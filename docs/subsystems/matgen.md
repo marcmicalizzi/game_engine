@@ -185,6 +185,103 @@ in cushions) and soil (crumbs) split at the moss share's quantile, dead leaf fra
 Poisson cover of `thatch_permille`, live leaves with a midrib and tapered tips as one of
 `live_permille`. `SetStats` reports the three covers.
 
+### A floor at standing height (G187)
+
+The parts above are all a few millimetres across, and G149's pictures showed what that gives at
+1.7 m: flat felt colour. A standing eye reads a floor by what lies between 5 cm and 1 m
+([grounding](../experiments/generated-material-sets.md#a-floor-at-standing-height-g187-2026-11-11)),
+so the ground kind (`Ground` version 2) now builds that band, every part a field of the recipe
+and zero in a recipe that does not ask for it:
+
+- **A patch mosaic** (`patch_permille`): a field of 0.6 m and 0.2 m octaves that sets, where it
+  is high, a turf's tall rejected tufts (longer, darker blue-green leaves, more of them dead)
+  against its short-grazed lawns (shorter, yellow-green), a soil's and a moss's moist against dry,
+  and where fresh straw lies over decayed litter.
+- **Tufts** (`tuft_mm`): live leaves fan out from a tiller's centre, 6 to 20 a tuft, each rising
+  from its base (its far end paler, lit) and lifting the tuft's top; `dead_permille` of them are
+  straw. Without tufts a leaf lies anywhere, as before.
+- **Clods** (`clod_mm`) of soil: cells of a cellular field whose lookup is warped by half a cell
+  (a polygon's straight edges read as crazy paving), domed by `relief_um`, cracked along some of
+  their edge, not all of it.
+- **Cushions** (`cushion_mm`) of moss (versions 7 and 8): one a cell, its centre jittered and its
+  radius 0.85 to 1.4 cells so neighbours overlap widely and the hollows are scattered pockets
+  (version 7's radii under a cell left a hollow round every cushion: a net at 15 m), each a smooth bump `(1 - (d / r)^2)^2` joined to
+  its neighbours softly (one less the product of one less each bump), so two cushions merge where
+  they meet. A cushion's hue and vigour are blended across the bumps by their weights, so its
+  tone falls off into its neighbours' rather than stepping at an edge; its crown is lighter and
+  greener (lit yellow-green, the shaded body and a dry brown mixed by the crown, the hue and the
+  wet-dry mosaic), its margins and the hollows between darker and wetter (0.8 of the crown's
+  tone), each cushion's own vigour 0.7 to 1.3 of the tone, and its relief the crown over low hummocks of `relief_um`. Versions 5 and 6 drew a
+  cushion as a Voronoi cell of one tone: creased domes (crazy paving) and then hard-edged tone
+  patches (a camouflage print), both in the engine. A carpet with no cushions (the turf's
+  underlay) keeps its flat tone, byte for byte.
+- **Stones** part buried in the soil (`stones_permille`, `stone_min_mm` to `stone_max_mm`, radii
+  log-uniform so small ones are many), ellipses whose crowns stand a quarter to three fifths of
+  their minor axis above it, each filmed with the soil's colour (more at its foot).
+- **Litter in two layers** (`decay_permille`): the decayed share first and dark, fresh straw
+  over it on a mosaic of its own 0.22 m across, and lying with the lodged grass where
+  `aligned_permille` asks, along a direction field 0.8 m across.
+- **Mounds** (`mound_um` at `mound_spacing_mm`): a low undulation under everything, so the normal
+  map shows at 15 m that the floor is not a plane. A thufur's 10 to 25 cm is the ground's
+  geometry, not the texture's: the set carries a tenth of it.
+- **The hollows' shade** reads over two centimetres and is full at a centimetre deep where a
+  recipe has tufts or cushions (5 mm otherwise); it was 4 mm over 6 mm, a crumb's scale.
+
+**A layer's share is the share drawn.** A clustered layer does not cover by the Poisson law (a
+tuft's leaves overlap each other), so the litter and the leaves are laid until their cover
+reaches the asked share; `SetStats::thatch_cover` and `live_cover` are the asked shares to within
+a fragment's area.
+
+The tile is 2 m at 2,048 texels (1 mm a texel) for all four, so the mosaic has a dozen patches a
+tile. What says the floor is no longer flat are the measures under "What a standing eye reads".
+Over seeds 61 to 63 at 256 texels (`msvc-debug`; the base is `k_matgen_version` 3 with its 0.5 m
+tiles, this is version 5), with the bounds the test holds each role to — **chosen** between the
+two, so the base fails every floor; the landmark ceiling the base meets except the moss:
+
+| Role | contrast at 5 cm: base, now, floor | at 25 cm: base, now, floor | relief RMS mm: base, now, floor | landmark: base, now, ceiling |
+|---|---|---|---|---|
+| `ground/turf` | 0.018–0.021, 0.056–0.068, > 0.04 | 0.002–0.005, 0.035–0.051, > 0.02 | 2.6–2.8, 5.8–7.9, > 4 | 0.10–0.11, 0.14–0.15, < 0.30 |
+| `ground/moss` | 0.035–0.058, 0.118–0.130, > 0.08 | 0.008–0.024, 0.086–0.102, > 0.04 | 0.44–0.65, 6.7–9.2, > 3 | 0.22–0.46, 0.28–0.33, < 0.45 |
+| `ground/soil` | 0.053–0.065, 0.106–0.118, > 0.08 | 0.014–0.025, 0.037–0.059, > 0.03 | 0.57, 3.6–4.7, > 2 | 0.31–0.43, 0.22–0.26, < 0.40 |
+| `ground/thatch` | 0.027–0.030, 0.045–0.046, > 0.035 | 0.006–0.012, 0.023–0.025, > 0.018 | 1.43, 4.2–5.6, > 2.5 | 0.14–0.17, 0.11–0.13, < 0.30 |
+
+No source gives a photographed floor's block contrast at these scales; the floors say only that
+the structure the base lacked is there. The thatch's is the weakest gain: a litter mat is one
+material, and its decayed patches are held soft (fresh straw is laid over a decimetre-scale
+mosaic of its own, at a rate that falls to 0.4 where the mosaic is high) because hard-edged ones
+read as a cow's hide.
+
+## Wood sets
+
+`wood/plank` and `wood/log` (G188; [grounding](../experiments/generated-material-sets.md#weathered-wood-g188-2026-11-11)):
+a softwood face, **its grain along the image's u**, as a sawn board shows it (`form: sawn`) or as
+the outside of a log does (`form: log`), weathered toward grey.
+
+- **The figure** is a phase across the tile — whole bands of `figure_um`, so it tiles — that
+  wanders `wander_mm` across the grain over 0.7 m along it, and climbs `spiral_ddeg` (a log's
+  spiral grain) as a whole number of bands over the tile's length. Each band is earlywood then
+  `latewood_permille` of latewood, the share filtered over the texel's footprint in the phase so a
+  band narrower than a texel keeps its tone instead of aliasing. Where the face runs along a ring
+  the phase's gradient falls, the bands widen and fold into a flat-sawn board's arches.
+- **Weathering**: earlywood toward a pale silver, latewood a darker grey, standing `relief_um`
+  proud of the eroded earlywood; how far each place has greyed is `grey_permille` plus or minus
+  `grey_patch_permille` over a 0.25 m field, so a board is grey to brown; `stain_permille` of dark
+  streaks along the grain; fibres as fine streaks that follow the bands.
+- **Knots** (`knots_per_m2`, `knot_min_mm` to `knot_max_mm`): the rings bend round each over three
+  of its radii; its body dark, ringed and proud; a third are dead knots with a dark rim.
+- **Checks** (`checks_per_m2`, `check_min_mm` to `check_max_mm`, `check_width_um`,
+  `check_depth_um`): splits that follow one band (they open along the grain, wherever it wanders),
+  widest at their middle, dark and deep.
+- **Bark** (`bark_permille`, a log's): patches where a field long along the stem is lowest, exactly
+  the share; plates `bark_plate_mm` long and fissured between, standing 6 mm proud so the
+  hollows' shade darkens the wood at their edge.
+
+**A consumer maps u along a member's length**, in metres: a 0.2 m board then shows a 0.2 m band
+of a 2 m tile, and boards at different offsets do not repeat each other's band. A projection that
+takes u from a world axis (the bridges' box mapping in `domain/bridges/src/mesh.cpp`, at this
+row's base) runs the grain across a member that lies along the other axis; that is the
+consumer's to turn.
+
 ## The defaults
 
 `default_sets()`, sorted by role; `engine-content matgen` builds them all.
@@ -200,8 +297,12 @@ Poisson cover of `thatch_permille`, live leaves with a midrib and tapered tips a
 | `rock/limestone` | rock | 2 m | micrite, solution pits, a grey rind, 15 % lichen, form 25 mm, strong ink stripes | `RockType::Limestone`, the caves |
 | `rock/sandstone` | rock | 1.5 m | buff grains, twelve laminae, one joint set, form 12 mm | `RockType::Sandstone` |
 | `gravel/bed.1`, `.2`, `sand/bar.1`, `.2`, `rock/scree.1`, `.2` | granular | as their role | the same recipe from other seeds ("Repetition") | a consumer that picks a variant by place |
-| `ground/soil`, `ground/moss`, `ground/thatch` | ground | 0.5 m | the sward floor's three parts | the sward's cook (`--sward-assets`) |
-| `ground/turf` | ground | 0.5 m | live leaves over thatch over moss and soil | a terrain layer that names it |
+| `ground/soil` | ground | 2 m | loam in 35 mm clods, cracked, 8 % stones of 5 to 40 mm part buried, moist and dry patches, a little litter, mounds | the sward's cook (`--sward-assets`), a terrain layer |
+| `ground/moss` | ground | 2 m | a moss carpet in 220 mm cushions that merge, lighter crowns and darker wet hollows, wet and dry patches, a little litter, mounds | the sward's cook, a terrain layer |
+| `ground/thatch` | ground | 2 m | a litter mat: decayed below, fresh straw over it in patches, lying with the lodged grass | the sward's cook, a terrain layer |
+| `ground/turf` | ground | 2 m | a grazed sward: live leaves in 110 mm tufts, short yellow-green lawns against tall dark rejected tufts, a fifth of the leaves dead, over litter, moss and soil | a terrain layer that names it, the meadow |
+| `wood/plank` | wood | 2 m | sawn softwood boards weathered grey to brown: flat-sawn figure, latewood ridges, checks, knots, stains | a bridge's deck, rails and posts ([bridges](bridges.md)) |
+| `wood/log` | wood | 2 m | the outside of a debarked log, silvered: spiral grain, long drying checks, knots, bark on 15 % | a bridge's logs, sills and stringers |
 
 Rock sets are `stochastic` (R131: a rock set is laid over cliffs many times its repeat, as
 `tools/pack-materials.ps1` defaults every `rock/*` role); the granular and ground sets are
@@ -235,6 +336,17 @@ measure and its bounds here are this row's own). G153 acts where a recipe can:
   always draws the same one; the seams between variants are then the seams between two beds,
   which a height blend or a placement's own edge has to carry. Asked of the hosts under "Not
   yet".
+
+### What a standing eye reads
+
+Three measures every build takes of its own result (`SetStats`, G187), for the band a standing
+eye reads a surface by, between a few centimetres and a metre: `contrast_5cm` and
+`contrast_25cm`, the RMS Weber contrast of the albedo's luminance averaged over blocks of the
+power-of-two side nearest 5 cm and 25 cm (0 where the tile holds fewer than two such blocks a
+side), and `relief_rms_mm`, the height's RMS about its mean. A surface whose structure is all a
+few millimetres across averages out to one tone over 5 cm blocks and reads as flat colour at
+1.7 m, whatever its texels hold; the landmark measure above is the other side of the same band,
+a ceiling where these are floors.
 
 ## The command
 
@@ -278,7 +390,9 @@ since the ground kind did not change). **The Linux containers reproduce the vers
 test passed. Version 3 (the step removed; the granite and sandstone pins re-taken):
 `linux-clang-debug` (14:25, at 39896b51) and `linux-gcc-release` (14:35) passed;
 `linux-gcc-release-v2` did not run for version 3 (the container lock was not had before the
-row's hand-back). The streaks' distance below a
+row's hand-back). Version 4 (G188) added the two wood pins and moved no other; version 5
+(G187) moved the turf's and added the moss's, the soil's and the thatch's. What the containers
+made of versions 4 and 5 is under "What it measured". The streaks' distance below a
 source is an integer from two sweeps round each column, the lichen's owner of a texel is decided
 by an f64 comparison of two quotients of the same arithmetic, so neither adds an operation a
 toolchain rounds its own way. Nothing was needed that `core/math/deterministic.h` lacks: a normal draw is Box and Muller's
@@ -335,10 +449,34 @@ the processors read 77 % busy before and 65 % after, 21 GB free. Build ms a set:
 times what it took (basalt, beside a different load), so none more than twice. The whole command
 with eighteen sets: 31 s.
 
-Resident while a set is built: 69 bytes a texel at most (the field's 20, the hollows' three
+**Versions 4 and 5** (G188, G187), `engine-content matgen --force` in `msvc-release`, every
+default, 2026-11-11 20:46 to 20:48 on the shared machine, **not a quiet run**: the processors
+read 76 % busy before and 71 % after, 1.3 GB of memory free at the start (seven rows and the
+main coordinator's five building beside it), so each figure is an upper bound. The whole command,
+twenty sets: 81 s. The six sets at 2,048 texels, build and write ms, PNG bytes:
+
+| Set | build ms | write ms | PNG bytes |
+|---|---|---|---|
+| `ground/moss` | 7,449 | 6,096 | 19,968,317 |
+| `ground/soil` | 6,812 | 1,346 | 21,388,489 |
+| `ground/thatch` | 8,279 | 1,457 | 24,082,966 |
+| `ground/turf` | 9,275 | 1,311 | 27,488,617 |
+| `wood/log` | 3,562 | 616 | 6,477,648 |
+| `wood/plank` | 2,899 | 990 | 8,878,660 |
+
+The ground sets at 2,048 cost about what G148's took at 2,048 (5.8 to 6.2 s beside lighter
+load), from four times the texels of their old 1,024 default; the turf's leaves are the dearest
+part (tens of thousands of fragments laid until their cover is reached). A ground or wood role
+now uploads three textures of 2,048 squared — 5.6 MB each in the `.tex` container by
+[materials](materials.md#the-first-pack-2026-10-19)' figures, 16.8 MB a role where its 1,024
+form cost 4.2 MB; six roles, 101 MB if every one is resident. Nothing scales with the world.
+
+Resident while a set is built: 72 bytes a texel at most (the field's 20, the hollows' three
 integer planes, the granular kind's top, id, taken, rise and break planes — 14 — or the rock
-kind's patch, owner, reach, source and streak planes — 17 —, the four images' 8) — about 72 MB at
-1,024 squared, 290 MB at 2,048 (G148's: 61 bytes) — all freed when the images are written.
+kind's patch, owner, reach, source and streak planes — 17 —, or the ground kind's patch, mound,
+underlay and two cover planes — 20 —, or the wood kind's phase, gradient and bark planes — 16 —,
+the four images' 8) — about 75 MB at 1,024 squared, 302 MB at 2,048 (G148's: 61 bytes) — all
+freed when the images are written.
 
 **Owned data.** The recipe type (`schemas/matgen.schema`), the default recipes, `k_matgen_version`.
 The pack directory `engine-content matgen` writes is derived data.
@@ -347,7 +485,9 @@ The pack directory `engine-content matgen` writes is derived data.
 
 - A set built from any window is the first window's bytes rotated.
 - The grid count over a bed reads the recipe's D50 and sorting; a rock's fresh share and a
-  floor's covers are the recipe's.
+  floor's covers are the recipe's (a floor's litter and leaves to within a fragment's area).
+- A ground set's contrast at 5 cm and 25 cm and its relief stand over the floors "A floor at
+  standing height" names; a wood set's grain runs along u.
 - No sixteenth of a tiled granular set stands out from its mean past the bounds "Repetition"
   names.
 - Streaks and moss exist only where a recipe asks for them.
@@ -362,15 +502,20 @@ The pack directory `engine-content matgen` writes is derived data.
 **Depends on.** `base`, `containers`, `math`, `hash`, `json`, `schema`, `log`, `texture` (the sRGB
 tables; the mip chain in the tests), `matgen_schemas`. No capability.
 
-**Testing.** `tools/dev.ps1 test -Filter matgen`: the rotation test over eight defaults (the wet
-granite's streaks and moss among them); the seam's step; the grid count over five seeds (the
+**Testing.** `tools/dev.ps1 test -Filter matgen`: the rotation test over ten defaults (the wet
+granite's streaks and moss among them, and the two wood sets); the seam's step; the grid count over five seeds (the
 cover of what is drawn held on the same bed unburied); scree against the bed; a rock's shares
 and a floor's covers over three seeds each; every default's mean albedo and roughness inside its
 material's range; the landmark measure under its bounds over three seeds for each tiled role,
 and the variants the same recipe from other seeds (G153); a rock face's form, streaks and moss
-where asked and absent where not (G152); a bed part buried and a talus layers deep (G151); a mip
-chain's mean; a recipe read, refused and keyed; the pins (about 23 s in `msvc-debug`, the
-longest case the grid count's 7.2 s: it builds each seed's bed twice, buried and not). `materials`' tests hold
+where asked and absent where not (G152); a bed part buried and a talus layers deep (G151); a wood
+set's grain along u (the colour's step along a row under 0.7 of its step down a column), its
+latewood share, checks, knots and bark where asked and none where not, over three seeds (G188,
+5.5 s); each ground role's standing-height measures over their floors and its landmark under its
+ceiling, over three seeds (G187, 7.7 s: twelve floors at 256 texels on 2 m tiles); a mip
+chain's mean; a recipe read, refused and keyed; the pins, nine roles (about 48 s in `msvc-debug`
+on a loaded machine, 2026-11-11 20:34; the longest case the grid count's 8.3 s: it builds each
+seed's bed twice, buried and not). `materials`' tests hold
 `merge_packs` and `pack_at`'s generated pack; `apps/engine_content/tests/matgen_tests.cpp` runs
 the command (two roles built, read back through `pack_at`, built again and skipped, a third role
 joining the manifest, the refusals; 1.1 s). Benchmarks: `tools/dev.ps1 bench -Filter 'matgen.*'`.
@@ -379,6 +524,40 @@ joining the manifest, the refusals; 1.1 s). Benchmarks: `tools/dev.ps1 bench -Fi
 command. Measured figures are in "What it measured" above.
 
 ## What the sets look like, and what a person would object to
+
+### The ground and wood sets in the engine (G187, G188, 2026-11-11 evening)
+
+Drawn as G149 drew its sets (`engine-view`, `msvc-release`, offscreen, 1,600 by 900, the earth sky
+at 15:30 in July at 46.5 degrees north): each set a stripe of one flat ground, the camera at 1.7 m
+looking two metres ahead and then fifteen metres along; "before" is the base's sets (built by the
+base's own `engine-content`, version 3), "after" version 6, both drawn by this row's
+`engine-view` (the renderer did not change). Two passes: version 5's pictures showed the moss's
+cushion domes creased at every seam into crazy paving and the boards' weathering patches as a
+checker at 15 m, which version 6 removed; its pictures are the ones judged. Beside the reels
+r01, r04 and r19 (turf, a grazed alpine sward; r19's grey plank footbridges and silvered logs):
+
+- **Turf** is no longer one flat green: at 1.7 m it shows tufts, dead leaves and a mottle of
+  lighter and darker sward, and at 15 m a patchy lawn. Beside r01 and r04 it is still too even
+  and too smooth: their turf's dark gaps between tufts and its bright blade tips come from
+  geometry (the sward's blades), and a texture alone reads as a mown lawn, not a grazed alpine
+  sward.
+- **Moss**, as judged in version 6, read as a camouflage print: hard-edged cells of one tone
+  each, worse beside the reels than the flat set before it. **Versions 7 and 8** (2026-11-12,
+  after the review; two picture passes, the second judged, against reel r39's moss cushions on
+  lava): version 7's cushions merged and their tone fell off softly, but a dark hollow ringed
+  every one, a net at 15 m; version 8's overlap leaves the hollows as scattered pockets. It now
+  reads as a soft, hummocky moss carpet at 1.7 m, with no edge anywhere. Still wrong beside r39:
+  the cushions are all one size, so at 15 m the mottle is even; the colour is a dull olive where
+  r39's lit crowns are a bright yellow-green; and at 1.7 m the surface is soft as velvet, without
+  the shoots' fine texture a photograph shows.
+- **Soil** reads as stony bare soil; its small stones are too uniformly pale specks.
+- **Thatch** is the weakest: a straw-coloured litter with soft mottles, still close to one flat
+  tone at 15 m.
+- **Planks** read as weathered grey-brown boards with flat-sawn arches, knots and checks; on a
+  ground plane at 15 m the 2 m tile's repeat is faint. Beside r19 the boards are a little too
+  brown and too clean: its decks are grey with dark wet stains along their joints.
+- **Logs**: the silvered wood and its long checks read; the bark patches read as cracked mud
+  more than as bark, and at 15 m they repeat in a lattice on a plane (a log of 4 m shows two).
 
 ### In the engine (G149, 2026-11-11)
 
@@ -455,9 +634,10 @@ bar is a photograph, and none of these is one:
 - **Built on demand.** A scene read that finds a role missing could call `build_set` through a
   registration point and the derived-data cache, as a tile's mesh is built; it needs the hosts'
   lookup (`systems/renderer/src/scene.cpp`, `domain/content_build`), which this row did not edit.
-- **`rock/scree` has no caller.** The rocks capability resolves scree and deposits by the
-  rock's type (`rock/granite`...), so a scree mesh takes the rock face's set; the set here is for
-  a ground layer or a recipe that names it until the deposits ask for a granular role.
+- **`rock/scree` has one caller, the deposits' bed.** The bed samples the pack's `rock/scree`
+  role first and its rock's role behind it (`k_scree_role`; [rocks](rocks.md#the-bed-is-rubble)),
+  since a talus surface is fresh clasts and not the wall's face. Nothing else asks for it: a scree
+  block's mesh and a cliff still take their rock face's set (`rock/granite`...).
 - **Lithology from the formation.** The bed's mix and the scree's rock are the recipe's, not the
   scene's formation's; a recipe per catchment is the hook.
 - **Height is carried and unread** by generated meshes ([materials](materials.md), "Not yet"); a
@@ -473,6 +653,16 @@ bar is a photograph, and none of these is one:
   other cures, neither this module's.
 - **Streaks run down the image.** A rock set laid on a mesh by triplanar or with a rotation has
   no idea which way is down; a streak points the way the image's -V points on that face.
+- **The thatch's structure above the decimetre** (G187): lodged swathes, tussock bases; it still
+  reads as one tone at 15 m.
+- **A grazed sward's dark gaps and lit tips** are the sward's blades' to draw (flora's), not a
+  texture's: the turf set is the floor under them and turf where none stand.
+- **Wood the way a member is mapped** (G188): the sets run their grain along u; a consumer that
+  maps u from a world axis runs it across a member that lies along the other one. A log's bark
+  is a patch on a flat image; a log mesh with its own bark (and a bark set) would carry it
+  better. The deck's wet stains along its joints and between boards belong to the consumer's
+  mesh (per-board placement), not the set.
+- **Ground and wood variants**: only the tiled granular roles have them (G153).
 - The numbers marked not verified on the grounding page.
 
 ## Capability contract (ADR-0027)
