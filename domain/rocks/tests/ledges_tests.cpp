@@ -1318,7 +1318,7 @@ TEST_CASE("ledges: a steep-dip patch and face are pinned to the bit") {
                                 << face.indices.size() / 3 << " triangles)");
   CHECK(s.report.triangles > 0u);
   CHECK(mesh_hash(s.mesh) == 11016132626080586711ull);
-  CHECK(mesh_hash(face) == 6435294768946086439ull);
+  CHECK(mesh_hash(face) == 11392922738312473375ull);
 }
 
 // Printed, not asserted (rocks.md, "A massif inside a budget"): the steep hillside's four ledge

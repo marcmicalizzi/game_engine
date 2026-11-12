@@ -1901,13 +1901,30 @@ ribs along the strike, their bedding faces to one side and their edges to the ot
 
 **A face's members** (`Cliff.members`, `engine.rocks.Cliff` version 8). With a formation that has
 a macro sequence and dips past 20 degrees the cliffs generator sets `members`, and the solver
-stands each weak member back from the resistant ones round it by `0.1 h` (8 m at most) times
-their contrast in resistance over half, eased over 3 m of the bed coordinate and ramped in from 20
-to 35 degrees of dip, so a face cut through steep beds shows the members as ribs and gullies where
-the strike crosses it and as banded recesses where the dip does. The back is that much further
-behind (`cliff_back_m`), so the face stays closed. Under 20 degrees nothing changes: the benches
+stands each weak member back from the resistant ones round it by a quarter of the member's own
+thickness (8 m at most) times their contrast in resistance over half, eased over 3 m of the bed
+coordinate and ramped in from 20 to 35 degrees of dip, so a face cut through steep beds shows the
+members as ribs and gullies where the strike crosses it and as banded recesses where the dip does.
+Not a share of the face's height: a tier is 12 m, and the first pictures' tenth of it (1.2 m) did
+not read from 100 m; the member is the mountain's, and the forest's 38 m pelitic schist stands 8 m
+back from its quartzite and orthogneiss. The back is 8 m further behind (`cliff_back_m`), so the
+face stays closed. Under 20 degrees nothing changes: the benches
 step the members there, and `members` is left out of a recipe's key when false, so every face
 written before it keeps its key.
+
+**What a scene writes on a 57 degree dip.** Nothing new: the attitude is read from the formation
+and the ground. Copy the scene's `formation` into one `ledges` entry and one `cliffs` entry per
+region window (the test scene `content/test-scenes/steep-dip/` is the pattern: the forest's own
+formation, macro sequence included, since the members are what stands as crags on the ledges and
+as ribs and gullies on the faces). On the `cliffs` entry: `min_slope_deg` 50, `tier_m` 12, the
+type `Gneiss`, `face.talus` 0 and `face.talus_blocks` 0 if the deposits shed instead; the faces
+set `members` themselves because the formation dips past 20 degrees, and the tiers break at
+levels, which is right for beds that do not run along a face. On the `ledges` entry:
+`cliff_slope_deg` 50 (the cliffs' `min_slope_deg`), `type` `Gneiss`, the rule at its defaults.
+Leave `near_rings` on the cliffs at 0 until the faces arrive with their tiles ("A massif inside a
+budget"): until then the far form only adds bytes. Expect every resistant bed of the fine sequence
+to stand (its resistances are 0.55 to 0.85, so no bed undercuts another) and the crags to come
+from the members: the schists (0.30 and 0.35) are the gullies between them.
 
 **Pinned**: the steep-dip patch (the forest's formation at 57 and 128 degrees, folds and all) and
 the first face of its band, by mesh hash ("a steep-dip patch and face are pinned to the bit").

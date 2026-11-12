@@ -327,17 +327,21 @@ f64 carve_at(const Carve& c, f64 s, f64 y, f64 top_y, D3 at, f64& notch) {
     e -= c.gully_amp * smoothstep((g - 0.45) * 3.0);
   }
   // **The members** (G200): a weak member weathers back from the resistant ones round it, by the
-  // contrast in their resistance (half of it the whole recess), its edges eased over 3 m of the
-  // bed coordinate so a member's boundary is a slope and not a step.
+  // contrast in their resistance (half of it the whole recess) and a quarter of its own thickness
+  // (a gully is narrower than deep only in a thin member), at most `member_amp`; its edges eased
+  // over 3 m of the bed coordinate so a member's boundary is a slope and not a step.
   if (c.members != nullptr && c.member_amp > 0.0) {
     const f64 wx = c.fabric.origin.x + at.x, wy = c.fabric.origin.y + at.y,
               wz = c.fabric.origin.z + at.z;
     const f64 coordinate = gfx::formation_coordinate(c.fabric.field, wx, wy, wz).coordinate;
     const gfx::FormationLateral lateral = gfx::formation_lateral(c.fabric.field, wx, wy, wz);
     f64 r = 0.0;
-    for (const f64 d : {-1.5, 0.0, 1.5})
-      r += static_cast<f64>(gfx::formation_member(*c.members, coordinate + d, lateral).resistance);
-    e -= c.member_amp * clamp01((c.member_hi - r / 3.0) / 0.5);
+    for (const f64 d : {-1.5, 0.0, 1.5}) {
+      const gfx::FormationBedSample m = gfx::formation_member(*c.members, coordinate + d, lateral);
+      r += min2(8.0, 0.25 * (m.top - m.base)) *
+           clamp01((c.member_hi - static_cast<f64>(m.resistance)) / 0.5);
+    }
+    e -= (c.member_amp / 8.0) * (r / 3.0);
   }
   // The grain: up to three octaves from 3 m, each only where it spans four cells of the rung.
   f64 len = 3.0;
@@ -748,17 +752,19 @@ bool cliff_in_range(const Cliff& p, std::string& error) {
 f64 cliff_type_rounding(RockType type) { return cliff_model(type).rounding; }
 
 namespace {
-// **A face's members** (G200; rocks.md, "Beds at any attitude"): how deep a weak member stands
-// back on a face `height_m` tall, before the contrast: ramped in as the formation's dip passes 20
-// degrees (under it the members are the benches' business, G172) to 35, and a tenth of the face's
-// height, never over 8 m (design: the gullies' own 6 % and 6 m, a little deeper, since a member is
-// a body of weak rock and not a joint's slot). Zero with no formation or no macro sequence.
+// **A face's members** (G200; rocks.md, "Beds at any attitude"): the most a weak member stands
+// back, before its contrast and its own thickness: ramped in as the formation's dip passes 20
+// degrees (under it the members are the benches' business, G172) to 35, and 8 m (design: a gully
+// in a weak member tens of metres thick, deeper than the face's own gullies' 6 m, since a member is
+// a body of weak rock and not a joint's slot). Not the face's height: a tier is 12 m and the
+// member it cuts is the mountain's. Zero with no formation or no macro sequence.
 f64 member_reach(const Cliff& p, f64 height_m) {
+  (void)height_m;
   if (!p.members || !p.formation.has_value() || !p.geology.from_formation) return 0.0;
   if (p.formation->macro_beds.empty() && p.formation->members.empty()) return 0.0;
   const f64 dip = std::fabs(wide(p.formation->dip_deg));
   const f64 w = clamp01((dip - 20.0) / 15.0);
-  return w * min2(8.0, 0.1 * height_m);
+  return w * 8.0;
 }
 }  // namespace
 

@@ -350,8 +350,8 @@ struct Cliff @version(8) {
   /// The members stand apart (G200; rocks.md, "Beds at any attitude"): with a `formation` that
   /// has a macro sequence and dips past 20 degrees, a weak member is carved back from the
   /// resistant ones round it by their contrast in resistance, ramped in from 20 to 35 degrees of
-  /// dip, a tenth of the face's height and 8 m at most, so a face cut across the strike shows
-  /// ribs and gullies. The cliffs generator sets it with such a formation.
+  /// dip, a quarter of the member's own thickness and 8 m at most, so a face cut across the
+  /// strike shows ribs and gullies. The cliffs generator sets it with such a formation.
   members: bool = false @since(8)
 }
 
