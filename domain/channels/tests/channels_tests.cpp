@@ -1678,44 +1678,76 @@ f64 zigzag(const void*, i64 x, i64 z) noexcept {
 
 // Stage 3's invariant: neither bank's ground (half the width across the line's heading) stands more
 // than half a depth under the ground at the line, so the cut has a bank on both sides.
+//
+// **What this case held, and what holds now** (W116, 2026-11-12): it counted the points with a
+// bank half a depth or more under the line's ground and held them under 2 %, because such a point
+// left the section standing in the air; that count went because the 2 % was reached by W93's move
+// taken untested where no place held, which on a hillside kinked the line and stood its ribbon
+// 0.52 m over the edited ground; what holds now is the per-point form below — every such point
+// is seated under that bank — and the move must still leave fewer such points than no move.
 TEST_CASE("channels: a line across a slope is moved between its banks") {
-  const ChannelLayer p = stream_layer(1);
-  ChannelNetwork n;
+  struct Read {
+    u32 points = 0, half_bank = 0, no_bank = 0, moved = 0, unseated = 0;
+    f64 worst = 0, short_m = 0;
+  };
+  const auto read = [](const ChannelNetwork& n) {
+    Read r;
+    for (const ChannelLink& link : n.links) {
+      r.moved += link.bank_moved;
+      for (u32 i = 1; i + 1 < link.line.size(); ++i) {
+        const ChannelPoint& pt = link.line[i];
+        const f64 w = static_cast<f64>(pt.width_m), d = static_cast<f64>(pt.depth_m);
+        if (w < 1.0) continue;
+        const f64 tx = link.line[i + 1].at.x - link.line[i - 1].at.x;
+        const f64 tz = link.line[i + 1].at.z - link.line[i - 1].at.z;
+        const f64 tl = std::sqrt(tx * tx + tz * tz);
+        if (!(tl > 0)) continue;
+        const auto at = [&](f64 side) {
+          return zigzag(nullptr, std::llround((pt.at.x - tz / tl * side * .5 * w) * 1000.0),
+                        std::llround((pt.at.z + tx / tl * side * .5 * w) * 1000.0));
+        };
+        const f64 under = pt.at.y - std::min(at(1), at(-1));
+        ++r.points;
+        r.no_bank += under > 1.13 * d;  // the trapezoid's thalweg: the bank's ground under the bed
+        r.worst = std::max(r.worst, under / d);
+        if (!(under > .5 * d)) continue;
+        ++r.half_bank;
+        // The section's top stands over that bank by `under - seat`: never past the bound.
+        const f64 seat = i < link.seat.size() ? static_cast<f64>(link.seat[i]) : 0.0;
+        r.unseated += seat < under - k_seat_bound_m;
+        r.short_m = std::max(r.short_m, under - seat);
+      }
+    }
+    return r;
+  };
+  ChannelLayer p = stream_layer(1);
+  ChannelNetwork n, still;
   std::string error;
   REQUIRE(plan_channels(p, ground(zigzag), 1, nullptr, n, error));
-  u32 points = 0, half_bank = 0, no_bank = 0, moved = 0;
-  f64 worst = 0;
-  for (const ChannelLink& link : n.links) {
-    moved += link.bank_moved;
-    for (u32 i = 1; i + 1 < link.line.size(); ++i) {
-      const ChannelPoint& pt = link.line[i];
-      const f64 w = static_cast<f64>(pt.width_m), d = static_cast<f64>(pt.depth_m);
-      if (w < 1.0) continue;
-      const f64 tx = link.line[i + 1].at.x - link.line[i - 1].at.x;
-      const f64 tz = link.line[i + 1].at.z - link.line[i - 1].at.z;
-      const f64 tl = std::sqrt(tx * tx + tz * tz);
-      if (!(tl > 0)) continue;
-      const auto at = [&](f64 side) {
-        return zigzag(nullptr, std::llround((pt.at.x - tz / tl * side * .5 * w) * 1000.0),
-                      std::llround((pt.at.z + tx / tl * side * .5 * w) * 1000.0));
-      };
-      const f64 under = pt.at.y - std::min(at(1), at(-1));
-      ++points;
-      half_bank += under > .5 * d;
-      no_bank += under > 1.13 * d;  // the trapezoid's thalweg: the bank's ground under the bed
-      worst = std::max(worst, under / d);
-    }
-  }
-  MESSAGE("points " << points << ", a bank more than half a depth under the line at " << half_bank
-                    << ", under the bed at " << no_bank << ", the worst " << worst
-                    << " depths; moved " << moved);
-  // Measured (2026-11-10): 1,969 points, 486 moved; a bank more than half a depth under the line
-  // at 32 of them (100 after one round of the move) and under the bed at 12, the worst 1.23
-  // depths. Held: under 2 % and under 1 %.
-  REQUIRE(points > 500);
-  CHECK(moved > 0);
-  CHECK(half_bank * 100 <= points * 2);
-  CHECK(no_bank * 100 <= points);
+  p.bank_move = false;
+  REQUIRE(plan_channels(p, ground(zigzag), 1, nullptr, still, error));
+  p.bank_move = true;
+  const Read moved = read(n), unmoved = read(still);
+  MESSAGE("points " << moved.points << ", a bank more than half a depth under the line at "
+                    << moved.half_bank << " (unmoved " << unmoved.half_bank
+                    << "), under the bed at " << moved.no_bank << ", the worst " << moved.worst
+                    << " depths; moved " << moved.moved
+                    << "; of those points, the top over the bank by at most " << moved.short_m
+                    << " m, past the bound at " << moved.unseated);
+  // Measured (2026-11-10, W93): 1,969 points, 486 moved; a bank more than half a depth under the
+  // line at 32 (100 after one round of the move), under the bed at 12, the worst 1.23 depths.
+  // Measured (2026-11-12, W116, the move only where it finds a bank): 1,969 points, 526 moved; 58
+  // such points with the move and 370 without it (`bank_move` false), none under the bed, the
+  // worst 1.08 depths; every one of the 58 seated (the top over its bank by 0 m at the most).
+  REQUIRE(moved.points > 500);
+  CHECK(moved.moved > 0);
+  // 1. What answers a missing bank, per point: the section's top stands over that bank by no more
+  //    than the bound, at every point the old count counted, none excepted.
+  CHECK(moved.unseated == 0);
+  // 2. The move still earns its place: no more such points than the same line unmoved.
+  CHECK(moved.half_bank <= unmoved.half_bank);
+  CHECK(unmoved.moved == 0);
+  CHECK(moved.no_bank * 100 <= moved.points);
   // W116: where the move leaves a bank under the line's ground, the section is seated under it, so
   // the cut's top stands over no lower bank's ground by more than the bound.
   const SeatStats seat = measure_seat(p, n, ground(zigzag));

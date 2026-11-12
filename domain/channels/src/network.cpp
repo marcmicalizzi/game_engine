@@ -307,7 +307,7 @@ void build_line(const ChannelLayer& p, const ChannelNetwork& n, const scene_gen:
   // the whole is done `k_bank_rounds` times; the two ends stay where the junctions are.
   // Rills under a metre wide are left: the lattice the cut is drawn on is a quarter of that.
   link.bank_moved = 0;
-  for (u32 round = 0; round < k_bank_rounds; ++round) {
+  for (u32 round = 0; round < (p.bank_move ? k_bank_rounds : 0u); ++round) {
     constexpr f64 k_bank_fall = .5;
     Vector<f64> move(m, 0.0), nx(m, 0.0), nz(m, 0.0);
     for (u32 i = 1; i + 1 < m; ++i) {
@@ -831,23 +831,27 @@ void seat_section(const ChannelLayer& p, const scene_gen::Ground& ground, Channe
     // The section's half width is not known yet (its swell is planned after the bed), so the
     // bank's ground is read at nine places over the range the swell can give it, and the lowest
     // kept: a bank top past a valley's floor stands higher the further out it is.
+    // Across two headings, the lowest kept: the line's over a width (the cut's section turns with
+    // it) and its own between the neighbouring points (where a kink turns it within a width).
     const f64 swell = .5 * wide(steep ? p.step_widening : p.riffle_widening);
-    Heading along = heading_at(link, s, s[i], w);
-    if (!along.ok) {
+    Heading local;
+    {
       const u32 a = i > 0 ? i - 1 : 0, b = std::min(i + 1, m - 1);
       const f64 dx = link.line[b].at.x - link.line[a].at.x;
       const f64 dz = link.line[b].at.z - link.line[a].at.z;
       const f64 l = std::sqrt(dx * dx + dz * dz);
       if (!(l > 0)) continue;
-      along = {dx / l, dz / l, true};
+      local = {dx / l, dz / l, true};
     }
+    Heading along = heading_at(link, s, s[i], w);
+    if (!along.ok) along = local;
     f64 lower = std::numeric_limits<f64>::infinity();
-    for (u32 k = 0; k <= 8; ++k) {
-      const f64 half = .5 * w * (1 + swell * (static_cast<f64>(k) / 4 - 1));
-      lower =
-          std::min(lower, ground_at(ground, pt.at.x - along.z * half, pt.at.z + along.x * half));
-      lower =
-          std::min(lower, ground_at(ground, pt.at.x + along.z * half, pt.at.z - along.x * half));
+    for (const Heading& h : {along, local}) {
+      for (u32 k = 0; k <= 8; ++k) {
+        const f64 half = .5 * w * (1 + swell * (static_cast<f64>(k) / 4 - 1));
+        lower = std::min(lower, ground_at(ground, pt.at.x - h.z * half, pt.at.z + h.x * half));
+        lower = std::min(lower, ground_at(ground, pt.at.x + h.z * half, pt.at.z - h.x * half));
+      }
     }
     seat[i] = std::max(0.0, std::ceil((pt.at.y - lower) * 1e3) / 1e3);
   }

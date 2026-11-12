@@ -918,7 +918,8 @@ how much line the plan seated, and the water's fit codes.
   which the water first spills (Leopold, Wolman & Miller 1964, as Buffington's field guide states
   it), so on unequal banks it is the lower bank's top that bounds it, and water standing over its
   downhill bank would leave down the fall line. The bank's ground is read at nine half widths over
-  the range the section's swell can give it (the swell is planned after the bed), the lowest kept,
+  the range the section's swell can give it (the swell is planned after the bed), across the
+  line's heading over a width and its heading between its neighbours, the lowest kept,
   rounded up to the millimetre and taken as the most over two points either way. The uphill bank
   is then the higher, its face running out to the hillside as every cut's does
   ([tileset](tileset.md#channels-cut-into-the-ground), "A face that runs out").
@@ -969,9 +970,14 @@ in its default sand.
 **What is left.** The meander still swings the contour stream a little down the slope at 20 and
 30 degrees, so its profile reads step-pool for 31 to 85 of 433 points (printed by the case, not
 held); a meander on a hillside wants the trough test applied across the whole width, not the
-centre. The W93 valley's count above (points whose bank stands half a depth under the *line's*
-ground) is 58 of 1,969 with the move as it is now, where W93 held 2 % (36): those points are
-seated, so their cut has both banks, and the count no longer reads a missing bank.
+centre.
+
+**W93's count, restated** (2026-11-12): the case "a line across a slope is moved between its
+banks" held the points whose bank stands half a depth under the *line's* ground under 2 %, a
+level reached by the untested width's move that kinked the line on a hillside; it now holds, at
+every such point (58 of 1,969 on the valley, none excepted), that the section's top stands over
+that bank by no more than the bound, and that the move leaves fewer such points than no move
+(58 against 370 with `ChannelLayer::bank_move` off, `ChannelLayer` version 11).
 
 ## Seen: the section, the flood bed and the proof of concept's items 6, 7 and 8
 
