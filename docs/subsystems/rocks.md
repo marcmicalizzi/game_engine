@@ -1424,6 +1424,34 @@ triangle), 308 after G183's cones (a slightly smaller bed on this tile, 187.5 m�
 bytes were not measured). The cluster DAG is the LOD policy; its coarsest level the far form, where
 the relief has gone into the material's normal.
 
+**The same pair in msvc-release** (2026-11-11 evening; the base b8eb339a and the tip 0d160651,
+each built in this row's worktree; the machine 100% busy by `Win32_Processor.LoadPercentage`
+throughout, 12-24 GB free, thirteen agents running, so every figure is an upper bound and the
+benchmarks report `quiet: false`):
+
+| The cost case's 16 m tile, five runs interleaved | Base | Tip |
+|---|---:|---:|
+| Its four patches built (solve and cluster DAG), ms | 521, 565, 889, 654, 616 (median 616) | 967, 642, 1,029, 688, 771 (median 771) |
+| Triangles a m² of bed, finest / coarsest | 319 / 9.7 | 381 / 12.0 |
+| The plan, ms (median) | 12.8 | 12.8 |
+
+| The review scene's `across` view, 1600×900, CSM, 61 frames, 3 repeats, RTX 5090 | Base | Tip |
+|---|---:|---:|
+| GPU ms a frame, median (p95) | 0.184 (0.187) | 0.190 (0.195) |
+| of which the material resolve | 0.083 | 0.091 |
+| the cull, Hi-Z and hardware raster | 0.033, 0.016, 0.014 | 0.033, 0.016, 0.014 |
+| the shadow maps and their cull | 0.037, 0.018 | 0.037, 0.018 |
+| Visible (instance, cluster) pairs; shadow pairs | 2,715; 4,573 | 2,704; 4,532 |
+
+GPU utilisation 3-6% when each run began and ended (the machine's CPU was busy, not the GPU). The
+frame record carries no triangle count; a cluster holds at most 128 triangles, and from across the
+LOD cut sits on coarse levels, so the finest form's 19% more triangles do not reach this view
+(the pairs are 0.4% fewer). **What the 19% buys and costs**: the 10 cm top that lets the clasts'
+angular faces and hollows read at one metre, for about a quarter more time to build a tile's
+patches (616 to 771 ms, median, busy machine) and 19% more triangles where the finest form is
+drawn, within a few metres; from across it costs 0.006 ms a frame, almost all of it in the
+resolve, which now samples the stones' second material.
+
 ### The toe
 
 G143's third pass. A real toe's largest clasts lie scattered over metres past the bed, thinning
