@@ -141,8 +141,8 @@ Entry::~Entry() {
 }
 // The plan's key: the layer's canonical bytes (its version and the solver's), the world seed, and
 // every height the plan samples, in whole micrometres, in its own order.
-bool plan_key(const DepositLayer& layer, const scene_gen::Ground& ground, u64 world_seed, u64& out,
-              std::string& error) {
+bool plan_key(const DepositLayer& layer, const scene_gen::Ground& ground,
+              const scene_gen::Ground* uncut, u64 world_seed, u64& out, std::string& error) {
   if (!ground.present()) {
     error = "engine.rocks deposits: invalid ground (required)";
     return false;
@@ -167,12 +167,17 @@ bool plan_key(const DepositLayer& layer, const scene_gen::Ground& ground, u64 wo
     out = h;  // the plan refuses it with its own sentence
     return true;
   }
-  for (i64 z = z0; z <= z1; z += spacing)
-    for (i64 x = x0; x <= x1; x += spacing) {
-      const f64 y = ground.surface_mm(x, z);
-      const i64 um = std::isfinite(y) && std::fabs(y) < 1e9 ? std::llround(y * 1e6) : i64{0x7ff0};
-      h = hash_combine(h, static_cast<u64>(um));
-    }
+  // The ground, and the ground before its edits where it differs (G190: what a face sheds).
+  for (const scene_gen::Ground* g : {&ground, uncut}) {
+    if (g == nullptr) continue;
+    h = hash_combine(h, g == uncut ? 0x75ull : 0x67ull);
+    for (i64 z = z0; z <= z1; z += spacing)
+      for (i64 x = x0; x <= x1; x += spacing) {
+        const f64 y = g->surface_mm(x, z);
+        const i64 um = std::isfinite(y) && std::fabs(y) < 1e9 ? std::llround(y * 1e6) : i64{0x7ff0};
+        h = hash_combine(h, static_cast<u64>(um));
+      }
+  }
   out = h;
   return true;
 }
@@ -302,13 +307,20 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
     return refused(error, "deposits: cannot resolve material image path");
   std::string why;
   e->world_seed = context.world_seed;
-  if (!plan_key(e->layer, context.ground, context.world_seed, e->key, why))
+  // G190: the ground before its edits, where the host has edits, so a face an edit cut sheds
+  // nothing (the scene reader's `Context::uncut()`; a host that offers none hands the ground).
+  const scene_gen::Ground before = context.uncut();
+  const bool edited = before.present() && (before.surface_fn != context.ground.surface_fn ||
+                                           before.context != context.ground.context);
+  if (!plan_key(e->layer, context.ground, edited ? &before : nullptr, context.world_seed, e->key,
+                why))
     return refused(error, why);
   e->plan = hold_plan(e->key);
   const bool found = e->plan != nullptr;
   if (!found) {
     DepositPlan plan;
-    if (!plan_deposits(e->layer, context.ground, plan, why)) return refused(error, why);
+    if (!plan_deposits(e->layer, context.ground, plan, why, edited ? &before : nullptr))
+      return refused(error, why);
     // The drainage is the plan's own working; a patch never reads it.
     plan.drainage_m2 = Vector<f64>();
     e->plan = keep_plan(e->key, std::move(plan));

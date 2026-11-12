@@ -1352,7 +1352,7 @@ faster than its spurs) would raise the contrast further; no inventory with numbe
 
 ### Where a pile comes to rest
 
-G190, 2026-11-12 (`k_deposit_version` 9; [grounding](../experiments/rockfall-deposits.md#g190-where-a-pile-comes-to-rest-2026-11-12)).
+G190, 2026-11-12 (`k_deposit_version` 9, and 10 for the edited faces below; [grounding](../experiments/rockfall-deposits.md#g190-where-a-pile-comes-to-rest-2026-11-12)).
 The forest proof of concept withheld the deposits from its world for two reasons (its asks audit,
 gaps 41 and 42): below its massifs the ground falls at 35 to 50 degrees for about 100 m before it
 can hold anything, and **the foot was the first sample under `source_deg`**, so every pile stood on
@@ -1396,12 +1396,29 @@ surface meets the ground):
 | 35 degrees | -0.05 m, 3,502 of 589 m³ (the wedge filled the slope) | -0.01 m, 240 of 650 m³ |
 | 42 degrees | **7.43 m**, 3,977 of 587 m³ | -0.02 m, 868 of 867 m³ |
 | 50 degrees | -0.08 m, 3,698 of 686 m³ | -0.02 m, 950 of 993 m³ |
+| 54 degrees | (not run on the base) | -0.02 m, 986 of 977 m³ |
+| 60 degrees | (not run on the base) | -0.02 m, 1,053 of 1,022 m³ |
 
+The forest's second world measured its beds standing on 54-degree ground at the median (20% of
+the outline dropping over 5 m); here the median ground under the bed is the transit slope's own
+below 54 degrees, where the wedge leans up the slope and meets it, and the meadow's (4.6 degrees)
+from 54 up, where the transit slope is itself a source and the pile lies at its foot.
 Every foot was on ground steeper than the repose on the base, none is now; the worst cut of a kept
 pile is under a millimetre; no case moved or refused a pile, because every fall now runs on to the
 meadow before it stands. A 2 m (4 m) bench at the brink of a 45-degree, 10 m drop: all 65 (59) piles
 moved over the brink, none refused, no cut. A transit slope that runs on past the region's edge: all
 65 falls refused, 863 m³ at 42 degrees and 1,621 at 50, and nothing stood.
+
+**A face an edit cut sheds nothing.** A source is a rock face of the land. The forest's second world
+read its channels' cut banks (45-56 degrees) as faces and shed 649 piles into a stream's bed. The
+generator hands `plan_deposits` the ground before its edits (`Context::uncut()`, the terrain less
+every cut, fill and bench, R144), when the host's differs from the ground, and **a sample sheds only
+where both are steeper than `source_deg`**; a cut bank or a bench's riser still carries what falls
+onto it from a real face above. Held by `deposits: a channel cut through a slope sheds nothing`: a
+3 m channel with 56-degree banks down a 20-degree hillside sheds 312 piles over 2,103 talus samples
+read on the cut ground alone, and none read against the ground before it, directly and through the
+generator's `Context` hook. The plan's key (T120, [A tile solves](#a-tile-solves)) covers both
+grounds.
 
 **What it does not do yet.** A pile leaning on ground at the repose angle itself lies parallel to it
 and holds only its toe: 37% of what it was asked at 35 degrees, and a moved pile against a 45-degree

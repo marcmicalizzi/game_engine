@@ -283,7 +283,7 @@ f64 deposit_convergence(const DepositPlan& p, u32 i, u32 k) {
 }
 
 bool plan_deposits(const DepositLayer& p, const scene_gen::Ground& ground, DepositPlan& out,
-                   std::string& error) {
+                   std::string& error, const scene_gen::Ground* uncut) {
   out = {};
   if (!ground.present()) return fail(error, "ground (required)");
   if (!in(wide(p.spacing_m), .25, 8)) return fail(error, "spacing_m");
@@ -389,6 +389,25 @@ bool plan_deposits(const DepositLayer& p, const scene_gen::Ground& ground, Depos
   // border whose lower neighbours are all outside it falls away out of the region, at a slope the
   // plan cannot see: what reaches it leaves the region and is refused, so no pile stands there cut
   // by the region's edge.
+  // G190: a source is a rock face of the land, not a face a ground edit cut. With the ground before
+  // its edits, a sample sheds only where that ground is steep too, so a channel's cut bank (45-56
+  // degrees in the forest, where 649 piles were shed into a stream's bed) or a bench's riser sheds
+  // nothing; it still carries what falls onto it from a real face above.
+  Vector<u8> natural;  // empty: every steep sample is a face of the land
+  if (uncut != nullptr && uncut->present()) {
+    Vector<f64> before(n);
+    for (u32 i = 0; i < n; ++i) {
+      before[i] = uncut->surface_mm(world_x(i), world_z(i));
+      if (!in(before[i], -1e6, 1e6)) return fail(error, "uncut ground height (finite +/-1e6 m)");
+    }
+    natural.assign(n, 0);
+    for (u32 i = 0; i < n; ++i)
+      for (u32 d = 0; d < 8 && natural[i] == 0; ++d) {
+        const u32 j = neighbour(i, pw, pd, d);
+        if (j != ~0u && (before[i] - before[j]) / step(d, sp) >= source) natural[i] = 1;
+      }
+  }
+  auto sheds = [&](u32 i) { return slopes[i] >= source && (natural.empty() || natural[i] != 0); };
   auto carries = [&](u32 i) {
     if (slopes[i] >= toe) return true;
     const u32 x = i % pw, z = i / pw;
@@ -397,8 +416,7 @@ bool plan_deposits(const DepositLayer& p, const scene_gen::Ground& ground, Depos
   Vector<f64> face_m2(n, 0.0), fed(n, 0.0);
   Vector<u32> up(n, ~0u);  // the inflow carrying the most face, to walk up the face by
   for (u32 i : order) {
-    if (slopes[i] >= source && next[i] != ~0u)
-      face_m2[i] += sp * sp * std::sqrt(1.0 + slopes[i] * slopes[i]);
+    if (sheds(i) && next[i] != ~0u) face_m2[i] += sp * sp * std::sqrt(1.0 + slopes[i] * slopes[i]);
     if (face_m2[i] <= 0.0 || !carries(i)) continue;
     const u32 j = next[i];
     if (j == ~0u) {
@@ -471,7 +489,7 @@ bool plan_deposits(const DepositLayer& p, const scene_gen::Ground& ground, Depos
         }
     face_first.assign(piles.size() + 1, 0);
     auto face_foot = [&](u32 i) {
-      if (slopes[i] < source || foot_of[i] == ~0u) return ~0u;
+      if (!sheds(i) || foot_of[i] == ~0u) return ~0u;
       const u32 f = rest_of(foot_of[i]);
       return f < n ? f : ~0u;
     };

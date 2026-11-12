@@ -248,8 +248,9 @@ TEST_CASE("deposits: mesh identity and cluster container are deterministic") {
   // each its own DAG and material, and k_deposit_version 6 (was 10478160828047604680), then for
   // G183's k_deposit_version 7 in the source hash (was 16110835894214829114), then for G182's
   // clasts and k_deposit_version 8 (was 7110207806032102213), then for G190's k_deposit_version 9
-  // in the source hash alone, the mesh above unmoved (was 7783980573357481640).
-  CHECK(geometry::cluster_file_hash(a) == 13888751263830557499ull);
+  // in the source hash alone, the mesh above unmoved (was 7783980573357481640), and again for its
+  // k_deposit_version 10 (edited faces shed nothing; was 13888751263830557499).
+  CHECK(geometry::cluster_file_hash(a) == 14261916470828244392ull);
   CHECK(geometry::cluster_file_hash(a) == geometry::cluster_file_hash(b));
   CHECK(a.source_hash == deposit_source_hash(p));
   CHECK(a.source_hash == b.source_hash);

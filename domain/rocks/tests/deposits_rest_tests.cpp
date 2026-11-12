@@ -95,7 +95,8 @@ TEST_CASE("deposits: a pile stands where rock comes to rest and never ends in a 
   // 50 degrees for 12 m before it can hold debris. Before G190 the foot was the first sample under
   // `source_deg`, the pile's surface stood over ground steeper than itself, and the flood cut it at
   // its height: a wall metres high along the bed's downslope edge.
-  for (f64 slope : {35.0, 42.0, 50.0})
+  // 54 and 60 degrees: the forest's second world, whose median bed stood on 54-degree ground.
+  for (f64 slope : {35.0, 42.0, 50.0, 54.0, 60.0})
     for (u64 seed : {1ull, 7ull, 23ull}) {
       CAPTURE(slope);
       CAPTURE(seed);
@@ -122,13 +123,28 @@ TEST_CASE("deposits: a pile stands where rock comes to rest and never ends in a 
         const f64 left = x > 0 ? plan.ground[f] - plan.ground[f - 1] : 0.0;
         if (left / .5 >= k_repose) ++steep_feet;
       }
-      for (u32 i = 0; i < plan.thickness.size(); ++i)
+      // The ground's slope under the bed, by area: the median talus sample's, central differences.
+      Vector<f64> under;
+      for (u32 i = 0; i < plan.thickness.size(); ++i) {
         deepest = std::max(deepest, static_cast<f64>(plan.thickness[i]));
+        const u32 x = i % plan.width;
+        if (plan.thickness[i] <= 0.0f || plan.coarse[i] <= 0.0f || x == 0 || x + 1 == plan.width)
+          continue;
+        under.push_back(std::atan(std::abs(plan.ground[i + 1] - plan.ground[i - 1]) / 1.0) * 180.0 /
+                        3.14159265358979323846);
+      }
+      std::sort(under.begin(), under.end());
+      const f64 median = under.empty() ? 0.0 : under[under.size() / 2];
       MESSAGE("slope ", slope, " seed ", seed, ": piles ", plan.piles.size(), ", moved ",
               plan.moved, ", refused ", plan.refused.size(), " (", refused, " m3), held ", held,
-              " m3 of ", asked, " asked, deepest ", deepest, " m, worst outline step ", step,
-              " m, worst cut ", plan.worst_cut_m, " m, rounds ", plan.rounds);
+              " m3 of ", asked, " asked, deepest ", deepest, " m, median ground under the bed ",
+              median, " degrees, worst outline step ", step, " m, worst cut ", plan.worst_cut_m,
+              " m, rounds ", plan.rounds);
       CHECK(step <= k_bound);
+      // The bed's median ground is the transit slope's below 54 degrees, where the wedge leans up
+      // it and meets it, and the meadow's from 54 up, where the transit slope sheds itself and
+      // the bed lies on the meadow below it; never ground steeper than the slope it leans on.
+      CHECK(median <= slope + 0.5);
       CHECK(plan.worst_cut_m <= 0.22 + 1e-9);
       CHECK(steep_feet == 0);
       // The face's fall is stood, not refused: there is a meadow below to hold it, and what is
@@ -145,6 +161,7 @@ TEST_CASE("deposits: a pile stands where rock comes to rest and never ends in a 
     }
 }
 
+namespace {
 // A face standing on a narrow bench at the brink of a 45-degree drop to the meadow: the bench is
 // gentle enough to hold debris, but a pile on it would drape the drop below it.
 f64 benched(const void* data, i64 x_mm, i64) noexcept {
@@ -154,6 +171,64 @@ f64 benched(const void* data, i64 x_mm, i64) noexcept {
   if (x < 40) return x - 30;
   if (x < 40 + bench) return 10 + .05 * (x - 40);
   return 10 + .05 * bench + std::min(2.0 * (x - 40 - bench), 20.0);
+}
+
+// A hillside at 20 degrees falling toward -x, before and after a stream's channel is cut down it
+// along z = 16 m: a 4 m floor 3 m deep between banks at 56 degrees (the forest's 45-56).
+f64 hillside(const void*, i64 x_mm, i64) noexcept { return .364 * static_cast<f64>(x_mm) / 1000.0; }
+f64 channelled(const void*, i64 x_mm, i64 z_mm) noexcept {
+  const f64 d = std::abs(static_cast<f64>(z_mm) / 1000.0 - 16.0);
+  const f64 cut = d < 2.0 ? 3.0 : std::max(0.0, 3.0 - (d - 2.0) * 1.4826);
+  return .364 * static_cast<f64>(x_mm) / 1000.0 - cut;
+}
+bool hillside_before(void*, scene_gen::Ground& out) {
+  out = {};
+  out.surface_fn = &hillside;
+  return true;
+}
+}  // namespace
+
+TEST_CASE("deposits: a channel cut through a slope sheds nothing") {
+  // The forest's second world: the channels' cut banks were read as rockfall sources and 649 piles
+  // were shed into a stream's bed. A source is a face of the land, so a sample sheds only where the
+  // ground before its edits is steep too.
+  scene_gen::Ground cut;
+  cut.surface_fn = &channelled;
+  scene_gen::Ground before;
+  before.surface_fn = &hillside;
+  DepositPlan with_banks, without;
+  std::string error;
+  REQUIRE(plan_deposits(layer(1), cut, with_banks, error));
+  REQUIRE(plan_deposits(layer(1), cut, without, error, &before));
+  auto talus = [](const DepositPlan& plan) {
+    u32 count = 0;
+    for (u32 i = 0; i < plan.thickness.size(); ++i)
+      count += plan.thickness[i] > 0.0f && plan.coarse[i] > 0.0f ? 1u : 0u;
+    return count;
+  };
+  MESSAGE("banks as sources: ", with_banks.piles.size(), " piles, ", talus(with_banks),
+          " talus samples; read against the ground before the cut: ", without.piles.size(), ", ",
+          talus(without));
+  CHECK_FALSE(with_banks.piles.empty());  // the defect, without the ground before the cut
+  CHECK(without.piles.empty());
+  CHECK(talus(without) == 0);
+  // Through the generator: a host's `Context::uncut()` is what it reads.
+  test::TempDir scratch;
+  const std::string dir = scratch.path();
+  scene_gen::Context c;
+  c.dir = dir;
+  c.ddc = dir;
+  c.ground = cut;
+  c.tile_size = 16;
+  c.uncut_ground.fn = &hillside_before;
+  const auto* desc = scene_gen::GeneratorRegistry::global().find_placement("deposits");
+  REQUIRE(desc != nullptr);
+  void* state = nullptr;
+  REQUIRE_MESSAGE(desc->open(schema::to_json(layer(5)), c, &state, &error), error);
+  scene_gen::Placements whole;
+  REQUIRE(desc->expand(state, c, whole, &error));
+  desc->close(state);
+  CHECK(whole.instances.empty());
 }
 
 TEST_CASE("deposits: a pile on a bench at a brink is moved on down to the meadow below") {

@@ -17,7 +17,8 @@ namespace engine::rocks {
 // angular, tilted blocks of several heights over hollows, drawn at 10 cm (rocks.md, "The bed is
 // rubble"). 9 (G190): a face's fall comes to rest on ground gentler than the repose, and a pile
 // that would end in a cut is moved on down or refused (rocks.md, "Where a pile comes to rest").
-inline constexpr u32 k_deposit_version = 9;
+// 10 (G190): a face a ground edit cut (a channel's bank) sheds nothing.
+inline constexpr u32 k_deposit_version = 10;
 // The bed's edge (rocks.md, "The edge and the seams"): inside its outline toward bare gentle ground
 // a deposit is no thicker than `k_edge_slope` (tan 31 degrees, the toe's own slope) times its
 // distance in, less half a spacing; past it the piles' surfaces continue under the ground; and the
@@ -100,8 +101,12 @@ struct DepositPlan {
 
 // Pure finite-window solve; no I/O, persistent state or dependence on tile arrival order.
 // Refuses absent/nonfinite ground, incompatible grids and exceeded budgets. Output clears on error.
+// `uncut` (G190; rocks.md, "Where a pile comes to rest"): the ground before its edits
+// (`scene_gen::Context::uncut()`), when it differs from `ground`. A sample sheds only where both
+// are steep, so a channel's cut bank or a bench's riser, a face an edit made, sheds nothing. Null:
+// the ground has no edits.
 bool plan_deposits(const DepositLayer& layer, const scene_gen::Ground& ground, DepositPlan& out,
-                   std::string& error);
+                   std::string& error, const scene_gen::Ground* uncut = nullptr);
 // The plan's ground converges here (G143): the contour curvature over `scale_samples` samples,
 // per metre, positive in a hollow; zero on a face whose contours are straight.
 f64 deposit_convergence(const DepositPlan& plan, u32 i, u32 scale_samples);
