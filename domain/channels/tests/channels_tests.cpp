@@ -2697,3 +2697,256 @@ TEST_CASE("channels: what a tile of bed costs (measured, printed)") {
           " pieces");
   CHECK(data.mesh.mesh.clusters.size() <= 4096);
 }
+
+// ---- T98: no coarse level of a piece stands off its stones ------------------------------------
+
+namespace {
+// The closest point of triangle abc to p (Ericson, Real-Time Collision Detection, 5.1.5), double.
+struct D3 {
+  f64 x = 0, y = 0, z = 0;
+};
+D3 d3(Vec3 v) { return {static_cast<f64>(v.x), static_cast<f64>(v.y), static_cast<f64>(v.z)}; }
+D3 sub(D3 a, D3 b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
+D3 add_scaled(D3 a, D3 d, f64 s) { return {a.x + d.x * s, a.y + d.y * s, a.z + d.z * s}; }
+f64 dot3(D3 a, D3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+f64 distance_to_triangle(D3 p, D3 a, D3 b, D3 c) {
+  const D3 ab = sub(b, a), ac = sub(c, a), ap = sub(p, a);
+  const f64 d1 = dot3(ab, ap), d2 = dot3(ac, ap);
+  D3 q;
+  if (d1 <= 0 && d2 <= 0) {
+    q = a;
+  } else {
+    const D3 bp = sub(p, b);
+    const f64 d3b = dot3(ab, bp), d4 = dot3(ac, bp);
+    const D3 cp = sub(p, c);
+    const f64 d5 = dot3(ab, cp), d6 = dot3(ac, cp);
+    const f64 vc = d1 * d4 - d3b * d2, vb = d5 * d2 - d1 * d6, va = d3b * d6 - d5 * d4;
+    if (d3b >= 0 && d4 <= d3b) {
+      q = b;
+    } else if (vc <= 0 && d1 >= 0 && d3b <= 0) {
+      q = add_scaled(a, ab, d1 / (d1 - d3b));
+    } else if (d6 >= 0 && d5 <= d6) {
+      q = c;
+    } else if (vb <= 0 && d2 >= 0 && d6 <= 0) {
+      q = add_scaled(a, ac, d2 / (d2 - d6));
+    } else if (va <= 0 && (d4 - d3b) >= 0 && (d5 - d6) >= 0) {
+      q = add_scaled(b, sub(c, b), (d4 - d3b) / ((d4 - d3b) + (d5 - d6)));
+    } else {
+      const f64 denom = 1 / (va + vb + vc);
+      q = add_scaled(add_scaled(a, ab, vb * denom), ac, vc * denom);
+    }
+  }
+  const D3 d = sub(p, q);
+  return std::sqrt(dot3(d, d));
+}
+
+// The finest form of a piece, as `solve_piece` makes it, in a uniform grid of `cell` metres, and
+// each vertex's stone (the connected component of the welded surface it is on: `solve_piece`
+// welds a clast and nothing else).
+struct Finest {
+  const assets::MeshData* mesh = nullptr;
+  f64 cell = .25;
+  i64 lo[3] = {}, n[3] = {};
+  std::vector<u32> start, items;
+  std::vector<u32> stone;
+  i64 index(i64 x, i64 y, i64 z) const { return (z * n[1] + y) * n[0] + x; }
+  i64 cell_of(f64 v, u32 axis) const {
+    return std::clamp(static_cast<i64>(std::floor(v / cell)) - lo[axis], i64{0}, n[axis] - 1);
+  }
+  explicit Finest(const assets::MeshData& m) : mesh(&m) {
+    const u32 vertices = m.positions.size();
+    stone.resize(vertices);
+    for (u32 v = 0; v < vertices; ++v)
+      stone[v] = v;
+    const auto find = [&](u32 v) {
+      while (stone[v] != v)
+        v = stone[v] = stone[stone[v]];
+      return v;
+    };
+    for (u32 i = 0; i < m.indices.size(); i += 3)
+      for (u32 e = 1; e < 3; ++e) {
+        const u32 a = find(m.indices[i]), b = find(m.indices[i + e]);
+        if (a != b) stone[std::max(a, b)] = std::min(a, b);
+      }
+    for (u32 v = 0; v < vertices; ++v)
+      stone[v] = find(v);
+    f64 mn[3] = {1e30, 1e30, 1e30}, mx[3] = {-1e30, -1e30, -1e30};
+    for (const Vec3 p : m.positions) {
+      const f64 c[3] = {static_cast<f64>(p.x), static_cast<f64>(p.y), static_cast<f64>(p.z)};
+      for (u32 k = 0; k < 3; ++k) {
+        mn[k] = std::min(mn[k], c[k]);
+        mx[k] = std::max(mx[k], c[k]);
+      }
+    }
+    for (u32 k = 0; k < 3; ++k) {
+      lo[k] = static_cast<i64>(std::floor(mn[k] / cell));
+      n[k] = static_cast<i64>(std::floor(mx[k] / cell)) - lo[k] + 1;
+    }
+    std::vector<u32> counts(static_cast<usize>(n[0] * n[1] * n[2]) + 1, 0);
+    const auto each_cell = [&](u32 t, auto&& visit) {
+      i64 a[3], b[3];
+      for (u32 k = 0; k < 3; ++k) {
+        f64 l = 1e30, h = -1e30;
+        for (u32 j = 0; j < 3; ++j) {
+          const Vec3 p = m.positions[m.indices[t * 3 + j]];
+          const f64 c = static_cast<f64>(k == 0 ? p.x : k == 1 ? p.y : p.z);
+          l = std::min(l, c);
+          h = std::max(h, c);
+        }
+        a[k] = cell_of(l, k);
+        b[k] = cell_of(h, k);
+      }
+      for (i64 z = a[2]; z <= b[2]; ++z)
+        for (i64 y = a[1]; y <= b[1]; ++y)
+          for (i64 x = a[0]; x <= b[0]; ++x)
+            visit(index(x, y, z));
+    };
+    const u32 triangles = m.indices.size() / 3;
+    for (u32 t = 0; t < triangles; ++t)
+      each_cell(t, [&](i64 c) { ++counts[static_cast<usize>(c)]; });
+    start.assign(counts.size() + 1, 0);
+    for (usize c = 0; c < counts.size(); ++c)
+      start[c + 1] = start[c] + counts[c];
+    items.resize(start.back());
+    std::vector<u32> fill(start.begin(), start.end() - 1);
+    for (u32 t = 0; t < triangles; ++t)
+      each_cell(t, [&](i64 c) { items[fill[static_cast<usize>(c)]++] = t; });
+  }
+  // The distance from `p` to the finest form, or `reach` when nothing lies within it.
+  f64 distance(D3 p, f64 reach) const {
+    f64 best = reach;
+    const f64 c[3] = {p.x, p.y, p.z};
+    i64 a[3], b[3];
+    for (u32 k = 0; k < 3; ++k) {
+      a[k] = cell_of(c[k] - reach, k);
+      b[k] = cell_of(c[k] + reach, k);
+    }
+    for (i64 z = a[2]; z <= b[2]; ++z)
+      for (i64 y = a[1]; y <= b[1]; ++y)
+        for (i64 x = a[0]; x <= b[0]; ++x) {
+          const i64 at = index(x, y, z);
+          for (u32 i = start[static_cast<usize>(at)]; i < start[static_cast<usize>(at) + 1]; ++i) {
+            const u32 t = items[i];
+            const u32* w = &mesh->indices[t * 3];
+            best = std::min(
+                best, distance_to_triangle(p, d3(mesh->positions[w[0]]), d3(mesh->positions[w[1]]),
+                                           d3(mesh->positions[w[2]])));
+          }
+        }
+    return best;
+  }
+};
+
+struct StandOff {
+  u64 triangles = 0;      // coarse triangles
+  u64 bridges = 0;        // of those, joining two stones
+  u64 measured = 0;       // of those, the ones whose distance was sampled (every `stride`-th)
+  u64 off = 0;            // of those, with a sample farther than its cluster's own error
+  f64 worst_m = 0;        // the farthest sample's distance, metres (at most five errors)
+  f64 worst_error_m = 0;  // that sample's cluster's own error
+  u32 worst_level = 0;
+};
+
+// Every triangle of every level above the finest: whether its corners lie on one stone, and on
+// every `stride`-th, its centroid and its edges' middles against its cluster's own error (its
+// corners are vertices of the finest form, so they lie on it): a one-sided distance, coarse to
+// finest.
+StandOff stand_off(const geometry::ClusterFileData& data, const assets::MeshData& mesh,
+                   u32 stride) {
+  const Finest finest(mesh);
+  const geometry::ClusterMesh& cm = data.mesh.mesh;
+  REQUIRE(cm.vertex_source.size() == cm.vertices.size());
+  u32 strangers = 0;
+  for (u32 v = 0; v < cm.vertices.size(); ++v) {
+    // A piece's parts are its materials' DAGs, each over every vertex of the finest form, and the
+    // merge numbers a part's sources after the parts before it (`merge_cluster_lod`).
+    const u32 s = cm.vertex_source[v] % mesh.positions.size();
+    if (s >= mesh.positions.size() || mesh.positions[s].x != cm.vertices[v].x ||
+        mesh.positions[s].y != cm.vertices[v].y || mesh.positions[s].z != cm.vertices[v].z)
+      ++strangers;
+  }
+  REQUIRE_MESSAGE(strangers == 0, strangers
+                                      << " of " << cm.vertices.size()
+                                      << " cluster vertices name no vertex of the finest form");
+  StandOff out;
+  for (u32 k = 0; k < cm.clusters.size(); ++k) {
+    const geometry::ClusterLodDesc& lod = data.mesh.lod[k];
+    if (lod.level == 0) continue;
+    const geometry::ClusterDesc& c = cm.clusters[k];
+    const f64 bound = static_cast<f64>(lod.own_error) + 1e-4;
+    for (u32 t = 0; t < c.triangle_count; ++t) {
+      const u32 packed = cm.triangles[c.triangle_offset + t];
+      const u32 v[3] = {c.vertex_offset + (packed & 0xffu), c.vertex_offset + (packed >> 8 & 0xffu),
+                        c.vertex_offset + (packed >> 16 & 0xffu)};
+      const D3 a = d3(cm.vertices[v[0]]), b = d3(cm.vertices[v[1]]), d = d3(cm.vertices[v[2]]);
+      const u32 n = mesh.positions.size();
+      const u32 s0 = finest.stone[cm.vertex_source[v[0]] % n];
+      if (s0 != finest.stone[cm.vertex_source[v[1]] % n] ||
+          s0 != finest.stone[cm.vertex_source[v[2]] % n])
+        ++out.bridges;
+      if (out.triangles++ % stride != 0) continue;
+      ++out.measured;
+      const D3 samples[4] = {{(a.x + b.x + d.x) / 3, (a.y + b.y + d.y) / 3, (a.z + b.z + d.z) / 3},
+                             {(a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2},
+                             {(b.x + d.x) / 2, (b.y + d.y) / 2, (b.z + d.z) / 2},
+                             {(d.x + a.x) / 2, (d.y + a.y) / 2, (d.z + a.z) / 2}};
+      bool off = false;
+      for (const D3& p : samples) {
+        if (finest.distance(p, bound) < bound) continue;
+        off = true;
+        // How far, up to four errors more: what the report names, not what the check reads.
+        const f64 far = finest.distance(p, 5 * bound);
+        if (far > out.worst_m) {
+          out.worst_m = far;
+          out.worst_error_m = static_cast<f64>(lod.own_error);
+          out.worst_level = lod.level;
+        }
+      }
+      if (off) ++out.off;
+    }
+  }
+  return out;
+}
+}  // namespace
+
+// **No coarse level joins two stones**
+// (channels.md, "The stray triangle on the riffle (T98)"):
+// a piece is many separate stones, and a level above the finest that joined two of them
+// with a triangle across the gap (meshoptimizer's sloppy fallback can: it welds on a grid) would
+// draw that triangle where no stone is, which is what the riffle view's pale triangle was suspected
+// of being. Over three seeds of the pool-riffle valley at W93's hydraulic geometry, the busiest
+// 32 m tile's piece: no triangle of any level has corners on two stones. Beside it, printed and not
+// held (the simplifier's error is a quadric estimate, not a bound): how far a sample of the coarse
+// triangles stands from the finest form against its cluster's own error.
+TEST_CASE("channels: no coarse level of a piece joins two stones, over seeds") {
+  u64 triangles = 0, bridges = 0;
+  for (const u64 seed : {1ull, 2ull, 7ull}) {
+    ChannelLayer p = layer();
+    p.seed = seed;
+    p.width_at_km2_m = 14;
+    p.depth_at_km2_m = 1.2f;
+    p.head_threshold_m2 = 300;
+    const Laid laid = lay_valley(p, &gentle, 32);
+    REQUIRE_FALSE(laid.pieces.empty());
+    u32 busiest = 0;
+    for (u32 i = 1; i < laid.pieces.size(); ++i)
+      if (clast_count(laid.pieces[i].recipe) > clast_count(laid.pieces[busiest].recipe))
+        busiest = i;
+    const ChannelPiece& recipe = laid.pieces[busiest].recipe;
+    assets::MeshData mesh;
+    geometry::ClusterFileData data;
+    std::string error;
+    REQUIRE_MESSAGE(solve_piece(recipe, mesh, error), error);
+    REQUIRE_MESSAGE(build_piece_container(recipe, {}, 0, data, error), error);
+    const StandOff s = stand_off(data, mesh, 32);
+    MESSAGE("seed ", seed, ": ", clast_count(recipe), " stones, ", s.triangles,
+            " coarse triangles, ", s.bridges, " joining two; of ", s.measured, " sampled, ", s.off,
+            " stand farther than their cluster's error from the finest form, the worst ",
+            1e3 * s.worst_m, " mm at level ", s.worst_level, " whose error is ",
+            1e3 * s.worst_error_m, " mm");
+    triangles += s.triangles;
+    bridges += s.bridges;
+  }
+  CHECK(triangles > 0);
+  CHECK(bridges == 0);
+}
