@@ -273,6 +273,31 @@ split's in one batch**, where the driver may compile the module twice side by si
 whose split is on should not build the one draw's pipeline at all, and today it does. The driver's
 time grows faster than the module: 29 s a megabyte at 0.59 MB, 30 at 2.47, 62 at 4.22.
 
+## What the frame budgets say
+
+`tools/frame-budget.ps1` over a copy of the budget file with
+`--tunable renderer.resolve.classes=modules` added to every run (the tool takes no tunable, and
+the budget file is nobody's to edit), the committed tree's `msvc-release` binaries copied out,
+`-WaitQuiet 60`, 2026-11-12 at 10:42 to 10:59 with other agents' flights between the runs. None of
+the four scenes flown has water, so `modules` is `draws` there:
+
+| run | verdict | resolve, median (budget) | classify, median | total, median / p99 (budget) | machine |
+|---|---|---:|---:|---:|---|
+| overlook-1080p | **not flown** | | | | its scene reads Khronos samples this worktree does not have, and a row may not download them |
+| erg-walk-1080p-rt | pass | 0.203 (0.200) | 0.012 | 0.755 / 1.320 (0.724 / 1.214) | quiet |
+| erg-walk-surround3-rt | busy, inconclusive | 2.405 (2.530) | 0.144 | 3.877 / 5.273 (3.771 / 4.127) | the GPU 99 % busy at its end |
+| endless-1080p-csm | pass | 0.188 (0.491) | 0.016 | 1.147 / 1.962 (3.161 / 5.545) | busy |
+| endless-surround3-rt | pass | 2.101 (2.100) | 0.142 | 4.330 / 5.810 (4.392 / 5.287) | busy |
+
+The one pass over its limit is not the resolve's: `clas` at the p99 on the surround's erg, 0.709 ms
+against a limit of 0.681, on a run the tool calls busy. **At 11520 × 2160 the classify pass is
+0.14 ms** for the three views, and the per-class draws of ground and sky cost the one draw or
+less (2.405 against a budget of 2.530 on the erg's surround; the endless desert's the same to a
+thousandth). No budget names the classify pass's bucket, so its 0.14 ms shows only in `total`,
+inside the tolerance. The csm run's budget is far above what either draw costs today and says
+nothing of the split. No run was flown with the split off beside these: they are read against the
+file's budgets, which were taken on a quiet machine.
+
 ## What stands between the split and on
 
 1. **The class exit in `fs_resolve`** (the patch): without it the split loses 0.43 ms under
@@ -287,8 +312,9 @@ time grows faster than the module: 29 s a megabyte at 0.59 MB, 30 at 2.47, 62 at
    SPIR-V's arithmetic; what it costs is not measured), or the difference is stated as a lever
    under the owner's rule for detail the eye does not resolve. Until one of those, the default
    could be `draws` and not `modules`.
-4. **The frame budgets.** The classify pass is a bucket the budget file does not name, and at
-   11520 × 2160 it is three times the figures above.
+4. **The frame budgets.** Within them on the three runs that could be judged ("What the frame
+   budgets say"); the overlook was not flown, the surround's erg wants a quiet flight, and the
+   classify pass is a bucket the budget file does not name.
 5. **The one draw's pipeline not built when the split is on**, so a cold start compiles the
    module once.
 
@@ -355,6 +381,7 @@ and a bin. The classes are a table of seven with room for fifteen in the depth's
 
 - The forest was not flown, by the brief.
 - The layered ground's `--raster hw` column was flown only with the class exit.
-- `tools/frame-budget.ps1` with the split on: see the roadmap row for what was run.
+- The overlook's budget run (the worktree has no Khronos samples), and a quiet flight of the
+  surround's erg.
 - No pose with a Panini view or an open sea was measured: there the plan draws every class by the
   scene's module and `modules` is `draws`.
