@@ -63,7 +63,9 @@ namespace engine::matgen {
 ///    patch mosaic, litter in two layers, mounds; its four sets on 2 m tiles at 2,048 texels.
 /// 6: after the engine pictures: a moss carpet's relief smooth hummocks (its cushions' domes
 ///    creased at every seam), a board's weathering patches smaller and weaker (a checker at 15 m).
-inline constexpr u32 k_matgen_version = 6;
+/// 7: a moss carpet's cushions overlap and merge, their tone falling off across each (a lighter,
+///    yellower crown, darker wet margins) instead of one tone a cell (a camouflage print).
+inline constexpr u32 k_matgen_version = 7;
 
 /// Variants of a tiled role (G153): `default_sets` writes `<role>.1` .. `<role>.<n>` beside each
 /// tiled granular role, the same recipe from other seeds, so a consumer that picks one by place

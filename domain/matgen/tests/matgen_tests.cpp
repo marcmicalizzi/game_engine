@@ -500,9 +500,10 @@ TEST_CASE("matgen: the same bytes from every toolchain") {
   // toolchain rounds its own way, so Clang and GCC, at v3 and at v2, are held to the same bytes;
   // version 5 (G187: the ground kind at standing height) moved the turf and added the moss, the
   // soil and the thatch, which no earlier pin held; version 6 (the engine pictures: a moss carpet's
-  // relief smoothed, a board's weathering patches smaller) moved the moss and the two woods; which
-  // of them has been run is on the page (matgen.md, "Same bytes everywhere"). A change to the
-  // generator moves these and bumps k_matgen_version.
+  // relief smoothed, a board's weathering patches smaller) moved the moss and the two woods;
+  // version 7 (the moss's cushions overlap and blend their tone instead of one tone a cell) moved
+  // the moss; which of them has been run is on the page (matgen.md, "Same bytes everywhere"). A
+  // change to the generator moves these and bumps k_matgen_version.
   struct Pin {
     const char* role;
     u64 hash;
@@ -512,7 +513,7 @@ TEST_CASE("matgen: the same bytes from every toolchain") {
       {"sand/bar", 6512822385822317515ull},       {"rock/granite", 1158326275606281670ull},
       {"rock/sandstone", 2145369994992403863ull}, {"ground/turf", 6124285787784493336ull},
       {"wood/plank", 14025903017001931447ull},    {"wood/log", 7590841734047759407ull},
-      {"ground/moss", 16492662926659797556ull},   {"ground/soil", 13248924326901389473ull},
+      {"ground/moss", 7388122920877078052ull},    {"ground/soil", 13248924326901389473ull},
       {"ground/thatch", 4229589913222796817ull},
   };
   for (const Pin& pin : pins) {

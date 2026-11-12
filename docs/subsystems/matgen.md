@@ -200,13 +200,20 @@ and zero in a recipe that does not ask for it:
 - **Tufts** (`tuft_mm`): live leaves fan out from a tiller's centre, 6 to 20 a tuft, each rising
   from its base (its far end paler, lit) and lifting the tuft's top; `dead_permille` of them are
   straw. Without tufts a leaf lies anywhere, as before.
-- **Cushions** (`cushion_mm`) of moss and **clods** (`clod_mm`) of soil: cells of a cellular field
-  whose lookup is warped by half a cell (a polygon's straight edges read as crazy paving); a
-  soil's clods domed by `relief_um`, a moss carpet's relief smooth hummocks of `relief_um` at the
-  cushions' scale (the cells' domes creased at every seam, and under a low sun the creases drew
-  crazy paving in the engine); a moss cushion each its own tone between lit yellow-green, the shaded body and a
-  dry brown and its own vigour (0.75 to 1.25 of the tone), the seam between two showing only where
-  a second field parts them; a soil's clods cracked along some of their edge, not all of it.
+- **Clods** (`clod_mm`) of soil: cells of a cellular field whose lookup is warped by half a cell
+  (a polygon's straight edges read as crazy paving), domed by `relief_um`, cracked along some of
+  their edge, not all of it.
+- **Cushions** (`cushion_mm`) of moss (version 7): one a cell, its centre jittered and its radius
+  0.7 to 0.98 of a cell so neighbours overlap, each a smooth bump `(1 - (d / r)^2)^2` joined to
+  its neighbours softly (one less the product of one less each bump), so two cushions merge where
+  they meet. A cushion's hue and vigour are blended across the bumps by their weights, so its
+  tone falls off into its neighbours' rather than stepping at an edge; its crown is lighter and
+  greener (lit yellow-green, the shaded body and a dry brown mixed by the crown, the hue and the
+  wet-dry mosaic), its margins and the hollows between darker and wetter (0.72 of the crown's
+  tone), and its relief the crown over low hummocks of `relief_um`. Versions 5 and 6 drew a
+  cushion as a Voronoi cell of one tone: creased domes (crazy paving) and then hard-edged tone
+  patches (a camouflage print), both in the engine. A carpet with no cushions (the turf's
+  underlay) keeps its flat tone, byte for byte.
 - **Stones** part buried in the soil (`stones_permille`, `stone_min_mm` to `stone_max_mm`, radii
   log-uniform so small ones are many), ellipses whose crowns stand a quarter to three fifths of
   their minor axis above it, each filmed with the soil's colour (more at its foot).
@@ -233,7 +240,7 @@ two, so the base fails every floor; the landmark ceiling the base meets except t
 | Role | contrast at 5 cm: base, now, floor | at 25 cm: base, now, floor | relief RMS mm: base, now, floor | landmark: base, now, ceiling |
 |---|---|---|---|---|
 | `ground/turf` | 0.018–0.021, 0.056–0.068, > 0.04 | 0.002–0.005, 0.035–0.051, > 0.02 | 2.6–2.8, 5.8–7.9, > 4 | 0.10–0.11, 0.14–0.15, < 0.30 |
-| `ground/moss` | 0.035–0.058, 0.133–0.140, > 0.08 | 0.008–0.024, 0.068–0.080, > 0.04 | 0.44–0.65, 7.0–9.6, > 3 | 0.22–0.46, 0.26–0.39, < 0.45 |
+| `ground/moss` | 0.035–0.058, 0.145–0.154, > 0.08 | 0.008–0.024, 0.074–0.088, > 0.04 | 0.44–0.65, 6.8–9.3, > 3 | 0.22–0.46, 0.29–0.33, < 0.45 |
 | `ground/soil` | 0.053–0.065, 0.106–0.118, > 0.08 | 0.014–0.025, 0.037–0.059, > 0.03 | 0.57, 3.6–4.7, > 2 | 0.31–0.43, 0.22–0.26, < 0.40 |
 | `ground/thatch` | 0.027–0.030, 0.045–0.046, > 0.035 | 0.006–0.012, 0.023–0.025, > 0.018 | 1.43, 4.2–5.6, > 2.5 | 0.14–0.17, 0.11–0.13, < 0.30 |
 
@@ -290,7 +297,7 @@ consumer's to turn.
 | `rock/sandstone` | rock | 1.5 m | buff grains, twelve laminae, one joint set, form 12 mm | `RockType::Sandstone` |
 | `gravel/bed.1`, `.2`, `sand/bar.1`, `.2`, `rock/scree.1`, `.2` | granular | as their role | the same recipe from other seeds ("Repetition") | a consumer that picks a variant by place |
 | `ground/soil` | ground | 2 m | loam in 35 mm clods, cracked, 8 % stones of 5 to 40 mm part buried, moist and dry patches, a little litter, mounds | the sward's cook (`--sward-assets`), a terrain layer |
-| `ground/moss` | ground | 2 m | a moss carpet in 150 mm cushions of their own tones, wet and dry patches, a little litter, mounds | the sward's cook, a terrain layer |
+| `ground/moss` | ground | 2 m | a moss carpet in 220 mm cushions that merge, lighter crowns and darker wet hollows, wet and dry patches, a little litter, mounds | the sward's cook, a terrain layer |
 | `ground/thatch` | ground | 2 m | a litter mat: decayed below, fresh straw over it in patches, lying with the lodged grass | the sward's cook, a terrain layer |
 | `ground/turf` | ground | 2 m | a grazed sward: live leaves in 110 mm tufts, short yellow-green lawns against tall dark rejected tufts, a fifth of the leaves dead, over litter, moss and soil | a terrain layer that names it, the meadow |
 | `wood/plank` | wood | 2 m | sawn softwood boards weathered grey to brown: flat-sawn figure, latewood ridges, checks, knots, stains | a bridge's deck, rails and posts ([bridges](bridges.md)) |
@@ -637,10 +644,8 @@ bar is a photograph, and none of these is one:
   other cures, neither this module's.
 - **Streaks run down the image.** A rock set laid on a mesh by triplanar or with a rotation has
   no idea which way is down; a streak points the way the image's -V points on that face.
-- **A floor's tone across a cushion** (G187): a moss cushion and a sward's patch take one tone
-  a cell, so their edges are hard; a tone that falls off across the cell, or two overlapping
-  cells blended, is the next step. The thatch needs structure of its own above the decimetre
-  (lodged swathes, tussock bases) to stop reading as one tone at 15 m.
+- **The thatch's structure above the decimetre** (G187): lodged swathes, tussock bases; it still
+  reads as one tone at 15 m.
 - **A grazed sward's dark gaps and lit tips** are the sward's blades' to draw (flora's), not a
   texture's: the turf set is the floor under them and turf where none stand.
 - **Wood the way a member is mapped** (G188): the sets run their grain along u; a consumer that

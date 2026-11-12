@@ -634,9 +634,9 @@ Set ground_of(const char* role, u64 seed, u32 moss, u32 soil, u32 thatch, u32 li
 }
 
 Set ground_moss() {
-  Set s = ground_of("ground/moss", 0x6d6f7373ull, 1000, 0, 40, 0);
+  Set s = ground_of("ground/moss", 0x6d6f7373ull, 1000, 0, 20, 0);
   Ground& g = s.ground;
-  g.cushion_mm = 150;
+  g.cushion_mm = 220;
   g.relief_um = 8000;
   g.mound_um = 25000;
   g.patch_permille = 500;

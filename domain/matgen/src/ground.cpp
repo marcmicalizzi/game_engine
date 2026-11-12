@@ -123,6 +123,51 @@ Cell warped_cell(u64 seed, u32 vx, u32 vy, u32 n, u32 k) noexcept {
   return cell_noise(seed, x + wx, y + wy, k);
 }
 
+// A moss carpet's cushions at texel (vx, vy) for period `k` (G187, version 7): one cushion a cell,
+// its centre jittered and its radius 0.7 to 0.98 of a cell, so neighbours overlap. Each is a
+// smooth bump (1 - (d / r)^2)^2, and they are joined softly (1 - the product of 1 - bump), so two
+// cushions merge where they meet instead of meeting at an edge; a cushion's hue and vigour are
+// blended by the bumps' weights, so its tone falls off across it into its neighbours' rather
+// than stepping at a cell's boundary (version 6's one tone a Voronoi cell read as a camouflage
+// print). `crown` is 1 on a cushion's top and 0 in the hollows between.
+struct Cushions {
+  f64 crown = 0;
+  f64 hue = 0.5;
+  f64 vigour = 0.5;
+};
+Cushions cushions(u64 seed, u32 vx, u32 vy, u32 n, u32 k) noexcept {
+  const f64 x0 = lattice_of(vx, n, k), y0 = lattice_of(vy, n, k);
+  // Warped by a quarter of a cell: outlines that wander.
+  const f64 x = x0 + 0.5 * (lattice_noise(seed ^ 0x7778ull, x0, y0, k) - 0.5);
+  const f64 y = y0 + 0.5 * (lattice_noise(seed ^ 0x7779ull, x0, y0, k) - 0.5);
+  const f64 fx = std::floor(x), fy = std::floor(y);
+  const i64 ix = static_cast<i64>(fx), iy = static_cast<i64>(fy);
+  const f64 tx = x - fx, ty = y - fy;
+  Cushions out;
+  f64 open = 1.0, weight = 0.0, hue = 0.0, vigour = 0.0;
+  for (i64 j = -1; j <= 1; ++j) {
+    for (i64 i = -1; i <= 1; ++i) {
+      const u64 h = hash3(seed, wrap_node(ix + i, k), wrap_node(iy + j, k));
+      const f64 dx = (static_cast<f64>(i) + 0.15 + 0.7 * unit_of(h)) - tx;
+      const f64 dy = (static_cast<f64>(j) + 0.15 + 0.7 * unit_of(mix64(h))) - ty;
+      const f64 r = 0.7 + 0.28 * unit_of(mix64(h ^ 0x72ull));
+      const f64 s = (dx * dx + dy * dy) / (r * r);
+      if (s >= 1.0) continue;
+      const f64 bump = (1.0 - s) * (1.0 - s);
+      open *= 1.0 - bump;
+      weight += bump;
+      hue += bump * unit_of(mix64(h ^ 0x687565ull));
+      vigour += bump * unit_of(mix64(h ^ 0x627269ull));
+    }
+  }
+  out.crown = 1.0 - open;
+  if (weight > 1.0e-12) {
+    out.hue = hue / weight;
+    out.vigour = vigour / weight;
+  }
+  return out;
+}
+
 // A dome over a cell of a cellular field: 1 at its point, 0 at its rim, the seam between cells low.
 f64 dome(const Cell& c) noexcept {
   const f64 rim = clamp01((c.f2 - c.f1) / 0.35);
@@ -213,32 +258,33 @@ void build_ground(const Set& set, Field& field, SetStats& stats, Shade& shade) {
       const Cell tip = cell_noise(set.seed ^ 0x746970ull, lattice_of(vx, n, tip_k),
                                   lattice_of(vy, n, tip_k), tip_k);
       const f64 lit = clamp01(1.0 - 1.5 * tip.f1);
-      f64 cushion_h = 0.0, cushion_tone = 0.5, cushion_bright = 1.0, seam = 0.0;
+      // Cushions: a crown lighter and yellower, its margins and the hollows between darker and
+      // wetter, the tone blended across neighbours (`cushions`, above); without cushions, the
+      // carpet is all crown.
+      f64 cushion_h = 0.0, crown = 1.0, cushion_tone = 0.5, vigour = 0.5;
       if (cushion_k > 0) {
-        // The cells warped by half a cell, so a cushion's outline is a cushion's and not a
-        // polygon's, and the seam between two shows only where they part (a warped mask).
-        const Cell c = warped_cell(set.seed ^ 0x637573686eull, vx, vy, n, cushion_k);
-        const f64 d = dome(c);
-        // The carpet's relief is smooth hummocks, not the cells' domes: a dome falls to a crease
-        // at every seam, and under a low sun the creases drew crazy paving (G187's pictures).
-        cushion_h = relief * fractal_noise(set.seed ^ 0x68756d6dull, vx, vy, n, cushion_k, 2);
-        cushion_tone = unit_of(mix64(c.id));
-        // A cushion's own vigour: how densely its shoots stand, how much light its tips catch.
-        cushion_bright = 0.75 + 0.5 * unit_of(mix64(c.id ^ 0x627269ull));
-        const f64 parts_here =
-            smooth01((lattice_noise(set.seed ^ 0x70617274ull, lattice_of(vx, n, cushion_k * 2),
-                                    lattice_of(vy, n, cushion_k * 2), cushion_k * 2) -
-                      0.35) /
-                     0.3);
-        seam = (1.0 - d) * parts_here;
+        const Cushions c = cushions(set.seed ^ 0x637573686eull, vx, vy, n, cushion_k);
+        crown = c.crown;
+        cushion_tone = c.hue;
+        vigour = c.vigour;
+        // The carpet's relief: the cushions' smooth domes over low hummocks (a dome that fell to
+        // a crease at a cell's seam drew crazy paving under a low sun, version 5).
+        cushion_h = relief * (0.65 * crown + 0.35 * fractal_noise(set.seed ^ 0x68756d6dull, vx, vy,
+                                                                  n, cushion_k, 2));
       }
-      const f64 dry = clamp01(patchiness * (0.5 - moist) * 1.6 + 0.35 * (cushion_tone - 0.5));
-      const f64 green = clamp01(0.5 + 1.4 * (cushion_tone - 0.5) - 0.6 * seam);
+      // A carpet with no cushions (a sward's underlay) keeps the flat tone it had.
+      const bool cushioned = cushion_k > 0;
+      const f64 hollow = 1.0 - crown;
+      const f64 dry = cushioned ? clamp01(patchiness * (0.5 - moist) * 1.0 +
+                                          0.25 * (cushion_tone - 0.5) - 0.3 * hollow)
+                                : clamp01(patchiness * (0.5 - moist) * 1.6);
+      const f64 green = cushioned ? clamp01(0.3 + 0.6 * crown + 0.5 * (cushion_tone - 0.5)) : 0.5;
+      const f64 body_shade =
+          cushioned ? mix(0.72, 1.08, smooth01(crown)) * (0.85 + 0.3 * vigour) : 1.0;
       f64 moss_rgb[3];
       for (u32 c = 0; c < 3; ++c) {
         const f64 body = mix(k_moss[c], k_moss_lit[c], green * lit);
-        moss_rgb[c] = mix(body, k_moss_dry[c], dry) * (0.6 + 0.8 * lit) * (1.0 - 0.12 * seam) *
-                      cushion_bright;
+        moss_rgb[c] = mix(body, k_moss_dry[c], dry) * (0.6 + 0.8 * lit) * body_shade;
       }
       const f64 moss_h = 0.008 * clamp01((moss_at - value) * 6.0 + 0.3) + 0.0012 * lit + cushion_h;
       // Soil: crumbs a few millimetres across, dark between them, a pale grain here and there,
