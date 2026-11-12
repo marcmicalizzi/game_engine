@@ -366,6 +366,19 @@ the test valley, at load, before the first frame. Now:
   derived-data cache, keyed by the recipe, off the frame's thread ([world](world.md#a-tiles-meshes-residency-by-reference)).
 - **`expand`** lists every piece with its recipe, so a scene read whole is the same scene.
 
+**What a walker sees while a tile's bed builds** (W97c, read from the world's placements consumer,
+[world](world.md#a-tiles-meshes-residency-by-reference)): the tile goes on drawing what it drew
+until a commit has its piece and the piece's textures in, so **a tile new to the ring draws no
+stones** — the ground's bed and bar materials alone — for the build's seconds and then the stones
+in one commit, and a tile already held draws its stones throughout, because the entry's
+`representation` is one in every ring and a ring change builds nothing again. A tile enters the
+ring at the outermost ring's radius, hundreds of metres out, so a walker (1.4 m/s: about 4 m in
+the busiest tile's 2.7 s) never sees a near tile without its stones; a camera that jumps or
+starts somewhere does not either, because a whole commit (a restart, an offscreen capture's
+fill) waits for every build. A fast flight over a stream is where the gap can show: at 100 m/s a
+tile could be about 270 m nearer before its stones arrive. No far form stands in for the stones
+meanwhile (the bed's material is all there is), which is the far form this page leaves.
+
 What the contract carries today: the mesh, its materials and their textures (since R147 and W97c:
 the four rocks' sets, built and admitted before the mesh, a set shared by every tile that names
 it), its collision proxy (a mesh a tile hands is walked on), and its cluster DAG as the far form.
@@ -395,6 +408,8 @@ of 64 mm or more):
 | Its coarsest (the DAG's roots) | 17 triangles: the far form is the bed's material, the clasts gone |
 | Its activation (solve, cluster DAG) | 2.9 s (W97, at scene read); 4.1 s (W97b, `msvc-release`, 2026-11-11 13:40, the machine at 100 % CPU: eight DAGs, one a rock, at the tile's activation off the frame's thread) |
 | Its coarsest form since W97b | 275 triangles: the eight DAGs' roots |
+| Its activation, the bench (W97c) | `channels.tile_activation`, `msvc-release`, 2026-11-11 20:49: median 2.74 s, min 2.55 s, max 2.88 s over three runs after a warm-up, 12,251 clasts. **Not quiet**: `--wait-quiet=1800` waited the half hour out, the machine at 62 % CPU from others at the start and 88 % at the end, so an upper bound; the textures are the host's and not in it |
+| Laying the region, the bench | `channels.lay_region`, the same run: median 56 ms |
 | W93's scratch scene (`engine-content channels`) | 65,611 clasts over 474 m of channel, 14 tiles |
 
 **Where the triangles go**: a clast under 128 mm is 48 triangles before those under the ground
