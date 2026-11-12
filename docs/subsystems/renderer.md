@@ -2621,7 +2621,7 @@ pixel of it together. And one G and one card fill stand for every species (the g
 **A prior that is wrong shows on a turn's first frame.** The stand's crowns are cubes, which
 counted as leaf are 6.5 m² a cubic metre and sit on the prior's floor: turned to from looking
 away, their first frame stands 3.7 steps *darker* than it will be for seven frames
-(`gi cache: a turn to a stand of trees stands nearer and settles sooner with the prior` holds
+(`gi cache: a turn to a stand of solid crowns stands nearer and settles sooner with the prior` holds
 that it is nearer than stage 6's 6.8 apart and settles sooner, and says the band's bound is not
 met there) — a bounce's hit on foliage with no cell yet takes the harmonics under its prior.
 
@@ -2721,6 +2721,18 @@ stands 0.24 from the long-held picture (main 0.72, stage 7 0.39) and +0.05 in th
 the reference tracer the picture stands where stage 7's did: 1.07 over the trees from 50 m and
 1.05 from close (the grove's crowns all have grids, so nothing of this stage reaches them but
 the memory).
+
+**What the turn to a stand still shows.** Stage 7's stand of nine crowns stood 3.7 steps dark
+on its turn's first frame and its fixture was blamed: crowns of solid cubes, every prior on its
+floor. Built of leaf cards at a tree's leaf area (1.5 m² a cubic metre, priors from a third to
+one) the stand's first frame is as dark (−3.8 against a floor of 0.14; the solid crowns −3.1),
+so it is not the prior. It is the hit's fallback: a bounce's ray that meets a leaf with no cell
+takes the harmonics by the ray's openness, nothing under a metre, and inside a crown every leaf
+is that close — the light a crown's leaves hand each other, a fifth of its indirect term,
+arrives over the frames after. A foliage hit's openness is its prior, not its ray's length;
+that mend is the row's next step and not in this stage, because it moves every picture the
+stage measured (`gi cache: a turn to a stand of leaf cards stands short of light, not over`
+holds the error's side and says what is unmet).
 
 **On the forest** (v41, 3840×2160 traced, the owner's wind; main and the stage back to back in
 one lease). The sample pass and the chain are main's again (+0.03 and +0.02 ms held at
