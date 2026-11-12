@@ -59,6 +59,7 @@ exists only as a PDF was not read, and is listed as such.
 | Hoffman (2013), a research report to Boulder County on soil mounds beside trees | fetched and unreadable here (a PDF); one sentence through a search |
 | Raile (1982), *Estimating stump volume*, USDA Forest Service Research Paper NC-224 | not read: a scanned PDF. It holds the butt-swell taper by species that would pin the flare's height |
 | North et al. (2015) and Hilbert et al. (2020), trunk flare diameter against DBH, Urban Forestry and Urban Greening | not opened; their coefficients as Lee (2022) reports them |
+| A study of the bark of *Quercus robur* roots (Trees; found by a search, its citation not confirmed) | not opened; two sentences through the search |
 
 ### How a tree meets level ground
 
@@ -85,7 +86,10 @@ the low end of the 1.3 to 1.9 band and is kept.
 could not be read; the forestry convention of measuring diameter at breast height because it is
 above the butt swell bounds it at about 1.3 m on an ordinary tree, which is an inference and not a
 measurement); a beech's fluting and an oak's flare as dimensions; what the bark does across the
-collar. The page pins nothing on those and asks [the next reels](#what-to-ask-of-the-next-reels).
+collar, beyond one unopened oak study a search returned (a root's bark is built very like the
+stem's, and is 1 to 2 mm thick on a lateral), which if it holds says the foot wears the trunk's
+bark at a finer relief. The page pins nothing on those and asks
+[the next reels](#what-to-ask-of-the-next-reels).
 
 ### How a tree meets a slope
 
@@ -190,7 +194,9 @@ depend on the yaw, and
   hangs over a tread's cut, a bank or the heightfield's edge (the forest's worst case, 1.35 m);
 - fits a plane to the 16 samples by sums and products against a table of constants (no C library,
   no division but by constants) and keeps its gradient, quantised to two 16-bit words: **the two
-  numbers an instance** that the flare reads.
+  numbers an instance** that the flare reads. Once a mesh has laterals (stage 4) the fit takes a
+  second circle at the foot's reach, 16 more queries, so the plane is the one the roots lie on and
+  not only the rim's.
 
 A mesh with no seat (a glTF prop) stands as it does today; a scatter kind's `sink` stays the
 author's and the larger of the two applies. Cost: 17 ground queries for a seated instance where it
@@ -263,6 +269,8 @@ turned normal goes.
 - **Determinism.** The two numbers are integer-millimetre samples through sums and products, the
   same bits on every toolchain; the shear is the device's float arithmetic, as the sway is. A tree
   on level ground has *g* = 0 and is written through at rest, to the bit.
+- **What a walker meets** does not change: a tree collides by its trunk, and the foot is drawn,
+  not walked on, until a later row says a root should trip or carry someone.
 - **Who is not conformed.** A rigid instance has no pool block: a far ring's distance form (a
   static structure shared by its mesh), a tree with `renderer.flora.motion` off, a snag. It shows
   the skirt, which is why the skirt is stage 1 and the conform cannot replace it. The conform's
@@ -414,7 +422,7 @@ best built by one row; 2 can run beside 1.
 - Any measurement of soil banked up-slope of a living stem (Hoffman's report could not be read),
   of a down-slope lateral's exposed length against slope angle, or of the flare's height against
   diameter (Raile 1982 is a scan).
-- Anything on bark across the root collar.
+- Anything opened on bark across the root collar (one oak study through a search only).
 - The erosion rates, the creep fallacy and the vegetation dams are from abstracts through a
   search, not from the papers.
 - The forest's count of trees inside the posed ring, which the estimate of the foot's traced
