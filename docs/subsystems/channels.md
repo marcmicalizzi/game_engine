@@ -955,6 +955,17 @@ case, none over the ground under it by more than 2 cm, and the ribbon's edges an
 width's within the fit's tolerance of the edited ground. The W93 valley above, read by the same
 measure: no point over (the worst 4 mm), seated up to 0.40 m.
 
+**Seen** (2026-11-12, `msvc-debug`, 1920×1080, `--raster hw --shadows rt`, world tiles, the
+generated material sets, the base and this row built in one checkout against one derived-data
+root each): from six metres back and two up, at 10 degrees the base's water ran out past the
+downhill bank as a level sheet ending in a straight edge over the slope, and at 30 degrees the
+bed and the water stood as a shelf along the hillside with the cut only on the uphill side; now
+the water lies in a trench between two banks at every cross-slope, the downhill bank's lip
+standing over it. What a walker would still object to is not this rule's: the waterline along
+the downhill bank is the lattice's sawtooth ([The flood bed](#the-flood-bed)), the uphill cut's
+lip reads as a row of teeth from below where a coarser ring draws it, and the scene's ground drew
+in its default sand.
+
 **What is left.** The meander still swings the contour stream a little down the slope at 20 and
 30 degrees, so its profile reads step-pool for 31 to 85 of 433 points (printed by the case, not
 held); a meander on a hillside wants the trough test applied across the whole width, not the
