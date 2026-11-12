@@ -440,17 +440,18 @@ its PNG compresses differently with the trunk carried to the box's bottom.
 A cost pair on `content/test-scenes/elder-grove` at 3840 x 2160, `--raster rt --shadows rt`, the
 bounce on (`renderer.gi.mode=bounce`), the scene's 38 s path, from main's release binaries
 (`b61\bin-main`) and this branch's copied out of the tree, alternated in one lease of the GPU lock
-(the machine: other processes at 18 to 37 % of the CPU, the GPU at 99 % and mine):
+(the machine: other processes at 25 to 42 % of the CPU, the GPU mine):
 
 | Run | Frame (median, p95) | Traced chain (CLAS, BLAS, TLAS, records) | Resolve | Trace | Pairs |
 |---|---|---|---|---|---|
-| main | 9.086, 12.032 ms | 1.037 ms | 4.660 ms | 1.728 ms | 106,392 |
-| skirt | 8.985, 12.066 ms | 1.039 ms | 4.617 ms | 1.659 ms | 106,430 |
-| main | 8.995, 11.993 ms | 1.035 ms | 4.615 ms | 1.692 ms | 106,392 |
-| skirt | 8.945, 12.042 ms | 1.038 ms | 4.643 ms | 1.623 ms | 106,430 |
+| main | 8.938, 12.087 ms | 1.038 ms | 4.578 ms | 1.667 ms | 106,392 |
+| skirt | 8.925, 12.059 ms | 1.039 ms | 4.583 ms | 1.662 ms | 106,359 |
+| main | 8.976, 12.082 ms | 1.037 ms | 4.643 ms | 1.698 ms | 106,392 |
+| skirt | 8.970, 12.050 ms | 1.042 ms | 4.619 ms | 1.642 ms | 106,359 |
 
-Inside the noise: the frame moves by -0.08 ms (the run-to-run spread is 0.09), the chain by
-+0.003 ms, the pairs by 38 (the 21 trees' skirts). The picture at 2 m on the 30 degree ramp, before
+Inside the noise: the frame moves by -0.01 ms (the run-to-run spread is 0.04), the chain by
++0.003 ms, the pairs by -33 (the coarser grid's cut). The first, two-ring skirt measured the same
+way (-0.08 ms against a spread of 0.09, +38 pairs). The picture at 2 m on the 30 degree ramp, before
 and after, and the ids across the slope (main 103 gap pixels under the 30 degree ramp's spruce and
 658 under the 45; the skirt none) are in the branch's hand-back.
 
