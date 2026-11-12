@@ -493,15 +493,13 @@ float2 gi_crown_cell(uint64_t grid, uint3 dims, uint3 c) {
 // has no table (`renderer.gi.crown_prior` off) or the mesh no record (one that arrived after the
 // load): the surface keeps its faces.
 //
-// **A mesh of low leaves reads one cell of no shade** (stage 8; the renderer's
-// `build_crown_priors`, renderer.md "Stage 8"): a sward, a shrub and a sapling are foliage too —
-// their cards face every way at every depth, so a face in their cells' key splits their samples
-// as it split a crown's, their own level's cells never fill, and their walk read two to four
-// levels on two faces for good. Their record is a grid of one cell that lets everything
-// through, so this function returns one for them with no rule of its own, and they read and
-// fill the crown's cells with no shade but what their own solvers already paint. (Pictures of
-// leaves — an impostor, a form's merged cards — have no record: this lookup on every one of
-// their pixels cost more than their one-level walk.)
+// **Only a crown has a record** (stage 8 tried the rest; renderer.md, "Stage 8"). A sward, a
+// shrub and an impostor are alpha-tested too, and a record of one cell that lets everything
+// through would make them foliage with no rule here. It was built and flown on the forest twice
+// (every mesh, then low leaves only) and the resolve was dearer both times: this lookup, on
+// every pixel of theirs, costs more than the walk it replaces. A one for a mesh with no grid
+// returned here, before the lookup, is the form that pays nothing; it changes the resolve's
+// modules and was not flown.
 float gi_crown_prior(uint64_t table, uint count, InstanceDesc instance, FrameEye eye,
                      float3 position, float3 normal) {
   if (table == 0 || instance.mesh >= count) return -1.0;

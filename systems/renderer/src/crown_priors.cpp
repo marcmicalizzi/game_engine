@@ -10,22 +10,18 @@ void build_crown_priors(const SceneData& data, CrownPriorTable& out) {
   out = CrownPriorTable{};
   const geometry::ClusterMesh& mesh = data.lod.mesh;
   const u32 meshes = static_cast<u32>(data.parts.size());
-  if (meshes == 0) return;
-  // A scene whose float positions are gone (a streamed one) has no leaves to read, and no table.
-  const bool leaves = !mesh.vertices.empty() && data.sources.size() == data.parts.size();
+  if (meshes == 0 || mesh.vertices.empty() || data.sources.size() != data.parts.size()) return;
   Vector<gfx::CrownPriorDesc> records;
   records.resize(meshes);
   Vector<u8> grids;
   Vector<Vec3> corners;
-  Vector<u8> low;  // a mesh of leaf cards that stand under a crown's height
-  low.resize(meshes, static_cast<u8>(0));
   // A distance form (`SceneData::form_source`) is a cut of its source's own clusters in its
   // source's mesh space: it reads its source's grid, made from the source's leaves, and none of
   // its own (a form's finest cards are merged ones).
   const auto is_form = [&](u32 m) noexcept {
     return m < data.form_source.size() && data.form_source[m] != m;
   };
-  for (u32 m = 0; leaves && m < meshes; ++m) {
+  for (u32 m = 0; m < meshes; ++m) {
     if (is_form(m)) continue;
     const geometry::ClusterMeshPart& part = data.parts[m];
     const SourceMesh& source = data.sources[m];
@@ -73,7 +69,7 @@ void build_crown_priors(const SceneData& data, CrownPriorTable& out) {
         }
       }
     }
-    if (corners.empty()) continue;
+    if (corners.empty() || leaf_hi - leaf_lo < gfx::k_crown_min_height_m) continue;
     // Leaves, not pictures of leaves: a mesh whose alpha-tested triangles are large on average
     // (a far forest's impostors, merged cards) has no leaf area to count.
     f64 card_area = 0.0;
@@ -84,12 +80,6 @@ void build_crown_priors(const SceneData& data, CrownPriorTable& out) {
     }
     if (card_area >
         static_cast<f64>(gfx::k_crown_card_max_m2) * static_cast<f64>(corners.size() / 3)) {
-      continue;
-    }
-    // Leaves that stand too low for a crown — a sward, a shrub, a sapling, a fern: foliage with
-    // no shade of its own to divide by (stage 8, below).
-    if (leaf_hi - leaf_lo < gfx::k_crown_min_height_m) {
-      low[m] = 1;
       continue;
     }
     gfx::CrownPriorStats stats;
@@ -110,39 +100,13 @@ void build_crown_priors(const SceneData& data, CrownPriorTable& out) {
                     log::field("dims", records[m].dims));
   }
   out.meshes = meshes;
-  const u32 head = meshes * static_cast<u32>(sizeof(gfx::CrownPriorDesc));
+  if (out.crowns == 0) return;
   for (u32 m = 0; m < meshes; ++m) {
     if (!is_form(m) || data.form_source[m] >= meshes) continue;
     records[m] = records[data.form_source[m]];
     if (records[m].offset != gfx::k_no_crown) ++out.forms;
   }
-  // **A mesh of low leaves reads one cell of no shade** (stage 8; renderer.md, "Indirect light",
-  // "Stage 8"). A record makes a mesh's alpha-tested surfaces foliage: keyed by no face, read
-  // one coarse level. A sward, a shrub, a sapling and a fern are foliage in every way that
-  // matters there — cards facing every way at every depth, own cells that never fill, and so a
-  // walk over face-keyed levels that never ends — and have no shade of their own to divide by
-  // (their own solvers paint it). Their record is a grid of one cell whose two means are one
-  // (255: everything let through) with no extent (`inv_cell` 0, so every point reads that cell):
-  // the shader's lookup returns one for them with no rule of its own, which keeps the resolve's
-  // modules the bytes they were.
-  //
-  // **Pictures of leaves get none**: a far forest's impostor and a form's merged cards are seen
-  // from where their level is the ladder's last, so their walk is one level already, and a
-  // record would add the grid's lookup to every one of their pixels and save nothing (the first
-  // build of this stage gave every mesh the cell: the forest's resolve was 0.4 ms dearer for it
-  // and the water's reflections 0.14).
-  const u32 unit_at = static_cast<u32>(grids.size());
-  for (u32 k = 0; k < 4; ++k)
-    grids.push_back(static_cast<u8>(255));
-  gfx::CrownPriorDesc unit;
-  unit.offset = head + unit_at;
-  unit.dims = 1u | (1u << 8) | (1u << 16);
-  for (u32 m = 0; m < meshes; ++m) {
-    if (low[m] == 0 || records[m].offset != gfx::k_no_crown) continue;
-    records[m] = unit;
-    ++out.plain;
-  }
-  if (out.crowns == 0 && out.plain == 0) return;
+  const u32 head = meshes * static_cast<u32>(sizeof(gfx::CrownPriorDesc));
   out.bytes.resize(head + static_cast<u32>(grids.size()));
   std::memcpy(out.bytes.data(), records.data(), head);
   std::memcpy(out.bytes.data() + head, grids.data(), grids.size());
@@ -153,7 +117,7 @@ bool upload_crown_priors(const gfx::Device& device, const SceneData& data,
   count = 0;
   CrownPriorTable table;
   build_crown_priors(data, table);
-  if (table.crowns == 0 && table.plain == 0) return true;
+  if (table.crowns == 0) return true;
   if (!gfx::upload_buffer(device, table.bytes.data(), table.bytes.size(),
                           gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress, buffer,
                           error)) {
@@ -162,7 +126,6 @@ bool upload_crown_priors(const gfx::Device& device, const SceneData& data,
   count = table.meshes;
   ENGINE_LOG_INFO(log_renderer, "crown priors", log::field("meshes", table.meshes),
                   log::field("crowns", table.crowns), log::field("forms", table.forms),
-                  log::field("plain", table.plain),
                   log::field("leaf_triangles", table.leaf_triangles),
                   log::field("leaf_area_m2", table.leaf_area_m2),
                   log::field("leaf_volume_m3", table.leaf_volume_m3),

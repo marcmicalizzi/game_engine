@@ -32,7 +32,6 @@
 #include <foundation/image/metrics.h>
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/capture.h>
-#include <systems/renderer/crown_priors.h>
 #include <systems/renderer/eye_shell.h>
 #include <systems/renderer/gi_preroll.h>
 #include <systems/renderer/gpu_scene.h>
@@ -478,10 +477,10 @@ bool write_crown(const std::string& path) {
 // ninetieth percentile is 1.82), where the cubes above count 6.5 and put every prior on its
 // floor. Through its centre the optical depth is 0.5 x 1.5 x 1.5 = 1.1, so the priors run from
 // about a third in the middle to one at the rim, as a crown's do.
-//
-// `radius`, `h` (a card's half side) and `cards` make the other two meshes the load tells apart
-// (stage 8): low leaves, and pictures of leaves.
-bool write_leaf_crown(const std::string& path, f32 radius = 1.5f, f32 h = 0.15f, u32 cards = 340) {
+bool write_leaf_crown(const std::string& path) {
+  const f32 radius = 1.5f;
+  const f32 h = 0.15f;
+  const u32 cards = 340;
   MeshBuilder m;
   u32 state = 20261112u;
   auto unit = [&state]() {
@@ -1586,62 +1585,6 @@ TEST_CASE("gi cache: a turn to a stand of leaf cards shows no band") {
   const Fixture fixture = stand_fixture(tmp.native(), true);
   const StandCurve now = stand_turn(gpu, fixture, "true");
   CHECK(std::abs(now.bias) <= now.floor);
-}
-
-// **Which meshes are foliage** (stage 8; `build_crown_priors`, no device). A record in the table
-// makes a mesh's alpha-tested surfaces foliage. A crown has a grid of its own shade (stage 7);
-// a mesh of leaf cards that stand under a crown's height — a shrub, a sward — has the one cell
-// that lets everything through, read as one from any point and any facing; an opaque mesh has
-// none; and neither has a mesh of pictures of leaves (cards of a square metre: an impostor),
-// whose walk is one level where it is seen from and for which the grid's lookup was 0.4 ms of
-// the forest's resolve. Without the stage the shrub has no record.
-TEST_CASE("gi cache: low leaves read one cell of no shade, and pictures of leaves have none") {
-  const test::TempDir tmp("engine_gi_low_leaves");
-  const std::string cube = slashes(tmp.native() / "cube.glb");
-  const std::string crown = slashes(tmp.native() / "crown.glb");
-  const std::string shrub = slashes(tmp.native() / "shrub.glb");
-  const std::string cards = slashes(tmp.native() / "cards.glb");
-  REQUIRE(write_cube(cube));
-  REQUIRE(write_leaf_crown(crown));
-  REQUIRE(write_leaf_crown(shrub, 0.5f, 0.1f, 120));  // 1.2 m tall with its cards: under 1.5
-  REQUIRE(write_leaf_crown(cards, 1.5f, 0.5f, 40));   // a card's triangle 0.5 m2: over 0.05
-  SceneDesc desc;
-  for (const std::string& mesh : {cube, crown, shrub, cards})
-    desc.meshes.push_back(mesh);
-  desc.ddc = slashes(tmp.native() / "ddc");
-  for (u32 m = 0; m < 4; ++m) {
-    SceneInstance instance;
-    instance.mesh = m;
-    instance.transform.position = Vec3{6.0f * static_cast<f32>(m), 2.0f, 0.0f};
-    desc.instances.push_back(instance);
-  }
-  SceneData data;
-  std::string error;
-  REQUIRE_MESSAGE(load_scene(desc, data, error), error);
-  CrownPriorTable table;
-  build_crown_priors(data, table);
-  REQUIRE(table.meshes >= 4);
-  REQUIRE(table.bytes.size() >= table.meshes * sizeof(gfx::CrownPriorDesc) + 4);
-  CHECK(table.crowns == 1);
-  CHECK(table.plain == 1);
-  gfx::CrownPriorDesc records[4];
-  std::memcpy(records, table.bytes.data(), sizeof(records));
-  CHECK(records[0].offset == gfx::k_no_crown);    // opaque: nothing asks
-  REQUIRE(records[1].offset != gfx::k_no_crown);  // a crown: its own grid, more than one cell
-  CHECK((records[1].dims & 0xffu) > 1u);
-  REQUIRE(records[2].offset != gfx::k_no_crown);  // low leaves: the cell of no shade
-  CHECK(records[2].dims == (1u | (1u << 8) | (1u << 16)));
-  REQUIRE(records[2].offset + 2u <= table.bytes.size());
-  for (const Vec3 p :
-       {Vec3{0.0f, 0.0f, 0.0f}, Vec3{0.4f, -0.3f, 0.2f}, Vec3{-90.0f, 40.0f, 7.0f}}) {
-    const gfx::CrownPriorSample s =
-        gfx::crown_prior_sample(records[2], table.bytes.data() + records[2].offset, p);
-    CHECK(s.up == 1.0f);
-    CHECK(s.down == 1.0f);
-    for (const f32 normal_y : {-1.0f, 0.0f, 0.7f, 1.0f})
-      CHECK(gfx::crown_prior(s, normal_y) == 1.0f);
-  }
-  CHECK(records[3].offset == gfx::k_no_crown);  // pictures of leaves: the walk they had
 }
 
 // **The start and a cut** (stage 5's pre-roll, gi_preroll.h). The first frame after a cut to

@@ -2665,27 +2665,25 @@ one machine state, not 1.6 between two: the sample pass +0.48, the resolve +0.37
   and no reach worth having removes it (0.13 of the 0.17 at 12 m). It stays; an instance that
   holds only casters could be masked out of the primaries' traversal, which is the chain's row.
 
-**Low leaves are foliage too** (`renderer::build_crown_priors`). Stage 7 gave a crown's cells
-and its one-level read to the 93 meshes of the forest that have a crown, and left every other
-alpha-tested mesh the walk over face-keyed levels. For a mesh of leaf cards that stand under a
-crown's 1.5 m — a sward, a shrub, a sapling, a fern — that walk never ends: its cards face every
-way at every depth, so its own cells never fill. Such a mesh is foliage in every way that
-matters to the cache; what it lacks is a shade of its own to divide by, which its own solver
-paints. So it has a record now: **a grid of one cell that lets everything through** (two bytes
-of 255, no extent). The shader's lookup returns a prior of one for it by the rule it already
-had, and its alpha-tested surfaces fill and read the crown's cells. It is done in the table and
-not in the shader on purpose: the resolve's modules are byte for byte stage 7's, so a build with
-this stage compiles two new pipelines (the cache's own, 80 ms each) where a change to the
-resolve's source compiles them all — on the forest the difference between a first load like any
-other and one that needs 53 GB of the machine.
-
-**Pictures of leaves keep the walk.** A far forest's impostor and a form's merged cards (cards
-over `gfx::k_crown_card_max_m2` on average) are seen from where their level is the ladder's
-last: their walk is one level already. The stage's first build gave every mesh the cell, and on
-the forest the resolve was 0.4 ms *dearer* for it and the water's reflections 0.14: the grid's
-lookup — a 3×3 inverse and eight cells — on two million pixels that had nothing to save. A cut
-is held by the pair that measures it, not by the count of lookups it removes. A mesh that
-arrives after the load still has no record, and keeps the walk whatever it is.
+**The resolve's read is stage 7's, and the cut that was built for it was not kept.** Stage 7
+gave a crown's cells and its one-level read to the 93 meshes of the forest that have a crown,
+and left every other alpha-tested mesh — the sward, the shrubs, the far forest's impostors, the
+forms' merged cards — the walk over face-keyed levels: "every alpha-tested surface on the
+crown's cells with a prior of one" was its untried lever. It was built in the form that leaves
+the resolve's modules byte for byte stage 7's: a record for such a mesh in the load's table, **a
+grid of one cell that lets everything through**, which the shader's lookup reads as a prior of
+one by the rule it already had (a build then compiles two new pipelines, the cache's own, in
+80 ms each, where a change to the resolve's source compiles them all — a first forest load that
+needs 53 GB of the machine). Flown on the forest twice, main beside it in the same lease: with
+the cell for every mesh the resolve stood **0.77 ms** over main's and the water's reflections
+0.14 (stage 7's walk: 0.37); with it for meshes of low leaves alone (cards that stand under a
+crown's 1.5 m), 0.58. The cell is read through the grid's lookup — the instance's 3×3 inverted,
+eight cells, their blend — and that, on every alpha-tested pixel, costs more than the walk it
+ends: a far impostor's level is the ladder's last, so its walk was one level already. **A cut
+is held by the pair that measures it, not by the count of lookups it removes**, and this one
+is out of the tree. The form that pays no lookup is a one returned in the shader before the
+grid is touched; it changes the resolve's source, a first forest load of such a build needs
+66 GB of commit free, and the machine had 57 to 64 on this day, so it was not flown.
 
 **A foliage cell remembers sixty-four frames** (`gfx::k_gi_crown_history_frames`,
 `k_gi_stamp_crown`; the fold). What sets a cell's rate is `gi_history`: a cell keeps 256 samples
@@ -2707,11 +2705,13 @@ did (`gi cache key: a foliage cell remembers sixty-four frames, and fills as fas
 **Two levers, stated and off** (`renderer.gi.shell_refresh`, `renderer.gi.shell_clip`). A
 direction whose surface's cells are already whole can stop at the eye's ray and take its bounce
 one frame in n, and the eye's ray can stop at the volume's reach. Both were built against the
-sample pass's cost before the split showed where it was; with the directions first neither buys
-a tenth of a millisecond on the grove, the first lowers the still picture's floor under the
-box's turn (which then stands 2.06 floors off where its case allows two), and the second stops
-warming what the sun's sweep holds past the reach (the stand at 16 m stands two steps further
-off on a turn's first frame). They stay as knobs with those numbers beside them.
+sample pass's cost before the split showed where it was; with the directions first they buy
+0.01 ms and nothing on the grove. With both on, the box's turn stood 2.06 floors from its
+long-held picture where its case allows two (the first frame no further off than stage 7's:
+the still picture's floor fell under it), and the stand of trees at 16 m, past the volume,
+stood 5.9 steps off on a turn's first frame where stage 7's stood 3.7 — until the eye's rays
+are stopped at the reach they warm what the sun's sweep holds past it. They stay as knobs with
+those numbers beside them.
 
 **What it does** (the page has the tables). On the grove at 3840×2160 with traced primaries and
 shadows the frame is **0.3 ms under main's** over crowns and 0.2 under it over sand (stage 7:
@@ -2721,6 +2721,21 @@ stands 0.24 from the long-held picture (main 0.72, stage 7 0.39) and +0.05 in th
 the reference tracer the picture stands where stage 7's did: 1.07 over the trees from 50 m and
 1.05 from close (the grove's crowns all have grids, so nothing of this stage reaches them but
 the memory).
+
+**On the forest** (v41, 3840×2160 traced, the owner's wind; main and the stage back to back in
+one lease). The sample pass and the chain are main's again (+0.03 and +0.02 ms held at
+`south-lake`, where stage 7 stood +0.48 and +0.19) and the primaries within 0.02 to 0.11 of
+them (+0.17). What is left is the resolve's read, stage 7's walk, 0.37 to 0.42 over main's.
+**The frame stood 0.60 and 0.61 ms over main's in the two pairs flown, both on builds that
+carried the cell**; with the cell out the passes sum to about +0.45 held and less on the turn
+and after it — on the half millisecond's edge, by an estimate: the build as committed had not
+flown its own pair when this was written (the page says whether it has since). The turn, flown
+as capture sequences with the wind off: the first frame after it
+stands 0.46 of a step from the long-held picture (main 0.70) and +0.03 in the mean, a tenth of
+the floor, and the still forest changes between frames by 0.10 (main 0.13). The volume at 24 m
+asks the chain for 800 clusters a frame more than main at that view where 48 m asked for
+9,300 — a little off a capacity the owner's 4K walk overran by 38,000 the same morning, not
+the mend of it.
 
 ## The sun's day
 
