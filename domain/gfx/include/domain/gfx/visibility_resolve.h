@@ -110,6 +110,13 @@ inline constexpr u32 k_shadow_wet_film_off = 1u << 16;
 // measurement switch: the resolve's water modules walk no bank record, so no channel wets the
 // ground this frame. Clear, the banks are walked.
 inline constexpr u32 k_shadow_wet_banks_off = 1u << 17;
+// **No wet class** (R151; renderer.md, "The resolve by pixel class";
+// `renderer.resolve.class_wet_plain`), a measurement switch read by `classify_pixel`
+// (resolve_class.slang) alone: no pixel is classed wet, so under the split's `modules` the wet
+// reach's ground is drawn by the module without water and the pixels that then differ from the
+// picture are the ones the water module wets. Clear, the class is written. Bit 20, clear of the
+// bits other rows may take.
+inline constexpr u32 k_shadow_wet_class_off = 1u << 20;
 // The refraction ray is traced only where the march's ground distance is at least this, metres:
 // water a few centimetres deep hides nothing a ray would find.
 inline constexpr f32 k_water_refract_min_m = 0.15f;

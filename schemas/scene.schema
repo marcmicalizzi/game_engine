@@ -1788,7 +1788,7 @@ struct CameraPath @version(1) {
 
 /// GPU milliseconds of one frame, pass by pass, from `gfx::GpuTimer` (`renderer::Stats` names).
 /// Version 5 added `sky`. Version 6 added `frame_passes`. Version 7 added `half_sun`.
-struct PassMs @version(9) {
+struct PassMs @version(10) {
   cull: f64 = 0
   hw: f64 = 0
   sw: f64 = 0
@@ -1848,6 +1848,10 @@ struct PassMs @version(9) {
   /// the resolve is in `resolve`. Zero with `renderer.gi.mode=off`.
   gi_trace: f64 = 0 @since(9)
   gi_fold: f64 = 0 @since(9)
+  /// Version 10 (R151; docs/subsystems/renderer.md, "The resolve by pixel class"): the resolve's
+  /// classify pass, every view's — each pixel's class written as depth. What the per-class draws
+  /// cost is in `resolve`. Zero in a frame the resolve draws whole (`renderer.resolve.classes=off`).
+  resolve_classify: f64 = 0 @since(10)
 }
 
 /// One terrain level's surface in one frame of a time-lapse (`engine-view --time-rate`;
@@ -2086,7 +2090,9 @@ struct FrameWorld @version(1) {
 /// Version 17: `gpu_ms` carries the world-space cache's passes, `gi_trace` and `gi_fold` (R69).
 ///
 /// Version 18: the water's reflection and refraction, `water_reflect*` and `water_refract*` (S86).
-struct FrameRecord @version(18) {
+///
+/// Version 19: `gpu_ms` carries the resolve's classify pass, `resolve_classify` (R151).
+struct FrameRecord @version(19) {
   /// Which pass over the path, from 0.
   repeat: u32 = 0
   /// The path frame, from 0; an interactive session's frame, from 0.
@@ -2270,8 +2276,9 @@ struct Percentiles @version(1) {
 /// names. **One entry per `PassMs` field, by name**: `summarize_frames` fills it by walking
 /// `PassMs`'s descriptor, so a bucket added there and not here fails the flythrough test that walks
 /// it ("the summary carries a median, p95 and p99 for every pass bucket"). Version 6 (T78) added
-/// the fifteen the hand-written list had missed since `PassMs` versions 3 to 9.
-struct PassPercentiles @version(6) {
+/// the fifteen the hand-written list had missed since `PassMs` versions 3 to 9. Version 7 (R151):
+/// `resolve_classify`.
+struct PassPercentiles @version(7) {
   cull: Percentiles
   hw: Percentiles
   sw: Percentiles
@@ -2308,6 +2315,7 @@ struct PassPercentiles @version(6) {
   unbucketed: Percentiles @since(6)
   gi_trace: Percentiles @since(6)
   gi_fold: Percentiles @since(6)
+  resolve_classify: Percentiles @since(7)
 }
 
 /// The frames' CPU stages over a path (`FrameRecord.cpu`, each frame's median across the repeats,

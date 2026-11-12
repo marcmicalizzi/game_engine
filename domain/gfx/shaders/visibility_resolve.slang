@@ -1265,9 +1265,23 @@ float4 empty_pixel(ResolveParams* params, float2 source, uint2 noise_pixel) {
 #endif
 
 #ifndef RESOLVE_HALF_PASS
+#include "resolve_class.slang"
+
 [shader("fragment")]
 float4 fs_resolve(FullscreenOut in) : SV_Target {
   ResolveParams* params = (ResolveParams*)g_push.params;
+  // **A draw of one pixel class** (R151; resolve_class.slang; renderer.md, "The resolve by pixel
+  // class"). Under `renderer.resolve.classes` the pass draws this triangle once per class, at the
+  // class's depth, with a depth-equal test. The test rejects quads, not pixels: a quad it keeps
+  // runs all four of its lanes, each down its own pixel's path, so a lane whose pixel cannot be
+  // of the draw's class ends here. The one draw's triangle is at depth 0, which is no class's.
+  if (in.position.z != 0.0) {
+    const uint2 class_pixel = uint2(in.position.xy) - uint2(params->view_x, params->view_y);
+    if (!resolve_class_may_draw(params, class_pixel, in.position.z)) {
+      discard;
+      return float4(0.0, 0.0, 0.0, 0.0);
+    }
+  }
   g_stop = params->resolve_stop & 0xffu;
   g_count = (params->resolve_stop & k_stop_count) != 0u;
   // SV_Position is in the target's pixels; this view's rectangle starts at (view_x, view_y).

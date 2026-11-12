@@ -1,0 +1,15 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "R151",
+  "reason": "R151 second pass: record_frame gains the wet-class measurement flag and the frame's one-draw fact (3 lines); renderer.md gains the class exit, auto and cycle, the wet class by level and what decides what is wet; water.md the heights' two readers",
+  "date": "2026-11-12",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "renderer.record_frame.lines": 57,
+    "renderer.record_frame.add_pass": 1,
+    "page:docs/subsystems/renderer.md": 12036,
+    "page:docs/subsystems/apps.md": 814,
+    "page:docs/subsystems/gfx.md": 581,
+    "page:docs/subsystems/water.md": 870
+  }
+}
