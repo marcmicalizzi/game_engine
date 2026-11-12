@@ -109,6 +109,20 @@ What the fourth pass (G177, 2026-11-11) read, through one research reader that s
 
 `module_tests.cpp` holds the layout with a measure run against the base to see it fail ([walls](../subsystems/walls.md#the-module)): over six seeds and three grades of a stretch's standing face stones, at least half the tops not level (G177: 53 %; the base 0), at least 8 % lumps (9.0 %; 0), at least 8 % of stones 1.6 times their sweep's median height or more (10.5 %; 1.1 %), and heights within a sweep spread by a coefficient of variation of at least 0.25 (0.33; 0.14). The bounds are design values.
 
+## A face that is broken and weathered
+
+What G177's pictures still showed beside r53, r07 and r57 (G189, 2026-11-11): every stone a flat-faced slab with crisp box edges. No new source was read for this row; what it rests on is the handbook's, already read above: a face stone is set "almost touching or just brushing" the line and none projects beyond the face (TCV, Building, Placing the stones), so the line touches each stone at its most proud point and the rest of the stone's face is wherever the split left it; a stone struck other than fair on "chips and rounds off" (TCV, Breaking and shaping stone), and a gneiss "is rough and irregular and splits less predictably" (Characteristic walling stones). The reels' faces are each turned their own way, broken across, and rounded at their arrises by weather. The numbers are design values inside the bounds `face_tests.cpp` already held (relief 3 to 35 mm, the most proud point within 12 mm of the line, the high point no more than 6 mm behind it):
+
+| Quantity | Chosen (G189) | Why |
+|---|---|---|
+| A face's turn | a slope of 0.06 to 0.20, mostly a lean (along the wall at most 0.4 of its rise), no deeper than 12 mm, and no deeper than leaves each corner 0.85 of its worn arris inside 20 mm | "just brushing the line": the most proud point on it, the rest behind; the depth is what the relief bound leaves after the arrises |
+| Broken across | a face of 0.015 m² or more: two high points a third and two thirds along its longer side, the second stepped back up to 6 mm; a smaller face one, off its middle, 0.5 to 3 mm proud | a split gneiss's face is more than one plane |
+| Weathered edge | the face proper's edge 0.5 mm to a twentieth of its shorter side (at most 4 mm) behind its plane; every vertex shared and smooth-shaded, so the arrises round | "chips and rounds off" |
+| A split face's least inset | 5 % of the dimension across the edge (G145c: 3 %), so the worn arris keeps 3 % of a face's area after the turn takes its depth | `face_tests.cpp`'s arris share |
+| A closing stone's face | a plain chip under 36 cm² in a standing face (G177: under 4 cm either way) | the triangles the fracture's quads cost |
+
+Measured over eight stretches (`look_tests.cpp`, against G177's build): a face proper's facets spread 4.8° about their mean (3.0°), 9 % of faces lie within 2° of a plane (28 %), the mean face is turned 2.1° off the line (1.75°: the turn is the measure with the least margin, because the arrises and the 35 mm of relief take most of a stone's depth), and the arrises are shaded 32° off their own facets (0°: flat bands).
+
 ## Where structure was traded for triangles
 
 - **The hearting is not geometry.** It is a dark closed core behind the faces, so a gap between face stones shows shadow and not the field behind. A hearting stone is never seen in a standing wall.
