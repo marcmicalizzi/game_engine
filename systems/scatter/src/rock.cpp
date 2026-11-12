@@ -12,6 +12,7 @@
 #include <core/json/json.h>
 #include <core/schema/json_reflect.h>
 #include <domain/geometry/cluster_file.h>
+#include <domain/scene_gen/derived_root.h>
 #include <foundation/io/vfs.h>
 #include <systems/scatter/scatter.h>
 
@@ -278,14 +279,9 @@ bool kind_meshes(const Layer& layer, std::string_view dir, Vector<scene_gen::Pla
   if (!layer.meshes.empty()) {
     rock_dir = resolve(dir, layer.meshes);
   } else {
-    std::string ddc(host_ddc);
-    if (ddc.empty()) {
-      std::error_code ec;
-      const std::filesystem::path from = std::filesystem::absolute(
-          std::filesystem::path(dir.empty() ? "." : std::string(dir)), ec);
-      if (!ec) ddc = geometry::find_ddc_root(from.generic_string());
-    }
-    rock_dir = !ddc.empty() ? io::join_path(ddc, "scatter") : resolve(dir, "scatter");
+    // The one rule (T119; scene_gen.md, "The derived-data root"): the host's root, else the scene's
+    // own `ddc/`, which every host already hands.
+    rock_dir = io::join_path(scene_gen::host_derived_root(host_ddc, dir, true), "scatter");
   }
   for (const Kind& kind : layer.kinds) {
     scene_gen::PlacementMesh mesh;

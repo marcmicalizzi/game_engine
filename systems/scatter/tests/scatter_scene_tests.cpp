@@ -170,7 +170,9 @@ TEST_CASE("scatter: the procedural rock goes under the host's derived-data root,
   SceneDesc bare;
   REQUIRE_MESSAGE(read_scene_file(scene_path, bare, error), error);
   REQUIRE(bare.meshes.size() == 2);
-  CHECK(io::parent_path(bare.meshes[0]) == io::join_path(io::parent_path(scene_path), "scatter"));
+  CHECK(io::parent_path(bare.meshes[0]) ==
+        io::join_path(io::parent_path(scene_path), "ddc/scatter"));
+  CHECK_FALSE(io::exists(io::join_path(io::parent_path(scene_path), "scatter")));
   CHECK(io::exists(bare.meshes[0]));
   // The same rock is the same bytes, so the same file name in either place.
   CHECK(io::file_name(bare.meshes[0]) == io::file_name(desc.meshes[0]));
