@@ -2982,12 +2982,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     gi_stride = resolved_.gi_young_rays
                     ? gfx::gi_trickle_stride(gi_pixels, resolved_.gi_rays_per_frame)
                     : gfx::gi_stride(gi_pixels, trickle_rays);
-    gi_flags =
-        gfx::k_gi_read | (resolved_.gi_mode == GiMode::Bounce ? gfx::k_gi_bounce : 0u) |
-        (resolved_.gi_face_blend ? gfx::k_gi_faces : 0u) |
-        (resolved_.gi_young_rays ? gfx::k_gi_young_rays : 0u) |
-        (resolved_.gi_hit_fallback ? gfx::k_gi_hit_fallback : 0u) |
-        gfx::gi_flag_numbers(resolved_.gi_confident, resolved_.gi_evict_age, resolved_.gi_far_lift);
+    gi_flags = gi_frame_flags(resolved_);
     const bool gi_cut = gi_reset_ || gi_eye_jumped(gi_eye_known_, gi_last_eye_,
                                                    frame.camera.position, resolved_.gi_cut_m);
     gi_last_eye_ = frame.camera.position;

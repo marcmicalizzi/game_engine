@@ -21,8 +21,22 @@
 
 #include <core/base/types.h>
 #include <core/math/world.h>
+#include <domain/gfx/gi_cache.h>
+#include <systems/renderer/settings.h>
 
 namespace engine::renderer {
+
+// `ResolveParams::gi_flags` for a frame that runs the cache: the read, the mode, the levers of
+// stages 2 to 6 and their numbers (gi_cache.h, `k_gi_*`), from the settings as resolved at load.
+inline u32 gi_frame_flags(const ResolvedSettings& s) noexcept {
+  return gfx::k_gi_read | (s.gi_mode == GiMode::Bounce ? gfx::k_gi_bounce : 0u) |
+         (s.gi_face_blend ? gfx::k_gi_faces : 0u) | (s.gi_young_rays ? gfx::k_gi_young_rays : 0u) |
+         (s.gi_hit_fallback ? gfx::k_gi_hit_fallback : 0u) | (s.gi_reveal ? gfx::k_gi_reveal : 0u) |
+         (s.gi_show_level >= 0
+              ? gfx::k_gi_show | (static_cast<u32>(s.gi_show_level) << gfx::k_gi_show_shift)
+              : 0u) |
+         gfx::gi_flag_numbers(s.gi_confident, s.gi_evict_age, s.gi_far_lift);
+}
 
 // True when the eye is more than `cut_m` metres from where the frame before had it. False while
 // there is no frame before (the first frame is cold for its own reason) and for a `cut_m` of 0 or

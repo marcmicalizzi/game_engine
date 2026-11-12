@@ -194,21 +194,85 @@ struct GiLevelRead {
   f32 confidence = 0.0f;
   f32 square = 0.0f;
   f32 spread = 0.0f;
+  f32 weight = 0.0f;  // the trilinear weights of the cells that hold a sample (stage 6)
 };
+//
+// **Stage 6: what a difference between two levels shows** (renderer.md, "Indirect light", "Stage
+// 6"). The count's rule alone treats a level under `confident` samples as if nothing were known of
+// it but its count, and that is the rule of a surface with no detail between the levels: there the
+// coarser level's mean is as good and quieter. In a crown the levels differ — the coarse cell is
+// the mean of leaves in the open and leaves in the shade — and waiting for 255 samples before the
+// difference is shown is what stood as a band after a turn: the same light, flattened, which the
+// display's curve makes a brighter picture (the shade lifted by more steps than the lit leaves
+// lose). So a level that is not yet read whole by its count is compared with the next one up:
+// with means `m` and `m_up` over `n` and `n_up` samples, a sample's variance taken as
+// `k_gi_sample_cv2` times the square of the larger mean, the square of their difference less what
+// that noise explains of it is the detail between the two levels, and the level takes that detail
+// over itself plus its own mean's noise — the shrinkage weight of a noisy mean towards a prior of
+// known spread, with the spread estimated by its positive part (James and Stein) — where that is
+// more than its count gives it. A level is taken early only where it differs from the one above by
+// more than noise explains, and then the noise it adds (`take * s / sqrt(n)`) is less than the
+// difference it shows; where the levels agree the count's rule stands to the bit. Continuous in
+// both means and both counts, so a cell's first sample is still no step (at one sample the noise
+// explains any difference). What the difference shows is taken by the cells' trilinear weight
+// where they hold under an eighth of it (`GiLevelRead::weight`: a mean extrapolated from a far
+// corner is not the point's), where the count's share is by their weight times their confidence.
+//
+// A sample's spread: a cosine ray from a half-occluded surface escapes to the sky or meets a leaf
+// in the shade or one in the sun — a mixture whose variance is one to two times its mean's square
+// (v = 0.3 of the rays escaping at 1.2, the rest at 0.2: 0.84; a fifth of the hits sunlit at 1.7:
+// 1.6). Two, the upper figure, is the constant: on the grove's turn four showed a tenth of the
+// band's shade early and two a quarter, with the frames' change the same (the experiment page).
+inline constexpr f32 k_gi_sample_cv2 = 2.0f;
+inline f32 gi_reveal(f32 m, f32 n, f32 m_up, f32 n_up) noexcept {
+  const f32 top = std::fmax(m, m_up);
+  const f32 s2 = k_gi_sample_cv2 * top * top;
+  const f32 d = m - m_up;
+  const f32 d2 = std::fmax(d * d - s2 * (1.0f / n + 1.0f / n_up), 0.0f);
+  const f32 den = d2 + s2 / n;
+  return den > 0.0f ? d2 / den : 0.0f;
+}
+// The luminance the reveal compares levels by (the shader's `gi_luminance`).
+inline f32 gi_level_luminance(const GiLevelRead& l) noexcept {
+  return (0.2126f * l.sum[0] + 0.7152f * l.sum[1] + 0.0722f * l.sum[2]) / l.confidence;
+}
 inline f32 gi_blend_levels(const GiLevelRead* levels, u32 count, f32 out[3],
-                           u32 confident = k_gi_confident) noexcept {
+                           u32 confident = k_gi_confident, bool reveal = false) noexcept {
   f32 acc[3] = {0.0f, 0.0f, 0.0f};
   f32 remaining = 1.0f;
-  for (u32 i = 0; i < count; ++i) {
-    const GiLevelRead& l = levels[i];
-    if (!(l.confidence > 1e-6f)) continue;
-    const f32 take = std::fmin(l.square / (l.spread * static_cast<f32>(confident)), 1.0f) *
-                     std::fmin(k_gi_read_cover * l.confidence, 1.0f);
+  const GiLevelRead* held = nullptr;  // a level whose share waits for the one above it
+  auto take_level = [&](const GiLevelRead& l, f32 take) {
     for (u32 c = 0; c < 3; ++c)
       acc[c] += (remaining * take / l.confidence) * l.sum[c];
     remaining *= 1.0f - take;
-    if (remaining <= k_gi_read_stop) break;
+  };
+  auto by_count = [&](const GiLevelRead& l) {
+    return std::fmin(l.square / (l.spread * static_cast<f32>(confident)), 1.0f);
+  };
+  auto cover = [](const GiLevelRead& l) { return std::fmin(k_gi_read_cover * l.confidence, 1.0f); };
+  for (u32 i = 0; i < count; ++i) {
+    const GiLevelRead& l = levels[i];
+    if (!(l.confidence > 1e-6f)) continue;
+    if (held != nullptr) {
+      const f32 shown = gi_reveal(gi_level_luminance(*held), held->square / held->spread,
+                                  gi_level_luminance(l), l.square / l.spread) *
+                        std::fmin(k_gi_read_cover * held->weight, 1.0f);
+      take_level(*held, std::fmax(by_count(*held) * cover(*held), shown));
+      held = nullptr;
+      if (remaining <= k_gi_read_stop) break;
+    }
+    const f32 take = by_count(l) * cover(l);
+    // A level that takes all that is left by its count needs no look at the one above it, nor
+    // does one after which the count's walk would stop: the reveal reads no level the count's
+    // walk does not.
+    if (!reveal || remaining * (1.0f - take) <= k_gi_read_stop) {
+      take_level(l, take);
+      if (remaining <= k_gi_read_stop) break;
+      continue;
+    }
+    held = &l;
   }
+  if (held != nullptr) take_level(*held, by_count(*held) * cover(*held));
   const f32 taken = 1.0f - remaining;
   if (!(taken > 0.0f)) return 0.0f;
   for (u32 c = 0; c < 3; ++c)
@@ -256,6 +320,15 @@ inline constexpr u32 k_gi_bounce = 2u;  // a ray that hits takes the hit's light
 inline constexpr u32 k_gi_faces = 8u;  // the read blends the next face near a face's edge (stage 2)
 inline constexpr u32 k_gi_young_rays = 16u;    // the sample pass's young candidates (stage 2)
 inline constexpr u32 k_gi_hit_fallback = 32u;  // a hit walks the ladder, then the fallback
+// Stage 6's diagnostic (`renderer.gi.show_level`): the resolve's read takes one level of the
+// ladder whole — the surface's own plus `(flags >> k_gi_show_shift) & 3` — and nothing else, with
+// the cache filled as ever. It is how the count by level is made (what each level holds against
+// the walk); a bounce's hit never sees it.
+inline constexpr u32 k_gi_show = 4u;
+inline constexpr u32 k_gi_show_shift = 6u;
+// Stage 6: a level is taken by what its difference from the next one up shows, where that is more
+// than its count gives it (`gi_reveal`). The evict age's top bit.
+inline constexpr u32 k_gi_reveal = 1u << 23;
 // Two of stage 2's numbers ride in the flags' upper bytes, so each lever can be judged against the
 // stage before it without a new row in the resolve block: the samples at which a cell is read
 // whole (`k_gi_confident` by default; 1 reads any cell with a sample whole, as stage 1 did) and
@@ -269,7 +342,7 @@ inline constexpr u32 k_gi_far_lift_shift = 24u;
 constexpr u32 gi_flag_numbers(u32 confident, u32 evict_age, f32 far_lift = 0.0f) noexcept {
   const f32 lift = far_lift < 0.0f ? 0.0f : (far_lift > 1.0f ? 1.0f : far_lift);
   return ((confident < 1 ? 1u : (confident > 255 ? 255u : confident)) << k_gi_confident_shift) |
-         ((evict_age > 255 ? 255u : evict_age) << k_gi_evict_shift) |
+         ((evict_age > 127 ? 127u : evict_age) << k_gi_evict_shift) |
          (static_cast<u32>(lift * 255.0f + 0.5f) << k_gi_far_lift_shift);
 }
 

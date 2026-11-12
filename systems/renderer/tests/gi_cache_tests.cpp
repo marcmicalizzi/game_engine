@@ -293,6 +293,8 @@ struct Rig {
   SceneRenderer renderer;
   ReferenceRenderer reference;
   std::string error;
+  u32 width = k_width;  // the stand of trees (stage 6) is drawn larger
+  u32 height = k_height;
 
   bool build(const gfx::Device& device, const SceneDesc& desc, bool with_reference,
              gfx::ResolveMode view_mode = gfx::ResolveMode::Shaded) {
@@ -310,8 +312,8 @@ struct Rig {
     if (with_reference && !reference_available(resolved, device, &error)) return false;
     if (!scene.create(device, data, resolved, &error)) return false;
     SceneRenderer::Desc rd;
-    rd.width = k_width;
-    rd.height = k_height;
+    rd.width = width;
+    rd.height = height;
     if (!renderer.create(device, scene, resolved, rd, &error)) return false;
     return !with_reference || reference.create(device, scene, renderer, {}, &error);
   }
@@ -401,6 +403,102 @@ Fixture rock_fixture(const std::filesystem::path& dir) {
   out.desc.instances.push_back(ball);
   out.camera.position = WorldPos{2.4, 1.9, 2.6};
   out.camera.target = WorldPos{0.0, 0.5, 0.0};
+  out.camera.znear = 0.05f;
+  return out;
+}
+
+// **A stand of trees** (stage 6's band): nine crowns over a slab, each 280 small cubes turned every
+// way inside a ball of 1.5 m — leaves in the open on its outside and leaves in the shade within,
+// which is the difference between a crown's coarse cell and the cells under it — on a trunk, seen
+// from 16 m. Instances: the slab, then nine crowns, then nine trunks.
+bool write_crown(const std::string& path) {
+  MeshBuilder m;
+  u32 state = 20261111u;
+  auto unit = [&state]() {
+    state = state * 1664525u + 1013904223u;
+    return static_cast<f32>(state >> 8) / 16777216.0f;
+  };
+  const f32 radius = 1.5f;
+  for (u32 leaf = 0; leaf < 280; ++leaf) {
+    // A centre inside the ball (rejection), a side, and a frame from two random directions.
+    Vec3 c{};
+    do {
+      c = Vec3{2.0f * unit() - 1.0f, 2.0f * unit() - 1.0f, 2.0f * unit() - 1.0f};
+    } while (dot(c, c) > 1.0f);
+    c = Vec3{c.x * radius, c.y * radius, c.z * radius};
+    const f32 h = 0.11f + 0.06f * unit();
+    Vec3 u{2.0f * unit() - 1.0f, 2.0f * unit() - 1.0f, 2.0f * unit() - 1.0f};
+    Vec3 t{2.0f * unit() - 1.0f, 2.0f * unit() - 1.0f, 2.0f * unit() - 1.0f};
+    if (dot(u, u) < 0.01f) u = Vec3{1.0f, 0.0f, 0.0f};
+    const f32 ul = std::sqrt(dot(u, u));
+    u = Vec3{u.x / ul, u.y / ul, u.z / ul};
+    Vec3 w = cross(u, t);
+    if (dot(w, w) < 0.0001f) w = cross(u, Vec3{0.0f, 1.0f, 0.3f});
+    const f32 wl = std::sqrt(dot(w, w));
+    w = Vec3{w.x / wl, w.y / wl, w.z / wl};
+    const Vec3 v = cross(w, u);
+    auto corner = [&](f32 a, f32 b, f32 d) {
+      return Vec3{c.x + h * (a * u.x + b * v.x + d * w.x), c.y + h * (a * u.y + b * v.y + d * w.y),
+                  c.z + h * (a * u.z + b * v.z + d * w.z)};
+    };
+    const Vec3 axes[3] = {u, v, w};
+    for (u32 axis = 0; axis < 3; ++axis) {
+      for (const f32 side : {-1.0f, 1.0f}) {
+        // The face at `side` along `axis`: its four corners vary the other two.
+        Vec3 p[4];
+        u32 k = 0;
+        for (const f32 a : {-1.0f, 1.0f}) {
+          for (const f32 b : {-1.0f, 1.0f}) {
+            const f32 e = (k == 2 || k == 3) ? -b : b;  // walk round the face, not across it
+            p[k++] = axis == 0 ? corner(side, a, e)
+                               : (axis == 1 ? corner(a, side, e) : corner(a, e, side));
+          }
+        }
+        const Vec3 n{side * axes[axis].x, side * axes[axis].y, side * axes[axis].z};
+        m.quad(p[0], p[1], p[2], p[3], n);
+      }
+    }
+  }
+  return write_glb(path, m, Vec3{0.25f, 0.45f, 0.15f}, 0.8f);
+}
+
+constexpr u32 k_stand_crowns = 9;
+
+Fixture stand_fixture(const std::filesystem::path& dir) {
+  const std::string cube = slashes(dir / "cube.glb");
+  const std::string crown = slashes(dir / "crown.glb");
+  REQUIRE(write_cube(cube));
+  REQUIRE(write_crown(crown));
+  Fixture out;
+  out.name = "a stand of nine crowns over a slab";
+  out.desc.meshes.push_back(cube);
+  out.desc.meshes.push_back(crown);
+  out.desc.ddc = slashes(dir / "ddc");
+  SceneInstance slab;
+  slab.transform.position = Vec3{0.0f, -0.25f, 0.0f};
+  slab.transform.scale = Vec3{48.0f, 0.5f, 48.0f};
+  out.desc.instances.push_back(slab);
+  for (u32 pass = 0; pass < 2; ++pass) {
+    for (i32 z = -1; z <= 1; ++z) {
+      for (i32 x = -1; x <= 1; ++x) {
+        SceneInstance tree;
+        const f32 px = 2.9f * static_cast<f32>(x) + 0.2f * static_cast<f32>(z);
+        const f32 pz = 2.9f * static_cast<f32>(z) - 0.15f * static_cast<f32>(x);
+        if (pass == 0) {
+          tree.mesh = 1;
+          tree.transform.position = Vec3{px, 3.0f + 0.2f * static_cast<f32>((x + z) & 1), pz};
+          tree.transform.rotation =
+              quat_from_axis_angle(Vec3{0.0f, 1.0f, 0.0f}, 0.9f * static_cast<f32>(x + 3 * z));
+        } else {
+          tree.transform.position = Vec3{px, 1.0f, pz};
+          tree.transform.scale = Vec3{0.25f, 2.0f, 0.25f};
+        }
+        out.desc.instances.push_back(tree);
+      }
+    }
+  }
+  out.camera.position = WorldPos{16.0, 2.6, 1.0};
+  out.camera.target = WorldPos{0.0, 2.7, 0.0};
   out.camera.znear = 0.05f;
   return out;
 }
@@ -1098,6 +1196,236 @@ TEST_CASE("gi cache: a turn shows no fill") {
   MESSAGE("the largest fall between two frames from the 200th after the turn: "
           << late_step << " with nothing round the eye, " << late_step_now << " at the defaults");
   CHECK(late_step_now <= 2.0 * now.floor_change);
+}
+
+// ---- stage 6 (renderer.md, "Indirect light: the world-space cache", "Stage 6") ----------------
+
+namespace {
+
+// The stand in pixels: 256 square, a cell about five pixels wide at the crowns (0.4 m at 16 m, so
+// the ladder is 0.4, 0.8, 1.6 and 3.2 m: the last a whole crown) and the trickle's one pixel in
+// eight.
+constexpr u32 k_stand_size = 256;
+constexpr const char* k_stand_scale = "0.018";
+constexpr const char* k_stand_rays = "16384";
+
+bool crown_pixel(const CapturedFrame& shot, u32 i) {
+  const u32 instance = shot.ids[i * k_id_words];
+  return instance >= 1 && instance <= k_stand_crowns;
+}
+
+// Linear luminance of an 8-bit pixel (the display's curve undone).
+f64 linear_of(const CapturedFrame& shot, u32 i) {
+  auto lin = [](u8 v) {
+    const f64 c = static_cast<f64>(v) / 255.0;
+    return c <= 0.04045 ? c / 12.92 : std::pow((c + 0.055) / 1.055, 2.4);
+  };
+  const u8* c = &shot.color[i * 4];
+  return 0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2]);
+}
+
+}  // namespace
+
+// **The band's cause, held.** After a turn stage 5 showed the far forest brighter than it would
+// be, darkening over twenty frames, and read it as the coarse levels holding more light than the
+// fine ones. They do not: every sample is added to all four levels, so over the surfaces that
+// took the samples the levels hold the same light. What a coarse level holds is that light
+// *flattened* — a crown's cell is the mean of its leaves in the open and its leaves in the shade —
+// and the display's curve makes a flattened picture a brighter one, the shade lifted by more
+// steps than the lit leaves lose. So, the stand held 200 frames and the resolve reading one level
+// whole (`renderer.gi.show_level`): against the own level's picture the third level's stands
+// within a tenth in linear light over the crowns, brighter over their darkest third, darker over
+// their brightest, and brighter in the mean of the 8-bit picture.
+TEST_CASE("gi cache: on a stand of trees a coarse level holds the fine one's light, flattened") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("gi cache unavailable here: " << gpu.why);
+    return;
+  }
+  const test::TempDir tmp("engine_gi_stand_levels");
+  const Fixture fixture = stand_fixture(tmp.native());
+  const ScopedTunable scale("renderer.gi.cell_scale", k_stand_scale);
+  const ScopedTunable rays("renderer.gi.rays_per_frame", k_stand_rays);
+  const ScopedTunable mode("renderer.gi.mode", "bounce");
+  CaptureChannels channels;
+  channels.ids = true;
+  CapturedFrame shots[2];
+  const char* levels[2] = {"0", "2"};
+  for (u32 r = 0; r < 2; ++r) {
+    const ScopedTunable show("renderer.gi.show_level", levels[r]);
+    Rig rig;
+    rig.width = k_stand_size;
+    rig.height = k_stand_size;
+    REQUIRE_MESSAGE(rig.build(gpu.device, fixture.desc, false), rig.error);
+    FrameDesc frame;
+    frame.camera = fixture.camera;
+    for (u32 i = 0; i + 1 < 200; ++i) {
+      frame.frame_index = i;
+      REQUIRE_MESSAGE(rig.renderer.render_offscreen(frame, &rig.error), rig.error);
+    }
+    frame.frame_index = 199;
+    REQUIRE_MESSAGE(rig.renderer.capture(frame, channels, shots[r], &rig.error), rig.error);
+  }
+  const CapturedFrame& fine = shots[0];
+  const CapturedFrame& coarse = shots[1];
+  std::vector<f64> lumas;
+  const u32 pixels = fine.width * fine.height;
+  for (u32 i = 0; i < pixels; ++i) {
+    if (crown_pixel(fine, i)) lumas.push_back(luma_of(fine, i));
+  }
+  REQUIRE(lumas.size() > 2000);
+  std::sort(lumas.begin(), lumas.end());
+  const f64 low = lumas[lumas.size() / 3];
+  const f64 high = lumas[2 * lumas.size() / 3];
+  f64 lin_fine = 0.0;
+  f64 lin_coarse = 0.0;
+  f64 step = 0.0;
+  f64 step_dark = 0.0;
+  f64 step_bright = 0.0;
+  u32 dark = 0;
+  u32 bright = 0;
+  for (u32 i = 0; i < pixels; ++i) {
+    if (!crown_pixel(fine, i)) continue;
+    lin_fine += linear_of(fine, i);
+    lin_coarse += linear_of(coarse, i);
+    const f64 d = luma_of(coarse, i) - luma_of(fine, i);
+    step += d;
+    if (luma_of(fine, i) <= low) {
+      step_dark += d;
+      ++dark;
+    } else if (luma_of(fine, i) >= high) {
+      step_bright += d;
+      ++bright;
+    }
+  }
+  const f64 n = static_cast<f64>(lumas.size());
+  MESSAGE("the third level against the own level over "
+          << lumas.size() << " crown pixels: linear light " << lin_coarse / lin_fine
+          << " of it; 8-bit luma " << step / n << " steps brighter in the mean, "
+          << step_dark / dark << " over the darkest third, " << step_bright / bright
+          << " over the brightest");
+  CHECK(lin_coarse / lin_fine > 0.9);
+  CHECK(lin_coarse / lin_fine < 1.1);
+  CHECK(step_dark / dark > 0.0);
+  CHECK(step_bright / bright < 0.0);
+  CHECK(step / n > 0.0);
+}
+
+// **A turn to a stand of trees shows its shade at once.** The stand outside the volume round the
+// eye (`renderer.gi.shell_m` 8, the stand at 16 m: the far forest, which no sample reaches before
+// it is seen), the eye held looking away, turned to it in four frames and held. Over the crowns'
+// pixels the first frame's signed distance from the long-held picture — the band — is within the
+// still picture's floor, and the frames change by no more than twice the floor's change from the
+// eighth on (stage 5's own rule). With the reveal off (stage 5's walk, by the count alone) the
+// first frame stands brighter than its floor: the band the test is for.
+TEST_CASE("gi cache: a turn to a stand of trees shows its shade at once") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("gi cache unavailable here: " << gpu.why);
+    return;
+  }
+  const test::TempDir tmp("engine_gi_stand_turn");
+  const Fixture fixture = stand_fixture(tmp.native());
+  constexpr u32 k_hold = 60;
+  constexpr u32 k_turn = 4;
+  constexpr u32 k_after = 352;
+  constexpr u32 k_frames = k_hold + k_turn + k_after;
+  constexpr usize k_stand_tail = 64;
+  const DVec3 ahead = fixture.camera.target - fixture.camera.position;
+  auto camera_at = [&](u32 i) {
+    // Away at first, then round to the stand.
+    const f64 share = i < k_hold ? 0.0 : std::min(1.0, static_cast<f64>(i - k_hold + 1) / k_turn);
+    const f64 a = 3.14159265358979 * (1.0 - share);
+    Camera c = fixture.camera;
+    c.target = c.position + DVec3{ahead.x * std::cos(a) + ahead.z * std::sin(a), ahead.y,
+                                  -ahead.x * std::sin(a) + ahead.z * std::cos(a)};
+    return c;
+  };
+  const ScopedTunable scale("renderer.gi.cell_scale", k_stand_scale);
+  const ScopedTunable rays("renderer.gi.rays_per_frame", k_stand_rays);
+  const ScopedTunable mode("renderer.gi.mode", "bounce");
+  const ScopedTunable shell("renderer.gi.shell_m", "8");
+  struct Curve {
+    f64 bias = 0.0;          // the first frame's signed distance from the reference
+    f64 apart = 0.0;         // ... and its absolute one
+    f64 floor = 0.0;         // the still picture's distance from it
+    f64 floor_change = 0.0;  // ... and its change between frames
+    f64 worst_change = 0.0;  // the largest change from the eighth frame on
+  };
+  Curve curves[2];
+  const char* reveal[2] = {"true", "false"};
+  CaptureChannels channels;
+  channels.ids = true;
+  for (u32 r = 0; r < 2; ++r) {
+    const ScopedTunable lever("renderer.gi.reveal", reveal[r]);
+    Rig rig;
+    rig.width = k_stand_size;
+    rig.height = k_stand_size;
+    REQUIRE_MESSAGE(rig.build(gpu.device, fixture.desc, false), rig.error);
+    std::vector<CapturedFrame> shots;
+    FrameDesc frame;
+    for (u32 i = 0; i < k_frames; ++i) {
+      frame.frame_index = i;
+      frame.camera = camera_at(i);
+      if (i + 1 < k_hold + k_turn) {
+        REQUIRE_MESSAGE(rig.renderer.render_offscreen(frame, &rig.error), rig.error);
+        continue;
+      }
+      CapturedFrame shot;
+      REQUIRE_MESSAGE(rig.renderer.capture(frame, channels, shot, &rig.error), rig.error);
+      CHECK(rig.renderer.stats().gi_preroll_steps == 0);
+      shots.push_back(std::move(shot));
+    }
+    const usize count = shots.size();
+    const u32 pixels = shots[0].width * shots[0].height;
+    std::vector<u32> crown;
+    for (u32 i = 0; i < pixels; ++i) {
+      if (crown_pixel(shots[count - 1], i)) crown.push_back(i);
+    }
+    REQUIRE(crown.size() > 2000);
+    std::vector<f64> reference(crown.size(), 0.0);
+    for (usize k = count - k_stand_tail; k < count; ++k)
+      for (usize j = 0; j < crown.size(); ++j)
+        reference[j] += luma_of(shots[k], crown[j]) / static_cast<f64>(k_stand_tail);
+    auto from_reference = [&](usize k, bool sign) {
+      f64 sum = 0.0;
+      for (usize j = 0; j < crown.size(); ++j) {
+        const f64 d = luma_of(shots[k], crown[j]) - reference[j];
+        sum += sign ? d : std::abs(d);
+      }
+      return sum / static_cast<f64>(crown.size());
+    };
+    auto change = [&](usize k) {
+      f64 sum = 0.0;
+      for (usize j = 0; j < crown.size(); ++j)
+        sum += std::abs(luma_of(shots[k], crown[j]) - luma_of(shots[k - 1], crown[j]));
+      return sum / static_cast<f64>(crown.size());
+    };
+    Curve& c = curves[r];
+    c.bias = from_reference(0, true);
+    c.apart = from_reference(0, false);
+    for (usize k = count - 2 * k_stand_tail; k < count - k_stand_tail; ++k) {
+      c.floor += from_reference(k, false) / static_cast<f64>(k_stand_tail);
+      c.floor_change += change(k) / static_cast<f64>(k_stand_tail);
+    }
+    for (usize k = 8; k < count; ++k)
+      c.worst_change = std::max(c.worst_change, change(k));
+    MESSAGE("the reveal " << reveal[r] << ": over " << crown.size()
+                          << " crown pixels the first frame after the turn stands " << c.bias
+                          << " 8-bit steps from the long-held picture in the mean (" << c.apart
+                          << " apart) against a floor of " << c.floor
+                          << "; the largest change from the eighth "
+                          << "frame on " << c.worst_change << " against the floor's "
+                          << c.floor_change);
+  }
+  const Curve& now = curves[0];
+  const Curve& counted = curves[1];
+  // The band: within the still picture's floor.
+  CHECK(std::abs(now.bias) <= now.floor);
+  // No speckle bought with it: stage 5's rule from the eighth frame.
+  CHECK(now.worst_change <= 2.0 * now.floor_change);
+  // And the count alone shows the band.
+  CHECK(counted.bias > counted.floor);
 }
 
 // **The start and a cut** (stage 5's pre-roll, gi_preroll.h). The first frame after a cut to

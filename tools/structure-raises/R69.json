@@ -1,11 +1,11 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "R69",
-  "reason": "R69 stage 5: record_frame records the cache's passes as the frame's steps (the pre-roll), and renderer.md gains the stage's section (the ladder, the walk, the warm levels' arithmetic, the pre-roll, what the forest showed)",
+  "reason": "R69 stages 5 and 6: record_frame records the cache's passes as the frame's steps (the pre-roll; its flags now come from gi_frame_flags), and renderer.md gains the two stages' sections (stage 5: the ladder, the walk, the warm levels' arithmetic, the pre-roll; stage 6: what the band is, the reveal and what it holds)",
   "date": "2026-11-11",
   "by": "Marc Micalizzi",
   "deltas": {
-    "renderer.record_frame.lines": 28,
-    "page:docs/subsystems/renderer.md": 14245
+    "renderer.record_frame.lines": 23,
+    "page:docs/subsystems/renderer.md": 19560
   }
 }

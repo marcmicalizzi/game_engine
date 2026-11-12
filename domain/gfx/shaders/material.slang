@@ -917,9 +917,17 @@ float3 scene_ambient(uint64_t gi_cells, uint gi_flags, uint gi_count, float gi_c
                      float3 harmonics) {
   if ((gi_flags & k_gi_read) == 0u || gi_cells == 0) return harmonics;
   float3 ratio;
-  const uint level = gi_level(distance, gi_cell_scale);
+  uint level = gi_level(distance, gi_cell_scale);
+  // Stage 6's diagnostic (`k_gi_show`, `renderer.gi.show_level`): one level of the ladder read
+  // whole, the cache filled as ever — how the count by level is made.
+  uint levels = k_gi_ladder;
+  if ((gi_flags & k_gi_show) != 0u) {
+    level = min(level + ((gi_flags >> k_gi_show_shift) & 3u), k_gi_levels - 1u);
+    levels = 1u;
+    gi_flags = (gi_flags & ~0xff00u) | 0x100u;
+  }
   const float taken =
-      gi_read(gi_cells, gi_count, gi_flags, eye, from_eye, level, k_gi_ladder, normal, ratio);
+      gi_read(gi_cells, gi_count, gi_flags, eye, from_eye, level, levels, normal, ratio);
   if (!(taken > 0.0)) return harmonics;
   // **The far lift** (stage 2, `renderer.gi.far_lift`, a stated lever): a coarse cell (1.6 m at
   // level 6 to 6.4 m at 8, past 400 m) averages a crown's lit and shaded leaves into one value the

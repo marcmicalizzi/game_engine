@@ -140,6 +140,7 @@ GiLevelRead level_read(const LevelCells& cells, u32 confident) {
     out.confidence += c;
     out.square += c * c;
     out.spread += c * c / static_cast<f32>(cells.samples[i]);
+    out.weight += w;
   }
   return out;
 }
@@ -150,16 +151,50 @@ GiLevelRead level_read(const LevelCells& cells, u32 confident) {
 // `confident` of what the finer levels left, and the answer is the takes' weighted mean. Returns
 // the share taken in all, and in `noise` the variance of the answer in units of one sample's
 // (every cell's mean carrying a sample's variance over its count), which the walk's rule bounds.
-f64 brute_walk(const LevelCells* levels, u32 count, u32 confident, f64& value,
-               f64* noise = nullptr) {
+//
+// With `reveal` (stage 6) a level its count does not read whole waits for the next one up, and
+// takes what their difference shows where that is more: the difference's square less the noise of
+// the two means (a sample's variance `k_gi_sample_cv2` times the larger mean's square), over itself
+// plus the level's own noise.
+f64 brute_reveal(f64 m, f64 n, f64 m_up, f64 n_up) {
+  const f64 top = std::fmax(m, m_up);
+  const f64 s2 = static_cast<f64>(k_gi_sample_cv2) * top * top;
+  const f64 d2 = std::fmax((m - m_up) * (m - m_up) - s2 * (1.0 / n + 1.0 / n_up), 0.0);
+  return d2 + s2 / n > 0.0 ? d2 / (d2 + s2 / n) : 0.0;
+}
+
+f64 brute_walk(const LevelCells* levels, u32 count, u32 confident, f64& value, f64* noise = nullptr,
+               bool reveal = false) {
   f64 left = 1.0;
   f64 acc = 0.0;
   f64 variance_sum = 0.0;
+  struct Level {
+    f64 mean = 0.0;
+    f64 confidence = 0.0;
+    f64 a_cell = 0.0;
+    f64 inverse = 0.0;
+    f64 weight = 0.0;
+    bool waiting = false;
+  };
+  Level held;
+  auto take = [&](const Level& level, f64 share_of_left) {
+    const f64 share = left * share_of_left;
+    acc += share * level.mean;
+    variance_sum += share * share * level.inverse / (level.confidence * level.confidence);
+    left -= share;
+  };
+  auto by_count = [&](const Level& level) {
+    return std::fmin(level.a_cell / static_cast<f64>(confident), 1.0);
+  };
+  auto cover = [](const Level& level) {
+    return std::fmin(static_cast<f64>(k_gi_read_cover) * level.confidence, 1.0);
+  };
   for (u32 l = 0; l < count; ++l) {
     f64 mean_sum = 0.0;
     f64 confidence = 0.0;
     f64 square = 0.0;
     f64 inverse = 0.0;
+    f64 weight = 0.0;
     for (u32 i = 0; i < 8; ++i) {
       const f64 n = static_cast<f64>(levels[l].samples[i]);
       if (n == 0.0) continue;
@@ -168,16 +203,32 @@ f64 brute_walk(const LevelCells* levels, u32 count, u32 confident, f64& value,
       confidence += c;
       square += c * c;
       inverse += c * c / n;
+      weight += levels[l].weight[i];
     }
     if (!(confidence > 1e-6)) continue;
-    const f64 a_cell = square / inverse;  // the harmonic mean of the counts
-    const f64 share = left * std::fmin(a_cell / static_cast<f64>(confident), 1.0) *
-                      std::fmin(static_cast<f64>(k_gi_read_cover) * confidence, 1.0);
-    acc += share * (mean_sum / confidence);
-    variance_sum += share * share * inverse / (confidence * confidence);
-    left -= share;
-    if (left <= static_cast<f64>(k_gi_read_stop)) break;
+    Level now;
+    now.mean = mean_sum / confidence;
+    now.confidence = confidence;
+    now.a_cell = square / inverse;  // the harmonic mean of the counts
+    now.inverse = inverse;
+    now.weight = weight;
+    if (held.waiting) {
+      const f64 shown = brute_reveal(held.mean, held.a_cell, now.mean, now.a_cell) *
+                        std::fmin(static_cast<f64>(k_gi_read_cover) * held.weight, 1.0);
+      take(held, std::fmax(by_count(held) * cover(held), shown));
+      held.waiting = false;
+      if (left <= static_cast<f64>(k_gi_read_stop)) break;
+    }
+    const f64 share = by_count(now) * cover(now);
+    if (!reveal || left * (1.0 - share) <= static_cast<f64>(k_gi_read_stop)) {
+      take(now, share);
+      if (left <= static_cast<f64>(k_gi_read_stop)) break;
+      continue;
+    }
+    held = now;
+    held.waiting = true;
   }
+  if (held.waiting) take(held, by_count(held) * cover(held));
   const f64 taken = 1.0 - left;
   value = taken > 0.0 ? acc / taken : 0.0;
   if (noise != nullptr) *noise = taken > 0.0 ? variance_sum / (taken * taken) : 0.0;
@@ -195,12 +246,12 @@ void trilinear(f64 fx, f64 fy, f64 fz, f64 out[8]) {
     out[i] = ((i & 1u) ? fx : 1.0 - fx) * ((i & 2u) ? fy : 1.0 - fy) * ((i & 4u) ? fz : 1.0 - fz);
 }
 
-f32 walk(const LevelCells* levels, u32 count, u32 confident, f32& value) {
+f32 walk(const LevelCells* levels, u32 count, u32 confident, f32& value, bool reveal = false) {
   GiLevelRead reads[k_gi_ladder];
   for (u32 l = 0; l < count; ++l)
     reads[l] = level_read(levels[l], confident);
   f32 out[3] = {0.0f, 0.0f, 0.0f};
-  const f32 taken = gi_blend_levels(reads, count, out, confident);
+  const f32 taken = gi_blend_levels(reads, count, out, confident, reveal);
   value = out[0];
   return taken;
 }
@@ -233,8 +284,96 @@ TEST_CASE("gi cache key: the walk up the ladder is the brute-force blend of its 
     if (!(brute > 1e-3)) continue;
     ++compared;
     CHECK(std::fabs(static_cast<f64>(got) - want) <= 2e-4 * (1.0 + std::fabs(want)));
+    // And with stage 6's reveal, the same cells.
+    const f32 taken_shown = walk(levels, count, k_gi_confident, got, true);
+    const f64 brute_shown = brute_walk(levels, count, k_gi_confident, want, nullptr, true);
+    CHECK(std::fabs(static_cast<f64>(taken_shown) - brute_shown) <= 2e-4);
+    CHECK(std::fabs(static_cast<f64>(got) - want) <= 4e-4 * (1.0 + std::fabs(want)));
   }
   CHECK(compared > 2000);
+}
+
+// **Stage 6: what a difference between two levels shows** (gi_cache.h, `gi_reveal`). The count's
+// rule waits 255 samples before a level is read whole, which is right where the level above holds
+// the same light and wrong in a crown, where it holds the mean of the open and the shade: there
+// the difference is the picture, and the reveal takes a level by what the difference shows beyond
+// the two means' noise.
+TEST_CASE("gi cache key: a level is taken early by what its difference shows, and only by that") {
+  // Two levels, the point at a cell's centre of each.
+  LevelCells levels[2];
+  for (LevelCells& level : levels) {
+    trilinear(0.0, 0.0, 0.0, level.weight);
+    for (u32 i = 0; i < 8; ++i) {
+      level.samples[i] = 0;
+      level.mean[i] = 0.0;
+    }
+  }
+  const f32 cv2 = k_gi_sample_cv2;
+  // The levels agree: the reveal adds nothing and the count's rule stands, to the bit.
+  levels[0].samples[0] = 16;
+  levels[0].mean[0] = 0.5;
+  levels[1].samples[0] = k_gi_max_samples;
+  levels[1].mean[0] = 0.5;
+  f32 plain = 0.0f;
+  f32 shown = 0.0f;
+  CHECK(walk(levels, 2, k_gi_confident, plain) == walk(levels, 2, k_gi_confident, shown, true));
+  CHECK(plain == shown);
+  // A difference the noise explains — a sample's spread is sqrt(cv2) of the larger mean, so the
+  // two means' noise is that over sqrt(n) and sqrt(n_up) — shows nothing either.
+  const f32 within = 0.5f * std::sqrt(cv2 * (1.0f / 16.0f + 1.0f / 256.0f)) * 0.99f;
+  levels[0].mean[0] = static_cast<f64>(0.5f - within);
+  CHECK(walk(levels, 2, k_gi_confident, plain) == walk(levels, 2, k_gi_confident, shown, true));
+  CHECK(plain == shown);
+  CHECK(gi_reveal(0.5f - within, 16.0f, 0.5f, 256.0f) == 0.0f);
+  // Shade under a level five times brighter, sixteen samples in: the count gives it 16 / 255 of
+  // the read; the difference gives it the detail over the detail plus its own noise.
+  levels[0].mean[0] = 0.1;
+  const f32 d2 = 0.4f * 0.4f - cv2 * 0.25f * (1.0f / 16.0f + 1.0f / 256.0f);
+  const f32 want = d2 / (d2 + cv2 * 0.25f / 16.0f);
+  CHECK(gi_reveal(0.1f, 16.0f, 0.5f, 256.0f) == doctest::Approx(want));
+  CHECK(want > 0.35f);
+  CHECK(walk(levels, 2, k_gi_confident, shown, true) == doctest::Approx(1.0f));
+  CHECK(shown == doctest::Approx(want * 0.1f + (1.0f - want) * 0.5f));
+  // The count alone shows a thirtieth of it (its 16 / 255, by the half its cells' confidence
+  // covers of an eighth).
+  (void)walk(levels, 2, k_gi_confident, plain);
+  const f32 counted = (16.0f / 255.0f) * (k_gi_read_cover * 16.0f / 255.0f);
+  CHECK(plain == doctest::Approx(counted * 0.1f + (1.0f - counted) * 0.5f));
+  // A far corner alone (a sixteenth of the weight) is shown by half as much.
+  trilinear(0.5, 0.5, 0.75, levels[0].weight);
+  for (u32 i = 1; i < 8; ++i)
+    levels[0].weight[i] = 0.0;
+  const f32 far = static_cast<f32>(levels[0].weight[0]);
+  CHECK(far == doctest::Approx(1.0f / 16.0f));
+  (void)walk(levels, 2, k_gi_confident, shown, true);
+  CHECK(shown == doctest::Approx(0.5f * want * 0.1f + (1.0f - 0.5f * want) * 0.5f));
+  trilinear(0.0, 0.0, 0.0, levels[0].weight);
+  // Over random pairs: the share is under one, rises with the level's samples, is the same
+  // whichever of the two is the brighter by the same step, and where it is above zero the noise the
+  // level adds to the read — its share times its mean's noise — is under the difference it shows.
+  u32 state = 4242u;
+  u32 early = 0;
+  for (u32 trial = 0; trial < 4000; ++trial) {
+    const f32 m = 0.01f + static_cast<f32>(next(state) % 3000) / 1000.0f;
+    const f32 m_up = 0.01f + static_cast<f32>(next(state) % 3000) / 1000.0f;
+    const f32 n = 1.0f + static_cast<f32>(next(state) % 254);
+    const f32 n_up = n * (1.0f + static_cast<f32>(next(state) % 16));
+    const f32 share = gi_reveal(m, n, m_up, n_up);
+    CHECK(share >= 0.0f);
+    CHECK(share < 1.0f);
+    CHECK(gi_reveal(m, n + 1.0f, m_up, n_up) >= share);
+    CHECK(gi_reveal(m_up, n, m, n_up) == doctest::Approx(share));
+    if (share > 0.0f) {
+      ++early;
+      const f32 noise = std::sqrt(cv2) * std::fmax(m, m_up) / std::sqrt(n);
+      CHECK(share * noise < std::fabs(m - m_up));
+    }
+  }
+  CHECK(early > 500);
+  // The lever off is stage 5's walk: `gi_blend_levels` without it is the count's rule alone.
+  CHECK(k_gi_reveal == (1u << 23));
+  CHECK((gi_flag_numbers(255, 127, 1.0f) & k_gi_reveal) == 0u);
+  CHECK((gi_flag_numbers(255, 255, 0.0f) >> k_gi_evict_shift & 0xffu) == 127u);
 }
 
 TEST_CASE("gi cache key: a cell remembers 256 samples or sixteen frames of them") {

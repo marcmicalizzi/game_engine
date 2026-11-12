@@ -417,7 +417,7 @@ tunables::Int gi_confident{
     "history's length: a mean of fewer arriving is what read as the light filling in) "
     "(renderer.md, Indirect light, Stage 5; read at load)"};
 tunables::Int gi_evict_age{
-    "renderer.gi.evict_age", 16, 0, 255,
+    "renderer.gi.evict_age", 16, 0, 127,
     "Frames without a sample after which a cache cell whose bucket turned an insert away is freed "
     "(0: only by the 240-frame age, as stage 1) (renderer.md, Indirect light: the world-space "
     "cache; read at load)"};
@@ -433,6 +433,18 @@ tunables::Bool gi_hit_fallback{
     "the ray's openness in proportion where its levels hold a handful of samples or none (false: "
     "two levels, then nothing, as stage 1) (renderer.md, Indirect light: the world-space cache; "
     "read at load)"};
+// **Stage 6** (R69; renderer.md, "Indirect light", "Stage 6"): the lever and the diagnostic.
+tunables::Bool gi_reveal{
+    "renderer.gi.reveal", true,
+    "A level of the cache's ladder that is not yet read whole by its samples is taken by what its "
+    "difference from the next level up shows beyond their samples' noise, so a crown's shade is "
+    "shown in its first frames in place of the coarser level's flatter light (false: by its "
+    "samples alone, as stage 5) (renderer.md, Indirect light, Stage 6; read at load)"};
+tunables::Int gi_show_level{
+    "renderer.gi.show_level", -1, -1, 3,
+    "A diagnostic: the resolve's read of the cache takes one level of the ladder whole, the "
+    "surface's own plus this many, with the cache filled as ever (-1: the walk) (renderer.md, "
+    "Indirect light, Stage 6; read at load)"};
 tunables::Float gi_far_lift{
     "renderer.gi.far_lift", 0.0, 0.0, 1.0,
     "How far a coarse cache cell's read (1.6 m and up, past 400 m) is lifted towards the sky's "
@@ -791,6 +803,8 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   out.gi_young_rays = gi_young_rays.get();
   out.gi_hit_fallback = gi_hit_fallback.get();
   out.gi_far_lift = static_cast<f32>(gi_far_lift.get());
+  out.gi_reveal = gi_reveal.get();
+  out.gi_show_level = static_cast<i32>(gi_show_level.get());
   out.gi_shell_m = static_cast<f32>(gi_shell_m.get());
   out.gi_shell_rays = static_cast<u32>(gi_shell_rays.get());
   out.gi_preroll = static_cast<u32>(gi_preroll.get());

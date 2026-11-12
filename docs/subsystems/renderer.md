@@ -2468,6 +2468,73 @@ near trees and its change between frames is a third less, the flight's dark star
 the far forest's bright first frames are new. **The owner's target is not met on the forest**,
 and the stage is `in progress` on the roadmap: the count a level is read whole at, the read's
 cost on crowns, and a measurement that holds the clouds still are what is next.
+
+### Stage 6: what a difference between two levels shows
+
+Roadmap R69 stage 6 (2026-11-11, batch 60; [the page](../experiments/gi-cache-2026-11-07.md#stage-6-what-the-band-is-and-what-a-difference-between-two-levels-shows)
+has the count, the curves and the costs). Stage 5 was held for the band it showed after a turn:
+the far forest brighter than it will be, darkening over about twenty frames.
+
+**What the band is.** Stage 5 read it as the coarse levels holding more light than the fine
+ones. Counted (`renderer.gi.show_level`: the resolve's read takes one level of the ladder whole,
+the cache filled as ever; the diagnostic stays), they do not: every sample is added to all four
+levels, and over the pixels that read them the levels' means agree in linear light within a
+tenth of a percent. What a coarse level holds is that light **flattened**. A crown's cell three
+levels up is the mean of its leaves in the open and its leaves in the shade, so it shows the
+shade 1.6 times as bright as it is and the lit leaves a little darker; and the display's curve
+turns a flattening into a brightening, because a dark pixel lifted by some light rises by many
+more steps than a bright one lowered by the same light falls. The band's sign is the same
+everywhere for that reason, and it is in the still picture too wherever a crown's own cells
+never fill. So nothing that corrects a coarse cell's *mean* touches it (a ratio of sums, cells
+weighted by their samples, the young rays kept out of the coarse levels: each measured, each
+nothing), and the count a level is read whole at only trades it for the noise of fewer samples.
+
+**The reveal** (`gi_reveal` in `gi_cache.h` and `gi_cache.slang`, `gfx::k_gi_reveal`,
+`renderer.gi.reveal`, on). The count's rule — a level takes its samples over 255 of the read —
+is the rule of a surface with no detail between the levels: there the coarser mean is as good
+and quieter, and waiting costs nothing. Where the levels differ the difference is the picture,
+and waiting for 255 samples to show it is the band. So a level its count does not read whole is
+compared with the next one up before its share is settled. With means m and m′ (in luminance)
+over n and n′ samples, and a sample's variance taken as s² = `k_gi_sample_cv2` · max(m, m′)²,
+
+    d² = max((m − m′)² − s² (1/n + 1/n′), 0)        the detail the noise does not explain
+    shown = d² / (d² + s²/n)                         the share the difference gives the level
+
+and the level takes the larger of its count's share and `shown`. That is the shrinkage weight of
+a noisy mean towards a prior whose spread is known, with the spread estimated from the data by
+its positive part (James and Stein, 1961; the page cites it): the read was already called a
+shrinkage estimate in stage 5, and this is the term it left out, the prior's spread, which the
+count's rule takes as zero. What follows from the form, and is held by
+`gi cache key: a level is taken early by what its difference shows, and only by that`:
+
+- where the levels agree within their noise `shown` is zero and the read is stage 5's to the
+  bit (ground, walls, anything a coarse cell describes as well as a fine one);
+- where it is not zero the noise the level adds to the read, `shown · s/√n`, is less than the
+  difference it shows — a level is never taken early on the strength of its own noise;
+- it is continuous in both means and both counts, and zero at one sample, so a cell's first
+  sample is still no step;
+- `shown` is cut by the trilinear weight of the cells that are there where they hold under an
+  eighth of it (`GiLevelRead::weight`), so a far corner's mean is not shown as the point's;
+- it reads no level the count's walk did not: a level waits only if the count's walk would have
+  gone on to the next one anyway.
+
+`k_gi_sample_cv2` is 2, from a model and not a fit: a cosine ray from a half-hidden leaf escapes
+to the sky, or meets a leaf in the shade, or one in the sun, and that mixture's variance is one
+to two times its mean's square. A bounce's hit walks the same ladder with the same rule.
+
+**What it does, and what it does not.** On a stand of trees turned to from looking away (the
+grove, past the volume round the eye) the first frame's band falls from +0.29 of an 8-bit step
+over the crowns to +0.18, inside the still picture's floor (0.27), with the frames' change at
+0.097 against 0.091 (the floor's 0.070), at 0.03 ms of resolve over stage 5 at 3840×2160 traced.
+**It is a third of the band.** Two neighbouring levels of a crown differ by little (each octave
+flattens a little), and in a crown's first frames its cells hold few samples — a cell is keyed by
+which of six ways its surface faces, and a crown's leaves face all six at every depth, so its
+samples are divided among a dozen cells where ground's are in one — so a small difference is
+inside the noise and the count still decides. Main, which reads a cell whole at 32 samples and
+looks one level up, stands nearer on those crowns (and shows the speckle stage 5 removed
+elsewhere). What takes the rest is the key, not the read: foliage filled and read without the
+face at the levels above its own, which would also halve the read's cost on crowns (the second
+face is 0.55 of its 1.4 ms there); it is on the roadmap row and not built.
 ## The sun's day
 
 *A scene that names a sky takes its sun, its moon and its sky from it instead, on the world's clock ([The sky](#the-sky)); everything in this section is the stand-in's, which every other scene still draws, to the bit.*

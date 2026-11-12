@@ -29,13 +29,18 @@ static const uint k_gi_dispatch_pitch = 32768u;
 
 static const uint k_gi_read = 1u;
 static const uint k_gi_bounce = 2u;
-static const uint k_gi_reset = 4u;
+// gfx::k_gi_show: the resolve's read takes one level whole, the own plus two bits at
+// `k_gi_show_shift` (stage 6's diagnostic, `renderer.gi.show_level`).
+static const uint k_gi_show = 4u;
+static const uint k_gi_show_shift = 6u;
 static const uint k_gi_faces = 8u;
 static const uint k_gi_young_rays = 16u;
 static const uint k_gi_hit_fallback = 32u;
+// gfx::k_gi_reveal: a level is taken by what its difference from the next one up shows (stage 6).
+static const uint k_gi_reveal = 1u << 23;
 // gfx::gi_flag_numbers: the samples a cell is read whole at, and the evict age.
 uint gi_confident(uint flags) { return max((flags >> 8) & 0xffu, 1u); }
-uint gi_evict_age(uint flags) { return (flags >> 16) & 0xffu; }
+uint gi_evict_age(uint flags) { return (flags >> 16) & 0x7fu; }
 float gi_far_lift(uint flags) { return float(flags >> 24) / 255.0; }
 
 float gi_luminance(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }
@@ -188,6 +193,24 @@ static const uint k_gi_ladder = 4u;
 // A walk stops once this share or less is left to the coarser levels (gfx::k_gi_read_stop): a
 // converged neighbourhood reads one level's eight cells.
 static const float k_gi_read_stop = 1.0 / 32.0;
+// **Stage 6: what a difference between two levels shows** (gfx::gi_reveal, the same arithmetic;
+// renderer.md, "Indirect light", "Stage 6"): the share a level of mean `m` over `n` samples takes
+// of a read whose next level up has mean `m_up` over `n_up`, by their difference alone. A sample's
+// variance is taken as `k_gi_sample_cv2` times the square of the larger mean; the difference's
+// square less what that noise explains of it is the detail between the two levels, and the share
+// is that detail over itself plus the finer mean's own noise — the shrinkage weight of a noisy
+// mean towards a prior of known spread, the spread estimated by its positive part. Nothing where
+// the levels agree within their noise; and where it is something, the noise the level adds to the
+// read is under the difference it shows.
+static const float k_gi_sample_cv2 = 2.0;
+float gi_reveal(float m, float n, float m_up, float n_up) {
+  const float top = max(m, m_up);
+  const float s2 = k_gi_sample_cv2 * top * top;
+  const float d = m - m_up;
+  const float d2 = max(d * d - s2 * (1.0 / n + 1.0 / n_up), 0.0);
+  const float den = d2 + s2 / n;
+  return den > 0.0 ? d2 / den : 0.0;
+}
 // Below this much confidence in all the levels together the read leans on the caller's prior (the
 // harmonics for a pixel, the bounded fallback for a bounce's hit), in proportion
 // (gfx::k_gi_read_floor): a surface whose coarsest cell holds a handful of samples is not shown
@@ -215,6 +238,7 @@ struct GiLevelRead {
   float confidence;
   float square;
   float spread;
+  float weight;  // the trilinear weights of the cells that hold a sample (stage 6's cover)
 };
 
 GiLevelRead gi_read_level(uint64_t cache, uint count, int64_t3 mm, uint l, uint face,
@@ -224,6 +248,7 @@ GiLevelRead gi_read_level(uint64_t cache, uint count, int64_t3 mm, uint l, uint 
   out.confidence = 0.0;
   out.square = 0.0;
   out.spread = 0.0;
+  out.weight = 0.0;
   const int64_t size = gi_cell_mm(l);
   const int64_t3 shifted = mm - int64_t3(size / 2);
   const int64_t3 base = int64_t3(terrain_floor_div(shifted.x, size),
@@ -245,6 +270,7 @@ GiLevelRead gi_read_level(uint64_t cache, uint count, int64_t3 mm, uint l, uint 
     out.confidence += c;
     out.square += c * c;
     out.spread += c * c / float(samples);
+    out.weight += w;
   }
   return out;
 }
@@ -259,23 +285,65 @@ GiLevelRead gi_read_level(uint64_t cache, uint count, int64_t3 mm, uint l, uint 
 // below `k_gi_read_floor`. Every term is continuous in every cell's sample count, so neither a
 // cell's first samples nor a level's hand-over steps in time; in space each level is trilinear, so
 // it does not step between cells either.
+//
+// **Stage 6** (`reveal`, `k_gi_reveal`): a level its count does not read whole waits for the next
+// one up, and takes what their difference shows (`gi_reveal`) where that is more than its count
+// gives it — by the weight of the cells that are there where they hold under an eighth of it, so a
+// far corner's mean is not shown as the point's. No level is read that the count's walk did not
+// read: a level that is not whole always sent the walk on to the next.
 float gi_read_face(uint64_t cache, uint count, int64_t3 mm, uint level, uint levels, uint face,
-                   uint confident, out float3 acc) {
+                   uint confident, bool reveal, out float3 acc) {
   acc = float3(0.0);
   float remaining = 1.0;
   const uint last = min(level + levels, k_gi_levels);
+  GiLevelRead held;
+  held.sum = float3(0.0);
+  held.confidence = 0.0;
+  held.square = 0.0;
+  held.spread = 0.0;
+  held.weight = 0.0;
+  bool have = false;
   for (uint l = level; l < last; ++l) {
     const GiLevelRead r = gi_read_level(cache, count, mm, l, face, confident);
     if (!(r.confidence > 1e-6)) continue;
+    if (have) {
+      // The level below, now that the one above it is known: its share by its count, or — where
+      // the two differ by more than their samples' noise explains — by what the difference shows.
+      const float shown = gi_reveal(gi_luminance(held.sum) / held.confidence,
+                                    held.square / held.spread,
+                                    gi_luminance(r.sum) / r.confidence, r.square / r.spread) *
+                          min(k_gi_read_cover * held.weight, 1.0);
+      const float take = max(min(held.square / (held.spread * float(confident)), 1.0) *
+                                 min(k_gi_read_cover * held.confidence, 1.0),
+                             shown);
+      acc += (remaining * take / held.confidence) * held.sum;
+      remaining *= 1.0 - take;
+      have = false;
+      if (remaining <= k_gi_read_stop) break;
+    }
     // The samples a cell of the level's mean holds over `confident`, and — where the cells that are there
     // hold under an eighth of the weight between them, which a point's own cell alone holds once
     // it is read whole — that share of it: a mean extrapolated from a far corner is not taken
     // whole, so the point's own cell arriving beside it is no step.
     const float take = min(r.square / (r.spread * float(confident)), 1.0) *
                        min(k_gi_read_cover * r.confidence, 1.0);
-    acc += (remaining * take / r.confidence) * r.sum;
+    // A level that takes all that is left by its own count needs no look at the one above it.
+    // Nor does one after which the count's walk would stop: the reveal reads no level the count's
+    // walk does not.
+    if (!reveal || remaining * (1.0 - take) <= k_gi_read_stop) {
+      acc += (remaining * take / r.confidence) * r.sum;
+      remaining *= 1.0 - take;
+      if (remaining <= k_gi_read_stop) break;
+      continue;
+    }
+    held = r;
+    have = true;
+  }
+  if (have) {
+    const float take = min(held.square / (held.spread * float(confident)), 1.0) *
+                       min(k_gi_read_cover * held.confidence, 1.0);
+    acc += (remaining * take / held.confidence) * held.sum;
     remaining *= 1.0 - take;
-    if (remaining <= k_gi_read_stop) break;
   }
   return 1.0 - remaining;
 }
@@ -314,8 +382,9 @@ float gi_read(uint64_t cache, uint count, uint flags, FrameEye eye, float3 from_
   const int64_t3 mm = gi_point_mm(eye, from_eye);
   float3 first;
   const uint confident = gi_confident(flags);
+  const bool reveal = (flags & k_gi_reveal) != 0u;
   const float taken_first =
-      gi_read_face(cache, count, mm, level, levels, gi_face(normal), confident, first);
+      gi_read_face(cache, count, mm, level, levels, gi_face(normal), confident, reveal, first);
   float second_size;
   float largest;
   const uint second_face = gi_second_face(normal, second_size, largest);
@@ -323,7 +392,8 @@ float gi_read(uint64_t cache, uint count, uint flags, FrameEye eye, float3 from_
   float3 second = float3(0.0);
   float taken_second = 0.0;
   if (w > 0.0) {
-    taken_second = gi_read_face(cache, count, mm, level, levels, second_face, confident, second);
+    taken_second =
+        gi_read_face(cache, count, mm, level, levels, second_face, confident, reveal, second);
   }
   // Each face's share by the blend's weight and by what its levels took, so a face with nothing
   // leaves the other whole and one that is young comes in as it fills.
