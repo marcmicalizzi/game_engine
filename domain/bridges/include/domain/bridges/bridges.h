@@ -11,13 +11,16 @@
 // `plan_bridge` chooses the form a footpath would build there — stepping stones, a clapper bridge,
 // a foot log, or log stringers under a plank deck — by the crossing's bankfull width and depth and
 // the bed's stone, and solves every member in whole millimetres; `solve_bridge` makes each member a
-// closed solid, stone members and timber members in one mesh of two materials.
+// closed solid, the stone, the sawn and the round timber in one mesh of three materials.
 //
 // **What it writes to its neighbours** (bridges.md, "The ground and the neighbours"): each bridge's
-// approaches as `Fill` ground edits from the deck's ends to the tread (`approach_edits_json`), and
-// its plan as a polygon footprint (`bridge_footprint`) so the bed's stones, the sward and scatter
-// keep out from under it. No host hands either across at activation yet: the command writes them
-// for pasting, as the routes' treads are.
+// approaches as `Fill` ground edits from the deck's ends to the tread (`approach_edits_json`),
+// handed to the ground through the host's hook before the ground is made
+// (`PlacementGeneratorDesc::plan_ground`, G186), and its plan as a polygon footprint
+// (`bridge_footprint`) handed with every tile it reaches and with the whole read
+// (`Placements::shapes`), so the bed's stones, the sward and scatter keep out from under it. A
+// scene names its `bridges` entry and pastes neither; `engine-content bridges` still prints both
+// for a person to read.
 //
 // **What it is not.** No road or cart bridge, no arch, no suspension span; no response of the water
 // to a pier (systems/water is not this capability's); no collision of its own (a tile's mesh is
@@ -52,7 +55,9 @@
 namespace engine::bridges {
 
 // The solver's version, in every recipe's source hash: a change that moves a member bumps it.
-inline constexpr u32 k_bridge_version = 2;
+// 3 (G186): three materials, the timber's UVs along its grain. 4 (G186): a small timber bridge at
+// the bank, and steps at a deck's ends.
+inline constexpr u32 k_bridge_version = 4;
 
 // ---- the grounded constants (docs/experiments/footbridges.md, each against its source) ---------
 
@@ -103,16 +108,54 @@ inline constexpr i32 k_setback_mm = 400;
 // its slabs lie at the banks' level and floods go over (Tarr Steps, rebuilt after 1942, 1952,
 // 1979).
 inline constexpr i32 k_min_freeboard_mm = 300;
+// **The deck's height by form and span** (G186; footbridges.md, "The deck's height, by form and
+// span"). That flood-stage rule estimates the 50 to 100 year flood; it is no clearance, and it put
+// a foot log over a brook a metre over its banks. A small timber bridge — a foot log, and stringers
+// of a clear span up to the Forest Service's minor trail bridge (20 ft, 6.1 m) — sits at the bank:
+// its underside `k_bank_clearance_mm` over the lower bank's top (Devon County Council's path
+// bridge, its soffit 300 mm over the bank tops). Past the minor span the flood-stage rule stands.
+// The span is the sources' one size for a minor timber bridge, used as the line: a choice.
+inline constexpr i32 k_bank_clearance_mm = 300;
+inline constexpr i32 k_minor_span_mm = 6100;
+// **The approaches are steps, then a short fill** (G186; footbridges.md, "The approaches: steps,
+// then a short fill"): from the deck's end out along the path, rough stone steps on the ground
+// with equal risers of at most `k_riser_mm`, each `k_step_going_mm` along the path and bedded
+// `k_step_bed_mm`, at most `k_max_steps` an end; past them a `Fill` at the route's grade brings
+// the tread up to the last step. No source gives a footbridge's steps: an outdoor step's numbers,
+// choices.
+inline constexpr i32 k_riser_mm = 200;
+inline constexpr i32 k_step_going_mm = 300;
+inline constexpr i32 k_step_bed_mm = 100;
+inline constexpr u32 k_max_steps = 4;
 
 // ---- the plan
 // ------------------------------------------------------------------------------------
 
 // What a member is, and what it is made of.
-enum class MemberKind : u8 { stone, slab, pier, abutment, log, sill, stringer, plank, post, rail };
-inline constexpr u32 k_member_kinds = 10;
-// The two materials of a bridge's mesh: 0 the stone, 1 the timber.
+enum class MemberKind : u8 {
+  stone,
+  slab,
+  pier,
+  abutment,
+  log,
+  sill,
+  stringer,
+  plank,
+  post,
+  rail,
+  step,  // an approach's step (G186)
+};
+inline constexpr u32 k_member_kinds = 11;
+// The three materials of a bridge's mesh (bridges.md, "The mesh"): 0 the stone (stones, slabs,
+// piers, abutments: the layer's `stone_role`, a `rock/*` set), 1 the sawn timber (planks, posts,
+// rails: `wood_role`, `wood/plank`), 2 the round timber (a foot log, stringers, sills: `log_role`,
+// `wood/log`). A role the pack lacks draws the member's constant colour.
 inline constexpr u8 k_stone = 0;
-inline constexpr u8 k_timber = 1;
+inline constexpr u8 k_plank = 1;
+inline constexpr u8 k_log = 2;
+inline constexpr u32 k_materials = 3;
+// The stone's role when the layer's is not in the pack: the engine's generated granite.
+inline constexpr std::string_view k_fallback_stone_role = "rock/granite";
 // The shape a member is drawn as: a block with a rough outline (a stone), a sawn box, or a log
 // along the bridge's x or z.
 enum class Shape : u8 { rough, box, log_x, log_z };
@@ -148,6 +191,12 @@ struct BridgePlan {
   i32 span = 0;
   u32 piers = 0;
   bool handrail = false;
+  // Each end's approach (0 the near end, at `x_start`; 1 the far, at `x_end`): its steps, and
+  // where along x and how high over the bed a fill must meet the last of them (the deck's end and
+  // the deck where there are none).
+  u32 steps[2] = {};
+  i32 approach_x[2] = {};
+  i32 approach_top[2] = {};
   u64 seed = 0;
   Vector<Member> members;
 };
@@ -171,20 +220,22 @@ bool plan_bridge(const Crossing& crossing, u64 seed, BridgePlan& out, std::strin
 // --------------------------------------------------------------------------------------
 
 struct BridgeReport {
-  u32 triangles = 0;                        // the finest form's
-  u32 kind_triangles[k_member_kinds] = {};  // where they go, by `MemberKind`
-  u32 stone_triangles = 0, timber_triangles = 0;
+  u32 triangles = 0;                         // the finest form's
+  u32 kind_triangles[k_member_kinds] = {};   // where they go, by `MemberKind`
+  u32 material_triangles[k_materials] = {};  // and by material
   u32 root_triangles = 0;  // the DAG's coarsest cut: the far form (set by `build_container`)
 };
-// Every member as a closed, outward-wound solid in the bridge's frame (metres), per material:
-// `parts[k_stone]` and `parts[k_timber]`, positions, normals, UVs in metres of surface, indices.
+// Every member as a closed, outward-wound solid in the bridge's frame (metres), per material
+// (`parts[k_stone]`, `[k_plank]`, `[k_log]`): positions, normals, UVs in metres of surface,
+// indices. A timber member's UVs run along its length (u along the grain), so a wood set's grain,
+// drawn along its image's u, follows the plank, the post or the log.
 struct MeshPart {
   Vector<Vec3> positions;
   Vector<Vec3> normals;
   Vector<Vec2> uvs;
   Vector<u32> indices;
 };
-bool solve_bridge(const Bridge& bridge, MeshPart (&parts)[2], BridgePlan& plan,
+bool solve_bridge(const Bridge& bridge, MeshPart (&parts)[k_materials], BridgePlan& plan,
                   BridgeReport& report, std::string& error);
 
 // The recipe's file: read (refusing an unknown field, a crossing out of range), canonical, and the
@@ -192,8 +243,9 @@ bool solve_bridge(const Bridge& bridge, MeshPart (&parts)[2], BridgePlan& plan,
 bool read_file(std::string_view text, Bridge& out, std::string& error);
 std::string canonical_json(const Bridge& bridge);
 u64 source_hash(const Bridge& bridge);
-// The container the mesh generator `bridge` builds: the stone and the timber each clustered and
-// their DAGs merged, a material each (the layer's roles, from the host's pack).
+// The container the mesh generator `bridge` builds: each material's members clustered and their
+// DAGs merged, a material each, its set the recipe's role from the host's pack, through the tile
+// contract (R147: the container names its images and carries their texture records).
 bool build_container(const Bridge& bridge, const assets::MeshGeneratorInputs& inputs,
                      const geometry::ClusterLodOptions& lod, u32 page_bytes,
                      geometry::ClusterFileData& out, BridgeReport& report, std::string& error);
@@ -210,10 +262,11 @@ scene_gen::Placement place(const Crossing& crossing) noexcept;
 // The tile a crossing is realised in: its centre's.
 scene_gen::TileCoord tile_of(const Crossing& crossing, i64 tile_mm) noexcept;
 
-// **The approaches** (`engine.scene.TerrainEdit`s of mode `Fill`): for each end of a bridge whose
-// deck stands over the ground there, a line from the deck's end out along the path, falling at
-// `approach_grade_permille` to the ground, so the walker steps from the tread to the deck with no
-// step. A JSON array in the layer's order.
+// **The approaches** (`engine.scene.TerrainEdit`s of mode `Fill`): for each end whose steps leave
+// the ground more than half a riser under the last step's foot (`BridgePlan::approach_top`), a
+// line from there out along the path, falling at `approach_grade_permille` to the ground, so the
+// walker climbs the tread to the steps and the steps to the deck. A JSON array in the layer's
+// order; a small bridge on level banks has none.
 JsonValue approach_edits_json(const Layer& layer, u32 approach_grade_permille);
 // An approach's top is the tread or the deck, whichever is wider, and a shoulder of half this each
 // side: a crest only a tread wide is two or three points of a 25 to 50 cm ground lattice, which
@@ -221,17 +274,23 @@ JsonValue approach_edits_json(const Layer& layer, u32 approach_grade_permille);
 // the deck). A choice for the lattice, not a source's number.
 inline constexpr i32 k_approach_shoulders_mm = 1000;
 i32 approach_width_mm(const Crossing& crossing, const BridgePlan& plan) noexcept;
-// How long an approach runs, and the step it leaves at the deck's end against the profile's ground
-// with the fill in it (the larger of the two ends), mm: what the tests and the command report.
+// How long an approach's fill runs, the step it leaves at the deck's end where the ground stands
+// over the deck (the larger of the two ends), and the steps at each end, mm: what the tests and
+// the command report.
 struct Approach {
   i32 length_mm[2] = {};
   i32 step_mm = 0;
+  u32 steps[2] = {};
 };
 Approach approach_of(const Crossing& crossing, const BridgePlan& plan,
                      u32 approach_grade_permille) noexcept;
 
 // **The footprint** (W98's polygon): the bridge's plan, its deck and every support, as four world
-// points in whole millimetres (written into `points`, which must outlive the footprint).
+// points in whole millimetres (written into `points`, which must outlive the footprint). The
+// generator hands it with every tile its disc, grown by `k_shape_reach_mm`, touches: the reach a
+// later entry keeps past a shape (the routes' wear, 2 m; scene_gen.md, "The shapes a tile
+// occupies"), so a point of a tile gets the whole read's answer. A choice, said so.
+inline constexpr i64 k_shape_reach_mm = 2000;
 scene_gen::Footprint bridge_footprint(const Crossing& crossing, const BridgePlan& plan,
                                       scene_gen::FootprintPoint (&points)[4]) noexcept;
 
