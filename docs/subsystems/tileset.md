@@ -179,8 +179,16 @@ counted only when it reaches one stored step at one point at least, so a counted
 stores something. The refusal now gives the weakest layer's largest stored value and how many of
 the tile's points hold a step or more (`weakest bedrock, at most 3/255 at 2 of 81 points`), and
 `masks check` gives every layer's (`stored`, `points`, with the tile's `tile_points`), from
-`MaskTileLayer::stored` and `points`. The forest's seven refused tiles (T116), counted this way, are
-in W113's hand-back; a fifth layer of real weight is a format question, W114's, not a tolerance.
+`MaskTileLayer::stored` and `points`. **Read the peak, not the mean**: a peak of one step (1/255,
+0.0039) at one point is a fringe the eye cannot see; a peak of a quarter or more is a point of real
+ground — on 8 m tiles at 1 m, a point's weight spreads bilinearly over the four cells round it, so a
+peak of 0.37 is about a third of a square metre of the layer — whatever the mean says. The forest's
+v41 (T116, `masks check` at b8eb339a): 7 of 603,905 tiles over, each at five layers, none at six;
+the weakest's mean 0.0002 to 0.0050 in all seven, but its peaks 0.0039 (meadow, one step), 0.013,
+0.013, 0.036 and 0.069 (bedrock: fringes of the slope prior), and 0.26 and 0.37 (bedrock: a steep
+point of a cut bank); beside them 8,288 layers under one step already dropped (peaks 0.0020 to
+0.0039). So a rule that kept a tile's four heaviest would lose a visible point in two of the seven.
+A fifth layer of real weight is a format question, W114's, not a tolerance.
 
 **The texel density: 1 m by default** (`spacing_mm`, 250 to 4000). A trail or a shore margin is one to a few metres wide and is the narrowest thing the masks must place; a metre resolves it with the bilinear blend, and the layers' own textures carry the centimetre detail at their `tile_m`. Half a metre quadruples the level's bytes for edges the priors' slope transitions (several metres wide) do not need; two metres blurs a trail to a smear. Unreal's landscape weightmaps are of the same order (a component's weightmap at its vertex density, typically a metre).
 
