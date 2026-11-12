@@ -259,10 +259,11 @@ void build_tube(const Axis& axis, f64 r0, f64 r1, u32 sides, Vec2 uv_offset, Emi
 
 // ---- the trunk's skirt (G201; skirt.h) ----------------------------------------------------------
 //
-// Under the ring of `sides + 1` vertices from `first`, round `centre` (the axis's foot): two rings
-// of `sides + 1` vertices appended after the tube they continue (its part, bend weight zero, its u
-// and its v in the trunk's metres continued below zero), open at the bottom, four triangles a
-// side. Appended whole, so the mesh less its skirt is the mesh it was, vertex for vertex.
+// Under the ring of `sides + 1` vertices from `first`, round `centre` (the axis's foot): one ring
+// of `sides + 1` vertices straight below it, appended after the tube it continues (its part, bend
+// weight zero, the collar's normals, its u and its v in the trunk's metres continued below zero),
+// open at the bottom, two triangles a side. Appended whole, so the mesh less its skirt is the mesh
+// it was, vertex for vertex.
 void build_skirt(u32 first, u32 sides, D3 centre, Emitter& out);
 
 // ---- a spray of cards ---------------------------------------------------------------------------

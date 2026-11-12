@@ -212,9 +212,9 @@ TEST_CASE("flora: named species share growth and preserve their skeleton across 
   // G129: supported-axis taper and one axial terminal twig (an earlier prototype's aggregate,
   // 6349184079384354209). G133: the final taper and the leader fix move the eight broadleaf-
   // architecture profiles (maple, oak, elm, walnut, beech, ash, aspen, alder); the six conifers
-  // hash as they did at 86d76acd. G201: every profile's trunk skirt (40 or 48 triangles) moves all
+  // hash as they did at 86d76acd. G201: every profile's trunk skirt (20 or 24 triangles) moves all
   // fourteen; less their skirts they are the trees they were, 12739116931385525735.
-  CHECK_MESSAGE(combined == 8458443129283961453ull, "named profile geometry hash: " << combined);
+  CHECK_MESSAGE(combined == 8135640812456067009ull, "named profile geometry hash: " << combined);
   const u64 before = hash_bytes(unskirted.data(), unskirted.size() * sizeof(u64));
   CHECK_MESSAGE(before == 12739116931385525735ull, "less their skirts: " << before);
 }

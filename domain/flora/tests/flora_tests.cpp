@@ -614,9 +614,9 @@ TEST_CASE(
   // Version 8 changes only the generator key; version 7 was 0x9606eab973575a61.
   // G87/version 9 changes only the generator key; version 8 was 0x44f25152b9ff5df9.
   // G91/version 11 changes the generator key only; palm mesh/motion are unchanged.
-  // G201/version 12: the trunk's skirt (64 triangles under the foot ring) moves the mesh, its grid
+  // G201/version 12: the trunk's skirt (32 triangles under the foot ring) moves the mesh, its grid
   // and the key; version 11 was 0xe66c149b4257dea4.
-  constexpr u64 k_golden = 0xfb578e7817871526ull;
+  constexpr u64 k_golden = 0xc295159d4e6b8392ull;
   CHECK_MESSAGE(hash == k_golden, "the default palm's container hashes to " << hex);
 
   // The canonical form is the parameters, defaults filled in, whatever the file spelled.
@@ -732,7 +732,7 @@ TEST_CASE("flora: the motion table round-trips through the container, appended t
   // G87/version 9 changes only the generator key; version 8 was 0x85aa5f48e32c6182.
   // G91/version 11 changes only the generator key. G201/version 12: the trunk's skirt moves the
   // mesh, its grid and the key; version 11 was 0x5bfd058153ed0d28.
-  constexpr u64 k_rigid_golden = 0x0827586a09ce5306ull;
+  constexpr u64 k_rigid_golden = 0x54f0151776cdaeeeull;
   const u64 rigid_hash = geometry::cluster_file_hash(rigid);
   char hex[32];
   std::snprintf(hex, sizeof(hex), "0x%016llxull", static_cast<unsigned long long>(rigid_hash));
@@ -747,7 +747,7 @@ TEST_CASE("flora: the default palm is the committed bytes on every toolchain") {
   const u64 got = mesh_hash(solve(default_palm()));
   // 0x86f10c7cf1c598e7 at version 2; the UVs in metres (3) moved only the UVs. G201 (version 12):
   // the skirt appended under the trunk's foot ring is the only change, as the next check shows.
-  constexpr u64 k_golden = 0xcbe5d9e91ae195e3ull;
+  constexpr u64 k_golden = 0x60e9c529838af690ull;
   char hex[32];
   std::snprintf(hex, sizeof(hex), "0x%016llxull", static_cast<unsigned long long>(got));
   CHECK_MESSAGE(got == k_golden, "the default palm's mesh hashes to " << hex);
@@ -890,7 +890,7 @@ TEST_CASE("flora: the broadleaf grows trunk, limbs, branches and leafy twigs, in
   // G129 taper checkpoint: 0x765d7bb485f8687d. G133: the leader fix's tree (2,925 twigs where 2,312
   // were, 49,136 triangles where 45,280 were, LAI 3.90 as 3.89).
   // G201: the trunk's skirt appended, nothing else (the second number, the tree less it).
-  check_species("broadleaf", p, flora::solve_broadleaf, parts, 0xdba1515ab3115026ull,
+  check_species("broadleaf", p, flora::solve_broadleaf, parts, 0x53f72dabdf3a1b8cull,
                 0x4c6c1a58938013e7ull);
 }
 
@@ -904,7 +904,7 @@ TEST_CASE("flora: the conifer grows whorls of needled branches thinning upward, 
   // Parts: the trunk and every branch; the whorls thin upward, so the top has fewer.
   // 0xd849a6672e26415a until the laterals, the interwhorl branches and the branches' fates (G80).
   // G201: the trunk's skirt appended, nothing else (the second number, the tree less it).
-  check_species("conifer", p, flora::solve_conifer, report.parts, 0xcc2235a3b6d2f781ull,
+  check_species("conifer", p, flora::solve_conifer, report.parts, 0xb8522fc3f0ea6c2full,
                 0x404c4126ccb215f2ull);
   CHECK(report.parts < 1 + p.whorls * p.branches_per_whorl + (p.whorls - 1) * p.interwhorl);
   CHECK(report.parts > 1 + p.whorls * 2);

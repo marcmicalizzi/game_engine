@@ -34,10 +34,11 @@ struct Skirt {
   u32 first = 0;  // its first vertex
   u32 sides = 0;
   f64 rim = 0;     // the collar ring's radius round its part's pivot, across the level plane
+  f64 rho = 0;     // the collar ring's farthest point from the origin, across the level plane
   f64 bottom = 0;  // the lowest ring's height
 };
 
-// The skirts of a mesh, each a run of skirt vertices: two rings of `sides + 1` under a ring of the
+// The skirts of a mesh, each a run of skirt vertices: one ring of `sides + 1` under a ring of the
 // stem's own vertices, which the skirt's triangles name.
 Vector<Skirt> skirts_of(const assets::MeshData& mesh, const flora::Motion& motion, u32& triangles) {
   const flora::test_support::SkirtFound found = flora::test_support::find_skirt(mesh, motion);
@@ -53,9 +54,7 @@ Vector<Skirt> skirts_of(const assets::MeshData& mesh, const flora::Motion& motio
       ++end;
     Skirt s;
     s.first = v;
-    const u32 count = end - v;
-    REQUIRE(count % 2 == 0);
-    s.sides = count / 2 - 1;
+    s.sides = end - v - 1;
     // The ring above: the stem's vertices this skirt's triangles name, in order.
     Vector<u32> top;
     for (u32 t = 0; t < found.triangle.size(); ++t) {
@@ -83,15 +82,20 @@ Vector<Skirt> skirts_of(const assets::MeshData& mesh, const flora::Motion& motio
       const f64 dx = static_cast<f64>(c.x) - static_cast<f64>(pivot.x);
       const f64 dz = static_cast<f64>(c.z) - static_cast<f64>(pivot.z);
       s.rim = std::max(s.rim, std::sqrt(dx * dx + dz * dz));
-      for (u32 ring = 0; ring < 2; ++ring) {
-        const u32 k = v + ring * (s.sides + 1) + i;
-        // The stem's own surface carried down: its part, no bend, its u, its v below the collar's.
-        CHECK(motion.vertex_part[k] == part);
-        CHECK(motion.vertex_weight[k] == 0.0f);
-        CHECK(mesh.uvs[k].x == mesh.uvs[top[i]].x);
-        CHECK(mesh.uvs[k].y < mesh.uvs[top[i]].y);
-        if (ring == 1) s.bottom = std::min(s.bottom, static_cast<f64>(mesh.positions[k].y));
-      }
+      s.rho = std::max(s.rho, std::sqrt(static_cast<f64>(c.x) * static_cast<f64>(c.x) +
+                                        static_cast<f64>(c.z) * static_cast<f64>(c.z)));
+      // The stem's own surface carried straight down: its part, no bend, its normal, its u, its v
+      // below the collar's by the metres it drops.
+      const u32 k = v + i;
+      CHECK(motion.vertex_part[k] == part);
+      CHECK(motion.vertex_weight[k] == 0.0f);
+      CHECK(mesh.positions[k].x == c.x);
+      CHECK(mesh.positions[k].z == c.z);
+      CHECK(std::abs(mesh.normals[k].x - mesh.normals[top[i]].x) <= 1e-6f);  // renormalised
+      CHECK(std::abs(mesh.normals[k].z - mesh.normals[top[i]].z) <= 1e-6f);
+      CHECK(mesh.uvs[k].x == mesh.uvs[top[i]].x);
+      CHECK(mesh.uvs[k].y < mesh.uvs[top[i]].y);
+      s.bottom = std::min(s.bottom, static_cast<f64>(mesh.positions[k].y));
     }
     out.push_back(s);
     v = end;
@@ -109,13 +113,15 @@ void check_skirts(const std::string& name, const assets::MeshData& mesh,
   REQUIRE(skirts.size() == stems);
   u32 expected = 0;
   for (const Skirt& s : skirts) {
-    expected += 4 * s.sides;
-    CHECK(s.bottom <= -(s.rim * k_ramps_tan[3] + k_margin_m));
-    MESSAGE(name << ": a skirt of " << s.sides << " sides, rim " << s.rim << " m, down to "
-                 << s.bottom << " m");
+    expected += 2 * s.sides;
+    // A 45 degree plane through the origin is rho tan 45 under the origin at the collar's farthest
+    // point; the skirt reaches that and the margin (as the mesh stores it, in f32).
+    CHECK(s.bottom <= static_cast<f64>(static_cast<f32>(-(s.rho * k_ramps_tan[3] + k_margin_m))));
+    MESSAGE(name << ": a skirt of " << s.sides << " sides, rim " << s.rim << " m (" << s.rho
+                 << " m from the origin), down to " << s.bottom << " m");
     u32 above = 0;  // a lowest-ring vertex not under some ramp at some azimuth
     for (u32 i = 0; i <= s.sides; ++i) {
-      const Vec3 p = mesh.positions[s.first + (s.sides + 1) + i];  // the lowest ring
+      const Vec3 p = mesh.positions[s.first + i];  // the lowest ring
       for (const f64 slope : k_ramps_tan)
         for (u32 a = 0; a < k_azimuths; ++a) {
           const f64 phi = 2.0 * 3.14159265358979323846 * a / k_azimuths;

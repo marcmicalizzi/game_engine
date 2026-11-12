@@ -491,55 +491,37 @@ void build_trunk(const Palm& p, const Spine& spine, const Spiral& spiral, const 
   for (u32 i = 0; i < segs; ++i)
     out.triangle(ring_first + i, centre, ring_first + (i + 1) % segs);
 
-  // The skirt (G201; flora.md, "The trunk's skirt"): the wall carried on below its foot ring, the
-  // branching species' `detail::build_skirt` in the palm's own emitter. The foot ring is square to
-  // the leaning spine, so each of its vertices drops by the same quarter of the rim's radius and
-  // then all go straight down to one depth under the origin.
+  // The skirt (G201; flora.md, "The trunk's skirt"): the wall carried straight down below its foot
+  // ring to one depth under the origin, the branching species' `detail::build_skirt` in the palm's
+  // own emitter. The foot ring is square to the leaning spine, so its columns are of unequal
+  // length.
   const D3 foot = spine_point(spine, 0.0);
   f64 rim = 0.0;
   f64 lowest = 1e300;
-  for (u32 i = 0; i <= segs; ++i) {
-    const Vec3 v = out.mesh.positions[first + i];
-    const f64 dx = static_cast<f64>(v.x) - foot.x;
-    const f64 dz = static_cast<f64>(v.z) - foot.z;
-    rim = std::max(rim, std::sqrt(dx * dx + dz * dz));
-    lowest = std::min(lowest, static_cast<f64>(v.y));
-  }
-  const f64 drop = detail::k_skirt_flare * rim;
-  // As `detail::build_skirt`: the depth the lowest ring's farthest point from the origin asks.
   f64 reach = 0.0;
   for (u32 i = 0; i <= segs; ++i) {
     const Vec3 v = out.mesh.positions[first + i];
-    const f64 x = foot.x + (static_cast<f64>(v.x) - foot.x) * detail::k_skirt_reach;
-    const f64 z = foot.z + (static_cast<f64>(v.z) - foot.z) * detail::k_skirt_reach;
+    const f64 x = static_cast<f64>(v.x);
+    const f64 z = static_cast<f64>(v.z);
+    rim = std::max(rim, std::sqrt((x - foot.x) * (x - foot.x) + (z - foot.z) * (z - foot.z)));
+    lowest = std::min(lowest, static_cast<f64>(v.y));
     reach = std::max(reach, std::sqrt(x * x + z * z));
   }
   const f64 bottom = std::min(-(reach * detail::k_skirt_slope_tan + detail::k_skirt_margin_m),
-                              lowest - drop - drop);
+                              lowest - detail::k_skirt_least_run * rim);
   out.weight = 0.0;
   const u32 skirt = out.mesh.positions.size();
-  const auto wide = [](Vec3 v) {
-    return D3{static_cast<f64>(v.x), static_cast<f64>(v.y), static_cast<f64>(v.z)};
-  };
-  for (u32 r = 1; r <= 2; ++r) {
-    for (u32 i = 0; i <= segs; ++i) {
-      const D3 p0 = wide(out.mesh.positions[first + i]);
-      const D3 h{p0.x - foot.x, 0.0, p0.z - foot.z};
-      const f64 y = r == 1 ? p0.y - drop : bottom;
-      const D3 at{foot.x + h.x * detail::k_skirt_reach, y, foot.z + h.z * detail::k_skirt_reach};
-      const D3 level = dot(h, h) > 1e-24 ? h : D3{1.0, 0.0, 0.0};
-      const Vec2 uv = out.mesh.uvs[first + i];
-      out.vertex(at, r == 1 ? wide(out.mesh.normals[first + i]) : level, static_cast<f64>(uv.x),
-                 static_cast<f64>(uv.y) - (p0.y - y));
-    }
+  for (u32 i = 0; i <= segs; ++i) {
+    const Vec3 v = out.mesh.positions[first + i];
+    const Vec3 n = out.mesh.normals[first + i];
+    const Vec2 uv = out.mesh.uvs[first + i];
+    out.vertex(D3{static_cast<f64>(v.x), bottom, static_cast<f64>(v.z)},
+               D3{static_cast<f64>(n.x), static_cast<f64>(n.y), static_cast<f64>(n.z)},
+               static_cast<f64>(uv.x), static_cast<f64>(uv.y) - (static_cast<f64>(v.y) - bottom));
   }
-  for (u32 band = 0; band < 2; ++band) {
-    const u32 upper = band == 0 ? first : skirt;
-    const u32 low = skirt + band * (segs + 1);
-    for (u32 i = 0; i < segs; ++i) {
-      out.triangle(low + i, upper + i + 1, low + i + 1);
-      out.triangle(low + i, upper + i, upper + i + 1);
-    }
+  for (u32 i = 0; i < segs; ++i) {
+    out.triangle(skirt + i, first + i + 1, skirt + i + 1);
+    out.triangle(skirt + i, first + i, first + i + 1);
   }
 }
 

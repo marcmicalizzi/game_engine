@@ -12,10 +12,11 @@ TEST_CASE("deadwood: complete container bytes agree across toolchains") {
   // G124: oak source taper and shape identity change; spruce remains byte-identical.
   // G133: 1363173e6482228d was an earlier G129 prototype's oak; the final taper and the leader fix
   // (k_branch_taper_version 2 in the source key) move the oak only.
-  // G201: the source tree's skirt (k_flora_version 12 in the source key, and the band of it between
-  // the origin and the collar ring that a bole cut from start_m 0 keeps) moves both; they were
-  // 0x89525862dfd8a785 and 0xe1109ed169374c96.
-  const u64 goldens[] = {0x56c21256a950bc9bull, 0x7be85dbd5248aa88ull};
+  // G201: the source tree's skirt moves both: the oak log (cut from 0.3 m, above it) by
+  // k_flora_version 12 in its source key alone, the fallen spruce (cut from 0) by that and the band
+  // of skirt between the origin and its collar ring; they were 0x89525862dfd8a785 and
+  // 0xe1109ed169374c96.
+  const u64 goldens[] = {0x56c21256a950bc9bull, 0x6ca6cd692992eaeeull};
   for (u32 i = 0; i < 2; ++i) {
     deadwood::DeadwoodFile p;
     p.tree.species = i == 0 ? "oak" : "spruce";

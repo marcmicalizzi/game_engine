@@ -161,8 +161,8 @@ TEST_CASE("impostor chain: the bake is the same bytes every time and on every to
   // which moves the cards and the star. G201: the trunk's skirt takes the star's box down to its
   // bottom, so the star's pair moves (it was 0x9cce4ec8f3744e18, 0x148ff7f0dc71b48f) and the cards'
   // pair, which bake no trunk, does not.
-  constexpr u64 k_golden[4] = {0x6f314c381c5847f1ull, 0xca1c3ce8b9210d9bull, 0xc635c59dc4565055ull,
-                               0x91873ba0bc3616f7ull};
+  constexpr u64 k_golden[4] = {0x6f314c381c5847f1ull, 0xca1c3ce8b9210d9bull, 0x0cb5e52d702765cdull,
+                               0x30da20a4f48c3977ull};
   for (u32 k = 0; k < 4; ++k)
     CHECK(hashes[k] == k_golden[k]);
 }
@@ -903,8 +903,8 @@ TEST_CASE("impostor chain: a conifer's bake is the same bytes every time and on 
   // own numbers, so the coverage-kept bake adds nothing a toolchain could move. G201: the trunk's
   // skirt takes the star's box down to its bottom, so the star's pair moves (it was
   // 0xcbb185d12f629b3c, 0xb90598dda6dbe5cf) and the cards' pair does not.
-  constexpr u64 k_golden[4] = {0x618d2ec59d250c70ull, 0xd2cad8a88487eb1aull, 0xf88ca5de92b9f486ull,
-                               0x981c47fd9039c247ull};
+  constexpr u64 k_golden[4] = {0x618d2ec59d250c70ull, 0xd2cad8a88487eb1aull, 0xea83f89d59e7f64aull,
+                               0x952c227072ca6701ull};
   for (u32 k = 0; k < 4; ++k)
     CHECK(hashes[k] == k_golden[k]);
 }

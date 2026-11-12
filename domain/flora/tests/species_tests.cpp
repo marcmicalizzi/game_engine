@@ -247,7 +247,7 @@ TEST_CASE("flora: the birch — a narrow ovoid crown of fine pendulous branchlet
   // G133: 0x94bd56a376299bfd was an earlier G129 prototype's; the final taper and the leader fix
   // add the stem's continuing leader (22 named axes where 21 were; 156 parts, 2,347 branchlets).
   check_species(flora::k_species_birch, full, flora::solve_birch, birch_parts(full),
-                {50000u, 36000u, 20000u, 12000u, 8000u}, 0xda5200dc082f2f69ull,
+                {50000u, 36000u, 20000u, 12000u, 8000u}, 0x80ce3fbe6e53ae2bull,
                 0x67522f26f96462aeull);  // G201: the skirt appended (the second, less it)
   assets::MeshData mesh;
   flora::Motion motion;
@@ -425,7 +425,7 @@ TEST_CASE("flora: a birch clump — seeded stems from one root collar, each load
   // G133: 0x539954b98363c339 was an earlier G129 prototype's; the leader fix on each stem.
   check_species(
       flora::k_species_birch, clump, flora::solve_birch, birch_parts(clump),
-      {50000u, 36000u, 12000u}, 0x2c6e0ec15d1faf8cull,
+      {50000u, 36000u, 12000u}, 0x909f5b7fb8d2c713ull,
       0x9e9dee595238433full);  // G201: a skirt under each of the three stems, nothing else
 }
 
@@ -436,7 +436,7 @@ TEST_CASE("flora: the willow — a short trunk, arching limbs, curtains hanging 
                 // G85: 0x6ed17ceedeee2d85. G86: 784 curtains and 30-degree spray lift.
                 // G87: curtain wood and independent alternate leaves (0x186fe6df146c3102, the
                 // second number); G201: the trunk's skirt appended, nothing else.
-                0x99e7a4793efb2399ull, 0x186fe6df146c3102ull, 5);
+                0x65b4f8dadf20b1f3ull, 0x186fe6df146c3102ull, 5);
   assets::MeshData mesh;
   flora::Motion motion;
   flora::TreeReport report;
@@ -464,12 +464,12 @@ TEST_CASE("flora: the orchard tree — a low broad crown, pruned flat or free, w
   const flora::Orchard p;
   const u32 parts = 1 + p.limbs + p.limbs * p.branches + p.limbs * p.branches * p.twigs;
   check_species(flora::k_species_orchard, p, flora::solve_orchard, parts, {8000u},
-                0xedc7767852719364ull, 0x6179cd3e0c98ee16ull);  // G201: the skirt, nothing else
+                0xe97ee708ae58da82ull, 0x6179cd3e0c98ee16ull);  // G201: the skirt, nothing else
   // With fruit: a third primitive, one-sided, its triangles eight a fruit.
   flora::Orchard fruiting = p;
   fruiting.fruit = 2;
   check_species(flora::k_species_orchard, fruiting, flora::solve_orchard, parts, {},
-                0xf251e0d678c075a0ull, 0x8399aaddf286a1cbull);  // G201: the skirt, nothing else
+                0xaca790c2c0b8a3c9ull, 0x8399aaddf286a1cbull);  // G201: the skirt, nothing else
   assets::MeshData mesh;
   flora::Motion motion;
   flora::TreeReport report;
@@ -521,7 +521,7 @@ TEST_CASE("flora: the ancient tree — buttresses, hollows, major limbs, a canop
                 // G85: 0x61446da58690bc66. G86 seats segment rims inside parent wood
                 // (0xfbaf29c9d6486049, the second number). G201: the skirt under the buttresses
                 // appended, nothing else.
-                0x45f892b6d2344237ull, 0xfbaf29c9d6486049ull);
+                0x996fa273d9fc06acull, 0xfbaf29c9d6486049ull);
   assets::MeshData mesh;
   flora::Motion motion;
   flora::TreeReport report;

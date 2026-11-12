@@ -20,7 +20,7 @@ TEST_CASE("litter: complete containers agree across toolchains") {
   // cuts) moves twig and tangle again (they were 8defceb2249dd50b / d1cc9c417dcf3e40); the four
   // deadwood-free kinds do not move.
   constexpr u64 expected[] = {0x341e406800665f85ull, 0xabfbd865a0676d1dull, 0xdefb0dd9440f730aull,
-                              0xf94b5a4d69cd7d2cull, 0xa9b3983ccd5a9520ull, 0xbc4c5679c5fb6f8aull};
+                              0xf94b5a4d69cd7d2cull, 0x0f49b2825414634aull, 0x7edaf634dfc81f95ull};
   for (u32 k = 0; k < 6; ++k) {
     litter::Recipe p;
     p.kind = static_cast<litter::Kind>(k);
