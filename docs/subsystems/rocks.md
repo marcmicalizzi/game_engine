@@ -429,7 +429,7 @@ here. A scene names it as `{"generator": "cliffs", "params": {...}}`, an `engine
   face's identity, its `datum_y` the world's zero so faces cut from one mass share their beds.
 - **What it writes.** A face's recipe is a `.rock.json` named by its canonical parameters' hash
   (`cliff-<hash>.rock.json`) under `recipes`, else the host's derived-data root's `cliffs/`
-  (`Context::ddc`), else the scene's own `ddc/` (T119's one rule, as for every generator) — the scatter's rule for
+  (`Context::ddc`), else the scene's own `ddc/` (T119) — the scatter's rule for
   its procedural rock — and a file already there is the right one. The scene reader builds it through
   the mesh-generator registry like any recipe; the placement is the face's **origin**, the first
   vertex of its line in whole millimetres (ADR-0053), unturned.
