@@ -153,3 +153,105 @@ plants, 6 % of its cells, where r01's meadow is a flower or more in every square
 plant or a static far form would lift it), the herbs' leaf and flower sets (flat colour here), and
 wetness in the sward's colour (r04's banks are a greener, brighter turf than the slope above). No
 picture was taken for this row: the result has not been looked at beside the reels.
+
+## The meadow at whole density (G167)
+
+G166's pictures of this community showed not one flower head: 256 plants a 64 m tile, each a
+`parts` herb. G167 makes the plant a field (flora.md, "The meadow at whole density") and reads a
+cover by its definition.
+
+**A cover is a share of the ground.** Domin's cover is the share of a plot the species' shoots cover
+seen from above (the NVC Users' Handbook, read for G140). So a species whose plant has a crown of
+radius r stands at `1 / (π r²)` plants a square metre where it grows, and covers its cover's share
+of the ground: in a cell of side s a drift of `n = s² / (π r²)` plants (held to 8) on a disc of
+`r sqrt(n)`, drawn with probability `cover · s² / (n π r²)`. Before G167 a cell held one plant at
+the cover's probability, which made a species' plants `cover` a square metre — a clover with a
+cover of 0.17 stood one plant in six square metres, where by its crown it stands about five in
+every square metre it grows in.
+
+**The crowns are chosen** (`crown_m`, sward_placement.cpp's table): measured crown or clump widths
+were not found for most of the thirteen (the sub-agent's search, 2026-11-11). What was read: *Geranium
+sylvaticum* is 1–5 rosette shoots and 1–3 flowering shoots joined by a rhizome of 3–10 cm, a clumped
+patch (Wagner et al. 2026, Biological Flora of Britain and Ireland No. 308, J. Ecol. 114,
+doi 10.1111/1365-2745.70225, full text): 15 cm chosen. *Leucanthemum vulgare* 0.1–0.5 m spread is a
+garden figure (RHS): 8 cm chosen for a meadow's single shoot. The rest, 6 cm (*Cardamine*,
+*Conopodium*) to 20 cm (*Filipendula*), are chosen from the plants' sizes and say so.
+
+**A check against counts of flowers** (not a fit): Wehn et al. (2019, Data in Brief 25:104065), 1 m²
+plots in early-cut semi-natural hay meadows at Botiza, Romania, 3 August 2016, read: *Lotus
+corniculatus* 29.6 ± 10.1 and *Leucanthemum vulgare* 28.1 ± 15.0 flowering units a square metre
+(whether plots without the species are in the mean is not stated). A drift of eight bird's-foot
+trefoils carries 32 heads in its square metre, and of eight ox-eye daisies eight; the trefoil is
+the right order and the daisy, at one head a shoot, a quarter of it — a daisy stand is denser than
+its crown says, or carries several shoots a plant.
+
+**The flowering months** (`bloom_from`, `bloom_to`). PLANTATT, the BSBI atlas and Stace were not
+read (their tables could not be fetched); what was read, secondary except where said: *Caltha
+palustris* March to May (the Floodplain Meadows Partnership; the Wildlife Trusts give March to July,
+NatureSpot to August: the specialist's is taken), *Filipendula ulmaria* June to September,
+*Cardamine pratensis* April to June, *Ranunculus acris* April to October, *Trifolium pratense* May to
+October, *Conopodium majus* May to June, *Leucanthemum vulgare* June to September, *Lotus
+corniculatus* May to September, *Thymus polytrichus* June to September (the Wildlife Trusts' "when to
+see" pages, which cite no flora), and *Geranium sylvaticum* June to August (Fitter and Peat 1994, as
+quoted by Wagner et al. 2026, read; in a Pennine Dales hay meadow its flowering had ended by 5 July
+1988, Smith and Jones 1991 as quoted there). On the community scene's day 200 (19 July) the wet
+margin's marsh marigold and cuckooflower and the mesic sward's pignut are past flowering; meadowsweet,
+buttercup, clover, wood cranesbill, ox-eye daisy, trefoil and thyme are in flower.
+
+**The budget, counted** (`meadow: a cell's plant is its cell's from any tile order`, the test's
+graded 64 m tile on its slope with the whole community, MSVC): the odds sum past one in every
+cell, so at the default cap the near ring holds **4,096 drifts a tile, 2,623,872 triangles** (640 a
+square metre, beside the sward's own 1,280 near and 768 coarse a patch), and the card ring **524 far
+forms, 167,664 triangles**. A drift is 264 to 3,144 triangles (`meadow: a drift is the field
+kind`: a forb out of flower 264, the sedge's and the rush's 384, a buttercup's 864 with 40 heads,
+a thyme's 1,416 with 48, a meadowsweet's 3,144 with 192), eight plants of one parentless part
+each. Before G167 the same tile held 256
+herbs of 48 to 498 triangles, at most 127,000. Cluster LOD thins a drift with distance like any
+mesh; the drifts are no instance of the pose table, so the CPU poser and the pose table's slots
+are unchanged by them.
+
+**The frame, measured** (`engine-view --benchmark` along `content/test-scenes/meadow/community`'s
+camera path, 1920 × 1080, CSM shadows, `msvc-release`, the base's binaries (be3826d9) against
+04ac9a60's, one GPU lease, 2026-11-11 21:05, RTX 5090; `--wait-quiet 30` ran anyway: the harness's
+`machine_state` recorded 90 % then 85 % of the CPU in other processes for the before, 64 % then
+71 % for the after, the GPU idle at both ends, so the CPU figures are upper bounds):
+
+| | before (G140, 256 herbs a tile) | after (G167, drifts as a field) |
+|---|---|---|
+| GPU total, median / p95 / p99 | 2.315 / 2.452 / 4.139 ms | 2.182 / 2.330 / 4.330 ms |
+| cull, median | 0.231 ms | 0.277 ms |
+| hardware raster, median | 0.344 ms | 0.367 ms |
+| sun's cascades, median | 0.704 ms | 0.532 ms |
+| deformed-vertex pool, median | 0.199 ms | 0.186 ms |
+| CPU frame, median / mean | 0.967 / 1.126 ms | 0.392 / 0.577 ms |
+| flora posed on the CPU | 3,141 instances, 82,712 parts, 0.56 ms mean, 4.63 ms max | none |
+| pose table | 20,166,240 bytes | 480 bytes |
+| field instances, meshes | 146,443, 32 | 189,155, 52 |
+
+The meadow at its whole density draws for less than it did at 6 %: a herb was posed on the CPU and
+cast its swaying pose into every cascade, and a drift is posed on the GPU and casts into the
+nearest cascade at rest, so what the cull and the raster gained (0.07 ms) the cascades and the
+CPU's poser more than gave back. The after's leaves were the herb's green in this run
+(04ac9a60); the measured albedo (f2b0581e) changes no triangle or pass.
+
+**What the pictures say** (the community scene's four markers, before and after, one derived-data
+root, 2026-11-11; beside reels r01 and r04). At eye height the meadow now carries flowers: clover's
+magenta and thyme's purple drifts and ox-eye daisies on the dry flank, specks of colour across the
+floor to 40 m; at the wet margin the sedge and rush drifts close the sward between the grass
+patches, darker and denser than the flank, and with the leaves at the blade's albedo they read as
+graminoids rather than the first run's pale fans. What a person still objects to beside r01: the
+heads are few and small for a meadow in flower (one drift a cell; most of the wet margin's forbs are
+past flowering on 19 July, and meadowsweet's cream heads are sparse); the grass is still thin
+blades in visible rows over a flat floor; from 50 m the flowers vanish into one olive tint with
+darker blotches where the near ring draws (the far form's colour carries no flower: G170's); the
+light is flat. The marsh marigold's yellow, which the wet margin should show in May, needs the
+scene's day.
+
+**Wet against dry, for G168** (read: Punalekar et al. 2016, Remote Sensing 8(2):112, field
+spectroscopy of a floodplain meadow, MG4): the wet community (*Carex*, *Juncus acutiflorus*,
+*Filipendula*, *Cardamine*) and the dry one were "spectrally very similar", the dry slightly
+brighter overall, the difference significant only at 400–541 nm and 666–681 nm, the leaf area index
+the same; leaf chlorophyll 31.5 µg/cm² for *Carex acuta* against 32.6 for *Sanguisorba*, and 23.5
+for *Juncus acutiflorus*. So a wet margin does not read darker for its leaves' pigment; what a
+person sees is the wet soil between them and the dry slope's standing dead, which is where G168's
+colour has to come from.

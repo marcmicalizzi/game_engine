@@ -98,6 +98,8 @@ inline constexpr const char* k_species_shrub = "shrub";
 inline constexpr const char* k_species_fern = "fern";
 inline constexpr const char* k_species_tuft = "tuft";
 inline constexpr const char* k_species_herb = "herb";
+// G167: a meadow's drift of herbs posed as a field (`meadow`, understory.h).
+inline constexpr const char* k_species_meadow = "meadow";
 
 // ---- the flora file and its build (flora.md, "The build")
 // ------------------------------------------

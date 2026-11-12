@@ -92,6 +92,8 @@ bool read_flora_file(std::string_view text, FloraFile& out, std::string& error) 
     in_range = tuft_in_range(checked.tuft, error);
   } else if (checked.species == k_species_herb) {
     in_range = herb_in_range(checked.herb, error);
+  } else if (checked.species == k_species_meadow) {
+    in_range = meadow_plant_in_range(checked.meadow, error);
   } else if (checked.species == "roots") {
     in_range = roots_in_range(checked.roots, error);
   } else if (checked.species == "sward") {
@@ -165,7 +167,7 @@ std::span<const PartRole> parts_of(const std::string& species) {
   if (species == k_species_tuft) return k_tuft_parts;
   if (species == "sward") return k_tuft_parts;
   if (species == "roots") return std::span<const PartRole>(k_tree_parts, 1);
-  if (species == k_species_herb) return k_herb_parts;
+  if (species == k_species_herb || species == k_species_meadow) return k_herb_parts;
   return k_tree_parts;
 }
 
@@ -200,8 +202,10 @@ std::string flora_role(const std::string& species, u32 material) {
   if (material >= parts.size()) return std::string();
   // A palm's roles are "palm/..." and a tuft's "grass/...": the material lab's words, not the
   // solver's.
+  // A meadow's drift is herbs, and takes a herb's roles.
   const std::string prefix = species == k_species_date_palm ? std::string("palm")
                              : species == k_species_tuft    ? std::string("grass")
+                             : species == k_species_meadow  ? std::string(k_species_herb)
                                                             : species;
   return prefix + "/" + parts[material].part;
 }
@@ -326,6 +330,7 @@ const char* species_member(const std::string& species) {
   if (species == "sward") return "sward";
   if (species == "roots") return "roots";
   if (species == k_species_herb) return "herb";
+  if (species == k_species_meadow) return "meadow";
   return "palm";
 }
 }  // namespace
@@ -358,6 +363,8 @@ u64 flora_source_hash(const FloraFile& file) {
   if (file.species == k_species_broadleaf || file.species == k_species_birch ||
       (detail::is_tree_species(file.species) && !detail::is_evergreen_species(file.species)))
     return hash_combine(hash_combine(h, k_flora_version), k_branch_taper_version);
+  if (file.species == k_species_meadow)
+    return hash_combine(hash_combine(h, k_ground_plants_version), k_meadow_plant_version);
   return hash_combine(h, file.species == "sward"   ? k_sward_version
                          : file.species == "roots" ? k_roots_version
                          : (file.species == k_species_fern || file.species == k_species_herb)
@@ -430,6 +437,8 @@ bool solve_flora(const FloraFile& file, assets::MeshData& mesh, Motion& motion,
     return solve_sward(file.sward, mesh, tree_report, &error, &motion, levels);
   if (file.species == k_species_herb)
     return solve_herb(file.herb, mesh, tree_report, &error, &motion);
+  if (file.species == k_species_meadow)
+    return solve_meadow_plant(file.meadow, mesh, tree_report, &error, &motion);
   if (file.species == k_species_date_palm)
     return solve_palm(file.palm, mesh, palm_report, &error, &motion);
   error = "unknown flora species: " + file.species;
@@ -615,6 +624,7 @@ DetailTier flora_detail_tier(const FloraFile& file) {
   if (file.species == "sward") return file.sward.detail_tier;
   if (file.species == "roots") return DetailTier::standard;
   if (file.species == k_species_herb) return file.herb.detail_tier;
+  if (file.species == k_species_meadow) return file.meadow.herb.detail_tier;
   return DetailTier::essential;
 }
 
@@ -626,7 +636,7 @@ bool flora_collides(const FloraFile& file) {
   if (file.species == "sward" || file.species == "roots") return false;
   if (file.species == k_species_shrub) return shrub_collides(file.shrub);
   return !(file.species == k_species_fern || file.species == k_species_tuft ||
-           file.species == k_species_herb);
+           file.species == k_species_herb || file.species == k_species_meadow);
 }
 
 bool build_flora_container(const FloraFile& file, const geometry::ClusterLodOptions& lod,

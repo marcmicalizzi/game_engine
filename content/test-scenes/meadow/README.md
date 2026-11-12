@@ -96,3 +96,9 @@ The sward layer's `far_color` is the short sod's bake's (`short-sod/d100-v0/prov
 ring's blades have faded in before each marker: `above-50m`, `wet-margin`, `dry-slope`,
 `along-margin`. The pond stands in for a stream's margin (the niche reads both alike); the
 pictures and what still reads wrong beside reels r01 and r04 are roadmap G166's.
+
+Since G167 the entry names `"meadow": {"day_of_year": 200}`, the sky's own day, so the forbs flower
+as they would on 19 July ([flora](../../../docs/subsystems/flora.md#the-meadow-at-whole-density-g167)),
+and every species stands as a drift of its plants posed as a field, at the default cap of 4,096
+drifts a tile: its stand-in recipes (`species` `meadow`) are written under the derived-data root's
+`meadow/` when the scene opens, as before.

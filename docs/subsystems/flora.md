@@ -312,11 +312,11 @@ below); G137's `forbs` (one list of meshes in a fixed `forb_share` of the cells)
 A plant stands within 0.35 of a cell a side of its patch's moved centre (inside the circle the patch
 cleared earlier footprints by), asked of the exclusion at its own point, upright, turned by its own
 stream, its ID the cell's with the top bit set (so an entry with a community is refused past a 31-bit
-cell space). The herb's motion kind is `parts` — every plant is a run of the part-pose table and is
-posed on the CPU each frame — so a tile keeps at most `forb_tile_cap` (256) of lowest hash, and plants
-stand in representation 0 (the near ring) and, as far forms, in representation 1 (below). The v36 measurement
-(grass-sward.md) sets 1,024 and shows the cost: the deformed-vertex pool 0.08–0.18 ms more at 1080p
-with no relayout of the deform table.
+cell space). Since G167 a plant is a drift of the species' herbs posed as a field (`meadow`, below:
+"The meadow at whole density"), so no plant runs the pose table and `forb_tile_cap` (4,096 drifts)
+is a budget lever; plants stand in representation 0 (the near ring) and, as far forms, in
+representation 1 (below). Until G167 the herb's motion kind was `parts`, and the v36 measurement
+(grass-sward.md) of 1,024 such plants cost the deformed-vertex pool 0.08–0.18 ms more at 1080p.
 **Capability contract.** Flora remains optional. It adds only a dependency on the nonoptional
 `scene_gen` registry and `Ground::masks`; no renderer pass depends on flora. Ground forwarding
 exposes existing W72 data. Baking uses the flora baker and geometry's authored-level DAG/form
@@ -337,11 +337,9 @@ slope-conforming patches; tussock spacing and base height from a field measureme
 the band where the shade layer draws the boundary, and where the noise's weight is exactly 0
 (`sward_site_form` would take the score's gradient itself), and a band width from a measured
 tall-to-short boundary rather than the height mosaic's scale;
-a `field`-kind meadow plant (or a static far form), so plants need no pose-table run and a tile can
-hold the community's whole density instead of `forb_tile_cap`'s 256 plants (6 % of a 64 m tile's
-cells: a flowering meadow at 50 m still reads sparse beside r01), and a merged far mesh a tile in place
-of far forms as instances (a request: the herb's solver and the field pass are not this module's
-sward); the
+a merged far mesh a tile in place of far forms as instances (the `field`-kind meadow plant that
+lifted the 256-plant cap is G167's, below); more than one drift a cell, so the species' covers sum
+past one as a meadow's do; the
 species' leaf and flower sets (roles: a buttercup's and a marigold's yellow cup, a clover's magenta
 head, a cranesbill's violet saucer, a daisy's white ray, an umbel's white, a sedge's and a rush's
 leaf, a bilberry's leaf), grazing and soil as niche axes, per-species tolerances fitted to plot data,
@@ -419,7 +417,61 @@ triangles each (at most 127,000 a tile, 31 a square metre at the cap), and far f
 at most 256 plants in the next (82 instances on the capped test tile, at most 510 triangles each:
 at most 42,000 a tile), none past it. Resident: the entry's community list (a pointer, a far mesh
 index and a thinning a species) and nothing per tile; the stand-in recipes are files in the
-derived-data root, a few hundred bytes each.
+derived-data root, a few hundred bytes each. *(G140's budget; G167, below, replaced the plant a
+cell with a drift and lifted the cap.)*
+
+### The meadow at whole density (G167)
+
+**The first pictures had not one flower head in any view** (roadmap G166): the community stood at
+256 plants a 64 m tile, 6 % of its cells, because every plant was a herb, whose motion kind is
+`parts` — a run of the frame's pose table, posed on the CPU each frame. G167 gives the meadow a kind
+of its own and reads a cover as what it is, the share of the ground the species' crowns cover
+([grounding](../experiments/meadow-community.md#the-meadow-at-whole-density-g167)).
+
+- **The kind** (`geometry::FloraSpecies::meadow`, motion `field`, the sedge's compliance 0.12, cast
+  like the sward's: never traced, the nearest cascade at rest). A recipe of species `meadow` is a
+  `MeadowPlant`: `count` plants (1..32) of one `herb` recipe on a disc of `radius_m`, each grown from
+  its own seed and at its own height (`height_jitter`, 0.2), turned about its stem, its base on
+  Vogel's spiral (even density, no two bases met) with a quarter-spacing jitter; the stem a tube of
+  `stem_sides` × `stem_rows` (3 × 3, the coarsest that reads from a metre: a herb's own is 6 × 10).
+  **Every plant is one parentless part**, its pivot its base, its length its height, every vertex
+  weighted by its height over the plant's, so the field pass bends the whole plant about its base
+  and a head stays on its stem ([renderer](renderer.md#the-field-kind)); no part collides and no
+  structural table is written. The primitives are the herb's, every plant's of one material
+  together, so a drift is two or three materials. `solve_meadow_plant` (`understory.h`) builds it,
+  keyed by `k_ground_plants_version` and `k_meadow_plant_version` (2); its roles are a herb's
+  (`herb/leaf`, `herb/flower`). Its leaves take a live leaf's measured albedo, the sward blade's
+  (`k_sward_leaf_albedo`), not the herb's chosen green, 2.7 times as bright, which drew the first
+  drifts as pale fans beside the grass.
+- **A cover becomes a count.** A species' plant has a crown of radius `crown_m` (the table's,
+  chosen; 6 to 20 cm), so its plants stand `1 / (π crown²)` a square metre where it grows. A cell the
+  species holds is a **drift** of `meadow_drift_count` plants, `round(cell² / (π crown²))` held to
+  1..`k_meadow_drift_max` (8), on a disc of `crown · sqrt(count)`, and the cell draws it with
+  probability `cover · cell² / (count · π crown²)` (`meadow_drift_scale`, `meadow_drift_odds`, in
+  1/65536, the sum scaled down in integers past one): so the species still covers its cover's share
+  of the ground, at its own crown's density there. **The trade:** a cell holds one drift, so where
+  the odds sum past one (most of a mesic meadow) every cell holds a drift and the species keep their
+  proportions but not their whole covers; and the count is held to 8 a drift for the triangles.
+- **In flower where the season has them.** Each forb carries its flowering months (`bloom_from`,
+  `bloom_to`, the British flora's, read on the grounding page), and `MeadowRule::day_of_year`
+  (default 182, the first of July; a scene with a sky names its own) says which: a forb out of bloom
+  (`meadow_in_bloom`) stands as its leafy shoot with no heads, and has no far form. A near drift's
+  heads keep at most `k_meadow_drift_petals` (8) cards a head with the coloured area kept
+  (`head_of_area`: longer cards, and past the herb's 8 cm more of them).
+- **The far form** (representation 1) is a field too: one far herb (`meadow_far_drift`) standing
+  for `meadow_far_thin` cells' drifts, its heads carrying the coloured area of all their plants.
+- **The cap** (`forb_tile_cap`, now counting drifts) defaults to 4,096, every cell of a 64 m tile of
+  1 m cells: a budget lever, no longer the pose table's limit.
+
+*Budget and cost.* The measured triangles a drift, instances and triangles a tile, and the frame's
+GPU time along the community scene's camera path before and after, with the machine's state, are on
+the grounding page ("The meadow at whole density"). Resident: one more `u32` a species (the drift's
+odds factor); nothing per tile.
+
+*Determinism.* The odds are integers from the covers (`det::exp`) and a factor computed once at
+`open` from the table; the drift's places are splitmix64 streams and the deterministic sines; no
+C library call decides a plant. The pins of `meadow: the covers and a tile's community are the same
+bits on every toolchain` moved with this row (the draw is the drift's odds now) and were re-taken.
 
 ### The ground under the sward (G141)
 

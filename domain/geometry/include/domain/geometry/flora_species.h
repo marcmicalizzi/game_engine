@@ -56,7 +56,8 @@ enum class FloraSpecies : u8 {
   pond_lily,
   silene_acaulis,
   saxifraga_paniculata,
-  salix_herbacea
+  salix_herbacea,
+  meadow
 };
 // **How a species moves** (renderer.md, "The flora stage"; R95). `parts`: posed per part on the
 // CPU, parent-first, each instance a run of the frame's part-pose table (the trees). `field`: posed
@@ -227,6 +228,17 @@ inline constexpr FloraSpeciesInfo k_flora_species[] = {
      8000,
      {0, 0, 0, 0},
      FloraMotionKind::none,
+     {false, 1, true}},
+    // G167: a meadow's plants, a drift of one species' herbs a cell (flora.md, "The meadow at whole
+    // density"), posed as a field like the sward: every plant one parentless part from its base, so
+    // a tile holds the community's whole density with no run of the pose table. A herb's stem is
+    // stiffer than a grass blade: the sedge's compliance (chosen), cast like the sward's.
+    {FloraSpecies::meadow,
+     "meadow",
+     false,
+     4000,
+     {.12f, .12f, .12f, .12f},
+     FloraMotionKind::field,
      {false, 1, true}},
 };
 constexpr bool valid_flora_catalogue() {
