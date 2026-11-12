@@ -124,8 +124,7 @@ int channels_command(int argc, char** argv) {
   scene_gen::Context context;
   context.world_seed = terrain.seed;
   context.dir = dir;
-  // **One root, the host's** (T90, T112; apps.md, "engine-content channels: the water's channel
-  // description"): `--ddc` is where
+  // **One root, the host's** (T90, T112; channels.md, "In a scene"): `--ddc` is where
   // the uncut ground's set and the plan go, over the scene's own `tiles.ddc`, as a host given the
   // same `--ddc` reads them; without it, the scene's own (its `tiles.ddc` for the set, the
   // repository's `ddc/` above the scene or `ddc/` beside it for the plan), as a host given none.

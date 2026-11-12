@@ -1,8 +1,9 @@
 // The channels capability's cost a tile (docs/subsystems/channels.md, "What a tile costs"): the
-// busiest 64 m tile's bed of the gentle test valley built into its container, which is what a
-// tile's activation costs the host's build thread (the solve and the cluster DAGs, without the
-// derived-data cache's read or write), and laying every clast of the region, which is what `open`
-// adds to the plan. Measured with `--wait-quiet` (bench.md, "Measuring on a shared machine").
+// busiest piece of the gentle test valley's 64 m tiles built into its container, which is what a
+// piece's build at a tile's activation costs the host's build thread (the solve and the cluster
+// DAGs, without the derived-data cache's read or write), and laying every clast of the region,
+// which is what `open` adds to the plan. Measured with `--wait-quiet` (bench.md, "Measuring on a
+// shared machine").
 #include <domain/channels/channels.h>
 #include <foundation/bench/bench.h>
 

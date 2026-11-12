@@ -2472,10 +2472,13 @@ TEST_CASE("channels: the clasts are tile-stable, one merged piece a tile, and op
   std::sort(kb.begin(), kb.end());
   CHECK(ka == kb);
   for (const Laid* l : {&a, &b}) {
+    // A tile's pieces (one, or several when its stones outgrow a mesh's room) are consecutive: no
+    // tile comes back after another's.
     std::vector<std::pair<i32, i32>> tiles;
     u64 held = 0;
     for (const PlacedPiece& piece : l->pieces) {
-      tiles.push_back({piece.tile.x, piece.tile.z});
+      const std::pair<i32, i32> t{piece.tile.x, piece.tile.z};
+      if (tiles.empty() || tiles.back() != t) tiles.push_back(t);
       held += clast_count(piece.recipe);
     }
     CHECK(held == l->log.clasts.size());
@@ -2686,4 +2689,11 @@ TEST_CASE("channels: what a tile of bed costs (measured, printed)") {
           build_ms, " ms");
   CHECK(data.mesh.leaf_triangle_count > 0);
   CHECK(root < data.mesh.leaf_triangle_count);
+  // **It fits a mesh a tile may hand** (W97c): the renderer refuses one of more than
+  // `renderer.meshes.max_clusters` (4,096 by default) and the tile then draws no stones; the
+  // scratch valley's busiest 32 m tile was 5,852 clusters in one piece before pieces were cut by
+  // their triangles.
+  MESSAGE("the busiest piece: ", data.mesh.mesh.clusters.size(), " clusters over ", pieces.size(),
+          " pieces");
+  CHECK(data.mesh.mesh.clusters.size() <= 4096);
 }

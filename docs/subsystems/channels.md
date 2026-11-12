@@ -278,9 +278,16 @@ buried** (`channels: a clast is partly buried and none floats`). Every number is
 recipe's millimetres and ten-thousandths before the burial is decided, so the test holds the
 recipe, not a float behind it.
 
-**One merged piece a tile**: the clasts are bucketed by the 64 m world tile their centre stands in,
-the tiles in z then x order (their ids 1, 2, …), each tile's clasts in the order laid. A clast
-whose footprint crosses a tile's border is in one tile's piece, so the bed is continuous. The
+**One merged piece a tile, or several**: the clasts are bucketed by the world tile their centre
+stands in, the tiles in z then x order (their ids 1, 2, …), each tile's clasts in the order laid,
+and **a tile's run is cut into pieces of at most 1,800 clasts and 120,000 drawn triangles before
+burial** (W97c), so no piece outgrows the 4,096 clusters a mesh that arrives with a tile may have
+(`renderer.meshes.max_clusters`): a stone is a cluster or more of its own at the finest level
+(2,290 clasts measured 3,859 clusters, the DAG included), and the scratch valley's busiest 32 m
+tile, one piece of 5,852 clusters, was refused by every streamed host and drew no stones at all
+(W97c's world run, 14 of its pieces). The cut is in the order laid, so a tile's pieces are the same
+whichever tile came first. A clast whose footprint crosses a tile's border is in one tile's
+piece, so the bed is continuous. The
 recipe (`engine.channels.ChannelPiece` version 2, `part` `Clasts`) is decided at `open` and handed
 with its tile ([A tile's bed, laid when it activates](#a-tiles-bed-laid-when-it-activates)); its
 mesh is built only when the host builds what the tile hands, through the mesh generator `channel`
@@ -378,6 +385,13 @@ starts somewhere does not either, because a whole commit (a restart, an offscree
 fill) waits for every build. A fast flight over a stream is where the gap can show: at 100 m/s a
 tile could be about 270 m nearer before its stones arrive. No far form stands in for the stones
 meanwhile (the bed's material is all there is), which is the far form this page leaves.
+**Measured by a run** (W97c, `engine-view --world` over W93's scratch valley, its nine views,
+`msvc-release` at d653871b, the machine busy): the first fill's whole commit spent 15.5 s on the
+placements before the first frame, and no later update built a piece, since the default rings
+(1.5, 8 and 24 tiles of 32 m) held every tile of the 384 m valley from the start. **And 14 pieces
+were refused** — one of 5,852 clusters against the 4,096 a tile's mesh may have — so those tiles
+drew no stones at all from any view, where the scene read whole drew them: the defect the cut
+into pieces of 1,800 clasts (above) closes.
 
 What the contract carries today: the mesh, its materials and their textures (since R147 and W97c:
 the four rocks' sets, built and admitted before the mesh, a set shared by every tile that names
@@ -408,8 +422,9 @@ of 64 mm or more):
 | Its coarsest (the DAG's roots) | 17 triangles: the far form is the bed's material, the clasts gone |
 | Its activation (solve, cluster DAG) | 2.9 s (W97, at scene read); 4.1 s (W97b, `msvc-release`, 2026-11-11 13:40, the machine at 100 % CPU: eight DAGs, one a rock, at the tile's activation off the frame's thread) |
 | Its coarsest form since W97b | 275 triangles: the eight DAGs' roots |
-| Its activation, the bench (W97c) | `channels.tile_activation`, `msvc-release`, 2026-11-11 20:49: median 2.74 s, min 2.55 s, max 2.88 s over three runs after a warm-up, 12,251 clasts. **Not quiet**: `--wait-quiet=1800` waited the half hour out, the machine at 62 % CPU from others at the start and 88 % at the end, so an upper bound; the textures are the host's and not in it |
-| Laying the region, the bench | `channels.lay_region`, the same run: median 56 ms |
+| Its activation, the bench (W97c) | `channels.tile_activation`, `msvc-release`, 2026-11-11 20:49, the tile still one piece: median 2.74 s, min 2.55 s, max 2.88 s over three runs after a warm-up, 12,251 clasts. **Not quiet**: `--wait-quiet=1800` waited the half hour out, the machine at 62 % CPU from others at the start and 88 % at the end, so an upper bound; the textures are the host's and not in it |
+| A piece's build since pieces are cut (W97c) | the same bench at 22:00, no quiet wait (the machine as busy): the busiest piece, 1,800 clasts and 3,069 clusters, median 384 ms (min 377 ms); the busiest tile is seven such pieces, which a streamed host builds on its pool of two |
+| Laying the region, the bench | `channels.lay_region`: median 56 ms at 20:49, 63 ms at 22:00 |
 | W93's scratch scene (`engine-content channels`) | 65,611 clasts over 474 m of channel, 14 tiles |
 
 **Where the triangles go**: a clast under 128 mm is 48 triangles before those under the ground

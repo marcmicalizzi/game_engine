@@ -26,7 +26,19 @@ using namespace detail;
 
 std::atomic<u64> g_pieces_solved{0};
 
-constexpr u32 k_max_clasts = 400000;  // a piece (a tile)
+constexpr u32 k_max_clasts = 400000;  // a piece
+// A piece's clasts and drawn triangles before burial at most (W97c): against the 4,096 clusters a
+// mesh that arrives with a tile may have (`renderer.meshes.max_clusters`). A stone is a cluster or
+// more of its own at the finest level (measured: 2,290 clasts made 3,859 clusters, 1.69 a clast,
+// the DAG included), so the clasts are the bound that binds and 1,800 leaves a quarter of the room;
+// the triangles bound a piece of large boulders. `channels: what a tile of bed costs` holds the
+// busiest piece under the room.
+constexpr u64 k_piece_clasts = 1800;
+constexpr u64 k_piece_triangles = 120000;
+// A clast's triangles before burial, by its b axis: the cube-sphere grid `solve_piece` picks.
+constexpr u64 clast_triangles(i64 b_mm) {
+  return b_mm < 64 ? 48 : b_mm < 250 ? 108 : b_mm < 500 ? 192 : 432;
+}
 // **The clasts' numbers** (W97; channels.md, "The clasts"; each one's source and status on the
 // grounding page, docs/experiments/channels.md, "Bed sediment"):
 // A station's strip across the bed is drawn in cells about this wide, each with its own zone and
@@ -414,10 +426,21 @@ bool place_pieces(const ChannelLayer& p, const ChannelNetwork& n, const scene_ge
   });
   u32 id = 0;
   for (u32 first = 0; first < order.size();) {
+    // **A piece fits a mesh a tile may hand** (W97c; channels.md, "The clasts"): a tile's clasts in
+    // the order laid, cut into runs of at most `k_piece_clasts` clasts and `k_piece_triangles`
+    // drawn triangles before burial, so no piece's DAG outgrows the renderer's room for a mesh that
+    // arrives with a tile (`renderer.meshes.max_clusters`, 4,096; the scratch valley's busiest 32 m
+    // tile was 5,852 clusters in one piece and drew nothing).
     u32 end = first;
+    u64 triangles = 0;
     while (end < order.size() && tile_x[order[end]] == tile_x[order[first]] &&
-           tile_z[order[end]] == tile_z[order[first]])
+           tile_z[order[end]] == tile_z[order[first]]) {
+      const u64 own = clast_triangles(all[order[end]].b_mm);
+      if (end > first && (triangles + own > k_piece_triangles || end - first >= k_piece_clasts))
+        break;
+      triangles += own;
       ++end;
+    }
     const i64 tx = tile_x[order[first]], tz = tile_z[order[first]];
     if (tx < std::numeric_limits<i32>::min() || tx > std::numeric_limits<i32>::max() ||
         tz < std::numeric_limits<i32>::min() || tz > std::numeric_limits<i32>::max())
