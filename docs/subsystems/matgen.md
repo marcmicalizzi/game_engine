@@ -439,10 +439,34 @@ the processors read 77 % busy before and 65 % after, 21 GB free. Build ms a set:
 times what it took (basalt, beside a different load), so none more than twice. The whole command
 with eighteen sets: 31 s.
 
-Resident while a set is built: 69 bytes a texel at most (the field's 20, the hollows' three
+**Versions 4 and 5** (G188, G187), `engine-content matgen --force` in `msvc-release`, every
+default, 2026-11-11 20:46 to 20:48 on the shared machine, **not a quiet run**: the processors
+read 76 % busy before and 71 % after, 1.3 GB of memory free at the start (seven rows and the
+main coordinator's five building beside it), so each figure is an upper bound. The whole command,
+twenty sets: 81 s. The six sets at 2,048 texels, build and write ms, PNG bytes:
+
+| Set | build ms | write ms | PNG bytes |
+|---|---|---|---|
+| `ground/moss` | 7,449 | 6,096 | 19,968,317 |
+| `ground/soil` | 6,812 | 1,346 | 21,388,489 |
+| `ground/thatch` | 8,279 | 1,457 | 24,082,966 |
+| `ground/turf` | 9,275 | 1,311 | 27,488,617 |
+| `wood/log` | 3,562 | 616 | 6,477,648 |
+| `wood/plank` | 2,899 | 990 | 8,878,660 |
+
+The ground sets at 2,048 cost about what G148's took at 2,048 (5.8 to 6.2 s beside lighter
+load), from four times the texels of their old 1,024 default; the turf's leaves are the dearest
+part (tens of thousands of fragments laid until their cover is reached). A ground or wood role
+now uploads three textures of 2,048 squared — 5.6 MB each in the `.tex` container by
+[materials](materials.md#the-first-pack-2026-10-19)' figures, 16.8 MB a role where its 1,024
+form cost 4.2 MB; six roles, 101 MB if every one is resident. Nothing scales with the world.
+
+Resident while a set is built: 72 bytes a texel at most (the field's 20, the hollows' three
 integer planes, the granular kind's top, id, taken, rise and break planes — 14 — or the rock
-kind's patch, owner, reach, source and streak planes — 17 —, the four images' 8) — about 72 MB at
-1,024 squared, 290 MB at 2,048 (G148's: 61 bytes) — all freed when the images are written.
+kind's patch, owner, reach, source and streak planes — 17 —, or the ground kind's patch, mound,
+underlay and two cover planes — 20 —, or the wood kind's phase, gradient and bark planes — 16 —,
+the four images' 8) — about 75 MB at 1,024 squared, 302 MB at 2,048 (G148's: 61 bytes) — all
+freed when the images are written.
 
 **Owned data.** The recipe type (`schemas/matgen.schema`), the default recipes, `k_matgen_version`.
 The pack directory `engine-content matgen` writes is derived data.
