@@ -184,8 +184,8 @@ TEST_CASE("landform: ice leaves a trough where a river leaves a V, and a tributa
   // share is the exponent: b = log(1/2) / log(share). A V of straight sides is b = 1, and a
   // glacial trough is a parabola or flatter: Svensson's own valley fits b "only slightly" off
   // 2, and the published fits of troughs run from about 1.5 up (how far each source was read
-  // is on the grounding page: docs/experiments/landform.md, "A trough's section: the
-  // sources"). So the bounds are the exponents': the river's valley under the glacial range's
+  // is on the ice's grounding page: docs/experiments/landform-ice.md, "A trough's section:
+  // the sources"). So the bounds are the exponents': the river's valley under the glacial range's
   // 1.5, the glacier's inside it or past it (a floor between walls is b without bound).
   //
   // **What the model must give, and why** (W126, after the held edge was mended: stage C's

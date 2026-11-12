@@ -888,7 +888,7 @@ i32 clamp_i32(f64 v) noexcept {
 // ---- ice ---------------------------------------------------------------------------------------
 //
 // Valley glaciers by Hergarten 2021's stream-power form (landform.md, "Ice";
-// docs/experiments/landform.md, "Ice: the sources"). The ice's thickness is not solved from its
+// docs/experiments/landform-ice.md, "Ice: the sources"). The ice's thickness is not solved from its
 // flow: a glacier is as wide as its flux makes it (w ~ flux^0.3) and as thick as a fixed part of
 // its width, its flux is what its catchment made less what melted, routed down the bed's own
 // receivers, and it wears its bed by the same law the rivers do with its own erodibility, its
