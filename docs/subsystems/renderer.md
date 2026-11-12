@@ -2535,6 +2535,15 @@ looks one level up, stands nearer on those crowns (and shows the speckle stage 5
 elsewhere). What takes the rest is the key, not the read: foliage filled and read without the
 face at the levels above its own, which would also halve the read's cost on crowns (the second
 face is 0.55 of its 1.4 ms there); it is on the roadmap row and not built.
+
+**On the forest** (v41, 3840×2160 traced, the owner's wind) the band is inside what the wind
+does to the picture for main and stage 6 alike (+0.19 and +0.23 of a step against a floor of
+11.5), no still of the turn shows a fill in either, and two things stand that the grove did not
+show: stages 5 and 6 cost about **1.4 ms a frame over main** on the lake view (0.5 the samples
+round the eye, 0.46 the read, 0.23 their volume: stage 6 took none of stage 5's cost back), and
+their forest is **darker than main's by a tenth** over the trees, the same on every frame —
+most likely stage 5's bounce off the ground taking the ground's own layers, not isolated and
+not yet judged against the reference. Both are why the row is still `in progress`.
 ## The sun's day
 
 *A scene that names a sky takes its sun, its moon and its sky from it instead, on the world's clock ([The sky](#the-sky)); everything in this section is the stand-in's, which every other scene still draws, to the bit.*
