@@ -133,7 +133,7 @@ i64 header_int(const JsonValue& header, std::string_view key, i64 fallback) {
 // record with the registry's sentence. The header is read here for its extent only; the provider
 // checks the rest.
 bool map_heightfield(Id128 id, const terrain::Heightfield& record, const std::string& base_dir,
-                     DocumentScene& out, std::string& error) {
+                     std::string_view ddc, DocumentScene& out, std::string& error) {
   const std::string where = "record " + hex_of(id) + " (" + std::string(k_heightfield) + ")";
   const std::string source = resolve_path(base_dir, record.source);
   std::string bytes;
@@ -162,6 +162,10 @@ bool map_heightfield(Id128 id, const terrain::Heightfield& record, const std::st
   tiles.heightfield = source;
   tiles.origin = record.origin;
   tiles.vertical_scale = record.vertical_scale;
+  // **The host's root** (T104, T119): written into the block too, so the load's own sampler, made
+  // from `desc.terrain`, finds the set this provider built rather than walking from the
+  // heightfield.
+  tiles.ddc = std::string(ddc);
   entry.tiles = std::move(tiles);
   entry.materials = record.materials;
   if (entry.materials.has_value()) {
@@ -190,6 +194,7 @@ bool map_heightfield(Id128 id, const terrain::Heightfield& record, const std::st
   scene_gen::Context context;
   context.dir = base_dir;
   context.where = where;
+  context.ddc = ddc;
   scene_gen::GroundProvider ground;
   std::string why;
   if (!provider->make(entry, context, ground, &why)) {
@@ -220,7 +225,7 @@ u32 DocumentScene::instance_of(Id128 id) const noexcept {
 }
 
 bool read_document_scene(const doc::Document& document, const std::string& base_dir,
-                         DocumentScene& out, std::string& error) {
+                         std::string_view ddc, DocumentScene& out, std::string& error) {
   out = DocumentScene{};
   out.revision = document.revision();
   // `objects()` is sorted by id, so the instance order — and with it every pair and visibility id
@@ -256,7 +261,7 @@ bool read_document_scene(const doc::Document& document, const std::string& base_
   if (!ground.is_null()) {
     terrain::Heightfield record;
     if (!read_heightfield_record(document, ground, record, error)) return false;
-    if (!map_heightfield(ground, record, base_dir, out, error)) return false;
+    if (!map_heightfield(ground, record, base_dir, ddc, out, error)) return false;
   }
   return true;
 }

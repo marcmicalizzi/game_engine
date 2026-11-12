@@ -1116,8 +1116,11 @@ rebake. The height source's own material masks are not rewritten or assumed to b
 
 Each patch is a schema recipe `deposit-<hash>.deposit.json` under `<ddc>/deposits/`, keyed by sampled
 terrain, thickness, coarse share, seed, material, budgets, `k_deposit_version` and
-`k_rocks_version`. The mesh-generator registry builds it through `engine-content build`,
-`build-all` and scene loading. No new app flag, renderer pass, scheduler work or dependency on
+`k_rocks_version`. `<ddc>` is the host's root and nothing else (T119; [scene_gen](scene_gen.md#the-derived-data-root)): an
+entry opened with no root is refused by name, and the world's streamed consumer opens it with the
+whole read's root, so a streamed load writes each recipe once, under `--ddc`, and none beside the scene
+(`deposits_tests.cpp`'s last case and the world's `placement_roots_tests.cpp`). The mesh-generator
+registry builds it through `engine-content build`, `build-all` and scene loading. No new app flag, renderer pass, scheduler work or dependency on
 another capability is added. With no deposits entry there is no work or persistent storage.
 
 The near mesh is a continuous sampled bed with a buried underside and boundary walls, plus

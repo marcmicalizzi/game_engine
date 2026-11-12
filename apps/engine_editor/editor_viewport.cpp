@@ -1,5 +1,6 @@
 #include "editor_viewport.h"
 
+#include <domain/scene_gen/derived_root.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/request.h>
 
@@ -14,7 +15,10 @@ bool Viewport::build(const gfx::Device& device, const doc::Document& document,
   device_ = &device;
   options_ = options;
   base_dir_ = base_dir;
-  if (!doc_scene::read_document_scene(document, base_dir, scene_, error)) return false;
+  // The ground's set under the editor's root (T104, T119): `--ddc`, else the repository's found
+  // from the executable, as the load's mesh cache finds it.
+  root_ = scene_gen::host_derived_root(options_.ddc, {}, false);
+  if (!doc_scene::read_document_scene(document, base_dir, root_, scene_, error)) return false;
   return load(error);
 }
 
@@ -105,7 +109,7 @@ bool Viewport::sync(const doc::Document& document, bool& rebuilt, std::string& e
     options_.width = width;
     options_.height = height;
     destroy();
-    if (!doc_scene::read_document_scene(document, base_dir_, scene_, error)) return false;
+    if (!doc_scene::read_document_scene(document, base_dir_, root_, scene_, error)) return false;
     rebuilt = true;
     return load(error);
   }

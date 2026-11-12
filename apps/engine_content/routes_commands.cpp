@@ -12,6 +12,7 @@
 #include <core/json/json.h>
 #include <core/schema/json_reflect.h>
 #include <domain/routes/routes.h>
+#include <domain/scene_gen/derived_root.h>
 #include <domain/scene_gen/scene_gen.h>
 #include <foundation/io/vfs.h>
 
@@ -99,6 +100,12 @@ int routes_command(int argc, char** argv) {
   scene_gen::Context context;
   context.world_seed = terrain.seed;
   context.dir = dir;
+  // **One root, the host's** (T119; routes.md, "One plan"): `--ddc` is where the ground's set and
+  // the plan go, over the scene's own `tiles.ddc`, as a host given the same `--ddc` reads them;
+  // without it the scene's own (its `tiles.ddc` for the set, the repository's `ddc/` above the
+  // scene or `ddc/` beside it for the plan), as a host given none — never the working directory's.
+  context.ddc = ddc;
+  const std::string root = scene_gen::host_derived_root(ddc, dir, true);
   scene_gen::GroundProvider ground;
   std::string error;
   if (!found->make(terrain, context, ground, &error) || !ground.valid())
@@ -129,7 +136,7 @@ int routes_command(int argc, char** argv) {
     return fail(error);
   context.exclusion = &water;
   std::string plan_dir;
-  if (!routes::derived_dir(ddc, dir, plan_dir, error)) return fail(error);
+  if (!routes::derived_dir(root, plan_dir, error)) return fail(error);
 
   JsonValue edits = JsonValue::array(), regions = JsonValue::array(), plans = JsonValue::array();
   JsonValue keys = JsonValue::array(), crossings = JsonValue::array();

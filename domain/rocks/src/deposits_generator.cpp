@@ -3,6 +3,7 @@
 #include <core/log/log.h>
 #include <core/schema/json_reflect.h>
 #include <domain/rocks/deposits.h>
+#include <domain/scene_gen/derived_root.h>
 #include <foundation/io/vfs.h>
 
 #include <algorithm>
@@ -107,17 +108,11 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
   if (tile_mm % patch_mm != 0 || patch_mm % plan.spacing_mm != 0 || patch_mm / plan.spacing_mm > 64)
     return refused(error,
                    "deposits: patch_m must divide tile_size and contain at most 64 whole spacings");
-  std::string root(context.ddc);
-  if (root.empty()) {
-    std::error_code ec;
-    const auto from = std::filesystem::absolute(
-        context.dir.empty() ? std::filesystem::path(".") : std::filesystem::path(context.dir), ec);
-    if (!ec) root = geometry::find_ddc_root(from.generic_string());
-    if (root.empty()) root = io::join_path(context.dir, "ddc");
-  }
-  std::error_code ec;
-  root = std::filesystem::absolute(io::join_path(root, "deposits"), ec).generic_string();
-  if (ec) return refused(error, "deposits: cannot resolve derived-data directory");
+  // The recipes go under the host's root and nowhere else (T119; scene_gen.md, "The derived-data
+  // root"): an entry opened with no root is refused by name rather than rooted at a guess.
+  std::string root;
+  if (!scene_gen::generator_derived_dir(context, "deposits", "deposits", root, why))
+    return refused(error, why);
   const i64 end_x = plan.x_mm + static_cast<i64>(plan.width - 1) * plan.spacing_mm;
   const i64 end_z = plan.z_mm + static_cast<i64>(plan.depth - 1) * plan.spacing_mm;
   // G143: each block goes to the patch its centre stands in (the last row and column of samples

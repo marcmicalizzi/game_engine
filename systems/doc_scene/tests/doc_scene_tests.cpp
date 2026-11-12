@@ -53,7 +53,7 @@ TEST_CASE("doc_scene: placements become instances in id order, meshes shared by 
   fill(d);
   doc_scene::DocumentScene scene;
   std::string error;
-  REQUIRE_MESSAGE(doc_scene::read_document_scene(d, "docs/world", scene, error), error);
+  REQUIRE_MESSAGE(doc_scene::read_document_scene(d, "docs/world", {}, scene, error), error);
   REQUIRE(scene.records.size() == 3);
   CHECK(scene.records[0] == id_of(1));
   CHECK(scene.records[1] == id_of(3));
@@ -84,7 +84,7 @@ TEST_CASE("doc_scene: a translation is a move, a new mesh or a new record is a r
   fill(d);
   doc_scene::DocumentScene scene;
   std::string error;
-  REQUIRE(doc_scene::read_document_scene(d, "", scene, error));
+  REQUIRE(doc_scene::read_document_scene(d, "", {}, scene, error));
 
   doc_scene::SceneChanges changes;
   REQUIRE(doc_scene::changes_since(d, scene, changes, error));
@@ -105,12 +105,12 @@ TEST_CASE("doc_scene: a translation is a move, a new mesh or a new record is a r
   REQUIRE(doc_scene::changes_since(d, scene, changes, error));
   CHECK(changes.rebuild);
 
-  REQUIRE(doc_scene::read_document_scene(d, "", scene, error));
+  REQUIRE(doc_scene::read_document_scene(d, "", {}, scene, error));
   create(d, id_of(9), doc_scene::k_mesh_placement, R"({"mesh":"props/a.glb"})");
   REQUIRE(doc_scene::changes_since(d, scene, changes, error));
   CHECK(changes.rebuild);
 
-  REQUIRE(doc_scene::read_document_scene(d, "", scene, error));
+  REQUIRE(doc_scene::read_document_scene(d, "", {}, scene, error));
   Vector<doc::Diagnostic> diags;
   REQUIRE(d.apply(doc::cmd_delete(id_of(4)), nullptr, &diags));
   REQUIRE(doc_scene::changes_since(d, scene, changes, error));
@@ -123,7 +123,7 @@ TEST_CASE("doc_scene: a document with no placements draws the stand-in ground an
   create(d, id_of(2), "engine.world.Node", R"({"name":"yard","position":[0,0,0]})");
   doc_scene::DocumentScene scene;
   std::string error;
-  REQUIRE(doc_scene::read_document_scene(d, "", scene, error));
+  REQUIRE(doc_scene::read_document_scene(d, "", {}, scene, error));
   REQUIRE(scene.desc.meshes.size() == 1);
   CHECK(scene.desc.meshes[0].empty());
   REQUIRE(scene.records.size() == 1);
@@ -137,6 +137,6 @@ TEST_CASE("doc_scene: a placement with no mesh is refused, naming the record") {
   create(d, id_of(5), doc_scene::k_mesh_placement, R"({"name":"nothing","translation":[0,0,0]})");
   doc_scene::DocumentScene scene;
   std::string error;
-  CHECK_FALSE(doc_scene::read_document_scene(d, "", scene, error));
+  CHECK_FALSE(doc_scene::read_document_scene(d, "", {}, scene, error));
   CHECK(error.find("names no mesh") != std::string::npos);
 }

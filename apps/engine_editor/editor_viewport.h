@@ -101,6 +101,7 @@ class Viewport {
   const gfx::Device* device_ = nullptr;
   Options options_;
   std::string base_dir_;
+  std::string root_;  // the derived-data root the document's ground is read under (T104)
   doc_scene::DocumentScene scene_;
   renderer::SceneData data_;
   renderer::ResolvedSettings resolved_;

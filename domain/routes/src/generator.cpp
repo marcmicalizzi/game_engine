@@ -6,13 +6,12 @@
 #include <core/hash/hash.h>
 #include <core/json/json.h>
 #include <core/schema/json_reflect.h>
-#include <domain/geometry/cluster_file.h>
+#include <domain/scene_gen/derived_root.h>
 #include <foundation/io/vfs.h>
 
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
-#include <filesystem>
 #include <memory>
 #include <span>
 #include <utility>
@@ -97,23 +96,8 @@ std::string plan_key_text(u64 key) {
 std::string plan_path(std::string_view dir, u64 key) {
   return io::join_path(dir, "plan-" + plan_key_text(key) + ".route-plan");
 }
-bool derived_dir(std::string_view ddc, std::string_view scene_dir, std::string& out,
-                 std::string& error) {
-  std::string root(ddc);
-  if (root.empty()) {
-    std::error_code ec;
-    const auto from = std::filesystem::absolute(
-        scene_dir.empty() ? std::filesystem::path(".") : std::filesystem::path(scene_dir), ec);
-    if (!ec) root = geometry::find_ddc_root(from.generic_string());
-    if (root.empty()) root = io::join_path(scene_dir, "ddc");
-  }
-  std::error_code ec;
-  out = std::filesystem::absolute(io::join_path(root, "routes"), ec).generic_string();
-  if (ec || io::make_directories(out) != io::Status::Ok) {
-    error = "routes: cannot make the derived-data directory " + out;
-    return false;
-  }
-  return true;
+bool derived_dir(std::string_view root, std::string& out, std::string& error) {
+  return scene_gen::derived_dir_under(root, "routes", "routes", out, error);
 }
 
 std::string plan_bytes(const RoutePlan& plan) {
@@ -363,10 +347,22 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
   }
   if (context.stand.present()) return refused(error, k_moving);
   std::string why, root;
-  if (!derived_dir(context.ddc, context.dir, root, why)) return refused(error, why);
+  // **The host's root and nothing else** (T119; scene_gen.md, "The derived-data root"): an
+  // entry opened with no root is refused by name rather than rooted at a guess.
+  if (!scene_gen::generator_derived_dir(context, "routes", "routes", root, why))
+    return refused(error, why);
   // **The plan, never made again over its own treads** (routes.md, "One plan"): read from its file
-  // when the entry names it, made here only for an entry that names none.
-  if (!ensure_plan(e->layer, context, root, e->plan, why)) return refused(error, why);
+  // when the entry names it, made here only for an entry that names none. A named plan the host's
+  // root does not hold is refused with where it is, if it is under the scene's own root or the
+  // working directory's (T112's rule, which the channels' plan follows): never read from there.
+  if (!ensure_plan(e->layer, context, root, e->plan, why)) {
+    bool ok = false;
+    const u64 key = e->layer.plan.empty() ? 0 : parse_key(e->layer.plan, ok);
+    if (ok && !io::exists(plan_path(root, key)))
+      why += scene_gen::derived_elsewhere(context, "routes",
+                                          "plan-" + plan_key_text(key) + ".route-plan", root);
+    return refused(error, why);
+  }
   file_bands(*e, context.tile_size);
   *state = e.release();
   return true;

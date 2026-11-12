@@ -2,6 +2,7 @@
 
 #include <core/profiling/startup_trace.h>  // stages only: timing, never logic
 #include <core/schema/json_reflect.h>
+#include <domain/scene_gen/derived_root.h>
 #include <domain/scene_gen/site.h>
 #include <domain/scene_gen/terrain_holes.h>
 #include <foundation/tunables/tunables.h>
@@ -98,7 +99,10 @@ bool plan_scene_ground(const scene::Scene& file, const std::string& path, const 
   context.world_seed = out.terrain.enabled ? out.terrain.seed : 0;
   context.tile_size = world ? rings.tile_size : 32.0f;
   context.dir = dir;
-  context.ddc = out.ddc;
+  // The generators' root by the one rule (T119; scene_gen.md, "The derived-data root"): the
+  // host's, else the scene's own, as the expansion that opens the same entries hands.
+  const std::string root = scene_gen::host_derived_root(out.ddc, dir, true);
+  context.ddc = root;
   if (out.terrain.enabled) context.ground = unedited.provider().view();
   if (!out.terrain.exclusion.empty()) context.exclusion = &out.terrain.exclusion;
   context.site = &out.terrain.site;

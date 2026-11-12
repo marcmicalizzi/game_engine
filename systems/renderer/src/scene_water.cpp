@@ -13,6 +13,7 @@
 #include <domain/gfx/water_spectrum.h>
 #include <domain/gfx/water_swash.h>
 #include <domain/gfx/wet_ground.h>
+#include <domain/scene_gen/derived_root.h>
 #include <domain/scene_gen/scene_gen.h>
 #include <foundation/io/vfs.h>
 
@@ -165,10 +166,11 @@ bool read_scene_water(const scene::Scene& file, const std::string& path, const s
   context.dir = dir;
   const std::string where = path + ": water";
   context.where = where;
-  // The host's derived-data root, set on the description before the file is read (scene_gen.md,
-  // "The derived-data root"): the pool's mesh is written under it, not under a `ddc/` found from
-  // where the scene is.
-  context.ddc = out.ddc;
+  // The host's derived-data root, set on the description before the file is read, else the
+  // scene's own: the one rule (T119; scene_gen.md, "The derived-data root"). The pool's mesh is
+  // written under it, never under a `ddc/` found from the working directory.
+  const std::string root = scene_gen::host_derived_root(out.ddc, dir, true);
+  context.ddc = root;
   if (out.terrain.enabled) context.ground = ground.provider().view();
   void* state = nullptr;
   if (!generator->open(water_params(file.water), context, &state, &error)) return false;
@@ -417,7 +419,8 @@ bool read_scene_water_channels(const scene::Scene& file, const std::string& path
   context.dir = dir;
   const std::string where = path + ": water_channels";
   context.where = where;
-  context.ddc = out.ddc;
+  const std::string root = scene_gen::host_derived_root(out.ddc, dir, true);  // T119's one rule
+  context.ddc = root;
   if (out.terrain.enabled) context.ground = ground.provider().view();
   JsonValue list = JsonValue::array();
   for (const scene::WaterChannel& channel : file.water_channels)

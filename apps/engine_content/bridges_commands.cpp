@@ -13,6 +13,7 @@
 #include <core/schema/json_reflect.h>
 #include <domain/bridges/bridges.h>
 #include <domain/routes/routes.h>
+#include <domain/scene_gen/derived_root.h>
 #include <domain/scene_gen/scene_gen.h>
 #include <foundation/io/vfs.h>
 #if ENGINE_CONTENT_CHANNELS
@@ -160,6 +161,9 @@ int bridges_command(int argc, char** argv) {
   context.world_seed = terrain.seed;
   context.dir = dir;
   context.ddc = ddc;
+  // The plans' root by the one rule (T119; scene_gen.md, "The derived-data root"): `--ddc`, else
+  // the scene's own, never the working directory's.
+  const std::string root = scene_gen::host_derived_root(ddc, dir, true);
   scene_gen::GroundProvider ground;
   std::string error;
   if (!found->make(terrain, context, ground, &error) || !ground.valid())
@@ -196,13 +200,13 @@ int bridges_command(int argc, char** argv) {
       continue;
     std::string channel_dir;
     channels::ChannelPlan plan;
-    if (channels::derived_dir(ddc, dir, channel_dir, error) &&
+    if (channels::derived_dir(root, dir, channel_dir, error) &&
         channels::ensure_plan(layer, context, channel_dir, plan, error))
       beds.push_back(std::move(plan));
   }
 #endif
   std::string route_dir;
-  if (!routes::derived_dir(ddc, dir, route_dir, error)) return fail(error);
+  if (!routes::derived_dir(root, route_dir, error)) return fail(error);
 
   bridges::Layer out_layer;
   out_layer.seed = terrain.seed != 0 ? terrain.seed : 1;

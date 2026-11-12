@@ -10,6 +10,7 @@
 #include <core/time/time.h>
 #include <domain/gfx/cluster_cull.h>
 #include <domain/protocol/session.h>
+#include <domain/scene_gen/derived_root.h>
 #include <foundation/bench/machine_state.h>
 #include <foundation/image/decode.h>
 #include <foundation/image/metrics.h>
@@ -568,7 +569,10 @@ bool load_session(protocol::Context& ctx, RenderHost& host,
     }
   }
   auto described = std::make_unique<doc_scene::DocumentScene>();
-  if (!doc_scene::read_document_scene(document, session->dir(), *described, message)) {
+  // The ground's set under the host's root, the load's own (T104, T119): `render.load`'s `ddc`,
+  // else the repository's found from the executable, as the load's mesh cache finds it.
+  const std::string root = scene_gen::host_derived_root(params.ddc, {}, false);
+  if (!doc_scene::read_document_scene(document, session->dir(), root, *described, message)) {
     error = protocol::make_error(protocol::codes::k_document_error, std::move(message));
     return false;
   }

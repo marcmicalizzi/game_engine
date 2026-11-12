@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <limits>
 
 using namespace engine;
@@ -505,4 +506,42 @@ TEST_CASE("deposits: whole expansion equals reversed tile arrival with stable id
   CHECK_FALSE(opened.desc->tile(opened.state, {0, 0}, c, moving_output, &error));
   Opened moving;
   CHECK_FALSE(moving.desc->open(schema::to_json(p), c, &moving.state, &error));
+}
+// **The recipes go under the host's root and nowhere else** (T119; scene_gen.md, "The derived-data
+// root"): opened with no root, the entry is refused by name and nothing is written; opened with
+// one, from a working directory that is a checkout of its own, the recipes are under the host's
+// root and the working directory holds no `ddc/`.
+TEST_CASE("deposits: the recipes go under the host's root, never the working directory") {
+  test::TempDir scratch;
+  const std::string working = scratch.file("working"), host = scratch.file("host-ddc");
+  std::filesystem::create_directories(working);
+  REQUIRE(io::write_file_atomic(working + "/AGENTS.md", "x") == io::Status::Ok);
+  const std::filesystem::path before = std::filesystem::current_path();
+  std::filesystem::current_path(working);
+  struct Back {
+    std::filesystem::path to;
+    ~Back() {
+      std::error_code ec;
+      std::filesystem::current_path(to, ec);
+    }
+  } back{before};
+  scene_gen::Context c;
+  c.ground = ground(cliff);
+  c.tile_size = 16;
+  c.where = "scene.json: placements 1";
+  std::string error;
+  Opened none;
+  CHECK_FALSE(none.desc->open(schema::to_json(layer()), c, &none.state, &error));
+  CHECK(error.find("scene.json: placements 1: deposits: no derived-data root") == 0);
+  c.ddc = host;
+  Opened opened;
+  REQUIRE_MESSAGE(opened.desc->open(schema::to_json(layer()), c, &opened.state, &error), error);
+  scene_gen::Placements whole;
+  REQUIRE(opened.desc->expand(opened.state, c, whole, &error));
+  REQUIRE_FALSE(whole.meshes.empty());
+  for (const auto& mesh : whole.meshes) {
+    CHECK(mesh.path.rfind(io::normalize_path(host + "/deposits/"), 0) == 0);
+    CHECK(io::exists(mesh.path));
+  }
+  CHECK_FALSE(std::filesystem::exists(working + "/ddc"));
 }
