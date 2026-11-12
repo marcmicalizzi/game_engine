@@ -1865,11 +1865,15 @@ formation with its folds off, four 64 m tiles of ledges and the band's faces):
 | Dip, attitude | Before (G142, G172) | Now |
 |---|---|---|
 | 40 to 75, any | every tread turf, on planes of 40 to 75 degrees (100 % of tread area past the 30 degree soil slope) | a tread past the soil slope is its unit's rock (0 %) |
-| 57 and 75, strike up the slope | fronts faced downhill (4 and 11 % of the faces along the contour): every row recessed along the fall line, sideways along its own face | the faces are the bed edges', 89 and 98 % along the contour: ribs running up the slope |
-| 57, with the slope (overdip: the beds steeper than the ground) | the slab's edge faces up the hill, but its rows stood out of it, recessed along the fall line: 9 % of the faces up the hill | 76 % up the hill, the flatiron's back |
+| 57, strike up the slope | of the faces steeper than 60 degrees out of the bedding plane, 65 % faced downhill and 30 % along the contour: every row recessed along the fall line, sliding sideways along its own front | 6 % downhill, 89 % along the contour: the bed edges', ribs running up the slope |
+| 75, strike up the slope; any dip, with or into | the faces already followed the bed edges (95 % along the contour at 75; 68 % up the hill at 57 with the slope, the overdip slab's back), their rows recessed a little off their own normal | the same faces (96 %, 76 %), the rows recessed square to them |
 | 40 and 57, with and into | plumb fronts (0.4 to 0.6 % of the rock overhanging) | slab edges overhang, toppled beds lean out: 1.4 to 4 % |
 | 20, any | plumb fronts, recessed along the fall line | plumb fronts, recessed along the bed edge's normal (the same within a few degrees) |
 | over 20, the band's faces | nothing: the tiers' breaks and the benches need 20 degrees or less, and the 9 faces were the same 16,778 triangles at every dip and attitude | the faces carve their members (below) |
+
+(The "before" column is the solver with its recess on the fall line, no lean and its treads all
+turf, run under this case; a first count that took every triangle past 45.6 degrees was ruled by
+the risers on the steepest ground, and is not used.)
 
 **What the solver takes from the beds' attitude.** At each point of the lattice the bed edge's own
 outward normal on the ground is where the bed coordinate falls along the surface (its gradient
@@ -1913,3 +1917,37 @@ the first face of its band, by mesh hash ("a steep-dip patch and face are pinned
 foot (`ledge_gaps` hands it over with the fallen ones); a flexural topple is a lean, not a bend;
 there is no second joint set and so no wedges; a weak member between two ribs is the ground's own
 surface (the ledges cannot cut a gully into the terrain); the crest is not broken by the members.
+
+### A massif inside a budget
+
+The forest's steep ground is 3.40 km² past 50 degrees in a 38 km² world (its deposits part's
+measurement), "tens of millions of triangles" of faces at the escarpment's density. What each part
+costs (`tests/ledges_tests.cpp`, "what a steep-dip tile costs" and "a massif's faces past the near
+rings are their far form"; msvc-debug timings beside other agents' builds, an upper bound; bytes
+are the source mesh's, positions, normals, UVs and indices, not the clusters the GPU keeps):
+
+| Part | Near | Far | Where it is drawn |
+|---|---|---|---|
+| ledges on 35-48 degree ground, the forest's formation, a 64 m tile | 3,378 triangles, 105 a metre of front (56 on the 12 degree test hillside: the steep dip's slabs are wide treads), 115 KB, 32 ms | 77 triangles, 2.1 a metre, 3.7 KB, 2 ms | near in the first `near_rings` (1), far to `far_rings` (3), nothing past (the terrain's bands) |
+| cliffs past 50 degrees, a square metre of steep plan, the default 250,000-triangle layer budget in 12 m tiers | 15.5 triangles, 501 bytes, 93 µs | 2.4 triangles, 89 bytes, 14 µs (`far_budget` 4,000 a face, no fallen blocks) | as written, or with `near_rings` the far form past them |
+
+**A 1 km window** (244 tiles) at the forest's density, 8.9 % of the plan past 50 degrees: the ledges
+are 0.82 M triangles and 28 MB near, 19 k and 0.9 MB far; the faces 1.38 M triangles and 45 MB as
+written, 0.21 M and 7.9 MB as far forms. **The forest's 3.40 km²** of faces is 52.7 M triangles and
+1.70 GB as written, 8.1 M and 0.30 GB as far forms.
+
+**What arrives with a tile and what is resident.** Today neither generator hands a mesh with its
+tile: `open` writes every tile's ledge recipe and every face's recipe, `meshes` lists them all, and
+the scene reader builds every one at load, so every row of the table above is resident from the
+start whatever the camera does, and the build is every face solved (about 8 seconds for the 1 km
+window's faces in msvc-debug, five minutes for the forest's, before clustering). The cluster DAG already draws a far
+face as a few clusters, so a far form saves no frame time on its own. **The far form is what makes
+the massif affordable once the faces arrive with their tiles** (R142's contract, `tile_meshes`): a
+face's tile in the first `near_rings` hands the face as written, every other ring its far form, and
+the 1.70 GB becomes the near rings' faces and 0.30 GB. That conversion is not done here (it changes
+the host's room for every scene with cliffs), so `near_rings` is 0 by default: with it set, both
+forms are resident and the far forms cost 18 % more bytes, and `tile` already places the far form
+past the near rings and says so through `representation`. A face's far form keeps its line, its
+tiers, its members and its formation's bands (the solver's coarse rung keeps every feature wider
+than four of its cells) and loses its fallen blocks and its fine joints: the silhouette and the bed
+pattern, the blocks gone.

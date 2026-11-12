@@ -878,6 +878,10 @@ bool cliff_layer_in_range(const CliffLayer& layer, std::string& error) {
     return bad("foot_scale_min", "above 0, and no more than foot_scale_max, at most 10");
   if (!in(wide(layer.taper_m), 0.0, 100.0)) return bad("taper_m", "0 to 100 m");
   if (!in(wide(layer.tier_m), 3.0, 200.0)) return bad("tier_m", "3 to 200 m");
+  if (layer.near_rings > 8) return bad("near_rings", "0 to 8");
+  if (layer.near_rings > 0 &&
+      !(layer.far_budget >= 2000 && layer.far_budget < layer.face.triangle_budget))
+    return bad("far_budget", "2,000 to 4,000,000 and under face.triangle_budget");
   if (layer.formation.has_value()) {
     std::string why;
     if (!gfx::validate_formation(*layer.formation, &why)) {
@@ -1149,10 +1153,24 @@ struct Entry {
   std::string where;
   CliffLayer layer;
   Vector<CliffFace> faces;  // the region's, by block (rows of x in order of z), then as traced
-  Vector<scene_gen::PlacementMesh> meshes;  // a face's recipe each, in `faces`' order, then the
-                                            // foot boulder's when the layer names one
+  Vector<scene_gen::PlacementMesh> meshes;  // a face's recipe each, in `faces`' order, then with
+                                            // `near_rings` each face's far form in the same
+                                            // order, then the foot boulder's when the layer names
+                                            // one
+  Vector<u32> far_mesh;  // with `near_rings`: each face's far form's index in `meshes`
   i64 tile_mm = 32000;
 };
+
+// A face's far form (rocks.md, "A massif inside a budget"): the same face at the layer's
+// `far_budget`, its fallen blocks gone. The silhouette, the members and the beds are the solver's
+// at a coarse rung, which keeps every feature wider than four of its cells.
+Cliff far_form(const Cliff& face, const CliffLayer& layer) {
+  Cliff far = face;
+  far.triangle_budget =
+      face.triangle_budget < layer.far_budget ? face.triangle_budget : layer.far_budget;
+  far.talus_blocks = 0;
+  return far;
+}
 
 std::string resolve(std::string_view dir, const std::string& path) {
   return io::is_absolute_path(path) || dir.empty() ? path : io::join_path(dir, path);
@@ -1229,24 +1247,35 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
   }
   if (!entry->faces.empty() && io::make_directories(dir) != io::Status::Ok)
     return fail(entry->where + ": cannot create " + dir);
-  for (const CliffFace& face : entry->faces) {
-    RockFile file;
-    file.shape = RockShape::Cliff;
-    file.cliff = face.cliff;
-    const std::string text = canonical_rock_json(file);
-    char name[48];
-    std::snprintf(name, sizeof(name), "cliff-%016llx.rock.json",
-                  static_cast<unsigned long long>(rock_source_hash(file)));
-    scene_gen::PlacementMesh mesh;
-    mesh.path = io::join_path(dir, name);
-    mesh.name = std::string("cliffs/") + name;
-    if (!io::exists(mesh.path)) {
-      const io::Status status = io::write_file_atomic(mesh.path, text);
-      if (status != io::Status::Ok)
-        return fail(entry->where + ": cannot write " + mesh.path + ": " + io::status_name(status));
+  // Each face's recipe, then with `near_rings` each one's far form, in the same order; a face
+  // already as coarse as its far form is drawn by its own recipe in every ring.
+  for (u32 form = 0; form < (layer.near_rings > 0 ? 2u : 1u); ++form)
+    for (u32 i = 0; i < entry->faces.size(); ++i) {
+      const CliffFace& face = entry->faces[i];
+      RockFile file;
+      file.shape = RockShape::Cliff;
+      file.cliff = form == 0 ? face.cliff : far_form(face.cliff, layer);
+      if (form == 1 && file.cliff->triangle_budget == face.cliff.triangle_budget &&
+          file.cliff->talus_blocks == face.cliff.talus_blocks) {
+        entry->far_mesh.push_back(i);
+        continue;
+      }
+      if (form == 1) entry->far_mesh.push_back(entry->meshes.size());
+      const std::string text = canonical_rock_json(file);
+      char name[48];
+      std::snprintf(name, sizeof(name), "cliff-%016llx.rock.json",
+                    static_cast<unsigned long long>(rock_source_hash(file)));
+      scene_gen::PlacementMesh mesh;
+      mesh.path = io::join_path(dir, name);
+      mesh.name = std::string("cliffs/") + name;
+      if (!io::exists(mesh.path)) {
+        const io::Status status = io::write_file_atomic(mesh.path, text);
+        if (status != io::Status::Ok)
+          return fail(entry->where + ": cannot write " + mesh.path + ": " +
+                      io::status_name(status));
+      }
+      entry->meshes.push_back(std::move(mesh));
     }
-    entry->meshes.push_back(std::move(mesh));
-  }
   if (!layer.foot_mesh.empty() && layer.foot_per_100m > 0.0f) {
     scene_gen::PlacementMesh foot;
     foot.path = resolve(context.dir, layer.foot_mesh);
@@ -1366,18 +1395,32 @@ bool occupies(const void* state, scene_gen::TileCoord tile) noexcept {
   return false;
 }
 
-// One tile: the faces whose origin is in it, and their foot boulders, indexing `meshes`' list.
+// The form a ring draws (rocks.md, "A massif inside a budget"): 0 the face as written, 1 its far
+// form, past the layer's `near_rings`. A whole read, and a layer with no far form, is 0.
+u8 form_of(const Entry& entry, const scene_gen::Context& context) {
+  if (entry.layer.near_rings == 0 || context.ring == scene_gen::k_no_ring) return 0;
+  return context.ring < entry.layer.near_rings ? u8{0} : u8{1};
+}
+
+// One tile: the faces whose origin is in it, and their foot boulders, indexing `meshes`' list;
+// past `near_rings` each face's far form, without its boulders.
 bool tile(void* state, scene_gen::TileCoord at, const scene_gen::Context& context,
           scene_gen::Placements& out, std::string*) {
   const Entry& entry = *static_cast<const Entry*>(state);
-  const bool foot = has_foot(entry);
-  const u32 foot_mesh = foot ? entry.meshes.size() - 1 : 0u;
+  const u8 form = form_of(entry, context);
+  out.kind = form;
+  const bool foot = has_foot(entry) && form == 0;
+  const u32 foot_mesh = has_foot(entry) ? entry.meshes.size() - 1 : 0u;
   for (u32 i = 0; i < entry.faces.size(); ++i) {
     if (!(tile_of(entry, entry.faces[i]) == at)) continue;
     if (!cleared(entry, entry.faces[i], context)) continue;
-    place_face(entry, i, i, foot_mesh, foot, context, out);
+    place_face(entry, i, form == 0 ? i : entry.far_mesh[i], foot_mesh, foot, context, out);
   }
   return true;
+}
+
+u8 representation(const void* state, const scene_gen::Context& context) noexcept {
+  return form_of(*static_cast<const Entry*>(state), context);
 }
 
 constexpr scene_gen::PlacementGeneratorDesc k_cliffs{
@@ -1388,7 +1431,7 @@ constexpr scene_gen::PlacementGeneratorDesc k_cliffs{
     .meshes = &meshes,
     .tile = &tile,
     .occupies = &occupies,
-    .representation = nullptr,
+    .representation = &representation,
 };
 const scene_gen::Registrar k_cliffs_registrar{k_cliffs};
 

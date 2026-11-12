@@ -378,7 +378,7 @@ struct CliffBand @version(1) {
 
 /// The scene generator `cliffs`' entry (rocks.md, "The cliffs generator"): the steep ground of a
 /// region found from the ground's heights, its feet traced into lines and dressed with faces.
-struct CliffLayer @version(2) {
+struct CliffLayer @version(3) {
   name: string
   seed: u64 = 1
   /// The region dressed, world metres, x and z: a face whose first vertex lies inside is placed.
@@ -432,6 +432,14 @@ struct CliffLayer @version(2) {
   /// break is a bedding plane of `formation` where a resistant bed's top is within a third of
   /// this, else a level.
   tier_m: f32 = 12.0 @since(2) @unit(m)
+  /// A massif's far form (G200; rocks.md, "A massif inside a budget"): how many of the world's
+  /// rings, innermost first, draw a face as written; further rings draw its far form, the same
+  /// face solved at `far_budget` triangles with no fallen blocks, so its silhouette, its members
+  /// and its bands stay and its blocks go. 0 to 8; 0 (the default) is no far form, every ring the
+  /// face as written.
+  near_rings: u32 = 0 @since(3)
+  /// The far form's triangle budget: 2,000 to 4,000,000, and under the face's own.
+  far_budget: u32 = 4000 @since(3)
 }
 
 /// Where bedrock shows through a soil mantle (G142; rocks.md, "Exposed bedrock (G142)"; the grounding,

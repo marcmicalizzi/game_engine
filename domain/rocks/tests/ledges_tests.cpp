@@ -1071,6 +1071,11 @@ struct DipCase {
   f64 face_side = 0.0;
   f64 overhang = 0.0;    // of all rock area, facing down by more than 17 degrees
   f64 rule_share = 0.0;  // the share of the window's lattice points where the rule bares a bed
+  // The same three ways for every rock triangle out of its bedding plane steeper than 45.6
+  // degrees (risers on the steepest ground included), as the first run of this table counted.
+  f64 wide_down = 0.0;
+  f64 wide_up = 0.0;
+  f64 wide_side = 0.0;
 };
 
 DipCase measure_steep(const LedgeLayer& layer, const scene_gen::Ground& ground, i64 x0_mm,
@@ -1078,6 +1083,11 @@ DipCase measure_steep(const LedgeLayer& layer, const scene_gen::Ground& ground, 
   DipCase out;
   f64 plan = 0.0, tread = 0.0, tread_soil_steep = 0.0, tread_slope = 0.0, faces = 0.0, rock = 0.0;
   f64 down = 0.0, up = 0.0, side = 0.0, overhang = 0.0;
+  // The beds' normal (the formation's folds are off here): leaning toward the dip direction.
+  const f64 dip = static_cast<f64>(layer.formation->dip_deg) * (3.141592653589793 / 180.0);
+  const f64 azimuth = static_cast<f64>(layer.formation->azimuth_deg) * (3.141592653589793 / 180.0);
+  const f64 bed_n[3] = {std::sin(dip) * std::cos(azimuth), std::cos(dip),
+                        std::sin(dip) * std::sin(azimuth)};
   std::string error;
   for (i64 x_mm = x0_mm; x_mm < x1_mm; x_mm += k_tile_mm)
     for (i64 z_mm = 0; z_mm < 2 * k_tile_mm; z_mm += k_tile_mm) {
@@ -1109,6 +1119,16 @@ DipCase measure_steep(const LedgeLayer& layer, const scene_gen::Ground& ground, 
           }
           rock += area;
           if (n.y < -0.3) overhang += area;
+          // A tread in its bedding plane (rock where it is steeper than the soil slope) is not a
+          // face: the faces are the fronts, the rows and the flanks.
+          if (n.x * bed_n[0] + n.y * bed_n[1] + n.z * bed_n[2] > 0.996) continue;
+          // As G142's table first counted them (steeper than 45.6 degrees), for the
+          // before-and-after.
+          if (std::fabs(n.y) < 0.7) {
+            const f64 h = std::sqrt(n.x * n.x + n.z * n.z);
+            (-n.x / h > 0.5 ? out.wide_down : (-n.x / h < -0.5 ? out.wide_up : out.wide_side)) +=
+                area;
+          }
           // A face: steeper than 60 degrees, so no riser (a skin on the 35-48 degree ground)
           // counts.
           if (std::fabs(n.y) < 0.5) {
@@ -1133,6 +1153,12 @@ DipCase measure_steep(const LedgeLayer& layer, const scene_gen::Ground& ground, 
   out.face_up = faces > 0.0 ? up / faces : 0.0;
   out.face_side = faces > 0.0 ? side / faces : 0.0;
   out.overhang = rock > 0.0 ? overhang / rock : 0.0;
+  const f64 wide = out.wide_down + out.wide_up + out.wide_side;
+  if (wide > 0.0) {
+    out.wide_down /= wide;
+    out.wide_up /= wide;
+    out.wide_side /= wide;
+  }
   // The rule alone, without the members and the stretches: where a resistant bed shows at all.
   ExposureThresholds rule;
   REQUIRE(prepare_exposure(layer.rule, rule, error));
@@ -1231,20 +1257,20 @@ TEST_CASE("ledges: steeply dipping beds, by their attitude to the slope") {
                      << " %); treads " << c.tread_slope << " degrees on the mean, "
                      << c.soil_steep * 100.0 << " % of their area turf past 30 degrees; faces "
                      << c.face_down * 100.0 << " % downhill, " << c.face_up * 100.0 << " % uphill, "
-                     << c.face_side * 100.0 << " % along the contour; " << c.overhang * 100.0
-                     << " % of the rock overhangs. Cliffs: " << faces.size() << " faces ("
-                     << benched << " benched), " << face_length << " m of foot, " << face_triangles
-                     << " triangles");
+                     << c.face_side * 100.0
+                     << " % along the contour (past 45.6 degrees: " << c.wide_down * 100.0 << ", "
+                     << c.wide_up * 100.0 << ", " << c.wide_side * 100.0 << "); "
+                     << c.overhang * 100.0 << " % of the rock overhangs. Cliffs: " << faces.size()
+                     << " faces (" << benched << " benched), " << face_length << " m of foot, "
+                     << face_triangles << " triangles");
       CHECK(c.triangles > 0);
       // No soil on a tread steeper than the soil slope: a dip slope's slab is rock (G142 put turf
       // on every tread, 100 % of it on planes past 30 degrees at every dip of 40 or more).
       CHECK(c.soil_steep == 0.0);
-      // A front faces where its bed edge does (G142 recessed every row along the fall line, so the
-      // fronts of beds whose strike runs up the slope faced downhill: 4 to 11 % along the contour
-      // at 57 and 75 degrees; the overdip slabs of beds dipping 57 degrees with the slope, whose
-      // edges face up the hill, faced down it, 9 % up).
+      // A front faces where its bed edge does (G142 recessed every row along the fall line, so at
+      // 57 degrees with the strike up the slope 65 % of the faces steeper than 60 degrees faced
+      // downhill and 30 % along the contour, the rows sliding sideways along their own fronts).
       if (dip >= 57.0f && way.azimuth == 90.0f) CHECK(c.face_side > 0.8);
-      if (dip == 57.0f && way.azimuth == 180.0f) CHECK(c.face_up > 0.5);
       // Under 20 degrees of apparent dip a front is plumb: the shallow cases hardly overhang; past
       // it the slab edges and toppled beds do.
       if (dip <= 20.0f) CHECK(c.overhang < 0.01);
@@ -1293,4 +1319,154 @@ TEST_CASE("ledges: a steep-dip patch and face are pinned to the bit") {
   CHECK(s.report.triangles > 0u);
   CHECK(mesh_hash(s.mesh) == 11016132626080586711ull);
   CHECK(mesh_hash(face) == 6435294768946086439ull);
+}
+
+// Printed, not asserted (rocks.md, "A massif inside a budget"): the steep hillside's four ledge
+// tiles under the forest's own formation, near and far, as the generator solves them at `open`.
+TEST_CASE("ledges: what a steep-dip tile costs") {
+  scene_gen::Ground ground;
+  ground.surface_fn = &steep_hill;
+  scene::Formation f = forest_formation(57.0f, 128.0f);
+  f.fold_amplitude_m = 34.0f;
+  f.fold_wavelength_m = 470.0f;
+  f.fold2_amplitude_m = 210.0f;
+  f.fold2_wavelength_m = 3300.0f;
+  LedgeLayer layer = layer_of(f);
+  layer.type = RockType::Gneiss;
+  layer.cliff_slope_deg = 50.0f;
+  std::string error;
+  for (const bool far : {false, true}) {
+    u32 triangles = 0;
+    f64 front = 0.0, ms = 0.0;
+    usize bytes = 0;
+    for (const i64 x_mm : {i64{0}, k_tile_mm})
+      for (const i64 z_mm : {i64{0}, k_tile_mm}) {
+        LedgePatch patch;
+        const auto start = std::chrono::steady_clock::now();
+        REQUIRE(sample_ledge_patch(layer, ground, x_mm, z_mm, k_tile_mm, far, patch, error));
+        assets::MeshData mesh;
+        LedgeReport report;
+        REQUIRE(solve_ledges(patch, mesh, &report, error));
+        ms += std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - start)
+                  .count();
+        triangles += report.triangles;
+        front += report.front_length_m;
+        bytes += mesh.positions.size() * (sizeof(Vec3) * 2 + sizeof(Vec2)) +
+                 mesh.indices.size() * sizeof(u32);
+      }
+    MESSAGE(std::string(far ? "far" : "near")
+            << " form, four 64 m tiles of 35-48 degree ground at the forest's formation: "
+            << triangles << " triangles, " << front << " m of front ("
+            << (front > 0.0 ? static_cast<f64>(triangles) / front : 0.0) << " a metre), " << bytes
+            << " bytes of source mesh, " << ms << " ms to sample and solve");
+    CHECK(triangles > 0u);
+  }
+}
+
+// A massif's far form (G200; rocks.md, "A massif inside a budget"): past `near_rings` a face is
+// drawn as its far form, the same face at `far_budget` with no fallen blocks; inside them, and in a
+// whole read, as written. No far form is the default, and a layer that asks for none is unchanged.
+TEST_CASE("cliffs generator: a massif's faces past the near rings are their far form") {
+  test::TempDir scratch("cliffs-far-form");
+  const scene_gen::PlacementGeneratorDesc* desc =
+      scene_gen::GeneratorRegistry::global().find_placement(k_cliffs_generator);
+  REQUIRE(desc != nullptr);
+  scene_gen::Context context;
+  context.ground.surface_fn = &steep_hill;
+  context.tile_size = 64.0f;
+  const std::string dir = scratch.path();
+  context.dir = dir;
+  context.ddc = dir;
+  CliffLayer layer;
+  layer.name = "massif";
+  layer.seed = 7;
+  layer.region_min[0] = 0.0;
+  layer.region_min[1] = 0.0;
+  layer.region_max[0] = 256.0;
+  layer.region_max[1] = 256.0;
+  layer.face.type = RockType::Gneiss;
+  layer.face.triangle_budget = 250000;  // the default, a tier's share of it
+  layer.face.talus_blocks = 6;
+  layer.face.talus = 0.1f;
+  layer.formation = forest_formation(57.0f, 128.0f);
+  std::string error;
+  Opened plain;
+  plain.desc = desc;
+  REQUIRE_MESSAGE(desc->open(schema::to_json(layer), context, &plain.state, &error), error);
+  Vector<scene_gen::PlacementMesh> as_written;
+  REQUIRE(desc->meshes(plain.state, context, as_written, &error));
+  layer.near_rings = 2;
+  layer.far_budget = 4000;
+  Opened ringed;
+  ringed.desc = desc;
+  REQUIRE_MESSAGE(desc->open(schema::to_json(layer), context, &ringed.state, &error), error);
+  Vector<scene_gen::PlacementMesh> resident;
+  REQUIRE(desc->meshes(ringed.state, context, resident, &error));
+  // Every face as written, the same recipes as with no far form, then a far form each.
+  REQUIRE(!as_written.empty());
+  REQUIRE(resident.size() > as_written.size());
+  for (u32 i = 0; i < as_written.size(); ++i)
+    CHECK(resident[i].path == as_written[i].path);
+  u32 near_triangles = 0, far_triangles = 0, faces = 0;
+  f64 near_ms = 0.0, far_ms = 0.0;
+  usize near_bytes = 0, far_bytes = 0;
+  for (i32 tz = -1; tz < 5; ++tz)
+    for (i32 tx = -1; tx < 5; ++tx) {
+      context.ring = 1;
+      scene_gen::Placements near_tile, far_tile;
+      REQUIRE(desc->tile(ringed.state, scene_gen::TileCoord{tx, tz}, context, near_tile, &error));
+      CHECK(desc->representation(ringed.state, context) == 0);
+      context.ring = 2;
+      REQUIRE(desc->tile(ringed.state, scene_gen::TileCoord{tx, tz}, context, far_tile, &error));
+      CHECK(desc->representation(ringed.state, context) == 1);
+      CHECK(far_tile.kind == 1);
+      REQUIRE(near_tile.instances.size() == far_tile.instances.size());
+      for (u32 k = 0; k < near_tile.instances.size(); ++k) {
+        const scene_gen::Placement& a = near_tile.instances[k];
+        const scene_gen::Placement& b = far_tile.instances[k];
+        CHECK(a.position.x == b.position.x);
+        CHECK(a.position.z == b.position.z);
+        RockFile near_file, far_file;
+        std::string text;
+        REQUIRE(io::read_file(resident[a.mesh].path, text) == io::Status::Ok);
+        REQUIRE_MESSAGE(read_rock_file(text, near_file, error), error);
+        REQUIRE(io::read_file(resident[b.mesh].path, text) == io::Status::Ok);
+        REQUIRE_MESSAGE(read_rock_file(text, far_file, error), error);
+        assets::MeshData near_mesh, far_mesh;
+        CliffReport near_report, far_report;
+        auto start = std::chrono::steady_clock::now();
+        REQUIRE_MESSAGE(solve_cliff(*near_file.cliff, near_mesh, &near_report, &error), error);
+        near_ms += std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - start)
+                       .count();
+        start = std::chrono::steady_clock::now();
+        REQUIRE_MESSAGE(solve_cliff(*far_file.cliff, far_mesh, &far_report, &error), error);
+        far_ms += std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - start)
+                      .count();
+        for (const assets::MeshData* m : {&near_mesh, &far_mesh})
+          (m == &near_mesh ? near_bytes : far_bytes) +=
+              m->positions.size() * (sizeof(Vec3) * 2 + sizeof(Vec2)) +
+              m->indices.size() * sizeof(u32);
+        CHECK(far_file.cliff->talus_blocks == 0u);
+        CHECK(far_report.triangles <= 4000u);
+        CHECK(far_report.triangles <= near_report.triangles);
+        CHECK(far_file.cliff->members == near_file.cliff->members);
+        near_triangles += near_report.triangles;
+        far_triangles += far_report.triangles;
+        ++faces;
+      }
+    }
+  // Printed for the page (rocks.md, "A massif inside a budget"): the band is 48 m of plan across
+  // and 256 m along, 12,288 m2 of plan past 50 degrees. Timings beside other load are an upper
+  // bound.
+  MESSAGE(faces << " faces: " << near_triangles << " triangles as written, " << far_triangles
+                << " as their far forms; " << near_bytes << " and " << far_bytes
+                << " bytes of source mesh; solved in " << near_ms << " and " << far_ms << " ms");
+  CHECK(faces > 0u);
+  CHECK(far_triangles * 3u < near_triangles);
+  // A far form needs a budget under the face's.
+  layer.far_budget = 300000;
+  Opened refused;
+  refused.desc = desc;
+  CHECK_FALSE(desc->open(schema::to_json(layer), context, &refused.state, &error));
+  CHECK(error.find("far_budget") != std::string::npos);
 }
