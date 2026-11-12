@@ -1,10 +1,10 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "G200",
-  "reason": "G200 lands on rocks.md: Beds at any attitude (the steep-dip table, the bed edge's normal and the front's lean by the beds' apparent dip, rock on steep treads, a face's members) and A massif inside a budget (what ledges and faces cost near and far, a 1 km window and the forest's 3.4 km2, the far form by ring)",
+  "reason": "G200 lands on rocks.md: Beds at any attitude (the steep-dip table, the bed edge's normal and the front's lean by the beds' apparent dip, rock on steep treads, a face's members, what a scene writes on a 57 degree dip) and A massif inside a budget (what ledges and faces cost near and far, a 1 km window and the forest's 3.4 km2, the far form by ring)",
   "date": "2026-11-12",
   "by": "Marc Micalizzi",
   "deltas": {
-    "page:docs/subsystems/rocks.md": 8796
+    "page:docs/subsystems/rocks.md": 10278
   }
 }
