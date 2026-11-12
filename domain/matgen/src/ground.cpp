@@ -219,7 +219,9 @@ void build_ground(const Set& set, Field& field, SetStats& stats, Shade& shade) {
         // polygon's, and the seam between two shows only where they part (a warped mask).
         const Cell c = warped_cell(set.seed ^ 0x637573686eull, vx, vy, n, cushion_k);
         const f64 d = dome(c);
-        cushion_h = relief * d * (0.6 + 0.4 * unit_of(c.id));
+        // The carpet's relief is smooth hummocks, not the cells' domes: a dome falls to a crease
+        // at every seam, and under a low sun the creases drew crazy paving (G187's pictures).
+        cushion_h = relief * fractal_noise(set.seed ^ 0x68756d6dull, vx, vy, n, cushion_k, 2);
         cushion_tone = unit_of(mix64(c.id));
         // A cushion's own vigour: how densely its shoots stand, how much light its tips catch.
         cushion_bright = 0.75 + 0.5 * unit_of(mix64(c.id ^ 0x627269ull));

@@ -162,7 +162,7 @@ void build_wood(const Set& set, Field& field, SetStats& stats, Shade& shade) {
   const f64 aged[3] = {static_cast<f64>(p.grey_r_permille) * 0.001,
                        static_cast<f64>(p.grey_g_permille) * 0.001,
                        static_cast<f64>(p.grey_b_permille) * 0.001};
-  const u32 patch_k = std::max(1u, static_cast<u32>(tile / 0.45 + 0.5));
+  const u32 patch_k = std::max(1u, static_cast<u32>(tile / 0.25 + 0.5));
   const u32 stain_x = std::max(1u, static_cast<u32>(tile / 0.3 + 0.5));
   const u32 fibre_x = std::max(4u, static_cast<u32>(tile / 0.04 + 0.5));
   const u32 plate_k =

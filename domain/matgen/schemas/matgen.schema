@@ -170,7 +170,7 @@ struct Wood {
   grey_b_permille: u32 = 185
   /// How far the face has weathered from fresh toward grey, and that share's half range across it.
   grey_permille: u32 = 800
-  grey_patch_permille: u32 = 250
+  grey_patch_permille: u32 = 150
   /// Dark staining in streaks along the grain: its strength.
   stain_permille: u32 = 350
   /// Checks: splits along the grain, how many a square metre, their lengths, widest opening and

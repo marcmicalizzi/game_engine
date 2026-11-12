@@ -201,8 +201,10 @@ and zero in a recipe that does not ask for it:
   from its base (its far end paler, lit) and lifting the tuft's top; `dead_permille` of them are
   straw. Without tufts a leaf lies anywhere, as before.
 - **Cushions** (`cushion_mm`) of moss and **clods** (`clod_mm`) of soil: cells of a cellular field
-  whose lookup is warped by half a cell (a polygon's straight edges read as crazy paving), domed
-  by `relief_um`; a moss cushion each its own tone between lit yellow-green, the shaded body and a
+  whose lookup is warped by half a cell (a polygon's straight edges read as crazy paving); a
+  soil's clods domed by `relief_um`, a moss carpet's relief smooth hummocks of `relief_um` at the
+  cushions' scale (the cells' domes creased at every seam, and under a low sun the creases drew
+  crazy paving in the engine); a moss cushion each its own tone between lit yellow-green, the shaded body and a
   dry brown and its own vigour (0.75 to 1.25 of the tone), the seam between two showing only where
   a second field parts them; a soil's clods cracked along some of their edge, not all of it.
 - **Stones** part buried in the soil (`stones_permille`, `stone_min_mm` to `stone_max_mm`, radii
@@ -255,7 +257,7 @@ the outside of a log does (`form: log`), weathered toward grey.
   the phase's gradient falls, the bands widen and fold into a flat-sawn board's arches.
 - **Weathering**: earlywood toward a pale silver, latewood a darker grey, standing `relief_um`
   proud of the eroded earlywood; how far each place has greyed is `grey_permille` plus or minus
-  `grey_patch_permille` over a 0.45 m field, so a board is grey to brown; `stain_permille` of dark
+  `grey_patch_permille` over a 0.25 m field, so a board is grey to brown; `stain_permille` of dark
   streaks along the grain; fibres as fine streaks that follow the bands.
 - **Knots** (`knots_per_m2`, `knot_min_mm` to `knot_max_mm`): the rings bend round each over three
   of its radii; its body dark, ringed and proud; a third are dead knots with a dark rim.

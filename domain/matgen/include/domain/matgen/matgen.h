@@ -61,7 +61,9 @@ namespace engine::matgen {
 ///    standing-height measures (`SetStats::contrast_5cm`, `contrast_25cm`, `relief_rms_mm`).
 /// 5: the ground kind at standing height (G187, 2026-11-11): tufts, cushions, clods, stones, a
 ///    patch mosaic, litter in two layers, mounds; its four sets on 2 m tiles at 2,048 texels.
-inline constexpr u32 k_matgen_version = 5;
+/// 6: after the engine pictures: a moss carpet's relief smooth hummocks (its cushions' domes
+///    creased at every seam), a board's weathering patches smaller and weaker (a checker at 15 m).
+inline constexpr u32 k_matgen_version = 6;
 
 /// Variants of a tiled role (G153): `default_sets` writes `<role>.1` .. `<role>.<n>` beside each
 /// tiled granular role, the same recipe from other seeds, so a consumer that picks one by place
