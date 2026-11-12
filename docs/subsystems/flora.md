@@ -2713,6 +2713,7 @@ constrained sites. **Omit the root placement in that case.** The container cooke
 rejects empty roots with that instruction, rather than manufacturing an invisible
 triangle. Grass masking, automatic roots for every Forest placement and runtime
 terrain edits are consumer integration, not implicit side effects of a tree recipe.
+What replaces that (a skirt under every trunk, a foot conformed to the slope, roots shared by a mesh's instances) is designed and not built: [a tree's base on sloping ground](../experiments/tree-base-on-slopes.md) (G201).
 
 Minimal flat-site companion recipe:
 ```json

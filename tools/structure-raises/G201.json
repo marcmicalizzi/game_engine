@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "G201",
+  "reason": "flora.md gains one pointer line under Exposed structural roots to the G201 design page (a skirt, a conformed foot, shared roots), which is where the roots' not-yet now lives",
+  "date": "2026-11-12",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/flora.md": 222
+  }
+}
