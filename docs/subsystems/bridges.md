@@ -238,6 +238,11 @@ The three bridges of the picture scene (`msvc-debug`, the containers the rendere
 | A foot log, 3 m (sills on stone abutments) | log, 2 sills, 2 courses | 244 | 84 (one level) | 18.8 KB |
 | Log stringers, 6 m, railed | 2 stringers, 2 sills and their abutments, the planks, posts and two rails | 944 | 417 (three levels) | 80 KB |
 
+**G186's steps** add 28 triangles a step (a rough block): over the same three crossings,
+`engine-content bridges` counts 1,580 triangles where the G147 forms on that ground were 1,216, the
+difference exactly the 13 steps' 364, and no approach fill (2026-11-11, the picture scene with its
+route's treads taken through the hook). The lower decks move no member's triangle count.
+
 A clapper of 6 m (the bench's crossing) is three spans on two piers and two abutments of three to
 four courses each and three slabs: about 20 rough blocks of 28 triangles, some 560. Every bridge is
 under a thousand triangles at its finest and a few hundred from the far end of its tile; a mesh is
