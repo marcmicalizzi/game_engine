@@ -1673,11 +1673,33 @@ host builds a patch's mesh when the first tile naming it activates, through the 
 keyed by the recipe, and lets it go after the last. `DepositLayer::far_rings` (version 3, 1-8,
 default 3, as the ledges') is how many of the world's rings draw the deposits: a tile in a ring past
 it hands nothing (`Placements::kind` 1), and the cluster DAG is the far form within. A patch whose
-`triangle_budget` and blocks exceed 240,000 triangles is refused at `open`, because a streamed host
-admits a tile's mesh of at most 4,096 clusters (the stream bed's row met it) and a patch is one
-mesh. What stays resident for the entry is the plan (its per-sample ground, thickness, coarse,
-sink, slope and rock, 29 bytes a sample, the drainage dropped after planning), its blocks, and 72
-bytes a candidate patch.
+`triangle_budget` and blocks exceed 160,000 triangles is refused at `open`, because a streamed host
+admits a tile's mesh of at most 4,096 clusters (the stream bed's row met it), a patch is one mesh,
+and the largest patch below measured 3,934 clusters at the forest's 128,000 with its blocks. What
+stays resident for the entry is the plan (its per-sample ground, thickness, coarse, sink, slope and
+rock, 29 bytes a sample, the drainage dropped after planning), its blocks, and 72 bytes a candidate
+patch: 5.7 MB for the kilometre below.
+
+**What a kilometre costs** (`deposits: what a kilometre of massif foot costs at load and a tile
+(measured)`, skipped in the suite and run by hand: a 1,024 m by 192 m window at 1 m of a 60 m face
+over a skirt grading through 50 to 35 degrees, 16 m patches, 64 m tiles; `msvc-release`,
+2026-11-12 14:11-14:18, the CPU at 52-73% with other agents' builds and GPU runs, 52-60 GB of free
+commit, so every time is an upper bound, one run each):
+
+| | 128,000 triangles a patch (the forest's) | 32,000 (the default's density) |
+|---|---:|---:|
+| Patches, over tiles | 466 over 63 | 466 over 63 |
+| Built and held at load before G191 | 466 meshes, 36.6 M triangles, 2.93 GB of containers, 249 s single-threaded | 466, 12.1 M, 0.99 GB, 79 s |
+| Built at load now | none; recipes written: none (before: 466 files, 13.6 MB) | none |
+| `open` (plan, patches checked) | 316 ms | 289 ms |
+| The second open (T120; before, the plan again) | 43 ms | 37 ms |
+| A 64 m tile's activation (its patches built), median and max | 3.9 s, 7.8 s | 1.4 s, 2.4 s |
+| The largest patch | 3,934 clusters | 1,558 clusters |
+
+The host builds a tile's meshes off the frame's thread and in parallel, so a tile's activation is
+its patches' build spread over the pool, not a stall; at the forest's budget it is still four
+seconds of work a 64 m tile, and the default's density costs a third of it. Before G191 the same
+466 builds ran at load whatever the camera (the forest measured 40 s for 724 on twenty threads).
 
 **One plan a load** (T120; the forest's gap 44: the reader's and the world's placements
 consumer's opens each planned the whole region). The scene reader opens an entry, reads it and

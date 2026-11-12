@@ -26,9 +26,11 @@ namespace engine::rocks {
 namespace {
 ENGINE_LOG_CATEGORY_DEFINE(log_deposits, "deposits");
 // G191: a streamed host admits a tile's mesh of at most 4,096 clusters
-// (`renderer.meshes.max_clusters`; the stream bed's row met it). At 124 triangles a cluster and the
-// cluster DAG's levels above its leaves, a patch of up to 240,000 triangles stays under it.
-constexpr u64 k_patch_triangles_max = 240000;
+// (`renderer.meshes.max_clusters`; the stream bed's row met it). Measured (rocks.md, "A tile
+// solves"): at the forest's 128,000 triangles a patch with its blocks, the largest of 466 patches
+// built 3,934 clusters with its blocks; a patch of up to 160,000 triangles, blocks included, stays
+// under it.
+constexpr u64 k_patch_triangles_max = 160000;
 struct PatchPlace {
   scene_gen::Placement placement;
   scene_gen::TileCoord tile;
@@ -397,7 +399,7 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
           k_patch_triangles_max)
         return refused(
             error,
-            "deposits: a patch's triangle_budget and its blocks exceed 240,000 triangles "
+            "deposits: a patch's triangle_budget and its blocks exceed 160,000 triangles "
             "(a streamed host admits a tile's mesh of at most 4,096 clusters)");
       PatchPlace at;
       at.placement.position = {static_cast<f64>(x0) / 1000.0, y0, static_cast<f64>(z0) / 1000.0};

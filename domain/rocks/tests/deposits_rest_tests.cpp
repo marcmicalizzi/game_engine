@@ -1,5 +1,6 @@
 // G190: where a pile comes to rest, and that it never ends in a cut (docs/subsystems/rocks.md,
 // "Where a pile comes to rest"; docs/experiments/rockfall-deposits.md, G190).
+#include <core/json/json.h>
 #include <core/schema/json_reflect.h>
 #include <domain/rocks/deposits.h>
 #include <foundation/io/vfs.h>
@@ -8,6 +9,7 @@
 #include <test_temp_dir.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 
 using namespace engine;
@@ -356,4 +358,110 @@ TEST_CASE("deposits: a tile's patches arrive with it, none past far_rings, and o
   REQUIRE_MESSAGE(desc->open(schema::to_json(p), c, &again, &error), error);
   CHECK(deposit_plans_made() == made + 2);
   desc->close(again);
+}
+
+namespace {
+// A kilometre of massif foot (G191's measurement): a 60 m ridge 40 m across along z over a 40 m
+// skirt 70 m across, so below a 60-67 degree face the ground grades through 50 to 35 degrees over
+// about 15 m to a gentle floor, as the forest's does, its line wandering 12 m over 300 m.
+f64 massif(const void*, i64 x_mm, i64 z_mm) noexcept {
+  const f64 z = static_cast<f64>(z_mm) / 1000.0;
+  const f64 x = static_cast<f64>(x_mm) / 1000.0 - 12.0 * std::sin(z / 300.0 * 6.283185307179586);
+  const f64 d = std::abs(x);
+  auto bump = [&](f64 h, f64 w) {
+    return d < w ? h * (0.5 + 0.5 * std::cos(3.14159265358979323846 * d / w)) : 0.0;
+  };
+  return bump(60, 40) + bump(40, 70) + .02 * x;
+}
+}  // namespace
+
+TEST_CASE("deposits: what a kilometre of massif foot costs at load and a tile (measured)" *
+          doctest::skip()) {
+  // Run by hand in msvc-release (`--no-skip --test-case=*kilometre*`): the numbers rocks.md quotes
+  // for G191. "Before" is what a host did at load until G191, every patch built and held; "after"
+  // is what it does now, nothing built until a tile asks.
+  test::TempDir scratch;
+  const std::string dir = scratch.path();
+  scene_gen::Context c;
+  c.dir = dir;
+  c.ddc = dir;
+  c.ground.surface_fn = &massif;
+  c.tile_size = 64;
+  DepositLayer p;
+  p.region_min = {-96, -512};
+  p.region_max = {96, 512};
+  p.spacing_m = 1;
+  p.patch_m = 16;
+  u32 budget = 128000, fragments = 96;  // the forest's
+  SUBCASE("the forest's budget, 128,000 triangles a 16 m patch") {}
+  SUBCASE("the default budget's density, 32,000 triangles a 16 m patch") {
+    budget = 32000;
+    fragments = 24;
+  }
+  p.patch.triangle_budget = budget;
+  p.patch.fragments = fragments;
+  p.sediment_depth_m = 0;
+  const auto* desc = scene_gen::GeneratorRegistry::global().find_placement("deposits");
+  REQUIRE(desc != nullptr);
+  std::string error;
+  const auto t0 = std::chrono::steady_clock::now();
+  void* state = nullptr;
+  REQUIRE_MESSAGE(desc->open(schema::to_json(p), c, &state, &error), error);
+  const f64 open_ms =
+      std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - t0).count();
+  const auto t1 = std::chrono::steady_clock::now();
+  void* second = nullptr;
+  REQUIRE_MESSAGE(desc->open(schema::to_json(p), c, &second, &error), error);
+  const f64 reopen_ms =
+      std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - t1).count();
+  desc->close(second);
+  scene_gen::Placements whole;
+  REQUIRE(desc->expand(state, c, whole, &error));
+  u64 recipe_bytes = 0;
+  for (const auto& m : whole.meshes)
+    recipe_bytes += m.recipe.size();
+  // Every tile's patches built, as the host builds a tile's meshes when it activates.
+  Vector<f64> tile_ms;
+  u64 triangles = 0, bytes = 0, clusters_max = 0, built = 0;
+  f64 all_ms = 0;
+  for (i32 tz = -8; tz < 8; ++tz)
+    for (i32 tx = -2; tx < 2; ++tx) {
+      scene_gen::Placements one;
+      c.ring = 0;
+      REQUIRE(desc->tile(state, {tx, tz}, c, one, &error));
+      if (one.instances.empty()) continue;
+      f64 ms = 0;
+      for (const auto& m : one.meshes) {
+        JsonValue json;
+        REQUIRE(parse_json(m.recipe, json).ok);
+        DepositPatch patch;
+        schema::ReadContext ctx;
+        REQUIRE(schema::from_json(patch, json, ctx));
+        geometry::ClusterFileData data;
+        const auto b = std::chrono::steady_clock::now();
+        REQUIRE_MESSAGE(build_deposit_container(patch, {}, 0, data, error), error);
+        ms += std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - b).count();
+        triangles += data.mesh.leaf_triangle_count;
+        clusters_max = std::max<u64>(clusters_max, data.mesh.mesh.clusters.size());
+        const std::string path = dir + "/p.clusters";
+        REQUIRE(geometry::write_cluster_file(path, data, &error));
+        std::string read;
+        REQUIRE(io::read_file(path, read) == io::Status::Ok);
+        bytes += read.size();
+        ++built;
+      }
+      tile_ms.push_back(ms);
+      all_ms += ms;
+    }
+  desc->close(state);
+  std::sort(tile_ms.begin(), tile_ms.end());
+  MESSAGE("a kilometre of massif foot at ", budget, " a patch: ", whole.instances.size(),
+          " patches over ", tile_ms.size(), " tiles; open ", open_ms, " ms, the second open ",
+          reopen_ms, " ms; recipes ", recipe_bytes,
+          " bytes; every patch built (the load before G191) ", all_ms, " ms, ", triangles,
+          " triangles, ", bytes, " bytes of containers, the largest patch ", clusters_max,
+          " clusters; a tile's activation median ",
+          tile_ms.empty() ? 0.0 : tile_ms[tile_ms.size() / 2], " ms, max ",
+          tile_ms.empty() ? 0.0 : tile_ms.back(), " ms; built ", built);
+  CHECK(clusters_max <= 4096);
 }
