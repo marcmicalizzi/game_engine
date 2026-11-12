@@ -265,6 +265,59 @@ and the column says so; no research sub-agent was run.
 | The cut bound | No published step; the bed's own clasts (rocks.md, "The bed is rubble") | `k_cut_m` 0.22 m: the lowest the coarsest drawn clast stands (0.2 of 0.55 of a 2 m cell), a step the toe's clasts hide. Run once against the base (33ff2824): the 42-degree case's outline stood 7.43 m over the bare ground past it, past the bound. |
 | A pile on a bench at a brink | Not found as a rule; Sanders et al. (2009)'s "gorges filled by talus" are the opposite case (talus that does fill a steep notch, from a chute above it) | Authored: a pile whose deposit covers ground steeper than the toe lower than its own foot by more than its height drapes the drop, and is moved over the brink to the ground below. |
 
+### What G190 does on the tests' faces
+
+`deposits_rest_tests.cpp`, msvc-debug: a 20 m face at 63 degrees over 12 m of drop to a meadow at
+35 to 60 degrees, three seeds each (the seeds move only the edge's noise). The outline step is a
+talus sample's top over a bare neighbour's ground less what a surface at the repose falls between
+them: at most 0 where the surface meets the ground. The base column is the same case run once
+against 33ff2824's solver.
+
+| Slope below the face | Base: outline step, held of asked | G190: outline step, held of asked |
+|---|---|---|
+| 35 degrees | -0.05 m, 3,502 of 589 m³ (the wedge filled the slope) | -0.01 m, 240 of 650 m³ |
+| 42 degrees | **7.43 m**, 3,977 of 587 m³ | -0.02 m, 868 of 867 m³ |
+| 50 degrees | -0.08 m, 3,698 of 686 m³ | -0.02 m, 950 of 993 m³ |
+| 54 degrees | (not run on the base) | -0.02 m, 986 of 977 m³ |
+| 60 degrees | (not run on the base) | -0.02 m, 1,053 of 1,022 m³ |
+
+Every foot was on ground steeper than the repose on the base, none is now; the worst cut of a kept
+pile is under a millimetre. The forest's second world measured its beds on 54-degree ground at the
+median (20% of the outline dropping over 5 m); here the median ground under the bed is the transit
+slope's own below 54 degrees, where the wedge leans up it and meets it, and the meadow's (4.6
+degrees) from 54 up, where the transit slope is itself a source. A 2 m (4 m) bench at the brink of a
+45-degree, 10 m drop: all 65 (59) piles moved over the brink, none refused, no cut, holding 40%
+(57%) of what they were asked. A transit slope that runs on past the region's edge: all 65 falls
+refused, 863 m³ at 42 degrees and 1,621 at 50, and nothing stood. A 3 m channel with 56-degree
+banks down a 20-degree hillside: 312 piles shed from its banks read on the cut ground alone, none
+read against the ground before the cut.
+
+### What a kilometre of deposits costs
+
+G191 and T120, `deposits: what a kilometre of massif foot costs at load and a tile (measured)`,
+skipped in the suite and run by hand: a 1,024 m by 192 m window at 1 m of a 60 m face over a skirt
+grading through 50 to 35 degrees, 16 m patches, 64 m tiles; `msvc-release`, 2026-11-12 14:11-14:18,
+the CPU at 52-73% with other agents' builds and GPU runs, 52-60 GB of free commit, so every time is
+an upper bound, one run each. "Before" is what a host did at load until G191: every patch built and
+held.
+
+| | 128,000 triangles a patch (the forest's) | 32,000 (the default's density) |
+|---|---:|---:|
+| Patches, over tiles | 466 over 63 | 466 over 63 |
+| Built and held at load before G191 | 466 meshes, 36.6 M triangles, 2.93 GB of containers, 249 s of work single-threaded | 466, 12.1 M, 0.99 GB, 79 s |
+| Built at load now | none; recipes written: none (before: 466 files, 13.6 MB) | none |
+| `open` (plan, patches checked) | 316 ms | 289 ms |
+| The second open (T120; before, the plan again) | 43 ms | 37 ms |
+| A 64 m tile's activation (its patches built), median and max | 3.9 s, 7.8 s | 1.4 s, 2.4 s |
+| The largest patch | 3,934 clusters | 1,558 clusters |
+
+The host builds a tile's meshes off the frame's thread and in parallel, so a tile's activation is
+its patches' build spread over the pool, not a stall; at the forest's budget it is still four
+seconds of work a 64 m tile, and the default's density costs a third of it. Before G191 the same
+466 builds ran at load whatever the camera (the forest measured 40 s for 724 on twenty threads).
+Resident for the entry: the plan, 29 bytes a sample (5.7 MB for this window), its blocks and 72 bytes
+a candidate patch.
+
 Not found, and looked for: a published runout of talus below the base of a transit slope; a law for
 the volume a pile at the foot of a slope at its own repose holds (the wedge law gives zero section,
 and the model under-holds there, 37% of the supply at 35 degrees; rocks.md says so).

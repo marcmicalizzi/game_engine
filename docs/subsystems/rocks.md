@@ -1386,28 +1386,12 @@ generator logs the counts and the refused volume once an entry. **The bound, `k_
 not a metre**: the lowest the bed's coarsest drawn clast stands, `k_clast_stand_lo` (0.2) of the
 smallest clast of the 2 m lattice (0.55 of its cell), 0.22 m, a step the toe's own clasts hide.
 
-**What it does** (`deposits_rest_tests.cpp`, msvc-debug; a 20 m face at 63 degrees over 12 m of drop
-to a meadow at 35, 42 or 50 degrees, three seeds each; the outline step is a talus sample's top over
-a bare neighbour's ground less what a surface at the repose falls between them, at most 0 where the
-surface meets the ground):
-
-| Slope below the face | Base (33ff2824): outline step, held of asked | G190: outline step, held of asked |
-|---|---|---|
-| 35 degrees | -0.05 m, 3,502 of 589 m³ (the wedge filled the slope) | -0.01 m, 240 of 650 m³ |
-| 42 degrees | **7.43 m**, 3,977 of 587 m³ | -0.02 m, 868 of 867 m³ |
-| 50 degrees | -0.08 m, 3,698 of 686 m³ | -0.02 m, 950 of 993 m³ |
-| 54 degrees | (not run on the base) | -0.02 m, 986 of 977 m³ |
-| 60 degrees | (not run on the base) | -0.02 m, 1,053 of 1,022 m³ |
-
-The forest's second world measured its beds standing on 54-degree ground at the median (20% of
-the outline dropping over 5 m); here the median ground under the bed is the transit slope's own
-below 54 degrees, where the wedge leans up the slope and meets it, and the meadow's (4.6 degrees)
-from 54 up, where the transit slope is itself a source and the pile lies at its foot.
-Every foot was on ground steeper than the repose on the base, none is now; the worst cut of a kept
-pile is under a millimetre; no case moved or refused a pile, because every fall now runs on to the
-meadow before it stands. A 2 m (4 m) bench at the brink of a 45-degree, 10 m drop: all 65 (59) piles
-moved over the brink, none refused, no cut. A transit slope that runs on past the region's edge: all
-65 falls refused, 863 m³ at 42 degrees and 1,621 at 50, and nothing stood.
+**What it does** (`deposits_rest_tests.cpp`; the table is on the
+[grounding page](../experiments/rockfall-deposits.md#what-g190-does-on-the-tests-faces)): below a
+face whose foot falls 12 m at 35 to 60 degrees, the outline meets the ground everywhere (the base's
+stood 7.43 m over it at 42 degrees), no foot is on ground steeper than the repose, and a pile holds
+what it shed to 4% from 42 degrees up (the base's six times it); piles on a bench at a brink are all
+moved over it; a fall with nowhere to rest is all refused.
 
 **A face an edit cut sheds nothing.** A source is a rock face of the land. The forest's second world
 read its channels' cut banks (45-56 degrees) as faces and shed 649 piles into a stream's bed. The
@@ -1680,26 +1664,12 @@ stays resident for the entry is the plan (its per-sample ground, thickness, coar
 rock, 29 bytes a sample, the drainage dropped after planning), its blocks, and 72 bytes a candidate
 patch: 5.7 MB for the kilometre below.
 
-**What a kilometre costs** (`deposits: what a kilometre of massif foot costs at load and a tile
-(measured)`, skipped in the suite and run by hand: a 1,024 m by 192 m window at 1 m of a 60 m face
-over a skirt grading through 50 to 35 degrees, 16 m patches, 64 m tiles; `msvc-release`,
-2026-11-12 14:11-14:18, the CPU at 52-73% with other agents' builds and GPU runs, 52-60 GB of free
-commit, so every time is an upper bound, one run each):
-
-| | 128,000 triangles a patch (the forest's) | 32,000 (the default's density) |
-|---|---:|---:|
-| Patches, over tiles | 466 over 63 | 466 over 63 |
-| Built and held at load before G191 | 466 meshes, 36.6 M triangles, 2.93 GB of containers, 249 s single-threaded | 466, 12.1 M, 0.99 GB, 79 s |
-| Built at load now | none; recipes written: none (before: 466 files, 13.6 MB) | none |
-| `open` (plan, patches checked) | 316 ms | 289 ms |
-| The second open (T120; before, the plan again) | 43 ms | 37 ms |
-| A 64 m tile's activation (its patches built), median and max | 3.9 s, 7.8 s | 1.4 s, 2.4 s |
-| The largest patch | 3,934 clusters | 1,558 clusters |
-
-The host builds a tile's meshes off the frame's thread and in parallel, so a tile's activation is
-its patches' build spread over the pool, not a stall; at the forest's budget it is still four
-seconds of work a 64 m tile, and the default's density costs a third of it. Before G191 the same
-466 builds ran at load whatever the camera (the forest measured 40 s for 724 on twenty threads).
+**What a kilometre costs** ([measured](../experiments/rockfall-deposits.md#what-a-kilometre-of-deposits-costs),
+`msvc-release`, a loaded machine): at the forest's 128,000 triangles a 16 m patch, the 466 patches
+of a 1,024 m window were 36.6 M triangles and 2.93 GB built at load before G191 (249 s of work); now
+none is built at load, `open` is 316 ms, the second open 43 ms, and a 64 m tile's activation is
+3.9 s of work at the median (1.4 s at 32,000 a patch), spread over the host's pool off the frame's
+thread.
 
 **One plan a load** (T120; the forest's gap 44: the reader's and the world's placements
 consumer's opens each planned the whole region). The scene reader opens an entry, reads it and
