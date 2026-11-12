@@ -218,6 +218,12 @@ std::string canonical_rock_json(const RockFile& file) {
   // outcrop's or a scree's parameters — and the key over them — are the bytes they were before
   // the cliff was (rocks.md, "The build").
   if (json.is_object() && !filled.cliff.has_value()) json.as_object().erase(std::string("cliff"));
+  // A face's `members` (G200), left out when false, so every face written before it keys as it
+  // did and only a face that carves its members has a new key.
+  if (filled.cliff.has_value() && !filled.cliff->members && json.is_object()) {
+    JsonValue* cliff = json.find("cliff");
+    if (cliff != nullptr && cliff->is_object()) cliff->as_object().erase(std::string("members"));
+  }
   detail::drop_absent_sampling(json);
   detail::drop_default_formation(json);
   JsonWriteOptions compact;
