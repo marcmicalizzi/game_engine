@@ -52,10 +52,10 @@ namespace engine::landform {
 inline constexpr const char* k_determinism = "derived";
 
 /// Bumped whenever the same sketch would solve to different bytes; the field file records it.
-inline constexpr u32 k_solver_version = 8;
+inline constexpr u32 k_solver_version = 9;
 
 inline constexpr std::string_view k_fields_format = "engine.landform.fields";
-inline constexpr u32 k_fields_version = 3;
+inline constexpr u32 k_fields_version = 4;
 
 /// A point's whole flow, in the units its shares among its receivers and `route_divided`'s
 /// discharge are kept in: whole numbers, so a divided flow is conserved exactly.
@@ -102,6 +102,14 @@ struct Budget {
   f64 unrouted_m3 = 0.0;
   /// The solved ground's volume less the starting ground's, before the heights are rounded.
   f64 change_m3 = 0.0;
+  /// The ice's own load (landform.md, "Moraines"): what the glaciers' ice brought to their
+  /// snouts over the run (the sketch's `carried` share of the sediment that reached each one),
+  /// what of it was laid as ridges, and what was lodged under the ice. Delivered less the
+  /// ridges is what the ridges had no room for, which went on with the meltwater. All three
+  /// are inside `deposited_m3` and `eroded_m3` as any other sediment is.
+  f64 ice_delivered_m3 = 0.0;
+  f64 moraine_m3 = 0.0;
+  f64 lodged_m3 = 0.0;
 };
 
 /// Where a solve's wall-clock seconds went, by part (landform.md, "Performance notes"). For a
@@ -169,9 +177,26 @@ struct Landform {
   /// the glacier's extent, and with a sketch whose ice lasts to the run's end the ice of today.
   /// Empty of ice is zero; a sketch with no ice age writes zeros.
   Vector<u32> ice;
-  /// The till under the point, whole millimetres: the part of `sediment` that melted out of the
-  /// ice and nothing has removed since.
+  /// The till under the point, whole millimetres: the part of `sediment` the ice left (lodged
+  /// under it, or laid as a moraine at its snout) and nothing has removed since.
   Vector<u32> till;
+  /// The thickest ice that ever stood over the point, whole millimetres: the trimline is its
+  /// edge. Zero where no ice stood.
+  Vector<u32> ice_max;
+  /// The part of `till` that was laid as a ridge where a snout stood, whole millimetres
+  /// (landform.md, "Moraines"), and `moraine_crest` the ridge's crest line: zero off a crest,
+  /// else one more than the stand that laid it (1 is the ice's first line, 2 its first
+  /// `stands` entry). A crest whose ridge was since worn away keeps its mark while any of the
+  /// ridge's till is left under it.
+  Vector<u32> moraine;
+  Vector<u8> moraine_crest;
+  /// The sediment under the point that settled in standing water (a lake's delta and its
+  /// levelled floor), whole millimetres: the part of `sediment` that makes a flat. With `fill`
+  /// (the water standing now) it is the flat's extent: a lake, or a lake filled.
+  Vector<u32> lakebed;
+  /// The rock's surface, whole millimetres: the height less `sediment`. Under a lake's fill,
+  /// an outwash plain or a moraine it is the floor the ice and the rivers cut.
+  Vector<i32> rock_floor;
   /// How many times lateral erosion took a bank's point over the run.
   u32 banks_taken = 0;
   /// The steps the ice stood for.
@@ -248,7 +273,13 @@ bool read_field_window(const std::string& json_path, const Fields& header, std::
                        std::string& error);
 
 /// A shaded relief for a person to look at: RGBA8, `width * height * 4`, lit from the north-west
-/// at 45 degrees, the sea tinted, and with `drainage` the channels drawn by their area.
+/// at 45 degrees, the sea and standing water of half a metre or more tinted, and with
+/// `drainage` the channels drawn by their area.
 void shaded_relief(const Landform& land, bool drainage, Vector<u8>& rgba);
+
+/// What the ice left, over the same relief: pale blue where ice ever stood (fuller where it
+/// was thicker), ochre where a moraine lies with its crest line dark, green where a lake's
+/// fill makes a flat, and the lakes that stand.
+void ice_map(const Landform& land, Vector<u8>& rgba);
 
 }  // namespace engine::landform

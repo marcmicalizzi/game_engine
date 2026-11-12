@@ -474,3 +474,147 @@ second evaluation of the update. The two-range sketch (512 by 512, 300 steps of 
 ice), `engine-content landform --jobs 5` in `msvc-release`, the base's executable and this
 one's run alternately on a machine at 76% to 84% CPU before each run: the subsystem page's
 [performance notes](../subsystems/landform.md#performance-notes) have the pairs.
+
+## Stage F (W127): what the ice leaves
+
+2026-11-11, the night. Stage E left basins that a sheet of till buried. Stage F replaces the
+till rule with what is published of where a glacier's load goes: a ridge at the snout, a thin
+sheet under the ice, and the rest to the meltwater; gives the sketch's ice a history of stands;
+and writes the fields the next solvers read. **The reading was through a fetch that answers
+questions of a page**, so a quotation below is the text that reading returned, not a line
+checked against the page; where only an abstract or a search extract was reached it says so.
+
+### Moraines and lodged till: the sources
+
+| What | Statement | Source |
+|---|---|---|
+| A moraine's volume is a flux times a time | The lateral ridges of one glacier hold about 9,060,000 m³, an average increment of 1,160 m³ a year, built "largely during the past 5 000 years" from the retreat of 1.55 km² of rockwall at about a millimetre a year | Small 1983, *J. Glaciol.* 29(102):250–259 (Glacier de Tsidjiore Nouve). **Read** (the publisher's full text, once, through the fetch). The balance is his: volume = supply × duration |
+| How tall a ridge is | Lateral embankments "up to 60 m in height on their distal flanks"; abandoned dump moraines "standing characteristically 100 m or more above the present glacier"; ice-cored ridges "up to 10 m or more" | The same, **read**. `moraine_height_m` 60 is the tallest *ridge* in it (the 100 m is a ridge's crest above a glacier that has since thinned, not a ridge's height) |
+| A ridge's flanks | Distal slopes of the main ridge 31 to 41 degrees; the embankment's distal face about 40; proximal faces of abandoned ridges 70 or more | The same, **read** (as the fetch paraphrased the figures). `k_moraine_flank` 0.6 is tan 31°, the gentlest, and under the sketch's critical slope (0.8 by default), so the limiter leaves a ridge as laid. The steep ice-contact face is not modelled |
+| Relief of moraines in general, and what sets a volume | Some ice-marginal moraines "show relief of hundreds of metres"; volume "depends on ice velocity, the volume of debris within/upon a glacier, and the duration of ice margin stability" | Barr and Lovell 2014, *Geomorphology* 226:44–64. **Secondary** (a search extract; the full text would not open). No scaling of height with glacier size was found in anything reached, and none is used: the cap is a measured height and the glacier's own thickness |
+| The load leaves at the terminus | "Simulated glaciers advance to steady states in which ice accumulation equals ice ablation, and debris input equals debris loss from the glacier terminus" | Anderson and Anderson 2016, *The Cryosphere* 10:1105. **Abstract only** (the PDF would not decode; its section on deposition was not read). This is why the ice's share is laid at the snout and not along the melt, where stage E laid it |
+| The ice's share of a glacier's load | Ice-borne debris flux "ranges from 10^5 to 10^6 m3 a−1", "one to two orders of magnitude lower than the glacifluvial sediment fluxes"; the meltwater "constitutes 83.6–98.6% of total sediment yields" | Hunter, Powell and Lawson 1996, *J. Glaciol.* 42(140):123–135 (three Alaskan tidewater glaciers). **Read** (the publisher's reader, through the fetch, which warned its text layer is poor). `carried` 0.1 is inside the 0.014 to 0.164 that leaves for the ice. They are tidewater glaciers; no figure for a land-terminating valley glacier was reached |
+| That meltwater carries most of it | For temperate glaciers "fluvial transport of basal sediment dominates all other glacial sediment transport processes" | An encyclopedia entry citing Alley et al. 1997 (*Quat. Sci. Rev.* 16:1017) and Hallet, Hunter and Bogen 1996. **Secondary**; neither paper was read |
+| How thick the till under a glacier is | A penetrometer through boreholes under about 100 m of ice went "between 0.2 and 0.35 m"; "the mean maximum penetration was ∼0.3 m", with the authors' caution that they could not tell till that ends from till that stiffens, a stone or the bed | Hooke, Hanson, Iverson, Jansson and Fischer 1997, *J. Glaciol.* 43(143):172–179 (Storglaciären). **Read** (the first 100,000 characters). A second extract, source not identified, gives "a discontinuous layer of till, 0.2-0.5 m thick" through the same glacier's overdeepening: **secondary** |
+| How fast a glacier wears its bed | About 0.01 mm a year under polar and thin plateau glaciers to about 0.1 under temperate valley glaciers (the upper end of the review was not reached); 0.24 mm a year at Tsidjiore Nouve | Hallet, Hunter and Bogen 1996, *Global Planet. Change* 12:213–235, **secondary** (a search extract); Small 1983, **read** |
+
+Not reached, so nobody looks in the same places: Benn and Evans's textbook; Kirkbride and
+Winkler 2012; Putkonen and O'Neal 2006 beyond one line (a moraine's crest lowers by a quarter
+of its final height); Evans et al. 2006 on subglacial till; Vacco, Alley and Pollard 2009 and
+2010 beyond their abstracts (a flowline model that lays moraines from a sediment flux: "the
+number, positions, and volume of moraines formed all are sensitive to the climate history").
+
+### The rule, and what in it is this solver's
+
+**The balance.** A ridge's volume is the ice's delivery to the snout over the time the snout
+stays: each step, at a point ice reaches and none leaves, `carried` of the sediment arriving is
+the ice's load, and the ridge takes it up to its cap. The rest, the water's nine tenths and
+what the cap refuses, goes on down the river. Checked against Small's ridge: the stand
+valley's ice (a plateau of 10 km²) brings 152,000,000 m³ to its snouts in 30,000 years,
+5,000 m³ a year, where his ridges grew by 1,160 m³ a year below 1.55 km² of rockwall. That
+is the ice's tenth; the whole load at the snout is ten times it, some 4 mm a year off the
+glacier's bed, and **the model's ice wears its bed ten to thirty times as fast as a
+measured valley glacier** (0.1 to 0.24 mm a year), which the subsystem page already says
+("the ice is fast"). So a 5,000-year step's delivery overfills a ridge at the cap (a 60 m
+ridge 500 m long holds about 5,000,000 m³; a step brings 25,000,000 m³), and **what sets a
+ridge's size here is the cap, not the balance**: every step's snout gets a ridge near the
+cap, and of the 152,000,000 m³ delivered 16,000,000 m³ was laid as ridges. With an
+erodibility that gave measured rates the balance would bind, and a stand of several steps
+would be what builds a tall ridge.
+
+**The shape** (this solver's): across the valley square to the way the line runs for the
+next half width; as long as the glacier's width at its widest (the largest flux up the line:
+a snout is a lobe, where this model's width, which goes with the local flux, ends in a
+point); stopped by the first ground above the highest crest there could be; the crest one
+level for three quarters of a spacing either side of its line (so the points between two
+points of a diagonal crest are crest too); flanks at 0.6; a point's ridge never more than
+the cap. The level is found by forty halvings of sums and comparisons.
+
+**The gate** (this solver's, and what the first attempt lacked). Built first as a ridge
+across the line, the rule sent the stand valley's snout from column 159 to the region's edge
+on the second step and again on the fifth (159, 199, 170, 134, 199 against 159, 142, 140,
+127, 115 with nothing carried). The count: a ridge dams the valley, the flood fills the
+hollow behind it, and on a filled flat the receivers are a fan toward the spill, so the
+tongue's points beside its line no longer drain to it; the swath, which stage E defined as
+the points that drain to the line, loses them; and a glacier pays its melt over its swath.
+A terminal moraine is not closed while it is built (its glacier's river leaves through it),
+so the river's points take no till: the receiver's path down, the largest donor of water up
+(by water and not by ice: a second, smaller glacier may end a point below the first, and its
+ridge must not close the first's river), and any point that passes as much water as the
+snout does (a larger river its ridge would otherwise cross). With the gate the two runs'
+snouts agree to a point at every step. **What that costs: a moraine dams nothing.** A lake
+behind one is then held by what the model lays in front of the snout (outwash, by the
+rivers' law) and by rock, as the published "glacial series" has it (basin, moraine, outwash
+plain), and not by the ridge's crest. **The swath on a filled hollow is the weakness under
+this**, and it is still there for a basin the ice digs under its own tongue: Hergarten's
+donors-of-the-line definition has the same hole on any flat.
+
+**The lodged sheet** (the thickness is the measurement; the rest is this solver's). A point
+under ice keeps up to `lodged` of the ice's thickness of what passes: 0.005, half a metre
+under 100 m, the thick end of the Storglaciären layer; one glacier's measurement scaled by
+thickness, which nothing read supports or refutes. Laid as ordinary sediment it was wrong
+twice, each measured on the trough test's trunk: stripped and lodged again every step it is
+loose ground the cut must go through first, so where the ice wears less in a step than the
+sheet is thick the rock is never reached (the tributary's hanging step fell from 14 m to
+3 m); and taken out of the cut but stripped by the step's books and lodged again, the wear
+was cancelled in the books instead (the trunk's bed at the junction stood at 1,315 m, the
+river's own level, against 1,290 m). **So the sheet is the ice's sole**: it is no part of
+the loose ground in the sweeps, the books take a step's wear from under it, and it is
+topped up only by what it lacks. With that the trunk's junction is at 1,291 m and the
+hanging step 31 m (the sheet over the margin's point is not worn with it).
+
+**Stands.** `stands` is a list of years and line heights, each after the one before. The
+line is constant between them: a glacier's snout is still while its line is, as far as the
+ground lets it. It does not let it far: the stand valley's glacier draws back 11 points
+(560 m) a step with the line still, because its ice wears its own plateau down 10 m a step
+(no steady glacier: stage E's finding, unchanged). So a stand in this model is a row of
+ridges up the valley, one a step, not one ridge, and `moraine_crest` marks which stand laid
+each.
+
+**Not built: lateral moraines.** A ridge is laid at a snout only. Small's lateral ridges
+are built of rockwall debris carried on the ice's margin (four fifths supraglacial); here a
+slope above the ice sheds to its rivers, and nothing rides the margin.
+
+### What the two-range sketch shows, and why no lake lasts
+
+The sketch (512 by 512 at 32 m, 300 steps, ice from 1,100,000 to 1,480,000 years with the
+line at 800 m, the run ending at 1,500,000) solved by the base's executable and this one's,
+and three variants of it, `msvc-release`, counts over the points ice ever stood on:
+
+| Run | Moraine of a metre or more | Crest points | Tallest ridge | Water of a metre or more | Lake fill of a metre or more |
+|---|---|---|---|---|---|
+| As sketched (20,000 years after the ice) | 18 points | 14 | 11.9 m | none (deepest 0.76 m anywhere) | none |
+| The same, ended when its ice does | 136 | 92 | 39.6 m | 4 points, to 12.7 m | 2 |
+| With stands (the line at 950 m from 1,400,000 and 1,100 m from 1,440,000), as sketched | 5 | 5 | 3.2 m | none | 1 |
+| A colder ice age (the line at 600 m, the ice gone one step before the end) | 316 | 198 | 38.5 m | none (0.77 m) | 131 |
+
+**The brief's result is not there: no lake stands in the sketch at its ice age as
+sketched**, behind a moraine or in a basin, and with stage E's solver none did either. Why,
+each measured or counted:
+
+1. **The sketch's ice is thin**: 95.7 m at its thickest ever, on a range 1,150 m high with
+   the line at 800 m. The basins' rule digs to what the surface's fall over four thicknesses
+   allows, so its basins are a few metres.
+2. **A basin is filled as the ice draws back over it.** Nine tenths of a glacier's load
+   goes on with its meltwater, into whatever stands in front of the snout, and the model's
+   load is ten times a measured glacier's. In the firn valley, 60,000 years of ice leave 8
+   points of water to 12 m in rock; 40,000 years of rivers leave none, with 3 m of fill
+   over a cell among them. In the colder sketch the 131 points of lake fill are those
+   lakes: flats now.
+3. **A sill does not last.** A river cuts a sill at the rate its erodibility and its size
+   give: at the sketch's 1.2e-5 a year a river of 10 km² moves a step in its bed some 190 m,
+   six points, in a 5,000-year step, and till goes twice as fast. A moraine's gate is at the
+   floor to begin with.
+4. **Ridges do not last either.** The sketch lets its rivers cut at every point
+   (`channel_area_m2` 0) and till is loose ground at twice the rock's erodibility, so a
+   ridge's flank at 0.6 loses two to three metres a step: of 136 points of ridge when the
+   ice leaves, 18 are left 20,000 years on. Published moraines of that age have lost a
+   quarter of their height (Putkonen and O'Neal 2006, one line of an extract).
+5. **With stands the last stand has no ice to speak of** (134 points under 12 m of it at a
+   line of 1,100 m), and the first stand's ridges are 80,000 years old by the end.
+
+What a later pass needs for a lake a person sees in such a sketch: an ice age that ends at
+the run's end or near it; thicker ice (a colder line, or a higher range); and either a
+sediment yield that falls when the ice goes or lakes deep enough to outlast it. And the
+ridges need a rule for how loose a moraine is (not read: nothing reached gives till's
+erodibility against alluvium's).

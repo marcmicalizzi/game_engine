@@ -398,7 +398,7 @@ void find_lakes(u32 n, Q&& units, const u8* iced, Routing& r) {
 // "Deposition"): `v` metres over one cell fill the point and those of its eight neighbours that
 // stand lower, the lowest first, to one level no higher than `cap`, the water's. Returns what the
 // cap left over. Held points are never raised.
-f64 spread(f64* z, f64* sed, const u8* held, u32 p, f64 v, f64 cap, u32 w, u32 h,
+f64 spread(f64* z, f64* sed, f64* still, const u8* held, u32 p, f64 v, f64 cap, u32 w, u32 h,
            f64& laid) noexcept {
   u32 cell[9];
   f64 height[9];
@@ -445,6 +445,7 @@ f64 spread(f64* z, f64* sed, const u8* held, u32 p, f64 v, f64 cap, u32 w, u32 h
     const f64 rise = top - height[i];
     z[cell[i]] = top;
     sed[cell[i]] += rise;
+    if (still != nullptr) still[cell[i]] += rise;
     laid += rise;
   }
   return rest > 0.0 ? rest : 0.0;
@@ -458,8 +459,8 @@ struct LakeCell {
 // A lake's pool laid from its deepest point up to one level, no higher than its sill stands now
 // (landform.md, "Deposition"): what settles out of standing water levels its floor. Returns what
 // the full lake passes on to its sill.
-f64 fill_lake(const Routing& r, const Lake& lake, f64* z, f64* sed, Vector<LakeCell>& scratch,
-              f64& laid) {
+f64 fill_lake(const Routing& r, const Lake& lake, f64* z, f64* sed, f64* still,
+              Vector<LakeCell>& scratch, f64& laid) {
   const f64 cap = z[lake.sill];
   scratch.clear();
   for (u32 k = lake.begin; k < lake.end; ++k) {
@@ -490,6 +491,7 @@ f64 fill_lake(const Routing& r, const Lake& lake, f64* z, f64* sed, Vector<LakeC
     const f64 rise = top - scratch[i].height;
     z[scratch[i].cell] = top;
     sed[scratch[i].cell] += rise;
+    still[scratch[i].cell] += rise;
     laid += rise;
   }
   return rest > 0.0 ? rest : 0.0;
@@ -903,8 +905,19 @@ constexpr i32 k_ice_reach_cells = 96;
 // many points whatever the ice's thickness.
 constexpr u32 k_ice_coupling_points = 64;
 
+// A point of a moraine being laid: its ground plus how far its top stands under the crest (the
+// level at which it begins to take till), that fall, the till it has room for, and the cell.
+struct MoraineCell {
+  f64 ground = 0.0;
+  f64 drop = 0.0;
+  f64 room = 0.0;
+  u32 cell = 0;
+};
+
 struct IceField {
-  bool on = false;  // the ice stands this step
+  bool on = false;           // the ice stands this step
+  Vector<MoraineCell> band;  // scratch: the ridge being laid
+  Vector<u32> gate;          // scratch: the points of the line through it, which stay open
   f64 erodibility = 0.0;
   Vector<f64> flux;      // the ice a point passes on, in cells making ice in full
   Vector<f64> arriving;  // what reaches it from above
@@ -912,11 +925,21 @@ struct IceField {
   Vector<f64> own;       // the ice the point's own flux makes, metres (its line's thickness)
   Vector<f64> thick;     // the ice over the point this step, metres
   Vector<f64> before;    // and last step
-  Vector<f64> melt;      // the share of the ice reaching the point that melts there
+  Vector<f64> peak;      // the largest flux up the line from the point: its glacier at its widest
+  Vector<f64> most;      // the thickest ice that ever stood over the point, metres
   Vector<f64> add;       // till to lay once the step's books are done
   Vector<f64> till;      // till laid so far
+  Vector<f64> moraine;   // the part of it laid as a ridge at a snout
+  Vector<u8> crest;      // a ridge's crest line: one more than the stand that laid it
+  Vector<u8> snout;      // ice reaches the point and none leaves it: a glacier ends here
   Vector<u8> iced;       // the point is under a glacier this step
   Vector<u8> was;        // and last step
+  u8 stand = 0;          // the stand the line is at this step: 0 is the ice's first line
+  // The ice's load over the run, metres over one cell: what the ice brought to its snouts, what
+  // of it was laid as ridges, and what was lodged under the ice.
+  f64 delivered = 0.0;
+  f64 ridged = 0.0;
+  f64 lodged = 0.0;
   // The point each iced point's erosion reads the ice's surface at, a coupling's reach down
   // its line, and how far that is in spacings (landform.md, "Basins the ice digs").
   Vector<u32> far;
@@ -927,9 +950,10 @@ f64 ice_width_m(const Ice& c, f64 cells, f64 cell_km2) noexcept {
   return c.width_m * det::exp(k_ice_width_power * det::log(cells * cell_km2));
 }
 
-// This step's ice: the flux, the swaths, the thickness, what melts where.
+// This step's ice with the equilibrium line at `ela_m`: the flux, the swaths, the thickness,
+// where each glacier ends.
 void glaciate(const Sketch& s, const Frame& frame, const u8* held, const f64* z, const Routing& r,
-              IceField& ice) {
+              f64 ela_m, IceField& ice) {
   const Ice& c = *s.ice;
   const u32 w = frame.w;
   const u32 n = w * frame.h;
@@ -945,14 +969,16 @@ void glaciate(const Sketch& s, const Frame& frame, const u8* held, const f64* z,
   f64* reach = ice.reach.data();
   f64* thick = ice.thick.data();
   const f64* before = ice.before.data();
-  f64* melt = ice.melt.data();
+  f64* peak = ice.peak.data();
+  u8* snout = ice.snout.data();
   u8* iced = ice.iced.data();
   for (u32 p = 0; p < n; ++p) {
     flux[p] = 0.0;
     arriving[p] = 0.0;
     reach[p] = 0.0;
     thick[p] = 0.0;
-    melt[p] = 0.0;
+    peak[p] = 0.0;
+    snout[p] = 0;
     iced[p] = 0;
   }
   // The flux, every donor before its receiver (Hergarten 2021, equation 21, kept to the ice). A
@@ -963,22 +989,29 @@ void glaciate(const Sketch& s, const Frame& frame, const u8* held, const f64* z,
   // pays for the melt over the whole of its swath** and ends where its catchment's ice is
   // spent. (Hergarten's sum takes the loss of every point of the catchment, ice on it or not;
   // taking it of the glacier's own surface is the same balance with the glacier's own area.)
+  // **A snout** is a point ice reaches and none leaves; `peak` carries down each line the
+  // largest flux anywhere above, which is the glacier at its widest (under its equilibrium
+  // line) and what its moraine is as long as.
   for (u32 k = n; k-- > 0;) {
     const u32 p = order[k];
     if (held[p] != 0) continue;
-    const f64 above = z[p] + before[p] - c.ela_m;
+    const f64 above = z[p] + before[p] - ela_m;
     f64 made = above >= 0.0 ? above / c.full_m : above / c.melt_m;
     if (made > 1.0) made = 1.0;
     const f64 from_above = arriving[p];
     if (made < 0.0 && !(from_above > 0.0) && was[p] == 0) continue;
     const f64 passed = from_above + made;
+    const u32 below = neighbour(p, o.at[receiver[p]]);
     if (passed > 0.0) {
       flux[p] = passed;
-      if (made < 0.0) melt[p] = -made < from_above ? -made / from_above : 1.0;
-      arriving[neighbour(p, o.at[receiver[p]])] += passed;
+      arriving[below] += passed;
+      const f64 widest = peak[p] > passed ? peak[p] : passed;
+      if (widest > peak[below]) peak[below] = widest;
     } else {
-      if (from_above > 0.0) melt[p] = 1.0;
-      if (was[p] != 0) arriving[neighbour(p, o.at[receiver[p]])] += passed;
+      // (`peak` and not what arrived: a swath's melt arrives too, as a loss, and may outweigh
+      // the line's ice at the very point the line ends.)
+      if (peak[p] > 0.0) snout[p] = 1;
+      if (was[p] != 0) arriving[below] += passed;
     }
   }
   // Each line's own ice: as thick as its flux makes it, and half its width in points.
@@ -1095,49 +1128,215 @@ void glaciate(const Sketch& s, const Frame& frame, const u8* held, const f64* z,
   }
 }
 
-// What melts out of the ice at a point, laid as till over the glacier's width there: `drop`
-// metres over one cell shared by the points within half the width that are under the ice (or
-// the point alone, at a snout). It is kept aside and laid once the step's books are done.
-f64 lay_till(const Sketch& s, const Frame& frame, const u8* held, u32 p, f64 drop, IceField& ice) {
-  const u32 w = frame.w;
-  const i32 wi = static_cast<i32>(w);
+// A moraine's flank, rise over run: 31 degrees, the gentlest of the distal slopes measured on
+// the lateral moraines of Glacier de Tsidjiore Nouve (31 to 41 degrees: Small 1983), and never
+// steeper than the sketch's critical slope, so the slope limiter leaves a ridge as it was laid.
+constexpr f64 k_moraine_flank = 0.6;
+// A crest is level for this many spacings either side of its line. The points between two
+// points of a diagonal crest line stand 0.71 of a spacing off it, and a crest that fell away
+// there would let the valley's water through the ridge.
+constexpr f64 k_moraine_crest_cells = 0.75;
+// The crest's level is found by halving: this many halvings of at most 300 m end under a
+// millimetre's millionth.
+constexpr u32 k_moraine_halvings = 40;
+// The smallest ice that is a glacier, square kilometres of ground making ice in full: the
+// glacier inventories map nothing under 0.01 km2.
+constexpr f64 k_glacier_min_km2 = 0.01;
+// A snout looks this many points down its line, at most, for the way its valley runs.
+constexpr i32 k_moraine_heading_points = 16;
+
+// A moraine (landform.md, "Moraines"): `load` metres over one cell, what the ice brought to its
+// snout at `p` this step, laid as a ridge across the valley there. The ridge is as long as the
+// glacier is wide at its widest (`peak`: a snout is a lobe as wide as its tongue, where this
+// model's width, which goes with the flux, would end in a point) and stops at the first ground
+// either side that stands above it, the valley's walls. Its crest is one level, so it dams the
+// valley from wall to wall; its flanks fall at `k_moraine_flank` up and down the valley; and
+// the crest stands no higher above the floor at the snout, less what earlier steps laid there,
+// than the sketch's `moraine_height_m` or the glacier's thickness at its widest. The level is
+// the one at which the ridge holds the load, found by halving (sums, products and
+// comparisons: the same bytes everywhere). Kept aside in `add` until the step's books are
+// done. Returns what was laid; the rest is the meltwater's.
+f64 lay_moraine(const Sketch& s, const Frame& frame, const u8* held, const u8* receiver,
+                const u64* discharge, const f64* z, u32 p, f64 load, IceField& ice) {
+  const Ice& c = *s.ice;
+  const i32 wi = static_cast<i32>(frame.w);
   const i32 hi = static_cast<i32>(frame.h);
-  const f64 cell_km2 = frame.spacing_m * frame.spacing_m * 1.0e-6;
-  const f64 through = ice.arriving[p] > 1.0 ? ice.arriving[p] : 1.0;
-  const f64 wide = ice_width_m(*s.ice, through, cell_km2);
-  // A moraine stands no higher than the ice that built it: a point takes till up to the
-  // thickness of the glacier here, and what it has no room for goes on with the meltwater.
-  const f64 deep = s.ice->thickness_ratio * wide;
-  i32 radius = static_cast<i32>(0.5 * wide / frame.spacing_m);
-  if (radius > k_ice_reach_cells) radius = k_ice_reach_cells;
-  const i32 px = static_cast<i32>(p % w);
-  const i32 py = static_cast<i32>(p / w);
-  const u8* iced = ice.iced.data();
-  const f64* till = ice.till.data();
+  const Offsets o = neighbour_offsets(frame.w);
+  const f64 spacing = frame.spacing_m;
+  const f64 cell_km2 = spacing * spacing * 1.0e-6;
+  const f64 wide = ice_width_m(c, ice.peak[p], cell_km2);
+  const f64 half = 0.5 * wide;
+  const f64 deep = c.thickness_ratio * wide;
+  const f64 tall = c.moraine_height_m < deep ? c.moraine_height_m : deep;
+  if (!(tall > 0.0) || !(load > 0.0)) return 0.0;
+  // Ice too small to be a glacier builds no ridge: a slope's thread of a few points ends under
+  // every crest, and its debris is the slope's.
+  if (ice.peak[p] * cell_km2 < k_glacier_min_km2) return 0.0;
+  // The way the valley runs: from the snout to the point a half width down its line.
+  i32 reach_points = static_cast<i32>(half / spacing);
+  if (reach_points < 2) reach_points = 2;
+  if (reach_points > k_moraine_heading_points) reach_points = k_moraine_heading_points;
+  i32 dx = 0, dz = 0;
+  u32 q = p;
+  for (i32 k = 0; k < reach_points; ++k) {
+    const u8 code = receiver[q];
+    if (code == k_no_receiver) break;
+    dx += k_receiver_dx[code];
+    dz += k_receiver_dz[code];
+    q = neighbour(q, o.at[code]);
+    if (held[q] != 0) break;
+  }
+  if (dx == 0 && dz == 0) return 0.0;
+  const f64 length = std::sqrt(static_cast<f64>(dx * dx + dz * dz));
+  const f64 ux = static_cast<f64>(dx) / length;
+  const f64 uz = static_cast<f64>(dz) / length;
+  const f64 flank = k_moraine_flank < s.critical_slope ? k_moraine_flank : s.critical_slope;
+  const f64 shoulder = k_moraine_crest_cells * spacing;
+  const f64 foot = shoulder + tall / flank;
   f64* add = ice.add.data();
-  u32 count = 0;
-  f64 laid = 0.0;
-  for (u32 pass = 0; pass < 2; ++pass) {
-    for (i32 dy = -radius; dy <= radius; ++dy) {
-      const i32 y = py + dy;
-      if (y < 0 || y >= hi) continue;
-      for (i32 dx = -radius; dx <= radius; ++dx) {
-        const i32 x = px + dx;
-        if (x < 0 || x >= wi || dx * dx + dy * dy > radius * radius) continue;
-        const u32 u = static_cast<u32>(y) * w + static_cast<u32>(x);
-        if (held[u] != 0 || (u != p && iced[u] == 0)) continue;
-        if (pass == 0) {
-          ++count;
-          continue;
-        }
-        const f64 room = deep - till[u] - add[u];
-        const f64 share = drop / static_cast<f64>(count);
-        const f64 given = share < room ? share : (room > 0.0 ? room : 0.0);
-        add[u] += given;
-        laid += given;
+  f64* moraine = ice.moraine.data();
+  const f64 top = z[p] + add[p] - moraine[p] + tall;
+  const i32 px = static_cast<i32>(p % frame.w);
+  const i32 pz = static_cast<i32>(p / frame.w);
+  // How far the crest runs either side: to the first ground above the highest crest there could
+  // be, or half the glacier's width.
+  f64 side_reach[2] = {half, half};
+  i32 side_points = static_cast<i32>(half / spacing);
+  if (side_points > k_ice_reach_cells) side_points = k_ice_reach_cells;
+  for (u32 side = 0; side < 2; ++side) {
+    const f64 sign = side == 0 ? 1.0 : -1.0;
+    for (i32 j = 1; j <= side_points; ++j) {
+      const f64 along = sign * static_cast<f64>(j);
+      const i32 x = px + static_cast<i32>(std::floor(-uz * along + 0.5));
+      const i32 y = pz + static_cast<i32>(std::floor(ux * along + 0.5));
+      bool wall = x < 0 || y < 0 || x >= wi || y >= hi;
+      if (!wall) {
+        const u32 u = static_cast<u32>(y) * frame.w + static_cast<u32>(x);
+        wall = held[u] != 0 || z[u] + add[u] >= top;
+      }
+      if (wall) {
+        side_reach[side] = (static_cast<f64>(j) - 0.5) * spacing;
+        break;
       }
     }
-    if (count == 0) return 0.0;
+  }
+  // **The meltwater keeps its gate**: the points of the glacier's own line through the ridge,
+  // up the line (the donor the most water comes from: a second glacier may end a point below
+  // the first, and its ridge must not close the first's river) and down it (the receiver: on a
+  // gentle floor the water divides, and one way through is enough) for the ridge's foot, take no
+  // till, and nor does any point that passes as much water as the snout does (below). A terminal
+  // moraine is breached where the glacier's river leaves it while it is being built, and a ridge
+  // laid across the line would dam the valley under the glacier's own tongue: the flood then fills
+  // the hollow, the tongue's points drain across the fill in a fan and not to its line, the swath
+  // loses them, and a glacier that pays no melt over its width runs to the region's edge (measured
+  // before the gate was built: the grounding page).
+  Vector<u32>& gate = ice.gate;
+  gate.clear();
+  gate.push_back(p);
+  i32 gate_points = static_cast<i32>(foot / spacing) + 2;
+  if (gate_points > k_ice_reach_cells) gate_points = k_ice_reach_cells;
+  q = p;
+  for (i32 k = 0; k < gate_points; ++k) {
+    const u8 code = receiver[q];
+    if (code == k_no_receiver) break;
+    q = neighbour(q, o.at[code]);
+    if (held[q] != 0) break;
+    gate.push_back(q);
+  }
+  q = p;
+  for (i32 k = 0; k < gate_points; ++k) {
+    const i32 qx = static_cast<i32>(q % frame.w);
+    const i32 qz = static_cast<i32>(q / frame.w);
+    u32 from = q;
+    u64 most = 0;
+    for (u32 j = 0; j < 8; ++j) {
+      const i32 x = qx + k_receiver_dx[j];
+      const i32 y = qz + k_receiver_dz[j];
+      if (x < 0 || y < 0 || x >= wi || y >= hi) continue;
+      const u32 u = static_cast<u32>(y) * frame.w + static_cast<u32>(x);
+      if (receiver[u] != ((j + 4) & 7u) || !(discharge[u] > most)) continue;
+      most = discharge[u];
+      from = u;
+    }
+    if (from == q) break;
+    q = from;
+    gate.push_back(q);
+  }
+  const u32* gate_cells = gate.data();
+  const u32 gate_count = gate.size();
+  // The ridge's points: each with its ground and how far its top stands under the crest.
+  Vector<MoraineCell>& band = ice.band;
+  band.clear();
+  i32 radius = static_cast<i32>(std::sqrt(half * half + foot * foot) / spacing) + 1;
+  if (radius > k_ice_reach_cells) radius = k_ice_reach_cells;
+  f64 lowest = top;
+  for (i32 ey = -radius; ey <= radius; ++ey) {
+    const i32 y = pz + ey;
+    if (y < 0 || y >= hi) continue;
+    for (i32 ex = -radius; ex <= radius; ++ex) {
+      const i32 x = px + ex;
+      if (x < 0 || x >= wi) continue;
+      const f64 fx = static_cast<f64>(ex) * spacing;
+      const f64 fy = static_cast<f64>(ey) * spacing;
+      const f64 across = -fx * uz + fy * ux;
+      if (across > side_reach[0] || -across > side_reach[1]) continue;
+      const f64 down = fx * ux + fy * uz;
+      const f64 off = down < 0.0 ? -down : down;
+      if (off > foot) continue;
+      const u32 u = static_cast<u32>(y) * frame.w + static_cast<u32>(x);
+      if (held[u] != 0) continue;
+      // Open: the gate up the line, and any point as much water passes as passes the snout
+      // (its own river below it, and a larger river its ridge would otherwise cross).
+      bool open = discharge[u] >= discharge[p];
+      for (u32 k = 0; k < gate_count && !open; ++k)
+        open = gate_cells[k] == u;
+      if (open) continue;
+      MoraineCell cell;
+      cell.cell = u;
+      cell.drop = off > shoulder ? (off - shoulder) * flank : 0.0;
+      cell.ground = z[u] + add[u] + cell.drop;
+      cell.room = tall - moraine[u];
+      if (cell.ground >= top || !(cell.room > 0.0)) continue;
+      if (cell.ground < lowest) lowest = cell.ground;
+      band.push_back(cell);
+    }
+  }
+  if (band.size() == 0) return 0.0;
+  const MoraineCell* cells = band.data();
+  const u32 count = band.size();
+  const auto holds = [cells, count](f64 level) {
+    f64 sum = 0.0;
+    for (u32 i = 0; i < count; ++i) {
+      if (!(level > cells[i].ground)) continue;
+      const f64 over = level - cells[i].ground;
+      sum += over < cells[i].room ? over : cells[i].room;
+    }
+    return sum;
+  };
+  f64 level = top;
+  if (holds(top) > load) {
+    f64 lo = lowest, up = top;
+    for (u32 k = 0; k < k_moraine_halvings; ++k) {
+      const f64 mid = 0.5 * (lo + up);
+      if (holds(mid) > load) {
+        up = mid;
+      } else {
+        lo = mid;
+      }
+    }
+    level = lo;
+  }
+  const u8 mark = static_cast<u8>(ice.stand + 1);
+  u8* crest = ice.crest.data();
+  f64 laid = 0.0;
+  for (u32 i = 0; i < count; ++i) {
+    f64 given = level - cells[i].ground;
+    if (!(given > 0.0)) continue;
+    if (given > cells[i].room) given = cells[i].room;
+    add[cells[i].cell] += given;
+    moraine[cells[i].cell] += given;
+    if (cells[i].drop == 0.0) crest[cells[i].cell] = mark;
+    laid += given;
   }
   return laid;
 }
@@ -1351,6 +1550,8 @@ void build_network(const RiverInputs& in, const Routing& r, jobs::JobSystem* job
   const f64* ice_flux = icy ? in.ice->flux.data() : nullptr;
   const f64* ice_reach = icy ? in.ice->reach.data() : nullptr;
   const f64* ice_thick = icy ? in.ice->thick.data() : nullptr;
+  const f64* ice_till = icy ? in.ice->till.data() : nullptr;
+  const f64* ice_moraine = icy ? in.ice->moraine.data() : nullptr;
   const f64 ice_k = icy ? in.ice->erodibility : 0.0;
   find_shares(w, in.h, in.divide_units, iced, jobs, r, net);
   accumulate_shares(w, in.h, r, net);
@@ -1563,6 +1764,17 @@ void build_network(const RiverInputs& in, const Routing& r, jobs::JobSystem* job
       // Ice lays nothing down under itself here: what it carries melts out in the step's books.
       deposit[i] = under_ice ? 0.0 : (in.settle[p] < cells ? in.settle[p] / cells : 1.0);
       loose[i] = in.sed[p];
+      if (under_ice) {
+        // **Lodged till is the ice's own sole, not a cover over its bed**: a glacier slides on
+        // its till and wears the rock under it. Counted as loose sediment it would have to be
+        // stripped before the rock is cut, every step, since every step lodges it again; and
+        // where the ice wears less in a step than the sheet is thick (a swath's margin, a
+        // tributary's step) the rock would never be reached. So under ice the lodged sheet
+        // (the till that is not a ridge) is no part of the loose ground the cut goes through
+        // first, and the step's books take the wear from under it.
+        const f64 sheet = ice_till[p] - ice_moraine[p];
+        if (sheet > 0.0) loose[i] = in.sed[p] > sheet ? in.sed[p] - sheet : 0.0;
+      }
       soft[i] = in.loose_dt * power;
       firm[i] = hard * power;
       ratio[i] = hard / in.loose_dt;
@@ -1964,8 +2176,24 @@ bool validate_sketch(const Sketch& s, std::string& error) {
     if (!in_range(s.ice->coupling, 0.0, 10.0)) return refuse("a sketch's ice.coupling is 0 to 10");
     if (!in_range(s.ice->adverse_slope, 0.5, 11.0))
       return refuse("a sketch's ice.adverse_slope is 0.5 to 11");
+    if (!in_range(s.ice->carried, 0.0, 1.0)) return refuse("a sketch's ice.carried is 0 to 1");
+    if (!in_range(s.ice->moraine_height_m, 0.0, 300.0))
+      return refuse("a sketch's ice.moraine_height_m is 0 to 300 m");
+    if (!in_range(s.ice->lodged, 0.0, 0.1)) return refuse("a sketch's ice.lodged is 0 to 0.1");
     if (s.ice->from_yr < 0 || (s.ice->until_yr && *s.ice->until_yr < s.ice->from_yr))
       return refuse("a sketch's ice stands from from_yr, 0 or later, until until_yr, no earlier");
+    if (s.ice->stands.size() > 254) return refuse("a sketch's ice has 254 stands or fewer");
+    i64 last_yr = s.ice->from_yr;
+    for (u32 k = 0; k < s.ice->stands.size(); ++k) {
+      const IceStand& stand = s.ice->stands[k];
+      if (!in_range(stand.ela_m, -11000.0, 9000.0))
+        return refuse("a sketch's ice.stands' ela_m is -11,000 to 9,000 m");
+      if (stand.from_yr <= last_yr)
+        return refuse(
+            "a sketch's ice.stands are in order of time, each after the one before it and "
+            "the first after the ice's from_yr");
+      last_yr = stand.from_yr;
+    }
   }
   if (!in_range(s.rock.resistance, 0.0, 1.0)) return refuse("a sketch's rock.resistance is 0 to 1");
   if (!in_range(s.rock.contrast, 1.0, 1000.0))
@@ -2231,6 +2459,9 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
   Vector<f64> iterate_field(n);
   Vector<f64> carry_field(n, 0.0);
   Vector<LakeCell> lake_scratch;
+  // The part of the sediment that settled in standing water: a lake's delta and its floor.
+  Vector<f64> still_field(n, 0.0);
+  f64* still = still_field.data();
   Vector<f32> resistance_field(n);  // the rock at each point's surface this step, 0 to 1
   f32* resist = resistance_field.data();
   read_resistance(s, strata, frame, z, lift, 0.0, jobs, resist);
@@ -2291,9 +2522,13 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
     ice.own.assign(n, 0.0);
     ice.thick.assign(n, 0.0);
     ice.before.assign(n, 0.0);
-    ice.melt.assign(n, 0.0);
+    ice.peak.assign(n, 0.0);
+    ice.most.assign(n, 0.0);
     ice.add.assign(n, 0.0);
     ice.till.assign(n, 0.0);
+    ice.moraine.assign(n, 0.0);
+    ice.crest.assign(n, u8{0});
+    ice.snout.assign(n, u8{0});
     ice.iced.assign(n, u8{0});
     ice.was.assign(n, u8{0});
     ice.far.assign(n, 0u);
@@ -2338,9 +2573,22 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
         // comes there is none, and a glacier found without one melts along its line only and
         // runs to the region's edge whatever the line's height: so that step finds the ice
         // twice, the second time over the first's swath.
-        if (ice_steps == 0) glaciate(s, frame, held, z, routing, ice);
-        glaciate(s, frame, held, z, routing, ice);
+        // The line stands where the latest stand that has begun puts it.
+        f64 ela_m = s.ice->ela_m;
+        ice.stand = 0;
+        for (u32 k = 0; k < s.ice->stands.size(); ++k) {
+          if (s.ice->stands[k].from_yr > at) break;
+          ela_m = s.ice->stands[k].ela_m;
+          ice.stand = static_cast<u8>(k + 1);
+        }
+        if (ice_steps == 0) glaciate(s, frame, held, z, routing, ela_m, ice);
+        glaciate(s, frame, held, z, routing, ela_m, ice);
         ++ice_steps;
+        // The thickest ice that ever stood: the trimline's field.
+        const f64* thick = ice.thick.data();
+        f64* most = ice.most.data();
+        for (u32 p = 0; p < n; ++p)
+          if (thick[p] > most[p]) most[p] = thick[p];
       }
     }
     banks.iced = ice.on ? ice.iced.data() : nullptr;
@@ -2396,18 +2644,59 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
       const u32 tag = sill[p];
       const bool is_sill = tag != k_no_sill && (tag & k_sill_flag) != 0;
       if (is_sill && lakes[tag & ~k_sill_flag].pool > 0.0)
-        q += fill_lake(routing, lakes[tag & ~k_sill_flag], z, sed, lake_scratch, laid);
+        q += fill_lake(routing, lakes[tag & ~k_sill_flag], z, sed, still, lake_scratch, laid);
       if (held[p] != 0) {
         left += q;
         continue;
       }
       q += carry[p];
       carry[p] = 0.0;
-      if (settles && ice.on && ice.melt[p] > 0.0 && q > 0.0) {
-        // What the ice carried melts out with the ice: that share is till here.
-        const f64 stays = lay_till(s, frame, held, p, q * ice.melt[p], ice);
-        laid += stays;
-        q -= stays;
+      // The lodged sheet under the point's ice, which rides with the ice through this step's
+      // wear (below); nothing off the ice.
+      f64 rides = 0.0;
+      if (settles && ice.on) {
+        // Under the ice a thin sheet of what passes is lodged: up to `lodged` of the ice's
+        // thickness (landform.md, "Moraines"). **The sheet is the ice's sole, not a cover
+        // over its bed**: the wear of this step is taken from what lies under it (a ridge
+        // the ice has overridden, a river's deposit, then the rock), and the sheet is topped
+        // up only by what it lacks. Were it stripped and lodged again each step, a point the
+        // ice wears by less than the sheet's thickness a step would never lose rock: measured,
+        // the trough test's trunk stood 25 m above its own bed with nothing lodged.
+        if (ice.iced[p] != 0) {
+          rides = ice.till[p] - ice.moraine[p];
+          if (rides < 0.0) rides = 0.0;
+          if (rides > sed[p]) rides = sed[p];
+          // What the wear leaves of the rest, settled here: what standing water beside the
+          // point lays on it later in these books is new sediment, and must not stand in for
+          // a ridge worn away. (`add` so far is ridge laid on the point in these books.)
+          const f64 cut = z[p] - hk[p];
+          const f64 other = sed[p] - rides;
+          const f64 other_left = cut > 0.0 ? (other > cut ? other - cut : 0.0) : other;
+          f64 ridge = ice.moraine[p] - ice.add[p];
+          if (ridge > other_left) ridge = other_left;
+          if (ridge < 0.0) ridge = 0.0;
+          ice.moraine[p] = ridge + ice.add[p];
+          ice.till[p] = rides + ridge;
+          const f64 room = s.ice->lodged * ice.thick[p] - rides - ice.add[p];
+          if (room > 0.0 && q > 0.0) {
+            const f64 given = q < room ? q : room;
+            ice.add[p] += given;
+            ice.lodged += given;
+            laid += given;
+            q -= given;
+          }
+        }
+        // At a snout the ice's own share of the load is left as a ridge across the valley; the
+        // water's share, and what the ridge has no room for, goes on down the river.
+        if (ice.snout[p] != 0 && q > 0.0) {
+          const f64 load = q * s.ice->carried;
+          const f64 stays =
+              lay_moraine(s, frame, held, receiver, network.discharge.data(), z, p, load, ice);
+          ice.delivered += load;
+          ice.ridged += stays;
+          laid += stays;
+          q -= stays;
+        }
       }
       if (!settles) {
         // G = 0: nothing settles, in standing water either. What is cut leaves.
@@ -2424,21 +2713,22 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
         Lake& lake = lakes[sill[tag] & ~k_sill_flag];
         if (q > 0.0) {
           const f64 mouth = q * s.delta_share;
-          lake.pool += q - mouth + spread(z, sed, held, p, mouth, z[lake.sill], w, h, laid);
+          lake.pool += q - mouth + spread(z, sed, still, held, p, mouth, z[lake.sill], w, h, laid);
         }
         continue;
       }
       if (has_sea && z[p] <= sea) {
         // The sea: everything settles, the deepest ground about the point first, to the sea's
         // level and no higher; what that leaves goes on along the bed.
-        if (q > 0.0) send(p, spread(z, sed, held, p, q, sea, w, h, laid));
+        if (q > 0.0) send(p, spread(z, sed, nullptr, held, p, q, sea, w, h, laid));
         continue;
       }
       f64 lost = z[p] - hk[p];
       if (q + lost < 0.0) lost = -q;  // an iterate that laid down more than arrived
       if (lost > 0.0) {
         eroded += lost;
-        sed[p] = sed[p] > lost ? sed[p] - lost : 0.0;
+        const f64 other = sed[p] - rides;
+        sed[p] = (other > lost ? other - lost : 0.0) + rides;
       } else {
         laid -= lost;
         sed[p] -= lost;
@@ -2451,6 +2741,8 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
       // is never more than the sediment that is still there.
       f64* add = ice.add.data();
       f64* till = ice.till.data();
+      f64* moraine = ice.moraine.data();
+      u8* crest = ice.crest.data();
       for (u32 p = 0; p < n; ++p) {
         if (add[p] > 0.0) {
           z[p] += add[p];
@@ -2459,8 +2751,12 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
           add[p] = 0.0;
         }
         if (till[p] > sed[p]) till[p] = sed[p];
+        if (moraine[p] > till[p]) moraine[p] = till[p];
+        if (!(moraine[p] > 0.0)) crest[p] = 0;
       }
     }
+    for (u32 p = 0; p < n; ++p)
+      if (still[p] > sed[p]) still[p] = sed[p];
     lap(timing.books_s);
     if (s.lateral_erosion > 0.0) {
       banks.step = step;
@@ -2569,6 +2865,9 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
   out.budget.settled_m3 = settled * cell_m2;
   out.budget.unrouted_m3 = unrouted * cell_m2;
   out.budget.change_m3 = (total() - volume_start) * cell_m2;
+  out.budget.ice_delivered_m3 = ice.delivered * cell_m2;
+  out.budget.moraine_m3 = ice.ridged * cell_m2;
+  out.budget.lodged_m3 = ice.lodged * cell_m2;
   out.river_sweeps = sweeps;
   out.network_levels = network.level_begin.size() > 0 ? network.level_begin.size() - 1 : 0;
   out.sediment.resize(n);
@@ -2628,12 +2927,28 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
   out.ice_steps = ice_steps;
   out.ice.assign(n, 0u);
   out.till.assign(n, 0u);
+  out.ice_max.assign(n, 0u);
+  out.moraine.assign(n, 0u);
+  out.moraine_crest.assign(n, u8{0});
   if (ice_steps > 0) {
     for (u32 p = 0; p < n; ++p) {
       out.ice[p] = static_cast<u32>(clamp_i32(ice.thick[p] * 1000.0));
+      out.ice_max[p] = static_cast<u32>(clamp_i32(ice.most[p] * 1000.0));
       const f64 kept = ice.till[p] < sed[p] ? ice.till[p] : sed[p];
       out.till[p] = static_cast<u32>(clamp_i32(kept * 1000.0));
+      const f64 ridge = ice.moraine[p] < kept ? ice.moraine[p] : kept;
+      out.moraine[p] = static_cast<u32>(clamp_i32(ridge * 1000.0));
+      out.moraine_crest[p] = out.moraine[p] > 0 ? ice.crest[p] : u8{0};
     }
+  }
+  // What settled in standing water, and the rock under everything laid down: the height in
+  // whole millimetres less the sediment in whole millimetres, so the three fields agree.
+  out.lakebed.resize(n);
+  out.rock_floor.resize(n);
+  for (u32 p = 0; p < n; ++p) {
+    const f64 flat = still[p] < sed[p] ? still[p] : sed[p];
+    out.lakebed[p] = static_cast<u32>(clamp_i32(flat * 1000.0));
+    out.rock_floor[p] = mm[p] - static_cast<i32>(out.sediment[p]);
   }
   {
     const u64* units = network.discharge.data();

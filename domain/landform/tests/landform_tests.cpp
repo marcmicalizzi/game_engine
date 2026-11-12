@@ -509,7 +509,25 @@ TEST_CASE("landform: the files round-trip and a field answers a window") {
   landform::Fields header;
   REQUIRE_MESSAGE(landform::read_fields(files.fields, header, error), error);
   CHECK(header.width == land.width);
-  CHECK(header.fields.size() == 11u);
+  CHECK(header.fields.size() == 16u);
+  CHECK(header.version == 4u);
+  // The rock's surface is the height less the sediment, point for point.
+  const u32 fw = 11, fh = 13;
+  Vector<i32> rock(fw * fh);
+  Vector<u32> loose(fw * fh);
+  REQUIRE_MESSAGE(landform::read_field_window(files.fields, header, "rock_floor", 5, 7, fw, fh,
+                                              rock.data(), usize{fw} * fh * 4, error),
+                  error);
+  REQUIRE_MESSAGE(landform::read_field_window(files.fields, header, "sediment", 5, 7, fw, fh,
+                                              loose.data(), usize{fw} * fh * 4, error),
+                  error);
+  bool floor_agrees = true;
+  for (u32 z = 0; z < fh; ++z)
+    for (u32 x = 0; x < fw; ++x)
+      if (rock[z * fw + x] !=
+          land.height_mm[(7 + z) * land.width + 5 + x] - static_cast<i32>(loose[z * fw + x]))
+        floor_agrees = false;
+  CHECK(floor_agrees);
   CHECK(header.solver_version == landform::k_solver_version);
   REQUIRE(header.sea_level_mm.has_value());
   CHECK(*header.sea_level_mm == 0);

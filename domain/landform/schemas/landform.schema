@@ -116,12 +116,25 @@ struct Rock @version(2) {
   /// sketch may no longer carry.
   formation: engine.scene.Formation? @since(2)
 }
+/// A stand of the ice (landform.md, "Ice"): from `from_yr` the equilibrium line is at `ela_m`,
+/// until the next stand or the ice age's end. A glacier's snout is still while its line is, and
+/// a snout that is still builds a moraine: an ice age's stands are where its ridges are.
+struct IceStand @version(1) {
+  /// The year of the run the line moves: after the ice's own `from_yr`, each stand later than
+  /// the one before it.
+  from_yr: i64
+  /// -11,000 to 9,000 m.
+  ela_m: f64 @unit(m)
+}
+
 /// An ice age (landform.md, "Ice"): valley glaciers by Hergarten 2021's stream-power form. Snow
 /// becomes ice above the equilibrium line and ice melts below it; the ice a point passes on is
 /// what its catchment made less what melted on the way; a glacier is as wide and as thick as its
-/// flux makes it, and wears its bed over that width.
-struct Ice @version(2) {
+/// flux makes it, and wears its bed over that width. What it carries it leaves as a moraine
+/// where its snout stands, and as a thin sheet of lodged till under itself.
+struct Ice @version(3) {
   /// The equilibrium line's altitude, metres: -11,000 to 9,000. Read on the ice's own surface.
+  /// The first stand's: `stands` move it.
   ela_m: f64 @unit(m)
   /// The height above the line at which all of a point's snowfall becomes ice (below the line
   /// the same slope is the melt): 10 to 5,000 m. Hergarten's H_f - H_e, 500 m in his example.
@@ -147,6 +160,24 @@ struct Ice @version(2) {
   /// The adverse slope of the bed, over the ice surface's slope, at which the ice stops
   /// wearing it: 0.5 to 11. The published supercooling threshold is 1.2 to 1.7.
   adverse_slope: f64 = 1.5 @since(2)
+  /// The share of the sediment reaching a glacier's snout that the ice itself carried there,
+  /// and leaves as a moraine: 0 to 1 (landform.md, "Moraines"). The rest came with the water
+  /// under the ice and goes on with it, the rivers' to lay down as outwash. Measured at three
+  /// glaciers the ice's share of the whole yield is 0.014 to 0.164 (Hunter, Powell and Lawson
+  /// 1996).
+  carried: f64 = 0.1 @since(3)
+  /// A moraine's crest stands no higher than this above the floor it was laid on, metres: 0 to
+  /// 300 (and never higher than the glacier that built it was thick). The tallest ridge
+  /// measured in what was read is 60 m (Small 1983). What a ridge has no room for goes on with
+  /// the meltwater. 0 builds no ridge.
+  moraine_height_m: f64 = 60 @since(3) @unit(m)
+  /// Lodged till under the ice, over the ice's thickness: 0 to 0.1. A point under a glacier
+  /// keeps this much of what passes it and no more: 0.5 m under 100 m of ice, the thick end of
+  /// the layer measured under Storglaciaren (Hooke et al. 1997).
+  lodged: f64 = 0.005 @since(3)
+  /// The line's later heights, in order of time (landform.md, "Ice"): none keeps the line at
+  /// `ela_m` for the whole ice age.
+  stands: IceStand[] @since(3)
   /// The years of the run the ice stands in: from `from_yr` until `until_yr`, or the run's end.
   from_yr: i64 = 0
   until_yr: i64?
@@ -230,7 +261,8 @@ struct Sketch @version(3) {
 /// One field of the field file.
 struct FieldEntry @version(1) {
   /// `drainage_area`, `receiver`, `slope`, `erosion_rate`, `fill`, `sediment`, `resistance`,
-  /// `discharge`, `channel_width`, `ice`, `till`.
+  /// `discharge`, `channel_width`, `ice`, `till`, `ice_max`, `moraine`, `moraine_crest`,
+  /// `lakebed`, `rock_floor`.
   name: string
   /// The raw grid, relative to the header: little-endian, rows of x in order of z, the
   /// heightfield's own lattice.
@@ -262,11 +294,11 @@ struct TerrainHeightfield @version(1) {
 }
 
 /// The header of the fields written beside a solved heightfield (landform.md, "The field file"):
-/// `engine.landform.fields/3`. Every field is on the heightfield's lattice, point for point.
+/// `engine.landform.fields/4`. Every field is on the heightfield's lattice, point for point.
 struct Fields @version(1) {
   /// "engine.landform.fields".
   format: string
-  version: u32 = 3
+  version: u32 = 4
   width: u32
   height: u32
   spacing_mm: i64
