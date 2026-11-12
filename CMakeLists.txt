@@ -49,6 +49,10 @@ include(EngineWebview)
 
 # Build tools first: schemac generates sources for schema modules below.
 add_subdirectory(tools/schemac)
+# The meter every slangc compile of engine_shaders() runs under (cmake/EngineShaders.cmake, T118).
+if(ENGINE_SHADERS)
+  add_subdirectory(tools/shader_meter)
+endif()
 
 # Layers, lowest first. engine_module() enforces that a module only depends on
 # modules that were declared before it and live in the same or a lower layer.

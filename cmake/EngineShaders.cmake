@@ -43,6 +43,23 @@ if(ENGINE_SHADERS)
   message(STATUS "engine: slangc ${ENGINE_SLANG_VERSION} at ${ENGINE_SLANGC}")
 endif()
 
+# The heavy compiles share a pool (roadmap T118; docs/ci/what-to-run.md, "Heavy shaders share a
+# pool"; cmake/EngineShaderCosts.cmake has the line, the share and why). A shader is heavy when
+# cmake/shader-costs.txt gives it a peak at or above ENGINE_SHADER_HEAVY_MB; its slangc compile is
+# given the Ninja job pool `engine_shader_heavy`, so no more than ENGINE_SHADER_HEAVY_JOBS of them
+# run at once while every light shader and every C++ step runs as parallel as the build's jobs
+# allow. Every compile runs under tools/shader_meter, which writes its peak memory and seconds
+# beside the SPIR-V (`<stem>.cost`), and build.shader_pool (cmake/CheckShaderCosts.cmake) holds the
+# table against those measurements and the pool against build.ninja, so a shader that grows past
+# the line fails a test instead of joining the next build's peak unannounced. A generator with no
+# pools (anything but Ninja) ignores JOB_POOL and configures as before.
+include("${CMAKE_CURRENT_LIST_DIR}/EngineShaderCosts.cmake")
+set(ENGINE_SHADER_HEAVY_JOBS "auto" CACHE STRING
+  "How many heavy shader compiles run at once: `auto` (as many of the largest as fit in a third of this machine's physical memory, at least one) or a whole number")
+set(_engine_shader_cost_file "${CMAKE_SOURCE_DIR}/cmake/shader-costs.txt")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_engine_shader_cost_file}")
+engine_read_shader_costs("${_engine_shader_cost_file}")
+
 # The quoted #include directives of one file, resolved against the including file's own
 # directory first (which is how slangc resolves them) and then against the top-level source's
 # directory. Angle-bracket includes are the compiler's own and are not tracked; a directive that
@@ -126,13 +143,25 @@ function(engine_shaders)
     set(_spv "${_gen}/${_stem}.spv")
     set(_header "${_gen}/include/shaders/${_stem}.spv.h")
     _engine_shader_include_tree("${_abs}" _scanned)
+    # The meter's measurement is an output beside the SPIR-V, so a build that lost it compiles
+    # the shader again rather than leave the check without its number.
+    set(_cost "${_gen}/${_stem}.cost")
+    engine_shader_is_heavy("${_stem}" _heavy)
+    set(_pool "")
+    if(_heavy)
+      set(_pool JOB_POOL ${ENGINE_SHADER_HEAVY_POOL})
+    endif()
+    file(RELATIVE_PATH _spv_rel "${CMAKE_BINARY_DIR}" "${_spv}")
+    set_property(GLOBAL APPEND PROPERTY ENGINE_SHADER_POOL_ENTRIES
+      "${_stem}|${_heavy}|${_spv_rel}|${_cost}")
     add_custom_command(
-      OUTPUT "${_spv}"
-      COMMAND "${ENGINE_SLANGC}" "${_abs}"
+      OUTPUT "${_spv}" "${_cost}"
+      COMMAND engine_shader_meter "${_cost}" "${ENGINE_SLANGC}" "${_abs}"
               -target spirv -profile ${SH_PROFILE} -emit-spirv-directly
               -fvk-use-entrypoint-name -O2 -warnings-disable 41012 ${SH_FLAGS}
               -o "${_spv}"
       DEPENDS "${_abs}" ${_included} ${_scanned}
+      ${_pool}
       COMMENT "slangc: ${_src}"
       VERBATIM)
     add_custom_command(
@@ -173,4 +202,74 @@ function(engine_write_shader_manifest)
     "{\n  \"slangc\": \"${ENGINE_SLANGC}\",\n  \"shaders\": [\n    ${_joined}\n  ]\n}\n")
   list(LENGTH _entries _count)
   message(STATUS "engine shaders: manifest with ${_count} shaders at ${CMAKE_BINARY_DIR}/shaders/manifest.json")
+  _engine_shader_pool_finalize()
+endfunction()
+
+# The pool's half of the manifest, when every engine_shaders() call has been made: the table's rows
+# checked against the tree's sources, the depth settled, the pool declared, and the list of every
+# compile with its class written to build/<preset>/shaders/pool.txt for build.shader_pool.
+function(_engine_shader_pool_finalize)
+  # A row is known when a .slang source of that name exists anywhere in the tree's layers, not
+  # only among this configuration's shaders: a capability switched off (ENGINE_MINIMAL) drops its
+  # shaders from the build but its row is still right for the builds that carry it.
+  set(_known "")
+  foreach(_layer IN ITEMS core foundation domain systems apps game tools)
+    file(GLOB_RECURSE _sources LIST_DIRECTORIES false "${CMAKE_SOURCE_DIR}/${_layer}/*.slang")
+    foreach(_source IN LISTS _sources)
+      get_filename_component(_stem "${_source}" NAME_WE)
+      list(APPEND _known "${_stem}")
+    endforeach()
+  endforeach()
+  engine_check_shader_cost_names("${_engine_shader_cost_file}" ${_known})
+
+  get_property(_pool_entries GLOBAL PROPERTY ENGINE_SHADER_POOL_ENTRIES)
+  set(_heavy_peaks "")
+  set(_heavy_names "")
+  foreach(_entry IN LISTS _pool_entries)
+    string(REPLACE "|" ";" _fields "${_entry}")
+    list(GET _fields 0 _stem)
+    list(GET _fields 1 _heavy)
+    if(_heavy)
+      get_property(_mb GLOBAL PROPERTY ENGINE_SHADER_COST_MB:${_stem})
+      list(APPEND _heavy_peaks "${_mb}")
+      list(APPEND _heavy_names "${_stem}")
+    endif()
+  endforeach()
+
+  cmake_host_system_information(RESULT _physical_mb QUERY TOTAL_PHYSICAL_MEMORY)
+  if(ENGINE_SHADER_HEAVY_JOBS STREQUAL "auto")
+    engine_shader_pool_depth("${_physical_mb}" _depth ${_heavy_peaks})
+    set(_how "auto: a third of ${_physical_mb} MiB")
+  elseif(ENGINE_SHADER_HEAVY_JOBS MATCHES "^[1-9][0-9]*$")
+    set(_depth "${ENGINE_SHADER_HEAVY_JOBS}")
+    set(_how "ENGINE_SHADER_HEAVY_JOBS")
+  else()
+    message(FATAL_ERROR "ENGINE_SHADER_HEAVY_JOBS is '${ENGINE_SHADER_HEAVY_JOBS}': `auto` or a whole number of at least 1")
+  endif()
+  set_property(GLOBAL APPEND PROPERTY JOB_POOLS "${ENGINE_SHADER_HEAVY_POOL}=${_depth}")
+
+  set(_text "line_mb ${ENGINE_SHADER_HEAVY_MB}\npool ${ENGINE_SHADER_HEAVY_POOL}\ndepth ${_depth}\n")
+  foreach(_entry IN LISTS _pool_entries)
+    string(APPEND _text "shader ${_entry}\n")
+  endforeach()
+  file(WRITE "${CMAKE_BINARY_DIR}/shaders/pool.txt" "${_text}")
+  list(LENGTH _heavy_names _heavy_count)
+  string(JOIN " " _heavy_shown ${_heavy_names})
+  message(STATUS "engine shaders: ${_heavy_count} heavy (at or above ${ENGINE_SHADER_HEAVY_MB} MiB), at most ${_depth} at once (${_how}): ${_heavy_shown}")
+
+  if(ENGINE_BUILD_TESTS)
+    add_test(NAME tools.shader_costs
+      COMMAND "${CMAKE_COMMAND}" -DSELF_TEST=ON "-DWORK=${CMAKE_BINARY_DIR}/Testing/Temporary"
+              "-DMETER=$<TARGET_FILE:engine_shader_meter>"
+              -P "${CMAKE_SOURCE_DIR}/cmake/CheckShaderCosts.cmake")
+    set_tests_properties(tools.shader_costs PROPERTIES LABELS "tools")
+    if(CMAKE_GENERATOR MATCHES "Ninja")
+      add_test(NAME build.shader_pool
+        COMMAND "${CMAKE_COMMAND}" "-DBINARY_DIR=${CMAKE_BINARY_DIR}"
+                -P "${CMAKE_SOURCE_DIR}/cmake/CheckShaderCosts.cmake")
+      set_tests_properties(build.shader_pool PROPERTIES LABELS "build")
+    else()
+      message(STATUS "engine shaders: build.shader_pool reads build.ninja; not registered for ${CMAKE_GENERATOR}")
+    endif()
+  endif()
 endfunction()
