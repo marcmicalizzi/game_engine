@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "W113",
+  "reason": "apps.md's masks check section names the two fields W113 adds to every layer of a refused tile's line (stored, points) and the tile's tile_points, which a composer reads to tell a fringe from real weight",
+  "date": "2026-11-11",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/apps.md": 95
+  }
+}

@@ -950,7 +950,8 @@ struct TerrainMaskRegion @version(1) {
   /// The palette layer the region is given outright, over everything below it.
   material: string
   /// The palette layer that stands in for the priors' soil inside the region; the priors' scree,
-  /// bedrock and snow still lie where they lie. Exclusive with `material`.
+  /// bedrock and snow still lie where they lie. With no `priors` the whole ground is that soil, so
+  /// the base is laid outright under everything above it (T109). Exclusive with `material`.
   base: string
   /// The edge's blend, metres, inward from the outline: 0 is a hard edge.
   feather_m: f32 = 2 @unit(m)
@@ -979,7 +980,8 @@ struct TerrainMaskIndex @version(1) {
 
 /// **Generated priors** (docs/experiments/ground-materials-grounding.md): where the substrates lie by
 /// slope, elevation and aspect, the defaults the published ranges. Each role names a palette layer;
-/// empty switches the role off. Angles are degrees of slope, elevations world metres.
+/// empty switches the role off, and a role has no default layer, so a block naming none is refused
+/// (T109). Angles are degrees of slope, elevations world metres.
 struct TerrainMaskPriors @version(1) {
   soil: string
   scree: string
