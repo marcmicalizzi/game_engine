@@ -439,8 +439,10 @@ of its own and reads a cover as what it is, the share of the ground the species'
   and a head stays on its stem ([renderer](renderer.md#the-field-kind)); no part collides and no
   structural table is written. The primitives are the herb's, every plant's of one material
   together, so a drift is two or three materials. `solve_meadow_plant` (`understory.h`) builds it,
-  keyed by `k_ground_plants_version` and `k_meadow_plant_version` (1); its roles are a herb's
-  (`herb/leaf`, `herb/flower`).
+  keyed by `k_ground_plants_version` and `k_meadow_plant_version` (2); its roles are a herb's
+  (`herb/leaf`, `herb/flower`). Its leaves take a live leaf's measured albedo, the sward blade's
+  (`k_sward_leaf_albedo`), not the herb's chosen green, 2.7 times as bright, which drew the first
+  drifts as pale fans beside the grass.
 - **A cover becomes a count.** A species' plant has a crown of radius `crown_m` (the table's,
   chosen; 6 to 20 cm), so its plants stand `1 / (π crown²)` a square metre where it grows. A cell the
   species holds is a **drift** of `meadow_drift_count` plants, `round(cell² / (π crown²))` held to

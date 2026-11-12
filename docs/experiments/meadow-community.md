@@ -210,6 +210,30 @@ herbs of 48 to 498 triangles, at most 127,000. Cluster LOD thins a drift with di
 mesh; the drifts are no instance of the pose table, so the CPU poser and the pose table's slots
 are unchanged by them.
 
+**The frame, measured** (`engine-view --benchmark` along `content/test-scenes/meadow/community`'s
+camera path, 1920 × 1080, CSM shadows, `msvc-release`, the base's binaries (be3826d9) against
+04ac9a60's, one GPU lease, 2026-11-11 21:05, RTX 5090; `--wait-quiet 30` ran anyway: the harness's
+`machine_state` recorded 90 % then 85 % of the CPU in other processes for the before, 64 % then
+71 % for the after, the GPU idle at both ends, so the CPU figures are upper bounds):
+
+| | before (G140, 256 herbs a tile) | after (G167, drifts as a field) |
+|---|---|---|
+| GPU total, median / p95 / p99 | 2.315 / 2.452 / 4.139 ms | 2.182 / 2.330 / 4.330 ms |
+| cull, median | 0.231 ms | 0.277 ms |
+| hardware raster, median | 0.344 ms | 0.367 ms |
+| sun's cascades, median | 0.704 ms | 0.532 ms |
+| deformed-vertex pool, median | 0.199 ms | 0.186 ms |
+| CPU frame, median / mean | 0.967 / 1.126 ms | 0.392 / 0.577 ms |
+| flora posed on the CPU | 3,141 instances, 82,712 parts, 0.56 ms mean, 4.63 ms max | none |
+| pose table | 20,166,240 bytes | 480 bytes |
+| field instances, meshes | 146,443, 32 | 189,155, 52 |
+
+The meadow at its whole density draws for less than it did at 6 %: a herb was posed on the CPU and
+cast its swaying pose into every cascade, and a drift is posed on the GPU and casts into the
+nearest cascade at rest, so what the cull and the raster gained (0.07 ms) the cascades and the
+CPU's poser more than gave back. The after's leaves were the herb's green in this run
+(04ac9a60); the measured albedo (f2b0581e) changes no triangle or pass.
+
 **Wet against dry, for G168** (read: Punalekar et al. 2016, Remote Sensing 8(2):112, field
 spectroscopy of a floodplain meadow, MG4): the wet community (*Carex*, *Juncus acutiflorus*,
 *Filipendula*, *Cardamine*) and the dry one were "spectrally very similar", the dry slightly
