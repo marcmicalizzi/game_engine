@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "S103",
+  "reason": "water.md's Not yet gains one line pointing at the water-obstacles design page (S103, pages only)",
+  "date": "2026-11-12",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/water.md": 401
+  }
+}
