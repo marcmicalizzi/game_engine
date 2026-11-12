@@ -349,7 +349,11 @@ under the surface (a simplified triangle bridging stones), drawn by the water's 
 strength; a printed diagnosis over a 9,965-clast tile found about 1,250 of 494,000 coarser
 triangles standing more than twice their cluster's error plus 2 cm from the nearest finest vertex
 in both the old and the new DAGs (a loose measure: a vertex, not the surface), so the new DAGs do
-not remove the kind, only that one. **Not held by a case**: a test of "no bed triangle above the
+not remove the kind, only that one. **W97c found it is not gone** (2026-11-11): W97b's tip
+(2cfb738f, merged onto be3826d9) draws a faint tan triangle at the same place of the same view,
+and with the stones textured it turns pale cream, the colour of the stones' sets: so it is a bed
+piece's triangle, seen through or standing above the surface, and the id buffer's ribbon was the
+water drawn over it. **Not held by a case**: a test of "no bed triangle above the
 water where the bed is deeper than a stone's protrusion" needs the cut ground the tile set makes
 (`domain/tileset`'s edits), which this module's tests do not link; and how the water draws what
 lies a few millimetres under it is the water's (closed to this row).
@@ -391,7 +395,9 @@ placements before the first frame, and no later update built a piece, since the 
 (1.5, 8 and 24 tiles of 32 m) held every tile of the 384 m valley from the start. **And 14 pieces
 were refused** — one of 5,852 clusters against the 4,096 a tile's mesh may have — so those tiles
 drew no stones at all from any view, where the scene read whole drew them: the defect the cut
-into pieces of 1,800 clasts (above) closes.
+into pieces of 1,800 clasts (above) closes. The same run at e6947eee refused none: 25 pieces
+built and admitted, textured, in a first fill of 10.1 s, and the riffle drew its bars' stones
+streamed as it does read whole.
 
 What the contract carries today: the mesh, its materials and their textures (since R147 and W97c:
 the four rocks' sets, built and admitted before the mesh, a set shared by every tile that names
