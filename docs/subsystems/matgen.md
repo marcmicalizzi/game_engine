@@ -185,6 +185,37 @@ in cushions) and soil (crumbs) split at the moss share's quantile, dead leaf fra
 Poisson cover of `thatch_permille`, live leaves with a midrib and tapered tips as one of
 `live_permille`. `SetStats` reports the three covers.
 
+## Wood sets
+
+`wood/plank` and `wood/log` (G188; [grounding](../experiments/generated-material-sets.md#weathered-wood-g188-2026-11-11)):
+a softwood face, **its grain along the image's u**, as a sawn board shows it (`form: sawn`) or as
+the outside of a log does (`form: log`), weathered toward grey.
+
+- **The figure** is a phase across the tile — whole bands of `figure_um`, so it tiles — that
+  wanders `wander_mm` across the grain over 0.7 m along it, and climbs `spiral_ddeg` (a log's
+  spiral grain) as a whole number of bands over the tile's length. Each band is earlywood then
+  `latewood_permille` of latewood, the share filtered over the texel's footprint in the phase so a
+  band narrower than a texel keeps its tone instead of aliasing. Where the face runs along a ring
+  the phase's gradient falls, the bands widen and fold into a flat-sawn board's arches.
+- **Weathering**: earlywood toward a pale silver, latewood a darker grey, standing `relief_um`
+  proud of the eroded earlywood; how far each place has greyed is `grey_permille` plus or minus
+  `grey_patch_permille` over a 0.45 m field, so a board is grey to brown; `stain_permille` of dark
+  streaks along the grain; fibres as fine streaks that follow the bands.
+- **Knots** (`knots_per_m2`, `knot_min_mm` to `knot_max_mm`): the rings bend round each over three
+  of its radii; its body dark, ringed and proud; a third are dead knots with a dark rim.
+- **Checks** (`checks_per_m2`, `check_min_mm` to `check_max_mm`, `check_width_um`,
+  `check_depth_um`): splits that follow one band (they open along the grain, wherever it wanders),
+  widest at their middle, dark and deep.
+- **Bark** (`bark_permille`, a log's): patches where a field long along the stem is lowest, exactly
+  the share; plates `bark_plate_mm` long and fissured between, standing 6 mm proud so the
+  hollows' shade darkens the wood at their edge.
+
+**A consumer maps u along a member's length**, in metres: a 0.2 m board then shows a 0.2 m band
+of a 2 m tile, and boards at different offsets do not repeat each other's band. A projection that
+takes u from a world axis (the bridges' box mapping in `domain/bridges/src/mesh.cpp`, at this
+row's base) runs the grain across a member that lies along the other axis; that is the
+consumer's to turn.
+
 ## The defaults
 
 `default_sets()`, sorted by role; `engine-content matgen` builds them all.
@@ -202,6 +233,8 @@ Poisson cover of `thatch_permille`, live leaves with a midrib and tapered tips a
 | `gravel/bed.1`, `.2`, `sand/bar.1`, `.2`, `rock/scree.1`, `.2` | granular | as their role | the same recipe from other seeds ("Repetition") | a consumer that picks a variant by place |
 | `ground/soil`, `ground/moss`, `ground/thatch` | ground | 0.5 m | the sward floor's three parts | the sward's cook (`--sward-assets`) |
 | `ground/turf` | ground | 0.5 m | live leaves over thatch over moss and soil | a terrain layer that names it |
+| `wood/plank` | wood | 2 m | sawn softwood boards weathered grey to brown: flat-sawn figure, latewood ridges, checks, knots, stains | a bridge's deck, rails and posts ([bridges](bridges.md)) |
+| `wood/log` | wood | 2 m | the outside of a debarked log, silvered: spiral grain, long drying checks, knots, bark on 15 % | a bridge's logs, sills and stringers |
 
 Rock sets are `stochastic` (R131: a rock set is laid over cliffs many times its repeat, as
 `tools/pack-materials.ps1` defaults every `rock/*` role); the granular and ground sets are
@@ -235,6 +268,17 @@ measure and its bounds here are this row's own). G153 acts where a recipe can:
   always draws the same one; the seams between variants are then the seams between two beds,
   which a height blend or a placement's own edge has to carry. Asked of the hosts under "Not
   yet".
+
+### What a standing eye reads
+
+Three measures every build takes of its own result (`SetStats`, G187), for the band a standing
+eye reads a surface by, between a few centimetres and a metre: `contrast_5cm` and
+`contrast_25cm`, the RMS Weber contrast of the albedo's luminance averaged over blocks of the
+power-of-two side nearest 5 cm and 25 cm (0 where the tile holds fewer than two such blocks a
+side), and `relief_rms_mm`, the height's RMS about its mean. A surface whose structure is all a
+few millimetres across averages out to one tone over 5 cm blocks and reads as flat colour at
+1.7 m, whatever its texels hold; the landmark measure above is the other side of the same band,
+a ceiling where these are floors.
 
 ## The command
 
@@ -278,7 +322,8 @@ since the ground kind did not change). **The Linux containers reproduce the vers
 test passed. Version 3 (the step removed; the granite and sandstone pins re-taken):
 `linux-clang-debug` (14:25, at 39896b51) and `linux-gcc-release` (14:35) passed;
 `linux-gcc-release-v2` did not run for version 3 (the container lock was not had before the
-row's hand-back). The streaks' distance below a
+row's hand-back). Version 4 (G188) added the two wood pins and moved no other; what the
+containers made of them is under "What it measured". The streaks' distance below a
 source is an integer from two sweeps round each column, the lichen's owner of a texel is decided
 by an f64 comparison of two quotients of the same arithmetic, so neither adds an operation a
 toolchain rounds its own way. Nothing was needed that `core/math/deterministic.h` lacks: a normal draw is Box and Muller's
@@ -368,7 +413,10 @@ cover of what is drawn held on the same bed unburied); scree against the bed; a 
 and a floor's covers over three seeds each; every default's mean albedo and roughness inside its
 material's range; the landmark measure under its bounds over three seeds for each tiled role,
 and the variants the same recipe from other seeds (G153); a rock face's form, streaks and moss
-where asked and absent where not (G152); a bed part buried and a talus layers deep (G151); a mip
+where asked and absent where not (G152); a bed part buried and a talus layers deep (G151); a wood
+set's grain along u (the colour's step along a row under 0.7 of its step down a column), its
+latewood share, checks, knots and bark where asked and none where not, over three seeds (G188,
+5.9 s); a mip
 chain's mean; a recipe read, refused and keyed; the pins (about 23 s in `msvc-debug`, the
 longest case the grid count's 7.2 s: it builds each seed's bed twice, buried and not). `materials`' tests hold
 `merge_packs` and `pack_at`'s generated pack; `apps/engine_content/tests/matgen_tests.cpp` runs

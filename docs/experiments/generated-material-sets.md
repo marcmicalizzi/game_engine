@@ -220,6 +220,23 @@ moss drawn as shoot tips (a cellular pattern 1.8 mm across, paler at each tip), 
 (5 mm, dark between), a fifth of the straw weathered grey, and live leaves that taper with a
 paler midrib for the turf.
 
+## Weathered wood (G188, 2026-11-11)
+
+Two sets for the bridges' timber (`wood/plank`, sawn boards; `wood/log`, the outside of a log),
+grain along the image's u. Same research pass, same caveat: **read (secondary)** at best.
+
+| What | Source and how it was read | The generator's number |
+|---|---|---|
+| Unfinished wood outdoors greys within months: UV degrades the lignin, rain leaches the products and extractives, staining fungi darken it; colours converge to a common grey whatever the species | the Wood Handbook's finishing chapter (Williams, FPL-GTR-190 ch. 16, 2010); Feist's 1992 FPL article; a SINTEF/NTNU colour study; read (secondary) | a grey of (0.21, 0.20, 0.185) linear, reached by `grey_permille` 800 to 850 with a patch field of ±0.25 leaving browner wood where it is less weathered (chosen; L\*a\*b\* of weathered softwood not found) |
+| Surface erosion about 6 mm a century for softwoods (Browne 1960); 5 to 10 mm vertically south-facing (Sell 1986); measured 34 to 101 µm a year over 16 years | Williams, Knaebe, Sotos and Feist 2001 (Wood and Fiber Science 33, Part I), abstract; read (secondary) | — |
+| Earlywood erodes faster than latewood for the first seven years or so (33 to 58 µm a year by species), leaving the latewood standing as ridges | Williams, Knaebe and Feist 2001 (Part II), abstract; Arnold, Lemaster and Dost 1992 (Wood and Fiber Science 24); read (secondary). **The ridges' depth was not found**; the rates' difference over seven years gives about 0.15 to 0.2 mm | latewood proud by 0.4 mm on a board, 0.3 mm on a log (chosen: an old bridge's boards are past seven years, and the edges round) |
+| Checks on weathered Scots pine boards: many under 3 mm deep and 10 to 30 mm long, deeper ones 3 to 10 mm deep and 30 to 150 mm long; radial faces check less | Venäläinen (Luke, Finland); read (secondary). Widths not found | board checks 10 to 150 mm long, up to 1.2 mm wide and 3 mm deep, 30 to the square metre (chosen within the lengths) |
+| Ring width: spruce 1.12 mm (0.40 to 3.30), larch 1.53 (0.35 to 8.65), pine 1.52 (0.40 to 4.90); latewood 38 % of a spruce ring, 37 % pine, 33 % larch | Czajka (Drewno 197); read (secondary) | latewood 380 of a band. A flat-sawn face cuts the rings at a shallow angle, so it shows each ring several times wider than it is: the face's bands are 8 mm (chosen), and they wander 45 mm across the grain over 0.7 m along it, so they fold into the arches of flat-sawn figure where the face runs along a ring |
+| Spiral grain: Norway spruce 2.1 to 2.6°, Scots pine 1.4 to 2.0° under bark | Hannrup et al. 2003 (Silvae Genetica 52); Hallingbäck et al. 2008; read (secondary) | a log's fibres climb 2.2° |
+| Drying checks in a log are radial, narrow toward the pith and widen as it dries (tangential shrinkage more than twice the radial) | secondary summaries; widths up to 38 mm only anecdotal | log checks 150 to 900 mm long, up to 5 mm wide and 15 mm deep, 6 to the square metre (chosen) |
+| Knots in graded timber are limited by knot-area ratios; diameters and frequency per metre are in EN 1309 / DIN 4074 tables | not read | 2 knots a square metre of board, 12 to 40 mm across, a third encased with a dark rim; a log's 1 a square metre, 25 to 70 mm (chosen) |
+| Norway spruce bark is 9 to 32 mm thick (double) from 12.5 to 92.5 cm diameter | a Bosnian 393-tree study; read (secondary). Plate sizes and fissure depths **not found** | a log keeps bark on 15 % of its surface, plates 45 mm long up the stem, 6 mm proud (chosen) |
+
 ## The ranges the defaults are held to
 
 `matgen_tests.cpp` holds each default's mean albedo (luminance of the mean linear colour, after
@@ -239,6 +256,8 @@ material's range above times what the generator states it does to it:
 | `ground/soil`, `ground/moss` | 0.03 to 0.10 | the sward floor's moist loam and moss |
 | `ground/thatch` | 0.08 to 0.20 | the sward floor's straw |
 | `ground/turf` | 0.05 to 0.14 | live leaves over thatch |
+| `wood/plank` | 0.10 to 0.30 | weathered grey softwood, its checks, knots and stains below the grey (chosen about the grey's 0.20) |
+| `wood/log` | 0.08 to 0.28 | the same with bark patches and deeper checks |
 
 ## Not verified
 

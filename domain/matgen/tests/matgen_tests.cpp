@@ -86,8 +86,9 @@ TEST_CASE("matgen: a set is the same picture wherever the image starts") {
   // The set lives on the torus of its tile: built from a window half a tile and three texels
   // over, every image is the first build's bytes rotated, exactly. A noise that did not wrap its
   // lattice, a clast cut at the image's edge or a blur that stopped at it would each differ.
-  for (const char* role : {"gravel/bed", "rock/scree", "sand/bar", "rock/granite", "rock/sandstone",
-                           "rock/basalt", "rock/granite_wet", "ground/turf"}) {
+  for (const char* role :
+       {"gravel/bed", "rock/scree", "sand/bar", "rock/granite", "rock/sandstone", "rock/basalt",
+        "rock/granite_wet", "ground/turf", "wood/plank", "wood/log"}) {
     CAPTURE(role);
     const matgen::Set set = recipe(role, 128);
     const Built first = build(set);
@@ -221,8 +222,9 @@ TEST_CASE("matgen: every default's colour and roughness means are in its materia
       {"rock/limestone", 0.20, 0.50, 0.75, 0.95},   {"rock/sandstone", 0.18, 0.45, 0.75, 0.95},
       {"ground/soil", 0.03, 0.10, 0.85, 0.98},      {"ground/moss", 0.03, 0.10, 0.85, 0.98},
       {"ground/thatch", 0.08, 0.20, 0.70, 0.90},    {"ground/turf", 0.05, 0.14, 0.50, 0.85},
+      {"wood/plank", 0.10, 0.30, 0.70, 0.90},       {"wood/log", 0.08, 0.28, 0.70, 0.92},
   };
-  // Twelve sets, and the variants of the three tiled granular ones.
+  // Fourteen sets, and the variants of the three tiled granular ones.
   CHECK(matgen::default_sets().size() == std::size(ranges) + 3 * matgen::k_tiled_variants);
   for (const Range& r : ranges) {
     CAPTURE(r.role);
@@ -326,6 +328,55 @@ TEST_CASE("matgen: a bed's clasts lie part buried, and a talus is layers deep") 
         shallow.stats.height_max_m - shallow.stats.height_min_m);
 }
 
+TEST_CASE("matgen: a wood set's grain runs along u, and its checks, knots and bark are asked for") {
+  // The grain along the image's u (a bridge maps u along a member): the colour steps far less
+  // from one texel to the next along a row than down a column. Checks, knots and bark appear where
+  // the recipe asks and nowhere when it asks none.
+  for (const char* role : {"wood/plank", "wood/log"}) {
+    CAPTURE(role);
+    for (const u64 seed : {3ull, 5ull, 7ull}) {
+      // A metre at 512 texels: two millimetres a texel, so a board's 8 mm bands are drawn.
+      matgen::Set set = recipe(role, 512, seed);
+      set.tile_mm = 1000;
+      const Built b = build(set);
+      const u32 n = b.images.size;
+      f64 along = 0, across = 0;
+      for (u32 y = 0; y < n; ++y) {
+        for (u32 x = 0; x < n; ++x) {
+          const u32 i = (y * n + x) * 3, r = (y * n + (x + 1) % n) * 3,
+                    d = (((y + 1) % n) * n + x) * 3;
+          for (u32 c = 0; c < 3; ++c) {
+            along += std::abs(static_cast<int>(b.images.base_color[i + c]) -
+                              static_cast<int>(b.images.base_color[r + c]));
+            across += std::abs(static_cast<int>(b.images.base_color[i + c]) -
+                               static_cast<int>(b.images.base_color[d + c]));
+          }
+        }
+      }
+      MESSAGE(std::string(role) << " seed " << seed << ": step along " << along / (n * n)
+                                << " across " << across / (n * n) << ", latewood "
+                                << b.stats.latewood_share << ", checks " << b.stats.check_share
+                                << ", knots " << b.stats.knots << ", bark " << b.stats.bark_share);
+      CHECK(along < 0.7 * across);
+      CHECK(b.stats.check_share > 0.0);
+      CHECK(b.stats.knots > 0u);
+      // The latewood's share of the face is the recipe's share of a band.
+      CHECK(b.stats.latewood_share ==
+            doctest::Approx(set.wood.latewood_permille * 1e-3).epsilon(0.15));
+      if (set.wood.bark_permille > 0)
+        CHECK(b.stats.bark_share == doctest::Approx(set.wood.bark_permille * 1e-3).epsilon(0.2));
+      if (seed != 3) continue;
+      set.wood.checks_per_m2 = 0;
+      set.wood.knots_per_m2 = 0;
+      set.wood.bark_permille = 0;
+      const Built bare = build(set);
+      CHECK(bare.stats.check_share == 0.0);
+      CHECK(bare.stats.knots == 0u);
+      CHECK(bare.stats.bark_share == 0.0);
+    }
+  }
+}
+
 TEST_CASE("matgen: a mip chain keeps the set's mean colour") {
   // The set's far form is its mean: every level of the texture build's chain (a repeating
   // sampler's) has the level-0 mean, in linear light, to a code or so.
@@ -405,7 +456,8 @@ TEST_CASE("matgen: a recipe reads, refuses and keys") {
 TEST_CASE("matgen: the same bytes from every toolchain") {
   // Taken on MSVC (x86-64-v3, debug); re-taken for k_matgen_version 2 (G149 to G153: every set
   // but the turf moved; the ground kind did not change), and for 3 (the rock face's broken step
-  // removed: the granite and the sandstone moved, no other kind). The generator calls nothing a
+  // removed: the granite and the sandstone moved, no other kind); version 4 added the wood kind's
+  // two pins and moved no other (G188). The generator calls nothing a
   // toolchain rounds its own way, so Clang and GCC, at v3 and at v2, are held to the same bytes;
   // which of them has been run is on the page (matgen.md, "Same bytes everywhere"). A change to the
   // generator moves these and bumps k_matgen_version.
@@ -417,6 +469,7 @@ TEST_CASE("matgen: the same bytes from every toolchain") {
       {"gravel/bed", 6280004583196325757ull},     {"rock/scree", 15685960211907165185ull},
       {"sand/bar", 6512822385822317515ull},       {"rock/granite", 1158326275606281670ull},
       {"rock/sandstone", 2145369994992403863ull}, {"ground/turf", 4583399645411956302ull},
+      {"wood/plank", 4421691671427882217ull},     {"wood/log", 14568179929401548549ull},
   };
   for (const Pin& pin : pins) {
     CAPTURE(pin.role);

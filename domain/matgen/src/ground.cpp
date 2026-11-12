@@ -70,11 +70,8 @@ void lay_fragment(Field& field, const Fragment& f, Vector<f32>* cover) {
   }
 }
 
-namespace {
-
 constexpr u32 k_bins = 4096;
 
-// The value below which `share` of the texels' field lies.
 f64 quantile(const Vector<f32>& values, f64 share) {
   Vector<u32> bins;
   bins.assign(k_bins, 0u);
@@ -88,6 +85,8 @@ f64 quantile(const Vector<f32>& values, f64 share) {
   }
   return 1.0;
 }
+
+namespace {
 
 // Linear albedos (generated-material-sets.md, "A floor"): standing litter pale and rising to the
 // red, a bryophyte dark, a moist organic loam between, a live grass leaf.

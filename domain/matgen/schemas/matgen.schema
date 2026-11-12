@@ -4,8 +4,11 @@
 // and the set's key is a hash over that text and the generator's version.
 namespace engine.matgen
 
-/// Which generator builds the set.
-enum Kind : u8 { granular = 0, rock = 1, ground = 2 }
+/// Which generator builds the set. `wood` is read from `Set` version 2.
+enum Kind : u8 { granular = 0, rock = 1, ground = 2, wood = 3 }
+
+/// How a wood set's face was cut: a sawn board's face, or the outside of a log.
+enum WoodForm : u8 { sawn = 0, log = 1 }
 
 /// One constituent of a mix: a lithology of a clast population, or a mineral of a rock. Colours
 /// are linear albedo in thousandths.
@@ -120,8 +123,50 @@ struct Ground {
   leaf_width_max_um: u32 = 4000
 }
 
+/// A face of softwood, its grain along the image's u, weathered toward grey (matgen.md, "Wood
+/// sets"). Colours are linear albedo in thousandths.
+struct Wood {
+  form: WoodForm = sawn
+  /// The figure's bands across the face, micrometres: a ring as the face shows it (a flat-sawn
+  /// face cuts the rings at a shallow angle, so a band is several rings' widths).
+  figure_um: u32 = 8000
+  /// The latewood's share of a band.
+  latewood_permille: u32 = 380
+  /// How far the figure wanders across the grain (its half range), millimetres.
+  wander_mm: u32 = 80
+  /// Spiral grain: the fibres' angle to the image's u, tenths of a degree.
+  spiral_ddeg: u32 = 0
+  /// The latewood stands this far proud of the eroded earlywood, micrometres.
+  relief_um: u32 = 400
+  fresh_r_permille: u32 = 460
+  fresh_g_permille: u32 = 330
+  fresh_b_permille: u32 = 190
+  grey_r_permille: u32 = 210
+  grey_g_permille: u32 = 200
+  grey_b_permille: u32 = 185
+  /// How far the face has weathered from fresh toward grey, and that share's half range across it.
+  grey_permille: u32 = 800
+  grey_patch_permille: u32 = 250
+  /// Dark staining in streaks along the grain: its strength.
+  stain_permille: u32 = 350
+  /// Checks: splits along the grain, how many a square metre, their lengths, widest opening and
+  /// depth.
+  checks_per_m2: u32 = 60
+  check_min_mm: u32 = 10
+  check_max_mm: u32 = 150
+  check_width_um: u32 = 2000
+  check_depth_um: u32 = 3000
+  /// Knots: how many a square metre, and their diameters.
+  knots_per_m2: u32 = 2
+  knot_min_mm: u32 = 12
+  knot_max_mm: u32 = 40
+  /// A log's bark left on: the share of the surface, and its plates' length along the stem.
+  bark_permille: u32 = 0
+  bark_plate_mm: u32 = 45
+}
+
 /// One set: the role it stands for, the surface one repeat covers and the texels across it.
-struct Set @version(1) {
+struct Set @version(2) {
   /// `<word>/<word>`, as a material pack's role.
   role: string = ""
   kind: Kind = granular
@@ -141,4 +186,5 @@ struct Set @version(1) {
   granular: Granular
   rock: Rock
   ground: Ground
+  wood: Wood @since(2)
 }
