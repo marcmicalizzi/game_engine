@@ -188,7 +188,7 @@ struct Plan {
 };
 
 u32 count_triangles(const Crown& crown, u32 stems, const Plan& plan) {
-  return stems * tube_triangles(plan.rows[0], plan.sides[0]) +
+  return stems * (tube_triangles(plan.rows[0], plan.sides[0]) + skirt_triangles(plan.sides[0])) +
          (crown.first_recursion - stems) * tube_triangles(plan.rows[1], plan.sides[1]) +
          crown_triangles(crown, plan.crown);
 }
@@ -455,9 +455,11 @@ bool solve_birch_chain(const Birch& p, assets::MeshData& out, TreeReport* report
         stem && n.r0 >= static_cast<f64>(load_bearing_min_radius("birch")) ? k_load_bearing : 0u);
     named_first.push_back(out.positions.size());
     crown_seat(crown, i, emit);
+    emit.skirt = stem;  // every stem of a clump stands on the ground (G201)
     build_tube(stem ? crown_sample_stem(crown, i, plan.rows[order])
                     : crown_sample_branch(crown, i, plan.rows[order], emit.seat_length),
                n.r0, n.r1, plan.sides[order], {}, emit, (n.flags & k_crown_stem_relay) != 0u);
+    emit.skirt = false;
     if (stem && n.r0 >= static_cast<f64>(load_bearing_min_radius("birch"))) ++load_bearing;
   }
   emit.seated = false;

@@ -1,4 +1,5 @@
 #include "../src/kit.h"
+#include "skirt_support.h"
 
 #include <core/hash/hash.h>
 #include <domain/flora/flora.h>
@@ -139,6 +140,7 @@ TEST_CASE("flora: named species share growth and preserve their skeleton across 
   const char* names[] = {"maple",  "oak",   "elm",     "walnut", "beech", "ash",     "pine",
                          "spruce", "cedar", "juniper", "aspen",  "fir",   "hemlock", "alder"};
   Vector<u64> shapes;
+  Vector<u64> unskirted;  // the same trees less their skirts (G201)
   for (const char* name : names) {
     CAPTURE(std::string_view(name));
     flora::FloraFile file;
@@ -175,6 +177,12 @@ TEST_CASE("flora: named species share growth and preserve their skeleton across 
     for (const u64 other : shapes)
       CHECK(hash != other);
     shapes.push_back(hash);
+    {
+      assets::MeshData less = mesh;
+      flora::Motion less_motion = motion;
+      flora::test_support::strip_skirt(less, less_motion);
+      unskirted.push_back(shape_hash(less));
+    }
     assets::MeshData again;
     flora::Motion repeated;
     REQUIRE(flora::solve_flora(file, again, repeated, nullptr, nullptr, error));
@@ -204,8 +212,11 @@ TEST_CASE("flora: named species share growth and preserve their skeleton across 
   // G129: supported-axis taper and one axial terminal twig (an earlier prototype's aggregate,
   // 6349184079384354209). G133: the final taper and the leader fix move the eight broadleaf-
   // architecture profiles (maple, oak, elm, walnut, beech, ash, aspen, alder); the six conifers
-  // hash as they did at 86d76acd.
-  CHECK_MESSAGE(combined == 12739116931385525735ull, "named profile geometry hash: " << combined);
+  // hash as they did at 86d76acd. G201: every profile's trunk skirt (40 or 48 triangles) moves all
+  // fourteen; less their skirts they are the trees they were, 12739116931385525735.
+  CHECK_MESSAGE(combined == 8458443129283961453ull, "named profile geometry hash: " << combined);
+  const u64 before = hash_bytes(unskirted.data(), unskirted.size() * sizeof(u64));
+  CHECK_MESSAGE(before == 12739116931385525735ull, "less their skirts: " << before);
 }
 
 TEST_CASE("flora: named species reject invalid input and keep distinct material roles") {

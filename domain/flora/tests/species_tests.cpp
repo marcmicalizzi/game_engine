@@ -1,6 +1,8 @@
 // The second batch of species — the birch, the willow, the orchard tree and the ancient tree — and
 // the structural table they emit (docs/subsystems/flora.md, "The birch", "The willow", "The orchard
 // tree", "Megaflora", "The structural table").
+#include "skirt_support.h"
+
 #include <core/hash/hash.h>
 #include <domain/flora/flora.h>
 #include <domain/flora/structure.h>
@@ -136,7 +138,8 @@ void check_tree(const std::string& species, const assets::MeshData& mesh,
 
 template <typename Params, typename Solve>
 u64 check_species(const std::string& species, const Params& params, Solve solve, u32 expected_parts,
-                  std::initializer_list<u32> budgets, u64 golden, u32 expected_steps = 0) {
+                  std::initializer_list<u32> budgets, u64 golden, u64 before,
+                  u32 expected_steps = 0) {
   CAPTURE(species);
   assets::MeshData mesh;
   flora::Motion motion;
@@ -179,6 +182,12 @@ u64 check_species(const std::string& species, const Params& params, Solve solve,
   char hex[32];
   std::snprintf(hex, sizeof(hex), "0x%016llxull", static_cast<unsigned long long>(got));
   CHECK_MESSAGE(got == golden, species << " hashes to " << hex);
+  // The skirt (G201) is the only thing the version-12 tree adds: less its skirt, the tree is the
+  // bytes it was before it, `before`, the golden the skirt moved.
+  flora::test_support::strip_skirt(again, again_motion);
+  const u64 less = tree_hash(again, again_motion);
+  std::snprintf(hex, sizeof(hex), "0x%016llxull", static_cast<unsigned long long>(less));
+  CHECK_MESSAGE(less == before, species << " less its skirt hashes to " << hex);
   Params other = params;
   other.seed = 2;
   assets::MeshData other_mesh;
@@ -238,7 +247,8 @@ TEST_CASE("flora: the birch — a narrow ovoid crown of fine pendulous branchlet
   // G133: 0x94bd56a376299bfd was an earlier G129 prototype's; the final taper and the leader fix
   // add the stem's continuing leader (22 named axes where 21 were; 156 parts, 2,347 branchlets).
   check_species(flora::k_species_birch, full, flora::solve_birch, birch_parts(full),
-                {50000u, 36000u, 20000u, 12000u, 8000u}, 0x67522f26f96462aeull);
+                {50000u, 36000u, 20000u, 12000u, 8000u}, 0xda5200dc082f2f69ull,
+                0x67522f26f96462aeull);  // G201: the skirt appended (the second, less it)
   assets::MeshData mesh;
   flora::Motion motion;
   flora::TreeReport report;
@@ -413,8 +423,10 @@ TEST_CASE("flora: a birch clump — seeded stems from one root collar, each load
   clump.seed = 5;
   clump.triangle_budget = 400000;
   // G133: 0x539954b98363c339 was an earlier G129 prototype's; the leader fix on each stem.
-  check_species(flora::k_species_birch, clump, flora::solve_birch, birch_parts(clump),
-                {50000u, 36000u, 12000u}, 0x9e9dee595238433full);
+  check_species(
+      flora::k_species_birch, clump, flora::solve_birch, birch_parts(clump),
+      {50000u, 36000u, 12000u}, 0x2c6e0ec15d1faf8cull,
+      0x9e9dee595238433full);  // G201: a skirt under each of the three stems, nothing else
 }
 
 TEST_CASE("flora: the willow — a short trunk, arching limbs, curtains hanging to the ground") {
@@ -422,7 +434,9 @@ TEST_CASE("flora: the willow — a short trunk, arching limbs, curtains hanging 
   const u32 parts = 1 + p.limbs + p.limbs * p.branches + p.limbs * p.branches * p.curtains;
   check_species(flora::k_species_willow, p, flora::solve_willow, parts, {20000u, 12000u},
                 // G85: 0x6ed17ceedeee2d85. G86: 784 curtains and 30-degree spray lift.
-                0x186fe6df146c3102ull, 5);  // G87: curtain wood and independent alternate leaves
+                // G87: curtain wood and independent alternate leaves (0x186fe6df146c3102, the
+                // second number); G201: the trunk's skirt appended, nothing else.
+                0x99e7a4793efb2399ull, 0x186fe6df146c3102ull, 5);
   assets::MeshData mesh;
   flora::Motion motion;
   flora::TreeReport report;
@@ -450,12 +464,12 @@ TEST_CASE("flora: the orchard tree — a low broad crown, pruned flat or free, w
   const flora::Orchard p;
   const u32 parts = 1 + p.limbs + p.limbs * p.branches + p.limbs * p.branches * p.twigs;
   check_species(flora::k_species_orchard, p, flora::solve_orchard, parts, {8000u},
-                0x6179cd3e0c98ee16ull);
+                0xedc7767852719364ull, 0x6179cd3e0c98ee16ull);  // G201: the skirt, nothing else
   // With fruit: a third primitive, one-sided, its triangles eight a fruit.
   flora::Orchard fruiting = p;
   fruiting.fruit = 2;
   check_species(flora::k_species_orchard, fruiting, flora::solve_orchard, parts, {},
-                0x8399aaddf286a1cbull);
+                0xf251e0d678c075a0ull, 0x8399aaddf286a1cbull);  // G201: the skirt, nothing else
   assets::MeshData mesh;
   flora::Motion motion;
   flora::TreeReport report;
@@ -504,8 +518,10 @@ TEST_CASE("flora: the ancient tree — buttresses, hollows, major limbs, a canop
   // 0xe9f2fe3b015def05 until the crown became the allometric recursion (G72), 0xf43a0a8e4b677b3f
   // until the habits and the limbs a wood could carry (G79).
   check_species(flora::k_species_ancient, p, flora::solve_ancient, parts, {100000u, 20000u},
-                // G85: 0x61446da58690bc66. G86 seats segment rims inside parent wood.
-                0xfbaf29c9d6486049ull);
+                // G85: 0x61446da58690bc66. G86 seats segment rims inside parent wood
+                // (0xfbaf29c9d6486049, the second number). G201: the skirt under the buttresses
+                // appended, nothing else.
+                0x45f892b6d2344237ull, 0xfbaf29c9d6486049ull);
   assets::MeshData mesh;
   flora::Motion motion;
   flora::TreeReport report;

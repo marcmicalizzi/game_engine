@@ -221,6 +221,7 @@ void build_tube(const Axis& axis, f64 r0, f64 r1, u32 sides, Vec2 uv_offset, Emi
   if (flat_tip) {
     for (u32 i = 1; i + 1 < sides; ++i)
       out.face(last, last + i, last + i + 1, tip_dir);
+    if (out.skirt) build_skirt(first, sides, axis.point[0], out);
     return;
   }
   const u32 tip = out.vertex(axis.point[rows - 1] + tip_dir * r1, tip_dir, u0 + 0.5 * round,
@@ -229,6 +230,61 @@ void build_tube(const Axis& axis, f64 r0, f64 r1, u32 sides, Vec2 uv_offset, Emi
     const Vec3 nv = out.mesh.normals[last + i];
     const D3 hint = from_f32(nv) + tip_dir;
     out.face(last + i, last + i + 1, tip, hint);
+  }
+  if (out.skirt) build_skirt(first, sides, axis.point[0], out);
+}
+
+void build_skirt(u32 first, u32 sides, D3 centre, Emitter& out) {
+  // The rim's radius: the bottom ring's farthest vertex from the foot, across the level plane.
+  const auto across = [&](u32 i) {
+    const D3 p = from_f32(out.mesh.positions[first + i]);
+    return D3{p.x - centre.x, 0.0, p.z - centre.z};
+  };
+  f64 rim = 0.0;
+  f64 lowest = 1e300;
+  for (u32 i = 0; i <= sides; ++i) {
+    rim = std::max(rim, length_of(across(i)));
+    lowest = std::min(lowest, static_cast<f64>(out.mesh.positions[first + i].y));
+  }
+  const f64 drop = k_skirt_flare * rim;
+  // Below the origin by the depth the lowest ring's farthest point from the origin asks (the
+  // instance stands on the ground at its origin, and a clump's stem or a leaning foot is off it),
+  // and never above the flare's ring: a foot sunk already still gets its straight run. For a stem
+  // on the axis that is skirt_depth(rim).
+  f64 reach = 0.0;
+  for (u32 i = 0; i <= sides; ++i) {
+    const D3 h = across(i);
+    const f64 x = centre.x + h.x * k_skirt_reach;
+    const f64 z = centre.z + h.z * k_skirt_reach;
+    reach = std::max(reach, std::sqrt(x * x + z * z));
+  }
+  const f64 bottom =
+      std::min(-(reach * k_skirt_slope_tan + k_skirt_margin_m), lowest - drop - drop);
+  out.weight = 0.0;
+  const u32 ring1 = out.mesh.positions.size();
+  for (u32 r = 1; r <= 2; ++r) {
+    for (u32 i = 0; i <= sides; ++i) {
+      const D3 p0 = from_f32(out.mesh.positions[first + i]);
+      const D3 h = across(i);
+      const f64 y = r == 1 ? p0.y - drop : bottom;
+      const D3 p{centre.x + h.x * k_skirt_reach, y, centre.z + h.z * k_skirt_reach};
+      const f64 out_len = length_of(h);
+      const D3 radial = out_len > 1e-12 ? h * (1.0 / out_len) : D3{1.0, 0.0, 0.0};
+      // The flare's ring keeps the collar's normal so the shading runs on across it; the straight
+      // run's is level.
+      const D3 normal = r == 1 ? from_f32(out.mesh.normals[first + i]) : radial;
+      const Vec2 uv = out.mesh.uvs[first + i];
+      out.vertex(p, normal, static_cast<f64>(uv.x), static_cast<f64>(uv.y) - (p0.y - y));
+    }
+  }
+  for (u32 band = 0; band < 2; ++band) {
+    const u32 top = band == 0 ? first : ring1;
+    const u32 low = ring1 + band * (sides + 1);
+    for (u32 i = 0; i < sides; ++i) {
+      const D3 hint = across(i) + across(i + 1);
+      out.face(top + i, top + i + 1, low + i + 1, hint);
+      out.face(top + i, low + i + 1, low + i, hint);
+    }
   }
 }
 

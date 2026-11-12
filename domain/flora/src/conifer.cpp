@@ -295,6 +295,7 @@ u32 dead_sides(const Plan& plan) { return plan.branch_tubes ? plan.branch_sides 
 
 u32 count_triangles(const Conifer& p, const Structure& s, const Plan& plan) {
   u32 total = tube_triangles(plan.trunk_rows, plan.trunk_sides) +
+              skirt_triangles(plan.trunk_sides) +
               spray_triangles(cards_of(p.needle_cards, plan));  // the leader's tuft
   for (const Branch& b : s.branches) {
     if (b.dead) {
@@ -435,8 +436,10 @@ bool detail::solve_conifer_rules(const Conifer& p, const GrowthRules& rules, ass
   // each a part of its own hanging from the trunk; a dead branch's on every rung.
   emit.begin_part(s.trunk.point[0], s.trunk.tangent[0], s.trunk.length,
                   geometry::k_motion_no_parent);
+  emit.skirt = true;  // the trunk stands on the ground (G201)
   build_tube(resample_axis(s.trunk, plan.trunk_rows), s.trunk_r0, std::min(.01, s.trunk_r0 * .3),
              plan.trunk_sides, Vec2{0.0f, 0.0f}, emit);
+  emit.skirt = false;
   Vector<u32> part_of(s.branches.size());
   u32 laterals = 0;
   for (u32 i = 0; i < s.branches.size(); ++i) {
