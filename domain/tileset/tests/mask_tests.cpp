@@ -248,6 +248,74 @@ TEST_CASE("tileset masks: explicit excavated soil overrides the steep bedrock pr
                   fx.error);
 }
 
+TEST_CASE("tileset masks: a region's base with no priors lays the ground inside it (T109)") {
+  // W97b's and G166's valleys: a meadow `base` over the whole map and no `priors` laid nothing,
+  // and the ground palette's sand showed everywhere.
+  Fixture fx;
+  fx.in.masks.priors.reset();
+  fx.in.masks.paint.clear();
+  fx.in.masks.regions.clear();
+  auto meadow = circle("meadow", 120, 0, 6);
+  meadow.base = "gravel";
+  meadow.feather_m = 0;
+  fx.in.masks.regions.push_back(meadow);
+  auto soft = circle("soft", -120, 0, 6);
+  soft.base = "litter";
+  soft.feather_m = 4;  // 2 m in from the outline, half its share
+  fx.in.masks.regions.push_back(soft);
+  Vector<f64> w;
+  f64 wet = 0;
+  const auto total = [&] {
+    f64 sum = 0;
+    for (const f64 v : w)
+      sum += v;
+    return sum;
+  };
+  REQUIRE_MESSAGE(mask_point(fx.set, fx.in, 120000, 0, w, wet, fx.error), fx.error);
+  CHECK(w[5] == 1.0);  // the base, outright: there is no scree, bedrock or snow to keep
+  CHECK(total() == 1.0);
+  REQUIRE(mask_point(fx.set, fx.in, -120000, -4000, w, wet, fx.error));
+  CHECK(w[7] == doctest::Approx(0.5));
+  CHECK(total() == doctest::Approx(0.5));  // the rest is the ground palette, as it was
+  REQUIRE(mask_point(fx.set, fx.in, 0, 120000, w, wet, fx.error));
+  CHECK(total() == 0.0);  // outside every region nothing is laid
+  // A material over a base lays over it, as it does over the priors' soil.
+  auto over = circle("over", 120, 0, 2);
+  over.material = "trail";
+  over.feather_m = 0;
+  fx.in.masks.regions.push_back(over);
+  REQUIRE(mask_point(fx.set, fx.in, 120000, 0, w, wet, fx.error));
+  CHECK(w[6] == 1.0);
+  CHECK(w[5] == 0.0);
+  // And the build stores it: the base region's tile names gravel at a full code.
+  MaskBuildResult built;
+  REQUIRE_MESSAGE(build_mask_level(fx.set, fx.in, fx.tmp.file("base"), built, fx.error), fx.error);
+  MaskLevel level;
+  REQUIRE_MESSAGE(level.open(built.manifest, fx.error), fx.error);
+  Vector<f32> sampled;
+  f32 sampled_wet = 0;
+  REQUIRE(level.sample(124000, 0.0, 0, 0.0, 0.0f, sampled, sampled_wet));
+  CHECK(sampled[5] == doctest::Approx(1.0f));
+}
+
+TEST_CASE("tileset masks: a priors block naming no role is refused by name (T109)") {
+  // A role has no default layer: a block with every role empty lays nothing, which a scene that
+  // wrote `"priors": {}` expecting defaults would not see until a picture.
+  Fixture fx;
+  scene::TerrainMaskPriors none;
+  fx.in.masks.priors = none;
+  CHECK_FALSE(validate_mask_inputs(fx.in, fx.error));
+  CHECK(fx.error.find("priors names no role") != std::string::npos);
+  MaskBuildResult built;
+  CHECK_FALSE(build_mask_level(fx.set, fx.in, fx.tmp.file("none"), built, fx.error));
+  // One role is enough; a role naming a layer the palette lacks is refused with its name.
+  fx.in.masks.priors->bedrock = "rock";
+  CHECK(validate_mask_inputs(fx.in, fx.error));
+  fx.in.masks.priors->soil = "loam";
+  CHECK_FALSE(validate_mask_inputs(fx.in, fx.error));
+  CHECK(fx.error.find("priors names \"loam\"") != std::string::npos);
+}
+
 TEST_CASE("tileset masks: a tile naming more layers than its budget is refused with a sentence") {
   Fixture fx;
   // A region of trail straddling the pond's margin and bed: soil, gravel, sand and trail meet, and
@@ -266,6 +334,10 @@ TEST_CASE("tileset masks: a tile naming more layers than its budget is refused w
   CHECK(fx.error.find("trail") != std::string::npos);
   CHECK(fx.error.find("at most 4 layers per tile") != std::string::npos);
   CHECK(fx.error.find("raise") == std::string::npos);
+  // W113: the weakest's stored weight and its points beside its mean, so a mean that prints 0.00
+  // is not read as a layer of no weight.
+  CHECK(fx.error.find("/255 at ") != std::string::npos);
+  CHECK(fx.error.find(" of 289 points") != std::string::npos);  // 16 cells: 17 by 17
   fx.in.budget = 2;
   CHECK_FALSE(build_mask_level(fx.set, fx.in, fx.tmp.file("over-two"), built, fx.error));
   CHECK(fx.error.find("raise materials.layer_budget up to 4") != std::string::npos);
@@ -395,7 +467,10 @@ TEST_CASE("tileset masks determinism: the fixture's level hashes to the pinned v
   // Re-pinned 2026-11-11 (T105): `k_tileset_version` 4 (no far level at or below the finest's
   // spacing) moved the set's key the same way; the archive is unchanged. Before:
   // "e4854ad70bcac09e".
-  constexpr const char* k_level = "a8298a209cc92c73";
+  // Re-pinned 2026-11-11 (T109): `k_mask_version` 4 (a region's base with no priors lays the
+  // ground) moved the key, which seeds the level's hash; the fixture has priors, so no record and
+  // no byte of the archive moved. Before: "a8298a209cc92c73".
+  constexpr const char* k_level = "fceeeee3a1295eb7";
   constexpr const char* k_archive = "75eef7ec443e0e7e";
   Fixture fx;
   MaskBuildResult built;
@@ -573,6 +648,11 @@ TEST_CASE(
     CHECK(report.over[0].layers.size() == 5);
     CHECK(report.over[0].layers[report.over[0].weakest].name == "litter");
     CHECK(report.over[0].layers[report.over[0].weakest].peak >= k_mask_step);
+    // W113: what the format would store of it: one 255th, at the one point of the edge row the
+    // circle reaches 0.4 m into (its neighbours a metre either side are 0.30 m in, under a step).
+    CHECK(report.over[0].layers[report.over[0].weakest].stored == 1);
+    CHECK(report.over[0].layers[report.over[0].weakest].points == 1);
+    CHECK(report.over[0].points == 289);
     MaskBuildResult built;
     CHECK_FALSE(build_mask_level(fx.set, fx.in, fx.tmp.file("refused"), built, fx.error));
     CHECK(fx.error == describe_over_budget(report, k_over_budget_listed));

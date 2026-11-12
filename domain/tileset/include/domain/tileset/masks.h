@@ -26,7 +26,9 @@ inline constexpr std::string_view k_mask_format = "engine.tileset.masks";
 // 3 (2026-11-08, roadmap T74): a layer whose peak weight over a tile is under one quantization step
 // no longer takes a channel (see `k_mask_step`), so a tile that stored a layer at a weight of one
 // 255th by rounding up now drops it.
-inline constexpr u32 k_mask_version = 3;
+// 4 (2026-11-11, roadmap T109): a region's `base` with no `priors` lays its share of the ground
+// (the whole ground is the soil it stands in for), where it laid nothing.
+inline constexpr u32 k_mask_version = 4;
 // **One quantization step of a layer's weight as stored** (a mask texel's channel is a u8 of
 // `round(weight * 255)`). A layer counts toward a tile's palette budget, and takes a channel, only
 // when its peak weight over the tile's points is at least one step; under it the layer is dropped
@@ -59,8 +61,9 @@ bool resolve_tile_set(const scene::Terrain& entry, std::string_view dir, const s
                       std::string& ddc, std::string& manifest, std::string& error);
 // False, with a sentence naming the field, for inputs a build cannot take: a spacing outside 250 to
 // 4000 mm, tile cells not a power of two in 4..256, a budget outside 1..4, a palette over 254 or
-// with a name empty or twice, a name the palette does not have, a region with no outline or two, a
-// region giving both `material` and `base`, numbers out of range, an image that does not read.
+// with a name empty or twice, a name the palette does not have, a `priors` block naming no role
+// (T109), a region with no outline or two, a region giving both `material` and `base`, numbers out
+// of range, an image that does not read.
 bool validate_mask_inputs(const MaskInputs& in, std::string& error);
 // The level's key: the set's hash, every input (each image by its bytes) and `k_mask_version`.
 bool mask_key(const TileSetManifest& set, const MaskInputs& in, u64& out, std::string& error);
@@ -92,6 +95,11 @@ struct MaskTileLayer {
   u32 layer = 0;  // index into the palette
   std::string name;
   f64 mean = 0, peak = 0;
+  // **What the format would store** (W113): the points of the tile's mip 0 at or over one step
+  // (`k_mask_step`), and the largest stored value, `round(peak * 255)`, in 255ths. A counted layer
+  // has at least one such point; a mean that prints as 0.00 is not a layer of no weight.
+  u32 points = 0;
+  u32 stored = 0;
 };
 // A tile whose points name more layers than the budget. `layers` is heaviest first by mean weight;
 // `weakest` indexes the last, the layer a blend-out would drop.
@@ -100,6 +108,7 @@ struct OverBudgetTile {
   i64 x0_mm = 0, x1_mm = 0, z0_mm = 0, z1_mm = 0;
   Vector<MaskTileLayer> layers;
   u32 weakest = 0;
+  u32 points = 0;  // the tile's mip-0 points, (cells + 1) squared
 };
 struct MaskBudgetReport {
   Vector<OverBudgetTile> over;   // in tile order, row by row
