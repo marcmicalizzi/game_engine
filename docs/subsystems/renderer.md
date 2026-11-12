@@ -2436,7 +2436,7 @@ The captures, at the erg from a walker's eyes at noon, a late afternoon, a sunse
 
 ### What the resolve costs, term by term
 
-**The stages say where in the shader; this says which term and which pixels, at the owner's setting** (2026-11-11, roadmap R148; [the measurement](../experiments/resolve-cost-2026-11-11.md), with every table and pair). At 3840×2160 with traced primaries, traced shadows and the bounce, on the engine's own scenes (the forest was not flown that night: a run needed 52 GB of commit the machine did not have), resolve milliseconds:
+**The stages say where in the shader; this says which term and which pixels, at the owner's setting** (2026-11-11, roadmap R148; [the measurement](../experiments/resolve-cost-2026-11-11.md), with every table and pair). At 3840×2160 with traced primaries, traced shadows and the bounce, on the engine's own scenes (the forest's one flight, 2026-11-12, ran out of memory in its load: the page has it), resolve milliseconds:
 
 | term | ground-by-place, the trail (72 % ground, 28 % sky; its night) | elder-grove (50 % sky, 29 % rigid, 11 % leaves, 10 % trunks) |
 |---|---:|---:|

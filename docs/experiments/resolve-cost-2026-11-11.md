@@ -66,7 +66,7 @@ among branch pixels runs the leaf's path for the time it takes. Under the elder 
 covered classes alone sum to 3.85 ms where the picture is 2.70. A class's figure alone is an upper
 bound; the lower one, the picture less a frame of every class but it, is in the forest's build of
 the patch (`measure-v2.patch`, 88 words, which also kills the air and the sky's light on the
-surface) and was not flown. (b) A kill leaves the term's registers
+surface), flown on the elder grove only ("The 88-word cycle", below). (b) A kill leaves the term's registers
 allocated: a fragment shader's registers are sized for its largest path, so a term's figure is the
 work it does and not what compiling it in costs the rest (the water module, below, is that cost
 measured from outside). (c) The cycle's picture frames read 3 to 10 % dearer than a plain flight's
@@ -151,9 +151,43 @@ sun, and 90 % of those are blocked. Alone, the leaves' pixels (11 % of the frame
 the trunks' (10 %) 1.56 against 0.63 for the rigid 29 %: the crowns are where the lighting, the
 sun's ray and the lights' rays are spent, and (a) above is why the three do not sum.
 
+### The 88-word cycle, flown on the elder grove (2026-11-11, 23:22)
+
+`measure-v2.patch` on be3826d9, the same pose and flags, `--no-medium`, one flight, 400 frames, the
+first cycle left out (3 to 4 frames a word, each word's spread 0.01 to 0.02 ms). The machine was
+quieter than for the tables above: other processes at 16 % of the CPU, `quiet` false. It agrees
+with the 80-word table: the stages' steps 0.09, 0.14, 0.15, 1.29, 0.48 and 0.68 against 0.09, 0.13,
+0.15, 1.31, 0.46 and 0.67; the indirect read's kill 1.22 against 1.17; every caster solid 0.11
+against 0.14; the material's textures 0.06 against 0.10; the triangle again 0.03 against 0.07; the
+census the same shares to a tenth of a percent. Its picture word reads 2.82 against 2.70 (the
+80-word flight's stages already summed to 2.81, above its own picture word). What it adds:
+
+| class (share of pixels) | alone (upper bound) | the picture less every class but it (lower bound) | µs a pixel |
+|---|---:|---:|---:|
+| rigid meshes (29.3 %) | 0.68 | 0.42 | 0.17 to 0.28 |
+| leaves (10.6 %) | 1.82 | 0.69 | 0.79 to 2.07 |
+| trunks and branches (10.2 %) | 1.66 | 0.53 | 0.63 to 1.96 |
+| sky (49.8 %) | 0.08 | 0.01 | under 0.01 |
+
+The lower bounds and the floor (0.08) sum to 1.73 of the 2.82 ms picture: **1.1 ms of this frame
+belongs to no class alone**, the warps where leaf, trunk and ground pixels meet, which is (a)
+measured. A leaf pixel costs three to eight times a rigid one either way. The two kills it adds,
+the air and the sky's light on the surface, are under 0.01 ms each here (the stand-in sky).
+
 ## The forest
 
-Not flown by this row. A forest run on be3826d9 needed 52 GB and, with a cold pipeline, 18 to 24
+Not measured. **One flight was made on 2026-11-12 and died before its first frame**: the
+88-word binary on `scene-staging.json` with the six-pose path, the staging note's flags, 3840 ×
+2160, `--raster rt --shadows rt`, the bounce, the pipeline cache on (the measure binary's resolve
+pipelines in none of it), started at 00:24 with 59.4 GB of free commit and the machine near idle
+(CPU 6 %), aborted 7.4 minutes in, ten seconds after the micromap stage lowered its level cap from 6
+to 5: `assertion failed: p != nullptr, out of memory` in `core/memory`. A minute later the machine
+had 61 GB free and no other process held more than 10 GB, so it was the run's own peak and not a
+neighbour's. The staging note measured 52 GB for a cold-pipeline load of the same scene on main;
+the log (warnings only) does not say whether the driver still held this binary's cold pipelines'
+compile when the micromaps were built. A second flight was not made: nothing the row could change removes
+that peak. What would: the measure binary's pipelines compiled into the cache by a run that stops
+before the micromaps, or more free commit than the 59 GB this one had. Before that night: a forest run on be3826d9 needed 52 GB and, with a cold pipeline, 18 to 24
 minutes to its first frame; the rule set during the night was 60 (later 55) GB of free commit
 before a run, and the machine offered 35 to 54 GB each of the three times this row looked
 (continuously from 20:46 to 21:16 and from 21:20 to 21:45, and at 21:47: 49.7 GB), after which the
@@ -170,8 +204,8 @@ ray under and through the crowns, the water's own pixels at 0.45 µs and more, a
 textured stochastic layers, in that order by [R135's map](frame-cost-map-2026-11-07.md) (the sun's
 stage 4.1 to 8.6 ms at 3840 on v34, 2.5 to 5.9 of it the masks). The measure binary, its path
 (six poses: the lake held, the open lake, under the canopy, the forest floor, the stream's reach,
-the eastern coast) and its reader are in the row's scratch directory; one lease of twenty minutes
-flies it.
+the eastern coast) and its reader are in the row's scratch directory, proven on the elder grove;
+what stops it is the load's memory, above.
 
 ## The cuts
 
