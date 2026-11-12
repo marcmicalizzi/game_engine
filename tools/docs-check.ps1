@@ -23,8 +23,9 @@
     plan        docs/plan/README.md's document table lists every docs/plan page.
     roadmap     docs/roadmap.md's item ids are unique, every id a "Depends on" cell names is a
                 row, a done row names what closed it (an ADR, a commit, a dated status note), a
-                blocked row says by what, every row has a Where link, and State, Effort and
-                Reasoning use the page's own vocabulary.
+                blocked row says by what, every row has a Where link, State, Effort and
+                Reasoning use the page's own vocabulary, and no row whose first cell is an item
+                id stands outside an item table, where none of this would read it.
     readme      the root README.md exists, names every layer directory and every engine_app(),
                 and links AGENTS.md, the plan, ADR, subsystems and experiments indexes, and the
                 roadmap when there is one.
@@ -815,15 +816,27 @@ if (Test-Path -LiteralPath $roadmapPath) {
   $roadmapRows = New-Object System.Collections.Generic.List[object]
   $columns = $null
   $skipTable = $false
+  $proseTable = $false
   $requiredColumns = @('#', 'Item', 'State', 'Depends on', 'Effort', 'Reasoning', 'Where')
 
   for ($i = 0; $i -lt $info.Lines.Count; $i++) {
     $line = $info.Lines[$i]
-    if ($info.Fenced[$i] -or $line -notmatch '^\s*\|') { $columns = $null; continue }   # a table ends at its first other line
+    if ($info.Fenced[$i] -or $line -notmatch '^\s*\|') { $columns = $null; $proseTable = $false; continue }   # a table ends at its first other line
     $cells = @((($line.Trim() -replace '\\\|', '/') -replace '^\|', '' -replace '\|$', '') -split '\|' | ForEach-Object { $_.Trim() })
 
+    if ($null -eq $columns -and $cells[0] -ne '#') { $columns = @{}; $proseTable = $true }
+    # A row whose first cell is an item id belongs in an item table. Outside one it is checked by
+    # nothing, which is how a blank line inside an item table hid forty rows' ids, dependencies and
+    # states from every rule below for weeks (roadmap T115): the rows after the blank line became a
+    # table of their own whose first row was taken for a prose header.
+    if ($proseTable) {
+      if ($cells[0] -match '^[A-Z]\d+$') {
+        Add-Problem $roadmapPath ($i + 1) 'roadmap' "$($cells[0]) looks like an item row but is in no item table (one whose header row starts with '#'); a blank line or another line ends a table, so join it to the table above or give its table the header"
+      }
+      continue
+    }
+
     if ($null -eq $columns) {
-      if ($cells[0] -ne '#') { $columns = @{}; $skipTable = $true; continue }
       $columns = @{}
       for ($c = 0; $c -lt $cells.Count; $c++) { $columns[$cells[$c]] = $c }
       $skipTable = $false

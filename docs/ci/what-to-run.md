@@ -558,33 +558,52 @@ thread can land inside a duration line and cut the case's name (seven cases in g
 log); the tool mends a cut name when exactly one case of the test begins with what is left, and
 reports the rest.
 
-**Gate b58's logs, predicted** (a prediction from one run's seconds, not a measurement until a
-gate runs the deal): the table they write is not committed on 2026-11-11, because other branches
-merging that day add files to the renderer, so the re-deal lands on the merged tree. Over this
-branch's base (`cdeb3cca`), the server's seconds for `renderer` and `gfx`, the slowest of the
-server's and the three Windows presets' for `engine_view`:
+**The table in use: gate b60's logs** (T113, 2026-11-11; a prediction from one gate's seconds,
+not a measurement until the next gate runs the deal). Gate b60 ran the four Windows suites at once
+on `be3826d9` from 17:55, and fetched no server log, so the rows are `msvc-debug`'s whole suite
+(`LastTest-20261111-175517-all.log`) for every file, with the slowest of `msvc-release`'s,
+`msvc-no-ecs`'s and `msvc-minimal`'s runs of `engine_view` beside it (the two off-configurations'
+`all-rest` logs; their `all-invariant-no-driver` logs ran `renderer` and `gfx` with every GPU case
+skipped and are the wrong log for a cost). **The renderer's and gfx's seconds are therefore the
+RTX 5090's in `msvc-debug`, not the Titan Xp's**: refresh those rows from the server's log when a
+gate has one. One case, 0.5 s of `hdr_output_tests.cpp`, was cut by a log line too early to mend
+and is left out; ten were mended.
 
-| Test | Parts now (name order), seconds | By the table | Longest part |
-|---|---|---|---|
-| `renderer` (54 files, server) | 878, 1,424, 2,383, 1,125 | 1,453, 1,453, 1,452, 1,452 | 2,383 to 1,453 |
-| `gfx` (47 files, 2 not costed, server) | 188, 378 | 283, 283 | 378 to 283 |
-| `engine_view` (40 sources, 8 with no cases) | 270, 530, 561, 134 | 374, 374, 373, 374 | 561 to 374 |
+| Test | Measured at the gate, seconds | Parts as dealt by name, by the table | By the table | Longest part |
+|---|---|---|---|---|
+| `renderer` (56 files) | 273, 523, 44, 87 | 273, 419, 45, 89 | 207, 207, 206, 206 | 419 to 207 |
+| `gfx` (47 files, 2 not costed) | 24, 123 | 30, 133 | 82, 81 | 133 to 82 |
+| `engine_view` (41 sources, 8 with no cases) | debug 86, 623, 212, 262; release 82, 844, 154, 327 | 108, 935, 215, 421 | 420, 420, 420, 419 | 935 to 420 |
 
-The renderer's "now" reproduces the server's measured parts (876, 1,423, 2,382, 1,123 s), which is
-the check that every case was placed. `engine_view`'s rows mix machines by design, and one is
-suspect: `interactive_tests.cpp` takes its 128 s from `msvc-minimal`, where an end-to-end test's
-children can wait for the card out of sight; the server's and release's runs of it were shorter.
+The renderer's middle column reproduces its measured parts once `renderer.2`'s own printed waits
+for the GPU lock (99 s over twenty devices) come off, which is the check that every case was placed;
+gfx's runs over by the whole second every file of under half a second rounds up to. `engine_view`'s
+middle column is the slowest machine's a file, so it is above every one run. The `PARTS` stay four,
+two and four: by the table the longest `engine_view` part is 420 s, under an end-to-end test's
+600 s of work (`ENGINE_TEST_WORK_TIMEOUT_S`) and under `flora`'s 547 s, the gate's longest unparted
+suite, where `engine_view.2` took 844 s in `msvc-release`; and the renderer's four on the server
+were about 1,450 s each at gate b58, so fewer would bind there whatever the 5090 says. Gate b58's
+own table (the server's seconds, predicting the renderer's longest part 2,383 s to 1,453 s) was
+never committed, because the merged tree of 2026-11-11 added files it did not know.
+
 **A case's seconds include its wait for the GPU lock**, and on this shared desktop that can be most
 of them: `gfx.1`, run by filter on 2026-11-10 behind three other agents' measurements, took 1,765 s
 of which 1,725 were one case waiting (its own work: 50 holds, 35 s held, on the RTX 5090 in
 `msvc-debug`). The process prints the wait on stderr, which reaches the log ahead of the buffered
 case lines, so the tool takes each printed wait off the shortest case at least that long — the
 only cases it can have been in; an end-to-end test's children wait out of sight, which is one more
-reason to read the server's log, where nothing else holds the card.
+reason to read the server's log, where nothing else holds the card. Gate b60's three largest
+`engine_view` rows — `mesh_view_tests.cpp` 308 s, `authored_view_tests.cpp` 288 s and
+`interactive_tests.cpp` 128 s — are `msvc-release`'s, run beside the other three suites, so some of
+each may be a child's wait.
 
 The check that a deal lost nothing: each part's `--list-test-cases --no-skip` with its own filter,
-summed, against the executable's whole list (2026-11-09, `msvc-debug`): renderer 111 + 69 + 98 + 71
-= 349, gfx 54 + 92 = 146, engine_view 53 + 48 + 50 + 19 = 170, every name once.
+summed, against the executable's whole list. On 2026-11-09 (`msvc-debug`): renderer 111 + 69 + 98 +
+71 = 349, gfx 54 + 92 = 146, engine_view 53 + 48 + 50 + 19 = 170. On `be3826d9` before and after
+T113's table (`msvc-debug`): renderer 131 + 74 + 88 + 77 and then 80 + 76 + 98 + 116, both 370 of
+370; gfx 60 + 105 and then 68 + 97, both 165 of 165; engine_view 46 + 59 + 43 + 29 and then 41 + 34
++ 64 + 38, both 177 of 179, the other two being `engine_view.generators`' own. Every name once, the
+same 712 names in the parts before and after, and `ctest -N` the same 158 tests.
 
 ### The off-configurations' GPU cases
 
