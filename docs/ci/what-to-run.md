@@ -351,6 +351,31 @@ do not move with load or preset, the seconds are an upper bound):
 The water branch and not the terrain is what makes a variant heavy: every heavy variant carries
 water, and the terrain variants without it peak at 805 MiB and under.
 
+**Measured, as a pair** (2026-11-12, `msvc-debug`, a clean rebuild of the shaders alone: every
+`.spv` and `.cost` removed, then `ninja -j6` over the twelve `engine_shaders_*_build` targets; another
+session's `engine-view` held 50 GB of commit throughout, so free commit swung between 45 and 5 GB
+under the run and the machine never had the 80 GB a pool-less run at six jobs needs, which is why
+the "before" side is a model). The peak is the largest sum of the meter's peaks over the compiles
+`.ninja_log` shows running at once, an upper bound since two compiles' peaks need not coincide; a
+sampler reading the `slangc` processes' private bytes every five seconds saw at most 11.6 GB. The
+model replays the measured run's order and each compile's measured time through `-j6` with and
+without the pool; it reproduces the measured run exactly (164.4 s, 19,659 MiB), and its pool-less
+side is a lower bound on time, since six heavy compiles at once would contend more than two do.
+
+| Run | Wall time of the shader step | Heavy compiles at once | Peak commit of the compiles |
+|---|---|---|---|
+| before: no pool, `-j6` (model) | 136.3 s | 6 | 31,323 MiB |
+| before: no pool, `-j4` (model) | 157.7 s | 4 | 25,981 MiB |
+| **after: pool depth 2, `-j6` (measured)** | **164.4 s** of `slangc` (174 s with ninja's start and the embeds) | 2 | **19,659 MiB** |
+| after: pool depth 1, `-j6` (model) | 315.7 s | 1 | 12,571 MiB |
+
+So at this desktop's default the pool takes 11.7 GB off the shader step's peak for 28 s of wall
+time on a rebuild of the shaders alone; in a whole build the C++ jobs fill the slots the pool holds
+back. The 38 to 40 GB quoted on 2026-11-11 is close to the sixteen resolve variants' peaks summed
+(37,594 MiB on 33ff2824), which one build reaches only with all sixteen running at once; at six jobs
+one build's worst is the six heavy compiles together, the first row, and the machine's worst was
+several builds' worst at once.
+
 **The table cannot go stale quietly.** Every compile runs under `tools/shader_meter`
 (`shader-meter <cost file> <slangc> <arguments...>`, a host tool, standard library and the operating
 system only), which writes the compile's peak private commit (Windows) or peak resident set
