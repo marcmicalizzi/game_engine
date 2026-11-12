@@ -1321,11 +1321,12 @@ TEST_CASE("gi cache: on a stand of trees a coarse level holds the fine one's lig
 // above hold of a crown is its light flattened, which is brighter.
 //
 // **What this does not hold, because stage 6 does not meet it** (the first run of this case,
-// 2026-11-11, RTX 5090): the band within the floor (0.78 of an 8-bit step with the reveal against
-// a floor of 0.38; 0.98 by the count), and the frames' change from the eighth on within twice the
-// floor's (0.31 with the reveal and 0.24 by the count against a floor's change of 0.044: the
-// crowns' first frame stands 6.6 steps from the long-held picture either way, and what follows is
-// that distance closing). The message carries both; the bounds wait for the stage that meets them.
+// 2026-11-11, RTX 5090; the numbers are the case's as it stands, every ray a stride pixel's): the
+// band within the floor (0.89 of an 8-bit step with the reveal against a floor of 0.38; 1.09 by
+// the count), and the frames' change from the eighth on within twice the floor's (0.34 with the
+// reveal and 0.25 by the count against a floor's change of 0.048: the crowns' first frame stands
+// 6.8 steps from the long-held picture either way, and what follows is that distance closing).
+// The message carries both; the bounds wait for the stage that meets them.
 TEST_CASE("gi cache: a turn to a stand of trees shows less of a band with the reveal") {
   Gpu gpu;
   if (!gpu.ok) {
@@ -1353,6 +1354,11 @@ TEST_CASE("gi cache: a turn to a stand of trees shows less of a band with the re
   const ScopedTunable rays("renderer.gi.rays_per_frame", k_stand_rays);
   const ScopedTunable mode("renderer.gi.mode", "bounce");
   const ScopedTunable shell("renderer.gi.shell_m", "8");
+  // Every ray a stride pixel's: which young pixels take the young half's rays when it runs out is
+  // the order waves reach a count (gi_update.slang, `gi_sample_pixel`), and on a turn it always
+  // runs out — with it the first frame's band moved by more between two runs of one executable
+  // (0.98 and 0.73 by the count) than the reveal moves it, and the case's second run refused it.
+  const ScopedTunable young("renderer.gi.young_rays", "false");
   struct Curve {
     f64 bias = 0.0;          // the first frame's signed distance from the reference
     f64 apart = 0.0;         // ... and its absolute one
@@ -1418,12 +1424,12 @@ TEST_CASE("gi cache: a turn to a stand of trees shows less of a band with the re
     }
     for (usize k = 8; k < count; ++k)
       c.worst_change = std::max(c.worst_change, change(k));
-    MESSAGE(std::string("the reveal ")
-            << reveal[r] << ": over " << crown.size()
-            << " crown pixels the first frame after the turn stands " << c.bias
-            << " 8-bit steps from the long-held picture in the mean (" << c.apart
-            << " apart) against a floor of " << c.floor << "; the largest change from the eighth "
-            << "frame on " << c.worst_change << " against the floor's " << c.floor_change);
+    const std::string label = std::string("the reveal ") + reveal[r];
+    MESSAGE(
+        label << ": over " << crown.size() << " crown pixels the first frame after the turn stands "
+              << c.bias << " 8-bit steps from the long-held picture in the mean (" << c.apart
+              << " apart) against a floor of " << c.floor << "; the largest change from the eighth "
+              << "frame on " << c.worst_change << " against the floor's " << c.floor_change);
   }
   const Curve& now = curves[0];
   const Curve& counted = curves[1];
