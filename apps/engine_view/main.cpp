@@ -244,7 +244,8 @@ constexpr const char* k_usage =
     "  --no-lights      only the sun and the sky; no point lights (they are on by default)\n"
     "  --sun <az,el>    where the sun starts, degrees: azimuth in the ground plane from +x towards\n"
     "                   +z, elevation above the horizon (default: the renderer.sun.* tunables,\n"
-    "                   48.37,53.03). It stands still unless its day runs (--sun-rate)\n"
+    "                   48.37,53.03), still unless its day runs (--sun-rate). Refused for a scene\n"
+    "                   with a sky, whose sun stands where its hour puts it: give --time-of-day\n"
     "  --sun-rate <r>   run the sun's day at r game seconds per real second (default: the\n"
     "                   renderer.sun.rate tunable, 0): it turns once a game day round the pole on\n"
     "                   the arc through its start, tilted renderer.sun.arc_tilt_deg (40), and\n"
@@ -389,11 +390,12 @@ constexpr const char* k_usage =
     "                   one frame; with --time-rate they move with the rest of the sand. Built at\n"
     "                   load, round the camera's first position; the summary's \"time_lapse\"\n"
     "                   block counts the re-centres\n"
-    "  --terrain-tiles  draw a dune terrain's ground from the world's tiles instead: 32 m tiles\n"
-    "                   by default, at a grid a ring of the world's tile ring (its \"ground_cells\"),\n"
-    "                   handed over as the ring moves, so the desert never ends. A scene's world\n"
-    "                   block asks for it with \"ground\": true; it replaces --terrain-rings, and\n"
-    "                   the walker's collision stands on the same tiles\n"
+    "  --terrain-tiles  draw the ground from the world's tiles: 32 m tiles by default, at a grid\n"
+    "                   a ring of the world's tile ring (its \"ground_cells\"), handed over as the\n"
+    "                   ring moves, so the ground never ends. A ground that is a tile set\n"
+    "                   (terrain.tiles) or a world block's \"ground\": true is drawn so without it;\n"
+    "                   this asks it of any other ground right to the millimetre (the dunes'). It\n"
+    "                   replaces --terrain-rings; the walker's collision stands on the same tiles\n"
     "  --terrain-far <n>  far levels of ground past the world tiles' outermost ring, each twice\n"
     "                   the spacing and reach of the one inside it, out to where the air takes\n"
     "                   the ground (0 to 8; default renderer.terrain.far_levels, 6)\n"
@@ -866,6 +868,15 @@ renderer::FrameClock frames_clock(const Options& options, const renderer::SceneD
 void look_overrides(const Options& options, renderer::SceneData& scene) {
   if (options.sky_disc_scale.has_value() && scene.sky.has_value())
     scene.sky->disc_scale = *options.sky_disc_scale;
+}
+// What a read scene file decides before its load: a streamed world's own instances get forms cut
+// for this session's projection and LOD, and **a tile set's ground is drawn from its tiles** (T110;
+// renderer.md, "The ground from the world's tiles"): its grid is a stand-in, 64 m facets drawn.
+void read_rules(Options& options, renderer::SceneDesc& desc) {
+  renderer::authored_rules(options.settings, options.height, renderer::Camera{}.fov_y,
+                           desc.authored);
+  if (desc.terrain.enabled && desc.terrain.tiles.has_value())
+    options.settings.terrain_tiles = desc.terrain_tiles = true;
 }
 // **The world's rate, settled once** (renderer/clocks.h): the dunes' time-lapse rides the world
 // clock, so the motion runs at `--time-rate` times the world's rate per real second. Called once
@@ -2670,7 +2681,7 @@ int run_reference(Options& options) {
     // The settings against the loaded scene — the page budget's percentage and the morph weights
     // — through the renderer's function, which `render.*` calls too.
     if (!renderer::settings_for(request_of(options), scene_data, options.settings, &error)) {
-      exit_code = fail("morph", error);
+      exit_code = fail("settings", error);
       break;
     }
     renderer::resolve_settings(options.settings, device.features(), &scene_data, resolved);
@@ -3015,9 +3026,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
         exit_code = fail("scene", error);
         break;
       }
-      // A streamed world's own instances get forms cut for this session's projection and LOD.
-      renderer::authored_rules(options.settings, options.height, renderer::Camera{}.fov_y,
-                               desc.authored);
+      read_rules(options, desc);
     } else {
       desc.meshes.push_back(options.mesh);
     }
@@ -3076,7 +3085,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
     // The settings against the loaded scene — the page budget's percentage and the morph weights
     // — through the renderer's function, which `render.*` calls too.
     if (!renderer::settings_for(request_of(options), scene_data, options.settings, &error)) {
-      exit_code = fail("morph", error);
+      exit_code = fail("settings", error);
       break;
     }
     renderer::resolve_settings(options.settings, device.features(), &scene_data, resolved);
@@ -5898,9 +5907,7 @@ int run_view(int argc, char** argv) {
           exit_code = fail("scene", error);
           return false;
         }
-        // A streamed world's own instances get forms cut for this session's projection and LOD.
-        renderer::authored_rules(options.settings, options.height, renderer::Camera{}.fov_y,
-                                 desc.authored);
+        read_rules(options, desc);
       } else {
         desc.meshes.push_back(options.mesh);  // empty: the procedural heightfield
       }
@@ -5997,7 +6004,7 @@ int run_view(int argc, char** argv) {
       // The settings against the loaded scene — the page budget's percentage and the morph weights
       // — through the renderer's function, which `render.*` calls too.
       if (!renderer::settings_for(request_of(options), scene_data, options.settings, &error)) {
-        exit_code = fail("morph", error);
+        exit_code = fail("settings", error);
         return false;
       }
       renderer::resolve_settings(options.settings, device.features(), &scene_data, resolved);

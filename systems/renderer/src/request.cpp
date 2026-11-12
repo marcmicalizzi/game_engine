@@ -56,6 +56,18 @@ void scene_file_options(const RenderRequest& request, SceneFileOptions& out) {
 bool settings_for(const RenderRequest& request, const SceneData& scene, RenderSettings& out,
                   std::string* error) {
   out = request.settings;
+  // **A sky places its own sun** (T111; renderer.md, "The sky"): its sun stands where the sky's
+  // ephemeris puts it at the sky's hour, and the stand-in sun's direction is never read under it,
+  // so a direction asked of a scene with a sky would be dropped without a word. It is refused, and
+  // the sentence says what moves that sun: the hour.
+  if (scene.sky.has_value() && (request.settings.sun_azimuth_deg.has_value() ||
+                                request.settings.sun_elevation_deg.has_value())) {
+    set_error(error,
+              "the scene has a sky, whose sun stands where its ephemeris puts it at the sky's "
+              "hour, so a sun direction (--sun, sun_azimuth_deg and sun_elevation_deg) would "
+              "change nothing; give the hour instead (--time-of-day, the clock's time_of_day_h)");
+    return false;
+  }
   // The dunes' time-lapse rides the world clock (clocks.h): `time_rate` game seconds per world
   // second, so a world rate scales it with everything else that moves, and the motion is started
   // at the product, per real second.

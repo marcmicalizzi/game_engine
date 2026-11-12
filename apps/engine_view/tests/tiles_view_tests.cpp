@@ -94,6 +94,10 @@ TEST_CASE("engine-view: a scene naming a built tile set draws it, offscreen") {
     return;
   }
   REQUIRE_MESSAGE(drawn.exit_code == 0, drawn.output);
+  // **A tile set's ground is drawn from its tiles without being asked** (T110): no
+  // `--terrain-tiles`, and the world's tiles drew it, where before the scene's own grid did — a
+  // stand-in at the grid's spacing, which over a forest's tile set is 64 m facets.
+  CHECK_MESSAGE(drawn.output.find("\"layout\":\"tiles\"") != std::string::npos, drawn.output);
   image::Image picture;
   REQUIRE(image::read_image(capture, picture) == io::Status::Ok);
   REQUIRE(picture.width == 160);
@@ -106,17 +110,11 @@ TEST_CASE("engine-view: a scene naming a built tile set draws it, offscreen") {
   MESSAGE(other << " of " << picture.width * picture.height << " pixels differ from the first");
   CHECK(other > picture.width * picture.height / 20);
   // The real viewer, at a stopped terrain clock, must select terrain levels for the authored
-  // provider. This flag streams terrain tiles and leaves flora/skin motion available.
-  const Run streamed = run_app(view_exe(), {"--offscreen",   "--scene",
-                                            scene,           "--terrain-tiles",
-                                            "--terrain-far", "1",
-                                            "--time-rate",   "0",
-                                            "--frames",      "2",
-                                            "--width",       "160",
-                                            "--height",      "96",
-                                            "--shadows",     "off",
-                                            "--capture",     tmp.file("streamed.png"),
-                                            "--ddc",         tmp.file("ddc")});
+  // provider, unasked, and leave flora/skin motion available.
+  const Run streamed =
+      run_app(view_exe(), {"--offscreen", "--scene", scene, "--terrain-far", "1", "--time-rate",
+                           "0", "--frames", "2", "--width", "160", "--height", "96", "--shadows",
+                           "off", "--capture", tmp.file("streamed.png"), "--ddc", tmp.file("ddc")});
   REQUIRE_MESSAGE(streamed.exit_code == 0, streamed.output);
   CHECK_MESSAGE(streamed.output.find("\"layout\":\"tiles\"") != std::string::npos, streamed.output);
   CHECK(streamed.output.find("trees drawn rigid") == std::string::npos);

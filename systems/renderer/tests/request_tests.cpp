@@ -614,6 +614,29 @@ TEST_CASE("request: settings_for resolves the page budget's share and the morph 
   CHECK(error.find("grin") != std::string::npos);
 }
 
+// **A sun direction asked of a scene with a sky is refused** (T111; renderer.md, "The sky"): the
+// sky's sun stands where its hour puts it and the stand-in's direction is never read under it, so
+// `--sun` (and `render.*`'s `sun_azimuth_deg`/`sun_elevation_deg`) changed nothing and said
+// nothing. Without a sky the direction is the stand-in sun's, as it always was.
+TEST_CASE("request: a sun direction is refused for a scene whose sky places its sun") {
+  renderer::SceneData scene;
+  RenderRequest request;
+  request.settings.sun_azimuth_deg = 120.0f;
+  request.settings.sun_elevation_deg = 35.0f;
+  renderer::RenderSettings out;
+  std::string error;
+  REQUIRE_MESSAGE(renderer::settings_for(request, scene, out, &error), error);
+  CHECK(out.sun_elevation_deg == 35.0f);
+  scene.sky.emplace();
+  CHECK_FALSE(renderer::settings_for(request, scene, out, &error));
+  CHECK(error.find("--time-of-day") != std::string::npos);
+  // The hour is what moves it, and is not refused.
+  request.settings.sun_azimuth_deg.reset();
+  request.settings.sun_elevation_deg.reset();
+  request.clock.time_of_day_h = 17.5;
+  CHECK(renderer::settings_for(request, scene, out, &error));
+}
+
 TEST_CASE("request: the view layout and the ground's file options come from the request") {
   renderer::RenderSettings s;
   s.views = renderer::ViewLayout::Surround3;
