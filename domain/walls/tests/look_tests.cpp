@@ -343,7 +343,7 @@ TEST_CASE("walls: no stacks of closing stones in a standing face" * doctest::ski
   CHECK(static_cast<f64>(stacked) <= 0.5 * static_cast<f64>(modules));
 }
 
-TEST_CASE("walls: the mid form's cope answers to the near form's skyline" * doctest::skip()) {
+TEST_CASE("walls: the mid form's cope answers to the near form's skyline") {
   // From about 20 m the cut draws the mid form (walls.md, "Forms and the LOD policy"); at thirty
   // metres a pixel is about 2 cm. The mid form's cope seen from the side keeps the near form's
   // broken top: its skyline at 4 cm bins moves at least half as much as the near form's, and

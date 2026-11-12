@@ -48,8 +48,9 @@ TEST_CASE("walls: modules and placements are the same bytes on every toolchain")
   // inset 5 % (3 %); the layout's draws stayed G177's (`k_layout_version`), the placement pin did
   // not move. Its second commit (k_wall_version 6) moved the three that have a cope: the cover
   // course of stones of their own thickness and proud, the cope's blocks, heights, top shapes,
-  // leaning runs and wedges. A replacement records its reason and commit here.
-  constexpr u64 expected[] = {0xd60a6aa036d736b2ull, 0x35a7ace0dd28393cull, 0x9db49dd50a40b0a2ull,
+  // leaning runs and wedges. Its third (k_wall_version 7) moved the same three: the mid form's
+  // cope stone by stone. A replacement records its reason and commit here.
+  constexpr u64 expected[] = {0x19f0e0ab76889d9bull, 0x067eeaf52d071f28ull, 0xcaecaf6a3334c4ddull,
                               0x78833e58325ee895ull, 0xf75f3d8efeaeb99aull};
   u64 got[5] = {};
   const ModuleKind kinds[4] = {ModuleKind::run, ModuleKind::head, ModuleKind::broken,

@@ -45,8 +45,9 @@ namespace engine::walls {
 // 4 (G177): stones laid with sloping beds and tops, jumpers, thin stones and lumps; a rough cope.
 // 5 (G189): a standing face stone's face turned off the line, broken across and weathered, its
 // arrises smooth-shaded. 6 (G189): the cover course stones of their own thickness and proud; the
-// cope's blocks, cock-and-hen heights, top shapes, leaning runs and wedges.
-inline constexpr u32 k_wall_version = 6;
+// cope's blocks, cock-and-hen heights, top shapes, leaning runs and wedges. 7 (G189): the mid
+// form's cope stone by stone.
+inline constexpr u32 k_wall_version = 7;
 
 // What a stone is in a solved module (the report's, for the tests and the page's counts).
 enum class StoneRole : u8 { face, footing, through, tie, pinning, cover, cope, rubble, core };

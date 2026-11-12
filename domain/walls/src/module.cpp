@@ -2135,31 +2135,47 @@ void mid_form(Builder& b, const Module& m, const Section& s, const ModuleReport&
   const f64 ca = head ? -0.5 * s.L : -0.5 * s.L - 0.02;
   const f64 cb = m.kind == ModuleKind::broken ? broken_from - 0.05 : 0.5 * s.L + 0.02;
   top_box(b, s, ca, cb, s.body, s.body + 0.075, 0.5 * s.top_w + 0.03, k_swatch_mid);
-  // The cope as blocks of three stones, each block's top slanting from its first stone's top to
-  // its last's and the block a centimetre short of the next, so the mid form keeps the cope's
-  // broken skyline where the near form hands it over (G145c; walls.md, "Forms and the LOD
-  // policy") rather than a flat band.
-  u32 in_group = 0;
-  f64 gx0 = 0, gtop0 = 0, gtop1 = 0, gx1 = 0;
+  // The cope stone by stone (G189; walls.md, "Forms and the LOD policy"): each stone its two
+  // sides and its top, at its own ends' heights and leaning as it leans, so the mid form keeps the
+  // near form's skyline, its gaps and its slants where it hands over, where G145c's blocks of
+  // three drew a ruled top at thirty metres. Six triangles a stone, its ends and bed not drawn;
+  // the faces striped along the wall by a row of the stones' swatches, a swatch every 8 cm.
+  const f64 v_row = (7.0 * k_swatch + 4.0) / k_atlas;
+  auto quad = [&](D3 a, D3 c1, D3 c2, D3 d, D3 out) {
+    D3 nrm = unit(cross(c1 - a, d - a));
+    if (dot(nrm, out) < 0) nrm = nrm * -1.0;
+    auto u_of = [](D3 p) { return p.x * (static_cast<f64>(k_swatch) / k_atlas) / 0.08; };
+    const u32 i0 = b.vertex(a, nrm, u_of(a), v_row), i1 = b.vertex(c1, nrm, u_of(c1), v_row),
+              i2 = b.vertex(c2, nrm, u_of(c2), v_row), i3 = b.vertex(d, nrm, u_of(d), v_row);
+    if (dot(cross(c1 - a, c2 - a), nrm) > 0) {
+      b.tri(i0, i1, i2);
+      b.tri(i0, i2, i3);
+    } else {
+      b.tri(i0, i2, i1);
+      b.tri(i0, i3, i2);
+    }
+  };
+  u32 lean_i = 0;
+  const f64 hw = 0.5 * s.top_w;
   for (const Stone& st : report.stones) {
     if (st.role != StoneRole::cope) continue;
-    const f64 xm = 0.5 * static_cast<f64>(st.x0 + st.x1);
-    const f64 above = static_cast<f64>(st.top) - s.base(xm) - s.body;
-    if (in_group == 0) {
-      gx0 = static_cast<f64>(st.x0);
-      gtop0 = above;
-    }
-    gtop1 = above;
-    gx1 = static_cast<f64>(st.x1);
-    if (++in_group == 3) {
-      top_box(b, s, gx0, std::max(gx1 - 0.01, gx0 + 0.02), s.body + 0.07, s.body + gtop0,
-              0.5 * s.top_w, k_swatch_mid, s.body + gtop1);
-      in_group = 0;
-    }
+    const f64 run = lean_i < report.cope_lean_deg.size()
+                        ? static_cast<f64>(report.cope_lean_deg[lean_i]) * 3.141592653589793 / 180.0
+                        : 0.0;
+    ++lean_i;
+    const f64 x0 = static_cast<f64>(st.x0), x1 = static_cast<f64>(st.x1);
+    const f64 b0 = static_cast<f64>(st.bed0), b1 = static_cast<f64>(st.bed1);
+    const f64 t0 = static_cast<f64>(st.top0), t1 = static_cast<f64>(st.top1);
+    const D3 lo0{x0, b0, 0}, lo1{x1, b1, 0};
+    // Its top drawn in by 15 % of its thickness either side, the near form's corners' pulls and
+    // wedges on average, so the gaps open toward the top as the near form's do.
+    const f64 in = 0.15 * (x1 - x0);
+    const D3 hi0{x0 + in + (t0 - b0) * run, t0, 0}, hi1{x1 - in + (t1 - b1) * run, t1, 0};
+    auto at_z = [](D3 p, f64 z) { return D3{p.x, p.y, z}; };
+    quad(at_z(lo0, hw), at_z(lo1, hw), at_z(hi1, hw), at_z(hi0, hw), {0, 0, 1});
+    quad(at_z(lo0, -hw), at_z(lo1, -hw), at_z(hi1, -hw), at_z(hi0, -hw), {0, 0, -1});
+    quad(at_z(hi0, -hw), at_z(hi1, -hw), at_z(hi1, hw), at_z(hi0, hw), {0, 1, 0});
   }
-  if (in_group > 0)
-    top_box(b, s, gx0, gx1, s.body + 0.07, s.body + gtop0, 0.5 * s.top_w, k_swatch_mid,
-            s.body + gtop1);
 }
 
 void far_form(Builder& b, const Module& m, const Section& s, f64 broken_from) {
