@@ -296,6 +296,83 @@ When a figure here is found wrong by more than a third, correct it in the change
 
 The 2026-10-23 terrain batch has 121 tests in Windows debug: **70 minutes** for that suite, **23 minutes** for minimal (76 tests) and **59 minutes** for no-ECS (110), side by side with the release app checks (**25 minutes**, seven entries) and the containers. All four Windows builds preceded those runs. The three Linux presets took **39 minutes** together (120, 120 and 76 tests), the GPU server **107 minutes** end to end (**87 minutes** of CTest, 100 tests), and the five warm frame-budget flights **six minutes** after the desktop suites. These are shared-machine elapsed times, not quiet costs; the budget reports retain their machine states. Size a new wait from these latest counts rather than the smaller October 4 tree.
 
+### Heavy shaders share a pool
+
+**The material resolve's variants are the build's largest single memory cost, and a Ninja job pool
+caps how many compile at once** (roadmap T118, 2026-11-12). One `slangc` compile of
+`visibility_resolve_rt_water_terrain_stochastic` holds 12.6 GB of commit for about two minutes; six
+of the sixteen resolve variants hold 2.4 GiB or more, the other ten under 1 GiB; the 55 shaders of
+the tree sum to 50 GB of peaks and 385 s of `slangc` (the table below). A build that recompiled
+them at four or six jobs asked for 38 to 40 GB at once, and on 2026-11-11, with thirteen agents
+building, the machine ran out of commit: builds died with C1083 on system headers, tests failed
+writing their own scratch files, and a forest load died. Every agent's first build after a base
+that touches a file the resolve includes paid that.
+
+**The rule.** `cmake/shader-costs.txt` gives a shader's peak commit and seconds by its stem; a row
+at or above the line, `ENGINE_SHADER_HEAVY_MB` = 1,536 MiB, makes it **heavy**, and
+`engine_shaders()` gives its compile the Ninja pool `engine_shader_heavy`
+(`cmake/EngineShaders.cmake`, `cmake/EngineShaderCosts.cmake`). Every other compile — the light
+shaders and every C++ step — runs as parallel as the build's jobs allow, as before. The line sits
+in the measured gap (light at 997 MiB and under, heavy at 2,430 and over) with room for a light
+shader to grow by half before the check below asks for its row. The depth is the cache variable
+`ENGINE_SHADER_HEAVY_JOBS`: a whole number, or `auto` (the default), which is **as many of the
+heaviest compiles, largest first, as fit in a third of the build machine's physical memory, and
+never fewer than one**. Largest first, because the pool does not choose which heavy compiles run
+together, so the depth has to fit the worst pair it could pick. A third, because the same build's
+C++ jobs, the other builds on a shared machine and the system need the rest. The configure prints
+the depth and the heavy set (`engine shaders: 6 heavy ..., at most 2 at once`).
+
+| Machine | A third of its memory | The largest first | `auto` depth | Heavy compiles' worst peak |
+|---|---|---|---|---|
+| This desktop, 64 GB (65,216 MiB) | 21,738 MiB | 12,571 + 7,089 = 19,660; + 3,883 = 23,543 | 2 | 19.7 GB |
+| A 32 GB developer machine | 10,922 MiB | 12,571 alone is over | 1 (the floor) | 12.6 GB |
+| 128 GB | 43,690 MiB | all six, 31,333 | 6 (no limit) | 31.3 GB |
+
+On a 32 GB machine the floor is the point: the largest variant alone is 12.6 GB, more than a third,
+and it still has to compile; one at a time is the least a build can ask. A Linux container sees the
+memory its VM was given. A generator with no pools (anything but Ninja; every preset is Ninja) ignores
+`JOB_POOL` and configures as before, and `build.shader_pool` is not registered there.
+
+**What a heavy compile costs** (the meter's numbers in the first `msvc-debug` build of 33ff2824
+with the pool, four jobs and other agents building beside it; the peaks are each compile's own and
+do not move with load or preset, the seconds are an upper bound):
+
+| Shader | Peak MiB | Seconds |
+|---|---|---|
+| `visibility_resolve_rt_water_terrain_stochastic` | 12,571 | 116.2 |
+| `visibility_resolve_rt_water_terrain` | 7,089 | 62.9 |
+| `visibility_resolve_water_terrain_stochastic` | 3,883 | 44.1 |
+| `visibility_resolve_rt_water_stochastic` | 2,824 | 31.2 |
+| `visibility_resolve_rt_water` | 2,536 | 26.8 |
+| `visibility_resolve_water_terrain` | 2,430 | 22.1 |
+| the six together | 31,333 | 303.3 |
+| the other 49 shaders | 18,943 summed; 997 the largest | 82.0 |
+
+The water branch and not the terrain is what makes a variant heavy: every heavy variant carries
+water, and the terrain variants without it peak at 805 MiB and under.
+
+**The table cannot go stale quietly.** Every compile runs under `tools/shader_meter`
+(`shader-meter <cost file> <slangc> <arguments...>`, a host tool, standard library and the operating
+system only), which writes the compile's peak private commit (Windows) or peak resident set
+(Linux, `wait4`'s `ru_maxrss`) and its wall seconds to `<stem>.cost` beside the SPIR-V, for the price
+of one process start. `build.shader_pool` (`cmake/CheckShaderCosts.cmake`, CTest label `build`,
+Ninja builds) reads `build/<preset>/shaders/pool.txt`, which the configure writes, `build.ninja` and
+`CMakeFiles/rules.ninja`, and the cost files, and fails when a heavy compile's build statement does
+not carry the pool or a light one's does, when the declared depth is not the configure's, when a
+shader measured at or above the line has no heavy row (it grew or is new: the failure prints the
+row to add), when a heavy row's shader measured under half the line, and when a SPIR-V has no
+measurement beside it. The half-line hysteresis keeps a shader near the line from changing class
+between a Windows build's commit and a Linux build's resident set. A row that names no `.slang`
+source in the tree stops the configure; a source that exists but is not compiled in this
+configuration (a capability switched off) is not an unknown name. `tools.shader_costs` is the same
+script's self-test: the reader, the refusals in a child `cmake -P`, the depth arithmetic above, and
+the classification over fixture builds, each way the build can disagree with the table.
+
+To change the table: build, read the row the check prints (or `<stem>.cost`), edit the row, and
+reconfigure (the table is a configure dependency, so `tools/dev.ps1 build` does it). The pool is per
+build tree: two agents recompiling the resolve at once each hold their own two, which is what a
+machine-wide limit would have to answer.
+
 **Checking the release stamp.** The build-time stamp is regenerated from Git on every build (`cmake/EngineBuildStamp.cmake`), and the build relinks the applications when it changes. `engine-view`, `engine-editor`, `engine-content`, `engine-image` and `engine-mcp` expose it through `--version`. The host, CLI and input probe currently have no `--version` switch; verify their completed relink against the clean generated stamp and retain their file hashes with an install, rather than treating an unsupported flag as a stale binary.
 
 ## The gate's wall clock (T77)
