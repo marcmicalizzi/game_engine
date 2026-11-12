@@ -541,8 +541,15 @@ r01, r04 and r19 (turf, a grazed alpine sward; r19's grey plank footbridges and 
   and too smooth: their turf's dark gaps between tufts and its bright blade tips come from
   geometry (the sward's blades), and a texture alone reads as a mown lawn, not a grazed alpine
   sward.
-- **Moss** reads as a carpet of patches, but its patches are hard-edged cells of one tone each
-  (a camouflage print at 1.7 m); a moss carpet's tone changes softly across a cushion.
+- **Moss**, as judged in version 6, read as a camouflage print: hard-edged cells of one tone
+  each, worse beside the reels than the flat set before it. **Versions 7 and 8** (2026-11-12,
+  after the review; two picture passes, the second judged, against reel r39's moss cushions on
+  lava): version 7's cushions merged and their tone fell off softly, but a dark hollow ringed
+  every one, a net at 15 m; version 8's overlap leaves the hollows as scattered pockets. It now
+  reads as a soft, hummocky moss carpet at 1.7 m, with no edge anywhere. Still wrong beside r39:
+  the cushions are all one size, so at 15 m the mottle is even; the colour is a dull olive where
+  r39's lit crowns are a bright yellow-green; and at 1.7 m the surface is soft as velvet, without
+  the shoots' fine texture a photograph shows.
 - **Soil** reads as stony bare soil; its small stones are too uniformly pale specks.
 - **Thatch** is the weakest: a straw-coloured litter with soft mottles, still close to one flat
   tone at 15 m.
