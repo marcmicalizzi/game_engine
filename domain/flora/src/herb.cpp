@@ -2,6 +2,7 @@
 #include "ground_plant.h"
 
 #include <domain/flora/structure.h>
+#include <domain/flora/sward.h>
 #include <domain/flora/understory.h>
 
 #include <algorithm>
@@ -310,6 +311,12 @@ bool solve_meadow_plant(const MeadowPlant& p, assets::MeshData& out, TreeReport*
   }
   // The herb's materials and primitive order, every plant's triangles of a material together.
   out.materials = plants[0].materials;
+  // A meadow plant's leaves stand among the sward's blades, so they take a live leaf's measured
+  // visible albedo, the blade's own (sward.h, grass-sward.md "The canopy's colour"), not the
+  // herb's chosen flat green, which is 2.7 times as bright and read as pale plastic fans beside
+  // the grass (G167's first pictures).
+  out.materials[0].base_color =
+      Vec4{k_sward_leaf_albedo[0], k_sward_leaf_albedo[1], k_sward_leaf_albedo[2], 1.0f};
   for (const assets::MeshData& plant : plants) {
     for (u32 i = 0; i < plant.positions.size(); ++i) {
       out.positions.push_back(plant.positions[i]);

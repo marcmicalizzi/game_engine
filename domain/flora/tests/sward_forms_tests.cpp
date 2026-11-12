@@ -1109,6 +1109,8 @@ TEST_CASE("meadow: a drift is the field kind, every plant one parentless part fr
       REQUIRE(motion.vertex_part.size() == mesh.positions.size());
       REQUIRE(motion.vertex_weight.size() == mesh.positions.size());
       CHECK(motion.structure.empty());
+      // The leaves are a live leaf's measured albedo, the sward blade's own.
+      CHECK(mesh.materials[0].base_color.y == flora::k_sward_leaf_albedo[1]);
       for (const auto& part : motion.parts) {
         CHECK(part.parent == geometry::k_motion_no_parent);
         CHECK(part.pivot.y == 0.0f);
