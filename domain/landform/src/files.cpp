@@ -166,7 +166,8 @@ bool write_landform(const Landform& land, const Sketch& sketch, const std::strin
       land.receiver.size() != n || land.slope.size() != n || land.erosion_rate.size() != n ||
       land.fill.size() != n || land.sediment.size() != n || land.resistance.size() != n ||
       land.discharge.size() != n || land.channel_width.size() != n || land.ice.size() != n ||
-      land.till.size() != n) {
+      land.till.size() != n || land.ice_max.size() != n || land.moraine.size() != n ||
+      land.moraine_crest.size() != n || land.lakebed.size() != n || land.rock_floor.size() != n) {
     error = "the landform is not solved";
     return false;
   }
@@ -236,7 +237,18 @@ bool write_landform(const Landform& land, const Sketch& sketch, const std::strin
            land.channel_width) ||
       !add("ice", "u32", "millimetres of ice over the point at the last step the ice stood",
            land.ice) ||
-      !add("till", "u32", "millimetres of the sediment that melted out of the ice", land.till))
+      !add("till", "u32", "millimetres of the sediment that the ice left: lodged, or a moraine",
+           land.till) ||
+      !add("ice_max", "u32", "millimetres of the thickest ice that ever stood over the point",
+           land.ice_max) ||
+      !add("moraine", "u32", "millimetres of the till that was laid as a ridge at a snout",
+           land.moraine) ||
+      !add("moraine_crest", "u8", "0 off a crest line, else one more than the stand that laid it",
+           land.moraine_crest) ||
+      !add("lakebed", "u32", "millimetres of the sediment that settled in standing water",
+           land.lakebed) ||
+      !add("rock_floor", "i32", "millimetres: the rock's surface, the height less the sediment",
+           land.rock_floor))
     return false;
   out.fields = in_dir(stem + ".fields.json");
   return write_text(out.fields, schema::to_json(fields), error);
@@ -330,6 +342,11 @@ void shaded_relief(const Landform& land, bool drainage, Vector<u8>& rgba) {
         r *= 0.45;
         g *= 0.62;
         b = b * 0.75 + 60.0;
+      } else if (land.fill.size() == w * h && land.fill[p] >= 500) {
+        // Standing water, half a metre or more: a lake, in both pictures.
+        r = r * 0.35 + 20.0;
+        g = g * 0.50 + 45.0;
+        b = b * 0.60 + 95.0;
       } else if (drainage) {
         // Sediment as sand under the channels: faint from half a metre, full from ten.
         if (land.sediment.size() == w * h && land.sediment[p] >= 500) {
@@ -355,6 +372,41 @@ void shaded_relief(const Landform& land, bool drainage, Vector<u8>& rgba) {
       px[2] = to_byte(b);
       px[3] = 255;
     }
+  }
+}
+
+void ice_map(const Landform& land, Vector<u8>& rgba) {
+  shaded_relief(land, false, rgba);
+  const u32 n = land.width * land.height;
+  if (land.ice_max.size() != n || land.moraine.size() != n || land.moraine_crest.size() != n ||
+      land.lakebed.size() != n || land.fill.size() != n)
+    return;
+  // One colour over the relief's shade, by the share `t`.
+  const auto tint = [&rgba](u32 p, f64 red, f64 green, f64 blue, f64 t) {
+    u8* px = rgba.data() + p * 4;
+    px[0] = to_byte(static_cast<f64>(px[0]) + (red - static_cast<f64>(px[0])) * t);
+    px[1] = to_byte(static_cast<f64>(px[1]) + (green - static_cast<f64>(px[1])) * t);
+    px[2] = to_byte(static_cast<f64>(px[2]) + (blue - static_cast<f64>(px[2])) * t);
+  };
+  for (u32 p = 0; p < n; ++p) {
+    if (land.has_sea && land.height_mm[p] <= land.sea_level_mm) continue;
+    if (land.fill[p] >= 500) continue;  // a lake: the relief drew it
+    // Where ice ever stood: pale blue, fuller with the ice's thickness to 200 m.
+    if (land.ice_max[p] > 0) {
+      f64 t = 0.18 + 0.32 * static_cast<f64>(land.ice_max[p]) / 200000.0;
+      tint(p, 170.0, 215.0, 245.0, t > 0.5 ? 0.5 : t);
+    }
+    // A lake's fill: green, faint from half a metre and full from five.
+    if (land.lakebed[p] >= 500) {
+      f64 t = 0.3 + 0.5 * static_cast<f64>(land.lakebed[p]) / 5000.0;
+      tint(p, 110.0, 170.0, 90.0, t > 0.8 ? 0.8 : t);
+    }
+    // A moraine: ochre from a metre, full from twenty, and its crest line dark.
+    if (land.moraine[p] >= 1000) {
+      f64 t = 0.35 + 0.55 * static_cast<f64>(land.moraine[p]) / 20000.0;
+      tint(p, 205.0, 150.0, 60.0, t > 0.9 ? 0.9 : t);
+    }
+    if (land.moraine_crest[p] != 0) tint(p, 90.0, 40.0, 10.0, 0.85);
   }
 }
 

@@ -115,7 +115,7 @@ int landform_command(int argc, char** argv) {
       return fail("the tile set refuses the heightfield written: " + error);
   }
 #endif
-  std::string relief_path, drainage_path;
+  std::string relief_path, drainage_path, ice_path;
   if (relief) {
     Vector<u8> rgba;
     relief_path = io::join_path(out_dir, name + ".relief.png");
@@ -128,6 +128,14 @@ int landform_command(int argc, char** argv) {
     if (image::write_png(drainage_path, land.width, land.height, 4,
                          std::span<const u8>(rgba.data(), rgba.size())) != io::Status::Ok)
       return fail("'" + drainage_path + "' could not be written");
+    if (land.ice_steps > 0) {
+      // What the ice left: where it stood, its moraines, the lakes and the flats.
+      ice_path = io::join_path(out_dir, name + ".ice.png");
+      landform::ice_map(land, rgba);
+      if (image::write_png(ice_path, land.width, land.height, 4,
+                           std::span<const u8>(rgba.data(), rgba.size())) != io::Status::Ok)
+        return fail("'" + ice_path + "' could not be written");
+    }
   }
 
   // The summary: what a person checks before building tiles from it.
@@ -157,6 +165,7 @@ int landform_command(int argc, char** argv) {
   if (relief) {
     summary.set("relief", JsonValue(relief_path));
     summary.set("drainage", JsonValue(drainage_path));
+    if (!ice_path.empty()) summary.set("ice_map", JsonValue(ice_path));
   }
   summary.set("width", JsonValue(land.width));
   summary.set("height", JsonValue(land.height));
@@ -193,17 +202,40 @@ int landform_command(int argc, char** argv) {
   summary.set("budget", std::move(budget));
   if (land.ice_steps > 0) {
     // The ice age (landform.md, "Ice"): how long it stood and what it left.
-    u32 iced = 0, thickest_ice = 0, tilled = 0;
+    u32 iced = 0, thickest_ice = 0, tilled = 0, ever = 0, thickest_ever = 0;
+    u32 ridged = 0, crests = 0, tallest = 0, lakes = 0, deepest = 0, flats = 0;
     for (u32 p = 0; p < n; ++p) {
       if (land.ice[p] > 0) ++iced;
       if (land.ice[p] > thickest_ice) thickest_ice = land.ice[p];
       if (land.till[p] >= 1000) ++tilled;
+      if (land.ice_max[p] == 0) continue;
+      // Where ice ever stood: what it left there.
+      ++ever;
+      if (land.ice_max[p] > thickest_ever) thickest_ever = land.ice_max[p];
+      if (land.moraine[p] >= 1000) ++ridged;
+      if (land.moraine_crest[p] != 0) ++crests;
+      if (land.moraine[p] > tallest) tallest = land.moraine[p];
+      if (land.fill[p] >= 1000) ++lakes;
+      if (land.fill[p] > deepest) deepest = land.fill[p];
+      if (land.lakebed[p] >= 1000) ++flats;
     }
     JsonValue ice = JsonValue::object();
     ice.set("steps", JsonValue(land.ice_steps));
     ice.set("iced_points", JsonValue(iced));
     ice.set("thickest_m", JsonValue(static_cast<f64>(thickest_ice) / 1000.0));
     ice.set("till_points", JsonValue(tilled));
+    ice.set("ever_iced_points", JsonValue(ever));
+    ice.set("thickest_ever_m", JsonValue(static_cast<f64>(thickest_ever) / 1000.0));
+    ice.set("moraine_points", JsonValue(ridged));
+    ice.set("moraine_crest_points", JsonValue(crests));
+    ice.set("tallest_moraine_m", JsonValue(static_cast<f64>(tallest) / 1000.0));
+    // Where ice stood: the points holding a metre of water now, and a metre of a lake's fill.
+    ice.set("lake_points", JsonValue(lakes));
+    ice.set("deepest_lake_m", JsonValue(static_cast<f64>(deepest) / 1000.0));
+    ice.set("lakebed_points", JsonValue(flats));
+    ice.set("delivered_m3", JsonValue(land.budget.ice_delivered_m3));
+    ice.set("moraine_m3", JsonValue(land.budget.moraine_m3));
+    ice.set("lodged_m3", JsonValue(land.budget.lodged_m3));
     summary.set("ice", std::move(ice));
   }
   summary.set("solve_seconds", JsonValue(seconds));

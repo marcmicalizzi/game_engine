@@ -150,6 +150,7 @@ TEST_CASE("landform: ice leaves a trough where a river leaves a V, and a tributa
   // Three sections of the trunk below the tributary.
   f64 river_share = 0.0, glacier_share = 0.0;
   u32 river_width = 0, glacier_width = 0, swath_width = 0;
+  f64 section_width = 0.0;
   for (const u32 x : {84u, 96u, 108u}) {
     river_share += trough_share(river, x) / 3.0;
     glacier_share += trough_share(glacier, x) / 3.0;
@@ -159,6 +160,10 @@ TEST_CASE("landform: ice leaves a trough where a river leaves a V, and a tributa
     // its line, the width four times the ice's thickness (`thickness_ratio` 0.25).
     const f64 thick_m = static_cast<f64>(glacier.ice[k_axis * k_wide + x]) / 1000.0;
     swath_width += 2 * static_cast<u32>(0.5 * thick_m / 0.25 / 50.0) + 1;
+    // The published section a hundred metres above its floor: a parabola from the line's bed
+    // to the ice's surface at the swath's margin is, at the height y, the swath's width times
+    // the square root of y over the ice's thickness.
+    section_width += 2.0 * (0.5 * thick_m / 0.25 / 50.0) * std::sqrt(100.0 / thick_m) + 1.0;
   }
   const u32 junction = k_axis * k_wide + k_side;
   u32 step_row = 0;
@@ -173,29 +178,30 @@ TEST_CASE("landform: ice leaves a trough where a river leaves a V, and a tributa
   std::printf(
       "landform ice: half way up its lowest 100 m the trunk is %.2f of its width at the 100 m "
       "under ice and %.2f under a river, and there %u points wide against %u over three "
-      "sections (the swaths are %u); the trunk's ice is %u mm thick at the junction and the "
+      "sections (the swaths are %u, and the parabola through them %.1f points at that height); "
+      "the trunk's ice is %u mm thick at the junction and the "
       "tributary's %u mm a kilometre up; the tributary's steepest step is %d mm under ice and "
       "%d mm under a river; the trunk's bed at the junction stands at %d and %d mm\n",
-      glacier_share, river_share, glacier_width, river_width, swath_width, glacier.ice[junction],
-      glacier.ice[(k_axis - 20) * k_wide + k_side], glacier_step, river_step,
+      glacier_share, river_share, glacier_width, river_width, swath_width, section_width,
+      glacier.ice[junction], glacier.ice[(k_axis - 20) * k_wide + k_side], glacier_step, river_step,
       glacier.height_mm[junction], river.height_mm[junction]);
   // The measure is the published one in another dress. A section y = a x^b (Svensson 1959's
   // form for a glacial valley's side) is (1/2)^(1/b) as wide half way up as at the top, so the
   // share is the exponent: b = log(1/2) / log(share). A V of straight sides is b = 1, and a
-  // glacial trough is a parabola or flatter: Svensson's own valley fits b "only slightly" off
-  // 2, and the published fits of troughs run from about 1.5 up (how far each source was read
-  // is on the grounding page: docs/experiments/landform.md, "A trough's section: the
-  // sources"). So the bounds are the exponents': the river's valley under the glacial range's
-  // 1.5, the glacier's inside it or past it (a floor between walls is b without bound).
+  // glacial trough is a parabola: Svensson's own valley fits b "only slightly" off 2, Graf
+  // 1970's run 1.5 to 2.0 and Li, Liu and Cui 2001's commonly 1.5 to 2.5 (how far each source
+  // was read is on the ice's grounding page: docs/experiments/landform-ice.md, "A trough's
+  // section: the sources"). So the bounds are the exponents': the river's valley under the
+  // glacial range's 1.5, the glacier's inside 1.5 to 2.5.
   //
-  // **What the model must give, and why** (W126, after the held edge was mended: stage C's
-  // numbers here were a trench against the region's edge, and its "50 m below the river's bed"
-  // went with it). The points of a glacier's swath are worn toward its line with the line's
-  // own flux, so the swath is a floor whose cross fall is a few times the fall along the line;
-  // outside the swath a slope's thinner ice meets the trunk's at a step in the ice's surface
-  // and hangs above the floor by it. So the section a hundred metres up is at least the swath
-  // wide, and the trough is a floor between walls: after 100,000 years flatter than a parabola
-  // (the page says what that means and what is missing).
+  // **What the model must give, and why** (W127: the fall across a swath). Beside its line a
+  // glacier wears nothing that stands outside its own section, and the section is the
+  // published parabola from the line's bed to the ice's surface at the swath's margin. So
+  // after 100,000 years (the trunk has stood near its base level for sixty thousand of them,
+  // and what stood inside the section is worn to it) the valley a hundred metres above its
+  // floor is as wide as that parabola is there, to the two points a section the lattice and
+  // the rivers' own work on the same points allow, and not the swath wide: stage E's floor
+  // between walls measured b = 4.9 here and the swath's whole width.
   const f64 river_b = std::log(0.5) / std::log(river_share);
   const f64 glacier_b = std::log(0.5) / std::log(glacier_share);
   std::printf("landform ice: as y = a x^b the river's section is b = %.2f, the glacier's %.2f\n",
@@ -203,26 +209,34 @@ TEST_CASE("landform: ice leaves a trough where a river leaves a V, and a tributa
   CHECK(river_b > 0.66);  // not a gorge either: the share's old lower bound of 0.35
   CHECK(river_b < 1.5);
   CHECK(glacier_b >= 1.5);
-  CHECK(glacier_width >= swath_width);
-  CHECK(glacier_width * 2 > river_width * 3);
-  // The trunk's ice is the thicker, and the tributary's bed meets it at a step: the tributary
-  // is worn to the trunk's ice, not to its bed. **What the model gives is where the step is,
-  // not how tall**: a point cannot be worn below its receiver's bed raised by the ice's share
-  // of the step in the ice, so the tributary's steepest step stands where its own ice meets
-  // the trunk's swath, and is steeper than a river leaves anywhere on it. How tall it grows
-  // depends on how long the swath's margin stays on one point (in this valley the trunk's ice
-  // thins from 320 m to 294 m over the run, its swath narrows by a point, and the step at the
-  // new margin is what has grown since: 14 m). Stage C held "five times the river's" on a
-  // step of 40 m that the trench at the region's edge had made (W126).
+  CHECK(glacier_b <= 2.5);
+  CHECK(static_cast<f64>(glacier_width) >= section_width - 6.0);
+  CHECK(static_cast<f64>(glacier_width) <= section_width + 6.0);
+  CHECK(glacier_width < swath_width);
+  CHECK(glacier_width > river_width);
+  // **A tributary hangs where its bed meets the trunk's section.** Inside the trunk's swath
+  // the tributary's bed is worn only where it stands above the trunk's parabola, so its
+  // steepest step is inside that swath, between the margin and the line, under the trunk's
+  // ice on both its points; and it is no steeper than the section itself is at its margin,
+  // twice the ice's thickness over the half width, which with the width four thicknesses is
+  // a fall of one in one: a spacing a point. Steeper than a river leaves anywhere on the same
+  // axis. (Stage E's step stood at the swath's margin, 14 m, and its height was the lattice's:
+  // how long the margin stayed on one point. The tributary's own ice is not in this bound:
+  // the page says why.)
+  const u32 half_points =
+      static_cast<u32>(0.5 * static_cast<f64>(glacier.ice[junction]) / 250.0 / 50.0);
   CHECK(glacier.ice[junction] > 100000);
   CHECK(glacier_step > river_step);
-  CHECK(ice_below > ice_above + 50000);
+  CHECK(glacier_step <= 50000);
+  CHECK(step_row + half_points >= k_axis);
+  CHECK(step_row < k_axis);
+  CHECK(ice_above + 5000 > glacier.ice[junction]);
+  CHECK(ice_below + 5000 > glacier.ice[junction]);
   // The ice wears the trunk faster than the river does (its erodibility is twice the rivers'
   // on a flux the swath shares), and no lower than the edge the trunk leaves through.
   CHECK(glacier.height_mm[junction] < river.height_mm[junction]);
   CHECK(glacier.height_mm[junction] >= k_edge_mm);
 }
-
 TEST_CASE("landform: a glacier that leaves through a held edge is graded to that edge") {
   // The trunk of the case above fills with ice to the open east edge and its ice leaves there.
   // Every point makes ice (the line is under the floor), so the ice thickens all the way down
@@ -280,32 +294,32 @@ TEST_CASE("landform: a glacier that ends inside its region leaves the edge alone
   // The one valley with the line at 1,750 m and nothing laid down, so the ground is rock and a
   // hollow cannot hide under till. The ice gathers on the upper sides, comes down the valley
   // floor and ends by melting about half way down the 8 km; as the ground wears down the
-  // glacier shrinks. The run is solved to each of its twenty steps, so the test knows the
-  // farthest the ice ever reached and the thickest ice that ever stood on each point.
+  // glacier shrinks. The farthest the ice ever reached and the thickest ice that ever stood
+  // on each point are the field's (`ice_max`: W127; the run was solved to each of its twenty
+  // steps before there was one), and the first two steps are solved for where the snout
+  // stood then.
   const landform::StartField start = one_valley();
   landform::Sketch sketch = one_valley_sketch(1750.0);
   sketch.deposition = 0.0;
   sketch.diffusivity_m2_per_yr = 0.0;
   const u32 n = k_valley_wide * k_valley_deep;
-  std::vector<u32> most(n, 0u);
   u32 farthest = 0, nearest = k_valley_wide;
   landform::Landform land;
-  for (i64 years = 5000; years <= 100000; years += 5000) {
+  for (const i64 years : {5000, 10000, 100000}) {
     sketch.duration_yr = years;
     land = solved(sketch, &start);
     u32 snout = 0;
     for (u32 p = 0; p < n; ++p) {
-      if (land.ice[p] > most[p]) most[p] = land.ice[p];
       const u32 z = p / k_valley_wide;
       // The valley glacier's snout: ice on the floor, within two rows of the axis. (The upper
       // sides carry slope ice all the way down the valley; that is not the glacier.)
-      if (land.ice[p] > 0 && z + 2 >= k_valley_axis && z <= k_valley_axis + 2 &&
-          p % k_valley_wide > snout)
-        snout = p % k_valley_wide;
+      if (z + 2 < k_valley_axis || z > k_valley_axis + 2) continue;
+      if (land.ice[p] > 0 && p % k_valley_wide > snout) snout = p % k_valley_wide;
+      if (land.ice_max[p] > 0 && p % k_valley_wide > farthest) farthest = p % k_valley_wide;
     }
-    if (snout > farthest) farthest = snout;
     if (years <= 10000 && snout < nearest) nearest = snout;
   }
+  const Vector<u32>& most = land.ice_max;
   u32 under = 0, hollows = 0, deepest = 0, over_ice = 0, dry_hollows = 0;
   for (u32 p = 0; p < n; ++p) {
     if (land.height_mm[p] < k_valley_edge_mm) ++under;
@@ -397,18 +411,12 @@ Water water_of(const landform::Landform& land) {
 TEST_CASE("landform: a glacier digs basins its rivers cannot, and they hold water") {
   const landform::StartField start = firn_valley();
   const Water river = water_of(solved(firn_sketch(false), &start));
-  // The glaciated run, solved to each of its steps: the thickest ice that ever stood on each
-  // point, and whether any ice did.
-  landform::Sketch sketch = firn_sketch(true);
+  // The glaciated run; the thickest ice that ever stood on each point, and whether any did,
+  // are its `ice_max` (W127: the run was solved to each of its twenty steps before).
+  const landform::Sketch sketch = firn_sketch(true);
   const u32 n = k_firn_wide * k_firn_deep;
-  std::vector<u32> most(n, 0u);
-  landform::Landform land;
-  for (i64 years = 5000; years <= 100000; years += 5000) {
-    sketch.duration_yr = years;
-    land = solved(sketch, &start);
-    for (u32 p = 0; p < n; ++p)
-      if (land.ice[p] > most[p]) most[p] = land.ice[p];
-  }
+  const landform::Landform land = solved(sketch, &start);
+  const Vector<u32>& most = land.ice_max;
   const Water ice = water_of(land);
   u32 dry_hollows = 0, over_ice = 0, floor_points = 0;
   i32 worst_over = 0;
@@ -619,11 +627,306 @@ TEST_CASE("landform: an ice age solves to the same bytes on one, four and sixtee
   // carries its donors' ice, where a disc about each line point put a glacier's ice on points
   // that drain out of it (the trench at a held edge); and again for the basins' rule (the
   // slope read over a coupling length on a glacier's own line, and meltwater that never fills).
-  CHECK(hash_of(serial.height_mm) == 0xcb332c9fa2168f28ull);
-  CHECK(hash_of(serial.ice) == 0xe26756e1f278b69cull);
-  CHECK(hash_of(serial.till) == 0x06a454b0b5827417ull);
+  // Re-taken by W127, twice: under ice a sheet of till is lodged, a twohundredth of the ice's
+  // thickness, where the valley's glacier (which melts nowhere) laid none before; and beside
+  // its line a glacier wears nothing outside its own section, a parabola, where it ground its
+  // whole swath to a floor.
+  CHECK(hash_of(serial.height_mm) == 0x6f25eb0fd45b1e22ull);
+  CHECK(hash_of(serial.ice) == 0x0eb6df477cd2e365ull);
+  CHECK(hash_of(serial.till) == 0x760ba181f26403deull);
   std::printf("landform ice pins: height %016llx ice %016llx till %016llx\n",
               static_cast<unsigned long long>(hash_of(serial.height_mm)),
               static_cast<unsigned long long>(hash_of(serial.ice)),
               static_cast<unsigned long long>(hash_of(serial.till)));
+}
+
+namespace {
+
+// The firn valley with its walls ended 250 m above the floor (a shoulder at 0.05 beyond), so
+// that no ice gathers on them below the plateau: the valley's one glacier is the plateau's,
+// its snout is the only one on the valley's floor, and what it leaves there can be told from
+// what a slope's thread of ice would.
+landform::StartField stand_valley() {
+  return start_from(k_firn_wide, k_firn_deep, 50000, [](f64 x, f64 z) {
+    const f64 across = std::fabs(z - 1200.0);
+    if (x < 4000.0) return 2000.0 - 0.025 * x + 0.05 * across;
+    const f64 wall = across < 500.0 ? 0.5 * across : 250.0 + 0.05 * (across - 500.0);
+    return 1500.0 - 0.03 * (x - 4000.0) + wall;
+  });
+}
+
+// The firn valley's sketch with the rivers laying down what they carry, since till is
+// sediment and with nothing laid down there is none.
+landform::Sketch stand_sketch(f64 ela_m) {
+  landform::Sketch sketch = firn_sketch(true);
+  sketch.deposition = 1.0;
+  sketch.ice->ela_m = ela_m;
+  return sketch;
+}
+
+// The valley glacier's snout: the last column with 40 m of ice or more within two rows of the
+// axis (a slope's thread is thinner).
+u32 trunk_snout(const landform::Landform& land) {
+  u32 snout = 0;
+  for (u32 p = 0; p < k_firn_wide * k_firn_deep; ++p) {
+    const u32 x = p % k_firn_wide, z = p / k_firn_wide;
+    if (land.ice[p] >= 40000 && z + 2 >= k_firn_axis && z <= k_firn_axis + 2 && x > snout)
+      snout = x;
+  }
+  return snout;
+}
+
+// What a ground carries of the ice's leavings on the valley's floor and off it.
+struct Leavings {
+  u32 crest_points = 0;
+  u32 crest_north = 0;  // crest points north of the axis, and south of it
+  u32 crest_south = 0;
+  u32 tallest = 0;       // the thickest moraine, mm
+  u32 closed = 0;        // points of the valley's river, below the plateau, that carry ridge
+  u32 river_points = 0;  // and how many points that river is
+  u32 thickest_ice = 0;  // the thickest ice that ever stood anywhere, mm
+};
+
+Leavings leavings_of(const landform::Landform& land) {
+  Leavings out;
+  for (u32 p = 0; p < land.width * land.height; ++p) {
+    const u32 z = p / land.width;
+    if (land.moraine_crest[p] != 0) {
+      ++out.crest_points;
+      if (z < k_firn_axis) ++out.crest_north;
+      if (z > k_firn_axis) ++out.crest_south;
+    }
+    if (land.moraine[p] > out.tallest) out.tallest = land.moraine[p];
+    if (land.ice_max[p] > out.thickest_ice) out.thickest_ice = land.ice_max[p];
+  }
+  // The valley's river: from the lowest point of column 100, below the plateau, down the
+  // receivers to the edge.
+  u32 at = 100;
+  for (u32 z = 0; z < land.height; ++z)
+    if (land.height_mm[z * land.width + 100] < land.height_mm[at]) at = z * land.width + 100;
+  while (land.receiver[at] != landform::k_no_receiver && out.river_points < land.width * 4) {
+    ++out.river_points;
+    if (land.moraine[at] > 0) ++out.closed;
+    const u8 code = land.receiver[at];
+    at = static_cast<u32>(static_cast<i32>(at) + landform::k_receiver_dx[code] +
+                          landform::k_receiver_dz[code] * static_cast<i32>(land.width));
+  }
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE(
+    "landform: a glacier leaves a ridge across its valley at its snout, its river's gate open") {
+  // The plateau's glacier with the line at 1,900 m ends inside the valley and draws back up it
+  // as the plateau wears down. Beside it the same run with the ice carrying nothing
+  // (`carried` 0): what the ridges change is then theirs.
+  const landform::StartField start = stand_valley();
+  landform::Sketch with = stand_sketch(1900.0), without = stand_sketch(1900.0);
+  without.ice->carried = 0.0;
+  // **The glacier is the same glacier.** A ridge is laid at the snout and in front of it and
+  // its river's gate stays open, so the ridge puts no sill under the tongue; the one thing it
+  // changes for the ice is the bed under its up-valley flank, by the ridge's height at most
+  // against a melt that takes `melt_m` (250 m) of depth to double, over the three points of a
+  // flank: under a point's worth of ice. So step for step the snout stands within three
+  // points of where it stands with nothing carried. (A ridge laid across the line, with no
+  // gate, sent the snout from column 159 to the region's edge, 199, on the second step and
+  // again on the fifth: the flood fills the hollow behind the ridge, the tongue's points drain
+  // across the fill in a fan, the swath loses them, and the glacier pays no melt over its
+  // width.)
+  u32 worst_shift = 0, first_snout = 0, last_snout = 0;
+  Leavings fresh;
+  landform::Landform land, bare;
+  for (i64 years = 5000; years <= 30000; years += 5000) {
+    with.duration_yr = years;
+    without.duration_yr = years;
+    land = solved(with, &start);
+    bare = solved(without, &start);
+    const u32 a = trunk_snout(land), b = trunk_snout(bare);
+    const u32 shift = a > b ? a - b : b - a;
+    if (shift > worst_shift) worst_shift = shift;
+    if (years == 5000) {
+      first_snout = a;
+      fresh = leavings_of(land);
+    }
+    last_snout = a;
+  }
+  const Leavings left = leavings_of(land), none = leavings_of(bare);
+  std::printf(
+      "landform moraines: the snout stands at column %u after one step and %u after six (never "
+      "more than %u points from where it stands with nothing carried); the ridges' crests are "
+      "%u points (%u north of the axis, %u south), the tallest ridge %u mm under ice that was "
+      "%u mm thick at most; after the first step, with its one ridge's crest %u points (%u "
+      "north, %u south), none of the %u points of the valley's river carries ridge (%u), and "
+      "after six %u of %u do; the ice brought %.0f m3 to its snouts, %.0f m3 of it stands as "
+      "ridges and %.0f m3 was lodged\n",
+      first_snout, last_snout, worst_shift, left.crest_points, left.crest_north, left.crest_south,
+      left.tallest, left.thickest_ice, fresh.crest_points, fresh.crest_north, fresh.crest_south,
+      fresh.river_points, fresh.closed, left.closed, left.river_points,
+      land.budget.ice_delivered_m3, land.budget.moraine_m3, land.budget.lodged_m3);
+  CHECK(first_snout > 100);  // the glacier came down the valley
+  CHECK(first_snout < 190);  // and ended inside it
+  CHECK(last_snout < first_snout);
+  CHECK(worst_shift <= 3);
+  // A ridge crosses the valley: its crest stands on both sides of the line it left open.
+  CHECK(left.crest_north > 0);
+  CHECK(left.crest_south > 0);
+  // The gate: a ridge is laid to one level from wall to wall but for its river's line, so
+  // when it has just been laid the valley's river reaches the edge over no ridge at all.
+  // (Through a ridge with no gate the only way is over its crest. Read after the first step,
+  // on the one ridge it laid: steps later a river may have moved onto the foot of a ridge's
+  // flank, which is its own doing and no sill.)
+  CHECK(fresh.crest_north > 0);
+  CHECK(fresh.crest_south > 0);
+  CHECK(fresh.river_points >= 99);
+  CHECK(fresh.closed == 0);
+  // The books: a ridge is made of what the ice brought, and nothing is carried with `carried` 0.
+  CHECK(land.budget.moraine_m3 > 0.0);
+  CHECK(land.budget.moraine_m3 <= land.budget.ice_delivered_m3);
+  CHECK(bare.budget.ice_delivered_m3 == 0.0);
+  CHECK(none.crest_points == 0);
+  CHECK(none.tallest == 0);
+}
+
+TEST_CASE("landform: a moraine is no taller than the published ridge, and lodged till is thin") {
+  const landform::StartField start = stand_valley();
+  landform::Sketch sketch = stand_sketch(1900.0);
+  sketch.duration_yr = 30000;
+  const landform::Landform land = solved(sketch, &start);
+  const Leavings left = leavings_of(land);
+  // What the rule gives, point by point. A ridge's crest is laid no higher above the floor
+  // than `moraine_height_m` (60 m: Small 1983's tallest) or the glacier's thickness at its
+  // widest, and no point takes more than that of ridge whatever later snouts lay on it. The
+  // rest of the till is lodged: a point under ice keeps `lodged` (0.005) of the ice's
+  // thickness and no more, so nowhere more than that share of the thickest ice that ever
+  // stood there. And all of it is sediment.
+  const u32 cap = left.thickest_ice < 60000 ? left.thickest_ice : 60000;
+  u32 over_cap = 0, over_lodged = 0, not_till = 0, not_sediment = 0, unmarked = 0;
+  u32 lodged_points = 0, thickest_lodged = 0;
+  for (u32 p = 0; p < land.width * land.height; ++p) {
+    if (land.moraine[p] > cap + 1) ++over_cap;
+    if (land.moraine[p] > land.till[p]) ++not_till;
+    if (land.till[p] > land.sediment[p]) ++not_sediment;
+    if (land.moraine_crest[p] != 0 && land.moraine[p] == 0) ++unmarked;
+    const u32 lodged =
+        land.till[p] - (land.moraine[p] < land.till[p] ? land.moraine[p] : land.till[p]);
+    if (lodged > 0) ++lodged_points;
+    if (lodged > thickest_lodged) thickest_lodged = lodged;
+    if (static_cast<f64>(lodged) > 0.005 * static_cast<f64>(land.ice_max[p]) + 1.0) ++over_lodged;
+  }
+  // The same valley with a lower ridge allowed, and with the ice leaving nothing.
+  landform::Sketch low = sketch;
+  low.ice->moraine_height_m = 20.0;
+  const Leavings low_left = leavings_of(solved(low, &start));
+  landform::Sketch clean = sketch;
+  clean.ice->carried = 0.0;
+  clean.ice->lodged = 0.0;
+  const landform::Landform bare = solved(clean, &start);
+  u32 bare_till = 0;
+  for (u32 p = 0; p < bare.width * bare.height; ++p)
+    if (bare.till[p] > 0) ++bare_till;
+  std::printf(
+      "landform moraines: the tallest ridge is %u mm (the cap %u mm; %u mm with 20 m allowed); "
+      "%u points carry lodged till, the thickest %u mm; %u points over the ridge's cap, %u over "
+      "the lodged share, %u with ridge that is not till, %u with till that is not sediment\n",
+      left.tallest, cap, low_left.tallest, lodged_points, thickest_lodged, over_cap, over_lodged,
+      not_till, not_sediment);
+  CHECK(left.tallest > 0);
+  CHECK(over_cap == 0);
+  CHECK(low_left.tallest <= 20001);
+  CHECK(lodged_points > 0);
+  CHECK(over_lodged == 0);
+  CHECK(not_till == 0);
+  CHECK(not_sediment == 0);
+  CHECK(unmarked == 0);
+  CHECK(bare_till == 0);
+}
+
+TEST_CASE("landform: the thickest ice that ever stood is kept, point by point") {
+  // The stand valley's glacier draws back for 30,000 years: the field is the largest of the
+  // ice over each point at the six steps, exactly, and its edge (the trimline) is farther down
+  // the valley than the ice of the last step.
+  const landform::StartField start = stand_valley();
+  landform::Sketch sketch = stand_sketch(1900.0);
+  const u32 n = k_firn_wide * k_firn_deep;
+  std::vector<u32> most(n, 0u);
+  landform::Landform land;
+  for (i64 years = 5000; years <= 30000; years += 5000) {
+    sketch.duration_yr = years;
+    land = solved(sketch, &start);
+    for (u32 p = 0; p < n; ++p)
+      if (land.ice[p] > most[p]) most[p] = land.ice[p];
+  }
+  u32 differ = 0, ever = 0, now = 0;
+  for (u32 p = 0; p < n; ++p) {
+    if (land.ice_max[p] != most[p]) ++differ;
+    if (land.ice_max[p] > 0) ++ever;
+    if (land.ice[p] > 0) ++now;
+  }
+  std::printf("landform fields: ice stood on %u points at some step and stands on %u at the last\n",
+              ever, now);
+  CHECK(differ == 0);
+  CHECK(ever > now);
+}
+
+TEST_CASE("landform: the ice's line moves at its stands, and a stand's ridges carry its mark") {
+  // The line at 1,900 m for 15,000 years and at 1,960 m after: a higher line makes less ice
+  // of the same plateau, so from the stand on the glacier is shorter than the one whose line
+  // stayed. Every glacier of the valley only ever draws back here (the plateau wears down
+  // and the line rises), so no ridge of the second stand lies down the valley of where the
+  // valley glacier's snout stood when the first stand ended, and the first stand left a ridge
+  // at that snout or below it. (Not "every second ridge above every first": a small glacier
+  // off the plateau's edge ends near the valley's head in both stands, and its first ridge
+  // stands above the valley glacier's second.)
+  const landform::StartField start = stand_valley();
+  landform::Sketch moved = stand_sketch(1900.0), stayed = stand_sketch(1900.0);
+  landform::IceStand stand;
+  stand.from_yr = 15000;
+  stand.ela_m = 1960.0;
+  moved.ice->stands.push_back(stand);
+  moved.duration_yr = 30000;
+  stayed.duration_yr = 30000;
+  const landform::Landform land = solved(moved, &start), same = solved(stayed, &start);
+  stayed.duration_yr = 15000;
+  const u32 ended = trunk_snout(solved(stayed, &start));
+  u32 first = 0, second = 0, first_farthest = 0, second_highest = 0, other = 0;
+  for (u32 p = 0; p < land.width * land.height; ++p) {
+    const u32 x = p % land.width, z = p / land.width;
+    const u8 mark = land.moraine_crest[p];
+    if (mark > 2) ++other;
+    // The valley's own ridges: within six rows of its axis, below the plateau.
+    if (mark == 0 || x < 80 || z + 6 < k_firn_axis || z > k_firn_axis + 6) continue;
+    if (mark == 1) {
+      ++first;
+      if (x > first_farthest) first_farthest = x;
+    } else {
+      ++second;
+      if (x > second_highest) second_highest = x;
+    }
+  }
+  std::printf(
+      "landform stands: with the line raised 60 m at 15,000 years the snout stands at column "
+      "%u at 30,000 against %u, and stood at %u when the first stand ended; the first stand's "
+      "crests are %u points, the farthest down the valley at column %u, the second's %u "
+      "points, none down the valley of column %u\n",
+      trunk_snout(land), trunk_snout(same), ended, first, first_farthest, second, second_highest);
+  CHECK(trunk_snout(land) < trunk_snout(same));
+  CHECK(first > 0);
+  CHECK(second > 0);
+  CHECK(other == 0);
+  CHECK(second_highest < ended);
+  CHECK(first_farthest >= ended);
+  // A sketch's stands are in order of time and after the ice has come.
+  std::string error;
+  landform::Sketch bad = moved;
+  bad.ice->stands.push_back(stand);
+  CHECK_FALSE(landform::validate_sketch(bad, error));
+  CHECK(error.find("in order of time") != std::string::npos);
+  bad = moved;
+  bad.ice->from_yr = 15000;
+  CHECK_FALSE(landform::validate_sketch(bad, error));
+  bad = moved;
+  bad.ice->carried = 1.5;
+  CHECK_FALSE(landform::validate_sketch(bad, error));
+  CHECK(error.find("ice.carried") != std::string::npos);
 }
