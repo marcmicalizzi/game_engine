@@ -3,10 +3,12 @@
 // (gi_cache.slang), and `gi cache: a scene moved by whole cells draws the same bytes with the cache
 // on` (systems/renderer) holds the two together on the GPU.
 
+#include <domain/gfx/crown_prior.h>
 #include <domain/gfx/gi_cache.h>
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 
@@ -522,4 +524,177 @@ TEST_CASE("gi cache key: the faces' blend and the fallback's openness are smooth
     CHECK(o >= previous);
     previous = o;
   }
+}
+
+// ---- stage 7: a crown's shade as a prior (crown_prior.h; renderer.md, "Indirect light",
+// "Stage 7"; docs/experiments/crown-shade-grounding.md) ------------------------------------------
+
+TEST_CASE("gi cache key: a crown's cells share no key with a face's") {
+  // One cell's coordinates under every level and face, and under every level of the crown's own:
+  // sixty-three hashes, all different (the crown's tags are the nine past the six faces').
+  u64 seen[k_gi_levels * 7];
+  u32 count = 0;
+  for (u32 level = 0; level < k_gi_levels; ++level) {
+    for (u32 face = 0; face <= k_gi_face_crown; ++face) {
+      seen[count++] = gi_hash(1234, -77, 4096, level, face);
+    }
+  }
+  for (u32 a = 0; a < count; ++a) {
+    for (u32 b = a + 1; b < count; ++b)
+      CHECK(seen[a] != seen[b]);
+  }
+}
+
+namespace {
+
+// A ball of uniform leaf: one small triangle at every point of a lattice inside `radius`, sized so
+// that the leaf area a cubic metre (after the cards' fill) is `density`.
+void leaf_ball(f32 radius, f32 spacing, f64 density, Vector<Vec3>& corners) {
+  const f64 area = density * static_cast<f64>(spacing) * static_cast<f64>(spacing) *
+                   static_cast<f64>(spacing) / k_crown_card_fill;
+  const f32 leg = static_cast<f32>(std::sqrt(2.0 * area));
+  const i32 n = static_cast<i32>(radius / spacing) + 1;
+  for (i32 z = -n; z < n; ++z) {
+    for (i32 y = -n; y < n; ++y) {
+      for (i32 x = -n; x < n; ++x) {
+        const Vec3 p{(static_cast<f32>(x) + 0.5f) * spacing, (static_cast<f32>(y) + 0.5f) * spacing,
+                     (static_cast<f32>(z) + 0.5f) * spacing};
+        if (dot(p, p) > radius * radius) continue;
+        corners.push_back(p);
+        corners.push_back(Vec3{p.x + leg, p.y, p.z});
+        corners.push_back(Vec3{p.x, p.y, p.z + leg});
+      }
+    }
+  }
+}
+
+// The fraction a ball of `radius` and uniform leaf lets through to the point `p` inside it along
+// the unit direction `d`: Beer-Lambert over the chord from the point to the ball's surface.
+f64 ball_transmitted(Vec3 p, Vec3 d, f64 radius, f64 density) {
+  const f64 b = static_cast<f64>(dot(p, d));
+  const f64 c = static_cast<f64>(dot(p, p)) - radius * radius;
+  const f64 chord = -b + std::sqrt(b * b - c);
+  return std::exp(-k_crown_g * density * chord);
+}
+
+}  // namespace
+
+// **The prior against the closed form.** In a ball of uniform leaf area density u the fraction
+// that reaches a point along a direction is exp(-G u s) over the chord s to the surface, and the
+// prior is its mean over a hemisphere's directions. Held two ways at points across the ball:
+// against that closed form along the prior's own twelve directions a hemisphere, where what is left
+// is the grid — a path's leaf is off by at most half a cell at the ball's surface and half a step
+// of the march, (0.25 + 0.125) m here, 0.094 of optical depth at G u = 0.25 a metre, so under 0.094
+// of the fraction itself, itself under 0.65 at these points: 0.06 — and, in the message, against
+// a fine quadrature of the same closed form over the hemisphere (64 by 128), which says what
+// twelve directions cost. At the centre every chord is the radius, so the prior is exp(-G u R)
+// whatever the directions.
+TEST_CASE("gi cache key: a crown's prior in a ball of uniform leaf is Beer-Lambert's closed form") {
+  const f32 radius = 4.0f;
+  const f64 density = 0.5;  // square metres of leaf a cubic metre: a broadleaf crown's
+  Vector<Vec3> corners;
+  leaf_ball(radius, 0.125f, density, corners);
+  CrownPriorDesc desc;
+  Vector<u8> bytes;
+  CrownPriorStats stats;
+  build_crown_prior({corners.data(), corners.size()}, Vec3{-radius, -radius, -radius},
+                    Vec3{radius, radius, radius}, desc, bytes, &stats);
+  CHECK((desc.dims & 0xffu) == k_crown_cells);
+  // The leaf it gathered is the ball's: u times the ball's volume, within the lattice's edge.
+  const f64 volume = 4.0 / 3.0 * 3.14159265358979 * 64.0;
+  CHECK(stats.leaf_area_m2 == doctest::Approx(density * volume).epsilon(0.02));
+  const Vec3 points[] = {Vec3{0.0f, 0.0f, 0.0f},  Vec3{0.0f, 2.0f, 0.0f},  Vec3{0.0f, -2.0f, 0.0f},
+                         Vec3{2.5f, 0.0f, 0.0f},  Vec3{0.0f, 3.25f, 0.0f}, Vec3{1.5f, 1.5f, -1.5f},
+                         Vec3{-1.0f, -2.5f, 2.0f}};
+  f64 worst_same = 0.0;
+  f64 worst_fine = 0.0;
+  for (const Vec3& p : points) {
+    const CrownPriorSample got = crown_prior_sample(desc, bytes.data(), p);
+    // The closed form along the prior's own directions.
+    f64 up = 0.0;
+    f64 down = 0.0;
+    for (u32 r = 0; r < k_crown_rings; ++r) {
+      const f64 y = (static_cast<f64>(r) + 0.5) / static_cast<f64>(k_crown_rings);
+      const f64 s = std::sqrt(1.0 - y * y);
+      for (u32 k = 0; k < k_crown_spokes; ++k) {
+        const f64 phi = 6.283185307179586 * (static_cast<f64>(k) + 0.5 * static_cast<f64>(r & 1u)) /
+                        static_cast<f64>(k_crown_spokes);
+        const Vec3 d{static_cast<f32>(s * std::cos(phi)), static_cast<f32>(y),
+                     static_cast<f32>(s * std::sin(phi))};
+        up += ball_transmitted(p, d, static_cast<f64>(radius), density);
+        down += ball_transmitted(p, Vec3{d.x, -d.y, d.z}, static_cast<f64>(radius), density);
+      }
+    }
+    up /= static_cast<f64>(k_crown_rings * k_crown_spokes);
+    down /= static_cast<f64>(k_crown_rings * k_crown_spokes);
+    CHECK(std::abs(static_cast<f64>(got.up) - up) <= 0.06);
+    CHECK(std::abs(static_cast<f64>(got.down) - down) <= 0.06);
+    worst_same = std::max({worst_same, std::abs(static_cast<f64>(got.up) - up),
+                           std::abs(static_cast<f64>(got.down) - down)});
+    // The same closed form over the whole hemisphere, equal solid angles.
+    f64 fine_up = 0.0;
+    f64 fine_down = 0.0;
+    for (u32 i = 0; i < 64; ++i) {
+      const f64 y = (static_cast<f64>(i) + 0.5) / 64.0;
+      const f64 s = std::sqrt(1.0 - y * y);
+      for (u32 k = 0; k < 128; ++k) {
+        const f64 phi = 6.283185307179586 * (static_cast<f64>(k) + 0.5) / 128.0;
+        const Vec3 d{static_cast<f32>(s * std::cos(phi)), static_cast<f32>(y),
+                     static_cast<f32>(s * std::sin(phi))};
+        fine_up += ball_transmitted(p, d, static_cast<f64>(radius), density);
+        fine_down += ball_transmitted(p, Vec3{d.x, -d.y, d.z}, static_cast<f64>(radius), density);
+      }
+    }
+    fine_up /= 64.0 * 128.0;
+    fine_down /= 64.0 * 128.0;
+    worst_fine = std::max({worst_fine, std::abs(static_cast<f64>(got.up) - fine_up),
+                           std::abs(static_cast<f64>(got.down) - fine_down)});
+  }
+  // The centre: exp(-G u R), whatever the directions.
+  const CrownPriorSample centre = crown_prior_sample(desc, bytes.data(), Vec3{0.0f, 0.0f, 0.0f});
+  const f64 closed = std::exp(-k_crown_g * density * static_cast<f64>(radius));
+  CHECK(std::abs(static_cast<f64>(centre.up) - closed) <= 0.094 * closed);
+  CHECK(std::abs(static_cast<f64>(centre.down) - closed) <= 0.094 * closed);
+  MESSAGE("a ball of 4 m at 0.5 m2/m3: the centre "
+          << centre.up << " against exp(-1) = " << closed << "; over seven points the grid stands "
+          << worst_same << " at most from the closed form along its own directions and "
+          << worst_fine << " from the hemisphere's fine quadrature; leaf " << stats.leaf_area_m2
+          << " m2 in " << stats.leaf_volume_m3 << " m3 of cells");
+  // The same bytes from every toolchain: the grid's FNV-1a, taken on MSVC.
+  u64 hash = 1469598103934665603ull;
+  for (const u8 b : bytes)
+    hash = (hash ^ b) * 1099511628211ull;
+  MESSAGE("the ball's grid: " << bytes.size() << " bytes, hash " << hash);
+  CHECK(hash == 13891853578010254563ull);
+}
+
+TEST_CASE("gi cache key: a surface's prior is its hemisphere's share of the two means, floored") {
+  const CrownPriorSample s{0.6f, 0.2f};
+  CHECK(crown_prior(s, 1.0f) == doctest::Approx(0.6f));   // facing up: the upper hemisphere's
+  CHECK(crown_prior(s, -1.0f) == doctest::Approx(0.2f));  // facing down: the lower one's
+  CHECK(crown_prior(s, 0.0f) == doctest::Approx(0.4f));   // on edge: half of each
+  // Never under the floor, which bounds what a sample's division can do to its noise: sixteen
+  // times at most.
+  CHECK(crown_prior(CrownPriorSample{0.01f, 0.0f}, 0.3f) == k_crown_floor);
+  // Open air: nothing between the surface and the light, and the read is the cache's as it was.
+  CHECK(crown_prior(CrownPriorSample{1.0f, 1.0f}, 0.7f) == doctest::Approx(1.0f));
+}
+
+TEST_CASE("gi cache key: a crown's cell counts in sixteenths, and a full count is sixteen frames") {
+  // A sample in the open counts sixteen, one at the prior's floor one, and none counts nothing.
+  CHECK(gi_crown_weight(1.0f) == k_gi_crown_weight);
+  CHECK(gi_crown_weight(k_crown_floor) == 1u);
+  CHECK(gi_crown_weight(0.5f) == 8u);
+  CHECK(gi_crown_weight(0.001f) == 1u);
+  // A cell that takes 24,000 a frame (1,500 samples in the open) fills its sixteen bits in three
+  // frames: until it has, the rate is the plain mean's; once it has, a frame's share of sixteen —
+  // not the 24,000 over 65,535 the capped count alone would give, a memory of under three frames.
+  CHECK(gi_history_rate(0u, 24000u) == doctest::Approx(1.0f));
+  CHECK(gi_history_rate(24000u, 24000u) == doctest::Approx(0.5f));
+  CHECK(gi_history(48000u, 24000u) == 0xffffu);
+  CHECK(gi_history_rate(0xffffu, 24000u) == doctest::Approx(1.0f / 16.0f));
+  // A cell under 4,096 a frame never fills the field, and its rate is the count's as it was.
+  CHECK(gi_history(60000u, 700u) == 700u * k_gi_history_frames);
+  CHECK(gi_history_rate(60000u, 700u) == doctest::Approx(1.0f / 16.0f));
+  CHECK(gi_history_rate(100u, 12u) == doctest::Approx(12.0f / 112.0f));
 }

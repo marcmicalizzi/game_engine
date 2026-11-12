@@ -1,11 +1,13 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "R69",
-  "reason": "R69 stages 5 and 6: record_frame records the cache's passes as the frame's steps (the pre-roll; its flags now come from gi_frame_flags), and renderer.md gains the two stages' sections (stage 5: the ladder, the walk, the warm levels' arithmetic, the pre-roll; stage 6: what the band is, the reveal and what it holds, what the forest showed)",
-  "date": "2026-11-11",
+  "reason": "R69 stages 5 to 7: record_frame records the cache's passes as the frame's steps (the pre-roll; its flags come from gi_frame_flags) and hands the crowns' priors to the resolve block; renderer.md gains the three stages' sections (stage 5: the ladder, the walk, the pre-roll; stage 6: what the band is, the reveal; stage 7: the darker forest judged, a crown's shade as a prior, what it does and does not do, the forest); flora.md says what the renderer reads of a crown's leaves and what it assumes of them",
+  "date": "2026-11-12",
   "by": "Marc Micalizzi",
   "deltas": {
-    "renderer.record_frame.lines": 23,
-    "page:docs/subsystems/renderer.md": 20305
+    "renderer.record_frame.lines": 25,
+    "page:docs/subsystems/renderer.md": 27877,
+    "page:docs/subsystems/flora.md": 952,
+    "page:docs/experiments/gi-cache-2026-11-07.md": 23
   }
 }

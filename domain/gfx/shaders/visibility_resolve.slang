@@ -204,6 +204,11 @@ struct ResolveParams {
   uint gi_shell_columns;
   uint gi_shell_cost;  // every view's shell rays, out of the young half of gi_rays
   uint gi_shell_pad;
+  // The crowns' priors (gfx::ResolveParams::gi_crowns; R69 stage 7): the table of `CrownPrior`
+  // records, one a mesh, with their grids behind it, and how many meshes it covers; 0 for none.
+  uint64_t gi_crowns;
+  uint gi_crown_count;
+  uint gi_crown_pad;
 };
 
 // **The resolve's split** (gfx::ResolveStop; renderer.md, "Where the resolve's time goes"; R115).
@@ -1659,9 +1664,15 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     // **What the scene lets through of it** (R69; renderer.md, "Indirect light: the world-space
     // cache"): where the frame reads the cache, the cells round this point scale that hemisphere
     // by what the frame's structures let through; anywhere else it is the hemisphere, to the bit.
+    // Foliage reads its tree's own shade as a prior (stage 7): negative for anything else.
+    float crown = -1.0;
+    if ((material.flags & k_material_masked) != 0u) {
+      crown = gi_crown_prior(params->gi_crowns, params->gi_crown_count, instance, params->eye,
+                             s.position, s.normal);
+    }
     ambient = scene_ambient(params->gi_cells, params->gi_flags, params->gi_count,
                             params->gi_cell_scale, params->eye, s.position,
-                            length(s.position - params->camera.xyz), s.normal, ambient);
+                            length(s.position - params->camera.xyz), s.normal, ambient, crown);
     const float n_dot_v = max(dot(surface.normal, surface.view), 0.0);
     float3 indirect =
         ambient * (albedo * (1.0 - surface.metallic) +

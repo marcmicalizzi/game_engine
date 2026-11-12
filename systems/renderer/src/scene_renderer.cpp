@@ -11,6 +11,7 @@
 #include <domain/gfx/water_swash.h>
 #include <foundation/io/vfs.h>
 #include <systems/renderer/caster_volume.h>
+#include <systems/renderer/crown_priors.h>
 #include <systems/renderer/eye_shell.h>
 #include <systems/renderer/gi_preroll.h>
 #include <systems/renderer/lighting.h>
@@ -750,6 +751,12 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
       return false;
     }
     gi_reset_ = true;
+    // The crowns' priors (stage 7): each mesh's own shade, from its own leaves, once.
+    if (resolved_.gi_crown_prior &&
+        !upload_crown_priors(device, scene.data(), gi_crowns_, gi_crown_count_, error)) {
+      destroy();
+      return false;
+    }
   }
   fill_view_layout();
   sample_gpu_memory();
@@ -1366,6 +1373,8 @@ void SceneRenderer::destroy() noexcept {
   sky_params_address_ = 0;
   destroy_shadow_maps();
   gfx::destroy_buffer(device, gi_cache_);
+  gfx::destroy_buffer(device, gi_crowns_);
+  gi_crown_count_ = 0;
   gi_count_ = 0;
   gi_reset_ = true;
   shaders_.destroy();
@@ -3457,6 +3466,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       resolve.gi_shell_rays = gi_shell_rays;
       resolve.gi_shell_columns = gi_shell_columns;
       resolve.gi_shell_cost = static_cast<u32>(gfx::gi_shell_ray_cost(gi_shell_rays) * views);
+      resolve.gi_crowns = gi_crowns_.address;
+      resolve.gi_crown_count = gi_crown_count_;
     }
     std::memcpy(resolve_bytes + sizeof(gfx::ResolveParams) * v, &resolve, sizeof(resolve));
 

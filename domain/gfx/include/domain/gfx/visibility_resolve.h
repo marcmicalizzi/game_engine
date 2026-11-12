@@ -1210,6 +1210,14 @@ struct ResolveParams {
   u32 gi_shell_columns = 0;
   u32 gi_shell_cost = 0;
   u32 gi_shell_pad = 0;
+  // **The crowns' priors** (crown_prior.h; renderer.md, "Indirect light", "Stage 7"; R69 stage 7):
+  // the table of `CrownPriorDesc` records, one a mesh of the scene, with their grids behind it,
+  // and the meshes it covers; 0 and 0 for none, and foliage is then read as everything else is.
+  // Read by the resolve's ambient, the reflections' and the cache's sample pass. A new 16-byte
+  // row: the block grew from 576 to 592 bytes.
+  u64 gi_crowns = 0;
+  u32 gi_crown_count = 0;
+  u32 gi_crown_pad = 0;
 };
 // `ResolveParams::water_open_instance` when the scene has no open water.
 inline constexpr u32 k_no_water_open = 0xffffffffu;
@@ -1221,7 +1229,7 @@ inline f32 water_clock(f64 time_s) noexcept {
   const f64 t = std::fmod(time_s, k_water_period_s);
   return static_cast<f32>(t < 0.0 ? t + k_water_period_s : t);
 }
-static_assert(sizeof(ResolveParams) == 576);
+static_assert(sizeof(ResolveParams) == 592);
 static_assert(sizeof(ResolveParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 
 // ---- the sun's masks by region and by distance (renderer.md; R139) -----------------------------

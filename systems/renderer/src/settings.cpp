@@ -445,6 +445,13 @@ tunables::Int gi_show_level{
     "A diagnostic: the resolve's read of the cache takes one level of the ladder whole, the "
     "surface's own plus this many, with the cache filled as ever (-1: the walk) (renderer.md, "
     "Indirect light, Stage 6; read at load)"};
+// **Stage 7** (R69; renderer.md, "Indirect light", "Stage 7"): a crown's shade as a prior.
+tunables::Bool gi_crown_prior{
+    "renderer.gi.crown_prior", true,
+    "Foliage on a mesh with a crown is lit through its tree's own shade as a prior: the cache "
+    "holds its light over the fraction the tree's own leaves let through, in cells of no face, "
+    "and a foliage pixel reads one coarse level times its own prior (false: foliage is read as "
+    "everything else, as stage 6) (renderer.md, Indirect light, Stage 7; read at load)"};
 tunables::Float gi_far_lift{
     "renderer.gi.far_lift", 0.0, 0.0, 1.0,
     "How far a coarse cache cell's read (1.6 m and up, past 400 m) is lifted towards the sky's "
@@ -804,6 +811,7 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   out.gi_hit_fallback = gi_hit_fallback.get();
   out.gi_far_lift = static_cast<f32>(gi_far_lift.get());
   out.gi_reveal = gi_reveal.get();
+  out.gi_crown_prior = gi_crown_prior.get();
   out.gi_show_level = static_cast<i32>(gi_show_level.get());
   out.gi_shell_m = static_cast<f32>(gi_shell_m.get());
   out.gi_shell_rays = static_cast<u32>(gi_shell_rays.get());

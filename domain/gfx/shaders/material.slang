@@ -938,22 +938,33 @@ float3 ambient_radiance(float3 sky, float3 ground, float3 normal) {
 // and the three coarser, each taking the share its cells' sample counts give it, so what is shown
 // is the finest light the cache already holds quietly, and the harmonics only in proportion where
 // even the coarsest level holds a handful of samples.
+//
+// **Foliage** (stage 7, `crown`; renderer.md, "Indirect light", "Stage 7"): a positive `crown` is
+// the point's own prior (`gi_crown_prior`: what its tree's own leaves let through of the diffuse
+// light), and its cells hold the light over that prior. The read is then one face and one level —
+// two up from the point's own, and the one above it only while that one is young — times the
+// prior; and where no level has a sample, the harmonics times the prior, which is the tree's own
+// shade under an open sky. Negative (the default): anything else, read as ever.
 float3 scene_ambient(uint64_t gi_cells, uint gi_flags, uint gi_count, float gi_cell_scale,
                      FrameEye eye, float3 from_eye, float distance, float3 normal,
-                     float3 harmonics) {
+                     float3 harmonics, float crown = -1.0) {
   if ((gi_flags & k_gi_read) == 0u || gi_cells == 0) return harmonics;
   float3 ratio;
   uint level = gi_level(distance, gi_cell_scale);
+  const bool foliage = crown > 0.0;
+  if (foliage) harmonics *= crown;
   // Stage 6's diagnostic (`k_gi_show`, `renderer.gi.show_level`): one level of the ladder read
   // whole, the cache filled as ever — how the count by level is made.
-  uint levels = k_gi_ladder;
+  uint levels = foliage ? k_gi_crown_read_levels : k_gi_ladder;
   if ((gi_flags & k_gi_show) != 0u) {
     level = min(level + ((gi_flags >> k_gi_show_shift) & 3u), k_gi_levels - 1u);
     levels = 1u;
     gi_flags = (gi_flags & ~0xff00u) | 0x100u;
+  } else if (foliage) {
+    level = min(level + k_gi_crown_read, k_gi_levels - 1u);
   }
   const float taken =
-      gi_read(gi_cells, gi_count, gi_flags, eye, from_eye, level, levels, normal, ratio);
+      gi_read(gi_cells, gi_count, gi_flags, eye, from_eye, level, levels, normal, ratio, foliage);
   if (!(taken > 0.0)) return harmonics;
   // **The far lift** (stage 2, `renderer.gi.far_lift`, a stated lever): a coarse cell (1.6 m at
   // level 6 to 6.4 m at 8, past 400 m) averages a crown's lit and shaded leaves into one value the

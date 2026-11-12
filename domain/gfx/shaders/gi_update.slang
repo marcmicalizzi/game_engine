@@ -66,6 +66,16 @@ float3 gi_harmonics(ResolveParams* params, float3 n) {
   return ambient_radiance(params->sky.rgb, ground, n);
 }
 
+// **Stage 7: a surface's crown prior** (gi_cache.slang, `gi_crown_prior`): positive for foliage —
+// an alpha-tested material on a mesh that has a crown — and negative for anything else, which
+// keeps the faces and the ladder it had.
+float gi_surface_crown(ResolveParams* params, ResolveMaterial material, InstanceDesc instance,
+                       float3 position, float3 normal) {
+  if (params->gi_crowns == 0 || (material.flags & k_material_masked) == 0u) return -1.0;
+  return gi_crown_prior(params->gi_crowns, params->gi_crown_count, instance, params->eye, position,
+                        normal);
+}
+
 // **Stage 1b: the bounce** (`k_gi_bounce`). What a ray brings back: the environment where it
 // escapes; where it hits, the hit point's radiance towards it — its material's albedo (the base
 // colour at level 0, decoded through `hit_visible_entry` and the material table as the reference
@@ -205,25 +215,34 @@ float3 gi_bounce(ResolveParams* params, float3 origin, float3 dir) {
   // **Stage 5: the hit walks the ladder too**, and leans on that fallback in proportion where the
   // levels together hold a handful of samples (`gi_confidence_weight`), so a hit's light does not
   // step when its first cell appears — which is what the cells the hit feeds would then average.
+  //
+  // **Stage 7: a hit on foliage reads the crown's cells and its own prior**, as a foliage pixel
+  // does (`scene_ambient`): the harmonics there are the harmonics under the tree's own shade.
   float3 ratio;
-  const float3 harmonics = gi_harmonics(params, n);
+  float3 harmonics = gi_harmonics(params, n);
   const bool fallback = (params->gi_flags & k_gi_hit_fallback) != 0u;
+  const float crown = gi_surface_crown(params, material, instance, hit.position, n);
+  const bool foliage = crown > 0.0;
+  if (foliage) harmonics *= crown;
   float3 ambient = fallback ? harmonics * gi_openness(query.CommittedRayT()) : float3(0.0);
+  const uint hit_level =
+      gi_level(length(hit.position - params->camera.xyz), params->gi_cell_scale);
   const float taken =
       gi_read(params->gi_cells, params->gi_count, params->gi_flags, params->eye, hit.position,
-              gi_level(length(hit.position - params->camera.xyz), params->gi_cell_scale),
-              fallback ? k_gi_ladder : 2u, hit.normal, ratio);
+              foliage ? min(hit_level + k_gi_crown_read, k_gi_levels - 1u) : hit_level,
+              foliage ? k_gi_crown_read_levels : (fallback ? k_gi_ladder : 2u), hit.normal, ratio,
+              foliage);
   if (taken > 0.0) {
     ambient = lerp(ambient, ratio * gi_luminance(harmonics), gi_confidence_weight(taken));
   }
   return light + ambient * sampled.albedo * (1.0 - sampled.metallic);
 }
 
-void gi_add(ResolveParams* params, uint slot, uint3 fixed) {
+void gi_add(ResolveParams* params, uint slot, uint3 fixed, uint weight) {
   Atomic<uint>* words =
       (Atomic<uint>*)gi_cell_words(params->gi_cells, params->gi_count) + slot * k_gi_cell_words;
   words[1].store(gi_now(params));
-  words[2].add(1u);
+  words[2].add(weight);
   words[3].add(fixed.x);
   words[4].add(fixed.y);
   words[5].add(fixed.z);
@@ -231,9 +250,11 @@ void gi_add(ResolveParams* params, uint slot, uint3 fixed) {
 
 // A pixel's surface as the resolve reconstructs it; false for a pixel with none (the sky, a tile
 // no view covers).
-bool gi_pixel_surface(ResolveParams* params, uint2 p, out Surface s, out InstanceDesc instance) {
+bool gi_pixel_surface(ResolveParams* params, uint2 p, out Surface s, out InstanceDesc instance,
+                      out float crown) {
   s = (Surface)0;
   instance = (InstanceDesc)0;
+  crown = -1.0;
   if (params->coverage != 0) {
     uint* tiles = (uint*)params->coverage;
     if (tiles[(p.y >> 5) * params->coverage_pitch + (p.x >> 5)] == 0) return false;
@@ -258,16 +279,27 @@ bool gi_pixel_surface(ResolveParams* params, uint2 p, out Surface s, out Instanc
   s = reconstruct_screen(geo, instance, visible_index, entry.y, id & 0xff, float2(p) + 0.5,
                          params->view_proj, params->camera.xyz, params->width, params->height,
                          from_eye);
+  if (params->gi_crowns != 0) {
+    crown = gi_surface_crown(params, material_of(geo, instance, entry.y), instance, s.position,
+                             s.normal);
+  }
   return true;
 }
 
-// The cell of a surface at `level` on its normal's face.
-uint64_t gi_cell_hash(ResolveParams* params, Surface s, uint l) {
+// The cell of a surface at `level` on its normal's face, or — foliage (`crown`, stage 7) — on
+// the crown's one face.
+uint64_t gi_cell_hash(ResolveParams* params, Surface s, uint l, bool crown = false) {
   const int64_t3 mm = gi_point_mm(params->eye, s.position);
   const int64_t size = gi_cell_mm(l);
   const int64_t3 c = int64_t3(terrain_floor_div(mm.x, size), terrain_floor_div(mm.y, size),
                               terrain_floor_div(mm.z, size));
-  return gi_hash(c, l, gi_face(s.normal));
+  return gi_hash(c, l, crown ? k_gi_face_crown : gi_face(s.normal));
+}
+
+// The level whose cell says whether a surface is young: its own, or — foliage — the one its read
+// starts at.
+uint gi_young_level(uint level, bool crown) {
+  return crown ? min(level + k_gi_crown_read, k_gi_levels - 1u) : level;
 }
 
 // One ray from a pixel's surface, its ratio added to the cells of the ladder (`k_gi_ladder`
@@ -275,8 +307,15 @@ uint64_t gi_cell_hash(ResolveParams* params, Surface s, uint l) {
 // level takes too few to be worth its cells). Returns the samples the pixel's own cell averaged
 // before this frame (the young test's count): 0 where the bucket was full or `first` skipped it,
 // 0xffffffff where the sky gives no scale.
+//
+// **Foliage** (`crown` positive, stage 7): the sample adds its ratio undivided and its own prior
+// to the count, in sixteenths (`gi_crown_weight`), so a cell's mean is its samples' light over
+// their priors — the light outside the crown's own shade; the cells are the crown's (one face),
+// `k_gi_crown_first` to the ladder's last level above the surface's own, and the count returned
+// is, in whole samples, the cell's its read starts at.
 uint gi_trace_and_add(ResolveParams* params, uint2 p, Surface s, InstanceDesc instance,
-                      uint first) {
+                      uint first, float crown) {
+  const bool foliage = crown > 0.0;
   const float base = gi_luminance(gi_harmonics(params, s.normal));
   if (!(base > 0.0)) return 0xffffffffu;
   // One cosine-weighted direction about the interpolated normal; one that the triangle's own plane
@@ -299,18 +338,27 @@ uint gi_trace_and_add(ResolveParams* params, uint2 p, Surface s, InstanceDesc in
     radiance = gi_environment(params, dir);
   }
   const float3 ratio = min(radiance / base, float3(k_gi_ratio_max));
-  const uint3 fixed = uint3(ratio * k_gi_fixed + 0.5);
+  const uint weight = foliage ? gi_crown_weight(crown) : 1u;
+  const uint3 fixed = uint3(ratio * k_gi_fixed + 0.5) * (foliage ? k_gi_crown_weight : 1u);
   // The ladder (stage 5): the pixel's level and the three coarser, consecutive, so a surface
   // whose level just changed as the eye came nearer reads the cells that were its own and its
   // parents' a frame ago, and the coarsest of them takes enough samples in one frame to be read
   // on it.
   const uint level = gi_level(length(s.position - params->camera.xyz), params->gi_cell_scale);
   uint own = 0u;
-  for (uint l = level + first; l < min(level + k_gi_ladder, k_gi_levels); ++l) {
+  // Foliage skips its own level (leaf-sized cells that never fill and nothing reads); a far crown
+  // whose levels end at the last keeps that one.
+  const uint from = foliage ? min(level + max(first, k_gi_crown_first), k_gi_levels - 1u)
+                            : level + first;
+  const uint young = gi_young_level(level, foliage);
+  for (uint l = from; l < min(level + k_gi_ladder, k_gi_levels); ++l) {
     const uint slot = gi_insert(params->gi_cells, params->gi_count, gi_now(params),
-                                gi_cell_hash(params, s, l));
-    if (l == level && slot != k_gi_no_slot) own = gi_samples(params->gi_cells, params->gi_count, slot);
-    if (slot != k_gi_no_slot) gi_add(params, slot, fixed);
+                                gi_cell_hash(params, s, l, foliage));
+    if (l == young && slot != k_gi_no_slot) {
+      own = gi_samples(params->gi_cells, params->gi_count, slot) /
+            (foliage ? k_gi_crown_weight : 1u);
+    }
+    if (slot != k_gi_no_slot) gi_add(params, slot, fixed, weight);
   }
   return own;
 }
@@ -334,15 +382,16 @@ void gi_sample_pixel(ResolveParams* params, uint t) {
   // thread, which on the frame's million samples would queue on four words.
   Surface s;
   InstanceDesc instance;
+  float crown = -1.0;
   bool trickle = false;
   if (index < pixels) {
     trickle = gi_pixel_surface(params, uint2(index % params->width, index / params->width), s,
-                               instance);
+                               instance, crown);
   }
   uint own = 0xffffffffu;
   if (trickle) {
     own = gi_trace_and_add(params, uint2(index % params->width, index / params->width), s, instance,
-                           0u);
+                           0u, crown);
   }
   const bool young_own = trickle && own < k_gi_young;
   // The second candidate: half a window on, a ray only where its own cell is young, and only for
@@ -352,15 +401,19 @@ void gi_sample_pixel(ResolveParams* params, uint t) {
   uint2 q = uint2(0u);
   Surface sq;
   InstanceDesc iq;
+  float crown_q = -1.0;
   if (stride >= 2u && (params->gi_flags & k_gi_young_rays) != 0u) {
     const uint young_index = t * stride + (offset + stride / 2u) % stride;
     if (young_index < pixels) {
       q = uint2(young_index % params->width, young_index / params->width);
-      if (gi_pixel_surface(params, q, sq, iq)) {
-        const uint level = gi_level(length(sq.position - params->camera.xyz), params->gi_cell_scale);
-        const uint slot =
-            gi_find(params->gi_cells, params->gi_count, gi_cell_hash(params, sq, level));
-        want = gi_samples(params->gi_cells, params->gi_count, slot) < k_gi_young;
+      if (gi_pixel_surface(params, q, sq, iq, crown_q)) {
+        const uint level = gi_young_level(
+            gi_level(length(sq.position - params->camera.xyz), params->gi_cell_scale),
+            crown_q > 0.0);
+        const uint slot = gi_find(params->gi_cells, params->gi_count,
+                                  gi_cell_hash(params, sq, level, crown_q > 0.0));
+        want = gi_samples(params->gi_cells, params->gi_count, slot) <
+               k_gi_young * (crown_q > 0.0 ? k_gi_crown_weight : 1u);
       }
     }
   }
@@ -374,7 +427,7 @@ void gi_sample_pixel(ResolveParams* params, uint t) {
   const uint young_budget =
       half_left > params->gi_shell_cost ? half_left - params->gi_shell_cost : 0u;
   const bool traced = want && first + WavePrefixCountBits(want) < young_budget;
-  if (traced) gi_trace_and_add(params, q, sq, iq, 0u);
+  if (traced) gi_trace_and_add(params, q, sq, iq, 0u, crown_q);
   const uint rays = WaveActiveCountBits(trickle) + WaveActiveCountBits(traced);
   const uint samples = WaveActiveCountBits(trickle);
   const uint young = WaveActiveCountBits(young_own);
@@ -427,7 +480,12 @@ uint gi_shell_sample(ResolveParams* params, uint i, out bool hit, out bool near)
   const TriangleFetch tri = fetch_triangle(geo, instance, visible_index, entry.y, h.primitive & 0xff);
   const Surface s =
       surface_at(geo, instance, tri, float3(1.0 - h.bary.x - h.bary.y, h.bary.x, h.bary.y), eye);
-  gi_trace_and_add(params, p, s, instance, 1u);
+  float crown = -1.0;
+  if (params->gi_crowns != 0) {
+    crown = gi_surface_crown(params, material_of(geo, instance, entry.y), instance, s.position,
+                             s.normal);
+  }
+  gi_trace_and_add(params, p, s, instance, 1u, crown);
   return 2u;
 }
 
@@ -521,7 +579,14 @@ void gi_fold_main(uint3 id : SV_DispatchThreadID) {
       // bounce's hit read, were a fresh estimate every frame: quiet each, and flickering.
       const uint total =
           min(previous + n, max(k_gi_max_samples, min(n * k_gi_history_frames, 0xffffu)));
-      const float rate = float(n) / float(total);
+      // The count is sixteen bits, and a cell that takes over 4,095 a frame — a crown's coarse
+      // cell, whose samples count in sixteenths (stage 7) — would fill it in under sixteen
+      // frames and then remember only what fits (three frames at 24,000 a frame, and the still
+      // picture's change between frames half as large again). A count that has filled the field
+      // stands for the whole history: the rate is then a frame's share of sixteen
+      // (gfx::gi_history_rate).
+      const uint full = max(k_gi_max_samples, n * k_gi_history_frames);
+      const float rate = float(n) / float(previous >= 0xffffu ? full : total);
       const float3 old_mean = float3(f16tof32(words[6] & 0xffffu), f16tof32(words[6] >> 16),
                                      f16tof32(words[7] & 0xffffu));
       const float3 mean = previous == 0u ? frame_mean : lerp(old_mean, frame_mean, rate);

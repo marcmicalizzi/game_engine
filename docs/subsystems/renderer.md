@@ -2544,6 +2544,97 @@ round the eye, 0.46 the read, 0.23 their volume: stage 6 took none of stage 5's 
 their forest is **darker than main's by a tenth** over the trees, the same on every frame —
 most likely stage 5's bounce off the ground taking the ground's own layers, not isolated and
 not yet judged against the reference. Both are why the row is still `in progress`.
+
+### Stage 7: a crown's shade as a prior
+
+Roadmap R69 stage 7 (2026-11-12, batch 61; [the measurements](../experiments/gi-cache-2026-11-07.md#stage-7-a-crowns-shade-as-a-prior),
+[the grounding](../experiments/crown-shade-grounding.md)). Stage 6 left the cache asked for
+something it is the wrong shape for: the fine structure of light inside a crown.
+
+**The darker forest, judged first.** The reference tracer on the grove over a layered, textured
+ground (the page has the scene and the table): over the trees main stands at **1.47** of the
+reference in linear light, stages 5 and 6 at **1.05**; over the ground both stand at 1.07.
+**Stage 5's darker picture is the right one.** Main's bounce off a layered ground does not read
+any of its layers — the palette's order moves neither picture — and brings back more light than
+any layer reflects; stage 5's `terrain_hit_material` brings back the ground's own.
+
+**What is fine inside a crown is the crown's own shade, and it is known from the tree alone.** The
+diffuse light at a point inside foliage is what the leaves between it and the open let through,
+exp(−G u s) along a path of s metres through u m² of leaf a cubic metre (Monsi and Saeki 1953;
+G = 0.5 for leaves of no preferred direction), averaged over the directions it comes from. So:
+
+- **Each mesh with a crown carries a grid of its own shade** (`gfx::build_crown_prior`,
+  `domain/gfx/crown_prior.h`; `renderer::build_crown_priors`, `crown_priors.h`). At load, the
+  finest level's alpha-tested triangles of a mesh are its leaves; their area (times 0.7, a card's
+  share that is blade) is gathered into a grid over the mesh's bounds, at most 16 cells an axis and
+  a quarter metre a cell, and from each cell's centre the grid is marched along twelve directions
+  of the upper hemisphere and their mirror images. A cell keeps two bytes: the mean transmitted
+  fraction from above and from below. A mesh whose leaves stand under 1.5 m has none (a sward's
+  shade is its own solver's). One buffer holds a 32-byte `gfx::CrownPriorDesc` a mesh and the
+  grids behind them (`ResolveParams::gi_crowns`, `gi_crown_count`; the block grew a row, 576 to
+  592 bytes): 11.8 KB for the grove's three crowns. **No vertex carries a byte for it**, the field
+  is the same for every LOD and every instance (optical depth does not change under a uniform
+  scale), and a mesh that arrives after the load has no record and is read as before.
+- **A surface's prior** (`gi_crown_prior`, gi_cache.slang; `gfx::crown_prior`) is the grid's two
+  means at its point in mesh space — the instance's 3×4 inverted by its rows' cross products,
+  trilinear between cell centres — weighted by the share of the surface's own hemisphere that is
+  above the horizon, (1 + n.y) / 2, and never under a sixteenth. **Foliage** is a pixel or a hit
+  whose material is alpha-tested (`k_material_masked`) on a mesh with a grid; a trunk, a twig's
+  bark, the ground and everything else keep the faces and the ladder they had.
+- **A crown's cells have no face** (`k_gi_face_crown`, the nine key tags past the six faces'). A
+  crown's leaves face every way at every depth, so a face split their samples six ways (stage 6's
+  count) and described nothing. A foliage sample goes to the three levels above its own (the own
+  level's leaf-sized cells never filled) and **adds its light undivided and its own prior to the
+  cell's count, in sixteenths** (`k_gi_crown_weight`): the cell's mean is then the sum of its
+  samples' light over the sum of their priors — a ratio of sums, whose noise is the samples' own
+  and which gives back, over the pixels that read it with their own priors, exactly the light the
+  samples brought. (The first build stored each sample's own quotient: a deep sample's noise
+  times up to sixteen.) A count that fills its sixteen bits now stands for the whole history
+  (`gfx::gi_history_rate`), since a crown's coarse cell at 3840×2160 takes more than 4,095 a
+  frame.
+- **A foliage pixel reads one face and one level** (`scene_ambient`'s `crown`): two levels up
+  from its own — sixteen times the own cell's samples and every facing's together, whole on the
+  first frame — and the one above only while that is young; times its own prior. Eight lookups
+  where stage 6 read two to four levels on one or two faces. Where no level has a sample it is the
+  harmonics times the prior, the tree's own shade under an open sky. A bounce's hit on foliage
+  reads the same way (`gi_bounce`), and so does a reflection's (`hit_shade.slang`).
+
+**What it does** (the grove, RTX 5090; the page has the tables). At 3840×2160 with traced
+primaries and shadows the frame over crowns is **0.22 ms under main's** (4.75 against 4.97 ms;
+the resolve 1.90 against 2.11, stage 6's 2.28) and 0.1 under it over sand. On the turn to the
+grove from looking away the first frame stands **0.39** of an 8-bit step from the long-held
+picture (main 0.72, stage 6 0.99, the still picture's floor 0.29) and +0.07 in the mean (main
++0.03, stage 6 +0.17): the band is inside the floor. On the stand of nine crowns
+(`gi cache: on a stand of trees a coarse level holds the fine one's light, flattened`) a coarse
+level of the crown's cells times each pixel's prior moves the darkest third and the brightest
+third of the crowns together (−1.5 and −1.7 steps against the fine level) where a coarse level
+of faces moved them 8.8 apart (+7.3 and −1.5): the flattening is gone, and a level's offset of
+3 % is left.
+
+**What it does not do.** Against the reference the still picture is where stage 6 left it, a
+little worse in the shade: the trees' darkest third stands at 1.9 to 2.1 of the reference (stage
+6: 1.7 to 1.9; main 2.8 to 3.0), so a crown's shaded leaves are still too bright by a factor of
+two with every read — the prior moves where the light is held, not how much of it the cache
+finds. The still picture's change between frames over far crowns is 0.14 of a step against
+main's 0.08: a whole crown now shares a few cells, and their sixteen frames of memory move every
+pixel of it together. And one G and one card fill stand for every species (the grounding page).
+**A prior that is wrong shows on a turn's first frame.** The stand's crowns are cubes, which
+counted as leaf are 6.5 m² a cubic metre and sit on the prior's floor: turned to from looking
+away, their first frame stands 3.7 steps *darker* than it will be for seven frames
+(`gi cache: a turn to a stand of trees stands nearer and settles sooner with the prior` holds
+that it is nearer than stage 6's 6.8 apart and settles sooner, and says the band's bound is not
+met there) — a bounce's hit on foliage with no cell yet takes the harmonics under its prior.
+
+**On the forest** (v41, 3840×2160 traced, the owner's wind; two flights thirteen minutes apart,
+not one lease) stage 7 costs **1.6 ms a frame over main** at `south-lake` held (20.33 against
+18.75 ms: the sample pass 1.99 against 1.46, the resolve 9.10 against 8.48, the ray tracing chain
+2.54 against 2.32, the primaries 3.01 against 2.73), where the target was half a millisecond.
+The prior's read does not show there: of the forest's 14,749 meshes 93 have a crown of their own
+and 196 distance forms read their source's, while the far forest's impostors, the sward and every
+other alpha-tested mesh keep stage 6's walk, and the samples round the eye and their volume are
+stage 5's as they were. Its forest is darker than main's by 9.0 8-bit steps over vegetation and
+2.5 over the rest — the side the judge above says is right. The row stays `in progress`.
+
 ## The sun's day
 
 *A scene that names a sky takes its sun, its moon and its sky from it instead, on the world's clock ([The sky](#the-sky)); everything in this section is the stand-in's, which every other scene still draws, to the bit.*

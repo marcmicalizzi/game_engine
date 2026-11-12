@@ -1061,6 +1061,10 @@ class SceneRenderer {
   // never by a frame; the first frame that records its passes clears it (`gi_reset_`).
   gfx::BufferResource gi_cache_;
   u32 gi_count_ = 0;
+  // The crowns' priors (crown_priors.h; renderer.md, "Indirect light", "Stage 7"): one record a
+  // mesh and the grids behind them, made once at load beside the cache where a mesh has a crown.
+  gfx::BufferResource gi_crowns_;
+  u32 gi_crown_count_ = 0;
   // The cache's own frame count: its stamps' clock and the sample pass's rotation, counted by the
   // frames that record its passes rather than taken from `FrameDesc::frame_index`, which a caller
   // that captures one pose again and again leaves at zero.

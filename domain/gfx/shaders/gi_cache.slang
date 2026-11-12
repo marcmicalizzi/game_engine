@@ -87,9 +87,15 @@ uint64_t gi_mix(uint64_t h) {
   return h;
 }
 
-// gfx::gi_hash.
+// gfx::k_gi_face_crown: the face of a foliage sample's cells (stage 7): none of the six. A crown's
+// leaves face every way at every depth, so a face in their key splits their samples six ways and
+// describes nothing; what a leaf's own facing does to its light is in its prior.
+static const uint k_gi_face_crown = 6u;
+
+// gfx::gi_hash. A crown's cells take the tags past the six faces' (9 levels of 6 faces end at 53).
 uint64_t gi_hash(int64_t3 c, uint level, uint face) {
-  uint64_t h = gi_mix(uint64_t(c.x) ^ (uint64_t(level * 6u + face) << 58));
+  const uint tag = face == k_gi_face_crown ? 54u + level : level * 6u + face;
+  uint64_t h = gi_mix(uint64_t(c.x) ^ (uint64_t(tag) << 58));
   h = gi_mix(h ^ uint64_t(c.y));
   return gi_mix(h ^ uint64_t(c.z));
 }
@@ -376,13 +382,26 @@ uint gi_second_face(float3 n, out float second, out float largest) {
 // dominant axis changes. Returns the confidence the levels took in all (`gi_read_face`), 0 where no
 // level of either face has a sample: the caller keeps its prior there, and leans on it below
 // `k_gi_read_floor` (`gi_confidence_weight`).
+//
+// `crown` (stage 7): the point is foliage with a prior, and `level` and `levels` are its walk on
+// the crown's own cells (`k_gi_face_crown`) — one face, so eight lookups a level, and no blend.
 float gi_read(uint64_t cache, uint count, uint flags, FrameEye eye, float3 from_eye, uint level,
-              uint levels, float3 normal, out float3 ratio) {
+              uint levels, float3 normal, out float3 ratio, bool crown = false) {
   ratio = float3(0.0);
   const int64_t3 mm = gi_point_mm(eye, from_eye);
   float3 first;
   const uint confident = gi_confident(flags);
   const bool reveal = (flags & k_gi_reveal) != 0u;
+  if (crown) {
+    // The counts are in sixteenths of a sample (`k_gi_crown_weight`), and there is no reveal: the
+    // detail between a crown's levels is its prior's, not its cells'.
+    const float taken_crown =
+        gi_read_face(cache, count, mm, level, levels, k_gi_face_crown,
+                     min(confident * k_gi_crown_weight, 0xffffu), false, first);
+    if (!(taken_crown > 0.0)) return 0.0;
+    ratio = first / taken_crown;
+    return taken_crown;
+  }
   const float taken_first =
       gi_read_face(cache, count, mm, level, levels, gi_face(normal), confident, reveal, first);
   float second_size;
@@ -412,6 +431,90 @@ float gi_confidence_weight(float taken) { return saturate(taken / k_gi_read_floo
 float gi_openness(float t) {
   const float x = saturate((t - k_gi_open_near_m) / (k_gi_open_far_m - k_gi_open_near_m));
   return x * x * (3.0 - 2.0 * x);
+}
+
+// **Stage 7: a crown's shade as a prior** (gfx::CrownPriorDesc, crown_prior.h; renderer.md,
+// "Indirect light", "Stage 7"). A mesh with a crown has a small grid over its own bounds: the mean
+// fraction of diffuse light its own leaves let through from the upper hemisphere and from the
+// lower one, at each cell's centre (Beer-Lambert in the leaf area the mesh's leaves were gathered
+// into). A foliage sample divides what its ray brought back by its own prior before the cells take
+// it, and a foliage pixel multiplies its own back: what the cells hold for foliage is the light
+// outside the crown's own shade, which is smooth, so a coarse cell holds it well, fills in a frame
+// and is read alone.
+struct CrownPrior {
+  float3 origin;    // mesh space: the centre of the grid's first cell
+  uint offset;      // bytes from the table's start to the grid; k_no_crown: none
+  float3 inv_cell;  // cells a metre
+  uint dims;        // x | y << 8 | z << 16
+};
+static const uint k_no_crown = 0xffffffffu;
+// gfx::k_crown_floor: the prior is never read below this (a sample divides by it).
+static const float k_gi_crown_floor = 1.0 / 16.0;
+// The levels above a foliage surface's own that its samples are added to (the own level's
+// leaf-sized cells never fill, and nothing reads them), and the one its read starts at: the field
+// is smooth, so the read takes the level two up — sixteen times the own cell's samples, and every
+// facing's together — and the one above only while that is young.
+static const uint k_gi_crown_first = 1u;
+static const uint k_gi_crown_read = 2u;
+static const uint k_gi_crown_read_levels = 2u;
+// **A crown's cell holds a ratio of sums** (gfx::k_gi_crown_weight). What a cell must hold for
+// foliage is the light over the prior; the mean of each sample's own quotient would do it, and
+// multiplies a deep sample's noise by up to sixteen (the first build: the still picture's change
+// between frames half as large again) and the cell's total light by whatever the samples' light
+// that does not follow the prior adds. So a foliage sample adds its light **undivided** and its
+// prior to the cell's count, in sixteenths: the cell's mean is then the sum of its samples'
+// light over the sum of their priors — the ratio estimator, whose noise is the samples' own and
+// which gives back, over the pixels that read it with their own priors, exactly the light the
+// samples brought. A crown's cell therefore counts sixteen for a sample in the open; its reads'
+// counts (the samples a level is read whole at, the young test) are in the same sixteenths.
+static const uint k_gi_crown_weight = 16u;
+uint gi_crown_weight(float crown) {
+  return uint(clamp(crown * float(k_gi_crown_weight) + 0.5, 1.0, float(k_gi_crown_weight)));
+}
+
+// One cell's two means (gfx::crown_prior_sample reads the same bytes): the upper hemisphere's in
+// the low byte of a pair, the lower one's in the high.
+float2 gi_crown_cell(uint64_t grid, uint3 dims, uint3 c) {
+  const uint i = (c.z * dims.y + c.y) * dims.x + c.x;
+  const uint word = ((uint*)grid)[i >> 1];
+  const uint pair = (word >> ((i & 1u) * 16u)) & 0xffffu;
+  return float2(float(pair & 0xffu), float(pair >> 8)) * (1.0 / 255.0);
+}
+
+// The prior of a surface of `instance` at `position` (from the frame's eye) with normal `normal`,
+// or a negative number where its mesh has no crown: the grid's two means at the point in mesh
+// space, trilinear between the cells' centres and held at the grid's edge, weighted by the share
+// of the surface's hemisphere that is above the horizon (gfx::crown_prior), never under the floor.
+float gi_crown_prior(uint64_t table, uint count, InstanceDesc instance, FrameEye eye,
+                     float3 position, float3 normal) {
+  if (table == 0 || instance.mesh >= count) return -1.0;
+  const CrownPrior crown = ((CrownPrior*)table)[instance.mesh];
+  if (crown.offset == k_no_crown) return -1.0;
+  // Into mesh space: the inverse of the instance's linear part, by its rows' cross products.
+  const float3 d = position - instance_from_eye(instance, eye);
+  const float3 r0 = instance.rows[0].xyz;
+  const float3 r1 = instance.rows[1].xyz;
+  const float3 r2 = instance.rows[2].xyz;
+  const float3 c0 = cross(r1, r2);
+  const float det = dot(r0, c0);
+  if (!(abs(det) > 1e-30)) return -1.0;
+  const float3 p = (c0 * d.x + cross(r2, r0) * d.y + cross(r0, r1) * d.z) / det;
+  const uint3 dims = uint3(crown.dims & 0xffu, (crown.dims >> 8) & 0xffu, (crown.dims >> 16) & 0xffu);
+  const float3 at = clamp((p - crown.origin) * crown.inv_cell, float3(0.0), float3(dims - 1u));
+  const uint3 base = uint3(at);
+  const uint3 next = min(base + 1u, dims - 1u);
+  const float3 f = at - float3(base);
+  const uint64_t grid = table + uint64_t(crown.offset);
+  const float2 x00 = lerp(gi_crown_cell(grid, dims, uint3(base.x, base.y, base.z)),
+                          gi_crown_cell(grid, dims, uint3(next.x, base.y, base.z)), f.x);
+  const float2 x10 = lerp(gi_crown_cell(grid, dims, uint3(base.x, next.y, base.z)),
+                          gi_crown_cell(grid, dims, uint3(next.x, next.y, base.z)), f.x);
+  const float2 x01 = lerp(gi_crown_cell(grid, dims, uint3(base.x, base.y, next.z)),
+                          gi_crown_cell(grid, dims, uint3(next.x, base.y, next.z)), f.x);
+  const float2 x11 = lerp(gi_crown_cell(grid, dims, uint3(base.x, next.y, next.z)),
+                          gi_crown_cell(grid, dims, uint3(next.x, next.y, next.z)), f.x);
+  const float2 means = lerp(lerp(x00, x10, f.y), lerp(x01, x11, f.y), f.z);
+  return max(lerp(means.y, means.x, 0.5 + 0.5 * normal.y), k_gi_crown_floor);
 }
 
 // **Stage 4: the shell's directions** (gfx::gi_shell_base, gfx::gi_shell_columns; renderer.md,

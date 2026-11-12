@@ -91,6 +91,17 @@ constexpr u32 gi_history(u32 previous, u32 n) noexcept {
   const u32 cap = k_gi_max_samples > frames ? k_gi_max_samples : frames;
   return previous + n < cap ? previous + n : cap;
 }
+// The rate the frame's mean enters at (the shader's rule): `n` over the new count — or, for a
+// cell whose count has filled its sixteen bits, over the whole history it stands for. A cell that
+// takes over 4,095 a frame (a crown's coarse cell, whose samples count in sixteenths: stage 7)
+// fills the field in under sixteen frames, and by the count alone would then remember only what
+// fits; a full field is read as the sixteen frames it is the cap of.
+constexpr f32 gi_history_rate(u32 previous, u32 n) noexcept {
+  const u32 full =
+      k_gi_max_samples > n * k_gi_history_frames ? k_gi_max_samples : n * k_gi_history_frames;
+  return static_cast<f32>(n) /
+         static_cast<f32>(previous >= 0xffffu ? full : gi_history(previous, n));
+}
 // Frames without a sample after which the fold frees a cell.
 inline constexpr u32 k_gi_max_age = 240;
 inline constexpr u32 k_gi_workgroup = 64;
@@ -403,8 +414,36 @@ constexpr u64 gi_mix(u64 h) noexcept {
   h ^= h >> 33;
   return h;
 }
+//
+// **A crown's cells** (stage 7; renderer.md, "Indirect light", "Stage 7"): foliage on a mesh with a
+// crown prior (crown_prior.h) is keyed by no face — `k_gi_face_crown` — because a crown's leaves
+// face every way at every depth, so a face splits their samples six ways and describes nothing
+// (what a leaf's own facing does to its light is in its prior). Its tags are the nine past the six
+// faces' (9 levels of 6 faces end at 53), so a crown's cell never shares a key with a face's.
+inline constexpr u32 k_gi_face_crown = 6;
+// The levels above a foliage surface's own that its samples are added from, the one its read
+// starts at, and the levels that read walks (gi_cache.slang's `k_gi_crown_*`).
+inline constexpr u32 k_gi_crown_first = 1;
+inline constexpr u32 k_gi_crown_read = 2;
+inline constexpr u32 k_gi_crown_read_levels = 2;
+// **A crown's cell holds a ratio of sums**: a foliage sample adds its light undivided and its own
+// prior to the cell's count, in these sixteenths (one to sixteen: the prior's floor is a
+// sixteenth, crown_prior.h), so the cell's mean is its samples' light over the sum of their
+// priors. The mean of each sample's own quotient would multiply a deep sample's noise by up to
+// sixteen and the cell's light by whatever does not follow the prior; the ratio estimator's
+// noise is the samples' own, and over the pixels that read the cell with their own priors it
+// gives back the light the samples brought. A crown's cell's counts — the samples a level is
+// read whole at, the young test — are in the same sixteenths (gi_cache.slang, `gi_crown_weight`).
+inline constexpr u32 k_gi_crown_weight = 16;
+constexpr u32 gi_crown_weight(f32 crown) noexcept {
+  const f32 v = crown * static_cast<f32>(k_gi_crown_weight) + 0.5f;
+  return v < 1.0f
+             ? 1u
+             : (v > static_cast<f32>(k_gi_crown_weight) ? k_gi_crown_weight : static_cast<u32>(v));
+}
 constexpr u64 gi_hash(i64 x, i64 y, i64 z, u32 level, u32 face) noexcept {
-  u64 h = gi_mix(static_cast<u64>(x) ^ (static_cast<u64>(level * 6u + face) << 58));
+  const u32 tag = face == k_gi_face_crown ? 54u + level : level * 6u + face;
+  u64 h = gi_mix(static_cast<u64>(x) ^ (static_cast<u64>(tag) << 58));
   h = gi_mix(h ^ static_cast<u64>(y));
   return gi_mix(h ^ static_cast<u64>(z));
 }
