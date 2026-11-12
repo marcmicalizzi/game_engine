@@ -4,6 +4,7 @@
 #include <domain/flora/structure.h>
 #include <domain/flora/understory.h>
 
+#include <algorithm>
 #include <cmath>
 #include <string>
 #include <utility>
@@ -17,6 +18,8 @@ using namespace detail;
 constexpr u64 k_stem_stream = 11;
 constexpr u64 k_leaf_stream = 12;
 constexpr u64 k_flower_stream = 13;
+// G167: a drift's placing of its plants, and (from the next stream on) each plant's own seed.
+constexpr u64 k_drift_stream = 64;
 constexpr u32 k_fine_rows = 16;
 
 struct Plan {
@@ -207,23 +210,167 @@ bool herb_in_range(const Herb& p, std::string& error) {
   return true;
 }
 
+namespace {
+bool solve_herb_with(const Herb& p, const Plan* stem_plan, assets::MeshData& out,
+                     TreeReport* report, std::string* error, Motion* motion);
+}  // namespace
+
 bool solve_herb(const Herb& p, assets::MeshData& out, TreeReport* report, std::string* error,
                 Motion* motion) {
+  return solve_herb_with(p, nullptr, out, report, error, motion);
+}
+
+bool meadow_plant_in_range(const MeadowPlant& p, std::string& error) {
+  const auto bad = [&](const char* field, const char* range) {
+    error = std::string("engine.flora.MeadowPlant.") + field + " is out of range (" + range + ")";
+    return false;
+  };
+  if (!herb_in_range(p.herb, error)) return false;
+  if (!(p.count >= 1u && p.count <= 32u)) return bad("count", "1 to 32");
+  if (!(p.radius_m >= 0.0f && p.radius_m <= 1.0f)) return bad("radius_m", "0 to 1 m");
+  if (!(p.height_jitter >= 0.0f && p.height_jitter <= 0.5f))
+    return bad("height_jitter", "0 to 0.5");
+  if (!(p.stem_sides >= 3u && p.stem_sides <= 6u)) return bad("stem_sides", "3 to 6");
+  if (!(p.stem_rows >= 2u && p.stem_rows <= 10u)) return bad("stem_rows", "2 to 10");
+  return true;
+}
+
+// **A meadow's drift as a field** (G167; flora.md, "The meadow at whole density"). `count` herbs of
+// one recipe, each grown from its own seed (stream k of the recipe's) so no two are the same plant,
+// at its own height (within `height_jitter`), turned about its stem and stood on the disc of
+// `radius_m` at an even spread (Vogel's sunflower spiral, its radius as the square root of the
+// plant's rank, so the disc's density is even and no two bases meet), with a further jitter from
+// the plant's stream. Each plant is **one parentless part**: its pivot its base, its direction up,
+// its length its height, and every vertex weighted by its height over the plant's: the field
+// kind's blade (renderer.md, "The field kind"), so the GPU bends the whole plant about its base and
+// a head stays on its stem. No part collides (the field kind has no collider), and no structural
+// table is emitted. The primitives stay the herb's: every plant's leaves, then every plant's
+// flowers, then every plant's dead leaves, so a drift is the herb's two or three materials.
+bool solve_meadow_plant(const MeadowPlant& p, assets::MeshData& out, TreeReport* report,
+                        std::string* error, Motion* motion) {
+  out = assets::MeshData{};
+  std::string message;
+  if (!meadow_plant_in_range(p, message)) {
+    if (error != nullptr) *error = message;
+    return false;
+  }
+  Plan stem;
+  stem.stem_sides = p.stem_sides;
+  stem.stem_rows = p.stem_rows;
+  Motion parts;
+  u32 triangles = 0, flower_triangles = 0;
+  Vector<assets::MeshData> plants;
+  plants.reserve(p.count);
+  Rng place = stream_of(p.herb.seed, k_drift_stream);
+  for (u32 k = 0; k < p.count; ++k) {
+    Herb herb = p.herb;
+    herb.seed = stream_of(p.herb.seed, k_drift_stream + 1 + k).next();
+    const f64 jitter = static_cast<f64>(p.height_jitter) * place.symmetric();
+    herb.height_m = static_cast<f32>(static_cast<f64>(p.herb.height_m) * (1.0 + jitter));
+    if (herb.height_m < 0.1f) herb.height_m = 0.1f;
+    if (herb.height_m > 2.0f) herb.height_m = 2.0f;
+    assets::MeshData plant;
+    TreeReport plant_report;
+    if (!solve_herb_with(herb, &stem, plant, &plant_report, error, nullptr)) return false;
+    triangles += plant_report.triangles;
+    flower_triangles += plant_report.fruit_triangles;
+    // Vogel's spiral: rank k at radius R sqrt((k + 1/2) / n), turned by the golden angle, then
+    // moved by up to a quarter of the spacing a side.
+    const f64 n = static_cast<f64>(p.count);
+    const f64 r = static_cast<f64>(p.radius_m) * std::sqrt((static_cast<f64>(k) + 0.5) / n);
+    const f64 a = static_cast<f64>(k) * k_golden_angle + place.unit() * 2.0 * k_pi;
+    const f64 spacing = static_cast<f64>(p.radius_m) * std::sqrt(k_pi / n);
+    const D3 base{r * det::cos(a) + 0.25 * spacing * place.symmetric(), 0.0,
+                  r * det::sin(a) + 0.25 * spacing * place.symmetric()};
+    const f64 yaw = place.unit() * 2.0 * k_pi;
+    const f64 c = det::cos(yaw), s = det::sin(yaw);
+    f64 top = 0.0;
+    for (const Vec3& v : plant.positions)
+      if (static_cast<f64>(v.y) > top) top = static_cast<f64>(v.y);
+    if (!(top > 0.0)) top = static_cast<f64>(herb.height_m);
+    MotionPart part{};
+    part.pivot = Vec3{static_cast<f32>(base.x), 0.0f, static_cast<f32>(base.z)};
+    part.direction = Vec3::unit_y();
+    part.length = static_cast<f32>(top);
+    part.parent = geometry::k_motion_no_parent;
+    parts.parts.push_back(part);
+    for (Vec3& v : plant.positions) {
+      const f64 x = static_cast<f64>(v.x), z = static_cast<f64>(v.z);
+      parts.vertex_part.push_back(k);
+      const f64 w = static_cast<f64>(v.y) / top;
+      parts.vertex_weight.push_back(static_cast<f32>(w < 0.0 ? 0.0 : (w > 1.0 ? 1.0 : w)));
+      v = Vec3{static_cast<f32>(base.x + c * x - s * z), v.y,
+               static_cast<f32>(base.z + s * x + c * z)};
+    }
+    for (Vec3& v : plant.normals) {
+      const f64 x = static_cast<f64>(v.x), z = static_cast<f64>(v.z);
+      v = Vec3{static_cast<f32>(c * x - s * z), v.y, static_cast<f32>(s * x + c * z)};
+    }
+    plants.push_back(std::move(plant));
+  }
+  // The herb's materials and primitive order, every plant's triangles of a material together.
+  out.materials = plants[0].materials;
+  for (const assets::MeshData& plant : plants) {
+    for (u32 i = 0; i < plant.positions.size(); ++i) {
+      out.positions.push_back(plant.positions[i]);
+      out.normals.push_back(i < plant.normals.size() ? plant.normals[i] : Vec3::unit_y());
+      out.uvs.push_back(i < plant.uvs.size() ? plant.uvs[i] : Vec2{});
+    }
+  }
+  for (u32 slot = 0; slot < plants[0].primitives.size(); ++slot) {
+    assets::Primitive merged;
+    merged.first_index = out.indices.size();
+    merged.material = plants[0].primitives[slot].material;
+    u32 vertex_base = 0;
+    for (const assets::MeshData& plant : plants) {
+      if (slot < plant.primitives.size()) {
+        const assets::Primitive& from = plant.primitives[slot];
+        for (u32 i = 0; i < from.index_count; ++i)
+          out.indices.push_back(vertex_base + plant.indices[from.first_index + i]);
+      }
+      vertex_base += plant.positions.size();
+    }
+    merged.index_count = out.indices.size() - merged.first_index;
+    if (merged.index_count > 0) out.primitives.push_back(merged);
+  }
+  if (report != nullptr) {
+    *report = TreeReport{};
+    report->triangles = triangles;
+    report->leaf_triangles = triangles - flower_triangles;
+    report->fruit_triangles = flower_triangles;
+    report->vertices = out.positions.size();
+    report->parts = parts.parts.size();
+    report->shoots = p.count;
+    report->sprays = p.herb.flowers * p.count;
+    report->trunk_sides = p.stem_sides;
+  }
+  if (motion != nullptr) *motion = std::move(parts);
+  return true;
+}
+
+namespace {
+bool solve_herb_with(const Herb& p, const Plan* stem_plan, assets::MeshData& out,
+                     TreeReport* report, std::string* error, Motion* motion) {
   out = assets::MeshData{};
   std::string message;
   if (!herb_in_range(p, message)) {
     if (error != nullptr) *error = message;
     return false;
   }
-  // The ladder: the stem's rows and sides, then the petals halved; never a leaf or a flower.
+  // The ladder: the stem's rows and sides, then the petals halved; never a leaf or a flower. A
+  // drift's plant (G167) starts from its own stem.
   Plan plan;
+  if (stem_plan != nullptr) {
+    plan.stem_sides = stem_plan->stem_sides;
+    plan.stem_rows = stem_plan->stem_rows;
+  }
   plan.petals = p.petals;
   plan.leaf_rows = p.leaf_segments;
   u32 steps = 0;
   const auto fits = [&] { return count_triangles(p, plan) <= p.triangle_budget; };
   if (!fits()) {
-    plan.stem_rows = 5;
-    plan.stem_sides = 4;
+    plan.stem_rows = std::min(plan.stem_rows, 5u);
+    plan.stem_sides = std::min(plan.stem_sides, 4u);
     ++steps;
   }
   if (!fits()) {
@@ -392,5 +539,6 @@ bool solve_herb(const Herb& p, assets::MeshData& out, TreeReport* report, std::s
   if (motion != nullptr) *motion = std::move(parts);
   return true;
 }
+}  // namespace
 
 }  // namespace engine::flora

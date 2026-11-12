@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "G167",
+  "reason": "G167: the meadow at whole density, a new section of flora.md (the field-kind drift, cover as crown count, the flowering months)",
+  "date": "2026-11-11",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/flora.md": 4190
+  }
+}

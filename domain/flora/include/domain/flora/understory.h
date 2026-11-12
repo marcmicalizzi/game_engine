@@ -71,4 +71,15 @@ bool solve_tuft(const Tuft& params, assets::MeshData& out, TreeReport* report = 
 bool solve_herb(const Herb& params, assets::MeshData& out, TreeReport* report = nullptr,
                 std::string* error = nullptr, Motion* motion = nullptr);
 
+// **A meadow's drift** (G167; flora.md, "The meadow at whole density"; species `meadow`): `count`
+// plants of one herb recipe over a disc, each its own seed and height, every plant one parentless
+// part from its base weighted by height — the field kind's blade, posed on the GPU with no run of
+// the pose table. The herb's primitives, every plant's of a material together. Its own version
+// keys the container beside the ground plants'.
+inline constexpr u32 k_meadow_plant_version = 1;
+bool meadow_plant_in_range(const MeadowPlant& params, std::string& error);
+bool solve_meadow_plant(const MeadowPlant& params, assets::MeshData& out,
+                        TreeReport* report = nullptr, std::string* error = nullptr,
+                        Motion* motion = nullptr);
+
 }  // namespace engine::flora
