@@ -15,8 +15,9 @@ namespace engine::rocks {
 // its rock"). 7 (G183): a foot's supply spreads along the wall through a kernel whose wedges are a
 // cone's flanks (rocks.md, "Cones that climb their gullies"). 8 (G182): the bed's clasts are
 // angular, tilted blocks of several heights over hollows, drawn at 10 cm (rocks.md, "The bed is
-// rubble").
-inline constexpr u32 k_deposit_version = 8;
+// rubble"). 9 (G190): a face's fall comes to rest on ground gentler than the repose, and a pile
+// that would end in a cut is moved on down or refused (rocks.md, "Where a pile comes to rest").
+inline constexpr u32 k_deposit_version = 9;
 // The bed's edge (rocks.md, "The edge and the seams"): inside its outline toward bare gentle ground
 // a deposit is no thicker than `k_edge_slope` (tan 31 degrees, the toe's own slope) times its
 // distance in, less half a spacing; past it the piles' surfaces continue under the ground; and the
@@ -60,6 +61,16 @@ struct DepositPlanBlock {
   RockType type = RockType::Granite;
 };
 
+// What a plan refused to stand (G190; rocks.md, "Where a pile comes to rest"): a pile that had
+// nowhere further down its fall line to rest, or still ended in a cut after its moves, or a face's
+// fall that left the region. World millimetres of the foot (or of the border sample it left by).
+struct DepositRefusal {
+  i64 x_mm = 0;
+  i64 z_mm = 0;
+  f64 volume_m3 = 0;  // what it was asked to hold
+  f64 cut_m = 0;      // how far its surface stood over the bare ground past it; 0: left the region
+};
+
 struct DepositPlan {
   u32 width = 0;
   u32 depth = 0;
@@ -78,6 +89,13 @@ struct DepositPlan {
   // gradient (x then z, two a sample) by central differences over the plan.
   Vector<f32> sink;
   Vector<f32> slope;
+  // G190: the piles refused, how many were moved on down their fall lines, the rounds the flood
+  // ran, and the most any kept pile's surface stood over the bare ground past its outline (at most
+  // the cut bound, 0.22 m, unless the rounds ran out).
+  Vector<DepositRefusal> refused;
+  u32 moved = 0;
+  u32 rounds = 0;
+  f64 worst_cut_m = 0;
 };
 
 // Pure finite-window solve; no I/O, persistent state or dependence on tile arrival order.
@@ -99,6 +117,10 @@ bool solve_deposit(const DepositPatch& patch, assets::MeshData& out, std::string
 bool deposit_patch_fits(const DepositPatch& patch, std::string& error);
 // How many times `solve_deposit` has built a mesh in this process: a statistic for tests.
 u64 deposit_solve_count();
+// T120 (rocks.md, "A tile solves"): how many plans the deposits generator has made in this
+// process. An entry opened twice on the same ground (the scene reader's, then the world's
+// placements consumer's) plans once: the second open holds the first's plan by its inputs' key.
+u64 deposit_plans_made();
 u64 deposit_source_hash(const DepositPatch& patch);
 bool build_deposit_container(const DepositPatch& patch, const geometry::ClusterLodOptions& lod,
                              u32 page_bytes, geometry::ClusterFileData& out, std::string& error,

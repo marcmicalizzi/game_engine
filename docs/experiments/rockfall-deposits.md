@@ -249,3 +249,22 @@ places.
 | Cone planform half angle; relief of the upper margin; rockfall in gullies against spurs | Not found (searched: Luckman's Treatise chapter, Rapp 1960, Church et al. 1979 abstract, Statham 1976 abstract) | The planform follows from the union of the piles' surfaces; the margin's relief is measured on the test walls and bounded by a design value (the apron at most four fifths of the cones), not a source's. |
 | Clast shape on talus | Wegner et al. (2021): blocks over 0.5 m, median a/b axis ratio 1.73 (basalt) to 2.63 (gneiss); Sanders et al. (2009): angular to subangular clasts, openwork, "open megapores" below larger platy clasts, an indistinct preferred orientation | The bed's clasts (G182): elongated 1-2.5 to 1 in plan, angular, tilted at random about the slope, of several heights, with the bed between the largest sunk into hollows. |
 | Clast protrusion, tilt angles, void depth, Zingg classes on talus | Not found (Bertran et al. 1997, Sedimentology 44, abstract only: individual particles give random orientation) | Authored and stated on the page. |
+
+## G190: where a pile comes to rest (2026-11-12)
+
+G190 ([rocks: Where a pile comes to rest](../subsystems/rocks.md#where-a-pile-comes-to-rest)), for the
+forest proof of concept's gaps 41 and 42 (its asks audit and its deposits part, read as text). The
+sources were read by the row's agent through a web search's summaries of them, not their full text,
+and the column says so; no research sub-agent was run.
+
+| Quantity / rule | Source read | Value used / trade |
+|---|---|---|
+| Source, transit and deposition zones | Dorren (2003), *A review of rockfall mechanics and modelling approaches*, Progress in Physical Geography 27(1): 69-87 (a search's summary of a secondary copy: free fall over slopes steeper than about 76 degrees, a bouncing rock turning to rolling as the mean slope falls below about 45, most of the energy lost at the first impact); the forest rockfall textbook's source, transition and deposition areas (search summary) | A face's fall is carried through every sample steeper than the deposit can stand on, and stands at the first one gentler: the transit zone carries, it does not hold. |
+| The ground a pile can stand on | Francou and Mante (1990), the geoguide (as G143 read them): straight upper talus at 34-37 degrees over a concave base at 31-34; Statham (1976), *A scree slope rockfall model*, Earth Surface Processes 1: 43-62 (search summary: the dynamic friction between a moving clast and the debris already lying controls where it stops) | A pile is a surface at `repose_deg` easing to `toe_deg`, so it meets only ground gentler than the toe: **a sample steeper than `toe_deg` (31) carries**. The brief asked for "gentler than the repose"; at the repose itself the toe that eases below the ground's slope rises off it and the pile filled the slope as a wedge, six times what it shed (the base's 35-degree case), so the toe is the bound. |
+| Where blocks that pass the talus stop | Evans and Hungr (1993), as G143 read it (minimum shadow angle 27.5 degrees from the talus' top) | Unchanged: the shed blocks run from the top of the talus along its surface to the shadow line. |
+| The cut bound | No published step; the bed's own clasts (rocks.md, "The bed is rubble") | `k_cut_m` 0.22 m: the lowest the coarsest drawn clast stands (0.2 of 0.55 of a 2 m cell), a step the toe's clasts hide. Run once against the base (33ff2824): the 42-degree case's outline stood 7.43 m over the bare ground past it, past the bound. |
+| A pile on a bench at a brink | Not found as a rule; Sanders et al. (2009)'s "gorges filled by talus" are the opposite case (talus that does fill a steep notch, from a chute above it) | Authored: a pile whose deposit covers ground steeper than the toe lower than its own foot by more than its height drapes the drop, and is moved over the brink to the ground below. |
+
+Not found, and looked for: a published runout of talus below the base of a transit slope; a law for
+the volume a pile at the foot of a slope at its own repose holds (the wedge law gives zero section,
+and the model under-holds there, 37% of the supply at 35 degrees; rocks.md says so).

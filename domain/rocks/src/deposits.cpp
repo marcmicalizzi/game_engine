@@ -156,6 +156,16 @@ constexpr f64 k_clast_sorting = 10;   // the toe's clasts against the apex's (au
 constexpr i64 k_clast_slope_mm = 25;  // the half step the relief's gradient is taken over
 constexpr const char* k_scree_role = "rock/scree";  // G148's granular role
 constexpr f64 k_toe_run_m = 1.5;  // how far past the outline the toe's clasts thin by e (authored)
+// G190 (rocks.md, "Where a pile comes to rest"): the most a pile's own surface may stand over the
+// ground at the first bare sample past its outline. A surface that meets the ground stands under
+// it there; one cut by `runout_m` or by the pile's height ends in a wall. The bound is the lowest
+// the bed's coarsest drawn clast stands (k_clast_stand_lo of the smallest clast of the 2 m lattice,
+// 0.55 of its cell): 0.22 m, a step the toe's own clasts hide.
+constexpr f64 k_cut_m = k_clast_stand_lo * 0.55 * static_cast<f64>(k_clast_cell_mm << 2) / 1000.0;
+// G190: how many times a cut pile is moved on down its fall line before a cut pile is refused, and
+// the most rounds of the flood a plan runs.
+constexpr u32 k_rest_moves = 8;
+constexpr u32 k_rest_rounds = 32;
 u64 clast_hash(i64 x, i64 z, u64 o) {
   return mix64(static_cast<u64>(x) * 0x9E3779B97F4A7C15ull ^ mix64(static_cast<u64>(z) + o));
 }
@@ -368,14 +378,34 @@ bool plan_deposits(const DepositLayer& p, const scene_gen::Ground& ground, Depos
   const f64 source = tangent(p.source_deg), repose = tangent(p.repose_deg);
   const f64 toe = tangent(p.toe_deg), sp = wide(p.spacing_m);
   // Face area: a steep sample's own surface area plus what flows into it, carried down steepest
-  // descent until it reaches a gentle sample, its foot.
+  // descent through every sample that cannot hold it until it reaches one that can, its foot.
+  // G190 (rocks.md, "Where a pile comes to rest"): a pile stands only where the ground is gentler
+  // than its own toe (`toe_deg`, the 31-34 degree concave base of a talus), because a surface that
+  // falls at the repose and eases to the toe meets nothing steeper than that; on a transit slope
+  // rock rolls and bounces on (Dorren 2003's source, transit and deposition zones), so a sample no
+  // gentler than the toe carries what reaches it. Until G190 the first sample under `source_deg`
+  // was the foot, and on ground that grades through 35 to 50 degrees below a face every pile stood
+  // on ground steeper than its own surface, which never met the ground. A sample on the region's
+  // border whose lower neighbours are all outside it falls away out of the region, at a slope the
+  // plan cannot see: what reaches it leaves the region and is refused, so no pile stands there cut
+  // by the region's edge.
+  auto carries = [&](u32 i) {
+    if (slopes[i] >= toe) return true;
+    const u32 x = i % pw, z = i / pw;
+    return next[i] == ~0u && (x == 0 || z == 0 || x + 1 == pw || z + 1 == pd);
+  };
   Vector<f64> face_m2(n, 0.0), fed(n, 0.0);
-  Vector<u32> up(n, ~0u);  // the steep inflow carrying the most face, to walk up the face by
+  Vector<u32> up(n, ~0u);  // the inflow carrying the most face, to walk up the face by
   for (u32 i : order) {
-    if (slopes[i] < source || next[i] == ~0u) continue;
-    face_m2[i] += sp * sp * std::sqrt(1.0 + slopes[i] * slopes[i]);
+    if (slopes[i] >= source && next[i] != ~0u)
+      face_m2[i] += sp * sp * std::sqrt(1.0 + slopes[i] * slopes[i]);
+    if (face_m2[i] <= 0.0 || !carries(i)) continue;
     const u32 j = next[i];
-    if (slopes[j] >= source)
+    if (j == ~0u) {
+      plan.refused.push_back({world_x(i), world_z(i), face_m2[i] * wide(p.supply_m), 0.0});
+      continue;
+    }
+    if (carries(j))
       face_m2[j] += face_m2[i];
     else
       fed[j] += face_m2[i];
@@ -392,10 +422,6 @@ bool plan_deposits(const DepositLayer& p, const scene_gen::Ground& ground, Depos
     f64 lead;  // horizontally, from the apex sample to where the face reaches the top
   };
   Vector<Pile> piles;
-  if (p.supply_m > 0)
-    for (u32 i = 0; i < n; ++i)
-      if (fed[i] > 0 && slopes[i] < source)
-        piles.push_back({i, i, 0.0, 0.0, fed[i] * wide(p.supply_m), 0.0, 0.0});
   // Each foot's height from the supply delivered to it, per metre of foot. Every foot spreads its
   // own volume along the foot over its own pile's reach r = h / tan(repose) through a kernel
   // 1.5 (1 - d / r)^2 / r, which integrates to one along a line, and a foot's pile is the wedge
@@ -418,26 +444,54 @@ bool plan_deposits(const DepositLayer& p, const scene_gen::Ground& ground, Depos
   Vector<u32> foot_of(n, ~0u);
   for (u32 s = order.size(); s-- > 0;) {  // lowest first: a sample's next is already known
     const u32 i = order[s];
-    if (slopes[i] < source || next[i] == ~0u) continue;
-    foot_of[i] = slopes[next[i]] >= source ? foot_of[next[i]] : next[i];
+    if (!carries(i) || next[i] == ~0u) continue;
+    foot_of[i] = carries(next[i]) ? foot_of[next[i]] : next[i];
   }
-  Vector<u32> pile_of(n, ~0u), face_first(piles.size() + 1, 0);
-  for (u32 k = 0; k < piles.size(); ++k)
-    pile_of[piles[k].foot] = k;
-  for (u32 i = 0; i < n; ++i)
-    if (foot_of[i] != ~0u && pile_of[foot_of[i]] != ~0u) ++face_first[pile_of[foot_of[i]] + 1];
-  for (u32 k = 1; k < face_first.size(); ++k)
-    face_first[k] += face_first[k - 1];
-  Vector<f64> face_rise(face_first.back()), face_area(face_first.back());
-  {
+  // G190: the face area delivered at each foot, and where a foot whose pile ended in a cut was
+  // moved on to (`k_refused`: refused). A face sample's foot is its fall line's, followed on.
+  constexpr u32 k_refused = ~1u;
+  Vector<f64> at_foot(fed);
+  Vector<u32> moved_to(n, ~0u);
+  auto rest_of = [&](u32 f) {
+    for (u32 guard = 0; f < n && moved_to[f] != ~0u && guard < n; ++guard)
+      f = moved_to[f];
+    return f;
+  };
+  Vector<u32> pile_of(n, ~0u), face_first;
+  Vector<f64> face_rise, face_area;
+  // The piles of a round: one a foot that holds face area, in sample order, and each one's face.
+  auto gather = [&]() {
+    piles.clear();
+    std::fill(pile_of.begin(), pile_of.end(), ~0u);
+    if (p.supply_m > 0)
+      for (u32 i = 0; i < n; ++i)
+        if (at_foot[i] > 0) {
+          pile_of[i] = piles.size();
+          piles.push_back({i, i, 0.0, 0.0, at_foot[i] * wide(p.supply_m), 0.0, 0.0});
+        }
+    face_first.assign(piles.size() + 1, 0);
+    auto face_foot = [&](u32 i) {
+      if (slopes[i] < source || foot_of[i] == ~0u) return ~0u;
+      const u32 f = rest_of(foot_of[i]);
+      return f < n ? f : ~0u;
+    };
+    for (u32 i = 0; i < n; ++i) {
+      const u32 f = face_foot(i);
+      if (f != ~0u && pile_of[f] != ~0u) ++face_first[pile_of[f] + 1];
+    }
+    for (u32 k = 1; k < face_first.size(); ++k)
+      face_first[k] += face_first[k - 1];
+    face_rise.resize(face_first.back());
+    face_area.resize(face_first.back());
     Vector<u32> fill(face_first);
     for (u32 i = 0; i < n; ++i) {
-      if (foot_of[i] == ~0u || pile_of[foot_of[i]] == ~0u) continue;
-      const u32 at = fill[pile_of[foot_of[i]]]++;
-      face_rise[at] = plan.ground[i] - plan.ground[foot_of[i]];
+      const u32 f = face_foot(i);
+      if (f == ~0u || pile_of[f] == ~0u) continue;
+      const u32 at = fill[pile_of[f]]++;
+      face_rise[at] = plan.ground[i] - plan.ground[f];
       face_area[at] = sp * sp * std::sqrt(1.0 + slopes[i] * slopes[i]);
     }
-  }
+  };
   // What pile k's face sheds while its pile stands `height` over its foot: the face above it.
   auto shed = [&](u32 k, f64 height) {
     f64 area = 0;
@@ -445,7 +499,8 @@ bool plan_deposits(const DepositLayer& p, const scene_gen::Ground& ground, Depos
       if (face_rise[j] > height) area += face_area[j];
     return area * wide(p.supply_m);
   };
-  if (!piles.empty()) {
+  auto stand = [&]() {
+    if (piles.empty()) return;
     const i64 bucket = 8000;  // mm: feet bucketed on the world's 8 m lattice to find neighbours
     const u32 m = piles.size();
     Vector<i64> keys(m);
@@ -495,7 +550,7 @@ bool plan_deposits(const DepositLayer& p, const scene_gen::Ground& ground, Depos
       piles[k].height = std::min(tall[k], std::min(wall[k], 20.0));
       piles[k].volume = shed(k, piles[k].height);
     }
-  }
+  };
   Vector<f64> best(n), apart(n, 0.0),
       under(n,
             -std::numeric_limits<f64>::infinity());  // the winning pile and how far from its apex
@@ -583,7 +638,84 @@ bool plan_deposits(const DepositLayer& p, const scene_gen::Ground& ground, Depos
     for (u32 i = 0; i < n; ++i)
       if (won[i] != ~0u) piles[won[i]].held += std::min(best[i] - plan.ground[i], 20.0) * sp * sp;
   };
-  if (!piles.empty()) flood();
+  // ---- A pile never ends in a cut (G190; rocks.md, "Where a pile comes to rest") ----
+  // The flood stops a pile's surface where it meets the ground, and where `runout_m` or the pile's
+  // own height stop it; at those last two the surface still stands over the ground and the bed
+  // ended in a wall (19 m on the forest's 45-degree slopes). After each flood, a pile whose surface
+  // at a bare sample beside its own stands more than `k_cut_m` over that sample's ground is moved
+  // on down its fall line, over the next brink (a carrying sample) to the ground below it that can
+  // hold it, and the round is run again; one with no brink below it, or that still cuts after
+  // `k_rest_moves` moves, is refused, and the plan records its volume and where.
+  Vector<f64> cut;
+  Vector<u8> drape;
+  for (u32 round = 0;; ++round) {
+    plan.rounds = round + 1;
+    gather();
+    stand();
+    flood();
+    cut.assign(piles.size(), 0.0);
+    for (u32 j = 0; j < n; ++j) {
+      if (won[j] != ~0u) continue;
+      for (u32 d = 0; d < 8; ++d) {
+        const u32 i = neighbour(j, pw, pd, d);
+        if (i == ~0u || won[i] == ~0u) continue;
+        const Pile& pile = piles[won[i]];
+        const f64 head =
+            cone_surface(pile.top, pile.height, repose, toe, from_apex(pile, j) + pile.lead);
+        cut[won[i]] = std::max(cut[won[i]], head - plan.ground[j]);
+      }
+    }
+    // A pile on a bench at a brink that drapes the drop below it meets the ground at last, so it is
+    // no cut, but it is a wedge that fills the drop and holds several times what it shed. It is
+    // found by what it covers: ground that carries (steeper than the toe), lower than its own foot
+    // by more than its height. Such a pile is moved on as a cut one is.
+    drape.assign(piles.size(), 0);
+    for (u32 j = 0; j < n; ++j) {
+      const u32 k = won[j];
+      if (k != ~0u && carries(j) && plan.ground[piles[k].foot] - plan.ground[j] > piles[k].height)
+        drape[k] = 1;
+    }
+    auto bad = [&](u32 k) { return cut[k] > k_cut_m || drape[k] != 0; };
+    bool any = false;
+    for (u32 k = 0; k < piles.size(); ++k)
+      any = any || bad(k);
+    if (!any || round + 1 >= k_rest_rounds) break;
+    for (u32 k = 0; k < piles.size(); ++k) {
+      if (!bad(k)) continue;
+      const u32 f = piles[k].foot;
+      u32 g = ~0u;
+      if (round < k_rest_moves) {
+        bool passed = false;
+        for (u32 c = f, guard = 0; guard < n; ++guard) {
+          const u32 down = next[c];
+          if (down == ~0u) break;
+          // The pile's apex walks back up the way it came where no face flows in.
+          if (up[down] == ~0u) up[down] = c;
+          c = down;
+          if (carries(c)) {
+            passed = true;
+            continue;
+          }
+          if (passed) {
+            g = rest_of(c);
+            break;
+          }
+        }
+      }
+      if (g >= n) {
+        plan.refused.push_back({world_x(f), world_z(f), piles[k].volume, cut[k]});
+        at_foot[f] = 0.0;
+        moved_to[f] = k_refused;
+      } else {
+        at_foot[g] += at_foot[f];
+        at_foot[f] = 0.0;
+        moved_to[f] = g;
+        ++plan.moved;
+      }
+    }
+  }
+  for (f64 c : cut)
+    plan.worst_cut_m = std::max(plan.worst_cut_m, c);
   // The piles that won a sample, and how far each reaches, for the sorting and the plan's record.
   Vector<f64> pile_reach(piles.size(), 0.0);
   for (u32 i = 0; i < n; ++i)
@@ -595,7 +727,7 @@ bool plan_deposits(const DepositLayer& p, const scene_gen::Ground& ground, Depos
     record.z_mm = world_z(piles[k].apex);
     record.apex_m = piles[k].top;
     record.height_m = piles[k].height;
-    record.face_m2 = fed[piles[k].foot];
+    record.face_m2 = at_foot[piles[k].foot];
     record.volume_m3 = piles[k].volume;
     record.held_m3 = piles[k].held;
     record.reach_m = pile_reach[k];

@@ -683,8 +683,9 @@ TEST_CASE("deposits: a cone across patch and tile borders meets itself to the mi
   Vector<Read> patches;
   u32 blocks = 0;
   for (const auto& instance : whole.instances) {
-    std::string text;
-    REQUIRE(io::read_file(whole.meshes[instance.mesh].path, text) == io::Status::Ok);
+    // G191: a patch's mesh is handed as its recipe; nothing is written.
+    const std::string& text = whole.meshes[instance.mesh].recipe;
+    REQUIRE_FALSE(text.empty());
     JsonValue json;
     REQUIRE(parse_json(text, json).ok);
     Read r;
@@ -836,8 +837,9 @@ TEST_CASE("deposits: neighbouring patches' coarse forms meet along their border"
   };
   Vector<Read> patches;
   for (const auto& instance : whole.instances) {
-    std::string text;
-    REQUIRE(io::read_file(whole.meshes[instance.mesh].path, text) == io::Status::Ok);
+    // G191: a patch's mesh is handed as its recipe; nothing is written.
+    const std::string& text = whole.meshes[instance.mesh].recipe;
+    REQUIRE_FALSE(text.empty());
     JsonValue json;
     REQUIRE(parse_json(text, json).ok);
     Read r;
@@ -1210,15 +1212,14 @@ TEST_CASE("deposits: what a tile of cones and shed blocks costs (measured, print
   CHECK(deposit_solve_count() == solves);
   scene_gen::Placements tile;
   REQUIRE(desc->tile(state, {1, 1}, c, tile, &error));  // the tile holding the middle cone's foot
-  Vector<scene_gen::PlacementMesh> meshes;
-  REQUIRE(desc->meshes(state, c, meshes, &error));
   desc->close(state);
   REQUIRE_FALSE(tile.instances.empty());
   u64 leaf = 0, root = 0, blocks = 0, bytes = 0, files = 0;
   f64 area = 0, build_ms = 0;
   for (const auto& instance : tile.instances) {
-    std::string text;
-    REQUIRE(io::read_file(meshes[instance.mesh].path, text) == io::Status::Ok);
+    // G191: the tile hands its patches' recipes with its placements.
+    const std::string& text = tile.meshes[instance.mesh].recipe;
+    REQUIRE_FALSE(text.empty());
     JsonValue json;
     REQUIRE(parse_json(text, json).ok);
     DepositPatch patch;

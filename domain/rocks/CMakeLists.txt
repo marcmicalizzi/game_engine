@@ -32,7 +32,8 @@ engine_module_tests(NAME rocks
   SOURCES tests/rocks_tests.cpp tests/cliff_tests.cpp tests/cliffs_generator_tests.cpp
           tests/size_table.cpp tests/geology_tests.cpp tests/surface_bake_tests.cpp tests/deposits_tests.cpp
           tests/formation_tests.cpp tests/deposits_exclusion_tests.cpp
-          tests/deposits_cone_tests.cpp tests/exposure_tests.cpp tests/ledges_tests.cpp)
+          tests/deposits_cone_tests.cpp tests/exposure_tests.cpp tests/ledges_tests.cpp
+          tests/deposits_rest_tests.cpp)
 
 # The committed recipes in content/rocks/ are pinned by hash; the test finds them through
 # test_paths.h, by this path or in a test bundle.

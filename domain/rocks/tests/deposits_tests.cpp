@@ -247,8 +247,9 @@ TEST_CASE("deposits: mesh identity and cluster container are deterministic") {
   // (was 13829166473420471729), then for T108's two primitives, the bed and the loose stones,
   // each its own DAG and material, and k_deposit_version 6 (was 10478160828047604680), then for
   // G183's k_deposit_version 7 in the source hash (was 16110835894214829114), then for G182's
-  // clasts and k_deposit_version 8 (was 7110207806032102213).
-  CHECK(geometry::cluster_file_hash(a) == 7783980573357481640ull);
+  // clasts and k_deposit_version 8 (was 7110207806032102213), then for G190's k_deposit_version 9
+  // in the source hash alone, the mesh above unmoved (was 7783980573357481640).
+  CHECK(geometry::cluster_file_hash(a) == 13888751263830557499ull);
   CHECK(geometry::cluster_file_hash(a) == geometry::cluster_file_hash(b));
   CHECK(a.source_hash == deposit_source_hash(p));
   CHECK(a.source_hash == b.source_hash);
@@ -472,24 +473,35 @@ TEST_CASE("deposits: whole expansion equals reversed tile arrival with stable id
   scene_gen::Placements whole, tiled;
   REQUIRE(opened.desc->expand(opened.state, c, whole, &error));
   REQUIRE_FALSE(whole.instances.empty());
-  Vector<scene_gen::PlacementMesh> meshes;
-  REQUIRE(opened.desc->meshes(opened.state, c, meshes, &error));
-  CHECK(meshes.size() == whole.meshes.size());
+  // G191: nothing is resident from the start and nothing is written; each tile hands its own
+  // patches' recipes, the same bytes the whole read lists for the same placements.
+  CHECK(opened.desc->meshes == nullptr);
+  CHECK(opened.desc->tile_meshes);
+  CHECK_FALSE(io::exists(dir + "/deposits"));
+  Vector<std::string> recipes;  // each tiled instance's recipe, in the order they arrive
   for (i32 z = 1; z >= 0; --z)
-    for (i32 x = 1; x >= 0; --x)
-      REQUIRE(opened.desc->tile(opened.state, {x, z}, c, tiled, &error));
+    for (i32 x = 1; x >= 0; --x) {
+      scene_gen::Placements one;
+      REQUIRE(opened.desc->tile(opened.state, {x, z}, c, one, &error));
+      for (auto instance : one.instances) {
+        recipes.push_back(one.meshes[instance.mesh].recipe);
+        instance.mesh = recipes.size() - 1;
+        tiled.instances.push_back(instance);
+      }
+    }
   std::sort(tiled.instances.begin(), tiled.instances.end(),
             [](const auto& a, const auto& b) { return a.id < b.id; });
   REQUIRE(tiled.instances.size() == whole.instances.size());
   for (u32 i = 0; i < whole.instances.size(); ++i) {
     CHECK(whole.instances[i].id != 0);
     CHECK(tiled.instances[i].id == whole.instances[i].id);
-    CHECK(tiled.instances[i].mesh == whole.instances[i].mesh);
+    CHECK(recipes[tiled.instances[i].mesh] == whole.meshes[whole.instances[i].mesh].recipe);
     CHECK(tiled.instances[i].position.x == whole.instances[i].position.x);
     CHECK(tiled.instances[i].position.y == whole.instances[i].position.y);
     CHECK(tiled.instances[i].position.z == whole.instances[i].position.z);
-    CHECK(io::exists(whole.meshes[whole.instances[i].mesh].path));
+    CHECK(whole.meshes[whole.instances[i].mesh].reach > 0.0f);
   }
+  CHECK_FALSE(io::exists(dir + "/deposits"));
   const auto at = whole.instances[0].position;
   const scene_gen::Footprint footprint{scene_gen::nearest_mm(at.x + 1),
                                        scene_gen::nearest_mm(at.z + 1), .1};

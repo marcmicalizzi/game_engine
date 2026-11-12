@@ -622,8 +622,9 @@ struct DepositLithology @version(1) {
 /// Version 2 (G143) replaces version 1's capped apron (`talus_depth_m`, removed; a migration drops
 /// it, and a layer that set it to zero asked for no talus, `supply_m` 0) with one supply rule: what
 /// lies at a face's foot is what the face shed, a cone under a gully and a sheet under a planar
-/// face; and adds the blocks shed below the faces and the formation's lithology.
-struct DepositLayer @version(2) {
+/// face; and adds the blocks shed below the faces and the formation's lithology. Version 3 (G191)
+/// adds `far_rings`: a tile's patches arrive with the tile, and rings past it draw none.
+struct DepositLayer @version(3) {
   seed: u64 = 1
   /// World metres, finite within +/-1e8; max exceeds min, aligned to spacing_m.
   region_min: f64[2]
@@ -679,4 +680,7 @@ struct DepositLayer @version(2) {
   /// face above it (`lithology`), and a block is no thicker than that bed.
   formation: engine.scene.Formation? @since(2)
   lithology: DepositLithology[] @since(2)
+  /// G191: how many of the world's rings, innermost first, draw the deposits, 1..8; further rings
+  /// draw none (rocks.md, "A tile solves"). A scene read whole draws them all.
+  far_rings: u32 = 3 @since(3)
 }

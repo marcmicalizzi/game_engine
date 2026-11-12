@@ -1114,9 +1114,10 @@ own talus; the existing same-tile footprint limit
 of streamed scenes still applies. `Context::stand` is refused: changing terrain requires a
 rebake. The height source's own material masks are not rewritten or assumed to be geology.
 
-Each patch is a schema recipe `deposit-<hash>.deposit.json` under `<ddc>/deposits/`, keyed by sampled
+Each patch is a schema recipe `deposit-<hash>.deposit.json`, keyed by sampled
 terrain, thickness, coarse share, seed, material, budgets, `k_deposit_version` and
-`k_rocks_version`. The mesh-generator registry builds it through `engine-content build`,
+`k_rocks_version`, handed with its tile and written nowhere since G191 ([A tile solves](#a-tile-solves)).
+The mesh-generator registry builds it through `engine-content build`,
 `build-all` and scene loading. No new app flag, renderer pass, scheduler work or dependency on
 another capability is added. With no deposits entry there is no work or persistent storage.
 
@@ -1349,6 +1350,66 @@ apron and not twice its height; a gully that heads into a basin (r04) makes the 
 same rule. Rockfall concentrated in gullies beyond the area they drain (a jointed gully retreating
 faster than its spurs) would raise the contrast further; no inventory with numbers was found.
 
+### Where a pile comes to rest
+
+G190, 2026-11-12 (`k_deposit_version` 9; [grounding](../experiments/rockfall-deposits.md#g190-where-a-pile-comes-to-rest-2026-11-12)).
+The forest proof of concept withheld the deposits from its world for two reasons (its asks audit,
+gaps 41 and 42): below its massifs the ground falls at 35 to 50 degrees for about 100 m before it
+can hold anything, and **the foot was the first sample under `source_deg`**, so every pile stood on
+ground steeper than its own surface, which never met the ground; and **the flood cut such a surface
+at `runout_m` or at the pile's height**, so the bed ended in a vertical wall, up to 19 m measured,
+half its outline stepping more than a metre.
+
+**Where it rests.** Rock that leaves a face falls, bounces and rolls through a transit zone and
+comes to rest in a deposition zone where the slope no longer keeps it moving (Dorren 2003's three
+zones; the talus' own friction angle, Francou and Mante's 34-36 degrees, and its concave base at
+31-34). A pile here is a surface that falls at the repose and eases to `toe_deg`, so it meets the
+ground only where the ground is gentler than its toe. **A sample no gentler than the toe carries
+what reaches it**: a face's area is routed down steepest descent through the face and every carrying
+sample below it, and its foot is the first sample that does not carry, so on the forest's ground the
+pile stands on the meadow at the bottom of the transit slope and its wedge leans up that slope
+(its section against the slope it leans on, as G143's against a face). A sample on the region's border
+whose lower neighbours are all outside it carries too: what reaches it leaves the region.
+
+**It never ends in a cut.** After each flood, every bare sample beside a pile's sample is asked
+how far that pile's own surface would stand over its ground. A surface that meets the ground stands
+under it; one cut by the run-out or by the pile's height stands the cut's height over it, and a pile
+whose cut exceeds `k_cut_m` is **moved on**: down its fall line, over the next brink (a carrying
+sample) to the first ground below it that holds, its face's area with it, and the round runs again.
+So is a pile that **drapes** a drop below it, which meets the ground at last and so is no cut but a
+wedge filling the drop (found by what it covers: carrying ground lower than its own foot by more than
+its height; on a 2 m bench at a 45-degree drop it held five times what it shed). A pile with no brink
+below it, or still cut after `k_rest_moves` (8) moves, is **refused**, and the plan records each
+refusal (`DepositPlan::refused`: the foot in world millimetres, the volume asked, the cut; a fall that
+left the region has cut 0) with the moves and the rounds (at most `k_rest_rounds`, 32); the
+generator logs the counts and the refused volume once an entry. **The bound, `k_cut_m`, is a clast,
+not a metre**: the lowest the bed's coarsest drawn clast stands, `k_clast_stand_lo` (0.2) of the
+smallest clast of the 2 m lattice (0.55 of its cell), 0.22 m, a step the toe's own clasts hide.
+
+**What it does** (`deposits_rest_tests.cpp`, msvc-debug; a 20 m face at 63 degrees over 12 m of drop
+to a meadow at 35, 42 or 50 degrees, three seeds each; the outline step is a talus sample's top over
+a bare neighbour's ground less what a surface at the repose falls between them, at most 0 where the
+surface meets the ground):
+
+| Slope below the face | Base (33ff2824): outline step, held of asked | G190: outline step, held of asked |
+|---|---|---|
+| 35 degrees | -0.05 m, 3,502 of 589 m³ (the wedge filled the slope) | -0.01 m, 240 of 650 m³ |
+| 42 degrees | **7.43 m**, 3,977 of 587 m³ | -0.02 m, 868 of 867 m³ |
+| 50 degrees | -0.08 m, 3,698 of 686 m³ | -0.02 m, 950 of 993 m³ |
+
+Every foot was on ground steeper than the repose on the base, none is now; the worst cut of a kept
+pile is under a millimetre; no case moved or refused a pile, because every fall now runs on to the
+meadow before it stands. A 2 m (4 m) bench at the brink of a 45-degree, 10 m drop: all 65 (59) piles
+moved over the brink, none refused, no cut. A transit slope that runs on past the region's edge: all
+65 falls refused, 863 m³ at 42 degrees and 1,621 at 50, and nothing stood.
+
+**What it does not do yet.** A pile leaning on ground at the repose angle itself lies parallel to it
+and holds only its toe: 37% of what it was asked at 35 degrees, and a moved pile against a 45-degree
+drop 40-57%; the volume not held is not drawn (the wedge law `h² a = q` has no term for the toe's
+concave apron, the part that holds it). The plan's region still ends where `region_max` says, so a
+pile whose run-out crosses it is cut by the region (G192). The 35-to-31-degree profile is one
+setting a layer; a rock-avalanche runout past the shadow line is not modelled.
+
 ### The edge and the seams
 
 G143's second stage (`k_deposit_version` 3). **The outline.** G128 and G143's first agent put a
@@ -1556,9 +1617,9 @@ material sets' row, not built here.
 
 Until G143's fourth stage the generator's `open` solved every patch's mesh of the region to check
 its triangle budget before writing its recipe, so opening a region cost every patch's mesh, near
-or not ("nothing exists before its tile"). `open` now plans the region, writes each patch's recipe
-(`deposit-<hash>.deposit.json`, as the cliffs generator writes its faces' `.rock.json`) and checks
-it with `deposit_patch_fits`, every refusal `solve_deposit` makes without building the mesh (the
+or not ("nothing exists before its tile"). `open` now plans the region, makes each patch's recipe
+(`deposit-<hash>.deposit.json`; written under the root until G191, handed with its tile since,
+below) and checks it with `deposit_patch_fits`, every refusal `solve_deposit` makes without building the mesh (the
 bed's cells and surface triangles against the budget). A patch's mesh is solved when the host
 builds the mesh its tile names, through the mesh generator registry (`deposit`) and the
 derived-data cache, keyed by the recipe; a second world that names the same patch reads it from
@@ -1581,6 +1642,39 @@ m²; 127,608 before [the fragments' rungs](#where-the-triangles-go)), 301 at the
 entry's life: the plan's 176-byte record, its per-sample arrays (ground 8 bytes, thickness, coarse,
 sink 4 each, slope 8, drainage 8; with a formation one `RockType`), 72 bytes a pile and 128 a
 block; it scales with the region's samples, not the world's size.
+
+**A tile's patches arrive with the tile** (G191, 2026-11-12; the forest's gap 43: every patch of a
+layer was listed by `meshes`, so a host built and held all of them at load, 724 meshes, 51.6 M
+triangles and 4.2 GB of containers for one 1 km window, whatever the camera). The generator now
+follows the tile-mesh contract ([scene_gen](scene_gen.md#a-tiles-meshes), ADR-0061): `meshes` is
+null and `tile_meshes` true, `tile` hands each of its patches as a `PlacementMesh` whose `recipe` is
+the patch's canonical bytes (made from the plan when the tile asks, so the same bytes whatever the
+order tiles come in) and whose `reach` is the patch's diagonal plus its largest block's overhang, and
+`expand` hands the same recipes for a scene read whole. **Nothing is written at `open`**: the
+recipe's `path` is where its file would be, under the host's derived-data root's `deposits/`. The
+host builds a patch's mesh when the first tile naming it activates, through the derived-data cache
+keyed by the recipe, and lets it go after the last. `DepositLayer::far_rings` (version 3, 1-8,
+default 3, as the ledges') is how many of the world's rings draw the deposits: a tile in a ring past
+it hands nothing (`Placements::kind` 1), and the cluster DAG is the far form within. A patch whose
+`triangle_budget` and blocks exceed 240,000 triangles is refused at `open`, because a streamed host
+admits a tile's mesh of at most 4,096 clusters (the stream bed's row met it) and a patch is one
+mesh. What stays resident for the entry is the plan (its per-sample ground, thickness, coarse,
+sink, slope and rock, 29 bytes a sample, the drainage dropped after planning), its blocks, and 72
+bytes a candidate patch.
+
+**One plan a load** (T120; the forest's gap 44: the reader's and the world's placements
+consumer's opens each planned the whole region). The scene reader opens an entry, reads it and
+closes it; the world's consumer opens it again, and its `Context` names no derived-data root (a
+request to `systems/world`), so a plan kept in a file under the root could miss. A plan is a
+function of the layer, the world seed and the ground's heights over the region, so the generator
+keeps it **for the process by a key over those** (the layer's canonical bytes with
+`k_deposit_version`, the seed, and every sampled height in whole micrometres): an open that finds
+its key holds that plan, and the plan last let go is kept until another is made, so a close and
+the next open of the same entry plan once. The key costs the ground's sampling again (the plan's
+first step), not the plan. `deposit_plans_made()` counts the plans a process made, and the test
+holds two opens and a close-and-open to one (`deposits: a tile's patches arrive with it, none past
+far_rings, and one plan a load`). The log says `deposits planned` once and `deposits plan reused`
+for every later open.
 ### Foothill exposure and repeated-material limits
 
 [G132's v29 controls](../experiments/v29-cliff-diagnosis.md) distinguish the continuous authored

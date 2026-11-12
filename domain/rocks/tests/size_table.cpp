@@ -19,7 +19,11 @@ ENGINE_EXPECT_SIZE(60, 4, rocks::RockGeology);
 // is built once an entry, on open, and kept for the entry's life.
 // 176 since G143's second agent (2026-11-10): the edge field's sink and the top's gradient, two
 // more vectors, for the bed's outline and its normals across patches.
-ENGINE_EXPECT_SIZE(176, 8, rocks::DepositPlan);
+// 208 since G190 (2026-11-12): what the plan refused (a vector), the piles it moved on, its rounds
+// and its worst cut, so a load says how much volume it did not stand and where.
+ENGINE_EXPECT_SIZE(208, 8, rocks::DepositPlan);
+// G190: one refused pile or fall, offline, a few a plan.
+ENGINE_EXPECT_SIZE(32, 8, rocks::DepositRefusal);
 // G143's records, one a foot's pile and one a block of a plan: offline, never per frame or per
 // instance. 72 since G143's second agent (2026-11-10): a pile records its face, its volume and what
 // it held, where the first agent's cone (56) had only its catchment.
