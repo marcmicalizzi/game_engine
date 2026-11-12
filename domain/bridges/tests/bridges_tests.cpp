@@ -301,7 +301,7 @@ TEST_CASE(
     for (i32 tx = -2; tx <= 3; ++tx) {
       scene_gen::Placements one;
       REQUIRE(desc->tile(state, {tx, tz}, context, one, &error));
-      CHECK(desc->occupies(state, {tx, tz}) == !one.instances.empty());
+      CHECK(desc->occupies(state, {tx, tz}) == (!one.instances.empty() || !one.shapes.empty()));
       for (u32 k = 0; k < one.instances.size(); ++k) {
         const scene_gen::Placement& p = one.instances[k];
         bool same = false;
@@ -359,6 +359,69 @@ TEST_CASE("bridges: the approaches bring the tread up to the deck, and the footp
   // Stepping stones have no approach.
   const Crossing brook = stream(2000, 300);
   CHECK(approach_of(brook, solved(brook), 150).length_mm[0] == 0);
+}
+
+TEST_CASE(
+    "bridges: a tile hands the plan of every bridge that reaches it, as the whole read does") {
+  // Two bridges, one across a tile's corner so its plan reaches four tiles: a point of any tile is
+  // under a deck by the tile's own shapes exactly when it is by the whole read's (scene_gen.md,
+  // "The shapes a tile occupies"), so the sward keeps off a streamed tile's deck as off the whole
+  // read's.
+  Layer layer;
+  layer.seed = 5;
+  layer.crossings.push_back(stream(6000, 900, 0, 0, 32000, 32000));  // on four tiles' corner
+  layer.crossings.push_back(stream(3000, 800, 0, 0, 5000, 7000));
+  const scene_gen::PlacementGeneratorDesc* desc =
+      scene_gen::GeneratorRegistry::global().find_placement("bridges");
+  REQUIRE(desc != nullptr);
+  REQUIRE(desc->plan_ground != nullptr);
+  scene_gen::Context context;
+  context.tile_size = 32.0f;
+  context.ddc = "unused-ddc";
+  void* state = nullptr;
+  std::string error;
+  REQUIRE_MESSAGE(desc->open(schema::to_json(layer), context, &state, &error), error);
+  scene_gen::Placements whole;
+  REQUIRE(desc->expand(state, context, whole, &error));
+  REQUIRE(whole.shapes.size() == 2);
+  scene_gen::Exclusion all;
+  REQUIRE(all.add_footprints(whole.shapes.span(), &error));
+  u32 covered = 0, points = 0;
+  for (i32 tz = -1; tz <= 1; ++tz)
+    for (i32 tx = -1; tx <= 1; ++tx) {
+      scene_gen::Placements one;
+      REQUIRE(desc->tile(state, {tx, tz}, context, one, &error));
+      CHECK(desc->occupies(state, {tx, tz}) == (!one.instances.empty() || !one.shapes.empty()));
+      scene_gen::Exclusion here;
+      REQUIRE(here.add_footprints(one.shapes.span(), &error));
+      // Every 250 mm of the tile within 12 m of either crossing.
+      for (i64 z = tz * 32000; z < (tz + 1) * 32000; z += 250)
+        for (i64 x = tx * 32000; x < (tx + 1) * 32000; x += 250) {
+          bool near = false;
+          for (const Crossing& c : layer.crossings)
+            near = near || (std::max(x > c.x_mm ? x - c.x_mm : c.x_mm - x,
+                                     z > c.z_mm ? z - c.z_mm : c.z_mm - z) < 12000);
+          if (!near) continue;
+          const scene_gen::Ground none;
+          const bool whole_says = all.excluded_mm(none, x, z, scene_gen::k_exclude_footprints);
+          CHECK(here.excluded_mm(none, x, z, scene_gen::k_exclude_footprints) == whole_says);
+          covered += whole_says ? 1u : 0u;
+          ++points;
+        }
+    }
+  CHECK(covered > 100);  // the decks are there to be kept off
+  CHECK(points > covered);
+  // The hook hands each approach as a `Fill` edit of the ground, one per deck end over the ground.
+  scene_gen::GroundPlan plan;
+  REQUIRE_MESSAGE(desc->plan_ground(state, context, plan, &error), error);
+  CHECK(plan.holes.empty());
+  for (const scene::TerrainEdit& edit : plan.edits)
+    CHECK(edit.mode == scene::TerrainEditMode::Fill);
+  desc->close(state);
+  // A grade out of range is refused when the entry is opened.
+  layer.approach_grade_permille = 0;
+  CHECK_FALSE(desc->open(schema::to_json(layer), context, &state, &error));
+  CHECK(error.find("approach_grade_permille") != std::string::npos);
 }
 
 TEST_CASE("bridges: the same bytes on every toolchain, pinned") {

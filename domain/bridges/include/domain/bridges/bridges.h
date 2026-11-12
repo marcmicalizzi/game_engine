@@ -14,10 +14,13 @@
 // closed solid, stone members and timber members in one mesh of two materials.
 //
 // **What it writes to its neighbours** (bridges.md, "The ground and the neighbours"): each bridge's
-// approaches as `Fill` ground edits from the deck's ends to the tread (`approach_edits_json`), and
-// its plan as a polygon footprint (`bridge_footprint`) so the bed's stones, the sward and scatter
-// keep out from under it. No host hands either across at activation yet: the command writes them
-// for pasting, as the routes' treads are.
+// approaches as `Fill` ground edits from the deck's ends to the tread (`approach_edits_json`),
+// handed to the ground through the host's hook before the ground is made
+// (`PlacementGeneratorDesc::plan_ground`, G186), and its plan as a polygon footprint
+// (`bridge_footprint`) handed with every tile it reaches and with the whole read
+// (`Placements::shapes`), so the bed's stones, the sward and scatter keep out from under it. A
+// scene names its `bridges` entry and pastes neither; `engine-content bridges` still prints both
+// for a person to read.
 //
 // **What it is not.** No road or cart bridge, no arch, no suspension span; no response of the water
 // to a pier (systems/water is not this capability's); no collision of its own (a tile's mesh is
@@ -231,7 +234,11 @@ Approach approach_of(const Crossing& crossing, const BridgePlan& plan,
                      u32 approach_grade_permille) noexcept;
 
 // **The footprint** (W98's polygon): the bridge's plan, its deck and every support, as four world
-// points in whole millimetres (written into `points`, which must outlive the footprint).
+// points in whole millimetres (written into `points`, which must outlive the footprint). The
+// generator hands it with every tile its disc, grown by `k_shape_reach_mm`, touches: the reach a
+// later entry keeps past a shape (the routes' wear, 2 m; scene_gen.md, "The shapes a tile
+// occupies"), so a point of a tile gets the whole read's answer. A choice, said so.
+inline constexpr i64 k_shape_reach_mm = 2000;
 scene_gen::Footprint bridge_footprint(const Crossing& crossing, const BridgePlan& plan,
                                       scene_gen::FootprintPoint (&points)[4]) noexcept;
 

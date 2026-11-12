@@ -3,8 +3,9 @@
 // crossing a `routes` entry's plan lists (routes.md, "Water"), it reads the stream's section there
 // from the scene's `water_channels` (and, where the scene's `channels` entry names its plan, the
 // bed's D84), samples the ground along the path through it, and writes a `bridges` placement entry
-// of those crossings, each bridge's approaches as `Fill` ground edits, and each bridge's footprint
-// as a polygon, for the scene's author to paste — as `routes` writes its treads.
+// of those crossings for the scene's author to paste. Beside it, each bridge's approaches as
+// `Fill` ground edits and each bridge's footprint as a polygon, to read: the entry hands both to
+// the host itself (`plan_ground` and its tiles' shapes, G186), so neither is pasted.
 #include "content_commands.h"
 
 #include <cstdio>
@@ -160,8 +161,46 @@ int bridges_command(int argc, char** argv) {
   context.world_seed = terrain.seed;
   context.dir = dir;
   context.ddc = ddc;
-  scene_gen::GroundProvider ground;
   std::string error;
+  const JsonValue* placements = json.find("placements");
+  if (placements == nullptr || !placements->is_array())
+    return fail(scene_path + " has no placements");
+  // **What the other entries plan for the ground** (scene_gen.md, "What an entry plans for the
+  // ground"): a `routes` entry's treads, a mouth's apron, handed through their hook. The scene's
+  // reader adds them to the tile set's edits before it makes the ground, so this command does too,
+  // each entry opened on the ground before any edit as the reader opens it; a `bridges` entry's
+  // own approaches are left out, as the pasted ones are above.
+  if (terrain.tiles.has_value()) {
+    scene::Terrain unedited = terrain;
+    unedited.tiles->edits.clear();
+    scene_gen::GroundProvider before;
+    if (!found->make(unedited, context, before, &error) || !before.valid())
+      return fail(error.empty() ? "the ground before its edits could not be made" : error);
+    scene_gen::Context planning = context;
+    planning.ground = before.view();
+    for (u32 k = 0; k < placements->as_array().size(); ++k) {
+      const JsonValue& entry = (*placements)[k];
+      const JsonValue* generator = entry.find("generator");
+      const JsonValue* params = entry.find("params");
+      if (generator == nullptr || !generator->is_string() || params == nullptr ||
+          generator->as_string() == "bridges")
+        continue;
+      const scene_gen::PlacementGeneratorDesc* desc =
+          registry.find_placement(generator->as_string());
+      if (desc == nullptr || desc->plan_ground == nullptr) continue;
+      const std::string where = scene_path + ": placements " + std::to_string(k);
+      planning.where = where;
+      void* state = nullptr;
+      if (!desc->open(*params, planning, &state, &error)) return fail(where + ": " + error);
+      scene_gen::GroundPlan plan;
+      const bool planned = desc->plan_ground(state, planning, plan, &error);
+      desc->close(state);
+      if (!planned) return fail(where + ": " + error);
+      for (scene::TerrainEdit& edit : plan.edits)
+        terrain.tiles->edits.push_back(std::move(edit));
+    }
+  }
+  scene_gen::GroundProvider ground;
   if (!found->make(terrain, context, ground, &error) || !ground.valid())
     return fail(error.empty() ? "the ground provider \"" + provider + "\" refused the terrain"
                               : error);
@@ -176,9 +215,6 @@ int bridges_command(int argc, char** argv) {
     }
   if (streams.empty()) return fail(scene_path + " has no water_channels to bridge");
 
-  const JsonValue* placements = json.find("placements");
-  if (placements == nullptr || !placements->is_array())
-    return fail(scene_path + " has no placements");
 #if ENGINE_CONTENT_CHANNELS
   // The bed's sediment, from the channels entry's named plan: read, never planned here (the
   // ground this command reads already has the cuts in it).
@@ -283,6 +319,7 @@ int bridges_command(int argc, char** argv) {
   }
   if (grade_override > 0) grade = static_cast<u32>(grade_override);
   if (grade == 0) grade = 250;
+  out_layer.approach_grade_permille = grade;
   // What each crossing became, its triangles, and its footprint.
   u32 by_form[5] = {};
   u32 triangles = 0, steps = 0;

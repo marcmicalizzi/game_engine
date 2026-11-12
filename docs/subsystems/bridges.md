@@ -6,9 +6,9 @@ of concept's solver needs §3.10, the footbridge half, and "Added by v40": four 
 trail must lead onto it"). At each ford a route's plan lists ([routes](routes.md), "Water") it
 chooses the form a footpath of that class would have — **stepping stones**, a **clapper bridge** of
 stone slabs on dry piers, a **foot log**, or **log stringers** under a plank deck — solves every
-member in whole millimetres, and hands the bridge to the renderer as one mesh a tile. It writes the
-approaches as ground edits that bring the tread up to the deck, and the bridge's plan as a footprint
-the other placements keep out from under. It does **not** make road or cart bridges, arches or
+member in whole millimetres, and hands the bridge to the renderer as one mesh a tile. It hands the
+host the approaches as ground edits that bring the tread up to the deck, and the bridge's plan as a
+footprint the other placements keep out from under (G186). It does **not** make road or cart bridges, arches or
 suspension spans, a wall crossing a stream, or any response of the water to a pier.
 
 **Why this shape.** A crossing is decided by the stream's section and the path, both of which are
@@ -26,7 +26,8 @@ a recipe with the tile ([scene_gen](scene_gen.md), "A tile's meshes"), because n
 share one and nothing of a bridge should exist before someone is near it.
 
 **Owned data.** The `engine.bridges` schema types (`Crossing`, `Layer`, `Bridge`) and the recipes
-the generator hands. The edits and footprints the command writes are the scene's once pasted.
+the generator hands. The approaches' edits and the footprints are the entry's: it hands them to the
+host itself (G186), and nothing of them is pasted into the scene.
 
 ## The form
 
@@ -117,29 +118,42 @@ under "Budgets".
   and the lattice rounded the crest into a knife-edge ridge that met the sill under the deck rather
   than the deck. What step the lattice still leaves is not measured here.
 - **The footprint** (`bridge_footprint`): the rectangle of every member's plan, as W98's polygon in
-  world millimetres, so the bed's stones, the sward and scatter keep out from under it once a host
-  hands it to the exclusion.
+  world millimetres, so the bed's stones, the sward and scatter keep out from under it.
 - **The tread across the deck**: the route's own tread runs through the channel as its bench (the
   channel's cut wins there, routes.md "Water"), and the walker crosses on the deck's mesh, which the
   collision builds a proxy of as of any tile's mesh (R145).
-- **Who hands them across**: nobody at activation yet. `engine-content bridges` writes the edits for
-  the `tiles` block's `edits` and the footprints as polygons; a host would call
-  `approach_edits_json(layer, grade)` before the tile set is built and `bridge_footprint` for each
-  crossing into `Exclusion::add_footprints` (scene_gen.md, "A tile's meshes", the room the contract
-  leaves).
+- **Who hands them across: the entry, through the host's two seams** (G186, on R144's hook;
+  [scene_gen](scene_gen.md), "What an entry plans for the ground" and "The shapes a tile
+  occupies"). `plan_ground` hands each approach as an `engine.scene.TerrainEdit` read back from the
+  JSON `approach_edits_json(layer, layer.approach_grade_permille)` writes, so an approach planned
+  at the read and the same approach pasted into `terrain.tiles.edits` are one edit and build one
+  tile set (`bridges ground plan: …`, below). It reads nothing but the layer: a crossing carries
+  the ground it was sampled on, so the plan is a function of the entry and the order of the entries
+  moves none of it. `expand` hands every bridge's footprint in `Placements::shapes`, and `tile`
+  every footprint whose disc, grown by `k_shape_reach_mm` (2 m, the routes' wear: a choice), touches
+  the tile, so a point of a streamed tile is under a deck exactly when it is on the whole read; both
+  hosts add the shapes to the exclusion the later entries ask, so the sward, litter and scatter keep
+  out from under the deck on either path. `occupies` answers for a tile with a bridge or a shape.
+  A placement's `reach` (the disc later entries read before the mesh is built) is the furthest of
+  the footprint's corners from the crossing's centre, the mesh's origin.
 
 ## In a scene
 
 **`engine-content bridges <scene.json> <out.json> [--ddc <dir>] [--grade <permille>]`** reads the
-scene's terrain with its edits (the channels' cuts, the treads) but without its own approaches,
-its `water_channels`, each `routes` entry's named plan (an entry that names none is refused: run
-`engine-content routes` first) and, where a `channels` entry names its plan, the bed's D84 at the
+scene's terrain with its edits (the channels' cuts, the treads) but without any bridge's approaches
+— the pasted ones it finds by name are left out, and a `bridges` entry's planned ones are never
+asked — and with what every other entry hands through its hook (`plan_ground`: a `routes` entry's
+treads), each opened on the ground before any edit as the scene's reader opens it; its
+`water_channels`; each `routes` entry's named plan (an entry that names none is refused: run
+`engine-content routes` first); and, where a `channels` entry names its plan, the bed's D84 at the
 nearest point of a link's line. For each crossing the routes list, the stream under its middle
 station gives the centre, the direction square to it (the way the path runs), the bankfull width and
 the water; the ground is sampled along the path every 250 mm to 6 m past each bank. It writes
-`{placement, edits, footprints}`: paste `placement` into the scene's `placements`, `edits` into
-`terrain.tiles.edits`. Its JSON line counts the crossings, each form, the fords left, the
-triangles, the approaches, the grade and the largest step.
+`{placement, edits, footprints}`: **paste `placement` into the scene's `placements`, and nothing
+else** — `edits` and `footprints` are what the entry hands the host itself, written so a person can
+read them. The layer carries the routes' grade cap as `approach_grade_permille` (`--grade`
+overrides it). Its JSON line counts the crossings, each form, the fords left, the triangles, the
+approaches, the grade and the largest step.
 
 The placement generator **`bridges`** (`tile_meshes`, no resident kit) realises each bridge in the
 tile its centre falls in, as one instance of one recipe mesh (`<ddc>/bridges/bridge-<hash>.bridge.json`,
@@ -197,6 +211,12 @@ recipe (the same size again), and a bridge's mesh exists only while its tile is 
 - Every member a closed solid wound outward (`… a closed solid wound outward`).
 - The tiles are the whole read, and a bridge does not read its tile (`… the generator's tiles …`).
 - The approaches meet the deck with no step, and the footprint is the plan (`… the approaches …`).
+- A tile hands the plan of every bridge that reaches it, and a point of the tile is under a deck by
+  the tile's shapes exactly when it is by the whole read's, at 250 mm over nine tiles round a
+  bridge on four tiles' corner; the hook hands `Fill` edits only (`… a tile hands the plan …`).
+- The approaches the hook plans are the command's pasted ones read back from text, field for
+  field, and the two tile sets are the same ground to the bit, and raised where the approaches are
+  (`bridges ground plan: …`, `tests/ground_plan_tests.cpp`, compiled where the tile set is).
 - The same bytes everywhere (`… pinned`).
 
 **Public API.** `include/domain/bridges/bridges.h`.
@@ -210,8 +230,10 @@ whose routes are switched off has no crossings to read.
 
 ## Not yet
 
-- **Hosts that hand the approaches and the footprint across** at a scene's read and a tile's
-  activation (another row's; what it would call is above).
+- **The collision's bodies under a streamed deck**: the collision generates a streamed entry's
+  placements with the scene's exclusion and no tile's shapes (scene_gen.md, "The shapes a tile
+  occupies"), so a body of a later streamed entry can stand where the drawn tile left the ground
+  bare under a deck. It is R144's, for every shape.
 - **Wood sets in the pack**: `wood/plank` and `wood/log`.
 - **The bank under the bridge**: rip-rap round an abutment, the bank trodden bare at the approaches.
 - **A crib abutment of logs**, a pier's cutwater, a slab's taper, a foot log's taper and bark left
