@@ -1886,8 +1886,8 @@ const scene_gen::Registrar k_probe_registrar{k_probe};
 // shapes in the tile's exclusion — as `world::PlacementTiles::build` hands them, so a later entry
 // that keeps off a tread on the drawn tile makes no body on it here. Before, `context_for` handed
 // no `earlier` and `gather_placements` no shape: the probe's posts stood on the band and on the
-// tread's post here, eight on the band's row of tile (0, 0) alone, and the walker below was stopped
-// by the first of them 0.7 m from where it set out.
+// tread's post here, and the walker below was stopped by the first of them at x 1.38 (measured
+// against the base's gather, 2026-11-11).
 TEST_CASE("scene_collision: a later entry keeps off a tread's band as on the drawn tile") {
   const MeshSource meshes[] = {box_mesh(Vec3{0.3f, 0.75f, 0.3f})};
   renderer::SceneData scene;
