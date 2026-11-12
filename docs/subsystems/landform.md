@@ -872,7 +872,9 @@ Each follows, and none is here: cirques, lateral moraines and a lake that lasts
 ([ice](#ice), [the grounding](../experiments/landform-ice.md#what-the-two-range-sketch-shows-and-why-no-lake-lasts)); scree at an angle of repose; soil depth; snow; a general m and n; neighbouring regions solved so a shared edge
 agrees; the rivers' sweeps in parallel by catchment (by level they are, and it buys nothing at
 these sizes: [the rivers' sweeps](#the-rivers-sweeps)); baking far-terrain maps from near output; anything
-in the editor. The limits of the model as it stands are on the grounding page.
+in the editor. The limits of the model as it stands are on the grounding page. **Nor a coast**: the
+sea fills to its own level, nothing erodes at the waterline and there is no shoreface or beach;
+grounded and designed, not built, on [experiments/coast.md](../experiments/coast.md) (W128).
 
 ## Invariants
 
