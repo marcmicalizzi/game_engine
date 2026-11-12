@@ -15,7 +15,8 @@ ResolveClassPlan plan_resolve_classes(const ResolveClassFrame& frame, gfx::Pipel
                                       gfx::PipelineHandle module,
                                       gfx::PipelineHandle plain_module) noexcept {
   ResolveClassPlan plan;
-  if (frame.mode == ResolveClassMode::Off || !classify.valid() || !module.valid()) return plan;
+  if (!classify.valid() || !module.valid()) return plan;
+  if (frame.mode == ResolveClassMode::Off && frame.one_draw) return plan;
   plan.classify = classify;
   plan.module = module;
   // Every class the classify pass can write is drawn: a class no pixel holds costs its triangle's
@@ -25,11 +26,14 @@ ResolveClassPlan plan_resolve_classes(const ResolveClassFrame& frame, gfx::Pipel
   if (frame.mode == ResolveClassMode::Modules && frame.water && plain_module.valid() &&
       !frame.open_sea && !frame.resample && !frame.measuring) {
     plan.plain = plan.classes & ~gfx::k_resolve_class_water_mask;
-    if (frame.wet_plain) plan.plain |= 1u << static_cast<u32>(gfx::ResolveClass::Wet);
     plan.plain_module = plain_module;
   }
-  plan.classes &= frame.mask;
-  plan.plain &= frame.mask;
+  // The mask is a measurement's; with no one draw to fall back to, a mask that leaves nothing is
+  // not applied.
+  if ((plan.classes & frame.mask) != 0 || frame.one_draw) {
+    plan.classes &= frame.mask;
+    plan.plain &= frame.mask;
+  }
   if (plan.classes == 0) plan = ResolveClassPlan{};
   return plan;
 }
@@ -61,7 +65,8 @@ void record_resolve_class_draws(gfx::CommandList commands, const ResolveClassPla
 // draws into. Inside `create_pipelines`' batch they compile beside everything else; from a frame
 // pass's first registration, in a batch of their own.
 bool SceneRenderer::create_resolve_class_pipelines(bool linear, std::string* error) {
-  const ResolveClassMode mode = resolve_classes_tunable();
+  const ResolveClassMode mode =
+      resolve_class_mode_for(resolve_classes_tunable(), scene_->has_masked());
   if (mode == ResolveClassMode::Off || resolved_.direct) return true;
   const gfx::Device& device = *device_;
   gfx::BindlessSet& bindless = scene_->bindless();
@@ -74,7 +79,7 @@ bool SceneRenderer::create_resolve_class_pipelines(bool linear, std::string* err
   // The module without water, for a scene with water (`modules`): the pixels that cannot touch
   // water stop carrying its registers and its tests.
   const gfx::Shader* plain = nullptr;
-  if (water && mode == ResolveClassMode::Modules) {
+  if (water && mode != ResolveClassMode::Draws) {  // `modules`, and `cycle`, which draws it too
     plain = shaders_.get(resolve_module_name(resolved_.shadows, false, terrain, stochastic), error);
     if (plain == nullptr) return false;
   }
@@ -120,7 +125,9 @@ bool SceneRenderer::create_resolve_class_pipelines(bool linear, std::string* err
     }
   }
   ENGINE_LOG_INFO(log_renderer, "resolve classes",
-                  log::field("mode", mode == ResolveClassMode::Modules ? "modules" : "draws"),
+                  log::field("mode", mode == ResolveClassMode::Draws     ? "draws"
+                                     : mode == ResolveClassMode::Modules ? "modules"
+                                                                         : "cycle"),
                   log::field("water", water), log::field("plain_module", plain != nullptr),
                   log::field("linear", linear));
   return batch.end(error);

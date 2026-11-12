@@ -1273,11 +1273,11 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   // **A draw of one pixel class** (R151; resolve_class.slang; renderer.md, "The resolve by pixel
   // class"). Under `renderer.resolve.classes` the pass draws this triangle once per class, at the
   // class's depth, with a depth-equal test. The test rejects quads, not pixels: a quad it keeps
-  // runs all four of its lanes, each down its own pixel's path, so a lane whose pixel is of
-  // another class ends here. The one draw's triangle is at depth 0, which is no class's.
+  // runs all four of its lanes, each down its own pixel's path, so a lane whose pixel cannot be
+  // of the draw's class ends here. The one draw's triangle is at depth 0, which is no class's.
   if (in.position.z != 0.0) {
     const uint2 class_pixel = uint2(in.position.xy) - uint2(params->view_x, params->view_y);
-    if (resolve_class_depth(classify_pixel(params, class_pixel)) != in.position.z) {
+    if (!resolve_class_may_draw(params, class_pixel, in.position.z)) {
       discard;
       return float4(0.0, 0.0, 0.0, 0.0);
     }

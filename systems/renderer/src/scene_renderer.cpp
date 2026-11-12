@@ -1334,7 +1334,12 @@ bool SceneRenderer::create_pipelines(std::string* error) {
                                       {}, sizeof(u64), pipelines_.cull, error) &&
          gfx::create_compute_pipeline(device, hiz->module, "hiz_build_main", {},
                                       sizeof(gfx::HizParams), pipelines_.hiz, error) &&
-         gfx::create_graphics_pipeline(device, resolve_desc, pipelines_.resolve, error) &&
+         // The one draw's pipeline, unless the renderer is made to draw by class (R151): the same
+         // module twice in one batch is the driver compiling it twice.
+         ((!resolve_one_draw_built(
+               resolve_class_mode_for(resolve_classes_tunable(), scene_->has_masked())) &&
+           !resolved_.direct) ||
+          gfx::create_graphics_pipeline(device, resolve_desc, pipelines_.resolve, error)) &&
          create_resolve_class_pipelines(linear_wanted(), error) &&  // R151: in this batch
          batch.end(error);
 }
@@ -3439,6 +3444,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // And its banks, unless a measurement skips them this frame.
     if (!water_banks_tunable(frame.frame_index))
       resolve.shadow_flags |= gfx::k_shadow_wet_banks_off;
+    // And no wet class, under the split's own measurement switch (R151; resolve_class.slang).
+    if (resolve_class_measure_tunables().wet_plain)
+      resolve.shadow_flags |= gfx::k_shadow_wet_class_off;
     if (slot < slot_water_.size()) {
       slot_water_[slot] =
           SlotWater{stats_.water_reflect, stats_.water_reflect_views, stats_.water_reflect_level_m,
@@ -5456,14 +5464,14 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // which no path with a visibility buffer draws into. Off, the plan is empty and the frame is
     // the one it was.
     ResolveClassFrame class_frame;
-    class_frame.mode = resolve_classes_tunable();
+    class_frame.mode =
+        resolve_class_mode_for(resolve_classes_tunable(frame.frame_index), scene.has_masked());
+    class_frame.one_draw = (frame_passes_on ? pipelines.resolve_linear : pipelines.resolve).valid();
     class_frame.water = scene.has_water();
     class_frame.open_sea = scene.water_open_instance() != gfx::k_no_water_open;
     class_frame.resample = views_.resample();
     class_frame.measuring = resolve_stop_tunable(frame.frame_index) != 0;
-    const ResolveClassMeasure class_measure = resolve_class_measure_tunables();
-    class_frame.mask = class_measure.mask;
-    class_frame.wet_plain = class_measure.wet_plain;
+    class_frame.mask = resolve_class_measure_tunables().mask;
     const u32 class_format = frame_passes_on ? 1u : 0u;
     const ResolveClassPlan class_plan =
         plan_resolve_classes(class_frame, pipelines.classify, pipelines.resolve_class[class_format],

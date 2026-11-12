@@ -294,13 +294,15 @@ tunables::Enum<gfx::ResolveStop> resolve_stop_after{
     "time goes)"};
 // R151: the resolve drawn once per pixel class (renderer.md, "The resolve by pixel class"). Indexed
 // by `ResolveClassMode`.
-constexpr const char* k_resolve_class_choices[] = {"off", "draws", "modules"};
+constexpr const char* k_resolve_class_choices[] = {"off", "draws", "modules", "cycle", "auto"};
 tunables::Enum<ResolveClassMode> resolve_classes{
     "renderer.resolve.classes", ResolveClassMode::Off, k_resolve_class_choices,
     "The material resolve by pixel class: off, one fullscreen draw; draws, a classify pass writes "
     "each pixel's class as depth and the resolve is drawn once per class, depth-equal; modules, "
-    "the same with the classes that cannot touch water drawn by the module without it (read when "
-    "the pipelines are made and once a frame; renderer.md, The resolve by pixel class)"};
+    "the same with the classes that cannot touch water drawn by the module without it; auto, "
+    "draws on a scene with alpha-tested materials and off on every other; cycle, measurement "
+    "only: frame f draws by (f / 16) % 3, off, draws, modules (read when the pipelines are made "
+    "and once a frame; renderer.md, The resolve by pixel class)"};
 tunables::Int resolve_class_mask{
     "renderer.resolve.class_mask", 127, 0, 127,
     "Measurement only: the pixel classes the split resolve draws, a bit a class (sky 1, rigid 2, "
@@ -311,8 +313,9 @@ tunables::Bool resolve_class_census{
     "each class (a blocking read of the class image)"};
 tunables::Bool resolve_class_wet_plain{
     "renderer.resolve.class_wet_plain", false,
-    "Measurement only: the wet class is drawn by the module without water, so the pixels that "
-    "differ from the picture are the ones the water module wets"};
+    "Measurement only: the classify pass writes no wet class, so under modules the wet reach's "
+    "ground is drawn by the module without water and the pixels that differ from the picture are "
+    "the ones the water module wets"};
 // R126: a shading rate by region (renderer.md, "A shading rate by region"). The sides' default is
 // a rule rather than a number, so a surround gets its outer thirds and every other frame nothing.
 tunables::Float resolve_half_rate_sides{
@@ -570,6 +573,11 @@ f32 half_rate_sides_tunable(u64 frame_index) noexcept {
 bool half_rate_centre_tunable() noexcept { return resolve_half_rate_centre.get(); }
 
 ResolveClassMode resolve_classes_tunable() noexcept { return resolve_classes.get(); }
+ResolveClassMode resolve_classes_tunable(u64 frame_index) noexcept {
+  const ResolveClassMode mode = resolve_classes.get();
+  if (mode != ResolveClassMode::Cycle) return mode;
+  return static_cast<ResolveClassMode>((frame_index / k_resolve_class_cycle_frames) % 3);
+}
 ResolveClassMeasure resolve_class_measure_tunables() noexcept {
   ResolveClassMeasure measure;
   measure.mask = static_cast<u32>(resolve_class_mask.get());

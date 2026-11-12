@@ -34,10 +34,27 @@ struct ResolveClassFrame {
   bool open_sea = false;   // an open body: any pixel may be the sea's, so every class needs water
   bool resample = false;   // a Panini view: the resolve reads a source pixel the map names
   bool measuring = false;  // a stop word (R115): the frame is a measurement's, drawn by one module
-  // The split's own measurement switches (settings.h, `ResolveClassMeasure`).
+  // The one draw's pipeline exists. A renderer made under `draws` or `modules` builds none (the
+  // driver would compile the resolve's module a second time beside the split's), so a frame of
+  // such a renderer is never the one draw: `off` then draws as `draws`.
+  bool one_draw = true;
+  // The split's own measurement switch (settings.h, `ResolveClassMeasure`).
   u32 mask = gfx::k_resolve_class_all;
-  bool wet_plain = false;
 };
+
+// What a mode is on a scene: `auto` is `draws` where the scene holds alpha-tested materials (the
+// leaves: classes that interleave at the pixel's scale, which is what the split returns) and the
+// one draw everywhere else, where the split would cost its classify pass for nothing. Every other
+// mode is itself.
+constexpr ResolveClassMode resolve_class_mode_for(ResolveClassMode asked, bool foliage) noexcept {
+  if (asked != ResolveClassMode::Auto) return asked;
+  return foliage ? ResolveClassMode::Draws : ResolveClassMode::Off;
+}
+// Whether a renderer made under that mode builds the one draw's pipeline: `off` has nothing else,
+// and `cycle` draws it every third block of frames.
+constexpr bool resolve_one_draw_built(ResolveClassMode made) noexcept {
+  return made == ResolveClassMode::Off || made == ResolveClassMode::Cycle;
+}
 
 // The plan of one frame from the pipelines that exist: nothing without the classify pass and the
 // module's depth-equal pipeline (a renderer made under `off`), every class the scene can hold

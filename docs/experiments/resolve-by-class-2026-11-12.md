@@ -22,19 +22,24 @@ built is described where it lives, [renderer](../subsystems/renderer.md#the-reso
    sky's draw under the grove costs 1.04 ms, of which the sky's pixels are 0.05: the rest is leaf
    and branch pixels shaded a second time, one or two to a shading group.
 3. **One test at the top of the resolve's entry point turns it into the gain R148 pointed at.** A
-   lane whose pixel is not of the class its draw shades ends before it shades. Measured from a
-   scratch build with those lines: the elder grove's resolve **2.25 ms against 2.75 (−18 %), the
-   frame 0.45 ms shorter**, the same bytes. That is half of the 1.1 ms; the rest is mixing inside
-   a class's own draw, which only fuller groups can return (the compute route, below).
+   lane whose pixel cannot be of the class its draw shades ends before it shades (the class exit,
+   committed in the second pass). The elder grove's resolve is **2.24 ms against 2.76 (−18 %),
+   the frame 0.46 ms shorter**, the same bytes. That is half of the 1.1 ms; the rest is mixing
+   inside a class's own draw, which only fuller groups can return (the compute route, below).
 4. **Drawing the pixels that cannot touch water with the module that has none returns the water
-   module's weight**: on the layered ground with ponds, 0.73 ms of a 2.94 ms resolve at the trail
-   and 0.57 of 2.59 at the mountain, no water in view (with the lines of 3; 0.4 to 0.7 and 0.25 to
-   0.5 without them); on oasis-pool 0.6 ms of 1.8 looking away from the pool. It is not exact to
-   the byte: two modules' arithmetic differs by one code on 2 pixels of 8.3 million at one pose of
-   seven. And at the two poses that are mostly pond and its banks it returns nothing and costs the
-   classify pass, because the wet class there is 37 to 40 % of the frame.
-5. **The default is off.** As committed the split is dearer under leaves, and the forest is
-   leaves. What stands between it and on is in "What stands between the split and on".
+   module's weight**: 0.6 ms of a 2.2 ms resolve at oasis-pool's pool and of 1.8 ms looking away
+   from it, 0.55 to 0.6 ms of 2.5 to 2.9 ms on the layered ground with its ponds out of view,
+   and 0.2 ms at the two poses that are mostly pond and bank, where it was dearer until the wet
+   class asked the records' levels (the second pass: 75 to 98 % of the class was ground above a
+   pond's fringe). It is not exact to the byte: the two modules differ by one code on 2 pixels of
+   8.3 million at one pose of seven, in the resolve's tail and not in the material.
+5. **What the default is, and why, is "The default" in the second pass.** `auto` draws by class
+   where the scene holds leaves and leaves every other scene to the one draw; `modules` is a
+   lever until the two pixels are closed.
+
+The page keeps the first pass as it was measured (to "What the frame budgets say") and the
+second after it; where the two give a figure for the same thing, the second's is from the
+committed tree.
 
 Everything below is `msvc-release` on the RTX 5090 (driver 617.42), 3840 × 2160 offscreen,
 `--shadows rt`, `renderer.gi.mode=bounce` unless a line says the bounce is off, one binary with
@@ -298,29 +303,258 @@ inside the tolerance. The csm run's budget is far above what either draw costs t
 nothing of the split. No run was flown with the split off beside these: they are read against the
 file's budgets, which were taken on a quiet machine.
 
-## What stands between the split and on
+## The second pass (the afternoon of 2026-11-12)
 
-1. **The class exit in `fs_resolve`** (the patch): without it the split loses 0.43 ms under
-   leaves. With it, `draws` is within 0.11 ms of the one draw at every pose measured (dearer at
-   four, before the classify pass's 0.06 to 0.08) and 0.5 ms cheaper under leaves, and `modules`
-   is cheaper or the same everywhere but the boggy pond, by 0.09 ms with the classify pass.
-2. **The forest.** Not flown, by the brief. Its frame is leaves over a layered ground beside
-   water, the three things the split is for, and its resolve is 9.78 ms at the lake; nothing here
-   says what the split returns there, only that both mechanisms it would use are measured.
-3. **`modules` to the byte.** Two pixels by one code at one pose of seven. Either the resolve's
-   modules are compiled so that their floats cannot be rearranged (`NoContraction` on the
-   SPIR-V's arithmetic; what it costs is not measured), or the difference is stated as a lever
-   under the owner's rule for detail the eye does not resolve. Until one of those, the default
-   could be `draws` and not `modules`.
-4. **The frame budgets.** Within them on the three runs that could be judged ("What the frame
-   budgets say"); the overlook was not flown, the surround's erg wants a quiet flight, and the
-   classify pass is a bucket the budget file does not name.
-5. **The one draw's pipeline not built when the split is on**, so a cold start compiles the
-   module once.
+Everything above this heading is the first pass, as it was measured that morning; its statements
+that the class exit is not in the tree and that the default waits for it are of that morning.
+The second pass committed the exit, changed what it asks, gave the wet class the records' levels,
+looked for the two pixels, and built what a default needs. The machine was busier than in the
+morning (eight rows of two coordinators and the owner's forest session shared the GPU through
+the lock's line, ten to thirteen waiting for most of the afternoon), so every difference below is
+read **inside one process**: `renderer.resolve.classes=cycle`, a measurement choice added for
+this, makes every pipeline and draws frame f by (f / 16) % 3 — off, draws, modules — so the three
+modes are sixteen frames apart under the same load, and a figure is the median of a mode's frames
+in a pose's hold less the first 48 of the hold and two at each block's start (70 to 82 frames a
+mode and pose; the tenth percentile in brackets where it is given). A forest flight is four
+minutes of load for seconds of frames, so the choice is also what makes a forest pair one load
+instead of four.
+
+### The class exit, committed
+
+Commit 85082c20 is the first pass's patch as it was. From that tree's `msvc-release` binaries
+copied out, as alternated runs (off, draws, modules; three times round on the grove, twice
+elsewhere), resolve ms and the frame's sum of timed passes:
+
+| scene and pose | one draw | `draws` | `modules` | classify | frame: one draw / `draws` / `modules` |
+|---|---:|---:|---:|---:|---:|
+| elder-grove | 2.755, 2.757, 2.756 | **2.243, 2.244, 2.243** | | 0.055 | 5.77 / **5.31** |
+| — `--raster hw` | 2.739, 2.738 | 2.227, 2.226 | | 0.055 | 4.91 / 4.45 |
+| oasis-pool, the pool | 2.194, 2.194 | 2.208, 2.207 | 1.821, 1.820 | 0.067 | 3.46 / 3.54 / 3.16 |
+| — away | 1.811, 1.810 | 1.900, 1.899 | 1.211, 1.211 | 0.071 | 2.87 / 3.03 / 2.34 |
+| — `--raster hw`, pool / away | 2.195 / 1.811 | 2.206 / 1.899 | 1.805 / 1.200 | 0.068 / 0.071 | |
+
+The grove is the first pass's scratch build to a hundredth: **−0.51 ms of resolve and −0.46 ms of
+frame under leaves**. The picture, the bounce off, at all seven poses: `draws` 0 pixels of
+8,294,400 differ; `modules` 0 at six and the same 2 at the layered ground's mountain. The layered
+ground's timings were taken on the next build, below.
+
+### What the exit asks: integers, and why
+
+As committed first the exit called `classify_pixel`, so every lane of every class's draw walked
+the shore records again, in the resolve's module. Two things were wrong with that.
+
+- **It cost what the classify pass costs, a second time, inside the dearest shader**: `draws` at
+  oasis-pool looking away was 0.09 ms dearer in `resolve` than the one draw (1.900 against 1.811)
+  before the classify pass's own 0.07.
+- **Two shaders asked the same floats.** The classify pass's module decides a pixel is wet and
+  writes the wet class's depth; the resolve's module, in the wet class's draw, asks again. If the
+  driver rounds one comparison of `classify_wet` otherwise in the second module — and this page
+  has two pixels that say two modules of one source do not always agree — the lane discards
+  itself in the one draw whose depth test it passes, and the pixel is left the clear. None was
+  seen in any capture; a wet class with a boundary thousands of pixels long is where one would be.
+
+So the exit now asks **integers only** (`resolve_class_may_draw`): the pixel's class by its
+material's flags, or "could be wet" by the resolve's own ground test, compared with the draw's
+class. The classify pass's module is the one place the floats are asked, and the depth test holds
+every draw to its answer. What it leaves running is a lane of plain ground in the wet class's
+draw, and the reverse, where the two meet inside a quad. Measured on the final build
+(`cycle`, two flights; resolve ms):
+
+| scene and pose | one draw | `draws` | `modules` | classify | frame: one draw / `draws` / `modules` |
+|---|---:|---:|---:|---:|---:|
+| elder-grove | 2.756, 2.756 | **2.243, 2.242** | | 0.055 | 5.78 / **5.31** |
+| — `--raster hw` | 2.741 | 2.222 | | 0.055 | 4.92 / 4.45 |
+| oasis-pool, the pool | 2.156, 2.180 | 2.157, 2.170 | **1.544, 1.554** | 0.077 | 3.43 to 3.46 / 3.50 to 3.52 / **2.89 to 2.91** |
+| — away | 1.773, 1.787 | 1.826, 1.839 | **1.199, 1.209** | 0.081 | 2.83 to 2.85 / 2.96 to 2.98 / **2.34 to 2.35** |
+| — `--raster hw`, pool / away | 2.179 / 1.774 | 2.167 / 1.828 | 1.555 / 1.201 | 0.078 / 0.082 | 2.79 / 2.86 / 2.25; 2.33 / 2.46 / 1.84 |
+| layered ground, sandy shore | (2.391, 2.392) | (2.389, 2.393) | **(2.170, 2.177)** | 0.078 | (3.68 / 3.75 / **3.53**) |
+| — trail | (2.762, 2.893) | (2.639, 2.819) | **(2.196, 2.343)** | 0.096 | (4.14 to 4.26 / 4.07 to 4.28 / **3.66 to 3.81**) |
+| — mountain | (2.537, 2.484) | (2.311, 2.476) | **(2.001, 2.152)** | 0.083 | (3.71 to 3.76 / 3.62 to 3.78 / **3.26 to 3.43**) |
+| — boggy pond | (2.243, 2.259) | (2.285, 2.291) | **(2.028, 2.051)** | 0.085 | (3.49 to 3.50 / 3.63 to 3.64 / **3.37 to 3.39**) |
+| — `--raster hw`, shore / trail / mountain / bog | (2.397 / 2.759 / 2.488 / 2.254) | (2.388 / 2.639 / 2.314 / 2.286) | (2.181 / 2.196 / 2.005 / 2.034) | 0.078 / 0.096 / 0.083 / 0.085 | |
+
+The layered ground's figures are in brackets because they are the **tenth percentile** of each
+mode's frames, not the median: its lease came while this row's own test suite was running on
+the CPU and the medians of its three flights spread by up to 0.5 ms; the quiet frames agree
+between flights to 0.02 ms at the shore and the bog and to 0.15 at the other two.
+
+`draws` on a scene with no leaves is now within 0.05 ms of the one draw in `resolve` (it was
+0.09 at the worst pose) and still costs the classify pass, 0.055 to 0.10 ms at 3840 × 2160, for
+nothing it can return: that is what `auto` is for. **`modules` is now cheaper than the one draw
+at every pose with the classify pass counted**, the two pond poses included (the shore 0.14 ms
+of frame, the boggy pond 0.12), which is the wet class's doing, below. The one draw itself is 0.02 to 0.04 ms cheaper
+than with the first exit (it keeps less alive). The classify pass is 0.01 ms dearer on the scenes
+with water than in the morning (0.077 against 0.067 at the pool): the level's arithmetic, below.
+
+### The wet class by the record's level
+
+`classify_wet` now asks, of every record whose square holds the pixel, the heights that record
+can wet: the resolve's own ranges (a still body's fringe above its level; where a swash's front
+and a tide can reach; a bank node's level range; a stretch from two metres under its surface to
+its fringe, within its half width and the fringe's run). The pixel's point is from its depth
+word, so the range is grown. **The first slack tried was the squares' own** (half a metre and two
+thousandths of the distance along the ray, times the ray's slope of height) and it returned
+almost nothing on the layered ground:
+
+| pose | wet class, squares alone | by level, the squares' slack | by level, the final slack | wetted |
+|---|---:|---:|---:|---:|
+| oasis-pool, the pool | 2,495,967 | 67,069 | **65,177** | 46,493 |
+| layered ground, sandy shore | 3,095,536 | 3,037,400 | **1,167,603** | 771,445 |
+| — boggy pond | 3,337,229 | 3,274,698 | **1,070,010** | 654,284 |
+
+Over-claimed, of the class: 98 %, 75 % and 80 % by the squares alone; **29 %, 34 % and 39 %**
+now, which is the slack and the fringe's last centimetres, where the saturation moves no code.
+
+The oasis's pool lies in a basin metres deep, and its class fell from 30 % of the frame to under
+1 %. The ponds lie in a plain: the body's fringe (`wet_m`, the schema's default) is **0.3 m**,
+the camera stands 4 m above a bank that falls a few decimetres to the water over ten metres, and
+half a metre of slack along a ray that looks down at 25° is 0.2 to 0.4 m of height, more than
+the fringe itself. So the heights have a slack of their own, from what the two points can
+actually differ by: both lie on the pixel's ray, apart by what moves the surface sideways (a step
+of the receiver's 16-bit grid, since a traced primary's depth is on the float triangle and the
+resolve's point on the grid's; a 256th of a pixel, since a rasterizer snaps its corners) over the
+tangent of the angle the ray meets the surface at. **A hundred grid steps along the ray (a
+centimetre at least) and two thousandths of the distance** holds down to half a degree; times the
+ray's slope of height, with four grid steps, a two-thousandth of the distance and two centimetres
+beside it for the point itself, it is 0.06 to 0.12 m at these poses. What it does not prove is a
+surface seen within half a degree of edge-on down a steep ray, less than a pixel wide; the
+squares keep their half metre.
+
+The wetted counts are the morning's to the pixel under every slack (the pixels that differ when
+no wet class is written, `renderer.resolve.class_wet_plain`, which since the exit works through
+a flag `classify_pixel` reads; the plan's own wet bit could not survive the exit, since the plain
+module has no wet class to keep). On the test's basin at 480 × 320 (a metre of fringe; final
+slack): across it from 14 m up the class is 100,189 pixels by the squares and 30,234 by level
+with 20,502 wetted (42,240 under the squares' slack); looking away over the plain 21,102 and
+**none**; from the rim at a walker's height 16,651 with 13,894 wetted; from thirty metres 1,479
+with 1,171. `modules` draws the one draw's bytes at all four.
+
+### The two pixels
+
+Two pixels of 8,294,400 at the layered ground's mountain differ by one code between `modules`
+and the one draw: (2556, 1499), blue 12 against 13, and (2948, 1749), red 15 against 14, both
+dark ground (codes 12 to 15) no shore record reaches, the same two in the morning's two builds
+and in this pass's three. What they are not: **the material, the normal, the sun's shadow or the
+sun's lobe.** The same pose and the scene's three others, drawn in the albedo, normals, shadow
+and sun-specular views by the one draw and by `modules` (eight runs, the bounce off): 0 pixels
+differ in any view at any pose, 8.3 million pixels each, where an albedo one unit in the last
+place apart on every ground pixel would move some tens of codes. So the two modules' ground
+blends, their reconstruction and their shadow rays agree to the bit, and the difference enters
+after them: in the sum of the lit terms, the sky's ambient, the air between the eye and the
+surface, the exposure or the output encode — a chain of multiplies and adds on the radiance,
+which the driver may fuse or order differently when the surrounding code differs (the water
+module calls the air's and the encode's functions from three more places, so what the driver
+inlines where is not the plain module's). It is not `terrain_wet`'s dead `pores` sum, which was
+the first guess: that is in the albedo, and the albedo is the same.
+
+**Not closed.** Closing it means the tail of `fs_resolve` (and `sky_aerial`, `display_output`)
+compiled so that a multiply and an add cannot be fused — `precise` there, or the modules built
+with the compiler's precise mode — in files this row did not hold, with a cost nobody has
+measured; and no tool on this machine disassembles SPIR-V, so the two modules' instruction
+streams for that tail were not compared (installing one is not a row's to do). The stop words
+that would bisect the tail are a measurement's and draw every class by one module. What stands:
+`modules` is exact on six poses of seven and at every pose of its test, differs by one code on
+two pixels at the seventh, the same two every run, and is therefore a lever a host may choose
+and not what `auto` picks. The test's bound is unchanged (a code, one pixel in twenty thousand;
+none measured at four poses).
+
+### The forest
+
+**Not flown when this was written.** A binary whose resolve shaders are new needs 66 GB of
+commit free when its lease comes (the warm-up's rule, from the load that died past 59 GB), and
+the two leases that came, at 12:46 and 13:27, each found 58 GB and were given back at once; a
+third was in the GPU's line behind fourteen others when the row's code was committed. Nothing
+on this page says what the split returns on the forest, whose frame is leaves over a layered
+ground beside water and whose resolve is 9.8 ms at the lake.
+
+The driver is in the row's scratch and is one lease: a six-frame warm-up of the new resolve
+shaders under `off` with the micromaps off (under `cycle` the forest's 5 MB module would be
+compiled twice side by side, as the cold starts below show, and the warm-up already peaks at
+53 GB), then one flight under `cycle` of the four cost poses the earlier pairs flew (the lake's
+south shore, the cascade, two more by the lake) held 384 frames each at 15 fps, with a capture
+in each mode at every pose for the census.
+
+### A cold start, each way
+
+oasis-pool, 1920 × 1080 offscreen, four frames, traced, the bounce, both caches cold (the
+engine's pipeline cache off, the driver's own disk cache off and pointed at an empty directory;
+[gfx](../subsystems/gfx.md)), one run each in one lease at 12:47 to 12:52, others' work beside
+them (free commit 50 to 70 GB at their starts), from the runs' `load.pipelines`:
+
+| made under | pipelines | the resolve's module (2,477,840 bytes) | the batch's wall | the process |
+|---|---:|---|---:|---:|
+| `off`: the one draw | 35 | compiled once, 86.4 s | 86.5 s | 93.6 s |
+| `draws`: the split, **no one draw** | 36 | compiled once, 96.6 s | 96.7 s | 99.1 s |
+| `cycle`: both | 38 | **compiled twice side by side, 107.9 s and 107.6 s**; the plain twin 10.4 s | 108.1 s | 111.9 s |
+
+The morning's guess was right: two pipelines of one module in one batch are two compiles, 244 s
+of CPU where one is 86 to 97 (the batch hides most of it in wall time on an idle core, and
+none of it in memory, which is what the forest's cold load runs out of). So a renderer made
+under `draws` or `modules` does not build the one draw's pipeline (`resolve_one_draw_built`),
+`off` asked of it later draws as `draws`, and only `cycle`, a measurement's, builds both. The
+10 s between the first two rows is one run each on a loaded machine, not the split's: the split
+adds the classify pass's module, 0.07 s.
+
+### The default
+
+**`off`, until the forest pair is flown; then `auto`.** The rule the row was given is that the
+split goes on if it is exact and no pose is dearer than the one draw, the classify pass counted,
+on the engine's seven poses and the forest's two, and that the forest's flight decides. `draws`
+by itself does not pass it: it is exact, and it is dearer at four of the seven (oasis-pool's
+two, the sandy shore and the boggy pond), by its classify pass. `auto` passes it on the seven. The forest's two are not measured, so the tunable's default
+is still `off`, and making it `auto` is one constant (`resolve_classes` in `settings.cpp`), to
+be changed with the forest's table beside it and the GPU suites run under it. `modules` is not a
+candidate while two pixels differ.
+
+What `auto` is on the scenes measured, frame ms with the classify pass counted, against the one
+draw: the elder grove `draws`, **−0.46**; oasis-pool and the layered ground, which hold no
+alpha-tested material, the one draw, 0 (where `draws` would cost up to 0.13 and `modules`
+return 0.12 to 0.55). No pose of the seven is dearer under `auto`, and one is cheaper. The rule
+is the scene's and static — "holds alpha-tested materials" is known when the pipelines are made
+— because what says how much a frame mixes is the census, a read-back. A scene with a few leaves
+and little else pays the classify pass for less than it returns; a scene of grass blades with no
+alpha test (deformed, opaque) mixes and is left to the one draw. Both are the rule's to refine
+when a scene shows them.
+
+### The frame budgets
+
+`tools/frame-budget.ps1` over a copy of the budget file with
+`--tunable renderer.resolve.classes=auto` in every run, the final build's `msvc-release`
+binaries copied out, `-WaitQuiet 60`, from 13:02, each run waiting its turn in the GPU's line
+(the overlook's Khronos samples copied into the worktree from the gate's, read only):
+
+| run | verdict | total, median / p99 (budget) | machine |
+|---|---|---:|---|
+| overlook-1080p | pass | 0.159 / 0.203 (0.155 / 0.358) | busy: others at 91 % of the CPU at its start |
+| erg-walk-1080p-rt | pass | 0.747 / 1.123 (0.724 / 1.214) | busy: others at 47 % |
+| erg-walk-surround3-rt, endless-1080p-csm, endless-surround3-rt | in the GPU's line when this was written | | |
+
+None of these scenes holds an alpha-tested material (the overlook's classify bucket is zero), so
+under `auto` every one is the one draw, and what the runs hold is the one draw with the class
+exit's test at its top: inside the budgets on the two that were flown, on a busy machine. The
+morning's table, above, is the same scenes with every class drawn.
+
+## What stands between `modules` and a default
+
+1. **The two pixels**, above: the resolve's tail compiled so that two modules of it cannot differ.
+2. **A forest pair after it**, since the forest is where a module without water returns most.
 
 ## The design that follows
 
-Not built. In the order of what each returns at 3840 × 2160, with the measurement behind it.
+As the first pass wrote it, in the order of what each returns at 3840 × 2160, with the
+measurement behind it. **Since the second pass**: (a) and (b) are built. (b)'s estimate from the
+shares, 0.2 to 0.3 ms at the pond poses, measured 0.21 to 0.22 ms of resolve at both. (c)'s
+argument for the cold start has its measurement: two pipelines of one module in one batch are
+two compiles (108 s twice over where one is 86 to 97), so per-class modules are what lets a
+batch compile side by side, and a class's second pipeline of the *same* module is not. Three
+rows the second pass adds, smallest first: **the classify pass's own cost on a scene with
+water** (0.078 to 0.096 ms where the morning's was 0.064 to 0.079: the level's slack is computed
+before any record's square is asked, and the pixel's facts carry the whole instance; both can
+wait until a square holds the pixel); **the resolve's tail compiled so that two modules of it
+cannot differ**, which is what stands between `modules` and `auto`; and **a class exit that
+reads instead of deciding** — the lane's own post-depth coverage or helper state, where the
+device reports it, would end a rejected lane with no decode at all, so that `draws` cost only
+the classify pass where nothing mixes and could be on for every scene.
 
 **(a) The class exit, then the default** (S). Returns 0.5 ms of 2.75 under the grove and makes
 `modules` worth 0.57 to 0.73 ms on a layered ground with ponds out of view; unblocks the forest's

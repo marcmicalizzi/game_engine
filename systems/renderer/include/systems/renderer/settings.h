@@ -573,11 +573,28 @@ u32 resolve_stop_tunable(u64 frame_index) noexcept;
 // `renderer.resolve.classes`: `off`, the one fullscreen draw; `draws`, a classify pass writes each
 // pixel's class as depth and the resolve is drawn once per class, depth-equal, every class by the
 // scene's own module; `modules`, the same with every class that cannot touch water drawn by the
-// module that has none. Read when the pipelines are made (a renderer made under `off` builds none
-// of the split's and draws exactly what it drew) and once a frame, where a renderer that built
-// them may be turned down to `draws` or `off`. The picture is the same bytes at all three.
-enum class ResolveClassMode : u32 { Off = 0, Draws = 1, Modules = 2 };
+// module that has none; `auto`, `draws` on a scene that holds alpha-tested materials (leaves: the
+// classes that interleave at the pixel's scale, which is what the split returns) and `off` on
+// every other (`resolve_class_mode_for`, resolve_classes.h). Read when the pipelines are made and
+// once a frame. A renderer made under `off` builds none of the split's and draws exactly what it
+// drew; one made under `draws` or `modules` builds the split's and **not the one draw's
+// pipeline** (the same module twice in one batch is the driver compiling it twice), so it can be
+// turned between those two frame by frame and `off` draws as `draws` there. The picture is the
+// same bytes under `off` and `draws`, and under `modules` to what two modules' arithmetic can
+// differ by (renderer.md).
+//
+// `cycle` is a measurement choice: the pipelines of every mode are made, and frame f draws by
+// (f / `k_resolve_class_cycle_frames`) % 3 — off, draws, modules — so one flight of one process
+// holds the three side by side under the same load, sixteen frames at a time (a forest flight is
+// four minutes of load for seconds of frames, and four flights are four loads). A renderer made
+// under it also follows the tunable frame by frame when a test sets it to one of the three.
+enum class ResolveClassMode : u32 { Off = 0, Draws = 1, Modules = 2, Cycle = 3, Auto = 4 };
+inline constexpr u64 k_resolve_class_cycle_frames = 16;
+// What the pipelines are made for: the tunable as set.
 ResolveClassMode resolve_classes_tunable() noexcept;
+// What the frame of that index draws: the tunable, or under `cycle` its turn; never `Cycle`, and
+// `Auto` until the caller asks the scene (`resolve_class_mode_for`).
+ResolveClassMode resolve_classes_tunable(u64 frame_index) noexcept;
 // The split's measurement switches, never defaults (R151;
 // docs/experiments/resolve-by-class-2026-11-12.md): `renderer.resolve.class_mask` (127, every
 // class), the classes a frame draws — a class left out keeps the clear, so a flight under one bit

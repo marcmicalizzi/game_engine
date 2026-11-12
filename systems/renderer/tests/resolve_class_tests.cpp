@@ -153,7 +153,9 @@ void split_is_the_one_draw(bool sky, ShadowMode shadows, bool frame_pass) {
     MESSAGE("skipped: no ray queries on " << gpu.device.adapter().name);
     return;
   }
-  ScopedTunable mode("renderer.resolve.classes", "draws");  // the pipelines are made under it
+  // The pipelines are made under it: `cycle` makes the one draw's and the split's, and such a
+  // renderer follows the tunable frame by frame once it names a mode.
+  ScopedTunable mode("renderer.resolve.classes", "cycle");
   Rig rig;
   REQUIRE_MESSAGE(rig.build(gpu.device, sky, shadows), rig.error);
   if (frame_pass) {
@@ -266,6 +268,61 @@ TEST_CASE("resolve classes: a renderer made with the split off builds none of it
   REQUIRE_MESSAGE(shoot(rig, still), rig.error);
   CHECK(rig.renderer.resolve_classes_drawn() == 0);
   CHECK(still.color == one.color);
+}
+
+TEST_CASE(
+    "resolve classes: a renderer made to draw by class builds no one draw, and auto asks "
+    "the scene") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("skipped: " << gpu.why);
+    return;
+  }
+  constexpr u32 k_five = gfx::k_resolve_class_all & ~gfx::k_resolve_class_water_mask;
+  CapturedFrame one;
+  {
+    ScopedTunable mode("renderer.resolve.classes", "off");
+    Rig rig;
+    REQUIRE_MESSAGE(rig.build(gpu.device, false, ShadowMode::Off), rig.error);
+    REQUIRE_MESSAGE(shoot(rig, one), rig.error);
+  }
+  {
+    // Made under `draws`: the split's pipelines and not the one draw's (the same module twice in
+    // one batch is the driver compiling it twice), so `off` asked of it later draws by class
+    // still, and the bytes are the one draw's from a renderer that has it.
+    ScopedTunable mode("renderer.resolve.classes", "draws");
+    Rig rig;
+    REQUIRE_MESSAGE(rig.build(gpu.device, false, ShadowMode::Off), rig.error);
+    CapturedFrame split;
+    REQUIRE_MESSAGE(shoot(rig, split), rig.error);
+    CHECK(rig.renderer.resolve_classes_drawn() == k_five);
+    CHECK(split.color == one.color);
+    mode.set("off");
+    CapturedFrame still;
+    REQUIRE_MESSAGE(shoot(rig, still), rig.error);
+    CHECK(rig.renderer.resolve_classes_drawn() == k_five);
+    CHECK(still.color == one.color);
+    // A mask that leaves nothing is not applied where there is no one draw to fall back to.
+    ScopedTunable mask("renderer.resolve.class_mask", "0");
+    CapturedFrame masked;
+    REQUIRE_MESSAGE(shoot(rig, masked), rig.error);
+    CHECK(rig.renderer.resolve_classes_drawn() == k_five);
+    CHECK(masked.color == one.color);
+  }
+  {
+    // `auto` on a scene with no alpha-tested material (hills and sky): the one draw, and none of
+    // the split's pipelines.
+    ScopedTunable mode("renderer.resolve.classes", "auto");
+    Rig rig;
+    REQUIRE_MESSAGE(rig.build(gpu.device, false, ShadowMode::Off), rig.error);
+    CapturedFrame automatic;
+    REQUIRE_MESSAGE(shoot(rig, automatic), rig.error);
+    CHECK(rig.renderer.resolve_classes_drawn() == 0);
+    CHECK(automatic.color == one.color);
+    mode.set("draws");
+    REQUIRE_MESSAGE(shoot(rig, automatic), rig.error);
+    CHECK(rig.renderer.resolve_classes_drawn() == 0);
+  }
 }
 
 TEST_CASE("resolve classes: every class has its own exact depth, and none is 0 or 1") {

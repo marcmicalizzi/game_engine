@@ -427,9 +427,13 @@ Terrain streaming does not introduce a second bottom for water.
 
 R151's GPU case (`tests/resolve_class_water_tests.cpp`) draws the shore test's basin with the
 resolve split by pixel class ([renderer](renderer.md#the-resolve-by-pixel-class)): under `modules`
-the ground that no shore record reaches is drawn by the resolve module without water and is the
-one draw's picture, the wet class holds every pixel the band darkens (drawn by the plain module it
-is not the picture, and only that class's pixels move), and `draws` is the one draw's bytes.
+the ground that no shore record can wet is drawn by the resolve module without water and is the
+one draw's picture, at four poses (two of them with the band at a grazing angle); the wet class
+is a record's square **and the heights it can wet**, so the plain 1.5 m above the basin's level
+holds no wet-class pixel; the class holds every pixel the band darkens (with no wet class written
+the picture is not the one draw's, by no more pixels than the class held); and `draws` is the one
+draw's bytes. A shore record's heights are read in two places that must agree: `water_ground_wetness`
+in the resolve and `classify_wet` in `resolve_class.slang`; change the one and the other.
 
 ## Capability contract (ADR-0027)
 
