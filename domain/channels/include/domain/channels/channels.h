@@ -122,6 +122,12 @@ struct ChannelLink {
   Vector<u8> reach;        // the reach's `ChannelReach` code
   Vector<f32> step_depth;  // how far a step-pool's pool lowers the cut's bed below its line, m
   Vector<f64> bed;  // the cut's bed, metres: the thalweg's, the steps', the fan's, the grade's
+  // **W116** (channels.md, "A line across a slope"), one per point of `line`: how far the section's
+  // top of bank stands under the ground at the line, metres — the ground at the line less the
+  // ground at its lower bank top, where that is lower. The section is seated by it: its top, its
+  // bed, its flood bed and the water in it stand that much lower, so the downhill bank stands over
+  // all of them. 0 where both bank tops stand at or over the ground at the line.
+  Vector<f32> seat;
   // The steps' crests (indices into `line`) and their heights: where the boulders stand.
   Vector<u32> step_at;
   Vector<f32> step_height;
@@ -353,6 +359,34 @@ struct WaterStats {
 WaterStats measure_water(const JsonValue& blocks, const scene_gen::Ground& ground,
                          const scene_gen::Exclusion* water = nullptr, const f64* region = nullptr,
                          f64 border_m = 0);
+
+// **The section against the hillside** (W116; channels.md, "A line across a slope"): the rule is
+// that at every point of a link nothing of the cut's section stands over the ground beside it by
+// more than `k_seat_bound_m` — the top of the bank (and with it the bed, the bars and the water
+// under it) over the ground at its lower bank top, and the flood bed's level over the ground at
+// its outer edge. Each point of every kept stretch at least `bar_min_width_m` wide is read across
+// the line's heading over a width, at the section's half width (`bend_section`'s, with its swell)
+// and at each side's flood reach, against `ground` (the ground before any cut: a cut only lowers,
+// so where the section stands over that ground the cut leaves it standing in the air). The
+// section is the trapezoid or triangle the cut writes, its faces rising to its top at the bank
+// tops, so on ground that is a plane across a width a section whose top holds holds everywhere
+// between the line and its banks.
+inline constexpr f64 k_seat_bound_m = .02;
+struct SeatStats {
+  u64 points = 0;       // points read
+  u64 bank_over = 0;    // whose top stands over the lower bank's ground by more than the bound
+  f64 bank_over_m = 0;  // the most, and where
+  WorldPos bank_over_at{};
+  f64 bank_over_line_m = 0;  // metres of line with a top over the bound
+  u64 flood_sides = 0;       // sides with a flood bed read
+  u64 flood_over = 0;  // whose level stands over the ground at its edge by more than the bound
+  f64 flood_over_m = 0;
+  WorldPos flood_over_at{};
+  f64 seat_max_m = 0;  // the largest `ChannelLink::seat`, and the metres of line seated at all
+  f64 seated_line_m = 0;
+};
+SeatStats measure_seat(const ChannelLayer& layer, const ChannelNetwork& network,
+                       const scene_gen::Ground& ground);
 
 // One placed piece (W97: every clast of one world tile, merged): where its frame stands (the
 // tile's corner, whole millimetres; y the lowest clast centre's whole millimetre), its world tile,
