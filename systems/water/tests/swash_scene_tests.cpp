@@ -190,4 +190,126 @@ TEST_CASE("water swash: the wet band runs up and back with the clock, and the wa
   CHECK(still_ground_moved == 0u);
 }
 
+// ---- S102: a sea that comes in at an angle, on a bay (docs/experiments/shore-mechanics.md)
+// -------
+
+namespace {
+
+// A bay cut by one wide basin: the shore an arc facing east, about 1:24 at the waterline, an open
+// sea whose outline follows it. `extra` is appended to the body (a swell's fields).
+std::string bay_scene(const char* extra) {
+  char text[2048];
+  std::snprintf(text, sizeof(text), R"({
+  "format": "engine.scene.v1",
+  "name": "bay-test",
+  "terrain": {"size": 257, "extent": 128, "seed": 2, "dune_height": 0,
+              "basins": [{"center": [150, 0], "radius": 200, "depth": 8}]},
+  "water": [{"name": "bay", "level_m": -0.8, "open": true,
+             "shape": {"polygon": [[16.9, 0, -100], [-5.3, 0, -60], [-13.8, 0, -30], [-16.5, 0, 0],
+                                   [-13.8, 0, 30], [-5.3, 0, 60], [16.9, 0, 100], [80, 0, 100],
+                                   [80, 0, -100]]},
+             "wind_follow": false, "direction_deg": 200, "wind_m_s": 8, "fetch_km": 60,
+             "wet_m": 0.3%s}]
+})",
+                extra);
+  return text;
+}
+
+struct BayShots {
+  CapturedFrame at_10;
+  CapturedFrame again;
+  CapturedFrame wrapped;  // 1,024 s later: the water's clock has gone round once
+  CapturedFrame later;    // a second on
+  bool lifted = false;
+  u32 water_instance = ~0u;
+};
+
+void shoot_bay(const gfx::Device& device, const test::TempDir& tmp, const std::string& name,
+               const char* extra, BayShots& out) {
+  const std::string path = tmp.file(name + ".json");
+  {
+    std::ofstream file(path, std::ios::binary);
+    file << bay_scene(extra);
+  }
+  SceneDesc desc;
+  std::string error;
+  REQUIRE_MESSAGE(read_scene_file(path, desc, error), error);
+  desc.ddc = tmp.file("ddc");
+  SceneData data;
+  REQUIRE_MESSAGE(load_scene(desc, data, error), error);
+  RenderSettings settings;
+  ResolvedSettings resolved;
+  resolve_settings(settings, device.features(), &data, resolved);
+  REQUIRE(check_availability(resolved, device.features()) == RenderAvailability::Ok);
+  GpuScene scene;
+  REQUIRE_MESSAGE(scene.create(device, data, resolved, &error), error);
+  out.lifted = scene.water_lifted();
+  SceneRenderer renderer;
+  SceneRenderer::Desc rd;
+  rd.width = 480;
+  rd.height = 320;
+  REQUIRE_MESSAGE(renderer.create(device, scene, resolved, rd, &error), error);
+  FrameDesc frame;
+  // Thirty metres over the beach, looking out and down at the surf and the sand below it.
+  frame.camera.position = WorldPos{-40.0, 30.0, 0.0};
+  frame.camera.target = WorldPos{15.0, -0.8, 0.0};
+  frame.sky_time_s = 0.0;
+  CaptureChannels channels;
+  channels.ids = true;
+  for (u32 i = 0; i < data.instances.size(); ++i) {
+    const u32 mesh = data.instances[i].mesh;
+    if (mesh < data.mesh_info.size() && data.mesh_info[mesh].water.has_value())
+      out.water_instance = i;
+  }
+  frame.world_time_s = 10.0;
+  REQUIRE_MESSAGE(renderer.capture(frame, channels, out.at_10, &error), error);
+  frame.world_time_s = 11.0;
+  REQUIRE_MESSAGE(renderer.capture(frame, channels, out.later, &error), error);
+  frame.world_time_s = 10.0 + 1024.0;
+  REQUIRE_MESSAGE(renderer.capture(frame, channels, out.wrapped, &error), error);
+  frame.world_time_s = 10.0;
+  REQUIRE_MESSAGE(renderer.capture(frame, channels, out.again, &error), error);
+}
+
+}  // namespace
+
+TEST_CASE("water swash: a sea that comes in at an angle is a function of the clock, and wraps") {
+  if (!gpu_here()) return;
+  const test::TempDir tmp("water_bay");
+  gfx::Device device;
+  std::string error;
+  REQUIRE_MESSAGE(device.create(gfx::DeviceOptions{}, &error), error);
+  BayShots sea, swell;
+  shoot_bay(device, tmp, "sea", "", sea);
+  shoot_bay(device, tmp, "swell",
+            R"(, "swell_height_m": 0.8, "swell_period_s": 10, "swell_direction_deg": 165)", swell);
+  device.destroy();
+  for (const BayShots* shots : {&sea, &swell}) {
+    REQUIRE(shots->water_instance != ~0u);
+    CHECK(shots->lifted);
+    // The same time twice, with other times drawn between: the same bytes (nothing is kept).
+    CHECK(shots->at_10.color == shots->again.color);
+    CHECK(shots->at_10.ids == shots->again.ids);
+    // The water's clock wraps every 1,024 s with no jump: the overlapping sheets, the train from
+    // its direction and the swell are all whole numbers of cycles of it.
+    CHECK(shots->at_10.color == shots->wrapped.color);
+    CHECK(shots->at_10.ids == shots->wrapped.ids);
+    // And it moves: a second on is another picture.
+    CHECK(shots->at_10.color != shots->later.color);
+  }
+  // The swell is another sea: the same clock draws another surface and another waterline.
+  const u32 pixels = sea.at_10.width * sea.at_10.height;
+  u32 differ = 0, waterline = 0;
+  for (u32 p = 0; p < pixels; ++p) {
+    if (luma(sea.at_10, p) != luma(swell.at_10, p)) ++differ;
+    if ((sea.at_10.ids[p * k_id_words] == sea.water_instance) !=
+        (swell.at_10.ids[p * k_id_words] == swell.water_instance))
+      ++waterline;
+  }
+  MESSAGE("bay: " << differ << " of " << pixels << " pixels differ with a 0.8 m, 10 s swell, "
+                  << waterline << " of them between water and ground");
+  CHECK(differ > pixels / 20);
+  CHECK(waterline > 0u);
+}
+
 #endif
