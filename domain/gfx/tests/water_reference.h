@@ -483,6 +483,7 @@ struct Field {
   double depth = 0.0;
   double arrival = 0.0;
   double grown = 1.0;
+  double slope = 0.0;  // the foreshore slope of the place's stretch of shore (S102); 0: none
   double depth_grad[2] = {0.0, 0.0};
   double arrival_grad[2] = {0.0, 0.0};
 };
@@ -512,14 +513,14 @@ inline Field field_at(const gfx::WaterSurface& s, const float* field, double x, 
                         0.5 * (0.5 + fz) * (0.5 + fz)};
   const double dwx[3] = {fx - 0.5, -2.0 * fx, fx + 0.5};
   const double dwz[3] = {fz - 0.5, -2.0 * fz, fz + 0.5};
-  double v[3] = {0.0, 0.0, 0.0};
+  double v[4] = {0.0, 0.0, 0.0, 0.0};
   double dx[2] = {0.0, 0.0};
   double dz[2] = {0.0, 0.0};
   for (i64 j = 0; j < 3; ++j) {
     const u32 row = static_cast<u32>(std::clamp(iz + j - 1, i64{0}, hi)) * n;
     for (i64 i = 0; i < 3; ++i) {
       const u32 at = row + static_cast<u32>(std::clamp(ix + i - 1, i64{0}, hi));
-      for (u32 c = 0; c < 3; ++c) {
+      for (u32 c = 0; c < 4; ++c) {
         const double texel = static_cast<double>(field[gfx::k_water_field_channels * at + c]);
         v[c] += texel * wx[i] * wz[j];
         if (c < 2) {
@@ -534,6 +535,7 @@ inline Field field_at(const gfx::WaterSurface& s, const float* field, double x, 
   f.depth = v[0];
   f.arrival = v[1];
   f.grown = std::clamp(v[2], 0.0, 1.0);
+  f.slope = v[3];
   f.depth_grad[0] = dx[0] * inside_x;
   f.depth_grad[1] = dz[0] * inside_z;
   f.arrival_grad[0] = dx[1] * inside_x;
@@ -561,8 +563,21 @@ inline double train_cycles(const gfx::WaterSurface& s, double t, double arrival)
 // water_waves.slang's `water_shelter`: the lee.
 inline double shelter(const Field& f) { return std::sqrt(std::clamp(f.grown, 0.0, 1.0)); }
 
+// water_waves.slang's `water_place_slope` and `water_place_run_up` (S102): a place's own stretch
+// of shore.
+inline double place_slope(const gfx::WaterSurface& s, const Field& f) {
+  return f.slope > 0.0 ? f.slope : static_cast<double>(s.slope);
+}
+inline double place_run_up(const gfx::WaterSurface& s, const Field& f) {
+  if (!(s.reach_scale > 0.0f) || !(f.slope > 0.0)) return static_cast<double>(s.run_up_m);
+  return std::min(static_cast<double>(s.reach_scale) *
+                      (0.35 * f.slope + 0.5 * std::sqrt(0.563 * f.slope * f.slope + 0.004)),
+                  static_cast<double>(s.reach_cap));
+}
+
 inline double offshore_weight(const gfx::WaterSurface& s, double d) {
-  const double k0 = std::max(static_cast<double>(s.k0), 1e-6);
+  // `water_table_k0`: with a swell (S102) the wind sea's own peak, which `swell` carries.
+  const double k0 = std::max(static_cast<double>(s.swell > 0.0f ? s.swell : s.k0), 1e-6);
   const double lo = gfx::k_water_train_shallow_kd / k0;
   const double hi = gfx::k_water_train_deep_kd / k0;
   const double x = std::clamp((d - lo) / (hi - lo), 0.0, 1.0);
@@ -604,7 +619,9 @@ inline double height(const gfx::WaterSurface& s, const Field& f, double x, doubl
     }
   }
   double train = 0.0;
-  if (w_off < 1.0 && d > 0.0 && s.height_m > 0.0f && s.period_s > 0.0f) {
+  // A swell's train (S102) is whole wherever there is water, beside the wind's table.
+  const double w_train = s.swell > 0.0f ? 1.0 : 1.0 - w_off;
+  if (w_train > 0.0 && d > 0.0 && s.height_m > 0.0f && s.period_s > 0.0f) {
     const double c = train_cycles(s, t, f.arrival);
     const double env = 0.55 + 0.45 * (0.5 - 0.5 * std::cos(k_two_pi * (c + 0.5) / 7.0));
     // What the mesh carries of the train: its spacing as the train crosses it.
@@ -624,7 +641,7 @@ inline double height(const gfx::WaterSurface& s, const Field& f, double x, doubl
             train_shape(static_cast<double>(s.height_m), static_cast<double>(s.k0), d,
                         k_two_pi * frac(c));
   }
-  return w_off * off + (1.0 - w_off) * train;
+  return w_off * off + w_train * train;
 }
 
 inline double swash_shape(double u) {
@@ -633,25 +650,38 @@ inline double swash_shape(double u) {
   return 4.0 * sv * (1.0 - sv);
 }
 
+// water_waves.slang's `water_surface_front` (`water_swash_front_at`, S102): the highest of the
+// sheets on the place's own stretch of beach, each lasting as long as its slope keeps it.
 inline double front(const gfx::WaterSurface& s, const Field& f, double x, double z, double t) {
   if (!(s.run_up_m > 0.0f) || !(s.period_s > 0.0f)) return 0.0;
   const double c = train_cycles(s, t, f.arrival);
   const double k = std::floor(c);
-  const u32 j = static_cast<u32>(static_cast<i32>(k) + 7 * 64) % 7u;
-  const double group =
-      0.55 + 0.45 * (0.5 - 0.5 * std::cos(k_two_pi * (static_cast<double>(j) + 0.5) / 7.0));
+  const double u = c - k;
   const double along = std::max(static_cast<double>(s.along_m), 1e-3);
   const double variation = 0.85 + 0.3 * value_noise(x / along + 17.3, z / along + 5.1);
-  const double r = static_cast<double>(s.run_up_m);
-  const double reach = r * group * variation * shelter(f);
+  const double r = place_run_up(s, f);
+  const double slope = std::max(place_slope(s, f), 1e-3);
+  const double period = static_cast<double>(s.period_s);
   const double z_lo = -0.2 * r;
-  return z_lo + (reach - z_lo) * swash_shape(c - k);
+  double front_z = z_lo;
+  for (u32 i = 0; i < gfx::k_swash_overlap; ++i) {
+    const u32 j = static_cast<u32>(static_cast<i32>(k) - static_cast<i32>(i) + 7 * 64) % 7u;
+    const double group =
+        0.55 + 0.45 * (0.5 - 0.5 * std::cos(k_two_pi * (static_cast<double>(j) + 0.5) / 7.0));
+    const double reach = r * group * (variation * shelter(f) * gfx::k_water_mesh_inside);
+    const double span =
+        std::clamp(std::sqrt(2.0 * std::max(reach + 0.2 * r, 0.0) / k_g) / (slope * 0.4 * period),
+                   gfx::k_swash_span_min, gfx::k_swash_span_max);
+    const double v = (u + static_cast<double>(i)) / span;
+    if (v < 1.0) front_z = std::max(front_z, z_lo + (reach - z_lo) * swash_shape(v));
+  }
+  return front_z;
 }
 
 // water_waves.slang's `water_sheet_surface`: the sheet over ground `g` above the instant's still
-// level under a front at `fr`, going on under the ground past the front at the same slope.
-inline double sheet_surface(const gfx::WaterSurface& s, double g, double fr) {
-  const double r = static_cast<double>(s.run_up_m);
+// level under a front at `fr`, going on under the ground past the front at the same slope; `r` the
+// place's run-up.
+inline double sheet_surface(double r, double g, double fr) {
   const double y = fr - g;
   const double sheet =
       y > 0.0 ? std::min(0.5 * y, 0.25 * r + 0.02) : std::max(0.5 * y, -gfx::k_water_bank_park_m);
@@ -672,9 +702,14 @@ inline double vertex_lift(const gfx::WaterSurface& s, const float* field, double
   const Field f = field_at(s, field, x, z);
   const double tide =
       s.tide_m > 0.0f ? static_cast<double>(s.tide_m) * std::sin(k_two_pi * tide_phase) : 0.0;
-  const double fade = (s.flags & gfx::k_water_surface_open) != 0 && s.fade_m > 0.0f
-                          ? smoothstep(0.0, static_cast<double>(s.fade_m), edge)
-                          : 1.0;
+  // `water_outline_fade` (S102): an open body's displacement fades in from its outline only where
+  // the outline stands in deep water.
+  double fade = 1.0;
+  if ((s.flags & gfx::k_water_surface_open) != 0 && s.fade_m > 0.0f) {
+    const double deep =
+        field != nullptr && s.k0 > 0.0f && s.height_m > 0.0f ? offshore_weight(s, f.depth) : 1.0;
+    fade = 1.0 - deep * (1.0 - smoothstep(0.0, static_cast<double>(s.fade_m), edge));
+  }
   const double mesh_far = static_cast<double>(s.mesh_far_m);
   const double mesh_ring = std::min(
       static_cast<double>(s.mesh_near_m) + static_cast<double>(s.mesh_grade) * std::max(edge, 0.0),
@@ -682,10 +717,10 @@ inline double vertex_lift(const gfx::WaterSurface& s, const float* field, double
   const double water = (tide + height(s, f, x, z, t, mesh_far, mesh_ring)) * fade;
   if (field == nullptr) return water;
   const double d = f.depth + tide;
-  const double r = static_cast<double>(s.run_up_m);
+  const double r = place_run_up(s, f);
   const double band = 0.2 * r + 0.05;
   if (d >= band) return water;
-  const double bank = tide + sheet_surface(s, -d, front(s, f, x, z, t));
+  const double bank = tide + sheet_surface(r, -d, front(s, f, x, z, t));
   const double share = 1.0 - smoothstep(0.0, band, d);
   return water + (bank - water) * share;
 }

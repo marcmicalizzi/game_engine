@@ -225,12 +225,22 @@ bool read_body(const scene::WaterBody& block, Body& out, std::string* error) {
     return fail("its tide_m must not be negative");
   if (!(block.drain_s > 0.0f) || !finite(block.drain_s))
     return fail("its drain_s must be positive");
+  // The swell (water.md, "The swell"; roadmap S102).
+  if (!(block.swell_height_m >= 0.0f) || !finite(block.swell_height_m))
+    return fail("its swell_height_m must not be negative");
+  if (!(block.swell_period_s >= 0.0f && block.swell_period_s <= 30.0f))
+    return fail("its swell_period_s must be within [0, 30]");
+  if (!finite(block.swell_direction_deg)) return fail("its swell_direction_deg is not a number");
+  if (block.swell_height_m > 0.0f && !(block.swell_period_s > 0.0f))
+    return fail("its swell has a height and no period (swell_period_s)");
   out.wet_m = block.wet_m;
   out.foam_m = block.foam_m;
   out.wind_m_s = block.wind_m_s;
   out.fetch_km = block.fetch_km;
   out.tide_m = block.open ? block.tide_m : 0.0f;
   out.drain_s = block.drain_s;
+  out.swell_height_m = block.open ? block.swell_height_m : 0.0f;
+  out.swell_period_s = block.open ? block.swell_period_s : 0.0f;
   out.shore_m = block.shore_m;
   out.open = block.open;
   return true;
@@ -326,11 +336,19 @@ WindWave wind_wave(const Body& body, const Vector<Vec2>& edge) {
   return w;
 }
 
+// The wave that comes ashore (S102): an open body's swell where it has one — it is the train that
+// shoals, breaks and runs up (water.md, "The swell") — else the wind's.
+WindWave shore_wave(const Body& body, const Vector<Vec2>& edge) {
+  if (body.open && body.swell_height_m > 0.0f && body.swell_period_s > 0.0f)
+    return WindWave{static_cast<f64>(body.swell_height_m), static_cast<f64>(body.swell_period_s)};
+  return wind_wave(body, edge);
+}
+
 f64 rim_height(const Body& body, const Vector<Vec2>& edge) {
   const f64 tide = body.open ? static_cast<f64>(body.tide_m) : 0.0;
-  const f64 u = static_cast<f64>(body.wind_m_s);
-  if (!(u > 0.0) && !(tide > 0.0)) return 0.0;
-  return 2.0 * wind_wave(body, edge).height + tide + 0.25;
+  const WindWave w = shore_wave(body, edge);
+  if (!(w.height > 0.0) && !(tide > 0.0)) return 0.0;
+  return 2.0 * w.height + tide + 0.25;
 }
 
 // **The rings' spacing at the outline** (S100 stage B; water.md, "The mesh"): a quarter of the
@@ -340,7 +358,7 @@ f64 rim_height(const Body& body, const Vector<Vec2>& edge) {
 // outline, so the gaps are a geometric series, 1.15 to a ring.
 inline constexpr f32 k_ring_grade = 0.15f;
 f32 near_spacing_for(const Body& body, const Vector<Vec2>& edge, f32 spacing) {
-  const WindWave w = wind_wave(body, edge);
+  const WindWave w = shore_wave(body, edge);
   if (!(w.height > 0.0)) return spacing;
   const f64 bore = w.period * std::sqrt(9.81 * w.height / 0.78);
   const f32 wanted = std::clamp(static_cast<f32>(0.25 * bore), 0.25f, spacing_for(body));

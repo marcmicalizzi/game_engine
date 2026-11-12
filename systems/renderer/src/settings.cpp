@@ -924,7 +924,8 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
       if (!info.water.has_value() || info.water->channel || info.water->depth.size < 2) continue;
       const auto& body = info.water->body;
       lifts_water = lifts_water || body.wind_m_s > 0.0f ||
-                    (body.open && (info.water->wind_m_s > 0.0f || body.tide_m > 0.0f));
+                    (body.open && (info.water->wind_m_s > 0.0f || body.tide_m > 0.0f ||
+                                   (body.swell_height_m > 0.0f && body.swell_period_s > 0.0f)));
     }
   }
   out.deform_pass = s.deform || out.terrain_levels || out.flora_motion || lifts_water ||

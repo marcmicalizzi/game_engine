@@ -1369,7 +1369,7 @@ struct WaterShape @version(2) {
 /// mesh carries under each vertex (the level less the ground there, zero where the ground stands
 /// above the water). The walker wades in it and stops at the chest. Append-only: a field added
 /// later has a default that draws what the block drew before it.
-struct WaterBody @version(5) {
+struct WaterBody @version(6) {
   name: string
   /// The surface's height, a world y, metres.
   level_m: f64 = 0 @unit(m)
@@ -1460,6 +1460,19 @@ struct WaterBody @version(5) {
   /// sand's wetness above the capillary fringe decays as exp(-t / drain_s) (sand: tens of seconds;
   /// gravel drains in a few, silt and clay hold water for minutes). Read only with a swash.
   drain_s: f32 = 20 @since(5) @unit(s)
+  /// **A swell** (docs/subsystems/water.md, "The swell"; docs/experiments/shore-mechanics.md;
+  /// roadmap S102): waves that were raised by a wind somewhere else and arrive on an open body's
+  /// coast long, regular and from their own direction, whatever the local wind does. Its
+  /// significant height in deep water, metres; with a period, the swell is the train that shoals,
+  /// turns to the beach, breaks and runs up it, in place of the local wind sea's peak wave (which
+  /// stays the surface offshore and calms towards the shore as before). 0, or a closed body: none.
+  swell_height_m: f32 = 0 @since(6) @unit(m)
+  /// The swell's period, seconds, (0, 30]: 8 to 14 s is an ocean coast's; how often a wave arrives
+  /// and, with the beach's slope, whether each sheet has run back before the next (a steep beach)
+  /// or is overrun by it (a gentle one).
+  swell_period_s: f32 = 0 @since(6) @unit(s)
+  /// Degrees about +y from +x towards +z: the way the swell travels over deep water.
+  swell_direction_deg: f32 = 0 @since(6) @unit(deg)
 }
 
 /// **A channel of flowing water** (docs/subsystems/water.md, "Channels"; roadmap S96; the grounding,
