@@ -517,6 +517,33 @@ command. Measured figures are in "What it measured" above.
 
 ## What the sets look like, and what a person would object to
 
+### The ground and wood sets in the engine (G187, G188, 2026-11-11 evening)
+
+Drawn as G149 drew its sets (`engine-view`, `msvc-release`, offscreen, 1,600 by 900, the earth sky
+at 15:30 in July at 46.5 degrees north): each set a stripe of one flat ground, the camera at 1.7 m
+looking two metres ahead and then fifteen metres along; "before" is the base's sets (built by the
+base's own `engine-content`, version 3), "after" version 6, both drawn by this row's
+`engine-view` (the renderer did not change). Two passes: version 5's pictures showed the moss's
+cushion domes creased at every seam into crazy paving and the boards' weathering patches as a
+checker at 15 m, which version 6 removed; its pictures are the ones judged. Beside the reels
+r01, r04 and r19 (turf, a grazed alpine sward; r19's grey plank footbridges and silvered logs):
+
+- **Turf** is no longer one flat green: at 1.7 m it shows tufts, dead leaves and a mottle of
+  lighter and darker sward, and at 15 m a patchy lawn. Beside r01 and r04 it is still too even
+  and too smooth: their turf's dark gaps between tufts and its bright blade tips come from
+  geometry (the sward's blades), and a texture alone reads as a mown lawn, not a grazed alpine
+  sward.
+- **Moss** reads as a carpet of patches, but its patches are hard-edged cells of one tone each
+  (a camouflage print at 1.7 m); a moss carpet's tone changes softly across a cushion.
+- **Soil** reads as stony bare soil; its small stones are too uniformly pale specks.
+- **Thatch** is the weakest: a straw-coloured litter with soft mottles, still close to one flat
+  tone at 15 m.
+- **Planks** read as weathered grey-brown boards with flat-sawn arches, knots and checks; on a
+  ground plane at 15 m the 2 m tile's repeat is faint. Beside r19 the boards are a little too
+  brown and too clean: its decks are grey with dark wet stains along their joints.
+- **Logs**: the silvered wood and its long checks read; the bark patches read as cracked mud
+  more than as bark, and at 15 m they repeat in a lattice on a plane (a log of 4 m shows two).
+
 ### In the engine (G149, 2026-11-11)
 
 All twelve drawn by `engine-view` (`msvc-release`, offscreen, 1,600 by 900, the earth sky at
@@ -610,6 +637,18 @@ bar is a photograph, and none of these is one:
   other cures, neither this module's.
 - **Streaks run down the image.** A rock set laid on a mesh by triplanar or with a rotation has
   no idea which way is down; a streak points the way the image's -V points on that face.
+- **A floor's tone across a cushion** (G187): a moss cushion and a sward's patch take one tone
+  a cell, so their edges are hard; a tone that falls off across the cell, or two overlapping
+  cells blended, is the next step. The thatch needs structure of its own above the decimetre
+  (lodged swathes, tussock bases) to stop reading as one tone at 15 m.
+- **A grazed sward's dark gaps and lit tips** are the sward's blades' to draw (flora's), not a
+  texture's: the turf set is the floor under them and turf where none stand.
+- **Wood the way a member is mapped** (G188): the sets run their grain along u; a consumer that
+  maps u from a world axis runs it across a member that lies along the other one. A log's bark
+  is a patch on a flat image; a log mesh with its own bark (and a bark set) would carry it
+  better. The deck's wet stains along its joints and between boards belong to the consumer's
+  mesh (per-board placement), not the set.
+- **Ground and wood variants**: only the tiled granular roles have them (G153).
 - The numbers marked not verified on the grounding page.
 
 ## Capability contract (ADR-0027)
