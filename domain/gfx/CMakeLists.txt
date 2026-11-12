@@ -37,10 +37,11 @@ engine_shaders(NAME gfx SOURCES shaders/cluster_mesh.slang shaders/cluster_cull.
                              shaders/overlay.slang shaders/alpha_coverage.slang
                              shaders/opacity_micromap_bake.slang)
 engine_module(NAME gfx LAYER domain
-  DEPS base containers memory hash json log math platform schemas io gpu_lock time
+  DEPS base containers memory hash json log math platform schemas io gpu_lock time jobs tunables
   SOURCES src/adapter.cpp src/device.cpp src/device_caps.cpp src/requirements.cpp src/vma.cpp
           src/frame.cpp src/render_graph.cpp src/commands.cpp src/rhi_vulkan.cpp
           src/bindless.cpp src/swapchain.cpp src/capture.cpp src/shader_library.cpp src/pipeline_cache.cpp
+          src/pipeline_batch.cpp
           src/gpu_timer.cpp src/acceleration.cpp src/cluster_acceleration.cpp src/opacity_micromap.cpp
           src/display_probe.cpp)
 target_link_libraries(engine_gfx PUBLIC engine_shaders_gfx)

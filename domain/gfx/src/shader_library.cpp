@@ -4,6 +4,7 @@
 #include <core/platform/process.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/pipeline.h>
+#include <domain/gfx/pipeline_batch.h>
 #include <domain/gfx/shader_library.h>
 #include <foundation/io/vfs.h>
 
@@ -667,6 +668,7 @@ bool ShaderLibrary::load_bytes(Entry& entry, std::span<const u8> bytes, bool fro
       if (error != nullptr) error->insert(0, entry.name + ": ");
       return false;
     }
+    name_shader_module(*device_, module, entry.name);  // for the pipelines' timings
   }
   const u32 generation = entry.loaded ? entry.shader.generation + 1 : 0;
   release(entry.shader);

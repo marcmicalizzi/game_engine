@@ -1,0 +1,12 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "R149",
+  "reason": "R149: the summary's load block names every pipeline the device made (load_summary takes the device; one include); gfx.md gains 'Pipelines created in parallel' with the cold table, the scaling measurement and the batch's rule; apps.md documents load.pipelines",
+  "date": "2026-11-11",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "engine_view.main_cpp.lines": 2,
+    "page:docs/subsystems/apps.md": 486,
+    "page:docs/subsystems/gfx.md": 9914
+  }
+}
