@@ -234,6 +234,19 @@ nearest cascade at rest, so what the cull and the raster gained (0.07 ms) the ca
 CPU's poser more than gave back. The after's leaves were the herb's green in this run
 (04ac9a60); the measured albedo (f2b0581e) changes no triangle or pass.
 
+**What the pictures say** (the community scene's four markers, before and after, one derived-data
+root, 2026-11-11; beside reels r01 and r04). At eye height the meadow now carries flowers: clover's
+magenta and thyme's purple drifts and ox-eye daisies on the dry flank, specks of colour across the
+floor to 40 m; at the wet margin the sedge and rush drifts close the sward between the grass
+patches, darker and denser than the flank, and with the leaves at the blade's albedo they read as
+graminoids rather than the first run's pale fans. What a person still objects to beside r01: the
+heads are few and small for a meadow in flower (one drift a cell; most of the wet margin's forbs are
+past flowering on 19 July, and meadowsweet's cream heads are sparse); the grass is still thin
+blades in visible rows over a flat floor; from 50 m the flowers vanish into one olive tint with
+darker blotches where the near ring draws (the far form's colour carries no flower: G170's); the
+light is flat. The marsh marigold's yellow, which the wet margin should show in May, needs the
+scene's day.
+
 **Wet against dry, for G168** (read: Punalekar et al. 2016, Remote Sensing 8(2):112, field
 spectroscopy of a floodplain meadow, MG4): the wet community (*Carex*, *Juncus acutiflorus*,
 *Filipendula*, *Cardamine*) and the dry one were "spectrally very similar", the dry slightly
