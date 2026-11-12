@@ -149,6 +149,8 @@ struct GiStats {
   u32 shell = 0;
   u32 shell_hits = 0;
   u32 shell_near = 0;
+  // Stage 8: of `shell_hits`, those whose cells were whole and took no bounce this frame.
+  u32 shell_kept = 0;
 };
 // One frame's numbers, as the renderer folds them in when that frame's slot comes around again
 // (`Stats::last`). The sums beside it answer "what does this scene cost on average"; a flythrough
@@ -478,6 +480,10 @@ struct Stats {
   // are counted in `shadow_casters` with the rest; a frame measures them as the difference with
   // `renderer.gi.shell_m=0`.
   u32 gi_shell_views = 0;
+  // **The cache's pre-roll** (R69 stage 5; gi_preroll.h), the frame last recorded: the sample and
+  // fold pairs it recorded before its own because it started cold — the cache's first frame, or
+  // one whose eye jumped. 0 on every other frame.
+  u32 gi_preroll_steps = 0;
   // The vertex path's indexed draw, last frame, both hardware passes and every view: the triangles
   // the cut's clusters hold, which is what it draws (three indices each), and how many of those
   // clusters the index budget had no room for, which the fallback drew instead at one vertex
@@ -1093,11 +1099,18 @@ class SceneRenderer {
   // never by a frame; the first frame that records its passes clears it (`gi_reset_`).
   gfx::BufferResource gi_cache_;
   u32 gi_count_ = 0;
+  // The crowns' priors (crown_priors.h; renderer.md, "Indirect light", "Stage 7"): one record a
+  // mesh and the grids behind them, made once at load beside the cache where a mesh has a crown.
+  gfx::BufferResource gi_crowns_;
+  u32 gi_crown_count_ = 0;
   // The cache's own frame count: its stamps' clock and the sample pass's rotation, counted by the
   // frames that record its passes rather than taken from `FrameDesc::frame_index`, which a caller
   // that captures one pose again and again leaves at zero.
   u32 gi_frame_ = 0;
   bool gi_reset_ = true;
+  // Where the frame before had its eye, for the pre-roll's cut test (gi_preroll.h).
+  WorldPos gi_last_eye_{};
+  bool gi_eye_known_ = false;
   gfx::FrameContext frames_;
   gfx::GpuTimer timer_;
   GeometryStreamer streamer_;

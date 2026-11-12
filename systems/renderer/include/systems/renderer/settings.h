@@ -422,10 +422,18 @@ struct ResolvedSettings {
   bool gi_young_rays = false;    // `renderer.gi.young_rays`: half the rays to young cells
   bool gi_hit_fallback = false;  // `renderer.gi.hit_fallback`: coarser levels, then the fallback
   f32 gi_far_lift = 0.0f;        // `renderer.gi.far_lift`: a coarse cell lifted to the harmonics
-  f32 gi_shell_m = 0.0f;         // `renderer.gi.shell_m`: the casters round the eye (stage 4)
-  u32 gi_shell_rays = 0;         // `renderer.gi.shell_rays`: the samples round the eye (stage 4)
-  bool occlusion = false;        // two-pass occlusion culling runs
-  bool rt_chain = false;         // the frame builds acceleration structures from its visible list
+  bool gi_reveal = false;        // `renderer.gi.reveal`: a level taken by what its difference shows
+  i32 gi_show_level = -1;       // `renderer.gi.show_level`: the read takes one level whole (-1: no)
+  bool gi_crown_prior = false;  // `renderer.gi.crown_prior`: foliage through its crown's shade
+  f32 gi_shell_m = 0.0f;        // `renderer.gi.shell_m`: the casters round the eye (stage 4)
+  u32 gi_shell_rays = 0;        // `renderer.gi.shell_rays`: the samples round the eye (stage 4)
+  u32 gi_shell_refresh = 1;     // `renderer.gi.shell_refresh`: a whole cell's bounce, frames apart
+  bool gi_shell_clip = false;   // `renderer.gi.shell_clip`: the eye's rays stop at `gi_shell_m`
+  bool gi_shell_first = false;  // `renderer.gi.shell_first`: the directions are the first threads
+  u32 gi_preroll = 0;           // `renderer.gi.preroll`: steps before a cold frame's own (stage 5)
+  f32 gi_cut_m = 0.0f;          // `renderer.gi.cut_m`: an eye that moved this far starts cold
+  bool occlusion = false;       // two-pass occlusion culling runs
+  bool rt_chain = false;        // the frame builds acceleration structures from its visible list
   // The cull pass keeps what its cone test rejects as shadow casters, in the visible list's run
   // `gfx::k_caster_run`, and the chain builds them beside the drawn clusters. True when shadows
   // are traced, the cone test is on, and the records are build records rather than template

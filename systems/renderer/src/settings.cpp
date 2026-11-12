@@ -435,13 +435,13 @@ tunables::Bool gi_face_blend{
 // Stage 2's levers (R69; renderer.md, "Indirect light: the world-space cache", "Stage 2"), each a
 // knob so it can be judged against the stage before it: 1, 0, false and false are stage 1's read.
 tunables::Int gi_confident{
-    "renderer.gi.confident", 32, 1, 255,
-    "The samples at which a cache cell is read whole; below it the read blends the cell with the "
-    "next coarser level's by samples over this (1: any sample reads whole, as stage 1) "
-    "(renderer.md, "
-    "Indirect light: the world-space cache; read at load)"};
+    "renderer.gi.confident", 255, 1, 255,
+    "The samples at which a cache cell is read whole; below it the read takes the cell by samples "
+    "over this and the rest from the coarser levels of the ladder (255 since stage 5, the "
+    "history's length: a mean of fewer arriving is what read as the light filling in) "
+    "(renderer.md, Indirect light, Stage 5; read at load)"};
 tunables::Int gi_evict_age{
-    "renderer.gi.evict_age", 16, 0, 255,
+    "renderer.gi.evict_age", 16, 0, 127,
     "Frames without a sample after which a cache cell whose bucket turned an insert away is freed "
     "(0: only by the 240-frame age, as stage 1) (renderer.md, Indirect light: the world-space "
     "cache; read at load)"};
@@ -453,10 +453,29 @@ tunables::Bool gi_young_rays{
     "cache; read at load)"};
 tunables::Bool gi_hit_fallback{
     "renderer.gi.hit_fallback", true,
-    "A bounce's hit reads up to three coarser cache levels, then the sky's harmonics times the "
-    "ray's "
-    "openness (false: two levels, then nothing, as stage 1) (renderer.md, Indirect light: the "
-    "world-space cache; read at load)"};
+    "A bounce's hit walks the cache's ladder as a pixel does, and takes the sky's harmonics times "
+    "the ray's openness in proportion where its levels hold a handful of samples or none (false: "
+    "two levels, then nothing, as stage 1) (renderer.md, Indirect light: the world-space cache; "
+    "read at load)"};
+// **Stage 6** (R69; renderer.md, "Indirect light", "Stage 6"): the lever and the diagnostic.
+tunables::Bool gi_reveal{
+    "renderer.gi.reveal", true,
+    "A level of the cache's ladder that is not yet read whole by its samples is taken by what its "
+    "difference from the next level up shows beyond their samples' noise, so a crown's shade is "
+    "shown in its first frames in place of the coarser level's flatter light (false: by its "
+    "samples alone, as stage 5) (renderer.md, Indirect light, Stage 6; read at load)"};
+tunables::Int gi_show_level{
+    "renderer.gi.show_level", -1, -1, 3,
+    "A diagnostic: the resolve's read of the cache takes one level of the ladder whole, the "
+    "surface's own plus this many, with the cache filled as ever (-1: the walk) (renderer.md, "
+    "Indirect light, Stage 6; read at load)"};
+// **Stage 7** (R69; renderer.md, "Indirect light", "Stage 7"): a crown's shade as a prior.
+tunables::Bool gi_crown_prior{
+    "renderer.gi.crown_prior", true,
+    "Foliage on a mesh with a crown is lit through its tree's own shade as a prior: the cache "
+    "holds its light over the fraction the tree's own leaves let through, in cells of no face, "
+    "and a foliage pixel reads one coarse level times its own prior (false: foliage is read as "
+    "everything else, as stage 6) (renderer.md, Indirect light, Stage 7; read at load)"};
 tunables::Float gi_far_lift{
     "renderer.gi.far_lift", 0.0, 0.0, 1.0,
     "How far a coarse cache cell's read (1.6 m and up, past 400 m) is lifted towards the sky's "
@@ -466,20 +485,63 @@ tunables::Float gi_far_lift{
 // docs/experiments/gi-cache-2026-11-07.md has the costs and the curves the defaults rest on). A
 // caster volume round the eye puts the geometry within this many metres into the frame's ray
 // tracing structures whatever the frustum, so the cache's rays meet the forest behind the eye; 0
-// is no volume, the structures the frame's frustum and lights alone ask for.
+// is no volume, the structures the frame's frustum and lights alone ask for. On since stage 5,
+// whose ladder is what made the samples below show: 48 m and 65,536 were stage 4's measured
+// setting. **24 m since stage 8**: on the forest the ring from 24 to 48 m behind the eye is
+// swaying trees, 9,300 clusters the chain instantiates every frame for 0.2 ms, and what a turn
+// shows of a tree that far is held by the ladder and the crown's prior without them (renderer.md,
+// "Stage 8").
 tunables::Float gi_shell_m{
-    "renderer.gi.shell_m", 0.0, 0.0, 1024.0,
+    "renderer.gi.shell_m", 24.0, 0.0, 1024.0,
     "Metres round the eye whose geometry the frame's ray tracing structures hold as casters "
     "whatever the frustum, for the cache's rays, where the cache is on (0: none) (renderer.md, "
     "Indirect light, Stage 4; read at load)"};
 // Directions a view samples from its eye over the whole sphere a frame, each a stride pixel's
-// sample of the surface it meets (the arithmetic is renderer.md's, "Stage 4"). Both off by default:
-// on v37's turn they did not meet stage 4's bound (48 m and 65,536 are the measured setting).
+// sample of the surface it meets, added to the three levels above that surface's own (the
+// arithmetic is renderer.md's, "Stage 5": the coarsest of them warm over the whole sphere in a
+// few frames, the one below it in under two seconds).
 tunables::Int gi_shell_rays{
-    "renderer.gi.shell_rays", 0, 0, 1 << 22,
+    "renderer.gi.shell_rays", 65536, 0, 1 << 22,
     "Directions over the sphere round each view's eye the cache samples a frame, two rays each out "
     "of the young half of renderer.gi.rays_per_frame (0: none) (renderer.md, Indirect light, "
     "Stage 4; read at load)"};
+// **Stage 8** (R69; renderer.md, "Indirect light", "Stage 8"): two stated levers on what a
+// direction round the eye stops at, both off. The directions' cost was where they were
+// dispatched, not what they traced (`renderer.gi.shell_first` below), and with that mended
+// neither lever buys what it gives up: a direction kept at the eye's ray while its cells are
+// whole samples the sphere less (the still picture's floor moves under the box's turn), and a
+// ray stopped at the volume's reach no longer warms what the sun's sweep holds past it (the
+// stand of trees at 16 m stands two steps further off on a turn's first frame).
+tunables::Int gi_shell_refresh{
+    "renderer.gi.shell_refresh", 1, 0, 255,
+    "Frames between the bounces of a direction round the eye whose surface's cells are already "
+    "whole: between them it stops at the eye's ray and stamps its cells (1: a bounce every frame; "
+    "0: never) (renderer.md, Indirect light, Stage 8; read at load)"};
+tunables::Bool gi_shell_clip{
+    "renderer.gi.shell_clip", false,
+    "The rays the cache traces from the eye stop at renderer.gi.shell_m, the reach of the volume "
+    "that holds the geometry round the eye (false: they run to the scene's end) (renderer.md, "
+    "Indirect light, Stage 8; read at load)"};
+tunables::Bool gi_shell_first{
+    "renderer.gi.shell_first", true,
+    "The directions round the eye are the sample pass's first threads, so their long rays run "
+    "beside the pixels' samples (false: its last, as stage 4, where the pass waited for the "
+    "slowest of them) (renderer.md, Indirect light, Stage 8; read at load)"};
+// **Stage 5: the pre-roll** (gi_preroll.h; renderer.md, "Indirect light", "Stage 5"). Thirty-two
+// steps: the trickle samples one pixel in nine at 3840x2160, so nine steps reach every pixel once
+// and thirty-two give a cell ten pixels wide about 350 samples, past `renderer.gi.confident`, and
+// the bounce thirty-two rounds of its own light (sixteen left the box's first frame at 2.3 floors
+// from its long-held picture); the experiment page has what they cost the first frame.
+tunables::Int gi_preroll{
+    "renderer.gi.preroll", 32, 0, 64,
+    "Sample and fold pairs the cache records before a cold frame's own — its first frame, and one "
+    "whose eye jumped (renderer.gi.cut_m) — so the picture after a load or a cut is already lit "
+    "(0: none, the cache fills in view) (renderer.md, Indirect light, Stage 5; read at load)"};
+tunables::Float gi_cut_m{
+    "renderer.gi.cut_m", 8.0, 0.0, 100000.0,
+    "Metres the eye moves between two frames past which the second starts cold and pre-rolls the "
+    "cache: a cut, a teleport, fast travel (0: never) (renderer.md, Indirect light, Stage 5; read "
+    "at load)"};
 // One log line a frame of the cache's counts (R69 stage 2): how a walk fills it is read from them.
 tunables::Bool gi_log{
     "renderer.gi.log", false,
@@ -811,8 +873,16 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   out.gi_young_rays = gi_young_rays.get();
   out.gi_hit_fallback = gi_hit_fallback.get();
   out.gi_far_lift = static_cast<f32>(gi_far_lift.get());
+  out.gi_reveal = gi_reveal.get();
+  out.gi_crown_prior = gi_crown_prior.get();
+  out.gi_show_level = static_cast<i32>(gi_show_level.get());
   out.gi_shell_m = static_cast<f32>(gi_shell_m.get());
   out.gi_shell_rays = static_cast<u32>(gi_shell_rays.get());
+  out.gi_shell_refresh = static_cast<u32>(gi_shell_refresh.get());
+  out.gi_shell_clip = gi_shell_clip.get();
+  out.gi_shell_first = gi_shell_first.get();
+  out.gi_preroll = static_cast<u32>(gi_preroll.get());
+  out.gi_cut_m = static_cast<f32>(gi_cut_m.get());
   // More than one view needs the cull pass: every view's draw reads its own run of the visible
   // list, and there is no run without one. The direct path draws one view and one only, because
   // it writes color rather than a visibility buffer and has nowhere to put a second rectangle.

@@ -6,6 +6,7 @@
 #include <domain/gfx/cluster_acceleration.h>
 #include <domain/gfx/cluster_cull.h>
 #include <domain/gfx/commands.h>
+#include <domain/gfx/crown_prior.h>
 #include <domain/gfx/flora_motion.h>
 #include <domain/gfx/formation.h>
 #include <domain/gfx/ground_detail.h>
@@ -266,8 +267,13 @@ ENGINE_EXPECT_SIZE(48, 8, gfx::HizParams);
 // two receiver distances and the side columns (R139; renderer.md, "The sun's masks by region and
 // by distance"), a row of its own that every module declares. 576, not 560: the cache's samples
 // round the eye — the directions a frame and their grid's columns (R69 stage 4; renderer.md,
-// "Indirect light", "Stage 4"), a row of its own that only the sample pass reads.
-ENGINE_EXPECT_SIZE(576, 8, gfx::ResolveParams);
+// "Indirect light", "Stage 4"), a row of its own that only the sample pass reads. 592, not 576:
+// the crowns' priors — the table's address and the meshes it covers (R69 stage 7; renderer.md,
+// "Indirect light", "Stage 7"), a row of its own.
+ENGINE_EXPECT_SIZE(592, 8, gfx::ResolveParams);
+// One per mesh of a scene with crowns, mirrored on the GPU (gi_cache.slang, `CrownPrior`): where
+// the mesh's grid of its own shade is, in mesh space and in the table's bytes (crown_prior.h).
+ENGINE_EXPECT_SIZE(32, 4, gfx::CrownPriorDesc);
 
 // The shore's record (S97; water.md, "The shore"), mirrored by water.slang's WaterShore. 64 since
 // S94: the swash's run-up, period, drain, slope, tide, wave height, foam and shore widths, and the

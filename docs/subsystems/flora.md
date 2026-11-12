@@ -1078,6 +1078,17 @@ under about 38,000, a 1.04 m card. A merged card drawn opaque is a parallelogram
 cluster textures (R65) baked from the solver's own finest geometry (R89) are what make it read as
 foliage ([tree allometry](../experiments/tree-allometry.md#what-the-aaa-pipelines-do-with-a-million-leaves)).
 
+**What the renderer reads of a crown's leaves** (R69 stage 7; [renderer](renderer.md#stage-7-a-crowns-shade-as-a-prior),
+[the grounding](../experiments/crown-shade-grounding.md)). At load the renderer gathers a tree
+mesh's finest alpha-tested cards into a grid of leaf area density and keeps each cell's mean
+transmitted fraction of diffuse light, Beer-Lambert through the tree's own leaves, as the prior
+its indirect light is read through. It takes a card's leaf as 0.7 of its triangles (`leaf_width`
+on the default broadleaf) and G = 0.5 for every species; counted that way the oak holds 0.46 m²
+of leaf a cubic metre of its leafy cells, the tall spruce 1.47 and the young spruce 4.0. A
+species whose `leaf_width` or leaf angles are far from those has its shade off by that much: the
+solver handing over each mesh's leaf area and angle is the mend, and is not built. A crown whose
+leaves are not alpha-tested (the date palm's fronds) has no prior.
+
 ### The impostor chain
 
 **G87 (2026-10-24):** branch-group representations now contain three orthogonal masked quads
