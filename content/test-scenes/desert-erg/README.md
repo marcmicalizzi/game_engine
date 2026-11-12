@@ -9,7 +9,7 @@ build/msvc-release/bin/engine-view --scene content/test-scenes/desert-erg/scene.
 build/msvc-release/bin/engine-view --scene content/test-scenes/desert-erg/scene.json --interactive --time-rate 86400 --terrain-rings
 ```
 
-`--time-rate 86400` runs a game day a real second and moves the sand on screen, blended between evaluated fields every frame so no dune ever steps, at a speed that stays steady however late a field is: the picture runs about 1.5 s of real time behind game time at a day or a week a second, which is what keeps it from standing and sprinting ([renderer](../../../docs/subsystems/renderer.md#a-clock-that-never-stops)). The lights stand still (`--orbit-lights` brings back the old orbit, `--sun <azimuth,elevation>` moves the sun); the summary line's `time_lapse` block says how often the field was evaluated and what it cost. `--terrain-rings` draws the ground near the camera at 50 cm out to 250 m and at a metre out to a kilometre instead of the grid's 1.5 m, so a slip face near the camera is tens of samples wide rather than five, and moves it with the rest ([renderer](../../../docs/subsystems/renderer.md#the-rings-in-the-scene)).
+`--time-rate 86400` runs a game day a real second and moves the sand on screen, blended between evaluated fields every frame so no dune ever steps, at a speed that stays steady however late a field is: the picture runs about 1.5 s of real time behind game time at a day or a week a second, which is what keeps it from standing and sprinting ([renderer](../../../docs/subsystems/renderer.md#a-clock-that-never-stops)). The lights stand still (`--orbit-lights` brings back the old orbit, and since the erg names a sky its sun stands where the hour puts it: `--time-of-day <h>` moves it, and `--sun` is refused, [below](#the-sky)); the summary line's `time_lapse` block says how often the field was evaluated and what it cost. `--terrain-rings` draws the ground near the camera at 50 cm out to 250 m and at a metre out to a kilometre instead of the grid's 1.5 m, so a slip face near the camera is tens of samples wide rather than five, and moves it with the rest ([renderer](../../../docs/subsystems/renderer.md#the-rings-in-the-scene)).
 
 ## The band table
 
@@ -34,7 +34,7 @@ Since 2026-09-29 the sand carries **wind ripples and grain** (`"detail"` in `sce
 ```powershell
 build/msvc-release/bin/engine-view --scene content/test-scenes/desert-erg/scene.json --interactive --walk --terrain-rings --start -1400,2,0 90,-10
 build/msvc-release/bin/engine-view --scene content/test-scenes/desert-erg/scene.json --camera-path content/test-scenes/desert-erg/walk-path.json --terrain-rings --offscreen --frames 1201 --capture walk.png --capture-every 240
-build/msvc-release/bin/engine-view --scene content/test-scenes/desert-erg/scene.json --interactive --walk --terrain-rings --start 462,2,-40 23,-8 --sun 15,6
+build/msvc-release/bin/engine-view --scene content/test-scenes/desert-erg/scene.json --interactive --walk --terrain-rings --start 462,2,-40 23,-8 --time-of-day 17.8
 ```
 
 What to look at (the first two lines; `walk-path.json` is a 20 s walk at eye height whose markers are these views):
