@@ -512,3 +512,23 @@ their pictures were taken from the same ground read at 4 m by a landform run of 
 2026-11-11 a far level's archive has a name of its own (the tile set's change, merged that
 morning), so a solved ground builds at the spacing it was solved at and the 4 m read is no
 longer needed; no picture has yet been taken that way.
+
+**Stage F (W127), the solver's own maps** (no ground was drawn by the renderer this stage).
+The two-range sketch as sketched, relief before and after at the size written (512 by 512):
+**the change cannot be seen**. It is the same range cut by rivers; the glaciated upper
+valleys differ by a point's width here and there. Its new ice map shows why: pale blue
+over the upper valleys only (38,092 points, ice 96 m thick at most), no ochre a person
+would find (20 points of moraine left), no lake. The colder variant's ice map (the line at
+600 m, the ice gone one step before the end) shows what the rule builds when it has ice:
+about a dozen ochre bars with dark crests where the largest valleys' glaciers ended at the
+two ranges' fronts and in the trough between them, each 6 to 16 points long. The trough
+case (128 by 96): before, a band of even width from the tributary to the edge, a floor
+between walls; after, a narrower trunk whose sides rise from its line, and a stroke of
+standing water in the tributary above where it meets the trunk's section (a basin its own
+ice dug behind its hanging lip, under ice still). **Beside the reference frames' glacial
+valleys a person still objects**: no lake; no level floor the width of a valley (the flats
+the lakes left are a few points each); the moraines are straight bars, not arcs bowed down
+the valley, a handful of points long, with no laterals running up the valley sides from
+them, and gone 20,000 years after the ice; no bowl at a valley's head; the troughs' sides
+are a parabola only inside the ice's reach, and at 32 m a valley 300 m wide is nine points;
+V's below the ice.

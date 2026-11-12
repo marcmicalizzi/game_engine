@@ -389,6 +389,20 @@ Each step the ice stands:
    A point of the swath beside the line keeps the step to its receiver: the surface across a
    glacier is level, and W106 measured the trough's section gone when every point read a
    reach.
+
+   **The fall across a swath.** Beside its line a glacier wears nothing that stands outside
+   its own section, and the section is the published one, a parabola
+   ([the sources](../experiments/landform-ice.md#the-fall-across-a-swath-the-sources-and-the-rule)):
+   under a surface level across the valley, from the line's bed up to that surface at the
+   swath's margin, half the glacier's width off the line. So a point x off a line whose ice
+   is h thick and whose half width is X is worn no lower than the line's bed plus
+   h (x / X)². The line abreast of a point is where its walk down its own receivers first
+   meets the largest glacier on the way (a point with over twice the flux of any before it;
+   a point with half that flux or more is on the line itself, and has no such floor). The
+   form is put in, as the swath is: the model has a glacier's width and thickness by rule and
+   not from its flow, and the section between them is the published one. Before it every
+   point of a swath was worn toward the line with the line's flux, and a mature trough was a
+   floor the swath wide between walls (b = 4.9).
 4. **Moraines.** What the ice leaves is till, in two forms
    ([the sources and the balance](../experiments/landform-ice.md#stage-f-w127-what-the-ice-leaves)).
    **At a snout** (a point ice reaches and none leaves) the ice's own share of the sediment
@@ -426,15 +440,14 @@ Each step the ice stands:
    published measurements used as defaults.
 
 **What it makes, measured** (the tests, W127's numbers): a trunk under ice for 100,000 years
-is worn 24 m below the same valley under a river at the junction, down to the level of the edge
-it leaves through and no lower, and is three times as wide a hundred metres above its floor
-(107 points over three sections against 34; the swaths there are 75): a floor the swath wide
-between walls that hang above it by the step in the ice at the swath's margin. A tributary's
-bed meets the trunk's swath at its steepest step (31 m in one 50 m point where the river's
-steepest is 2.7 m; 14 m before the lodged sheet, which rides over the margin's point and is
-not worn with it). A glacier fed from a plateau that ends inside its valley leaves a ridge
-at each step's snout (crests on both sides of its river, the tallest 53 m under ice 158 m
-thick), and its snout stands within a point of where it stands with nothing carried. A glacier whose line is above its valley's floor ends inside the region
+is worn 16 m below the same valley under a river at the junction, down toward the level of
+the edge it leaves through and no lower, and a hundred metres above its floor is a third
+wider than the river's (45 points over three sections against 34) where its swath is 79:
+a parabola from its line to the ice's surface at the swath's margin. A tributary's bed
+meets that section at its steepest step (22 m in one 50 m point where the river's steepest
+is 2.7 m). A glacier fed from a plateau that ends inside its valley leaves a ridge at each
+step's snout (crests on both sides of its river, the tallest 24 m under ice 158 m thick),
+and its snout stands within a point of where it stands with nothing carried. A glacier whose line is above its valley's floor ends inside the region
 (with the line 250 m above the valley's head, half way down an 8 km valley at its farthest)
 and leaves no point below the region's base level. In the two-range sketch
 ([pictures](../experiments/landform.md#pictures-and-what-still-reads-wrong)) with the line at 800 m the ice covers the
@@ -443,37 +456,37 @@ its reach the valleys are the rivers'.
 
 **What it does not make, said plainly**:
 
-- **It makes a trough, and a mature one is flatter than a rock trough is measured to be.** By
-  the stated measure (a section's width half way up its lowest hundred metres over its width
-  at the hundred; a section y = a x^b measures (1/2)^(1/b)) the river's trunk is b = 1.2 and
-  the glacier's passes through the published range and out of it: 1.5 to 2.3 after 10,000 to
-  20,000 years, 3 to 9 after 40,000, 4.5 at the test's 100,000. Graf 1970's troughs run 1.5 to
-  2.0 and Svensson 1959's valley is "only slightly" off 2; the widest range found is 1.0 to
-  3.5 with most between 1.3 and 2.5
-  ([the grounding](../experiments/landform-ice.md#the-troughs-section-on-the-mended-ice) says how
-  far each was read). **Why**: every point of a swath is worn toward the line with the line's
-  own flux, so once the trunk nears its base level the swath is ground to a floor whose cross
-  fall is a few times the fall along it, and the walls outside the swath hang above it by the
-  step in the ice. That is the U of Hergarten's own sentence ("introduced by the swath
-  construction rather than predicted"). **What is missing** for a parabola that lasts is the
-  erosion's fall across a glacier's width (the published section models wear in proportion
-  to the sliding speed squared, greatest under the thickest ice); it is not built, and the
-  test holds the lower bound only. The level floor of the photographs is a different matter
-  and mostly not rock: a lake's fill and outwash in a basin the ice dug below the river's
-  grade. The solver has the fill and not the basin.
+- **The trough is a parabola because one is put in, and it has a slot while its glacier
+  cuts down.** By the stated measure (a section's width half way up its lowest hundred
+  metres over its width at the hundred; a section y = a x^b measures (1/2)^(1/b)) the river's
+  trunk is b = 1.2 and the glacier's 1.9 at the test's 100,000 years, inside the published
+  1.5 to 2.5, and a hundred metres up it is as wide as the parabola through its swath (45
+  points over three sections against 46.3). Over time
+  ([the table](../experiments/landform-ice.md#the-fall-across-a-swath-the-sources-and-the-rule))
+  a section below the tributary reads 1.4 to 2.2 from 10,000 years on; one above it reads a
+  V at its line (0.7 to 1.0) until the trunk stops cutting down, because the line is worn
+  first and the points beside it follow a step behind. Nothing here predicts the form:
+  the published models that do (wear as the square of the sliding speed across a section)
+  were not read, and a first closure in their spirit (wear by the ice's depth over the
+  point, to the fourth power) made a narrower floor between steeper walls, b = 6.3. The
+  level floor of the photographs is not this: it is a lake's fill and outwash.
 - **The trench at a held edge is mended** (W106 found it, W126 counted and mended it:
-  [the count](../experiments/landform-ice.md#the-held-edge-counted-and-mended)). Stage C's trunk
-  ended at 1,041 m against an edge held at 1,273 m, with 2,407 points under the edge. Now none
-  is, the trunk meets the edge with no step, and the held point carries the ice of the point
-  that drains to it (322 m either side of the edge). Stage C's "196 m below the river's bed",
-  "1.7 times as wide" and a hanging step of 40 m were that trench's.
-- **A hanging valley's step is not tall here.** What the rule gives is where a tributary's
-  step stands (where its own ice meets the trunk's swath) and that it cannot be worn away from
-  below; how tall it grows depends on how long the swath's margin stays on one point. In the
-  test's valley the trunk's ice thins from 320 m to 294 m over the run, the swath narrows by a
-  point, and the step at the new margin is 14 m (9 m before the basins' rule). A tributary much thinner than its trunk would
-  hang by most of the difference; no test valley has one yet.
-- **Creep leaves hollows of centimetres under ice.** A hollow under a glacier is not a lake
+  [the count](../experiments/landform-ice.md#the-held-edge-counted-and-mended)). No point
+  stands under the edge, the trunk meets it with no step, and the held point carries the ice
+  of the point that drains to it (331 m either side).
+- **A hanging valley's step is where the tributary meets the trunk's section, and the
+  tributary's own ice is not in it.** Inside the trunk's swath a tributary's bed is worn
+  only where it stands above the trunk's parabola, so its steepest step is inside the swath
+  (22 m in one 50 m point, six points off the trunk's line of twelve, where a river's
+  steepest is 2.7 m) and no steeper than the section at its margin, a spacing a point. It
+  grows as the trunk cuts down past the tributary's mouth, and it no longer depends on how
+  long the swath's margin sits on one lattice point (stage E's 14 m did). **What it lacks**:
+  a tributary glacier's surface meets its trunk's, so its bed should hang by what the
+  trunk's ice is thicker; taking the tributary's own thickness off the section's level does
+  that for a glacier and is wrong for a slope's thread of ice, which this model makes 20 to
+  45 m thick at a few points of flux, and lowering the section by that across the swath
+  flattened it (b = 3.0). It wants a thickness for small ice the model does not have, and
+  no test valley has a thin tributary.- **Creep leaves hollows of centimetres under ice.** A hollow under a glacier is not a lake
   and nothing is laid in it, so what hillslope creep raises unevenly on a floor the ice has
   ground level stays as closed hollows 9 to 14 cm deep (measured in both test valleys; with
   the creep off there are none, to the millimetre). They are under the 16 m lattice's
@@ -486,7 +499,7 @@ its reach the valleys are the rivers'.
   0.89 of the ice surface's slope, under the 1.5. Stage E's till rule laid what the ice
   carried where the ice melted, which is where the basins are (819 points of water behind
   mounds of till, to 40 m). With the till a thin sheet and a ridge at the snout, the same
-  valley when its ice leaves holds 8 points of water to 12 m, in rock. **But a lake does not
+  valley when its ice leaves holds 35 points of water to 3.7 m, in rock. **But a lake does not
   last in this model, and the two-range sketch at its ice age as sketched ends with none**
   (no point of a metre of water where ice stood; W127's numbers are on
   [the grounding page](../experiments/landform-ice.md#what-the-two-range-sketch-shows-and-why-no-lake-lasts)):
@@ -496,8 +509,8 @@ its reach the valleys are the rivers'.
   that size (at the default, two to three points of 32 m in a 5,000-year step on ten square
   kilometres); and
   the sketch's ice is thin (95 m at its thickest), so its basins are a few metres. Twenty
-  thousand years after that sketch's ice the ridges are nearly gone too (18 points of a
-  metre of moraine, where 136 stood when the ice left). **So a person looking at the
+  thousand years after that sketch's ice the ridges are nearly gone too (20 points of a
+  metre of moraine, where 120 stood when the ice left). **So a person looking at the
   two-range ground still sees a range cut by rivers.** No cirque and no tarn: a cirque is
   the basins' rule under a glacier that ends near its head, and no test valley holds one
   there yet. No lateral moraine: a ridge is laid at a snout only.
@@ -913,18 +926,18 @@ in the editor. The limits of the model as it stands are on the grounding page.
 | a single mouth's fan is a cone (2.2 s: two solves of a hundred steps) | a funnel-shaped catchment drains through one mouth onto a level plain for 200,000 years: on an arc 500 m from the mouth the ground stands over 2 m above the plain (measured 28.2 m) and varies along the arc by under a third of that (5.4 m, 19%); with one receiver a point the same arc measures 13.9 m and 3.7 m (27%) | the flow does not divide on the fan, or the load is not carried by the shares |
 | a river's plain is wider than a point, and cutting down leaves a terrace (2.7 s: three solves) | a straight valley draining 20 km², banks three times as erodible as the bed, 400,000 years: the lower floor (points within 2 m of the lowest of their column) is 3 points wide or more (measured 8.8) and a point wider than with no lateral erosion (6.6), with over a hundred banks taken (11,310). Then the base level falls 20 m for 8,000 years: the river cuts down over a quarter of the fall in the last kilometre (7.5 m) into a floor narrower than the one it left (4.1 points against 10.2), and of the columns that owe a terrace (cut 5 m, old floor 3 points wider than the new) three quarters keep old floor within 1.5 m of where it stood (10 of 10, 6.5 points each) with its edge beside the new floor (10 of 10) | no bank is taken, or a river that cuts down takes its whole floor with it |
 | a range raised unevenly is not a comb (3.9 s: two solves of a hundred steps on a lattice that holds a dozen valleys a side) | a 9.6 km range along x raised evenly and with the default unevenness: of the mountain channels, the junctions a kilometre rise by over 15% (measured 0.149 to 0.359) and the share running straight down the range falls (60% to 43%) | the unevenness is lost, or is of the local rate and vanishes on the flanks |
-| ice leaves a trough where a river leaves a V, and a tributary hangs (`ice_tests.cpp`, 1.2 s: two solves of twenty steps) | a trunk valley falling at 0.02 with a tributary at 0.12, 100,000 years under ice and under a river: by the stated measure (width half way up the lowest 100 m over width at the 100 m: V 0.5, parabola 0.71, box 1) which is the exponent of a section y = a x^b, the river's trunk is under the glacial range's b = 1.5 (measured 1.19) and the glacier's at 1.5 or more (5.33: a floor between walls, past the published range, as [ice](#ice) says); the glacier's section at the 100 m is at least its swath wide (107 points over three sections against swaths of 75) and half again the river's (34); the tributary's steepest step is taller than the river's (30.8 m against 2.7 m) and stands where its ice meets the trunk's swath (the ice 50 m or more thicker below it: 224 m to 293 m); the trunk's bed at the junction is below the river's (1,291 m against 1,315 m) and not below the edge, under 100 m or more of ice (298 m). W126 restated three of these from what the mended ice must give: stage C's widths, its 50 m at the junction and its step of five times the river's were the trench at the held edge | the ice wears only its line, or a tributary is graded to the trunk's bed |
-| a glacier that leaves through a held edge is graded to that edge (W126; 0.7 s) | the same trunk with its ice leaving through the open edge and the creep off: no point of the region under the edge's height (stage C: 2,407, the lowest by 274 m), no standing water over 10 mm, the trunk's axis never rising toward the edge by over a millimetre and never above its start, the last point inside within a metre of the edge (measured 0), and the held point carrying the ice of the point that drains to it (322.4 m on both) | a glacier's ice is put on points that drain out of its swath, or a held point is read as a snout |
+| ice leaves a trough where a river leaves a V, and a tributary hangs (`ice_tests.cpp`, 1.1 s: two solves of twenty steps) | a trunk valley falling at 0.02 with a tributary at 0.12, 100,000 years under ice and under a river. By the stated measure, the exponent of a section y = a x^b, the river's trunk is under the glacial range's 1.5 (measured 1.19) and the glacier's inside 1.5 to 2.5 (1.86); a hundred metres up, the glacier's section is as wide as the parabola through its swath to two points a section (45 points over three sections against 46.3), narrower than the swath (79) and wider than the river's (34); the tributary's steepest step is taller than the river's (22.3 m against 2.7 m), no taller than a spacing (the section's slope at its margin), and stands inside the trunk's swath between its margin and its line under the trunk's ice (row 58, the line at 64, the half width 12 points); the trunk's bed at the junction is below the river's (1,299 m against 1,315 m) and not below the edge, under 100 m or more of ice (306 m). W127 restated the width, the exponent's upper bound and where the step stands from the section's rule: stage E's were a floor the swath wide, b = 4.9 with no upper bound, and a step at the swath's margin | the ice wears its whole swath to a floor, or only its line, or a tributary is graded to the trunk's bed |
+| a glacier that leaves through a held edge is graded to that edge (W126; 0.7 s) | the same trunk with its ice leaving through the open edge and the creep off: no point of the region under the edge's height (stage C: 2,407, the lowest by 274 m), no standing water over 10 mm, the trunk's axis never rising toward the edge by over a millimetre and never above its start, the last point inside within a metre of the edge (measured 0), and the held point carrying the ice of the point that drains to it (330.9 m on both) | a glacier's ice is put on points that drain out of its swath, or a held point is read as a snout |
 | a glacier that ends inside its region leaves the edge alone (W126; 0.3 s: the farthest and the thickest the ice ever was are `ice_max`, and the first two steps are solved for the snout then) | a valley falling at 0.03 with the line 250 m above its head, nothing laid down and the creep off: the valley glacier's snout (ice within two rows of the axis) past column 40 in its first two steps and 40 columns or more inside the lattice at its farthest (column 82 of 160); no point under the edge's height; no standing water deeper than the thickest ice that stood on the point, and none on ground no ice reached (measured none anywhere) | a swath's margin or the region's edge is read as a snout, or the step the ice comes runs it to the edge |
-| a glacier digs basins its rivers cannot, and they hold water (W126; 2.0 s: five solves) | a valley under a firn plateau, the line at 1,750 m, nothing laid down and the creep off: under its rivers alone no point holds a metre of water and none over 10 mm; under ice some do, on the valley's floor (130 points, columns 132 to 197 of 200, the deepest 7.5 m); none where no ice ever stood; the deepest is shallower with the adverse-slope limit at 0.5 than at the default 1.5 (2.4 m) and no deeper at 1.5 than at 6 (12.2 m). Printed and not held: no point holds more water than the thickest ice that stood on it; reading the slope to the next point (`coupling` 0) the same valley holds 505 points to 34 m, a pit where each step's snout stood | the ice digs no basin, digs one where no ice stood, or the limit does not bound the dig |
-| what a glacier's basin holds is filled from its head once the ice has gone (W126; 1.0 s) | the same valley with deposition, 60,000 years of ice and 40,000 of rivers after: water stands when the ice leaves (8 points of a metre or more, to 12.3 m, in rock: 624 points to 40 m behind till before stage F); less stands at the end (none), the points that held it gained sediment (3 m over a cell in all), and the rock's surface under each, the height less the sediment, is no higher than it was (8 of 8) | the flood does not find the lake, the rivers do not fill it, or the fill is counted as rock |
-| a bed under ice rises no steeper than the limit lets it (W126; 0.4 s) | the same valley solved step by step to the first step that leaves the axis' bed rising (the third), so every rise was made under the ice the field file records: each rise to the next point, over the ice surface's slope from the point to the point twice `coupling` thicknesses on, is under `adverse_slope` (0.89 at 1.5 over 5 rises; 0.26 at 0.5 over 3), to two parts in a hundred for the sweeps' millimetre | the limit is not applied, or is applied to another slope than the one the solver reads |
-| a glacier ends where its ice is spent, and leaves till (0.5 s) | the one valley of the snout's row (falling at 0.03, no plateau) with the line 100 m above its head: over 300 points under ice (776), the last of it past column 40 and 8 columns or more inside the lattice (column 144 of 160, which is the upper sides' slope ice: the row above measures the valley glacier), a hundred points or more with half a metre of till (533: the ridges of many small snouts, the thickest 23.7 m), and till never more than the sediment there | the melt is not charged to the glacier, or till is laid that is not sediment |
-| a glacier leaves a ridge across its valley at its snout, its river's gate open (W127; 1.5 s: twelve solves) | the stand valley (the firn valley with its walls ended 250 m up, so the plateau's glacier is the valley's only one), the line at 1,900 m, beside the same with `carried` 0, at each of six steps: the snout comes down the valley and ends inside it (column 159 of 200), draws back (101), and never stands more than 3 points from where it stands with nothing carried (measured 1: a ridge's flank raises the bed under the tongue by its height at most against a melt that takes 250 m to double); after the first step the one ridge's crest stands on both sides of the axis (3 points north, 2 south) and none of the 99 points of the valley's river down to the edge carries ridge; the ridges are made of what the ice brought (16,500,000 m³ of 153,700,000 m³) and with nothing carried there is no ridge, no crest and no delivery | a ridge is laid across its glacier's river (the snout then runs to the region's edge, column 199, on the second step), or on one side of the valley only, or of what did not arrive |
-| a moraine is no taller than the published ridge, and lodged till is thin (W127; 0.5 s: three solves) | the same valley after 30,000 years, point by point: no point carries more ridge than the lesser of `moraine_height_m` and the thickest ice that ever stood (the tallest 52.6 m of 60), nor more than 20 m with 20 m allowed; the till that is not ridge is never more than `lodged` of `ice_max` there (2,358 points, the thickest 0.79 m); ridge is never more than till, till never more than sediment, a crest is marked only where ridge lies; and with `carried` and `lodged` 0 there is no till | a ridge stacks past its cap under later snouts, the lodged sheet stacks (it did, where a lake's delta was spread onto a point under ice and stood in for sheet the wear had taken), or till is counted that is not there |
-| the thickest ice that ever stood is kept, point by point (W127; 0.7 s: six solves) | the same valley solved to each of its six steps: `ice_max` is the largest of the six `ice` at every point, exactly, and covers more points than the last step's ice (4,638 against 3,405) | the field misses a step, or keeps the first step's first finding of the ice |
-| the ice's line moves at its stands, and a stand's ridges carry its mark (W127; 0.4 s: three solves) | the same valley with the line raised 60 m at 15,000 years: at 30,000 the snout is shorter than with the line kept (column 70 against 101); no crest of the second stand lies down the valley of where the snout stood when the first ended (87 against 140), a crest of the first lies at or below it (142), and no other mark is written; stands out of order, a stand before the ice comes and `carried` over 1 are refused | the line does not move, or a ridge is marked with the wrong stand |
-| an ice age solves to the same bytes on one, four and sixteen workers (0.7 s) | the heightfield, the ice, the till, the sediment and the discharge of a 30,000-year ice age from each, and the first three pinned on MSVC for Clang and GCC to reproduce (re-taken by W127: a sheet of till is lodged under the valley's ice) | a loop of the ice reads what another chunk writes, or `det::exp` and `det::log` differ by toolchain |
+| a glacier digs basins its rivers cannot, and they hold water (W126; 2.0 s: five solves) | a valley under a firn plateau, the line at 1,750 m, nothing laid down and the creep off: under its rivers alone no point holds a metre of water and none over 10 mm; under ice some do, on the valley's floor (140 points, columns 122 to 194 of 200, the deepest 9.6 m); none where no ice ever stood; the deepest is shallower with the adverse-slope limit at 0.5 than at the default 1.5 (3.5 m) and no deeper at 1.5 than at 6 (21.7 m). Printed and not held: no point holds more water than the thickest ice that stood on it; reading the slope to the next point (`coupling` 0) the same valley holds 416 points to 42 m, a pit where each step's snout stood | the ice digs no basin, digs one where no ice stood, or the limit does not bound the dig |
+| what a glacier's basin holds is filled from its head once the ice has gone (W126; 1.0 s) | the same valley with deposition, 60,000 years of ice and 40,000 of rivers after: water stands when the ice leaves (35 points of a metre or more, to 3.7 m, in rock: 624 points to 40 m behind till before stage F); less stands at the end (15 m over a cell in all against 83 m), the points that held it gained sediment (411 m over a cell in all), and the rock's surface under each, the height less the sediment, is no higher than it was (35 of 35) | the flood does not find the lake, the rivers do not fill it, or the fill is counted as rock |
+| a bed under ice rises no steeper than the limit lets it (W126; 0.4 s) | the same valley solved step by step to the first step that leaves the axis' bed rising (the third), so every rise was made under the ice the field file records: each rise to the next point, over the ice surface's slope from the point to the point twice `coupling` thicknesses on, is under `adverse_slope` (0.86 at 1.5 over 4 rises; 0.20 at 0.5 over 3), to two parts in a hundred for the sweeps' millimetre | the limit is not applied, or is applied to another slope than the one the solver reads |
+| a glacier ends where its ice is spent, and leaves till (0.5 s) | the one valley of the snout's row (falling at 0.03, no plateau) with the line 100 m above its head: over 300 points under ice (1,296), the last of it past column 40 and 8 columns or more inside the lattice (column 145 of 160, which is the upper sides' slope ice: the row above measures the valley glacier), a hundred points or more with half a metre of till (221: the ridges of many small snouts, the thickest 16.6 m), and till never more than the sediment there | the melt is not charged to the glacier, or till is laid that is not sediment |
+| a glacier leaves a ridge across its valley at its snout, its river's gate open (W127; 1.5 s: twelve solves) | the stand valley (the firn valley with its walls ended 250 m up, so the plateau's glacier is the valley's only one), the line at 1,900 m, beside the same with `carried` 0, at each of six steps: the snout comes down the valley and ends inside it (column 159 of 200), draws back (113), and never stands more than 3 points from where it stands with nothing carried (measured 1: a ridge's flank raises the bed under the tongue by its height at most against a melt that takes 250 m to double); after the first step the one ridge's crest stands on both sides of the axis (3 points north, 2 south) and none of the 99 points of the valley's river down to the edge carries ridge; the ridges are made of what the ice brought (10,700,000 m³ of 113,600,000 m³) and with nothing carried there is no ridge, no crest and no delivery | a ridge is laid across its glacier's river (the snout then runs to the region's edge, column 199, on the second step), or on one side of the valley only, or of what did not arrive |
+| a moraine is no taller than the published ridge, and lodged till is thin (W127; 0.5 s: three solves) | the same valley after 30,000 years, point by point: no point carries more ridge than the lesser of `moraine_height_m` and the thickest ice that ever stood (the tallest 24.3 m of 60), nor more than 20 m with 20 m allowed; the till that is not ridge is never more than `lodged` of `ice_max` there (2,271 points, the thickest 0.79 m); ridge is never more than till, till never more than sediment, a crest is marked only where ridge lies; and with `carried` and `lodged` 0 there is no till | a ridge stacks past its cap under later snouts, the lodged sheet stacks (it did, where a lake's delta was spread onto a point under ice and stood in for sheet the wear had taken), or till is counted that is not there |
+| the thickest ice that ever stood is kept, point by point (W127; 0.7 s: six solves) | the same valley solved to each of its six steps: `ice_max` is the largest of the six `ice` at every point, exactly, and covers more points than the last step's ice (4,642 against 3,687) | the field misses a step, or keeps the first step's first finding of the ice |
+| the ice's line moves at its stands, and a stand's ridges carry its mark (W127; 0.4 s: three solves) | the same valley with the line raised 60 m at 15,000 years: at 30,000 the snout is shorter than with the line kept (column 79 against 113); no crest of the second stand lies down the valley of where the snout stood when the first ended (94 against 147), a crest of the first lies at or below it (149), and no other mark is written; stands out of order, a stand before the ice comes and `carried` over 1 are refused | the line does not move, or a ridge is marked with the wrong stand |
+| an ice age solves to the same bytes on one, four and sixteen workers (0.7 s) | the heightfield, the ice, the till, the sediment and the discharge of a 30,000-year ice age from each, and the first three pinned on MSVC for Clang and GCC to reproduce (re-taken by W127 twice: a sheet of till is lodged under the valley's ice, and the swath is worn to a parabola) | a loop of the ice reads what another chunk writes, or `det::exp` and `det::log` differ by toolchain |
 | a lake's floor fills level, and its mouth builds a delta | a basin fed for ten thousand years: its floor away from the mouths level within 50 mm (measured 0 and 3 mm) under water still metres deep; with `delta_share` 0.5 the shelf under the mouths holds a quarter more sediment (measured twice) and the floor stands lower | the fill follows the flood's order, or the mouths get nothing |
 
 ## Performance notes
@@ -999,21 +1012,25 @@ tapered G, each point's sill, its rock's resistance, and the two buffers of the 
 size at run time, and there are no triangles and no per-tile cost: the tile set's are the
 heightfield's.
 
-**Stage E, the ice's swath by a walk and the basins' rule** (W126, 2026-11-11). The same
-two-range sketch (512 by 512 at 32 m, 300 steps, 76 of them ice), `engine-content landform
---jobs 5` in `msvc-release`, the base's executable (b8eb339a, built in the same tree and
-copied out) and this one's run alternately, the machine at 76% to 100% CPU before each run
-(eleven other agents building), so every figure is an upper bound:
+**Stage E's pairs** (the swath by a walk, the basins' rule; W126) measured nothing beyond the
+load either, and are on [the ice's grounding page](../experiments/landform-ice.md#the-basins-as-built-and-what-they-are-worth).
 
-| Pair | Base | This solver | |
-|---|---|---|---|
-| after the swath's mend alone | 106.3 s, 89.6 s | 103.3 s, 111.5 s | |
-| with the basins' rule | 106.9 s, 92.0 s | 114.4 s, 107.0 s | the sweeps 51.6 and 45.1 s against 54.9 and 49.8 s; the network 18.8 and 16.1 s against 19.8 and 18.5 s; the flood, **whose code did not change**, 16.4 and 14.0 s against 18.6 and 18.6 s |
+**Stage F, what the ice leaves and the swath's section** (W127, 2026-11-11). The same sketch
+and command, the base's executable (be3826d9's solver, copied out) and this one's run
+alternately, the machine at 42% to 80% CPU before each run (a dozen agents building):
 
-So nothing is measured beyond the load: the part that did not change moved by more than the
-parts that did. What the ice's new work is, in the ice steps only: a walk of at most 96
-points down each point's line for its swath (in place of a disc stamped about every point
-of a line), a walk of at most 64 for its reach, and a second evaluation of the update for a
-point whose joint update ends under its receiver's bed. The solve holds 20 more bytes a
-point while it runs when the sketch has ice (a line's own thickness, the reach's far point
-and its length), and four arrays of the network (28 bytes a point) in place of one (8).
+| | Base | This solver |
+|---|---|---|
+| The solve | 84.0 s, 89.0 s | 94.1 s, 79.3 s |
+| The flood, whose code did not change | 13.9 s, 14.8 s | 15.9 s, 13.5 s |
+| The sweeps | 40.5 s, 43.2 s | 44.7 s, 38.0 s |
+| The books (the ridges and the sheet are laid here) | 6.1 s, 6.4 s | 7.2 s, 5.6 s |
+
+**Nothing is measured beyond the load again**: this solver's second run is the fastest of
+the four, and its first the slowest. The new work is in the ice steps only: a ridge at each
+snout (a band of at most a few hundred points and forty sums over it), one comparison and
+one clamp a point of ice in the books, and one more array each side of the sweep for the
+section's floor. While it runs a sketch with ice holds 58 more bytes a point (the largest
+flux up the line, the thickest ice, the surface's level and the distance to the line, the
+ridges, their crests and the snouts), every sketch 8 more for a lake's fill, and the result
+40 more for the five new fields.

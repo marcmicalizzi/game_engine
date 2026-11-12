@@ -924,6 +924,8 @@ struct IceField {
   Vector<f64> reach;     // the largest flux of a glacier whose swath holds the point
   Vector<f64> own;       // the ice the point's own flux makes, metres (its line's thickness)
   Vector<f64> thick;     // the ice over the point this step, metres
+  Vector<f64> level;     // its glacier's surface there, level across the swath: metres
+  Vector<f64> aside;     // how far the point stands from its glacier's line, metres
   Vector<f64> before;    // and last step
   Vector<f64> peak;      // the largest flux up the line from the point: its glacier at its widest
   Vector<f64> most;      // the thickest ice that ever stood over the point, metres
@@ -968,6 +970,8 @@ void glaciate(const Sketch& s, const Frame& frame, const u8* held, const f64* z,
   f64* arriving = ice.arriving.data();
   f64* reach = ice.reach.data();
   f64* thick = ice.thick.data();
+  f64* level = ice.level.data();
+  f64* aside = ice.aside.data();
   const f64* before = ice.before.data();
   f64* peak = ice.peak.data();
   u8* snout = ice.snout.data();
@@ -1048,6 +1052,12 @@ void glaciate(const Sketch& s, const Frame& frame, const u8* held, const f64* z,
     if (held[u] != 0) continue;
     f64 most = 0.0, most_deep = 0.0;  // the largest flux down the line so far, and its ice
     f64 found = 0.0, found_deep = 0.0;
+    // The line abreast of the point: where its walk first meets the largest glacier on its
+    // way (a point with over twice the flux of any before it is a larger glacier's; along
+    // one glacier the flux grows by less a point), that point's bed, and how far off it
+    // stands in spacings squared. A slope's own thread of ice is met first and is not it.
+    f64 abreast_flux = 0.0, abreast = 0.0;
+    i32 abreast2 = 0;
     u32 q = u;
     i32 dx = 0, dy = 0;
     for (i32 step = 0; step < k_ice_reach_cells && widest > 0; ++step) {
@@ -1060,6 +1070,11 @@ void glaciate(const Sketch& s, const Frame& frame, const u8* held, const f64* z,
       const i32 far2 = dx * dx + dy * dy;
       // Past the widest glacier's half width nothing down the line holds the point.
       if (far2 > widest2) break;
+      if (flux[q] > 2.0 * abreast_flux) {
+        abreast_flux = flux[q];
+        abreast = z[q];
+        abreast2 = far2;
+      }
       if (flux[q] > most) {
         most = flux[q];
         most_deep = own[q];
@@ -1070,19 +1085,36 @@ void glaciate(const Sketch& s, const Frame& frame, const u8* held, const f64* z,
       found = most;
       found_deep = most_deep;
     }
+    // The glacier's surface over the point: level across the swath, the line's bed abreast
+    // plus the line's ice (landform.md, "The fall across a swath").
+    f64 found_level = abreast + found_deep;
+    f64 found_aside = frame.spacing_m * std::sqrt(static_cast<f64>(abreast2));
+    // A point with half the flux of the largest glacier on its way, or more, is on that
+    // glacier's line and not beside it: down a line the flux changes by less a point.
+    if (2.0 * flux[u] > abreast_flux) {
+      found_level = z[u] + found_deep;
+      found_aside = 0.0;
+    }
     if (found > 0.0) {
       const u32 below = neighbour(u, o.at[receiver[u]]);
       if (held[below] == 0 && found > reach[below]) {
         found = reach[below];
         found_deep = thick[below];
+        found_level = level[below];
+        // One step farther from that glacier's line than the receiver is.
+        found_aside = aside[below] + frame.spacing_m * ((receiver[u] & 1u) != 0 ? k_sqrt2 : 1.0);
       }
     }
     if (flux[u] >= found) {
       found = flux[u];
       found_deep = own[u];
+      found_level = z[u] + own[u];
+      found_aside = 0.0;
     }
     reach[u] = found;
     thick[u] = found_deep;
+    level[u] = found > 0.0 ? found_level : 0.0;
+    aside[u] = found > 0.0 ? found_aside : 0.0;
     iced[u] = found > 0.0 ? u8{1} : u8{0};
   }
   // **The region's edge is not a snout.** A held point is outside the model: no flux is
@@ -1387,11 +1419,13 @@ struct Network {
   Vector<f64> ratio;     // the rock's erodibility over the sediment's
   // Under ice (zero with none): the ice's share of the point's stream power, the place of the
   // point its erosion reads the ice's surface at, the ice's thickness there less here, and the
-  // part of an adverse bed the published limit lets it keep wearing.
+  // part of an adverse bed the published limit lets it keep wearing, and beside a glacier's
+  // line the level of its section there, which it does not wear below.
   Vector<f64> ice_share;
   Vector<u32> far_place;
   Vector<f64> far_step;
   Vector<f64> far_limit;
+  Vector<f64> far_floor;
   // The network's edges, each point's a run: its receivers with the weight each one's height has
   // in the point's base level, and its donors with the share of each one's flow that comes here.
   Vector<u32> down_begin;
@@ -1550,6 +1584,9 @@ void build_network(const RiverInputs& in, const Routing& r, jobs::JobSystem* job
   const f64* ice_flux = icy ? in.ice->flux.data() : nullptr;
   const f64* ice_reach = icy ? in.ice->reach.data() : nullptr;
   const f64* ice_thick = icy ? in.ice->thick.data() : nullptr;
+  const f64* ice_level = icy ? in.ice->level.data() : nullptr;
+  const f64* ice_aside = icy ? in.ice->aside.data() : nullptr;
+  const f64 ice_half = icy ? 0.5 / s.ice->thickness_ratio : 0.0;
   const f64* ice_till = icy ? in.ice->till.data() : nullptr;
   const f64* ice_moraine = icy ? in.ice->moraine.data() : nullptr;
   const f64 ice_k = icy ? in.ice->erodibility : 0.0;
@@ -1678,6 +1715,8 @@ void build_network(const RiverInputs& in, const Routing& r, jobs::JobSystem* job
   net.far_place.resize(n);
   net.far_step.resize(n);
   net.far_limit.resize(n);
+  net.far_floor.resize(n);
+  f64* far_floor = net.far_floor.data();
   f64* ice_share = net.ice_share.data();
   u32* far_place = net.far_place.data();
   f64* far_step = net.far_step.data();
@@ -1692,6 +1731,7 @@ void build_network(const RiverInputs& in, const Routing& r, jobs::JobSystem* job
       far_place[i] = i;
       far_step[i] = 0.0;
       far_limit[i] = 0.0;
+      far_floor[i] = -k_max_height_m;
       ground[i] = in.z[p];
       iterate[i] = in.z[p];
       arriving[i] = 0.0;
@@ -1753,6 +1793,18 @@ void build_network(const RiverInputs& in, const Routing& r, jobs::JobSystem* job
           // wear: with D the reach and d the step to the receiver, both in spacings,
           // (b_r - b) / d <= c (b + h - s_q) / D gives b >= flat + (b_r - flat) D / (D + c d).
           far_limit[i] = reach_cells / (reach_cells + adverse * ((code & 1u) != 0 ? k_sqrt2 : 1.0));
+          if (ice_aside[p] > 0.0) {
+            // **The fall across a swath** (landform.md, "The fall across a swath"): beside
+            // its line a glacier wears nothing that stands outside its own section, and the
+            // section is the published one, a parabola: under a surface level across the
+            // valley, from the line's bed up to that surface at the swath's margin, half the
+            // glacier's width off the line. So a tributary's bed inside its trunk's swath is
+            // worn only where it stands above the trunk's section, and where the two meet is
+            // its hanging step.
+            f64 off = ice_aside[p] / (ice_half * ice_thick[p]);
+            if (off > 1.0) off = 1.0;
+            far_floor[i] = ice_level[p] - ice_thick[p] * (1.0 - off * off);
+          }
         }
       }
       const f64 hard = in.hardness[p] * erodibility_of(s, static_cast<f64>(in.resist[p]));
@@ -1999,6 +2051,7 @@ u32 sweep_rivers(const RiverInputs& in, jobs::JobSystem* jobs, Network& net) {
   const u32* far_place = net.far_place.data();
   const f64* far_step = net.far_step.data();
   const f64* far_limit = net.far_limit.data();
+  const f64* far_floor = net.far_floor.data();
   const u32* down_begin = net.down_begin.data();
   const u32* down_place = net.down_place.data();
   const f64* down_weight = net.down_weight.data();
@@ -2057,7 +2110,9 @@ u32 sweep_rivers(const RiverInputs& in, jobs::JobSystem* jobs, Network& net) {
             // meltwater's term draws it toward the receiver's bed. Both at once is one update
             // toward their mean by their powers.
             const f64 flat = iterate[far_place[i]] + far_step[i];
-            const f64 target = base > flat ? flat + (base - flat) * far_limit[i] : flat;
+            f64 target = base > flat ? flat + (base - flat) * far_limit[i] : flat;
+            // Beside a glacier's line: no lower than its section stands there.
+            if (target < far_floor[i]) target = far_floor[i];
             to = cut(soft[i], firm[i], base + ice_share[i] * (target - base));
             // **Water wears a bed down and never fills it.** Where that update ends below the
             // receiver's bed the meltwater's term has pulled the bed up toward the receiver,
@@ -2521,6 +2576,8 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
     ice.reach.assign(n, 0.0);
     ice.own.assign(n, 0.0);
     ice.thick.assign(n, 0.0);
+    ice.level.assign(n, 0.0);
+    ice.aside.assign(n, 0.0);
     ice.before.assign(n, 0.0);
     ice.peak.assign(n, 0.0);
     ice.most.assign(n, 0.0);

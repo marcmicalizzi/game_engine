@@ -150,6 +150,7 @@ TEST_CASE("landform: ice leaves a trough where a river leaves a V, and a tributa
   // Three sections of the trunk below the tributary.
   f64 river_share = 0.0, glacier_share = 0.0;
   u32 river_width = 0, glacier_width = 0, swath_width = 0;
+  f64 section_width = 0.0;
   for (const u32 x : {84u, 96u, 108u}) {
     river_share += trough_share(river, x) / 3.0;
     glacier_share += trough_share(glacier, x) / 3.0;
@@ -159,6 +160,10 @@ TEST_CASE("landform: ice leaves a trough where a river leaves a V, and a tributa
     // its line, the width four times the ice's thickness (`thickness_ratio` 0.25).
     const f64 thick_m = static_cast<f64>(glacier.ice[k_axis * k_wide + x]) / 1000.0;
     swath_width += 2 * static_cast<u32>(0.5 * thick_m / 0.25 / 50.0) + 1;
+    // The published section a hundred metres above its floor: a parabola from the line's bed
+    // to the ice's surface at the swath's margin is, at the height y, the swath's width times
+    // the square root of y over the ice's thickness.
+    section_width += 2.0 * (0.5 * thick_m / 0.25 / 50.0) * std::sqrt(100.0 / thick_m) + 1.0;
   }
   const u32 junction = k_axis * k_wide + k_side;
   u32 step_row = 0;
@@ -173,29 +178,30 @@ TEST_CASE("landform: ice leaves a trough where a river leaves a V, and a tributa
   std::printf(
       "landform ice: half way up its lowest 100 m the trunk is %.2f of its width at the 100 m "
       "under ice and %.2f under a river, and there %u points wide against %u over three "
-      "sections (the swaths are %u); the trunk's ice is %u mm thick at the junction and the "
+      "sections (the swaths are %u, and the parabola through them %.1f points at that height); "
+      "the trunk's ice is %u mm thick at the junction and the "
       "tributary's %u mm a kilometre up; the tributary's steepest step is %d mm under ice and "
       "%d mm under a river; the trunk's bed at the junction stands at %d and %d mm\n",
-      glacier_share, river_share, glacier_width, river_width, swath_width, glacier.ice[junction],
-      glacier.ice[(k_axis - 20) * k_wide + k_side], glacier_step, river_step,
+      glacier_share, river_share, glacier_width, river_width, swath_width, section_width,
+      glacier.ice[junction], glacier.ice[(k_axis - 20) * k_wide + k_side], glacier_step, river_step,
       glacier.height_mm[junction], river.height_mm[junction]);
   // The measure is the published one in another dress. A section y = a x^b (Svensson 1959's
   // form for a glacial valley's side) is (1/2)^(1/b) as wide half way up as at the top, so the
   // share is the exponent: b = log(1/2) / log(share). A V of straight sides is b = 1, and a
-  // glacial trough is a parabola or flatter: Svensson's own valley fits b "only slightly" off
-  // 2, and the published fits of troughs run from about 1.5 up (how far each source was read
-  // is on the ice's grounding page: docs/experiments/landform-ice.md, "A trough's section:
-  // the sources"). So the bounds are the exponents': the river's valley under the glacial range's
-  // 1.5, the glacier's inside it or past it (a floor between walls is b without bound).
+  // glacial trough is a parabola: Svensson's own valley fits b "only slightly" off 2, Graf
+  // 1970's run 1.5 to 2.0 and Li, Liu and Cui 2001's commonly 1.5 to 2.5 (how far each source
+  // was read is on the ice's grounding page: docs/experiments/landform-ice.md, "A trough's
+  // section: the sources"). So the bounds are the exponents': the river's valley under the
+  // glacial range's 1.5, the glacier's inside 1.5 to 2.5.
   //
-  // **What the model must give, and why** (W126, after the held edge was mended: stage C's
-  // numbers here were a trench against the region's edge, and its "50 m below the river's bed"
-  // went with it). The points of a glacier's swath are worn toward its line with the line's
-  // own flux, so the swath is a floor whose cross fall is a few times the fall along the line;
-  // outside the swath a slope's thinner ice meets the trunk's at a step in the ice's surface
-  // and hangs above the floor by it. So the section a hundred metres up is at least the swath
-  // wide, and the trough is a floor between walls: after 100,000 years flatter than a parabola
-  // (the page says what that means and what is missing).
+  // **What the model must give, and why** (W127: the fall across a swath). Beside its line a
+  // glacier wears nothing that stands outside its own section, and the section is the
+  // published parabola from the line's bed to the ice's surface at the swath's margin. So
+  // after 100,000 years (the trunk has stood near its base level for sixty thousand of them,
+  // and what stood inside the section is worn to it) the valley a hundred metres above its
+  // floor is as wide as that parabola is there, to the two points a section the lattice and
+  // the rivers' own work on the same points allow, and not the swath wide: stage E's floor
+  // between walls measured b = 4.9 here and the swath's whole width.
   const f64 river_b = std::log(0.5) / std::log(river_share);
   const f64 glacier_b = std::log(0.5) / std::log(glacier_share);
   std::printf("landform ice: as y = a x^b the river's section is b = %.2f, the glacier's %.2f\n",
@@ -203,26 +209,34 @@ TEST_CASE("landform: ice leaves a trough where a river leaves a V, and a tributa
   CHECK(river_b > 0.66);  // not a gorge either: the share's old lower bound of 0.35
   CHECK(river_b < 1.5);
   CHECK(glacier_b >= 1.5);
-  CHECK(glacier_width >= swath_width);
-  CHECK(glacier_width * 2 > river_width * 3);
-  // The trunk's ice is the thicker, and the tributary's bed meets it at a step: the tributary
-  // is worn to the trunk's ice, not to its bed. **What the model gives is where the step is,
-  // not how tall**: a point cannot be worn below its receiver's bed raised by the ice's share
-  // of the step in the ice, so the tributary's steepest step stands where its own ice meets
-  // the trunk's swath, and is steeper than a river leaves anywhere on it. How tall it grows
-  // depends on how long the swath's margin stays on one point (in this valley the trunk's ice
-  // thins from 320 m to 294 m over the run, its swath narrows by a point, and the step at the
-  // new margin is what has grown since: 14 m). Stage C held "five times the river's" on a
-  // step of 40 m that the trench at the region's edge had made (W126).
+  CHECK(glacier_b <= 2.5);
+  CHECK(static_cast<f64>(glacier_width) >= section_width - 6.0);
+  CHECK(static_cast<f64>(glacier_width) <= section_width + 6.0);
+  CHECK(glacier_width < swath_width);
+  CHECK(glacier_width > river_width);
+  // **A tributary hangs where its bed meets the trunk's section.** Inside the trunk's swath
+  // the tributary's bed is worn only where it stands above the trunk's parabola, so its
+  // steepest step is inside that swath, between the margin and the line, under the trunk's
+  // ice on both its points; and it is no steeper than the section itself is at its margin,
+  // twice the ice's thickness over the half width, which with the width four thicknesses is
+  // a fall of one in one: a spacing a point. Steeper than a river leaves anywhere on the same
+  // axis. (Stage E's step stood at the swath's margin, 14 m, and its height was the lattice's:
+  // how long the margin stayed on one point. The tributary's own ice is not in this bound:
+  // the page says why.)
+  const u32 half_points =
+      static_cast<u32>(0.5 * static_cast<f64>(glacier.ice[junction]) / 250.0 / 50.0);
   CHECK(glacier.ice[junction] > 100000);
   CHECK(glacier_step > river_step);
-  CHECK(ice_below > ice_above + 50000);
+  CHECK(glacier_step <= 50000);
+  CHECK(step_row + half_points >= k_axis);
+  CHECK(step_row < k_axis);
+  CHECK(ice_above + 5000 > glacier.ice[junction]);
+  CHECK(ice_below + 5000 > glacier.ice[junction]);
   // The ice wears the trunk faster than the river does (its erodibility is twice the rivers'
   // on a flux the swath shares), and no lower than the edge the trunk leaves through.
   CHECK(glacier.height_mm[junction] < river.height_mm[junction]);
   CHECK(glacier.height_mm[junction] >= k_edge_mm);
 }
-
 TEST_CASE("landform: a glacier that leaves through a held edge is graded to that edge") {
   // The trunk of the case above fills with ice to the open east edge and its ice leaves there.
   // Every point makes ice (the line is under the floor), so the ice thickens all the way down
@@ -613,11 +627,13 @@ TEST_CASE("landform: an ice age solves to the same bytes on one, four and sixtee
   // carries its donors' ice, where a disc about each line point put a glacier's ice on points
   // that drain out of it (the trench at a held edge); and again for the basins' rule (the
   // slope read over a coupling length on a glacier's own line, and meltwater that never fills).
-  // Re-taken by W127: under ice a sheet of till is lodged, a twohundredth of the ice's
-  // thickness, where the valley's glacier (which melts nowhere) laid none before.
-  CHECK(hash_of(serial.height_mm) == 0x936a9817a8e395a6ull);
-  CHECK(hash_of(serial.ice) == 0xf7c421b6b3559d35ull);
-  CHECK(hash_of(serial.till) == 0x796fbec677d8a742ull);
+  // Re-taken by W127, twice: under ice a sheet of till is lodged, a twohundredth of the ice's
+  // thickness, where the valley's glacier (which melts nowhere) laid none before; and beside
+  // its line a glacier wears nothing outside its own section, a parabola, where it ground its
+  // whole swath to a floor.
+  CHECK(hash_of(serial.height_mm) == 0x6f25eb0fd45b1e22ull);
+  CHECK(hash_of(serial.ice) == 0x0eb6df477cd2e365ull);
+  CHECK(hash_of(serial.till) == 0x760ba181f26403deull);
   std::printf("landform ice pins: height %016llx ice %016llx till %016llx\n",
               static_cast<unsigned long long>(hash_of(serial.height_mm)),
               static_cast<unsigned long long>(hash_of(serial.ice)),
