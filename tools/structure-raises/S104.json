@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "S104",
+  "reason": "water.md's Not yet gains the pointer to the waterfall's design page (S104), which is where a reader of the water page looks for what a fall does not do yet",
+  "date": "2026-11-12",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/apps.md": -1,
+    "page:docs/subsystems/water.md": 499
+  }
+}
