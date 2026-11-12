@@ -1275,8 +1275,8 @@ banks' test with the line's points a metre wide or more, the flood bed's walks w
 alluvial line 2 m wide or more.
 
 **Not yet.** The cut is written by the subcommand and pasted by the author, not applied by the generator itself (the ground is built before the placements are); a procedural ground (the dunes) takes no cut; D8 only (no D∞ spreading); heads by a local four-metre slope, not a slope
-averaged over the source area; no braided reaches; the valley's confinement is not read for the
-reach; a bend with a point bar is cut 6 % narrower than its crossings where a surveyed river's
+averaged over the source area; no braided reaches; the valley's confinement is read for the flood
+bed ("The flood bed") but not for the reach's class, which is the slope's alone; a bend with a point bar is cut 6 % narrower than its crossings where a surveyed river's
 is wider ([the grounding](../experiments/channels.md#the-steep-reaches-the-pools-place-and-three-numbers-read-again)); undercut and
 turf banks are not the heightfield's to draw; the line is moved between its banks by a width at the most, so where the trough's floor is
 further off than that a bench with half a bank is left (1.8 % of the test valley's points, and
