@@ -1,0 +1,20 @@
+{
+  "format": "engine.camera-path.v1",
+  "name": "steep-dip",
+  "description": "The steep-dip mountain at three distances: the whole mountain from a kilometre, the flank whose beds dip with the slope from 100 m, the flank whose strike runs up the slope from 100 m, and a ledge on the flank whose beds dip into the slope from 10 m at eye height.",
+  "interpolation": "Smooth",
+  "fps": 60,
+  "znear": 0.3,
+  "keys": [
+    {"time": 0.0, "position": [-441.0, 130.0, 613.0], "target": [175.0, 90.0, -175.0]},
+    {"time": 4.0, "position": [38.0, 40.0, 1.0], "ground": true, "target": [99.0, 110.0, -78.0]},
+    {"time": 8.0, "position": [372.0, 40.0, -21.0], "ground": true, "target": [293.0, 80.0, -83.0]},
+    {"time": 12.0, "position": [299.0, 1.7, -334.0], "ground": true, "target": [287.0, 42.0, -318.0]}
+  ],
+  "markers": [
+    {"frame": 0, "name": "far", "note": "the whole mountain from a kilometre, toward the flank whose beds dip with the slope"},
+    {"frame": 240, "name": "dip-slope", "note": "100 m from the flank whose beds dip with the slope"},
+    {"frame": 480, "name": "strike", "note": "100 m from the flank whose strike runs up the slope"},
+    {"frame": 720, "name": "near", "note": "10 m from a ledge on the flank whose beds dip into the slope, at eye height"}
+  ]
+}

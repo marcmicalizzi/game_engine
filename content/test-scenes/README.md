@@ -63,3 +63,7 @@ interwoven thickets and sparse dry-site wood, with mixed live/dead stems and fix
 snowbed willow dwarf scrub and sparse plants rooted between rocks, at their botanical scale.
 
 [Rockfall deposits](rockfall-deposits/README.md) show connected talus, mixed fragments and drainage sediment.
+
+[`steep-dip/`](steep-dip/README.md) is a mountain cut by beds dipping 57 degrees (the forest proof
+of concept's formation), so its flanks take every attitude of the beds to the slope; the `ledges`
+and `cliffs` generators dress it (roadmap G200).

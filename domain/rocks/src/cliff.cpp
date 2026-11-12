@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <memory>
 #include <string>
 
 namespace engine::rocks {
@@ -159,6 +160,13 @@ struct Carve {
   f64 warp_len = 1.0;
   f64 gully_amp = 0.0;  // the gullies between buttresses: how deep, m
   f64 gully_len = 1.0;
+  // **A face's members** (G200; rocks.md, "Beds at any attitude"): on beds dipping past 20
+  // degrees a weak member stands back from the resistant ones by their contrast, so a face cut
+  // across the strike shows ribs and gullies. The formation's sequence (null: none), the deepest
+  // recess, and the most resistant member's resistance.
+  const gfx::FormationParams* members = nullptr;
+  f64 member_amp = 0.0;
+  f64 member_hi = 0.0;
   f64 fade_blocks = 0.0;
   f64 fade_beds = 0.0;
   f64 fade_columns = 0.0;
@@ -317,6 +325,19 @@ f64 carve_at(const Carve& c, f64 s, f64 y, f64 top_y, D3 at, f64& notch) {
   if (c.gully_amp > 0.0) {
     const f64 g = noise3(c.seed_gully, D3{s / c.gully_len, yd / (4.0 * c.gully_len), 0.4});
     e -= c.gully_amp * smoothstep((g - 0.45) * 3.0);
+  }
+  // **The members** (G200): a weak member weathers back from the resistant ones round it, by the
+  // contrast in their resistance (half of it the whole recess), its edges eased over 3 m of the
+  // bed coordinate so a member's boundary is a slope and not a step.
+  if (c.members != nullptr && c.member_amp > 0.0) {
+    const f64 wx = c.fabric.origin.x + at.x, wy = c.fabric.origin.y + at.y,
+              wz = c.fabric.origin.z + at.z;
+    const f64 coordinate = gfx::formation_coordinate(c.fabric.field, wx, wy, wz).coordinate;
+    const gfx::FormationLateral lateral = gfx::formation_lateral(c.fabric.field, wx, wy, wz);
+    f64 r = 0.0;
+    for (const f64 d : {-1.5, 0.0, 1.5})
+      r += static_cast<f64>(gfx::formation_member(*c.members, coordinate + d, lateral).resistance);
+    e -= c.member_amp * clamp01((c.member_hi - r / 3.0) / 0.5);
   }
   // The grain: up to three octaves from 3 m, each only where it spans four cells of the rung.
   f64 len = 3.0;
@@ -726,6 +747,21 @@ bool cliff_in_range(const Cliff& p, std::string& error) {
 
 f64 cliff_type_rounding(RockType type) { return cliff_model(type).rounding; }
 
+namespace {
+// **A face's members** (G200; rocks.md, "Beds at any attitude"): how deep a weak member stands
+// back on a face `height_m` tall, before the contrast: ramped in as the formation's dip passes 20
+// degrees (under it the members are the benches' business, G172) to 35, and a tenth of the face's
+// height, never over 8 m (design: the gullies' own 6 % and 6 m, a little deeper, since a member is
+// a body of weak rock and not a joint's slot). Zero with no formation or no macro sequence.
+f64 member_reach(const Cliff& p, f64 height_m) {
+  if (!p.members || !p.formation.has_value() || !p.geology.from_formation) return 0.0;
+  if (p.formation->macro_beds.empty() && p.formation->members.empty()) return 0.0;
+  const f64 dip = std::fabs(wide(p.formation->dip_deg));
+  const f64 w = clamp01((dip - 20.0) / 15.0);
+  return w * min2(8.0, 0.1 * height_m);
+}
+}  // namespace
+
 // The back's distance behind the face's mean plane (cliffs.h): the recipe's `depth`, else the
 // carving's deepest reach on a face `height_m` tall plus two metres, and never under 4 m. The
 // solver's own rule, so the generator that seats a face's top can ask how far back it goes.
@@ -743,7 +779,8 @@ f64 cliff_back_m(const Cliff& p, f64 height_m) {
   const f64 reach = relief + wide(p.undercut) * bed + 0.12 * bed + m.warp * height_m +
                     min2(6.0, 0.06 * height_m) + 2.0 * m.grain + m.column_relief +
                     rounding * (1.0 + 3.0 * rounding);
-  return max2(4.0, reach + 2.0);
+  const f64 members = member_reach(p, height_m);
+  return max2(4.0, (members > 0.0 ? reach + members : reach) + 2.0);
 }
 
 bool solve_cliff(const Cliff& p, assets::MeshData& out, CliffReport* report_out,
@@ -799,6 +836,21 @@ bool solve_cliff(const Cliff& p, assets::MeshData& out, CliffReport* report_out,
   carve.gully_amp = min2(6.0, 0.06 * z.line.height_max);
   carve.gully_len = max2(12.0, 0.6 * z.line.height_max);
   carve.warp_len = max2(16.0, 0.6 * z.line.height_max);
+  // A face's members (G200): the sequence packed once a solve, on the heap (it is two tables of
+  // a hundred kilobytes), only where they carve.
+  std::unique_ptr<gfx::FormationParams> member_field;
+  if (carve.fabric.world && member_reach(p, z.line.height_max) > 0.0) {
+    member_field = std::make_unique<gfx::FormationParams>();
+    if (gfx::pack_formation(*p.formation, *member_field, nullptr)) {
+      const gfx::FormationSequence& macro = member_field->macro;
+      f64 hi = 0.0;
+      for (u32 i = 0; i < macro.count; ++i)
+        hi = max2(hi, static_cast<f64>(macro.beds[i].resistance));
+      carve.members = member_field.get();
+      carve.member_hi = hi;
+      carve.member_amp = member_reach(p, z.line.height_max);
+    }
+  }
   {
     Rng seeds(mix64(p.seed ^ 0x434C494646ull));  // "CLIFF"
     carve.seed_blocks = seeds.next();

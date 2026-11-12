@@ -752,8 +752,12 @@ void faces_of_line(const CliffLayer& layer, const scene_gen::Ground& ground, con
       // relief and more, so an open bottom hung past the carved crest and the ground showed through
       // the face from below. The lowest tier's bottom is in the ground.
       c.bottom = !lowest;
-      // With a bedded formation its members step (rocks.md, "Benches").
+      // With a bedded formation its members step (rocks.md, "Benches"); with one dipping past 20
+      // degrees and a macro sequence they stand apart as ribs and gullies (G200; rocks.md, "Beds
+      // at any attitude").
       c.benches = benched;
+      c.members = layer.formation.has_value() && std::fabs(layer.formation->dip_deg) > 20.0f &&
+                  (!layer.formation->macro_beds.empty() || !layer.formation->members.empty());
       c.type = type_for(layer, face.y);
       c.seed = mix64(layer.seed ^ id);
       c.height = static_cast<f32>(min2(200.0, max2(1.0, mean)));

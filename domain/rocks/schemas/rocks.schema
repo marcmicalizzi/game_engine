@@ -273,7 +273,7 @@ struct CliffGround @version(1) {
 /// under a hard one, warped and grained — closed at the ends, the top and a back buried `depth`
 /// behind it, with a talus skirt of the rock's own debris at its foot. Walking along `points`, the
 /// face looks to the right (+z for a line along +x).
-struct Cliff @version(7) {
+struct Cliff @version(8) {
   seed: u64 = 1
   type: RockType = Sandstone
   /// The foot of the face, in order: 2 to 4,096 vertices, a line 1 to 1,000 m long.
@@ -347,6 +347,12 @@ struct Cliff @version(7) {
   /// profile's run the face's batter times its height. The cliffs generator sets it with a
   /// formation; false is the plane leaned by the batter.
   benches: bool = false @since(7)
+  /// The members stand apart (G200; rocks.md, "Beds at any attitude"): with a `formation` that
+  /// has a macro sequence and dips past 20 degrees, a weak member is carved back from the
+  /// resistant ones round it by their contrast in resistance, ramped in from 20 to 35 degrees of
+  /// dip, a tenth of the face's height and 8 m at most, so a face cut across the strike shows
+  /// ribs and gullies. The cliffs generator sets it with such a formation.
+  members: bool = false @since(8)
 }
 
 /// A rock file, `<name>.rock.json`: the shape and its parameters. Only the shape's own block may
