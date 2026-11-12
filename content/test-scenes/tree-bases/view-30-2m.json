@@ -1,0 +1,12 @@
+{
+  "format": "engine.camera-path.v1",
+  "name": "tree-bases-30-2m",
+  "description": "One still view: the spruce at yaw 180 on the 30 degree ramp (x 15, z 3) from 2 m, 60 degrees round from straight down-slope towards +x, the eye 0.6 m over the ramp, looking at the trunk's foot: the downhill rim and the ground under it in profile.",
+  "interpolation": "Smooth",
+  "fps": 60,
+  "znear": 0.05,
+  "keys": [
+    { "time": 0.0, "position": [16.732051, -1.709401, 4.0], "ground": false, "target": [15.0, -1.45, 3.0], "target_ground": false },
+    { "time": 1.0, "position": [16.732051, -1.709401, 4.0], "ground": false, "target": [15.0, -1.45, 3.0], "target_ground": false }
+  ]
+}

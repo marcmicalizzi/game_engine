@@ -376,7 +376,7 @@ slope at 10 m.
 
 | Stage | What is built | What it returns to the eye | What holds it |
 |---|---|---|---|
-| 1. The skirt | the tube carried down on every tree species' trunk; the seat in the generator section; the solver's version and the pins | no gap under any tree at any distance or yaw, to 45°, at no cost an instance: the owner's defect, closed | a CPU test over the four ramps and eight yaws: the skirt's lowest ring is under the ground beneath it at 64 azimuths; the three distances captured |
+| 1. The skirt (**built**, below) | the tube carried down on every tree species' trunk; the solver's version and the pins | no gap under any tree at any distance or yaw, to 45°, at no cost an instance: the owner's defect, closed | a CPU test over the four ramps and 64 azimuths: the skirt's lowest ring is under the ground beneath it; every LOD cut and distance form keeps it; a GPU case on the scene, from the ids |
 | 2. The footprint | the 17-sample seat and plane fit in the scene reader and the placements; `engine-content ground sample` | trees beside a tread, a cut bank and the lattice's edge sit; authors can ask the drawn ground | a tread benched under a rim; the whole read and the streamed tiles equal; pinned bytes of the fit for the containers |
 | 3. The conformed foot | the foot part, the pose's third kind, its normal, the padding and the error scale, the fade at the ring's edge | at 2 to 10 m the flare leans into the slope: exposed down-slope, buried up-slope | the stage against a CPU reference; rest poses to the bit at *g* = 0; rays against raster word for word on a conformed tree; a cost pair at 3840 x 2160 under traced primaries and shadows |
 | 4. The laterals | the rounded roots by habit in the foot; near-detail clusters left out of distance forms; shapes handed to the exclusion; G102's ridge and sleeve removed | roots on every tree at 2 to 15 m, round, in the trunk's bark, with no grass through them | the collapse check G102 left open, on the foot; a form without marked clusters; the chain's demand counted on the scene and on one forest pair |
@@ -385,6 +385,75 @@ slope at 10 m.
 
 Stage 1 stands alone and is the one that answers the walk. Stages 3 and 4 share the foot and are
 best built by one row; 2 can run beside 1.
+
+### Stage 1 as built (2026-11-12, branch b62-G201-1)
+
+Every tree mesh the solver makes carries the skirt ([flora](../subsystems/flora.md#the-trunks-skirt)
+has the rule, each trunk kind and the re-pins): one ring straight under the stem's bottom ring at
+*rho* tan 45° + 0.15 m below the origin. Three things differ from the design above, all found in
+the build:
+
+- **Straight, not flared on.** The design carried the flare's curve on for a quarter of the rim's
+  radius with the radius grown by a tenth. Built that way, the picture at 2 m on the 30 degree ramp
+  had a dark line round the trunk at its old bottom ring: the tube's flare is a smoothstep, which
+  meets the bottom ring with no slope, so a ring growing outward below it is a crease, and the
+  traced shadows drew it. Straight down with the collar's normals the surface runs on unbroken, and
+  one ring does what two did: two triangles a side, not four (32 at 16 sides, not 64).
+- **The depth is measured from the origin, not the stem.** `1.1 r + 0.15 m` assumed a stem on the
+  axis; a birch clump's stems and a leaning palm's foot stand off it, and the ground under a stem
+  0.1 m out at 45° is 0.1 m lower again. So the depth is the bottom ring's farthest point from the
+  origin times tan 45° plus the margin: *r* + 0.15 m for a stem on the axis (no tenth to cover,
+  now that the skirt does not grow), deeper for one off it (the clump's stems 0.38 to 0.43 m where
+  *r* + 0.15 m would give 0.28 to 0.32).
+- **The seat in the generator section is left to stage 2**, its only reader; the skirt needs
+  nothing recorded, the plan counts its triangles.
+
+| Trunk kind | Sides | Skirt triangles | Rim | Bottom |
+|---|---|---|---|---|
+| date palm (default) | 16 | 32 | 0.23 m | -0.38 m |
+| broadleaf (default) | 12 | 24 | 0.48 m | -0.63 m |
+| broadleaf profiles at 10 m (maple to alder) | 12 | 24 | 0.08 to 0.34 m | -0.23 to -0.49 m |
+| conifer (default) | 10 | 20 | 0.41 m | -0.56 m |
+| evergreen profiles at 10 m (pine to juniper) | 10 | 20 | 0.14 to 0.36 m | -0.29 to -0.51 m |
+| birch, one stem; a three-stem clump | 10; 8 a stem | 20; 48 | 0.17 m; 0.13 to 0.17 m | -0.32 m; -0.38 to -0.43 m |
+| willow, orchard tree | 10, 12 | 20, 24 | 0.68 m, 0.20 m | -0.83 m, -0.35 m |
+| ancient tree (20,000 rung) | 59 | 118 | 11.0 m (the buttresses) | -11.2 m |
+
+The forest's own meshes were not rebuilt here (the proof of concept is read, never run); for their
+rims of 0.39 to 1.14 m the rule gives 0.54 to 1.29 m (the design's 0.58 to 1.40 m had the tenth).
+
+**What it costs, as built.** Containers from `engine-content flora`, main (33ff2824) against the
+skirt, from the same recipes:
+
+| Recipe | Triangles | Vertices | Clusters (finest) | Bytes |
+|---|---|---|---|---|
+| `spruce-tall` | 23,450 → 23,470 (+20) | 32,627 → 32,635 | 545 → 546 (381 → 380) | 2,537,860 → 2,525,576 |
+| `oak` | 58,839 → 58,863 (+24) | 97,469 → 97,636 | 1,691 → 1,696 (1,020 → 1,020) | 5,489,180 → 5,483,008 |
+| `date-palm` | 55,312 → 55,344 (+32) | 107,003 → 107,038 | 1,753 → 1,750 (799 → 799) | 4,259,404 → 4,260,584 |
+| `willow` | 52,988 → 53,008 (+20) | 196,107 → 196,209 | 3,204 → 3,208 (1,516 → 1,516) | 7,452,592 → 7,456,832 |
+
+The finest clusters hardly change in number (the skirt's triangles join the trunk's own clusters);
+the coarser levels move by a few clusters either way, the simplifier working on a grid the skirt
+made a few percent coarser. The bytes fall a little where the star's atlas is baked (spruce, oak):
+its PNG compresses differently with the trunk carried to the box's bottom.
+
+A cost pair on `content/test-scenes/elder-grove` at 3840 x 2160, `--raster rt --shadows rt`, the
+bounce on (`renderer.gi.mode=bounce`), the scene's 38 s path, from main's release binaries
+(`b61\bin-main`) and this branch's copied out of the tree, alternated in one lease of the GPU lock
+(the machine: other processes at 25 to 42 % of the CPU, the GPU mine):
+
+| Run | Frame (median, p95) | Traced chain (CLAS, BLAS, TLAS, records) | Resolve | Trace | Pairs |
+|---|---|---|---|---|---|
+| main | 8.938, 12.087 ms | 1.038 ms | 4.578 ms | 1.667 ms | 106,392 |
+| skirt | 8.925, 12.059 ms | 1.039 ms | 4.583 ms | 1.662 ms | 106,359 |
+| main | 8.976, 12.082 ms | 1.037 ms | 4.643 ms | 1.698 ms | 106,392 |
+| skirt | 8.970, 12.050 ms | 1.042 ms | 4.619 ms | 1.642 ms | 106,359 |
+
+Inside the noise: the frame moves by -0.01 ms (the run-to-run spread is 0.04), the chain by
++0.003 ms, the pairs by -33 (the coarser grid's cut). The first, two-ring skirt measured the same
+way (-0.08 ms against a spread of 0.09, +38 pairs). The picture at 2 m on the 30 degree ramp, before
+and after, and the ids across the slope (main 103 gap pixels under the 30 degree ramp's spruce and
+658 under the 45; the skirt none) are in the branch's hand-back.
 
 ### What the build needs from other rows
 

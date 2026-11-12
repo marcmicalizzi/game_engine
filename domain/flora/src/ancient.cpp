@@ -1092,7 +1092,7 @@ u32 stub_sides(const Plan& plan) { return plan.sides[2] < 8 ? plan.sides[2] : 8;
 u32 count_triangles(const Ancient& p, const Layout& l, const Crown& crown, const Named& named,
                     const Plan& plan) {
   const Grid g = trunk_grid(l, p, plan.trunk_rows, plan.trunk_sides, plan.fin_flanks);
-  u32 n = trunk_triangles(g, windows_of(l, g)) +
+  u32 n = trunk_triangles(g, windows_of(l, g)) + skirt_triangles(g.angles.size() - 1) +
           named.runs.size() * tube_triangles(plan.rows[1], plan.sides[1]);
   const auto segment = [&](u32 node) {
     const CrownNode& c = crown.nodes[node];
@@ -1526,6 +1526,9 @@ bool solve_ancient_chain(const Ancient& p, assets::MeshData& out, TreeReport* re
   const u32 trunk_vertex = out.positions.size();
   build_trunk(l, p, grid, windows, emit);
   trunk_normals(out, trunk_vertex, 0, out.indices.size(), grid.arcs.size(), grid.angles.size());
+  // The skirt under the buttressed foot (G201), after the trunk's normals so they are its own: the
+  // `k_sink_m` metre the foot already stands in is not a 45-degree slope under a 3 m buttress.
+  build_skirt(trunk_vertex, grid.angles.size() - 1, l.base, emit);
 
   // The runs and the first segments past them, in pairs; the runs straight. Then every later
   // segment, limb by limb, parents first; then the dead stubs. A limb part at least

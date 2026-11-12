@@ -157,7 +157,7 @@ u32 count_triangles(const Willow& p, const Plan& plan) {
   const u32 limbs = p.limbs;
   const u32 branches = p.limbs * p.branches;
   const u32 curtains = branches * p.curtains;
-  return tube_triangles(plan.rows[0], plan.sides[0]) +
+  return tube_triangles(plan.rows[0], plan.sides[0]) + skirt_triangles(plan.sides[0]) +
          limbs * tube_triangles(plan.rows[1], plan.sides[1]) +
          branches * tube_triangles(plan.rows[2], plan.sides[2]) +
          curtains * (spray_triangles(plan.cards) +
@@ -286,10 +286,12 @@ bool solve_willow(const Willow& p, assets::MeshData& out, TreeReport* report, st
         build_tube(resample_axis(s.axis, plan.curtain_rows), .0015, .0004, 3, {}, emit);
       continue;
     }
+    emit.skirt = i == 0;  // the trunk stands on the ground (G201)
     part_of[i] = emit_tube_part(
         emit, s.axis, s.r0, s.r1, plan.rows[s.order], plan.sides[s.order], parent,
         s.order == 0 && s.r0 >= static_cast<f64>(load_bearing_min_radius("willow")) ? k_load_bearing
                                                                                     : 0u);
+    emit.skirt = false;
     ++wood;
   }
   assets::Primitive bark;

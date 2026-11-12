@@ -1,10 +1,10 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "G201",
-  "reason": "flora.md gains one pointer line under Exposed structural roots to the G201 design page (a skirt, a conformed foot, shared roots), which is where the roots' not-yet now lives",
+  "reason": "flora.md gains one pointer line under Exposed structural roots to the G201 design page (+222), and The trunk's skirt (G201 stage 1, +5498): what every tree's stem now carries below its collar, per trunk kind, in every form, its cost, and the re-pins it made",
   "date": "2026-11-12",
   "by": "Marc Micalizzi",
   "deltas": {
-    "page:docs/subsystems/flora.md": 222
+    "page:docs/subsystems/flora.md": 5720
   }
 }

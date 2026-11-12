@@ -150,7 +150,7 @@ u32 count_triangles(const Orchard& p, const Plan& plan) {
   const u32 limbs = p.limbs;
   const u32 branches = p.limbs * p.branches;
   const u32 twigs = branches * p.twigs;
-  return tube_triangles(plan.rows[0], plan.sides[0]) +
+  return tube_triangles(plan.rows[0], plan.sides[0]) + skirt_triangles(plan.sides[0]) +
          limbs * tube_triangles(plan.rows[1], plan.sides[1]) +
          branches * tube_triangles(plan.rows[2], plan.sides[2]) +
          twigs * (spray_triangles(plan.cards) + p.fruit * k_fruit_triangles);
@@ -274,11 +274,13 @@ bool solve_orchard(const Orchard& p, assets::MeshData& out, TreeReport* report, 
     const Shoot& s = shoots[i];
     if (s.order > 2) continue;
     const u32 parent = i == 0 ? geometry::k_motion_no_parent : part_of[s.parent];
+    emit.skirt = i == 0;  // the trunk stands on the ground (G201)
     part_of[i] =
         emit_tube_part(emit, s.axis, s.r0, s.r1, plan.rows[s.order], plan.sides[s.order], parent,
                        s.order == 0 && s.r0 >= static_cast<f64>(load_bearing_min_radius("orchard"))
                            ? k_load_bearing
                            : 0u);
+    emit.skirt = false;
     ++wood;
   }
   assets::Primitive bark;

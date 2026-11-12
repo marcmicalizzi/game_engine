@@ -744,7 +744,8 @@ grown rather than lathed. The apex is closed by a low dome, hidden inside the yo
 bases. One UV island **in metres**: *u* once round at the mean radius with one seam column, *v* the
 arc up the trunk, so a tiled bark set repeats every `tile_m` both ways and is not stretched; the
 dome is a disc of its own at its own size, a hand's width below the wall's island
-([materials](#materials)).
+([materials](#materials)). Under the foot ring the wall goes on below the ground as the
+[skirt](#the-trunks-skirt) every tree has (G201), so a palm on a slope shows no gap under its trunk.
 
 ### The crown: one spiral by age
 
@@ -2446,6 +2447,60 @@ threshold that knows a strip's width — not more tuning of the solver.
   and the emitter that `kit.h` now holds for the branching species; moving it over is mechanical
   and must leave its pinned bytes alone.
 
+## The trunk's skirt
+
+**Every tree mesh the solver makes carries its stem on below its collar** (roadmap G201, stage 1 of
+[a tree's base on sloping ground](../experiments/tree-base-on-slopes.md#1-seating)). A tree stands
+on the ground at its origin and its stem's bottom ring is level, 1 to 7 cm above the origin, so on
+a slope of angle *a* the downhill rim of radius *r* stood *r* tan *a* above the ground: 8,880 of the
+forest proof of concept's 74,503 trees showed a gap over 3 cm under one side, the owner's walk of
+2026-11-12. The skirt closes it for every tree, at any yaw, on ground of up to 45 degrees, with
+nothing per instance: one ring straight below the stem's bottom ring at *rho* tan 45° + 0.15 m
+under the origin, *rho* the bottom ring's farthest point from the origin across the level plane:
+*r* + 0.15 m for a stem on the axis, deeper by its offset for a clump's stem or a leaning foot.
+Straight, not flared on: the tube's flare is a smoothstep and meets its bottom ring with no slope,
+and a first skirt that grew outward by a tenth below it made a crease the traced shadows drew as a
+dark line round every trunk at 2 m. Open at the bottom (always under the ground: a cap would cost
+triangles nobody sees), **two triangles a side**.
+
+**It is the stem's own surface.** The skirt's vertices are appended after the tube they continue,
+in the same part with bend weight zero, the same bark primitive and material, the collar ring's
+normals, *u* the column's own and *v* the trunk's metres carried on below zero, so a tiled bark set
+and the shading run across the collar with no band. `detail::build_skirt`
+(`src/kit.cpp`, under every branching species' stem, `Emitter::skirt`) and the palm's own trunk
+(`src/palm.cpp`, its emitter being its own) make it from the same numbers (`src/skirt.h`), and every
+plan counts it (`skirt_triangles`) before it builds, so no tree goes over its budget for it.
+
+| Trunk kind | What it does | Skirt (at the default) |
+|---|---|---|
+| The date palm | its trunk wall's foot ring, square to the leaning spine, carried straight down to one depth, so its columns differ in length | 16 sides, 32 triangles, to -0.38 m |
+| The broadleaf and its profiles (maple, oak, elm, walnut, beech, ash, aspen, alder) | the trunk, the first named stem | 12 sides, 24 triangles; -0.63 m on the default, -0.23 to -0.49 m on the 10 m profiles |
+| The conifer and the evergreens (pine, spruce, cedar, fir, hemlock, juniper) | the trunk, part 0 | 10 sides, 20 triangles; -0.56 m on the default, -0.29 to -0.51 m on the 10 m profiles |
+| The birch | every stem of a clump, each from its own foot | 10 sides, 20 a stem (a three-stem clump on its rung, 8 sides: 48), -0.32 to -0.43 m |
+| The willow, the orchard tree | the trunk | 10 and 12 sides, 20 and 24 triangles, -0.83 and -0.35 m |
+| The ancient tree (megaflora) | under the buttressed foot ring, after the trunk's own normals: the `k_sink_m` metre its foot stood in was not a 45 degree slope under an 11 m buttress | 59 sides, 118 triangles, to -11.2 m |
+| Not given one | the shrubs (many stems from the ground, under a metre), the juvenile trees of regeneration (a stem of a centimetre or two), the herbs, ferns, tufts and the sward | none |
+
+**In every form a tree is drawn in.** The skirt is clusters of the trunk's own in the LOD DAG, and
+no cut drops it before the tree is gone: the simplifier cannot lift its bottom ring without an error
+of the skirt's whole depth, so every cut from the finest to the coarsest, and every distance form
+from 5 m to 1 km, reaches the same bottom to a centimetre (`tests/skirt_tests.cpp`). The impostor
+chain's star stands on the box of the mesh it bakes, which now reaches the skirt's bottom, so its
+planes and its baked picture carry the stem down too. A deformed (swaying) tree's skirt is at bend
+weight zero and does not move.
+
+**What it costs.** 20 to 32 triangles a mesh (118 on the ancient tree), *sides* + 1 vertices,
+in every rung and every distance form, and nothing per instance; no schema, no placement path's
+change. The mesh's box reaches down by the skirt's depth, so its 16-bit grid is coarser by the
+depth over the tree's height: 2 to 5 % on the 10 m profiles, 3 % on a 22 m spruce. On the tree-bases scene ([`content/test-scenes/tree-bases/`](../../content/test-scenes/tree-bases/README.md),
+the tall spruce on ramps of 0, 15, 30 and 45 degrees at eight yaws) the GPU case in
+`systems/renderer`'s `flora_scene_tests.cpp` reads the ids across the slope and finds nothing but
+the tree and its ramp under any trunk. **The mesh less its skirt is the mesh it was**: every
+pinned tree is held to its version-11 hash with the skirt stripped (`tests/skirt_support.h`), so
+the skirt is the only thing version 12 moved. What it does not do, later stages do:
+seating by footprint where the ground falls away under the rim faster than a plane (a tread's cut,
+a bank), the conformed foot, the laterals.
+
 ## Determinism
 
 The same parameters give the same bytes on every toolchain and at either CPU baseline: the solver
@@ -2459,7 +2514,11 @@ container caught it (2026-10-18). The default palm's mesh, the broadleaf's and t
 and motion contract) are pinned by hash in `tests/flora_tests.cpp`, and the birch's, the willow's,
 the orchard tree's (with and without fruit) and the ancient tree's (mesh, motion contract and
 structural table) in `tests/species_tests.cpp`; a change that moves one bumps
-`flora::k_flora_version` and the number in the same commit. The second batch was added without
+`flora::k_flora_version` and the number in the same commit. **The trunk's skirt (G201) moved every
+tree's pin and `k_flora_version` (12)** and nothing else: each pin keeps its version-11 number
+beside the new one, which the tree with its skirt stripped must still hash to, so the skirt is
+shown to be the only change; the palm's containers, the trees' container rows in engine-content's
+`determinism_tests.cpp` and the bakes the star's box moves were re-taken with it. The second batch was added without
 moving the first three's pins: its helpers are appended to the kit and change none of the old
 ones' output, and its species are new members of the flora file that the canonical form of a palm,
 an oak or a spruce does not carry. **The impostor chain (R89)** moved neither the solver's pins nor `k_flora_version`: its cards are appended after the mesh the plain solve makes, and its two fields (`card_bake_px`, `impostor_px`, `@version(3)`) change the broadleaf's and the ancient tree's canonical parameters and so their keys; its atlases are pinned by hash in `tests/impostor_tests.cpp`, and both trees' whole containers, chain included, by engine-content's `determinism_tests.cpp`, whose rows GCC and Clang reproduce. **The conifers' chain (G120)** moved no solver pin and not `k_flora_version` either: its cards are appended past the plain solve's mesh, `Conifer`'s two fields (`@version(3)`) move the bare conifer's canonical parameters and `k_conifer_chain_version` the evergreen profiles' keys, the test spruce's coverage-kept atlases are pinned by hash in `tests/impostor_tests.cpp` (the mask is integers from the texel's place, the fit the coverage bake's own numbers) and a pine's whole container by engine-content's `determinism_tests.cpp`. **The conifer's shoots (G80) moved the conifer's pin and not

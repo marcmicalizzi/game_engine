@@ -143,7 +143,11 @@ No tick, frame allocation, socket, model invocation or external service. Unused 
 `tools/dev.ps1 test -Filter deadwood` exercises all forms, contact, independent leaf/branch loss,
 hollows, collapse, deterministic repetition, source preservation, validation, cache identity and
 container/host eligibility. Required handover runs the affected Windows set and matching Linux
-Clang container; source hash pins and capture results live on the grounding page.
+Clang container; source hash pins and capture results live on the grounding page. The source
+tree's skirt ([flora](flora.md#the-trunks-skirt), G201) moved both container pins and the litter's
+twig and tangle: the source key carries `k_flora_version` 12, and a bole cut from `start_m` 0 keeps
+the few centimetres of skirt between the origin and the collar ring. A standing snag or stump keeps
+no more of it than that, so on a slope it shows the gap the living tree no longer does.
 
 Not yet: dynamic falls, decay over time, species-calibrated deadwood mechanics, automatic leaning
 pose search, root plates/soil clods, loose bark strips, subtriangle collision guarantees, bespoke
