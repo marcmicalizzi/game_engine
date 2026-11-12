@@ -55,8 +55,9 @@
 namespace engine::bridges {
 
 // The solver's version, in every recipe's source hash: a change that moves a member bumps it.
-// 3 (G186): three materials, the timber's UVs along its grain.
-inline constexpr u32 k_bridge_version = 3;
+// 3 (G186): three materials, the timber's UVs along its grain. 4 (G186): a small timber bridge at
+// the bank, and steps at a deck's ends.
+inline constexpr u32 k_bridge_version = 4;
 
 // ---- the grounded constants (docs/experiments/footbridges.md, each against its source) ---------
 
@@ -107,13 +108,44 @@ inline constexpr i32 k_setback_mm = 400;
 // its slabs lie at the banks' level and floods go over (Tarr Steps, rebuilt after 1942, 1952,
 // 1979).
 inline constexpr i32 k_min_freeboard_mm = 300;
+// **The deck's height by form and span** (G186; footbridges.md, "The deck's height, by form and
+// span"). That flood-stage rule estimates the 50 to 100 year flood; it is no clearance, and it put
+// a foot log over a brook a metre over its banks. A small timber bridge — a foot log, and stringers
+// of a clear span up to the Forest Service's minor trail bridge (20 ft, 6.1 m) — sits at the bank:
+// its underside `k_bank_clearance_mm` over the lower bank's top (Devon County Council's path
+// bridge, its soffit 300 mm over the bank tops). Past the minor span the flood-stage rule stands.
+// The span is the sources' one size for a minor timber bridge, used as the line: a choice.
+inline constexpr i32 k_bank_clearance_mm = 300;
+inline constexpr i32 k_minor_span_mm = 6100;
+// **The approaches are steps, then a short fill** (G186; footbridges.md, "The approaches: steps,
+// then a short fill"): from the deck's end out along the path, rough stone steps on the ground
+// with equal risers of at most `k_riser_mm`, each `k_step_going_mm` along the path and bedded
+// `k_step_bed_mm`, at most `k_max_steps` an end; past them a `Fill` at the route's grade brings
+// the tread up to the last step. No source gives a footbridge's steps: an outdoor step's numbers,
+// choices.
+inline constexpr i32 k_riser_mm = 200;
+inline constexpr i32 k_step_going_mm = 300;
+inline constexpr i32 k_step_bed_mm = 100;
+inline constexpr u32 k_max_steps = 4;
 
 // ---- the plan
 // ------------------------------------------------------------------------------------
 
 // What a member is, and what it is made of.
-enum class MemberKind : u8 { stone, slab, pier, abutment, log, sill, stringer, plank, post, rail };
-inline constexpr u32 k_member_kinds = 10;
+enum class MemberKind : u8 {
+  stone,
+  slab,
+  pier,
+  abutment,
+  log,
+  sill,
+  stringer,
+  plank,
+  post,
+  rail,
+  step,  // an approach's step (G186)
+};
+inline constexpr u32 k_member_kinds = 11;
 // The three materials of a bridge's mesh (bridges.md, "The mesh"): 0 the stone (stones, slabs,
 // piers, abutments: the layer's `stone_role`, a `rock/*` set), 1 the sawn timber (planks, posts,
 // rails: `wood_role`, `wood/plank`), 2 the round timber (a foot log, stringers, sills: `log_role`,
@@ -159,6 +191,12 @@ struct BridgePlan {
   i32 span = 0;
   u32 piers = 0;
   bool handrail = false;
+  // Each end's approach (0 the near end, at `x_start`; 1 the far, at `x_end`): its steps, and
+  // where along x and how high over the bed a fill must meet the last of them (the deck's end and
+  // the deck where there are none).
+  u32 steps[2] = {};
+  i32 approach_x[2] = {};
+  i32 approach_top[2] = {};
   u64 seed = 0;
   Vector<Member> members;
 };
@@ -224,10 +262,11 @@ scene_gen::Placement place(const Crossing& crossing) noexcept;
 // The tile a crossing is realised in: its centre's.
 scene_gen::TileCoord tile_of(const Crossing& crossing, i64 tile_mm) noexcept;
 
-// **The approaches** (`engine.scene.TerrainEdit`s of mode `Fill`): for each end of a bridge whose
-// deck stands over the ground there, a line from the deck's end out along the path, falling at
-// `approach_grade_permille` to the ground, so the walker steps from the tread to the deck with no
-// step. A JSON array in the layer's order.
+// **The approaches** (`engine.scene.TerrainEdit`s of mode `Fill`): for each end whose steps leave
+// the ground more than half a riser under the last step's foot (`BridgePlan::approach_top`), a
+// line from there out along the path, falling at `approach_grade_permille` to the ground, so the
+// walker climbs the tread to the steps and the steps to the deck. A JSON array in the layer's
+// order; a small bridge on level banks has none.
 JsonValue approach_edits_json(const Layer& layer, u32 approach_grade_permille);
 // An approach's top is the tread or the deck, whichever is wider, and a shoulder of half this each
 // side: a crest only a tread wide is two or three points of a 25 to 50 cm ground lattice, which
@@ -235,11 +274,13 @@ JsonValue approach_edits_json(const Layer& layer, u32 approach_grade_permille);
 // the deck). A choice for the lattice, not a source's number.
 inline constexpr i32 k_approach_shoulders_mm = 1000;
 i32 approach_width_mm(const Crossing& crossing, const BridgePlan& plan) noexcept;
-// How long an approach runs, and the step it leaves at the deck's end against the profile's ground
-// with the fill in it (the larger of the two ends), mm: what the tests and the command report.
+// How long an approach's fill runs, the step it leaves at the deck's end where the ground stands
+// over the deck (the larger of the two ends), and the steps at each end, mm: what the tests and
+// the command report.
 struct Approach {
   i32 length_mm[2] = {};
   i32 step_mm = 0;
+  u32 steps[2] = {};
 };
 Approach approach_of(const Crossing& crossing, const BridgePlan& plan,
                      u32 approach_grade_permille) noexcept;

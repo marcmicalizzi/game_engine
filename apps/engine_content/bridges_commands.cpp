@@ -322,7 +322,7 @@ int bridges_command(int argc, char** argv) {
   out_layer.approach_grade_permille = grade;
   // What each crossing became, its triangles, and its footprint.
   u32 by_form[5] = {};
-  u32 triangles = 0, steps = 0;
+  u32 triangles = 0, steps = 0, stairs = 0;
   JsonValue footprints = JsonValue::array();
   for (const bridges::Crossing& c : out_layer.crossings) {
     bridges::Bridge b;
@@ -334,7 +334,9 @@ int bridges_command(int argc, char** argv) {
     if (!bridges::solve_bridge(b, parts, plan, report, error)) return fail(error);
     ++by_form[static_cast<u32>(plan.form)];
     triangles += report.triangles;
-    steps = std::max<u32>(steps, static_cast<u32>(bridges::approach_of(c, plan, grade).step_mm));
+    const bridges::Approach approach = bridges::approach_of(c, plan, grade);
+    steps = std::max<u32>(steps, static_cast<u32>(approach.step_mm));
+    stairs += approach.steps[0] + approach.steps[1];
     scene_gen::FootprintPoint corners[4];
     if (bridges::bridge_footprint(c, plan, corners).point_count == 0) continue;
     JsonValue polygon = JsonValue::array();
@@ -373,6 +375,7 @@ int bridges_command(int argc, char** argv) {
   line["approaches"] = JsonValue(edit_count);
   line["grade_permille"] = JsonValue(grade);
   line["largest_step_mm"] = JsonValue(steps);
+  line["approach_steps"] = JsonValue(stairs);
   line["solve_s"] = JsonValue(std::round(seconds * 1000) / 1000);
   line["out_bytes"] = JsonValue(static_cast<u64>(written.size()));
   JsonWriteOptions compact;

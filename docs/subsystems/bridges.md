@@ -68,11 +68,15 @@ ground):
 - **Log stringers**: two logs, 250 mm through at a 5 m span to 400 mm at 10 m (the TCV), hewn 50 mm
   for the planks' bearing (the specification), under 150 × 50 mm planks with 20 mm gaps across a
   900 mm deck.
-- **Seats**: a timber bridge's underside stands over the bankfull level by the bankfull depth, at
-  least 300 mm (the trail bridge page's flood stage at twice the bankfull depth), and over the
-  ground at both sills. A sill whose underside is in the ground lies in it, sunk at most a third of
-  its diameter (the specification's mud sills); one that stands over the ground lies on a stone
-  abutment of rough courses founded 200 mm in it.
+- **Seats**: a timber bridge's underside stands where [the deck's height](#the-decks-height) puts
+  it, and over the ground at both sills. A sill whose underside is in the ground under the whole of
+  it lies there, sunk at most a third of its diameter (the specification's mud sills); one that
+  stands over any of the ground beneath it — a bank rising across the sill — lies on a stone
+  abutment of rough courses founded 200 mm under the lowest ground beneath the abutment. (G186:
+  the test was the highest ground about the sill, which on a rising bank left the low side of a
+  sill seated at the bank 35 mm in the air once the deck stopped standing a metre up.)
+- **Steps** at each end of a clapper or a timber deck that stands more than a riser over the ground
+  there (G186; [the ground and the neighbours](#the-ground-and-the-neighbours)).
 - **A handrail** 1070 mm over the deck (the Forest Service and the NPS) where the deck stands more
   than 1 m over the bed — a choice: no source gives the fall height — on posts every 2 m or less on
   the planks, both sides, on a stringer bridge only. A foot log has none: a post on its 250 mm flat
@@ -83,6 +87,30 @@ ground):
 The stones are **rough blocks**: the box's plan with each corner knocked off by its own draw (eight
 sides), flat at the bed and the top, so a slab reads as split along its bedding. The draws are a
 stream per member from the crossing's seed and its index.
+
+## The deck's height
+
+**Which forms keep a flood clearance and which sit at the bank** (G186; the sources, the readings
+and the table in [the grounding](../experiments/footbridges.md#the-decks-height-by-form-and-span)).
+G147 held every timber form's underside over bankfull by a bankfull depth — the trail bridge page's
+estimate of the 50 to 100 year flood stage, which is a way to find a flood and not a clearance — and
+a foot log over a 0.6 to 0.8 m brook stood a metre over its banks on two humps of fill, where reel
+r19's crossings sit almost at the bank. Now:
+
+| Form | Its underside (or top) | `bridges.h` |
+|---|---|---|
+| Stepping stones | each top 150 mm over the water at the scene's stage | `k_stone_rise_mm` |
+| Clapper | the slabs on the banks' level, the higher seat's, or 200 mm over the water; overtopped in a flood | (G147) |
+| Foot log; stringers of a clear span up to 6.1 m | **300 mm over the lower bank's top** (Devon County Council's path footbridge: its soffit 300 mm above the bank tops, the flood clearance relaxed on a small watercourse so long as the soffit is above bank level) | `k_bank_clearance_mm`, `k_minor_span_mm` |
+| Stringers past 6.1 m | over the flood stage: bankfull plus a bankfull depth, at least 300 mm | `k_min_freeboard_mm` |
+
+Every form is also on or over the ground at its sills, which raises it where a bank is higher than
+the bankfull level. **The line at 6.1 m is a choice**: it is the Forest Service's *minor trail
+bridge* (a wood bridge of 20 ft clear span or less), an inspection class, the one size the sources
+draw for a small timber bridge; no source draws the line between "at the bank" and "over the flood"
+by span. What it buys, measured on the tests' crossings: a foot log over a 3 m brook 0.8 m deep on
+level banks walks 0.75 m over its banks where it walked 1.25 m, and is reached by three stones an
+end where it was reached by two fills each 8 m long at 15 %.
 
 ## The mesh
 
@@ -121,16 +149,33 @@ under "Budgets".
 
 ## The ground and the neighbours
 
-- **The approaches** (`approach_edits_json`): at each end of a bridge whose deck stands over the
-  ground there, a `Fill` line from the deck's end out along the path, falling at the route's own
-  grade cap (the approach is the path's tread), its top the tread or the deck, whichever is wider,
-  and half a metre of shoulder each side (`k_approach_shoulders_mm`), with the routes' 0.5 fill
-  batter and 0.15 rounding. Its top at the deck's end is the deck, so in the plan the walker steps
-  onto the bridge with **no step**; `Approach::step_mm` reports where the ground at a deck's end
-  stands over the deck (none in the tests). The shoulders are for the ground's lattice: the first
-  pictures had the top only a tread wide, two or three points of the scene's 50 cm heightfield,
-  and the lattice rounded the crest into a knife-edge ridge that met the sill under the deck rather
-  than the deck. What step the lattice still leaves is not measured here.
+- **The approaches are steps, then a short fill** (G186; the grounding's
+  [approaches](../experiments/footbridges.md#the-approaches-steps-then-a-short-fill)). At each
+  end of a clapper or a timber deck that stands more than a riser (`k_riser_mm`, 200 mm) over the
+  ground at its end, rough stone steps (`MemberKind::step`, the stone's material) are laid on the
+  ground out along the path: the risers equal and at most 200 mm, each step 300 mm along the path
+  (`k_step_going_mm`), as wide as the tread or the deck to 1.2 m, bedded 100 mm under the lowest
+  ground beneath it, at most four an end (`k_max_steps`), and none past where the ground already
+  stands at its height. `BridgePlan::steps`, `approach_x` and `approach_top` say what each end
+  laid and where a fill would have to meet the last step. **The fill** (`approach_edits_json`) is
+  left only where the ground there is more than half a riser under that: a `Fill` line from the
+  last step's outer edge out along the path, falling at the route's own grade cap (the approach is
+  the path's tread), its top a riser under the last step, the tread or the deck wide, whichever is
+  wider, with a metre of shoulder (`k_approach_shoulders_mm`, for the ground's lattice: a crest a
+  tread wide is two or three points of a 25 to 50 cm heightfield) and the routes' 0.5 batter and
+  0.15 rounding. So a small bridge on level banks has steps and no earthwork, and a stringer bridge
+  past the minor span four steps an end and a fill a metre lower than G147's, starting 1.2 m
+  further out. `Approach::step_mm` reports where the ground at a deck's end stands over the deck
+  (none in the tests) and `Approach::steps` the steps; the command's line counts them
+  (`approach_steps`). The source for the steps' numbers is none: they are an outdoor step's.
+- **The notch where the channel's cut meets the approach** (G147's third objection: the cut won
+  over the first half metre of the fill, which was listed before it). The steps stand on the
+  crossing's profile, which is the ground **with the channel's cut in it**, so nothing the cut
+  lowers is under them, and the fill, where there is one, starts 1.2 m past the deck's end, outside
+  a cut's bank batter at the picture scene's slopes. So the notch is closed in this module for
+  every form. **What would close it for a fill that must start at the deck's end** (none does now):
+  `domain/tileset` letting a `Fill` listed after a `Cut` win on the bank outside the cut's bankfull
+  width, or a mode of edit the cut leaves alone — a request, not this row's.
 - **The footprint** (`bridge_footprint`): the rectangle of every member's plan, as W98's polygon in
   world millimetres, so the bed's stones, the sward and scatter keep out from under it.
 - **The tread across the deck**: the route's own tread runs through the channel as its bench (the
@@ -220,11 +265,17 @@ recipe (the same size again), and a bridge's mesh exists only while its tile is 
 - The form rule at each form's smallest and largest crossing (`bridges: the form rule …`).
 - Every member rests on the member it names or in the ground, and a spanning member has a support
   under each end; nothing below bankfull in the channel but a pier or a stone, no sill or abutment
-  inside the bankfull width; a timber deck's freeboard; stones a stride apart (`… every member is
-  seated …`).
+  inside the bankfull width; a timber deck's underside where the deck's height puts it, and higher
+  only where a sill's ground asks; stones a stride apart (`… every member is seated …`).
 - Every member a closed solid wound outward (`… a closed solid wound outward`).
 - The tiles are the whole read, and a bridge does not read its tile (`… the generator's tiles …`).
-- The approaches meet the deck with no step, and the footprint is the plan (`… the approaches …`).
+- A small bridge sits at its bank: a foot log over a 3 m brook and stringers over 5.4 m have their
+  underside exactly 300 mm over the bank, the log walks at most 780 mm over it, both ends have
+  steps of equal risers at most 200 mm and 300 mm long on the ground, and no fill
+  (`… a small bridge sits at its bank …`; G147's rule fails it by 500 mm).
+- Past the minor span, four steps an end and a fill from the last one's foot at the grade; the
+  fill's top there is a riser under the last step; the footprint is the plan, steps included
+  (`… the approaches …`).
 - A tile hands the plan of every bridge that reaches it, and a point of the tile is under a deck by
   the tile's shapes exactly when it is by the whole read's, at 250 mm over nine tiles round a
   bridge on four tiles' corner; the hook hands `Fill` edits only (`… a tile hands the plan …`).

@@ -186,8 +186,21 @@ TEST_CASE(
     check_channel(c, p);
     const i32 depth = bankfull_depth_mm(c);
     if (p.form == BridgeForm::log || p.form == BridgeForm::stringers) {
-      // The underside over bankfull by the bankfull depth, at least 300 mm.
-      CHECK(p.soffit >= p.bankfull + std::max(k_min_freeboard_mm, depth));
+      // A small bridge's underside 300 mm over the bank, a larger one's over the flood stage
+      // (bankfull plus a bankfull depth, at least 300 mm); higher only where a sill's ground asks.
+      const bool minor = p.form == BridgeForm::log || p.span <= k_minor_span_mm;
+      const i32 over = minor ? p.bankfull + k_bank_clearance_mm
+                             : p.bankfull + std::max(k_min_freeboard_mm, depth);
+      CHECK(p.soffit >= over);
+      bool sill_asks = false;
+      for (const Member& m : p.members)
+        if (m.kind == MemberKind::sill) {
+          i32 g = static_cast<i32>(profile_at(c, m.x0) - c.bed_mm);
+          for (i32 x = m.x0 - 300; x <= m.x1 + 300; x += 50)
+            g = std::max(g, static_cast<i32>(profile_at(c, x) - c.bed_mm));
+          sill_asks = sill_asks || p.soffit <= g + 200;
+        }
+      CHECK((p.soffit == over || sill_asks));
       CHECK(p.span >= static_cast<i32>(c.width_mm));
       CHECK(p.handrail == (p.form == BridgeForm::stringers && p.deck > k_rail_fall_mm));
     } else if (p.form == BridgeForm::clapper) {
@@ -376,22 +389,85 @@ TEST_CASE(
   CHECK(plan_hash(solved(a)) == plan_hash(solved(b)));
 }
 
-TEST_CASE("bridges: the approaches bring the tread up to the deck, and the footprint is its plan") {
-  // A foot log over a 3 m stream: its deck stands over both banks.
+namespace {
+// The steps at one end of a plan: each a riser under the one before it (the deck first), the
+// risers equal and at most `k_riser_mm`, each on the ground, and what is left under the last one's
+// foot `approach_top`.
+void check_steps(const BridgePlan& p, u32 end) {
+  CAPTURE(end);
+  i32 above = p.deck, rise = -1;
+  u32 seen = 0;
+  for (const Member& m : p.members) {
+    if (m.kind != MemberKind::step || (end == 0) != (m.x1 <= p.x_start)) continue;
+    CHECK(m.support == -1);
+    CHECK(above - m.y1 <= k_riser_mm);
+    if (rise >= 0) CHECK(above - m.y1 == rise);
+    rise = above - m.y1;
+    CHECK(m.x1 - m.x0 == k_step_going_mm);
+    above = m.y1;
+    ++seen;
+  }
+  CHECK(seen == p.steps[end]);
+  CHECK(seen <= k_max_steps);
+  if (seen > 0) CHECK(p.approach_top[end] == above - rise);
+}
+}  // namespace
+
+TEST_CASE("bridges: a small bridge sits at its bank, reached by steps and no earthwork") {
+  // G147's mound: a foot log over a 3 m brook 0.8 m deep stood with its walk 1.25 m over level
+  // banks on two fill humps. At the bank (bridges.md, "The deck's height"): its underside 300 mm
+  // over the bank and its walk at most that and the log over it; three or four steps an end, and
+  // no fill.
   const Crossing c = stream(3000, 800, 0, 0, 2000, -3000);
   const BridgePlan p = solved(c);
   REQUIRE(p.form == BridgeForm::log);
+  CHECK(p.soffit == p.bankfull + k_bank_clearance_mm);
+  CHECK(p.deck - p.bankfull <= k_bank_clearance_mm + k_foot_log_mm);
+  CHECK(p.steps[0] >= 1);
+  CHECK(p.steps[1] >= 1);
+  check_steps(p, 0);
+  check_steps(p, 1);
+  const Approach a = approach_of(c, p, 150);
+  CHECK(a.step_mm == 0);
+  CHECK(a.length_mm[0] == 0);
+  CHECK(a.length_mm[1] == 0);
+  Layer layer;
+  layer.crossings.push_back(c);
+  layer.seed = 7;
+  CHECK(approach_edits_json(layer, 150).as_array().empty());
+  // Stringers of a 5.4 m span sit at the bank too.
+  const Crossing five = stream(4600, 700);
+  const BridgePlan q = solved(five);
+  REQUIRE(q.form == BridgeForm::stringers);
+  REQUIRE(q.span <= k_minor_span_mm);
+  CHECK(q.soffit == q.bankfull + k_bank_clearance_mm);
+  check_steps(q, 0);
+  check_steps(q, 1);
+}
+
+TEST_CASE("bridges: the approaches bring the tread up to the deck, and the footprint is its plan") {
+  // Stringers over an 8.2 m river, past the minor span: the deck keeps the flood clearance, so four
+  // steps an end and a fill past them to the tread.
+  const Crossing c = stream(8200, 900, 0, 0, 2000, -3000);
+  const BridgePlan p = solved(c);
+  REQUIRE(p.form == BridgeForm::stringers);
+  REQUIRE(p.span > k_minor_span_mm);
+  CHECK(p.soffit >= p.bankfull + std::max(k_min_freeboard_mm, bankfull_depth_mm(c)));
+  CHECK(p.steps[0] == k_max_steps);
+  CHECK(p.steps[1] == k_max_steps);
+  check_steps(p, 0);
+  check_steps(p, 1);
+  CHECK(p.approach_x[0] == p.x_start - static_cast<i32>(k_max_steps) * k_step_going_mm);
   const Approach a = approach_of(c, p, 150);
   CHECK(a.step_mm == 0);
   CHECK(a.length_mm[0] > 0);
   CHECK(a.length_mm[1] > 0);
   // At 15 %, the fill's top meets the ground where the approach ends and stands over it 100 mm
-  // before: the run is the deck's height over the bank over 0.15, to the 100 mm.
-  const i64 deck = c.bed_mm + p.deck;
+  // before: the run is the last step's foot over the bank over 0.15, to the 100 mm.
+  const i64 top = c.bed_mm + p.approach_top[0];
   const i64 len = a.length_mm[0];
-  CHECK(deck - 150 * len / 1000 <= profile_at(c, p.x_start - len));
-  CHECK(deck - 150 * (len - 100) / 1000 > profile_at(c, p.x_start - (len - 100)));
-  CHECK(len >= 1000);
+  CHECK(top - 150 * len / 1000 <= profile_at(c, p.approach_x[0] - len));
+  CHECK(top - 150 * (len - 100) / 1000 > profile_at(c, p.approach_x[0] - (len - 100)));
   Layer layer;
   layer.crossings.push_back(c);
   layer.seed = 7;
@@ -399,16 +475,17 @@ TEST_CASE("bridges: the approaches bring the tread up to the deck, and the footp
   REQUIRE(edits.as_array().size() == 2);
   const JsonValue& first = edits.as_array()[0];
   CHECK(first.find("mode")->as_string() == "Fill");
-  // Its top at the deck's end is the deck: no step onto the bridge.
+  // Its top where it starts is a riser under the last step: the walker steps up the stones.
   CHECK(first.find("points")->as_array()[0].as_array()[1].as_float() ==
-        doctest::Approx(static_cast<f64>(c.bed_mm + p.deck) / 1000.0).epsilon(1e-12));
+        doctest::Approx(static_cast<f64>(top) / 1000.0).epsilon(1e-12));
+  // The footprint is the plan, steps included.
   scene_gen::FootprintPoint corners[4];
   const scene_gen::Footprint shape = bridge_footprint(c, p, corners);
   CHECK(shape.covers_mm(c.x_mm, c.z_mm));
   i64 wx = 0, wz = 0;
-  world_mm(c, p.x_end - 10, 0, wx, wz);
+  world_mm(c, p.approach_x[1] - 10, 0, wx, wz);
   CHECK(shape.covers_mm(wx, wz));
-  world_mm(c, p.x_end + 20, 0, wx, wz);
+  world_mm(c, p.approach_x[1] + 20, 0, wx, wz);
   CHECK_FALSE(shape.covers_mm(wx, wz));
   // Stepping stones have no approach.
   const Crossing brook = stream(2000, 300);
@@ -482,10 +559,10 @@ TEST_CASE("bridges: the same bytes on every toolchain, pinned") {
   // Pinned on MSVC (x64, msvc-debug) 2026-11-11; GCC and Clang at v3 and GCC at v2 reproduce them.
   const Crossing cases[] = {stream(3000, 400), stream(6000, 800, 400, 300), stream(3000, 800),
                             stream(7000, 900, 0, 300)};
-  const u64 plan_pins[] = {0x1599dbc7f6e3f185ull, 0x9ca998a88eceb423ull, 0xfdce0357b88c500eull,
-                           0xa2e065a587840fe5ull};
-  const u64 mesh_pins[] = {0xf63ee472b509b0bdull, 0x5a94b3a18ac30237ull, 0xe53b4303fd18cbb4ull,
-                           0x2c4e80eb15304fafull};
+  const u64 plan_pins[] = {0x1599dbc7f6e3f185ull, 0xbb3f59df948f2011ull, 0x934862ac4dcaca46ull,
+                           0x4b3550ca63cc3a80ull};
+  const u64 mesh_pins[] = {0xf63ee472b509b0bdull, 0x4a47a8084a7606a5ull, 0x35f44210eb8fc628ull,
+                           0xc9c9bc502972a785ull};
   for (u32 i = 0; i < 4; ++i) {
     MeshPart parts[k_materials];
     BridgePlan plan;

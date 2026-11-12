@@ -63,16 +63,22 @@ Approach approach_of(const Crossing& c, const BridgePlan& plan, u32 grade) noexc
   for (u32 end = 0; end < 2; ++end) {
     const i64 x_end = end == 0 ? plan.x_start : plan.x_end;
     const i64 out = end == 0 ? -1 : 1;
-    const i64 ground = profile_at(c, x_end);
-    a.step_mm = std::max<i32>(a.step_mm, static_cast<i32>(std::max<i64>(ground - deck, 0)));
-    if (ground >= deck) continue;
+    a.steps[end] = plan.steps[end];
+    a.step_mm =
+        std::max<i32>(a.step_mm, static_cast<i32>(std::max<i64>(profile_at(c, x_end) - deck, 0)));
+    // The fill starts past the last step (the deck's end where there is none), at the height a
+    // riser under it, and is wanted only where the ground there is more than half a riser lower:
+    // the walker's own step is no earthwork.
+    const i64 from = plan.approach_x[end];
+    const i64 top0 = c.bed_mm + plan.approach_top[end];
+    if (top0 - profile_at(c, from) <= k_riser_mm / 2) continue;
     // Out along the path at the grade until the fill's top meets the ground, every 100 mm.
     i64 d = 0;
     const i64 limit = static_cast<i64>(c.profile_mm.size()) * c.profile_step_mm;
     while (d < limit) {
       d += 100;
-      const i64 top = deck - (static_cast<i64>(grade) * d) / 1000;
-      if (top <= profile_at(c, x_end + out * d)) break;
+      const i64 top = top0 - (static_cast<i64>(grade) * d) / 1000;
+      if (top <= profile_at(c, from + out * d)) break;
     }
     a.length_mm[end] = static_cast<i32>(d);
   }
@@ -91,20 +97,21 @@ JsonValue approach_edits_json(const Layer& layer, u32 grade) {
     std::string why;
     if (!plan_bridge(c, crossing_seed(layer.seed, c), plan, why)) continue;
     const Approach a = approach_of(c, plan, grade);
-    const i64 deck = c.bed_mm + plan.deck;
     for (u32 end = 0; end < 2; ++end) {
       const i64 length = a.length_mm[end];
       if (length <= 0) continue;
-      const i64 x_end = end == 0 ? plan.x_start : plan.x_end;
+      const i64 from = plan.approach_x[end];
+      const i64 top0 = c.bed_mm + plan.approach_top[end];
       const i64 out = end == 0 ? -1 : 1;
       JsonValue points = JsonValue::array(), widths = JsonValue::array();
-      // The deck's end, then the line falling at the grade to where it meets the ground: two
-      // points, since the fill is straight; its top at the deck's end is the deck.
+      // The last step's outer edge (the deck's end where there is none), then the line falling at
+      // the grade to where it meets the ground: two points, since the fill is straight; its top
+      // there is a riser under the last step (the deck where there is none).
       const i64 ends[2] = {0, length};
       for (const i64 d : ends) {
         i64 wx = 0, wz = 0;
-        world_mm(c, x_end + out * d, 0, wx, wz);
-        const i64 top = deck - (static_cast<i64>(grade) * d) / 1000;
+        world_mm(c, from + out * d, 0, wx, wz);
+        const i64 top = top0 - (static_cast<i64>(grade) * d) / 1000;
         JsonValue at = JsonValue::array();
         at.push_back(JsonValue(static_cast<f64>(wx) / 1000.0));
         at.push_back(JsonValue(static_cast<f64>(top) / 1000.0));
