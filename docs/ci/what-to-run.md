@@ -330,7 +330,11 @@ the depth and the heavy set (`engine shaders: 6 heavy ..., at most 2 at once`).
 
 On a 32 GB machine the floor is the point: the largest variant alone is 12.6 GB, more than a third,
 and it still has to compile; one at a time is the least a build can ask. A Linux container sees the
-memory its VM was given. A generator with no pools (anything but Ninja; every preset is Ninja) ignores
+memory its VM was given: this desktop's containers see 15,997 MiB and take depth 1, so their six
+heavy compiles run one after another (about 300 s of `slangc` on the shader step's path; the first
+two container runs with the pool, `linux-clang-debug` and `linux-gcc-release` with a narrow test
+filter, took 9 min 25 s and 11 min 52 s end to end), where before the pool six of them at once would
+have asked a 16 GB VM for 31 GB. A generator with no pools (anything but Ninja; every preset is Ninja) ignores
 `JOB_POOL` and configures as before, and `build.shader_pool` is not registered there.
 
 **What a heavy compile costs** (the meter's numbers in the first `msvc-debug` build of 33ff2824
@@ -380,7 +384,8 @@ several builds' worst at once.
 (`shader-meter <cost file> <slangc> <arguments...>`, a host tool, standard library and the operating
 system only), which writes the compile's peak private commit (Windows) or peak resident set
 (Linux, `wait4`'s `ru_maxrss`) and its wall seconds to `<stem>.cost` beside the SPIR-V, for the price
-of one process start. `build.shader_pool` (`cmake/CheckShaderCosts.cmake`, CTest label `build`,
+of one process start; the compiler's diagnostics reach the build's log through the meter's own
+handles, its exit code is the meter's, and a failed compile leaves no measurement. `build.shader_pool` (`cmake/CheckShaderCosts.cmake`, CTest label `build`,
 Ninja builds) reads `build/<preset>/shaders/pool.txt`, which the configure writes, `build.ninja` and
 `CMakeFiles/rules.ninja`, and the cost files, and fails when a heavy compile's build statement does
 not carry the pool or a light one's does, when the declared depth is not the configure's, when a

@@ -3,7 +3,7 @@
 # shaders share a pool"; cmake/EngineShaders.cmake registers both tests).
 #
 #   cmake -DBINARY_DIR=<build/preset> -P cmake/CheckShaderCosts.cmake
-#   cmake -DSELF_TEST=ON -DWORK=<directory> -P cmake/CheckShaderCosts.cmake
+#   cmake -DSELF_TEST=ON -DWORK=<directory> [-DMETER=<shader-meter>] -P cmake/CheckShaderCosts.cmake
 #
 # The real check reads build/<preset>/shaders/pool.txt (the configure's list of every slangc
 # compile, its class, its SPIR-V and its measurement), build.ninja, and each `<stem>.cost` the
@@ -22,7 +22,8 @@
 # The self-test runs the reader, the depth and the classification over fixtures with known answers
 # in a directory of its own under WORK, so a check that stopped matching anything fails here rather
 # than passing everywhere quietly; and it runs the reader in a child `cmake -P` over a malformed row,
-# a doubled row and an unknown name, each of which has to stop it.
+# a doubled row and an unknown name, each of which has to stop it. With METER it runs the built
+# meter over `cmake -E echo`, `cmake -E false` and a program that does not exist.
 
 cmake_minimum_required(VERSION 3.28)
 include("${CMAKE_CURRENT_LIST_DIR}/EngineShaderCosts.cmake")
@@ -284,6 +285,39 @@ if(SELF_TEST)
     endif()
     _expect("${_label}: ${_want} problem(s) (found ${_n}: ${_found})" "_n EQUAL _want AND _matches")
   endforeach()
+
+  # The meter itself, when the build names it (-DMETER): a command that succeeds leaves a cost
+  # file of two lines and the command's exit code; one that fails passes its code on and leaves no
+  # measurement; a program that does not exist is 127, as a shell says it.
+  if(METER)
+    set(_cost_file "${_dir}/meter.cost")
+    execute_process(COMMAND "${METER}" "${_cost_file}" "${CMAKE_COMMAND}" -E echo "meter probe"
+                    RESULT_VARIABLE _code OUTPUT_VARIABLE _out ERROR_VARIABLE _err)
+    set(_peak "")
+    if(EXISTS "${_cost_file}")
+      file(STRINGS "${_cost_file}" _cost_lines)
+      foreach(_c IN LISTS _cost_lines)
+        if(_c MATCHES "^peak_mb ([0-9]+)$")
+          set(_peak "${CMAKE_MATCH_1}")
+        endif()
+      endforeach()
+    endif()
+    string(FIND "${_out}" "meter probe" _echoed)
+    _expect("the meter runs a command, passes its output and exit 0 on, and writes a peak (got ${_code}, peak '${_peak}')"
+            "_code EQUAL 0 AND _echoed GREATER -1 AND NOT \"${_peak}\" STREQUAL \"\" AND _peak GREATER 0")
+    file(REMOVE "${_cost_file}")
+    execute_process(COMMAND "${METER}" "${_cost_file}" "${CMAKE_COMMAND}" -E false
+                    RESULT_VARIABLE _code OUTPUT_QUIET ERROR_QUIET)
+    set(_written FALSE)
+    if(EXISTS "${_cost_file}")
+      set(_written TRUE)
+    endif()
+    _expect("a failing command's exit code comes through and leaves no measurement (got ${_code})"
+            "NOT _code EQUAL 0 AND NOT _written")
+    execute_process(COMMAND "${METER}" "${_cost_file}" "${_dir}/no-such-program"
+                    RESULT_VARIABLE _code OUTPUT_QUIET ERROR_VARIABLE _err)
+    _expect("a program that does not exist is exit 127 (got ${_code})" "_code EQUAL 127")
+  endif()
 
   file(REMOVE_RECURSE "${_dir}")
   if(_failures GREATER 0)

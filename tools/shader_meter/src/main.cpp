@@ -78,9 +78,10 @@ std::wstring quote_argument(const std::wstring& arg) {
   return out;
 }
 
-// Runs argv[0..argc) and returns its exit code, with its peak private commit in `peak_bytes`;
-// -1 when it could not be started.
-int run_child(int argc, native_char** argv, unsigned long long& peak_bytes) {
+// Runs argv[0..argc): false when it could not be started, else true with its exit code in `code`
+// and its peak private commit in `peak_bytes`. The code is the process's own 32 bits, so a
+// compiler that exits -1 or crashes is never mistaken for one that did not start.
+bool run_child(int argc, native_char** argv, int& code, unsigned long long& peak_bytes) {
   std::wstring command_line;
   for (int i = 0; i < argc; ++i) {
     if (i > 0) {
@@ -88,18 +89,25 @@ int run_child(int argc, native_char** argv, unsigned long long& peak_bytes) {
     }
     command_line += quote_argument(argv[i]);
   }
+  // The compiler writes to this process's standard handles, named outright and inherited, so its
+  // diagnostics reach the pipe the build reads whatever kind of handle that is.
   STARTUPINFOW startup{};
   startup.cb = sizeof(startup);
+  startup.dwFlags = STARTF_USESTDHANDLES;
+  startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+  startup.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+  startup.hStdError = GetStdHandle(STD_ERROR_HANDLE);
   PROCESS_INFORMATION process{};
   // The child inherits this process's error mode, which main() sets so that a crash in the
   // compiler is an exit code in the build's log and never a dialog waiting for a click.
-  if (!CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr,
+  if (!CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr,
                       &startup, &process)) {
-    return -1;
+    return false;
   }
   WaitForSingleObject(process.hProcess, INFINITE);
-  DWORD code = 1;
-  GetExitCodeProcess(process.hProcess, &code);
+  DWORD exit_code = 1;
+  GetExitCodeProcess(process.hProcess, &exit_code);
+  code = static_cast<int>(exit_code);
   PROCESS_MEMORY_COUNTERS_EX counters{};
   counters.cb = sizeof(counters);
   if (GetProcessMemoryInfo(process.hProcess, reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters),
@@ -108,7 +116,7 @@ int run_child(int argc, native_char** argv, unsigned long long& peak_bytes) {
   }
   CloseHandle(process.hThread);
   CloseHandle(process.hProcess);
-  return static_cast<int>(code);
+  return true;
 }
 
 std::FILE* open_for_write(const native_char* path) {
@@ -123,25 +131,28 @@ void print_path(const native_char* path) { std::fwprintf(stderr, L"%ls", path); 
 #else
 using native_char = char;
 
-int run_child(int argc, native_char** argv, unsigned long long& peak_bytes) {
+bool run_child(int argc, native_char** argv, int& code, unsigned long long& peak_bytes) {
   (void)argc;
   pid_t pid = 0;
   if (posix_spawnp(&pid, argv[0], nullptr, nullptr, argv, environ) != 0) {
-    return -1;
+    return false;
   }
   int status = 0;
   rusage usage{};
   while (wait4(pid, &status, 0, &usage) < 0) {
     if (errno != EINTR) {
-      return 1;
+      code = 1;
+      return true;
     }
   }
   // ru_maxrss is in kibibytes on Linux.
   peak_bytes = static_cast<unsigned long long>(usage.ru_maxrss) * 1024ull;
   if (WIFEXITED(status)) {
-    return WEXITSTATUS(status);
+    code = WEXITSTATUS(status);
+  } else {
+    code = WIFSIGNALED(status) ? 128 + WTERMSIG(status) : 1;
   }
-  return WIFSIGNALED(status) ? 128 + WTERMSIG(status) : 1;
+  return true;
 }
 
 std::FILE* open_for_write(const native_char* path) { return std::fopen(path, "wb"); }
@@ -156,9 +167,10 @@ int meter(int argc, native_char** argv) {
   }
   const auto start = std::chrono::steady_clock::now();
   unsigned long long peak_bytes = 0;
-  const int code = run_child(argc - 2, argv + 2, peak_bytes);
+  int code = 1;
+  const bool started = run_child(argc - 2, argv + 2, code, peak_bytes);
   const auto stop = std::chrono::steady_clock::now();
-  if (code < 0) {
+  if (!started) {
     std::fprintf(stderr, "shader-meter: could not start ");
     print_path(argv[2]);
     std::fprintf(stderr, "\n");

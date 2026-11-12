@@ -260,6 +260,7 @@ function(_engine_shader_pool_finalize)
   if(ENGINE_BUILD_TESTS)
     add_test(NAME tools.shader_costs
       COMMAND "${CMAKE_COMMAND}" -DSELF_TEST=ON "-DWORK=${CMAKE_BINARY_DIR}/Testing/Temporary"
+              "-DMETER=$<TARGET_FILE:engine_shader_meter>"
               -P "${CMAKE_SOURCE_DIR}/cmake/CheckShaderCosts.cmake")
     set_tests_properties(tools.shader_costs PROPERTIES LABELS "tools")
     if(CMAKE_GENERATOR MATCHES "Ninja")
