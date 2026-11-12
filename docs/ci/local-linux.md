@@ -53,7 +53,8 @@ pwsh tools/linux-build.ps1 -Prune [-Stale [-KeepUnknown] [-Base <rev>]] [-WhatIf
 | `-KeepUnknown` | with `-Stale`: keep the volumes whose checkout [nothing can name](#unknown-checkouts-are-removed-by-default). |
 | `-WhatIf` | with `-Prune`: print the same lines and remove nothing. Any other run refuses it. |
 | `-Sync:$false` | build what is already in the volume without re-syncing the checkout. |
-| `-NoWait` | if another build holds the [build lock](#one-container-build-at-a-time-whoever-started-it), say whose and exit 2 instead of waiting for it. |
+| `-NoWait` | if another build holds the [build lock](#one-container-build-at-a-time-whoever-started-it), or others are before this one in its line, say who and exit 2 instead of waiting. |
+| `-LockOnly <s>` | take the build lock as a build does, hold it `<s>` seconds, release: no container, no Docker. What the lock's tests drive. |
 | `-Offline` | run the build containers with `--network none`. A configure that still needs to download something then fails instead of downloading it, which makes "this build fetched nothing" a result rather than a reading of the log. |
 
 Exit status is the build's, or the tests' with `-Test`. **A build that fails ends the run with its status, and the tests do not run.** Until 2026-09-23 they did. The container script had `pipefail` but not `-e`, so a failed `cmake --build` fell through to `ctest`. `ctest` then ran the previous build's test binaries, which passed, and `-Test` printed `ok` with exit 0 over a Clang `-Werror` failure in the one file that had changed. The script is now `set -eo pipefail`. A run whose log says `ninja: build stopped` but whose verdict says `ok` came from before that fix. With `all`, every preset is attempted and
@@ -84,10 +85,27 @@ file ([bench](../subsystems/bench.md#measuring-on-a-shared-machine), "The GPU lo
 `$env:ENGINE_LINUX_BUILD_LOCK`, created atomically with an owner, a purpose that names the presets
 and the checkout, and an expiry. An expired lock may be broken, an unexpired one never.
 
-- **A second invocation waits** and says whom for — `linux-build: waiting; held by 'claude-engine':
-  linux-build linux-clang-debug,... -Test in D:\...\agent-xyz (until 21:04:00Z)` — and starts the
-  moment the first releases. `-NoWait` makes it fail at once with exit 2 instead; after four hours
-  it gives up with exit 3.
+- **A second invocation waits** and says whom for and where it stands — `linux-build: waiting; held
+  by 'claude-engine': linux-build linux-clang-debug,... -Test in D:\...\agent-xyz (until
+  21:04:00Z); this ask is behind 2 of the 3 in the line, first 'claude-engine' (pid 7716):
+  linux-build linux-gcc-release -Test in D:\...\agent-abc, waiting 412 s` — and starts within a
+  quarter of a second of the build before it releasing. `-NoWait` makes it fail at once with exit
+  2 instead, when the lock is held *or* when it is free and others are before it in the line;
+  after four hours it gives up with exit 3, and both say the same two things.
+- **The builds that wait are a line, served in the order they arrived** (T96,
+  [ADR-0062](../adr/0062-the-machine-locks-have-a-line.md); the mechanism, its bounds and its
+  sources are [gpu_lock](../subsystems/gpu_lock.md#the-line)'s). Until 2026-11-11 they were not:
+  every waiter retried every 20 s and whoever's retry came first after a release had the lock, so
+  on the night of 2026-11-10 four rows waited 110, 136, 147 and 240 minutes while later arrivals
+  won, and four handed back without GCC having compiled them. A build now takes a ticket — a file
+  in `D:\workspace\linux-build.lock.line\` — when it starts to wait, and only the oldest live
+  ticket tries the lock. Every build asks for the same ten-minute lease, so the order is plain
+  first come, first served, and an agent whose build ends and who asks again stands behind
+  everyone who was waiting. **A waiting script that is killed** (a tool timeout, with no `finally`)
+  leaves a ticket nobody refreshes: it stops counting when its 30 s lease runs out, so the build
+  behind it starts **under 32 s** after the kill. A script from another worktree that predates the
+  line takes no ticket and retries every 20 s as it did: it is outside the order, usually behind
+  it, and can neither stall nor corrupt it.
 - **The lease is ten minutes, refreshed every two** from a background thread while the build runs,
   so a build whose script is killed outright holds the machine for ten minutes and not for as long
   as the build would have taken. Ctrl+C is not killed outright: the script removes the container it
@@ -110,7 +128,15 @@ and the checkout, and an expiry. An expired lock may be broken, an unexpired one
 - On a machine without the lock's directory (no `D:\workspace`) there is nobody to coordinate with;
   the build says so and runs unlocked.
 
-`tools/gpu-lock.ps1 status -LockFile D:\workspace\linux-build.lock` says who is building.
+`tools/gpu-lock.ps1 status -LockFile D:\workspace\linux-build.lock` says who is building, since
+when and until when, and then who is waiting, in order, with how long each has waited.
+
+`tools/linux-build.ps1 -LockOnly <seconds>` takes the build lock exactly as a build does — the
+same line, the same messages, the same exit codes — holds it for that long and releases it,
+starting no container and asking nothing of Docker. It is how `tools.machine_lock` tests the
+build lock's line through this script (three runs served in the order they started, `-NoWait`
+behind them, the waiting line's text), each at a lock of the case's own
+(`ENGINE_LINUX_BUILD_LOCK`); by hand it keeps builds off the machine for a moment.
 
 **Checked, on 2026-09-22**: two invocations from two checkouts, fifteen seconds apart, with a
 planted orphan (named as this script names its containers, its owner pid dead) and a planted

@@ -1456,8 +1456,8 @@ folded plane, never a line on the screen or a contour — and a band on a steep 
 the bed is, which no plan-view mask could hold.
 
 **The flag, the address and the one block.** The layer's flag is `k_material_terrain_formation`,
-bit 18 of `ResolveMaterial::flags` (R131 took 17). The field is one 98,624-byte (W94; 928 before)
-`gfx::FormationParams` block (`domain/gfx/formation.h`, pinned by the size table, mirrored once in
+bit 18 of `ResolveMaterial::flags` (R131 took 17). The field is one 106,816-byte (T94; 98,624
+after W94, 928 before) `gfx::FormationParams` block (`domain/gfx/formation.h`, pinned by the size table, mirrored once in
 `formation.slang`), uploaded at scene load only when a layer asks for it, and named by
 `TerrainRecord::formation`, a device address in two of the eight pad words the terrain's record
 always had. **Beside the terrain record and not in `ResolveParams`**: the field is the terrain's
@@ -1495,8 +1495,9 @@ recessive lithology with lognormal thicknesses, drawn by `gfx::generate_formatio
 millimetres, integer hashes and `det::exp`, on the CPU at pack time. The members are the macro
 sequence, so both tables have one period, the members' whole thickness: a section repeats after
 hundreds of metres, not every few. **The table is the definition**: 512 beds of 96 bytes a
-sequence (W85: 8 of 48), read by the shader and the twin alike, found by a **binary search** — nine
-steps, where eight beds took seven of a linear one, so the lookup's steps are what they were. The
+sequence (W85: 8 of 48), read by the shader and the twin alike, found by a **binary search** — over
+the whole table as W94 left it, nine steps; over the few beds a slice of the period names since
+T94 (below). The
 integral a bed carries is of the value **less the sequence's mean**, a bounded walk where the plain
 integral grew with the section, so a 4 mm box across a contact is exact to 1e-4 over a kilometre of
 beds (W85's form: 2e-3 over 128 m). An authored `beds` and `macro_beds` still packs to the table
@@ -1512,9 +1513,10 @@ of `amplitude * (value below - value above)` over the tops under it, which is ex
 the tops adds to the integral. A **fault** is a vertical plane beyond which the coordinate is a
 throw greater, added in whole millimetres before the reduction. The first and last top of a sequence
 and every member's top do not move, so the period — and the precision argument below — is the same
-everywhere. The block is **98,624 bytes** a scene, uploaded as it was (one `upload_buffer` of the
-packed block); a pixel pays the two lateral fields (two int64 remainders, four hashes) and the fault's
-sign once, and nothing more per lookup than two multiplies a step. **Measured** (2026-11-11, RTX
+everywhere. The block was **98,624 bytes** a scene as W94 left it (106,816 with T94's two slice
+indexes), uploaded as it was (one `upload_buffer` of the packed block); a pixel pays the two
+lateral fields (an int64 division each, four hashes) and the fault's sign once, and nothing more
+per lookup than two multiplies a step. **Measured as W94 left it** (2026-11-11, RTX
 5090, 1920 × 1080, `--raster hw --shadows csm`, the escarpment's ridge as one banded rock layer,
 the median of 52 frames a held pose; under the GPU lock with the GPU otherwise idle and every CPU
 core busy with other agents' builds, so upper bounds): the resolve with W85's authored fixture
@@ -1526,6 +1528,106 @@ on this view was not measured (no build of the base was made); its lookup has fe
 of a binary search for four beds, where the linear one took three). **What the pictures show**
 (`formation-sequence.md`, "What the pictures show"): the regular corrugation is gone and members
 read as members, but at 100 m and beyond the tops are still ruled lines.
+
+**The frame-only pack** (roadmap T94, 2026-11-11). The block is 106,816 bytes, and a caller that
+declared one to read its frame — rocks' `make_fabric` did, once a rock — put that on its stack.
+`gfx::FormationHead` is the block's first 192 bytes as a type of its own (the origin, the
+directions, the folds, the lateral fields and the fault: all the coordinate and the lateral fields
+read), `gfx::pack_formation_head` fills it from the scene's formation and its plans, and
+`gfx::pack_formation_frame(formation, frame, error)` gives the 208-byte `FormationFrame` the twin's
+`formation_coordinate` and `formation_lateral` take, with no table packed. `pack_formation` writes
+the block's head through the same function, so the two frames are the same bytes
+(`formation_tests.cpp`, "the frame-only pack"); whether the lateral fields are on is asked of the
+plans (`formation_top_travel`, the one rule for how far a top moves, which the table's packer also
+calls) and no longer read back from the packed tables. `gfx::check_formation` is the validation
+with the table's bound and no block, for a caller that only wants to know a formation packs.
+
+**What the formation costs the resolve** (roadmap T94, 2026-11-11). Measured three ways on W94's
+views — W85's tree (44c80a0a, its own shader), W94's (b8eb339a) and T94's — each `engine-view`
+copied out of its build, the same three scenes (the escarpment's ridge as one rock layer: W85's
+authored fixture, W94's drawn section of eight members with its fault, and the layer with no
+formation at all), RTX 5090, 1920 × 1080, `--raster hw --shadows csm --sun 120,35`, the resolve
+pass's GPU milliseconds, the median of 164 frames a held pose (two flights), runs minutes apart
+agreeing to 0.002 ms and runs an hour apart to 0.008. Every run under the GPU lock, and every run's `machine_state` the same: other processes
+at 90 to 100% of the CPU (other agents' builds), the GPU 3 to 80% busy at the sample before the
+flight, so these are upper bounds:
+
+| Resolve, ms | 50 m | 500 m | valley |
+|---|---|---|---|
+| W85's tree, its authored table | 0.589 | 0.163 | 0.563 |
+| W85's tree, no formation | 0.496 | 0.139 | 0.479 |
+| W94, the authored table | 0.725 | 0.200 | 0.680 |
+| W94, the drawn formation | 0.824 | 0.226 | 0.764 |
+| W94, no formation | **0.579** | 0.164 | 0.557 |
+| T94, the authored table | 0.593 | 0.173 | 0.572 |
+| T94, the drawn formation | **0.590** | 0.168 | **0.566** |
+| T94, no formation | **0.494** | 0.138 | 0.477 |
+
+So the drawn formation is **within 0.001 ms of W85's own cost at 50 m, 0.003 in the valley and
+0.005 at 500 m — over it, not under**. The table's rows were flown over two hours and differ by
+up to 0.008 ms from one hour to the next, so the three binaries were flown again one after the
+other, three times, each sample a lease of its own (CPU 32 to 55% busy with others' work): W85's
+tree gave 0.588, 0.162 and 0.561 (each within 0.001 across the three samples), W94's drawn
+formation 0.822, 0.225 and 0.765, and T94's drawn formation 0.589, 0.167 and 0.564. A banded pixel pays
+0.096 ms a frame for the drawn formation at 50 m where W85's eight authored beds cost 0.093 and
+W94's drawn section 0.33; and **a scene with no formation is 0.085 ms cheaper than W94 left it**,
+which nobody had measured. What took it out, at 50 m on the drawn scene, in the order it was done
+(each step's numbers are the shader at that step through the binary of the slice index, so the
+last is 0.587 here and 0.590 above):
+
+- **What a loop in the lookup cost.** W94's shader cost every terrain pixel of every scene, banded
+  or not: 0.579 ms with no formation against 0.493 with the formation's code compiled out, on a
+  scene where none of it runs. Compiling out any one of the lateral fields, the search or the
+  filter's second lookup gave the 0.086 back, and so did writing the search's steps out with no
+  `for`: it is what the driver's compile does with the shader once a loop of dependent loads with
+  a data-dependent end is in it (W85's loop over eight beds did not cross it), not work done. So
+  `formation_find` is nine halvings written out, each skipped by one compare once the run is one
+  bed, and the header says why. **Anyone adding a loop over a table to the resolve should time a
+  scene that never runs it.**
+- **The slice index** (0.824 → 0.741 with the loop still in, 0.662 with it out). A lookup was a
+  binary search over the whole table, nine loads each waiting on the one before, four times a
+  pixel. Each table now carries 1,024 words, one a slice of its period: the first bed a coordinate
+  in the slice can be in and how many, **wherever the tops stand** (a base ranges over its start
+  plus the negative and the positive parts of its two amplitudes), with a margin of a millimetre
+  and 2^-18 of the period for the float that picks the slice. The search runs over that run: 1.2
+  beds a slice on a 264 m drawn section, 2.1 on 512 centimetre beds, so none or one step. It
+  finds the bed the search of the whole table finds (`formation_tests.cpp`, "the slice index":
+  3.8 million lookups over six tables at seven settings of the fields, none different). The table
+  is still the definition; the index is derived from it by `pack_formation_index` and costs 4,096
+  bytes a table (the block: 98,624 → 106,816 bytes).
+- **A box inside one bed is that bed's value** (0.662 → 0.628). The filter looked both ends of
+  its box up and differenced two integrals. Where the upper end is under the next bed's base in
+  the same period — most pixels of a near face — the answer is the bed's value, which is what the
+  difference gives to rounding, and nothing more is read. The twin keeps the difference always: it
+  is the definition, and the probe holds the shader's band to it at 4e-3.
+- **Division in 32 bits, and a member through its bed** (0.628 → 0.587). The remainders modulo the
+  period, the fold's wavelength and the lateral lattices are of `whole millimetres << 24`, so they
+  are the whole millimetres' by the modulus with the low 24 bits carried, and those fit 32 bits
+  while the frame's cell is within 2,147 km of the origin along the direction; the 64-bit form
+  stays for a frame further out and gives the same integers. A drawn formation's two periods are
+  one, so one remainder serves both; a lateral field takes its cell and its remainder from one
+  division where it took two. And a drawn formation's macro table **is** its members
+  (`k_formation_drawn` in the block's flags): a bed's `member` is the macro's index and a member
+  starts and ends where its first and last bed do, as the same floats, so where the box is inside
+  one bed the macro's value is read through the bed and the macro's own lookup, which would return
+  that number, is not made (`formation_tests.cpp`, "a drawn formation's macro table is its
+  members"; the one place the two could differ is a float's step wide, where a lens that is a
+  member's first bed has pinched out and the next bed's base, an f32 start plus an f32 amplitude,
+  rounds a step under the member's own).
+
+**What is left, feature by feature** (the shader before the last step, 50 m, one feature compiled
+out): the lateral fields 0.042 ms, the macro's lookup 0.034, the four int64 divisions 0.028, the
+fold 0.010, the fault 0.009; the band's two lookups 0.057 in all and the coordinate with its
+fields 0.078. **Tried and not kept:** the remainders by a float reciprocal and two exact int64
+corrections in place of `%` (no gain: 0.636 against 0.628). **Where the rest would come from:**
+everything integer in `formation_coordinate` — the two dot products, their remainders, the lateral
+lattices' cells — is a function of the frame's eye cell and the block, the same for every pixel of
+the frame, and is recomputed a pixel because `formation.slang` is handed nothing a frame. A record
+a frame beside `ResolveParams` would take it out; that is the resolve's file and not this row's.
+**The picture moved by rounding and no more**: the drawn scene's captures from W94's binary and
+this one, 1920 × 1080, differ by one step of 255 at most, in 1,452 pixels of 2,073,600 at 50 m,
+42 at 500 m and 589 in the valley — the pixels whose box lies inside one bed, where the bed's
+value now stands for the difference of two integrals that gave it to the last bit or two.
 
 **Why the precision holds at 10 km — and at 10,000.** No absolute position is formed
 (ADR-0053). The shader has the frame's eye cell and a float offset from its corner; the field's
@@ -2744,7 +2846,7 @@ The benchmark corpus of [plan 09 §9.4](../plan/09-testing-profiling.md#94-bench
 
 **The formats are schema types** (`schemas/scene.schema`, namespace `engine.scene`), so `schemac` generates them and `engine-cli schema.describe '{"type":"engine.scene.Scene"}'` explains any of them: `Scene` (meshes with a name, a content `hash`, an `overlay` hash and a `Fit`; instances with a translation, rotation, `yaw_deg`, scale and `ground`; seeded `Scatter`s; `ruins`, the `RuinScatter`s below; an optional `Terrain` with `Ridge`s and `Basin`s; since version 2, an optional `camera_path` naming the path the scene is flown along, which `read_scene_file` resolves against the scene file into `SceneDesc::camera_path` and which a host with no path of its own starts a camera at — engine-view's `--interactive` ([apps](apps.md#--interactive-a-camera-somebody-flies)); and, since version 3, in a fragment the ruin assembler wrote, a `RuinTag` on each instance with `ruin_sites` and `sand_drifts` beside them, which the reader accepts and does not interpret), `Overlay` (a local manifest from content hash to file), `CameraPath` (`CameraKey`s and `CameraMarker`s), and what a run writes — `FrameRecord` per frame and `FlythroughSummary` at the end. **Why a JSON file keyed to schema types and not a `doc::Document` layer**, which is how the plan stores a world ([03 §3.2](../plan/03-data-model.md#32-the-authoring-document-world-document)): the renderer reads scenes and must not depend on the document model's journal and ids to do it; a corpus scene is a fixture whose identity is its bytes, so one committed file that diffs as text and hashes as a unit is the honest unit; and the types are chosen to map one-to-one onto a layer's placement objects, so the move is an export and not a redesign. `read_scene_file` reads the **oldest spelling too** — `{"meshes":[{"path"}],"instances":[{"mesh","translation","rotation","scale","animation"}]}` is a valid `Scene` — and is stricter than it was: an unknown field is refused with its path, because a misspelt `ground` that quietly did nothing would float a building.
 
-**A generated mesh in the mesh table.** A mesh path ending in `.<generator>.json` — `content/flora/date-palm.flora.json` — is built by that mesh generator ([assets](assets.md#generated-meshes)) instead of being imported: `load_source_mesh` hands it to `load_generated_mesh` (`src/scene_flora.cpp`, the one call site), which finds the generator by the name in the file's name, takes the source hash over what the file says, looks in the derived-data cache under `assets::generated_mesh_build_key(source hash, the inputs, the scene's LOD options, the default page target)` — `cluster_cache_key` with no weld and the material pack's key when there is one, the key `engine-content flora` writes under — and on a miss builds the container with the generator and writes it there, then adopts it exactly as a `.clusters` named outright is adopted, so everything downstream is the container path. **The material pack** the generator's parts fall back to is `SceneDesc::materials` ([materials](materials.md)): a directory, or empty and the repository's `content/materials` **when the cache root is looked up too** (the repository's defaults go with the repository's cache; a caller that names its own derived-data root, as every test does, names its pack too or draws flat). **The images a generated mesh's parts sample are built into the cache's textures** (`build_cache_textures`, the same texture step as a glTF's, run beside the container on a hit or a miss when the scene reads the cache), so a palm's bark draws block-compressed and mipmapped from `<ddc>/textures/`; without a cache they draw through the decode, as a glTF's images always could. On a hit the container's source path is set to the path the scene names, since a recipe's image paths are relative to the recipe and another host may have written the entry from another spelling of it. `cache` reads `hit`, `miss` or `none`; a `hash` in the scene file is checked against the generated mesh's source hash. **The renderer names no generator**: a build without the flora capability compiles the same file and refuses the path with the registry's sentence, which names the capability (`ENGINE_WITH_FLORA`), and a host carries a generator by linking its capability, as it carries the scene generators. `flora_scene_tests.cpp` builds one through the cache, reads it back as a hit and built in memory, refuses a file the solver refuses, and draws [oasis-palms](../../content/test-scenes/oasis-palms/README.md) offscreen ([flora](flora.md#in-a-scene)).
+**A generated mesh in the mesh table.** A mesh path ending in `.<generator>.json` — `content/flora/date-palm.flora.json` — is built by that mesh generator ([assets](assets.md#generated-meshes)) instead of being imported: `load_source_mesh` hands it to `load_generated_mesh` (`src/scene_flora.cpp`, the one call site), which finds the generator by the name in the file's name, takes the source hash over what the file says, looks in the derived-data cache under `assets::generated_mesh_build_key(source hash, the inputs, the scene's LOD options, the default page target)` — `cluster_cache_key` with no weld and the material pack's key when there is one, the key `engine-content flora` writes under — and on a miss builds the container with the generator and writes it there, then adopts it exactly as a `.clusters` named outright is adopted, so everything downstream is the container path. **The material pack** the generator's parts fall back to is `SceneDesc::materials` ([materials](materials.md)): a directory, or empty and the repository's `content/materials` **whatever the derived-data root** (T103; until then only when the cache root was looked up too, so every run with `--ddc` drew flat), except in a test, whose main switches the default off for itself and every child (`SceneLoadReport::materials` says which pack the load used; [materials](materials.md), "Where the hosts find it"). **The images a generated mesh's parts sample are built into the cache's textures** (`build_cache_textures`, the same texture step as a glTF's, run beside the container on a hit or a miss when the scene reads the cache), so a palm's bark draws block-compressed and mipmapped from `<ddc>/textures/`; without a cache they draw through the decode, as a glTF's images always could. On a hit the container's source path is set to the path the scene names, since a recipe's image paths are relative to the recipe and another host may have written the entry from another spelling of it. `cache` reads `hit`, `miss` or `none`; a `hash` in the scene file is checked against the generated mesh's source hash. **The renderer names no generator**: a build without the flora capability compiles the same file and refuses the path with the registry's sentence, which names the capability (`ENGINE_WITH_FLORA`), and a host carries a generator by linking its capability, as it carries the scene generators. `flora_scene_tests.cpp` builds one through the cache, reads it back as a hit and built in memory, refuses a file the solver refuses, and draws [oasis-palms](../../content/test-scenes/oasis-palms/README.md) offscreen ([flora](flora.md#in-a-scene)).
 
 **Content addressing.** A mesh's `hash` is `assets::source_mesh_hash` of the file; the load computes it (the cache path already does) and refuses other bytes, naming both hashes. The terrain's is `terrain_hash`, over every field and `k_terrain_version`. **An authored tile set (`TerrainDesc::tiles`, the `tiles` provider) enters it by its content, never its paths** (2026-10-18): a built set by its manifest's build key, set hash and recorded lattice (`key`, `source_hash`, `hash`, `cells`, `spacing_mm`, `origin_mm`, `width`, `height`, `vertical_scale`, `offset_y_mm`, `chain`), a set built on load by its heightfield header's `data_hash` and lattice plus the block's `origin`, `vertical_scale` and build options — the fields the set's build key is made of ([tileset](tileset.md#the-set)). Until then the hash named the provider and nothing of the set, so a heightfield rewritten behind the same path drew the old cached render mesh under the new heights. The renderer reads those fields as JSON and does not link the capability (ADR-0027); a file that is not JSON enters by its bytes, and the block's `ddc` (where, not what) never. Only a terrain with a tile set reads them, so every waves and dunes terrain keeps its hash and its cache entry, pinned in `scene_gen_scene_tests.cpp` ("a tile set enters the terrain hash by its content"). A run's summary carries the scene file's hash, the path file's hash, every mesh's hash and where it came from (`scene`, `overlay` or `terrain`), and one `identity` over all of them: the number that names what was measured.
 
@@ -3429,11 +3531,13 @@ The sum is taken with `sizeof` when the room is laid out (`MeshRoom::cluster_byt
 
 **The order rule: nothing drawn depends on the order meshes arrived in.** A visibility id is `pair << 8 | triangle`, and a pair is (instance, cluster *of its mesh*): neither the slot a mesh took nor where its clusters landed in the arena is in it. The mesh's bytes are a function of its recipe (one cache entry, whoever built it), and its clusters are in the order a whole read's merge leaves them (`load_placement_mesh` runs the same leaves-first merge). So two walks that end in the same place hold the same instances of the same bytes, and draw the same depth and colour to the byte; their ids agree once each is read as (instance of the tail, cluster of its mesh, triangle), which `mesh_first_cluster` is for. What *does* depend on arrival is where a tile's block sits in the instance table — as it has since the tail had blocks — and so which of two instances wins an exact tie in depth; compaction lays the blocks out in the tail's order.
 
-**What does not arrive, yet.** An admitted mesh's **textures**: it draws its materials' constants (base colour, roughness, metallic, emissive), and an alpha-tested material is drawn opaque, as only the load uploads them ([design](texture.md#textures-that-arrive-after-the-load)). Its **coverage errors** and its **motion contract** (it is rigid). **Cluster templates, static structures and the resident cluster cache**: the chain builds an admitted mesh's clusters per frame, as it builds any mesh that has none of the three; the per-instance tables are sized for it (`rt_max_per_instance_` takes `max_clusters`), and that is all this row asked of the chain.
+**Its textures arrive with it** (R147, 2026-11-11; [texture](texture.md#textures-that-arrive-after-the-load)). A scene with a mesh room keeps one table of built textures by `.tex` build key — the load's, pinned, and the admitted ones with a count of who holds each — and `SceneRenderer::acquire_texture` puts one in without a wait: an image made empty, its levels staged in the terrain's ring, copied by the same "terrain upload" pass that copies the mesh's streams (`gfx::record_image_levels_upload`), into a pair of bindless slots from a run reserved when the scene was made. `admit_mesh` makes the mesh's materials with the function the load makes its own with (`GpuScene::fill_material`: factors, the five slots, the built flags, a sampler per textured slot, the UV transform, the alpha mask), holds a reference on each texture, and `retire_mesh` gives them back; a texture nobody holds leaves the table at once and its image four recorded frames later. A mesh admitted without its textures in the table — refused by the room's pairs (`renderer.textures.slots`, 1,024) or bytes (`renderer.textures.budget_mib`, 1,024), or never built — draws its materials' constants, said once. **Alpha-tested materials** draw their coverage on every rasterizer and the ray path when a generator of the scene said its tiles may hand one (`scene_gen::PlacementGeneratorDesc::tile_meshes_masked`, carried as `SceneData::tile_meshes_masked`), since the masked pipelines are chosen when the scene is made; without it such a material is drawn opaque, by name.
+
+**What does not arrive, yet.** An admitted mesh's **coverage errors** and its **motion contract** (it is rigid). An admitted alpha-tested mesh has no entry in the **opaque shadow proxy's coverage table** and no **opacity micromap**, both baked at load over the load's clusters: its shadow rays test the mask's texel at every candidate, which is the right shadow at the cost the proxy and the micromaps were made to cut ([texture](texture.md#textures-that-arrive-after-the-load), what would give it those). A material that asks for **stochastic sampling** gets it only where the load already has a stochastic material (the resolve's variant is chosen from the load's), else it draws plain, by name. **Cluster templates, static structures and the resident cluster cache**: the chain builds an admitted mesh's clusters per frame, as it builds any mesh that has none of the three; the per-instance tables are sized for it (`rt_max_per_instance_` takes `max_clusters`), and that is all this row asked of the chain.
 
 **What an admission costs.** Staging is a copy of the mesh's bytes on the committing thread; the device's share is the same bytes as buffer copies in a pass that exists anyway. The world's allowance is two meshes and 4 MiB a budgeted commit ([world](world.md#a-tiles-meshes-residency-by-reference)). `mesh_room_tests.cpp` prints a rock's clusters, its staged bytes and what the room reserves for it; `GpuScene::mesh_use()` carries the totals (`staged_bytes`, `admitted`, `retired`) for a host's summary. **Not measured yet**: the p99 frame time along a walk over activating tiles, before and after — it needs a scene whose generator hands meshes drawn by engine-view in `msvc-release`, and the only such generator is the tests' fixture; the first converted solver is where that number is taken (R142's hand-back, "Rows this leaves").
 
-**Tests** (`mesh_room_tests.cpp`): the room's bytes before an admission, with one mesh and after its retirement; a tail naming an empty slot refused; a scene whose rocks arrived one by one against the same scene read whole, and against the same rocks arriving in another order through other slots after one came and went — depth and colour equal to the byte and every id equal as (instance, cluster of its mesh, triangle); the room's refusal naming `renderer.meshes.budget_mib` and changing nothing, a mesh past `max_clusters` refused by name, a scene with no such generator reserving nothing; and an admitted rock on the ray path against the rasterizer, held as the streamed tail's is, casting a traced shadow.
+**Tests** (`mesh_room_tests.cpp`): the room's bytes before an admission, with one mesh and after its retirement; a tail naming an empty slot refused; a scene whose rocks arrived one by one against the same scene read whole, and against the same rocks arriving in another order through other slots after one came and went — depth and colour equal to the byte and every id equal as (instance, cluster of its mesh, triangle); the room's refusal naming `renderer.meshes.budget_mib` and changing nothing, a mesh past `max_clusters` refused by name, a scene with no such generator reserving nothing; and an admitted rock on the ray path against the rasterizer, held as the streamed tail's is, casting a traced shadow. `mesh_texture_tests.cpp` holds the textures (R147): textured rocks that arrived one by one against the scene read whole and against another order of arrival, depth, colour and ids to the byte, rasterized and traced, and not the picture their constants draw; a shared texture uploaded once and gone four frames after its last mesh, in bytes, and back without an upload when wanted sooner; both refusals by name; an alpha-tested rock's holes drawn as the whole read draws them, only in a scene told to expect one; what an admission allocates; and a 2K texture's admission timed.
 
 ### Authored instances per tile
 

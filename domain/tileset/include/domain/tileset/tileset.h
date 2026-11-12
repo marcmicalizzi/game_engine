@@ -46,7 +46,9 @@ inline constexpr std::string_view k_tileset_format = "engine.tileset";
 // what its file held, so every level's hash is unchanged and the set's moves through its key.
 // 3 (2026-11-11, roadmap T90): a far level's archive is `far-<spacing_mm>.tiles`, so one at the
 // finest's spacing no longer replaces the finest's file; the records are the bytes they were.
-inline constexpr u32 k_tileset_version = 3;
+// 4 (2026-11-11, roadmap T105): no far level is built at or below the finest's spacing (the
+// finest answers a filter there), so a coarse ground's set holds fewer levels.
+inline constexpr u32 k_tileset_version = 4;
 // The name the ground provider registers under (scene_gen.md, "The registrar pattern").
 inline constexpr std::string_view k_ground_provider = "tiles";
 // The file a set's manifest is, in its directory.
@@ -93,7 +95,8 @@ struct BuildOptions {
   // Points a tile side less one: a tile file holds `cells + 3` points a side.
   u32 cells = 64;
   // The far levels a renderer will ask (renderer.md, "Ground to the horizon"): the first far
-  // level's spacing is `far_ratio` times the outermost ring's, and each one after doubles it.
+  // level's spacing is `far_ratio` times the outermost ring's, and each one after doubles it. A
+  // level at or below the heightfield's own spacing is not built (T105): the finest answers it.
   i64 ring_spacing_mm = 2000;
   u32 far_ratio = 4;
   u32 far_levels = 6;
@@ -191,13 +194,15 @@ class TileSet {
 
   // **The set as a tile source**: at `filter_mm` 0, the ground at each point of any spacing — the
   // finest's own points where the spacing is a multiple of its own, its bilinear surface between
-  // them; at a filter, the chain level of that spacing, point for point, and **a filter it was
-  // not built with is refused** (false). Past the data the edge's heights are held: flat beyond
-  // it, at every level. No time: every time is the one surface.
+  // them; at a filter, the chain level of that spacing, point for point, at or below the finest's
+  // spacing the finest as at no filter (no level is built there, T105), and **a coarser filter
+  // it was not built with is refused** (false). Past the data the edge's heights are held: flat
+  // beyond it, at every level. No time: every time is the one surface.
   scene_gen::TileSource source() const noexcept;
   bool heights(i64 spacing_mm, i64 filter_mm, i32 i0, i32 j0, u32 nx, u32 nz, u32 block_begin,
                u32 block_end, std::span<f32> out) const noexcept;
-  // Whether a lattice of `spacing_mm` filtered to it is one of the chain's.
+  // Whether a lattice of `spacing_mm` filtered to it is answered: one of the chain's levels, or
+  // any spacing at or below the finest's, which the finest answers (T105).
   bool has_filter(i64 spacing_mm) const noexcept;
 
   // **The ground at a point in whole millimetres**: the finest heights' bilinear surface, the edge
@@ -290,8 +295,9 @@ class TileSet {
 };
 
 // A level's archive inside a set's directory: the finest's (filter 0) "<spacing_mm>.tiles", a far
-// level's "far-<spacing_mm>.tiles", so a heightfield at one of the chain's spacings, which has
-// both, keeps both (T90; tileset.md, "Two levels at one spacing").
+// level's "far-<spacing_mm>.tiles", so a level's file says what it is (T90; tileset.md, "Two
+// levels at one spacing"). Since T105 no far level is built at the finest's spacing, so the two
+// names no longer meet.
 std::string level_archive(i64 spacing_mm, i64 filter_mm);
 
 // **The set behind a `tiles` ground** (the capability's typed accessor, scene_gen.md): null for a

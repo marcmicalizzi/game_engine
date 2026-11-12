@@ -16,6 +16,21 @@ bool mesh_admit(void* context, u32 mesh, const renderer::PlacementMeshData& data
 void mesh_retire(void* context, u32 mesh) {
   (void)static_cast<renderer::SceneRenderer*>(context)->retire_mesh(mesh);
 }
+TileMeshSink::Texture mesh_texture(void* context, const renderer::PlacementTexture& texture,
+                                   std::string* why) {
+  switch (static_cast<renderer::SceneRenderer*>(context)->acquire_texture(texture, why)) {
+    case renderer::GpuScene::TextureAdmit::held: return TileMeshSink::Texture::held;
+    case renderer::GpuScene::TextureAdmit::need_bytes: return TileMeshSink::Texture::need_bytes;
+    case renderer::GpuScene::TextureAdmit::refused: break;
+  }
+  return TileMeshSink::Texture::refused;
+}
+void mesh_release_texture(void* context, u64 key) {
+  static_cast<renderer::SceneRenderer*>(context)->release_texture(key);
+}
+bool mesh_texture_resident(void* context, u64 key) {
+  return static_cast<renderer::SceneRenderer*>(context)->texture_resident(key);
+}
 
 }  // namespace
 
@@ -32,7 +47,9 @@ void connect_scene_meshes(PlacementTiles& placements, renderer::SceneRenderer& r
   config.linger = mesh_linger_tunable();
   config.admissions = mesh_admissions_tunable();
   config.admission_bytes = mesh_admission_bytes_tunable();
-  placements.set_meshes(config, TileMeshSink{&renderer, &mesh_fits, &mesh_admit, &mesh_retire},
+  placements.set_meshes(config,
+                        TileMeshSink{&renderer, &mesh_fits, &mesh_admit, &mesh_retire,
+                                     &mesh_texture, &mesh_release_texture, &mesh_texture_resident},
                         jobs);
 }
 

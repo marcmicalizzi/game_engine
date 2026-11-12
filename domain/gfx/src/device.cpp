@@ -1397,24 +1397,12 @@ bool upload_image_2d(const Device& device, u32 width, u32 height, Format format,
   return ok;
 }
 
-bool upload_image_2d_levels(const Device& device, u32 width, u32 height, Format format,
-                            std::span<const ImageLevelData> levels, ImageResource& out,
-                            std::string* error) {
+bool create_sampled_image_levels(const Device& device, u32 width, u32 height, Format format,
+                                 u32 levels, ImageResource& out, std::string* error) {
   out = ImageResource{};
-  if (levels.empty() || width == 0 || height == 0) {
-    if (error != nullptr) *error = "upload_image_2d_levels: nothing to upload";
+  if (levels == 0 || levels > k_max_image_levels || width == 0 || height == 0) {
+    if (error != nullptr) *error = "create_sampled_image_levels: no extent, or a chain past 16";
     return false;
-  }
-  u64 total = 0;
-  for (const ImageLevelData& level : levels) {
-    if (level.data == nullptr || level.bytes == 0) {
-      if (error != nullptr) *error = "upload_image_2d_levels: a level has no bytes";
-      return false;
-    }
-    // Each level's copy source is aligned to 16 bytes, which covers every block size (8 or 16)
-    // and the 4-byte texel of an uncompressed format — vkCmdCopyBufferToImage requires the offset
-    // to be a multiple of the texel block size.
-    total = (total + 15) / 16 * 16 + level.bytes;
   }
   const Handles& h = device.handles();
   VkImageCreateInfo info{};
@@ -1422,7 +1410,7 @@ bool upload_image_2d_levels(const Device& device, u32 width, u32 height, Format 
   info.imageType = VK_IMAGE_TYPE_2D;
   info.format = vk::native(format);
   info.extent = {width, height, 1};
-  info.mipLevels = static_cast<u32>(levels.size());
+  info.mipLevels = levels;
   info.arrayLayers = 1;
   info.samples = VK_SAMPLE_COUNT_1_BIT;
   info.tiling = VK_IMAGE_TILING_OPTIMAL;
@@ -1438,7 +1426,6 @@ bool upload_image_2d_levels(const Device& device, u32 width, u32 height, Format 
       vmaCreateImage(h.allocator, &info, &alloc, &image, &allocation, &allocation_info);
   if (r != VK_SUCCESS) {
     set_error(error, "vmaCreateImage", r);
-    out = ImageResource{};
     return false;
   }
   out.image = vk::wrap(image);
@@ -1446,36 +1433,32 @@ bool upload_image_2d_levels(const Device& device, u32 width, u32 height, Format 
   out.format = format;
   out.width = width;
   out.height = height;
-  out.levels = static_cast<u32>(levels.size());
+  out.levels = levels;
   out.bytes = allocation_info.size;
+  return true;
+}
 
-  BufferResource staging;
-  if (!create_buffer(device, total, BufferUsage::TransferSrc, true, staging, error)) {
-    destroy_image(device, out);
-    return false;
-  }
-  Vector<VkBufferImageCopy> regions;
-  regions.reserve(static_cast<u32>(levels.size()));
-  u64 offset = 0;
-  for (u32 i = 0; i < levels.size(); ++i) {
-    offset = (offset + 15) / 16 * 16;
-    std::memcpy(static_cast<u8*>(staging.mapped) + offset, levels[i].data,
-                static_cast<usize>(levels[i].bytes));
-    const u32 w = (width >> i) == 0 ? 1u : (width >> i);
-    const u32 hgt = (height >> i) == 0 ? 1u : (height >> i);
+void record_image_levels_upload(CommandList list, const ImageResource& image, BufferHandle staging,
+                                std::span<const u64> level_offsets) noexcept {
+  const VkCommandBuffer commands = vk::native(list);
+  const VkImage target = vk::native(image.image);
+  const u32 level_count = image.levels < k_max_image_levels ? image.levels : k_max_image_levels;
+  VkBufferImageCopy regions[k_max_image_levels];
+  u32 count = 0;
+  for (; count < level_count && count < level_offsets.size(); ++count) {
+    const u32 w = (image.width >> count) == 0 ? 1u : (image.width >> count);
+    const u32 hgt = (image.height >> count) == 0 ? 1u : (image.height >> count);
     VkBufferImageCopy region{};
-    region.bufferOffset = offset;
-    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i, 0, 1};
+    region.bufferOffset = level_offsets[count];
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, count, 0, 1};
     region.imageExtent = {w, hgt, 1};
-    regions.push_back(region);
-    offset += levels[i].bytes;
+    regions[count] = region;
   }
-  const u32 level_count = out.levels;
   // One barrier over every level each way: the whole chain goes from nothing to a copy target,
   // and then to what the shaders read.
-  auto transition = [&](VkCommandBuffer commands, VkImageLayout from, VkImageLayout to,
-                        VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
-                        VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access) {
+  const auto transition = [&](VkImageLayout from, VkImageLayout to, VkPipelineStageFlags2 src_stage,
+                              VkAccessFlags2 src_access, VkPipelineStageFlags2 dst_stage,
+                              VkAccessFlags2 dst_access) {
     VkImageMemoryBarrier2 barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
     barrier.srcStageMask = src_stage;
@@ -1486,33 +1469,72 @@ bool upload_image_2d_levels(const Device& device, u32 width, u32 height, Format 
     barrier.newLayout = to;
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = image;
-    barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, level_count, 0, 1};
+    barrier.image = target;
+    barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, image.levels, 0, 1};
     VkDependencyInfo dependency{};
     dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
     dependency.imageMemoryBarrierCount = 1;
     dependency.pImageMemoryBarriers = &barrier;
     vkCmdPipelineBarrier2(commands, &dependency);
   };
+  transition(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+             VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE, VK_PIPELINE_STAGE_2_COPY_BIT,
+             VK_ACCESS_2_TRANSFER_WRITE_BIT);
+  vkCmdCopyBufferToImage(commands, vk::native(staging), target,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, count, regions);
+  transition(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+             VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+             VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_SHADER_READ_BIT);
+}
+
+bool upload_image_2d_levels(const Device& device, u32 width, u32 height, Format format,
+                            std::span<const ImageLevelData> levels, ImageResource& out,
+                            std::string* error) {
+  out = ImageResource{};
+  if (levels.empty() || width == 0 || height == 0) {
+    if (error != nullptr) *error = "upload_image_2d_levels: nothing to upload";
+    return false;
+  }
+  if (levels.size() > k_max_image_levels) {
+    if (error != nullptr) *error = "upload_image_2d_levels: a chain past 16 levels";
+    return false;
+  }
+  // Each level's copy source is aligned to 16 bytes, which covers every block size (8 or 16)
+  // and the 4-byte texel of an uncompressed format — vkCmdCopyBufferToImage requires the offset
+  // to be a multiple of the texel block size.
+  u64 offsets[k_max_image_levels];
+  u64 total = 0;
+  for (u32 i = 0; i < levels.size(); ++i) {
+    if (levels[i].data == nullptr || levels[i].bytes == 0) {
+      if (error != nullptr) *error = "upload_image_2d_levels: a level has no bytes";
+      return false;
+    }
+    total = (total + 15) / 16 * 16;
+    offsets[i] = total;
+    total += levels[i].bytes;
+  }
+  if (!create_sampled_image_levels(device, width, height, format, static_cast<u32>(levels.size()),
+                                   out, error))
+    return false;
+  BufferResource staging;
+  if (!create_buffer(device, total, BufferUsage::TransferSrc, true, staging, error)) {
+    destroy_image(device, out);
+    return false;
+  }
+  for (u32 i = 0; i < levels.size(); ++i) {
+    std::memcpy(static_cast<u8*>(staging.mapped) + offsets[i], levels[i].data,
+                static_cast<usize>(levels[i].bytes));
+  }
+  const ImageResource image = out;
   const bool ok = submit_immediate(
       device,
       [&](CommandList list) {
-        const VkCommandBuffer commands = vk::native(list);
-        transition(commands, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                   VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE, VK_PIPELINE_STAGE_2_COPY_BIT,
-                   VK_ACCESS_2_TRANSFER_WRITE_BIT);
-        vkCmdCopyBufferToImage(commands, vk::native(staging.buffer), image,
-                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, regions.size(),
-                               regions.data());
-        transition(commands, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
-                   VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                   VK_ACCESS_2_SHADER_READ_BIT);
+        record_image_levels_upload(list, image, staging.buffer,
+                                   std::span<const u64>(offsets, levels.size()));
       },
       error);
   destroy_buffer(device, staging);
   if (!ok) destroy_image(device, out);
   return ok;
 }
-
 }  // namespace engine::gfx

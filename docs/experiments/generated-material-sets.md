@@ -147,6 +147,67 @@ drawn on a fresh break). It is a parameter of the set, not a mask: a mask over a
 aspect and age is the cover capability's (cover.md), which places lichen where the mesh is
 exposed. Cover percentages by age were **not** found tonight; 12 % is *chosen*.
 
+## What G149 to G153 added (2026-11-11)
+
+One research pass (published sources only) reached almost no primary text: most papers came back
+as PDFs the reader could not decode, so the marks below are mostly *read (secondary)* or *chosen*.
+
+**Repetition** (G153). The tiling literature states the goal — output "with no unnatural
+artifacts or repetition" is how Wei, Lefebvre, Kwatra and Turk (2009, "State of the art in
+example-based texture synthesis", Eurographics STAR) frame it, and Cohen, Shade, Hiller and
+Deussen (2003, "Wang Tiles for Image and Texture Generation", ACM TOG 22(3)) exist to avoid
+visible periodic repetition — but *read (secondary)*, neither gives a rule for a tile's size
+against its largest feature, and none was found that does. So the measure (the largest departure
+of a sixteenth of the tile from its mean, as a Weber contrast) and its bounds are **chosen**, and
+the bounds were set where the base generator's sets fail them (matgen.md, "Repetition").
+
+**Embeddedness.** Platts, Megahan and Minshall (1983) define it as the degree to which the larger
+particles are surrounded or covered by fine sediment, in classes 0 to 25, 25 to 50, 50 to 75 and
+over 75 % (*read (secondary)*: the EPA's rapid bioassessment habitat table, which cites them).
+The default bed's 0.30 is in the second class: *chosen within it*.
+
+**Biofilm.** Periphyton films on stable stones are green, gold or brown, dark brown mats under
+stable flow, and bed material of 2 to 16 mm is the main agent that scours them off (*read
+(secondary)*: New Zealand's periphyton monitoring guides and a summary of an abrasion study). So
+the film lies on the crowns and not the sides, and a fifth of the clasts carry none. Its tint is
+*chosen*.
+
+**Talus.** That coarse talus ranges from openwork with large voids to clast-supported with every
+void filled, and fills with fines as it ages and with depth, is *read (secondary)* (Selby 1982 as
+cited; Scapozza, Baron and Lambiel 2015, Permafrost and Periglacial Processes 26:67-83, borehole
+air content falling with depth as a fine matrix fills the voids). **No porosity figure was
+found**: the three layers, the 1.2 median thicknesses between them and the 15 % of voids filled
+are *chosen*.
+
+**Lichen colonies.** Crustose thalli grow radially from a centre (the review of Armstrong and
+Bradwell 2010, "Growth of crustose lichens: a review", Geografiska Annaler A 92(1):3-17; *read*:
+the abstract, which gives no numbers). *Read (secondary)*: Armstrong's 1983 sample in North Wales
+held thalli of 2 to 65 mm across; the largest living *Rhizocarpon* thalli run past 150 mm;
+*Xanthoria elegans* grows about 0.5 to 0.7 mm a year in radius for its first decades (Osborn and
+Taylor 1975, as summarised). The defaults' largest thallus (120 mm for granite, 60 to 80 mm for
+the others) and the skew to small thalli are *chosen* within that; the orange species is added
+because the reels' boulders (r04) carry it. Colonies meeting at a line is *chosen*, from
+photographs, not from a source found.
+
+**Joints.** A Nigerian granite outcrop's mapped joint spacing averaged 1.6 to 2.5 m over all sets
+(Saliu and Alade 2012, *read (secondary)*); sheeting joints are centimetres apart near the surface
+and metres at depth (*read (secondary)*). The tile's 0.67 m between traces is closer than the
+outcrop's: a 1.5 m tile has room for two traces a set, and a tile with fewer would show no joint
+on most of a block. **Traded**: denser joints than a real face for a set that must show one on a
+small mesh. Their worn profile (a floor of fines, rounded shoulders, four widths deep) is
+*chosen*.
+
+**Run-off streaks.** Black stripes where water runs off a rock face, formed mostly by lichens
+with green algae or cyanobacteria ("Tintenstriche"; Pittino et al. 2024, Frontiers in
+Microbiology, doi 10.3389/fmicb.2024.1430059, *read (secondary)*), driven by the rock's water
+retention. **No width or length was found**: 0.45 m long, strands 3 cm across, are *chosen*.
+
+**Form above the decimetre.** No source was read: scallops 0.33 m (at 0.15 of the form at a
+cell's rim), ribs 0.5 m, and the amplitudes (granite 22 mm) are *chosen* to give a face a shape
+the normal map shows at 15 m. A broken step of 1.4 times the form was drawn too and removed
+(`k_matgen_version` 3): its curved contour, cut by the rock sets' stochastic sampling, read as
+crescent stamps in the engine (matgen.md, "Rock sets").
+
 ## A floor
 
 The parts and their numbers are the sward's floor's ([grass-sward.md](grass-sward.md#the-floor-under-a-sward-g141-2026-11-10),
@@ -197,3 +258,10 @@ source says otherwise:
   library.
 - Granite's grain-size class limits, joint spacing in outcrop, and lichen cover against exposure
   age.
+- (G149 to G153, 2026-11-11; none of these was read in its primary either.) Platts, Megahan and
+  Minshall 1983's embeddedness classes, read whole; a talus's void fraction and how fast fines
+  fill it with age (Sass 2006; Scapozza et al. 2015 read whole); crustose thallus size
+  distributions on old faces and the growth rate of *Xanthoria elegans* (Armstrong and Bradwell
+  2010 read whole, its PDF was not decodable; Osborn and Taylor 1975); the width and length of a
+  run-off streak (Pittino et al. 2024 read whole); a rule for a tile's size against its largest
+  feature, if the tiling literature has one (Wei et al. 2009 read whole).

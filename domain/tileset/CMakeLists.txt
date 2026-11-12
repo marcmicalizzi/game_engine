@@ -20,5 +20,7 @@ engine_module(NAME tileset LAYER domain OPTIONAL WHOLE_ARCHIVE GENERATOR ground:
        tunables time profiling
   SOURCES src/archive.cpp src/cuts.cpp src/tileset.cpp src/masks.cpp src/ground.cpp)
 
-engine_module_tests(NAME tileset
+# WALL_CLOCK: tileset_tests.cpp holds one height lookup beside a building window under 50 ms, so the
+# suite runs alone in a CTest run with jobs (docs/ci/what-to-run.md, "Jobs").
+engine_module_tests(NAME tileset WALL_CLOCK
   SOURCES tests/tileset_tests.cpp tests/determinism_tests.cpp tests/mask_tests.cpp tests/cut_tests.cpp)

@@ -92,8 +92,9 @@ FaceOf face_of(const Module& m, const assets::MeshData& mesh, const Stone& s) {
     // neighbour's arris is not counted as this stone's).
     if (mid.x <= static_cast<f64>(s.x0) + 0.001 || mid.x >= static_cast<f64>(s.x1) - 0.001)
       continue;
-    if (mid.y <= static_cast<f64>(s.bed) + 0.002 || mid.y >= static_cast<f64>(s.top) - 0.002)
-      continue;
+    // Within its own bed and top where the triangle is (G177: a stone's bed and top slope, so its
+    // extent's box holds its neighbours' corners; for a level stone this is the box).
+    if (mid.y <= bed_at(s, mid.x) + 0.002 || mid.y >= top_at(s, mid.x) - 0.002) continue;
     if (mid.z * sg < std::abs(static_cast<f64>(s.z1)) - 0.03) continue;
     // A through's or a footing's, proud of the face: not this stone's.
     const f64 reach = std::abs(static_cast<f64>(s.z1)) + 0.02;

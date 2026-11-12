@@ -1,0 +1,24 @@
+{
+  "format": "engine.camera-path.v1",
+  "name": "meadow-community",
+  "description": "Four held views, each held two seconds so the inner ring's blades have faded in (30 frames) before its marker: the floor from 50 m, eye height in the pond's wet margin, eye height on the dry flank, and along the margin.",
+  "interpolation": "Linear",
+  "fps": 30,
+  "znear": 0.05,
+  "keys": [
+    {"time": 0, "position": [0, 22, -78], "ground": true, "target": [0, 0.5, -32], "target_ground": true, "fov_deg": 60},
+    {"time": 2, "position": [0, 22, -78], "ground": true, "target": [0, 0.5, -32], "target_ground": true, "fov_deg": 60},
+    {"time": 2.01, "position": [3, 1.7, -34], "ground": true, "target": [14, 0.2, -31], "target_ground": true, "fov_deg": 60},
+    {"time": 4, "position": [3, 1.7, -34], "ground": true, "target": [14, 0.2, -31], "target_ground": true, "fov_deg": 60},
+    {"time": 4.01, "position": [0, 1.7, -150], "ground": true, "target": [15, 0.3, -140], "target_ground": true, "fov_deg": 60},
+    {"time": 6, "position": [0, 1.7, -150], "ground": true, "target": [15, 0.3, -140], "target_ground": true, "fov_deg": 60},
+    {"time": 6.01, "position": [-24, 3, -26], "ground": true, "target": [8, 0.3, -36], "target_ground": true, "fov_deg": 60},
+    {"time": 8, "position": [-24, 3, -26], "ground": true, "target": [8, 0.3, -36], "target_ground": true, "fov_deg": 60}
+  ],
+  "markers": [
+    {"frame": 58, "name": "above-50m", "note": "the floor and the pond from 50 m"},
+    {"frame": 118, "name": "wet-margin", "note": "eye height 4 m outside the pond's edge, along it"},
+    {"frame": 178, "name": "dry-slope", "note": "eye height on the 15 degree flank 150 m out"},
+    {"frame": 238, "name": "along-margin", "note": "3 m up, along the margin with the water on the left"}
+  ]
+}

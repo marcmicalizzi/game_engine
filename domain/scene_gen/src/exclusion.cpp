@@ -412,6 +412,85 @@ f64 Exclusion::channel_edge_distance_mm(i64 x_mm, i64 z_mm, f64 reach_m) const n
   if (cells_.empty() || !(reach_m > 0.0)) return k_far;
   const f64 x = static_cast<f64>(x_mm) * 0.001;
   const f64 z = static_cast<f64>(z_mm) * 0.001;
+  const auto row_start = [&](i64 kz, i64 kx) {
+    return std::lower_bound(cells_.begin(), cells_.end(), Cell{kz, kx, 0},
+                            [](const Cell& a, const Cell& b) {
+                              if (a.key_z != b.key_z) return a.key_z < b.key_z;
+                              return a.key_x < b.key_x;
+                            });
+  };
+  // **Nearest cells first** (T102). A segment is filed in every cell its line's box touches once
+  // grown by its own widest edge and `k_riparian_reach_m` (`build`), so a segment whose edge is g
+  // metres from the point is filed in a cell no further than g - k_riparian_reach_m from it: the
+  // point itself is in that grown box when g is under the riparian reach, and otherwise the point
+  // of the box nearest it, on the line from the point to the segment, is that close. So once every
+  // cell within L - k_riparian_reach_m of the point has been read, where L is the lesser of the
+  // best gap found and the reach, no cell left can hold a nearer edge, and the answer is the old
+  // square scan's to the bit (the least of the same gaps; the test holds the two together). The
+  // grid is read a row at a time outward from the point's own, and each row from the point's
+  // column outward, the nearer side's next filed cell first, until the next cell is further than
+  // the bound, which shrinks as the best gap does: one binary search a row, and a point beside a
+  // stream reads its own cell and its neighbours. `k_slack_m` covers the rounding of the filing's
+  // and this bound's arithmetic, a centimetre where a micrometre would do.
+  constexpr f64 k_slack_m = 0.01;
+  const i64 cz = cell_of(z), cx = cell_of(x);
+  // Never under 0: the point's own cell is read whatever the reach, since a segment whose edge is
+  // within the riparian reach is filed there.
+  const auto bound = [&](f64 so_far) {
+    return std::max(std::min(so_far, reach_m) - k_riparian_reach_m + k_slack_m, 0.0);
+  };
+  f64 best = k_far;
+  // Rows outside the filed ones hold nothing, which also bounds the walk for any reach.
+  const i64 z_lo = cells_.front().key_z, z_hi = cells_.back().key_z;
+  const f64 cell_z0 = static_cast<f64>(cz) * k_cell_m;
+  const f64 cell_x0 = static_cast<f64>(cx) * k_cell_m;
+  for (i64 k = 0;; ++k) {
+    bool any = false;
+    for (int side = 0; side < (k == 0 ? 1 : 2); ++side) {
+      const i64 row = side == 0 ? cz + k : cz - k;
+      // How far the row's nearest edge is from the point, along z.
+      const f64 dz = k == 0      ? 0.0
+                     : side == 0 ? cell_z0 + static_cast<f64>(k) * k_cell_m - z
+                                 : z - (cell_z0 - static_cast<f64>(k - 1) * k_cell_m);
+      if (!(dz <= bound(best))) continue;
+      any = true;
+      if (row < z_lo || row > z_hi) continue;
+      // `right` walks the row's cells from the point's column up, `left` the ones below it down.
+      auto right = row_start(row, cx);
+      auto left = right;
+      for (;;) {
+        f64 dr = k_far, dl = k_far;
+        if (right != cells_.end() && right->key_z == row)
+          dr = right->key_x == cx ? 0.0
+                                  : static_cast<f64>(right->key_x - cx) * k_cell_m + cell_x0 - x;
+        if (left != cells_.begin() && (left - 1)->key_z == row)
+          dl = x - (cell_x0 - static_cast<f64>(cx - (left - 1)->key_x - 1) * k_cell_m);
+        const bool take_right = dr <= dl;
+        const f64 dx = std::max(take_right ? dr : dl, 0.0);
+        const f64 limit = bound(best);
+        if (dx >= k_far || !(dx <= limit && dz * dz + dx * dx <= limit * limit)) break;
+        if (take_right) {
+          const i64 kx = right->key_x;
+          for (; right != cells_.end() && right->key_z == row && right->key_x == kx; ++right)
+            best = std::min(best, bank_gap(segments_[right->segment], x, z));
+        } else {
+          const i64 kx = (left - 1)->key_x;
+          for (; left != cells_.begin() && (left - 1)->key_z == row && (left - 1)->key_x == kx;
+               --left)
+            best = std::min(best, bank_gap(segments_[(left - 1)->segment], x, z));
+        }
+      }
+    }
+    if (!any || (cz + k >= z_hi && cz - k <= z_lo)) break;
+  }
+  if (best >= reach_m) return k_far;
+  return best > 0.0 ? best : 0.0;
+}
+
+f64 Exclusion::channel_edge_distance_reference_mm(i64 x_mm, i64 z_mm, f64 reach_m) const noexcept {
+  if (cells_.empty() || !(reach_m > 0.0)) return k_far;
+  const f64 x = static_cast<f64>(x_mm) * 0.001;
+  const f64 z = static_cast<f64>(z_mm) * 0.001;
   // A segment whose edge is within the reach has its line within the reach and its widest edge
   // of the point, and it is filed in every cell its line's box touches.
   const f64 box = reach_m + widest_edge_;

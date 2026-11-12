@@ -25,6 +25,13 @@
 
 namespace engine::test {
 
+// The switch the test main and the bench main set to `0` for every test, bench and child process,
+// so none reads the machine's material pack (`materials::k_default_materials_env`, spelled here
+// because this directory sits below every module; docs/subsystems/materials.md, "Where the hosts
+// find it"). A test that wants the default lookup — one that builds a repository of its own with a
+// pack in it — holds `ScopedEnv(k_default_materials_env, "1")` for its case.
+inline constexpr const char* k_default_materials_env = "ENGINE_DEFAULT_MATERIALS";
+
 // Sets `name` to `value` (empty removes it) and restores what it was.
 class ScopedEnv {
  public:

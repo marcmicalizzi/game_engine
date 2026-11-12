@@ -16,7 +16,7 @@
       "file": "systems/renderer/src/scene_renderer.cpp",
       "function": "SceneRenderer::record_frame",
       "why": "every pass and every feature flag of a frame",
-      "ceiling": 3350
+      "ceiling": 3358
     },
     {
       "id": "renderer.record_frame.add_pass",
@@ -32,21 +32,21 @@
       "measure": "file-lines",
       "file": "systems/renderer/src/gpu_scene.cpp",
       "why": "every feature's GPU state",
-      "ceiling": 6882
+      "ceiling": 6846
     },
     {
       "id": "renderer.gpu_scene_h.lines",
       "measure": "file-lines",
       "file": "systems/renderer/include/systems/renderer/gpu_scene.h",
       "why": "every feature's GPU state",
-      "ceiling": 1935
+      "ceiling": 2040
     },
     {
       "id": "engine_view.main_cpp.lines",
       "measure": "file-lines",
       "file": "apps/engine_view/main.cpp",
       "why": "every play feature and every flag",
-      "ceiling": 7469
+      "ceiling": 7470
     },
     {
       "id": "engine_view.run_view.lines",
@@ -107,19 +107,19 @@
       "id": "page:docs/subsystems/renderer.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/renderer.md",
-      "ceiling": 992047
+      "ceiling": 1003088
     },
     {
       "id": "page:docs/subsystems/apps.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/apps.md",
-      "ceiling": 658249
+      "ceiling": 659199
     },
     {
       "id": "page:docs/subsystems/gfx.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/gfx.md",
-      "ceiling": 309129
+      "ceiling": 309516
     },
     {
       "id": "page:docs/subsystems/geometry.md",
@@ -155,7 +155,7 @@
       "id": "page:docs/subsystems/protocol.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/protocol.md",
-      "ceiling": 114676
+      "ceiling": 115005
     },
     {
       "id": "page:docs/experiments/e10-generated-props.md",
@@ -173,7 +173,7 @@
       "id": "page:docs/subsystems/world.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/world.md",
-      "ceiling": 108517
+      "ceiling": 110226
     },
     {
       "id": "page:AGENTS.md",
@@ -185,7 +185,7 @@
       "id": "page:docs/subsystems/rocks.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/rocks.md",
-      "ceiling": 131180
+      "ceiling": 137063
     }
   ],
   "rebaselines": [
@@ -546,6 +546,120 @@
           "id": "page:docs/subsystems/rocks.md",
           "old": 115626,
           "new": 131180
+        }
+      ]
+    },
+    {
+      "date": "2026-11-11",
+      "by": "Marc Micalizzi",
+      "reason": "",
+      "commit": "489e3b9a",
+      "folded": [
+        {
+          "name": "G147",
+          "reason": "engine-content bridges: the command's section, beside routes'",
+          "date": "2026-11-11",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 456
+          }
+        },
+        {
+          "name": "G172",
+          "reason": "G172, T101 and G174 land on rocks.md: the benches section (the members' profile, the stand-off it asks, the crest's shoulder, the top at a coarser cell, their measures), a tier's closed bottom and the foot's carving in A face in tiers, and the flank's notch in A block is a body",
+          "date": "2026-11-11",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/rocks.md": 5733
+          }
+        },
+        {
+          "name": "R147",
+          "reason": "Texture residency for admitted meshes (R147): the texture table's public and private blocks in gpu_scene.h, the upload pass's image copies in record_frame, and the pages that say what is built (renderer.md, gfx.md, world.md)",
+          "date": "2026-11-11",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.record_frame.lines": 8,
+            "renderer.gpu_scene_cpp.lines": -36,
+            "renderer.gpu_scene_h.lines": 105,
+            "page:docs/subsystems/renderer.md": 2480,
+            "page:docs/subsystems/gfx.md": 387,
+            "page:docs/subsystems/world.md": 1709
+          }
+        },
+        {
+          "name": "T103",
+          "reason": "T103: engine-view's summary says which material pack the load used (one line, load.materials), and the pages that described the default pack as looked up only with the cache root say it is looked up whatever the root, with the test switch and RenderSceneInfo.materials",
+          "date": "2026-11-11",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "engine_view.main_cpp.lines": 1,
+            "page:docs/subsystems/renderer.md": 130,
+            "page:docs/subsystems/apps.md": 494,
+            "page:docs/subsystems/protocol.md": 329
+          }
+        },
+        {
+          "name": "T94",
+          "reason": "T94: the frame-only pack, and what the formation costs the resolve measured three ways with what took it out, on the formation's section of renderer.md; make_fabric's frame-only pack on rocks.md",
+          "date": "2026-11-11",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 8431,
+            "page:docs/subsystems/rocks.md": 150
+          }
+        }
+      ],
+      "changes": [
+        {
+          "id": "renderer.record_frame.lines",
+          "old": 3350,
+          "new": 3358
+        },
+        {
+          "id": "renderer.gpu_scene_cpp.lines",
+          "old": 6882,
+          "new": 6846
+        },
+        {
+          "id": "renderer.gpu_scene_h.lines",
+          "old": 1935,
+          "new": 2040
+        },
+        {
+          "id": "engine_view.main_cpp.lines",
+          "old": 7469,
+          "new": 7470
+        },
+        {
+          "id": "page:docs/subsystems/renderer.md",
+          "old": 992047,
+          "new": 1003088
+        },
+        {
+          "id": "page:docs/subsystems/apps.md",
+          "old": 658249,
+          "new": 659199
+        },
+        {
+          "id": "page:docs/subsystems/gfx.md",
+          "old": 309129,
+          "new": 309516
+        },
+        {
+          "id": "page:docs/subsystems/protocol.md",
+          "old": 114676,
+          "new": 115005
+        },
+        {
+          "id": "page:docs/subsystems/world.md",
+          "old": 108517,
+          "new": 110226
+        },
+        {
+          "id": "page:docs/subsystems/rocks.md",
+          "old": 131180,
+          "new": 137063
         }
       ]
     }

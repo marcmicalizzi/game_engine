@@ -1441,6 +1441,26 @@ bool SceneRenderer::retire_mesh(u32 mesh, std::string* error) {
   return true;
 }
 
+// A tile's mesh's texture, in and out (texture.md, "Textures that arrive after the load"): the
+// scene makes the image and stages its levels, and the next frame's "terrain upload" pass copies
+// them, before the mesh that names it is drawn.
+GpuScene::TextureAdmit SceneRenderer::acquire_texture(const PlacementTexture& texture,
+                                                      std::string* why) {
+  if (scene_ == nullptr || recording_) {
+    if (why != nullptr) *why = "a texture is admitted between frames of a scene, not inside one";
+    return GpuScene::TextureAdmit::refused;
+  }
+  return scene_->acquire_texture(texture, why);
+}
+
+void SceneRenderer::release_texture(u64 key) noexcept {
+  if (scene_ != nullptr && !recording_) scene_->release_texture(key);
+}
+
+bool SceneRenderer::texture_resident(u64 key) const {
+  return scene_ != nullptr && scene_->texture_resident(key);
+}
+
 bool SceneRenderer::set_dynamic_instances(std::span<const SceneInstance> tail,
                                           std::span<const DynamicBlock> blocks, std::string* error,
                                           bool compact) {
@@ -4186,7 +4206,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // A moving terrain's fields the host evaluated since the last frame, copied out of their staging
   // into their field slots before the cull pass and the pool pass read them. The staging buffers go
   // to the frame context once this frame is recorded, and are freed when it is done.
-  if (terrain_copies > 0 || terrain_geometry) {
+  // The textures admitted since the last frame go in the same pass (`GpuScene::acquire_texture`):
+  // images the graph never sees, their barriers recorded with their copies.
+  const bool terrain_images = !terrain_frame_.images.empty();
+  if (terrain_copies > 0 || terrain_geometry || terrain_images) {
     graph.add_pass(
         "terrain upload", gfx::PassKind::Transfer,
         [&, terrain_copies, terrain_geometry](gfx::PassBuilder& b) {
@@ -4211,6 +4234,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           }
           for (const GpuScene::TerrainUpdate::GeometryCopy& copy : terrain_frame_.geometry)
             cb.copy_buffer(copy.src, copy.dst, copy.region);
+          for (const GpuScene::TerrainUpdate::ImageUpload& upload : terrain_frame_.images) {
+            gfx::record_image_levels_upload(
+                cb, upload.image, upload.staging,
+                std::span<const u64>(upload.offsets, upload.image.levels));
+          }
           timer.end(cb);
         });
   }

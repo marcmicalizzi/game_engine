@@ -62,10 +62,9 @@ TEST_CASE("rocks: a cliff's beds are the formation's at its world position acros
   const detail::Fabric fabric =
       detail::make_fabric(RockType::Sandstone, geology, 7, &field, origin);
   REQUIRE(fabric.world);
-  gfx::FormationParams block;
+  gfx::FormationFrame frame;
   std::string error;
-  REQUIRE(gfx::pack_formation(field, block, &error));
-  const gfx::FormationFrame frame = gfx::formation_frame(block);
+  REQUIRE(gfx::pack_formation_frame(field, frame, &error));
   // Points on the face's foot line (the recipe's points and between them), where the terrain meets
   // the face: the fabric's bed coordinate is the shader's twin's at the same world point.
   const Cliff c = face();
@@ -74,9 +73,10 @@ TEST_CASE("rocks: a cliff's beds are the formation's at its world position acros
       const f64 t = static_cast<f64>(k) / 8.0;
       const CliffPoint& a = c.points[i];
       const CliffPoint& b = c.points[i + 1];
-      const detail::D3 p{static_cast<f64>(a.x) + (static_cast<f64>(b.x) - static_cast<f64>(a.x)) * t,
-                         static_cast<f64>(a.y) + (static_cast<f64>(b.y) - static_cast<f64>(a.y)) * t,
-                         static_cast<f64>(a.z) + (static_cast<f64>(b.z) - static_cast<f64>(a.z)) * t};
+      const detail::D3 p{
+          static_cast<f64>(a.x) + (static_cast<f64>(b.x) - static_cast<f64>(a.x)) * t,
+          static_cast<f64>(a.y) + (static_cast<f64>(b.y) - static_cast<f64>(a.y)) * t,
+          static_cast<f64>(a.z) + (static_cast<f64>(b.z) - static_cast<f64>(a.z)) * t};
       const f64 want =
           gfx::formation_coordinate(frame, origin.x + p.x, origin.y + p.y, origin.z + p.z)
               .coordinate;

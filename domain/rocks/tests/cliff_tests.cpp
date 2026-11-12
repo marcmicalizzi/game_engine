@@ -1,5 +1,6 @@
 // The cliff solver (docs/subsystems/rocks.md, "Cliffs"): closedness at every rung and type, the
 // ladder's numbers, the undercut's overhang, the file and its key, the pack's roles, determinism.
+#include "../src/cliff_benches.h"
 #include "rock_checks.h"
 
 #include <core/hash/hash.h>
@@ -12,6 +13,7 @@
 #include <doctest/doctest.h>
 #include <test_paths.h>
 
+#include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <iterator>
@@ -464,4 +466,71 @@ TEST_CASE("cliffs: coarse carbonate faces retain broad relief after close joints
   const auto coarse = solve(c);
   CHECK(spread(coarse) > unjointed + 0.1f);
   CHECK(coarse.indices.size() / 3 <= 25000);
+}
+
+TEST_CASE("cliffs: a bedded face's members step as risers and benches in their grounded ranges") {
+  // Level beds, a cliff-former of 6 m under a weak member of `weak` metres, repeated; a face 30 m
+  // high on ground at 50 degrees (the tracer's threshold) and at 63 (the escarpment's steepest
+  // tiers). The smallest weak member the default steps (k_member_min_m, 1 m) and a large one
+  // (20 m, a shale slope taller than its tier).
+  for (const f32 weak : {1.0f, 20.0f}) {
+    scene::Formation f;
+    f.dip_deg = 0.0f;
+    scene::FormationBed hard;
+    hard.name = "sandstone";
+    hard.thickness_m = 6.0f;
+    hard.resistance = 0.9f;
+    scene::FormationBed soft;
+    soft.name = "shale";
+    soft.thickness_m = weak;
+    soft.resistance = 0.1f;
+    f.beds.push_back(hard);
+    f.beds.push_back(soft);
+    detail::BenchBeds beds;
+    REQUIRE(detail::bench_beds(f, beds));
+    for (const f64 slope_deg : {50.0, 63.0}) {
+      CAPTURE(weak);
+      CAPTURE(slope_deg);
+      const f64 batter = 1.0 / std::tan(slope_deg * 3.14159265358979323846 / 180.0);
+      detail::BenchProfile p;
+      detail::bench_profile(beds, 0.0, 0.0, 1.0, 0.0, 0.0, 30.0, batter, p);
+      // The chord is the plane's: tiers still meet as they did.
+      CHECK(p.setback(30.0) == doctest::Approx(batter * 30.0).epsilon(1e-9));
+      const f64 bench_deg = std::atan(1.0 / p.bench_run) * 180.0 / 3.14159265358979323846;
+      const f64 riser_deg =
+          std::atan(1.0 / std::max(p.riser_run, 1e-12)) * 180.0 / 3.14159265358979323846;
+      u32 benches = 0, risers = 0;
+      for (u32 k = 0; k < p.count; ++k)
+        (p.weak[k] != 0 ? benches : risers) += 1;
+      MESSAGE("weak member " << weak << " m on " << slope_deg << " degrees: bench at " << bench_deg
+                             << " degrees, riser at " << riser_deg << ", widest tread " << p.tread_m
+                             << " m, " << benches << " bench and " << risers << " riser segments, "
+                             << p.behind() << " m behind the plane at worst");
+      CHECK(benches > 0);
+      CHECK(risers > 0);
+      // A bench near the angle of repose where the ground leaves the room (35 degrees), and never
+      // outside 30 to 60; a riser at 80 or steeper.
+      CHECK(bench_deg >= 30.0 - 1e-9);
+      CHECK(bench_deg <= 60.0 + 1e-9);
+      CHECK(riser_deg >= 80.0 - 1e-6);
+      if (weak <= 1.0f) CHECK(bench_deg == doctest::Approx(35.0).epsilon(1e-6));
+      CHECK(p.tread_m >= 0.0);
+      // The profile only goes back: no bench or riser leans out over the one below.
+      for (u32 k = 0; k < p.count; ++k)
+        CHECK(p.s[k + 1] >= p.s[k] - 1e-12);
+    }
+  }
+  // Without beds, or with beds that dip past 20 degrees, it is the plane.
+  scene::Formation steep;
+  steep.dip_deg = 35.0f;
+  scene::FormationBed one;
+  one.name = "sandstone";
+  one.thickness_m = 3.0f;
+  steep.beds.push_back(one);
+  detail::BenchBeds none;
+  CHECK_FALSE(detail::bench_beds(steep, none));
+  detail::BenchProfile plane;
+  detail::bench_profile(none, 0.0, 0.0, 1.0, 0.0, 0.0, 30.0, 0.5, plane);
+  CHECK(plane.count == 1);
+  CHECK(plane.behind() == 0.0);
 }

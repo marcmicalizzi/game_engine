@@ -8,6 +8,7 @@
 // longer than `max_length_m`, and written as recipes. Everything is a function of the block's
 // heights, so a face is the same whichever tile asks for it; the identity is a hash of the line in
 // millimetres.
+#include "cliff_benches.h"
 #include "detail.h"
 #include "geology.h"
 
@@ -276,6 +277,23 @@ struct Part {
 };
 constexpr u32 k_max_parts = 24;
 
+// **The batter that keeps a tier in front of the ground**: the lean that passes at least the
+// standoff downhill of every point of the tier's own part of the profile — not the chord of the
+// part, which a slope that rounds over rises above. It is measured from the part's own start on
+// the profile (the traced foot, or the break), never from the ground under the stood-off foot: a
+// plane leaned from there is steeper than the slope and stands metres off it at the top, where its
+// top then cannot reach the ground. `py` is the vertex's profile, `steps` its points past the foot.
+f64 part_lean(const Part& p, const f64* py, u32 steps, f64 step) {
+  f64 lean = 1.5;
+  for (u32 q = 1; q <= steps && step * static_cast<f64>(q) <= p.r_hi + 1e-9; ++q) {
+    const f64 r = step * static_cast<f64>(q);
+    const f64 up = py[q] - p.y_lo;
+    if (r > p.r_lo && up > 1.0) lean = min2(lean, (r - p.r_lo) / up);
+  }
+  if (p.y_hi - p.y_lo > 1.0) lean = min2(lean, (p.r_hi - p.r_lo) / (p.y_hi - p.y_lo));
+  return max2(0.0, lean);
+}
+
 // One traced line into faces: measured up the slope, cut into tiers, stood off, seated, and written
 // as recipes.
 void faces_of_line(const CliffLayer& layer, const scene_gen::Ground& ground, const Lattice& l,
@@ -405,6 +423,45 @@ void faces_of_line(const CliffLayer& layer, const scene_gen::Ground& ground, con
   prof_at[n] = prof_y.size();
   part_at[n] = parts.size();
 
+  // **A stepped face stands off by what its steps take back** (rocks.md, "Benches"): with a
+  // bedded formation the solver draws each tier's members as risers and benches whose run over
+  // the tier is its plane's, so the profile falls behind the plane between them — at a riser's
+  // foot, over a bench below it — by up to a few metres. Every tier at a vertex is stood off by the
+  // worst of its tiers' (so a tier's foot still lies behind the crest of the one below it), taken
+  // over the two vertices either side, and a tenth and a quarter of a metre more for what the
+  // smoothing and a lowered foot move.
+  BenchBeds bench_field;
+  const bool benched =
+      tiers.bedded && layer.formation.has_value() && bench_beds(*layer.formation, bench_field);
+  if (benched) {
+    Vector<f64> behind(n, 0.0);
+    BenchProfile column;
+    for (u32 i = 0; i < n; ++i) {
+      const f64* py = &prof_y[prof_at[i]];
+      const u32 steps = prof_at[i + 1] - prof_at[i] - 1;
+      for (u32 q = part_at[i]; q < part_at[i + 1]; ++q) {
+        const Part& p = parts[q];
+        const f64 lean = part_lean(p, py, steps, step);
+        const f64 top_y = p.topmost ? p.y_hi - 0.5 : p.y_hi;
+        const f64 fx = line[i].x + out_x[i] * (stand[i] - p.r_lo);
+        const f64 fz = line[i].z + out_z[i] * (stand[i] - p.r_lo);
+        bench_profile(bench_field, fx, fz, -out_x[i], -out_z[i], p.y_lo, top_y, lean, column);
+        behind[i] = max2(behind[i], column.behind());
+      }
+    }
+    for (u32 i = 0; i < n; ++i) {
+      f64 worst = 0.0;
+      for (u32 k = i > 2 ? i - 2 : 0; k <= i + 2 && k < n; ++k)
+        worst = max2(worst, behind[k]);
+      if (!(worst > 0.0)) continue;
+      stand[i] += 1.1 * worst + 0.25;
+      whole_foot_y[i] =
+          ground_at(ground, line[i].x + out_x[i] * stand[i], line[i].z + out_z[i] * stand[i]);
+      const f64 top = prof_y[prof_at[i + 1] - 1];
+      whole_height[i] = min2(200.0, max2(1.0, top - 0.5 - whole_foot_y[i]));
+    }
+  }
+
   // The whole steep band decides whether the line is dressed at all: its length along the
   // stood-off foot and its mean height, as before the tiers.
   f64 whole_length = 0.0;
@@ -449,24 +506,11 @@ void faces_of_line(const CliffLayer& layer, const scene_gen::Ground& ground, con
       const f64* py = &prof_y[prof_at[i]];
       const u32 steps = prof_at[i + 1] - prof_at[i] - 1;
       const f64 top_y = p.topmost ? p.y_hi - 0.5 : p.y_hi;
-      // **The batter that keeps the tier in front of the ground**: the lean that passes at least
-      // the standoff downhill of every point of the tier's own part of the profile — not the chord
-      // of the part, which a slope that rounds over rises above.
-      // It is measured from the part's own start on the profile (the traced foot, or the break),
-      // never from the ground under the stood-off foot: a plane leaned from there is steeper than
-      // the slope and stands metres off it at the top, where its top then cannot reach the ground.
-      f64 lean = 1.5;
       if (p.lowest) ++lowest_count;
       base_r[v] = p.r_lo;
       base_y[v] = p.y_lo;
-      for (u32 q = 1; q <= steps && step * static_cast<f64>(q) <= p.r_hi + 1e-9; ++q) {
-        const f64 r = step * static_cast<f64>(q);
-        const f64 up = py[q] - p.y_lo;
-        if (r > p.r_lo && up > 1.0) lean = min2(lean, (r - p.r_lo) / up);
-      }
-      if (p.y_hi - base_y[v] > 1.0) lean = min2(lean, (p.r_hi - base_r[v]) / (p.y_hi - base_y[v]));
       height[v] = min2(200.0, max2(1.0, top_y - base_y[v]));
-      batter[v] = max2(0.0, lean);
+      batter[v] = part_lean(p, py, steps, step);
     }
     // The tier with the talus and the foot boulders: the lowest at most of its vertices.
     const bool lowest = 2 * lowest_count > m;
@@ -588,6 +632,42 @@ void faces_of_line(const CliffLayer& layer, const scene_gen::Ground& ground, con
       }
       next_top[first + v] = foot_y[v] - sink[v] + 0.85 * height[v] + max2(0.0, buried - 0.5);
     }
+    // **The crest's shoulder** (rocks.md, "Benches"): where this tier is the topmost at a vertex,
+    // its top is the slope's brow, and the stretch of its flat top from the crest to where the
+    // ground rises over it is a level slab seen from the crest. The front's last rows fall back by
+    // that stretch less 0.3 m (`crest_back`), the most that keeps every row of the shoulder in
+    // front of the ground under it, looked for a quarter of a metre at a time.
+    Vector<f64> crest(m, 0.0);
+    for (u32 v = 0; v < m; ++v) {
+      if (!part_of(first + v, label)->topmost) continue;
+      const f64 tall = height[v];
+      const f64 top = foot_y[v] - sink[v] + tall;
+      const f64 lean = batter[v] * tall;
+      const auto ground_back = [&](f64 d) {  // the ground `d` behind the plane's crest
+        return ground_at(ground, foot_x[v] - look_x[v] * (lean + d),
+                         foot_z[v] - look_z[v] * (lean + d));
+      };
+      f64 entry = -1.0;
+      for (u32 q = 0; q <= 4 * k_stations && entry < 0.0; ++q) {
+        const f64 d = back * static_cast<f64>(q) / static_cast<f64>(4 * k_stations);
+        if (ground_back(d) >= top) entry = d;
+      }
+      if (!(entry > 0.3)) continue;
+      for (f64 cb = min2(20.0, entry - 0.3); cb > 0.0; cb -= 0.25) {
+        const f64 shoulder = min2(0.5 * tall, max2(1.5, 1.25 * cb));
+        bool clear = true;
+        for (f64 h = 0.0; h <= shoulder + 1e-9 && clear; h += 0.25) {
+          const f64 t = clamp01((shoulder - h) / shoulder);
+          const f64 w = t * t * (3.0 - 2.0 * t);
+          // The front at `h` under the top, behind the plane's crest (negative: in front of it).
+          const f64 at = cb * w - batter[v] * h;
+          clear = ground_back(at) <= top - h + 0.05;
+        }
+        if (!clear) continue;
+        crest[v] = cb;
+        break;
+      }
+    }
     if (total < 1.0) return;
     f64 run_mean = 0.0;
     for (u32 v = 0; v < m; ++v)
@@ -667,6 +747,13 @@ void faces_of_line(const CliffLayer& layer, const scene_gen::Ground& ground, con
       c.points.clear();
       // A generated face stands in a slope: no back and no bottom (rocks.md, "Faces in the slope").
       c.open = true;
+      // **A tier over another keeps its bottom** (T101; rocks.md, "A face in tiers"): its foot is
+      // at the plane of the tier under it, whose front is carved back from that plane by up to its
+      // relief and more, so an open bottom hung past the carved crest and the ground showed through
+      // the face from below. The lowest tier's bottom is in the ground.
+      c.bottom = !lowest;
+      // With a bedded formation its members step (rocks.md, "Benches").
+      c.benches = benched;
       c.type = type_for(layer, face.y);
       c.seed = mix64(layer.seed ^ id);
       c.height = static_cast<f32>(min2(200.0, max2(1.0, mean)));
@@ -730,6 +817,7 @@ void faces_of_line(const CliffLayer& layer, const scene_gen::Ground& ground, con
         p.z = static_cast<f32>(foot_z[v] - oz);
         p.height = static_cast<f32>(height[v]);
         p.batter = static_cast<f32>(batter[v]);
+        if (crest[v] > 0.0) p.crest_back = static_cast<f32>(crest[v]);
         c.points.push_back(p);
       }
       face.cliff = c;

@@ -30,8 +30,9 @@
 // `k_formation_max_beds` beds, authored or drawn from a seed by `generate_formation` — on the CPU,
 // in integers and `det::` functions, once, at pack time — and both the shader and the twin read the
 // same bytes, so which bed a coordinate is in is the same answer on both to the bit of the table.
-// The lookup is a binary search (nine steps for 512 beds, where W85's eight beds took seven of a
-// linear one) and the box filter two of them, whatever the width.
+// The lookup is one word of the table's slice index and a binary search over the few beds it names
+// (T94, "The slice index" below; W94 searched the whole table, nine steps for 512 beds), and the
+// box filter two lookups at most, whatever the width.
 //
 // **Variation along strike** (W94). A bed's top is `start + a0 * g0(p) + a1 * g1(p)`: two seeded
 // lateral fields g in [0, 1] (value noise on a whole-millimetre lattice along a horizontal
@@ -49,6 +50,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstring>
 #include <numbers>
 #include <schemas/scene.h>
 #include <string>
@@ -61,6 +63,14 @@ inline constexpr u32 k_formation_q_bits = 24;
 inline constexpr f64 k_formation_q = 1.0 / 16777216.0;  // 2^-24
 // FormationParams::flags: the block holds a formation (an all-zero block is none).
 inline constexpr u32 k_formation_valid = 1u;
+// FormationParams::flags: the formation was drawn from members (T94), so **the macro table is the
+// members**: a bed's `member` is the macro table's index, a member's base and top are its first
+// and last bed's to the float (both tables' starts are the same whole millimetres), and a top
+// between two members moves in neither table. The shader then reads a member's value through its
+// bed where a pixel's box lies inside one bed, with no second lookup (formation.slang,
+// `formation_band`). An authored pair of tables promises none of it and never carries the bit; a
+// packer that moves the members' tops must move them alike in both tables to keep it.
+inline constexpr u32 k_formation_drawn = 2u;
 // FormationBedGpu::kind: what a bed is. Authored beds are 0; a drawn bed is one of its member's
 // two lithologies, and a lens (authored or drawn) carries the bit as well.
 inline constexpr u32 k_formation_bed_resistant = 1u;
@@ -101,17 +111,35 @@ struct FormationBedGpu {
 };
 static_assert(sizeof(FormationBedGpu) == 96);
 
+// **The slice index** (T94). A lookup's question is "which bed's base is the last at or under y",
+// and W94 answered it by a binary search over the whole table: nine loads for 512 beds, each
+// waiting on the one before, four times a banded pixel (two ends of the box, two sequences) — with
+// the loop it ran in, 0.21 of the 0.33 ms the formation cost the resolve at 1080p (renderer.md,
+// "Formation bands", "What the formation costs the resolve"). The
+// period is cut into `k_formation_slices` equal slices, and each slice carries one word: the first
+// bed a coordinate in the slice can be in and how many beds it can be in, **for every value of the
+// lateral fields** (a bed's base ranges over `start + [min(0, a0) + min(0, a1), max(0, a0) +
+// max(0, a1)]`), with a margin for the float that picks the slice. The search then runs over that
+// run of beds — one or two steps on a drawn section — and finds the bed the search over the whole
+// table finds, because the run holds every bed whose base can be at or under the coordinate and
+// starts at one whose base always is. The table is still the definition: the index is derived from
+// it at pack time (`pack_formation_index`), by the shader's twin, and says nothing the beds do not.
+inline constexpr u32 k_formation_slices = 1024;
+
 struct FormationSequence {
   u32 count = 0;      // 0: no sequence, a tint of one everywhere
   u32 period_mm = 0;  // the sum of the beds' whole-millimetre thicknesses
   f32 period_m = 0.0f;
-  u32 pad = 0;
-  Vec4 mean{};            // the value's mean over one period of the reference section
-  Vec4 lateral_total0{};  // each lateral field's correction over one whole period
+  f32 slices_per_m = 0.0f;  // k_formation_slices / period_m: a coordinate's slice is y times this
+  Vec4 mean{};              // the value's mean over one period of the reference section
+  Vec4 lateral_total0{};    // each lateral field's correction over one whole period
   Vec4 lateral_total1{};
   FormationBedGpu beds[k_formation_max_beds] = {};
+  // Per slice: the first candidate bed (low 16 bits) and the candidates' count (high 16, 1 or
+  // more).
+  u32 slices[k_formation_slices] = {};
 };
-static_assert(sizeof(FormationSequence) == 64 + 96 * k_formation_max_beds);
+static_assert(sizeof(FormationSequence) == 64 + 96 * k_formation_max_beds + 4 * k_formation_slices);
 
 // One lateral field: a horizontal direction (x, z) as integers over 2^24, the lattice's cell in
 // whole millimetres (0: the field is off, g = 0), its seed and its sharpening.
@@ -125,8 +153,8 @@ struct FormationLateralGpu {
 static_assert(sizeof(FormationLateralGpu) == 32);
 
 // **The field's GPU block**, one per scene, named by `TerrainRecord::formation` (a device
-// address; zero is no formation), mirrored in formation.slang. 98,624 bytes: a 192-byte head and
-// two tables of 512 beds.
+// address; zero is no formation), mirrored in formation.slang. 106,816 bytes: a 192-byte head and
+// two tables of 512 beds, each with its slice index (T94; 98,624 without the two indexes).
 struct FormationParams {
   i64 origin_mm[3] = {};  // the origin, whole millimetres
   i64 normal_q[3] = {};   // the beds' unit normal times 2^24, rounded: the normal is this over 2^24
@@ -134,7 +162,7 @@ struct FormationParams {
   u32 fold_mm[2] = {};    // the folds' wavelengths, whole millimetres (0: that fold is off)
   f32 fold_amp_m[2] = {};
   f32 soft_m = 0.0f;
-  u32 flags = 0;  // k_formation_valid
+  u32 flags = 0;  // k_formation_valid, k_formation_drawn
   FormationLateralGpu lateral[2] = {};
   i64 fault_q[2] = {};      // the fault plane's horizontal unit normal (x, z) times 2^24
   i64 fault_offset_mm = 0;  // where the plane stands along it from the origin
@@ -145,6 +173,47 @@ struct FormationParams {
 static_assert(offsetof(FormationParams, beds) == 192);
 static_assert(sizeof(FormationParams) == 192 + 2 * sizeof(FormationSequence));
 static_assert(sizeof(FormationParams) % 16 == 0);
+
+// **The block's head alone** (T94): the 192 bytes before the tables, field for field — the origin,
+// the directions, the folds, the lateral fields and the fault, which is everything the coordinate
+// and the lateral fields read and nothing a bed lookup does. A caller that wants the formation's
+// frame (`pack_formation_frame`, below) packs this and no table: 192 bytes where the whole block
+// is 106,816 on its stack. `pack_formation` writes the block's head through the same function
+// (`pack_formation_head`) and copies it in, so the two cannot differ.
+struct FormationHead {
+  i64 origin_mm[3] = {};
+  i64 normal_q[3] = {};
+  i64 dip_q[3] = {};
+  u32 fold_mm[2] = {};
+  f32 fold_amp_m[2] = {};
+  f32 soft_m = 0.0f;
+  u32 flags = 0;
+  FormationLateralGpu lateral[2] = {};
+  i64 fault_q[2] = {};
+  i64 fault_offset_mm = 0;
+  i64 fault_throw_mm = 0;
+};
+static_assert(sizeof(FormationHead) == offsetof(FormationParams, beds));
+static_assert(offsetof(FormationHead, normal_q) == offsetof(FormationParams, normal_q));
+static_assert(offsetof(FormationHead, dip_q) == offsetof(FormationParams, dip_q));
+static_assert(offsetof(FormationHead, fold_mm) == offsetof(FormationParams, fold_mm));
+static_assert(offsetof(FormationHead, fold_amp_m) == offsetof(FormationParams, fold_amp_m));
+static_assert(offsetof(FormationHead, soft_m) == offsetof(FormationParams, soft_m));
+static_assert(offsetof(FormationHead, flags) == offsetof(FormationParams, flags));
+static_assert(offsetof(FormationHead, lateral) == offsetof(FormationParams, lateral));
+static_assert(offsetof(FormationHead, fault_q) == offsetof(FormationParams, fault_q));
+static_assert(offsetof(FormationHead, fault_offset_mm) ==
+              offsetof(FormationParams, fault_offset_mm));
+static_assert(offsetof(FormationHead, fault_throw_mm) == offsetof(FormationParams, fault_throw_mm));
+// The head of a packed block, copied out. Through `void*`: both types are trivially copyable and
+// the asserts above hold their layouts together, but each has default member initializers, and
+// GCC's -Wclass-memaccess refuses a raw copy into such a type unless the cast says it is meant
+// (Clang and MSVC say nothing).
+inline FormationHead formation_head(const FormationParams& p) {
+  FormationHead h;
+  std::memcpy(static_cast<void*>(&h), static_cast<const void*>(&p), sizeof(h));
+  return h;
+}
 
 // ---- The generator's integers -------------------------------------------------------------------
 
@@ -385,12 +454,94 @@ inline void formation_clear(FormationSequence& s) {
   s.count = 0;
   s.period_mm = 0;
   s.period_m = 0.0f;
-  s.pad = 0;
+  s.slices_per_m = 0.0f;
   s.mean = Vec4{};
   s.lateral_total0 = Vec4{};
   s.lateral_total1 = Vec4{};
   for (u32 i = 0; i < k_formation_max_beds; ++i)
     s.beds[i] = blank;
+  for (u32 j = 0; j < k_formation_slices; ++j)
+    s.slices[j] = 0;
+}
+
+// **A table's slice index** (T94; "The slice index", above), from the table as the shader reads
+// it: the f32 starts and amplitudes widened, so the bounds are of the numbers the search compares.
+// Slice j is the coordinates [j h, (j + 1) h), h the period over `k_formation_slices`, widened by a
+// margin either way — a millimetre and 2^-18 of the period, 32 times the float's step at the
+// period's far end — because the shader picks the slice from a float product. Its word is the last
+// bed whose base is at or under the slice's lower edge wherever the tops stand (bed 0 for want of
+// one: its base is the period's start and never moves), and the count from there to the last bed
+// whose base can be at or under the upper edge. The bounds rise with the bed (tops never cross)
+// and the edges with the slice, so both are one walk through the table; a pinched lens's base can
+// sit a float's step under its neighbour's, which the margin covers thirty times over.
+inline void pack_formation_index(FormationSequence& s) {
+  s.slices_per_m = 0.0f;
+  for (u32 j = 0; j < k_formation_slices; ++j)
+    s.slices[j] = 0;
+  if (s.count == 0 || s.period_mm == 0) return;
+  const f64 period = static_cast<f64>(s.period_m);
+  s.slices_per_m = static_cast<f32>(static_cast<f64>(k_formation_slices) / period);
+  const f64 h = period / static_cast<f64>(k_formation_slices);
+  const f64 margin = 0.001 + period / 262144.0;
+  const auto low = [&s](u32 i) {
+    const FormationBedGpu& b = s.beds[i];
+    const f64 a0 = static_cast<f64>(b.base_amp_m[0]), a1 = static_cast<f64>(b.base_amp_m[1]);
+    return static_cast<f64>(b.start_m) + (a0 < 0.0 ? a0 : 0.0) + (a1 < 0.0 ? a1 : 0.0);
+  };
+  const auto high = [&s](u32 i) {
+    const FormationBedGpu& b = s.beds[i];
+    const f64 a0 = static_cast<f64>(b.base_amp_m[0]), a1 = static_cast<f64>(b.base_amp_m[1]);
+    return static_cast<f64>(b.start_m) + (a0 > 0.0 ? a0 : 0.0) + (a1 > 0.0 ? a1 : 0.0);
+  };
+  u32 first = 0, last = 0;
+  for (u32 j = 0; j < k_formation_slices; ++j) {
+    const f64 lower = static_cast<f64>(j) * h - margin;
+    const f64 upper = static_cast<f64>(j + 1) * h + margin;
+    while (first + 1 < s.count && high(first + 1) <= lower)
+      ++first;
+    while (last + 1 < s.count && low(last + 1) <= upper)
+      ++last;
+    if (last < first) last = first;
+    s.slices[j] = first | ((last - first + 1) << 16);
+  }
+}
+
+// **How far a top travels** (the top between bed i and bed i + 1 of a plan's first `count` beds):
+// whole millimetres, signed, and which lateral field it rides. Zero is a top that stays: the
+// sequence's last, a top between two members, a lens's base (the lens is nothing exactly where its
+// own top has come down to it), and any top whose bed has no variation. The table's packer and the
+// frame-only pack (`formation_plan_moves`) both ask here, so "does any top move" has one answer.
+struct FormationTopTravel {
+  i64 amplitude_mm = 0;
+  u32 field = 0;
+};
+inline FormationTopTravel formation_top_travel(const Vector<FormationBedPlan>& plan, u32 count,
+                                               u64 seed, u32 i) {
+  FormationTopTravel out;
+  if (i + 1 >= count) return out;
+  const FormationBedPlan& b = plan[i];
+  const FormationBedPlan& above = plan[i + 1];
+  if (above.member != b.member || above.lens) return out;
+  const u64 key = formation_key(seed, 0x544F50u, i);
+  if (b.lens) {
+    out.amplitude_mm = -static_cast<i64>(b.thickness_mm);
+  } else if (b.variation > 0.0f) {
+    const u64 thinner = b.thickness_mm < above.thickness_mm ? b.thickness_mm : above.thickness_mm;
+    const f64 share = static_cast<f64>(
+        b.variation > k_formation_max_variation ? k_formation_max_variation : b.variation);
+    out.amplitude_mm = static_cast<i64>(share * static_cast<f64>(thinner));  // toward zero
+    if ((key & 2u) != 0) out.amplitude_mm = -out.amplitude_mm;  // down, or up, by the hash
+  }
+  out.field = static_cast<u32>(key & 1u);
+  return out;
+}
+// Whether any top of a plan moves, as `pack_formation_table` would pack it with this seed.
+inline bool formation_plan_moves(const Vector<FormationBedPlan>& plan, u64 seed) {
+  const u32 count =
+      static_cast<u32>(plan.size() < k_formation_max_beds ? plan.size() : k_formation_max_beds);
+  for (u32 i = 0; i + 1 < count; ++i)
+    if (formation_top_travel(plan, count, seed, i).amplitude_mm != 0) return true;
+  return false;
 }
 
 // **A plan into its table.** Starts and thicknesses in whole millimetres; the mean; the deviation
@@ -453,31 +604,18 @@ inline void pack_formation_table(const Vector<FormationBedPlan>& plan, u64 seed,
     // This bed's top, which is the next bed's base.
     if (i + 1 >= count) break;
     const FormationBedPlan& above = plan[i + 1];
-    // A member's top stays, and so does a lens's base: the lens is nothing exactly where its own
-    // top has come down to it.
-    if (above.member != b.member || above.lens) continue;
-    const u64 key = formation_key(seed, 0x544F50u, i);
-    i64 amplitude_mm = 0;
-    if (b.lens) {
-      amplitude_mm = -static_cast<i64>(b.thickness_mm);
-    } else if (b.variation > 0.0f) {
-      const u64 thinner = b.thickness_mm < above.thickness_mm ? b.thickness_mm : above.thickness_mm;
-      const f64 share = static_cast<f64>(
-          b.variation > k_formation_max_variation ? k_formation_max_variation : b.variation);
-      amplitude_mm = static_cast<i64>(share * static_cast<f64>(thinner));  // toward zero
-      if ((key & 2u) != 0) amplitude_mm = -amplitude_mm;  // down, or up, by the hash
-    }
-    if (amplitude_mm == 0) continue;
-    const u32 field = static_cast<u32>(key & 1u);
-    const f64 amplitude = static_cast<f64>(amplitude_mm) / 1000.0;
-    out.beds[i + 1].base_amp_m[field] = static_cast<f32>(amplitude);
+    const FormationTopTravel travel = formation_top_travel(plan, count, seed, i);
+    if (travel.amplitude_mm == 0) continue;
+    const f64 amplitude = static_cast<f64>(travel.amplitude_mm) / 1000.0;
+    out.beds[i + 1].base_amp_m[travel.field] = static_cast<f32>(amplitude);
     const f64 next[4] = {static_cast<f64>(above.value.x), static_cast<f64>(above.value.y),
                          static_cast<f64>(above.value.z), static_cast<f64>(above.value.w)};
     for (u32 c = 0; c < 4; ++c)
-      lateral[field][c] += amplitude * (value[c] - next[c]);
+      lateral[travel.field][c] += amplitude * (value[c] - next[c]);
   }
   out.lateral_total0 = to_vec4(lateral[0]);
   out.lateral_total1 = to_vec4(lateral[1]);
+  pack_formation_index(out);
 }
 
 // W85's name for packing an authored sequence, kept for its callers: the beds as written, the
@@ -489,12 +627,22 @@ inline void pack_formation_sequence(const Vector<scene::FormationBed>& beds,
   pack_formation_table(plan, 1, out);
 }
 
-// The scene's formation into its GPU block: false, with the validation's sentence, when it is out
-// of range or its members draw more beds than a table holds.
-inline bool pack_formation(const scene::Formation& f, FormationParams& out, std::string* error) {
-  // Field by field rather than `out = FormationParams{}`: GCC 13 at -O2 stops with an internal
-  // compiler error (gimplify.cc:774) on that temporary of nested default-initialized arrays, and a
-  // named default would be a second 98 KB on the stack.
+// The seeds the two tables' tops take their signs and fields from.
+inline u64 formation_table_seed(const scene::Formation& f, u32 table) {
+  return formation_key(f.seed, 0x42454453u, table);
+}
+
+// **The scene's formation into the block's head and its two plans** (T94): the validation, the
+// plans (drawn or authored), and every field of the 192-byte head. False, with the validation's
+// sentence, when the formation is out of range or its members draw more beds than a table holds;
+// `out` is then the empty head (flags 0). The whole pack and the frame-only pack are both this,
+// so a frame read from either is the same to the bit.
+inline bool pack_formation_head(const scene::Formation& f, FormationHead& out,
+                                Vector<FormationBedPlan>& beds, Vector<FormationBedPlan>& members,
+                                std::string* error) {
+  // Field by field rather than `out = FormationHead{}`: GCC 13 at -O2 stopped with an internal
+  // compiler error (gimplify.cc:774) on such a temporary of the whole block's nested
+  // default-initialized arrays (W85), and the form is kept away from here too.
   for (u32 i = 0; i < 3; ++i)
     out.origin_mm[i] = out.normal_q[i] = out.dip_q[i] = 0;
   for (u32 k = 0; k < 2; ++k) {
@@ -508,10 +656,9 @@ inline bool pack_formation(const scene::Formation& f, FormationParams& out, std:
   out.soft_m = 0.0f;
   out.flags = 0;
   out.fault_offset_mm = out.fault_throw_mm = 0;
-  formation_clear(out.beds);
-  formation_clear(out.macro);
+  beds.clear();
+  members.clear();
   if (!validate_formation(f, error)) return false;
-  Vector<FormationBedPlan> beds, members;
   if (!f.members.empty()) {
     if (!generate_formation(f, beds, members, error)) return false;
   } else {
@@ -543,15 +690,11 @@ inline bool pack_formation(const scene::Formation& f, FormationParams& out, std:
   out.fold_amp_m[0] = out.fold_mm[0] != 0 ? f.fold_amplitude_m : 0.0f;
   out.fold_amp_m[1] = out.fold_mm[1] != 0 ? f.fold2_amplitude_m : 0.0f;
   out.soft_m = f.soft_m;
-  out.flags = k_formation_valid;
-  pack_formation_table(beds, formation_key(f.seed, 0x42454453u, 0), out.beds);
-  pack_formation_table(members, formation_key(f.seed, 0x42454453u, 1), out.macro);
+  out.flags = k_formation_valid | (f.members.empty() ? 0u : k_formation_drawn);
   // The lateral fields, only when a top moves: the strike is the dip direction turned a quarter
   // (-sin az, 0, cos az), and each field runs along it turned a little further its own way.
-  bool moves = false;
-  for (const FormationSequence* s : {&out.beds, &out.macro})
-    for (u32 i = 0; i < s->count; ++i)
-      moves = moves || s->beds[i].base_amp_m[0] != 0.0f || s->beds[i].base_amp_m[1] != 0.0f;
+  const bool moves = formation_plan_moves(beds, formation_table_seed(f, 0)) ||
+                     formation_plan_moves(members, formation_table_seed(f, 1));
   if (moves) {
     const f64 cell_mm = static_cast<f64>(std::llround(static_cast<f64>(f.lateral_m) * 1000.0));
     for (u32 k = 0; k < 2; ++k) {
@@ -574,6 +717,30 @@ inline bool pack_formation(const scene::Formation& f, FormationParams& out, std:
   return true;
 }
 
+// The scene's formation into its GPU block: false, with the validation's sentence, when it is out
+// of range or its members draw more beds than a table holds (the block is then empty: flags 0, no
+// beds).
+inline bool pack_formation(const scene::Formation& f, FormationParams& out, std::string* error) {
+  FormationHead head;
+  Vector<FormationBedPlan> beds, members;
+  const bool ok = pack_formation_head(f, head, beds, members, error);
+  std::memcpy(static_cast<void*>(&out), static_cast<const void*>(&head), sizeof(head));
+  formation_clear(out.beds);
+  formation_clear(out.macro);
+  if (!ok) return false;
+  pack_formation_table(beds, formation_table_seed(f, 0), out.beds);
+  pack_formation_table(members, formation_table_seed(f, 1), out.macro);
+  return true;
+}
+
+// Whether a scene's formation packs — its ranges, and that its members draw no more beds than a
+// table holds — with the sentence `pack_formation` would give, and no block (T94).
+inline bool check_formation(const scene::Formation& f, std::string* error) {
+  FormationHead head;
+  Vector<FormationBedPlan> beds, members;
+  return pack_formation_head(f, head, beds, members, error);
+}
+
 // ---- The twin, in f64 ---------------------------------------------------------------------------
 
 // The field's geometry as the twin reads it: the definition the GPU block's head holds, widened.
@@ -592,7 +759,7 @@ struct FormationFrame {
   f64 lateral_gain[2] = {};
   u32 lateral_seed[2] = {};
 };
-inline FormationFrame formation_frame(const FormationParams& p) {
+inline FormationFrame formation_frame(const FormationHead& p) {
   FormationFrame f;
   for (u32 i = 0; i < 3; ++i) {
     f.origin[i] = static_cast<f64>(p.origin_mm[i]) / 1000.0;
@@ -612,6 +779,25 @@ inline FormationFrame formation_frame(const FormationParams& p) {
   f.fault_offset = static_cast<f64>(p.fault_offset_mm) / 1000.0;
   f.fault_throw = static_cast<f64>(p.fault_throw_mm) / 1000.0;
   return f;
+}
+inline FormationFrame formation_frame(const FormationParams& p) {
+  return formation_frame(formation_head(p));
+}
+
+// **The frame-only pack** (T94): a scene's formation straight into the frame the twin's
+// `formation_coordinate` and `formation_lateral` read, with no block. What a solver that asks only
+// where the beds stand wants (rocks' `make_fabric`, a cave plan, a ledge's frame): the whole block
+// is 106,816 bytes, and a caller that declared one to read its head put that on its stack. The same
+// frame, to the bit, as `formation_frame` of the packed block (`formation_tests.cpp`, "the
+// frame-only pack"). False with `pack_formation`'s sentence, and `out` untouched, when the
+// formation does not pack.
+inline bool pack_formation_frame(const scene::Formation& f, FormationFrame& out,
+                                 std::string* error) {
+  FormationHead head;
+  Vector<FormationBedPlan> beds, members;
+  if (!pack_formation_head(f, head, beds, members, error)) return false;
+  out = formation_frame(head);
+  return true;
 }
 
 // formation.slang's `formation_coordinate` without its reduction: the folded bed coordinate at a
@@ -688,9 +874,16 @@ inline f64 formation_base(const FormationSequence& s, u32 i, const FormationLate
   return static_cast<f64>(b.start_m) + static_cast<f64>(b.base_amp_m[0]) * g.g[0] +
          static_cast<f64>(b.base_amp_m[1]) * g.g[1];
 }
-// The bed whose base is the last at or under y: the shader's binary search, step for step.
+// The bed whose base is the last at or under y: the shader's lookup, step for step — y's slice of
+// the period, the run of beds its word names ("The slice index"), a binary search over the run.
+// The same bed as a search over the whole table (`formation_tests.cpp`, "the slice index").
 inline u32 formation_find(const FormationSequence& s, f64 y, const FormationLateral& g) {
-  u32 lo = 0, hi = s.count;
+  const f64 scaled = (y > 0.0 ? y : 0.0) * static_cast<f64>(s.slices_per_m);
+  const u32 slice = scaled < static_cast<f64>(k_formation_slices - 1) ? static_cast<u32>(scaled)
+                                                                      : k_formation_slices - 1;
+  const u32 word = s.slices[slice];
+  u32 lo = word & 0xFFFFu, hi = lo + (word >> 16);
+  if (word == 0) hi = s.count;  // a sequence filled by hand, with no index: the whole table
   while (hi - lo > 1) {
     const u32 mid = (lo + hi) >> 1;
     if (y >= formation_base(s, mid, g))
@@ -764,7 +957,10 @@ inline void formation_integral(const FormationSequence& s, f64 x, f64 out[4]) {
 
 // formation.slang's `formation_filtered`: the sequence's value averaged over `width` metres of
 // coordinate about `coordinate` (a box), the point's own value below a micrometre. A width over a
-// period tends to the sequence's mean, which is what a band far away should read as.
+// period tends to the sequence's mean, which is what a band far away should read as. This is the
+// definition: the two integrals' difference, always. The shader returns the bed's value outright
+// where the box lies inside one bed of one period (T94) — the same number to rounding, and most
+// pixels of a near face — and differences the integrals as here everywhere else.
 inline Vec4 formation_filtered(const FormationSequence& s, f64 coordinate, f64 width,
                                const FormationLateral& g) {
   if (s.count == 0) return Vec4{1.0f, 1.0f, 1.0f, 0.0f};

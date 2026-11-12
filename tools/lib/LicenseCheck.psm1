@@ -240,5 +240,57 @@ function Invoke-LicenseCheck {
   return @{ Problems = $problems.ToArray(); Notes = $notes.ToArray(); Rows = $rows; Declarations = $decls }
 }
 
+<#
+  **Ported sources** (roadmap T86): code rewritten from a published work into an engine file, whose
+  licence asks that its notice travel with it (fdlibm's). The caller's list (`-Ported`, one entry a
+  file: @{ Path = '<repo-relative path>'; Notice = '<a line of the notice>' }) is held against the
+  record's "Ported, not vendored" table both ways, and each file must carry its notice line:
+
+  - a port in the list that no row of the table names (a backticked path in its last column);
+  - a row naming a path the list does not hold (a record of a port nobody listed);
+  - a listed file that is not there, or that does not hold its notice line (the notice dropped).
+
+  Returns the problems as strings, each naming the file and line to fix.
+#>
+function Test-PortedSources {
+  [CmdletBinding()]
+  param([Parameter(Mandatory)] [string]$Root, [object[]]$Ported = @())
+  $problems = New-Object System.Collections.Generic.List[string]
+  $record = Join-Path $Root 'third_party/LICENSES.md'
+  $named = @{}
+  $inSection = $false
+  $n = 0
+  foreach ($line in (Get-Content -LiteralPath $record)) {
+    $n++
+    if ($line -match '^##\s') { $inSection = $line -match '^##\s+Ported, not vendored\s*$'; continue }
+    if (-not $inSection -or $line -notmatch '^\|' -or $line -match '^\|\s*(-|Work\s*\|)') { continue }
+    $cells = @($line.Trim().Trim('|') -split '\|' | ForEach-Object { $_.Trim() })
+    $paths = @([regex]::Matches($cells[-1], '`([^`]+)`') | ForEach-Object { $_.Groups[1].Value } |
+               Where-Object { $_ -match '/' })
+    if ($paths.Count -eq 0) { $problems.Add("third_party/LICENSES.md:${n}: a ported work's row names no file it was ported into (a backticked path in its last column)") }
+    foreach ($p in $paths) { $named[$p] = $n }
+  }
+  $listed = @{}
+  foreach ($entry in $Ported) {
+    $path = [string]$entry.Path
+    $listed[$path] = $true
+    if (-not $named.ContainsKey($path)) {
+      $problems.Add("${path}: listed as a port of a published work, and third_party/LICENSES.md's ""Ported, not vendored"" has no row naming it: add its row, with its licence")
+    }
+    $file = Join-Path $Root $path
+    if (-not (Test-Path -LiteralPath $file)) {
+      $problems.Add("${path}: listed as a port, and there is no such file: correct the list in tools/license-check.ps1")
+    } elseif (-not (Select-String -LiteralPath $file -SimpleMatch -Pattern ([string]$entry.Notice) -Quiet)) {
+      $problems.Add("${path}: a port whose licence asks that its notice be preserved, and the file does not hold it ('$($entry.Notice)')")
+    }
+  }
+  foreach ($p in $named.Keys) {
+    if (-not $listed.ContainsKey($p)) {
+      $problems.Add("third_party/LICENSES.md:$($named[$p]): records ``$p`` as a port, which tools/license-check.ps1's list of ported sources does not hold: add it to the list or remove the row")
+    }
+  }
+  return $problems.ToArray()
+}
+
 Export-ModuleMember -Function Get-LicenseFamilies, Test-LicenseExpression, Read-LicenseRecord,
-  Find-FetchContentDeclarations, Get-LicenseFiles, Invoke-LicenseCheck
+  Find-FetchContentDeclarations, Get-LicenseFiles, Invoke-LicenseCheck, Test-PortedSources

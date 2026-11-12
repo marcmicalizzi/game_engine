@@ -332,6 +332,13 @@ bool PlacementTiles::build(TileCoord tile, u8 ring, TileBlock& out, u32 entries,
   // Each entry is handed the footprints of the entries before it on this tile (ADR-0046 decision
   // 4, as built): the tile is a function of the entries, the seed, the tile, the ground and those.
   earlier_.clear();
+  // **The shapes the entries before this one occupy on the tile** (R144; scene_gen.md, "The shapes
+  // a tile occupies"): the scene's exclusion with them added, made the first time an entry of this
+  // tile hands any — a tile no shape reaches is handed the scene's own object, as it always was.
+  // The copy is the scene's holes, water and channels; an exclusion that reads one beneath it
+  // would spare it, which is asked of `scene_gen` on that page.
+  scene_gen::Exclusion shaped;
+  bool has_shaped = false;
   const u32 run = entries < entries_.size() ? entries : entries_.size();
   for (u32 e = 0; e < run; ++e) {
     Entry& entry = *entries_[e];
@@ -341,15 +348,30 @@ bool PlacementTiles::build(TileCoord tile, u8 ring, TileBlock& out, u32 entries,
     placed.clear();
     std::string why;
     const i64 start = time::monotonic_ns();
-    if (!entry.generator->tile(entry.state, at, context_for(entry, ring, for_query), placed,
-                               &why)) {
+    scene_gen::Context context = context_for(entry, ring, for_query);
+    if (has_shaped) context.exclusion = &shaped;
+    if (!entry.generator->tile(entry.state, at, context, placed, &why)) {
       ok = false;
       ENGINE_LOG_WARN(log_world_placements, "a tile's placements were not made",
                       log::field("entry", entry.source->where), log::field("x", tile.x),
                       log::field("z", tile.z), log::field("error", why));
       continue;
     }
-    if (placed.things == 0 && placed.instances.empty()) continue;  // nothing on this tile
+    // Its shapes, for the entries after it: into the tile's exclusion and, after its placements'
+    // discs, into `earlier_`. A polygon's points are the entry's own `placed`, which stands until
+    // the entry's next tile.
+    if (!placed.shapes.empty() && e + 1 < entries_.size()) {
+      if (!has_shaped) shaped = scene_->terrain.exclusion;
+      has_shaped = true;
+      if (!shaped.add_footprints(placed.shapes.span(), &why)) {
+        ok = false;
+        ENGINE_LOG_WARN(log_world_placements, "a tile's shape was refused",
+                        log::field("entry", entry.source->where), log::field("x", tile.x),
+                        log::field("z", tile.z), log::field("error", why));
+      }
+    }
+    if (placed.things == 0 && placed.instances.empty() && placed.shapes.empty())
+      continue;  // nothing on this tile
     const Vector<u32>& meshes = entry.source->meshes;
     // **The meshes the tile handed** (scene_gen.md, "A tile's meshes"): each named in the table
     // of them (`TileMeshes`), which builds one the first time a tile names it and holds it while
@@ -418,6 +440,9 @@ bool PlacementTiles::build(TileCoord tile, u8 ring, TileBlock& out, u32 entries,
                                                 static_cast<f64>(reach * scale)});
       }
     }
+    if (e + 1 < entries_.size())
+      for (const scene_gen::Footprint& shape : placed.shapes.span())
+        earlier_.push_back(shape);
     if (for_query) {
       stats_.query_ns += time::monotonic_ns() - start;
     } else {

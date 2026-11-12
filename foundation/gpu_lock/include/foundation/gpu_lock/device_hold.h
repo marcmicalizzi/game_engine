@@ -63,8 +63,9 @@ inline constexpr const char* k_env_log = "ENGINE_GPU_LOCK_LOG";
 // for two minutes at most, and three refreshes can be missed before the lease runs out.
 inline constexpr i64 k_device_lease_s = 120;
 inline constexpr i64 k_device_refresh_s = 30;
-// How often a waiter looks again: the low end of GPU-LOCK.md's 15-30 s, because the holds it
-// waits behind are short.
+// An upper bound on how often a waiter looks again. Since the line (gpu_lock.h, T96) every waiter
+// looks every k_line_look_ms, which is far shorter, so this only matters to a caller that sets a
+// longer look; it was the whole interval when a waiter had no place and looked every 15 s.
 inline constexpr i64 k_device_poll_s = 15;
 // How long a process tree waits when nobody set a deadline: GPU-LOCK.md rule 9's half hour.
 inline constexpr i64 k_default_wait_s = 1800;
@@ -77,9 +78,11 @@ struct HoldConfig {
   std::string purpose;   // one line; empty: "gpu device: <executable> in <directory>"
   i64 lease_s = k_device_lease_s;
   i64 refresh_s = k_device_refresh_s;
-  i64 poll_s = k_device_poll_s;
-  i64 wait_until_unix_s = 0;    // 0: k_default_wait_s after the first wait begins
-  std::string log_path;         // empty: no hold log
+  i64 poll_s = k_device_poll_s;           // an upper bound on a look; look_ms is the shorter
+  i64 look_ms = k_line_look_ms;           // how often a waiter looks at the line and the lock
+  i64 ticket_lease_s = k_ticket_lease_s;  // how long its ticket outlives it if it dies
+  i64 wait_until_unix_s = 0;              // 0: k_default_wait_s after the first wait begins
+  std::string log_path;                   // empty: no hold log
   std::FILE* out = stderr;      // the waiting, taking-over and giving-up lines; null: silent
   bool exit_on_give_up = true;  // false only for tests of the give-up itself
 };

@@ -239,7 +239,7 @@ struct Scree @version(3) {
 /// One vertex of a cliff's line along the ground (rocks.md, "Cliffs"), metres from the recipe's
 /// origin: `x` and `z` where the face's foot runs, `y` the ground there. `height` and `batter`
 /// override the face's own at this vertex, and are interpolated between vertices.
-struct CliffPoint @version(1) {
+struct CliffPoint @version(2) {
   x: f32 = 0.0 @unit(m)
   y: f32 = 0.0 @unit(m)
   z: f32 = 0.0 @unit(m)
@@ -247,6 +247,11 @@ struct CliffPoint @version(1) {
   height: f32? @unit(m)
   /// How far the face leans back, metres across per metre up: 0 to 1.5; absent, the face's.
   batter: f32?
+  /// The crest's shoulder (G172; rocks.md, "Benches"): how far the front's top falls back over its
+  /// last rows, so a face whose top meets the slope's brow rounds over into it instead of
+  /// standing a level slab in front of it: 0 to 20 m; absent, none. The cliffs generator sets it
+  /// on a line's topmost tier.
+  crest_back: f32? @since(2) @unit(m)
 }
 
 /// Terrain heights below a cliff's debris, sampled in its local x/z frame, rows of x in z.
@@ -268,7 +273,7 @@ struct CliffGround @version(1) {
 /// under a hard one, warped and grained — closed at the ends, the top and a back buried `depth`
 /// behind it, with a talus skirt of the rock's own debris at its foot. Walking along `points`, the
 /// face looks to the right (+z for a line along +x).
-struct Cliff @version(6) {
+struct Cliff @version(7) {
   seed: u64 = 1
   type: RockType = Sandstone
   /// The foot of the face, in order: 2 to 4,096 vertices, a line 1 to 1,000 m long.
@@ -331,6 +336,17 @@ struct Cliff @version(6) {
   /// ends remain and share their borders. The cliffs generator sets it; false is the closed box a
   /// face on open ground needs.
   open: bool = false @since(6)
+  /// An open face keeps its bottom (T101; rocks.md, "A face in tiers"): a tier that stands on
+  /// another has its foot at the plane of the tier under it, and that tier's front is carved back
+  /// from its plane, so an open bottom would hang past the carved crest and show the ground
+  /// through the face. The cliffs generator sets it on every tier but a line's lowest.
+  bottom: bool = false @since(7)
+  /// The members step (G172; rocks.md, "Benches"): with a bedded `formation` (dip 20 degrees or
+  /// less), up the face a resistant member stands as a riser at 80 degrees and a weak one lies
+  /// back as a bench near the angle of repose, a tread at each resistant member's top, the whole
+  /// profile's run the face's batter times its height. The cliffs generator sets it with a
+  /// formation; false is the plane leaned by the batter.
+  benches: bool = false @since(7)
 }
 
 /// A rock file, `<name>.rock.json`: the shape and its parameters. Only the shape's own block may

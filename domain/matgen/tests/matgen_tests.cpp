@@ -87,7 +87,7 @@ TEST_CASE("matgen: a set is the same picture wherever the image starts") {
   // over, every image is the first build's bytes rotated, exactly. A noise that did not wrap its
   // lattice, a clast cut at the image's edge or a blur that stopped at it would each differ.
   for (const char* role : {"gravel/bed", "rock/scree", "sand/bar", "rock/granite", "rock/sandstone",
-                           "rock/basalt", "ground/turf"}) {
+                           "rock/basalt", "rock/granite_wet", "ground/turf"}) {
     CAPTURE(role);
     const matgen::Set set = recipe(role, 128);
     const Built first = build(set);
@@ -146,7 +146,15 @@ TEST_CASE("matgen: a bed's grid count reads the stated distribution, over seeds"
     // Sneed and Folk's maximum projection sphericity of the drawn clasts.
     CHECK(b.stats.mean_sphericity > 0.60);
     CHECK(b.stats.mean_sphericity < 0.75);
-    CHECK(b.stats.clast_cover > 0.75);
+    // The clasts drawn cover the bed: the default bed is embedded (G151), so its matrix stands
+    // over a share of them, and the cover of what is drawn is held on the same bed unburied.
+    matgen::Set clean = set;
+    clean.granular.buried_permille = 0;
+    CHECK(build(clean).stats.clast_cover > 0.75);
+    // The default (embedded) bed keeps a floor on its cover too. A floor from measurement, not
+    // from a source: at 512 texels its cover read 0.7458, 0.7386, 0.7454, 0.7407 and 0.7404 over
+    // seeds 11 to 55 (k_matgen_version 2); the floor is the smallest less 0.03.
+    CHECK(b.stats.clast_cover > 0.708);
   }
   const f64 count = static_cast<f64>(std::size(seeds));
   CHECK(sum50 / count == doctest::Approx(d50).epsilon(0.12));
@@ -214,7 +222,8 @@ TEST_CASE("matgen: every default's colour and roughness means are in its materia
       {"ground/soil", 0.03, 0.10, 0.85, 0.98},      {"ground/moss", 0.03, 0.10, 0.85, 0.98},
       {"ground/thatch", 0.08, 0.20, 0.70, 0.90},    {"ground/turf", 0.05, 0.14, 0.50, 0.85},
   };
-  CHECK(matgen::default_sets().size() == std::size(ranges));
+  // Twelve sets, and the variants of the three tiled granular ones.
+  CHECK(matgen::default_sets().size() == std::size(ranges) + 3 * matgen::k_tiled_variants);
   for (const Range& r : ranges) {
     CAPTURE(r.role);
     const Built b = build(recipe(r.role, 256));
@@ -228,6 +237,93 @@ TEST_CASE("matgen: every default's colour and roughness means are in its materia
     CHECK(b.stats.mean_roughness >= r.rough_lo);
     CHECK(b.stats.mean_roughness <= r.rough_hi);
   }
+}
+
+TEST_CASE("matgen: no block of a tiled set stands out as a landmark, over seeds") {
+  // G153 (matgen.md, "Repetition"): what shows a repeat is a tile's few most salient features, so
+  // the measure is how far a sixteenth of the tile (its mean luminance) departs from the tile's
+  // mean, as a Weber contrast: the largest departure and the RMS over the 256 blocks. The bounds
+  // are chosen; the base generator's sets (G148's 1,024-texel pack, the same measure over its
+  // PNGs) measured gravel 1.04 and 0.237, scree 0.89 and 0.238 — over both bounds — and the sand
+  // bar 0.29 and 0.043, under its (its recipe did not change; its bound holds it there). Held over
+  // three seeds for each tiled role, at the texels the tests use.
+  struct Bound {
+    const char* role;
+    f64 most, rms;
+  };
+  const Bound bounds[] = {
+      {"gravel/bed", 0.85, 0.15}, {"sand/bar", 0.45, 0.07}, {"rock/scree", 0.60, 0.16}};
+  for (const Bound& b : bounds) {
+    CAPTURE(b.role);
+    for (const u64 seed : {41ull, 42ull, 43ull}) {
+      const Built built = build(recipe(b.role, 256, seed));
+      MESSAGE(std::string(b.role) << " seed " << seed << ": landmark "
+                                  << built.stats.landmark_contrast << " rms "
+                                  << built.stats.block_contrast);
+      CHECK(built.stats.landmark_contrast < b.most);
+      CHECK(built.stats.block_contrast < b.rms);
+    }
+  }
+  // A variant is the same recipe from another seed: the same numbers, other images.
+  const Vector<matgen::Set> sets = matgen::default_sets();
+  u32 variants = 0;
+  for (const matgen::Set& s : sets) {
+    const usize dot = s.role.find('.');
+    if (dot == std::string::npos) continue;
+    ++variants;
+    matgen::Set parent;
+    REQUIRE(matgen::default_set(s.role.substr(0, dot), parent));
+    matgen::Set same = s;
+    same.role = parent.role;
+    same.seed = parent.seed;
+    CHECK(matgen::canonical_json(same) == matgen::canonical_json(parent));
+    CHECK(s.seed != parent.seed);
+  }
+  CHECK(variants == 3 * matgen::k_tiled_variants);
+}
+
+TEST_CASE("matgen: a rock face's form, streaks and moss are where they are asked for") {
+  // Form above the decimetre lifts the relief past the micro-relief's; streaks darken the face
+  // below its joints and steps; moss grows in a wet face's joints and nowhere when none is asked.
+  matgen::Set set = recipe("rock/granite_wet", 256);
+  const Built wet = build(set);
+  MESSAGE("granite_wet: streak " << wet.stats.streak_share << " moss " << wet.stats.moss_cover
+                                 << " lichen " << wet.stats.lichen_cover << " relief mm "
+                                 << (wet.stats.height_max_m - wet.stats.height_min_m) * 1000);
+  CHECK(wet.stats.moss_cover > 0.005);
+  CHECK(wet.stats.streak_share > 0.01);
+  // The step alone is 1.4 form_um: with the rest, the face spans more than 1.5 of it.
+  CHECK(wet.stats.height_max_m - wet.stats.height_min_m > 1.5 * set.rock.form_um * 1e-6);
+  set.rock.moss_permille = 0;
+  set.rock.streak_permille = 0;
+  const Built bare = build(set);
+  CHECK(bare.stats.moss_cover == 0.0);
+  CHECK(bare.stats.streak_share == 0.0);
+  // The streaks and the moss darken the face.
+  CHECK(luminance(wet.stats.mean_color) < luminance(bare.stats.mean_color));
+}
+
+TEST_CASE("matgen: a bed's clasts lie part buried, and a talus is layers deep") {
+  matgen::Set bed = recipe("gravel/bed", 256);
+  const Built embedded = build(bed);
+  bed.granular.buried_permille = 0;
+  const Built clean = build(bed);
+  MESSAGE("bed buried " << embedded.stats.buried_share << " matrix " << embedded.stats.matrix_share
+                        << " (clean " << clean.stats.matrix_share << ")");
+  // Unburied, only the smallest clasts' tops lie under the matrix's own level.
+  CHECK(embedded.stats.buried_share > 0.1);
+  CHECK(clean.stats.buried_share < 0.25 * embedded.stats.buried_share);
+  CHECK(embedded.stats.matrix_share > clean.stats.matrix_share);
+  matgen::Set talus = recipe("rock/scree", 256);
+  const Built deep = build(talus);
+  talus.granular.depth_layers = 1;
+  const Built shallow = build(talus);
+  MESSAGE("scree under " << deep.stats.clasts_under << " (one layer " << shallow.stats.clasts_under
+                         << "), relief mm "
+                         << (deep.stats.height_max_m - deep.stats.height_min_m) * 1000);
+  CHECK(deep.stats.clasts_under > 2 * shallow.stats.clasts_under);
+  CHECK(deep.stats.height_max_m - deep.stats.height_min_m >
+        shallow.stats.height_max_m - shallow.stats.height_min_m);
 }
 
 TEST_CASE("matgen: a mip chain keeps the set's mean colour") {
@@ -307,18 +403,20 @@ TEST_CASE("matgen: a recipe reads, refuses and keys") {
 }
 
 TEST_CASE("matgen: the same bytes from every toolchain") {
-  // Taken on MSVC (x86-64-v3, debug). The generator calls nothing a toolchain rounds its own way,
-  // so Clang and GCC, at v3 and at v2, are held to the same bytes; which of them has been run is
-  // on the page (matgen.md, "Same bytes everywhere"). A change to the generator moves these and
-  // bumps k_matgen_version.
+  // Taken on MSVC (x86-64-v3, debug); re-taken for k_matgen_version 2 (G149 to G153: every set
+  // but the turf moved; the ground kind did not change), and for 3 (the rock face's broken step
+  // removed: the granite and the sandstone moved, no other kind). The generator calls nothing a
+  // toolchain rounds its own way, so Clang and GCC, at v3 and at v2, are held to the same bytes;
+  // which of them has been run is on the page (matgen.md, "Same bytes everywhere"). A change to the
+  // generator moves these and bumps k_matgen_version.
   struct Pin {
     const char* role;
     u64 hash;
   };
   const Pin pins[] = {
-      {"gravel/bed", 14327999565024624954ull},    {"rock/scree", 8687072859064289307ull},
-      {"sand/bar", 17923485152781687478ull},      {"rock/granite", 10653580526231192418ull},
-      {"rock/sandstone", 1534237874609981072ull}, {"ground/turf", 4583399645411956302ull},
+      {"gravel/bed", 6280004583196325757ull},     {"rock/scree", 15685960211907165185ull},
+      {"sand/bar", 6512822385822317515ull},       {"rock/granite", 1158326275606281670ull},
+      {"rock/sandstone", 2145369994992403863ull}, {"ground/turf", 4583399645411956302ull},
   };
   for (const Pin& pin : pins) {
     CAPTURE(pin.role);

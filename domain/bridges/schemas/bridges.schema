@@ -1,0 +1,69 @@
+// Footbridges where a route fords a stream (docs/subsystems/bridges.md; the numbers and their
+// sources, docs/experiments/footbridges.md). Every length here is whole millimetres, so a crossing's
+// canonical form and its key are integers and a decision never passes through a float.
+namespace engine.bridges
+
+/// What a crossing is built as (bridges.md, "The form"): stepping stones in a shallow brook, a
+/// clapper bridge of stone slabs on dry piers where the bed has stone to hand, a single foot log, or
+/// log stringers under a plank deck; `none` past the longest span the handbooks build without an
+/// engineer, counted and left a ford.
+enum BridgeForm : u8 { stones = 0, clapper = 1, log = 2, stringers = 3, none = 4 }
+
+/// One crossing as `engine-content bridges` writes it: where a route's line fords a channel, the
+/// stream's section there and the ground along the path, in whole millimetres of the world.
+struct Crossing @version(1) {
+  /// Its identity: the `routes` entry, the line of that entry's plan and the line's middle station
+  /// of the ford (routes.md, "Water"). The bridge's seed is drawn from these and the layer's seed,
+  /// so it does not depend on the tile that realises it.
+  route: u32 = 0
+  line: u32 = 0
+  station: u32 = 0
+  /// The stream's centreline where the path crosses it, world millimetres.
+  x_mm: i64 = 0
+  z_mm: i64 = 0
+  /// The path's direction across the stream, square to the channel there (any length; read as a
+  /// direction). The bridge's +x.
+  dir_x: i32 = 10000
+  dir_z: i32 = 0
+  /// The bankfull width at the crossing, 300..20000 mm.
+  width_mm: u32 = 3000
+  /// The bed at the line (its lowest point) and the water's surface at the scene's stage, world
+  /// millimetres; the surface is above the bed.
+  bed_mm: i64 = 0
+  water_mm: i64 = 300
+  /// The bed's D84, mm (channels.md, "Bed sediment"); 0 when the writer did not know it.
+  d84_mm: u32 = 0
+  /// The path's tread width, 300..3000 mm.
+  tread_mm: u32 = 600
+  /// The ground along the path's line through the crossing, world millimetres, every
+  /// `profile_step_mm` from `-(n - 1) / 2` steps to `+(n - 1) / 2` steps of the centre: an odd count,
+  /// at least the bankfull width and 4 m each side past it. This is the ground with the channel's
+  /// cut and the route's tread in it and no bridge's approaches.
+  profile_step_mm: u32 = 250
+  profile_mm: i64[] = []
+}
+
+/// A layer of footbridges, the placement generator `bridges`'s parameters.
+struct Layer @version(1) {
+  name: string = "bridges"
+  /// Mixed into every bridge's seed.
+  seed: u64 = 1
+  crossings: Crossing[] = []
+  /// The material roles the members sample (materials.md): the stone of piers, slabs, stones and
+  /// abutments, and the timber of logs, sills, deck and rails. A role the pack lacks draws the
+  /// member's own colour.
+  stone_role: string = "rock/granite"
+  wood_role: string = "wood/plank"
+  /// Where the recipes go, relative to the scene; empty: the derived-data root's `bridges/`.
+  recipes: string = ""
+}
+
+/// One bridge, the mesh generator `bridge`'s file (`<name>.bridge.json`): the crossing and what
+/// its members are drawn with. The mesh's origin is the crossing's centre at its bed, +x the path's
+/// direction across, +z downstream-or-up the channel (the right hand), y up.
+struct Bridge @version(1) {
+  crossing: Crossing
+  seed: u64 = 1
+  stone_role: string = "rock/granite"
+  wood_role: string = "wood/plank"
+}

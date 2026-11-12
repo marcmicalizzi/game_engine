@@ -85,7 +85,8 @@ TEST_CASE("engine-content matgen builds a pack every host reads, and builds a se
   CHECK(read->roles.size() == 3u);
   const materials::MaterialSet* bed = materials::find_role(read, "gravel/bed");
   REQUIRE(bed != nullptr);
-  CHECK(bed->tile_m == doctest::Approx(1.0f));
+  // The bed's recipe tile (2 m since G153, matgen.md "Repetition") reaches the pack's role.
+  CHECK(bed->tile_m == doctest::Approx(2.0f));
   CHECK_FALSE(bed->stochastic);
   CHECK(io::exists(bed->base_color));
   CHECK(io::exists(bed->normal));

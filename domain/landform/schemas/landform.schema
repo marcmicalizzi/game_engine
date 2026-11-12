@@ -120,7 +120,7 @@ struct Rock @version(2) {
 /// becomes ice above the equilibrium line and ice melts below it; the ice a point passes on is
 /// what its catchment made less what melted on the way; a glacier is as wide and as thick as its
 /// flux makes it, and wears its bed over that width.
-struct Ice @version(1) {
+struct Ice @version(2) {
   /// The equilibrium line's altitude, metres: -11,000 to 9,000. Read on the ice's own surface.
   ela_m: f64 @unit(m)
   /// The height above the line at which all of a point's snowfall becomes ice (below the line
@@ -138,6 +138,15 @@ struct Ice @version(1) {
   width_m: f64 = 500 @unit(m)
   /// The ice's thickness over its width: 0.01 to 1. Hergarten's example is 0.25.
   thickness_ratio: f64 = 0.25
+  /// The ice's coupling length over its thickness: 0 to 10 (landform.md, "Basins the ice
+  /// digs"). Along a glacier's own line the slope its erosion reads is its surface's over twice
+  /// this many thicknesses down the line, so it goes on wearing a bed that rises under it: a
+  /// basin. Kamb and Echelmeyer 1986 give one to three thicknesses for valley glaciers. 0 reads
+  /// the slope to the next point, and digs only where the ice thins.
+  coupling: f64 = 2 @since(2)
+  /// The adverse slope of the bed, over the ice surface's slope, at which the ice stops
+  /// wearing it: 0.5 to 11. The published supercooling threshold is 1.2 to 1.7.
+  adverse_slope: f64 = 1.5 @since(2)
   /// The years of the run the ice stands in: from `from_yr` until `until_yr`, or the run's end.
   from_yr: i64 = 0
   until_yr: i64?

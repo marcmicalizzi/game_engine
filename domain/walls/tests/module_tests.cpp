@@ -18,15 +18,17 @@ bool in_face(const Stone& s) {
 }
 
 // The lowest face, through or tie stone of the face covering x whose bed is at or above `level`
-// (the stone laid on what is below at x).
-const Stone* on_top(const Vector<Stone>& stones, i8 side, f64 x, f64 level) {
+// (the stone laid on what is below at x). Its bed and the level are read at the joint `xj` (its
+// bed clamped to its own extent), not at x: a bed laid along a sloping top differs by the slope
+// over the 4 cm between them (G177; for level stones the measure is G145's).
+const Stone* on_top(const Vector<Stone>& stones, i8 side, f64 x, f64 xj, f64 level) {
   const Stone* best = nullptr;
   for (const Stone& s : stones) {
     if (!in_face(s)) continue;
     if (s.side != 0 && s.side != side) continue;
-    if (static_cast<f64>(s.bed) < level - 0.006) continue;
     if (x < static_cast<f64>(s.x0) || x > static_cast<f64>(s.x1)) continue;
-    if (best == nullptr || s.bed < best->bed) best = &s;
+    if (bed_at(s, xj) < level - 0.006) continue;
+    if (best == nullptr || bed_at(s, xj) < bed_at(*best, xj)) best = &s;
   }
   return best;
 }
@@ -35,17 +37,17 @@ const Stone* on_top(const Vector<Stone>& stones, i8 side, f64 x, f64 level) {
 // side of the joint (4 cm off it) are different stones meeting within 3 cm of it.
 u32 runs_above(const Vector<Stone>& stones, const Stone& s) {
   const f64 x = static_cast<f64>(s.x1), tol = 0.03;
-  f64 level = static_cast<f64>(s.top);
+  f64 level = top_at(s, x);
   u32 levels = 0;
   for (u32 k = 0; k < 3; ++k) {
-    const Stone* l = on_top(stones, s.side, x - 0.04, level);
-    const Stone* r = on_top(stones, s.side, x + 0.04, level);
+    const Stone* l = on_top(stones, s.side, x - 0.04, x, level);
+    const Stone* r = on_top(stones, s.side, x + 0.04, x, level);
     if (l == nullptr || r == nullptr || l == r) break;
     if (std::abs(static_cast<f64>(l->x1) - x) >= tol &&
         std::abs(static_cast<f64>(r->x0) - x) >= tol)
       break;
     ++levels;
-    level = std::min(static_cast<f64>(l->top), static_cast<f64>(r->top));
+    level = std::min(top_at(*l, x), top_at(*r, x));
   }
   return levels;
 }
@@ -96,9 +98,78 @@ TEST_CASE("walls: vertical joints are crossed, one on two and two on one") {
   // solver reaches, stated as such and not from a source (TCV: none through three): G145c
   // measured 70 of 5,465 joints through three courses (1.28 %) and 34 through four (0.62 %).
   // G145b's bounds (2 % and 0.8 %) held on its own kept draws only; on the version's draws they
-  // failed at 2.09 %.
-  CHECK(static_cast<f64>(more) < 0.014 * static_cast<f64>(joints));
-  CHECK(static_cast<f64>(four) < 0.007 * static_cast<f64>(joints));
+  // failed at 2.09 %. G177's layout (a stone that starts on another level beside a jumper starts
+  // off the joint below) measures 46 of 4,560 through three (1.01 %) and 19 through four
+  // (0.42 %); G178 holds that, tighter than G145c's 1.4 % and 0.7 %. What stops zero, of the 46:
+  // 13 meet a through-stone or a tie (neither can move), 4 lie at the module's own ends, 3 beside
+  // a jumper, 2 beside a lump, 2 at the footing, and 21 where a stone laid over a pack of pinnings
+  // ends within 3 cm of a joint two stones down, which the end's check, reading the skyline just
+  // below, does not see (walls.md, "Not yet").
+  CHECK(static_cast<f64>(more) < 0.011 * static_cast<f64>(joints));
+  CHECK(static_cast<f64>(four) < 0.005 * static_cast<f64>(joints));
+}
+
+TEST_CASE("walls: the face is not coursed boxes") {
+  // G177 (walls.md, "The module"; dry-stone-walls.md, "A face that is not coursed"): where a wall
+  // is not strictly coursed its stones differ in height inside a layer, jumpers rise through two,
+  // tops are not level and a rounded top is bedded with small stones either side (TCV, Building;
+  // Specialist building techniques). No source gives a share, so the bounds are design values,
+  // each run against the base (G145c, k_wall_version 3) to see it fail: there every top was
+  // level (share 0: a stone carried one top), no face was a pentagon (0), heights within a sweep
+  // spread by a coefficient of variation of 0.140 and 1.11 % of stones stood 1.6 times their
+  // sweep's median or more (2,251 face stones in 219 sweeps, measured on the base build).
+  // Measured over six seeds, three grades, the standing face stones of a stretch.
+  u32 stones = 0, sloped = 0, lumps = 0, tall = 0, groups = 0;
+  f64 cv_sum = 0;
+  for (const i32 grade : {0, 250, 500})
+    for (const u64 seed : {1ull, 2ull, 3ull, 4ull, 5ull, 6ull}) {
+      assets::MeshData mesh;
+      ModuleReport report;
+      std::string error;
+      REQUIRE(solve_module(module_of(ModuleKind::run, grade, seed), mesh, report, error));
+      for (const i8 side : {i8{1}, i8{-1}})
+        for (u16 sweep = 1; sweep < 48; ++sweep) {
+          Vector<f64> h;
+          for (const Stone& s : report.stones) {
+            if (s.role != StoneRole::face || s.side != side || s.sweep != sweep) continue;
+            if (s.x0 < -1.4f || s.x1 > 1.4f) continue;
+            const f64 xm = 0.5 * static_cast<f64>(s.x0 + s.x1);
+            h.push_back(top_at(s, xm) - bed_at(s, xm));
+            ++stones;
+            sloped +=
+                std::abs(static_cast<f64>(s.top1) - static_cast<f64>(s.top0)) >= 0.01 || is_lump(s)
+                    ? 1u
+                    : 0u;
+            lumps += is_lump(s) ? 1u : 0u;
+          }
+          if (h.size() < 3) continue;
+          Vector<f64> sorted = h;
+          std::sort(sorted.begin(), sorted.end());
+          const f64 median = sorted[sorted.size() / 2];
+          f64 mean = 0;
+          for (const f64 v : h)
+            mean += v;
+          mean /= static_cast<f64>(h.size());
+          f64 var = 0;
+          for (const f64 v : h) {
+            var += (v - mean) * (v - mean);
+            tall += v >= 1.6 * median ? 1u : 0u;
+          }
+          cv_sum += std::sqrt(var / static_cast<f64>(h.size())) / mean;
+          ++groups;
+        }
+    }
+  REQUIRE(stones > 500);
+  REQUIRE(groups > 50);
+  const f64 n = static_cast<f64>(stones);
+  MESSAGE(stones << " face stones in " << groups << " sweeps: tops not level " << 100.0 * sloped / n
+                 << " %, lumps " << 100.0 * lumps / n
+                 << " %, 1.6 times the sweep's median or taller " << 100.0 * tall / n
+                 << " %; heights within a sweep spread by " << cv_sum / groups);
+  CHECK(static_cast<f64>(sloped) >= 0.5 * n);
+  CHECK(static_cast<f64>(lumps) >= 0.08 * n);
+  CHECK(static_cast<f64>(tall) >= 0.08 * n);
+  CHECK(cv_sum / static_cast<f64>(groups) >= 0.25);
 }
 
 TEST_CASE("walls: the height, batter, through-stones and cope are inside the pinned ranges") {
@@ -171,8 +242,12 @@ TEST_CASE(
     u32 nl = 0, nh = 0;
     for (const Stone& s : report.stones) {
       if (s.role != StoneRole::face) continue;
-      const f64 h = static_cast<f64>(s.top - s.bed);
-      CHECK(h <= 0.19);
+      // A course stone to 190 mm, a jumper through two to 280 mm (dry-stone-walls.md); G177 made
+      // jumpers the rule rather than a stone brought up against a step, so the bound is the
+      // jumper's (it was 0.19 for every face stone of this one module).
+      const f64 xm = 0.5 * static_cast<f64>(s.x0 + s.x1);
+      const f64 h = top_at(s, xm) - bed_at(s, xm);
+      CHECK(h <= 0.28 + 1e-6);
       if (s.bed < 0.3f) {
         low += h;
         ++nl;

@@ -31,7 +31,7 @@ set(_renderer_deps base containers hash math time jobs log platform io image geo
                    gfx json texture tunables content_build schema schemas scene_gen profiling)
 engine_module(NAME renderer LAYER systems
   DEPS ${_renderer_deps}
-  SOURCES src/settings.cpp src/view_set.cpp src/scene.cpp src/gpu_scene.cpp src/gpu_scene_meshes.cpp
+  SOURCES src/settings.cpp src/view_set.cpp src/scene.cpp src/gpu_scene.cpp src/gpu_scene_meshes.cpp src/gpu_scene_textures.cpp
           src/lighting.cpp
           src/page_source.cpp src/streaming.cpp src/scene_renderer.cpp src/reference.cpp
           src/capture.cpp src/terrain.cpp src/terrain_materials.cpp src/camera_path.cpp src/flythrough.cpp
@@ -41,7 +41,8 @@ engine_module(NAME renderer LAYER systems
           src/terrain_rings.cpp src/terrain_tiles.cpp src/sky.cpp src/request.cpp
           src/overlay.cpp src/scene_water.cpp src/scene_flora.cpp src/flora_motion.cpp
           src/flora_poser.cpp src/scene_fire.cpp src/far_forest.cpp src/water_reflect.cpp
-          src/water_refract.cpp)
+          src/water_refract.cpp
+          src/scene_ground_plan.cpp)
 # The renderer's own shader: the output encode after the frame passes (frame_pass.h,
 # shaders/frame_encode.slang), which includes domain/gfx's display.slang by its path.
 engine_shaders(NAME renderer SOURCES shaders/frame_encode.slang)
@@ -105,7 +106,7 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     # The trees posed on a pool: every worker count the serial loop's bytes.
                     tests/flora_poser_tests.cpp
                     # The streamed trees' budget: records counted once, the nearest tiles first (R137).
-                    tests/tail_budget_tests.cpp tests/mesh_room_tests.cpp
+                    tests/tail_budget_tests.cpp tests/mesh_room_tests.cpp tests/mesh_texture_tests.cpp
                     # R69: indirect light from the world-space cache.
                     tests/gi_cache_tests.cpp)
 if(TARGET engine::ruins)

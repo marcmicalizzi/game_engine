@@ -119,7 +119,9 @@ int matgen_command(int argc, char** argv) {
   }
   if (sets.empty()) sets = matgen::default_sets();
   if (out_dir.empty()) {
-    const std::string pack = materials::default_pack_dir(platform::executable_directory());
+    // Where the default pack is written, which the test switch that blinds every reader does not
+    // touch (materials.h, `repository_pack_dir`).
+    const std::string pack = materials::repository_pack_dir(platform::executable_directory());
     if (pack.empty()) return fail("no repository above the executable: name --out <pack dir>");
     out_dir = io::join_path(pack, "generated");
   }
@@ -208,6 +210,11 @@ int matgen_command(int argc, char** argv) {
       measured.set("moss_share", JsonValue(stats.moss_share));
       measured.set("thatch_cover", JsonValue(stats.thatch_cover));
       measured.set("live_cover", JsonValue(stats.live_cover));
+      measured.set("buried_share", JsonValue(stats.buried_share));
+      measured.set("streak_share", JsonValue(stats.streak_share));
+      measured.set("moss_cover", JsonValue(stats.moss_cover));
+      measured.set("landmark_contrast", JsonValue(stats.landmark_contrast));
+      measured.set("block_contrast", JsonValue(stats.block_contrast));
       record.set("measured", measured);
       if (io::write_file_atomic(sidecar, write_json(record)) != io::Status::Ok)
         return fail("'" + sidecar + "' could not be written");

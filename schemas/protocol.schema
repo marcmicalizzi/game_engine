@@ -847,7 +847,7 @@ struct RenderLoadParams @version(7) {
 ///
 /// Version 3 (ADR-0053): `center` is a `worldpos`, the scene's f64 centre, where version 2 wrote
 /// it rounded to a float32. The JSON is the same three numbers.
-struct RenderSceneInfo @version(6) {
+struct RenderSceneInfo @version(7) {
   scene: string
   adapter: string
   meshes: u32 = 0
@@ -897,6 +897,10 @@ struct RenderSceneInfo @version(6) {
   /// `render.load` with `startup_trace`: the startup block of the load (engine-view's summary
   /// `startup`). Null otherwise.
   startup: json @since(5)
+  /// The material pack directory the load drew generated meshes with — the repository's default,
+  /// whatever `ddc` names — or empty for none, as in a test, whose main switches the default off
+  /// (docs/subsystems/materials.md, "Where the hosts find it"; engine-view's summary `load.materials`).
+  materials: string @since(7)
 }
 
 /// An explicit camera. `znear` of zero is a hundredth of the scene radius, as engine-view uses.

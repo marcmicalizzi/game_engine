@@ -104,7 +104,9 @@ struct Recorder {
     return true;
   }
   TileMeshSink sink() {
-    return TileMeshSink{this, &Recorder::fits, &Recorder::admit, &Recorder::retire};
+    // No texture hooks: this host draws nothing, and its builds leave the textures out.
+    return TileMeshSink{this,    &Recorder::fits, &Recorder::admit, &Recorder::retire,
+                        nullptr, nullptr,         nullptr};
   }
 };
 
