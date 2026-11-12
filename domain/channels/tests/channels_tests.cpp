@@ -7,6 +7,7 @@
 #include <core/schema/json_reflect.h>
 #include <domain/assets/mesh_generator.h>
 #include <domain/channels/channels.h>
+#include <domain/materials/materials.h>
 #include <foundation/io/vfs.h>
 
 #include <doctest/doctest.h>
@@ -274,33 +275,107 @@ TEST_CASE("channels: whole expansion equals any tile order, with stable ids") {
   ChannelLayer p = layer();
   std::string error;
   REQUIRE_MESSAGE(opened.desc->open(schema::to_json(p), c, &opened.state, &error), error);
-  scene_gen::Placements whole, forward, backward;
+  scene_gen::Placements whole;
   REQUIRE(opened.desc->expand(opened.state, c, whole, &error));
   REQUIRE_FALSE(whole.instances.empty());
+  // **A tile's bed arrives with the tile** (W97b; scene_gen.md, "A tile's meshes"): the entry lists
+  // nothing resident, says its tiles hand meshes, and writes no recipe file.
+  CHECK(opened.desc->meshes == nullptr);
+  CHECK(opened.desc->tile_meshes);
+  // Each tile is handed alone (a host's `Placements` holds one tile's call), and what it hands is
+  // gathered here as (id, placement, the recipe its placement names, the mesh's path and reach).
+  struct Handed {
+    u32 id;
+    scene_gen::Placement at;
+    std::string recipe, path;
+    f32 reach;
+  };
+  auto activate = [&](i32 x, i32 z, std::vector<Handed>& into) {
+    scene_gen::Placements one;
+    REQUIRE(opened.desc->tile(opened.state, {x, z}, c, one, &error));
+    CHECK(one.meshes.size() == one.instances.size());  // one piece a tile, its own mesh
+    for (const scene_gen::Placement& placed : one.instances) {
+      REQUIRE(placed.mesh < one.meshes.size());
+      const scene_gen::PlacementMesh& m = one.meshes[placed.mesh];
+      into.push_back({placed.id, placed, m.recipe, m.path, m.reach});
+    }
+    return one.instances.size();
+  };
+  std::vector<Handed> forward, backward;
   // W97: a clast near the region's edge may stand a little past it, in the tile beyond.
   for (i32 z = -1; z < 9; ++z)
     for (i32 x = -1; x < 5; ++x)
-      REQUIRE(opened.desc->tile(opened.state, {x, z}, c, forward, &error));
+      (void)activate(x, z, forward);
   for (i32 z = 8; z >= -1; --z)
-    for (i32 x = 4; x >= -1; --x) {
-      if (opened.desc->occupies(opened.state, {x, z})) {
-        const u32 before = backward.instances.size();
-        REQUIRE(opened.desc->tile(opened.state, {x, z}, c, backward, &error));
-        CHECK(backward.instances.size() > before);
-      }
-    }
-  auto by_id = [](const auto& a, const auto& b) { return a.id < b.id; };
-  std::sort(forward.instances.begin(), forward.instances.end(), by_id);
-  std::sort(backward.instances.begin(), backward.instances.end(), by_id);
-  REQUIRE(forward.instances.size() == whole.instances.size());
-  REQUIRE(backward.instances.size() == whole.instances.size());
+    for (i32 x = 4; x >= -1; --x)
+      if (opened.desc->occupies(opened.state, {x, z})) CHECK(activate(x, z, backward) > 0);
+  auto by_id = [](const Handed& a, const Handed& b) { return a.id < b.id; };
+  std::sort(forward.begin(), forward.end(), by_id);
+  std::sort(backward.begin(), backward.end(), by_id);
+  REQUIRE(forward.size() == whole.instances.size());
+  REQUIRE(backward.size() == whole.instances.size());
   for (u32 i = 0; i < whole.instances.size(); ++i) {
+    const scene_gen::PlacementMesh& listed = whole.meshes[whole.instances[i].mesh];
     CHECK(whole.instances[i].id == i + 1);
-    CHECK(forward.instances[i].id == whole.instances[i].id);
-    CHECK(backward.instances[i].mesh == whole.instances[i].mesh);
-    CHECK(backward.instances[i].position == whole.instances[i].position);
-    CHECK(io::exists(whole.meshes[whole.instances[i].mesh].path));
+    CHECK(forward[i].id == whole.instances[i].id);
+    CHECK(backward[i].at.position == whole.instances[i].position);
+    // What a tile hands is what the whole read lists, recipe for recipe, and the recipe is the
+    // mesh generator's own bytes: nothing is read from or written to disk.
+    CHECK(forward[i].recipe == listed.recipe);
+    CHECK(backward[i].recipe == listed.recipe);
+    CHECK(backward[i].path == listed.path);
+    CHECK_FALSE(listed.recipe.empty());
+    CHECK_FALSE(io::exists(listed.path));
+    CHECK(listed.reach > 0.0f);
+    CHECK(forward[i].reach == listed.reach);
   }
+}
+
+// **The same bytes from any start and any thread count** (W97b): two entries opened over one
+// ground, one planning with no job system and one with six workers, hand every tile the same
+// recipe in whichever order their tiles activate.
+TEST_CASE("channels: a tile's bed is the same bytes whichever tile activates first, any jobs") {
+  test::TempDir one_dir, six_dir;
+  jobs::JobSystemConfig config;
+  config.performance_workers = 6;
+  config.efficiency_workers = 0;
+  config.pin_threads = false;
+  jobs::JobSystem js(config);
+  scene_gen::Context serial, parallel;
+  for (scene_gen::Context* c : {&serial, &parallel}) {
+    c->ground = ground(gentle);  // a pool-riffle valley with bars and a flood bed
+    c->tile_size = 64;
+  }
+  const std::string one_path = one_dir.path(), six_path = six_dir.path();
+  serial.dir = one_path;
+  serial.ddc = one_path;
+  parallel.dir = six_path;
+  parallel.ddc = six_path;
+  parallel.jobs_context = &js;
+  parallel.jobs_fn = [](void* context) { return static_cast<jobs::JobSystem*>(context); };
+  Opened a, b;
+  ChannelLayer p = layer();
+  p.head_threshold_m2 = 300;
+  std::string error;
+  REQUIRE_MESSAGE(a.desc->open(schema::to_json(p), serial, &a.state, &error), error);
+  REQUIRE_MESSAGE(b.desc->open(schema::to_json(p), parallel, &b.state, &error), error);
+  std::vector<std::pair<u32, std::string>> first, second;
+  auto take = [&](Opened& o, const scene_gen::Context& c, i32 x, i32 z, auto& into) {
+    scene_gen::Placements one;
+    REQUIRE(o.desc->tile(o.state, {x, z}, c, one, &error));
+    for (const scene_gen::Placement& at : one.instances)
+      into.emplace_back(at.id, one.meshes[at.mesh].recipe);
+  };
+  for (i32 z = -1; z < 9; ++z)
+    for (i32 x = -1; x < 5; ++x)
+      take(a, serial, x, z, first);
+  for (i32 z = 8; z >= -1; --z)
+    for (i32 x = 4; x >= -1; --x)
+      take(b, parallel, x, z, second);
+  std::sort(first.begin(), first.end());
+  std::sort(second.begin(), second.end());
+  REQUIRE_FALSE(first.empty());
+  CHECK(first == second);
 }
 
 TEST_CASE("channels: the refusals") {
@@ -2086,6 +2161,120 @@ TEST_CASE("channels: one plan is read by the cut, the water, the exclusion and t
   CHECK_FALSE(read_plan(bytes, refused, error));
 }
 
+// **The host's root wins, the plan's too** (T112; channels.md, "In a scene"): a plan written under
+// the scene's own root (what `engine-content channels` does without `--ddc`) is read by a host that
+// names no root, and by one that names that root; a host that names another root does not read it
+// there, and the refusal says where it is.
+TEST_CASE("channels: the host's root wins over the scene's own, for the plan") {
+  test::TempDir scratch;
+  const std::string scene_dir = scratch.file("scene"), host = scratch.file("host");
+  REQUIRE(io::make_directories(scene_dir) == io::Status::Ok);
+  std::string own, theirs, error;
+  REQUIRE_MESSAGE(derived_dir("", scene_dir, own, error), error);
+  CHECK(own.ends_with("/ddc/channels"));  // nothing above the scratch says it is a repository
+  REQUIRE_MESSAGE(derived_dir(host, scene_dir, theirs, error), error);
+  scene_gen::Context c;
+  c.dir = scene_dir;
+  c.ground = ground(step_pool);
+  c.tile_size = 64;
+  c.world_seed = 7;
+  ChannelLayer p = layer();
+  ChannelPlan plan;
+  REQUIRE_MESSAGE(ensure_plan(p, c, own, plan, error), error);
+  p.plan = plan_key_text(plan.key);
+  {
+    Opened opened;
+    REQUIRE_MESSAGE(opened.desc->open(schema::to_json(p), c, &opened.state, &error), error);
+  }
+  {
+    scene_gen::Context named = c;
+    const std::string root = io::join_path(scene_dir, "ddc");
+    named.ddc = root;
+    Opened opened;
+    REQUIRE_MESSAGE(opened.desc->open(schema::to_json(p), named, &opened.state, &error), error);
+  }
+  scene_gen::Context other = c;
+  other.ddc = host;
+  Opened opened;
+  CHECK_FALSE(opened.desc->open(schema::to_json(p), other, &opened.state, &error));
+  MESSAGE(error);
+  CHECK(error.find("is not in " + theirs) != std::string::npos);
+  CHECK(error.find("it is in " + own) != std::string::npos);
+  CHECK(error.find("the same --ddc") != std::string::npos);
+}
+
+// **The cuts planned, not pasted** (W97c; R144's hook; channels.md, "In a scene"): an entry that
+// names no plan hands its cuts through `plan_ground` on the unedited ground, and they are the
+// blocks `engine-content channels --cut` writes for the scene to paste (`terrain_cuts_json` of the
+// same plan), byte for byte, so the two scenes' grounds are one list of edits under one key (R144
+// holds a list to the ground it builds). Opened again on the ground those cuts lowered, with the
+// unedited ground behind `uncut()`, it reads the same plan and lays the same pieces; an entry that
+// names its plan plans no cut, since the scene carries them.
+TEST_CASE("channels: an entry that names no plan plans its cuts through the ground hook") {
+  test::TempDir scratch;
+  scene_gen::Context c;
+  c.dir = scratch.path();
+  c.ddc = scratch.path();
+  c.ground = ground(step_pool);
+  c.tile_size = 64;
+  c.world_seed = 7;
+  const ChannelLayer p = layer();
+  Opened planning;
+  REQUIRE(planning.desc->plan_ground != nullptr);
+  std::string error;
+  REQUIRE_MESSAGE(planning.desc->open(schema::to_json(p), c, &planning.state, &error), error);
+  scene_gen::GroundPlan planned;
+  REQUIRE_MESSAGE(planning.desc->plan_ground(planning.state, c, planned, &error), error);
+  CHECK(planned.holes.empty());
+  REQUIRE_FALSE(planned.edits.empty());
+  // The pasted form: the plan's own cuts, as engine-content channels writes them.
+  std::string plans_dir;
+  REQUIRE_MESSAGE(derived_dir(c.ddc, c.dir, plans_dir, error), error);
+  ChannelPlan plan;
+  REQUIRE_MESSAGE(ensure_plan(p, c, plans_dir, plan, error), error);
+  CHECK_FALSE(plan.planned);  // the entry's open made it; this reads it
+  JsonValue as_planned = JsonValue::array();
+  for (const scene::TerrainEdit& edit : planned.edits)
+    as_planned.push_back(schema::to_json(edit));
+  JsonValue pasted = JsonValue::array();
+  const JsonValue cuts = terrain_cuts_json(p, plan.network);
+  for (const JsonValue& cut : cuts.as_array()) {
+    scene::TerrainEdit edit;  // through the type, as a scene file's edits are read
+    schema::ReadContext reader;
+    REQUIRE(schema::from_json(edit, cut, reader));
+    pasted.push_back(schema::to_json(edit));
+  }
+  REQUIRE(pasted.as_array().size() == planned.edits.size());
+  CHECK(write_json(as_planned) == write_json(pasted));
+  // The second open, on the cut ground, its unedited ground behind `uncut()`: one plan (nothing
+  // planned again), the same pieces by id (their clasts stand on the cut ground, so not their
+  // recipes).
+  scene_gen::Context cut = c;
+  cut.ground = ground(step_pool_cut);
+  cut.uncut_ground.fn = [](void*, scene_gen::Ground& out) {
+    out = ground(step_pool);
+    return true;
+  };
+  const u64 made = plans_made();
+  Opened second;
+  REQUIRE_MESSAGE(second.desc->open(schema::to_json(p), cut, &second.state, &error), error);
+  CHECK(plans_made() == made);
+  scene_gen::Placements a, b;
+  REQUIRE(planning.desc->expand(planning.state, c, a, &error));
+  REQUIRE(second.desc->expand(second.state, cut, b, &error));
+  REQUIRE(a.instances.size() == b.instances.size());
+  for (u32 i = 0; i < a.instances.size(); ++i)
+    CHECK(a.instances[i].id == b.instances[i].id);
+  // A named plan: the scene carries its cuts, and the entry plans none.
+  ChannelLayer named = p;
+  named.plan = plan_key_text(plan.key);
+  Opened carried;
+  REQUIRE_MESSAGE(carried.desc->open(schema::to_json(named), cut, &carried.state, &error), error);
+  scene_gen::GroundPlan none;
+  REQUIRE(carried.desc->plan_ground(carried.state, cut, none, &error));
+  CHECK(none.empty());
+}
+
 // ---- W97: bed sediment -------------------------------------------------------------------------
 
 namespace {
@@ -2283,10 +2472,13 @@ TEST_CASE("channels: the clasts are tile-stable, one merged piece a tile, and op
   std::sort(kb.begin(), kb.end());
   CHECK(ka == kb);
   for (const Laid* l : {&a, &b}) {
+    // A tile's pieces (one, or several when its stones outgrow a mesh's room) are consecutive: no
+    // tile comes back after another's.
     std::vector<std::pair<i32, i32>> tiles;
     u64 held = 0;
     for (const PlacedPiece& piece : l->pieces) {
-      tiles.push_back({piece.tile.x, piece.tile.z});
+      const std::pair<i32, i32> t{piece.tile.x, piece.tile.z};
+      if (tiles.empty() || tiles.back() != t) tiles.push_back(t);
       held += clast_count(piece.recipe);
     }
     CHECK(held == l->log.clasts.size());
@@ -2323,9 +2515,125 @@ TEST_CASE("channels: the clasts' recipes and mesh are pinned") {
   const u64 indices = hash_bytes(mesh.indices.data(), mesh.indices.size() * sizeof(u32));
   MESSAGE("recipes " << recipes << ", first piece: " << mesh.indices.size() / 3
                      << " triangles, positions " << positions << ", indices " << indices);
-  CHECK(recipes == 7519227035656357816ull);
+  // W97b re-pinned the recipes (k_channels_version 9; the surface carries no default colour) and
+  // the indices (the triangles grouped by lithology); the positions are W97's to the bit.
+  CHECK(recipes == 7718558231201880594ull);
   CHECK(positions == 14068701233020217500ull);
-  CHECK(indices == 14738498776935463833ull);
+  CHECK(indices == 4152819545259226263ull);
+}
+
+namespace {
+// A pack holding `roles`, each with its five maps named under the role's own directory (nothing is
+// read: a pack is parsed, and a container names paths; a set's metallic and height maps are not
+// sampled by a mesh, so three of each set's images are named).
+std::string rock_pack(std::initializer_list<const char*> roles) {
+  std::string text =
+      R"({"format":"engine.materials.pack/1","name":"rocks","version":"1","roles":{)";
+  bool first = true;
+  for (const char* role : roles) {
+    const std::string r(role);
+    text += (first ? "\"" : ",\"") + r +
+            R"(":{"tile_m":1.5,"normal_convention":"opengl","maps":{"base_color":{"file":")" + r +
+            R"(/b.png"},"normal":{"file":")" + r + R"(/n.png"},"roughness":{"file":")" + r +
+            R"(/r.png"},"metallic":{"file":")" + r + R"(/m.png"},"height":{"file":")" + r +
+            R"(/h.png"}}})";
+    first = false;
+  }
+  return text + "}}";
+}
+}  // namespace
+
+// **The stones are of several rocks, each its own set** (W97b, G165, W97c; channels.md, "What a
+// stone is made of"): with no pack a tile's container names no image and holds a material a
+// lithology and tone with a dry rock's albedo, every cluster one of them; with a pack each rock's
+// two materials name that rock's own set (the tone a factor on it, a texture record an image), a
+// rock whose role the pack lacks keeps its constants, and `boulders.role` named is every stone's
+// set; over two valleys the lithologies' shares of the triangles follow their shares of the stones.
+TEST_CASE("channels: the stones are of four rocks in their shares, each its own set") {
+  const ChannelLayer p = layer();
+  f64 by_rock[4] = {}, total = 0;
+  for (const scene_gen::HeightFn fn : {&step_pool, &plane_bed}) {
+    const Laid laid = lay_valley(p, fn, 64);
+    REQUIRE_FALSE(laid.pieces.empty());
+    for (const PlacedPiece& piece : laid.pieces) {
+      assets::MeshData mesh;
+      std::string error;
+      REQUIRE(solve_piece(piece.recipe, mesh, error));
+      REQUIRE(mesh.materials.size() == 8);
+      for (const assets::Primitive& prim : mesh.primitives) {
+        by_rock[prim.material / 2] += prim.index_count / 3;
+        total += prim.index_count / 3;
+      }
+    }
+    geometry::ClusterFileData data;
+    std::string error;
+    REQUIRE_MESSAGE(build_piece_container(laid.pieces[0].recipe, {}, 0, data, error), error);
+    CHECK(data.image_paths.empty());
+    REQUIRE(data.materials.size() == 8);
+    REQUIRE(data.cluster_material.size() == data.mesh.mesh.clusters.size());
+    for (const u32 m : data.cluster_material)
+      CHECK(m < 8);
+    for (const geometry::ClusterFileMaterial& m : data.materials) {
+      const f32 mean = (m.base_color.x + m.base_color.y + m.base_color.z) / 3.0f;
+      CHECK(mean > 0.08f);  // the darkest tone of basalt's 0.12
+      CHECK(mean < 0.32f);  // the lightest of the pale rock's 0.25
+      CHECK(m.base_color_image == -1);
+    }
+  }
+  // A pack with three of the four rocks' sets: basalt's is missing.
+  const PlacedPiece piece = lay_valley(p, &step_pool, 64).pieces[0];
+  materials::Pack pack;
+  std::string error;
+  REQUIRE_MESSAGE(
+      materials::parse_pack(rock_pack({"rock/granite", "rock/limestone", "rock/sandstone"}),
+                            "D:/pack", pack, error),
+      error);
+  geometry::ClusterFileData data, plain;
+  REQUIRE_MESSAGE(build_piece_container(piece.recipe, {}, 0, plain, error), error);
+  REQUIRE_MESSAGE(build_piece_container(piece.recipe, {}, 0, data, error, &pack), error);
+  CHECK(data.image_paths.size() == 9);  // three sets of three maps, each named once
+  CHECK(data.textures.size() == data.image_paths.size());
+  REQUIRE(data.materials.size() == 8);
+  REQUIRE(data.material_sampling.size() == 8);
+  CHECK(data.cluster_material == plain.cluster_material);
+  const char* roles[4] = {"rock/granite", "rock/limestone", "", "rock/sandstone"};
+  for (u32 m = 0; m < 8; ++m) {
+    const geometry::ClusterFileMaterial& got = data.materials[m];
+    if (m / 2 == 2) {
+      // Basalt: no set, so its constants, as with no pack.
+      CHECK(got.base_color_image == -1);
+      CHECK(got.normal_image == -1);
+      CHECK(got.base_color.x == plain.materials[m].base_color.x);
+      CHECK(got.roughness == plain.materials[m].roughness);
+      continue;
+    }
+    REQUIRE(got.base_color_image >= 0);
+    REQUIRE(got.normal_image >= 0);
+    CHECK(data.image_paths[static_cast<u32>(got.base_color_image)] ==
+          std::string("D:/pack/") + roles[m / 2] + "/b.png");
+    CHECK(data.image_paths[static_cast<u32>(got.normal_image)] ==
+          std::string("D:/pack/") + roles[m / 2] + "/n.png");
+    // The tone is the factor on the set: 0.85 and 1.15, grey.
+    const f32 tone = m % 2 == 0 ? .85f : 1.15f;
+    CHECK(got.base_color.x == tone);
+    CHECK(got.base_color.y == tone);
+    CHECK(got.base_color.z == tone);
+    // The two tones of a rock are one set.
+    if (m % 2 == 1) CHECK(got.base_color_image == data.materials[m - 1].base_color_image);
+  }
+  // `boulders.role` named: every stone that set, and one set's images.
+  ChannelPiece one = piece.recipe;
+  one.surface.role = "rock/sandstone";
+  geometry::ClusterFileData named;
+  REQUIRE_MESSAGE(build_piece_container(one, {}, 0, named, error, &pack), error);
+  CHECK(named.image_paths.size() == 3);
+  for (const geometry::ClusterFileMaterial& m : named.materials)
+    CHECK(m.base_color_image >= 0);
+  const f64 share[4] = {.45, .25, .15, .15};
+  for (u32 r = 0; r < 4; ++r) {
+    MESSAGE("rock " << r << ": " << by_rock[r] / total << " of the triangles");
+    CHECK(std::abs(by_rock[r] / total - share[r]) < .05);
+  }
 }
 
 // **What a tile of bed costs** (W97; measured, printed; the numbers channels.md, "What a tile
@@ -2381,4 +2689,11 @@ TEST_CASE("channels: what a tile of bed costs (measured, printed)") {
           build_ms, " ms");
   CHECK(data.mesh.leaf_triangle_count > 0);
   CHECK(root < data.mesh.leaf_triangle_count);
+  // **It fits a mesh a tile may hand** (W97c): the renderer refuses one of more than
+  // `renderer.meshes.max_clusters` (4,096 by default) and the tile then draws no stones; the
+  // scratch valley's busiest 32 m tile was 5,852 clusters in one piece before pieces were cut by
+  // their triangles.
+  MESSAGE("the busiest piece: ", data.mesh.mesh.clusters.size(), " clusters over ", pieces.size(),
+          " pieces");
+  CHECK(data.mesh.mesh.clusters.size() <= 4096);
 }
