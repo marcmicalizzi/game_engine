@@ -90,12 +90,26 @@ stream per member from the crossing's seed and its index.
 triangles for a stone, 12 for a sawn member), a log a twelve-sided prism (44 triangles) whose
 section is a constant table (no C library sine) cut flat at its hewn height, its sides with radial
 normals. Each face's points are wound so its normal points away from the member's centre. UVs are
-metres of surface on the plane the face is nearest square to, as the materials' `metres` layout
-reads them. The stone members and the timber members are two parts, each clustered with the
-engine's DAG builder, merged into one mesh with a material each: the layer's `stone_role`
-(`rock/granite` by default) and `wood_role` (`wood/plank`). **The pack has no `wood/` set today**, so
-the timber draws its constant colour (a weathered grey-brown), as the walls' stone did before G148;
-a `wood/plank` and a `wood/log` set are the materials row's to add.
+metres of surface, as the materials' `metres` layout reads them: a stone's on the plane the face is
+nearest square to; a timber member's **along its grain** (G186) — u runs along a log's axis or a
+sawn member's longest extent on every face but its ends, v along the face's other axis — so a wood
+set whose grain runs along its image's u follows the plank across the deck, the post up and the log
+along the span.
+
+**Three materials, each a role through the tile contract** (G186; R147's seam,
+[texture](texture.md#textures-that-arrive-after-the-load)). The members are three parts — the
+**stone** (stones, slabs, piers, abutments), the **sawn timber** (planks, posts, rails) and the
+**round timber** (a foot log, stringers, sills) — each clustered with the engine's DAG builder and
+merged into one mesh with a material each, whose set is the recipe's role from the host's pack:
+`stone_role` (`rock/granite` by default; a rock the pack lacks falls back to `rock/granite`, the
+engine's generated set, before a constant, since any rock set reads better than flat grey),
+`wood_role` (`wood/plank`) and `log_role` (`wood/log`). The container names the sets' images and
+fills their texture records (`texture::fill_cluster_texture_records`), so a tile's bridge draws
+textured wherever the host reads the derived-data cache. A material no member wears (a line of
+stepping stones' timber) names no images. **A timber role the pack lacks draws its constant**: a
+weathered sawn grey-brown (0.30, 0.27, 0.22) and a darker barked log (0.20, 0.17, 0.13), roughness
+0.80 and 0.85. The base's packs have no `wood/` set; `wood/plank` and `wood/log` are the materials
+row's (G188), under exactly those names.
 
 ## Forms and the LOD policy
 
@@ -234,7 +248,7 @@ whose routes are switched off has no crossings to read.
   placements with the scene's exclusion and no tile's shapes (scene_gen.md, "The shapes a tile
   occupies"), so a body of a later streamed entry can stand where the drawn tile left the ground
   bare under a deck. It is R144's, for every shape.
-- **Wood sets in the pack**: `wood/plank` and `wood/log`.
+- **Wood sets in the pack**: `wood/plank` and `wood/log` (G188); the bridge names them already.
 - **The bank under the bridge**: rip-rap round an abutment, the bank trodden bare at the approaches.
 - **A crib abutment of logs**, a pier's cutwater, a slab's taper, a foot log's taper and bark left
   at its ends; lattice rails (reel r49).

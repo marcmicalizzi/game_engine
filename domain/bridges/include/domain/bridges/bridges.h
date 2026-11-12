@@ -11,7 +11,7 @@
 // `plan_bridge` chooses the form a footpath would build there — stepping stones, a clapper bridge,
 // a foot log, or log stringers under a plank deck — by the crossing's bankfull width and depth and
 // the bed's stone, and solves every member in whole millimetres; `solve_bridge` makes each member a
-// closed solid, stone members and timber members in one mesh of two materials.
+// closed solid, the stone, the sawn and the round timber in one mesh of three materials.
 //
 // **What it writes to its neighbours** (bridges.md, "The ground and the neighbours"): each bridge's
 // approaches as `Fill` ground edits from the deck's ends to the tread (`approach_edits_json`),
@@ -55,7 +55,8 @@
 namespace engine::bridges {
 
 // The solver's version, in every recipe's source hash: a change that moves a member bumps it.
-inline constexpr u32 k_bridge_version = 2;
+// 3 (G186): three materials, the timber's UVs along its grain.
+inline constexpr u32 k_bridge_version = 3;
 
 // ---- the grounded constants (docs/experiments/footbridges.md, each against its source) ---------
 
@@ -113,9 +114,16 @@ inline constexpr i32 k_min_freeboard_mm = 300;
 // What a member is, and what it is made of.
 enum class MemberKind : u8 { stone, slab, pier, abutment, log, sill, stringer, plank, post, rail };
 inline constexpr u32 k_member_kinds = 10;
-// The two materials of a bridge's mesh: 0 the stone, 1 the timber.
+// The three materials of a bridge's mesh (bridges.md, "The mesh"): 0 the stone (stones, slabs,
+// piers, abutments: the layer's `stone_role`, a `rock/*` set), 1 the sawn timber (planks, posts,
+// rails: `wood_role`, `wood/plank`), 2 the round timber (a foot log, stringers, sills: `log_role`,
+// `wood/log`). A role the pack lacks draws the member's constant colour.
 inline constexpr u8 k_stone = 0;
-inline constexpr u8 k_timber = 1;
+inline constexpr u8 k_plank = 1;
+inline constexpr u8 k_log = 2;
+inline constexpr u32 k_materials = 3;
+// The stone's role when the layer's is not in the pack: the engine's generated granite.
+inline constexpr std::string_view k_fallback_stone_role = "rock/granite";
 // The shape a member is drawn as: a block with a rough outline (a stone), a sawn box, or a log
 // along the bridge's x or z.
 enum class Shape : u8 { rough, box, log_x, log_z };
@@ -174,20 +182,22 @@ bool plan_bridge(const Crossing& crossing, u64 seed, BridgePlan& out, std::strin
 // --------------------------------------------------------------------------------------
 
 struct BridgeReport {
-  u32 triangles = 0;                        // the finest form's
-  u32 kind_triangles[k_member_kinds] = {};  // where they go, by `MemberKind`
-  u32 stone_triangles = 0, timber_triangles = 0;
+  u32 triangles = 0;                         // the finest form's
+  u32 kind_triangles[k_member_kinds] = {};   // where they go, by `MemberKind`
+  u32 material_triangles[k_materials] = {};  // and by material
   u32 root_triangles = 0;  // the DAG's coarsest cut: the far form (set by `build_container`)
 };
-// Every member as a closed, outward-wound solid in the bridge's frame (metres), per material:
-// `parts[k_stone]` and `parts[k_timber]`, positions, normals, UVs in metres of surface, indices.
+// Every member as a closed, outward-wound solid in the bridge's frame (metres), per material
+// (`parts[k_stone]`, `[k_plank]`, `[k_log]`): positions, normals, UVs in metres of surface,
+// indices. A timber member's UVs run along its length (u along the grain), so a wood set's grain,
+// drawn along its image's u, follows the plank, the post or the log.
 struct MeshPart {
   Vector<Vec3> positions;
   Vector<Vec3> normals;
   Vector<Vec2> uvs;
   Vector<u32> indices;
 };
-bool solve_bridge(const Bridge& bridge, MeshPart (&parts)[2], BridgePlan& plan,
+bool solve_bridge(const Bridge& bridge, MeshPart (&parts)[k_materials], BridgePlan& plan,
                   BridgeReport& report, std::string& error);
 
 // The recipe's file: read (refusing an unknown field, a crossing out of range), canonical, and the
@@ -195,8 +205,9 @@ bool solve_bridge(const Bridge& bridge, MeshPart (&parts)[2], BridgePlan& plan,
 bool read_file(std::string_view text, Bridge& out, std::string& error);
 std::string canonical_json(const Bridge& bridge);
 u64 source_hash(const Bridge& bridge);
-// The container the mesh generator `bridge` builds: the stone and the timber each clustered and
-// their DAGs merged, a material each (the layer's roles, from the host's pack).
+// The container the mesh generator `bridge` builds: each material's members clustered and their
+// DAGs merged, a material each, its set the recipe's role from the host's pack, through the tile
+// contract (R147: the container names its images and carries their texture records).
 bool build_container(const Bridge& bridge, const assets::MeshGeneratorInputs& inputs,
                      const geometry::ClusterLodOptions& lod, u32 page_bytes,
                      geometry::ClusterFileData& out, BridgeReport& report, std::string& error);

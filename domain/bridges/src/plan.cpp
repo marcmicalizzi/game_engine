@@ -187,7 +187,7 @@ i32 timber_seat(BridgePlan& p, Draws& d, const Crossing& c, i32 x, i32 sill, i32
     below = stone_stack(p, d, MemberKind::abutment, x, sill + 300, length + 200, ground - 200,
                         sill_foot);
   return static_cast<i32>(
-      add(p, block(MemberKind::sill, Shape::log_z, k_timber, x - sill / 2, x + sill / 2, sill_foot,
+      add(p, block(MemberKind::sill, Shape::log_z, k_log, x - sill / 2, x + sill / 2, sill_foot,
                    seat, -length / 2, length / 2, below)));
 }
 
@@ -215,7 +215,7 @@ void plan_timber(const Crossing& c, Draws& d, BridgePlan& p, bool foot_log) {
     const i32 length = 1200;
     const i32 a = timber_seat(p, d, c, s0, sill, length, soffit);
     timber_seat(p, d, c, s1, sill, length, soffit);
-    Member log = block(MemberKind::log, Shape::log_x, k_timber, s0 - sill / 2 - overhang,
+    Member log = block(MemberKind::log, Shape::log_x, k_log, s0 - sill / 2 - overhang,
                        s1 + sill / 2 + overhang, soffit, soffit + dia, -r, r, a);
     log.hewn = hewn;
     add(p, log);
@@ -237,7 +237,7 @@ void plan_timber(const Crossing& c, Draws& d, BridgePlan& p, bool foot_log) {
     const i32 hewn = soffit + dia - 50;
     i32 stringer = -1;
     for (i32 side = -1; side <= 1; side += 2) {
-      Member s = block(MemberKind::stringer, Shape::log_x, k_timber, s0 - sill / 2 - overhang / 2,
+      Member s = block(MemberKind::stringer, Shape::log_x, k_log, s0 - sill / 2 - overhang / 2,
                        s1 + sill / 2 + overhang / 2, soffit, soffit + dia, side * zc - dia / 2,
                        side * zc + dia / 2, a);
       s.hewn = hewn;
@@ -250,7 +250,7 @@ void plan_timber(const Crossing& c, Draws& d, BridgePlan& p, bool foot_log) {
     for (i32 k = 0; k < planks; ++k) {
       const i32 px = start + k * pitch;
       const i32 jw = d.range(-6, 6);
-      add(p, block(MemberKind::plank, Shape::box, k_timber, px, px + k_plank_mm + jw, hewn,
+      add(p, block(MemberKind::plank, Shape::box, k_plank, px, px + k_plank_mm + jw, hewn,
                    hewn + k_plank_thick_mm, -k_deck_mm / 2, k_deck_mm / 2, stringer));
     }
     p.deck = hewn + k_plank_thick_mm;
@@ -282,12 +282,12 @@ void plan_timber(const Crossing& c, Draws& d, BridgePlan& p, bool foot_log) {
       const Member& plank = p.members[static_cast<u32>(on)];
       const i32 at = std::clamp(x, plank.x0 + post / 2, plank.x1 - post / 2);
       const i32 idx = static_cast<i32>(
-          add(p, block(MemberKind::post, Shape::box, k_timber, at - post / 2, at + post / 2, p.deck,
+          add(p, block(MemberKind::post, Shape::box, k_plank, at - post / 2, at + post / 2, p.deck,
                        p.deck + k_rail_mm, zc - post / 2, zc + post / 2, on)));
       if (first_post < 0) first_post = idx;
     }
     if (first_post >= 0)
-      add(p, block(MemberKind::rail, Shape::box, k_timber, x0 - post / 2, x1 + post / 2,
+      add(p, block(MemberKind::rail, Shape::box, k_plank, x0 - post / 2, x1 + post / 2,
                    p.deck + k_rail_mm, p.deck + k_rail_mm + 60, zc - 40, zc + 40, first_post));
   }
 }

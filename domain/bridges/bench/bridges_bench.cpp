@@ -43,7 +43,7 @@ ENGINE_BENCH_ARGS(bridges_plan, "bridges.plan", 0, 1, 2, 3) {
 ENGINE_BENCH_ARGS(bridges_solve, "bridges.solve", 0, 1, 2, 3) {
   bridges::Bridge b;
   b.crossing = crossing(state.arg());
-  bridges::MeshPart parts[2];
+  bridges::MeshPart parts[bridges::k_materials];
   bridges::BridgePlan plan;
   bridges::BridgeReport report;
   std::string error;

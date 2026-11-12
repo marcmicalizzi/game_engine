@@ -7,6 +7,7 @@
 #include <core/json/json.h>
 #include <core/schema/json_reflect.h>
 #include <domain/bridges/bridges.h>
+#include <domain/materials/materials.h>
 
 #include <doctest/doctest.h>
 
@@ -123,11 +124,12 @@ u64 plan_hash(const BridgePlan& p) {
   return h;
 }
 
-u64 mesh_hash(const MeshPart (&parts)[2]) {
+u64 mesh_hash(const MeshPart (&parts)[k_materials]) {
   u64 h = 0;
   for (const MeshPart& part : parts) {
     h = hash_combine(h, hash_bytes(part.positions.data(), part.positions.size() * sizeof(Vec3)));
     h = hash_combine(h, hash_bytes(part.normals.data(), part.normals.size() * sizeof(Vec3)));
+    h = hash_combine(h, hash_bytes(part.uvs.data(), part.uvs.size() * sizeof(Vec2)));
     h = hash_combine(h, hash_bytes(part.indices.data(), part.indices.size() * sizeof(u32)));
   }
   return h;
@@ -207,7 +209,7 @@ TEST_CASE("bridges: every member is a closed solid wound outward") {
   const Crossing cases[] = {stream(3000, 400), stream(6000, 800, 400), stream(3000, 800),
                             stream(7000, 900)};
   for (const Crossing& c : cases) {
-    MeshPart parts[2];
+    MeshPart parts[k_materials];
     BridgePlan plan;
     BridgeReport report;
     std::string error;
@@ -248,31 +250,83 @@ TEST_CASE("bridges: every member is a closed solid wound outward") {
     // and a log fill less than theirs, a reversed solid would count negative).
     CHECK(volume > 0.5 * boxes);
     CHECK(volume <= boxes * 1.0001);
-    CHECK(report.triangles == report.stone_triangles + report.timber_triangles);
+    CHECK(report.triangles == report.material_triangles[k_stone] +
+                                  report.material_triangles[k_plank] +
+                                  report.material_triangles[k_log]);
   }
 }
 
-TEST_CASE("bridges: the container is one mesh of two materials with a far form") {
+TEST_CASE("bridges: the container is one mesh of three materials with a far form") {
   const Crossing c = stream(7000, 900);
   geometry::ClusterFileData data;
   BridgeReport report;
   std::string error;
   REQUIRE_MESSAGE(build_container(recipe(c), {}, {}, 0, data, report, error), error);
-  CHECK(data.materials.size() == 2);
+  CHECK(data.materials.size() == k_materials);
   CHECK(data.cluster_material.size() == data.mesh.mesh.clusters.size());
-  bool stone = false, timber = false;
+  bool worn[k_materials] = {};
   for (const u32 m : data.cluster_material) {
-    stone = stone || m == k_stone;
-    timber = timber || m == k_timber;
+    REQUIRE(m < k_materials);
+    worn[m] = true;
   }
-  CHECK(stone);
-  CHECK(timber);
+  CHECK(worn[k_stone]);  // the abutments under the sills
+  CHECK(worn[k_plank]);  // the deck and the rails
+  CHECK(worn[k_log]);    // the stringers and the sills
   CHECK(report.root_triangles > 0);
   CHECK(report.root_triangles < report.triangles);
   CHECK(data.generator == "bridge");
   // A ford has nothing to build.
   geometry::ClusterFileData none;
   CHECK_FALSE(build_container(recipe(stream(12000, 1200)), {}, {}, 0, none, report, error));
+}
+
+TEST_CASE("bridges: each material names its role's set through the tile contract") {
+  // Stand-in packs parsed from text (no pack on disk): the stone takes the layer's rock and falls
+  // back to the generated granite, the sawn and the round timber their own roles, and a timber
+  // role the pack lacks draws its constant (bridges.md, "The mesh").
+  const auto set = [](const char* role, const char* file) {
+    return std::string("\"") + role + R"(":{"tile_m":1,"normal_convention":"opengl","maps":{)" +
+           R"("base_color":{"file":")" + file + R"(.png"},"normal":{"file":")" + file +
+           R"(n.png"},"roughness":{"file":")" + file + R"(r.png"},"metallic":{"file":")" + file +
+           R"(m.png"},"height":{"file":")" + file + R"(h.png"}}})";
+  };
+  const std::string head =
+      R"({"format":"engine.materials.pack/1","name":"stand-in","version":"1","roles":{)";
+  materials::Pack full, granite_only;
+  std::string error;
+  REQUIRE_MESSAGE(
+      materials::parse_pack(head + set("rock/basalt", "b") + "," + set("rock/granite", "g") + "," +
+                                set("wood/plank", "p") + "," + set("wood/log", "l") + "}}",
+                            "C:/stand-in", full, error),
+      error);
+  REQUIRE(materials::parse_pack(head + set("rock/granite", "g") + "}}", "C:/stand-in", granite_only,
+                                error));
+  const auto image = [](const geometry::ClusterFileData& d, u8 m) -> std::string {
+    const i32 k = d.materials[m].base_color_image;
+    return k >= 0 ? d.image_paths[static_cast<u32>(k)] : std::string();
+  };
+  Bridge b = recipe(stream(7000, 900));  // stringers: stone, planks and logs
+  b.stone_role = "rock/basalt";
+  geometry::ClusterFileData data;
+  BridgeReport report;
+  REQUIRE_MESSAGE(
+      build_container(b, assets::MeshGeneratorInputs{&full}, {}, 0, data, report, error), error);
+  CHECK(image(data, k_stone) == "C:/stand-in/b.png");
+  CHECK(image(data, k_plank) == "C:/stand-in/p.png");
+  CHECK(image(data, k_log) == "C:/stand-in/l.png");
+  // The rock the pack lacks falls back to the granite; the timber it lacks keeps its colour.
+  REQUIRE(
+      build_container(b, assets::MeshGeneratorInputs{&granite_only}, {}, 0, data, report, error));
+  CHECK(image(data, k_stone) == "C:/stand-in/g.png");
+  CHECK(image(data, k_plank).empty());
+  CHECK(image(data, k_log).empty());
+  CHECK(data.materials[k_plank].base_color.x != data.materials[k_log].base_color.x);
+  // Stepping stones wear no timber, and name no timber image.
+  REQUIRE(build_container(recipe(stream(2000, 300)), assets::MeshGeneratorInputs{&full}, {}, 0,
+                          data, report, error));
+  CHECK(image(data, k_stone) == "C:/stand-in/g.png");
+  CHECK(image(data, k_plank).empty());
+  CHECK(image(data, k_log).empty());
 }
 
 TEST_CASE(
@@ -430,10 +484,10 @@ TEST_CASE("bridges: the same bytes on every toolchain, pinned") {
                             stream(7000, 900, 0, 300)};
   const u64 plan_pins[] = {0x1599dbc7f6e3f185ull, 0x9ca998a88eceb423ull, 0xfdce0357b88c500eull,
                            0xa2e065a587840fe5ull};
-  const u64 mesh_pins[] = {0xa2149693bc9c34dfull, 0xda99be6a0705e2aeull, 0xd99ad790db329798ull,
-                           0x1eb8b2d377f88031ull};
+  const u64 mesh_pins[] = {0xf63ee472b509b0bdull, 0x5a94b3a18ac30237ull, 0xe53b4303fd18cbb4ull,
+                           0x2c4e80eb15304fafull};
   for (u32 i = 0; i < 4; ++i) {
-    MeshPart parts[2];
+    MeshPart parts[k_materials];
     BridgePlan plan;
     BridgeReport report;
     std::string error;

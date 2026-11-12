@@ -54,11 +54,13 @@ struct Layer @version(2) {
   /// The grade an approach falls at from a deck's end to the ground, permille, 1..1000: the routes'
   /// own grade cap, which `engine-content bridges` writes (the approach is the path's tread).
   approach_grade_permille: u32 = 250 @since(2)
-  /// The material roles the members sample (materials.md): the stone of piers, slabs, stones and
-  /// abutments, and the timber of logs, sills, deck and rails. A role the pack lacks draws the
-  /// member's own colour.
+  /// The material roles the members sample (materials.md; bridges.md, "The mesh"): the stone of
+  /// piers, slabs, stones and abutments (a `rock/*` set; `rock/granite` behind it when the pack
+  /// lacks it), the sawn timber of planks, posts and rails, and the round timber of a foot log,
+  /// stringers and sills. A timber role the pack lacks draws the member's own colour.
   stone_role: string = "rock/granite"
   wood_role: string = "wood/plank"
+  log_role: string = "wood/log" @since(2)
   /// Where the recipes go, relative to the scene; empty: the derived-data root's `bridges/`.
   recipes: string = ""
 }
@@ -66,9 +68,11 @@ struct Layer @version(2) {
 /// One bridge, the mesh generator `bridge`'s file (`<name>.bridge.json`): the crossing and what
 /// its members are drawn with. The mesh's origin is the crossing's centre at its bed, +x the path's
 /// direction across, +z downstream-or-up the channel (the right hand), y up.
-struct Bridge @version(1) {
+struct Bridge @version(2) {
   crossing: Crossing
   seed: u64 = 1
   stone_role: string = "rock/granite"
   wood_role: string = "wood/plank"
+  /// Version 2 (G186): the round timber's role, apart from the sawn timber's.
+  log_role: string = "wood/log" @since(2)
 }

@@ -328,7 +328,7 @@ int bridges_command(int argc, char** argv) {
     bridges::Bridge b;
     b.crossing = c;
     b.seed = bridges::crossing_seed(out_layer.seed, c);
-    bridges::MeshPart parts[2];
+    bridges::MeshPart parts[bridges::k_materials];
     bridges::BridgePlan plan;
     bridges::BridgeReport report;
     if (!bridges::solve_bridge(b, parts, plan, report, error)) return fail(error);

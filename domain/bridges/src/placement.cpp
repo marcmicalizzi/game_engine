@@ -215,6 +215,7 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
     bridge.seed = crossing_seed(entry->layer.seed, c);
     bridge.stone_role = entry->layer.stone_role;
     bridge.wood_role = entry->layer.wood_role;
+    bridge.log_role = entry->layer.log_role;
     BridgePlan plan;
     std::string why;
     if (!plan_bridge(c, bridge.seed, plan, why))
