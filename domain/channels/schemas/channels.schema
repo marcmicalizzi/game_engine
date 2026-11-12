@@ -41,23 +41,23 @@ enum ChannelSampling : u8 {
   Stochastic
 }
 
-/// One part's look: the material pack's role it samples, the size of a repeat, and the flat
-/// colour and roughness it draws with where the pack has no set for the role.
+/// The clasts' look: the material pack's role they sample, the size of a repeat, and the flat
+/// colour and roughness a stone draws with where the pack has no set for its role (channels.md,
+/// "What a stone is made of").
 struct ChannelSurface @version(1) {
-  /// The pack's role (`rock/granite`). Empty: the part's own list of roles, the first the pack
-  /// has (channels.md, "Materials").
+  /// The pack's role every stone samples (`rock/granite`). Empty: each stone its own rock's,
+  /// `rock/granite`, `rock/limestone`, `rock/basalt` or `rock/sandstone`.
   role: string
-  /// One repeat covers this many metres: 0.05 to 20 m; absent, the part's own (the bed 0.35 m, so a
-  /// rock set reads at a gravel's scale; the bars 0.8 m; the banks 1.5 m).
+  /// One repeat covers this many metres of a stone's surface: 0.05 to 20 m; absent, 1.2 m.
   tile_m: f32? @unit(m)
   sampling: ChannelSampling = Stochastic
-  /// Linear base colour, each channel 0 to 1; absent, the part's own.
+  /// Linear base colour, each channel 0 to 1, of a stone whose role the pack lacks; absent, its
+  /// rock's dry albedo.
   color: f32[3]?
-  /// 0.02 to 1.
+  /// 0.02 to 1, of a stone whose role the pack lacks, with `color`.
   roughness: f32 = 0.9
-  /// Linear RGB the pack's set is multiplied by, each channel 0 to 1; absent, the part's own (the
-  /// bed 0.62, 0.60, 0.56, a rock set darkened toward wet-worn gravel; the banks 0.8, 0.75, 0.7;
-  /// the bars none).
+  /// Linear RGB the pack's set is multiplied by, each channel 0 to 1, beside the stone's tone
+  /// (0.85 or 1.15); absent, none.
   tint: f32[3]?
 }
 
@@ -255,11 +255,9 @@ struct ChannelLayer @version(10) {
   bed_material: string @since(9)
   bed_feather_m: f32 = 0.4 @since(9) @unit(m)
   /// The clasts' look (channels.md, "Materials"): every clast the generator lays, the bed's and
-  /// the steps' alike, the one thing it places. Since W97b a tile's mesh draws its materials'
-  /// constants only: with `color` absent the stones are four lithologies in two tones (channels.md,
-  /// "What a stone is made of"); `color` given makes every stone that rock at `roughness`. `role`,
-  /// `tile_m`, `sampling` and `tint` are carried in the recipe for when a tile's meshes draw
-  /// textures, and draw nothing today.
+  /// the steps' alike, the one thing it places. The stones are four rocks in two tones, each rock
+  /// its own set of the pack unless `role` names one for all (channels.md, "What a stone is made
+  /// of"); `color` and `roughness` are what a stone whose set the pack lacks draws.
   boulders: ChannelSurface @since(7)
   /// **Bed sediment** (W97; channels.md, "Bed sediment"; the sources in
   /// docs/experiments/channels.md, "Bed sediment"): the smallest clast drawn as geometry, its b

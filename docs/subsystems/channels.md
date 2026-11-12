@@ -183,15 +183,18 @@ a quarter of the width where the section is a V.
 
 ### Materials
 
-**Since W97b a tile's piece draws its materials' constants only**: it is handed with its tile
-(R142's contract), and a mesh a tile hands has no texture residency yet ([ADR-0061](../adr/0061-a-tiles-meshes-arrive-with-the-tile.md);
-the main coordinator's next row). So the stones are not textured: each is one of four lithologies
-in two tones, each a material of its own with the dry rock's albedo and roughness ([What a stone
-is made of](#what-a-stone-is-made-of)). `boulders.color`, given, makes every stone that one rock at
-`boulders.roughness`. `boulders.role`, `tile_m`, `sampling` and `tint` are still carried in the
-recipe (each clast's UVs are its vertices' x and z plus half their height, offset by its seed) for
-when such meshes draw textures, and draw nothing today; until W97b a pack's `rock/boulder`, else
-`rock/granite`, else `rock/sandstone` set was applied, which no host drew for a tile's mesh.
+**Since W97c each rock samples its own set** through the tile contract's textures (R147: a tile's
+mesh arrives with its textures, [scene_gen](scene_gen.md#a-tiles-meshes)): the piece is handed with
+its tile, its container names the sets' images and records them
+(`texture::fill_cluster_texture_records`), and the host builds and admits them before the mesh.
+Each stone is one of four lithologies in two tones ([What a stone is made of](#what-a-stone-is-made-of));
+each rock takes its own role, the tone a factor on the set. `boulders.role`, named, is the one set
+every stone samples; `boulders.tint` multiplies the set beside the tone; `tile_m` (1.2 m by
+default) is the repeat over a stone's surface, whose UVs are its vertices' x and z plus half their
+height, offset by its seed; `sampling` is the set's placement. `boulders.color` and `roughness`
+are what a stone whose role the pack lacks draws (absent, its rock's dry albedo). W97b drew every
+stone as those constants, because a tile's mesh had no textures yet; before W97b a pack's
+`rock/boulder`, else `rock/granite`, else `rock/sandstone` set was applied to all of them.
 **The bed's and the bars' materials are the terrain's**: `bed_material` paints the cut's bed and,
 with `bar_material` (W97), the flood bed each side is a region of its own in the bars' material, so
 a bar reads apart from the bed. **A palette layer names its images outright**
@@ -296,25 +299,34 @@ a cluster is one rock at every level; the merged DAG is the tile's far form.
 the resistant ones enriched downstream by abrasion (the grounding page, [The stones'
 rocks](../experiments/channels.md#the-stones-rocks)). A clast is one of four, drawn from its own
 seed by share, so a recipe needs no new field and the same recipe is the same stones on every
-host; and one of two tones, 0.85 and 1.15 of its rock's albedo. Each of the eight is a material of
-the piece's container with its constants, since a tile's mesh draws no texture yet:
+host; and one of two tones, 0.85 and 1.15. Each of the eight is a material of the piece's
+container. **Each rock samples its own set of the pack** (W97c), and **the tone is a factor on the
+set**, not a second set, so the eight materials share four sets' images and a set is uploaded once
+whatever the tiles. Where the pack has no set for a rock's role, that rock's two materials draw
+its dry albedo and roughness, untextured, and `resolve_set` says once which role was missing:
 
-| Rock | Dry albedo, linear | Roughness | Share |
-|---|---|---|---:|
-| granite (grey granite, gneiss) | 0.19, 0.18, 0.17 | 0.8 | 0.45 |
-| pale (quartzite, limestone, chalk) | 0.27, 0.26, 0.24 | 0.75 | 0.25 |
-| basalt (and greywacke) | 0.12, 0.12, 0.125 | 0.75 | 0.15 |
-| sandstone | 0.16, 0.12, 0.085 | 0.85 | 0.15 |
+| Rock | Its role | Dry albedo, linear (no set) | Roughness (no set) | Share |
+|---|---|---|---|---:|
+| granite (grey granite, gneiss) | `rock/granite` | 0.19, 0.18, 0.17 | 0.8 | 0.45 |
+| pale (quartzite, limestone, chalk) | `rock/limestone` | 0.27, 0.26, 0.24 | 0.75 | 0.25 |
+| basalt (and greywacke) | `rock/basalt` | 0.12, 0.12, 0.125 | 0.75 | 0.15 |
+| sandstone | `rock/sandstone` | 0.16, 0.12, 0.085 | 0.85 | 0.15 |
 
-The albedos are a measured table's (grey granite 0.18, basalt 0.12, sandstone 0.12, chalk 0.25);
-the hues, the tones and the shares are design choices, the shares those of `gravel/bed`'s generated
-set (G148) so the stones and the bed's texture between them agree. **Not built**: the mix from the
-scene's formation (`Context::formation`) or from the catchment's rocks upstream, the abrasion
-that enriches the hard rocks downstream, and wet stones at and under the waterline (the water's).
-`channels: the stones are of four rocks in their shares, as material constants` holds the
-container (no image, eight materials, every cluster one of them, each mean albedo in 0.08 to 0.32)
-and the shares of the triangles over two valleys within 0.05 of the table's (measured 0.456,
-0.250, 0.147, 0.147).
+All four roles are among the generated sets (`engine-content matgen`, [matgen](matgen.md)), so a
+checkout that has run it draws every stone textured; the engine's fetched pack holds
+`rock/sandstone` alone and the generated sets stand behind it. The pale rock takes the limestone set
+because it is the only pale rock with one (a choice; a quartzite set is a row this leaves). The albedos are a measured table's (grey granite 0.18, basalt 0.12,
+sandstone 0.12, chalk 0.25); the hues, the tones and the shares are design choices, the shares
+those of `gravel/bed`'s generated set (G148) so the stones and the bed's texture between them agree.
+**Not built**: the mix from the scene's formation (`Context::formation`) or from the catchment's
+rocks upstream, the abrasion that enriches the hard rocks downstream, and wet stones at and under
+the waterline (`rock/granite_wet` exists; which stones are wet is the water's surface, closed to
+this row). `channels: the stones are of four rocks in their shares, each its own set` holds the
+container with no pack (no image, eight materials, every cluster one of them, each mean albedo in
+0.08 to 0.32), with a pack lacking `rock/basalt` (each rock's two materials name its own set's
+images, the tone the factor, basalt's two on their constants, a texture record an image) and with
+`boulders.role` named (every material that set), and the shares of the triangles over two valleys
+within 0.05 of the table's (measured 0.456, 0.250, 0.147, 0.147).
 
 ### The stray triangle on the riffle (T98)
 
@@ -354,9 +366,10 @@ the test valley, at load, before the first frame. Now:
   derived-data cache, keyed by the recipe, off the frame's thread ([world](world.md#a-tiles-meshes-residency-by-reference)).
 - **`expand`** lists every piece with its recipe, so a scene read whole is the same scene.
 
-What the contract carries today: the mesh, its materials' constants, its collision proxy (a mesh a
-tile hands is walked on), and its cluster DAG as the far form. What it does not, and the bed
-needs: texture residency (the stones are untextured until it lands); a footprint other than a disc
+What the contract carries today: the mesh, its materials and their textures (since R147 and W97c:
+the four rocks' sets, built and admitted before the mesh, a set shared by every tile that names
+it), its collision proxy (a mesh a tile hands is walked on), and its cluster DAG as the far form.
+What it does not, and the bed needs: a footprint other than a disc
 of `reach` about the tile's corner (a later entry is handed a disc as wide as the tile for a piece
 that covers a thin strip of it); and a far form past the DAG (the bed's material darkened and
 roughened by cover). `channels: whole expansion equals any tile order, with stable ids` holds a
@@ -413,7 +426,17 @@ cached yet, made; [One plan](#one-plan)) from the host's derived-data root's `ch
 repository's `ddc/`, else `ddc/` beside the scene), every piece's recipe decided and kept, and
 `expand`/`tile`/`occupies` hand out what was decided, a tile's piece with the tile. An entry of a scene whose ground carries the
 plan's cuts names the plan: `"plan": "<the key engine-content channels printed>"`. A moving ground is refused (the dunes have no
-drainage to dress). Every field, its default and range is in `schemas/channels.schema`.
+drainage to dress).
+
+**The host's root wins, the plan's too** (T112, 2026-11-11). A host given `--ddc` reads a named
+plan under that root and nowhere else, as it builds the ground's set there over the scene's own
+`tiles.ddc` (T90); without one, under the scene's own (the repository's `ddc/` above the scene, else
+`ddc/` beside it). So a plan `engine-content channels` wrote without `--ddc` is not found by a host
+given one: the entry is refused, and when the plan is under the scene's own root the refusal says
+so and where (`channels: the host's root wins over the scene's own`). Reading it from either root
+would make which plan a scene draws depend on which roots happen to hold one; refusing loudly
+keeps one rule and one answer. `engine-content channels --ddc` takes the same root for the plan
+and for the uncut ground's set, so the subcommand and the host are given one `--ddc`, or neither. Every field, its default and range is in `schemas/channels.schema`.
 
 ## The water's description
 

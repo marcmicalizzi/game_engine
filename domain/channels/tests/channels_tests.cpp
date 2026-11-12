@@ -7,6 +7,7 @@
 #include <core/schema/json_reflect.h>
 #include <domain/assets/mesh_generator.h>
 #include <domain/channels/channels.h>
+#include <domain/materials/materials.h>
 #include <foundation/io/vfs.h>
 
 #include <doctest/doctest.h>
@@ -2160,6 +2161,48 @@ TEST_CASE("channels: one plan is read by the cut, the water, the exclusion and t
   CHECK_FALSE(read_plan(bytes, refused, error));
 }
 
+// **The host's root wins, the plan's too** (T112; channels.md, "In a scene"): a plan written under
+// the scene's own root (what `engine-content channels` does without `--ddc`) is read by a host that
+// names no root, and by one that names that root; a host that names another root does not read it
+// there, and the refusal says where it is.
+TEST_CASE("channels: the host's root wins over the scene's own, for the plan") {
+  test::TempDir scratch;
+  const std::string scene_dir = scratch.file("scene"), host = scratch.file("host");
+  REQUIRE(io::make_directories(scene_dir) == io::Status::Ok);
+  std::string own, theirs, error;
+  REQUIRE_MESSAGE(derived_dir("", scene_dir, own, error), error);
+  CHECK(own.ends_with("/ddc/channels"));  // nothing above the scratch says it is a repository
+  REQUIRE_MESSAGE(derived_dir(host, scene_dir, theirs, error), error);
+  scene_gen::Context c;
+  c.dir = scene_dir;
+  c.ground = ground(step_pool);
+  c.tile_size = 64;
+  c.world_seed = 7;
+  ChannelLayer p = layer();
+  ChannelPlan plan;
+  REQUIRE_MESSAGE(ensure_plan(p, c, own, plan, error), error);
+  p.plan = plan_key_text(plan.key);
+  {
+    Opened opened;
+    REQUIRE_MESSAGE(opened.desc->open(schema::to_json(p), c, &opened.state, &error), error);
+  }
+  {
+    scene_gen::Context named = c;
+    const std::string root = io::join_path(scene_dir, "ddc");
+    named.ddc = root;
+    Opened opened;
+    REQUIRE_MESSAGE(opened.desc->open(schema::to_json(p), named, &opened.state, &error), error);
+  }
+  scene_gen::Context other = c;
+  other.ddc = host;
+  Opened opened;
+  CHECK_FALSE(opened.desc->open(schema::to_json(p), other, &opened.state, &error));
+  MESSAGE(error);
+  CHECK(error.find("is not in " + theirs) != std::string::npos);
+  CHECK(error.find("it is in " + own) != std::string::npos);
+  CHECK(error.find("the same --ddc") != std::string::npos);
+}
+
 // ---- W97: bed sediment -------------------------------------------------------------------------
 
 namespace {
@@ -2404,11 +2447,34 @@ TEST_CASE("channels: the clasts' recipes and mesh are pinned") {
   CHECK(indices == 4152819545259226263ull);
 }
 
-// **The stones are of several rocks, as constants** (W97b, G165; channels.md, "What a stone is
-// made of"): a tile's container names no image (a tile's mesh draws constants only, ADR-0061),
-// holds a material a lithology and tone with a dry rock's albedo, gives every cluster one of them,
-// and over two valleys the lithologies' shares of the triangles follow their shares of the stones.
-TEST_CASE("channels: the stones are of four rocks in their shares, as material constants") {
+namespace {
+// A pack holding `roles`, each with its five maps named under the role's own directory (nothing is
+// read: a pack is parsed, and a container names paths; a set's metallic and height maps are not
+// sampled by a mesh, so three of each set's images are named).
+std::string rock_pack(std::initializer_list<const char*> roles) {
+  std::string text =
+      R"({"format":"engine.materials.pack/1","name":"rocks","version":"1","roles":{)";
+  bool first = true;
+  for (const char* role : roles) {
+    const std::string r(role);
+    text += (first ? "\"" : ",\"") + r +
+            R"(":{"tile_m":1.5,"normal_convention":"opengl","maps":{"base_color":{"file":")" + r +
+            R"(/b.png"},"normal":{"file":")" + r + R"(/n.png"},"roughness":{"file":")" + r +
+            R"(/r.png"},"metallic":{"file":")" + r + R"(/m.png"},"height":{"file":")" + r +
+            R"(/h.png"}}})";
+    first = false;
+  }
+  return text + "}}";
+}
+}  // namespace
+
+// **The stones are of several rocks, each its own set** (W97b, G165, W97c; channels.md, "What a
+// stone is made of"): with no pack a tile's container names no image and holds a material a
+// lithology and tone with a dry rock's albedo, every cluster one of them; with a pack each rock's
+// two materials name that rock's own set (the tone a factor on it, a texture record an image), a
+// rock whose role the pack lacks keeps its constants, and `boulders.role` named is every stone's
+// set; over two valleys the lithologies' shares of the triangles follow their shares of the stones.
+TEST_CASE("channels: the stones are of four rocks in their shares, each its own set") {
   const ChannelLayer p = layer();
   f64 by_rock[4] = {}, total = 0;
   for (const scene_gen::HeightFn fn : {&step_pool, &plane_bed}) {
@@ -2436,8 +2502,58 @@ TEST_CASE("channels: the stones are of four rocks in their shares, as material c
       const f32 mean = (m.base_color.x + m.base_color.y + m.base_color.z) / 3.0f;
       CHECK(mean > 0.08f);  // the darkest tone of basalt's 0.12
       CHECK(mean < 0.32f);  // the lightest of the pale rock's 0.25
+      CHECK(m.base_color_image == -1);
     }
   }
+  // A pack with three of the four rocks' sets: basalt's is missing.
+  const PlacedPiece piece = lay_valley(p, &step_pool, 64).pieces[0];
+  materials::Pack pack;
+  std::string error;
+  REQUIRE_MESSAGE(
+      materials::parse_pack(rock_pack({"rock/granite", "rock/limestone", "rock/sandstone"}),
+                            "D:/pack", pack, error),
+      error);
+  geometry::ClusterFileData data, plain;
+  REQUIRE_MESSAGE(build_piece_container(piece.recipe, {}, 0, plain, error), error);
+  REQUIRE_MESSAGE(build_piece_container(piece.recipe, {}, 0, data, error, &pack), error);
+  CHECK(data.image_paths.size() == 9);  // three sets of three maps, each named once
+  CHECK(data.textures.size() == data.image_paths.size());
+  REQUIRE(data.materials.size() == 8);
+  REQUIRE(data.material_sampling.size() == 8);
+  CHECK(data.cluster_material == plain.cluster_material);
+  const char* roles[4] = {"rock/granite", "rock/limestone", "", "rock/sandstone"};
+  for (u32 m = 0; m < 8; ++m) {
+    const geometry::ClusterFileMaterial& got = data.materials[m];
+    if (m / 2 == 2) {
+      // Basalt: no set, so its constants, as with no pack.
+      CHECK(got.base_color_image == -1);
+      CHECK(got.normal_image == -1);
+      CHECK(got.base_color.x == plain.materials[m].base_color.x);
+      CHECK(got.roughness == plain.materials[m].roughness);
+      continue;
+    }
+    REQUIRE(got.base_color_image >= 0);
+    REQUIRE(got.normal_image >= 0);
+    CHECK(data.image_paths[static_cast<u32>(got.base_color_image)] ==
+          std::string("D:/pack/") + roles[m / 2] + "/b.png");
+    CHECK(data.image_paths[static_cast<u32>(got.normal_image)] ==
+          std::string("D:/pack/") + roles[m / 2] + "/n.png");
+    // The tone is the factor on the set: 0.85 and 1.15, grey.
+    const f32 tone = m % 2 == 0 ? .85f : 1.15f;
+    CHECK(got.base_color.x == tone);
+    CHECK(got.base_color.y == tone);
+    CHECK(got.base_color.z == tone);
+    // The two tones of a rock are one set.
+    if (m % 2 == 1) CHECK(got.base_color_image == data.materials[m - 1].base_color_image);
+  }
+  // `boulders.role` named: every stone that set, and one set's images.
+  ChannelPiece one = piece.recipe;
+  one.surface.role = "rock/sandstone";
+  geometry::ClusterFileData named;
+  REQUIRE_MESSAGE(build_piece_container(one, {}, 0, named, error, &pack), error);
+  CHECK(named.image_paths.size() == 3);
+  for (const geometry::ClusterFileMaterial& m : named.materials)
+    CHECK(m.base_color_image >= 0);
   const f64 share[4] = {.45, .25, .15, .15};
   for (u32 r = 0; r < 4; ++r) {
     MESSAGE("rock " << r << ": " << by_rock[r] / total << " of the triangles");

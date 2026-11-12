@@ -183,16 +183,29 @@ std::string plan_key_text(u64 key) {
 std::string plan_path(std::string_view dir, u64 key) {
   return io::join_path(dir, "plan-" + plan_key_text(key) + ".channel-plan");
 }
+namespace {
+// The root a scene's derived data takes when no host names one: the repository's `ddc/` above the
+// scene, else `ddc/` beside it.
+std::string scene_root(std::string_view scene_dir) {
+  std::string root;
+  std::error_code ec;
+  const auto from = std::filesystem::absolute(
+      scene_dir.empty() ? std::filesystem::path(".") : std::filesystem::path(scene_dir), ec);
+  if (!ec) root = geometry::find_ddc_root(from.generic_string());
+  if (root.empty()) root = io::join_path(scene_dir, "ddc");
+  return root;
+}
+std::string channels_dir(std::string_view root) {
+  std::error_code ec;
+  const std::string dir =
+      std::filesystem::absolute(io::join_path(root, "channels"), ec).generic_string();
+  return ec ? std::string() : dir;
+}
+}  // namespace
+
 bool derived_dir(std::string_view ddc, std::string_view scene_dir, std::string& out,
                  std::string& error) {
-  std::string root(ddc);
-  if (root.empty()) {
-    std::error_code ec;
-    const auto from = std::filesystem::absolute(
-        scene_dir.empty() ? std::filesystem::path(".") : std::filesystem::path(scene_dir), ec);
-    if (!ec) root = geometry::find_ddc_root(from.generic_string());
-    if (root.empty()) root = io::join_path(scene_dir, "ddc");
-  }
+  const std::string root = ddc.empty() ? scene_root(scene_dir) : std::string(ddc);
   std::error_code ec;
   out = std::filesystem::absolute(io::join_path(root, "channels"), ec).generic_string();
   if (ec || io::make_directories(out) != io::Status::Ok) {
@@ -386,7 +399,21 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
   // whose ground is then the ground before any cut. The scene's water bodies reach it through the
   // exclusion the host built (W90; null: no mouths).
   ChannelPlan plan;
-  if (!ensure_plan(e->layer, context, root, plan, why)) return refused(error, why);
+  if (!ensure_plan(e->layer, context, root, plan, why)) {
+    // **The host's root wins, the plan's too** (T112; channels.md, "In a scene"): a host that
+    // names a derived-data root reads the plan there and nowhere else, as it reads the ground's
+    // set there over the scene's own `tiles.ddc` (T90). A plan left under the scene's own root is
+    // not read from it; the refusal says where it is, so the two can be given one root.
+    bool ok = false;
+    const u64 key = parse_key(e->layer.plan, ok);
+    const std::string own = channels_dir(scene_root(context.dir));
+    if (ok && !context.ddc.empty() && !own.empty() && own != root &&
+        io::exists(plan_path(own, key)))
+      why += "; it is in " + own +
+             ", under the scene's own root: the host's derived-data root wins over the scene's, so "
+             "give the host and `engine-content channels` the same --ddc";
+    return refused(error, why);
+  }
   Vector<PlacedPiece> pieces;
   if (!place_pieces(e->layer, plan.network, context.ground, context.tile_size, pieces, why))
     return refused(error, why);

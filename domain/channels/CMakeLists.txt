@@ -22,3 +22,8 @@ engine_module(NAME channels LAYER domain OPTIONAL WHOLE_ARCHIVE
 
 engine_module_tests(NAME channels
   SOURCES tests/channels_tests.cpp tests/size_table.cpp)
+
+# A tile's activation and the region's laying, timed (channels.md, "What a tile costs"); the CTest
+# smoke run lays a quarter of the valley.
+engine_module_bench(NAME channels
+  SOURCES bench/channels_bench.cpp)

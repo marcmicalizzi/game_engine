@@ -63,26 +63,28 @@ constexpr f64 k_scarp_m = .5;
 constexpr f64 k_bar_head = 1.2, k_bar_tail = .8;
 constexpr f64 k_flood_bed = .8;
 
-// **What a stone is made of** (W97b, G165; channels.md, "What a stone is made of"; the sources on
-// docs/experiments/channels.md, "The stones' rocks"): a gravel bed carries a handful of
+// **What a stone is made of** (W97b, G165, W97c; channels.md, "What a stone is made of"; the
+// sources on docs/experiments/channels.md, "The stones' rocks"): a gravel bed carries a handful of
 // lithologies from its catchment (Kodama 1994, five in one bed, abstract), so a clast is one of
-// four, drawn from its seed by share, in one of two tones. A tile's mesh draws its materials'
-// constants only (ADR-0061), so the albedo is the dry rock's own, linear: grey granite 0.18, basalt
-// 0.12, sandstone 0.12 and a pale (chalk, limestone, quartzite) 0.25 (a measured table of dry stone
-// albedo, read in full; broadband). The shares follow `gravel/bed`'s generated set (matgen) so the
-// stones and the bed's texture between them agree; the hues and the tones (0.85 and 1.15 of the
-// albedo) are design choices.
+// four, drawn from its seed by share, in one of two tones. Each rock samples its own set of the
+// pack (`role`; W97c, through the tile contract's textures, R147), the tone a factor on it; where
+// the pack has no set for the role the stone draws the dry rock's albedo, linear: grey granite
+// 0.18, basalt 0.12, sandstone 0.12 and a pale (chalk, limestone, quartzite) 0.25 (a measured
+// table of dry stone albedo, read in full; broadband). The shares follow `gravel/bed`'s generated
+// set (matgen) so the stones and the bed's texture between them agree; the hues and the tones
+// (0.85 and 1.15) are design choices.
 struct ClastLithology {
   const char* name;
-  f32 albedo[3];
+  const char* role;  // the pack's set it samples (materials.md; matgen's defaults)
+  f32 albedo[3];     // where the pack has none
   f32 roughness;
   f64 share;
 };
 constexpr ClastLithology k_lithologies[] = {
-    {"granite", {.19f, .18f, .17f}, .8f, .45},
-    {"pale", {.27f, .26f, .24f}, .75f, .25},
-    {"basalt", {.12f, .12f, .125f}, .75f, .15},
-    {"sandstone", {.16f, .12f, .085f}, .85f, .15},
+    {"granite", "rock/granite", {.19f, .18f, .17f}, .8f, .45},
+    {"pale", "rock/limestone", {.27f, .26f, .24f}, .75f, .25},
+    {"basalt", "rock/basalt", {.12f, .12f, .125f}, .75f, .15},
+    {"sandstone", "rock/sandstone", {.16f, .12f, .085f}, .85f, .15},
 };
 constexpr u32 k_clast_tones = 2;
 constexpr f32 k_tone[k_clast_tones] = {.85f, 1.15f};
@@ -542,10 +544,10 @@ bool solve_piece(const ChannelPiece& piece, assets::MeshData& out, std::string& 
   if (!piece_in_range(piece, error)) return false;
   g_pieces_solved.fetch_add(1, std::memory_order_relaxed);
   assets::MeshData mesh;
-  // **One material a lithology and tone** (W97b, G165; channels.md, "What a stone is made of"): a
-  // tile's mesh draws its materials' constants only (ADR-0061; texture residency for a tile's
-  // meshes is not built yet), so each stone's colour and roughness are the material's own.
-  // An authored `boulders.color` makes every stone that one rock, at `boulders.roughness`.
+  // **One material a lithology and tone** (W97b, G165; channels.md, "What a stone is made of"):
+  // these are the constants a stone draws where the pack has no set for its rock (the container
+  // applies the sets, `build_piece_container`). An authored `boulders.color` is that constant for
+  // every rock, at `boulders.roughness`.
   const bool authored = piece.surface.color.has_value();
   for (u32 m = 0; m < k_clast_materials; ++m) {
     const ClastLithology& l = k_lithologies[m / k_clast_tones];
@@ -734,9 +736,6 @@ bool build_piece_container(const ChannelPiece& piece, const geometry::ClusterLod
     geometry::permute_cluster_array(order, owners);
   }
   out.cluster_material = std::move(owners);
-  // **Constants only** (ADR-0061; scene_gen.md, "A tile's meshes"): a mesh a tile hands draws its
-  // materials' constants until texture residency for such meshes lands, so no set is applied and
-  // no image named; the pack still keys the build, as every generated mesh's does.
   for (const assets::Material& m : mesh.materials) {
     geometry::ClusterFileMaterial material;
     material.base_color = m.base_color;
@@ -744,6 +743,40 @@ bool build_piece_container(const ChannelPiece& piece, const geometry::ClusterLod
     material.roughness = m.roughness;
     out.materials.push_back(material);
   }
+  // **Each rock its own set** (W97c; channels.md, "What a stone is made of"): a tile's mesh arrives
+  // with its textures (R147; scene_gen.md, "A tile's meshes"), so the container names its images
+  // and records them, and the host builds and admits them before the mesh. A rock samples
+  // `boulders.role` when the recipe names one, else its own (`rock/granite`, `rock/limestone`,
+  // `rock/basalt`, `rock/sandstone`); the tone (and `boulders.tint`) is a factor on the set, not a
+  // second set, so the eight materials share four sets' images. A role the pack lacks leaves its
+  // two materials on their constants, said once a role by `resolve_set`. The UVs are metres of
+  // the stone's surface, offset by its seed, so the set repeats every `boulders.tile_m`.
+  const materials::MaterialSet* sets[k_clast_materials] = {};
+  bool any = false;
+  for (u32 m = 0; m < k_clast_materials; ++m) {
+    const std::string_view role = piece.surface.role.empty()
+                                      ? std::string_view(k_lithologies[m / k_clast_tones].role)
+                                      : std::string_view(piece.surface.role);
+    // Each role asked once: the two tones of a rock share its answer, and its log line.
+    sets[m] = m % k_clast_tones != 0 ? sets[m - 1] : materials::resolve_set(nullptr, pack, role);
+    any = any || sets[m] != nullptr;
+  }
+  if (any) {
+    for (const assets::Material& m : mesh.materials)
+      out.material_sampling.push_back(
+          geometry::encode_material_sampling(m.sampling, m.occlusion_strength));
+    for (u32 m = 0; m < k_clast_materials; ++m) {
+      if (sets[m] == nullptr) continue;
+      materials::MaterialSet applied = *sets[m];
+      applied.tile_m = piece.surface.tile_m.value_or(applied.tile_m);
+      applied.stochastic = piece.surface.sampling == ChannelSampling::Stochastic;
+      materials::apply_set(applied, materials::UvLayout::metres, out, m);
+      const f32 tone = k_tone[m % k_clast_tones];
+      const std::array<f32, 3> tint = piece.surface.tint.value_or(std::array<f32, 3>{1, 1, 1});
+      out.materials[m].base_color = {tone * tint[0], tone * tint[1], tone * tint[2], 1.0f};
+    }
+  }
+  if (!out.image_paths.empty()) texture::fill_cluster_texture_records(out);
   out.source_hash = piece_source_hash(piece);
   out.build_key = assets::generated_mesh_build_key(
       out.source_hash, assets::MeshGeneratorInputs{pack}, lod, page_bytes);
