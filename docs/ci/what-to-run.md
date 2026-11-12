@@ -300,9 +300,9 @@ The 2026-10-23 terrain batch has 121 tests in Windows debug: **70 minutes** for 
 
 **The material resolve's variants are the build's largest single memory cost, and a Ninja job pool
 caps how many compile at once** (roadmap T118, 2026-11-12). One `slangc` compile of
-`visibility_resolve_rt_water_terrain_stochastic` holds 12.6 GB of commit for about two minutes; six
+`visibility_resolve_rt_water_terrain_stochastic` holds 12.3 GiB of commit for about two minutes; six
 of the sixteen resolve variants hold 2.4 GiB or more, the other ten under 1 GiB; the 55 shaders of
-the tree sum to 50 GB of peaks and 385 s of `slangc` (the table below). A build that recompiled
+the tree sum to 49.1 GiB of peaks and 385 s of `slangc` (the table below). A build that recompiled
 them at four or six jobs asked for 38 to 40 GB at once, and on 2026-11-11, with thirteen agents
 building, the machine ran out of commit: builds died with C1083 on system headers, tests failed
 writing their own scratch files, and a forest load died. Every agent's first build after a base
@@ -324,17 +324,17 @@ the depth and the heavy set (`engine shaders: 6 heavy ..., at most 2 at once`).
 
 | Machine | A third of its memory | The largest first | `auto` depth | Heavy compiles' worst peak |
 |---|---|---|---|---|
-| This desktop, 64 GB (65,216 MiB) | 21,738 MiB | 12,571 + 7,089 = 19,660; + 3,883 = 23,543 | 2 | 19.7 GB |
-| A 32 GB developer machine | 10,922 MiB | 12,571 alone is over | 1 (the floor) | 12.6 GB |
-| 128 GB | 43,690 MiB | all six, 31,333 | 6 (no limit) | 31.3 GB |
+| This desktop, 64 GB (65,216 MiB) | 21,738 MiB | 12,571 + 7,089 = 19,660; + 3,883 = 23,543 | 2 | 19.2 GiB |
+| A 32 GB developer machine | 10,922 MiB | 12,571 alone is over | 1 (the floor) | 12.3 GiB |
+| 128 GB | 43,690 MiB | all six, 31,333 | 6 (no limit) | 30.6 GiB |
 
-On a 32 GB machine the floor is the point: the largest variant alone is 12.6 GB, more than a third,
+On a 32 GB machine the floor is the point: the largest variant alone is 12.3 GiB, more than a third,
 and it still has to compile; one at a time is the least a build can ask. A Linux container sees the
 memory its VM was given: this desktop's containers see 15,997 MiB and take depth 1, so their six
 heavy compiles run one after another (about 300 s of `slangc` on the shader step's path; the first
 two container runs with the pool, `linux-clang-debug` and `linux-gcc-release` with a narrow test
 filter, took 9 min 25 s and 11 min 52 s end to end), where before the pool six of them at once would
-have asked a 16 GB VM for 31 GB. A generator with no pools (anything but Ninja; every preset is Ninja) ignores
+have asked a 15.6 GiB VM for 30.6 GiB. A generator with no pools (anything but Ninja; every preset is Ninja) ignores
 `JOB_POOL` and configures as before, and `build.shader_pool` is not registered there.
 
 **What a heavy compile costs** (the meter's numbers in the first `msvc-debug` build of 33ff2824
@@ -357,11 +357,11 @@ water, and the terrain variants without it peak at 805 MiB and under.
 
 **Measured, as a pair** (2026-11-12, `msvc-debug`, a clean rebuild of the shaders alone: every
 `.spv` and `.cost` removed, then `ninja -j6` over the twelve `engine_shaders_*_build` targets; another
-session's `engine-view` held 50 GB of commit throughout, so free commit swung between 45 and 5 GB
-under the run and the machine never had the 80 GB a pool-less run at six jobs needs, which is why
+session's `engine-view` held 49.8 GiB of commit throughout, so free commit swung between 45 and 5 GiB
+under the run and the machine never had the 80 GiB a pool-less run at six jobs needs, which is why
 the "before" side is a model). The peak is the largest sum of the meter's peaks over the compiles
 `.ninja_log` shows running at once, an upper bound since two compiles' peaks need not coincide; a
-sampler reading the `slangc` processes' private bytes every five seconds saw at most 11.6 GB. The
+sampler reading the `slangc` processes' private bytes every five seconds saw at most 11.6 GiB. The
 model replays the measured run's order and each compile's measured time through `-j6` with and
 without the pool; it reproduces the measured run exactly (164.4 s, 19,659 MiB), and its pool-less
 side is a lower bound on time, since six heavy compiles at once would contend more than two do.
@@ -373,7 +373,7 @@ side is a lower bound on time, since six heavy compiles at once would contend mo
 | **after: pool depth 2, `-j6` (measured)** | **164.4 s** of `slangc` (174 s with ninja's start and the embeds) | 2 | **19,659 MiB** |
 | after: pool depth 1, `-j6` (model) | 315.7 s | 1 | 12,571 MiB |
 
-So at this desktop's default the pool takes 11.7 GB off the shader step's peak for 28 s of wall
+So at this desktop's default the pool takes 11.4 GiB off the shader step's peak for 28 s of wall
 time on a rebuild of the shaders alone; in a whole build the C++ jobs fill the slots the pool holds
 back. The 38 to 40 GB quoted on 2026-11-11 is close to the sixteen resolve variants' peaks summed
 (37,594 MiB on 33ff2824), which one build reaches only with all sixteen running at once; at six jobs
