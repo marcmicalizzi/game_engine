@@ -389,44 +389,50 @@ best built by one row; 2 can run beside 1.
 ### Stage 1 as built (2026-11-12, branch b62-G201-1)
 
 Every tree mesh the solver makes carries the skirt ([flora](../subsystems/flora.md#the-trunks-skirt)
-has the rule, each trunk kind and the re-pins): two rings under the stem's bottom ring, the first a
-quarter of the rim's radius down with the radius grown by a tenth, the second straight under it at
-*rho* tan 45° + 0.15 m below the origin. Two things differ from the design above, both found in the
-build:
+has the rule, each trunk kind and the re-pins): one ring straight under the stem's bottom ring at
+*rho* tan 45° + 0.15 m below the origin. Three things differ from the design above, all found in
+the build:
 
+- **Straight, not flared on.** The design carried the flare's curve on for a quarter of the rim's
+  radius with the radius grown by a tenth. Built that way, the picture at 2 m on the 30 degree ramp
+  had a dark line round the trunk at its old bottom ring: the tube's flare is a smoothstep, which
+  meets the bottom ring with no slope, so a ring growing outward below it is a crease, and the
+  traced shadows drew it. Straight down with the collar's normals the surface runs on unbroken, and
+  one ring does what two did: two triangles a side, not four (32 at 16 sides, not 64).
 - **The depth is measured from the origin, not the stem.** `1.1 r + 0.15 m` assumed a stem on the
   axis; a birch clump's stems and a leaning palm's foot stand off it, and the ground under a stem
-  0.3 m out at 45° is 0.3 m lower again. So the depth is the lowest ring's farthest point from the
-  origin times tan 45° plus the margin: the design's number for a stem on the axis, deeper for one
-  off it (the clump's 0.39 to 0.44 m where 1.1 *r* + 0.15 m would have given 0.30 to 0.34).
+  0.1 m out at 45° is 0.1 m lower again. So the depth is the bottom ring's farthest point from the
+  origin times tan 45° plus the margin: *r* + 0.15 m for a stem on the axis (no tenth to cover,
+  now that the skirt does not grow), deeper for one off it (the clump's stems 0.38 to 0.43 m where
+  *r* + 0.15 m would give 0.28 to 0.32).
 - **The seat in the generator section is left to stage 2**, its only reader; the skirt needs
   nothing recorded, the plan counts its triangles.
 
 | Trunk kind | Sides | Skirt triangles | Rim | Bottom |
 |---|---|---|---|---|
-| date palm (default) | 16 | 64 | 0.23 m | -0.40 m |
-| broadleaf (default) | 12 | 48 | 0.48 m | -0.68 m |
-| broadleaf profiles at 10 m (maple to alder) | 12 | 48 | 0.08 to 0.34 m | -0.23 to -0.53 m |
-| conifer (default) | 10 | 40 | 0.41 m | -0.60 m |
-| evergreen profiles at 10 m (pine to juniper) | 10 | 40 | 0.14 to 0.36 m | -0.31 to -0.55 m |
-| birch, one stem; a three-stem clump | 10; 8 a stem | 40; 96 | 0.17 m; 0.13 to 0.17 m | -0.34 m; -0.39 to -0.44 m |
-| willow, orchard tree | 10, 12 | 40, 48 | 0.68 m, 0.20 m | -0.90 m, -0.37 m |
-| ancient tree (20,000 rung) | 59 | 236 | 11.0 m (the buttresses) | -12.3 m |
+| date palm (default) | 16 | 32 | 0.23 m | -0.38 m |
+| broadleaf (default) | 12 | 24 | 0.48 m | -0.63 m |
+| broadleaf profiles at 10 m (maple to alder) | 12 | 24 | 0.08 to 0.34 m | -0.23 to -0.49 m |
+| conifer (default) | 10 | 20 | 0.41 m | -0.56 m |
+| evergreen profiles at 10 m (pine to juniper) | 10 | 20 | 0.14 to 0.36 m | -0.29 to -0.51 m |
+| birch, one stem; a three-stem clump | 10; 8 a stem | 20; 48 | 0.17 m; 0.13 to 0.17 m | -0.32 m; -0.38 to -0.43 m |
+| willow, orchard tree | 10, 12 | 20, 24 | 0.68 m, 0.20 m | -0.83 m, -0.35 m |
+| ancient tree (20,000 rung) | 59 | 118 | 11.0 m (the buttresses) | -11.2 m |
 
-The forest's own meshes were not rebuilt here (the proof of concept is read, never run); the
-design's 0.58 to 1.40 m for their rims of 0.39 to 1.14 m is the same rule.
+The forest's own meshes were not rebuilt here (the proof of concept is read, never run); for their
+rims of 0.39 to 1.14 m the rule gives 0.54 to 1.29 m (the design's 0.58 to 1.40 m had the tenth).
 
 **What it costs, as built.** Containers from `engine-content flora`, main (33ff2824) against the
 skirt, from the same recipes:
 
 | Recipe | Triangles | Vertices | Clusters (finest) | Bytes |
 |---|---|---|---|---|
-| `spruce-tall` | 23,450 → 23,490 (+40) | 32,627 → 32,647 | 545 → 546 (381 → 381) | 2,537,860 → 2,525,160 |
-| `oak` | 58,839 → 58,887 (+48) | 97,469 → 97,690 | 1,691 → 1,696 (1,020 → 1,020) | 5,489,180 → 5,484,592 |
-| `date-palm` | 55,312 → 55,376 (+64) | 107,003 → 106,991 | 1,753 → 1,749 (799 → 799) | 4,259,404 → 4,259,148 |
-| `willow` | 52,988 → 53,028 (+40) | 196,107 → 196,057 | 3,204 → 3,203 (1,516 → 1,516) | 7,452,592 → 7,451,216 |
+| `spruce-tall` | 23,450 → 23,470 (+20) | 32,627 → 32,635 | 545 → 546 (381 → 380) | 2,537,860 → 2,525,576 |
+| `oak` | 58,839 → 58,863 (+24) | 97,469 → 97,636 | 1,691 → 1,696 (1,020 → 1,020) | 5,489,180 → 5,483,008 |
+| `date-palm` | 55,312 → 55,344 (+32) | 107,003 → 107,038 | 1,753 → 1,750 (799 → 799) | 4,259,404 → 4,260,584 |
+| `willow` | 52,988 → 53,008 (+20) | 196,107 → 196,209 | 3,204 → 3,208 (1,516 → 1,516) | 7,452,592 → 7,456,832 |
 
-The finest clusters do not change in number (the skirt's triangles join the trunk's own clusters);
+The finest clusters hardly change in number (the skirt's triangles join the trunk's own clusters);
 the coarser levels move by a few clusters either way, the simplifier working on a grid the skirt
 made a few percent coarser. The bytes fall a little where the star's atlas is baked (spruce, oak):
 its PNG compresses differently with the trunk carried to the box's bottom.
