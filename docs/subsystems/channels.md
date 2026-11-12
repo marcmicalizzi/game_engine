@@ -428,6 +428,22 @@ repository's `ddc/`, else `ddc/` beside the scene), every piece's recipe decided
 plan's cuts names the plan: `"plan": "<the key engine-content channels printed>"`. A moving ground is refused (the dunes have no
 drainage to dress).
 
+**An entry that names no plan plans its own cuts** (W97c, 2026-11-11, through R144's hook,
+[scene_gen](scene_gen.md#what-an-entry-plans-for-the-ground)): `plan_ground` hands the network's
+cuts, the very blocks `engine-content channels --cut` writes (`terrain_cuts_json`), as the
+ground's edits, so such a scene pastes no cut and its ground is the pasted scene's: one list of
+edits under one key (`channels: an entry that names no plan plans its cuts through the ground
+hook` holds the planned list to the pasted one byte for byte, and R144's own case holds a list to
+the ground it builds). Its `open` stands the plan on `Context::uncut()`, so the planning pass and
+the second open on the cut ground make one plan and plan once. An entry that **names** its plan
+stands on cuts the scene carries and plans none: the two are one entry's two spellings, never
+both. What is still pasted: the water's ribbons (`water_channels`) and the beds' mask regions,
+which the hook has no list for (`GroundPlan` holds edits and openings); `engine-content channels`
+stays the way to inspect a plan and to write those. **Since this, an entry that names no plan on a
+terrain with no `tiles` block is refused** by the scene reader (an edit is written into a tile
+set's heights), where it used to lay its stones on the uncut ground: a channel is cut into the
+ground (W89), and a ground that cannot be cut cannot carry one.
+
 **The host's root wins, the plan's too** (T112, 2026-11-11). A host given `--ddc` reads a named
 plan under that root and nowhere else, as it builds the ground's set there over the scene's own
 `tiles.ddc` (T90); without one, under the scene's own (the repository's `ddc/` above the scene, else

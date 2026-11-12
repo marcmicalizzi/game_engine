@@ -2203,6 +2203,78 @@ TEST_CASE("channels: the host's root wins over the scene's own, for the plan") {
   CHECK(error.find("the same --ddc") != std::string::npos);
 }
 
+// **The cuts planned, not pasted** (W97c; R144's hook; channels.md, "In a scene"): an entry that
+// names no plan hands its cuts through `plan_ground` on the unedited ground, and they are the
+// blocks `engine-content channels --cut` writes for the scene to paste (`terrain_cuts_json` of the
+// same plan), byte for byte, so the two scenes' grounds are one list of edits under one key (R144
+// holds a list to the ground it builds). Opened again on the ground those cuts lowered, with the
+// unedited ground behind `uncut()`, it reads the same plan and lays the same pieces; an entry that
+// names its plan plans no cut, since the scene carries them.
+TEST_CASE("channels: an entry that names no plan plans its cuts through the ground hook") {
+  test::TempDir scratch;
+  scene_gen::Context c;
+  c.dir = scratch.path();
+  c.ddc = scratch.path();
+  c.ground = ground(step_pool);
+  c.tile_size = 64;
+  c.world_seed = 7;
+  const ChannelLayer p = layer();
+  Opened planning;
+  REQUIRE(planning.desc->plan_ground != nullptr);
+  std::string error;
+  REQUIRE_MESSAGE(planning.desc->open(schema::to_json(p), c, &planning.state, &error), error);
+  scene_gen::GroundPlan planned;
+  REQUIRE_MESSAGE(planning.desc->plan_ground(planning.state, c, planned, &error), error);
+  CHECK(planned.holes.empty());
+  REQUIRE_FALSE(planned.edits.empty());
+  // The pasted form: the plan's own cuts, as engine-content channels writes them.
+  std::string plans_dir;
+  REQUIRE_MESSAGE(derived_dir(c.ddc, c.dir, plans_dir, error), error);
+  ChannelPlan plan;
+  REQUIRE_MESSAGE(ensure_plan(p, c, plans_dir, plan, error), error);
+  CHECK_FALSE(plan.planned);  // the entry's open made it; this reads it
+  JsonValue as_planned = JsonValue::array();
+  for (const scene::TerrainEdit& edit : planned.edits)
+    as_planned.push_back(schema::to_json(edit));
+  JsonValue pasted = JsonValue::array();
+  const JsonValue cuts = terrain_cuts_json(p, plan.network);
+  for (const JsonValue& cut : cuts.as_array()) {
+    scene::TerrainEdit edit;  // through the type, as a scene file's edits are read
+    schema::ReadContext reader;
+    REQUIRE(schema::from_json(edit, cut, reader));
+    pasted.push_back(schema::to_json(edit));
+  }
+  REQUIRE(pasted.as_array().size() == planned.edits.size());
+  CHECK(write_json(as_planned) == write_json(pasted));
+  // The second open, on the cut ground, its unedited ground behind `uncut()`: one plan (nothing
+  // planned again), the same pieces by id (their clasts stand on the cut ground, so not their
+  // recipes).
+  scene_gen::Context cut = c;
+  cut.ground = ground(step_pool_cut);
+  cut.uncut_ground.fn = [](void*, scene_gen::Ground& out) {
+    out = ground(step_pool);
+    return true;
+  };
+  const u64 made = plans_made();
+  Opened second;
+  REQUIRE_MESSAGE(second.desc->open(schema::to_json(p), cut, &second.state, &error), error);
+  CHECK(plans_made() == made);
+  scene_gen::Placements a, b;
+  REQUIRE(planning.desc->expand(planning.state, c, a, &error));
+  REQUIRE(second.desc->expand(second.state, cut, b, &error));
+  REQUIRE(a.instances.size() == b.instances.size());
+  for (u32 i = 0; i < a.instances.size(); ++i)
+    CHECK(a.instances[i].id == b.instances[i].id);
+  // A named plan: the scene carries its cuts, and the entry plans none.
+  ChannelLayer named = p;
+  named.plan = plan_key_text(plan.key);
+  Opened carried;
+  REQUIRE_MESSAGE(carried.desc->open(schema::to_json(named), cut, &carried.state, &error), error);
+  scene_gen::GroundPlan none;
+  REQUIRE(carried.desc->plan_ground(carried.state, cut, none, &error));
+  CHECK(none.empty());
+}
+
 // ---- W97: bed sediment -------------------------------------------------------------------------
 
 namespace {

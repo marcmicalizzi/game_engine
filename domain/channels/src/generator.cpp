@@ -370,6 +370,9 @@ struct Entry {
   Vector<scene_gen::PlacementMesh> meshes;  // one a piece, its recipe in memory
   Vector<scene_gen::Placement> placements;  // one a piece; `mesh` its index in `meshes`
   Vector<scene_gen::TileCoord> tiles;       // per placement
+  // The plan's network, kept for `plan_ground` by an entry that names no plan (whose cuts it
+  // plans); empty for one that names its plan (whose cuts the scene carries).
+  ChannelNetwork network;
 };
 
 bool refused(std::string* error, std::string message) {
@@ -397,9 +400,14 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
   // **The plan, never made again over cut ground** (channels.md, "One plan"): read from its file
   // when the entry names it or its key is cached, and made here only for an entry that names none,
   // whose ground is then the ground before any cut. The scene's water bodies reach it through the
-  // exclusion the host built (W90; null: no mouths).
+  // exclusion the host built (W90; null: no mouths). **An entry that names no plan plans its own
+  // cuts** (W97c, R144's hook; channels.md, "In a scene"), so it stands its plan on the ground
+  // before any edit, `Context::uncut()`: the planning pass and the second open, on the ground
+  // those cuts lowered, make one plan under one key.
+  scene_gen::Context planning = context;
+  if (e->layer.plan.empty()) planning.ground = context.uncut();
   ChannelPlan plan;
-  if (!ensure_plan(e->layer, context, root, plan, why)) {
+  if (!ensure_plan(e->layer, planning, root, plan, why)) {
     // **The host's root wins, the plan's too** (T112; channels.md, "In a scene"): a host that
     // names a derived-data root reads the plan there and nowhere else, as it reads the ground's
     // set there over the scene's own `tiles.ddc` (T90). A plan left under the scene's own root is
@@ -433,10 +441,31 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
     e->tiles.push_back(piece.tile);
     e->meshes.push_back(std::move(mesh));
   }
+  if (e->layer.plan.empty()) e->network = std::move(plan.network);
   *state = e.release();
   return true;
 }
 void close(void* state) noexcept { delete static_cast<Entry*>(state); }
+
+// **The cuts, planned and not pasted** (W97c; R144; channels.md, "In a scene"): an entry that names
+// no plan hands its network's cuts — `terrain_cuts_json`, the blocks `engine-content channels
+// --cut` writes — as the ground's edits, so the scene carries none and the ground is the one the
+// pasted cuts made, under the same key. An entry that names its plan stands on cuts the scene
+// carries, and plans none: the two forms are one entry's two spellings, never both.
+bool plan_ground(void* state, const scene_gen::Context&, scene_gen::GroundPlan& out,
+                 std::string* error) {
+  const auto& e = *static_cast<Entry*>(state);
+  if (!e.layer.plan.empty()) return true;
+  const JsonValue cuts = terrain_cuts_json(e.layer, e.network);
+  for (const JsonValue& cut : cuts.as_array()) {
+    scene::TerrainEdit edit;
+    schema::ReadContext reader;
+    if (!schema::from_json(edit, cut, reader) || !reader.ok())
+      return refused(error, "channels: a planned cut is not an engine.scene.TerrainEdit");
+    out.edits.push_back(std::move(edit));
+  }
+  return true;
+}
 bool expand(void* state, const scene_gen::Context& c, scene_gen::Placements& out,
             std::string* error) {
   if (c.stand.present()) return refused(error, k_moving);
@@ -481,7 +510,8 @@ constexpr scene_gen::PlacementGeneratorDesc k_channels{.name = "channels",
                                                        .tile = &tile,
                                                        .occupies = &occupies,
                                                        .representation = &representation,
-                                                       .tile_meshes = true};
+                                                       .tile_meshes = true,
+                                                       .plan_ground = &plan_ground};
 const scene_gen::Registrar k_registrar{k_channels};
 }  // namespace
 }  // namespace engine::channels
