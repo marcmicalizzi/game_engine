@@ -115,10 +115,14 @@ describes the mechanism for shingle).
 
 **The numbers that were opened**: a gravel face stands at about 1 in 8 (tan β 0.125), with grains
 resting at 35° in air and about 30° in water (the Coastal Wiki's gravel page). **The numbers that
-were not**: the compilation the brief names, Bujan, Cox and Masselink 2019 over 2,000 beaches from
-fine sand to boulders, could be reached only as a bibliographic record. From memory, its fit is
+were not**: the compilation the brief names, Bujan, Cox and Masselink 2019, was reached as its abstract
+only (an index's record of it, opened): 2,144 measurements from very fine sand to boulders; the
+face steepens with the grain up to cobbles, steeply among fine sediments and gently among coarse,
+with a plateau near very coarse sand, where a beach becomes one that infiltration rules; boulders
+may fall off again (preliminary); and the fit has the form tan β = a (D50 − 0.125)^b + c. **The
+abstract does not give a, b and c.** From memory they are
 
-    tan β = 0.268 − 0.154 (D50 − 0.125)^(−0.145)        (D50 in mm; memory, not opened)
+    tan β = 0.268 − 0.154 (D50 − 0.125)^(−0.145)        (D50 in mm; the coefficients from memory)
 
 which gives 0.044 at 0.2 mm (2.5°), 0.070 at 0.3 mm (4.0°), 0.091 at 0.5 mm, 0.11 at 1 mm (6.3°),
 0.16 at 10 mm (9°) and 0.18 at 50 mm (10°). Those agree with what could be checked beside them: the
@@ -228,8 +232,10 @@ documentation, opened; the count through a search summary):
 R₀ the control line from the headland's tip, where the waves diffract, to the down-coast end of
 the bay; β the angle between that line and the crests arriving at the tip; R the distance from the
 tip to the shore at angle θ from the crest line; and the three coefficients tabulated against β,
-so that R = R₀ at θ = β. **The table was not found** (the technical note that prints it refused the
-fetch, and the paper is not open), so the design's check of a pocket beach is stated first by the
+so that R = R₀ at θ = β, which makes the three sum to one. **The table was not found**: it is
+printed for β from 20° to 80° in steps of 2° in Silvester and Hsu 1993 and as a figure in the
+Coastal Engineering Manual's Part III, chapter 2 (search summaries); the technical note and the
+manual's pages refused the fetch, and the paper is not open. So the design's check of a pocket beach is stated first by the
 condition the parabola is the fit of, zero net transport, and by the parabola once the build row
 has the table. González and Medina 2001 add where the straight part begins (the same
 documentation).
@@ -419,7 +425,7 @@ geomorphology; no source was opened for it.
 | Fall speed | w = R g D² / (18 ν + √(0.75 R g D³)) | C₁ 18, C₂ 1 | Ferguson and Church 2004: summary |
 | Closure, inner | 2.28 H − 68.5 H²/(g T²); 1.75, 57.9; 6.75 H̄ | H exceeded 12 h a year | Hallermeier, Birkemeier, Houston via the Coastal Wiki: opened |
 | Closure, outer | 0.018 H_s T_s √(g / (d50 (s − 1))) | 15 to 40 m | Hallermeier 1983 via the same: opened; its example disagrees with the formula |
-| Beach face | steeper with grain, flatter with exposure; gravel 1 in 8 | tan β = 0.268 − 0.154 (D − 0.125)^−0.145 | Gravel: Coastal Wiki, opened. The fit: Bujan and others 2019, **memory**. Bascom 1951, Sunamura 1984: not opened |
+| Beach face | steeper with grain, flatter with exposure; gravel 1 in 8 | tan β = 0.268 − 0.154 (D − 0.125)^−0.145 | Gravel: Coastal Wiki, opened. The fit: Bujan and others 2019, its form from the abstract (opened), its coefficients **memory**. Bascom 1951, Sunamura 1984: not opened |
 | Berm | high water + run-up of the fair-weather wave | Stockdon's R₂ | [shore.md](shore.md#the-run-up) |
 | Beach state | Ω = H_b / (w T) | reflective under 1, dissipative over 6 | Wright and Short 1984: summary |
 | Cusps | spacing = f × swash excursion | f 1.6 (1.06 to 2.15) | Coastal Wiki (Dean and Maurmeyer; Werner and Fink): opened; f: summary |
@@ -477,7 +483,7 @@ mouths are the last step's.
 | Field | What | Range, default |
 |---|---|---|
 | `sea.wave_base_m` | The depth below the level to which the sea's bed may be built | 0 to 200 m; absent: Hallermeier's outer depth of the climate's mean sea, or 20 m with no climate |
-| `sea.tide_m` | The spring tidal range | 0 to 15 m, default 0 |
+| `sea.tide_m` | The spring tidal range (a water body's own `tide_m` is an amplitude, half of this; the two must be set together) | 0 to 15 m, default 0 |
 | `sea.stands` | The level's history, a year and a level each, in order, as the ice's `stands` are; the wave-base rule follows it, and the coast's stand runs at the last | none |
 | `coast.stand_yr`, `coast.step_yr` | The stand and its step | 0 (no coast) to 20,000; 100 |
 | `coast.waves` | The rose of what arrives from the open sea: entries of `from_deg`, `height_m`, `period_s` and `share` of the year. It enters through `Sea` edges only | none |
@@ -622,8 +628,10 @@ first, and one header of closed forms once S102 has merged; they do not share th
   it should not link the GPU's module for a formula.
 - **What is shared**: the dispersion relation at a depth, the celerities, the shoaling coefficient,
   Snell's law, the breaker index, the fetch laws and Stockdon's run-up, as pure functions with no
-  C library call in a decision (the dispersion relation's hyperbolic tangent by a rational
-  approximation; Hunt 1979's is the usual one, from memory). Until S102 merges the landform
+  C library call in a decision (the dispersion relation solved by a rational
+  approximation in place of a hyperbolic tangent: Hunt 1979's explicit solution, good to about
+  0.2% at any depth by a later discussion's account, a search summary; its coefficients are known
+  to this page only from memory and are to be taken from the paper). Until S102 merges the landform
   carries its own and `engine-content`, which links both, holds the two to each other in a test,
   as it holds the heightfield's two readers.
 - **What must agree is the climate.** The coast is the equilibrium of one wave climate, and the
@@ -780,6 +788,24 @@ own island; E is cheap once B stands and the forest has a lake.
   above, as its own row.
 - **`core/math/deterministic.h`**: a cube root, if it has none.
 
+### What every solver holds, and where this design stands
+
+1. **The same bytes everywhere**: designed for, [above](#determinism); every stage pins hashes on
+   MSVC that GCC and Clang reproduce, as the solver's stages do.
+2. **Tile-stable**: the output is on the world's lattice, as the solver's is; the profile's
+   re-evaluation at a tile is a function of the fields at the tile's points, so two tiles agree
+   along their edge.
+3. **Nothing exists before its tile**: not held, by kind, as for the solver: a littoral cell's
+   sand is everything along its shore. It is the plan above the tile, built once, offline.
+4. **Merged, with a far form**: the heightfield's far forms are the tile set's; a cliff's face,
+   a stack and a boulder field are the cliffs' and the scatter's meshes, with their LOD.
+5. **It writes to the ground, and the others read it**: it writes the ground, and the fields and
+   the features file are how it is read; who reads each is [above](#outputs-and-who-reads-each).
+6. **Grounded in published research**: this page, with what was and was not opened said for
+   every number; the build row opens what is marked memory before it pins.
+7. **Budgets stated**: [estimated above](#what-it-costs), to be measured by each stage as a pair
+   against the stage before on the same sketch.
+
 ## What to ask of the next reels
 
 The second set is rich in swash and thin in the shape of the coast itself. Five of its 80 scenes
@@ -825,13 +851,16 @@ retreat are all written in terms of.
   (through his own 2015 review, of which the last third, on slope failure, was not read).
 - **Summaries only**: Moore 1982; Ferguson and Church 2004; Wright and Short 1984; Limber and
   Murray 2011 and the 2014 pair; Matsumoto, Dickson and Kench 2016 (an exploratory profile model
-  that makes plunging cliffs, benches and both platform kinds from wave type and tide: the nearest
-  published thing to stage C, and the build row should open it); Trenhaile on gradient against
+  that makes plunging cliffs, benches and both platform kinds from wave type and tide, with a 2018
+  sequel on waves against weathering across tidal ranges: the nearest published thing to stage C,
+  and the build row should open the papers. An implementation of it is public under the GPL; its
+  code is not to be read into the engine, which takes permissive licences only, ADR-0014); Trenhaile on gradient against
   tide; Kogure and others on notches; Rowan, Kalff and Rasmussen 1992; the Wisconsin lake survey;
   Sunamura and Mizuno 1987 (its file was a scan with no text; the thresholds are an annotating
   page's).
-- **From memory, unverified**: Bujan, Cox and Masselink 2019's fit (only its bibliographic record
-  opened; the publisher's page redirected and returned nothing); Bascom 1951 and Sunamura 1984 on
+- **From memory, unverified**: the three coefficients of Bujan, Cox and Masselink 2019's fit (its
+  abstract opened, which gives the form and not the numbers; the publisher's page redirected and
+  returned nothing); Bascom 1951 and Sunamura 1984 on
   the beach face; Takeda and Sunamura's berm height; the edge-wave cusp spacings; Hunt 1979's
   dispersion approximation; Pelletier 2010 on the lattice and the contributing area; the
   engineering manual's table of A; that the sea reached its level about six thousand years ago.
@@ -862,6 +891,9 @@ Opened through the page-reading tool, 2026-11-12:
   González and Medina 2001's addition).
 - A page annotating Sunamura and Mizuno 1987 and later breakwater rules, at
   ancientportsantiques.com.
+- The abstract of D. Bujan, R. Cox and G. Masselink, "From fine sand to boulders: examining the
+  relationship between beach-face slope and sediment size", *Marine Geology* 417, 2019, through
+  Semantic Scholar's record.
 - The owner's second set of reels: `inspiration2/_frames/catalog.json` (the coastal scenes'
   landform notes) and five shots' sheets under `_frames/motion`.
 - The forest proof of concept's account of building a coast by hand, as text: its solver-needs
