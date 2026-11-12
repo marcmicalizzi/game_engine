@@ -1361,10 +1361,16 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
       instance.deform == k_invalid_deform ? 0u : entry_of_pair(params->pair_entries, pair);
   // The point less the eye, from corners less the eye: what the view vector and the air's distance
   // are taken from, where a world position less the eye would carry the world's rounding.
+  // The triangle and the pixel's barycentrics are kept for the material stage (R148; material.slang,
+  // `reconstruct_screen_kept`): the UV's derivatives, the ground's footprint, the tangent frame and
+  // the normal's variance below are arithmetic on these two, not a fetch and a projection each.
   float3 from_eye;
-  const Surface s = reconstruct_screen(geo, instance, visible_index, entry.y, id & 0xff, source,
-                                       params->view_proj, params->camera.xyz, params->width,
-                                       params->height, from_eye);
+  TriangleFetch tri;
+  ScreenBarycentrics at;
+  const Surface s =
+      reconstruct_screen_kept(geo, instance, visible_index, entry.y, id & 0xff, source,
+                              params->view_proj, params->camera.xyz, params->width, params->height,
+                              from_eye, tri, at);
   if (params->mode == 4) return float4(s.normal * 0.5 + 0.5, 1.0);
   if (g_stop == k_stop_reconstruct) {
     return float4(s.normal * 0.5 + 0.5 + s.geometric * 0.125, frac(s.uv.x + s.uv.y));
@@ -1396,9 +1402,7 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   float2 duv_dx = float2(0.0, 0.0);
   float2 duv_dy = float2(0.0, 0.0);
   if ((material.flags & k_material_mipped) != 0) {
-    screen_uv_gradients(geo, fetch_triangle(geo, instance, visible_index, entry.y, id & 0xff),
-                        source, params->view_proj, params->camera.xyz, params->width,
-                        params->height, duv_dx, duv_dy);
+    screen_uv_gradients_at(geo, tri, at, duv_dx, duv_dy);
     duv_dx = material_duv(material, duv_dx * material.uv_scale);
     duv_dy = material_duv(material, duv_dy * material.uv_scale);
   }
@@ -1426,18 +1430,22 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   }
 #endif
 #ifdef MATERIAL_TERRAIN
-  MaterialSample sampled = sample_material_grad(material, uv, duv_dx, duv_dy);
+  // A layered ground's material is `sample_terrain_material`'s whole: it reads the root's maps
+  // itself, at the map's own UV. Until R148 the root was read here first, at the mesh's UV, for
+  // every ground pixel, and the result thrown away (renderer.md, "What the resolve costs, term by
+  // term"); now one or the other.
+  MaterialSample sampled;
   float3 terrain_normal = s.normal;
   if ((material.flags & k_material_terrain_layers) != 0) {
     wet_applied = true;
     float3 dp_dx;
     float3 dp_dy;
-    const TriangleFetch tri = fetch_triangle(geo, instance, visible_index, entry.y, id & 0xff);
-    screen_position_gradients(tri, source, params->view_proj, params->camera.xyz, params->width,
-                              params->height, dp_dx, dp_dy);
+    screen_position_gradients_at(tri, at, dp_dx, dp_dy);
     sampled = sample_terrain_material(geo, material, surface_uv, duv_dx, duv_dy, s.position,
                                       s.normal, dp_dx, dp_dy, length(from_eye), true, terrain_normal,
                                       params->mode != 12, wet_s, wet_film);
+  } else {
+    sampled = sample_material_grad(material, uv, duv_dx, duv_dy);
   }
 #else
   const MaterialSample sampled = sample_material_grad(material, uv, duv_dx, duv_dy);
@@ -1452,9 +1460,7 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   if (material.normal_texture != k_no_texture) {
     float3 tangent;
     float3 bitangent;
-    // The triangle a second time rather than one held across the reconstruction, which is what
-    // this block always did: the frame is needed only where a normal map is.
-    const TriangleFetch tri = fetch_triangle(geo, instance, visible_index, entry.y, id & 0xff);
+    // The triangle the reconstruction kept (R148): until then this block fetched it a second time.
     if (tangent_frame(geo, tri, s.normal, tangent, bitangent)) {
       shading_normal =
           apply_normal_map_grad(material, uv, duv_dx, duv_dy, s.normal, tangent, bitangent);
@@ -1473,19 +1479,15 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   // carries it, and only when the frame hands over its block; everything else reads what it read.
   float roughness = sampled.roughness;
   if (sampled.normal_filter) {
-    const TriangleFetch tri = fetch_triangle(geo, instance, visible_index, entry.y, id & 0xff);
     roughness = brdf_filter_roughness(roughness, 0.0,
-        screen_geometric_alpha2(geo, instance, tri, source, params->view_proj,
-                                params->camera.xyz, params->width, params->height));
+                                      screen_geometric_alpha2_at(geo, instance, tri, at));
   }
   const bool detailed =
       (material.flags & k_material_ground_detail) != 0 && params->ground_detail != 0;
   if (detailed) {
-    const TriangleFetch tri = fetch_triangle(geo, instance, visible_index, entry.y, id & 0xff);
     float3 dp_dx;
     float3 dp_dy;
-    screen_position_gradients(tri, source, params->view_proj, params->camera.xyz, params->width,
-                              params->height, dp_dx, dp_dy);
+    screen_position_gradients_at(tri, at, dp_dx, dp_dy);
     // The point as the eye and the point less it, never their float sum: the detail takes it from
     // its frame's origin (gfx.md, "Far from the origin"), and 420 km out the sum has a 3.1 cm step.
     const GroundShading ground =

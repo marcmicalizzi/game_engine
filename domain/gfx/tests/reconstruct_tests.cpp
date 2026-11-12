@@ -176,6 +176,9 @@ struct ProbePixel {
   ref::Dvec3 dp_dy;
   ref::Dvec3 view;
   ref::Dvec3 corner[3];
+  // The kept triangle and barycentrics (R148, `reconstruct_screen_kept` and the `_at` forms) gave
+  // the bits the forms that fetch and project for themselves give.
+  bool kept_agrees = false;
 };
 
 // The device, the probe and the ray path, and the five triangles as meshes at some offset from the
@@ -531,6 +534,7 @@ ProbePixel probe_pixel(const Vec4* rows, u32 x, u32 y) {
   p.v = static_cast<f64>(r[2].y);
   p.duv_dx = dvec(r[2].z, r[2].w, 0.0f);
   p.duv_dy = dvec(r[3].x, r[3].y, 0.0f);
+  p.kept_agrees = r[3].z == 1.0f;
   p.dp_dx = ref::dvec3(r[4]);
   p.dp_dy = ref::dvec3(r[5]);
   p.view = ref::dvec3(r[6]);
@@ -621,6 +625,7 @@ TEST_CASE(
       u32 clamped = 0;
       u32 outside = 0;  // pixels whose ray misses the triangle by more than a snap could explain
       u32 missing = 0;  // pixels whose ray lands well inside it and that nothing drew
+      u32 kept_differs = 0;   // pixels whose kept triangle and barycentrics gave other bits (R148)
       f64 worst_point = 0.0;  // in the pixel's own footprints
       f64 worst_bary = 0.0;
       f64 worst_uv = 0.0;
@@ -642,6 +647,7 @@ TEST_CASE(
             continue;
           }
           ++covered;
+          if (!got.kept_agrees) ++kept_differs;
           if (hit.clamped) ++clamped;
           if (margin < -1e-3) ++outside;
           // The footprint: the point's change per pixel, from the ray's barycentrics' central
@@ -678,6 +684,8 @@ TEST_CASE(
       CHECK(covered > k_size * k_size / 8);
       CHECK(missing == 0u);
       CHECK(outside == 0u);
+      // The resolve's one fetch and one projection a pixel (R148) are the bits its five were.
+      CHECK(kept_differs == 0u);
       // A point a hundredth of a pixel from where the pixel looks, and derivatives a thousandth
       // of their own length from the ray's; measured, both are float rounding (the message above).
       CHECK(worst_point < 0.01);

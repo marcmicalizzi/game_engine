@@ -65,22 +65,47 @@ void probe_main(uint3 id : SV_DispatchThreadID) {
   const ScreenBarycentrics sb =
       screen_barycentrics(tri, center, params->view_proj, params->camera.xyz, params->width,
                           params->height);
+  // As fs_resolve calls them since R148: the reconstruction keeps its triangle and barycentrics,
+  // and the derivatives are taken from the kept pair.
   float3 from_eye;
-  const Surface s = reconstruct_screen(geo, instance, 0u, cluster, triangle, center,
-                                       params->view_proj, params->camera.xyz, params->width,
-                                       params->height, from_eye);
+  TriangleFetch kept;
+  ScreenBarycentrics at;
+  const Surface s = reconstruct_screen_kept(geo, instance, 0u, cluster, triangle, center,
+                                            params->view_proj, params->camera.xyz, params->width,
+                                            params->height, from_eye, kept, at);
   float2 duv_dx;
   float2 duv_dy;
-  screen_uv_gradients(geo, tri, center, params->view_proj, params->camera.xyz, params->width,
-                      params->height, duv_dx, duv_dy);
+  screen_uv_gradients_at(geo, kept, at, duv_dx, duv_dy);
   float3 dp_dx;
   float3 dp_dy;
+  screen_position_gradients_at(kept, at, dp_dx, dp_dy);
+  // And the forms a caller with one use takes, which fetch and project for themselves: the same
+  // bits, or the kept pair is not the pixel's (out[3].z says so: 1 where every number agrees).
+  float3 own_from_eye;
+  const Surface own = reconstruct_screen(geo, instance, 0u, cluster, triangle, center,
+                                         params->view_proj, params->camera.xyz, params->width,
+                                         params->height, own_from_eye);
+  float2 own_duv_dx;
+  float2 own_duv_dy;
+  screen_uv_gradients(geo, tri, center, params->view_proj, params->camera.xyz, params->width,
+                      params->height, own_duv_dx, own_duv_dy);
+  float3 own_dp_dx;
+  float3 own_dp_dy;
   screen_position_gradients(tri, center, params->view_proj, params->camera.xyz, params->width,
-                            params->height, dp_dx, dp_dy);
+                            params->height, own_dp_dx, own_dp_dy);
+  const bool same = all(asuint(own.position) == asuint(s.position)) &&
+                    all(asuint(own.uv) == asuint(s.uv)) &&
+                    all(asuint(own.normal) == asuint(s.normal)) &&
+                    all(asuint(own_from_eye) == asuint(from_eye)) &&
+                    all(asuint(own_duv_dx) == asuint(duv_dx)) &&
+                    all(asuint(own_duv_dy) == asuint(duv_dy)) &&
+                    all(asuint(own_dp_dx) == asuint(dp_dx)) &&
+                    all(asuint(own_dp_dy) == asuint(dp_dy)) &&
+                    all(asuint(at.b) == asuint(sb.b));
   out[0] = float4(sb.b, 1.0);
   out[1] = float4(s.position, float(triangle));
   out[2] = float4(s.uv, duv_dx);
-  out[3] = float4(duv_dy, 0.0, 0.0);
+  out[3] = float4(duv_dy, same ? 1.0 : 0.0, 0.0);
   out[4] = float4(dp_dx, 0.0);
   out[5] = float4(dp_dy, 0.0);
   // The view vector fs_resolve shades with, from the point less the eye.
