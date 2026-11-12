@@ -1,4 +1,5 @@
 #include "device_waits.h"
+#include "pipeline_recorder.h"
 #include "volk_instance.h"
 
 #include <core/base/assert.h>
@@ -6,6 +7,7 @@
 #include <core/containers/vector.h>
 #include <core/log/log.h>
 #include <core/memory/memory.h>
+#include <core/time/time.h>
 #include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/pipeline.h>
@@ -214,6 +216,8 @@ struct Device::Impl {
   // driver's size of the cache as it was loaded or last saved, which a save compares against.
   PipelineCacheReport pipeline_cache;
   u64 cache_bytes = 0;
+  // Every pipeline creation's time and the open batch (pipeline_batch.h); `handles.pipelines`.
+  std::unique_ptr<detail::PipelineRecorder> pipelines;
 };
 
 Device::~Device() { destroy(); }
@@ -788,6 +792,8 @@ bool Device::create(const DeviceOptions& options, std::string* error) {
 
   // ---- pipeline cache (pipeline_cache.h): never a reason to fail ----
   open_pipeline_cache(options, h, impl->pipeline_cache, impl->cache_bytes);
+  impl->pipelines = std::make_unique<detail::PipelineRecorder>();
+  h.pipelines = impl->pipelines.get();
 
   impl_ = impl;
   ENGINE_LOG_INFO(log_device, "device created",
@@ -831,6 +837,7 @@ void Device::destroy() noexcept {
     vkDestroyDebugUtilsMessengerEXT(h.instance, h.messenger, nullptr);
   if (detail::device_instance() == h.instance) detail::set_device_instance(VK_NULL_HANDLE);
   if (h.instance != VK_NULL_HANDLE) vkDestroyInstance(h.instance, nullptr);
+  h.pipelines = nullptr;
   std::destroy_at(impl_);
   mem::deallocate(impl_, sizeof(Impl), alignof(Impl));
   impl_ = nullptr;
@@ -1029,11 +1036,17 @@ ShaderModuleHandle create_shader_module(const Device& device, const unsigned cha
     set_error(error, "vkCreateShaderModule", r);
     return {};
   }
+  // Known by its size, and by its name once the library names it, for the pipelines' timings.
+  if (detail::PipelineRecorder* recorder = device.handles().pipelines; recorder != nullptr)
+    detail::register_module(*recorder, vk::wrap(module), bytes);
   return vk::wrap(module);
 }
 
 void destroy_shader_module(const Device& device, ShaderModuleHandle module) noexcept {
-  if (module) vkDestroyShaderModule(device.handles().device, vk::native(module), nullptr);
+  if (!module) return;
+  if (detail::PipelineRecorder* recorder = device.handles().pipelines; recorder != nullptr)
+    detail::forget_module(*recorder, module);
+  vkDestroyShaderModule(device.handles().device, vk::native(module), nullptr);
 }
 
 namespace {
@@ -1057,6 +1070,10 @@ const VkSpecializationInfo* micromap_key(const Device& device) noexcept {
   static const VkSpecializationInfo k_info{1, &k_entry, sizeof(u32), &k_value};
   return device.features().opacity_micromap ? &k_info : nullptr;
 }
+
+// Every create call ends here (pipeline_batch.h): recorded when the calling thread holds the
+// device's open batch, made and timed now otherwise. Defined after the mesh pipelines.
+bool create_or_record(const Device& device, detail::PipelineRequest& request, std::string* error);
 
 }  // namespace
 
@@ -1086,25 +1103,13 @@ bool create_compute_pipeline(const Device& device, ShaderModuleHandle module, co
     return false;
   }
   out.layout = vk::wrap(layout);
-  VkComputePipelineCreateInfo info{};
-  info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-  info.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-  info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-  info.stage.module = vk::native(module);
-  info.stage.pName = entry;
-  info.stage.pSpecializationInfo = micromap_key(device);
-  info.layout = layout;
-  VkPipeline pipeline = VK_NULL_HANDLE;
-  if (const VkResult r =
-          vkCreateComputePipelines(h.device, h.pipeline_cache, 1, &info, nullptr, &pipeline);
-      r != VK_SUCCESS) {
-    set_error(error, "vkCreateComputePipelines", r);
-    vkDestroyPipelineLayout(h.device, layout, nullptr);
-    out.layout = {};
-    return false;
-  }
-  out.pipeline = vk::wrap(pipeline);
-  return true;
+  detail::PipelineRequest request;
+  request.kind = PipelineKind::Compute;
+  request.module = module;
+  request.layout = out.layout;
+  request.entries[0] = entry;
+  request.compute_out = &out;
+  return create_or_record(device, request, error);
 }
 
 void destroy_compute_pipeline(const Device& device, ComputePipeline& pipeline) noexcept {
@@ -1122,6 +1127,19 @@ namespace engine::gfx {
 
 bool create_graphics_pipeline(const Device& device, const GraphicsPipelineDesc& desc,
                               PipelineHandle& out, std::string* error) {
+  detail::PipelineRequest request;
+  request.kind = PipelineKind::Graphics;
+  request.graphics = desc;
+  if (desc.vertex_entry != nullptr) request.entries[0] = desc.vertex_entry;
+  if (desc.fragment_entry != nullptr) request.entries[1] = desc.fragment_entry;
+  request.out = &out;
+  return create_or_record(device, request, error);
+}
+
+namespace {
+
+VkResult make_graphics_pipeline(const Device& device, const GraphicsPipelineDesc& desc,
+                                VkPipeline& pipeline) {
   VkPipelineShaderStageCreateInfo stages[2]{};
   stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
   stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
@@ -1202,17 +1220,11 @@ bool create_graphics_pipeline(const Device& device, const GraphicsPipelineDesc& 
   info.pColorBlendState = &blend;
   info.pDynamicState = &dynamic;
   info.layout = vk::native(desc.layout);
-  VkPipeline pipeline = VK_NULL_HANDLE;
-  const VkResult r = vkCreateGraphicsPipelines(
-      device.handles().device, device.handles().pipeline_cache, 1, &info, nullptr, &pipeline);
-  if (r != VK_SUCCESS) {
-    set_error(error, "vkCreateGraphicsPipelines", r);
-    out = {};
-    return false;
-  }
-  out = vk::wrap(pipeline);
-  return true;
+  return vkCreateGraphicsPipelines(device.handles().device, device.handles().pipeline_cache, 1,
+                                   &info, nullptr, &pipeline);
 }
+
+}  // namespace
 
 void destroy_pipeline(const Device& device, PipelineHandle pipeline) noexcept {
   if (pipeline) vkDestroyPipeline(device.handles().device, vk::native(pipeline), nullptr);
@@ -1231,6 +1243,20 @@ bool create_mesh_pipeline(const Device& device, const MeshPipelineDesc& desc, Pi
     out = {};
     return false;
   }
+  detail::PipelineRequest request;
+  request.kind = PipelineKind::Mesh;
+  request.mesh = desc;
+  if (desc.task_entry != nullptr) request.entries[0] = desc.task_entry;
+  if (desc.mesh_entry != nullptr) request.entries[1] = desc.mesh_entry;
+  if (desc.fragment_entry != nullptr) request.entries[2] = desc.fragment_entry;
+  request.out = &out;
+  return create_or_record(device, request, error);
+}
+
+namespace {
+
+VkResult make_mesh_pipeline(const Device& device, const MeshPipelineDesc& desc,
+                            VkPipeline& pipeline) {
   VkPipelineShaderStageCreateInfo stages[3]{};
   u32 stage_count = 0;
   if (desc.task) {
@@ -1304,16 +1330,85 @@ bool create_mesh_pipeline(const Device& device, const MeshPipelineDesc& desc, Pi
   info.pColorBlendState = &blend;
   info.pDynamicState = &dynamic;
   info.layout = vk::native(desc.layout);
-  VkPipeline pipeline = VK_NULL_HANDLE;
-  const VkResult r = vkCreateGraphicsPipelines(
-      device.handles().device, device.handles().pipeline_cache, 1, &info, nullptr, &pipeline);
-  if (r != VK_SUCCESS) {
-    set_error(error, "vkCreateGraphicsPipelines(mesh)", r);
-    out = {};
-    return false;
+  return vkCreateGraphicsPipelines(device.handles().device, device.handles().pipeline_cache, 1,
+                                   &info, nullptr, &pipeline);
+}
+
+VkResult make_compute_pipeline(const Device& device, ShaderModuleHandle module, const char* entry,
+                               PipelineLayoutHandle layout, VkPipeline& pipeline) {
+  VkComputePipelineCreateInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+  info.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+  info.stage.module = vk::native(module);
+  info.stage.pName = entry;
+  info.stage.pSpecializationInfo = micromap_key(device);
+  info.layout = vk::native(layout);
+  return vkCreateComputePipelines(device.handles().device, device.handles().pipeline_cache, 1,
+                                  &info, nullptr, &pipeline);
+}
+
+bool create_or_record(const Device& device, detail::PipelineRequest& request, std::string* error) {
+  detail::PipelineRecorder* recorder = device.handles().pipelines;
+  if (recorder != nullptr) {
+    detail::describe_request(*recorder, request);
+    if (detail::record_if_batched(*recorder, request)) return true;
   }
-  out = vk::wrap(pipeline);
-  return true;
+  request.begin_ns = time::monotonic_ns();
+  request.result = detail::make_pipeline(device, request);
+  request.end_ns = time::monotonic_ns();
+  if (recorder != nullptr) detail::record_creation(*recorder, request, false);
+  return detail::finish_request(device, request, error);
+}
+
+}  // namespace
+
+// The entry points are the request's own copies, so a batch's descriptions outlive their callers'.
+VkResult detail::make_pipeline(const Device& device, PipelineRequest& request) {
+  request.pipeline = VK_NULL_HANDLE;
+  switch (request.kind) {
+    case PipelineKind::Compute:
+      return make_compute_pipeline(device, request.module, request.entries[0].c_str(),
+                                   request.layout, request.pipeline);
+    case PipelineKind::Graphics: {
+      GraphicsPipelineDesc desc = request.graphics;
+      desc.vertex_entry = request.entries[0].c_str();
+      desc.fragment_entry = request.entries[1].c_str();
+      return make_graphics_pipeline(device, desc, request.pipeline);
+    }
+    case PipelineKind::Mesh: {
+      MeshPipelineDesc desc = request.mesh;
+      desc.task_entry = request.entries[0].c_str();
+      desc.mesh_entry = request.entries[1].c_str();
+      desc.fragment_entry = request.entries[2].c_str();
+      return make_mesh_pipeline(device, desc, request.pipeline);
+    }
+  }
+  return VK_ERROR_UNKNOWN;
+}
+
+bool detail::finish_request(const Device& device, PipelineRequest& request, std::string* error) {
+  if (request.result == VK_SUCCESS) {
+    if (request.compute_out != nullptr) request.compute_out->pipeline = vk::wrap(request.pipeline);
+    if (request.out != nullptr) *request.out = vk::wrap(request.pipeline);
+    return true;
+  }
+  switch (request.kind) {
+    case PipelineKind::Compute: set_error(error, "vkCreateComputePipelines", request.result); break;
+    case PipelineKind::Graphics:
+      set_error(error, "vkCreateGraphicsPipelines", request.result);
+      break;
+    case PipelineKind::Mesh:
+      set_error(error, "vkCreateGraphicsPipelines(mesh)", request.result);
+      break;
+  }
+  if (request.compute_out != nullptr) {
+    vkDestroyPipelineLayout(device.handles().device, vk::native(request.layout), nullptr);
+    request.compute_out->layout = {};
+    request.compute_out->pipeline = {};
+  }
+  if (request.out != nullptr) *request.out = {};
+  return false;
 }
 
 }  // namespace engine::gfx

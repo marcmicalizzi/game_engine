@@ -6,9 +6,12 @@
 // doubles, and the count of the network's levels (336 bytes), then the divided discharge and the
 // channel's width, two arrays, and the count of the banks lateral erosion took (376 bytes), then
 // the ice and the till, two arrays more, with the count of the ice's steps beside the banks': 408.
+// Stage F (W127) added what the ice leaves, five arrays (the thickest ice that ever stood, the
+// moraines and their crests, a lake's fill, the rock's floor) and three volumes of the budget
+// (the ice's load delivered, laid as ridges, lodged): 512.
 #include <core/base/size_table.h>
 #include <domain/landform/landform.h>
 
 using namespace engine;
 
-ENGINE_EXPECT_SIZE(408, 8, landform::Landform);
+ENGINE_EXPECT_SIZE(512, 8, landform::Landform);

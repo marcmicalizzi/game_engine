@@ -360,18 +360,36 @@ ScreenBarycentrics screen_barycentrics(TriangleFetch tri, float2 pixel_center,
 // the corners less `camera`, which is what the view vector and the air's distance are taken from;
 // the surface's position in the frame is `camera + from_eye`, which for the renderer's views,
 // whose `camera` is zero, is `from_eye` itself.
+//
+// **The triangle and its barycentrics are kept** (`tri`, `at`; R148, renderer.md, "What the resolve
+// costs, term by term"): everything the resolve takes from the pixel's triangle after the surface —
+// the UV's derivatives, the footprint on the ground, the tangent frame, the normal's variance — is
+// arithmetic on these two, and until R148 each of those fetched the triangle again and put its
+// corners through the matrix again: up to five fetches and four sets of barycentrics a pixel, in
+// branches the driver's compiler does not merge. The `_at` forms below take the kept pair; the forms
+// without it compute their own, for a caller with one use (the water, the half pass, the probes).
+Surface reconstruct_screen_kept(SceneGeometry geo, InstanceDesc instance, uint entry,
+                               uint cluster_index, uint triangle, float2 pixel_center,
+                               column_major float4x4 view_proj, float3 camera, uint width,
+                               uint height, out float3 from_eye, out TriangleFetch tri,
+                               out ScreenBarycentrics at) {
+  tri = fetch_triangle(geo, instance, entry, cluster_index, triangle);
+  at = screen_barycentrics(tri, pixel_center, view_proj, camera, width, height);
+  Surface surface = surface_at(geo, instance, tri, at.b, camera);
+  from_eye = at.b.x * (tri.p[0] - camera) + at.b.y * (tri.p[1] - camera) +
+             at.b.z * (tri.p[2] - camera);
+  surface.position = camera + from_eye;
+  return surface;
+}
+
 Surface reconstruct_screen(SceneGeometry geo, InstanceDesc instance, uint entry,
                           uint cluster_index, uint triangle, float2 pixel_center,
                           column_major float4x4 view_proj, float3 camera, uint width,
                           uint height, out float3 from_eye) {
-  const TriangleFetch tri = fetch_triangle(geo, instance, entry, cluster_index, triangle);
-  const ScreenBarycentrics s =
-      screen_barycentrics(tri, pixel_center, view_proj, camera, width, height);
-  Surface surface = surface_at(geo, instance, tri, s.b, camera);
-  from_eye = s.b.x * (tri.p[0] - camera) + s.b.y * (tri.p[1] - camera) +
-             s.b.z * (tri.p[2] - camera);
-  surface.position = camera + from_eye;
-  return surface;
+  TriangleFetch tri;
+  ScreenBarycentrics at;
+  return reconstruct_screen_kept(geo, instance, entry, cluster_index, triangle, pixel_center,
+                                 view_proj, camera, width, height, from_eye, tri, at);
 }
 
 // The UV's derivatives across the screen at `pixel_center`, taken from the triangle itself rather
@@ -384,20 +402,27 @@ Surface reconstruct_screen(SceneGeometry geo, InstanceDesc instance, uint entry,
 // edges from the first, which keeps a UV a thousand tiles out as sharp as one at the origin.
 // Zero for a triangle with no attributes or one seen exactly edge-on, which SampleGrad reads as
 // level 0.
-void screen_uv_gradients(SceneGeometry geo, TriangleFetch tri, float2 pixel_center,
-                         column_major float4x4 view_proj, float3 eye, uint width, uint height,
-                         out float2 duv_dx, out float2 duv_dy) {
+void screen_uv_gradients_at(SceneGeometry geo, TriangleFetch tri, ScreenBarycentrics s,
+                            out float2 duv_dx, out float2 duv_dy) {
   duv_dx = float2(0.0, 0.0);
   duv_dy = float2(0.0, 0.0);
   if (geo.attributes == 0) return;
-  const ScreenBarycentrics s =
-      screen_barycentrics(tri, pixel_center, view_proj, eye, width, height);
   VertexAttributes* attributes = (VertexAttributes*)geo.attributes;
   const float2 uv0 = decode_half2(attributes[tri.local[0]].uv_half2);
   const float2 e1 = decode_half2(attributes[tri.local[1]].uv_half2) - uv0;
   const float2 e2 = decode_half2(attributes[tri.local[2]].uv_half2) - uv0;
   duv_dx = s.db_dx.y * e1 + s.db_dx.z * e2;
   duv_dy = s.db_dy.y * e1 + s.db_dy.z * e2;
+}
+void screen_uv_gradients(SceneGeometry geo, TriangleFetch tri, float2 pixel_center,
+                         column_major float4x4 view_proj, float3 eye, uint width, uint height,
+                         out float2 duv_dx, out float2 duv_dy) {
+  duv_dx = float2(0.0, 0.0);
+  duv_dy = float2(0.0, 0.0);
+  if (geo.attributes == 0) return;
+  screen_uv_gradients_at(geo, tri,
+                         screen_barycentrics(tri, pixel_center, view_proj, eye, width, height),
+                         duv_dx, duv_dy);
 }
 
 // The surface point's world-space change per pixel along the screen's two axes at `pixel_center`:
@@ -407,11 +432,8 @@ void screen_uv_gradients(SceneGeometry geo, TriangleFetch tri, float2 pixel_cent
 // quad a derivative instruction would difference straddles other triangles in a fullscreen pass.
 // Zero for a triangle seen exactly edge-on, which reads as a footprint of nothing: the unfiltered
 // detail.
-void screen_position_gradients(TriangleFetch tri, float2 pixel_center,
-                               column_major float4x4 view_proj, float3 eye, uint width,
-                               uint height, out float3 dp_dx, out float3 dp_dy) {
-  const ScreenBarycentrics s =
-      screen_barycentrics(tri, pixel_center, view_proj, eye, width, height);
+void screen_position_gradients_at(TriangleFetch tri, ScreenBarycentrics s, out float3 dp_dx,
+                                  out float3 dp_dy) {
   // The derivatives sum to zero, so the corners enter as edges from the first: a terrain's corners
   // are thousands of metres from the origin and their differences are what the answer is made of.
   const float3 e1 = tri.p[1] - tri.p[0];
@@ -419,15 +441,19 @@ void screen_position_gradients(TriangleFetch tri, float2 pixel_center,
   dp_dx = s.db_dx.y * e1 + s.db_dx.z * e2;
   dp_dy = s.db_dy.y * e1 + s.db_dy.z * e2;
 }
+void screen_position_gradients(TriangleFetch tri, float2 pixel_center,
+                               column_major float4x4 view_proj, float3 eye, uint width,
+                               uint height, out float3 dp_dx, out float3 dp_dy) {
+  screen_position_gradients_at(
+      tri, screen_barycentrics(tri, pixel_center, view_proj, eye, width, height), dp_dx, dp_dy);
+}
 
 // Normal derivatives use the same analytic barycentrics, never a fullscreen quad that straddles
 // triangles. Differentiate normalization after the instance's cofactor transform; this also
 // handles nonuniform scale and deformed normals. The 2021 projected-space kernel is bounded.
-float screen_geometric_alpha2(SceneGeometry geo, InstanceDesc instance, TriangleFetch tri,
-                               float2 pixel_center, column_major float4x4 view_proj,
-                               float3 eye, uint width, uint height) {
+float screen_geometric_alpha2_at(SceneGeometry geo, InstanceDesc instance, TriangleFetch tri,
+                                 ScreenBarycentrics s) {
   if (geo.attributes == 0) return 0.0;
-  const ScreenBarycentrics s = screen_barycentrics(tri, pixel_center, view_proj, eye, width, height);
   VertexAttributes* attributes = (VertexAttributes*)geo.attributes;
   const float3 c0 = float3(instance.rows[0].x, instance.rows[1].x, instance.rows[2].x);
   const float3 c1 = float3(instance.rows[0].y, instance.rows[1].y, instance.rows[2].y);

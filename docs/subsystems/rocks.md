@@ -1138,7 +1138,9 @@ cuts apply. Opaque geometry casts standard shadows and receives the existing 5 c
 There is no additional impostor chain or cover mask.
 
 Materials use `rock/<type>` from the pack, overridden by the patch's `RockMaterial`, else the
-existing flat lithology colour. The bed projects x/z in metres per repeat; fragment charts use
+existing flat lithology colour; since G143's third pass the bed asks `rock/scree` first, and since
+T108 the loose stones are a material of their own that wears the rock's set ([A stone wears its
+rock](#a-stone-wears-its-rock)). The bed projects x/z in metres per repeat; fragment charts use
 the existing box projection. Baked `surface_maps` are refused for patches. Fine grain appearance
 requires a suitable tiled material; this feature does not generate sediment PBR maps.
 A textured deposit initializes its material-sampling record from the solved material before
@@ -1183,15 +1185,16 @@ plan area times `sqrt(1 + slope²)`), until it reaches a gentle sample: its **fo
 **supply** is the part of that area its pile has not buried times `supply_m`, the wall's retreat since
 the ice left (default 1.2 m by [How much a face sheds](#how-much-a-face-sheds); range 0-50 m, the
 published rates' 0.015-2 mm a year over the Holocene). Each foot spreads its own supply along the
-feet round it over its own pile's reach `r = h / tan(repose)` through a triangle kernel
-`(1 - d / r) / r`, which integrates to one along a line, so volume is conserved; a foot's pile is the
+feet round it over its own pile's reach `r = h / tan(repose)` through a kernel (since G183 the
+cone's, `1.5 (1 - d / r)² / r`: [Cones that climb their gullies](#cones-that-climb-their-gullies)),
+which integrates to one along a line, so volume is conserved; a foot's pile is the
 wedge that holds what it receives, `h² a = q`, with `a = (1 / tan(repose) - 1 / tan(face)) / 2` the
 wedge's section against the face (the face's slope at the foot; at least `0.1 / tan(repose)`).
 Under a planar face `q` is the face's own supply per metre and the piles of neighbouring feet are
 one **sheet**, `a h² + q h = q H` with `q` the supply a metre of the face's height `H` (it went as
 the root of the face's height before G143's third pass let the talus bury its face). A foot fed by a gully
-receives its volume `V` over `r`, so `h³ = V tan(repose) / a`: the half cone's `π h³ / (6 tan²)`
-within a few per cent, a **cone**, its neighbours on the kernel's flanks. Sixteen steps, each halfway
+receives `1.5 V / r`, so `h³ = 1.5 V tan(repose) / a`, a **cone**, its neighbours on the kernel's
+flanks (G143 had `h³ = V tan(repose) / a` from a triangle kernel). Sixteen steps, each halfway
 to the law's height, settle every height together; no pile competes with another, so no step can
 run away (a first version that scaled each pile by what it won of the union let a few piles bury
 the rest). A pile never stands above the wall it fell from, nor more than 20 m (the patch's limit).
@@ -1217,7 +1220,8 @@ face's constant to 1%; the deposit holds 2,767 m³ for the 2,632 m³ the face sh
 wedge on a meadow that falls away from it). A planar 24 m face stands 14.0 m piles along its whole
 foot, the same to 0.2%. Its three funnel gullies, 12 m apart, each route 43.6 m³ (at 1 m of retreat)
 to their largest foot against 13.4 m³ a planar foot, and their piles stand 8.7 m over the foot
-against 7.6 m between them: **on a face this short with gullies this close, the cones merge into an
+against 7.6 m between them (G143's numbers; with the buried face's feedback and G183's kernel,
+8.0 m against 6.3 m): **on a face this short with gullies this close, the cones merge into an
 apron that bulges at each gully** (each cone reaches farther than the gullies are apart). A cone
 stands alone where its gully drains more face than the faces between it shed, as in reels r04 and
 r19, where a gully drains a basin; the review pictures' funnel face (G143's report) is built so.
@@ -1299,6 +1303,52 @@ buried 42% and a 100 m wall 15%; at the alpine 3.5 m, 59% and 25% (the talus' 20
 latter at 20%). What sets it from the world (a layer's elevation, aspect and climate from
 `scene_gen::Site`, G144, and the age of the deglaciation) is not read yet; the field is the knob.
 
+### Cones that climb their gullies
+
+G183, 2026-11-11 (`k_deposit_version` 7; [grounding](../experiments/rockfall-deposits.md#g183-and-g182-cones-that-climb-and-the-bed-at-one-metre-2026-11-11)).
+From across, G143's apron under the gullied review face was a thin even band with a ruled upper
+edge and a small pile at each gully's foot: a gravel berm against the wall, not cones that climb
+their gullies and merge into an apron between. Sanders et al. (2009) describe the two forms: cones
+below cliffs whose chutes "focus" the supply into point sources, aprons below planar cliffs, and
+cones that "laterally merge" where the point sources are close. Talus slopes of 29-36 degrees
+(Wegner et al. 2021) put the default repose's 35 inside the measured range.
+
+**Why the edge was ruled.** Every foot spreads its supply along the wall to the feet within its
+pile's reach, and a foot's pile is the wedge holding what it receives, `h = sqrt(q / a)`. A triangle
+kernel `(1 - d / r) / r` gives a point source's neighbours `h0 sqrt(1 - d / r)`: a ridge along the
+wall standing above the cone's own surface, about 0.7 of the apex's height half a reach away where
+a cone stands at half. The gully's volume was spent raising the apron beside it, and the margin
+between two gullies 12 m apart on the 24 m test face stood at 0.90 of the cones'. **The kernel is
+now the cone's**, `1.5 (1 - d / r)² / r`, which also integrates to one along a line, so a planar
+face's sheet is the same sheet (the sheet and buried-face cases hold to 1%), but a point source's
+neighbours stand `h0 (1 - d / r)`: the pile's top falls along the wall at the repose angle, the
+cone's own surface. A gully's pile is then `h³ = 1.5 V tan(repose) / a` (15% taller for its volume
+than the triangle's), its apex walked further up the gully's floor ([What a face sheds](#what-a-face-sheds)),
+and the margin falls from each apex to the apron the spurs shed. On the discrete feet the kernel's
+sum is `1 + sp² / (2 r²)` where `r` is a whole number of spacings, so it is divided by that: a short
+pile's volume is conserved on the lattice too.
+
+**What it does** (`deposits: cones climb their gullies and the apron between them is lower, 10 to
+100 m`, the default 1.2 m supply, gullies a fifth of the wall deep): the margin along the wall
+stands at the gullies and between them as below, the apron at most four fifths of the cones where
+the cones are cones (a design value: the triangle kernel fails it on every face but the crag).
+
+| Wall, gullies apart | Cones' margin | Apron's | Ratio (triangle kernel) |
+|---|---:|---:|---:|
+| 10 m crag, 12 m | 4.45 m | 4.13 m | 0.93 (0.93) |
+| 24 m face, 12 m | 8.42 m | 6.30 m | 0.75 (0.90) |
+| 24 m face, 18 m | 8.39 m | 6.57 m | 0.78 (0.84) |
+| 100 m wall, 40 m | 19.9 m | 15.0 m | 0.75 (0.81) |
+
+The crag's cones reach 6.3 m along the wall from gullies 6 m from their midpoint, so they merge:
+an apron that bulges at each gully, as on the reels where a short wall is closely gullied. The
+buried-face feedback holds at both ends (the 10 m crag's cones bury 45% of it, the 100 m wall's
+20%). What the kernel cannot do: make a gully drain more than its face. On the review face the
+gullies are 5 m notches in a 24 m wall and drain a modest share, so its cones stand 2 m over the
+apron and not twice its height; a gully that heads into a basin (r04) makes the larger cone by the
+same rule. Rockfall concentrated in gullies beyond the area they drain (a jointed gully retreating
+faster than its spurs) would raise the contrast further; no inventory with numbers was found.
+
 ### The edge and the seams
 
 G143's second stage (`k_deposit_version` 3). **The outline.** G128 and G143's first agent put a
@@ -1376,7 +1426,8 @@ msvc-release run was made this pass).
 G143's third pass, 2026-11-11 ([grounding](../experiments/rockfall-deposits.md#g143s-third-pass-the-shading-fault-the-supply-by-setting-and-the-rubble-2026-11-11)).
 Up close the bed was a smooth pale sheet with sparse pebbles: a scree's surface is openwork, angular
 clasts standing on each other with voids between and the fines below (Verdian et al. 2021), and at a
-metre, ten and a hundred what reads is its largest clasts. **The top is now drawn at 12.5 cm**
+metre, ten and a hundred what reads is its largest clasts. **The top is now drawn at 12.5 cm** (10
+cm since G182, below)
 (`k_clast_step_mm`; `sub` steps a sample spacing, 4 at 0.5 m, as many as the patch's budget holds
 with every loose fragment at the blocks' rung beside it) and **raised by the clasts of its own
 sorting**: three world-anchored lattices of 0.5, 1 and 2 m cells, one clast a cell, its centre, size
@@ -1403,6 +1454,65 @@ default count is 24 a patch, not 96. The finest form is 136 triangles a square m
 the loose fragments and blocks; the relief leaves the coarse forms through the cluster DAG, and
 beyond the finest it is the material's normal and roughness. `k_deposit_version` 4.
 
+**At one metre the clasts are blocks, not plates** (G182, `k_deposit_version` 8). The third pass's
+clasts were flat-topped plates of one shape standing 0.35 of their size on a flat floor, and at one
+metre the eye read the set's printed clasts and not them. A clast is now an angular block
+([grounding](../experiments/rockfall-deposits.md#g183-and-g182-cones-that-climb-and-the-bed-at-one-metre-2026-11-11)):
+in plan a hexagon in its own frame whose faces stand 0.7-1 of the half-size from its centre,
+elongated `a / b` 1.7-2.6 (Wegner et al. 2021's medians for talus blocks over 0.5 m); its top a low
+roof (`k_clast_roof`, 0.35 of its height from the edges up to ridges that follow the hexagon in)
+tilted about both axes (`k_clast_tilt`, up to half its height across its half-size); its sides a
+steep bevel over 0.12 of the half-size; its height drawn 0.2-0.5 of its size, so neighbours stand
+at several heights. **The bed between the largest lies in hollows**: wherever a lattice's clasts
+show, the bed sinks by `k_clast_void` (0.15) of the bed's clast size and the clasts stand out of it
+(Sanders et al. 2009's open pores under the larger clasts; the depth is authored, no source measured
+it). The top is drawn at **10 cm** (`k_clast_step_mm`, five steps a 0.5 m spacing; 12.5 cm before),
+so a 0.3 m clast spans three steps and its faces read. On the rubble case's 16 m bed, by quarters
+from apex to toe: the highest clast 0, 0.005, 0.10 and 0.14 m over the plan's top, the lowest hollow
+0, -0.001, -0.04 and -0.075 m; at the apex the bed is the material's alone. Every author-chosen
+number here is the page's, not a source's: no protrusion, tilt or void depth of talus clasts was
+found measured. **What the geometry cannot do and the material should**: the clasts under 10 cm,
+their own shading and a height that goes down between them (the set's height map read as
+parallax, or a darker cavity term between clasts) are the material sets' (`domain/matgen`), a
+request, not built here.
+
+**What it costs** (the cost case's tile, 16 m, four patches, at the default 24 loose stones a
+patch; msvc-debug, CPU 85-90% busy with other agents' builds, 12 GB free, one run each: upper
+bounds). The finest form: 319 triangles a square metre of bed on the base (T108 moves no
+triangle), 308 after G183's cones (a slightly smaller bed on this tile, 187.5 m² for 193.5),
+**381** after G182's 10 cm top; the coarsest 9.9, 10.1 and 12.0. The tile's four patches build in
+2.4, 1.9 and 2.3 s, and write 4.9 MB of containers after G183 and 5.8 MB after G182 (the base's
+bytes were not measured). The cluster DAG is the LOD policy; its coarsest level the far form, where
+the relief has gone into the material's normal.
+
+**The same pair in msvc-release** (2026-11-11 evening; the base b8eb339a and the tip 0d160651,
+each built in this row's worktree; the machine 100% busy by `Win32_Processor.LoadPercentage`
+throughout, 12-24 GB free, thirteen agents running, so every figure is an upper bound and the
+benchmarks report `quiet: false`):
+
+| The cost case's 16 m tile, five runs interleaved | Base | Tip |
+|---|---:|---:|
+| Its four patches built (solve and cluster DAG), ms | 521, 565, 889, 654, 616 (median 616) | 967, 642, 1,029, 688, 771 (median 771) |
+| Triangles a m² of bed, finest / coarsest | 319 / 9.7 | 381 / 12.0 |
+| The plan, ms (median) | 12.8 | 12.8 |
+
+| The review scene's `across` view, 1600×900, CSM, 61 frames, 3 repeats, RTX 5090 | Base | Tip |
+|---|---:|---:|
+| GPU ms a frame, median (p95) | 0.184 (0.187) | 0.190 (0.195) |
+| of which the material resolve | 0.083 | 0.091 |
+| the cull, Hi-Z and hardware raster | 0.033, 0.016, 0.014 | 0.033, 0.016, 0.014 |
+| the shadow maps and their cull | 0.037, 0.018 | 0.037, 0.018 |
+| Visible (instance, cluster) pairs; shadow pairs | 2,715; 4,573 | 2,704; 4,532 |
+
+GPU utilisation 3-6% when each run began and ended (the machine's CPU was busy, not the GPU). The
+frame record carries no triangle count; a cluster holds at most 128 triangles, and from across the
+LOD cut sits on coarse levels, so the finest form's 19% more triangles do not reach this view
+(the pairs are 0.4% fewer). **What the 19% buys and costs**: the 10 cm top that lets the clasts'
+angular faces and hollows read at one metre, for about a quarter more time to build a tile's
+patches (616 to 771 ms, median, busy machine) and 19% more triangles where the finest form is
+drawn, within a few metres; from across it costs 0.006 ms a frame, almost all of it in the
+resolve, which now samples the stones' second material.
+
 ### The toe
 
 G143's third pass. A real toe's largest clasts lie scattered over metres past the bed, thinning
@@ -1416,6 +1526,31 @@ slope): the edge field also sinks a bed's bare rim on the face above it, and the
 pictures stuck clasts to the wall (`k_deposit_version` 5; `deposits: the toe's clasts thin out over
 metres, the largest farthest`: 36, 19 and 9 clasts by metre out, 0.19, 0.24 and 0.32 m across,
 none on the face beside the bed). The shed blocks still run past them to the shadow line.
+
+### A stone wears its rock
+
+T108, 2026-11-11 (`k_deposit_version` 6). The bed samples the pack's `rock/scree`, which is right
+for a bed: its set is a picture of many clasts on a dark ground. Until T108 the loose fragments, the
+toe's clasts and the shed blocks were drawn in the same mesh with the same material, so every loose
+block past the toe was one stone wearing a picture of many stones (G143's third pass's one-metre
+picture). **A patch's mesh is now two primitives**: the bed (material 0, the scree's set as before)
+and every loose stone (material 1), which wears its rock's own set, chosen as a boulder's is: the
+recipe's own images, else the pack's `rock/<type>` (`rock_role` of the patch's type), else the
+type's flat constant. A stone is charted at **its own set's repeat** (`solve_deposit`'s
+`stone_tile_m`; the box projection of [External tiled maps](#external-tiled-maps)), so a 0.9 m
+block shows half a 2 m granite repeat, not four repeats of a 0.5 m scree. Each primitive is its own
+cluster DAG with the patch's border locked, merged by `merge_cluster_lod`, so a cluster names one
+material. A patch with no loose stone keeps one material; a patch of meadow with blocks and no bed
+has the stones' primitive alone (`deposits: a loose stone wears its rock's own surface and the bed
+the scree's`). The patch's `RockMaterial` factors (tint, roughness) go on both.
+
+**What a fresh break would add.** A block that fell this century shows a fresh break on the faces
+it broke along: paler and less rough than its weathered face, without lichen (the G97 rind is the
+same idea for a baked boulder). A stone that has lain on the talus for millennia is weathered all
+round. A second role a rock, `rock/<type>-fresh`, would let the blocks' broken faces (the fragment
+kernel already knows which facets are cut) and the youngest blocks (the plan draws each block's
+age as its burial) take it; the matgen sets have no such role yet, so this is a request to the
+material sets' row, not built here.
 
 ### A tile solves
 

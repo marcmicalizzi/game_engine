@@ -7,6 +7,7 @@
 #include <domain/gfx/capture.h>
 #include <domain/gfx/display.h>
 #include <domain/gfx/gi_cache.h>
+#include <domain/gfx/pipeline_batch.h>
 #include <domain/gfx/water_swash.h>
 #include <foundation/io/vfs.h>
 #include <systems/renderer/caster_volume.h>
@@ -849,8 +850,10 @@ bool SceneRenderer::create_frame_pass_pipelines(std::string* error) {
   encode_desc.fragment_entry = "fs_encode";
   encode_desc.layout = bindless.pipeline_layout();
   encode_desc.color_format = desc_.color_format;
+  gfx::PipelineBatch batch(device);  // the two side by side (pipeline_batch.h)
   return gfx::create_graphics_pipeline(device, resolve_desc, pipelines_.resolve_linear, error) &&
-         gfx::create_graphics_pipeline(device, encode_desc, pipelines_.encode, error);
+         gfx::create_graphics_pipeline(device, encode_desc, pipelines_.encode, error) &&
+         batch.end(error);
 }
 
 // The target's size, a colour attachment for the resolve, a storage image for the passes and a
@@ -989,6 +992,10 @@ bool SceneRenderer::create_color_target(std::string* error) {
 bool SceneRenderer::create_pipelines(std::string* error) {
   ENGINE_STARTUP_STAGE("pipelines");
   const gfx::Device& device = *device_;
+  // **Every creation below is recorded and compiled at once, in parallel, at `batch.end`**
+  // (pipeline_batch.h; gfx.md, "Pipelines created in parallel"): nothing here uses a pipeline
+  // before the end, and an early return compiles nothing.
+  gfx::PipelineBatch batch(device);
   // **The mesh-shader pipelines are built only for a path that draws with them**, and
   // `cluster_mesh` is not even loaded otherwise. On a device without VK_EXT_mesh_shader
   // `resolve_settings` has already moved hw, direct and auto to the vertex path, and building a
@@ -1307,7 +1314,8 @@ bool SceneRenderer::create_pipelines(std::string* error) {
                                       {}, sizeof(u64), pipelines_.cull, error) &&
          gfx::create_compute_pipeline(device, hiz->module, "hiz_build_main", {},
                                       sizeof(gfx::HizParams), pipelines_.hiz, error) &&
-         gfx::create_graphics_pipeline(device, resolve_desc, pipelines_.resolve, error);
+         gfx::create_graphics_pipeline(device, resolve_desc, pipelines_.resolve, error) &&
+         batch.end(error);
 }
 
 void SceneRenderer::destroy() noexcept {

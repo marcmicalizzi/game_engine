@@ -46,7 +46,7 @@
       "measure": "file-lines",
       "file": "apps/engine_view/main.cpp",
       "why": "every play feature and every flag",
-      "ceiling": 7470
+      "ceiling": 7472
     },
     {
       "id": "engine_view.run_view.lines",
@@ -107,19 +107,19 @@
       "id": "page:docs/subsystems/renderer.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/renderer.md",
-      "ceiling": 1003088
+      "ceiling": 1007893
     },
     {
       "id": "page:docs/subsystems/apps.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/apps.md",
-      "ceiling": 659199
+      "ceiling": 660080
     },
     {
       "id": "page:docs/subsystems/gfx.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/gfx.md",
-      "ceiling": 309516
+      "ceiling": 319942
     },
     {
       "id": "page:docs/subsystems/geometry.md",
@@ -185,7 +185,7 @@
       "id": "page:docs/subsystems/rocks.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/rocks.md",
-      "ceiling": 137063
+      "ceiling": 147549
     }
   ],
   "rebaselines": [
@@ -660,6 +660,79 @@
           "id": "page:docs/subsystems/rocks.md",
           "old": 131180,
           "new": 137063
+        }
+      ]
+    },
+    {
+      "date": "2026-11-12",
+      "by": "Marc Micalizzi",
+      "reason": "",
+      "commit": "c6879d34",
+      "folded": [
+        {
+          "name": "R148",
+          "reason": "renderer.md gains 'What the resolve costs, term by term' (R148): the resolve's terms at the owner's setting, the two cuts and what the sixteen variants cost to build, which no other page holds",
+          "date": "2026-11-11",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 4812
+          }
+        },
+        {
+          "name": "R149",
+          "reason": "R149: the summary's load block names every pipeline the device made (load_summary takes the device; one include); gfx.md gains 'Pipelines created in parallel' with the cold table, the scaling measurement, the pairs and the batch's rule; apps.md documents load.pipelines",
+          "date": "2026-11-11",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "engine_view.main_cpp.lines": 2,
+            "page:docs/subsystems/apps.md": 486,
+            "page:docs/subsystems/gfx.md": 10426
+          }
+        },
+        {
+          "name": "T108",
+          "reason": "T108, G183 and G182: rocks.md's deposit sections say why a loose stone wears its rock's set, how a gully's cone climbs and its flanks fall at the repose along the wall, what the bed's clasts are at one metre, and what they cost in debug and release",
+          "date": "2026-11-11",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/rocks.md": 10486
+          }
+        },
+        {
+          "name": "W127",
+          "reason": "apps.md: the landform command's summary and file list gain what the ice leaves (W127 stage F): the ice map, the five new fields of engine.landform.fields/4, and under ice the moraines, lakes, lake fill and the ice's load",
+          "date": "2026-11-11",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 395
+          }
+        }
+      ],
+      "changes": [
+        {
+          "id": "engine_view.main_cpp.lines",
+          "old": 7470,
+          "new": 7472
+        },
+        {
+          "id": "page:docs/subsystems/renderer.md",
+          "old": 1003088,
+          "new": 1007893
+        },
+        {
+          "id": "page:docs/subsystems/apps.md",
+          "old": 659199,
+          "new": 660080
+        },
+        {
+          "id": "page:docs/subsystems/gfx.md",
+          "old": 309516,
+          "new": 319942
+        },
+        {
+          "id": "page:docs/subsystems/rocks.md",
+          "old": 137063,
+          "new": 147549
         }
       ]
     }
