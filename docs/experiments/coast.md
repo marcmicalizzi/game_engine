@@ -129,7 +129,12 @@ which gives 0.044 at 0.2 mm (2.5°), 0.070 at 0.3 mm (4.0°), 0.091 at 0.5 mm, 0
 gravel page's 1 in 8, the proof of concept's 0.075 for 0.3 mm in a sheltered bay, and the reels'
 catalogue (5 to 8° on coral sand, 3 to 5° on a long fine-sand beach, 10 to 15° at the step of a
 steep one). Sunamura 1984's form, in which the slope also falls with the breaker's height over
-√(g D) T (so exposure flattens a beach of a given grain), was not opened.
+√(g D) T (so exposure flattens a beach of a given grain), was not opened. **Exposure, measured**:
+Vos and others 2022's satellite dataset of Australia's beaches (opened) has faces from 0.01 to
+0.18 between mean sea level and mean high water springs, state medians from 0.055 to 0.08, and
+**0.01 to 0.035 along the energetic, wave-dominated southern coasts**: the same sand lies three
+times flatter under a large swell. The design's face is therefore the grain's slope scaled down
+by exposure, and the scaling is the build row's to fit from a source it has opened.
 
 ### The berm, the step, bars, and the beach's state
 
@@ -223,9 +228,13 @@ metre of wave moves **hundreds of thousands of cubic metres a year** along an op
 
 Between two headlands with nothing passing them, a beach comes to rest where the net transport is
 nothing at every point: the shoreline is square to the waves that reach it, so it is straight
-where the waves arrive unbent and curls in behind the headland the waves bend round. Hsu and Evans
+where the waves arrive unbent and curls in behind the headland the waves bend round. In the words
+of a paper that applies it, at static equilibrium the waves "break simultaneously along the bay
+periphery" (Lim, Hwang and Lee 2022, opened), and a cell of length L reaches that state in about
+L / (4 q cos² α_b), q the transport's rate of shoreline movement (the same paper, whose CERC
+constants are K = 0.39, a breaker index of 0.78 and breaking at a depth of 1.28 H). Hsu and Evans
 1989 fit the curve from 27 beaches, model and real (the form through the IH Cantabria model
-documentation, opened; the count through a search summary):
+documentation and Lim and others, both opened; the count from the latter):
 
     R / R₀ = C₀ + C₁ (β / θ) + C₂ (β / θ)²
 
@@ -279,8 +288,8 @@ build deltas with a top at the water's level, a front at the angle of repose and
 
 ### Retreat as force against resistance
 
-Sunamura's account (his 2015 review in the Proceedings of the Japan Academy, opened: the first
-100,000 of its 164,000 characters, through section 7; the 1992 book it summarises is not open): a
+Sunamura's account (his 2015 review in the Proceedings of the Japan Academy, opened whole, in two
+parts; the 1992 book it summarises is not open): a
 cliff's foot retreats at a rate set by the waves' assailing force F_W against the rock's resisting
 force F_R, and not at all below a threshold,
 
@@ -295,7 +304,7 @@ make it a model and not a rate:
 - **The wave at the foot is not the wave offshore.** Waves break where the depth is 1.25 times
   their height (H_b / h_b = 0.8) and decay across whatever lies between the break and the cliff:
   H_f / H_b = exp(−35.2 l tan β / (T √(g h_b))), l the distance and tan β the slope (the review's
-  equation 13). Computed here: a 100 m platform at 1 in 50 cuts a 2 m, 8 s breaker to a sixth. So
+  equation 13, from Sunamura 1985). Computed here: a 100 m platform at 1 in 50 cuts a 2 m, 8 s breaker to a sixth. So
   **retreat widens the platform, and the platform slows the retreat**, toward a width at which
   the wave at the foot falls to the threshold.
 - **Rates span four orders of magnitude.** Soft-rock cliffs go back 10⁻² to 10⁰ m a year (the
@@ -308,6 +317,12 @@ make it a model and not a rate:
   the compiled data (a weak peak at tidal ranges of 1 to 3 m). Measured cliffs are the ones that
   move, so these medians are an upper reading of a hard coast (this page's inference, not the
   paper's).
+- **Retreat is a cycle.** The waves undercut the foot, the face falls, topples or slides, the
+  debris stands as talus and shields the foot, and the waves clear it and begin again: every 10
+  to 50 years on the coasts the review lists (10 at Taito-misaki, about 40 at Warden Point, 10 to
+  40 on English chalk, 25 to 50 on French), the talus lasting weeks to months where the beach is
+  reflective and years to decades behind a dissipative one. "Without wave erosion, no cyclic
+  recession will occur." A stand's step of a century holds the cycle whole, so a rate is its mean.
 
 ### The beach at the cliff's foot: a tool, then a cover
 
@@ -434,7 +449,7 @@ geomorphology; no source was opened for it.
 | Pocket beach | zero net transport; R/R₀ = C₀ + C₁(β/θ) + C₂(β/θ)² | C's tabulated against β: **not found** | Hsu and Evans 1989 via IH Cantabria's documentation: opened |
 | Tombolo | island length over distance offshore | over 0.67 (to 1.0); salient 0.3 to 0.67 | Sunamura and Mizuno 1987 via an annotating page; Coastal Wiki: opened |
 | Delta | R = Q_river / Q_wave, Q_wave = 90 H^(12/5) T^(1/5) kg/s | wave-dominated under 1 | Nienhuis and others 2015 via the Coastal Wiki: opened |
-| Cliff retreat | dX/dt = K (ρ g H_f / S_c − ε), 0 below the threshold | medians 2.9, 10, 23 cm/yr by rock class | Sunamura 2015 (opened, to section 7); Prémaillon and others 2018 (opened, most) |
+| Cliff retreat | dX/dt = K (ρ g H_f / S_c − ε), 0 below the threshold | medians 2.9, 10, 23 cm/yr by rock class | Sunamura 2015 (opened); Prémaillon and others 2018 (opened, most) |
 | Wave at the foot | breaks at h = 1.25 H; H_f/H_b = exp(−35.2 l tan β / (T √(g h_b))) | — | Sunamura 2015: opened |
 | Beach as tool and cover | rate up to a narrow beach, then down to nothing at a wide one | 1.25 m and 6 m (a lake); 20 to 70 m (open coasts) | Sunamura 2015: opened. Limber and Murray 2011: summary |
 | Platforms | sloping 1° to 5° (large tide, soft rock); level with a drop (small tide, hard rock); plunging: no retreat | soft is S_c up to about 5 MPa | Coastal Wiki, Sunamura 2015: opened. Gradient against tide: summary |
@@ -491,7 +506,7 @@ mouths are the last step's.
 | `coast.storm` | The height exceeded twelve hours a year over the mean height, for the closure depth and the berm | 1 to 6, default 3 |
 | `coast.sand` | The default sediment: `grain_mm`, `kind` (quartz, carbonate), and `river_share`, the part of a river's load that is sand or coarser | 0.3 mm; quartz; 0.3 |
 | `coast.sources` | Supplies that are not a river or a cliff: a polyline or a stretch of an edge, a `rate_m3_per_yr`, a `grain_mm` and a `kind` (a reef's carbonate sand; drift entering at the lattice's edge; sand the rising sea swept onshore) | none |
-| `coast.cliff` | `rate_m_per_yr` at resistance 0, 0.5 and 1 under the reference wave of 1 m at the foot; `yield`, the share of what a cliff loses that stays on the shore as sand or coarser; `grain_mm` of that yield at resistance 0 and 1 | 0.25, 0.03 and 0.003: authored inside the published span (GlobR2C2's medians, 23 cm for weak rock and 2.9 cm for hard; hard rock typically under a centimetre a year, the Coastal Wiki after Sunamura 1992); 0.3; 0.3 mm and 200 mm |
+| `coast.cliff` | `rate_m_per_yr` at resistance 0, 0.5 and 1 under the reference wave of 1 m at the foot; `yield`, the share of what a cliff loses that stays on the shore as sand or coarser; `grain_mm` of that yield at resistance 0 and 1; `platform_m`, a level platform's height above the sea | 0.25, 0.03 and 0.003: authored inside the published span (GlobR2C2's medians, 23 cm for weak rock and 2.9 cm for hard; hard rock typically under a centimetre a year, the Coastal Wiki after Sunamura 1992); 0.3; 0.3 mm and 200 mm; 0 |
 | `coast.outline` | Closed polylines of land, a plan: the uplift's footprint and the starting sea bed are made from them | none |
 
 **What is already there**: the rock's resistance at every point, uniform or from the formation
@@ -542,12 +557,15 @@ the lattice's bathymetry ([what is shared with S102](#the-same-physics-as-the-wa
 **2. The cliff line retreats.** The line between rock that stands and rock the sea has cut is the
 zero of a distance function kept on the lattice. Each step it moves landward at the local speed
 
-    v = rate(r) × g(W) × max(0, H_f / H_ref − ε)
+    v = rate(r) × g(W) × max(0, (H_f − H_c(r)) / (H_ref − H_c(r)))
 
 `rate(r)` the sketch's three rates read log-linearly in the resistance r at the surface (the
 formation's bed there: a hard bed is a headland), H_f the storm wave at the foot (the smaller of
 the depth-limited height at the foot at high tide and the breaker decayed across the platform by
-Sunamura's exponential), ε the threshold, and g(W) the beach's tool-and-cover factor for the
+Sunamura's exponential), H_ref the reference wave of 1 m at which the rates are stated, H_c(r)
+the height under which that rock does not retreat (the law makes it proportional to the rock's
+strength and gives no field constant: authored, 0.05 m at resistance 0 to 0.5 m at 1, until the
+build row has a source), and g(W) the beach's tool-and-cover factor for the
 width W of sand in front: rising from 1 on bare rock to a peak at a narrow beach, falling to 0
 where the beach is wide enough that the storm's run-up ends on it. The form is Sunamura's linear
 law; its scale is authored through the three rates because his constants are a flume's. The
@@ -556,14 +574,18 @@ advance is the upwind step of the eikonal equation, the scheme
 line moves at most half a cell at a time. So the line is known to a fraction of a cell, moves the
 same distance at any spacing, and has no eight-sided bias.
 
-- **Where the foot is too deep for the storm wave to break** (deeper than 1.25 H), H_f is the
-  unbroken wave's and falls under the threshold: a **plunging cliff**, and no retreat.
+- **Where the foot is too deep for the storm wave to break** (deeper than 1.25 H) the wave
+  reflects from the face unbroken, and an unbroken wave's force is a small share of a breaking
+  one's: a **plunging cliff**, and no retreat. The share is the build row's to take from the
+  profile model that weighs unbroken, breaking and broken waves apart (Matsumoto and others
+  2016, not opened); until then it is nothing.
 - **What the line has passed is platform.** Its rock floor is lowered to the platform's surface:
   from `tide_m / 2` above the level at the foot, seaward at a gradient that rises with the tide
   (an authored line through the published 1° to 5°: 0.01 + 0.006 per metre of tide, held to
   0.09), down to where the surface meets the old bed. With a tide under 2 m in rock of resistance
-  over 0.5 it is **level with a seaward drop**: flat at mid-tide to its edge, then a scarp to the
-  storm wave's breaking depth. The two numbers that pick the kind are authored inside what the
+  over 0.5 it is **level with a seaward drop**: flat to its edge at `coast.cliff.platform_m` above
+  the sea (default 0, mid-tide; the reels' limestone shelf stands half a metre above a sea with
+  almost no tide), then a scarp to the storm wave's breaking depth. The two numbers that pick the kind are authored inside what the
   sources say (small tide and hard rock: level); the regression was not opened.
 - **The cliff is as tall as the land the line retreated into**, which is the hand rule the
   authors found. Its cells are marked, and **the limiter leaves a marked cliff standing**: the
@@ -848,7 +870,7 @@ retreat are all written in terms of.
 - **Not opened, restated by a page that was**: Bruun 1954; Dean 1977 and 1987; Hallermeier 1978,
   1981, 1983; Birkemeier 1985; Komar and Inman 1970 and the CERC manual; Pelnard-Considère 1956;
   Ashton and Murray 2001 and 2006; Hsu and Evans 1989; Nienhuis and others 2015; Sunamura 1992
-  (through his own 2015 review, of which the last third, on slope failure, was not read).
+  and 1985 (through his own 2015 review); Bujan and others 2019 beyond its abstract.
 - **Summaries only**: Moore 1982; Ferguson and Church 2004; Wright and Short 1984; Limber and
   Murray 2011 and the 2014 pair; Matsumoto, Dickson and Kench 2016 (an exploratory profile model
   that makes plunging cliffs, benches and both platform kinds from wave type and tide, with a 2018
@@ -884,7 +906,12 @@ Opened through the page-reading tool, 2026-11-12:
 - J. Bosboom and M. J. F. Stive, *Coastal Dynamics*, section 7.2.2, "(Semi-)empirical derivations"
   (LibreTexts edition).
 - T. Sunamura, "Rocky coast processes: with special reference to the recession of soft rock
-  cliffs", *Proceedings of the Japan Academy, Series B* 91(9), 2015 (J-STAGE; sections 1 to 7).
+  cliffs", *Proceedings of the Japan Academy, Series B* 91(9), 2015 (J-STAGE; whole, in two parts).
+- K. Vos, W. Deng, M. D. Harley, I. L. Turner and K. D. M. Splinter, "Beach-face slope dataset for
+  Australia", *Earth System Science Data* 14, 1345–1357, 2022.
+- C. Lim, S. Hwang and J. L. Lee, "An analytical model for beach erosion downdrift of groins: case
+  study of Jeongdongjin Beach, Korea", *Earth Surface Dynamics* 10, 151–163, 2022 (for the
+  parabolic bay's form, its constraint and the CERC constants).
 - M. Prémaillon, V. Regard, T. J. B. Dewez and Y. Auda, "GlobR2C2 (Global Recession Rates of
   Coastal Cliffs)", *Earth Surface Dynamics* 6, 651–668, 2018 (all but the last eighth).
 - IH Cantabria, IH-SET documentation, "Hsu and Evans (1989)" (the parabolic bay's form and
