@@ -195,7 +195,10 @@ TEST_CASE("matgen: a rock's fresh breaks and lichen are the asked shares, over s
   }
 }
 
-TEST_CASE("matgen: a floor's covers follow the Poisson law, over seeds") {
+TEST_CASE("matgen: a floor's covers are the asked shares, over seeds") {
+  // The litter and the live leaves are laid until their cover reaches the recipe's share (G187: a
+  // tuft's leaves overlap, so a count from the Poisson law would fall short of it); the moss is
+  // its share of the underlay by quantile.
   for (const u64 seed : {3ull, 5ull, 7ull}) {
     const Built turf = build(recipe("ground/turf", 256, seed));
     MESSAGE("seed " << seed << ": moss " << turf.stats.moss_share << " thatch "
@@ -377,6 +380,42 @@ TEST_CASE("matgen: a wood set's grain runs along u, and its checks, knots and ba
   }
 }
 
+TEST_CASE("matgen: a floor reads at standing height, over seeds") {
+  // G187 (matgen.md, "A floor at standing height"): what a standing eye reads a floor by lies
+  // between 5 cm and 1 m — tufts, cushions, clods, a lawn's patches — so each ground role holds a
+  // floor on the luminance's block contrast at 5 cm and at 25 cm and on the height's RMS, and a
+  // ceiling on its landmark contrast (the mosaic must not become the tile's repeat). The bounds are
+  // chosen between what the base generator measured (k_matgen_version 3, its 0.5 m tiles, these
+  // seeds: contrast at 5 cm turf 0.018 to 0.021, moss 0.035 to 0.058, soil 0.053 to 0.065, thatch
+  // 0.027 to 0.030; at 25 cm 0.002 to 0.025; relief 0.44 to 2.8 mm) and what this one does, so the
+  // base fails every floor (matgen.md, "A floor at standing height", has both tables).
+  struct Bound {
+    const char* role;
+    f64 c5, c25, relief_mm, landmark;
+  };
+  const Bound bounds[] = {
+      {"ground/turf", 0.04, 0.02, 4.0, 0.30},
+      {"ground/moss", 0.08, 0.04, 3.0, 0.45},
+      {"ground/soil", 0.08, 0.03, 2.0, 0.40},
+      {"ground/thatch", 0.035, 0.018, 2.5, 0.30},
+  };
+  for (const Bound& b : bounds) {
+    CAPTURE(b.role);
+    for (const u64 seed : {61ull, 62ull, 63ull}) {
+      const Built built = build(recipe(b.role, 256, seed));
+      MESSAGE(std::string(b.role) << " seed " << seed << ": contrast 5 cm "
+                                  << built.stats.contrast_5cm << " 25 cm "
+                                  << built.stats.contrast_25cm << " relief rms mm "
+                                  << built.stats.relief_rms_mm << " landmark "
+                                  << built.stats.landmark_contrast);
+      CHECK(built.stats.contrast_5cm > b.c5);
+      CHECK(built.stats.contrast_25cm > b.c25);
+      CHECK(built.stats.relief_rms_mm > b.relief_mm);
+      CHECK(built.stats.landmark_contrast < b.landmark);
+    }
+  }
+}
+
 TEST_CASE("matgen: a mip chain keeps the set's mean colour") {
   // The set's far form is its mean: every level of the texture build's chain (a repeating
   // sampler's) has the level-0 mean, in linear light, to a code or so.
@@ -459,8 +498,10 @@ TEST_CASE("matgen: the same bytes from every toolchain") {
   // removed: the granite and the sandstone moved, no other kind); version 4 added the wood kind's
   // two pins and moved no other (G188). The generator calls nothing a
   // toolchain rounds its own way, so Clang and GCC, at v3 and at v2, are held to the same bytes;
-  // which of them has been run is on the page (matgen.md, "Same bytes everywhere"). A change to the
-  // generator moves these and bumps k_matgen_version.
+  // version 5 (G187: the ground kind at standing height) moved the turf and added the moss, the
+  // soil and the thatch, which no earlier pin held; which of them has been run is on the page
+  // (matgen.md, "Same bytes everywhere"). A change to the generator moves these and bumps
+  // k_matgen_version.
   struct Pin {
     const char* role;
     u64 hash;
@@ -468,8 +509,10 @@ TEST_CASE("matgen: the same bytes from every toolchain") {
   const Pin pins[] = {
       {"gravel/bed", 6280004583196325757ull},     {"rock/scree", 15685960211907165185ull},
       {"sand/bar", 6512822385822317515ull},       {"rock/granite", 1158326275606281670ull},
-      {"rock/sandstone", 2145369994992403863ull}, {"ground/turf", 4583399645411956302ull},
+      {"rock/sandstone", 2145369994992403863ull}, {"ground/turf", 6124285787784493336ull},
       {"wood/plank", 4421691671427882217ull},     {"wood/log", 14568179929401548549ull},
+      {"ground/moss", 6198598581770743291ull},    {"ground/soil", 13248924326901389473ull},
+      {"ground/thatch", 4229589913222796817ull},
   };
   for (const Pin& pin : pins) {
     CAPTURE(pin.role);

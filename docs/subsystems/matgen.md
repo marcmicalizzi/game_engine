@@ -185,6 +185,62 @@ in cushions) and soil (crumbs) split at the moss share's quantile, dead leaf fra
 Poisson cover of `thatch_permille`, live leaves with a midrib and tapered tips as one of
 `live_permille`. `SetStats` reports the three covers.
 
+### A floor at standing height (G187)
+
+The parts above are all a few millimetres across, and G149's pictures showed what that gives at
+1.7 m: flat felt colour. A standing eye reads a floor by what lies between 5 cm and 1 m
+([grounding](../experiments/generated-material-sets.md#a-floor-at-standing-height-g187-2026-11-11)),
+so the ground kind (`Ground` version 2) now builds that band, every part a field of the recipe
+and zero in a recipe that does not ask for it:
+
+- **A patch mosaic** (`patch_permille`): a field of 0.6 m and 0.2 m octaves that sets, where it
+  is high, a turf's tall rejected tufts (longer, darker blue-green leaves, more of them dead)
+  against its short-grazed lawns (shorter, yellow-green), a soil's and a moss's moist against dry,
+  and where fresh straw lies over decayed litter.
+- **Tufts** (`tuft_mm`): live leaves fan out from a tiller's centre, 6 to 20 a tuft, each rising
+  from its base (its far end paler, lit) and lifting the tuft's top; `dead_permille` of them are
+  straw. Without tufts a leaf lies anywhere, as before.
+- **Cushions** (`cushion_mm`) of moss and **clods** (`clod_mm`) of soil: cells of a cellular field
+  whose lookup is warped by half a cell (a polygon's straight edges read as crazy paving), domed
+  by `relief_um`; a moss cushion each its own tone between lit yellow-green, the shaded body and a
+  dry brown and its own vigour (0.75 to 1.25 of the tone), the seam between two showing only where
+  a second field parts them; a soil's clods cracked along some of their edge, not all of it.
+- **Stones** part buried in the soil (`stones_permille`, `stone_min_mm` to `stone_max_mm`, radii
+  log-uniform so small ones are many), ellipses whose crowns stand a quarter to three fifths of
+  their minor axis above it, each filmed with the soil's colour (more at its foot).
+- **Litter in two layers** (`decay_permille`): the decayed share first and dark, fresh straw
+  over it on a mosaic of its own 0.22 m across, and lying with the lodged grass where
+  `aligned_permille` asks, along a direction field 0.8 m across.
+- **Mounds** (`mound_um` at `mound_spacing_mm`): a low undulation under everything, so the normal
+  map shows at 15 m that the floor is not a plane. A thufur's 10 to 25 cm is the ground's
+  geometry, not the texture's: the set carries a tenth of it.
+- **The hollows' shade** reads over two centimetres and is full at a centimetre deep where a
+  recipe has tufts or cushions (5 mm otherwise); it was 4 mm over 6 mm, a crumb's scale.
+
+**A layer's share is the share drawn.** A clustered layer does not cover by the Poisson law (a
+tuft's leaves overlap each other), so the litter and the leaves are laid until their cover
+reaches the asked share; `SetStats::thatch_cover` and `live_cover` are the asked shares to within
+a fragment's area.
+
+The tile is 2 m at 2,048 texels (1 mm a texel) for all four, so the mosaic has a dozen patches a
+tile. What says the floor is no longer flat are the measures under "What a standing eye reads".
+Over seeds 61 to 63 at 256 texels (`msvc-debug`; the base is `k_matgen_version` 3 with its 0.5 m
+tiles, this is version 5), with the bounds the test holds each role to — **chosen** between the
+two, so the base fails every floor; the landmark ceiling the base meets except the moss:
+
+| Role | contrast at 5 cm: base, now, floor | at 25 cm: base, now, floor | relief RMS mm: base, now, floor | landmark: base, now, ceiling |
+|---|---|---|---|---|
+| `ground/turf` | 0.018–0.021, 0.056–0.068, > 0.04 | 0.002–0.005, 0.035–0.051, > 0.02 | 2.6–2.8, 5.8–7.9, > 4 | 0.10–0.11, 0.14–0.15, < 0.30 |
+| `ground/moss` | 0.035–0.058, 0.133–0.140, > 0.08 | 0.008–0.024, 0.068–0.080, > 0.04 | 0.44–0.65, 7.0–9.6, > 3 | 0.22–0.46, 0.26–0.39, < 0.45 |
+| `ground/soil` | 0.053–0.065, 0.106–0.118, > 0.08 | 0.014–0.025, 0.037–0.059, > 0.03 | 0.57, 3.6–4.7, > 2 | 0.31–0.43, 0.22–0.26, < 0.40 |
+| `ground/thatch` | 0.027–0.030, 0.045–0.046, > 0.035 | 0.006–0.012, 0.023–0.025, > 0.018 | 1.43, 4.2–5.6, > 2.5 | 0.14–0.17, 0.11–0.13, < 0.30 |
+
+No source gives a photographed floor's block contrast at these scales; the floors say only that
+the structure the base lacked is there. The thatch's is the weakest gain: a litter mat is one
+material, and its decayed patches are held soft (fresh straw is laid over a decimetre-scale
+mosaic of its own, at a rate that falls to 0.4 where the mosaic is high) because hard-edged ones
+read as a cow's hide.
+
 ## Wood sets
 
 `wood/plank` and `wood/log` (G188; [grounding](../experiments/generated-material-sets.md#weathered-wood-g188-2026-11-11)):
@@ -231,8 +287,10 @@ consumer's to turn.
 | `rock/limestone` | rock | 2 m | micrite, solution pits, a grey rind, 15 % lichen, form 25 mm, strong ink stripes | `RockType::Limestone`, the caves |
 | `rock/sandstone` | rock | 1.5 m | buff grains, twelve laminae, one joint set, form 12 mm | `RockType::Sandstone` |
 | `gravel/bed.1`, `.2`, `sand/bar.1`, `.2`, `rock/scree.1`, `.2` | granular | as their role | the same recipe from other seeds ("Repetition") | a consumer that picks a variant by place |
-| `ground/soil`, `ground/moss`, `ground/thatch` | ground | 0.5 m | the sward floor's three parts | the sward's cook (`--sward-assets`) |
-| `ground/turf` | ground | 0.5 m | live leaves over thatch over moss and soil | a terrain layer that names it |
+| `ground/soil` | ground | 2 m | loam in 35 mm clods, cracked, 8 % stones of 5 to 40 mm part buried, moist and dry patches, a little litter, mounds | the sward's cook (`--sward-assets`), a terrain layer |
+| `ground/moss` | ground | 2 m | a moss carpet in 150 mm cushions of their own tones, wet and dry patches, a little litter, mounds | the sward's cook, a terrain layer |
+| `ground/thatch` | ground | 2 m | a litter mat: decayed below, fresh straw over it in patches, lying with the lodged grass | the sward's cook, a terrain layer |
+| `ground/turf` | ground | 2 m | a grazed sward: live leaves in 110 mm tufts, short yellow-green lawns against tall dark rejected tufts, a fifth of the leaves dead, over litter, moss and soil | a terrain layer that names it, the meadow |
 | `wood/plank` | wood | 2 m | sawn softwood boards weathered grey to brown: flat-sawn figure, latewood ridges, checks, knots, stains | a bridge's deck, rails and posts ([bridges](bridges.md)) |
 | `wood/log` | wood | 2 m | the outside of a debarked log, silvered: spiral grain, long drying checks, knots, bark on 15 % | a bridge's logs, sills and stringers |
 
@@ -322,8 +380,9 @@ since the ground kind did not change). **The Linux containers reproduce the vers
 test passed. Version 3 (the step removed; the granite and sandstone pins re-taken):
 `linux-clang-debug` (14:25, at 39896b51) and `linux-gcc-release` (14:35) passed;
 `linux-gcc-release-v2` did not run for version 3 (the container lock was not had before the
-row's hand-back). Version 4 (G188) added the two wood pins and moved no other; what the
-containers made of them is under "What it measured". The streaks' distance below a
+row's hand-back). Version 4 (G188) added the two wood pins and moved no other; version 5
+(G187) moved the turf's and added the moss's, the soil's and the thatch's. What the containers
+made of versions 4 and 5 is under "What it measured". The streaks' distance below a
 source is an integer from two sweeps round each column, the lichen's owner of a texel is decided
 by an f64 comparison of two quotients of the same arithmetic, so neither adds an operation a
 toolchain rounds its own way. Nothing was needed that `core/math/deterministic.h` lacks: a normal draw is Box and Muller's
@@ -392,7 +451,9 @@ The pack directory `engine-content matgen` writes is derived data.
 
 - A set built from any window is the first window's bytes rotated.
 - The grid count over a bed reads the recipe's D50 and sorting; a rock's fresh share and a
-  floor's covers are the recipe's.
+  floor's covers are the recipe's (a floor's litter and leaves to within a fragment's area).
+- A ground set's contrast at 5 cm and 25 cm and its relief stand over the floors "A floor at
+  standing height" names; a wood set's grain runs along u.
 - No sixteenth of a tiled granular set stands out from its mean past the bounds "Repetition"
   names.
 - Streaks and moss exist only where a recipe asks for them.
@@ -407,8 +468,8 @@ The pack directory `engine-content matgen` writes is derived data.
 **Depends on.** `base`, `containers`, `math`, `hash`, `json`, `schema`, `log`, `texture` (the sRGB
 tables; the mip chain in the tests), `matgen_schemas`. No capability.
 
-**Testing.** `tools/dev.ps1 test -Filter matgen`: the rotation test over eight defaults (the wet
-granite's streaks and moss among them); the seam's step; the grid count over five seeds (the
+**Testing.** `tools/dev.ps1 test -Filter matgen`: the rotation test over ten defaults (the wet
+granite's streaks and moss among them, and the two wood sets); the seam's step; the grid count over five seeds (the
 cover of what is drawn held on the same bed unburied); scree against the bed; a rock's shares
 and a floor's covers over three seeds each; every default's mean albedo and roughness inside its
 material's range; the landmark measure under its bounds over three seeds for each tiled role,
@@ -416,9 +477,11 @@ and the variants the same recipe from other seeds (G153); a rock face's form, st
 where asked and absent where not (G152); a bed part buried and a talus layers deep (G151); a wood
 set's grain along u (the colour's step along a row under 0.7 of its step down a column), its
 latewood share, checks, knots and bark where asked and none where not, over three seeds (G188,
-5.9 s); a mip
-chain's mean; a recipe read, refused and keyed; the pins (about 23 s in `msvc-debug`, the
-longest case the grid count's 7.2 s: it builds each seed's bed twice, buried and not). `materials`' tests hold
+5.5 s); each ground role's standing-height measures over their floors and its landmark under its
+ceiling, over three seeds (G187, 7.7 s: twelve floors at 256 texels on 2 m tiles); a mip
+chain's mean; a recipe read, refused and keyed; the pins, nine roles (about 48 s in `msvc-debug`
+on a loaded machine, 2026-11-11 20:34; the longest case the grid count's 8.3 s: it builds each
+seed's bed twice, buried and not). `materials`' tests hold
 `merge_packs` and `pack_at`'s generated pack; `apps/engine_content/tests/matgen_tests.cpp` runs
 the command (two roles built, read back through `pack_at`, built again and skipped, a third role
 joining the manifest, the refusals; 1.1 s). Benchmarks: `tools/dev.ps1 bench -Filter 'matgen.*'`.

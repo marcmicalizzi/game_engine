@@ -107,20 +107,44 @@ struct Rock @version(2) {
   lichen_max_mm: u32 = 60 @since(2)
 }
 
-/// A ground floor: moss and soil under dead leaf fragments under live leaves.
-struct Ground {
+/// A ground floor: moss and soil under litter under live leaves, with the structure a standing eye
+/// reads between 5 cm and 1 m (matgen.md, "A floor at standing height").
+struct Ground @version(2) {
   /// The underlay's two parts, relative shares.
   moss_permille: u32 = 0
   soil_permille: u32 = 1000
-  /// The share of the ground under dead leaf fragments (a Poisson cover).
+  /// The share of the ground under litter (the layer is laid until it covers this share).
   thatch_permille: u32 = 500
-  /// The share under live leaves, over the thatch.
+  /// The share under live leaves, over the litter.
   live_permille: u32 = 0
   /// A fragment's length range and width range, millimetres and micrometres.
   leaf_min_mm: u32 = 30
   leaf_max_mm: u32 = 90
   leaf_width_min_um: u32 = 1000
   leaf_width_max_um: u32 = 4000
+  /// Live leaves fan out of tufts this wide (a tiller's); 0: one leaf anywhere.
+  tuft_mm: u32 = 0 @since(2)
+  /// The share of the live layer's leaves that are standing dead.
+  dead_permille: u32 = 0 @since(2)
+  /// Moss in cushions this wide, soil in clods this wide; 0: neither.
+  cushion_mm: u32 = 0 @since(2)
+  clod_mm: u32 = 0 @since(2)
+  /// The cushions' and clods' dome, micrometres.
+  relief_um: u32 = 0 @since(2)
+  /// Low mounds under everything: their half range, micrometres, and their spacing, millimetres.
+  mound_um: u32 = 0 @since(2)
+  mound_spacing_mm: u32 = 900 @since(2)
+  /// The strength of the patch mosaic a few decimetres across (a sward's short lawns against its
+  /// tall tufts, wet against dry, fresh litter against decayed).
+  patch_permille: u32 = 0 @since(2)
+  /// The litter's share that is old and dark, laid below the fresh.
+  decay_permille: u32 = 0 @since(2)
+  /// The share of the litter that lies with the lodged grass round it.
+  aligned_permille: u32 = 0 @since(2)
+  /// Stones part buried in the soil: the share of the soil they cover, and their sizes.
+  stones_permille: u32 = 0 @since(2)
+  stone_min_mm: u32 = 5 @since(2)
+  stone_max_mm: u32 = 40 @since(2)
 }
 
 /// A face of softwood, its grain along the image's u, weathered toward grey (matgen.md, "Wood

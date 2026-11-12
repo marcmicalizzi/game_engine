@@ -271,8 +271,10 @@ struct Fragment {
   f64 lift_max_m = 0;
   bool taper = false;
   f64 midrib = 0;  // how much paler the centre line is
+  f64 rise = 0;    // how much paler its far end is than its base (a leaf rising out of a tuft)
 };
-void lay_fragment(Field& field, const Fragment& f, Vector<f32>* cover);
+// Returns the cover it added to `cover`, summed over the texels (0 when `cover` is null).
+f64 lay_fragment(Field& field, const Fragment& f, Vector<f32>* cover);
 
 // The kinds (granular.cpp, rock.cpp, ground.cpp, wood.cpp): each fills `field` and its part of
 // `stats`, and says what depth of hollow counts as full shade (`cavity_m`) and how wide a hollow is

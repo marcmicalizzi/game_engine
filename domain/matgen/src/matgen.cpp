@@ -107,6 +107,14 @@ bool validate_set(const Set& set, std::string& error) {
           g.leaf_width_min_um < 200 || g.leaf_width_max_um > 20000 ||
           g.leaf_width_min_um > g.leaf_width_max_um)
         return fail(error, "ground leaf sizes are out of range");
+      if (g.tuft_mm > 1000 || g.cushion_mm > 2000 || g.clod_mm > 1000 || g.relief_um > 100000 ||
+          g.mound_um > 200000 || g.mound_spacing_mm < 50 || g.mound_spacing_mm > 20000)
+        return fail(error, "ground tufts, cushions, clods, relief or mounds are out of range");
+      if (g.dead_permille > 1000 || g.patch_permille > 1000 || g.decay_permille > 1000 ||
+          g.aligned_permille > 1000 || g.stones_permille > 900)
+        return fail(error, "a ground share is over its limit");
+      if (g.stone_min_mm < 2 || g.stone_min_mm > g.stone_max_mm || g.stone_max_mm > 500)
+        return fail(error, "ground stone sizes are out of range");
       break;
     }
     case Kind::wood: {
@@ -612,13 +620,66 @@ Set wood_log() {
   return s;
 }
 
+// The floors (G187; matgen.md, "A floor at standing height"): two metres at 2,048 texels.
 Set ground_of(const char* role, u64 seed, u32 moss, u32 soil, u32 thatch, u32 live) {
-  Set s = base(role, Kind::ground, seed, 500);
-  s.cavity_permille = 300;
+  Set s = base(role, Kind::ground, seed, 2000);
+  s.texels = 2048;
+  s.cavity_permille = 450;
   s.ground.moss_permille = moss;
   s.ground.soil_permille = soil;
   s.ground.thatch_permille = thatch;
   s.ground.live_permille = live;
+  s.ground.mound_spacing_mm = 900;
+  return s;
+}
+
+Set ground_moss() {
+  Set s = ground_of("ground/moss", 0x6d6f7373ull, 1000, 0, 40, 0);
+  Ground& g = s.ground;
+  g.cushion_mm = 150;
+  g.relief_um = 8000;
+  g.mound_um = 25000;
+  g.patch_permille = 500;
+  g.decay_permille = 800;
+  return s;
+}
+
+Set ground_soil() {
+  Set s = ground_of("ground/soil", 0x736f696cull, 0, 1000, 30, 0);
+  Ground& g = s.ground;
+  g.clod_mm = 35;
+  g.relief_um = 5000;
+  g.mound_um = 12000;
+  g.patch_permille = 500;
+  g.decay_permille = 600;
+  g.stones_permille = 80;
+  return s;
+}
+
+Set ground_thatch() {
+  Set s = ground_of("ground/thatch", 0x746861746368ull, 0, 1000, 970, 0);
+  Ground& g = s.ground;
+  g.mound_um = 15000;
+  g.patch_permille = 600;
+  g.decay_permille = 500;
+  g.aligned_permille = 350;
+  return s;
+}
+
+Set ground_turf() {
+  Set s = ground_of("ground/turf", 0x74757266ull, 250, 750, 600, 800);
+  s.cavity_permille = 550;
+  Ground& g = s.ground;
+  g.leaf_min_mm = 40;
+  g.leaf_max_mm = 110;
+  g.tuft_mm = 110;
+  g.dead_permille = 200;
+  g.clod_mm = 35;
+  g.relief_um = 3000;
+  g.mound_um = 20000;
+  g.patch_permille = 600;
+  g.decay_permille = 500;
+  g.stones_permille = 10;
   return s;
 }
 
@@ -640,10 +701,10 @@ Vector<Set> default_sets() {
       sets.push_back(variant_of(s, k));
   };
   with_variants(gravel_bed());
-  sets.push_back(ground_of("ground/moss", 0x6d6f7373ull, 1000, 0, 40, 0));
-  sets.push_back(ground_of("ground/soil", 0x736f696cull, 0, 1000, 30, 0));
-  sets.push_back(ground_of("ground/thatch", 0x746861746368ull, 0, 1000, 970, 0));
-  sets.push_back(ground_of("ground/turf", 0x74757266ull, 250, 750, 600, 800));
+  sets.push_back(ground_moss());
+  sets.push_back(ground_soil());
+  sets.push_back(ground_thatch());
+  sets.push_back(ground_turf());
   sets.push_back(rock_basalt());
   sets.push_back(rock_granite());
   sets.push_back(rock_granite_wet());
