@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "S102",
+  "reason": "S102's first stage on the water page: the swash as its stretch of shore's (the slope field, the sheets that overlap), the swell and the direction, the outline fade, what the stage costs and what still reads as an animation; Not yet brought up to the code",
+  "date": "2026-11-12",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "renderer.gpu_scene_cpp.lines": -1,
+    "page:docs/subsystems/water.md": 12205
+  }
+}

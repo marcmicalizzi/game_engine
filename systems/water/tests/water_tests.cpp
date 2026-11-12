@@ -120,6 +120,59 @@ TEST_CASE("water: a wave shoals by Green's law and breaks at 0.78 of the depth")
                                        << " m high half as deep again offshore");
 }
 
+// S102 (docs/experiments/shore-mechanics.md, "Speed, direction and height before breaking"): what a
+// wave keeps until something takes it is its energy flux, E c_g with E = rho g H^2 / 8.
+TEST_CASE("water: a wave keeps its energy flux to the break, and loses it from there") {
+  const f64 g = gfx::k_swash_g;
+  f64 worst = 0.0;
+  for (const f64 period : {1.5, 4.7, 10.0}) {
+    const f64 omega = 2.0 * 3.14159265358979323846 / period;
+    const f64 k0 = omega * omega / g;
+    const f64 h0 = 0.05 * period * period;  // a steepness of about 0.03 at every period
+    // The group speed from the dispersion relation itself, d(omega)/dk by a central difference at
+    // the depth — not from the formula the shoaling coefficient is made of.
+    const auto group_speed = [&](f64 k, f64 d) {
+      const auto omega_of = [&](f64 q) { return std::sqrt(g * q * std::tanh(q * d)); };
+      const f64 e = 1e-5 * k;
+      return (omega_of(k + e) - omega_of(k - e)) / (2.0 * e);
+    };
+    const f64 flux0 = h0 * h0 * (0.5 * g / omega);  // deep water: c_g = g / (2 omega)
+    // Where it breaks: the shoaled height meets 0.78 d.
+    f64 lo = 1e-3, hi = 50.0;
+    for (u32 i = 0; i < 80; ++i) {
+      const f64 mid = 0.5 * (lo + hi);
+      (h0 * gfx::water_shoaling(gfx::water_wavenumber(k0, mid), mid) >
+               gfx::k_water_breaking_gamma * mid
+           ? lo
+           : hi) = mid;
+    }
+    const f64 breaking = 0.5 * (lo + hi);
+    // From 20 / k0 deep down to the break, in forty steps of equal ratio: the flux is deep water's.
+    const f64 deep = 20.0 / k0;
+    for (u32 s = 0; s <= 40; ++s) {
+      const f64 d = deep * std::pow(1.001 * breaking / deep, static_cast<f64>(s) / 40.0);
+      const f64 k = gfx::water_wavenumber(k0, d);
+      const f64 h = gfx::water_wave_height(h0, k0, d);
+      worst = std::max(worst, std::fabs(h * h * group_speed(k, d) / flux0 - 1.0));
+    }
+    // Inshore of it the bore is 0.78 d and the flux falls with every step towards the shore.
+    f64 last = flux0;
+    for (u32 s = 1; s <= 20; ++s) {
+      const f64 d = breaking * (1.0 - static_cast<f64>(s) / 21.0);
+      const f64 h = gfx::water_wave_height(h0, k0, d);
+      const f64 flux = h * h * group_speed(gfx::water_wavenumber(k0, d), d);
+      CHECK(flux < last);
+      last = flux;
+    }
+    CHECK(last <
+          0.01 * flux0);  // nearly all of it is gone a twentieth of the break depth from shore
+  }
+  MESSAGE("energy flux from deep water to the break: within " << worst << " of deep water's");
+  // The bound: the wavenumber's own residual (4e-9 of omega^2, the dispersion case above) and the
+  // difference's truncation, (1e-5)^2 of the group speed's curvature: under 1e-7 between them.
+  CHECK(worst < 1e-7);
+}
+
 TEST_CASE("water: the train arrives in sequence along a straight shore") {
   // A planar beach 1:20, the shore at x = 40 m, the bank beyond: 241 texels of 0.25 m.
   const u32 n = 241;

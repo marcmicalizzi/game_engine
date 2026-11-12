@@ -201,8 +201,8 @@ float water_swash_shape(float u) {
   return 4.0 * s * (1.0 - s);
 }
 
-// **The sheet's duration is the slope's** (gfx::swash_span; S102; shore-mechanics.md, "The swash is
-// the slope's"): a front slowed by gravity alone climbs E in sqrt(2 E / g) / beta seconds, the
+// **The sheet's duration is the slope's** (gfx::swash_span; S102; shore-mechanics.md, "The
+// swash"): a front slowed by gravity alone climbs E in sqrt(2 E / g) / beta seconds, the
 // uprush is `k_swash_uprush` of the sheet's life, so a wave of reach `reach` over a rundown of
 // `k_swash_rundown run_up` stays sqrt(2 E / g) / (beta q T) periods on the beach — under one on a
 // steep shore, several on a gentle one, where the next bore arrives over the backwash.

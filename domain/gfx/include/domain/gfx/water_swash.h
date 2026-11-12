@@ -97,7 +97,7 @@ inline f64 swash_shape(f64 u) noexcept {
 }
 
 // **The sheet's duration is the slope's, not the clock's** (roadmap S102;
-// docs/experiments/shore-mechanics.md, "The swash is the slope's"). A front launched up a slope
+// docs/experiments/shore-mechanics.md, "The swash"). A front launched up a slope
 // beta and slowed by gravity alone climbs a height E in sqrt(2 E / g) / beta seconds (Shen and
 // Meyer 1963: the shoreline is a projectile, x_s = u0 t - g beta t^2 / 2, whose top is u0^2 / 2g
 // high whatever the slope); the uprush being `k_swash_uprush` of the whole (the backwash is the
@@ -591,7 +591,7 @@ inline f64 water_mean_shore_slope(const u16* texels, u32 size, f64 texel_m, f64 
 }
 
 // **The foreshore slope at every place** (roadmap S102; docs/experiments/shore-mechanics.md, "The
-// swash is the slope's"): the slope of the ground where the still level meets it, at the nearest
+// swash"): the slope of the ground where the still level meets it, at the nearest
 // point of the waterline to each texel — so a place on the beach, and the water at its foot, know
 // the slope *their* stretch of shore has, and the swash's reach and duration there are that
 // stretch's, where S94 gave a whole body one number. The waterline's texels are the wet ones with a
