@@ -42,7 +42,8 @@ engine_module(NAME renderer LAYER systems
           src/overlay.cpp src/scene_water.cpp src/scene_flora.cpp src/flora_motion.cpp
           src/flora_poser.cpp src/scene_fire.cpp src/far_forest.cpp src/water_reflect.cpp
           src/water_refract.cpp
-          src/scene_ground_plan.cpp)
+          src/scene_ground_plan.cpp
+          src/resolve_classes.cpp)
 # The renderer's own shader: the output encode after the frame passes (frame_pass.h,
 # shaders/frame_encode.slang), which includes domain/gfx's display.slang by its path.
 engine_shaders(NAME renderer SOURCES shaders/frame_encode.slang)
@@ -108,7 +109,9 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     # The streamed trees' budget: records counted once, the nearest tiles first (R137).
                     tests/tail_budget_tests.cpp tests/mesh_room_tests.cpp tests/mesh_texture_tests.cpp
                     # R69: indirect light from the world-space cache.
-                    tests/gi_cache_tests.cpp)
+                    tests/gi_cache_tests.cpp
+                    # R151: the resolve drawn once per pixel class is the one draw's bytes.
+                    tests/resolve_class_tests.cpp)
 if(TARGET engine::ruins)
   # A scene with a `ruins` entry read over a terrain: kits, meshes, instances and determinism; and,
   # where the terrain capability is too, the same buildings over the dunes a year apart.

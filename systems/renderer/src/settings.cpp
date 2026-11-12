@@ -292,6 +292,27 @@ tunables::Enum<gfx::ResolveStop> resolve_stop_after{
     "Measurement only: the resolve ends each pixel's work after this stage and writes what it has "
     "(none: the picture; cycle: frame f stops after stage f % 8; renderer.md, Where the resolve's "
     "time goes)"};
+// R151: the resolve drawn once per pixel class (renderer.md, "The resolve by pixel class"). Indexed
+// by `ResolveClassMode`.
+constexpr const char* k_resolve_class_choices[] = {"off", "draws", "modules"};
+tunables::Enum<ResolveClassMode> resolve_classes{
+    "renderer.resolve.classes", ResolveClassMode::Off, k_resolve_class_choices,
+    "The material resolve by pixel class: off, one fullscreen draw; draws, a classify pass writes "
+    "each pixel's class as depth and the resolve is drawn once per class, depth-equal; modules, "
+    "the same with the classes that cannot touch water drawn by the module without it (read when "
+    "the pipelines are made and once a frame; renderer.md, The resolve by pixel class)"};
+tunables::Int resolve_class_mask{
+    "renderer.resolve.class_mask", 127, 0, 127,
+    "Measurement only: the pixel classes the split resolve draws, a bit a class (sky 1, rigid 2, "
+    "ground 4, masked 8, deformed 16, water 32, wet 64); a class left out keeps the clear"};
+tunables::Bool resolve_class_census{
+    "renderer.resolve.class_census", false,
+    "Measurement only: a capture logs the pixels and 2x2 quads its frame's classify pass gave "
+    "each class (a blocking read of the class image)"};
+tunables::Bool resolve_class_wet_plain{
+    "renderer.resolve.class_wet_plain", false,
+    "Measurement only: the wet class is drawn by the module without water, so the pixels that "
+    "differ from the picture are the ones the water module wets"};
 // R126: a shading rate by region (renderer.md, "A shading rate by region"). The sides' default is
 // a rule rather than a number, so a surround gets its outer thirds and every other frame nothing.
 tunables::Float resolve_half_rate_sides{
@@ -548,6 +569,14 @@ f32 half_rate_sides_tunable(u64 frame_index) noexcept {
 }
 bool half_rate_centre_tunable() noexcept { return resolve_half_rate_centre.get(); }
 
+ResolveClassMode resolve_classes_tunable() noexcept { return resolve_classes.get(); }
+ResolveClassMeasure resolve_class_measure_tunables() noexcept {
+  ResolveClassMeasure measure;
+  measure.mask = static_cast<u32>(resolve_class_mask.get());
+  measure.census = resolve_class_census.get();
+  measure.wet_plain = resolve_class_wet_plain.get();
+  return measure;
+}
 u32 resolve_stop_tunable(u64 frame_index) noexcept {
   const u32 choice = static_cast<u32>(resolve_stop_after.get());
   if (choice < gfx::k_resolve_stops) return choice;

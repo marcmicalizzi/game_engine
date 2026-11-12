@@ -23,6 +23,7 @@
 #include <cstring>
 #include <memory>
 #include <renderer_log.h>
+#include <resolve_classes.h>
 #include <shaders/alpha_coverage.spv.h>
 #include <shaders/clas_records.spv.h>
 #include <shaders/cluster_cull.spv.h>
@@ -39,6 +40,8 @@
 #include <shaders/overlay.spv.h>
 #include <shaders/pair_expand.spv.h>
 #include <shaders/ray_visibility.spv.h>
+#include <shaders/resolve_classify.spv.h>
+#include <shaders/resolve_classify_water.spv.h>
 #include <shaders/resolve_half_sun.spv.h>
 #include <shaders/tlas_references.spv.h>
 #include <shaders/vertex_expand.spv.h>
@@ -214,6 +217,11 @@ const char* resolve_module(bool shadows, bool water, bool terrain, bool stochast
 
 }  // namespace
 
+// The same table for the split's pipelines (R151; resolve_classes.cpp).
+const char* resolve_module_name(bool shadows, bool water, bool terrain, bool stochastic) noexcept {
+  return resolve_module(shadows, water, terrain, stochastic);
+}
+
 // **The retired set is freed on a worker** (R128; renderer.md, "A resize is swapped in, not waited
 // for"). A swapped resize hands the old buffers back, and until R128 they went to the slot's
 // deferred frees, which the frame's thread runs when the slot comes round: freeing a 1.6-2 GB CLAS
@@ -278,6 +286,13 @@ void SceneRenderer::Pipelines::destroy(const gfx::Device& device) noexcept {
   if (resolve.valid()) gfx::destroy_pipeline(device, resolve);
   if (resolve_linear.valid()) gfx::destroy_pipeline(device, resolve_linear);
   if (encode.valid()) gfx::destroy_pipeline(device, encode);
+  if (classify.valid()) gfx::destroy_pipeline(device, classify);
+  for (u32 f = 0; f < 2; ++f) {
+    if (resolve_class[f].valid()) gfx::destroy_pipeline(device, resolve_class[f]);
+    if (resolve_class_plain[f].valid()) gfx::destroy_pipeline(device, resolve_class_plain[f]);
+    resolve_class[f] = resolve_class_plain[f] = {};
+  }
+  classify = {};
   gfx::destroy_compute_pipeline(device, software);
   gfx::destroy_compute_pipeline(device, cull);
   gfx::destroy_compute_pipeline(device, expand);
@@ -362,8 +377,12 @@ bool SceneRenderer::Targets::create(const gfx::Device& device, const ViewSet& se
   constexpr gfx::BufferUsage k_buffer_usage =
       gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress |
       gfx::BufferUsage::TransferDst | gfx::BufferUsage::TransferSrc;
-  return gfx::create_image_2d(device, set.width(), set.height(), gfx::Format::D32Sfloat,
-                              gfx::ImageUsage::DepthStencilAttachment, depth, error) &&
+  // The depth image is the direct path's depth buffer, and on every other path the resolve's
+  // pixel classes (R151; resolve_classes.cpp), which a census reads back: TRANSFER_SRC.
+  return gfx::create_image_2d(
+             device, set.width(), set.height(), gfx::Format::D32Sfloat,
+             gfx::ImageUsage::DepthStencilAttachment | gfx::ImageUsage::TransferSrc, depth,
+             error) &&
          gfx::create_buffer(device, vis_elements * sizeof(u64), k_buffer_usage, false, vis,
                             error) &&
          gfx::create_buffer(device, u64{hiz_elements} * sizeof(f32), k_buffer_usage, false, hiz,
@@ -687,6 +706,10 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
                         shaders::k_ray_visibility_spirv_size);
   shaders_.add_embedded("resolve_half_sun", shaders::k_resolve_half_sun_spirv,
                         shaders::k_resolve_half_sun_spirv_size);
+  shaders_.add_embedded("resolve_classify", shaders::k_resolve_classify_spirv,
+                        shaders::k_resolve_classify_spirv_size);
+  shaders_.add_embedded("resolve_classify_water", shaders::k_resolve_classify_water_spirv,
+                        shaders::k_resolve_classify_water_spirv_size);
   shaders_.add_embedded("gi_update", shaders::k_gi_update_spirv, shaders::k_gi_update_spirv_size);
   shaders_.add_embedded("deform", shaders::k_deform_spirv, shaders::k_deform_spirv_size);
   shaders_.add_embedded("deform_alloc", shaders::k_deform_alloc_spirv,
@@ -933,7 +956,10 @@ void SceneRenderer::destroy_ui_layer() noexcept {
 // passes' linear image and pipelines when no pass made them. Nothing in flight reads any of them
 // (they did not exist), so nothing waits; every later frame finds them made.
 bool SceneRenderer::ensure_ui_layer(std::string* error) {
-  if (!pipelines_.encode.valid() && !create_frame_pass_pipelines(error)) return false;
+  if (!pipelines_.encode.valid() &&
+      (!create_frame_pass_pipelines(error) || !create_resolve_class_pipelines(true, error))) {
+    return false;
+  }
   if (!linear_.image.valid() && !create_linear_target(error)) {
     destroy_linear_target();
     return false;
@@ -954,7 +980,8 @@ bool SceneRenderer::add_frame_pass(FramePassStage stage, FramePassFn fn, void* u
   }
   if (frame_pass_count_ == 0 && !linear_.image.valid()) {
     frames_.wait_idle();
-    if (!create_frame_pass_pipelines(error) || !create_linear_target(error)) {
+    if (!create_frame_pass_pipelines(error) || !create_resolve_class_pipelines(true, error) ||
+        !create_linear_target(error)) {
       destroy_linear_target();
       return false;
     }
@@ -1308,6 +1335,7 @@ bool SceneRenderer::create_pipelines(std::string* error) {
          gfx::create_compute_pipeline(device, hiz->module, "hiz_build_main", {},
                                       sizeof(gfx::HizParams), pipelines_.hiz, error) &&
          gfx::create_graphics_pipeline(device, resolve_desc, pipelines_.resolve, error) &&
+         create_resolve_class_pipelines(linear_wanted(), error) &&  // R151: in this batch
          batch.end(error);
 }
 
@@ -1918,6 +1946,7 @@ void SceneRenderer::collect_slot(u32 slot) {
     last.gpu_terrain_upload = timer_.ms("terrain upload");
     last.gpu_sky = timer_.ms("sky");
     last.gpu_half_sun = timer_.ms("half sun");
+    last.gpu_resolve_classify = timer_.ms("resolve classify");
     last.gpu_gi_trace = timer_.ms("gi sample");
     last.gpu_gi_fold = timer_.ms("gi fold");
     for (u32 p = 0; p < frame_pass_count_; ++p)
@@ -1931,7 +1960,7 @@ void SceneRenderer::collect_slot(u32 slot) {
                       last.gpu_deform + last.gpu_deform_alloc + last.gpu_trace + last.gpu_rt +
                       last.gpu_shadow + last.gpu_tables + last.gpu_terrain_upload + last.gpu_sky +
                       last.gpu_frame_passes + last.gpu_half_sun + last.gpu_gi_trace +
-                      last.gpu_gi_fold;
+                      last.gpu_gi_fold + last.gpu_resolve_classify;
     last.gpu_unbucketed = std::max(0.0, last.gpu_total - named);
     stats_.tiles.gpu_tables += last.gpu_tables;
     stats_.tiles.gpu_pair_expand += last.gpu_pair_expand;
@@ -1978,6 +2007,8 @@ void SceneRenderer::collect_slot(u32 slot) {
     stats_.gpu_sky += timer_.ms("sky");
     // The half-rate sun pass, every view's under one name.
     stats_.gpu_half_sun += timer_.ms("half sun");
+    // The resolve's classify pass (R151), every view's under one name.
+    stats_.gpu_resolve_classify += timer_.ms("resolve classify");
     // The world-space cache's passes (R69), every view's sample pass under one name.
     stats_.gpu_gi_trace += timer_.ms("gi sample");
     stats_.gpu_gi_fold += timer_.ms("gi fold");
@@ -5418,6 +5449,51 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       }
       gi_reset_ = false;
     }
+    // **The resolve by pixel class** (R151; resolve_classes.h; renderer.md, "The resolve by pixel
+    // class"). Under `renderer.resolve.classes` a classify pass writes each pixel's class as depth
+    // (resolve_classify.slang, through the resolve's own block and tables) and the resolve below
+    // draws once per class, depth-equal, into the same target — the direct path's depth image,
+    // which no path with a visibility buffer draws into. Off, the plan is empty and the frame is
+    // the one it was.
+    ResolveClassFrame class_frame;
+    class_frame.mode = resolve_classes_tunable();
+    class_frame.water = scene.has_water();
+    class_frame.open_sea = scene.water_open_instance() != gfx::k_no_water_open;
+    class_frame.resample = views_.resample();
+    class_frame.measuring = resolve_stop_tunable(frame.frame_index) != 0;
+    const ResolveClassMeasure class_measure = resolve_class_measure_tunables();
+    class_frame.mask = class_measure.mask;
+    class_frame.wet_plain = class_measure.wet_plain;
+    const u32 class_format = frame_passes_on ? 1u : 0u;
+    const ResolveClassPlan class_plan =
+        plan_resolve_classes(class_frame, pipelines.classify, pipelines.resolve_class[class_format],
+                             pipelines.resolve_class_plain[class_format]);
+    resolve_classes_drawn_ = class_plan.classes;
+    resolve_classes_plain_ = class_plan.plain;
+    if (class_plan.classes != 0) {
+      graph.add_pass(
+          "resolve classify", gfx::PassKind::Raster,
+          [&](gfx::PassBuilder& b) {
+            b.depth_attachment(depth_target, gfx::LoadOp::Clear, 1.0f);  // no class's depth
+            b.read(rg_vis, gfx::Access::FragmentRead);
+            if (cull_on && deform_on) b.read(rg_pair_entries, gfx::Access::FragmentRead);
+            if (occlusion) b.read(rg_hiz, gfx::Access::FragmentRead);  // the coverage mask
+            read_tables(b, gfx::Access::FragmentRead, true);
+          },
+          [&, class_plan](gfx::CommandList cb, gfx::RenderGraph&) {
+            cb.bind_pipeline(gfx::BindPoint::Graphics, class_plan.classify);
+            bindless.bind(cb, gfx::BindPoint::Graphics);
+            timer.begin(cb, "resolve classify");
+            for (u32 v = 0; v < views; ++v) {
+              const View& view = views_[v];
+              set_view_viewport(cb, view.rect.x, view.rect.y, view.rect.width, view.rect.height);
+              cb.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0, sizeof(u64),
+                                &view_frames[v].resolve_address);
+              cb.draw(3, 1, 0, 0);
+            }
+            timer.end(cb);
+          });
+    }
     // One resolve pass, one fullscreen draw per view through that view's rectangle of the target.
     // The clear covers the whole target once, so a pixel no view owns keeps the sky.
     graph.add_pass(
@@ -5430,6 +5506,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           } else {
             b.color_attachment(color, gfx::LoadOp::Clear, sky);
           }
+          // The classes' depth, tested and not written (R151).
+          if (class_plan.classes != 0) b.depth_attachment(depth_target, gfx::LoadOp::Load);
           b.read(rg_vis, gfx::Access::FragmentRead);
           if (sky_on) {
             b.read(sb_sky.transmittance, gfx::Access::FragmentRead);
@@ -5460,9 +5538,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           if (half_on) b.read(rg_half, gfx::Access::FragmentRead);  // the half pass's answers
           if (gi_on) b.read(rg_gi, gfx::Access::FragmentRead);      // the cache's cells (R69)
         },
-        [&](gfx::CommandList cb, gfx::RenderGraph&) {
-          cb.bind_pipeline(gfx::BindPoint::Graphics,
-                           frame_passes_on ? pipelines.resolve_linear : pipelines.resolve);
+        [&, class_plan](gfx::CommandList cb, gfx::RenderGraph&) {
+          if (class_plan.classes == 0) {
+            cb.bind_pipeline(gfx::BindPoint::Graphics,
+                             frame_passes_on ? pipelines.resolve_linear : pipelines.resolve);
+          }
           bindless.bind(cb, gfx::BindPoint::Graphics);
           for (u32 v = 0; v < views; ++v) {
             timer.begin(cb, k_zone_names[k_zone_resolve][v]);
@@ -5470,7 +5550,12 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             set_view_viewport(cb, view.rect.x, view.rect.y, view.rect.width, view.rect.height);
             cb.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0, sizeof(u64),
                               &view_frames[v].resolve_address);
-            cb.draw(3, 1, 0, 0);
+            if (class_plan.classes != 0) {  // a draw per class, depth-equal (R151)
+              record_resolve_class_draws(cb, class_plan, view.rect.x, view.rect.y, view.rect.width,
+                                         view.rect.height);
+            } else {
+              cb.draw(3, 1, 0, 0);
+            }
             timer.end(cb);
           }
         });
@@ -5835,6 +5920,11 @@ bool SceneRenderer::capture(const FrameDesc& frame, const CaptureChannels& chann
   first.wait = {};
   first.signal = {};
   if (!render_offscreen(first, error)) return false;
+  // `renderer.resolve.class_census` (R151, a measurement switch): what the frame's classify pass
+  // gave each class, read back and logged.
+  if (resolve_classes_drawn_ != 0 && resolve_class_measure_tunables().census) {
+    log_resolve_class_census();
+  }
   if (channels.color && desc_.display != gfx::DisplayEncoding::Sdr) {
     // PQ codes or half floats reduced to 8 bits would be a picture of nothing (E39): an HDR or
     // linear picture is read back as its light.

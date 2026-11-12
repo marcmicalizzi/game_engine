@@ -2478,6 +2478,93 @@ The captures, at the erg from a walker's eyes at noon, a late afternoon, a sunse
 
 **The material at half rate is not built.** The plan, if the sun's pass is not enough: the same block rule for the material stage's fetches — the block's albedo, shading normal, roughness and metallic taken once where its pair is one — with the reconstruction and the lighting still per pixel; the material is 5.6 ms of the replay's 22.5 at full width, so its two side thirds at a quarter of the rate are at most about 2.8 ms back.
 
+## The resolve by pixel class
+
+Roadmap R151 (2026-11-12); the measurements, the sources and the design that follows are on
+[the resolve by pixel class](../experiments/resolve-by-class-2026-11-12.md). **Off by default**:
+`renderer.resolve.classes=off` builds none of it and the frame is the one it was.
+
+**Why.** The resolve is one fullscreen draw of one fragment shader that holds every kind of pixel,
+and R148 measured three costs of that shape rather than of any term
+([what the resolve costs](../experiments/resolve-cost-2026-11-11.md)): under the elder grove about
+1.1 ms of a 2.8 ms resolve belongs to no class of pixel alone (a shading group with a leaf and a
+ground pixel in it runs both paths), a scene with water pays 0.7 ms for the water module on a
+frame with no water in view, and the one pipeline is the cold start. A visibility buffer can sort
+its pixels before it shades them.
+
+**What it draws.** Under `renderer.resolve.classes=draws` or `modules` the frame gains a
+**classify pass** before the resolve (`resolve_classify.slang`; timer zone `resolve classify`,
+`FrameStats::gpu_resolve_classify`, `PassMs.resolve_classify`): one fullscreen triangle a view
+whose fragment stage finds the pixel's class by the resolve's own decode (`classify_pixel`,
+`resolve_class.slang`: the visibility word, the pair table, the instance, the material's flags,
+through the view's own `ResolveParams`) and writes it as depth, `gfx::resolve_class_depth` — class
+c at (c + 1) sixteenths, into the direct path's depth image, which no path with a visibility
+buffer draws into. The resolve pass then takes that image as its depth attachment and draws the
+fullscreen triangle **once per class at the class's depth** (the viewport's depth range, one
+value) with a depth-equal test and no depth write (`record_resolve_class_draws`,
+`resolve_classes.cpp`), from pipelines that are the resolve's own modules and entry points with
+that depth state (`Pipelines::resolve_class`, made beside the others in `create_pipelines`' batch;
+for the frame passes' linear image when a pass is registered). The classes
+(`gfx::ResolveClass`, `domain/gfx/resolve_classes.h`): **sky** (no surface), **rigid**, **ground**
+(a layered ground's material), **masked** (alpha-tested: the leaves), **deformed** (a deformed
+instance's opaque parts: trunks, blades), and in a scene with water **water** and **wet**. Seven,
+because they are what R148's census could tell apart and what the modules differ by; every class
+the scene's classify variant can write is drawn each frame, since a class with no pixel costs its
+triangle's rejection (0.002 to 0.008 ms measured) and a class left out leaves its pixels the clear.
+
+**`modules`: the pixels that cannot touch water are drawn by the module without it.** A scene
+with water draws with the water module, and every pixel carries its registers and tests. Under
+`modules` the sky, rigid, ground, masked and deformed classes are drawn by the same combination's
+module with no water (`Pipelines::resolve_class_plain`) and only **water** and **wet** by the
+scene's own. The wet class is what makes that exact: the water module also darkens ground near
+water (`water_ground_wetness`, the shores' and banks' records), on pixels that are not water, so
+the class is "may need the water module", and `classify_wet` claims every ground pixel inside a
+shore record's square or a bank stretch's, each grown by half a metre and two thousandths of the
+pixel's distance — the function's own bounds, not its level test, with the pixel's point taken from
+its depth word rather than its triangle. It over-claims (2 % to 25 % of the class is wetted on the
+scenes measured) and never under-claims. The plain module is not used, and every class is drawn by
+the scene's module, where the scene has an open sea (any pixel, an empty one included, may be the
+sea's plane), where the view resamples (Panini: two shaders would each have to map a pixel to the
+same source pixel), and in a frame that carries a stop word.
+
+**The picture.** Which draw shades a pixel changes nothing the pixel computes, so `draws` is the
+one draw's bytes by construction, and `resolve_class_tests.cpp` holds it: colour, ids and depth
+equal with the split on and off on one renderer (under the stand-in sky and a physical one, with
+traced shadows, and into a frame pass), every pixel of the target given exactly one class
+(`SceneRenderer::resolve_class_census`, a read-back of the class image), every class that has a
+pixel drawn, and a class left out (`renderer.resolve.class_mask`, a measurement switch) seen in
+the picture by that class's pixels. At 3840 × 2160 with the bounce off, 0 pixels differ on all
+seven poses measured. `modules` is two modules' arithmetic: 0 pixels differ on six of the seven
+poses, and on the seventh (the layered ground's mountain) **2 pixels of 8.3 million differ by one
+code**, ground pixels no record reaches, where the driver's compiler arranged the same source's
+floats differently in the two modules.
+
+**What it costs, and why it is off.** A fixed-function depth test rejects **quads, not pixels**:
+a 2 × 2 quad the test keeps runs all four of its lanes, and a lane whose pixel failed the test
+still runs *its own pixel's* path to the end, as a helper, although the resolve's SPIR-V holds no
+derivative instruction and whether or not the entry point asks for early fragment tests. So where
+classes interleave at the pixel's scale the split adds a second, badly occupied run of every
+boundary lane: under the elder grove 6.4 % of the quads hold more than one class, the sky's draw
+alone costs 1.04 ms where the sky's own pixels cost 0.05, and the resolve goes from 2.75 to
+3.18 ms (and the classify pass is 0.055). On scenes whose classes meet along lines (oasis-pool,
+the layered ground: 0.1 to 0.2 % of the quads) `draws` costs what the one draw costs, and
+`modules` takes 0.4 to 0.6 ms off a resolve of 1.8 to 2.9 ms at the poses with no water in view
+and nothing at the poses that are mostly wet ground. **What turns it into a gain everywhere is
+one test at the top of `fs_resolve`**: a lane whose pixel is not of the draw's class (the
+fragment's own depth says which) ends before it shades. With it, measured from a scratch build,
+the elder grove's resolve is 2.25 ms against 2.75 (the frame 0.45 ms shorter), and the layered
+ground's poses without water 2.21 against 2.94 and 2.01 against 2.59. Those lines are inside the
+resolve's entry point, which other rows held when this one was made, so they are a patch and a
+row (R151's page has both) and the default waits for them.
+
+**The other hosts.** The reference renderer draws nothing through this pass (its own compute
+pipelines) and is unchanged. `render.capture`'s channels are the bytes they were: the colour is
+the resolve's, held above, and ids and depth are read from the visibility buffer, which the split
+does not write. The baseline tier's vertex pipeline and the software and ray paths fill the same
+visibility buffer and are resolved by the same pass, so they split the same way; the direct path
+has no resolve and no split. The measurement switches (`renderer.resolve.class_mask`,
+`class_census`, `class_wet_plain`; `settings.h`) are never defaults.
+
 ## Frame passes
 
 **The registration point for a capability that draws into the shaded picture between the resolve and the overlay** (2026-10-17; `frame_pass.h`, `SceneRenderer::add_frame_pass`; roadmap R47; ADR-0027's "attach through `RenderGraph::add_pass`"). The overlay above is its sibling: the one pass that already ran after the resolve, registered by a host with its lists. A frame pass is registered once with a function, a user pointer and a GPU timer zone; the renderer calls the function inside every shaded frame's graph build with a `FramePassContext` and the function adds its passes to the graph, declaring every read and write — the graph places every barrier, never the pass. The first user is the participating medium ([volumetrics](volumetrics.md), roadmap W45 and R47); nothing in the renderer names it.
