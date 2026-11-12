@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "W97c",
+  "reason": "W97c: apps.md says what --ddc reaches for a channel plan (T112) and that engine-content channels takes the host's root; channels.md carries the stones' sets by rock, the plan's root, the cuts through the ground hook, the piece cut a streamed host admits, the measured cost and what a walker sees",
+  "date": "2026-11-11",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/apps.md": 607,
+    "page:docs/subsystems/channels.md": 4290
+  }
+}
