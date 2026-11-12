@@ -2725,12 +2725,10 @@ the memory).
 **On the forest** (v41, 3840×2160 traced, the owner's wind; main and the stage back to back in
 one lease). The sample pass and the chain are main's again (+0.03 and +0.02 ms held at
 `south-lake`, where stage 7 stood +0.48 and +0.19) and the primaries within 0.02 to 0.11 of
-them (+0.17). What is left is the resolve's read, stage 7's walk, 0.37 to 0.42 over main's.
-**The frame stood 0.60 and 0.61 ms over main's in the two pairs flown, both on builds that
-carried the cell**; with the cell out the passes sum to about +0.45 held and less on the turn
-and after it — on the half millisecond's edge, by an estimate: the build as committed had not
-flown its own pair when this was written (the page says whether it has since). The turn, flown
-as capture sequences with the wind off: the first frame after it
+them (+0.17). What is left is the resolve's read, stage 7's walk, 0.2 to 0.4 over main's.
+**The frame is 0.19 ms over main's held, 0.26 on the turn and 0.11 after it** (the build as
+committed; the two builds that carried the cell stood 0.60 and 0.61 over). The turn, flown as
+capture sequences with the wind off: the first frame after it
 stands 0.46 of a step from the long-held picture (main 0.70) and +0.03 in the mean, a tenth of
 the floor, and the still forest changes between frames by 0.10 (main 0.13). The volume at 24 m
 asks the chain for 800 clusters a frame more than main at that view where 48 m asked for

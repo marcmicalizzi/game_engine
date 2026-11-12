@@ -6,8 +6,8 @@
   "by": "Marc Micalizzi",
   "deltas": {
     "renderer.record_frame.lines": 30,
-    "page:docs/subsystems/renderer.md": 36325,
+    "page:docs/subsystems/renderer.md": 36130,
     "page:docs/subsystems/flora.md": 952,
-    "page:docs/experiments/gi-cache-2026-11-07.md": 15481
+    "page:docs/experiments/gi-cache-2026-11-07.md": 17146
   }
 }
