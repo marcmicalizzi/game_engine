@@ -599,9 +599,15 @@ WaterHeight water_height(WaterSurface* s, float2 p, WaterField f, float t, float
       if (lp > 1e-3 && lc > 1e-9) along_ray = abs(dot(p, grad_c2)) / (lp * lc);
       held = max(mesh.y * along_ray, mesh.x * sqrt(max(1.0 - along_ray * along_ray, 0.0)));
     }
+    // What is held against a spacing is kept from twice as long a wave as the first train's is
+    // (whole at eight spacings a wavelength, none at four): two crossing trains on a mesh that
+    // carries each at four spans a wavelength stand up as facets — dark shards in the surf from
+    // above, where the water's colour goes with the faceted surface's depth (the first flight of
+    // this pass) — so the mesh takes the second train only where it carries it smoothly, and the
+    // normal, which is per pixel, has all of it.
     const float keep =
         held > 0.0
-            ? clamp(k_water_two_pi / water_wavenumber(s->cross_k0, d) / (2.0 * held) - 1.0, 0.0, 1.0)
+            ? clamp(k_water_two_pi / water_wavenumber(s->cross_k0, d) / (4.0 * held) - 1.0, 0.0, 1.0)
             : 1.0;
     float d_theta = 0.0;
     const float shape = water_train_shape(s->cross_m * flux, s->cross_k0, d, k_water_two_pi * c2,

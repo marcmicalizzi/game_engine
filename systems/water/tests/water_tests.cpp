@@ -393,8 +393,13 @@ f64 flux_loss(f64 q, f64 d, f64 period, f64 height) {
 // `variation` gathers the total variation of dq/dx along the way (`last` the slope it ended on):
 // **the sweep's bound**. One step of the sweep is an implicit Euler step of this equation, whose
 // right side never falls as q rises (more flux, more of the group breaking), so the steps do not
-// amplify each other's errors and the sweep is off by no more than the sum of its local ones,
-// (h^2 / 2) |q''| a step: (h / 2) times the total variation of q'.
+// amplify each other's errors and the sweep is off by no more than the sum of its local ones. A
+// step takes h q'(end) for the integral of q' over the step, which is off by no more than h times
+// the variation of q' within the step — so the sweep by no more than **h times the total
+// variation of q'** so far. (First written as half of that, (h^2 / 2) |q''| a step, which holds
+// only where q'' hardly changes over a step; where the group's first wave starts to break q'
+// leaves zero as a square and the step is off by two thirds of h q', and the first run was 5e-5
+// over the half.)
 template <typename Profile>
 f64 flux_along(const Profile& d, f64 x0, f64 x1, f64 q, f64 period, f64 height, f64& variation,
                f64& last) {
@@ -492,8 +497,8 @@ TEST_CASE(
     ++first;
   // (1) To the break the flux is the deep water's: nothing between two straight rays takes it.
   // (2) From there it is the balance's own solution — dq/dx = -(alpha / 4) f (gamma d)^2 Qb / (e0
-  // cg0), Runge-Kutta in centimetres — to the sweep's order (`flux_along` has the bound: half a
-  // texel times the total variation of dq/dx so far).
+  // cg0), Runge-Kutta in centimetres — to the sweep's order (`flux_along` has the bound: a texel
+  // times the total variation of dq/dx so far).
   f64 before_worst = 0.0, surf_worst = 0.0, surf_over = 0.0, variation = 0.0, slope = 0.0;
   u32 unbroken = 0, broken = 0;
   f64 q_ref = 1.0;
@@ -513,7 +518,7 @@ TEST_CASE(
       // The bound, and f32's step on the square of a stored ratio.
       const f64 err = std::fabs(got - q_ref);
       surf_worst = std::max(surf_worst, err);
-      surf_over = std::max(surf_over, err - (0.5 * texel * variation + 1e-6));
+      surf_over = std::max(surf_over, err - (texel * variation + 1e-6));
       ++broken;
     }
   }
@@ -521,13 +526,21 @@ TEST_CASE(
           << before_worst << " of deep water's over " << unbroken
           << " texels to the break; through the surf (" << broken << " texels) within "
           << surf_worst << " of the balance's solution, the bound"
-          << " at the last of them " << 0.5 * texel * variation << "; " << q_ref
+          << " at the last of them " << texel * variation << "; " << q_ref
           << " of it left at 15 cm");
   CHECK(unbroken > 50u);
   CHECK(broken > 50u);
   CHECK(before_worst < 1e-6);
   CHECK(surf_over <= 0.0);
-  CHECK(q_ref < 0.05);  // nearly all of it is gone by the shore
+  // By the shore every wave of the group is a bore — the flux left carries each of them over
+  // gamma d, where the shader's cap draws the saturated bore it always drew. (The bore's
+  // dissipation goes as (gamma d)^2 and cannot take the flux as fast as the depth shoals away in
+  // the last decimetres: an eighth of the flux is still carried at 15 cm on this beach, and the
+  // cap takes it. A first expectation here, "under a twentieth is left", was a guess and not the
+  // model's; the model's statement is this one.)
+  const f64 last_crest = height * gfx::water_shoaling(gfx::water_wavenumber(k0, 0.15), 0.15) /
+                         (gfx::k_water_breaking_gamma * 0.15);
+  CHECK(gfx::water_group_breaking(last_crest * std::sqrt(q_ref)) == 1.0);
   // (3) The mean level. Outside the surf it is Longuet-Higgins and Stewart's set-down under the
   // group as drawn, -E k / sinh(2 k d), E = rms^2 H^2 Ks^2 / 8: the sweep integrates d(eta) =
   // -d(S) / (d + eta) from the source's own set-down a texel at a time, and a one-sided step is
@@ -620,11 +633,11 @@ TEST_CASE(
   const f64 q_ref =
       flux_along(profile, x0 - texel, trough0 + 5.0, 1.0, period, height, variation, slope);
   MESSAGE("bar: " << lo << " of the flux crosses the trough (the balance's solution " << q_ref
-                  << ", bound " << 0.5 * texel * variation << "), the same to " << hi - lo
+                  << ", bound " << texel * variation << "), the same to " << hi - lo
                   << " across it; the wave there " << std::sqrt(lo) << " of the unbroken one");
   CHECK(hi - lo < 1e-6);  // f32's own step on a ratio: nothing is taken, nothing given back
   CHECK(lo < 0.7);        // it broke
-  CHECK(std::fabs(lo - q_ref) <= 0.5 * texel * variation + 1e-6);
+  CHECK(std::fabs(lo - q_ref) <= texel * variation + 1e-6);
   // The wave it carries is under the limit across the trough — no foam is born there, where the
   // closed form of the depth alone was whole again — and on the beach behind it breaks in
   // shallower water than a wave that had met no bar.

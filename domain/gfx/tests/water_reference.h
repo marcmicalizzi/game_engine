@@ -687,7 +687,8 @@ inline double height(const gfx::WaterSurface& s, const Field& f, double x, doubl
       const double held = std::max(
           mesh_ring * along_ray, mesh_far * std::sqrt(std::max(1.0 - along_ray * along_ray, 0.0)));
       const double local_k = gfx::water_wavenumber(static_cast<double>(s.cross_k0), d);
-      if (held > 0.0) keep = brdf_ref::clamp01(k_two_pi / local_k / (2.0 * held) - 1.0);
+      // Kept from twice as long a wave as the first train's: whole at eight spacings.
+      if (held > 0.0) keep = brdf_ref::clamp01(k_two_pi / local_k / (4.0 * held) - 1.0);
     }
     cross = keep * shelter(f) *
             train_shape(static_cast<double>(s.cross_m) * flux, static_cast<double>(s.cross_k0), d,

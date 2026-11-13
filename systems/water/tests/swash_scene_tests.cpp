@@ -530,6 +530,19 @@ TEST_CASE("water swash: the sheet on the sand is one surface across the mesh's e
     u32 pairs = 0, over = 0, seen_off = 0, saturated = 0;
     f64 worst_share = 0.0;
     u32 worst_step = 0;
+    // **Which water is the sheet's.** A pixel that is the body's water at every one of the times
+    // is the sea, and where it meets the ground between sheets is the water's own edge — the
+    // waterline, a place where one thing ends and wet sand begins, with the film the last sheet
+    // left drained to whatever the clock says. A pixel that is water now and ground at another
+    // time is the sheet over the bank, and the mesh's edge beside it is inside the sheet: the
+    // pixel's own front lies beyond the mesh's (`k_water_mesh_inside`), so the ground there is
+    // under the whole sheet. Those are the pairs.
+    Vector<u8> sea(width * height);
+    for (u32 p = 0; p < width * height; ++p) {
+      sea[p] = 1;
+      for (u32 s = 0; s < k_sheet_times; ++s)
+        if (on.frame[e][s].ids[p * k_id_words] != on.water_instance) sea[p] = 0;
+    }
     for (u32 s = 0; s < k_sheet_times; ++s) {
       const CapturedFrame& a = on.frame[e][s];
       const CapturedFrame& b = off.frame[e][s];
@@ -544,7 +557,20 @@ TEST_CASE("water swash: the sheet on the sand is one surface across the mesh's e
         if (wet_pixel(p) == wet_pixel(q)) return;
         const u32 w = wet_pixel(p) ? p : q;
         const u32 g = wet_pixel(p) ? q : p;
-        if (!sheeted(g)) return;
+        if (sea[w] != 0 || !sheeted(g)) return;
+        // And the sea's own edge moves a little with each wave, with no sheet: the lifted surface
+        // meets the ground where the wave's height at the band's depth puts it (the band is 0.2 R
+        // + 5 cm deep, 7 cm here, and a wave there is at most 0.78 of that high: 3 cm either way
+        // of the mean), which on a beach no gentler than 1:33 — the bay's is 1:24 — is within a
+        // metre of where the sea always is. A water pixel that near the sea is left to it.
+        const f64 down = sheet_cosine(e, w, width, height, on.fov_y);
+        const f64 metres = (k_sheet_eye[e][1] - k_sheet_level) / down *
+                           (static_cast<f64>(on.fov_y) / height) / down;
+        const i64 reach = static_cast<i64>(std::ceil(1.0 / metres)) + 1;
+        const i64 wx = w % width, wy = w / width;
+        for (i64 y = std::max<i64>(wy - reach, 0); y <= std::min<i64>(wy + reach, height - 1); ++y)
+          for (i64 x = std::max<i64>(wx - reach, 0); x <= std::min<i64>(wx + reach, width - 1); ++x)
+            if (sea[static_cast<u32>(y * width + x)] != 0) return;
         ++pairs;
         const f64 bottoms = sheet_bottoms(a, g);
         bool breaks = false, breaks_off = false;

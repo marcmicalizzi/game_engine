@@ -241,7 +241,13 @@ inline void water_flux_field(const f32* depth, const f32* arrival, u32 size, f64
       flow[f] = fx * static_cast<f64>(k_di[f]) + fz * static_cast<f64>(k_dj[f]);
       usable[f] = false;
       if (flow[f] > 0.0) {
-        out += flow[f];  // to water, onto the bank (absorbed there), or off the map
+        // Out: to water the train reaches later, onto the bank (absorbed there), or off the map.
+        // **A face is crossed one way and counted on both sides or on neither**: what this texel
+        // sends is what the texel beside it takes when its turn comes, so a face whose direction
+        // points at water the train reached *earlier* — the arrival's order and the face's
+        // direction disagree, where two fronts meet behind a headland — carries nothing either
+        // way. Without this the sweep lost a part in a hundred of the flux behind a wall.
+        if (!(water && done[beside[f]] != 0)) out += flow[f];
       } else if (!inside) {
         own -= flow[f];
       } else if (water && done[beside[f]] != 0) {
