@@ -310,6 +310,13 @@ held.
 | The second open (T120; before, the plan again) | 43 ms | 37 ms |
 | A 64 m tile's activation (its patches built), median and max | 3.9 s, 7.8 s | 1.4 s, 2.4 s |
 | The largest patch | 3,934 clusters | 1,558 clusters |
+| **Since G191's pieces** (2026-11-13 01:20, `msvc-release` at 8cd633a6, CPU 63-73% busy, one run) | | |
+| Meshes handed for the 466 patches | 1,476 | 468 |
+| Built, every mesh | 36.7 M triangles, 3.00 GB, 263 s of work single-threaded | 12.1 M, 0.99 GB, 78 s |
+| The largest mesh | 2,442 clusters | 1,558 clusters |
+| Built again at half its budget | none | none |
+| One mesh's build, median and max | 169 ms, 526 ms | 172 ms, 339 ms |
+| A 64 m tile's activation (its meshes built one after another), median and max | 4.1 s, 9.2 s | 1.3 s, 2.3 s |
 
 The host builds a tile's meshes off the frame's thread and in parallel, so a tile's activation is
 its patches' build spread over the pool, not a stall; at the forest's budget it is still four

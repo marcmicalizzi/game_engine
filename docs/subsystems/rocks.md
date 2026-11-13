@@ -1674,7 +1674,11 @@ patch: 5.7 MB for the kilometre below.
 of a 1,024 m window were 36.6 M triangles and 2.93 GB built at load before G191 (249 s of work); now
 none is built at load, `open` is 316 ms, the second open 43 ms, and a 64 m tile's activation is
 3.9 s of work at the median (1.4 s at 32,000 a patch), spread over the host's pool off the frame's
-thread.
+thread. Since the pieces (2026-11-13, the same case, a machine 63-73% busy) the 466 patches are
+1,476 meshes, 36.7 M triangles (0.3% more: the walls along the cuts) and 3.00 GB (2.4% more), the
+largest 2,442 clusters where it was 3,934, none built again; a tile's activation is 4.1 s of work
+at the median and 9.2 s at most, one mesh's build 169 ms at the median and 526 ms at most, so a
+pool of two workers takes a tile's 20 to 40 meshes in about two seconds.
 
 **What a walker sees** (2026-11-13, [measured](../experiments/rockfall-deposits.md#what-a-walker-sees-in-a-streamed-host),
 `engine-view --world --windowed` along a 300 m walk at 2 m/s beside a kilometre of massif foot at
@@ -1772,9 +1776,12 @@ machine): the forest's budget with 160 loose stones on the massif's foot built w
 107,000 to 128,000 triangles at 23.6 to 26.7 triangles a cluster (4,329 to 4,784 clusters, every one
 over the limit, at the commit before this rule: `deposits: no mesh a tile hands at the forest's
 density is over a streamed host's cluster limit`, which fails there); 600 stones of 192 triangles on
-a 16 m patch built pieces at **20.1** triangles a cluster, the densest seen (1,915 clusters from
-38,592). The first G191's kilometre measured 29.5 at both its budgets. At the densest, a piece of
-40,000 triangles is about 2,000 clusters, half the limit. The same tile at the forest's budget is
+a 16 m patch built pieces at 20.1 triangles a cluster (1,915 clusters from 38,592); and the kilometre
+case (`deposits: what a kilometre of massif foot costs`) at the forest's budget hands its 466
+patches as 1,476 pieces whose largest builds **2,442** clusters, the most seen, from at most 40,000
+triangles: 16.4 a cluster or more. The first G191's kilometre measured 29.5 at both its budgets.
+At 40,000 triangles a piece is at most 60% of the limit at the densest seen, where a cut at 48,000
+would have been 72%. The same tile at the forest's budget is
 handed as 16 pieces of 23,000 to 34,000 triangles, the most 1,342 clusters, 1.3% more triangles in
 all than the 4 whole patches (the walls along the cuts), and nothing is built again at half its
 budget (`deposit_builds_reduced()` unmoved over every case).
