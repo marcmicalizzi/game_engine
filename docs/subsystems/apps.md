@@ -412,6 +412,20 @@ one JSON line (`entries`, `heads`, `links`, `channel_m`, `region_km2`, `km_per_k
 `engine.scene.TerrainEdit` blocks for `tiles.edits`, one per link, and the water's surface stands in
 the cut ([channels](channels.md#the-cut)); it plans over the ground before the scene's own cuts. Exit 1 for a scene with no terrain, no `channels` placement or a refused layer, 2
 for usage. It requires the channels capability; see [channels](channels.md#the-waters-description).
+
+## engine-content falls: where the water leaves its bed
+
+`engine-content falls <scene.json> [<out.json>] [--ddc <dir>] [--entry <i>] [--stage <fraction>] [--min-area-m2 <m2>] [--jobs <n>] [--paths]`
+(S104, stages 0 and 1) takes each `channels` entry's plan — the one it names, opening no ground, else
+the one keyed from the ground before its cuts, as `engine-content channels` makes it under the same
+root — tests every run of every link's stepped bed and cooks the falls beside the plan
+(`falls-<plan>-<options>.channel-falls`, read again on the next run), and prints one JSON line:
+`links`, `runs`, `held`, `drowned`, `trickles`, `falls`, `plunges`, `horsetails`, `tiered`,
+`drawn_falls` (on links the water's description draws at `--min-area-m2`), `mouth_falls`,
+`knick_falls`, `highest_fall_m`, `columns`, `vertices`, `bytes`, `bytes_per_run`, `plan_s`, `cook_s`,
+`cooked`, and each entry's plan key and falls file. `<out.json>` gets the falls as JSON (`--paths`:
+every column's path). `--jobs` cooks the links on that many threads; the bytes do not depend on it.
+See [channels](channels.md#where-the-water-leaves-its-bed-s104).
 The hosts (engine-view, engine-host, engine-editor) link the capability with the other generators, so
 a scene's `channels` placement draws in each.
 
