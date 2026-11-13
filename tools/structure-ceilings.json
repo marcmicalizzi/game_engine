@@ -16,7 +16,7 @@
       "file": "systems/renderer/src/scene_renderer.cpp",
       "function": "SceneRenderer::record_frame",
       "why": "every pass and every feature flag of a frame",
-      "ceiling": 3445
+      "ceiling": 3504
     },
     {
       "id": "renderer.record_frame.add_pass",
@@ -25,21 +25,21 @@
       "function": "SceneRenderer::record_frame",
       "pattern": "\\badd_pass\\s*[(<]",
       "why": "the passes a frame adds inline rather than through a frame-pass seam",
-      "ceiling": 45
+      "ceiling": 46
     },
     {
       "id": "renderer.gpu_scene_cpp.lines",
       "measure": "file-lines",
       "file": "systems/renderer/src/gpu_scene.cpp",
       "why": "every feature's GPU state",
-      "ceiling": 6845
+      "ceiling": 6659
     },
     {
       "id": "renderer.gpu_scene_h.lines",
       "measure": "file-lines",
       "file": "systems/renderer/include/systems/renderer/gpu_scene.h",
       "why": "every feature's GPU state",
-      "ceiling": 2040
+      "ceiling": 2115
     },
     {
       "id": "engine_view.main_cpp.lines",
@@ -107,19 +107,19 @@
       "id": "page:docs/subsystems/renderer.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/renderer.md",
-      "ceiling": 1057059
+      "ceiling": 1080530
     },
     {
       "id": "page:docs/subsystems/apps.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/apps.md",
-      "ceiling": 662933
+      "ceiling": 667417
     },
     {
       "id": "page:docs/subsystems/gfx.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/gfx.md",
-      "ceiling": 320523
+      "ceiling": 321369
     },
     {
       "id": "page:docs/subsystems/geometry.md",
@@ -131,7 +131,7 @@
       "id": "page:docs/subsystems/flora.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/flora.md",
-      "ceiling": 247078
+      "ceiling": 248747
     },
     {
       "id": "page:docs/plan/05-simulation.md",
@@ -149,7 +149,7 @@
       "id": "page:docs/subsystems/water.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/water.md",
-      "ceiling": 186797
+      "ceiling": 199873
     },
     {
       "id": "page:docs/subsystems/protocol.md",
@@ -173,19 +173,19 @@
       "id": "page:docs/subsystems/world.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/world.md",
-      "ceiling": 110226
+      "ceiling": 111390
     },
     {
       "id": "page:AGENTS.md",
       "measure": "page-bytes",
       "file": "AGENTS.md",
-      "ceiling": 72441
+      "ceiling": 72422
     },
     {
       "id": "page:docs/subsystems/rocks.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/rocks.md",
-      "ceiling": 157827
+      "ceiling": 175059
     },
     {
       "id": "page:docs/experiments/gi-cache-2026-11-07.md",
@@ -197,7 +197,13 @@
       "id": "page:docs/subsystems/channels.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/channels.md",
-      "ceiling": 113248
+      "ceiling": 121469
+    },
+    {
+      "id": "page:docs/subsystems/landform.md",
+      "measure": "page-bytes",
+      "file": "docs/subsystems/landform.md",
+      "ceiling": 112217
     }
   ],
   "rebaselines": [
@@ -956,6 +962,175 @@
           "id": "page:docs/subsystems/channels.md",
           "old": 100000,
           "new": 113248
+        }
+      ]
+    },
+    {
+      "date": "2026-11-13",
+      "by": "Marc Micalizzi",
+      "reason": "",
+      "commit": "0aa8e44a",
+      "folded": [
+        {
+          "name": "G190",
+          "reason": "G190, G191 and T120 on rocks.md: where a pile comes to rest, a tile's patches arriving with it, one plan a load, a dense patch handed as pieces under the cluster limit, and what a walker sees in a streamed host (the tables are on the grounding page)",
+          "date": "2026-11-13",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/rocks.md": 16865
+          }
+        },
+        {
+          "name": "G201",
+          "reason": "G201 stage 2: a tree seated by its footprint (renderer.md), the seat record (flora.md), a tile's trees seated (world.md) and engine-content ground sample with info's seat (apps.md, beside the masks rows' growth merged in): new behaviour, each page its own section",
+          "date": "2026-11-13",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 5000,
+            "page:docs/subsystems/apps.md": 3124,
+            "page:docs/subsystems/flora.md": 1669,
+            "page:docs/subsystems/world.md": 1113,
+            "page:AGENTS.md": -19
+          }
+        },
+        {
+          "name": "R152",
+          "reason": "R152: the frame's cluster set in chunks and a step made on the worker. record_frame gains the chunks' count pass and a build pass a chunk; gpu_scene.h gains the step's accessors and members (its types are rt_step.h's) and gpu_scene.cpp's resize code moved with the step's into gpu_scene_rt_step.cpp, so the hub is smaller than before the row; renderer.md and gfx.md gain the two sections.",
+          "date": "2026-11-12",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.record_frame.lines": 49,
+            "renderer.record_frame.add_pass": 1,
+            "renderer.gpu_scene_cpp.lines": -188,
+            "renderer.gpu_scene_h.lines": 54,
+            "page:docs/subsystems/renderer.md": 7305,
+            "page:docs/subsystems/gfx.md": 846
+          }
+        },
+        {
+          "name": "R152b",
+          "reason": "The far field at rest (R152 leg B): record_frame hands the frame's field block to the pool's allocator and the chain's records and turns the cache's passes on for a field (11 lines); gpu_scene.cpp fills the rule into the block and counts an untraced rigid instance as cached on the ray path (12 lines); gpu_scene.h holds the scene's part of the rule, the last block and the census's kind for an instance at rest (21 lines); renderer.md gains the section that says what the rule does to the picture and to every position reader",
+          "date": "2026-11-13",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.record_frame.lines": 11,
+            "renderer.gpu_scene_cpp.lines": 12,
+            "renderer.gpu_scene_h.lines": 21,
+            "page:docs/subsystems/renderer.md": 11166
+          }
+        },
+        {
+          "name": "S102",
+          "reason": "S102 second pass: water.md gains One sheet (the swash's ground drawn as the body's thin water, the sheet's thickness) and The surf (the energy-flux field, the second train, what the first flights changed and cost)",
+          "date": "2026-11-13",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.gpu_scene_cpp.lines": -10,
+            "page:docs/subsystems/water.md": 13112
+          }
+        },
+        {
+          "name": "S104",
+          "reason": "S104 stages 0 and 1: channels.md says where the water leaves its bed (the fall test on every link's stepped bed, the march, the falls file's layout the water reads, what it costs, and what the count found: W116's seat eating a cliff a line meets obliquely, a mouth's fan over a sea cliff); apps.md documents engine-content falls",
+          "date": "2026-11-13",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 1138,
+            "page:docs/subsystems/channels.md": 8221
+          }
+        },
+        {
+          "name": "T119",
+          "reason": "T119: the derived-data root's one rule is described where each reader looks: apps.md's --ddc sentence names the consumers and the document's ground it now reaches, rocks.md says the deposits' and cliffs' recipes are under the host's root or the scene's own ddc/, world.md's stale textures line is replaced by R147's state and the consumer's root",
+          "date": "2026-11-12",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 222,
+            "page:docs/subsystems/water.md": -36,
+            "page:docs/subsystems/world.md": 51,
+            "page:docs/subsystems/rocks.md": 367
+          }
+        },
+        {
+          "name": "W128",
+          "reason": "landform.md gains the coast (W128 stages A and B): the wave base, the outline, the stand's waterline, exposure and section with its derived bound, seven fields, five test rows and the stand's measured pair",
+          "date": "2026-11-13",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/landform.md": 12217
+          }
+        }
+      ],
+      "changes": [
+        {
+          "id": "renderer.record_frame.lines",
+          "old": 3445,
+          "new": 3504
+        },
+        {
+          "id": "renderer.record_frame.add_pass",
+          "old": 45,
+          "new": 46
+        },
+        {
+          "id": "renderer.gpu_scene_cpp.lines",
+          "old": 6845,
+          "new": 6659
+        },
+        {
+          "id": "renderer.gpu_scene_h.lines",
+          "old": 2040,
+          "new": 2115
+        },
+        {
+          "id": "page:docs/subsystems/renderer.md",
+          "old": 1057059,
+          "new": 1080530
+        },
+        {
+          "id": "page:docs/subsystems/apps.md",
+          "old": 662933,
+          "new": 667417
+        },
+        {
+          "id": "page:docs/subsystems/gfx.md",
+          "old": 320523,
+          "new": 321369
+        },
+        {
+          "id": "page:docs/subsystems/flora.md",
+          "old": 247078,
+          "new": 248747
+        },
+        {
+          "id": "page:docs/subsystems/water.md",
+          "old": 186797,
+          "new": 199873
+        },
+        {
+          "id": "page:docs/subsystems/world.md",
+          "old": 110226,
+          "new": 111390
+        },
+        {
+          "id": "page:AGENTS.md",
+          "old": 72441,
+          "new": 72422
+        },
+        {
+          "id": "page:docs/subsystems/rocks.md",
+          "old": 157827,
+          "new": 175059
+        },
+        {
+          "id": "page:docs/subsystems/channels.md",
+          "old": 113248,
+          "new": 121469
+        },
+        {
+          "id": "page:docs/subsystems/landform.md",
+          "old": 100000,
+          "new": 112217
         }
       ]
     }
