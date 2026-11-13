@@ -988,6 +988,7 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
   // The surface's height over the body's level at the pixel: the mesh's, or for a lifted body the
   // height function's own away from the swash's band (water.slang, `water_surface_normal`).
   float surface_y = local.y;
+  float bank_share = 0.0;  // the share of the swash's band at the pixel: 1 over the bank
   float3 n;
   if (swash.surface != 0) {
     float wave_y = 0.0;
@@ -995,6 +996,7 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
     n = water_surface_normal((WaterSurface*)swash.surface, local.xz, s.uv.x, params->water_time_s,
                              params->water_tide_phase, footprint, dropped, wave_y, bank);
     surface_y = lerp(wave_y, local.y, bank);
+    bank_share = bank;
   } else {
     n = water_normal_of(w, material.flags, geo.materials, index, local.xz, params->water_time_s,
                         footprint, depth, dropped);
@@ -1041,6 +1043,18 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
         // bared ground, as the ground's own pixels beside it are, and the waterline is the
         // front's and not a triangle's.
         depth = water_swash_on(swash) && hh > front ? 0.0 : max(surface_y + signed_depth, 0.0);
+        // **Under its front the sheet is never thinner than the sheet is** (S102, second pass;
+        // water.md, "One sheet"). The line above is the mesh's height over the depth map's ground,
+        // and over the bank the mesh stands millimetres over a ground the map knows to
+        // centimetres: where the map's ground stood over the mesh the depth was nothing, and a
+        // pixel under its own front was drawn as bared — the bottom alone, with no surface — in a
+        // band along the mesh's edge. The sheet's own thickness there is the pool's rule
+        // (`water_sheet_surface`): half the front's height over the ground, to a quarter of the
+        // run-up and 2 cm.
+        if (water_swash_on(swash) && hh <= front) {
+          const float sheet = min(0.5 * (front - hh), 0.25 * place.run_up + 0.02);
+          depth = max(depth, bank_share * sheet);
+        }
       } else {
         // The shift fades out over the swash's own depth, so deep water is the depth it was.
         const float band = 1.5 * swash.run_up_m + swash.tide_m + k_water_calm_depth;
