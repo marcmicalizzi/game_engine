@@ -107,8 +107,11 @@ struct TileSetReport @version(1) {
 /// **A mask level's manifest** (docs/subsystems/tileset.md, "The mask level"): written last into the
 /// level's directory, so a level whose manifest is there is whole. The level is the material weights
 /// of a terrain's `masks` block over a tile set, keyed by the set's hash, the authored inputs (every
-/// image's bytes, never its path) and `k_mask_version`.
-struct MaskLevelManifest @version(1) {
+/// image's bytes, never its path) and `k_mask_version`. Version 2 (T127) carries no resident budget:
+/// that is the host's, read from the scene at every load, so a level cooked under one figure is not
+/// refused under a raised one. A version-1 manifest's `resident_mib` is dropped unread
+/// (`domain/tileset/src/masks.cpp`, the migration), so its level is used as it stands.
+struct MaskLevelManifest @version(2) {
   format: string
   version: u32 = 1
   key: string
@@ -123,7 +126,6 @@ struct MaskLevelManifest @version(1) {
   budget: u32
   wetness: f32
   height_blend: f32
-  resident_mib: u32 = 256
   /// The tiles written, as (x, z) pairs; a tile not listed holds nothing authored.
   present: i32[]
   /// The bytes of the tile records written, and the hash over them in the order listed.

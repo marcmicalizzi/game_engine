@@ -40,4 +40,18 @@ struct TerrainMaskUpload {
   u32 tiles = 0;
 };
 bool prepare_terrain_masks(const TerrainDesc& terrain, TerrainMaskUpload& out, std::string* error);
+
+// **A mask level against the host's budget** (T121, T127; renderer.md, "Ground materials by
+// place"): its resident size counted from the provider's presence alone, no payload read
+// (`scene_gen::mask_resident_bytes`), against the scene's `masks.resident_mib` — never a figure the
+// level carries, so a raised figure holds a level cooked under a lower one — refused with
+// `scene_gen::mask_resident_refusal`'s sentence, the one `engine-content masks check` prints.
+// `has`, when given, gets a byte a tile of the range, 1 for a present one, in page order.
+bool check_terrain_mask_resident(const TerrainDesc& terrain, const scene_gen::GroundMasks& masks,
+                                 u64& bytes, Vector<u8>* has, std::string* error);
+// **The load's step** (T122): a terrain's mask level asked of the ground provider the load made —
+// cooked on a miss, so a tile over `layer_budget` is refused here — and held to the budget, before
+// a placement is expanded. True for a terrain with no masks.
+bool check_terrain_masks(const TerrainDesc& terrain, const scene_gen::GroundProvider& provider,
+                         std::string* error);
 }  // namespace engine::renderer

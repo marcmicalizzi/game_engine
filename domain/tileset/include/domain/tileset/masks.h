@@ -116,11 +116,52 @@ struct MaskBudgetReport {
   u32 tiles = 0;                 // tiles scanned
   u32 largest = 0;               // the most layers any tile names
   u32 budget = 0;
+  // **The level's resident size** (T121), as the renderer will hold it: the tiles a build writes
+  // (any layer at a step or more, or any wetness; a tile over the budget counts, since it is one
+  // once the scene is fixed), `scene_gen::mask_resident_bytes` over the range, the scene's figure,
+  // and `scene_gen::mask_resident_refusal`'s sentence, empty when the level fits.
+  u64 present = 0;
+  u64 resident_bytes = 0;
+  u32 resident_mib = 0;
+  std::string resident_refusal;
 };
-// The composition a build runs, scanned for the budget alone: no archive is written. Every tile
-// over is listed, not the first. False, with a sentence, only when the inputs cannot be composed.
+// The composition a build runs, scanned for the budget and the resident size: no archive is
+// written. Every tile over is listed, not the first. False, with a sentence, only when the inputs
+// cannot be composed; a level over either is in the report (`over`, `resident_refusal`).
 bool check_mask_budget(const TileSet& set, const MaskInputs& in, MaskBudgetReport& out,
                        std::string& error);
+
+// **A level's footprint before anything is built** (T122): the mask tiles its tile set's lattice
+// spans, read from the set's manifest when the terrain names one, else from its heightfield's
+// header moved by the block's origin — no heights read, no set built. Every tile a build writes
+// lies in it; `range` is what the renderer's page table covers.
+struct MaskLevelSpan {
+  i32 tx0 = 0, tz0 = 0, tx1 = -1, tz1 = -1;
+  u64 range() const noexcept {
+    return tx1 < tx0 || tz1 < tz0
+               ? 0u
+               : static_cast<u64>(tx1 - tx0 + 1) * static_cast<u64>(tz1 - tz0 + 1);
+  }
+};
+bool mask_level_span(const scene::Terrain& entry, std::string_view dir, const MaskInputs& in,
+                     MaskLevelSpan& out, std::string& error);
+// **Whether every tile of the span is present, known from the inputs alone**: when the priors name
+// soil, scree and bedrock, every point's weights sum to one over at most 254 layers, so some layer
+// is over one step (1/254 > 1/255) at every point and every tile is written (or refused for its
+// layers). Otherwise which tiles hold anything is the composition's to say.
+bool mask_level_full(const MaskInputs& in) noexcept;
+// **What a load refuses of the masks before it builds anything** (T122): the inputs
+// (`validate_mask_inputs`), and the level's resident size against `in.masks.resident_mib` where
+// the span alone gives it (`mask_level_full`), with the one sentence the upload and the check give.
+// `known` says whether the size was known; `bytes` is then exact. The `tiles` provider calls it
+// before it finds or builds its set, and `engine-content masks check` reaches it through the load.
+struct MaskEarlyCheck {
+  MaskLevelSpan span;
+  bool known = false;
+  u64 bytes = 0;
+};
+bool check_masks_early(const scene::Terrain& entry, std::string_view dir, const MaskInputs& in,
+                       MaskEarlyCheck& out, std::string& error);
 // How many over-budget tiles the build's refusal names before "and N more".
 inline constexpr u32 k_over_budget_listed = 32;
 // The refusal's sentence: the count, then up to `cap` tiles with place, layers and weakest.

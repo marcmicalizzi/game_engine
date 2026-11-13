@@ -52,6 +52,8 @@
 #include <domain/tileset/tileset.h>
 #include <foundation/bench/machine_state.h>
 #include <foundation/io/vfs.h>
+#include <systems/renderer/scene.h>
+#include <systems/renderer/terrain.h>
 
 #include <charconv>
 #include <cstdlib>
@@ -276,10 +278,6 @@ int tiles_command(int argc, char** argv) {
   return k_exit_ok;
 }
 
-std::string resolved(const std::string& dir, const std::string& path) {
-  return path.empty() || io::is_absolute_path(path) ? path : io::join_path(dir, path);
-}
-
 int masks_command(int argc, char** argv) {
   if (argc < 3) return usage(k_masks_usage, "");
   const std::string scene_path = argv[2];
@@ -302,57 +300,33 @@ int masks_command(int argc, char** argv) {
       return usage(k_masks_usage, "unknown argument '" + std::string(a) + "'");
     }
   }
-  std::string bytes;
-  if (io::read_file(scene_path, bytes) != io::Status::Ok)
-    return failed("terrain-masks", "'" + scene_path + "' could not be read");
-  JsonValue json;
-  if (!parse_json(bytes, json).ok)
-    return failed("terrain-masks", "'" + scene_path + "' is not JSON");
-  scene::Scene scene;
-  schema::ReadContext ctx;
-  if (!schema::from_json(scene, json, ctx) || !ctx.ok())
-    return failed("terrain-masks", "'" + scene_path + "' is not a scene");
-  if (!scene.terrain.has_value() || !scene.terrain->masks.has_value() ||
-      !scene.terrain->tiles.has_value())
+  // **The ground a load composes, by the load's reader** (T121; tileset.md, "What a load refuses
+  // before it builds"): the scene read as far as its ground, so the level is cooked over the set
+  // a load builds — the scene's own edits and every entry's plan in it — and keyed as the load
+  // keys it, so a load then finds this level. Before T121 this read the file's terrain alone and
+  // built the set without even the scene's own edits: a level no load would find.
+  renderer::SceneDesc desc;
+  desc.ddc = ddc;
+  renderer::SceneFileOptions read_options;
+  read_options.ground_only = true;
+  std::string error;
+  if (!renderer::read_scene_file(scene_path, read_options, desc, error))
+    return failed("terrain-masks", error);
+  if (!desc.terrain.enabled || !desc.terrain.masks.has_value() || !desc.terrain.tiles.has_value())
     return failed("terrain-masks",
                   "the scene's terrain names no masks over a tile set (\"tiles\" and \"masks\")");
-  scene::Terrain entry = *scene.terrain;
-  const std::string dir(io::parent_path(scene_path));
-  std::string error;
-  if (!scene_gen::resolve_mask_water({scene.water.data(), scene.water.size()}, *entry.masks,
-                                     &error))
-    return failed("terrain-masks", error);
-  // The set, as the provider opens it: the manifest named, or the heightfield built on a miss.
-  scene::TerrainTileSet& t = *entry.tiles;
-  if (ddc.empty() && !t.ddc.empty()) ddc = resolved(dir, t.ddc);
+  const scene::Terrain entry = renderer::terrain_entry(desc.terrain);
   std::string manifest;
-  if (!t.manifest.empty()) {
-    manifest = resolved(dir, t.manifest);
-    if (ddc.empty()) ddc = geometry::find_ddc_root(io::parent_path(manifest));
-  } else {
-    const std::string source = resolved(dir, t.heightfield);
-    if (ddc.empty()) ddc = geometry::find_ddc_root(io::parent_path(source));
-    tileset::BuildOptions o;
-    o.cells = t.cells;
-    o.ring_spacing_mm = t.ring_spacing_mm;
-    o.far_ratio = t.far_ratio;
-    o.far_levels = t.far_levels;
-    o.vertical_scale = static_cast<f64>(t.vertical_scale);
-    o.offset_x_mm = scene_gen::nearest_mm(t.origin.x);
-    o.offset_y_mm = scene_gen::nearest_mm(t.origin.y);
-    o.offset_z_mm = scene_gen::nearest_mm(t.origin.z);
-    tileset::BuildResult set_built;
-    if (!tileset::ensure_tileset(source, o, std::string(), ddc, false, set_built, error))
-      return failed("terrain-masks", error);
-    manifest = set_built.manifest;
-  }
+  if (!tileset::resolve_tile_set(entry, std::string_view(), std::string(), ddc, manifest, error))
+    return failed("terrain-masks", error);
   if (out_dir.empty() && ddc.empty())
     return failed("terrain-masks",
                   "no output directory, no --ddc, and no repository round the scene");
   tileset::TileSet set;
   if (!set.open(manifest, error)) return failed("terrain-masks", error);
   tileset::MaskInputs inputs;
-  if (!tileset::mask_inputs(entry, dir, inputs, error)) return failed("terrain-masks", error);
+  if (!tileset::mask_inputs(entry, std::string_view(), inputs, error))
+    return failed("terrain-masks", error);
   const i64 start = time::monotonic_ns();
   tileset::MaskBuildResult built;
   if (!tileset::ensure_mask_level(set, inputs, out_dir, ddc, force, built, error))

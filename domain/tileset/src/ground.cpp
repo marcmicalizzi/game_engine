@@ -4,6 +4,7 @@
 // cache on a miss — and answers every height from it. It has no time: the set does not move, so
 // it has no `evaluate`, `travel_m`, `wind` or `transport`, and a time-lapse moves nothing of it.
 #include <core/log/log.h>
+#include <core/profiling/startup_trace.h>
 #include <domain/geometry/cluster_file.h>
 #include <domain/scene_gen/scene_gen.h>
 #include <domain/tileset/masks.h>
@@ -11,6 +12,7 @@
 #include <foundation/io/vfs.h>
 #include <foundation/tunables/tunables.h>
 
+#include <algorithm>
 #include <memory>
 #include <mutex>
 #include <schemas/scene.h>
@@ -82,6 +84,10 @@ bool tiles_masks(const void* state, scene_gen::GroundMasks& out, std::string* er
   if (!g.has_masks) return true;
   const std::lock_guard<std::mutex> lock(g.mask_mutex);
   if (!g.mask_tried) {
+    // A stage of its own, so a trace names the cook (or the hit) wherever the first ask comes from:
+    // the read's own check (T122), or a placement that reads the masks, which used to carry the
+    // cook's minutes under its own name (the forest's "placement litter", T125's finding).
+    ENGINE_STARTUP_STAGE("ground masks");
     g.mask_tried = true;
     MaskBuildResult built;
     std::string why;
@@ -89,11 +95,29 @@ bool tiles_masks(const void* state, scene_gen::GroundMasks& out, std::string* er
         !g.masks.open(built.manifest, why))
       g.mask_error = "the ground provider \"tiles\" could not build its masks: " + why;
     // A layer under one quantization step is dropped from its tile rather than counted against
-    // the budget (masks.h, `k_mask_step`); each one is named, since its weight is lost.
+    // the budget (masks.h, `k_mask_step`). **One line a layer, not a tile** (T122): every drop is
+    // a smoothstep's tail (a feather's, a margin's, a slope band's) reaching into a tile by less
+    // than a point, so a large level drops thousands (the forest's v41 8,288) and a line each
+    // buried the load's log; the count, the heaviest and the first tile say the same. `masks
+    // check` still lists every one.
+    Vector<u32> layers;
     for (const DroppedLayer& d : built.dropped) {
+      bool seen = false;
+      for (const u32 l : layers)
+        seen = seen || l == d.layer;
+      if (seen) continue;
+      layers.push_back(d.layer);
+      u32 tiles = 0;
+      f64 peak = 0;
+      for (const DroppedLayer& e : built.dropped) {
+        if (e.layer != d.layer) continue;
+        ++tiles;
+        peak = std::max(peak, e.peak);
+      }
       ENGINE_LOG_WARN(log_tileset, "mask layer dropped: under one quantization step",
-                      log::field("tile_x", d.tx), log::field("tile_z", d.tz),
-                      log::field("layer", d.name), log::field("peak", d.peak));
+                      log::field("layer", d.name), log::field("tiles", tiles),
+                      log::field("peak_max", peak), log::field("first_tile_x", d.tx),
+                      log::field("first_tile_z", d.tz));
     }
   }
   if (!g.mask_error.empty()) {
@@ -223,18 +247,25 @@ bool tiles_make(const scene::Terrain& entry, const scene_gen::Context& context,
   std::string manifest;
   std::string ddc;
   std::string why;
+  auto ground = std::make_unique<TilesGround>();
+  if (entry.masks.has_value()) {
+    // **Refused before anything is built** (T122; tileset.md, "What a load refuses before it
+    // builds"): the masks' inputs, and the level's resident size wherever the span gives it, from
+    // the set's manifest or its heightfield's header alone — before this make finds or builds a
+    // set, which on a cold cache is the longest step of a load before its placements.
+    MaskEarlyCheck early;
+    if (!mask_inputs(entry, context.dir, ground->mask_inputs, why) ||
+        !check_masks_early(entry, context.dir, ground->mask_inputs, early, why))
+      return fail("the ground provider \"tiles\" cannot build its masks: " + why);
+  }
   // The same function `engine-content masks check` calls (T74), so the check composes the ground a
   // load composes; the host's root, when it names one, before the block's (T90).
   if (!resolve_tile_set(entry, context.dir, std::string(context.ddc), ddc, manifest, why))
     return fail(why);
-  auto ground = std::make_unique<TilesGround>();
   if (!ground->set.open(manifest, why))
     return fail("the ground provider \"tiles\" could not open its set: " + why);
   if (entry.masks.has_value()) {
     // The mask level, built beside the set on a miss as the set itself is (masks.h), on first ask.
-    if (!mask_inputs(entry, context.dir, ground->mask_inputs, why) ||
-        !validate_mask_inputs(ground->mask_inputs, why))
-      return fail("the ground provider \"tiles\" cannot build its masks: " + why);
     ground->has_masks = true;
     ground->ddc = ddc;
   }
