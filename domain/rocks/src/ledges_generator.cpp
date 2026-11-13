@@ -16,6 +16,7 @@
 #include <core/json/json.h>
 #include <core/schema/json_reflect.h>
 #include <domain/rocks/ledges.h>
+#include <domain/scene_gen/derived_root.h>
 #include <foundation/io/vfs.h>
 
 #include <cmath>
@@ -100,16 +101,9 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
   if (!layer.recipes.empty()) {
     root = io::join_path(context.dir, layer.recipes);
   } else {
-    root = std::string(context.ddc);
-    if (root.empty()) {
-      std::error_code ec;
-      const auto from = std::filesystem::absolute(
-          context.dir.empty() ? std::filesystem::path(".") : std::filesystem::path(context.dir),
-          ec);
-      if (!ec) root = geometry::find_ddc_root(from.generic_string());
-      if (root.empty()) root = io::join_path(context.dir, "ddc");
-    }
-    root = io::join_path(root, "ledges");
+    // The one rule (T119; scene_gen.md, "The derived-data root"): the host's root, else the scene's
+    // own `ddc/`, which every host already hands as `Context::ddc`.
+    root = io::join_path(scene_gen::host_derived_root(context.ddc, context.dir, true), "ledges");
   }
   std::error_code ec;
   root = std::filesystem::absolute(root, ec).generic_string();

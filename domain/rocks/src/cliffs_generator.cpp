@@ -22,6 +22,7 @@
 #include <domain/gfx/formation.h>
 #include <domain/rocks/cliffs.h>
 #include <domain/rocks/rocks.h>
+#include <domain/scene_gen/derived_root.h>
 #include <foundation/io/vfs.h>
 
 #include <algorithm>
@@ -1209,14 +1210,9 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
   if (!layer.recipes.empty()) {
     dir = resolve(context.dir, layer.recipes);
   } else {
-    std::string ddc(context.ddc);
-    if (ddc.empty()) {
-      std::error_code ec;
-      const std::filesystem::path from = std::filesystem::absolute(
-          std::filesystem::path(context.dir.empty() ? "." : std::string(context.dir)), ec);
-      if (!ec) ddc = geometry::find_ddc_root(from.generic_string());
-    }
-    dir = !ddc.empty() ? io::join_path(ddc, "cliffs") : resolve(context.dir, "cliffs");
+    // The host's root, else the scene's own `ddc/`: the one rule (T119; scene_gen.md, "The
+    // derived-data root"), which every host already hands as `Context::ddc`.
+    dir = io::join_path(scene_gen::host_derived_root(context.ddc, context.dir, true), "cliffs");
   }
   // Every block the region touches, rows of x in order of z; a face is the region's when its
   // origin is inside it.

@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 
 using namespace engine;
 using namespace engine::rocks;
@@ -326,7 +327,16 @@ TEST_CASE("deposits: a tile's patches arrive with it, none past far_rings, and o
   REQUIRE(desc->expand(first, c, whole, &error));
   REQUIRE_FALSE(whole.instances.empty());
   CHECK(whole.meshes.size() == whole.instances.size());
-  CHECK_FALSE(io::exists(dir + "/deposits"));
+  // Nothing written: the recipes' directory under the root (T119) holds no file.
+  auto files = [&] {
+    std::error_code ec;
+    u32 n = 0;
+    if (std::filesystem::is_directory(dir, ec))
+      for (const auto& f : std::filesystem::recursive_directory_iterator(dir, ec))
+        n += f.is_regular_file() ? 1u : 0u;
+    return n;
+  };
+  CHECK(files() == 0);
   // The tile under the transit slope's foot (x 30 m) in each ring.
   u32 near = 0, far = 0;
   for (u8 ring = 0; ring < 3; ++ring) {
@@ -347,7 +357,7 @@ TEST_CASE("deposits: a tile's patches arrive with it, none past far_rings, and o
   }
   CHECK(near == 2 * whole.instances.size());
   CHECK(far == 0);
-  CHECK_FALSE(io::exists(dir + "/deposits"));
+  CHECK(files() == 0);
   desc->close(first);
   desc->close(second);
   // A close and the next open of the same entry: the plan let go is kept until another is made.

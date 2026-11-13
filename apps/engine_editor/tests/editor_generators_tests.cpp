@@ -89,7 +89,7 @@ TEST_CASE("generators: engine-editor reads a document placing a cave and a soil 
   }
   doc_scene::DocumentScene scene;
   std::string error;
-  REQUIRE_MESSAGE(doc_scene::read_document_scene(document, tmp.path(), scene, error), error);
+  REQUIRE_MESSAGE(doc_scene::read_document_scene(document, tmp.path(), {}, scene, error), error);
   REQUIRE(scene.desc.meshes.size() == (caves ? 1u : 0u) + (soil ? 1u : 0u));
   renderer::SceneDesc desc = scene.desc;
   desc.ddc = tmp.file("ddc");

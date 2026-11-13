@@ -429,7 +429,7 @@ here. A scene names it as `{"generator": "cliffs", "params": {...}}`, an `engine
   face's identity, its `datum_y` the world's zero so faces cut from one mass share their beds.
 - **What it writes.** A face's recipe is a `.rock.json` named by its canonical parameters' hash
   (`cliff-<hash>.rock.json`) under `recipes`, else the host's derived-data root's `cliffs/`
-  (`Context::ddc`), else the repository's, else `cliffs` beside the scene — the scatter's rule for
+  (`Context::ddc`), else the scene's own `ddc/` (T119) — the scatter's rule for
   its procedural rock — and a file already there is the right one. The scene reader builds it through
   the mesh-generator registry like any recipe; the placement is the face's **origin**, the first
   vertex of its line in whole millimetres (ADR-0053), unturned.
@@ -1117,9 +1117,14 @@ rebake. The height source's own material masks are not rewritten or assumed to b
 
 Each patch is a schema recipe `deposit-<hash>.deposit.json`, keyed by sampled
 terrain, thickness, coarse share, seed, material, budgets, `k_deposit_version` and
-`k_rocks_version`, handed with its tile and written nowhere since G191 ([A tile solves](#a-tile-solves)).
-The mesh-generator registry builds it through `engine-content build`,
-`build-all` and scene loading. No new app flag, renderer pass, scheduler work or dependency on
+`k_rocks_version`, handed with its tile and written nowhere since G191 ([A tile solves](#a-tile-solves)):
+its `path` names where its file would be, under `<ddc>/deposits/`, and `<ddc>` is the host's root
+and nothing else (T119; [scene_gen](scene_gen.md#the-derived-data-root)): an entry opened with no
+root is refused by name and makes no directory, and the world's streamed consumer opens it with the
+whole read's root, so every recipe a streamed load hands is named under `--ddc` and nothing of the
+entry lands beside the scene or the working directory (`deposits_tests.cpp`'s last case and the
+world's `placement_roots_tests.cpp`). The mesh-generator registry builds it through `engine-content
+build`, `build-all` and scene loading. No new app flag, renderer pass, scheduler work or dependency on
 another capability is added. With no deposits entry there is no work or persistent storage.
 
 The near mesh is a continuous sampled bed with a buried underside and boundary walls, plus

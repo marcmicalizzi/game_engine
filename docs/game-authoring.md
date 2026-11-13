@@ -122,6 +122,19 @@ namespace and its DLL):
 
 `git init` and the first commit are the author's; the script runs neither.
 
+### Where a game's derived data goes
+
+**A host keeps what it derives under the derived-data root it is named, and an SDK's host should
+always be named one** (T119; the rule, stated once, is [scene_gen](subsystems/scene_gen.md#the-derived-data-root)).
+With no root named, a host falls back to the scene's own (the repository's `ddc/` above the scene,
+else a `ddc/` beside it) or, for a document, the document's own; it never uses the working directory.
+An SDK lives outside any engine checkout, so without a name each scene folder of a game would grow
+a `ddc/` of its own. The template names one in every launch: `run.ps1` hands the SDK's runner
+`-Ddc <repo>/ddc`, which `.gitignore` already keeps out, and `package-game.ps1`'s `run.cmd` names
+`--ddc` inside the package's folder. A host started by hand (engine-view, engine-host, engine-editor)
+is given `--ddc <repo>/ddc` the same way. `tools.game_sdk` (`tools/export-game-sdk.Tests.ps1`) reads
+the template and fails when one of its launches, or a host command line in its README, names none.
+
 ## Rules that keep a run replayable
 
 A recorded `--game` session replays to the same module state, offscreen or in a window, as long as

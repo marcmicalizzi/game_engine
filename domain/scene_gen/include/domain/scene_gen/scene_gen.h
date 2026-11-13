@@ -132,11 +132,11 @@ struct Context {
   std::string_view dir;
   // Where the entry is, for a sentence: "scene.json: ruins 0".
   std::string_view where;
-  // **The host's derived-data root** (`--ddc`, `render.load`'s `ddc`): where a generator that
-  // writes what it builds (the water's meshes) keeps it. Empty when the host named none; a
-  // generator then finds the repository's from the scene's directory, as it did before the field
-  // (scene_gen.md, "The derived-data root"), so a game repository's `--ddc` is honoured and a
-  // committed scene read with no root still writes into the checkout's `ddc/`.
+  // **The derived-data root** a generator keeps its plans, recipes and meshes under: what the host
+  // decided by the one rule (derived_root.h, `host_derived_root`; scene_gen.md, "The derived-data
+  // root"; T119) — its `--ddc` or `render.load`'s `ddc`, else the scene's own, else the
+  // repository's found from the executable, never the working directory. Every host fills it; a
+  // generator handed an empty one refuses by name (`generator_derived_dir`) rather than guess.
   std::string_view ddc;
   Ground ground;
   // **The moving ground** (scene_gen.md, "Context::stand"): the surface as it stands now, when a

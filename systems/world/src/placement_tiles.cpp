@@ -45,6 +45,7 @@ scene_gen::Context PlacementTiles::context_for(const Entry& entry, u8 ring,
   context.tile_size = config_.tile_size;
   context.dir = entry.source->dir;
   context.where = entry.source->where;
+  context.ddc = entry.source->ddc;  // the whole read's root (T119; scene_gen.md)
   if (ground_ != nullptr) context.ground = ground_->provider().view();
   if (!scene_->terrain.exclusion.empty()) context.exclusion = &scene_->terrain.exclusion;
   context.site = &scene_->terrain.site;

@@ -11,6 +11,7 @@
 #include <test_temp_dir.h>
 
 #include <cmath>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -130,5 +131,105 @@ TEST_CASE("engine-content channels writes the network's WaterChannel blocks") {
                                 R"("ddc":"ddc","cells":32,"far_levels":0}}})") == io::Status::Ok);
   CHECK(run({"channels", tmp.file("bare.json"), tmp.file("bare-out.json")}).code == 1);
   CHECK(run({"channels", tmp.file("scene.json"), tmp.file("x.json"), "--stage", "2"}).code == 2);
+#endif
+}
+
+// **The commands write under `--ddc` and nowhere else** (T119; scene_gen.md, "The derived-data
+// root"; the forest's engine-needs 46): `channels`, `routes` and `bridges`, each run from a working
+// directory that is a checkout of its own (it holds an `AGENTS.md`, as the forest's does) over a
+// scene in a third directory whose `tiles` block names a `ddc` of its own, with `--ddc` naming a
+// fourth. Before T119 `routes` built the ground's set under the scene's `tiles.ddc` and `channels`
+// did too, and a command given a bare scene path rooted its plans at the working directory's.
+TEST_CASE("engine-content channels, routes and bridges write under --ddc, never the working dir") {
+#if !ENGINE_CONTENT_CHANNELS || !ENGINE_CONTENT_TILESET
+  MESSAGE("no channels or no tiles ground provider in this configuration");
+#else
+  test::TempDir tmp("content_roots");
+  REQUIRE(tmp.ok());
+  const std::string working = tmp.file("working"), scenes = tmp.file("scenes"),
+                    host = tmp.file("host/ddc");
+  std::filesystem::create_directories(working);
+  std::filesystem::create_directories(scenes);
+  REQUIRE(io::write_file_atomic(working + "/AGENTS.md", "x") == io::Status::Ok);
+  tileset::Heightfield field;
+  field.width = 65;
+  field.height = 129;
+  field.spacing_mm = 2000;
+  for (u32 z = 0; z < field.height; ++z)
+    for (u32 x = 0; x < field.width; ++x) {
+      const f64 xx = 2.0 * x, zz = 2.0 * z;
+      field.data.push_back(static_cast<f32>(.01 * zz + .08 * std::abs(xx - 64)));
+    }
+  std::string error;
+  REQUIRE_MESSAGE(tileset::write_heightfield(scenes + "/valley.json", field, error), error);
+  const std::string terrain =
+      R"("terrain":{"provider":"tiles","seed":5,)"
+      R"("tiles":{"heightfield":"valley.json","ddc":"ddc","cells":32,"far_levels":0}})";
+  const std::string scene =
+      R"({"format":"engine.scene.v1","name":"valley",)" + terrain +
+      R"(,"placements":[{"generator":"channels","params":{"name":"valley","seed":2,)"
+      R"("region_min":[0,0],"region_max":[128,256],"head_threshold_m2":300}},)"
+      R"({"generator":"routes","params":{"name":"path","region_min":[0,0],"region_max":[128,256],)"
+      R"("routes":[{"name":"a","waypoints":[[20,0,30],[110,0,220]]}]}}]})";
+  REQUIRE(io::write_file_atomic(scenes + "/scene.json", scene) == io::Status::Ok);
+  const std::filesystem::path before = std::filesystem::current_path();
+  std::filesystem::current_path(working);
+  struct Back {
+    std::filesystem::path to;
+    ~Back() {
+      std::error_code ec;
+      std::filesystem::current_path(to, ec);
+    }
+  } back{before};
+  const auto nothing_beside = [&](const char* what) {
+    INFO(what);
+    CHECK_FALSE(std::filesystem::exists(working + "/ddc"));
+    CHECK_FALSE(std::filesystem::exists(scenes + "/ddc"));
+  };
+
+  const auto channels = run({"channels", scenes + "/scene.json", tmp.file("channels.json"),
+                             "--min-area-m2", "0", "--ddc", host});
+  REQUIRE_MESSAGE(channels.code == 0, channels.text);
+  CHECK(std::filesystem::exists(host + "/channels"));
+  nothing_beside("channels");
+
+  const auto routes =
+      run({"routes", scenes + "/scene.json", tmp.file("routes.json"), "--ddc", host});
+  if (routes.code != 0 && routes.text.find("capability") != std::string::npos) {
+    MESSAGE("no routes capability in this configuration");
+    return;
+  }
+  REQUIRE_MESSAGE(routes.code == 0, routes.text);
+  CHECK(std::filesystem::exists(host + "/routes"));
+  nothing_beside("routes");
+
+  // The bridges over the scene with the channels' water and the route's plan named.
+  std::string text;
+  JsonValue water, planned;
+  REQUIRE(io::read_file(tmp.file("channels.json"), text) == io::Status::Ok);
+  REQUIRE(parse_json(text, water).ok);
+  REQUIRE(io::read_file(tmp.file("routes.json"), text) == io::Status::Ok);
+  REQUIRE(parse_json(text, planned).ok);
+  const JsonValue* blocks = water.find("water_channels");
+  const JsonValue* plans = planned.find("plans");
+  REQUIRE(blocks != nullptr);
+  REQUIRE(plans != nullptr);
+  REQUIRE(plans->size() == 1);
+  const std::string key((*plans)[0].find("plan")->as_string());
+  const std::string bridged =
+      R"({"format":"engine.scene.v1","name":"valley",)" + terrain + R"(,"water_channels":)" +
+      write_json(*blocks) +
+      R"(,"placements":[{"generator":"routes","params":{"name":"path","region_min":[0,0],)"
+      R"("region_max":[128,256],"plan":")" +
+      key + R"(","routes":[{"name":"a","waypoints":[[20,0,30],[110,0,220]]}]}}]})";
+  REQUIRE(io::write_file_atomic(scenes + "/bridged.json", bridged) == io::Status::Ok);
+  const auto bridges =
+      run({"bridges", scenes + "/bridged.json", tmp.file("bridges.json"), "--ddc", host});
+  if (bridges.code != 0 && bridges.text.find("capability") != std::string::npos) {
+    MESSAGE("no bridges capability in this configuration");
+    return;
+  }
+  REQUIRE_MESSAGE(bridges.code == 0, bridges.text);
+  nothing_beside("bridges");
 #endif
 }

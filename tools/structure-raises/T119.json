@@ -1,0 +1,13 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "T119",
+  "reason": "T119: the derived-data root's one rule is described where each reader looks: apps.md's --ddc sentence names the consumers and the document's ground it now reaches, rocks.md says the deposits' and cliffs' recipes are under the host's root or the scene's own ddc/, world.md's stale textures line is replaced by R147's state and the consumer's root",
+  "date": "2026-11-12",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/apps.md": 222,
+    "page:docs/subsystems/water.md": -36,
+    "page:docs/subsystems/world.md": 51,
+    "page:docs/subsystems/rocks.md": 367
+  }
+}

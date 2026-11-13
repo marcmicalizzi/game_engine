@@ -18,12 +18,14 @@
 # `src/terrain_features.cpp` is the one piece of ground arithmetic here: a scene terrain's ridges and
 # basins, which every ground provider adds the same way, beside the entry's type in one copy; and
 # `src/terrain_holes.cpp` its holes (W87), which the renderer's meshes and the collision both read.
+# `src/derived_root.cpp` (T119) is the one rule for the derived-data root a host hands a generator,
+# which is why `io` (the walk, the directories) and `platform` (the executable's repository) are here.
 engine_module(NAME scene_gen LAYER domain
-  DEPS base containers math hash json schema schemas jobs log geometry
+  DEPS base containers math hash json schema schemas jobs log geometry io platform
   SOURCES src/registry.cpp src/terrain_features.cpp src/terrain_holes.cpp src/exclusion.cpp
-          src/site.cpp)
+          src/site.cpp src/derived_root.cpp)
 
 engine_module_tests(NAME scene_gen
   SOURCES tests/scene_gen_tests.cpp tests/size_table.cpp tests/terrain_holes_tests.cpp tests/exclusion_tests.cpp
-          tests/site_tests.cpp tests/footprint_list_tests.cpp)
+          tests/site_tests.cpp tests/footprint_list_tests.cpp tests/derived_root_tests.cpp)
 engine_module_bench(NAME scene_gen SOURCES bench/site_bench.cpp)

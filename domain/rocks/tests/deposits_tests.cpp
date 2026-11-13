@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <limits>
 
 using namespace engine;
@@ -460,6 +461,17 @@ TEST_CASE("deposits: a loose stone wears its rock's own surface and the bed the 
   REQUIRE_MESSAGE(build_deposit_container(bare, {}, 0, data, error, &both), error);
   CHECK(data.materials.size() == 1);
 }
+namespace {
+// The files anywhere under `dir`, 0 when it is not there: what an entry wrote.
+u32 files_under(const std::string& dir) {
+  std::error_code ec;
+  if (!std::filesystem::is_directory(dir, ec)) return 0;
+  u32 n = 0;
+  for (const auto& e : std::filesystem::recursive_directory_iterator(dir, ec))
+    n += e.is_regular_file() ? 1u : 0u;
+  return n;
+}
+}  // namespace
 TEST_CASE("deposits: whole expansion equals reversed tile arrival with stable ids and exclusion") {
   test::TempDir scratch;
   scene_gen::Context c;
@@ -480,7 +492,7 @@ TEST_CASE("deposits: whole expansion equals reversed tile arrival with stable id
   // patches' recipes, the same bytes the whole read lists for the same placements.
   CHECK(opened.desc->meshes == nullptr);
   CHECK(opened.desc->tile_meshes);
-  CHECK_FALSE(io::exists(dir + "/deposits"));
+  CHECK(files_under(dir) == 0);
   Vector<std::string> recipes;  // each tiled instance's recipe, in the order they arrive
   for (i32 z = 1; z >= 0; --z)
     for (i32 x = 1; x >= 0; --x) {
@@ -504,7 +516,7 @@ TEST_CASE("deposits: whole expansion equals reversed tile arrival with stable id
     CHECK(tiled.instances[i].position.z == whole.instances[i].position.z);
     CHECK(whole.meshes[whole.instances[i].mesh].reach > 0.0f);
   }
-  CHECK_FALSE(io::exists(dir + "/deposits"));
+  CHECK(files_under(dir) == 0);
   const auto at = whole.instances[0].position;
   const scene_gen::Footprint footprint{scene_gen::nearest_mm(at.x + 1),
                                        scene_gen::nearest_mm(at.z + 1), .1};
@@ -520,4 +532,56 @@ TEST_CASE("deposits: whole expansion equals reversed tile arrival with stable id
   CHECK_FALSE(opened.desc->tile(opened.state, {0, 0}, c, moving_output, &error));
   Opened moving;
   CHECK_FALSE(moving.desc->open(schema::to_json(p), c, &moving.state, &error));
+}
+// **The recipes go under the host's root and nowhere else** (T119; scene_gen.md, "The derived-data
+// root"): opened with no root, the entry is refused by name and makes no directory; opened with
+// one, from a working directory that is a checkout of its own, every recipe a whole read and a
+// tile hand is named under the host's root, nothing is written there (G191: a recipe travels with
+// its tile), and the working directory holds nothing of the entry's.
+TEST_CASE("deposits: the recipes go under the host's root, never the working directory") {
+  test::TempDir scratch;
+  const std::string working = scratch.file("working"), host = scratch.file("host-ddc");
+  std::filesystem::create_directories(working);
+  REQUIRE(io::write_file_atomic(working + "/AGENTS.md", "x") == io::Status::Ok);
+  const std::filesystem::path before = std::filesystem::current_path();
+  std::filesystem::current_path(working);
+  struct Back {
+    std::filesystem::path to;
+    ~Back() {
+      std::error_code ec;
+      std::filesystem::current_path(to, ec);
+    }
+  } back{before};
+  scene_gen::Context c;
+  c.ground = ground(cliff);
+  c.tile_size = 16;
+  c.where = "scene.json: placements 1";
+  std::string error;
+  Opened none;
+  CHECK_FALSE(none.desc->open(schema::to_json(layer()), c, &none.state, &error));
+  CHECK(error.find("scene.json: placements 1: deposits: no derived-data root") == 0);
+  CHECK_FALSE(std::filesystem::exists(working + "/ddc"));
+  CHECK_FALSE(std::filesystem::exists(host));
+  c.ddc = host;
+  Opened opened;
+  REQUIRE_MESSAGE(opened.desc->open(schema::to_json(layer()), c, &opened.state, &error), error);
+  scene_gen::Placements whole, tile;
+  REQUIRE(opened.desc->expand(opened.state, c, whole, &error));
+  REQUIRE_FALSE(whole.instances.empty());
+  const auto first = whole.instances[0].position;  // the tile of the first patch the read lists
+  REQUIRE(opened.desc->tile(opened.state,
+                            {static_cast<i32>(std::floor(first.x / 16)),
+                             static_cast<i32>(std::floor(first.z / 16))},
+                            c, tile, &error));
+  REQUIRE_FALSE(whole.meshes.empty());
+  REQUIRE_FALSE(tile.meshes.empty());
+  for (const auto* handed : {&whole, &tile})
+    for (const auto& mesh : handed->meshes) {
+      CHECK(mesh.path.rfind(io::normalize_path(host + "/deposits/"), 0) == 0);
+      CHECK_FALSE(mesh.recipe.empty());
+      CHECK_FALSE(io::exists(mesh.path));
+    }
+  CHECK(files_under(host) == 0);
+  CHECK(files_under(working) == 1);  // its own AGENTS.md, nothing of the entry's
+  CHECK_FALSE(std::filesystem::exists(working + "/ddc"));
 }
