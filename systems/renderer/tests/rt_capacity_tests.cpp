@@ -458,8 +458,12 @@ TEST_CASE("rt capacity: removing the last untraced tile restores the frame estim
   data.sources.resize(data.parts.size());
   data.sources[0].species = "sward";
   // Both contracts (R110): with a rasterized picture an untraced pair is never built, so the
-  // estimate leaves the grass out; on the ray path its drawn entries are the picture's, so the
-  // estimate counts every pair, the tile's included while it stands.
+  // estimate leaves the grass out; on the ray path its drawn entries are the picture's. Until R152
+  // the frame built them there, so the ray path's estimate counted every pair, the tile's included
+  // while it stands. Since R152 a rigid untraced instance references the resident cache on the
+  // ray path, like any rigid instance, so where the scene has a cache the frame's own estimate
+  // leaves its pairs out on both paths and the references' estimate holds them; without a cache
+  // the ray path still counts every pair.
   for (const bool ray_path : {false, true}) {
     CAPTURE(ray_path);
     RenderSettings settings;
@@ -477,15 +481,17 @@ TEST_CASE("rt capacity: removing the last untraced tile restores the frame estim
                     error);
     CHECK(scene.flora_stats().untraced == data.instances.size() + 1);
     const u64 untraced_with_tile = u64{data.pair_count} + data.parts[0].cluster_count;
+    const bool built_here = ray_path && !scene.rt_cache();  // no cache: the frame builds them
     CHECK(scene.rt_frame_estimate() ==
-          u64{scene.pair_stride()} - (ray_path ? 0u : untraced_with_tile));
+          u64{scene.pair_stride()} - (built_here ? 0u : untraced_with_tile));
+    if (ray_path && scene.rt_cache()) CHECK(scene.rt_reference_estimate() == untraced_with_tile);
     GpuScene::TileChange removed;
     REQUIRE_MESSAGE(scene.set_dynamic_instances({}, {}, removed, nullptr, &error), error);
     CHECK(removed.layout.freed == 1);
     CHECK(removed.slots_written == 0);
     CHECK(scene.flora_stats().untraced == data.instances.size());
     CHECK(scene.rt_frame_estimate() ==
-          u64{scene.pair_stride()} - (ray_path ? 0u : u64{data.pair_count}));
+          u64{scene.pair_stride()} - (built_here ? 0u : u64{data.pair_count}));
   }
 }
 

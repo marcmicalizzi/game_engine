@@ -4974,7 +4974,11 @@ drawn entries are built ([The caster policy](#the-caster-policy)), so `PairAccou
 takes the path (`frame_pairs(ray_path)`) and subtracts only the static forms' pairs, an untraced
 static form's included (`untraced_static_pairs`: built once on either path), and
 `GpuScene::rt_frame_estimate` keeps `untraced_pairs_live_` in on that path alone.
-`FloraStats::untraced` stays the policy's count of instances, whatever the path. In v13 the fixed reservation is `6,578,247 + 347,040 = 6,925,287`; the file's
+`FloraStats::untraced` stays the policy's count of instances, whatever the path. **Since R152 a
+rigid untraced instance's pairs leave the frame's estimate on the ray path too**, where the scene
+has a cache: its entries reference the cache there ([The caster policy](#the-caster-policy)), so
+`rt_reference_estimate` holds them and `rt_frame_estimate` does not (`rt_capacity_tests.cpp`'s
+untraced tile, whose pin moved with it). In v13 the fixed reservation is `6,578,247 + 347,040 = 6,925,287`; the file's
 144,135-pair tile floor reserves 147,456, so the initial reservation is 7,072,743. No caster-run
 factor belongs in that number. The live tail in the captured clearing is 3,760,093 pairs;
 1,208,168 pairs reference static forms and the 115,629 grass instances are untraced.
