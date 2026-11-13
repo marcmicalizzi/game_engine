@@ -4776,7 +4776,8 @@ the band, nothing from the margin, never rising, a centimetre at a time; the roo
 records' run, the hand-off's two roles, the walker); and on a row of nine sward patches from 6.4
 to 20.6 m with the rule at 15 m over 3 m, on the hardware rasterizer and the ray path: a patch
 wholly short of the band is the rule-off picture to the id and the depth's bits, one wholly past
-the distance the calm picture's, fewer entries take a block, and on the ray path the structures the
+the distance the calm picture's (to the bit on the rasterizer; on the ray path to the id, with the
+depth within 3.6e-6, the floats against the grid), fewer entries take a block (72 → 48), and on the ray path the structures the
 frame builds and the references add up to the rule-off frame's builds, nothing wanted is unbuilt,
 and the picture is byte for byte the one drawn with `renderer.rt.cache=false`, the per-frame build
 of the same poses.

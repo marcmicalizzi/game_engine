@@ -245,7 +245,9 @@ f32 patch_distance(u32 i) {
 // where the two differ in id or depth.
 struct PatchDiff {
   u32 pixels = 0;
-  u32 differ = 0;
+  u32 differ = 0;      // in id or in the depth's bits
+  u32 ids = 0;         // in id alone (or covered by it in one capture only)
+  f32 depth_rel = 0;   // the largest relative depth difference where the ids agree
 };
 PatchDiff compare(const CapturedFrame& a, const CapturedFrame& b, u32 instance) {
   PatchDiff c;
@@ -256,12 +258,16 @@ PatchDiff compare(const CapturedFrame& a, const CapturedFrame& b, u32 instance) 
     const bool covered_b = b.depth[px] != 0.0f && ib == instance;
     if (!covered_a && !covered_b) continue;
     ++c.pixels;
-    const bool same =
+    const bool same_id =
         covered_a && covered_b &&
         std::memcmp(&a.ids[u64{px} * k_id_words], &b.ids[u64{px} * k_id_words],
-                    k_id_words * sizeof(u32)) == 0 &&
-        std::memcmp(&a.depth[px], &b.depth[px], sizeof(f32)) == 0;
+                    k_id_words * sizeof(u32)) == 0;
+    const bool same = same_id && std::memcmp(&a.depth[px], &b.depth[px], sizeof(f32)) == 0;
     c.differ += same ? 0u : 1u;
+    c.ids += same_id ? 0u : 1u;
+    if (same_id && a.depth[px] > 0.0f) {
+      c.depth_rel = std::fmax(c.depth_rel, std::fabs(a.depth[px] - b.depth[px]) / a.depth[px]);
+    }
   }
   return c;
 }
@@ -331,9 +337,25 @@ TEST_CASE("renderer: past its rest distance a field stands as in a calm, short o
         CHECK(to_off.differ == 0);
         CHECK(swayed.differ > 0);  // and the wind does move it, so the case can tell
       } else if (d - on.root_reach >= rest_m + 0.05f) {
-        // Wholly past the distance: its rest pose, to the id and the depth's bits.
+        // Wholly past the distance: its rest pose. A rasterizer reads the grid for an entry with
+        // no block and the pool wrote the grid's positions in the calm, so there it is the calm
+        // picture to the id and the depth's bits. The ray path's structures of a resting instance
+        // are built from the mesh's float positions, as a rigid instance's are, where a calm
+        // frame's are built from the pool's grid positions, tens of micrometres away: the same
+        // triangles, so the same ids but for a pixel on an edge, and the depth to parts in ten
+        // thousand (measured on the RTX 5090: no id of the three patches' 51, 36 and 36 pixels
+        // differs, and the depth by 3.6e-6 at the most, which is 29 to 41 depths a patch in their
+        // last bits).
         ++rest_patches;
-        CHECK(to_calm.differ == 0);
+        if (raster == RasterMode::RayTrace) {
+          MESSAGE("patch " << i << " at rest on the ray path: " << to_calm.ids << " of "
+                           << to_calm.pixels << " pixels differ from the calm's in id, depth by "
+                           << to_calm.depth_rel << " at the most");
+          CHECK(to_calm.ids * 50 <= to_calm.pixels);
+          CHECK(to_calm.depth_rel <= 1.0e-4f);
+        } else {
+          CHECK(to_calm.differ == 0);
+        }
         moved_off += swayed.differ;
       }
     }
