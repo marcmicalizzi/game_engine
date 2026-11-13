@@ -151,6 +151,12 @@ int ground_command(int argc, char** argv) {
     std::fprintf(stderr, "engine-content ground: %s\n", error.c_str());
     return k_exit_failed;
   }
+  for (const std::string& name : ground.not_carried()) {
+    std::fprintf(stderr,
+                 "engine-content ground: this build does not carry the placement generator \"%s\"; "
+                 "whatever it plans for the ground is not in these answers\n",
+                 name.c_str());
+  }
   print(ground.head());
   for (const renderer::GroundQuestion& q : questions)
     print(ground.sample(q, skirt));

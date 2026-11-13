@@ -1444,41 +1444,80 @@ void prune_form_parts(SourceMesh& form) {
 // say the seat, and before the authored entry and its forms take their instances, so a streamed
 // tree is handed on seated and the world's tiles place it where a whole read does. A ground is
 // made only when there is an instance to seat on it. Instances are independent of each other, so
-// the order does not matter and nothing here depends on the thread count.
+// the order does not matter and nothing depends on the thread count: on a pool, blocks of a fixed
+// size, each its own instances and its own counts, the counts summed in block order.
+
+struct SeatBlock {
+  std::span<SceneInstance> instances;
+  std::span<const SourceMesh> sources;
+  std::span<const SceneMeshInfo> info;
+  scene_gen::Ground ground;
+  const scene_gen::Exclusion* holes = nullptr;
+  u32 seated = 0;
+  u32 lowered = 0;
+  f64 lowered_max_m = 0.0;
+};
+
+scene_gen::MeshSeat seat_of(const SceneInstance& instance, std::span<const SourceMesh> sources,
+                            std::span<const SceneMeshInfo> info) {
+  if (!instance.grounded || instance.mesh >= sources.size()) return scene_gen::MeshSeat{};
+  if (instance.mesh < info.size() && info[instance.mesh].fit.active()) return scene_gen::MeshSeat{};
+  return scene_gen::mesh_seat(sources[instance.mesh].seat);
+}
+
+void seat_block(void* data) {
+  SeatBlock& b = *static_cast<SeatBlock*>(data);
+  for (SceneInstance& instance : b.instances) {
+    const scene_gen::MeshSeat seat = seat_of(instance, b.sources, b.info);
+    if (!seat.valid()) continue;
+    const scene_gen::SeatResult r = scene_gen::seat_on_ground(
+        b.ground, b.holes, seat, instance.transform.scale, instance.origin);
+    if (!r.seated) continue;
+    instance.slope = r.slope;
+    ++b.seated;
+    if (r.lowered_m > 0.0) {
+      ++b.lowered;
+      b.lowered_max_m = std::max(b.lowered_max_m, r.lowered_m);
+    }
+  }
+}
+
 }  // namespace
 
 void seat_scene_instances(const TerrainDesc& terrain, std::span<SceneInstance> instances,
                           std::span<const SourceMesh> sources, std::span<const SceneMeshInfo> info,
-                          SceneLoadReport& report) {
+                          SceneLoadReport& report, jobs::JobSystem* pool) {
   if (!terrain.enabled) return;
-  const auto seat_of = [&](const SceneInstance& instance) {
-    if (!instance.grounded || instance.mesh >= sources.size()) return scene_gen::MeshSeat{};
-    if (instance.mesh < info.size() && info[instance.mesh].fit.active())
-      return scene_gen::MeshSeat{};
-    return scene_gen::mesh_seat(sources[instance.mesh].seat);
-  };
   bool any = false;
   for (const SceneInstance& instance : instances)
-    any = any || seat_of(instance).valid();
+    any = any || seat_of(instance, sources, info).valid();
   if (!any) return;
   ENGINE_STARTUP_STAGE("seats");
   const i64 start = time::monotonic_ns();
   const TerrainSampler ground(terrain);
   if (!ground.ok()) return;  // the read made this ground already, and said why it could not
-  const scene_gen::Ground view = ground.provider().view();
-  const scene_gen::Exclusion* holes = terrain.exclusion.empty() ? nullptr : &terrain.exclusion;
-  for (SceneInstance& instance : instances) {
-    const scene_gen::MeshSeat seat = seat_of(instance);
-    if (!seat.valid()) continue;
-    const scene_gen::SeatResult r =
-        scene_gen::seat_on_ground(view, holes, seat, instance.transform.scale, instance.origin);
-    if (!r.seated) continue;
-    instance.slope = r.slope;
-    ++report.seated;
-    if (r.lowered_m > 0.0) {
-      ++report.lowered;
-      report.lowered_max_m = std::max(report.lowered_max_m, r.lowered_m);
-    }
+  constexpr usize k_block = 1024;
+  Vector<SeatBlock> blocks;
+  blocks.reserve(static_cast<u32>((instances.size() + k_block - 1) / k_block));
+  for (usize first = 0; first < instances.size(); first += k_block) {
+    SeatBlock b;
+    b.instances = instances.subspan(first, std::min(k_block, instances.size() - first));
+    b.sources = sources;
+    b.info = info;
+    b.ground = ground.provider().view();
+    b.holes = terrain.exclusion.empty() ? nullptr : &terrain.exclusion;
+    blocks.push_back(b);
+  }
+  if (pool != nullptr && blocks.size() > 1) {
+    run_jobs<SeatBlock>(*pool, blocks, &seat_block);
+  } else {
+    for (SeatBlock& b : blocks)
+      seat_block(&b);
+  }
+  for (const SeatBlock& b : blocks) {
+    report.seated += b.seated;
+    report.lowered += b.lowered;
+    report.lowered_max_m = std::max(report.lowered_max_m, b.lowered_max_m);
   }
   report.seat_ms = static_cast<f64>(time::monotonic_ns() - start) / 1.0e6;
   ENGINE_LOG_INFO(log_renderer, "instances seated by their footprints",
@@ -2288,17 +2327,10 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
       return false;
     }
   }
-  // The drawn ground and nothing on it (ground_sample.h). A name the executable does not carry is
-  // the expansion's to refuse, and nothing expands here: refused here, since its plan is missing.
-  if (options.ground_only) {
-    const scene_gen::GeneratorRegistry& registry = scene_gen::GeneratorRegistry::global();
-    for (const PlacementRef& entry : placements) {
-      if (registry.find_placement(entry.generator) != nullptr) continue;
-      error = entry.where + " " + registry.unknown_placement(entry.generator);
-      return false;
-    }
-    return true;
-  }
+  // The drawn ground and nothing on it (ground_sample.h). A placement entry this executable does
+  // not carry planned nothing (`plan_scene_ground` asks only the ones it has), and nothing expands
+  // here to refuse it: the caller names such entries (`SceneGround::not_carried`).
+  if (options.ground_only) return true;
   // The surface under a world position (ADR-0053): asked at its whole millimetre, which never
   // passes through a float32 metre, at the terrain's own time — the heights the sampler's float
   // `height` gives at a point a float holds to the millimetre (`GroundOps::height_mm`), and the
@@ -2626,7 +2658,8 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   // the file described it (`desc`: before a tile-drawn terrain's carrier grid is shrunk, above).
   seat_scene_instances(desc.terrain, {resolved.instances.data(), resolved.instances.size()},
                        {out.sources.data(), out.sources.size()},
-                       {resolved.mesh_info.data(), resolved.mesh_info.size()}, out.load);
+                       {resolved.mesh_info.data(), resolved.mesh_info.size()}, out.load,
+                       pool.has_value() ? &*pool : nullptr);
   // A streamed world's own instances, before the merge: their forms are meshes of their own
   // (renderer.md, "Authored instances per tile").
   {

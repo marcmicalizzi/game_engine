@@ -870,7 +870,7 @@ G201 stage 2, 2026-11-12 ([tree base on slopes](../experiments/tree-base-on-slop
 - **What it costs.** 17 ground queries a seated instance where it made one, once, off the frame's thread. Measured: [the stage's page](../experiments/tree-base-on-slopes.md#stage-2-as-built-2026-11-12-branch-b63-g201-2).
 - **Not built.** A tile's own meshes (handed with the tile, built after it) are not seated, because their seat is not known when the tile is built; the authored set does not carry an instance's slope across the hand-over, so a streamed authored tree's `slope` is zero (its height is seated). Both are stage 3's to close where it needs them.
 
-What holds it on a GPU: `tests/flora_scene_tests.cpp`'s "a tree on a tread's edge or a cutting's lip is seated with no gap", on `content/test-scenes/tree-bases/seat.json`'s ground, read from the ids and the depth.
+What holds it on a GPU: `tests/flora_scene_tests.cpp`'s "a tree on a tread's edge or a cutting's lip is seated with no gap", on `content/test-scenes/tree-bases/seat.json`'s ground, read from the ids and the depth along each edge: seated, no pixel under any trunk is the sky, another tree or the ground far behind; the same trees loaded as the base placed them (not grounded, so not seated) show such pixels on both edges, so the scene asks what the skirt alone cannot answer.
 
 ## What the load reads
 

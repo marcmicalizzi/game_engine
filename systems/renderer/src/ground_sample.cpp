@@ -1,9 +1,42 @@
+#include <core/json/json.h>
 #include <domain/scene_gen/exclusion.h>
 #include <domain/scene_gen/scene_gen.h>
 #include <domain/scene_gen/seat.h>
+#include <foundation/io/vfs.h>
 #include <systems/renderer/ground_sample.h>
 
 namespace engine::renderer {
+
+namespace {
+
+// The placement generators the file names (its `ruins` entries are the generator "ruins") that
+// this executable does not carry, in the file's order, each once.
+Vector<std::string> generators_not_carried(const std::string& scene_path) {
+  Vector<std::string> out;
+  std::string text;
+  JsonValue root;
+  if (io::read_file(scene_path, text) != io::Status::Ok || !parse_json(text, root).ok) return out;
+  const scene_gen::GeneratorRegistry& registry = scene_gen::GeneratorRegistry::global();
+  const auto note = [&](std::string_view name) {
+    if (registry.find_placement(name) != nullptr) return;
+    for (const std::string& seen : out)
+      if (seen == name) return;
+    out.push_back(std::string(name));
+  };
+  const JsonValue* ruins = root.find("ruins");
+  if (ruins != nullptr && ruins->is_array() && ruins->size() > 0) note("ruins");
+  const JsonValue* placements = root.find("placements");
+  if (placements != nullptr && placements->is_array()) {
+    for (usize i = 0; i < placements->size(); ++i) {
+      const JsonValue* generator = (*placements)[i].find("generator");
+      std::string_view name;
+      if (generator != nullptr && generator->get_string(name)) note(name);
+    }
+  }
+  return out;
+}
+
+}  // namespace
 
 SceneGround::~SceneGround() = default;
 
@@ -17,6 +50,9 @@ bool SceneGround::open(const std::string& scene_path, const std::string& ddc, bo
   SceneFileOptions options;
   options.ground_only = !placements;
   if (!read_scene_file(scene_path, options, desc_, error)) return false;
+  // Read through the plan alone, an entry this build does not carry is not refused (nothing of it
+  // expands); what it would have planned is missing, so it is named.
+  not_carried_ = placements ? Vector<std::string>{} : generators_not_carried(scene_path);
   if (!desc_.terrain.enabled) {
     error = scene_path + ": the scene names no terrain, so there is no ground to ask";
     return false;
@@ -49,6 +85,10 @@ JsonValue SceneGround::head() const {
   out.set("rim_samples", JsonValue(scene_gen::k_seat_rim_samples));
   out.set("seat_margin_m", JsonValue(static_cast<f64>(scene_gen::k_seat_margin_mm) / 1000.0));
   out.set("time_s", JsonValue(desc_.terrain.time_s));
+  JsonValue missing = JsonValue::array();
+  for (const std::string& name : not_carried_)
+    missing.push_back(JsonValue(name));
+  out.set("not_carried", std::move(missing));
   return out;
 }
 

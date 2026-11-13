@@ -429,8 +429,9 @@ TEST_CASE("flora scene: no tree on a ramp of up to 45 degrees shows a gap under 
 // is seen along the edge from 3 m, the eye 0.2 m over its foot, so a gap under its downhill rim
 // shows the ground beyond it, far behind. Read from the ids and the depth: in every column the
 // tree draws low in the frame, every pixel from its lowest down is the tree's, until the ground
-// within 0.6 m of the trunk's distance — never the sky, another tree, or ground far behind. On the
-// base (b7681ac9: the skirt, no seat) the faces' trees fail it; seated, every one passes.
+// within 0.6 m of the trunk's distance — never the sky, another tree, or ground far behind. The
+// same trees loaded as the base (b7681ac9: the skirt, no seat) placed them fail it on both edges;
+// seated, every one passes.
 TEST_CASE("flora scene: a tree on a tread's edge or a cutting's lip is seated with no gap") {
   const std::string spruce =
       test::data_path(ENGINE_SOURCE_DIR "/content/flora/spruce-tall.flora.json",
@@ -449,7 +450,7 @@ TEST_CASE("flora scene: a tree on a tread's edge or a cutting's lip is seated wi
   for (char& c : spruce_path)
     if (c == '\\') c = '/';
   // The committed scene's instances and terrain (tree-bases/seat.json), its paths this test's.
-  constexpr f64 k_edge_x[2] = {-4.6, 8.1};  // 0.1 m inside the tread's edge; 0.1 m off the lip
+  constexpr f64 k_edge_x[2] = {-4.55, 8.05};  // 5 cm inside the tread's edge; 5 cm off the lip
   std::string text = R"({"format":"engine.scene.v1","name":"tree-seats","meshes":[)"
                      R"({"name":"spruce","path":")" +
                      spruce_path + R"("}],"instances":[)";
@@ -457,7 +458,7 @@ TEST_CASE("flora scene: a tree on a tread's edge or a cutting's lip is seated wi
     for (u32 k = 0; k < 8; ++k) {
       char line[160];
       std::snprintf(line, sizeof(line),
-                    R"(%s{"mesh":0,"translation":[%.1f,0,%d],"yaw_deg":%u,"ground":true})",
+                    R"(%s{"mesh":0,"translation":[%.2f,0,%d],"yaw_deg":%u,"ground":true})",
                     row + k == 0 ? "" : ",", k_edge_x[row], -21 + 6 * static_cast<i32>(k), 45u * k);
       text += line;
     }
@@ -480,6 +481,14 @@ TEST_CASE("flora scene: a tree on a tread's edge or a cutting's lip is seated wi
                     << data.load.lowered_max_m << " m, in " << data.load.seat_ms << " ms");
   CHECK(data.load.seated == 16u);
   CHECK(data.load.lowered == 16u);
+  // The same trees placed as the base placed them (b7681ac9: the skirt, no seat): standing where
+  // the read stood them, which is what an instance not on the ground is never moved from.
+  SceneDesc base = desc;
+  for (SceneInstance& instance : base.instances)
+    instance.grounded = false;
+  SceneData base_data;
+  REQUIRE_MESSAGE(load_scene(base, base_data, error), error);
+  CHECK(base_data.load.seated == 0u);
   const u32 terrain = 16;
 
   Gpu gpu;
@@ -487,67 +496,84 @@ TEST_CASE("flora scene: a tree on a tread's edge or a cutting's lip is seated wi
     MESSAGE("skipped: " << gpu.why);
     return;
   }
-  RenderSettings settings;
-  ResolvedSettings resolved;
-  resolve_settings(settings, gpu.device.features(), &data, resolved);
-  REQUIRE(check_availability(resolved, gpu.device.features()) == RenderAvailability::Ok);
-  GpuScene scene;
-  REQUIRE_MESSAGE(scene.create(gpu.device, data, resolved, &error), error);
-  SceneRenderer renderer;
-  SceneRenderer::Desc rd;
-  rd.width = 640;
-  rd.height = 400;
-  REQUIRE_MESSAGE(renderer.create(gpu.device, scene, resolved, rd, &error), error);
-  CaptureChannels channels;
-  channels.ids = true;
-  channels.depth = true;
   const bool keep = !test::detail::environment("ENGINE_FLORA_KEEP_CAPTURE").empty();
-  constexpr f64 k_distance = 3.0;
-  constexpr f32 k_znear = 0.05f;
-  for (u32 row = 0; row < 2; ++row) {
-    u32 gap = 0;
-    u32 columns = 0;
-    for (u32 k = 0; k < 8; ++k) {
-      const u32 tree = row * 8 + k;
-      const WorldPos foot = unseated[tree].origin;
-      FrameDesc frame;
-      frame.camera.position = WorldPos{foot.x, foot.y + 0.2, foot.z - k_distance};
-      frame.camera.target = WorldPos{foot.x, foot.y + 0.2, foot.z};
-      frame.camera.znear = k_znear;
-      CapturedFrame shot;
-      REQUIRE_MESSAGE(renderer.render_offscreen(frame, &error), error);
-      REQUIRE_MESSAGE(renderer.capture(frame, channels, shot, &error), error);
-      REQUIRE(shot.ids.size() == u64{shot.width} * shot.height * k_id_words);
-      REQUIRE(shot.depth.size() == u64{shot.width} * shot.height);
-      if (keep) {
-        CaptureFiles files;
-        write_capture(tmp.path(), "tree-seats-" + std::to_string(row) + "-" + std::to_string(k),
-                      shot, files, error);
-        tmp.keep();
-      }
-      const auto pixel = [&](u32 x, u32 y) { return u64{y} * shot.width + x; };
-      for (u32 x = 0; x < shot.width; ++x) {
-        u32 lowest = shot.height;
-        for (u32 y = 0; y < shot.height; ++y)
-          if (shot.ids[pixel(x, y) * k_id_words] == tree) lowest = y;
-        if (lowest == shot.height || lowest < shot.height * 2 / 5) continue;  // a branch's column
-        ++columns;
-        for (u32 y = lowest + 1; y < shot.height; ++y) {
-          const u32 id = shot.ids[pixel(x, y) * k_id_words];
-          const f32 depth = shot.depth[pixel(x, y)];
-          if (id == tree) continue;
-          // The ground at the foot: the trunk's distance and its rim's.
-          if (id == terrain && depth > 0.0f &&
-              static_cast<f64>(k_znear / depth) <= k_distance + 0.6)
-            break;
-          ++gap;  // the sky, another tree, or the ground far behind, seen under the trunk
+  // Per row, the gap pixels under the trunks of its eight trees and the columns of trunk read.
+  struct Count {
+    u32 gap[2] = {0, 0};
+    u32 columns[2] = {0, 0};
+  };
+  const auto count = [&](const SceneData& loaded, const char* label) {
+    Count out;
+    RenderSettings settings;
+    ResolvedSettings resolved;
+    resolve_settings(settings, gpu.device.features(), &loaded, resolved);
+    REQUIRE(check_availability(resolved, gpu.device.features()) == RenderAvailability::Ok);
+    GpuScene scene;
+    REQUIRE_MESSAGE(scene.create(gpu.device, loaded, resolved, &error), error);
+    SceneRenderer renderer;
+    SceneRenderer::Desc rd;
+    rd.width = 640;
+    rd.height = 400;
+    REQUIRE_MESSAGE(renderer.create(gpu.device, scene, resolved, rd, &error), error);
+    CaptureChannels channels;
+    channels.ids = true;
+    channels.depth = true;
+    constexpr f64 k_distance = 3.0;
+    constexpr f32 k_znear = 0.05f;
+    for (u32 row = 0; row < 2; ++row) {
+      for (u32 k = 0; k < 8; ++k) {
+        const u32 tree = row * 8 + k;
+        const WorldPos foot = unseated[tree].origin;
+        FrameDesc frame;
+        frame.camera.position = WorldPos{foot.x, foot.y + 0.2, foot.z - k_distance};
+        frame.camera.target = WorldPos{foot.x, foot.y + 0.2, foot.z};
+        frame.camera.znear = k_znear;
+        CapturedFrame shot;
+        REQUIRE_MESSAGE(renderer.render_offscreen(frame, &error), error);
+        REQUIRE_MESSAGE(renderer.capture(frame, channels, shot, &error), error);
+        REQUIRE(shot.ids.size() == u64{shot.width} * shot.height * k_id_words);
+        REQUIRE(shot.depth.size() == u64{shot.width} * shot.height);
+        if (keep) {
+          CaptureFiles files;
+          write_capture(tmp.path(),
+                        std::string("tree-seats-") + label + "-" + std::to_string(row) + "-" +
+                            std::to_string(k),
+                        shot, files, error);
+          tmp.keep();
+        }
+        const auto pixel = [&](u32 x, u32 y) { return u64{y} * shot.width + x; };
+        for (u32 x = 0; x < shot.width; ++x) {
+          u32 lowest = shot.height;
+          for (u32 y = 0; y < shot.height; ++y)
+            if (shot.ids[pixel(x, y) * k_id_words] == tree) lowest = y;
+          if (lowest == shot.height || lowest < shot.height * 2 / 5) continue;  // a branch's column
+          ++out.columns[row];
+          for (u32 y = lowest + 1; y < shot.height; ++y) {
+            const u32 id = shot.ids[pixel(x, y) * k_id_words];
+            const f32 depth = shot.depth[pixel(x, y)];
+            if (id == tree) continue;
+            // The ground at the foot: the trunk's distance and its rim's.
+            if (id == terrain && depth > 0.0f &&
+                static_cast<f64>(k_znear / depth) <= k_distance + 0.6)
+              break;
+            ++out.gap[row];  // the sky, another tree, or the ground far behind, under the trunk
+          }
         }
       }
     }
+    return out;
+  };
+  const Count seated = count(data, "seated");
+  const Count before = count(base_data, "base");
+  for (u32 row = 0; row < 2; ++row) {
     MESSAGE((row == 0 ? "the tread's edge: " : "the cutting's lip: ")
-            << gap << " gap pixels under " << columns << " columns of trunk, eight yaws");
-    CHECK(columns > 0);
-    CHECK(gap == 0);
+            << seated.gap[row] << " gap pixels under " << seated.columns[row]
+            << " columns of trunk at eight yaws, seated; " << before.gap[row] << " under "
+            << before.columns[row] << " placed as the base placed them");
+    CHECK(seated.columns[row] > 0);
+    CHECK(seated.gap[row] == 0);
+    // The scene asks what the skirt alone cannot answer: as the base stood them, there are gaps.
+    CHECK(before.gap[row] > 0);
   }
 }
 

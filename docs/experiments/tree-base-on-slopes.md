@@ -485,7 +485,7 @@ the tree-bases ramps are slabs 2 m thick). What differs from the design above:
   not; `k_deadwood_version` moved for the standing remains' skirt.
 
 What decides it, on `content/test-scenes/tree-bases/seat.json` (a tread raised 1.2 m with fill faces
-at 3 in 1, a cutting 1.5 m deep with banks at 4 in 1, the tall spruce at eight yaws 0.1 m from each
+at 3 in 1, a cutting 1.5 m deep with banks at 4 in 1, the tall spruce at eight yaws 5 cm from each
 edge): the GPU case reads the ids and the depth along each edge. Measured numbers are below.
 
 ### What the build needs from other rows

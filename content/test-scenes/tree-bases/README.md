@@ -17,8 +17,8 @@ scene has no terrain and no sky: the renderer's stand-in sun.
 
 **[`seat.json`](seat.json): trees seated by their footprints** (G201 stage 2;
 [renderer](../../../docs/subsystems/renderer.md#a-tree-seated-by-its-footprint)). The same spruce
-at eight yaws 0.1 m inside the edge of a tread raised 1.2 m over flat ground (a `Bench` edit, its fill
-faces at 3 in 1) and eight 0.1 m off the lip of a cutting 1.5 m deep (a `Cut` edit, its banks at 4 in
+at eight yaws 5 cm inside the edge of a tread raised 1.2 m over flat ground (a `Bench` edit, its fill
+faces at 3 in 1) and eight 5 cm off the lip of a cutting 1.5 m deep (a `Cut` edit, its banks at 4 in
 1), every one `ground: true` with its rim over a face steeper than its skirt reaches; the load lowers
 each until its skirt is under the face's foot. The ground is a `tiles` heightfield, flat, 257 points
 at 0.25 m, which is binary and **never committed**: write it first. [`seat-views.json`](seat-views.json)

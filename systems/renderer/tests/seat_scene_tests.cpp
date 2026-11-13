@@ -277,11 +277,20 @@ TEST_CASE("seat: the drawn ground can be asked, as the load stands on it") {
   f64 drop = 0.0;
   REQUIRE(disc->find("drop_m")->get_f64(drop));
   CHECK(drop > 0.9);
-  // A scene that names a generator this executable does not carry is refused, plan or none.
+  CHECK(ground.not_carried().empty());
+  // A generator this executable does not carry: the ground is still asked, through the plan alone,
+  // and the head names it, since whatever it would have planned is missing. Read whole, refused.
   REQUIRE(write_text(path, R"({"format":"engine.scene.v1","name":"x","placements":[)"
                            R"({"generator":"no-such-generator","params":{}}],)"
                            R"("terrain":{"size":17,"extent":20,"provider":"seat-test-bank"}})"));
-  SceneGround refused;
-  CHECK_FALSE(refused.open(path, std::string(), false, false, error));
+  SceneGround partial;
+  REQUIRE_MESSAGE(partial.open(path, std::string(), false, false, error), error);
+  REQUIRE(partial.not_carried().size() == 1u);
+  CHECK(partial.not_carried()[0] == "no-such-generator");
+  const JsonValue* missing = partial.head().find("not_carried");
+  REQUIRE(missing != nullptr);
+  CHECK(missing->size() == 1u);
+  SceneGround whole;
+  CHECK_FALSE(whole.open(path, std::string(), false, true, error));
   CHECK(error.find("no-such-generator") != std::string::npos);
 }

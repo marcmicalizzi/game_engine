@@ -36,6 +36,10 @@
 #include <string>
 #include <string_view>
 
+namespace engine::jobs {
+class JobSystem;
+}
+
 namespace engine::renderer {
 
 // The optional `"animation"` block of a scene file's instance, **carried and never interpreted**.
@@ -124,10 +128,11 @@ struct SceneLoadReport;
 // drawn ground, with every planned edit — its holes left out; its `slope` is set. What `load_scene`
 // does after the meshes load and before the authored entry takes its instances, and what the
 // world's placements do a tile at a time; counted into `report`. A ground is made only when there
-// is an instance to seat. `sources` and `info` are by mesh (`info` may be empty).
+// is an instance to seat. `sources` and `info` are by mesh (`info` may be empty). On `pool`,
+// blocks of instances in parallel, each block its own: the same instances on any thread count.
 void seat_scene_instances(const TerrainDesc& terrain, std::span<SceneInstance> instances,
                           std::span<const SourceMesh> sources, std::span<const SceneMeshInfo> info,
-                          SceneLoadReport& report);
+                          SceneLoadReport& report, jobs::JobSystem* pool = nullptr);
 
 // Where one instance's bone matrices are in the frame's one contiguous span. Parallel to the
 // scene's instances, and the whole of the renderer's side of the animation contract: the caller
