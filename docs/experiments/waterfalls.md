@@ -259,6 +259,16 @@ layout and the reader. What the build decided against this page's design, and wh
   heights in the ribbon); a plunge pool's depth (the plan's water at the foot is `stage` of the
   thalweg, so `tail_depth` is that, not a pool's); air drag on the sheet (a hundredth of g while it
   is whole, above).
+- **A ladder of small risers counts by its flights.** The test is on a flight, not on a riser: on
+  twenty level treads of half a metre with water half a critical depth deep over each, every riser
+  is left, and a flight's drop is its riser less the water on the tread below. At 0.04 m²/s (d_c
+  5.5 cm) risers of 0.1 m make no fall and risers of 0.2 m make nineteen; at 0.3 m²/s (d_c 21 cm)
+  risers up to 0.3 m make none, and risers of 0.6 m (2.9 d_c each) make nine, because the jet off
+  each clears the next tread and drops two risers at once (`falls_tests.cpp`, "a ladder of
+  half-metre treads"). So a bed cut as a staircase of risers taller than three critical depths of its
+  stream would read as a ladder of falls. The cook reads the plan's bed (`ChannelLink::bed`, a
+  polyline), not the tile set's drawn cut: a staircase that the drawn section's round ends make on a
+  falling line is not in what it reads; one the plan's own bed has would be.
 - **Nothing is pinned from a frame.** The shots' measurements above were made on the first cut of
   the sheets, before they were re-cut by source frame on 2026-11-12; none of them enters stages 0
   and 1 (the break-up length's K is fitted to Horeni's number, not to a frame; the veil's widening

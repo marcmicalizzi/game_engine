@@ -240,6 +240,49 @@ Counted count_steps(const ChannelNetwork& n, const FallSet& set, u32 link) {
 }
 }  // namespace
 
+// **A ladder of small risers** (the coordinator's question of the night: a cut bed read as a
+// staircase, a riser at every half metre of line): 20 treads of 0.5 m, level, each ending in a
+// vertical riser of h, the water `stage`-deep over each tread. Printed for risers of 0.1, 0.2, 0.3
+// and 0.6 m at 0.04 and 0.3 m^2/s (critical depths 5.5 and 20.9 cm). The test counts flights, not
+// risers: a riser is a fall when the flight off it drops three critical depths, and a jet that
+// clears a tread drops two risers in one flight.
+TEST_CASE("falls: a ladder of half-metre treads makes a fall only where one flight drops 3 d_c") {
+  for (const f64 q : {.04, .3}) {
+    const f64 dc = critical_depth(q);
+    for (const f64 h : {.1, .2, .3, .6}) {
+      FallProfile p;
+      f64 y = 20;
+      for (u32 i = 0; i < 20; ++i) {
+        p.s.push_back(.5 * i);
+        p.bed.push_back(y);
+        p.water.push_back(.5 * dc);
+        p.s.push_back(.5 * i + .499);
+        p.bed.push_back(y);
+        p.water.push_back(.5 * dc);
+        y -= h;
+      }
+      FallMarch march;
+      REQUIRE(march_column(p, q, q / (1.5 * dc), .04, 0, p.s.size() - 1, 0.0, march));
+      u32 falls = 0;
+      f64 most = 0;
+      for (const FallFlight& f : march.flights) {
+        most = std::max(most, f.drop());
+        falls += f.drop() >= k_fall_min_drop_depths * dc && dc >= k_fall_min_critical_m ? 1 : 0;
+      }
+      MESSAGE("q " << q << " (d_c " << dc << "), risers " << h << " m (" << h / dc
+                   << " d_c): " << march.flights.size() << " flights, the highest " << most
+                   << " m, " << falls << " falls");
+      // Every riser is left (19 flights); a flight drops its riser less the water standing on the
+      // tread below, so a riser counts when that is three critical depths; and at 0.3 m^2/s the
+      // jet off a 0.6 m riser (2.9 d_c) clears the next tread and drops two risers at once, a fall
+      // every other riser.
+      const u32 expected = q < .1 ? (h >= .2 ? 19u : 0u) : (h >= .6 ? 9u : 0u);
+      CHECK(falls == expected);
+      CHECK(march.flights.size() >= (h >= .6 && q > .1 ? 10u : 19u));
+    }
+  }
+}
+
 namespace {
 // One planned scene of the cliffs and what the cook made of it: the trunk's falls by cliff, the
 // stats, and at each cliff (within 3 m of it) the largest seat W116 gave a point and the deepest
@@ -295,9 +338,14 @@ struct StepCase {
   bool move;
 };
 // Down the fall line with the move on and off, and across W116's hillside at 20 and 30 degrees.
-constexpr StepCase k_step_cases[] = {
-    {0, 1, true},   {0, 2, true},   {0, 1, false}, {0, 2, false}, {.36397023426620234, 1, true},
-    {.36397023426620234, 2, true}, {.57735026918962573, 1, true}, {.57735026918962573, 2, true}};
+constexpr StepCase k_step_cases[] = {{0, 1, true},
+                                     {0, 2, true},
+                                     {0, 1, false},
+                                     {0, 2, false},
+                                     {.36397023426620234, 1, true},
+                                     {.36397023426620234, 2, true},
+                                     {.57735026918962573, 1, true},
+                                     {.57735026918962573, 2, true}};
 }  // namespace
 
 // **The count** (stage 0) on a scene of cliffs of known heights, down a fall line (the move on and
