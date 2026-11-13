@@ -192,12 +192,16 @@ bool write_heightfield(const std::string& json_path, const Heightfield& field, s
   return true;
 }
 
-bool read_heightfield(const std::string& json_path, Heightfield& out, u64& source_hash,
-                      std::string& error) {
+namespace {
+
+// A heightfield's header alone, checked for its format, and `hash_bytes` over its bytes as read:
+// the source hash a build's key starts from. The header records its grid's hash (`data_hash`), so
+// this hash names the grid's bytes too without reading them (T126).
+bool read_heightfield_header(const std::string& json_path, HeightfieldHeader& header,
+                             u64& source_hash, std::string& error) {
   std::string bytes;
   JsonValue json;
   if (!read_json_file(json_path, bytes, json, error)) return false;
-  HeightfieldHeader header;
   schema::ReadContext ctx;
   if (!schema::from_json(header, json, ctx) || !ctx.ok()) {
     error = "'" + json_path + "' is not a heightfield header: " + diagnostics(ctx);
@@ -209,6 +213,17 @@ bool read_heightfield(const std::string& json_path, Heightfield& out, u64& sourc
             std::string(k_heightfield_format) + " version 1";
     return false;
   }
+  source_hash = hash_bytes(bytes.data(), bytes.size());
+  return true;
+}
+
+}  // namespace
+
+bool read_heightfield(const std::string& json_path, Heightfield& out, u64& source_hash,
+                      std::string& error) {
+  HeightfieldHeader header;
+  u64 header_hash = 0;
+  if (!read_heightfield_header(json_path, header, header_hash, error)) return false;
   out = Heightfield{};
   out.width = header.width;
   out.height = header.height;
@@ -249,7 +264,7 @@ bool read_heightfield(const std::string& json_path, Heightfield& out, u64& sourc
     error = "'" + json_path + "': " + error;
     return false;
   }
-  source_hash = hash_bytes(bytes.data(), bytes.size());
+  source_hash = header_hash;
   return true;
 }
 
@@ -645,9 +660,13 @@ bool build_tileset(const Heightfield& field, u64 source_hash, std::string_view s
 bool ensure_tileset(const std::string& heightfield_json, const BuildOptions& options,
                     const std::string& dir, const std::string& ddc, bool force, BuildResult& out,
                     std::string& error) {
-  Heightfield field;
+  // **A hit reads the header alone** (T126; tileset.md, "The archive"): the key is the
+  // header's bytes and the options, and the header carries its grid's hash, so the grid — the
+  // forest's 5.29 GB, read, hashed and copied every time a sampler was made — is read only by a
+  // build, which checks it against that hash before it writes a tile.
+  HeightfieldHeader header;
   u64 source_hash = 0;
-  if (!read_heightfield(heightfield_json, field, source_hash, error)) return false;
+  if (!read_heightfield_header(heightfield_json, header, source_hash, error)) return false;
   const u64 key = tileset_key(source_hash, options);
   std::string target = dir;
   if (target.empty()) {
@@ -682,6 +701,14 @@ bool ensure_tileset(const std::string& heightfield_json, const BuildOptions& opt
       (void)parse_hex16(manifest.hash, out.hash);
       return true;
     }
+  }
+  Heightfield field;
+  u64 read_hash = 0;
+  if (!read_heightfield(heightfield_json, field, read_hash, error)) return false;
+  // The header changed between the two reads: the key above is not this source's.
+  if (read_hash != source_hash) {
+    error = "'" + heightfield_json + "' changed while it was read";
+    return false;
   }
   return build_tileset(field, source_hash, heightfield_json, options, target, out, error);
 }
