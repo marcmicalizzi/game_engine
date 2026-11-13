@@ -136,7 +136,8 @@ TEST_CASE("water: a scene's block is one mesh and one instance a body, before th
 // The host's derived-data root (`--ddc`, `SceneDesc::ddc` set before the file is read, which the
 // reader hands the generator as `Context::ddc`): the pool's mesh is written under `<root>/water/`
 // and nothing beside the scene, so a game repository's root is honoured wherever its scenes are.
-// With none named, the old rule: a scene outside any checkout keeps `water/` beside it.
+// With none named, the scene's own root by the one rule (T119; scene_gen.md, "The derived-data
+// root"): outside any checkout, `<scene dir>/ddc/water/`, and nothing at `<scene dir>/water/`.
 TEST_CASE("water: the meshes go under the host's derived-data root, else beside the scene") {
   const test::TempDir tmp("water_scene_ddc");
   const std::string path = tmp.file("scene.json");

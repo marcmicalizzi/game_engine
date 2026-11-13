@@ -569,9 +569,9 @@ bool load_session(protocol::Context& ctx, RenderHost& host,
     }
   }
   auto described = std::make_unique<doc_scene::DocumentScene>();
-  // The ground's set under the host's root, the load's own (T104, T119): `render.load`'s `ddc`,
-  // else the repository's found from the executable, as the load's mesh cache finds it.
-  const std::string root = scene_gen::host_derived_root(params.ddc, {}, false);
+  // The ground's set under the host's root (T104, T119): `render.load`'s `ddc`, else the
+  // document's own — the repository's `ddc/` above the session's directory, else its own `ddc/`.
+  const std::string root = scene_gen::document_derived_root(params.ddc, session->dir());
   if (!doc_scene::read_document_scene(document, session->dir(), root, *described, message)) {
     error = protocol::make_error(protocol::codes::k_document_error, std::move(message));
     return false;

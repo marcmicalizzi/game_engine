@@ -15,9 +15,9 @@ bool Viewport::build(const gfx::Device& device, const doc::Document& document,
   device_ = &device;
   options_ = options;
   base_dir_ = base_dir;
-  // The ground's set under the editor's root (T104, T119): `--ddc`, else the repository's found
-  // from the executable, as the load's mesh cache finds it.
-  root_ = scene_gen::host_derived_root(options_.ddc, {}, false);
+  // The ground's set under the editor's root (T104, T119): `--ddc`, else the document's own — the
+  // repository's `ddc/` above its directory, else its own `ddc/`.
+  root_ = scene_gen::document_derived_root(options_.ddc, base_dir);
   if (!doc_scene::read_document_scene(document, base_dir, root_, scene_, error)) return false;
   return load(error);
 }

@@ -58,13 +58,41 @@ TEST_CASE("a host's derived-data root: the named one, the scene's own, the execu
   CHECK(host_derived_root({}, scenes, true) == io::normalize_path(checkout + "/ddc"));
   CHECK(host_derived_root({}, world, true) == io::normalize_path(world + "/ddc"));
   CHECK(scene_derived_root(world) == io::normalize_path(world + "/ddc"));
-  // No scene file (a document, a description in memory): the executable's repository, which is
-  // where the test executable was built, not the working directory.
+  // No scene file (a description in memory): the executable's repository, which is where the test
+  // executable was built, not the working directory.
   const std::string executable = geometry::find_ddc_root(platform::executable_directory());
   CHECK(host_derived_root({}, {}, false) == executable);
   CHECK(host_derived_root({}, {}, false) != io::normalize_path(working + "/ddc"));
   // A scene named by a path relative to the working directory is the scene's own still.
   CHECK(host_derived_root({}, "", true) == io::normalize_path(working + "/ddc"));
+}
+
+// **A document's host** (T104, T119; doc_scene.md, "The ground's root"): never without a root
+// while the document has a directory — the named one; else the repository's above the document;
+// else the document's own `ddc/`; only a document with no directory looks from the executable.
+// Before 2026-11-12's night a document's host with no `--ddc` always looked from the executable,
+// and an SDK's host outside any checkout found nothing there.
+TEST_CASE("a document's derived-data root: named, its repository's, its own, the executable's") {
+  engine::test::TempDir tmp("scene_gen_document_roots");
+  REQUIRE(tmp.ok());
+  const std::string alone = tmp.file("alone/doc");  // a document outside any repository
+  const std::string game = tmp.file("game");        // a game repository: it holds AGENTS.md
+  const std::string inside = game + "/worlds/doc";  // a document inside it
+  const std::string working = tmp.file("working");  // where the host was started
+  std::filesystem::create_directories(alone);
+  std::filesystem::create_directories(inside);
+  std::filesystem::create_directories(working);
+  REQUIRE(io::write_file_atomic(game + "/AGENTS.md", "x") == io::Status::Ok);
+  REQUIRE(io::write_file_atomic(working + "/AGENTS.md", "x") == io::Status::Ok);
+  const WorkingDirectory in(working);
+
+  CHECK(document_derived_root("host/ddc", inside) == "host/ddc");
+  CHECK(document_derived_root({}, inside) == io::normalize_path(game + "/ddc"));
+  CHECK(document_derived_root({}, alone) == io::normalize_path(alone + "/ddc"));
+  const std::string executable = geometry::find_ddc_root(platform::executable_directory());
+  CHECK(document_derived_root({}, {}) == executable);
+  // Never the working directory's repository, whichever branch answers.
+  CHECK(document_derived_root({}, alone) != io::normalize_path(working + "/ddc"));
 }
 
 TEST_CASE("a generator handed no root refuses by name and writes nothing") {

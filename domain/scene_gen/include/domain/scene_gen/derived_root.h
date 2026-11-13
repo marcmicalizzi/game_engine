@@ -36,6 +36,15 @@ std::string scene_derived_root(std::string_view scene_dir);
 // no repository above the executable; a generator handed that refuses (`generator_derived_dir`).
 std::string host_derived_root(std::string_view named, std::string_view scene_dir, bool scene_file);
 
+// **The same rule for a document's host** (engine-host's `render.load {"session"}`, engine-editor's
+// viewport; T104, T119): the named root; else, for a document with a directory, the document's own
+// — the repository's `ddc/` above the document's directory, else `<document dir>/ddc` — so a host
+// started from an SDK outside any checkout keeps the ground's set beside the document it edits
+// instead of having no root; only a document with no directory (one built in memory) looks from
+// the executable. The document store reads only its layers' own directories, so a `ddc/` in the
+// document's directory is not read as one.
+std::string document_derived_root(std::string_view named, std::string_view document_dir);
+
 // What a generator calls for the directory it keeps its files in: `<Context::ddc>/<sub>`, absolute
 // and made. False with a sentence that names the generator and the entry when the context has no
 // root (a host that did not follow the rule), or when the directory cannot be made.

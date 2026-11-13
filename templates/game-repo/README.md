@@ -25,6 +25,12 @@ deliberately and by itself.
 ./package.ps1 [-Scene <scene.json>] # the zip a tester double-clicks and sends report.json back from
 ```
 
+**Derived data stays in this repository.** `./run.ps1` hands the SDK's engine-view `--ddc ddc/`
+here (`.gitignore` keeps it out), and a package's `run.cmd` names a `ddc/` inside its own folder,
+because a host run from the SDK is outside any checkout and with no root named would write a
+`ddc/` beside each scene it reads. A host you start by hand names one too: `--ddc <this repo>/ddc`
+(the engine's `docs/game-authoring.md`, "Where a game's derived data goes").
+
 The loop: `./run.ps1` opens a window on the desert with the game loaded; edit `src/`, run
 `./build.ps1` in another shell, and the running session swaps the new build in on the next frame
 with the state carried (a field added to `src/@@NAME@@.schema` starts at its default). W A S D

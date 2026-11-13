@@ -39,6 +39,10 @@ std::string host_derived_root(std::string_view named, std::string_view scene_dir
   return geometry::find_ddc_root(platform::executable_directory());
 }
 
+std::string document_derived_root(std::string_view named, std::string_view document_dir) {
+  return host_derived_root(named, document_dir, !document_dir.empty());
+}
+
 bool derived_dir_under(std::string_view root, std::string_view generator, std::string_view sub,
                        std::string& out, std::string& error) {
   out.clear();
