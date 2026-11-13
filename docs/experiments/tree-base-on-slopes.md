@@ -486,7 +486,11 @@ the tree-bases ramps are slabs 2 m thick). What differs from the design above:
 
 What decides it, on `content/test-scenes/tree-bases/seat.json` (a tread raised 1.2 m with fill faces
 at 3 in 1, a cutting 1.5 m deep with banks at 4 in 1, the tall spruce at eight yaws 5 cm from each
-edge): the GPU case reads the ids and the depth along each edge. Measured numbers are below.
+edge): the GPU case reads the ids and the depth along each edge. On the RTX 5090 (2026-11-13), seated:
+0 gap pixels under 948 columns of trunk on the tread's edge and 0 under 913 on the cutting's lip, at
+eight yaws; the same trees placed as the base placed them (the skirt, no seat): 2,527 under 1,014
+and 7,970 under 1,009. Stage 1's ramps, now slabs: 0 on every ramp to 45 degrees. Measured numbers
+are below.
 
 **What it costs** (2026-11-12, the shared desktop at 74 to 86 % CPU beside other agents' builds,
 so upper bounds):

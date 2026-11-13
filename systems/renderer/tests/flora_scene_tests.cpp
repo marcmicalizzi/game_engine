@@ -590,7 +590,7 @@ TEST_CASE("flora scene: a tree on a tread's edge or a cutting's lip is seated wi
   const Count seated = count(data, "seated");
   const Count before = count(base_data, "base");
   for (u32 row = 0; row < 2; ++row) {
-    MESSAGE((row == 0 ? "the tread's edge: " : "the cutting's lip: ")
+    MESSAGE(std::string(row == 0 ? "the tread's edge: " : "the cutting's lip: ")
             << seated.gap[row] << " gap pixels under " << seated.columns[row]
             << " columns of trunk at eight yaws, seated; " << before.gap[row] << " under "
             << before.columns[row] << " placed as the base placed them");
