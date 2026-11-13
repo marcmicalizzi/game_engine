@@ -486,6 +486,13 @@ struct Field {
   double slope = 0.0;  // the foreshore slope of the place's stretch of shore (S102); 0: none
   double depth_grad[2] = {0.0, 0.0};
   double arrival_grad[2] = {0.0, 0.0};
+  // S102's second pass (water_flux.h): the second train's arrival and its gradient, the share of
+  // the unrefracted height that reaches the place, the share of that breaking left, the setup.
+  double arrival2 = 0.0;
+  double arrival2_grad[2] = {0.0, 0.0};
+  double incident = 1.0;
+  double kept = 1.0;
+  double setup = 0.0;
 };
 
 inline Field field_at(const gfx::WaterSurface& s, const float* field, double x, double z) {
@@ -513,19 +520,20 @@ inline Field field_at(const gfx::WaterSurface& s, const float* field, double x, 
                         0.5 * (0.5 + fz) * (0.5 + fz)};
   const double dwx[3] = {fx - 0.5, -2.0 * fx, fx + 0.5};
   const double dwz[3] = {fz - 0.5, -2.0 * fz, fz + 0.5};
-  double v[4] = {0.0, 0.0, 0.0, 0.0};
-  double dx[2] = {0.0, 0.0};
-  double dz[2] = {0.0, 0.0};
+  double v[8] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  double dx[3] = {0.0, 0.0, 0.0};  // of the depth, the arrival and the second train's arrival
+  double dz[3] = {0.0, 0.0, 0.0};
   for (i64 j = 0; j < 3; ++j) {
     const u32 row = static_cast<u32>(std::clamp(iz + j - 1, i64{0}, hi)) * n;
     for (i64 i = 0; i < 3; ++i) {
       const u32 at = row + static_cast<u32>(std::clamp(ix + i - 1, i64{0}, hi));
-      for (u32 c = 0; c < 4; ++c) {
+      for (u32 c = 0; c < gfx::k_water_field_channels; ++c) {
         const double texel = static_cast<double>(field[gfx::k_water_field_channels * at + c]);
         v[c] += texel * wx[i] * wz[j];
-        if (c < 2) {
-          dx[c] += texel * dwx[i] * wz[j];
-          dz[c] += texel * wx[i] * dwz[j];
+        if (c < 2 || c == 4) {
+          const u32 g = c < 2 ? c : 2u;
+          dx[g] += texel * dwx[i] * wz[j];
+          dz[g] += texel * wx[i] * dwz[j];
         }
       }
     }
@@ -540,13 +548,20 @@ inline Field field_at(const gfx::WaterSurface& s, const float* field, double x, 
   f.depth_grad[1] = dz[0] * inside_z;
   f.arrival_grad[0] = dx[1] * inside_x;
   f.arrival_grad[1] = dz[1] * inside_z;
+  f.arrival2 = v[4];
+  f.arrival2_grad[0] = dx[2] * inside_x;
+  f.arrival2_grad[1] = dz[2] * inside_z;
+  f.incident = v[5] > 0.0 ? v[5] : 1.0;
+  f.kept = v[6] > 0.0 ? v[6] : 1.0;
+  f.setup = v[7];
   return f;
 }
 
-inline double train_shape(double h0, double k0, double d, double theta) {
+// `share` (S102's second pass): the train's share of the breaking height beside a second train.
+inline double train_shape(double h0, double k0, double d, double theta, double share = 1.0) {
   if (!(d > 0.0) || !(h0 > 0.0)) return 0.0;
   const double shoaled = h0 * gfx::water_shoaling(gfx::water_wavenumber(k0, d), d);
-  const double limit = gfx::k_water_breaking_gamma * d;
+  const double limit = gfx::k_water_breaking_gamma * d * share;
   const double height = std::min(shoaled, limit);
   const double b = std::clamp(shoaled / limit, 0.0, 1.0);
   const double m = 1.0 + 2.0 * b;
@@ -568,11 +583,20 @@ inline double shelter(const Field& f) { return std::sqrt(std::clamp(f.grown, 0.0
 inline double place_slope(const gfx::WaterSurface& s, const Field& f) {
   return f.slope > 0.0 ? f.slope : static_cast<double>(s.slope);
 }
-inline double place_run_up(const gfx::WaterSurface& s, const Field& f) {
+// Since the second pass: the reach is taken with the height that reaches the stretch (`incident`),
+// and the swash stands on its shore's setup (`water_place_level`), the run-up what it climbs over
+// that.
+inline double place_reach(const gfx::WaterSurface& s, const Field& f) {
   if (!(s.reach_scale > 0.0f) || !(f.slope > 0.0)) return static_cast<double>(s.run_up_m);
-  return std::min(static_cast<double>(s.reach_scale) *
+  return std::min(static_cast<double>(s.reach_scale) * std::sqrt(f.incident) *
                       (0.35 * f.slope + 0.5 * std::sqrt(0.563 * f.slope * f.slope + 0.004)),
                   static_cast<double>(s.reach_cap));
+}
+inline double place_level(const gfx::WaterSurface& s, const Field& f) {
+  return std::clamp(f.setup, 0.0, 0.5 * place_reach(s, f));
+}
+inline double place_run_up(const gfx::WaterSurface& s, const Field& f) {
+  return place_reach(s, f) - place_level(s, f);
 }
 
 inline double offshore_weight(const gfx::WaterSurface& s, double d) {
@@ -591,6 +615,12 @@ inline double height(const gfx::WaterSurface& s, const Field& f, double x, doubl
                      double mesh_far = 0.0, double mesh_ring = 0.0) {
   const double d = f.depth;
   const double w_off = s.k0 > 0.0f && s.height_m > 0.0f ? offshore_weight(s, d) : 1.0;
+  // What the energy flux left of the height here, and the first train's share of the breaking
+  // height beside a second (S102's second pass).
+  const double flux = f.incident * f.kept;
+  const double first_m = static_cast<double>(s.train_m > 0.0f ? s.train_m : s.height_m);
+  const double share =
+      s.cross_m > 0.0f ? first_m / (first_m + static_cast<double>(s.cross_m)) : 1.0;
   double off = 0.0;
   if ((s.flags & gfx::k_water_surface_spectrum) != 0) {
     const double young = std::pow(std::max(f.grown, 1e-4), -4.0 / 3.0) - 1.0;
@@ -638,10 +668,32 @@ inline double height(const gfx::WaterSurface& s, const Field& f, double x, doubl
       if (held > 0.0) keep = brdf_ref::clamp01(k_two_pi / local_k / (2.0 * held) - 1.0);
     }
     train = keep * env * shelter(f) *
-            train_shape(static_cast<double>(s.height_m), static_cast<double>(s.k0), d,
-                        k_two_pi * frac(c));
+            train_shape(first_m * flux, static_cast<double>(s.k0), d, k_two_pi * frac(c), share);
   }
-  return w_off * off + w_train * train;
+  // The second train (S102's second pass): its own arrival's phase, its share of the limit, where
+  // the table gives way to the shallows.
+  double cross = 0.0;
+  const double w_cross = 1.0 - w_off;
+  if (w_cross > 0.0 && d > 0.0 && s.cross_m > 0.0f && s.cross_period_s > 0.0f) {
+    const double period = static_cast<double>(s.cross_period_s);
+    const double c2 = frac(frac(t / period) - frac(f.arrival2 / period));
+    double keep = 1.0;
+    if (mesh_far > 0.0) {
+      const double lp = std::hypot(x, z);
+      const double lc = std::hypot(f.arrival2_grad[0], f.arrival2_grad[1]);
+      double along_ray = 1.0;
+      if (lp > 1e-3 && lc > 1e-9 * period)
+        along_ray = std::fabs(x * f.arrival2_grad[0] + z * f.arrival2_grad[1]) / (lp * lc);
+      const double held = std::max(
+          mesh_ring * along_ray, mesh_far * std::sqrt(std::max(1.0 - along_ray * along_ray, 0.0)));
+      const double local_k = gfx::water_wavenumber(static_cast<double>(s.cross_k0), d);
+      if (held > 0.0) keep = brdf_ref::clamp01(k_two_pi / local_k / (2.0 * held) - 1.0);
+    }
+    cross = keep * shelter(f) *
+            train_shape(static_cast<double>(s.cross_m) * flux, static_cast<double>(s.cross_k0), d,
+                        k_two_pi * c2, 1.0 - share);
+  }
+  return w_off * off + w_train * train + w_cross * cross;
 }
 
 inline double swash_shape(double u) {
@@ -714,13 +766,16 @@ inline double vertex_lift(const gfx::WaterSurface& s, const float* field, double
   const double mesh_ring = std::min(
       static_cast<double>(s.mesh_near_m) + static_cast<double>(s.mesh_grade) * std::max(edge, 0.0),
       mesh_far);
-  const double water = (tide + height(s, f, x, z, t, mesh_far, mesh_ring)) * fade;
+  // The mean level the waves stand on (S102's second pass): the field's setup; over the bank, the
+  // place's shore's, under half its reach.
+  const double water = (tide + f.setup + height(s, f, x, z, t, mesh_far, mesh_ring)) * fade;
   if (field == nullptr) return water;
-  const double d = f.depth + tide;
+  const double level = tide + place_level(s, f);
+  const double d = f.depth + level;
   const double r = place_run_up(s, f);
   const double band = 0.2 * r + 0.05;
   if (d >= band) return water;
-  const double bank = tide + sheet_surface(r, -d, front(s, f, x, z, t));
+  const double bank = level + sheet_surface(r, -d, front(s, f, x, z, t));
   const double share = 1.0 - smoothstep(0.0, band, d);
   return water + (bank - water) * share;
 }

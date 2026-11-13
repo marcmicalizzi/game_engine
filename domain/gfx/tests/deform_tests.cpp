@@ -1195,14 +1195,16 @@ TEST_CASE(
   Vector<f32> arrival(size * size);
   gfx::water_arrival_field(depth.data(), size, 0.25, static_cast<f64>(surface.period_s),
                            arrival.data());
-  // The field's four floats a texel: the depth, the arrival, the grown share (whole here) and one
-  // spare.
-  Vector<f32> field(gfx::k_water_field_channels * size * size);
+  // The field's floats a texel: the depth, the arrival, the grown share (whole here), no slope of
+  // its own, and (S102's second pass) the four of the second train and the energy flux, none here.
+  constexpr u32 k_texel = gfx::k_water_field_channels;
+  Vector<f32> field(k_texel * size * size);
   for (u32 i = 0; i < size * size; ++i) {
-    field[4 * i] = depth[i];
-    field[4 * i + 1] = arrival[i];
-    field[4 * i + 2] = 1.0f;
-    field[4 * i + 3] = 0.0f;
+    for (u32 c = 0; c < k_texel; ++c)
+      field[k_texel * i + c] = 0.0f;
+    field[k_texel * i] = depth[i];
+    field[k_texel * i + 1] = arrival[i];
+    field[k_texel * i + 2] = 1.0f;
   }
   gfx::BufferResource field_buffer;
   gfx::BufferResource surface_buffer;
@@ -1264,7 +1266,7 @@ TEST_CASE(
   surface.mesh_grade = 0.15f;
   for (u32 j = 0; j < size; ++j)
     for (u32 i = 0; i < size; ++i)
-      field[4 * (j * size + i) + 2] =
+      field[k_texel * (j * size + i) + 2] =
           0.2f + 0.8f * static_cast<f32>(i) / static_cast<f32>(size - 1);
   gfx::BufferResource lee_field;
   gfx::BufferResource lee_surface;
@@ -1276,6 +1278,40 @@ TEST_CASE(
   run(water, lifted);
   compare(surface, "the spectrum's bands in a lee on a mesh", 4u);
 
+  // (4) S102's second pass (water_flux.h): a second train crossing the first — eight of its waves
+  // in the first's seven, from 25 degrees off — and an energy-flux field: the incident share
+  // rising along the shore from 0.6 to 1.4, the share breaking left falling to a half in the
+  // shallows, a setup of up to 6 cm at the shore. The lift's new terms against the same reference.
+  surface.train_m = 0.34f;
+  surface.cross_m = 0.21f;
+  surface.cross_period_s = surface.period_s * 7.0f / 8.0f;
+  const f64 cross_omega = 6.283185307179586 / static_cast<f64>(surface.cross_period_s);
+  surface.cross_k0 = static_cast<f32>(cross_omega * cross_omega / gfx::k_swash_g);
+  Vector<f32> second(size * size);
+  gfx::water_arrival_field(depth.data(), size, 0.25, static_cast<f64>(surface.cross_period_s),
+                           second.data(), 3, Vec2{0.9063078f, 0.4226183f});
+  for (u32 j = 0; j < size; ++j) {
+    for (u32 i = 0; i < size; ++i) {
+      const u32 at = j * size + i;
+      const f32 shallow = 1.0f - std::clamp(depth[at], 0.0f, 1.0f);
+      field[k_texel * at + 4] = second[at];
+      field[k_texel * at + 5] = 0.6f + 0.8f * static_cast<f32>(j) / static_cast<f32>(size - 1);
+      field[k_texel * at + 6] = 1.0f - 0.5f * shallow;
+      field[k_texel * at + 7] = 0.06f * shallow;
+    }
+  }
+  gfx::BufferResource flux_field;
+  gfx::BufferResource flux_surface;
+  REQUIRE(gfx::upload_buffer(device, field.data(), u64{field.size()} * sizeof(f32), k_address,
+                             flux_field, &error));
+  surface.field = flux_field.address;
+  REQUIRE(gfx::upload_buffer(device, &surface, sizeof(surface), k_address, flux_surface, &error));
+  water.joints = flux_surface.address;
+  run(water, lifted);
+  compare(surface, "two trains over an energy-flux field", 4u);
+
+  gfx::destroy_buffer(device, flux_field);
+  gfx::destroy_buffer(device, flux_surface);
   gfx::destroy_buffer(device, lee_field);
   gfx::destroy_buffer(device, lee_surface);
   gfx::destroy_buffer(device, still_buffer);

@@ -287,8 +287,10 @@ ENGINE_EXPECT_SIZE(112, 8, gfx::WaterShore);
 // `WaterSurface`: the header, then the spectrum's sixteen waves. 624 since S100 stage B: what the
 // mesh resolves (three spacings, one in the old pad) and the swell's flag. 632 since S102: the
 // run-up's scale and ceiling, from which a pixel finds its own stretch of shore's run-up by the
-// slope the field carries there (one in the old pad, one new word and a pad).
-ENGINE_EXPECT_SIZE(632, 8, gfx::WaterSurface);
+// slope the field carries there (one in the old pad, one new word and a pad). 648 since S102's
+// second pass: the first train's own height (in the old pad) and the second train's height, period
+// and wavenumber, and a pad to the address's alignment.
+ENGINE_EXPECT_SIZE(648, 8, gfx::WaterSurface);
 
 // The sky (sky.h; docs/subsystems/gfx.md, "The sky"): the air, the lights, the eye, the celestial
 // frame, the exposure, the tables' addresses, and a view's inverse projection and pixel angle for

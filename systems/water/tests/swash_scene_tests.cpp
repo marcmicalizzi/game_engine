@@ -8,8 +8,10 @@
 #include <core/math/math.h>
 #include <core/math/world.h>
 #include <domain/gfx/device.h>
+#include <foundation/tunables/tunables.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/gpu_scene.h>
+#include <systems/renderer/lighting.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/scene_renderer.h>
 #include <systems/renderer/settings.h>
@@ -18,7 +20,9 @@
 #include <test_temp_dir.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <string>
 
@@ -310,6 +314,284 @@ TEST_CASE("water swash: a sea that comes in at an angle is a function of the clo
                   << waterline << " of them between water and ground");
   CHECK(differ > pixels / 20);
   CHECK(waterline > 0u);
+}
+
+// ---- S102, second pass: one sheet (docs/subsystems/water.md, "One sheet")
+// ------------------------
+
+namespace {
+
+// The bay under a swell too long and low to break — it surges up the sand whole, so no foam is
+// born or carried and the sheet is water and nothing else — whose water absorbs 0.3 a metre in
+// every band and scatters nothing: the sheet's two sides are then the model's two terms alone.
+constexpr f64 k_sheet_extinction = 0.3;
+constexpr f64 k_sheet_level = -0.8;
+std::string sheet_scene() {
+  return R"({
+  "format": "engine.scene.v1",
+  "name": "sheet-test",
+  "terrain": {"size": 257, "extent": 128, "seed": 2, "dune_height": 0,
+              "basins": [{"center": [150, 0], "radius": 200, "depth": 8}]},
+  "water": [{"name": "bay", "level_m": -0.8, "open": true,
+             "shape": {"polygon": [[16.9, 0, -100], [-5.3, 0, -60], [-13.8, 0, -30], [-16.5, 0, 0],
+                                   [-13.8, 0, 30], [-5.3, 0, 60], [16.9, 0, 100], [80, 0, 100],
+                                   [80, 0, -100]]},
+             "wind_follow": false, "wind_m_s": 0, "wet_m": 0.3,
+             "absorption": [0.3, 0.3, 0.3], "scattering": [0, 0, 0],
+             "swell_height_m": 0.05, "swell_period_s": 20, "swell_direction_deg": 180}]
+})";
+}
+
+constexpr u32 k_sheet_times = 6;
+constexpr u32 k_sheet_eyes = 2;
+// Low on the sand: looking along the swash from half a metre over it, and across it to the sea
+// from a metre and a quarter.
+constexpr f64 k_sheet_eye[k_sheet_eyes][3] = {{-19.5, -0.15, -14.0}, {-23.0, 0.7, 2.0}};
+constexpr f64 k_sheet_target[k_sheet_eyes][3] = {{-16.9, -0.8, 6.0}, {-12.0, -0.8, 5.0}};
+
+struct SheetShots {
+  CapturedFrame frame[k_sheet_eyes][k_sheet_times];
+  u32 water_instance = ~0u;
+  f32 fov_y = 0.0f;
+  bool lifted = false;
+};
+
+void shoot_sheet(const gfx::Device& device, const test::TempDir& tmp, const std::string& name,
+                 SheetShots& out) {
+  const std::string path = tmp.file(name + ".json");
+  {
+    std::ofstream file(path, std::ios::binary);
+    file << sheet_scene();
+  }
+  SceneDesc desc;
+  std::string error;
+  REQUIRE_MESSAGE(read_scene_file(path, desc, error), error);
+  desc.ddc = tmp.file("ddc");
+  SceneData data;
+  REQUIRE_MESSAGE(load_scene(desc, data, error), error);
+  RenderSettings settings;
+  ResolvedSettings resolved;
+  resolve_settings(settings, device.features(), &data, resolved);
+  REQUIRE(check_availability(resolved, device.features()) == RenderAvailability::Ok);
+  GpuScene scene;
+  REQUIRE_MESSAGE(scene.create(device, data, resolved, &error), error);
+  out.lifted = scene.water_lifted();
+  SceneRenderer renderer;
+  SceneRenderer::Desc rd;
+  rd.width = 480;
+  rd.height = 320;
+  REQUIRE_MESSAGE(renderer.create(device, scene, resolved, rd, &error), error);
+  for (u32 i = 0; i < data.instances.size(); ++i) {
+    const u32 mesh = data.instances[i].mesh;
+    if (mesh < data.mesh_info.size() && data.mesh_info[mesh].water.has_value())
+      out.water_instance = i;
+  }
+  CaptureChannels channels;
+  channels.ids = true;
+  channels.normals = true;
+  for (u32 e = 0; e < k_sheet_eyes; ++e) {
+    FrameDesc frame;
+    frame.camera.position = WorldPos{k_sheet_eye[e][0], k_sheet_eye[e][1], k_sheet_eye[e][2]};
+    frame.camera.target =
+        WorldPos{k_sheet_target[e][0], k_sheet_target[e][1], k_sheet_target[e][2]};
+    frame.sky_time_s = 0.0;
+    out.fov_y = frame.camera.fov_y;
+    // Six times over one period of the swell on the water's clock (20.9 s): the sheet is on the
+    // sand in some of them, climbing and draining.
+    for (u32 s = 0; s < k_sheet_times; ++s) {
+      frame.world_time_s = 10.0 + 3.5 * static_cast<f64>(s);
+      REQUIRE_MESSAGE(renderer.capture(frame, channels, out.frame[e][s], &error), error);
+    }
+  }
+}
+
+// The cosine the eye's ray through pixel p makes with the vertical, pointing down: what a level
+// surface's Fresnel is taken at.
+f64 sheet_cosine(u32 eye, u32 p, u32 width, u32 height, f32 fov_y) {
+  const f64 x = static_cast<f64>(p % width) + 0.5;
+  const f64 y = static_cast<f64>(p / width) + 0.5;
+  f64 fwd[3];
+  for (u32 i = 0; i < 3; ++i)
+    fwd[i] = k_sheet_target[eye][i] - k_sheet_eye[eye][i];
+  const f64 fl = std::sqrt(fwd[0] * fwd[0] + fwd[1] * fwd[1] + fwd[2] * fwd[2]);
+  for (f64& v : fwd)
+    v /= fl;
+  // look_at's frame: right = forward x up, up' = right x forward.
+  f64 right[3] = {-fwd[2], 0.0, fwd[0]};
+  const f64 rl = std::sqrt(right[0] * right[0] + right[2] * right[2]);
+  right[0] /= rl;
+  right[2] /= rl;
+  const f64 up_y = right[2] * fwd[0] - right[0] * fwd[2];
+  const f64 t = std::tan(0.5 * static_cast<f64>(fov_y));
+  const f64 sx = (x / width * 2.0 - 1.0) * t * static_cast<f64>(width) / height;
+  const f64 sy = (1.0 - y / height * 2.0) * t;
+  f64 dir[3];
+  const f64 up[3] = {right[1] * fwd[2] - right[2] * fwd[1], up_y,
+                     right[0] * fwd[1] - right[1] * fwd[0]};
+  for (u32 i = 0; i < 3; ++i)
+    dir[i] = fwd[i] + right[i] * sx + up[i] * sy;
+  const f64 dl = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+  return std::max(-dir[1] / dl, 1e-4);
+}
+
+f64 sheet_fresnel(f64 cosine) {
+  const f64 f0 = 0.020059312;  // water.slang's k_water_f0
+  const f64 m = 1.0 - cosine;
+  return f0 + (1.0 - f0) * m * m * m * m * m;
+}
+
+// **The most the picture may step across the mesh's edge inside the sheet**, in codes of one
+// channel, derived from what the two sides are (water.slang, `water_sheet_over_ground`; water.md,
+// "One sheet"), not measured. Both are L = U (1 - F) + S F: F Schlick's at the level surface's
+// cosine, S the stand-in sky (the water's reflection is off and the scene has no sky), U the wet
+// ground lit through the surface. So across the edge
+//
+//   L_w - L_g = (F_w - F_g) (S - U_g) + (1 - F_w) (U_w - U_g),
+//
+// and: U_g (1 - F_g) <= L_g < 1 for a pixel under white, so |S - U_g| <= max(S, 1 / (1 - F_g));
+// U_w differs from U_g by the two bottoms' normals (`bottoms`, below) and by what a film of water
+// takes: the water's pixel beside the edge is at most half the ground's rise over its own
+// footprint deep (the sheet is half the front's height over the ground; the bowl is nowhere
+// steeper than 1:10), and light crosses it down and up at no more than 1 / cos(48.6 degrees) each,
+// 3.04 depths in all, at `k_sheet_extinction`. The encode x^(1/2.2) is concave, so a step in light
+// is at most its slope at the darker pixel's level times the step; the dither's two noises and the
+// store's rounding are a code each.
+//
+// **The two bottoms' normals** (`sheet_bottoms`): the ground's pixel lights its sand by its own
+// shading normal; the water's lights the bottom by the depth map's slope, **and the map is clamped
+// at the level over the bank, so there the water's bottom is level** (`water_path_map`: the
+// channels' row holds it; said in the hand-back). The sun's term under the surface goes with n . l,
+// l the sun refracted (its horizontal part over 1.33), so the two differ by at most the ground's
+// own n . l less a level surface's, over the level one's — from the picture's normals channel,
+// 8-bit and so within 2 sqrt(3) / 255 once renormalized — and the sky's term not at all.
+f64 sheet_bottoms(const CapturedFrame& f, u32 p_ground) {
+  const Vec3 sun = sun_direction(k_default_sun_azimuth_deg, k_default_sun_elevation_deg);
+  const f64 lx = static_cast<f64>(sun.x) / 1.33;
+  const f64 lz = static_cast<f64>(sun.z) / 1.33;
+  const f64 ly = std::sqrt(1.0 - lx * lx - lz * lz);
+  f64 n[3];
+  for (u32 i = 0; i < 3; ++i)
+    n[i] = f.normals[p_ground * 3 + i] / 255.0 * 2.0 - 1.0;
+  const f64 nl = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+  const f64 lit = (n[0] * lx + n[1] * ly + n[2] * lz) / nl;
+  const f64 slack = 2.0 * std::sqrt(3.0) / 255.0 * std::sqrt(lx * lx + lz * lz);
+  return (std::fabs(lit - ly) + slack) / ly;
+}
+
+f64 sheet_step_bound(u32 eye, u32 p_water, u32 p_ground, u32 channel, u32 code_low, u32 width,
+                     u32 height, f32 fov_y, f64 bottoms) {
+  const f64 cw = sheet_cosine(eye, p_water, width, height, fov_y);
+  const f64 cg = sheet_cosine(eye, p_ground, width, height, fov_y);
+  const f64 fw = sheet_fresnel(cw);
+  const f64 fg = sheet_fresnel(cg);
+  const f64 sky = static_cast<f64>(channel == 0 ? k_sky.x : (channel == 1 ? k_sky.y : k_sky.z));
+  const f64 eye_height = k_sheet_eye[eye][1] - k_sheet_level;
+  const f64 footprint = eye_height / cw * (static_cast<f64>(fov_y) / height) / cw;
+  const f64 film = 0.5 * 0.1 * footprint;
+  const f64 under = bottoms + k_sheet_extinction * film * 3.04;
+  const f64 light =
+      std::fabs(fw - fg) * std::max(sky, 1.0 / (1.0 - fg)) + under * (1.0 - fw) / (1.0 - fg);
+  const f64 level = std::pow(static_cast<f64>(std::max(code_low, 2u) - 1u) / 255.0, 2.2);
+  const f64 slope = std::pow(level, 1.0 / 2.2 - 1.0) / 2.2;
+  return 255.0 * slope * light + 2.0;
+}
+
+struct RestoreFilm {
+  ~RestoreFilm() {
+    (void)tunables::apply_overrides("renderer.water.wet_film=true");
+    (void)tunables::apply_overrides("renderer.water.reflect=1");
+  }
+};
+
+}  // namespace
+
+TEST_CASE("water swash: the sheet on the sand is one surface across the mesh's edge") {
+  if (!gpu_here()) return;
+  const test::TempDir tmp("water_sheet");
+  gfx::Device device;
+  std::string error;
+  REQUIRE_MESSAGE(device.create(gfx::DeviceOptions{}, &error), error);
+  RestoreFilm restore;
+  // The sheet mirrors the stand-in sky, the one light the bound knows.
+  REQUIRE(tunables::apply_overrides("renderer.water.reflect=0"));
+  SheetShots on, off;
+  shoot_sheet(device, tmp, "on", on);
+  // With the film off (a measurement switch) the ground under the sheet is wet sand and nothing
+  // more: which pixels the sheet is drawn on is the difference of the two.
+  REQUIRE(tunables::apply_overrides("renderer.water.wet_film=false"));
+  shoot_sheet(device, tmp, "off", off);
+  REQUIRE(tunables::apply_overrides("renderer.water.wet_film=true"));
+  device.destroy();
+  REQUIRE(on.water_instance != ~0u);
+  CHECK(on.lifted);
+  const u32 width = on.frame[0][0].width;
+  const u32 height = on.frame[0][0].height;
+  for (u32 e = 0; e < k_sheet_eyes; ++e) {
+    u32 pairs = 0, over = 0, seen_off = 0, saturated = 0;
+    f64 worst_share = 0.0;
+    u32 worst_step = 0;
+    for (u32 s = 0; s < k_sheet_times; ++s) {
+      const CapturedFrame& a = on.frame[e][s];
+      const CapturedFrame& b = off.frame[e][s];
+      REQUIRE(a.ids == b.ids);  // the film is shading: it moves no surface
+      const auto wet_pixel = [&](u32 p) { return a.ids[p * k_id_words] == on.water_instance; };
+      const auto sheeted = [&](u32 p) {
+        return !wet_pixel(p) && std::memcmp(&a.color[p * 4], &b.color[p * 4], 3) != 0;
+      };
+      // Every pair of neighbours, side by side or one over the other, of which one is the body's
+      // water and the other ground the sheet is drawn on: the mesh's edge inside the sheet.
+      const auto pair = [&](u32 p, u32 q) {
+        if (wet_pixel(p) == wet_pixel(q)) return;
+        const u32 w = wet_pixel(p) ? p : q;
+        const u32 g = wet_pixel(p) ? q : p;
+        if (!sheeted(g)) return;
+        ++pairs;
+        const f64 bottoms = sheet_bottoms(a, g);
+        bool breaks = false, breaks_off = false;
+        for (u32 ch = 0; ch < 3; ++ch) {
+          const u32 cw = a.color[w * 4 + ch];
+          const u32 cg = a.color[g * 4 + ch];
+          if (cw == 255u || cg == 255u) {
+            ++saturated;
+            continue;
+          }
+          const u32 step = cw > cg ? cw - cg : cg - cw;
+          const f64 bound =
+              sheet_step_bound(e, w, g, ch, std::min(cw, cg), width, height, on.fov_y, bottoms);
+          worst_share = std::max(worst_share, static_cast<f64>(step) / bound);
+          worst_step = std::max(worst_step, step);
+          if (static_cast<f64>(step) > bound) breaks = true;
+          // The same pair with the sheet off: the edge as it stood before this pass's shading.
+          const u32 og = b.color[g * 4 + ch];
+          const u32 ow = b.color[w * 4 + ch];
+          const u32 step_off = ow > og ? ow - og : og - ow;
+          if (og != 255u && ow != 255u &&
+              static_cast<f64>(step_off) >
+                  sheet_step_bound(e, w, g, ch, std::min(ow, og), width, height, on.fov_y, bottoms))
+            breaks_off = true;
+        }
+        if (breaks && ++over <= 8u)
+          MESSAGE("the edge shows at (" << w % width << ", " << w / width << ") against ("
+                                        << g % width << ", " << g / width << "), time " << s);
+        if (breaks_off) ++seen_off;
+      };
+      for (u32 y = 0; y < height; ++y) {
+        for (u32 x = 0; x < width; ++x) {
+          const u32 p = y * width + x;
+          if (x + 1 < width) pair(p, p + 1);
+          if (y + 1 < height) pair(p, p + width);
+        }
+      }
+    }
+    MESSAGE("sheet, eye " << e << ": " << pairs << " water/ground neighbours inside the sheet over "
+                          << k_sheet_times << " times; the largest step " << worst_step
+                          << " codes, " << worst_share << " of its bound; " << over
+                          << " over it; with the sheet off " << seen_off << " are; " << saturated
+                          << " channel pairs at white, left out");
+    CHECK(pairs > 100u);   // the edge is in the picture
+    CHECK(over == 0u);     // and is not seen
+    CHECK(seen_off > 0u);  // where without the sheet's shading it is
+  }
 }
 
 #endif

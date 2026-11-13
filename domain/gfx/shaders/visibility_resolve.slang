@@ -1011,7 +1011,6 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
     if (swashing) {
       const float t = params->water_time_s;
       const float signed_depth = water_depth_signed(map, local.xz);
-      const float level = water_swash_tide(swash, params->water_tide_phase);
       float front = 0.0;
       bool uprush = false;
       WaterSwashPlace place = {};
@@ -1019,6 +1018,9 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
         place = water_swash_place(swash, local.xz);
         front = water_swash_front(place, t, uprush);
       }
+      // The level the swash stands on: the tide's, and the setup of the place's shore (S102,
+      // second pass; 0 for a body with no surface).
+      const float level = water_swash_tide(swash, params->water_tide_phase) + place.level;
       const float hh = -signed_depth - level;
       if (swash.surface != 0) {
         // The mesh stands where the pool lifted it (S100): the water here is the surface's height
@@ -1074,11 +1076,16 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
       const float det = e1.x * e2.y - e1.y * e2.x;
       if (abs(det) > 1e-8) slope = float2(d1 * e2.y - d2 * e1.y, e1.x * d2 - e2.x * d1) / det;
     }
+    // **The ground under a lifted body's water is wet** (S102, second pass; water.md, "One sheet"):
+    // the bottom's material takes the saturation of sand under water, as the ground beside the
+    // sheet takes it under its film — Lekner and Dorf's darkening is that of a surface under a
+    // layer of water, whatever the layer's depth. Until this pass only a bared pixel's bottom was
+    // wet, and the sheet's sand was drawn dry beside the wet sand it lies on.
+    const float bottom_s = swash.surface != 0 && depth > 0.0 ? 1.0 : max(bared_wet, 0.0);
     const float3 c = water_plunge_over(params, s, ray_bias, plunge,
                                        water_pixel_volume(params, geo, instance, index, slope, dp_dx,
                                                           dp_dy, s, local, n, view, w, ray_bias, depth,
-                                                          has_map, map, edge, foam,
-                                                          max(bared_wet, 0.0)));
+                                                          has_map, map, edge, foam, bottom_s));
     return c;
   }
   // The low tier draws the bottom as the body's shallow tint, so a bared pixel is that tint's
@@ -1210,12 +1217,23 @@ bool open_water_pixel(ResolveParams* params, float2 source, uint2 noise_pixel, b
 // (S94), or a channel stretch's bank (S99), the wettest of them; the film's weight; the swash's
 // foam. A pixel outside every record's bounds pays the bounds test alone, and one that is not
 // ground pays nothing.
-WaterWetGround water_ground_wetness(ResolveParams* params, ResolveMaterial material,
-                                    InstanceDesc instance, float3 position, float footprint) {
+//
+// **The footprint the swash's foam is drawn at is the ground's own** (S102, second pass; water.md,
+// "One sheet"): the larger of the position's two screen gradients, which is what the water's pixel
+// beside it takes (`water_pixel`), found from the kept triangle the first time a swash asks. Until
+// this pass it was the distance over half the rows — the footprint across the view — and at a low
+// eye, where a pixel is many times longer along the view than across it, the sheet's foam was a
+// crisp lace on the ground's pixels and a grey mean on the mesh's. A traced hit (hit_shade.slang)
+// has no kept triangle and gives its own footprint, as it did.
+WaterWetGround water_ground_wetness_of(ResolveParams* params, ResolveMaterial material,
+                                       InstanceDesc instance, float3 position, float footprint,
+                                       TriangleFetch tri, ScreenBarycentrics at) {
   WaterWetGround g;
   g.s = 0.0;
   g.film = 0.0;
   g.foam = 0.0;
+  g.sheet = 0.0;
+  g.body = 0u;
   if (params->water_shore_count == 0 || stop_skips(k_stop_water)) return g;
   WaterShore* shores = (WaterShore*)params->water_shores;
   InstanceDesc* instances = (InstanceDesc*)params->instances;
@@ -1236,11 +1254,21 @@ WaterWetGround water_ground_wetness(ResolveParams* params, ResolveMaterial mater
     // Only where the front and the tide can reach, and the fringe above.
     const float top = max(shore.wet_m, 1.5 * shore.run_up_m) + shore.tide_m;
     if (!(local.y < top) || !(local.y > -shore.tide_m - 1.5 * shore.run_up_m)) continue;
+    if (footprint < 0.0) {
+      float3 dp_dx;
+      float3 dp_dy;
+      screen_position_gradients_at(tri, at, dp_dx, dp_dy);
+      footprint = max(length(dp_dx), length(dp_dy));
+    }
     const WaterWetGround here = water_swash_saturation(
         shore, local.xz, local.y, params->water_time_s, params->water_tide_phase, footprint);
     g.s = max(g.s, here.s);
     g.film = max(g.film, here.film);
     g.foam = max(g.foam, here.foam);
+    if (here.sheet > g.sheet) {
+      g.sheet = here.sheet;
+      g.body = here.body;
+    }
   }
   // The channels' banks (gfx::build_bank_tree): depth first, a node missed skips its subtree by
   // its escape index, so a point far from every channel tests the few nodes above it. A record's
@@ -1265,6 +1293,22 @@ WaterWetGround water_ground_wetness(ResolveParams* params, ResolveMaterial mater
     }
   }
   return g;
+}
+
+// A shaded pixel's: the footprint from its kept triangle, when a swash asks.
+WaterWetGround water_ground_wetness(ResolveParams* params, ResolveMaterial material,
+                                    InstanceDesc instance, float3 position, TriangleFetch tri,
+                                    ScreenBarycentrics at) {
+  return water_ground_wetness_of(params, material, instance, position, -1.0, tri, at);
+}
+
+// A traced hit's (hit_shade.slang): the footprint it gives.
+WaterWetGround water_ground_wetness(ResolveParams* params, ResolveMaterial material,
+                                    InstanceDesc instance, float3 position, float footprint) {
+  TriangleFetch none_tri = (TriangleFetch)0;
+  ScreenBarycentrics none_at = (ScreenBarycentrics)0;
+  return water_ground_wetness_of(params, material, instance, position, max(footprint, 0.0),
+                                 none_tri, none_at);
 }
 
 // An empty pixel: the open sea where its ray looks down at it, the sky otherwise.
@@ -1444,16 +1488,21 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   float wet_s = 0.0;
   float wet_film = 0.0;
   float wet_foam = 0.0;
+  // The share of the pixel under a lifted body's sheet, and that body's water material (S102,
+  // second pass; water.slang, `water_sheet_over_ground`).
+  float wet_sheet = 0.0;
+  uint wet_body = 0u;
 #ifdef RESOLVE_WATER
   if ((material.flags & k_material_water) == 0 && !g_count) {
-    const WaterWetGround wet =
-        water_ground_wetness(params, material, instance, s.position,
-                             length(from_eye) * 2.0 / float(params->height));
+    const WaterWetGround wet = water_ground_wetness(params, material, instance, s.position, tri, at);
     wet_s = wet.s;
     // `renderer.water.wet_film` false (a measurement switch): the darkening and the damp roughness
-    // alone, no film (wet_ground.slang's negative film).
-    wet_film = (params->shadow_flags & k_shadow_wet_film_off) != 0 ? -1.0 : wet.film;
+    // alone, no film (wet_ground.slang's negative film) and no sheet.
+    const bool film_off = (params->shadow_flags & k_shadow_wet_film_off) != 0;
+    wet_film = film_off ? -1.0 : wet.film;
     wet_foam = wet.foam;
+    wet_sheet = film_off ? 0.0 : wet.sheet;
+    wet_body = wet.body;
   }
 #endif
 #ifdef MATERIAL_TERRAIN
@@ -1747,7 +1796,52 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     // place of the cosine-weighted hemisphere's by the BSDF's. Then the swash's foam over the lit
     // pixel, as S94 laid it. The water stage's: a measurement that skips it skips this too.
     const float film_w = wet_s > 0.0 ? wet_ground_film(wet_s, wet_film) : 0.0;
-    if (film_w > 0.0) {
+    // **Under a lifted body's sheet the ground is that body's thin water** (S102, second pass;
+    // water.md, "One sheet"; water.slang, `water_sheet_over_ground`): what `water_pixel_volume`
+    // draws at no depth, by the same two functions — the level surface's Fresnel and glitter at
+    // the body's roughness, the sky or the traced scene along the level mirror, and under it this
+    // ground's own wet albedo lit through the surface — in the sheet's share of the pixel, which
+    // is whole under the front and drains with the film behind it. So the mesh's edge inside the
+    // sheet is no edge: either side of it is the same function of the same place. The low tier's
+    // water has no volume to match, and keeps the film below.
+    bool sheeted = false;
+    float3 foam_ambient = ambient;
+    if (wet_sheet > 0.0) {
+      ResolveMaterial* table = (ResolveMaterial*)geo.materials;
+      const ResolveMaterial body = table[wet_body];
+      if ((body.flags & k_material_water_volume) != 0) {
+        sheeted = true;
+        const float3 level = float3(0.0, 1.0, 0.0);
+        const float3 r = water_reflected(level, surface.view);
+        float3 sheet_ambient;
+        float3 sheet_reflected;
+        if (has_sky) {
+          sheet_ambient = sky_ambient((SkyFrame*)sky->frame, level);
+          sheet_reflected = sky_environment(sky, (SkyFrame*)sky->frame, r);
+        } else {
+          const float3 below = ground_radiance(params->sky.rgb, params->ground.rgb, params->sun);
+          sheet_ambient = ambient_radiance(params->sky.rgb, below, level);
+          sheet_reflected = params->sky.rgb;
+        }
+#ifdef RESOLVE_RAY_SHADOWS
+        sheet_reflected = water_reflection(params, s, r, ray_bias, sheet_reflected);
+#endif
+        float3 sheet_sun = float3(0.0);
+        if (params->sun.y > 0.0 && dot(surface.normal, params->sun.xyz) > 0.0) {
+          sheet_sun = float3(params->sun.w);
+          if (has_sky) {
+            sheet_sun =
+                sky_light_at(sky, s.position, params->sun.xyz, sky->sun_illuminance.rgb);
+          }
+        }
+        const float3 sheet = water_sheet_over_ground(
+            water_of(body), water_optics_of(table[wet_body + 1u]), surface.view, surface.normal,
+            albedo, params->sun.xyz, sheet_sun, sun_visibility, sheet_ambient, sheet_reflected);
+        color = lerp(color, sheet, wet_sheet);
+        foam_ambient = lerp(ambient, sheet_ambient, wet_sheet);
+      }
+    }
+    if (!sheeted && film_w > 0.0) {
       const float3 r = reflect(-surface.view, surface.normal);
       float3 reflected = params->sky.rgb;
       if (has_sky) reflected = sky_environment(sky, (SkyFrame*)sky->frame, r);
@@ -1761,7 +1855,7 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
       color = max(color + film_w * (reflected * film_spec - ambient * lobe_spec), float3(0.0));
     }
     if (wet_foam > 0.0) {
-      float3 foam_light = ambient;
+      float3 foam_light = foam_ambient;  // under a sheet, the level surface's, as the water's foam
       if (params->sun.y > 0.0) {
         float3 sun = float3(params->sun.w);
         if (has_sky) sun = sky_light_at(sky, s.position, params->sun.xyz, sky->sun_illuminance.rgb);

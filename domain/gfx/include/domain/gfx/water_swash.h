@@ -142,9 +142,15 @@ inline f64 swash_reach_cap(f64 h0, f64 bank_max_m) noexcept {
 }
 // The most any stretch of a body's shore can run up: the steepest slope a field keeps, under the
 // ceiling. What a lifted body's shore record carries for its bounds and the ground's band.
+//
+// **Where refraction gathers the wave** (second pass; water_flux.h, `incident`) a stretch's run-up
+// is taken with the height that reaches it, H0' = Kr H0, so the formula's sqrt(H0 L0) is up to
+// sqrt(`k_water_incident_max`) larger: a height's doubling is where the flux's focusing is cut (a
+// caustic is where ray theory ends).
+inline constexpr f64 k_water_incident_max = 2.0;
 inline f64 swash_highest_run_up(f64 h0, f64 t, f64 bank_max_m) noexcept {
-  return swash_local_run_up(swash_reach_scale(h0, t), swash_reach_cap(h0, bank_max_m),
-                            k_swash_slope_max);
+  return swash_local_run_up(swash_reach_scale(h0, t) * std::sqrt(k_water_incident_max),
+                            swash_reach_cap(h0, bank_max_m), k_swash_slope_max);
 }
 
 // The 2% run-up on a shore of slope beta: Stockdon et al.'s, no higher than the steep shore's
@@ -273,9 +279,13 @@ inline constexpr f64 k_water_celerity_floor_m = 0.02;
 // The field's floats a texel: the signed depth (m), the train's arrival (s), `grown` — the share
 // of the body's fetch the wind has blown over to reach the texel (`water_fetch_field`; 1 over an
 // open body) — and the foreshore slope of the texel's own stretch of shore
-// (`water_shore_slope_field`; S102, the spare until then).
-inline constexpr u32 k_water_field_channels = 4;
-// **One body's height function, for the GPU** (632 bytes; water_waves.slang's `WaterSurface`). The
+// (`water_shore_slope_field`; S102, the spare until then). **Since S102's second pass four more**
+// (water_flux.h; 32 bytes a texel where there were 16): the second train's arrival (s), and the
+// energy-flux field's three — `incident`, the share of the unrefracted height H0 Ks(d) that
+// refraction and the lee leave the place; `kept`, the share of that breaking left; and the setup
+// (m). A texel whose `incident` and `kept` are 0 carries none, and reads as 1.
+inline constexpr u32 k_water_field_channels = 8;
+// **One body's height function, for the GPU** (648 bytes; water_waves.slang's `WaterSurface`). The
 // GPU scene writes one per deformed body at load; the pool pass reaches it through the body's
 // `DeformDesc::joints` and the resolve through its `WaterShore::surface`.
 struct WaterSurface {
@@ -318,10 +328,18 @@ struct WaterSurface {
   // depth map's bank is known to. 0: `run_up_m` everywhere (a surface with no field).
   f32 reach_scale = 0.0f;
   f32 reach_cap = 0.0f;
+  // **Two trains come ashore** (S102, second pass; water_flux.h, `WaterCross`): the first train's
+  // own deep-water height (0: `height_m`, a train alone), and the second's height, period and
+  // deep-water wavenumber (0: none). `height_m` stays the sea's — what the run-up, the foam's
+  // strength and the swash are taken from.
+  f32 train_m = 0.0f;
+  f32 cross_m = 0.0f;
+  f32 cross_period_s = 0.0f;
+  f32 cross_k0 = 0.0f;
   f32 pad = 0.0f;
   WaterWave waves[k_water_waves];  // the wind's spectrum (k_water_surface_spectrum)
 };
-static_assert(sizeof(WaterSurface) == 632);
+static_assert(sizeof(WaterSurface) == 648);
 
 // **The dispersion relation at depth**: the wavenumber k with omega^2 = g k tanh(k d), from the
 // deep-water k0 = omega^2 / g — Fenton and McKee's (1990) explicit approximation

@@ -250,9 +250,11 @@ static const float k_water_train_deep_kd = 1.0;    // gfx::k_water_train_deep_kd
 static const float k_water_train_shallow_kd = 0.35;
 static const uint k_water_surface_waves = 16u;     // gfx::k_water_waves
 
-// Mirrors gfx::WaterSurface (632 bytes).
+// Mirrors gfx::WaterSurface (648 bytes).
 struct WaterSurface {
-  uint64_t field;  // float4 per texel: (signed depth, arrival s, grown, shore slope), rows along +z
+  // Two float4 per texel, rows along +z: (signed depth, arrival s, grown, shore slope) and (the
+  // second train's arrival s, incident, kept, setup m) — the energy-flux field's (water_flux.h).
+  uint64_t field;
   float2 origin;
   float texel_m;
   uint size;
@@ -277,6 +279,12 @@ struct WaterSurface {
   float swell;        // the wind sea's peak k0 when the train is a swell's (S102); 0: the wind's
   float reach_scale;  // 1.1 sqrt(H0 L0): the run-up of a place from its slope (S102); 0: run_up_m
   float reach_cap;
+  // S102, second pass (water_flux.h, `WaterCross`): the first train's own deep-water height (0:
+  // `height_m`), and the second train's height, period and deep-water wavenumber (0: none).
+  float train_m;
+  float cross_m;
+  float cross_period_s;
+  float cross_k0;
   float pad;
   WaterWave waves[16];
 };
@@ -286,7 +294,10 @@ struct WaterSurface {
 // gradients (zero along an axis the point is clamped on). **Read smoothly** (S100 stage B; shore.md,
 // "The shallows"): a quadratic B-spline over the nine texels round the point, which is C1, where a
 // bilinear read's gradient jumps at every texel's border and a crest — a level line of the arrival
-// — turned a corner there.
+// — turned a corner there. Since S102's second pass a texel is two float4 and the read gives the
+// energy-flux field too: the second train's arrival and its gradient, the share of the unrefracted
+// height that reaches the place (`incident`), the share of that breaking left (`kept`) — each 1
+// in a field that carries none, whose texels hold 0 — and the setup, metres.
 struct WaterField {
   float depth;
   float arrival;
@@ -294,11 +305,18 @@ struct WaterField {
   float slope;
   float2 depth_grad;
   float2 arrival_grad;
+  float arrival2;
+  float2 arrival2_grad;
+  float incident;
+  float kept;
+  float setup;
 };
 
 WaterField water_field_at(WaterSurface* s, float2 p) {
   WaterField f = (WaterField)0;
   f.grown = 1.0;
+  f.incident = 1.0;
+  f.kept = 1.0;
   const uint n = s->size;
   if (s->field == 0 || n < 2) return f;
   const float last = float(n - 1);
@@ -317,15 +335,21 @@ WaterField water_field_at(WaterSurface* s, float2 p) {
   const float3 dwz = float3(fr.y - 0.5, -2.0 * fr.y, fr.y + 0.5);
   float4* texels = (float4*)s->field;
   float4 v = float4(0.0, 0.0, 0.0, 0.0);
+  float4 e = float4(0.0, 0.0, 0.0, 0.0);
   float2 dx = float2(0.0, 0.0);
   float2 dz = float2(0.0, 0.0);
+  float2 d2 = float2(0.0, 0.0);
   for (int j = 0; j < 3; ++j) {
     const uint row = uint(clamp(iz + j - 1, 0, hi)) * n;
     for (int i = 0; i < 3; ++i) {
-      const float4 t = texels[row + uint(clamp(ix + i - 1, 0, hi))];
+      const uint at = (row + uint(clamp(ix + i - 1, 0, hi))) * 2u;
+      const float4 t = texels[at];
+      const float4 t2 = texels[at + 1u];
       v += t * (wx[i] * wz[j]);
+      e += t2 * (wx[i] * wz[j]);
       dx += t.xy * (dwx[i] * wz[j]);
       dz += t.xy * (wx[i] * dwz[j]);
+      d2 += t2.x * float2(dwx[i] * wz[j], wx[i] * dwz[j]);
     }
   }
   const float inside_x = g.x >= 0.0 && g.x <= last ? 1.0 / s->texel_m : 0.0;
@@ -338,19 +362,40 @@ WaterField water_field_at(WaterSurface* s, float2 p) {
   f.slope = v.w;
   f.depth_grad = float2(dx.x, dz.x);
   f.arrival_grad = float2(dx.y, dz.y);
+  f.arrival2 = e.x;
+  f.arrival2_grad = float2(d2.x * inside_x, d2.y * inside_z);
+  f.incident = e.y > 0.0 ? e.y : 1.0;
+  f.kept = e.z > 0.0 ? e.z : 1.0;
+  f.setup = e.w;
   return f;
 }
 
 // **A place's own shore** (S102; gfx::swash_local_run_up): the foreshore slope of its stretch of
 // the waterline — the field's, or the body's one number where the field carries none — and the
-// run-up that slope gives the body's wave: Stockdon et al.'s formula, no higher than the steep
-// shore's ceiling.
+// run-up that slope gives the wave that reaches it: Stockdon et al.'s formula, no higher than the
+// steep shore's ceiling. **Since the second pass** the wave is the place's own — the formula's
+// sqrt(H0 L0) with H0 the height refraction left that stretch, `incident` of the body's (the
+// field's; coastal engineering's H0' = Kr H0), so a point's swash climbs higher than its lee's —
+// and the swash stands on the **setup** its surf raises: `water_place_level`, the field's at the
+// place's shore, never under the still level and kept under half the run-up (theory's setup
+// through a saturated surf is larger than the share of the run-up Stockdon's fit gives it on a
+// gentle beach; the top stays the fit's), and `water_place_run_up` is what the swash climbs over
+// that level.
 float water_place_slope(WaterSurface* s, WaterField f) { return f.slope > 0.0 ? f.slope : s->slope; }
 
-float water_place_run_up(WaterSurface* s, WaterField f) {
+float water_place_reach(WaterSurface* s, WaterField f) {
   if (!(s->reach_scale > 0.0) || !(f.slope > 0.0)) return s->run_up_m;
-  return min(s->reach_scale * (0.35 * f.slope + 0.5 * sqrt(0.563 * f.slope * f.slope + 0.004)),
+  return min(s->reach_scale * sqrt(f.incident) *
+                 (0.35 * f.slope + 0.5 * sqrt(0.563 * f.slope * f.slope + 0.004)),
              s->reach_cap);
+}
+
+float water_place_level(WaterSurface* s, WaterField f) {
+  return clamp(f.setup, 0.0, 0.5 * water_place_reach(s, f));
+}
+
+float water_place_run_up(WaterSurface* s, WaterField f) {
+  return water_place_reach(s, f) - water_place_level(s, f);
 }
 
 // **The dispersion relation at depth** (gfx::water_wavenumber): Fenton and McKee's explicit k d
@@ -377,12 +422,15 @@ float water_shoaling(float k, float d) {
 // mean), m = 1 + 2 b with b the share of the breaking height reached, so the crest sharpens and the
 // trough flattens as the wave nears breaking; the mean of ((1 + cos)/2)^m is
 // Gamma(m + 1/2) / (sqrt(pi) Gamma(m + 1)), within a percent of 1 / sqrt(pi (m + 1/4)).
-// `dtheta` is its derivative in theta.
-float water_train_shape(float h0, float k0, float d, float theta, out float dtheta) {
+// `dtheta` is its derivative in theta. `share` (S102, second pass) is the train's share of the
+// breaking height where two trains come ashore together — its deep-water height over the two's
+// sum, so the crest the two make where they coincide is the one that stands gamma d — and 1 for a
+// train alone.
+float water_train_shape(float h0, float k0, float d, float theta, float share, out float dtheta) {
   dtheta = 0.0;
   if (!(d > 0.0) || !(h0 > 0.0)) return 0.0;
   const float shoaled = h0 * water_shoaling(water_wavenumber(k0, d), d);
-  const float limit = k_water_breaking_gamma * d;
+  const float limit = k_water_breaking_gamma * d * share;
   const float height = min(shoaled, limit);
   const float b = clamp(shoaled / limit, 0.0, 1.0);
   const float m = 1.0 + 2.0 * b;
@@ -451,6 +499,11 @@ WaterHeight water_height(WaterSurface* s, float2 p, WaterField f, float t, float
   // whole wherever there is water, beside the wind's table: a swell is there offshore too.
   const bool swell = s->swell > 0.0;
   const float w_train = swell ? 1.0 : 1.0 - w_off;
+  // What the energy flux left of the unrefracted, unbroken height here, and the first train's
+  // share of the breaking height beside a second (S102, second pass).
+  const float flux = f.incident * f.kept;
+  const float first_m = s->train_m > 0.0 ? s->train_m : s->height_m;
+  const float share = s->cross_m > 0.0 ? first_m / (first_m + s->cross_m) : 1.0;
   // Offshore: the spectrum's sixteen, or the four sines.
   WaterSum off = (WaterSum)0;
   const float wave_footprint = max(footprint, mesh.x);
@@ -511,12 +564,16 @@ WaterHeight water_height(WaterSurface* s, float2 p, WaterField f, float t, float
     const float env = water_train_envelope(c, d_env);
     const float shelter = water_shelter(f);
     float d_theta = 0.0;
-    const float shape = water_train_shape(s->height_m, s->k0, d, theta, d_theta);
+    // **The height the flux left the place** (S102, second pass; water_flux.h): the train's own
+    // deep-water height times what refraction brought here and what breaking kept of it, shoaled
+    // by the closed form and capped at the train's share of gamma d.
+    const float h1 = (s->train_m > 0.0 ? s->train_m : s->height_m) * flux;
+    const float shape = water_train_shape(h1, s->k0, d, theta, share, d_theta);
     // The shape's change with depth, by a central difference over a millimetre's part of it.
     const float eps = 1e-3 + 1e-3 * d;
     float unused = 0.0;
-    const float d_depth = (water_train_shape(s->height_m, s->k0, d + eps, theta, unused) -
-                           water_train_shape(s->height_m, s->k0, max(d - eps, 1e-4), theta, unused)) /
+    const float d_depth = (water_train_shape(h1, s->k0, d + eps, theta, share, unused) -
+                           water_train_shape(h1, s->k0, max(d - eps, 1e-4), theta, share, unused)) /
                           (d + eps - max(d - eps, 1e-4));
     train = env * shelter * shape;
     train_grad = shelter * keep *
@@ -524,9 +581,38 @@ WaterHeight water_height(WaterSurface* s, float2 p, WaterField f, float t, float
                   shape * d_env * grad_c);
     train *= keep;
   }
-  r.height = w_off * off.height + w_train * train;
-  r.grad = w_off * off.grad + w_train * train_grad +
-           (off.height - (swell ? 0.0 : train)) * dw * f.depth_grad;
+  // **The second train** (S102, second pass; water.md, "The surf"): where the table gives way to
+  // the shallows the sea is two trains crossing, not one ruled one — its phase its own arrival's,
+  // its period a whole number of waves in the first's group of seven, its height its share of the
+  // limit. Its change with depth is left out of the gradient (the phase's carries it).
+  float second = 0.0;
+  float2 second_grad = float2(0.0, 0.0);
+  const float w_cross = 1.0 - w_off;
+  if (w_cross > 0.0 && d > 0.0 && s->cross_m > 0.0 && s->cross_period_s > 0.0) {
+    const float c2 = frac(frac(t / s->cross_period_s) - frac(f.arrival2 / s->cross_period_s));
+    const float2 grad_c2 = -f.arrival2_grad / s->cross_period_s;
+    float held = footprint;
+    if (mesh.x > 0.0) {
+      const float lp = length(p);
+      const float lc = length(grad_c2);
+      float along_ray = 1.0;
+      if (lp > 1e-3 && lc > 1e-9) along_ray = abs(dot(p, grad_c2)) / (lp * lc);
+      held = max(mesh.y * along_ray, mesh.x * sqrt(max(1.0 - along_ray * along_ray, 0.0)));
+    }
+    const float keep =
+        held > 0.0
+            ? clamp(k_water_two_pi / water_wavenumber(s->cross_k0, d) / (2.0 * held) - 1.0, 0.0, 1.0)
+            : 1.0;
+    float d_theta = 0.0;
+    const float shape = water_train_shape(s->cross_m * flux, s->cross_k0, d, k_water_two_pi * c2,
+                                          1.0 - share, d_theta);
+    const float shelter = water_shelter(f);
+    second = keep * shelter * shape;
+    second_grad = (keep * shelter * d_theta * k_water_two_pi) * grad_c2;
+  }
+  r.height = w_off * off.height + w_train * train + w_cross * second;
+  r.grad = w_off * off.grad + w_train * train_grad + w_cross * second_grad +
+           (off.height - (swell ? 0.0 : train) - second) * dw * f.depth_grad;
   r.lift = w_off * off.lift;
   r.dropped = w_off * w_off * off.dropped;
   return r;
@@ -620,12 +706,15 @@ float water_vertex_lift(WaterSurface* s, float2 p, float edge, float t, float ti
   const float tide = water_surface_tide(s, tide_phase);
   const float fade = water_outline_fade(s, f, edge);
   const WaterHeight w = water_height(s, p, f, t, 0.0, water_mesh_spacing(s, edge));
-  const float water = (tide + w.height) * fade;
+  // The mean level the waves stand on (S102, second pass): the field's setup, a set-down of a
+  // centimetre outside the surf and a rise through it; over the bank its shore's.
+  const float water = (tide + f.setup + w.height) * fade;
   if (s->field == 0) {
     grad = w.grad * fade;
     return water;
   }
-  const float d = f.depth + tide;
+  const float level = tide + water_place_level(s, f);
+  const float d = f.depth + level;
   const float run_up = water_place_run_up(s, f);
   const float band = 0.2 * run_up + 0.05;
   if (d >= band) {
@@ -634,7 +723,7 @@ float water_vertex_lift(WaterSurface* s, float2 p, float edge, float t, float ti
   }
   bool uprush = false;
   const float front = water_surface_front(s, p, f, t, uprush);
-  const float bank = tide + water_sheet_surface(run_up, -d, front);
+  const float bank = level + water_sheet_surface(run_up, -d, front);
   const float share = 1.0 - smoothstep(0.0, band, d);
   grad = w.grad * fade * (1.0 - share);
   return lerp(water, bank, share);
