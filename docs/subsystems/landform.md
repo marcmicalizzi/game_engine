@@ -722,7 +722,10 @@ what was read of each ([what the build opened](../experiments/coast.md#what-the-
 settles, the deepest ground about it first, up to the level less `sea.wave_base_m` and no
 higher; the rest goes on along the bed and leaves at the sea's edge (`left`). Above the wave
 base the bed is the waves' to move, so nothing a river carries settles there in the long run.
-`budget.shelf_m3` is what settled under it. A lake is unchanged. **Why**: the sea took
+`budget.shelf_m3` is what settled under it. **Creep too**: what the hillslopes' diffusion lays
+on a point under the sea above the wave base is carried off by the next step's books as a slope's
+shed is (counted as eroded), because the first build kept it and an island's creep built its
+shore out into the sea 12% in 150,000 years where its rivers built nothing. A lake is unchanged. **Why**: the sea took
 everything to its level, so an island with deposition on grew a plain of its own sediment (the
 proof of concept's island 2.6 times its footprint) and its authors switched deposition off,
 which took every fan and valley floor with it. The default is Hallermeier's outer limit for the
@@ -747,8 +750,12 @@ retreats until stage C, so `step_yr` is recorded and not yet stepped):
    marching squares over the lattice's squares, linear along an edge, a saddle read by its
    centre, so a plane's waterline is exact. Every point's distance to it is a distance
    transform that hands each point its neighbours' nearest segment and keeps the closest by the
-   exact distance to the segment (ties to the lower index), swept until a round changes nothing:
-   so the distance is a segment's, never a staircase's.
+   exact distance to the segment (ties to the lower index), swept until a round changes nothing,
+   and then walks the line's chain (the segments sharing a crossed edge, whose crossing both
+   squares read in one order, so to the bit) while a next segment is nearer: the transform alone
+   left a short segment no neighbour's foot fell on to nobody, and the coast at 4 m and 8 m then
+   stood 9 mm apart. So the distance is a segment's, never a staircase's, and on a straight line
+   the perpendicular.
 2. **Exposure**: each segment walks from its middle toward each wave entry's azimuth (the
    stand's 32), a spacing a step on integers (1/65536 of a spacing), until land (closed) or the
    lattice's edge (open only through a `Sea` edge). An open entry's deep-water wave is carried
@@ -786,8 +793,8 @@ littoral cells, a lake's bench, and the face flattened by exposure (Vos and othe
 the same sand three times flatter under a large swell; no law was opened).
 
 **What the section is held to** (`coast_tests.cpp`): on a straight coast 15° off the lattice,
-from two cells out to the closure depth every point is within **1.1 mm** of A x^(2/3) (the face
-of tan β x inside x*), x the field's distance. The bound is derived: half a millimetre of the
+from two cells out to the closure depth every point is within **1.1 mm** of A x^(2/3), x the
+field's distance (two cells is past x*, so the face under water is not what the case measures). The bound is derived: half a millimetre of the
 height's rounding, plus the section's slope (never more than the face's) times how far the
 rounded ground's waterline can stand from the line the section was laid from (half a millimetre
 of height over the face's slope along a lattice edge, 7.4 mm at 15°, and the distance's own half
@@ -1040,6 +1047,11 @@ the section, or the water, would call).
 | the thickest ice that ever stood is kept, point by point (W127; 0.7 s: six solves) | the same valley solved to each of its six steps: `ice_max` is the largest of the six `ice` at every point, exactly, and covers more points than the last step's ice (4,642 against 3,687) | the field misses a step, or keeps the first step's first finding of the ice |
 | the ice's line moves at its stands, and a stand's ridges carry its mark (W127; 0.4 s: three solves) | the same valley with the line raised 60 m at 15,000 years: at 30,000 the snout is shorter than with the line kept (column 79 against 113); no crest of the second stand lies down the valley of where the snout stood when the first ended (94 against 147), a crest of the first lies at or below it (149), and no other mark is written; stands out of order, a stand before the ice comes and `carried` over 1 are refused | the line does not move, or a ridge is marked with the wrong stand |
 | an ice age solves to the same bytes on one, four and sixteen workers (0.7 s) | the heightfield, the ice, the till, the sediment and the discharge of a 30,000-year ice age from each, and the first three pinned on MSVC for Clang and GCC to reproduce (re-taken by W127 twice: a sheet of till is lodged under the valley's ice, and the swath is worn to a parabola) | a loop of the ice reads what another chunk writes, or `det::exp` and `det::log` differ by toolchain |
+| the coast's closed forms against their sources' numbers (`coast_tests.cpp`) | A is the manual's Table III-3-3 as printed (0.100, 0.125, 0.161, 0.210; its own 0.112 at 0.24 mm and 0.18 at 0.66 mm); the face 0.0697 at 0.3 mm; Hallermeier's 5.858 m for a 3 m, 8 s storm and 15.21 m outer for 1 m, 6 s over 0.3 mm; Stockdon's 0.7196 m; the breaker 1.254 m | a law or its table is miscopied |
+| an island with deposition on keeps its fans and grows no plain (1.7 s: three solves) | an island a kilometre across in a sea on every side, 150,000 years at 20 m: its land with deposition on within 5% of its land with it off (1,538 points and 1,538, 152 of them on a metre of sediment), where `wave_base_m` 0, the base's rule bit for bit, grows it 4.8 times (7,336); ten land points or more on a metre of sediment; the sea's take inside what was laid, and the budget closing | the sea fills above its wave base, or the outline's footprint or bed is lost |
+| a straight coast's beach is Dean's profile in section, at 4 m and at 8 m (0.9 s) | a plane 15° off the lattice under one swell: every point from two cells out to the closure depth within 1.1 mm of A x^(2/3) (derived: [the coast](#the-coast); measured 0.71 mm over 6,781 points to 321 m), the berm at high water plus R₂ within a millimetre (0.43 mm over 523), exposure the same along the shore and the swell's breaker; the same coast at 4 m and 8 m within a millimetre at every shared point (0 mm over 2,045) | the section is not Dean's, the distance is a staircase's, or the beach depends on the spacing |
+| an island offshore shadows the shore behind it as wide as geometry says | a swell from the west and an island of eight rows: exactly those eight rows of the shore take nothing, the rest the swell's breaker to a millimetre | the walks miss land, or sheltering leaks |
+| a stood island solves to the pinned bytes, on one, four and sixteen workers (0.9 s) | the height, distance, substrate, exposure and berm pinned on MSVC and reproduced by Clang and GCC at v3 and GCC at v2; the same from four and sixteen workers | a walk or the section reads another chunk's result, or a C library call decides |
 | a lake's floor fills level, and its mouth builds a delta | a basin fed for ten thousand years: its floor away from the mouths level within 50 mm (measured 0 and 3 mm) under water still metres deep; with `delta_share` 0.5 the shelf under the mouths holds a quarter more sediment (measured twice) and the floor stands lower | the fill follows the flood's order, or the mouths get nothing |
 
 ## Performance notes

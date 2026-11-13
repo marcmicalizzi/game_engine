@@ -67,10 +67,12 @@ landform::Sketch island_sketch() {
   return s;
 }
 
+// Points at or above the level: a plain the sea filled to its level is land to the eye (a flat
+// the water no longer covers), though the solver's own test for the sea is at or below it.
 u32 land_points(const landform::Landform& land) {
   u32 count = 0;
   for (u32 p = 0; p < land.width * land.height; ++p)
-    if (land.height_mm[p] > land.sea_level_mm) ++count;
+    if (land.height_mm[p] >= land.sea_level_mm) ++count;
   return count;
 }
 
@@ -401,11 +403,11 @@ landform::Sketch stood_island() {
 // Pinned on MSVC (msvc-debug), 2026-11-13; Clang and GCC at v3 and GCC at v2 reproduce them in
 // the containers. A change that moves one re-pins it with a sentence in the commit and bumps
 // `k_solver_version`.
-constexpr u64 k_island_height_hash = 0x0ull;
-constexpr u64 k_island_shore_hash = 0x0ull;
-constexpr u64 k_island_substrate_hash = 0x0ull;
-constexpr u64 k_island_exposure_hash = 0x0ull;
-constexpr u64 k_island_berm_hash = 0x0ull;
+constexpr u64 k_island_height_hash = 0x0954bfa51219b52aull;
+constexpr u64 k_island_shore_hash = 0x86c83b6556665e91ull;
+constexpr u64 k_island_substrate_hash = 0x9fd7f174cab0db74ull;
+constexpr u64 k_island_exposure_hash = 0x3ed130d52e29b1a8ull;
+constexpr u64 k_island_berm_hash = 0xda040f823697efebull;
 
 }  // namespace
 

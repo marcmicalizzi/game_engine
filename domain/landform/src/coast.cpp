@@ -18,6 +18,8 @@ namespace engine::landform {
 
 namespace {
 
+using coast::Grid;
+
 constexpr f64 k_g = 9.81;
 constexpr f64 k_pi = 3.14159265358979323846;
 // The breaker index, H_b / h_b (McCowan's 0.78; the CERC constants Lim, Hwang and Lee 2022 use).
@@ -48,11 +50,17 @@ void for_range(jobs::JobSystem* jobs, u32 count, u32 grain, F body) {
 // x^y for x > 0, through the deterministic exponential and logarithm.
 f64 power(f64 x, f64 y) noexcept { return det::exp(y * det::log(x)); }
 
+constexpr u32 k_no_segment_id = 0xFFFFFFFFu;
+
 // A segment of the waterline, in lattice units (a point's i and j), with the unit normal that
 // points from the land to the sea.
 struct Segment {
   f64 ax = 0.0, az = 0.0, bx = 0.0, bz = 0.0;
   f64 nx = 0.0, nz = 0.0;
+  // The lattice edges its two ends lie on (2 (j w + i) for the edge from (i, j) toward +x, one
+  // more for the edge toward +z), and the segments that share each end: the line's chain.
+  u32 edge_a = 0, edge_b = 0;
+  u32 next_a = 0xFFFFFFFFu, next_b = 0xFFFFFFFFu;
 };
 
 // Squared distance from (px, pz) to a segment, lattice units, and the parameter of the nearest
@@ -124,8 +132,10 @@ void find_segments(const Grid& g, const f64* z, const u8* sea, f64 level, Vector
       if (code == 0 || code == 15) continue;
       const f64 va = value(pa), vb = value(pb), vc = value(pc), vd = value(pd);
       const f64 x0 = static_cast<f64>(i), z0 = static_cast<f64>(j);
-      // The crossing on each edge: 0 a-b (z = j), 1 b-c (x = i + 1), 2 c-d (z = j + 1), 3 d-a.
-      const auto cross = [&](u32 e, f64& cx, f64& cz) {
+      // The crossing on each edge: 0 a-b (z = j), 1 b-c (x = i + 1), 2 d-c (z = j + 1), 3 a-d
+      // (x = i), each read from its lower corner toward +x or +z, so the two squares that share
+      // an edge find the same point to the bit and the line is one chain. `id` is the edge's.
+      const auto cross = [&](u32 e, f64& cx, f64& cz, u32& id) {
         f64 v0 = 0.0, v1 = 0.0;
         if (e == 0) {
           v0 = va;
@@ -134,25 +144,29 @@ void find_segments(const Grid& g, const f64* z, const u8* sea, f64 level, Vector
           v0 = vb;
           v1 = vc;
         } else if (e == 2) {
-          v0 = vc;
-          v1 = vd;
-        } else {
           v0 = vd;
-          v1 = va;
+          v1 = vc;
+        } else {
+          v0 = va;
+          v1 = vd;
         }
         const f64 t = v0 / (v0 - v1);
         if (e == 0) {
           cx = x0 + t;
           cz = z0;
+          id = 2 * pa;
         } else if (e == 1) {
           cx = x0 + 1.0;
           cz = z0 + t;
+          id = 2 * pb + 1;
         } else if (e == 2) {
-          cx = x0 + 1.0 - t;
+          cx = x0 + t;
           cz = z0 + 1.0;
+          id = 2 * pd;
         } else {
           cx = x0;
-          cz = z0 + 1.0 - t;
+          cz = z0 + t;
+          id = 2 * pa + 1;
         }
       };
       u32 pairs[4];
@@ -215,8 +229,8 @@ void find_segments(const Grid& g, const f64* z, const u8* sea, f64 level, Vector
       }
       for (u32 k = 0; k < count; k += 2) {
         Segment seg;
-        cross(pairs[k], seg.ax, seg.az);
-        cross(pairs[k + 1], seg.bx, seg.bz);
+        cross(pairs[k], seg.ax, seg.az, seg.edge_a);
+        cross(pairs[k + 1], seg.bx, seg.bz, seg.edge_b);
         const f64 ex = seg.bx - seg.ax, ez = seg.bz - seg.az;
         const f64 len = std::sqrt(ex * ex + ez * ez);
         if (!(len > 0.0)) continue;
@@ -249,6 +263,30 @@ void find_segments(const Grid& g, const f64* z, const u8* sea, f64 level, Vector
         out.push_back(seg);
       }
     }
+  // The chain: the two segments on either side of a crossed edge are each other's next.
+  Vector<u32> first(2 * w * h, k_no_segment_id);
+  for (u32 k = 0; k < out.size(); ++k) {
+    Segment& seg = out[k];
+    for (u32 end = 0; end < 2; ++end) {
+      const u32 e = end == 0 ? seg.edge_a : seg.edge_b;
+      const u32 other = first[e];
+      if (other == k_no_segment_id) {
+        first[e] = k;
+        continue;
+      }
+      if (end == 0) {
+        seg.next_a = other;
+      } else {
+        seg.next_b = other;
+      }
+      Segment& o = out[other];
+      if (o.edge_a == e) {
+        o.next_a = k;
+      } else {
+        o.next_b = k;
+      }
+    }
+  }
 }
 
 // Every point's nearest segment, by a distance transform that hands each point its neighbours'
@@ -304,6 +342,32 @@ void nearest_segments(const Grid& g, const Vector<Segment>& segs, Vector<u32>& n
       }
     }
     if (!changed) break;
+  }
+  // Along the chain: what the transform handed a point may be the neighbour of the segment its
+  // foot lies on (a short segment no neighbour's foot lies on is handed to nobody), so each point
+  // walks the chain while a next segment is nearer, ties to the lower index. On a straight line
+  // that is the perpendicular, exactly.
+  for (u32 p = 0; p < n; ++p) {
+    u32 k = nearest[p];
+    if (k == k_no_segment) continue;
+    const f64 px = static_cast<f64>(p % w), pz = static_cast<f64>(p / w);
+    for (u32 guard = 0; guard < 256; ++guard) {
+      const u32 nexts[2] = {segs[k].next_a, segs[k].next_b};
+      u32 best = k;
+      f64 best_d = d2[p];
+      for (const u32 next : nexts) {
+        if (next == k_no_segment) continue;
+        const f64 d = distance2(segs[next], px, pz);
+        if (d < best_d || (d == best_d && next < best)) {
+          best = next;
+          best_d = d;
+        }
+      }
+      if (best == k) break;
+      k = best;
+      nearest[p] = k;
+      d2[p] = best_d;
+    }
   }
 }
 

@@ -2609,6 +2609,10 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
   const f64 volume_start = total();
   f64 uplifted = 0.0, eroded = 0.0, laid = 0.0, left = 0.0, crept = 0.0, settled = 0.0;
   f64 shelf = 0.0;
+  // The ground before each step's creep, where the sea has a wave base its bed may not be built
+  // above by creep either.
+  Vector<f64> shore_kept;
+  if (has_sea && wave_base > 0.0) shore_kept.resize(n);
   u32 sweeps = 0;
   Network network;
   RiverInputs rivers;
@@ -2904,6 +2908,9 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
     // Hillslopes: a Jacobi step reads one surface and writes the other, so rows run in parallel.
     // What creep lowers comes off the sediment first, and what it raises is sediment.
     const f64 before_creep = substeps > 0 ? total() : 0.0;
+    if (shore_kept.size() == n)
+      for (u32 p = 0; p < n; ++p)
+        shore_kept[p] = z[p];
     f64* from = z;
     f64* to = scratch_field.data();
     for (u32 sub = 0; sub < substeps; ++sub) {
@@ -2951,6 +2958,24 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
       carry[p] = fell;
       eroded += fell;
       sed[p] = sed[p] > fell ? sed[p] - fell : 0.0;
+    }
+    // Above the wave base the sea's bed is the waves' to move (landform.md, "The coast"): what
+    // creep laid this step on a point under the sea, above the wave base, is carried off by the
+    // next step's books as a slope's shed is, along the bed to below the wave base or out. Kept,
+    // a land's creep builds its shore out into the sea a cell a few steps.
+    if (shore_kept.size() == n) {
+      const f64* was = shore_kept.data();
+      for (u32 p = 0; p < n; ++p) {
+        if (held[p] != 0 || was[p] > sea) continue;
+        const f64 gain = z[p] - was[p];
+        const f64 above = z[p] - sea_cap;
+        if (!(gain > 0.0) || !(above > 0.0)) continue;
+        const f64 off = gain < above ? gain : above;
+        z[p] -= off;
+        sed[p] = sed[p] > off ? sed[p] - off : 0.0;
+        carry[p] += off;
+        eroded += off;
+      }
     }
     lap(timing.slopes_s);
   }

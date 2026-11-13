@@ -43,6 +43,12 @@ struct Sea @version(2) {
   tide_m: f64 = 0 @since(2) @unit(m)
 }
 
+/// A point in the world's frame, metres.
+struct Point @version(1) {
+  x: f64 @unit(m)
+  z: f64 @unit(m)
+}
+
 /// One entry of the wave climate that arrives from the open sea (docs/experiments/coast.md,
 /// "Inputs"): deep-water waves from a direction for a share of the year. It reaches a shore only
 /// through a `Sea` edge.
@@ -89,12 +95,6 @@ struct Coast @version(1) {
   /// stand. Stage B places the sand at equilibrium once; nothing retreats until stage C.
   stand_yr: i64 = 6000
   step_yr: i64 = 100
-}
-
-/// A point in the world's frame, metres.
-struct Point @version(1) {
-  x: f64 @unit(m)
-  z: f64 @unit(m)
 }
 
 /// A point held at a level, anywhere in the lattice: a lake's sill, a river leaving through a
