@@ -488,6 +488,30 @@ What decides it, on `content/test-scenes/tree-bases/seat.json` (a tread raised 1
 at 3 in 1, a cutting 1.5 m deep with banks at 4 in 1, the tall spruce at eight yaws 5 cm from each
 edge): the GPU case reads the ids and the depth along each edge. Measured numbers are below.
 
+**What it costs** (2026-11-12, the shared desktop at 74 to 86 % CPU beside other agents' builds,
+so upper bounds):
+
+| What | Where | Number |
+|---|---|---|
+| A tile's activation with its trees seated, four 8 m tiles of 256 trees on the test's analytic bank | `msvc-release`, `systems/world`'s `seat_tiles_tests.cpp`, three runs | 1.37 to 1.47 ms the four, of which seating 1.05 to 1.18 ms: about 1.1 µs a tree, 0.26 to 0.3 ms a tile of 256 |
+| Seating on a tile set's ground (`tiles`, a 64 m heightfield with two edits), 4,096 trees, the sampler made | `msvc-debug`, `flora_scene_tests.cpp` | 101 ms: 24.7 µs a tree in a debug build |
+| The tree-bases seat scene's load | `msvc-debug` | 16 seated, 16 lowered, the most 0.79 m, in 7.4 ms |
+
+The query a seat makes is the ground provider's own point query, 17 a tree, so a ground whose point
+query is dear (a tile set read from disk on a miss) costs a tree 17 of them; nothing is cached per
+tile, and the whole read's seating runs on the load's pool in blocks of 1,024. **Bytes**: 12 a tree
+mesh (section 42), 4 a seated instance (`GroundSlope`, on the host's instance), nothing per world
+size. A load with no grounded instance whose mesh has a seat makes no ground and asks nothing.
+
+The forest's own numbers are not here (its scenes are not run from this tree). What another agent
+reads there, with this branch's `engine-view` and `engine-content` copied out: the load's one
+`instances seated by their footprints` line (`seated`, `lowered`, `lowered_max_m`, `ms`) and the
+startup trace's `seats` stage on v42, against the authors' own count (14,458 trees lowered, a median
+of 6.7 cm and a worst of 1.35 m by their profile; the skirt alone answers every plane to 45 degrees,
+so the engine's count is the trees over ground steeper than that under the rim), and `engine-content
+ground sample` at their worst trees' places with `--skirt` set to the mesh's (`engine-content info`
+on the tree's container prints its `seat`).
+
 ### What the build needs from other rows
 
 - **The flora solver** (`domain/flora`: the kit's tube, each species' trunk, the container's

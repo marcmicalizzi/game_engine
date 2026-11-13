@@ -28,7 +28,7 @@ holds one still view a tree, from 3 m along its edge at eye height, a marker eac
 engine-content terrain-synth content/test-scenes/tree-bases/seat-ground.json --kind flat --size 257 --spacing-mm 250 --origin-mm -32000,-32000
 engine-view --scene <absolute path>/content/test-scenes/tree-bases/seat.json --offscreen \
   --camera-path content/test-scenes/tree-bases/seat-views.json --marker-captures <dir>
-engine-content ground sample content/test-scenes/tree-bases/seat.json --point -4.6,-21,0.33 --skirt 0.48
+engine-content ground sample content/test-scenes/tree-bases/seat.json --point -4.55,-21,0.35 --skirt 0.5
 ```
 
 What holds it: `systems/renderer`'s "a tree on a tread's edge or a cutting's lip is seated with no

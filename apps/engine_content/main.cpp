@@ -1261,6 +1261,14 @@ int info(const std::string& path) {
                                 : JsonValue(data.generator_params));
     summary.set("generator", std::move(generator));
   }
+  // The seat (section 42, G201): what a host seats an instance of a tree by.
+  if (data.has_seat()) {
+    JsonValue seat = JsonValue::object();
+    seat.set("radius_m", JsonValue(data.seat.radius_m));
+    seat.set("rim_y_m", JsonValue(data.seat.rim_y_m));
+    seat.set("skirt_y_m", JsonValue(data.seat.skirt_y_m));
+    summary.set("seat", std::move(seat));
+  }
   print_json(summary);
   return k_exit_ok;
 }
