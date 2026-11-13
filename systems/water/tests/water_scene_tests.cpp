@@ -716,7 +716,7 @@ TEST_CASE("water: the bottom seen through the pool shows no ring or fan of the m
   // The map unreadable: the capability finds a file under its name and leaves it; the reader
   // refuses it and the body has no map.
   u32 maps = 0;
-  for (const auto& entry : std::filesystem::directory_iterator(tmp.file("water"))) {
+  for (const auto& entry : std::filesystem::directory_iterator(io::join_path(ddc, "water"))) {
     if (entry.path().extension() != ".depth") continue;
     REQUIRE(write_text(entry.path().string(), "not a depth map"));
     ++maps;
