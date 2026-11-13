@@ -1,0 +1,15 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "R152",
+  "reason": "R152: the frame's cluster set in chunks and a step made on the worker. record_frame gains the chunks' count pass and a build pass a chunk; gpu_scene gains the step in two halves (rt_step_inputs, make_rt_step, take_rt_step) where resize_ray_tracing was one function; renderer.md and gfx.md gain the two sections. The step's code belongs in a file of its own beside gpu_scene.cpp, which this row did not get to.",
+  "date": "2026-11-12",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "renderer.record_frame.lines": 49,
+    "renderer.record_frame.add_pass": 1,
+    "renderer.gpu_scene_cpp.lines": 116,
+    "renderer.gpu_scene_h.lines": 102,
+    "page:docs/subsystems/renderer.md": 7203,
+    "page:docs/subsystems/gfx.md": 846
+  }
+}

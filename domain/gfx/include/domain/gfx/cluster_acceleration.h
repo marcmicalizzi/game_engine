@@ -135,6 +135,41 @@ bool create_cluster_set(const Device& device, const ClusterSetLimits& limits, Cl
 void build_cluster_set(CommandList commands, const ClusterSet& set, DeviceAddress records,
                        DeviceAddress count, const BufferResource& scratch);
 
+// **A set in chunks** (docs/subsystems/renderer.md, "The frame's set stands in chunks"; R152). An
+// implicit build writes into one buffer, so a set that is one build is one allocation, and changing
+// how many structures it holds makes all of it again: 3.1 GB at the RTX 5090's default budget, held
+// beside the old one until the frames in flight have let go of it, which a card the scene already
+// fills has no room for. A set whose storage is several buffers, each built by a command of its
+// own, grows by the buffers it lacks and shrinks by the ones it gives up. These are the two halves
+// `create_cluster_set` makes together: the storage one build writes into (`out.data`, with the
+// limits, the alignment and the scratch that build needs), and the address and size arrays builds
+// report into (`out.addresses`, `out.sizes`) — one pair of arrays for all the chunks, so the
+// bottom-level build still reads one array of addresses in record order.
+bool create_cluster_storage(const Device& device, const ClusterSetLimits& limits, ClusterSet& out,
+                            std::string* error = nullptr);
+bool create_cluster_outputs(const Device& device, u32 max_clusters, ClusterSet& out,
+                            std::string* error = nullptr);
+// `build_cluster_set` for one chunk: `storage`'s clusters from `records` (the chunk's first
+// record), their addresses and sizes into `outputs` from its entry `first` on. `count` as there:
+// the device address of this chunk's u32 count (clas_chunks.slang writes them), or 0 for all of it.
+void build_cluster_chunk(CommandList commands, const ClusterSet& storage, const ClusterSet& outputs,
+                         u32 first, DeviceAddress records, DeviceAddress count,
+                         const BufferResource& scratch);
+// clas_chunks.slang's push block: what each chunk's build reads as its count, from the frame's
+// one built count. Chunk k holds records [k * chunk_clusters, (k + 1) * chunk_clusters) of the
+// first `capacity`, so its count is what of the built records falls in that range. One workgroup,
+// a thread a chunk.
+struct ClusterChunkParams {
+  u64 record_count = 0;    // u32: the frame's built count (ClusterRecordParams::record_count, word 0)
+  u64 counts = 0;          // u32[chunks] out
+  u32 chunks = 0;          // at most k_cluster_chunks_workgroup
+  u32 chunk_clusters = 0;  // a whole chunk's clusters; the last chunk may hold fewer
+  u32 capacity = 0;        // every chunk's clusters together
+  u32 pad = 0;
+};
+static_assert(sizeof(ClusterChunkParams) == 32);
+inline constexpr u32 k_cluster_chunks_workgroup = 64;  // numthreads in clas_chunks.slang
+
 // **Clusters built where the caller says** (explicit destinations): one CLAS per record, each into
 // the address at the same index of `destinations` (u64 each), which the caller has made room for —
 // `structure_bytes` from `cluster_explicit_sizes` at the device's `cluster_alignment`. It is what a

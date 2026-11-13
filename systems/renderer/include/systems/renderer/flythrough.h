@@ -189,12 +189,29 @@ class VisibleCensus {
 
   // `levels[l]` is the frame's visible pairs at DAG level l (0 is the source geometry), and
   // `meshes[m]` its visible pairs of scene mesh m. Both are resized to fit.
+  //
+  // **And the chain's census** (R152; docs/experiments/rt-chain-walk-2026-11-12.md): the same
+  // entries, and the shadow casters' run after them, by what the ray tracing chain does with their
+  // instance (`GpuScene::rt_instance_kind`, 0 to 7) and by its rank in the drop order
+  // (`rt_instance_rank`: 0 the prefix, ring + 1 a tail's, the last rank everything past it):
+  // `chain()[(caster * k_chain_ranks + rank) * k_chain_kinds + kind]`, which says what a frame's
+  // structures are for — its own builds against references, the deforming against the rigid, ring
+  // by ring. With `renderer.rt.census_log` (false) every counted frame logs it, one line.
+  static constexpr u32 k_chain_ranks = 6;
+  static constexpr u32 k_chain_kinds = 8;
   bool count(const SceneData& data, const GpuScene& scene, const Stats& stats, Vector<u32>& levels,
              Vector<u32>& meshes, std::string* error = nullptr);
+  std::span<const u32> chain() const noexcept {
+    return std::span<const u32>(chain_, 2 * k_chain_ranks * k_chain_kinds);
+  }
 
  private:
+  bool copy_runs(const GpuScene& scene, const Stats& stats, bool casters, u64& entries,
+                 std::string* error);
   const gfx::Device* device_ = nullptr;
   gfx::BufferResource staging_;
+  u32 chain_[2 * k_chain_ranks * k_chain_kinds] = {};
+  u32 counted_ = 0;  // frames counted, for the log's line
 };
 
 }  // namespace engine::renderer

@@ -412,6 +412,23 @@ class GpuScene {
   }
   // The mesh a hole's null instance names: one `gfx::MeshDesc` past the scene's, with no clusters.
   u32 null_mesh() const noexcept { return null_mesh_; }
+  // **What the ray tracing chain does with instance `index`'s clusters** (R152's census;
+  // `VisibleCensus::count`): 0 the frame builds them itself and they deform, 1 the frame builds
+  // them itself and they are rigid (a mesh the cache does not keep), 2 they reference the resident
+  // cache's, 3 a static form's, built once — and 4 added for an instance the caster policy leaves
+  // untraced, which the chain builds only under a traced picture and then itself. ~0 past the end.
+  // `rt_instance_rank` is its rank in the drop order: 0 the prefix, its ring + 1 in a tail.
+  u32 rt_instance_kind(u32 index) const noexcept {
+    if (index >= instance_count_ || index >= instance_table_.size()) return ~0u;
+    const gfx::InstanceDesc& instance = instance_table_[index];
+    const u32 untraced = (instance.flags & gfx::k_instance_untraced) != 0 ? 4u : 0u;
+    if ((instance.flags & gfx::k_instance_static_rt) != 0) return 3u | untraced;
+    if (rt_instance_cached(instance)) return 2u;
+    return (instance.deform != gfx::k_invalid_deform ? 0u : 1u) | untraced;
+  }
+  u32 rt_instance_rank(u32 index) const noexcept {
+    return index < slot_rank_.size() ? slot_rank_[index] : 0u;
+  }
   // True when every instance slot's `first_pair` is at or above the one before it and every live
   // slot is where the layout says: what the cull pass's binary search needs. For the tests.
   bool validate_tables(std::string* why = nullptr) const;
@@ -672,9 +689,22 @@ class GpuScene {
   // cannot hold both sets at once returns false with `retired` empty and nothing changed, and the
   // caller waits and calls again without it. `renderer.rt.swap_references` (true) false keeps the
   // old rule, a references step that waits: the comparison the measurement makes.
+  //
+  // **The frame's set stands in chunks** (R152; renderer.md, "The frame's set stands in chunks"):
+  // the cluster structures' storage is `rt_chunk_count()` buffers of `rt_chunk_clusters()` clusters
+  // each (the last what is left), every one built by a command of its own into its slice of the
+  // set's one array of addresses, so a step makes the chunks the new capacity lacks and hands back
+  // the ones it gives up, and the chunks both hold stay where they are. Until then the storage was
+  // one buffer, 3.1 GB at the RTX 5090's default budget, made again whole at every step and held
+  // beside the old one for two frames — which a card the forest fills had no room for, so the step
+  // waited for the device and freed first: 66 to 254 ms on the owner's v41 walk. At most
+  // `k_rt_chunks_max` chunks (a larger capacity is cut into larger ones); `renderer.rt.
+  // chunk_clusters` 0 is one chunk whatever the capacity, the comparison.
+  static constexpr u32 k_rt_chunks_max = gfx::k_cluster_chunks_workgroup;
   struct RtRetired {
-    static constexpr u32 k_buffers = 11;  // records, hit entries, the CLAS set's three, the BLAS
-                                          // set's two, the scratch, the cache's three references
+    // Records, hit entries, the set's addresses and sizes, the BLAS set's two, the scratch, the
+    // cache's three references, and every chunk.
+    static constexpr u32 k_buffers = 10 + k_rt_chunks_max;
     gfx::BufferResource buffers[k_buffers];
     u32 count = 0;
   };
@@ -686,6 +716,68 @@ class GpuScene {
     i64 free_ns = 0, records_ns = 0, clas_ns = 0, references_ns = 0, blas_ns = 0, scratch_ns = 0;
   };
   const RtResizeCost& rt_resize_cost() const noexcept { return rt_resize_cost_; }
+  u32 rt_chunk_count() const noexcept { return rt_chunk_count_; }
+  u32 rt_chunk_clusters() const noexcept { return rt_chunk_clusters_; }
+  // Chunk `k`'s storage (`data`, its limits and alignment): what `gfx::build_cluster_chunk` takes
+  // with `clas_set` as the outputs.
+  const gfx::ClusterSet& rt_chunk(u32 k) const noexcept { return clas_chunks_[k]; }
+  // Every chunk's storage together, in bytes.
+  u64 rt_chunk_bytes() const noexcept {
+    u64 bytes = 0;
+    for (u32 k = 0; k < rt_chunk_count_; ++k)
+      bytes += clas_chunks_[k].data.size;
+    return bytes;
+  }
+  // **A step in two halves** (R152; renderer.md, "A step is made on the worker"): what a step
+  // makes is made from a copy of what it needs of the scene (`rt_step_inputs`), by any thread
+  // (`make_rt_step`: allocations and driver size queries, nothing of the scene read or written),
+  // and becomes the scene's on the frame's thread (`take_rt_step`), which hands the buffers it
+  // replaces to `retired` — or, with none, destroys them: the caller waited for the device. A step
+  // made for a scene that has changed since (`rt_step_current` false: another step was taken, or
+  // the chain was laid out again) is dropped with `drop_rt_step`. `resize_ray_tracing` is the three
+  // in a row on one thread.
+  struct RtStepInputs {
+    u32 capacity = 0;    // clamped: what the step makes
+    u32 references = 0;  // likewise; 0 without a cache
+    bool swap = false;   // made beside the scene's set: the chunks both hold are kept
+    bool keep_frame_set = false;   // the capacity stays: only the references' side is made
+    bool swap_references = false;  // the cache's three reference buffers are made
+    u32 chunk_clusters = 0;        // the new layout's chunk
+    u32 kept_chunks = 0;           // the scene's chunks [0, kept) stay
+    u64 kept_scratch_bytes = 0;    // what a build of the kept chunks' largest needs
+    gfx::ClusterSetLimits limits;  // `rt_limits_` with the capacity and its geometry index
+    u32 blas_structures = 0;
+    u32 blas_per_instance = 0;
+    u64 fixed_scratch_bytes = 0;  // the top-level build's and the cache's: the scratch is no less
+    u64 scratch_bytes = 0;        // the scratch the scene holds
+    u64 generation = 0;           // the scene's `rt_generation_` when the step was asked for
+  };
+  struct RtStep {
+    RtStepInputs inputs;
+    gfx::BufferResource records, hit_entries;
+    gfx::ClusterSet outputs;                  // the addresses and sizes of the whole capacity
+    gfx::ClusterSet chunks[k_rt_chunks_max];  // made: [inputs.kept_chunks, chunk_count)
+    u32 chunk_count = 0;
+    gfx::ClusterBlasSet blas;
+    gfx::BufferResource scratch;  // made only when the builds need more than the scene's
+    gfx::BufferResource references, reference_keys, misses;
+    RtResizeCost cost;
+  };
+  // False (and an error) for a capacity the chain cannot take as asked: a references step under
+  // `renderer.rt.swap_references` false, which must wait.
+  bool rt_step_inputs(u32 capacity, u32 references, bool beyond_budget, bool swap,
+                      RtStepInputs& out, std::string* error = nullptr) const;
+  static bool make_rt_step(const gfx::Device& device, const RtStepInputs& inputs, RtStep& out,
+                           std::string* error = nullptr);
+  static void drop_rt_step(const gfx::Device& device, RtStep& step) noexcept;
+  bool rt_step_current(const RtStepInputs& inputs) const noexcept {
+    return inputs.generation == rt_generation_;
+  }
+  void take_rt_step(RtStep& step, RtRetired* retired);
+  // What a step to `capacity` and `references` allocates beside what the scene holds, in bytes at
+  // the chain's own prices: the clusters of the chunks it makes and the references when they
+  // change. What a swap asks room for.
+  u64 rt_step_bytes(u32 capacity, u32 references) const noexcept;
   // **Static structures for rigid forms** (docs/subsystems/renderer.md, "Static structures for
   // rigid forms"; `ResolvedSettings::static_forms`). A rigid distance form drawn at its frontier is
   // a fixed cut, so its cluster structures and one bottom-level structure are built here once, at
@@ -1412,7 +1504,13 @@ class GpuScene {
   gfx::ClusterTemplateSet clas_templates;  // --rt-templates: one per cluster, packed to size
   // Sized by the frame (`rt_capacity()` clusters), and replaced by `resize_ray_tracing`:
   gfx::BufferResource records;  // CLAS build or instantiate records written from the cull output
+  // The frame's cluster set: `clas_set` holds the address and size arrays of the whole capacity
+  // (and its limits; no storage of its own), `clas_chunks_` the storage, a buffer a chunk (R152).
   gfx::ClusterSet clas_set;
+  gfx::ClusterSet clas_chunks_[k_rt_chunks_max];
+  // u32[k_rt_chunks_max]: each chunk's count for the frame, written by clas_chunks.slang from the
+  // record count's word 0; scene-sized, made with the chain.
+  gfx::BufferResource clas_chunk_counts;
   gfx::ClusterBlasSet blas_set;  // every instance's cluster bottom-level structure, one build
   gfx::BufferResource rt_scratch;
   // The resident cluster structure cache (`rt_cache()`; gfx::ClusterCacheTables documents each):
@@ -1958,6 +2056,9 @@ class GpuScene {
   u64 rt_bytes_per_cluster_plain_ = 0;
   u32 rt_capacity_ = 0;
   RtResizeCost rt_resize_cost_;
+  u32 rt_chunk_count_ = 0;     // the chunks the frame's set stands in (R152)
+  u32 rt_chunk_clusters_ = 0;  // a whole chunk's clusters; the last chunk holds what is left
+  u64 rt_generation_ = 0;      // moves whenever the per-frame half is made, taken or laid out again
   u32 rt_capacity_limit_ = 0;
   u32 rt_budget_mib_ = 0;
   RtBudgetSource rt_budget_source_ = RtBudgetSource::Device;
@@ -2011,6 +2112,7 @@ class GpuScene {
   void count_rt_cache_instances() noexcept;
   // Which meshes are static and which of their clusters are the frontier, before the geometry is
   // uploaded: the cut the cull selects for them is patched to the frontier (`patch_static_lods`).
+  void destroy_rt_chunks() noexcept;
   void plan_static_forms();
   bool build_static_forms(std::string* error);
   void uncount_static(u32 slot) noexcept;

@@ -385,6 +385,13 @@ struct RtStats {
   u32 peak_wanted = 0;
   u32 grows = 0;
   u32 shrinks = 0;
+  // **Steps made on the worker** (R152; renderer.md, "A step is made on the worker"): how many of
+  // the steps above (and of the references') the frame's thread only took, what the last one cost
+  // the worker in milliseconds, and the most one did. And the chunks the frame's set stands in.
+  u32 worker_steps = 0;
+  f64 worker_step_ms = 0.0;
+  f64 peak_worker_step_ms = 0.0;
+  u32 chunks = 0;
   u64 overflow_frames = 0;
   u64 dropped_instances = 0;
   u64 dropped_caster_instances = 0;
@@ -1008,6 +1015,9 @@ class SceneRenderer {
     // tlas_references.slang, `blas_compact_main` (R143): the bottom-level records of the instances
     // that reference anything, which the build reads.
     gfx::ComputePipeline blas_compact;
+    // clas_chunks.slang (R152): each chunk of the frame's cluster set's count, from the one built
+    // count, before the chunks' builds.
+    gfx::ComputePipeline clas_chunks;
     gfx::ComputePipeline trace;
     // resolve_half_sun.slang: the sun's ray once per 2x2 block of the half-rate columns (R126;
     // renderer.md, "A shading rate by region"), built only where the resolve traces shadows.
@@ -1273,6 +1283,16 @@ class SceneRenderer {
   // `references` 0 keeps the cache's reference capacity.
   bool apply_rt_capacity(u32 capacity, std::string* error, bool beyond_budget = false,
                          u32 references = 0);
+  // **A step made on the worker** (R152; renderer.md, "A step is made on the worker"): asked for by
+  // `begin_frame` when the policy answers with another capacity, made by the worker that frees the
+  // retired buffers, and taken by the first `begin_frame` that finds it made (or, when the chain
+  // is already short of the demand read back, waited for). `cancel_rt_step` waits for one and
+  // drops it: whoever resizes on its own thread does that first.
+  bool rt_step_pending() const noexcept;
+  bool start_rt_step(u32 capacity, u32 references);
+  bool take_rt_step(bool wait);
+  void cancel_rt_step();
+  void note_rt_step(u32 before, u32 references_before);
   void note_rt_bytes() noexcept;
 };
 
