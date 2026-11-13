@@ -1362,7 +1362,34 @@ drawn").
 scenes A, B and C to rounding (the landing v_b sqrt(2H/g) out, after sqrt(2H/g), at
 sqrt(v_b² + 2gH); the strike 2 v_b² tan² θ / g down a 60-degree face and the film at Manning's
 normal speed on it); the count on cliffs of known heights down a fall line and across a slope; a
-sea cliff at a mouth; and the bytes at one job and six, read back and pinned.
+sea cliff at a mouth; and the bytes at one job and six, read back and pinned (the pin over a
+network made by hand, so it holds the cook and not the planner).
+
+**Measured** (2026-11-13, `msvc-release`, `channels.falls_cook` with `--wait-quiet=120`, which
+proceeded on a busy machine: other processes at 28 % of the CPU and the GPU lock held by another
+agent's frame budget, so an upper bound): 640 runs on 64 links made by hand in 529 ms on one
+thread, **0.83 ms a run** (nine columns marched over the window of four widths about the run, the flights in closed
+form); the file holds **about 11.7 KB a run** (nine columns of about 45 vertices at 28 bytes, the
+column and fall records 340 bytes). On W93's 4.1 km ridged heightfield (305 links, 16.8 km²,
+no steps in its beds) the cook found no run and took 5 ms; `engine-content falls` there was 6.1 s,
+all of it the plan (3.6 s) and the uncut ground's set.
+
+**What the count found on b7681ac9** (the cliffs' scene: a valley at 3 % with cliffs of 3, 7, 10
+and 14 m, a channel about 1.2 m wide, eight plans): every cliff is found, at a marked knickpoint,
+a plunge; but **the seat (W116) eats steps where a line meets a cliff at an angle**, down a fall
+line as much as across a slope. A point's lower bank is read across the line's heading; on or just
+above a face that the line crosses at 20 to 30 degrees the reading lands on the ground below it, so
+the seat is the step, and its dilation over two points lowers the lip a step deep a metre upstream
+and leaves a pit a step deep at the foot, until the floor of two thalwegs under the ground brings
+the bed back up. Seed 2 down the fall line: 12.9 m of seat at the 14 m cliff, two runs, drops of
+21.9 and 13.9 m; with the move off, 0.64 m. A case marked `may_fail` holds what the rule should
+give (each cliff one run of its own height, no pit at its foot), for the row that fixes the seat.
+
+**A sea cliff at a mouth** (a valley at 3 % over a 20 m cliff whose foot stands in the sea): the
+link ends at the shoreline on the cliff's face and its fan grades the last three widths of bed to
+the sea, so the cliff in the bed is a ramp of about 80 degrees; the lip's water strikes it 8.4 m
+down and slides into the sea, a horsetail, where the cliff itself would be a plunge. The fan is the
+rule for a stream meeting a body over low ground, not over a cliff.
 
 ## Invariants
 

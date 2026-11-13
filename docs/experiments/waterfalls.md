@@ -230,7 +230,8 @@ Stage 1 is first because it is the objection every reviewer has made ("does not 
 layout and the reader. What the build decided against this page's design, and why:
 
 - **The `falls` list is a file beside the plan, not a field of `WaterChannel`.** A column's path
-  is tens of vertices and a lip nine columns, so a fall is kilobytes (measured below); the
+  is tens of vertices and a lip nine columns, so a fall is kilobytes (about 11.7 KB a run, and
+  0.83 ms a run to cook on one thread: the channels page's "Measured"); the
   description is text an author pastes. The cook writes `falls-<plan>-<options>.channel-falls` under
   the plan's own directory with `k_falls_version` of its own, and the plan, its format and
   `ChannelLayer` do not move. The water may not link `domain/channels` (ADR-0027), so the layout is
