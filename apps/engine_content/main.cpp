@@ -183,6 +183,11 @@ const char* k_usage =
     "                                          blocks) from the scene's channels placements\n"
     "                                          over its terrain; present with the channels\n"
     "                                          capability\n"
+    "  falls <scene.json> [<out.json>] [--ddc <dir>] [--entry <i>] [--paths]\n"
+    "                                          where the scene's channels' water leaves its bed:\n"
+    "                                          every run of the bed's steps tested and the falls\n"
+    "                                          cooked beside each entry's plan; present with the\n"
+    "                                          channels capability\n"
     "  landform <sketch.json> <out dir> [--name <stem>] [--jobs <n>] [--no-relief]\n"
     "                                          solve a region sketch into an authored\n"
     "                                          heightfield, its fields (drainage area,\n"
@@ -1429,6 +1434,7 @@ int main(int argc, char** argv) {
   if (command == "flora") return content::flora_command(argc, argv);
   if (command == "rocks") return content::rocks_command(argc, argv);
   if (command == "channels") return content::channels_command(argc, argv);
+  if (command == "falls") return content::falls_command(argc, argv);
   if (command == "landform") return content::landform_command(argc, argv);
   if (command == "matgen") return content::matgen_command(argc, argv);
   if (command == "routes") return content::routes_command(argc, argv);

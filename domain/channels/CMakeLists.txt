@@ -18,17 +18,19 @@ engine_module(NAME channels LAYER domain OPTIONAL WHOLE_ARCHIVE
   GENERATOR placement:channels mesh:channel
   DEPS base containers math hash json schema log io jobs assets geometry materials texture scene_gen
        channels_schemas
-  SOURCES src/network.cpp src/sediment.cpp src/pieces.cpp src/generator.cpp src/measure.cpp)
+  SOURCES src/network.cpp src/sediment.cpp src/pieces.cpp src/generator.cpp src/measure.cpp
+          src/falls.cpp)
 
 # W116: where the tileset capability is built, the tests also read the cut on the tile set's own
 # edited ground (`tileset::TerrainEdits`), a test-only dependency: the module itself never names it.
 if(TARGET engine_tileset)
   engine_module_tests(NAME channels
     SOURCES tests/channels_tests.cpp tests/seat_ground_tests.cpp tests/size_table.cpp
+            tests/falls_tests.cpp
     DEPS tileset)
 else()
   engine_module_tests(NAME channels
-    SOURCES tests/channels_tests.cpp tests/size_table.cpp)
+    SOURCES tests/channels_tests.cpp tests/size_table.cpp tests/falls_tests.cpp)
 endif()
 
 # A tile's activation and the region's laying, timed (channels.md, "What a tile costs"); the CTest

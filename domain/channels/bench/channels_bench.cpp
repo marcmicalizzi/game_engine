@@ -5,6 +5,7 @@
 // which is what `open` adds to the plan. Measured with `--wait-quiet` (bench.md, "Measuring on a
 // shared machine").
 #include <domain/channels/channels.h>
+#include <domain/channels/falls.h>
 #include <foundation/bench/bench.h>
 
 #include <cmath>
@@ -67,6 +68,47 @@ ENGINE_BENCH(channels_tile_activation, "channels.tile_activation") {
     bench::keep(triangles);
   }
   state.set_items(clast_count(piece));
+}
+
+// **The falls' cook** (S104; channels.md, "Where the water leaves its bed (S104)"): a network made
+// by hand, so the planner is not in it: 64 straight links (8 in the smoke run) 200 m long in half
+// metres, falling 3 %, each with ten cliffs of 2 to 11 m, every one a run the cook marches nine
+// columns down. Items are runs: the seconds a fall costs to cook.
+ENGINE_BENCH(channels_falls_cook, "channels.falls_cook") {
+  ChannelNetwork n;
+  const u32 links = bench::smoke_mode() ? 8u : 64u;
+  for (u32 k = 0; k < links; ++k) {
+    ChannelLink link;
+    for (u32 i = 0; i <= 400; ++i) {
+      const f64 x = .5 * i;
+      f64 down = 0;
+      for (u32 c = 0; c < 10; ++c)
+        down += x > 10.0 + 18.0 * c + static_cast<f64>(k % 5) ? 2.0 + static_cast<f64>(c) : 0.0;
+      ChannelPoint pt;
+      pt.at = WorldPos{x, 100 - .03 * x - down, 10.0 * k};
+      pt.width_m = 1.2f + .1f * static_cast<f32>(k % 7);
+      pt.depth_m = .1f;
+      pt.slope = .03f;
+      pt.area_m2 = 6e4f;
+      link.line.push_back(pt);
+      link.bed.push_back(pt.at.y - .12);
+      link.reach.push_back(static_cast<u8>(ChannelReach::PoolRiffle));
+      link.knick.push_back(0);
+    }
+    link.keep = link.line.size();
+    n.links.push_back(std::move(link));
+  }
+  ChannelLayer layer;
+  layer.name = "bench";
+  std::string error;
+  u64 runs = 0;
+  while (state.keep_running()) {
+    FallSet set;
+    cook_falls(layer, n, 0, FallOptions{}, nullptr, set, error);
+    runs = set.stats.runs;
+    bench::keep(set.vertices.size());
+  }
+  state.set_items(runs);
 }
 
 ENGINE_BENCH(channels_lay_region, "channels.lay_region") {

@@ -1297,6 +1297,100 @@ target (a 3.0 m bed, where the paint drew 5.2 m: the forest layer's region cuts 
 channel's catchment). The density is a little under the model's because a region's edge cuts the
 catchments that flow in across it. The captures and their verdict are in the W86 row's report.
 
+## Where the water leaves its bed (S104)
+
+(2026-11-12, roadmap S104, the build's stages 0 and 1; the design, its grounding and its sources
+are [the waterfalls page](../experiments/waterfalls.md), whose "Built: stages 0 and 1" says what
+was read again tonight.) Water is a projectile its bed may hold up and cannot pull down. `falls.h`
+holds two things, both new files beside the plan and neither touching it: `k_channels_version`,
+the plan's format and `ChannelLayer` are as they were, and the falls carry `k_falls_version` (1)
+of their own.
+
+**The test, on the solver's own steps** (stage 0, `cook_falls`). A run is a maximal run of a
+link's stretches whose cut bed (`ChannelLink::bed`, after the seat, the chute's limit and the fan)
+falls at least its run, 45 degrees: the bed the water would draw as falling today. **Every link is
+read**, whether or not the water's description draws it: the island's streams over their sea
+cliff drain under `--min-area-m2` and carry no water block, so a count over the description never
+sees them; `drawn` and `drawn_falls` say which falls the description draws. Each run is marched
+(below) over a window from two of the lip's widths above it to two below its last point, nine
+columns across the water's width at the lip, each with its head over the lip's section and a share
+of the discharge as that head to the 3/2 power. A column's flight is a **fall** when it drops at
+least **three critical depths** (Rand's water behind the nappe is under half the drop there) and
+its critical depth is at least **a centimetre**; a run's kind is its highest falling column's —
+a plunge (it comes down in water), a horsetail (on a face, and slides), tiered (two falls in one
+column) — else what its columns came to: held (no column left the bed), drowned (it left, short of
+three critical depths: a riser and S103's hole) or a trickle (under a sheet's discharge: wet rock).
+**At a mouth** the landing past the line's last point is the body's level, and a run that reaches a
+mouth link's last point is counted under `mouth_falls` whatever it lands on.
+
+**The march** (stage 1, `march_column`). The water's depth at a lip is `stage` of the thalweg as
+the description lays it in the cut, its speed Manning's at the description's n (0.04) over the bed's
+fall across the knickpoint's window above the lip. On the bed the speed follows the energy equation
+against Manning's friction slope, stepped every 5 cm in a half-implicit form that tends to the
+normal speed and never overshoots it. At each point the column **leaves** where the parabola launched
+along the stretch above at its speed (the brink's, q over 0.715 d_c, where it arrives subcritical)
+stands more than a millimetre over the bed at the next point; aloft it is the free jet in closed
+form, and it **lands** at the first root of the parabola against each stretch's surface in turn —
+the rock of a face, the water standing over any other stretch, a pool's level backed up against a
+face's foot, a body's level past a mouth — keeping the part of its velocity along what it struck,
+and **slides** on a face. The path is sampled by the bed's points and, aloft, by a step from a
+quarter of the sheet's thickness at the lip growing to a metre. Every decision is + - x / and a
+square root, the cube root a fixed Newton iteration, and the links are cooked a job each and merged
+by link index: the same bytes from every toolchain and at any thread count.
+
+**The data the water reads** (`falls_bytes`, `read_falls`, the reader; `ensure_falls` keeps it at
+`<derived-data root>/channels/falls-<plan key>-<options hash>.channel-falls`, beside the plan, and
+`engine-content falls` cooks it and prints the count). The water capability may not link this
+module (ADR-0027), so the layout is the contract, little-endian, each record its bytes with no
+padding (pinned in the size table):
+
+| Part | Bytes | Fields |
+|---|---|---|
+| header | 24 | `u32` magic `CHFL`, `u32` `k_falls_version`, `u64` the plan's key, `u64` the options' hash |
+| stats | 120 | 14 `u64` (links, runs, held, drowned, trickles, falls, plunges, horsetails, tiered, drawn, mouth, knick, columns, vertices), `f64` the highest drop |
+| `Fall` | a `u32` count, then 88 a fall | `i64` x, y, z of the lip (world mm; y its bed); `u32` link, lip point, run's last point; `i32` heading x, z (1e-4); `u32` discharge (ml/s), critical depth (um), launch speed (mm/s); `i32` drop (mm); `u32` break-up length (mm, K = 0.77: the design page's own fit); `i32` landing height from the lip (mm); `u32` water depth there (mm); `u32` first column, columns; `u8` kind, landing, reach above, turbulence class, knick, drawn, two pad |
+| `FallColumn` | a `u32` count, then 28 a column | `i32` offset across, left positive (mm); `u32` q (mm²/s), critical depth (um); `i32` drop (mm); `u32` first vertex, vertices; `u8` kind, landing, flights, pad |
+| `FallVertex` | a `u32` count, then 28 a vertex | `i32` x, y, z from the lip (mm; y the lower face of the water); `u32` time from the column's first vertex (us), speed (mm/s), thickness q over the speed (um); `u8` phase (0 bed, 1 air, 2 slide), three pad |
+| closing | 8 | `u64` the hash of everything before it |
+
+A reader refuses a file of another magic or version, one that does not hash to its closing, and one
+whose indices run past their arrays. The sheet's mesh is then the columns' paths side by side: a
+row a vertex, UV.x the travel time, UV.y the thickness, as the design asks (waterfalls.md, "What is
+drawn").
+
+**Held** (`tests/falls_tests.cpp`): the march against the free jet's closed forms for the design's
+scenes A, B and C to rounding (the landing v_b sqrt(2H/g) out, after sqrt(2H/g), at
+sqrt(v_b² + 2gH); the strike 2 v_b² tan² θ / g down a 60-degree face and the film at Manning's
+normal speed on it); the count on cliffs of known heights down a fall line and across a slope; a
+sea cliff at a mouth; and the bytes at one job and six, read back and pinned (the pin over a
+network made by hand, so it holds the cook and not the planner).
+
+**Measured** (2026-11-13, `msvc-release`, `channels.falls_cook` with `--wait-quiet=120`, which
+proceeded on a busy machine: other processes at 28 % of the CPU and the GPU lock held by another
+agent's frame budget, so an upper bound): 640 runs on 64 links made by hand in 529 ms on one
+thread, **0.83 ms a run** (nine columns marched over the window of four widths about the run, the flights in closed
+form); the file holds **about 11.7 KB a run** (nine columns of about 45 vertices at 28 bytes, the
+column and fall records 340 bytes). On W93's 4.1 km ridged heightfield (305 links, 16.8 km²,
+no steps in its beds) the cook found no run and took 5 ms; `engine-content falls` there was 6.1 s,
+all of it the plan (3.6 s) and the uncut ground's set.
+
+**What the count found on b7681ac9** (the cliffs' scene: a valley at 3 % with cliffs of 3, 7, 10
+and 14 m, a channel about 1.2 m wide, eight plans): every cliff is found, at a marked knickpoint,
+a plunge; but **the seat (W116) eats steps where a line meets a cliff at an angle**, down a fall
+line as much as across a slope. A point's lower bank is read across the line's heading; on or just
+above a face that the line crosses at 20 to 30 degrees the reading lands on the ground below it, so
+the seat is the step, and its dilation over two points lowers the lip a step deep a metre upstream
+and leaves a pit a step deep at the foot, until the floor of two thalwegs under the ground brings
+the bed back up. Seed 2 down the fall line: 12.9 m of seat at the 14 m cliff, two runs, drops of
+21.9 and 13.9 m; with the move off, 0.64 m. A case marked `may_fail` holds what the rule should
+give (each cliff one run of its own height, no pit at its foot), for the row that fixes the seat.
+
+**A sea cliff at a mouth** (a valley at 3 % over a 20 m cliff whose foot stands in the sea): the
+link ends at the shoreline on the cliff's face and its fan grades the last three widths of bed to
+the sea, so the cliff in the bed is a ramp of about 80 degrees; the lip's water strikes it 8.4 m
+down and slides into the sea, a horsetail, where the cliff itself would be a plunge. The fan is the
+rule for a stream meeting a body over low ground, not over a cliff.
+
 ## Invariants
 
 - The network is a function of the layer, the seed and the ground's answers at the lattice's

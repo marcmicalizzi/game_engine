@@ -223,6 +223,85 @@ Stage 1 is first because it is the objection every reviewer has made ("does not 
 - **S99's record**: a face and a splash reach in place of the two stated spray bands.
 - **The landform and the cliffs**: a plunge pool; an alcove where a cap overhangs. Neither holds stage 1.
 
+## Built: stages 0 and 1
+
+(2026-11-12, night, batch 63.) The fall test and the cook, in `domain/channels` and no shader:
+[channels](../subsystems/channels.md#where-the-water-leaves-its-bed-s104) has the rules, the file's
+layout and the reader. What the build decided against this page's design, and why:
+
+- **The `falls` list is a file beside the plan, not a field of `WaterChannel`.** A column's path
+  is tens of vertices and a lip nine columns, so a fall is kilobytes (about 11.7 KB a run, and
+  0.83 ms a run to cook on one thread: the channels page's "Measured"); the
+  description is text an author pastes. The cook writes `falls-<plan>-<options>.channel-falls` under
+  the plan's own directory with `k_falls_version` of its own, and the plan, its format and
+  `ChannelLayer` do not move. The water may not link `domain/channels` (ADR-0027), so the layout is
+  the contract, given byte by byte on the channels page with `read_falls` as the reference reader;
+  how the water finds the file for a block (the plan's key on the block, or a scene field) is the
+  water row's to choose.
+- **The march reads the plan's cut bed, not the ground.** The profile is `ChannelLink::bed` at the
+  line's points (0.5 m) and linear between, as the cut is, not the lattice's 0.25 m: the bed is what
+  the tile set cuts and the water stands in, it is known without the ground, and the same plan cooks
+  the same bytes wherever it was made. Each column's bed is the cut's section risen at its place
+  across the line. The leave and land tests are exact against that polyline (a quadratic's root a
+  stretch), so a vertical step sampled as one stretch of half a metre lands where the closed form
+  says.
+- **Every link is tested.** The forest's island streams over their sea cliff drain under the
+  description's threshold and carry no water block (the W117 finding of the night); the cook reads
+  every link of the plan and says which falls the description draws.
+- **The fall test is on runs of the bed's own steps**, the stretches the cut makes fall at 45
+  degrees: where the solver put a fall (a knickpoint) or failed to spread a drop (`steep_left`).
+  The test itself is this page's: three critical depths of flight and a centimetre of critical
+  depth.
+- **What a stage 0 and 1 cook does not do yet**: the drops' slowing past the break-up length (stage
+  2: the cook carries L_b by the reach's turbulence class, **K = 0.77 being this page's own fit**,
+  and the free jet's path to the landing, so a fall taller than its break-up length plus a few
+  metres lands faster here than it will); the brink's draw-down over four critical depths (S103's
+  heights in the ribbon); a plunge pool's depth (the plan's water at the foot is `stage` of the
+  thalweg, so `tail_depth` is that, not a pool's); air drag on the sheet (a hundredth of g while it
+  is whole, above).
+- **A ladder of small risers counts by its flights.** The test is on a flight, not on a riser: on
+  twenty level treads of half a metre with water half a critical depth deep over each, every riser
+  is left, and a flight's drop is its riser less the water on the tread below. At 0.04 m²/s (d_c
+  5.5 cm) risers of 0.1 m make no fall and risers of 0.2 m make nineteen; at 0.3 m²/s (d_c 21 cm)
+  risers up to 0.3 m make none, and risers of 0.6 m (2.9 d_c each) make nine, because the jet off
+  each clears the next tread and drops two risers at once (`falls_tests.cpp`, "a ladder of
+  half-metre treads"). So a bed cut as a staircase of risers taller than three critical depths of its
+  stream would read as a ladder of falls. The cook reads the plan's bed (`ChannelLink::bed`, a
+  polyline), not the tile set's drawn cut: a staircase that the drawn section's round ends make on a
+  falling line is not in what it reads; one the plan's own bed has would be.
+- **Nothing is pinned from a frame.** The shots' measurements above were made on the first cut of
+  the sheets, before they were re-cut by source frame on 2026-11-12; none of them enters stages 0
+  and 1 (the break-up length's K is fitted to Horeni's number, not to a frame; the veil's widening
+  and the pulses are stage 2's and 5's). They are to be measured again on the re-cut set before a
+  stage pins one. Looked at again tonight, shapes only: `falls-locked` is a tiered fall, an upper
+  fall from the notch onto a ledge about a fifth of the lower fall's height, the lower veil widening
+  and landing on rock, then a cascade off the ledge — the march's tiered kind.
+
+**Sources read again tonight** for the three things the cook decides by: the brink's 0.715 and its
+conditions (a subcritical approach in a horizontal or mild rectangular channel, atmospheric
+pressure on both faces of the nappe, the pressure leaving hydrostatic three to four critical depths
+upstream) from Chanson's account of the free overfall in IAHR's media library (2021; the page,
+read whole, gives 0.71 measured and 0.715 from theory "verified experimentally", and cites Rouse
+1936 and Henderson 1966), with Rouse 1936 itself still not opened (a search's summary of later
+papers names it as the source of 0.715 for a horizontal rectangular channel); the free jet as a
+projectile from the brink's depth and speed (a search's summary of drop-box papers: the free-falling
+nappe's trajectory "works" from the 0.715 brink for a subcritical approach, and a supercritical
+approach needs its own brink condition, which is S98's "over as it is" that the cook follows), with
+Wahl, Frizell and Cohen 2008 (*J. Hydraul. Eng.* 134(2), 256-260, on a commonly cited jet
+trajectory equation being wrong for a sloped launch) not opened (the publisher refused the fetch):
+the cook's form is the projectile's in the launch's own slope, x = v cos θ t, y = v sin θ t + g t²/2,
+derived and held to it by the tests to rounding; and the critical depth d_c = (q² / g)^(1/3), the
+definition in every open-channel text (Henderson 1966; from memory). **The break-up length**,
+which the cook carries and does not decide by, was looked for again: Castillo's papers still
+refused the fetch (CORE and MDPI 403, two `upct.es` copies 404), and a search's summaries of them
+now say more than this page's first reading did — the rectangular nappe's form is written with
+φ = K_φ T_u, **K_φ about 1.24** for a three-dimensional nappe where this page took Ervine's 1.14
+from the round jet, and the fitted **K is about 0.85 at T_u 0.012 (an inclined crest) and 0.95 at
+0.013 (a flat top)**, with 0.40 to 0.80 suggested elsewhere. Taken together those give a break-up
+length about 15 % longer than `k_breakup_depths` at T_u 0.05 (8.0 against 6.9 critical depths).
+The three multiples stay **this page's fit** (K = 0.77 with 1.14) until a copy opens; stage 2,
+which draws by them, is where they are pinned or replaced.
+
 ## What to ask of the next reels
 
 The three fall shots gave one law (free fall below the crest) and almost no length. What would give the rest, most useful first:
