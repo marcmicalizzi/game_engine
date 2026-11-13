@@ -465,6 +465,37 @@ TEST_CASE("tileset: a second build is a hit, and another source or option is not
   CHECK(error.find("twice the heightfield's spacing") != std::string::npos);
 }
 
+// T126: a hit is the header's alone. The grid behind it is not read — here it is not even the grid
+// any more — and a build, which must read it, still refuses a grid its header's hash does not name.
+TEST_CASE("tileset: a hit reads the header and not the grid") {
+  test::TempDir tmp{"engine_tileset_header_hit"};
+  const Heightfield field = synth_heightfield(SynthKind::ridge, 33, 1000, 1);
+  std::string error;
+  REQUIRE_MESSAGE(write_heightfield(tmp.file("ridge.json"), field, error), error);
+  BuildOptions o;
+  o.cells = 8;
+  o.far_levels = 2;
+  const std::string ddc = tmp.file("ddc");
+  BuildResult first;
+  REQUIRE_MESSAGE(ensure_tileset(tmp.file("ridge.json"), o, "", ddc, false, first, error), error);
+  CHECK_FALSE(first.hit);
+  // The grid replaced by bytes of another length: a read of it would refuse at once.
+  REQUIRE(io::write_file(tmp.file("ridge.f32"), std::string("not a grid")) == io::Status::Ok);
+  BuildResult second;
+  REQUIRE_MESSAGE(ensure_tileset(tmp.file("ridge.json"), o, "", ddc, false, second, error), error);
+  CHECK(second.hit);
+  CHECK(second.key == first.key);
+  CHECK(second.hash == first.hash);
+  BuildResult forced;
+  CHECK_FALSE(ensure_tileset(tmp.file("ridge.json"), o, "", ddc, true, forced, error));
+  CHECK(error.find("its grid is") != std::string::npos);
+  // With no grid at all, the same: a hit, and a refused build.
+  REQUIRE(io::remove_file(tmp.file("ridge.f32")) == io::Status::Ok);
+  REQUIRE_MESSAGE(ensure_tileset(tmp.file("ridge.json"), o, "", ddc, false, second, error), error);
+  CHECK(second.hit);
+  CHECK_FALSE(ensure_tileset(tmp.file("ridge.json"), o, "", ddc, true, forced, error));
+}
+
 TEST_CASE("tileset: the tiles ground provider, through the registry") {
   SmallSet s;
   const scene_gen::GeneratorRegistry& registry = scene_gen::GeneratorRegistry::global();

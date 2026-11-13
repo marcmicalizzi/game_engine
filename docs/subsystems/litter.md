@@ -75,6 +75,31 @@ remain resident while the host supplies their normal distance forms. `max_cells`
 per tile and rejects an excessive lattice at open, rather than dropping its tail.
 `max_total_cells` (1048576 by default) also bounds a whole read before expansion.
 
+**A whole read runs on the job system's performance pool** (T125, 2026-11-12). The window's tiles,
+in row-major order, are cut into contiguous runs (four a thread), each run placed by one job into
+a list of its own, and the lists joined in run order, never in the order the jobs finish; so the
+instances, their ids rising, are the bytes one thread makes, and a refusal is the earliest tile's,
+the one the serial walk met first (`tests/litter_pool_tests.cpp` holds both at one, four and eight
+threads, and pins the bytes of the walk this replaced). Nothing is drawn from a shared stream: every
+draw is the cell's own hash. Two costs per cell became costs per tile, with no byte moved: the
+earlier footprints anchored in a tile are found once (a whole read sorts them by tile once and each
+tile gathers the 3 x 3 tiles about it, keeping exactly those the one-tile scan keeps, in the host's
+order), where every cell had scanned every earlier footprint of the scene; and each mask tile a
+litter tile reaches is read once, where every cell had copied its mask tile out of the level again.
+
+**Where a cold load's minutes went** (the forest's engine needs 66). The entry's `open` asks the
+ground for its masks when the layer names a substrate, and a `tiles` ground builds its mask level
+on that first ask when the derived-data cache has none (`ensure_mask_level`, [tileset](tileset.md#the-mask-level)).
+In the forest's scene the litter entry is the first to ask, so the startup trace put the cook,
+which walks every mask tile of the heightfield's frame on one thread, under "placement litter":
+763 s on v42 against 408 s on v41 for the same cells, because v42's frame is three times wider, and
+815 s again after its archive was deleted, because a deleted archive is cooked again. The level's
+key is its content (the set's hash, the block without its image paths and `resident_mib`, the
+palette, the budget, the frame and the images' bytes), so the same masks cooked from two
+directories are one entry and a second load cooks nothing (`tests/litter_masks_tests.cpp`). The
+ask now has a startup stage of its own, "ground masks", so a trace names the cook. The cook itself
+is the masks' to put on the pool.
+
 ## Materials and invariants
 
 Pack roles: `litter/leaf`, `litter/needles`, `litter/cone`, `litter/bark`, `litter/wood` for both
@@ -110,9 +135,13 @@ is read-only; use a derived external scene to review integration.
 
 Scaffolded with `new-capability.ps1`. `ENGINE_WITH_LITTER` is optional; it requires `deadwood`
 (and transitively flora), explicitly declared in the capability graph. Dependencies: base,
-containers, math, hash, json, schema, assets, geometry, materials, texture, scene_gen, deadwood
-and litter_schemas. The only read of another solver is its public `deadwood::solve` and identity
-API. Hosts link litter conditionally. Registration points are the mesh and placement registries
+containers, math, hash, json, schema, assets, geometry, materials, texture, scene_gen, deadwood,
+litter_schemas, jobs (a whole read's pool) and profiling (the "ground masks" stage). The only read
+of another solver is its public `deadwood::solve` and identity API. Where the tile-set capability
+is in the build, the tests add `tests/litter_masks_tests.cpp` and the module has a bench,
+`engine_litter_bench` (`litter.mask_cook`, `litter.expand.serial`, `litter.expand.pool`, each at a
+frame one and three kilometres wide), both linking `tileset` as a test target may; the module
+itself does not. Hosts link litter conditionally. Registration points are the mesh and placement registries
 and schema descriptions. No protocol method or tunable: all controls are recipe data.
 Determinism is derived and cross-toolchain. The twig and tangle container pins follow the
 deadwood solver they reuse: a change to deadwood's geometry or `k_deadwood_version` moves those
