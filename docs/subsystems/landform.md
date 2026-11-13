@@ -1050,7 +1050,7 @@ the section, or the water, would call).
 | the coast's closed forms against their sources' numbers (`coast_tests.cpp`) | A is the manual's Table III-3-3 as printed (0.100, 0.125, 0.161, 0.210; its own 0.112 at 0.24 mm and 0.18 at 0.66 mm); the face 0.0697 at 0.3 mm; Hallermeier's 5.858 m for a 3 m, 8 s storm and 15.21 m outer for 1 m, 6 s over 0.3 mm; Stockdon's 0.7196 m; the breaker 1.254 m | a law or its table is miscopied |
 | an island with deposition on keeps its fans and grows no plain (1.7 s: three solves) | an island a kilometre across in a sea on every side, 150,000 years at 20 m: its land with deposition on within 5% of its land with it off (1,538 points and 1,538, 152 of them on a metre of sediment), where `wave_base_m` 0, the base's rule bit for bit, grows it 4.8 times (7,336); ten land points or more on a metre of sediment; the sea's take inside what was laid, and the budget closing | the sea fills above its wave base, or the outline's footprint or bed is lost |
 | a straight coast's beach is Dean's profile in section, at 4 m and at 8 m (0.9 s) | a plane 15° off the lattice under one swell: every point from two cells out to the closure depth within 1.1 mm of A x^(2/3) (derived: [the coast](#the-coast); measured 0.71 mm over 6,781 points to 321 m), the berm at high water plus R₂ within a millimetre (0.43 mm over 523), exposure the same along the shore and the swell's breaker; the same coast at 4 m and 8 m within a millimetre at every shared point (0 mm over 2,045) | the section is not Dean's, the distance is a staircase's, or the beach depends on the spacing |
-| an island offshore shadows the shore behind it as wide as geometry says | a swell from the west and an island of eight rows: exactly those eight rows of the shore take nothing, the rest the swell's breaker to a millimetre | the walks miss land, or sheltering leaks |
+| an island offshore shadows the shore behind it as wide as geometry says (0.03 s) | a swell from the west and an island of eight rows: exactly those eight rows of the shore take nothing, the rest the swell's breaker to a millimetre | the walks miss land, or sheltering leaks |
 | a stood island solves to the pinned bytes, on one, four and sixteen workers (0.9 s) | the height, distance, substrate, exposure and berm pinned on MSVC and reproduced by Clang and GCC at v3 and GCC at v2; the same from four and sixteen workers | a walk or the section reads another chunk's result, or a C library call decides |
 | a lake's floor fills level, and its mouth builds a delta | a basin fed for ten thousand years: its floor away from the mouths level within 50 mm (measured 0 and 3 mm) under water still metres deep; with `delta_share` 0.5 the shelf under the mouths holds a quarter more sediment (measured twice) and the floor stands lower | the fill follows the flood's order, or the mouths get nothing |
 
@@ -1149,3 +1149,25 @@ flux up the line, the thickest ice, the surface's level and the distance to the 
 ridges, their crests and the snouts, less the melt's share it no longer keeps), every
 sketch 16 more (the section's floor in the network, a lake's fill), and the result 17 more
 for the five new fields.
+
+**The coast, stages A and B** (W128, 2026-11-13, 00:20), `landform.coast` in `msvc-release`: an
+island of 1,024 points a side at 16 m in a sea on every side, its outline a circle of 32 points,
+twenty steps on four workers, without the stand and with it (two wave entries). `--wait-quiet`
+gave up: other processes held 82% of the CPU and another agent held the GPU lock, so both are
+upper bounds; what matters is the pair.
+
+| | Without the stand (`/0`) | With it (`/1`) |
+|---|---|---|
+| median of the solve | 15.80 s | 15.98 s |
+| fastest | 14.33 s | 14.19 s |
+
+**The stand costs under the load's noise on that size** (0.19 s on the medians, 1.2%; the fastest
+runs the other way), where the design estimated 5 to 15 s: its parts are a walk of the lattice for
+the sea, one for the squares, a distance transform of two passes a round (two to three rounds),
+the chain's walk, two azimuth walks a segment, and a pass for the section. Stage A adds a
+comparison a sea point in the books and, with a sea, one copy of the ground a step (eight bytes a
+point) for creep's rule; the stand holds the sea's mask, the segments, the nearest segment and
+its distance (twelve bytes a point) and the chain's first segment on each lattice edge (eight
+bytes a point) while it runs, about 22 bytes a point, and the result 20 more for the seven
+fields. The design's 5 to 15 s assumed 32 walks a segment and 60 steps of a stand; stage B walks
+the climate's azimuths only and places the sand once.
