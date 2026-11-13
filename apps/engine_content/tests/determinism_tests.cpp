@@ -495,12 +495,15 @@ TEST_CASE("engine-content: city makes the committed plan, fragment and yield on 
 // G201/version 12 (2026-11-12, MSVC 14.51): the trunk's skirt under each tree's stem moves its
 // mesh, its grid, the star's box and bake, and the identity; the folds were 0x54124b62114c2f27
 // (broadleaf), 0xc1db7f48a4fb3e3c (ancient) and 0x1d5da835900c331e (pine).
-constexpr u64 k_broadleaf_container_golden = 0x288b2862a2405a77ull;
-constexpr u64 k_ancient_container_golden = 0xd2d924bfdff56084ull;
+// G201 stage 2 (2026-11-13, MSVC 14.51): the seat (section 42, appended) and
+// `k_flora_seat_version` in the identity (section 15); no mesh or bake section moves. The folds
+// were 0x288b2862a2405a77, 0xd2d924bfdff56084 and 0xa8e54c1fb193731a.
+constexpr u64 k_broadleaf_container_golden = 0x8b8915bc944c047dull;
+constexpr u64 k_ancient_container_golden = 0x308513fb082108d9ull;
 // G120 (2026-11-01, MSVC 14.51): a pine, the conifer solver's chain — one three-plane card group a
 // live branch and the star, coverage-kept and fitted to the needles' coverage — at small tiles so
 // a debug run builds it in seconds. Its section 15 carries `k_conifer_chain_version`.
-constexpr u64 k_pine_container_golden = 0xa8e54c1fb193731aull;
+constexpr u64 k_pine_container_golden = 0xc6f1032af64051fdull;
 
 TEST_CASE("engine-content: the allometric crowns build the committed bytes on every toolchain") {
   const test::TempDir tmp("engine_content_flora_determinism");
