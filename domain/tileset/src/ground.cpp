@@ -223,18 +223,25 @@ bool tiles_make(const scene::Terrain& entry, const scene_gen::Context& context,
   std::string manifest;
   std::string ddc;
   std::string why;
+  auto ground = std::make_unique<TilesGround>();
+  if (entry.masks.has_value()) {
+    // **Refused before anything is built** (T122; tileset.md, "What a load refuses before it
+    // builds"): the masks' inputs, and the level's resident size wherever the span gives it, from
+    // the set's manifest or its heightfield's header alone — before this make finds or builds a
+    // set, which on a cold cache is the longest step of a load before its placements.
+    MaskEarlyCheck early;
+    if (!mask_inputs(entry, context.dir, ground->mask_inputs, why) ||
+        !check_masks_early(entry, context.dir, ground->mask_inputs, early, why))
+      return fail("the ground provider \"tiles\" cannot build its masks: " + why);
+  }
   // The same function `engine-content masks check` calls (T74), so the check composes the ground a
   // load composes; the host's root, when it names one, before the block's (T90).
   if (!resolve_tile_set(entry, context.dir, std::string(context.ddc), ddc, manifest, why))
     return fail(why);
-  auto ground = std::make_unique<TilesGround>();
   if (!ground->set.open(manifest, why))
     return fail("the ground provider \"tiles\" could not open its set: " + why);
   if (entry.masks.has_value()) {
     // The mask level, built beside the set on a miss as the set itself is (masks.h), on first ask.
-    if (!mask_inputs(entry, context.dir, ground->mask_inputs, why) ||
-        !validate_mask_inputs(ground->mask_inputs, why))
-      return fail("the ground provider \"tiles\" cannot build its masks: " + why);
     ground->has_masks = true;
     ground->ddc = ddc;
   }

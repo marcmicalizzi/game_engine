@@ -772,3 +772,61 @@ TEST_CASE("tileset masks: the check composes the cut ground a load composes") {
     CHECK(error.find(describe_over_budget(report, k_over_budget_listed)) != std::string::npos);
   }
 }
+
+// **The level's size, three ways that agree** (T121, T122, T127; tileset.md, "What a load refuses
+// before it builds"): the span read from the heightfield's header is the range the build writes
+// into its manifest; the check counts the tiles the build writes and sizes the level as the
+// renderer will; with the priors' three slope roles every tile of the span is present, so the
+// early size is the built one. And a manifest written before T127, which names the budget of its
+// cook, is read as it stands: the level is a hit, not rebuilt.
+TEST_CASE("tileset masks: the span, the check and the build agree on the level's size") {
+  Fixture fx;
+  scene::Terrain entry;
+  entry.provider = "tiles";
+  entry.tiles = scene::TerrainTileSet{};
+  entry.tiles->heightfield = fx.tmp.file("mountain.json");
+  MaskEarlyCheck early;
+  REQUIRE_MESSAGE(check_masks_early(entry, std::string_view(), fx.in, early, fx.error), fx.error);
+  CHECK(mask_level_full(fx.in));
+  CHECK(early.known);
+  MaskBudgetReport report;
+  REQUIRE_MESSAGE(check_mask_budget(fx.set, fx.in, report, fx.error), fx.error);
+  CHECK(report.resident_refusal.empty());
+  MaskBuildResult built;
+  REQUIRE_MESSAGE(ensure_mask_level(fx.set, fx.in, "", fx.tmp.file("ddc"), false, built, fx.error),
+                  fx.error);
+  MaskLevel level;
+  REQUIRE_MESSAGE(level.open(built.manifest, fx.error), fx.error);
+  const MaskLevelManifest& m = level.manifest();
+  CHECK(early.span.tx0 == m.tile_min[0]);
+  CHECK(early.span.tz0 == m.tile_min[1]);
+  CHECK(early.span.tx1 == m.tile_max[0]);
+  CHECK(early.span.tz1 == m.tile_max[1]);
+  CHECK(report.present == built.tiles);
+  CHECK(report.present == early.span.range());  // 17 by 17 tiles of 16 m, every one present
+  const u64 bytes = scene_gen::mask_resident_bytes(early.span.range(), built.tiles, 16);
+  CHECK(report.resident_bytes == bytes);
+  CHECK(early.bytes == bytes);
+  // Without the priors' slope roles the span cannot say which tiles hold anything.
+  MaskInputs sparse = fx.in;
+  sparse.masks.priors->scree.clear();
+  CHECK_FALSE(mask_level_full(sparse));
+  REQUIRE(check_masks_early(entry, std::string_view(), sparse, early, fx.error));
+  CHECK_FALSE(early.known);
+  // A version-1 manifest (before T127) named the cook's budget; it is dropped unread and the level
+  // stays a hit, its key and hash unchanged.
+  std::string text;
+  REQUIRE(io::read_file(built.manifest, text) == io::Status::Ok);
+  CHECK(text.find("resident_mib") == std::string::npos);
+  const usize brace = text.find('{');
+  REQUIRE(brace != std::string::npos);
+  text.insert(brace + 1, "\"resident_mib\": 512, ");
+  REQUIRE(io::write_file(built.manifest, text) == io::Status::Ok);
+  MaskLevel old;
+  REQUIRE_MESSAGE(old.open(built.manifest, fx.error), fx.error);
+  CHECK(old.manifest().key == m.key);
+  MaskBuildResult again;
+  REQUIRE(ensure_mask_level(fx.set, fx.in, "", fx.tmp.file("ddc"), false, again, fx.error));
+  CHECK(again.hit);
+  CHECK(again.hash == built.hash);
+}

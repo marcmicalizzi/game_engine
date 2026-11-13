@@ -124,6 +124,14 @@ if(TARGET engine::cover)
   list(APPEND _content_deps cover cover_schemas flora schema)
 endif()
 list(REMOVE_DUPLICATES _content_deps)
+# **A host that reads scenes** (T121; docs/subsystems/scene_gen.md, "Which generators a host
+# carries"): `masks check` reads a scene through the renderer's own reader as far as its ground
+# (`renderer::SceneFileOptions::ground_only`), so the ground it checks has every entry's plan in it
+# (the routes' benches, the channels' cuts) exactly as a load's has. That reader finds a planning
+# entry's generator by name, so this app carries the build's one generator list, as engine-view,
+# engine-host and engine-editor do, and the configure holds it to the same list.
+list(APPEND _content_deps renderer scene_gen)
+engine_host_generators(engine_content _content_deps)
 
 engine_app(NAME engine_content OUTPUT engine-content
   SOURCES main.cpp tissue_commands.cpp ruins_commands.cpp city_commands.cpp limit_dump.cpp

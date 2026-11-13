@@ -1,16 +1,26 @@
 // engine-content masks check end to end (roadmap T72; docs/subsystems/apps.md): a synthetic
 // mountain whose slopes cross the soil, scree and bedrock bands is checked against a budget of
 // four (no tile over: exit 0, a summary line) and of two (tiles over: exit 1, one JSON line each
-// with its layers and its weakest, then the summary), and the usage and scene refusals.
+// with its layers and its weakest, then the summary), and the usage and scene refusals. Then the
+// level's size and the order a load refuses in (T121, T122, T127; tileset.md, "What a load refuses
+// before it builds"): the check and the load refuse a level over `resident_mib` in one sentence,
+// the load before it builds anything where the header sizes it, a raised figure holds the cooked
+// level as it stands, and the check composes the ground the scene's entries plan.
 #include <core/json/json.h>
 #include <core/platform/process.h>
+#include <domain/scene_gen/scene_gen.h>
+#include <domain/tileset/tileset.h>
 #include <foundation/io/vfs.h>
+#include <systems/renderer/scene.h>
+#include <systems/renderer/terrain_materials.h>
 
 #include <doctest/doctest.h>
 #include <test_paths.h>
 #include <test_temp_dir.h>
 
+#include <filesystem>
 #include <string>
+#include <system_error>
 #include <vector>
 
 using namespace engine;
@@ -22,7 +32,7 @@ struct Output {
   std::string text;
 };
 
-Output run(std::vector<std::string> args) {
+Output run(std::vector<std::string> args, bool merge_stderr = false) {
   static const std::string exe = test::app_path(ENGINE_APP_PATH);
   std::vector<std::string_view> argv;
   argv.push_back(exe);
@@ -31,7 +41,7 @@ Output run(std::vector<std::string> args) {
   platform::Process p;
   std::string error;
   Output out;
-  if (!p.spawn(std::span<const std::string_view>(argv.data(), argv.size()), &error)) {
+  if (!p.spawn(std::span<const std::string_view>(argv.data(), argv.size()), &error, merge_stderr)) {
     FAIL("cannot spawn engine-content: " << error);
     return out;
   }
@@ -189,4 +199,248 @@ TEST_CASE("engine-content masks check: it composes the ground a load composes, c
   REQUIRE(over.size() >= 2);
   CHECK(whole(over.back(), "over") >= 1);
   CHECK(whole(over.front(), "count") >= 5);  // bedrock, and scree where the banks meet the flat
+}
+
+// ---- the level's size, and the order a load refuses in (T121, T122, T127) ----------------------
+
+namespace {
+
+// The 256 m mountain of the first case in tiles of 256 cells: four tiles in the level's range,
+// each 110,516 words. With the priors' three slope roles every point's weights sum to one, so every
+// tile is present and the level is (4 + 4 * 110,516) * 4 = 1,768,272 bytes, 1.7 MiB, known from
+// the heightfield's header alone (`tileset::mask_level_full`). `sparse`: no priors, a gravel patch
+// in three of the four tiles, so three are present, 1,326,208 bytes, 1.3 MiB, which only the
+// composition can say.
+std::string resident_scene(u32 resident_mib, bool sparse) {
+  const std::string body =
+      sparse ? R"("regions": [
+        {"name": "a", "center": [-64, 0, -64], "radius_m": 10, "material": "gravel"},
+        {"name": "b", "center": [64, 0, -64], "radius_m": 10, "material": "gravel"},
+        {"name": "c", "center": [-64, 0, 64], "radius_m": 10, "material": "gravel"}])"
+             : R"("priors": {"soil": "soil", "scree": "scree", "bedrock": "bedrock", "snow": "snow",
+                 "snowline_m": 60, "snow_blend_m": 8, "snow_aspect_m": 6})";
+  return std::string(R"({"format": "engine.scene.v1", "name": "masks-resident", "terrain": {
+    "size": 17, "extent": 128, "provider": "tiles",
+    "tiles": {"heightfield": "ground.json", "cells": 32},
+    "materials": {"layer_budget": 4, "layers": [
+      {"name": "soil"}, {"name": "scree"}, {"name": "bedrock"}, {"name": "snow"},
+      {"name": "gravel"}]},
+    "masks": {"spacing_mm": 1000, "tile_cells": 256, "resident_mib": )") +
+         std::to_string(resident_mib) + ", " + body + "}}}";
+}
+
+void write_mountain(const test::TempDir& tmp) {
+  const Output synth =
+      run({"terrain-synth", tmp.file("ground.json"), "--kind", "mountain", "--size", "257",
+           "--spacing-mm", "1000", "--origin-mm", "-128000,-128000"});
+  REQUIRE_MESSAGE(synth.exit_code == 0, synth.text);
+}
+
+// A load's read of the scene (what engine-view and engine-host do before the upload), in process.
+bool load(const std::string& path, const std::string& ddc, renderer::SceneDesc& desc,
+          std::string& error) {
+  desc = renderer::SceneDesc{};
+  desc.ddc = ddc;
+  return renderer::read_scene_file(path, renderer::SceneFileOptions{}, desc, error);
+}
+
+u32 files_under(const std::string& dir) {
+  u32 count = 0;
+  std::error_code ec;
+  for (const auto& entry : std::filesystem::recursive_directory_iterator(dir, ec))
+    count += entry.is_regular_file() ? 1u : 0u;
+  return count;
+}
+
+// The one mask archive under a derived-data root (`<ddc>/tilemasks/<key>/1000.masks`).
+std::vector<std::filesystem::path> mask_archives(const std::string& ddc) {
+  std::vector<std::filesystem::path> out;
+  std::error_code ec;
+  for (const auto& entry :
+       std::filesystem::recursive_directory_iterator(io::join_path(ddc, "tilemasks"), ec))
+    if (entry.is_regular_file() && entry.path().extension() == ".masks")
+      out.push_back(entry.path());
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("masks: a level over resident_mib is refused by the check in the load's words (T121)") {
+  const test::TempDir tmp("engine_content_masks_resident");
+  write_mountain(tmp);
+  for (const bool sparse : {false, true}) {
+    CAPTURE(sparse);
+    const std::string scene = tmp.file(sparse ? "sparse.json" : "full.json");
+    REQUIRE(io::write_file(scene, resident_scene(1, sparse)) == io::Status::Ok);
+    const std::string ddc = tmp.file(sparse ? "ddc-sparse" : "ddc-full");
+    // The load refuses it, before or after its cook (T122)...
+    renderer::SceneDesc desc;
+    std::string load_error;
+    CHECK_FALSE(load(scene, ddc, desc, load_error));
+    const std::string sentence = sparse ? "the mask level is 1.3 MiB resident (3 tiles of the 4 "
+                                          "in its range), over the block's resident_mib of 1; "
+                                          "raise it to 2 or more"
+                                        : "the mask level is 1.7 MiB resident (4 tiles of the 4 "
+                                          "in its range), over the block's resident_mib of 1; "
+                                          "raise it to 2 or more";
+    CHECK_MESSAGE(load_error.find(sentence) != std::string::npos, load_error);
+    // ...and the check refuses it, exit 1, with the same sentence. Before T121 the check printed
+    // no size and passed it.
+    const Output refused = run({"masks", "check", scene, "--ddc", ddc}, true);
+    CAPTURE(refused.text);
+    CHECK(refused.exit_code == 1);
+    CHECK(refused.text.find(sentence) != std::string::npos);
+    // Raised, both accept it; the check's summary says what the level holds against the figure.
+    REQUIRE(io::write_file(scene, resident_scene(2, sparse)) == io::Status::Ok);
+    CHECK_MESSAGE(load(scene, ddc, desc, load_error), load_error);
+    const Output fits = run({"masks", "check", scene, "--ddc", ddc});
+    CAPTURE(fits.text);
+    CHECK(fits.exit_code == 0);
+    const std::vector<JsonValue> summary = lines(fits.text);
+    REQUIRE_FALSE(summary.empty());
+    CHECK(whole(summary.back(), "present") == (sparse ? 3 : 4));
+    CHECK(whole(summary.back(), "resident_bytes") == (sparse ? 1326208 : 1768272));
+    CHECK(whole(summary.back(), "resident_mib") == 2);
+  }
+}
+
+TEST_CASE("masks: a load refuses a level it can size from the header before it builds (T122)") {
+  const test::TempDir tmp("engine_content_masks_early");
+  write_mountain(tmp);
+  const std::string scene = tmp.file("full.json");
+  REQUIRE(io::write_file(scene, resident_scene(1, false)) == io::Status::Ok);
+  // Every tile present, so the size is known from the heightfield's header: refused at the
+  // provider's make, before the tile set is found or built, so the derived-data root holds
+  // nothing — no tile set, no mask level. Before T122 the read accepted it, and the upload
+  // refused it after the expansion and the mesh loads.
+  renderer::SceneDesc desc;
+  std::string error;
+  CHECK_FALSE(load(scene, tmp.file("ddc"), desc, error));
+  CHECK_MESSAGE(error.find("over the block's resident_mib of 1") != std::string::npos, error);
+  CHECK(files_under(tmp.file("ddc")) == 0);
+  // The sparse level cannot be sized before its cook: the read cooks it, then refuses, still
+  // before a placement is expanded (scene.cpp, `read_scene_file`).
+  const std::string sparse = tmp.file("sparse.json");
+  REQUIRE(io::write_file(sparse, resident_scene(1, true)) == io::Status::Ok);
+  CHECK_FALSE(load(sparse, tmp.file("ddc-sparse"), desc, error));
+  CHECK_MESSAGE(error.find("over the block's resident_mib of 1") != std::string::npos, error);
+  CHECK(mask_archives(tmp.file("ddc-sparse")).size() == 1);
+}
+
+TEST_CASE("masks: raising resident_mib holds the cooked level as it stands (T127)") {
+  const test::TempDir tmp("engine_content_masks_raise");
+  write_mountain(tmp);
+  const std::string scene = tmp.file("sparse.json");
+  const std::string ddc = tmp.file("ddc");
+  REQUIRE(io::write_file(scene, resident_scene(1, true)) == io::Status::Ok);
+  renderer::SceneDesc desc;
+  std::string error;
+  CHECK_FALSE(load(scene, ddc, desc, error));  // cooked, then refused for its size
+  const std::vector<std::filesystem::path> cooked = mask_archives(ddc);
+  REQUIRE(cooked.size() == 1);
+  std::error_code ec;
+  const auto written = std::filesystem::last_write_time(cooked[0], ec);
+  // The figure raised: the same level is found by its key and held to the scene's new figure, by
+  // the read and by the upload's preparation (which before T127 took the figure the cook wrote
+  // into the manifest, and refused the raised scene until the level was deleted by hand).
+  REQUIRE(io::write_file(scene, resident_scene(2, true)) == io::Status::Ok);
+  REQUIRE_MESSAGE(load(scene, ddc, desc, error), error);
+  renderer::TerrainMaskUpload upload;
+  CHECK_MESSAGE(renderer::prepare_terrain_masks(desc.terrain, upload, &error), error);
+  CHECK(upload.tiles == 3);
+  const std::vector<std::filesystem::path> after = mask_archives(ddc);
+  REQUIRE(after.size() == 1);
+  CHECK(after[0] == cooked[0]);
+  CHECK(std::filesystem::last_write_time(after[0], ec) == written);  // nothing recooked
+  // Lowered again, the upload refuses the same level for the scene's figure.
+  desc.terrain.masks->resident_mib = 1;
+  CHECK_FALSE(renderer::prepare_terrain_masks(desc.terrain, upload, &error));
+  CHECK(error.find("over the block's resident_mib of 1") != std::string::npos);
+}
+
+namespace {
+
+// A hillside 64 m square at 25 cm a point (`apps/engine_view/tests/ground_plan_tests.cpp`'s): 10 %
+// across x, 4 % across z and a twist, every point between 4.8 and 7.3 degrees.
+void write_hill(const test::TempDir& tmp) {
+  tileset::Heightfield field;
+  field.width = 257;
+  field.height = 257;
+  field.spacing_mm = 250;
+  field.origin_x_mm = -32000;
+  field.origin_z_mm = -32000;
+  for (u32 j = 0; j < field.height; ++j)
+    for (u32 i = 0; i < field.width; ++i) {
+      const f64 x = 0.25 * static_cast<f64>(i) - 32.0, z = 0.25 * static_cast<f64>(j) - 32.0;
+      field.data.push_back(static_cast<f32>(8.0 + 0.10 * x + 0.04 * z + 0.0005 * x * z));
+    }
+  std::string error;
+  REQUIRE_MESSAGE(tileset::write_heightfield(tmp.file("hill.json"), field, error), error);
+}
+
+// The hill under priors that read it as bedrock everywhere (past 4 degrees), with a budget of two;
+// `routes`: a footpath along the contour, whose treads the routes generator plans and benches into
+// the ground at the read (R144). A tread is near level across, so it is soil, with scree where it
+// meets the hill: three layers in the tiles it crosses, over the budget, on the planned ground
+// only.
+std::string hill_scene(bool routes) {
+  return std::string(R"({"format":"engine.scene.v1","name":"masks-planned","terrain":{"size":17,
+    "extent":32,"provider":"tiles","seed":3,"tiles":{"heightfield":"hill.json","ddc":"ddc",
+      "cells":32,"far_levels":0},
+    "materials":{"layer_budget":2,"layers":[{"name":"soil"},{"name":"scree"},{"name":"bedrock"}]},
+    "masks":{"spacing_mm":250,"tile_cells":16,"priors":{"soil":"soil","scree":"scree",
+      "bedrock":"bedrock","scree_deg":2,"bedrock_deg":3.5,"slope_blend_deg":0.5}}},
+    "placements":[)") +
+         (routes ? R"({"generator":"routes","params":{"name":"way","region_min":[-28,-28],
+      "region_max":[28,28],"routes":[{"name":"contour","waypoints":[[10,0,-24],[0,0,24]]}]}})"
+                 : "") +
+         "]}";
+}
+
+}  // namespace
+
+TEST_CASE("masks: the check composes the ground the entries plan, as the load does (T121)") {
+  if (scene_gen::GeneratorRegistry::global().find_placement("routes") == nullptr) {
+    MESSAGE("this configuration has no routes capability: nothing plans the ground");
+    return;
+  }
+  const test::TempDir tmp("engine_content_masks_planned");
+  write_hill(tmp);
+  // The bare hill: bedrock inside; only the tiles on its far edges, where the set's edge points
+  // stand level past the last row, may name more.
+  REQUIRE(io::write_file(tmp.file("bare.json"), hill_scene(false)) == io::Status::Ok);
+  const Output bare = run({"masks", "check", tmp.file("bare.json")});
+  CAPTURE(bare.text);
+  const std::vector<JsonValue> bare_lines = lines(bare.text);
+  REQUIRE_FALSE(bare_lines.empty());
+  const i64 bare_over = whole(bare_lines.back(), "over");
+  // The footpath's treads, planned at the read: the load refuses the tiles they cross besides, and
+  // the check names the same count, where before T121 it read the file's terrain alone and found
+  // the bare hill's.
+  REQUIRE(io::write_file(tmp.file("path.json"), hill_scene(true)) == io::Status::Ok);
+  renderer::SceneDesc desc;
+  std::string error;
+  CHECK_FALSE(load(tmp.file("path.json"), std::string(), desc, error));
+  const Output path = run({"masks", "check", tmp.file("path.json")});
+  CAPTURE(path.text);
+  CHECK(path.exit_code == 1);
+  const std::vector<JsonValue> over = lines(path.text);
+  REQUIRE(over.size() >= 2);
+  const i64 path_over = whole(over.back(), "over");
+  CHECK(path_over > bare_over);
+  CHECK_MESSAGE(
+      error.find("terrain.masks: " + std::to_string(path_over) +
+                 " tiles name more layers than materials.layer_budget is 2") != std::string::npos,
+      error);
+  // A tile the footpath crosses in the hill's middle, x 4 to 8 m and z 0 to 4 m, is among them.
+  bool crossed = false;
+  for (const JsonValue& line : over) {
+    const JsonValue* tile = line.find("tile");
+    if (tile == nullptr || !tile->is_array() || tile->size() != 2) continue;
+    i64 tx = 0, tz = 0;
+    (void)(*tile)[0].get_i64(tx);
+    (void)(*tile)[1].get_i64(tz);
+    crossed = crossed || (tx == 1 && tz == 0);
+  }
+  CHECK(crossed);
 }

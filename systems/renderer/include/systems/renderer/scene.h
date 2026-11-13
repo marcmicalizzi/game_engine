@@ -493,6 +493,12 @@ struct SceneFileOptions {
   // time (engine-view `--world-instances tiles`, the default) or keep them in the scene's prefix
   // (`whole`): `SceneDesc::authored.enabled`.
   bool world_instances = true;
+  // **Read as far as the ground, and stop** (T121; apps.md, "engine-content masks check"): the
+  // file, its terrain with every entry's plan for it composed in, and the ground provider made over
+  // all of it (its set found or built, its masks' inputs and early budget checked), then return
+  // with no mask level cooked, no placement expanded and no instance placed. What `engine-content
+  // masks check` reads, so the ground it checks is the one a load composes, by the same code.
+  bool ground_only = false;
 };
 
 // Reads a scene file (schema `engine.scene.Scene`): meshes with an optional name, content hash,

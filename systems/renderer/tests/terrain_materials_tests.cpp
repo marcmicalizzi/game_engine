@@ -335,7 +335,6 @@ bool probe_info(const void*, scene_gen::GroundMaskInfo& out) noexcept {
 }
 struct ProbeReads {
   u32 reads = 0;
-  u32 resident_mib = 256;
   bool sparse = false;
   bool fail_tile = false;
 };
@@ -368,13 +367,8 @@ bool probe_tile(const void*, i32 tx, i32 tz, std::span<u32> words) noexcept {
   }
   return true;
 }
-bool counted_probe_info(const void* state, scene_gen::GroundMaskInfo& out) noexcept {
-  if (!probe_info(state, out)) return false;
-  if (probe_reads != nullptr) out.resident_mib = probe_reads->resident_mib;
-  return true;
-}
 constexpr scene_gen::GroundMaskOps k_probe_mask_ops{
-    .present = &probe_present, .info = &counted_probe_info, .tile = &probe_tile};
+    .present = &probe_present, .info = &probe_info, .tile = &probe_tile};
 bool probe_masks(const void*, scene_gen::GroundMasks& out, std::string*) {
   out = scene_gen::GroundMasks{&k_probe_mask_ops, nullptr};
   return true;
@@ -428,12 +422,16 @@ TEST_CASE("renderer: mask upload reads present tiles once and checks budget befo
     if (p == 5) continue;
     CHECK(upload.words[p] == slot++);
   }
+  // The budget is the scene's (T127): the provider's level carries none. 16 pages and 15 tiles of
+  // 150 words (8 cells) are 9,064 bytes, so a figure of 0 refuses it before a payload is read.
   counted.state.reads = 0;
-  counted.state.resident_mib = 0;
+  desc.masks.emplace();
+  desc.masks->resident_mib = 0;
   CHECK_FALSE(prepare_terrain_masks(desc, upload, &error));
   CHECK(counted.state.reads == 0);
-  CHECK(error.find("resident_mib") != std::string::npos);
-  counted.state.resident_mib = 256;
+  CHECK(error.find("over the block's resident_mib of 0") != std::string::npos);
+  CHECK(error.find("(15 tiles of the 16 in its range)") != std::string::npos);
+  desc.masks.reset();
   counted.state.fail_tile = true;
   CHECK_FALSE(prepare_terrain_masks(desc, upload, &error));
   CHECK(counted.state.reads == 1);
