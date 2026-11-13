@@ -452,8 +452,15 @@ struct ClusterRecordParams {
   // not: its record names no micromap, and a cached one takes the fourth form, alpha-tested
   // without.
   u64 omm_fade = 0;
+  // **The far field at rest** (renderer.md, "The far field at rest"; flora_motion.h; R152): the
+  // frame's `FloraFieldFrame`, or 0 for no rule. With the cache, a field instance whose every root
+  // is past the block's rest distance is a cached instance this frame — the pool gave it no block,
+  // so it is drawn at its rest pose, the pose the cache's structures are built in — whether or not
+  // it is untraced: its drawn entries reference its mesh's slots and the frame builds none of
+  // them. Its casters are the cache's caster form, where its species casts at all. 200 bytes.
+  u64 field = 0;
 };
-static_assert(sizeof(ClusterRecordParams) == 192);
+static_assert(sizeof(ClusterRecordParams) == 200);
 
 // **The resident cluster structure cache's tables** (docs/subsystems/renderer.md, "The resident
 // cluster structure cache"; R101), one device block the records passes read through

@@ -1111,7 +1111,7 @@ struct DeformParams {
 };
 static_assert(sizeof(DeformParams) == 128);
 
-// Mirrors AllocParams in deform_alloc.slang: the push constants of the pool's allocator, 112
+// Mirrors AllocParams in deform_alloc.slang: the push constants of the pool's allocator, 120
 // bytes, shared by its three passes (R104): `deform_alloc_tiles_main` and
 // `deform_alloc_place_main` over `groups` workgroups, `deform_alloc_scan_main` in one, once per
 // run of the visible list, covering every view of the run. The allocation is a prefix sum over the
@@ -1159,8 +1159,15 @@ struct DeformAllocParams {
   // posed, which the nearest cascade always is. It took the block from 96 to 112 bytes, within the
   // 128 every device pushes.
   f32 rest_padding_m[4] = {};
+  // **The far field at rest** (renderer.md, "The far field at rest"; flora_motion.h; R152): the
+  // frame's `FloraFieldFrame`, or 0 for no rule. On every dispatch, the camera's and the
+  // cascades', an entry of a field instance whose every root is past the block's rest distance
+  // takes no block: the pool pass would write its rest position, so every reader draws it from the
+  // grid and the pool pass does not run for it. It took the block from 112 to 120 bytes, within
+  // the 128 every device pushes.
+  u64 field = 0;
 };
-static_assert(sizeof(DeformAllocParams) == 112);
+static_assert(sizeof(DeformAllocParams) == 120);
 
 inline constexpr u32 k_deform_workgroup_size = 128;   // numthreads in deform.slang
 inline constexpr u32 k_deform_alloc_workgroup = 256;  // numthreads in deform_alloc.slang

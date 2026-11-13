@@ -76,8 +76,20 @@ struct FloraFieldPart {
 };
 static_assert(sizeof(FloraFieldPart) == 16);
 
-// The frame's field, GPU-mirrored (deform.slang's `FloraFieldFrame`). 160 bytes, two poses' worth,
-// at the head of every frame slot's part-pose region.
+// **The far field at rest** (renderer.md, "The far field at rest"; R152). Past `rest.x` metres from
+// the eye a blade's root takes no wind — the angle fades to zero over the band `1 / rest.y` wide
+// that ends `k_field_rest_margin_m` short of it, so the last posed frame of a blade is its rest
+// pose — and an instance whose every root is that far (`field_rests`, below) is given no pool
+// block (deform_alloc.slang), which every position reader draws from the grid, and references its
+// mesh's resident structures in the ray tracing chain instead of having the frame build its own
+// (clas_records.slang, `instance_cached`). The margin is what lets the two passes disagree by a
+// float's rounding and the picture not know: inside it a posed blade is at rest to the bit.
+inline constexpr f32 k_field_rest_margin_m = 0.25f;
+
+// The frame's field, GPU-mirrored (field_rest.slang's `FloraFieldFrame`). 240 bytes, three poses'
+// worth, at the head of every frame slot's part-pose region. 240, not 160 (R152): the rule above
+// needs five words no field of the block could give up, and the block is where the frame's eye and
+// walker already are, which the rule reads too.
 struct FloraFieldFrame {
   FrameEye eye{};  // the frame's origin: the root's offset from it is what the waves read
   // Where the wind blows to in the ground plane (x, z; unit), its strength over a record's mean
@@ -91,11 +103,62 @@ struct FloraFieldFrame {
   // The walker's height, the push's most radians, its margin metres, and in w the bits of the
   // hand-off's clock (a u32, `GpuScene::handoff_tick`; G136), which a load-in age is counted from.
   Vec4 push{};
+  // The far field at rest (above). x: the distance, metres (0: no rule, a blade sways at every
+  // distance); y: one over the fade band's width; z: the largest |root| of any field mesh of the
+  // scene, mesh space, so an instance's roots lie within z times its `scale_max` of its origin;
+  // w: how near the walker an instance's origin must be for a blade of it to be pushed, less that
+  // reach — the capsule's radius, the push's margin and the scene's longest blade (0: no walker).
+  Vec4 rest{};
+  // The scene's field records: the deform entries [field_first, field_first + field_count), one a
+  // field mesh, made together at load. How a pass that reads no DeformDesc knows a field instance.
+  u32 field_first = 0;
+  u32 field_count = 0;
+  u32 reserved[14] = {};
 };
-static_assert(sizeof(FloraFieldFrame) == 160);
+static_assert(sizeof(FloraFieldFrame) == 240);
 inline constexpr u64 k_flora_field_frame_bytes = sizeof(FloraFieldFrame);
-static_assert(k_flora_field_frame_bytes == 2 * sizeof(FloraPartPose),
-              "the block is two poses' room at the head of a region");
+static_assert(k_flora_field_frame_bytes == 3 * sizeof(FloraPartPose),
+              "the block is three poses' room at the head of a region");
+
+// The share of the wind a blade whose root is `d` metres from the eye takes: 1 short of the band,
+// 0 from `k_field_rest_margin_m` short of the rest distance on. field_rest.slang's `field_fade`,
+// operation for operation.
+inline f32 field_fade(const FloraFieldFrame& field, f32 d) noexcept {
+  if (!(field.rest.x > 0.0f)) return 1.0f;
+  const f32 t = (field.rest.x - k_field_rest_margin_m - d) * field.rest.y;
+  return t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+}
+
+// **Whether an instance stands at rest this frame**: a field instance every one of whose roots is
+// at least the rest distance from the eye, so every vertex the pool pass would write for it is its
+// rest position. `from_eye` is the instance's translation from the frame's eye
+// (`engine::relative`). Never a near form of a hand-off (past its band it draws nothing, which is
+// not its rest pose), a far form only past its band's end (inside it the pass thins it by part),
+// and never an instance the walker can reach. field_rest.slang's `field_rests`, operation for
+// operation; the two passes that ask (the pool's allocator and the chain's records) run the same
+// SPIR-V over the same words.
+inline bool field_rests(const InstanceDesc& instance, Vec3 from_eye,
+                        const FloraFieldFrame& field) noexcept {
+  if (!(field.rest.x > 0.0f)) return false;
+  if (instance.deform - field.field_first >= field.field_count) return false;
+  const u32 role = instance.flags & k_instance_handoff_mask;
+  if (role == k_instance_handoff_near) return false;
+  f32 bound = field.rest.x;
+  if (role == k_instance_handoff_far) {
+    const f32 to = static_cast<f32>(instance.band >> 16) * 0.01f;
+    if (to > bound) bound = to;
+  }
+  const f32 reach = field.rest.z * instance.scale_max;
+  const f32 least = bound + reach;
+  if (!(dot(from_eye, from_eye) >= least * least)) return false;
+  if (field.rest.w > 0.0f) {
+    const f32 dx = from_eye.x - field.walker.x;
+    const f32 dz = from_eye.z - field.walker.z;
+    const f32 near = field.rest.w + reach;
+    if (dx * dx + dz * dz < near * near) return false;
+  }
+  return true;
+}
 
 // Rodrigues' rotation of `v` about the unit `k` by the angle whose cosine and sine are `c`, `s`:
 // v c + (k x v) s + k (k . v)(1 - c). The shader's `flora_rotate` is the same expression in the

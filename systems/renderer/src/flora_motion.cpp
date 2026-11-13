@@ -56,6 +56,22 @@ tunables::Float flora_rest_pose_cascades_m{
     "Metres: a swaying instance farther than this from the eye casts its rest pose into the "
     "cascaded shadow maps (0: off; grass casts at rest by its species' policy whatever this says)"};
 
+// **The far field at rest** (renderer.md, "The far field at rest"; R152). The owner's vantage over
+// the forest wanted 618,793 cluster structures of a budget of 338,072, and nine tenths of what a
+// frame builds there is the sward, every pair of it rebuilt every frame because it sways. Past
+// this distance it stands still, takes no pool block and references its mesh's resident
+// structures. The default is where the sway stops being a pixel's worth at 3840 x 2160 (the
+// page has the measure); 0 sways the field at every distance, as before.
+tunables::Float flora_field_rest_m{
+    "renderer.flora.field_rest_m", 120.0, 0.0, 100'000.0,
+    "Metres from the eye past which a field's blades (the sward) take no wind, so an instance "
+    "wholly past it is drawn at rest with no pool block and references the ray tracing chain's "
+    "resident structures (0: off; renderer.md, \"The far field at rest\")"};
+tunables::Float flora_field_rest_fade_m{
+    "renderer.flora.field_rest_fade_m", 40.0, 0.0, 10'000.0,
+    "Metres: the band before renderer.flora.field_rest_m over which a field's sway falls to "
+    "nothing, so no blade stops in one frame"};
+
 constexpr f32 k_tau = 6.28318530717958647692f;
 
 // A 32-bit integer hash (the "lowbias32" finalizer): the seed's phases, nothing that needs more.
@@ -278,6 +294,51 @@ void flora_field_frame(Vec2 to, f32 strength, f64 time_s, const WorldEye& eye,
     out.walker = Vec4{feet, frame.walker_radius > 0.0f ? frame.walker_radius : 0.0f};
     out.push = Vec4{frame.walker_height, k_flora_push_max, k_flora_push_margin, 0.0f};
   }
+}
+
+f32 flora_field_rest_m_tunable() noexcept { return static_cast<f32>(flora_field_rest_m.get()); }
+f32 flora_field_rest_fade_m_tunable() noexcept {
+  return static_cast<f32>(flora_field_rest_fade_m.get());
+}
+
+FloraFieldRest flora_field_rest_of(std::span<const FloraMesh> meshes,
+                                   std::span<const u32> records) noexcept {
+  FloraFieldRest out;
+  u32 last = 0;
+  f32 reach2 = 0.0f;
+  for (u32 m = 0; m < meshes.size() && m < records.size(); ++m) {
+    if (records[m] == ~0u) continue;
+    if (out.count == 0 || records[m] < out.first) out.first = records[m];
+    if (out.count == 0 || records[m] > last) last = records[m];
+    ++out.count;
+    for (const geometry::ClusterFileMotionPart& part : meshes[m].parts) {
+      reach2 = std::fmax(reach2, dot(part.pivot, part.pivot));
+      out.blade_max = std::fmax(out.blade_max, part.length);
+    }
+  }
+  out.root_reach = std::sqrt(reach2);
+  // The shaders know a field instance by its record's place in one run. The records are made
+  // together at load; were they ever not, the rule is off rather than wrong.
+  if (out.count != 0 && last - out.first + 1 != out.count) out = FloraFieldRest{};
+  return out;
+}
+
+void flora_field_rest(const FloraFieldRest& scene, const FrameFlora& frame,
+                      gfx::FloraFieldFrame& out) noexcept {
+  out.field_first = scene.first;
+  out.field_count = scene.count;
+  out.rest = Vec4{};
+  const f32 rest_m = flora_field_rest_m_tunable();
+  if (scene.count == 0 || !(rest_m > gfx::k_field_rest_margin_m)) return;
+  // The band lies inside the distance, and never reaches the eye: a blade underfoot sways whole.
+  const f32 room = rest_m - gfx::k_field_rest_margin_m;
+  f32 fade = flora_field_rest_fade_m_tunable();
+  if (fade > room) fade = room;
+  if (fade < 0.01f) fade = 0.01f;
+  const f32 walker = frame.walker && frame.walker_radius > 0.0f
+                         ? frame.walker_radius + k_flora_push_margin + scene.blade_max
+                         : 0.0f;
+  out.rest = Vec4{rest_m, 1.0f / fade, scene.root_reach, walker};
 }
 
 f32 flora_gust(f64 time_s, u32 seed) noexcept {

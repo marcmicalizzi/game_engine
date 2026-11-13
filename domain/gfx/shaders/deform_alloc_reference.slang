@@ -12,7 +12,7 @@
 
 #include "scene.slang"
 
-// Mirrors gfx::DeformAllocParams (112 bytes).
+// Mirrors gfx::DeformAllocParams (120 bytes).
 struct AllocParams {
   uint64_t clusters;
   uint64_t instances;
@@ -31,6 +31,7 @@ struct AllocParams {
   uint groups;      // unused here
   uint pad;
   float4 rest_padding_m;  // the cascades' rest pose per view (R103)
+  uint64_t field;         // the far field at rest (R152): unused here, the tests hand it 0
 };
 
 [[vk::push_constant]] ConstantBuffer<AllocParams> g_params;

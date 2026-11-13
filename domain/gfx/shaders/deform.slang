@@ -64,6 +64,7 @@
 //            every copy moves the same way. A real cage transfer has to keep that property.
 
 #include "scene.slang"
+#include "field_rest.slang"
 #include "water_waves.slang"
 
 // Mirrors gfx::MorphParams (48 bytes): the scene's morph stream, one block behind one address
@@ -596,16 +597,9 @@ void flora_vertex(MeshDesc mesh, DeformDesc deform, uint vertex, out float3 posi
 // cantilever) and the root stays. Crack-free as the trees are: everything a vertex reads is its
 // rest position, its part and its fraction, and its instance, which every copy shares.
 
-// Mirrors gfx::FloraFieldFrame (160 bytes).
-struct FloraFieldFrame {
-  FrameEye eye;
-  float4 wind;     // to.x, to.z, strength, the flutter's phase
-  float4 waves[2]; // the four waves' (x, z) vectors, rad/m
-  float4 phases;   // their phases at the eye
-  float4 weights;  // their shares of the gust
-  float4 walker;   // the walker's feet from the eye, radius (<= 0: none)
-  float4 push;     // height, the push's most radians, margin; w the hand-off's clock's bits (G136)
-};
+// The frame's block (gfx::FloraFieldFrame) is field_rest.slang's, which the pool's allocator and
+// the chain's records read too: past its rest distance a blade takes no wind (`field_fade`), and an
+// instance wholly past it has no block here at all.
 
 static const float k_field_lean = 0.6;     // renderer::flora_part_poses' constants, the trees'
 static const float k_field_lean_gust = 0.8;
@@ -643,7 +637,7 @@ void field_vertex(MeshDesc mesh, InstanceDesc instance, DeformDesc deform, uint 
   const uint part = record & 0xffffu;
   const uint fraction = record >> 16;
   if (part >= deform.joint_count) return;
-  const FloraFieldFrame field = ((FloraFieldFrame*)(g_params.flora - 160))[0];
+  const FloraFieldFrame field = ((FloraFieldFrame*)(g_params.flora - k_field_frame_bytes))[0];
   const float4 blade = ((float4*)deform.joints)[part];  // root xyz, length
   // The blade's own hash, from its root's bits and its instance's placement: its phase below, and
   // its place in the hand-off's order.
@@ -683,8 +677,11 @@ void field_vertex(MeshDesc mesh, InstanceDesc instance, DeformDesc deform, uint 
     // the roots, so a card sways in its patch's phases.
     const float phase = float(h >> 8) * (k_tau / 16777216.0);
     const float compliance = asfloat(deform.first_channel);
+    // **The far field at rest** (field_rest.slang; R152): the wind's share falls to nothing over
+    // the band before the rest distance, so a blade past it has no angle and returns its rest
+    // position below, to the bit — the pose an instance wholly past it is drawn in with no block.
     const float angle =
-        compliance * strength *
+        compliance * strength * field_fade(field, length(root)) *
         ((k_field_lean + k_field_lean_gust * gust) +
          (k_field_flutter + k_field_flutter_gust * gust) * sin(field.wind.w + phase));
     // cross(up, to): the axis that turns up towards where the wind blows.

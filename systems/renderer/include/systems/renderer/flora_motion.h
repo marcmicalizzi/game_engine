@@ -177,6 +177,33 @@ inline constexpr f32 k_flora_field_weights[4] = {0.2f, 0.2f, 0.3f, 0.3f};  // ho
 void flora_field_frame(Vec2 to, f32 strength, f64 time_s, const WorldEye& eye,
                        const FrameFlora& frame, gfx::FloraFieldFrame& out) noexcept;
 
+// ---- the far field at rest (renderer.md, "The far field at rest"; gfx/flora_motion.h; R152) ----
+//
+// **Past `renderer.flora.field_rest_m` a field does not sway, and the frame builds nothing for
+// it.** The sway of a blade fades to nothing over the `renderer.flora.field_rest_fade_m` before
+// that distance from the eye, and an instance wholly past it takes no pool block and, in the ray
+// tracing chain, references its mesh's resident structures instead of having its own built every
+// frame. What the rule needs of the scene, found once at load: its field records (one a field
+// mesh, made together), the largest |root| of any of their blades (so an instance's roots lie
+// within that times its scale of its origin) and the longest blade (the walker's reach).
+struct FloraFieldRest {
+  u32 first = 0;
+  u32 count = 0;
+  f32 root_reach = 0.0f;
+  f32 blade_max = 0.0f;
+};
+// The scene's part, from its field meshes' blades: `meshes` are the scene's flora meshes and
+// `records` each one's field record, or ~0 for a mesh with none (`GpuScene::field_deform_`).
+FloraFieldRest flora_field_rest_of(std::span<const FloraMesh> meshes,
+                                   std::span<const u32> records) noexcept;
+// The tunables: metres from the eye (0: off, the field sways at every distance), and the band.
+f32 flora_field_rest_m_tunable() noexcept;
+f32 flora_field_rest_fade_m_tunable() noexcept;
+// Writes the rule into a frame's block, after `flora_field_frame`: the scene's records always, the
+// distances when the rule is on and the scene has a field.
+void flora_field_rest(const FloraFieldRest& scene, const FrameFlora& frame,
+                      gfx::FloraFieldFrame& out) noexcept;
+
 // Builds `out` from a mesh's sections 35 and 37 and its species. False for a table that breaks the
 // contract (a parent at or after its child, a part count past 65,536). `ids`, when it is as long as
 // `parts`, is each part's id in the mesh a distance form was cut from

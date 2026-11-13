@@ -377,8 +377,9 @@ TEST_CASE("engine-view: a streamed sward sways as a field, as the whole read's d
     CHECK(field_u64(*flora, "field_instances") == 160);
     CHECK(field_u64(*flora, "tail_records") == 0);
     CHECK(field_u64(*flora, "tail_bytes") == 0);
-    // The table is the field block a slot and nothing else: three slots of 160 bytes.
-    CHECK(field_u64(*flora, "pose_table_bytes") == 480);
+    // The table is the field block a slot and nothing else: three slots of 240 bytes (160 until
+    // R152 gave the block the far field's rest distance, the roots' reach and the field records).
+    CHECK(field_u64(*flora, "pose_table_bytes") == 720);
   }
   const u32 swayed = differing_pixels(tmp.file("whole.png"), tmp.file("rigid.png"));
   const u32 replay = differing_pixels(tmp.file("whole.png"), tmp.file("again.png"));
