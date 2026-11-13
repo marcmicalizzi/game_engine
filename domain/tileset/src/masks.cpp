@@ -775,7 +775,7 @@ bool mask_level_span(const scene::Terrain& entry, std::string_view dir, const Ma
     return false;
   }
   const scene::TerrainTileSet& t = *entry.tiles;
-  const auto read = [&](const std::string& path, JsonValue& json) {
+  const auto load_json = [&](const std::string& path, JsonValue& json) {
     std::string bytes;
     if (io::read_file(path, bytes) != io::Status::Ok) {
       error = "terrain.masks: '" + path + "' could not be read";
@@ -793,7 +793,7 @@ bool mask_level_span(const scene::Terrain& entry, std::string_view dir, const Ma
   if (!t.manifest.empty()) {
     const std::string path = resolve(dir, t.manifest);
     JsonValue json;
-    if (!read(path, json)) return false;
+    if (!load_json(path, json)) return false;
     schema::ReadContext ctx;
     ctx.options.ignore_unknown_fields = true;
     if (!schema::from_json(lattice, json, ctx) || !ctx.ok()) {
@@ -803,7 +803,7 @@ bool mask_level_span(const scene::Terrain& entry, std::string_view dir, const Ma
   } else if (!t.heightfield.empty()) {
     const std::string path = resolve(dir, t.heightfield);
     JsonValue json;
-    if (!read(path, json)) return false;
+    if (!load_json(path, json)) return false;
     HeightfieldHeader header;
     schema::ReadContext ctx;
     if (!schema::from_json(header, json, ctx) || !ctx.ok()) {
@@ -1104,9 +1104,9 @@ bool MaskLevel::open(const std::string& manifest_path, std::string& error, bool 
   manifest_ = MaskLevelManifest{};
   // A manifest carries no version of its own struct; only a version-1 one names `resident_mib`.
   const bool version_1 = json.is_object() && json.find("resident_mib") != nullptr;
-  const bool read = version_1 ? schema::from_json_versioned(manifest_, std::move(json), 1, ctx)
-                              : schema::from_json(manifest_, json, ctx);
-  if (!read || !ctx.ok() || manifest_.format != k_mask_format ||
+  const bool parsed = version_1 ? schema::from_json_versioned(manifest_, std::move(json), 1, ctx)
+                                : schema::from_json(manifest_, json, ctx);
+  if (!parsed || !ctx.ok() || manifest_.format != k_mask_format ||
       manifest_.version != k_mask_version || manifest_.cells < 4 || manifest_.cells > 256 ||
       (manifest_.cells & (manifest_.cells - 1)) != 0 || manifest_.spacing_mm < 1 ||
       manifest_.present.size() % 2 != 0) {
