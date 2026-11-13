@@ -24,6 +24,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <thread>
@@ -743,6 +744,67 @@ TEST_CASE("listen: document terrain tile intent rebuilds a bounded carrier") {
   check_load(false, true, 2 * 64 * 64);
   check_load(true, true, 2 * 16 * 16);
   check_load(true, false, 2 * 16 * 16);
+}
+
+// **A document's ground with no root named lands with the document** (T104, T119; doc_scene.md,
+// "The ground's root"): `render.load` of a session with no `ddc` builds the heightfield's set under
+// the repository's `ddc/` above the document's directory when there is one, else under the
+// document's own `ddc/` — never under the repository the host was started from, which is where a
+// host outside any checkout (an SDK's) used to have no root at all. The mesh cache is off, so the
+// fixture writes nothing outside its scratch directory.
+TEST_CASE("listen: a document's ground with no root named is built beside the document") {
+  test::TempDir tmp("engine_host_document_root");
+  const auto heightfield = [&](const std::string& doc) {
+    std::vector<f32> heights(33 * 33);
+    for (u32 z = 0; z < 33; ++z)
+      for (u32 x = 0; x < 33; ++x)
+        heights[z * 33 + x] = static_cast<f32>(x + z) * 0.01f;
+    const std::string bytes(reinterpret_cast<const char*>(heights.data()),
+                            heights.size() * sizeof(f32));
+    write_file(doc + "/ground.f32", bytes);
+    char hash[17];
+    std::snprintf(hash, sizeof(hash), "%016llx",
+                  static_cast<unsigned long long>(hash_bytes(bytes.data(), bytes.size())));
+    write_file(
+        doc + "/ground.json",
+        std::string(
+            R"({"format":"engine.terrain.heightfield","version":1,"width":33,"height":33,"spacing_mm":1000,"origin_mm":[-16000,-16000],"vertical_mm_per_unit":1000,"data":"ground.f32","data_hash":")") +
+            hash + "\"}");
+  };
+  // Returns false when this machine cannot render, and the case says so and stops.
+  const auto load = [&](const std::string& doc) {
+    ListeningHost host({"--doc", doc, "--create", "--actor", "shell"});
+    heightfield(doc);
+    Client c;
+    REQUIRE(c.connect(host.port, host.token));
+    const JsonValue made = c.call(
+        "doc.apply",
+        R"({"session":")" + host.session +
+            R"(","commands":[{"kind":"CreateObject","id":"00000000000000200000000000000001","type":"engine.terrain.Heightfield","value":{"source":"ground.json"}}],"attribution":{"rationale":"a document's root"}})");
+    REQUIRE_MESSAGE(error_code(made) == 0, write_json(made));
+    const JsonValue loaded =
+        c.call("render.load", R"({"session":")" + host.session +
+                                  R"(","cache":false,"settings":{"terrain_tiles":true}})");
+    if (error_code(loaded) == k_render_unavailable) {
+      MESSAGE("render.* unavailable here: " << write_json(loaded));
+      return false;
+    }
+    REQUIRE_MESSAGE(error_code(loaded) == 0, write_json(loaded));
+    return true;
+  };
+  // Outside any checkout: the document's own `ddc/`.
+  std::filesystem::create_directories(tmp.file("alone"));
+  const std::string alone = tmp.file("alone/doc");
+  if (!load(alone)) return;
+  CHECK(std::filesystem::is_directory(alone + "/ddc"));
+  // Inside a repository (the directory above holds AGENTS.md): that repository's `ddc/`.
+  const std::string game = tmp.file("game");
+  std::filesystem::create_directories(game + "/worlds");
+  write_file(game + "/AGENTS.md", "a game repository's root\n");
+  const std::string inside = game + "/worlds/doc";
+  if (!load(inside)) return;
+  CHECK(std::filesystem::is_directory(game + "/ddc"));
+  CHECK_FALSE(std::filesystem::exists(inside + "/ddc"));
 }
 #endif
 

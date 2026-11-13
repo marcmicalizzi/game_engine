@@ -70,8 +70,13 @@ struct DocumentScene {
 // relative to: the document's directory. False, with `error` naming the record, for a placement
 // whose properties do not read as the schema type or whose mesh is empty. A second live heightfield
 // record is refused naming both, as is one whose source does not read or whose set cannot be built.
+// `ddc` is **the host's derived-data root** (T104, T119; doc_scene.md, "The ground's root"): the
+// ground's set is built and found there, and `desc.terrain`'s `tiles` block carries it so the load
+// reads the same one. A host passes `scene_gen::host_derived_root(<its --ddc>, {}, false)`: the
+// root it was named, else the repository's found from the executable. Empty only where neither
+// exists, and then the provider's own rule (the repository above the heightfield) holds.
 bool read_document_scene(const doc::Document& document, const std::string& base_dir,
-                         DocumentScene& out, std::string& error);
+                         std::string_view ddc, DocumentScene& out, std::string& error);
 
 // One placement record's properties as an instance of `scene`'s meshes: its mesh index found by
 // path. False, with `error`, when the record is not a live placement, does not read, or names a

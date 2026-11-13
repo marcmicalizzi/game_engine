@@ -259,3 +259,54 @@ TEST_CASE("scene_collision: a tile's mesh built ahead and never activated leaks 
   }
   CHECK(physics.built_shape_count() == 0);
 }
+
+namespace {
+// A placement generator that keeps the root each open is handed (T119): what the collision's open
+// of a streamed entry gives it.
+std::string g_opened_root;
+bool probe_open(const JsonValue&, const scene_gen::Context& c, void** state, std::string*) {
+  g_opened_root = std::string(c.ddc);
+  *state = nullptr;
+  return true;
+}
+void probe_close(void*) noexcept {}
+bool probe_expand(void*, const scene_gen::Context&, scene_gen::Placements&, std::string*) {
+  return true;
+}
+bool probe_tile(void*, scene_gen::TileCoord, const scene_gen::Context&, scene_gen::Placements&,
+                std::string*) {
+  return true;
+}
+bool probe_occupies(const void*, scene_gen::TileCoord) noexcept { return false; }
+u8 probe_representation(const void*, const scene_gen::Context&) noexcept { return 0; }
+constexpr scene_gen::PlacementGeneratorDesc k_root_probe{.name = "test-root-probe",
+                                                         .open = &probe_open,
+                                                         .close = &probe_close,
+                                                         .expand = &probe_expand,
+                                                         .tile = &probe_tile,
+                                                         .occupies = &probe_occupies,
+                                                         .representation = &probe_representation};
+const scene_gen::Registrar k_root_probe_registrar{k_root_probe};
+}  // namespace
+
+// **The collision opens a streamed entry with the whole read's root** (T119; scene_gen.md, "The
+// derived-data root"): the root the reader opened it with (`StreamedPlacements::ddc`), never an
+// empty one a generator would fill from the scene's directory or the working directory.
+TEST_CASE("scene_collision: a streamed entry is opened under the whole read's root") {
+  renderer::SceneData scene;
+  renderer::StreamedPlacements entry;
+  entry.generator = "test-root-probe";
+  entry.where = "test.json: placements 0";
+  entry.ddc = "D:/somewhere/the-host/ddc";
+  scene.streamed.push_back(entry);
+  physics::World physics;
+  REQUIRE(physics.init(physics_options()) == physics::Status::Ok);
+  g_opened_root.clear();
+  {
+    SceneCollision collision;
+    std::string error;
+    REQUIRE_MESSAGE(collision.create(physics, scene, nullptr, Config{}, &error), error);
+    CHECK(g_opened_root == "D:/somewhere/the-host/ddc");
+  }
+  physics.shutdown();
+}

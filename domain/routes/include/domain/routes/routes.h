@@ -154,10 +154,10 @@ struct RoutePlan {
 u64 plan_layer_hash(const RouteLayer& layer);
 std::string plan_key_text(u64 key);
 std::string plan_path(std::string_view dir, u64 key);
-// `<ddc>/routes`, `ddc` the host's root when it named one, else the repository's found from
-// `scene_dir`, else `<scene_dir>/ddc`; made when it is not there.
-bool derived_dir(std::string_view ddc, std::string_view scene_dir, std::string& out,
-                 std::string& error);
+// `<root>/routes`, absolute, made when it is not there. `root` is the one a host hands
+// (`scene_gen::host_derived_root`, T119; routes.md, "One plan"): an empty one is refused with a
+// sentence, never filled from the scene's directory or the working directory here.
+bool derived_dir(std::string_view root, std::string& out, std::string& error);
 bool ensure_plan(const RouteLayer& layer, const scene_gen::Context& context, std::string_view dir,
                  RoutePlan& out, std::string& error);
 // The file's bytes (integers and IEEE bits, little-endian, closed by a hash of the whole), and a

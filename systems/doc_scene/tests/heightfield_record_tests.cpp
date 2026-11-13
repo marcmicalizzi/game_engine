@@ -73,7 +73,7 @@ TEST_CASE("doc_scene: a heightfield record is the scene's terrain, its set built
          R"({"name":"hut","mesh":"props/hut.glb","translation":[1,0,1]})");
   doc_scene::DocumentScene scene;
   std::string error;
-  REQUIRE_MESSAGE(doc_scene::read_document_scene(w.d, w.tmp.path(), scene, error), error);
+  REQUIRE_MESSAGE(doc_scene::read_document_scene(w.d, w.tmp.path(), {}, scene, error), error);
   CHECK(scene.terrain_record == id_of(1));
   REQUIRE(scene.terrain.has_value());
   CHECK(scene.terrain->provider == "tiles");
@@ -104,7 +104,7 @@ TEST_CASE("doc_scene: a heightfield record is the scene's terrain, its set built
   CHECK(again.hit);
   // A second read builds nothing.
   doc_scene::DocumentScene second;
-  REQUIRE_MESSAGE(doc_scene::read_document_scene(w.d, w.tmp.path(), second, error), error);
+  REQUIRE_MESSAGE(doc_scene::read_document_scene(w.d, w.tmp.path(), {}, second, error), error);
   CHECK(second.terrain_record == id_of(1));
 }
 
@@ -116,7 +116,7 @@ TEST_CASE("doc_scene: a heightfield record's changes, and the refusals") {
          R"({"name":"hut","mesh":"props/hut.glb","translation":[1,0,1]})");
   doc_scene::DocumentScene scene;
   std::string error;
-  REQUIRE_MESSAGE(doc_scene::read_document_scene(w.d, w.tmp.path(), scene, error), error);
+  REQUIRE_MESSAGE(doc_scene::read_document_scene(w.d, w.tmp.path(), {}, scene, error), error);
   doc_scene::SceneChanges changes;
 
   // Its name is not drawn: nothing.
@@ -133,28 +133,28 @@ TEST_CASE("doc_scene: a heightfield record's changes, and the refusals") {
   set(w.d, id_of(1), "source", R"("terrain/bowl.json")");
   REQUIRE(doc_scene::changes_since(w.d, scene, changes, error));
   CHECK(changes.rebuild);
-  REQUIRE_MESSAGE(doc_scene::read_document_scene(w.d, w.tmp.path(), scene, error), error);
+  REQUIRE_MESSAGE(doc_scene::read_document_scene(w.d, w.tmp.path(), {}, scene, error), error);
   CHECK(scene.terrain->tiles->heightfield == w.tmp.file("terrain/bowl.json"));
   set(w.d, id_of(1), "origin", "[16,0,0]");
   REQUIRE(doc_scene::changes_since(w.d, scene, changes, error));
   CHECK(changes.rebuild);
-  REQUIRE_MESSAGE(doc_scene::read_document_scene(w.d, w.tmp.path(), scene, error), error);
+  REQUIRE_MESSAGE(doc_scene::read_document_scene(w.d, w.tmp.path(), {}, scene, error), error);
   set(w.d, id_of(1), "vertical_scale", "2");
   REQUIRE(doc_scene::changes_since(w.d, scene, changes, error));
   CHECK(changes.rebuild);
-  REQUIRE_MESSAGE(doc_scene::read_document_scene(w.d, w.tmp.path(), scene, error), error);
+  REQUIRE_MESSAGE(doc_scene::read_document_scene(w.d, w.tmp.path(), {}, scene, error), error);
   // Materials are part of the native ground, carried to the viewport and rebuilt on edit.
   set(w.d, id_of(1), "materials", R"({"layers":[{"name":"soil","tint":[0.2,0.3,0.1]}]})");
   REQUIRE(doc_scene::changes_since(w.d, scene, changes, error));
   CHECK(changes.rebuild);
-  REQUIRE_MESSAGE(doc_scene::read_document_scene(w.d, w.tmp.path(), scene, error), error);
+  REQUIRE_MESSAGE(doc_scene::read_document_scene(w.d, w.tmp.path(), {}, scene, error), error);
   REQUIRE(scene.desc.terrain.materials.has_value());
   CHECK(scene.desc.terrain.materials->layers[0].name == "soil");
   // Deleted: a rebuild, and the scene has no ground.
   remove(w.d, id_of(1));
   REQUIRE(doc_scene::changes_since(w.d, scene, changes, error));
   CHECK(changes.rebuild);
-  REQUIRE_MESSAGE(doc_scene::read_document_scene(w.d, w.tmp.path(), scene, error), error);
+  REQUIRE_MESSAGE(doc_scene::read_document_scene(w.d, w.tmp.path(), {}, scene, error), error);
   CHECK(scene.terrain_record.is_null());
   CHECK_FALSE(scene.terrain.has_value());
   CHECK_FALSE(scene.desc.terrain.enabled);
@@ -163,23 +163,45 @@ TEST_CASE("doc_scene: a heightfield record's changes, and the refusals") {
          R"({"name":"bowl","source":"terrain/bowl.json"})");
   REQUIRE(doc_scene::changes_since(w.d, scene, changes, error));
   CHECK(changes.rebuild);
-  REQUIRE_MESSAGE(doc_scene::read_document_scene(w.d, w.tmp.path(), scene, error), error);
+  REQUIRE_MESSAGE(doc_scene::read_document_scene(w.d, w.tmp.path(), {}, scene, error), error);
   CHECK(scene.terrain_record == id_of(3));
 
   // Two are refused, naming both.
   create(w.d, id_of(4), doc_scene::k_heightfield,
          R"({"name":"second","source":"terrain/ridge.json"})");
-  CHECK_FALSE(doc_scene::read_document_scene(w.d, w.tmp.path(), scene, error));
+  CHECK_FALSE(doc_scene::read_document_scene(w.d, w.tmp.path(), {}, scene, error));
   CHECK(error.find("two engine.terrain.Heightfield records") != std::string::npos);
   CHECK(error.find("00000000000000200000000000000003") != std::string::npos);
   CHECK(error.find("00000000000000200000000000000004") != std::string::npos);
   remove(w.d, id_of(4));
   // A source that is not there, and an origin between the source's points, each a sentence.
   set(w.d, id_of(3), "source", R"("terrain/none.json")");
-  CHECK_FALSE(doc_scene::read_document_scene(w.d, w.tmp.path(), scene, error));
+  CHECK_FALSE(doc_scene::read_document_scene(w.d, w.tmp.path(), {}, scene, error));
   CHECK(error.find("does not read as a heightfield header") != std::string::npos);
   set(w.d, id_of(3), "source", R"("terrain/bowl.json")");
   set(w.d, id_of(3), "origin", "[0.5,0,0]");
-  CHECK_FALSE(doc_scene::read_document_scene(w.d, w.tmp.path(), scene, error));
+  CHECK_FALSE(doc_scene::read_document_scene(w.d, w.tmp.path(), {}, scene, error));
   CHECK(error.find("whole number of its spacings") != std::string::npos);
+}
+
+// **The host's root, not the heightfield's** (T104, T119; doc_scene.md, "The ground's root"): a
+// host that names a root has the set built and found there, and the scene's `tiles` block carries
+// it so the load's own sampler reads the same set; the repository the document sits in, which the
+// provider would walk to with none named, gets no `ddc/`.
+TEST_CASE("doc_scene: the ground's set is built under the host's root") {
+  World w;
+  create(w.d, id_of(1), doc_scene::k_heightfield,
+         R"({"name":"range","source":"terrain/ridge.json"})");
+  const std::string host = w.tmp.file("elsewhere/ddc");
+  doc_scene::DocumentScene scene;
+  std::string error;
+  REQUIRE_MESSAGE(doc_scene::read_document_scene(w.d, w.tmp.path(), host, scene, error), error);
+  REQUIRE(scene.desc.terrain.tiles.has_value());
+  CHECK(scene.desc.terrain.tiles->ddc == host);
+  CHECK_FALSE(io::exists(w.tmp.file("ddc")));
+  tileset::BuildResult again;
+  REQUIRE_MESSAGE(tileset::ensure_tileset(w.tmp.file("terrain/ridge.json"), tileset::BuildOptions{},
+                                          "", host, false, again, error),
+                  error);
+  CHECK(again.hit);
 }

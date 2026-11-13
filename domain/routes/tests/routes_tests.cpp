@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 
 using namespace engine;
 using namespace engine::routes;
@@ -163,7 +164,7 @@ TEST_CASE("routes: the plan is the same bytes from any thread count and any host
 
   test::TempDir scratch;
   std::string dir;
-  REQUIRE_MESSAGE(derived_dir(scratch.path(), scratch.path(), dir, error), error);
+  REQUIRE_MESSAGE(derived_dir(scratch.path(), dir, error), error);
   scene_gen::Context near_origin, elsewhere;
   near_origin.ground = elsewhere.ground = ground(hill);
   near_origin.tile_size = 32;
@@ -174,7 +175,7 @@ TEST_CASE("routes: the plan is the same bytes from any thread count and any host
   REQUIRE_MESSAGE(ensure_plan(p, near_origin, dir, one, error), error);
   test::TempDir other;
   std::string dir2;
-  REQUIRE_MESSAGE(derived_dir(other.path(), other.path(), dir2, error), error);
+  REQUIRE_MESSAGE(derived_dir(other.path(), dir2, error), error);
   REQUIRE_MESSAGE(ensure_plan(p, elsewhere, dir2, two, error), error);
   CHECK(one.planned);
   CHECK(two.planned);
@@ -198,7 +199,7 @@ TEST_CASE("routes: the plan is the same bytes from any thread count and any host
 TEST_CASE("routes: one plan, read again and named on its own treads") {
   test::TempDir scratch;
   std::string dir, error;
-  REQUIRE_MESSAGE(derived_dir(scratch.path(), scratch.path(), dir, error), error);
+  REQUIRE_MESSAGE(derived_dir(scratch.path(), dir, error), error);
   scene_gen::Context c;
   c.ground = ground(hill);
   RouteLayer p = region(-50, -30, 50, 50);
@@ -585,4 +586,63 @@ TEST_CASE("routes: a layer out of range is refused with the field") {
   CHECK_FALSE(plan_routes(q, ground(hill), nullptr, n, error));
   CHECK(error.find("max_samples") != std::string::npos);
   CHECK_FALSE(plan_routes(p, scene_gen::Ground{}, nullptr, n, error));
+}
+
+// **The host's root and nothing else** (T119; scene_gen.md, "The derived-data root"): an entry
+// opened with no root is refused by name; a named plan under the host's root is read; one that is
+// only under the working directory's `ddc/` (where a host before T119 looked) is refused with a
+// sentence that names where it is, and is not read from there. The working directory is a scratch
+// directory that holds an `AGENTS.md`, as the forest's checkout does.
+TEST_CASE("routes: the plan is read under the host's root, never the working directory's") {
+  test::TempDir scratch;
+  const std::string working = scratch.file("working"), host = scratch.file("host-ddc");
+  std::filesystem::create_directories(working + "/scenes");
+  REQUIRE(io::write_file_atomic(working + "/AGENTS.md", "x") == io::Status::Ok);
+  const scene_gen::PlacementGeneratorDesc* generator =
+      scene_gen::GeneratorRegistry::global().find_placement("routes");
+  REQUIRE(generator != nullptr);
+  RouteLayer p = region(-50, -30, 50, 50);
+  p.routes.push_back(route("a", -44, -20, 40, 40));
+  // The plan made under the working directory's root, as `engine-content routes` with no `--ddc`
+  // run there wrote it before T119.
+  std::string stale, error;
+  REQUIRE_MESSAGE(derived_dir(working + "/ddc", stale, error), error);
+  scene_gen::Context make;
+  make.ground = ground(hill);
+  RoutePlan made;
+  REQUIRE_MESSAGE(ensure_plan(p, make, stale, made, error), error);
+  RouteLayer named = p;
+  named.plan = plan_key_text(made.key);
+  const JsonValue params = schema::to_json(named);
+
+  const std::filesystem::path before = std::filesystem::current_path();
+  std::filesystem::current_path(working);
+  struct Back {
+    std::filesystem::path to;
+    ~Back() {
+      std::error_code ec;
+      std::filesystem::current_path(to, ec);
+    }
+  } back{before};
+  scene_gen::Context c;
+  c.ground = ground(hill);
+  c.tile_size = 16.0f;
+  c.dir = "scenes";  // the scene, relative to the working directory, inside its checkout
+  c.where = "scene.json: placements 0";
+  void* state = nullptr;
+  // No root: refused by name, and nothing is made anywhere.
+  CHECK_FALSE(generator->open(params, c, &state, &error));
+  CHECK(error.find("scene.json: placements 0: routes: no derived-data root") == 0);
+  // The host's root, which does not hold the plan: refused, and the sentence says where it is.
+  c.ddc = host;
+  CHECK_FALSE(generator->open(params, c, &state, &error));
+  CHECK(error.find("is not in " + io::normalize_path(host + "/routes")) != std::string::npos);
+  CHECK(error.find("it is in " + io::normalize_path(working + "/ddc/routes")) != std::string::npos);
+  MESSAGE(error);
+  // Moved under the host's root: read, and planned nowhere.
+  std::filesystem::copy_file(plan_path(stale, made.key), plan_path(host + "/routes", made.key));
+  const u64 planned = plans_made();
+  REQUIRE_MESSAGE(generator->open(params, c, &state, &error), error);
+  CHECK(plans_made() == planned);
+  generator->close(state);
 }

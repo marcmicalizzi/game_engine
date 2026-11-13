@@ -18,6 +18,7 @@
 #include <domain/geometry/flora_species.h>
 #include <domain/geometry/stress_mesh.h>
 #include <domain/materials/materials.h>
+#include <domain/scene_gen/derived_root.h>
 #include <domain/scene_gen/scene_gen.h>
 #include <domain/scene_gen/sky.h>
 #include <domain/texture/material_textures.h>
@@ -1175,9 +1176,11 @@ bool expand_placements(const scene::Scene& file, const std::string& path, const 
   context.world_seed = out.terrain.enabled ? out.terrain.seed : 0;
   context.tile_size = out.world.enabled ? out.world.tile_size : 32.0f;
   context.dir = dir;
-  // The host's derived-data root, which both hosts set on the description before they read the
-  // file (`SceneDesc::ddc`); empty when none was named, and the generator finds one itself.
-  context.ddc = out.ddc;
+  // **The generators' root, by the one rule** (T119; scene_gen.md, "The derived-data root"): the
+  // host's (`SceneDesc::ddc`, set by both hosts before they read the file), else the scene's own;
+  // and the same root carried on each streamed entry for every consumer that opens it again.
+  const std::string root = scene_gen::host_derived_root(out.ddc, dir, true);
+  context.ddc = root;
   if (out.terrain.enabled) context.ground = ground.provider().view();
   if (!out.terrain.exclusion.empty()) context.exclusion = &out.terrain.exclusion;
   context.site = &out.terrain.site;
@@ -1266,6 +1269,7 @@ bool expand_placements(const scene::Scene& file, const std::string& path, const 
       streamed.where = entry.where;
       streamed.tile_meshes = generator->tile_meshes;
       streamed.tile_meshes_masked = generator->tile_meshes && generator->tile_meshes_masked;
+      streamed.ddc = root;
       std::string clash;
       streamed.meshes = append_placement_meshes(
           std::span<const scene_gen::PlacementMesh>(resident.data(), resident.size()), seen, out,

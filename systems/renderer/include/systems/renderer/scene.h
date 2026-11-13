@@ -253,6 +253,11 @@ struct StreamedPlacements {
   // The generator's `tile_meshes`: its tiles hand meshes, so the scene makes room for them.
   bool tile_meshes = false;
   bool tile_meshes_masked = false;  // and they may be alpha-tested (`tile_meshes_masked`)
+  // The derived-data root the reader opened the entry with (`scene_gen::host_derived_root`, T119):
+  // the host's, else the scene's own. Every consumer that opens the entry again (the world's
+  // placements consumer, the collision) hands this one, so its plans and recipes are the whole
+  // read's, never a root found from where the process was started.
+  std::string ddc;
   // For an entry whose placement ids name the whole read's instances (the `authored` entry's: its
   // place in the file's own list plus one), the loaded index of id 1: a placement of id `n` is
   // given `motion_key = motion_key_base + n - 1`, the key the whole read gives it. `~0u`: none.

@@ -77,6 +77,34 @@ try {
   Check ($inside.Code -eq 2 -and $inside.Output -match 'inside the repository') 'an export inside the repository is refused with exit 2'
   Check (-not (Test-Path -LiteralPath (Join-Path $Root 'build/never-written-sdk'))) 'and nothing was written there'
 
+  # ---- the template's launches name a derived-data root inside the game repository (T119) --------
+  # An SDK's host runs outside any checkout, so a launch that names no root writes beside each
+  # scene (docs/game-authoring.md, "Where a game's derived data goes"). Every script of the template
+  # that starts a host or the SDK's runner names one under the repository (`$here`); the package's
+  # run.cmd names one inside its folder; a host started from the README's command lines names one.
+  $template = Join-Path $Root 'templates/game-repo'
+  $launchers = @()
+  foreach ($file in Get-ChildItem -LiteralPath $template -Recurse -File -Filter '*.ps1') {
+    $code = @(Get-Content -LiteralPath $file.FullName | Where-Object { $_ -notmatch '^\s*#' })
+    $starts = @($code | Where-Object { $_ -match '^\s*&' -and $_ -match 'run-game\.ps1|bin[/\\]engine-(view|host|editor|mcp)' })
+    if ($starts.Count -eq 0) { continue }
+    $launchers += $file.Name
+    $text = $code -join "`n"
+    $named = ($text -match 'Ddc\s*=\s*\(Join-Path\s+\$here\s+''ddc''\)') -or ($text -match '--ddc''?\s*,?\s*\(?Join-Path\s+\$here')
+    Check $named "templates/game-repo/$($file.Name) starts a host and names a derived-data root inside the repository"
+  }
+  Check ($launchers -contains 'run.ps1') 'the template has a launch to check (run.ps1)'
+  $packer = Get-Content -LiteralPath (Join-Path $Root 'tools/package-game.ps1') -Raw
+  Check ($packer -match '''--ddc'', ''\{dir\}\\ddc''') "the package's run.cmd names --ddc inside its own folder (tools/package-game.ps1)"
+  $fenced = $false
+  $bare = @()
+  foreach ($line in Get-Content -LiteralPath (Join-Path $template 'README.md')) {
+    if ($line -match '^```') { $fenced = -not $fenced; continue }
+    $command = ($line -split '#', 2)[0]  # a command line's own words, not its comment
+    if ($fenced -and $command -match '(^|[\s/\\])engine-(view|host|editor|mcp)(\.exe)?(\s|$)' -and $command -notmatch '--ddc') { $bare += $line.Trim() }
+  }
+  Check ($bare.Count -eq 0) "the template's README starts no host without --ddc: $($bare -join ' | ')"
+
   # ---- export -----------------------------------------------------------------------------------
   $t = Get-Date
   $export = Run (Join-Path $Root 'tools/export-game-sdk.ps1') @('-Preset', $preset, '-BuildDir', $BuildDir, '-Out', $sdk)

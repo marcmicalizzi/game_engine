@@ -70,6 +70,14 @@ whatever the ground, and a named plan that is missing, or was made from another 
 with the command that makes it. That was the only way before R144, when the generator stood on the
 ground its pasted treads had changed.
 
+**The plan is under the host's root and nowhere else** (T119; [scene_gen](scene_gen.md#the-derived-data-root)):
+the generator reads and writes `<Context::ddc>/routes/` and refuses by name an entry opened with no
+root, rather than walking from the scene's directory or the working directory as it did. A named plan
+the host's root does not hold is refused with where it is when the scene's own root or the working
+directory's holds it ("… is not in `<root>/routes`…; it is in `<dir>`, under …"), and is never read from
+there. `engine-content routes` and `bridges` root the plan by the same rule (`--ddc`, else the scene's
+own) and hand `--ddc` to the ground's set; `routes_tests.cpp`'s last case holds the refusals and the read.
+
 ### Determinism
 
 The heights are whole millimetres; the steep test is products and one correctly rounded square root;

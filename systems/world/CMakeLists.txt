@@ -65,8 +65,12 @@ if(TARGET engine::city)
   # The placements consumer over a streamed city: its per-tile query, reached through the registry.
   list(APPEND _world_tests tests/city_tiles_tests.cpp)
 endif()
+if(TARGET engine::rocks)
+  # The consumer's derived-data root (T119): a streamed deposits entry, reached through the registry.
+  list(APPEND _world_tests tests/placement_roots_tests.cpp)
+endif()
 engine_module_tests(NAME world SOURCES ${_world_tests})
-foreach(_gen authored city ruins sky terrain)
+foreach(_gen authored city rocks ruins sky terrain)
   if(TARGET engine_world_tests AND TARGET engine::${_gen})
     target_link_libraries(engine_world_tests PRIVATE engine::${_gen})
   endif()
