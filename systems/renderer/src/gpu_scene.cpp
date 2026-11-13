@@ -6071,8 +6071,8 @@ bool GpuScene::lay_out_ray_tracing(std::string* error) {
       log::field("bytes_per_cluster", rt_bytes_per_cluster_),
       log::field("bytes_per_cluster_plain", plain_bytes_per_cluster),
       log::field("clas_bytes", rt_chunk_bytes()), log::field("clas_chunks", rt_chunk_count_),
-      log::field("blas_bytes", blas_set.data.size),
-      log::field("scratch_bytes", rt_scratch.size), log::field("rt_bytes", rt_bytes_),
+      log::field("blas_bytes", blas_set.data.size), log::field("scratch_bytes", rt_scratch.size),
+      log::field("rt_bytes", rt_bytes_),
       log::field("templates", limits.instantiate ? cluster_count_ : 0u),
       log::field("template_bytes", template_bytes_),
       log::field("template_storage", clas_templates.data.size));

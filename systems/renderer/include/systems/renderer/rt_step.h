@@ -47,9 +47,9 @@ struct RtResizeCost {
 // the chain was laid out again) is dropped with `drop_rt_step`. `resize_ray_tracing` is the three
 // in a row on one thread.
 struct RtStepInputs {
-  u32 capacity = 0;    // clamped: what the step makes
-  u32 references = 0;  // likewise; 0 without a cache
-  bool swap = false;   // made beside the scene's set: the chunks both hold are kept
+  u32 capacity = 0;              // clamped: what the step makes
+  u32 references = 0;            // likewise; 0 without a cache
+  bool swap = false;             // made beside the scene's set: the chunks both hold are kept
   bool keep_frame_set = false;   // the capacity stays: only the references' side is made
   bool swap_references = false;  // the cache's three reference buffers are made
   u32 chunk_clusters = 0;        // the new layout's chunk

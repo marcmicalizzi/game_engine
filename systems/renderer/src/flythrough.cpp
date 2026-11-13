@@ -4,13 +4,13 @@
 #include <core/time/time.h>
 #include <domain/gfx/resources.h>
 #include <foundation/tunables/tunables.h>
-#include <renderer_log.h>
 #include <systems/renderer/flythrough.h>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <renderer_log.h>
 #include <utility>
 
 namespace engine::renderer {
@@ -720,19 +720,19 @@ bool VisibleCensus::count(const SceneData& data, const GpuScene& scene, const St
     ENGINE_LOG_INFO(
         log_renderer, "chain census", log::field("frame", counted_ - 1),
         log::field("drawn", static_cast<u32>(entry_count)),
-        log::field("casters", static_cast<u32>(caster_count)),
-        log::field("deform", kinds[0][0]), log::field("rigid", kinds[0][1]),
-        log::field("cached", kinds[0][2]), log::field("static", kinds[0][3]),
-        log::field("untraced_deform", kinds[0][4]), log::field("untraced_rigid", kinds[0][5]),
-        log::field("untraced_static", kinds[0][7]), log::field("own_r0", own[0][0]),
-        log::field("own_r1", own[0][1]), log::field("own_r2", own[0][2]),
-        log::field("own_r3", own[0][3]), log::field("own_r4", own[0][4]),
-        log::field("own_r5", own[0][5]), log::field("c_deform", kinds[1][0]),
-        log::field("c_rigid", kinds[1][1]), log::field("c_cached", kinds[1][2]),
-        log::field("c_static", kinds[1][3]), log::field("c_untraced", kinds[1][4] + kinds[1][5]),
-        log::field("c_own_r0", own[1][0]), log::field("c_own_r1", own[1][1]),
-        log::field("c_own_r2", own[1][2]), log::field("c_own_r3", own[1][3]),
-        log::field("c_own_r4", own[1][4]), log::field("c_own_r5", own[1][5]));
+        log::field("casters", static_cast<u32>(caster_count)), log::field("deform", kinds[0][0]),
+        log::field("rigid", kinds[0][1]), log::field("cached", kinds[0][2]),
+        log::field("static", kinds[0][3]), log::field("untraced_deform", kinds[0][4]),
+        log::field("untraced_rigid", kinds[0][5]), log::field("untraced_static", kinds[0][7]),
+        log::field("own_r0", own[0][0]), log::field("own_r1", own[0][1]),
+        log::field("own_r2", own[0][2]), log::field("own_r3", own[0][3]),
+        log::field("own_r4", own[0][4]), log::field("own_r5", own[0][5]),
+        log::field("c_deform", kinds[1][0]), log::field("c_rigid", kinds[1][1]),
+        log::field("c_cached", kinds[1][2]), log::field("c_static", kinds[1][3]),
+        log::field("c_untraced", kinds[1][4] + kinds[1][5]), log::field("c_own_r0", own[1][0]),
+        log::field("c_own_r1", own[1][1]), log::field("c_own_r2", own[1][2]),
+        log::field("c_own_r3", own[1][3]), log::field("c_own_r4", own[1][4]),
+        log::field("c_own_r5", own[1][5]));
   }
   return true;
 }
@@ -740,8 +740,8 @@ bool VisibleCensus::count(const SceneData& data, const GpuScene& scene, const St
 // Every view's drawn runs — or, with `casters`, its shadow casters' — into the staging buffer, each
 // only as long as the count the frame's statistics hold: the rest of a run is whatever an earlier
 // frame left there.
-bool VisibleCensus::copy_runs(const GpuScene& scene, const Stats& stats, bool casters,
-                              u64& entries, std::string* error) {
+bool VisibleCensus::copy_runs(const GpuScene& scene, const Stats& stats, bool casters, u64& entries,
+                              std::string* error) {
   gfx::BufferCopy regions[k_max_views * k_visible_runs];
   u32 region_count = 0;
   u64 cursor = 0;

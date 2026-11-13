@@ -75,20 +75,17 @@ bool GpuScene::rt_step_inputs(u32 capacity, u32 references, bool beyond_budget, 
           ? rt_chunk_clusters_
           : renderer::rt_chunk_clusters(capacity, rt_chunk_clusters_tunable(), k_rt_chunks_max);
   out.kept_chunks =
-      out.keep_frame_set
-          ? rt_chunk_count_
-          : swap ? rt_chunks_kept(rt_capacity_, rt_chunk_clusters_, capacity, out.chunk_clusters)
-                 : 0u;
+      out.keep_frame_set ? rt_chunk_count_
+      : swap ? rt_chunks_kept(rt_capacity_, rt_chunk_clusters_, capacity, out.chunk_clusters)
+             : 0u;
   for (u32 k = 0; k < out.kept_chunks; ++k) {
-    out.kept_scratch_bytes =
-        std::max(out.kept_scratch_bytes, clas_chunks_[k].build_scratch_bytes);
+    out.kept_scratch_bytes = std::max(out.kept_scratch_bytes, clas_chunks_[k].build_scratch_bytes);
   }
   out.limits = rt_limits_;
   out.limits.max_clusters = capacity;
   // With a cache the frame's set also builds what the cache could not place (R114), named as the
   // cache names it — the cluster within its mesh under bit 23 — so its indices reach 24 bits.
-  out.limits.max_geometry_index =
-      rt_cache() ? gfx::k_cluster_cache_geometry * 2 - 1 : capacity - 1;
+  out.limits.max_geometry_index = rt_cache() ? gfx::k_cluster_cache_geometry * 2 - 1 : capacity - 1;
   // One bottom-level set over both: an instance references the frame's own structures or the
   // cache's, never both, so its most is the larger of the two capacities.
   // And at most one structure per reference: the build is over the instances that reference
@@ -272,10 +269,9 @@ u64 GpuScene::rt_step_bytes(u32 capacity, u32 references) const noexcept {
   u64 made = 0;
   for (u32 k = kept; k < renderer::rt_chunk_count(capacity, chunk); ++k)
     made += rt_chunk_size(capacity, chunk, k);
-  return made * rt_bytes_per_cluster_ +
-         (references != 0 && references != rt_reference_capacity_
-              ? u64{references} * rt_bytes_per_reference_
-              : 0u);
+  return made * rt_bytes_per_cluster_ + (references != 0 && references != rt_reference_capacity_
+                                             ? u64{references} * rt_bytes_per_reference_
+                                             : 0u);
 }
 
 bool GpuScene::resize_ray_tracing(u32 capacity, std::string* error, bool beyond_budget,

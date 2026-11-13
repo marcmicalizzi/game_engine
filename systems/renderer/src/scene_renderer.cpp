@@ -27,6 +27,7 @@
 #include <renderer_log.h>
 #include <resolve_classes.h>
 #include <shaders/alpha_coverage.spv.h>
+#include <shaders/clas_chunks.spv.h>
 #include <shaders/clas_records.spv.h>
 #include <shaders/cluster_cull.spv.h>
 #include <shaders/cluster_mesh.spv.h>
@@ -46,7 +47,6 @@
 #include <shaders/resolve_classify.spv.h>
 #include <shaders/resolve_classify_water.spv.h>
 #include <shaders/resolve_half_sun.spv.h>
-#include <shaders/clas_chunks.spv.h>
 #include <shaders/tlas_references.spv.h>
 #include <shaders/vertex_expand.spv.h>
 #include <shaders/visibility_resolve.spv.h>
@@ -2262,9 +2262,9 @@ bool SceneRenderer::apply_rt_capacity(u32 capacity, std::string* error, bool bey
   // capacity's 3.1 GB on the owner's v41 walk, was refused on a card the forest fills, and then
   // freed and remade the cluster set it had no reason to touch: 13 of that walk's 15 slow steps.
   gfx::MemoryBudget budget;
-  const bool room = !device_->memory_budget(budget) || !budget.valid ||
-                    budget.used_bytes + scene.rt_step_bytes(capacity, references) <=
-                        budget.budget_bytes;
+  const bool room =
+      !device_->memory_budget(budget) || !budget.valid ||
+      budget.used_bytes + scene.rt_step_bytes(capacity, references) <= budget.budget_bytes;
   if (rt_swap_resize_tunable() && room) {
     GpuScene::RtRetired retired;
     if (scene.resize_ray_tracing(capacity, nullptr, beyond_budget, references, &retired)) {
@@ -2384,27 +2384,26 @@ bool SceneRenderer::take_rt_step(bool wait) {
   for (u32 i = 0; i < retired.count; ++i)
     retire_rt_buffer(retired.buffers[i]);
   ++stats_.rt.worker_steps;
-  const f64 made_ms =
-      static_cast<f64>(cost.records_ns + cost.clas_ns + cost.references_ns + cost.blas_ns +
-                       cost.scratch_ns) /
-      1.0e6;
+  const f64 made_ms = static_cast<f64>(cost.records_ns + cost.clas_ns + cost.references_ns +
+                                       cost.blas_ns + cost.scratch_ns) /
+                      1.0e6;
   stats_.rt.worker_step_ms = made_ms;
   stats_.rt.peak_worker_step_ms = std::max(stats_.rt.peak_worker_step_ms, made_ms);
   // What the worker spent, said where a step on the frame's thread says it was slow: it is the
   // time the chain went on at its old capacity, not a frame's.
   if (cost.records_ns + cost.clas_ns + cost.references_ns + cost.blas_ns + cost.scratch_ns >
       k_slow_frame_ns) {
-    ENGINE_LOG_INFO(log_renderer, "the ray tracing chain's step took the worker a while",
-                    log::field("from", before), log::field("to", scene.rt_capacity()),
-                    log::field("ms", made_ms),
-                    log::field("asked_ms",
-                               static_cast<f64>(time::monotonic_ns() - s.asked_ns) / 1.0e6),
-                    log::field("waited", wait),
-                    log::field("records_ms", static_cast<f64>(cost.records_ns) / 1.0e6),
-                    log::field("clas_ms", static_cast<f64>(cost.clas_ns) / 1.0e6),
-                    log::field("references_ms", static_cast<f64>(cost.references_ns) / 1.0e6),
-                    log::field("blas_ms", static_cast<f64>(cost.blas_ns) / 1.0e6),
-                    log::field("scratch_ms", static_cast<f64>(cost.scratch_ns) / 1.0e6));
+    ENGINE_LOG_INFO(
+        log_renderer, "the ray tracing chain's step took the worker a while",
+        log::field("from", before), log::field("to", scene.rt_capacity()),
+        log::field("ms", made_ms),
+        log::field("asked_ms", static_cast<f64>(time::monotonic_ns() - s.asked_ns) / 1.0e6),
+        log::field("waited", wait),
+        log::field("records_ms", static_cast<f64>(cost.records_ns) / 1.0e6),
+        log::field("clas_ms", static_cast<f64>(cost.clas_ns) / 1.0e6),
+        log::field("references_ms", static_cast<f64>(cost.references_ns) / 1.0e6),
+        log::field("blas_ms", static_cast<f64>(cost.blas_ns) / 1.0e6),
+        log::field("scratch_ms", static_cast<f64>(cost.scratch_ns) / 1.0e6));
   }
   note_rt_step(before, references_before);
   return true;
@@ -5374,8 +5373,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             [&, k](gfx::PassBuilder& b) {
               b.read(rt.records, gfx::Access::AccelerationBuildRead);
               b.read(rt.record_count, gfx::Access::AccelerationBuildRead);
-              if (clas_chunks > 1)
-                b.read(rt.clas_chunk_counts, gfx::Access::AccelerationBuildRead);
+              if (clas_chunks > 1) b.read(rt.clas_chunk_counts, gfx::Access::AccelerationBuildRead);
               // After the cache's build, which shares the scratch (the graph orders the two), and
               // after the chunk before, which wrote the same arrays and shares it too.
               if (rt_cache) b.read(rt.cache_slots, gfx::Access::AccelerationBuildRead);

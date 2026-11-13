@@ -32,9 +32,9 @@ tunables::Float rt_shrink_seconds{"renderer.rt.shrink_seconds", 120.0, 0.0, 8640
                                   "under half its capacity before the capacity shrinks"};
 // R152: the frame's cluster structures in chunks, and a step made on the worker (rt_capacity.h).
 tunables::Int rt_chunk_knob{"renderer.rt.chunk_clusters", 65536, 0, 1 << 24,
-                                "The frame's cluster structures stand in chunks of this many, "
-                                "each a buffer and a build of its own, so a resize makes only the "
-                                "chunks it lacks; 0 is one buffer for the whole capacity"};
+                            "The frame's cluster structures stand in chunks of this many, "
+                            "each a buffer and a build of its own, so a resize makes only the "
+                            "chunks it lacks; 0 is one buffer for the whole capacity"};
 tunables::Bool rt_step_on_worker{
     "renderer.rt.step_on_worker", true,
     "Make a resize of the ray tracing chain on a worker and take it on the frame's thread "

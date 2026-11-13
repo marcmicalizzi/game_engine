@@ -160,9 +160,9 @@ void build_cluster_chunk(CommandList commands, const ClusterSet& storage, const 
 // first `capacity`, so its count is what of the built records falls in that range. One workgroup,
 // a thread a chunk.
 struct ClusterChunkParams {
-  u64 record_count = 0;    // u32: the frame's built count (ClusterRecordParams::record_count, word 0)
-  u64 counts = 0;          // u32[chunks] out
-  u32 chunks = 0;          // at most k_cluster_chunks_workgroup
+  u64 record_count = 0;  // u32: the frame's built count (ClusterRecordParams::record_count, word 0)
+  u64 counts = 0;        // u32[chunks] out
+  u32 chunks = 0;        // at most k_cluster_chunks_workgroup
   u32 chunk_clusters = 0;  // a whole chunk's clusters; the last chunk may hold fewer
   u32 capacity = 0;        // every chunk's clusters together
   u32 pad = 0;
