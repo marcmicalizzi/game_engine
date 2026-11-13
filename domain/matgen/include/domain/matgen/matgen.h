@@ -13,13 +13,14 @@
 // an image: `engine-content matgen` writes a pack directory of them under the git-ignored
 // `content/materials/generated/`, which `materials::pack_at` reads behind the fetched pack.
 //
-// Three kinds:
+// Four kinds:
 //   granular  a bed of clasts on a periodic domain (a gravel bed, a sand bar, scree): sizes from
 //             the surface's grid-count distribution, shape and roundness by transport, placed
 //             largest first, imbricated against the flow, a matrix or voids between
 //   rock      a rock face: crystals by modal share, joints, a weathering rind against fresh
 //             breaks, crustose lichen by a cover parameter, pits, laminae
 //   ground    a floor: moss and soil under dead leaf fragments under live leaves
+//   wood      a softwood face, its grain along u: a sawn board's or a log's outside, weathered
 //
 // **A set tiles by construction**: every clast, crystal, joint and fragment lives on the torus of
 // the tile, never in the image, so the image is the same picture whichever texel it starts at
@@ -56,7 +57,17 @@ namespace engine::matgen {
 ///    roofed blocks and fines; the largest clasts' tone held toward their lithology's.
 /// 3: a rock face's broken step removed (its curved contour, cut by the stochastic sampling, read
 ///    as crescent stamps in the engine).
-inline constexpr u32 k_matgen_version = 3;
+/// 4: the wood kind (G188, 2026-11-11): `wood/plank` and `wood/log`; and every kind's
+///    standing-height measures (`SetStats::contrast_5cm`, `contrast_25cm`, `relief_rms_mm`).
+/// 5: the ground kind at standing height (G187, 2026-11-11): tufts, cushions, clods, stones, a
+///    patch mosaic, litter in two layers, mounds; its four sets on 2 m tiles at 2,048 texels.
+/// 6: after the engine pictures: a moss carpet's relief smooth hummocks (its cushions' domes
+///    creased at every seam), a board's weathering patches smaller and weaker (a checker at 15 m).
+/// 7: a moss carpet's cushions overlap and merge, their tone falling off across each (a lighter,
+///    yellower crown, darker wet margins) instead of one tone a cell (a camouflage print).
+/// 8: the moss's cushions overlap widely (radii 0.85 to 1.4 cells) so its hollows are scattered
+///    pockets, not a net round every cushion (version 7's read as a reticulated pattern at 15 m).
+inline constexpr u32 k_matgen_version = 8;
 
 /// Variants of a tiled role (G153): `default_sets` writes `<role>.1` .. `<role>.<n>` beside each
 /// tiled granular role, the same recipe from other seeds, so a consumer that picks one by place
@@ -125,6 +136,17 @@ struct SetStats {
   f64 moss_share = 0;
   f64 thatch_cover = 0;
   f64 live_cover = 0;
+  // wood: the face's latewood share, the share in checks, the share under bark, the knots drawn.
+  f64 latewood_share = 0;
+  f64 check_share = 0;
+  f64 bark_share = 0;
+  u32 knots = 0;
+  // What a standing eye reads (G187; matgen.md, "What a standing eye reads"), every kind: the
+  // RMS Weber contrast of the albedo's luminance over blocks of the power-of-two side nearest 5 cm
+  // and 25 cm (0 where the tile holds fewer than two a side), and the height's RMS about its mean.
+  f64 contrast_5cm = 0;
+  f64 contrast_25cm = 0;
+  f64 relief_rms_mm = 0;
 };
 
 /// A recipe's text read (an unknown field or a value out of range refused, with a sentence).
@@ -143,8 +165,8 @@ bool build_set(const Set& set, SetImages& out, SetStats* stats, std::string& err
 /// The sets the engine's solvers ask a pack for by role and no pack has (matgen.md, "The
 /// defaults"): `gravel/bed`, `sand/bar`, `rock/scree`, `rock/granite`, `rock/granite_wet`,
 /// `rock/basalt`, `rock/limestone`, `rock/sandstone`, `ground/soil`, `ground/moss`,
-/// `ground/thatch`, `ground/turf`, and `k_tiled_variants` variants of each tiled granular role
-/// (`gravel/bed.1`, ...). Sorted by role.
+/// `ground/thatch`, `ground/turf`, `wood/plank`, `wood/log`, and `k_tiled_variants` variants of
+/// each tiled granular role (`gravel/bed.1`, ...). Sorted by role.
 Vector<Set> default_sets();
 /// Variant `index` (1..) of a recipe: the same numbers from another seed, its role
 /// `<role>.<index>`.

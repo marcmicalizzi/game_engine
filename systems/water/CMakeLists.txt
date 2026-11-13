@@ -26,6 +26,8 @@ engine_module_tests(NAME water
           tests/channel_tests.cpp tests/channel_scene_tests.cpp tests/reflect_scene_tests.cpp
           tests/wet_ground_scene_tests.cpp
           tests/refract_scene_tests.cpp
+          # R151: the resolve by pixel class on a basin, the ground by the module without water.
+          tests/resolve_class_water_tests.cpp
   DEPS renderer gfx tunables)
 if(TARGET engine_water_tests)
   target_compile_definitions(engine_water_tests PRIVATE ENGINE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")

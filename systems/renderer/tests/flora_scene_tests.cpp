@@ -320,6 +320,99 @@ TEST_CASE("flora scene: the oasis's palms are green crowns over brown trunks") {
   CHECK(frond_row / frond < bark_row / bark);  // and the crowns stand above the trunks
 }
 
+// G201 (flora.md, "The trunk's skirt"; docs/experiments/tree-base-on-slopes.md): the tree-bases
+// scene's spruces stand on ramps of 0, 15, 30 and 45 degrees at eight yaws, and none shows a gap
+// under its trunk. Each tree is seen across the slope from 3 m, the eye 0.2 m over its foot and
+// looking level, so the ground under the downhill rim falls away from the sight line and a gap is
+// what lies beyond: the sky, or another ramp. Read from the ids alone: in every column the tree
+// draws in the lower part of the frame, every pixel from the tree's lowest down to the first of
+// its own ramp's is the tree's or the ramp's. On the mesh before the skirt (main at 33ff2824) the
+// 30 degree ramp's trees fail this; with it, every ramp to 45 passes.
+TEST_CASE("flora scene: no tree on a ramp of up to 45 degrees shows a gap under its trunk") {
+  const std::string scene_path =
+      test::data_path(ENGINE_SOURCE_DIR "/content/test-scenes/tree-bases/scene.json",
+                      "content/test-scenes/tree-bases/scene.json");
+  if (!test::path_exists(scene_path)) {
+    MESSAGE("skipped: " << scene_path << " is not here");
+    return;
+  }
+  const test::TempDir tmp("renderer_tree_bases");
+  REQUIRE(tmp.ok());
+  SceneDesc desc;
+  std::string error;
+  REQUIRE_MESSAGE(read_scene_file(scene_path, desc, error), error);
+  desc.ddc = tmp.file("ddc");
+  SceneData data;
+  REQUIRE_MESSAGE(load_scene(desc, data, error), error);
+  // The four ramps first, then eight spruces a ramp down its fall line (scene.json).
+  REQUIRE(data.instances.size() == 4u + 4u * 8u);
+
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("skipped: " << gpu.why);
+    return;
+  }
+  RenderSettings settings;
+  ResolvedSettings resolved;
+  resolve_settings(settings, gpu.device.features(), &data, resolved);
+  REQUIRE(check_availability(resolved, gpu.device.features()) == RenderAvailability::Ok);
+  GpuScene scene;
+  REQUIRE_MESSAGE(scene.create(gpu.device, data, resolved, &error), error);
+  SceneRenderer renderer;
+  SceneRenderer::Desc rd;
+  rd.width = 640;
+  rd.height = 400;
+  REQUIRE_MESSAGE(renderer.create(gpu.device, scene, resolved, rd, &error), error);
+  CaptureChannels channels;
+  channels.ids = true;
+  const bool keep = !test::detail::environment("ENGINE_FLORA_KEEP_CAPTURE").empty();
+
+  constexpr f64 k_ramp_x[4] = {-45.0, -15.0, 15.0, 45.0};
+  constexpr f64 k_ramp_tan[4] = {0.0, 0.2679491924311227, 0.5773502691896257, 1.0};
+  for (u32 ramp = 0; ramp < 4; ++ramp) {
+    u32 gap = 0;
+    u32 columns = 0;
+    for (u32 k = 0; k < 8; ++k) {
+      const u32 tree = 4 + ramp * 8 + k;
+      const f64 z = -21.0 + 6.0 * k;
+      const f64 y = -k_ramp_tan[ramp] * z;
+      FrameDesc frame;
+      frame.camera.position = WorldPos{k_ramp_x[ramp] + 3.0, y + 0.2, z};
+      frame.camera.target = WorldPos{k_ramp_x[ramp], y + 0.2, z};
+      frame.camera.znear = 0.05f;
+      CapturedFrame shot;
+      REQUIRE_MESSAGE(renderer.render_offscreen(frame, &error), error);
+      REQUIRE_MESSAGE(renderer.capture(frame, channels, shot, &error), error);
+      REQUIRE(shot.ids.size() == u64{shot.width} * shot.height * k_id_words);
+      if (keep) {
+        CaptureFiles files;
+        write_capture(tmp.path(), "tree-bases-" + std::to_string(ramp) + "-" + std::to_string(k),
+                      shot, files, error);
+        tmp.keep();
+      }
+      const auto instance = [&](u32 x, u32 row) {
+        return shot.ids[(u64{row} * shot.width + x) * k_id_words];
+      };
+      for (u32 x = 0; x < shot.width; ++x) {
+        u32 lowest = shot.height;
+        for (u32 row = 0; row < shot.height; ++row)
+          if (instance(x, row) == tree) lowest = row;
+        if (lowest == shot.height || lowest < shot.height * 2 / 5) continue;  // a branch's column
+        ++columns;
+        for (u32 row = lowest + 1; row < shot.height; ++row) {
+          const u32 id = instance(x, row);
+          if (id == ramp) break;  // the ground it stands on
+          if (id != tree) ++gap;
+        }
+      }
+    }
+    MESSAGE("ramp of " << 15 * ramp << " degrees: " << gap << " gap pixels under " << columns
+                       << " columns of trunk, eight yaws");
+    CHECK(columns > 0);
+    CHECK(gap == 0);
+  }
+}
+
 #endif  // ENGINE_RENDERER_TESTS_FLORA_TERRAIN
 
 #else

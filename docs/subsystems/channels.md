@@ -29,8 +29,10 @@ readers place them as they place any generator's instances.
 **Owned data.** The network (`ChannelNetwork`: the lattice's heights, the filled heights, D8
 receivers, contributing area, channel cells, heads and links with their lines) is planned once,
 kept as a derived file (`<ddc>/channels/plan-<key>.channel-plan`; [One plan](#one-plan)) and is the
-source of truth for every cut, every piece and every `WaterChannel` block made from it; the recipes
-(`<ddc>/channels/channel-<hash>.channel.json`) are derived data too.
+source of truth for every cut, every piece and every `WaterChannel` block made from it. The
+pieces' recipes are kept in memory by the opened entry and handed with their tiles (W97b; [A
+tile's bed, laid when it activates](#a-tiles-bed-laid-when-it-activates)); no recipe file is
+written, and a built piece lives in the derived-data cache under its recipe's key.
 
 ## The network
 
@@ -181,17 +183,32 @@ a quarter of the width where the section is a V.
 
 ### Materials
 
-Every clast takes the look `boulders` names: a material-pack role (`boulders.role`) or, empty, the
-first their pack has of `rock/boulder`, `rock/granite`, `rock/sandstone` (W97 added the last, the
-engine's one pack's rock set, so a worktree with the pack draws textured stones). The set is sampled
-at `boulders.tile_m` (1.2 m) in metres (each clast's UVs are its vertices' x and z plus half their
-height, offset by its seed, so neighbours show different texels) and `Stochastic` by default
-(R131). With a pack, `boulders.tint` multiplies the set (absent: 0.7, 0.68, 0.65). With no pack,
-the flat colour (`boulders.color`, or a grey). **The bed's and the bars' materials are the
-terrain's**: `bed_material` paints the cut's bed and, with `bar_material` (W97), the flood bed each
-side is a region of its own in the bars' material, so a bar reads apart from the bed. The roles a
-pack would need are `gravel/bed` and `sand/bar` (row G148 generates material sets by role), which
-no pack here has.
+**Since W97c each rock samples its own set** through the tile contract's textures (R147: a tile's
+mesh arrives with its textures, [scene_gen](scene_gen.md#a-tiles-meshes)): the piece is handed with
+its tile, its container names the sets' images and records them
+(`texture::fill_cluster_texture_records`), and the host builds and admits them before the mesh.
+Each stone is one of four lithologies in two tones ([What a stone is made of](#what-a-stone-is-made-of));
+each rock takes its own role, the tone a factor on the set. `boulders.role`, named, is the one set
+every stone samples; `boulders.tint` multiplies the set beside the tone; `tile_m` (1.2 m by
+default) is the repeat over a stone's surface, whose UVs are its vertices' x and z plus half their
+height, offset by its seed; `sampling` is the set's placement. `boulders.color` and `roughness`
+are what a stone whose role the pack lacks draws (absent, its rock's dry albedo). W97b drew every
+stone as those constants, because a tile's mesh had no textures yet; before W97b a pack's
+`rock/boulder`, else `rock/granite`, else `rock/sandstone` set was applied to all of them.
+**The bed's and the bars' materials are the terrain's**: `bed_material` paints the cut's bed and,
+with `bar_material` (W97), the flood bed each side is a region of its own in the bars' material, so
+a bar reads apart from the bed. **A palette layer names its images outright**
+(`TerrainMaterialLayer.base_color` and the rest): the generated sets `gravel/bed` and `sand/bar`
+(G148, `engine-content matgen`) reach the bed only when the scene's `gravel` and `sand` layers name
+their files. W97's first pictures drew flat paint between the stones for that reason: their scene's
+layers named tints and no images, so nothing of the generated pack reached the ground; the same
+scene with the layers naming the sets draws the bed as a cobble texture between the drawn clasts
+(W97b's pictures). The same scene drew its whole valley, meadow and all, in the `sand` layer
+until its `masks.priors` named palette layers (`soil` `meadow`, `scree` `gravel`, `bedrock` and
+`snow` `soil`): with the priors left at their defaults, three of which the palette does not have,
+nothing refused the scene and the ground beyond the bed took the bars' sand. That is the terrain
+masks' to look at (a row this leaves). Both are the scene's to say, not the generator's; a palette layer that names a
+role and finds it in the pack is the terrain's to add (a row this leaves).
 
 ## Bed sediment
 
@@ -261,18 +278,148 @@ buried** (`channels: a clast is partly buried and none floats`). Every number is
 recipe's millimetres and ten-thousandths before the burial is decided, so the test holds the
 recipe, not a float behind it.
 
-**One merged piece a tile**: the clasts are bucketed by the 64 m world tile their centre stands in,
-the tiles in z then x order (their ids 1, 2, …), each tile's clasts in the order laid. A clast
-whose footprint crosses a tile's border is in one tile's piece, so the bed is continuous. The
-recipe (`engine.channels.ChannelPiece` version 2, `part` `Clasts`) is written at `open` and its
-mesh is built only when the host builds the mesh its tile names, through the mesh generator
-`channel` and the derived-data cache (rocks.md, "A tile solves"; `pieces_solved()` holds `open` to
-none). The mesh: each clast an ellipsoid on a cube-sphere grid by its b axis (2 quads a face edge
+**One merged piece a tile, or several**: the clasts are bucketed by the world tile their centre
+stands in, the tiles in z then x order (their ids 1, 2, …), each tile's clasts in the order laid,
+and **a tile's run is cut into pieces of at most 1,800 clasts and 120,000 drawn triangles before
+burial** (W97c), so no piece outgrows the 4,096 clusters a mesh that arrives with a tile may have
+(`renderer.meshes.max_clusters`): a stone is a cluster or more of its own at the finest level
+(2,290 clasts measured 3,859 clusters, the DAG included), and the scratch valley's busiest 32 m
+tile, one piece of 5,852 clusters, was refused by every streamed host and drew no stones at all
+(W97c's world run, 14 of its pieces). The cut is in the order laid, so a tile's pieces are the same
+whichever tile came first. A clast whose footprint crosses a tile's border is in one tile's
+piece, so the bed is continuous. The
+recipe (`engine.channels.ChannelPiece` version 2, `part` `Clasts`) is decided at `open` and handed
+with its tile ([A tile's bed, laid when it activates](#a-tiles-bed-laid-when-it-activates)); its
+mesh is built only when the host builds what the tile hands, through the mesh generator `channel`
+and the derived-data cache (`pieces_solved()` holds `open` to none). The mesh: each clast an
+ellipsoid on a cube-sphere grid by its b axis (2 quads a face edge
 under 128 mm, 48 triangles; 3 under 0.5 m, 108; 4 under 1 m, 192; else 6, 432), cut by ten facets
 at 0.78 to 0.92 of its reach and blended back toward the ellipsoid by its roundness, so an angular
 clast has faces and a rounded one none; **the triangles wholly under the lowest ground beneath it
-are left out**, so each clast is open only underground (`channels: the placed pieces ...`). The
-cluster LOD DAG of the tile's mesh is its far form.
+are left out**, so each clast is open only underground (`channels: the placed pieces ...`). Since
+W97b the triangles are grouped by the clast's material, one cluster LOD DAG a material, merged, so
+a cluster is one rock at every level; the merged DAG is the tile's far form.
+
+### What a stone is made of
+
+(W97b with G165, 2026-11-11.) A gravel bed carries a handful of lithologies from its catchment,
+the resistant ones enriched downstream by abrasion (the grounding page, [The stones'
+rocks](../experiments/channels.md#the-stones-rocks)). A clast is one of four, drawn from its own
+seed by share, so a recipe needs no new field and the same recipe is the same stones on every
+host; and one of two tones, 0.85 and 1.15. Each of the eight is a material of the piece's
+container. **Each rock samples its own set of the pack** (W97c), and **the tone is a factor on the
+set**, not a second set, so the eight materials share four sets' images and a set is uploaded once
+whatever the tiles. Where the pack has no set for a rock's role, that rock's two materials draw
+its dry albedo and roughness, untextured, and `resolve_set` says once which role was missing:
+
+| Rock | Its role | Dry albedo, linear (no set) | Roughness (no set) | Share |
+|---|---|---|---|---:|
+| granite (grey granite, gneiss) | `rock/granite` | 0.19, 0.18, 0.17 | 0.8 | 0.45 |
+| pale (quartzite, limestone, chalk) | `rock/limestone` | 0.27, 0.26, 0.24 | 0.75 | 0.25 |
+| basalt (and greywacke) | `rock/basalt` | 0.12, 0.12, 0.125 | 0.75 | 0.15 |
+| sandstone | `rock/sandstone` | 0.16, 0.12, 0.085 | 0.85 | 0.15 |
+
+All four roles are among the generated sets (`engine-content matgen`, [matgen](matgen.md)), so a
+checkout that has run it draws every stone textured; the engine's fetched pack holds
+`rock/sandstone` alone and the generated sets stand behind it. The pale rock takes the limestone set
+because it is the only pale rock with one (a choice; a quartzite set is a row this leaves). The albedos are a measured table's (grey granite 0.18, basalt 0.12,
+sandstone 0.12, chalk 0.25); the hues, the tones and the shares are design choices, the shares
+those of `gravel/bed`'s generated set (G148) so the stones and the bed's texture between them agree.
+**Not built**: the mix from the scene's formation (`Context::formation`) or from the catchment's
+rocks upstream, the abrasion that enriches the hard rocks downstream, and wet stones at and under
+the waterline (`rock/granite_wet` exists; which stones are wet is the water's surface, closed to
+this row). `channels: the stones are of four rocks in their shares, each its own set` holds the
+container with no pack (no image, eight materials, every cluster one of them, each mean albedo in
+0.08 to 0.32), with a pack lacking `rock/basalt` (each rock's two materials name its own set's
+images, the tone the factor, basalt's two on their constants, a texture record an image) and with
+`boulders.role` named (every material that set), and the shares of the triangles over two valleys
+within 0.05 of the table's (measured 0.456, 0.250, 0.147, 0.147).
+
+### The stray triangle on the riffle (T98)
+
+W97's first pictures showed a flat triangle about 13 cm across in the open water of the scratch
+valley's riffle (`riffle-up`, about pixel 680, 823 of 1920 by 1080): dark while the stones were
+constant colours, pale cream once they wore their rocks' sets. W97b read the id buffer there (the
+trunk's ribbon) as "no bed piece above the water"; W97c read the colour as "a bed piece's
+triangle, a coarse level suspected". **Both were half right, and the cause is the water's**
+(T98, 2026-11-12, on 5b044794, one camera, `--raster hw --shadows rt`):
+
+- **What the picture holds there is the water.** Every pixel within 4 of the marker carries one
+  ribbon triangle (`water/valley link 4`, its cluster 93, triangle 19). The scene less its
+  `water_channels` draws no pale shape there at all: the straight view meets the cut ground and,
+  a few pixels off, a stone of a bed piece at level 1. And with water and `--shadows csm`, which
+  traces no ray, the shape is gone while the ids stay the same.
+- **So it is what the water's refraction ray meets** (`water_refract.slang`; water.md, "What is
+  under the water"): a bed stone, standing in about 0.30 m of water (the ribbon's depth there; its
+  surface 9.50 m) about 0.22 m over its ground. The refraction counts a hit as the ground when it
+  lies within 8 cm plus 0.5 % of the eye's distance of the depth map's ground, about 10 cm here, so
+  only the stone's top stands "in the water": a cap with a hard edge where the stone crosses that
+  margin, shaded almost untinted at a few centimetres' depth, round which every other stone of the
+  bed is the terrain material's pebbles. That is the pale triangle.
+- **No level of a piece bridges stones.** The suspicion (meshoptimizer's sloppy fallback welds on a
+  grid, and could join two stones) is held to "no" by a case: over three seeds, the busiest tile's
+  piece has no coarse triangle with corners on two stones (test: "no coarse level of a piece joins
+  two stones, over seeds", 8.5 s in `msvc-debug`). Beside it, printed: about 5 % of a sample of
+  coarse triangles stand farther than their cluster's error from the finest form, the worst 1.4
+  times it (60 to 97 mm at levels 7 to 9): the simplifier's error is a quadric estimate, not a
+  bound, and nothing a viewer resolves at those levels' distances.
+
+Nothing here changes what this module builds (`k_channels_version` stays 9). What the water's
+refraction should do with a stone that crosses its margin, and with the stones under it, is the
+water's: a request, with the numbers above.
+
+### A tile's bed, laid when it activates
+
+(W97b, 2026-11-11; R142's contract, [scene_gen](scene_gen.md#a-tiles-meshes), ADR-0061.) Until
+W97b `open` wrote every tile's recipe into the derived-data root and listed every piece in its
+`meshes`, so a host read each one at scene read and built it there: 2.9 s for the busiest tile of
+the test valley, at load, before the first frame. Now:
+
+- **`open`** reads the plan, lays every clast (the plan, the sediment, the draws: what `place_pieces`
+  does) and keeps, a piece, its recipe's JSON, its placement and its tile. It builds nothing and
+  writes nothing but the plan file.
+- **No resident meshes**: the entry has no `meshes` entry point, and its descriptor says
+  `tile_meshes`, so a host makes room for meshes that arrive with tiles.
+- **`tile`** hands the tile's piece as `PlacementMesh{path, name, 0, recipe, reach}` with its
+  placement indexing it: `path` is where the file would be (`<ddc>/channels/channel-<hash>.channel.json`,
+  which names it), `recipe` its bytes, `reach` the farthest clast centre from the tile's corner plus
+  its a axis (`piece_reach_m`). The host builds it through the mesh generator `channel` and the
+  derived-data cache, keyed by the recipe, off the frame's thread ([world](world.md#a-tiles-meshes-residency-by-reference)).
+- **`expand`** lists every piece with its recipe, so a scene read whole is the same scene.
+
+**What a walker sees while a tile's bed builds** (W97c, read from the world's placements consumer,
+[world](world.md#a-tiles-meshes-residency-by-reference)): the tile goes on drawing what it drew
+until a commit has its piece and the piece's textures in, so **a tile new to the ring draws no
+stones** — the ground's bed and bar materials alone — for the build's seconds and then the stones
+in one commit, and a tile already held draws its stones throughout, because the entry's
+`representation` is one in every ring and a ring change builds nothing again. A tile enters the
+ring at the outermost ring's radius, hundreds of metres out, so a walker (1.4 m/s: about 4 m in
+the busiest tile's 2.7 s) never sees a near tile without its stones; a camera that jumps or
+starts somewhere does not either, because a whole commit (a restart, an offscreen capture's
+fill) waits for every build. A fast flight over a stream is where the gap can show: at 100 m/s a
+tile could be about 270 m nearer before its stones arrive. No far form stands in for the stones
+meanwhile (the bed's material is all there is), which is the far form this page leaves.
+**Measured by a run** (W97c, `engine-view --world` over W93's scratch valley, its nine views,
+`msvc-release` at d653871b, the machine busy): the first fill's whole commit spent 15.5 s on the
+placements before the first frame, and no later update built a piece, since the default rings
+(1.5, 8 and 24 tiles of 32 m) held every tile of the 384 m valley from the start. **And 14 pieces
+were refused** — one of 5,852 clusters against the 4,096 a tile's mesh may have — so those tiles
+drew no stones at all from any view, where the scene read whole drew them: the defect the cut
+into pieces of 1,800 clasts (above) closes. The same run at e6947eee refused none: 25 pieces
+built and admitted, textured, in a first fill of 10.1 s, and the riffle drew its bars' stones
+streamed as it does read whole.
+
+What the contract carries today: the mesh, its materials and their textures (since R147 and W97c:
+the four rocks' sets, built and admitted before the mesh, a set shared by every tile that names
+it), its collision proxy (a mesh a tile hands is walked on), and its cluster DAG as the far form.
+What it does not, and the bed needs: a footprint other than a disc
+of `reach` about the tile's corner (a later entry is handed a disc as wide as the tile for a piece
+that covers a thin strip of it); and a far form past the DAG (the bed's material darkened and
+roughened by cover). `channels: whole expansion equals any tile order, with stable ids` holds a
+tile's hand-over to the whole read's, recipe for recipe, and that no file is written;
+`channels: a tile's bed is the same bytes whichever tile activates first, any jobs` holds two
+entries, one planned with six workers and one with none, to the same recipe at every tile in
+opposite orders.
 
 ### What a tile costs
 
@@ -289,7 +436,11 @@ of 64 mm or more):
 | The busiest tile's clasts | 12,251 over about 452 m² (its share of the clasts times the bed's area: an estimate) |
 | Its finest form | 610,781 triangles: 1,352 a m² |
 | Its coarsest (the DAG's roots) | 17 triangles: the far form is the bed's material, the clasts gone |
-| Its activation (solve, cluster DAG) | 2.9 s |
+| Its activation (solve, cluster DAG) | 2.9 s (W97, at scene read); 4.1 s (W97b, `msvc-release`, 2026-11-11 13:40, the machine at 100 % CPU: eight DAGs, one a rock, at the tile's activation off the frame's thread) |
+| Its coarsest form since W97b | 275 triangles: the eight DAGs' roots |
+| Its activation, the bench (W97c) | `channels.tile_activation`, `msvc-release`, 2026-11-11 20:49, the tile still one piece: median 2.74 s, min 2.55 s, max 2.88 s over three runs after a warm-up, 12,251 clasts. **Not quiet**: `--wait-quiet=1800` waited the half hour out, the machine at 62 % CPU from others at the start and 88 % at the end, so an upper bound; the textures are the host's and not in it |
+| A piece's build since pieces are cut (W97c) | the same bench at 22:00, no quiet wait (the machine as busy): the busiest piece, 1,800 clasts and 3,069 clusters, median 384 ms (min 377 ms); the busiest tile is seven such pieces, which a streamed host builds on its pool of two |
+| Laying the region, the bench | `channels.lay_region`: median 56 ms at 20:49, 63 ms at 22:00 |
 | W93's scratch scene (`engine-content channels`) | 65,611 clasts over 474 m of channel, 14 tiles |
 
 **Where the triangles go**: a clast under 128 mm is 48 triangles before those under the ground
@@ -297,8 +448,15 @@ are left out, and on a lognormal bed most clasts are the smallest drawn. 1,352 a
 times the deposits' finest (rocks.md, "Where the triangles go"); the cluster DAG draws a tile's
 far clasts coarse, and `clast_min_mm` is the knob (128 mm takes the count to about a quarter on
 such a bed). **Resident**: the plan's `ChannelSediment`, 32 bytes a point of line (64 bytes a
-metre at the 0.5 m step); `open` keeps each tile's recipe path and placement, not the clasts; a
-recipe is 12 integers a clast (about 60 bytes of JSON). What scales with the world: the plan, by
+metre at the 0.5 m step); since W97b `open` keeps each tile's recipe text in memory with its
+placement (12 integers a clast, about 60 bytes of JSON: about 0.7 MB for the busiest tile, 4 MB
+for the test valley's 66,253 clasts) instead of writing it, which is what scales with the bed's
+area before any tile is near. **Who pays the build**: a host that streams (the world's placements
+consumer) builds a tile's piece when the tile activates, off the frame's thread, and holds it while
+the tile is held; a host that reads a scene whole (`engine-view --scene` without streaming) still
+lists and builds every piece at load through `expand`, as the contract requires, so it measured
+5.5 s of meshes at load on W97's scratch valley where the base took 15.4 s, both on a cold cache
+and the machine loaded (an upper bound each). What scales with the world: the plan, by
 its length of channel; the recipes and meshes, by its area of bed.
 
 ## In a scene
@@ -310,11 +468,37 @@ its length of channel; the recipes and meshes, by its area of bed.
 ```
 
 The entry is opened once: its plan is read (or, for an entry on uncut ground whose plan is not
-cached yet, made; [One plan](#one-plan)), every piece's recipe written under the host's
-derived-data root's `channels/` (else the repository's `ddc/`, else `ddc/` beside the scene), and
-`expand`/`tile`/`occupies` hand out what was decided. An entry of a scene whose ground carries the
+cached yet, made; [One plan](#one-plan)) from the host's derived-data root's `channels/` (else the
+repository's `ddc/`, else `ddc/` beside the scene), every piece's recipe decided and kept, and
+`expand`/`tile`/`occupies` hand out what was decided, a tile's piece with the tile. An entry of a scene whose ground carries the
 plan's cuts names the plan: `"plan": "<the key engine-content channels printed>"`. A moving ground is refused (the dunes have no
-drainage to dress). Every field, its default and range is in `schemas/channels.schema`.
+drainage to dress).
+
+**An entry that names no plan plans its own cuts** (W97c, 2026-11-11, through R144's hook,
+[scene_gen](scene_gen.md#what-an-entry-plans-for-the-ground)): `plan_ground` hands the network's
+cuts, the very blocks `engine-content channels --cut` writes (`terrain_cuts_json`), as the
+ground's edits, so such a scene pastes no cut and its ground is the pasted scene's: one list of
+edits under one key (`channels: an entry that names no plan plans its cuts through the ground
+hook` holds the planned list to the pasted one byte for byte, and R144's own case holds a list to
+the ground it builds). Its `open` stands the plan on `Context::uncut()`, so the planning pass and
+the second open on the cut ground make one plan and plan once. An entry that **names** its plan
+stands on cuts the scene carries and plans none: the two are one entry's two spellings, never
+both. What is still pasted: the water's ribbons (`water_channels`) and the beds' mask regions,
+which the hook has no list for (`GroundPlan` holds edits and openings); `engine-content channels`
+stays the way to inspect a plan and to write those. **Since this, an entry that names no plan on a
+terrain with no `tiles` block is refused** by the scene reader (an edit is written into a tile
+set's heights), where it used to lay its stones on the uncut ground: a channel is cut into the
+ground (W89), and a ground that cannot be cut cannot carry one.
+
+**The host's root wins, the plan's too** (T112, 2026-11-11). A host given `--ddc` reads a named
+plan under that root and nowhere else, as it builds the ground's set there over the scene's own
+`tiles.ddc` (T90); without one, under the scene's own (the repository's `ddc/` above the scene, else
+`ddc/` beside it). So a plan `engine-content channels` wrote without `--ddc` is not found by a host
+given one: the entry is refused, and when the plan is under the scene's own root the refusal says
+so and where (`channels: the host's root wins over the scene's own`). Reading it from either root
+would make which plan a scene draws depend on which roots happen to hold one; refusing loudly
+keeps one rule and one answer. `engine-content channels --ddc` takes the same root for the plan
+and for the uncut ground's set, so the subcommand and the host are given one `--ddc`, or neither. Every field, its default and range is in `schemas/channels.schema`.
 
 ## The water's description
 
@@ -692,6 +876,108 @@ the test holds 2 % and 1 %. They are where a width's move does not reach the flo
 there is still narrowed or lowered by W91's fit. Since the kinks were low-passed out of the line
 and the steep line wanders ([The planform](#the-planform)): 36 points (1.8 %) with less than half
 a bank and **none** with no bank, the worst 1.08 depths under.
+
+### The section seated under its lower bank (W116)
+
+(2026-11-12, roadmap W116; the owner's walk of the forest that morning, marks 3 to 5, and the
+forest's engine needs 53 and 21: "a level bar or flood-bed surface on a cross-slope stands out of
+the hillside on its downhill side".) Moving the line answers a line on a valley's side above its
+floor; it cannot answer a stream that runs along a hillside's contour, where every place a width
+across falls the same. There the cut's **top of bank was the ground at the line**, so the downhill
+bank's ground stood under the top by half the width times the cross-slope — under the bed and the
+water past a little cross-slope — and the cut, which only lowers, left the section's downhill half
+standing over the hillside: the water carried level over the drop, and a flood bed whose level
+reached out over ground that falls away (the tan plate of mark 4, the bed's mask region painted on
+it).
+
+**The rule.** At every point of every kept stretch at least `bar_min_width_m` wide, nothing of the
+section stands over the ground beside it by more than `k_seat_bound_m` (**2 cm**, under the 25 cm
+lattice's height step on a slope of one in ten): the top of the bank (and with it the bed, the bar
+and the water under it) over the ground at the **lower** bank top, read across the line's heading
+over a width at the section's half width; and each side's flood-bed level over the ground at that
+side's edge. The section's faces rise from its bed to its top at the bank tops, so on ground that
+is a plane across a width a top that holds holds every place between. Fans (a body's level stands
+over their banks), knickpoints and a tributary's confluence grade (it opens into its trunk) are not
+read. `measure_seat` measures it and `engine-content channels` prints it as `seat` in its summary
+line: the points read, those over the bound (`bank_over`, `flood_over`) and the most, how far and
+how much line the plan seated, and the water's fit codes.
+
+**How it is met**, in the order the brief asked:
+
+- **The section narrows on the downhill side where nothing needs its width: the flood bed.** Each
+  side's walk ([The flood bed](#the-flood-bed)) also finds where the ground first stands under the
+  bed's level (`flood_bed_depth` of a thalweg under the top), and the bed reaches no further on
+  that side. A side whose ground falls away from the line has no bed; on a hillside the uphill
+  side's walk meets the flood-prone height within a width or two, so a seated reach is entrenched
+  and has none either — which is what confined reaches are (Montgomery & Buffington 1997: "little
+  to no" flood plain; Fryirs, Wheaton & Brierley 2016: floodplain pockets under a tenth of a
+  confined reach).
+- **The channel is cut deeper** (`seat_section`, `ChannelLink::seat`): its width is the hydraulic
+  geometry's and carries its area, so it is not narrowed; its top is the ground at the lower of its
+  two bank tops, its bed, its flood bed and its water that much lower. Bankfull is the stage at
+  which the water first spills (Leopold, Wolman & Miller 1964, as Buffington's field guide states
+  it), so on unequal banks it is the lower bank's top that bounds it, and water standing over its
+  downhill bank would leave down the fall line. The bank's ground is read at nine half widths over
+  the range the section's swell can give it (the swell is planned after the bed), across the
+  line's heading over a width and its heading between its neighbours, the lowest kept,
+  rounded up to the millimetre and taken as the most over two points either way. The uphill bank
+  is then the higher, its face running out to the hillside as every cut's does
+  ([tileset](tileset.md#channels-cut-into-the-ground), "A face that runs out").
+- **No fill.** A `Fill` would build the downhill bank as a levee, and a natural levee is the
+  overbank deposit of a channel on its floodplain, a ridge between the two (Brierley, Ferguson &
+  Woolfe 1997); a channel cut into a hillside has neither, so a bank built there reads as an
+  earthwork, which is what W86's berms read as. Cutting deeper always holds the rule, so no reach
+  is refused for it.
+- **The line is moved toward a bank only where the move finds one** (`build_line`): the place that
+  holds both banks, or the tested place (a width at the most) whose bank falls a tenth of a depth
+  less than at the line. W93's move took a width untested whenever no place held, which on a
+  hillside carried the line off the trough the routing found and down the slope: on W116's scratch
+  scene it moved 493 of 707 points, kinked the line where each move began and ended, and turned a
+  1.5 % contour stream into 169 points of step-pool and 30 of cascade.
+
+**What a cross-sloping reach looks like in section now**: a channel incised into the hillside, its
+downhill bank top at the ground and its uphill bank higher by the width times the cross-slope plus
+the seat (2.3 m on a 3.3 m stream across 30 degrees), the water at half the thalweg under the low
+bank, no flood bed on either side, and the bed's mask region no wider than the cut's own bank tops.
+
+**Measured.** W116's scratch scene (a 384 m stream along a hillside's contour at the
+toe of a metre-wide bench, falling 1.5 %, the hillside falling across it at 10, 20 and 30 degrees,
+`--cut`, 707 points): on the base, **648 points' tops stood over their lower bank's ground by more
+than 2 cm, 399 m of the 438 m, the worst 1.08 m** (at 30 degrees); 39 of 101 flood-bed sides over
+their edge, the worst 0.20 m; the ribbon's fit narrowed 384 points; `no_bank_m` 133. Now: **none**
+(the worst 13 mm), no flood-bed side over (43 read), the seat up to 1.09 m over 370 m of line, the
+fit narrows 12 points and lowers none, `no_bank_m` 0, and the reaches 95 points of step-pool and
+none of cascade. Held by "a stream across a hillside is seated under its downhill bank" (three
+cross-slopes, three seeds, `measure_seat` and the water's fit) and, on the tile set's own edited
+ground (`seat_ground_tests.cpp`, built where the tileset capability is: the cuts compiled by
+`tileset::TerrainEdits`), "on the edited ground nothing of a cross-slope's section stands in the
+air": the section read at nine places a side out to its bank top or flood edge, 7,758 places a
+case, none over the ground under it by more than 2 cm, and the ribbon's edges and the handed
+width's within the fit's tolerance of the edited ground. The W93 valley above, read by the same
+measure: no point over (the worst 4 mm), seated up to 0.40 m.
+
+**Seen** (2026-11-12, `msvc-debug`, 1920×1080, `--raster hw --shadows rt`, world tiles, the
+generated material sets, the base and this row built in one checkout against one derived-data
+root each): from six metres back and two up, at 10 degrees the base's water ran out past the
+downhill bank as a level sheet ending in a straight edge over the slope, and at 30 degrees the
+bed and the water stood as a shelf along the hillside with the cut only on the uphill side; now
+the water lies in a trench between two banks at every cross-slope, the downhill bank's lip
+standing over it. What a walker would still object to is not this rule's: the waterline along
+the downhill bank is the lattice's sawtooth ([The flood bed](#the-flood-bed)), the uphill cut's
+lip reads as a row of teeth from below where a coarser ring draws it, and the scene's ground drew
+in its default sand.
+
+**What is left.** The meander still swings the contour stream a little down the slope at 20 and
+30 degrees, so its profile reads step-pool for 31 to 85 of 433 points (printed by the case, not
+held); a meander on a hillside wants the trough test applied across the whole width, not the
+centre.
+
+**W93's count, restated** (2026-11-12): the case "a line across a slope is moved between its
+banks" held the points whose bank stands half a depth under the *line's* ground under 2 %, a
+level reached by the untested width's move that kinked the line on a hillside; it now holds, at
+every such point (58 of 1,969 on the valley, none excepted), that the section's top stands over
+that bank by no more than the bound, and that the move leaves fewer such points than no move
+(58 against 370 with `ChannelLayer::bank_move` off, `ChannelLayer` version 11).
 
 ## Seen: the section, the flood bed and the proof of concept's items 6, 7 and 8
 
@@ -1101,8 +1387,8 @@ banks' test with the line's points a metre wide or more, the flood bed's walks w
 alluvial line 2 m wide or more.
 
 **Not yet.** The cut is written by the subcommand and pasted by the author, not applied by the generator itself (the ground is built before the placements are); a procedural ground (the dunes) takes no cut; D8 only (no D∞ spreading); heads by a local four-metre slope, not a slope
-averaged over the source area; no braided reaches; the valley's confinement is not read for the
-reach; a bend with a point bar is cut 6 % narrower than its crossings where a surveyed river's
+averaged over the source area; no braided reaches; the valley's confinement is read for the flood
+bed ("The flood bed") but not for the reach's class, which is the slope's alone; a bend with a point bar is cut 6 % narrower than its crossings where a surveyed river's
 is wider ([the grounding](../experiments/channels.md#the-steep-reaches-the-pools-place-and-three-numbers-read-again)); undercut and
 turf banks are not the heightfield's to draw; the line is moved between its banks by a width at the most, so where the trough's floor is
 further off than that a bench with half a bank is left (1.8 % of the test valley's points, and

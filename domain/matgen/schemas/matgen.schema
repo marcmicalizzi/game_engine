@@ -4,8 +4,11 @@
 // and the set's key is a hash over that text and the generator's version.
 namespace engine.matgen
 
-/// Which generator builds the set.
-enum Kind : u8 { granular = 0, rock = 1, ground = 2 }
+/// Which generator builds the set. `wood` is read from `Set` version 2.
+enum Kind : u8 { granular = 0, rock = 1, ground = 2, wood = 3 }
+
+/// How a wood set's face was cut: a sawn board's face, or the outside of a log.
+enum WoodForm : u8 { sawn = 0, log = 1 }
 
 /// One constituent of a mix: a lithology of a clast population, or a mineral of a rock. Colours
 /// are linear albedo in thousandths.
@@ -104,24 +107,90 @@ struct Rock @version(2) {
   lichen_max_mm: u32 = 60 @since(2)
 }
 
-/// A ground floor: moss and soil under dead leaf fragments under live leaves.
-struct Ground {
+/// A ground floor: moss and soil under litter under live leaves, with the structure a standing eye
+/// reads between 5 cm and 1 m (matgen.md, "A floor at standing height").
+struct Ground @version(2) {
   /// The underlay's two parts, relative shares.
   moss_permille: u32 = 0
   soil_permille: u32 = 1000
-  /// The share of the ground under dead leaf fragments (a Poisson cover).
+  /// The share of the ground under litter (the layer is laid until it covers this share).
   thatch_permille: u32 = 500
-  /// The share under live leaves, over the thatch.
+  /// The share under live leaves, over the litter.
   live_permille: u32 = 0
   /// A fragment's length range and width range, millimetres and micrometres.
   leaf_min_mm: u32 = 30
   leaf_max_mm: u32 = 90
   leaf_width_min_um: u32 = 1000
   leaf_width_max_um: u32 = 4000
+  /// Live leaves fan out of tufts this wide (a tiller's); 0: one leaf anywhere.
+  tuft_mm: u32 = 0 @since(2)
+  /// The share of the live layer's leaves that are standing dead.
+  dead_permille: u32 = 0 @since(2)
+  /// Moss in cushions this wide, soil in clods this wide; 0: neither.
+  cushion_mm: u32 = 0 @since(2)
+  clod_mm: u32 = 0 @since(2)
+  /// The cushions' and clods' dome, micrometres.
+  relief_um: u32 = 0 @since(2)
+  /// Low mounds under everything: their half range, micrometres, and their spacing, millimetres.
+  mound_um: u32 = 0 @since(2)
+  mound_spacing_mm: u32 = 900 @since(2)
+  /// The strength of the patch mosaic a few decimetres across (a sward's short lawns against its
+  /// tall tufts, wet against dry, fresh litter against decayed).
+  patch_permille: u32 = 0 @since(2)
+  /// The litter's share that is old and dark, laid below the fresh.
+  decay_permille: u32 = 0 @since(2)
+  /// The share of the litter that lies with the lodged grass round it.
+  aligned_permille: u32 = 0 @since(2)
+  /// Stones part buried in the soil: the share of the soil they cover, and their sizes.
+  stones_permille: u32 = 0 @since(2)
+  stone_min_mm: u32 = 5 @since(2)
+  stone_max_mm: u32 = 40 @since(2)
+}
+
+/// A face of softwood, its grain along the image's u, weathered toward grey (matgen.md, "Wood
+/// sets"). Colours are linear albedo in thousandths.
+struct Wood {
+  form: WoodForm = sawn
+  /// The figure's bands across the face, micrometres: a ring as the face shows it (a flat-sawn
+  /// face cuts the rings at a shallow angle, so a band is several rings' widths).
+  figure_um: u32 = 8000
+  /// The latewood's share of a band.
+  latewood_permille: u32 = 380
+  /// How far the figure wanders across the grain (its half range), millimetres.
+  wander_mm: u32 = 80
+  /// Spiral grain: the fibres' angle to the image's u, tenths of a degree.
+  spiral_ddeg: u32 = 0
+  /// The latewood stands this far proud of the eroded earlywood, micrometres.
+  relief_um: u32 = 400
+  fresh_r_permille: u32 = 460
+  fresh_g_permille: u32 = 330
+  fresh_b_permille: u32 = 190
+  grey_r_permille: u32 = 210
+  grey_g_permille: u32 = 200
+  grey_b_permille: u32 = 185
+  /// How far the face has weathered from fresh toward grey, and that share's half range across it.
+  grey_permille: u32 = 800
+  grey_patch_permille: u32 = 150
+  /// Dark staining in streaks along the grain: its strength.
+  stain_permille: u32 = 350
+  /// Checks: splits along the grain, how many a square metre, their lengths, widest opening and
+  /// depth.
+  checks_per_m2: u32 = 60
+  check_min_mm: u32 = 10
+  check_max_mm: u32 = 150
+  check_width_um: u32 = 2000
+  check_depth_um: u32 = 3000
+  /// Knots: how many a square metre, and their diameters.
+  knots_per_m2: u32 = 2
+  knot_min_mm: u32 = 12
+  knot_max_mm: u32 = 40
+  /// A log's bark left on: the share of the surface, and its plates' length along the stem.
+  bark_permille: u32 = 0
+  bark_plate_mm: u32 = 45
 }
 
 /// One set: the role it stands for, the surface one repeat covers and the texels across it.
-struct Set @version(1) {
+struct Set @version(2) {
   /// `<word>/<word>`, as a material pack's role.
   role: string = ""
   kind: Kind = granular
@@ -141,4 +210,5 @@ struct Set @version(1) {
   granular: Granular
   rock: Rock
   ground: Ground
+  wood: Wood @since(2)
 }

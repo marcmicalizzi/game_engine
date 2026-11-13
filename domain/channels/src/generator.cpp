@@ -1,7 +1,8 @@
 // The placement generator "channels" (docs/subsystems/channels.md, "In a scene"): the network over
-// the entry's region decided once, when the entry is opened, its pieces written as recipes into
-// the derived-data root, and each tile handed the pieces whose origin it holds — so a tile's
-// placements are the same whenever and in whatever order it comes in.
+// the entry's region decided once, when the entry is opened, its pieces kept as recipes, and each
+// tile handed the pieces whose origin it holds with their recipes (W97b: a tile's bed is built when
+// the tile activates, never at scene read) — so a tile's placements and meshes are the same
+// whenever and in whatever order it comes in.
 #include "detail.h"
 
 #include <core/json/json.h>
@@ -22,7 +23,7 @@ namespace {
 using namespace detail;
 
 constexpr u32 k_plan_magic = 0x4C504843u;  // "CHPL"
-constexpr u32 k_plan_format = 2;           // 2 (W97): a link's sediment
+constexpr u32 k_plan_format = 3;           // 2 (W97): a link's sediment; 3 (W116): its seat
 static_assert(sizeof(ChannelPoint) == 40, "a point is written as its bytes: no padding");
 static_assert(sizeof(ChannelSediment) == 32, "a sediment is written as its bytes: no padding");
 
@@ -78,6 +79,7 @@ void write_link(Writer& w, const ChannelLink& l) {
   w.list(l.reach);
   w.list(l.step_depth);
   w.list(l.bed);
+  w.list(l.seat);
   w.list(l.step_at);
   w.list(l.step_height);
   w.list(l.cluster_at);
@@ -112,6 +114,7 @@ bool read_link(Reader& r, ChannelLink& l) {
   r.list(l.reach);
   r.list(l.step_depth);
   r.list(l.bed);
+  r.list(l.seat);
   r.list(l.step_at);
   r.list(l.step_height);
   r.list(l.cluster_at);
@@ -138,10 +141,10 @@ bool read_link(Reader& r, ChannelLink& l) {
   const u32 m = l.line.size();
   const auto per_point = [m](u32 size) { return size == 0 || size == m; };
   if (!per_point(l.reach.size()) || !per_point(l.step_depth.size()) || !per_point(l.bed.size()) ||
-      !per_point(l.knick.size()) || !per_point(l.asym.size()) || !per_point(l.swell.size()) ||
-      !per_point(l.flood_left.size()) || !per_point(l.flood_right.size()) ||
-      !per_point(l.entrenchment.size()) || !per_point(l.sediment.size()) ||
-      l.flood_left.size() != l.flood_right.size())
+      !per_point(l.seat.size()) || !per_point(l.knick.size()) || !per_point(l.asym.size()) ||
+      !per_point(l.swell.size()) || !per_point(l.flood_left.size()) ||
+      !per_point(l.flood_right.size()) || !per_point(l.entrenchment.size()) ||
+      !per_point(l.sediment.size()) || l.flood_left.size() != l.flood_right.size())
     return false;
   if (l.step_at.size() != l.step_height.size() || l.cluster_at.size() != l.cluster_size.size() ||
       l.keep > m)
@@ -182,16 +185,29 @@ std::string plan_key_text(u64 key) {
 std::string plan_path(std::string_view dir, u64 key) {
   return io::join_path(dir, "plan-" + plan_key_text(key) + ".channel-plan");
 }
+namespace {
+// The root a scene's derived data takes when no host names one: the repository's `ddc/` above the
+// scene, else `ddc/` beside it.
+std::string scene_root(std::string_view scene_dir) {
+  std::string root;
+  std::error_code ec;
+  const auto from = std::filesystem::absolute(
+      scene_dir.empty() ? std::filesystem::path(".") : std::filesystem::path(scene_dir), ec);
+  if (!ec) root = geometry::find_ddc_root(from.generic_string());
+  if (root.empty()) root = io::join_path(scene_dir, "ddc");
+  return root;
+}
+std::string channels_dir(std::string_view root) {
+  std::error_code ec;
+  const std::string dir =
+      std::filesystem::absolute(io::join_path(root, "channels"), ec).generic_string();
+  return ec ? std::string() : dir;
+}
+}  // namespace
+
 bool derived_dir(std::string_view ddc, std::string_view scene_dir, std::string& out,
                  std::string& error) {
-  std::string root(ddc);
-  if (root.empty()) {
-    std::error_code ec;
-    const auto from = std::filesystem::absolute(
-        scene_dir.empty() ? std::filesystem::path(".") : std::filesystem::path(scene_dir), ec);
-    if (!ec) root = geometry::find_ddc_root(from.generic_string());
-    if (root.empty()) root = io::join_path(scene_dir, "ddc");
-  }
+  const std::string root = ddc.empty() ? scene_root(scene_dir) : std::string(ddc);
   std::error_code ec;
   out = std::filesystem::absolute(io::join_path(root, "channels"), ec).generic_string();
   if (ec || io::make_directories(out) != io::Status::Ok) {
@@ -346,11 +362,19 @@ bool ensure_plan(const ChannelLayer& layer, const scene_gen::Context& context, s
 
 namespace {
 
+// **What `open` keeps** (W97b; channels.md, "A tile's bed, laid when it activates"): the plan's
+// decisions and nothing built — each piece's recipe text, its placement and its tile. No mesh is
+// listed as resident and no file is written: a tile hands its own piece's recipe when it activates,
+// and the host builds it off the frame's thread through the derived-data cache (scene_gen.md, "A
+// tile's meshes").
 struct Entry {
   ChannelLayer layer;
-  Vector<scene_gen::PlacementMesh> meshes;
-  Vector<scene_gen::Placement> placements;
-  Vector<scene_gen::TileCoord> tiles;  // per placement
+  Vector<scene_gen::PlacementMesh> meshes;  // one a piece, its recipe in memory
+  Vector<scene_gen::Placement> placements;  // one a piece; `mesh` its index in `meshes`
+  Vector<scene_gen::TileCoord> tiles;       // per placement
+  // The plan's network, kept for `plan_ground` by an entry that names no plan (whose cuts it
+  // plans); empty for one that names its plan (whose cuts the scene carries).
+  ChannelNetwork network;
 };
 
 bool refused(std::string* error, std::string message) {
@@ -378,22 +402,39 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
   // **The plan, never made again over cut ground** (channels.md, "One plan"): read from its file
   // when the entry names it or its key is cached, and made here only for an entry that names none,
   // whose ground is then the ground before any cut. The scene's water bodies reach it through the
-  // exclusion the host built (W90; null: no mouths).
+  // exclusion the host built (W90; null: no mouths). **An entry that names no plan plans its own
+  // cuts** (W97c, R144's hook; channels.md, "In a scene"), so it stands its plan on the ground
+  // before any edit, `Context::uncut()`: the planning pass and the second open, on the ground
+  // those cuts lowered, make one plan under one key.
+  scene_gen::Context planning = context;
+  if (e->layer.plan.empty()) planning.ground = context.uncut();
   ChannelPlan plan;
-  if (!ensure_plan(e->layer, context, root, plan, why)) return refused(error, why);
+  if (!ensure_plan(e->layer, planning, root, plan, why)) {
+    // **The host's root wins, the plan's too** (T112; channels.md, "In a scene"): a host that
+    // names a derived-data root reads the plan there and nowhere else, as it reads the ground's
+    // set there over the scene's own `tiles.ddc` (T90). A plan left under the scene's own root is
+    // not read from it; the refusal says where it is, so the two can be given one root.
+    bool ok = false;
+    const u64 key = parse_key(e->layer.plan, ok);
+    const std::string own = channels_dir(scene_root(context.dir));
+    if (ok && !context.ddc.empty() && !own.empty() && own != root &&
+        io::exists(plan_path(own, key)))
+      why += "; it is in " + own +
+             ", under the scene's own root: the host's derived-data root wins over the scene's, so "
+             "give the host and `engine-content channels` the same --ddc";
+    return refused(error, why);
+  }
   Vector<PlacedPiece> pieces;
   if (!place_pieces(e->layer, plan.network, context.ground, context.tile_size, pieces, why))
     return refused(error, why);
   for (const PlacedPiece& piece : pieces) {
-    const std::string text = piece_json(piece.recipe);
+    std::string text = piece_json(piece.recipe);
     char name[64];
     std::snprintf(name, sizeof(name), "channel-%016llx.channel.json",
                   static_cast<unsigned long long>(piece_source_hash(piece.recipe)));
-    scene_gen::PlacementMesh mesh;
-    mesh.path = io::join_path(root, name);
-    mesh.name = std::string("channels/") + name;
-    if (!io::exists(mesh.path) && io::write_file_atomic(mesh.path, text) != io::Status::Ok)
-      return refused(error, "channels: cannot write " + mesh.path);
+    // The recipe is handed, not written: `path` is where its file would be, which names it.
+    scene_gen::PlacementMesh mesh(io::join_path(root, name), std::string("channels/") + name, 0,
+                                  std::move(text), piece_reach_m(piece.recipe));
     scene_gen::Placement at;
     at.position = piece.origin;
     at.mesh = e->meshes.size();
@@ -402,10 +443,31 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
     e->tiles.push_back(piece.tile);
     e->meshes.push_back(std::move(mesh));
   }
+  if (e->layer.plan.empty()) e->network = std::move(plan.network);
   *state = e.release();
   return true;
 }
 void close(void* state) noexcept { delete static_cast<Entry*>(state); }
+
+// **The cuts, planned and not pasted** (W97c; R144; channels.md, "In a scene"): an entry that names
+// no plan hands its network's cuts — `terrain_cuts_json`, the blocks `engine-content channels
+// --cut` writes — as the ground's edits, so the scene carries none and the ground is the one the
+// pasted cuts made, under the same key. An entry that names its plan stands on cuts the scene
+// carries, and plans none: the two forms are one entry's two spellings, never both.
+bool plan_ground(void* state, const scene_gen::Context&, scene_gen::GroundPlan& out,
+                 std::string* error) {
+  const auto& e = *static_cast<Entry*>(state);
+  if (!e.layer.plan.empty()) return true;
+  const JsonValue cuts = terrain_cuts_json(e.layer, e.network);
+  for (const JsonValue& cut : cuts.as_array()) {
+    scene::TerrainEdit edit;
+    schema::ReadContext reader;
+    if (!schema::from_json(edit, cut, reader) || !reader.ok())
+      return refused(error, "channels: a planned cut is not an engine.scene.TerrainEdit");
+    out.edits.push_back(std::move(edit));
+  }
+  return true;
+}
 bool expand(void* state, const scene_gen::Context& c, scene_gen::Placements& out,
             std::string* error) {
   if (c.stand.present()) return refused(error, k_moving);
@@ -421,19 +483,18 @@ bool expand(void* state, const scene_gen::Context& c, scene_gen::Placements& out
   }
   return true;
 }
-bool meshes(void* state, const scene_gen::Context&, Vector<scene_gen::PlacementMesh>& out,
-            std::string*) {
-  for (const auto& m : static_cast<Entry*>(state)->meshes)
-    out.push_back(m);
-  return true;
-}
+// A tile's piece arrives with the tile (`Placements::meshes`): nothing is resident before it, so
+// the entry lists no `meshes` at all, and its placement indexes the list it is handed with.
 bool tile(void* state, scene_gen::TileCoord tile, const scene_gen::Context& c,
           scene_gen::Placements& out, std::string* error) {
   if (c.stand.present()) return refused(error, k_moving);
   const auto& e = *static_cast<Entry*>(state);
   for (u32 i = 0; i < e.placements.size(); ++i)
     if (e.tiles[i] == tile) {
-      out.instances.push_back(e.placements[i]);
+      auto at = e.placements[i];
+      at.mesh = out.meshes.size();
+      out.meshes.push_back(e.meshes[e.placements[i].mesh]);
+      out.instances.push_back(at);
       ++out.things;
     }
   return true;
@@ -448,10 +509,11 @@ constexpr scene_gen::PlacementGeneratorDesc k_channels{.name = "channels",
                                                        .open = &open,
                                                        .close = &close,
                                                        .expand = &expand,
-                                                       .meshes = &meshes,
                                                        .tile = &tile,
                                                        .occupies = &occupies,
-                                                       .representation = &representation};
+                                                       .representation = &representation,
+                                                       .tile_meshes = true,
+                                                       .plan_ground = &plan_ground};
 const scene_gen::Registrar k_registrar{k_channels};
 }  // namespace
 }  // namespace engine::channels

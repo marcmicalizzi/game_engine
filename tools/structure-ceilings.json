@@ -16,7 +16,7 @@
       "file": "systems/renderer/src/scene_renderer.cpp",
       "function": "SceneRenderer::record_frame",
       "why": "every pass and every feature flag of a frame",
-      "ceiling": 3358
+      "ceiling": 3445
     },
     {
       "id": "renderer.record_frame.add_pass",
@@ -25,14 +25,14 @@
       "function": "SceneRenderer::record_frame",
       "pattern": "\\badd_pass\\s*[(<]",
       "why": "the passes a frame adds inline rather than through a frame-pass seam",
-      "ceiling": 44
+      "ceiling": 45
     },
     {
       "id": "renderer.gpu_scene_cpp.lines",
       "measure": "file-lines",
       "file": "systems/renderer/src/gpu_scene.cpp",
       "why": "every feature's GPU state",
-      "ceiling": 6846
+      "ceiling": 6845
     },
     {
       "id": "renderer.gpu_scene_h.lines",
@@ -46,7 +46,7 @@
       "measure": "file-lines",
       "file": "apps/engine_view/main.cpp",
       "why": "every play feature and every flag",
-      "ceiling": 7472
+      "ceiling": 7479
     },
     {
       "id": "engine_view.run_view.lines",
@@ -54,7 +54,7 @@
       "file": "apps/engine_view/main.cpp",
       "function": "run_view",
       "why": "the windowed loop",
-      "ceiling": 3168
+      "ceiling": 3166
     },
     {
       "id": "engine_view.run_offscreen.lines",
@@ -62,7 +62,7 @@
       "file": "apps/engine_view/main.cpp",
       "function": "run_offscreen",
       "why": "the offscreen loop",
-      "ceiling": 1162
+      "ceiling": 1160
     },
     {
       "id": "gfx.resolve_modules",
@@ -107,19 +107,19 @@
       "id": "page:docs/subsystems/renderer.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/renderer.md",
-      "ceiling": 1007893
+      "ceiling": 1057059
     },
     {
       "id": "page:docs/subsystems/apps.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/apps.md",
-      "ceiling": 660080
+      "ceiling": 662933
     },
     {
       "id": "page:docs/subsystems/gfx.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/gfx.md",
-      "ceiling": 319942
+      "ceiling": 320523
     },
     {
       "id": "page:docs/subsystems/geometry.md",
@@ -131,7 +131,7 @@
       "id": "page:docs/subsystems/flora.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/flora.md",
-      "ceiling": 236015
+      "ceiling": 247078
     },
     {
       "id": "page:docs/plan/05-simulation.md",
@@ -149,7 +149,7 @@
       "id": "page:docs/subsystems/water.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/water.md",
-      "ceiling": 172375
+      "ceiling": 186797
     },
     {
       "id": "page:docs/subsystems/protocol.md",
@@ -185,7 +185,19 @@
       "id": "page:docs/subsystems/rocks.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/rocks.md",
-      "ceiling": 147549
+      "ceiling": 157827
+    },
+    {
+      "id": "page:docs/experiments/gi-cache-2026-11-07.md",
+      "measure": "page-bytes",
+      "file": "docs/experiments/gi-cache-2026-11-07.md",
+      "ceiling": 119711
+    },
+    {
+      "id": "page:docs/subsystems/channels.md",
+      "measure": "page-bytes",
+      "file": "docs/subsystems/channels.md",
+      "ceiling": 113248
     }
   ],
   "rebaselines": [
@@ -733,6 +745,217 @@
           "id": "page:docs/subsystems/rocks.md",
           "old": 137063,
           "new": 147549
+        }
+      ]
+    },
+    {
+      "date": "2026-11-12",
+      "by": "Marc Micalizzi",
+      "reason": "",
+      "commit": "4f40bd49",
+      "folded": [
+        {
+          "name": "G167",
+          "reason": "G167: the meadow at whole density, a new section of flora.md (the field-kind drift, cover as crown count, the flowering months, the leaves' albedo)",
+          "date": "2026-11-11",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/flora.md": 4393
+          }
+        },
+        {
+          "name": "G200",
+          "reason": "G200 lands on rocks.md: Beds at any attitude (the steep-dip table, the bed edge's normal and the front's lean by the beds' apparent dip, rock on steep treads, a face's members, what a scene writes on a 57 degree dip) and A massif inside a budget (what ledges and faces cost near and far, a 1 km window and the forest's 3.4 km2, the far form by ring)",
+          "date": "2026-11-12",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/rocks.md": 10278
+          }
+        },
+        {
+          "name": "G201",
+          "reason": "flora.md gains one pointer line under Exposed structural roots to the G201 design page (+222), and The trunk's skirt (G201 stage 1, +5498): what every tree's stem now carries below its collar, per trunk kind, in every form, its cost, and the re-pins it made",
+          "date": "2026-11-12",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/flora.md": 5720
+          }
+        },
+        {
+          "name": "R151",
+          "reason": "R151 second pass: record_frame gains the wet-class measurement flag and the frame's one-draw fact (3 lines); renderer.md gains the class exit, auto and cycle, the wet class by level and what decides what is wet; water.md the heights' two readers",
+          "date": "2026-11-12",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.record_frame.lines": 57,
+            "renderer.record_frame.add_pass": 1,
+            "page:docs/subsystems/renderer.md": 12036,
+            "page:docs/subsystems/apps.md": 814,
+            "page:docs/subsystems/gfx.md": 581,
+            "page:docs/subsystems/water.md": 870
+          }
+        },
+        {
+          "name": "R69",
+          "reason": "R69 stages 5 to 8: record_frame records the cache's passes as the frame's steps (the pre-roll; its flags come from gi_frame_flags), hands the crowns' priors to the resolve block and, stage 8, the word the directions round the eye read and their workgroups before the windows'; renderer.md gains the four stages' sections (stage 5: the ladder, the walk, the pre-roll; stage 6: what the band is, the reveal; stage 7: the darker forest judged, a crown's shade as a prior; stage 8: the forest's cost by term, the directions first, the volume's reach, a foliage cell's memory, the cut that was flown and taken out, the stand of leaf cards); flora.md says what the renderer reads of a crown's leaves; the cache's experiment page gains stage 8's split, pairs, turn, stand and flicker tables",
+          "date": "2026-11-12",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.record_frame.lines": 30,
+            "page:docs/subsystems/renderer.md": 37130,
+            "page:docs/subsystems/flora.md": 952,
+            "page:docs/experiments/gi-cache-2026-11-07.md": 19711
+          }
+        },
+        {
+          "name": "S102",
+          "reason": "S102's first stage on the water page: the swash as its stretch of shore's (the slope field, the sheets that overlap), the swell and the direction, the outline fade, what the stage costs and what still reads as an animation; Not yet brought up to the code",
+          "date": "2026-11-12",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.gpu_scene_cpp.lines": -1,
+            "page:docs/subsystems/water.md": 12652
+          }
+        },
+        {
+          "name": "S103",
+          "reason": "water.md's Not yet gains one line pointing at the water-obstacles design page (S103, pages only)",
+          "date": "2026-11-12",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/water.md": 401
+          }
+        },
+        {
+          "name": "S104",
+          "reason": "water.md's Not yet gains the pointer to the waterfall's design page (S104), which is where a reader of the water page looks for what a fall does not do yet",
+          "date": "2026-11-12",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": -1,
+            "page:docs/subsystems/water.md": 499
+          }
+        },
+        {
+          "name": "T114",
+          "reason": "T110 and T111 (row D): main.cpp's help of --terrain-tiles and --sun says what each now does (a tile set's ground draws its tiles unasked; --sun is refused under a sky) and read_rules, one function both loops call once a scene file is read, replaces two copies of the authored-forms call (the two loops 2 lines shorter each); apps.md says the same of both flags",
+          "date": "2026-11-11",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "engine_view.main_cpp.lines": 7,
+            "engine_view.run_view.lines": -2,
+            "engine_view.run_offscreen.lines": -2,
+            "page:docs/subsystems/apps.md": 1338
+          }
+        },
+        {
+          "name": "T98",
+          "reason": "channels.md: the Not-yet list says which reading of the valley's confinement exists; T98's section replaces two guesses at the riffle's pale triangle with what it is (the water's refraction meeting a stone's top past its ground margin) and the case that no level of a piece bridges stones",
+          "date": "2026-11-12",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/channels.md": 723
+          }
+        },
+        {
+          "name": "W113",
+          "reason": "apps.md's masks check section names the two fields W113 adds to every layer of a refused tile's line (stored, points) and the tile's tile_points, which a composer reads to tell a fringe from real weight",
+          "date": "2026-11-11",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 95
+          }
+        },
+        {
+          "name": "W116",
+          "reason": "W116: channels.md says the rule that nothing of a cross-slope's section stands over the hillside, how the section is seated under its lower bank, the flood bed held by the ground, the move that finds a bank, W93's count restated per point, what was measured and what the pictures show",
+          "date": "2026-11-12",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/channels.md": 8235
+          }
+        },
+        {
+          "name": "W97c",
+          "reason": "W97c: apps.md says what --ddc reaches for a channel plan (T112) and that engine-content channels takes the host's root; channels.md carries the stones' sets by rock, the plan's root, the cuts through the ground hook, the piece cut a streamed host admits, the measured cost and what a walker sees",
+          "date": "2026-11-11",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 607,
+            "page:docs/subsystems/channels.md": 4290
+          }
+        }
+      ],
+      "changes": [
+        {
+          "id": "renderer.record_frame.lines",
+          "old": 3358,
+          "new": 3445
+        },
+        {
+          "id": "renderer.record_frame.add_pass",
+          "old": 44,
+          "new": 45
+        },
+        {
+          "id": "renderer.gpu_scene_cpp.lines",
+          "old": 6846,
+          "new": 6845
+        },
+        {
+          "id": "engine_view.main_cpp.lines",
+          "old": 7472,
+          "new": 7479
+        },
+        {
+          "id": "engine_view.run_view.lines",
+          "old": 3168,
+          "new": 3166
+        },
+        {
+          "id": "engine_view.run_offscreen.lines",
+          "old": 1162,
+          "new": 1160
+        },
+        {
+          "id": "page:docs/subsystems/renderer.md",
+          "old": 1007893,
+          "new": 1057059
+        },
+        {
+          "id": "page:docs/subsystems/apps.md",
+          "old": 660080,
+          "new": 662933
+        },
+        {
+          "id": "page:docs/subsystems/gfx.md",
+          "old": 319942,
+          "new": 320523
+        },
+        {
+          "id": "page:docs/subsystems/flora.md",
+          "old": 236015,
+          "new": 247078
+        },
+        {
+          "id": "page:docs/subsystems/water.md",
+          "old": 172375,
+          "new": 186797
+        },
+        {
+          "id": "page:docs/subsystems/rocks.md",
+          "old": 147549,
+          "new": 157827
+        },
+        {
+          "id": "page:docs/experiments/gi-cache-2026-11-07.md",
+          "old": 100000,
+          "new": 119711
+        },
+        {
+          "id": "page:docs/subsystems/channels.md",
+          "old": 100000,
+          "new": 113248
         }
       ]
     }

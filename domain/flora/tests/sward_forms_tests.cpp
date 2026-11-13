@@ -8,6 +8,7 @@
 #include <domain/flora/meadow.h>
 #include <domain/flora/sward.h>
 #include <domain/flora/understory.h>
+#include <domain/geometry/flora_species.h>
 #include <domain/scene_gen/scene_gen.h>
 
 #include <doctest/doctest.h>
@@ -481,10 +482,19 @@ TEST_CASE("sward forms: the community's plants take their covers' share, and the
   REQUIRE(clover != nullptr);
   u32 cover = 0;
   flora::meadow_cover({&clover, 1}, niche, {&cover, 1});
-  const f64 expected = 4096.0 * cover / flora::k_meadow_cover_one;
-  CHECK(std::fabs(expected - 697) < 3);
-  // Expectation, as the density classes are: sigma 24 at this share.
-  CHECK(std::fabs(static_cast<f64>(forbs) - expected) < 100);
+  CHECK(std::fabs(4096.0 * cover / flora::k_meadow_cover_one - 697) < 3);
+  // G167: a cell holds a drift of eight clovers on a disc of r sqrt(8), so the drift is drawn in
+  // the cover over the drift's share of the cell (0.251): 0.677 of the cells, and the clover still
+  // covers its 0.170 of the ground.
+  const u32 scale = flora::meadow_drift_scale(*clover, 1);
+  u32 odds = 0;
+  flora::meadow_drift_odds({&clover, 1}, {&scale, 1}, niche, {&odds, 1});
+  const f64 expected = 4096.0 * odds / flora::k_meadow_cover_one;
+  CHECK(flora::meadow_drift_count(*clover, 1) == 8);
+  const f64 covered = expected * 8 * 3.14159265358979 * clover->crown_m * clover->crown_m;
+  CHECK(std::fabs(covered / (4096.0 * cover / flora::k_meadow_cover_one) - 1) < .01);
+  // Expectation, as the density classes are: sigma 30 at this share.
+  CHECK(std::fabs(static_cast<f64>(forbs) - expected) < 120);
   // The card ring carries the far form after its cards: red clover's stands for four plants, one in
   // four of the near ring's cells by its own stream, its mesh after the near one.
   u32 far = 0;
@@ -874,8 +884,38 @@ TEST_CASE("meadow: a cell's plant is its cell's from any tile order, and a tile 
   }
   CHECK(plants > 400);
   CHECK(std::popcount(used) >= 4);
-  // The default budget: 256 plants a tile in the nearest ring; in the next the far forms, each
-  // counted as the plants it stands for, up to the same 256; none past it.
+  // G167's budget, reported: the drifts a tile holds in each ring and their triangles (each
+  // species' drift solved once; the plants' seeds are the entry's, as the stand-ins are).
+  {
+    Vector<u32> near_tris, far_tris;
+    for (const auto& species : flora::meadow_species()) {
+      assets::MeshData mesh;
+      flora::TreeReport report;
+      std::string error;
+      REQUIRE(flora::solve_meadow_plant(flora::meadow_drift(species, 1, p.seed), mesh, &report,
+                                        &error));
+      near_tris.push_back(report.triangles);
+      if (flora::meadow_far_thin(species) > 0) {
+        REQUIRE(flora::solve_meadow_plant(flora::meadow_far_drift(species, 1, p.seed), mesh,
+                                          &report, &error));
+        far_tris.push_back(report.triangles);
+      }
+    }
+    u64 near_sum = 0, far_sum = 0;
+    u32 far_count = 0;
+    for (const auto& placed : a.instances)
+      if ((placed.id & 0x80000000u) != 0) near_sum += near_tris[placed.mesh - 8];
+    const u32 far_base = 8 + static_cast<u32>(flora::meadow_species().size());
+    for (const auto& placed : first.tile(1).instances)
+      if ((placed.id & 0x80000000u) != 0) {
+        ++far_count;
+        far_sum += far_tris[placed.mesh - far_base];
+      }
+    MESSAGE("a 64 m tile, the whole community at the cap of 4096: ", plants, " drifts near, ",
+            near_sum, " triangles; ", far_count, " far forms, ", far_sum, " triangles");
+  }
+  // A lower cap is the budget lever: 256 drifts a tile in the nearest ring; in the next the far
+  // forms, each counted as the drifts it stands for, up to the same 256; none past it.
   p.forb_tile_cap = 256;
   Meadow capped(&rising, p, 120);
   Vector<u32> thin_of_mesh;  // the far meshes follow the 13 near ones, flowering species only
@@ -904,19 +944,24 @@ TEST_CASE("meadow: a cell's plant is its cell's from any tile order, and a tile 
 TEST_CASE("meadow: the far form keeps the flowers' colour and coloured area within a tenth") {
   // Each head's coloured area is its petal cards' (n l^2 at the herb's width ratio); a tile's
   // flowers, near against far, per colour, summed over four worlds with no cap.
+  // G167: a near drift is `count` plants; its far form one stem carrying `thin` drifts' heads.
+  const auto area = [](const flora::MeadowPlant& d) {
+    return static_cast<f64>(d.count) * d.herb.flowers * d.herb.petals *
+           static_cast<f64>(d.herb.petal_length_m) * static_cast<f64>(d.herb.petal_length_m);
+  };
   for (const auto& species : flora::meadow_species()) {
-    const auto near = flora::meadow_herb(species), far = flora::meadow_far_herb(species);
-    CHECK(far.flower_red == near.flower_red);
-    CHECK(far.flower_green == near.flower_green);
-    CHECK(far.flower_blue == near.flower_blue);
+    const auto near = flora::meadow_drift(species, 1), far = flora::meadow_far_drift(species, 1);
+    CHECK(far.herb.flower_red == near.herb.flower_red);
+    CHECK(far.herb.flower_green == near.herb.flower_green);
+    CHECK(far.herb.flower_blue == near.herb.flower_blue);
     if (flora::meadow_far_thin(species) == 0) continue;
-    const f64 per_near = static_cast<f64>(near.flowers) * near.petals *
-                         static_cast<f64>(near.petal_length_m) *
-                         static_cast<f64>(near.petal_length_m);
-    const f64 per_far = static_cast<f64>(far.flowers) * far.petals *
-                        static_cast<f64>(far.petal_length_m) * static_cast<f64>(far.petal_length_m);
     INFO(species.name);
-    CHECK(std::fabs(per_far / (per_near * flora::meadow_far_thin(species)) - 1) < 1e-3);
+    // The table's own heads: a near drift's petal cards carry them whole (at most 8 a head).
+    const f64 table = static_cast<f64>(near.count) * species.flowers * species.petals *
+                      species.petal_m * species.petal_m;
+    CHECK(std::fabs(area(near) / table - 1) < 1e-3);
+    CHECK(near.herb.petals <= flora::k_meadow_drift_petals);
+    CHECK(std::fabs(area(far) / (area(near) * flora::meadow_far_thin(species)) - 1) < 1e-3);
   }
   auto p = four_forms();
   for (const auto& species : flora::meadow_species())
@@ -924,18 +969,11 @@ TEST_CASE("meadow: the far form keeps the flowers' colour and coloured area with
   p.forb_tile_cap = 4096;
   const u32 count = static_cast<u32>(flora::meadow_species().size());
   Vector<f64> area_of_mesh;  // coloured area by mesh index past the patches'
-  for (const auto& species : flora::meadow_species()) {
-    const auto h = flora::meadow_herb(species);
-    area_of_mesh.push_back(static_cast<f64>(h.flowers) * h.petals *
-                           static_cast<f64>(h.petal_length_m) * static_cast<f64>(h.petal_length_m));
-  }
   for (const auto& species : flora::meadow_species())
-    if (flora::meadow_far_thin(species) > 0) {
-      const auto h = flora::meadow_far_herb(species);
-      area_of_mesh.push_back(static_cast<f64>(h.flowers) * h.petals *
-                             static_cast<f64>(h.petal_length_m) *
-                             static_cast<f64>(h.petal_length_m));
-    }
+    area_of_mesh.push_back(area(flora::meadow_drift(species, 1)));
+  for (const auto& species : flora::meadow_species())
+    if (flora::meadow_far_thin(species) > 0)
+      area_of_mesh.push_back(area(flora::meadow_far_drift(species, 1)));
   f64 near_area = 0, far_area = 0;
   u32 near_count = 0, far_count = 0;
   for (u32 w = 0; w < 4; ++w) {
@@ -978,12 +1016,15 @@ TEST_CASE("meadow: the covers and a tile's community are the same bits on every 
   for (const auto& species : flora::meadow_species())
     p.community.push_back(member(std::string(species.name).c_str()));
   p.forb_tile_cap = 4096;
+  // Re-taken for G167 (MSVC, 2026-11-11): a cell draws a drift at its cover over the drift's share
+  // of the cell, and the out-of-bloom species have no far form, so both rings' plants moved; the
+  // covers' pin above did not.
   Meadow sloped(&rising, p, 120, true);
-  CHECK(pin_of(sloped.tile(0)) == 5908356335877227896ull);
+  CHECK(pin_of(sloped.tile(0)) == 11273859908338696005ull);
   CHECK(pin_of(sloped.tile(1)) ==
-        8258841106184913265ull);  // the far ring: the cards and the far forms
+        18266861944754905536ull);  // the far ring: the cards and the far forms
   Meadow valley_floor(&valley, p);
-  CHECK(pin_of(valley_floor.tile(0)) == 8268456944544360779ull);
+  CHECK(pin_of(valley_floor.tile(0)) == 11264372552321339524ull);
 }
 
 TEST_CASE("meadow: what a tile's placement costs, with and without the community") {
@@ -1041,6 +1082,112 @@ TEST_CASE("meadow: each species' stand-in herb is in range and inside its budget
             flora::meadow_far_thin(species), " plants");
   }
   MESSAGE("the table's stand-ins: ", total, " triangles");
+}
+
+TEST_CASE("meadow: a drift is the field kind, every plant one parentless part from its base") {
+  // G167: the catalogue's `meadow` is posed as a field, and each drift's plants are blades of it:
+  // a part a plant, no parent, its pivot on the ground, every weight in [0, 1] rising with height.
+  const auto* kind = geometry::flora_species_info("meadow");
+  REQUIRE(kind != nullptr);
+  CHECK(kind->motion == geometry::FloraMotionKind::field);
+  CHECK_FALSE(kind->casters.traced);
+  CHECK(kind->casters.cascades == 1);
+  u32 near_total = 0, far_total = 0;
+  for (const auto& species : flora::meadow_species()) {
+    INFO(species.name);
+    for (const bool far : {false, true}) {
+      if (far && flora::meadow_far_thin(species) == 0) continue;
+      const auto drift =
+          far ? flora::meadow_far_drift(species, 1, 3) : flora::meadow_drift(species, 1, 3);
+      std::string error;
+      REQUIRE_MESSAGE(flora::meadow_plant_in_range(drift, error), error);
+      assets::MeshData mesh;
+      flora::TreeReport report;
+      flora::Motion motion;
+      REQUIRE_MESSAGE(flora::solve_meadow_plant(drift, mesh, &report, &error, &motion), error);
+      REQUIRE(motion.parts.size() == drift.count);
+      REQUIRE(motion.vertex_part.size() == mesh.positions.size());
+      REQUIRE(motion.vertex_weight.size() == mesh.positions.size());
+      CHECK(motion.structure.empty());
+      // The leaves are a live leaf's measured albedo, the sward blade's own.
+      CHECK(mesh.materials[0].base_color.y == flora::k_sward_leaf_albedo[1]);
+      for (const auto& part : motion.parts) {
+        CHECK(part.parent == geometry::k_motion_no_parent);
+        CHECK(part.pivot.y == 0.0f);
+        CHECK(part.direction.y == 1.0f);
+        CHECK(part.length > 0.0f);
+        // On the drift's disc, with the quarter-spacing jitter.
+        CHECK(std::sqrt(part.pivot.x * part.pivot.x + part.pivot.z * part.pivot.z) <=
+              drift.radius_m * 1.25f + 1e-4f);
+      }
+      for (u32 v = 0; v < mesh.positions.size(); ++v) {
+        CHECK(motion.vertex_weight[v] >= 0.0f);
+        CHECK(motion.vertex_weight[v] <= 1.0f);
+        if (mesh.positions[v].y > 0.05f) CHECK(motion.vertex_weight[v] > 0.0f);
+      }
+      // A flowering drift keeps its heads in their own primitive, at their colour.
+      if (drift.herb.flowers > 0) {
+        REQUIRE(mesh.primitives.size() >= 2);
+        CHECK(mesh.primitives[1].material == 1);
+        CHECK(mesh.materials[1].base_color.x == drift.herb.flower_red);
+      }
+      if (far)
+        far_total += report.triangles;
+      else
+        near_total += report.triangles;
+      const std::string which = std::string(species.name) + (far ? " far: " : " near: ");
+      MESSAGE(which, drift.count, " plants: ", report.triangles, " triangles, ",
+              drift.herb.flowers * drift.count, " heads");
+    }
+  }
+  MESSAGE("the table's drifts: ", near_total, " triangles near, ", far_total, " far");
+  // The container: the flora generator builds `meadow` and names the field kind's species.
+  flora::FloraFile file;
+  file.species = flora::k_species_meadow;
+  file.meadow = flora::meadow_drift(*flora::meadow_species("trifolium_pratense"), 1);
+  geometry::ClusterFileData out;
+  std::string error;
+  REQUIRE_MESSAGE(flora::build_flora_container(file, {}, 0, out, nullptr, error), error);
+  CHECK(out.generator_kind == "meadow");
+  CHECK(out.motion_parts.size() == file.meadow.count);
+  CHECK_FALSE(flora::flora_collides(file));
+  CHECK(flora::flora_role(flora::k_species_meadow, 1) == "herb/flower");
+}
+
+TEST_CASE("meadow: a forb carries its heads only within its flowering months") {
+  // G167: the table's months, first day of the first to last day of the last.
+  const auto* caltha = flora::meadow_species("caltha_palustris");
+  const auto* clover = flora::meadow_species("trifolium_pratense");
+  const auto* rush = flora::meadow_species("juncus_effusus");
+  REQUIRE(caltha != nullptr);
+  REQUIRE(clover != nullptr);
+  REQUIRE(rush != nullptr);
+  CHECK(flora::meadow_in_bloom(*caltha, 60));   // 1 March
+  CHECK(flora::meadow_in_bloom(*caltha, 151));  // 31 May
+  CHECK_FALSE(flora::meadow_in_bloom(*caltha, 152));
+  CHECK_FALSE(flora::meadow_in_bloom(*caltha, 59));
+  CHECK(flora::meadow_in_bloom(*clover, 200));
+  CHECK_FALSE(flora::meadow_in_bloom(*rush, 200));  // no heads drawn at all
+  CHECK(flora::meadow_herb(*caltha, 1, 200).flowers == 0);
+  CHECK(flora::meadow_herb(*caltha, 1, 100).flowers == caltha->flowers);
+  CHECK(flora::meadow_far_thin(*caltha, 200) == 0);
+  CHECK(flora::meadow_far_thin(*caltha, 100) > 0);
+  // Out of bloom the entry writes no far form for it, and the near drift stands in leaf.
+  auto p = four_forms();
+  p.community.push_back(member("caltha_palustris"));
+  p.community.back().mesh.clear();
+  p.meadow.day_of_year = 200;
+  Meadow summer(&flat, p, 255);
+  u32 far = 0;
+  for (const auto& placed : summer.tile(1).instances)
+    far += (placed.id & 0x80000000u) != 0 ? 1u : 0u;
+  CHECK(far == 0);
+  auto bad = p;
+  bad.meadow.day_of_year = 367;
+  void* state = nullptr;
+  std::string error;
+  CHECK_FALSE(summer.gen->open(schema::to_json(bad), summer.ctx, &state, &error));
+  CHECK(error.find("day_of_year") != std::string::npos);
 }
 
 TEST_CASE("sward forms: where the slope draws the boundary the band keeps its width (G139)") {

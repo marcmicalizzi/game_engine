@@ -1,8 +1,11 @@
 // The date palm's solver (palm.h; docs/subsystems/flora.md, "The date palm").
+#include "skirt.h"
+
 #include <core/math/deterministic.h>
 #include <domain/flora/palm.h>
 #include <domain/geometry/cluster.h>
 
+#include <algorithm>
 #include <cmath>
 #include <string>
 #include <utility>
@@ -206,7 +209,8 @@ const RingProfile& profile_of(u32 rows_per_ring) {
 
 u32 trunk_triangles(const Plan& plan) {
   const u32 rows = rings_of(plan) * plan.rows_per_ring + 1;
-  return (rows - 1) * plan.segments * 2 + plan.segments;  // the wall and the apex's dome
+  // The wall, the apex's dome, and the skirt under the foot (G201: `detail::build_skirt`'s shape).
+  return (rows - 1) * plan.segments * 2 + plan.segments + detail::skirt_triangles(plan.segments);
 }
 
 // A persistent base is a tapered tube of `boot_sides` sides out of the wall (two triangles a side)
@@ -486,6 +490,39 @@ void build_trunk(const Palm& p, const Spine& spine, const Spiral& spiral, const 
   }
   for (u32 i = 0; i < segs; ++i)
     out.triangle(ring_first + i, centre, ring_first + (i + 1) % segs);
+
+  // The skirt (G201; flora.md, "The trunk's skirt"): the wall carried straight down below its foot
+  // ring to one depth under the origin, the branching species' `detail::build_skirt` in the palm's
+  // own emitter. The foot ring is square to the leaning spine, so its columns are of unequal
+  // length.
+  const D3 foot = spine_point(spine, 0.0);
+  f64 rim = 0.0;
+  f64 lowest = 1e300;
+  f64 reach = 0.0;
+  for (u32 i = 0; i <= segs; ++i) {
+    const Vec3 v = out.mesh.positions[first + i];
+    const f64 x = static_cast<f64>(v.x);
+    const f64 z = static_cast<f64>(v.z);
+    rim = std::max(rim, std::sqrt((x - foot.x) * (x - foot.x) + (z - foot.z) * (z - foot.z)));
+    lowest = std::min(lowest, static_cast<f64>(v.y));
+    reach = std::max(reach, std::sqrt(x * x + z * z));
+  }
+  const f64 bottom = std::min(-(reach * detail::k_skirt_slope_tan + detail::k_skirt_margin_m),
+                              lowest - detail::k_skirt_least_run * rim);
+  out.weight = 0.0;
+  const u32 skirt = out.mesh.positions.size();
+  for (u32 i = 0; i <= segs; ++i) {
+    const Vec3 v = out.mesh.positions[first + i];
+    const Vec3 n = out.mesh.normals[first + i];
+    const Vec2 uv = out.mesh.uvs[first + i];
+    out.vertex(D3{static_cast<f64>(v.x), bottom, static_cast<f64>(v.z)},
+               D3{static_cast<f64>(n.x), static_cast<f64>(n.y), static_cast<f64>(n.z)},
+               static_cast<f64>(uv.x), static_cast<f64>(uv.y) - (static_cast<f64>(v.y) - bottom));
+  }
+  for (u32 i = 0; i < segs; ++i) {
+    out.triangle(skirt + i, first + i + 1, skirt + i + 1);
+    out.triangle(skirt + i, first + i, first + i + 1);
+  }
 }
 
 // ---- the collar: the persistent frond bases ----------------------------------------------------

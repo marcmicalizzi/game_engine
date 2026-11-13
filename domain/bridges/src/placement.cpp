@@ -63,16 +63,22 @@ Approach approach_of(const Crossing& c, const BridgePlan& plan, u32 grade) noexc
   for (u32 end = 0; end < 2; ++end) {
     const i64 x_end = end == 0 ? plan.x_start : plan.x_end;
     const i64 out = end == 0 ? -1 : 1;
-    const i64 ground = profile_at(c, x_end);
-    a.step_mm = std::max<i32>(a.step_mm, static_cast<i32>(std::max<i64>(ground - deck, 0)));
-    if (ground >= deck) continue;
+    a.steps[end] = plan.steps[end];
+    a.step_mm =
+        std::max<i32>(a.step_mm, static_cast<i32>(std::max<i64>(profile_at(c, x_end) - deck, 0)));
+    // The fill starts past the last step (the deck's end where there is none), at the height a
+    // riser under it, and is wanted only where the ground there is more than half a riser lower:
+    // the walker's own step is no earthwork.
+    const i64 from = plan.approach_x[end];
+    const i64 top0 = c.bed_mm + plan.approach_top[end];
+    if (top0 - profile_at(c, from) <= k_riser_mm / 2) continue;
     // Out along the path at the grade until the fill's top meets the ground, every 100 mm.
     i64 d = 0;
     const i64 limit = static_cast<i64>(c.profile_mm.size()) * c.profile_step_mm;
     while (d < limit) {
       d += 100;
-      const i64 top = deck - (static_cast<i64>(grade) * d) / 1000;
-      if (top <= profile_at(c, x_end + out * d)) break;
+      const i64 top = top0 - (static_cast<i64>(grade) * d) / 1000;
+      if (top <= profile_at(c, from + out * d)) break;
     }
     a.length_mm[end] = static_cast<i32>(d);
   }
@@ -91,20 +97,21 @@ JsonValue approach_edits_json(const Layer& layer, u32 grade) {
     std::string why;
     if (!plan_bridge(c, crossing_seed(layer.seed, c), plan, why)) continue;
     const Approach a = approach_of(c, plan, grade);
-    const i64 deck = c.bed_mm + plan.deck;
     for (u32 end = 0; end < 2; ++end) {
       const i64 length = a.length_mm[end];
       if (length <= 0) continue;
-      const i64 x_end = end == 0 ? plan.x_start : plan.x_end;
+      const i64 from = plan.approach_x[end];
+      const i64 top0 = c.bed_mm + plan.approach_top[end];
       const i64 out = end == 0 ? -1 : 1;
       JsonValue points = JsonValue::array(), widths = JsonValue::array();
-      // The deck's end, then the line falling at the grade to where it meets the ground: two
-      // points, since the fill is straight; its top at the deck's end is the deck.
+      // The last step's outer edge (the deck's end where there is none), then the line falling at
+      // the grade to where it meets the ground: two points, since the fill is straight; its top
+      // there is a riser under the last step (the deck where there is none).
       const i64 ends[2] = {0, length};
       for (const i64 d : ends) {
         i64 wx = 0, wz = 0;
-        world_mm(c, x_end + out * d, 0, wx, wz);
-        const i64 top = deck - (static_cast<i64>(grade) * d) / 1000;
+        world_mm(c, from + out * d, 0, wx, wz);
+        const i64 top = top0 - (static_cast<i64>(grade) * d) / 1000;
         JsonValue at = JsonValue::array();
         at.push_back(JsonValue(static_cast<f64>(wx) / 1000.0));
         at.push_back(JsonValue(static_cast<f64>(top) / 1000.0));
@@ -154,6 +161,16 @@ struct Built {
   scene_gen::PlacementMesh mesh;
   scene_gen::Placement placement;
   scene_gen::TileCoord tile;
+  // The plan's footprint (`bridge_footprint`), its points held here, and the tiles its disc grown
+  // by `k_shape_reach_mm` reaches (inclusive), which `tile` hands it to.
+  scene_gen::FootprintPoint corners[4];
+  scene_gen::TileCoord reach_lo, reach_hi;
+  scene_gen::Footprint shape() const noexcept {
+    return scene_gen::Footprint::polygon({corners, 4});
+  }
+  bool reaches(scene_gen::TileCoord t) const noexcept {
+    return t.x >= reach_lo.x && t.x <= reach_hi.x && t.z >= reach_lo.z && t.z <= reach_hi.z;
+  }
 };
 
 struct Entry {
@@ -162,6 +179,8 @@ struct Entry {
   i64 tile_mm = 32000;
   std::string where;
 };
+
+constexpr i64 floor_div(i64 a, i64 b) noexcept { return a / b - ((a % b != 0 && a < 0) ? 1 : 0); }
 
 bool fail(std::string* error, const std::string& where, std::string_view why) {
   if (error != nullptr) *error = where + ": bridges: " + std::string(why);
@@ -179,6 +198,8 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
                 read.diagnostics.empty()
                     ? std::string("invalid engine.bridges.Layer")
                     : read.diagnostics[0].path + ": " + read.diagnostics[0].message);
+  if (entry->layer.approach_grade_permille < 1 || entry->layer.approach_grade_permille > 1000)
+    return fail(error, entry->where, "approach_grade_permille must be 1..1000");
   const i64 tile_mm = scene_gen::nearest_mm(static_cast<f64>(context.tile_size));
   entry->tile_mm = tile_mm > 0 ? tile_mm : 32000;
   // Where a recipe's file would be: the layer's directory, else the derived-data root's
@@ -201,6 +222,7 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
     bridge.seed = crossing_seed(entry->layer.seed, c);
     bridge.stone_role = entry->layer.stone_role;
     bridge.wood_role = entry->layer.wood_role;
+    bridge.log_role = entry->layer.log_role;
     BridgePlan plan;
     std::string why;
     if (!plan_bridge(c, bridge.seed, plan, why))
@@ -209,17 +231,30 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
       ++fords;
       continue;
     }
-    scene_gen::FootprintPoint corners[4];
-    const scene_gen::Footprint shape = bridge_footprint(c, plan, corners);
     char name[48];
     std::snprintf(name, sizeof(name), "bridge-%016llx.bridge.json",
                   static_cast<unsigned long long>(source_hash(bridge)));
     Built b;
+    const scene_gen::Footprint shape = bridge_footprint(c, plan, b.corners);
+    // The reach is the footprint's disc about the crossing's centre (the mesh's origin), not
+    // about the plan's middle: what a later entry reads as this placement's disc.
+    f64 reach = 0.0;
+    for (const scene_gen::FootprintPoint& q : b.corners) {
+      const f64 dx = static_cast<f64>(q.x_mm - c.x_mm), dz = static_cast<f64>(q.z_mm - c.z_mm);
+      reach = std::max(reach, std::sqrt(dx * dx + dz * dz) / 1000.0);
+    }
     b.mesh = scene_gen::PlacementMesh(io::join_path(dir, name), std::string("bridges/") + name, 0,
-                                      canonical_json(bridge), static_cast<f32>(shape.radius));
+                                      canonical_json(bridge), static_cast<f32>(reach));
     b.placement = place(c);
     b.placement.id = k + 1;
     b.tile = tile_of(c, entry->tile_mm);
+    // The tiles the shape is handed to: every tile its disc, grown by the reach a later entry
+    // keeps past a shape, touches (scene_gen.md, "The shapes a tile occupies").
+    const i64 r = static_cast<i64>(shape.radius * 1000.0) + 1 + k_shape_reach_mm;
+    b.reach_lo = {static_cast<i32>(floor_div(shape.x_mm - r, entry->tile_mm)),
+                  static_cast<i32>(floor_div(shape.z_mm - r, entry->tile_mm))};
+    b.reach_hi = {static_cast<i32>(floor_div(shape.x_mm + r, entry->tile_mm)),
+                  static_cast<i32>(floor_div(shape.z_mm + r, entry->tile_mm))};
     entry->bridges.push_back(std::move(b));
   }
   ENGINE_LOG_INFO(log_bridges, "bridges planned", log::field("entry", entry->where),
@@ -232,13 +267,19 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
 
 void close(void* state) noexcept { delete static_cast<Entry*>(state); }
 
+// A tile is occupied when a bridge stands in it or a bridge's shape reaches it: both are what its
+// hand-over carries.
 bool occupies(const void* state, scene_gen::TileCoord tile) noexcept {
   const Entry& e = *static_cast<const Entry*>(state);
   for (const Built& b : e.bridges)
-    if (b.tile == tile) return true;
+    if (b.tile == tile || b.reaches(tile)) return true;
   return false;
 }
 
+// **A tile's hand-over** (scene_gen.md, "A tile's meshes", "The shapes a tile occupies"): the
+// bridge whose centre is in the tile, as its own mesh, and the plan of every bridge whose shape
+// reaches it, so the entries after this one keep their cover out from under the deck on a
+// streamed tile as on the whole read.
 bool tile(void* state, scene_gen::TileCoord t, const scene_gen::Context& context,
           scene_gen::Placements& out, std::string* error) {
   out.clear();
@@ -246,6 +287,7 @@ bool tile(void* state, scene_gen::TileCoord t, const scene_gen::Context& context
   if (scene_gen::nearest_mm(static_cast<f64>(context.tile_size)) != e.tile_mm)
     return fail(error, e.where, "the tile size changed after open");
   for (const Built& b : e.bridges) {
+    if (b.reaches(t)) out.shapes.add(b.shape());
     if (!(b.tile == t)) continue;
     scene_gen::Placement p = b.placement;
     p.mesh = out.meshes.size();  // no resident kit: a tile's meshes are all its own
@@ -264,8 +306,29 @@ bool expand(void* state, const scene_gen::Context&, scene_gen::Placements& out, 
     p.mesh = out.meshes.size();
     out.meshes.push_back(b.mesh);
     out.instances.push_back(p);
+    out.shapes.add(b.shape());
   }
   out.things = out.instances.size();
+  return true;
+}
+
+// **The approaches, handed to the ground** (bridges.md, "The ground and the neighbours";
+// scene_gen.md, "What an entry plans for the ground"): each `Fill` edit read back from the JSON
+// `engine-content bridges` writes, so an approach planned at the read and the same approach
+// pasted into `terrain.tiles.edits` are one edit, field for field, and build one tile set. A
+// function of the layer alone: the crossings carry the ground they were sampled on.
+bool plan_ground(void* state, const scene_gen::Context&, scene_gen::GroundPlan& out,
+                 std::string* error) {
+  const Entry& e = *static_cast<const Entry*>(state);
+  const JsonValue edits = approach_edits_json(e.layer, e.layer.approach_grade_permille);
+  for (const JsonValue& json : edits.as_array()) {
+    scene::TerrainEdit edit;
+    schema::ReadContext reader;
+    if (!schema::from_json(edit, json, reader) || !reader.ok())
+      return fail(error, e.where,
+                  "an approach's edit did not read back as engine.scene.TerrainEdit");
+    out.edits.push_back(std::move(edit));
+  }
   return true;
 }
 
@@ -277,7 +340,9 @@ constexpr scene_gen::PlacementGeneratorDesc k_generator{.name = "bridges",
                                                         .tile = tile,
                                                         .occupies = occupies,
                                                         .representation = nullptr,
-                                                        .tile_meshes = true};
+                                                        .tile_meshes = true,
+                                                        .tile_meshes_masked = false,
+                                                        .plan_ground = plan_ground};
 const scene_gen::Registrar k_registrar{k_generator};
 
 }  // namespace

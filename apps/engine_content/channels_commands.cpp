@@ -124,6 +124,11 @@ int channels_command(int argc, char** argv) {
   scene_gen::Context context;
   context.world_seed = terrain.seed;
   context.dir = dir;
+  // **One root, the host's** (T90, T112; channels.md, "In a scene"): `--ddc` is where
+  // the uncut ground's set and the plan go, over the scene's own `tiles.ddc`, as a host given the
+  // same `--ddc` reads them; without it, the scene's own (its `tiles.ddc` for the set, the
+  // repository's `ddc/` above the scene or `ddc/` beside it for the plan), as a host given none.
+  context.ddc = ddc;
   scene_gen::GroundProvider ground;
   std::string error;
   if (!found->make(terrain, context, ground, &error) || !ground.valid())
@@ -175,6 +180,10 @@ int channels_command(int argc, char** argv) {
     f64 line_m = 0, half_bank_m = 0, no_bank_m = 0, no_bank_fall = 0;
     f64 by_angle_m[5] = {}, half_bank_by_angle_m[5] = {}, no_bank_by_angle_m[5] = {};
   } section;
+  // W116: the section against the hillside, every entry's summed (the worst kept), and the water's
+  // fit codes (how many points the ribbon fit narrowed, and lowered under the downhill ground).
+  channels::SeatStats seat;
+  u64 fit_narrowed = 0, fit_lowered = 0;
   if (placements != nullptr && placements->is_array()) {
     for (u32 k = 0; k < placements->as_array().size(); ++k) {
       const JsonValue& entry = (*placements)[k];
@@ -218,8 +227,34 @@ int channels_command(int argc, char** argv) {
       region[2] = std::max(region[2], layer.region_max[0]);
       region[3] = std::max(region[3], layer.region_max[1]);
       border = std::max(border, 2.0 * static_cast<f64>(layer.spacing_m));
-      for (const JsonValue& b : blocks.as_array())
+      for (const JsonValue& b : blocks.as_array()) {
+        if (const JsonValue* fit = b.find("fit"); fit != nullptr && fit->is_array())
+          for (const JsonValue& code : fit->as_array()) {
+            f64 c = 0;
+            if (!code.get_f64(c)) continue;
+            fit_narrowed += c == 1 ? 1u : 0u;
+            fit_lowered += c == 2 ? 1u : 0u;
+          }
         all.push_back(b);
+      }
+      {
+        const channels::SeatStats here = channels::measure_seat(layer, network, ground_view);
+        seat.points += here.points;
+        seat.bank_over += here.bank_over;
+        seat.bank_over_line_m += here.bank_over_line_m;
+        if (here.bank_over_m > seat.bank_over_m) {
+          seat.bank_over_m = here.bank_over_m;
+          seat.bank_over_at = here.bank_over_at;
+        }
+        seat.flood_sides += here.flood_sides;
+        seat.flood_over += here.flood_over;
+        if (here.flood_over_m > seat.flood_over_m) {
+          seat.flood_over_m = here.flood_over_m;
+          seat.flood_over_at = here.flood_over_at;
+        }
+        seat.seat_max_m = std::max(seat.seat_max_m, here.seat_max_m);
+        seat.seated_line_m += here.seated_line_m;
+      }
       if (cut) {
         const JsonValue c = channels::terrain_cuts_json(layer, network);
         for (const JsonValue& b : c.as_array())
@@ -431,6 +466,35 @@ int channels_command(int argc, char** argv) {
     line["no_bank_mean_slope"] = JsonValue(
         section.no_bank_m > 0 ? std::round(section.no_bank_fall / section.no_bank_m * 1000) / 1000
                               : 0.0);
+  }
+  // W116 (channels.md, "A line across a slope"): the rule, measured — points whose top of bank
+  // stands over the ground at their lower bank top by more than the bound, the metres of line
+  // they make and the most; flood-bed sides whose level stands over the ground at their edge; how
+  // far and how much line the plan seated; and the water's fit codes.
+  {
+    const auto at_of = [](const WorldPos& p) {
+      JsonValue a = JsonValue::array();
+      a.push_back(JsonValue(std::round(p.x * 100) / 100));
+      a.push_back(JsonValue(std::round(p.y * 100) / 100));
+      a.push_back(JsonValue(std::round(p.z * 100) / 100));
+      return a;
+    };
+    JsonValue s = JsonValue::object();
+    s["bound_m"] = JsonValue(channels::k_seat_bound_m);
+    s["points"] = JsonValue(seat.points);
+    s["bank_over"] = JsonValue(seat.bank_over);
+    s["bank_over_line_m"] = JsonValue(std::round(seat.bank_over_line_m));
+    s["bank_over_max_m"] = JsonValue(std::round(seat.bank_over_m * 1000) / 1000);
+    s["bank_over_max_at"] = at_of(seat.bank_over_at);
+    s["flood_sides"] = JsonValue(seat.flood_sides);
+    s["flood_over"] = JsonValue(seat.flood_over);
+    s["flood_over_max_m"] = JsonValue(std::round(seat.flood_over_m * 1000) / 1000);
+    s["flood_over_max_at"] = at_of(seat.flood_over_at);
+    s["seat_max_m"] = JsonValue(std::round(seat.seat_max_m * 1000) / 1000);
+    s["seated_line_m"] = JsonValue(std::round(seat.seated_line_m));
+    s["water_narrowed_points"] = JsonValue(fit_narrowed);
+    s["water_lowered_points"] = JsonValue(fit_lowered);
+    line["seat"] = std::move(s);
   }
   line["ribbon_edges"] = JsonValue(stats.edges);
   line["edges_above_005"] = JsonValue(stats.edges_above_005);

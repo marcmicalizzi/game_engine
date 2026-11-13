@@ -210,9 +210,15 @@ float3 shade_hit(ResolveParams* params, RayDesc ray, SceneHit hit, float footpri
     const float3 ground = ground_radiance(params->sky.rgb, params->ground.rgb, params->sun);
     ambient = ambient_radiance(params->sky.rgb, ground, n);
   }
+  // Foliage reads its tree's own shade as a prior, as the resolve does (R69 stage 7).
+  float crown = -1.0;
+  if ((material.flags & k_material_masked) != 0u) {
+    crown = gi_crown_prior(params->gi_crowns, params->gi_crown_count, instance, params->eye,
+                           surf.position, n);
+  }
   ambient = scene_ambient(params->gi_cells, params->gi_flags, params->gi_count,
                           params->gi_cell_scale, params->eye, surf.position,
-                          length(surf.position - params->camera.xyz), n, ambient);
+                          length(surf.position - params->camera.xyz), n, ambient, crown);
   const float n_dot_v = max(dot(n, surface.view), 0.0);
   light += ambient * (albedo * (1.0 - metallic) +
                       brdf_env_specular(brdf_f0(albedo, metallic), roughness, n_dot_v));

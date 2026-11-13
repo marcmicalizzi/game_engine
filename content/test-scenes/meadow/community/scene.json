@@ -48,6 +48,7 @@
       {"form": "short_tussock", "density": 1, "near": ["short-tussock/d100-v0/patch.clusters", "short-tussock/d100-v1/patch.clusters"],
        "cards": ["short-tussock/d100-v0/distance.clusters", "short-tussock/d100-v1/distance.clusters"]}
     ],
+    "meadow": {"day_of_year": 200},
     "community": [
       {"species": "caltha_palustris"}, {"species": "filipendula_ulmaria"}, {"species": "cardamine_pratensis"},
       {"species": "carex_nigra"}, {"species": "juncus_effusus"}, {"species": "ranunculus_acris"},

@@ -116,6 +116,17 @@ TEST_CASE("engine-content masks check: every tile over the budget is a line, the
     CHECK(whole(over[i], "count") > 2);
     CHECK(over[i].find("tile") != nullptr);
     CHECK(over[i].find("weakest") != nullptr);
+    // W113: each layer says what the format would store and at how many of the tile's points;
+    // a counted layer stores at least one 255th at one point at least.
+    const i64 tile_points = whole(over[i], "tile_points");
+    CHECK(tile_points > 0);
+    for (usize k = 0; k < layers->size(); ++k) {
+      CAPTURE(k);
+      const JsonValue& layer = (*layers)[k];
+      CHECK(whole(layer, "stored") >= 1);
+      CHECK(whole(layer, "points") >= 1);
+      CHECK(whole(layer, "points") <= tile_points);
+    }
   }
 }
 

@@ -422,10 +422,18 @@ struct ResolvedSettings {
   bool gi_young_rays = false;    // `renderer.gi.young_rays`: half the rays to young cells
   bool gi_hit_fallback = false;  // `renderer.gi.hit_fallback`: coarser levels, then the fallback
   f32 gi_far_lift = 0.0f;        // `renderer.gi.far_lift`: a coarse cell lifted to the harmonics
-  f32 gi_shell_m = 0.0f;         // `renderer.gi.shell_m`: the casters round the eye (stage 4)
-  u32 gi_shell_rays = 0;         // `renderer.gi.shell_rays`: the samples round the eye (stage 4)
-  bool occlusion = false;        // two-pass occlusion culling runs
-  bool rt_chain = false;         // the frame builds acceleration structures from its visible list
+  bool gi_reveal = false;        // `renderer.gi.reveal`: a level taken by what its difference shows
+  i32 gi_show_level = -1;       // `renderer.gi.show_level`: the read takes one level whole (-1: no)
+  bool gi_crown_prior = false;  // `renderer.gi.crown_prior`: foliage through its crown's shade
+  f32 gi_shell_m = 0.0f;        // `renderer.gi.shell_m`: the casters round the eye (stage 4)
+  u32 gi_shell_rays = 0;        // `renderer.gi.shell_rays`: the samples round the eye (stage 4)
+  u32 gi_shell_refresh = 1;     // `renderer.gi.shell_refresh`: a whole cell's bounce, frames apart
+  bool gi_shell_clip = false;   // `renderer.gi.shell_clip`: the eye's rays stop at `gi_shell_m`
+  bool gi_shell_first = false;  // `renderer.gi.shell_first`: the directions are the first threads
+  u32 gi_preroll = 0;           // `renderer.gi.preroll`: steps before a cold frame's own (stage 5)
+  f32 gi_cut_m = 0.0f;          // `renderer.gi.cut_m`: an eye that moved this far starts cold
+  bool occlusion = false;       // two-pass occlusion culling runs
+  bool rt_chain = false;        // the frame builds acceleration structures from its visible list
   // The cull pass keeps what its cone test rejects as shadow casters, in the visible list's run
   // `gfx::k_caster_run`, and the chain builds them beside the drawn clusters. True when shadows
   // are traced, the cone test is on, and the records are build records rather than template
@@ -569,6 +577,45 @@ bool shadow_opaque_rays_tunable() noexcept;
 // `gfx::k_resolve_stops` — and 0, the picture, by default (R115; renderer.md, "Where the resolve's
 // time goes").
 u32 resolve_stop_tunable(u64 frame_index) noexcept;
+// **The resolve by pixel class** (R151; renderer.md, "The resolve by pixel class"),
+// `renderer.resolve.classes`: `off`, the one fullscreen draw; `draws`, a classify pass writes each
+// pixel's class as depth and the resolve is drawn once per class, depth-equal, every class by the
+// scene's own module; `modules`, the same with every class that cannot touch water drawn by the
+// module that has none; `auto`, `draws` on a scene that holds alpha-tested materials (leaves: the
+// classes that interleave at the pixel's scale, which is what the split returns) and `off` on
+// every other (`resolve_class_mode_for`, resolve_classes.h). Read when the pipelines are made and
+// once a frame. A renderer made under `off` builds none of the split's and draws exactly what it
+// drew; one made under `draws` or `modules` builds the split's and **not the one draw's
+// pipeline** (the same module twice in one batch is the driver compiling it twice), so it can be
+// turned between those two frame by frame and `off` draws as `draws` there. The picture is the
+// same bytes under `off` and `draws`, and under `modules` to what two modules' arithmetic can
+// differ by (renderer.md).
+//
+// `cycle` is a measurement choice: the pipelines of every mode are made, and frame f draws by
+// (f / `k_resolve_class_cycle_frames`) % 3 — off, draws, modules — so one flight of one process
+// holds the three side by side under the same load, sixteen frames at a time (a forest flight is
+// four minutes of load for seconds of frames, and four flights are four loads). A renderer made
+// under it also follows the tunable frame by frame when a test sets it to one of the three.
+enum class ResolveClassMode : u32 { Off = 0, Draws = 1, Modules = 2, Cycle = 3, Auto = 4 };
+inline constexpr u64 k_resolve_class_cycle_frames = 16;
+// What the pipelines are made for: the tunable as set.
+ResolveClassMode resolve_classes_tunable() noexcept;
+// What the frame of that index draws: the tunable, or under `cycle` its turn; never `Cycle`, and
+// `Auto` until the caller asks the scene (`resolve_class_mode_for`).
+ResolveClassMode resolve_classes_tunable(u64 frame_index) noexcept;
+// The split's measurement switches, never defaults (R151;
+// docs/experiments/resolve-by-class-2026-11-12.md): `renderer.resolve.class_mask` (127, every
+// class), the classes a frame draws — a class left out keeps the clear, so a flight under one bit
+// is that class's draw alone; `renderer.resolve.class_census` (false), a capture logs how many
+// pixels and 2x2 quads its frame gave each class; `renderer.resolve.class_wet_plain` (false), the
+// wet class by the module without water, so the pixels that then differ from the picture are the
+// ones the water module wets.
+struct ResolveClassMeasure {
+  u32 mask = 127;
+  bool census = false;
+  bool wet_plain = false;
+};
+ResolveClassMeasure resolve_class_measure_tunables() noexcept;
 // **A shading rate by region** (R126; renderer.md, "A shading rate by region"): the share of the
 // frame's width at each side whose sun ray is asked once per 2x2 block of one pair,
 // `renderer.resolve.half_rate_sides` — negative, the default, for `gfx::half_rate_sides`' rule (a

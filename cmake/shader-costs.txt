@@ -1,0 +1,42 @@
+# What one slangc compile of a shader costs, per shader (roadmap T118; docs/ci/what-to-run.md,
+# "Heavy shaders share a pool"; cmake/EngineShaders.cmake reads it, cmake/CheckShaderCosts.cmake
+# holds it against the build).
+#
+#   <shader stem> <peak MiB> <seconds>  # <where the number came from>
+#
+# The stem is an engine_shaders() source's file name without `.slang`; the peak is slangc's peak
+# private commit in whole MiB and the seconds its wall time, both as tools/shader_meter writes them
+# beside the SPIR-V (`<stem>.cost`) on every build. A row whose peak is at or above the line,
+# ENGINE_SHADER_HEAVY_MB (1536), makes that shader **heavy**: its compile joins the Ninja pool
+# `engine_shader_heavy`, whose depth is ENGINE_SHADER_HEAVY_JOBS. A row under the line is kept for
+# the record and changes nothing; a shader with no row is light.
+#
+# The table cannot go stale quietly: build.shader_pool fails when a shader the build measured at or
+# above the line has no heavy row, when a heavy row's shader measured under half the line, and when
+# the pool in build.ninja does not hold exactly the heavy rows. A row naming no `.slang` file in the
+# tree stops the configure. When the check asks for a row, it prints the row to write.
+#
+# Measured on 33ff2824 by the meter, in the first msvc-debug build with the pool (four jobs, two heavy at
+# once, other agents building beside it): the peaks are each compile's own and the same at any load
+# and in every preset (the flags do not change); the seconds are that build's and an upper bound.
+# Rows under the line are the shaders at 512 MiB and over, and every resolve variant.
+visibility_resolve_rt_water_terrain_stochastic 12571 116.2  # 33ff2824, first build
+visibility_resolve_rt_water_terrain 7089 62.9  # 33ff2824, first build
+visibility_resolve_water_terrain_stochastic 3883 44.1  # 33ff2824, first build
+visibility_resolve_rt_water_stochastic 2824 31.2  # 33ff2824, first build
+visibility_resolve_rt_water 2536 26.8  # 33ff2824, first build
+visibility_resolve_water_terrain 2430 22.1  # 33ff2824, first build
+visibility_resolve_water_stochastic 997 7.7  # 33ff2824, first build
+visibility_resolve_terrain_stochastic 805 6.5  # 33ff2824, first build
+visibility_resolve_rt_terrain_stochastic 772 6.2  # 33ff2824, first build
+visibility_resolve_water 740 7.5  # 33ff2824, first build
+visibility_resolve_rt_terrain 708 4.2  # 33ff2824, first build
+path_trace_terrain 548 3.8  # 33ff2824, first build
+terrain_footprint_reads 548 3.6  # 33ff2824, first build
+terrain_full_reads 548 3.7  # 33ff2824, first build
+visibility_resolve_terrain 548 4.8  # 33ff2824, first build
+gi_update 516 2.6  # 33ff2824, first build
+visibility_resolve_rt_stochastic 452 2.7  # 33ff2824, first build
+visibility_resolve_rt 420 2.5  # 33ff2824, first build
+visibility_resolve_stochastic 410 3.0  # 33ff2824, first build
+visibility_resolve 409 2.3  # 33ff2824, first build

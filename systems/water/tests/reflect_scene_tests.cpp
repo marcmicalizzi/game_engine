@@ -652,3 +652,129 @@ TEST_CASE(
   CHECK(std::abs(std::log(refl_bg / seen_bg)) < bound);
   CHECK(refl_rg > 1.0);  // red over green: sand, where the first layer's grass is green over red
 }
+
+// ---- A bounce off the ground takes the ground's material too (R69 stage 5) ---------------------
+// The same bank, with a grey box standing on its sand: the world-space cache's bounce
+// (`renderer.gi.mode=bounce`) lights the box's sides with the sun off the ground round it. Until
+// stage 5 the bounce's hit on a terrain tile read the root material's base colour, the record's
+// first layer, so the sand bounced the grass's green onto the box; the cache's terrain module
+// (gi_update_terrain.slang) reads the masks' own layers there (`terrain_hit_material`, R129's).
+// What the bounce adds is the picture under `bounce` less the picture under `sky`, whose rays
+// bring the sky through the same visibility and nothing from the ground: over the box's pixels
+// its red-to-green and blue-to-green ratios are the sand's (1.25 and 0.62) where the grass's are
+// 0.29 and 0.17. The two pictures are differenced after the display's curve, which pulls a ratio
+// towards 1 (2026-11-10, RTX 5090: 0.93 and 0.60), so the check is not the sand's ratio but which
+// of the two layers each ratio is nearer in the logarithm: past the geometric mean of the two.
+namespace {
+
+struct RestoreGi {
+  ~RestoreGi() { (void)tunables::apply_overrides("renderer.gi.mode=off"); }
+};
+
+}  // namespace
+
+TEST_CASE(
+    "gi cache: a bounce off a bank of sand under the masks is sand's, not the first layer's") {
+  if (!ray_queries_here()) return;
+  const test::TempDir tmp("gi_bounce_ground");
+  RestoreGi restore;
+  std::string error;
+  {
+    // The far shore's box, grey: what it shows is the light that reaches it.
+    std::string box = box_gltf();
+    const std::string red = "[0.9, 0.05, 0.03, 1]";
+    const usize at = box.find(red);
+    REQUIRE(at != std::string::npos);
+    box.replace(at, red.size(), "[0.8, 0.8, 0.8, 1]");
+    std::ofstream file(tmp.file("box.gltf"), std::ios::binary);
+    file << box;
+  }
+  const std::string path = tmp.file("bank.json");
+  {
+    std::ofstream file(path, std::ios::binary);
+    file << R"({
+  "format": "engine.scene.v1",
+  "name": "gi-ground-test",
+  "meshes": [{"name": "box", "path": "box.gltf"}],
+  "instances": [{"mesh": 0, "translation": [0, 0, 30], "ground": true}],
+  "terrain": {"provider": "reflect_bank_probe", "size": 65, "extent": 128}
+})";
+  }
+  SceneDesc desc;
+  REQUIRE_MESSAGE(read_scene_file(path, desc, error), error);
+  desc.ddc = tmp.file("ddc");
+  desc.cache = false;
+  desc.terrain.materials.emplace();
+  desc.terrain.materials->layer_budget = 2;
+  for (const auto& [name, tint] : {std::pair{"grass", k_grass}, std::pair{"sand", k_sand}}) {
+    scene::TerrainMaterialLayer l;
+    l.name = name;
+    l.tint = Vec3{tint[0], tint[1], tint[2]};
+    desc.terrain.materials->layers.push_back(l);
+  }
+  desc.terrain.masks.emplace();
+  SceneData data;
+  REQUIRE_MESSAGE(load_scene(desc, data, error), error);
+  u32 box_instance = ~0u;
+  for (u32 i = 0; i < data.instances.size(); ++i)
+    if (data.instances[i].mesh == 0) box_instance = i;
+  REQUIRE(box_instance != ~0u);
+  gfx::Device device;
+  REQUIRE_MESSAGE(device.create(gfx::DeviceOptions{}, &error), error);
+  // From the pool's side of the box, a little west: its south and west faces, and the sand the
+  // sun lights in front of them.
+  FrameDesc frame;
+  frame.camera.position = WorldPos{-9.0, static_cast<f64>(bowl(0.0, 30.0)) + 5.0, 12.0};
+  frame.camera.target = WorldPos{0.0, static_cast<f64>(bowl(0.0, 30.0)) + 3.0, 30.0};
+  frame.camera.fov_y = 60.0f * 3.14159265f / 180.0f;
+  CaptureChannels channels;
+  channels.ids = true;
+  CapturedFrame shots[2];
+  const char* modes[2] = {"renderer.gi.mode=sky", "renderer.gi.mode=bounce"};
+  for (u32 s = 0; s < 2; ++s) {
+    REQUIRE(tunables::apply_overrides(modes[s]));
+    RenderSettings settings;
+    settings.shadows = ShadowMode::RayTraced;
+    settings.lights = false;
+    ResolvedSettings resolved;
+    resolve_settings(settings, device.features(), &data, resolved);
+    REQUIRE(check_availability(resolved, device.features()) == RenderAvailability::Ok);
+    GpuScene scene;
+    REQUIRE_MESSAGE(scene.create(device, data, resolved, &error), error);
+    REQUIRE(scene.has_terrain_materials());
+    REQUIRE(scene.terrain_mask_tiles() > 0);
+    SceneRenderer renderer;
+    SceneRenderer::Desc rd;
+    rd.width = 320;
+    rd.height = 240;
+    REQUIRE_MESSAGE(renderer.create(device, scene, resolved, rd, &error), error);
+    // The pre-roll's samples on the first frame, and a second of frames more for the bounce's
+    // own bounces.
+    for (u32 i = 0; i < 48; ++i)
+      REQUIRE_MESSAGE(renderer.render_offscreen(frame, &error), error);
+    REQUIRE_MESSAGE(renderer.capture(frame, channels, shots[s], &error), error);
+    renderer.destroy();
+    scene.destroy();
+  }
+  device.destroy();
+  REQUIRE(shots[0].ids == shots[1].ids);
+  f64 added[3] = {};
+  u32 pixels = 0;
+  for (u32 p = 0; p < shots[1].width * shots[1].height; ++p) {
+    if (shots[1].ids[p * k_id_words] != box_instance) continue;
+    for (u32 k = 0; k < 3; ++k)
+      added[k] += linear(shots[1].color[p * 4 + k]) - linear(shots[0].color[p * 4 + k]);
+    ++pixels;
+  }
+  REQUIRE(pixels > 1500u);
+  REQUIRE(added[1] > 0.0);
+  const f64 sand_rg = static_cast<f64>(k_sand[0]) / static_cast<f64>(k_sand[1]);
+  const f64 grass_rg = static_cast<f64>(k_grass[0]) / static_cast<f64>(k_grass[1]);
+  MESSAGE("what the bounce adds over "
+          << pixels << " pixels of the box: red/green " << added[0] / added[1] << ", blue/green "
+          << added[2] / added[1] << " (sand " << sand_rg << ", grass " << grass_rg << ")");
+  const f64 sand_bg = static_cast<f64>(k_sand[2]) / static_cast<f64>(k_sand[1]);
+  const f64 grass_bg = static_cast<f64>(k_grass[2]) / static_cast<f64>(k_grass[1]);
+  CHECK(added[0] / added[1] > std::sqrt(sand_rg * grass_rg));
+  CHECK(added[2] / added[1] > std::sqrt(sand_bg * grass_bg));
+}

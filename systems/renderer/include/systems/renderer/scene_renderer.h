@@ -35,6 +35,7 @@
 #include <domain/gfx/pipeline.h>
 #include <domain/gfx/ray_visibility.h>
 #include <domain/gfx/render_graph.h>
+#include <domain/gfx/resolve_classes.h>
 #include <domain/gfx/resources.h>
 #include <domain/gfx/rhi.h>
 #include <domain/gfx/shader_library.h>
@@ -148,6 +149,8 @@ struct GiStats {
   u32 shell = 0;
   u32 shell_hits = 0;
   u32 shell_near = 0;
+  // Stage 8: of `shell_hits`, those whose cells were whole and took no bounce this frame.
+  u32 shell_kept = 0;
 };
 // One frame's numbers, as the renderer folds them in when that frame's slot comes around again
 // (`Stats::last`). The sums beside it answer "what does this scene cost on average"; a flythrough
@@ -264,6 +267,10 @@ struct FrameStats {
   // The half-rate sun pass (R126; renderer.md, "A shading rate by region"), every view's: zero in
   // a frame at full rate.
   f64 gpu_half_sun = 0.0;
+  // The resolve's classify pass (R151; renderer.md, "The resolve by pixel class"), every view's:
+  // each pixel's class written as depth. Zero in a frame the resolve draws whole; what the
+  // per-class draws cost is in `gpu_resolve`.
+  f64 gpu_resolve_classify = 0.0;
   // The world-space cache's passes (R69; renderer.md, "Indirect light: the world-space cache"):
   // the sample pass (every view's touches and rays) and the fold. Zero with `renderer.gi.mode=off`.
   f64 gpu_gi_trace = 0.0;
@@ -473,6 +480,10 @@ struct Stats {
   // are counted in `shadow_casters` with the rest; a frame measures them as the difference with
   // `renderer.gi.shell_m=0`.
   u32 gi_shell_views = 0;
+  // **The cache's pre-roll** (R69 stage 5; gi_preroll.h), the frame last recorded: the sample and
+  // fold pairs it recorded before its own because it started cold — the cache's first frame, or
+  // one whose eye jumped. 0 on every other frame.
+  u32 gi_preroll_steps = 0;
   // The vertex path's indexed draw, last frame, both hardware passes and every view: the triangles
   // the cut's clusters hold, which is what it draws (three indices each), and how many of those
   // clusters the index budget had no room for, which the fallback drew instead at one vertex
@@ -527,6 +538,8 @@ struct Stats {
   SkyStats sky;
   // The half-rate sun pass (`FrameStats::gpu_half_sun`), summed; what it saves is in `gpu_resolve`.
   f64 gpu_half_sun = 0.0;
+  // The resolve's classify pass (`FrameStats::gpu_resolve_classify`), summed.
+  f64 gpu_resolve_classify = 0.0;
   // The world-space cache's passes (`FrameStats::gpu_gi_trace`, `gpu_gi_fold`), summed.
   f64 gpu_gi_trace = 0.0;
   f64 gpu_gi_fold = 0.0;
@@ -588,6 +601,7 @@ struct Stats {
   f64 sky_ms() const noexcept { return gpu_sky / timed(); }
   f64 frame_passes_ms() const noexcept { return gpu_frame_passes / timed(); }
   f64 half_sun_ms() const noexcept { return gpu_half_sun / timed(); }
+  f64 resolve_classify_ms() const noexcept { return gpu_resolve_classify / timed(); }
   f64 gi_trace_ms() const noexcept { return gpu_gi_trace / timed(); }
   f64 gi_fold_ms() const noexcept { return gpu_gi_fold / timed(); }
   f64 total_ms() const noexcept { return gpu_total / timed(); }
@@ -849,6 +863,26 @@ class SceneRenderer {
   // path in one call, which is what engine-host and the tests use.
   bool render_offscreen(const FrameDesc& frame, std::string* error = nullptr);
 
+  // **The resolve by pixel class** (R151; renderer.md, "The resolve by pixel class"). The classes
+  // the last recorded frame's resolve drew, as a mask of `gfx::ResolveClass` bits (0: the one
+  // fullscreen draw), and those of them it drew with the module that has no water in it.
+  u32 resolve_classes_drawn() const noexcept { return resolve_classes_drawn_; }
+  u32 resolve_classes_plain() const noexcept { return resolve_classes_plain_; }
+  // How many pixels of the target the last frame's classify pass gave each class, read back from
+  // its depth image (a blocking copy: a test's and a measurement's, never a frame's). False when
+  // the last frame drew no classes. `unclassed` counts pixels holding no class's depth: none, in a
+  // frame whose views cover the target.
+  // `quads` counts the 2x2 quads of the target holding at least one pixel of each class — what a
+  // class's draw runs — of `quads_total`, and `quads_mixed` those holding more than one class.
+  struct ResolveClassCensus {
+    u64 pixels[gfx::k_resolve_classes] = {};
+    u64 unclassed = 0;
+    u64 quads[gfx::k_resolve_classes] = {};
+    u64 quads_total = 0;
+    u64 quads_mixed = 0;
+  };
+  bool resolve_class_census(ResolveClassCensus& out, std::string* error = nullptr);
+
   // Renders and reads back every channel of `channels`. `normals` costs a second frame, because
   // the normal is what the resolve reconstructs and only the resolve knows it; `ids` and
   // `depth` come out of the visibility buffer of the first, which `--raster direct` does not
@@ -988,6 +1022,14 @@ class SceneRenderer {
     // out of it into the frame's target (frame_encode.slang). Made by the first `add_frame_pass`.
     gfx::PipelineHandle resolve_linear;
     gfx::PipelineHandle encode;
+    // **The resolve by pixel class** (R151; resolve_classes.cpp; renderer.md, "The resolve by pixel
+    // class"), built only under `renderer.resolve.classes`: the classify pass (the class as depth),
+    // and the resolve with a depth-equal test and no depth write — the scene's own module, and for
+    // a scene with water the module without it — each for the frame's target [0] and for the frame
+    // passes' linear image [1].
+    gfx::PipelineHandle classify;
+    gfx::PipelineHandle resolve_class[2];
+    gfx::PipelineHandle resolve_class_plain[2];
     void destroy(const gfx::Device& device) noexcept;
   };
   // One view's slice of the screen-sized buffers. Every view rasterizes into its own region of
@@ -1057,11 +1099,18 @@ class SceneRenderer {
   // never by a frame; the first frame that records its passes clears it (`gi_reset_`).
   gfx::BufferResource gi_cache_;
   u32 gi_count_ = 0;
+  // The crowns' priors (crown_priors.h; renderer.md, "Indirect light", "Stage 7"): one record a
+  // mesh and the grids behind them, made once at load beside the cache where a mesh has a crown.
+  gfx::BufferResource gi_crowns_;
+  u32 gi_crown_count_ = 0;
   // The cache's own frame count: its stamps' clock and the sample pass's rotation, counted by the
   // frames that record its passes rather than taken from `FrameDesc::frame_index`, which a caller
   // that captures one pose again and again leaves at zero.
   u32 gi_frame_ = 0;
   bool gi_reset_ = true;
+  // Where the frame before had its eye, for the pre-roll's cut test (gi_preroll.h).
+  WorldPos gi_last_eye_{};
+  bool gi_eye_known_ = false;
   gfx::FrameContext frames_;
   gfx::GpuTimer timer_;
   GeometryStreamer streamer_;
@@ -1101,6 +1150,16 @@ class SceneRenderer {
   u32 linear_storage_slot_ = gfx::BindlessSet::k_invalid_slot;
   u32 linear_sampled_slot_ = gfx::BindlessSet::k_invalid_slot;
   bool create_frame_pass_pipelines(std::string* error);
+  // The split's pipelines that are wanted and not yet made (resolve_classes.cpp): the classify
+  // pass and the target's two with the renderer's own, the linear image's two once a frame pass
+  // or the UI layer has made the linear resolve. Nothing under `renderer.resolve.classes=off`.
+  bool create_resolve_class_pipelines(bool linear, std::string* error);
+  // `renderer.resolve.class_census`: the last frame's census as one log line (a capture's).
+  void log_resolve_class_census();
+  // What the last recorded frame's resolve drew: the classes, and those of them by the module
+  // without water; 0 for the one fullscreen draw.
+  u32 resolve_classes_drawn_ = 0;
+  u32 resolve_classes_plain_ = 0;
   bool create_linear_target(std::string* error);
   void destroy_linear_target() noexcept;
   // **The overlay's UI layer on an HDR target** (overlay.h, renderer.md "The overlay"): the

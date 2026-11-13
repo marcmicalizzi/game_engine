@@ -1,0 +1,26 @@
+{
+  "format": "engine.camera-path.v1",
+  "name": "steep-dip",
+  "description": "The steep-dip mountain at three distances: the whole mountain from a kilometre; each of the three attitudes from about 100 m (the flank whose beds dip with the slope, the flank whose strike runs up it, the flank whose beds dip into it), looking up at the ledges' outer band and the faces over it; and the same three from 30 m at eye height, looking up the slope at the ledges.",
+  "interpolation": "Smooth",
+  "fps": 60,
+  "znear": 0.3,
+  "keys": [
+    {"time": 0.0, "position": [-441.0, 130.0, 613.0], "target": [175.0, 90.0, -175.0]},
+    {"time": 3.0, "position": [-10.0, 30.0, 61.0], "ground": true, "target": [70.0, 60.0, -41.0]},
+    {"time": 6.0, "position": [411.0, 30.0, 10.0], "ground": true, "target": [309.0, 58.0, -70.0]},
+    {"time": 9.0, "position": [360.0, 30.0, -411.0], "ground": true, "target": [280.0, 59.0, -309.0]},
+    {"time": 12.0, "position": [43.0, 2.0, -6.0], "ground": true, "target": [61.0, 41.0, -29.0]},
+    {"time": 15.0, "position": [307.0, 2.0, -344.0], "ground": true, "target": [289.0, 43.0, -321.0]},
+    {"time": 18.0, "position": [344.0, 2.0, -43.0], "ground": true, "target": [321.0, 41.0, -61.0]}
+  ],
+  "markers": [
+    {"frame": 0, "name": "far", "note": "the whole mountain from a kilometre, toward the flank whose beds dip with the slope"},
+    {"frame": 180, "name": "with-100m", "note": "the flank whose beds dip with the slope, from about 100 m"},
+    {"frame": 360, "name": "strike-100m", "note": "a flank whose strike runs up the slope, from about 100 m"},
+    {"frame": 540, "name": "into-100m", "note": "the flank whose beds dip into the slope, from about 100 m"},
+    {"frame": 720, "name": "with-near", "note": "the ledges where the beds dip with the slope, from 30 m at eye height"},
+    {"frame": 900, "name": "into-near", "note": "the ledges where the beds dip into the slope, from 30 m at eye height"},
+    {"frame": 1080, "name": "strike-near", "note": "the ledges where the strike runs up the slope, from 30 m at eye height"}
+  ]
+}

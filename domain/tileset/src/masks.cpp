@@ -304,6 +304,20 @@ void evaluate(const Field& f, i64 x_mm, i64 z_mm, i64 step_mm, Vector<f64>& w, f
     if (f.scree >= 0) w[static_cast<u32>(f.scree)] += (1.0 - snow) * scree;
     if (f.bedrock >= 0) w[static_cast<u32>(f.bedrock)] += (1.0 - snow) * rock;
     if (f.snow >= 0) w[static_cast<u32>(f.snow)] += snow;
+  } else {
+    // **With no priors the whole ground is the soil a `base` stands in for** (T109): there is no
+    // scree, bedrock or snow to keep, so a region's base lays its share of everything under the
+    // paints, as it would on flat ground below the snowline with a soil role. Before T109 a base
+    // with no priors laid nothing and said nothing, and the ground palette showed through.
+    f64 soil_left = 1.0;
+    for (u32 i = 0; i < f.regions.size(); ++i) {
+      const Region& r = f.regions[i];
+      if (r.base < 0) continue;
+      const f64 share = inside_share(region_d[i], r.feather);
+      if (share <= 0) continue;
+      w[static_cast<u32>(r.base)] += soil_left * share;
+      soil_left *= 1.0 - share;
+    }
   }
   const MaskInputs& in = *f.in;
   const f64 u = static_cast<f64>(x_mm - in.map_x0_mm) / static_cast<f64>(in.map_size_mm);
@@ -442,6 +456,13 @@ bool validate_mask_inputs(const MaskInputs& in, std::string& error) {
     const scene::TerrainMaskPriors& p = *m.priors;
     for (const auto* name : {&p.soil, &p.scree, &p.bedrock, &p.snow})
       if (!known(*name, "priors")) return false;
+    // A role has no default layer: an empty one is off. A block with every role off lays nothing
+    // a block left out would not, so it is a scene that expected defaults (T109), refused by name.
+    if (p.soil.empty() && p.scree.empty() && p.bedrock.empty() && p.snow.empty())
+      return fail(
+          "priors names no role: soil, scree, bedrock and snow are all empty, and a role has no "
+          "default layer, so the priors would lay nothing; name the palette layer of each role "
+          "wanted (\"soil\": \"meadow\", ...), or leave priors out");
     if (!(p.slope_blend_deg >= 0 && p.slope_blend_deg <= 15 && p.scree_deg > 0 &&
           p.bedrock_deg > p.scree_deg && p.bedrock_deg < 90 && p.snow_max_deg > 0 &&
           p.snow_max_deg <= 90))
@@ -561,6 +582,7 @@ OverBudgetTile over_budget_tile(const MaskInputs& in, i32 tx, i32 tz, i64 s, u32
   t.x1_mm = (static_cast<i64>(tx) + 1) * c * s;
   t.z0_mm = static_cast<i64>(tz) * c * s;
   t.z1_mm = (static_cast<i64>(tz) + 1) * c * s;
+  t.points = points;
   const u32 palette = static_cast<u32>(in.palette.size());
   for (const u32 k : table) {
     MaskTileLayer l;
@@ -571,8 +593,10 @@ OverBudgetTile over_budget_tile(const MaskInputs& in, i32 tx, i32 tz, i64 s, u32
       const f64 v = dense[p * palette + k];
       sum += v;
       l.peak = std::max(l.peak, v);
+      if (v >= k_mask_step) ++l.points;
     }
     l.mean = sum / static_cast<f64>(points);
+    l.stored = quantize(l.peak);
     t.layers.push_back(l);
   }
   // Heaviest first; ties by palette order, so the listing is the same on every run.
@@ -621,7 +645,17 @@ std::string describe_over_budget(const MaskBudgetReport& report, u32 cap) {
       std::snprintf(w, sizeof(w), " %.2f", t.layers[k].mean);
       text += (k > 0 ? ", " : "") + t.layers[k].name + w;
     }
-    text += "; weakest " + (t.layers.empty() ? std::string() : t.layers[t.weakest].name) + ")";
+    if (t.layers.empty()) {
+      text += "; weakest )";
+      continue;
+    }
+    // The weakest's stored weight beside its mean (W113): a mean that prints 0.00 still stores at
+    // least one 255th at one point, which is what the budget counts.
+    const MaskTileLayer& weak = t.layers[t.weakest];
+    char at[96];
+    std::snprintf(at, sizeof(at), ", at most %u/255 at %u of %u points", weak.stored, weak.points,
+                  t.points);
+    text += "; weakest " + weak.name + at + ")";
   }
   if (n > cap) text += "; and " + std::to_string(n - cap) + " more";
   text += "; narrow a region's feather or margin, or a prior's blend, so fewer meet there";

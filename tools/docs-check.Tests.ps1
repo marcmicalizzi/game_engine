@@ -469,6 +469,16 @@ Layers: `core/` and `apps/`; `engine-cli` is the client. See [docs/plan/README.m
   Set-FixtureRoadmap $root "## T — Tools`n`n| # | Item | State | Depends on |" "## T — Tools`n`n| # | Item | State | Needs |"
   Test-Reports 'an item table without a column the rules read' $root `
     "docs/roadmap.md:18: [roadmap] this item table has no 'Depends on' column"
+  # A blank line inside an item table makes the rows after it a table of their own, with no '#'
+  # header, which no rule read (T115: forty rows of the real roadmap went unchecked so).
+  $root = New-Fixture
+  Set-FixtureRoadmap $root "[ADR-0001](adr/0001-first-decision.md) |`n| R2" "[ADR-0001](adr/0001-first-decision.md) |`n`n| R2"
+  Test-Reports 'an item row cut off its table by a blank line' $root `
+    "docs/roadmap.md:15: [roadmap] R2 looks like an item row but is in no item table"
+  $root = New-Fixture
+  Set-FixtureRoadmap $root "| done | finished, and the row names what closed it |" "| done | finished, and the row names what closed it |`n| R7 | A row in the legend | open | | S | routine | [base](subsystems/base.md) |"
+  Test-Reports 'an item row in a prose table' $root `
+    "docs/roadmap.md:8: [roadmap] R7 looks like an item row but is in no item table"
   $root = New-Fixture
   Set-FixtureFile $root 'docs/roadmap.md' "# Roadmap`n`nNothing yet.`n"
   Test-Reports 'a roadmap with no item rows' $root "docs/roadmap.md:1: [roadmap] no item rows"

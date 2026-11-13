@@ -107,9 +107,41 @@ bool validate_set(const Set& set, std::string& error) {
           g.leaf_width_min_um < 200 || g.leaf_width_max_um > 20000 ||
           g.leaf_width_min_um > g.leaf_width_max_um)
         return fail(error, "ground leaf sizes are out of range");
+      if (g.tuft_mm > 1000 || g.cushion_mm > 2000 || g.clod_mm > 1000 || g.relief_um > 100000 ||
+          g.mound_um > 200000 || g.mound_spacing_mm < 50 || g.mound_spacing_mm > 20000)
+        return fail(error, "ground tufts, cushions, clods, relief or mounds are out of range");
+      if (g.dead_permille > 1000 || g.patch_permille > 1000 || g.decay_permille > 1000 ||
+          g.aligned_permille > 1000 || g.stones_permille > 900)
+        return fail(error, "a ground share is over its limit");
+      if (g.stone_min_mm < 2 || g.stone_min_mm > g.stone_max_mm || g.stone_max_mm > 500)
+        return fail(error, "ground stone sizes are out of range");
       break;
     }
-    default: return fail(error, "kind is not granular, rock or ground");
+    case Kind::wood: {
+      const Wood& w = set.wood;
+      if (w.form != WoodForm::sawn && w.form != WoodForm::log)
+        return fail(error, "wood.form is not sawn or log");
+      if (w.figure_um < 500 || w.figure_um > 100000)
+        return fail(error, "wood.figure_um is out of range (500 to 100000)");
+      if (w.latewood_permille < 50 || w.latewood_permille > 800)
+        return fail(error, "wood.latewood_permille is out of range (50 to 800)");
+      if (w.wander_mm > 500 || w.spiral_ddeg > 200 || w.relief_um > 5000)
+        return fail(error, "wood wander, spiral or relief is out of range");
+      if (w.fresh_r_permille > 1000 || w.fresh_g_permille > 1000 || w.fresh_b_permille > 1000 ||
+          w.grey_r_permille > 1000 || w.grey_g_permille > 1000 || w.grey_b_permille > 1000 ||
+          w.grey_permille > 1000 || w.grey_patch_permille > 1000 || w.stain_permille > 1000)
+        return fail(error, "a wood colour or share is over 1000");
+      if (w.checks_per_m2 > 1000 || w.check_min_mm < 2 || w.check_min_mm > w.check_max_mm ||
+          w.check_max_mm > 5000 || w.check_width_um > 50000 || w.check_depth_um > 100000)
+        return fail(error, "wood checks are out of range");
+      if (w.knots_per_m2 > 100 || w.knot_min_mm < 2 || w.knot_min_mm > w.knot_max_mm ||
+          w.knot_max_mm > 300)
+        return fail(error, "wood knots are out of range");
+      if (w.bark_permille > 1000 || w.bark_plate_mm < 5 || w.bark_plate_mm > 500)
+        return fail(error, "wood bark is out of range");
+      break;
+    }
+    default: return fail(error, "kind is not granular, rock, ground or wood");
   }
   return true;
 }
@@ -180,6 +212,7 @@ bool build_set(const Set& set, SetImages& out, SetStats* stats_out, std::string&
   switch (set.kind) {
     case Kind::granular: detail::build_granular(set, field, stats, shade); break;
     case Kind::rock: detail::build_rock(set, field, stats, shade); break;
+    case Kind::wood: detail::build_wood(set, field, stats, shade); break;
     default: detail::build_ground(set, field, stats, shade); break;
   }
   const u32 count = n * n;
@@ -254,6 +287,51 @@ bool build_set(const Set& set, SetImages& out, SetStats* stats_out, std::string&
     }
     stats.landmark_contrast = most;
     stats.block_contrast = std::sqrt(squares / static_cast<f64>(k_blocks * k_blocks));
+  }
+  // ---- what a standing eye reads (G187; matgen.md, "What a standing eye reads"): the RMS Weber
+  // contrast of the luminance's block means over blocks of the power-of-two side nearest 5 cm and
+  // 25 cm, and the height's RMS about its mean.
+  {
+    Vector<f64> lum;
+    lum.resize(count);
+    f64 total = 0.0, height_sum = 0.0;
+    for (u32 i = 0; i < count; ++i) {
+      const detail::Texel& t = field.texels[i];
+      lum[i] = 0.2126 * static_cast<f64>(t.r) + 0.7152 * static_cast<f64>(t.g) +
+               0.0722 * static_cast<f64>(t.b);
+      total += lum[i];
+      height_sum += static_cast<f64>(t.height);
+    }
+    const f64 mean = std::max(total / static_cast<f64>(count), 1.0e-9);
+    const auto contrast_at = [&](f64 size_m) {
+      u32 side = 1;
+      while (side * 2 <= n && std::fabs(static_cast<f64>(side * 2) * texel - size_m) <
+                                  std::fabs(static_cast<f64>(side) * texel - size_m))
+        side *= 2;
+      const u32 blocks = n / side;
+      if (blocks < 2) return 0.0;
+      f64 squares = 0.0;
+      for (u32 by = 0; by < blocks; ++by) {
+        for (u32 bx = 0; bx < blocks; ++bx) {
+          f64 sum = 0.0;
+          for (u32 y = by * side; y < (by + 1) * side; ++y)
+            for (u32 x = bx * side; x < (bx + 1) * side; ++x)
+              sum += lum[y * n + x];
+          const f64 d = (sum / (static_cast<f64>(side) * static_cast<f64>(side)) - mean) / mean;
+          squares += d * d;
+        }
+      }
+      return std::sqrt(squares / (static_cast<f64>(blocks) * static_cast<f64>(blocks)));
+    };
+    stats.contrast_5cm = contrast_at(0.05);
+    stats.contrast_25cm = contrast_at(0.25);
+    const f64 height_mean = height_sum / static_cast<f64>(count);
+    f64 squares = 0.0;
+    for (u32 i = 0; i < count; ++i) {
+      const f64 d = static_cast<f64>(field.texels[i].height) - height_mean;
+      squares += d * d;
+    }
+    stats.relief_rms_mm = std::sqrt(squares / static_cast<f64>(count)) * 1000.0;
   }
   stats.height_min_m = lowest;
   stats.height_max_m = highest;
@@ -494,13 +572,114 @@ Set rock_sandstone() {
   return s;
 }
 
+// Sawn softwood boards, weathered grey to brown (generated-material-sets.md, "Weathered wood"):
+// flat-sawn figure of 8 mm bands, a spruce's latewood share, latewood ridges, short checks along
+// the grain, two knots a square metre. Two metres at 2,048 texels: a millimetre a texel, and a
+// deck's boards each show their own band of it.
+Set wood_plank() {
+  Set s = base("wood/plank", Kind::wood, 0x706c616e6bull, 2000);
+  s.texels = 2048;
+  s.cavity_permille = 400;
+  Wood& w = s.wood;
+  w.form = WoodForm::sawn;
+  return s;
+}
+
+// The outside of a debarked log left to silver: broad bands where the surface cuts the rings, a
+// spruce's spiral grain, long drying checks, knots, bark left on in patches.
+Set wood_log() {
+  Set s = base("wood/log", Kind::wood, 0x6c6f67ull, 2000);
+  s.texels = 2048;
+  s.cavity_permille = 500;
+  Wood& w = s.wood;
+  w.form = WoodForm::log;
+  w.figure_um = 30000;
+  w.latewood_permille = 250;
+  w.wander_mm = 80;
+  w.spiral_ddeg = 22;
+  w.relief_um = 300;
+  w.fresh_r_permille = 420;
+  w.fresh_g_permille = 300;
+  w.fresh_b_permille = 180;
+  w.grey_r_permille = 200;
+  w.grey_g_permille = 195;
+  w.grey_b_permille = 185;
+  w.grey_permille = 850;
+  w.grey_patch_permille = 200;
+  w.stain_permille = 400;
+  w.checks_per_m2 = 8;
+  w.check_min_mm = 150;
+  w.check_max_mm = 900;
+  w.check_width_um = 7000;
+  w.check_depth_um = 15000;
+  w.knots_per_m2 = 1;
+  w.knot_min_mm = 25;
+  w.knot_max_mm = 70;
+  w.bark_permille = 150;
+  w.bark_plate_mm = 45;
+  return s;
+}
+
+// The floors (G187; matgen.md, "A floor at standing height"): two metres at 2,048 texels.
 Set ground_of(const char* role, u64 seed, u32 moss, u32 soil, u32 thatch, u32 live) {
-  Set s = base(role, Kind::ground, seed, 500);
-  s.cavity_permille = 300;
+  Set s = base(role, Kind::ground, seed, 2000);
+  s.texels = 2048;
+  s.cavity_permille = 450;
   s.ground.moss_permille = moss;
   s.ground.soil_permille = soil;
   s.ground.thatch_permille = thatch;
   s.ground.live_permille = live;
+  s.ground.mound_spacing_mm = 900;
+  return s;
+}
+
+Set ground_moss() {
+  Set s = ground_of("ground/moss", 0x6d6f7373ull, 1000, 0, 20, 0);
+  Ground& g = s.ground;
+  g.cushion_mm = 220;
+  g.relief_um = 8000;
+  g.mound_um = 25000;
+  g.patch_permille = 500;
+  g.decay_permille = 800;
+  return s;
+}
+
+Set ground_soil() {
+  Set s = ground_of("ground/soil", 0x736f696cull, 0, 1000, 30, 0);
+  Ground& g = s.ground;
+  g.clod_mm = 35;
+  g.relief_um = 5000;
+  g.mound_um = 12000;
+  g.patch_permille = 500;
+  g.decay_permille = 600;
+  g.stones_permille = 80;
+  return s;
+}
+
+Set ground_thatch() {
+  Set s = ground_of("ground/thatch", 0x746861746368ull, 0, 1000, 970, 0);
+  Ground& g = s.ground;
+  g.mound_um = 15000;
+  g.patch_permille = 600;
+  g.decay_permille = 500;
+  g.aligned_permille = 350;
+  return s;
+}
+
+Set ground_turf() {
+  Set s = ground_of("ground/turf", 0x74757266ull, 250, 750, 600, 800);
+  s.cavity_permille = 550;
+  Ground& g = s.ground;
+  g.leaf_min_mm = 40;
+  g.leaf_max_mm = 110;
+  g.tuft_mm = 110;
+  g.dead_permille = 200;
+  g.clod_mm = 35;
+  g.relief_um = 3000;
+  g.mound_um = 20000;
+  g.patch_permille = 600;
+  g.decay_permille = 500;
+  g.stones_permille = 10;
   return s;
 }
 
@@ -522,10 +701,10 @@ Vector<Set> default_sets() {
       sets.push_back(variant_of(s, k));
   };
   with_variants(gravel_bed());
-  sets.push_back(ground_of("ground/moss", 0x6d6f7373ull, 1000, 0, 40, 0));
-  sets.push_back(ground_of("ground/soil", 0x736f696cull, 0, 1000, 30, 0));
-  sets.push_back(ground_of("ground/thatch", 0x746861746368ull, 0, 1000, 970, 0));
-  sets.push_back(ground_of("ground/turf", 0x74757266ull, 250, 750, 600, 800));
+  sets.push_back(ground_moss());
+  sets.push_back(ground_soil());
+  sets.push_back(ground_thatch());
+  sets.push_back(ground_turf());
   sets.push_back(rock_basalt());
   sets.push_back(rock_granite());
   sets.push_back(rock_granite_wet());
@@ -533,6 +712,8 @@ Vector<Set> default_sets() {
   sets.push_back(rock_sandstone());
   with_variants(rock_scree());
   with_variants(sand_bar());
+  sets.push_back(wood_log());
+  sets.push_back(wood_plank());
   return sets;
 }
 

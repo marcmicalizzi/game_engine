@@ -1,8 +1,8 @@
 // A footbridge as geometry, and the mesh generator `bridge` (docs/subsystems/bridges.md, "The
 // mesh"): every member of the plan a closed, outward-wound convex solid — a stone a block with a
 // rough outline, a sawn member a box, a log a twelve-sided prism hewn flat where it is walked on or
-// bears planks — the stone and the timber each clustered as a part and the two DAGs merged into one
-// mesh of two materials.
+// bears planks — the stone, the sawn and the round timber each clustered as a part and the DAGs
+// merged into one mesh of three materials, each its role's set through the tile contract.
 
 #include <core/hash/hash.h>
 #include <core/json/json.h>
@@ -21,10 +21,14 @@ namespace {
 
 f32 metres(i32 mm) noexcept { return static_cast<f32>(static_cast<f64>(mm) / 1000.0); }
 
+f32 axis_of(Vec3 p, u32 axis) noexcept { return axis == 0 ? p.x : (axis == 1 ? p.y : p.z); }
+
 // A convex face's points, oriented so its normal points away from the solid's centre, appended as
 // a fan. `smooth` (nullable) gives each point its own normal (a log's round side); otherwise the
-// face's. UVs are metres of surface on the plane the normal is nearest to square to.
-void face(MeshPart& part, Vec3 centre, const Vec3* pts, u32 n, const Vec3* smooth) {
+// face's. UVs are metres of surface on the plane the normal is nearest to square to; for a member
+// with a grain (`grain` 0, 1 or 2: x, y or z; 3 none) u runs along the grain on every face but its
+// ends, and v along the face's other axis, so a wood set's grain follows the member.
+void face(MeshPart& part, Vec3 centre, const Vec3* pts, u32 n, const Vec3* smooth, u32 grain) {
   // Newell's normal: exact for a planar polygon whatever its collinear points.
   f64 nx = 0, ny = 0, nz = 0, cx = 0, cy = 0, cz = 0;
   for (u32 i = 0; i < n; ++i) {
@@ -46,13 +50,16 @@ void face(MeshPart& part, Vec3 centre, const Vec3* pts, u32 n, const Vec3* smoot
   const f64 s = (flip ? -1.0 : 1.0) / len;
   const Vec3 normal{static_cast<f32>(nx * s), static_cast<f32>(ny * s), static_cast<f32>(nz * s)};
   const f32 ax = std::fabs(normal.x), ay = std::fabs(normal.y), az = std::fabs(normal.z);
+  const u32 facing = ay >= ax && ay >= az ? 1u : (ax >= az ? 0u : 2u);
   const u32 base = part.positions.size();
   for (u32 k = 0; k < n; ++k) {
     const u32 i = flip ? n - 1 - k : k;
     const Vec3 p = pts[i];
     part.positions.push_back(p);
     part.normals.push_back(smooth != nullptr ? smooth[i] : normal);
-    if (ay >= ax && ay >= az)
+    if (grain < 3 && grain != facing)
+      part.uvs.push_back({axis_of(p, grain), axis_of(p, 3 - grain - facing)});
+    else if (ay >= ax && ay >= az)
       part.uvs.push_back({p.x, p.z});
     else if (ax >= az)
       part.uvs.push_back({p.z, p.y});
@@ -70,7 +77,7 @@ void face(MeshPart& part, Vec3 centre, const Vec3* pts, u32 n, const Vec3* smoot
 // `at(a, b, t)` maps a section point and the axis coordinate to a position.
 template <typename At>
 void prism(MeshPart& part, const f32* sa, const f32* sb, const Vec3* ring_normals, u32 n, f32 t0,
-           f32 t1, At at) {
+           f32 t1, u32 grain, At at) {
   Vec3 lo[16], hi[16];
   f64 ca = 0, cb = 0;
   for (u32 i = 0; i < n; ++i) {
@@ -80,18 +87,28 @@ void prism(MeshPart& part, const f32* sa, const f32* sb, const Vec3* ring_normal
     cb += static_cast<f64>(sb[i]);
   }
   const Vec3 centre = at(static_cast<f32>(ca / n), static_cast<f32>(cb / n), (t0 + t1) * 0.5f);
-  face(part, centre, lo, n, nullptr);
-  face(part, centre, hi, n, nullptr);
+  face(part, centre, lo, n, nullptr, grain);
+  face(part, centre, hi, n, nullptr, grain);
   for (u32 i = 0; i < n; ++i) {
     const u32 j = (i + 1) % n;
     const Vec3 q[4] = {lo[i], lo[j], hi[j], hi[i]};
     if (ring_normals != nullptr) {
       const Vec3 qn[4] = {ring_normals[i], ring_normals[j], ring_normals[j], ring_normals[i]};
-      face(part, centre, q, 4, qn);
+      face(part, centre, q, 4, qn, grain);
     } else {
-      face(part, centre, q, 4, nullptr);
+      face(part, centre, q, 4, nullptr, grain);
     }
   }
+}
+
+// The axis a member's grain runs along: a log's own, a sawn member's longest extent; none for
+// stone.
+u32 grain_of(const Member& m) noexcept {
+  if (m.material == k_stone) return 3;
+  if (m.shape == Shape::log_x) return 0;
+  if (m.shape == Shape::log_z) return 2;
+  const i32 dx = m.x1 - m.x0, dy = m.y1 - m.y0, dz = m.z1 - m.z0;
+  return dy >= dx && dy >= dz ? 1u : (dx >= dz ? 0u : 2u);
 }
 
 // The twelve directions of a log's section, cos and sin of 0, 30, ... 330 degrees, as constants
@@ -121,10 +138,10 @@ void emit(MeshPart& part, const Member& m) {
       rn[i] = cut ? Vec3{0, 1, 0} : (along_x ? Vec3{0, ns, nc} : Vec3{nc, ns, 0});
     }
     if (along_x)
-      prism(part, sa, sb, rn, 12, metres(m.x0), metres(m.x1),
+      prism(part, sa, sb, rn, 12, metres(m.x0), metres(m.x1), grain_of(m),
             [](f32 a, f32 b, f32 t) { return Vec3{t, b, a}; });
     else
-      prism(part, sa, sb, rn, 12, metres(m.z0), metres(m.z1),
+      prism(part, sa, sb, rn, 12, metres(m.z0), metres(m.z1), grain_of(m),
             [](f32 a, f32 b, f32 t) { return Vec3{a, b, t}; });
     return;
   }
@@ -153,7 +170,7 @@ void emit(MeshPart& part, const Member& m) {
       sb[i] = metres(pz[i]);
     }
   }
-  prism(part, sa, sb, nullptr, n, metres(m.y0), metres(m.y1),
+  prism(part, sa, sb, nullptr, n, metres(m.y0), metres(m.y1), grain_of(m),
         [](f32 a, f32 b, f32 t) { return Vec3{a, t, b}; });
 }
 
@@ -170,22 +187,22 @@ const char* form_name(BridgeForm f) noexcept {
 
 }  // namespace
 
-bool solve_bridge(const Bridge& b, MeshPart (&parts)[2], BridgePlan& plan, BridgeReport& report,
-                  std::string& error) {
-  parts[0] = {};
-  parts[1] = {};
+bool solve_bridge(const Bridge& b, MeshPart (&parts)[k_materials], BridgePlan& plan,
+                  BridgeReport& report, std::string& error) {
+  for (MeshPart& part : parts)
+    part = {};
   report = {};
   if (!plan_bridge(b.crossing, b.seed, plan, error)) return false;
   for (const Member& m : plan.members) {
-    MeshPart& part = parts[m.material == k_timber ? 1 : 0];
+    MeshPart& part = parts[m.material < k_materials ? m.material : k_stone];
     const u32 before = part.indices.size() / 3;
     emit(part, m);
     const u32 made = part.indices.size() / 3 - before;
     report.kind_triangles[static_cast<u32>(m.kind)] += made;
     report.triangles += made;
   }
-  report.stone_triangles = parts[0].indices.size() / 3;
-  report.timber_triangles = parts[1].indices.size() / 3;
+  for (u32 k = 0; k < k_materials; ++k)
+    report.material_triangles[k] = parts[k].indices.size() / 3;
   return true;
 }
 
@@ -224,7 +241,7 @@ bool build_container(const Bridge& bridge, const assets::MeshGeneratorInputs& in
                      const geometry::ClusterLodOptions& lod, u32 page_bytes,
                      geometry::ClusterFileData& out, BridgeReport& report, std::string& error) {
   out = {};
-  MeshPart parts[2];
+  MeshPart parts[k_materials];
   BridgePlan plan;
   if (!solve_bridge(bridge, parts, plan, report, error)) return false;
   if (plan.members.empty()) {
@@ -235,7 +252,7 @@ bool build_container(const Bridge& bridge, const assets::MeshGeneratorInputs& in
   options.normal_cones = true;  // every member is closed and one-sided
   Vector<geometry::ClusterLodMesh> built;
   Vector<u32> material_of;
-  for (u32 m = 0; m < 2; ++m) {
+  for (u32 m = 0; m < k_materials; ++m) {
     if (parts[m].indices.empty()) continue;
     geometry::ClusterLodMesh one;
     std::string build_error;
@@ -272,12 +289,18 @@ bool build_container(const Bridge& bridge, const assets::MeshGeneratorInputs& in
   out.cluster_material.reserve(part_of_cluster.size());
   for (const u32 part : part_of_cluster)
     out.cluster_material.push_back(material_of[part]);
-  // The two materials, a constant each where the pack has no set for the layer's role: a grey
-  // stone, a weathered timber.
-  const Vec4 colour[2] = {{0.46f, 0.45f, 0.42f, 1.0f}, {0.24f, 0.21f, 0.17f, 1.0f}};
-  const f32 roughness[2] = {0.85f, 0.80f};
-  const std::string_view role[2] = {bridge.stone_role, bridge.wood_role};
-  for (u32 m = 0; m < 2; ++m) {
+  // **The three materials through the tile contract** (bridges.md, "The mesh"; R147): each its
+  // recipe's role from the host's pack, the container naming the set's images and carrying their
+  // texture records, so a tile's bridge draws textured as the bed's stones do. Where the pack has
+  // no set for the role, a constant: a grey stone, a weathered sawn grey-brown, a darker barked
+  // log. The stone falls back to the engine's generated granite before its constant, since any
+  // rock set reads better than a flat grey; a timber role has no fallback but its colour, so a
+  // pack without `wood/*` (every pack before G188) draws timber as G147 did.
+  const Vec4 colour[k_materials] = {
+      {0.46f, 0.45f, 0.42f, 1.0f}, {0.30f, 0.27f, 0.22f, 1.0f}, {0.20f, 0.17f, 0.13f, 1.0f}};
+  const f32 roughness[k_materials] = {0.85f, 0.80f, 0.85f};
+  const std::string_view role[k_materials] = {bridge.stone_role, bridge.wood_role, bridge.log_role};
+  for (u32 m = 0; m < k_materials; ++m) {
     geometry::ClusterFileMaterial material;
     material.base_color = colour[m];
     material.metallic = 0;
@@ -287,9 +310,16 @@ bool build_container(const Bridge& bridge, const assets::MeshGeneratorInputs& in
     const assets::Material defaults;
     out.material_sampling.push_back(geometry::encode_material_sampling(defaults.sampling, 1.0f));
   }
-  for (u32 m = 0; m < 2; ++m) {
-    if (role[m].empty()) continue;
-    const materials::MaterialSet* set = materials::resolve_set(nullptr, inputs.materials, role[m]);
+  for (u32 m = 0; m < k_materials; ++m) {
+    // A material no member wears (the stepping stones' timber) names no images: nothing would
+    // sample them, and each set is three pairs of the texture table.
+    if (parts[m].indices.empty()) continue;
+    const materials::MaterialSet* set =
+        role[m].empty() ? nullptr : materials::find_role(inputs.materials, role[m]);
+    if (set == nullptr && m == k_stone && role[m] != k_fallback_stone_role)
+      set = materials::find_role(inputs.materials, k_fallback_stone_role);
+    if (set == nullptr && !role[m].empty())
+      set = materials::resolve_set(nullptr, inputs.materials, role[m]);  // says once it is missing
     if (set != nullptr) materials::apply_set(*set, materials::UvLayout::metres, out, m);
   }
   if (!out.image_paths.empty()) texture::fill_cluster_texture_records(out);

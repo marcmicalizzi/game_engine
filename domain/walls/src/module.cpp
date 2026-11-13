@@ -196,12 +196,25 @@ struct Inset {
 constexpr Inset k_inset[3] = {
     {0.04, 0.12, 0.002, 0.020},  // fine
     {0.06, 0.18, 0.003, 0.020},  // small
-    {0.03, 0.14, 0.003, 0.040},  // stone
+    {0.05, 0.14, 0.003, 0.040},  // stone
 };
 constexpr f64 k_ring_relief = 0.0025;
 constexpr f64 k_crown_lo = 0.0005, k_crown_hi = 0.0025;
 constexpr f64 k_back_max = 0.019;  // a corner's set-back at most, so a face's relief is <= 35 mm
 constexpr f64 k_broken = 0.40;     // the share of a walling stone's corners broken off (G177: 0.45)
+// The version of the face's layout (G177's), which keys the solver's draws: moved only by a change
+// that moves the stones of a face (`solve_module`).
+constexpr u64 k_layout_version = 4;
+// A standing face stone's face (G189; dry-stone-walls.md, "A face that is broken and weathered"):
+// turned off the line by a slope of its own (0.06 to 0.20), no deeper than 12 mm; its face proper's
+// edge weathered back up to 4 mm; a face of 0.015 m^2 or more broken across into two facets; no
+// corner further behind the line than 20 mm, so the face's relief stays within face_tests.cpp's 35.
+constexpr f64 k_turn_lo = 0.06, k_turn_hi = 0.20;
+constexpr f64 k_turn_max_m = 0.012;
+constexpr f64 k_weather_m = 0.004;
+constexpr f64 k_fracture_area = 0.015;
+constexpr f64 k_depth_max = 0.020;
+constexpr f64 k_chip_area = 0.0036;  // a closing stone smaller than this is a plain chip
 
 // A six-faced body from its eight corners (bottom ring 0..3, top ring 4..7, the rings in one
 // order: (x0, za), (x1, za), (x1, zb), (x0, zb)), each face wound outward from the body's centre.
@@ -475,10 +488,28 @@ void face_poly(Builder& b, const D3* q0, u32 count, D3 out, u32 swatch, u8 edge,
     return;
   }
   const Inset& in = k_inset[std::min<u32>(edge, 2)];
-  D3 c[k_max];
+  // The face's own turn (G189; walls.md, "The stone"): built to the line, a stone touches it at its
+  // most proud point and the rest of its face falls away from it as the face was split, so each
+  // stone's face catches the light its own way. A slope of 0.06 to 0.20 (3.4 to 11 degrees) in a
+  // direction of its own across the face, no deeper than `k_turn_max_m` at its far side.
+  const f64 dir_x = r.range(-0.4, 0.4);
+  const f64 dir_y = r.range(-1.0, 1.0);
+  const f64 slope_draw = r.range(k_turn_lo, k_turn_hi);
+  const f64 dl = std::sqrt(dir_x * dir_x + dir_y * dir_y);
+  const f64 gx = dl > 1e-9 ? dir_x / dl : 1.0, gy = dl > 1e-9 ? dir_y / dl : 0.0;
+  f64 g_lo = 1e9, g_hi = -1e9;
+  for (u32 k = 0; k < count; ++k) {
+    g_lo = std::min(g_lo, gx * q0[k].x + gy * q0[k].y);
+    g_hi = std::max(g_hi, gx * q0[k].x + gy * q0[k].y);
+  }
+  // Points in the face's plane first, each with its depth behind it (metres, along -n); placed
+  // once every depth is known.
   D3 ring[2 * k_max];
+  f64 ring_depth[2 * k_max];
   u32 ring_count = 0;
   u32 first_of[k_max] = {}, last_of[k_max] = {};
+  f64 deepest_of[k_max] = {}, wear_of[k_max] = {};
+  const f64 shorter_side = std::min(sx, sy);
   for (u32 k = 0; k < count; ++k) {
     const D3 p = q0[k], ep = q0[(k + count - 1) % count] - p, en = q0[(k + 1) % count] - p;
     const f64 lp = std::max(std::sqrt(dot(ep, ep)), 1e-6),
@@ -488,7 +519,10 @@ void face_poly(Builder& b, const D3* q0, u32 count, D3 out, u32 swatch, u8 edge,
     const f64 hi_a = std::min(in.max_m, 0.3 * ln), hi_b = std::min(in.max_m, 0.3 * lp);
     const f64 ia = std::clamp(share_a * ln, std::min(in.min_m, hi_a), hi_a);
     const f64 ib = std::clamp(share_b * lp, std::min(in.min_m, hi_b), hi_b);
-    const f64 lift = r.range(-k_ring_relief, k_ring_relief);
+    // The face proper's edge weathered back off its turned plane (G189: 0.5 mm to a twentieth of
+    // the face's shorter side, at most `k_weather_m`), each corner its own.
+    const f64 weather =
+        r.range(0.0005, std::max(0.001, std::min(k_weather_m, 0.05 * shorter_side)));
     const f64 broken = r.next();
     const f64 cut_a = r.range(0.25, 0.50), cut_b = r.range(0.25, 0.50);
     first_of[k] = ring_count;
@@ -497,60 +531,194 @@ void face_poly(Builder& b, const D3* q0, u32 count, D3 out, u32 swatch, u8 edge,
       const f64 shorter = std::min(lp, ln);
       const f64 ca = std::max(std::min(cut_a * shorter, 0.3 * lp), ib);
       const f64 cb = std::max(std::min(cut_b * shorter, 0.3 * ln), ia);
-      ring[ring_count++] = p + ep * (ca / lp) + en * (ia / ln) + n * lift;
-      ring[ring_count++] = p + en * (cb / ln) + ep * (ib / lp) + n * lift;
+      ring[ring_count] = p + ep * (ca / lp) + en * (ia / ln);
+      ring_depth[ring_count] = weather;
+      ++ring_count;
+      ring[ring_count] = p + en * (cb / ln) + ep * (ib / lp);
+      ring_depth[ring_count] = weather;
+      ++ring_count;
       deepest = std::max(ca, cb);
     } else {
-      ring[ring_count++] = p + en * (ia / ln) + ep * (ib / lp) + n * lift;
+      ring[ring_count] = p + en * (ia / ln) + ep * (ib / lp);
+      ring_depth[ring_count] = weather;
+      ++ring_count;
     }
     last_of[k] = ring_count - 1;
-    const f64 wear = r.range(0.003, 0.008);
-    c[k] = p - n * std::clamp(0.6 * deepest + wear, 0.005, k_back_max);
+    deepest_of[k] = deepest;
+    wear_of[k] = r.range(0.003, 0.008);
   }
+  // The turn takes what depth the worn arrises leave: each corner, as far along the turn as it
+  // lies, keeps at least three quarters of its arris's set-back (0.6 of its inset) inside
+  // `k_depth_max`, so the arrises toward the face's high side stay steeper than 25 degrees and
+  // those on its far side wear shallower.
+  f64 slope = std::min(slope_draw, k_turn_max_m / std::max(g_hi - g_lo, 1e-6));
+  for (u32 k = 0; k < count; ++k) {
+    const f64 back = std::clamp(0.6 * deepest_of[k] + wear_of[k], 0.005, k_back_max);
+    // Weathered no deeper than leaves the corner its whole arris.
+    f64 w = 0;
+    for (u32 j = first_of[k]; j <= last_of[k]; ++j) {
+      ring_depth[j] = std::min(ring_depth[j], std::max(0.0, k_depth_max - back));
+      w = std::max(w, ring_depth[j]);
+    }
+    const f64 along = gx * q0[k].x + gy * q0[k].y - g_lo;
+    if (along <= 1e-6) continue;
+    slope = std::min(slope, std::max(0.0, k_depth_max - w - 0.85 * back) / along);
+  }
+  auto turn = [&](D3 p) { return slope * (gx * p.x + gy * p.y - g_lo); };
+  for (u32 k = 0; k < ring_count; ++k)
+    ring_depth[k] += turn(ring[k]);  // The face proper's high points (G189): one, off the middle
+                                     // and 0.5 to 3 mm proud of the
+  // turned plane, on a face under `k_fracture_area`; on a larger one two, a third and two thirds
+  // along its longer side, the second stepped back up to 6 mm, so the face is broken across into
+  // facets as a split stone's is. A closing stone's face (`crown` false) is fanned flat.
+  D3 peak[2];
+  f64 peak_depth[2] = {0, 0};
+  u32 peaks = 0;
   if (crown) {
-    D3 apex{};
-    f64 weight = 0;
-    for (u32 k = 0; k < ring_count; ++k) {
-      const f64 w = r.range(0.5, 1.5);
-      apex = apex + ring[k] * w;
-      weight += w;
+    const f64 sx_draw = r.next();
+    const f64 sy_draw = r.next();
+    const f64 rise_a = r.range(0.0005, 0.003);
+    const f64 along_b = r.next();
+    const f64 across_b = r.next();
+    const f64 step_b = r.range(-0.002, 0.006);
+    const bool along_x = sx >= sy;
+    auto at_frac = [&](f64 fa, f64 fc) {
+      const f64 fx = along_x ? fa : fc, fy = along_x ? fc : fa;
+      return D3{lo.x + sx * fx, lo.y + sy * fy, 0.0};
+    };
+    if (sx * sy >= k_fracture_area) {
+      peak[0] = at_frac(0.22 + 0.18 * sx_draw, 0.35 + 0.30 * sy_draw);
+      peak[1] = at_frac(0.60 + 0.18 * along_b, 0.35 + 0.30 * across_b);
+      peak_depth[0] = -rise_a;
+      peak_depth[1] = step_b;
+      peaks = 2;
+    } else {
+      peak[0] = at_frac(0.30 + 0.40 * sx_draw, 0.30 + 0.40 * sy_draw);
+      peak_depth[0] = -rise_a;
+      peaks = 1;
     }
-    const f64 rise = r.range(k_crown_lo, k_crown_hi);
-    apex = apex * (1.0 / weight) + n * rise;
-    D3 tn[2 * k_max];
-    D3 all{};
-    for (u32 k = 0; k < ring_count; ++k) {
-      D3 t = cross(ring[k] - apex, ring[(k + 1) % ring_count] - apex);
-      if (dot(t, n) < 0) t = t * -1.0;
-      tn[k] = unit(t);
-      all = all + tn[k];
+    // On the face's plane at that point (the plane through q0 along n), then its depth.
+    for (u32 i = 0; i < peaks; ++i) {
+      peak[i].z = mid.z - (n.x * (peak[i].x - mid.x) + n.y * (peak[i].y - mid.y)) /
+                              (std::abs(n.z) > 1e-6 ? n.z : 1e-6);
+      peak_depth[i] += turn(peak[i]);
     }
-    f64 u, v;
-    uv_of(apex, u, v);
-    const u32 i_apex = b.vertex(apex, unit(all), u, v);
-    u32 iv[2 * k_max];
-    for (u32 k = 0; k < ring_count; ++k) {
-      uv_of(ring[k], u, v);
-      iv[k] = b.vertex(ring[k], unit(tn[(k + ring_count - 1) % ring_count] + tn[k]), u, v);
-    }
-    for (u32 k = 0; k < ring_count; ++k) {
-      const u32 k1 = (k + 1) % ring_count;
-      if (dot(cross(ring[k] - apex, ring[k1] - apex), n) > 0)
-        b.tri(i_apex, iv[k], iv[k1]);
-      else
-        b.tri(i_apex, iv[k1], iv[k]);
-    }
-  } else {
-    for (u32 k = 1; k + 1 < ring_count; ++k)
-      facet(ring[0], ring[k], ring[k + 1]);
   }
+  // The most proud point of the face proper stands 0 to 2 mm proud of the line (TCV, Placing the
+  // stones: "just brushing the line").
+  const f64 proud = r.range(0.0, 0.002);
+  f64 shift = 1e9;
+  for (u32 k = 0; k < ring_count; ++k)
+    shift = std::min(shift, ring_depth[k]);
+  for (u32 i = 0; i < peaks; ++i)
+    shift = std::min(shift, peak_depth[i]);
+  shift += proud;
+  for (u32 k = 0; k < ring_count; ++k)
+    ring_depth[k] -= shift;
+  for (u32 i = 0; i < peaks; ++i)
+    peak_depth[i] -= shift;
+  // The stone's corners behind its face proper, as far back as the worn arris asks and never past
+  // `k_depth_max` behind the line, so a face's relief stays within 35 mm.
+  D3 c[k_max];
+  for (u32 k = 0; k < count; ++k) {
+    const f64 back = std::clamp(0.6 * deepest_of[k] + wear_of[k], 0.005, k_back_max);
+    f64 behind = turn(q0[k]) - shift;
+    for (u32 j = first_of[k]; j <= last_of[k]; ++j) {
+      // Its face proper's points no deeper than leave the corner its whole worn arris.
+      ring_depth[j] = std::min(ring_depth[j], std::max(0.0, k_depth_max - back));
+      behind = std::max(behind, ring_depth[j]);
+    }
+    c[k] = q0[k] - n * std::min(behind + back, k_depth_max);
+  }
+  // Every vertex shared and smooth-shaded by its triangles' areas (G189): the face proper's
+  // facets meet softly and the arrises round from the face to its corners, as weather wears a
+  // split stone, where G177's flat arris bands drew a box's crisp edges. 20 vertices at most.
+  D3 vp[2 + 2 * k_max + k_max];
+  u32 vn = 0;
+  const u32 v_peak = vn;
+  for (u32 i = 0; i < peaks; ++i)
+    vp[vn++] = peak[i] - n * peak_depth[i];
+  const u32 v_ring = vn;
+  for (u32 k = 0; k < ring_count; ++k)
+    vp[vn++] = ring[k] - n * ring_depth[k];
+  const u32 v_corner = vn;
+  for (u32 k = 0; k < count; ++k)
+    vp[vn++] = c[k];
+  u32 tri[3 * 40];
+  u32 tn = 0;
+  auto add = [&](u32 a, u32 b2, u32 c2) {
+    if (dot(cross(vp[b2] - vp[a], vp[c2] - vp[a]), n) >= 0) {
+      tri[tn++] = a;
+      tri[tn++] = b2;
+      tri[tn++] = c2;
+    } else {
+      tri[tn++] = a;
+      tri[tn++] = c2;
+      tri[tn++] = b2;
+    }
+  };
+  if (peaks == 2) {
+    // Each ring point to the high point on its side of the line between them; where the side
+    // changes along the ring, a quad to both. A ring that changes side more than twice (not
+    // convex enough) takes the first high point alone.
+    const D3 axis = vp[v_peak + 1] - vp[v_peak];
+    const f64 cut = 0.5 * (dot(vp[v_peak], axis) + dot(vp[v_peak + 1], axis));
+    u8 side[2 * k_max];
+    u32 changes = 0;
+    for (u32 k = 0; k < ring_count; ++k)
+      side[k] = dot(vp[v_ring + k], axis) < cut ? 0 : 1;
+    for (u32 k = 0; k < ring_count; ++k)
+      changes += side[k] != side[(k + 1) % ring_count] ? 1u : 0u;
+    if (changes == 2) {
+      for (u32 k = 0; k < ring_count; ++k) {
+        const u32 k1 = (k + 1) % ring_count;
+        add(v_peak + side[k], v_ring + k, v_ring + k1);
+        if (side[k] != side[k1]) add(v_peak + side[k], v_ring + k1, v_peak + side[k1]);
+      }
+    } else {
+      peaks = 1;
+    }
+  }
+  if (peaks == 1)
+    for (u32 k = 0; k < ring_count; ++k)
+      add(v_peak, v_ring + k, v_ring + (k + 1) % ring_count);
+  if (peaks == 0)
+    for (u32 k = 1; k + 1 < ring_count; ++k)
+      add(v_ring, v_ring + k, v_ring + k + 1);
   for (u32 k = 0; k < count; ++k) {
     const u32 k1 = (k + 1) % count;
-    const D3& a = ring[first_of[k]];
-    const D3& z = ring[last_of[k]];
-    if (first_of[k] != last_of[k]) facet(c[k], a, z);
-    facet(c[k], c[k1], ring[first_of[k1]]);
-    facet(c[k], ring[first_of[k1]], z);
+    if (first_of[k] != last_of[k]) add(v_corner + k, v_ring + first_of[k], v_ring + last_of[k]);
+    add(v_corner + k, v_corner + k1, v_ring + first_of[k1]);
+    add(v_corner + k, v_ring + first_of[k1], v_ring + last_of[k]);
+  }
+  D3 acc[2 + 2 * k_max + k_max];
+  for (u32 i = 0; i < vn; ++i)
+    acc[i] = D3{};
+  for (u32 t = 0; t < tn; t += 3) {
+    const D3 w = cross(vp[tri[t + 1]] - vp[tri[t]], vp[tri[t + 2]] - vp[tri[t]]);
+    for (u32 e = 0; e < 3; ++e)
+      acc[tri[t + e]] = acc[tri[t + e]] + w;
+  }
+  D3 vnorm[2 + 2 * k_max + k_max];
+  u32 base = 0;
+  for (u32 i = 0; i < vn; ++i) {
+    f64 u, v;
+    uv_of(vp[i], u, v);
+    D3 nv = acc[i];
+    if (dot(nv, nv) < 1e-24 || dot(nv, n) <= 0) nv = n;
+    vnorm[i] = unit(nv);
+    const u32 id = b.vertex(vp[i], vnorm[i], u, v);
+    if (i == 0) base = id;
+  }
+  for (u32 t = 0; t < tn; t += 3) {
+    // A steep arris facet whose shared normals lean away from it is drawn flat on its own
+    // vertices instead, so it is never culled from the side it shows (face_tests.cpp).
+    const D3 g = cross(vp[tri[t + 1]] - vp[tri[t]], vp[tri[t + 2]] - vp[tri[t]]);
+    if (dot(g, vnorm[tri[t]] + vnorm[tri[t + 1]] + vnorm[tri[t + 2]]) <= 0) {
+      facet(vp[tri[t]], vp[tri[t + 1]], vp[tri[t + 2]]);
+      continue;
+    }
+    b.tri(base + tri[t], base + tri[t + 1], base + tri[t + 2]);
   }
 }
 
@@ -596,6 +764,16 @@ constexpr f64 k_lump_share = 0.18;    // a standing stone whose top rises to a r
 constexpr f64 k_top_fall = 0.35;      // a top's fall end to end, at most, of its height
 constexpr f64 k_jumper_max_m = 0.28;  // the tallest face stone
 constexpr f64 k_bed_slope = 0.25;     // a bed laid along a sloping top, at most
+
+// The top's shares (G189; dry-stone-walls.md, "A cope that is not a row of books"): design values
+// inside the source's ranges (TCV, Types of coping: slab copes 50 to 200 mm; upright neighbours
+// within 50 mm), held by look_tests.cpp.
+constexpr f64 k_cover_thin_m = 0.045;     // a cover stone's thinnest end
+constexpr f64 k_cover_thick_m = 0.11;     // and its thickest
+constexpr f64 k_cope_block_share = 0.30;  // a cope stone that is a block, not a slab
+constexpr f64 k_cope_block_m = 0.10;      // a block's least thickness, a slab's most
+constexpr f64 k_cope_lean_deg = 12.0;     // a run of cope stones leans together by up to this
+constexpr f64 k_cope_wedge_share = 0.45;  // a cope stone narrower at its top than at its bed
 
 struct Skyline {
   f64 x_lo = 0;
@@ -812,16 +990,18 @@ struct Solver {
     const u8 end = head && x0 <= -0.5 * s.L + 1e-6 && x1 - x0 >= 0.06 ? face_bit(5) : u8{0};
     // A walling stone's face is crowned, its arrises worn back by the stone's share (12
     // triangles, two more a broken corner); a face under 0.012 m^2 is worn by the small share; a
-    // closing stone is fanned flat (10), and one under 4 cm either way is a plain chip (2). In a
-    // standing face the stone's top and ends lie against its neighbours and are not drawn: a joint
-    // shows the worn arrises and the hearting's shadow behind them. Where the wall has fallen, and
-    // on the footing (its top is the scarcement), they are.
+    // closing stone is fanned flat (10), and one under 4 cm either way or under 36 cm^2 is a
+    // plain chip (2; G189, where the triangles of the broken faces came from). In a standing face
+    // the stone's top and ends lie against its neighbours and are not drawn: a joint shows the
+    // worn arrises and the hearting's shadow behind them. Where the wall has fallen, and on the
+    // footing (its top is the scarcement), they are.
     const bool closer = role == StoneRole::pinning;
     const u8 edge = closer || len * (top - bed) < 0.012 ? k_edge_small : k_edge_stone;
-    const bool rough = !(closer && (len < 0.04 || top - bed < 0.04));
     // Near a head the ends are drawn too: the head's end shows its joints, and a look into one
     // meets stone.
     const bool open = ragged(xm) || role == StoneRole::footing || (head && x0 < -0.5 * s.L + 0.6);
+    const bool rough =
+        !(closer && (len < 0.04 || top - bed < 0.04 || (!open && len * (top - bed) < k_chip_area)));
     const u8 hide =
         open ? (role == StoneRole::footing ? static_cast<u8>(face_bit(3) | face_bit(5)) : u8{0})
              : static_cast<u8>(face_bit(1) | face_bit(3) | face_bit(5));
@@ -1491,33 +1671,62 @@ struct Solver {
   }
 
   // The cover course across the full width, on the line of the cover's bed, and the cope on edge
-  // standing on it, each stone vertical (TCV, Coping); the first at a head a large square topstone.
+  // standing on it (TCV, Coping; Types of coping); the first at a head a large square topstone.
   void lay_top() {
     if (m.kind == ModuleKind::fallen) return;
     const f64 x0 = head ? -0.5 * s.L : -0.5 * s.L - rng.range(0.0, 0.04);
     const f64 x1 = m.kind == ModuleKind::broken ? broken_from() - rng.range(0.0, 0.10)
                                                 : 0.5 * s.L + rng.range(0.0, 0.04);
-    Vector<f64> cover_x, cover_t;  // each cover stone's start and its thickness
+    // The cover (G189; walls.md, "The module"): flat stones of their own thickness, not sawn
+    // slabs. A stone is 25 to 55 cm long, 45 to 110 mm thick and thicker at one end than the
+    // other by 8 to 40 mm, its end within 15 mm of its neighbour's so a cope stone standing over
+    // the joint stays within its height; each of its four corners proud of the face by its own
+    // 5 to 55 mm, so the course's top and the shadow under it are not ruled lines.
+    Vector<f64> cover_x, cover_e, cover_ta, cover_tb;  // each cover stone's ends and thicknesses
+    const f64 first_t = rng.range(0.06, 0.09);
+    f64 prev_tb = first_t;
     for (f64 x = x0; x < x1 - 0.05;) {
-      const f64 e = std::min(x + rng.range(0.25, 0.45), x1);
-      const f64 t = rng.range(0.06, 0.09);
-      const f64 proud = rng.range(0.02, 0.04);
-      const f64 hw = 0.5 * s.top_w + proud;
+      const f64 len_draw = rng.next();
+      const f64 e = std::min(x + 0.25 + 0.30 * len_draw, x1);
+      const f64 step = rng.range(-0.015, 0.015);
+      const f64 fall_draw = rng.range(0.008, 0.04);
+      const f64 flip = rng.next();
+      const f64 ta = std::clamp(prev_tb + step, k_cover_thin_m, k_cover_thick_m);
+      // Its fall toward the course's middle thickness seven times in ten, so the walk of the ends'
+      // thicknesses keeps off its bounds and most stones fall 15 mm or more.
+      const bool thin_end = (ta > 0.5 * (k_cover_thin_m + k_cover_thick_m)) == (flip < 0.7);
+      const f64 tb =
+          std::clamp(ta + (thin_end ? -fall_draw : fall_draw), k_cover_thin_m, k_cover_thick_m);
+      prev_tb = tb;
+      f64 proud[4];
+      for (f64& p : proud)
+        p = rng.range(0.005, 0.055);
+      const f64 hw = 0.5 * s.top_w;
       const f64 bed0 = s.base(x) + s.body, bed1 = s.base(e) + s.body;
       Stone st;
       st.x0 = static_cast<f32>(x);
       st.x1 = static_cast<f32>(e);
       st.bed = static_cast<f32>(std::min(bed0, bed1));
-      st.top = static_cast<f32>(std::max(bed0, bed1) + t);
-      st.z0 = static_cast<f32>(-hw);
-      st.z1 = static_cast<f32>(hw);
+      st.top = static_cast<f32>(std::max(bed0 + ta, bed1 + tb));
+      st.bed0 = static_cast<f32>(bed0);
+      st.bed1 = static_cast<f32>(bed1);
+      st.top0 = static_cast<f32>(bed0 + ta);
+      st.top1 = static_cast<f32>(bed1 + tb);
+      st.peak_x = st.x0;
+      st.z0 = static_cast<f32>(-hw - std::max(proud[0], proud[1]));
+      st.z1 = static_cast<f32>(hw + std::max(proud[2], proud[3]));
       st.role = StoneRole::cover;
       add_stone(st);
-      D3 c[8] = {{x + 0.002, bed0, -hw},    {e - 0.002, bed1, -hw},     {e - 0.002, bed1, hw},
-                 {x + 0.002, bed0, hw},     {x + 0.002, bed0 + t, -hw}, {e - 0.002, bed1 + t, -hw},
-                 {e - 0.002, bed1 + t, hw}, {x + 0.002, bed0 + t, hw}};
-      for (D3& p : c)
-        p.z += rng.range(-0.008, 0.008);
+      // Corners: (x0, -z) proud[0], (x1, -z) proud[1], (x1, +z) proud[2], (x0, +z) proud[3]; the
+      // top's edge drawn in 0 to 8 mm from the bed's, as a split stone's is.
+      D3 c[8] = {{x + 0.002, bed0, -hw - proud[0]},      {e - 0.002, bed1, -hw - proud[1]},
+                 {e - 0.002, bed1, hw + proud[2]},       {x + 0.002, bed0, hw + proud[3]},
+                 {x + 0.002, bed0 + ta, -hw - proud[0]}, {e - 0.002, bed1 + tb, -hw - proud[1]},
+                 {e - 0.002, bed1 + tb, hw + proud[2]},  {x + 0.002, bed0 + ta, hw + proud[3]}};
+      for (u32 k = 4; k < 8; ++k) {
+        const f64 in = rng.range(0.0, 0.008);
+        c[k].z += c[k].z > 0 ? -in : in;
+      }
       // Its two edges along the faces split, as a face stone's is, fanned flat; its bed on the
       // wall and its ends against its neighbours not drawn, but at a head's end and where a
       // broken stretch's cover stops.
@@ -1529,80 +1738,143 @@ struct Solver {
       body(b, c, swatch, Faces{static_cast<u8>(face_bit(2) | face_bit(4)), hide, k_edge_stone, 0},
            rng);
       cover_x.push_back(x);
-      cover_t.push_back(t);
+      cover_e.push_back(e);
+      cover_ta.push_back(ta);
+      cover_tb.push_back(tb);
       x = e;
     }
     auto cover_top = [&](f64 x) {
       u32 i = 0;
       while (i + 1 < cover_x.size() && cover_x[i + 1] <= x)
         ++i;
-      return s.base(x) + s.body + (cover_t.empty() ? 0.075 : cover_t[i]);
+      if (cover_x.empty()) return s.base(x) + s.body + 0.075;
+      const f64 f =
+          std::clamp((x - cover_x[i]) / std::max(cover_e[i] - cover_x[i], 1e-6), 0.0, 1.0);
+      return s.base(x) + s.body + cover_ta[i] + (cover_tb[i] - cover_ta[i]) * f;
     };
     // The cope as random upright coping (TCV, Types of coping): stones of differing thickness,
     // mostly thin slabs and now and then a block; their heights the specification's on average,
     // taller and shorter alternating more often than not, neighbours never more than 50 mm apart
     // (Upright: "rarely ... more than 2 inches"); each set near vertical, leaning as its neighbour
     // does, within 4 degrees; packed close (TCV, Coping: 2 to 3 mm wedges), 2 to 8 mm apart.
+    // G189 (walls.md, "The module"; dry-stone-walls.md, "A cope that is not a row of books"): the
+    // cope read as books on a shelf at ten metres, because its slabs were near-equal in height,
+    // thickness and set and stood upright with flat tops. Now: one stone in four a block of 100 to
+    // 200 mm (TCV, Types of coping: slab copes 50 to 200 mm), the rest slabs of 40 to 100 mm;
+    // taller and shorter alternating eight times in ten, 1.02 to 1.10 and 0.86 to 0.96 of the
+    // cope's height, neighbours still within 50 mm (TCV); tops of their own shape (square, falling
+    // across the wall, or a block's falling along it); set in runs of three to seven that lean
+    // together by up to 12 degrees, one in twelve leaning 12 to 20 degrees on its neighbour
+    // (tilted coping, met in random coping); nearly half wedges; each set clear of the one before
+    // it whatever their leans.
     bool first = true;
     bool taller = rng.next() < 0.5;
-    f64 prev_h = s.cope, prev_lean = 0;
+    f64 prev_h = s.cope, prev_run = 0, prev_e = x0;
+    f64 lean_run = 0;
+    u32 run_left = 0;
     for (f64 x = x0; x < x1 - 0.04;) {
       const bool big = head && first;
+      const f64 kind_draw = rng.next();
       const f64 thin = rng.next();
-      // Thin slabs and blocks between (G177: the square of a draw left the cope a row of slabs).
-      const f64 t =
-          big ? 0.30 : k_cope_thin_m + (k_cope_thick_m - k_cope_thin_m) * thin * std::sqrt(thin);
-      const f64 e = std::min(x + t, x1);
-      const f64 hw = big ? 0.5 * s.top_w + 0.02 : 0.5 * s.top_w * rng.range(0.78, 1.05);
+      const f64 t = big ? 0.30
+                        : (kind_draw < k_cope_block_share
+                               ? k_cope_block_m + (k_cope_thick_m - k_cope_block_m) * thin
+                               : k_cope_thin_m + (k_cope_block_m - k_cope_thin_m) * thin * thin);
+      const f64 width_draw = rng.next();
+      const f64 hw = big ? 0.5 * s.top_w + 0.02 : 0.5 * s.top_w * (0.78 + 0.27 * width_draw);
       const f64 zc = rng.range(-0.015, 0.015);
-      const f64 b0 = cover_top(x), b1 = cover_top(e);
       const f64 turn = rng.next();
-      if (turn < 0.7) taller = !taller;
-      const f64 want = s.cope * (taller ? rng.range(1.00, 1.11) : rng.range(0.92, 1.01));
-      const f64 hc = big ? s.cope * 1.1 : std::clamp(want, prev_h - 0.05, prev_h + 0.05);
+      if (turn < 0.8) taller = !taller;
+      const f64 h_draw = rng.next();
+      // A cope is brought to its line (TCV, Coping): half of what the cover under it is thinner or
+      // thicker than its 75 mm is made up in the stone, within 0.86 to 1.08 of the cope, and within
+      // 40 mm of its neighbour, so with the cover's fall under them their tops keep TCV's 50.
+      const f64 under = cover_top(std::max(x, prev_e)) - s.base(std::max(x, prev_e)) - s.body;
+      const f64 want =
+          s.cope * (taller ? 1.02 + 0.08 * h_draw : 0.86 + 0.10 * h_draw) + 0.5 * (s.cover - under);
+      const f64 hc = big ? s.cope * 1.1
+                         : std::clamp(std::clamp(want, prev_h - 0.04, prev_h + 0.04), 0.86 * s.cope,
+                                      1.08 * s.cope);
       prev_h = hc;
-      // A rough stone, not a slab (G177): each corner of its top at its own height, 0.86 to 1 of
-      // the stone's, and drawn in toward its middle across the wall by up to a fifth of its width
-      // and along it by up to a fifth of its thickness, so its top is a ridge of its own and its
-      // section tapers from its thickest edge, on which it stands (TCV, Coping).
+      // Its lean: the run's, give or take 3 degrees; one in twelve a leaner of 12 to 20 degrees
+      // the run's way; within 0.15 m of the module's ends no more than 4 degrees, so a stone
+      // never leans into the next module's.
+      if (run_left == 0) {
+        const f64 run_draw = rng.next();
+        const f64 lean_draw = rng.next();
+        run_left = 3 + static_cast<u32>(5.0 * run_draw);
+        lean_run = (lean_draw * 2.0 - 1.0) * k_cope_lean_deg;
+      }
+      --run_left;
+      const f64 own = rng.range(-3.0, 3.0);
+      const f64 tilt = rng.next();
+      const f64 steep = rng.range(12.0, 20.0);
+      const bool leaning = !big && !first && tilt < 1.0 / 12.0;
+      f64 lean_deg = big ? 0.0 : (leaning ? (lean_run < 0 ? -steep : steep) : lean_run + own);
+      if (x < -0.5 * s.L + 0.15 || x + t > 0.5 * s.L - 0.15)
+        lean_deg = std::clamp(lean_deg, -4.0, 4.0);
+      const f64 run_per_m = lean_deg * 3.141592653589793 / 180.0;  // the top's run, small angle
+      // Set clear of the stone before: where this one leans less toward it than that one leans
+      // toward this, apart by the difference over the lower of their heights.
+      const f64 clear = std::max(0.0, std::min(prev_h, hc) * (prev_run - run_per_m));
+      x = std::max(x, prev_e) + (first ? 0.0 : clear);
+      if (x >= x1 - 0.04) break;
+      const f64 e = std::min(x + t, x1);
+      const f64 b0 = cover_top(x), b1 = cover_top(e);
+      const f64 lean = hc * run_per_m;
+      // A rough stone, not a slab (G177): each corner of its top at its own height, and drawn in
+      // toward its middle across the wall by up to a fifth of its width and along it by up to a
+      // fifth of its thickness, so its section tapers from its thickest edge, on which it stands
+      // (TCV, Coping). Its top's shape (G189): square (corners 0.86 to 1), falling across the
+      // wall (one side 0.62 to 0.80), or, a block, falling along it.
+      const f64 shape_draw = rng.next();
+      const f64 side_draw = rng.next();
       f64 corner_h[4], pull_z[4], pull_x[4];
       f64 highest = 0;
       for (u32 k = 0; k < 4; ++k) {
         corner_h[k] = rng.range(0.86, 1.0);
         pull_z[k] = rng.range(0.0, 0.20);
         pull_x[k] = rng.range(0.0, 0.20);
-        highest = std::max(highest, corner_h[k]);
       }
+      const f64 low_a = rng.range(0.62, 0.80);
+      const f64 low_b = rng.range(0.62, 0.80);
+      if (!big && shape_draw >= 0.35) {
+        // Corners: 0 (x0, -z), 1 (x1, -z), 2 (x1, +z), 3 (x0, +z).
+        const bool along = t >= k_cope_block_m && shape_draw >= 0.70;
+        const u32 la = along ? (side_draw < 0.5 ? 0u : 1u) : (side_draw < 0.5 ? 0u : 2u);
+        const u32 lb = along ? (side_draw < 0.5 ? 3u : 2u) : (side_draw < 0.5 ? 1u : 3u);
+        corner_h[la] = low_a;
+        corner_h[lb] = low_b;
+      }
+      for (u32 k = 0; k < 4; ++k)
+        highest = std::max(highest, corner_h[k]);
       // The highest corner is the stone's height, so the cope keeps the specification's.
       for (u32 k = 0; k < 4; ++k)
         corner_h[k] /= highest;
       const f64 t0 = b0 + hc * std::max(corner_h[0], corner_h[3]);
       const f64 t1 = b1 + hc * std::max(corner_h[1], corner_h[2]);
-      const f64 own = rng.range(-2.5, 2.5);
-      // Now and then (one in fifteen) a stone leans on the next, 5 to 8 degrees, its foot a few
-      // centimetres off it, the next set past its top (G145c, a design value: no source read
-      // gives a share); else vertical within 4 degrees, as its neighbour leans.
-      const f64 tilt = rng.next();
-      const bool leaning = !big && !first && tilt < 1.0 / 15.0;
-      const f64 steep = rng.range(5.0, 8.0);
-      const f64 lean_deg = leaning ? steep : std::clamp(0.5 * prev_lean + own, -4.0, 4.0);
-      prev_lean = leaning ? 0.0 : lean_deg;
-      const f64 lean = hc * (lean_deg * 3.141592653589793 / 180.0);  // the top's run, small angle
-      // Three in ten are wedges, narrower at the top than at the bed by up to a fifth of their
-      // thickness, the narrowing on either side (a split stone is seldom square; G145c's first
-      // pictures, at a half, opened gaps the sky showed through).
+      // Nearly half are wedges, narrower at the top than at the bed by up to 18 % of their
+      // thickness either side (a split stone is seldom square), so the sky shows between tops.
       const f64 shape = rng.next();
-      const f64 wa = shape < 0.3 ? rng.range(0.0, 0.10) * (e - x) : 0.0;
-      const f64 wb = shape < 0.3 ? rng.range(0.0, 0.10) * (e - x) : 0.0;
+      const f64 wa_draw = rng.next();
+      const f64 wb_draw = rng.next();
+      const f64 wa = shape < k_cope_wedge_share ? 0.18 * wa_draw * (e - x) : 0.0;
+      const f64 wb = shape < k_cope_wedge_share ? 0.18 * wb_draw * (e - x) : 0.0;
       Stone st;
       st.x0 = static_cast<f32>(x);
       st.x1 = static_cast<f32>(e);
       st.bed = static_cast<f32>(std::min(b0, b1));
       st.top = static_cast<f32>(std::max(t0, t1));
+      st.bed0 = static_cast<f32>(b0);
+      st.bed1 = static_cast<f32>(b1);
+      st.top0 = static_cast<f32>(t0);
+      st.top1 = static_cast<f32>(t1);
+      st.peak_x = st.x0;
       st.z0 = static_cast<f32>(zc - hw);
       st.z1 = static_cast<f32>(zc + hw);
       st.role = StoneRole::cope;
       add_stone(st);
+      report.cope_lean_deg.push_back(static_cast<f32>(lean_deg));
       const f64 xa = x + 0.002, xb = e - 0.002;
       const f64 ta = xa + lean + wa, tb = xb + lean - wb;
       const f64 thick = xb - xa;
@@ -1625,9 +1897,10 @@ struct Solver {
            Faces{0, face_bit(0), k_edge_fine, 0,
                  static_cast<u8>(face_bit(1) | face_bit(2) | face_bit(4))},
            rng);
-      const f64 gap = rng.range(0.002, 0.008);
-      // Past a leaner's top, so it rests on the next stone and does not pass into it.
-      x = e + gap + (leaning ? std::max(lean - wb, 0.0) : 0.0);
+      const f64 gap = rng.range(0.002, 0.010);
+      prev_e = e + gap;
+      prev_run = run_per_m;
+      x = prev_e;
       first = false;
     }
   }
@@ -1862,31 +2135,47 @@ void mid_form(Builder& b, const Module& m, const Section& s, const ModuleReport&
   const f64 ca = head ? -0.5 * s.L : -0.5 * s.L - 0.02;
   const f64 cb = m.kind == ModuleKind::broken ? broken_from - 0.05 : 0.5 * s.L + 0.02;
   top_box(b, s, ca, cb, s.body, s.body + 0.075, 0.5 * s.top_w + 0.03, k_swatch_mid);
-  // The cope as blocks of three stones, each block's top slanting from its first stone's top to
-  // its last's and the block a centimetre short of the next, so the mid form keeps the cope's
-  // broken skyline where the near form hands it over (G145c; walls.md, "Forms and the LOD
-  // policy") rather than a flat band.
-  u32 in_group = 0;
-  f64 gx0 = 0, gtop0 = 0, gtop1 = 0, gx1 = 0;
+  // The cope stone by stone (G189; walls.md, "Forms and the LOD policy"): each stone its two
+  // sides and its top, at its own ends' heights and leaning as it leans, so the mid form keeps the
+  // near form's skyline, its gaps and its slants where it hands over, where G145c's blocks of
+  // three drew a ruled top at thirty metres. Six triangles a stone, its ends and bed not drawn;
+  // the faces striped along the wall by a row of the stones' swatches, a swatch every 8 cm.
+  const f64 v_row = (7.0 * k_swatch + 4.0) / k_atlas;
+  auto quad = [&](D3 a, D3 c1, D3 c2, D3 d, D3 out) {
+    D3 nrm = unit(cross(c1 - a, d - a));
+    if (dot(nrm, out) < 0) nrm = nrm * -1.0;
+    auto u_of = [](D3 p) { return p.x * (static_cast<f64>(k_swatch) / k_atlas) / 0.08; };
+    const u32 i0 = b.vertex(a, nrm, u_of(a), v_row), i1 = b.vertex(c1, nrm, u_of(c1), v_row),
+              i2 = b.vertex(c2, nrm, u_of(c2), v_row), i3 = b.vertex(d, nrm, u_of(d), v_row);
+    if (dot(cross(c1 - a, c2 - a), nrm) > 0) {
+      b.tri(i0, i1, i2);
+      b.tri(i0, i2, i3);
+    } else {
+      b.tri(i0, i2, i1);
+      b.tri(i0, i3, i2);
+    }
+  };
+  u32 lean_i = 0;
+  const f64 hw = 0.5 * s.top_w;
   for (const Stone& st : report.stones) {
     if (st.role != StoneRole::cope) continue;
-    const f64 xm = 0.5 * static_cast<f64>(st.x0 + st.x1);
-    const f64 above = static_cast<f64>(st.top) - s.base(xm) - s.body;
-    if (in_group == 0) {
-      gx0 = static_cast<f64>(st.x0);
-      gtop0 = above;
-    }
-    gtop1 = above;
-    gx1 = static_cast<f64>(st.x1);
-    if (++in_group == 3) {
-      top_box(b, s, gx0, std::max(gx1 - 0.01, gx0 + 0.02), s.body + 0.07, s.body + gtop0,
-              0.5 * s.top_w, k_swatch_mid, s.body + gtop1);
-      in_group = 0;
-    }
+    const f64 run = lean_i < report.cope_lean_deg.size()
+                        ? static_cast<f64>(report.cope_lean_deg[lean_i]) * 3.141592653589793 / 180.0
+                        : 0.0;
+    ++lean_i;
+    const f64 x0 = static_cast<f64>(st.x0), x1 = static_cast<f64>(st.x1);
+    const f64 b0 = static_cast<f64>(st.bed0), b1 = static_cast<f64>(st.bed1);
+    const f64 t0 = static_cast<f64>(st.top0), t1 = static_cast<f64>(st.top1);
+    const D3 lo0{x0, b0, 0}, lo1{x1, b1, 0};
+    // Its top drawn in by 15 % of its thickness either side, the near form's corners' pulls and
+    // wedges on average, so the gaps open toward the top as the near form's do.
+    const f64 in = 0.15 * (x1 - x0);
+    const D3 hi0{x0 + in + (t0 - b0) * run, t0, 0}, hi1{x1 - in + (t1 - b1) * run, t1, 0};
+    auto at_z = [](D3 p, f64 z) { return D3{p.x, p.y, z}; };
+    quad(at_z(lo0, hw), at_z(lo1, hw), at_z(hi1, hw), at_z(hi0, hw), {0, 0, 1});
+    quad(at_z(lo0, -hw), at_z(lo1, -hw), at_z(hi1, -hw), at_z(hi0, -hw), {0, 0, -1});
+    quad(at_z(hi0, -hw), at_z(hi1, -hw), at_z(hi1, hw), at_z(hi0, hw), {0, 1, 0});
   }
-  if (in_group > 0)
-    top_box(b, s, gx0, gx1, s.body + 0.07, s.body + gtop0, 0.5 * s.top_w, k_swatch_mid,
-            s.body + gtop1);
 }
 
 void far_form(Builder& b, const Module& m, const Section& s, f64 broken_from) {
@@ -1939,8 +2228,13 @@ bool solve_module(const Module& m, assets::MeshData& out, ModuleReport& report,
   const Section s = section_of(m);
   report.length_m = s.L;
   b.indices = &out.indices;
+  // The layout's draws are keyed by the layout's own version, not the solver's (G189): a change to
+  // how a stone is drawn moves no stone, so a picture before and after shows the same wall, and
+  // the joint measure (module_tests.cpp) reads the layout it was held at. Reseeded with 5, G177's
+  // unchanged layout measures 70 joints of 4,560 through three courses and 24 through four against
+  // its own draws' 46 and 19 (walls.md, "Not yet": the bounds are G178's).
   Solver solver(m, s, b, report,
-                hash_combine(hash_combine(m.seed, k_wall_version), static_cast<u64>(m.kind)));
+                hash_combine(hash_combine(m.seed, k_layout_version), static_cast<u64>(m.kind)));
   solver.head = m.kind == ModuleKind::head;
   const f64 broken_from = solver.broken_from();
   if (m.kind == ModuleKind::strip) {

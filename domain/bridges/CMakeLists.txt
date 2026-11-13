@@ -21,8 +21,16 @@ engine_module(NAME bridges LAYER domain OPTIONAL WHOLE_ARCHIVE GENERATOR placeme
        bridges_schemas
   SOURCES src/plan.cpp src/mesh.cpp src/placement.cpp)
 
+# The planned-against-pasted ground case builds two tile sets, so it is compiled where the tile set
+# is: a test-only dependency, which a build with `ENGINE_WITH_TILESET=OFF` simply leaves out.
+set(_bridges_test_sources tests/bridges_tests.cpp tests/size_table.cpp)
+set(_bridges_test_deps "")
+if(TARGET engine_tileset)
+  list(APPEND _bridges_test_sources tests/ground_plan_tests.cpp)
+  list(APPEND _bridges_test_deps tileset)
+endif()
 engine_module_tests(NAME bridges
-  SOURCES tests/bridges_tests.cpp tests/size_table.cpp)
+  SOURCES ${_bridges_test_sources} DEPS ${_bridges_test_deps})
 
 engine_module_bench(NAME bridges
   SOURCES bench/bridges_bench.cpp)

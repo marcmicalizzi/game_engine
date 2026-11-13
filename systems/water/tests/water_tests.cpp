@@ -120,6 +120,59 @@ TEST_CASE("water: a wave shoals by Green's law and breaks at 0.78 of the depth")
                                        << " m high half as deep again offshore");
 }
 
+// S102 (docs/experiments/shore-mechanics.md, "Speed, direction and height before breaking"): what a
+// wave keeps until something takes it is its energy flux, E c_g with E = rho g H^2 / 8.
+TEST_CASE("water: a wave keeps its energy flux to the break, and loses it from there") {
+  const f64 g = gfx::k_swash_g;
+  f64 worst = 0.0;
+  for (const f64 period : {1.5, 4.7, 10.0}) {
+    const f64 omega = 2.0 * 3.14159265358979323846 / period;
+    const f64 k0 = omega * omega / g;
+    const f64 h0 = 0.05 * period * period;  // a steepness of about 0.03 at every period
+    // The group speed from the dispersion relation itself, d(omega)/dk by a central difference at
+    // the depth — not from the formula the shoaling coefficient is made of.
+    const auto group_speed = [&](f64 k, f64 d) {
+      const auto omega_of = [&](f64 q) { return std::sqrt(g * q * std::tanh(q * d)); };
+      const f64 e = 1e-5 * k;
+      return (omega_of(k + e) - omega_of(k - e)) / (2.0 * e);
+    };
+    const f64 flux0 = h0 * h0 * (0.5 * g / omega);  // deep water: c_g = g / (2 omega)
+    // Where it breaks: the shoaled height meets 0.78 d.
+    f64 lo = 1e-3, hi = 50.0;
+    for (u32 i = 0; i < 80; ++i) {
+      const f64 mid = 0.5 * (lo + hi);
+      (h0 * gfx::water_shoaling(gfx::water_wavenumber(k0, mid), mid) >
+               gfx::k_water_breaking_gamma * mid
+           ? lo
+           : hi) = mid;
+    }
+    const f64 breaking = 0.5 * (lo + hi);
+    // From 20 / k0 deep down to the break, in forty steps of equal ratio: the flux is deep water's.
+    const f64 deep = 20.0 / k0;
+    for (u32 s = 0; s <= 40; ++s) {
+      const f64 d = deep * std::pow(1.001 * breaking / deep, static_cast<f64>(s) / 40.0);
+      const f64 k = gfx::water_wavenumber(k0, d);
+      const f64 h = gfx::water_wave_height(h0, k0, d);
+      worst = std::max(worst, std::fabs(h * h * group_speed(k, d) / flux0 - 1.0));
+    }
+    // Inshore of it the bore is 0.78 d and the flux falls with every step towards the shore.
+    f64 last = flux0;
+    for (u32 s = 1; s <= 20; ++s) {
+      const f64 d = breaking * (1.0 - static_cast<f64>(s) / 21.0);
+      const f64 h = gfx::water_wave_height(h0, k0, d);
+      const f64 flux = h * h * group_speed(gfx::water_wavenumber(k0, d), d);
+      CHECK(flux < last);
+      last = flux;
+    }
+    CHECK(last <
+          0.01 * flux0);  // nearly all of it is gone a twentieth of the break depth from shore
+  }
+  MESSAGE("energy flux from deep water to the break: within " << worst << " of deep water's");
+  // The bound: the wavenumber's own residual (4e-9 of omega^2, the dispersion case above) and the
+  // difference's truncation, (1e-5)^2 of the group speed's curvature: under 1e-7 between them.
+  CHECK(worst < 1e-7);
+}
+
 TEST_CASE("water: the train arrives in sequence along a straight shore") {
   // A planar beach 1:20, the shore at x = 40 m, the bank beyond: 241 texels of 0.25 m.
   const u32 n = 241;
@@ -168,6 +221,128 @@ TEST_CASE("water: the train arrives in sequence along a straight shore") {
   MESSAGE("arrival: along the shore " << along_worst << " s, across it " << cross_worst
                                       << " of the travel time, over the bank " << bank_worst
                                       << " s");
+}
+
+// S102 (docs/experiments/shore-mechanics.md, "A wave has a direction"): a train that comes from
+// somewhere is turned by the depth as Snell's law says.
+TEST_CASE("water: a train that comes in at an angle turns to the beach by Snell's law") {
+  // The same planar beach, 1:20 with the shore at x = 40 m, twice as long along the shore so the
+  // part that is read has the wave's whole run behind it: 241 by 241 texels of 0.25 m.
+  const u32 n = 241;
+  const f64 texel = 0.25;
+  Vector<f32> depth(n * n);
+  for (u32 j = 0; j < n; ++j)
+    for (u32 i = 0; i < n; ++i)
+      depth[j * n + i] = static_cast<f32>((40.0 - texel * static_cast<f64>(i)) / 20.0);
+  const f64 period = gfx::swash_period(4.0);
+  const f64 omega = 2.0 * 3.14159265358979323846 / period;
+  const f64 k0 = omega * omega / gfx::k_swash_g;
+  // The source: every texel at least min(1 / k0, 0.8 of the deepest) deep, as the field takes it.
+  const f64 deepest = 2.0;
+  const f64 source = std::min(gfx::k_water_train_deep_kd / k0, 0.8 * deepest);
+  const f64 c_source = omega / gfx::water_wavenumber(k0, source);
+  // Thirty degrees off the shore's normal, travelling towards +x and +z.
+  const f64 sin0 = 0.5;
+  const Vec2 direction{0.8660254f, 0.5f};
+  Vector<f32> tau(n * n);
+  gfx::water_arrival_field(depth.data(), n, texel, period, tau.data(), 3, direction);
+  // Snell: along a straight coast the phase's slowness along the shore is kept, sin(theta) / c =
+  // sin(theta0) / c0, so the crest's angle to the beach falls with the celerity. Read where the
+  // wave has crossed the whole beach from the source (its run along the shore is under 19 m), by
+  // central differences over a metre.
+  f64 slowness_worst = 0.0, angle_worst_deg = 0.0;
+  f64 angle_at[3] = {0.0, 0.0, 0.0};
+  const f64 depths[3] = {1.2, 0.6, 0.3};
+  for (u32 j = 110; j <= 220; j += 10) {
+    for (u32 i = 8; i + 8 < n; ++i) {
+      const u32 at = j * n + i;
+      const f64 d = static_cast<f64>(depth[at]);
+      if (!(d > 0.2 && d < 0.9 * source)) continue;
+      const f64 tz = static_cast<f64>(tau[at + 2 * n] - tau[at - 2 * n]) / (4.0 * texel);
+      const f64 tx = static_cast<f64>(tau[at + 2] - tau[at - 2]) / (4.0 * texel);
+      slowness_worst = std::max(slowness_worst, std::fabs(tz * c_source / sin0 - 1.0));
+      const f64 c = omega / gfx::water_wavenumber(k0, d);
+      const f64 snell = std::asin(sin0 * c / c_source) * 57.29577951308232;
+      const f64 angle = std::atan2(tz, tx) * 57.29577951308232;
+      angle_worst_deg = std::max(angle_worst_deg, std::fabs(angle - snell));
+      if (j == 160)
+        for (u32 q = 0; q < 3; ++q)
+          if (std::fabs(d - depths[q]) < 0.5 * texel / 20.0 + 1e-6) angle_at[q] = angle;
+    }
+  }
+  MESSAGE("Snell on 1:20, 4 s, 30 degrees at "
+          << source << " m: the along-shore slowness within " << slowness_worst
+          << " of sin(theta0) / c0, the angle "
+          << "within " << angle_worst_deg << " degrees; " << angle_at[0] << ", " << angle_at[1]
+          << ", " << angle_at[2] << " degrees at 1.2, 0.6 and 0.3 m");
+  // The scheme is first-order (the destination texel's slowness, as the straight-on case above,
+  // which it holds to 2% of the travel time): the same 2% of the slowness, and the angle that
+  // follows from it — d(theta) = tan(theta) d(s) / s, under 0.7 degrees at 30.
+  CHECK(slowness_worst < 0.02);
+  CHECK(angle_worst_deg < 0.7);
+  // A crest's angle to the beach falls as it comes in.
+  CHECK(angle_at[0] > angle_at[1]);
+  CHECK(angle_at[1] > angle_at[2]);
+  CHECK(angle_at[2] > 5.0);
+  CHECK(angle_at[0] < 30.0);
+  // One end of the beach before the other: along the waterline the crest arrives later towards
+  // +z, by the same slowness.
+  const u32 shore = 159;  // x = 39.75 m, the last wet texel
+  const f64 lag = static_cast<f64>(tau[200 * n + shore] - tau[120 * n + shore]);
+  CHECK(lag == doctest::Approx(80.0 * texel * sin0 / c_source).epsilon(0.02));
+  // No direction is the default: every source texel leaves at once, the crest along the deep
+  // water's contour, and the whole waterline is reached together.
+  Vector<f32> still(n * n), before(n * n);
+  gfx::water_arrival_field(depth.data(), n, texel, period, still.data(), 3, Vec2{0.0f, 0.0f});
+  gfx::water_arrival_field(depth.data(), n, texel, period, before.data());
+  CHECK(std::memcmp(still.data(), before.data(), u64{n} * n * sizeof(f32)) == 0);
+  CHECK(std::fabs(static_cast<f64>(still[200 * n + shore] - still[120 * n + shore])) < 1e-4);
+}
+
+TEST_CASE("water: every stretch of shore knows its own slope") {
+  // One body, two beaches: 1:30 for z under 40 m, 1:8 past 60 m, eased between; the waterline
+  // along x = 30 m. 161 by 161 texels of 0.5 m.
+  const u32 n = 161;
+  const f64 texel = 0.5;
+  Vector<f32> depth(n * n);
+  const auto slope_at = [&](f64 z) {
+    const f64 t = std::clamp((z - 40.0) / 20.0, 0.0, 1.0);
+    const f64 s = t * t * (3.0 - 2.0 * t);
+    return 1.0 / 30.0 + (1.0 / 8.0 - 1.0 / 30.0) * s;
+  };
+  for (u32 j = 0; j < n; ++j)
+    for (u32 i = 0; i < n; ++i)
+      depth[j * n + i] = static_cast<f32>((30.0 - texel * static_cast<f64>(i)) *
+                                          slope_at(texel * static_cast<f64>(j)));
+  Vector<f32> slope(n * n);
+  gfx::water_shore_slope_field(depth.data(), n, texel, slope.data());
+  // Over the bank, at the waterline and out in the water alike, a place has its stretch's slope.
+  f64 gentle_worst = 0.0, steep_worst = 0.0;
+  for (u32 j = 0; j < n; ++j) {
+    const f64 z = texel * static_cast<f64>(j);
+    for (const u32 i : {10u, 40u, 59u, 61u, 80u, 120u}) {
+      const f64 here = static_cast<f64>(slope[j * n + i]);
+      if (z < 36.0) gentle_worst = std::max(gentle_worst, std::fabs(here * 30.0 - 1.0));
+      if (z > 64.0) steep_worst = std::max(steep_worst, std::fabs(here * 8.0 - 1.0));
+    }
+  }
+  MESSAGE("shore slope: within " << gentle_worst << " of 1:30 and " << steep_worst << " of 1:8");
+  // A plane's central difference is the plane's slope, to the map's f32.
+  CHECK(gentle_worst < 1e-4);
+  CHECK(steep_worst < 1e-4);
+  // Between them it rises monotonically along the waterline.
+  for (u32 j = 81; j < 120; ++j)
+    CHECK(slope[j * n + 59] >= slope[(j - 1) * n + 59] - 1e-6f);
+  // A map with no waterline: the default everywhere. The same field twice, to the bit.
+  Vector<f32> dry(n * n), none(n * n);
+  for (u32 i = 0; i < n * n; ++i)
+    dry[i] = -1.0f;
+  gfx::water_shore_slope_field(dry.data(), n, texel, none.data());
+  CHECK(none[0] == static_cast<f32>(gfx::k_swash_slope_default));
+  CHECK(none[n * n - 1] == static_cast<f32>(gfx::k_swash_slope_default));
+  Vector<f32> again(n * n);
+  gfx::water_shore_slope_field(depth.data(), n, texel, again.data());
+  CHECK(std::memcmp(slope.data(), again.data(), u64{n} * n * sizeof(f32)) == 0);
 }
 
 TEST_CASE("water: a body with a wind has its mesh grown over the bank, one without keeps its own") {
