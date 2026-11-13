@@ -1140,8 +1140,283 @@ bool bed_cells(const DepositPatch& p, Vector<u8>& active, Vector<u32>& cells,
     return fail(error, "patch triangle_budget (surface plus every fragment at minimum rung)");
   return true;
 }
+// The bed's triangles at `s` steps a spacing (its fine top, its underside and its walls), over the
+// cells `bed_cells` found.
+u64 bed_surface(const DepositPatch& p, const Vector<u8>& active, const Vector<u32>& cells, u64 s) {
+  const u32 w = p.width, h = p.depth;
+  auto present = [&](i32 x, i32 z) {
+    return x >= 0 && z >= 0 && x < static_cast<i32>(w - 1) && z < static_cast<i32>(h - 1) &&
+           active[static_cast<u32>(z) * (w - 1) + static_cast<u32>(x)] != 0;
+  };
+  u64 wall_edges = 0;
+  for (u32 a : cells) {
+    const i32 x = static_cast<i32>(a % w), z = static_cast<i32>(a / w);
+    wall_edges += static_cast<u64>(!present(x - 1, z) + !present(x + 1, z) + !present(x, z - 1) +
+                                   !present(x, z + 1));
+  }
+  return static_cast<u64>(cells.size()) * (2 * s * s + 2) + wall_edges * (s + 1);
+}
+// The finest form `solve_deposit` draws a patch at (rocks.md, "Where the triangles go"): the top's
+// steps a spacing, the loose fragments' finest rung, the blocks' rung, and the bed's triangles. One
+// function, so a piece's estimate (G191, `deposit_patch_triangles`) is the solve's own choice.
+struct DepositForm {
+  u32 sub = 1;
+  u32 rung = 4;
+  u32 block_rung = 4;
+  u32 each = 0;  // a loose fragment's share of what the bed leaves of the budget
+  u64 surface = 0;
+};
+DepositForm deposit_form(const DepositPatch& p, const Vector<u8>& active,
+                         const Vector<u32>& cells) {
+  // G143's third pass (rocks.md, "The bed is rubble"): the top is drawn `sub` steps a spacing, at
+  // k_clast_step_mm, raised by the clasts, as fine as the budget holds with every fragment at its
+  // block's rung beside it; the underside and the walls' feet stay on the samples.
+  DepositForm f;
+  const i64 spacing_mm = std::llround(wide(p.spacing_m) * 1000.0);
+  for (u32 s = static_cast<u32>(
+           std::clamp<i64>((spacing_mm + k_clast_step_mm / 2) / k_clast_step_mm, 1, 16));
+       s > 1; --s)
+    if (spacing_mm % s == 0 && bed_surface(p, active, cells, s) + 432ull * p.fragments <=
+                                   p.triangle_budget) {
+      f.sub = s;
+      break;
+    }
+  f.surface = bed_surface(p, active, cells, f.sub);
+  f.each = p.fragments > 0 ? (p.triangle_budget - static_cast<u32>(f.surface)) / p.fragments : 0;
+  for (u32 r : k_grid_rungs)
+    if (r <= 20 && triangles_of_grid(r) <= f.each) f.rung = r;
+  for (u32 r : k_grid_rungs)
+    if (triangles_of_grid(r) <= p.block_triangles) f.block_rung = r;
+  return f;
+}
+// At most what the finest form draws: the bed, every loose fragment at its rung and no finer than
+// the blocks' (`solve_deposit` builds a small one coarser), every block at the blocks' rung.
+u64 form_triangles(const DepositPatch& p, const DepositForm& f) {
+  return f.surface +
+         static_cast<u64>(p.fragments) * triangles_of_grid(std::min(f.rung, f.block_rung)) +
+         static_cast<u64>(p.blocks.size()) * triangles_of_grid(f.block_rung);
+}
+
+// ---- G191: a patch handed as pieces (rocks.md, "A patch under the cluster limit") ----
+constexpr u32 k_pieces_max = 16;
+// The deposit's cells of the whole's cells [x0, x1) x [z0, z1): any corner thicker than
+// k_min_depth, as `bed_cells` counts them before its bridges.
+u64 deposit_cells(const DepositPatch& p, u32 x0, u32 x1, u32 z0, u32 z1) {
+  const u32 w = p.width;
+  u64 n = 0;
+  for (u32 z = z0; z < z1; ++z)
+    for (u32 x = x0; x < x1; ++x) {
+      const u32 a = z * w + x;
+      if (std::max({p.thickness[a], p.thickness[a + 1], p.thickness[a + w],
+                    p.thickness[a + w + 1]}) > k_min_depth)
+        ++n;
+    }
+  return n;
+}
+// A piece being cut: the whole's cells [x0, x1) x [z0, z1), its share of the fragments and of the
+// budget, its patch and what its finest form holds at most.
+struct Cut {
+  u32 x0 = 0, x1 = 0, z0 = 0, z1 = 0;
+  DepositPatch patch;
+  u64 triangles = 0;
+  bool done = false;  // no cut leaves both sides a deposit that fits
+};
+// Whether a block's centre stands in the cut: a centre on a cut line belongs to the piece after it,
+// one on the whole's far edge to the last.
+bool block_in(const DepositPatch& p, const DepositBlock& b, u32 x0, u32 x1, u32 z0, u32 z1) {
+  const f64 s = wide(p.spacing_m), x = wide(b.x_m), z = wide(b.z_m);
+  return (x0 == 0 || x >= s * x0) && (x1 + 1 == p.width || x < s * x1) &&
+         (z0 == 0 || z >= s * z0) && (z1 + 1 == p.depth || z < s * z1);
+}
+// The piece of `p` over its cells [x0, x1) x [z0, z1) holding `fragments`. Its budget is its own
+// bed at the whole's steps and each fragment the whole's share (`DepositForm::each`), so
+// `deposit_form` chooses the whole's steps and the whole's rungs for it (finer steps only where
+// its bed has fewer walls a cell than the whole's and the whole's budget stopped short of them).
+// False when it holds no deposit or does not fit.
+bool make_cut(const DepositPatch& p, const DepositForm& form, u32 x0, u32 x1, u32 z0, u32 z1,
+              u32 fragments, Cut& out) {
+  out = {};
+  out.x0 = x0;
+  out.x1 = x1;
+  out.z0 = z0;
+  out.z1 = z1;
+  DepositPatch& q = out.patch;
+  q = p;
+  q.width = x1 - x0 + 1;
+  q.depth = z1 - z0 + 1;
+  q.ground.clear();
+  q.thickness.clear();
+  q.coarse.clear();
+  q.sink.clear();
+  q.slope.clear();
+  q.blocks.clear();
+  for (u32 z = z0; z <= z1; ++z)
+    for (u32 x = x0; x <= x1; ++x) {
+      const u32 i = z * p.width + x;
+      q.ground.push_back(p.ground[i]);
+      q.thickness.push_back(p.thickness[i]);
+      q.coarse.push_back(p.coarse[i]);
+      if (!p.sink.empty()) q.sink.push_back(p.sink[i]);
+      if (!p.slope.empty()) {
+        q.slope.push_back(p.slope[2 * i]);
+        q.slope.push_back(p.slope[2 * i + 1]);
+      }
+    }
+  const i64 spacing_mm = std::llround(wide(p.spacing_m) * 1000.0);
+  q.origin_mm = {p.origin_mm[0] + static_cast<i64>(x0) * spacing_mm,
+                 p.origin_mm[1] + static_cast<i64>(z0) * spacing_mm};
+  const f64 s = wide(p.spacing_m);
+  for (const DepositBlock& b : p.blocks) {
+    if (!block_in(p, b, x0, x1, z0, z1)) continue;
+    DepositBlock local = b;
+    local.x_m = static_cast<f32>(std::clamp(wide(b.x_m) - s * x0, 0.0, s * (x1 - x0)));
+    local.z_m = static_cast<f32>(std::clamp(wide(b.z_m) - s * z0, 0.0, s * (z1 - z0)));
+    q.blocks.push_back(local);
+  }
+  q.fragments = fragments;
+  q.triangle_budget = 1000000;  // for its cells; set below
+  Vector<u8> active;
+  Vector<u32> cells;
+  u32 surface = 0;
+  std::string why;
+  if (!bed_cells(q, active, cells, surface, why)) return false;
+  const u64 own = std::max<u64>(
+      500, bed_surface(q, active, cells, form.sub) + static_cast<u64>(fragments) * form.each);
+  if (own > 1000000) return false;
+  q.triangle_budget = static_cast<u32>(own);
+  if (!bed_cells(q, active, cells, surface, why)) return false;
+  out.triangles = form_triangles(q, deposit_form(q, active, cells));
+  return true;
+}
+// Cut `c` in two along a line of samples where the deposit's triangles balance, its longer side
+// first; false when neither side leaves both pieces a deposit that fits.
+bool split_cut(const DepositPatch& p, const DepositForm& form, const Cut& c, Cut& a, Cut& b) {
+  const u32 cells_x = c.x1 - c.x0, cells_z = c.z1 - c.z0;
+  const u64 deposit = deposit_cells(p, c.x0, c.x1, c.z0, c.z1);
+  const u64 n_cells = std::max<u64>(1, deposit);
+  // A cell's triangles, in units of 1/n_cells: its bed at the whole's steps and its share of the
+  // fragments; a block's, the blocks' rung's. Integers, so the cut is the same on every toolchain.
+  const u64 cell_weight =
+      (2ull * form.sub * form.sub + 2) * n_cells +
+      static_cast<u64>(c.patch.fragments) * triangles_of_grid(std::min(form.rung, form.block_rung));
+  const u64 block_weight = static_cast<u64>(triangles_of_grid(form.block_rung)) * n_cells;
+  for (u32 pass = 0; pass < 2; ++pass) {
+    const bool along_x = (cells_x >= cells_z) == (pass == 0);
+    const u32 n = along_x ? cells_x : cells_z;
+    if (n < 2) continue;
+    Vector<u64> weight(n, 0);
+    for (u32 k = 0; k < n; ++k) {
+      const u64 cells = along_x ? deposit_cells(p, c.x0 + k, c.x0 + k + 1, c.z0, c.z1)
+                                : deposit_cells(p, c.x0, c.x1, c.z0 + k, c.z0 + k + 1);
+      weight[k] = cells * cell_weight;
+    }
+    const f64 s = wide(p.spacing_m);
+    for (const DepositBlock& block : p.blocks) {
+      if (!block_in(p, block, c.x0, c.x1, c.z0, c.z1)) continue;
+      const f64 at = along_x ? wide(block.x_m) / s : wide(block.z_m) / s;
+      const i64 column = static_cast<i64>(std::floor(at)) - (along_x ? c.x0 : c.z0);
+      weight[static_cast<u32>(std::clamp<i64>(column, 0, static_cast<i64>(n) - 1))] +=
+          block_weight;
+    }
+    u64 total = 0;
+    for (u64 v : weight)
+      total += v;
+    u64 before = 0, best_gap = ~0ull;
+    u32 best = 0;
+    for (u32 k = 1; k < n; ++k) {
+      before += weight[k - 1];
+      if (before == 0 || before == total) continue;
+      const u64 gap = 2 * before > total ? 2 * before - total : total - 2 * before;
+      if (gap < best_gap) {
+        best_gap = gap;
+        best = k;
+      }
+    }
+    if (best == 0) continue;
+    const u32 ax1 = along_x ? c.x0 + best : c.x1, az1 = along_x ? c.z1 : c.z0 + best;
+    const u32 bx0 = along_x ? c.x0 + best : c.x0, bz0 = along_x ? c.z0 : c.z0 + best;
+    // The fragments shared by the deposit's cells (by area where it has none).
+    u64 share_a = deposit_cells(p, c.x0, ax1, c.z0, az1), share = deposit;
+    if (deposit == 0) {
+      share_a = static_cast<u64>(ax1 - c.x0) * (az1 - c.z0);
+      share = static_cast<u64>(cells_x) * cells_z;
+    }
+    const u32 fragments_a =
+        static_cast<u32>((static_cast<u64>(c.patch.fragments) * share_a + share / 2) / share);
+    if (!make_cut(p, form, c.x0, ax1, c.z0, az1, fragments_a, a)) continue;
+    if (!make_cut(p, form, bx0, c.x1, bz0, c.z1, c.patch.fragments - fragments_a, b)) continue;
+    return true;
+  }
+  return false;
+}
 std::atomic<u64> g_solves{0};
+std::atomic<u64> g_reduced{0};
 }  // namespace
+
+bool deposit_patch_triangles(const DepositPatch& p, u64& out, std::string& error) {
+  out = 0;
+  Vector<u8> active;
+  Vector<u32> cells;
+  u32 surface = 0;
+  if (!bed_cells(p, active, cells, surface, error)) return false;
+  out = form_triangles(p, deposit_form(p, active, cells));
+  return true;
+}
+
+void deposit_patch_pieces(const DepositPatch& whole, Vector<DepositPiece>& out, u64 triangles_max) {
+  out.clear();
+  Vector<u8> active;
+  Vector<u32> cells;
+  u32 surface = 0;
+  std::string why;
+  DepositForm form;
+  Vector<Cut> cuts;
+  if (bed_cells(whole, active, cells, surface, why)) {
+    form = deposit_form(whole, active, cells);
+    Cut first;
+    first.x1 = whole.width - 1;
+    first.z1 = whole.depth - 1;
+    first.patch = whole;
+    first.triangles = form_triangles(whole, form);
+    cuts.push_back(std::move(first));
+  }
+  // The piece holding the most over the limit is cut next (the first of a tie), so the pieces are
+  // a function of the patch, never of an order of work.
+  while (cuts.size() < k_pieces_max) {
+    u32 next = ~0u;
+    for (u32 k = 0; k < cuts.size(); ++k)
+      if (!cuts[k].done && cuts[k].triangles > triangles_max &&
+          (next == ~0u || cuts[k].triangles > cuts[next].triangles))
+        next = k;
+    if (next == ~0u) break;
+    Cut a, b;
+    if (!split_cut(whole, form, cuts[next], a, b)) {
+      cuts[next].done = true;
+      continue;
+    }
+    cuts[next] = std::move(a);
+    cuts.insert(next + 1, std::move(b));
+  }
+  if (cuts.size() <= 1) {
+    DepositPiece one;
+    one.patch = whole;
+    out.push_back(std::move(one));
+    return;
+  }
+  for (Cut& c : cuts) {
+    DepositPiece piece;
+    piece.patch = std::move(c.patch);
+    // Each piece its own draw of loose stones, named by its corner in the whole (the bed's clasts
+    // are anchored to the world, so they are the whole's).
+    piece.patch.seed =
+        hash_combine(whole.seed, (static_cast<u64>(c.x0) << 32) | static_cast<u64>(c.z0));
+    piece.sample_x = c.x0;
+    piece.sample_z = c.z0;
+    out.push_back(std::move(piece));
+  }
+}
+
+u64 deposit_builds_reduced() { return g_reduced.load(std::memory_order_relaxed); }
 
 bool deposit_patch_fits(const DepositPatch& p, std::string& error) {
   Vector<u8> active;
@@ -1167,33 +1442,11 @@ bool solve_deposit(const DepositPatch& p, assets::MeshData& out, std::string& er
     return x >= 0 && z >= 0 && x < static_cast<i32>(w - 1) && z < static_cast<i32>(h - 1) &&
            active[static_cast<u32>(z) * (w - 1) + static_cast<u32>(x)] != 0;
   };
-  // G143's third pass (rocks.md, "The bed is rubble"): the top is drawn `sub` steps a spacing, at
-  // k_clast_step_mm, raised by the clasts, as fine as the budget holds with every fragment at its
-  // block's rung beside it; the underside and the walls' feet stay on the samples.
+  // The top's steps a spacing and the stones' rungs (`deposit_form`, rocks.md, "The bed is
+  // rubble" and "Where the triangles go").
   const i64 spacing_mm = std::llround(wide(p.spacing_m) * 1000.0);
-  u32 wall_edges = 0;
-  for (u32 a : cells) {
-    const i32 x = static_cast<i32>(a % w), z = static_cast<i32>(a / w);
-    wall_edges += static_cast<u32>(!present(x - 1, z) + !present(x + 1, z) + !present(x, z - 1) +
-                                   !present(x, z + 1));
-  }
-  auto surface_of = [&](u64 s) {
-    return static_cast<u64>(cells.size()) * (2 * s * s + 2) +
-           static_cast<u64>(wall_edges) * (s + 1);
-  };
-  u32 sub = 1;
-  for (u32 s = static_cast<u32>(
-           std::clamp<i64>((spacing_mm + k_clast_step_mm / 2) / k_clast_step_mm, 1, 16));
-       s > 1; --s)
-    if (spacing_mm % s == 0 && surface_of(s) + 432ull * p.fragments <= p.triangle_budget) {
-      sub = s;
-      break;
-    }
-  surface_triangles = static_cast<u32>(surface_of(sub));
-  u32 rung = 4;
-  const u32 each = p.fragments > 0 ? (p.triangle_budget - surface_triangles) / p.fragments : 0;
-  for (u32 r : k_grid_rungs)
-    if (r <= 20 && triangles_of_grid(r) <= each) rung = r;
+  const DepositForm form = deposit_form(p, active, cells);
+  const u32 sub = form.sub, rung = form.rung;
   assets::MeshData mesh;
   assets::Material mat = rock_material(p.type);
   material_factors(p.material, mat.base_color, mat.roughness);
@@ -1421,9 +1674,7 @@ bool solve_deposit(const DepositPatch& p, assets::MeshData& out, std::string& er
   // onto the plane of the top under its centre, so it rests on it on every side and never stands
   // proud of a slope. The plane, not the patch's grid, so a block over the patch's edge sits as
   // well as one inside it.
-  u32 block_rung = 4;
-  for (u32 r : k_grid_rungs)
-    if (triangles_of_grid(r) <= p.block_triangles) block_rung = r;
+  const u32 block_rung = form.block_rung;
   for (const DepositBlock& b : p.blocks) {
     const u32 first = mesh.positions.size();
     const f64 x = wide(b.x_m), y = wide(b.y_m), z = wide(b.z_m);
@@ -1485,7 +1736,7 @@ u64 deposit_source_hash(const DepositPatch& p) {
 
 bool build_deposit_container(const DepositPatch& input, const geometry::ClusterLodOptions& lod,
                              u32 page_bytes, geometry::ClusterFileData& out, std::string& error,
-                             const materials::Pack* pack) {
+                             const materials::Pack* pack, u32 clusters_max) {
   out = {};
   DepositPatch p = input;
   materials::MaterialSet set;
@@ -1521,7 +1772,8 @@ bool build_deposit_container(const DepositPatch& input, const geometry::ClusterL
   // most `k_deposit_clusters_max` clusters and refuses a larger one at the walk. The builder cannot
   // be given a bound that holds the cluster DAG under it (meshoptimizer bounds one clustering's
   // clusters by 3T / (max_vertices - 2), 6,194 at 128,000 triangles, and no bound holds the levels
-  // above it), so the build holds it: a patch whose DAG is over the limit is built again at half its
+  // above it). The generator hands a dense patch as pieces (`deposit_patch_pieces`) far under it;
+  // the build is what holds it: a patch whose DAG is over `clusters_max` is built again at half its
   // triangle budget, half its fragments and half its blocks' rung, a function of the recipe alone,
   // and a patch still over it at the least budget is refused here, naming it and its count.
   assets::MeshData mesh;
@@ -1564,17 +1816,22 @@ bool build_deposit_container(const DepositPatch& input, const geometry::ClusterL
     for (u32& o : owner)
       o = part_material[o];
     const u64 clusters = out.mesh.mesh.clusters.size();
-    if (clusters <= k_deposit_clusters_max) break;
-    const bool least = q.triangle_budget <= 500 && q.fragments == 0 && q.block_triangles <= 192;
-    if (least || attempt + 1 >= k_deposit_cluster_attempts) {
+    if (clusters <= clusters_max) {
+      if (attempt > 0) g_reduced.fetch_add(1, std::memory_order_relaxed);
+      break;
+    }
+    auto refuse = [&] {
       char hash[24];
       std::snprintf(hash, sizeof(hash), "%016llx",
                     static_cast<unsigned long long>(deposit_source_hash(input)));
       error = std::string("engine.rocks deposits: patch deposit-") + hash + " builds " +
-              std::to_string(clusters) + " clusters at its least budget, over the " +
-              std::to_string(k_deposit_clusters_max) + " a streamed host admits";
+              std::to_string(clusters) + " clusters after " + std::to_string(attempt + 1) +
+              (attempt == 0 ? " build" : " builds") + ", over the " + std::to_string(clusters_max) +
+              " a streamed host admits";
       return false;
-    }
+    };
+    const bool least = q.triangle_budget <= 500 && q.fragments == 0 && q.block_triangles <= 192;
+    if (least || attempt + 1 >= k_deposit_cluster_attempts) return refuse();
     ENGINE_LOG_INFO(log_deposit_build, "deposit patch built again under the cluster limit",
                     log::field("patch", deposit_source_hash(input)), log::field("clusters", clusters),
                     log::field("triangle_budget", static_cast<u64>(q.triangle_budget)),
@@ -1585,10 +1842,7 @@ bool build_deposit_container(const DepositPatch& input, const geometry::ClusterL
     q.block_triangles = std::max<u32>(192, q.block_triangles / 2);
     std::string why;
     if (!deposit_patch_fits(q, why)) q.fragments = 0;
-    if (!deposit_patch_fits(q, why)) {
-      error = why;
-      return false;
-    }
+    if (!deposit_patch_fits(q, why)) return refuse();
   }
   if (page_bytes > 0) {
     geometry::ClusterPagesOptions pages;

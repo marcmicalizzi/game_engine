@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 
 using namespace engine;
 using namespace engine::rocks;
@@ -360,54 +361,133 @@ TEST_CASE("deposits: a tile's patches arrive with it, none past far_rings, and o
   desc->close(again);
 }
 
-TEST_CASE("deposits: a patch at the forest's density builds under a streamed host's cluster limit") {
-  // G191: a streamed host refuses a tile mesh over 4,096 clusters at the walk, and the cluster
-  // count follows the patch's separate parts (its fragments and blocks) more than its triangles.
-  // Each case is a 16 m patch at the forest's 128,000 triangles a patch whose budget and blocks
-  // the generator's open admitted before (under 160,000 together); the build holds every one under
-  // the limit, building again at half the budget where the first build is over it.
+namespace {
+// A 16 m patch at 0.5 m samples, its deposit everywhere but where `bare` says, at the forest's
+// 128,000 triangles a patch, with `fragments` loose stones and `blocks` shed blocks.
+DepositPatch dense_patch(u32 fragments, u32 blocks, bool bare_half = false) {
+  DepositPatch p;
+  p.width = 33;
+  p.depth = 33;
+  p.spacing_m = .5f;
+  p.triangle_budget = 128000;
+  p.fragments = fragments;
+  p.fragment_m = .25f;
+  p.origin_mm = {64000, 32000};
+  p.seed = 77;
+  for (u32 z = 0; z < p.depth; ++z)
+    for (u32 x = 0; x < p.width; ++x) {
+      p.ground.push_back(-.1f * static_cast<f32>(x) * .5f);
+      const bool bare = bare_half && x < 20;
+      p.thickness.push_back(bare ? 0.0f
+                                 : 1.0f + .5f * static_cast<f32>((x * 7 + z * 3) % 5) / 5.0f);
+      p.coarse.push_back(static_cast<f32>(x) / 32.0f);
+    }
+  for (u32 b = 0; b < blocks; ++b) {
+    DepositBlock block;
+    block.x_m = .5f + static_cast<f32>((b * 37) % 31) * .5f;
+    block.z_m = .5f + static_cast<f32>((b * 53) % 31) * .5f;
+    block.y_m = 1.2f;
+    block.half[0] = .35f + .1f * static_cast<f32>(b % 3);
+    block.half[1] = .2f;
+    block.half[2] = .3f;
+    block.seed = 1000 + b;
+    p.blocks.push_back(block);
+  }
+  return p;
+}
+}  // namespace
+
+TEST_CASE("deposits: a dense patch is handed as pieces that keep what it holds") {
+  // G191 (rocks.md, "A patch under the cluster limit"): a patch whose finest form holds more than
+  // k_deposit_piece_triangles is handed as pieces, each an ordinary patch over a rectangle of its
+  // samples; together they hold every fragment and block of the whole, at the whole's steps and
+  // rungs, so the pieces' finest forms hold the whole's triangles plus the walls at their cuts and
+  // nothing less; each piece builds under a streamed host's cluster limit without building again.
   struct Case {
     u32 fragments;
     u32 blocks;
+    bool bare_half;
   };
-  for (const Case k : {Case{96, 60}, Case{320, 60}, Case{600, 70}}) {
+  for (const Case k : {Case{24, 0, false}, Case{96, 60, false}, Case{320, 60, false},
+                       Case{600, 70, false}, Case{96, 60, true}}) {
     CAPTURE(k.fragments);
     CAPTURE(k.blocks);
-    DepositPatch p;
-    p.width = 33;
-    p.depth = 33;
-    p.spacing_m = .5f;
-    p.triangle_budget = 128000;
-    p.fragments = k.fragments;
-    p.fragment_m = .25f;
-    p.origin_mm = {64000, 32000};
-    for (u32 z = 0; z < p.depth; ++z)
-      for (u32 x = 0; x < p.width; ++x) {
-        p.ground.push_back(-.1f * static_cast<f32>(x) * .5f);
-        p.thickness.push_back(1.0f + .5f * static_cast<f32>((x * 7 + z * 3) % 5) / 5.0f);
-        p.coarse.push_back(static_cast<f32>(x) / 32.0f);
-      }
-    for (u32 b = 0; b < k.blocks; ++b) {
-      DepositBlock block;
-      block.x_m = .5f + static_cast<f32>((b * 37) % 31) * .5f;
-      block.z_m = .5f + static_cast<f32>((b * 53) % 31) * .5f;
-      block.y_m = 1.2f;
-      block.half[0] = .35f + .1f * static_cast<f32>(b % 3);
-      block.half[1] = .2f;
-      block.half[2] = .3f;
-      block.seed = 1000 + b;
-      p.blocks.push_back(block);
-    }
+    CAPTURE(k.bare_half);
+    const DepositPatch whole = dense_patch(k.fragments, k.blocks, k.bare_half);
     std::string error;
-    REQUIRE_MESSAGE(deposit_patch_fits(p, error), error);
-    CHECK(static_cast<u64>(p.triangle_budget) + static_cast<u64>(k.blocks) * p.block_triangles <=
-          160000);  // a patch the open admitted before G191's bound
+    u64 triangles = 0;
+    REQUIRE_MESSAGE(deposit_patch_triangles(whole, triangles, error), error);
+    Vector<DepositPiece> pieces;
+    deposit_patch_pieces(whole, pieces);
+    REQUIRE_FALSE(pieces.empty());
+    CHECK((pieces.size() > 1) == (triangles > k_deposit_piece_triangles));
+    u64 fragments = 0, blocks = 0, sum = 0, cut_walls = 0;
+    for (const DepositPiece& piece : pieces) {
+      REQUIRE_MESSAGE(deposit_patch_fits(piece.patch, error), error);
+      u64 t = 0;
+      REQUIRE(deposit_patch_triangles(piece.patch, t, error));
+      CHECK(t <= k_deposit_piece_triangles);
+      sum += t;
+      fragments += piece.patch.fragments;
+      blocks += piece.patch.blocks.size();
+      // Its corner is the whole's corner plus its samples, so its clasts are the whole's.
+      CHECK(piece.patch.origin_mm[0] == whole.origin_mm[0] + piece.sample_x * 500);
+      CHECK(piece.patch.origin_mm[1] == whole.origin_mm[1] + piece.sample_z * 500);
+      // The walls a cut adds: one side of each of its interior borders, at most 11 triangles an
+      // edge (five steps a spacing).
+      const u32 inner = (piece.sample_x > 0) + (piece.sample_z > 0) +
+                        (piece.sample_x + piece.patch.width < whole.width) +
+                        (piece.sample_z + piece.patch.depth < whole.depth);
+      cut_walls += static_cast<u64>(inner) * 32 * 6 * 2;
+    }
+    MESSAGE(pieces.size(), " pieces: the whole's finest form ", triangles, " triangles, the pieces' ",
+            sum);
+    CHECK(fragments == whole.fragments);
+    CHECK(blocks == whole.blocks.size());
+    CHECK(sum >= triangles);
+    CHECK(sum <= triangles + cut_walls);
+    // The pieces are a function of the patch.
+    Vector<DepositPiece> again;
+    deposit_patch_pieces(whole, again);
+    REQUIRE(again.size() == pieces.size());
+    for (u32 i = 0; i < pieces.size(); ++i)
+      CHECK(deposit_source_hash(again[i].patch) == deposit_source_hash(pieces[i].patch));
+  }
+}
+
+TEST_CASE("deposits: each piece of a patch at the forest's density builds under the cluster "
+          "limit, and a container over it is refused by name") {
+  // G191: the build is what holds the bound. Every piece of the densest case builds under 4,096
+  // clusters at its first build (nothing is built again at half its budget), and a container that
+  // stays over a limit is refused with a sentence naming the patch and its count.
+  const DepositPatch whole = dense_patch(600, 70);
+  Vector<DepositPiece> pieces;
+  deposit_patch_pieces(whole, pieces);
+  REQUIRE(pieces.size() > 1);
+  const u64 reduced = deposit_builds_reduced();
+  std::string error;
+  u64 most = 0;
+  for (const DepositPiece& piece : pieces) {
     geometry::ClusterFileData data;
-    REQUIRE_MESSAGE(build_deposit_container(p, {}, 0, data, error), error);
-    MESSAGE("fragments ", k.fragments, ", blocks ", k.blocks, ": ", data.mesh.mesh.clusters.size(),
-            " clusters, ", data.mesh.leaf_triangle_count, " triangles at the finest form");
+    REQUIRE_MESSAGE(build_deposit_container(piece.patch, {}, 0, data, error), error);
+    most = std::max<u64>(most, data.mesh.mesh.clusters.size());
+    MESSAGE("a piece: ", data.mesh.mesh.clusters.size(), " clusters, ",
+            data.mesh.leaf_triangle_count, " triangles at the finest form");
     CHECK(data.mesh.mesh.clusters.size() <= k_deposit_clusters_max);
   }
+  CHECK(deposit_builds_reduced() == reduced);
+  MESSAGE("the most clusters a piece: ", most);
+  // A small patch against a limit no build can meet: built again, then refused, by name.
+  DepositPatch small = dense_patch(8, 4);
+  small.triangle_budget = 20000;
+  geometry::ClusterFileData data;
+  CHECK_FALSE(build_deposit_container(small, {}, 0, data, error, nullptr, 4));
+  char name[24];
+  std::snprintf(name, sizeof(name), "%016llx",
+                static_cast<unsigned long long>(deposit_source_hash(small)));
+  CHECK(error.find(std::string("patch deposit-") + name) != std::string::npos);
+  CHECK(error.find("over the 4 a streamed host admits") != std::string::npos);
+  MESSAGE(error);
 }
 
 namespace {
@@ -471,8 +551,9 @@ TEST_CASE("deposits: what a kilometre of massif foot costs at load and a tile (m
   for (const auto& m : whole.meshes)
     recipe_bytes += m.recipe.size();
   // Every tile's patches built, as the host builds a tile's meshes when it activates.
-  Vector<f64> tile_ms;
+  Vector<f64> tile_ms, mesh_ms;
   u64 triangles = 0, bytes = 0, clusters_max = 0, built = 0;
+  const u64 reduced = deposit_builds_reduced();
   f64 all_ms = 0;
   for (i32 tz = -8; tz < 8; ++tz)
     for (i32 tx = -2; tx < 2; ++tx) {
@@ -490,7 +571,10 @@ TEST_CASE("deposits: what a kilometre of massif foot costs at load and a tile (m
         geometry::ClusterFileData data;
         const auto b = std::chrono::steady_clock::now();
         REQUIRE_MESSAGE(build_deposit_container(patch, {}, 0, data, error), error);
-        ms += std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - b).count();
+        const f64 one_ms =
+            std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - b).count();
+        ms += one_ms;
+        mesh_ms.push_back(one_ms);
         triangles += data.mesh.leaf_triangle_count;
         clusters_max = std::max<u64>(clusters_max, data.mesh.mesh.clusters.size());
         const std::string path = dir + "/p.clusters";
@@ -505,8 +589,17 @@ TEST_CASE("deposits: what a kilometre of massif foot costs at load and a tile (m
     }
   desc->close(state);
   std::sort(tile_ms.begin(), tile_ms.end());
+  std::sort(mesh_ms.begin(), mesh_ms.end());
+  // G191's pieces: how many meshes the patches were handed as, the longest one mesh's build (a
+  // tile's meshes build on the host's pool, so the longest is what a tile waits at least), and how
+  // many containers were built again at half their budget (none is the pieces' purpose).
+  MESSAGE("meshes ", whole.meshes.size(), " for ", whole.things, " patches; one mesh's build median ",
+          mesh_ms.empty() ? 0.0 : mesh_ms[mesh_ms.size() / 2], " ms, max ",
+          mesh_ms.empty() ? 0.0 : mesh_ms.back(), " ms; built again at half the budget ",
+          deposit_builds_reduced() - reduced);
+  CHECK(deposit_builds_reduced() == reduced);
   MESSAGE("a kilometre of massif foot at ", budget, " a patch: ", whole.instances.size(),
-          " patches over ", tile_ms.size(), " tiles; open ", open_ms, " ms, the second open ",
+          " meshes over ", tile_ms.size(), " tiles; open ", open_ms, " ms, the second open ",
           reopen_ms, " ms; recipes ", recipe_bytes,
           " bytes; every patch built (the load before G191) ", all_ms, " ms, ", triangles,
           " triangles, ", bytes, " bytes of containers, the largest patch ", clusters_max,

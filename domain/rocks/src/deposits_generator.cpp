@@ -444,27 +444,51 @@ bool allowed(const Entry& e, const PatchPlace& p, const scene_gen::Context& c) {
   }
   return true;
 }
-// G191: a patch's mesh, handed as its recipe with the placement that names it.
+// G191: a patch's mesh, handed as its recipe with the placement that names it; a patch whose
+// finest form is over `k_deposit_piece_triangles` as its pieces (rocks.md, "A patch under the
+// cluster limit"), each its own mesh and placement at its own corner, so no mesh a tile hands is
+// over a streamed host's cluster limit and none is coarser or sparser than the patch it is of.
 void hand(const Entry& e, const PatchPlace& at, scene_gen::Placements& out) {
   DepositPatch p;
   i64 x0 = 0, z0 = 0, x1 = 0, z1 = 0;
   f64 y0 = 0, overhang = 0;
   bool any = false;
   make_patch(e, at.bx, at.bz, at.placement.id, p, x0, z0, y0, x1, z1, any, overhang);
+  Vector<DepositPiece> pieces;
+  deposit_patch_pieces(p, pieces);
+  const i64 spacing_mm = e.plan->spacing_mm;
+  const u64 patch_count = static_cast<u64>(e.columns * e.rows);
   JsonWriteOptions compact;
   compact.pretty = false;
-  std::string text = write_json(schema::to_json(p), compact);
-  char name[64];
-  std::snprintf(name, sizeof(name), "deposit-%016llx.deposit.json",
-                static_cast<unsigned long long>(deposit_source_hash(p)));
-  // Its reach from its corner: the patch's diagonal and the largest block's overhang past it.
-  const f64 reach = std::sqrt(at.width * at.width + at.depth * at.depth) + overhang;
-  scene_gen::Placement placed = at.placement;
-  placed.mesh = out.meshes.size();  // no resident kit: a tile's meshes are all its own
-  out.meshes.push_back(scene_gen::PlacementMesh(io::join_path(e.root, name),
-                                                std::string("deposits/") + name, 0, std::move(text),
-                                                static_cast<f32>(reach)));
-  out.instances.push_back(placed);
+  for (u32 k = 0; k < pieces.size(); ++k) {
+    const DepositPatch& piece = pieces[k].patch;
+    std::string text = write_json(schema::to_json(piece), compact);
+    char name[64];
+    std::snprintf(name, sizeof(name), "deposit-%016llx.deposit.json",
+                  static_cast<unsigned long long>(deposit_source_hash(piece)));
+    // Its reach from its corner: its diagonal and its largest block's overhang past it.
+    f64 overhang_k = 0;
+    for (const DepositBlock& b : piece.blocks)
+      overhang_k = std::max(overhang_k, static_cast<f64>(std::max(b.half[0], b.half[2])));
+    const f64 w = static_cast<f64>(static_cast<i64>(piece.width - 1) * spacing_mm) / 1000.0;
+    const f64 d = static_cast<f64>(static_cast<i64>(piece.depth - 1) * spacing_mm) / 1000.0;
+    const f64 reach = pieces.size() == 1
+                          ? std::sqrt(at.width * at.width + at.depth * at.depth) + overhang
+                          : std::sqrt(w * w + d * d) + overhang_k;
+    scene_gen::Placement placed = at.placement;
+    // A piece's corner, in whole millimetres; the patch's height, which its samples are from.
+    placed.position.x =
+        static_cast<f64>(x0 + static_cast<i64>(pieces[k].sample_x) * spacing_mm) / 1000.0;
+    placed.position.z =
+        static_cast<f64>(z0 + static_cast<i64>(pieces[k].sample_z) * spacing_mm) / 1000.0;
+    // The first piece keeps the patch's name; the k-th is named past every patch's.
+    placed.id = static_cast<u32>(at.placement.id + k * patch_count);
+    placed.mesh = out.meshes.size();  // no resident kit: a tile's meshes are all its own
+    out.meshes.push_back(scene_gen::PlacementMesh(io::join_path(e.root, name),
+                                                  std::string("deposits/") + name, 0,
+                                                  std::move(text), static_cast<f32>(reach)));
+    out.instances.push_back(placed);
+  }
   ++out.things;
 }
 // The form a ring draws (G191): 0 the patches, 1 nothing past `far_rings`. A whole read is near.

@@ -1657,8 +1657,9 @@ recipe's `path` is where its file would be, under the host's derived-data root's
 host builds a patch's mesh when the first tile naming it activates, through the derived-data cache
 keyed by the recipe, and lets it go after the last. `DepositLayer::far_rings` (version 3, 1-8,
 default 3, as the ledges') is how many of the world's rings draw the deposits: a tile in a ring past
-it hands nothing (`Placements::kind` 1), and the cluster DAG is the far form within. A patch is held
-under a streamed host's cluster limit by its build ([A patch under the cluster limit](#a-patch-under-the-cluster-limit)). What
+it hands nothing (`Placements::kind` 1), and the cluster DAG is the far form within. A dense patch
+is handed as pieces, and every mesh is held under a streamed host's cluster limit by its build
+([A patch under the cluster limit](#a-patch-under-the-cluster-limit)). What
 stays resident for the entry is the plan (its per-sample ground, thickness, coarse, sink, slope and
 rock, 29 bytes a sample, the drainage dropped after planning), its blocks, and 72 bytes a candidate
 patch: 5.7 MB for the kilometre below.
@@ -1702,19 +1703,50 @@ to the vertex limit, not the triangle limit, which is why the count follows the 
 triangles. Above the leaves, each level simplifies a group of clusters to half (and keeps any group
 that will not go under 85%) and clusters it again; the groups' sizes are the partitioner's and are
 not bounded below, so the levels' sum has no bound short of the leaves' count times the levels' (19
-at a 0.85 ratio). A bound that held by construction would cap a patch near 30,000 triangles and
-throw away the forest's density for the worst case of a partitioner.
+at a 0.85 ratio). A bound that held by construction for one mesh would cap it far under the
+forest's density.
 
-**So the build holds it.** `build_deposit_container` counts the merged DAG's clusters; over
-`k_deposit_clusters_max` (4,096, the host's default) it builds the patch again at half its
-`triangle_budget`, half its fragments and half its blocks' rung (192 at the least), up to eight
-times, and logs each (`deposit patch built again under the cluster limit`, naming the patch by its
-hash and the count). Each attempt is a function of the recipe alone, so the container a recipe
-builds is the same bytes on every host and every run, and the derived-data cache's key (the recipe)
-stays the key. A patch still over the limit at the least budget (one whose blocks alone, at 192
-triangles each, are over it) is refused by its build with a sentence naming it and its count, so no
-container over the limit ever reaches a host. The generator's 160,000-triangle cap at `open` is gone
-with it.
+**The limit is a mesh's, not a tile's, so a dense patch is handed as pieces.** Building a dense
+patch again coarser would draw a sparser, coarser pile beside full ones, which a walker sees. The
+generator's `tile` hands a patch whose finest form holds more than `k_deposit_piece_triangles`
+(48,000) as **pieces** (`deposit_patch_pieces`), each an ordinary `DepositPatch` recipe over a
+rectangle of the patch's samples, its own mesh and placement at its own corner:
+
+- **Where it is cut.** Along a line of samples of the piece's longer side where the deposit's
+  triangles balance (a cell's bed at the patch's steps and its share of the loose stones, and each
+  block at the blocks' rung, in integers), the piece holding the most cut next, up to 16 pieces; a
+  cut that would leave a side with no deposit, or one that does not fit, is not made. Cuts on
+  sample lines keep every bed cell whole.
+- **What a piece keeps.** The patch's samples, its sink and its gradient over the rectangle; the
+  blocks whose centres stand in it (a centre on a cut belongs to the piece after it); the patch's
+  rock and material; a share of the loose stones by its deposit's cells; and a budget that is its own
+  bed at the patch's steps plus each stone the patch's share (`DepositForm::each`), so
+  `solve_deposit` chooses the patch's steps and the patch's rungs for it. Its corner is the patch's
+  plus its samples, so its clasts are the patch's (they are anchored to the world); its seed is the
+  patch's and its corner, so its loose stones are drawn afresh at the same density. Together the
+  pieces hold every stone and block of the patch, at the patch's form, plus the walls along their
+  cuts (`deposits: a dense patch is handed as pieces that keep what it holds`).
+- **Where pieces meet.** A piece's border is locked as a patch's is ([The coarse forms keep the
+  patch's border](#the-coarse-forms-keep-the-patchs-border)), so two pieces meet at every coarse form
+  as two patches do, and the walls along a cut are back to back inside the bed, as between patches.
+- **Names.** The first piece keeps the patch's placement id; the k-th is the id plus k times the
+  layer's patch count, so every placement of an entry has its own stable name. The pieces are a
+  function of the patch's recipe alone, so a tile hands the same bytes whenever it comes in.
+
+**And the build holds it.** `build_deposit_container` counts the merged DAG's clusters; over its
+`clusters_max` (`k_deposit_clusters_max`, 4,096, the host's default) it builds the patch again at
+half its `triangle_budget`, half its fragments and half its blocks' rung (192 at the least), up to
+eight times, logs each (`deposit patch built again under the cluster limit`, naming the patch by its
+hash and the count) and counts it (`deposit_builds_reduced()`). Each attempt is a function of the
+recipe alone, so the container a recipe builds is the same bytes on every host and every run, and
+the derived-data cache's key (the recipe) stays the key. A patch still over the limit after its
+builds is refused by its build with a sentence naming it and its count (`engine.rocks deposits:
+patch deposit-<hash> builds <n> clusters after <k> builds, over the 4096 a streamed host admits`),
+so no container over the limit ever reaches a host. The pieces are why nothing reaches that path at
+the forest's density; it is the bound's guarantee, not its plan. The generator's 160,000-triangle cap
+at `open` is gone with it.
+
+**Why 48,000.** MEASURED-PIECES
 ### Foothill exposure and repeated-material limits
 
 [G132's v29 controls](../experiments/v29-cliff-diagnosis.md) distinguish the continuous authored

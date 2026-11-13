@@ -18,12 +18,17 @@ namespace engine::rocks {
 // rubble"). 9 (G190): a face's fall comes to rest on ground gentler than the repose, and a pile
 // that would end in a cut is moved on down or refused (rocks.md, "Where a pile comes to rest").
 // 10 (G190): a face a ground edit cut (a channel's bank) sheds nothing. 11 (G191): a patch whose
-// cluster DAG is over `k_deposit_clusters_max` is built again at half its budget.
+// finest form is over `k_deposit_piece_triangles` is handed as pieces, and a container over
+// `k_deposit_clusters_max` is built again at half its budget.
 inline constexpr u32 k_deposit_version = 11;
 // G191 (rocks.md, "A patch under the cluster limit"): the most clusters a patch's container holds,
 // the streamed host's `renderer.meshes.max_clusters` default, which refuses a larger tile mesh at
 // the walk. `build_deposit_container` holds it.
 inline constexpr u32 k_deposit_clusters_max = 4096;
+// G191: the most triangles a piece's finest form holds (`deposit_patch_triangles`), so a patch at
+// the forest's density is handed as pieces each far under the cluster limit (rocks.md, "A patch
+// under the cluster limit", has the measured density it is set from).
+inline constexpr u64 k_deposit_piece_triangles = 48000;
 // The bed's edge (rocks.md, "The edge and the seams"): inside its outline toward bare gentle ground
 // a deposit is no thicker than `k_edge_slope` (tan 31 degrees, the toe's own slope) times its
 // distance in, less half a spacing; past it the piles' surfaces continue under the ground; and the
@@ -125,14 +130,41 @@ bool solve_deposit(const DepositPatch& patch, assets::MeshData& out, std::string
 // Every refusal `solve_deposit` would make, without building the mesh (G143; rocks.md, "A tile
 // solves"): what the generator's `open` checks each patch with, so it solves none.
 bool deposit_patch_fits(const DepositPatch& patch, std::string& error);
+// G191 (rocks.md, "A patch under the cluster limit"): the most triangles `solve_deposit` draws the
+// patch's finest form with (its bed at the steps the budget holds, every loose fragment at the
+// rung its share allows, every block at the blocks' rung), without building it; false with the
+// refusal `deposit_patch_fits` would make.
+bool deposit_patch_triangles(const DepositPatch& patch, u64& out, std::string& error);
+// A piece of a patch: an ordinary patch over a rectangle of the whole's samples, its corner
+// `sample_x`, `sample_z` samples from the whole's.
+struct DepositPiece {
+  DepositPatch patch;
+  u32 sample_x = 0;
+  u32 sample_z = 0;
+};
+// G191: the pieces a patch is handed as, so each one's finest form holds at most `triangles_max`
+// triangles. A patch under it is one piece, itself. Over it the patch is cut along a line of
+// samples (its longer side's, where the deposit's triangles balance), and again, up to 16 pieces;
+// each piece keeps the whole's samples, its blocks by their centres, the whole's rock and material,
+// and a share of its fragments and budget by its deposit's cells, so the bed's steps and the
+// stones' rungs are the whole's. The pieces' borders are locked as a patch's are, so they meet at
+// every coarse form. A function of the patch alone.
+void deposit_patch_pieces(const DepositPatch& whole, Vector<DepositPiece>& out,
+                          u64 triangles_max = k_deposit_piece_triangles);
 // How many times `solve_deposit` has built a mesh in this process: a statistic for tests.
 u64 deposit_solve_count();
+// G191: how many containers `build_deposit_container` built again at half their budget because
+// the first build was over its cluster limit: a statistic for tests and the walk's log.
+u64 deposit_builds_reduced();
 // T120 (rocks.md, "A tile solves"): how many plans the deposits generator has made in this
 // process. An entry opened twice on the same ground (the scene reader's, then the world's
 // placements consumer's) plans once: the second open holds the first's plan by its inputs' key.
 u64 deposit_plans_made();
 u64 deposit_source_hash(const DepositPatch& patch);
+// `clusters_max` (G191): over it the patch is built again at half its budget, fragments and block
+// rung, up to eight times, and refused by name past that; the host's limit unless a test asks less.
 bool build_deposit_container(const DepositPatch& patch, const geometry::ClusterLodOptions& lod,
                              u32 page_bytes, geometry::ClusterFileData& out, std::string& error,
-                             const materials::Pack* pack = nullptr);
+                             const materials::Pack* pack = nullptr,
+                             u32 clusters_max = k_deposit_clusters_max);
 }  // namespace engine::rocks
