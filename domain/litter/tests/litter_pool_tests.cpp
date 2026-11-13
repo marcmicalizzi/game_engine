@@ -138,7 +138,7 @@ TEST_CASE("litter: a whole read is the same bytes on one thread and on the pool,
   CHECK(hash_placements(joined) == hash_placements(serial));
   // The pin, taken on MSVC with the serial walk this replaced (b7681ac9): the pool's merge
   // changed no byte of what a whole read places.
-  CHECK(hash_placements(serial) == 0x0ull);
+  CHECK(hash_placements(serial) == 0x5a1878e19758bd3eull);
   // Three and seven workers (and the calling thread): the bytes of one.
   for (const u32 workers : {3u, 7u}) {
     CAPTURE(workers);
