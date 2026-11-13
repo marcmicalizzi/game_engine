@@ -204,5 +204,5 @@ TEST_CASE("seat: the discs over a sloping bank are the same bytes on every toolc
     }
   }
   MESSAGE("seat discs hash 0x" << std::hex << h);
-  CHECK(h == 0x0ull);  // pinned on MSVC (G201 stage 2)
+  CHECK(h == 0xe08927463e2ea8aaull);  // pinned on MSVC (G201 stage 2)
 }

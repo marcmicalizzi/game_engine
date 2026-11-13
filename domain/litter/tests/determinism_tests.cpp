@@ -18,9 +18,11 @@ TEST_CASE("litter: complete containers agree across toolchains") {
   // (0.225 m at 86d76acd): the twig 2,625 -> 1,351 triangles, the tangle 8,536 -> 8,520.
   // G201: the source tree's skirt (k_flora_version 12 in the wood's source key, and the deadwood it
   // cuts) moves twig and tangle again (they were 8defceb2249dd50b / d1cc9c417dcf3e40); the four
-  // deadwood-free kinds do not move.
+  // deadwood-free kinds do not move. G201 stage 2: `k_deadwood_version` 3 in the wood's source key
+  // moves twig and tangle by their identity alone (1,435 and 8,608 triangles, as before; they were
+  // 0f49b2825414634a / 7edaf634dfc81f95).
   constexpr u64 expected[] = {0x341e406800665f85ull, 0xabfbd865a0676d1dull, 0xdefb0dd9440f730aull,
-                              0xf94b5a4d69cd7d2cull, 0x0f49b2825414634aull, 0x7edaf634dfc81f95ull};
+                              0xf94b5a4d69cd7d2cull, 0xc286220ee8cef6daull, 0x4a67ee0cc6defcf3ull};
   for (u32 k = 0; k < 6; ++k) {
     litter::Recipe p;
     p.kind = static_cast<litter::Kind>(k);

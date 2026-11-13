@@ -590,11 +590,15 @@ TEST_CASE(
   CHECK(coned[0] > 0);
   CHECK(coned[1] == 0);
   CHECK(coned[2] == 0);
-  CHECK(data.source_hash == flora::flora_source_hash(file));
+  // The tree's own hash and the seat's version (G201 stage 2): the container is keyed apart from
+  // the tree's shape, which the deadwood keys by.
+  CHECK(data.source_hash ==
+        hash_combine(flora::flora_source_hash(file), flora::k_flora_seat_version));
   CHECK(data.build_key == flora::flora_build_key(data.source_hash, lod, page_bytes));
   CHECK(data.generator == "flora");
   CHECK(data.generator_kind == "date_palm");
   CHECK(data.generator_params == flora::canonical_flora_json(file));
+  CHECK(data.has_seat());
   MESSAGE("default palm: " << data.mesh.mesh.clusters.size() << " clusters, "
                            << data.mesh.level_cluster_counts.size() << " levels, "
                            << data.pages.pages.size() << " pages");
@@ -615,8 +619,10 @@ TEST_CASE(
   // G87/version 9 changes only the generator key; version 8 was 0x44f25152b9ff5df9.
   // G91/version 11 changes the generator key only; palm mesh/motion are unchanged.
   // G201/version 12: the trunk's skirt (32 triangles under the foot ring) moves the mesh, its grid
-  // and the key; version 11 was 0xe66c149b4257dea4.
-  constexpr u64 k_golden = 0xc295159d4e6b8392ull;
+  // and the key; version 11 was 0xe66c149b4257dea4. G201 stage 2: the seat (section 42) appended
+  // and `k_flora_seat_version` in the source hash it records, nothing of the mesh; version 12's
+  // was 0xc295159d4e6b8392.
+  constexpr u64 k_golden = 0x8344de13ac0e1b47ull;
   CHECK_MESSAGE(hash == k_golden, "the default palm's container hashes to " << hex);
 
   // The canonical form is the parameters, defaults filled in, whatever the file spelled.
@@ -704,13 +710,16 @@ TEST_CASE("flora: the motion table round-trips through the container, appended t
   CHECK(std::memcmp(back.motion_vertices.data(), data.motion_vertices.data(),
                     data.motion_vertices.size() * sizeof(geometry::ClusterFileMotionVertex)) == 0);
 
+  // The seat (section 42, G201 stage 2) is appended after the contract and cleared with it here,
+  // so the rest is the container's sections before either.
   geometry::ClusterFileData rigid = data;
   rigid.motion_parts.clear();
   rigid.motion_vertices.clear();
+  rigid.seat = geometry::ClusterFileSeat{};
   REQUIRE_MESSAGE(geometry::write_cluster_file(without, rigid, &error), error);
   const Vector<RawSection> a = raw_sections(with);
   const Vector<RawSection> b = raw_sections(without);
-  REQUIRE(a.size() == b.size() + 2);
+  REQUIRE(a.size() == b.size() + 3);
   for (u32 i = 0; i < b.size(); ++i) {
     CAPTURE(b[i].kind);
     CHECK(a[i].kind == b[i].kind);
@@ -721,6 +730,7 @@ TEST_CASE("flora: the motion table round-trips through the container, appended t
   CHECK(a[b.size()].kind == static_cast<u32>(geometry::ClusterSection::MotionParts));
   CHECK(a[b.size() + 1].kind == static_cast<u32>(geometry::ClusterSection::MotionVertices));
   CHECK(std::string(geometry::cluster_section_name(a[b.size()].kind)) == "motion_parts");
+  CHECK(a[b.size() + 2].kind == static_cast<u32>(geometry::ClusterSection::Seat));
   // The container with the contract cleared, pinned on its own: it was 0xab870afd905f4acd, the
   // container from before the contract existed, until the crown's spiral moved the mesh
   // (k_flora_version 2), and 0xeb471d9e96454476 until the UVs went to metres (3), so a change that
@@ -731,8 +741,10 @@ TEST_CASE("flora: the motion table round-trips through the container, appended t
   // Version 8 changes only the generator key; version 7 was 0x340996a15b4ed8a3.
   // G87/version 9 changes only the generator key; version 8 was 0x85aa5f48e32c6182.
   // G91/version 11 changes only the generator key. G201/version 12: the trunk's skirt moves the
-  // mesh, its grid and the key; version 11 was 0x5bfd058153ed0d28.
-  constexpr u64 k_rigid_golden = 0x54f0151776cdaeeeull;
+  // mesh, its grid and the key; version 11 was 0x5bfd058153ed0d28. G201 stage 2: the seat's version
+  // in the source hash the container records (the seat itself is cleared above with the contract);
+  // version 12's was 0x54f0151776cdaeee.
+  constexpr u64 k_rigid_golden = 0xd9a0852ec6e82a2eull;
   const u64 rigid_hash = geometry::cluster_file_hash(rigid);
   char hex[32];
   std::snprintf(hex, sizeof(hex), "0x%016llxull", static_cast<unsigned long long>(rigid_hash));
@@ -1264,10 +1276,12 @@ TEST_CASE("flora: each part takes the recipe's set, else the pack's role, else i
   CHECK(data.image_paths.size() == 6);
   CHECK(data.textures.size() == data.image_paths.size());
   // The pack is in the key, and a different pack is a different key; the source hash is the
-  // file's alone, so a scene that names it by hash still finds it.
+  // file's alone (with the seat's version, G201 stage 2), so a scene that names it by hash still
+  // finds it.
   CHECK(data.build_key == flora::flora_build_key(data.source_hash, lod, page_bytes, &pack));
   CHECK(data.build_key != flora::flora_build_key(data.source_hash, lod, page_bytes));
-  CHECK(data.source_hash == flora::flora_source_hash(file));
+  CHECK(data.source_hash ==
+        hash_combine(flora::flora_source_hash(file), flora::k_flora_seat_version));
 
   // Written and read back, the images and the transforms survive.
   engine::test::TempDir tmp("flora_materials");

@@ -252,7 +252,7 @@ TEST_CASE("seat: grounded trees over a bank's edge are lowered by their footprin
     h = hash_combine(h, hash_bytes(&instance.slope, sizeof(instance.slope)));
   }
   MESSAGE("seated origins and slopes 0x" << std::hex << h);
-  CHECK(h == 0x0ull);
+  CHECK(h == 0xa62d4922754484eaull);  // pinned on MSVC (G201 stage 2)
   SceneDesc many = desc;
   many.load_jobs = 0;  // every thread the machine offers
   SceneData all;
@@ -302,7 +302,8 @@ TEST_CASE("seat: the drawn ground can be asked, as the load stands on it") {
   REQUIRE_MESSAGE(partial.open(path, std::string(), false, false, error), error);
   REQUIRE(partial.not_carried().size() == 1u);
   CHECK(partial.not_carried()[0] == "no-such-generator");
-  const JsonValue* missing = partial.head().find("not_carried");
+  const JsonValue partial_head = partial.head();
+  const JsonValue* missing = partial_head.find("not_carried");
   REQUIRE(missing != nullptr);
   CHECK(missing->size() == 1u);
   SceneGround whole;

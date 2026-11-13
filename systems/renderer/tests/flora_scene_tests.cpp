@@ -565,7 +565,7 @@ TEST_CASE("flora scene: a tree on a tread's edge or a cutting's lip is seated wi
                         shot, files, error);
           tmp.keep();
         }
-        const auto pixel = [&](u32 x, u32 y) { return u64{y} * shot.width + x; };
+        const auto pixel = [&](u32 x, u32 y) { return y * shot.width + x; };  // 640 by 400
         for (u32 x = 0; x < shot.width; ++x) {
           u32 lowest = shot.height;
           for (u32 y = 0; y < shot.height; ++y)
