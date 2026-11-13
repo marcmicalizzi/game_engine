@@ -91,10 +91,13 @@ bool anchored_in(const scene_gen::Footprint& f, f64 corner_x, f64 corner_z, f64 
   const f64 fx = static_cast<f64>(f.x_mm) * .001, fz = static_cast<f64>(f.z_mm) * .001;
   return !(fx < corner_x || fx >= corner_x + size || fz < corner_z || fz >= corner_z + size);
 }
-// The mask tiles one litter tile has read, each once (T125): a cell asks the tile its point is in,
-// and a litter tile spans a few, so the words are kept for the rest of the tile instead of copied
-// out of the level again for every cell. Per call: what a tile reads is what the level holds now.
+// The mask tiles a run of litter tiles has read, each once (T125): a cell asks the tile its point
+// is in, and a litter tile spans a few, which its neighbours along the row share, so the words are
+// kept instead of copied out of the level again for every cell. Held for one `tile` call, or for
+// one run of a whole read, which reads one level that does not change under it; at most `k_held` at
+// once, so a long run holds a row's worth and not the window's.
 struct MaskTiles {
+  static constexpr u32 k_held = 64;
   struct Held {
     i32 tx = 0, tz = 0;
     u32 at = 0;
@@ -111,6 +114,11 @@ struct MaskTiles {
         last = i;
         return words.data() + held[i].at;
       }
+    if (held.size() >= k_held) {
+      held.clear();
+      words.clear();
+      last = ~0u;
+    }
     const u32 at = words.size();
     words.resize(at + n);
     if (!masks.ops->tile(masks.state, tx, tz, std::span<u32>(words.data() + at, n))) {
@@ -125,11 +133,11 @@ struct MaskTiles {
 // One tile of the window, its earlier footprints the ones `own` names (indices into `c.earlier`, in
 // the order the host handed them): what `tile` and every job of `expand` run.
 bool place(const Entry& e, scene_gen::TileCoord t, const scene_gen::Context& c,
-           std::span<const u32> own, Vector<scene_gen::Placement>& out, std::string* error) {
+           std::span<const u32> own, MaskTiles& held, Vector<scene_gen::Placement>& out,
+           std::string* error) {
   const auto& p = e.p;
   scene_gen::GroundMasks masks;
   scene_gen::GroundMaskInfo info;
-  MaskTiles held;
   u32 words = 0;
   if (p.substrate >= 0) {
     if (!c.ground.masks(masks, error)) return false;
@@ -236,7 +244,8 @@ bool tile(void* state, scene_gen::TileCoord t, const scene_gen::Context& c,
     if (anchored_in(c.earlier[i], static_cast<f64>(t.x) * size, static_cast<f64>(t.z) * size, size))
       own.push_back(i);
   scene_gen::Placements result;
-  if (!place(e, t, c, std::span<const u32>(own.data(), own.size()), result.instances, error))
+  MaskTiles held;
+  if (!place(e, t, c, std::span<const u32>(own.data(), own.size()), held, result.instances, error))
     return false;
   result.things = result.instances.size();
   out = std::move(result);
@@ -318,13 +327,14 @@ bool expand(void* state, const scene_gen::Context& c, scene_gen::Placements& out
   Vector<Run> parts(runs);
   const auto run = [&](u32 r) {
     Vector<u32> own;
+    MaskTiles held;
     const u32 from = static_cast<u32>(u64{count} * r / runs);
     const u32 to = static_cast<u32>(u64{count} * (r + 1) / runs);
     for (u32 i = from; i < to; ++i) {
       const scene_gen::TileCoord t{static_cast<i32>(e.p.min_x + static_cast<i64>(i % w)),
                                    static_cast<i32>(e.p.min_z + static_cast<i64>(i / w))};
       anchored.gather(t, own);
-      if (!place(e, t, c, std::span<const u32>(own.data(), own.size()), parts[r].instances,
+      if (!place(e, t, c, std::span<const u32>(own.data(), own.size()), held, parts[r].instances,
                  &parts[r].why)) {
         parts[r].ok = false;
         return;

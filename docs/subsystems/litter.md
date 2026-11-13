@@ -84,8 +84,9 @@ threads, and pins the bytes of the walk this replaced). Nothing is drawn from a 
 draw is the cell's own hash. Two costs per cell became costs per tile, with no byte moved: the
 earlier footprints anchored in a tile are found once (a whole read sorts them by tile once and each
 tile gathers the 3 x 3 tiles about it, keeping exactly those the one-tile scan keeps, in the host's
-order), where every cell had scanned every earlier footprint of the scene; and each mask tile a
-litter tile reaches is read once, where every cell had copied its mask tile out of the level again.
+order), where every cell had scanned every earlier footprint of the scene; and each mask tile is
+read once by the run of tiles that reaches it (a `tile` call, or one job's run of a whole read,
+holding at most 64), where every cell had copied its mask tile out of the level again.
 
 **Where a cold load's minutes went** (the forest's engine needs 66). The entry's `open` asks the
 ground for its masks when the layer names a substrate, and a `tiles` ground builds its mask level
