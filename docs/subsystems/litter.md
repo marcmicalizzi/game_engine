@@ -119,9 +119,13 @@ which walks every mask tile of the heightfield's frame on one thread, under "pla
 815 s again after its archive was deleted, because a deleted archive is cooked again. The level's
 key is its content (the set's hash, the block without its image paths and `resident_mib`, the
 palette, the budget, the frame and the images' bytes), so the same masks cooked from two
-directories are one entry and a second load cooks nothing (`tests/litter_masks_tests.cpp`). The
-ask now has a startup stage of its own, "ground masks", so a trace names the cook. The cook itself
-is the masks' to put on the pool.
+directories are one entry and a second load cooks nothing (`tests/litter_masks_tests.cpp`).
+Measured (`msvc-release`, the machine shared, upper bounds): `engine_litter_bench`'s cook took
+2.5 s on a frame 1 km by 1 km and 7.5 s on one 3 km by 1 km, the entry's own read of the same
+16,384 cells 38 ms and 42 ms; and in `engine-view`'s startup trace of a 1 km scene with a cold
+derived-data root, "placement litter" took 3.13 s of which the provider's first ask, the cook,
+took 3.08 s, and 0.06 s warm. The ask is named in the trace by the provider's own stage (the masks
+row, T122), not by this entry; the cook on the pool is a row of its own (T128).
 
 ## Materials and invariants
 
@@ -159,7 +163,7 @@ is read-only; use a derived external scene to review integration.
 Scaffolded with `new-capability.ps1`. `ENGINE_WITH_LITTER` is optional; it requires `deadwood`
 (and transitively flora), explicitly declared in the capability graph. Dependencies: base,
 containers, math, hash, json, schema, assets, geometry, materials, texture, scene_gen, deadwood,
-litter_schemas, jobs (a whole read's pool) and profiling (the "ground masks" stage). The only read
+litter_schemas, jobs (a whole read's pool) and tunables (`litter.whole_read_jobs`). The only read
 of another solver is its public `deadwood::solve` and identity API. Where the tile-set capability
 is in the build, the tests add `tests/litter_masks_tests.cpp` and the module has a bench,
 `engine_litter_bench` (`litter.mask_cook`, `litter.expand.serial`, `litter.expand.pool`, each at a

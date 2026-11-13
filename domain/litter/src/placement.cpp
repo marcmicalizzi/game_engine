@@ -1,7 +1,6 @@
 #include <core/hash/hash.h>
 #include <core/jobs/job_system.h>
 #include <core/math/deterministic.h>
-#include <core/profiling/startup_trace.h>
 #include <core/schema/json_reflect.h>
 #include <domain/litter/litter.h>
 #include <domain/scene_gen/scene_gen.h>
@@ -71,9 +70,7 @@ bool open(const JsonValue& params, const scene_gen::Context& c, void** state, st
   }
   if (p.substrate >= 0) {
     // The ground's first ask for its masks may cook the mask level (a "tiles" ground builds it
-    // beside its set on a miss, `ensure_mask_level`): a stage of its own, so a load's trace names
-    // the cook and does not put its minutes under this entry (T125; litter.md, "Placement").
-    ENGINE_STARTUP_STAGE("ground masks");
+    // beside its set on a miss, `ensure_mask_level`), under the provider's own startup stage.
     scene_gen::GroundMasks masks;
     if (!c.ground.masks(masks, error)) return false;
     if (!masks.valid()) return fail(error, "substrate requires cooked ground masks");
