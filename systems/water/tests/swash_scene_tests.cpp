@@ -338,11 +338,11 @@ std::string sheet_scene() {
                                    [80, 0, -100]]},
              "wind_follow": false, "wind_m_s": 0, "wet_m": 0.3,
              "absorption": [0.3, 0.3, 0.3], "scattering": [0, 0, 0],
-             "swell_height_m": 0.05, "swell_period_s": 20, "swell_direction_deg": 180}]
+             "swell_height_m": 0.15, "swell_period_s": 30, "swell_direction_deg": 180}]
 })";
 }
 
-constexpr u32 k_sheet_times = 6;
+constexpr u32 k_sheet_times = 12;
 constexpr u32 k_sheet_eyes = 2;
 // Low on the sand: looking along the swash from half a metre over it, and across it to the sea
 // from a metre and a quarter.
@@ -396,10 +396,10 @@ void shoot_sheet(const gfx::Device& device, const test::TempDir& tmp, const std:
         WorldPos{k_sheet_target[e][0], k_sheet_target[e][1], k_sheet_target[e][2]};
     frame.sky_time_s = 0.0;
     out.fov_y = frame.camera.fov_y;
-    // Six times over one period of the swell on the water's clock (20.9 s): the sheet is on the
-    // sand in some of them, climbing and draining.
+    // Twelve times over one period of the swell on the water's clock (29.3 s): the sheet is on
+    // the sand in about half of them, climbing and draining.
     for (u32 s = 0; s < k_sheet_times; ++s) {
-      frame.world_time_s = 10.0 + 3.5 * static_cast<f64>(s);
+      frame.world_time_s = 10.0 + 2.44 * static_cast<f64>(s);
       REQUIRE_MESSAGE(renderer.capture(frame, channels, out.frame[e][s], &error), error);
     }
   }
@@ -530,20 +530,24 @@ TEST_CASE("water swash: the sheet on the sand is one surface across the mesh's e
     u32 pairs = 0, over = 0, seen_off = 0, saturated = 0;
     f64 worst_share = 0.0;
     u32 worst_step = 0;
-    // **Which water is the sheet's.** A pixel that is the body's water at every one of the times
-    // is the sea, and where it meets the ground between sheets is the water's own edge — the
-    // waterline, a place where one thing ends and wet sand begins, with the film the last sheet
-    // left drained to whatever the clock says. A pixel that is water now and ground at another
-    // time is the sheet over the bank, and the mesh's edge beside it is inside the sheet: the
-    // pixel's own front lies beyond the mesh's (`k_water_mesh_inside`), so the ground there is
-    // under the whole sheet. Those are the pairs.
-    Vector<u8> sea(width * height);
-    for (u32 p = 0; p < width * height; ++p) {
-      sea[p] = 1;
-      for (u32 s = 0; s < k_sheet_times; ++s)
-        if (on.frame[e][s].ids[p * k_id_words] != on.water_instance) sea[p] = 0;
-    }
+    // **Which frame has the sheet on the sand.** Between sheets the water's edge is the sea's own —
+    // the waterline, where one thing ends and wet sand begins, its film drained to what the clock
+    // says — and that edge is not the one this case is about. The swell comes straight on to a
+    // shore that curves little in the view, so its sheet climbs the whole of it together and is up
+    // for half a period: the time at which the body's water covers the most pixels is the sheet
+    // near its top, and there every place the water meets the ground is the mesh's edge inside
+    // the sheet (the pixel's own front lies beyond the mesh's, `k_water_mesh_inside`).
+    u32 top = 0, most = 0;
     for (u32 s = 0; s < k_sheet_times; ++s) {
+      u32 count = 0;
+      for (u32 p = 0; p < width * height; ++p)
+        if (on.frame[e][s].ids[p * k_id_words] == on.water_instance) ++count;
+      if (count > most) {
+        most = count;
+        top = s;
+      }
+    }
+    for (u32 s = top; s <= top; ++s) {
       const CapturedFrame& a = on.frame[e][s];
       const CapturedFrame& b = off.frame[e][s];
       REQUIRE(a.ids == b.ids);  // the film is shading: it moves no surface
@@ -557,20 +561,7 @@ TEST_CASE("water swash: the sheet on the sand is one surface across the mesh's e
         if (wet_pixel(p) == wet_pixel(q)) return;
         const u32 w = wet_pixel(p) ? p : q;
         const u32 g = wet_pixel(p) ? q : p;
-        if (sea[w] != 0 || !sheeted(g)) return;
-        // And the sea's own edge moves a little with each wave, with no sheet: the lifted surface
-        // meets the ground where the wave's height at the band's depth puts it (the band is 0.2 R
-        // + 5 cm deep, 7 cm here, and a wave there is at most 0.78 of that high: 3 cm either way
-        // of the mean), which on a beach no gentler than 1:33 — the bay's is 1:24 — is within a
-        // metre of where the sea always is. A water pixel that near the sea is left to it.
-        const f64 down = sheet_cosine(e, w, width, height, on.fov_y);
-        const f64 metres = (k_sheet_eye[e][1] - k_sheet_level) / down *
-                           (static_cast<f64>(on.fov_y) / height) / down;
-        const i64 reach = static_cast<i64>(std::ceil(1.0 / metres)) + 1;
-        const i64 wx = w % width, wy = w / width;
-        for (i64 y = std::max<i64>(wy - reach, 0); y <= std::min<i64>(wy + reach, height - 1); ++y)
-          for (i64 x = std::max<i64>(wx - reach, 0); x <= std::min<i64>(wx + reach, width - 1); ++x)
-            if (sea[static_cast<u32>(y * width + x)] != 0) return;
+        if (!sheeted(g)) return;
         ++pairs;
         const f64 bottoms = sheet_bottoms(a, g);
         bool breaks = false, breaks_off = false;
@@ -597,8 +588,14 @@ TEST_CASE("water swash: the sheet on the sand is one surface across the mesh's e
             breaks_off = true;
         }
         if (breaks && ++over <= 8u)
-          MESSAGE("the edge shows at (" << w % width << ", " << w / width << ") against ("
-                                        << g % width << ", " << g / width << "), time " << s);
+          MESSAGE("the edge shows at ("
+                  << w % width << ", " << w / width << ") against (" << g % width << ", "
+                  << g / width << "), time " << s << ": water " << u32{a.color[w * 4]} << " "
+                  << u32{a.color[w * 4 + 1]} << " " << u32{a.color[w * 4 + 2]} << ", ground "
+                  << u32{a.color[g * 4]} << " " << u32{a.color[g * 4 + 1]} << " "
+                  << u32{a.color[g * 4 + 2]} << ", ground with"
+                  << " the sheet off " << u32{b.color[g * 4]} << " " << u32{b.color[g * 4 + 1]}
+                  << " " << u32{b.color[g * 4 + 2]});
         if (breaks_off) ++seen_off;
       };
       for (u32 y = 0; y < height; ++y) {

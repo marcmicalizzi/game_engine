@@ -209,17 +209,29 @@ float3 water_normal_spectrum(WaterWave* waves, float2 p, float time, float footp
 // mesh carries — the Gerstner crests' sharpening with it, faded flat over the swash's band (the
 // sheet over the bank is a few centimetres on the ground's slope) and in from an open body's outline
 // as the lift is. The open fade's own gradient is left out.
+//
+// **And the height itself** (S102, second pass): `height` is the same function's value at the
+// pixel, the tide and the setup in it — what the pool lifted the mesh to, with every wave — and
+// `bank` the share of the swash's band here, where the surface is the sheet's and the mesh's own
+// height is the one to take. The water's depth over its bottom is taken from these and not from
+// the mesh's interpolated height: the mesh carries a crest on rings whose spacing along a ring is
+// metres, so a crest that crosses the rings is a row of flat facets, and a colour that goes with
+// the depth under each facet drew the surf from above as dark shards with the mesh's straight
+// edges (in main too: "dark triangles beyond the surf").
 float3 water_surface_normal(WaterSurface* s, float2 p, float edge, float time, float tide_phase,
-                            float footprint, out float dropped) {
+                            float footprint, out float dropped, out float height,
+                            out float bank) {
   const WaterField f = water_field_at(s, p);
   const WaterHeight w = water_height(s, p, f, time, footprint, float2(0.0, 0.0));
   const float fade = water_outline_fade(s, f, edge);
+  height = (water_surface_tide(s, tide_phase) + f.setup + w.height) * fade;
   float share = 0.0;
   if (s->field != 0) {
     const float band = 0.2 * water_place_run_up(s, f) + 0.05;
     share = 1.0 - smoothstep(0.0, band, f.depth + water_surface_tide(s, tide_phase) +
                                             water_place_level(s, f));
   }
+  bank = share;
   const float k = fade * (1.0 - share);
   dropped = w.dropped * k * k;
   return normalize(
@@ -936,11 +948,19 @@ float water_bore_foam(WaterSurface* s, float2 p, WaterField f, float d, float t,
   const float amount = water_foam_amount(h);
   const float decay = water_foam_decay(h);
   const uint next = uint(int(k) + 1 + int(k_swash_group) * 64) % k_swash_group;
+  // **How much of its foam a crest makes** where it stands x of the limit: none under 0.9 (it has
+  // not broken) and all of it from `k_water_broke_whole`. The air a breaker entrains goes with
+  // what it loses, and a crest barely over the limit spills a little down its face. Until the
+  // second train this was whole at 1.05, a line; with a crest that is over the limit only on the
+  // stretch where the two trains coincide, a line cut the foam into ruled slabs along the crest
+  // (the second pass's first flight, from 30 m up), where a breaking stretch thickens from its
+  // ends to its middle.
+  const float k_water_broke_whole = 1.5;
   // The roller on the face of the wave coming in: a raft where the wave is big, flecks where not.
   float foam = water_foam_cover(
       water_foam_lace(p, cell, next),
       amount *
-          smoothstep(0.9, 1.05,
+          smoothstep(0.9, k_water_broke_whole,
                      ratio * water_swash_group(next) +
                          second * cos(k_water_two_pi * frac(cross_phase + float(next) * cross_step))) *
           smoothstep(0.88, 0.97, u),
@@ -948,7 +968,7 @@ float water_bore_foam(WaterSurface* s, float2 p, WaterField f, float d, float t,
   for (uint back = 0; back < k_water_foam_waves; ++back) {
     const uint j = uint(int(k) - int(back) + int(k_swash_group) * 64) % k_swash_group;
     const float broke = smoothstep(
-        0.9, 1.05,
+        0.9, k_water_broke_whole,
         ratio * water_swash_group(j) +
             second * cos(k_water_two_pi * frac(cross_phase + float(j) * cross_step)));
     const float density = amount * broke * exp(-(u + float(back)) * s->period_s / decay);

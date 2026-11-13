@@ -985,12 +985,20 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
     }
   }
   float dropped = 0.0;
-  float3 n =
-      swash.surface != 0
-          ? water_surface_normal((WaterSurface*)swash.surface, local.xz, s.uv.x,
-                                 params->water_time_s, params->water_tide_phase, footprint, dropped)
-          : water_normal_of(w, material.flags, geo.materials, index, local.xz,
-                            params->water_time_s, footprint, depth, dropped);
+  // The surface's height over the body's level at the pixel: the mesh's, or for a lifted body the
+  // height function's own away from the swash's band (water.slang, `water_surface_normal`).
+  float surface_y = local.y;
+  float3 n;
+  if (swash.surface != 0) {
+    float wave_y = 0.0;
+    float bank = 0.0;
+    n = water_surface_normal((WaterSurface*)swash.surface, local.xz, s.uv.x, params->water_time_s,
+                             params->water_tide_phase, footprint, dropped, wave_y, bank);
+    surface_y = lerp(wave_y, local.y, bank);
+  } else {
+    n = water_normal_of(w, material.flags, geo.materials, index, local.xz, params->water_time_s,
+                        footprint, depth, dropped);
+  }
   // The wavelets the pixel cannot hold: most come back at the pixel's own scale, the rest widen
   // the lobe (S100 stage B; water.slang, `water_micro_normal` and `water_roughness`).
   w.roughness = water_roughness(w.roughness, (1.0 - k_water_micro_share) * dropped);
@@ -1029,7 +1037,7 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
         // front — with the lobes a mesh cannot carry — has not reached this ground, the pixel is
         // bared ground, as the ground's own pixels beside it are, and the waterline is the
         // front's and not a triangle's.
-        depth = water_swash_on(swash) && hh > front ? 0.0 : max(local.y + signed_depth, 0.0);
+        depth = water_swash_on(swash) && hh > front ? 0.0 : max(surface_y + signed_depth, 0.0);
       } else {
         // The shift fades out over the swash's own depth, so deep water is the depth it was.
         const float band = 1.5 * swash.run_up_m + swash.tide_m + k_water_calm_depth;
