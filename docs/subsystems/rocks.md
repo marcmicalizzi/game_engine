@@ -1709,7 +1709,7 @@ forest's density.
 **The limit is a mesh's, not a tile's, so a dense patch is handed as pieces.** Building a dense
 patch again coarser would draw a sparser, coarser pile beside full ones, which a walker sees. The
 generator's `tile` hands a patch whose finest form holds more than `k_deposit_piece_triangles`
-(48,000) as **pieces** (`deposit_patch_pieces`), each an ordinary `DepositPatch` recipe over a
+(40,000) as **pieces** (`deposit_patch_pieces`), each an ordinary `DepositPatch` recipe over a
 rectangle of the patch's samples, its own mesh and placement at its own corner:
 
 - **Where it is cut.** Along a line of samples of the piece's longer side where the deposit's
@@ -1746,7 +1746,19 @@ so no container over the limit ever reaches a host. The pieces are why nothing r
 the forest's density; it is the bound's guarantee, not its plan. The generator's 160,000-triangle cap
 at `open` is gone with it.
 
-**Why 48,000.** MEASURED-PIECES
+**Why 40,000.** The cluster count is a density, triangles a cluster, and it is the loose stones
+that make it dense: a closed stone of 192 or 432 triangles fills its clusters to the vertex limit.
+Measured on the two cases (msvc-debug, 2026-11-12; the counts do not depend on the build or the
+machine): the forest's budget with 160 loose stones on the massif's foot built whole patches of
+107,000 to 128,000 triangles at 23.6 to 26.7 triangles a cluster (4,329 to 4,784 clusters, every one
+over the limit, at the commit before this rule: `deposits: no mesh a tile hands at the forest's
+density is over a streamed host's cluster limit`, which fails there); 600 stones of 192 triangles on
+a 16 m patch built pieces at **20.1** triangles a cluster, the densest seen (1,915 clusters from
+38,592). The first G191's kilometre measured 29.5 at both its budgets. At the densest, a piece of
+40,000 triangles is about 2,000 clusters, half the limit. The same tile at the forest's budget is
+handed as 16 pieces of 23,000 to 34,000 triangles, the most 1,342 clusters, 1.3% more triangles in
+all than the 4 whole patches (the walls along the cuts), and nothing is built again at half its
+budget (`deposit_builds_reduced()` unmoved over every case).
 ### Foothill exposure and repeated-material limits
 
 [G132's v29 controls](../experiments/v29-cliff-diagnosis.md) distinguish the continuous authored

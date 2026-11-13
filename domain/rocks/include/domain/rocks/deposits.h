@@ -28,7 +28,7 @@ inline constexpr u32 k_deposit_clusters_max = 4096;
 // G191: the most triangles a piece's finest form holds (`deposit_patch_triangles`), so a patch at
 // the forest's density is handed as pieces each far under the cluster limit (rocks.md, "A patch
 // under the cluster limit", has the measured density it is set from).
-inline constexpr u64 k_deposit_piece_triangles = 48000;
+inline constexpr u64 k_deposit_piece_triangles = 40000;
 // The bed's edge (rocks.md, "The edge and the seams"): inside its outline toward bare gentle ground
 // a deposit is no thicker than `k_edge_slope` (tan 31 degrees, the toe's own slope) times its
 // distance in, less half a spacing; past it the piles' surfaces continue under the ground; and the
