@@ -1029,7 +1029,10 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
       // The level the swash stands on: the tide's, and the setup of the place's shore (S102,
       // second pass; 0 for a body with no surface).
       const float level = water_swash_tide(swash, params->water_tide_phase) + place.level;
-      const float hh = -signed_depth - level;
+      // A lifted body's ground is its field's, the one its mesh stands on (water.slang,
+      // `WaterSwashPlace::ground`).
+      const float hh =
+          (swash.surface != 0 && water_swash_on(swash) ? place.ground : -signed_depth) - level;
       if (swash.surface != 0) {
         // The mesh stands where the pool lifted it (S100): the water here is the surface's height
         // over the ground, the waves', the bore's or the sheet's. **The sheet ends at the front,

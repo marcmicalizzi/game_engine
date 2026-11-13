@@ -1,11 +1,11 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "S102",
-  "reason": "S102 second pass: water.md gains One sheet (the swash's ground drawn as the body's thin water) and The surf (the energy-flux field, the second train, what the first flights changed)",
+  "reason": "S102 second pass: water.md gains One sheet (the swash's ground drawn as the body's thin water) and The surf (the energy-flux field, the second train, what the first flights changed and cost)",
   "date": "2026-11-13",
   "by": "Marc Micalizzi",
   "deltas": {
     "renderer.gpu_scene_cpp.lines": -10,
-    "page:docs/subsystems/water.md": 10217
+    "page:docs/subsystems/water.md": 12454
   }
 }

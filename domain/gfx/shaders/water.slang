@@ -727,6 +727,13 @@ struct WaterSwashPlace {
   float jitter;  // the reach's factor here
   float slope;   // the foreshore slope of the place's stretch of shore
   float level;   // the setup at the place's shore (S102, second pass): the swash stands on it
+  // The ground's height over the still level as the body's field has it (second pass; 0 with no
+  // surface): the ground the pool placed the mesh's sheet on. A water pixel decides whether its
+  // own front has reached its ground against **this** ground, not the depth map's texture: the two
+  // are the same samples read two ways (a spline, a bilinear tap), centimetres apart on a slope,
+  // and the mesh's margin inside the pixel's front is centimetres — read against the texture, the
+  // mesh's last pixels were bared (the bottom alone, matte) beside ground under the whole sheet.
+  float ground;
 };
 
 bool water_swash_on(WaterShore s) { return s.run_up_m > 0.0 && s.period_s > 0.0; }
@@ -744,6 +751,7 @@ WaterSwashPlace water_swash_place(WaterShore s, float2 p) {
   w.period = s.period_s;
   w.slope = s.slope;
   w.level = 0.0;
+  w.ground = 0.0;
   if (s.surface != 0) {
     WaterSurface* surface = (WaterSurface*)s.surface;
     const WaterField f = water_field_at(surface, p);
@@ -757,6 +765,7 @@ WaterSwashPlace water_swash_place(WaterShore s, float2 p) {
     w.run_up = water_place_run_up(surface, f);
     w.slope = water_place_slope(surface, f);
     w.level = water_place_level(surface, f);
+    w.ground = -f.depth;
     return w;
   }
   const float scale = max(k_swash_raggedness_m, 3.0 * s.run_up_m / max(s.slope, 1e-3));
