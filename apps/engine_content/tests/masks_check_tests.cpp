@@ -383,11 +383,13 @@ void write_hill(const test::TempDir& tmp) {
 // the ground at the read (R144). A tread is near level across, so it is soil, with scree where it
 // meets the hill: three layers in the tiles it crosses, over the budget, on the planned ground
 // only.
-std::string hill_scene(bool routes) {
+std::string hill_scene(bool routes, u32 budget = 2) {
   return std::string(R"({"format":"engine.scene.v1","name":"masks-planned","terrain":{"size":17,
     "extent":32,"provider":"tiles","seed":3,"tiles":{"heightfield":"hill.json","ddc":"ddc",
       "cells":32,"far_levels":0},
-    "materials":{"layer_budget":2,"layers":[{"name":"soil"},{"name":"scree"},{"name":"bedrock"}]},
+    "materials":{"layer_budget":)") +
+         std::to_string(budget) +
+         R"(,"layers":[{"name":"soil"},{"name":"scree"},{"name":"bedrock"}]},
     "masks":{"spacing_mm":250,"tile_cells":16,"priors":{"soil":"soil","scree":"scree",
       "bedrock":"bedrock","scree_deg":2,"bedrock_deg":3.5,"slope_blend_deg":0.5}}},
     "placements":[)") +
@@ -443,4 +445,14 @@ TEST_CASE("masks: the check composes the ground the entries plan, as the load do
     crossed = crossed || (tx == 1 && tz == 0);
   }
   CHECK(crossed);
+  // With room for the three layers, `terrain-masks` cooks the level over the same planned ground,
+  // under the key a load computes: the load then finds it and cooks nothing. Before T121 the step
+  // built the hill without the treads, and the load cooked a second level beside it.
+  REQUIRE(io::write_file(tmp.file("roomy.json"), hill_scene(true, 3)) == io::Status::Ok);
+  const Output cooked = run({"terrain-masks", tmp.file("roomy.json")});
+  CAPTURE(cooked.text);
+  REQUIRE(cooked.exit_code == 0);
+  REQUIRE(mask_archives(tmp.file("ddc")).size() == 1);
+  CHECK_MESSAGE(load(tmp.file("roomy.json"), std::string(), desc, error), error);
+  CHECK(mask_archives(tmp.file("ddc")).size() == 1);
 }
