@@ -1,17 +1,19 @@
 // A whole read on the job system's performance pool (T125; litter.md, "Placement"): the window's
-// tiles in contiguous runs, joined in run order, so one thread and many give the same bytes; the
-// earlier footprints found by tile give what the one-tile scan gives; and each mask tile is read
-// once a litter tile rather than once a cell.
+// tiles in contiguous runs, joined in run order, so one thread and many give the same bytes at
+// every `litter.whole_read_jobs`; the earlier footprints found by tile give what the one-tile scan
+// gives; and each mask tile is read once a run rather than once a cell.
 #include <core/hash/hash.h>
 #include <core/jobs/job_system.h>
 #include <core/schema/json_reflect.h>
 #include <domain/litter/litter.h>
 #include <domain/scene_gen/scene_gen.h>
+#include <foundation/tunables/tunables.h>
 
 #include <doctest/doctest.h>
 
 #include <atomic>
 #include <limits>
+#include <string>
 
 using namespace engine;
 
@@ -31,6 +33,20 @@ struct Pool {
       : system(jobs::JobSystemConfig{.performance_workers = workers, .pin_threads = false}) {}
   jobs::JobSystem system;
   static jobs::JobSystem* get(void* self) { return &static_cast<Pool*>(self)->system; }
+};
+
+// `litter.whole_read_jobs` set for a scope ("0": the host's pool; "3": at most three jobs), and
+// back to its default after.
+struct Jobs {
+  explicit Jobs(const char* value) {
+    tunables::Tunable* t = tunables::find("litter.whole_read_jobs");
+    REQUIRE(t != nullptr);
+    std::string error;
+    REQUIRE_MESSAGE(t->set_from_text(value, &error), error);
+  }
+  ~Jobs() {
+    if (tunables::Tunable* t = tunables::find("litter.whole_read_jobs")) t->reset();
+  }
 };
 
 // The ground and its masks, one state for both (`Ground::context`): integer terraces, so a step
@@ -139,21 +155,27 @@ TEST_CASE("litter: a whole read is the same bytes on one thread and on the pool,
   // The pin, taken on MSVC with the serial walk this replaced (b7681ac9): the pool's merge
   // changed no byte of what a whole read places.
   CHECK(hash_placements(serial) == 0x5a1878e19758bd3eull);
-  // Three and seven workers (and the calling thread): the bytes of one.
-  for (const u32 workers : {3u, 7u}) {
-    CAPTURE(workers);
-    Pool pool(workers);
-    c.jobs_fn = &Pool::get;
-    c.jobs_context = &pool;
-    for (u32 again = 0; again < 3; ++again) {
-      scene_gen::Placements many;
-      REQUIRE_MESSAGE(a.g->expand(a.state, c, many, &error), error);
-      REQUIRE(many.instances.size() == serial.instances.size());
-      CHECK(hash_placements(many) == hash_placements(serial));
-      CHECK(many.meshes.size() == serial.meshes.size());
+  // Three and seven workers (and the calling thread), the whole pool and a cap of three jobs, its
+  // mask tiles read ahead a band at a time: the bytes of one. And with a pool handed but the
+  // default (one job), the same.
+  for (const char* jobs : {"0", "3", "1"}) {
+    const Jobs set(jobs);
+    for (const u32 workers : {3u, 7u}) {
+      CAPTURE(jobs);
+      CAPTURE(workers);
+      Pool pool(workers);
+      c.jobs_fn = &Pool::get;
+      c.jobs_context = &pool;
+      for (u32 again = 0; again < 3; ++again) {
+        scene_gen::Placements many;
+        REQUIRE_MESSAGE(a.g->expand(a.state, c, many, &error), error);
+        REQUIRE(many.instances.size() == serial.instances.size());
+        CHECK(hash_placements(many) == hash_placements(serial));
+        CHECK(many.meshes.size() == serial.meshes.size());
+      }
+      c.jobs_fn = nullptr;
+      c.jobs_context = nullptr;
     }
-    c.jobs_fn = nullptr;
-    c.jobs_context = nullptr;
   }
 }
 
@@ -187,6 +209,7 @@ TEST_CASE("litter: a refusal on the pool is the earliest tile's, as the serial w
   scene_gen::Placements last;
   CHECK_FALSE(a.g->tile(a.state, {p.max_x, p.max_z}, c, last, &error));
   CHECK(error.find("nonfinite standing ground") != std::string::npos);
+  const Jobs set("0");
   Pool pool(5);
   c.jobs_fn = &Pool::get;
   c.jobs_context = &pool;

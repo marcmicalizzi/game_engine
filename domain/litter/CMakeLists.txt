@@ -19,7 +19,7 @@ engine_schema_library(NAME litter_schemas SCHEMAS schemas/litter.schema CAPABILI
 
 engine_module(NAME litter LAYER domain OPTIONAL WHOLE_ARCHIVE GENERATOR placement:litter mesh:litter
   DEPS base containers math hash json schema assets geometry materials texture scene_gen deadwood litter_schemas
-       jobs profiling
+       jobs profiling tunables
   SOURCES src/litter.cpp src/container.cpp src/placement.cpp)
 
 engine_module_tests(NAME litter

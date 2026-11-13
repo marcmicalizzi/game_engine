@@ -75,18 +75,40 @@ remain resident while the host supplies their normal distance forms. `max_cells`
 per tile and rejects an excessive lattice at open, rather than dropping its tail.
 `max_total_cells` (1048576 by default) also bounds a whole read before expansion.
 
-**A whole read runs on the job system's performance pool** (T125, 2026-11-12). The window's tiles,
-in row-major order, are cut into contiguous runs (four a thread), each run placed by one job into
-a list of its own, and the lists joined in run order, never in the order the jobs finish; so the
-instances, their ids rising, are the bytes one thread makes, and a refusal is the earliest tile's,
-the one the serial walk met first (`tests/litter_pool_tests.cpp` holds both at one, four and eight
-threads, and pins the bytes of the walk this replaced). Nothing is drawn from a shared stream: every
-draw is the cell's own hash. Two costs per cell became costs per tile, with no byte moved: the
+**A whole read may run on the job system's performance pool, and by default does not** (T125,
+2026-11-12; the tunable `litter.whole_read_jobs`: 1 one thread, the default; 0 the host's pool; a
+larger number a cap on it). On the pool the window's tiles, in row-major order, go in bands of
+whole rows, each band cut into contiguous runs, each run placed by one job into a list of its own,
+and the lists joined in band and run order, never in the order the jobs finish; so the instances,
+their ids rising, are the bytes one thread makes, and a refusal is the earliest tile's, the one the
+serial walk met first. A band's mask tiles are read ahead on the calling thread in the level's
+order, because the level reads through one window and jobs asking it from all over a band each
+move it. Nothing is drawn from a shared stream: every draw is the cell's own hash.
+`tests/litter_pool_tests.cpp` holds the bytes at one, four and eight threads, the whole pool and a
+cap of three, and pins the bytes of the serial walk this replaced (`0x5a1878e19758bd3e`).
+
+**Why one thread is the default: on a "tiles" ground the pool is slower.** Every height a cell asks
+of a tile set's reader takes its lock twice (the pin and the unpin, `TileSet::tile`) and bumps a
+shared counter, so concurrent cells queue on one mutex. Measured in `msvc-release` with
+`engine_litter_bench` (the 1 km frame, 16,384 cells, medians of three; the machine was shared, 53 %
+of its CPU used by other agents' work in the last run and up to 98 % in earlier ones, so every
+number is an upper bound): one thread 38.2 ms, two 58.0, four 69.6, eight 90.0, sixteen 210.6,
+the machine's whole pool 218.0. On the same ground read as a function with no lock
+(`litter.expand.unlocked`) one thread took 5.1 ms, eight 4.1 and sixteen 4.3, and before the
+mask read-ahead sixteen had taken 21 ms. So seven eighths of the entry's own cost on a tile set is
+the reader's lookups, and until the tile set answers a point without its lock, the entry's work
+stays on one thread, where it
+costs about 2.4 us a cell (0.04 s for the bench's 16,384) and grows by a tenth on a frame three
+times wider: the entry's own work is a function of its cells, not of the region.
+
+**Three costs per cell were costs that should not be there**, and are gone with no byte moved: the
 earlier footprints anchored in a tile are found once (a whole read sorts them by tile once and each
 tile gathers the 3 x 3 tiles about it, keeping exactly those the one-tile scan keeps, in the host's
-order), where every cell had scanned every earlier footprint of the scene; and each mask tile is
-read once by the run of tiles that reaches it (a `tile` call, or one job's run of a whole read,
-holding at most 64), where every cell had copied its mask tile out of the level again.
+order), where every cell had scanned every earlier footprint of the scene; each mask tile is read
+once by the run of tiles that reaches it (a `tile` call, or one run of a whole read, holding at
+most 64), where every cell had copied its mask tile out of the level again (3,123 reads for 54
+tiles in the pool test before, at most 216 after); and a cell standing on the ground it was decided
+on reuses the five heights it read rather than asking the ground for them again.
 
 **Where a cold load's minutes went** (the forest's engine needs 66). The entry's `open` asks the
 ground for its masks when the layer names a substrate, and a `tiles` ground builds its mask level
@@ -143,7 +165,9 @@ is in the build, the tests add `tests/litter_masks_tests.cpp` and the module has
 `engine_litter_bench` (`litter.mask_cook`, `litter.expand.serial`, `litter.expand.pool`, each at a
 frame one and three kilometres wide), both linking `tileset` as a test target may; the module
 itself does not. Hosts link litter conditionally. Registration points are the mesh and placement registries
-and schema descriptions. No protocol method or tunable: all controls are recipe data.
+and schema descriptions. No protocol method. One tunable, `litter.whole_read_jobs` (how many jobs a
+whole read runs on, 1 by default: "Placement"), which changes no byte; every other control is
+recipe data.
 Determinism is derived and cross-toolchain. The twig and tangle container pins follow the
 deadwood solver they reuse: a change to deadwood's geometry or `k_deadwood_version` moves those
 two (and only those two) and re-pins them in `determinism_tests.cpp` with the reason and commit,

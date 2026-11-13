@@ -11,6 +11,7 @@
 #include <domain/tileset/masks.h>
 #include <domain/tileset/tileset.h>
 #include <foundation/bench/bench.h>
+#include <foundation/tunables/tunables.h>
 
 #include <test_temp_dir.h>
 
@@ -119,21 +120,36 @@ void cook(bench::State& state) {
 }
 
 struct Pool {
+  explicit Pool(u32 workers) : system(jobs::JobSystemConfig{.performance_workers = workers}) {}
   jobs::JobSystem system;
   static jobs::JobSystem* get(void* self) { return &static_cast<Pool*>(self)->system; }
 };
 
-void expand(bench::State& state, bool pooled) {
-  Fixture& f = fixture(static_cast<u32>(state.arg()));
+// The same ground as a function, read with no lock: what the entry costs when its ground is not a
+// tile set's reader.
+f64 analytic(const void*, i64 x_mm, i64 z_mm) noexcept {
+  const i64 x = x_mm / 1000 + 512, z = z_mm / 1000 + 512;
+  const f64 u = static_cast<f64>(((x % 160) + 160) % 160) / 80.0 - 1.0;
+  const f64 v = static_cast<f64>(((z % 120) + 120) % 120) / 60.0 - 1.0;
+  return 18.0 * (1.0 - u * u) * (1.0 - v * v);
+}
+
+// `workers` 0: none (one thread); otherwise the pool's performance workers, ~0u the machine's.
+void expand(bench::State& state, u32 wide, u32 workers, bool locked = true) {
+  Fixture& f = fixture(wide);
   if (!f.ok) return;
   scene_gen::Context c;
   c.tile_size = 32;
-  c.ground.surface_fn = surface;
+  c.ground.surface_fn = locked ? surface : analytic;
   c.ground.masks_fn = ground_masks;
   c.ground.context = &f;
   std::unique_ptr<Pool> pool;
-  if (pooled) {
-    pool = std::make_unique<Pool>();
+  // The pool's whole size (`litter.whole_read_jobs` 0) when a pool is handed, one job when not.
+  tunables::Tunable* jobs = tunables::find("litter.whole_read_jobs");
+  std::string refused;
+  if (jobs != nullptr) (void)jobs->set_from_text(workers != 0 ? "0" : "1", &refused);
+  if (workers != 0) {
+    pool = std::make_unique<Pool>(workers == ~0u ? 0u : workers);
     c.jobs_fn = &Pool::get;
     c.jobs_context = pool.get();
   }
@@ -156,10 +172,23 @@ void expand(bench::State& state, bool pooled) {
     bench::keep(out.instances.size());
   }
   g->close(entry);
+  if (jobs != nullptr) jobs->reset();
 }
 
 }  // namespace
 
 ENGINE_BENCH_ARGS(mask_cook, "litter.mask_cook", 1, 3) { cook(state); }
-ENGINE_BENCH_ARGS(expand_serial, "litter.expand.serial", 1, 3) { expand(state, false); }
-ENGINE_BENCH_ARGS(expand_pool, "litter.expand.pool", 1, 3) { expand(state, true); }
+ENGINE_BENCH_ARGS(expand_serial, "litter.expand.serial", 1, 3) {
+  expand(state, static_cast<u32>(state.arg()), 0);
+}
+ENGINE_BENCH_ARGS(expand_pool, "litter.expand.pool", 1, 3) {
+  expand(state, static_cast<u32>(state.arg()), ~0u);
+}
+// The 1 km frame on a pool of so many performance workers (and the calling thread); 0 is no pool.
+ENGINE_BENCH_ARGS(expand_workers, "litter.expand.workers", 0, 1, 3, 7, 15) {
+  expand(state, 1, static_cast<u32>(state.arg()));
+}
+// The same on the ground as a function with no reader's lock, the masks still the level's.
+ENGINE_BENCH_ARGS(expand_unlocked, "litter.expand.unlocked", 0, 1, 3, 7, 15) {
+  expand(state, 1, static_cast<u32>(state.arg()), false);
+}

@@ -11,6 +11,7 @@
 #include <domain/tileset/tileset.h>
 #include <foundation/image/png.h>
 #include <foundation/io/vfs.h>
+#include <foundation/tunables/tunables.h>
 
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
@@ -184,7 +185,11 @@ TEST_CASE(
   const u64 h1 = place(a.set, one, nullptr, n1);
   const u64 h2 = place(b.set, two, nullptr, n2);
   Pool pool;
+  tunables::Tunable* jobs = tunables::find("litter.whole_read_jobs");
+  REQUIRE(jobs != nullptr);
+  REQUIRE(jobs->set_from_text("0", &error));  // the host's pool, its mask tiles read ahead
   const u64 h3 = place(b.set, two, &pool, n3);
+  jobs->reset();
   CHECK(n1 > 100);
   CHECK(n1 == n2);
   CHECK(n1 == n3);

@@ -5,6 +5,7 @@
 #include <core/schema/json_reflect.h>
 #include <domain/litter/litter.h>
 #include <domain/scene_gen/scene_gen.h>
+#include <foundation/tunables/tunables.h>
 
 #include <algorithm>
 #include <cmath>
@@ -14,6 +15,13 @@
 
 namespace engine::litter {
 namespace {
+// **How many jobs a whole read places its tiles on at once** (T125; litter.md, "Placement"): 1, one
+// thread, by measurement — on a "tiles" ground every height a cell asks takes the tile set reader's
+// lock, and the pool measured slower than one thread at every size tried — and 0 for the host's
+// pool, or a number to cap it. The bytes are the same at any value.
+tunables::Int whole_read_jobs{"litter.whole_read_jobs", 1, 0, 4096,
+                              "Jobs a whole litter read places its tiles on at once: 1 one "
+                              "thread, 0 the host's pool, more a cap on it"};
 struct Entry {
   Layer p;
   Vector<scene_gen::PlacementMesh> meshes;
@@ -98,15 +106,26 @@ bool anchored_in(const scene_gen::Footprint& f, f64 corner_x, f64 corner_z, f64 
 // once, so a long run holds a row's worth and not the window's.
 struct MaskTiles {
   static constexpr u32 k_held = 64;
+  static constexpr u32 k_absent = ~0u;
   struct Held {
     i32 tx = 0, tz = 0;
-    u32 at = 0;
+    u32 at = 0;  // k_absent: the level has no such tile
   };
   Vector<Held> held;
   Vector<u32> words;
   u32 last = ~0u;
+  // A band's tiles read ahead by the whole read (`expand`), sorted by (tz, tx), shared read-only by
+  // its jobs: what a job finds there it does not ask the level for.
+  const MaskTiles* band = nullptr;
   // The tile's words, read on first ask; null when the level refuses it.
   const u32* get(const scene_gen::GroundMasks& masks, u32 n, i32 tx, i32 tz) {
+    if (band != nullptr) {
+      const auto it = std::lower_bound(
+          band->held.begin(), band->held.end(), Held{tx, tz, 0},
+          [](const Held& a, const Held& b) { return a.tz != b.tz ? a.tz < b.tz : a.tx < b.tx; });
+      if (it != band->held.end() && it->tx == tx && it->tz == tz)
+        return it->at == k_absent ? nullptr : band->words.data() + it->at;
+    }
     if (last != ~0u && held[last].tx == tx && held[last].tz == tz)
       return words.data() + held[last].at;
     for (u32 i = 0; i < held.size(); ++i)
@@ -183,10 +202,11 @@ bool place(const Entry& e, scene_gen::TileCoord t, const scene_gen::Context& c,
       }
       if (blocked) continue;
       const f64 h = c.ground.surface_mm(mx, mz);
-      const f64 average =
-          (c.ground.surface_mm(mx - step, mz) + c.ground.surface_mm(mx + step, mz) +
-           c.ground.surface_mm(mx, mz - step) + c.ground.surface_mm(mx, mz + step)) *
-          .25;
+      const f64 west = c.ground.surface_mm(mx - step, mz),
+                east = c.ground.surface_mm(mx + step, mz),
+                south = c.ground.surface_mm(mx, mz - step),
+                north = c.ground.surface_mm(mx, mz + step);
+      const f64 average = (west + east + south + north) * .25;
       if (!std::isfinite(h) || !std::isfinite(average)) return fail(error, "nonfinite ground");
       density += static_cast<f64>(p.hollow_gain) * std::clamp((average - h) / .1, 0.0, 1.0) +
                  static_cast<f64>(p.obstacle_gain) * edge;
@@ -210,11 +230,16 @@ bool place(const Entry& e, scene_gen::TileCoord t, const scene_gen::Context& c,
         density = std::min(1.0, density) * weight;
       }
       if (draw(seed, 3) >= std::min(1.0, density)) continue;
-      const f64 sy = stand.surface_mm(mx, mz);
-      const f64 sx =
-          (stand.surface_mm(mx + step, mz) - stand.surface_mm(mx - step, mz)) / (.002 * step);
-      const f64 sz =
-          (stand.surface_mm(mx, mz + step) - stand.surface_mm(mx, mz - step)) / (.002 * step);
+      // Standing on the ground decided on (no moving surface): the five heights just read, which
+      // the same queries would give again, so the ground is asked five times a cell and not ten.
+      const bool moved = c.stand.present();
+      const f64 sy = moved ? stand.surface_mm(mx, mz) : h;
+      const f64 sx = moved ? (stand.surface_mm(mx + step, mz) - stand.surface_mm(mx - step, mz)) /
+                                 (.002 * step)
+                           : (east - west) / (.002 * step);
+      const f64 sz = moved ? (stand.surface_mm(mx, mz + step) - stand.surface_mm(mx, mz - step)) /
+                                 (.002 * step)
+                           : (north - south) / (.002 * step);
       if (!std::isfinite(sy) || !std::isfinite(sx) || !std::isfinite(sz))
         return fail(error, "nonfinite standing ground");
       if (sx * sx + sz * sz > static_cast<f64>(p.max_slope) * static_cast<f64>(p.max_slope))
@@ -301,12 +326,12 @@ class Anchored {
   i64 tile_mm_ = 1;
   Vector<Keyed> sorted_;
 };
-// **A whole read on the job system's performance pool** (T125; litter.md, "Placement"): the
-// window's tiles in row-major order, cut into contiguous runs, each run placed by one job into its
-// own list, and the lists joined in run order — never in the order the jobs finish — so the
-// instances, their ids rising, are the bytes one thread makes. A run stops at its first refusal,
-// and the refusal returned is the one of the earliest tile, which is the one the serial walk met
-// first.
+// **A whole read on the job system's performance pool** (T125; litter.md, "Placement"), when
+// `litter.whole_read_jobs` asks for one: the window's tiles in row-major order, in bands of whole
+// rows, each band cut into contiguous runs, each run placed by one job into its own list, and the
+// lists joined in band and run order — never in the order the jobs finish — so the instances,
+// their ids rising, are the bytes one thread makes. A run stops at its first refusal, and the
+// refusal returned is the one of the earliest tile, which is the one the serial walk met first.
 bool expand(void* state, const scene_gen::Context& c, scene_gen::Placements& out,
             std::string* error) {
   out.clear();
@@ -316,53 +341,102 @@ bool expand(void* state, const scene_gen::Context& c, scene_gen::Placements& out
   const u64 d = static_cast<u64>(static_cast<i64>(e.p.max_z) - e.p.min_z + 1);
   const u32 count = static_cast<u32>(w * d);  // checked at open: under 2^32
   const Anchored anchored(c, e.tile_size);
-  jobs::JobSystem* workers = count > 1 ? c.jobs() : nullptr;
-  const u32 threads = workers != nullptr ? workers->worker_count(jobs::Pool::Performance) + 1 : 1;
-  const u32 runs = threads <= 1 ? 1 : std::min(count, threads * 4);
+  const i64 wanted = whole_read_jobs.get();
+  jobs::JobSystem* workers = count > 1 && wanted != 1 ? c.jobs() : nullptr;
+  const u32 pool = workers != nullptr ? workers->worker_count(jobs::Pool::Performance) + 1 : 1;
+  const u32 threads = wanted == 0 ? pool : static_cast<u32>(std::min<i64>(wanted, pool));
+  // Four runs a thread over the host's pool; exactly one a job under a cap, so no more than the cap
+  // run at once.
+  const u32 per_thread = wanted == 0 ? 4 : 1;
+  // The mask level, when the layer reads one: a band's tiles are read ahead on this thread in the
+  // level's order, because the level reads through one window and jobs asking it from all over the
+  // band each move it (measured: the pool four times slower than one thread on a lock-free ground).
+  scene_gen::GroundMasks masks;
+  scene_gen::GroundMaskInfo info;
+  const bool ahead = threads > 1 && e.p.substrate >= 0 && c.ground.masks(masks, nullptr) &&
+                     masks.valid() && masks.ops->info && masks.ops->tile &&
+                     masks.ops->info(masks.state, info) && info.spacing_mm > 0 && info.cells >= 1 &&
+                     info.cells <= 1024 && (info.cells & (info.cells - 1)) == 0;
+  // Bands of whole rows, each enough tiles for every thread four times over.
+  const u32 band_rows = threads <= 1
+                            ? static_cast<u32>(d)
+                            : std::max<u32>(1, static_cast<u32>((threads * 4u + w - 1) / w));
   struct Run {
     Vector<scene_gen::Placement> instances;
     bool ok = true;
     std::string why;
   };
-  Vector<Run> parts(runs);
-  const auto run = [&](u32 r) {
-    Vector<u32> own;
-    MaskTiles held;
-    const u32 from = static_cast<u32>(u64{count} * r / runs);
-    const u32 to = static_cast<u32>(u64{count} * (r + 1) / runs);
-    for (u32 i = from; i < to; ++i) {
-      const scene_gen::TileCoord t{static_cast<i32>(e.p.min_x + static_cast<i64>(i % w)),
-                                   static_cast<i32>(e.p.min_z + static_cast<i64>(i / w))};
-      anchored.gather(t, own);
-      if (!place(e, t, c, std::span<const u32>(own.data(), own.size()), held, parts[r].instances,
-                 &parts[r].why)) {
-        parts[r].ok = false;
-        return;
-      }
-    }
-  };
-  if (runs == 1) {
-    run(0);
-  } else {
-    workers->parallel_for(jobs::Pool::Performance, runs, 1, [&](u32 begin, u32 end) {
-      for (u32 r = begin; r < end; ++r)
-        run(r);
-    });
-  }
   scene_gen::Placements result;
   result.meshes = e.meshes;
-  u32 total = 0;
-  for (const Run& part : parts) {
-    if (!part.ok) {
-      if (error != nullptr) *error = part.why;
-      return false;
+  Vector<Run> parts;
+  MaskTiles band;
+  for (u64 row = 0; row < d; row += band_rows) {
+    const u32 first = static_cast<u32>(row * w);
+    const u32 tiles = static_cast<u32>(std::min<u64>(band_rows, d - row) * w);
+    const u32 runs = threads <= 1 ? 1 : std::min(tiles, threads * per_thread);
+    band.held.clear();
+    band.words.clear();
+    if (ahead) {
+      // Every mask tile the band's cells can fall in, within the level's window.
+      const u32 n = scene_gen::mask_tile_words(info.cells);
+      const i64 size_mm = scene_gen::nearest_mm(static_cast<f64>(e.tile_size));
+      const auto mask_tile = [&](i64 mm) {
+        return scene_gen::mask_floor_div(scene_gen::mask_floor_div(mm, info.spacing_mm),
+                                         info.cells);
+      };
+      const i64 z0 =
+          std::max<i64>(info.tile_min_z, mask_tile((e.p.min_z + static_cast<i64>(row)) * size_mm));
+      const i64 z1 = std::min<i64>(
+          info.tile_max_z, mask_tile((e.p.min_z + static_cast<i64>(row + tiles / w)) * size_mm));
+      const i64 x0 = std::max<i64>(info.tile_min_x, mask_tile(e.p.min_x * size_mm));
+      const i64 x1 = std::min<i64>(info.tile_max_x, mask_tile((e.p.max_x + 1) * size_mm));
+      for (i64 tz = z0; tz <= z1; ++tz)
+        for (i64 tx = x0; tx <= x1; ++tx) {
+          const u32 at = band.words.size();
+          band.words.resize(at + n);
+          const bool read = masks.ops->tile(masks.state, static_cast<i32>(tx), static_cast<i32>(tz),
+                                            std::span<u32>(band.words.data() + at, n));
+          if (!read) band.words.resize(at);
+          band.held.push_back(MaskTiles::Held{static_cast<i32>(tx), static_cast<i32>(tz),
+                                              read ? at : MaskTiles::k_absent});
+        }
     }
-    total += part.instances.size();
+    parts.clear();
+    parts.resize(runs);
+    const auto run = [&](u32 r) {
+      Vector<u32> own;
+      MaskTiles held;
+      if (ahead) held.band = &band;
+      const u32 from = first + static_cast<u32>(u64{tiles} * r / runs);
+      const u32 to = first + static_cast<u32>(u64{tiles} * (r + 1) / runs);
+      for (u32 i = from; i < to; ++i) {
+        const scene_gen::TileCoord t{static_cast<i32>(e.p.min_x + static_cast<i64>(i % w)),
+                                     static_cast<i32>(e.p.min_z + static_cast<i64>(i / w))};
+        anchored.gather(t, own);
+        if (!place(e, t, c, std::span<const u32>(own.data(), own.size()), held, parts[r].instances,
+                   &parts[r].why)) {
+          parts[r].ok = false;
+          return;
+        }
+      }
+    };
+    if (runs == 1) {
+      run(0);
+    } else {
+      workers->parallel_for(jobs::Pool::Performance, runs, 1, [&](u32 begin, u32 end) {
+        for (u32 r = begin; r < end; ++r)
+          run(r);
+      });
+    }
+    for (const Run& part : parts) {
+      if (!part.ok) {
+        if (error != nullptr) *error = part.why;
+        return false;
+      }
+      for (const scene_gen::Placement& p : part.instances)
+        result.instances.push_back(p);
+    }
   }
-  result.instances.reserve(total);
-  for (const Run& part : parts)
-    for (const scene_gen::Placement& p : part.instances)
-      result.instances.push_back(p);
   result.things = result.instances.size();
   out = std::move(result);
   return true;
