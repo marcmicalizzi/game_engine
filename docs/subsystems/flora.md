@@ -2499,7 +2499,28 @@ the tree and its ramp under any trunk. **The mesh less its skirt is the mesh it 
 pinned tree is held to its version-11 hash with the skirt stripped (`tests/skirt_support.h`), so
 the skirt is the only thing version 12 moved. What it does not do, later stages do:
 seating by footprint where the ground falls away under the rim faster than a plane (a tread's cut,
-a bank), the conformed foot, the laterals.
+a bank; [the seat](#the-seat), below), the conformed foot, the laterals.
+
+## The seat
+
+G201 stage 2, 2026-11-12 ([renderer](renderer.md#a-tree-seated-by-its-footprint)). Every tree's
+container records **what its skirt measured of the stem's foot**, section 42
+(`geometry::ClusterFileSeat`, 12 bytes): `radius_m`, the farthest point of the stem's foot ring
+from the origin across the level plane (every stem's, for a clump: the circle a host samples the
+ground on); `rim_y_m`, the foot ring's lowest point; `skirt_y_m`, the skirt's bottom. The skirt's
+emission measures them where it builds (`detail::build_skirt`, and the palm's own emitter) and folds
+each stem into `Motion::seat` (`add_to_seat`: the farthest reach, the lowest collar, the lowest
+bottom), which `build_flora_container` copies. Every species with a skirt carries one: the palm, the
+broadleaf and its profiles, the conifer and the evergreens, the birch and its clumps, the willow, the
+orchard tree, the ancient tree; never a regeneration sapling, a shrub, a herb, a fern, a tuft or the
+sward, which a host never seats.
+
+The seat is the **container's**, not the tree's shape: `k_flora_seat_version` (1) is mixed into the
+container's source hash of every species that carries one, after the conifers' chain version, and
+not into `flora_source_hash`, which the deadwood keys a remain by and whose trees the seat does not
+change. So every tree's cache entry rebuilds once to carry its seat, and nothing a tree's mesh is
+moves: its vertices, clusters and pins are version 12's (`tests/skirt_tests.cpp` holds the seat to
+the skirt's own vertices). A standing deadwood remain records its own ([deadwood](deadwood.md#standing-remains-keep-their-skirt)).
 
 ## Determinism
 

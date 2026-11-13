@@ -6,7 +6,9 @@
 #include <schemas/deadwood.h>
 
 namespace engine::deadwood {
-inline constexpr u32 k_deadwood_version = 2;
+// 3: a standing remain (snag, snapped stem, solid stump) keeps its tree's skirt under its base and
+//    its container records a seat (G201 stage 2; deadwood.md, "Standing remains keep their skirt").
+inline constexpr u32 k_deadwood_version = 3;
 
 // Cold cook diagnostics. No solver state or allocations in the frame loop.
 struct Report {

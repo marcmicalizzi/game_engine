@@ -214,10 +214,17 @@ enum class ClusterSection : u32 {
   CoverMask = 40,
   // G90: ao, thickness, hue, age as four u8 unorms, parallel to Vertices.
   SwardVertex = 41,
+  // **A tree's seat** (G201 stage 2; docs/experiments/tree-base-on-slopes.md, "Seating"; flora.md,
+  // "The seat"): exactly one `ClusterFileSeat`, what a host seats an instance of the mesh by on the
+  // ground under it — the farthest its stem's foot reaches from the origin across the level plane,
+  // the collar ring's height, and the skirt's bottom (stage 1's). **Written only by a generator
+  // whose mesh stands on the ground** (the flora's trees, a standing deadwood remain), like 34 to
+  // 41, so every other container is the bytes it was; a reader without it seats nothing. Resident.
+  Seat = 42,
 };
 
 // One past the highest kind this build knows, which is how wide a by-kind table has to be.
-inline constexpr u32 k_cluster_section_kinds = static_cast<u32>(ClusterSection::SwardVertex) + 1;
+inline constexpr u32 k_cluster_section_kinds = static_cast<u32>(ClusterSection::Seat) + 1;
 
 // Names the kinds this build knows, "unknown" for anything else; for diagnostics and for
 // `engine-content info`.
@@ -374,6 +381,18 @@ struct ClusterFileSwardVertex {
 };
 static_assert(sizeof(ClusterFileSwardVertex) == 4);
 
+// **A tree's seat**, as section 42 records it (G201 stage 2; flora.md, "The seat"). 12 bytes, the
+// mesh's own metres. `radius_m` is the farthest point of the stem's foot ring (every stem's, for a
+// clump) from the origin across the level plane: the circle a host samples the ground on, in fixed
+// world directions, whatever the instance's yaw. `rim_y_m` is the foot ring's lowest point, a few
+// centimetres over the origin; `skirt_y_m` the skirt's bottom (stage 1's), below it: negative, and
+// how far under the origin the stem reaches. A record whose radius is not positive is no seat.
+struct ClusterFileSeat {
+  f32 radius_m = 0.0f;
+  f32 rim_y_m = 0.0f;
+  f32 skirt_y_m = 0.0f;
+};
+
 // One part's thickness, as section 37 records it (flora.md, "The structural table"). 16 bytes.
 // `part` is the part's id in section 35, the records in ascending id and so parents first; the
 // part's axis is the segment from its `pivot` along its `direction` for its `length`, and its
@@ -501,6 +520,10 @@ struct ClusterFileData {
   // host vertex. Written only when not empty.
   Vector<u32> cover_mask;
   Vector<ClusterFileSwardVertex> sward_vertices;
+  // The seat (section 42): a radius of zero for every mesh that does not stand on the ground.
+  // Written only when the radius is positive.
+  ClusterFileSeat seat{};
+  bool has_seat() const noexcept { return seat.radius_m > 0.0f; }
 };
 
 // Material `material`'s sampling record, or the default one (repeat, linear, no transform,

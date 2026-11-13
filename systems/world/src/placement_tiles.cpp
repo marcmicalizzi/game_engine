@@ -57,6 +57,24 @@ scene_gen::Context PlacementTiles::context_for(const Entry& entry, u8 ring,
   return context;
 }
 
+void PlacementTiles::seat(renderer::SceneInstance& instance) {
+  const u32 m = instance.mesh;
+  if (m >= scene_->sources.size() || !(scene_->sources[m].seat.radius_m > 0.0f)) return;
+  if (m < scene_->mesh_info.size() && scene_->mesh_info[m].fit.active()) return;
+  const i64 start = time::monotonic_ns();
+  const scene_gen::Exclusion* holes =
+      scene_->terrain.exclusion.empty() ? nullptr : &scene_->terrain.exclusion;
+  const scene_gen::SeatResult r = scene_gen::seat_on_ground(
+      ground_->provider().view(), holes, scene_gen::mesh_seat(scene_->sources[m].seat),
+      instance.transform.scale, instance.origin);
+  if (r.seated) {
+    instance.slope = r.slope;
+    ++stats_.seated;
+    if (r.lowered_m > 0.0) ++stats_.lowered;
+  }
+  stats_.seat_ns += time::monotonic_ns() - start;
+}
+
 bool PlacementTiles::create(const renderer::SceneData& scene, const PlacementTilesConfig& config,
                             std::string* error) {
   scene_ = &scene;
@@ -426,6 +444,10 @@ bool PlacementTiles::build(TileCoord tile, u8 ring, TileBlock& out, u32 entries,
       instance.transform = p.turn();
       instance.origin = p.position;
       instance.handoff = p.handoff;  // the near and far forms' hand-off (G136)
+      instance.grounded = true;
+      // Seated by its footprint (G201 stage 2): a resident mesh with a seat, on the scene's ground,
+      // by the function the load seats a whole read's with, so the two place it alike.
+      if (!entry.source->seated && ground_ != nullptr && p.mesh < meshes.size()) seat(instance);
       // The whole read's place, for an entry whose ids name it (the `authored` entry's): what a
       // swaying tree's phase is hashed from, so it sways as it would loaded, whenever its tile came
       // (renderer.md, "Streamed trees sway").

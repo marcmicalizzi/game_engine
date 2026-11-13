@@ -3,6 +3,7 @@
 // copied once into the scene's instances — so its stride is what a streamed tile's output costs.
 #include <core/base/size_table.h>
 #include <domain/scene_gen/scene_gen.h>
+#include <domain/scene_gen/seat.h>
 
 using namespace engine;
 
@@ -14,3 +15,7 @@ ENGINE_EXPECT_SIZE(64, 8, scene_gen::Placement);
 ENGINE_EXPECT_SIZE(8, 4, scene_gen::TileCoord);
 // A ring's place, millimetres: centre and half-side.
 ENGINE_EXPECT_SIZE(24, 8, scene_gen::RingPlace);
+// **A seated placement's plane** (G201 stage 2; seat.h): the gradient of the ground under a tree's
+// rim as two 16-bit words, the four bytes a placement keeps for the conformed foot (stage 3), on
+// the host's instance beside the placement and never in it.
+ENGINE_EXPECT_SIZE(4, 2, scene_gen::GroundSlope);

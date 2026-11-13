@@ -21,9 +21,9 @@
 engine_module(NAME scene_gen LAYER domain
   DEPS base containers math hash json schema schemas jobs log geometry
   SOURCES src/registry.cpp src/terrain_features.cpp src/terrain_holes.cpp src/exclusion.cpp
-          src/site.cpp)
+          src/site.cpp src/seat.cpp)
 
 engine_module_tests(NAME scene_gen
   SOURCES tests/scene_gen_tests.cpp tests/size_table.cpp tests/terrain_holes_tests.cpp tests/exclusion_tests.cpp
-          tests/site_tests.cpp tests/footprint_list_tests.cpp)
+          tests/site_tests.cpp tests/footprint_list_tests.cpp tests/seat_tests.cpp)
 engine_module_bench(NAME scene_gen SOURCES bench/site_bench.cpp)

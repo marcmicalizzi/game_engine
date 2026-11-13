@@ -193,6 +193,11 @@ const char* k_usage =
     "                                          scree, rock, ground) into a pack directory,\n"
     "                                          by default the one every host reads behind the\n"
     "                                          fetched pack; present with the matgen capability\n"
+    "  ground sample <scene.json> (--point <x,z[,r]> ... | --points <file.jsonl>) [--skirt <m>]\n"
+    "         [--uncut] [--placements] [--ddc <dir>]\n"
+    "                                          the drawn ground at a point (height, hole,\n"
+    "                                          exclusion, gradient) and over a disc (its drop,\n"
+    "                                          plane and a skirt's seat), as a load stands on it\n"
     "  routes <scene.json> <out.json> [--ddc <dir>] [--entry <i>]\n"
     "                                          the scene's footpaths as benched treads (edits),\n"
     "                                          their mask regions and plan keys; present with\n"
@@ -1409,6 +1414,7 @@ int main(int argc, char** argv) {
       command == "terrain-read")
     return content::tileset_command(argc, argv);
   if (command == "masks") return content::masks_check_command(argc, argv);
+  if (command == "ground") return content::ground_command(argc, argv);
   if (command == "city") return content::city_command(argc, argv);
   if (command == "npcs") return content::npcs_command(argc, argv);
   if (command == "soil-cook") return content::soil_command(argc, argv);

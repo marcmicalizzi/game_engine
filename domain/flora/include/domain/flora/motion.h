@@ -30,6 +30,8 @@
 #include <domain/geometry/cluster_file.h>
 #include <domain/geometry/cluster_lod.h>
 
+#include <algorithm>
+
 namespace engine::flora {
 
 inline constexpr u32 k_trunk_part = 0;
@@ -44,7 +46,27 @@ struct Motion {
   // The structural table (structure.h; flora.md, "The structural table"): empty for a species that
   // emits none (the palm, the broadleaf, the conifer), otherwise one record per part in id order.
   Vector<geometry::ClusterFileStructuralPart> structure;
+  // **The seat** (G201 stage 2; flora.md, "The seat"): what the skirt's emission measured of the
+  // stem's foot — its farthest reach from the origin, the collar ring's lowest point, the skirt's
+  // bottom — over every stem that stands on the ground, which the container records (section 42)
+  // and a host seats an instance by. A radius of zero for a species with no skirt.
+  geometry::ClusterFileSeat seat{};
 };
+
+// Folds one stem's foot into a seat: the farthest reach, the lowest collar point and the lowest
+// skirt bottom over the stems so far.
+inline void add_to_seat(geometry::ClusterFileSeat& seat, f64 reach, f64 rim_y, f64 skirt_y) {
+  const f32 r = static_cast<f32>(reach);
+  const f32 rim = static_cast<f32>(rim_y);
+  const f32 bottom = static_cast<f32>(skirt_y);
+  if (!(seat.radius_m > 0.0f)) {
+    seat = geometry::ClusterFileSeat{r, rim, bottom};
+    return;
+  }
+  seat.radius_m = std::max(seat.radius_m, r);
+  seat.rim_y_m = std::min(seat.rim_y_m, rim);
+  seat.skirt_y_m = std::min(seat.skirt_y_m, bottom);
+}
 
 // The weight as the container stores it: a 16-bit unorm, rounded to nearest.
 u16 encode_bend_weight(f32 weight) noexcept;

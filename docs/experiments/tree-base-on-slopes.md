@@ -377,7 +377,7 @@ slope at 10 m.
 | Stage | What is built | What it returns to the eye | What holds it |
 |---|---|---|---|
 | 1. The skirt (**built**, below) | the tube carried down on every tree species' trunk; the solver's version and the pins | no gap under any tree at any distance or yaw, to 45°, at no cost an instance: the owner's defect, closed | a CPU test over the four ramps and 64 azimuths: the skirt's lowest ring is under the ground beneath it; every LOD cut and distance form keeps it; a GPU case on the scene, from the ids |
-| 2. The footprint | the 17-sample seat and plane fit in the scene reader and the placements; `engine-content ground sample` | trees beside a tread, a cut bank and the lattice's edge sit; authors can ask the drawn ground | a tread benched under a rim; the whole read and the streamed tiles equal; pinned bytes of the fit for the containers |
+| 2. The footprint (**built**, below) | the 17-sample seat and plane fit in the scene reader and the placements; `engine-content ground sample` | trees beside a tread, a cut bank and the lattice's edge sit; authors can ask the drawn ground | a tread benched under a rim; the whole read and the streamed tiles equal; pinned bytes of the fit for the containers |
 | 3. The conformed foot | the foot part, the pose's third kind, its normal, the padding and the error scale, the fade at the ring's edge | at 2 to 10 m the flare leans into the slope: exposed down-slope, buried up-slope | the stage against a CPU reference; rest poses to the bit at *g* = 0; rays against raster word for word on a conformed tree; a cost pair at 3840 x 2160 under traced primaries and shadows |
 | 4. The laterals | the rounded roots by habit in the foot; near-detail clusters left out of distance forms; shapes handed to the exclusion; G102's ridge and sleeve removed | roots on every tree at 2 to 15 m, round, in the trunk's bark, with no grass through them | the collapse check G102 left open, on the foot; a form without marked clusters; the chain's demand counted on the scene and on one forest pair |
 | 5. Surface and ground | the bark's height term; the cover's host including the foot; litter banked up-slope; the apron's mask | the foot darker, mossed and half buried in litter, as the r52 sheet has it | pictures beside the reels |
@@ -454,6 +454,39 @@ Inside the noise: the frame moves by -0.01 ms (the run-to-run spread is 0.04), t
 way (-0.08 ms against a spread of 0.09, +38 pairs). The picture at 2 m on the 30 degree ramp, before
 and after, and the ids across the slope (main 103 gap pixels under the 30 degree ramp's spruce and
 658 under the 45; the skirt none) are in the branch's hand-back.
+
+### Stage 2 as built (2026-11-12, branch b63-G201-2)
+
+Seating by the footprint ([renderer](../subsystems/renderer.md#a-tree-seated-by-its-footprint),
+[scene_gen](../subsystems/scene_gen.md#seating-by-the-footprint)), the seat record
+([flora](../subsystems/flora.md#the-seat)), the drawn ground asked
+([apps](../subsystems/apps.md#engine-content-ground-sample)), and the two small things stage 1
+left (a standing deadwood remain keeps its skirt, [deadwood](../subsystems/deadwood.md#standing-remains-keep-their-skirt);
+the tree-bases ramps are slabs 2 m thick). What differs from the design above:
+
+- **The seat records the skirt's numbers, not the foot's.** Section 42 is the foot ring's farthest
+  reach from the origin, its lowest point and the skirt's bottom; the foot's height and reach are
+  stage 3's to add (an append-only section's record is the reader's to take whole or not at all, so
+  stage 3 widens it with a size the reader checks).
+- **The rule is `min(y, lowest + skirt - 0.05 m)`**, the design's `max(0, drop - (D - 0.05))`
+  measured from the origin's own height rather than the centre's, so a scatter kind's `sink` and the
+  seat are "the larger of the two" by construction and seating twice is seating once.
+- **The plane is a 2 by 2 least-squares solve**, not a division by a table's constants: a hole's
+  samples are left out, which leaves the rim's set asymmetric, and one solve in f64 over integer
+  centred sums is the same bits on every toolchain. With every sample present the set is symmetric
+  (`seat_rim_offset`) and the solve is the table's answer.
+- **The seat is the host's at load and at activation, by one function**, and a generator never
+  seats: the seat is the mesh's, which only a host that has built the mesh knows. So the whole read
+  seats in `load_scene` after its meshes load, before the authored entry takes the file's instances,
+  and the world's placements seat every other streamed entry's placements as a tile is built; a
+  tile's own meshes (built after the tile) are not seated.
+- **The seat is the container's**, keyed by `k_flora_seat_version` in the container's source hash
+  and not in the tree's shape hash, so no tree's mesh moved and the deadwood's key of a tree did
+  not; `k_deadwood_version` moved for the standing remains' skirt.
+
+What decides it, on `content/test-scenes/tree-bases/seat.json` (a tread raised 1.2 m with fill faces
+at 3 in 1, a cutting 1.5 m deep with banks at 4 in 1, the tall spruce at eight yaws 0.1 m from each
+edge): the GPU case reads the ids and the depth along each edge. Measured numbers are below.
 
 ### What the build needs from other rows
 

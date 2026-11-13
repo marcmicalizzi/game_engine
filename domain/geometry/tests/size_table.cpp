@@ -71,6 +71,10 @@ ENGINE_EXPECT_SIZE(24, 4, geometry::ClusterFileSlotSampling);
 
 ENGINE_EXPECT_SIZE(128, 4, geometry::ClusterFileMaterialSampling);
 
+// A tree's seat (section 42, G201): the foot's radius, the collar's height and the skirt's bottom,
+// three floats laid over the file's bytes.
+ENGINE_EXPECT_SIZE(12, 4, geometry::ClusterFileSeat);
+
 // The surface binding record (surface_binding.h; plan 07 §7.11's proposed packing): a u16 refined
 // triangle, two u16 barycentrics, a half-float normal offset and a u16 blend weight, five u16 and
 // no padding. It is stored once per bound render vertex and read once per frame by the transfer,

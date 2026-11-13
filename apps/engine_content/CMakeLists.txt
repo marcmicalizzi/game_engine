@@ -14,10 +14,13 @@
 # engine-view does for `--animate`: link the module when this configuration has it, define
 # ENGINE_CONTENT_TISSUE so the commands compile, and otherwise build an engine-content that refuses
 # `tissue` with a sentence. `msvc-minimal` is the proof that the second half works.
+# `renderer` and `scene_gen` for `ground sample` (G201 stage 2): the drawn ground is the scene
+# reader's, through its ground plan, and the renderer is not a capability, so every configuration
+# has the command.
 set(_content_deps base containers math hash time log platform jobs io json geometry materials
-    assets atlas texture content_build)
+    assets atlas texture content_build renderer scene_gen)
 set(_content_tests tests/content_tests.cpp tests/determinism_tests.cpp tests/limit_dump_tests.cpp
-    tests/normal_cases_tests.cpp tests/texture_tests.cpp)
+    tests/normal_cases_tests.cpp tests/texture_tests.cpp tests/ground_tests.cpp)
 if(TARGET engine::tissue)
   list(APPEND _content_deps tissue schemas)
   list(APPEND _content_tests tests/tissue_tests.cpp)
@@ -130,7 +133,7 @@ engine_app(NAME engine_content OUTPUT engine-content
           normal_cases.cpp clip_commands.cpp terrain_commands.cpp tileset_commands.cpp masks_check_commands.cpp npc_commands.cpp
           flora_commands.cpp rocks_commands.cpp channels_commands.cpp cover_commands.cpp soil_commands.cpp morphs.cpp
           landform_commands.cpp matgen_commands.cpp routes_commands.cpp caves_commands.cpp
-          bridges_commands.cpp
+          bridges_commands.cpp ground_commands.cpp
   DEPS ${_content_deps}
   E2E_TESTS ${_content_tests} tests/soil_tests.cpp tests/morphs_tests.cpp tests/matgen_tests.cpp)
 

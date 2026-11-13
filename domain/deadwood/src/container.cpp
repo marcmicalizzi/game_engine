@@ -50,6 +50,7 @@ bool build_container(const DeadwoodFile& file, const assets::MeshGeneratorInputs
   }
   result.motion_parts = std::move(motion.parts);
   result.structural_parts = std::move(motion.structure);
+  result.seat = motion.seat;  // a standing remain's (G201 stage 2); none for a fallen one
   for (const auto& m : mesh.materials) {
     geometry::ClusterFileMaterial material;
     material.base_color = m.base_color;

@@ -278,6 +278,11 @@ u64 encode(const ClusterFileData& data, std::string& out) {
     add_section(payloads, ClusterSection::SwardVertex, sizeof(ClusterFileSwardVertex),
                 data.sward_vertices.size(), data.sward_vertices.data());
   }
+  // The seat, and only for a mesh that stands on the ground (G201; flora.md, "The seat").
+  if (data.has_seat()) {
+    add_section(payloads, ClusterSection::Seat, static_cast<u32>(sizeof(ClusterFileSeat)), 1,
+                &data.seat);
+  }
 
   u64 offset = k_header_bytes + k_record_bytes * payloads.size();
   for (Payload& payload : payloads) {
@@ -457,6 +462,7 @@ const char* cluster_section_name(u32 kind) noexcept {
     case ClusterSection::LodCoverage: return "lod_coverage";
     case ClusterSection::CoverMask: return "cover_mask";
     case ClusterSection::SwardVertex: return "sward_vertex";
+    case ClusterSection::Seat: return "seat";
   }
   return "unknown";
 }
@@ -699,6 +705,15 @@ bool read_cluster_file_memory(std::span<const u8> bytes, ClusterFileData& out, s
         sward->element_count != result.mesh.mesh.vertices.size())
       return fail(error, "cluster file sward_vertex is not four bytes per vertex");
     copy_section(bytes, *sward, result.sward_vertices);
+  }
+  // The seat: one record, or none.
+  if (const ClusterFileSection* seat = found[static_cast<u32>(ClusterSection::Seat)];
+      seat != nullptr && seat->element_count != 0) {
+    if (seat->element_size != sizeof(ClusterFileSeat) || seat->element_count != 1)
+      return fail(error, "cluster file section seat is not one 12-byte record");
+    Vector<ClusterFileSeat> records;
+    copy_section(bytes, *seat, records);
+    result.seat = records[0];
   }
 
   // The morph stream. A file with no `morph_channels` section, or with an empty one, is a mesh
@@ -1146,6 +1161,8 @@ constexpr ClusterSection k_resident_kinds[] = {
     ClusterSection::LodCoverage,
     // 4 bytes a host vertex, and only in a cover's companion.
     ClusterSection::CoverMask,
+    // 12 bytes, and only in a mesh that stands on the ground: its seat.
+    ClusterSection::Seat,
 };
 
 // The per-page streams, which a resident read leaves on disk. They are still *listed*, with zero
