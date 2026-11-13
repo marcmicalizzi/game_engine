@@ -335,8 +335,8 @@ TEST_CASE("landform: the sea bed takes part: no wall at the coast") {
   }
   SUBCASE("a coast the rivers build out holds the critical slope too, delta fronts included") {
     // The same coast with deposition, and a sea wide and deep enough to outlast the run: the
-    // rivers' sediment settles to the sea's level at their mouths and the fronts stand no
-    // steeper than any other ground.
+    // rivers' sediment settles below the wave base off their mouths (W128: the sea fills to its
+    // wave base and no higher) and the fronts stand no steeper than any other ground.
     landform::Sketch sketch = golden_sketch();
     sketch.rock.formation.reset();
     sketch.rock.resistance = 0.0;
@@ -509,8 +509,26 @@ TEST_CASE("landform: the files round-trip and a field answers a window") {
   landform::Fields header;
   REQUIRE_MESSAGE(landform::read_fields(files.fields, header, error), error);
   CHECK(header.width == land.width);
-  CHECK(header.fields.size() == 16u);
-  CHECK(header.version == 4u);
+  CHECK(header.fields.size() == 23u);
+  CHECK(header.version == 5u);
+  REQUIRE(header.tide_mm.has_value());
+  CHECK(*header.tide_mm == 0);
+  // The coast's distance from the waterline reads back as written (a u16 field beside it).
+  {
+    Vector<i32> shore(land.width);
+    REQUIRE_MESSAGE(
+        landform::read_field_window(files.fields, header, "shore_distance", 0, 40, land.width, 1,
+                                    shore.data(), usize{land.width} * 4, error),
+        error);
+    bool shore_same = true;
+    for (u32 i = 0; i < land.width; ++i)
+      if (shore[i] != land.shore_distance[40 * land.width + i]) shore_same = false;
+    CHECK(shore_same);
+    Vector<u16> exposure(land.width);
+    REQUIRE_MESSAGE(landform::read_field_window(files.fields, header, "exposure", 0, 40, land.width,
+                                                1, exposure.data(), usize{land.width} * 2, error),
+                    error);
+  }
   // The rock's surface is the height less the sediment, point for point.
   const u32 fw = 11, fh = 13;
   Vector<i32> rock(fw * fh);

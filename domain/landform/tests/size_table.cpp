@@ -8,10 +8,12 @@
 // the ice and the till, two arrays more, with the count of the ice's steps beside the banks': 408.
 // Stage F (W127) added what the ice leaves, five arrays (the thickest ice that ever stood, the
 // moraines and their crests, a lake's fill, the rock's floor) and three volumes of the budget
-// (the ice's load delivered, laid as ridges, lodged): 512.
+// (the ice's load delivered, laid as ridges, lodged): 512. The coast (W128, stages A and B) added
+// its seven arrays, the tide and the wave base, the shore's two counts, three volumes of the
+// budget (the shelf's take, the beach laid and taken) and the stand's seconds: 680.
 #include <core/base/size_table.h>
 #include <domain/landform/landform.h>
 
 using namespace engine;
 
-ENGINE_EXPECT_SIZE(512, 8, landform::Landform);
+ENGINE_EXPECT_SIZE(680, 8, landform::Landform);

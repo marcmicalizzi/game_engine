@@ -95,6 +95,7 @@ bool write_text(const std::string& path, const JsonValue& json, std::string& err
 
 u32 type_bytes(std::string_view type) noexcept {
   if (type == "u8") return 1;
+  if (type == "u16") return 2;
   if (type == "u32" || type == "i32") return 4;
   return 0;
 }
@@ -167,7 +168,10 @@ bool write_landform(const Landform& land, const Sketch& sketch, const std::strin
       land.fill.size() != n || land.sediment.size() != n || land.resistance.size() != n ||
       land.discharge.size() != n || land.channel_width.size() != n || land.ice.size() != n ||
       land.till.size() != n || land.ice_max.size() != n || land.moraine.size() != n ||
-      land.moraine_crest.size() != n || land.lakebed.size() != n || land.rock_floor.size() != n) {
+      land.moraine_crest.size() != n || land.lakebed.size() != n || land.rock_floor.size() != n ||
+      land.shore_distance.size() != n || land.substrate.size() != n || land.grain.size() != n ||
+      land.exposure.size() != n || land.wave_direction.size() != n ||
+      land.beach_slope.size() != n || land.berm.size() != n) {
     error = "the landform is not solved";
     return false;
   }
@@ -201,7 +205,10 @@ bool write_landform(const Landform& land, const Sketch& sketch, const std::strin
   fields.height = land.height;
   fields.spacing_mm = land.spacing_mm;
   fields.origin_mm = {land.origin_x_mm, land.origin_z_mm};
-  if (land.has_sea) fields.sea_level_mm = land.sea_level_mm;
+  if (land.has_sea) {
+    fields.sea_level_mm = land.sea_level_mm;
+    fields.tide_mm = land.tide_mm;
+  }
   fields.heightfield = stem + ".json";
   const std::string sketch_text = write_json(schema::to_json(sketch));
   fields.sketch_hash = hex16(hash_bytes(sketch_text.data(), sketch_text.size()));
@@ -248,7 +255,21 @@ bool write_landform(const Landform& land, const Sketch& sketch, const std::strin
       !add("lakebed", "u32", "millimetres of the sediment that settled in standing water",
            land.lakebed) ||
       !add("rock_floor", "i32", "millimetres: the rock's surface, the height less the sediment",
-           land.rock_floor))
+           land.rock_floor) ||
+      !add("shore_distance", "i32",
+           "millimetres from the still waterline, positive over the sea, held to 2 km",
+           land.shore_distance) ||
+      !add("substrate", "u8", "0 none, 1 sand, 2 shingle, 3 boulders, 4 rock, 5 sea cliff, 6 mud",
+           land.substrate) ||
+      !add("grain", "u32", "micrometres: the beach sediment's median diameter", land.grain) ||
+      !add("exposure", "u16", "millimetres: the energy-weighted breaker height at the shore",
+           land.exposure) ||
+      !add("wave_direction", "u8",
+           "where the waves come from, 256ths of a turn clockwise from north (-z)",
+           land.wave_direction) ||
+      !add("beach_slope", "i32", "the beach face's tan beta, parts per million",
+           land.beach_slope) ||
+      !add("berm", "u32", "millimetres: the berm's crest above the sea's level", land.berm))
     return false;
   out.fields = in_dir(stem + ".fields.json");
   return write_text(out.fields, schema::to_json(fields), error);
@@ -270,7 +291,7 @@ bool read_fields(const std::string& json_path, Fields& out, std::string& error) 
   for (u32 i = 0; i < out.fields.size(); ++i)
     if (type_bytes(out.fields[i].type) == 0) {
       error = "'" + json_path + "': field '" + out.fields[i].name + "' is of type '" +
-              out.fields[i].type + "'; a field is u8, u32 or i32";
+              out.fields[i].type + "'; a field is u8, u16, u32 or i32";
       return false;
     }
   return true;

@@ -33,14 +33,17 @@ namespace {
 // Version 6 (W104 stage C, rivers with width): every hash moved, because the golden sketch takes
 // the new defaults: its flow divides where the ground is gentle, its rivers wear their banks, and
 // its uplift is uneven over the plan by 0.7.
-constexpr u64 k_height_hash = 0x87a3180cd93046ffull;
-constexpr u64 k_area_hash = 0x37a14640e15ff18bull;
-constexpr u64 k_receiver_hash = 0xe27b979581e5b230ull;
-constexpr u64 k_slope_hash = 0x8b5d9a6c90a7ca7dull;
-constexpr u64 k_erosion_hash = 0x5a95096691d65b81ull;
-constexpr u64 k_fill_hash = 0x3496a0d9a616b98eull;
-constexpr u64 k_sediment_hash = 0x70108d41bd5df534ull;
-constexpr u64 k_resistance_hash = 0x2f7f8146fcaad4e8ull;
+// Version 10 (W128, the coast's stages A and B): every hash moved, because the golden sketch has a
+// sea, and its sea now takes its rivers' sediment only below the default wave base of 20 m and
+// carries off what creep lays on its bed above it.
+constexpr u64 k_height_hash = 0x696e95d72b338d11ull;
+constexpr u64 k_area_hash = 0xf4be33182e665886ull;
+constexpr u64 k_receiver_hash = 0xfe47b81a1f7cebc9ull;
+constexpr u64 k_slope_hash = 0xef065d373cb86835ull;
+constexpr u64 k_erosion_hash = 0x66cc29d28522d08bull;
+constexpr u64 k_fill_hash = 0x011f19ce5d69d336ull;
+constexpr u64 k_sediment_hash = 0x27c5990586c8c71eull;
+constexpr u64 k_resistance_hash = 0xdf878cd38688f424ull;
 
 }  // namespace
 
