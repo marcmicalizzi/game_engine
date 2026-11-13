@@ -49,6 +49,13 @@ struct MeadowSpeciesTraits {
   f64 petal_m;  // a petal card's length
   f64 petal_angle_deg;
   f32 flower_rgb[3];  // linear
+  // G167: the radius of one plant's crown, metres (chosen from the floras' leaf and branch spans,
+  // the grounding page says which): what a drift spaces its plants by, so a cover becomes a count.
+  f64 crown_m;
+  // G167: the months it flowers, first and last, 1..12 (the British flora's; 0 and 0 for a species
+  // drawn with no heads).
+  u32 bloom_from;
+  u32 bloom_to;
 };
 std::span<const MeadowSpeciesTraits> meadow_species() noexcept;
 const MeadowSpeciesTraits* meadow_species(std::string_view name) noexcept;
@@ -86,8 +93,36 @@ u32 meadow_cover(std::span<const MeadowSpeciesTraits* const> species, const Mead
                  std::span<u32> out) noexcept;
 // The species' stand-in mesh recipe: a herb of the table's height with its flowers at their colour
 // (flat-coloured until leaf and flower sets exist), or, for a sedge, a rush or a dwarf shrub, a
-// herb of leaves alone. `seed` varies the plant.
-Herb meadow_herb(const MeadowSpeciesTraits& species, u64 seed = 1);
+// herb of leaves alone. `seed` varies the plant. G167: a forb out of its flowering months
+// (`meadow_in_bloom`) stands in leaf, its heads left off.
+Herb meadow_herb(const MeadowSpeciesTraits& species, u64 seed = 1, u32 day_of_year = 182);
+// G167: whether the species carries its heads on `day_of_year` (1..366): within its flowering
+// months, first day of the first to last day of the last, in a common year.
+bool meadow_in_bloom(const MeadowSpeciesTraits& species, u32 day_of_year) noexcept;
+
+// **The drift** (G167; flora.md, "The meadow at whole density"). A cover is the share of the ground
+// the species' crowns cover, so a cell the species holds is a drift of its plants at its crown's
+// spacing: `meadow_drift_count` plants, `round(cell area / (pi crown^2))` held to
+// 1..`k_meadow_drift_max`, on a disc of `crown sqrt(count)`. A cell draws the drift of species i
+// with probability cover_i over the drift's own covered share of the cell, `meadow_drift_scale`,
+// in 1/65536 (the sum scaled down in integers where it passes one), so a species still covers its
+// cover's share of the ground and stands at its crown's density there.
+inline constexpr u32 k_meadow_drift_max = 8;
+u32 meadow_drift_count(const MeadowSpeciesTraits& species, f64 cell_m) noexcept;
+f64 meadow_drift_radius(const MeadowSpeciesTraits& species, f64 cell_m) noexcept;
+// The factor, in 1/65536, a cover is multiplied by to give the probability of the drift.
+u32 meadow_drift_scale(const MeadowSpeciesTraits& species, f64 cell_m) noexcept;
+// The probabilities of each species' drift at a niche, in 1/65536, into `out`; their sum, at most
+// `k_meadow_cover_one`, is returned. `scales` are `meadow_drift_scale`'s, one a species.
+u32 meadow_drift_odds(std::span<const MeadowSpeciesTraits* const> species,
+                      std::span<const u32> scales, const MeadowNiche& niche,
+                      std::span<u32> out) noexcept;
+// The near drift's recipe (species `meadow`): `meadow_drift_count` of the stand-in herb at the
+// drift's radius, each head's petal cards held to `k_meadow_drift_petals` with its coloured area
+// kept, and the coarsest stem that reads.
+inline constexpr u32 k_meadow_drift_petals = 8;
+MeadowPlant meadow_drift(const MeadowSpeciesTraits& species, f64 cell_m, u64 seed = 1,
+                         u32 day_of_year = 182);
 
 // **The far form** (flora.md, "The meadow community"): past the near ring one plant in
 // `meadow_far_thin` of a flowering species' stands, as a leafless stem carrying the heads of that
@@ -96,9 +131,16 @@ Herb meadow_herb(const MeadowSpeciesTraits& species, u64 seed = 1);
 // most heads a herb carries, and the most plants a far form stands for:
 inline constexpr u32 k_meadow_far_heads = 40;
 inline constexpr u32 k_meadow_far_thin = 4;
-// How many plants a species' far form stands for: 0 for a species with no flowers (it has none),
-// else 40 over its heads a plant, held to 1..4.
-u32 meadow_far_thin(const MeadowSpeciesTraits& species) noexcept;
-Herb meadow_far_herb(const MeadowSpeciesTraits& species, u64 seed = 1);
+// How many cells' drifts a species' far form stands for: 0 for a species with no flowers or out of
+// bloom (it has none), else 40 over its heads a plant, held to 1..4.
+u32 meadow_far_thin(const MeadowSpeciesTraits& species, u32 day_of_year = 182) noexcept;
+// G167: the far form carries the heads of `thin` cells' drifts of `count` plants each: the heads of
+// `thin` plants on one stem, each head's coloured area `count` times a plant's, its petal cards
+// lengthened to at most the herb's 8 cm and then more of them, so the area is kept.
+Herb meadow_far_herb(const MeadowSpeciesTraits& species, u64 seed = 1, u32 count = 1,
+                     u32 day_of_year = 182);
+// The far form as a field (species `meadow`): one plant, the far herb.
+MeadowPlant meadow_far_drift(const MeadowSpeciesTraits& species, f64 cell_m, u64 seed = 1,
+                             u32 day_of_year = 182);
 
 }  // namespace engine::flora

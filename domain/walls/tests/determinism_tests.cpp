@@ -42,10 +42,16 @@ TEST_CASE("walls: modules and placements are the same bytes on every toolchain")
   // drawn, its wedges and leaners toned down, the mid form's cope striped). G177 (k_wall_version
   // 4) moved the four module pins: stones laid with sloping beds and tops, jumpers, thin stones and
   // lumps, a standing face stone drawn as its face alone, slits one centimetre high left open, a
-  // rough cope, 40 % of corners broken; the placement pin did not move. A replacement records its
-  // reason and commit here.
-  constexpr u64 expected[] = {0xaf1ba44f28a05478ull, 0xd6513ff2ec1d98ccull, 0x74ccd307867d127cull,
-                              0xb060632d8a9fd294ull, 0xf75f3d8efeaeb99aull};
+  // rough cope, 40 % of corners broken; the placement pin did not move. G189 (k_wall_version 5)
+  // moved the four module pins: a standing face stone's face turned, broken across and weathered
+  // with shared smooth-shaded vertices, small closing stones plain chips, a split face's least
+  // inset 5 % (3 %); the layout's draws stayed G177's (`k_layout_version`), the placement pin did
+  // not move. Its second commit (k_wall_version 6) moved the three that have a cope: the cover
+  // course of stones of their own thickness and proud, the cope's blocks, heights, top shapes,
+  // leaning runs and wedges. Its third (k_wall_version 7) moved the same three: the mid form's
+  // cope stone by stone. A replacement records its reason and commit here.
+  constexpr u64 expected[] = {0x19f0e0ab76889d9bull, 0x067eeaf52d071f28ull, 0xcaecaf6a3334c4ddull,
+                              0x78833e58325ee895ull, 0xf75f3d8efeaeb99aull};
   u64 got[5] = {};
   const ModuleKind kinds[4] = {ModuleKind::run, ModuleKind::head, ModuleKind::broken,
                                ModuleKind::fallen};

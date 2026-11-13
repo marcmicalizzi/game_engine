@@ -1,0 +1,101 @@
+{
+  "format": "engine.scene.v1",
+  "name": "steep-dip",
+  "description": "Bedrock on steeply dipping beds (G200; docs/subsystems/rocks.md 'Beds at any attitude'): a mountain 230 m high whose flanks reach 54 degrees, cut by the forest proof of concept's gneiss formation dipping 57 degrees toward 128 degrees, so one flank has its beds dipping with the slope, the opposite one into it, and the two between their strike running up it. The ledges generator stands the resistant beds on the 30 to 50 degree ground and the cliffs generator faces the steeper band. Its heightfield is written first by engine-content terrain-synth (README.md).",
+  "camera_path": "camera-path.json",
+  "terrain": {
+    "size": 1001,
+    "extent": 500,
+    "provider": "tiles",
+    "tiles": {"heightfield": "mountain.json", "vertical_scale": 1.25}
+  },
+  "placements": [
+    {
+      "generator": "cliffs",
+      "params": {
+        "name": "steep-dip faces",
+        "seed": 7,
+        "region_min": [-128, -448],
+        "region_max": [448, 128],
+        "spacing_m": 4,
+        "block_m": 256,
+        "min_slope_deg": 50,
+        "min_length_m": 24,
+        "min_height_m": 6,
+        "max_length_m": 300,
+        "tier_m": 12,
+        "face": {
+          "type": "Gneiss",
+          "talus": 0,
+          "talus_blocks": 0,
+          "material": {"tile_m": 2.0},
+          "triangle_budget": 60000
+        },
+        "formation": {
+          "origin": [137.0, 0.0, 2911.0], "dip_deg": 57.0, "azimuth_deg": 128.0,
+          "fold_amplitude_m": 34.0, "fold_wavelength_m": 470.0,
+          "fold2_amplitude_m": 210.0, "fold2_wavelength_m": 3300.0, "soft_m": 0.7,
+          "beds": [
+            {"name": "felsic gneiss", "thickness_m": 4.3, "tint": [1.03, 1.02, 1.01], "roughness": -0.01, "resistance": 0.8},
+            {"name": "biotite seam", "thickness_m": 0.25, "tint": [0.98, 0.98, 0.975], "roughness": 0.02, "resistance": 0.55},
+            {"name": "banded gneiss", "thickness_m": 2.1, "tint": [1.0, 0.99, 0.98], "roughness": 0.0, "resistance": 0.7},
+            {"name": "felsic gneiss", "thickness_m": 7.8, "tint": [1.02, 1.02, 1.0], "roughness": -0.01, "resistance": 0.8},
+            {"name": "mafic seam", "thickness_m": 0.6, "tint": [0.975, 0.98, 0.98], "roughness": 0.03, "resistance": 0.6},
+            {"name": "banded gneiss", "thickness_m": 1.2, "tint": [0.99, 0.98, 0.97], "roughness": 0.0, "resistance": 0.7},
+            {"name": "quartz-rich", "thickness_m": 3.4, "tint": [1.02, 1.015, 1.01], "roughness": -0.02, "resistance": 0.85},
+            {"name": "biotite gneiss", "thickness_m": 0.9, "tint": [0.98, 0.975, 0.97], "roughness": 0.02, "resistance": 0.55}
+          ],
+          "macro_beds": [
+            {"name": "orthogneiss", "thickness_m": 96.0, "tint": [1.06, 1.04, 1.01], "roughness": -0.02, "resistance": 0.8},
+            {"name": "amphibolite", "thickness_m": 14.0, "tint": [0.76, 0.79, 0.78], "roughness": 0.05, "resistance": 0.75},
+            {"name": "pelitic schist", "thickness_m": 38.0, "tint": [0.93, 0.86, 0.78], "roughness": 0.07, "resistance": 0.35},
+            {"name": "marble", "thickness_m": 23.0, "tint": [1.2, 1.19, 1.17], "roughness": -0.06, "resistance": 0.55},
+            {"name": "paragneiss", "thickness_m": 141.0, "tint": [0.97, 0.95, 0.92], "roughness": 0.0, "resistance": 0.7},
+            {"name": "calc-silicate", "thickness_m": 9.0, "tint": [0.9, 0.95, 0.88], "roughness": 0.03, "resistance": 0.65},
+            {"name": "quartzite", "thickness_m": 31.0, "tint": [1.12, 1.1, 1.06], "roughness": -0.04, "resistance": 0.9},
+            {"name": "graphitic schist", "thickness_m": 6.0, "tint": [0.84, 0.84, 0.85], "roughness": 0.08, "resistance": 0.3}
+          ]
+        }
+      }
+    },
+    {
+      "generator": "ledges",
+      "params": {
+        "name": "steep-dip ledges",
+        "seed": 11,
+        "region_min": [-128, -448],
+        "region_max": [448, 128],
+        "type": "Gneiss",
+        "cliff_slope_deg": 50,
+        "near_rings": 1,
+        "far_rings": 3,
+        "material": {"tile_m": 2.0},
+        "formation": {
+          "origin": [137.0, 0.0, 2911.0], "dip_deg": 57.0, "azimuth_deg": 128.0,
+          "fold_amplitude_m": 34.0, "fold_wavelength_m": 470.0,
+          "fold2_amplitude_m": 210.0, "fold2_wavelength_m": 3300.0, "soft_m": 0.7,
+          "beds": [
+            {"name": "felsic gneiss", "thickness_m": 4.3, "tint": [1.03, 1.02, 1.01], "roughness": -0.01, "resistance": 0.8},
+            {"name": "biotite seam", "thickness_m": 0.25, "tint": [0.98, 0.98, 0.975], "roughness": 0.02, "resistance": 0.55},
+            {"name": "banded gneiss", "thickness_m": 2.1, "tint": [1.0, 0.99, 0.98], "roughness": 0.0, "resistance": 0.7},
+            {"name": "felsic gneiss", "thickness_m": 7.8, "tint": [1.02, 1.02, 1.0], "roughness": -0.01, "resistance": 0.8},
+            {"name": "mafic seam", "thickness_m": 0.6, "tint": [0.975, 0.98, 0.98], "roughness": 0.03, "resistance": 0.6},
+            {"name": "banded gneiss", "thickness_m": 1.2, "tint": [0.99, 0.98, 0.97], "roughness": 0.0, "resistance": 0.7},
+            {"name": "quartz-rich", "thickness_m": 3.4, "tint": [1.02, 1.015, 1.01], "roughness": -0.02, "resistance": 0.85},
+            {"name": "biotite gneiss", "thickness_m": 0.9, "tint": [0.98, 0.975, 0.97], "roughness": 0.02, "resistance": 0.55}
+          ],
+          "macro_beds": [
+            {"name": "orthogneiss", "thickness_m": 96.0, "tint": [1.06, 1.04, 1.01], "roughness": -0.02, "resistance": 0.8},
+            {"name": "amphibolite", "thickness_m": 14.0, "tint": [0.76, 0.79, 0.78], "roughness": 0.05, "resistance": 0.75},
+            {"name": "pelitic schist", "thickness_m": 38.0, "tint": [0.93, 0.86, 0.78], "roughness": 0.07, "resistance": 0.35},
+            {"name": "marble", "thickness_m": 23.0, "tint": [1.2, 1.19, 1.17], "roughness": -0.06, "resistance": 0.55},
+            {"name": "paragneiss", "thickness_m": 141.0, "tint": [0.97, 0.95, 0.92], "roughness": 0.0, "resistance": 0.7},
+            {"name": "calc-silicate", "thickness_m": 9.0, "tint": [0.9, 0.95, 0.88], "roughness": 0.03, "resistance": 0.65},
+            {"name": "quartzite", "thickness_m": 31.0, "tint": [1.12, 1.1, 1.06], "roughness": -0.04, "resistance": 0.9},
+            {"name": "graphitic schist", "thickness_m": 6.0, "tint": [0.84, 0.84, 0.85], "roughness": 0.08, "resistance": 0.3}
+          ]
+        }
+      }
+    }
+  ]
+}

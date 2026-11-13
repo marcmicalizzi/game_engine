@@ -1182,6 +1182,18 @@ void SceneCollision::gather_placements(world::TileCoord coord, PlacementScratch&
   const WorldPos corner = tile_corner(coord);
   if (!entries_.empty()) {
     const scene_gen::TileCoord at{coord.x, coord.z};
+    // **Each entry is handed what the entries before it put on the tile, as the drawn tile's build
+    // hands it** (T114; docs: "The entries before this one"): their placements' discs and then the
+    // shapes they said they occupy in `earlier`, and those shapes in the tile's exclusion, made the
+    // first time an entry of this tile hands one — `world::PlacementTiles::build`'s rule, read and
+    // followed, so the collision's tile is the drawn tile's. Without them a scatter layer that kept
+    // off a tread on the drawn tile made bodies on it here: rocks nobody could see, in the way. Per
+    // gather and on this thread, since a build ahead gathers on a worker; a polygon's points are
+    // the list's own (`FootprintList`), because `scratch.placed` is the next entry's by then.
+    scene_gen::FootprintList earlier;
+    FlatMap<u32, f32> reach_of;  // by scene mesh
+    scene_gen::Exclusion shaped;
+    bool has_shaped = false;
     for (u32 e = 0; e < entries_.size(); ++e) {
       const Entry& entry = *entries_[e];
       if (entry.generator->occupies != nullptr && !entry.generator->occupies(entry.state, at))
@@ -1190,8 +1202,11 @@ void SceneCollision::gather_placements(world::TileCoord coord, PlacementScratch&
       std::string why;
       bool made = false;
       {
+        scene_gen::Context context = context_for(entry);
+        context.earlier = earlier.span();
+        if (has_shaped) context.exclusion = &shaped;
         std::lock_guard<std::mutex> lock(generators_mutex_);
-        made = entry.generator->tile(entry.state, at, context_for(entry), scratch.placed, &why);
+        made = entry.generator->tile(entry.state, at, context, scratch.placed, &why);
       }
       if (!made) {
         out.ok = false;
@@ -1200,6 +1215,27 @@ void SceneCollision::gather_placements(world::TileCoord coord, PlacementScratch&
                         log::field("z", coord.z), log::field("error", why));
         continue;
       }
+      const bool later = e + 1 < entries_.size();  // an entry after it reads what it placed
+      if (later && !scratch.placed.shapes.empty()) {
+        if (!has_shaped) shaped = scene_->terrain.exclusion;
+        has_shaped = true;
+        if (!shaped.add_footprints(scratch.placed.shapes.span(), &why)) {
+          out.ok = false;
+          ENGINE_LOG_WARN(log_collision, "a tile's shape was refused",
+                          log::field("entry", entry.source->where), log::field("x", coord.x),
+                          log::field("z", coord.z), log::field("error", why));
+        }
+      }
+      // A placement's disc, as the drawn build makes it: at the placement's millimetre, its mesh's
+      // reach on the ground (`renderer::ground_radius`, the tile's word for a mesh it handed) times
+      // its larger ground scale.
+      const auto disc = [&](const scene_gen::Placement& p, f32 reach) {
+        if (!later) return;
+        const f32 scale = std::max(std::fabs(p.scale.x), std::fabs(p.scale.z));
+        earlier.add(scene_gen::Footprint{scene_gen::nearest_mm(p.position.x),
+                                         scene_gen::nearest_mm(p.position.z),
+                                         static_cast<f64>(reach * scale)});
+      };
       const u32 resident = entry.source->meshes.size();
       for (const scene_gen::Placement& p : scratch.placed.instances) {
         if (p.mesh >= resident) {
@@ -1207,11 +1243,25 @@ void SceneCollision::gather_placements(world::TileCoord coord, PlacementScratch&
           // tile's own list. It stands where the renderer stands it — its fit is the identity.
           const u32 k = p.mesh - resident;
           if (k >= scratch.placed.meshes.size()) continue;
+          disc(p, scratch.placed.meshes[k].reach);
           (void)add_tile_piece(scratch.placed.meshes[k], mat4_from_transform(p.turn()), p.position,
                                corner, scratch, out.tile_proxies, e);
           continue;
         }
         const u32 mesh = entry.source->meshes[p.mesh];
+        if (later) {
+          // Measured once a mesh a gather: a tile holds many placements of a few meshes.
+          f32* reach = reach_of.find_value(mesh);
+          if (reach == nullptr) {
+            const geometry::ClusterMeshPart* part =
+                mesh < scene_->parts.size() ? &scene_->parts[mesh] : nullptr;
+            reach = &(reach_of[mesh] = part != nullptr ? renderer::ground_radius(
+                                                             scene_->lod, part->first_cluster,
+                                                             part->cluster_count)
+                                                       : 0.0f);
+          }
+          disc(p, *reach);
+        }
         const Mat4 fit = mesh < scene_->mesh_fit.size() ? scene_->mesh_fit[mesh] : Mat4::identity();
         // Where the renderer stands the same placement (`renderer::instance_translation`): the
         // fit's offset through the rotation and scale in float32, the size of the mesh, and the
@@ -1220,6 +1270,9 @@ void SceneCollision::gather_placements(world::TileCoord coord, PlacementScratch&
         const WorldPos stands = p.position + DVec3{linear.c[3].xyz()};
         (void)add_piece(mesh, linear, stands, corner, scratch, k_no_index, e);
       }
+      if (later)
+        for (const scene_gen::Footprint& shape : scratch.placed.shapes.span())
+          earlier.add(shape);
     }
   }
   if (const Vector<u32>* bin = bins_.find_value(key)) {

@@ -7,6 +7,7 @@
 #include <core/json/json.h>
 #include <core/schema/json_reflect.h>
 #include <domain/bridges/bridges.h>
+#include <domain/materials/materials.h>
 
 #include <doctest/doctest.h>
 
@@ -123,11 +124,12 @@ u64 plan_hash(const BridgePlan& p) {
   return h;
 }
 
-u64 mesh_hash(const MeshPart (&parts)[2]) {
+u64 mesh_hash(const MeshPart (&parts)[k_materials]) {
   u64 h = 0;
   for (const MeshPart& part : parts) {
     h = hash_combine(h, hash_bytes(part.positions.data(), part.positions.size() * sizeof(Vec3)));
     h = hash_combine(h, hash_bytes(part.normals.data(), part.normals.size() * sizeof(Vec3)));
+    h = hash_combine(h, hash_bytes(part.uvs.data(), part.uvs.size() * sizeof(Vec2)));
     h = hash_combine(h, hash_bytes(part.indices.data(), part.indices.size() * sizeof(u32)));
   }
   return h;
@@ -184,8 +186,21 @@ TEST_CASE(
     check_channel(c, p);
     const i32 depth = bankfull_depth_mm(c);
     if (p.form == BridgeForm::log || p.form == BridgeForm::stringers) {
-      // The underside over bankfull by the bankfull depth, at least 300 mm.
-      CHECK(p.soffit >= p.bankfull + std::max(k_min_freeboard_mm, depth));
+      // A small bridge's underside 300 mm over the bank, a larger one's over the flood stage
+      // (bankfull plus a bankfull depth, at least 300 mm); higher only where a sill's ground asks.
+      const bool minor = p.form == BridgeForm::log || p.span <= k_minor_span_mm;
+      const i32 over = minor ? p.bankfull + k_bank_clearance_mm
+                             : p.bankfull + std::max(k_min_freeboard_mm, depth);
+      CHECK(p.soffit >= over);
+      bool sill_asks = false;
+      for (const Member& m : p.members)
+        if (m.kind == MemberKind::sill) {
+          i32 g = static_cast<i32>(profile_at(c, m.x0) - c.bed_mm);
+          for (i32 x = m.x0 - 300; x <= m.x1 + 300; x += 50)
+            g = std::max(g, static_cast<i32>(profile_at(c, x) - c.bed_mm));
+          sill_asks = sill_asks || p.soffit <= g + 200;
+        }
+      CHECK((p.soffit == over || sill_asks));
       CHECK(p.span >= static_cast<i32>(c.width_mm));
       CHECK(p.handrail == (p.form == BridgeForm::stringers && p.deck > k_rail_fall_mm));
     } else if (p.form == BridgeForm::clapper) {
@@ -207,7 +222,7 @@ TEST_CASE("bridges: every member is a closed solid wound outward") {
   const Crossing cases[] = {stream(3000, 400), stream(6000, 800, 400), stream(3000, 800),
                             stream(7000, 900)};
   for (const Crossing& c : cases) {
-    MeshPart parts[2];
+    MeshPart parts[k_materials];
     BridgePlan plan;
     BridgeReport report;
     std::string error;
@@ -248,31 +263,83 @@ TEST_CASE("bridges: every member is a closed solid wound outward") {
     // and a log fill less than theirs, a reversed solid would count negative).
     CHECK(volume > 0.5 * boxes);
     CHECK(volume <= boxes * 1.0001);
-    CHECK(report.triangles == report.stone_triangles + report.timber_triangles);
+    CHECK(report.triangles == report.material_triangles[k_stone] +
+                                  report.material_triangles[k_plank] +
+                                  report.material_triangles[k_log]);
   }
 }
 
-TEST_CASE("bridges: the container is one mesh of two materials with a far form") {
+TEST_CASE("bridges: the container is one mesh of three materials with a far form") {
   const Crossing c = stream(7000, 900);
   geometry::ClusterFileData data;
   BridgeReport report;
   std::string error;
   REQUIRE_MESSAGE(build_container(recipe(c), {}, {}, 0, data, report, error), error);
-  CHECK(data.materials.size() == 2);
+  CHECK(data.materials.size() == k_materials);
   CHECK(data.cluster_material.size() == data.mesh.mesh.clusters.size());
-  bool stone = false, timber = false;
+  bool worn[k_materials] = {};
   for (const u32 m : data.cluster_material) {
-    stone = stone || m == k_stone;
-    timber = timber || m == k_timber;
+    REQUIRE(m < k_materials);
+    worn[m] = true;
   }
-  CHECK(stone);
-  CHECK(timber);
+  CHECK(worn[k_stone]);  // the abutments under the sills
+  CHECK(worn[k_plank]);  // the deck and the rails
+  CHECK(worn[k_log]);    // the stringers and the sills
   CHECK(report.root_triangles > 0);
   CHECK(report.root_triangles < report.triangles);
   CHECK(data.generator == "bridge");
   // A ford has nothing to build.
   geometry::ClusterFileData none;
   CHECK_FALSE(build_container(recipe(stream(12000, 1200)), {}, {}, 0, none, report, error));
+}
+
+TEST_CASE("bridges: each material names its role's set through the tile contract") {
+  // Stand-in packs parsed from text (no pack on disk): the stone takes the layer's rock and falls
+  // back to the generated granite, the sawn and the round timber their own roles, and a timber
+  // role the pack lacks draws its constant (bridges.md, "The mesh").
+  const auto set = [](const char* role, const char* file) {
+    return std::string("\"") + role + R"(":{"tile_m":1,"normal_convention":"opengl","maps":{)" +
+           R"("base_color":{"file":")" + file + R"(.png"},"normal":{"file":")" + file +
+           R"(n.png"},"roughness":{"file":")" + file + R"(r.png"},"metallic":{"file":")" + file +
+           R"(m.png"},"height":{"file":")" + file + R"(h.png"}}})";
+  };
+  const std::string head =
+      R"({"format":"engine.materials.pack/1","name":"stand-in","version":"1","roles":{)";
+  materials::Pack full, granite_only;
+  std::string error;
+  REQUIRE_MESSAGE(
+      materials::parse_pack(head + set("rock/basalt", "b") + "," + set("rock/granite", "g") + "," +
+                                set("wood/plank", "p") + "," + set("wood/log", "l") + "}}",
+                            "C:/stand-in", full, error),
+      error);
+  REQUIRE(materials::parse_pack(head + set("rock/granite", "g") + "}}", "C:/stand-in", granite_only,
+                                error));
+  const auto image = [](const geometry::ClusterFileData& d, u8 m) -> std::string {
+    const i32 k = d.materials[m].base_color_image;
+    return k >= 0 ? d.image_paths[static_cast<u32>(k)] : std::string();
+  };
+  Bridge b = recipe(stream(7000, 900));  // stringers: stone, planks and logs
+  b.stone_role = "rock/basalt";
+  geometry::ClusterFileData data;
+  BridgeReport report;
+  REQUIRE_MESSAGE(
+      build_container(b, assets::MeshGeneratorInputs{&full}, {}, 0, data, report, error), error);
+  CHECK(image(data, k_stone) == "C:/stand-in/b.png");
+  CHECK(image(data, k_plank) == "C:/stand-in/p.png");
+  CHECK(image(data, k_log) == "C:/stand-in/l.png");
+  // The rock the pack lacks falls back to the granite; the timber it lacks keeps its colour.
+  REQUIRE(
+      build_container(b, assets::MeshGeneratorInputs{&granite_only}, {}, 0, data, report, error));
+  CHECK(image(data, k_stone) == "C:/stand-in/g.png");
+  CHECK(image(data, k_plank).empty());
+  CHECK(image(data, k_log).empty());
+  CHECK(data.materials[k_plank].base_color.x != data.materials[k_log].base_color.x);
+  // Stepping stones wear no timber, and name no timber image.
+  REQUIRE(build_container(recipe(stream(2000, 300)), assets::MeshGeneratorInputs{&full}, {}, 0,
+                          data, report, error));
+  CHECK(image(data, k_stone) == "C:/stand-in/g.png");
+  CHECK(image(data, k_plank).empty());
+  CHECK(image(data, k_log).empty());
 }
 
 TEST_CASE(
@@ -301,7 +368,7 @@ TEST_CASE(
     for (i32 tx = -2; tx <= 3; ++tx) {
       scene_gen::Placements one;
       REQUIRE(desc->tile(state, {tx, tz}, context, one, &error));
-      CHECK(desc->occupies(state, {tx, tz}) == !one.instances.empty());
+      CHECK(desc->occupies(state, {tx, tz}) == (!one.instances.empty() || !one.shapes.empty()));
       for (u32 k = 0; k < one.instances.size(); ++k) {
         const scene_gen::Placement& p = one.instances[k];
         bool same = false;
@@ -322,22 +389,85 @@ TEST_CASE(
   CHECK(plan_hash(solved(a)) == plan_hash(solved(b)));
 }
 
-TEST_CASE("bridges: the approaches bring the tread up to the deck, and the footprint is its plan") {
-  // A foot log over a 3 m stream: its deck stands over both banks.
+namespace {
+// The steps at one end of a plan: each a riser under the one before it (the deck first), the
+// risers equal and at most `k_riser_mm`, each on the ground, and what is left under the last one's
+// foot `approach_top`.
+void check_steps(const BridgePlan& p, u32 end) {
+  CAPTURE(end);
+  i32 above = p.deck, rise = -1;
+  u32 seen = 0;
+  for (const Member& m : p.members) {
+    if (m.kind != MemberKind::step || (end == 0) != (m.x1 <= p.x_start)) continue;
+    CHECK(m.support == -1);
+    CHECK(above - m.y1 <= k_riser_mm);
+    if (rise >= 0) CHECK(above - m.y1 == rise);
+    rise = above - m.y1;
+    CHECK(m.x1 - m.x0 == k_step_going_mm);
+    above = m.y1;
+    ++seen;
+  }
+  CHECK(seen == p.steps[end]);
+  CHECK(seen <= k_max_steps);
+  if (seen > 0) CHECK(p.approach_top[end] == above - rise);
+}
+}  // namespace
+
+TEST_CASE("bridges: a small bridge sits at its bank, reached by steps and no earthwork") {
+  // G147's mound: a foot log over a 3 m brook 0.8 m deep stood with its walk 1.25 m over level
+  // banks on two fill humps. At the bank (bridges.md, "The deck's height"): its underside 300 mm
+  // over the bank and its walk at most that and the log over it; three or four steps an end, and
+  // no fill.
   const Crossing c = stream(3000, 800, 0, 0, 2000, -3000);
   const BridgePlan p = solved(c);
   REQUIRE(p.form == BridgeForm::log);
+  CHECK(p.soffit == p.bankfull + k_bank_clearance_mm);
+  CHECK(p.deck - p.bankfull <= k_bank_clearance_mm + k_foot_log_mm);
+  CHECK(p.steps[0] >= 1);
+  CHECK(p.steps[1] >= 1);
+  check_steps(p, 0);
+  check_steps(p, 1);
+  const Approach a = approach_of(c, p, 150);
+  CHECK(a.step_mm == 0);
+  CHECK(a.length_mm[0] == 0);
+  CHECK(a.length_mm[1] == 0);
+  Layer layer;
+  layer.crossings.push_back(c);
+  layer.seed = 7;
+  CHECK(approach_edits_json(layer, 150).as_array().empty());
+  // Stringers of a 5.4 m span sit at the bank too.
+  const Crossing five = stream(4600, 700);
+  const BridgePlan q = solved(five);
+  REQUIRE(q.form == BridgeForm::stringers);
+  REQUIRE(q.span <= k_minor_span_mm);
+  CHECK(q.soffit == q.bankfull + k_bank_clearance_mm);
+  check_steps(q, 0);
+  check_steps(q, 1);
+}
+
+TEST_CASE("bridges: the approaches bring the tread up to the deck, and the footprint is its plan") {
+  // Stringers over an 8.2 m river, past the minor span: the deck keeps the flood clearance, so four
+  // steps an end and a fill past them to the tread.
+  const Crossing c = stream(8200, 900, 0, 0, 2000, -3000);
+  const BridgePlan p = solved(c);
+  REQUIRE(p.form == BridgeForm::stringers);
+  REQUIRE(p.span > k_minor_span_mm);
+  CHECK(p.soffit >= p.bankfull + std::max(k_min_freeboard_mm, bankfull_depth_mm(c)));
+  CHECK(p.steps[0] == k_max_steps);
+  CHECK(p.steps[1] == k_max_steps);
+  check_steps(p, 0);
+  check_steps(p, 1);
+  CHECK(p.approach_x[0] == p.x_start - static_cast<i32>(k_max_steps) * k_step_going_mm);
   const Approach a = approach_of(c, p, 150);
   CHECK(a.step_mm == 0);
   CHECK(a.length_mm[0] > 0);
   CHECK(a.length_mm[1] > 0);
   // At 15 %, the fill's top meets the ground where the approach ends and stands over it 100 mm
-  // before: the run is the deck's height over the bank over 0.15, to the 100 mm.
-  const i64 deck = c.bed_mm + p.deck;
+  // before: the run is the last step's foot over the bank over 0.15, to the 100 mm.
+  const i64 top = c.bed_mm + p.approach_top[0];
   const i64 len = a.length_mm[0];
-  CHECK(deck - 150 * len / 1000 <= profile_at(c, p.x_start - len));
-  CHECK(deck - 150 * (len - 100) / 1000 > profile_at(c, p.x_start - (len - 100)));
-  CHECK(len >= 1000);
+  CHECK(top - 150 * len / 1000 <= profile_at(c, p.approach_x[0] - len));
+  CHECK(top - 150 * (len - 100) / 1000 > profile_at(c, p.approach_x[0] - (len - 100)));
   Layer layer;
   layer.crossings.push_back(c);
   layer.seed = 7;
@@ -345,32 +475,96 @@ TEST_CASE("bridges: the approaches bring the tread up to the deck, and the footp
   REQUIRE(edits.as_array().size() == 2);
   const JsonValue& first = edits.as_array()[0];
   CHECK(first.find("mode")->as_string() == "Fill");
-  // Its top at the deck's end is the deck: no step onto the bridge.
+  // Its top where it starts is a riser under the last step: the walker steps up the stones.
   CHECK(first.find("points")->as_array()[0].as_array()[1].as_float() ==
-        doctest::Approx(static_cast<f64>(c.bed_mm + p.deck) / 1000.0).epsilon(1e-12));
+        doctest::Approx(static_cast<f64>(top) / 1000.0).epsilon(1e-12));
+  // The footprint is the plan, steps included.
   scene_gen::FootprintPoint corners[4];
   const scene_gen::Footprint shape = bridge_footprint(c, p, corners);
   CHECK(shape.covers_mm(c.x_mm, c.z_mm));
   i64 wx = 0, wz = 0;
-  world_mm(c, p.x_end - 10, 0, wx, wz);
+  world_mm(c, p.approach_x[1] - 10, 0, wx, wz);
   CHECK(shape.covers_mm(wx, wz));
-  world_mm(c, p.x_end + 20, 0, wx, wz);
+  world_mm(c, p.approach_x[1] + 20, 0, wx, wz);
   CHECK_FALSE(shape.covers_mm(wx, wz));
   // Stepping stones have no approach.
   const Crossing brook = stream(2000, 300);
   CHECK(approach_of(brook, solved(brook), 150).length_mm[0] == 0);
 }
 
+TEST_CASE(
+    "bridges: a tile hands the plan of every bridge that reaches it, as the whole read does") {
+  // Two bridges, one across a tile's corner so its plan reaches four tiles: a point of any tile is
+  // under a deck by the tile's own shapes exactly when it is by the whole read's (scene_gen.md,
+  // "The shapes a tile occupies"), so the sward keeps off a streamed tile's deck as off the whole
+  // read's.
+  Layer layer;
+  layer.seed = 5;
+  layer.crossings.push_back(stream(6000, 900, 0, 0, 32000, 32000));  // on four tiles' corner
+  layer.crossings.push_back(stream(3000, 800, 0, 0, 5000, 7000));
+  const scene_gen::PlacementGeneratorDesc* desc =
+      scene_gen::GeneratorRegistry::global().find_placement("bridges");
+  REQUIRE(desc != nullptr);
+  REQUIRE(desc->plan_ground != nullptr);
+  scene_gen::Context context;
+  context.tile_size = 32.0f;
+  context.ddc = "unused-ddc";
+  void* state = nullptr;
+  std::string error;
+  REQUIRE_MESSAGE(desc->open(schema::to_json(layer), context, &state, &error), error);
+  scene_gen::Placements whole;
+  REQUIRE(desc->expand(state, context, whole, &error));
+  REQUIRE(whole.shapes.size() == 2);
+  scene_gen::Exclusion all;
+  REQUIRE(all.add_footprints(whole.shapes.span(), &error));
+  u32 covered = 0, points = 0;
+  for (i32 tz = -1; tz <= 1; ++tz)
+    for (i32 tx = -1; tx <= 1; ++tx) {
+      scene_gen::Placements one;
+      REQUIRE(desc->tile(state, {tx, tz}, context, one, &error));
+      CHECK(desc->occupies(state, {tx, tz}) == (!one.instances.empty() || !one.shapes.empty()));
+      scene_gen::Exclusion here;
+      REQUIRE(here.add_footprints(one.shapes.span(), &error));
+      // Every 250 mm of the tile within 12 m of either crossing.
+      for (i64 z = tz * 32000; z < (tz + 1) * 32000; z += 250)
+        for (i64 x = tx * 32000; x < (tx + 1) * 32000; x += 250) {
+          bool near = false;
+          for (const Crossing& c : layer.crossings)
+            near = near || (std::max(x > c.x_mm ? x - c.x_mm : c.x_mm - x,
+                                     z > c.z_mm ? z - c.z_mm : c.z_mm - z) < 12000);
+          if (!near) continue;
+          const scene_gen::Ground none;
+          const bool whole_says = all.excluded_mm(none, x, z, scene_gen::k_exclude_footprints);
+          CHECK(here.excluded_mm(none, x, z, scene_gen::k_exclude_footprints) == whole_says);
+          covered += whole_says ? 1u : 0u;
+          ++points;
+        }
+    }
+  CHECK(covered > 100);  // the decks are there to be kept off
+  CHECK(points > covered);
+  // The hook hands each approach as a `Fill` edit of the ground, one per deck end over the ground.
+  scene_gen::GroundPlan plan;
+  REQUIRE_MESSAGE(desc->plan_ground(state, context, plan, &error), error);
+  CHECK(plan.holes.empty());
+  for (const scene::TerrainEdit& edit : plan.edits)
+    CHECK(edit.mode == scene::TerrainEditMode::Fill);
+  desc->close(state);
+  // A grade out of range is refused when the entry is opened.
+  layer.approach_grade_permille = 0;
+  CHECK_FALSE(desc->open(schema::to_json(layer), context, &state, &error));
+  CHECK(error.find("approach_grade_permille") != std::string::npos);
+}
+
 TEST_CASE("bridges: the same bytes on every toolchain, pinned") {
   // Pinned on MSVC (x64, msvc-debug) 2026-11-11; GCC and Clang at v3 and GCC at v2 reproduce them.
   const Crossing cases[] = {stream(3000, 400), stream(6000, 800, 400, 300), stream(3000, 800),
                             stream(7000, 900, 0, 300)};
-  const u64 plan_pins[] = {0x1599dbc7f6e3f185ull, 0x9ca998a88eceb423ull, 0xfdce0357b88c500eull,
-                           0xa2e065a587840fe5ull};
-  const u64 mesh_pins[] = {0xa2149693bc9c34dfull, 0xda99be6a0705e2aeull, 0xd99ad790db329798ull,
-                           0x1eb8b2d377f88031ull};
+  const u64 plan_pins[] = {0x1599dbc7f6e3f185ull, 0xbb3f59df948f2011ull, 0x934862ac4dcaca46ull,
+                           0x4b3550ca63cc3a80ull};
+  const u64 mesh_pins[] = {0xf63ee472b509b0bdull, 0x4a47a8084a7606a5ull, 0x35f44210eb8fc628ull,
+                           0xc9c9bc502972a785ull};
   for (u32 i = 0; i < 4; ++i) {
-    MeshPart parts[2];
+    MeshPart parts[k_materials];
     BridgePlan plan;
     BridgeReport report;
     std::string error;

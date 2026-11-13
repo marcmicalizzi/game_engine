@@ -8,6 +8,8 @@
 // Everything here is IEEE `+ - * /` and `sqrt` in f64 with the deterministic sines, so a mesh built
 // from it is a function of its parameters' bits on every toolchain.
 
+#include "skirt.h"
+
 #include <core/math/deterministic.h>
 #include <domain/assets/gltf.h>
 #include <domain/flora/impostor.h>
@@ -154,6 +156,9 @@ struct Emitter {
   bool swept_seat = false;
   f64 seat_radius = 0.0;
   f64 seat_length = 0.0;  // zero preserves the legacy two-radius seat
+  // The next tube is a tree's stem standing on the ground: `build_tube` carries it on below its
+  // bottom ring as a skirt (`build_skirt`; flora.md, "The trunk's skirt", G201).
+  bool skirt = false;
   u32 vertex(D3 position, D3 normal, f64 u, f64 v) {
     const u32 index = mesh.positions.size();
     mesh.positions.push_back(to_f32(position));
@@ -251,6 +256,15 @@ f64 axis_radius(const Axis& axis, f64 r0, f64 r1, f64 arc);
 inline u32 tube_triangles(u32 rows, u32 sides) { return rows * sides * 2 + sides; }
 void build_tube(const Axis& axis, f64 r0, f64 r1, u32 sides, Vec2 uv_offset, Emitter& out,
                 bool flat_tip = false);
+
+// ---- the trunk's skirt (G201; skirt.h) ----------------------------------------------------------
+//
+// Under the ring of `sides + 1` vertices from `first`, round `centre` (the axis's foot): one ring
+// of `sides + 1` vertices straight below it, appended after the tube it continues (its part, bend
+// weight zero, the collar's normals, its u and its v in the trunk's metres continued below zero),
+// open at the bottom, two triangles a side. Appended whole, so the mesh less its skirt is the mesh
+// it was, vertex for vertex.
+void build_skirt(u32 first, u32 sides, D3 centre, Emitter& out);
 
 // ---- a spray of cards ---------------------------------------------------------------------------
 //

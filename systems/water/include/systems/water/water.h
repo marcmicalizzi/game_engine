@@ -99,6 +99,11 @@ struct Body {
   f32 fetch_km = 100.0f;
   f32 tide_m = 0.0f;
   f32 drain_s = 20.0f;
+  // An open body's swell (the block's `swell_height_m` and `swell_period_s`; water.md, "The
+  // swell"; roadmap S102): the rim and the rings at the outline are sized by it where it is the
+  // larger wave. 0 for a closed body.
+  f32 swell_height_m = 0.0f;
+  f32 swell_period_s = 0.0f;
   bool circle() const noexcept { return !fill && outline.empty(); }
   bool filled() const noexcept { return fill && region.nx > 0; }
 };

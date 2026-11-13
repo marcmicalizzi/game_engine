@@ -950,7 +950,8 @@ struct TerrainMaskRegion @version(1) {
   /// The palette layer the region is given outright, over everything below it.
   material: string
   /// The palette layer that stands in for the priors' soil inside the region; the priors' scree,
-  /// bedrock and snow still lie where they lie. Exclusive with `material`.
+  /// bedrock and snow still lie where they lie. With no `priors` the whole ground is that soil, so
+  /// the base is laid outright under everything above it (T109). Exclusive with `material`.
   base: string
   /// The edge's blend, metres, inward from the outline: 0 is a hard edge.
   feather_m: f32 = 2 @unit(m)
@@ -979,7 +980,8 @@ struct TerrainMaskIndex @version(1) {
 
 /// **Generated priors** (docs/experiments/ground-materials-grounding.md): where the substrates lie by
 /// slope, elevation and aspect, the defaults the published ranges. Each role names a palette layer;
-/// empty switches the role off. Angles are degrees of slope, elevations world metres.
+/// empty switches the role off, and a role has no default layer, so a block naming none is refused
+/// (T109). Angles are degrees of slope, elevations world metres.
 struct TerrainMaskPriors @version(1) {
   soil: string
   scree: string
@@ -1367,7 +1369,7 @@ struct WaterShape @version(2) {
 /// mesh carries under each vertex (the level less the ground there, zero where the ground stands
 /// above the water). The walker wades in it and stops at the chest. Append-only: a field added
 /// later has a default that draws what the block drew before it.
-struct WaterBody @version(5) {
+struct WaterBody @version(6) {
   name: string
   /// The surface's height, a world y, metres.
   level_m: f64 = 0 @unit(m)
@@ -1458,6 +1460,19 @@ struct WaterBody @version(5) {
   /// sand's wetness above the capillary fringe decays as exp(-t / drain_s) (sand: tens of seconds;
   /// gravel drains in a few, silt and clay hold water for minutes). Read only with a swash.
   drain_s: f32 = 20 @since(5) @unit(s)
+  /// **A swell** (docs/subsystems/water.md, "The swell"; docs/experiments/shore-mechanics.md;
+  /// roadmap S102): waves that were raised by a wind somewhere else and arrive on an open body's
+  /// coast long, regular and from their own direction, whatever the local wind does. Its
+  /// significant height in deep water, metres; with a period, the swell is the train that shoals,
+  /// turns to the beach, breaks and runs up it, in place of the local wind sea's peak wave (which
+  /// stays the surface offshore and calms towards the shore as before). 0, or a closed body: none.
+  swell_height_m: f32 = 0 @since(6) @unit(m)
+  /// The swell's period, seconds, (0, 30]: 8 to 14 s is an ocean coast's; how often a wave arrives
+  /// and, with the beach's slope, whether each sheet has run back before the next (a steep beach)
+  /// or is overrun by it (a gentle one).
+  swell_period_s: f32 = 0 @since(6) @unit(s)
+  /// Degrees about +y from +x towards +z: the way the swell travels over deep water.
+  swell_direction_deg: f32 = 0 @since(6) @unit(deg)
 }
 
 /// **A channel of flowing water** (docs/subsystems/water.md, "Channels"; roadmap S96; the grounding,
@@ -1786,7 +1801,7 @@ struct CameraPath @version(1) {
 
 /// GPU milliseconds of one frame, pass by pass, from `gfx::GpuTimer` (`renderer::Stats` names).
 /// Version 5 added `sky`. Version 6 added `frame_passes`. Version 7 added `half_sun`.
-struct PassMs @version(9) {
+struct PassMs @version(10) {
   cull: f64 = 0
   hw: f64 = 0
   sw: f64 = 0
@@ -1846,6 +1861,10 @@ struct PassMs @version(9) {
   /// the resolve is in `resolve`. Zero with `renderer.gi.mode=off`.
   gi_trace: f64 = 0 @since(9)
   gi_fold: f64 = 0 @since(9)
+  /// Version 10 (R151; docs/subsystems/renderer.md, "The resolve by pixel class"): the resolve's
+  /// classify pass, every view's — each pixel's class written as depth. What the per-class draws
+  /// cost is in `resolve`. Zero in a frame the resolve draws whole (`renderer.resolve.classes=off`).
+  resolve_classify: f64 = 0 @since(10)
 }
 
 /// One terrain level's surface in one frame of a time-lapse (`engine-view --time-rate`;
@@ -2084,7 +2103,9 @@ struct FrameWorld @version(1) {
 /// Version 17: `gpu_ms` carries the world-space cache's passes, `gi_trace` and `gi_fold` (R69).
 ///
 /// Version 18: the water's reflection and refraction, `water_reflect*` and `water_refract*` (S86).
-struct FrameRecord @version(18) {
+///
+/// Version 19: `gpu_ms` carries the resolve's classify pass, `resolve_classify` (R151).
+struct FrameRecord @version(19) {
   /// Which pass over the path, from 0.
   repeat: u32 = 0
   /// The path frame, from 0; an interactive session's frame, from 0.
@@ -2268,8 +2289,9 @@ struct Percentiles @version(1) {
 /// names. **One entry per `PassMs` field, by name**: `summarize_frames` fills it by walking
 /// `PassMs`'s descriptor, so a bucket added there and not here fails the flythrough test that walks
 /// it ("the summary carries a median, p95 and p99 for every pass bucket"). Version 6 (T78) added
-/// the fifteen the hand-written list had missed since `PassMs` versions 3 to 9.
-struct PassPercentiles @version(6) {
+/// the fifteen the hand-written list had missed since `PassMs` versions 3 to 9. Version 7 (R151):
+/// `resolve_classify`.
+struct PassPercentiles @version(7) {
   cull: Percentiles
   hw: Percentiles
   sw: Percentiles
@@ -2306,6 +2328,7 @@ struct PassPercentiles @version(6) {
   unbucketed: Percentiles @since(6)
   gi_trace: Percentiles @since(6)
   gi_fold: Percentiles @since(6)
+  resolve_classify: Percentiles @since(7)
 }
 
 /// The frames' CPU stages over a path (`FrameRecord.cpu`, each frame's median across the repeats,

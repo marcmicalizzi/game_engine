@@ -6,11 +6,12 @@
 // Runs the composition a load runs (`tileset::check_mask_budget`, the same field `terrain-masks`
 // builds from) over the scene terrain's tile set and prints one JSON line per tile whose points
 // name more layers than `materials.layer_budget` — the tile, its place in metres, the layers it
-// names with their mean and peak weight (heaviest first) and the weakest, the one a blend-out
-// would drop — then a summary line. Exit 0 when no tile is over, 1 when any is (or the scene
-// cannot be composed), 2 for usage. No mask archive is written. The tile set is opened as
-// `terrain-masks` opens it, built into the derived-data cache on a miss, because the priors read
-// its heights.
+// names with their mean and peak weight (heaviest first), the largest value the format would store
+// (`stored`, 255ths) and the points at or over one stored step (`points`, of `tile_points`; W113),
+// and the weakest, the one a blend-out would drop — then a summary line. Exit 0 when no tile is
+// over, 1 when any is (or the scene cannot be composed), 2 for usage. No mask archive is written.
+// The tile set is opened as `terrain-masks` opens it, built into the derived-data cache on a miss,
+// because the priors read its heights.
 #include "content_commands.h"
 
 #include <core/base/types.h>
@@ -44,7 +45,8 @@ const char* k_usage =
     "usage: engine-content masks check <scene.json> [--ddc <root>]\n"
     "  composes the scene terrain's masks as a load does and prints one JSON line per tile whose\n"
     "  points name more layers than materials.layer_budget (its place, its layers with mean and\n"
-    "  peak weight, the weakest), then a summary line; writes no mask archive\n"
+    "  peak weight, the largest stored value and the points at or over one step, the weakest),\n"
+    "  then a summary line; writes no mask archive\n"
     "  exit 0: no tile over budget; 1: some tile over (or the scene cannot be composed); 2: "
     "usage\n";
 
@@ -86,9 +88,11 @@ std::string tile_line(const tileset::OverBudgetTile& t) {
     const tileset::MaskTileLayer& l = t.layers[i];
     if (i > 0) s += ",";
     s += "{\"name\":" + quoted(l.name) + ",\"mean\":" + number(l.mean) +
-         ",\"peak\":" + number(l.peak) + "}";
+         ",\"peak\":" + number(l.peak) + ",\"stored\":" + std::to_string(l.stored) +
+         ",\"points\":" + std::to_string(l.points) + "}";
   }
-  s += "],\"weakest\":" + quoted(t.layers.empty() ? std::string() : t.layers[t.weakest].name) + "}";
+  s += "],\"weakest\":" + quoted(t.layers.empty() ? std::string() : t.layers[t.weakest].name) +
+       ",\"tile_points\":" + std::to_string(t.points) + "}";
   return s;
 }
 

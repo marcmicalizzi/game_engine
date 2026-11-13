@@ -22,27 +22,175 @@ namespace engine::flora {
 namespace {
 // F and L: Hill et al. (1999), final values, read in the text. Cover: a Domin class's midpoint,
 // chosen from the constancy the grounding page records (Domin 4, 4-10 %: 0.07; 5, 11-25 %: 0.18;
-// 6, 26-33 %: 0.30). Height, heads, petals and colour: chosen, for the stand-in herb only.
+// 6, 26-33 %: 0.30). Height, heads, petals and colour: chosen, for the stand-in herb only. G167:
+// the crown's radius, chosen from the floras' leaf and branch spans, and the flowering months, the
+// British flora's (meadow-community.md, "The meadow at whole density", says which were read).
 constexpr MeadowSpeciesTraits k_meadow[] = {
     // The wet margin.
-    {"caltha_palustris", MeadowRole::forb, 9, 7, .18, .30, 3, 5, .018, 60, {.80f, .55f, .02f}},
-    {"filipendula_ulmaria", MeadowRole::forb, 8, 7, .18, 1.0, 24, 5, .004, 80, {.80f, .76f, .56f}},
-    {"cardamine_pratensis", MeadowRole::forb, 8, 7, .07, .35, 8, 4, .008, 75, {.56f, .46f, .70f}},
-    {"carex_nigra", MeadowRole::sedge, 8, 7, .18, .40, 0, 0, 0, 0, {0, 0, 0}},
-    {"juncus_effusus", MeadowRole::rush, 7, 7, .30, .80, 0, 0, 0, 0, {0, 0, 0}},
+    {"caltha_palustris",
+     MeadowRole::forb,
+     9,
+     7,
+     .18,
+     .30,
+     3,
+     5,
+     .018,
+     60,
+     {.80f, .55f, .02f},
+     .15,
+     3,
+     5},
+    {"filipendula_ulmaria",
+     MeadowRole::forb,
+     8,
+     7,
+     .18,
+     1.0,
+     24,
+     5,
+     .004,
+     80,
+     {.80f, .76f, .56f},
+     .20,
+     6,
+     9},
+    {"cardamine_pratensis",
+     MeadowRole::forb,
+     8,
+     7,
+     .07,
+     .35,
+     8,
+     4,
+     .008,
+     75,
+     {.56f, .46f, .70f},
+     .06,
+     4,
+     6},
+    {"carex_nigra", MeadowRole::sedge, 8, 7, .18, .40, 0, 0, 0, 0, {0, 0, 0}, .08, 0, 0},
+    {"juncus_effusus", MeadowRole::rush, 7, 7, .30, .80, 0, 0, 0, 0, {0, 0, 0}, .15, 0, 0},
     // The mesic sward.
-    {"ranunculus_acris", MeadowRole::forb, 6, 7, .18, .60, 5, 5, .010, 75, {.85f, .65f, .02f}},
-    {"geranium_sylvaticum", MeadowRole::forb, 5, 6, .30, .60, 6, 5, .014, 80, {.35f, .15f, .55f}},
-    {"trifolium_pratense", MeadowRole::forb, 5, 7, .18, .35, 3, 30, .012, 35, {.55f, .08f, .30f}},
-    {"conopodium_majus", MeadowRole::forb, 5, 6, .07, .40, 1, 30, .020, 85, {.80f, .80f, .75f}},
+    {"ranunculus_acris",
+     MeadowRole::forb,
+     6,
+     7,
+     .18,
+     .60,
+     5,
+     5,
+     .010,
+     75,
+     {.85f, .65f, .02f},
+     .10,
+     4,
+     10},
+    {"geranium_sylvaticum",
+     MeadowRole::forb,
+     5,
+     6,
+     .30,
+     .60,
+     6,
+     5,
+     .014,
+     80,
+     {.35f, .15f, .55f},
+     .15,
+     6,
+     8},
+    {"trifolium_pratense",
+     MeadowRole::forb,
+     5,
+     7,
+     .18,
+     .35,
+     3,
+     30,
+     .012,
+     35,
+     {.55f, .08f, .30f},
+     .10,
+     5,
+     10},
+    {"conopodium_majus",
+     MeadowRole::forb,
+     5,
+     6,
+     .07,
+     .40,
+     1,
+     30,
+     .020,
+     85,
+     {.80f, .80f, .75f},
+     .06,
+     5,
+     6},
     // The shade edge.
-    {"vaccinium_myrtillus", MeadowRole::dwarf_shrub, 6, 6, .18, .30, 0, 0, 0, 0, {0, 0, 0}},
+    {"vaccinium_myrtillus",
+     MeadowRole::dwarf_shrub,
+     6,
+     6,
+     .18,
+     .30,
+     0,
+     0,
+     0,
+     0,
+     {0, 0, 0},
+     .15,
+     0,
+     0},
     // The dry slope.
-    {"leucanthemum_vulgare", MeadowRole::forb, 4, 8, .07, .50, 1, 20, .020, 85, {.85f, .85f, .78f}},
-    {"lotus_corniculatus", MeadowRole::forb, 4, 7, .07, .15, 4, 6, .008, 60, {.85f, .55f, .02f}},
-    {"thymus_polytrichus", MeadowRole::forb, 4, 8, .07, .10, 6, 10, .004, 70, {.50f, .25f, .45f}},
+    {"leucanthemum_vulgare",
+     MeadowRole::forb,
+     4,
+     8,
+     .07,
+     .50,
+     1,
+     20,
+     .020,
+     85,
+     {.85f, .85f, .78f},
+     .08,
+     6,
+     9},
+    {"lotus_corniculatus",
+     MeadowRole::forb,
+     4,
+     7,
+     .07,
+     .15,
+     4,
+     6,
+     .008,
+     60,
+     {.85f, .55f, .02f},
+     .10,
+     5,
+     9},
+    {"thymus_polytrichus",
+     MeadowRole::forb,
+     4,
+     8,
+     .07,
+     .10,
+     6,
+     10,
+     .004,
+     70,
+     {.50f, .25f, .45f},
+     .08,
+     6,
+     9},
 };
 f64 clamp_to(f64 v, f64 lo, f64 hi) noexcept { return v < lo ? lo : (v > hi ? hi : v); }
+// The first day of each month of a common year, and the day after the year's last.
+constexpr u32 k_month_start[13] = {1, 32, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335, 366};
+constexpr f64 k_pi = 3.14159265358979323846;
 }  // namespace
 
 std::span<const MeadowSpeciesTraits> meadow_species() noexcept { return k_meadow; }
@@ -104,11 +252,23 @@ u32 meadow_cover(std::span<const MeadowSpeciesTraits* const> species, const Mead
   }
   return static_cast<u32>(sum);
 }
-Herb meadow_herb(const MeadowSpeciesTraits& species, u64 seed) {
+bool meadow_in_bloom(const MeadowSpeciesTraits& species, u32 day_of_year) noexcept {
+  if (species.flowers == 0 || species.bloom_from < 1 || species.bloom_to > 12 ||
+      species.bloom_from > species.bloom_to)
+    return false;
+  return day_of_year >= k_month_start[species.bloom_from - 1] &&
+         day_of_year < k_month_start[species.bloom_to];
+}
+Herb meadow_herb(const MeadowSpeciesTraits& species, u64 seed, u32 day_of_year) {
   Herb h;
   h.seed = seed;
   h.height_m = static_cast<f32>(clamp_to(species.height_m, .1, 2));
-  if (species.flowers > 0) {
+  if (species.flowers > 0 && !meadow_in_bloom(species, day_of_year)) {
+    // In leaf: the leafy shoot with no heads (a forb's flowering stem is what the season adds).
+    h.flowers = 0;
+    h.leaves = 6;
+    h.leaf_length_m = static_cast<f32>(clamp_to(species.height_m * .15, .01, .3));
+  } else if (species.flowers > 0) {
     h.flowers = species.flowers;
     h.spike = species.flowers > 1 ? .3f : 0.0f;
     h.petals = species.petals;
@@ -132,24 +292,101 @@ Herb meadow_herb(const MeadowSpeciesTraits& species, u64 seed) {
   }
   return h;
 }
-u32 meadow_far_thin(const MeadowSpeciesTraits& species) noexcept {
-  if (species.flowers == 0) return 0;
+u32 meadow_far_thin(const MeadowSpeciesTraits& species, u32 day_of_year) noexcept {
+  if (species.flowers == 0 || !meadow_in_bloom(species, day_of_year)) return 0;
   return std::clamp<u32>(k_meadow_far_heads / species.flowers, 1, k_meadow_far_thin);
 }
-Herb meadow_far_herb(const MeadowSpeciesTraits& species, u64 seed) {
-  Herb h = meadow_herb(species, seed);
-  const u32 thin = meadow_far_thin(species);
+namespace {
+// A head of `petals` cards of `length` carrying the coloured area of `area` (n l^2): at most `cap`
+// cards and at least three, each lengthened to keep the area, and where that would pass the herb's
+// 8 cm, more cards of 8 cm (up to the herb's 40), so the area is kept wherever the herb can say it.
+void head_of_area(f64 area, u32 cap, Herb& h) {
+  constexpr f64 k_longest = .08;
+  u32 petals = std::max<u32>(cap, 3);
+  f64 length = std::sqrt(area / static_cast<f64>(petals));
+  if (length > k_longest) {
+    petals = std::min<u32>(40, static_cast<u32>(std::ceil(area / (k_longest * k_longest))));
+    length = std::sqrt(area / static_cast<f64>(petals));
+  }
+  h.petals = petals;
+  h.petal_length_m = static_cast<f32>(clamp_to(length, .004, k_longest));
+}
+}  // namespace
+Herb meadow_far_herb(const MeadowSpeciesTraits& species, u64 seed, u32 count, u32 day_of_year) {
+  Herb h = meadow_herb(species, seed, day_of_year);
+  const u32 thin = meadow_far_thin(species, day_of_year);
   if (thin == 0) return h;
   // The heads of `thin` plants on one stem, and no leaves (the sward's card is the green there).
   h.flowers = std::min(species.flowers * thin, k_meadow_far_heads);
   h.spike = h.flowers > 1 ? .5f : 0.0f;
   h.leaves = 0;
-  // Fewer, larger petal cards a head, the head's coloured area kept: n l^2 = n' l'^2.
-  const u32 petals = std::min<u32>(species.petals, 5);
-  h.petals = std::max<u32>(petals, 3);
-  const f64 scale = std::sqrt(static_cast<f64>(species.petals) / static_cast<f64>(h.petals));
-  h.petal_length_m = static_cast<f32>(clamp_to(species.petal_m * scale, .004, .08));
+  // Fewer, larger petal cards a head, the coloured area of `count` plants' heads kept:
+  // n' l'^2 = count n l^2.
+  const f64 area = static_cast<f64>(count) * static_cast<f64>(species.petals) * species.petal_m *
+                   species.petal_m;
+  head_of_area(area, std::min<u32>(species.petals, 5), h);
   return h;
+}
+u32 meadow_drift_count(const MeadowSpeciesTraits& species, f64 cell_m) noexcept {
+  const f64 crown = species.crown_m > .01 ? species.crown_m : .01;
+  const f64 n = cell_m * cell_m / (k_pi * crown * crown);
+  return static_cast<u32>(clamp_to(n + .5, 1, k_meadow_drift_max));
+}
+f64 meadow_drift_radius(const MeadowSpeciesTraits& species, f64 cell_m) noexcept {
+  const f64 crown = species.crown_m > .01 ? species.crown_m : .01;
+  return crown * std::sqrt(static_cast<f64>(meadow_drift_count(species, cell_m)));
+}
+u32 meadow_drift_scale(const MeadowSpeciesTraits& species, f64 cell_m) noexcept {
+  const f64 crown = species.crown_m > .01 ? species.crown_m : .01;
+  const f64 covered = static_cast<f64>(meadow_drift_count(species, cell_m)) * k_pi * crown * crown;
+  // The drift's share of the cell, at most the whole of it: a cover of c draws the drift in c over
+  // that share of the cells. Held to 64 so the product stays inside 32 bits.
+  const f64 scale = clamp_to(cell_m * cell_m / covered, 1, 64);
+  return static_cast<u32>(scale * static_cast<f64>(k_meadow_cover_one) + .5);
+}
+u32 meadow_drift_odds(std::span<const MeadowSpeciesTraits* const> species,
+                      std::span<const u32> scales, const MeadowNiche& niche,
+                      std::span<u32> out) noexcept {
+  u32 covers[16] = {};
+  const usize count = std::min<usize>(species.size(), 16);
+  meadow_cover(species.first(count), niche, {covers, count});
+  u64 sum = 0;
+  for (usize i = 0; i < count; ++i) {
+    const u64 odds = static_cast<u64>(covers[i]) * scales[i] / k_meadow_cover_one;
+    out[i] = static_cast<u32>(std::min<u64>(odds, k_meadow_cover_one));
+    sum += out[i];
+  }
+  // A cell holds one drift: where the odds pass one they are scaled down, in integers, so the
+  // species keep their shares of the cells and every cell holds one.
+  if (sum > k_meadow_cover_one) {
+    u64 scaled = 0;
+    for (usize i = 0; i < count; ++i) {
+      out[i] = static_cast<u32>(static_cast<u64>(out[i]) * k_meadow_cover_one / sum);
+      scaled += out[i];
+    }
+    sum = scaled;
+  }
+  return static_cast<u32>(sum);
+}
+MeadowPlant meadow_drift(const MeadowSpeciesTraits& species, f64 cell_m, u64 seed,
+                         u32 day_of_year) {
+  MeadowPlant drift;
+  drift.herb = meadow_herb(species, seed, day_of_year);
+  if (drift.herb.flowers > 0) {
+    const f64 area = static_cast<f64>(species.petals) * species.petal_m * species.petal_m;
+    head_of_area(area, std::min<u32>(species.petals, k_meadow_drift_petals), drift.herb);
+  }
+  drift.count = meadow_drift_count(species, cell_m);
+  drift.radius_m = static_cast<f32>(clamp_to(meadow_drift_radius(species, cell_m), 0, 1));
+  return drift;
+}
+MeadowPlant meadow_far_drift(const MeadowSpeciesTraits& species, f64 cell_m, u64 seed,
+                             u32 day_of_year) {
+  MeadowPlant drift;
+  drift.herb = meadow_far_herb(species, seed, meadow_drift_count(species, cell_m), day_of_year);
+  drift.count = 1;
+  drift.height_jitter = 0;
+  return drift;
 }
 
 namespace {
@@ -171,11 +408,11 @@ std::string recipe_dir(const scene_gen::Context& context) {
   return (base / "meadow").lexically_normal().generic_string();
 }
 // Writes the stand-in recipe under its content hash (once: the name is what it says) and names it.
-bool stand_in(const std::string& dir, const MeadowSpeciesTraits& species, const Herb& herb,
+bool stand_in(const std::string& dir, const MeadowSpeciesTraits& species, const MeadowPlant& drift,
               const char* form, scene_gen::PlacementMesh& out, std::string* error) {
   FloraFile file;
-  file.species = k_species_herb;
-  file.herb = herb;
+  file.species = k_species_meadow;
+  file.meadow = drift;
   const std::string text = canonical_flora_json(file);
   char name[96];
   std::snprintf(name, sizeof(name), "%.40s-%s-%016llx.flora.json",
@@ -229,6 +466,8 @@ struct Entry {
   Vector<const MeadowSpeciesTraits*> community;
   Vector<u32> far_mesh;
   Vector<u32> far_thin;
+  // G167: each species' drift odds factor (`meadow_drift_scale`), in 1/65536.
+  Vector<u32> drift_scale;
 };
 constexpr u32 k_forms = 5;
 constexpr u32 k_forb_id_bit = 0x80000000u;
@@ -318,10 +557,10 @@ bool open_forms(Entry& entry, const scene_gen::Context& context, std::string* er
         static_cast<f64>(m.wet_reach_m) <= scene_gen::k_site_water_reach_m) ||
       !(m.heat_dry >= 0 && m.heat_dry <= 10) || !(m.slope_dry >= 0 && m.slope_dry <= 10) ||
       !(m.hollow_wet >= 0 && m.hollow_wet <= 200) || !(m.light_open >= 1 && m.light_open <= 9) ||
-      !(m.light_shade >= 1 && m.light_shade <= 9))
+      !(m.light_shade >= 1 && m.light_shade <= 9) || m.day_of_year < 1 || m.day_of_year > 366)
     return fail(error,
                 "meadow needs moisture_base 1..9, wet_reach_m 0.5..128, heat_dry and slope_dry "
-                "0..10, hollow_wet 0..200 and light_open, light_shade 1..9");
+                "0..10, hollow_wet 0..200, light_open, light_shade 1..9 and day_of_year 1..366");
   entry.forb_base = entry.meshes.size();
   // G140: the one-mesh forbs are the community's now; an entry still naming them is refused rather
   // than read as something it did not say.
@@ -340,33 +579,38 @@ bool open_forms(Entry& entry, const scene_gen::Context& context, std::string* er
     const auto resolved = (std::filesystem::path(context.dir) / path).lexically_normal();
     entry.meshes.push_back({resolved.generic_string(), "meadow", 0});
   };
-  const auto generated = [&](const MeadowSpeciesTraits& species, const Herb& herb,
+  const auto generated = [&](const MeadowSpeciesTraits& species, const MeadowPlant& drift,
                              const char* form) {
     if (dir.empty()) dir = recipe_dir(context);
     scene_gen::PlacementMesh mesh;
-    if (!stand_in(dir, species, herb, form, mesh, error)) return false;
+    if (!stand_in(dir, species, drift, form, mesh, error)) return false;
     entry.meshes.push_back(std::move(mesh));
     return true;
   };
+  // G167: each stand-in is a drift of the species' plants at its crown's spacing, posed as a field
+  // (`meadow`), and a cell draws it at its cover over the drift's share of the cell.
+  const f64 cell = static_cast<f64>(p.cell_m);
+  const u32 day = m.day_of_year;
   for (const auto& member : p.community) {
     const auto* species = meadow_species(member.species);
     if (species == nullptr)
       return fail(error, "unknown community species '" + member.species + "'");
     entry.community.push_back(species);
+    entry.drift_scale.push_back(meadow_drift_scale(*species, cell));
     if (!member.mesh.empty())
       authored(member.mesh);
-    else if (!generated(*species, meadow_herb(*species, p.seed), "near"))
+    else if (!generated(*species, meadow_drift(*species, cell, p.seed, day), "near"))
       return false;
   }
   for (u32 i = 0; i < p.community.size(); ++i) {
     const auto& species = *entry.community[i];
-    const u32 thin = meadow_far_thin(species);
+    const u32 thin = meadow_far_thin(species, day);
     entry.far_thin.push_back(thin);
     entry.far_mesh.push_back(entry.meshes.size());
     if (thin == 0) continue;
     if (!p.community[i].far.empty())
       authored(p.community[i].far);
-    else if (!generated(species, meadow_far_herb(species, p.seed), "far"))
+    else if (!generated(species, meadow_far_drift(species, cell, p.seed, day), "far"))
       return false;
   }
   return true;
@@ -547,10 +791,11 @@ bool meshes(void* state, const scene_gen::Context&, Vector<scene_gen::PlacementM
   out = static_cast<const Entry*>(state)->meshes;
   return true;
 }
-// G140, the meadow's community (G137's forbs before it): a cell that drew a patch draws one plant,
-// its species by the covers its niche gives the community — stream 4 of the patch's hash, its top
-// 16 bits against the covers' running sum in 1/65536, so a species stands in its cover's share of
-// the cells and a cell past the sum holds grass alone. Within 0.35 of a cell a side of the patch's
+// G140, the meadow's community (G137's forbs before it): a cell that drew a patch draws one drift,
+// its species by the odds its niche gives the community — stream 4 of the patch's hash, its top
+// 16 bits against the odds' running sum in 1/65536 (G167: each cover over the drift's share of the
+// cell, `meadow_drift_odds`), so a species covers its cover's share of the ground at its crown's
+// density and a cell past the sum holds grass alone. Within 0.35 of a cell a side of the patch's
 // moved centre, so inside the circle the patch cleared earlier structures by, and asked of the
 // exclusion at its own point. Upright (a herb grows vertical) and turned by stream 7; its rank
 // among a tile's from stream 9.
@@ -569,7 +814,8 @@ void add_forb(const Entry& entry, const scene_gen::Context& context, u64 random,
   const auto& p = entry.params;
   u32 covers[16] = {};
   const u32 count = entry.community.size();
-  meadow_cover({entry.community.data(), count}, niche, {covers, count});
+  meadow_drift_odds({entry.community.data(), count}, {entry.drift_scale.data(), count}, niche,
+                    {covers, count});
   const u32 draw = static_cast<u32>(hash_combine(random, 4) >> 48);
   u32 sum = 0, species = count;
   for (u32 i = 0; i < count; ++i) {
@@ -597,10 +843,11 @@ void add_forb(const Entry& entry, const scene_gen::Context& context, u64 random,
       Vec3::unit_y(), static_cast<f32>(unit_of(random, 7) * 6.283185307179586));
   forbs.push_back(forb);
 }
-// A tile keeps at most `forb_tile_cap` plants, those of lowest rank (every one is a run of the
-// frame's pose table: the herb's motion kind is `parts`), and appends them after the patches in
-// their cells' order, so the answer is the tile's whatever the request order. A far form counts as
-// the plants it stands for, so both rings hold the same flowers a tile at the cap.
+// A tile keeps at most `forb_tile_cap` drifts, those of lowest rank (G167: a budget lever only,
+// since a drift is the field kind and runs no pose table; the default keeps every one), and appends
+// them after the patches in their cells' order, so the answer is the tile's whatever the request
+// order. A far form counts as the drifts it stands for, so both rings hold the same flowers a tile
+// at the cap.
 void keep_forbs(const Entry& entry, Vector<Forb>& forbs, scene_gen::Placements& out) {
   if (forbs.empty()) return;
   const u64 cap = entry.params.forb_tile_cap;

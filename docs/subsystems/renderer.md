@@ -2078,14 +2078,16 @@ reading each view's own `ResolveParams`):
 - **`gi fold`** (`gpu_ms.gi_fold`): a thread a cell folds the frame's sums into the mean with an
   exponential average whose rate is the frame's samples over the history's (`n / min(N + n, 256)`),
   so a new cell takes its first frame whole and an old one moves a frame's share; a cell nothing
-  reached for 240 frames is freed. The cache's first frame clears the buffer instead
-  (`k_gi_reset`), and its sample pass adds nothing.
+  reached for 240 frames is freed. The cache's first frame clears the buffer with one more fold
+  first (`gfx::k_gi_step_reset`) and then pre-rolls ([stage 5](#stage-5-the-light-is-already-there));
+  until stage 5 that frame's sample pass added nothing and it drew the harmonics.
 
 **The read** (`scene_ambient` in `material.slang`, one call in the resolve): trilinear over the eight
 cells of the point's level round it on the point's face, each weighted by its share of the point and
-only where it has samples; the next coarser level where none of the eight has (warm, because every
-sample went to both), and the harmonics, **to the bit**, where neither has or where the frame does
-not read the cache. The material's ambient occlusion still multiplies it, as it multiplies the
+by its samples, and the coarser levels for whatever share the samples behind that do not earn (the
+walk up the ladder, [stage 5](#stage-5-the-light-is-already-there); stages 1 and 2 read the next
+level only where the first had nothing, then by a confidence), and the harmonics, **to the bit**,
+where no level has a sample or where the frame does not read the cache. The material's ambient occlusion still multiplies it, as it multiplies the
 harmonics: it stands for occlusion below a cell's size. Only the opaque path's ambient reads it; the
 water's own ambient is the harmonics still.
 
@@ -2141,7 +2143,9 @@ The owner walked v35 under `bounce` and saw the light load in "like a checkerboa
 seconds, a little dark, with blocks on the rocks. Each change below is a knob whose stage-1 value
 reproduces the stage-1 read, so every lever was judged on its own against the reference
 (`gi cache: stage 2's levers one at a time, ...`):
-- **The young cell reads its parent** (`renderer.gi.confident`, 32). A level's read sums its eight
+- **The young cell reads its parent** (`renderer.gi.confident`, 32; **replaced by stage 5's walk**,
+  which takes a level by the samples behind its mean, reads four levels and is read whole at 128;
+  what follows is stage 2's rule as it stood). A level's read sums its eight
   cells as before and also their confidence, the trilinear weights times `min(samples / 32, 1)`;
   the read takes that share from the point's own level and the rest from the next coarser one,
   which every sample also reached and which holds four to eight times the samples
@@ -2167,8 +2171,8 @@ reproduces the stage-1 read, so every lever was judged on its own against the re
   when their half runs out is the order waves reach the count; below it the picture does not
   depend on order (the translation test still holds the bytes).
 - **A bounce's hit reads coarser, then a bounded fallback** (`renderer.gi.hit_fallback`). Every
-  sample now reaches three levels (`k_gi_sample_levels`), and a hit reads four from its own
-  (`k_gi_hit_levels`), so a wall behind the eye finds the light of a coarse cell some pixel in view
+  sample reached three levels and a hit read four from its own (four and four since stage 5,
+  `k_gi_ladder`), so a wall behind the eye finds the light of a coarse cell some pixel in view
   reached. Where none has samples it takes the harmonics times the ray's openness
   (`gfx::gi_openness`: nothing for a hit within a metre of the ray's origin, which is enclosed, all
   of it past ten metres, smooth between) — never the raw harmonics, which lit the box's inside as
@@ -2294,6 +2298,454 @@ first frame stands **1.30** from its converged picture against **1.68** at 32 Mi
 0.43), with no insert turned away, so `renderer.gi.cache_mib` defaults to 128: 108 MiB more device
 memory where the cache is on, and a fold over four times the cells (stage 2 measured 0.01 ms for a
 million; four million was not timed).
+
+### Stage 5: the light is already there
+
+The owner, a third time (v40, 2026-11-10): "it's down to about 1 second to fill, but **the problem
+is the filling being visible at all** ... maybe it needs to be baked into the scene somehow?" The
+target is therefore not a rate: **a viewer sees no change in the indirect light that the world did
+not cause**, on a turn of any speed, on a walk, in flight, and in the first frame after a load or a
+cut. ([The measurements](../experiments/gi-cache-2026-11-07.md#stage-5-the-light-is-already-there),
+with the curves against a long-held reference and the answer about baking.)
+
+**What the eye was catching.** Stage 4 found the turn's error to be variance, not bias, and that is
+the whole of it: a cell's estimate *arriving*. A sample is one cosine-weighted ray, and under
+`bounce` its value spreads about as widely as its mean (a sunlit patch of ground or the dark
+underside of a crown), so the mean of n samples carries a sample's spread over √n. Stage 2 read a
+cell whole at 32 samples (a sixth of a sample's spread of noise, four times what a converged cell
+keeps) and handed whatever weight was left to the next level **whole, whatever it held** — on the
+first frame a surface is seen that level holds 44 samples. The picture then settles to an
+exponential average of 256, a spread over √511: the eye watches the noise fall by four over a
+second, a cell at a time, and reads it as light loading. Stage 4's samples round the eye could not
+help: they filled cells behind the eye to five or twenty samples, which the same read then showed.
+
+**The ladder** (`gfx::k_gi_ladder`, `gi_cache.h` and `gi_cache.slang`). Every sample is added to
+its surface's own level and the **three coarser**, and every read walks the same four, finest
+first. A surface's cells are a quarter as many a level up, so a cell l levels up takes about 4^l
+times the own cell's samples. At 3840×2160 the trickle samples one pixel in nine and a cell is
+about ten pixels wide, so in the **one frame** a surface is first seen:
+
+| level | cell at 20 m | samples in the first frame | frames to 255 |
+|---|---|---|---|
+| own | 10 cm, ~10 px | 11 | 23 |
+| +1 | 20 cm | 44 | 6 |
+| +2 | 40 cm | 178 | 2 |
+| +3 | 80 cm | 711 | 1 |
+
+There is always a level that is quiet on the first frame; stage 2 added to three levels and read
+two, so the level with 178 samples existed and was not read. The four are consecutive on purpose:
+a surface that crosses to a finer level as the eye comes nearer finds the cells that were its own
+and its parents' a frame before, converged, under its new empty ones.
+
+**The walk** (`gi_read_level`, `gi_read_face`; `gfx::gi_blend_levels` is the same arithmetic on the
+CPU, held against a brute force from the cells). One level's read sums, over the eight cells round
+the point, each cell's share s = trilinear weight × min(n / 255, 1): Σ s·mean, Σ s, Σ s² and
+Σ s²/n. The level's mean is the first over the second, and Σ s² / Σ s²/n is **the samples a cell
+of that mean holds** — the cells' counts averaged as the mean's variance weighs them: a cell's own
+count at its centre, eleven between eight cells of eleven. The level takes that count over 255
+(`renderer.gi.confident`, 32 before; the history's own length) of what the finer levels left, at
+most all, and passes the rest up; the walk stops when a thirty-second or less is left. Three
+things follow:
+
+- **No level adds more noise than a mean of 255 samples carries.** With m samples a cell a level
+  takes m/255 and adds at most a sample's spread times √m/255 (less where several cells share the
+  point: the variance of its mean is Σ s²/n over (Σ s)², Kish's effective sample size inverted),
+  at most 1/√255 — **√(511/255) = 1.42 times a converged cell's noise** for the whole read,
+  whatever its cells hold (`gi cache key: no cell's next sample steps the read` computes it over
+  random neighbourhoods). And one more sample moves a filling cell's share of the read by 1/255,
+  which is what it moves a converged cell's mean by (1/256): **frame to frame, a cell that is
+  filling changes as one that has filled.** That is why the count is the history's length and not
+  less, and why it is a cell's count and not the pooled count of the eight: the first build read
+  a level whole at 128 samples behind its mean, pooled, so a point between eight cells took a
+  third of its own level in one frame, and the box's turn stood at exactly the twice its
+  arithmetic gives and changed between frames at up to four times the steady rate.- **Nothing steps.** Every sum is continuous in every cell's count, so neither a cell's first
+  sample nor a level's hand-over is an event, and each level is trilinear, so the read is
+  continuous across cells. A corner the surface never passes through (the layer above a floor) has
+  no cell and counts for nothing, where stage 2's confidence counted it as unknown and sent up to
+  half of every floor's read to the parent for good — so stage 2 read two levels at most pixels,
+  and this read one where the neighbourhood has converged: eight lookups. (That did not make the
+  read cheaper on the forest, as it was expected to: the crowns' leaf-sized cells never hold 255
+  samples, so their walk reads two to four levels for good, and the resolve is 0.6 to 1.6 ms
+  dearer at 3840×2160; the page has the pair.) One guard: where the cells that are there hold under an eighth of the
+  weight between them (a point's own cell holds that alone) the level is taken by that much less,
+  or a mean extrapolated from one far corner would be taken whole until the point's own cell
+  appeared.
+- **What is shown first is coarser, not noisier — and on the forest that is seen.** A surface
+  first seen is lit from the 40 and 80 cm cells and sharpens to its own over twenty-three frames,
+  a 255th of the read a sample. In the box the change is under the cache's steady floor. On the
+  v40 forest's turn it is not: a far crown's coarse cells (3 to 6 m) average the canopy's lit
+  outside with its darker inside, the light's detail in a forest being mostly occlusion, so the
+  far forest stands in the turn's first frame as **one band a little brighter than it will be**
+  (+0.58 of a luma step over the picture) and darkens over twenty frames, where main showed
+  speckle of the same mean size. The speckle is gone and the band is new; the count a level is
+  read whole at is what sets how long it lasts, it was set on the box, and the page has the
+  forest's numbers at the other counts.
+**A cell remembers 256 samples or sixteen frames of them, the longer** (`gfx::gi_history`,
+`k_gi_history_frames`). The fold's average was capped at 256 samples, and a cell that took more
+than that in one frame kept none of its past: its mean was a fresh draw every frame. That is every
+coarse level of the ladder (178 and 711 a frame above), which is what a filling surface, a crown
+whose leaf-sized own cells never fill, and a bounce's hit read — quiet each frame, and flickering
+at sixty a second. Sixteen frames is a little under what an own cell's 256 samples are at eleven a
+frame, so no level remembers less time than the finest.
+
+Where all four levels together hold under a sixteenth of confidence (a twig's worth of pixels on
+its first frames) the read leans on the harmonics in proportion (`k_gi_read_floor`,
+`gi_confidence_weight`); with no cell at all it is the harmonics to the bit, as before. A bounce's
+hit walks the same ladder and leans on its bounded fallback the same way, so a hit's light does
+not step when its first cell appears either. Between **levels** the read still steps where a
+surface's distance crosses a power of two (one pixel reads level l, its neighbour l+1): the two
+are each converged and differ by the light's detail between 10 and 20 cm cells, which nobody has
+reported and the page's captures do not show; blending the two levels by the distance's fraction
+would make it continuous and double the read, so it is not built.
+
+**Warm round the eye** (stage 4's volume and samples, on by default now: `renderer.gi.shell_m`
+48, `renderer.gi.shell_rays` 65,536). The ladder alone removes the *noise* of a fill and not the
+fill: in the box, turned with nothing round the eye, the first frame stood twenty floors from the
+turned pose's long-held picture with the ladder as without it — the turned view's bounce meets
+hits behind the eye and in the half never seen that have no cells, so its first samples carry
+the fallback and the answer iterates in view (the bias stage 4 measured). And 240 frames after the
+turn the cells the first view had filled aged out and **the light moved again, four seconds after
+anything happened** — on main too, which no stage had seen because no stage held a turn that
+long. The volume and the samples keep the sphere's cells sampled, so both go: the turn's first
+frame starts from the light that was there, and nothing behind the eye ages out while the eye
+stands. Stage 4 built them and they did nothing measurable, because the read showed their five to
+twenty samples a cell whole; with the ladder, their samples are added to the three levels
+**above** the surface's own (the own level took a million cells of the cache for nothing a read
+would take).The arithmetic, at the default `cell_scale`: a cell at
+distance d is 0.004 d to 0.008 d wide, so a sphere whose every direction met a surface holds
+196,000 to 785,000 cells at their own level whatever its radius, and a quarter as many a level up.
+Of 65,536 directions a frame the frustum's tenth is skipped and, on the forest, about half of the
+rest meet a surface (the sky and the far lake are not cells): 30,000 to 59,000 samples a frame.
+
+| level | cells on the sphere | samples a cell a frame | frames to 255 |
+|---|---|---|---|
+| +3 | 3,100 – 12,300 | 2.4 – 19 | 13 – 106 |
+| +2 | 12,300 – 49,000 | 0.6 – 4.8 | 53 – 420 |
+| +1 | 49,000 – 196,000 | 0.15 – 1.2 | 210 – 1,700 |
+
+So after a second or two of a still eye the coarsest level is quiet over the whole sphere, the
+next within seven, and they stay so (a cell is kept while a sample reaches it every 240 frames). A
+turn's first frame then adds its own 44, 178 and 711 to them. Their cost is stated on the page so
+they can be judged alone.
+
+**The start, and a cut** (`gi_preroll.h`, `renderer.gi.preroll` 32, `renderer.gi.cut_m` 8). A load
+is the one place the cache has nothing, and the first picture was the sky's harmonics with the
+light arriving over the next second; fast travel is the same start somewhere else. A frame that
+starts cold — the cache's first, or one whose eye is more than eight metres from the frame
+before's — records the sample pass and the fold **thirty-two times more** before its resolve
+reads, against the frame's own visibility buffer and structures. Each step is a frame of the
+cache's clock (`gfx::GiStepPush`: the pixel offsets, the directions and the seeds turn), so
+thirty-two are thirty-two frames' samples at one pose: the trickle has reached every pixel three
+times, an own cell holds about 350 samples, the sphere has had two million directions, and a
+bounce's hits have read cells that already held thirty-one rounds of the bounce before them
+(sixteen left the box's first frame 2.3 floors from its long-held picture, the bounce's later
+rounds still arriving). The first frame is then inside the same bound as any other (`gi cache:
+the pre-roll runs on the first frame and on a cut, and neither shows a fill`). The fold counts
+only on the frame's last step and the young claims are a step's, so a frame's counts are the
+frame's; `Stats::gi_preroll_steps` says which frames pre-rolled. A turn is not a cut and never
+pre-rolls.
+**The bounce off the ground** takes the ground's own material: the cache's passes have a terrain
+module (`gi_update_terrain.slang`, picked as the resolve picks its own) in which a hit on a
+terrain root reads the masks' layers there through R129's `terrain_hit_material`, at a footprint
+of a twentieth of the ray's length. Until then it read the root's base colour, the record's first
+layer, and a tan bank bounced its meadow's green (`gi cache: a bounce off a bank of sand under the
+masks is sand's, not the first layer's`, in `systems/water`'s tests beside R129's bank).
+
+**On baking** (the owner's question; the page has the numbers). What a bake buys is light on the
+first frame, and the pre-roll buys that at the load for the milliseconds in the table below, for
+exactly the cells the view reads, at the sun the frame has. A bake kept per tile would have to
+hold every level a tile can be seen at (the level follows the eye's distance) for every sun
+position, or only the coarse levels — which are the ones a frame warms in one step. What it would
+still add is nothing a viewer has been shown to see; it is not built.
+
+**What it costs, and where it stands** ([the page](../experiments/gi-cache-2026-11-07.md#stage-5-the-light-is-already-there)
+has the pair and the curves). At 3840×2160 with traced primaries and shadows the stage costs
+**1.4 ms a frame on the lake view and 2.4 on the forest view**: 0.6 to 1.6 of read, 0.5 to 0.6 of
+the samples round the eye, 0.2 of their volume. In the box a turn, a cut and (from the
+twenty-fourth frame) a load stand inside twice the cache's steady floor, where the plain read
+stands eighteen floors off; on the forest the turn's variance is gone from the ground and the
+near trees and its change between frames is a third less, the flight's dark start is gone, and
+the far forest's bright first frames are new. **The owner's target is not met on the forest**,
+and the stage is `in progress` on the roadmap: the count a level is read whole at, the read's
+cost on crowns, and a measurement that holds the clouds still are what is next.
+
+### Stage 6: what a difference between two levels shows
+
+Roadmap R69 stage 6 (2026-11-11, batch 60; [the page](../experiments/gi-cache-2026-11-07.md#stage-6-what-the-band-is-and-what-a-difference-between-two-levels-shows)
+has the count, the curves and the costs). Stage 5 was held for the band it showed after a turn:
+the far forest brighter than it will be, darkening over about twenty frames.
+
+**What the band is.** Stage 5 read it as the coarse levels holding more light than the fine
+ones. Counted (`renderer.gi.show_level`: the resolve's read takes one level of the ladder whole,
+the cache filled as ever; the diagnostic stays), they do not: every sample is added to all four
+levels, and over the pixels that read them the levels' means agree in linear light within a
+tenth of a percent. What a coarse level holds is that light **flattened**. A crown's cell three
+levels up is the mean of its leaves in the open and its leaves in the shade, so it shows the
+shade 1.6 times as bright as it is and the lit leaves a little darker; and the display's curve
+turns a flattening into a brightening, because a dark pixel lifted by some light rises by many
+more steps than a bright one lowered by the same light falls. The band's sign is the same
+everywhere for that reason, and it is in the still picture too wherever a crown's own cells
+never fill. So nothing that corrects a coarse cell's *mean* touches it (a ratio of sums, cells
+weighted by their samples, the young rays kept out of the coarse levels: each measured, each
+nothing), and the count a level is read whole at only trades it for the noise of fewer samples.
+
+**The reveal** (`gi_reveal` in `gi_cache.h` and `gi_cache.slang`, `gfx::k_gi_reveal`,
+`renderer.gi.reveal`, on). The count's rule — a level takes its samples over 255 of the read —
+is the rule of a surface with no detail between the levels: there the coarser mean is as good
+and quieter, and waiting costs nothing. Where the levels differ the difference is the picture,
+and waiting for 255 samples to show it is the band. So a level its count does not read whole is
+compared with the next one up before its share is settled. With means m and m′ (in luminance)
+over n and n′ samples, and a sample's variance taken as s² = `k_gi_sample_cv2` · max(m, m′)²,
+
+    d² = max((m − m′)² − s² (1/n + 1/n′), 0)        the detail the noise does not explain
+    shown = d² / (d² + s²/n)                         the share the difference gives the level
+
+and the level takes the larger of its count's share and `shown`. That is the shrinkage weight of
+a noisy mean towards a prior whose spread is known, with the spread estimated from the data by
+its positive part (James and Stein, 1961; the page cites it): the read was already called a
+shrinkage estimate in stage 5, and this is the term it left out, the prior's spread, which the
+count's rule takes as zero. What follows from the form, and is held by
+`gi cache key: a level is taken early by what its difference shows, and only by that`:
+
+- where the levels agree within their noise `shown` is zero and the read is stage 5's to the
+  bit (ground, walls, anything a coarse cell describes as well as a fine one);
+- where it is not zero the noise the level adds to the read, `shown · s/√n`, is less than the
+  difference it shows — a level is never taken early on the strength of its own noise;
+- it is continuous in both means and both counts, and zero at one sample, so a cell's first
+  sample is still no step;
+- `shown` is cut by the trilinear weight of the cells that are there where they hold under an
+  eighth of it (`GiLevelRead::weight`), so a far corner's mean is not shown as the point's;
+- it reads no level the count's walk did not: a level waits only if the count's walk would have
+  gone on to the next one anyway.
+
+`k_gi_sample_cv2` is 2, from a model and not a fit: a cosine ray from a half-hidden leaf escapes
+to the sky, or meets a leaf in the shade, or one in the sun, and that mixture's variance is one
+to two times its mean's square. A bounce's hit walks the same ladder with the same rule.
+
+**What it does, and what it does not.** On a stand of trees turned to from looking away (the
+grove, past the volume round the eye) the first frame's band falls from +0.29 of an 8-bit step
+over the crowns to +0.18, inside the still picture's floor (0.27), with the frames' change at
+0.097 against 0.091 (the floor's 0.070), at 0.03 ms of resolve over stage 5 at 3840×2160 traced.
+**It is a third of the band.** Two neighbouring levels of a crown differ by little (each octave
+flattens a little), and in a crown's first frames its cells hold few samples — a cell is keyed by
+which of six ways its surface faces, and a crown's leaves face all six at every depth, so its
+samples are divided among a dozen cells where ground's are in one — so a small difference is
+inside the noise and the count still decides. Main, which reads a cell whole at 32 samples and
+looks one level up, stands nearer on those crowns (and shows the speckle stage 5 removed
+elsewhere). What takes the rest is the key, not the read: foliage filled and read without the
+face at the levels above its own, which would also halve the read's cost on crowns (the second
+face is 0.55 of its 1.4 ms there); it is on the roadmap row and not built.
+
+**On the forest** (v41, 3840×2160 traced, the owner's wind) the band is inside what the wind
+does to the picture for main and stage 6 alike (+0.19 and +0.23 of a step against a floor of
+11.5), no still of the turn shows a fill in either, and two things stand that the grove did not
+show: stages 5 and 6 cost about **1.4 ms a frame over main** on the lake view (0.5 the samples
+round the eye, 0.46 the read, 0.23 their volume: stage 6 took none of stage 5's cost back), and
+their forest is **darker than main's by a tenth** over the trees, the same on every frame —
+most likely stage 5's bounce off the ground taking the ground's own layers, not isolated and
+not yet judged against the reference. Both are why the row is still `in progress`.
+
+### Stage 7: a crown's shade as a prior
+
+Roadmap R69 stage 7 (2026-11-12, batch 61; [the measurements](../experiments/gi-cache-2026-11-07.md#stage-7-a-crowns-shade-as-a-prior),
+[the grounding](../experiments/crown-shade-grounding.md)). Stage 6 left the cache asked for
+something it is the wrong shape for: the fine structure of light inside a crown.
+
+**The darker forest, judged first.** The reference tracer on the grove over a layered, textured
+ground (the page has the scene and the table): over the trees main stands at **1.47** of the
+reference in linear light, stages 5 and 6 at **1.05**; over the ground both stand at 1.07.
+**Stage 5's darker picture is the right one.** Main's bounce off a layered ground does not read
+any of its layers — the palette's order moves neither picture — and brings back more light than
+any layer reflects; stage 5's `terrain_hit_material` brings back the ground's own.
+
+**What is fine inside a crown is the crown's own shade, and it is known from the tree alone.** The
+diffuse light at a point inside foliage is what the leaves between it and the open let through,
+exp(−G u s) along a path of s metres through u m² of leaf a cubic metre (Monsi and Saeki 1953;
+G = 0.5 for leaves of no preferred direction), averaged over the directions it comes from. So:
+
+- **Each mesh with a crown carries a grid of its own shade** (`gfx::build_crown_prior`,
+  `domain/gfx/crown_prior.h`; `renderer::build_crown_priors`, `crown_priors.h`). At load, the
+  finest level's alpha-tested triangles of a mesh are its leaves; their area (times 0.7, a card's
+  share that is blade) is gathered into a grid over the mesh's bounds, at most 16 cells an axis and
+  a quarter metre a cell, and from each cell's centre the grid is marched along twelve directions
+  of the upper hemisphere and their mirror images. A cell keeps two bytes: the mean transmitted
+  fraction from above and from below. A mesh whose leaves stand under 1.5 m has none (a sward's
+  shade is its own solver's). One buffer holds a 32-byte `gfx::CrownPriorDesc` a mesh and the
+  grids behind them (`ResolveParams::gi_crowns`, `gi_crown_count`; the block grew a row, 576 to
+  592 bytes): 11.8 KB for the grove's three crowns. **No vertex carries a byte for it**, the field
+  is the same for every LOD and every instance (optical depth does not change under a uniform
+  scale), and a mesh that arrives after the load has no record and is read as before.
+- **A surface's prior** (`gi_crown_prior`, gi_cache.slang; `gfx::crown_prior`) is the grid's two
+  means at its point in mesh space — the instance's 3×4 inverted by its rows' cross products,
+  trilinear between cell centres — weighted by the share of the surface's own hemisphere that is
+  above the horizon, (1 + n.y) / 2, and never under a sixteenth. **Foliage** is a pixel or a hit
+  whose material is alpha-tested (`k_material_masked`) on a mesh with a grid; a trunk, a twig's
+  bark, the ground and everything else keep the faces and the ladder they had.
+- **A crown's cells have no face** (`k_gi_face_crown`, the nine key tags past the six faces'). A
+  crown's leaves face every way at every depth, so a face split their samples six ways (stage 6's
+  count) and described nothing. A foliage sample goes to the three levels above its own (the own
+  level's leaf-sized cells never filled) and **adds its light undivided and its own prior to the
+  cell's count, in sixteenths** (`k_gi_crown_weight`): the cell's mean is then the sum of its
+  samples' light over the sum of their priors — a ratio of sums, whose noise is the samples' own
+  and which gives back, over the pixels that read it with their own priors, exactly the light the
+  samples brought. (The first build stored each sample's own quotient: a deep sample's noise
+  times up to sixteen.) A count that fills its sixteen bits now stands for the whole history
+  (`gfx::gi_history_rate`), since a crown's coarse cell at 3840×2160 takes more than 4,095 a
+  frame.
+- **A foliage pixel reads one face and one level** (`scene_ambient`'s `crown`): two levels up
+  from its own — sixteen times the own cell's samples and every facing's together, whole on the
+  first frame — and the one above only while that is young; times its own prior. Eight lookups
+  where stage 6 read two to four levels on one or two faces. Where no level has a sample it is the
+  harmonics times the prior, the tree's own shade under an open sky. A bounce's hit on foliage
+  reads the same way (`gi_bounce`), and so does a reflection's (`hit_shade.slang`).
+
+**What it does** (the grove, RTX 5090; the page has the tables). At 3840×2160 with traced
+primaries and shadows the frame over crowns is **0.22 ms under main's** (4.75 against 4.97 ms;
+the resolve 1.90 against 2.11, stage 6's 2.28) and 0.1 under it over sand. On the turn to the
+grove from looking away the first frame stands **0.39** of an 8-bit step from the long-held
+picture (main 0.72, stage 6 0.99, the still picture's floor 0.29) and +0.07 in the mean (main
++0.03, stage 6 +0.17): the band is inside the floor. On the stand of nine crowns
+(`gi cache: on a stand of trees a coarse level holds the fine one's light, flattened`) a coarse
+level of the crown's cells times each pixel's prior moves the darkest third and the brightest
+third of the crowns together (−1.5 and −1.7 steps against the fine level) where a coarse level
+of faces moved them 8.8 apart (+7.3 and −1.5): the flattening is gone, and a level's offset of
+3 % is left.
+
+**What it does not do.** Against the reference the still picture is where stage 6 left it, a
+little worse in the shade: the trees' darkest third stands at 1.9 to 2.1 of the reference (stage
+6: 1.7 to 1.9; main 2.8 to 3.0), so a crown's shaded leaves are still too bright by a factor of
+two with every read — the prior moves where the light is held, not how much of it the cache
+finds. The still picture's change between frames over far crowns is 0.14 of a step against
+main's 0.08: a whole crown now shares a few cells, and their sixteen frames of memory move every
+pixel of it together. And one G and one card fill stand for every species (the grounding page).
+**A prior that is wrong shows on a turn's first frame.** The stand's crowns are cubes, which
+counted as leaf are 6.5 m² a cubic metre and sit on the prior's floor: turned to from looking
+away, their first frame stands 3.7 steps *darker* than it will be for seven frames
+(`gi cache: a turn to a stand of solid crowns stands nearer and settles sooner with the prior` holds
+that it is nearer than stage 6's 6.8 apart and settles sooner, and says the band's bound is not
+met there) — a bounce's hit on foliage with no cell yet takes the harmonics under its prior.
+
+**On the forest** (v41, 3840×2160 traced, the owner's wind; two flights thirteen minutes apart,
+not one lease) stage 7 costs **1.6 ms a frame over main** at `south-lake` held (20.33 against
+18.75 ms: the sample pass 1.99 against 1.46, the resolve 9.10 against 8.48, the ray tracing chain
+2.54 against 2.32, the primaries 3.01 against 2.73), where the target was half a millisecond.
+The prior's read does not show there: of the forest's 14,749 meshes 93 have a crown of their own
+and 196 distance forms read their source's, while the far forest's impostors, the sward and every
+other alpha-tested mesh keep stage 6's walk, and the samples round the eye and their volume are
+stage 5's as they were. Its forest is darker than main's by 9.0 8-bit steps over vegetation and
+2.5 over the rest — the side the judge above says is right. The row stays `in progress`.
+
+### Stage 8: what the forest paid for, and what a far crown remembers
+
+Roadmap R69 stage 8 (2026-11-12, batch 62; [the measurements](../experiments/gi-cache-2026-11-07.md#stage-8-the-forests-cost-by-term-the-far-crowns-flicker)).
+Stage 7 was held for two things: the forest's frame over main's, and a still picture that changed
+between frames by 0.136 of a step over far crowns where main's changes by 0.076.
+
+**The split came first, and it moved every cut** (the page has the table: stage 7's binary flown
+on the forest with one thing switched at a time, main beside it). The gap was 0.75 to 1.0 ms in
+one machine state, not 1.6 between two: the sample pass +0.48, the resolve +0.37, the chain
++0.19, the primaries +0.17. Three of the four were not what stage 7 took them for:
+
+- **The directions round the eye cost by where they ran, not by what they traced.** A quarter of
+  them cost three quarters as much, and halving the volume they trace through changed nothing.
+  They were the sample pass's last workgroups; their rays are its longest (from the eye through
+  whatever stands round it, then a bounce); and a workgroup of them was dispatched when the
+  windows' work was done, so the pass waited on an idle device for its slowest few threads.
+  **They are the pass's first threads now** (`gfx::k_gi_shell_first`, `gi_shell_base`,
+  `renderer.gi.shell_first`): the same directions, the same rays, the same cells, run beside
+  the windows' 620,000 samples. Nothing a picture can show changes.
+- **The chain's share is the swaying trees between 24 and 48 m behind the eye**: 9,300 clusters
+  whose structures are instantiated from the deformed pool every frame. Nearer than 24 m the
+  volume's geometry is rigid or already in the frame for the sun. **The volume's reach is 24 m**
+  (`renderer.gi.shell_m`, 48 until now). What a turn shows of a tree past it is the ladder's
+  and the crown's prior's to hold, and they hold it: the grove's turn, 75 m out, stands 0.24 of
+  a step from its long-held picture on its first frame.
+- **The primaries' share is the nearest geometry** — the instances the eye stands in hold their
+  clusters all round the eye with the volume, and every primary ray starts inside more boxes —
+  and no reach worth having removes it (0.13 of the 0.17 at 12 m). It stays; an instance that
+  holds only casters could be masked out of the primaries' traversal, which is the chain's row.
+
+**The resolve's read is stage 7's, and the cut that was built for it was not kept.** Stage 7
+gave a crown's cells and its one-level read to the 93 meshes of the forest that have a crown,
+and left every other alpha-tested mesh — the sward, the shrubs, the far forest's impostors, the
+forms' merged cards — the walk over face-keyed levels: "every alpha-tested surface on the
+crown's cells with a prior of one" was its untried lever. It was built in the form that leaves
+the resolve's modules byte for byte stage 7's: a record for such a mesh in the load's table, **a
+grid of one cell that lets everything through**, which the shader's lookup reads as a prior of
+one by the rule it already had (a build then compiles two new pipelines, the cache's own, in
+80 ms each, where a change to the resolve's source compiles them all — a first forest load that
+needs 53 GB of the machine). Flown on the forest twice, main beside it in the same lease: with
+the cell for every mesh the resolve stood **0.77 ms** over main's and the water's reflections
+0.14 (stage 7's walk: 0.37); with it for meshes of low leaves alone (cards that stand under a
+crown's 1.5 m), 0.58. The cell is read through the grid's lookup — the instance's 3×3 inverted,
+eight cells, their blend — and that, on every alpha-tested pixel, costs more than the walk it
+ends: a far impostor's level is the ladder's last, so its walk was one level already. **A cut
+is held by the pair that measures it, not by the count of lookups it removes**, and this one
+is out of the tree. The form that pays no lookup is a one returned in the shader before the
+grid is touched; it changes the resolve's source, a first forest load of such a build needs
+66 GB of commit free, and the machine had 57 to 64 on this day, so it was not flown.
+
+**A foliage cell remembers sixty-four frames** (`gfx::k_gi_crown_history_frames`,
+`k_gi_stamp_crown`; the fold). What sets a cell's rate is `gi_history`: a cell keeps 256 samples
+or sixteen frames of them, the longer, so a coarse cell that takes hundreds a frame moves a
+sixteenth of the way to each frame's mean. For a face's cell that is grain: the pixels that read
+it are its own patch, and its neighbours' means move independently. A crown's cell has no face
+and is read two levels up, so every pixel of a far crown reads the same few cells, and their
+sixteenth-steps moved the whole crown together — which the eye reads as flicker, and the measure
+as 0.136. What such a cell holds is the light outside the crown's own shade over the sky's
+harmonics: the sun's hour and the sky's colour reach the picture through the harmonics the
+ratio multiplies, the same frame, and what is left in the ratio is the bounce off what stands
+round the tree and the crown's own geometry, which change over minutes. **A face's cell follows
+the camera's world (a door, a torch's reach, a rock rolled into a hollow); a crown's follows
+the sun and the wind**, and neither is hidden by a second of memory. The fold has a cell's
+words and not its key's tag, so a foliage sample sets the top bit of its cell's stamp. Until the
+history is full the rate is the plain mean's whatever the memory, so a crown fills as fast as it
+did (`gi cache key: a foliage cell remembers sixty-four frames, and fills as fast as ever`).
+
+**Two levers, stated and off** (`renderer.gi.shell_refresh`, `renderer.gi.shell_clip`). A
+direction whose surface's cells are already whole can stop at the eye's ray and take its bounce
+one frame in n, and the eye's ray can stop at the volume's reach. Both were built against the
+sample pass's cost before the split showed where it was; with the directions first they buy
+0.01 ms and nothing on the grove. With both on, the box's turn stood 2.06 floors from its
+long-held picture where its case allows two (the first frame no further off than stage 7's:
+the still picture's floor fell under it), and the stand of trees at 16 m, past the volume,
+stood 5.9 steps off on a turn's first frame where stage 7's stood 3.7 — until the eye's rays
+are stopped at the reach they warm what the sun's sweep holds past it. They stay as knobs with
+those numbers beside them.
+
+**What it does** (the page has the tables). On the grove at 3840×2160 with traced primaries and
+shadows the frame is **0.3 ms under main's** over crowns and 0.2 under it over sand (stage 7:
+0.2 and 0.1). The still picture's change between frames over far crowns is **0.043** of a step
+(main 0.076, stage 7 0.136) and its floor 0.14 (main 0.27, stage 7 0.29); the turn's first frame
+stands 0.24 from the long-held picture (main 0.72, stage 7 0.39) and +0.05 in the mean. Against
+the reference tracer the picture stands where stage 7's did: 1.07 over the trees from 50 m and
+1.05 from close (the grove's crowns all have grids, so nothing of this stage reaches them but
+the memory).
+
+**What the turn to a stand still shows.** Stage 7's stand of nine crowns stood 3.7 steps dark
+on its turn's first frame and its fixture was blamed: crowns of solid cubes, every prior on its
+floor. Built of leaf cards at a tree's leaf area (1.5 m² a cubic metre, priors from a third to
+one) the stand's first frame is as dark (−3.8 against a floor of 0.14; the solid crowns −3.1),
+so it is not the prior. It is the hit's fallback: a bounce's ray that meets a leaf with no cell
+takes the harmonics by the ray's openness, nothing under a metre, and inside a crown every leaf
+is that close — the light a crown's leaves hand each other, a fifth of its indirect term,
+arrives over the frames after. A foliage hit's openness is its prior, not its ray's length;
+that mend is the row's next step and not in this stage, because it moves every picture the
+stage measured (`gi cache: a turn to a stand of leaf cards stands short of light, not over`
+holds the error's side and says what is unmet).
+
+**On the forest** (v41, 3840×2160 traced, the owner's wind; main and the stage back to back in
+one lease). The sample pass and the chain are main's again (+0.03 and +0.02 ms held at
+`south-lake`, where stage 7 stood +0.48 and +0.19) and the primaries within 0.02 to 0.11 of
+them (+0.17). What is left is the resolve's read, stage 7's walk, 0.2 to 0.4 over main's.
+**The frame is 0.19 ms over main's held, 0.26 on the turn and 0.11 after it** (the build as
+committed; the two builds that carried the cell stood 0.60 and 0.61 over). The turn, flown as
+capture sequences with the wind off: the first frame after it
+stands 0.46 of a step from the long-held picture (main 0.70) and +0.03 in the mean, a tenth of
+the floor, and the still forest changes between frames by 0.10 (main 0.13). The volume at 24 m
+asks the chain for 800 clusters a frame more than main at that view where 48 m asked for
+9,300 — a little off a capacity the owner's 4K walk overran by 38,000 the same morning, not
+the mend of it.
 
 ## The sun's day
 
@@ -2477,6 +2929,148 @@ The captures, at the erg from a walker's eyes at noon, a late afternoon, a sunse
 **What it returns, measured** on the v25 walk's replay at 11520×2160 ([stage 4](../experiments/forest-resolve-2026-11-01.md#stage-4-a-shading-rate-by-region-2026-11-02), `--raster rt --shadows rt`, every cell a median of 150 frames, the machine not quiet: other processes 9–29% of the CPU): the resolve **23.43 ms at full rate, 19.25 with the sides at a third plus 1.20 for the half pass — 3.0 ms back net, the GPU frame 44.2 → 40.9** — and 18.04 + 1.72 with the whole frame at half rate (3.7 back, the frame 39.7). The sun's stage falls from 15.3 to 11.1 ms, not to the 7.7 a quarter rate over two thirds of the frame would give: the blocks the rule cannot take — a leaf's edge against the sky or the ground behind it, two pairs in four pixels — are where the masks' candidates are, so about 45% of the sides' sun cost stays per pixel (an inference from the stage's drop, which is three quarters of the taken blocks' cost). At 3840×2160 the default records no pass (the half pass 0.00 ms in every frame of the as-set share, the resolve 7.84 against 7.62, the same work) and the whole frame at half rate saves 0.75 ms of 7.6. **What the eye is asked to give** (three markers at 11520×2160, against the full-rate picture, a pixel's change its largest channel difference): the centre third 0 pixels at every marker; in the sides **1.5–4.1% of the pixels change, almost all by more than 16 codes** (mean 40–84 codes, 99th percentile 70–129) — a sunfleck's or a shadow's edge moved by up to one pixel to the block's top-left pixel's answer, a 2×2 staircase on the edge, and nothing else. That is the trade stated: three milliseconds of a 44 ms frame for a shadow edge resolved at half the pixel rate on the two outer monitors.
 
 **The material at half rate is not built.** The plan, if the sun's pass is not enough: the same block rule for the material stage's fetches — the block's albedo, shading normal, roughness and metallic taken once where its pair is one — with the reconstruction and the lighting still per pixel; the material is 5.6 ms of the replay's 22.5 at full width, so its two side thirds at a quarter of the rate are at most about 2.8 ms back.
+
+## The resolve by pixel class
+
+Roadmap R151 (2026-11-12); the measurements, the sources and the design that follows are on
+[the resolve by pixel class](../experiments/resolve-by-class-2026-11-12.md). **Off by default**:
+`renderer.resolve.classes=off` builds none of it and the frame is the one it was, but for one
+test of the fragment's depth at the top of `fs_resolve`. The default becomes `auto` (below) when
+the forest's pair is flown: `auto` is no dearer at any of the engine's seven measured poses and
+0.46 ms cheaper under the elder grove, and the forest, which is what it is for, had not been
+measured when the row handed back (R151's page, "The default").
+
+**Why.** The resolve is one fullscreen draw of one fragment shader that holds every kind of pixel,
+and R148 measured three costs of that shape rather than of any term
+([what the resolve costs](../experiments/resolve-cost-2026-11-11.md)): under the elder grove about
+1.1 ms of a 2.8 ms resolve belongs to no class of pixel alone (a shading group with a leaf and a
+ground pixel in it runs both paths), a scene with water pays 0.7 ms for the water module on a
+frame with no water in view, and the one pipeline is the cold start. A visibility buffer can sort
+its pixels before it shades them.
+
+**What it draws.** Under `renderer.resolve.classes=draws` or `modules` the frame gains a
+**classify pass** before the resolve (`resolve_classify.slang`; timer zone `resolve classify`,
+`FrameStats::gpu_resolve_classify`, `PassMs.resolve_classify`): one fullscreen triangle a view
+whose fragment stage finds the pixel's class by the resolve's own decode (`classify_pixel`,
+`resolve_class.slang`: the visibility word, the pair table, the instance, the material's flags,
+through the view's own `ResolveParams`) and writes it as depth, `gfx::resolve_class_depth` — class
+c at (c + 1) sixteenths, into the direct path's depth image, which no path with a visibility
+buffer draws into. The resolve pass then takes that image as its depth attachment and draws the
+fullscreen triangle **once per class at the class's depth** (the viewport's depth range, one
+value) with a depth-equal test and no depth write (`record_resolve_class_draws`,
+`resolve_classes.cpp`), from pipelines that are the resolve's own modules and entry points with
+that depth state (`Pipelines::resolve_class`, made beside the others in `create_pipelines`' batch;
+for the frame passes' linear image when a pass is registered). The classes
+(`gfx::ResolveClass`, `domain/gfx/resolve_classes.h`): **sky** (no surface), **rigid**, **ground**
+(a layered ground's material), **masked** (alpha-tested: the leaves), **deformed** (a deformed
+instance's opaque parts: trunks, blades), and in a scene with water **water** and **wet**. Seven,
+because they are what R148's census could tell apart and what the modules differ by; every class
+the scene's classify variant can write is drawn each frame, since a class with no pixel costs its
+triangle's rejection (0.002 to 0.008 ms measured) and a class left out leaves its pixels the clear.
+
+**The class exit.** A fixed-function depth test rejects **quads, not pixels**: a 2 × 2 quad the
+test keeps runs all four of its lanes, and a lane whose pixel failed the test still runs *its own
+pixel's* path to the end, as a helper (the resolve's SPIR-V holds no derivative instruction, and
+asking for early fragment tests changes nothing). So `fs_resolve` begins with fourteen lines: a
+fragment of a class's draw — its depth is the class's; the one draw's triangle is at depth 0,
+which is no class's — asks `classify_pixel` for its own pixel's class and discards when it is
+another's. Without them the split was 0.43 ms *dearer* than the one draw under the elder grove
+(the sky's draw alone cost 1.04 ms for pixels worth 0.05); with them it is 0.51 ms cheaper there
+(2.24 against 2.76 ms, the frame 0.46 ms shorter with the classify pass counted). The lines cost
+the one draw 0.01 to 0.05 ms, and a scene whose classes meet along lines pays the classify pass
+and the exit's decode for nothing it can get back, which is what `auto` is for.
+
+**What a renderer builds, and `auto`.** `off` builds the one draw's pipeline and none of the
+split's. `draws` and `modules` build the classify pass and the per-class pipelines and **not the
+one draw's**: the same module twice in one batch is the driver compiling it twice
+(`resolve_one_draw_built`; R151's page has the cold starts), so such a renderer can be turned
+between `draws` and `modules` frame by frame, and `off` asked of it later draws as `draws`. `auto`
+asks the scene (`resolve_class_mode_for`, `resolve_classes.h`): `draws` where it holds
+alpha-tested materials — leaves, whose pixels interleave with every other class at the pixel's
+scale, which is the mixing the split returns — and `off` everywhere else, where the split would
+cost its classify pass and return nothing. `cycle` is a measurement choice: every pipeline is
+made and frame f draws by (f / 16) % 3, off, draws, modules, so one flight of one process holds
+the three side by side under the same load (a forest flight is four minutes of load for seconds
+of frames); a renderer made under it follows the tunable frame by frame, which is how the tests
+hold the split against the one draw on one renderer.
+
+**`modules`: the pixels that cannot touch water are drawn by the module without it.** A scene
+with water draws with the water module, and every pixel carries its registers and tests. Under
+`modules` the sky, rigid, ground, masked and deformed classes are drawn by the same combination's
+module with no water (`Pipelines::resolve_class_plain`) and only **water** and **wet** by the
+scene's own. The wet class is what makes that exact: the water module also darkens ground near
+water (`water_ground_wetness`, the shores' and banks' records), on pixels that are not water, so
+the class is "may need the water module", and `classify_wet` claims every ground pixel inside a
+shore record's square or a bank stretch's **and within the heights that record can wet** — the
+resolve's own ranges, record by record: a still body's fringe above its level, the reach of a
+swash and a tide, a bank node's level range, a stretch from two metres under its surface to its
+fringe above it within its half width and the fringe's run. The pixel's point is taken from its
+depth word rather than its triangle, so both tests are grown: the squares by half a metre and two
+thousandths of the pixel's distance, the heights by that slack along the pixel's ray (times the
+ray's own slope of height), four steps of the receiver's grid, a two-thousandth of the distance
+and two centimetres (`resolve_class.slang` says where each comes from). It never under-claims,
+and what it over-claims is that margin (the row's page has the counts; by the squares alone 75 to
+98 % of the class was ground above a pond's fringe). The plain module is not used, and every class is drawn by
+the scene's module, where the scene has an open sea (any pixel, an empty one included, may be the
+sea's plane), where the view resamples (Panini: two shaders would each have to map a pixel to the
+same source pixel), and in a frame that carries a stop word.
+
+**The picture.** Which draw shades a pixel changes nothing the pixel computes, so `draws` is the
+one draw's bytes by construction, and `resolve_class_tests.cpp` holds it: colour, ids and depth
+equal with the split on and off on one renderer (under the stand-in sky and a physical one, with
+traced shadows, and into a frame pass), every pixel of the target given exactly one class
+(`SceneRenderer::resolve_class_census`, a read-back of the class image), every class that has a
+pixel drawn, and a class left out (`renderer.resolve.class_mask`, a measurement switch) seen in
+the picture by that class's pixels. At 3840 × 2160 with the bounce off, 0 pixels differ on all
+seven poses measured. `modules` is two modules' arithmetic: 0 pixels differ on six of the seven
+poses, and on the seventh (the layered ground's mountain) **2 pixels of 8.3 million differ by one
+code**, the same two in every build, dark ground no record reaches. The two modules draw the same
+bytes there in the albedo, normal, sun-shadow and sun-specular views (0 of 8.3 million pixels
+each, at all four of that scene's poses), so the material and the sun's shadow and lobe are not
+where they part: the difference enters in what follows them (the sums of the lit terms, the air,
+the exposure and the encode), where the driver is free to fuse or order a multiply and an add
+differently beside different code; R151's page has what was tried. Until that is closed `modules`
+is a lever a host may choose and never what `auto` picks. `resolve_class_water_tests.cpp` (in
+`systems/water`, where a scene with water can be built) holds `modules` on a basin with a wet
+band at four poses — across it from above, looking away, and two where the band is seen at a
+grazing angle (from the rim at a walker's height, from thirty metres back a metre up): the plain
+module's classes are the five, the picture is the one draw's to a code on at most one pixel in
+twenty thousand (none measured at any of the four), looking away **no pixel is wet-class** (the
+plain is 1.5 m above the level and the fringe a metre; by the squares alone 21,102 were), and with
+no wet class written (`renderer.resolve.class_wet_plain`) the picture is not the one draw's, by
+the band's pixels and by no more pixels than the class held.
+
+**One shader decides what is wet.** The classify pass's module asks `classify_wet`'s floats, once
+a pixel, and the depth test holds every draw to its answer. The class exit asks integers only
+(`resolve_class_may_draw`: the class by the material's flags, or "could be wet" by the resolve's
+ground test), because a second module that asked the floats again and rounded one of them
+otherwise would discard the pixel in the one draw whose depth test it passes, and nothing would
+draw it. What that leaves running is a lane of plain ground in the wet class's draw and the
+reverse where the two meet inside a quad, which is lines.
+
+**What it costs and returns** (3840 × 2160, traced primaries and shadows, the bounce; one
+process with the modes cycled sixteen frames at a time; R151's page has every pose). The classify
+pass is 0.055 ms where no scene has water and 0.07 to 0.09 ms where one has. **Under leaves
+`draws` returns 0.51 ms of a 2.76 ms resolve and 0.46 ms of the frame** (the elder grove, where
+6.4 % of the quads hold more than one class): that is the mixing R148 measured, the half of it a
+raster pass can return. On a scene whose classes meet along lines (oasis-pool, a layered ground:
+0.1 to 0.2 % of the quads) `draws` returns nothing and costs the classify pass and up to 0.05 ms
+of exit, which is why `auto` leaves such a scene to the one draw. `modules` returns the water
+module's weight on every pixel that cannot touch water: 0.6 ms of a 2.2 ms resolve at
+oasis-pool's pool and of 1.8 ms looking away from it, 0.6 to 0.7 ms of 2.6 to 2.9 ms on a
+layered ground with its ponds out of view.
+
+**The other hosts.** The reference renderer draws nothing through this pass (its own compute
+pipelines) and is unchanged. `render.capture`'s channels are the bytes they were: the colour is
+the resolve's, held above, and ids and depth are read from the visibility buffer, which the split
+does not write. The baseline tier's vertex pipeline and the software and ray paths fill the same
+visibility buffer and are resolved by the same pass, so they split the same way; the direct path
+has no resolve and no split. The measurement switches (`renderer.resolve.class_mask`,
+`class_census`, `class_wet_plain`, and the `cycle` choice; `settings.h`) are never defaults.
+`class_wet_plain` sets `gfx::k_shadow_wet_class_off` in the view's `shadow_flags`, which
+`classify_pixel` alone reads: no pixel is classed wet, so under `modules` the pixels that differ
+from the picture are the ones the water module wets, which is how the wet class's over-claim is
+counted (the class's pixels less those).
 
 ## Frame passes
 

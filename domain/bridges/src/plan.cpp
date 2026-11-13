@@ -177,17 +177,20 @@ void plan_clapper(const Crossing& c, Draws& d, BridgePlan& p) {
 // the seat stands over the ground by more than the sill): returns the sill's index; the sill's top
 // is `seat`.
 i32 timber_seat(BridgePlan& p, Draws& d, const Crossing& c, i32 x, i32 sill, i32 length, i32 seat) {
-  const i32 ground = ground_max(c, x - sill, x + sill);
   i32 below = -1;
-  // A sill whose underside is in the ground lies in it, sunk at most a third of its diameter (the
-  // seat is set no lower: the specification's mud sills, buried); one whose underside stands over
-  // the ground lies on a stone abutment founded 200 mm in it.
+  // A sill whose underside is in the ground under the whole of it lies there, sunk at most a third
+  // of its diameter (the seat is set no lower: the specification's mud sills, buried); one whose
+  // underside stands over any of the ground beneath it — a bank that rises across the sill —
+  // lies on a stone abutment founded 200 mm under the lowest ground beneath the abutment. (G186:
+  // the test was the highest ground about the sill, which on a rising bank left the low side of a
+  // sill seated at the bank 35 mm in the air once the deck no longer stood a metre up.)
   const i32 sill_foot = seat - sill;
-  if (sill_foot > ground)
-    below = stone_stack(p, d, MemberKind::abutment, x, sill + 300, length + 200, ground - 200,
-                        sill_foot);
+  const i32 along = sill + 300;
+  if (sill_foot > ground_min(c, x - sill / 2, x + sill / 2))
+    below = stone_stack(p, d, MemberKind::abutment, x, along, length + 200,
+                        ground_min(c, x - along / 2 - 25, x + along / 2 + 25) - 200, sill_foot);
   return static_cast<i32>(
-      add(p, block(MemberKind::sill, Shape::log_z, k_timber, x - sill / 2, x + sill / 2, sill_foot,
+      add(p, block(MemberKind::sill, Shape::log_z, k_log, x - sill / 2, x + sill / 2, sill_foot,
                    seat, -length / 2, length / 2, below)));
 }
 
@@ -196,11 +199,16 @@ void plan_timber(const Crossing& c, Draws& d, BridgePlan& p, bool foot_log) {
   const i32 sill = 300;
   const i32 s0 = -(half + k_setback_mm + sill / 2), s1 = half + k_setback_mm + sill / 2;
   p.span = (s1 - sill / 2) - (s0 + sill / 2);
+  // **The underside by form and span** (bridges.md, "The deck's height"): a foot log, and
+  // stringers to the minor span, `k_bank_clearance_mm` over the lower bank's top; stringers past
+  // it over the flood stage (bankfull plus a bankfull depth, at least `k_min_freeboard_mm`). And
+  // every sill on or in its ground.
   const i32 depth = std::max(p.bankfull, 1);
-  const i32 freeboard = std::max(k_min_freeboard_mm, depth);
-  // The underside over bankfull by the freeboard, and every sill on or in its ground.
+  const bool minor = foot_log || p.span <= k_minor_span_mm;
+  const i32 over =
+      minor ? p.bankfull + k_bank_clearance_mm : p.bankfull + std::max(k_min_freeboard_mm, depth);
   const i32 g0 = ground_max(c, s0 - sill, s0 + sill), g1 = ground_max(c, s1 - sill, s1 + sill);
-  const i32 soffit = std::max({p.bankfull + freeboard, g0 + sill * 2 / 3, g1 + sill * 2 / 3});
+  const i32 soffit = std::max({over, g0 + sill * 2 / 3, g1 + sill * 2 / 3});
   p.soffit = soffit;
   const i32 overhang = 250;
   if (foot_log) {
@@ -215,7 +223,7 @@ void plan_timber(const Crossing& c, Draws& d, BridgePlan& p, bool foot_log) {
     const i32 length = 1200;
     const i32 a = timber_seat(p, d, c, s0, sill, length, soffit);
     timber_seat(p, d, c, s1, sill, length, soffit);
-    Member log = block(MemberKind::log, Shape::log_x, k_timber, s0 - sill / 2 - overhang,
+    Member log = block(MemberKind::log, Shape::log_x, k_log, s0 - sill / 2 - overhang,
                        s1 + sill / 2 + overhang, soffit, soffit + dia, -r, r, a);
     log.hewn = hewn;
     add(p, log);
@@ -237,7 +245,7 @@ void plan_timber(const Crossing& c, Draws& d, BridgePlan& p, bool foot_log) {
     const i32 hewn = soffit + dia - 50;
     i32 stringer = -1;
     for (i32 side = -1; side <= 1; side += 2) {
-      Member s = block(MemberKind::stringer, Shape::log_x, k_timber, s0 - sill / 2 - overhang / 2,
+      Member s = block(MemberKind::stringer, Shape::log_x, k_log, s0 - sill / 2 - overhang / 2,
                        s1 + sill / 2 + overhang / 2, soffit, soffit + dia, side * zc - dia / 2,
                        side * zc + dia / 2, a);
       s.hewn = hewn;
@@ -250,7 +258,7 @@ void plan_timber(const Crossing& c, Draws& d, BridgePlan& p, bool foot_log) {
     for (i32 k = 0; k < planks; ++k) {
       const i32 px = start + k * pitch;
       const i32 jw = d.range(-6, 6);
-      add(p, block(MemberKind::plank, Shape::box, k_timber, px, px + k_plank_mm + jw, hewn,
+      add(p, block(MemberKind::plank, Shape::box, k_plank, px, px + k_plank_mm + jw, hewn,
                    hewn + k_plank_thick_mm, -k_deck_mm / 2, k_deck_mm / 2, stringer));
     }
     p.deck = hewn + k_plank_thick_mm;
@@ -282,13 +290,50 @@ void plan_timber(const Crossing& c, Draws& d, BridgePlan& p, bool foot_log) {
       const Member& plank = p.members[static_cast<u32>(on)];
       const i32 at = std::clamp(x, plank.x0 + post / 2, plank.x1 - post / 2);
       const i32 idx = static_cast<i32>(
-          add(p, block(MemberKind::post, Shape::box, k_timber, at - post / 2, at + post / 2, p.deck,
+          add(p, block(MemberKind::post, Shape::box, k_plank, at - post / 2, at + post / 2, p.deck,
                        p.deck + k_rail_mm, zc - post / 2, zc + post / 2, on)));
       if (first_post < 0) first_post = idx;
     }
     if (first_post >= 0)
-      add(p, block(MemberKind::rail, Shape::box, k_timber, x0 - post / 2, x1 + post / 2,
+      add(p, block(MemberKind::rail, Shape::box, k_plank, x0 - post / 2, x1 + post / 2,
                    p.deck + k_rail_mm, p.deck + k_rail_mm + 60, zc - 40, zc + 40, first_post));
+  }
+}
+
+// **The approaches' steps** (bridges.md, "The ground and the neighbours"): from each end of a deck
+// that stands over the ground there by more than a riser, rough stones on the ground out along
+// the path, the risers equal and at most `k_riser_mm`, each stone `k_step_going_mm` along the
+// path, as wide as the tread or the deck (to 1.2 m) and bedded `k_step_bed_mm` under the lowest
+// ground beneath it; at most `k_max_steps` an end, and none past where the ground already stands
+// at its height. They stand on the ground the crossing was sampled on — the channel's cut in it —
+// so nothing the cut lowers is under them, and a fill (`approach_of`) is left only past the last.
+void plan_steps(const Crossing& c, Draws& d, BridgePlan& p) {
+  const i32 across = std::max<i32>(static_cast<i32>(c.tread_mm), std::min(p.width, 1200));
+  for (u32 end = 0; end < 2; ++end) {
+    const i32 out = end == 0 ? -1 : 1;
+    const i32 x_end = end == 0 ? p.x_start : p.x_end;
+    p.approach_x[end] = x_end;
+    p.approach_top[end] = p.deck;
+    const i32 h = p.deck - ground_rel(c, x_end);
+    if (h <= k_riser_mm) continue;  // one riser: the walker's own step onto the deck
+    const i32 risers = (h + k_riser_mm - 1) / k_riser_mm;
+    const bool all = static_cast<u32>(risers - 1) <= k_max_steps;
+    const i32 rise = all ? static_cast<i32>(div_round(h, risers)) : k_riser_mm;
+    const u32 blocks = all ? static_cast<u32>(risers - 1) : k_max_steps;
+    for (u32 k = 1; k <= blocks; ++k) {
+      const i32 top = p.deck - static_cast<i32>(k) * rise;
+      const i32 inner = x_end + out * static_cast<i32>(k - 1) * k_step_going_mm;
+      const i32 outer = x_end + out * static_cast<i32>(k) * k_step_going_mm;
+      const i32 x0 = std::min(inner, outer), x1 = std::max(inner, outer);
+      if (top <= ground_max(c, x0, x1)) break;  // the ground is there already
+      const i32 jz = d.range(-30, 30), dw = d.range(-60, 0);
+      add(p, block(MemberKind::step, Shape::rough, k_stone, x0, x1,
+                   ground_min(c, x0, x1) - k_step_bed_mm, top, -(across + dw) / 2 + jz,
+                   (across + dw) / 2 + jz, -1));
+      ++p.steps[end];
+      p.approach_x[end] = outer;
+      p.approach_top[end] = top - rise;
+    }
   }
 }
 
@@ -380,6 +425,8 @@ bool plan_bridge(const Crossing& c, u64 seed, BridgePlan& p, std::string& why) {
     case BridgeForm::stringers: plan_timber(c, d, p, false); break;
     case BridgeForm::none: break;
   }
+  if (p.form == BridgeForm::clapper || p.form == BridgeForm::log || p.form == BridgeForm::stringers)
+    plan_steps(c, d, p);
   return true;
 }
 

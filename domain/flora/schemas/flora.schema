@@ -1004,10 +1004,28 @@ struct Regeneration {
   impostor_px: u32 = 128
 }
 
+/// G167: a meadow's plant as the sward's field kind (flora.md, "The meadow at whole density"): a
+/// drift of `count` herbs of one recipe over a disc, each plant one parentless part bending from its
+/// base, so the renderer poses it on the GPU with no run of the pose table. Species `meadow`.
+struct MeadowPlant @version(1) {
+  /// The plant every member of the drift is grown from; each takes its own seed from it.
+  herb: Herb
+  /// Plants in the drift: 1 to 32.
+  count: u32 = 1
+  /// The disc the plants' bases stand in, metres from the drift's centre: 0 to 1.
+  radius_m: f32 = 0.0 @unit(m)
+  /// Each plant's height differs from the recipe's by up to this share either way: 0 to 0.5.
+  height_jitter: f32 = 0.2
+  /// The stem's tube: sides round, 3 to 6, and rows up, 2 to 10 (a herb's own is 6 and 10; a
+  /// drift's plants are seen from a metre and more, so the default is the coarsest that reads).
+  stem_sides: u32 = 3
+  stem_rows: u32 = 3
+}
+
 /// A flora file, `<name>.flora.json`: the species and its parameters. A scene's mesh table names
 /// one as it names a glTF, and `engine-content flora` builds one into a container; either way the
 /// build is keyed by the chosen species' canonical parameters, materials and solver version.
-struct FloraFile @version(10) {
+struct FloraFile @version(11) {
   /// The species: "date_palm", "broadleaf", "conifer", "birch", "willow", "orchard", "ancient",
   /// "shrub", "fern", "tuft", "herb", "sward" or "roots" read their own parameter block. Named tree profiles
   /// in domain/geometry/flora_species.h read `tree`; the five named shrub profiles read `shrub_growth`.
@@ -1040,6 +1058,8 @@ struct FloraFile @version(10) {
   /// Optional juvenile model for maple/oak/birch/pine/spruce/beaked_hazel/red_osier_dogwood.
   /// When present, replaces the species' adult parameter block; absence preserves old output.
   regeneration: Regeneration? @since(10)
+  /// G167: a meadow's drift of herbs posed as a field; species must be meadow.
+  meadow: MeadowPlant @since(11)
 }
 
 /// G137: a sward's growth form (Briske and Derner 1998: caespitose bunch grasses against
@@ -1097,7 +1117,7 @@ struct SwardStature @version(2) {
 /// scales as recalibrated for Britain (Hill et al. 1999): moisture F (1..12) and light L (1..9).
 /// The stature rule's wetness is read from the same F, so the sward's form and the community agree
 /// (flora.md, "The meadow community"; the defaults in docs/experiments/meadow-community.md).
-struct MeadowRule @version(1) {
+struct MeadowRule @version(2) {
   /// F on level, open ground far from water: 5, "fresh soils of average dampness". 1..9.
   moisture_base: f32 = 5.0
   /// Metres from a channel's bank or a water body's outline over which F falls from the wet
@@ -1112,6 +1132,10 @@ struct MeadowRule @version(1) {
   /// L in the open and under the shade layer's full weight, 1..9.
   light_open: f32 = 7.5
   light_shade: f32 = 5.0
+  /// G167: the day of the year the meadow stands at, 1..366: a forb carries its heads only within
+  /// its flowering months (the community table's, from the British flora), else it stands in leaf.
+  /// 182, the first of July: a hay meadow's peak before the cut. A scene with a sky gives its own.
+  day_of_year: u32 = 182 @since(2)
 }
 /// G140: one species of the meadow's community, named from the community table (flora.md, "The
 /// meadow community"), and the mesh it stands as near the eye.
@@ -1127,7 +1151,7 @@ struct MeadowSpecies @version(1) {
 }
 /// The sward placement registry's parameters. The paint already contains shade, wet margins,
 /// slopes and excluded trails; do not apply those factors twice at runtime.
-struct SwardPlacements @version(3) {
+struct SwardPlacements @version(4) {
   seed: u64 = 1
   /// Patch edge, metres: 1 or 2. Must divide the context tile size.
   cell_m: f32 = 1.0 @unit(m)
@@ -1152,13 +1176,15 @@ struct SwardPlacements @version(3) {
   forbs: string[] @since(2) @deprecated
   /// G137's share of forb cells, replaced by the community's covers (G140): not read.
   forb_share: f32 = 0.33 @since(2) @deprecated
-  /// Plants of the community a tile keeps at most in a ring, 0..4096, a far form counted as the
-  /// plants it stands for: every herb is a run of the frame's pose table (its motion kind is
-  /// `parts`), so a tile keeps the ones of lowest hash.
-  forb_tile_cap: u32 = 256 @since(2)
+  /// Drifts of the community a tile keeps at most in a ring, 0..4096, a far form counted as the
+  /// drifts it stands for; a tile keeps the ones of lowest hash. G167: a drift is the field kind
+  /// (`meadow`), posed on the GPU with no run of the pose table, so the default is every cell of a
+  /// 64 m tile of 1 m cells: the community's whole density. A lower cap is a budget lever.
+  forb_tile_cap: u32 = 4096 @since(2)
   /// G140, the meadow's community (1..16 species; empty: none): each cell that drew a patch draws
-  /// one plant of a species by the covers the site gives them, standing as itself in the nearest
-  /// ring and as one far form for several in the next.
+  /// a drift of one species by the covers the site gives them (G167: as many plants as fill the
+  /// species' share of the cell at its own crown's spacing), standing as itself in the nearest ring
+  /// and as one far form for several in the next.
   community: MeadowSpecies[] @since(3)
   /// G140: the site's moisture and light, read by the community and by the stature rule's wetness.
   meadow: MeadowRule @since(3)

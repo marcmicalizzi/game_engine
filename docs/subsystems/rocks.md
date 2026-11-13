@@ -510,7 +510,8 @@ behaviour**: there is no option to stand a top proud.
   dipping 20° or less), the top of a resistant bed (resistance 0.5 or more, a weaker bed over it)
   within a third of a tier of that, in the formation's plumb coordinate: a face steps back where a
   cliff-forming bed ends. They are a function of the layer alone, so every block and every line
-  cuts at the same ones. A break within a third of a tier of the foot, the brow or the break below
+  cuts at the same ones. Past 20 degrees a bed does not run along a face, the breaks are levels,
+  and the members carve the face instead ([Beds at any attitude](#beds-at-any-attitude)). A break within a third of a tier of the foot, the brow or the break below
   is not cut, so no tier is a sliver.
 - **A tier's plane** starts where its break meets the profile, stood off downhill by the standoff,
   and leans by the batter that keeps it the standoff in front of every point of its own part of
@@ -1684,7 +1685,9 @@ buried back, carried 8 cm under so the line is the depth buffer's) out to where 
 front is tallest where the slope is steep or the ground is a nose and falls to nothing where the
 exposure ends: **the ends taper because the rule does**. Scarp slope and dip slope are not cases:
 beds dipping into the hill leave the ground quickly and make short treads and crisp risers, beds
-dipping with it make slabs, and both are the same intersection.
+dipping with it make slabs, and both are the same intersection. What a front's rows recess along,
+how it leans and what a steep tread is drawn in follow the beds' attitude to the slope
+([Beds at any attitude](#beds-at-any-attitude)).
 
 **Blocks.** Joints cut a unit into blocks along the strike, its thickness over `joint_ratio`
 (1.3) apart on average, their stations moved by up to three tenths, and their planes up to 20° off
@@ -1852,3 +1855,119 @@ present; a border's standing vertices matched across tiles within a millimetre; 
 weaker and none where every bed stands, crept blocks); a crag's risers on the ground, none in the far form; the far form
 beside the near form's steps; the meshes' and recipes' pins; and the generator's tiles in reverse
 against its whole read, a form a ring.
+
+### Beds at any attitude
+
+**A mountain range of steeply dipping beds is the common case** (G200; the
+[grounding](../experiments/steep-dip-bedrock.md)). The ledges and the tiers were written for beds
+dipping 20 degrees or less, and on the forest proof of concept's 57 degree gneiss they drew the
+wrong mountain. What a steep dip did on a hillside of 35 to 48 degrees with a 60 degree band over
+it (`tests/ledges_tests.cpp`, "steeply dipping beds, by their attitude to the slope", the forest's
+formation with its folds off, four 64 m tiles of ledges and the band's faces):
+
+| Dip, attitude | Before (G142, G172) | Now |
+|---|---|---|
+| 40 to 75, any | every tread turf, on planes of 40 to 75 degrees (100 % of tread area past the 30 degree soil slope) | a tread past the soil slope is its unit's rock (0 %) |
+| 57, strike up the slope | of the faces steeper than 60 degrees out of the bedding plane, 65 % faced downhill and 30 % along the contour: every row recessed along the fall line, sliding sideways along its own front | 6 % downhill, 89 % along the contour: the bed edges', ribs running up the slope |
+| 75, strike up the slope; any dip, with or into | the faces already followed the bed edges (95 % along the contour at 75; 68 % up the hill at 57 with the slope, the overdip slab's back), their rows recessed a little off their own normal | the same faces (96 %, 76 %), the rows recessed square to them |
+| 40 and 57, with and into | plumb fronts (0.4 to 0.6 % of the rock overhanging) | slab edges overhang, toppled beds lean out: 1.4 to 4 % |
+| 20, any | plumb fronts, recessed along the fall line | plumb fronts, recessed along the bed edge's normal (the same within a few degrees) |
+| over 20, the band's faces | nothing: the tiers' breaks and the benches need 20 degrees or less, and the 9 faces were the same 16,778 triangles at every dip and attitude | the faces carve their members (below) |
+
+(The "before" column is the solver with its recess on the fall line, no lean and its treads all
+turf, run under this case; a first count that took every triangle past 45.6 degrees was ruled by
+the risers on the steepest ground, and is not used.)
+
+**What the solver takes from the beds' attitude.** At each point of the lattice the bed edge's own
+outward normal on the ground is where the bed coordinate falls along the surface (its gradient
+along the ground, horizontal, reversed): it is where a front faces, whatever the slope's aspect,
+and it turns with the ground round a spur, so nothing has a seam there. A front's rows, its lip,
+its worn edges and a cleft's flank at the face recess along it (G142 used the fall line, which is
+the same only where the beds strike across the slope). The beds' **apparent dip along it**, `a`,
+positive where they dip out of the face, sets the front's lean (`front_lean`, `ledges.cpp`), as
+tangents so no angle is taken:
+
+- `|a|` under 20 degrees: plumb, as G142 built it (a cuesta's scarp).
+- beds dipping out of the face (a dip slope's slab edge): the joint square to the bedding,
+  overhanging by `a` (at most 40), ramped in from 20 to 30 degrees: the slabs' stepped overlaps.
+- beds dipping into the face, 20 to 30 degrees: square to the bedding, leaning back by `|a|`.
+- past 30 into the face the beds topple (Goodman and Bray's condition with a near-vertical face
+  and a friction angle of 30 degrees): the front leans out along its own bedding by `90 - |a|`,
+  never more than 25 degrees, crossing over from 30 to 40.
+
+The foot follows the lean over the ground it reaches (a front leaning back over falling ground
+goes deeper, at most 2.5 times: the lean is held to `lean * fall <= 0.6`), and a cleft's flank at
+the face leans with it. **A tread steeper than the rule's soil slope is rock**: a slab at 57
+degrees holds no soil, so it is drawn in its unit's rock and the turf is left to the treads that
+can carry it. Strike running up the slope needs nothing of its own: the resistant units stand as
+ribs along the strike, their bedding faces to one side and their edges to the other.
+
+**A face's members** (`Cliff.members`, `engine.rocks.Cliff` version 8). With a formation that has
+a macro sequence and dips past 20 degrees the cliffs generator sets `members`, and the solver
+stands each weak member back from the resistant ones round it by a quarter of the member's own
+thickness (8 m at most) times their contrast in resistance over half, eased over 3 m of the bed
+coordinate and ramped in from 20 to 35 degrees of dip, so a face cut through steep beds shows the
+members as ribs and gullies where the strike crosses it and as banded recesses where the dip does.
+Not a share of the face's height: a tier is 12 m, and the first pictures' tenth of it (1.2 m) did
+not read from 100 m; the member is the mountain's, and the forest's 38 m pelitic schist stands 8 m
+back from its quartzite and orthogneiss. The back is 8 m further behind (`cliff_back_m`), so the
+face stays closed. Under 20 degrees nothing changes: the benches
+step the members there, and `members` is left out of a recipe's key when false, so every face
+written before it keeps its key.
+
+**What a scene writes on a 57 degree dip.** Nothing new: the attitude is read from the formation
+and the ground. Copy the scene's `formation` into one `ledges` entry and one `cliffs` entry per
+region window (the test scene `content/test-scenes/steep-dip/` is the pattern: the forest's own
+formation, macro sequence included, since the members are what stands as crags on the ledges and
+as ribs and gullies on the faces). On the `cliffs` entry: `min_slope_deg` 50, `tier_m` 12, the
+type `Gneiss`, `face.talus` 0 and `face.talus_blocks` 0 if the deposits shed instead; the faces
+set `members` themselves because the formation dips past 20 degrees, and the tiers break at
+levels, which is right for beds that do not run along a face. On the `ledges` entry:
+`cliff_slope_deg` 50 (the cliffs' `min_slope_deg`), `type` `Gneiss`, the rule at its defaults.
+Leave `near_rings` on the cliffs at 0 until the faces arrive with their tiles ("A massif inside a
+budget"): until then the far form only adds bytes. Expect every resistant bed of the fine sequence
+to stand (its resistances are 0.55 to 0.85, so no bed undercuts another) and the crags to come
+from the members: the schists (0.30 and 0.35) are the gullies between them.
+
+**Pinned**: the steep-dip patch (the forest's formation at 57 and 128 degrees, folds and all) and
+the first face of its band, by mesh hash ("a steep-dip patch and face are pinned to the bit").
+**Tests**: the table's case asserts each "now" (4 s in msvc-debug).
+
+**What it does not do yet.** A toppled block is a gap in its ledge and nothing lays it at the
+foot (`ledge_gaps` hands it over with the fallen ones); a flexural topple is a lean, not a bend;
+there is no second joint set and so no wedges; a weak member between two ribs is the ground's own
+surface (the ledges cannot cut a gully into the terrain); the crest is not broken by the members.
+
+### A massif inside a budget
+
+The forest's steep ground is 3.40 km² past 50 degrees in a 38 km² world (its deposits part's
+measurement), "tens of millions of triangles" of faces at the escarpment's density. What each part
+costs (`tests/ledges_tests.cpp`, "what a steep-dip tile costs" and "a massif's faces past the near
+rings are their far form"; msvc-debug timings beside other agents' builds, an upper bound; bytes
+are the source mesh's, positions, normals, UVs and indices, not the clusters the GPU keeps):
+
+| Part | Near | Far | Where it is drawn |
+|---|---|---|---|
+| ledges on 35-48 degree ground, the forest's formation, a 64 m tile | 3,378 triangles, 105 a metre of front (56 on the 12 degree test hillside: the steep dip's slabs are wide treads), 115 KB, 32 ms | 77 triangles, 2.1 a metre, 3.7 KB, 2 ms | near in the first `near_rings` (1), far to `far_rings` (3), nothing past (the terrain's bands) |
+| cliffs past 50 degrees, a square metre of steep plan, the default 250,000-triangle layer budget in 12 m tiers | 15.5 triangles, 501 bytes, 93 µs | 2.4 triangles, 89 bytes, 14 µs (`far_budget` 4,000 a face, no fallen blocks) | as written, or with `near_rings` the far form past them |
+
+**A 1 km window** (244 tiles) at the forest's density, 8.9 % of the plan past 50 degrees: the ledges
+are 0.82 M triangles and 28 MB near, 19 k and 0.9 MB far; the faces 1.38 M triangles and 45 MB as
+written, 0.21 M and 7.9 MB as far forms. **The forest's 3.40 km²** of faces is 52.7 M triangles and
+1.70 GB as written, 8.1 M and 0.30 GB as far forms.
+
+**What arrives with a tile and what is resident.** Today neither generator hands a mesh with its
+tile: `open` writes every tile's ledge recipe and every face's recipe, `meshes` lists them all, and
+the scene reader builds every one at load, so every row of the table above is resident from the
+start whatever the camera does, and the build is every face solved (about 8 seconds for the 1 km
+window's faces in msvc-debug, five minutes for the forest's, before clustering). The cluster DAG already draws a far
+face as a few clusters, so a far form saves no frame time on its own. **The far form is what makes
+the massif affordable once the faces arrive with their tiles** (R142's contract, `tile_meshes`): a
+face's tile in the first `near_rings` hands the face as written, every other ring its far form, and
+the 1.70 GB becomes the near rings' faces and 0.30 GB. That conversion is not done here (it changes
+the host's room for every scene with cliffs), so `near_rings` is 0 by default: with it set, both
+forms are resident and the far forms cost 18 % more bytes, and `tile` already places the far form
+past the near rings and says so through `representation`. A face's far form keeps its line, its
+tiers, its members and its formation's bands (the solver's coarse rung keeps every feature wider
+than four of its cells) and loses its fallen blocks and its fine joints: the silhouette and the bed
+pattern, the blocks gone.

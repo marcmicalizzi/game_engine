@@ -43,7 +43,9 @@ namespace engine::rocks {
 inline constexpr const char* k_ledges_generator = "ledges";
 // 2: a block is a body (clefts, rims worn all round, undercut feet, crept blocks), G142c.
 // 3: a cleft's flank follows the front's rows and its undercut at the face, G174.
-inline constexpr u32 k_ledge_version = 3;
+// 4: beds at any attitude, G200: a front recesses along its bed edge's own outward normal and
+//    leans by the beds' apparent dip along it; a tread steeper than the soil slope is rock.
+inline constexpr u32 k_ledge_version = 4;
 
 // What a solve made, for a test and a host's summary.
 struct LedgeReport {

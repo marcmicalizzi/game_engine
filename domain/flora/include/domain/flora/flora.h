@@ -67,7 +67,10 @@ namespace engine::flora {
 // 9: species-correct terminal foliage and material-dependent canopy LOD (G87).
 // 10: species maturity, four profiles, sapling taper, and bounded trunk-tip crowns (G88).
 // 11: researched broadleaf blade dimensions, independent of retained leaf allocation (G91).
-inline constexpr u32 k_flora_version = 11;
+// 12: every tree's stem carried on below its collar as a skirt, so no tree on ground of up to 45
+//    degrees shows a gap under its trunk (G201; flora.md, "The trunk's skirt"): every tree's mesh
+//    grows by four triangles a side of its trunk and its box reaches down, so its grid moves.
+inline constexpr u32 k_flora_version = 12;
 // G129: broadleaf/birch shape and baked-LOD invalidation, without rebuilding other architectures.
 inline constexpr u32 k_branch_taper_version = 2;
 
@@ -98,6 +101,8 @@ inline constexpr const char* k_species_shrub = "shrub";
 inline constexpr const char* k_species_fern = "fern";
 inline constexpr const char* k_species_tuft = "tuft";
 inline constexpr const char* k_species_herb = "herb";
+// G167: a meadow's drift of herbs posed as a field (`meadow`, understory.h).
+inline constexpr const char* k_species_meadow = "meadow";
 
 // ---- the flora file and its build (flora.md, "The build")
 // ------------------------------------------

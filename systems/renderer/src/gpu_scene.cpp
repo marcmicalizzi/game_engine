@@ -547,8 +547,6 @@ bool find_built_textures(const SourceMesh& mesh, const SceneTextures& known, boo
   return true;
 }
 
-f64 water_shore_slope(const SceneWaterDepth& map);  // below, with the shore's records
-
 // **A body's swash numbers** (water.md, "The shore"; S94): a closed body's own wind over the
 // smaller of its fetch and its own longest reach (the map's square's diagonal), an open body's the
 // wind its spectrum took; the wind's wave over the fetch, the map's foreshore slope, Stockdon's
@@ -560,6 +558,9 @@ struct WaterSwashNumbers {
   gfx::SwashWave wave{};
   f64 run_up = 0.0;
   f32 tide = 0.0f;
+  // S102: the train's direction over deep water; with a swell, the wind sea's peak wavenumber.
+  Vec2 direction{1.0f, 0.0f};
+  f64 wind_k0 = 0.0;
 };
 WaterSwashNumbers water_swash_numbers(const SceneWater& water) {
   WaterSwashNumbers n;
@@ -569,9 +570,29 @@ WaterSwashNumbers water_swash_numbers(const SceneWater& water) {
   // The fetch the scene's reader found (S100 stage B): an open body's `fetch_km`, a closed body's
   // own reach along its wind.
   n.fetch_m = static_cast<f64>(water.fetch_m);
-  n.slope = water_shore_slope(water.depth);
+  n.slope = gfx::water_mean_shore_slope(
+      water.depth.texels.data(), water.depth.size, static_cast<f64>(water.depth.texel_m),
+      static_cast<f64>(water.depth.depth_max), static_cast<f64>(water.depth.bank_max));
   n.wave = gfx::swash_wave(n.wind, n.fetch_m);
-  n.run_up = gfx::stockdon_r2(n.wave.height_m, n.wave.period_s, n.slope);
+  n.direction = water.shading.direction;
+  // **A swell** (S102; water.md, "The swell") is the train that shoals, turns, breaks and runs up,
+  // from its own direction; the wind's wave keeps the surface offshore.
+  if (body.open && body.swell_height_m > 0.0f && body.swell_period_s > 0.0f) {
+    if (n.wave.period_s > 0.0) {
+      const f64 omega = 6.283185307179586 / gfx::swash_period(n.wave.period_s);
+      n.wind_k0 = omega * omega / gfx::k_swash_g;
+    } else {
+      n.wind_k0 = 1.0;  // no wind sea to calm: any positive number marks the swell
+    }
+    n.wave.height_m = static_cast<f64>(body.swell_height_m);
+    n.wave.period_s = std::min(static_cast<f64>(body.swell_period_s), 30.0);
+    const f32 a = radians(body.swell_direction_deg);
+    n.direction = Vec2{std::cos(a), std::sin(a)};
+  }
+  // Stockdon et al.'s, as it was, under the steep shore's ceiling (S102), which only a long low
+  // wave on a steep shore reaches.
+  n.run_up = std::min(gfx::stockdon_r2(n.wave.height_m, n.wave.period_s, n.slope),
+                      gfx::k_swash_steep_cap * n.wave.height_m);
   n.tide = body.open ? body.tide_m : 0.0f;
   return n;
 }
@@ -623,9 +644,18 @@ void water_surface_of(const SceneWater& water, const WaterSwashNumbers& n, gfx::
   for (u32 i = 0; i < count; ++i)
     depth[i] = static_cast<f32>(static_cast<f64>(map.texels[i]) / 65535.0 * range -
                                 static_cast<f64>(map.bank_max));
+  // S102 (water_swash.h): the train comes from a direction, and the field's fourth channel is each
+  // texel's own stretch of shore's slope, from which a pixel takes its run-up and its sheet's life.
+  out.swell = static_cast<f32>(n.wind_k0);
+  out.reach_scale = static_cast<f32>(gfx::swash_reach_scale(n.wave.height_m, n.wave.period_s));
+  out.reach_cap =
+      static_cast<f32>(gfx::swash_reach_cap(n.wave.height_m, static_cast<f64>(map.bank_max)));
   Vector<f32> arrival(count);
   gfx::water_arrival_field(depth.data(), map.size, static_cast<f64>(map.texel_m), period,
-                           arrival.data());
+                           arrival.data(), 3, n.direction);
+  Vector<f32> shore_slope(count);
+  gfx::water_shore_slope_field(depth.data(), map.size, static_cast<f64>(map.texel_m),
+                               shore_slope.data());
   // The share of the body's fetch the wind has blown over at each texel (a closed body's lee): the
   // fetch field over the fetch the table was grown at. An open body's sea comes in grown.
   Vector<f32> grown(count);
@@ -643,7 +673,7 @@ void water_surface_of(const SceneWater& water, const WaterSwashNumbers& n, gfx::
     field[4 * i] = depth[i];
     field[4 * i + 1] = arrival[i];
     field[4 * i + 2] = grown[i];
-    field[4 * i + 3] = 0.0f;
+    field[4 * i + 3] = shore_slope[i];
   }
 }
 
@@ -6250,44 +6280,6 @@ gfx::GroundDetailParams GpuScene::ground_detail_params() const noexcept {
   return block;
 }
 
-// The foreshore slope of a body's waterline, from its signed depth map (water.md, "The shore"):
-// the mean of the slope across every pair of neighbouring texels whose depths straddle zero, kept
-// to [k_swash_slope_min, k_swash_slope_max]; the default where the map crosses nowhere.
-namespace {
-f64 water_shore_slope(const SceneWaterDepth& map) {
-  if (map.size < 2 || !(map.texel_m > 0.0f)) return gfx::k_swash_slope_default;
-  const f64 range = static_cast<f64>(map.depth_max) + static_cast<f64>(map.bank_max);
-  const auto depth = [&](u32 i, u32 j) {
-    return static_cast<f64>(map.texels[j * map.size + i]) / 65535.0 * range -
-           static_cast<f64>(map.bank_max);
-  };
-  f64 sum = 0.0;
-  u64 count = 0;
-  for (u32 j = 0; j < map.size; ++j) {
-    for (u32 i = 0; i < map.size; ++i) {
-      const f64 d = depth(i, j);
-      if (i + 1 < map.size) {
-        const f64 e = depth(i + 1, j);
-        if ((d > 0.0) != (e > 0.0)) {
-          sum += std::fabs(e - d);
-          ++count;
-        }
-      }
-      if (j + 1 < map.size) {
-        const f64 e = depth(i, j + 1);
-        if ((d > 0.0) != (e > 0.0)) {
-          sum += std::fabs(e - d);
-          ++count;
-        }
-      }
-    }
-  }
-  if (count == 0) return gfx::k_swash_slope_default;
-  return std::clamp(sum / static_cast<f64>(count) / static_cast<f64>(map.texel_m),
-                    gfx::k_swash_slope_min, gfx::k_swash_slope_max);
-}
-}  // namespace
-
 // The shore's records (water.md, "The shore"; roadmap S97, S94): one a water body with a depth map
 // and a `wet_m` or a swash, its instance, its water material, its swash — the wind's wave run up
 // the map's foreshore slope by Stockdon et al., the period rounded onto the water's clock, the
@@ -6342,7 +6334,14 @@ bool GpuScene::upload_water_shores(std::string* error) {
     const f64 run_up = numbers.run_up;
     const f32 tide = numbers.tide;
     if (!(body.wet_m > 0.0f) && !(run_up > 0.0) && !(tide > 0.0f)) continue;
-    const f32 reach = std::max(body.wet_m, static_cast<f32>(run_up) * 1.25f + tide);
+    // A lifted body's run-up is each stretch of shore's own (S102): the record carries the most
+    // any stretch can have, for the bounds and the ground's band; a pixel finds its own.
+    const bool lifted = i < water_surface_of_.size() && water_surface_of_[i] != ~0u;
+    f64 highest = run_up;
+    if (lifted && run_up > 0.0)
+      highest = std::max(run_up, gfx::swash_highest_run_up(wave.height_m, wave.period_s,
+                                                           static_cast<f64>(water.depth.bank_max)));
+    const f32 reach = std::max(body.wet_m, static_cast<f32>(highest) * 1.25f + tide);
     const f32 margin = 25.0f * reach + 1.0f;
     const f32 half = 0.5f * water.depth.texel_m;
     const f32 span = static_cast<f32>(water.depth.size - 1) * water.depth.texel_m;
@@ -6351,7 +6350,7 @@ bool GpuScene::upload_water_shores(std::string* error) {
     shore.wet_m = body.wet_m;
     shore.terrain_mesh = data_->terrain.enabled ? data_->terrain_mesh : 0xffffffffu;
     shore.material = m < mesh_material_base_.size() ? mesh_material_base_[m] : 0xffffffffu;
-    shore.run_up_m = static_cast<f32>(run_up);
+    shore.run_up_m = static_cast<f32>(highest);
     shore.period_s = static_cast<f32>(gfx::swash_period(wave.period_s));
     shore.drain_s = body.drain_s;
     shore.slope = static_cast<f32>(slope);
@@ -6359,7 +6358,7 @@ bool GpuScene::upload_water_shores(std::string* error) {
     shore.height_m = static_cast<f32>(wave.height_m);
     shore.foam_m = body.foam_m;
     shore.shore_m = body.shore_m;
-    if (i < water_surface_of_.size() && water_surface_of_[i] != ~0u)
+    if (lifted)
       shore.surface =
           water_surfaces_.address + u64{water_surface_of_[i]} * sizeof(gfx::WaterSurface);
     ENGINE_LOG_INFO(log_renderer, "water swash", log::field("body", body.name),

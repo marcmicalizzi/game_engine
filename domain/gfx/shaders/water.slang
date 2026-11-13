@@ -213,12 +213,10 @@ float3 water_surface_normal(WaterSurface* s, float2 p, float edge, float time, f
                             float footprint, out float dropped) {
   const WaterField f = water_field_at(s, p);
   const WaterHeight w = water_height(s, p, f, time, footprint, float2(0.0, 0.0));
-  const float fade = (s->flags & k_water_surface_open) != 0 && s->fade_m > 0.0
-                         ? smoothstep(0.0, s->fade_m, edge)
-                         : 1.0;
+  const float fade = water_outline_fade(s, f, edge);
   float share = 0.0;
   if (s->field != 0) {
-    const float band = 0.2 * s->run_up_m + 0.05;
+    const float band = 0.2 * water_place_run_up(s, f) + 0.05;
     share = 1.0 - smoothstep(0.0, band, f.depth + water_surface_tide(s, tide_phase));
   }
   const float k = fade * (1.0 - share);
@@ -679,10 +677,11 @@ static const float k_swash_fringe = 0.5;
 static const float k_swash_raggedness_m = 4.0;
 
 struct WaterSwashPlace {
-  float run_up;
+  float run_up;  // the place's own R (S102: its stretch of shore's slope gives it)
   float period;
   float phase;   // cycles
   float jitter;  // the reach's factor here
+  float slope;   // the foreshore slope of the place's stretch of shore
 };
 
 bool water_swash_on(WaterShore s) { return s.run_up_m > 0.0 && s.period_s > 0.0; }
@@ -698,6 +697,7 @@ WaterSwashPlace water_swash_place(WaterShore s, float2 p) {
   WaterSwashPlace w;
   w.run_up = s.run_up_m;
   w.period = s.period_s;
+  w.slope = s.slope;
   if (s.surface != 0) {
     WaterSurface* surface = (WaterSurface*)s.surface;
     const WaterField f = water_field_at(surface, p);
@@ -706,6 +706,9 @@ WaterSwashPlace water_swash_place(WaterShore s, float2 p) {
     const float group = float(k_swash_group);
     w.phase = -(ca - group * floor(ca / group));
     w.jitter = water_reach_variation(surface, p, true) * water_shelter(f);
+    // The place's own stretch of shore (S102): its slope, and the run-up that slope gives.
+    w.run_up = water_place_run_up(surface, f);
+    w.slope = water_place_slope(surface, f);
     return w;
   }
   const float scale = max(k_swash_raggedness_m, 3.0 * s.run_up_m / max(s.slope, 1e-3));
@@ -720,19 +723,19 @@ float water_swash_reach(WaterSwashPlace w, int wave) {
   return w.run_up * water_swash_group(j) * w.jitter;
 }
 
-// The front's height above the still level at time t, and whether it is running up.
+// The front's height above the still level at time t, and whether it is running up: the highest of
+// the sheets on the beach (S102: a sheet lasts as long as the slope keeps it, and on a gentle
+// beach the next bore arrives over the backwash; `water_swash_front_at`, water_waves.slang).
 float water_swash_front(WaterSwashPlace w, float t, out bool uprush) {
-  const float c = t / w.period + w.phase;
-  const float k = floor(c);
-  const float u = c - k;
-  uprush = u < k_swash_uprush;
-  const float z_lo = -k_swash_rundown * w.run_up;
-  const float a = water_swash_reach(w, int(k));
-  return z_lo + (a - z_lo) * water_swash_shape(u);
+  return water_swash_front_at(w.run_up, w.jitter, w.slope, w.period, t / w.period + w.phase,
+                              uprush);
 }
 
 // Seconds since the front last stood at or above h: 0 under the sheet, `k_swash_never` where no
-// wave of the group reaches (gfx::swash_age, step for step).
+// wave of the group reaches (gfx::swash_age, step for step). With sheets that overlap (S102) a
+// wave's interval over h is [u1, u2] of its own span and the front left h last at the latest end
+// among the waves that have reached it; a wave j back cannot give an age under (j - span_max)
+// periods, which ends the search.
 float water_swash_age(WaterSwashPlace w, float t, float h) {
   const float z_lo = -k_swash_rundown * w.run_up;
   if (h <= z_lo) return 0.0;
@@ -741,19 +744,22 @@ float water_swash_age(WaterSwashPlace w, float t, float h) {
   const int k = int(kf);
   const float u = c - kf;
   const float q = k_swash_uprush;
-  for (uint j = 0; j <= k_swash_group; ++j) {
+  float best = k_swash_never;
+  for (uint j = 0; j < k_swash_group + k_swash_overlap; ++j) {
+    if ((float(j) - k_swash_span_max) * w.period >= best) break;
     const float a = water_swash_reach(w, k - int(j));
     const float ck = (h - z_lo) / (a - z_lo);
     if (!(ck <= 1.0)) continue;
+    const float span = water_swash_span(a, w.run_up, w.slope, w.period);
     const float r = sqrt(max(0.0, 1.0 - ck));
-    const float u1 = (1.0 - r) * q;
-    const float u2 = q + r * (1.0 - q);
+    const float u1 = (1.0 - r) * q * span;
+    const float u2 = (q + r * (1.0 - q)) * span;
     const float now = u + float(j);
-    if (j == 0 && u < u1) continue;
+    if (now < u1) continue;
     if (now <= u2) return 0.0;
-    return (now - u2) * w.period;
+    best = min(best, (now - u2) * w.period);
   }
-  return k_swash_never;
+  return best;
 }
 
 // An open body's tide at the frame's phase of M2, metres above the level.
@@ -861,7 +867,9 @@ float water_bore_foam(WaterSurface* s, float2 p, WaterField f, float d, float t,
   if (!(s->height_m > 0.0) || !(s->period_s > 0.0) || !(d > 0.0)) return 0.0;
   const float shelter = water_shelter(f);
   const float h = s->height_m * shelter;
-  const float strength = water_foam_strength(h, s->period_s, s->slope);
+  // By the slope of the place's own stretch of shore (S102): a wave that surges up a steep rock
+  // whole leaves no foam there while the same train spills on the beach beside it.
+  const float strength = water_foam_strength(h, s->period_s, water_place_slope(s, f));
   if (!(strength > 0.0)) return 0.0;
   const float ratio =
       h * water_shoaling(water_wavenumber(s->k0, d), d) / (k_water_breaking_gamma * d);
@@ -897,7 +905,7 @@ float water_uprush_foam(WaterShore s, WaterSwashPlace w, float2 p, float hh, flo
                         float footprint) {
   if (!water_swash_on(s)) return 0.0;
   const float h = s.height_m * min(w.jitter, 1.0);
-  const float strength = water_foam_strength(h, s.period_s, s.slope);
+  const float strength = water_foam_strength(h, s.period_s, w.slope);
   if (!(strength > 0.0)) return 0.0;
   const float z_lo = -k_swash_rundown * w.run_up;
   const float c = t / w.period + w.phase;
@@ -908,26 +916,30 @@ float water_uprush_foam(WaterShore s, WaterSwashPlace w, float2 p, float hh, flo
   const float amount = water_foam_amount(h);
   const float decay = water_foam_decay(h);
   float foam = 0.0;
-  for (uint back = 0; back < k_water_foam_waves; ++back) {
+  // Every sheet that can still be on the beach, and the waves whose foam has not decayed (S102: a
+  // sheet's phase runs over its own span, so a wave back may still be climbing).
+  for (uint back = 0; back < k_water_foam_waves + k_swash_overlap - 1u; ++back) {
     const int wave = int(kf) - int(back);
     const float a = water_swash_reach(w, wave);
     const float ck = max((hh - z_lo) / (a - z_lo), 0.0);
     if (!(ck <= 1.0)) continue;  // this wave never came this high
+    const float span = water_swash_span(a, w.run_up, w.slope, w.period);
     const float r = sqrt(1.0 - ck);
-    const float u1 = (1.0 - r) * q;
+    const float u1 = (1.0 - r) * q * span;
     const float since = u + float(back) - u1;  // periods since its front arrived here
     if (since < 0.0) continue;
-    if (back == 0 && u < q) {
+    const float v = (u + float(back)) / span;  // the sheet's own phase
+    if (v < q) {
       // The front's line, `x` metres behind it along the slope.
-      const float front = z_lo + (a - z_lo) * water_swash_shape(u);
-      const float x = max(front - hh, 0.0) / max(s.slope, 1e-3);
+      const float front = z_lo + (a - z_lo) * water_swash_shape(v);
+      const float x = max(front - hh, 0.0) / max(w.slope, 1e-3);
       const float thin = clamp(0.5 * h, 0.03, 0.25);
       const float width = max(thin, footprint);
       const float y = x / width;
-      foam = max(foam, sqrt(amount) * exp(-y * y) * (thin / width) * sqrt(1.0 - u / q));
+      foam = max(foam, sqrt(amount) * exp(-y * y) * (thin / width) * sqrt(1.0 - v / q));
     }
     const uint j = uint(wave + int(k_swash_group) * 64) % k_swash_group;
-    const float density = amount * (1.0 - 0.6 * u1 / q) * exp(-since * w.period / decay);
+    const float density = amount * (1.0 - 0.6 * (1.0 - r)) * exp(-since * w.period / decay);
     if (density > 0.02)
       foam = max(foam, water_foam_cover(water_foam_lace(p, cell, j), density, footprint, cell));
   }
@@ -951,6 +963,16 @@ WaterWetGround water_swash_saturation(WaterShore s, float2 p, float h, float t, 
   WaterSwashPlace w = {};
   if (water_swash_on(s)) {
     w = water_swash_place(s, p);
+    // Above every sheet this stretch of shore can send (S102: the record's band is the steepest
+    // stretch's, most ground in it is over its own): the fringe's damp alone, which is what the
+    // age's search would find with no wave reaching — and nothing else is asked.
+    if (hh >= w.run_up * w.jitter) {
+      g.film = 0.0;
+      g.s = s.wet_m > 0.0 && hh >= 0.0 && hh < s.wet_m
+                ? k_swash_fringe * (1.0 - smoothstep(0.0, s.wet_m, hh))
+                : 0.0;
+      return g;
+    }
     front = water_swash_front(w, t, uprush);
     g.s = water_swash_wetness(s, w, t, hh, g.film);
   } else {
@@ -958,8 +980,8 @@ WaterWetGround water_swash_saturation(WaterShore s, float2 p, float h, float t, 
     g.film = hh < 0.0 ? 1.0 : 0.0;
     g.s = hh < 0.0 ? 1.0 : (s.wet_m > 0.0 && hh < s.wet_m ? wet_ground_fringe(hh, s.wet_m) : 0.0);
   }
-  const float x = (front - hh) / max(s.slope, 1e-3);  // metres behind the front, along the slope
-  if (x > 0.0 && water_swash_on(s)) {
+  // (hh under the front: the ground is under the sheet.)
+  if (front > hh && water_swash_on(s)) {
     g.s = 1.0;
     g.film = 1.0;
   }

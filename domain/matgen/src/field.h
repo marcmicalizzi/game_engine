@@ -188,6 +188,51 @@ inline Cell cell_noise(u64 seed, f64 x, f64 y, u32 k) noexcept {
   return out;
 }
 
+// Value noise in [0, 1] at any coordinate, on a lattice that repeats every `kx` nodes along x and
+// `ky` along y: a wood's figure and fibres, which follow a phase rather than a texel.
+inline f64 periodic_noise(u64 seed, f64 x, f64 y, u32 kx, u32 ky) noexcept {
+  const f64 fx = std::floor(x), fy = std::floor(y);
+  const i64 ix = static_cast<i64>(fx), iy = static_cast<i64>(fy);
+  const u32 xa = wrap_node(ix, kx), xb = wrap_node(ix + 1, kx);
+  const u32 ya = wrap_node(iy, ky), yb = wrap_node(iy + 1, ky);
+  const f64 tx = x - fx, ty = y - fy;
+  const f64 sx = tx * tx * (3.0 - 2.0 * tx), sy = ty * ty * (3.0 - 2.0 * ty);
+  const f64 a = mix(unit_of(hash3(seed, xa, ya)), unit_of(hash3(seed, xb, ya)), sx);
+  const f64 b = mix(unit_of(hash3(seed, xa, yb)), unit_of(hash3(seed, xb, yb)), sx);
+  return mix(a, b, sy);
+}
+
+// The cellular lattice with its own period along each axis (a bark's plates, long up the stem).
+inline Cell cell_noise2(u64 seed, u32 vx, u32 vy, u32 n, u32 kx, u32 ky) noexcept {
+  const f64 x = lattice_of(vx, n, kx), y = lattice_of(vy, n, ky);
+  const f64 fx = std::floor(x), fy = std::floor(y);
+  const i64 ix = static_cast<i64>(fx), iy = static_cast<i64>(fy);
+  const f64 tx = x - fx, ty = y - fy;
+  Cell out;
+  f64 best = 1.0e30, second = 1.0e30;
+  for (i64 j = -1; j <= 1; ++j) {
+    for (i64 i = -1; i <= 1; ++i) {
+      const u64 h = hash3(seed, wrap_node(ix + i, kx), wrap_node(iy + j, ky));
+      const f64 dx = (static_cast<f64>(i) + unit_of(h)) - tx;
+      const f64 dy = (static_cast<f64>(j) + unit_of(mix64(h))) - ty;
+      const f64 d = dx * dx + dy * dy;
+      if (d < best) {
+        second = best;
+        best = d;
+        out.id = h;
+      } else if (d < second) {
+        second = d;
+      }
+    }
+  }
+  out.f1 = std::sqrt(best);
+  out.f2 = std::sqrt(second);
+  return out;
+}
+
+// The value below which `share` of a field in [0, 1] lies (to a 4096th).
+f64 quantile(const Vector<f32>& values, f64 share);
+
 // The offset of torus texel `t` from a centre in sub-texels, by the nearest image, in texels: an
 // integer difference, so it is the same number wherever the image starts.
 inline f64 offset_texels(i64 t, i64 centre_sub, i64 n) noexcept {
@@ -226,11 +271,13 @@ struct Fragment {
   f64 lift_max_m = 0;
   bool taper = false;
   f64 midrib = 0;  // how much paler the centre line is
+  f64 rise = 0;    // how much paler its far end is than its base (a leaf rising out of a tuft)
 };
-void lay_fragment(Field& field, const Fragment& f, Vector<f32>* cover);
+// Returns the cover it added to `cover`, summed over the texels (0 when `cover` is null).
+f64 lay_fragment(Field& field, const Fragment& f, Vector<f32>* cover);
 
-// The kinds (granular.cpp, rock.cpp, ground.cpp): each fills `field` and its part of `stats`, and
-// says what depth of hollow counts as full shade (`cavity_m`) and how wide a hollow is
+// The kinds (granular.cpp, rock.cpp, ground.cpp, wood.cpp): each fills `field` and its part of
+// `stats`, and says what depth of hollow counts as full shade (`cavity_m`) and how wide a hollow is
 // (`cavity_px`).
 struct Shade {
   f64 cavity_m = 0.002;
@@ -239,5 +286,6 @@ struct Shade {
 void build_granular(const Set& set, Field& field, SetStats& stats, Shade& shade);
 void build_rock(const Set& set, Field& field, SetStats& stats, Shade& shade);
 void build_ground(const Set& set, Field& field, SetStats& stats, Shade& shade);
+void build_wood(const Set& set, Field& field, SetStats& stats, Shade& shade);
 
 }  // namespace engine::matgen::detail

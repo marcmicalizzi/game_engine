@@ -312,11 +312,11 @@ below); G137's `forbs` (one list of meshes in a fixed `forb_share` of the cells)
 A plant stands within 0.35 of a cell a side of its patch's moved centre (inside the circle the patch
 cleared earlier footprints by), asked of the exclusion at its own point, upright, turned by its own
 stream, its ID the cell's with the top bit set (so an entry with a community is refused past a 31-bit
-cell space). The herb's motion kind is `parts` — every plant is a run of the part-pose table and is
-posed on the CPU each frame — so a tile keeps at most `forb_tile_cap` (256) of lowest hash, and plants
-stand in representation 0 (the near ring) and, as far forms, in representation 1 (below). The v36 measurement
-(grass-sward.md) sets 1,024 and shows the cost: the deformed-vertex pool 0.08–0.18 ms more at 1080p
-with no relayout of the deform table.
+cell space). Since G167 a plant is a drift of the species' herbs posed as a field (`meadow`, below:
+"The meadow at whole density"), so no plant runs the pose table and `forb_tile_cap` (4,096 drifts)
+is a budget lever; plants stand in representation 0 (the near ring) and, as far forms, in
+representation 1 (below). Until G167 the herb's motion kind was `parts`, and the v36 measurement
+(grass-sward.md) of 1,024 such plants cost the deformed-vertex pool 0.08–0.18 ms more at 1080p.
 **Capability contract.** Flora remains optional. It adds only a dependency on the nonoptional
 `scene_gen` registry and `Ground::masks`; no renderer pass depends on flora. Ground forwarding
 exposes existing W72 data. Baking uses the flora baker and geometry's authored-level DAG/form
@@ -337,11 +337,9 @@ slope-conforming patches; tussock spacing and base height from a field measureme
 the band where the shade layer draws the boundary, and where the noise's weight is exactly 0
 (`sward_site_form` would take the score's gradient itself), and a band width from a measured
 tall-to-short boundary rather than the height mosaic's scale;
-a `field`-kind meadow plant (or a static far form), so plants need no pose-table run and a tile can
-hold the community's whole density instead of `forb_tile_cap`'s 256 plants (6 % of a 64 m tile's
-cells: a flowering meadow at 50 m still reads sparse beside r01), and a merged far mesh a tile in place
-of far forms as instances (a request: the herb's solver and the field pass are not this module's
-sward); the
+a merged far mesh a tile in place of far forms as instances (the `field`-kind meadow plant that
+lifted the 256-plant cap is G167's, below); more than one drift a cell, so the species' covers sum
+past one as a meadow's do; the
 species' leaf and flower sets (roles: a buttercup's and a marigold's yellow cup, a clover's magenta
 head, a cranesbill's violet saucer, a daisy's white ray, an umbel's white, a sedge's and a rush's
 leaf, a bilberry's leaf), grazing and soil as niche axes, per-species tolerances fitted to plot data,
@@ -419,7 +417,61 @@ triangles each (at most 127,000 a tile, 31 a square metre at the cap), and far f
 at most 256 plants in the next (82 instances on the capped test tile, at most 510 triangles each:
 at most 42,000 a tile), none past it. Resident: the entry's community list (a pointer, a far mesh
 index and a thinning a species) and nothing per tile; the stand-in recipes are files in the
-derived-data root, a few hundred bytes each.
+derived-data root, a few hundred bytes each. *(G140's budget; G167, below, replaced the plant a
+cell with a drift and lifted the cap.)*
+
+### The meadow at whole density (G167)
+
+**The first pictures had not one flower head in any view** (roadmap G166): the community stood at
+256 plants a 64 m tile, 6 % of its cells, because every plant was a herb, whose motion kind is
+`parts` — a run of the frame's pose table, posed on the CPU each frame. G167 gives the meadow a kind
+of its own and reads a cover as what it is, the share of the ground the species' crowns cover
+([grounding](../experiments/meadow-community.md#the-meadow-at-whole-density-g167)).
+
+- **The kind** (`geometry::FloraSpecies::meadow`, motion `field`, the sedge's compliance 0.12, cast
+  like the sward's: never traced, the nearest cascade at rest). A recipe of species `meadow` is a
+  `MeadowPlant`: `count` plants (1..32) of one `herb` recipe on a disc of `radius_m`, each grown from
+  its own seed and at its own height (`height_jitter`, 0.2), turned about its stem, its base on
+  Vogel's spiral (even density, no two bases met) with a quarter-spacing jitter; the stem a tube of
+  `stem_sides` × `stem_rows` (3 × 3, the coarsest that reads from a metre: a herb's own is 6 × 10).
+  **Every plant is one parentless part**, its pivot its base, its length its height, every vertex
+  weighted by its height over the plant's, so the field pass bends the whole plant about its base
+  and a head stays on its stem ([renderer](renderer.md#the-field-kind)); no part collides and no
+  structural table is written. The primitives are the herb's, every plant's of one material
+  together, so a drift is two or three materials. `solve_meadow_plant` (`understory.h`) builds it,
+  keyed by `k_ground_plants_version` and `k_meadow_plant_version` (2); its roles are a herb's
+  (`herb/leaf`, `herb/flower`). Its leaves take a live leaf's measured albedo, the sward blade's
+  (`k_sward_leaf_albedo`), not the herb's chosen green, 2.7 times as bright, which drew the first
+  drifts as pale fans beside the grass.
+- **A cover becomes a count.** A species' plant has a crown of radius `crown_m` (the table's,
+  chosen; 6 to 20 cm), so its plants stand `1 / (π crown²)` a square metre where it grows. A cell the
+  species holds is a **drift** of `meadow_drift_count` plants, `round(cell² / (π crown²))` held to
+  1..`k_meadow_drift_max` (8), on a disc of `crown · sqrt(count)`, and the cell draws it with
+  probability `cover · cell² / (count · π crown²)` (`meadow_drift_scale`, `meadow_drift_odds`, in
+  1/65536, the sum scaled down in integers past one): so the species still covers its cover's share
+  of the ground, at its own crown's density there. **The trade:** a cell holds one drift, so where
+  the odds sum past one (most of a mesic meadow) every cell holds a drift and the species keep their
+  proportions but not their whole covers; and the count is held to 8 a drift for the triangles.
+- **In flower where the season has them.** Each forb carries its flowering months (`bloom_from`,
+  `bloom_to`, the British flora's, read on the grounding page), and `MeadowRule::day_of_year`
+  (default 182, the first of July; a scene with a sky names its own) says which: a forb out of bloom
+  (`meadow_in_bloom`) stands as its leafy shoot with no heads, and has no far form. A near drift's
+  heads keep at most `k_meadow_drift_petals` (8) cards a head with the coloured area kept
+  (`head_of_area`: longer cards, and past the herb's 8 cm more of them).
+- **The far form** (representation 1) is a field too: one far herb (`meadow_far_drift`) standing
+  for `meadow_far_thin` cells' drifts, its heads carrying the coloured area of all their plants.
+- **The cap** (`forb_tile_cap`, now counting drifts) defaults to 4,096, every cell of a 64 m tile of
+  1 m cells: a budget lever, no longer the pose table's limit.
+
+*Budget and cost.* The measured triangles a drift, instances and triangles a tile, and the frame's
+GPU time along the community scene's camera path before and after, with the machine's state, are on
+the grounding page ("The meadow at whole density"). Resident: one more `u32` a species (the drift's
+odds factor); nothing per tile.
+
+*Determinism.* The odds are integers from the covers (`det::exp`) and a factor computed once at
+`open` from the table; the drift's places are splitmix64 streams and the deterministic sines; no
+C library call decides a plant. The pins of `meadow: the covers and a tile's community are the same
+bits on every toolchain` moved with this row (the draw is the drift's odds now) and were re-taken.
 
 ### The ground under the sward (G141)
 
@@ -692,7 +744,8 @@ grown rather than lathed. The apex is closed by a low dome, hidden inside the yo
 bases. One UV island **in metres**: *u* once round at the mean radius with one seam column, *v* the
 arc up the trunk, so a tiled bark set repeats every `tile_m` both ways and is not stretched; the
 dome is a disc of its own at its own size, a hand's width below the wall's island
-([materials](#materials)).
+([materials](#materials)). Under the foot ring the wall goes on below the ground as the
+[skirt](#the-trunks-skirt) every tree has (G201), so a palm on a slope shows no gap under its trunk.
 
 ### The crown: one spiral by age
 
@@ -1025,6 +1078,17 @@ any budget under about 1.15 million triangles, and a merge-1 card is 1.22 m; on 
 under about 38,000, a 1.04 m card. A merged card drawn opaque is a parallelogram again; alpha-masked
 cluster textures (R65) baked from the solver's own finest geometry (R89) are what make it read as
 foliage ([tree allometry](../experiments/tree-allometry.md#what-the-aaa-pipelines-do-with-a-million-leaves)).
+
+**What the renderer reads of a crown's leaves** (R69 stage 7; [renderer](renderer.md#stage-7-a-crowns-shade-as-a-prior),
+[the grounding](../experiments/crown-shade-grounding.md)). At load the renderer gathers a tree
+mesh's finest alpha-tested cards into a grid of leaf area density and keeps each cell's mean
+transmitted fraction of diffuse light, Beer-Lambert through the tree's own leaves, as the prior
+its indirect light is read through. It takes a card's leaf as 0.7 of its triangles (`leaf_width`
+on the default broadleaf) and G = 0.5 for every species; counted that way the oak holds 0.46 m²
+of leaf a cubic metre of its leafy cells, the tall spruce 1.47 and the young spruce 4.0. A
+species whose `leaf_width` or leaf angles are far from those has its shade off by that much: the
+solver handing over each mesh's leaf area and angle is the mend, and is not built. A crown whose
+leaves are not alpha-tested (the date palm's fronds) has no prior.
 
 ### The impostor chain
 
@@ -2383,6 +2447,60 @@ threshold that knows a strip's width — not more tuning of the solver.
   and the emitter that `kit.h` now holds for the branching species; moving it over is mechanical
   and must leave its pinned bytes alone.
 
+## The trunk's skirt
+
+**Every tree mesh the solver makes carries its stem on below its collar** (roadmap G201, stage 1 of
+[a tree's base on sloping ground](../experiments/tree-base-on-slopes.md#1-seating)). A tree stands
+on the ground at its origin and its stem's bottom ring is level, 1 to 7 cm above the origin, so on
+a slope of angle *a* the downhill rim of radius *r* stood *r* tan *a* above the ground: 8,880 of the
+forest proof of concept's 74,503 trees showed a gap over 3 cm under one side, the owner's walk of
+2026-11-12. The skirt closes it for every tree, at any yaw, on ground of up to 45 degrees, with
+nothing per instance: one ring straight below the stem's bottom ring at *rho* tan 45° + 0.15 m
+under the origin, *rho* the bottom ring's farthest point from the origin across the level plane:
+*r* + 0.15 m for a stem on the axis, deeper by its offset for a clump's stem or a leaning foot.
+Straight, not flared on: the tube's flare is a smoothstep and meets its bottom ring with no slope,
+and a first skirt that grew outward by a tenth below it made a crease the traced shadows drew as a
+dark line round every trunk at 2 m. Open at the bottom (always under the ground: a cap would cost
+triangles nobody sees), **two triangles a side**.
+
+**It is the stem's own surface.** The skirt's vertices are appended after the tube they continue,
+in the same part with bend weight zero, the same bark primitive and material, the collar ring's
+normals, *u* the column's own and *v* the trunk's metres carried on below zero, so a tiled bark set
+and the shading run across the collar with no band. `detail::build_skirt`
+(`src/kit.cpp`, under every branching species' stem, `Emitter::skirt`) and the palm's own trunk
+(`src/palm.cpp`, its emitter being its own) make it from the same numbers (`src/skirt.h`), and every
+plan counts it (`skirt_triangles`) before it builds, so no tree goes over its budget for it.
+
+| Trunk kind | What it does | Skirt (at the default) |
+|---|---|---|
+| The date palm | its trunk wall's foot ring, square to the leaning spine, carried straight down to one depth, so its columns differ in length | 16 sides, 32 triangles, to -0.38 m |
+| The broadleaf and its profiles (maple, oak, elm, walnut, beech, ash, aspen, alder) | the trunk, the first named stem | 12 sides, 24 triangles; -0.63 m on the default, -0.23 to -0.49 m on the 10 m profiles |
+| The conifer and the evergreens (pine, spruce, cedar, fir, hemlock, juniper) | the trunk, part 0 | 10 sides, 20 triangles; -0.56 m on the default, -0.29 to -0.51 m on the 10 m profiles |
+| The birch | every stem of a clump, each from its own foot | 10 sides, 20 a stem (a three-stem clump on its rung, 8 sides: 48), -0.32 to -0.43 m |
+| The willow, the orchard tree | the trunk | 10 and 12 sides, 20 and 24 triangles, -0.83 and -0.35 m |
+| The ancient tree (megaflora) | under the buttressed foot ring, after the trunk's own normals: the `k_sink_m` metre its foot stood in was not a 45 degree slope under an 11 m buttress | 59 sides, 118 triangles, to -11.2 m |
+| Not given one | the shrubs (many stems from the ground, under a metre), the juvenile trees of regeneration (a stem of a centimetre or two), the herbs, ferns, tufts and the sward | none |
+
+**In every form a tree is drawn in.** The skirt is clusters of the trunk's own in the LOD DAG, and
+no cut drops it before the tree is gone: the simplifier cannot lift its bottom ring without an error
+of the skirt's whole depth, so every cut from the finest to the coarsest, and every distance form
+from 5 m to 1 km, reaches the same bottom to a centimetre (`tests/skirt_tests.cpp`). The impostor
+chain's star stands on the box of the mesh it bakes, which now reaches the skirt's bottom, so its
+planes and its baked picture carry the stem down too. A deformed (swaying) tree's skirt is at bend
+weight zero and does not move.
+
+**What it costs.** 20 to 32 triangles a mesh (118 on the ancient tree), *sides* + 1 vertices,
+in every rung and every distance form, and nothing per instance; no schema, no placement path's
+change. The mesh's box reaches down by the skirt's depth, so its 16-bit grid is coarser by the
+depth over the tree's height: 2 to 5 % on the 10 m profiles, 3 % on a 22 m spruce. On the tree-bases scene ([`content/test-scenes/tree-bases/`](../../content/test-scenes/tree-bases/README.md),
+the tall spruce on ramps of 0, 15, 30 and 45 degrees at eight yaws) the GPU case in
+`systems/renderer`'s `flora_scene_tests.cpp` reads the ids across the slope and finds nothing but
+the tree and its ramp under any trunk. **The mesh less its skirt is the mesh it was**: every
+pinned tree is held to its version-11 hash with the skirt stripped (`tests/skirt_support.h`), so
+the skirt is the only thing version 12 moved. What it does not do, later stages do:
+seating by footprint where the ground falls away under the rim faster than a plane (a tread's cut,
+a bank), the conformed foot, the laterals.
+
 ## Determinism
 
 The same parameters give the same bytes on every toolchain and at either CPU baseline: the solver
@@ -2396,7 +2514,11 @@ container caught it (2026-10-18). The default palm's mesh, the broadleaf's and t
 and motion contract) are pinned by hash in `tests/flora_tests.cpp`, and the birch's, the willow's,
 the orchard tree's (with and without fruit) and the ancient tree's (mesh, motion contract and
 structural table) in `tests/species_tests.cpp`; a change that moves one bumps
-`flora::k_flora_version` and the number in the same commit. The second batch was added without
+`flora::k_flora_version` and the number in the same commit. **The trunk's skirt (G201) moved every
+tree's pin and `k_flora_version` (12)** and nothing else: each pin keeps its version-11 number
+beside the new one, which the tree with its skirt stripped must still hash to, so the skirt is
+shown to be the only change; the palm's containers, the trees' container rows in engine-content's
+`determinism_tests.cpp` and the bakes the star's box moves were re-taken with it. The second batch was added without
 moving the first three's pins: its helpers are appended to the kit and change none of the old
 ones' output, and its species are new members of the flora file that the canonical form of a palm,
 an oak or a spruce does not carry. **The impostor chain (R89)** moved neither the solver's pins nor `k_flora_version`: its cards are appended after the mesh the plain solve makes, and its two fields (`card_bake_px`, `impostor_px`, `@version(3)`) change the broadleaf's and the ancient tree's canonical parameters and so their keys; its atlases are pinned by hash in `tests/impostor_tests.cpp`, and both trees' whole containers, chain included, by engine-content's `determinism_tests.cpp`, whose rows GCC and Clang reproduce. **The conifers' chain (G120)** moved no solver pin and not `k_flora_version` either: its cards are appended past the plain solve's mesh, `Conifer`'s two fields (`@version(3)`) move the bare conifer's canonical parameters and `k_conifer_chain_version` the evergreen profiles' keys, the test spruce's coverage-kept atlases are pinned by hash in `tests/impostor_tests.cpp` (the mask is integers from the texel's place, the fit the coverage bake's own numbers) and a pine's whole container by engine-content's `determinism_tests.cpp`. **The conifer's shoots (G80) moved the conifer's pin and not
@@ -2713,6 +2835,7 @@ constrained sites. **Omit the root placement in that case.** The container cooke
 rejects empty roots with that instruction, rather than manufacturing an invisible
 triangle. Grass masking, automatic roots for every Forest placement and runtime
 terrain edits are consumer integration, not implicit side effects of a tree recipe.
+What replaces that (a skirt under every trunk, a foot conformed to the slope, roots shared by a mesh's instances) is designed and not built: [a tree's base on sloping ground](../experiments/tree-base-on-slopes.md) (G201).
 
 Minimal flat-site companion recipe:
 ```json

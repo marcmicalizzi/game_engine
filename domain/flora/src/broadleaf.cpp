@@ -166,7 +166,7 @@ struct Plan {
 };
 
 u32 count_triangles(const Broadleaf&, const Crown& crown, const Plan& plan) {
-  return tube_triangles(plan.rows[0], plan.sides[0]) +
+  return tube_triangles(plan.rows[0], plan.sides[0]) + skirt_triangles(plan.sides[0]) +
          (crown.first_recursion - 1) * tube_triangles(plan.rows[1], plan.sides[1]) +
          crown_triangles(crown, plan.crown);
 }
@@ -377,9 +377,11 @@ bool detail::solve_broadleaf_rules(const Broadleaf& p, const GrowthRules& rules,
                              i == 0 ? geometry::k_motion_no_parent : crown.nodes[0].part);
     named_first.push_back(out.positions.size());
     crown_seat(crown, i, emit);
+    emit.skirt = i == 0;  // the trunk stands on the ground (G201)
     build_tube(i == 0 ? crown_sample_stem(crown, i, plan.rows[order])
                       : crown_sample_branch(crown, i, plan.rows[order], emit.seat_length),
                n.r0, n.r1, plan.sides[order], {}, emit, (n.flags & k_crown_stem_relay) != 0u);
+    emit.skirt = false;
   }
   emit.seated = false;
   emit.seat_length = 0;

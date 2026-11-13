@@ -13,6 +13,7 @@
 #include <domain/scene_gen/scene_gen.h>
 #include <systems/renderer/scene.h>
 #include <systems/scene_collision/scene_collision.h>
+#include <systems/world/placement_tiles.h>
 #include <systems/world/world.h>
 
 #include <doctest/doctest.h>
@@ -23,6 +24,8 @@
 #include <cmath>
 #include <string>
 #include <thread>
+#include <utility>
+#include <vector>
 
 using namespace engine;
 using namespace engine::scene_collision;
@@ -1811,4 +1814,176 @@ TEST_CASE("scene_collision: a tile activated with its build pending waits for th
   REQUIRE(
       periodic_heights(nullptr, 0.0, 1000, 0, 4016, -2000, 1, 1, 0, 1, std::span<f32>(expect, 1)));
   CHECK(h == expect[0]);
+}
+
+namespace {
+
+// Two placement generators of the test's own, for what an entry is handed of the entries before it
+// (T114; docs: "The entries before this one"). `collision_test_tread` occupies a tread — a band
+// along z = 16 m from x = -40 to 72 m, 1.5 m either side of its line, handed as a shape on every
+// tile it reaches, as `domain/routes` hands its treads — and stands one post at (8, 8) m. Then
+// `collision_test_probe` stands a post on every point of a 2 m lattice of the world's that neither
+// the exclusion nor an earlier footprint covers: the question the sward, the scatter and the litter
+// each ask of a candidate (`Context::excluded_mm`, `Context::earlier`).
+constexpr i64 k_tread_z_mm = 16000;
+constexpr i64 k_tread_half_mm = 1500;
+bool tread_tile(void*, scene_gen::TileCoord tile, const scene_gen::Context& context,
+                scene_gen::Placements& out, std::string*) {
+  const i64 size = scene_gen::nearest_mm(static_cast<f64>(context.tile_size));
+  const i64 z0 = tile.z * size;
+  if (k_tread_z_mm + k_tread_half_mm >= z0 && k_tread_z_mm - k_tread_half_mm <= z0 + size)
+    out.shapes.add(
+        scene_gen::Footprint::band(-40000, k_tread_z_mm, 72000, k_tread_z_mm, k_tread_half_mm));
+  if (tile.x == 0 && tile.z == 0) {
+    scene_gen::Placement p;
+    p.mesh = 0;
+    p.position = WorldPos{8.0, 0.0, 8.0};
+    out.instances.push_back(p);
+  }
+  out.things = out.instances.size();
+  return true;
+}
+constexpr scene_gen::PlacementGeneratorDesc k_tread{.name = "collision_test_tread",
+                                                    .open = &posts_open,
+                                                    .close = &posts_close,
+                                                    .expand = &posts_expand,
+                                                    .meshes = &posts_meshes,
+                                                    .tile = &tread_tile};
+const scene_gen::Registrar k_tread_registrar{k_tread};
+
+u32 g_probe_earlier = 0;  // the footprints the probe was last handed in `earlier`
+bool probe_tile(void*, scene_gen::TileCoord tile, const scene_gen::Context& context,
+                scene_gen::Placements& out, std::string*) {
+  g_probe_earlier = static_cast<u32>(context.earlier.size());
+  const i64 size = scene_gen::nearest_mm(static_cast<f64>(context.tile_size));
+  for (i64 z = tile.z * size; z < (tile.z + 1) * size; z += 2000)
+    for (i64 x = tile.x * size; x < (tile.x + 1) * size; x += 2000) {
+      if (context.excluded_mm(x, z)) continue;
+      bool covered = false;
+      for (const scene_gen::Footprint& f : context.earlier)
+        covered = covered || f.covers_mm(x, z);
+      if (covered) continue;
+      scene_gen::Placement p;
+      p.mesh = 0;
+      p.position = WorldPos{static_cast<f64>(x) / 1000.0, 0.0, static_cast<f64>(z) / 1000.0};
+      out.instances.push_back(p);
+    }
+  out.things = out.instances.size();
+  return true;
+}
+constexpr scene_gen::PlacementGeneratorDesc k_probe{.name = "collision_test_probe",
+                                                    .open = &posts_open,
+                                                    .close = &posts_close,
+                                                    .expand = &posts_expand,
+                                                    .meshes = &posts_meshes,
+                                                    .tile = &probe_tile};
+const scene_gen::Registrar k_probe_registrar{k_probe};
+
+}  // namespace
+
+// **The collision's tile is the drawn tile** (T114): each streamed entry is handed the entries
+// before it on the tile — their placements' discs and their shapes in `Context::earlier`, their
+// shapes in the tile's exclusion — as `world::PlacementTiles::build` hands them, so a later entry
+// that keeps off a tread on the drawn tile makes no body on it here. Before, `context_for` handed
+// no `earlier` and `gather_placements` no shape: the probe's posts stood on the band and on the
+// tread's post here, and the walker below was stopped by the first of them at x 1.38 (measured
+// against the base's gather, 2026-11-11).
+TEST_CASE("scene_collision: a later entry keeps off a tread's band as on the drawn tile") {
+  const MeshSource meshes[] = {box_mesh(Vec3{0.3f, 0.75f, 0.3f})};
+  renderer::SceneData scene;
+  build_scene(meshes, {}, scene);
+  for (const char* generator : {"collision_test_tread", "collision_test_probe"}) {
+    renderer::StreamedPlacements entry;
+    entry.generator = generator;
+    entry.params = JsonValue::object();
+    entry.where = std::string("test.json: ") + generator;
+    entry.meshes.push_back(0);
+    scene.streamed.push_back(entry);
+  }
+  scene.world.enabled = true;
+  scene.world.tile_size = 32.0f;
+  scene.dynamic = true;
+
+  // The drawn tile (0, 0): the world's placements consumer, as a host builds it.
+  world::PlacementTiles drawn;
+  world::PlacementTilesConfig drawn_config;
+  drawn_config.tile_size = 32.0f;
+  drawn_config.ring_count = 1;
+  std::string error;
+  REQUIRE_MESSAGE(drawn.create(scene, drawn_config, &error), error);
+  const world::TileConsumer drawn_consumer = drawn.consumer();
+  world::TileEvent event;
+  event.tile = {0, 0};
+  event.to = 0;
+  REQUIRE(drawn_consumer.activate(drawn_consumer.context, event));
+  drawn_consumer.commit(drawn_consumer.context);
+  CHECK(g_probe_earlier == 2);  // the tread's post, then its band
+  using Point = std::pair<i64, i64>;
+  std::vector<Point> drawn_probes;
+  for (const renderer::SceneInstance& instance : drawn.tile_instances(event.tile))
+    drawn_probes.push_back(
+        {scene_gen::nearest_mm(instance.origin.x), scene_gen::nearest_mm(instance.origin.z)});
+  // The tread's post, then 16 x 16 probes less the band's row and the post's point.
+  REQUIRE(drawn_probes.size() == 1u + 16u * 16u - 16u - 1u);
+  drawn_probes.erase(drawn_probes.begin());
+  std::sort(drawn_probes.begin(), drawn_probes.end());
+
+  // The collision of the same tile: the same probes, piece for piece.
+  physics::World physics;
+  REQUIRE(physics.init(physics_options()) == physics::Status::Ok);
+  physics::ShapeId floor_shape;
+  REQUIRE(physics.create_box(Vec3{100.0f, 0.5f, 100.0f}, floor_shape) == physics::Status::Ok);
+  physics::BodyDesc floor;
+  floor.shape = floor_shape;
+  floor.transform.position = place(Vec3{0.0f, -0.5f, 0.0f});
+  floor.motion = physics::MotionType::Static;
+  floor.layer = physics::Layer::Static;
+  physics::BodyId floor_body;
+  REQUIRE(physics.create_body(floor, floor_body) == physics::Status::Ok);
+  Config config;
+  config.keep_shapes = true;
+  SceneCollision collision;
+  REQUIRE_MESSAGE(collision.create(physics, scene, nullptr, config, &error), error);
+  world::World world(ring());
+  world.add_consumer(collision.consumer());
+  world.update(at(16.0f, 16.0f), 0, true);
+  std::vector<Point> held_probes;
+  for (u32 t = 0; t < collision.held_tiles(); ++t) {
+    HeldTile tile;
+    REQUIRE(collision.held_tile(t, tile));
+    if (tile.coord.x != 0 || tile.coord.z != 0) continue;
+    for (u32 k = 0; k < tile.pieces; ++k) {
+      HeldPiece piece;
+      REQUIRE(collision.held_piece(t, k, piece));
+      if (piece.entry != 1) continue;
+      held_probes.push_back(
+          {scene_gen::nearest_mm(tile.corner.x + static_cast<f64>(piece.offset.x)),
+           scene_gen::nearest_mm(tile.corner.z + static_cast<f64>(piece.offset.z))});
+    }
+  }
+  std::sort(held_probes.begin(), held_probes.end());
+  CHECK(held_probes == drawn_probes);
+  // Straight down on the band's line meets the floor, beside it a probe's top.
+  for (const f32 x : {4.0f, 30.0f}) {
+    f32 floor_top = 1.0f;
+    REQUIRE(hit_below(physics, x, 16.0f, floor_top));
+    CHECK(std::fabs(floor_top) < 1.0e-3f);
+  }
+  f32 top = 0.0f;
+  REQUIRE(hit_below(physics, 4.0f, 14.0f, top));
+  CHECK(top == doctest::Approx(1.5f).epsilon(1.0e-3));
+
+  // A walker going east along the tread's line meets nothing on it.
+  physics::CharacterBody walker;
+  physics::CharacterConfig c;
+  c.step_hz = 240;
+  REQUIRE(walker.create(physics, c, place(Vec3{1.0f, 0.02f, 16.0f})) == physics::Status::Ok);
+  physics::CharacterInput east;
+  east.move = Vec3{1.0f, 0.0f, 0.0f};
+  for (u32 k = 0; k < 10 * 240; ++k)
+    REQUIRE(walker.step(east) == physics::Status::Ok);
+  const Vec3 stood = local_of(walker.state().position);
+  MESSAGE("walked east along the tread from x 1: stood at x " << stood.x << ", z " << stood.z);
+  CHECK(stood.x > 1.0f + 10.0f * c.walk_speed - 0.5f);
+  CHECK(std::fabs(stood.z - 16.0f) < 0.05f);
 }

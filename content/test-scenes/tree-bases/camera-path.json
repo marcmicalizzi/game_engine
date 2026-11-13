@@ -1,0 +1,14 @@
+{
+  "format": "engine.camera-path.v1",
+  "name": "tree-bases",
+  "description": "Twenty seconds over the four ramps: the 30 degree ramp's spruce at yaw 180 from 2 m (view-30-2m.json's view), the same ramp's trees from 10 m down-slope, every ramp from 50 m down-slope, and the 45 degree ramp across the slope at 10 m.",
+  "interpolation": "Smooth",
+  "fps": 60,
+  "znear": 0.05,
+  "keys": [
+    { "time": 0.0, "position": [16.732051, -1.709401, 4.0], "ground": false, "target": [15.0, -1.45, 3.0], "target_ground": false },
+    { "time": 6.0, "position": [15.0, -6.7, 13.0], "ground": false, "target": [15.0, -1.0, 0.0], "target_ground": false },
+    { "time": 12.0, "position": [0.0, -20.0, 53.0], "ground": false, "target": [0.0, -3.0, 3.0], "target_ground": false },
+    { "time": 20.0, "position": [55.0, -2.5, 3.0], "ground": false, "target": [45.0, -2.5, 3.0], "target_ground": false }
+  ]
+}

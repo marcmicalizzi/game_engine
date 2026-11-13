@@ -77,6 +77,43 @@ inline constexpr f32 k_gi_ratio_max = 15.99f;
 // The running mean's history: a cell's average weighs this many samples at most, so a change in
 // the scene or the sky reaches it within a few frames of samples.
 inline constexpr u32 k_gi_max_samples = 256;
+// ... or this many frames of samples, whichever is longer (stage 5). A coarse level of the ladder
+// takes hundreds of samples a frame, and a history of 256 samples was then under one frame: the
+// cell kept none of its past, and its mean, quiet as it was, was a fresh draw every frame —
+// flicker at sixty a second in whatever read it (a filling surface, a crown whose leaf-sized own
+// cells never fill, a bounce's hit). Sixteen frames is a little under what an own cell's 256
+// samples are at the trickle's eleven a frame, so no level remembers less time than the finest.
+inline constexpr u32 k_gi_history_frames = 16;
+// **A foliage cell remembers four times as long** (stage 8; renderer.md, "Indirect light", "Stage
+// 8"). A face's cell is read by the pixels of its own patch and its neighbours' means move
+// independently, so its sixteen frames show as grain. A crown's cell has no face and is read two
+// levels up: every pixel of a far crown reads the same few cells, and each frame's step of their
+// means moved the whole crown together — flicker, 0.136 of an 8-bit step a frame over far crowns
+// against main's 0.076. What such a cell holds is the light outside the crown's own shade, which
+// follows the sun and the sky through the harmonics its ratio multiplies (the same frame) and the
+// bounce off what stands round the tree (minutes): nothing a second's memory hides.
+inline constexpr u32 k_gi_crown_history_frames = 64;
+// The fold has a cell's words and not its key's tag, so a foliage sample sets its cell's stamp's
+// top bit (the cache's frame count is far under it: a year at sixty a second is 2^31).
+inline constexpr u32 k_gi_stamp_crown = 0x80000000u;
+// The fold's history for a cell that averaged `previous` samples and takes `n` this frame (the
+// shader's rule): the new count, and `n` over it the rate the frame's mean enters at. `frames` is
+// the cell's memory: `k_gi_history_frames`, or a foliage cell's `k_gi_crown_history_frames`.
+constexpr u32 gi_history(u32 previous, u32 n, u32 frames = k_gi_history_frames) noexcept {
+  const u32 held = n * frames < 0xffffu ? n * frames : 0xffffu;
+  const u32 cap = k_gi_max_samples > held ? k_gi_max_samples : held;
+  return previous + n < cap ? previous + n : cap;
+}
+// The rate the frame's mean enters at (the shader's rule): `n` over the new count — or, for a
+// cell whose count has filled its sixteen bits, over the whole history it stands for. A cell that
+// takes over 4,095 a frame (a crown's coarse cell, whose samples count in sixteenths: stage 7)
+// fills the field in under sixteen frames, and by the count alone would then remember only what
+// fits; a full field is read as the sixteen frames it is the cap of.
+constexpr f32 gi_history_rate(u32 previous, u32 n, u32 frames = k_gi_history_frames) noexcept {
+  const u32 full = k_gi_max_samples > n * frames ? k_gi_max_samples : n * frames;
+  return static_cast<f32>(n) /
+         static_cast<f32>(previous >= 0xffffu ? full : gi_history(previous, n, frames));
+}
 // Frames without a sample after which the fold frees a cell.
 inline constexpr u32 k_gi_max_age = 240;
 inline constexpr u32 k_gi_workgroup = 64;
@@ -84,20 +121,42 @@ inline constexpr u32 k_gi_workgroup = 64;
 // more than 65,535): thread `id.y * k_gi_dispatch_pitch * k_gi_workgroup + id.x`.
 inline constexpr u32 k_gi_dispatch_pitch = 32768;
 
-// **Stage 2's rules** (renderer.md, "Indirect light: the world-space cache", "Stage 2").
-// A cell's own mean is read whole once it averages this many samples; below it the read blends
-// it with the next coarser level's by `samples / k_gi_confident` (the young cell reads its parent).
-inline constexpr u32 k_gi_confident = 32;
+// **Stage 2's rules** (renderer.md, "Indirect light: the world-space cache", "Stage 2"), as stage 5
+// left them.
+// A cell's own mean is read whole once it averages this many samples; below it the read takes it
+// by `samples / k_gi_confident` and the rest from the coarser levels (the walk up the ladder,
+// below). 255 since stage 5 (it was 32), the history's own length as the flags' byte holds it: a
+// cell read whole at n samples shows the noise of a mean of n, a sample's spread over the square
+// root of n, and the eye took a 32-sample mean arriving for the light filling in. At 255 a filling
+// cell never shows more than sqrt(511 / 255) = 1.42 times the noise the converged average keeps
+// (`k_gi_max_samples`, an exponential average of 256: a spread over the square root of 511), and
+// one more sample moves its share of the read by 1/255, which is what one more sample moves a
+// converged cell's mean by: frame to frame, a cell that is filling changes as one that has filled.
+inline constexpr u32 k_gi_confident = 255;
 // A cell under this many samples is young: the sample pass's second candidate pixel takes a ray
-// only where its cell is young, and the fill is measured as the share of pixels whose cell is.
+// only where its cell is young.
 inline constexpr u32 k_gi_young = 8;
 // Frames a cell must have gone without a sample before the fold frees it for a full bucket.
 inline constexpr u32 k_gi_evict_age = 16;
-// The levels a pixel's sample is added to (its own and the coarser ones), and the levels a
-// bounce's hit reads before it takes the bounded fallback.
-inline constexpr u32 k_gi_sample_levels = 3;
-inline constexpr u32 k_gi_hit_levels = 4;
-// The faces' blend: where the second-largest component of the normal is at least this share of
+// **Stage 5: the ladder** (renderer.md, "Indirect light", "Stage 5"). The levels a sample is added
+// to and a read walks, finest first: the surface's own and the three coarser. Consecutive, so a
+// surface whose level changes as the eye comes nearer reads the cells that were its own and its
+// parents' the frame before; four, because a surface's cells are a quarter as many a level up, so
+// the fourth takes 64 times the own cell's samples — about 700 in the one frame a surface is first
+// seen at 3840x2160, where its own cell takes 11 — and is read whole on that frame.
+inline constexpr u32 k_gi_ladder = 4;
+// A walk stops once this share or less is left to the coarser levels.
+inline constexpr f32 k_gi_read_stop = 1.0f / 32.0f;
+// A level whose cells hold less than an eighth of the trilinear weight between them (in shares:
+// weight times confidence) is taken by that much less: a point's own cell holds an eighth at
+// least, so this is a mean extrapolated from far corners while the point's own cell is empty or
+// young, and taking it whole made the own cell's first sample a step.
+inline constexpr f32 k_gi_read_cover = 8.0f;
+// Under this much confidence over all the levels the read leans on the caller's prior in
+// proportion (`gi_confidence_weight`).
+inline constexpr f32 k_gi_read_floor =
+    1.0f / 16.0f;  // The faces' blend: where the second-largest component of the normal is at least
+                   // this share of
 // the largest, the read takes the second face's cells too, by up to half at the boundary
 // (0.6: 31 degrees from the axis in that plane, the boundary at 45).
 inline constexpr f32 k_gi_face_blend = 0.6f;
@@ -128,7 +187,11 @@ inline constexpr u32 k_gi_ray_count = 8;
 inline constexpr u32 k_gi_stat_shell = 9;
 inline constexpr u32 k_gi_stat_shell_hits = 10;
 inline constexpr u32 k_gi_stat_shell_near = 11;
-inline constexpr u32 k_gi_stat_copy_words = 12;
+// Stage 8: the directions that met a surface whose cells are already whole and stopped at the
+// eye's ray (gi_update.slang, `gi_shell_keep`): their cells stamped, their bounce taken one frame
+// in eight.
+inline constexpr u32 k_gi_stat_shell_kept = 12;
+inline constexpr u32 k_gi_stat_copy_words = 13;
 inline constexpr f32 k_gi_shell_near_m = 50.0f;
 
 // The buffer's bytes for `count` slots: the header, the keys and the cells.
@@ -136,40 +199,118 @@ constexpr u64 gi_buffer_bytes(u32 count) noexcept {
   return k_gi_header_bytes + u64{count} * (4 + k_gi_cell_bytes);
 }
 
-// **The young cell reads its parent** (the shader's `gi_read_face`, the same arithmetic): one
-// level's read is the trilinear sum of its cells' means over the weight of the cells that had
-// samples, and its confidence the trilinear weights times each cell's `min(samples /
-// k_gi_confident, 1)`. Finest first, each level with samples takes its confidence's share of what
-// is left (the last level tried takes all of it) and passes the rest on; a level without samples
-// takes nothing. What the levels took is the answer, over the share they took — so a young cell
-// whose parent is empty is read whole. False where no level has samples (the caller keeps the
-// harmonics). The shader stops reading once nothing is left, so a converged neighbourhood costs
-// one level's eight lookups.
+// **The walk up the ladder** (the shader's `gi_read_level` and `gi_read_face`, the same
+// arithmetic). One level's read is three sums over its eight cells, with each cell's share `s` its
+// trilinear weight times its confidence `min(samples / confident, 1)`: the shares times the cells'
+// means, the shares, the shares squared, and the shares squared over the cells' samples.
+// `square / spread` is the samples a cell of the level's mean `sum / confidence` holds: the cells'
+// counts averaged as the mean's variance weighs them (harmonically, by the shares squared) — one
+// cell's count at its centre, eleven between eight cells of eleven. Finest first, a level takes
+// that count over `confident` (at most all) of what the finer levels left and passes the rest up;
+// the walk ends once `k_gi_read_stop` or less is left. So a level sharpens at one rate wherever the
+// point stands among its cells, and adds no more noise to the read than a mean of `confident`
+// samples carries: with m samples a cell it takes m / confident and adds at most a sample's spread
+// times sqrt(m) / confident (less where several cells share the point; the variance of the mean
+// is `spread / confidence^2`, Kish's effective sample size inverted, with each cell's mean a
+// sample's variance over its count). Returns what the levels took in all, 0 to 1, with `out` their
+// mean over that share; 0 where no level has a sample (the caller keeps its prior, and leans on it
+// below `k_gi_read_floor`). Every term is continuous in every cell's sample count: no cell's first
+// sample and no level's hand-over steps.
 struct GiLevelRead {
   f32 sum[3] = {0.0f, 0.0f, 0.0f};
-  f32 weight = 0.0f;
   f32 confidence = 0.0f;
+  f32 square = 0.0f;
+  f32 spread = 0.0f;
+  f32 weight = 0.0f;  // the trilinear weights of the cells that hold a sample (stage 6)
 };
-inline bool gi_blend_levels(const GiLevelRead* levels, u32 count, f32 out[3]) noexcept {
+//
+// **Stage 6: what a difference between two levels shows** (renderer.md, "Indirect light", "Stage
+// 6"). The count's rule alone treats a level under `confident` samples as if nothing were known of
+// it but its count, and that is the rule of a surface with no detail between the levels: there the
+// coarser level's mean is as good and quieter. In a crown the levels differ — the coarse cell is
+// the mean of leaves in the open and leaves in the shade — and waiting for 255 samples before the
+// difference is shown is what stood as a band after a turn: the same light, flattened, which the
+// display's curve makes a brighter picture (the shade lifted by more steps than the lit leaves
+// lose). So a level that is not yet read whole by its count is compared with the next one up:
+// with means `m` and `m_up` over `n` and `n_up` samples, a sample's variance taken as
+// `k_gi_sample_cv2` times the square of the larger mean, the square of their difference less what
+// that noise explains of it is the detail between the two levels, and the level takes that detail
+// over itself plus its own mean's noise — the shrinkage weight of a noisy mean towards a prior of
+// known spread, with the spread estimated by its positive part (James and Stein) — where that is
+// more than its count gives it. A level is taken early only where it differs from the one above by
+// more than noise explains, and then the noise it adds (`take * s / sqrt(n)`) is less than the
+// difference it shows; where the levels agree the count's rule stands to the bit. Continuous in
+// both means and both counts, so a cell's first sample is still no step (at one sample the noise
+// explains any difference). What the difference shows is taken by the cells' trilinear weight
+// where they hold under an eighth of it (`GiLevelRead::weight`: a mean extrapolated from a far
+// corner is not the point's), where the count's share is by their weight times their confidence.
+//
+// A sample's spread: a cosine ray from a half-occluded surface escapes to the sky or meets a leaf
+// in the shade or one in the sun — a mixture whose variance is one to two times its mean's square
+// (v = 0.3 of the rays escaping at 1.2, the rest at 0.2: 0.84; a fifth of the hits sunlit at 1.7:
+// 1.6). Two, the upper figure, is the constant: on the grove's turn four showed a tenth of the
+// band's shade early and two a quarter, with the frames' change the same (the experiment page).
+inline constexpr f32 k_gi_sample_cv2 = 2.0f;
+inline f32 gi_reveal(f32 m, f32 n, f32 m_up, f32 n_up) noexcept {
+  const f32 top = std::fmax(m, m_up);
+  const f32 s2 = k_gi_sample_cv2 * top * top;
+  const f32 d = m - m_up;
+  const f32 d2 = std::fmax(d * d - s2 * (1.0f / n + 1.0f / n_up), 0.0f);
+  const f32 den = d2 + s2 / n;
+  return den > 0.0f ? d2 / den : 0.0f;
+}
+// The luminance the reveal compares levels by (the shader's `gi_luminance`).
+inline f32 gi_level_luminance(const GiLevelRead& l) noexcept {
+  return (0.2126f * l.sum[0] + 0.7152f * l.sum[1] + 0.0722f * l.sum[2]) / l.confidence;
+}
+inline f32 gi_blend_levels(const GiLevelRead* levels, u32 count, f32 out[3],
+                           u32 confident = k_gi_confident, bool reveal = false) noexcept {
   f32 acc[3] = {0.0f, 0.0f, 0.0f};
   f32 remaining = 1.0f;
-  bool any = false;
+  const GiLevelRead* held = nullptr;  // a level whose share waits for the one above it
+  auto take_level = [&](const GiLevelRead& l, f32 take) {
+    for (u32 c = 0; c < 3; ++c)
+      acc[c] += (remaining * take / l.confidence) * l.sum[c];
+    remaining *= 1.0f - take;
+  };
+  auto by_count = [&](const GiLevelRead& l) {
+    return std::fmin(l.square / (l.spread * static_cast<f32>(confident)), 1.0f);
+  };
+  auto cover = [](const GiLevelRead& l) { return std::fmin(k_gi_read_cover * l.confidence, 1.0f); };
   for (u32 i = 0; i < count; ++i) {
     const GiLevelRead& l = levels[i];
-    if (!(l.weight > 1e-4f)) continue;
-    any = true;
-    const f32 take = i + 1 == count ? 1.0f : std::fmin(l.confidence, 1.0f);
-    for (u32 c = 0; c < 3; ++c)
-      acc[c] += remaining * take * (l.sum[c] / l.weight);
-    remaining *= 1.0f - take;
-    if (remaining <= 0.0f) break;
+    if (!(l.confidence > 1e-6f)) continue;
+    if (held != nullptr) {
+      const f32 shown = gi_reveal(gi_level_luminance(*held), held->square / held->spread,
+                                  gi_level_luminance(l), l.square / l.spread) *
+                        std::fmin(k_gi_read_cover * held->weight, 1.0f);
+      take_level(*held, std::fmax(by_count(*held) * cover(*held), shown));
+      held = nullptr;
+      if (remaining <= k_gi_read_stop) break;
+    }
+    const f32 take = by_count(l) * cover(l);
+    // A level that takes all that is left by its count needs no look at the one above it, nor
+    // does one after which the count's walk would stop: the reveal reads no level the count's
+    // walk does not.
+    if (!reveal || remaining * (1.0f - take) <= k_gi_read_stop) {
+      take_level(l, take);
+      if (remaining <= k_gi_read_stop) break;
+      continue;
+    }
+    held = &l;
   }
-  if (!any) return false;
+  if (held != nullptr) take_level(*held, by_count(*held) * cover(*held));
+  const f32 taken = 1.0f - remaining;
+  if (!(taken > 0.0f)) return 0.0f;
   for (u32 c = 0; c < 3; ++c)
-    out[c] = remaining < 1.0f ? acc[c] / (1.0f - remaining) : acc[c];
-  return true;
+    out[c] = acc[c] / taken;
+  return taken;
 }
-// The faces' blend weight for the second face: 0 below `k_gi_face_blend`, a half where the two
+// How much of a read's value stands against the caller's prior: all of it from `k_gi_read_floor`
+// of confidence up, in proportion below.
+inline f32 gi_confidence_weight(f32 taken) noexcept {
+  return std::fmin(std::fmax(taken / k_gi_read_floor, 0.0f), 1.0f);
+}  // The faces' blend weight for the second face: 0 below `k_gi_face_blend`, a half where the two
 // largest components are equal, smooth between.
 inline f32 gi_face_blend(f32 largest, f32 second) noexcept {
   if (!(largest > 0.0f)) return 0.0f;
@@ -185,13 +326,36 @@ inline f32 gi_openness(f32 t_m) noexcept {
   return x * x * (3.0f - 2.0f * x);
 }
 
+// **The frame's steps** (stage 5; renderer.md, "Indirect light", "Stage 5"): the push block of the
+// cache's two passes (the shader's `ResolvePush` under RESOLVE_GI_STEP). A frame records one sample
+// pass and one fold, or — the cache's first frame, and a frame whose eye jumped —
+// `gi_preroll_steps` pairs more before them against the same visibility buffer and structures: the
+// pre-roll, so the first picture after a load or a cut is lit by a cache that has had its samples.
+// Step `step` is frame `ResolveParams::gi_frame + step` of the cache's own clock.
+struct GiStepPush {
+  u64 params = 0;  // the view's ResolveParams
+  u32 step = 0;
+  u32 flags = 0;  // k_gi_step_*
+};
+static_assert(sizeof(GiStepPush) == 16);
+inline constexpr u32 k_gi_step_reset = 1u;  // the fold clears every cell and the header
+inline constexpr u32 k_gi_step_count = 2u;  // the fold counts what it keeps: the frame's last step
+
 // `ResolveParams::gi_flags`.
 inline constexpr u32 k_gi_read = 1u;    // the resolve reads the cache for its ambient
 inline constexpr u32 k_gi_bounce = 2u;  // a ray that hits takes the hit's light (stage 1b)
-inline constexpr u32 k_gi_reset = 4u;   // the fold clears every cell (the cache's first frame)
 inline constexpr u32 k_gi_faces = 8u;  // the read blends the next face near a face's edge (stage 2)
 inline constexpr u32 k_gi_young_rays = 16u;    // the sample pass's young candidates (stage 2)
-inline constexpr u32 k_gi_hit_fallback = 32u;  // a hit reads coarser levels, then the fallback
+inline constexpr u32 k_gi_hit_fallback = 32u;  // a hit walks the ladder, then the fallback
+// Stage 6's diagnostic (`renderer.gi.show_level`): the resolve's read takes one level of the
+// ladder whole — the surface's own plus `(flags >> k_gi_show_shift) & 3` — and nothing else, with
+// the cache filled as ever. It is how the count by level is made (what each level holds against
+// the walk); a bounce's hit never sees it.
+inline constexpr u32 k_gi_show = 4u;
+inline constexpr u32 k_gi_show_shift = 6u;
+// Stage 6: a level is taken by what its difference from the next one up shows, where that is more
+// than its count gives it (`gi_reveal`). The evict age's top bit.
+inline constexpr u32 k_gi_reveal = 1u << 23;
 // Two of stage 2's numbers ride in the flags' upper bytes, so each lever can be judged against the
 // stage before it without a new row in the resolve block: the samples at which a cell is read
 // whole (`k_gi_confident` by default; 1 reads any cell with a sample whole, as stage 1 did) and
@@ -205,7 +369,7 @@ inline constexpr u32 k_gi_far_lift_shift = 24u;
 constexpr u32 gi_flag_numbers(u32 confident, u32 evict_age, f32 far_lift = 0.0f) noexcept {
   const f32 lift = far_lift < 0.0f ? 0.0f : (far_lift > 1.0f ? 1.0f : far_lift);
   return ((confident < 1 ? 1u : (confident > 255 ? 255u : confident)) << k_gi_confident_shift) |
-         ((evict_age > 255 ? 255u : evict_age) << k_gi_evict_shift) |
+         ((evict_age > 127 ? 127u : evict_age) << k_gi_evict_shift) |
          (static_cast<u32>(lift * 255.0f + 0.5f) << k_gi_far_lift_shift);
 }
 
@@ -266,8 +430,36 @@ constexpr u64 gi_mix(u64 h) noexcept {
   h ^= h >> 33;
   return h;
 }
+//
+// **A crown's cells** (stage 7; renderer.md, "Indirect light", "Stage 7"): foliage on a mesh with a
+// crown prior (crown_prior.h) is keyed by no face — `k_gi_face_crown` — because a crown's leaves
+// face every way at every depth, so a face splits their samples six ways and describes nothing
+// (what a leaf's own facing does to its light is in its prior). Its tags are the nine past the six
+// faces' (9 levels of 6 faces end at 53), so a crown's cell never shares a key with a face's.
+inline constexpr u32 k_gi_face_crown = 6;
+// The levels above a foliage surface's own that its samples are added from, the one its read
+// starts at, and the levels that read walks (gi_cache.slang's `k_gi_crown_*`).
+inline constexpr u32 k_gi_crown_first = 1;
+inline constexpr u32 k_gi_crown_read = 2;
+inline constexpr u32 k_gi_crown_read_levels = 2;
+// **A crown's cell holds a ratio of sums**: a foliage sample adds its light undivided and its own
+// prior to the cell's count, in these sixteenths (one to sixteen: the prior's floor is a
+// sixteenth, crown_prior.h), so the cell's mean is its samples' light over the sum of their
+// priors. The mean of each sample's own quotient would multiply a deep sample's noise by up to
+// sixteen and the cell's light by whatever does not follow the prior; the ratio estimator's
+// noise is the samples' own, and over the pixels that read the cell with their own priors it
+// gives back the light the samples brought. A crown's cell's counts — the samples a level is
+// read whole at, the young test — are in the same sixteenths (gi_cache.slang, `gi_crown_weight`).
+inline constexpr u32 k_gi_crown_weight = 16;
+constexpr u32 gi_crown_weight(f32 crown) noexcept {
+  const f32 v = crown * static_cast<f32>(k_gi_crown_weight) + 0.5f;
+  return v < 1.0f
+             ? 1u
+             : (v > static_cast<f32>(k_gi_crown_weight) ? k_gi_crown_weight : static_cast<u32>(v));
+}
 constexpr u64 gi_hash(i64 x, i64 y, i64 z, u32 level, u32 face) noexcept {
-  u64 h = gi_mix(static_cast<u64>(x) ^ (static_cast<u64>(level * 6u + face) << 58));
+  const u32 tag = face == k_gi_face_crown ? 54u + level : level * 6u + face;
+  u64 h = gi_mix(static_cast<u64>(x) ^ (static_cast<u64>(tag) << 58));
   h = gi_mix(h ^ static_cast<u64>(y));
   return gi_mix(h ^ static_cast<u64>(z));
 }
@@ -301,9 +493,20 @@ constexpr u32 gi_trickle_stride(u64 pixels, u64 rays) noexcept {
 // eye's directions cover the sphere evenly and densely over frames. Each costs two rays from the
 // young half of the budget (the primary from the eye and the sample's own), so the young half is
 // `gi_shell_rays * 2` smaller when they run.
-constexpr u32 gi_shell_base(u32 windows) noexcept {
-  return (windows + k_gi_workgroup - 1) / k_gi_workgroup * k_gi_workgroup;
+//
+// **Stage 8: the directions are the pass's first threads** (`gi_shell_word`'s bit 24,
+// `renderer.gi.shell_first`). A direction's rays are long — from the eye through whatever stands
+// round it, then a bounce — and a workgroup of them takes as long as its longest. Dispatched
+// behind the windows they ran when the windows' work was done, with the device otherwise idle,
+// and the pass waited for the slowest of them: a quarter of the directions cost three quarters
+// as much (renderer.md, "Stage 8"). Dispatched first they run beside the windows. With the bit,
+// thread `i` under `gi_shell_base(gi_shell_rays)` takes direction `i` and the threads from there
+// take the windows; without it the windows come first, as stage 4 had them. Either way the pass
+// dispatches `gi_shell_base(windows) + gi_shell_base(gi_shell_rays)` threads.
+constexpr u32 gi_shell_base(u32 count) noexcept {
+  return (count + k_gi_workgroup - 1) / k_gi_workgroup * k_gi_workgroup;
 }
+inline constexpr u32 k_gi_shell_first = 1u << 24;
 // Columns of the grid for `count` directions: about sqrt(pi * count), so a cell's width in
 // longitude at the equator (2 pi / columns) is about its height (2 / rows radians).
 inline u32 gi_shell_columns(u32 count) noexcept {
@@ -315,5 +518,21 @@ inline u32 gi_shell_columns(u32 count) noexcept {
 // The rays the shell's samples take out of the young half: two a direction (an upper bound: a
 // direction inside the view's frustum, or one that meets nothing, takes fewer).
 constexpr u64 gi_shell_ray_cost(u32 shell_rays) noexcept { return u64{shell_rays} * 2; }
+
+// **Stage 8: what a direction round the eye stops at** (`ResolveParams::gi_shell_word`;
+// renderer.md, "Indirect light", "Stage 8"). The low half is the reach of the eye's ray in whole
+// metres, rounded up (0: no stop): the radius of the volume that put the geometry round the eye
+// into the frame's structures, past which they hold a part of what is there. The third byte is the
+// frames between the bounces of a direction whose surface's cells are whole
+// (`renderer.gi.shell_refresh`): such a direction stops at the eye's ray, stamps its cells so the
+// fold keeps them, and takes its bounce one frame in that many — 1 is every frame (stage 7's pass),
+// 0 never. Bit 24
+// (`k_gi_shell_first`): the directions are the pass's first threads.
+constexpr u32 gi_shell_word(f32 reach_m, u32 refresh, bool first = true) noexcept {
+  const u32 whole = reach_m > 0.0f ? static_cast<u32>(reach_m) : 0u;
+  const u32 reach = static_cast<f32>(whole) < reach_m ? whole + 1 : whole;
+  return (reach < 0xffffu ? reach : 0xffffu) | ((refresh < 0xffu ? refresh : 0xffu) << 16) |
+         (first ? k_gi_shell_first : 0u);
+}
 
 }  // namespace engine::gfx

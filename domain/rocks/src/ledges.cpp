@@ -57,6 +57,37 @@ constexpr f64 k_riser_lift = 0.03;
 // The least wear for which a joint's edge is worn round too (rocks.md, "A block is a body"):
 // sandstone's 12 cm and limestone's 13.5 are, slate's 2.4 is not.
 constexpr f64 k_rim_m = 0.04;
+// **Beds at any attitude** (G200; rocks.md, "Beds at any attitude"; the grounding,
+// docs/experiments/steep-dip-bedrock.md, "What the engine takes, by attitude"). A front's lean is
+// a function of the beds' apparent dip along its own outward normal, as tangents (no angle is
+// taken): plumb under 20 degrees, the cuesta's range; the joint normal to the bedding past it,
+// ramped in to 30; beds dipping into the face topple past the friction angle's 30 degrees
+// (Goodman and Bray 1976 with a near-vertical face) and lean out along their own bedding by
+// 90 degrees less their dip, never more than 25, crossing over from 30 to 40.
+constexpr f64 k_tan20 = 0.36397023426620234;
+constexpr f64 k_tan30 = 0.57735026918962573;
+constexpr f64 k_tan40 = 0.83909963117728001;
+constexpr f64 k_tan25 = 0.46630765815499858;  // the most a toppled bed leans out
+// A front's foot follows its lean out over falling ground only while the lean times the fall
+// stays under this (the foot is then at most 2.5 times as deep as it would go plumb): design.
+constexpr f64 k_lean_reach = 0.6;
+
+// The horizontal shift of a front's point a metre further down, along its outward normal: positive
+// leans the face back (the foot further out), negative overhangs it. `t` is the tangent of the
+// beds' apparent dip along the outward normal, positive where they dip out of the face.
+f64 front_lean(f64 t) {
+  const f64 b = t < 0.0 ? -t : t;
+  if (b <= k_tan20) return 0.0;
+  const f64 ramp = b >= k_tan30 ? 1.0 : (b - k_tan20) / (k_tan30 - k_tan20);
+  // Out of the face: the slab's edge, square to its bedding, overhangs by the dip (at most 40).
+  if (t > 0.0) return -ramp * (b < k_tan40 ? b : k_tan40);
+  // Into the face: square to the bedding the face leans back by the dip, until the beds topple.
+  if (b <= k_tan30) return ramp * b;
+  const f64 toppled = -(1.0 / b < k_tan25 ? 1.0 / b : k_tan25);
+  if (b >= k_tan40) return toppled;
+  const f64 s = (b - k_tan30) / (k_tan40 - k_tan30);
+  return k_tan30 * (1.0 - s) + toppled * s;
+}
 
 bool bad(std::string& error, const char* field, const char* range) {
   error = std::string("engine.rocks.LedgePatch.") + field + " must be " + range;
@@ -502,6 +533,10 @@ bool solve_patch(const LedgePatch& p, assets::MeshData& out, LedgeReport* report
   // the place along the strike.
   Vector<f64> ground(m * m), coordinate(m * m), fraction(m * m), down_x(m * m), down_z(m * m),
       strike(m * m), down_dip(m * m), per_slope(m * m), riser(m * m);
+  // **Beds at any attitude** (rocks.md): a bed edge's own outward normal on the ground — where the
+  // bed coordinate falls along the surface, which is where a front faces — and the front's lean
+  // there (`front_lean`), held so its foot still reaches the ground it leans over.
+  Vector<f64> out_x(m * m), out_z(m * m), lean_of(m * m), fall_of(m * m);
   const auto height_mm = [&](u32 i, u32 j) { return static_cast<i64>(p.heights_mm[j * side + i]); };
   for (u32 j = 0; j < m; ++j)
     for (u32 i = 0; i < m; ++i) {
@@ -517,7 +552,27 @@ bool solve_patch(const LedgePatch& p, assets::MeshData& out, LedgeReport* report
       const f64 wz = static_cast<f64>(wz_mm) / 1000.0;
       const f64 wy = static_cast<f64>(p.y_mm + height_mm(gi, gj)) / 1000.0;
       ground[k] = static_cast<f64>(height_mm(gi, gj)) / 1000.0;
-      coordinate[k] = gfx::formation_coordinate(frame, wx, wy, wz).coordinate;
+      const gfx::FormationCoordinate fc = gfx::formation_coordinate(frame, wx, wy, wz);
+      coordinate[k] = fc.coordinate;
+      {
+        // The coordinate's gradient along the ground, horizontal: the bed edge's inward normal.
+        const f64 gx = fc.gradient[0] + fc.gradient[1] * shape.slope_x;
+        const f64 gz = fc.gradient[2] + fc.gradient[1] * shape.slope_z;
+        const f64 len = std::sqrt(gx * gx + gz * gz);
+        const bool sloped = shape.slope > 1e-9;
+        const f64 ox = len > 1e-9 ? -gx / len : (sloped ? -shape.slope_x / shape.slope : 1.0);
+        const f64 oz = len > 1e-9 ? -gz / len : (sloped ? -shape.slope_z / shape.slope : 0.0);
+        out_x[k] = ox;
+        out_z[k] = oz;
+        // The beds' apparent dip along it (positive out of the face) and the ground's fall.
+        const f64 grad_y = fc.gradient[1] > 1e-9 ? fc.gradient[1] : 1e-9;
+        const f64 dip_out = (fc.gradient[0] * ox + fc.gradient[2] * oz) / grad_y;
+        const f64 fall = -(shape.slope_x * ox + shape.slope_z * oz);
+        f64 lean = front_lean(dip_out);
+        if (lean * fall > k_lean_reach) lean = k_lean_reach / fall;
+        lean_of[k] = lean;
+        fall_of[k] = fall;
+      }
       fraction[k] =
           standing_share(rule, exposure_fraction(rule, shape), soil_cover(rule, wx_mm, wz_mm));
       if (shape.slope >= cliff_slope) fraction[k] = 0.0;
@@ -592,7 +647,12 @@ bool solve_patch(const LedgePatch& p, assets::MeshData& out, LedgeReport* report
         const u32 n00 = cz * m + cx, n10 = n00 + 1, n01 = n00 + m, n11 = n01 + 1;
         const u32 node[3] = {half == 0 ? n00 : n10, n01, half == 0 ? n10 : n11};
         f64 lx[3], lz[3], g[3], c[3], fr[3], dx[3], dz[3], st0[3], dp[3], ps[3];
+        f64 ox[3], oz[3], lean_c[3], fall_c[3];
         for (u32 k = 0; k < 3; ++k) {
+          ox[k] = out_x[node[k]];
+          oz[k] = out_z[node[k]];
+          lean_c[k] = lean_of[node[k]];
+          fall_c[k] = fall_of[node[k]];
           dp[k] = down_dip[node[k]];
           ps[k] = per_slope[node[k]];
           lx[k] = static_cast<f64>(node[k] % m) * cell;
@@ -836,7 +896,8 @@ bool solve_patch(const LedgePatch& p, assets::MeshData& out, LedgeReport* report
                 lip[k] = std::max(0.0, std::min(round_m, 0.45 * first_row));
                 D3 back{1.0, 0.0, 0.0};
                 if (on_face) {
-                  const f64 ddx = at(poly[k], dx), ddz = at(poly[k], dz);
+                  // Along the bed edge's own outward normal (G200), not the fall line's.
+                  const f64 ddx = at(poly[k], ox), ddz = at(poly[k], oz);
                   const f64 len = std::sqrt(ddx * ddx + ddz * ddz);
                   if (len > 1e-9) back = D3{ddx / len, 0.0, ddz / len};
                 } else {
@@ -877,10 +938,17 @@ bool solve_patch(const LedgePatch& p, assets::MeshData& out, LedgeReport* report
                 ++made.slipped;
               }
               bool drew = false;
-              // The tread: the polygon, in the bedding plane. It carries soil to its lip.
-              mesher.material = 0;
+              // The tread: the polygon, in the bedding plane. It carries soil to its lip, but on a
+              // plane steeper than the rule's soil slope, where no soil stays (a dip slope's slab,
+              // G200): there it is the unit's rock.
               for (u32 k = 1; k + 1 < n; ++k) {
                 D3 q[3] = {lip_top[0], lip_top[k], lip_top[k + 1]};
+                {
+                  const D3 nq = cross(q[1] - q[0], q[2] - q[0]);
+                  const f64 up = nq.y < 0.0 ? -nq.y : nq.y;
+                  const f64 across = std::sqrt(nq.x * nq.x + nq.z * nq.z);
+                  mesher.material = across > rule.soil_slope * up ? 1 + ui : 0;
+                }
                 f64 uv[3][2] = {{q[0].x, q[0].z}, {q[1].x, q[1].z}, {q[2].x, q[2].z}};
                 if (mesher.emit(mix64(uid), q, uv, Facing::Up, {})) {
                   count(true, q);
@@ -906,12 +974,19 @@ bool solve_patch(const LedgePatch& p, assets::MeshData& out, LedgeReport* report
                   const bool notched = unit.undercut > 0.0 && relief > 0.0;
                   const u32 rows = block_rows + (notched ? 1u : 0u);
                   f64 depth[2][k_max_rows + 2], back_m[2][k_max_rows + 1], place_u[2], grown_at[2];
+                  // `lean`: the bed edge's outward normal (G200: the front's own, not the fall
+                  // line's); `shear`: how far a point a metre down stands out along it.
                   D3 lean[2];
+                  f64 shear[2];
                   for (u32 v = 0; v < 2; ++v) {
                     const PolyVertex& pv = poly[e[v]];
                     const f64 step = at(pv, db);
-                    const f64 foot = step + under_of(step);
-                    const f64 ddx = at(pv, dx), ddz = at(pv, dz);
+                    shear[v] = at(pv, lean_c);
+                    // The foot leans with the face over the ground it reaches (rocks.md, "Beds at
+                    // any attitude"): deeper where it leans out over falling ground.
+                    const f64 reach = std::max(0.4, 1.0 - shear[v] * at(pv, fall_c));
+                    const f64 foot = (step + under_of(step)) / reach;
+                    const f64 ddx = at(pv, ox), ddz = at(pv, oz);
                     const f64 len = std::sqrt(ddx * ddx + ddz * ddz);
                     lean[v] = len > 1e-9 ? D3{ddx / len, 0.0, ddz / len} : D3{1.0, 0.0, 0.0};
                     place_u[v] = at(pv, st) - strike0;
@@ -948,8 +1023,9 @@ bool solve_patch(const LedgePatch& p, assets::MeshData& out, LedgeReport* report
                     const f64 rise = standing_back *
                                      (frame.normal[0] * lean[v].x + frame.normal[2] * lean[v].z) /
                                      ny;
-                    return rolled(D3{t.x - standing_back * lean[v].x, t.y - down + rise,
-                                     t.z - standing_back * lean[v].z});
+                    const f64 along = down * shear[v] - standing_back;
+                    return rolled(
+                        D3{t.x + along * lean[v].x, t.y - down + rise, t.z + along * lean[v].z});
                   };
                   // The fluting: how far a face stands back at a depth under the tread, two scales
                   // of the world's noise, so the two segments that share a vertex agree.
@@ -1088,7 +1164,11 @@ bool solve_patch(const LedgePatch& p, assets::MeshData& out, LedgeReport* report
                     const D3& t = top[e[v]];
                     const bool face_end = (pv.lines & k_on_face) != 0 && relief > 0.0;
                     const f64 st_v = step[v] > 0.0 ? step[v] : 0.0;
-                    const f64 foot = st_v + under_of(step[v]);
+                    // At the face the flank leans with the front (rocks.md, "Beds at any
+                    // attitude"), its foot as deep as the front's; behind it, straight down.
+                    const f64 shear_v = (pv.lines & k_on_face) != 0 ? at(pv, lean_c) : 0.0;
+                    const f64 foot =
+                        (st_v + under_of(step[v])) / std::max(0.4, 1.0 - shear_v * at(pv, fall_c));
                     // The front's column at this vertex, as the front's own loop makes it.
                     f64 dep[k_max_rows + 2], bk[k_max_rows + 1];
                     const bool notched = unit.undercut > 0.0 && relief > 0.0;
@@ -1112,10 +1192,11 @@ bool solve_patch(const LedgePatch& p, assets::MeshData& out, LedgeReport* report
                                                    (0.7 + 0.3 * draw(uid, block, 0x1C1ull));
                     }
                     dep[rows] = foot;
-                    const f64 ddx = at(pv, dx), ddz = at(pv, dz);
+                    const f64 ddx = at(pv, ox), ddz = at(pv, oz);
                     const f64 len = std::sqrt(ddx * ddx + ddz * ddz);
                     const D3 ln = len > 1e-9 ? D3{ddx / len, 0.0, ddz / len} : D3{1.0, 0.0, 0.0};
                     const auto place_at = [&](f64 down, f64 back) {
+                      const f64 sheared = down * shear_v;
                       if (!face_end) {
                         back = 0.0;
                       } else if (round_m > 0.0) {
@@ -1127,7 +1208,8 @@ bool solve_patch(const LedgePatch& p, assets::MeshData& out, LedgeReport* report
                       }
                       const f64 rise =
                           back * (frame.normal[0] * ln.x + frame.normal[2] * ln.z) / ny;
-                      return rolled(D3{t.x - back * ln.x, t.y - down + rise, t.z - back * ln.z});
+                      const f64 along = sheared - back;
+                      return rolled(D3{t.x + along * ln.x, t.y - down + rise, t.z + along * ln.z});
                     };
                     u32 fk = 0;
                     flank[v][fk++] = rim[v];
@@ -1153,7 +1235,9 @@ bool solve_patch(const LedgePatch& p, assets::MeshData& out, LedgeReport* report
                       flank[v][fk++] = place_at(lower, in);
                       flank[v][fk++] = place_at(foot, in);
                     } else {
-                      flank[v][fk++] = rolled(D3{t.x, t.y - st_v - under_of(step[v]), t.z});
+                      const f64 along = foot * shear_v;
+                      flank[v][fk++] =
+                          rolled(D3{t.x + along * ln.x, t.y - foot, t.z + along * ln.z});
                     }
                     count_of[v] = fk;
                   }
