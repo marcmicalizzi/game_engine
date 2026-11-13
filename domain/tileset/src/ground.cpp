@@ -4,6 +4,7 @@
 // cache on a miss — and answers every height from it. It has no time: the set does not move, so
 // it has no `evaluate`, `travel_m`, `wind` or `transport`, and a time-lapse moves nothing of it.
 #include <core/log/log.h>
+#include <core/profiling/startup_trace.h>
 #include <domain/geometry/cluster_file.h>
 #include <domain/scene_gen/scene_gen.h>
 #include <domain/tileset/masks.h>
@@ -83,6 +84,10 @@ bool tiles_masks(const void* state, scene_gen::GroundMasks& out, std::string* er
   if (!g.has_masks) return true;
   const std::lock_guard<std::mutex> lock(g.mask_mutex);
   if (!g.mask_tried) {
+    // A stage of its own, so a trace names the cook (or the hit) wherever the first ask comes from:
+    // the read's own check (T122), or a placement that reads the masks, which used to carry the
+    // cook's minutes under its own name (the forest's "placement litter", T125's finding).
+    ENGINE_STARTUP_STAGE("ground masks");
     g.mask_tried = true;
     MaskBuildResult built;
     std::string why;
