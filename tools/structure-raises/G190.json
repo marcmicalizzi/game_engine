@@ -1,10 +1,10 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "G190",
-  "reason": "rocks.md gains G190's rule for where a pile rests and never ends in a cut, G191's tile-time patches and T120's one plan a load; the numbers moved to docs/experiments/rockfall-deposits.md",
-  "date": "2026-11-12",
+  "reason": "G190, G191 and T120 on rocks.md: where a pile comes to rest, a tile's patches arriving with it, one plan a load, a dense patch handed as pieces under the cluster limit, and what a walker sees in a streamed host (the tables are on the grounding page)",
+  "date": "2026-11-13",
   "by": "Marc Micalizzi",
   "deltas": {
-    "page:docs/subsystems/rocks.md": 8665
+    "page:docs/subsystems/rocks.md": 16152
   }
 }
