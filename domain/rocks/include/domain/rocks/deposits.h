@@ -17,8 +17,13 @@ namespace engine::rocks {
 // angular, tilted blocks of several heights over hollows, drawn at 10 cm (rocks.md, "The bed is
 // rubble"). 9 (G190): a face's fall comes to rest on ground gentler than the repose, and a pile
 // that would end in a cut is moved on down or refused (rocks.md, "Where a pile comes to rest").
-// 10 (G190): a face a ground edit cut (a channel's bank) sheds nothing.
-inline constexpr u32 k_deposit_version = 10;
+// 10 (G190): a face a ground edit cut (a channel's bank) sheds nothing. 11 (G191): a patch whose
+// cluster DAG is over `k_deposit_clusters_max` is built again at half its budget.
+inline constexpr u32 k_deposit_version = 11;
+// G191 (rocks.md, "A patch under the cluster limit"): the most clusters a patch's container holds,
+// the streamed host's `renderer.meshes.max_clusters` default, which refuses a larger tile mesh at
+// the walk. `build_deposit_container` holds it.
+inline constexpr u32 k_deposit_clusters_max = 4096;
 // The bed's edge (rocks.md, "The edge and the seams"): inside its outline toward bare gentle ground
 // a deposit is no thicker than `k_edge_slope` (tan 31 degrees, the toe's own slope) times its
 // distance in, less half a spacing; past it the piles' surfaces continue under the ground; and the

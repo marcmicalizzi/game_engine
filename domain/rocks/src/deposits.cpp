@@ -3,6 +3,7 @@
 
 #include <core/hash/hash.h>
 #include <core/json/json.h>
+#include <core/log/log.h>
 #include <core/schema/json_reflect.h>
 #include <domain/assets/mesh_generator.h>
 #include <domain/geometry/cluster_pages.h>
@@ -14,11 +15,15 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdio>
 #include <limits>
 
 namespace engine::rocks {
 namespace {
 using namespace detail;
+ENGINE_LOG_CATEGORY_DEFINE(log_deposit_build, "deposits");
+// G191: how many times a patch over the cluster limit is built again at half its budget.
+constexpr u32 k_deposit_cluster_attempts = 8;
 constexpr i32 k_dx[] = {-1, 0, 1, -1, 1, -1, 0, 1};
 constexpr i32 k_dz[] = {-1, -1, -1, 0, 0, 1, 1, 1};
 constexpr f64 k_diag = 1.4142135623730951;
@@ -1510,42 +1515,81 @@ bool build_deposit_container(const DepositPatch& input, const geometry::ClusterL
       materials::resolve_set(&set, pack, rock_role(p.type), &stone_from_pack);
   const f64 stone_tile = stone_from_pack ? wide(stone->tile_m) : wide(p.material.tile_m);
   if (from_pack) p.material.tile_m = chosen->tile_m;
-  assets::MeshData mesh;
-  if (!solve_deposit(p, mesh, error, stone_tile)) return false;
   geometry::ClusterLodOptions options = lod;
   options.normal_cones = true;
-  // G143's third pass (rocks.md, "The coarse forms keep the patch's border"): a patch is a closed
-  // mesh, so the simplifier sees no open border at its edge and moved each patch's top off the
-  // line it shares with its neighbour its own way; from across a valley the apron drew as square
-  // panels with wedges between them. Every vertex on the patch's border is locked, as the
-  // terrain's chunks lock theirs (terrain.md), so two neighbours' coarse forms meet exactly.
-  // The border's positions as solve_deposit computes them (whole millimetres from the corner).
-  const i64 spacing_mm = std::llround(wide(p.spacing_m) * 1000.0);
-  const f32 span_x = static_cast<f32>(static_cast<f64>(spacing_mm * (p.width - 1)) / 1000.0);
-  const f32 span_z = static_cast<f32>(static_cast<f64>(spacing_mm * (p.depth - 1)) / 1000.0);
-  Vector<u8> locked(mesh.positions.size(), 0);
-  for (u32 v = 0; v < mesh.positions.size(); ++v) {
-    const Vec3 q = mesh.positions[v];
-    locked[v] = q.x == 0.0f || q.z == 0.0f || q.x == span_x || q.z == span_z ? 1 : 0;
-  }
-  geometry::AttributeSource attributes = assets::attribute_source(mesh);
-  attributes.locked = std::span<const u8>(locked.data(), locked.size());
-  // T108: one DAG a primitive (the bed, the stones), merged, so a cluster names one material.
-  Vector<geometry::ClusterLodMesh> parts;
-  Vector<u32> part_material;
-  for (const assets::Primitive& primitive : mesh.primitives) {
-    geometry::ClusterLodMesh part;
-    if (!geometry::build_cluster_lod(
-            mesh.positions, {mesh.indices.data() + primitive.first_index, primitive.index_count},
-            options, part, &error, attributes))
-      return false;
-    part_material.push_back(static_cast<u32>(primitive.material));
-    parts.push_back(std::move(part));
-  }
+  // G191 (rocks.md, "A patch under the cluster limit"): a streamed host admits a tile's mesh of at
+  // most `k_deposit_clusters_max` clusters and refuses a larger one at the walk. The builder cannot
+  // be given a bound that holds the cluster DAG under it (meshoptimizer bounds one clustering's
+  // clusters by 3T / (max_vertices - 2), 6,194 at 128,000 triangles, and no bound holds the levels
+  // above it), so the build holds it: a patch whose DAG is over the limit is built again at half its
+  // triangle budget, half its fragments and half its blocks' rung, a function of the recipe alone,
+  // and a patch still over it at the least budget is refused here, naming it and its count.
+  assets::MeshData mesh;
   Vector<u32> owner;
-  if (!geometry::merge_cluster_lod(parts, out.mesh, &owner, &error)) return false;
-  for (u32& o : owner)
-    o = part_material[o];
+  DepositPatch q = p;
+  for (u32 attempt = 0;; ++attempt) {
+    mesh = {};
+    if (!solve_deposit(q, mesh, error, stone_tile)) return false;
+    // G143's third pass (rocks.md, "The coarse forms keep the patch's border"): a patch is a closed
+    // mesh, so the simplifier sees no open border at its edge and moved each patch's top off the
+    // line it shares with its neighbour its own way; from across a valley the apron drew as square
+    // panels with wedges between them. Every vertex on the patch's border is locked, as the
+    // terrain's chunks lock theirs (terrain.md), so two neighbours' coarse forms meet exactly.
+    // The border's positions as solve_deposit computes them (whole millimetres from the corner).
+    const i64 spacing_mm = std::llround(wide(q.spacing_m) * 1000.0);
+    const f32 span_x = static_cast<f32>(static_cast<f64>(spacing_mm * (q.width - 1)) / 1000.0);
+    const f32 span_z = static_cast<f32>(static_cast<f64>(spacing_mm * (q.depth - 1)) / 1000.0);
+    Vector<u8> locked(mesh.positions.size(), 0);
+    for (u32 v = 0; v < mesh.positions.size(); ++v) {
+      const Vec3 at = mesh.positions[v];
+      locked[v] = at.x == 0.0f || at.z == 0.0f || at.x == span_x || at.z == span_z ? 1 : 0;
+    }
+    geometry::AttributeSource attributes = assets::attribute_source(mesh);
+    attributes.locked = std::span<const u8>(locked.data(), locked.size());
+    // T108: one DAG a primitive (the bed, the stones), merged, so a cluster names one material.
+    Vector<geometry::ClusterLodMesh> parts;
+    Vector<u32> part_material;
+    for (const assets::Primitive& primitive : mesh.primitives) {
+      geometry::ClusterLodMesh part;
+      if (!geometry::build_cluster_lod(
+              mesh.positions, {mesh.indices.data() + primitive.first_index, primitive.index_count},
+              options, part, &error, attributes))
+        return false;
+      part_material.push_back(static_cast<u32>(primitive.material));
+      parts.push_back(std::move(part));
+    }
+    owner.clear();
+    out.mesh = {};
+    if (!geometry::merge_cluster_lod(parts, out.mesh, &owner, &error)) return false;
+    for (u32& o : owner)
+      o = part_material[o];
+    const u64 clusters = out.mesh.mesh.clusters.size();
+    if (clusters <= k_deposit_clusters_max) break;
+    const bool least = q.triangle_budget <= 500 && q.fragments == 0 && q.block_triangles <= 192;
+    if (least || attempt + 1 >= k_deposit_cluster_attempts) {
+      char hash[24];
+      std::snprintf(hash, sizeof(hash), "%016llx",
+                    static_cast<unsigned long long>(deposit_source_hash(input)));
+      error = std::string("engine.rocks deposits: patch deposit-") + hash + " builds " +
+              std::to_string(clusters) + " clusters at its least budget, over the " +
+              std::to_string(k_deposit_clusters_max) + " a streamed host admits";
+      return false;
+    }
+    ENGINE_LOG_INFO(log_deposit_build, "deposit patch built again under the cluster limit",
+                    log::field("patch", deposit_source_hash(input)), log::field("clusters", clusters),
+                    log::field("triangle_budget", static_cast<u64>(q.triangle_budget)),
+                    log::field("fragments", static_cast<u64>(q.fragments)),
+                    log::field("blocks", static_cast<u64>(q.blocks.size())));
+    q.triangle_budget = std::max<u32>(500, q.triangle_budget / 2);
+    q.fragments /= 2;
+    q.block_triangles = std::max<u32>(192, q.block_triangles / 2);
+    std::string why;
+    if (!deposit_patch_fits(q, why)) q.fragments = 0;
+    if (!deposit_patch_fits(q, why)) {
+      error = why;
+      return false;
+    }
+  }
   if (page_bytes > 0) {
     geometry::ClusterPagesOptions pages;
     pages.page_bytes = page_bytes;

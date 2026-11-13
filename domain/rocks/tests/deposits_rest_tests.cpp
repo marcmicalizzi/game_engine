@@ -360,6 +360,56 @@ TEST_CASE("deposits: a tile's patches arrive with it, none past far_rings, and o
   desc->close(again);
 }
 
+TEST_CASE("deposits: a patch at the forest's density builds under a streamed host's cluster limit") {
+  // G191: a streamed host refuses a tile mesh over 4,096 clusters at the walk, and the cluster
+  // count follows the patch's separate parts (its fragments and blocks) more than its triangles.
+  // Each case is a 16 m patch at the forest's 128,000 triangles a patch whose budget and blocks
+  // the generator's open admitted before (under 160,000 together); the build holds every one under
+  // the limit, building again at half the budget where the first build is over it.
+  struct Case {
+    u32 fragments;
+    u32 blocks;
+  };
+  for (const Case k : {Case{96, 60}, Case{320, 60}, Case{600, 70}}) {
+    CAPTURE(k.fragments);
+    CAPTURE(k.blocks);
+    DepositPatch p;
+    p.width = 33;
+    p.depth = 33;
+    p.spacing_m = .5f;
+    p.triangle_budget = 128000;
+    p.fragments = k.fragments;
+    p.fragment_m = .25f;
+    p.origin_mm = {64000, 32000};
+    for (u32 z = 0; z < p.depth; ++z)
+      for (u32 x = 0; x < p.width; ++x) {
+        p.ground.push_back(-.1f * static_cast<f32>(x) * .5f);
+        p.thickness.push_back(1.0f + .5f * static_cast<f32>((x * 7 + z * 3) % 5) / 5.0f);
+        p.coarse.push_back(static_cast<f32>(x) / 32.0f);
+      }
+    for (u32 b = 0; b < k.blocks; ++b) {
+      DepositBlock block;
+      block.x_m = .5f + static_cast<f32>((b * 37) % 31) * .5f;
+      block.z_m = .5f + static_cast<f32>((b * 53) % 31) * .5f;
+      block.y_m = 1.2f;
+      block.half[0] = .35f + .1f * static_cast<f32>(b % 3);
+      block.half[1] = .2f;
+      block.half[2] = .3f;
+      block.seed = 1000 + b;
+      p.blocks.push_back(block);
+    }
+    std::string error;
+    REQUIRE_MESSAGE(deposit_patch_fits(p, error), error);
+    CHECK(static_cast<u64>(p.triangle_budget) + static_cast<u64>(k.blocks) * p.block_triangles <=
+          160000);  // a patch the open admitted before G191's bound
+    geometry::ClusterFileData data;
+    REQUIRE_MESSAGE(build_deposit_container(p, {}, 0, data, error), error);
+    MESSAGE("fragments ", k.fragments, ", blocks ", k.blocks, ": ", data.mesh.mesh.clusters.size(),
+            " clusters, ", data.mesh.leaf_triangle_count, " triangles at the finest form");
+    CHECK(data.mesh.mesh.clusters.size() <= k_deposit_clusters_max);
+  }
+}
+
 namespace {
 // A kilometre of massif foot (G191's measurement): a 60 m ridge 40 m across along z over a 40 m
 // skirt 70 m across, so below a 60-67 degree face the ground grades through 50 to 35 degrees over

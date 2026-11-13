@@ -1657,10 +1657,8 @@ recipe's `path` is where its file would be, under the host's derived-data root's
 host builds a patch's mesh when the first tile naming it activates, through the derived-data cache
 keyed by the recipe, and lets it go after the last. `DepositLayer::far_rings` (version 3, 1-8,
 default 3, as the ledges') is how many of the world's rings draw the deposits: a tile in a ring past
-it hands nothing (`Placements::kind` 1), and the cluster DAG is the far form within. A patch whose
-`triangle_budget` and blocks exceed 160,000 triangles is refused at `open`, because a streamed host
-admits a tile's mesh of at most 4,096 clusters (the stream bed's row met it), a patch is one mesh,
-and the largest patch below measured 3,934 clusters at the forest's 128,000 with its blocks. What
+it hands nothing (`Placements::kind` 1), and the cluster DAG is the far form within. A patch is held
+under a streamed host's cluster limit by its build ([A patch under the cluster limit](#a-patch-under-the-cluster-limit)). What
 stays resident for the entry is the plan (its per-sample ground, thickness, coarse, sink, slope and
 rock, 29 bytes a sample, the drainage dropped after planning), its blocks, and 72 bytes a candidate
 patch: 5.7 MB for the kilometre below.
@@ -1685,6 +1683,38 @@ first step), not the plan. `deposit_plans_made()` counts the plans a process mad
 holds two opens and a close-and-open to one (`deposits: a tile's patches arrive with it, none past
 far_rings, and one plan a load`). The log says `deposits planned` once and `deposits plan reused`
 for every later open.
+
+### A patch under the cluster limit
+
+G191's review, 2026-11-12 (`k_deposit_version` 11). A streamed host refuses a tile's mesh over
+`renderer.meshes.max_clusters` (4,096) by name, at the walk, and its tile draws the rest without it
+([world](world.md#a-tiles-meshes-residency-by-reference)). A patch is one mesh, so a patch over the
+limit is a hole in the talus that appears as a walker comes near. The first G191 capped a patch at
+160,000 triangles, blocks included, because the largest patch of one test massif built 3,934
+clusters: a 4% margin on one terrain.
+
+**Why no bound on the input holds it.** The builder is meshoptimizer's cluster LOD (`clodBuild`).
+One clustering of T triangles makes at most `max(ceil(3T / (v - 2)), ceil(T / t))` clusters
+(`meshopt_buildMeshletsBound`, with v = 64 vertices and t = 124 triangles a cluster): 6,194 at the
+forest's 128,000, over the limit before a level of the DAG is built, and a mesh of many separate
+parts (the fragments and blocks, each a closed solid of a few hundred triangles) fills its clusters
+to the vertex limit, not the triangle limit, which is why the count follows the parts more than the
+triangles. Above the leaves, each level simplifies a group of clusters to half (and keeps any group
+that will not go under 85%) and clusters it again; the groups' sizes are the partitioner's and are
+not bounded below, so the levels' sum has no bound short of the leaves' count times the levels' (19
+at a 0.85 ratio). A bound that held by construction would cap a patch near 30,000 triangles and
+throw away the forest's density for the worst case of a partitioner.
+
+**So the build holds it.** `build_deposit_container` counts the merged DAG's clusters; over
+`k_deposit_clusters_max` (4,096, the host's default) it builds the patch again at half its
+`triangle_budget`, half its fragments and half its blocks' rung (192 at the least), up to eight
+times, and logs each (`deposit patch built again under the cluster limit`, naming the patch by its
+hash and the count). Each attempt is a function of the recipe alone, so the container a recipe
+builds is the same bytes on every host and every run, and the derived-data cache's key (the recipe)
+stays the key. A patch still over the limit at the least budget (one whose blocks alone, at 192
+triangles each, are over it) is refused by its build with a sentence naming it and its count, so no
+container over the limit ever reaches a host. The generator's 160,000-triangle cap at `open` is gone
+with it.
 ### Foothill exposure and repeated-material limits
 
 [G132's v29 controls](../experiments/v29-cliff-diagnosis.md) distinguish the continuous authored
