@@ -697,6 +697,8 @@ bool solve(const DeadwoodFile& p, assets::MeshData& mesh, flora::Motion& motion,
     const Vec3 samples[] = {
         t.a.p, t.b.p, t.c.p, (t.a.p + t.b.p) * .5f, (t.b.p + t.c.p) * .5f, (t.c.p + t.a.p) * .5f};
     for (const Vec3 at : samples) {
+      // A standing remain's stem under its base is meant to be in the ground (its skirt).
+      if (standing && at.y < report.lift_m) continue;
       Vec3 n;
       const f32 gap = clearance(p, at, n);
       if (!std::isfinite(gap)) return fail(error, "ground does not cover the finished surface");
