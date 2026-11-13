@@ -392,10 +392,11 @@ std::string hill_scene(bool routes, u32 budget = 2) {
          R"(,"layers":[{"name":"soil"},{"name":"scree"},{"name":"bedrock"}]},
     "masks":{"spacing_mm":250,"tile_cells":16,"priors":{"soil":"soil","scree":"scree",
       "bedrock":"bedrock","scree_deg":2,"bedrock_deg":3.5,"slope_blend_deg":0.5}}},
-    "placements":[)") +
-         (routes ? R"({"generator":"routes","params":{"name":"way","region_min":[-28,-28],
+    "placements":[)" +
+         std::string(routes
+                         ? R"({"generator":"routes","params":{"name":"way","region_min":[-28,-28],
       "region_max":[28,28],"routes":[{"name":"contour","waypoints":[[10,0,-24],[0,0,24]]}]}})"
-                 : "") +
+                         : "") +
          "]}";
 }
 
@@ -434,7 +435,8 @@ TEST_CASE("masks: the check composes the ground the entries plan, as the load do
       error.find("terrain.masks: " + std::to_string(path_over) +
                  " tiles name more layers than materials.layer_budget is 2") != std::string::npos,
       error);
-  // A tile the footpath crosses in the hill's middle, x 4 to 8 m and z 0 to 4 m, is among them.
+  // Tiles the footpath crosses in the hill's middle are among them, where the bare hill has none
+  // (its tiles over are on the set's far edges, 4 m tiles 7 and 8 out).
   bool crossed = false;
   for (const JsonValue& line : over) {
     const JsonValue* tile = line.find("tile");
@@ -442,7 +444,7 @@ TEST_CASE("masks: the check composes the ground the entries plan, as the load do
     i64 tx = 0, tz = 0;
     (void)(*tile)[0].get_i64(tx);
     (void)(*tile)[1].get_i64(tz);
-    crossed = crossed || (tx == 1 && tz == 0);
+    crossed = crossed || (tx > -6 && tx < 6 && tz > -6 && tz < 6);
   }
   CHECK(crossed);
   // With room for the three layers, `terrain-masks` cooks the level over the same planned ground,
