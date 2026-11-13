@@ -346,6 +346,8 @@ engine_host_generators(engine_view _view_deps)   # [EXCLUDE <module> "<reason>"]
 
 `include/domain/scene_gen/sky.h`: `SkyState`, `Atmosphere`, `Star`, `SkyOps`, `SkyProvider`, `SkyProviderDesc`, `k_default_sky`, `sky_provider_name`.
 
+`include/domain/scene_gen/seat.h`: `GroundSlope`, `quantize_slope`, `GroundDisc`, `ground_disc`, `seat_rim_offset`, `seated_y_mm`, `MeshSeat`, `mesh_seat`, `SeatResult`, `seat_on_ground`, `k_seat_rim_samples`, `k_seat_margin_mm`, `k_slope_unit` -- a placement seated by its footprint ([Seating by the footprint](#seating-by-the-footprint)).
+
 ## Depends on
 
 `base`, `containers`, `math`, `hash`, `json` (an entry's parameters), `schema` and `schemas` (the scene's entries as parsed: `engine.scene.Terrain`, `engine.scene.WorldRings`), `jobs` (the pool a generator is offered), `log`, and `geometry`: a ground's ring chunk is a cluster LOD DAG, so the rings' table names `geometry::ClusterLodMesh`. Nothing above the domain layer, and no capability.

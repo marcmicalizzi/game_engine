@@ -15,6 +15,7 @@
 #
 # `src/exclusion.cpp` (G135) is where nothing is placed: the holes, channels and water a generator leaves empty.
 # `src/site.cpp` (G144) is what the ground is like at a point: the terrain variables a placement's rules read.
+# `src/seat.cpp` (G201) is how a host seats a placement by its footprint: 17 ground queries, never up.
 # `src/terrain_features.cpp` is the one piece of ground arithmetic here: a scene terrain's ridges and
 # basins, which every ground provider adds the same way, beside the entry's type in one copy; and
 # `src/terrain_holes.cpp` its holes (W87), which the renderer's meshes and the collision both read.

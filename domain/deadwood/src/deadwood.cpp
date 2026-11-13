@@ -762,7 +762,7 @@ bool solve(const DeadwoodFile& p, assets::MeshData& mesh, flora::Motion& motion,
     f64 lowest = 1e300;
     for (const Vec3& v : result.positions) {
       lowest = std::min(lowest, static_cast<f64>(v.y));
-      if (static_cast<f64>(v.y) < report.lift_m + 0.1)
+      if (static_cast<f64>(v.y) < static_cast<f64>(report.lift_m) + 0.1)
         reach = std::max(reach, std::sqrt(static_cast<f64>(v.x) * static_cast<f64>(v.x) +
                                           static_cast<f64>(v.z) * static_cast<f64>(v.z)));
     }

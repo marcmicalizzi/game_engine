@@ -489,6 +489,30 @@ TEST_CASE("flora scene: a tree on a tread's edge or a cutting's lip is seated wi
   SceneData base_data;
   REQUIRE_MESSAGE(load_scene(base, base_data, error), error);
   CHECK(base_data.load.seated == 0u);
+  // What seating costs on a tile set's ground (the forest's kind): 4,096 trees on a 0.5 m grid over
+  // the tread and the cutting, on one thread, the sampler's making included.
+  {
+    const TerrainSampler drawn(desc.terrain);
+    REQUIRE(drawn.ok());
+    Vector<SceneInstance> grove;
+    for (u32 j = 0; j < 64; ++j) {
+      for (u32 i = 0; i < 64; ++i) {
+        SceneInstance t = unseated[0];
+        t.origin =
+            WorldPos{-10.0 + 0.5 * static_cast<f64>(i), 0.0, -16.0 + 0.5 * static_cast<f64>(j)};
+        t.origin.y = drawn.provider().view().surface(t.origin);  // standing on the ground
+        grove.push_back(t);
+      }
+    }
+    SceneLoadReport cost;
+    seat_scene_instances(desc.terrain, {grove.data(), grove.size()},
+                         {data.sources.data(), data.sources.size()},
+                         {desc.mesh_info.data(), desc.mesh_info.size()}, cost);
+    MESSAGE("seating 4,096 trees on the tile set's ground: "
+            << cost.seat_ms << " ms (" << cost.seat_ms * 1000.0 / 4096.0 << " us a tree), "
+            << cost.lowered << " lowered");
+    CHECK(cost.seated == 4096u);
+  }
   const u32 terrain = 16;
 
   Gpu gpu;

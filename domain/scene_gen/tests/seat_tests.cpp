@@ -144,9 +144,9 @@ TEST_CASE("seat: a rim over a bank is lowered until the skirt is under the bank'
   CHECK(scaled.seated);
   CHECK(big.y == doctest::Approx(-0.05).epsilon(1e-12));
   // A bank beyond the rim is not the tree's: nothing moves.
-  Shape far = s;
-  far.step_x_mm = 400;
-  const Ground gf = ground_of(far);
+  Shape beyond = s;
+  beyond.step_x_mm = 400;
+  const Ground gf = ground_of(beyond);
   WorldPos clear{0.0, 0.0, 0.0};
   (void)seat_on_ground(gf, nullptr, seat, Vec3{1.0f, 1.0f, 1.0f}, clear);
   CHECK(clear.y == 0.0);
