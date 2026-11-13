@@ -249,3 +249,111 @@ places.
 | Cone planform half angle; relief of the upper margin; rockfall in gullies against spurs | Not found (searched: Luckman's Treatise chapter, Rapp 1960, Church et al. 1979 abstract, Statham 1976 abstract) | The planform follows from the union of the piles' surfaces; the margin's relief is measured on the test walls and bounded by a design value (the apron at most four fifths of the cones), not a source's. |
 | Clast shape on talus | Wegner et al. (2021): blocks over 0.5 m, median a/b axis ratio 1.73 (basalt) to 2.63 (gneiss); Sanders et al. (2009): angular to subangular clasts, openwork, "open megapores" below larger platy clasts, an indistinct preferred orientation | The bed's clasts (G182): elongated 1-2.5 to 1 in plan, angular, tilted at random about the slope, of several heights, with the bed between the largest sunk into hollows. |
 | Clast protrusion, tilt angles, void depth, Zingg classes on talus | Not found (Bertran et al. 1997, Sedimentology 44, abstract only: individual particles give random orientation) | Authored and stated on the page. |
+
+## G190: where a pile comes to rest (2026-11-12)
+
+G190 ([rocks: Where a pile comes to rest](../subsystems/rocks.md#where-a-pile-comes-to-rest)), for the
+forest proof of concept's gaps 41 and 42 (its asks audit and its deposits part, read as text). The
+sources were read by the row's agent through a web search's summaries of them, not their full text,
+and the column says so; no research sub-agent was run.
+
+| Quantity / rule | Source read | Value used / trade |
+|---|---|---|
+| Source, transit and deposition zones | Dorren (2003), *A review of rockfall mechanics and modelling approaches*, Progress in Physical Geography 27(1): 69-87 (a search's summary of a secondary copy: free fall over slopes steeper than about 76 degrees, a bouncing rock turning to rolling as the mean slope falls below about 45, most of the energy lost at the first impact); the forest rockfall textbook's source, transition and deposition areas (search summary) | A face's fall is carried through every sample steeper than the deposit can stand on, and stands at the first one gentler: the transit zone carries, it does not hold. |
+| The ground a pile can stand on | Francou and Mante (1990), the geoguide (as G143 read them): straight upper talus at 34-37 degrees over a concave base at 31-34; Statham (1976), *A scree slope rockfall model*, Earth Surface Processes 1: 43-62 (search summary: the dynamic friction between a moving clast and the debris already lying controls where it stops) | A pile is a surface at `repose_deg` easing to `toe_deg`, so it meets only ground gentler than the toe: **a sample steeper than `toe_deg` (31) carries**. The brief asked for "gentler than the repose"; at the repose itself the toe that eases below the ground's slope rises off it and the pile filled the slope as a wedge, six times what it shed (the base's 35-degree case), so the toe is the bound. |
+| Where blocks that pass the talus stop | Evans and Hungr (1993), as G143 read it (minimum shadow angle 27.5 degrees from the talus' top) | Unchanged: the shed blocks run from the top of the talus along its surface to the shadow line. |
+| The cut bound | No published step; the bed's own clasts (rocks.md, "The bed is rubble") | `k_cut_m` 0.22 m: the lowest the coarsest drawn clast stands (0.2 of 0.55 of a 2 m cell), a step the toe's clasts hide. Run once against the base (33ff2824): the 42-degree case's outline stood 7.43 m over the bare ground past it, past the bound. |
+| A pile on a bench at a brink | Not found as a rule; Sanders et al. (2009)'s "gorges filled by talus" are the opposite case (talus that does fill a steep notch, from a chute above it) | Authored: a pile whose deposit covers ground steeper than the toe lower than its own foot by more than its height drapes the drop, and is moved over the brink to the ground below. |
+
+### What G190 does on the tests' faces
+
+`deposits_rest_tests.cpp`, msvc-debug: a 20 m face at 63 degrees over 12 m of drop to a meadow at
+35 to 60 degrees, three seeds each (the seeds move only the edge's noise). The outline step is a
+talus sample's top over a bare neighbour's ground less what a surface at the repose falls between
+them: at most 0 where the surface meets the ground. The base column is the same case run once
+against 33ff2824's solver.
+
+| Slope below the face | Base: outline step, held of asked | G190: outline step, held of asked |
+|---|---|---|
+| 35 degrees | -0.05 m, 3,502 of 589 m³ (the wedge filled the slope) | -0.01 m, 240 of 650 m³ |
+| 42 degrees | **7.43 m**, 3,977 of 587 m³ | -0.02 m, 868 of 867 m³ |
+| 50 degrees | -0.08 m, 3,698 of 686 m³ | -0.02 m, 950 of 993 m³ |
+| 54 degrees | (not run on the base) | -0.02 m, 986 of 977 m³ |
+| 60 degrees | (not run on the base) | -0.02 m, 1,053 of 1,022 m³ |
+
+Every foot was on ground steeper than the repose on the base, none is now; the worst cut of a kept
+pile is under a millimetre. The forest's second world measured its beds on 54-degree ground at the
+median (20% of the outline dropping over 5 m); here the median ground under the bed is the transit
+slope's own below 54 degrees, where the wedge leans up it and meets it, and the meadow's (4.6
+degrees) from 54 up, where the transit slope is itself a source. A 2 m (4 m) bench at the brink of a
+45-degree, 10 m drop: all 65 (59) piles moved over the brink, none refused, no cut, holding 40%
+(57%) of what they were asked. A transit slope that runs on past the region's edge: all 65 falls
+refused, 863 m³ at 42 degrees and 1,621 at 50, and nothing stood. A 3 m channel with 56-degree
+banks down a 20-degree hillside: 312 piles shed from its banks read on the cut ground alone, none
+read against the ground before the cut.
+
+### What a kilometre of deposits costs
+
+G191 and T120, `deposits: what a kilometre of massif foot costs at load and a tile (measured)`,
+skipped in the suite and run by hand: a 1,024 m by 192 m window at 1 m of a 60 m face over a skirt
+grading through 50 to 35 degrees, 16 m patches, 64 m tiles; `msvc-release`, 2026-11-12 14:11-14:18,
+the CPU at 52-73% with other agents' builds and GPU runs, 52-60 GB of free commit, so every time is
+an upper bound, one run each. "Before" is what a host did at load until G191: every patch built and
+held.
+
+| | 128,000 triangles a patch (the forest's) | 32,000 (the default's density) |
+|---|---:|---:|
+| Patches, over tiles | 466 over 63 | 466 over 63 |
+| Built and held at load before G191 | 466 meshes, 36.6 M triangles, 2.93 GB of containers, 249 s of work single-threaded | 466, 12.1 M, 0.99 GB, 79 s |
+| Built at load now | none; recipes written: none (before: 466 files, 13.6 MB) | none |
+| `open` (plan, patches checked) | 316 ms | 289 ms |
+| The second open (T120; before, the plan again) | 43 ms | 37 ms |
+| A 64 m tile's activation (its patches built), median and max | 3.9 s, 7.8 s | 1.4 s, 2.4 s |
+| The largest patch | 3,934 clusters | 1,558 clusters |
+| **Since G191's pieces** (2026-11-13 01:20, `msvc-release` at 8cd633a6, CPU 63-73% busy, one run) | | |
+| Meshes handed for the 466 patches | 1,476 | 468 |
+| Built, every mesh | 36.7 M triangles, 3.00 GB, 263 s of work single-threaded | 12.1 M, 0.99 GB, 78 s |
+| The largest mesh | 2,442 clusters | 1,558 clusters |
+| Built again at half its budget | none | none |
+| One mesh's build, median and max | 169 ms, 526 ms | 172 ms, 339 ms |
+| A 64 m tile's activation (its meshes built one after another), median and max | 4.1 s, 9.2 s | 1.3 s, 2.3 s |
+
+The host builds a tile's meshes off the frame's thread and in parallel, so a tile's activation is
+its patches' build spread over the pool, not a stall; at the forest's budget it is still four
+seconds of work a 64 m tile, and the default's density costs a third of it. Before G191 the same
+466 builds ran at load whatever the camera (the forest measured 40 s for 724 on twenty threads).
+Resident for the entry: the plan, 29 bytes a sample (5.7 MB for this window), its blocks and 72 bytes
+a candidate patch.
+
+### What a walker sees in a streamed host
+
+G191's review, 2026-11-13: `engine-view --scene <scene> --world --camera-path walk.json --windowed
+--width 1600 --height 900 --ddc <cold root> --benchmark run.jsonl --world-log world.jsonl`,
+`msvc-release` at 8cd633a6, RTX 5090. The scene is a kilometre of massif foot (a 60 m face over a
+skirt grading through 50 to 35 degrees), a deposits layer 100 m by 960 m at 1 m samples, 16 m
+patches at the forest's 128,000 triangles, 96 loose stones; 64 m tiles, rings of 1.5, 4 and 8
+tiles; the walk 300 m along the foot at 2 m/s and eye height, 150 s in real time. The machine was
+shared: other processes held 34 to 99.5% of the CPU across the runs, so every time is an upper
+bound. An offscreen `--benchmark` flight of the same path is no measure of this: it draws its 4,500
+frames in 2.5 s, faster than one tile's meshes build, and draws no deposit after its first fill.
+
+| | `far_rings` 3, the default mesh room (256 MiB) | `far_rings` 3, a 2 GiB room | `far_rings` 1, the default room |
+|---|---:|---:|---:|
+| The first frame (the ring filled with no budget, every build waited for on the frame's thread) | 63.9 s | 63.8 s | 16.4 s |
+| Deposits' meshes drawn after the first fill | 88 instances, then none from 66 s to the end | 541, 601 from 70 s to the end | 17 to 97, two tiles arriving every 32 s |
+| Withheld | 32 tiles (105 meshes, 250.5 MiB resident) | none | none |
+| A tile arriving in view | never | never (the 512 m outer ring holds the whole region from every point of the walk) | +3,233 visible pairs in one frame at 43.5 s, the tile's near edge about 63 m ahead |
+| Frame times over the walk after the first frame, median / p95 / max | 12.2 / 23.2 / 506 ms (the update after the first fill) | 12.2 / 23.0 / 77.8 ms | 12.2 / 24.0 / 74.8 ms, the same within 2 s of an arrival |
+
+What the default room does with `far_rings` 3: the first fill admits what fits, the ring moves, and
+the nearest waiting tile asks for room; the room yields the farther drawn tiles one by one (the
+tail falls 88, 80, 48, 40, 8, 0 over five updates) and still has no run for it. By a reading of the code
+(not traced): what the room still holds is named by tiles that are waiting themselves, partly
+admitted, and `PlacementTiles::yield_farthest` (`systems/world/src/placement_tiles.cpp`) takes only
+drawn tiles, so nothing frees it. Every tile then waits for the rest of the walk. Nothing
+in the deposits decides this; at the forest's density a 64 m tile of the foot is some 40 meshes and
+a third of the room.
+
+Not found, and looked for: a published runout of talus below the base of a transit slope; a law for
+the volume a pile at the foot of a slope at its own repose holds (the wedge law gives zero section,
+and the model under-holds there, 37% of the supply at 35 degrees; rocks.md says so).

@@ -3,6 +3,7 @@
 
 #include <core/hash/hash.h>
 #include <core/json/json.h>
+#include <core/log/log.h>
 #include <core/schema/json_reflect.h>
 #include <domain/assets/mesh_generator.h>
 #include <domain/geometry/cluster_pages.h>
@@ -14,11 +15,15 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdio>
 #include <limits>
 
 namespace engine::rocks {
 namespace {
 using namespace detail;
+ENGINE_LOG_CATEGORY_DEFINE(log_deposit_build, "deposits");
+// G191: how many times a patch over the cluster limit is built again at half its budget.
+constexpr u32 k_deposit_cluster_attempts = 8;
 constexpr i32 k_dx[] = {-1, 0, 1, -1, 1, -1, 0, 1};
 constexpr i32 k_dz[] = {-1, -1, -1, 0, 0, 1, 1, 1};
 constexpr f64 k_diag = 1.4142135623730951;
@@ -156,6 +161,16 @@ constexpr f64 k_clast_sorting = 10;   // the toe's clasts against the apex's (au
 constexpr i64 k_clast_slope_mm = 25;  // the half step the relief's gradient is taken over
 constexpr const char* k_scree_role = "rock/scree";  // G148's granular role
 constexpr f64 k_toe_run_m = 1.5;  // how far past the outline the toe's clasts thin by e (authored)
+// G190 (rocks.md, "Where a pile comes to rest"): the most a pile's own surface may stand over the
+// ground at the first bare sample past its outline. A surface that meets the ground stands under
+// it there; one cut by `runout_m` or by the pile's height ends in a wall. The bound is the lowest
+// the bed's coarsest drawn clast stands (k_clast_stand_lo of the smallest clast of the 2 m lattice,
+// 0.55 of its cell): 0.22 m, a step the toe's own clasts hide.
+constexpr f64 k_cut_m = k_clast_stand_lo * 0.55 * static_cast<f64>(k_clast_cell_mm << 2) / 1000.0;
+// G190: how many times a cut pile is moved on down its fall line before a cut pile is refused, and
+// the most rounds of the flood a plan runs.
+constexpr u32 k_rest_moves = 8;
+constexpr u32 k_rest_rounds = 32;
 u64 clast_hash(i64 x, i64 z, u64 o) {
   return mix64(static_cast<u64>(x) * 0x9E3779B97F4A7C15ull ^ mix64(static_cast<u64>(z) + o));
 }
@@ -273,7 +288,7 @@ f64 deposit_convergence(const DepositPlan& p, u32 i, u32 k) {
 }
 
 bool plan_deposits(const DepositLayer& p, const scene_gen::Ground& ground, DepositPlan& out,
-                   std::string& error) {
+                   std::string& error, const scene_gen::Ground* uncut) {
   out = {};
   if (!ground.present()) return fail(error, "ground (required)");
   if (!in(wide(p.spacing_m), .25, 8)) return fail(error, "spacing_m");
@@ -368,14 +383,52 @@ bool plan_deposits(const DepositLayer& p, const scene_gen::Ground& ground, Depos
   const f64 source = tangent(p.source_deg), repose = tangent(p.repose_deg);
   const f64 toe = tangent(p.toe_deg), sp = wide(p.spacing_m);
   // Face area: a steep sample's own surface area plus what flows into it, carried down steepest
-  // descent until it reaches a gentle sample, its foot.
+  // descent through every sample that cannot hold it until it reaches one that can, its foot.
+  // G190 (rocks.md, "Where a pile comes to rest"): a pile stands only where the ground is gentler
+  // than its own toe (`toe_deg`, the 31-34 degree concave base of a talus), because a surface that
+  // falls at the repose and eases to the toe meets nothing steeper than that; on a transit slope
+  // rock rolls and bounces on (Dorren 2003's source, transit and deposition zones), so a sample no
+  // gentler than the toe carries what reaches it. Until G190 the first sample under `source_deg`
+  // was the foot, and on ground that grades through 35 to 50 degrees below a face every pile stood
+  // on ground steeper than its own surface, which never met the ground. A sample on the region's
+  // border whose lower neighbours are all outside it falls away out of the region, at a slope the
+  // plan cannot see: what reaches it leaves the region and is refused, so no pile stands there cut
+  // by the region's edge.
+  // G190: a source is a rock face of the land, not a face a ground edit cut. With the ground before
+  // its edits, a sample sheds only where that ground is steep too, so a channel's cut bank (45-56
+  // degrees in the forest, where 649 piles were shed into a stream's bed) or a bench's riser sheds
+  // nothing; it still carries what falls onto it from a real face above.
+  Vector<u8> natural;  // empty: every steep sample is a face of the land
+  if (uncut != nullptr && uncut->present()) {
+    Vector<f64> before(n);
+    for (u32 i = 0; i < n; ++i) {
+      before[i] = uncut->surface_mm(world_x(i), world_z(i));
+      if (!in(before[i], -1e6, 1e6)) return fail(error, "uncut ground height (finite +/-1e6 m)");
+    }
+    natural.assign(n, 0);
+    for (u32 i = 0; i < n; ++i)
+      for (u32 d = 0; d < 8 && natural[i] == 0; ++d) {
+        const u32 j = neighbour(i, pw, pd, d);
+        if (j != ~0u && (before[i] - before[j]) / step(d, sp) >= source) natural[i] = 1;
+      }
+  }
+  auto sheds = [&](u32 i) { return slopes[i] >= source && (natural.empty() || natural[i] != 0); };
+  auto carries = [&](u32 i) {
+    if (slopes[i] >= toe) return true;
+    const u32 x = i % pw, z = i / pw;
+    return next[i] == ~0u && (x == 0 || z == 0 || x + 1 == pw || z + 1 == pd);
+  };
   Vector<f64> face_m2(n, 0.0), fed(n, 0.0);
-  Vector<u32> up(n, ~0u);  // the steep inflow carrying the most face, to walk up the face by
+  Vector<u32> up(n, ~0u);  // the inflow carrying the most face, to walk up the face by
   for (u32 i : order) {
-    if (slopes[i] < source || next[i] == ~0u) continue;
-    face_m2[i] += sp * sp * std::sqrt(1.0 + slopes[i] * slopes[i]);
+    if (sheds(i) && next[i] != ~0u) face_m2[i] += sp * sp * std::sqrt(1.0 + slopes[i] * slopes[i]);
+    if (face_m2[i] <= 0.0 || !carries(i)) continue;
     const u32 j = next[i];
-    if (slopes[j] >= source)
+    if (j == ~0u) {
+      plan.refused.push_back({world_x(i), world_z(i), face_m2[i] * wide(p.supply_m), 0.0});
+      continue;
+    }
+    if (carries(j))
       face_m2[j] += face_m2[i];
     else
       fed[j] += face_m2[i];
@@ -392,10 +445,6 @@ bool plan_deposits(const DepositLayer& p, const scene_gen::Ground& ground, Depos
     f64 lead;  // horizontally, from the apex sample to where the face reaches the top
   };
   Vector<Pile> piles;
-  if (p.supply_m > 0)
-    for (u32 i = 0; i < n; ++i)
-      if (fed[i] > 0 && slopes[i] < source)
-        piles.push_back({i, i, 0.0, 0.0, fed[i] * wide(p.supply_m), 0.0, 0.0});
   // Each foot's height from the supply delivered to it, per metre of foot. Every foot spreads its
   // own volume along the foot over its own pile's reach r = h / tan(repose) through a kernel
   // 1.5 (1 - d / r)^2 / r, which integrates to one along a line, and a foot's pile is the wedge
@@ -418,26 +467,54 @@ bool plan_deposits(const DepositLayer& p, const scene_gen::Ground& ground, Depos
   Vector<u32> foot_of(n, ~0u);
   for (u32 s = order.size(); s-- > 0;) {  // lowest first: a sample's next is already known
     const u32 i = order[s];
-    if (slopes[i] < source || next[i] == ~0u) continue;
-    foot_of[i] = slopes[next[i]] >= source ? foot_of[next[i]] : next[i];
+    if (!carries(i) || next[i] == ~0u) continue;
+    foot_of[i] = carries(next[i]) ? foot_of[next[i]] : next[i];
   }
-  Vector<u32> pile_of(n, ~0u), face_first(piles.size() + 1, 0);
-  for (u32 k = 0; k < piles.size(); ++k)
-    pile_of[piles[k].foot] = k;
-  for (u32 i = 0; i < n; ++i)
-    if (foot_of[i] != ~0u && pile_of[foot_of[i]] != ~0u) ++face_first[pile_of[foot_of[i]] + 1];
-  for (u32 k = 1; k < face_first.size(); ++k)
-    face_first[k] += face_first[k - 1];
-  Vector<f64> face_rise(face_first.back()), face_area(face_first.back());
-  {
+  // G190: the face area delivered at each foot, and where a foot whose pile ended in a cut was
+  // moved on to (`k_refused`: refused). A face sample's foot is its fall line's, followed on.
+  constexpr u32 k_refused = ~1u;
+  Vector<f64> at_foot(fed);
+  Vector<u32> moved_to(n, ~0u);
+  auto rest_of = [&](u32 f) {
+    for (u32 guard = 0; f < n && moved_to[f] != ~0u && guard < n; ++guard)
+      f = moved_to[f];
+    return f;
+  };
+  Vector<u32> pile_of(n, ~0u), face_first;
+  Vector<f64> face_rise, face_area;
+  // The piles of a round: one a foot that holds face area, in sample order, and each one's face.
+  auto gather = [&]() {
+    piles.clear();
+    std::fill(pile_of.begin(), pile_of.end(), ~0u);
+    if (p.supply_m > 0)
+      for (u32 i = 0; i < n; ++i)
+        if (at_foot[i] > 0) {
+          pile_of[i] = piles.size();
+          piles.push_back({i, i, 0.0, 0.0, at_foot[i] * wide(p.supply_m), 0.0, 0.0});
+        }
+    face_first.assign(piles.size() + 1, 0);
+    auto face_foot = [&](u32 i) {
+      if (!sheds(i) || foot_of[i] == ~0u) return ~0u;
+      const u32 f = rest_of(foot_of[i]);
+      return f < n ? f : ~0u;
+    };
+    for (u32 i = 0; i < n; ++i) {
+      const u32 f = face_foot(i);
+      if (f != ~0u && pile_of[f] != ~0u) ++face_first[pile_of[f] + 1];
+    }
+    for (u32 k = 1; k < face_first.size(); ++k)
+      face_first[k] += face_first[k - 1];
+    face_rise.resize(face_first.back());
+    face_area.resize(face_first.back());
     Vector<u32> fill(face_first);
     for (u32 i = 0; i < n; ++i) {
-      if (foot_of[i] == ~0u || pile_of[foot_of[i]] == ~0u) continue;
-      const u32 at = fill[pile_of[foot_of[i]]]++;
-      face_rise[at] = plan.ground[i] - plan.ground[foot_of[i]];
+      const u32 f = face_foot(i);
+      if (f == ~0u || pile_of[f] == ~0u) continue;
+      const u32 at = fill[pile_of[f]]++;
+      face_rise[at] = plan.ground[i] - plan.ground[f];
       face_area[at] = sp * sp * std::sqrt(1.0 + slopes[i] * slopes[i]);
     }
-  }
+  };
   // What pile k's face sheds while its pile stands `height` over its foot: the face above it.
   auto shed = [&](u32 k, f64 height) {
     f64 area = 0;
@@ -445,7 +522,8 @@ bool plan_deposits(const DepositLayer& p, const scene_gen::Ground& ground, Depos
       if (face_rise[j] > height) area += face_area[j];
     return area * wide(p.supply_m);
   };
-  if (!piles.empty()) {
+  auto stand = [&]() {
+    if (piles.empty()) return;
     const i64 bucket = 8000;  // mm: feet bucketed on the world's 8 m lattice to find neighbours
     const u32 m = piles.size();
     Vector<i64> keys(m);
@@ -495,7 +573,7 @@ bool plan_deposits(const DepositLayer& p, const scene_gen::Ground& ground, Depos
       piles[k].height = std::min(tall[k], std::min(wall[k], 20.0));
       piles[k].volume = shed(k, piles[k].height);
     }
-  }
+  };
   Vector<f64> best(n), apart(n, 0.0),
       under(n,
             -std::numeric_limits<f64>::infinity());  // the winning pile and how far from its apex
@@ -583,7 +661,84 @@ bool plan_deposits(const DepositLayer& p, const scene_gen::Ground& ground, Depos
     for (u32 i = 0; i < n; ++i)
       if (won[i] != ~0u) piles[won[i]].held += std::min(best[i] - plan.ground[i], 20.0) * sp * sp;
   };
-  if (!piles.empty()) flood();
+  // ---- A pile never ends in a cut (G190; rocks.md, "Where a pile comes to rest") ----
+  // The flood stops a pile's surface where it meets the ground, and where `runout_m` or the pile's
+  // own height stop it; at those last two the surface still stands over the ground and the bed
+  // ended in a wall (19 m on the forest's 45-degree slopes). After each flood, a pile whose surface
+  // at a bare sample beside its own stands more than `k_cut_m` over that sample's ground is moved
+  // on down its fall line, over the next brink (a carrying sample) to the ground below it that can
+  // hold it, and the round is run again; one with no brink below it, or that still cuts after
+  // `k_rest_moves` moves, is refused, and the plan records its volume and where.
+  Vector<f64> cut;
+  Vector<u8> drape;
+  for (u32 round = 0;; ++round) {
+    plan.rounds = round + 1;
+    gather();
+    stand();
+    flood();
+    cut.assign(piles.size(), 0.0);
+    for (u32 j = 0; j < n; ++j) {
+      if (won[j] != ~0u) continue;
+      for (u32 d = 0; d < 8; ++d) {
+        const u32 i = neighbour(j, pw, pd, d);
+        if (i == ~0u || won[i] == ~0u) continue;
+        const Pile& pile = piles[won[i]];
+        const f64 head =
+            cone_surface(pile.top, pile.height, repose, toe, from_apex(pile, j) + pile.lead);
+        cut[won[i]] = std::max(cut[won[i]], head - plan.ground[j]);
+      }
+    }
+    // A pile on a bench at a brink that drapes the drop below it meets the ground at last, so it is
+    // no cut, but it is a wedge that fills the drop and holds several times what it shed. It is
+    // found by what it covers: ground that carries (steeper than the toe), lower than its own foot
+    // by more than its height. Such a pile is moved on as a cut one is.
+    drape.assign(piles.size(), 0);
+    for (u32 j = 0; j < n; ++j) {
+      const u32 k = won[j];
+      if (k != ~0u && carries(j) && plan.ground[piles[k].foot] - plan.ground[j] > piles[k].height)
+        drape[k] = 1;
+    }
+    auto bad = [&](u32 k) { return cut[k] > k_cut_m || drape[k] != 0; };
+    bool any = false;
+    for (u32 k = 0; k < piles.size(); ++k)
+      any = any || bad(k);
+    if (!any || round + 1 >= k_rest_rounds) break;
+    for (u32 k = 0; k < piles.size(); ++k) {
+      if (!bad(k)) continue;
+      const u32 f = piles[k].foot;
+      u32 g = ~0u;
+      if (round < k_rest_moves) {
+        bool passed = false;
+        for (u32 c = f, guard = 0; guard < n; ++guard) {
+          const u32 down = next[c];
+          if (down == ~0u) break;
+          // The pile's apex walks back up the way it came where no face flows in.
+          if (up[down] == ~0u) up[down] = c;
+          c = down;
+          if (carries(c)) {
+            passed = true;
+            continue;
+          }
+          if (passed) {
+            g = rest_of(c);
+            break;
+          }
+        }
+      }
+      if (g >= n) {
+        plan.refused.push_back({world_x(f), world_z(f), piles[k].volume, cut[k]});
+        at_foot[f] = 0.0;
+        moved_to[f] = k_refused;
+      } else {
+        at_foot[g] += at_foot[f];
+        at_foot[f] = 0.0;
+        moved_to[f] = g;
+        ++plan.moved;
+      }
+    }
+  }
+  for (f64 c : cut)
+    plan.worst_cut_m = std::max(plan.worst_cut_m, c);
   // The piles that won a sample, and how far each reaches, for the sorting and the plan's record.
   Vector<f64> pile_reach(piles.size(), 0.0);
   for (u32 i = 0; i < n; ++i)
@@ -595,7 +750,7 @@ bool plan_deposits(const DepositLayer& p, const scene_gen::Ground& ground, Depos
     record.z_mm = world_z(piles[k].apex);
     record.apex_m = piles[k].top;
     record.height_m = piles[k].height;
-    record.face_m2 = fed[piles[k].foot];
+    record.face_m2 = at_foot[piles[k].foot];
     record.volume_m3 = piles[k].volume;
     record.held_m3 = piles[k].held;
     record.reach_m = pile_reach[k];
@@ -985,8 +1140,283 @@ bool bed_cells(const DepositPatch& p, Vector<u8>& active, Vector<u32>& cells,
     return fail(error, "patch triangle_budget (surface plus every fragment at minimum rung)");
   return true;
 }
+// The bed's triangles at `s` steps a spacing (its fine top, its underside and its walls), over the
+// cells `bed_cells` found.
+u64 bed_surface(const DepositPatch& p, const Vector<u8>& active, const Vector<u32>& cells, u64 s) {
+  const u32 w = p.width, h = p.depth;
+  auto present = [&](i32 x, i32 z) {
+    return x >= 0 && z >= 0 && x < static_cast<i32>(w - 1) && z < static_cast<i32>(h - 1) &&
+           active[static_cast<u32>(z) * (w - 1) + static_cast<u32>(x)] != 0;
+  };
+  u64 wall_edges = 0;
+  for (u32 a : cells) {
+    const i32 x = static_cast<i32>(a % w), z = static_cast<i32>(a / w);
+    wall_edges += static_cast<u64>(!present(x - 1, z) + !present(x + 1, z) + !present(x, z - 1) +
+                                   !present(x, z + 1));
+  }
+  return static_cast<u64>(cells.size()) * (2 * s * s + 2) + wall_edges * (s + 1);
+}
+// The finest form `solve_deposit` draws a patch at (rocks.md, "Where the triangles go"): the top's
+// steps a spacing, the loose fragments' finest rung, the blocks' rung, and the bed's triangles. One
+// function, so a piece's estimate (G191, `deposit_patch_triangles`) is the solve's own choice.
+struct DepositForm {
+  u32 sub = 1;
+  u32 rung = 4;
+  u32 block_rung = 4;
+  u32 each = 0;  // a loose fragment's share of what the bed leaves of the budget
+  u64 surface = 0;
+};
+DepositForm deposit_form(const DepositPatch& p, const Vector<u8>& active,
+                         const Vector<u32>& cells) {
+  // G143's third pass (rocks.md, "The bed is rubble"): the top is drawn `sub` steps a spacing, at
+  // k_clast_step_mm, raised by the clasts, as fine as the budget holds with every fragment at its
+  // block's rung beside it; the underside and the walls' feet stay on the samples.
+  DepositForm f;
+  const i64 spacing_mm = std::llround(wide(p.spacing_m) * 1000.0);
+  for (u32 s = static_cast<u32>(
+           std::clamp<i64>((spacing_mm + k_clast_step_mm / 2) / k_clast_step_mm, 1, 16));
+       s > 1; --s)
+    if (spacing_mm % s == 0 && bed_surface(p, active, cells, s) + 432ull * p.fragments <=
+                                   p.triangle_budget) {
+      f.sub = s;
+      break;
+    }
+  f.surface = bed_surface(p, active, cells, f.sub);
+  f.each = p.fragments > 0 ? (p.triangle_budget - static_cast<u32>(f.surface)) / p.fragments : 0;
+  for (u32 r : k_grid_rungs)
+    if (r <= 20 && triangles_of_grid(r) <= f.each) f.rung = r;
+  for (u32 r : k_grid_rungs)
+    if (triangles_of_grid(r) <= p.block_triangles) f.block_rung = r;
+  return f;
+}
+// At most what the finest form draws: the bed, every loose fragment at its rung and no finer than
+// the blocks' (`solve_deposit` builds a small one coarser), every block at the blocks' rung.
+u64 form_triangles(const DepositPatch& p, const DepositForm& f) {
+  return f.surface +
+         static_cast<u64>(p.fragments) * triangles_of_grid(std::min(f.rung, f.block_rung)) +
+         static_cast<u64>(p.blocks.size()) * triangles_of_grid(f.block_rung);
+}
+
+// ---- G191: a patch handed as pieces (rocks.md, "A patch under the cluster limit") ----
+constexpr u32 k_pieces_max = 16;
+// The deposit's cells of the whole's cells [x0, x1) x [z0, z1): any corner thicker than
+// k_min_depth, as `bed_cells` counts them before its bridges.
+u64 deposit_cells(const DepositPatch& p, u32 x0, u32 x1, u32 z0, u32 z1) {
+  const u32 w = p.width;
+  u64 n = 0;
+  for (u32 z = z0; z < z1; ++z)
+    for (u32 x = x0; x < x1; ++x) {
+      const u32 a = z * w + x;
+      if (std::max({p.thickness[a], p.thickness[a + 1], p.thickness[a + w],
+                    p.thickness[a + w + 1]}) > k_min_depth)
+        ++n;
+    }
+  return n;
+}
+// A piece being cut: the whole's cells [x0, x1) x [z0, z1), its share of the fragments and of the
+// budget, its patch and what its finest form holds at most.
+struct Cut {
+  u32 x0 = 0, x1 = 0, z0 = 0, z1 = 0;
+  DepositPatch patch;
+  u64 triangles = 0;
+  bool done = false;  // no cut leaves both sides a deposit that fits
+};
+// Whether a block's centre stands in the cut: a centre on a cut line belongs to the piece after it,
+// one on the whole's far edge to the last.
+bool block_in(const DepositPatch& p, const DepositBlock& b, u32 x0, u32 x1, u32 z0, u32 z1) {
+  const f64 s = wide(p.spacing_m), x = wide(b.x_m), z = wide(b.z_m);
+  return (x0 == 0 || x >= s * x0) && (x1 + 1 == p.width || x < s * x1) &&
+         (z0 == 0 || z >= s * z0) && (z1 + 1 == p.depth || z < s * z1);
+}
+// The piece of `p` over its cells [x0, x1) x [z0, z1) holding `fragments`. Its budget is its own
+// bed at the whole's steps and each fragment the whole's share (`DepositForm::each`), so
+// `deposit_form` chooses the whole's steps and the whole's rungs for it (finer steps only where
+// its bed has fewer walls a cell than the whole's and the whole's budget stopped short of them).
+// False when it holds no deposit or does not fit.
+bool make_cut(const DepositPatch& p, const DepositForm& form, u32 x0, u32 x1, u32 z0, u32 z1,
+              u32 fragments, Cut& out) {
+  out = {};
+  out.x0 = x0;
+  out.x1 = x1;
+  out.z0 = z0;
+  out.z1 = z1;
+  DepositPatch& q = out.patch;
+  q = p;
+  q.width = x1 - x0 + 1;
+  q.depth = z1 - z0 + 1;
+  q.ground.clear();
+  q.thickness.clear();
+  q.coarse.clear();
+  q.sink.clear();
+  q.slope.clear();
+  q.blocks.clear();
+  for (u32 z = z0; z <= z1; ++z)
+    for (u32 x = x0; x <= x1; ++x) {
+      const u32 i = z * p.width + x;
+      q.ground.push_back(p.ground[i]);
+      q.thickness.push_back(p.thickness[i]);
+      q.coarse.push_back(p.coarse[i]);
+      if (!p.sink.empty()) q.sink.push_back(p.sink[i]);
+      if (!p.slope.empty()) {
+        q.slope.push_back(p.slope[2 * i]);
+        q.slope.push_back(p.slope[2 * i + 1]);
+      }
+    }
+  const i64 spacing_mm = std::llround(wide(p.spacing_m) * 1000.0);
+  q.origin_mm = {p.origin_mm[0] + static_cast<i64>(x0) * spacing_mm,
+                 p.origin_mm[1] + static_cast<i64>(z0) * spacing_mm};
+  const f64 s = wide(p.spacing_m);
+  for (const DepositBlock& b : p.blocks) {
+    if (!block_in(p, b, x0, x1, z0, z1)) continue;
+    DepositBlock local = b;
+    local.x_m = static_cast<f32>(std::clamp(wide(b.x_m) - s * x0, 0.0, s * (x1 - x0)));
+    local.z_m = static_cast<f32>(std::clamp(wide(b.z_m) - s * z0, 0.0, s * (z1 - z0)));
+    q.blocks.push_back(local);
+  }
+  q.fragments = fragments;
+  q.triangle_budget = 1000000;  // for its cells; set below
+  Vector<u8> active;
+  Vector<u32> cells;
+  u32 surface = 0;
+  std::string why;
+  if (!bed_cells(q, active, cells, surface, why)) return false;
+  const u64 own = std::max<u64>(
+      500, bed_surface(q, active, cells, form.sub) + static_cast<u64>(fragments) * form.each);
+  if (own > 1000000) return false;
+  q.triangle_budget = static_cast<u32>(own);
+  if (!bed_cells(q, active, cells, surface, why)) return false;
+  out.triangles = form_triangles(q, deposit_form(q, active, cells));
+  return true;
+}
+// Cut `c` in two along a line of samples where the deposit's triangles balance, its longer side
+// first; false when neither side leaves both pieces a deposit that fits.
+bool split_cut(const DepositPatch& p, const DepositForm& form, const Cut& c, Cut& a, Cut& b) {
+  const u32 cells_x = c.x1 - c.x0, cells_z = c.z1 - c.z0;
+  const u64 deposit = deposit_cells(p, c.x0, c.x1, c.z0, c.z1);
+  const u64 n_cells = std::max<u64>(1, deposit);
+  // A cell's triangles, in units of 1/n_cells: its bed at the whole's steps and its share of the
+  // fragments; a block's, the blocks' rung's. Integers, so the cut is the same on every toolchain.
+  const u64 cell_weight =
+      (2ull * form.sub * form.sub + 2) * n_cells +
+      static_cast<u64>(c.patch.fragments) * triangles_of_grid(std::min(form.rung, form.block_rung));
+  const u64 block_weight = static_cast<u64>(triangles_of_grid(form.block_rung)) * n_cells;
+  for (u32 pass = 0; pass < 2; ++pass) {
+    const bool along_x = (cells_x >= cells_z) == (pass == 0);
+    const u32 n = along_x ? cells_x : cells_z;
+    if (n < 2) continue;
+    Vector<u64> weight(n, 0);
+    for (u32 k = 0; k < n; ++k) {
+      const u64 cells = along_x ? deposit_cells(p, c.x0 + k, c.x0 + k + 1, c.z0, c.z1)
+                                : deposit_cells(p, c.x0, c.x1, c.z0 + k, c.z0 + k + 1);
+      weight[k] = cells * cell_weight;
+    }
+    const f64 s = wide(p.spacing_m);
+    for (const DepositBlock& block : p.blocks) {
+      if (!block_in(p, block, c.x0, c.x1, c.z0, c.z1)) continue;
+      const f64 at = along_x ? wide(block.x_m) / s : wide(block.z_m) / s;
+      const i64 column = static_cast<i64>(std::floor(at)) - (along_x ? c.x0 : c.z0);
+      weight[static_cast<u32>(std::clamp<i64>(column, 0, static_cast<i64>(n) - 1))] +=
+          block_weight;
+    }
+    u64 total = 0;
+    for (u64 v : weight)
+      total += v;
+    u64 before = 0, best_gap = ~0ull;
+    u32 best = 0;
+    for (u32 k = 1; k < n; ++k) {
+      before += weight[k - 1];
+      if (before == 0 || before == total) continue;
+      const u64 gap = 2 * before > total ? 2 * before - total : total - 2 * before;
+      if (gap < best_gap) {
+        best_gap = gap;
+        best = k;
+      }
+    }
+    if (best == 0) continue;
+    const u32 ax1 = along_x ? c.x0 + best : c.x1, az1 = along_x ? c.z1 : c.z0 + best;
+    const u32 bx0 = along_x ? c.x0 + best : c.x0, bz0 = along_x ? c.z0 : c.z0 + best;
+    // The fragments shared by the deposit's cells (by area where it has none).
+    u64 share_a = deposit_cells(p, c.x0, ax1, c.z0, az1), share = deposit;
+    if (deposit == 0) {
+      share_a = static_cast<u64>(ax1 - c.x0) * (az1 - c.z0);
+      share = static_cast<u64>(cells_x) * cells_z;
+    }
+    const u32 fragments_a =
+        static_cast<u32>((static_cast<u64>(c.patch.fragments) * share_a + share / 2) / share);
+    if (!make_cut(p, form, c.x0, ax1, c.z0, az1, fragments_a, a)) continue;
+    if (!make_cut(p, form, bx0, c.x1, bz0, c.z1, c.patch.fragments - fragments_a, b)) continue;
+    return true;
+  }
+  return false;
+}
 std::atomic<u64> g_solves{0};
+std::atomic<u64> g_reduced{0};
 }  // namespace
+
+bool deposit_patch_triangles(const DepositPatch& p, u64& out, std::string& error) {
+  out = 0;
+  Vector<u8> active;
+  Vector<u32> cells;
+  u32 surface = 0;
+  if (!bed_cells(p, active, cells, surface, error)) return false;
+  out = form_triangles(p, deposit_form(p, active, cells));
+  return true;
+}
+
+void deposit_patch_pieces(const DepositPatch& whole, Vector<DepositPiece>& out, u64 triangles_max) {
+  out.clear();
+  Vector<u8> active;
+  Vector<u32> cells;
+  u32 surface = 0;
+  std::string why;
+  DepositForm form;
+  Vector<Cut> cuts;
+  if (bed_cells(whole, active, cells, surface, why)) {
+    form = deposit_form(whole, active, cells);
+    Cut first;
+    first.x1 = whole.width - 1;
+    first.z1 = whole.depth - 1;
+    first.patch = whole;
+    first.triangles = form_triangles(whole, form);
+    cuts.push_back(std::move(first));
+  }
+  // The piece holding the most over the limit is cut next (the first of a tie), so the pieces are
+  // a function of the patch, never of an order of work.
+  while (cuts.size() < k_pieces_max) {
+    u32 next = ~0u;
+    for (u32 k = 0; k < cuts.size(); ++k)
+      if (!cuts[k].done && cuts[k].triangles > triangles_max &&
+          (next == ~0u || cuts[k].triangles > cuts[next].triangles))
+        next = k;
+    if (next == ~0u) break;
+    Cut a, b;
+    if (!split_cut(whole, form, cuts[next], a, b)) {
+      cuts[next].done = true;
+      continue;
+    }
+    cuts[next] = std::move(a);
+    cuts.insert(next + 1, std::move(b));
+  }
+  if (cuts.size() <= 1) {
+    DepositPiece one;
+    one.patch = whole;
+    out.push_back(std::move(one));
+    return;
+  }
+  for (Cut& c : cuts) {
+    DepositPiece piece;
+    piece.patch = std::move(c.patch);
+    // Each piece its own draw of loose stones, named by its corner in the whole (the bed's clasts
+    // are anchored to the world, so they are the whole's).
+    piece.patch.seed =
+        hash_combine(whole.seed, (static_cast<u64>(c.x0) << 32) | static_cast<u64>(c.z0));
+    piece.sample_x = c.x0;
+    piece.sample_z = c.z0;
+    out.push_back(std::move(piece));
+  }
+}
+
+u64 deposit_builds_reduced() { return g_reduced.load(std::memory_order_relaxed); }
 
 bool deposit_patch_fits(const DepositPatch& p, std::string& error) {
   Vector<u8> active;
@@ -1012,33 +1442,11 @@ bool solve_deposit(const DepositPatch& p, assets::MeshData& out, std::string& er
     return x >= 0 && z >= 0 && x < static_cast<i32>(w - 1) && z < static_cast<i32>(h - 1) &&
            active[static_cast<u32>(z) * (w - 1) + static_cast<u32>(x)] != 0;
   };
-  // G143's third pass (rocks.md, "The bed is rubble"): the top is drawn `sub` steps a spacing, at
-  // k_clast_step_mm, raised by the clasts, as fine as the budget holds with every fragment at its
-  // block's rung beside it; the underside and the walls' feet stay on the samples.
+  // The top's steps a spacing and the stones' rungs (`deposit_form`, rocks.md, "The bed is
+  // rubble" and "Where the triangles go").
   const i64 spacing_mm = std::llround(wide(p.spacing_m) * 1000.0);
-  u32 wall_edges = 0;
-  for (u32 a : cells) {
-    const i32 x = static_cast<i32>(a % w), z = static_cast<i32>(a / w);
-    wall_edges += static_cast<u32>(!present(x - 1, z) + !present(x + 1, z) + !present(x, z - 1) +
-                                   !present(x, z + 1));
-  }
-  auto surface_of = [&](u64 s) {
-    return static_cast<u64>(cells.size()) * (2 * s * s + 2) +
-           static_cast<u64>(wall_edges) * (s + 1);
-  };
-  u32 sub = 1;
-  for (u32 s = static_cast<u32>(
-           std::clamp<i64>((spacing_mm + k_clast_step_mm / 2) / k_clast_step_mm, 1, 16));
-       s > 1; --s)
-    if (spacing_mm % s == 0 && surface_of(s) + 432ull * p.fragments <= p.triangle_budget) {
-      sub = s;
-      break;
-    }
-  surface_triangles = static_cast<u32>(surface_of(sub));
-  u32 rung = 4;
-  const u32 each = p.fragments > 0 ? (p.triangle_budget - surface_triangles) / p.fragments : 0;
-  for (u32 r : k_grid_rungs)
-    if (r <= 20 && triangles_of_grid(r) <= each) rung = r;
+  const DepositForm form = deposit_form(p, active, cells);
+  const u32 sub = form.sub, rung = form.rung;
   assets::MeshData mesh;
   assets::Material mat = rock_material(p.type);
   material_factors(p.material, mat.base_color, mat.roughness);
@@ -1266,9 +1674,7 @@ bool solve_deposit(const DepositPatch& p, assets::MeshData& out, std::string& er
   // onto the plane of the top under its centre, so it rests on it on every side and never stands
   // proud of a slope. The plane, not the patch's grid, so a block over the patch's edge sits as
   // well as one inside it.
-  u32 block_rung = 4;
-  for (u32 r : k_grid_rungs)
-    if (triangles_of_grid(r) <= p.block_triangles) block_rung = r;
+  const u32 block_rung = form.block_rung;
   for (const DepositBlock& b : p.blocks) {
     const u32 first = mesh.positions.size();
     const f64 x = wide(b.x_m), y = wide(b.y_m), z = wide(b.z_m);
@@ -1330,7 +1736,7 @@ u64 deposit_source_hash(const DepositPatch& p) {
 
 bool build_deposit_container(const DepositPatch& input, const geometry::ClusterLodOptions& lod,
                              u32 page_bytes, geometry::ClusterFileData& out, std::string& error,
-                             const materials::Pack* pack) {
+                             const materials::Pack* pack, u32 clusters_max) {
   out = {};
   DepositPatch p = input;
   materials::MaterialSet set;
@@ -1360,42 +1766,84 @@ bool build_deposit_container(const DepositPatch& input, const geometry::ClusterL
       materials::resolve_set(&set, pack, rock_role(p.type), &stone_from_pack);
   const f64 stone_tile = stone_from_pack ? wide(stone->tile_m) : wide(p.material.tile_m);
   if (from_pack) p.material.tile_m = chosen->tile_m;
-  assets::MeshData mesh;
-  if (!solve_deposit(p, mesh, error, stone_tile)) return false;
   geometry::ClusterLodOptions options = lod;
   options.normal_cones = true;
-  // G143's third pass (rocks.md, "The coarse forms keep the patch's border"): a patch is a closed
-  // mesh, so the simplifier sees no open border at its edge and moved each patch's top off the
-  // line it shares with its neighbour its own way; from across a valley the apron drew as square
-  // panels with wedges between them. Every vertex on the patch's border is locked, as the
-  // terrain's chunks lock theirs (terrain.md), so two neighbours' coarse forms meet exactly.
-  // The border's positions as solve_deposit computes them (whole millimetres from the corner).
-  const i64 spacing_mm = std::llround(wide(p.spacing_m) * 1000.0);
-  const f32 span_x = static_cast<f32>(static_cast<f64>(spacing_mm * (p.width - 1)) / 1000.0);
-  const f32 span_z = static_cast<f32>(static_cast<f64>(spacing_mm * (p.depth - 1)) / 1000.0);
-  Vector<u8> locked(mesh.positions.size(), 0);
-  for (u32 v = 0; v < mesh.positions.size(); ++v) {
-    const Vec3 q = mesh.positions[v];
-    locked[v] = q.x == 0.0f || q.z == 0.0f || q.x == span_x || q.z == span_z ? 1 : 0;
-  }
-  geometry::AttributeSource attributes = assets::attribute_source(mesh);
-  attributes.locked = std::span<const u8>(locked.data(), locked.size());
-  // T108: one DAG a primitive (the bed, the stones), merged, so a cluster names one material.
-  Vector<geometry::ClusterLodMesh> parts;
-  Vector<u32> part_material;
-  for (const assets::Primitive& primitive : mesh.primitives) {
-    geometry::ClusterLodMesh part;
-    if (!geometry::build_cluster_lod(
-            mesh.positions, {mesh.indices.data() + primitive.first_index, primitive.index_count},
-            options, part, &error, attributes))
-      return false;
-    part_material.push_back(static_cast<u32>(primitive.material));
-    parts.push_back(std::move(part));
-  }
+  // G191 (rocks.md, "A patch under the cluster limit"): a streamed host admits a tile's mesh of at
+  // most `k_deposit_clusters_max` clusters and refuses a larger one at the walk. The builder cannot
+  // be given a bound that holds the cluster DAG under it (meshoptimizer bounds one clustering's
+  // clusters by 3T / (max_vertices - 2), 6,194 at 128,000 triangles, and no bound holds the levels
+  // above it). The generator hands a dense patch as pieces (`deposit_patch_pieces`) far under it;
+  // the build is what holds it: a patch whose DAG is over `clusters_max` is built again at half its
+  // triangle budget, half its fragments and half its blocks' rung, a function of the recipe alone,
+  // and a patch still over it at the least budget is refused here, naming it and its count.
+  assets::MeshData mesh;
   Vector<u32> owner;
-  if (!geometry::merge_cluster_lod(parts, out.mesh, &owner, &error)) return false;
-  for (u32& o : owner)
-    o = part_material[o];
+  DepositPatch q = p;
+  for (u32 attempt = 0;; ++attempt) {
+    mesh = {};
+    if (!solve_deposit(q, mesh, error, stone_tile)) return false;
+    // G143's third pass (rocks.md, "The coarse forms keep the patch's border"): a patch is a closed
+    // mesh, so the simplifier sees no open border at its edge and moved each patch's top off the
+    // line it shares with its neighbour its own way; from across a valley the apron drew as square
+    // panels with wedges between them. Every vertex on the patch's border is locked, as the
+    // terrain's chunks lock theirs (terrain.md), so two neighbours' coarse forms meet exactly.
+    // The border's positions as solve_deposit computes them (whole millimetres from the corner).
+    const i64 spacing_mm = std::llround(wide(q.spacing_m) * 1000.0);
+    const f32 span_x = static_cast<f32>(static_cast<f64>(spacing_mm * (q.width - 1)) / 1000.0);
+    const f32 span_z = static_cast<f32>(static_cast<f64>(spacing_mm * (q.depth - 1)) / 1000.0);
+    Vector<u8> locked(mesh.positions.size(), 0);
+    for (u32 v = 0; v < mesh.positions.size(); ++v) {
+      const Vec3 at = mesh.positions[v];
+      locked[v] = at.x == 0.0f || at.z == 0.0f || at.x == span_x || at.z == span_z ? 1 : 0;
+    }
+    geometry::AttributeSource attributes = assets::attribute_source(mesh);
+    attributes.locked = std::span<const u8>(locked.data(), locked.size());
+    // T108: one DAG a primitive (the bed, the stones), merged, so a cluster names one material.
+    Vector<geometry::ClusterLodMesh> parts;
+    Vector<u32> part_material;
+    for (const assets::Primitive& primitive : mesh.primitives) {
+      geometry::ClusterLodMesh part;
+      if (!geometry::build_cluster_lod(
+              mesh.positions, {mesh.indices.data() + primitive.first_index, primitive.index_count},
+              options, part, &error, attributes))
+        return false;
+      part_material.push_back(static_cast<u32>(primitive.material));
+      parts.push_back(std::move(part));
+    }
+    owner.clear();
+    out.mesh = {};
+    if (!geometry::merge_cluster_lod(parts, out.mesh, &owner, &error)) return false;
+    for (u32& o : owner)
+      o = part_material[o];
+    const u64 clusters = out.mesh.mesh.clusters.size();
+    if (clusters <= clusters_max) {
+      if (attempt > 0) g_reduced.fetch_add(1, std::memory_order_relaxed);
+      break;
+    }
+    auto refuse = [&] {
+      char hash[24];
+      std::snprintf(hash, sizeof(hash), "%016llx",
+                    static_cast<unsigned long long>(deposit_source_hash(input)));
+      error = std::string("engine.rocks deposits: patch deposit-") + hash + " builds " +
+              std::to_string(clusters) + " clusters after " + std::to_string(attempt + 1) +
+              (attempt == 0 ? " build" : " builds") + ", over the " + std::to_string(clusters_max) +
+              " a streamed host admits";
+      return false;
+    };
+    const bool least = q.triangle_budget <= 500 && q.fragments == 0 && q.block_triangles <= 192;
+    if (least || attempt + 1 >= k_deposit_cluster_attempts) return refuse();
+    ENGINE_LOG_INFO(log_deposit_build, "deposit patch built again under the cluster limit",
+                    log::field("patch", deposit_source_hash(input)), log::field("clusters", clusters),
+                    log::field("triangle_budget", static_cast<u64>(q.triangle_budget)),
+                    log::field("fragments", static_cast<u64>(q.fragments)),
+                    log::field("blocks", static_cast<u64>(q.blocks.size())));
+    q.triangle_budget = std::max<u32>(500, q.triangle_budget / 2);
+    q.fragments /= 2;
+    q.block_triangles = std::max<u32>(192, q.block_triangles / 2);
+    std::string why;
+    if (!deposit_patch_fits(q, why)) q.fragments = 0;
+    if (!deposit_patch_fits(q, why)) return refuse();
+  }
   if (page_bytes > 0) {
     geometry::ClusterPagesOptions pages;
     pages.page_bytes = page_bytes;

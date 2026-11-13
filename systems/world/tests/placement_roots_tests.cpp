@@ -1,10 +1,13 @@
 // **The streamed consumer opens an entry under the whole read's root** (T119; scene_gen.md, "The
 // derived-data root"; the forest's engine-needs 46 and 61): a streamed deposits entry, read with a
-// host root named, writes its recipes under that root when the reader opens it and again when the
-// world's placements consumer opens it, and nothing under the scene's own root. Before T119 the
-// consumer opened it with no root, so the deposits walked from the scene's directory and wrote
-// every recipe a second time under `<scene>/ddc/deposits` (the forest's 707 cliff, 143 ledge and
-// 479 deposit recipes). Linked with the rocks capability, as a host is.
+// host root named, is opened under that root by the reader and again by the world's placements
+// consumer, and nothing of it lands under the scene's own root. Before T119 the consumer opened it
+// with no root, so the deposits walked from the scene's directory and wrote every recipe a second
+// time under `<scene>/ddc/deposits` (the forest's 707 cliff, 143 ledge and 479 deposit recipes).
+// Since G191 the deposits write no recipe (a recipe travels with its tile; rocks.md, "A tile
+// solves"): what an open leaves is its directory, made under the root it was handed, so the case
+// holds where each open was rooted by where that directory is, and that neither wrote a file.
+// Linked with the rocks capability, as a host is.
 #include <systems/renderer/scene.h>
 #include <systems/world/placement_tiles.h>
 
@@ -20,12 +23,12 @@ using namespace engine::world;
 
 namespace {
 
-// The files directly under `dir`, 0 when it is not there.
+// The files anywhere under `dir`, 0 when it is not there.
 u32 files_in(const std::string& dir) {
   std::error_code ec;
   if (!std::filesystem::is_directory(dir, ec)) return 0;
   u32 n = 0;
-  for (const auto& e : std::filesystem::directory_iterator(dir, ec))
+  for (const auto& e : std::filesystem::recursive_directory_iterator(dir, ec))
     n += e.is_regular_file() ? 1u : 0u;
   return n;
 }
@@ -66,19 +69,23 @@ TEST_CASE(
   REQUIRE_MESSAGE(renderer::read_scene_file(path, desc, error), error);
   REQUIRE(desc.streamed.size() == 1);
   CHECK(desc.streamed[0].ddc == host);
-  const u32 read = files_in(host + "/deposits");
-  CHECK(read > 0);
+  // The reader's open was rooted at the host's root, and wrote nothing (G191).
+  CHECK(std::filesystem::is_directory(host + "/deposits"));
+  CHECK(files_in(host) == 0);
   CHECK_FALSE(std::filesystem::exists(scene_dir + "/ddc"));
+  CHECK(files_in(scene_dir) == 1);  // the scene file alone
 
-  // The consumer opens the entry again: the same recipes, under the same root, and none beside the
-  // scene.
+  // The consumer opens the entry again: rooted at the same root (its directory is made again
+  // there, and nowhere beside the scene), and it too writes nothing.
+  std::filesystem::remove_all(host);
   renderer::SceneData scene;
   fake_load(desc, scene);
   PlacementTilesConfig config;
   config.tile_size = 16.0f;
   PlacementTiles tiles;
   REQUIRE_MESSAGE(tiles.create(scene, config, &error), error);
-  CHECK(files_in(host + "/deposits") == read);
+  CHECK(std::filesystem::is_directory(host + "/deposits"));
+  CHECK(files_in(host) == 0);
   CHECK_FALSE(std::filesystem::exists(scene_dir + "/ddc"));
-  MESSAGE(read << " recipes, all under the host's root");
+  CHECK(files_in(scene_dir) == 1);
 }

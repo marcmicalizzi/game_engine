@@ -1115,13 +1115,16 @@ own talus; the existing same-tile footprint limit
 of streamed scenes still applies. `Context::stand` is refused: changing terrain requires a
 rebake. The height source's own material masks are not rewritten or assumed to be geology.
 
-Each patch is a schema recipe `deposit-<hash>.deposit.json` under `<ddc>/deposits/`, keyed by sampled
+Each patch is a schema recipe `deposit-<hash>.deposit.json`, keyed by sampled
 terrain, thickness, coarse share, seed, material, budgets, `k_deposit_version` and
-`k_rocks_version`. `<ddc>` is the host's root and nothing else (T119; [scene_gen](scene_gen.md#the-derived-data-root)): an
-entry opened with no root is refused by name, and the world's streamed consumer opens it with the
-whole read's root, so a streamed load writes each recipe once, under `--ddc`, and none beside the scene
-(`deposits_tests.cpp`'s last case and the world's `placement_roots_tests.cpp`). The mesh-generator
-registry builds it through `engine-content build`, `build-all` and scene loading. No new app flag, renderer pass, scheduler work or dependency on
+`k_rocks_version`, handed with its tile and written nowhere since G191 ([A tile solves](#a-tile-solves)):
+its `path` names where its file would be, under `<ddc>/deposits/`, and `<ddc>` is the host's root
+and nothing else (T119; [scene_gen](scene_gen.md#the-derived-data-root)): an entry opened with no
+root is refused by name and makes no directory, and the world's streamed consumer opens it with the
+whole read's root, so every recipe a streamed load hands is named under `--ddc` and nothing of the
+entry lands beside the scene or the working directory (`deposits_tests.cpp`'s last case and the
+world's `placement_roots_tests.cpp`). The mesh-generator registry builds it through `engine-content
+build`, `build-all` and scene loading. No new app flag, renderer pass, scheduler work or dependency on
 another capability is added. With no deposits entry there is no work or persistent storage.
 
 The near mesh is a continuous sampled bed with a buried underside and boundary walls, plus
@@ -1353,6 +1356,67 @@ apron and not twice its height; a gully that heads into a basin (r04) makes the 
 same rule. Rockfall concentrated in gullies beyond the area they drain (a jointed gully retreating
 faster than its spurs) would raise the contrast further; no inventory with numbers was found.
 
+### Where a pile comes to rest
+
+G190, 2026-11-12 (`k_deposit_version` 9, and 10 for the edited faces below; [grounding](../experiments/rockfall-deposits.md#g190-where-a-pile-comes-to-rest-2026-11-12)).
+The forest proof of concept withheld the deposits from its world for two reasons (its asks audit,
+gaps 41 and 42): below its massifs the ground falls at 35 to 50 degrees for about 100 m before it
+can hold anything, and **the foot was the first sample under `source_deg`**, so every pile stood on
+ground steeper than its own surface, which never met the ground; and **the flood cut such a surface
+at `runout_m` or at the pile's height**, so the bed ended in a vertical wall, up to 19 m measured,
+half its outline stepping more than a metre.
+
+**Where it rests.** Rock that leaves a face falls, bounces and rolls through a transit zone and
+comes to rest in a deposition zone where the slope no longer keeps it moving (Dorren 2003's three
+zones; the talus' own friction angle, Francou and Mante's 34-36 degrees, and its concave base at
+31-34). A pile here is a surface that falls at the repose and eases to `toe_deg`, so it meets the
+ground only where the ground is gentler than its toe. **A sample no gentler than the toe carries
+what reaches it**: a face's area is routed down steepest descent through the face and every carrying
+sample below it, and its foot is the first sample that does not carry, so on the forest's ground the
+pile stands on the meadow at the bottom of the transit slope and its wedge leans up that slope
+(its section against the slope it leans on, as G143's against a face). A sample on the region's border
+whose lower neighbours are all outside it carries too: what reaches it leaves the region.
+
+**It never ends in a cut.** After each flood, every bare sample beside a pile's sample is asked
+how far that pile's own surface would stand over its ground. A surface that meets the ground stands
+under it; one cut by the run-out or by the pile's height stands the cut's height over it, and a pile
+whose cut exceeds `k_cut_m` is **moved on**: down its fall line, over the next brink (a carrying
+sample) to the first ground below it that holds, its face's area with it, and the round runs again.
+So is a pile that **drapes** a drop below it, which meets the ground at last and so is no cut but a
+wedge filling the drop (found by what it covers: carrying ground lower than its own foot by more than
+its height; on a 2 m bench at a 45-degree drop it held five times what it shed). A pile with no brink
+below it, or still cut after `k_rest_moves` (8) moves, is **refused**, and the plan records each
+refusal (`DepositPlan::refused`: the foot in world millimetres, the volume asked, the cut; a fall that
+left the region has cut 0) with the moves and the rounds (at most `k_rest_rounds`, 32); the
+generator logs the counts and the refused volume once an entry. **The bound, `k_cut_m`, is a clast,
+not a metre**: the lowest the bed's coarsest drawn clast stands, `k_clast_stand_lo` (0.2) of the
+smallest clast of the 2 m lattice (0.55 of its cell), 0.22 m, a step the toe's own clasts hide.
+
+**What it does** (`deposits_rest_tests.cpp`; the table is on the
+[grounding page](../experiments/rockfall-deposits.md#what-g190-does-on-the-tests-faces)): below a
+face whose foot falls 12 m at 35 to 60 degrees, the outline meets the ground everywhere (the base's
+stood 7.43 m over it at 42 degrees), no foot is on ground steeper than the repose, and a pile holds
+what it shed to 4% from 42 degrees up (the base's six times it); piles on a bench at a brink are all
+moved over it; a fall with nowhere to rest is all refused.
+
+**A face an edit cut sheds nothing.** A source is a rock face of the land. The forest's second world
+read its channels' cut banks (45-56 degrees) as faces and shed 649 piles into a stream's bed. The
+generator hands `plan_deposits` the ground before its edits (`Context::uncut()`, the terrain less
+every cut, fill and bench, R144), when the host's differs from the ground, and **a sample sheds only
+where both are steeper than `source_deg`**; a cut bank or a bench's riser still carries what falls
+onto it from a real face above. Held by `deposits: a channel cut through a slope sheds nothing`: a
+3 m channel with 56-degree banks down a 20-degree hillside sheds 312 piles over 2,103 talus samples
+read on the cut ground alone, and none read against the ground before it, directly and through the
+generator's `Context` hook. The plan's key (T120, [A tile solves](#a-tile-solves)) covers both
+grounds.
+
+**What it does not do yet.** A pile leaning on ground at the repose angle itself lies parallel to it
+and holds only its toe: 37% of what it was asked at 35 degrees, and a moved pile against a 45-degree
+drop 40-57%; the volume not held is not drawn (the wedge law `h² a = q` has no term for the toe's
+concave apron, the part that holds it). The plan's region still ends where `region_max` says, so a
+pile whose run-out crosses it is cut by the region (G192). The 35-to-31-degree profile is one
+setting a layer; a rock-avalanche runout past the shadow line is not modelled.
+
 ### The edge and the seams
 
 G143's second stage (`k_deposit_version` 3). **The outline.** G128 and G143's first agent put a
@@ -1560,9 +1624,9 @@ material sets' row, not built here.
 
 Until G143's fourth stage the generator's `open` solved every patch's mesh of the region to check
 its triangle budget before writing its recipe, so opening a region cost every patch's mesh, near
-or not ("nothing exists before its tile"). `open` now plans the region, writes each patch's recipe
-(`deposit-<hash>.deposit.json`, as the cliffs generator writes its faces' `.rock.json`) and checks
-it with `deposit_patch_fits`, every refusal `solve_deposit` makes without building the mesh (the
+or not ("nothing exists before its tile"). `open` now plans the region, makes each patch's recipe
+(`deposit-<hash>.deposit.json`; written under the root until G191, handed with its tile since,
+below) and checks it with `deposit_patch_fits`, every refusal `solve_deposit` makes without building the mesh (the
 bed's cells and surface triangles against the budget). A patch's mesh is solved when the host
 builds the mesh its tile names, through the mesh generator registry (`deposit`) and the
 derived-data cache, keyed by the recipe; a second world that names the same patch reads it from
@@ -1585,6 +1649,142 @@ m²; 127,608 before [the fragments' rungs](#where-the-triangles-go)), 301 at the
 entry's life: the plan's 176-byte record, its per-sample arrays (ground 8 bytes, thickness, coarse,
 sink 4 each, slope 8, drainage 8; with a formation one `RockType`), 72 bytes a pile and 128 a
 block; it scales with the region's samples, not the world's size.
+
+**A tile's patches arrive with the tile** (G191, 2026-11-12; the forest's gap 43: every patch of a
+layer was listed by `meshes`, so a host built and held all of them at load, 724 meshes, 51.6 M
+triangles and 4.2 GB of containers for one 1 km window, whatever the camera). The generator now
+follows the tile-mesh contract ([scene_gen](scene_gen.md#a-tiles-meshes), ADR-0061): `meshes` is
+null and `tile_meshes` true, `tile` hands each of its patches as a `PlacementMesh` whose `recipe` is
+the patch's canonical bytes (made from the plan when the tile asks, so the same bytes whatever the
+order tiles come in) and whose `reach` is the patch's diagonal plus its largest block's overhang, and
+`expand` hands the same recipes for a scene read whole. **Nothing is written at `open`**: the
+recipe's `path` is where its file would be, under the host's derived-data root's `deposits/`. The
+host builds a patch's mesh when the first tile naming it activates, through the derived-data cache
+keyed by the recipe, and lets it go after the last. `DepositLayer::far_rings` (version 3, 1-8,
+default 3, as the ledges') is how many of the world's rings draw the deposits: a tile in a ring past
+it hands nothing (`Placements::kind` 1), and the cluster DAG is the far form within. A dense patch
+is handed as pieces, and every mesh is held under a streamed host's cluster limit by its build
+([A patch under the cluster limit](#a-patch-under-the-cluster-limit)). What
+stays resident for the entry is the plan (its per-sample ground, thickness, coarse, sink, slope and
+rock, 29 bytes a sample, the drainage dropped after planning), its blocks, and 72 bytes a candidate
+patch: 5.7 MB for the kilometre below.
+
+**What a kilometre costs** ([measured](../experiments/rockfall-deposits.md#what-a-kilometre-of-deposits-costs),
+`msvc-release`, a loaded machine): at the forest's 128,000 triangles a 16 m patch, the 466 patches
+of a 1,024 m window were 36.6 M triangles and 2.93 GB built at load before G191 (249 s of work); now
+none is built at load, `open` is 316 ms, the second open 43 ms, and a 64 m tile's activation is
+3.9 s of work at the median (1.4 s at 32,000 a patch), spread over the host's pool off the frame's
+thread. Since the pieces (2026-11-13, the same case, a machine 63-73% busy) the 466 patches are
+1,476 meshes, 36.7 M triangles (0.3% more: the walls along the cuts) and 3.00 GB (2.4% more), the
+largest 2,442 clusters where it was 3,934, none built again; a tile's activation is 4.1 s of work
+at the median and 9.2 s at most, one mesh's build 169 ms at the median and 526 ms at most, so a
+pool of two workers takes a tile's 20 to 40 meshes in about two seconds.
+
+**What a walker sees** (2026-11-13, [measured](../experiments/rockfall-deposits.md#what-a-walker-sees-in-a-streamed-host),
+`engine-view --world --windowed` along a 300 m walk at 2 m/s beside a kilometre of massif foot at
+the forest's density, 64 m tiles, rings of 1.5, 4 and 8 tiles). A tile's meshes build on the host's
+pool, off the frame's thread: across a tile's arrival the frames are what they are between arrivals
+(median 12.2 ms, p95 24 ms). The first fill is not: a flight's first frame fills the ring with no
+budget and waits for every build on the frame's thread (16 s with the deposits in the inner ring,
+64 s in all three). **With `far_rings` 3 the default mesh room cannot hold them**: the first fill
+admits 105 meshes (250 of 256 MiB), and once the walker moves every drawn tile yields to a nearer one
+that still does not fit, so for the rest of the walk no deposit is drawn at all (32 tiles withheld,
+none drawn; with a 2 GiB room all 601 are resident from the first fill and none ever arrives). With
+`far_rings` 1 they arrive two tiles at a time every 32 s of the walk, in view, the nearer tile's near
+edge about 63 m ahead. Both are the world's room and its yield (rows in the roadmap), not the
+generator's.
+
+**One plan a load** (T120; the forest's gap 44: the reader's and the world's placements
+consumer's opens each planned the whole region). The scene reader opens an entry, reads it and
+closes it; the world's consumer opens it again, and its `Context` names no derived-data root (a
+request to `systems/world`), so a plan kept in a file under the root could miss. A plan is a
+function of the layer, the world seed and the ground's heights over the region, so the generator
+keeps it **for the process by a key over those** (the layer's canonical bytes with
+`k_deposit_version`, the seed, and every sampled height in whole micrometres): an open that finds
+its key holds that plan, and the plan last let go is kept until another is made, so a close and
+the next open of the same entry plan once. The key costs the ground's sampling again (the plan's
+first step), not the plan. `deposit_plans_made()` counts the plans a process made, and the test
+holds two opens and a close-and-open to one (`deposits: a tile's patches arrive with it, none past
+far_rings, and one plan a load`). The log says `deposits planned` once and `deposits plan reused`
+for every later open.
+
+### A patch under the cluster limit
+
+G191's review, 2026-11-12 (`k_deposit_version` 11). A streamed host refuses a tile's mesh over
+`renderer.meshes.max_clusters` (4,096) by name, at the walk, and its tile draws the rest without it
+([world](world.md#a-tiles-meshes-residency-by-reference)). A patch is one mesh, so a patch over the
+limit is a hole in the talus that appears as a walker comes near. The first G191 capped a patch at
+160,000 triangles, blocks included, because the largest patch of one test massif built 3,934
+clusters: a 4% margin on one terrain.
+
+**Why no bound on the input holds it.** The builder is meshoptimizer's cluster LOD (`clodBuild`).
+One clustering of T triangles makes at most `max(ceil(3T / (v - 2)), ceil(T / t))` clusters
+(`meshopt_buildMeshletsBound`, with v = 64 vertices and t = 124 triangles a cluster): 6,194 at the
+forest's 128,000, over the limit before a level of the DAG is built, and a mesh of many separate
+parts (the fragments and blocks, each a closed solid of a few hundred triangles) fills its clusters
+to the vertex limit, not the triangle limit, which is why the count follows the parts more than the
+triangles. Above the leaves, each level simplifies a group of clusters to half (and keeps any group
+that will not go under 85%) and clusters it again; the groups' sizes are the partitioner's and are
+not bounded below, so the levels' sum has no bound short of the leaves' count times the levels' (19
+at a 0.85 ratio). A bound that held by construction for one mesh would cap it far under the
+forest's density.
+
+**The limit is a mesh's, not a tile's, so a dense patch is handed as pieces.** Building a dense
+patch again coarser would draw a sparser, coarser pile beside full ones, which a walker sees. The
+generator's `tile` hands a patch whose finest form holds more than `k_deposit_piece_triangles`
+(40,000) as **pieces** (`deposit_patch_pieces`), each an ordinary `DepositPatch` recipe over a
+rectangle of the patch's samples, its own mesh and placement at its own corner:
+
+- **Where it is cut.** Along a line of samples of the piece's longer side where the deposit's
+  triangles balance (a cell's bed at the patch's steps and its share of the loose stones, and each
+  block at the blocks' rung, in integers), the piece holding the most cut next, up to 16 pieces; a
+  cut that would leave a side with no deposit, or one that does not fit, is not made. Cuts on
+  sample lines keep every bed cell whole.
+- **What a piece keeps.** The patch's samples, its sink and its gradient over the rectangle; the
+  blocks whose centres stand in it (a centre on a cut belongs to the piece after it); the patch's
+  rock and material; a share of the loose stones by its deposit's cells; and a budget that is its own
+  bed at the patch's steps plus each stone the patch's share (`DepositForm::each`), so
+  `solve_deposit` chooses the patch's steps and the patch's rungs for it. Its corner is the patch's
+  plus its samples, so its clasts are the patch's (they are anchored to the world); its seed is the
+  patch's and its corner, so its loose stones are drawn afresh at the same density. Together the
+  pieces hold every stone and block of the patch, at the patch's form, plus the walls along their
+  cuts (`deposits: a dense patch is handed as pieces that keep what it holds`).
+- **Where pieces meet.** A piece's border is locked as a patch's is ([The coarse forms keep the
+  patch's border](#the-coarse-forms-keep-the-patchs-border)), so two pieces meet at every coarse form
+  as two patches do, and the walls along a cut are back to back inside the bed, as between patches.
+- **Names.** The first piece keeps the patch's placement id; the k-th is the id plus k times the
+  layer's patch count, so every placement of an entry has its own stable name. The pieces are a
+  function of the patch's recipe alone, so a tile hands the same bytes whenever it comes in.
+
+**And the build holds it.** `build_deposit_container` counts the merged DAG's clusters; over its
+`clusters_max` (`k_deposit_clusters_max`, 4,096, the host's default) it builds the patch again at
+half its `triangle_budget`, half its fragments and half its blocks' rung (192 at the least), up to
+eight times, logs each (`deposit patch built again under the cluster limit`, naming the patch by its
+hash and the count) and counts it (`deposit_builds_reduced()`). Each attempt is a function of the
+recipe alone, so the container a recipe builds is the same bytes on every host and every run, and
+the derived-data cache's key (the recipe) stays the key. A patch still over the limit after its
+builds is refused by its build with a sentence naming it and its count (`engine.rocks deposits:
+patch deposit-<hash> builds <n> clusters after <k> builds, over the 4096 a streamed host admits`),
+so no container over the limit ever reaches a host. The pieces are why nothing reaches that path at
+the forest's density; it is the bound's guarantee, not its plan. The generator's 160,000-triangle cap
+at `open` is gone with it.
+
+**Why 40,000.** The cluster count is a density, triangles a cluster, and it is the loose stones
+that make it dense: a closed stone of 192 or 432 triangles fills its clusters to the vertex limit.
+Measured on the two cases (msvc-debug, 2026-11-12; the counts do not depend on the build or the
+machine): the forest's budget with 160 loose stones on the massif's foot built whole patches of
+107,000 to 128,000 triangles at 23.6 to 26.7 triangles a cluster (4,329 to 4,784 clusters, every one
+over the limit, at the commit before this rule: `deposits: no mesh a tile hands at the forest's
+density is over a streamed host's cluster limit`, which fails there); 600 stones of 192 triangles on
+a 16 m patch built pieces at 20.1 triangles a cluster (1,915 clusters from 38,592); and the kilometre
+case (`deposits: what a kilometre of massif foot costs`) at the forest's budget hands its 466
+patches as 1,476 pieces whose largest builds **2,442** clusters, the most seen, from at most 40,000
+triangles: 16.4 a cluster or more. The first G191's kilometre measured 29.5 at both its budgets.
+At 40,000 triangles a piece is at most 60% of the limit at the densest seen, where a cut at 48,000
+would have been 72%. The same tile at the forest's budget is
+handed as 16 pieces of 23,000 to 34,000 triangles, the most 1,342 clusters, 1.3% more triangles in
+all than the 4 whole patches (the walls along the cuts), and nothing is built again at half its
+budget (`deposit_builds_reduced()` unmoved over every case).
 ### Foothill exposure and repeated-material limits
 
 [G132's v29 controls](../experiments/v29-cliff-diagnosis.md) distinguish the continuous authored
