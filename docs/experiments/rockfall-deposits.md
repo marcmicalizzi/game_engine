@@ -318,6 +318,35 @@ seconds of work a 64 m tile, and the default's density costs a third of it. Befo
 Resident for the entry: the plan, 29 bytes a sample (5.7 MB for this window), its blocks and 72 bytes
 a candidate patch.
 
+### What a walker sees in a streamed host
+
+G191's review, 2026-11-13: `engine-view --scene <scene> --world --camera-path walk.json --windowed
+--width 1600 --height 900 --ddc <cold root> --benchmark run.jsonl --world-log world.jsonl`,
+`msvc-release` at 8cd633a6, RTX 5090. The scene is a kilometre of massif foot (a 60 m face over a
+skirt grading through 50 to 35 degrees), a deposits layer 100 m by 960 m at 1 m samples, 16 m
+patches at the forest's 128,000 triangles, 96 loose stones; 64 m tiles, rings of 1.5, 4 and 8
+tiles; the walk 300 m along the foot at 2 m/s and eye height, 150 s in real time. The machine was
+shared: other processes held 34 to 99.5% of the CPU across the runs, so every time is an upper
+bound. An offscreen `--benchmark` flight of the same path is no measure of this: it draws its 4,500
+frames in 2.5 s, faster than one tile's meshes build, and draws no deposit after its first fill.
+
+| | `far_rings` 3, the default mesh room (256 MiB) | `far_rings` 3, a 2 GiB room | `far_rings` 1, the default room |
+|---|---:|---:|---:|
+| The first frame (the ring filled with no budget, every build waited for on the frame's thread) | 63.9 s | 63.8 s | 16.4 s |
+| Deposits' meshes drawn after the first fill | 88 instances, then none from 66 s to the end | 541, 601 from 70 s to the end | 17 to 97, two tiles arriving every 32 s |
+| Withheld | 32 tiles (105 meshes, 250.5 MiB resident) | none | none |
+| A tile arriving in view | never | never (the 512 m outer ring holds the whole region from every point of the walk) | +3,233 visible pairs in one frame at 43.5 s, the tile's near edge about 63 m ahead |
+| Frame times over the walk after the first frame, median / p95 / max | 12.2 / 23.2 / 506 ms (the update after the first fill) | 12.2 / 23.0 / 77.8 ms | 12.2 / 24.0 / 74.8 ms, the same within 2 s of an arrival |
+
+What the default room does with `far_rings` 3: the first fill admits what fits, the ring moves, and
+the nearest waiting tile asks for room; the room yields the farther drawn tiles one by one (the
+tail falls 88, 80, 48, 40, 8, 0 over five updates) and still has no run for it. By a reading of the code
+(not traced): what the room still holds is named by tiles that are waiting themselves, partly
+admitted, and `PlacementTiles::yield_farthest` (`systems/world/src/placement_tiles.cpp`) takes only
+drawn tiles, so nothing frees it. Every tile then waits for the rest of the walk. Nothing
+in the deposits decides this; at the forest's density a 64 m tile of the foot is some 40 meshes and
+a third of the room.
+
 Not found, and looked for: a published runout of talus below the base of a transit slope; a law for
 the volume a pile at the foot of a slope at its own repose holds (the wedge law gives zero section,
 and the model under-holds there, 37% of the supply at 35 degrees; rocks.md says so).

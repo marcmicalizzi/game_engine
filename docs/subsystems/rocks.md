@@ -1676,6 +1676,20 @@ none is built at load, `open` is 316 ms, the second open 43 ms, and a 64 m tile'
 3.9 s of work at the median (1.4 s at 32,000 a patch), spread over the host's pool off the frame's
 thread.
 
+**What a walker sees** (2026-11-13, [measured](../experiments/rockfall-deposits.md#what-a-walker-sees-in-a-streamed-host),
+`engine-view --world --windowed` along a 300 m walk at 2 m/s beside a kilometre of massif foot at
+the forest's density, 64 m tiles, rings of 1.5, 4 and 8 tiles). A tile's meshes build on the host's
+pool, off the frame's thread: across a tile's arrival the frames are what they are between arrivals
+(median 12.2 ms, p95 24 ms). The first fill is not: a flight's first frame fills the ring with no
+budget and waits for every build on the frame's thread (16 s with the deposits in the inner ring,
+64 s in all three). **With `far_rings` 3 the default mesh room cannot hold them**: the first fill
+admits 105 meshes (250 of 256 MiB), and once the walker moves every drawn tile yields to a nearer one
+that still does not fit, so for the rest of the walk no deposit is drawn at all (32 tiles withheld,
+none drawn; with a 2 GiB room all 601 are resident from the first fill and none ever arrives). With
+`far_rings` 1 they arrive two tiles at a time every 32 s of the walk, in view, the nearer tile's near
+edge about 63 m ahead. Both are the world's room and its yield (rows in the roadmap), not the
+generator's.
+
 **One plan a load** (T120; the forest's gap 44: the reader's and the world's placements
 consumer's opens each planned the whole region). The scene reader opens an entry, reads it and
 closes it; the world's consumer opens it again, and its `Context` names no derived-data root (a
