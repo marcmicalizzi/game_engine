@@ -66,6 +66,9 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     # The caster policy's untraced species under a traced picture (R110).
                     tests/untraced_tests.cpp
                     tests/handoff_tests.cpp
+                    # The far field at rest: past a distance the sward stands still, takes no pool
+                    # block and references the chain's resident structures (R152).
+                    tests/field_rest_tests.cpp
                     # The off-frustum shadow casters' volumes against a brute-force membership, on
                     # the CPU (caster_volume.h).
                     tests/caster_volume_tests.cpp

@@ -22,6 +22,14 @@ tunables::Bool census_log{"renderer.rt.census_log", false,
                           "Log every census frame's visible and caster entries by what the ray "
                           "tracing chain does with them (built by the frame, cached, static) and "
                           "by ring (engine-view --census)"};
+// **What a placement draws against what it holds** (R152; docs/experiments/rt-chain-walk-2026-11-12
+// .md, "What a far placement draws"): on one census frame, per ring, the meshes that draw the most
+// entries, each with its cluster count (the pairs an instance of it holds), the instances of it
+// the frame drew anything of, the entries they drew and the most one instance drew.
+tunables::Int census_mesh_frame{"renderer.rt.census_mesh_frame", -1, -1, 1'000'000'000,
+                                "The census frame on which to log, per ring, the meshes that "
+                                "draw the most entries and how many clusters an instance of each "
+                                "draws against how many it holds (-1: never)"};
 
 // The median of a handful of repeats: the middle one, or the mean of the middle two.
 f64 median_of(Vector<f64>& values) {
@@ -702,18 +710,67 @@ bool VisibleCensus::count(const SceneData& data, const GpuScene& scene, const St
   if (!copy_runs(scene, stats, true, caster_count, error)) return false;
   for (u64 e = 0; e < caster_count; ++e)
     tally(entries[e * 2 + 0], 1);
+  if (census_mesh_frame.get() == static_cast<i64>(counted_)) {
+    // The drawn run again (the staging buffer holds the casters now): entries per instance, then
+    // per (rank, mesh) the instances seen, their entries and the most one drew. Cold: one frame.
+    if (!copy_runs(scene, stats, false, entry_count, error)) return false;
+    u32 instance_end = 0;
+    for (u64 e = 0; e < entry_count; ++e)
+      instance_end = std::max(instance_end, entries[e * 2 + 0] + 1u);
+    Vector<u32> per_instance(instance_end, 0u);
+    for (u64 e = 0; e < entry_count; ++e)
+      ++per_instance[entries[e * 2 + 0]];
+    struct Row {
+      u32 instances = 0;
+      u32 drawn = 0;
+      u32 most = 0;
+    };
+    Vector<Row> rows(u64{k_chain_ranks} * data.parts.size());
+    for (u32 i = 0; i < per_instance.size(); ++i) {
+      if (per_instance[i] == 0) continue;
+      const u32 mesh = scene.instance_mesh(i);
+      if (mesh >= data.parts.size()) continue;
+      const u32 rank = std::min(scene.rt_instance_rank(i), k_chain_ranks - 1);
+      Row& row = rows[u64{rank} * data.parts.size() + mesh];
+      ++row.instances;
+      row.drawn += per_instance[i];
+      row.most = std::max(row.most, per_instance[i]);
+    }
+    for (u32 rank = 0; rank < k_chain_ranks; ++rank) {
+      for (u32 top = 0; top < 10; ++top) {
+        u32 best = ~0u;
+        for (u32 m = 0; m < data.parts.size(); ++m) {
+          const Row& row = rows[u64{rank} * data.parts.size() + m];
+          if (row.drawn == 0) continue;
+          if (best == ~0u || row.drawn > rows[u64{rank} * data.parts.size() + best].drawn) best = m;
+        }
+        if (best == ~0u) break;
+        Row& row = rows[u64{rank} * data.parts.size() + best];
+        ENGINE_LOG_INFO(log_renderer, "census mesh", log::field("frame", counted_),
+                        log::field("rank", rank), log::field("mesh", best),
+                        log::field("clusters", data.parts[best].cluster_count),
+                        log::field("instances_drawn", row.instances),
+                        log::field("entries", row.drawn), log::field("most", row.most));
+        row.drawn = 0;  // taken
+      }
+    }
+  }
   ++counted_;
   if (census_log.get()) {
     // Summed over the ranks by kind, and the frame's own builds by rank: kinds 0 and 1 are built
     // every frame under any picture, 4 and 5 (untraced) under a traced one alone.
     u32 kinds[2][k_chain_kinds] = {};
     u32 own[2][k_chain_ranks] = {};
+    u32 refs[k_chain_ranks] = {};
     for (u32 c = 0; c < 2; ++c) {
       for (u32 r = 0; r < k_chain_ranks; ++r) {
         for (u32 k = 0; k < k_chain_kinds; ++k) {
           const u32 n = chain_[(c * k_chain_ranks + r) * k_chain_kinds + k];
           kinds[c][k] += n;
           if (k == 0 || k == 1 || k == 4 || k == 5) own[c][r] += n;
+          // What references the cache, by rank: a rigid instance's entries and, since the far
+          // field rests (R152), a field instance's past the distance — traced (2) or not (6).
+          if (c == 0 && (k == 2 || k == 6)) refs[r] += n;
         }
       }
     }
@@ -724,7 +781,10 @@ bool VisibleCensus::count(const SceneData& data, const GpuScene& scene, const St
         log::field("deform", kinds[0][0]), log::field("rigid", kinds[0][1]),
         log::field("cached", kinds[0][2]), log::field("static", kinds[0][3]),
         log::field("untraced_deform", kinds[0][4]), log::field("untraced_rigid", kinds[0][5]),
-        log::field("untraced_static", kinds[0][7]), log::field("own_r0", own[0][0]),
+        log::field("untraced_static", kinds[0][7]), log::field("untraced_cached", kinds[0][6]),
+        log::field("ref_r0", refs[0]), log::field("ref_r1", refs[1]), log::field("ref_r2", refs[2]),
+        log::field("ref_r3", refs[3]), log::field("ref_r4", refs[4]),
+        log::field("own_r0", own[0][0]),
         log::field("own_r1", own[0][1]), log::field("own_r2", own[0][2]),
         log::field("own_r3", own[0][3]), log::field("own_r4", own[0][4]),
         log::field("own_r5", own[0][5]), log::field("c_deform", kinds[1][0]),

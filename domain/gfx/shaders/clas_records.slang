@@ -69,6 +69,7 @@
 // top-level record's mask (tlas_references.slang, `instance_ray_mask` in scene.slang).
 
 #include "scene.slang"
+#include "field_rest.slang"
 
 // Mirrors VkClusterAccelerationStructureBuildTriangleClusterInfoNV (64 bytes).
 struct ClusterRecord {
@@ -103,7 +104,7 @@ struct BlasRecord {
   uint64_t references;
 };
 
-// Mirrors gfx::ClusterRecordParams (192 bytes: past the 128 every device guarantees, which this
+// Mirrors gfx::ClusterRecordParams (200 bytes: past the 128 every device guarantees, which this
 // pass may take because it runs only where VK_NV_cluster_acceleration_structure does, and every
 // such device has 256).
 struct RecordParams {
@@ -147,6 +148,9 @@ struct RecordParams {
   // micro-triangles where the caster must be passed through.
   uint64_t omm;
   uint64_t omm_fade;  // the cross-fade table, view 0's block, or 0
+  // **The far field at rest** (field_rest.slang; R152): the frame's FloraFieldFrame, or 0. A field
+  // instance wholly past its rest distance is a cached instance this frame (`instance_cached`).
+  uint64_t field;
 };
 
 // Mirrors gfx::ClusterCacheTables (120 bytes).
@@ -256,12 +260,25 @@ void attach_micromap(inout ClusterRecord record, uint cluster_id) {
 // structures are the cache's, built once, and not this frame's. Rigid — nothing in the pool moves
 // its vertices, so every instance of its mesh traces the same clusters — and of a mesh the cache
 // keeps. A static form never reaches a records pass that asks. An untraced instance does in a
-// traced-primary frame (R110), and is never cached: the cache's drawn structure is every
-// instance's, and the CPU's count of the instances the cache serves (`rt_instance_cached`) leaves
-// it out, so the frame builds its drawn entries itself.
+// traced-primary frame (R110), and since R152 is cached there like any rigid instance: the cache's
+// drawn structure is every instance's of its mesh, and what keeps a light's ray off an untraced
+// one is its own top-level record's mask, not the structure. (Until R152 it was left out and the
+// frame built its drawn entries itself: the forest's litter, rigid and untraced, was most of what
+// the owner's worst view built.) Its casters never reach here, in any frame.
+//
+// **A field instance at rest is cached too** (field_rest.slang; renderer.md, "The far field at
+// rest"; R152): wholly past the frame's rest distance the pool gave it no block, so this frame it
+// is the rigid instance the cache's structures are built for — the rest pose, from the same floats
+// an own record of it would name — and it references them, untraced or not: a traced-primary
+// frame's far sward is then a few hundred resident structures and not one per pair. It is asked
+// with the frame's eye, so an instance stops being cached the frame it comes inside the distance.
 bool instance_cached(InstanceDesc instance) {
-  if (g_params.cache == 0 || instance.deform != k_invalid_deform) return false;
-  if ((instance.flags & k_instance_untraced) != 0) return false;
+  if (g_params.cache == 0) return false;
+  if (instance.deform != k_invalid_deform) {
+    if (!field_rests_at(g_params.field, instance)) return false;
+  } else if ((instance.flags & k_instance_untraced) != 0 && !untraced_drawn()) {
+    return false;  // a rasterized picture: none of its entries reach the records at all
+  }
   CacheTables* tables = cache_tables();
   if (instance.mesh >= tables->mesh_count) return false;
   uint* bases = (uint*)tables->bases;
@@ -361,7 +378,10 @@ void records_main(uint3 thread_id : SV_DispatchThreadID) {
     // one. It is left out here, before it is counted, so the ranges and the emit never see it.
     MeshDesc* meshes = (MeshDesc*)g_params.meshes;
     const MeshDesc mesh = meshes[instance.mesh];
-    if (is_deformed(mesh, instance) && deform_base(mesh, instance, index) == k_no_pool_slot) {
+    // A field instance at rest has no block because its rest pose *is* its pose (field_rest.slang;
+    // R152), so its caster stays: the cache's caster form, like a rigid instance's.
+    if (is_deformed(mesh, instance) && deform_base(mesh, instance, index) == k_no_pool_slot &&
+        !field_rests_at(g_params.field, instance)) {
       return;
     }
     Atomic<uint>* counts = (Atomic<uint>*)caster_counts();

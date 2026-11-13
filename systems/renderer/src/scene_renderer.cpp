@@ -2819,6 +2819,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   const f64 sky_time_s = scene.epoch_s() + frame.sky_time_s;
   const u64 flora_table = scene.flora_frame(slot, frame.flora, frame.frame_index,
                                             frame.world_time_s, sky_time_s, frame_origin);
+  // **The far field at rest** (renderer.md, "The far field at rest"; R152): the frame's field
+  // block, which the pool's allocator and the chain's records ask whether an instance rests.
+  const u64 field_block =
+      flora_table != 0 && scene.field_rest() ? flora_table - gfx::k_flora_field_frame_bytes : 0;
   if (scene.skinned()) {
     const u32 span = static_cast<u32>(frame.joints.size());
     const u32 uploaded = span < scene.max_joints() ? span : scene.max_joints();
@@ -3870,6 +3874,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
                        gfx::k_cull_params_eye_offset;
     shadow_alloc.blocks = scene.deform_blocks.address;
     shadow_alloc.groups = gfx::deform_alloc_group_count(cascades_drawn, pair_stride);
+    shadow_alloc.field = field_block;
   }
 
   // ---- the pool's allocator, one block per run ------------------------------------------------
@@ -3900,6 +3905,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       a.reset = run == 0 ? 1u : 0u;
       a.blocks = scene.deform_blocks.address;
       a.groups = gfx::deform_alloc_group_count(views, pair_stride);
+      a.field = field_block;
     }
   }
 
@@ -3915,7 +3921,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // static form — the frame records none of its passes and the records chain's plain variants, the
   // chain as it was before the cache, and the cache's tables and slots wait for an instance that
   // needs them.
-  const bool rt_cache = rt_chain && scene.rt_cache() && scene.rt_cache_instances() > 0;
+  // A field instance past its rest distance is one too (R152), which only the frame's eye says.
+  const bool rt_cache =
+      rt_chain && scene.rt_cache() &&
+      (scene.rt_cache_instances() > 0 ||
+       (field_block != 0 && scene.flora_stats().field_instances > 0));
   rt_cache_recording_ = rt_cache;
   // **The drop order's scan, on the frames that may need it** (R106; clas_records.slang, "past
   // the capacity"): its three passes are recorded while a frame read back in the last
@@ -4018,6 +4028,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       record_params.cache = scene.rt_cache_tables_address(slot);  // this slot's copy (R130)
       record_params.frame = scene.next_rt_cache_frame();
     }
+    record_params.field = field_block;  // a field instance at rest references the cache (R152)
     rt_micromaps_ = false;
     // A drawn alpha-tested pair's record names the scene's micromap (R120; renderer.md, "Opacity
     // micromaps"), but not a pair inside a cross-fade band, whose hits the loops keep by the pixel.

@@ -1,0 +1,13 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "R152b",
+  "reason": "The far field at rest (R152 leg B): record_frame hands the frame's field block to the pool's allocator and the chain's records and turns the cache's passes on for a field (11 lines); gpu_scene.cpp fills the rule into the block and counts an untraced rigid instance as cached on the ray path (12 lines); gpu_scene.h holds the scene's part of the rule, the last block and the census's kind for an instance at rest (21 lines); renderer.md gains the section that says what the rule does to the picture and to every position reader",
+  "date": "2026-11-13",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "renderer.record_frame.lines": 11,
+    "renderer.gpu_scene_cpp.lines": 12,
+    "renderer.gpu_scene_h.lines": 21,
+    "page:docs/subsystems/renderer.md": 10691
+  }
+}

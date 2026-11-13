@@ -2468,6 +2468,9 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
         }
       }
     }
+    // What the far field's rest needs of the scene (renderer.md, "The far field at rest"; R152).
+    field_rest_ = flora_field_rest_of({flora_meshes_.data(), flora_meshes_.size()},
+                                      {field_deform_.data(), field_deform_.size()});
     // **The water bodies the pool lifts** (S100; water.md, "The mesh"): every body with a depth map
     // and a wind (or an open one with a tide) gets its height function — a `WaterSurface` and its
     // arrival field — and a deform record of the water stage; a body with neither stays rigid, the
@@ -3315,10 +3318,12 @@ u64 GpuScene::flora_frame(u32 slot, const FrameFlora& frame, u64 frame_index, f6
   if (flora_field_) {
     gfx::FloraFieldFrame block;
     flora_field_frame(to, strength, world_time_s, eye, frame, block);
+    flora_field_rest(field_rest_, frame, block);  // the far field at rest (R152)
     // The hand-off's clock (G136): what the pool pass counts a patch's load-in age from.
     const u32 tick = handoff_tick();
     std::memcpy(&block.push.w, &tick, sizeof(tick));
     std::memcpy(region, &block, sizeof(block));
+    field_last_ = block;
     field_moving = block.wind.z > 0.0f || block.walker.w > 0.0f;
   }
   if (flora_instances_.empty()) {
@@ -5500,8 +5505,11 @@ bool GpuScene::create_rt_cache(std::string* error) {
     for (const gfx::InstanceDesc& instance : instance_table_) {
       const bool rigid =
           instance.deform == gfx::k_invalid_deform &&
-          (instance.flags & (gfx::k_instance_static_rt | gfx::k_instance_untraced)) == 0;
-      if (rigid && instance.mesh < served.size()) served[instance.mesh] = 1;
+          (instance.flags & gfx::k_instance_static_rt) == 0 &&
+          ((instance.flags & gfx::k_instance_untraced) == 0 || rt_untraced_drawn_);
+      // A field instance past its rest distance is served too (R152), untraced or not.
+      const bool rests = field_rest() && instance.deform - field_rest_.first < field_rest_.count;
+      if ((rigid || rests) && instance.mesh < served.size()) served[instance.mesh] = 1;
     }
   }
   rt_cache_base_.assign(data.parts.size(), ~0u);
@@ -5727,7 +5735,9 @@ void GpuScene::destroy_rt_cache() noexcept {
 
 bool GpuScene::rt_instance_cached(const gfx::InstanceDesc& instance) const noexcept {
   if (rt_cache_slots_ == 0 || instance.deform != gfx::k_invalid_deform) return false;
-  if ((instance.flags & (gfx::k_instance_static_rt | gfx::k_instance_untraced)) != 0) return false;
+  if ((instance.flags & gfx::k_instance_static_rt) != 0) return false;
+  // An untraced instance is served where its drawn entries are in the chain at all (R152).
+  if ((instance.flags & gfx::k_instance_untraced) != 0 && !rt_untraced_drawn_) return false;
   return instance.mesh < rt_cache_base_.size() && rt_cache_base_[instance.mesh] != ~0u;
 }
 
@@ -6555,6 +6565,8 @@ void GpuScene::destroy() noexcept {
   ray_tracing_ = deform_ = skinned_ = streamed_ = rt_untraced_drawn_ = false;
   flora_field_ = flora_tail_parts_ = false;
   field_deform_.clear();
+  field_rest_ = FloraFieldRest{};
+  field_last_ = gfx::FloraFieldFrame{};
   mesh_policy_.clear();
   page_count_ = page_slots_ = slot_vertices_ = slot_triangles_ = max_requests_ = 0;
   upload_budget_bytes_ = 0;

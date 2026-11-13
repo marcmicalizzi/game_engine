@@ -424,8 +424,19 @@ class GpuScene {
     const gfx::InstanceDesc& instance = instance_table_[index];
     const u32 untraced = (instance.flags & gfx::k_instance_untraced) != 0 ? 4u : 0u;
     if ((instance.flags & gfx::k_instance_static_rt) != 0) return 3u | untraced;
-    if (rt_instance_cached(instance)) return 2u;
+    // The cache serves a rigid instance and, since R152, a field instance past its rest distance
+    // from the last frame's eye; either may be untraced where the picture is traced (6).
+    if (rt_instance_cached(instance) || field_rested(instance)) return 2u | untraced;
     return (instance.deform != gfx::k_invalid_deform ? 0u : 1u) | untraced;
+  }
+  // Whether the last recorded frame's field block put `instance` at rest and the cache serves its
+  // mesh (the records pass's `instance_cached` for a field instance; renderer.md, "The far field
+  // at rest").
+  bool field_rested(const gfx::InstanceDesc& instance) const noexcept {
+    if (instance.mesh >= rt_cache_base_.size() || rt_cache_base_[instance.mesh] == ~0u) return false;
+    return gfx::field_rests(
+        instance, relative(gfx::instance_cell(instance), gfx::world_eye(field_last_.eye)),
+        field_last_);
   }
   u32 rt_instance_rank(u32 index) const noexcept {
     return index < slot_rank_.size() ? slot_rank_[index] : 0u;
@@ -647,6 +658,14 @@ class GpuScene {
   // variants, as if there were no cache (renderer.md, "The resident cluster structure cache";
   // R106).
   u32 rt_cache_instances() const noexcept { return rt_cache_instances_; }
+  // **The far field at rest** (renderer.md, "The far field at rest"; R152): whether a frame's
+  // field block carries the rule — the scene has field records and `renderer.flora.field_rest_m`
+  // is on — so its allocator and its records' passes are handed the block, and the cache's passes
+  // run for the field instances it will serve past the distance.
+  bool field_rest() const noexcept {
+    return field_rest_.count != 0 && flora_field_rest_m_tunable() > gfx::k_field_rest_margin_m;
+  }
+  const FloraFieldRest& field_rest_scene() const noexcept { return field_rest_; }
   u32 rt_cache_slots() const noexcept { return rt_cache_slots_; }
   // The ceiling the slots were sized under, in MiB, and where it came from (the tunable, or the
   // device's sixty-fourth); 0 without a cache.
@@ -1839,6 +1858,8 @@ class GpuScene {
   // (`gfx::FloraFieldPart`), and whether any mesh is one. Per scene mesh the InstanceDesc flag bits
   // of its species' caster policy, ORed into every instance of it, the load's and the tail's.
   Vector<u32> field_deform_;
+  FloraFieldRest field_rest_;  // the far field at rest's scene part (R152)
+  gfx::FloraFieldFrame field_last_;  // the last frame's field block, for the census
   gfx::BufferResource flora_field_parts_;
   bool flora_field_ = false;
   bool flora_tail_parts_ = false;  // the tail may name a mesh posed by parts: it reserves room

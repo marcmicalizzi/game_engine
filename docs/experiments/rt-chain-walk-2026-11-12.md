@@ -220,7 +220,8 @@ and 1,280 m.
 | of the tail: rigid forms built once (`static_form_pairs`) | 4,062,966 | 4,800,370 |
 | of the tail: untraced (`untraced_pairs`) | 10,372,531 | 9,808,411 |
 
-**Four meshes hold most of it.** Four meshes of 245, 191, 102 and 55 clusters head every ring's
+**Four meshes hold most of it.** (Leg B named them by path: they are the litter's, not the
+sward's cards as this paragraph read them; [below](#what-a-far-placement-draws).) Four meshes of 245, 191, 102 and 55 clusters head every ring's
 list, each placed as itself (`mesh == source_mesh`) in all four rings, thousands of times. They are
 read here as the `sward` generator's cards — it places a patch as a near form and a card
 (`distance.clusters`) for each family at four densities, and the scene's untraced pairs, which are
@@ -250,3 +251,265 @@ pairs adds 0.67 million in v41 and 0.56 in v42. The work is in the placement pat
 (`systems/world`, `scene_gen`'s generators and the form cut in `scene.cpp`), which is other rows'
 tonight; it is left as a row.
 
+
+## Leg B (2026-11-13): the demand itself
+
+The first leg removed the resize and counted the demand; this one is about what the frames build.
+Three things came of it: why the staging copy cannot show the owner's drop, two rules that take
+most of a traced frame's own structures out of it — [the far field at rest](#the-far-field-at-rest)
+and [untraced rigid instances in the cache](#untraced-rigid-instances-reference-the-cache) — and
+[what a far placement draws against the pairs it holds](#what-a-far-placement-draws).
+
+### What the staging copy does not hold of the owner's demand
+
+At the vantage the staging flights hold 8.55 million pairs and 145,702 instances where the
+recording has 16.5 million and 358,330, and want 130,264 structures where the walk wanted 618,793.
+What was tried, and what the files say (the proof of concept's run as text: `run.json`,
+`scene.json`, `stderr.log`, `frames.jsonl`):
+
+- **Not the mesh room.** The staging flights log `the mesh room withholds tiles' meshes` (a
+  warning: the owner's log, which is warnings only, would have it). Flown on main with
+  `renderer.meshes.budget_mib=2048` (a room of 815,913 clusters, no tile withheld): 9,079,737
+  pairs at the most, 131,124 wanted. The room's 170 withheld tiles are half a million pairs.
+- **Not how the eye got there.** The first leg held the pose 1,500 frames; the same.
+- **Not the launcher's settings.** `run.json`'s arguments are the flights' (3840 × 2160, `--raster
+  rt --shadows rt`, `--lod 1`, `--deform-pool-mib 64`, `--rt-budget-mib 0`, the wind at 0.7,
+  micromaps, the bounce) but for what a session adds: the window (`hdr10`, uncapped), the game
+  module with its 416 animals, the player, the input record.
+- **Not the scenes' entries at that place.** The lab run's scene names the same sward entry (seed,
+  extent, the sixteen families at four densities; cooked as `forest-v41-33ff2824` where the
+  staging's is `forest-v41-b8eb339a`), the same two litter entries, eighteen wetland entries and
+  the channels, and beside them `routes`, `walls`, `bridges`, `caves` and five `scatter` entries
+  the staging does not have — the scatters are boulder fields in five polygons by the lake, none
+  near the vantage.
+- **What differs is what stands in the far rings.** Along the walk the staging holds as many
+  instances as the recording (366,606 at the walk's first frames against 358,330 at the vantage)
+  in half the pairs: 24 an instance against 46. At the worst path's last frame its second ring
+  holds 4,447 instances and 242,999 pairs in 168 tiles and its third 10,712 and 534,395 in 395;
+  the recording's last frame holds 38,178 and 4,325,298 in 191 tiles and 125,087 and 9,833,581 in
+  448. The difference is the **litter**: the four meshes that head every ring of the recording
+  ([below](#what-a-far-placement-draws)) stand 13,606 and 36,766 times in its second and third
+  rings by their three largest, and 572 and 1,858 times in the staging's.
+
+Why this main places a twentieth of the litter in the far rings there was not run down: the litter
+generator reads the ground's masks through a `substrate` index (5 and 8 in the two entries), this
+main's masks are version 4, and the staging's are the migration's. It is the masks' and the
+litter's rows' to say, and until it is said **no flight on this main shows the owner's 618,793**:
+the staging comes to 52 to 55% of the pairs, 41% of the instances, 34% of the visible pairs
+(250,241 of 730,726) and 21% of the structures wanted. Every number below is the staging's.
+
+### The far field at rest
+
+The rule is on [the renderer's page](../subsystems/renderer.md#the-far-field-at-rest): past
+`renderer.flora.field_rest_m` (120 m) a field's blades take no wind, the sway falling to nothing
+over the 40 m before it; an instance wholly past it takes no pool block, so every reader draws it
+from the grid; and the chain's records treat it as the rigid instance it is that frame, so its
+entries reference the resident cache.
+
+### Untraced rigid instances reference the cache
+
+The same census that named the sward named a second builder the staging barely holds at the
+vantage and the owner's world is full of: the **litter**, rigid and untraced. An untraced
+instance's drawn entries are in the chain only under a traced picture (R110), and R110 left them
+out of the cache, so every litter pair in view was built every frame. Nothing about the cache
+needed that: a cached structure is every instance's of its mesh, and what keeps a light's ray off
+an untraced instance is its own top-level record's mask. So `instance_cached` now serves an
+untraced rigid instance in a traced-primary frame (`clas_records.slang`; `GpuScene::
+rt_instance_cached` and the cache's `served` test on the CPU, by the scene's path), and the
+census counts it as `untraced_cached`. In a rasterized frame nothing changes: none of its entries
+reach the records.
+
+### The pair at the worst place
+
+`worst-path.json` (420 frames, the vantage and the slope below it), 300 frames held first, main's
+binary (4f40bd49's source) and this row's back to back in one lease (2026-11-13 00:28 to 00:38;
+RTX 5090; a debug build of this row finished three minutes before the lease and nothing of this
+row ran beside it, other agents' work did: the milliseconds are upper bounds and the pair is what
+compares). Medians over the flight:
+
+| | main | this row |
+|---|---:|---:|
+| frame | 17.06 ms | 15.66 ms |
+| GPU total | 17.09 ms | 15.70 ms |
+| the chain (`rt`) | 2.79 ms | 1.88 ms |
+| of it the cluster builds (`clas`) | 1.85 ms | 0.95 ms |
+| the bottom-level build (`blas`) | 0.33 ms | 0.28 ms |
+| the pool pass (`deform`) | 0.395 ms | 0.376 ms |
+| the cull pass | 0.17 ms | 0.20 ms |
+| the primary rays (`trace`) | 2.38 ms | 2.36 ms |
+| the resolve | 8.45 ms | 8.40 ms |
+| structures wanted, median; at the most | 88,348; 130,264 | 39,967; 77,152 |
+| built | all | all |
+| references to the cache, median; at the most | 7,772; 61,190 | 71,898; 99,455 |
+| visible pairs, casters, the scene's pairs | 155,373; 11,643; 5,539,161 | the same, every frame |
+| frames whose GPU total is over the other's by 0.5 ms | | 2 of 419 |
+
+The cut is the same in every frame (the cull pass is untouched: an instance at rest keeps its
+padding and is never cone-tested), so the visible list and the casters are main's to the entry.
+What changed is who builds: at the flight's largest frame on main (frame 351, the second slope)
+the frame's own structures go from 130,264 to 63,049 and the references from 7,740 to 74,955; at
+frame 245, the row's own largest, from 119,206 to 77,152. By the census's kinds, this row, frame
+378 (main's census of the same place is the first leg's table above):
+
+| what the chain does with the entry | frame 378, drawn | casters |
+|---|---:|---:|
+| builds it this frame: deforming, traced | 9,418 | 2,535 |
+| builds it this frame: deforming, untraced (the sward short of the distance) | 52,405 | 0 |
+| builds it this frame: rigid | 296 | 1 |
+| references the cache: traced | 7,495 | 85 |
+| references the cache: untraced (**the sward at rest, and the litter**) | 64,700 | 0 |
+| a rigid form's structure, built once | 33,306 | 7 |
+| the frame's own by ring: prefix; ring 0; ring 1; ring 2; ring 3 | 2,653; 35,343; 23,857; 218; 48 | 428; 2,092; 15; 1; 0 |
+| the references by ring: prefix; ring 0; ring 1; ring 2; ring 3 | 7,495; 383; 64,124; 190; 3 | |
+
+So two thirds of the second ring's sward (64,124 of 87,981 entries) stands past 120 m and is no
+longer built; what the frame still builds is the sward inside the distance (35,343 in the inner
+ring, 23,857 in the second) and the swaying trees. **The memory**: the frame's set is sized by the
+capacity, which the policy holds a step above the demand, so a demand of 77,152 where it was
+130,264 is 53,112 structures, 486 MB of capacity at 9,156 bytes, the chain no longer has to hold;
+on these flights the capacity was at the budget's 338,072 either way (it starts there and the
+two-minute window had not passed). The references cost 99,455 where they cost 61,190, at tens of
+bytes each. **The cache is full on both sides**: its 60,074 slots (506 MiB at 8,832 bytes a slot
+with micromaps) are all occupied on main and on this row, and a frame's misses past them are
+built in the frame's own set — 160,856 such builds over main's 720 frames and 282,808 over this
+row's, 223 and 393 a frame, which are in the "wanted" figures above. The sward's cards and the
+litter are a few hundred distinct clusters; what fills the cache is the inner rings' rigid meshes
+(48,920 references at frame 285 on main). A cache that held the scene's distinct clusters would
+give those builds back too; its slots at the size they are (R143's next step) is the row for it.
+
+**The target, stated.** On the staging at the owner's vantage `built == wanted` already on main
+(130,264 of a budget of 338,072), and with the two rules the frame wants 59% of that at the most.
+At the owner's demand it cannot be flown (above). What the recording says of it: of 730,726
+visible pairs the chain wanted 617,554 and referenced 14,441, so about 100,000 were static forms
+and **six in seven of the visible entries were built that frame**: deforming or untraced. Every
+untraced rigid entry of those (the litter: 10.4 million of that world's 16.4 million pairs) and
+every sward entry past 120 m now references the cache; what stays in the frame's set is the
+swaying trees of the inner ring, the ground, and the sward within 120 m, which on the staging is
+63,049 at the worst frame. Whether that is under 338,072 on the owner's world is what a flight
+there has to say; the bound from this side is that the staging's own demand fell by 52% and the
+kinds that fell are the kinds the owner's world has 2.5 times more of.
+
+### What a far placement draws
+
+The cap of 2^24 pairs is the owner's and does not move. The first leg found four meshes of 245,
+191, 102 and 55 clusters placed as themselves in every ring and read them as the sward's cards.
+**They are the litter**: the first `litter` entry's four meshes, by path
+`litter-v22-tangle.litter.json` (245 clusters in the owner's cook, 251 in the staging's),
+`litter-v22-leaf` (191), `litter-v22-bark` (102) and `litter-v22-twig` (55; 58) of the proof of
+concept's `world/v22/recipes`, each a 1.25 m patch of fallen leaves, bark, twigs or tangle laid
+in 4 m cells, up to 256 cells a tile (the staging's load log names every mesh with its source
+and cluster count, and the scene's entry lists the four in this order; the ids are consecutive,
+3914 to 3917 in the recording and 5914 to 5917 in v42). The sward's cards are three and four
+clusters and stand in the first two rings only. What each ring holds, from the two summaries'
+`pair_breakdown`:
+
+| | recording's last frame (v41) | | | v42 `run-3-rt-sky` | | |
+|---|---:|---:|---:|---:|---:|---:|
+| ring | litter instances | their pairs | of the ring's pairs | litter instances | their pairs | of the ring's pairs |
+| 0 (to 80 m) | 513 | 75,085 | 52% | not in the six largest | | |
+| 1 (to 192 m) | 1,697 | 249,037 | 35% | 1,195 | 169,715 | 23% |
+| 2 (to 640 m) | 18,154 | 2,671,905 | 62% | 30,291 | 4,448,644 | 49% |
+| 3 (to 1,280 m) | 48,913 | 7,262,069 | 74% | 25,844 | 3,833,751 | 72% |
+| all four | 69,277 | 10,258,096 | 63% of the scene's 16,400,611 | 57,330 | 8,452,110 | 53% of 16,071,512 |
+
+A litter patch 1 km away holds the 55 to 245 pairs it holds underfoot: 148 pairs an instance in
+every ring. Beside it an authored tree in the third ring holds its distance form (32 pairs an
+instance over that ring's 75,839 form instances in the recording, 20 in v42), and a sward card
+three.
+
+**What the cut draws of one.** Not measured where it matters: `renderer.rt.census_mesh_frame`
+(new: on one census frame, per ring, the meshes that draw the most entries, with the instances
+drawn and the most one drew) was flown on the held view below, and on the staging the litter is
+in no ring's ten most-drawn meshes there (the section above). What the same frame shows of other
+placements: a sward card draws its 3 of 3 clusters in the second ring (4,638 instances, 13,896
+entries); a tree's ring form its 64 of 64 (a static form's frontier is drawn whole); the inner
+ring's sward patches 75 of 268 an instance (9,252 entries over 123 instances, 82 at the most).
+What the litter's containers say: a patch is 0.7 m across (`radius_m` 0.35), 7 pixels at the
+second ring's inner edge and 2 at the third's at 3840 × 2160, and its DAG has 6 to 8 levels over
+24 to 147 leaf clusters, so the cut that far is the top of the DAG: a few clusters where the
+placement holds 55 to 245. The arithmetic below takes **four**, and says what each one more costs.
+
+**What the cap would reach.** With a far litter patch held as four pairs, the same tiles hold:
+
+| | recording's last frame (v41) | v42 `run-3-rt-sky` |
+|---|---:|---:|
+| pairs held today, of 16,777,216 | 16,400,611 | 16,071,512 |
+| the litter of rings 2 and 3, today | 9,933,974 (67,067 instances) | 8,282,395 (56,135) |
+| the same at four pairs an instance | 268,268 | 224,540 |
+| the scene then | 6,734,905 | 8,013,657 |
+| each pair more a far patch holds | 67,067 | 56,135 |
+| a ring-2 tile, today; then | 22,646; 9,037 | 28,093; 14,570 |
+| a ring-3 tile, today; then | 21,950; 6,177 | 19,649; 5,935 |
+
+So the walk's world would hold 40% of the cap where it holds 98%, and v42's 48% where it holds
+96%. The rings as they are set — every tile whose centre is within 20 tiles, 1,257 of them, 286
+in the second ring's annulus and 942 in the third's — would cost the recording's world 1.06
+million fixed, 0.86 million for the first two rings, 2.6 million for a full second ring and 5.8
+million for a full third: 10.3 million, with 6.4 million of the cap unspent, where today a full
+third ring alone would be 20.7 million. Every tile the walk withheld (up to 1,002 at once) fits, and so do the 905 the next world withheld on its island views (item 69 of
+the forest's page); the unspent 6.4 million is a further 1,040 tiles at the third ring's density,
+a disc of 27 tiles: **the cap reaches 1.7 km where it reaches short of 1.28 km today.**
+
+**The design: a placement's ring forms.** An authored instance already costs what its ring draws:
+past the first ring it is placed as a distance form, a mesh cut from the top of its source's DAG
+for the nearest eye its ring allows (`extract_lod_form`, `stream_authored`), rigid, and under the
+chain a static form whose structure is built once. A generator's placement names a mesh and the
+world places that mesh in every ring. The same cut taken of a generator's meshes — per mesh and
+ring, at load, since a generator's meshes are the scene's own (`SceneData::parts`, with
+`form_source` and `form_rigid` beside them as for an authored form) — gives a placement its ring
+forms: the placements consumer names `form(mesh, ring)` where it names `mesh`, the pair account's
+`B(tile)` counts the form's clusters, and a rigid form being a static form, a far litter patch
+then costs the frame's set and the cache nothing either. What it costs: a form a ring for each
+placed mesh (eighteen for the litter's six), the hand-over at a ring's edge (a form cut for its
+ring's inner edge draws there what the source draws there, R91's measure for trees), and R94's
+price that a form is drawn whole wherever in its ring it stands. A field mesh's card needs none:
+it is three clusters already. The generators' placement path (`systems/world`, `scene_gen`) is
+other rows' tonight, so this is the count and the design, and a row.
+
+### What the picture lost
+
+Stopping the far field's sway is a change to the picture, not a cull, and this is its measure.
+The worst place's largest frame held (`hold-path.json`: the eye at (-1445, 491, 3903) looking
+along the slope, 300 frames of warm-up, then six captures a quarter second apart from the fourth
+second, the id words read back beside each), this row's binary with the rule off and on, one
+lease (2026-11-13 00:59 to 01:09). Every pixel of the 8,294,400 is put in one class by its id
+words (instance, cluster, triangle) over the twelve captures:
+
+| class | pixels | share | colour over 1.25 s, rule off | rule on | on against off, same frame |
+|---|---:|---:|---:|---:|---:|
+| still: the same in every capture of both runs | 6,478,408 | 78.11% | 0.62 | 0.62 | 0.24 |
+| moving: changes over the on run (near grass, trees) | 1,673,871 | 20.18% | 23.60 | 23.91 | 2.07 |
+| **stilled**: still with the rule, moving without it | 124,967 | 1.51% | 26.28 | 0.33 | 21.03 |
+| leaned: still in both, not the same between them | 17,154 | 0.21% | 0.44 | 0.15 | 48.72 |
+
+(Colour: the mean absolute difference of the three 8-bit channels, the first capture against the
+last; the still class's 0.62 is the bounce's own noise.) **What the picture lost is the motion of
+1.5% of its pixels**: the sward past 120 m, 12,000 instances in this view, whose pixels changed
+as much over a second as the near grass's do (26 of 255) and now do not change. That far the
+motion is a blade's or a card's edge crossing a pixel's centre — the tip's travel is about a
+pixel — so what was there to lose reads as a shimmer on the far slopes rather than as grass
+bending; it is gone, and the far slopes are as still as a rigid forest's far rings already are.
+The 0.21% "leaned" are far blades whose mean lean in the wind is no longer drawn: a pose that
+differs and does not move. **Where nothing moved the ids are identical**: the still class is the
+same words in all twelve captures, and by rows the stilled and leaned pixels lie in the second to
+seventh twelfths of the picture — the far slopes — with none in the lower five, the ground to
+about 100 m, where the on run is the off run to the id in every capture.
+
+**No step at the boundary, in space or in time.** By construction a blade's last posed frame is
+its rest pose (the share is zero a quarter metre short of the distance, and a blade with no angle
+returns the grid's position). On the captures: the stilled class thickens gradually up the far
+slopes from the moving grass below it, with no line where the band ends (the class picture), and
+the pixels whose ids change between consecutive captures are steady over the on run — 975,357,
+982,398, 970,760, 960,702 and 943,285 — as they are over the off run (1,039,701 to 1,007,835),
+about 64,000 fewer each quarter second: the far sway, and no capture apart from the others.
+
+**The default** is the staging's evidence, and the owner's to overrule: 120 m with a band of 40 m
+gives back 41 to 52% of the frame's own structures and a millisecond of the chain at the worst
+place for the motion of 1.5% of the picture's pixels there. `renderer.flora.field_rest_m=0` keeps
+every blade swaying; a larger distance trades the two (at 3840 × 2160 the strongest flutter's
+travel is under a pixel from 139 m, the typical blade's from 100 m).
+
+Pictures (opened): the on run's first capture,
+`<scratch>/runs/b1-hold-on/markers/00240-hold-240.png`, and the classes,
+`<scratch>/runs/classes.png` (still black, moving grey, stilled red, leaned yellow), `<scratch>`
+being the coordinator's `scratchpad\b63\R152b`.

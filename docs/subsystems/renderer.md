@@ -645,7 +645,7 @@ Roadmap R94 (2026-10-25). **The chain built a structure for every visible pair e
 
 Roadmap R101 (2026-10-26), which is R63's "cluster structures shared across rigid instances". **The chain built a cluster's structure for every visible (instance, cluster) pair, every frame**, so the same rigid cluster of the same mesh was built again for each instance that drew it and again the next frame. A forest is a few dozen meshes placed tens of thousands of times: the proof of concept's expanded forest at 11520×2160 under traced shadows wanted 222,455 structures a frame against the 1 GiB budget's 166,937, dropped instances on every frame, and spent 33.9 ms of its 98.5 ms in the chain. R94 took the rigid distance forms out by building their frontier once; the prefix's rigid instances and the inner ring's full meshes still rebuilt. The cluster extension is made for the other arrangement — a structure is built once and **referenced** by any number of bottom-level builds, which take only addresses — and this is that.
 
-**What is cached.** A **cached instance** is rigid — `InstanceDesc::deform` invalid, so nothing in the pool moves its vertices and every instance of its mesh traces the same clusters — traced, not a static form, and of a **cached mesh**: every mesh of the scene's own (`SceneData::parts`; a ring slot's mesh is rewritten as the camera moves and is never cached) but a static form's, with at most `gfx::k_cluster_cache_max_clusters` (2^22) clusters. Decided per instance on the GPU (`instance_cached` in `clas_records.slang`), from the mesh's entry in the cache's `bases` table and the instance's own deform word, so a tree that starts to sway stops being cached the frame it does. A cluster has three **keys**, one per form its structure can take: drawn opaque, drawn alpha-tested (non-opaque, so the ray loops test its mask) and shadow caster (non-opaque, and named as one) — and since R120 a fourth, drawn alpha-tested inside a cross-fade band, which names no opacity micromap ([Opacity micromaps](#opacity-micromaps)); `keys` holds each one's **slot**. A slot is the driver's most for one cluster (6,144 bytes at 124 triangles and 64 vertices on the RTX 5090, as an implicit build reserves for each), a fixed piece of one buffer, so a structure built into it stays at the same address for every later frame's bottom-level build. **What is still per frame**: everything a deforming instance draws (skinned, morphed, swaying, every terrain level; built or instantiated from the pool as before), the bottom-level build over every instance, the top-level build, and the cache's misses.
+**What is cached.** A **cached instance** is rigid — `InstanceDesc::deform` invalid, so nothing in the pool moves its vertices and every instance of its mesh traces the same clusters — traced (or, since R152, untraced in a frame whose picture is traced, where its drawn entries are in the chain at all; and a field instance the frame's eye puts [at rest](#the-far-field-at-rest), which the pool gave no block), not a static form, and of a **cached mesh**: every mesh of the scene's own (`SceneData::parts`; a ring slot's mesh is rewritten as the camera moves and is never cached) but a static form's, with at most `gfx::k_cluster_cache_max_clusters` (2^22) clusters. Decided per instance on the GPU (`instance_cached` in `clas_records.slang`), from the mesh's entry in the cache's `bases` table and the instance's own deform word, so a tree that starts to sway stops being cached the frame it does. A cluster has three **keys**, one per form its structure can take: drawn opaque, drawn alpha-tested (non-opaque, so the ray loops test its mask) and shadow caster (non-opaque, and named as one) — and since R120 a fourth, drawn alpha-tested inside a cross-fade band, which names no opacity micromap ([Opacity micromaps](#opacity-micromaps)); `keys` holds each one's **slot**. A slot is the driver's most for one cluster (6,144 bytes at 124 triangles and 64 vertices on the RTX 5090, as an implicit build reserves for each), a fixed piece of one buffer, so a structure built into it stays at the same address for every later frame's bottom-level build. **What is still per frame**: everything a deforming instance draws (skinned, morphed, swaying, every terrain level; built or instantiated from the pool as before), the bottom-level build over every instance, the top-level build, and the cache's misses.
 
 **A frame** (`clas_records.slang`, `gfx::ClusterCacheTables`): the bucketing pass is unchanged; the ranges keep two prefix sums — the frame's own records and the cached instances' **references** — each against its own capacity, and point a cached instance's bottom-level record into the cache's `references` instead of the frame's CLAS addresses; the emit pass writes no record for a cached entry but looks its key up: a resident one has its slot stamped with the frame and its reference addressed at once, a missing one is claimed by exactly one thread (a compare-exchange) and listed as a **miss**, and every reference whose key was not resident is listed as **pending**, its key parked in the reference itself. Then four dispatches, a graph pass each: `cache_scan_main` lists the free slots and counts the occupied ones the frame did not draw by age (frames since they were drawn, 63 buckets and the rest); `cache_evict_main` finds the oldest ages that make room for the misses (each of its groups from the scan's 64 words) and frees them — **least recently drawn first, never a slot this frame drew**; `cache_assign_main` gives each miss a slot, writes its build record (the rest-pose float positions, as a rigid entry always had) and its destination — and a miss it has no slot for a record in the frame's own set ([below](#an-overflow-is-built-in-the-frames-own-set)); and, after the frame's own build, `cache_references_main` writes every pending reference's address. The misses are built with **explicit destinations** (`gfx::build_cluster_set_explicit`, the "clas cache" pass), before the frame's own build, which shares the scratch and which the graph orders after it. A frame that drew nothing new builds nothing there: its count word is zero.
 
@@ -4464,12 +4464,14 @@ padding is the same bound) and marked `field`, and then:
   (`channel_count` stays 0, so no morph code reads them). The record is a function of the mesh
   alone, so it is derived rather than allocated: a tile of a meadow costs the tail's room nothing,
   and `acquire_tail_tree` points a grass instance at it and returns.
-- **One block a frame** (`gfx::FloraFieldFrame`, 160 bytes): the frame's eye, the wind (where it
+- **One block a frame** (`gfx::FloraFieldFrame`, 240 bytes; 160 until R152 added the rule of
+  [the far field at rest](#the-far-field-at-rest)): the frame's eye, the wind (where it
   blows to and its strength, as the trees read it: the frame's, the ground's record at the sky's
   hour, or the tunables'), the four gust waves' vectors, phases at the eye and shares, the flutter's
-  phase, and the walker's capsule from the eye. It is written at the head of each slot's region of
-  the pose table, two poses' room before the address `DeformParams::flora` carries, so a tree's
-  `first_part` did not move and a scene of grass alone has a table of 480 bytes.
+  phase, the walker's capsule from the eye, and the rest distance, its fade and the scene's field
+  records. It is written at the head of each slot's region of the pose table, three poses' room
+  before the address `DeformParams::flora` carries, so a tree's `first_part` did not move and a
+  scene of grass alone has a table of 720 bytes.
 
 **What a blade does** (`deform.slang`, `field_vertex`). It bends about its root, across the wind
 (the axis `up × to`), by the trees' lean and flutter with the gust read off a field instead of a
@@ -4551,7 +4553,8 @@ unchanged by this).
 **What holds it.** `authored_view_tests.cpp`: 160 sward patches read whole and streamed in one ring
 and in two, thirty frames into the sway, **0 pixels** different, where the field moves 337 of the
 whole read's pixels against the rigid picture; a second run of the same frames 0 pixels; the
-streamed summary's 160 field instances, 0 tail records, 0 tail bytes and a 480-byte pose table. The
+streamed summary's 160 field instances, 0 tail records, 0 tail bytes and a 720-byte pose table (480
+until R152 gave the field block a third pose's room). The
 tree tests (`flora_scene_tests`, `flora_motion_tests`, the authored sway, return and handover
 cases) draw what they drew.
 
@@ -4658,6 +4661,126 @@ tail as a whole is 15,373,825 pairs against 15,382,329; no tile was withheld at 
 placements of the outermost ring against 884). The defaults (25 m, 8 m) were kept: the walk's
 frames read as blades well past the band and show no line where the band lies.
 
+### The far field at rest
+
+Roadmap R152 (2026-11-13). **Past `renderer.flora.field_rest_m` (120 m) a field does not sway, takes
+no pool block, and in the ray tracing chain references its mesh's resident structures.** On the
+owner's walk of the forest at 3840 × 2160 with traced primaries one view wanted 618,793 cluster
+structures of a budget of 338,072 and dropped whole instances' structures for three seconds; the
+census of that place ([the experiment](../experiments/rt-chain-walk-2026-11-12.md)) found nine
+tenths of what a frame builds there to be the sward, two thirds of it 80 to 192 m away. It is built
+every frame for one reason: it sways, so its positions are the pool's and its structures the
+frame's own. This is a change to the picture, said plainly: **far grass stands still**. It is not
+a cull, and nothing is dropped.
+
+**How an instance comes to deform, and what the chain does with each kind.** `InstanceDesc::deform`
+is set when an instance is placed: a skinned, morphed or `--deform` instance and every terrain level
+get a record of their own at load; a swaying tree gets one per instance (the load's, or a tail
+record from its mesh's free list, in the rings `renderer.flora.sway_m` reaches: the inner ring by
+default); a **field** instance (the sward: `geometry::FloraMotionKind::field`) points at its mesh's
+one shared record in **every** ring, the load's and every tile's (`acquire_tail_tree`), because the
+record costs nothing. The chain then does one of five things with an instance's visible entries
+(`GpuScene::rt_instance_kind`): a deformed one is built this frame from its pool blocks; an
+untraced one (the sward's caster policy) is built this frame too, drawn entries only, where the
+picture is traced; a rigid one of a mesh the cache keeps **references the cache** (its clusters'
+structures are built once, the first frame any instance draws them, and addressed after); a rigid
+distance form's structure is **built once** at load for its fixed cut; and a rigid instance the
+cache does not serve is built this frame. "References the cache" needs an instance whose every
+copy traces the same clusters at the same positions: rigid, of a mesh of the scene's own, not a
+static form. "Built once" needs a fixed cut, which only a distance form has. A far sward card is
+neither while it sways, and at rest it is the first.
+
+**The rule.** A blade's share of the wind is 1 short of the band, falls linearly over
+`renderer.flora.field_rest_fade_m` (40 m), and is 0 from `gfx::k_field_rest_margin_m` (0.25 m)
+short of the distance on (`field_fade`, `deform.slang`'s `field_vertex`): the wind's angle is
+multiplied by it, measured at the blade's root from the frame's eye, so a blade past the distance
+has no angle and the pool pass returns its rest position off the grid, **to the bit** (the path
+a calm frame takes). **No state changes at the boundary**: the last frame the pool poses a blade
+in, the pose is the rest pose. An instance **rests** when it is a field's (its deform entry lies in
+the scene's run of field records, made together at load) and its every root is at least the
+distance from the eye — its origin's distance less the scene's largest root offset times its scale
+(`gfx::field_rests`, `field_rest.slang`, the CPU mirror in `gfx/flora_motion.h`). Never a hand-off's
+near form (past its band it draws nothing, which is not its rest pose), a hand-off's far form only
+past its band's end (inside it the pass thins it by part), and never an instance the walker's
+capsule can reach, whose blades it bends wherever the eye is. The rule's numbers ride in the
+frame's field block (`gfx::FloraFieldFrame`, 240 bytes since: the distance, one over the band, the
+roots' reach, the walker's reach and the field records' run), which already held the eye and the
+walker; three passes read it:
+
+- **the pool's allocator** (`deform_alloc.slang`, `DeformAllocParams::field`), on the camera's and
+  the cascades' dispatches alike: an entry of an instance at rest asks for no block, so
+  `deform_base` answers `k_no_pool_slot` for it and **every position reader draws it from the
+  grid** — the three rasterizers, the resolve's reconstruction, the ray path — by the rule they
+  already follow for a rigid instance, a frame with no pool and an entry the budget refused. The
+  pool pass walks the blocks, so it does not run for the instance at all;
+- **the pool pass** (`deform.slang`), for the fade;
+- **the chain's records** (`clas_records.slang`, `ClusterRecordParams::field`): `instance_cached`
+  answers true for an instance at rest, untraced or not, so its drawn entries (and its casters,
+  where its species casts) take the cache's path — a reference each, a structure a distinct
+  cluster built once from the rest-pose floats, the same floats an own record of an entry with no
+  block names — and the frame builds none of them. Asked with the frame's eye, so an instance
+  stops being cached the frame it comes inside the distance and is cached again the frame it
+  leaves; the cache's slots are stamped by the frames that reference them, as for any instance.
+
+**Why its own radius and not a ring's edge.** A ring is a set of tiles by their centres' distance:
+the second ring begins 35 m from the eye at a tile's corner and ends 237 m away at another's, so a
+rule by ring either stills grass 35 m away, where its sway is two to four pixels, or leaves the
+second ring's 89,000 structures a frame as they are. A radius from the eye is the measure the sway's size
+has, costs the instance table nothing (no slot is rewritten as the eye moves), and lets the fade be
+by the blade.
+
+**What sets the distance.** The sway's size in pixels at 3840 × 2160 and 55° (a pixel is 0.48 mm
+a metre of distance: 3.9 cm at 80 m, 5.8 cm at 120 m, 9.3 cm at 192 m). At the forest's wind (0.7)
+a blade's tip leans 0.084 to 0.196 rad with the gust and flutters ±0.035 to ±0.084 rad at 1.26 Hz
+(the sward's compliance 0.20; `field_vertex`), so a 0.4 m blade's tip travels 2.8 to 6.7 cm peak
+to peak in the flutter — 0.7 to 1.7 pixels at 80 m, 0.5 to 1.2 at 120 m — and its middle a quarter
+of that. The band begins where the typical tip still moves a pixel and ends where it would move
+half of one; [the measurement](../experiments/rt-chain-walk-2026-11-12.md#the-far-field-at-rest)
+has what the picture lost on the forest.
+
+**What the readers were checked for.** The cull pass is untouched: an instance at rest is still
+padded by its sway bound and never cone-tested (its `deform` word still names its record), so the
+cut — and with it the visible list, the ids and the raster's work — is the cut with the rule off;
+a sward card is two-sided and its cones would cull nothing a rigid test could use. The cascades
+already drew the sward at rest (the caster policy's `rest_pose`). The cache's structure and the
+frame's own structure of a resting entry are built from the same floats, so a hit's position does
+not move when an instance changes path; against a *posed* entry of the frame before, the pool's
+positions are the 16-bit grid's and the cache's the floats', which differ by under a grid step (tens
+of micrometres on a patch), as they do for every rigid instance beside a deformed one.
+
+**What turns the cache's passes on.** `rt_cache_instances()` counts the instances the cache serves
+when the instances change; which field instances rest is the frame's eye's to say, so a frame of a
+scene with field instances and the rule on records the cache's passes too (`record_frame`), idle
+when nothing rests. A scene read whole whose only servable instances are a field's now gets a
+cache (`create_rt_cache`).
+
+**What it does not do.** The first capacities are still estimated with every field pair in the
+frame's own set (`rt_frame_estimate`), so a scene starts with more capacity than the rule needs,
+and the references' capacity grows by its policy as the first frames reference more than the
+estimate. A field instance's blades inside the band still take a block and an own structure: at
+the forest's worst place that is the sward to 120 m. The far *trees* were already rigid forms.
+`renderer.flora.field_rest_m=0` is the sward's picture and its builds as they were (an untraced
+rigid instance still references the cache under a traced picture: [the caster
+policy](#the-caster-policy)).
+
+**What it costs and gives** ([the pair at the worst place](../experiments/rt-chain-walk-2026-11-12.md#the-pair-at-the-worst-place);
+the forest's staging copy at 3840 × 2160, traced, with the bounce, main against this back to back):
+the frame's own structures 130,264 → 77,152 at the most and 88,348 → 39,967 at the median, the
+references 61,190 → 99,455, the chain 2.79 → 1.88 ms, the cluster builds 1.85 → 0.95 ms, the frame
+17.06 → 15.66 ms, with the visible list and the casters the same to the entry in every frame. On a
+held view of that place 1.51% of the picture's pixels, the sward past 120 m, stop moving
+([what the picture lost](../experiments/rt-chain-walk-2026-11-12.md#what-the-picture-lost)).
+
+**What holds it.** `field_rest_tests.cpp`: the fade and the predicate on the CPU (whole short of
+the band, nothing from the margin, never rising, a centimetre at a time; the roots' reach, the
+records' run, the hand-off's two roles, the walker); and on a row of nine sward patches from 6.4
+to 20.6 m with the rule at 15 m over 3 m, on the hardware rasterizer and the ray path: a patch
+wholly short of the band is the rule-off picture to the id and the depth's bits, one wholly past
+the distance the calm picture's, fewer entries take a block, and on the ray path the structures the
+frame builds and the references add up to the rule-off frame's builds, nothing wanted is unbuilt,
+and the picture is byte for byte the one drawn with `renderer.rt.cache=false`, the per-frame build
+of the same poses.
+
 ### The caster policy
 
 Also R95. **Per species: in the ray tracing chain at all, how many of the sun's nearest cascades,
@@ -4689,9 +4812,14 @@ defaults sets none, so every existing scene's instances are the bytes they were.
     rt_complete`, whose path tracer's first ray is a camera ray): the records pass is told so
     (`gfx::k_cluster_records_untraced_drawn` in `ClusterRecordParams::mode`) and builds the
     instance's **drawn** entries as any instance's, from their pool blocks when it is deformed (the
-    sward is a field kind posed on the GPU), never its casters; the cluster cache never serves it
-    (`instance_cached` in the shader and `rt_instance_cached` on the CPU both leave it out), so its
-    entries are built per frame. The primary rays draw it exactly where the rasterizers draw it,
+    sward is a field kind posed on the GPU), never its casters. Until R152 the cluster cache never
+    served it, so even a rigid one's entries were built per frame — the forest's litter, rigid and
+    untraced, was most of what the owner's worst view built; **since R152 a rigid untraced
+    instance references the cache in such a frame like any rigid instance** (`instance_cached` in
+    the shader, `rt_instance_cached` on the CPU by the scene's path), and so does a field instance
+    [at rest](#the-far-field-at-rest): the cache's structure is every instance's of its mesh, and
+    what keeps a light off an untraced one is its own record's mask, below. The primary rays draw
+    it exactly where the rasterizers draw it,
     and the resolve decodes its pixels through `hit_visible_entry` and `pair_entries` unchanged.
   - **No light's ray meets it, in either**: its top-level record's mask has no caster bit
     (`gfx::instance_ray_mask`, written every frame by `tlas_references.slang`), and the resolve's

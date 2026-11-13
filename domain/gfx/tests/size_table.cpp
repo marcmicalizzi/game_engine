@@ -78,8 +78,11 @@ ENGINE_EXPECT_SIZE(80, 4, gfx::FloraPartPose);
 // The field kind (R95): a blade is its root and length, one float4 load; the frame's field is the
 // eye, the wind and flutter clock, four waves' vectors, phases and shares, and the walker — 160
 // bytes, two poses' room at the head of each region, so the trees' poses keep their indices.
+// 240, not 160 (R152): the far field at rest — the distance, the fade, the roots' reach, the
+// walker's, and the scene's field records — in a third pose's room, since the allocator and the
+// chain's records read the rule from the same block the pool pass poses from.
 ENGINE_EXPECT_SIZE(16, 4, gfx::FloraFieldPart);
-ENGINE_EXPECT_SIZE(160, 4, gfx::FloraFieldFrame);
+ENGINE_EXPECT_SIZE(240, 4, gfx::FloraFieldFrame);
 
 // A terrain level's height field and its frame (gfx.md, "The deform chain"; renderer.md, "The dunes
 // in time-lapse"): 24 bytes a field — the heights' address, the window's lattice origin and its
@@ -99,7 +102,9 @@ ENGINE_EXPECT_SIZE(96, 8, gfx::TerrainLevelDesc);
 // added, with a pad word to keep the eight-byte alignment. Still well inside 128 bytes.
 // 112, not 96 (R103): `rest_padding_m`, one length per cascade of the cascades' dispatch, under
 // which a deformed instance's reach lets that cascade draw it at rest. Still inside 128 bytes.
-ENGINE_EXPECT_SIZE(112, 8, gfx::DeformAllocParams);
+// 120, not 112 (R152): `field`, the frame's field block, by which a field instance wholly past its
+// rest distance takes no block on any dispatch. Still inside 128 bytes.
+ENGINE_EXPECT_SIZE(120, 8, gfx::DeformAllocParams);
 
 // Unchanged at 96: `deform` took one of the three pad words and `bounds_padding` a second, so a
 // deformed instance can say how far its vertices leave their rest positions without the record
@@ -130,7 +135,9 @@ ENGINE_EXPECT_SIZE(128, 8, gfx::ClusterDrawParams);
 // "The ray tracing chain's memory", 2026-10-25).
 // 176, not 160: the resident cluster structure cache's tables and the frame's stamp (renderer.md,
 // "The resident cluster structure cache", R101); the compact hit entries had taken 160.
-ENGINE_EXPECT_SIZE(192, 8, gfx::ClusterRecordParams);
+// 200, not 192 (R152): `field`, the frame's field block, by which a field instance wholly past its
+// rest distance references the cache instead of being built (renderer.md, "The far field at rest").
+ENGINE_EXPECT_SIZE(200, 8, gfx::ClusterRecordParams);
 // The cache's tables, read through an address (R101). 120, not 112: the args block its passes
 // are dispatched from, so a pass with nothing to do dispatches no thread (R106).
 ENGINE_EXPECT_SIZE(120, 8, gfx::ClusterCacheTables);

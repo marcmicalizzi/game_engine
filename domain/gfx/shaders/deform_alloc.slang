@@ -64,8 +64,9 @@
 // the **rest pose**, and is counted in `gfx::DeformAlloc`. Never garbage, and never a crash.
 
 #include "scene.slang"
+#include "field_rest.slang"
 
-// Mirrors gfx::DeformAllocParams (112 bytes).
+// Mirrors gfx::DeformAllocParams (120 bytes).
 struct AllocParams {
   uint64_t clusters;        // ClusterDesc[]
   uint64_t instances;       // InstanceDesc[]
@@ -92,6 +93,9 @@ struct AllocParams {
   // gfx::DeformAllocParams::rest_padding_m: per view of the cascades' dispatch, the reach under
   // which a deformed instance (not a terrain level) draws at rest in that cascade; 0 none.
   float4 rest_padding_m;
+  // gfx::DeformAllocParams::field: the frame's FloraFieldFrame, or 0. A field instance wholly past
+  // its rest distance takes no block on any dispatch (field_rest.slang; R152).
+  uint64_t field;
 };
 
 [[vk::push_constant]] ConstantBuffer<AllocParams> g_params;
@@ -154,6 +158,10 @@ uint entry_need(uint entry) {
   const InstanceDesc instance = instances[pair.x];
   uint need = 0;
   if (instance.deform != k_invalid_deform) need = clusters[pair.y].vertex_count;
+  // **The far field at rest** (field_rest.slang; R152), on every dispatch: a field instance whose
+  // every root is past the rest distance would be posed at its rest position, vertex for vertex,
+  // so it asks for nothing and every reader draws it from the grid.
+  if (need != 0 && field_rests_at(g_params.field, instance)) need = 0;
   if (need != 0 && g_params.rest_beyond_m >= 0.0 && instance.terrain == 0) {
     if ((instance.flags & k_instance_shadow_rest) != 0) {
       need = 0;
