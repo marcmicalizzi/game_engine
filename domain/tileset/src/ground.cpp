@@ -11,6 +11,7 @@
 #include <foundation/io/vfs.h>
 #include <foundation/tunables/tunables.h>
 
+#include <algorithm>
 #include <memory>
 #include <mutex>
 #include <schemas/scene.h>
@@ -89,11 +90,29 @@ bool tiles_masks(const void* state, scene_gen::GroundMasks& out, std::string* er
         !g.masks.open(built.manifest, why))
       g.mask_error = "the ground provider \"tiles\" could not build its masks: " + why;
     // A layer under one quantization step is dropped from its tile rather than counted against
-    // the budget (masks.h, `k_mask_step`); each one is named, since its weight is lost.
+    // the budget (masks.h, `k_mask_step`). **One line a layer, not a tile** (T122): every drop is
+    // a smoothstep's tail (a feather's, a margin's, a slope band's) reaching into a tile by less
+    // than a point, so a large level drops thousands (the forest's v41 8,288) and a line each
+    // buried the load's log; the count, the heaviest and the first tile say the same. `masks
+    // check` still lists every one.
+    Vector<u32> layers;
     for (const DroppedLayer& d : built.dropped) {
+      bool seen = false;
+      for (const u32 l : layers)
+        seen = seen || l == d.layer;
+      if (seen) continue;
+      layers.push_back(d.layer);
+      u32 tiles = 0;
+      f64 peak = 0;
+      for (const DroppedLayer& e : built.dropped) {
+        if (e.layer != d.layer) continue;
+        ++tiles;
+        peak = std::max(peak, e.peak);
+      }
       ENGINE_LOG_WARN(log_tileset, "mask layer dropped: under one quantization step",
-                      log::field("tile_x", d.tx), log::field("tile_z", d.tz),
-                      log::field("layer", d.name), log::field("peak", d.peak));
+                      log::field("layer", d.name), log::field("tiles", tiles),
+                      log::field("peak_max", peak), log::field("first_tile_x", d.tx),
+                      log::field("first_tile_z", d.tz));
     }
   }
   if (!g.mask_error.empty()) {
