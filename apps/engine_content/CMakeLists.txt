@@ -14,11 +14,8 @@
 # engine-view does for `--animate`: link the module when this configuration has it, define
 # ENGINE_CONTENT_TISSUE so the commands compile, and otherwise build an engine-content that refuses
 # `tissue` with a sentence. `msvc-minimal` is the proof that the second half works.
-# `renderer` and `scene_gen` for `ground sample` (G201 stage 2): the drawn ground is the scene
-# reader's, through its ground plan, and the renderer is not a capability, so every configuration
-# has the command.
 set(_content_deps base containers math hash time log platform jobs io json geometry materials
-    assets atlas texture content_build renderer scene_gen)
+    assets atlas texture content_build)
 set(_content_tests tests/content_tests.cpp tests/determinism_tests.cpp tests/limit_dump_tests.cpp
     tests/normal_cases_tests.cpp tests/texture_tests.cpp tests/ground_tests.cpp)
 if(TARGET engine::tissue)
@@ -127,6 +124,16 @@ if(TARGET engine::cover)
   list(APPEND _content_deps cover cover_schemas flora schema)
 endif()
 list(REMOVE_DUPLICATES _content_deps)
+# **A host that reads scenes** (T121; docs/subsystems/scene_gen.md, "Which generators a host
+# carries"): `masks check` reads a scene through the renderer's own reader as far as its ground
+# (`renderer::SceneFileOptions::ground_only`), so the ground it checks has every entry's plan in it
+# (the routes' benches, the channels' cuts) exactly as a load's has. That reader finds a planning
+# entry's generator by name, so this app carries the build's one generator list, as engine-view,
+# engine-host and engine-editor do, and the configure holds it to the same list. `ground sample`
+# (G201 stage 2) reads the same ground through the same reader, so it carries every entry's plan
+# too; the renderer is not a capability, so every configuration has both commands.
+list(APPEND _content_deps renderer scene_gen)
+engine_host_generators(engine_content _content_deps)
 
 engine_app(NAME engine_content OUTPUT engine-content
   SOURCES main.cpp tissue_commands.cpp ruins_commands.cpp city_commands.cpp limit_dump.cpp

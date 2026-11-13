@@ -3,14 +3,17 @@
 //
 //   masks check <scene.json> [--ddc <root>]
 //
-// Runs the composition a load runs (`tileset::check_mask_budget`, the same field `terrain-masks`
-// builds from) over the scene terrain's tile set and prints one JSON line per tile whose points
-// name more layers than `materials.layer_budget` — the tile, its place in metres, the layers it
-// names with their mean and peak weight (heaviest first), the largest value the format would store
-// (`stored`, 255ths) and the points at or over one stored step (`points`, of `tile_points`; W113),
-// and the weakest, the one a blend-out would drop — then a summary line. Exit 0 when no tile is
-// over, 1 when any is (or the scene cannot be composed), 2 for usage. No mask archive is written.
-// The tile set is opened as `terrain-masks` opens it, built into the derived-data cache on a miss,
+// Reads the scene as a load reads it, as far as its ground (`renderer::read_scene_file` with
+// `ground_only`, T121: every entry's plan for the ground composed in), runs the composition a load
+// runs (`tileset::check_mask_budget`, the tile scan `terrain-masks` builds with) over that ground's
+// tile set and prints one JSON line per tile whose points name more layers than
+// `materials.layer_budget` — the tile, its place in metres, the layers it names with their mean and
+// peak weight (heaviest first), the largest value the format would store (`stored`, 255ths) and
+// the points at or over one stored step (`points`, of `tile_points`; W113), and the weakest, the
+// one a blend-out would drop — then a summary line with the level's resident size against the
+// scene's `resident_mib`. A refusal is printed on stderr in the load's words. Exit 0 when the level
+// fits both, 1 when it does not (or the scene cannot be composed), 2 for usage. No mask archive is
+// written; the tile set is built into the derived-data cache on a miss, as a load builds it,
 // because the priors read its heights.
 #include "content_commands.h"
 
@@ -29,6 +32,8 @@
 #include <domain/tileset/masks.h>
 #include <domain/tileset/tileset.h>
 #include <foundation/io/vfs.h>
+#include <systems/renderer/scene.h>
+#include <systems/renderer/terrain.h>
 
 #include <schemas/scene.h>
 #endif
@@ -46,9 +51,10 @@ const char* k_usage =
     "  composes the scene terrain's masks as a load does and prints one JSON line per tile whose\n"
     "  points name more layers than materials.layer_budget (its place, its layers with mean and\n"
     "  peak weight, the largest stored value and the points at or over one step, the weakest),\n"
-    "  then a summary line; writes no mask archive\n"
-    "  exit 0: no tile over budget; 1: some tile over (or the scene cannot be composed); 2: "
-    "usage\n";
+    "  then a summary line with the level's resident size against resident_mib; the ground is\n"
+    "  the load's, every placement entry's plan for it included; writes no mask archive\n"
+    "  exit 0: the level fits; 1: a tile over budget or the level over resident_mib (the load's\n"
+    "  sentence on stderr), or the scene cannot be composed; 2: usage\n";
 
 int failed(const std::string& message) {
   std::fprintf(stderr, "engine-content masks check: %s\n", message.c_str());
@@ -97,32 +103,31 @@ std::string tile_line(const tileset::OverBudgetTile& t) {
 }
 
 int check_scene(const std::string& scene_path, std::string ddc) {
-  std::string bytes;
-  if (io::read_file(scene_path, bytes) != io::Status::Ok)
-    return failed("'" + scene_path + "' could not be read");
-  JsonValue json;
-  if (!parse_json(bytes, json).ok) return failed("'" + scene_path + "' is not JSON");
-  scene::Scene scene;
-  schema::ReadContext ctx;
-  if (!schema::from_json(scene, json, ctx) || !ctx.ok())
-    return failed("'" + scene_path + "' is not a scene");
-  if (!scene.terrain.has_value() || !scene.terrain->masks.has_value() ||
-      !scene.terrain->tiles.has_value())
-    return failed("the scene's terrain names no masks over a tile set (\"tiles\" and \"masks\")");
-  scene::Terrain entry = *scene.terrain;
-  const std::string dir(io::parent_path(scene_path));
+  // **The ground a load composes, by the load's own reader** (T121): the scene read as far as its
+  // ground (`ground_only`), so its terrain carries the scene's own edits and every entry's plan
+  // for the ground (the routes' benched treads, the channels' cuts), its water bodies resolved into
+  // the regions, the host's root before the block's, and the provider made over it — which is
+  // where a load refuses the masks' inputs, and the level's size where the span alone gives it
+  // (T122), with the sentences printed here. Before T121 the check read the file's terrain alone,
+  // and passed a scene whose planned benches a load refused (the forest's v41, item 45).
+  renderer::SceneDesc desc;
+  desc.ddc = ddc;
+  renderer::SceneFileOptions options;
+  options.ground_only = true;
   std::string error;
-  if (!scene_gen::resolve_mask_water({scene.water.data(), scene.water.size()}, *entry.masks,
-                                     &error))
-    return failed(error);
-  // The set a load composes, from the same function (T74): the heightfield's cuts included, so the
-  // check and the load cannot disagree about the ground the masks read.
+  if (!renderer::read_scene_file(scene_path, options, desc, error)) return failed(error);
+  if (!desc.terrain.enabled || !desc.terrain.masks.has_value() || !desc.terrain.tiles.has_value())
+    return failed("the scene's terrain names no masks over a tile set (\"tiles\" and \"masks\")");
+  // The entry as the load hands it to its provider: every path already resolved.
+  const scene::Terrain entry = renderer::terrain_entry(desc.terrain);
   std::string manifest, ddc_used;
-  if (!tileset::resolve_tile_set(entry, dir, ddc, ddc_used, manifest, error)) return failed(error);
+  if (!tileset::resolve_tile_set(entry, std::string_view(), std::string(), ddc_used, manifest,
+                                 error))
+    return failed(error);
   tileset::TileSet set;
   if (!set.open(manifest, error)) return failed(error);
   tileset::MaskInputs inputs;
-  if (!tileset::mask_inputs(entry, dir, inputs, error)) return failed(error);
+  if (!tileset::mask_inputs(entry, std::string_view(), inputs, error)) return failed(error);
   if (!tileset::validate_mask_inputs(inputs, error)) return failed(error);
   tileset::MaskBudgetReport report;
   if (!tileset::check_mask_budget(set, inputs, report, error)) return failed(error);
@@ -139,9 +144,20 @@ int check_scene(const std::string& scene_path, std::string ddc) {
          ",\"over\":" + std::to_string(report.over.size()) +
          ",\"dropped\":" + std::to_string(report.dropped.size()) +
          ",\"largest\":" + std::to_string(report.largest) +
-         ",\"budget\":" + std::to_string(report.budget) + "}\n";
+         ",\"budget\":" + std::to_string(report.budget) +
+         ",\"present\":" + std::to_string(report.present) +
+         ",\"resident_bytes\":" + std::to_string(report.resident_bytes) +
+         ",\"resident_mib\":" + std::to_string(report.resident_mib) +
+         ",\"resident_over\":" + (report.resident_refusal.empty() ? "false" : "true") + "}\n";
   std::fwrite(out.data(), 1, out.size(), stdout);
-  return report.over.empty() ? k_exit_ok : k_exit_over;
+  // **The load's sentences** on stderr, so a scene the load would refuse is refused here in the
+  // words it would be (T121): the budget's, as the provider's build gives it, then the size's.
+  if (!report.over.empty())
+    std::fprintf(stderr, "engine-content masks check: %s\n",
+                 tileset::describe_over_budget(report, tileset::k_over_budget_listed).c_str());
+  if (!report.resident_refusal.empty())
+    std::fprintf(stderr, "engine-content masks check: %s\n", report.resident_refusal.c_str());
+  return report.over.empty() && report.resident_refusal.empty() ? k_exit_ok : k_exit_over;
 }
 
 #endif

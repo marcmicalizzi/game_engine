@@ -2327,10 +2327,18 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
       return false;
     }
   }
-  // The drawn ground and nothing on it (ground_sample.h). A placement entry this executable does
-  // not carry planned nothing (`plan_scene_ground` asks only the ones it has), and nothing expands
-  // here to refuse it: the caller names such entries (`SceneGround::not_carried`).
+  // The drawn ground and nothing on it (ground_sample.h; masks check). A placement entry this
+  // executable does not carry planned nothing (`plan_scene_ground` asks only the ones it has), and
+  // nothing expands here to refuse it: the caller names such entries (`SceneGround::not_carried`).
   if (options.ground_only) return true;
+  // **The masks before the placements** (T122; tileset.md, "What a load refuses before it
+  // builds"): the level cooked here, over the ground just made, so a tile naming more layers than
+  // its budget or a level over `resident_mib` is refused now and not after every entry has been
+  // expanded and the scene loaded. The upload asks again and finds it in the cache.
+  if (out.terrain.enabled && !check_terrain_masks(out.terrain, ground.provider(), &error)) {
+    error = path + ": " + error;
+    return false;
+  }
   // The surface under a world position (ADR-0053): asked at its whole millimetre, which never
   // passes through a float32 metre, at the terrain's own time — the heights the sampler's float
   // `height` gives at a point a float holds to the millimetre (`GroundOps::height_mm`), and the

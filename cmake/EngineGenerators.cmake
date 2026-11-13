@@ -30,11 +30,11 @@ set(ENGINE_GENERATOR_KINDS ground placement sky mesh)
 
 # The hosts that read a scene, and so carry every generator the build has: engine-view
 # (`--scene`, `--mesh x.<gen>.json`, `--world`), engine-host (`render.load`) and engine-editor (a
-# document's placements and ground, drawn through the renderer's scene reader). A host on this list
-# that does not call engine_host_generators(), or links a different set, stops the configure. A
-# host that reads no scene (engine-cli, engine-content's own commands link what they build) is not
-# on it.
-set(ENGINE_GENERATOR_HOSTS engine_view engine_host engine_editor)
+# document's placements and ground, drawn through the renderer's scene reader) and engine-content
+# (`masks check` reads a scene's ground through that reader, every entry's plan composed in; T121).
+# A host on this list that does not call engine_host_generators(), or links a different set, stops
+# the configure. A host that reads no scene (engine-cli) is not on it.
+set(ENGINE_GENERATOR_HOSTS engine_view engine_host engine_editor engine_content)
 
 set_property(GLOBAL PROPERTY ENGINE_GENERATOR_MODULES "")
 set_property(GLOBAL PROPERTY ENGINE_GENERATOR_DECLARED "")

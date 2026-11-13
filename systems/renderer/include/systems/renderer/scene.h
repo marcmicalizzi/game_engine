@@ -528,10 +528,13 @@ struct SceneFileOptions {
   // time (engine-view `--world-instances tiles`, the default) or keep them in the scene's prefix
   // (`whole`): `SceneDesc::authored.enabled`.
   bool world_instances = true;
-  // **Read through the ground plan and stop** (G201 stage 2; `SceneGround`, ground_sample.h): the
-  // terrain with the scene's edits and every entry's planned ones, its sampler made and checked,
-  // the exclusion and the site built; no instance, scatter, placement or water is read. What
-  // `engine-content ground sample` asks the drawn ground of without expanding a forest.
+  // **Read as far as the ground, and stop** (T121; tileset.md, "What a load refuses before it
+  // builds"): the file, its terrain with the scene's edits and every entry's plan for it composed
+  // in, the ground provider made over all of it (its set found or built, its masks' inputs and
+  // early budget checked), the exclusion and the site built; then return with no mask level
+  // cooked, no placement expanded, no instance placed and no water read. Its two readers ask the
+  // ground a load composes by the same code: `engine-content masks check` (T121) and
+  // `engine-content ground sample` (G201 stage 2; `SceneGround`, ground_sample.h).
   bool ground_only = false;
 };
 

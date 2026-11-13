@@ -30,6 +30,7 @@
 #include <core/base/types.h>
 
 #include <span>
+#include <string>
 
 namespace engine::scene_gen {
 
@@ -68,8 +69,40 @@ struct GroundMaskInfo {
   u64 hash = 0;                          // the level's identity: its key and its tiles' hashes
   f32 wetness = 0;                       // the scene's, everywhere
   f32 height_blend = 0;                  // the depth of the height blend; 0 linear
-  u32 resident_mib = 256;
+  // No resident budget (T127): that is the host's, read from the scene's `masks.resident_mib` at
+  // every load, never from a cooked level, so raising it works on the level as it stands.
 };
+
+// **What a level holds resident** (renderer.md, "Ground materials by place"; tileset.md, "The mask
+// level"): a page word for every tile of its range (`GroundMaskInfo::tile_min_*` to `tile_max_*`)
+// and a tile's words for each tile present. Bytes. The renderer's upload, the load's check and
+// `engine- content masks check` all count it here, so the three cannot disagree (T121).
+constexpr u64 mask_resident_bytes(u64 range_tiles, u64 present_tiles, u32 cells) noexcept {
+  return (range_tiles + present_tiles * mask_tile_words(cells)) * 4u;
+}
+// The tiles of a level's range.
+constexpr u64 mask_range_tiles(const GroundMaskInfo& info) noexcept {
+  return info.tile_max_x < info.tile_min_x || info.tile_max_z < info.tile_min_z
+             ? 0u
+             : static_cast<u64>(info.tile_max_x - info.tile_min_x + 1) *
+                   static_cast<u64>(info.tile_max_z - info.tile_min_z + 1);
+}
+// **The one sentence a level over its budget is refused with**, wherever it is found (the load,
+// the upload, the check), or empty when `bytes` fits `resident_mib`: the size to a tenth of a MiB,
+// the tiles it holds of its range, the budget, and the least figure that would hold it.
+inline std::string mask_resident_refusal(u64 bytes, u64 present_tiles, u64 range_tiles,
+                                         u32 resident_mib) {
+  constexpr u64 k_mib = 1024u * 1024u;
+  if (bytes <= u64{resident_mib} * k_mib) return std::string();
+  const u64 tenths = (bytes * 10u + k_mib / 2u) / k_mib;
+  const u64 least = (bytes + k_mib - 1u) / k_mib;
+  return "terrain.masks: the mask level is " + std::to_string(tenths / 10u) + "." +
+         std::to_string(tenths % 10u) + " MiB resident (" + std::to_string(present_tiles) +
+         " tiles of the " + std::to_string(range_tiles) +
+         " in its range), over the block's resident_mib of " + std::to_string(resident_mib) +
+         "; raise it to " + std::to_string(least) +
+         " or more, or coarsen spacing_mm (streaming the level is W25's)";
+}
 
 struct GroundMaskOps {
   // Manifest presence only, no payload I/O. A resident upload counts this before reading tiles.

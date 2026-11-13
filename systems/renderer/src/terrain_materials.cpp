@@ -318,6 +318,55 @@ u64 terrain_materials_hash(const scene::TerrainMaterials& materials) {
 }  // namespace engine::renderer
 
 namespace engine::renderer {
+bool check_terrain_mask_resident(const TerrainDesc& terrain, const scene_gen::GroundMasks& masks,
+                                 u64& bytes, Vector<u8>* has, std::string* error) {
+  bytes = 0;
+  const auto fail = [&](const std::string& why) {
+    if (error != nullptr) *error = why;
+    return false;
+  };
+  if (!masks.valid()) return true;
+  scene_gen::GroundMaskInfo info;
+  if (!masks.ops->info(masks.state, info) || info.cells == 0)
+    return fail("terrain.masks: the ground provider's mask level has no description");
+  // Count the manifest's presence, never payloads, before holding the resident level (W76).
+  if (masks.ops->present == nullptr)
+    return fail("terrain.masks: the ground provider has no mask presence query");
+  const u64 tiles_x = static_cast<u64>(info.tile_max_x - info.tile_min_x + 1);
+  const u64 tiles_z = static_cast<u64>(info.tile_max_z - info.tile_min_z + 1);
+  const u64 pages = scene_gen::mask_range_tiles(info);
+  if (has != nullptr) has->assign(static_cast<u32>(pages), u8{0});
+  u64 present = 0;
+  for (u64 z = 0; z < tiles_z; ++z)
+    for (u64 x = 0; x < tiles_x; ++x)
+      if (masks.ops->present(masks.state, info.tile_min_x + static_cast<i32>(x),
+                             info.tile_min_z + static_cast<i32>(z))) {
+        if (has != nullptr) (*has)[static_cast<u32>(z * tiles_x + x)] = 1;
+        ++present;
+      }
+  bytes = scene_gen::mask_resident_bytes(pages, present, info.cells);
+  // The host's figure, from the scene (T127): a terrain whose description carries no block (a
+  // provider that answers masks of its own) is held to the block's default.
+  const u32 budget =
+      terrain.masks.has_value() ? terrain.masks->resident_mib : scene::TerrainMasks{}.resident_mib;
+  const std::string refusal = scene_gen::mask_resident_refusal(bytes, present, pages, budget);
+  return refusal.empty() || fail(refusal);
+}
+
+bool check_terrain_masks(const TerrainDesc& terrain, const scene_gen::GroundProvider& provider,
+                         std::string* error) {
+  if (!terrain.masks.has_value()) return true;
+  ENGINE_STARTUP_STAGE("mask level");  // the load's cook, before the placements (T122)
+  scene_gen::GroundMasks masks;
+  std::string why;
+  if (!provider.masks(masks, &why)) {
+    if (error != nullptr) *error = "terrain.masks: " + why;
+    return false;
+  }
+  u64 bytes = 0;
+  return check_terrain_mask_resident(terrain, masks, bytes, nullptr, error);
+}
+
 bool prepare_terrain_masks(const TerrainDesc& terrain, TerrainMaskUpload& out, std::string* error) {
   ENGINE_STARTUP_STAGE("terrain masks");
   out = TerrainMaskUpload{};
@@ -338,25 +387,11 @@ bool prepare_terrain_masks(const TerrainDesc& terrain, TerrainMaskUpload& out, s
   const u64 tiles_z = static_cast<u64>(info.tile_max_z - info.tile_min_z + 1);
   const u32 words = scene_gen::mask_tile_words(info.cells);
   const u64 pages = tiles_x * tiles_z;
-  // Count the manifest's presence, never payloads, before holding the resident level (W76).
-  if (masks.ops->present == nullptr) return fail("the ground provider has no mask presence query");
-  u64 present = 0;
-  Vector<u8> has(static_cast<u32>(pages), u8{0});
-  for (u64 z = 0; z < tiles_z; ++z)
-    for (u64 x = 0; x < tiles_x; ++x)
-      if (masks.ops->present(masks.state, info.tile_min_x + static_cast<i32>(x),
-                             info.tile_min_z + static_cast<i32>(z))) {
-        has[static_cast<u32>(z * tiles_x + x)] = 1;
-        ++present;
-      }
-  const u64 bytes = (pages + present * words) * sizeof(u32);
-  if (bytes > u64{info.resident_mib} * 1024 * 1024) {
-    return fail("the mask level is " + std::to_string(bytes / (1024 * 1024)) +
-                " MiB resident, over the block's resident_mib of " +
-                std::to_string(info.resident_mib) +
-                "; raise it, or coarsen spacing_mm (streaming the level is W25's)");
-  }
-  out.words.assign(static_cast<u32>(pages + present * words), 0u);
+  // Presence counted and the budget held before a payload is read, by the load's own check.
+  u64 bytes = 0;
+  Vector<u8> has;
+  if (!check_terrain_mask_resident(terrain, masks, bytes, &has, error)) return false;
+  out.words.assign(static_cast<u32>(bytes / sizeof(u32)), 0u);
   u32 slot = 0;
   for (u64 p = 0; p < pages; ++p) {
     if (has[static_cast<u32>(p)] == 0) {

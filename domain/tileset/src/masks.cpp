@@ -7,6 +7,7 @@
 #include <core/json/json.h>
 #include <core/json/json_value.h>
 #include <core/schema/json_reflect.h>
+#include <domain/scene_gen/scene_gen.h>
 #include <domain/tileset/masks.h>
 #include <foundation/image/decode.h>
 #include <foundation/image/png.h>
@@ -23,6 +24,21 @@ namespace engine::tileset {
 namespace {
 
 i64 floor_div(i64 a, i64 b) noexcept { return scene_gen::mask_floor_div(a, b); }
+
+// **A version-1 manifest's budget, dropped unread** (T127; tileset.schema, `MaskLevelManifest`):
+// it named the scene's `resident_mib` of the cook, which the reader then held the level to, so a
+// figure raised after a refusal did nothing until the level was deleted. Version 2 carries none;
+// a level cooked before it is read as it stands, with nothing recooked (its records never held the
+// figure, which is why `k_mask_version` does not move).
+bool migrate_manifest_1(JsonValue& object, schema::ReadContext&) {
+  if (object.is_object()) object.as_object().erase(std::string("resident_mib"));
+  return true;
+}
+[[maybe_unused]] const bool k_manifest_migration = [] {
+  schema::MigrationRegistry::global().add(
+      {"engine.tileset.MaskLevelManifest", 1, &migrate_manifest_1});
+  return true;
+}();
 
 std::string hex(u64 v) {
   char text[17];
@@ -512,7 +528,8 @@ bool mask_key(const TileSetManifest& set, const MaskInputs& in, u64& out, std::s
   for (auto& paint : identity.masks.paint)
     paint.image.clear();
   if (identity.masks.index.has_value()) identity.masks.index->image.clear();
-  // The resident budget is the renderer's, not the level's: it changes no byte.
+  // The resident budget is the host's, not the level's: it changes no byte, the manifest does not
+  // carry it (T127), and the level is held to the scene's figure at every load.
   identity.masks.resident_mib = 0;
   const std::string text = write_json(schema::to_json(identity.masks));
   u64 h = hash_combine(k_hash_seed, k_mask_version);
@@ -624,6 +641,48 @@ void note_dropped(const MaskInputs& in, i32 tx, i32 tz, const Vector<u32>& used,
   }
 }
 
+// **One tile's composition, for the build and the check alike** (T121): every point's palette
+// weights (`dense`, a point's palette after the last's) and wetness, which layers reach one step
+// somewhere (`used`), their peaks, the table (those layers, in palette order) and whether any point
+// is wet. A tile the build writes is one that is `present()`, so the check's count of them is the
+// renderer's, tile for tile.
+struct TileScan {
+  Vector<f64> dense, wet, w, scratch, peak;
+  Vector<u32> used, table;
+  bool any_wet = false;
+  bool present() const noexcept { return !table.empty() || any_wet; }
+};
+
+void scan_tile(const Field& f, i32 tx, i32 tz, TileScan& t) {
+  const i64 s = f.in->masks.spacing_mm;
+  const u32 c = f.in->masks.tile_cells;
+  const u32 n0 = c + 1;
+  t.dense.resize(n0 * n0 * f.palette);
+  t.wet.resize(n0 * n0);
+  t.used.assign(f.palette, 0u);
+  t.peak.assign(f.palette, 0.0);
+  t.table.clear();
+  t.any_wet = false;
+  for (u32 b = 0; b < n0; ++b) {
+    for (u32 a = 0; a < n0; ++a) {
+      const i64 xm = (static_cast<i64>(tx) * c + a) * s;
+      const i64 zm = (static_cast<i64>(tz) * c + b) * s;
+      f64 point_wet = 0;
+      evaluate(f, xm, zm, s, t.w, point_wet, t.scratch);
+      const u32 p = b * n0 + a;
+      for (u32 k = 0; k < f.palette; ++k) {
+        t.dense[p * f.palette + k] = t.w[k];
+        t.peak[k] = std::max(t.peak[k], t.w[k]);
+        if (t.w[k] >= k_mask_step) t.used[k] = 1;
+      }
+      t.wet[p] = point_wet;
+      if (quantize(point_wet) != 0) t.any_wet = true;
+    }
+  }
+  for (u32 k = 0; k < f.palette; ++k)
+    if (t.used[k] != 0) t.table.push_back(k);
+}
+
 }  // namespace
 
 std::string describe_over_budget(const MaskBudgetReport& report, u32 cap) {
@@ -675,39 +734,118 @@ bool check_mask_budget(const TileSet& set, const MaskInputs& in, MaskBudgetRepor
   const u32 c = in.masks.tile_cells;
   const TileRange r = tile_range(set.manifest(), s, c);
   const u32 n0 = c + 1;
-  Vector<f64> dense(static_cast<u32>(n0) * n0 * f.palette);
-  Vector<f64> w;
-  Vector<f64> scratch;
+  TileScan scan;
   out.budget = in.budget;
   for (i32 tz = r.tz0; tz <= r.tz1; ++tz) {
     for (i32 tx = r.tx0; tx <= r.tx1; ++tx) {
-      Vector<u32> used(f.palette, 0u);
-      Vector<f64> peak(f.palette, 0.0);
-      for (u32 b = 0; b < n0; ++b) {
-        for (u32 a = 0; a < n0; ++a) {
-          const i64 xm = (static_cast<i64>(tx) * c + a) * s;
-          const i64 zm = (static_cast<i64>(tz) * c + b) * s;
-          f64 point_wet = 0;
-          evaluate(f, xm, zm, s, w, point_wet, scratch);
-          const u32 p = b * n0 + a;
-          for (u32 k = 0; k < f.palette; ++k) {
-            dense[p * f.palette + k] = w[k];
-            peak[k] = std::max(peak[k], w[k]);
-            if (w[k] >= k_mask_step) used[k] = 1;
-          }
-        }
-      }
-      Vector<u32> table;
-      for (u32 k = 0; k < f.palette; ++k)
-        if (used[k] != 0) table.push_back(k);
-      note_dropped(in, tx, tz, used, peak, out.dropped);
+      scan_tile(f, tx, tz, scan);
+      note_dropped(in, tx, tz, scan.used, scan.peak, out.dropped);
       ++out.tiles;
-      out.largest = std::max(out.largest, static_cast<u32>(table.size()));
-      if (table.size() > in.budget)
-        out.over.push_back(over_budget_tile(in, tx, tz, s, c, dense, n0 * n0, table));
+      if (scan.present()) ++out.present;
+      out.largest = std::max(out.largest, static_cast<u32>(scan.table.size()));
+      if (scan.table.size() > in.budget)
+        out.over.push_back(over_budget_tile(in, tx, tz, s, c, scan.dense, n0 * n0, scan.table));
     }
   }
+  // The size the renderer would hold, by the function it counts with, against the scene's figure.
+  const u64 range = static_cast<u64>(r.tx1 - r.tx0 + 1) * static_cast<u64>(r.tz1 - r.tz0 + 1);
+  out.resident_bytes = scene_gen::mask_resident_bytes(range, out.present, c);
+  out.resident_mib = in.masks.resident_mib;
+  out.resident_refusal = scene_gen::mask_resident_refusal(out.resident_bytes, out.present, range,
+                                                          in.masks.resident_mib);
   return true;
+}
+
+bool mask_level_full(const MaskInputs& in) noexcept {
+  // Soil, scree and bedrock partition the slope (soil = 1 - scree - rock), snow takes its share of
+  // all three, a `base` stands in for soil, and every later input is laid by the alpha rule: so a
+  // point's weights sum to one, its heaviest is at least 1/254 of it, which is over one step.
+  if (!in.masks.priors.has_value()) return false;
+  const scene::TerrainMaskPriors& p = *in.masks.priors;
+  return !p.soil.empty() && !p.scree.empty() && !p.bedrock.empty() &&
+         in.palette.size() <= scene_gen::k_mask_max_palette;
+}
+
+bool mask_level_span(const scene::Terrain& entry, std::string_view dir, const MaskInputs& in,
+                     MaskLevelSpan& out, std::string& error) {
+  out = MaskLevelSpan{};
+  if (!entry.tiles.has_value()) {
+    error =
+        "terrain.masks: the masks are built over a tile set, and the terrain names no \"tiles\"";
+    return false;
+  }
+  const scene::TerrainTileSet& t = *entry.tiles;
+  const auto load_json = [&](const std::string& path, JsonValue& json) {
+    std::string bytes;
+    if (io::read_file(path, bytes) != io::Status::Ok) {
+      error = "terrain.masks: '" + path + "' could not be read";
+      return false;
+    }
+    if (!parse_json(bytes, json).ok) {
+      error = "terrain.masks: '" + path + "' is not JSON";
+      return false;
+    }
+    return true;
+  };
+  // The finest lattice a build would write into the set's manifest (tileset.cpp, `build_tileset`):
+  // the source's spacing and size, its origin moved by the block's.
+  TileSetManifest lattice;
+  if (!t.manifest.empty()) {
+    const std::string path = resolve(dir, t.manifest);
+    JsonValue json;
+    if (!load_json(path, json)) return false;
+    schema::ReadContext ctx;
+    ctx.options.ignore_unknown_fields = true;
+    if (!schema::from_json(lattice, json, ctx) || !ctx.ok()) {
+      error = "terrain.masks: '" + path + "' is not a tile set's manifest";
+      return false;
+    }
+  } else if (!t.heightfield.empty()) {
+    const std::string path = resolve(dir, t.heightfield);
+    JsonValue json;
+    if (!load_json(path, json)) return false;
+    HeightfieldHeader header;
+    schema::ReadContext ctx;
+    if (!schema::from_json(header, json, ctx) || !ctx.ok()) {
+      error = "terrain.masks: '" + path + "' is not a heightfield header";
+      return false;
+    }
+    lattice.spacing_mm = header.spacing_mm;
+    lattice.width = header.width;
+    lattice.height = header.height;
+    const i64 s = header.spacing_mm > 0 ? header.spacing_mm : 1;
+    lattice.origin_mm = {(header.origin_mm[0] + scene_gen::nearest_mm(t.origin.x)) / s * s,
+                         (header.origin_mm[1] + scene_gen::nearest_mm(t.origin.z)) / s * s};
+  } else {
+    error = "terrain.masks: the terrain's tile set names neither a manifest nor a heightfield";
+    return false;
+  }
+  if (lattice.spacing_mm <= 0 || lattice.width < 2 || lattice.height < 2) {
+    error = "terrain.masks: the tile set's lattice is empty";
+    return false;
+  }
+  const TileRange r = tile_range(lattice, in.masks.spacing_mm, in.masks.tile_cells);
+  out.tx0 = r.tx0;
+  out.tz0 = r.tz0;
+  out.tx1 = r.tx1;
+  out.tz1 = r.tz1;
+  return true;
+}
+
+bool check_masks_early(const scene::Terrain& entry, std::string_view dir, const MaskInputs& in,
+                       MaskEarlyCheck& out, std::string& error) {
+  out = MaskEarlyCheck{};
+  if (!validate_mask_inputs(in, error)) return false;
+  if (!mask_level_span(entry, dir, in, out.span, error)) return false;
+  if (!mask_level_full(in)) return true;  // which tiles hold anything is the composition's
+  out.known = true;
+  const u64 range = out.span.range();
+  out.bytes = scene_gen::mask_resident_bytes(range, range, in.masks.tile_cells);
+  const std::string refusal =
+      scene_gen::mask_resident_refusal(out.bytes, range, range, in.masks.resident_mib);
+  if (refusal.empty()) return true;
+  error = refusal;
+  return false;
 }
 
 bool build_mask_level(const TileSet& set, const MaskInputs& in, const std::string& dir,
@@ -742,15 +880,14 @@ bool build_mask_level(const TileSet& set, const MaskInputs& in, const std::strin
   manifest.budget = in.budget;
   manifest.wetness = in.masks.wetness;
   manifest.height_blend = in.masks.height_blend;
-  manifest.resident_mib = in.masks.resident_mib;
 
   const u32 n0 = c + 1;
   const u32 points = scene_gen::mask_points(c);
   const u32 words = scene_gen::mask_tile_words(c);
-  Vector<f64> dense(static_cast<u32>(n0) * n0 * f.palette);
-  Vector<f64> wet(static_cast<u32>(n0) * n0);
-  Vector<f64> w;
-  Vector<f64> scratch;
+  TileScan scan;
+  const Vector<f64>& dense = scan.dense;
+  const Vector<f64>& wet = scan.wet;
+  const Vector<u32>& table = scan.table;
   Vector<u32> channel[scene_gen::k_mask_channels];
   Vector<u32> wet_points;
   Vector<u32> tile_words(words);
@@ -759,30 +896,9 @@ bool build_mask_level(const TileSet& set, const MaskInputs& in, const std::strin
   archive::Writer writer("EMSK", s, record_bytes(c));
   for (i32 tz = tz0; tz <= tz1; ++tz) {
     for (i32 tx = tx0; tx <= tx1; ++tx) {
-      bool any_wet = false;
-      Vector<u32> used(f.palette, 0u);
-      Vector<f64> peak(f.palette, 0.0);
-      for (u32 b = 0; b < n0; ++b) {
-        for (u32 a = 0; a < n0; ++a) {
-          const i64 xm = (static_cast<i64>(tx) * c + a) * s;
-          const i64 zm = (static_cast<i64>(tz) * c + b) * s;
-          f64 point_wet = 0;
-          evaluate(f, xm, zm, s, w, point_wet, scratch);
-          const u32 p = b * n0 + a;
-          for (u32 k = 0; k < f.palette; ++k) {
-            dense[static_cast<u32>(p) * f.palette + k] = w[k];
-            peak[k] = std::max(peak[k], w[k]);
-            if (w[k] >= k_mask_step) used[k] = 1;
-          }
-          wet[p] = point_wet;
-          if (quantize(point_wet) != 0) any_wet = true;
-        }
-      }
-      Vector<u32> table;
-      for (u32 k = 0; k < f.palette; ++k)
-        if (used[k] != 0) table.push_back(k);
-      note_dropped(in, tx, tz, used, peak, out.dropped);
-      if (table.empty() && !any_wet) continue;
+      scan_tile(f, tx, tz, scan);
+      note_dropped(in, tx, tz, scan.used, scan.peak, out.dropped);
+      if (!scan.present()) continue;
       if (table.size() > in.budget) {
         // Every tile over is named, not the first: the scan goes on and the sentence lists them.
         over.over.push_back(over_budget_tile(in, tx, tz, s, c, dense, n0 * n0, table));
@@ -986,7 +1102,11 @@ bool MaskLevel::open(const std::string& manifest_path, std::string& error, bool 
   }
   schema::ReadContext ctx;
   manifest_ = MaskLevelManifest{};
-  if (!schema::from_json(manifest_, json, ctx) || !ctx.ok() || manifest_.format != k_mask_format ||
+  // A manifest carries no version of its own struct; only a version-1 one names `resident_mib`.
+  const bool version_1 = json.is_object() && json.find("resident_mib") != nullptr;
+  const bool parsed = version_1 ? schema::from_json_versioned(manifest_, std::move(json), 1, ctx)
+                                : schema::from_json(manifest_, json, ctx);
+  if (!parsed || !ctx.ok() || manifest_.format != k_mask_format ||
       manifest_.version != k_mask_version || manifest_.cells < 4 || manifest_.cells > 256 ||
       (manifest_.cells & (manifest_.cells - 1)) != 0 || manifest_.spacing_mm < 1 ||
       manifest_.present.size() % 2 != 0) {
@@ -1005,7 +1125,6 @@ bool MaskLevel::open(const std::string& manifest_path, std::string& error, bool 
   info_.budget = manifest_.budget;
   info_.wetness = manifest_.wetness;
   info_.height_blend = manifest_.height_blend;
-  info_.resident_mib = manifest_.resident_mib;
   u64 h = hash_combine(k_hash_seed, hash_bytes(manifest_.key.data(), manifest_.key.size()));
   info_.hash = hash_combine(h, hash_bytes(manifest_.hash.data(), manifest_.hash.size()));
   for (u32 i = 0; i < manifest_.present.size(); i += 2)
