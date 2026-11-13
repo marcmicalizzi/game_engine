@@ -95,6 +95,22 @@ eliminating that cost requires a shared rigid-collider motion policy and is not 
 Collision uses the normal welded DAG cut at 5 cm. A cover host sees wood, not leaves; the cover
 capability produces its own section-40 mask when a companion is cooked over the remains.
 
+## Standing remains keep their skirt
+
+G201 stage 2, 2026-11-12 (`k_deadwood_version` 3; [flora](flora.md#the-trunks-skirt)). The source
+tree's stem goes on below its collar as a skirt, so a tree on a slope meets the ground on its
+downhill side. A remain cut at `start_m` kept only the part of it above `start_m`, which for a
+standing remain cut at its base is none: a snag or a stump on a slope showed the gap the skirt
+closed on the living tree. A **standing remain** (a `snag`, a `snapped` stem or a solid `stump`,
+upright: pitch 0, no hollow, cut from the trunk) now cuts its wood's foot underground, at the
+skirt's depth under `start_m` (the source's seat, frame-relative, and a millimetre past it), with no
+fracture there; what stands above the ground is the remain it was, and its settling still reads the
+bole above `start_m` alone. Its container records a seat (section 42, [flora](flora.md#the-seat)):
+the posed foot's farthest reach under the old collar, the settled collar's height and the skirt's
+bottom, so a host seats it on ground falling faster than the skirt reaches as it seats a tree
+([renderer](renderer.md#a-tree-seated-by-its-footprint)). A fallen log, a limb, a hollow stump and a
+remain pitched over keep no skirt and record no seat.
+
 ## Budgets and distance
 
 The source tree selects its own detail through its existing recipe/profile budget. The remains

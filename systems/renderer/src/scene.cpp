@@ -589,6 +589,8 @@ void adopt_container(geometry::ClusterFileData& container_data, const std::strin
     out.data.images.push_back(std::move(image));
   }
   out.textures = std::move(container_data.textures);  // where the built textures are, if any
+  // What a host seats an instance of it by (G201 stage 2; section 42): none but a tree's.
+  out.seat = container_data.seat;
   // A generated tree's motion contract, for the flora stage and the collision (renderer.md, "The
   // flora stage"): kept only when its per-vertex records cover the mesh, which is what a reader may
   // index them by.
@@ -1313,6 +1315,8 @@ bool expand_placements(const scene::Scene& file, const std::string& path, const 
       instance.transform = p.turn();
       instance.origin = p.position;
       instance.handoff = p.handoff;  // the near and far forms' hand-off (G136)
+      // A generator's placement stands on `context.ground`: the load seats it (G201 stage 2).
+      instance.grounded = true;
       out.instances.push_back(instance);
     }
     // What the entries after this one are handed: only when there is one to hand it to.
@@ -1436,6 +1440,97 @@ void prune_form_parts(SourceMesh& form) {
   form.motion_parts = std::move(parts);
   form.motion_part_ids = std::move(ids);
 }
+
+// **Seats the instances standing on the ground by their meshes' seats** (G201 stage 2; renderer.md,
+// "A tree seated by its footprint"; scene_gen/seat.h): every grounded instance whose mesh carries a
+// seat and no fit, on the drawn ground — the scene's terrain with every edit planned, `terrain`,
+// asked as the read asked it — with the scene's holes left out. After the meshes, whose containers
+// say the seat, and before the authored entry and its forms take their instances, so a streamed
+// tree is handed on seated and the world's tiles place it where a whole read does. A ground is
+// made only when there is an instance to seat on it. Instances are independent of each other, so
+// the order does not matter and nothing depends on the thread count: on a pool, blocks of a fixed
+// size, each its own instances and its own counts, the counts summed in block order.
+
+struct SeatBlock {
+  std::span<SceneInstance> instances;
+  std::span<const SourceMesh> sources;
+  std::span<const SceneMeshInfo> info;
+  scene_gen::Ground ground;
+  const scene_gen::Exclusion* holes = nullptr;
+  u32 seated = 0;
+  u32 lowered = 0;
+  f64 lowered_max_m = 0.0;
+};
+
+scene_gen::MeshSeat seat_of(const SceneInstance& instance, std::span<const SourceMesh> sources,
+                            std::span<const SceneMeshInfo> info) {
+  if (!instance.grounded || instance.mesh >= sources.size()) return scene_gen::MeshSeat{};
+  if (instance.mesh < info.size() && info[instance.mesh].fit.active()) return scene_gen::MeshSeat{};
+  return scene_gen::mesh_seat(sources[instance.mesh].seat);
+}
+
+void seat_block(void* data) {
+  SeatBlock& b = *static_cast<SeatBlock*>(data);
+  for (SceneInstance& instance : b.instances) {
+    const scene_gen::MeshSeat seat = seat_of(instance, b.sources, b.info);
+    if (!seat.valid()) continue;
+    const scene_gen::SeatResult r = scene_gen::seat_on_ground(
+        b.ground, b.holes, seat, instance.transform.scale, instance.origin);
+    if (!r.seated) continue;
+    instance.slope = r.slope;
+    ++b.seated;
+    if (r.lowered_m > 0.0) {
+      ++b.lowered;
+      b.lowered_max_m = std::max(b.lowered_max_m, r.lowered_m);
+    }
+  }
+}
+
+}  // namespace
+
+void seat_scene_instances(const TerrainDesc& terrain, std::span<SceneInstance> instances,
+                          std::span<const SourceMesh> sources, std::span<const SceneMeshInfo> info,
+                          SceneLoadReport& report, jobs::JobSystem* pool) {
+  if (!terrain.enabled) return;
+  bool any = false;
+  for (const SceneInstance& instance : instances)
+    any = any || seat_of(instance, sources, info).valid();
+  if (!any) return;
+  ENGINE_STARTUP_STAGE("seats");
+  const i64 start = time::monotonic_ns();
+  const TerrainSampler ground(terrain);
+  if (!ground.ok()) return;  // the read made this ground already, and said why it could not
+  constexpr usize k_block = 1024;
+  Vector<SeatBlock> blocks;
+  blocks.reserve(static_cast<u32>((instances.size() + k_block - 1) / k_block));
+  for (usize first = 0; first < instances.size(); first += k_block) {
+    SeatBlock b;
+    b.instances = instances.subspan(first, std::min(k_block, instances.size() - first));
+    b.sources = sources;
+    b.info = info;
+    b.ground = ground.provider().view();
+    b.holes = terrain.exclusion.empty() ? nullptr : &terrain.exclusion;
+    blocks.push_back(b);
+  }
+  if (pool != nullptr && blocks.size() > 1) {
+    run_jobs<SeatBlock>(*pool, blocks, &seat_block);
+  } else {
+    for (SeatBlock& b : blocks)
+      seat_block(&b);
+  }
+  for (const SeatBlock& b : blocks) {
+    report.seated += b.seated;
+    report.lowered += b.lowered;
+    report.lowered_max_m = std::max(report.lowered_max_m, b.lowered_max_m);
+  }
+  report.seat_ms = static_cast<f64>(time::monotonic_ns() - start) / 1.0e6;
+  ENGINE_LOG_INFO(log_renderer, "instances seated by their footprints",
+                  log::field("seated", report.seated), log::field("lowered", report.lowered),
+                  log::field("lowered_max_m", report.lowered_max_m),
+                  log::field("ms", report.seat_ms));
+}
+
+namespace {
 
 // Hands the file's own rigid instances to the "authored" generator (authored.md) and makes each
 // ring's distance form of their meshes (geometry.md, "Distance forms"): appended after every mesh
@@ -1721,6 +1816,7 @@ bool stream_authored(SceneDesc& resolved, Vector<SourceMesh>& sources,
   entry.where = (resolved.name.empty() ? std::string("scene") : resolved.name) + ": instances";
   entry.meshes = std::move(resident);
   entry.motion_key_base = first;  // id n is instance first + n - 1 of the whole read
+  entry.seated = true;  // the load seated every grounded one before handing it on (G201 stage 2)
   entry.tile_instances = std::move(tile_instances);
   resolved.streamed.push_back(std::move(entry));
   stats.streamed = taken;
@@ -2235,6 +2331,9 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
       return false;
     }
   }
+  // The drawn ground and nothing on it (ground_sample.h; masks check). A placement entry this
+  // executable does not carry planned nothing (`plan_scene_ground` asks only the ones it has), and
+  // nothing expands here to refuse it: the caller names such entries (`SceneGround::not_carried`).
   if (options.ground_only) return true;
   // **The masks before the placements** (T122; tileset.md, "What a load refuses before it
   // builds"): the level cooked here, over the ground just made, so a tile naming more layers than
@@ -2281,6 +2380,7 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
     instance.origin = entry.translation;
     if (entry.ground) {
       instance.origin.y += ground_at_world(entry.translation);
+      instance.grounded = true;  // seated by the load when its mesh has a seat (G201 stage 2)
     } else if (out.terrain.enabled) {
       // T74: an instance placed at an absolute `y` over a ground that has moved since (the forest
       // proof of concept floated trees 26 m when its landform changed). Counted, not refused.
@@ -2360,6 +2460,7 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
                               static_cast<f64>(std::sin(angle) * radius)};
       instance.origin.y =
           static_cast<f64>(scatter.y) + (scatter.ground ? ground_at_world(instance.origin) : 0.0);
+      instance.grounded = scatter.ground;
       instance.transform.rotation = quat_from_axis_angle(Vec3{0.0f, 1.0f, 0.0f}, yaw);
       instance.transform.scale = Vec3{scale, scale, scale};
       out.instances.push_back(instance);
@@ -2565,6 +2666,12 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   // Each mesh's path as the scene named it, for a sentence about it (a form copies its source's).
   for (u32 m = 0; m < out.sources.size() && m < resolved.meshes.size(); ++m)
     out.sources[m].path = resolved.meshes[m];
+  // The trees standing on the ground, seated by their footprints (G201 stage 2), on the ground as
+  // the file described it (`desc`: before a tile-drawn terrain's carrier grid is shrunk, above).
+  seat_scene_instances(desc.terrain, {resolved.instances.data(), resolved.instances.size()},
+                       {out.sources.data(), out.sources.size()},
+                       {resolved.mesh_info.data(), resolved.mesh_info.size()}, out.load,
+                       pool.has_value() ? &*pool : nullptr);
   // A streamed world's own instances, before the merge: their forms are meshes of their own
   // (renderer.md, "Authored instances per tile").
   {
@@ -2770,6 +2877,7 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
     // the place a whole read gives it (renderer.md, "Streamed trees sway").
     out.motion_keys.push_back(source.motion_key != k_motion_key_load ? source.motion_key
                                                                      : out.motion_keys.size());
+    out.ground_slopes.push_back(source.slope);  // the seat's plane (G201 stage 2)
     out.skinned_instances += joints > 0 ? 1u : 0u;
     out.instances.push_back(instance);
   }

@@ -793,7 +793,9 @@ TEST_CASE("impostor chain: the conifer profiles and the matured conifer build it
     CHECK(flora::flora_source_hash(file) == h);
     u64 container = 0;
     REQUIRE(flora::flora_source_hash_with(file, {}, container, error));
-    CHECK(container == hash_combine(h, flora::k_conifer_chain_version));
+    // And the seat's version after the chain's (G201 stage 2), which every tree takes.
+    CHECK(container == hash_combine(hash_combine(h, flora::k_conifer_chain_version),
+                                    flora::k_flora_seat_version));
     CHECK(data.source_hash == container);
   }
   // A broadleaf profile carries the G129 shape salt, but never the conifer chain salt.
@@ -808,7 +810,7 @@ TEST_CASE("impostor chain: the conifer profiles and the matured conifer build it
   CHECK(flora::flora_source_hash(oak) == oak_hash);
   u64 oak_container = 0;
   REQUIRE(flora::flora_source_hash_with(oak, {}, oak_container, error));
-  CHECK(oak_container == oak_hash);
+  CHECK(oak_container == hash_combine(oak_hash, flora::k_flora_seat_version));  // the seat's (G201)
   // Off is the container it was: no level, no atlas.
   flora::FloraFile off;
   REQUIRE(flora::read_flora_file(R"({"species":"pine","tree":{"height_m":8,)"

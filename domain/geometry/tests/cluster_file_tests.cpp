@@ -1088,6 +1088,41 @@ TEST_CASE("cluster file: the source path travels with the mesh, and its absence 
   check_equal(anonymous_read, anonymous);
 }
 
+// G201 stage 2 (flora.md, "The seat"): a tree's seat is one 12-byte record of section 42, written
+// only when it has a radius, read back by the whole read and the resident one; a file without it,
+// which every mesh but a tree's is, reads with none and its bytes are what they were.
+TEST_CASE("cluster file: a seat round-trips, and a mesh without one writes no section") {
+  const test::TempDir tmp("engine_cluster_file");
+  ClusterFileData data;
+  Vector<u32> indices;
+  make_fixture(data, indices);
+  std::string error;
+  REQUIRE_MESSAGE(write_cluster_file(tmp.file("plain.clusters"), data, &error), error);
+  data.seat = ClusterFileSeat{0.41f, 0.03f, -0.56f};
+  REQUIRE_MESSAGE(write_cluster_file(tmp.file("seat.clusters"), data, &error), error);
+  std::string plain;
+  std::string seated;
+  REQUIRE(io::read_file(tmp.file("plain.clusters"), plain) == io::Status::Ok);
+  REQUIRE(io::read_file(tmp.file("seat.clusters"), seated) == io::Status::Ok);
+  CHECK(seated.size() > plain.size());
+  ClusterFileData read;
+  REQUIRE_MESSAGE(read_cluster_file_memory(view(seated), read, &error), error);
+  CHECK(read.has_seat());
+  CHECK(read.seat.radius_m == 0.41f);
+  CHECK(read.seat.rim_y_m == 0.03f);
+  CHECK(read.seat.skirt_y_m == -0.56f);
+  ClusterFileData none;
+  REQUIRE_MESSAGE(read_cluster_file_memory(view(plain), none, &error), error);
+  CHECK_FALSE(none.has_seat());
+  CHECK(std::string(cluster_section_name(static_cast<u32>(ClusterSection::Seat))) == "seat");
+  // The resident read (a paged container's tables) carries it too.
+  const std::string path = tmp.file("seated.clusters");
+  REQUIRE_MESSAGE(write_cluster_file(path, data, &error), error);
+  ClusterFileData from_disk;
+  REQUIRE_MESSAGE(read_cluster_file(path, from_disk, &error), error);
+  CHECK(from_disk.seat.radius_m == 0.41f);
+}
+
 TEST_CASE("cluster file: the source identity reads back without decoding the mesh") {
   const test::TempDir tmp("engine_cluster_file");
   ClusterFileData data;

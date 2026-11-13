@@ -36,7 +36,7 @@ engine_module(NAME renderer LAYER systems
           src/page_source.cpp src/streaming.cpp src/scene_renderer.cpp src/reference.cpp
           src/capture.cpp src/terrain.cpp src/terrain_materials.cpp src/camera_path.cpp src/flythrough.cpp
           src/rt_capacity.cpp src/shadow_cascades.cpp src/caster_volume.cpp src/eye_shell.cpp src/crown_priors.cpp src/tile_layout.cpp
-          src/pair_account.cpp
+          src/pair_account.cpp src/ground_sample.cpp
           src/terrain_time.cpp
           src/terrain_rings.cpp src/terrain_tiles.cpp src/sky.cpp src/request.cpp
           src/overlay.cpp src/scene_water.cpp src/scene_flora.cpp src/flora_motion.cpp
@@ -80,6 +80,9 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     # The reader through the registry with generators of the test's own, in every
                     # configuration: with no capability linked, the minimal one included.
                     tests/scene_gen_scene_tests.cpp
+                    # G201 stage 2: trees seated by their footprints over a bank of the test's
+                    # own, at one thread and many, and the drawn ground asked (ground_sample.h).
+                    tests/seat_scene_tests.cpp
                     # The sand's detail on the renderer's own ground, the waves.
                     tests/ground_detail_tests.cpp
                     # The world's tiles on the CPU: the first fill, a tile's mesh and its seams,
@@ -193,6 +196,12 @@ if(TARGET engine_renderer_tests AND TARGET engine::flora)
   target_compile_definitions(engine_renderer_tests PRIVATE ENGINE_RENDERER_TESTS_FLORA=1)
   if(TARGET engine::terrain)
     target_compile_definitions(engine_renderer_tests PRIVATE ENGINE_RENDERER_TESTS_FLORA_TERRAIN=1)
+  endif()
+  # A tree seated on a tread's edge and a cutting's lip (G201 stage 2) stands on a tile set's
+  # edited ground: the tile-set capability linked for its `tiles` provider, as a host links it.
+  if(TARGET engine::tileset)
+    target_link_libraries(engine_renderer_tests PRIVATE engine::tileset)
+    target_compile_definitions(engine_renderer_tests PRIVATE ENGINE_RENDERER_TESTS_TILESET=1)
   endif()
 endif()
 # ENGINE_SOURCE_DIR is where the shadow caster measurement looks for the Khronos samples

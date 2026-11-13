@@ -134,6 +134,17 @@ void check_skirts(const std::string& name, const assets::MeshData& mesh,
   }
   CHECK(triangles == expected);
   MESSAGE(name << ": " << triangles << " skirt triangles of " << mesh.indices.size() / 3);
+  // The seat (G201 stage 2; flora.md, "The seat"): what the skirts measured, over every stem — the
+  // farthest collar point from the origin and the lowest bottom, as the mesh stores them.
+  f64 rho = 0.0;
+  f64 bottom = 1e30;
+  for (const Skirt& s : skirts) {
+    rho = std::max(rho, s.rho);
+    bottom = std::min(bottom, s.bottom);
+  }
+  CHECK(motion.seat.radius_m == static_cast<f32>(rho));
+  CHECK(static_cast<f64>(motion.seat.skirt_y_m) == bottom);
+  CHECK(motion.seat.rim_y_m > motion.seat.skirt_y_m);
 }
 
 }  // namespace

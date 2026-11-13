@@ -406,6 +406,15 @@ bool solve(const DeadwoodFile& p, assets::MeshData& mesh, flora::Motion& motion,
                .2 * det::sin(static_cast<f64>(v.p.z) * 19.0 - static_cast<f64>(phase)));
   };
   const bool bole_only = p.kind == RemainKind::log || p.kind == RemainKind::stump;
+  // **A standing remain** (a snag, a snapped stem, a stump, upright and solid): its stem keeps the
+  // source tree's skirt under its base, `skirt` metres (G201; deadwood.md, "Standing remains keep
+  // their skirt"), and its container a seat, as the living tree's does.
+  const bool standing = root == 0 && pitch_of(p) == 0 && p.hollow == 0 &&
+                        (p.kind == RemainKind::snag || p.kind == RemainKind::snapped ||
+                         p.kind == RemainKind::stump) &&
+                        growth.seat.radius_m > 0.0f;
+  // In the frame's own heights (its origin is the trunk's pivot), to a millimetre past the bottom.
+  const f32 skirt = standing ? frame.origin.y - growth.seat.skirt_y_m + 0.001f : 0.0f;
   const f32 leaves = leaf_share(p), branches = branch_share(p);
   Vector<u8> keep(growth.parts.size(), 0);
   Vector<f32> cut(growth.parts.size(), 1);
@@ -551,7 +560,13 @@ bool solve(const DeadwoodFile& p, assets::MeshData& mesh, flora::Motion& motion,
                         source.uvs[v],
                         growth.vertex_weight[v]});
       }
-      clip(poly, [&](const Vertex& v) { return v.p.y - start - (start > 0 ? fracture(v) : 0); });
+      // A standing remain keeps the stem under its base as its tree's skirt (G201; flora.md, "The
+      // trunk's skirt"): its foot is cut underground, at the skirt's depth under `start`, so on a
+      // slope it meets the ground as the living tree does.
+      if (standing && woody)
+        clip(poly, [&](const Vertex& v) { return v.p.y - (start - skirt); });
+      else
+        clip(poly, [&](const Vertex& v) { return v.p.y - start - (start > 0 ? fracture(v) : 0); });
       clip(poly, [&](const Vertex& v) { return end - fracture(v) - v.p.y; });
       if (cut[id] < 1) clip(poly, [&](const Vertex& v) { return cut[id] - v.w; });
       if (poly.size() < 3) continue;
@@ -682,6 +697,8 @@ bool solve(const DeadwoodFile& p, assets::MeshData& mesh, flora::Motion& motion,
     const Vec3 samples[] = {
         t.a.p, t.b.p, t.c.p, (t.a.p + t.b.p) * .5f, (t.b.p + t.c.p) * .5f, (t.c.p + t.a.p) * .5f};
     for (const Vec3 at : samples) {
+      // A standing remain's stem under its base is meant to be in the ground (its skirt).
+      if (standing && at.y < report.lift_m) continue;
       Vec3 n;
       const f32 gap = clearance(p, at, n);
       if (!std::isfinite(gap)) return fail(error, "ground does not cover the finished surface");
@@ -740,6 +757,19 @@ bool solve(const DeadwoodFile& p, assets::MeshData& mesh, flora::Motion& motion,
     if (prim.material > 0 && prim.material < static_cast<i32>(wood_material))
       for (u32 i = prim.first_index; i < prim.first_index + prim.index_count; ++i)
         motion.vertex_part[result.indices[i]] = 1;
+  // A standing remain is seated as its tree is (G201 stage 2): the lowest and the farthest of its
+  // kept stem's vertices under its old collar, posed.
+  if (standing) {
+    f64 reach = 0.0;
+    f64 lowest = 1e300;
+    for (const Vec3& v : result.positions) {
+      lowest = std::min(lowest, static_cast<f64>(v.y));
+      if (static_cast<f64>(v.y) < static_cast<f64>(report.lift_m) + 0.1)
+        reach = std::max(reach, std::sqrt(static_cast<f64>(v.x) * static_cast<f64>(v.x) +
+                                          static_cast<f64>(v.z) * static_cast<f64>(v.z)));
+    }
+    flora::add_to_seat(motion.seat, reach, static_cast<f64>(report.lift_m), lowest);
+  }
   mesh = std::move(result);
   return true;
 }

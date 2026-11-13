@@ -245,11 +245,23 @@ bool builds_conifer(const std::string& species) {
 // the conifers the chain's version (G120). Mixed here and not into `flora_source_hash`, which is
 // also a tree's shape to the deadwood that solves it without the chain and whose key it is part
 // of, so a dead spruce's entry does not rebuild for a star it never draws.
+// The species whose stem stands on the ground with a skirt (G201; flora.md, "The trunk's skirt"),
+// and so whose container records a seat.
+bool seated_species(const FloraFile& file) {
+  const std::string& s = file.species;
+  return !file.regeneration &&
+         (s == k_species_date_palm || s == k_species_broadleaf || s == k_species_conifer ||
+          s == k_species_birch || s == k_species_willow || s == k_species_orchard ||
+          s == k_species_ancient || detail::is_tree_species(s));
+}
+
 u64 container_hash(const FloraFile& file) {
-  const u64 h = flora_source_hash(file);
-  return !file.regeneration && builds_conifer(file.species)
-             ? hash_combine(h, k_conifer_chain_version)
-             : h;
+  u64 h = flora_source_hash(file);
+  if (!file.regeneration && builds_conifer(file.species))
+    h = hash_combine(h, k_conifer_chain_version);
+  // The seat (G201 stage 2) is the container's and not the tree's shape: keyed here, so a tree's
+  // entry rebuilds to carry it and the deadwood's key, which takes the shape, does not move.
+  return seated_species(file) ? hash_combine(h, k_flora_seat_version) : h;
 }
 }  // namespace
 
@@ -804,6 +816,7 @@ bool build_flora_container(const FloraFile& file, const geometry::ClusterLodOpti
   }
   out.motion_parts = std::move(motion.parts);
   out.structural_parts = std::move(motion.structure);  // section 37, where the species emits it
+  out.seat = motion.seat;  // section 42, for a tree whose stem stands on the ground (G201)
   if (!sward_attributes.empty()) {
     for (u32 source : out.mesh.mesh.vertex_source) {
       if (source >= sward_attributes.size()) {

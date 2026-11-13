@@ -1,0 +1,4 @@
+# Written by `engine-content terrain-synth` (README.md): seat.json's flat ground, a binary grid that
+# is never committed; the header beside it names the grid's hash, so it is written with it.
+seat-ground.json
+seat-ground.f32

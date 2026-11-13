@@ -164,6 +164,45 @@ TEST_CASE("deadwood: variants preserve species geometry with bounded posed conta
     CHECK(mesh_hash(again) == hash);
   }
 }
+// G201 stage 2 (deadwood.md, "Standing remains keep their skirt"): a snag, a snapped stem and a
+// stump standing at their base keep the source tree's skirt under it, down to the skirt's depth
+// under the settled base, so on a slope they meet the ground as the living tree does, and record a
+// seat; a fallen tree and a log keep none. On the base (b7681ac9) a standing remain's lowest wood
+// was its base ring, a few centimetres over the ground.
+TEST_CASE("deadwood: a standing remain keeps its tree's skirt and a seat; a fallen one neither") {
+  auto p = recipe();
+  assets::MeshData source;
+  flora::Motion growth;
+  std::string error;
+  REQUIRE(flora::solve_flora(p.tree, source, growth, nullptr, nullptr, error));
+  REQUIRE(growth.seat.radius_m > 0.0f);
+  for (const auto kind :
+       {deadwood::RemainKind::snag, deadwood::RemainKind::snapped, deadwood::RemainKind::stump,
+        deadwood::RemainKind::fallen, deadwood::RemainKind::log}) {
+    CAPTURE(static_cast<u32>(kind));
+    p.kind = kind;
+    assets::MeshData mesh;
+    flora::Motion motion;
+    deadwood::Report report;
+    REQUIRE_MESSAGE(deadwood::solve(p, mesh, motion, report, error), error);
+    f32 lowest = 1e30f;
+    for (const Vec3 v : mesh.positions)
+      lowest = std::min(lowest, v.y);
+    const bool standing = kind == deadwood::RemainKind::snag ||
+                          kind == deadwood::RemainKind::snapped ||
+                          kind == deadwood::RemainKind::stump;
+    if (standing) {
+      // The skirt's bottom, under the settled base by the source's depth (a millimetre's slack).
+      CHECK(lowest <= report.lift_m + growth.seat.skirt_y_m + 0.01f);
+      REQUIRE(motion.seat.radius_m > 0.0f);
+      CHECK(motion.seat.skirt_y_m == lowest);
+      CHECK(motion.seat.radius_m >= growth.seat.radius_m * 0.9f);
+    } else {
+      CHECK(motion.seat.radius_m == 0.0f);
+    }
+  }
+}
+
 TEST_CASE("deadwood: leafless and branchless are independent, source is unchanged") {
   auto p = recipe();
   p.pitch_deg = 0;

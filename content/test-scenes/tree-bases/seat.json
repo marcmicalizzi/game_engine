@@ -1,0 +1,41 @@
+{
+  "format": "engine.scene.v1",
+  "name": "tree-seats",
+  "camera_path": "seat-views.json",
+  "description": "Trees seated by their footprints (G201 stage 2; docs/experiments/tree-base-on-slopes.md, 'Seating'): the tall spruce at eight yaws on the edge of a tread raised 1.2 m over flat ground (a Bench line, its fill faces at 3 in 1) and on the lip of a cutting 1.5 m deep (a Cut line, its banks at 4 in 1), each 5 cm from the edge so its rim hangs over a face steeper than the skirt reaches. Every tree stands ground: true; the load lowers each until its skirt is under the foot of the face. The flat ground is written first by engine-content terrain-synth (README.md).",
+  "meshes": [
+    { "name": "spruce", "path": "../../flora/spruce-tall.flora.json" }
+  ],
+  "instances": [
+    { "mesh": 0, "name": "spruce on the tread, yaw 0", "translation": [-4.55,0, -21], "yaw_deg": 0, "ground": true },
+    { "mesh": 0, "name": "spruce on the tread, yaw 45", "translation": [-4.55,0, -15], "yaw_deg": 45, "ground": true },
+    { "mesh": 0, "name": "spruce on the tread, yaw 90", "translation": [-4.55,0, -9], "yaw_deg": 90, "ground": true },
+    { "mesh": 0, "name": "spruce on the tread, yaw 135", "translation": [-4.55,0, -3], "yaw_deg": 135, "ground": true },
+    { "mesh": 0, "name": "spruce on the tread, yaw 180", "translation": [-4.55,0, 3], "yaw_deg": 180, "ground": true },
+    { "mesh": 0, "name": "spruce on the tread, yaw 225", "translation": [-4.55,0, 9], "yaw_deg": 225, "ground": true },
+    { "mesh": 0, "name": "spruce on the tread, yaw 270", "translation": [-4.55,0, 15], "yaw_deg": 270, "ground": true },
+    { "mesh": 0, "name": "spruce on the tread, yaw 315", "translation": [-4.55,0, 21], "yaw_deg": 315, "ground": true },
+    { "mesh": 0, "name": "spruce on the lip, yaw 0", "translation": [8.05,0, -21], "yaw_deg": 0, "ground": true },
+    { "mesh": 0, "name": "spruce on the lip, yaw 45", "translation": [8.05,0, -15], "yaw_deg": 45, "ground": true },
+    { "mesh": 0, "name": "spruce on the lip, yaw 90", "translation": [8.05,0, -9], "yaw_deg": 90, "ground": true },
+    { "mesh": 0, "name": "spruce on the lip, yaw 135", "translation": [8.05,0, -3], "yaw_deg": 135, "ground": true },
+    { "mesh": 0, "name": "spruce on the lip, yaw 180", "translation": [8.05,0, 3], "yaw_deg": 180, "ground": true },
+    { "mesh": 0, "name": "spruce on the lip, yaw 225", "translation": [8.05,0, 9], "yaw_deg": 225, "ground": true },
+    { "mesh": 0, "name": "spruce on the lip, yaw 270", "translation": [8.05,0, 15], "yaw_deg": 270, "ground": true },
+    { "mesh": 0, "name": "spruce on the lip, yaw 315", "translation": [8.05,0, 21], "yaw_deg": 315, "ground": true }
+  ],
+  "terrain": {
+    "size": 257,
+    "extent": 32,
+    "provider": "tiles",
+    "tiles": {
+      "heightfield": "seat-ground.json",
+      "edits": [
+        { "name": "tread", "mode": "Bench", "points": [[-6, 1.2, -30], [-6, 1.2, 30]], "width_m": [3, 3],
+          "fill_slope": 3, "fill_m": 2, "bank_round": 0.1 },
+        { "name": "cutting", "mode": "Cut", "points": [[6, 0, -30], [6, 0, 30]], "width_m": [4, 4],
+          "depth_m": [1.5, 1.5], "bank_slope": 4, "bank_round": 0.1 }
+      ]
+    }
+  }
+}

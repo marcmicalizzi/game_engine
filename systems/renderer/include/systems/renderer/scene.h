@@ -24,6 +24,7 @@
 #include <domain/gfx/cluster_cull.h>
 #include <domain/gfx/visibility_resolve.h>
 #include <domain/gfx/water_spectrum.h>
+#include <domain/scene_gen/seat.h>
 #include <domain/texture/texture_file.h>
 #include <systems/renderer/far_forest.h>
 #include <systems/renderer/fire.h>
@@ -34,6 +35,10 @@
 #include <span>
 #include <string>
 #include <string_view>
+
+namespace engine::jobs {
+class JobSystem;
+}
 
 namespace engine::renderer {
 
@@ -95,6 +100,14 @@ struct SceneInstance {
   // `scene_gen::k_handoff_near` or `k_handoff_far` for a patch placed as both its forms, which the
   // renderer gives the band `renderer.flora.sward_near_m`/`sward_fade_m` say; 0, everything else.
   u8 handoff = 0;
+  // **It stands on the ground** (G201 stage 2; renderer.md, "A tree seated by its footprint"): a
+  // file's `ground: true` instance, a grounded scatter's, every placement generator's. What the
+  // load and the world's placements seat by its mesh's seat (`SourceMesh::seat`); false for
+  // everything placed at a height of its own, which is never moved.
+  bool grounded = false;
+  // The plane under its rim the seat fitted (`scene_gen::GroundSlope`, four bytes), kept for the
+  // conformed foot (stage 3); zero for an instance that was not seated.
+  scene_gen::GroundSlope slope{};
 };
 
 inline constexpr u32 k_motion_key_load = ~0u;
@@ -103,6 +116,23 @@ inline constexpr u32 k_motion_key_load = ~0u;
 // scale: `origin + transform.position + (R S)(fit's translation)`, in f64. What `load_scene` and
 // `make_instance` place an instance at.
 WorldPos instance_translation(const SceneInstance& source, const Mat4& fit) noexcept;
+
+struct TerrainDesc;
+struct SourceMesh;
+struct SceneMeshInfo;
+struct SceneLoadReport;
+// **Seats the instances standing on the ground by their meshes' seats** (G201 stage 2; renderer.md,
+// "A tree seated by its footprint"; scene_gen/seat.h): every `grounded` instance whose mesh's
+// source carries a seat (`SourceMesh::seat`) and no fit is lowered, where its rim stands over
+// ground falling faster than its skirt reaches, by `scene_gen::seat_on_ground` on `terrain` — the
+// drawn ground, with every planned edit — its holes left out; its `slope` is set. What `load_scene`
+// does after the meshes load and before the authored entry takes its instances, and what the
+// world's placements do a tile at a time; counted into `report`. A ground is made only when there
+// is an instance to seat. `sources` and `info` are by mesh (`info` may be empty). On `pool`,
+// blocks of instances in parallel, each block its own: the same instances on any thread count.
+void seat_scene_instances(const TerrainDesc& terrain, std::span<SceneInstance> instances,
+                          std::span<const SourceMesh> sources, std::span<const SceneMeshInfo> info,
+                          SceneLoadReport& report, jobs::JobSystem* pool = nullptr);
 
 // Where one instance's bone matrices are in the frame's one contiguous span. Parallel to the
 // scene's instances, and the whole of the renderer's side of the animation contract: the caller
@@ -262,6 +292,11 @@ struct StreamedPlacements {
   // place in the file's own list plus one), the loaded index of id 1: a placement of id `n` is
   // given `motion_key = motion_key_base + n - 1`, the key the whole read gives it. `~0u`: none.
   u32 motion_key_base = ~0u;
+  // **Its placements are seated already** (G201 stage 2; renderer.md, "A tree seated by its
+  // footprint"): the `authored` entry's, which the load seated, the instances standing on the
+  // ground among them, before it handed them on. Every other entry's placements stand on the ground
+  // and the world's placements seat them at activation, by the same function.
+  bool seated = false;
   // Finite entries can size the consumer's per-tile storage at load. The authored reader knows
   // the exact count in every tile; a distance form changes the mesh, never this count. Empty for
   // generators without a finite bound (their tile storage is pooled at its high-water mark).
@@ -499,11 +534,12 @@ struct SceneFileOptions {
   // (`whole`): `SceneDesc::authored.enabled`.
   bool world_instances = true;
   // **Read as far as the ground, and stop** (T121; tileset.md, "What a load refuses before it
-  // builds"): the
-  // file, its terrain with every entry's plan for it composed in, and the ground provider made over
-  // all of it (its set found or built, its masks' inputs and early budget checked), then return
-  // with no mask level cooked, no placement expanded and no instance placed. What `engine-content
-  // masks check` reads, so the ground it checks is the one a load composes, by the same code.
+  // builds"): the file, its terrain with the scene's edits and every entry's plan for it composed
+  // in, the ground provider made over all of it (its set found or built, its masks' inputs and
+  // early budget checked), the exclusion and the site built; then return with no mask level
+  // cooked, no placement expanded, no instance placed and no water read. Its two readers ask the
+  // ground a load composes by the same code: `engine-content masks check` (T121) and
+  // `engine-content ground sample` (G201 stage 2; `SceneGround`, ground_sample.h).
   bool ground_only = false;
 };
 
@@ -596,6 +632,11 @@ struct SourceMesh {
   // from so the form sways as the full mesh does. Empty for a mesh that is its own source.
   Vector<u32> motion_part_ids;
   std::string species;
+  // **The seat** (G201 stage 2; the container's section 42; renderer.md, "A tree seated by its
+  // footprint"): a tree's foot, which the load and the world's placements seat an instance standing
+  // on the ground by (`scene_gen::seat_on_ground`). A radius of zero for every other mesh; a
+  // distance form keeps its source's.
+  geometry::ClusterFileSeat seat{};
   bool has_motion() const noexcept { return !motion_parts.empty() && !motion_vertices.empty(); }
 };
 
@@ -612,6 +653,14 @@ struct SceneLoadReport {
   // the ground they stand over (`SceneDesc::instances_floating`); only counted, never refused.
   u32 instances_floating = 0;
   u32 instances_buried = 0;
+  // **Seating by the footprint** (G201 stage 2; renderer.md, "A tree seated by its footprint"):
+  // the loaded instances standing on the ground whose mesh has a seat (`seated`, each 17 ground
+  // queries), the ones of those lowered because the rim stood over ground falling faster than the
+  // skirt reaches, the most any went down, and the wall milliseconds it took.
+  u32 seated = 0;
+  u32 lowered = 0;
+  f64 lowered_max_m = 0.0;
+  f64 seat_ms = 0.0;
   // The texture pass: images the meshes' materials sample (`references`), the distinct built
   // textures they name (`textures`), of those the ones whose `.tex` was trusted from its header
   // and the ones built now, and the ones neither (the image could not be read or built; drawn
@@ -738,6 +787,9 @@ struct SceneData {
   // Per loaded instance, the key its sway's seed is hashed from (`SceneInstance::motion_key`, its
   // index when the source named none). Empty: every instance's index.
   Vector<u32> motion_keys;
+  // Per loaded instance, the plane under its rim its seat fitted (`SceneInstance::slope`, G201
+  // stage 2), four bytes each, kept for the conformed foot; zero for one not seated.
+  Vector<scene_gen::GroundSlope> ground_slopes;
   // **The whole read's index to the loaded instance** (renderer.md, "The whole read's index"): per
   // instance of the whole read (`SceneDesc::instances`), its index among `instances`, or
   // `k_not_loaded` for one handed to the world's tail. Built once, by a load that streamed; empty

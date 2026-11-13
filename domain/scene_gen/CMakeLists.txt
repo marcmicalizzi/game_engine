@@ -15,6 +15,7 @@
 #
 # `src/exclusion.cpp` (G135) is where nothing is placed: the holes, channels and water a generator leaves empty.
 # `src/site.cpp` (G144) is what the ground is like at a point: the terrain variables a placement's rules read.
+# `src/seat.cpp` (G201) is how a host seats a placement by its footprint: 17 ground queries, never up.
 # `src/terrain_features.cpp` is the one piece of ground arithmetic here: a scene terrain's ridges and
 # basins, which every ground provider adds the same way, beside the entry's type in one copy; and
 # `src/terrain_holes.cpp` its holes (W87), which the renderer's meshes and the collision both read.
@@ -23,9 +24,9 @@
 engine_module(NAME scene_gen LAYER domain
   DEPS base containers math hash json schema schemas jobs log geometry io platform
   SOURCES src/registry.cpp src/terrain_features.cpp src/terrain_holes.cpp src/exclusion.cpp
-          src/site.cpp src/derived_root.cpp)
+          src/site.cpp src/derived_root.cpp src/seat.cpp)
 
 engine_module_tests(NAME scene_gen
   SOURCES tests/scene_gen_tests.cpp tests/size_table.cpp tests/terrain_holes_tests.cpp tests/exclusion_tests.cpp
-          tests/site_tests.cpp tests/footprint_list_tests.cpp tests/derived_root_tests.cpp)
+          tests/site_tests.cpp tests/footprint_list_tests.cpp tests/derived_root_tests.cpp tests/seat_tests.cpp)
 engine_module_bench(NAME scene_gen SOURCES bench/site_bench.cpp)

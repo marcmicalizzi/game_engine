@@ -377,7 +377,7 @@ slope at 10 m.
 | Stage | What is built | What it returns to the eye | What holds it |
 |---|---|---|---|
 | 1. The skirt (**built**, below) | the tube carried down on every tree species' trunk; the solver's version and the pins | no gap under any tree at any distance or yaw, to 45°, at no cost an instance: the owner's defect, closed | a CPU test over the four ramps and 64 azimuths: the skirt's lowest ring is under the ground beneath it; every LOD cut and distance form keeps it; a GPU case on the scene, from the ids |
-| 2. The footprint | the 17-sample seat and plane fit in the scene reader and the placements; `engine-content ground sample` | trees beside a tread, a cut bank and the lattice's edge sit; authors can ask the drawn ground | a tread benched under a rim; the whole read and the streamed tiles equal; pinned bytes of the fit for the containers |
+| 2. The footprint (**built**, below) | the 17-sample seat and plane fit in the scene reader and the placements; `engine-content ground sample` | trees beside a tread, a cut bank and the lattice's edge sit; authors can ask the drawn ground | a tread benched under a rim; the whole read and the streamed tiles equal; pinned bytes of the fit for the containers |
 | 3. The conformed foot | the foot part, the pose's third kind, its normal, the padding and the error scale, the fade at the ring's edge | at 2 to 10 m the flare leans into the slope: exposed down-slope, buried up-slope | the stage against a CPU reference; rest poses to the bit at *g* = 0; rays against raster word for word on a conformed tree; a cost pair at 3840 x 2160 under traced primaries and shadows |
 | 4. The laterals | the rounded roots by habit in the foot; near-detail clusters left out of distance forms; shapes handed to the exclusion; G102's ridge and sleeve removed | roots on every tree at 2 to 15 m, round, in the trunk's bark, with no grass through them | the collapse check G102 left open, on the foot; a form without marked clusters; the chain's demand counted on the scene and on one forest pair |
 | 5. Surface and ground | the bark's height term; the cover's host including the foot; litter banked up-slope; the apron's mask | the foot darker, mossed and half buried in litter, as the r52 sheet has it | pictures beside the reels |
@@ -454,6 +454,67 @@ Inside the noise: the frame moves by -0.01 ms (the run-to-run spread is 0.04), t
 way (-0.08 ms against a spread of 0.09, +38 pairs). The picture at 2 m on the 30 degree ramp, before
 and after, and the ids across the slope (main 103 gap pixels under the 30 degree ramp's spruce and
 658 under the 45; the skirt none) are in the branch's hand-back.
+
+### Stage 2 as built (2026-11-12, branch b63-G201-2)
+
+Seating by the footprint ([renderer](../subsystems/renderer.md#a-tree-seated-by-its-footprint),
+[scene_gen](../subsystems/scene_gen.md#seating-by-the-footprint)), the seat record
+([flora](../subsystems/flora.md#the-seat)), the drawn ground asked
+([apps](../subsystems/apps.md#engine-content-ground-sample)), and the two small things stage 1
+left (a standing deadwood remain keeps its skirt, [deadwood](../subsystems/deadwood.md#standing-remains-keep-their-skirt);
+the tree-bases ramps are slabs 2 m thick). What differs from the design above:
+
+- **The seat records the skirt's numbers, not the foot's.** Section 42 is the foot ring's farthest
+  reach from the origin, its lowest point and the skirt's bottom; the foot's height and reach are
+  stage 3's to add (an append-only section's record is the reader's to take whole or not at all, so
+  stage 3 widens it with a size the reader checks).
+- **The rule is `min(y, lowest + skirt - 0.05 m)`**, the design's `max(0, drop - (D - 0.05))`
+  measured from the origin's own height rather than the centre's, so a scatter kind's `sink` and the
+  seat are "the larger of the two" by construction and seating twice is seating once.
+- **The plane is a 2 by 2 least-squares solve**, not a division by a table's constants: a hole's
+  samples are left out, which leaves the rim's set asymmetric, and one solve in f64 over integer
+  centred sums is the same bits on every toolchain. With every sample present the set is symmetric
+  (`seat_rim_offset`) and the solve is the table's answer.
+- **The seat is the host's at load and at activation, by one function**, and a generator never
+  seats: the seat is the mesh's, which only a host that has built the mesh knows. So the whole read
+  seats in `load_scene` after its meshes load, before the authored entry takes the file's instances,
+  and the world's placements seat every other streamed entry's placements as a tile is built; a
+  tile's own meshes (built after the tile) are not seated.
+- **The seat is the container's**, keyed by `k_flora_seat_version` in the container's source hash
+  and not in the tree's shape hash, so no tree's mesh moved and the deadwood's key of a tree did
+  not; `k_deadwood_version` moved for the standing remains' skirt.
+
+What decides it, on `content/test-scenes/tree-bases/seat.json` (a tread raised 1.2 m with fill faces
+at 3 in 1, a cutting 1.5 m deep with banks at 4 in 1, the tall spruce at eight yaws 5 cm from each
+edge): the GPU case reads the ids and the depth along each edge. On the RTX 5090 (2026-11-13), seated:
+0 gap pixels under 948 columns of trunk on the tread's edge and 0 under 913 on the cutting's lip, at
+eight yaws; the same trees placed as the base placed them (the skirt, no seat): 2,527 under 1,014
+and 7,970 under 1,009. Stage 1's ramps, now slabs: 0 on every ramp to 45 degrees. Measured numbers
+are below.
+
+**What it costs** (2026-11-12, the shared desktop at 74 to 86 % CPU beside other agents' builds,
+so upper bounds):
+
+| What | Where | Number |
+|---|---|---|
+| A tile's activation with its trees seated, four 8 m tiles of 256 trees on the test's analytic bank | `msvc-release`, `systems/world`'s `seat_tiles_tests.cpp`, three runs | 1.37 to 1.47 ms the four, of which seating 1.05 to 1.18 ms: about 1.1 µs a tree, 0.26 to 0.3 ms a tile of 256 |
+| Seating on a tile set's ground (`tiles`, a 64 m heightfield with two edits), 4,096 trees, the sampler made | `msvc-debug`, `flora_scene_tests.cpp` | 101 ms: 24.7 µs a tree in a debug build |
+| The tree-bases seat scene's load | `msvc-debug` | 16 seated, 16 lowered, the most 0.79 m, in 7.4 ms |
+
+The query a seat makes is the ground provider's own point query, 17 a tree, so a ground whose point
+query is dear (a tile set read from disk on a miss) costs a tree 17 of them; nothing is cached per
+tile, and the whole read's seating runs on the load's pool in blocks of 1,024. **Bytes**: 12 a tree
+mesh (section 42), 4 a seated instance (`GroundSlope`, on the host's instance), nothing per world
+size. A load with no grounded instance whose mesh has a seat makes no ground and asks nothing.
+
+The forest's own numbers are not here (its scenes are not run from this tree). What another agent
+reads there, with this branch's `engine-view` and `engine-content` copied out: the load's one
+`instances seated by their footprints` line (`seated`, `lowered`, `lowered_max_m`, `ms`) and the
+startup trace's `seats` stage on v42, against the authors' own count (14,458 trees lowered, a median
+of 6.7 cm and a worst of 1.35 m by their profile; the skirt alone answers every plane to 45 degrees,
+so the engine's count is the trees over ground steeper than that under the rim), and `engine-content
+ground sample` at their worst trees' places with `--skirt` set to the mesh's (`engine-content info`
+on the tree's container prints its `seat`).
 
 ### What the build needs from other rows
 

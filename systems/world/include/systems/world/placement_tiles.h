@@ -84,6 +84,12 @@ struct PlacementTilesStats {
   // calls above and the tile's pair count after them (W82: the frame record's `world.tiles_ms`).
   u64 tiles_built = 0;
   i64 tiles_ns = 0;
+  // **Seating by the footprint** (G201 stage 2; world.md, "A tile's trees are seated"): placements
+  // standing on the ground whose mesh has a seat, over the run (17 ground queries each, inside
+  // `tiles_ns`), the ones of those lowered, and the seating's own wall time.
+  u64 seated = 0;
+  u64 lowered = 0;
+  i64 seat_ns = 0;
   // With a build budget (`set_build_budget`): the activations and redrawing ring changes whose
   // build waited for a later commit, over the run; and now, the held tiles still waiting.
   u64 deferred = 0;
@@ -308,6 +314,9 @@ class PlacementTiles {
   // (a query's tile). `entries`: how many of the entries to run, in the scene's order.
   scene_gen::Context context_for(const Entry& entry, u8 ring,
                                  bool scene_ground = false) const noexcept;
+  // Seats a placement standing on the ground by its mesh's seat (G201 stage 2; `ground_`, the
+  // scene's own ground at its own time, as the load's): nothing for a mesh with none or a fit.
+  void seat(renderer::SceneInstance& instance);
   bool build(TileCoord tile, u8 ring, TileBlock& out, u32 entries = ~0u, bool for_query = false);
   bool take(const TileEvent& event);
   void recycle(u64 key, TileBlock&& block);

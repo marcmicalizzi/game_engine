@@ -48,7 +48,10 @@ engine_module(NAME world LAYER systems OPTIONAL WHOLE_ARCHIVE
 set(_world_tests tests/world_tests.cpp tests/tile_store_tests.cpp tests/consumer_tests.cpp
                  tests/save_tests.cpp tests/scene_order_tests.cpp tests/drawn_tiles_tests.cpp
                  tests/tile_meshes_tests.cpp tests/tile_mesh_textures_tests.cpp
-                 tests/size_table.cpp)
+                 tests/size_table.cpp
+                 # G201 stage 2: a streamed tile's trees seated where the whole read seats them,
+                 # over a ground and a generator of the test's own.
+                 tests/seat_tiles_tests.cpp)
 if(TARGET engine::ruins)
   # The placements consumer over a streamed ruins entry: the ruins reach it through the registry,
   # so the test links the capability as a host does.

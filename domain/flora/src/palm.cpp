@@ -509,6 +509,7 @@ void build_trunk(const Palm& p, const Spine& spine, const Spiral& spiral, const 
   }
   const f64 bottom = std::min(-(reach * detail::k_skirt_slope_tan + detail::k_skirt_margin_m),
                               lowest - detail::k_skirt_least_run * rim);
+  add_to_seat(out.motion.seat, reach, lowest, bottom);  // the seat (G201 stage 2)
   out.weight = 0.0;
   const u32 skirt = out.mesh.positions.size();
   for (u32 i = 0; i <= segs; ++i) {

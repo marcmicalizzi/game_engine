@@ -251,6 +251,8 @@ void build_skirt(u32 first, u32 sides, D3 centre, Emitter& out) {
   }
   const f64 bottom =
       std::min(-(reach * k_skirt_slope_tan + k_skirt_margin_m), lowest - k_skirt_least_run * rim);
+  // What a host seats the instance by (G201 stage 2; flora.md, "The seat").
+  add_to_seat(out.motion.seat, reach, lowest, bottom);
   out.weight = 0.0;
   const u32 ring = out.mesh.positions.size();
   for (u32 i = 0; i <= sides; ++i) {

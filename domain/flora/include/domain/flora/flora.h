@@ -86,6 +86,16 @@ inline constexpr u32 k_branch_taper_version = 2;
 //    star — baked with the needles' coverage kept (`ImpostorSpec::coverage_dither`).
 inline constexpr u32 k_conifer_chain_version = 1;
 
+// **The seat** (G201 stage 2; flora.md, "The seat"): mixed into the container's source hash of
+// every species whose stem stands on the ground with a skirt (every tree; not a regeneration
+// sapling, a shrub or the ground plants), after the chain's version, and not into
+// `flora_source_hash`, the tree's shape, which the seat does not change and the deadwood keys by.
+// Bump it with a change to what the seat records alone.
+//
+// 1: the container records the stem's foot (section 42): its reach from the origin, the collar's
+//    height and the skirt's bottom, which the hosts seat an instance on the ground by.
+inline constexpr u32 k_flora_seat_version = 1;
+
 // The species `engine.flora.FloraFile.species` names; the solver reads the parameters of the same
 // member (`palm`, `broadleaf`, `conifer`, `birch`, `willow`, `orchard`, `ancient`).
 inline constexpr const char* k_species_date_palm = "date_palm";

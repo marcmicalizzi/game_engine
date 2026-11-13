@@ -59,6 +59,9 @@ int ruins_block_kit_command(int argc, char** argv);
 int terrain_command(int argc, char** argv);
 int tileset_command(int argc, char** argv);      // terrain-synth, terrain-tiles, terrain-masks
 int masks_check_command(int argc, char** argv);  // masks_check_commands.cpp: masks check (T72)
+// What the drawn ground is at a point and over a disc round it, through the scene reader's ground
+// plan (ground_commands.cpp; G201 stage 2): `ground sample`. Present in every configuration.
+int ground_command(int argc, char** argv);
 int city_command(int argc, char** argv);
 int npcs_command(int argc, char** argv);
 int flora_command(int argc, char** argv);

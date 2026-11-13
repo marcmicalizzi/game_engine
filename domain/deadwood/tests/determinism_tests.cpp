@@ -15,8 +15,10 @@ TEST_CASE("deadwood: complete container bytes agree across toolchains") {
   // G201: the source tree's skirt moves both: the oak log (cut from 0.3 m, above it) by
   // k_flora_version 12 in its source key alone, the fallen spruce (cut from 0) by that and the band
   // of skirt between the origin and its collar ring; they were 0x89525862dfd8a785 and
-  // 0xe1109ed169374c96.
-  const u64 goldens[] = {0x56c21256a950bc9bull, 0x6ca6cd692992eaeeull};
+  // 0xe1109ed169374c96. G201 stage 2: `k_deadwood_version` 3 (a standing remain keeps its skirt)
+  // moves both by the source key alone, neither being a standing remain; they were
+  // 0x56c21256a950bc9b and 0x6ca6cd692992eaee.
+  const u64 goldens[] = {0x60060207b3a4241dull, 0x2d9e4afaa3af1347ull};
   for (u32 i = 0; i < 2; ++i) {
     deadwood::DeadwoodFile p;
     p.tree.species = i == 0 ? "oak" : "spruce";
