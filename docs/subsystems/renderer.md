@@ -1323,8 +1323,7 @@ mips' edge points are filtered along the edge alone so that holds at every mip.
 **Costs** (`msvc-debug`, RTX 5090, 1600 × 900, the ground-by-place camera path, terrain tiles and
 two far levels; machine state in [the costs](../experiments/native-terrain-materials.md#ground-materials-by-place-costs)):
 the resolve's median per frame against the plain palette, and the level's bytes, are in that
-section. The level is held whole (the scene's `resident_mib`, 256 by default, refused above, and
-held to it at the read before the placements: [tileset](tileset.md#what-a-load-refuses-before-it-builds)): the 1 km test
+section. The level is held whole (`resident_mib`, 256 by default, refused above): the 1 km test
 scene is 1,089 tiles and 8.2 MB, 7.5 KB a 32 m tile; streaming it with the terrain's tiles is
 W25's remainder.
 
