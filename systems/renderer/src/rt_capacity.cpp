@@ -21,9 +21,24 @@ tunables::Int rt_headroom_pct{"renderer.rt.headroom_pct", 25, 0, 400,
 // R116 (2026-11-02): the window is wall time, not frames — a load's fast frames were a whole window
 // of 240 three seconds after the start — and a shrink keeps half the last minute's peak, which a
 // growth goes straight back to (rt_capacity.h).
-tunables::Float rt_shrink_seconds{"renderer.rt.shrink_seconds", 10.0, 0.0, 86400.0,
+// R152 (2026-11-12): 120 s where it was ten. On the owner's v41 walk
+// (docs/experiments/rt-chain-walk-2026-11-12.md) a ten-second window shrank the chain 18 times and
+// 16 of the 17 growths after went back to a capacity a shrink had just given up; replayed through
+// this arithmetic, two minutes shrinks it once and no growth undoes a shrink, for 0.73 GB more of
+// capacity held on average (2.86 GB against 2.13). `RtCapacityConfig`'s own default stays ten,
+// the arithmetic the CPU cases pin.
+tunables::Float rt_shrink_seconds{"renderer.rt.shrink_seconds", 120.0, 0.0, 86400.0,
                                   "Seconds of wall time the ray tracing chain's demand must stay "
                                   "under half its capacity before the capacity shrinks"};
+// R152: the frame's cluster structures in chunks, and a step made on the worker (rt_capacity.h).
+tunables::Int rt_chunk_knob{"renderer.rt.chunk_clusters", 65536, 0, 1 << 24,
+                            "The frame's cluster structures stand in chunks of this many, "
+                            "each a buffer and a build of its own, so a resize makes only the "
+                            "chunks it lacks; 0 is one buffer for the whole capacity"};
+tunables::Bool rt_step_on_worker{
+    "renderer.rt.step_on_worker", true,
+    "Make a resize of the ray tracing chain on a worker and take it on the frame's thread "
+    "when it is ready, instead of allocating on the frame's thread (R152)"};
 tunables::Float rt_peak_seconds{"renderer.rt.peak_seconds", 60.0, 0.0, 86400.0,
                                 "Seconds the ray tracing chain remembers the largest capacity it "
                                 "held: a growth goes back to it, and a shrink keeps a share of it"};
@@ -130,6 +145,44 @@ bool rt_scan_near_capacity_tunable() noexcept { return rt_scan_near_capacity.get
 bool rt_scan_every_frame_tunable() noexcept { return rt_scan_every_frame.get(); }
 bool rt_free_on_worker_tunable() noexcept { return rt_free_on_worker.get(); }
 u32 rt_slope_frames_tunable() noexcept { return static_cast<u32>(rt_slope_frames.get()); }
+u32 rt_chunk_clusters_tunable() noexcept { return static_cast<u32>(rt_chunk_knob.get()); }
+bool rt_step_on_worker_tunable() noexcept { return rt_step_on_worker.get(); }
+
+u32 rt_chunk_clusters(u32 capacity, u32 wanted, u32 max_chunks) noexcept {
+  if (capacity == 0) return 1;
+  if (wanted == 0 || wanted >= capacity) return capacity;
+  if (max_chunks == 0) max_chunks = 1;
+  if ((u64{capacity} + wanted - 1) / wanted <= max_chunks) return wanted;
+  // Too many chunks of that size: the smallest multiple of 4,096 that cuts it into `max_chunks`.
+  const u64 least = (u64{capacity} + max_chunks - 1) / max_chunks;
+  const u64 chunk = round_up(least, 4096);
+  return chunk >= capacity ? capacity : static_cast<u32>(chunk);
+}
+
+u32 rt_chunk_count(u32 capacity, u32 chunk) noexcept {
+  if (capacity == 0 || chunk == 0) return 0;
+  return static_cast<u32>((u64{capacity} + chunk - 1) / chunk);
+}
+
+u32 rt_chunk_size(u32 capacity, u32 chunk, u32 k) noexcept {
+  if (chunk == 0) return 0;
+  const u64 first = u64{k} * chunk;
+  if (first >= capacity) return 0;
+  const u64 rest = capacity - first;
+  return static_cast<u32>(rest < chunk ? rest : chunk);
+}
+
+u32 rt_chunks_kept(u32 from_capacity, u32 from_chunk, u32 to_capacity, u32 to_chunk) noexcept {
+  if (from_chunk == 0 || from_chunk != to_chunk) return 0;
+  u32 kept = 0;
+  const u32 count =
+      std::min(rt_chunk_count(from_capacity, from_chunk), rt_chunk_count(to_capacity, to_chunk));
+  while (kept < count && rt_chunk_size(from_capacity, from_chunk, kept) ==
+                             rt_chunk_size(to_capacity, to_chunk, kept)) {
+    ++kept;
+  }
+  return kept;
+}
 bool rt_static_forms_tunable() noexcept { return rt_static_forms.get(); }
 bool rt_static_build_tunable() noexcept { return rt_static_build.get(); }
 bool rt_caster_horizon_tunable() noexcept { return rt_caster_horizon.get(); }

@@ -1,0 +1,15 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "R152",
+  "reason": "R152: the frame's cluster set in chunks and a step made on the worker. record_frame gains the chunks' count pass and a build pass a chunk; gpu_scene.h gains the step's accessors and members (its types are rt_step.h's) and gpu_scene.cpp's resize code moved with the step's into gpu_scene_rt_step.cpp, so the hub is smaller than before the row; renderer.md and gfx.md gain the two sections.",
+  "date": "2026-11-12",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "renderer.record_frame.lines": 49,
+    "renderer.record_frame.add_pass": 1,
+    "renderer.gpu_scene_cpp.lines": -188,
+    "renderer.gpu_scene_h.lines": 54,
+    "page:docs/subsystems/renderer.md": 7305,
+    "page:docs/subsystems/gfx.md": 846
+  }
+}

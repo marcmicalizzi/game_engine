@@ -3,17 +3,25 @@
 #include <core/schema/type_info.h>
 #include <core/time/time.h>
 #include <domain/gfx/resources.h>
+#include <foundation/tunables/tunables.h>
 #include <systems/renderer/flythrough.h>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <renderer_log.h>
 #include <utility>
 
 namespace engine::renderer {
 
 namespace {
+
+// The chain's census as a log line a counted frame (flythrough.h, `VisibleCensus::count`; R152).
+tunables::Bool census_log{"renderer.rt.census_log", false,
+                          "Log every census frame's visible and caster entries by what the ray "
+                          "tracing chain does with them (built by the frame, cached, static) and "
+                          "by ring (engine-view --census)"};
 
 // The median of a handful of repeats: the middle one, or the mean of the middle two.
 f64 median_of(Vector<f64>& values) {
@@ -662,14 +670,88 @@ bool VisibleCensus::count(const SceneData& data, const GpuScene& scene, const St
       return false;
     }
   }
-  // Every view's three runs, each only as long as the count its argument block recorded: the rest
-  // of a run is whatever an earlier frame left there.
+  u64 entry_count = 0;
+  if (!copy_runs(scene, stats, false, entry_count, error)) return false;
+  const auto* entries = static_cast<const u32*>(staging_.mapped);
+  const u32 cluster_count = data.lod.lod.size();
+  std::memset(chain_, 0, sizeof(chain_));
+  // The chain's census (flythrough.h): an entry by its instance's kind and rank.
+  const auto tally = [this, &scene](u32 instance, u32 caster) {
+    const u32 kind = scene.rt_instance_kind(instance);
+    if (kind >= k_chain_kinds) return;
+    const u32 rank = std::min(scene.rt_instance_rank(instance), k_chain_ranks - 1);
+    ++chain_[(caster * k_chain_ranks + rank) * k_chain_kinds + kind];
+  };
+  for (u64 e = 0; e < entry_count; ++e) {
+    const u32 instance = entries[e * 2 + 0];
+    const u32 cluster = entries[e * 2 + 1];
+    if (cluster < cluster_count) {
+      const u32 level = data.lod.lod[cluster].level;
+      if (level >= levels.size()) levels.resize(level + 1, 0u);
+      ++levels[level];
+    }
+    // Through the GPU scene's table, which holds a streamed world's tail of instances as well as
+    // the load's (`SceneData::instances` is only the latter).
+    const u32 mesh = scene.instance_mesh(instance);
+    if (mesh < meshes.size()) ++meshes[mesh];
+    tally(instance, 0);
+  }
+  // The shadow casters' run, which nothing draws: what the cone test kept out of the picture and
+  // the volumes round the eye, the water's mirror and its floor added (gpu_scene.h).
+  u64 caster_count = 0;
+  if (!copy_runs(scene, stats, true, caster_count, error)) return false;
+  for (u64 e = 0; e < caster_count; ++e)
+    tally(entries[e * 2 + 0], 1);
+  ++counted_;
+  if (census_log.get()) {
+    // Summed over the ranks by kind, and the frame's own builds by rank: kinds 0 and 1 are built
+    // every frame under any picture, 4 and 5 (untraced) under a traced one alone.
+    u32 kinds[2][k_chain_kinds] = {};
+    u32 own[2][k_chain_ranks] = {};
+    for (u32 c = 0; c < 2; ++c) {
+      for (u32 r = 0; r < k_chain_ranks; ++r) {
+        for (u32 k = 0; k < k_chain_kinds; ++k) {
+          const u32 n = chain_[(c * k_chain_ranks + r) * k_chain_kinds + k];
+          kinds[c][k] += n;
+          if (k == 0 || k == 1 || k == 4 || k == 5) own[c][r] += n;
+        }
+      }
+    }
+    ENGINE_LOG_INFO(
+        log_renderer, "chain census", log::field("frame", counted_ - 1),
+        log::field("drawn", static_cast<u32>(entry_count)),
+        log::field("casters", static_cast<u32>(caster_count)), log::field("deform", kinds[0][0]),
+        log::field("rigid", kinds[0][1]), log::field("cached", kinds[0][2]),
+        log::field("static", kinds[0][3]), log::field("untraced_deform", kinds[0][4]),
+        log::field("untraced_rigid", kinds[0][5]), log::field("untraced_static", kinds[0][7]),
+        log::field("own_r0", own[0][0]), log::field("own_r1", own[0][1]),
+        log::field("own_r2", own[0][2]), log::field("own_r3", own[0][3]),
+        log::field("own_r4", own[0][4]), log::field("own_r5", own[0][5]),
+        log::field("c_deform", kinds[1][0]), log::field("c_rigid", kinds[1][1]),
+        log::field("c_cached", kinds[1][2]), log::field("c_static", kinds[1][3]),
+        log::field("c_untraced", kinds[1][4] + kinds[1][5]), log::field("c_own_r0", own[1][0]),
+        log::field("c_own_r1", own[1][1]), log::field("c_own_r2", own[1][2]),
+        log::field("c_own_r3", own[1][3]), log::field("c_own_r4", own[1][4]),
+        log::field("c_own_r5", own[1][5]));
+  }
+  return true;
+}
+
+// Every view's drawn runs — or, with `casters`, its shadow casters' — into the staging buffer, each
+// only as long as the count the frame's statistics hold: the rest of a run is whatever an earlier
+// frame left there.
+bool VisibleCensus::copy_runs(const GpuScene& scene, const Stats& stats, bool casters, u64& entries,
+                              std::string* error) {
   gfx::BufferCopy regions[k_max_views * k_visible_runs];
   u32 region_count = 0;
   u64 cursor = 0;
   for (u32 v = 0; v < scene.view_count() && v < k_max_views; ++v) {
     const ViewStats& view = stats.views[v];
-    const u32 counts[k_visible_runs] = {view.visible_hw, view.visible_pass2, view.visible_sw};
+    u32 counts[k_visible_runs] = {view.visible_hw, view.visible_pass2, view.visible_sw};
+    if (casters) {
+      for (u32 run = 0; run < k_visible_runs; ++run)
+        counts[run] = run == gfx::k_caster_run ? view.shadow_casters : 0u;
+    }
     for (u32 run = 0; run < k_visible_runs; ++run) {
       const u64 bytes = u64{counts[run]} * 8;
       if (bytes == 0) continue;
@@ -693,22 +775,7 @@ bool VisibleCensus::count(const SceneData& data, const GpuScene& scene, const St
         error);
     if (!ok) return false;
   }
-  const auto* entries = static_cast<const u32*>(staging_.mapped);
-  const u64 entry_count = cursor / 8;
-  const u32 cluster_count = data.lod.lod.size();
-  for (u64 e = 0; e < entry_count; ++e) {
-    const u32 instance = entries[e * 2 + 0];
-    const u32 cluster = entries[e * 2 + 1];
-    if (cluster < cluster_count) {
-      const u32 level = data.lod.lod[cluster].level;
-      if (level >= levels.size()) levels.resize(level + 1, 0u);
-      ++levels[level];
-    }
-    // Through the GPU scene's table, which holds a streamed world's tail of instances as well as
-    // the load's (`SceneData::instances` is only the latter).
-    const u32 mesh = scene.instance_mesh(instance);
-    if (mesh < meshes.size()) ++meshes[mesh];
-  }
+  entries = cursor / 8;
   return true;
 }
 

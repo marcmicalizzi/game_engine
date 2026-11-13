@@ -41,6 +41,7 @@
 #include <systems/renderer/flora_poser.h>
 #include <systems/renderer/pair_account.h>
 #include <systems/renderer/rt_capacity.h>
+#include <systems/renderer/rt_step.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/settings.h>
 #include <systems/renderer/terrain_levels.h>
@@ -412,6 +413,23 @@ class GpuScene {
   }
   // The mesh a hole's null instance names: one `gfx::MeshDesc` past the scene's, with no clusters.
   u32 null_mesh() const noexcept { return null_mesh_; }
+  // **What the ray tracing chain does with instance `index`'s clusters** (R152's census;
+  // `VisibleCensus::count`): 0 the frame builds them itself and they deform, 1 the frame builds
+  // them itself and they are rigid (a mesh the cache does not keep), 2 they reference the resident
+  // cache's, 3 a static form's, built once — and 4 added for an instance the caster policy leaves
+  // untraced, which the chain builds only under a traced picture and then itself. ~0 past the end.
+  // `rt_instance_rank` is its rank in the drop order: 0 the prefix, its ring + 1 in a tail.
+  u32 rt_instance_kind(u32 index) const noexcept {
+    if (index >= instance_count_ || index >= instance_table_.size()) return ~0u;
+    const gfx::InstanceDesc& instance = instance_table_[index];
+    const u32 untraced = (instance.flags & gfx::k_instance_untraced) != 0 ? 4u : 0u;
+    if ((instance.flags & gfx::k_instance_static_rt) != 0) return 3u | untraced;
+    if (rt_instance_cached(instance)) return 2u;
+    return (instance.deform != gfx::k_invalid_deform ? 0u : 1u) | untraced;
+  }
+  u32 rt_instance_rank(u32 index) const noexcept {
+    return index < slot_rank_.size() ? slot_rank_[index] : 0u;
+  }
   // True when every instance slot's `first_pair` is at or above the one before it and every live
   // slot is where the layout says: what the cull pass's binary search needs. For the tests.
   bool validate_tables(std::string* why = nullptr) const;
@@ -672,20 +690,46 @@ class GpuScene {
   // cannot hold both sets at once returns false with `retired` empty and nothing changed, and the
   // caller waits and calls again without it. `renderer.rt.swap_references` (true) false keeps the
   // old rule, a references step that waits: the comparison the measurement makes.
-  struct RtRetired {
-    static constexpr u32 k_buffers = 11;  // records, hit entries, the CLAS set's three, the BLAS
-                                          // set's two, the scratch, the cache's three references
-    gfx::BufferResource buffers[k_buffers];
-    u32 count = 0;
-  };
+  //
+  // The frame's set stands in chunks and a step is made in two halves (R152): the types are
+  // rt_step.h's, the functions' bodies gpu_scene_rt_step.cpp's.
+  static constexpr u32 k_rt_chunks_max = renderer::k_rt_chunks_max;
+  using RtRetired = renderer::RtRetired;
+  using RtResizeCost = renderer::RtResizeCost;
+  using RtStepInputs = renderer::RtStepInputs;
+  using RtStep = renderer::RtStep;
   bool resize_ray_tracing(u32 capacity, std::string* error = nullptr, bool beyond_budget = false,
                           u32 references = 0, RtRetired* retired = nullptr);
-  // What the last `resize_ray_tracing` spent making each part, in nanoseconds: what a slow resize
-  // was slow at (R116).
-  struct RtResizeCost {
-    i64 free_ns = 0, records_ns = 0, clas_ns = 0, references_ns = 0, blas_ns = 0, scratch_ns = 0;
-  };
   const RtResizeCost& rt_resize_cost() const noexcept { return rt_resize_cost_; }
+  u32 rt_chunk_count() const noexcept { return rt_chunk_count_; }
+  u32 rt_chunk_clusters() const noexcept { return rt_chunk_clusters_; }
+  // Chunk `k`'s storage (`data`, its limits and alignment): what `gfx::build_cluster_chunk` takes
+  // with `clas_set` as the outputs.
+  const gfx::ClusterSet& rt_chunk(u32 k) const noexcept { return clas_chunks_[k]; }
+  // Every chunk's storage together, in bytes.
+  u64 rt_chunk_bytes() const noexcept {
+    u64 bytes = 0;
+    for (u32 k = 0; k < rt_chunk_count_; ++k)
+      bytes += clas_chunks_[k].data.size;
+    return bytes;
+  }
+  // **A step in two halves** (rt_step.h): `rt_step_inputs` on the frame's thread, `make_rt_step`
+  // on any, `take_rt_step` on the frame's again, `drop_rt_step` for one no longer current.
+  // False (and an error) for a capacity the chain cannot take as asked: a references step under
+  // `renderer.rt.swap_references` false, which must wait.
+  bool rt_step_inputs(u32 capacity, u32 references, bool beyond_budget, bool swap,
+                      RtStepInputs& out, std::string* error = nullptr) const;
+  static bool make_rt_step(const gfx::Device& device, const RtStepInputs& inputs, RtStep& out,
+                           std::string* error = nullptr);
+  static void drop_rt_step(const gfx::Device& device, RtStep& step) noexcept;
+  bool rt_step_current(const RtStepInputs& inputs) const noexcept {
+    return inputs.generation == rt_generation_;
+  }
+  void take_rt_step(RtStep& step, RtRetired* retired);
+  // What a step to `capacity` and `references` allocates beside what the scene holds, in bytes at
+  // the chain's own prices: the clusters of the chunks it makes and the references when they
+  // change. What a swap asks room for.
+  u64 rt_step_bytes(u32 capacity, u32 references) const noexcept;
   // **Static structures for rigid forms** (docs/subsystems/renderer.md, "Static structures for
   // rigid forms"; `ResolvedSettings::static_forms`). A rigid distance form drawn at its frontier is
   // a fixed cut, so its cluster structures and one bottom-level structure are built here once, at
@@ -1412,7 +1456,13 @@ class GpuScene {
   gfx::ClusterTemplateSet clas_templates;  // --rt-templates: one per cluster, packed to size
   // Sized by the frame (`rt_capacity()` clusters), and replaced by `resize_ray_tracing`:
   gfx::BufferResource records;  // CLAS build or instantiate records written from the cull output
+  // The frame's cluster set: `clas_set` holds the address and size arrays of the whole capacity
+  // (and its limits; no storage of its own), `clas_chunks_` the storage, a buffer a chunk (R152).
   gfx::ClusterSet clas_set;
+  gfx::ClusterSet clas_chunks_[k_rt_chunks_max];
+  // u32[k_rt_chunks_max]: each chunk's count for the frame, written by clas_chunks.slang from the
+  // record count's word 0; scene-sized, made with the chain.
+  gfx::BufferResource clas_chunk_counts;
   gfx::ClusterBlasSet blas_set;  // every instance's cluster bottom-level structure, one build
   gfx::BufferResource rt_scratch;
   // The resident cluster structure cache (`rt_cache()`; gfx::ClusterCacheTables documents each):
@@ -1958,6 +2008,9 @@ class GpuScene {
   u64 rt_bytes_per_cluster_plain_ = 0;
   u32 rt_capacity_ = 0;
   RtResizeCost rt_resize_cost_;
+  u32 rt_chunk_count_ = 0;     // the chunks the frame's set stands in (R152)
+  u32 rt_chunk_clusters_ = 0;  // a whole chunk's clusters; the last chunk holds what is left
+  u64 rt_generation_ = 0;      // moves whenever the per-frame half is made, taken or laid out again
   u32 rt_capacity_limit_ = 0;
   u32 rt_budget_mib_ = 0;
   RtBudgetSource rt_budget_source_ = RtBudgetSource::Device;
@@ -2011,6 +2064,7 @@ class GpuScene {
   void count_rt_cache_instances() noexcept;
   // Which meshes are static and which of their clusters are the frontier, before the geometry is
   // uploaded: the cut the cull selects for them is patched to the frontier (`patch_static_lods`).
+  void destroy_rt_chunks() noexcept;
   void plan_static_forms();
   bool build_static_forms(std::string* error);
   void uncount_static(u32 slot) noexcept;

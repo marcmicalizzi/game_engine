@@ -27,6 +27,7 @@
 #include <renderer_log.h>
 #include <resolve_classes.h>
 #include <shaders/alpha_coverage.spv.h>
+#include <shaders/clas_chunks.spv.h>
 #include <shaders/clas_records.spv.h>
 #include <shaders/cluster_cull.spv.h>
 #include <shaders/cluster_mesh.spv.h>
@@ -253,8 +254,29 @@ struct RtFreer {
       gfx::destroy_buffer(*batch.device, buffer);
     batch.freeing.clear();
   }
+  // **A step is made here too** (R152; renderer.md, "A step is made on the worker"): the buffers a
+  // step of the capacity needs, from a copy of what the scene was when the policy asked, while the
+  // frames go on recording into the chain they have. One at a time, on the one thread that frees,
+  // so an allocation never runs beside a free (R128 measured the two contending in the driver) and
+  // the memory a free returns is there for the step behind it. `made` is the frame's thread's to
+  // read once `done` is.
+  struct Step {
+    const gfx::Device* device = nullptr;
+    GpuScene::RtStep step;
+    bool pending = false;  // asked for and not yet taken or dropped
+    bool made = false;
+    i64 asked_ns = 0;
+    u32 from = 0;  // the capacity the scene held when it was asked for
+    jobs::Counter done;
+  };
+  static void make(void* data) {
+    Step& s = *static_cast<Step*>(data);
+    const GpuScene::RtStepInputs inputs = s.step.inputs;
+    s.made = GpuScene::make_rt_step(*s.device, inputs, s.step, nullptr);
+  }
   RtFreer(const gfx::Device& device, u32 slots)
       : jobs(config()), batches(std::make_unique<Batch[]>(slots)), slot_count(slots) {
+    step.device = &device;
     for (u32 s = 0; s < slots; ++s) {
       batches[s].device = &device;
       batches[s].pending.reserve(2 * GpuScene::RtRetired::k_buffers);
@@ -263,6 +285,8 @@ struct RtFreer {
   }
   // Every job done and everything still pending freed here: the device is idle.
   ~RtFreer() {
+    step.done.wait_blocking();
+    if (step.pending && step.made) GpuScene::drop_rt_step(*step.device, step.step);
     for (u32 s = 0; s < slot_count; ++s) {
       batches[s].done.wait_blocking();
       for (gfx::BufferResource& buffer : batches[s].pending)
@@ -272,6 +296,7 @@ struct RtFreer {
   jobs::JobSystem jobs;
   std::unique_ptr<Batch[]> batches;
   u32 slot_count = 0;
+  Step step;
 };
 
 void SceneRenderer::Pipelines::destroy(const gfx::Device& device) noexcept {
@@ -318,6 +343,7 @@ void SceneRenderer::Pipelines::destroy(const gfx::Device& device) noexcept {
     gfx::destroy_compute_pipeline(device, pass);
   gfx::destroy_compute_pipeline(device, tlas_references);
   gfx::destroy_compute_pipeline(device, blas_compact);
+  gfx::destroy_compute_pipeline(device, clas_chunks);
   gfx::destroy_compute_pipeline(device, trace);
   gfx::destroy_compute_pipeline(device, half_sun);
   gfx::destroy_compute_pipeline(device, gi_sample);
@@ -702,6 +728,8 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
                         shaders::k_clas_records_spirv_size);
   shaders_.add_embedded("tlas_references", shaders::k_tlas_references_spirv,
                         shaders::k_tlas_references_spirv_size);
+  shaders_.add_embedded("clas_chunks", shaders::k_clas_chunks_spirv,
+                        shaders::k_clas_chunks_spirv_size);
   shaders_.add_embedded("overlay", shaders::k_overlay_spirv, shaders::k_overlay_spirv_size);
   shaders_.add_embedded("frame_encode", shaders::k_frame_encode_spirv,
                         shaders::k_frame_encode_spirv_size);
@@ -1083,8 +1111,13 @@ bool SceneRenderer::create_pipelines(std::string* error) {
     const gfx::Shader* records = shaders_.get("clas_records", error);
     const gfx::Shader* references =
         records != nullptr ? shaders_.get("tlas_references", error) : nullptr;
-    if (references == nullptr) return false;
-    if (!gfx::create_compute_pipeline(device, references->module, "tlas_references_main", {},
+    const gfx::Shader* chunks =
+        references != nullptr ? shaders_.get("clas_chunks", error) : nullptr;
+    if (chunks == nullptr) return false;
+    if (!gfx::create_compute_pipeline(device, chunks->module, "clas_chunks_main", {},
+                                      sizeof(gfx::ClusterChunkParams), pipelines_.clas_chunks,
+                                      error) ||
+        !gfx::create_compute_pipeline(device, references->module, "tlas_references_main", {},
                                       sizeof(gfx::TlasReferenceParams), pipelines_.tlas_references,
                                       error) ||
         !gfx::create_compute_pipeline(device, references->module, "blas_compact_main", {},
@@ -2134,17 +2167,36 @@ void SceneRenderer::begin_frame() {
       const bool references_moved =
           scene_->rt_cache() && next_references != scene_->rt_reference_capacity();
       const i64 resize_started = time::monotonic_ns();
+      // **A step is made on the worker and taken when it is ready** (R152; renderer.md, "A step is
+      // made on the worker"): the policy's answer starts the making, the frames go on recording
+      // into the chain they have, and the frame that finds the step made takes it, which is a
+      // handful of assignments. Only a frame whose read-back demand is already past what the
+      // chain holds waits for it: that frame would drop structures, and the wait is the
+      // allocation alone, never a free or the device.
+      const bool short_now =
+          stats_.rt.wanted > scene_->rt_capacity() ||
+          (scene_->rt_cache() && stats_.rt.references_wanted > scene_->rt_reference_capacity());
+      bool stepped = take_rt_step(short_now);
       const bool step = next != scene_->rt_capacity() || references_moved;
-      if (step && !apply_rt_capacity(next, nullptr, false, next_references)) {
-        // The allocation failed: the device is out of memory. Say so and fall back to the smallest
-        // step, which a frame can still record into, rather than drawing with nothing.
-        ENGINE_LOG_ERROR(log_renderer, "the ray tracing chain could not be resized",
-                         log::field("capacity", next));
-        (void)apply_rt_capacity(rt_capacity_.config().step, nullptr);
+      // Not in the frame that took one: the policy answered for the capacity before it.
+      if (step && !stepped && !rt_step_pending()) {
+        if (rt_step_on_worker_tunable() && rt_swap_resize_tunable() &&
+            start_rt_step(next, next_references)) {
+          if (short_now) stepped = take_rt_step(true);
+        } else {
+          stepped = true;
+          if (!apply_rt_capacity(next, nullptr, false, next_references)) {
+            // The allocation failed: the device is out of memory. Say so and fall back to the
+            // smallest step, which a frame can still record into, rather than drawing with nothing.
+            ENGINE_LOG_ERROR(log_renderer, "the ray tracing chain could not be resized",
+                             log::field("capacity", next));
+            (void)apply_rt_capacity(rt_capacity_.config().step, nullptr);
+          }
+        }
       }
       // The step's own share of `begin_ms` (R130): an unswapped step's wait for the device lands
       // here, never in `wait_ms`, which is the slot's.
-      if (step)
+      if (stepped)
         frame_cpu_.resize_ms = static_cast<f64>(time::monotonic_ns() - resize_started) / 1.0e6;
     }
   }
@@ -2179,6 +2231,8 @@ bool SceneRenderer::apply_rt_capacity(u32 capacity, std::string* error, bool bey
   const u32 before = scene.rt_capacity();
   const u32 references_before = scene.rt_reference_capacity();
   if (references == 0) references = references_before;
+  // A step still being made on the worker was asked for another capacity: this one supersedes it.
+  cancel_rt_step();
   if (capacity == before && references == references_before) return true;
   const i64 started = time::monotonic_ns();
   // **A free still running on the worker finishes first** (R128): on the replay, a growth made
@@ -2203,13 +2257,14 @@ bool SceneRenderer::apply_rt_capacity(u32 capacity, std::string* error, bool bey
   // Both sets at once must fit what the device lets this process hold: past that the driver makes
   // room by evicting, which made one swapped growth on the replay 524 ms where the waited one was
   // 37 (the experiment) — so a device without the room waits and frees first.
+  // **Asked for what the step makes** (R152): the chunks the new capacity lacks and the references
+  // when they move, not the whole capacity. Until then a step of the references alone asked for the
+  // capacity's 3.1 GB on the owner's v41 walk, was refused on a card the forest fills, and then
+  // freed and remade the cluster set it had no reason to touch: 13 of that walk's 15 slow steps.
   gfx::MemoryBudget budget;
   const bool room =
       !device_->memory_budget(budget) || !budget.valid ||
-      budget.used_bytes + u64{capacity} * scene.rt_bytes_per_cluster() +
-              (references != references_before ? u64{references} * scene.rt_bytes_per_reference()
-                                               : 0u) <=
-          budget.budget_bytes;
+      budget.used_bytes + scene.rt_step_bytes(capacity, references) <= budget.budget_bytes;
   if (rt_swap_resize_tunable() && room) {
     GpuScene::RtRetired retired;
     if (scene.resize_ray_tracing(capacity, nullptr, beyond_budget, references, &retired)) {
@@ -2243,6 +2298,13 @@ bool SceneRenderer::apply_rt_capacity(u32 capacity, std::string* error, bool bey
                     log::field("blas_ms", static_cast<f64>(cost.blas_ns) / 1.0e6),
                     log::field("scratch_ms", static_cast<f64>(cost.scratch_ns) / 1.0e6));
   }
+  note_rt_step(before, references_before);
+  return true;
+}
+
+// The policies, the counts and the log after a step, however it was made.
+void SceneRenderer::note_rt_step(u32 before, u32 references_before) {
+  GpuScene& scene = *scene_;
   const f64 now = static_cast<f64>(time::monotonic_ns()) / 1.0e9;
   rt_capacity_.resized(scene.rt_capacity(), now);
   rt_reference_policy_.resized(scene.rt_reference_capacity(), now);
@@ -2260,14 +2322,108 @@ bool SceneRenderer::apply_rt_capacity(u32 capacity, std::string* error, bool bey
   note_rt_bytes();
   ENGINE_LOG_INFO(log_renderer, "ray tracing chain resized", log::field("from", before),
                   log::field("to", scene.rt_capacity()), log::field("wanted", chain.wanted),
+                  log::field("chunks", scene.rt_chunk_count()),
                   log::field("bytes", scene.rt_bytes()));
+}
+
+bool SceneRenderer::rt_step_pending() const noexcept {
+  return rt_freer_ != nullptr && rt_freer_->step.pending;
+}
+
+// **A step, asked of the worker** (R152; renderer.md, "A step is made on the worker"). False when
+// there is nothing to make or the step cannot be swapped (a references step under
+// `renderer.rt.swap_references` false), and the caller makes it itself.
+bool SceneRenderer::start_rt_step(u32 capacity, u32 references) {
+  GpuScene::RtStepInputs inputs;
+  if (!scene_->rt_step_inputs(capacity, references, false, true, inputs, nullptr)) return false;
+  if (inputs.capacity == scene_->rt_capacity() &&
+      inputs.references == scene_->rt_reference_capacity()) {
+    return false;
+  }
+  if (rt_freer_ == nullptr) rt_freer_ = new RtFreer(*device_, frames_.frames_in_flight());
+  RtFreer::Step& s = rt_freer_->step;
+  s.step.inputs = inputs;
+  s.pending = true;
+  s.made = false;
+  s.asked_ns = time::monotonic_ns();
+  s.from = scene_->rt_capacity();
+  s.done.add(1);
+  rt_freer_->jobs.schedule(jobs::Pool::Performance, jobs::Job{&RtFreer::make, &s, &s.done});
   return true;
+}
+
+// **And taken** by the frame's thread once it is made — or, with `wait`, now: the frame cannot
+// record into less than it is about to ask for. The buffers the step replaces go to this slot's
+// retired list, as a swapped resize's do; a step made for a chain that has since been laid out
+// again is dropped. True when the scene holds a new capacity.
+bool SceneRenderer::take_rt_step(bool wait) {
+  if (!rt_step_pending()) return false;
+  RtFreer::Step& s = rt_freer_->step;
+  if (!s.done.done()) {
+    if (!wait) return false;
+    s.done.wait_blocking();
+  }
+  s.pending = false;
+  GpuScene& scene = *scene_;
+  if (!s.made) {
+    // The allocation failed: the device is out of memory. The chain keeps what it holds, which the
+    // frames go on recording into; the policy asks again when the demand next says so.
+    ENGINE_LOG_ERROR(log_renderer, "the ray tracing chain could not be resized",
+                     log::field("capacity", s.step.inputs.capacity));
+    return false;
+  }
+  if (!scene.rt_step_current(s.step.inputs)) {
+    GpuScene::drop_rt_step(*device_, s.step);
+    return false;
+  }
+  const u32 before = scene.rt_capacity();
+  const u32 references_before = scene.rt_reference_capacity();
+  const GpuScene::RtResizeCost cost = s.step.cost;
+  GpuScene::RtRetired retired;
+  scene.take_rt_step(s.step, &retired);
+  for (u32 i = 0; i < retired.count; ++i)
+    retire_rt_buffer(retired.buffers[i]);
+  ++stats_.rt.worker_steps;
+  const f64 made_ms = static_cast<f64>(cost.records_ns + cost.clas_ns + cost.references_ns +
+                                       cost.blas_ns + cost.scratch_ns) /
+                      1.0e6;
+  stats_.rt.worker_step_ms = made_ms;
+  stats_.rt.peak_worker_step_ms = std::max(stats_.rt.peak_worker_step_ms, made_ms);
+  // What the worker spent, said where a step on the frame's thread says it was slow: it is the
+  // time the chain went on at its old capacity, not a frame's.
+  if (cost.records_ns + cost.clas_ns + cost.references_ns + cost.blas_ns + cost.scratch_ns >
+      k_slow_frame_ns) {
+    ENGINE_LOG_INFO(
+        log_renderer, "the ray tracing chain's step took the worker a while",
+        log::field("from", before), log::field("to", scene.rt_capacity()),
+        log::field("ms", made_ms),
+        log::field("asked_ms", static_cast<f64>(time::monotonic_ns() - s.asked_ns) / 1.0e6),
+        log::field("waited", wait),
+        log::field("records_ms", static_cast<f64>(cost.records_ns) / 1.0e6),
+        log::field("clas_ms", static_cast<f64>(cost.clas_ns) / 1.0e6),
+        log::field("references_ms", static_cast<f64>(cost.references_ns) / 1.0e6),
+        log::field("blas_ms", static_cast<f64>(cost.blas_ns) / 1.0e6),
+        log::field("scratch_ms", static_cast<f64>(cost.scratch_ns) / 1.0e6));
+  }
+  note_rt_step(before, references_before);
+  return true;
+}
+
+// A step being made that nothing will take: waited for and dropped. For the callers that resize
+// on their own thread (a frame somebody waits for, the first capacity, the comparison).
+void SceneRenderer::cancel_rt_step() {
+  if (!rt_step_pending()) return;
+  RtFreer::Step& s = rt_freer_->step;
+  s.done.wait_blocking();
+  s.pending = false;
+  if (s.made) GpuScene::drop_rt_step(*device_, s.step);
 }
 
 void SceneRenderer::note_rt_bytes() noexcept {
   if (scene_ == nullptr || !resolved_.rt_chain) return;
   RtStats& chain = stats_.rt;
   chain.capacity = scene_->rt_capacity();
+  chain.chunks = scene_->rt_chunk_count();
   chain.caster_index_fallbacks = resolved_.caster_index_fallback ? 1u : 0u;
   chain.frame_estimate = scene_->rt_frame_estimate();
   chain.bytes_per_cluster = scene_->rt_bytes_per_cluster();
@@ -4096,12 +4252,30 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   struct RtBuffers {
     gfx::RgBuffer records, record_count, slots, instance_counts, blas_records, hit_entries;
     gfx::RgBuffer blas_dense, blas_slots;  // R143: the records the build reads, and their places
-    gfx::RgBuffer clas_data, clas_addresses, clas_sizes, blas_data, blas_addresses, tlas, instances;
+    gfx::RgBuffer clas_addresses, clas_sizes, blas_data, blas_addresses, tlas, instances;
+    // The frame's cluster set, a buffer and a build a chunk, and each chunk's count (R152).
+    gfx::RgBuffer clas_chunks[GpuScene::k_rt_chunks_max], clas_chunk_counts;
     // The resident cluster structure cache (renderer.md, "The resident cluster structure cache").
     gfx::RgBuffer cache_keys, cache_owners, cache_stamps, cache_free, cache_misses,
         cache_miss_records, cache_miss_destinations, cache_scratch, cache_slots, cache_references,
         cache_reference_keys, cache_args;
   } rt{};
+  // **The frame's set stands in chunks** (R152; renderer.md, "The frame's set stands in chunks"):
+  // a buffer and a build a chunk, and for more than one the dispatch that cuts the one built count
+  // into each chunk's.
+  const u32 clas_chunks = rt_chain ? scene.rt_chunk_count() : 0u;
+  const auto read_clas = [&rt, clas_chunks](gfx::PassBuilder& b, gfx::Access access) {
+    for (u32 k = 0; k < clas_chunks; ++k)
+      b.read(rt.clas_chunks[k], access);
+  };
+  gfx::ClusterChunkParams chunk_params{};
+  if (rt_chain) {
+    chunk_params.record_count = scene.record_count.address;
+    chunk_params.counts = scene.clas_chunk_counts.address;
+    chunk_params.chunks = clas_chunks;
+    chunk_params.chunk_clusters = scene.rt_chunk_clusters();
+    chunk_params.capacity = scene.rt_capacity();
+  }
   if (rt_cache) {
     const GpuScene::RtCacheBuffers& c = scene.rt_cache_buffers;
     rt.cache_keys = graph.import_buffer("cache keys", c.keys);
@@ -4127,7 +4301,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     rt.blas_records = graph.import_buffer("cluster blas records", scene.blas_records);
     rt.blas_dense = graph.import_buffer("cluster blas records built", scene.blas_dense);
     rt.blas_slots = graph.import_buffer("cluster blas places", scene.blas_slots);
-    rt.clas_data = graph.import_buffer("clas", scene.clas_set.data);
+    for (u32 k = 0; k < clas_chunks; ++k)
+      rt.clas_chunks[k] = graph.import_buffer("clas", scene.rt_chunk(k).data);
+    rt.clas_chunk_counts = graph.import_buffer("clas chunk counts", scene.clas_chunk_counts);
     rt.clas_addresses = graph.import_buffer("clas addresses", scene.clas_set.addresses);
     rt.clas_sizes = graph.import_buffer("clas sizes", scene.clas_set.sizes);
     rt.blas_data = graph.import_buffer("cluster blas", scene.blas_set.data);
@@ -5175,30 +5351,58 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
               timer.end(cb);
             });
       }
-      graph.add_pass(
-          "clas", gfx::PassKind::Compute,
-          [&](gfx::PassBuilder& b) {
-            b.read(rt.records, gfx::Access::AccelerationBuildRead);
-            b.read(rt.record_count, gfx::Access::AccelerationBuildRead);
-            // After the cache's build, which shares the scratch (the graph orders the two).
-            if (rt_cache) b.read(rt.cache_slots, gfx::Access::AccelerationBuildRead);
-            if (deform_on) {
-              b.read(rg_pool, gfx::Access::AccelerationBuildRead);
-              b.read(rg_slots, gfx::Access::AccelerationBuildRead);
-            }
-            b.write(rt.clas_data, gfx::Access::AccelerationBuildWrite);
-            b.write(rt.clas_addresses, gfx::Access::AccelerationBuildWrite);
-            b.write(rt.clas_sizes, gfx::Access::AccelerationBuildWrite);
-            read_pool(b, gfx::Access::AccelerationBuildRead);
-          },
-          [&](gfx::CommandList cb, gfx::RenderGraph&) {
-            // The same command either way: a set created with `instantiate` runs the instantiate
-            // op over the template records the emit pass wrote.
-            timer.begin(cb, "clas");
-            gfx::build_cluster_set(cb, scene.clas_set, scene.records.address,
-                                   scene.record_count.address, scene.rt_scratch);
-            timer.end(cb);
-          });
+      // Each chunk's count, after every pass that moves the built count (the cache's assign pass
+      // raises it for the misses the frame builds itself). One chunk reads the built count itself.
+      if (clas_chunks > 1) {
+        graph.add_pass(
+            "clas chunks", gfx::PassKind::Compute,
+            [&](gfx::PassBuilder& b) {
+              b.read(rt.record_count, gfx::Access::ComputeRead);
+              b.write(rt.clas_chunk_counts, gfx::Access::ComputeWrite);
+            },
+            [&](gfx::CommandList cb, gfx::RenderGraph&) {
+              cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.clas_chunks.pipeline);
+              cb.push_constants(pipelines.clas_chunks.layout, gfx::ShaderStage::Compute, 0,
+                                sizeof(chunk_params), &chunk_params);
+              cb.dispatch(1, 1, 1);
+            });
+      }
+      for (u32 k = 0; k < clas_chunks; ++k) {
+        graph.add_pass(
+            "clas", gfx::PassKind::Compute,
+            [&, k](gfx::PassBuilder& b) {
+              b.read(rt.records, gfx::Access::AccelerationBuildRead);
+              b.read(rt.record_count, gfx::Access::AccelerationBuildRead);
+              if (clas_chunks > 1) b.read(rt.clas_chunk_counts, gfx::Access::AccelerationBuildRead);
+              // After the cache's build, which shares the scratch (the graph orders the two), and
+              // after the chunk before, which wrote the same arrays and shares it too.
+              if (rt_cache) b.read(rt.cache_slots, gfx::Access::AccelerationBuildRead);
+              if (deform_on) {
+                b.read(rg_pool, gfx::Access::AccelerationBuildRead);
+                b.read(rg_slots, gfx::Access::AccelerationBuildRead);
+              }
+              b.write(rt.clas_chunks[k], gfx::Access::AccelerationBuildWrite);
+              b.write(rt.clas_addresses, gfx::Access::AccelerationBuildWrite);
+              b.write(rt.clas_sizes, gfx::Access::AccelerationBuildWrite);
+              read_pool(b, gfx::Access::AccelerationBuildRead);
+            },
+            [&, k](gfx::CommandList cb, gfx::RenderGraph&) {
+              // The same command either way: a set created with `instantiate` runs the instantiate
+              // op over the template records the emit pass wrote. Chunk k's records are the dense
+              // ones from `k * chunk_clusters` on, and its addresses the same entries of the set's.
+              if (k == 0) timer.begin(cb, "clas");
+              const gfx::ClusterSet& chunk = scene.rt_chunk(k);
+              const u64 stride = chunk.limits.instantiate ? gfx::k_cluster_instantiate_record_bytes
+                                                          : gfx::k_cluster_build_record_bytes;
+              const u32 first = k * chunk_params.chunk_clusters;
+              gfx::build_cluster_chunk(
+                  cb, chunk, scene.clas_set, first, scene.records.address + u64{first} * stride,
+                  clas_chunks > 1 ? scene.clas_chunk_counts.address + u64{k} * sizeof(u32)
+                                  : scene.record_count.address,
+                  scene.rt_scratch);
+              if (k + 1 == clas_chunks) timer.end(cb);
+            });
+      }
       // Every pending reference's address — a slot's, or for a miss the frame built itself the
       // address its build just wrote (R114) — before the bottom-level build reads them; timed with
       // the cache's other passes.
@@ -5230,7 +5434,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.read(rt.blas_dense, gfx::Access::AccelerationBuildRead);
             b.read(rt.record_count, gfx::Access::AccelerationBuildRead);
             b.read(rt.clas_addresses, gfx::Access::AccelerationBuildRead);
-            b.read(rt.clas_data, gfx::Access::AccelerationBuildRead);
+            read_clas(b, gfx::Access::AccelerationBuildRead);
             if (rt_cache) {
               b.read(rt.cache_references, gfx::Access::AccelerationBuildRead);
               b.read(rt.cache_slots, gfx::Access::AccelerationBuildRead);
@@ -5292,7 +5496,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.read(rt.tlas, gfx::Access::RayQueryRead);
             b.read(rt.hit_entries, gfx::Access::ComputeRead);
             b.read(rt.blas_data, gfx::Access::RayQueryRead);
-            b.read(rt.clas_data, gfx::Access::RayQueryRead);
+            read_clas(b, gfx::Access::RayQueryRead);
             if (rt_cache) b.read(rt.cache_slots, gfx::Access::RayQueryRead);
             b.read(rg_visible, gfx::Access::ComputeRead);  // a hit's entry -> its pair, the id
             if (fading) b.read(rg_fade, gfx::Access::ComputeRead);
@@ -5382,7 +5586,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.read(rt.tlas, gfx::Access::RayQueryRead);
             b.read(rt.hit_entries, gfx::Access::ComputeRead);
             b.read(rt.blas_data, gfx::Access::RayQueryRead);
-            b.read(rt.clas_data, gfx::Access::RayQueryRead);
+            read_clas(b, gfx::Access::RayQueryRead);
             if (rt_cache) b.read(rt.cache_slots, gfx::Access::RayQueryRead);
             b.write(rg_half, gfx::Access::ComputeWrite);
           },
@@ -5455,7 +5659,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
               b.read(rt.tlas, gfx::Access::RayQueryRead);
               b.read(rt.hit_entries, gfx::Access::ComputeRead);
               b.read(rt.blas_data, gfx::Access::RayQueryRead);
-              b.read(rt.clas_data, gfx::Access::RayQueryRead);
+              read_clas(b, gfx::Access::RayQueryRead);
               if (rt_cache) b.read(rt.cache_slots, gfx::Access::RayQueryRead);
               b.write(rg_gi, gfx::Access::ComputeWrite);
             },
@@ -5588,7 +5792,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.read(rt.tlas, gfx::Access::FragmentRayQueryRead);
             b.read(rt.hit_entries, gfx::Access::FragmentRead);
             b.read(rt.blas_data, gfx::Access::FragmentRayQueryRead);
-            b.read(rt.clas_data, gfx::Access::FragmentRayQueryRead);
+            read_clas(b, gfx::Access::FragmentRayQueryRead);
             if (rt_cache) b.read(rt.cache_slots, gfx::Access::FragmentRayQueryRead);
           }
           if (half_on) b.read(rg_half, gfx::Access::FragmentRead);  // the half pass's answers

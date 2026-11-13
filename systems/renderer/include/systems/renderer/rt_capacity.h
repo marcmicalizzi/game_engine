@@ -114,6 +114,28 @@ bool rt_scan_every_frame_tunable() noexcept;
 bool rt_free_on_worker_tunable() noexcept;
 // `renderer.rt.slope_frames` (4): `RtCapacityConfig::slope_frames`.
 u32 rt_slope_frames_tunable() noexcept;
+// `renderer.rt.chunk_clusters` (65,536): the frame's cluster structures stand in chunks of this
+// many, each a buffer and a build of its own, so a step makes the chunks the new capacity lacks and
+// gives up the ones it no longer holds, and never the whole set again (R152; renderer.md, "The
+// frame's set stands in chunks"). 0 is one buffer for the whole capacity, the rule before: the
+// comparison. Read at each step.
+u32 rt_chunk_clusters_tunable() noexcept;
+// `renderer.rt.step_on_worker` (true): a step the capacity policy asks for is made on the worker
+// that frees the retired buffers and taken by the frame's thread when it is ready, so the frame
+// pays for no allocation; a frame whose demand has already passed what the chain holds waits for
+// it (R152). False makes it on the frame's thread, as before: the comparison. Read every frame.
+bool rt_step_on_worker_tunable() noexcept;
+
+// **The chunks of a capacity** (R152; renderer.md, "The frame's set stands in chunks"): whole
+// chunks of `chunk` clusters and then the rest. `rt_chunk_clusters` is the chunk a capacity is cut
+// by: `wanted` (0: the whole capacity, one chunk), raised so that no capacity has more than
+// `max_chunks` (to the next multiple of 4,096 that holds it). `rt_chunks_kept` is how many leading
+// chunks two capacities cut alike share — the chunks a step from one to the other keeps as they
+// are. Arithmetic only, so the layout is tested on the CPU.
+u32 rt_chunk_clusters(u32 capacity, u32 wanted, u32 max_chunks) noexcept;
+u32 rt_chunk_count(u32 capacity, u32 chunk) noexcept;
+u32 rt_chunk_size(u32 capacity, u32 chunk, u32 k) noexcept;
+u32 rt_chunks_kept(u32 from_capacity, u32 from_chunk, u32 to_capacity, u32 to_chunk) noexcept;
 // `renderer.rt.static_forms` (true): rigid distance forms keep structures built once
 // (`RenderSettings::rt_static_forms`; renderer.md, "Static structures for rigid forms").
 bool rt_static_forms_tunable() noexcept;

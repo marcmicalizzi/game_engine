@@ -1380,6 +1380,173 @@ TEST_CASE(
   device.destroy();
 }
 
+// **The frame's set stands in chunks** (R152; renderer.md, "The frame's set stands in chunks"): the
+// layout is arithmetic. The owner's v41 walk moved between the budget's 338,072 and half of it, and
+// every step made the whole set again; cut into chunks of 65,536, the way back makes four chunks
+// beside the two both capacities hold, and the way down makes one.
+TEST_CASE("rt capacity: a capacity is cut into chunks, and a step keeps the chunks both hold") {
+  CHECK(rt_chunk_clusters(338072, 65536, 64) == 65536);
+  CHECK(rt_chunk_count(338072, 65536) == 6);
+  CHECK(rt_chunk_size(338072, 65536, 0) == 65536);
+  CHECK(rt_chunk_size(338072, 65536, 5) == 338072 - 5 * 65536);
+  CHECK(rt_chunk_size(338072, 65536, 6) == 0);
+  CHECK(rt_chunk_count(172032, 65536) == 3);
+  CHECK(rt_chunk_size(172032, 65536, 2) == 40960);
+  CHECK(rt_chunks_kept(172032, 65536, 338072, 65536) == 2);
+  CHECK(rt_chunks_kept(338072, 65536, 172032, 65536) == 2);
+  // The same capacity keeps every chunk, and one that ends on a chunk's edge every whole one.
+  CHECK(rt_chunks_kept(338072, 65536, 338072, 65536) == 6);
+  CHECK(rt_chunks_kept(131072, 65536, 338072, 65536) == 2);
+  // A capacity inside one chunk is one chunk of exactly it, the chain as it was before chunks, and
+  // a step of it is made whole: a small scene's set is small, and so is its step.
+  CHECK(rt_chunk_clusters(40960, 65536, 64) == 40960);
+  CHECK(rt_chunk_count(40960, 40960) == 1);
+  CHECK(rt_chunks_kept(40960, 40960, 12288, 12288) == 0);
+  // 0 is one chunk whatever the capacity: the comparison.
+  CHECK(rt_chunk_clusters(338072, 0, 64) == 338072);
+  CHECK(rt_chunk_count(338072, 338072) == 1);
+  // Never more chunks than the most: a capacity past it is cut into larger ones.
+  const u32 union_chunk = rt_chunk_clusters(16777216, 65536, 64);
+  CHECK(union_chunk == 262144);
+  CHECK(rt_chunk_count(16777216, union_chunk) == 64);
+  const u32 fine = rt_chunk_clusters(5000, 64, 64);
+  CHECK(fine == 4096);
+  CHECK(rt_chunk_count(5000, fine) == 2);
+  // What the chunks hold together is the capacity.
+  for (const u32 capacity : {1u, 4096u, 65536u, 65537u, 172032u, 338072u, 16777216u}) {
+    const u32 chunk = rt_chunk_clusters(capacity, 65536, 64);
+    u64 held = 0;
+    for (u32 k = 0; k < rt_chunk_count(capacity, chunk); ++k)
+      held += rt_chunk_size(capacity, chunk, k);
+    CHECK(held == capacity);
+    CHECK(rt_chunk_count(capacity, chunk) <= 64);
+  }
+}
+
+// **A shrink the walk does not pay for** (R152): the owner's v41 walk looked at the forest, away
+// and back every half minute or so, and a ten-second window halved the chain at every look away
+// and grew it back at every return, 18 and 17 times. A two-minute window (`renderer.rt.
+// shrink_seconds`' default since) holds the chain through looks away shorter than itself.
+TEST_CASE("rt capacity: a two-minute window holds the chain between a walk's views of the forest") {
+  for (const f64 seconds : {10.0, 120.0}) {
+    CAPTURE(seconds);
+    RtCapacityConfig config = v25_config();
+    config.shrink_seconds = seconds;
+    Driven drive;
+    drive.policy.reset(config, 65536, 0.0);
+    drive.run(200000, 10 * 60);  // the forest: one growth
+    REQUIRE(drive.grows == 1);
+    for (u32 look = 0; look < 8; ++look) {
+      drive.run(20000, 30 * 60);  // thirty seconds at a tenth of it
+      drive.run(200000, 5 * 60);  // and five back
+    }
+    if (seconds < 60.0) {
+      CHECK(drive.shrinks == 8);  // the rule before: every look away is a shrink and a growth
+      CHECK(drive.grows == 9);
+    } else {
+      CHECK(drive.shrinks == 0);
+      CHECK(drive.grows == 1);
+    }
+    // And a quiet that outlasts the window still gives the memory back.
+    drive.run(20000, 300 * 60);
+    CHECK(drive.shrinks >= 1);
+    CHECK(drive.policy.capacity() < 253952);
+  }
+}
+
+// **In chunks, and stepped on the worker** (R152; renderer.md, "The frame's set stands in chunks",
+// "A step is made on the worker"): the chain of the case above cut into chunks of 128 clusters, so
+// its capacities span several buffers and builds, and resized on every cut — by the worker, the
+// frame's thread only taking what it made, and for comparison on the frame's thread — draws what a
+// chain in one buffer that never resizes draws, and never stops for the device.
+TEST_CASE("rt capacity: a chain in chunks stepped on the worker draws what a whole chain draws") {
+  gfx::Device device;
+  std::string error;
+  if (!device.create(gfx::DeviceOptions{}, &error) || !traces(device)) {
+    MESSAGE("tracing unavailable: " << error);
+    return;
+  }
+  ScopedTunable per_frame("renderer.rt.cache", "false");
+  for (const RasterMode raster : {RasterMode::RayTrace, RasterMode::Hardware}) {
+    RenderSettings settings;
+    settings.raster = raster;
+    settings.shadows = ShadowMode::RayTraced;
+    Rig whole;
+    {
+      ScopedTunable never("renderer.rt.shrink_seconds", "86400");
+      ScopedTunable one_buffer("renderer.rt.chunk_clusters", "0");
+      REQUIRE_MESSAGE(whole.build(device, settings, error), error);
+    }
+    REQUIRE(whole.scene.rt_chunk_count() == 1);
+    for (const bool worker : {true, false}) {
+      CAPTURE(worker);
+      ScopedTunable chunked("renderer.rt.chunk_clusters", "128");
+      ScopedTunable stepping("renderer.rt.step_on_worker", worker ? "true" : "false");
+      Rig moving;
+      {
+        ScopedTunable soon("renderer.rt.shrink_seconds", "0");
+        ScopedTunable one("renderer.rt.shrink_frames", "1");
+        ScopedTunable no_floor("renderer.rt.floor_pct", "0");
+        ScopedTunable no_peak("renderer.rt.peak_seconds", "0");
+        ScopedTunable no_peak_frames("renderer.rt.peak_frames", "0");
+        ScopedTunable tight("renderer.rt.headroom_pct", "0");
+        ScopedTunable fine("renderer.rt.step_clusters", "64");
+        REQUIRE_MESSAGE(moving.build(device, settings, error), error);
+      }
+      const f32 distances[] = {9.0f, 1.4f, 9.0f, 0.8f, 5.0f, 1.4f};
+      u64 frame_index = 0;
+      u64 waits = 0;
+      u32 resizes = 0;
+      u32 most_chunks = 0;
+      Pictures differ;
+      for (const f32 distance : distances) {
+        const u32 before = moving.renderer.stats().rt.grows + moving.renderer.stats().rt.shrinks;
+        const u64 waited = gfx::device_waits_on_thread();
+        for (u32 k = 0; k < 6; ++k, ++frame_index) {
+          moving.renderer.begin_frame();
+          REQUIRE_MESSAGE(moving.renderer.submit_frame(frame_at(moving.data, distance, frame_index),
+                                                       &error) != 0,
+                          error);
+          most_chunks = std::max(most_chunks, moving.scene.rt_chunk_count());
+        }
+        waits += gfx::device_waits_on_thread() - waited;
+        resizes += moving.renderer.stats().rt.grows + moving.renderer.stats().rt.shrinks - before;
+        CapturedFrame a;
+        CapturedFrame b;
+        REQUIRE_MESSAGE(whole.renderer.capture(frame_at(whole.data, distance, frame_index),
+                                               {.color = true, .ids = true}, a, &error),
+                        error);
+        REQUIRE_MESSAGE(moving.renderer.capture(frame_at(moving.data, distance, frame_index),
+                                                {.color = true, .ids = true}, b, &error),
+                        error);
+        most_chunks = std::max(most_chunks, moving.scene.rt_chunk_count());
+        ++frame_index;
+        const Pictures d = compare(a, b);
+        differ.colour += d.colour;
+        differ.ids += d.ids;
+      }
+      const u32 worker_steps = moving.renderer.stats().rt.worker_steps;
+      MESSAGE(std::string(raster_name(raster))
+              << std::string(worker ? " on the worker" : " on the frame's thread") << ": "
+              << resizes << " resizes in flight, " << worker_steps << " of them the worker's, "
+              << most_chunks << " chunks at the most, " << waits << " stops for the device, "
+              << differ.colour << " colour bytes and " << differ.ids
+              << " id words differ from the whole chain");
+      CHECK(resizes > 0);
+      CHECK(most_chunks > 1);  // the case: the set did stand in several buffers
+      CHECK(differ.colour == 0);
+      CHECK(differ.ids == 0);
+      CHECK(waits == 0);
+      if (worker) {
+        CHECK(worker_steps > 0);
+      } else {
+        CHECK(worker_steps == 0);
+      }
+    }
+  }
+  device.destroy();
+}
+
 // The cache's references swap the same way (R130): each frame slot reads its own copy of the
 // cache's table, so a step of the references made while frames are in flight draws what a chain
 // that never steps draws and never stops for the device. Until 2026-11-03 such a step waited, 180

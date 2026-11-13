@@ -5247,7 +5247,10 @@ bool GpuScene::create_ray_tracing(const ResolvedSettings& resolved, std::string*
                    gfx::k_build_input_usage, indices8, error)) &&
       gfx::create_buffer(device, sizeof(u32) * gfx::k_cluster_record_count_words,
                          k_record_usage | gfx::BufferUsage::TransferSrc, false, record_count,
-                         error);
+                         error) &&
+      // Each chunk's count of the frame's cluster set (R152; clas_chunks.slang).
+      gfx::create_buffer(device, sizeof(u32) * k_rt_chunks_max, k_record_usage, false,
+                         clas_chunk_counts, error);
   // One template per cluster of the scene, built from the rest pose, with cluster id and base
   // geometry index zero so an instantiate record's offsets are the visible entry outright. Built
   // once, **packed to the size each one is** rather than to the driver's worst case (about 2.2 KB
@@ -5828,6 +5831,7 @@ void GpuScene::destroy_ray_tracing_layout() noexcept {
   gfx::destroy_buffer(device, records);
   gfx::destroy_buffer(device, hit_entries);
   gfx::destroy_cluster_set(device, clas_set);
+  destroy_rt_chunks();
   gfx::destroy_cluster_blas_set(device, blas_set);
   gfx::destroy_buffer(device, rt_scratch);
 }
@@ -6066,206 +6070,12 @@ bool GpuScene::lay_out_ray_tracing(std::string* error) {
       log::field("device_local_mib", memory.device_local_bytes >> 20),
       log::field("bytes_per_cluster", rt_bytes_per_cluster_),
       log::field("bytes_per_cluster_plain", plain_bytes_per_cluster),
-      log::field("clas_bytes", clas_set.data.size), log::field("blas_bytes", blas_set.data.size),
-      log::field("scratch_bytes", rt_scratch.size), log::field("rt_bytes", rt_bytes_),
+      log::field("clas_bytes", rt_chunk_bytes()), log::field("clas_chunks", rt_chunk_count_),
+      log::field("blas_bytes", blas_set.data.size), log::field("scratch_bytes", rt_scratch.size),
+      log::field("rt_bytes", rt_bytes_),
       log::field("templates", limits.instantiate ? cluster_count_ : 0u),
       log::field("template_bytes", template_bytes_),
       log::field("template_storage", clas_templates.data.size));
-  return true;
-}
-
-bool GpuScene::resize_ray_tracing(u32 capacity, std::string* error, bool beyond_budget,
-                                  u32 references, RtRetired* retired) {
-  rt_resize_cost_ = RtResizeCost{};
-  if (retired != nullptr) retired->count = 0;
-  if (!ray_tracing_ || device_ == nullptr) return true;
-  const gfx::Device& device = *device_;
-  const u32 ceiling =
-      beyond_budget || rt_capacity_limit_ == 0 ? rt_union_clusters_ : rt_capacity_limit_;
-  const u64 index_room = rt_cache() ? u64{gfx::k_cluster_cache_geometry}
-                                    : u64{device.features().cluster_max_geometry_index} + 1;
-  capacity =
-      static_cast<u32>(std::max<u64>(1, std::min({u64{capacity}, u64{ceiling}, index_room})));
-  // The cache's references (renderer.md, "The resident cluster structure cache"): 0 keeps them.
-  if (rt_cache()) {
-    if (references == 0) references = rt_reference_capacity_;
-    const u32 reference_ceiling =
-        beyond_budget || rt_reference_limit_ == 0 ? rt_union_clusters_ : rt_reference_limit_;
-    references = static_cast<u32>(std::max<u64>(
-        1, std::min({u64{references}, u64{reference_ceiling}, u64{rt_union_clusters_}})));
-  } else {
-    references = 0;
-  }
-  // **The swap** (R116): the old buffers go to `retired`. The cache's references swap with them
-  // (R130): each frame slot reads its own copy of the cache's table, written when its frame is
-  // recorded (`rt_cache_tables_address`), so a frame in flight keeps the copy naming the old ones.
-  // `renderer.rt.swap_references` false is the old rule, a references step that waits.
-  const bool swap = retired != nullptr;
-  const bool swap_references = swap && references != rt_reference_capacity_;
-  if (swap_references && !rt_swap_references_tunable()) {
-    if (error != nullptr) *error = "the cache's references change: the resize must wait";
-    return false;
-  }
-  // Where the time goes, part by part: a slow resize says which (the slow resize's line).
-  i64 mark = time::monotonic_ns();
-  const auto lap = [&mark](i64& into) {
-    const i64 now = time::monotonic_ns();
-    into += now - mark;
-    mark = now;
-  };
-  // Waited for, the old buffers go first, so the device never holds both sets.
-  if (!swap) {
-    gfx::destroy_buffer(device, rt_cache_buffers.references);
-    gfx::destroy_buffer(device, rt_cache_buffers.reference_keys);
-    gfx::destroy_buffer(device, rt_cache_buffers.misses);
-    rt_reference_capacity_ = 0;
-    gfx::destroy_buffer(device, records);
-    gfx::destroy_buffer(device, hit_entries);
-    gfx::destroy_cluster_set(device, clas_set);
-    gfx::destroy_cluster_blas_set(device, blas_set);
-    gfx::destroy_buffer(device, rt_scratch);
-    rt_capacity_ = 0;
-    lap(rt_resize_cost_.free_ns);
-  }
-  gfx::ClusterSetLimits limits = rt_limits_;
-  limits.max_clusters = capacity;
-  // With a cache the frame's set also builds what the cache could not place (R114), named as the
-  // cache names it — the cluster within its mesh under bit 23 — so its indices reach 24 bits.
-  limits.max_geometry_index = rt_cache() ? gfx::k_cluster_cache_geometry * 2 - 1 : capacity - 1;
-  // The frame's records are a transfer source too, so a test can read the drop rule's result back
-  // and hold the scan to the one-thread rule's bytes (R128).
-  constexpr gfx::BufferUsage k_record_usage =
-      k_address | gfx::BufferUsage::AccelerationBuildInput | gfx::BufferUsage::TransferSrc;
-  const u64 record_bytes = limits.instantiate ? gfx::k_cluster_instantiate_record_bytes
-                                              : gfx::k_cluster_build_record_bytes;
-  gfx::BufferResource made_records;
-  gfx::BufferResource made_hit_entries;
-  gfx::ClusterSet made_clas;
-  gfx::ClusterBlasSet made_blas;
-  gfx::BufferResource made_scratch;
-  // **A step of the references alone keeps the frame's own set** (R130): the records, the
-  // record-to-entry table and the CLAS set are sized by the capacity, so a swapped step that leaves
-  // it alone makes only the references, the bottom-level set and, when it must grow, the scratch.
-  // Making the CLAS set again beside the old one was 937 ms in the driver on the v27 replay, on a
-  // card other processes held 21 GB of.
-  const bool keep_frame_set = swap && capacity == rt_capacity_ && rt_capacity_ != 0;
-  bool ok = true;
-  if (!keep_frame_set) {
-    ok = gfx::create_buffer(device, record_bytes * capacity, k_record_usage, false, made_records,
-                            error) &&
-         gfx::create_buffer(device, sizeof(u32) * u64{capacity}, k_address, false, made_hit_entries,
-                            error);
-    lap(rt_resize_cost_.records_ns);
-    ok = ok && gfx::create_cluster_set(device, limits, made_clas, error);
-    lap(rt_resize_cost_.clas_ns);
-  }
-  // Swapped, new references are made beside the old ones, which go to `retired` below.
-  gfx::BufferResource made_references, made_reference_keys, made_misses;
-  if (swap_references) {
-    ok = ok &&
-         gfx::create_buffer(device, u64{references} * sizeof(u64), k_record_usage, false,
-                            made_references, error) &&
-         gfx::create_buffer(device, u64{references} * sizeof(u32), k_address, false,
-                            made_reference_keys, error) &&
-         gfx::create_buffer(device, u64{references} * gfx::k_cluster_cache_miss_bytes, k_address,
-                            false, made_misses, error);
-    lap(rt_resize_cost_.references_ns);
-  }
-  if (!swap) {
-    ok = ok && (references == 0 ||
-                (gfx::create_buffer(device, u64{references} * sizeof(u64), k_record_usage, false,
-                                    rt_cache_buffers.references, error) &&
-                 gfx::create_buffer(device, u64{references} * sizeof(u32), k_address, false,
-                                    rt_cache_buffers.reference_keys, error) &&
-                 // A miss is a pending reference's key, claimed once: never more of them than
-                 // references.
-                 gfx::create_buffer(device, u64{references} * gfx::k_cluster_cache_miss_bytes,
-                                    k_address, false, rt_cache_buffers.misses, error)));
-    lap(rt_resize_cost_.references_ns);
-  }
-  // One bottom-level set over both: an instance references the frame's own structures or the
-  // cache's, never both, so its most is the larger of the two capacities.
-  // And at most one structure per reference: the build is over the instances that reference
-  // anything (R143, `blas_compact_main`), never over every slot.
-  const u32 blas_structures = static_cast<u32>(
-      std::max<u64>(1, std::min<u64>(rt_instance_slots_, u64{capacity} + references)));
-  ok = ok &&
-       gfx::create_cluster_blas_set(device, blas_structures, capacity + references,
-                                    std::min(rt_max_per_instance_, std::max(capacity, references)),
-                                    made_blas, error, rt_limits_.opacity_micromaps);
-  lap(rt_resize_cost_.blas_ns);
-  bool scratch_made = false;
-  if (ok) {
-    u64 scratch_bytes =
-        keep_frame_set ? clas_set.build_scratch_bytes : made_clas.build_scratch_bytes;
-    scratch_bytes = std::max(scratch_bytes, made_blas.build_scratch_bytes);
-    scratch_bytes = std::max(scratch_bytes, tlas.build_scratch_bytes);
-    // The cache's misses build in the same chain, one pass before the frame's own (the graph
-    // orders the two), so they share it.
-    scratch_bytes = std::max(scratch_bytes, rt_cache_scratch_bytes_);
-    if (!keep_frame_set || scratch_bytes > rt_scratch.size) {
-      ok = gfx::create_scratch(device, scratch_bytes, made_scratch, error);
-      scratch_made = ok;
-    }
-  }
-  lap(rt_resize_cost_.scratch_ns);
-  if (!ok) {
-    gfx::destroy_buffer(device, made_records);
-    gfx::destroy_buffer(device, made_hit_entries);
-    gfx::destroy_cluster_set(device, made_clas);
-    gfx::destroy_cluster_blas_set(device, made_blas);
-    gfx::destroy_buffer(device, made_scratch);
-    gfx::destroy_buffer(device, made_references);
-    gfx::destroy_buffer(device, made_reference_keys);
-    gfx::destroy_buffer(device, made_misses);
-    // Swapped, the old set is untouched and still the scene's: the caller waits and tries again.
-    if (swap) return false;
-    gfx::destroy_buffer(device, rt_cache_buffers.references);
-    gfx::destroy_buffer(device, rt_cache_buffers.reference_keys);
-    gfx::destroy_buffer(device, rt_cache_buffers.misses);
-    write_rt_cache_tables();
-    rt_bytes_ = rt_scene_bytes_;
-    return false;
-  }
-  if (swap) {
-    // The frames in flight imported these by handle; they are the caller's to free once those
-    // frames have completed.
-    if (!keep_frame_set) {
-      for (gfx::BufferResource* old :
-           {&records, &hit_entries, &clas_set.data, &clas_set.addresses, &clas_set.sizes})
-        retired->buffers[retired->count++] = *old;
-    }
-    for (gfx::BufferResource* old : {&blas_set.data, &blas_set.addresses})
-      retired->buffers[retired->count++] = *old;
-    if (scratch_made) retired->buffers[retired->count++] = rt_scratch;
-    if (swap_references) {
-      for (gfx::BufferResource* old : {&rt_cache_buffers.references,
-                                       &rt_cache_buffers.reference_keys, &rt_cache_buffers.misses})
-        retired->buffers[retired->count++] = *old;
-      rt_cache_buffers.references = made_references;
-      rt_cache_buffers.reference_keys = made_reference_keys;
-      rt_cache_buffers.misses = made_misses;
-      // The table's copies are written when each slot's frame is recorded, never here: the frames
-      // in flight read theirs.
-      rt_reference_capacity_ = references;
-    }
-  }
-  if (!keep_frame_set) {
-    records = made_records;
-    hit_entries = made_hit_entries;
-    clas_set = made_clas;
-  }
-  blas_set = made_blas;
-  if (scratch_made || !swap) rt_scratch = made_scratch;
-  rt_capacity_ = capacity;
-  if (!swap) {
-    rt_reference_capacity_ = references;
-    write_rt_cache_tables();
-  }
-  rt_bytes_ = rt_scene_bytes_ + records.size + hit_entries.size + clas_set.data.size +
-              clas_set.addresses.size + clas_set.sizes.size + blas_set.data.size +
-              blas_set.addresses.size + rt_scratch.size + rt_cache_buffers.references.size +
-              rt_cache_buffers.reference_keys.size + rt_cache_buffers.misses.size;
   return true;
 }
 
@@ -6555,6 +6365,8 @@ void GpuScene::destroy() noexcept {
   gfx::destroy_acceleration_structure(device, tlas);
   gfx::destroy_cluster_blas_set(device, blas_set);
   gfx::destroy_cluster_set(device, clas_set);
+  destroy_rt_chunks();
+  gfx::destroy_buffer(device, clas_chunk_counts);
   gfx::destroy_buffer(device, rt_scratch);
   gfx::destroy_buffer(device, rt_instances);
   gfx::destroy_buffer(device, blas_records);

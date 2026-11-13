@@ -31,7 +31,7 @@ set(_renderer_deps base containers hash math time jobs log platform io image geo
                    gfx json texture tunables content_build schema schemas scene_gen profiling)
 engine_module(NAME renderer LAYER systems
   DEPS ${_renderer_deps}
-  SOURCES src/settings.cpp src/view_set.cpp src/scene.cpp src/gpu_scene.cpp src/gpu_scene_meshes.cpp src/gpu_scene_textures.cpp
+  SOURCES src/settings.cpp src/view_set.cpp src/scene.cpp src/gpu_scene.cpp src/gpu_scene_meshes.cpp src/gpu_scene_textures.cpp src/gpu_scene_rt_step.cpp
           src/lighting.cpp
           src/page_source.cpp src/streaming.cpp src/scene_renderer.cpp src/reference.cpp
           src/capture.cpp src/terrain.cpp src/terrain_materials.cpp src/camera_path.cpp src/flythrough.cpp

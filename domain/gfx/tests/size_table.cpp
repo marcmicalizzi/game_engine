@@ -145,6 +145,9 @@ ENGINE_EXPECT_SIZE(120, 8, gfx::ClusterCacheTables);
 // bottom-level build is over the instances that drew something and not over every instance slot
 // (renderer.md, "The bottom-level build is over what the frame drew", R143, 2026-11-10).
 ENGINE_EXPECT_SIZE(120, 8, gfx::TlasReferenceParams);
+// clas_chunks.slang's push block: the frame's built count, the chunks' counts, and how the
+// capacity is cut into chunks (renderer.md, "The frame's set stands in chunks", R152).
+ENGINE_EXPECT_SIZE(32, 8, gfx::ClusterChunkParams);
 
 // 416, not 400: geometry streaming appended the address of its own block plus the two counts that
 // bound every index the shader writes — the page table's length and the request buffer's capacity
