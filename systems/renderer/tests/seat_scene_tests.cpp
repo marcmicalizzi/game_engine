@@ -131,6 +131,9 @@ std::string scene_text(const std::string& tree) {
          R"({"mesh":0,"translation":[-0.2,0.5,0]},)"
          R"({"mesh":0,"translation":[-0.6,0,0],"ground":true,"scale":[2,2,2]},)"
          R"({"mesh":1,"translation":[-0.2,0,0],"ground":true}],)"
+         // A grounded scatter of 3,000 over the edge, so the load seats in several blocks.
+         R"("scatters":[{"mesh":0,"name":"grove","center":[-1,0,0],"radius_max":3,)"
+         R"("count":3000,"seed":7}],)"
          R"("placements":[{"generator":"seat-test-trees",)"
          R"("params":{"path":")" +
          json_path(tree) +
@@ -170,11 +173,14 @@ TEST_CASE("seat: grounded trees over a bank's edge are lowered by their footprin
   SceneDesc desc;
   std::string error;
   REQUIRE_MESSAGE(read_scene_file(path, desc, error), error);
-  // The file's five, the generator's three, the terrain.
-  REQUIRE(desc.instances.size() == 5u + 3u + 1u);
+  // The file's five, the scatter's 3,000, the generator's three from `g`, the terrain.
+  constexpr u32 k_grove = 3000;
+  constexpr u32 g = 5 + k_grove;
+  REQUIRE(desc.instances.size() == 5u + k_grove + 3u + 1u);
   CHECK(desc.instances[0].grounded);
   CHECK_FALSE(desc.instances[2].grounded);
-  CHECK(desc.instances[5].grounded);  // a generator's placement stands on the ground
+  CHECK(desc.instances[5].grounded);  // a grounded scatter's
+  CHECK(desc.instances[g].grounded);  // a generator's placement stands on the ground
   // The sources as the load reads them: the seat back from the container.
   SceneData data;
   desc.cache = false;
@@ -185,9 +191,11 @@ TEST_CASE("seat: grounded trees over a bank's edge are lowered by their footprin
   CHECK(data.sources[0].seat.radius_m == k_seat.radius_m);
   CHECK(data.sources[0].seat.skirt_y_m == k_seat.skirt_y_m);
   CHECK_FALSE(data.sources[1].seat.radius_m > 0.0f);
-  // Which were seated and which lowered: 0, 1, 3, 5, 6, 7 seated; 0, 3, 5, 6 lowered.
-  CHECK(data.load.seated == 6u);
-  CHECK(data.load.lowered == 4u);
+  // Which were seated and which lowered: 0, 1, 3, the grove and the generator's three seated; 0, 3
+  // and the generator's first two lowered, and the grove's trees whose rims reach the edge.
+  CHECK(data.load.seated == 6u + k_grove);
+  CHECK(data.load.lowered > 4u);
+  CHECK(data.load.lowered < 4u + k_grove);
 
   // The rule on the read's instances, the sources' seats as loaded.
   Vector<SceneInstance> seated = desc.instances;
@@ -211,10 +219,13 @@ TEST_CASE("seat: grounded trees over a bank's edge are lowered by their footprin
   // 3: twice the size, so a rim of 0.8 m over the edge and a skirt of 1.1 m.
   CHECK(scene_gen::nearest_mm(seated[3].origin.y) ==
         std::min(i64{0}, lowest_mm(-0.6, 0.0, 0.8) + 1100 - scene_gen::k_seat_margin_mm));
-  // 5, 6: the generator's over the edge; 7 clear.
-  CHECK(seated[5].origin.y < 0.2 - 0.4);
-  CHECK(seated[6].origin.y < 0.2 - 0.4);
-  CHECK(seated[7].origin == desc.instances[7].origin);
+  // The generator's: the first two over the edge, the third clear.
+  CHECK(seated[g].origin.y < 0.2 - 0.4);
+  CHECK(seated[g + 1].origin.y < 0.2 - 0.4);
+  CHECK(seated[g + 2].origin == desc.instances[g + 2].origin);
+  // The load, on its pool, seated every one as this does.
+  CHECK(report.seated == data.load.seated);
+  CHECK(report.lowered == data.load.lowered);
   // Seated twice is seated once.
   Vector<SceneInstance> twice = seated;
   SceneLoadReport again;
@@ -225,10 +236,14 @@ TEST_CASE("seat: grounded trees over a bank's edge are lowered by their footprin
     CHECK(twice[i].origin == seated[i].origin);
   CHECK(again.lowered == 0u);
 
-  // The bytes: every origin's bits and every slope, pinned on MSVC (G201 stage 2), and the load
-  // at every thread the same instance table and slopes as at one.
+  // The bytes: every origin's bits and every slope, pinned on MSVC (G201 stage 2) — but the
+  // grove's, whose places a scene file's scatter draws with the C library's sine and cosine
+  // (`read_scene_file`), which no pin holds across toolchains — and the load at every thread the
+  // same instance table and slopes as at one.
   u64 h = 0;
-  for (const SceneInstance& instance : seated) {
+  for (u32 i = 0; i < seated.size(); ++i) {
+    if (i >= 5 && i < g) continue;
+    const SceneInstance& instance = seated[i];
     u64 bits[3];
     std::memcpy(&bits[0], &instance.origin.x, 8);
     std::memcpy(&bits[1], &instance.origin.y, 8);

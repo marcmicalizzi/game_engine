@@ -9,7 +9,8 @@ namespace engine::scene_gen {
 namespace {
 
 // cos and sin of 22.5 and 45 degrees, to the double's last bit: the rim's directions are these
-// constants and their reflections, never a C library's sine (b59-common, "The same bytes").
+// constants and their reflections, never a C library's sine, so every toolchain asks the same
+// points.
 constexpr f64 k_cos_22_5 = 0.92387953251128674;
 constexpr f64 k_sin_22_5 = 0.38268343236508978;
 constexpr f64 k_cos_45 = 0.70710678118654752;
