@@ -127,11 +127,17 @@ landform::Sketch straight_sketch(f64 spacing_m, landform::StartField& start) {
 }  // namespace
 
 TEST_CASE("landform: the coast's closed forms against their sources' numbers") {
-  // Dean's A: 0.21 D^0.48 gives 0.097, 0.118, 0.151 and 0.21 at 0.2, 0.3, 0.5 and 1 mm, within
-  // 5% of A = 0.51 w^0.44 from the fall speed (docs/subsystems/landform.md, "The coast").
-  CHECK(std::fabs(landform::profile_scale(1.0) - 0.21) < 1.0e-12);
-  CHECK(std::fabs(landform::profile_scale(0.3) - 0.1178) < 5.0e-4);
-  CHECK(std::fabs(landform::profile_scale(0.2) - 0.0969) < 5.0e-4);
+  // Dean's A, the Coastal Engineering Manual's Table III-3-3 as printed: 0.100, 0.125, 0.161 and
+  // 0.210 at 0.2, 0.3, 0.5 and 1 mm; its own worked values, 0.112 at 0.24 mm and 0.18 at
+  // 0.66 mm (docs/subsystems/landform.md, "The coast").
+  CHECK(std::fabs(landform::profile_scale(0.2) - 0.100) < 1.0e-12);
+  CHECK(std::fabs(landform::profile_scale(0.3) - 0.125) < 1.0e-12);
+  CHECK(std::fabs(landform::profile_scale(0.5) - 0.161) < 1.0e-12);
+  CHECK(std::fabs(landform::profile_scale(1.0) - 0.210) < 1.0e-12);
+  CHECK(std::fabs(landform::profile_scale(0.24) - 0.112) < 1.0e-12);
+  CHECK(std::fabs(landform::profile_scale(0.66) - 0.1802) < 1.0e-12);
+  CHECK(std::fabs(landform::profile_scale(0.305) - 0.126) < 1.0e-12);  // between two entries
+  CHECK(landform::profile_scale(2.0) > landform::profile_scale(1.09));
   // The face for 0.3 mm sand: 0.0697, worked by hand from the fit's form.
   CHECK(std::fabs(landform::face_slope(0.3) - 0.069719) < 1.0e-5);
   CHECK(landform::face_slope(0.13) == 0.01);

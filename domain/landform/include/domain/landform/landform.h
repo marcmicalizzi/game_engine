@@ -77,7 +77,9 @@ enum class Substrate : u8 {
 // Pure functions of their arguments, with no C library call: the fractional powers are
 // `det::exp` and `det::log`. The stand reads each once per wave entry or per shore segment.
 
-/// Dean's profile scale A, m^(1/3), for a median grain `grain_mm`: 0.21 D^0.48 (Dean 1991).
+/// Dean's profile scale A, m^(1/3), for a median grain `grain_mm`: the Coastal Engineering
+/// Manual's Table III-3-3 (Dean's values, 0.10 to 1.09 mm) read linearly, carried past 1.09 mm by
+/// D^0.48.
 f64 profile_scale(f64 grain_mm) noexcept;
 /// The beach face's slope, tan beta, for a median grain: 0.268 - 0.154 (D - 0.125)^-0.145 held to
 /// [0.01, 0.2] (the form of Bujan, Cox and Masselink 2019; its coefficients authored, said so on

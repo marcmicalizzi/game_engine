@@ -363,7 +363,34 @@ struct Exposure {
 
 // ---- the closed forms ---------------------------------------------------------------------------
 
-f64 profile_scale(f64 grain_mm) noexcept { return 0.21 * power(grain_mm, 0.48); }
+// The Coastal Engineering Manual's Table III-3-3 (EM 1110-2-1100, Part III, chapter 3, 2002):
+// Dean's A, m^(1/3), from 0.10 mm to 1.09 mm in steps of 0.01 mm ("based on Dean 1978b, values
+// recomputed by Dean, June 2001"), as printed.
+constexpr f64 k_dean_a[100] = {
+    0.063, 0.0672, 0.0714, 0.0756, 0.0798, 0.084,  0.0872, 0.0904, 0.0936, 0.0968,  // 0.1
+    0.100, 0.103,  0.106,  0.109,  0.112,  0.115,  0.117,  0.119,  0.121,  0.123,   // 0.2
+    0.125, 0.127,  0.129,  0.131,  0.133,  0.135,  0.137,  0.139,  0.141,  0.143,   // 0.3
+    0.145, 0.1466, 0.1482, 0.1498, 0.1514, 0.153,  0.1546, 0.1562, 0.1578, 0.1594,  // 0.4
+    0.161, 0.1622, 0.1634, 0.1646, 0.1658, 0.167,  0.1682, 0.1694, 0.1706, 0.1718,  // 0.5
+    0.173, 0.1742, 0.1754, 0.1766, 0.1778, 0.179,  0.1802, 0.1814, 0.1826, 0.1838,  // 0.6
+    0.185, 0.1859, 0.1868, 0.1877, 0.1886, 0.1895, 0.1904, 0.1913, 0.1922, 0.1931,  // 0.7
+    0.194, 0.1948, 0.1956, 0.1964, 0.1972, 0.198,  0.1988, 0.1996, 0.2004, 0.2012,  // 0.8
+    0.202, 0.2028, 0.2036, 0.2044, 0.2052, 0.206,  0.2068, 0.2076, 0.2084, 0.2092,  // 0.9
+    0.210, 0.2108, 0.2116, 0.2124, 0.2132, 0.2140, 0.2148, 0.2156, 0.2164, 0.2172,  // 1.0
+};
+
+f64 profile_scale(f64 grain_mm) noexcept {
+  // Read linearly between the table's hundredths of a millimetre; past its last row, its last
+  // value carried by D^0.48, the exponent of Dean 1991's fit to the same values (authored: the
+  // shoreface of shingle is outside what the table was fit to).
+  const f64 at = (grain_mm - 0.10) * 100.0;
+  if (!(at > 0.0)) return k_dean_a[0];
+  if (at >= 99.0) return k_dean_a[99] * power(grain_mm / 1.09, 0.48);
+  const f64 low = std::floor(at);
+  const u32 k = static_cast<u32>(low);
+  const f64 t = at - low;
+  return k_dean_a[k] + t * (k_dean_a[k + 1] - k_dean_a[k]);
+}
 
 f64 face_slope(f64 grain_mm) noexcept {
   const f64 d = grain_mm - 0.125;

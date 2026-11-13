@@ -69,7 +69,8 @@ implementations; the paper not opened). **Computed here** from the two, at ν = 
 | 1 mm | 12.6 cm/s | 0.20 | 4.3 m | 164 m |
 
 These sit inside Dean's range and within a few percent of the table the engineering manuals print
-(memory: 0.100, 0.125, 0.161 and 0.210 for the same four sizes; the manual was not opened). So a
+(0.100, 0.125, 0.161 and 0.210 for the same four sizes: from memory here, read in the manual's
+Table III-3-3 by the build row, which pins the table). So a
 shoreface is 150 to 500 m wide, and coarser sand makes deeper water closer in.
 
 **What the form does not say.** Its slope is infinite at the waterline, so it cannot be the beach
@@ -904,20 +905,21 @@ retreat are all written in terms of.
 
 The build row (2026-11-12, night) opened the sources of the numbers stages A and B pin before
 pinning them, as the brief asked: for each, where it was found, how far it was read, the number
-taken and its range. **No primary paper could be read from its own pages**: Dean 1991
+taken and its range. **Of the primary papers none could be read from its own pages**: Dean 1991
 (the journal's server refused), Hallermeier 1981 (two copies refused or unreadable), Bujan, Cox
-and Masselink 2019 and the 2025 review that restates it (both refused), the Coastal Engineering
-Manual's Part III chapter 3 (fetched, but the PDF is encrypted and its table could not be
-extracted), Ferguson and Church 2004 (unreadable PDF). What was read instead, and what follows:
+and Masselink 2019 and the 2025 review that restates it (both refused), Ferguson and Church 2004
+(unreadable). The Coastal Engineering Manual's Part III chapter 3 was fetched as an encrypted
+PDF and its text recovered (the standard handler's RC4 with an empty user password, by a script
+in the row's scratch: the manual is a public U.S. Army document). What was read, and what follows:
 
 | Number | Where found | How far read | Taken | Standing |
 |---|---|---|---|---|
-| A against the grain | (1) Hong Kong's Port Works Design Manual, Part 5, Appendix A, "Equilibrium profile method", citing Dean 1991; (2) Bosboom and Stive's *Coastal Dynamics* 7.2.2, citing Dean 1987 | (1) the appendix whole, as text extracted from its PDF; (2) the section, through the page-reading tool (and by the design row before) | **A = 0.21 D^0.48**, D in mm: 0.097, 0.118, 0.151, 0.21 at 0.2, 0.3, 0.5, 1 mm | Pinned. Agrees within 5% with A = 0.51 w^0.44 from the fall speed (the table under "A from the grain", above) at the four sizes. Dean 1991's own table and the manual's Table III-3-3 not read; past 1 mm the law is extrapolated (shingle) |
+| A against the grain | (1) the **Coastal Engineering Manual**, EM 1110-2-1100 Part III, chapter 3 (30 April 2002), section III-3-3c and **Table III-3-3**, "based on Dean 1978b, values recomputed by Dean, June 2001"; (2) Hong Kong's *Port Works Design Manual*, Part 5, Appendix A, citing Dean 1991; (3) Bosboom and Stive's *Coastal Dynamics* 7.2.2, citing Dean 1987 | (1) the section and the table whole, and the chapter's worked examples; (2) the appendix whole; (3) the section | **The table itself**, 0.10 to 1.09 mm by hundredths, read linearly: 0.100, 0.125, 0.161, 0.210 at 0.2, 0.3, 0.5, 1 mm (the "memory" values above, now read). Past 1.09 mm its last value carried by D^0.48, the exponent of (2)'s A = 0.21 D^0.48 | Pinned. (2) and (3) agree with the table to 6% (0.118 against 0.125 at 0.3 mm). The manual says the table's four places are "for consistency", not accuracy, and names the x^(2/3) form's two limits, the infinite slope at the waterline and no bars; its gravity-corrected form with the face's slope m₀ was an image the text did not hold. Past 1.09 mm (shingle) the continuation is **authored** |
 | Fall speed | a sediment-transport draft and a course notebook that restate Ferguson and Church 2004 | the restatements | C₁ 18, C₂ 1.0 for natural grains, sieve diameters | Used only for the cross-check above; nothing in the code reads it |
 | Inner closure depth | the Coastal Wiki's "Closure depth", opened again by this row | the page | **2.28 H − 68.5 H² / (g T²)**, H exceeded 12 h a year (0.137% of the time) | Pinned, through the restatement. Typical 3 to 10 m per the shoreface page; this page gives Ocean City's 5 to 6 m |
 | `storm` 3 | the same page's Houston form, h_in = 6.75 H̄ | the page | 6.75 / 2.28 = 2.96, so the year's 12-hour height is about three times the mean where the two agree | Derived; a default inside the sketch's 1 to 6 |
 | Outer limit (the wave base's default) | the same page | the page | **0.018 H_s T_s √(g / (d50 (s − 1)))**, s 2.65 | Pinned. **The disagreement is settled against the page's example**: for 1 m, 6 s, 0.3 mm both printed forms give 15.2 m (the shoreface page's (H − 0.3σ) T √(g / 5000 d50) at σ = 0 gives 15.3 m), and the page's "about 11 m" for those inputs is what neither gives |
-| The wave base itself | a general reference on wave base (half the wavelength, motion under e^−π ≈ 4% of the surface's) and the Coastal Wiki's definition of the outer limit ("the maximum depth beyond which the annual median wave condition cannot initiate motion of the specified bed sediment") | both pages | the outer limit, not half the wavelength (50 m at 8 s), because it is where sand stops moving rather than where motion is first felt | Rule chosen from what was read. **20 m with no climate is authored** (a search summary put storm wave bases at 10 to 30 m; not read) |
+| The wave base itself | the Coastal Engineering Manual, III-3-3 (Hallermeier "defined two depths, the shallowest of which delineates the limit of intense bed activity and the deepest seaward of which there is expected to be little sand transport due to waves"); the Coastal Wiki's definition of the outer limit; a general reference on wave base (half the wavelength, motion under e^−π ≈ 4% of the surface's) | the manual's paragraph; both pages | the outer limit, not half the wavelength (50 m at 8 s), because it is where sand stops moving rather than where motion is first felt | Rule chosen from what was read. **20 m with no climate is authored** (a search summary put storm wave bases at 10 to 30 m; not read) |
 | Beach face | the 2025 review's restatement of Bujan and others' fit, seen only in a search's snippet | **snippet only** | 0.268 − 0.154 (D − 0.125)^−0.145, D in mm | **Authored**: the form is the abstract's (opened by the design row), the coefficients a snippet's and the design row's memory, which agree. Checked against what was opened: 0.07 at 0.3 mm beside the proof of concept's 0.075 and Vos and others' medians of 0.055 to 0.08; held to [0.01, 0.2] by Vos' range |
 | Run-up | Stockdon and others 2006, eq. 19 | already pinned on [the shore page](shore.md#the-run-up) | R₂ | Pinned there |
 | Breaker | linear theory's energy flux (deep group speed g T / 4π, shallow √(g h)) with γ = 0.78 (the CERC constants Lim, Hwang and Lee 2022 use, opened by the design row) | derivation | Hb = (√(γ g) T H0² cos α0 / 4π)^(2/5): 1.254 m for 1 m at 8 s | Derived. Komar and Gaughan's empirical 0.39 g^(1/5) (T H0²)^(2/5) (memory, not read) gives 1.41 m: the derivation is 11% under it |
@@ -963,6 +965,9 @@ Opened through the page-reading tool, 2026-11-12:
 
 Opened by the build row, 2026-11-12 (night):
 
+- U.S. Army Corps of Engineers, *Coastal Engineering Manual*, EM 1110-2-1100, Part III, chapter
+  3, "Cross-shore sediment transport processes", 30 April 2002 (Table III-3-3; III-3-3c; the
+  example problems' h* = 1.57 (H̄ + 5.6 σ)).
 - Civil Engineering and Development Department, Hong Kong, *Port Works Design Manual*, Part 5,
   Appendix A, "Fill quantity estimation" (A = 0.21 D^0.48 after Dean 1991; closure 1.75 H_s).
 - The Coastal Wiki's "Closure depth", again (the three inner forms, the outer limit, Ocean

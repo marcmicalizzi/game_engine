@@ -764,8 +764,9 @@ retreats until stage C, so `step_yr` is recorded and not yet stepped):
    deep-water height, then over as far again a straight blend to the ground (the outer
    shoreface: **authored**). Landward the face rises at tan β to the berm, high water plus
    Stockdon's R₂ of the deep-water wave on that face ([the run-up](../experiments/shore.md#the-run-up)),
-   and the berm runs level `berm_width_m` (authored, 30 m) behind the face's top. A = 0.21 D^0.48
-   (Dean 1991, D in mm); tan β = 0.268 − 0.154 (D − 0.125)^−0.145 held to [0.01, 0.2] (Bujan,
+   and the berm runs level `berm_width_m` (authored, 30 m) behind the face's top. A is the
+   Coastal Engineering Manual's Table III-3-3 (Dean's values from 0.10 to 1.09 mm, read linearly;
+   0.125 at 0.3 mm), carried past 1.09 mm by D^0.48 (authored: shingle is outside the table); tan β = 0.268 − 0.154 (D − 0.125)^−0.145 held to [0.01, 0.2] (Bujan,
    Cox and Masselink 2019's form; **its coefficients are authored**: read only in a search's
    snippet). `storm` defaults to 3 because Houston's 6.75 H̄ and Hallermeier's 2.28 He agree
    there.
