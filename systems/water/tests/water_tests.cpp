@@ -7,6 +7,9 @@
 #include <core/math/world.h>
 #include <domain/assets/gltf.h>
 #include <domain/gfx/visibility_resolve.h>
+#include <domain/gfx/water_flux.h>
+#include <domain/gfx/water_obstacle.h>
+#include <domain/gfx/water_ripples.h>
 #include <domain/gfx/water_spectrum.h>
 #include <domain/gfx/water_swash.h>
 #include <domain/scene_gen/scene_gen.h>
@@ -343,6 +346,530 @@ TEST_CASE("water: every stretch of shore knows its own slope") {
   Vector<f32> again(n * n);
   gfx::water_shore_slope_field(depth.data(), n, texel, again.data());
   CHECK(std::memcmp(slope.data(), again.data(), u64{n} * n * sizeof(f32)) == 0);
+}
+
+// ---- S102, second pass: the energy flux as a field (water_flux.h; docs/experiments/
+// shore-mechanics.md, "What the second pass built")
+// ------------------------------------------------
+
+namespace {
+
+// The flux's fields over a square map.
+struct Flux {
+  Vector<f32> tau;
+  Vector<f32> incident;
+  Vector<f32> kept;
+  Vector<f32> setup;
+};
+
+Flux flux_of(const Vector<f32>& depth, u32 n, f64 texel, f64 period, f64 height, Vec2 direction) {
+  Flux f;
+  f.tau.resize(n * n);
+  f.incident.resize(n * n);
+  f.kept.resize(n * n);
+  f.setup.resize(n * n);
+  gfx::water_arrival_field(depth.data(), n, texel, period, f.tau.data(), 3, direction);
+  gfx::water_flux_field(depth.data(), f.tau.data(), n, texel, period, height, f.incident.data(),
+                        f.kept.data(), f.setup.data());
+  return f;
+}
+
+// What breaking takes of the flux ratio q per metre along a ray at depth d (water_flux.h's balance
+// with the divergence taken out): (alpha / 4) f (gamma d)^2 Qb / (e0 cg0).
+f64 flux_loss(f64 q, f64 d, f64 period, f64 height) {
+  const f64 omega = 2.0 * 3.14159265358979323846 / period;
+  const f64 k0 = omega * omega / gfx::k_swash_g;
+  const f64 rms = gfx::water_group_rms();
+  const f64 e0 = rms * rms * height * height / 8.0;
+  const f64 cg0 = 0.5 * gfx::k_swash_g / omega;
+  const f64 limit = gfx::k_water_breaking_gamma * d;
+  const f64 crest = height * gfx::water_shoaling(gfx::water_wavenumber(k0, d), d) / limit;
+  return gfx::k_water_breaking_alpha / 4.0 / period * limit * limit *
+         gfx::water_group_breaking(crest * std::sqrt(std::max(q, 0.0))) / (e0 * cg0);
+}
+
+// q along a profile d(x) from x0 (where it is `q`) to x1 by fourth-order Runge-Kutta in steps of
+// about a centimetre: the balance's own solution, which the field's sweep is held against.
+// `variation` gathers the total variation of dq/dx along the way (`last` the slope it ended on):
+// **the sweep's bound**. One step of the sweep is an implicit Euler step of this equation, whose
+// right side never falls as q rises (more flux, more of the group breaking), so the steps do not
+// amplify each other's errors and the sweep is off by no more than the sum of its local ones. A
+// step takes h q'(end) for the integral of q' over the step, which is off by no more than h times
+// the variation of q' within the step — so the sweep by no more than **h times the total
+// variation of q'** so far. (First written as half of that, (h^2 / 2) |q''| a step, which holds
+// only where q'' hardly changes over a step; where the group's first wave starts to break q'
+// leaves zero as a square and the step is off by two thirds of h q', and the first run was 5e-5
+// over the half.)
+template <typename Profile>
+f64 flux_along(const Profile& d, f64 x0, f64 x1, f64 q, f64 period, f64 height, f64& variation,
+               f64& last) {
+  const u32 steps = static_cast<u32>(std::ceil((x1 - x0) / 0.01));
+  const f64 h = (x1 - x0) / static_cast<f64>(steps);
+  for (u32 s = 0; s < steps; ++s) {
+    const f64 x = x0 + h * static_cast<f64>(s);
+    const f64 k1 = -flux_loss(q, d(x), period, height);
+    const f64 k2 = -flux_loss(q + 0.5 * h * k1, d(x + 0.5 * h), period, height);
+    const f64 k3 = -flux_loss(q + 0.5 * h * k2, d(x + 0.5 * h), period, height);
+    const f64 k4 = -flux_loss(q + h * k3, d(x + h), period, height);
+    variation += std::fabs(k1 - last);
+    last = k1;
+    q += h * (k1 + 2.0 * k2 + 2.0 * k3 + k4) / 6.0;
+  }
+  return q;
+}
+
+}  // namespace
+
+TEST_CASE("water: the flux between two rays is kept as they turn: Kr on a plane beach is Snell's") {
+  // The Snell case's beach and train (1:20, the shore at x = 40 m, 4 s, 30 degrees off the
+  // normal), under a wave too low to break anywhere it is read: 2 cm.
+  const u32 n = 241;
+  const f64 texel = 0.25;
+  Vector<f32> depth(n * n);
+  for (u32 j = 0; j < n; ++j)
+    for (u32 i = 0; i < n; ++i)
+      depth[j * n + i] = static_cast<f32>((40.0 - texel * static_cast<f64>(i)) / 20.0);
+  const f64 period = gfx::swash_period(4.0);
+  const f64 omega = 2.0 * 3.14159265358979323846 / period;
+  const f64 k0 = omega * omega / gfx::k_swash_g;
+  const f64 source = std::min(gfx::k_water_train_deep_kd / k0, 0.8 * 2.0);
+  const f64 c_source = omega / gfx::water_wavenumber(k0, source);
+  const f64 sin0 = 0.5;
+  const f64 cos0 = std::sqrt(1.0 - sin0 * sin0);
+  const Flux f = flux_of(depth, n, texel, period, 0.02, Vec2{0.8660254f, 0.5f});
+  // Between two rays a distance b apart along the crest the flux E cg b is kept, and on straight
+  // contours b is cos(theta) of the spacing along the shore: H / (H0 Ks) = sqrt(cos(theta0) /
+  // cos(theta)), theta Snell's. Read where the wave has crossed the whole beach from the source,
+  // as the Snell case reads its angle.
+  f64 worst = 0.0, kept_worst = 0.0, least = 1.0;
+  for (u32 j = 110; j <= 220; j += 10) {
+    for (u32 i = 8; i + 8 < n; ++i) {
+      const u32 at = j * n + i;
+      const f64 d = static_cast<f64>(depth[at]);
+      if (!(d > 0.3 && d < 0.9 * source)) continue;
+      const f64 sin_t = sin0 * (omega / gfx::water_wavenumber(k0, d)) / c_source;
+      const f64 kr = std::sqrt(cos0 / std::sqrt(1.0 - sin_t * sin_t));
+      worst = std::max(worst, std::fabs(static_cast<f64>(f.incident[at]) / kr - 1.0));
+      kept_worst = std::max(kept_worst, std::fabs(static_cast<f64>(f.kept[at]) - 1.0));
+      least = std::min(least, kr);
+    }
+  }
+  MESSAGE("Kr on 1:20, 4 s, 30 degrees: the field within "
+          << worst << " of sqrt(cos0 / cos), "
+          << "which falls to " << least << "; kept within " << kept_worst << " of 1");
+  // The scheme telescopes the flux through each line of faces exactly, so what is left is the
+  // arrival's own angle (held to 0.7 degrees above: d(Kr) / Kr = tan(theta) d(theta) / 2, 0.0035
+  // at 30 degrees) and the half texel between a texel and its face (Kr falls 0.07 over 26 m:
+  // 0.0004): under 0.005.
+  CHECK(worst < 0.005);
+  CHECK(least < 0.95);       // and the turn is there to be seen
+  CHECK(kept_worst < 1e-6);  // nothing broke
+  // The same fields twice, to the bit.
+  const Flux g = flux_of(depth, n, texel, period, 0.02, Vec2{0.8660254f, 0.5f});
+  CHECK(std::memcmp(f.incident.data(), g.incident.data(), u64{n} * n * sizeof(f32)) == 0);
+  CHECK(std::memcmp(f.kept.data(), g.kept.data(), u64{n} * n * sizeof(f32)) == 0);
+  CHECK(std::memcmp(f.setup.data(), g.setup.data(), u64{n} * n * sizeof(f32)) == 0);
+}
+
+TEST_CASE(
+    "water: on a plane beach the flux is kept to the break and the group's breaking takes "
+    "it, and the level is set down then up") {
+  // 1:30 from 6 m deep to the shore at x = 180 m, the bank beyond: 401 texels of 0.5 m; a 1 m,
+  // 6 s sea straight on.
+  const u32 n = 401;
+  const f64 texel = 0.5;
+  const f64 height = 1.0;
+  const f64 period = gfx::swash_period(6.0);
+  const auto profile = [](f64 x) { return (180.0 - x) / 30.0; };
+  Vector<f32> depth(n * n);
+  for (u32 j = 0; j < n; ++j)
+    for (u32 i = 0; i < n; ++i)
+      depth[j * n + i] = static_cast<f32>(profile(texel * static_cast<f64>(i)));
+  const Flux f = flux_of(depth, n, texel, period, height, Vec2{1.0f, 0.0f});
+  const f64 omega = 2.0 * 3.14159265358979323846 / period;
+  const f64 k0 = omega * omega / gfx::k_swash_g;
+  const f64 rms = gfx::water_group_rms();
+  const u32 row = 200 * n;
+  // The source ends where the depth falls under min(1 / k0, 0.8 of the deepest).
+  const f64 source = std::min(gfx::k_water_train_deep_kd / k0, 0.8 * 6.0);
+  u32 first = 0;
+  while (static_cast<f64>(depth[row + first]) >= source)
+    ++first;
+  // (1) To the break the flux is the deep water's: nothing between two straight rays takes it.
+  // (2) From there it is the balance's own solution — dq/dx = -(alpha / 4) f (gamma d)^2 Qb / (e0
+  // cg0), Runge-Kutta in centimetres — to the sweep's order (`flux_along` has the bound: a texel
+  // times the total variation of dq/dx so far).
+  f64 before_worst = 0.0, surf_worst = 0.0, surf_over = 0.0, variation = 0.0, slope = 0.0;
+  u32 unbroken = 0, broken = 0;
+  f64 q_ref = 1.0;
+  for (u32 i = first; i < n; ++i) {
+    const f64 d = static_cast<f64>(depth[row + i]);
+    if (!(d > 0.15)) break;
+    const f64 x = texel * static_cast<f64>(i);
+    q_ref = flux_along(profile, x - texel, x, q_ref, period, height, variation, slope);
+    const f64 got = static_cast<f64>(f.kept[row + i]) * static_cast<f64>(f.kept[row + i]);
+    CHECK(static_cast<f64>(f.incident[row + i]) == doctest::Approx(1.0).epsilon(1e-6));
+    const f64 crest = height * gfx::water_shoaling(gfx::water_wavenumber(k0, d), d) /
+                      (gfx::k_water_breaking_gamma * d);
+    if (gfx::water_group_breaking(crest) == 0.0) {
+      before_worst = std::max(before_worst, std::fabs(got - 1.0));
+      ++unbroken;
+    } else {
+      // The bound, and f32's step on the square of a stored ratio.
+      const f64 err = std::fabs(got - q_ref);
+      surf_worst = std::max(surf_worst, err);
+      surf_over = std::max(surf_over, err - (texel * variation + 1e-6));
+      ++broken;
+    }
+  }
+  MESSAGE("plane beach 1:30, 1 m at 6 s: the flux within "
+          << before_worst << " of deep water's over " << unbroken
+          << " texels to the break; through the surf (" << broken << " texels) within "
+          << surf_worst << " of the balance's solution, the bound"
+          << " at the last of them " << texel * variation << "; " << q_ref
+          << " of it left at 15 cm");
+  CHECK(unbroken > 50u);
+  CHECK(broken > 50u);
+  CHECK(before_worst < 1e-6);
+  CHECK(surf_over <= 0.0);
+  // By the shore every wave of the group is a bore — the flux left carries each of them over
+  // gamma d, where the shader's cap draws the saturated bore it always drew. (The bore's
+  // dissipation goes as (gamma d)^2 and cannot take the flux as fast as the depth shoals away in
+  // the last decimetres: an eighth of the flux is still carried at 15 cm on this beach, and the
+  // cap takes it. A first expectation here, "under a twentieth is left", was a guess and not the
+  // model's; the model's statement is this one.)
+  const f64 last_crest = height * gfx::water_shoaling(gfx::water_wavenumber(k0, 0.15), 0.15) /
+                         (gfx::k_water_breaking_gamma * 0.15);
+  CHECK(gfx::water_group_breaking(last_crest * std::sqrt(q_ref)) == 1.0);
+  // (3) The mean level. Outside the surf it is Longuet-Higgins and Stewart's set-down under the
+  // group as drawn, -E k / sinh(2 k d), E = rms^2 H^2 Ks^2 / 8: the sweep integrates d(eta) =
+  // -d(S) / (d + eta) from the source's own set-down a texel at a time, and a one-sided step is
+  // off by no more than the level's change over it, texel * max |d(eta)/dx|; and the closed form
+  // itself leaves eta out beside d, which is worth eta^2 / d.
+  f64 down_worst = 0.0, down_steepest = 0.0, lowest = 0.0, shallowest = 6.0;
+  const auto set_down = [&](f64 d) {
+    const f64 k = gfx::water_wavenumber(k0, d);
+    const f64 hs = rms * height * gfx::water_shoaling(k, d);
+    return gfx::water_set_down(hs * hs / 8.0, k, d);
+  };
+  for (u32 i = first; i < n; ++i) {
+    const f64 d = static_cast<f64>(depth[row + i]);
+    const f64 crest = height * gfx::water_shoaling(gfx::water_wavenumber(k0, d), d) /
+                      (gfx::k_water_breaking_gamma * d);
+    // The closed form is the uncapped group's: read it where no wave of the group is capped.
+    if (!(crest < 0.9)) break;
+    down_worst = std::max(down_worst, std::fabs(static_cast<f64>(f.setup[row + i]) - set_down(d)));
+    down_steepest =
+        std::max(down_steepest, std::fabs(set_down(d) - set_down(d + texel / 30.0)) / texel);
+    lowest = std::min(lowest, set_down(d));
+    shallowest = std::min(shallowest, d);
+  }
+  const f64 down_bound = texel * down_steepest + lowest * lowest / shallowest;
+  MESSAGE("set-down to " << lowest << " m at " << shallowest << " m of depth: the field within "
+                         << down_worst << " m, bound " << down_bound << " m");
+  CHECK(lowest < -0.01);
+  CHECK(down_worst <= down_bound);
+  // Through the surf it rises, to a setup at the shore; and the balance closes: the sum of (d +
+  // eta) d(eta) over the profile is the stress lost, to the half d(eta)^2 a step the one-sided
+  // depth leaves.
+  u32 shore = first;
+  while (shore + 1 < n && depth[row + shore + 1] > 0.0f)
+    ++shore;
+  const f64 at_shore = static_cast<f64>(f.setup[row + shore]);
+  CHECK(at_shore > 0.02);
+  CHECK(at_shore < 0.5 * height);
+  // Over the bank it is its shoreline's.
+  CHECK(f.setup[row + shore + 20] == f.setup[row + shore]);
+  MESSAGE("setup at the shore " << at_shore << " m under a 1 m sea");
+}
+
+TEST_CASE(
+    "water: a wave that broke on a bar carries less across the trough, and breaks again "
+    "only where the depth asks") {
+  // 5 m deep, up 1:30 to a bar 0.8 m under the level and 10 m wide, down 1:15 into a trough 2.5 m
+  // deep and 30 m wide, then 1:30 to the shore: 0.5 m texels, a 1 m, 6 s sea straight on.
+  const f64 texel = 0.5;
+  const f64 height = 1.0;
+  const f64 period = gfx::swash_period(6.0);
+  const f64 bar0 = 126.0, bar1 = 136.0, trough0 = 161.5, trough1 = 191.5, shore_x = 266.5;
+  const auto profile = [&](f64 x) {
+    if (x < bar0) return 0.8 + (bar0 - x) / 30.0;
+    if (x < bar1) return 0.8;
+    if (x < trough0) return 0.8 + (x - bar1) / 15.0;
+    if (x < trough1) return 2.5;
+    return (shore_x - x) / 30.0;
+  };
+  const u32 n = 561;
+  Vector<f32> depth(n * n);
+  for (u32 j = 0; j < n; ++j)
+    for (u32 i = 0; i < n; ++i)
+      depth[j * n + i] = static_cast<f32>(profile(texel * static_cast<f64>(i)));
+  const Flux f = flux_of(depth, n, texel, period, height, Vec2{1.0f, 0.0f});
+  const f64 omega = 2.0 * 3.14159265358979323846 / period;
+  const f64 k0 = omega * omega / gfx::k_swash_g;
+  const u32 row = 280 * n;
+  const auto crest_at = [&](f64 d) {
+    return height * gfx::water_shoaling(gfx::water_wavenumber(k0, d), d) /
+           (gfx::k_water_breaking_gamma * d);
+  };
+  // On the bar the unbroken wave stands over the limit, and in the trough under it.
+  REQUIRE(crest_at(0.8) > 1.3);
+  REQUIRE(gfx::water_group_breaking(crest_at(2.5)) == 0.0);
+  // Across the trough the flux is one number: what the bar left.
+  f64 lo = 1.0, hi = 0.0;
+  for (u32 i = static_cast<u32>(trough0 / texel) + 2; i < static_cast<u32>(trough1 / texel) - 2;
+       ++i) {
+    const f64 q = static_cast<f64>(f.kept[row + i]) * static_cast<f64>(f.kept[row + i]);
+    lo = std::min(lo, q);
+    hi = std::max(hi, q);
+  }
+  // And it is the balance's own solution over the bar, to the sweep's order (the plane beach's
+  // bound).
+  const f64 source = std::min(gfx::k_water_train_deep_kd / k0, 0.8 * 5.0);
+  f64 x0 = 0.0;
+  while (profile(x0) >= source)
+    x0 += texel;
+  f64 variation = 0.0, slope = 0.0;
+  const f64 q_ref =
+      flux_along(profile, x0 - texel, trough0 + 5.0, 1.0, period, height, variation, slope);
+  MESSAGE("bar: " << lo << " of the flux crosses the trough (the balance's solution " << q_ref
+                  << ", bound " << texel * variation << "), the same to " << hi - lo
+                  << " across it; the wave there " << std::sqrt(lo) << " of the unbroken one");
+  CHECK(hi - lo < 1e-6);  // f32's own step on a ratio: nothing is taken, nothing given back
+  CHECK(lo < 0.7);        // it broke
+  CHECK(std::fabs(lo - q_ref) <= texel * variation + 1e-6);
+  // The wave it carries is under the limit across the trough — no foam is born there, where the
+  // closed form of the depth alone was whole again — and on the beach behind it breaks in
+  // shallower water than a wave that had met no bar.
+  f64 first_break = 0.0, plain_break = 0.0;
+  for (u32 i = static_cast<u32>(trough1 / texel); i < n; ++i) {
+    const f64 d = static_cast<f64>(depth[row + i]);
+    if (!(d > 0.05)) break;
+    const f64 here = crest_at(d);
+    if (plain_break == 0.0 && gfx::water_group_breaking(here) > 0.0) plain_break = d;
+    if (first_break == 0.0 &&
+        gfx::water_group_breaking(here * static_cast<f64>(f.kept[row + i])) > 0.0)
+      first_break = d;
+  }
+  MESSAGE("behind the bar the group's largest wave breaks at "
+          << first_break << " m; with no bar at " << plain_break << " m");
+  CHECK(first_break > 0.0);
+  CHECK(first_break < plain_break);
+}
+
+TEST_CASE("water: a wall casts a lee, and the sea beside it is the sea") {
+  // A shelf 2 m deep behind 5 m of deep water, a wall of dry ground 40 texels wide across the
+  // train's way, 161 texels of 0.5 m; a low 4 s train straight on, so nothing breaks.
+  const u32 n = 161;
+  const f64 texel = 0.5;
+  const u32 wall_x = 60, wall_lo = 60, wall_hi = 100;  // the wall: one texel thick, j in [60, 100)
+  Vector<f32> depth(n * n);
+  for (u32 j = 0; j < n; ++j) {
+    for (u32 i = 0; i < n; ++i) {
+      f32 d = i < 20 ? 5.0f : 2.0f;
+      if (i == wall_x && j >= wall_lo && j < wall_hi) d = -1.0f;
+      depth[j * n + i] = d;
+    }
+  }
+  const Flux f = flux_of(depth, n, texel, gfx::swash_period(4.0), 0.02, Vec2{1.0f, 0.0f});
+  // Far to the side of the wall the sea is the sea; nothing focuses on a level shelf.
+  f64 side_worst = 0.0, most = 0.0;
+  for (u32 i = 20; i < n; ++i) {
+    side_worst = std::max(side_worst, std::fabs(static_cast<f64>(f.incident[10 * n + i]) - 1.0));
+    for (u32 j = 0; j < n; ++j)
+      most = std::max(most, static_cast<f64>(f.incident[j * n + i]));
+  }
+  CHECK(side_worst < 1e-6);
+  (void)most;
+  // **What the wall took is missing behind it at every distance, and nothing else**: the scheme is
+  // conservative, so the flux through a whole line of faces across the map is the same line after
+  // line where nothing absorbs it — the sea's 161 texels' worth before the wall, and 121 behind it,
+  // however the rays that creep round its ends have spread what is left. The flux through a face is
+  // the upwind texel's incident^2 times the face's direction along x, the two texels' mean, as the
+  // sweep takes it. (The stored ratio's floor is worth 0.02^2 a shadowed texel: 0.02 over the
+  // wall.)
+  const auto travel_x = [&](u32 i, u32 j) {
+    const auto wet = [&](i64 x, i64 z) {
+      return x >= 0 && z >= 0 && x < i64{n} && z < i64{n} &&
+             depth[static_cast<u32>(z * i64{n} + x)] > 0.0f;
+    };
+    const auto tau = [&](i64 x, i64 z) {
+      return static_cast<f64>(f.tau[static_cast<u32>(z * i64{n} + x)]);
+    };
+    const i64 a = i, b = j;
+    f64 gx = 0.0, gz = 0.0;
+    if (wet(a - 1, b) && wet(a + 1, b))
+      gx = 0.5 * (tau(a + 1, b) - tau(a - 1, b));
+    else if (wet(a + 1, b))
+      gx = tau(a + 1, b) - tau(a, b);
+    else if (wet(a - 1, b))
+      gx = tau(a, b) - tau(a - 1, b);
+    if (wet(a, b - 1) && wet(a, b + 1))
+      gz = 0.5 * (tau(a, b + 1) - tau(a, b - 1));
+    else if (wet(a, b + 1))
+      gz = tau(a, b + 1) - tau(a, b);
+    else if (wet(a, b - 1))
+      gz = tau(a, b) - tau(a, b - 1);
+    const f64 len = std::sqrt(gx * gx + gz * gz);
+    return len > 1e-12 ? gx / len : 0.0;
+  };
+  const auto through = [&](u32 i) {
+    f64 sum = 0.0;
+    for (u32 j = 0; j < n; ++j) {
+      const f64 face = 0.5 * (travel_x(i, j) + travel_x(i + 1, j));
+      const f64 up = static_cast<f64>(f.incident[j * n + (face > 0.0 ? i : i + 1)]);
+      sum += face * up * up;
+    }
+    return sum;
+  };
+  const f64 width = static_cast<f64>(wall_hi - wall_lo);
+  const f64 before = through(40);
+  MESSAGE("a wall " << width << " texels wide: " << before << " texels' flux before it, "
+                    << through(wall_x + 3) << ", " << through(wall_x + 20) << " and "
+                    << through(wall_x + 60) << " at 3, 20 and 60 texels behind");
+  CHECK(before == doctest::Approx(static_cast<f64>(n)).epsilon(1e-6));
+  for (const u32 behind : {3u, 20u, 60u})
+    CHECK(std::fabs(through(wall_x + behind) - (static_cast<f64>(n) - width)) < 0.05);
+  // The lee is quiet behind the wall's middle and fills in with distance.
+  const f64 near_wall = static_cast<f64>(f.incident[80 * n + wall_x + 3]);
+  const f64 far_behind = static_cast<f64>(f.incident[80 * n + wall_x + 80]);
+  MESSAGE("behind the wall's middle: " << near_wall << " of the sea's height 3 texels behind, "
+                                       << far_behind << " at 80");
+  CHECK(near_wall < far_behind);
+  CHECK(far_behind < 1.0);
+}
+
+TEST_CASE(
+    "water: a wind sea's second train is the spectrum's own, eight waves in the peak's "
+    "seven") {
+  const f64 period = gfx::swash_period(4.7);
+  const gfx::WaterCross c = gfx::water_cross_of_sea(1.1, period, Vec2{1.0f, 0.0f}, 1u);
+  // The two trains hold the sea's energy between them, in JONSWAP's ratio of the spectrum at 8/7
+  // of the peak to the peak's: (8/7)^-5 exp(-(5/4)((7/8)^4 - 1)) 3.3^(exp(-(1/7)^2 / (2 0.09^2)) -
+  // 1) = 0.5129 * 1.6775 * 0.4252 = 0.3658.
+  CHECK(c.train_m * c.train_m + c.cross_m * c.cross_m == doctest::Approx(1.1 * 1.1).epsilon(1e-12));
+  CHECK(c.cross_m * c.cross_m / (c.train_m * c.train_m) == doctest::Approx(0.3658).epsilon(0.002));
+  CHECK(c.height_m == doctest::Approx(1.1));
+  // Eight of its waves in the first's seven, so the pair is periodic in the group and the water's
+  // clock holds a whole number of both.
+  CHECK(c.period_s * 8.0 == doctest::Approx(period * 7.0).epsilon(1e-12));
+  const f64 turns = gfx::k_swash_clock_s / c.period_s;
+  CHECK(std::fabs(turns - std::floor(turns + 0.5)) < 1e-9);
+  // Turned by the half width at half maximum of Donelan and Banner's sech^2(beta theta) at 8/7 of
+  // the peak: acosh(sqrt 2) / (2.28 (8/7)^-1.3) = 0.8814 / 1.9166 = 26.35 degrees; the seed picks
+  // the side.
+  const f64 angle = std::atan2(static_cast<f64>(c.direction.y), static_cast<f64>(c.direction.x)) *
+                    57.29577951308232;
+  CHECK(angle == doctest::Approx(26.35).epsilon(0.005));
+  const gfx::WaterCross other = gfx::water_cross_of_sea(1.1, period, Vec2{1.0f, 0.0f}, 2u);
+  CHECK(other.direction.y == doctest::Approx(-static_cast<f64>(c.direction.y)));
+  // Beside a swell the second train is the wind's peak wave, its period moved onto the group.
+  const gfx::WaterCross s =
+      gfx::water_cross_of_swell(0.9, gfx::swash_period(10.0), 1.1, 4.7, Vec2{0.0f, 1.0f});
+  CHECK(s.train_m == doctest::Approx(0.9));
+  CHECK(s.cross_m == doctest::Approx(1.1));
+  const f64 waves = 7.0 * gfx::swash_period(10.0) / s.period_s;
+  CHECK(std::fabs(waves - std::floor(waves + 0.5)) < 1e-9);
+  CHECK(s.period_s == doctest::Approx(4.7).epsilon(0.05));
+  CHECK(s.height_m == doctest::Approx(std::sqrt(0.9 * 0.9 + 1.1 * 1.1)));
+}
+
+// S102's stage 3, as far as it is built: the closed forms of a disc in the swash (water_obstacle.h;
+// shore-mechanics.md, "Stage 3: a shore of rock, and a boulder in the swash"). Nothing draws them.
+TEST_CASE(
+    "water: the way round a boulder in the swash is the tangent's, and the pile is the "
+    "front's speed head") {
+  gfx::WaterDisc disc;
+  disc.x = 3.0;
+  disc.z = -2.0;
+  disc.radius = 0.8;
+  const f64 r = disc.radius;
+  const f64 wx = 0.6, wz = 0.8;   // the sheet's way (unit)
+  const f64 ax = -0.8, az = 0.6;  // across it
+  const auto at = [&](f64 along, f64 across) {
+    return gfx::water_disc_detour(disc, wx, wz, disc.x + along * wx + across * ax,
+                                  disc.z + along * wz + across * az);
+  };
+  const f64 half_pi = 1.5707963267948966;
+  // Touching the disc's back, the front has gone a quarter of the way round less the radius it
+  // would have crossed; before the disc, beside it and on the shadow's edge it has gone no further.
+  CHECK(at(r, 0.0) == doctest::Approx((half_pi - 1.0) * r).epsilon(1e-12));
+  CHECK(at(-0.5, 0.2) == 0.0);
+  CHECK(at(2.0, 1.2 * r) == 0.0);
+  CHECK(at(2.0, r) == 0.0);
+  CHECK(at(2.0, 0.999999 * r) < 1e-6);
+  // Far behind, the lee closes as r^2 / (2 rho).
+  CHECK(at(40.0 * r, 0.0) == doctest::Approx(r / 80.0).epsilon(1e-3));
+  // Against a scan of every way round: to the disc's side, a quarter turn or less along its back,
+  // and straight on from wherever the straight line leaves the disc outward; less the open
+  // beach's way to the same place.
+  f64 worst = 0.0;
+  for (const f64 along : {0.3, 0.9, 1.5, 4.0}) {
+    for (const f64 across : {0.0, 0.25, 0.5, 0.75}) {
+      if (along * along + across * across < r * r) continue;
+      f64 best = 1e30;
+      const u32 steps = 20000;
+      for (u32 s = 0; s <= steps; ++s) {
+        const f64 turn = half_pi * static_cast<f64>(s) / static_cast<f64>(steps);
+        const f64 lx = r * std::sin(turn);  // along the way, from the side round the back
+        const f64 lc = r * std::cos(turn);  // across it, on the point's side
+        if ((along - lx) * lx + (across - lc) * lc < 0.0) continue;  // would cut through the disc
+        best = std::min(best, r + r * turn + std::hypot(along - lx, across - lc));
+      }
+      worst = std::max(worst, std::fabs(best - (along + r) - at(along, across)));
+    }
+  }
+  MESSAGE("the detour round a disc: the closed form within " << worst << " m of the scan");
+  CHECK(worst < 1e-7);
+  // The pile against the face is what the front had left to climb: u^2 / 2g with u^2 = 2 g E.
+  CHECK(gfx::water_disc_pile(gfx::swash_front_speed(0.3), 1.0) == doctest::Approx(0.3));
+  CHECK(gfx::water_disc_pile(gfx::swash_front_speed(0.3), 0.5) == doctest::Approx(0.075));
+  CHECK(gfx::water_disc_pile(gfx::swash_front_speed(0.3), -0.2) == 0.0);
+  // A rock lower than the pile is overtopped; one that stands over it is climbed if its face is a
+  // ramp and throws the sheet if it is steep (xi = slope / sqrt(H / L0): 5.6 and 1.1 under the
+  // beach scene's 1.1 m, 4.7 s sea, either side of Battjes's 3.3).
+  disc.top_m = 0.2;
+  CHECK(gfx::water_disc_meeting(disc, gfx::swash_front_speed(0.3), 1.0, 1.1, 4.7) ==
+        gfx::WaterDiscMeeting::Overtops);
+  disc.top_m = 1.0;
+  CHECK(gfx::water_disc_meeting(disc, gfx::swash_front_speed(0.3), 1.0, 1.1, 4.7) ==
+        gfx::WaterDiscMeeting::Thrown);
+  CHECK(gfx::water_disc_meeting(disc, gfx::swash_front_speed(0.3), 0.2, 1.1, 4.7) ==
+        gfx::WaterDiscMeeting::RunsUp);
+}
+
+// S102's stage 4, as far as it is built: the published forms of a wave ripple on a sandy bed
+// (water_ripples.h; shore-mechanics.md, "Stage 4: the sand"). Nothing draws them.
+TEST_CASE("water: wave ripples on a sandy bed follow the orbit at the bed and the grain") {
+  // By hand, a 0.2 m, 4 s wave over 3 m of water on 0.3 mm sand: k0 = (2 pi / 4)^2 / g = 0.2515,
+  // k d tanh(k d) = 0.7546 at k d = 0.994, sinh = 1.166; A = 0.1 / 1.166 = 0.0857 m, U0 = A omega =
+  // 0.1347 m/s; psi = 0.01814 / (1.65 * 9.81 * 0.0003) = 3.74; lambda = A (2.2 - 0.345 * 3.74^0.34)
+  // = 0.0857 * 1.660 = 0.142 m; A / D = 286, far under 5000, so the steepness is the whole 0.15.
+  const gfx::WaveRipple r = gfx::water_wave_ripple(0.2, 4.0, 3.0, 3e-4);
+  CHECK(r.orbit_m == doctest::Approx(0.0857).epsilon(0.01));
+  CHECK(r.mobility == doctest::Approx(3.74).epsilon(0.02));
+  CHECK(r.length_m == doctest::Approx(0.142).epsilon(0.02));
+  CHECK(r.height_m == doctest::Approx(0.15 * r.length_m).epsilon(1e-9));
+  // Long and low under a sea offshore, shorter as the depth falls and the bed is worked harder,
+  // gone under the surf; short and sharp under a lake's wavelets; none on a bed coarser than sand.
+  const gfx::WaveRipple deep = gfx::water_wave_ripple(1.1, 4.7, 5.0, 3e-4);
+  const gfx::WaveRipple shallow = gfx::water_wave_ripple(1.1, 4.7, 3.0, 3e-4);
+  const gfx::WaveRipple surf = gfx::water_wave_ripple(1.1, 4.7, 1.2, 3e-4);
+  const gfx::WaveRipple lake = gfx::water_wave_ripple(0.13, 1.34, 0.5, 3e-4);
+  MESSAGE("ripples under 1.1 m at 4.7 s on 0.3 mm sand: "
+          << deep.length_m << " m at 5 m (psi " << deep.mobility << "), " << shallow.length_m
+          << " m at 3 m (psi " << shallow.mobility << "), " << surf.length_m << " m at 1.2 m (psi "
+          << surf.mobility << "); under a lake's 0.13 m at 1.34 s over 0.5 m " << lake.length_m
+          << " m (psi " << lake.mobility << ")");
+  CHECK(deep.mobility < shallow.mobility);
+  CHECK(shallow.mobility < surf.mobility);
+  CHECK(deep.length_m > shallow.length_m);
+  CHECK(shallow.length_m > 0.0);
+  CHECK(surf.length_m == 0.0);  // psi past where Nielsen's form reaches zero
+  CHECK(lake.length_m > 0.02);
+  CHECK(lake.length_m < 0.12);
+  CHECK(gfx::water_wave_ripple(0.2, 4.0, 3.0, 5e-3).length_m == 0.0);
+  CHECK(gfx::water_wave_ripple(0.0, 4.0, 3.0, 3e-4).length_m == 0.0);
 }
 
 TEST_CASE("water: a body with a wind has its mesh grown over the bank, one without keeps its own") {

@@ -673,10 +673,11 @@ TEST_CASE("water: a crest that crosses a bay's depth contours turns no corner") 
   gfx::water_arrival_field(depth.data(), n, texel, static_cast<f64>(s.period_s), arrival.data());
   Vector<f32> field(gfx::k_water_field_channels * n * n);
   for (u32 i = 0; i < n * n; ++i) {
-    field[4 * i] = depth[i];
-    field[4 * i + 1] = arrival[i];
-    field[4 * i + 2] = 1.0f;
-    field[4 * i + 3] = 0.0f;
+    for (u32 c = 0; c < gfx::k_water_field_channels; ++c)
+      field[gfx::k_water_field_channels * i + c] = 0.0f;  // no slope, no second train, no flux
+    field[gfx::k_water_field_channels * i] = depth[i];
+    field[gfx::k_water_field_channels * i + 1] = arrival[i];
+    field[gfx::k_water_field_channels * i + 2] = 1.0f;
   }
   // Stage A's read: the bilinear's own gradient in the cell.
   const auto bilinear_grad = [&](f64 px, f64 pz, f64& gx, f64& gz) {

@@ -10,6 +10,7 @@
 #include <domain/gfx/bindless.h>
 #include <domain/gfx/commands.h>
 #include <domain/gfx/pipeline.h>
+#include <domain/gfx/water_flux.h>
 #include <domain/gfx/water_spectrum.h>
 #include <domain/gfx/water_swash.h>
 #include <domain/gfx/wet_ground.h>
@@ -561,6 +562,7 @@ struct WaterSwashNumbers {
   // S102: the train's direction over deep water; with a swell, the wind sea's peak wavenumber.
   Vec2 direction{1.0f, 0.0f};
   f64 wind_k0 = 0.0;
+  gfx::SwashWave wind_wave{};  // with a swell: the wind's own wave, the second train (second pass)
 };
 WaterSwashNumbers water_swash_numbers(const SceneWater& water) {
   WaterSwashNumbers n;
@@ -584,6 +586,7 @@ WaterSwashNumbers water_swash_numbers(const SceneWater& water) {
     } else {
       n.wind_k0 = 1.0;  // no wind sea to calm: any positive number marks the swell
     }
+    n.wind_wave = n.wave;
     n.wave.height_m = static_cast<f64>(body.swell_height_m);
     n.wave.period_s = std::min(static_cast<f64>(body.swell_period_s), 30.0);
     const f32 a = radians(body.swell_direction_deg);
@@ -638,43 +641,30 @@ void water_surface_of(const SceneWater& water, const WaterSwashNumbers& n, gfx::
     for (u32 i = 0; i < gfx::k_water_waves; ++i)
       out.waves[i] = water.waves[i];
   }
-  const u32 count = map.size * map.size;
-  Vector<f32> depth(count);
-  const f64 range = static_cast<f64>(map.depth_max) + static_cast<f64>(map.bank_max);
-  for (u32 i = 0; i < count; ++i)
-    depth[i] = static_cast<f32>(static_cast<f64>(map.texels[i]) / 65535.0 * range -
-                                static_cast<f64>(map.bank_max));
-  // S102 (water_swash.h): the train comes from a direction, and the field's fourth channel is each
-  // texel's own stretch of shore's slope, from which a pixel takes its run-up and its sheet's life.
+  // S102 (water_swash.h, water_flux.h): the train comes from a direction, each texel carries its
+  // own stretch of shore's slope, and since the second pass the field is built in the water's own
+  // header — with a second train beside the first (the sea's own second component, or the wind's
+  // peak wave beside a swell) and the energy flux's fields, from which a place takes its height.
   out.swell = static_cast<f32>(n.wind_k0);
   out.reach_scale = static_cast<f32>(gfx::swash_reach_scale(n.wave.height_m, n.wave.period_s));
   out.reach_cap =
       static_cast<f32>(gfx::swash_reach_cap(n.wave.height_m, static_cast<f64>(map.bank_max)));
-  Vector<f32> arrival(count);
-  gfx::water_arrival_field(depth.data(), map.size, static_cast<f64>(map.texel_m), period,
-                           arrival.data(), 3, n.direction);
-  Vector<f32> shore_slope(count);
-  gfx::water_shore_slope_field(depth.data(), map.size, static_cast<f64>(map.texel_m),
-                               shore_slope.data());
-  // The share of the body's fetch the wind has blown over at each texel (a closed body's lee): the
-  // fetch field over the fetch the table was grown at. An open body's sea comes in grown.
-  Vector<f32> grown(count);
-  if (body.open || !(n.fetch_m > 0.0)) {
-    for (u32 i = 0; i < count; ++i)
-      grown[i] = 1.0f;
-  } else {
-    gfx::water_fetch_field(depth.data(), map.size, static_cast<f64>(map.texel_m), out.wind,
-                           grown.data());
-    for (u32 i = 0; i < count; ++i)
-      grown[i] = static_cast<f32>(std::clamp(static_cast<f64>(grown[i]) / n.fetch_m, 0.0, 1.0));
-  }
-  field.resize(gfx::k_water_field_channels * count);
-  for (u32 i = 0; i < count; ++i) {
-    field[4 * i] = depth[i];
-    field[4 * i + 1] = arrival[i];
-    field[4 * i + 2] = grown[i];
-    field[4 * i + 3] = shore_slope[i];
-  }
+  const gfx::WaterCross cross =
+      n.wind_k0 > 0.0
+          ? gfx::water_cross_of_swell(n.wave.height_m, period, n.wind_wave.height_m,
+                                      n.wind_wave.period_s, water.shading.direction)
+          : gfx::water_cross_of_sea(n.wave.height_m, period, n.direction, water.shading.seed);
+  gfx::WaterFieldDesc desc;
+  desc.texels = map.texels.data();
+  desc.size = map.size;
+  desc.texel_m = static_cast<f64>(map.texel_m);
+  desc.depth_max = static_cast<f64>(map.depth_max);
+  desc.bank_max = static_cast<f64>(map.bank_max);
+  desc.period_s = period;
+  desc.direction = n.direction;
+  desc.fetch_m = body.open ? 0.0 : n.fetch_m;
+  desc.wind = out.wind;
+  gfx::water_surface_field(desc, cross, out, field);
 }
 
 }  // namespace
