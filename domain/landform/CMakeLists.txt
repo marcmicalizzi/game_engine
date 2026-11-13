@@ -25,11 +25,11 @@ engine_schema_library(NAME landform_schemas SCHEMAS schemas/landform.schema DEPS
 
 engine_module(NAME landform LAYER domain OPTIONAL
   DEPS base containers math hash json schema io jobs gfx schemas landform_schemas
-  SOURCES src/landform.cpp src/files.cpp)
+  SOURCES src/landform.cpp src/coast.cpp src/files.cpp)
 
 engine_module_tests(NAME landform
   SOURCES tests/landform_tests.cpp tests/rivers_tests.cpp tests/ice_tests.cpp
-          tests/determinism_tests.cpp tests/size_table.cpp)
+          tests/coast_tests.cpp tests/determinism_tests.cpp tests/size_table.cpp)
 
 engine_module_bench(NAME landform
   SOURCES bench/landform_bench.cpp)

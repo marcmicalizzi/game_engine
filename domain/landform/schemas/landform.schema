@@ -26,12 +26,69 @@ struct Edges @version(1) {
 /// The sea: a level rivers cut to and no lower, and a bed that is ground like any other (it
 /// diffuses and holds the critical slope). With no starting heightfield the bed falls from the
 /// level, `shelf_m` in from a sea edge, to `depth_m` below it at the edge.
-struct Sea @version(1) {
+struct Sea @version(2) {
   level_m: f64 = 0
   /// 0 to 1,000,000 m.
   shelf_m: f64 = 2000
   /// 0 to 11,000 m.
   depth_m: f64 = 200
+  /// The depth below the level to which the sea's bed may be built by what the rivers bring
+  /// (docs/experiments/coast.md, "The long run: the sea fills to its wave base and no higher"):
+  /// above it the bed is the waves' to move, and nothing a river carries settles there in the
+  /// long run. 0 to 200 m. Absent: Hallermeier's outer limit of the coast's wave climate where
+  /// the sketch has one, else 20 m (authored). 0 lets the sea fill to its level, as a lake does.
+  wave_base_m: f64? @since(2) @unit(m)
+  /// The spring tidal range, 0 to 15 m: high water stands half of it above the level. A water
+  /// body's own `tide_m` is an amplitude, half of this; the two are set together.
+  tide_m: f64 = 0 @since(2) @unit(m)
+}
+
+/// One entry of the wave climate that arrives from the open sea (docs/experiments/coast.md,
+/// "Inputs"): deep-water waves from a direction for a share of the year. It reaches a shore only
+/// through a `Sea` edge.
+struct Wave @version(1) {
+  /// The direction the waves come from, degrees clockwise from north (-z): 0 to 360. Quantized
+  /// to the stand's 32 azimuths.
+  from_deg: f64
+  /// The deep-water significant height, 0 to 30 m.
+  height_m: f64 @unit(m)
+  /// The period, 1 to 30 s.
+  period_s: f64 @unit(s)
+  /// The share of the year, 0 to 1; the entries' shares sum to 1 or less.
+  share: f64 = 1
+}
+
+/// A closed polyline of land (docs/experiments/coast.md, "Inputs"): the plan of an island or a
+/// coast. Three points or more; the last joins the first.
+struct Outline @version(1) {
+  points: Point[]
+}
+
+/// The coast (docs/experiments/coast.md): an outline of land the uplift and the starting bed are
+/// made from, and the stand of the sea after the last step, in which each shore takes the wave
+/// climate that reaches it and its sand comes to rest in an equilibrium section.
+struct Coast @version(1) {
+  /// The land's plan. Uplift rises from nothing at a line to the sketch's rate `outline_reach_m`
+  /// inside it and is nothing outside; with no starting ground, the bed outside is the
+  /// equilibrium shoreface of `grain_mm` down to the wave base and a shelf beyond, falling to
+  /// the sea's `depth_m` over its `shelf_m`.
+  outline: Outline[]
+  /// 0 to 1,000 km. Absent: the sketch's border reach.
+  outline_reach_m: f64? @unit(m)
+  /// The waves that arrive from the open sea, through `Sea` edges. None: the stand has no
+  /// climate and does not run.
+  waves: Wave[]
+  /// The beach's sediment, its median diameter: 0.15 to 64 mm (sand under 2 mm, shingle above).
+  grain_mm: f64 = 0.3
+  /// The height exceeded twelve hours a year over the climate's significant height, for the
+  /// closure depth: 1 to 6. 3 is what Hallermeier's and Houston's closure depths agree at.
+  storm: f64 = 3
+  /// How far the berm runs landward of the beach face's top, 0 to 1,000 m (authored).
+  berm_width_m: f64 = 30 @unit(m)
+  /// The stand's years after the last step, 0 (no stand) to 20,000, and its step: 1 to the
+  /// stand. Stage B places the sand at equilibrium once; nothing retreats until stage C.
+  stand_yr: i64 = 6000
+  step_yr: i64 = 100
 }
 
 /// A point in the world's frame, metres.
@@ -185,7 +242,7 @@ struct Ice @version(3) {
 
 /// The region sketch `engine-content landform` reads (landform.md, "The sketch"). Every range is
 /// checked, and a sketch outside one is refused with a sentence naming the field.
-struct Sketch @version(3) {
+struct Sketch @version(4) {
   /// Points a row (x) and rows (z), each 8 to 16,384.
   width: u32
   height: u32
@@ -245,6 +302,8 @@ struct Sketch @version(3) {
   channel_width_m: f64 = 5 @since(3) @unit(m)
   /// An ice age, or none.
   ice: Ice? @since(3)
+  /// A coast, or none (docs/experiments/coast.md). It needs a sea.
+  coast: Coast? @since(4)
   seed: u64 = 1
   /// The starting plane's roughness, metres either way: 0 to 100.
   roughness_m: f64 = 1
@@ -262,12 +321,13 @@ struct Sketch @version(3) {
 struct FieldEntry @version(1) {
   /// `drainage_area`, `receiver`, `slope`, `erosion_rate`, `fill`, `sediment`, `resistance`,
   /// `discharge`, `channel_width`, `ice`, `till`, `ice_max`, `moraine`, `moraine_crest`,
-  /// `lakebed`, `rock_floor`.
+  /// `lakebed`, `rock_floor`, and the coast's `shore_distance`, `substrate`, `grain`,
+  /// `exposure`, `wave_direction`, `beach_slope`, `berm`.
   name: string
   /// The raw grid, relative to the header: little-endian, rows of x in order of z, the
   /// heightfield's own lattice.
   file: string
-  /// `u8`, `u32` or `i32`.
+  /// `u8`, `u16`, `u32` or `i32`.
   type: string
   /// What one unit is, in words (landform.md, "The field file").
   unit: string
@@ -294,17 +354,19 @@ struct TerrainHeightfield @version(1) {
 }
 
 /// The header of the fields written beside a solved heightfield (landform.md, "The field file"):
-/// `engine.landform.fields/4`. Every field is on the heightfield's lattice, point for point.
-struct Fields @version(1) {
+/// `engine.landform.fields/5`. Every field is on the heightfield's lattice, point for point.
+struct Fields @version(2) {
   /// "engine.landform.fields".
   format: string
-  version: u32 = 4
+  version: u32 = 5
   width: u32
   height: u32
   spacing_mm: i64
   origin_mm: i64[2]
   /// The sea's level, whole millimetres; absent, the region has no sea.
   sea_level_mm: i64?
+  /// The sea's spring tidal range, whole millimetres; absent with no sea.
+  tide_mm: i64? @since(2)
   /// The heightfield's header, relative to this one.
   heightfield: string
   /// `hash_bytes` over the sketch's canonical JSON, 16 hex digits, and the solver's version: what

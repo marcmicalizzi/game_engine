@@ -1,8 +1,11 @@
 # The coast as a landform: the grounding, and the design of a coast process (W128)
 
-Roadmap W128, 2026-11-12. **Pages only: nothing on this page is built.** It grounds what a coast is
-in the published models, and designs the process the [landform solver](../subsystems/landform.md)
-will run to make one. The build is its own row and starts from here.
+Roadmap W128, 2026-11-12. It grounds what a coast is in the published models, and designs the
+process the [landform solver](../subsystems/landform.md) runs to make one. **Stages A and B are
+built** (2026-11-13: the wave base, the outline, the tide, the stand's frame, exposure, the
+section and seven fields; [the coast](../subsystems/landform.md#the-coast) says what the code
+does, [what the build opened](#what-the-build-opened-w128-stages-a-and-b) what was read before a
+number was pinned); stages C to G are design.
 
 **Why.** The solver ends at the sea's level. Its sea takes everything its rivers bring, up to that
 level ([deposition](../subsystems/landform.md#deposition)), so an island with deposition on builds a
@@ -892,9 +895,40 @@ retreat are all written in terms of.
   and the wave that moves a block; a lake terrace's width against fetch as a formula; the share
   of a river's load that is sand (the default 0.3 is a placeholder), and of a cliff's loss that
   stays on the shore (the same).
-- **Disagreements left standing**: Hallermeier's outer depth by the formula (15 m) and by the
-  page's worked example (about 11 m) for the same inputs; the tombolo's threshold between
-  0.67 and 2 by source.
+- **Disagreements left standing**: the tombolo's threshold between 0.67 and 2 by source.
+  Hallermeier's outer depth by the formula (15 m) against the page's worked example (about
+  11 m) is settled by the build row against the example ([what the build
+  opened](#what-the-build-opened-w128-stages-a-and-b)).
+
+## What the build opened (W128, stages A and B)
+
+The build row (2026-11-12, night) opened the sources of the numbers stages A and B pin before
+pinning them, as the brief asked: for each, where it was found, how far it was read, the number
+taken and its range. **No primary paper could be read from its own pages**: Dean 1991
+(the journal's server refused), Hallermeier 1981 (two copies refused or unreadable), Bujan, Cox
+and Masselink 2019 and the 2025 review that restates it (both refused), the Coastal Engineering
+Manual's Part III chapter 3 (fetched, but the PDF is encrypted and its table could not be
+extracted), Ferguson and Church 2004 (unreadable PDF). What was read instead, and what follows:
+
+| Number | Where found | How far read | Taken | Standing |
+|---|---|---|---|---|
+| A against the grain | (1) Hong Kong's Port Works Design Manual, Part 5, Appendix A, "Equilibrium profile method", citing Dean 1991; (2) Bosboom and Stive's *Coastal Dynamics* 7.2.2, citing Dean 1987 | (1) the appendix whole, as text extracted from its PDF; (2) the section, through the page-reading tool (and by the design row before) | **A = 0.21 D^0.48**, D in mm: 0.097, 0.118, 0.151, 0.21 at 0.2, 0.3, 0.5, 1 mm | Pinned. Agrees within 5% with A = 0.51 w^0.44 from the fall speed (the table under "A from the grain", above) at the four sizes. Dean 1991's own table and the manual's Table III-3-3 not read; past 1 mm the law is extrapolated (shingle) |
+| Fall speed | a sediment-transport draft and a course notebook that restate Ferguson and Church 2004 | the restatements | C₁ 18, C₂ 1.0 for natural grains, sieve diameters | Used only for the cross-check above; nothing in the code reads it |
+| Inner closure depth | the Coastal Wiki's "Closure depth", opened again by this row | the page | **2.28 H − 68.5 H² / (g T²)**, H exceeded 12 h a year (0.137% of the time) | Pinned, through the restatement. Typical 3 to 10 m per the shoreface page; this page gives Ocean City's 5 to 6 m |
+| `storm` 3 | the same page's Houston form, h_in = 6.75 H̄ | the page | 6.75 / 2.28 = 2.96, so the year's 12-hour height is about three times the mean where the two agree | Derived; a default inside the sketch's 1 to 6 |
+| Outer limit (the wave base's default) | the same page | the page | **0.018 H_s T_s √(g / (d50 (s − 1)))**, s 2.65 | Pinned. **The disagreement is settled against the page's example**: for 1 m, 6 s, 0.3 mm both printed forms give 15.2 m (the shoreface page's (H − 0.3σ) T √(g / 5000 d50) at σ = 0 gives 15.3 m), and the page's "about 11 m" for those inputs is what neither gives |
+| The wave base itself | a general reference on wave base (half the wavelength, motion under e^−π ≈ 4% of the surface's) and the Coastal Wiki's definition of the outer limit ("the maximum depth beyond which the annual median wave condition cannot initiate motion of the specified bed sediment") | both pages | the outer limit, not half the wavelength (50 m at 8 s), because it is where sand stops moving rather than where motion is first felt | Rule chosen from what was read. **20 m with no climate is authored** (a search summary put storm wave bases at 10 to 30 m; not read) |
+| Beach face | the 2025 review's restatement of Bujan and others' fit, seen only in a search's snippet | **snippet only** | 0.268 − 0.154 (D − 0.125)^−0.145, D in mm | **Authored**: the form is the abstract's (opened by the design row), the coefficients a snippet's and the design row's memory, which agree. Checked against what was opened: 0.07 at 0.3 mm beside the proof of concept's 0.075 and Vos and others' medians of 0.055 to 0.08; held to [0.01, 0.2] by Vos' range |
+| Run-up | Stockdon and others 2006, eq. 19 | already pinned on [the shore page](shore.md#the-run-up) | R₂ | Pinned there |
+| Breaker | linear theory's energy flux (deep group speed g T / 4π, shallow √(g h)) with γ = 0.78 (the CERC constants Lim, Hwang and Lee 2022 use, opened by the design row) | derivation | Hb = (√(γ g) T H0² cos α0 / 4π)^(2/5): 1.254 m for 1 m at 8 s | Derived. Komar and Gaughan's empirical 0.39 g^(1/5) (T H0²)^(2/5) (memory, not read) gives 1.41 m: the derivation is 11% under it |
+| Cliff retreat | Sunamura's 2015 review (J-STAGE) | to about three fifths, by this row's research sub-agent | dX/dt = C ln(F_W / F_R) (Sunamura 1977), and K (ρ g H_f / S_c − ε) from Sunamura and others 2014 | Stage C's; not used here |
+
+**Authored in stages A and B, each said where it is used**: the 20 m wave base with no climate;
+the face's coefficients; the blend from the closure depth to the ground over as far again; the
+berm's width behind the face, 30 m. **Not built that the design named for these stages**: the
+delta exception at a mouth whose river beats the waves (it needs a river's sand flux against
+Nienhuis' Q_wave, and the sketch's river sand share is a placeholder); the climate recorded in
+the field file; the face flattened by exposure; a wind's sea over the lattice's fetch.
 
 ## Sources
 
@@ -926,5 +960,15 @@ Opened through the page-reading tool, 2026-11-12:
 - The forest proof of concept's account of building a coast by hand, as text: its solver-needs
   page ("Added by v42", sections 3.13 and 3.14) and its islands part's README. Leads and the
   statement of the need, not sources.
+
+Opened by the build row, 2026-11-12 (night):
+
+- Civil Engineering and Development Department, Hong Kong, *Port Works Design Manual*, Part 5,
+  Appendix A, "Fill quantity estimation" (A = 0.21 D^0.48 after Dean 1991; closure 1.75 H_s).
+- The Coastal Wiki's "Closure depth", again (the three inner forms, the outer limit, Ocean
+  City's example).
+- D. K. Stauble, "A review of the role of grain size in beach nourishment projects" (U.S. Army
+  Engineer Research and Development Center): A rises with the grain; nothing numeric taken.
+- Restatements of Ferguson and Church 2004's constants, and a general reference on wave base.
 
 Named above and not opened: see the section before this one.

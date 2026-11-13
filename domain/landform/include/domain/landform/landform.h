@@ -52,10 +52,54 @@ namespace engine::landform {
 inline constexpr const char* k_determinism = "derived";
 
 /// Bumped whenever the same sketch would solve to different bytes; the field file records it.
-inline constexpr u32 k_solver_version = 9;
+inline constexpr u32 k_solver_version = 10;
 
 inline constexpr std::string_view k_fields_format = "engine.landform.fields";
-inline constexpr u32 k_fields_version = 4;
+inline constexpr u32 k_fields_version = 5;
+
+/// The wave base a sea takes when its sketch names none and has no wave climate to compute
+/// Hallermeier's outer limit from, metres (authored: docs/experiments/coast.md, "The depth of
+/// closure, and the wave base").
+inline constexpr f64 k_default_wave_base_m = 20.0;
+
+/// `substrate`'s values (docs/subsystems/landform.md, "The field file").
+enum class Substrate : u8 {
+  None = 0,
+  Sand = 1,
+  Shingle = 2,
+  Boulders = 3,
+  Rock = 4,
+  Cliff = 5,
+  Mud = 6
+};
+
+// ---- the coast's closed forms (src/coast.cpp; docs/experiments/coast.md) ------------------------
+// Pure functions of their arguments, with no C library call: the fractional powers are
+// `det::exp` and `det::log`. The stand reads each once per wave entry or per shore segment.
+
+/// Dean's profile scale A, m^(1/3), for a median grain `grain_mm`: 0.21 D^0.48 (Dean 1991).
+f64 profile_scale(f64 grain_mm) noexcept;
+/// The beach face's slope, tan beta, for a median grain: 0.268 - 0.154 (D - 0.125)^-0.145 held to
+/// [0.01, 0.2] (the form of Bujan, Cox and Masselink 2019; its coefficients authored, said so on
+/// the page).
+f64 face_slope(f64 grain_mm) noexcept;
+/// Hallermeier's inner closure depth from the height exceeded twelve hours a year and its period,
+/// metres: 2.28 H - 68.5 H^2 / (g T^2).
+f64 closure_depth(f64 storm_height_m, f64 period_s) noexcept;
+/// Hallermeier's outer limit, past which the year's waves move no sand of the grain: 0.018 H T
+/// sqrt(g / (D (s - 1))), s = 2.65.
+f64 outer_closure_depth(f64 height_m, f64 period_s, f64 grain_mm) noexcept;
+/// The height at which a deep-water wave breaks, carried over contours parallel to the shore by
+/// its energy flux with linear theory, the breaker index 0.78 and `cos_angle` the cosine of its
+/// deep-water angle to the shore's normal.
+f64 breaker_height(f64 height_m, f64 period_s, f64 cos_angle) noexcept;
+/// Stockdon et al. 2006's run-up exceeded by 2% of waves, metres above the still level, for a
+/// deep-water height and period on a face of slope `slope`.
+f64 run_up(f64 height_m, f64 period_s, f64 slope) noexcept;
+/// The section's depth below the level at `x_m` metres seaward of the waterline: the face's plane
+/// where it is shallower than Dean's curve, the curve beyond (docs/subsystems/landform.md, "The
+/// coast"). Negative x is the land: minus the face's height there, capped at `berm_m`.
+f64 beach_depth(f64 x_m, f64 scale, f64 slope, f64 berm_m) noexcept;
 
 /// A point's whole flow, in the units its shares among its receivers and `route_divided`'s
 /// discharge are kept in: whole numbers, so a divided flow is conserved exactly.
@@ -110,6 +154,14 @@ struct Budget {
   f64 ice_delivered_m3 = 0.0;
   f64 moraine_m3 = 0.0;
   f64 lodged_m3 = 0.0;
+  /// What the rivers laid under the sea, all of it below the wave base (landform.md, "The
+  /// coast"): inside `deposited_m3`.
+  f64 shelf_m3 = 0.0;
+  /// What the coast's stand laid as beach where its section stands above the ground, and took
+  /// where the ground's sediment stood above it. Outside the rivers' identity; the ground's
+  /// change gains placed less taken.
+  f64 beach_placed_m3 = 0.0;
+  f64 beach_taken_m3 = 0.0;
 };
 
 /// Where a solve's wall-clock seconds went, by part (landform.md, "Performance notes"). For a
@@ -122,6 +174,7 @@ struct Timing {
   f64 books_s = 0.0;    // the step's books: lakes, the sea, what each point lost or gained
   f64 slopes_s = 0.0;   // lateral erosion, the ice's deposit, diffusion, the slope limiter
   f64 settle_s = 0.0;   // the settling to the critical slope after the last step
+  f64 stand_s = 0.0;    // the coast's stand: the waterline, its distance, exposure, the section
   f64 fields_s = 0.0;   // the outputs and their routing
 };
 
@@ -135,6 +188,10 @@ struct Landform {
   i64 origin_z_mm = 0;
   bool has_sea = false;
   i64 sea_level_mm = 0;
+  /// The sea's spring tidal range, whole millimetres.
+  i64 tide_mm = 0;
+  /// The depth the sea's bed was built to and no higher, metres (zero with no sea).
+  f64 wave_base_m = 0.0;
   u32 steps = 0;
   /// The sweeps the rivers' solve took over the whole run (landform.md, "Deposition"): one a step
   /// with nothing laid down, a handful with; steps times the limit says a step did not settle.
@@ -197,6 +254,26 @@ struct Landform {
   /// The rock's surface, whole millimetres: the height less `sediment`. Under a lake's fill,
   /// an outwash plain or a moraine it is the floor the ice and the rivers cut.
   Vector<i32> rock_floor;
+  /// The coast (docs/subsystems/landform.md, "The coast"; all zero with no sea, and all but
+  /// `shore_distance` zero off the beach's band or with no stand):
+  /// - `shore_distance`: millimetres from the still waterline of the solved ground, positive
+  ///   over the sea (the points under the level that connect to a sea edge), held to 2 km;
+  /// - `substrate`: a `Substrate`; `grain`: the beach's median grain, micrometres;
+  /// - `exposure`: the energy-weighted breaker height of the climate that reaches the shore,
+  ///   millimetres; `wave_direction`: where those waves come from, 256ths of a turn clockwise
+  ///   from north;
+  /// - `beach_slope`: the face's tan beta, parts per million; `berm`: the berm's crest above the
+  ///   level, millimetres.
+  Vector<i32> shore_distance;
+  Vector<u8> substrate;
+  Vector<u32> grain;
+  Vector<u16> exposure;
+  Vector<u8> wave_direction;
+  Vector<i32> beach_slope;
+  Vector<u32> berm;
+  /// The shore's segments the stand found and how many of them a wave of the climate reached.
+  u32 shore_segments = 0;
+  u32 exposed_segments = 0;
   /// How many times lateral erosion took a bank's point over the run.
   u32 banks_taken = 0;
   /// The steps the ice stood for.

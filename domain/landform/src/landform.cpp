@@ -4,6 +4,8 @@
 // lakes and the sea taking what reaches them), hillslope diffusion, the slope limiter. Every
 // decision is IEEE `+ - * /`, `sqrt`, `floor` and integers; the loops the job system runs are the
 // ones whose points read nothing another point of the same loop writes.
+#include "coast.h"
+
 #include <core/jobs/job_system.h>
 #include <core/math/deterministic.h>
 #include <domain/gfx/formation.h>
@@ -2164,6 +2166,42 @@ bool validate_sketch(const Sketch& s, std::string& error) {
       return refuse("a sketch's sea.shelf_m is 0 to 1,000,000 m");
     if (!in_range(s.sea->depth_m, 0.0, 11000.0))
       return refuse("a sketch's sea.depth_m is 0 to 11,000 m");
+    if (s.sea->wave_base_m && !in_range(*s.sea->wave_base_m, 0.0, 200.0))
+      return refuse("a sketch's sea.wave_base_m is 0 to 200 m");
+    if (!in_range(s.sea->tide_m, 0.0, 15.0)) return refuse("a sketch's sea.tide_m is 0 to 15 m");
+  }
+  if (s.coast) {
+    const Coast& c = *s.coast;
+    if (!s.sea) return refuse("a sketch's coast is the shore of its sea (sea)");
+    for (u32 o = 0; o < c.outline.size(); ++o) {
+      if (c.outline[o].points.size() < 3)
+        return refuse("a sketch's coast.outline is closed polylines of three points or more");
+      for (u32 k = 0; k < c.outline[o].points.size(); ++k)
+        if (!in_range(c.outline[o].points[k].x, -1.0e9, 1.0e9) ||
+            !in_range(c.outline[o].points[k].z, -1.0e9, 1.0e9))
+          return refuse("a sketch's coast.outline points are finite, in the world's metres");
+    }
+    if (c.outline_reach_m && !in_range(*c.outline_reach_m, 0.0, 1000000.0))
+      return refuse("a sketch's coast.outline_reach_m is 0 to 1,000,000 m");
+    f64 shares = 0.0;
+    for (u32 k = 0; k < c.waves.size(); ++k) {
+      const Wave& wave = c.waves[k];
+      if (!in_range(wave.from_deg, 0.0, 360.0) || !in_range(wave.height_m, 0.0, 30.0) ||
+          !in_range(wave.period_s, 1.0, 30.0) || !in_range(wave.share, 0.0, 1.0))
+        return refuse(
+            "a sketch's coast.waves entry comes from 0 to 360 degrees with a height of 0 to 30 m, "
+            "a period of 1 to 30 s and a share of 0 to 1");
+      shares += wave.share;
+    }
+    if (shares > 1.0 + 1.0e-9) return refuse("a sketch's coast.waves' shares sum to 1 or less");
+    if (!in_range(c.grain_mm, 0.15, 64.0)) return refuse("a sketch's coast.grain_mm is 0.15 to 64");
+    if (!in_range(c.storm, 1.0, 6.0)) return refuse("a sketch's coast.storm is 1 to 6");
+    if (!in_range(c.berm_width_m, 0.0, 1000.0))
+      return refuse("a sketch's coast.berm_width_m is 0 to 1,000 m");
+    if (c.stand_yr < 0 || c.stand_yr > 20000)
+      return refuse("a sketch's coast.stand_yr is 0 to 20,000 years");
+    if (c.step_yr < 1 || (c.stand_yr > 0 && c.step_yr > c.stand_yr))
+      return refuse("a sketch's coast.step_yr is 1 year to the stand");
   }
   const bool drains = edge_drains(s.edges.west) || edge_drains(s.edges.east) ||
                       edge_drains(s.edges.north) || edge_drains(s.edges.south);
@@ -2365,6 +2403,20 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
   const f64 dt = static_cast<f64>(s.step_yr);
   const bool has_sea = s.sea.has_value();
   const f64 sea = has_sea ? s.sea->level_m : 0.0;
+  // The sea fills to its wave base and no higher (docs/experiments/coast.md, "The long run: the
+  // sea fills to its wave base and no higher").
+  const f64 wave_base = coast::wave_base_m(s);
+  const f64 sea_cap = sea - wave_base;
+  coast::Grid grid;
+  grid.w = w;
+  grid.h = h;
+  grid.spacing_m = frame.spacing_m;
+  grid.origin_x_m = frame.origin_x_m;
+  grid.origin_z_m = frame.origin_z_m;
+  // The coast's outline, where the sketch has one: metres inside the land, negative outside.
+  const bool outlined = s.coast && s.coast->outline.size() > 0;
+  Vector<f64> outline_field;
+  if (outlined) coast::outline_distance(s, grid, jobs, outline_field);
   Strata strata;
   if (!read_strata(s, strata, error)) return false;
 
@@ -2397,7 +2449,15 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
     for (u32 j = 0; j < h; ++j)
       for (u32 i = 0; i < w; ++i) {
         f64 v = plane + s.roughness_m * signed_unit(mix(s.seed ^ mix(u64{j} * w + i)));
-        if (has_sea) {
+        if (outlined) {
+          // Outside the outline the bed is the shoreface down to the wave base and the shelf
+          // beyond (docs/experiments/coast.md, "Inputs": the outline).
+          const f64 outside = -outline_field[j * w + i];
+          if (outside > 0.0) {
+            const f64 bed = sea - coast::outline_bed_depth(s, outside);
+            if (bed < v) v = bed;
+          }
+        } else if (has_sea) {
           // The bed: the sea's level a shelf's width in from a sea edge, its depth at the edge.
           const f64 d = sea_distance(s, frame, i, j);
           if (d >= 0.0 && s.sea->shelf_m > 0.0) {
@@ -2418,7 +2478,9 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
       } else if (start == nullptr) {
         z[p] = sea;
       }
-    } else if (start == nullptr) {
+    } else if (start == nullptr && !outlined) {
+      // With an outline a sea edge keeps the bed the outline made there, so the shoreface
+      // meets the edge without a wall.
       z[p] = sea - s.sea->depth_m;
     }
   };
@@ -2459,6 +2521,8 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
   f64* hardness = hardness_field.data();
   f64* settle = settle_field.data();
   const f64 reach = s.border_reach_m ? *s.border_reach_m : 16.0 * frame.spacing_m;
+  const f64 outline_reach =
+      outlined && s.coast->outline_reach_m ? *s.coast->outline_reach_m : reach;
   const f64 k_dt = s.erodibility_per_yr * dt;
   for_rows(jobs, h, [&](u32 j0, u32 j1) {
     for (u32 j = j0; j < j1; ++j)
@@ -2488,6 +2552,18 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
           taper = t * t * (3.0 - 2.0 * t);
         }
         rate *= taper;
+        if (outlined) {
+          // The outline is the uplift's footprint: nothing outside it, rising to the rate a
+          // reach inside it.
+          const f64 inside = outline_field[p];
+          f64 foot = 0.0;
+          if (inside > 0.0) {
+            const f64 t =
+                outline_reach > 0.0 && inside < outline_reach ? inside / outline_reach : 1.0;
+            foot = t * t * (3.0 - 2.0 * t);
+          }
+          rate *= foot;
+        }
         settle[p] = s.deposition * taper;
         lift[p] = held[p] != 0 ? 0.0 : rate * dt / 1000.0;
         hardness[p] =
@@ -2532,6 +2608,7 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
   };
   const f64 volume_start = total();
   f64 uplifted = 0.0, eroded = 0.0, laid = 0.0, left = 0.0, crept = 0.0, settled = 0.0;
+  f64 shelf = 0.0;
   u32 sweeps = 0;
   Network network;
   RiverInputs rivers;
@@ -2775,9 +2852,14 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
         continue;
       }
       if (has_sea && z[p] <= sea) {
-        // The sea: everything settles, the deepest ground about the point first, to the sea's
-        // level and no higher; what that leaves goes on along the bed.
-        if (q > 0.0) send(p, spread(z, sed, nullptr, held, p, q, sea, w, h, laid));
+        // The sea: what arrives settles, the deepest ground about the point first, to the wave
+        // base and no higher (landform.md, "The coast"): above it the bed is the waves' to
+        // move. What that leaves goes on along the bed, and out at the sea's edge.
+        if (q > 0.0) {
+          const f64 before_laid = laid;
+          send(p, spread(z, sed, nullptr, held, p, q, sea_cap, w, h, laid));
+          shelf += laid - before_laid;
+        }
         continue;
       }
       f64 lost = z[p] - hk[p];
@@ -2911,8 +2993,32 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
 
   lap(timing.settle_s);
 
+  // ---- the coast's stand, after the last step (docs/subsystems/landform.md, "The coast") ------
+  coast::Stand stand;
+  Vector<f64> unstood;  // the ground the last step left, where a stand then changes it
+  if (coast::stand_runs(s) && steps > 0) {
+    unstood.resize(n);
+    for (u32 p = 0; p < n; ++p)
+      unstood[p] = z[p];
+  }
+  coast::run_stand(s, grid, held, z, sed, jobs, stand);
+  lap(timing.stand_s);
+
   // ---- the outputs: whole millimetres, and the fields of exactly that ground -----------------
   out = Landform{};
+  out.budget.shelf_m3 = shelf * frame.spacing_m * frame.spacing_m;
+  out.budget.beach_placed_m3 = stand.placed * frame.spacing_m * frame.spacing_m;
+  out.budget.beach_taken_m3 = stand.taken * frame.spacing_m * frame.spacing_m;
+  out.wave_base_m = wave_base;
+  out.tide_mm = has_sea ? static_cast<i64>(std::floor(s.sea->tide_m * 1000.0 + 0.5)) : 0;
+  out.shore_segments = stand.segments;
+  out.exposed_segments = stand.exposed;
+  out.substrate.swap(stand.substrate);
+  out.grain.swap(stand.grain);
+  out.exposure.swap(stand.exposure);
+  out.wave_direction.swap(stand.wave_direction);
+  out.beach_slope.swap(stand.beach_slope);
+  out.berm.swap(stand.berm);
   const f64 cell_m2 = frame.spacing_m * frame.spacing_m;
   out.budget.uplifted_m3 = uplifted * cell_m2;
   out.budget.eroded_m3 = eroded * cell_m2;
@@ -2963,10 +3069,14 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
     return false;
   }
   if (steps > 0) {
+    // The last step's rate, of the ground the step left: the stand's beach is not erosion.
     const f64* before = before_field.data();
+    const f64* after = unstood.size() == n ? unstood.data() : z;
     for (u32 p = 0; p < n; ++p)
-      erosion[p] = held[p] != 0 ? 0 : clamp_i32((before[p] - z[p]) / dt * 1.0e6);
+      erosion[p] = held[p] != 0 ? 0 : clamp_i32((before[p] - after[p]) / dt * 1.0e6);
   }
+  // The distance from the waterline of exactly these millimetres.
+  coast::shore_distance(s, grid, mm, out.shore_distance);
   if (!flood(
           w, h, held, [mm](u32 i) { return static_cast<i64>(mm[i]) * k_fill_units_per_mm; }, jobs,
           routing)) {

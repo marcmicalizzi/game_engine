@@ -35,7 +35,8 @@ when the build has the tile set, and refuses its own output if the tile set does
 | `width`, `height`, `spacing_mm`, `origin_mm` | The lattice: points a row and rows, the spacing, and point (0, 0) in the world, a whole number of spacings, so the lattice is a window of the world's at its spacing, as a heightfield's is | 8 to 16,384 points; 100 mm to 1 km; default 16 m |
 | `edges` | Each side `Open` (held at the base level; rivers leave), `Closed` (nothing crosses) or `Sea` (held at the sea bed's depth). West is −x, north −z | all `Open` |
 | `base_level_m` | What an open edge is held at. Absent with a starting heightfield: its own heights there | −11,000 to 9,000 m |
-| `sea` | `level_m`, and for a run with no starting ground `shelf_m` and `depth_m`: the bed falls from the level a shelf's width in from a sea edge to the depth at the edge | required by a sea edge |
+| `sea` | `level_m`, and for a run with no starting ground `shelf_m` and `depth_m`: the bed falls from the level a shelf's width in from a sea edge to the depth at the edge; `wave_base_m`, the depth below the level the rivers may build the bed to, and `tide_m`, the spring range ([the coast](#the-coast)) | required by a sea edge; wave base 0 to 200 m, default the climate's outer limit or 20 m; tide 0 to 15 m, 0 |
+| `coast` | `outline` (closed polylines of land: the uplift's footprint and the starting bed), `outline_reach_m`, `waves` (`from_deg`, `height_m`, `period_s`, `share`), `grain_mm`, `storm`, `berm_width_m`, `stand_yr`, `step_yr` ([the coast](#the-coast)) | none; needs a sea; 0.3 mm, 3, 30 m, 6,000 and 100 years |
 | `outlets` | Points held at a level anywhere in the lattice | — |
 | `border_reach_m` | Uplift is tapered to nothing over this distance from every open or sea edge | 16 cells |
 | `uplift` | `regional_mm_per_yr`, plus `ridges` (a polyline, `rate_mm_per_yr` on it, varied along the line by `variation` over `variation_length_m` ([uplift along a ridge](#uplift-along-a-ridge)), falling to nothing `reach_m` away as (1 − (r/reach)²)²; the largest of overlapping ridges counts), plus a coarse `raster` read bilinearly over the region; and the whole made uneven over the plan by `variation` over `variation_length_m` ([valleys that are not a comb](#valleys-that-are-not-a-comb)) | 0 to 100 mm/yr; a ridge's variation 0.35 over 6 km; the plan's 0.7 over 3 km |
@@ -151,9 +152,10 @@ river stands (1 + G) times as steep and no more concave, which the test holds.
   to one level, so **a lake's floor is level** however the flood happened to cross it, and
   stage A's straight lines in a dammed valley's floor are gone. A lake that is full passes the
   rest to its sill.
-- **The sea** takes everything that reaches it, the same way and up to its level; what a point
-  has no room for goes on along the bed. A point brought to the sea's level is land the next
-  step, so a delta's plain rises above the water by the river's own deposit.
+- **The sea** takes what reaches it the same way, up to its wave base and no higher ([the
+  coast](#the-coast)); what a point has no room for goes on along the bed and leaves at the
+  sea's edge. With `wave_base_m` 0 it fills to its level as a lake does, and a delta's plain
+  rises above the water by the river's own deposit.
 - **Toward an edge that drains G is tapered** with the uplift, over `border_reach_m`. Without it
   a small river meets an open edge on its own fan (the border test's first row stood 17.4 m up
   over a 100 m cell in the first build, where its bound is 2 m), and the ground no longer meets
@@ -711,6 +713,87 @@ region's edge and a fixed sea bed met as a 370 m underwater wall.
 - **A point below the sea's level is under water wherever it is**: a basin inland of the coast
   that lies below the level is not cut by rivers either.
 
+## The coast
+
+W128 stages A and B of [the coast's design](../experiments/coast.md), which has the sources and
+what was read of each ([what the build opened](../experiments/coast.md#what-the-build-opened-w128-stages-a-and-b)).
+
+**The sea fills to its wave base and no higher.** What the rivers bring to a point under the sea
+settles, the deepest ground about it first, up to the level less `sea.wave_base_m` and no
+higher; the rest goes on along the bed and leaves at the sea's edge (`left`). Above the wave
+base the bed is the waves' to move, so nothing a river carries settles there in the long run.
+`budget.shelf_m3` is what settled under it. A lake is unchanged. **Why**: the sea took
+everything to its level, so an island with deposition on grew a plain of its own sediment (the
+proof of concept's island 2.6 times its footprint) and its authors switched deposition off,
+which took every fan and valley floor with it. The default is Hallermeier's outer limit for the
+coast's climate (0.018 H T √(g / (D (s − 1))), the depth past which the year's waves move no
+sand of the grain), or 20 m with no climate, which is authored; 0 is the old rule. The mouth
+whose river beats the waves (Nienhuis' R over 1) still lays nothing above the wave base: that
+exception is not built.
+
+**`coast.outline`**: closed polylines of land. The uplift is their footprint (nothing outside a
+line, a smoothstep to the sketch's rate `outline_reach_m` inside it), and with no starting
+ground the bed outside is Dean's shoreface for `coast.grain_mm` down to the climate's outer
+limit (or 20 m), then the sea's shelf falling to `depth_m` over `shelf_m`; a sea edge keeps that
+bed, so no wall stands at the lattice's edge. **`sea.tide_m`** is the spring range; high water
+is half of it above the level, and the field file carries it (`tide_mm`).
+
+**The stand** runs after the last step and its settling, when the sketch has a sea and a
+`coast` with `waves` and a `stand_yr` (stage B places the sand once, at equilibrium: nothing
+retreats until stage C, so `step_yr` is recorded and not yet stepped):
+
+1. **The waterline**: the sea is the points under the level that a `Sea` edge reaches through
+   other such points (a hollow inland below the level is a lagoon, not sea). The line is
+   marching squares over the lattice's squares, linear along an edge, a saddle read by its
+   centre, so a plane's waterline is exact. Every point's distance to it is a distance
+   transform that hands each point its neighbours' nearest segment and keeps the closest by the
+   exact distance to the segment (ties to the lower index), swept until a round changes nothing:
+   so the distance is a segment's, never a staircase's.
+2. **Exposure**: each segment walks from its middle toward each wave entry's azimuth (the
+   stand's 32), a spacing a step on integers (1/65536 of a spacing), until land (closed) or the
+   lattice's edge (open only through a `Sea` edge). An open entry's deep-water wave is carried
+   to its break by its energy flux over contours parallel to the segment: Hb = (√(γ g) T H0²
+   cos α0 / 4π)^(2/5), γ = 0.78, which neglects the crest's remaining angle at the break (under
+   2% for a 1 m, 8 s wave). The segment keeps the energy-weighted breaker height (`exposure`),
+   deep-water height and period, and the direction nearest the energy's mean. Sheltering is
+   exact; focusing over a shoal is not here.
+3. **The section**, at every point whose nearest segment is exposed: seaward x metres, depth
+   min(tan β x, A x^(2/3)) (the face's plane where it is shallower than Dean's curve, which has
+   an infinite slope at the waterline; they meet at x* = (A / tan β)³, 4.8 m for 0.3 mm sand),
+   down to the inner closure depth h_in = 2.28 He − 68.5 He² / (g T²) with He = `storm` × the
+   deep-water height, then over as far again a straight blend to the ground (the outer
+   shoreface: **authored**). Landward the face rises at tan β to the berm, high water plus
+   Stockdon's R₂ of the deep-water wave on that face ([the run-up](../experiments/shore.md#the-run-up)),
+   and the berm runs level `berm_width_m` (authored, 30 m) behind the face's top. A = 0.21 D^0.48
+   (Dean 1991, D in mm); tan β = 0.268 − 0.154 (D − 0.125)^−0.145 held to [0.01, 0.2] (Bujan,
+   Cox and Masselink 2019's form; **its coefficients are authored**: read only in a search's
+   snippet). `storm` defaults to 3 because Houston's 6.75 H̄ and Hallermeier's 2.28 He agree
+   there.
+4. **What may move**: under the sea the waves move sediment and not rock, so the surface becomes
+   the section where it is above the rock and the rock shows where it stands higher; on land the
+   beach is laid only where the section stands above the ground (a dune, a fan or a cliff behind
+   the berm keeps its ground) and a lagoon keeps its water. **The supply is whatever the section
+   needs**: stage D's littoral cells and their volume are not built, so `beach_placed_m3` and
+   `beach_taken_m3` say what the section added and took, and the ground's change gains their
+   difference. The fields written in the band are the next six below.
+
+The fields (version 5's first seven, all zero off the band): `shore_distance` (everywhere with a
+sea, from the waterline of the final millimetres), `substrate` (sand under 2 mm, shingle above,
+rock where the rock shows), `grain`, `exposure`, `wave_direction`, `beach_slope`, `berm`. Not
+here: the climate recorded in the header, `exposure_storm`, `berm_line`, cliffs, platforms,
+littoral cells, a lake's bench, and the face flattened by exposure (Vos and others 2022 measure
+the same sand three times flatter under a large swell; no law was opened).
+
+**What the section is held to** (`coast_tests.cpp`): on a straight coast 15° off the lattice,
+from two cells out to the closure depth every point is within **1.1 mm** of A x^(2/3) (the face
+of tan β x inside x*), x the field's distance. The bound is derived: half a millimetre of the
+height's rounding, plus the section's slope (never more than the face's) times how far the
+rounded ground's waterline can stand from the line the section was laid from (half a millimetre
+of height over the face's slope along a lattice edge, 7.4 mm at 15°, and the distance's own half
+millimetre): 0.5 + 0.0697 × 7.9 = 1.05 mm. The same coast at 4 m and 8 m is the same ground
+point for point to a millimetre, because every part of the section is a function of a distance
+to a line known exactly and of physical parameters, never of a neighbour's difference.
+
 ## The same bytes everywhere
 
 A sketch solves to the same bytes on MSVC, GCC and Clang, at x86-64-v3 and v2, and at any thread
@@ -750,10 +833,11 @@ count (`determinism_tests.cpp` pins the hash of the heightfield and of each fiel
 
 ### The field file
 
-`engine.landform.fields/4` (`engine.landform.Fields`; version 2 added `sediment` and `resistance`,
+`engine.landform.fields/5` (`engine.landform.Fields`; version 2 added `sediment` and `resistance`,
 version 3 `discharge`, `channel_width`, `ice` and `till`, version 4 (W127) `ice_max`, `moraine`,
 `moraine_crest`, `lakebed` and `rock_floor`, with `till` now what the ice lodged or laid as a
-ridge where it was what melted out; a reader of an older version is refused by the
+ridge where it was what melted out, version 5 (W128) the coast's seven and `tide_mm` in the
+header; a reader of an older version is refused by the
 version, since the solver that wrote it is not this one). What a later solver (channels, scree, soil,
 ecology, snow) reads:
 
@@ -783,6 +867,14 @@ ecology, snow) reads:
   | `moraine_crest` | u8 | 0 off a crest line; else one more than the stand that laid it (1 is the ice's first line, 2 its first `stands` entry) | the crest line of a ridge, a point or two wide, broken where the glacier's river left through it. A mark stays while any of the ridge's till is under it, so a crest a river has since worn down is still marked: read `moraine` for what stands |
   | `lakebed` | u32 | millimetres of the sediment that settled in standing water: a lake's delta and its levelled floor | never more than `sediment`. **The flat's extent**: with `fill` above zero the lake stands; with `fill` zero it is a lake filled, a level floor |
   | `rock_floor` | i32 | millimetres: the rock's surface, the height less `sediment`, exactly | under a lake's fill, an outwash plain or a moraine it is the floor the ice and the rivers cut: a basin the ice dug shows here after its lake has filled |
+
+  | `shore_distance` | i32 | millimetres from the still waterline of the heightfield, positive over the sea, held to ±2 km ([the coast](#the-coast)) | everywhere with a sea; zero with none. A finer build re-evaluates the beach's section from it |
+  | `substrate` | u8 | 0 none, 1 sand, 2 shingle, 3 boulders, 4 rock, 5 sea cliff, 6 mud | stage B writes sand or shingle where the beach lies and rock where the rock shows through its band; the rest are later stages' |
+  | `grain` | u32 | micrometres: the beach sediment's median | where `substrate` is sand or shingle |
+  | `exposure` | u16 | millimetres: the energy-weighted breaker height of the climate that reaches the shore | zero in a lee: the shore's sheltered stretches |
+  | `wave_direction` | u8 | where that energy comes from, 256ths of a turn clockwise from north (−z) | |
+  | `beach_slope` | i32 | the face's tan β, parts per million | |
+  | `berm` | u32 | millimetres: the berm's crest above the level (high water plus the run-up) | the wrack line is under it, dry sand above |
 
 - **What the snow and glacier solver should take from `ice`**: where to put a glacier's
   surface (the bed plus this), where it steepens over a step in the bed (an icefall: `slope`
@@ -872,9 +964,10 @@ Each follows, and none is here: cirques, lateral moraines and a lake that lasts
 ([ice](#ice), [the grounding](../experiments/landform-ice.md#what-the-two-range-sketch-shows-and-why-no-lake-lasts)); scree at an angle of repose; soil depth; snow; a general m and n; neighbouring regions solved so a shared edge
 agrees; the rivers' sweeps in parallel by catchment (by level they are, and it buys nothing at
 these sizes: [the rivers' sweeps](#the-rivers-sweeps)); baking far-terrain maps from near output; anything
-in the editor. The limits of the model as it stands are on the grounding page. **Nor a coast**: the
-sea fills to its own level, nothing erodes at the waterline and there is no shoreface or beach;
-grounded and designed, not built, on [experiments/coast.md](../experiments/coast.md) (W128).
+in the editor. The limits of the model as it stands are on the grounding page. **Of the coast**
+([experiments/coast.md](../experiments/coast.md), W128) stages A and B are built ([the
+coast](#the-coast)); its cliffs and platforms, littoral cells, a lake's bench, the one-line
+model and the sea's history are not.
 
 ## Invariants
 
@@ -886,16 +979,22 @@ grounded and designed, not built, on [experiments/coast.md](../experiments/coast
   and the held points with `route_seed` returns the same receivers and areas.
 - The output is a function of the sketch (and the starting ground): not of the thread count, the
   compiler, the CPU baseline or the C library.
-- A run of no steps writes the starting ground's heights untouched.
+- A run of no steps writes the starting ground's heights untouched, but where a coast's stand
+  lays its beach.
 - What is eroded is deposited, leaves through a held point, or is the last step's unrouted
-  shed: `budget.eroded_m3 = deposited_m3 + left_m3 + unrouted_m3`, to nine digits.
+  shed: `budget.eroded_m3 = deposited_m3 + left_m3 + unrouted_m3`, to nine digits. The stand is
+  outside it: the ground's change gains `beach_placed_m3 − beach_taken_m3`.
+- Nothing a river carries settles under the sea above its wave base.
 - `sediment` is never more than the ground gained there: the rock's surface, the height less
   the sediment, only falls relative to the rock.
 
 ## Public API
 
 `include/domain/landform/landform.h`: `validate_sketch`, `solve`, `route`, `route_divided`, `read_sketch`,
-`read_start_field`, `write_landform`, `read_fields`, `read_field_window`, `shaded_relief`, `ice_map`.
+`read_start_field`, `write_landform`, `read_fields`, `read_field_window`, `shaded_relief`, `ice_map`;
+the coast's closed forms `profile_scale`, `face_slope`, `closure_depth`, `outer_closure_depth`,
+`breaker_height`, `run_up`, `beach_depth` (pure, deterministic: what a finer build re-evaluating
+the section, or the water, would call).
 
 ## Depends on
 
@@ -915,7 +1014,7 @@ grounded and designed, not built, on [experiments/coast.md](../experiments/coast
 | the ground meets an open edge without a step | the first row within 2 m, no bend above 0.2 a row; and that without the taper both fail | the border taper is lost |
 | the sea bed takes part | no neighbours above the critical slope on land, across the coast or on the bed (with nothing laid down, and again on a coast the rivers build out, delta fronts included); a 370 m underwater wall gone | the limiter or the routing stops at the waterline |
 | a starting heightfield is refined | the 800 m low-pass moves under a twentieth of the relief (measured 9.5 m of 407 m) while single points move 30 m; no steps leaves the heights untouched | a refine replaces its ground |
-| the files round-trip | the heightfield read back whole millimetres; the field file at version 4 with its sixteen fields; a field's window equals memory; `rock_floor` is the height less `sediment` point for point; a window past the edge is refused | the formats drift |
+| the files round-trip | the heightfield read back whole millimetres; the field file at version 5 with its twenty-three fields and the tide; a field's window equals memory; `rock_floor` is the height less `sediment` point for point; a window past the edge is refused | the formats drift |
 | a sketch outside a range is refused | six refusals, each naming its field | validation is lost |
 | what is eroded is deposited or leaves | the two identities of the budget to nine digits on the golden sketch; the settled and unrouted share under 2%; the same with G = 0, where everything cut leaves | a pass lays down what did not arrive, or loses what did |
 | with deposition a steady river stands 1 + G times as steep | the steepness factor S √A K / U over the channels in 1.85 to 2.05 at G = 1 (measured 1.955: the discrete form's (N − 1) / N), the mean rate within 2% of the uplift, the concavity within 0.03 of 0.5 | the deposit is not Yuan's, or is laid after the cut and not with it (which measured 2.14, rising with area) |
