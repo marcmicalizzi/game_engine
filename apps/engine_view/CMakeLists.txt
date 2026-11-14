@@ -141,6 +141,9 @@ if(TARGET engine::animation)
   # these cases drive them with no GPU and no world. Without the capability the header is not
   # compiled at all, which is what the minimal build proves.
   list(APPEND _view_tests tests/anim_lod_tests.cpp)
+  # The rule by what the eye can see, end to end (A44; animation.md, "The LOD policy: what the eye
+  # can see"): one small bar at 100 m at two resolutions and with a bias, `--animate --offscreen`.
+  list(APPEND _view_tests tests/anim_visibility_view_tests.cpp)
 endif()
 
 engine_app(NAME engine_view OUTPUT engine-view

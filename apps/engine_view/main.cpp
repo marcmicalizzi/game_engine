@@ -5352,11 +5352,14 @@ int run_view(int argc, char** argv) {
                  "with --offscreen or in the window\n");
     return k_exit_usage;
   }
-  if (options.offscreen && (options.animate || options.morph_animate || options.reference != 0)) {
-    std::fprintf(stderr,
-                 "engine-view: --offscreen, --benchmark, --verify-occlusion and --marker-captures "
-                 "draw rigid scenes; --animate, --morph-animate and --reference have their own "
-                 "paths\n");
+  // `--animate` runs offscreen (A44, the forest's need 93): the offscreen loop has stepped a scene
+  // file's animation blocks on the frame clock since S87, and `--animate` only adds every other
+  // skinned instance to them; this guard predated that loop and was all that stood in the way.
+  if (options.offscreen && (options.morph_animate || options.reference != 0)) {
+    std::fprintf(
+        stderr,
+        "engine-view: --offscreen, --benchmark, --verify-occlusion and --marker-captures "
+        "draw without --morph-animate's weight curves, and --reference has its own path\n");
     return k_exit_usage;
   }
   // An interactive session ends when its log does or its window closes, not after a default count.

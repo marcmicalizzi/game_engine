@@ -17,8 +17,10 @@ ENGINE_EXPECT_SIZE(48, 8, hotload::Value);
 // placement and the ground sample, two more (344); ABI 9 an actor's shape — its morph weights, its
 // scale and its channels' names — three more (368). A module built against 3 reads the first 216,
 // one against 4 the first 248, one against 5 the first 312, one against 6 or 7 the first 328, one
-// against 8 the first 344.
-ENGINE_EXPECT_SIZE(368, 8, hotload::HostApi);
+// against 8 the first 344. ABI 11 (A44) an actor's animation detail and its clips — the tier bias,
+// the clips' names and durations and the seek — three more (392; ABI 10, row A43's, adds its own
+// entries before them).
+ENGINE_EXPECT_SIZE(392, 8, hotload::HostApi);
 // ABI 4's structs, each led by its own size so it can grow the way the table does: an element is
 // 56 bytes of fixed fields and the text's pointer and length; the graphics state is six words, five
 // 24-byte names (the longest present mode, "fifo-latest-ready", is 17) and four 96-byte reasons; a
@@ -45,6 +47,9 @@ static_assert(offsetof(hotload::ActorState, scale) == hotload::k_actor_state_v8_
 // ABI 9: an actor's morph channels, led by its size: four words (size, index in, count out, a
 // reserved word) and the borrowed name's pointer and length.
 ENGINE_EXPECT_SIZE(32, 8, hotload::MorphInfo);
+// ABI 11: one of an actor's clips, led by its size: four words (size, index in, count out, a
+// reserved word), the duration and a reserved word, and the borrowed name's pointer and length.
+ENGINE_EXPECT_SIZE(40, 8, hotload::ClipInfo);
 // ABI 8: the ground under a point, led by its size: two words, the f64 height, the normal and a
 // reserved word.
 ENGINE_EXPECT_SIZE(32, 8, hotload::GroundSample);

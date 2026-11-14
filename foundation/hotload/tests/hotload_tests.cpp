@@ -554,6 +554,89 @@ TEST_CASE(
   CHECK(current.morph_count == 2);
 }
 
+TEST_CASE(
+    "hotload: ABI 11's actor animation entries forward, answer Unsupported without services or "
+    "through a table that ends before them, and a ClipInfo comes back up to the module's size") {
+  ModuleHost host;
+  const HostApi* api = host.context()->api;
+  CHECK(api->size == sizeof(HostApi));
+  CHECK(ENGINE_HOTLOAD_HAS(api, actor_lod_bias));
+  CHECK(ENGINE_HOTLOAD_HAS(api, actor_clip_info));
+  CHECK(ENGINE_HOTLOAD_HAS(api, actor_seek));
+  // A table as an ABI 9 host built it ends before the three: the helpers do not call them.
+  HostApi v9 = *api;
+  v9.size = static_cast<u32>(offsetof(HostApi, actor_morph_info) + sizeof(void (*)()));
+  CHECK(ENGINE_HOTLOAD_HAS(&v9, actor_morph_info));
+  CHECK_FALSE(ENGINE_HOTLOAD_HAS(&v9, actor_lod_bias));
+  CHECK_FALSE(ENGINE_HOTLOAD_HAS(&v9, actor_seek));
+  ModuleContext old_host{&v9, nullptr};
+  ClipInfo info;
+  CHECK(actor_lod_bias(&old_host, 0, 2.0f) == Result::Unsupported);
+  CHECK(actor_clip_info(&old_host, 0, 0, info) == Result::Unsupported);
+  CHECK(actor_seek(&old_host, 0, 0.5f) == Result::Unsupported);
+
+  // No game services: all three answer Unsupported, after the host's own checks on a ClipInfo.
+  ModuleContext context{api, nullptr};
+  CHECK(actor_lod_bias(&context, 0, 2.0f) == Result::Unsupported);
+  CHECK(actor_clip_info(&context, 0, 0, info) == Result::Unsupported);
+  CHECK(actor_seek(&context, 0, 0.5f) == Result::Unsupported);
+  CHECK(api->actor_clip_info(api->host, 0, nullptr) == Result::InvalidArgument);
+  ClipInfo small;
+  small.size = 24;
+  CHECK(api->actor_clip_info(api->host, 0, &small) == Result::InvalidArgument);
+
+  struct Seen {
+    u32 actor = ~0u;
+    f32 bias = -1.0f;
+    u32 index = ~0u;
+    f32 seek = -1.0f;
+  } seen;
+  GameServices services;
+  services.user = &seen;
+  services.actor_lod_bias = [](void* user, u32 actor, f32 bias) {
+    Seen& s = *static_cast<Seen*>(user);
+    s.actor = actor;
+    s.bias = bias;
+    return Result::Ok;
+  };
+  services.actor_clip_info = [](void* user, u32, ClipInfo& io) {
+    static_cast<Seen*>(user)->index = io.index;
+    io.count = 3;
+    io.duration_s = 1.25f;
+    io.name = "bar/bend";
+    io.name_length = 8;
+    return Result::Ok;
+  };
+  services.actor_seek = [](void* user, u32, f32 seconds) {
+    static_cast<Seen*>(user)->seek = seconds;
+    return Result::Ok;
+  };
+  host.set_game_services(services);
+  CHECK(actor_lod_bias(&context, 4, 2.5f) == Result::Ok);
+  CHECK(seen.actor == 4);
+  CHECK(seen.bias == 2.5f);
+  CHECK(actor_seek(&context, 4, 0.75f) == Result::Ok);
+  CHECK(seen.seek == 0.75f);
+  // The module's `index` reaches the service; the answer comes back whole, `size` the module's.
+  CHECK(actor_clip_info(&context, 4, 2, info) == Result::Ok);
+  CHECK(seen.index == 2);
+  CHECK(info.size == sizeof(ClipInfo));
+  CHECK(info.count == 3);
+  CHECK(info.duration_s == 1.25f);
+  REQUIRE(info.name != nullptr);
+  CHECK(std::string(info.name, info.name_length) == "bar/bend");
+  // A bigger struct (a later ABI's) gets ABI 11's fields and keeps its own size.
+  struct Bigger {
+    ClipInfo info;
+    u64 later = 0x77;
+  } bigger;
+  bigger.info.size = sizeof(Bigger);
+  CHECK(api->actor_clip_info(api->host, 4, &bigger.info) == Result::Ok);
+  CHECK(bigger.info.size == sizeof(Bigger));
+  CHECK(bigger.info.count == 3);
+  CHECK(bigger.later == 0x77);
+}
+
 TEST_CASE("hotload: ABI 4's entries forward to the game services, and answer Unsupported without") {
   // No module: the table the host hands every module, called as one would call it.
   ModuleHost host;

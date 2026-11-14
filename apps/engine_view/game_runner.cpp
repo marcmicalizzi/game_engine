@@ -942,6 +942,30 @@ struct GameRunner::Impl {
     const hotload::Result r = static_cast<Impl*>(user)->actor_host(actor, host);
     return r == hotload::Result::Ok ? host->morph_info(actor, io) : r;
   }
+  // ---- ABI 11: an actor's animation detail and its clips (apps.md, "Actors"; A44) ----
+  // The runner judges what the ABI promises before anything reaches the animated world: the
+  // handle, a bias finite and within [0, k_actor_lod_bias_max], a seek's time finite.
+  static hotload::Result actor_lod_bias(void* user, u32 actor, f32 bias) {
+    ActorHost* host = nullptr;
+    const hotload::Result r = static_cast<Impl*>(user)->actor_host(actor, host);
+    if (r != hotload::Result::Ok) return r;
+    if (!std::isfinite(bias) || bias < 0.0f || bias > hotload::k_actor_lod_bias_max) {
+      return hotload::Result::InvalidArgument;
+    }
+    return host->lod_bias(actor, bias);
+  }
+  static hotload::Result actor_clip_info(void* user, u32 actor, hotload::ClipInfo& io) {
+    ActorHost* host = nullptr;
+    const hotload::Result r = static_cast<Impl*>(user)->actor_host(actor, host);
+    return r == hotload::Result::Ok ? host->clip_info(actor, io) : r;
+  }
+  static hotload::Result actor_seek(void* user, u32 actor, f32 seconds) {
+    ActorHost* host = nullptr;
+    const hotload::Result r = static_cast<Impl*>(user)->actor_host(actor, host);
+    if (r != hotload::Result::Ok) return r;
+    if (!std::isfinite(seconds)) return hotload::Result::InvalidArgument;
+    return host->seek(actor, seconds);
+  }
 
   // Sound: not built yet (roadmap P43, the third stage). `Unsupported`, said once.
   static hotload::Result sound_clip(void* user, std::string_view, u32*, std::string*) {
@@ -1030,6 +1054,9 @@ bool GameRunner::start(const Config& config, const input::ActionMap& map, u32 ti
   services.actor_morph = &Impl::actor_morph;
   services.actor_scale = &Impl::actor_scale;
   services.actor_morph_info = &Impl::actor_morph_info;
+  services.actor_lod_bias = &Impl::actor_lod_bias;
+  services.actor_clip_info = &Impl::actor_clip_info;
+  services.actor_seek = &Impl::actor_seek;
   host.set_game_services(services);
 
   const auto refuse = [&](const std::string& why) {

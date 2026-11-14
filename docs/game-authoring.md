@@ -235,6 +235,26 @@ a world) answers `actor_place` with `Unsupported`, and `actor_spawn` — a chara
 answers `Unsupported` everywhere ([apps.md, "Actors"](subsystems/apps.md#actors-the-characters-a-game-moves)
 says what each needs). An actor does not collide: check reach from `actor_state`'s position.
 
+**How far a character keeps moving** (ABI 11, 2026-11-14,
+[animation.md, "The LOD policy: what the eye can see"](subsystems/animation.md#the-lod-policy-what-the-eye-can-see)).
+The engine animates a character finely while its limbs travel more than a few pixels on the screen,
+skins it while they travel more than one, and draws its rest pose past that: a deer at 3840 × 2160
+keeps moving to about a kilometre, half that at 1080p, with nothing for the game to set. The travel
+is measured from the character's own skin and clip, so an imported glTF gets the same rule. When a
+character is conspicuous beyond its size — a bird against an open sky — or not worth its pixels — an
+idle prop — give it a **bias**: in the scene, `"animation": {"clip": "fly", "lod_bias": 4}`; at run
+time, `actor_lod_bias(context, actor, 4.0f)` (0 to 64; 1 the rule alone, 0 always the coarsest). A
+crowd past the frame's budget (`animation.lod.full_max`, `animation.lod.skinned_max`) keeps the
+nearest and largest on screen fine and reports how many fell back in the run's summary. **Clips by
+name, and a phase-matched change**: `actor_clip_info(context, actor, k, info)` answers how many
+clips the character has and clip `k`'s name and duration (no more probing with `actor_play`), and
+`actor_seek(context, actor, seconds)` puts the playhead of the clip it is heading for — so a walk
+turns into a run in step by playing `run` with a fade and seeking it to the walk's phase
+(`actor_state`'s `playhead_s` over the walk's duration, times the run's). A host older than ABI 11
+answers the three `Unsupported`. `engine-view --animate` now runs `--offscreen` and with
+`--marker-captures`, so a scene of several animated characters can be checked in captures with no
+module driving them.
+
 ## The HUD, and how far `nearest_placement` sees
 
 The HUD is a proof-of-concept panel, not the game UI framework

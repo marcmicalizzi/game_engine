@@ -48,12 +48,16 @@ namespace engine::renderer {
 // renderer that knew about clips would put the tick inside the frame, and the whole point of the
 // contract is that it is outside it. But a scene file is one file, and making the host parse it a
 // second time to find the animation blocks would be two parsers over one grammar. So the renderer
-// reads the block into these four fields and hands them to whoever asked for the scene; only the
-// app resolves `clip` against an `animation::Library`.
+// reads the block into these fields and hands them to whoever asked for the scene; only the app
+// resolves `clip` against an `animation::Library`.
 struct SceneAnimation {
-  std::string clip;   // the clip's name; empty means the skin's first clip
-  f32 speed = 1.0f;   // playback rate
-  f32 phase = 0.0f;   // seconds added to the starting playhead, so a crowd is not in lockstep
+  std::string clip;  // the clip's name; empty means the skin's first clip
+  f32 speed = 1.0f;  // playback rate
+  f32 phase = 0.0f;  // seconds added to the starting playhead, so a crowd is not in lockstep
+  // A factor on the animation tier's rule (systems/animation/visibility.h; A44): above 1 an actor
+  // conspicuous beyond its limbs' travel (a bird against the sky), below 1 one not worth its
+  // pixels.
+  f32 lod_bias = 1.0f;
   bool play = false;  // the block was present at all
 };
 

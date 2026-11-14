@@ -2404,6 +2404,7 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
       instance.animation.clip = entry.animation->clip;
       instance.animation.speed = entry.animation->speed;
       instance.animation.phase = entry.animation->phase;
+      instance.animation.lod_bias = entry.animation->lod_bias;  // checked by the host (A44)
     }
     out.instances.push_back(instance);
   }

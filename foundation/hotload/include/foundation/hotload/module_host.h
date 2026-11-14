@@ -135,6 +135,13 @@ struct GameServices {
   Result (*actor_morph)(void* user, u32 actor, const f32* weights, u32 count) = nullptr;
   Result (*actor_scale)(void* user, u32 actor, f32 scale) = nullptr;
   Result (*actor_morph_info)(void* user, u32 actor, MorphInfo& io) = nullptr;
+  // ABI 11 (module_abi.h; A44): an actor's animation detail and its clips. The host checks the
+  // pointers and a `ClipInfo`'s size, and copies the answer back only as far as the module's; the
+  // values (a bias's range, a finite time) are the runner's to judge. Null, each answers
+  // `Unsupported`.
+  Result (*actor_lod_bias)(void* user, u32 actor, f32 bias) = nullptr;
+  Result (*actor_clip_info)(void* user, u32 actor, ClipInfo& io) = nullptr;
+  Result (*actor_seek)(void* user, u32 actor, f32 seconds) = nullptr;
 };
 
 struct HostConfig {

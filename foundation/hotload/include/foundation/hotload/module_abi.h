@@ -97,7 +97,17 @@ namespace engine::hotload {
 // read as ABI 8's fields are: the host copies out only as far as the module's `size` (an ABI 8
 // module passes `k_actor_state_v8_size`). Additive as 4 to 8 were: a module built against 3 to 8
 // loads on a host of 9 and runs unchanged, and an actor nobody shapes is drawn exactly as it was.
-inline constexpr u32 k_abi_version = 9;
+//
+// **10** is row A43's (the world queries a module asks), taken the same night.
+//
+// **11** (2026-11-14): `HostApi` gained, at its end, **an actor's animation detail and its clips**
+// (`actor_lod_bias`, `actor_clip_info`, `actor_seek`; roadmap A44; apps.md, "Actors: the characters
+// a game moves"; animation.md, "The LOD policy: what the eye can see"): a factor on the tier rule
+// for an actor conspicuous beyond its limbs' travel or not worth its pixels, the clips its skeleton
+// has with their durations, and a playhead put where a phase-matched fade needs it. Additive as 4
+// to 9 were: a module built against 3 to 10 loads on a host of 11 and runs unchanged, and an actor
+// nobody biases is tiered by the rule alone.
+inline constexpr u32 k_abi_version = 11;
 // The oldest module ABI a host of this header loads (4, above, says why 3 and not 4).
 inline constexpr u32 k_abi_oldest = 3;
 
@@ -341,6 +351,27 @@ struct MorphInfo {
   const char* name = nullptr;  // out: borrowed
   u64 name_length = 0;         // out: bytes, the NUL not counted
 };
+// **One of an actor's clips** (ABI 11; apps.md, "Actors"), led by its size like the other structs:
+// `index` goes in, the rest comes out. `count` is the clips the actor's skeleton has (0: none, and
+// it stands at its bind pose); `name` is clip `index`'s library name ("bar/bend", what
+// `actor_play` takes), borrowed — NUL-terminated, valid while the session's scene is loaded — and
+// empty, with `duration_s` 0, for an `index` past `count`. The order is the library's and stable
+// for the scene, so `index` as digits is also a name `actor_play` takes.
+struct ClipInfo {
+  u32 size = sizeof(ClipInfo);
+  u32 index = 0;               // in: the clip whose name and duration are asked
+  u32 count = 0;               // out: the actor's clips
+  u32 reserved = 0;            // zero: the next field's place
+  f32 duration_s = 0.0f;       // out: clip `index`'s length, seconds
+  u32 reserved2 = 0;           // zero
+  const char* name = nullptr;  // out: borrowed
+  u64 name_length = 0;         // out: bytes, the NUL not counted
+};
+
+// `actor_lod_bias`'s range: a factor on the animation tier's rule (0 the coarsest tier always, 1
+// the rule alone, 64 a bird a kilometre up keeping its wingbeat); systems/animation/visibility.h.
+inline constexpr f32 k_actor_lod_bias_max = 64.0f;
+
 // `actor_scale`'s range: a factor on the scene's scale, so a typo cannot make a 100 m body.
 inline constexpr f32 k_actor_scale_min = 0.25f;
 inline constexpr f32 k_actor_scale_max = 4.0f;
@@ -633,6 +664,31 @@ struct HostApi {
   // caller's struct up to its size. `NotFound` for a handle that is not an actor, `InvalidArgument`
   // for a struct smaller than ABI 9's.
   Result (*actor_morph_info)(void* host, u32 actor, MorphInfo* io);
+
+  // ---- ABI 10 is row A43's: its entries come here, before ABI 11's ----
+
+  // ---- ABI 11: an actor's animation detail and its clips (roadmap A44; apps.md, "Actors: the
+  // characters a game moves") ----
+  // **A factor on the animation tier's rule** for this actor (animation.md, "The LOD policy: what
+  // the eye can see"): the tier follows how many pixels its limbs travel on the screen, and `bias`
+  // multiplies that — above 1 for an actor conspicuous beyond its size (a bird against the sky),
+  // below 1 for one not worth its pixels (a prop's idle), 0 for the coarsest tier always; 1 is the
+  // rule alone, and a scene's `animation.lod_bias` is where an actor starts. Applied from the next
+  // tier decision, before the tick's step; the budget still ranks a biased actor by its biased
+  // score. `NotFound` for a handle that is not an actor, `InvalidArgument` for a bias that is not
+  // finite or outside [0, k_actor_lod_bias_max], leaving it as it was.
+  Result (*actor_lod_bias)(void* host, u32 actor, f32 bias);
+  // **The actor's clips** (`ClipInfo`): their count, and clip `index`'s name and duration, into the
+  // caller's struct up to its size. `NotFound` for a handle that is not an actor, `InvalidArgument`
+  // for a struct smaller than ABI 11's.
+  Result (*actor_clip_info)(void* host, u32 actor, ClipInfo* io);
+  // **Puts the playhead** of the clip the actor is heading for — the one fading in while a fade is
+  // in flight, else the one playing; `ActorState::playhead_s` is the same one — at `seconds`,
+  // wrapped into the clip for a looping one and held to [0, duration] otherwise, at this tick and
+  // before its step, the rate kept. What a phase-matched fade needs: `actor_play` the new clip with
+  // a fade, then seek it to the phase the old one stands at. `NotFound` for a handle that is not an
+  // actor or one standing at rest (no clip), `InvalidArgument` for a time that is not finite.
+  Result (*actor_seek)(void* host, u32 actor, f32 seconds);
 };
 
 // Whether the host's table reaches the entry at `offset` (`offsetof(HostApi, hud_element)`): a
@@ -975,6 +1031,30 @@ inline Result actor_morph_info(const ModuleContext* context, u32 actor, u32 inde
   info = MorphInfo{};
   info.index = index;
   return context->api->actor_morph_info(context->api->host, actor, &info);
+}
+
+// ---- an actor's animation detail and its clips (ABI 11) ----
+// Each answers `Unsupported` on a host whose table ends before the entry (ABI 10 or older), where
+// the actor is tiered by the rule alone and a module still names its clips by trying them.
+
+inline Result actor_lod_bias(const ModuleContext* context, u32 actor, f32 bias) noexcept {
+  if (!ENGINE_HOTLOAD_HAS(context->api, actor_lod_bias)) return Result::Unsupported;
+  return context->api->actor_lod_bias(context->api->host, actor, bias);
+}
+
+// `info.count`, and clip `index`'s name and duration; `info` is reset first, so only `index` is the
+// caller's.
+inline Result actor_clip_info(const ModuleContext* context, u32 actor, u32 index,
+                              ClipInfo& info) noexcept {
+  if (!ENGINE_HOTLOAD_HAS(context->api, actor_clip_info)) return Result::Unsupported;
+  info = ClipInfo{};
+  info.index = index;
+  return context->api->actor_clip_info(context->api->host, actor, &info);
+}
+
+inline Result actor_seek(const ModuleContext* context, u32 actor, f32 seconds) noexcept {
+  if (!ENGINE_HOTLOAD_HAS(context->api, actor_seek)) return Result::Unsupported;
+  return context->api->actor_seek(context->api->host, actor, seconds);
 }
 
 // ---- the HUD's images and fonts (ABI 6) ----
