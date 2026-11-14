@@ -529,7 +529,6 @@ void hand_far(const Entry& e, scene_gen::TileCoord tile, const scene_gen::Contex
   scene_gen::FarTile far;
   far.level = level;
   far.meshes = std::move(meshes);
-  f64 reach = 0;
   for (const scene_gen::Placement& placed : instances) {
     scene_gen::FarTilePlacement fp;
     fp.mesh = placed.mesh;
@@ -537,13 +536,16 @@ void hand_far(const Entry& e, scene_gen::TileCoord tile, const scene_gen::Contex
     fp.y_mm = scene_gen::nearest_mm(placed.position.y) - y0;
     fp.z_mm = scene_gen::nearest_mm(placed.position.z) - z0;
     far.placements.push_back(fp);
-    const f64 dx = static_cast<f64>(fp.x_mm) / 1000.0, dz = static_cast<f64>(fp.z_mm) / 1000.0;
-    reach = std::max(reach, std::sqrt(dx * dx + dz * dz) +
-                                static_cast<f64>(far.meshes[placed.mesh].reach));
+    // What a later entry is handed of the ground the pieces stand on: each piece's disc, as the
+    // near ring's placements give it, and not one disc over the whole tile.
+    out.shapes.add_disc(scene_gen::nearest_mm(placed.position.x),
+                        scene_gen::nearest_mm(placed.position.z),
+                        static_cast<f64>(far.meshes[placed.mesh].reach));
   }
   scene_gen::PlacementMesh mesh;
   std::string why;
-  if (!scene_gen::far_tile_mesh(far, e.root, static_cast<f32>(reach), mesh, &why)) return;
+  // Reach 0: the far tile's own footprint is a point, its pieces' are the shapes above.
+  if (!scene_gen::far_tile_mesh(far, e.root, 0.0f, mesh, &why)) return;
   scene_gen::Placement at;
   at.position = {static_cast<f64>(x0) / 1000.0, static_cast<f64>(y0) / 1000.0,
                  static_cast<f64>(z0) / 1000.0};
