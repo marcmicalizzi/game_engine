@@ -107,23 +107,31 @@ bool ground_masks(const void* s, scene_gen::GroundMasks& out, std::string*) {
   return true;
 }
 
-void cook(bench::State& state) {
-  Fixture& f = fixture(static_cast<u32>(state.arg()));
-  if (!f.ok) return;
-  state.set_items(f.mask_tiles);
-  std::string error;
-  while (state.keep_running()) {
-    tileset::MaskBuildResult again;
-    bench::keep(tileset::ensure_mask_level(f.set, f.in, f.tmp.file("again"), std::string(), true,
-                                           again, error));
-  }
-}
-
 struct Pool {
   explicit Pool(u32 workers) : system(jobs::JobSystemConfig{.performance_workers = workers}) {}
   jobs::JobSystem system;
   static jobs::JobSystem* get(void* self) { return &static_cast<Pool*>(self)->system; }
 };
+
+// `workers` 0: the calling thread alone; otherwise a pool of so many performance workers (and the
+// calling thread), ~0u the machine's (T128: the cook on the pool).
+void cook(bench::State& state, u32 wide, u32 workers = 0) {
+  Fixture& f = fixture(wide);
+  if (!f.ok) return;
+  state.set_items(f.mask_tiles);
+  std::unique_ptr<Pool> pool;
+  tileset::MaskCookJobs on;
+  if (workers != 0) {
+    pool = std::make_unique<Pool>(workers == ~0u ? 0u : workers);
+    on = tileset::MaskCookJobs{&Pool::get, pool.get(), 0};
+  }
+  std::string error;
+  while (state.keep_running()) {
+    tileset::MaskBuildResult again;
+    bench::keep(tileset::ensure_mask_level(f.set, f.in, f.tmp.file("again"), std::string(), true,
+                                           again, error, on));
+  }
+}
 
 // The same ground as a function, read with no lock: what the entry costs when its ground is not a
 // tile set's reader.
@@ -177,7 +185,15 @@ void expand(bench::State& state, u32 wide, u32 workers, bool locked = true) {
 
 }  // namespace
 
-ENGINE_BENCH_ARGS(mask_cook, "litter.mask_cook", 1, 3) { cook(state); }
+ENGINE_BENCH_ARGS(mask_cook, "litter.mask_cook", 1, 3) {
+  cook(state, static_cast<u32>(state.arg()));
+}
+// The 3 km frame's cook on a pool of so many performance workers (and the calling thread); 0 is
+// the machine's whole pool (T128).
+ENGINE_BENCH_ARGS(mask_cook_workers, "litter.mask_cook.workers", 0, 1, 3, 7, 15) {
+  const u32 workers = static_cast<u32>(state.arg());
+  cook(state, 3, workers == 0 ? ~0u : workers);
+}
 ENGINE_BENCH_ARGS(expand_serial, "litter.expand.serial", 1, 3) {
   expand(state, static_cast<u32>(state.arg()), 0);
 }

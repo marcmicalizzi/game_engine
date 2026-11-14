@@ -2,6 +2,7 @@
 // inputs deterministically, a seam holds the same weights in both tiles, a tile naming more layers
 // than its budget is refused, and the level reads back as the field it was built from.
 #include <core/hash/hash.h>
+#include <core/jobs/job_system.h>
 #include <domain/scene_gen/ground_masks.h>
 #include <domain/scene_gen/scene_gen.h>
 #include <domain/tileset/masks.h>
@@ -489,6 +490,112 @@ TEST_CASE("tileset masks determinism: the fixture's level hashes to the pinned v
   CHECK(level.manifest().hash == std::string(k_level));
   CHECK(std::string(archive) == std::string(k_archive));
   CHECK(level.manifest().archive_bytes == bytes.size());
+}
+
+namespace {
+struct CookPool {
+  explicit CookPool(u32 workers) : system(jobs::JobSystemConfig{.performance_workers = workers}) {}
+  jobs::JobSystem system;
+  static jobs::JobSystem* get(void* self) { return &static_cast<CookPool*>(self)->system; }
+};
+}  // namespace
+
+// **The cook on the pool is the same bytes** (T128; tileset.md, "The mask level's cook"): the
+// pinned level and archive at one thread and on pools of 3 and 7 workers, whole and capped at 2
+// lanes; the budget check's report, tile for tile, likewise; and a refusal over the budget is the
+// same sentence however many threads composed it.
+TEST_CASE("tileset masks determinism: the cook on the pool writes the pinned bytes") {
+  Fixture fx;
+  const auto archive_hash = [&](const MaskBuildResult& built) {
+    MaskLevel level;
+    REQUIRE(level.open(built.manifest, fx.error));
+    std::string bytes;
+    REQUIRE(io::read_file(io::join_path(std::string(io::parent_path(built.manifest)),
+                                        level.manifest().archive),
+                          bytes) == io::Status::Ok);
+    char text[17];
+    std::snprintf(text, sizeof(text), "%016llx",
+                  static_cast<unsigned long long>(hash_bytes(bytes.data(), bytes.size())));
+    return std::string(text) + " " + level.manifest().hash;
+  };
+  MaskBuildResult serial;
+  REQUIRE_MESSAGE(build_mask_level(fx.set, fx.in, fx.tmp.file("serial"), serial, fx.error),
+                  fx.error);
+  const std::string want = archive_hash(serial);
+  CHECK(want == "75eef7ec443e0e7e fceeeee3a1295eb7");
+  MaskBudgetReport alone;
+  REQUIRE_MESSAGE(check_mask_budget(fx.set, fx.in, alone, fx.error), fx.error);
+  u32 run = 0;
+  for (const u32 workers : {3u, 7u}) {
+    CookPool pool(workers);
+    for (const u32 lanes : {0u, 2u}) {
+      MaskCookJobs cook{&CookPool::get, &pool, lanes};
+      MaskBuildResult built;
+      REQUIRE_MESSAGE(build_mask_level(fx.set, fx.in, fx.tmp.file("pool-" + std::to_string(run++)),
+                                       built, fx.error, cook),
+                      fx.error);
+      CHECK_MESSAGE(archive_hash(built) == want, workers << " workers, " << lanes << " lanes");
+      CHECK(built.tiles == serial.tiles);
+      CHECK(built.bytes == serial.bytes);
+      MaskBudgetReport report;
+      REQUIRE_MESSAGE(check_mask_budget(fx.set, fx.in, report, fx.error, cook), fx.error);
+      CHECK(report.tiles == alone.tiles);
+      CHECK(report.present == alone.present);
+      CHECK(report.largest == alone.largest);
+      CHECK(report.dropped.size() == alone.dropped.size());
+      CHECK(report.over.size() == alone.over.size());
+    }
+  }
+  // Over the budget: the refusal names the same tiles in the same order from any pool.
+  fx.in.budget = 2;
+  MaskBuildResult refused;
+  CHECK_FALSE(build_mask_level(fx.set, fx.in, fx.tmp.file("refused-serial"), refused, fx.error));
+  const std::string sentence = fx.error;
+  CookPool pool(7);
+  CHECK_FALSE(build_mask_level(fx.set, fx.in, fx.tmp.file("refused-pool"), refused, fx.error,
+                               MaskCookJobs{&CookPool::get, &pool, 0}));
+  CHECK(fx.error == sentence);
+}
+
+// **The cook reads its ground a window a tile** (T128): every point of a mask tile and the ring
+// round it from one `TileSet::surface_mm` request — the same values as `point_mm` asked point by
+// point — so the cook pins each of the set's tiles once a mask tile, where it took the set's lock
+// twice a height (five heights a point).
+TEST_CASE("tileset masks: the cook's window is point_mm to the bit, and takes no lock a height") {
+  Fixture fx;
+  // A window between and across the set's tiles, at the mask's spacing and at one between the
+  // set's own points.
+  for (const i64 spacing : {i64{1000}, i64{700}}) {
+    const u32 nx = 37, nz = 29;
+    const i64 i0 = -40, j0 = 13;
+    Vector<f64> window(nx * nz);
+    REQUIRE(fx.set.surface_mm(spacing, i0, j0, nx, nz, std::span<f64>(window.data(), nx * nz)));
+    u32 differ = 0;
+    for (u32 z = 0; z < nz; ++z)
+      for (u32 x = 0; x < nx; ++x) {
+        const f64 point = fx.set.point_mm((i0 + x) * spacing, (j0 + z) * spacing);
+        differ += std::memcmp(&point, &window[z * nx + x], sizeof(f64)) == 0 ? 0u : 1u;
+      }
+    CHECK_MESSAGE(differ == 0, "spacing " << spacing);
+  }
+  // Past the data the edge is held, as `point_mm` holds it.
+  Vector<f64> far(4);
+  REQUIRE(fx.set.surface_mm(1000, 500, 500, 2, 2, std::span<f64>(far.data(), 4)));
+  CHECK(far[0] == fx.set.point_mm(500000, 500000));
+  // The cook, with its tiles resident: the lock is taken for the misses, never once a height.
+  MaskBuildResult warm;
+  REQUIRE_MESSAGE(build_mask_level(fx.set, fx.in, fx.tmp.file("warm"), warm, fx.error), fx.error);
+  const TileSet::ReaderStats before = fx.set.reader_stats();
+  MaskBuildResult again;
+  REQUIRE_MESSAGE(build_mask_level(fx.set, fx.in, fx.tmp.file("again"), again, fx.error), fx.error);
+  const TileSet::ReaderStats after = fx.set.reader_stats();
+  MESSAGE("a warm cook of " << again.tiles << " tiles took the set's lock "
+                            << after.locks - before.locks << " times and pinned "
+                            << after.hits - before.hits << " tiles");
+  CHECK(after.misses == before.misses);
+  CHECK(after.locks - before.locks == 0);
+  // A window a mask tile, each pinning the few set tiles it spans: far fewer pins than heights.
+  CHECK(after.hits - before.hits < u64{again.tiles} * 16);
 }
 
 TEST_CASE("tileset masks: the budget check names every tile over, and the refusal names them all") {

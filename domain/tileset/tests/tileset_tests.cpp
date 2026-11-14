@@ -467,7 +467,10 @@ TEST_CASE("tileset: a second build is a hit, and another source or option is not
 
 // T126: a hit is the header's alone. The grid behind it is not read — here it is not even the grid
 // any more — and a build, which must read it, still refuses a grid its header's hash does not name.
-TEST_CASE("tileset: a hit reads the header and not the grid") {
+// T128: a hit does check the grid's size, a stat and no read, so a grid truncated or gone behind an
+// intact header is refused rather than served from the cache; one of the right size whose bytes
+// changed is still a hit (its bytes are the build's to hash).
+TEST_CASE("tileset: a hit reads the header and not the grid, and checks the grid's size") {
   test::TempDir tmp{"engine_tileset_header_hit"};
   const Heightfield field = synth_heightfield(SynthKind::ridge, 33, 1000, 1);
   std::string error;
@@ -479,8 +482,9 @@ TEST_CASE("tileset: a hit reads the header and not the grid") {
   BuildResult first;
   REQUIRE_MESSAGE(ensure_tileset(tmp.file("ridge.json"), o, "", ddc, false, first, error), error);
   CHECK_FALSE(first.hit);
-  // The grid replaced by bytes of another length: a read of it would refuse at once.
-  REQUIRE(io::write_file(tmp.file("ridge.f32"), std::string("not a grid")) == io::Status::Ok);
+  // The grid replaced by other bytes of its length: a hit, and a build refuses them by their hash.
+  REQUIRE(io::write_file(tmp.file("ridge.f32"), std::string(33u * 33u * 4u, '\x7f')) ==
+          io::Status::Ok);
   BuildResult second;
   REQUIRE_MESSAGE(ensure_tileset(tmp.file("ridge.json"), o, "", ddc, false, second, error), error);
   CHECK(second.hit);
@@ -488,11 +492,17 @@ TEST_CASE("tileset: a hit reads the header and not the grid") {
   CHECK(second.hash == first.hash);
   BuildResult forced;
   CHECK_FALSE(ensure_tileset(tmp.file("ridge.json"), o, "", ddc, true, forced, error));
+  CHECK(error.find("do not hash to data_hash") != std::string::npos);
+  // Bytes of another length: refused by the hit itself, with the sizes, and by a build.
+  REQUIRE(io::write_file(tmp.file("ridge.f32"), std::string("not a grid")) == io::Status::Ok);
+  CHECK_FALSE(ensure_tileset(tmp.file("ridge.json"), o, "", ddc, false, second, error));
+  CHECK(error.find("is 10 bytes, not 4356") != std::string::npos);
+  CHECK_FALSE(ensure_tileset(tmp.file("ridge.json"), o, "", ddc, true, forced, error));
   CHECK(error.find("its grid is") != std::string::npos);
-  // With no grid at all, the same: a hit, and a refused build.
+  // With no grid at all: refused by the hit, named missing, and by a build.
   REQUIRE(io::remove_file(tmp.file("ridge.f32")) == io::Status::Ok);
-  REQUIRE_MESSAGE(ensure_tileset(tmp.file("ridge.json"), o, "", ddc, false, second, error), error);
-  CHECK(second.hit);
+  CHECK_FALSE(ensure_tileset(tmp.file("ridge.json"), o, "", ddc, false, second, error));
+  CHECK(error.find("is missing") != std::string::npos);
   CHECK_FALSE(ensure_tileset(tmp.file("ridge.json"), o, "", ddc, true, forced, error));
 }
 
@@ -838,6 +848,80 @@ TEST_CASE("tileset: concurrent callers missing the same tiles read each once") {
   MESSAGE(set.reads() << " tiles read for 8 callers in " << stats.batches << " batches of "
                       << stats.runs << " runs; " << stats.load_waits
                       << " waits for another's read, " << stats.hits << " hits");
+}
+
+// **A resident tile is read with no lock** (T128; tileset.md, "The reader's lock"): a point whose
+// tiles are resident pins them through the cache's hints and lets them go with no lock, and its
+// hit is counted in the thread's own shard. Before, every point took the lock twice — once to pin,
+// once to let go — and raised one counter every thread shared: T125 measured the litter's whole
+// read on a tile set slower on eight threads than on one (38 ms, 90 ms), and 5.1 ms with no lock.
+TEST_CASE("tileset: a resident tile's points take no lock") {
+  SmallSet s;
+  TileSet set;
+  REQUIRE_MESSAGE(set.open(s.built.manifest, s.error), s.error);
+  const Grid expected = grid_of(s.field, s.options);
+  REQUIRE(set.prefetch_level(0) == set.manifest().levels[0].tiles);
+  const TileSet::ReaderStats before = set.reader_stats();
+  u32 differ = 0;
+  u32 asked = 0;
+  for (i64 z = -16000; z <= 32000; z += 1500)
+    for (i64 x = -24000; x <= 24000; x += 1500) {
+      differ +=
+          set.point_mm(x, z) == static_cast<f64>(expected.at_world(x / 500, z / 500)) ? 0u : 1u;
+      ++asked;
+    }
+  const TileSet::ReaderStats after = set.reader_stats();
+  MESSAGE(asked << " points: " << after.locks - before.locks << " locks, "
+                << after.hits - before.hits << " hits");
+  CHECK(differ == 0);
+  CHECK(after.locks == before.locks);
+  CHECK(after.misses == before.misses);
+  CHECK(after.hits - before.hits >= asked);
+}
+
+// **No lock, and still never a wrong height** (T128): eight threads ask points all over the set
+// through a cache of six tiles, so tiles are reclaimed under readers' feet all the while — the
+// compare-and-swap that reclaims an entry against the pins readers raise with no lock — and every
+// answer is the one a reader alone gives, bit for bit, with no failed read.
+TEST_CASE("tileset: points on many threads through a cache smaller than the set agree") {
+  SmallSet s;
+  TileSet reference;
+  REQUIRE_MESSAGE(reference.open(s.built.manifest, s.error), s.error);
+  const u64 payload = u64{s.options.cells + 3} * (s.options.cells + 3) * sizeof(i32);
+  TileSet set(payload * 6);
+  REQUIRE_MESSAGE(set.open(s.built.manifest, s.error), s.error);
+  constexpr u32 k_threads = 8;
+  constexpr u32 k_points = 4000;
+  // A scattered, seeded walk over the set and a little past it, at whole millimetres between the
+  // finest's points: the same points every run.
+  const auto point_of = [](u32 thread, u32 k, i64& x, i64& z) {
+    const u64 h = hash_combine(hash_combine(k_hash_seed, thread), k);
+    x = -26000 + static_cast<i64>(h % 52001);
+    z = -18000 + static_cast<i64>((h >> 24) % 52001);
+  };
+  std::vector<std::thread> threads;
+  std::atomic<u32> wrong{0};
+  for (u32 t = 0; t < k_threads; ++t) {
+    threads.emplace_back([&, t] {
+      for (u32 k = 0; k < k_points; ++k) {
+        i64 x = 0, z = 0;
+        point_of(t, k, x, z);
+        const f64 got = set.point_mm(x, z);
+        const f64 want = reference.point_mm(x, z);
+        if (std::memcmp(&got, &want, sizeof(f64)) != 0) wrong.fetch_add(1);
+      }
+    });
+  }
+  for (std::thread& t : threads)
+    t.join();
+  const TileSet::ReaderStats stats = set.reader_stats();
+  MESSAGE(u64{k_threads} * k_points << " points on " << k_threads << " threads: " << stats.hits
+                                    << " hits, " << stats.misses << " misses, "
+                                    << set.cache_stats().evictions << " evictions, " << stats.locks
+                                    << " locks");
+  CHECK(wrong.load() == 0);
+  CHECK(set.failures() == 0);
+  CHECK(set.cache_stats().evictions > 0);
 }
 
 namespace {

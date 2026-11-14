@@ -250,7 +250,7 @@ engine-content ruins-block-kit <directory> [--fidelity low|mid|high] [--thicknes
 engine-content terrain <scene.json> --tile <x,z> [--time <s>] [--cells <n>] [--detail full|dunes|coarse|floor] [--tile-size <m>] [--crests] [--storms] [--stats [--stats-side <m>] [--stats-spacing <m>] [--jobs <n>]]
 engine-content terrain-synth <out.json> --kind ridge|basin|steps|flat|mountain --size <n> --spacing-mm <s> [--seed <n>] [--origin-mm <x,z>]
 engine-content terrain-tiles <heightfield.json> [<out dir>] [--ddc <root>] [--cells <n>] [--ring-spacing-mm <s>] [--far-ratio <r>] [--far-levels <n>] [--vertical-scale <v>] [--offset-mm <x,y,z>] [--force]
-engine-content terrain-masks <scene.json> [<out dir>] [--ddc <root>] [--force] [--write-priors <dir>]
+engine-content terrain-masks <scene.json> [<out dir>] [--ddc <root>] [--force] [--jobs <n>] [--write-priors <dir>]
 engine-content masks check <scene.json> [--ddc <root>]
 engine-content ground sample <scene.json> (--point <x,z[,radius]> ... | --points <file.jsonl>) [--skirt <m>] [--uncut] [--placements] [--ddc <root>]
 engine-content terrain-read <manifest.json | dir> [--pattern level|windows|points|pool|queue|files] [--level <n>] [--depth <n>] [--run-kib <n>] [--window <n>] [--cache-mib <n>] [--pool-workers <n>] [--unbuffered] [--masks]

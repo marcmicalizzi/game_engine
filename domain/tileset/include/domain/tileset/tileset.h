@@ -154,8 +154,9 @@ bool ensure_tileset(const std::string& heightfield_json, const BuildOptions& opt
 
 // **A built tile set, read back** (docs/subsystems/tileset.md, "The reader"). Tiles are read on
 // first ask and retained within a bounded cache. **The reader never holds its lock across work**
-// ("The reader's lock"): a request pins the tiles it reads under a short lock on the cache's index
-// and evaluates from them with no lock, a tile not resident is read from disk outside the lock
+// ("The reader's lock"): a request pins the tiles it reads — a resident one with no lock at all,
+// through the cache's hints (T128), else under a short lock on the cache's index — and evaluates
+// from them with no lock, a tile not resident is read from disk outside the lock
 // with an in-flight marker so two callers never read it twice, and an entry a request pins is never
 // evicted. **A window's misses are one batch** ("Reading a level"): claimed together and read from
 // the level's archive with up to `ReadOptions::depth` range reads in flight. Not movable:
@@ -210,6 +211,13 @@ class TileSet {
   // f64; `height_mm` the float32 metres, one division of it.
   f64 point_mm(i64 x_mm, i64 z_mm) const noexcept;
   f32 height_mm(i64 x_mm, i64 z_mm) const noexcept;
+  // **The same surface over a window, as one request** (T128): `out[z * nx + x]` is
+  // `point_mm((i0 + x) * spacing_mm, (j0 + z) * spacing_mm)` to the bit, its tiles' misses read
+  // as one batch first and pinned once for the window — what a caller that asks every point of a
+  // patch (the mask level's cook) asks instead of a point at a time. NaN where `point_mm` is.
+  // False only for a set not open, a spacing under 1 or an `out` not `nx * nz`.
+  bool surface_mm(i64 spacing_mm, i64 i0, i64 j0, u32 nx, u32 nz,
+                  std::span<f64> out) const noexcept;
 
   // **Reading ahead, as one batch**: the tiles of level `level` (the manifest's order, the finest
   // first) in the rectangle [tx0, tx1] × [tz0, tz1], or the whole level in file order — the shape
@@ -270,9 +278,12 @@ class TileSet {
   const i32* tile(const Level& level, i32 tx, i32 tz, Pins& pins) const noexcept;
   f64 value(const Level& level, i64 i, i64 j, Pins& pins) const noexcept;
   f64 point_mm_pinned(i64 x_mm, i64 z_mm, Pins& pins) const noexcept;
-  void unpin(Pins& pins) const noexcept;
-  void unpin_locked(Pins& pins) const noexcept;
-  u32 claim_locked(i32 tx, i32 tz, i64 level, Pins* pins) const noexcept;
+  void unpin(Pins& pins) const noexcept;  // takes no lock (T128)
+  // Whether a hint names (tx, tz) resident, with no lock and no pin: what a window's batch skips
+  // before it takes the lock to claim its misses. A guess that can be stale either way; a tile it
+  // wrongly calls resident is read alone when it is asked.
+  bool hinted(const Level& level, i32 tx, i32 tz) const noexcept;
+  u32 claim_locked(const Level& level, i32 tx, i32 tz, Pins* pins) const noexcept;
   // Claims and reads, as one batch, the tiles of `keys` (archive keys, ascending) that are neither
   // resident nor being read, at most `limit`; returns the tiles read.
   u32 fetch(const Level& level, std::span<const u64> keys, u32 limit) const noexcept;
