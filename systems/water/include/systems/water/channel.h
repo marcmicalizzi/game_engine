@@ -283,13 +283,16 @@ ChannelEdge channel_edge_exposed(const Channel& channel, const ChannelMesh& mesh
                                  f32 clear_m = 0.001f);
 
 // **A channel's water at a point** (what a walker, a game module's water query or a sound source
-// asks; nothing in the engine calls it yet — roadmap A43 points its query here). False where the
+// asks; a game module's `water_at` asks it through `water::WaterQuery`, query.h). False where the
 // point is not over the channel's water: outside the wet reach, on a stretch that is not drawn, or
 // where the ground stands at or above the level. `level_m` is the surface's world height,
 // `depth_m` the level less the ground at the point, `velocity` the surface's, m/s, along the
 // line's heading there (the section's mean times the surface factor and the lateral share of the
 // point's depth; on a fall the nappe's). Linear in the channel's stations: a caller with many
-// channels and many points keeps its own index of which channel is near.
+// channels and many points keeps its own index of which channel is near, and may name the
+// stretches [first, last] the nearest place is looked for among (`channel_at`'s), which answers
+// as the whole line does when they hold every stretch within the channel's reach of the point
+// (`WaterQuery`'s index, query.h).
 struct ChannelSample {
   f64 level_m = 0.0;
   f32 depth_m = 0.0f;
@@ -298,7 +301,8 @@ struct ChannelSample {
   bool fall = false;
 };
 bool channel_sample(const Channel& channel, const ChannelLine& line,
-                    const scene_gen::Ground& ground, WorldPos at, ChannelSample& out) noexcept;
+                    const scene_gen::Ground& ground, WorldPos at, ChannelSample& out,
+                    u32 first = 0, u32 last = 0xffffffffu) noexcept;
 
 // The generator's parameters as the reader hands them: `{"channels": [<WaterChannel>...]}`. Its
 // `expand` makes one mesh and one placement per channel, in order.

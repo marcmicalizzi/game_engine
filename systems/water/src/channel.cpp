@@ -803,12 +803,12 @@ ChannelEdge channel_edge_exposed(const Channel& c, const ChannelMesh& mesh,
 }
 
 bool channel_sample(const Channel& c, const ChannelLine& line, const scene_gen::Ground& ground,
-                    WorldPos at_world, ChannelSample& out) noexcept {
+                    WorldPos at_world, ChannelSample& out, u32 first, u32 last) noexcept {
   out = ChannelSample{};
   if (c.points.size() < 2) return false;
   const f32 x = static_cast<f32>(at_world.x - c.origin.x);
   const f32 z = static_cast<f32>(at_world.z - c.origin.z);
-  const ChannelAt at = channel_at(c, line, x, z);
+  const ChannelAt at = channel_at(c, line, x, z, first, last);
   if (!(at.wet_inside > 0.0f)) return false;
   const f64 level = c.origin.y + static_cast<f64>(at.level);
   f64 depth = static_cast<f64>(at.depth_m);

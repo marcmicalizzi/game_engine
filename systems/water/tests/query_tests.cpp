@@ -1,7 +1,8 @@
 // The water at a point (query.h; docs/subsystems/water.md, "The water at a point"; roadmap A43): a
 // body answered from its depth map — five points of a pond agreeing with the map's own texels and
-// with the ground under it — a channel answered from its description, dry where neither is, and
-// the answers pinned so every toolchain gives the same bits. No device.
+// with the ground under it — a channel answered from its solved stations (the flow fixture's), the
+// channels' index answering what every stretch answers over 300 channels, dry where neither is,
+// and the answers pinned so every toolchain gives the same bits. No device.
 #include <core/hash/hash.h>
 #include <core/math/math.h>
 #include <core/math/world.h>
@@ -17,6 +18,8 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+
+#include "channel_fixture.h"
 
 using namespace engine;
 
@@ -49,19 +52,43 @@ water::Body pond() {
   return body;
 }
 
-// A straight stream along +x from (0, 1, 0) to (40, 0, 0): 3 m wide and 0.6 m deep at its head,
-// 4 m and 0.8 m at its foot, a slope of 0.025.
-water::Channel stream() {
-  scene::WaterChannel c;
-  c.name = "stream";
-  c.points = {WorldPos{0.0, 1.0, 0.0}, WorldPos{40.0, 0.0, 0.0}};
-  c.width_m = {3.0f, 4.0f};
-  c.depth_m = {0.6f, 0.8f};
-  c.slope = {0.025f, 0.025f};
+// A solved channel as the stream row's tests hold one (channel_fixture.h: the three channels
+// `engine-content flow fixture` writes, solved by `flow solve`, and their ground).
+water::Channel fixture_channel(const scene::WaterChannel& block) {
   water::Channel out;
   std::string error;
-  REQUIRE_MESSAGE(water::read_channel(c, out, &error), error);
+  REQUIRE_MESSAGE(water::read_channel(block, out, &error), error);
   return out;
+}
+
+// The pond's bowl north of z = 30, the flow fixture's trenches south of it.
+f64 bowl_and_trenches(const void* context, i64 x_mm, i64 z_mm) noexcept {
+  return z_mm > 30000 ? bowl(context, x_mm, z_mm)
+                      : channel_fixture::ground_fn(context, x_mm, z_mm);
+}
+
+scene_gen::Ground both_grounds() {
+  scene_gen::Ground g;
+  g.surface_fn = &bowl_and_trenches;
+  return g;
+}
+
+// `count` copies of the fixture's three channels, laid out on a grid 120 m apart in x and 80 m in
+// z, each named for its place.
+void many_channels(u32 count, water::WaterQuery& query) {
+  const scene::WaterChannel kinds[3] = {channel_fixture::uniform(), channel_fixture::step(),
+                                        channel_fixture::mouth()};
+  for (u32 k = 0; k < count; ++k) {
+    scene::WaterChannel block = kinds[k % 3];
+    const f64 dx = 120.0 * static_cast<f64>((k / 3) % 10);
+    const f64 dz = 80.0 * static_cast<f64>((k / 3) / 10);
+    for (WorldPos& p : block.points) {
+      p.x += dx;
+      p.z += dz;
+    }
+    block.name += "-" + std::to_string(k);
+    query.add_channel(fixture_channel(block));
+  }
 }
 
 u64 bits(u64 h, f64 v) {
@@ -86,8 +113,8 @@ TEST_CASE("water: a pond's water at five points is its depth map's, and the grou
   water::build_depth_map(body, mesh, ground, map);
   REQUIRE(map.size > 0u);
   water::WaterQuery query;
-  query.set_ground(&ground);
   query.add_body(body, map);
+  query.prepare(&ground);
   // Five points: the centre, four more on and between the map's texel centres, all under water.
   const f64 points[5][2] = {
       {100.0, 50.0}, {104.0, 50.0}, {97.0, 46.0}, {100.3, 57.1}, {108.2, 52.6}};
@@ -136,53 +163,129 @@ TEST_CASE("water: a pond's water at five points is its depth map's, and the grou
   CHECK(dry.depth == 0.0f);
 }
 
-TEST_CASE("water: a channel's water is its description's, flowing down its line") {
-  const water::Channel c = stream();
+TEST_CASE("water: a channel's water is its solve's, flowing down its line") {
+  const scene_gen::Ground ground = channel_fixture::ground();
+  const water::Channel c = fixture_channel(channel_fixture::uniform());
+  const water::ChannelLine line = water::channel_line(c);
   water::WaterQuery query;
   query.add_channel(c);
-  // Mid-stream, on the line: the surface half way down, the centre's depth, Manning's speed along
-  // +x times the profile's centre share (C = 1.045718 at r = 1).
+  query.prepare(&ground);
+  // On the line at its third station (24, -20): the solved level, the level less the ground
+  // (0.5 m on the trench's flat bed), and the surface's speed along +x: the section's solved mean
+  // times 7/6 (the vertical's surface over its mean) and the vertical's share for its depth, along
+  // the stretch's fall of 0.01.
+  const WorldPos on{24.0, 0.0, -20.0};
   water::WaterPoint w;
-  query.sample(WorldPos{20.0, 0.0, 0.0}, w);
+  query.sample(on, w);
   REQUIRE(w.wet);
   CHECK(w.source == 2u);
   CHECK(w.index == 0u);
-  CHECK(w.level == doctest::Approx(0.5).epsilon(1.0e-6));
-  CHECK(w.depth == doctest::Approx(0.7f).epsilon(1.0e-5));
-  const f64 mean = static_cast<f64>(water::manning_speed(0.04f, 0.7f, 0.025f));
-  CHECK(w.velocity.x == doctest::Approx(mean * water::k_channel_profile_mean).epsilon(1.0e-5));
-  CHECK(w.velocity.y == 0.0f);
-  // A metre off the line, of 3.5 m: the parabola's share 1 - (2/3.5)^2 of the depth, slower.
+  CHECK(w.level == doctest::Approx(10.34).epsilon(1.0e-6));
+  const f64 under = channel_fixture::ground_m(24.0, -20.0);
+  CHECK(w.depth == doctest::Approx(10.34 - under).epsilon(1.0e-4));
+  const f64 hydraulic = static_cast<f64>(water::station_hydraulic_depth(c, 2));
+  const f64 surface = 1.2794 * water::k_channel_surface_factor *
+                      water::lateral_speed_share(static_cast<f64>(w.depth), hydraulic) /
+                      std::sqrt(1.0 + 0.01 * 0.01);
+  CHECK(w.velocity.x == doctest::Approx(surface).epsilon(1.0e-4));
+  CHECK(std::fabs(w.velocity.y) < 1.0e-6f);
+  // It is `channel_sample`'s answer, bit for bit.
+  water::ChannelSample s;
+  REQUIRE(water::channel_sample(c, line, ground, on, s));
+  CHECK(w.level == s.level_m);
+  CHECK(w.depth == s.depth_m);
+  CHECK(w.velocity.x == s.velocity.x);
+  CHECK(w.velocity.y == s.velocity.z);
+  // 1.2 m off the line the bank has risen 0.2 m: shallower, and slower by the vertical's share.
   water::WaterPoint side;
-  query.sample(WorldPos{20.0, 0.0, 1.0}, side);
+  query.sample(WorldPos{24.0, 0.0, -18.8}, side);
   REQUIRE(side.wet);
-  const f64 r = 1.0 - (2.0 / 3.5) * (2.0 / 3.5);
-  CHECK(side.depth == doctest::Approx(0.7 * r).epsilon(1.0e-4));
+  CHECK(side.level == w.level);
+  CHECK(side.depth == doctest::Approx(0.3).epsilon(1.0e-3));
   CHECK(side.velocity.x < w.velocity.x);
-  CHECK(side.velocity.x == doctest::Approx(mean * water::lateral_speed_share(r)).epsilon(1.0e-4));
-  // Past the edge, and past the foot: dry.
+  // Past the wet reach (1.5 m), and past the last station: dry.
   water::WaterPoint dry;
-  query.sample(WorldPos{20.0, 0.0, 2.0}, dry);
+  query.sample(WorldPos{24.0, 0.0, -18.4}, dry);
   CHECK_FALSE(dry.wet);
-  query.sample(WorldPos{45.0, 0.0, 0.0}, dry);
+  query.sample(WorldPos{55.0, 0.0, -20.0}, dry);
   CHECK_FALSE(dry.wet);
+  // A described ribbon left from before the solve (a level, widths, depths, a slope) is refused
+  // at load: there is nothing for a module's question to answer from.
+  scene::WaterChannel laid = channel_fixture::uniform();
+  laid.discharge_m3s.clear();
+  laid.speed_mps.clear();
+  laid.froude.clear();
+  laid.wet_left_m.clear();
+  laid.wet_right_m.clear();
+  laid.flags.clear();
+  water::Channel refused;
+  CHECK_FALSE(water::read_channel(laid, refused, nullptr));
+}
+
+TEST_CASE("water: the channels' index answers what every stretch answers, over 300 channels") {
+  // Prepared, a point asks its cell's spans; never prepared, every channel's every stretch. The
+  // two must agree to the bit everywhere: on the lines, at the banks, past the ends, between.
+  water::WaterQuery indexed;
+  water::WaterQuery linear;
+  many_channels(300, indexed);
+  many_channels(300, linear);
+  indexed.prepare(nullptr);
+  u32 wet = 0;
+  for (u32 k = 0; k < 20000; ++k) {
+    // A walk that crosses every slot's three lines at many offsets.
+    const f64 x = 4.0 + 0.0613 * static_cast<f64>(k);
+    const f64 z = -23.0 + 0.0417 * static_cast<f64>((k * 7919u) % 19000u);
+    water::WaterPoint a;
+    water::WaterPoint b;
+    indexed.sample(WorldPos{x, 0.0, z}, a);
+    linear.sample(WorldPos{x, 0.0, z}, b);
+    REQUIRE(a.wet == b.wet);
+    CHECK(a.level == b.level);
+    CHECK(a.depth == b.depth);
+    CHECK(a.velocity.x == b.velocity.x);
+    CHECK(a.velocity.y == b.velocity.y);
+    CHECK(a.index == b.index);
+    wet += a.wet ? 1u : 0u;
+  }
+  MESSAGE(wet << " of 20000 points wet");
+  CHECK(wet > 500u);
+  // The cost, for the page: a thousand questions over the 300 channels, along the slots' lines.
+  for (water::WaterQuery* q : {&indexed, &linear}) {
+    const auto t0 = std::chrono::steady_clock::now();
+    u32 hits = 0;
+    for (u32 k = 0; k < 1000; ++k) {
+      water::WaterPoint w;
+      const f64 x = 6.0 + 1.19 * static_cast<f64>(k);
+      const f64 z = -20.0 + 0.04 * static_cast<f64>(k % 9);
+      q->sample(WorldPos{x, 0.0, z}, w);
+      hits += w.wet ? 1u : 0u;
+    }
+    const f64 us =
+        std::chrono::duration<f64, std::micro>(std::chrono::steady_clock::now() - t0).count();
+    MESSAGE("1000 water questions over 300 channels, "
+            << std::string(q == &indexed ? "indexed" : "every stretch") << ": " << us << " us, " << hits
+            << " wet");
+  }
 }
 
 TEST_CASE("water: a module's water answers are pinned, the same from every toolchain") {
-  const scene_gen::Ground ground = bowl_ground();
+  const scene_gen::Ground ground = both_grounds();
   const water::Body body = pond();
   water::Mesh mesh;
   water::build_mesh(body, ground, mesh);
   water::DepthMap map;
   water::build_depth_map(body, mesh, ground, map);
   water::WaterQuery query;
-  query.set_ground(&ground);
   query.add_body(body, map);
-  query.add_channel(stream());
+  query.add_channel(fixture_channel(channel_fixture::uniform()));
+  query.add_channel(fixture_channel(channel_fixture::step()));
+  query.add_channel(fixture_channel(channel_fixture::mouth()));
+  query.prepare(&ground);
   u64 h = 0;
   for (u32 k = 0; k < 64; ++k) {
-    // A walk across the pond and down the stream.
-    const f64 x = k < 32 ? 88.0 + 0.77 * static_cast<f64>(k) : 1.3 * static_cast<f64>(k - 32);
+    // A walk across the pond, and down the step's channel over its fall and its jump.
+    const f64 x =
+        k < 32 ? 88.0 + 0.77 * static_cast<f64>(k) : 8.0 + 1.6 * static_cast<f64>(k - 32);
     const f64 z =
         k < 32 ? 50.0 + 0.31 * static_cast<f64>(k) : 0.05 * static_cast<f64>(k - 32) - 0.8;
     water::WaterPoint w;
@@ -197,10 +300,12 @@ TEST_CASE("water: a module's water answers are pinned, the same from every toolc
   char text[32];
   std::snprintf(text, sizeof text, "%016llx", static_cast<unsigned long long>(h));
   MESSAGE("the answers' hash: " << text);
-  // Taken on MSVC at x86-64-v3 (2026-11-14); GCC and Clang in the Linux containers reproduce it.
-  CHECK(std::string(text) == "dbad2ab66666308d");
+  // Re-pinned at the join of A43 with S106 (2026-11-14): a channel now answers from its solved
+  // stations through `channel_sample`, and the walk goes down the flow fixture's step instead of
+  // a laid stream. Taken on MSVC at x86-64-v3; MSVC release and the Linux container reproduce it.
+  CHECK(std::string(text) == "588dd6b257de7005");
 
-  // The cost, for the page: a thousand questions in one step.
+  // The cost, for the page: the same thousand questions A43 measured, along the pond's line.
   const auto t0 = std::chrono::steady_clock::now();
   u32 wet = 0;
   for (u32 k = 0; k < 1000; ++k) {
@@ -210,6 +315,6 @@ TEST_CASE("water: a module's water answers are pinned, the same from every toolc
   }
   const f64 us =
       std::chrono::duration<f64, std::micro>(std::chrono::steady_clock::now() - t0).count();
-  MESSAGE("1000 water questions (a pond and a stream): " << us << " us, " << wet << " wet");
+  MESSAGE("1000 water questions (a pond and three channels): " << us << " us, " << wet << " wet");
   CHECK(wet > 0u);
 }
