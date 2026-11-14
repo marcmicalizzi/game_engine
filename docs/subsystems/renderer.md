@@ -4964,6 +4964,83 @@ moved inward and not yet built again — which the quarter tile in the floor cov
 authored form; and the step to nothing, which happens only under `min_px`. An offered form draws
 what its maker says it draws, and its hand-over is its maker's to show.
 
+**Where the 0.9 ms went.** Per pass, the median over the walk's frames (the same pair of runs):
+the hardware rasterizer 0.105 → 0.613 ms, the top-level records 0.081 → 0.393, the
+deformed-vertex pool's pass 0.060 → 0.375, the ray chain's ranges 0.014 → 0.083 and `rt` 0.594 →
+0.779; the cull fell 0.394 → 0.222 and the chain's records 0.252 → 0.106. Each rise follows a
+count the newly drawn tiles brought, not the forms: instances 121,653 → 902,977 (the top-level
+records are written a thread an instance every frame) and visible entries 117,780 → 785,188 (the
+rasterizer and the pool's pass walk the cull's visible list, the pool's pass even where nothing
+deforms); the cull, which runs a thread a pair, fell with the pairs, 16.3 M → 5.6 M. **Like for
+like** — the same scene with its rings at 1.25, 3 and 6 tiles, so both binaries draw the same 5,
+27 and 99 tiles and withhold none, over the same walk (2026-11-14, the GPU lease held, other agents'
+work at 20 to 43% of the CPU): the frame 1.083 → 0.563 ms median, the cull 0.271 → 0.058 (pairs
+11.8 M → 1.9 M), `rt` 0.536 → 0.218 (its records 0.236 → 0.034, its emit 0.142 → 0.025), and the
+rasterizer, the pool's pass, the top-level records and the resolve unchanged (0.069, 0.039, 0.068,
+0.17), with the same 74,194 visible entries: a cut draws what its source draws from there. So the
+forms halve the frame's cost on the tiles both draw, and the after's 2.2 ms on the full rings is
+the 1,173 tiles the cap withheld before, drawn.
+
+**On the forest staging** (2026-11-14, the owner's settings: 3840 × 2160, `--raster rt --shadows rt
+--no-lights --time-of-day 15 --lod 1 --terrain-tiles --terrain-far 6`, bounce GI, micromaps,
+flora motion; six frames at (180, 200, 1509) looking north; `bin-base` 486AC137…, `bin-final`
+52C394FD…; the scene file 184,799,237 bytes, written 2026-11-12 21:01; the machine shared with
+other rows' builds, GPU suites and forest loads). Both draw every tile (5, 22, 285 and 815 by
+ring) and withhold none from this camera:
+
+| ring | pairs, before | pairs, after | the litter's, before → after |
+|---|---:|---:|---:|
+| 0 | 5,181,536 | 5,181,536 | — (none placed near this camera) |
+| 1 | 469,245 | 469,245 | — |
+| 2 | 2,509,504 | 963,486 | 1,556,292 → 10,274 (10,274 instances) |
+| 3 | 6,113,954 | 1,822,418 | 4,322,776 → 31,240 (28,984 instances) |
+| tail | 14,274,239 | 8,436,685 | 5,879,068 → 41,514, of the cap's 16,777,216 |
+
+The litter went from 41% of the tail to under 1%: every far patch is one or two clusters, and
+none was under `min_px` there. What holds the tail now is what this rule does not touch: the
+sward's cards (5,352,736, 64% of the after's tail, nearly all in the first ring) and the
+understory ferns (`fern-arch` 1,630,928 and `fern-creep` 472,857, 25%, 64 and 33 pairs an
+instance in the fourth ring as in the third). Both are flora recipes, which carry a motion
+contract, and a mesh that sways keeps itself in every ring (below); that the ferns are kept for
+that reason, and not because their entry picks its own forms, is read from the scene file and not
+traced through the load. They are the next row's: a swaying mesh's far form that stands still.
+
+**The forest walked** (the same settings, a 135 m walk north from (180, 200, 1509) at 4.5 m/s, 900
+frames, one flight each; free commit 56 and 57 GB at the start, 8.5 and 14.3 GB at its lowest
+with other rows' forest loads beside): the frame's GPU median 12.40 → 12.09 ms (p99 16.54 →
+15.87), the cull 0.541 → 0.326, `rt` 1.741 → 1.659, the trace 1.042 → 0.939, the resolve 7.36
+and 7.40 (the frame is the resolve's at this resolution); the tail at the walk's end 15,259,104 →
+9,667,470 pairs, three fourth-ring tiles withheld before and none after; 25 pair-budget
+withholding lines → 0, and 150 mesh-room lines → 54 (the room is T131's). Ring changes: 85 tiles
+came in and 77 changed ring in both, and both built the same 193 tiles: **on the forest a form
+change adds no rebuild**, because every tile there holds an entry that draws its rings differently
+already (`representation`), so the base rebuilt them too. The builds are on the frame's thread
+(`change_ring` → `take` → `build`), 2,042 and 1,992 ms of tile work, 21 frames over 50 ms of it in
+each (at most 85 ms), about 10 ms a tile. Frames over 50 ms in all: 23 → 24, and the 20 over
+100 ms (600 to 850 ms) fall on the same frames in both binaries with no tile work and a 2 ms
+frame of their own: not this row's, handed to T131.
+
+**What a ring change costs, and the swap it could be.** Where the base did not rebuild — the
+engine's litter scene, whose only entries draw every ring alike — the forms do: on the like-for-like
+walk 34 → 73 tiles built, 151 → 278 ms on the frame's thread (each about 3.8 ms, its generators
+called again). The placements do not move, so the change could rewrite each instance's mesh
+through `pick_ring_form` with no generator call; that needs the block to keep each placement's
+source mesh and scale, those drawn as nothing included, and `change_ring` to rewrite in place
+where `redraws` finds only forms differing — when a tile is built, which is T131's — so it is a
+row, G202 ([world](world.md#a-placements-form-by-ring)).
+
+**What it looks like.** The litter scene with the generated sets (`engine-content matgen`; the
+ground `ground/soil`, stochastic at 2 m; `load.materials` the worktree's `content/materials`), at
+1920 × 1080, from 1.7 m across the inner ring's edge, from 12 m, and to the horizon: before and
+after differ in 147, 381 and 309 pixels of 2,073,600, every one in the band of the picture where
+the third and fourth rings lie — the far litter the cap withheld, now drawn — at most 37 of 255 a
+channel. That is the visible gain, and it is next to none: a far patch is a pixel or two. Beside a
+photographed pine floor (the reels' r52) what a person objects to is not the rings: the litter is
+scattered orange specks on a near-black soil where the photograph is a continuous rust carpet
+that hides the ground; each patch is a disc with a hard edge, with nothing gathered at a stem or a
+log; and the far floor goes one flat grey, since what carries a litter's colour to the horizon is
+the ground's own layer under it, not placements a pixel wide.
+
 **What an imported mesh gets, and what a scene with none of it costs.** Every input is what any mesh
 has or can be measured for — its DAG, its size, a form its container offers — never which
 generator placed it, so an imported boulder scattered by a scene file is cut, chosen and dropped by
