@@ -131,8 +131,7 @@ bool bake_far_form(const ClusterLodMesh& mesh, std::span<const u32> material, Fa
     Vector<FarFormVertex> sorted;
     sorted.reserve(vertices.size());
     for (u32 k = 0; k < keyed.size(); ++k) {
-      const bool same =
-          k > 0 && std::memcmp(keyed[k].w, keyed[k - 1].w, sizeof(keyed[k].w)) == 0;
+      const bool same = k > 0 && std::memcmp(keyed[k].w, keyed[k - 1].w, sizeof(keyed[k].w)) == 0;
       if (!same) sorted.push_back(vertices[keyed[k].v]);
       moved[keyed[k].v] = sorted.size() - 1;
     }
@@ -236,13 +235,14 @@ bool bake_far_form(const ClusterLodMesh& mesh, std::span<const u32> material, Fa
     }
   }
   // **What the mesh's own DAG never moved stays where it is** (geometry.md, "The far form meets
-  // its neighbour"). A mesh built in pieces that meet edge to edge — a deposit's pieces and patches,
-  // a terrain's chunks — is usually closed (walls round it, so it stays two-manifold), so it has no
-  // open border for `meshopt_SimplifyLockBorder` to hold, and its builder locked the cut instead
-  // (`AttributeSource::locked`). A lock is never collapsed, so every locked vertex is still a vertex
-  // of the DAG's roots (the clusters with no coarser version); the container does not record the
-  // locks, but the roots do. Every finest vertex at a root vertex's point is locked here too, so
-  // two neighbours' far forms meet wherever their near forms do. It locks more than the builder
+  // its neighbour"). A mesh built in pieces that meet edge to edge — a deposit's pieces and
+  // patches, a terrain's chunks — is usually closed (walls round it, so it stays two-manifold), so
+  // it has no open border for `meshopt_SimplifyLockBorder` to hold, and its builder locked the cut
+  // instead
+  // (`AttributeSource::locked`). A lock is never collapsed, so every locked vertex is still a
+  // vertex of the DAG's roots (the clusters with no coarser version); the container does not record
+  // the locks, but the roots do. Every finest vertex at a root vertex's point is locked here too,
+  // so two neighbours' far forms meet wherever their near forms do. It locks more than the builder
   // did (each part's coarsest vertices), which costs triangles only where the DAG's roots are
   // finer than the far form would go, and moves nothing a neighbour shares.
   {

@@ -3992,7 +3992,8 @@ where it is drawn. What it costs and how its hand-over reads are on the deposits
 
 **What it costs to make and to hold** (the forest tile, rocks.md's table): 2.5 s of members cold
 from their cached containers (15 far forms baked, none carried) and 0.8 s to build, debug, on the
-pool; 33 ms read back. It holds one admission into the room (2,261 clusters, 5.7 MiB) and **no near
+pool; 33 ms read back. It holds one admission into the room (1,430 clusters, 3.6 MiB since G198's
+second pass; 2,261 and 5.7 MiB at the first) and **no near
 mesh**: a member is built only when its container is not in the cache, once, and its streams are let
 go as soon as its far form is read.
 
@@ -4034,7 +4035,7 @@ levels (1,235 clusters), of which the rule drew **3**:
 |---|---:|---:|
 | base `61ccce67`, cold / warm | 14.2 s / 0.21 s | none |
 | first pass, cold / warm (baked every load) | 14.4 s / 1.15 s | 0.73 s / 0.80 s |
-| this pass, cold / warm (kept in the cache) | PENDING | PENDING |
+| this pass, cold / warm (kept in the cache) | 15.5 s / 0.66 s | 0.90 s (7 baked, 19 built and written) / 0.35 s (19 read) |
 
 So the first pass made a warm load of this scene five times longer: every load baked every rigid
 resident mesh's far form and built every offered level's DAG again. **Each offered level is now kept
@@ -4043,7 +4044,10 @@ form it came from, under a key over the mesh's source identity (a glTF's file ha
 a container records of what it was built from), the load's LOD options, `k_far_form_version` and
 `k_far_tile_build_version`; a warm load reads it and neither bakes nor builds. A mesh with no source
 identity at all is baked every load, as before. `far offered: a resident mesh's offered levels are
-kept in the derived-data cache` holds the entries and the same forms on the second load.
+kept in the derived-data cache` holds the entries and the same forms on the second load. What a warm
+load still pays, 0.35 s here, is reading 19 containers of which the rule draws 3; offering only the
+levels that can win a ring (the rule's own comparison before a level is built) is the row that
+would take it to the reads of those 3.
 
 **And the same bytes cold and warm.** The first bake followed its input's order: a DAG built in the
 load and the same DAG read back from its container lay their clusters out differently (leaves

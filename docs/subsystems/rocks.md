@@ -1828,12 +1828,14 @@ instance of a sixth of its meshes' clusters past the first ring`:
 | its 15 meshes (G191, every ring) | 15 | 13,939 | 35.0 MiB | 736,769 at 0 m |
 | the DAG's own distance form, cut for 96 m | 15 | 3,184 | (not a tile mesh) | 79,725 |
 | the DAG's own distance form, cut for 256 m | 15 | 1,599 | (not a tile mesh) | 38,135 |
-| **the far tile, level 0** (ring 1, 96 m) | **1** | **2,261** | **5.7 MiB** | 61,738 at the leaves |
-| the far form, level 1 / level 2 (summed over the pieces) | | | | 41,488 / 35,882 |
+| the far tile, level 0, G198's first pass | 1 | 2,261 | 5.7 MiB | 61,738 at the leaves |
+| **the far tile, level 0** (ring 1, 96 m), second pass | **1** | **1,430** | **3.6 MiB** | 42,876 at the leaves |
+| the far form, level 1 / level 2 (summed over the pieces), second pass | | | | 35,854 / 31,358 |
 
-The mesh room at 2,632 bytes a cluster (ray tracing on, the default cluster). The far tile's
-clusters are 1,025 leaves of 60 triangles and its own DAG over them (580, 320, 206, 75 and down to
-one), which coarsens it across the ring. Its honest error is 7.7 cm (a pixel from 79 m at 1080p and
+The mesh room at 2,632 bytes a cluster (ray tracing on, the default cluster). The second pass's far
+tile is 773 leaves and its own DAG over them (334, 168, 84 and down to one), which coarsens it across
+the ring; it keeps every cut point of its pieces (geometry.md, "The far form meets its neighbour")
+and still costs a tenth of the pieces' pairs. Its honest error is 7.7 cm (a pixel from 79 m at 1080p and
 the default camera). Made cold from its members' cached containers it takes 2.5 s (their 15 far
 forms baked, since no container build bakes them) and 0.8 s to build, on the pool, in debug; it then
 keeps itself in the derived-data cache and reads back in 33 ms with no member touched. Its far forms
@@ -1864,6 +1866,56 @@ over 128 (a 16 m patch: about 9 cm; the forest tile's pieces measured at most 7.
 at 1080p and the default camera is a pixel from about 90 m (79 m measured); the deposit scenes' second ring starts 96 m out (a 64 m tile at 1.5 tiles), so the hand-over
 moves nothing a pixel resolves. A scene whose first ring is smaller draws the far form nearer than
 it is held for, and says so in no sentence yet (a row this leaves).
+
+**What the pictures showed, and whose each fault was** (G198's second pass; G191's streamed scene,
+offscreen 1920×1080, the camera held 29 s on each view so every tile has arrived; `msvc-release`,
+RTX 5090, other agents' builds and containers running; the ids, depth and normals channels beside
+each colour capture):
+
+1. **Dark lines up the talus 100 to 130 m out, and paving from 300 m: the far form's.** The normals
+   put them on the pieces' cuts: the far forms did not keep the cut their pieces' builds lock, so the
+   tops parted and the walls showed (50,932 of 59,307 cut points gone); and the far tile's weld
+   tilted every cut's top toward its wall. Both fixed (geometry.md, "The far form meets its
+   neighbour"; renderer.md, "The far tile", step 3). From 300 m the band now reads as rubble with no
+   grid; what a person still sees there is a few dark wedges where a large simplified triangle's
+   normals swing, and a faint banding along the foot.
+2. **A gap of sand 250 to 450 m out with a lone slab past it: the far tile's.** Whole 64 m tiles
+   built over the cluster limit and were refused; and the block split's first form drew half the
+   blocks. Fixed (a far tile a block, above).
+3. **A long hard shadow on the sand under the cascaded maps: not the far tile's.** It is in the base
+   `61ccce67`'s capture of the same view, where no deposit is drawn at all, and absent under traced
+   shadows; walking on, it becomes several large polygons. Its caster is something the cascades draw
+   that the picture and the traced structures do not; the cascaded maps (renderer.md, "Shadows") or
+   the ground's form in the cascades, not a placement.
+4. **A vertical striped wedge where the talus ends: the mesh room's, then the world's.** With the
+   room large enough (`renderer.meshes.budget_mib` 1024, a diagnosis setting) the band runs unbroken
+   to the horizon at the ring's edge view. At the owner's 256 MiB, without ray tracing it fits
+   (209 instances, 176,271 pairs, nothing withheld); with ray tracing (101,989 clusters of room) 11
+   far tiles are withheld and the band ends about 200 m out in its pieces' end walls — the room and its
+   admission are section B's (W118, `b64-T131`). Where nothing is withheld the talus ends at the
+   world's last ring, 512 m: past `far_rings` and past the world there is no deposit, and a deposit is
+   a raised closed solid, so it ends in a face. A far representation past the world's rings (the
+   ground's own material, or a coarser far level to the horizon) is a row this leaves.
+
+**The hand-over, walked** (windowed 1600×900, 60 s along the foot at 2 m/s from z = -150, `msvc-release`
+at the second pass's tip, the affected build and other agents' containers running, so frame times
+are upper bounds). In a room the band fits in, the walk makes eight changes of what is drawn; the
+largest, about 43.8 s in, is a tile entering the first ring while the one behind leaves it: 257
+instances and 225,423 pairs to 193 and 163,727 over six frames, its frames 13 to 26 ms. Offscreen
+captures 4 m either side of it (frames 1,260 and 1,320 of the same path, traced and mapped) show
+the talus continuous across the far tiles' edge with the near pieces, no step, no wall, no line,
+and no shadow that appears or vanishes: traced shadows trace the far tile in the frame's
+structures, the cascades draw it as any rigid instance, and its error is under the pixel at the
+ring's floor. At the owner's room with ray tracing the same walk makes 21 changes, down to 21
+instances 43 s in while the room trades tiles (section B's). Frames over 50 ms: 68 of 2,261 in the
+roomy walk, 174 of 4,212 at the owner's room, 126 of 4,040 mapped.
+
+Beside reel sheet r22's scree (the fans under the Oeschinensee cliffs): a person still objects,
+most first, to the talus's uniform grey with no lighter fan heads and darker toes, no fines, no
+grass reaching into it; to its upper edge, a staircase where the deposit meets the face; to its end
+where the world ends; and from 300 m to a surface still too even for scree seen from across a
+valley. None is the far form's; the first three are the deposit's look (the row's material and
+outline work), the last its plan.
 
 ### Foothill exposure and repeated-material limits
 

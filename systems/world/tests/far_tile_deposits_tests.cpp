@@ -122,8 +122,8 @@ TEST_CASE(
       hash_bytes(tile.lod.mesh.attributes.data(),
                  tile.lod.mesh.attributes.size() * sizeof(geometry::VertexAttributes)));
   MESSAGE("far tile hash ", pin);
-  // Taken on MSVC 14.51, 2026-11-13 (k_far_form_version 2, k_far_tile_build_version 3, the default LOD
-  // options): the merged far tile's positions, triangles and attributes (the normals the weld
+  // Taken on MSVC 14.51, 2026-11-13 (k_far_form_version 2, k_far_tile_build_version 3, the default
+  // LOD options): the merged far tile's positions, triangles and attributes (the normals the weld
   // carries from the near form), built by one thread in the recipe's order, so the same at any job
   // count.
   CHECK(pin == 9493304939766293052ull);

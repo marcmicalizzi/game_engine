@@ -49,9 +49,7 @@ f32 wave(f32 t) {
 }
 
 // 0.3 sin(0.7 x) cos(0.5 z) in shape: periods of 2 pi / 0.7 and 2 pi / 0.5 metres.
-f32 relief(f32 x, f32 z) {
-  return 0.3f * wave(x * 0.11140846f) * wave(z * 0.07957747f + 0.25f);
-}
+f32 relief(f32 x, f32 z) { return 0.3f * wave(x * 0.11140846f) * wave(z * 0.07957747f + 0.25f); }
 
 Fixture talus() {
   Fixture f;

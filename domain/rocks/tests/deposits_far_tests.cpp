@@ -76,8 +76,9 @@ void forest_tile(Vector<geometry::ClusterFileData>& out) {
     build_ns += time::monotonic_ns() - start;
     out.push_back(std::move(data));
     const i64 spacing_mm = std::llround(static_cast<f64>(patch.spacing_m) * 1000.0);
-    spans.push_back(Vec2{static_cast<f32>(static_cast<f64>(spacing_mm * (patch.width - 1)) / 1000.0),
-                         static_cast<f32>(static_cast<f64>(spacing_mm * (patch.depth - 1)) / 1000.0)});
+    spans.push_back(
+        Vec2{static_cast<f32>(static_cast<f64>(spacing_mm * (patch.width - 1)) / 1000.0),
+             static_cast<f32>(static_cast<f64>(spacing_mm * (patch.depth - 1)) / 1000.0)});
   }
 }
 

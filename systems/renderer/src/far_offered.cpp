@@ -103,11 +103,12 @@ bool offer_far_forms(SceneDesc& resolved, Vector<SourceMesh>& sources,
     const u64 identity = cache ? source_identity(sources[m]) : 0;
     const bool keyed = identity != 0;
     const u64 base =
-        keyed ? hash_combine(geometry::cluster_cache_key(identity, resolved.lod, false, 0),
-                             hash_combine(hash_combine(geometry::k_far_form_version,
-                                                       k_far_tile_build_version),
-                                          k_offered_cache_tag))
-              : 0;
+        keyed
+            ? hash_combine(
+                  geometry::cluster_cache_key(identity, resolved.lod, false, 0),
+                  hash_combine(hash_combine(geometry::k_far_form_version, k_far_tile_build_version),
+                               k_offered_cache_tag))
+            : 0;
     geometry::ClusterFileData cached[geometry::k_far_form_levels];
     bool hit[geometry::k_far_form_levels] = {};
     geometry::FarForm form = sources[m].far_form;
