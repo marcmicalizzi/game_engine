@@ -64,7 +64,14 @@ exactly as for a generated one. The ones that read something a generator wrote �
 species, a seat, an impostor chain, coverage errors, a sampling word — do nothing for it, and two of
 them do nothing *silently* (an imported tree is rigid with no line said; a mesh ground is never
 checked for floating instances). The crown prior is the third kind: it measures the asset, but with
-a solver's constants (0.05 m², 0.7), so it refuses the cards every bought tree has.
+a solver's constants (0.05 m², 0.7), so it refuses the cards every bought tree has — silently too,
+since a load with no crown writes no `crown priors` line.
+
+**What the pictures show** (1920 × 1080, traced primaries and shadows, the bounce, from four of the
+path's keys; not committed): the ground's one 4 m texture repeats as a visible mottle across the
+whole field (the stochastic row), the crowns stand perfectly still, and the cards' shadows and
+cut-outs are right on every rasterizer — the alpha test, the micromaps and the traced shadows need
+nothing from a generator.
 
 ## What it costs with nothing to do
 
