@@ -2404,7 +2404,15 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
       instance.animation.clip = entry.animation->clip;
       instance.animation.speed = entry.animation->speed;
       instance.animation.phase = entry.animation->phase;
-      instance.animation.lod_bias = entry.animation->lod_bias;  // checked by the host (A44)
+      // A factor on the animation tier's rule (A44; systems/animation/visibility.h), refused here
+      // outside [0, 64] rather than clamped, so a typo is a sentence at the read.
+      const f32 bias = entry.animation->lod_bias;
+      if (!(bias >= 0.0f) || bias > 64.0f) {
+        error = path + ": instance " + std::to_string(i) + ": animation.lod_bias " +
+                std::to_string(bias) + " is outside [0, 64]";
+        return false;
+      }
+      instance.animation.lod_bias = bias;
     }
     out.instances.push_back(instance);
   }

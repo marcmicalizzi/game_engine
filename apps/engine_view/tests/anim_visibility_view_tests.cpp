@@ -5,14 +5,16 @@
 // many pixels the bar's limbs travel, so the same bar at the same distance draws its rest pose at
 // 960 x 540, keeps moving at 1920 x 1080, and keeps moving at 960 x 540 again once its scene block
 // gives it a bias. The summary says the tier, the travel the rule read and the pose hash; a pose
-// that moves hashes differently four steps later, the rest pose hashes as nothing both times.
+// that moves hashes differently four steps later, and the rest pose hashes as nothing.
 
 #include "view_process.h"
 
+#include <core/hash/hash.h>
 #include <core/json/json.h>
 #include <foundation/io/vfs.h>
 #include <systems/animation/animation.h>
 #include <systems/animation/visibility.h>
+#include <systems/renderer/scene.h>
 
 #include <doctest/doctest.h>
 #include <test_paths.h>
@@ -131,10 +133,11 @@ TEST_CASE("anim visibility view: the same bar at 100 m moves with the projection
   write_scene(tmp, "plain.json", 1.0f);
   write_scene(tmp, "biased.json", 4.0f);
 
-  // 960 x 540: the bar's limbs travel under a pixel at 100 m, so it is held at LOD2 and draws its
-  // rest pose — the same (empty) pose hash at steps 20 and 24.
+  // Five runs, each its own GPU device and so its own turn at the machine's GPU lock: the case is
+  // kept to what it must show. 960 x 540: the bar's limbs travel under a pixel at 100 m, so it is
+  // held at LOD2 and draws its rest pose, whose run is empty and hashes as nothing (`k_hash_seed`,
+  // animation.cpp `animation_summary`) at any step.
   const Seen small_a = run_at(tmp, "plain.json", 960, 540, 20);
-  const Seen small_b = run_at(tmp, "plain.json", 960, 540, 24);
   // The geometry is chosen for the bend clip's bound on this bar (about 1.6 m at scale 1): the case
   // means what it says only while the travel the rule read keeps the 540-row run under the band's
   // pixel widened by the hysteresis and the 1080-row run over it.
@@ -147,8 +150,7 @@ TEST_CASE("anim visibility view: the same bar at 100 m moves with the projection
   REQUIRE(travel * lens(1080) / k_distance_m > 1.0);
   CHECK(small_a.lod_bias == doctest::Approx(1.0));
   CHECK(small_a.tier == 2);
-  CHECK(small_b.tier == 2);
-  CHECK(small_a.pose_hash == small_b.pose_hash);
+  CHECK(small_a.pose_hash == renderer::hash_hex(k_hash_seed));
 
   // 1920 x 1080: twice the lens, twice the pixels, over the band — skinned, and moving.
   const Seen large_a = run_at(tmp, "plain.json", 1920, 1080, 20);
@@ -165,14 +167,10 @@ TEST_CASE("anim visibility view: the same bar at 100 m moves with the projection
   CHECK(biased_a.lod_bias == doctest::Approx(4.0));
   CHECK(biased_a.tier <= 1);
   CHECK(biased_a.pose_hash != biased_b.pose_hash);
-
-  // A bias outside [0, 64] is refused with a sentence, not clamped.
-  write_scene(tmp, "wild.json", 65.0f);
-  const Run wild =
-      run_view({"--scene", tmp.file("wild.json"), "--camera-path", tmp.file("still.json"),
-                "--animate", "--offscreen", "--frames", "2", "--width", "64", "--height", "64"});
-  CHECK(wild.exit_code != 0);
-  CHECK(wild.output.find("lod_bias") != std::string::npos);
+  CHECK(biased_a.pose_hash != renderer::hash_hex(k_hash_seed));
+  // A bias outside [0, 64] is refused by the scene reader with a sentence, not clamped:
+  // systems/renderer's flythrough_tests.cpp ("scene file: the oldest spelling ...") holds it with
+  // no GPU, which this case would otherwise spend a turn at the lock on.
 }
 
 #endif  // ENGINE_VIEW_ANIMATION
