@@ -15,8 +15,8 @@ generated world, what that costs it, and what would make the feature work for it
   wider outwards, a 256-texel texture repeating every 4 m): no `terrain` block, no ground provider,
   no tiles, no rings;
 - seven trees, ten shrubs and forty grass clumps of **branch cards**, as a bought tree has them: the
-  tree is a trunk, six limbs and 75 alpha-tested, two-sided cards of 1.5 m by 1.1 m, three crossed
-  planes at each of 25 points, cut by a twig of 18 leaves in the card's alpha (about a third of the
+  tree is a trunk, six limbs and 117 alpha-tested, two-sided cards of 1.8 m by 1.3 m, three crossed
+  planes at each of 39 points, cut by a twig of 18 leaves in the card's alpha (about a third of the
   card); the shrub is 24 such cards; the grass three crossed cards of blades with normals up;
 - six boulders (`kit/rock.gltf`, a noise-pushed sphere of 2,304 triangles);
 - two Khronos Lanterns (fit to 2.4 m) and the FlightHelmet (fit to 0.45 m) on the first boulder,

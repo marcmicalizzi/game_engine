@@ -11,8 +11,8 @@
 // way a bought asset is made and **carrying nothing a generator adds**: no generator section, no
 // motion table, no structural table, no seat, no impostor chain — only what glTF 2.0 itself says
 // (meshes, metallic-roughness materials, `alphaMode` MASK with a cutoff, `doubleSided`, PNG
-// images). The tree is a trunk, six limbs and 75 branch cards of 1.5 m by 1.1 m, three crossed
-// planes at each of 25 points, cut by a twig of 18 leaves in the card's alpha: the shape of a
+// images). The tree is a trunk, six limbs and 117 branch cards of 1.8 m by 1.3 m, three crossed
+// planes at each of 39 points, cut by a twig of 18 leaves in the card's alpha: the shape of a
 // middleware or marketplace tree, whose cards stand for a bough rather than a leaf. The grass
 // clumps' normals point up, as a bought grass card's do. Nothing binary is committed: the files are
 // written here, beside the scene (git-ignored) or into a test's scratch directory.
@@ -428,7 +428,8 @@ Material leaf_material() {
   return m;
 }
 
-// A broadleaf of about 9 m: the trunk, six limbs, and 25 points of three crossed branch cards.
+// A broadleaf of about 9 m: the trunk, six limbs, and 39 points of three crossed branch cards of
+// 1.8 m by 1.3 m (five along each limb, eight round the crown's top and one at its peak).
 void make_tree(Mesh& mesh) {
   const Circle& k = circle();
   mesh.materials = {bark_material(), leaf_material()};
@@ -446,12 +447,12 @@ void make_tree(Mesh& mesh) {
     const V3 base{0.0, y, 0.0};
     const f64 length = 3.2 - 0.25 * static_cast<f64>(limb);
     tube(wood, base, base + out * length, 0.11, 0.035, 8, 3, 1.0, 1.0);
-    for (const f64 f : {0.5, 0.78, 1.0})
+    for (const f64 f : {0.35, 0.55, 0.75, 0.9, 1.0})
       points.push_back(base + out * (length * f));
   }
-  for (u32 i = 0; i < 6; ++i) {
-    const u32 at = (i * 8 + 4) % 48;
-    points.push_back(V3{k.c[at] * 0.9, 6.9 + 0.3 * static_cast<f64>(i & 1u), k.s[at] * 0.9});
+  for (u32 i = 0; i < 8; ++i) {
+    const u32 at = (i * 6 + 3) % 48;
+    points.push_back(V3{k.c[at] * 1.1, 6.6 + 0.4 * static_cast<f64>(i & 1u), k.s[at] * 1.1});
   }
   points.push_back(V3{0.0, 8.0, 0.0});
   for (usize p = 0; p < points.size(); ++p) {
@@ -461,7 +462,7 @@ void make_tree(Mesh& mesh) {
     out = unit(unit(out) + V3{0.0, 0.35, 0.0});
     const u32 twist = static_cast<u32>(hash3(static_cast<u32>(p), 9u, 3u) % 16u);
     for (u32 c = 0; c < 3; ++c)
-      card(leaves, at, out, 1.5, 1.1, twist + c * 16);
+      card(leaves, at, out, 1.8, 1.3, twist + c * 16);
   }
 }
 

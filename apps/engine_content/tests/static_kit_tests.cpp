@@ -70,7 +70,7 @@ TEST_CASE("engine-content static-kit: plain glTF meshes that carry nothing a gen
   REQUIRE_MESSAGE(last_json(kit.text, summary), kit.text);
   const JsonValue* triangles = summary.find("triangles");
   REQUIRE(triangles != nullptr);
-  // The shapes the scene's page describes: a ground of 160 x 160 quads, a tree of 75 cards over its
+  // The shapes the scene's page describes: a ground of 160 x 160 quads, a tree of 117 cards over its
   // wood, 24 cards of shrub, three of grass, a sphere of 48 x 24 facets.
   u64 v = 0;
   CHECK((triangles->find("ground")->get_u64(v) && v == 2u * 160u * 160u));
@@ -78,7 +78,7 @@ TEST_CASE("engine-content static-kit: plain glTF meshes that carry nothing a gen
   CHECK((triangles->find("grass")->get_u64(v) && v == 6u));
   CHECK((triangles->find("rock")->get_u64(v) && v == 2u * 48u * 24u));
   REQUIRE(triangles->find("tree")->get_u64(v));
-  CHECK(v == 150u + 2u * 16u * 8u + 6u * 2u * 8u * 3u);
+  CHECK(v == 2u * 117u + 2u * 16u * 8u + 6u * 2u * 8u * 3u);
   // A branch card is about a third leaf: what a crown prior keyed on the card's own alpha reads.
   f64 coverage = 0.0;
   REQUIRE(summary.find("alpha_coverage")->find("branch-card.png")->get_f64(coverage));
