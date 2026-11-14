@@ -2184,7 +2184,7 @@ struct Wading {
                            at);
   }
   // **A game module's water at a point** (ABI 10, A43; water/query.h): the bodies with the depth
-  // maps the reader cooked beside their meshes, and the channels' descriptions.
+  // maps the reader cooked beside their meshes, and the channels' solved stations.
   water::WaterQuery query;
   static bool sample(const void* self, f64 x, f64 z, hotload::WaterSample& out) noexcept {
     water::WaterPoint p;
@@ -2228,7 +2228,7 @@ struct Wading {
     // that fails here keeps the unflooded answer.
     for (water::Body& body : bodies)
       if (body.fill) (void)water::fill_body(body, ground, nullptr);
-    query.set_ground(&ground);
+    query.prepare(&ground);  // and the channels' index, once
     for (u32 b = 0; b < bodies.size(); ++b) {
       const renderer::SceneWaterDepth& d = *maps[b];
       water::DepthMap map;

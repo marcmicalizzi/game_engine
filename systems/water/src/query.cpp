@@ -71,67 +71,16 @@ bool body_water_at(const Body& body, const DepthMap& map, const scene_gen::Groun
   return true;
 }
 
-bool channel_water_at(const Channel& channel, WorldPos at, WaterPoint& out) noexcept {
+bool channel_water_at(const Channel& channel, const ChannelLine& line,
+                      const scene_gen::Ground& ground, WorldPos at, WaterPoint& out, u32 first,
+                      u32 last) noexcept {
   out = WaterPoint{};
-  const u32 n = channel.points.size();
-  if (n < 2 || channel.width_m.size() != n || channel.depth_m.size() != n ||
-      channel.slope.size() != n) {
-    return false;
-  }
-  const f32 px = static_cast<f32>(at.x - channel.origin.x);
-  const f32 pz = static_cast<f32>(at.z - channel.origin.z);
-  // The stretch that holds the point nearest its line; the first such in the line's order on a tie.
-  bool found = false;
-  f32 best_share = 0.0f;  // |2a / w|: how far out across its width the point lies
-  u32 best_i = 0;
-  f32 best_t = 0.0f;
-  for (u32 i = 0; i + 1 < n; ++i) {
-    const Vec3 p = channel.points[i];
-    const Vec3 q = channel.points[i + 1];
-    const f32 dx = q.x - p.x;
-    const f32 dz = q.z - p.z;
-    const f32 run2 = dx * dx + dz * dz;
-    if (!(run2 > 0.0f)) continue;  // a vertical drop holds no surface in plan
-    f32 t = ((px - p.x) * dx + (pz - p.z) * dz) / run2;
-    t = std::clamp(t, 0.0f, 1.0f);
-    const f32 cx = p.x + dx * t;
-    const f32 cz = p.z + dz * t;
-    const f32 ox = px - cx;
-    const f32 oz = pz - cz;
-    const f32 a = std::sqrt(ox * ox + oz * oz);
-    const f32 w = channel.width_m[i] + (channel.width_m[i + 1] - channel.width_m[i]) * t;
-    if (!(w > 0.0f)) continue;
-    const f32 share = 2.0f * a / w;
-    if (share > 1.0f) continue;
-    if (!found || share < best_share) {
-      found = true;
-      best_share = share;
-      best_i = i;
-      best_t = t;
-    }
-  }
-  if (!found) return false;
-  const u32 i = best_i;
-  const f32 t = best_t;
-  const Vec3 p = channel.points[i];
-  const Vec3 q = channel.points[i + 1];
-  const f32 centre_depth = channel.depth_m[i] + (channel.depth_m[i + 1] - channel.depth_m[i]) * t;
-  const f32 slope = channel.slope[i] + (channel.slope[i + 1] - channel.slope[i]) * t;
-  const f32 r = 1.0f - best_share * best_share;  // the parabola's share of the centre's depth
-  const f32 depth = centre_depth * r;
-  if (!(depth > 0.0f)) return false;
-  // Manning's mean speed for the centre's depth, and the 1/6-power profile across the width:
-  // r^(1/6) = cbrt(sqrt(r)), both correctly rounded or this module's own, never `std::pow`.
-  const f64 mean = static_cast<f64>(manning_speed(channel.manning_n, centre_depth, slope));
-  const f64 share = k_channel_profile_mean * cube_root(std::sqrt(static_cast<f64>(r)));
-  const f32 dx = q.x - p.x;
-  const f32 dz = q.z - p.z;
-  const f32 run = std::sqrt(dx * dx + dz * dz);
-  const f32 speed = static_cast<f32>(mean * share);
+  ChannelSample s;
+  if (!channel_sample(channel, line, ground, at, s, first, last)) return false;
   out.wet = true;
-  out.level = channel.origin.y + static_cast<f64>(p.y + (q.y - p.y) * t);
-  out.depth = depth;
-  out.velocity = Vec2{dx / run * speed, dz / run * speed};
+  out.level = s.level_m;
+  out.depth = s.depth_m;
+  out.velocity = Vec2{s.velocity.x, s.velocity.z};
   out.source = 2;
   return true;
 }
@@ -140,7 +89,106 @@ void WaterQuery::add_body(Body body, DepthMap map) {
   bodies_.push_back(HeldBody{std::move(body), std::move(map)});
 }
 
-void WaterQuery::add_channel(Channel channel) { channels_.push_back(std::move(channel)); }
+void WaterQuery::add_channel(Channel channel) {
+  lines_.push_back(channel_line(channel));
+  channels_.push_back(std::move(channel));
+  cell_start_.clear();  // the index is built again by `prepare`
+}
+
+namespace {
+
+// One stretch's claim on a cell of the index, before the claims are folded into spans.
+struct Claim {
+  u32 cell;
+  u32 channel;
+  u32 stretch;
+};
+
+// How far from its line any of a channel's stretches can hold a wet point, metres: the widest wet
+// reach either side at any station, and the margin under the bank, as `stretch_reach` (channel.cpp)
+// takes it. One number a channel, so every stretch that ties for nearest with the one holding the
+// point is in the point's cell too (query.h, "The channels' index").
+f32 channel_reach(const Channel& c) noexcept {
+  f32 reach = 0.0f;
+  for (u32 i = 0; i < c.points.size(); ++i)
+    reach = std::max(reach, std::max(c.wet_left_m[i], c.wet_right_m[i]));
+  return reach + k_channel_under_bank_m;
+}
+
+}  // namespace
+
+void WaterQuery::prepare(const scene_gen::Ground* ground) {
+  ground_ = ground;
+  cell_start_.clear();
+  spans_.clear();
+  // The bounds of every stretch, grown by its channel's reach, in world metres.
+  f64 x0 = 1e300, z0 = 1e300, x1 = -1e300, z1 = -1e300;
+  for (u32 c = 0; c < channels_.size(); ++c) {
+    const Channel& ch = channels_[c];
+    if (ch.points.size() < 2) continue;
+    const f64 r = static_cast<f64>(channel_reach(ch));
+    for (const Vec3& p : ch.points) {
+      x0 = std::min(x0, ch.origin.x + static_cast<f64>(p.x) - r);
+      x1 = std::max(x1, ch.origin.x + static_cast<f64>(p.x) + r);
+      z0 = std::min(z0, ch.origin.z + static_cast<f64>(p.z) - r);
+      z1 = std::max(z1, ch.origin.z + static_cast<f64>(p.z) + r);
+    }
+  }
+  if (!(x1 >= x0)) return;  // no channel with a stretch: nothing to index
+  cell_m_ = k_channel_cell_m;
+  while ((x1 - x0) / cell_m_ >= static_cast<f64>(k_channel_cells_max) ||
+         (z1 - z0) / cell_m_ >= static_cast<f64>(k_channel_cells_max)) {
+    cell_m_ *= 2.0;
+  }
+  grid_x_ = x0;
+  grid_z_ = z0;
+  cells_x_ = static_cast<u32>((x1 - x0) / cell_m_) + 1;
+  cells_z_ = static_cast<u32>((z1 - z0) / cell_m_) + 1;
+  // Every cell each stretch's grown bounds touch, then sorted by cell, channel and stretch.
+  Vector<Claim> claims;  // the load's, freed on return; a question allocates nothing
+  for (u32 c = 0; c < channels_.size(); ++c) {
+    const Channel& ch = channels_[c];
+    if (ch.points.size() < 2) continue;
+    const f64 r = static_cast<f64>(channel_reach(ch));
+    for (u32 i = 0; i + 1 < ch.points.size(); ++i) {
+      const Vec3 p = ch.points[i];
+      const Vec3 q = ch.points[i + 1];
+      const f64 ax = ch.origin.x + static_cast<f64>(std::min(p.x, q.x)) - r;
+      const f64 bx = ch.origin.x + static_cast<f64>(std::max(p.x, q.x)) + r;
+      const f64 az = ch.origin.z + static_cast<f64>(std::min(p.z, q.z)) - r;
+      const f64 bz = ch.origin.z + static_cast<f64>(std::max(p.z, q.z)) + r;
+      const u32 i0 = cell_of(ax, cells_x_, grid_x_);
+      const u32 i1 = cell_of(bx, cells_x_, grid_x_);
+      const u32 j0 = cell_of(az, cells_z_, grid_z_);
+      const u32 j1 = cell_of(bz, cells_z_, grid_z_);
+      for (u32 j = j0; j <= j1; ++j)
+        for (u32 k = i0; k <= i1; ++k) claims.push_back(Claim{j * cells_x_ + k, c, i});
+    }
+  }
+  std::sort(claims.begin(), claims.end(), [](const Claim& a, const Claim& b) {
+    if (a.cell != b.cell) return a.cell < b.cell;
+    if (a.channel != b.channel) return a.channel < b.channel;
+    return a.stretch < b.stretch;
+  });
+  // One span a channel a cell: its stretches from the first that touches the cell to the last.
+  cell_start_.resize(cells_x_ * cells_z_ + 1, 0u);
+  for (u32 n = 0; n < claims.size();) {
+    const Claim& head = claims[n];
+    u32 m = n + 1;
+    while (m < claims.size() && claims[m].cell == head.cell && claims[m].channel == head.channel)
+      ++m;
+    spans_.push_back(ChannelSpan{head.channel, head.stretch, claims[m - 1].stretch});
+    cell_start_[head.cell + 1] += 1;
+    n = m;
+  }
+  for (u32 k = 0; k < cells_x_ * cells_z_; ++k) cell_start_[k + 1] += cell_start_[k];
+}
+
+u32 WaterQuery::cell_of(f64 v, u32 cells, f64 origin) const noexcept {
+  const f64 f = std::floor((v - origin) / cell_m_);
+  if (!(f > 0.0)) return 0;
+  return f >= static_cast<f64>(cells - 1) ? cells - 1 : static_cast<u32>(f);
+}
 
 void WaterQuery::sample(WorldPos at, WaterPoint& out) const noexcept {
   out = WaterPoint{};
@@ -152,10 +200,34 @@ void WaterQuery::sample(WorldPos at, WaterPoint& out) const noexcept {
       out.index = b;
     }
   }
-  for (u32 c = 0; c < channels_.size(); ++c) {
-    if (channel_water_at(channels_[c], at, here) && (!out.wet || here.depth > out.depth)) {
+  if (channels_.empty()) return;
+  static const scene_gen::Ground k_no_ground{};
+  const scene_gen::Ground& ground = ground_ != nullptr ? *ground_ : k_no_ground;
+  if (cell_start_.empty()) {
+    // Not prepared: every channel, every stretch (what the index answers, slower).
+    for (u32 c = 0; c < channels_.size(); ++c) {
+      if (channel_water_at(channels_[c], lines_[c], ground, at, here) &&
+          (!out.wet || here.depth > out.depth)) {
+        out = here;
+        out.index = c;
+      }
+    }
+    return;
+  }
+  const f64 fx = std::floor((at.x - grid_x_) / cell_m_);
+  const f64 fz = std::floor((at.z - grid_z_) / cell_m_);
+  if (!(fx >= 0.0 && fz >= 0.0 && fx < static_cast<f64>(cells_x_) &&
+        fz < static_cast<f64>(cells_z_))) {
+    return;  // past every channel's reach
+  }
+  const u32 cell = static_cast<u32>(fz) * cells_x_ + static_cast<u32>(fx);
+  for (u32 s = cell_start_[cell]; s < cell_start_[cell + 1]; ++s) {
+    const ChannelSpan& span = spans_[s];
+    if (channel_water_at(channels_[span.channel], lines_[span.channel], ground, at, here,
+                         span.first, span.last) &&
+        (!out.wet || here.depth > out.depth)) {
       out = here;
-      out.index = c;
+      out.index = span.channel;
     }
   }
 }
