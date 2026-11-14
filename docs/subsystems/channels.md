@@ -696,7 +696,8 @@ through **the sections the ground has**, by the textbook's method
 - **Nodes** a ground lattice apart down the line. At each, the ground is sampled across the line a
   lattice apart. The **thalweg** is the lowest sample within the bed's half width of the line (the
   nearest hollow to the line where the line names no width); each **bank's crest** is the highest
-  ground reached walking out from it before the ground falls away 2 cm. A level wets only ground
+  ground reached walking out from it before the ground falls away by 2 cm and a quarter of what
+  it has climbed (so a ledge on a high bank's face is not its top). A level wets only ground
   connected to the thalweg under it, and no further than the crests: a hollow beyond a bank is
   not wet, and water is never written outside its bed. Area, wetted perimeter, top width and first
   moment are sums over the wet samples' trapezoids; there is no described shape.
@@ -732,7 +733,13 @@ through **the sections the ground has**, by the textbook's method
   lower crest the station is flagged, counted and reported, and written **at the crest** with
   the solved flow's speed. Once tranquil water has spilled it is written no higher downstream
   than where it spilled, until its solved level comes down under that (those stations are flagged
-  too), so the written level does not climb from one crest to the next. **The cut does not grow**: the solve runs on the composed ground after
+  too), so the written level does not climb from one crest to the next. **A line that climbs** —
+  the planner routes over a lattice with its pits filled, and where the ground itself is not
+  filled a line runs down into a hollow and up to its spill point — is over its bank all the way
+  up: the water that would pass the sill is a pool standing at the sill's level, far outside any
+  bed. The cook writes a film at the bed there, flags every station of it, and reports the worst;
+  it does not draw the lake the ground is missing. A reader that draws flagged stations draws
+  that film going uphill. **The cut does not grow**: the solve runs on the composed ground after
   the cut is in it, and the bankfull section is the plan's contract with the exclusion, the
   sediment and the flood bed. The count is the author's lever: a lower `stage`, or a wider law.
 
@@ -764,7 +771,10 @@ opens **the composed ground the scene draws** (`renderer::SceneGround`, handed t
 `channels` entry, and every `water_channels` block that is not one of those links' — an author's
 line. So the order of a cook is: `engine-content channels --cut` for the plan and the cuts; the
 cuts pasted into the scene's `tiles.edits` and the plan's key into the entry; then `flow solve`,
-whose `water_channels` are pasted (or written whole with `--scene-out`). The lattice is the tile
+whose `water_channels` are pasted (or written whole with `--scene-out`). The scene's own
+`water_channels` are not read for the ground (`SceneFileOptions::without_water_channels`) and a
+planner's block is told by its name before it is read, so a scene cooked before W120 — which no
+other reader opens — is cooked again by the same command. The lattice is the tile
 set's heightfield's spacing unless `--lattice` names one. It writes the blocks and a `dry` list
 (each dry link, its reason, its discharge and the film's depth) and prints one line: links wet and
 dry, kilometres, stations a kilometre, crests, falls, jumps, drowned feet, hanging tails, the

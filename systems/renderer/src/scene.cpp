@@ -1951,6 +1951,9 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
     error = std::string(path) + ":" + std::to_string(parsed.line) + ": " + parsed.message;
     return false;
   }
+  // The water's cook reads the ground and writes the channels: the file's own are left out (W120).
+  if (options.without_water_channels && root.is_object() && root.contains("water_channels"))
+    root.set("water_channels", JsonValue::array());
   // One grammar, and it is the schema's: an unknown field is refused with its path rather than
   // skipped, because a misspelt `"ground"` that quietly did nothing would float a building.
   scene::Scene file;

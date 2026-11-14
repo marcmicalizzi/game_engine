@@ -360,7 +360,8 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
       for (u32 j = t + 1; j < c.across; ++j) {
         if (row[j] > row[crest]) {
           crest = j;
-        } else if (row[j] < row[crest] - k_bank_crest_drop_m) {
+        } else if (row[j] < row[crest] - k_bank_crest_drop_m -
+                                k_bank_crest_drop_share * (row[crest] - row[t])) {
           break;
         }
       }
@@ -369,7 +370,8 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
       for (u32 j = t; j-- > 0;) {
         if (row[j] > row[crest]) {
           crest = j;
-        } else if (row[j] < row[crest] - k_bank_crest_drop_m) {
+        } else if (row[j] < row[crest] - k_bank_crest_drop_m -
+                                k_bank_crest_drop_share * (row[crest] - row[t])) {
           break;
         }
       }

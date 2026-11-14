@@ -268,7 +268,7 @@ int flow_solve_command(int argc, char** argv) {
 
   // The ground the scene draws.
   renderer::SceneGround composed;
-  if (!composed.open(scene_path, ddc, false, false, error)) return solve_fail(error);
+  if (!composed.open(scene_path, ddc, false, false, error, true)) return solve_fail(error);
   const scene_gen::Ground ground = composed.ground();
   if (!ground.present()) return solve_fail(scene_path + ": the scene's ground gives no heights");
   for (const std::string& name : composed.not_carried())
@@ -344,7 +344,7 @@ int flow_solve_command(int argc, char** argv) {
         // Planned as `engine-content channels` plans it: over the ground before its cuts.
         if (uncut == nullptr) {
           uncut = std::make_unique<renderer::SceneGround>();
-          if (!uncut->open(scene_path, ddc, true, false, error)) return solve_fail(error);
+          if (!uncut->open(scene_path, ddc, true, false, error, true)) return solve_fail(error);
         }
         context.ground = uncut->ground();
       } else {
@@ -404,6 +404,15 @@ int flow_solve_command(int argc, char** argv) {
   // ---- An author's lines ----------------------------------------------------------------------
   if (const JsonValue* list = json.find("water_channels"); list != nullptr && list->is_array()) {
     for (u32 k = 0; k < list->as_array().size(); ++k) {
+      // A planner's link is solved above, from its plan: its block here is what this cook
+      // replaces, whatever it holds (a block cooked before W120 does not even read).
+      const JsonValue* named = (*list)[k].find("name");
+      const std::string block_name =
+          named != nullptr && named->is_string() ? std::string(named->as_string()) : std::string();
+      bool planners = false;
+      for (const std::string& prefix : prefixes)
+        planners = planners || block_name.compare(0, prefix.size(), prefix) == 0;
+      if (planners) continue;
       scene::WaterChannel block;
       schema::ReadContext reader;
       if (!schema::from_json(block, (*list)[k], reader) || !reader.ok()) {
@@ -412,10 +421,6 @@ int flow_solve_command(int argc, char** argv) {
           message += "; " + d.path + ": " + d.message;
         return solve_fail(message);
       }
-      bool planners = false;
-      for (const std::string& prefix : prefixes)
-        planners = planners || block.name.compare(0, prefix.size(), prefix) == 0;
-      if (planners) continue;  // solved above, from its plan
       const std::string where =
           scene_path + ": water_channels " + std::to_string(k) + " \"" + block.name + "\"";
       if (block.discharge_m3s.empty())

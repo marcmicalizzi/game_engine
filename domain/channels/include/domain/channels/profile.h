@@ -54,6 +54,10 @@ inline constexpr f64 k_reach_slope_m = 10.0;
 // A bank's crest is where the ground, walking out from the thalweg, stops rising and falls this
 // far below the highest it reached: past it the ground is another hollow's.
 inline constexpr f64 k_bank_crest_drop_m = 0.02;
+// ... and a quarter of the height it has climbed over the thalweg: a ledge on a high bank's face
+// is not the bank's top (on the forest's ground a 2 cm dip in a trench's wall read as its crest,
+// and a pool standing in the trench as 72 m over its bank).
+inline constexpr f64 k_bank_crest_drop_share = 0.25;
 // A level stands over a bank when it is this far over the crest.
 inline constexpr f64 k_over_bank_m = 0.001;
 
