@@ -28,12 +28,13 @@ if(TARGET engine_tileset)
   engine_module_tests(NAME channels
     SOURCES tests/channels_tests.cpp tests/seat_ground_tests.cpp tests/size_table.cpp
             tests/falls_tests.cpp tests/flow_fixture_tests.cpp tests/profile_tests.cpp
-            tests/discharge_tests.cpp
+            tests/discharge_tests.cpp tests/hollow_tests.cpp
     DEPS tileset)
 else()
   engine_module_tests(NAME channels
     SOURCES tests/channels_tests.cpp tests/size_table.cpp tests/falls_tests.cpp
-            tests/flow_fixture_tests.cpp tests/profile_tests.cpp tests/discharge_tests.cpp)
+            tests/flow_fixture_tests.cpp tests/profile_tests.cpp tests/discharge_tests.cpp
+            tests/hollow_tests.cpp)
 endif()
 
 # A tile's activation and the region's laying, timed (channels.md, "What a tile costs"); the CTest

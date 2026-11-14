@@ -385,6 +385,14 @@ TEST_CASE("falls: the solver's steps of known heights are found, down a fall lin
 // the 14 m cliff, two runs, drops of 21.9 and 13.9 m). Held when the seat leaves a step its height:
 // each cliff one run, a plunge, its drop the cliff's within 0.25 m down the fall line and 0.5 m
 // across a slope, and no pit deeper than a decimetre at it.
+//
+// **Since W122** the seat reads no bank across a step and never reaches under a lip, and the
+// case after this one holds what that mends: one run a cliff, no pit, nothing tiered, on all
+// eight runs. What this case still fails on is its drop's lower bound, on one run of the eight
+// (the fall line, seed 2, the move on: 9.53 m at the 10 m cliff and 13.29 m at the 14 m one), and
+// that is the count's, not the plan's: there a point of the line stands half-way down the cliff's
+// 25 cm ramp, the stretch into it falls at 44.5 degrees, and the cook's 45-degree test begins the
+// fall below it, half a metre short. The mark stays for that, and for whoever owns the count.
 TEST_CASE("falls: every cliff is one fall of its own height, with no pit at its foot" *
           doctest::may_fail()) {
   for (const StepCase& sc : k_step_cases) {
@@ -397,6 +405,29 @@ TEST_CASE("falls: every cliff is one fall of its own height, with no pit at its 
       CHECK(r.c.drop[k] <= k_step_h[k] + .05);
       CHECK(r.c.drop[k] >= k_step_h[k] - bound);
       CHECK(r.pit[k] <= .1);
+    }
+    CHECK(r.stats.tiered == 0);
+  }
+}
+
+// **The seat leaves a step alone** (W122; channels.md, "The seat, reshaped"). On 38d040a1 this
+// fails as the case above does: at seed 2 down the fall line the seat at
+// the 14 m cliff is 12.9 m, the cliff is two runs and a pit 12.7 m deep stands at its foot. Held
+// on every run: no seat within three metres of a cliff, each cliff one run and a plunge, no pit
+// at its foot, nothing tiered, and its drop no more than the cliff's and no less than it by one
+// stretch of the line's fall down the ramp (0.75 m: what the count's 45-degree test can leave off
+// at the lip, above).
+TEST_CASE("falls: no seat is read across a cliff, so each is one fall with no pit at its foot") {
+  for (const StepCase& sc : k_step_cases) {
+    const StepRun r = run_steps(sc.cross, sc.seed, sc.move);
+    REQUIRE(r.ok);
+    for (u32 k = 1; k < 4; ++k) {
+      CHECK_MESSAGE(r.c.found[k] == 1, "the " << k_step_h[k] << " m cliff, cross " << sc.cross
+                                              << ", seed " << sc.seed);
+      CHECK(r.seat[k] == 0);
+      CHECK(r.pit[k] <= .1);
+      CHECK(r.c.drop[k] <= k_step_h[k] + .05);
+      CHECK(r.c.drop[k] >= k_step_h[k] - .75);
     }
     CHECK(r.stats.tiered == 0);
   }

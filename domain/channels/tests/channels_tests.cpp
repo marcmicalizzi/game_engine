@@ -2651,7 +2651,9 @@ TEST_CASE("channels: the clasts' recipes and mesh are pinned") {
   // the indices (the triangles grouped by lithology); the positions are W97's to the bit. W116
   // re-pinned the recipes alone: `k_channels_version` 10 is in every recipe's hash, and the
   // positions and indices of this V-notch's pieces are the same bits (nothing in it is seated).
-  CHECK(recipes == 13916790691844512975ull);
+  // W122 re-pinned the recipes alone, for the same reason: `k_channels_version` 11; the
+  // positions and the indices are the same bits (this notch has no hollow and its bed no hold).
+  CHECK(recipes == 10122370879145706239ull);
   CHECK(positions == 14068701233020217500ull);
   CHECK(indices == 4152819545259226263ull);
 }
