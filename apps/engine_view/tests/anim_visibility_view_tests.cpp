@@ -26,8 +26,8 @@
 
 using namespace engine;
 
-#if ENGINE_VIEW_ANIMATION
-
+// Compiled only where the animation capability is (CMakeLists.txt), so it needs no guard of its
+// own.
 namespace engine::view_test {
 bool write_skinned_bar_glb(const std::string& path);  // mesh_view_tests.cpp
 }  // namespace engine::view_test
@@ -173,5 +173,3 @@ TEST_CASE("anim visibility view: the same bar at 100 m moves with the projection
   // systems/renderer's flythrough_tests.cpp ("scene file: the oldest spelling ...") holds it with
   // no GPU, which this case would otherwise spend a turn at the lock on.
 }
-
-#endif  // ENGINE_VIEW_ANIMATION

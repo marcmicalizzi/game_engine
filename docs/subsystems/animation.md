@@ -118,7 +118,18 @@ So **the bands stay metres and mean one thing**: the distance at which a referen
 
 **What fell back is reported**: the most actors any step held at LOD1 that wanted LOD0 (`fell_back_full`) and at LOD2 that wanted a skinned tier (`fell_back_skinned`), with the ceilings in force, in the summary's `animation` block (`engine.scene.FlythroughAnimation` version 2), and per instance the travel and the bias the rule read (`AnimatedInstance.travel_m`, `.lod_bias`).
 
-**Why those ceilings.** What each tier costs an instance is this module's bench ("Performance notes", below): with LOD0 at about 2.5 µs a tick for a 23-joint skeleton and LOD1 at half, 256 actors at LOD0 and 768 more at LOD1 are about 1.5 ms of a 60 Hz step on one worker — a tenth of a frame — and everything past them costs tenths of a microsecond at LOD2 and nanoseconds at LOD3. A game whose rigs are heavier, or whose frame is lighter, moves them.
+**Why those ceilings.** What each tier costs an instance is this module's bench ("Performance notes", below). Taken again for A44 (2026-11-14, `msvc-release` at v3, one worker, 10⁴ instances of a 23-joint skeleton, three repeats; the box was loaded — other processes at 95 % of the CPU — so these are **upper bounds**): **2.83 µs** an instance a tick at LOD0, **1.39** at LOD1, **0.49** at LOD2 and **0.012** at LOD3. So 256 actors at LOD0 and 768 more at LOD1 are at most 0.72 + 1.07 = **1.8 ms** of a 60 Hz step, about a tenth of a frame, and the rest of a crowd costs tenths of a microsecond each. A game whose rigs are heavier, or whose frame is lighter, moves them.
+
+**What the rule costs, measured as a pair** (2026-11-14; main's release engine-view at 0aa8e44a against this branch's, both copied out of their trees, back to back in one lease of the GPU lock). The scene is not the forest: 400 of the game's two generated residents (`surveyor`, 18 joints, playing `Surveyor_Idle`; `tortoise`, 9 joints, `Tortoise_Rest`), alternating on a 20 × 20 fan from 6 m to 600 m on a low dune ground (0.5 m dunes over 1.4 km), a still camera replayed for 180 frames (`--replay-input`, so the world steps on the session's tick and the benchmark animates), at 3840 × 2160, `--raster rt --shadows rt --tunable renderer.gi.mode=bounce`. The machine was shared — other processes at 81–97 % of the CPU and the GPU busy at both ends of every run (`machine_state`) — so every figure is an upper bound and the pair's differences are what it is for.
+
+| Run | Tiers (LOD0/1/2/3) | Tick, ms a frame | Tier decision, ms | Frame, median / p95 ms | Deform pass, ms |
+|---|---|---|---|---|---|
+| main, 1 | 40 / 124 / 96 / 140 | 0.486 | 0.029 | 2.618 / 3.573 | 0.0245 |
+| A44, 1 | 185 / 120 / 85 / 10 | 0.957 | 0.041 | 2.637 / 3.630 | 0.0338 |
+| main, 2 | 40 / 124 / 96 / 140 | 0.425 | 0.026 | 2.594 / 2.898 | 0.0248 |
+| A44, 2 | 185 / 120 / 85 / 10 | 0.869 | 0.037 | 2.609 / 3.099 | 0.0343 |
+
+The rule keeps **305 of the 400 skinned where main kept 164**, because the residents 40 to 600 m away still move by a pixel or more at 2160 rows. That costs **+0.46 ms of CPU a frame** in the world's step (single-threaded, on a loaded box), **+0.01 ms** in the tier decision (the importance's multiply and the budget's score pass), and on the GPU **+0.009 ms of deformation and +0.015 to 0.02 ms of the frame's median** — which is the skinning of 141 more small meshes and nothing else, since every pass but `deform` is the same scene drawn the same way.
 
 ## The renderer contract
 
