@@ -35,8 +35,9 @@ ChannelLink link_of(std::initializer_list<u32> cells, f64 x0, f64 z0, f64 x1, f6
   return link;
 }
 
-// Two tributaries (links 0 and 1) meeting at cell 12, where link 2 begins.
-ChannelNetwork fork() {
+// Two tributaries (links 0 and 1) meeting at cell 12, where link 2 begins. (Not `fork`: that is
+// POSIX's, and Clang and GCC find the call ambiguous.)
+ChannelNetwork forked_network() {
   ChannelNetwork n;
   n.links.push_back(link_of({10, 11, 12}, 0, 100, 100, 0, 2e5f, 6e5f, 1.0f));
   n.links.push_back(link_of({20, 21, 12}, 0, -100, 100, 0, 1e5f, 3e5f, 1.0f));
@@ -52,7 +53,7 @@ f64 fixture_height(const void*, i64 x_mm, i64 z_mm) noexcept {
 
 TEST_CASE("discharge: runoff over the catchment, summed down the links and conserved") {
   ChannelLayer layer;
-  const ChannelNetwork n = fork();
+  const ChannelNetwork n = forked_network();
   NetworkFlow flow;
   std::string error;
   REQUIRE_MESSAGE(network_flow(layer, n, flow, error), error);
@@ -81,7 +82,7 @@ TEST_CASE("discharge: runoff over the catchment, summed down the links and conse
 
 TEST_CASE("discharge: a link is wet from where its water is a sheet over its bed") {
   ChannelLayer layer;
-  const ChannelNetwork n = fork();
+  const ChannelNetwork n = forked_network();
   NetworkFlow flow;
   std::string error;
   REQUIRE(network_flow(layer, n, flow, error));
@@ -111,7 +112,7 @@ TEST_CASE("discharge: a link is wet from where its water is a sheet over its bed
   CHECK(flow.dry_under_sheet == 3);
   CHECK(flow.dry_m > 0.0);
   // A tributary inside its main stem's banks has nothing to carry it.
-  ChannelNetwork inside = fork();
+  ChannelNetwork inside = forked_network();
   inside.links[1].keep = 1;
   layer.flow.stage = 1.0f;
   REQUIRE(network_flow(layer, inside, flow, error));
@@ -127,7 +128,7 @@ TEST_CASE("discharge: a point source joins its link and everything downstream of
   spring.at = WorldPos{52.0, 0.0, -48.0};  // by link 1's sixth point (50, -50)
   spring.flow_m3s = 0.2f;
   layer.flow.sources.push_back(spring);
-  const ChannelNetwork n = fork();
+  const ChannelNetwork n = forked_network();
   NetworkFlow flow, bare;
   std::string error;
   REQUIRE_MESSAGE(network_flow(layer, n, flow, error), error);
