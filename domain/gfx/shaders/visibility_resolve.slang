@@ -909,19 +909,36 @@ float3 water_channel_pixel(ResolveParams* params, SceneGeometry geo, InstanceDes
                            float footprint, float depth, bool has_map, WaterDepthMap map,
                            float3 dp_dx, float3 dp_dy) {
   VertexAttributes* attributes = (VertexAttributes*)geo.attributes;
-  const WaterChannelFlow f = water_channel_flow(
-      tri.p[0], tri.p[1], tri.p[2], decode_half2(attributes[tri.local[0]].uv_half2).x,
-      decode_half2(attributes[tri.local[1]].uv_half2).x,
-      decode_half2(attributes[tri.local[2]].uv_half2).x);
+  const float2 uv0 = decode_half2(attributes[tri.local[0]].uv_half2);
+  const float2 uv1 = decode_half2(attributes[tri.local[1]].uv_half2);
+  const float2 uv2 = decode_half2(attributes[tri.local[2]].uv_half2);
+  const WaterChannelFlow f =
+      water_channel_flow(tri.p[0], tri.p[1], tri.p[2], uv0.x, uv1.x, uv2.x);
+  // **The solve, read** (S106): UV.y is the section's hydraulic depth, and on a fall less the
+  // nappe's thickness, so a triangle with a negative corner is a fall's, of the mean of its
+  // negative corners' thickness. The depth under a reach's pixel is the map's (the level less the
+  // ground); with no map it is the hydraulic depth; a fall's is its sheet's thickness, and its
+  // sheet is not marched against the map, whose depths lie under the nappe's foot.
+  const float3 falls = float3(max(-uv0.y, 0.0), max(-uv1.y, 0.0), max(-uv2.y, 0.0));
+  const float fallen = float(uv0.y < 0.0) + float(uv1.y < 0.0) + float(uv2.y < 0.0);
+  const float nappe = fallen > 0.0 ? (falls.x + falls.y + falls.z) / fallen : 0.0;
+  const float hydraulic = max(s.uv.y, 0.0);
+  if (nappe > 0.0) {
+    depth = nappe;
+    has_map = false;
+  } else if (!has_map) {
+    depth = hydraulic;
+  }
   // The surface's own plane, facing out of the water whichever side the eye is on.
   const float3 plane = dot(s.geometric, s.normal) < 0.0 ? -s.geometric : s.geometric;
   const WaterChannelSurface c =
       water_channel_surface(f, local, plane, s.uv.x, params->water_time_s, footprint, depth,
-                            w.roughness, w.seed, has_map, map);
+                            hydraulic, nappe, w.roughness, w.seed);
   WaterParams wc = w;
   wc.roughness = c.roughness;
   const float3 view = normalize(-from_eye);
-  const float edge = w.shore * clamp(depth / k_water_calm_depth, 0.0, 1.0);
+  // The shore fades by depth; a nappe is thin everywhere and has no shore.
+  const float edge = nappe > 0.0 ? w.shore : w.shore * clamp(depth / k_water_calm_depth, 0.0, 1.0);
   float3 color = float3(0.0);
   if (c.foam < 1.0) {
     if ((flags & k_material_water_volume) != 0) {
