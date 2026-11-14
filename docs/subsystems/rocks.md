@@ -1813,7 +1813,7 @@ clusters`), and the talus showed a gap of sand 250 to 450 m out with a lone far 
 it. A tile's patches are now handed as one far tile **a square block of the patch lattice**, as many
 patches a block as `k_far_tile_budget_triangles` (512,000) of their recipe budget holds — a power of
 two on a side, at least one: 2 × 2 patches of 16 m at the forest's 128,000, whose far tile measured
-2,261 clusters at the first pass and **1,368** now (33 % of the limit; geometry.md, "The far form
+2,261 clusters at the first pass and **1,430** now (35 % of the limit; geometry.md, "The far form
 meets its neighbour"). Each block's far tile stands at the tile's corner. The members, the pairs and
 the room a tile takes are what one far tile took; only the limit's margin moves.
 

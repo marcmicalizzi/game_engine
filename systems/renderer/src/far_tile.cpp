@@ -54,6 +54,10 @@ u32 bits_of(f32 v) noexcept {
   return b;
 }
 
+// Two copies of a far form vertex at one point and one UV weld when their normals are within 60
+// degrees: a hard edge sharper than that (a slab's top and its wall) stays two vertices.
+constexpr f32 k_far_weld_cos = 0.5f;
+
 // **A far form is drawn smooth.** Its vertices are its mesh's own, split wherever the near form
 // had a hard edge — a faceted stone at every edge — and a triangle that shares no corner with its
 // neighbour fills a cluster's 64 vertices with 21 triangles: the forest's tile built 2,356
@@ -79,11 +83,36 @@ void weld_part(Part& part) {
       if (a.w[k] != b.w[k]) return a.w[k] < b.w[k];
     return a.v < b.v;
   });
-  // Each run's first vertex (the lowest index) stands for it; the survivors keep their order.
+  // Within a run of one point and one UV, a copy joins the first group whose first normal is
+  // within `k_far_weld_cos` of its own, else starts one (G198's second pass): a piece's top and
+  // the wall under its cut meet at a right angle on one point, and one vertex there took the mean
+  // of both, tilting every cut's top toward its wall — the lines between the paving's slabs from
+  // 300 m. A faceted stone's facets, at a few tens of degrees, still weld. Each group's first copy
+  // (the lowest index) stands for it; the survivors keep their order.
+  const bool carried = part.normals.size() == n;
   Vector<u32> rep(n);
-  for (u32 k = 0; k < n; ++k) {
-    const bool same = k > 0 && std::memcmp(order[k].w, order[k - 1].w, sizeof(order[k].w)) == 0;
-    rep[order[k].v] = same ? rep[order[k - 1].v] : order[k].v;
+  for (u32 first = 0; first < n;) {
+    u32 last = first + 1;
+    while (last < n && std::memcmp(order[last].w, order[first].w, sizeof(order[first].w)) == 0)
+      ++last;
+    for (u32 k = first; k < last; ++k) {
+      const u32 v = order[k].v;
+      rep[v] = v;
+      if (!carried) {
+        rep[v] = order[first].v;
+        continue;
+      }
+      for (u32 j = first; j < k; ++j) {
+        const u32 u = order[j].v;
+        if (rep[u] != u) continue;
+        const Vec3 a = part.normals[u], b = part.normals[v];
+        if (a.x * b.x + a.y * b.y + a.z * b.z >= k_far_weld_cos) {
+          rep[v] = u;
+          break;
+        }
+      }
+    }
+    first = last;
   }
   Vector<u32> remap(n, ~0u);
   Vector<Vec3> positions;
@@ -100,7 +129,6 @@ void weld_part(Part& part) {
   // every piece its own and the band read as paving from 300 m. A run whose copies cancel (two
   // faces of a thin plate) takes the faces' area-weighted normal.
   Vector<Vec3> sums(positions.size(), Vec3{0.0f, 0.0f, 0.0f});
-  const bool carried = part.normals.size() == n;
   if (carried)
     for (u32 v = 0; v < n; ++v)
       sums[remap[rep[v]]] = sums[remap[rep[v]]] + part.normals[v];

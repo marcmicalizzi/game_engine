@@ -3968,7 +3968,12 @@ thread builds the tile's meshes:
    form's own normals at its copies** (`k_far_tile_build_version` 2): a deposit's bed carries the
    plan's gradient, the same on both sides of a piece's cut, where the first pass made normals
    again from the far form's large triangles, gave every piece its own, and the band read as
-   paving from 300 m; a run whose copies cancel takes the faces' area-weighted normal — then
+   paving from 300 m; a run whose copies cancel takes the faces' area-weighted normal. Copies
+   weld only within **60 degrees** of each other (`k_far_tile_build_version` 3): a piece's top and
+   the wall under its cut meet at a right angle on one point, and one vertex there took the mean
+   of both and tilted every cut's top toward its wall, which drew the lines between the paving's
+   slabs; a faceted stone's facets still weld (the forest tile: 1,368 clusters welded whole, 1,430
+   at 60 degrees) — then
    clustered with its own DAG (`build_cluster_lod`, the load's options), the parts merged, and the
    clusters laid out leaves first as every tile mesh is; its textures are the load's pass over the
    one mesh, as every tile mesh's are.

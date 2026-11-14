@@ -434,7 +434,7 @@ and sorts the triangles by material and corners, so the far form is a function o
 not of how its clusters were laid out. The weld by bytes also joins copies the source numbering kept
 apart (a deposit piece's bed has them), so the simplifier sees one surface where it saw strips: with
 both rules the forest tile's levels are **42,876, 35,854 and 31,358 triangles** (the first pass:
-61,738, 41,488 and 35,882) with every cut point kept, and its far tile **1,368 clusters, 3.4 MiB of
+61,738, 41,488 and 35,882) with every cut point kept, and its far tile **1,430 clusters, 3.6 MiB of
 the room** (2,261 and 5.7 MiB). The bake is 3.2 s against the pieces' 12.8 s of build in debug, beside
 other agents' builds. **The lesson for any consumer that simplifies
 a mesh again**: honour what its builder locked, and where the container does not carry it, its
