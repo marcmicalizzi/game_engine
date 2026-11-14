@@ -858,13 +858,13 @@ void run_lane(void* context) {
 
 // **Every tile of the range, composed on the pool and handed on in tile order** (T128; tileset.md,
 // "The mask level's cook"): the range in row-major order, which is the archive's (`tile_key`), cut
-// into batches of 16 tiles a lane; a batch's tiles dealt round the lanes, each lane with scratch of
-// its own, and then handed to `deliver(tx, tz, out)` one by one in order on the calling thread —
-// so what is written, refused, dropped and hashed is the same at any number of lanes, and never
-// depends on which finished first. The next batch is composed while the calling thread hands on
-// the last (two buffers of outputs, the lanes' scratch used by one batch at a time), so the
-// writer's appends are not a pause the pool waits through. Memory is two batches' records, not the
-// level's twice.
+// into batches of about 16 tiles of 32 cells' points a lane; a batch's tiles dealt round the lanes,
+// each lane with scratch of its own, and then handed to `deliver(tx, tz, out)` one by one in order
+// on the calling thread — so what is written, refused, dropped and hashed is the same at any number
+// of lanes, and never depends on which finished first. The next batch is composed while the calling
+// thread hands on the last (two buffers of outputs, the lanes' scratch used by one batch at a
+// time), so the writer's appends are not a pause the pool waits through. Memory is two batches'
+// records, not the level's twice.
 template <class Deliver>
 void scan_range(const Field& f, const TileRange& r, bool records, const MaskCookJobs& cook,
                 Deliver&& deliver) {
@@ -875,7 +875,12 @@ void scan_range(const Field& f, const TileRange& r, bool records, const MaskCook
   u32 lanes = pool != nullptr ? pool->worker_count(jobs::Pool::Performance) + 1 : 1;
   if (cook.lanes > 1) lanes = std::min(lanes, cook.lanes);
   if (lanes <= 1) pool = nullptr;
-  const u64 batch = static_cast<u64>(lanes) * 16;
+  // A lane's share of a batch is about 16 tiles of 32 cells' worth of points (17,424), so a level
+  // of small tiles (the forest's are 8 cells) is not a batch, and a pause, every few hundred
+  // microseconds.
+  const u64 n0 = static_cast<u64>(f.in->masks.tile_cells) + 1;
+  const u64 per_lane = std::max<u64>(16, (16 * 33 * 33) / (n0 * n0));
+  const u64 batch = static_cast<u64>(lanes) * per_lane;
   const u32 held = static_cast<u32>(std::min(batch, count));
   Vector<TileWork> work(lanes);
   Vector<TileOut> outs[2] = {Vector<TileOut>(held), Vector<TileOut>(pool != nullptr ? held : 0)};

@@ -1628,13 +1628,26 @@ bool TileSet::surface_mm(i64 spacing_mm, i64 i0, i64 j0, u32 nx, u32 nz,
   if (!is_open() || spacing_mm < 1 || out.size() != static_cast<usize>(nx) * nz) return false;
   if (nx == 0 || nz == 0) return true;
   const Level& finest = *levels_[0];
-  Vector<i32> xs;
-  Vector<i32> zs;
-  Vector<u64> keys;
-  window_axis_tiles(finest, manifest_.cells, i0, nx, 0, spacing_mm, false, xs);
-  window_axis_tiles(finest, manifest_.cells, j0, nz, 0, spacing_mm, true, zs);
-  for (const i32 tz : zs)
-    for (const i32 tx : xs)
+  // The tiles the window's points read are a rectangle (each axis's points, and so their corners,
+  // ascend): its first point's first corner to its last point's second, clamped as `value` clamps
+  // (`window_axis_tiles` for one axis, with no list to allocate — a cook asks this once a mask
+  // tile).
+  const i64 c = manifest_.cells;
+  const i64 s = finest.spacing;
+  const auto tile_span = [&](i64 first, u32 count, i64 lo, i64 hi, i32& t0, i32& t1) {
+    const auto corner = [&](i64 i, i64 step) {
+      const i64 f = clamp_i64(i * spacing_mm - lo * s, 0, (hi - lo) * s);
+      return static_cast<i32>(floor_div(clamp_i64(lo + f / s + step, lo, hi), c));
+    };
+    t0 = corner(first, 0);
+    t1 = corner(first + count - 1, 1);
+  };
+  i32 tx0 = 0, tx1 = 0, tz0 = 0, tz1 = 0;
+  tile_span(i0, nx, finest.imin, finest.imax, tx0, tx1);
+  tile_span(j0, nz, finest.jmin, finest.jmax, tz0, tz1);
+  Vector<u64> keys;  // allocated only when a tile is not resident
+  for (i32 tz = tz0; tz <= tz1; ++tz)
+    for (i32 tx = tx0; tx <= tx1; ++tx)
       if (!hinted(finest, tx, tz)) keys.push_back(archive::tile_key(tx, tz));
   // Only the misses' claim takes the lock: a window whose tiles are resident takes none.
   if (!keys.empty())
