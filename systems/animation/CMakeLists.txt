@@ -21,11 +21,11 @@ engine_schema_library(NAME animation_schemas SCHEMAS schemas/animation.schema CA
 
 engine_module(NAME animation LAYER systems OPTIONAL WHOLE_ARCHIVE
   DEPS base containers math time log jobs ids json schema tunables geometry anim assets sim ecs animation_schemas
-  SOURCES src/library.cpp src/pose_pool.cpp src/animation.cpp src/gait.cpp)
+  SOURCES src/library.cpp src/pose_pool.cpp src/animation.cpp src/gait.cpp src/visibility.cpp)
 
 engine_module_tests(NAME animation
   SOURCES tests/animation_tests.cpp tests/ancestor_tests.cpp tests/lod_tests.cpp tests/size_table.cpp
-          tests/gait_tests.cpp)
+          tests/gait_tests.cpp tests/visibility_tests.cpp)
 # The gait's tests wear the Khronos RiggedFigure where tools/fetch-samples.ps1 has fetched it,
 # found through test_paths.h by this path or in a test bundle.
 if(TARGET engine_animation_tests)

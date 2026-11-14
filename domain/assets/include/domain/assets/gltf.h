@@ -42,6 +42,7 @@
 #include <core/containers/vector.h>
 #include <core/math/math.h>
 #include <domain/geometry/cluster.h>
+#include <domain/geometry/cluster_file.h>
 #include <domain/geometry/material_sampling.h>
 #include <domain/geometry/uv_repair.h>
 #include <domain/geometry/zero_area_repair.h>
@@ -239,7 +240,16 @@ struct MeshData {
   Vector<Node> nodes;
   Vector<Skin> skins;
   Vector<Animation> animations;
+  // **The perches the file declares** (A43; assets.md, "Perches"): every node of the default scene
+  // whose name begins with `perch` or whose `extras` has a `perch` member, as the place a small
+  // animal may stand — the node's world translation, its world +y (normalized) for up, and
+  // `extras.perch.size_m` for the foot it holds (`k_default_perch_size_m` without one). In the
+  // flattened mesh's space, like the positions; empty for a file with none, which imports as it
+  // always did. The content build writes them into the container's section 43.
+  Vector<geometry::ClusterFilePerch> perches;
 };
+// A perch whose node says no size: a songbird's to a crow's branch, metres.
+inline constexpr f32 k_default_perch_size_m = 0.05f;
 
 // Loads a .gltf (external or embedded buffers) or .glb file. External buffers and images are
 // resolved relative to the file's directory through foundation/io. `out` is replaced, and left

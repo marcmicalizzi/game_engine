@@ -405,6 +405,44 @@ TEST_CASE("gltf: a .glb built in memory loads like the .gltf") {
   check_cube_materials(mesh);
 }
 
+// A43 (assets.md, "Perches"): a node named `perch...`, or whose extras have a `perch` member, is a
+// perch at its world origin, up its world +y, its size the extras' or the default; any other node
+// is not. The cube's node turns a quarter about +y and moves 2 m along x, so its children's places
+// go through that.
+TEST_CASE("gltf: the nodes an author names perch are perches, in the mesh's space") {
+  const Cube cube = make_cube();
+  std::string json = cube_json("");
+  const std::string cube_node =
+      "{\"name\": \"cube\", \"mesh\": 0, \"translation\": [2, 0, 0],\n"
+      "     \"rotation\": [0, 0.70710678118654752, 0, 0.70710678118654752]}";
+  const std::size_t at = json.find(cube_node);
+  REQUIRE(at != std::string::npos);
+  json.replace(at, cube_node.size(),
+               "{\"name\": \"cube\", \"mesh\": 0, \"translation\": [2, 0, 0],"
+               " \"rotation\": [0, 0.70710678118654752, 0, 0.70710678118654752],"
+               " \"children\": [2, 3, 4]},\n"
+               "    {\"name\": \"perch.001\", \"translation\": [0, 0.5, 0]},\n"
+               "    {\"name\": \"branch\", \"translation\": [0.5, 0, 0],"
+               " \"extras\": {\"perch\": {\"size_m\": 0.02}}},\n"
+               "    {\"name\": \"stand\", \"translation\": [0, 1, 0], \"extras\": {\"note\": 1}}");
+  const std::vector<std::uint8_t> glb = make_glb(json, cube_buffer(cube));
+  MeshData mesh;
+  std::string error;
+  REQUIRE_MESSAGE(load_gltf_memory(span_of(glb), "", mesh, &error), error);
+  check_cube_mesh(mesh, cube);  // the perches change nothing else the import makes
+  REQUIRE(mesh.perches.size() == 2u);
+  const Vec3 first = expected_position(Vec3{0.0f, 0.5f, 0.0f});
+  CHECK(mesh.perches[0].position.x == doctest::Approx(first.x));
+  CHECK(mesh.perches[0].position.y == doctest::Approx(first.y));
+  CHECK(mesh.perches[0].position.z == doctest::Approx(first.z));
+  CHECK(mesh.perches[0].up.y == doctest::Approx(1.0f));
+  CHECK(mesh.perches[0].size_m == k_default_perch_size_m);
+  const Vec3 second = expected_position(Vec3{0.5f, 0.0f, 0.0f});
+  CHECK(mesh.perches[1].position.x == doctest::Approx(second.x));
+  CHECK(mesh.perches[1].position.z == doctest::Approx(second.z));
+  CHECK(mesh.perches[1].size_m == doctest::Approx(0.02f));
+}
+
 TEST_CASE("gltf: an embedded base64 buffer needs no companion file") {
   const Cube cube = make_cube();
   const std::string uri = "data:application/octet-stream;base64," + base64(cube_buffer(cube));

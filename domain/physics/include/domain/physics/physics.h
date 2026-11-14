@@ -198,11 +198,17 @@ struct BodyDesc {
 
 // --- queries --------------------------------------------------------------------------------
 
+// **Which child of a compound was hit** (`RayHit::child`, `ShapeHit::child`; physics.md, "Which
+// piece a cast hit"): the index of the child in the order `create_compound` or `build_compound` was
+// given them, so a caller that keeps a table beside its compound (a tile's placements) can say what
+// the cast met. 0 for a body whose shape has no children — a compound of one child is built as that
+// child placed, which is the same answer.
 struct RayHit {
   BodyId body{};
   WorldPos position{};  // origin + direction * fraction, in f64
   Vec3 normal{};        // the surface normal at `position`, pointing out of the hit body
   f32 fraction = 0.0f;  // along the ray's direction vector, so position = origin + dir*fraction
+  u32 child = 0;        // the compound's child, in the order it was built with
 };
 
 struct ShapeHit {
@@ -211,6 +217,7 @@ struct ShapeHit {
   Vec3 normal{};        // points from the hit body towards the cast shape
   f32 fraction = 0.0f;  // along `sweep`
   f32 penetration = 0.0f;
+  u32 child = 0;  // as `RayHit::child`
 };
 
 // --- contacts -------------------------------------------------------------------------------
@@ -337,6 +344,11 @@ class World {
                 LayerMask mask = LayerMask::all()) const;
   bool cast_shape(ShapeId shape, const BodyTransform& start, Vec3 sweep, ShapeHit& out,
                   LayerMask mask = LayerMask::all()) const;
+  // **A sphere of any radius swept from `start`** (physics.md, "A sphere of any radius"): the
+  // sphere is the call's own and never enters the shape table, so a caller asking with a new radius
+  // every time makes no shape and changes no id a later shape gets. `cast_shape`'s answer.
+  bool cast_sphere(WorldPos start, f32 radius, Vec3 sweep, ShapeHit& out,
+                   LayerMask mask = LayerMask::all()) const;
 
   // --- stepping
   // Advances the world by one fixed step. `dt_seconds` is the step length (use
@@ -356,6 +368,9 @@ class World {
   void optimize_broad_phase();
 
  private:
+  // `cast_shape` and `cast_sphere` over the backend's shape (a `JPH::Shape`).
+  bool cast_backend_shape(const void* backend_shape, const BodyTransform& start, Vec3 sweep,
+                          ShapeHit& out, LayerMask mask) const;
   // The character is swept through the backend's own queries and its scratch arena, which live in
   // `Impl`; it is a class of its own because it is not a body (character.h).
   friend class CharacterBody;

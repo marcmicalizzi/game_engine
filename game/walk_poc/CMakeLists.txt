@@ -68,6 +68,11 @@ if(TARGET engine_game_walk_poc AND TARGET engine_engine_view_tests)
   engine_game_module(NAME walk_poc_shape OUTPUT_DIRECTORY "${_tests}"
     SOURCES walk_poc.cpp SCHEMAS walk_poc.schema)
   target_compile_definitions(engine_game_walk_poc_shape PRIVATE WALK_POC_TEST=10)
+  # And walk_poc_world for ABI 10 (roadmap A43; apps.md "What a module can ask the world"): a module
+  # of its own source, stateless, that asks the casts, the supports and the water in the case's own
+  # scene and ends the run with every answer.
+  engine_game_module(NAME walk_poc_world OUTPUT_DIRECTORY "${_tests}" SOURCES world_probe.cpp)
+  add_dependencies(engine_engine_view_tests engine_game_walk_poc_world)
   add_dependencies(engine_engine_view_tests engine_game_walk_poc_level engine_game_walk_poc_shape)
   add_dependencies(engine_engine_view_tests engine_game_walk_poc engine_game_walk_poc_bad_action
                    engine_game_walk_poc_failing engine_game_walk_poc_no_props
@@ -86,6 +91,7 @@ if(TARGET engine_game_walk_poc AND TARGET engine_engine_view_tests)
     WALK_POC_ABI7_PATH="$<TARGET_FILE:engine_game_walk_poc_abi7>"
     WALK_POC_LEVEL_PATH="$<TARGET_FILE:engine_game_walk_poc_level>"
     WALK_POC_SHAPE_PATH="$<TARGET_FILE:engine_game_walk_poc_shape>"
+    WALK_POC_WORLD_PATH="$<TARGET_FILE:engine_game_walk_poc_world>"
     WALK_POC_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
   # The hot-reload case compiles a second build of the fixture, a field added, into its own
   # scratch directory with the exported command, as foundation/hotload's tests do.

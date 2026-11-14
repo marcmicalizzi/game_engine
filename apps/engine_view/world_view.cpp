@@ -1,8 +1,12 @@
 // engine-view's streamed world (world_view.h).
 #include "world_view.h"
 
-#include "anim_lod.h"
 #include "game_runner.h"  // k_max_placement_query_m: what the query cache is bounded by
+
+// What `anim_lod.h` brought in before it read the animation capability's rule (A44), which a
+// build without the capability (no-ECS, minimal) has no header for.
+#include <domain/sim/tiers.h>
+#include <systems/renderer/view_set.h>
 
 #if ENGINE_VIEW_WORLD
 

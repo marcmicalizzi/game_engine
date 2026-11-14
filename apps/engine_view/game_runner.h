@@ -45,6 +45,8 @@
 
 namespace engine::view {
 
+class Walker;
+
 // The game actions a module may declare (map revision 5, fly_camera.h): the only names
 // `HostApi::game_action` accepts.
 inline constexpr const char* k_game_actions[] = {"interact", "use",    "game_1",
@@ -315,6 +317,14 @@ class GameRunner {
   // module hears `Unsupported`.
   using GroundQuery = bool (*)(void* user, f64 x, f64 z, f64& out_height);
   void set_ground(GroundQuery query, void* user) noexcept;
+  // **What a module can ask the world** (ABI 10; apps.md, "What a module can ask the world";
+  // roadmap A43): the casts and the supports are the walker's collision (walk.h, `Walker::cast`,
+  // `Walker::supports`), set by whoever attaches the runner to a session; the water at a point is
+  // whoever holds the scene's water (main.cpp's, the water capability's `WaterQuery`). Without
+  // either the module hears `Unsupported`. Asking changes nothing a replay walks.
+  void set_walker(const Walker* walker) noexcept;
+  using WaterQueryFn = bool (*)(const void* user, f64 x, f64 z, hotload::WaterSample& out) noexcept;
+  void set_water(WaterQueryFn query, const void* user) noexcept;
   // The loaded module's name and build (the host's generation), for a recording's header.
   const std::string& module_name() const noexcept;
   u32 build() const noexcept;

@@ -48,12 +48,16 @@ namespace engine::renderer {
 // renderer that knew about clips would put the tick inside the frame, and the whole point of the
 // contract is that it is outside it. But a scene file is one file, and making the host parse it a
 // second time to find the animation blocks would be two parsers over one grammar. So the renderer
-// reads the block into these four fields and hands them to whoever asked for the scene; only the
-// app resolves `clip` against an `animation::Library`.
+// reads the block into these fields and hands them to whoever asked for the scene; only the app
+// resolves `clip` against an `animation::Library`.
 struct SceneAnimation {
-  std::string clip;   // the clip's name; empty means the skin's first clip
-  f32 speed = 1.0f;   // playback rate
-  f32 phase = 0.0f;   // seconds added to the starting playhead, so a crowd is not in lockstep
+  std::string clip;  // the clip's name; empty means the skin's first clip
+  f32 speed = 1.0f;  // playback rate
+  f32 phase = 0.0f;  // seconds added to the starting playhead, so a crowd is not in lockstep
+  // A factor on the animation tier's rule (systems/animation/visibility.h; A44): above 1 an actor
+  // conspicuous beyond its limbs' travel (a bird against the sky), below 1 one not worth its
+  // pixels.
+  f32 lod_bias = 1.0f;
   bool play = false;  // the block was present at all
 };
 
@@ -216,6 +220,10 @@ struct SceneWater {
   // mesh's UV.x is the flow phase, and the GPU scene sets `gfx::k_material_water_channel` on its
   // material. `body` then holds the channel's name and optics under a body's names, and no shape.
   bool channel = false;
+  // A channel's description as the scene gave it (A43): what a host's water at a point answers a
+  // channel from (`water::channel_water_at`; apps.md, "What a module can ask the world"). Default
+  // for a body.
+  scene::WaterChannel channel_source{};
   // A body's **plunges** (water.md, "The plunge"; S98): the feet of the scene's channels' falls
   // that land in it — inside its depth map, within a metre of its level — body-local,
   // the highest falls first, at most `gfx::k_water_plunges` (the reader drops the rest and says
@@ -637,6 +645,10 @@ struct SourceMesh {
   // on the ground by (`scene_gen::seat_on_ground`). A radius of zero for every other mesh; a
   // distance form keeps its source's.
   geometry::ClusterFileSeat seat{};
+  // **The perches the mesh declares** (A43; the container's section 43, or the glTF's nodes;
+  // apps.md, "What a module can ask the world"): mesh space, read by the collision's supports.
+  // Empty for every mesh that declares none.
+  Vector<geometry::ClusterFilePerch> perches;
   bool has_motion() const noexcept { return !motion_parts.empty() && !motion_vertices.empty(); }
 };
 

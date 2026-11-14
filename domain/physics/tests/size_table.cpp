@@ -19,7 +19,7 @@ ENGINE_EXPECT_SIZE(80, 8, physics::ContactEvent);
 
 // Query results are returned by value into a caller's stack slot. A hit's point is a `WorldPos`
 // (ADR-0053), so both grew by its twelve bytes and their alignment is a double's.
-ENGINE_EXPECT_SIZE(48, 8, physics::RayHit);
+ENGINE_EXPECT_SIZE(56, 8, physics::RayHit);
 ENGINE_EXPECT_SIZE(56, 8, physics::ShapeHit);
 
 // Where a body is: a `WorldPos` and a quaternion, no scale. Returned per body by the renderer's

@@ -11,6 +11,8 @@
 #include <Jolt/Physics/Collision/CollisionCollectorImpl.h>
 #include <Jolt/Physics/Collision/NarrowPhaseQuery.h>
 #include <Jolt/Physics/Collision/RayCast.h>
+#include <Jolt/Physics/Collision/Shape/CompoundShape.h>
+#include <Jolt/Physics/Collision/Shape/SphereShape.h>
 #include <Jolt/Physics/Collision/ShapeCast.h>
 #include <Jolt/Physics/PhysicsSettings.h>
 #include <Jolt/Physics/SoftBody/SoftBodyMotionProperties.h>
@@ -555,6 +557,18 @@ Status World::spawn_debris(ShapeId shape, const BodyTransform& transform, Vec3 l
 
 // --- queries -------------------------------------------------------------------------------
 
+namespace {
+// The compound child a sub-shape id names (physics.h, `RayHit::child`): the body's shape is the
+// compound itself (a body is made of the shape the table holds, undecorated), whose sub-shape
+// index is the child's place in the order the compound was built with. 0 for any other shape.
+u32 compound_child(const JPH::Body& body, const JPH::SubShapeID& id) noexcept {
+  const JPH::Shape* shape = body.GetShape();
+  if (shape == nullptr || shape->GetType() != JPH::EShapeType::Compound) return 0;
+  JPH::SubShapeID remainder;
+  return static_cast<const JPH::CompoundShape*>(shape)->GetSubShapeIndexFromID(id, remainder);
+}
+}  // namespace
+
 bool World::cast_ray(WorldPos origin, Vec3 direction, RayHit& out, LayerMask mask) const {
   if (impl_ == nullptr) return false;
   const JPH::RRayCast ray(to_jph(origin), to_jph(direction));
@@ -573,7 +587,20 @@ bool World::cast_ray(WorldPos origin, Vec3 direction, RayHit& out, LayerMask mas
   out.position = from_jph_world(point);
   out.normal = from_jph(lock.GetBody().GetWorldSpaceSurfaceNormal(result.mSubShapeID2, point));
   out.fraction = result.mFraction;
+  out.child = compound_child(lock.GetBody(), result.mSubShapeID2);
   return true;
+}
+
+bool World::cast_sphere(WorldPos start, f32 radius, Vec3 sweep, ShapeHit& out,
+                        LayerMask mask) const {
+  if (impl_ == nullptr || !(radius > 0.0f)) return false;
+  // The call's own sphere, on the stack: embedded, so the backend's reference count never frees
+  // it, and never in the table.
+  JPH::SphereShape sphere(radius);
+  sphere.SetEmbedded();
+  BodyTransform from;
+  from.position = start;
+  return cast_backend_shape(&sphere, from, sweep, out, mask);
 }
 
 bool World::cast_shape(ShapeId shape, const BodyTransform& start, Vec3 sweep, ShapeHit& out,
@@ -581,6 +608,12 @@ bool World::cast_shape(ShapeId shape, const BodyTransform& start, Vec3 sweep, Sh
   if (impl_ == nullptr) return false;
   const JPH::Shape* jph_shape = impl_->shape_ptr(shape);
   if (jph_shape == nullptr) return false;
+  return cast_backend_shape(jph_shape, start, sweep, out, mask);
+}
+
+bool World::cast_backend_shape(const void* backend_shape, const BodyTransform& start, Vec3 sweep,
+                               ShapeHit& out, LayerMask mask) const {
+  const JPH::Shape* jph_shape = static_cast<const JPH::Shape*>(backend_shape);
 
   const JPH::RVec3 base = to_jph(start.position);
   const JPH::RMat44 from = JPH::RMat44::sRotationTranslation(to_jph(start.rotation), base);
@@ -607,6 +640,9 @@ bool World::cast_shape(ShapeId shape, const BodyTransform& start, Vec3 sweep, Sh
   out.normal = axis.IsNearZero() ? Vec3::zero() : from_jph(-axis.Normalized());
   out.fraction = collector.mHit.mFraction;
   out.penetration = collector.mHit.mPenetrationDepth;
+  out.child = 0;
+  const JPH::BodyLockRead lock(impl_->system.GetBodyLockInterfaceNoLock(), collector.mHit.mBodyID2);
+  if (lock.Succeeded()) out.child = compound_child(lock.GetBody(), collector.mHit.mSubShapeID2);
   return true;
 }
 

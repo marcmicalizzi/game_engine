@@ -380,7 +380,7 @@ TEST_CASE(
   REQUIRE_MESSAGE(first.exit_code == 0, first.output);
   JsonValue a;
   REQUIRE_MESSAGE(summary_of(first, a), first.output);
-  CHECK(number(at(a, {"interactive", "game", "abi"})) == 9.0);  // built against the header's ABI
+  CHECK(number(at(a, {"interactive", "game", "abi"})) == 11.0);  // built against the header's ABI
   const JsonValue* bar = bar_of(a);
   REQUIRE_MESSAGE(bar != nullptr, first.output.substr(0, 2000));
   const JsonValue* path = bar->find("path");
@@ -569,7 +569,7 @@ TEST_CASE(
   }
   const JsonValue& old_run = summaries[0];
   CHECK(number(at(old_run, {"interactive", "game", "abi"})) == 7.0);
-  CHECK(number(at(summaries[1], {"interactive", "game", "abi"})) == 9.0);
+  CHECK(number(at(summaries[1], {"interactive", "game", "abi"})) == 11.0);
   // It circled the bar 240 ticks with `actor_place` and read its state each tick without the host
   // writing past the 136 bytes it owns (the guard behind the struct is counted in its state).
   CHECK(number(at(old_run, {"interactive", "game", "state", "actor_ticks"})) == 240.0);
@@ -755,7 +755,7 @@ TEST_CASE(
     return;
   }
   REQUIRE_MESSAGE(first.exit_code == 0, first.output);
-  CHECK(number(at(a, {"interactive", "game", "abi"})) == 9.0);
+  CHECK(number(at(a, {"interactive", "game", "abi"})) == 11.0);
   // The first tick's five refused calls (four bits each): too many weights, a NaN weight, a scale
   // of 5, of 0.1 and NaN, all InvalidArgument (6); and the actor kept its scale through them.
   const JsonValue* state_a = at(a, {"interactive", "game", "state"});

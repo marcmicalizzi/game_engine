@@ -467,6 +467,7 @@ bool read_scene_water_channels(const scene::Scene& file, const std::string& path
     water.shading.shore_m = c.shore_m;
     water.shading.seed = water.body.seed;
     water.channel = true;
+    water.channel_source = c;  // A43: what a game module's `water_at` answers from
     water.depth = read_depth_map(placed.meshes[k].path);
     SceneInstance instance;
     instance.mesh = mesh;
