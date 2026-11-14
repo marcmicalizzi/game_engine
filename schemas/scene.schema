@@ -1475,35 +1475,50 @@ struct WaterBody @version(6) {
   swell_direction_deg: f32 = 0 @since(6) @unit(deg)
 }
 
-/// **A channel of flowing water** (docs/subsystems/water.md, "Channels"; roadmap S96; the grounding,
-/// docs/experiments/flowing-water.md): a stream, a river or a waterfall as a ribbon of water along
-/// a centreline, drawn as a water material that moves. The description is the contract between the
-/// drainage generator that finds channels in the ground (roadmap W86, which writes JSON of this
-/// shape) and the water capability that draws them: `name`, `points`, `width_m`, `depth_m`,
-/// `slope` and `seed` are version 1 exactly; the fields after `seed` have defaults, and the optics
-/// among them are `WaterBody`'s under the same names with the same defaults, so a writer that knows
-/// only the contract draws clear fresh water. The speed at each point is Manning's,
-/// v = (1/n) d^(2/3) S^(1/2) with the depth for the hydraulic radius; where the line between two
-/// points falls at 45 degrees or steeper the water is in free fall and that stretch is a waterfall.
-/// Refused with a sentence: fewer than two points, arrays of unequal length, a width or depth that
-/// is not positive, a slope that is negative where the line descends.
-struct WaterChannel @version(5) {
+/// **A channel of flowing water, solved** (docs/subsystems/channels.md, "The water's description";
+/// roadmap S96, W120; the grounding, docs/experiments/stream-profile.md): a stream or a river as
+/// stations down a centreline, each carrying the steady one-dimensional flow of its discharge
+/// through the ground's own section there — the level, the greatest depth, the speed, the Froude
+/// number and how far the water reaches each side of the line. The description is the contract
+/// between the solver that writes it (`engine-content flow solve`, from the channels planner's
+/// lines or from a line and a discharge an author names) and whoever draws, excludes or measures
+/// by it; `scene_gen::water_channel_solved` (domain/scene_gen/water_channel.h) is the one check
+/// they all make, and that header holds the bits of `flags`.
+///
+/// **Version 6 is not version 5 with more fields.** Until W120 the level was a share of a cut's
+/// depth laid along the line, the width a described ribbon and the depth a described parabola.
+/// Nothing is read in that meaning: a block that carries none of the solved arrays is refused by
+/// name, "cooked before W120: cook again". `fit` (version 3's record of a ribbon narrowed or
+/// lowered onto the ground) is gone with the ribbon it described.
+///
+/// **Between stations the surface is a straight line**, except across a discontinuity, which is
+/// always a pair of neighbouring stations: a hydraulic jump's head and foot, a fall's lip and foot
+/// (channels.md pins how near the line stands to the profile and how far apart stations may be).
+/// A tributary's last station carries the main stem's level there to the millimetre, and a
+/// mouth's the body's. Refused with a sentence: fewer than two points; a per-station array that
+/// is not the points' long; a width, depth or discharge that is not positive; a negative slope,
+/// speed, Froude number or wet reach; an unknown flag; a head or a lip without its foot.
+struct WaterChannel @version(6) {
   name: string
   /// The centreline, downstream, world positions; each point's y is the **water surface's**
-  /// height there.
+  /// height there: the solved level. There is no second level.
   points: worldpos[]
-  /// The surface's width across the line at each point, metres, > 0.
+  /// **The cut's bankfull width** across the line at each point, metres, > 0: the bed's width at
+  /// the top of its banks. The placements' exclusion reads it for the bank's reach; the draw does
+  /// not (the water's own reach is `wet_left_m` and `wet_right_m`).
   width_m: f32[]
-  /// The bed's depth below the surface at each point, metres, > 0: the deepest at the line, the
-  /// bed a parabola across the width.
+  /// **The solved greatest depth** at each point, metres, > 0: the level less the lowest ground
+  /// connected to the line under it. There is no described shape of bed: the bed is the ground.
   depth_m: f32[]
-  /// The surface's fall per metre along the line at each point (m/m; not negative where the line
-  /// descends): Manning's S.
+  /// **The friction slope** at each point (m/m, >= 0): the energy the bed takes per metre. No
+  /// reader derives a speed from it; the speed is `speed_mps`.
   slope: f32[]
   /// What the surface's ripples are drawn from.
   seed: u64 = 1
-  /// Manning's roughness n of the bed: 0.030 to 0.050 for a mountain stream over gravel, cobbles
-  /// and a few boulders (Chow 1959), 0.04 the middle. Not part of the W86 contract.
+  /// **The bed's resistance as Manning's n.** Read by the solver for a line its author wrote:
+  /// held at every station unless the solve is told to use its steep-stream law. Written by the
+  /// solver as the n it solved with (the stations' mean, by length, where the law set one a
+  /// station). No reader derives a speed from it.
   manning_n: f32 = 0.04
   /// The optics, as `WaterBody`'s (same names, same defaults). `shore_m` fades the surface in by
   /// depth at the edges (as an open body's does) rather than by a distance from an outline.
@@ -1520,12 +1535,6 @@ struct WaterChannel @version(5) {
   /// code, 0 dune-ripple, 1 pool-riffle, 2 plane-bed, 3 step-pool, 4 cascade, 5 bedrock, 6
   /// colluvial (Montgomery & Buffington 1997), one per point; empty where the writer did not say.
   reach: u8[] @since(2)
-  /// **How the writer fitted each point to the ground** (W91; channels.md, "Invariants"): 0 as
-  /// planned, 1 the point moved and its width narrowed so neither edge of the ribbon stands over the
-  /// ground beside it, 2 also its surface lowered under the downhill ground (the bed stands over
-  /// it, and the water lies under the ground there). One per point; empty where the writer did not
-  /// fit it. The water reads nothing of it: a record of what the writer did.
-  fit: u8[] @since(3)
   /// **The bank's reach beyond the water's edge** (T78; scene_gen.md, "Exclusion"): the placements
   /// leave a point bare within `w / 2 + bank_width_widths * w + bank_width_m` of the line, `w` the
   /// width there. The channels recipe's numbers of the same names, handed over here so the
@@ -1542,6 +1551,31 @@ struct WaterChannel @version(5) {
   /// one per point; empty where the channel has no flood bed. The water reads neither.
   flood_left_m: f32[] @since(5)
   flood_right_m: f32[] @since(5)
+  /// **The discharge** at each point, m^3/s, > 0 (W120; channels.md, "The water's description"):
+  /// what the
+  /// sources upstream of the station send through it. A line its author wrote names it here
+  /// before the solve — one entry for the whole line, or one a point — with `points` and nothing
+  /// else solved; `engine-content flow solve` then writes the stations.
+  discharge_m3s: f32[] @since(6)
+  /// **The section's mean speed** at each point, m/s: the discharge over the wetted area.
+  speed_mps: f32[] @since(6)
+  /// **The Froude number** at each point: the speed over sqrt(g A / T), A the wetted area and T
+  /// the surface's width, g 9.81 (the falls' constant). Under 1 the flow is tranquil and a
+  /// disturbance travels upstream; over 1 it is shooting; a control of kind crest stands at 1.
+  froude: f32[] @since(6)
+  /// **How far the water reaches each side of the line** at each point, metres, >= 0: from the
+  /// line to the wet edge, left the side of (-dz, dx) for a line running (dx, dz) (W93's left and
+  /// right). Only ground connected to the line under the level counts: a hollow beyond a bank is
+  /// not wet. Where the level stands over a bank (`flags`' over_bank) the reach stops at the
+  /// bank's top: water is never written outside its bed.
+  wet_left_m: f32[] @since(6)
+  wet_right_m: f32[] @since(6)
+  /// **What each station is** (domain/scene_gen/water_channel.h has the bits): bit 0 a control,
+  /// bits 1 and 2 its kind (0 crest, 1 mouth, 2 confluence, 3 spill), bit 3 a jump's head, bit 4
+  /// a jump's foot, bit 5 a fall's lip, bit 6 a fall's foot, bit 7 the level stands over a bank.
+  /// A head is followed by its foot and a lip by its foot: a discontinuity is that pair, and
+  /// between any other two neighbours the surface is the straight line between them.
+  flags: u16[] @since(6)
 }
 
 /// One bed of a formation's sequence (`Formation`; renderer.md, "Formation bands"; the grounding,

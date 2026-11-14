@@ -57,6 +57,11 @@ class SceneGround {
 
   static constexpr f64 k_gradient_radius_m = 0.25;
 
+  // The same ground as a sampler a domain module can be handed (W120: the channels' profile
+  // solver reads its sections from the composed ground and may not link the renderer): valid
+  // while this object stands open, absent before `open`.
+  scene_gen::Ground ground() const;
+
   // The placement generators the scene names that this executable does not carry, read through
   // the plan alone: not refused, since nothing of them expands, but whatever they would have
   // planned for the ground is missing from it. The head line's `not_carried`.
