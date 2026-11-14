@@ -16,6 +16,7 @@
 #include <cstring>
 #include <filesystem>
 #include <renderer_log.h>
+#include <scene_far.h>
 
 namespace engine::renderer {
 
@@ -82,6 +83,50 @@ bool cluster_parts(Vector<Part>& parts, const geometry::ClusterLodOptions& lod,
 }
 
 }  // namespace
+
+bool far_form_level_mesh(const geometry::FarForm& form, u32 level,
+                         const geometry::ClusterLodOptions& lod, geometry::ClusterLodMesh& out,
+                         Vector<u32>& part_of_cluster, std::string& error) {
+  if (level >= form.levels.size()) {
+    error = "no far form level " + std::to_string(level);
+    return false;
+  }
+  const geometry::FarFormLevel& record = form.levels[level];
+  // One part a material the level draws, in the order its parts name them, over its own vertices.
+  Vector<Part> parts;
+  Vector<u32> material_of;
+  for (u32 q = record.first_part; q < record.first_part + record.part_count; ++q) {
+    const geometry::FarFormPart& fp = form.parts[q];
+    u32 to = ~0u;
+    for (u32 p = 0; p < material_of.size(); ++p)
+      if (material_of[p] == fp.material) to = p;
+    if (to == ~0u) {
+      to = parts.size();
+      parts.push_back(Part{});
+      material_of.push_back(fp.material);
+    }
+    Part& part = parts[to];
+    Vector<u32> local(form.vertices.size(), ~0u);
+    for (u32 i = fp.first_index; i < fp.first_index + fp.index_count; ++i) {
+      const u32 v = form.indices[i];
+      if (local[v] == ~0u) {
+        local[v] = part.positions.size();
+        part.positions.push_back(form.vertices[v].position);
+        part.normals.push_back(geometry::decode_normal_oct(form.vertices[v].normal_oct));
+        part.uvs.push_back(geometry::decode_half2(form.vertices[v].uv_half2));
+      }
+      part.indices.push_back(local[v]);
+    }
+  }
+  Vector<u32> drawn;
+  Vector<u32> merged_parts;
+  if (!cluster_parts(parts, lod, out, merged_parts, drawn, error)) return false;
+  part_of_cluster.clear();
+  part_of_cluster.reserve(merged_parts.size());
+  for (const u32 p : merged_parts)
+    part_of_cluster.push_back(material_of[drawn[p]]);
+  return true;
+}
 
 bool load_far_tile(const scene_gen::PlacementMesh& mesh, const PlacementMeshOptions& options,
                    PlacementMeshData& out, std::string& error, FarTileStats* stats) {
