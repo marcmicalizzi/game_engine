@@ -4936,7 +4936,30 @@ handovers, the outward ones behind the walker, the inward ones 3,341 changed col
 of their tiles' pixels — at 80 m a patch's form drew 552 pixels where the mesh's own cut drew 156,
 the mesh's coarse levels having lost the leaves its frontier kept. So a form is static only when
 its caster policy traces it, and the litter's are not; a traced mesh's forms (a rock's) keep the
-structure built once and this price, which its maker answers at the hand-over. What can show is a form drawn nearer than its floor — a tile
+structure built once and this price, which its maker answers at the hand-over.
+
+**Measured** (2026-11-13, `msvc-release`, a pair of binaries from one tree, 1920 × 1080, `--shadows
+rt`; the machine shared with other agents' builds and GPU work, so the times are upper bounds and
+the pairs are counts). A streamed scene of the staging's rings (64 m tiles, radii 1.25, 3, 10 and 20
+tiles) over a 3 km terrain, two `litter` entries of the engine's own recipes at 2 m cells, 640
+patches a tile (156,000 a km², the staging's 153,000), and a 158 m walk at 4.5 m/s; at its end:
+
+| ring | tiles drawn (withheld), before | pairs an instance, before | tiles drawn, after | pairs an instance, after | pairs, before → after |
+|---|---:|---:|---:|---:|---:|
+| 0 | 5 | 132 | 5 | 132 | 422,845 → 422,845 |
+| 1 | 27 | 135 | 27 | 48.5 | 2,323,114 → 837,397 |
+| 2 | 154 (167) | 134 | 321 | 4.35 | 13,232,354 → 897,272 |
+| 3 | 0 (1,006) | — | 1,006 | 4.11 | 0 → 2,646,383 |
+| tail | | | | | 15,978,313 → 4,803,897 |
+
+Before, the cap withheld half the third ring and all the fourth; after, every tile is drawn with
+71% of the cap unspent. The GPU's frame went from 1.32 to 2.23 ms median for the 1,173 tiles
+more it draws (visible pairs 118,000 → 785,000). The handover pass over the same walk (106 ring
+changes of occupied tiles) changed no pixel. **What a ring change costs**: on the walk 99 tiles
+came in and 94 changed ring; before, a change rebuilt nothing (the litter draws every ring alike),
+after, each of the 94 is built again for its forms, 378 generator calls where there were 190 (2 ms
+each). A stretch paced back and forth across the inner ring's edge seven times rebuilt no tile:
+the ring's own band held it. What can show is a form drawn nearer than its floor — a tile
 moved inward and not yet built again — which the quarter tile in the floor covers, as for an
 authored form; and the step to nothing, which happens only under `min_px`. An offered form draws
 what its maker says it draws, and its hand-over is its maker's to show.
