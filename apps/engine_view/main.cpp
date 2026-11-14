@@ -6676,16 +6676,13 @@ int run_view(int argc, char** argv) {
       }
 
 #if ENGINE_VIEW_WORLD
-      // The streamed world from the last frame's camera, before this frame begins: the first
-      // frame fills the ring round where the camera starts, its tiles built off this thread
-      // (T131) unless the run captures a picture, which is of the settled scene.
+      // The streamed world from the last frame's camera, before this frame begins (the first
+      // fills the ring round the camera: `ViewWorld::window_mode`).
       const view::ViewWorld::Counters world_then = view_world.counters();
       const bool settled = !options.capture.empty() || !options.marker_captures.empty();
-      const view::ViewWorld::Mode first =
-          settled ? view::ViewWorld::Mode::Complete : view::ViewWorld::Mode::Fill;
       if (view_world.valid() && world_camera_set &&
           !view_world.update(world_camera, rendered,
-                             rendered <= 1 ? first : view::ViewWorld::Mode::Budgeted, 0,
+                             view::ViewWorld::window_mode(rendered, settled), 0,
                              static_cast<u32>(rendered), true, &error)) {
         exit_code = fail("world", error);
         break;

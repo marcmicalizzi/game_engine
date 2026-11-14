@@ -63,6 +63,13 @@ class ViewWorld {
   // the frame's thread: a window's first frame, which until 2026-11-13 waited 16 to 64 s for every
   // tile of a deposits walk (world.md, "Builds off the frame's thread").
   enum class Mode : u8 { Budgeted, Complete, Restart, Fill };
+  // A window's update before its `rendered`th frame: the first fills the ring — `Fill`, or
+  // `Complete` for a run that captures (`settled`), whose picture is of the settled scene — and
+  // the rest are `Budgeted`.
+  static Mode window_mode(u64 rendered, bool settled) noexcept {
+    if (rendered > 1) return Mode::Budgeted;
+    return settled ? Mode::Complete : Mode::Fill;
+  }
   // One update from `camera`, the log line with it.
   bool update(const renderer::Camera& camera, u64 tick, Mode mode, u32 repeat, u32 frame,
               bool recorded, std::string* error);
