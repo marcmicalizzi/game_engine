@@ -52,7 +52,9 @@ struct Cover {
   u32 most = 0;
   u32 covered = 0;
   f32 step = 0.0f;
-  f64 area() const { return static_cast<f64>(covered) * static_cast<f64>(step) * step; }
+  f64 area() const {
+    return static_cast<f64>(covered) * static_cast<f64>(step) * static_cast<f64>(step);
+  }
 };
 
 Cover plan_cover(const water::Mesh& m, f32 step) {
@@ -81,14 +83,20 @@ Cover plan_cover(const water::Mesh& m, f32 step) {
     const u32 i1 = std::min(nx - 1, static_cast<u32>(std::max(0.0f, std::ceil((x1 - ox) / step))));
     const u32 j0 = static_cast<u32>(std::max(0.0f, std::floor((z0 - oz) / step)));
     const u32 j1 = std::min(nz - 1, static_cast<u32>(std::max(0.0f, std::ceil((z1 - oz) / step))));
-    const f64 area = static_cast<f64>(b.x - a.x) * (c.z - a.z) - static_cast<f64>(c.x - a.x) * (b.z - a.z);
+    // (Every f32 is widened by name: GCC's -Wdouble-promotion refuses the implicit one, and the
+    // values are the ones the implicit widening gave.)
+    const f64 ax = static_cast<f64>(a.x), az = static_cast<f64>(a.z);
+    const f64 bx = static_cast<f64>(b.x), bz = static_cast<f64>(b.z);
+    const f64 cx = static_cast<f64>(c.x), cz = static_cast<f64>(c.z);
+    const f64 area = static_cast<f64>(b.x - a.x) * static_cast<f64>(c.z - a.z) -
+                     static_cast<f64>(c.x - a.x) * static_cast<f64>(b.z - a.z);
     if (std::abs(area) < 1e-12) continue;
     for (u32 j = j0; j <= j1; ++j) {
       for (u32 i = i0; i <= i1; ++i) {
-        const f64 x = static_cast<f64>(ox) + static_cast<f64>(i) * step;
-        const f64 z = static_cast<f64>(oz) + static_cast<f64>(j) * step;
-        const f64 w0 = ((b.x - x) * (c.z - z) - (c.x - x) * (b.z - z)) / area;
-        const f64 w1 = ((c.x - x) * (a.z - z) - (a.x - x) * (c.z - z)) / area;
+        const f64 x = static_cast<f64>(ox) + static_cast<f64>(i) * static_cast<f64>(step);
+        const f64 z = static_cast<f64>(oz) + static_cast<f64>(j) * static_cast<f64>(step);
+        const f64 w0 = ((bx - x) * (cz - z) - (cx - x) * (bz - z)) / area;
+        const f64 w1 = ((cx - x) * (az - z) - (ax - x) * (cz - z)) / area;
         const f64 w2 = 1.0 - w0 - w1;
         if (w0 > 1e-9 && w1 > 1e-9 && w2 > 1e-9) ++count[j * nx + i];
       }
@@ -435,8 +443,8 @@ TEST_CASE("water channel: a hairpin tighter than the wet reach does not fold") {
     const Vec3 a = m.positions[m.indices[t]];
     const Vec3 bb = m.positions[m.indices[t + 1]];
     const Vec3 cc = m.positions[m.indices[t + 2]];
-    sum += 0.5 * std::abs(static_cast<f64>(bb.x - a.x) * (cc.z - a.z) -
-                          static_cast<f64>(cc.x - a.x) * (bb.z - a.z));
+    sum += 0.5 * std::abs(static_cast<f64>(bb.x - a.x) * static_cast<f64>(cc.z - a.z) -
+                          static_cast<f64>(cc.x - a.x) * static_cast<f64>(bb.z - a.z));
   }
   CHECK(cover.area() == doctest::Approx(sum).epsilon(0.02));
 }
@@ -544,7 +552,8 @@ TEST_CASE("water channel: a channel's water at a point") {
   CHECK_FALSE(s.fall);
   CHECK(s.froude == doctest::Approx(0.6465f).epsilon(2e-3));
   const f64 mean = 1.0 / (0.5 * (1.0 / 1.2905 + 1.0 / 1.3090));
-  const f64 hydraulic = mean * mean / (9.81 * static_cast<f64>(s.froude) * s.froude);
+  const f64 hydraulic =
+      mean * mean / (9.81 * static_cast<f64>(s.froude) * static_cast<f64>(s.froude));
   const f64 surface = mean * water::k_channel_surface_factor *
                       water::lateral_speed_share(static_cast<f64>(s.depth_m), hydraulic);
   CHECK(static_cast<f64>(s.velocity.x) == doctest::Approx(surface).epsilon(1e-3));
