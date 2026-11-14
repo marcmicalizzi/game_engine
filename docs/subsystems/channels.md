@@ -1498,6 +1498,15 @@ the ground the cut left:
   outline: water rightly drawn. The black one beside it is the same cut outside the outline, dry
   under the waterline: 11.25 m² under the level, the worst 0.31 m, on the scene whose outline
   falls short (none with W121); 0.56 m², the worst 7 cm, where the outline reaches past the contour.
+- **On the forest the black triangle stays** (2026-11-14, W121's binary, the staging re-cut with
+  W121's plan into a derived-data root of its own, the owner's mark 8 camera, `--raster hw
+  --shadows rt`, GI sky): the outlet's bed is held at the pond's 1.179 m outside the outline (the
+  ground sampled there is 1.179 m), yet a band about 4 m across below the outline's straight edge
+  draws near black (rgb 9 to 17), and the ids say it is the ground's own instance, not an empty
+  pixel and not the water. So what darkens it is not the cut: ground at the body's level (or under
+  it, where the author's outline falls short) beside a body that draws no surface over it. It is
+  handed to the water's row with the capture (W121's hand-back); the engine scenes above show the
+  cut's part of it and not this shading.
 - **W119**: over the sea cliff, 6 of 24 points in the last 12 m above it had their bed graded up to
   16.9 m under the cut's own floor; none with W121.
 
