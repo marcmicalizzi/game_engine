@@ -1,9 +1,9 @@
 #pragma once
 
 // **The far form of a rigid mesh** (docs/subsystems/geometry.md, "The far form"; roadmap G198): what
-// a mesh draws as once it is far, made from the mesh alone at the content build and carried in its
-// container (sections 43 to 47), so an imported boulder and a generated talus get the same one and
-// no generator is asked what its far form is.
+// a mesh draws as once it is far, made from the mesh alone — baked on first offer, or carried in its
+// container (sections 43 to 47) when a tool wrote one — so an imported boulder and a generated talus
+// get the same one and no generator is asked what its far form is.
 //
 // **What it is.** The mesh's finest level, welded by source vertex, then for each of a few levels of
 // rising error `e_k = e_0 * 2^k`: every connected piece of it whose extent is at most `e_k` left out

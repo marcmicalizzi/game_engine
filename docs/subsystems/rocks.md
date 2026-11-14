@@ -1822,8 +1822,11 @@ instance of a sixth of its meshes' clusters past the first ring`:
 The mesh room at 2,632 bytes a cluster (ray tracing on, the default cluster). The far tile's
 clusters are 1,025 leaves of 60 triangles and its own DAG over them (580, 320, 206, 75 and down to
 one), which coarsens it across the ring. Its honest error is 7.7 cm (a pixel from 79 m at 1080p and
-the default camera); its 15 members read back from the cache in 0.28 s and it builds in 0.77 s, on the
-pool, in debug. The distance form is shown for what a DAG keeps; a tile's meshes arrive after the load
+the default camera). Made cold from its members' cached containers it takes 2.5 s (their 15 far
+forms baked, since no container build bakes them) and 0.8 s to build, on the pool, in debug; it then
+keeps itself in the derived-data cache and reads back in 33 ms with no member touched. Its far forms
+and the merged mesh are pinned (`deposits far: what the DAG's own distance form keeps …`, the world's
+far tile case). The distance form is shown for what a DAG keeps; a tile's meshes arrive after the load
 and are cut by nothing (G197's rule cuts the resident meshes), so before this row the choice past the
 first ring was the first row of the table or nothing.
 

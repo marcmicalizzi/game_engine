@@ -388,7 +388,12 @@ asked what its far form is.
    under a pixel wherever the level draws, and leaving it out moves the surface by at most its
    extent — and the rest is simplified, one material at a time, by meshoptimizer's simplifier with
    the open border locked (`meshopt_SimplifyLockBorder`), so two meshes that met edge to edge — a
-   patch and the next, cut by a tile — still meet. Each level is simplified **from the one before
+   patch and the next, cut by a tile — still meet. It is **permissive**, as the DAG's own
+   simplification is ([What the simplifier is given, and why](#what-the-simplifier-is-given-and-why)):
+   a collapse may cross a hard shading edge, a vertex two materials share is locked and one whose
+   point holds two UVs is protected. Holding every attribute seam instead left a deposit's faceted
+   stones — split at every edge — almost whole: the forest's tile came to 154,000 triangles, more
+   than the DAG's own cut at 96 m (80,000); permissive, 61,700. Each level is simplified **from the one before
    it** (the first from the finest), so a level costs the triangles of the one before and not the
    mesh's; the errors of its steps add (`simplify_m` is their sum), and each step's target is what
    is left of `e_k` after the steps before it.
@@ -407,9 +412,18 @@ constant. Why 128: a ring past the first of a streamed world (a 64 m tile at 1.5
 **Which meshes get one** (`far_form_applies`): a rigid mesh with finest triangles — no skin, no
 morph channels, no motion contract (it sways, and its far form would not), no impostor chain (a tree
 has a far form of its own, [flora](flora.md#the-impostor-chain)). Measured from the data, never
-asked. A container that carries none (written before section 43, or by a build that bakes none) is
-baked from its finest level by whoever wants it, **the same bytes**: the bake reads nothing the
-container does not hold.
+asked. A container that carries none is baked from its finest level by whoever wants it, **the
+same bytes**: the bake reads nothing the container does not hold.
+
+**Baked on first offer, not by every build.** Measured on one forest-density deposit tile (15
+pieces, msvc-debug, 2026-11-13): the bake is 1.86 s against the pieces' 8.82 s of build, 21 %, and
+adds 11 % to their containers' bytes (29.9 to 33.2 MB). That is too much to put on every rigid
+mesh's content build for the meshes a scene places far, so no build bakes it: the far tile bakes
+what its members carry none of and keeps **its own** result in the derived-data cache
+([renderer](renderer.md#the-far-tile)), and the load bakes what it offers the rings' rule. A scene
+that places nothing far pays nothing, and no cache version moved: every entry is the bytes it was.
+Sections 43 to 47 are the format a container carries the far form in when a tool writes one
+(`ensure_far_form`); none does yet.
 
 **The record.** 43 is one `FarFormHeader` (48 bytes: the version, the level count, the finest
 triangles, the pieces, the centre, the radius, the 128), 44 one `FarFormLevel` a level (32), 45 one
@@ -419,8 +433,9 @@ triangles, the pieces, the centre, the radius, the 128), 44 one `FarFormLevel` a
 The size table pins the four records.
 
 **Determinism.** meshoptimizer's simplifier (the DAG's own; contraction off tree-wide), integer
-union-find and sorts on integer keys: the same bytes from every toolchain and any thread count
-(`far_form_tests.cpp` pins the hash).
+union-find and sorts on integer keys, one thread: the same bytes from every toolchain and any thread
+count (`far_form_tests.cpp` pins the fixture's hash, `deposits_far_tests.cpp` the forest tile's 15
+far forms').
 
 **What it is not.** Not an impostor: a baked card or a star of planes stands in for foliage, where a
 pixel is coverage and colour, and a camera-facing quad has no shader here

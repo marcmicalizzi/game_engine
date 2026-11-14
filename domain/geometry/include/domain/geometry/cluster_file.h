@@ -227,10 +227,11 @@ enum class ClusterSection : u32 {
   // error covers left out and the rest simplified to it, a few levels of rising error. 43 is exactly
   // one `FarFormHeader`; 44 one `FarFormLevel` a level; 45 one `FarFormPart` a (level, material);
   // 46 the `FarFormVertex` the levels share; 47 their `u32` indices. Five kinds because the format's
-  // rule is one fixed-size element per section. **Written only when the build bakes one** (a rigid
-  // mesh: no skin, no morph, no motion contract, no impostor chain), like 34 to 42; a reader without
-  // them has no far form, and a host that wants one bakes it from the finest level, the same bytes.
-  // Resident.
+  // rule is one fixed-size element per section. **Written only when the data carries one**
+  // (`ensure_far_form`, a rigid mesh: no skin, no morph, no motion contract, no impostor chain),
+  // like 34 to 42, and no content build bakes one by default (it is baked on first offer); a reader
+  // without them has no far form, and a host that wants one bakes it from the finest level, the
+  // same bytes. Resident.
   FarForm = 43,
   FarFormLevels = 44,
   FarFormParts = 45,
