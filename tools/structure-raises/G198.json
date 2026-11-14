@@ -1,0 +1,12 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "G198",
+  "reason": "G198: the far form (geometry.md 'The far form'), the far tile and the resident offer (renderer.md 'The far tile' and the far forest's generator-keyed note), and a deposit past the first ring with its measured cost (rocks.md): new behaviour, each page its own section",
+  "date": "2026-11-13",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/renderer.md": 6100,
+    "page:docs/subsystems/geometry.md": 6428,
+    "page:docs/subsystems/rocks.md": 3949
+  }
+}
