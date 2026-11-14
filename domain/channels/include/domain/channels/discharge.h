@@ -58,6 +58,10 @@ struct NetworkFlow {
   f64 dry_m = 0;             // metres of kept line that do not
   f64 largest_m3s = 0;       // the largest discharge at any point
   f64 smallest_wet_m3s = 0;  // the smallest discharge a wet link ends with
+  // W122: the plan's lakes that lose water (evaporation, seepage, a leak) and have an outlet, and
+  // what was taken off their outlets and everything below them, m3/s, each lake's once.
+  u32 lake_outlets = 0;
+  f64 lake_loss_m3s = 0;
 };
 
 // `ChannelFlow`'s numbers in range. False with a sentence.

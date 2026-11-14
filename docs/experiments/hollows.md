@@ -29,6 +29,8 @@ the default comes from instead.
 | Jenson & Domingue (1988); Planchon & Darboux (2001); Wang & Liu (2006) | The fill's lineage. Nothing is pinned from them | Not opened |
 | Mason, Guzkowska, Rapley & Street-Perrott (1994), "The response of lake levels and areas to climatic change", *Climatic Change* 27, 161-197 | Nothing pinned. A closed lake is a low-pass filter of its climate with an equilibrium response time of 1.5 to 350 years | Not read (behind a login); the response times from a search snippet. The balance below is conservation of mass and is stated as that |
 | Lake evaporation: NOAA's 1981-2010 Great Lakes climatology; a Minnesota open-water study (1964-2005); USGS SIR 2024-5040 (Lake Okeechobee, 2013-16); an Okanagan Lake study | **Evaporation from open water**, millimetres a year: 504 (Michigan-Huron) to 896 (Erie); 580 to 747 over six Minnesota sites; 725 and 835 at Okanagan; about 1,825 at Okeechobee | Secondary, search snippets |
+| *Hydrological Atlas of Switzerland*, plate 4.1, "Mean annual actual evaporation 1973-1992" (the plate's text; the text names no author, and its model is the TRAIN model of Menzel 1997, its reference 1) | **Evaporation by surface in a humid mountain climate**, from the TRAIN model on a 1 km grid with daily data over twenty years: **open water 901 mm a year**, forest 616, farmland and mountain pasture 436, rock 234, ice and firn 156, the whole country 484; land evaporation is about 560 mm up to 700 m and falls steadily to about 230 mm at 3,000 m | The plate's text in full (four pages, 2026-11-14); the map and its figures not seen |
+| Rosenberry, Lewandowski, Meinikmann & Nützmann (2015), "Groundwater - the disregarded component in lake water and nutrient budgets. Part 1: effects of groundwater on hydrology", *Hydrological Processes* 29, 2895-2921 | **What a lake's bed passes**: over the lakes of the review, the median loss of lake water to the ground is **0.60 cm a day** (2,190 mm a year) and the median gain from it 0.74 cm a day; reported rates "span more than five orders of magnitude"; the ground takes a median 35 % of a lake's losses and gives a median 25 % of its inputs, and matters less as lakes pass 100 ha | The abstract, on the survey's publication page (2026-11-14; the publisher's page refused). The table behind the medians not seen, so which settings sit at which end is not known here |
 | A water balance of a proglacial lake in the French Alps (*Annals of Glaciology*) | **What a moraine passes**: a lake with no open outlet that takes all the melt of a 250 ha glacial catchment and loses about 5 x 10^6 m3 a year by seepage, 0.16 m3/s | A search snippet |
 | A sedimentation study of an Eastern Alps lake (EGU 2019 abstract), and a review line on high alpine lakes | **How long a lake lasts**: 25,000 m3 a year on the bottom and 100,000 m3 a year in the delta, filled "within the next 25-30 years"; lifetimes of high alpine lakes "between a few decades and many centuries to thousands of years"; infilling is "a natural stage in the succession of a freshwater system" | Search snippets |
 | Sinks in talus, rock glaciers and karst (ponors, swallow holes) | Nothing found: the search returned moraine dams only. That a basin floored with blocks or karst drains underground is common knowledge and is given to the author as a number (`leak_m3s`), not derived | Not found |
@@ -66,6 +68,20 @@ mm) and a net evaporation of 1,000 to 1,500 mm, and a hollow then needs a catchm
 sixteen times its water to fill. `basin_seepage_mm_y` is what the bed passes over its whole area;
 a basin's `leak_m3s` is what one floor passes whatever the water's area (the French lake's
 moraine: 0.16 m3/s from a 250 ha catchment, as much as that catchment's whole runoff).
+
+**The losses by climate, in place of zero** (2026-11-14, for the forest's mix). The default
+runoff, 946 mm a year, with the Swiss atlas's 484 mm of evaporation from the land is a rain of
+about 1,430 mm, which is that country's own. Open water there loses 901 mm, so **the rain on a
+lake passes its evaporation by about 530 mm**: `basin_evaporation_mm_y`, which is net of the rain
+and cannot be negative, is rightly 0 in this climate, and the balance then understates a lake's
+inflow by what falls on it (530 mm against the 946 mm the same area would send as land: 7 l/s on
+a 43 ha lake fed 135). A drier scene takes its own two numbers: open water less rain, and the
+runoff. `basin_seepage_mm_y` has no climate; it is the ground's. The one central figure opened
+is the review's median, **2,190 mm a year**, taken over lakes that were studied because the
+ground mattered to them, so it is a high reading for a basin in rock and a fair one for till or
+talus; the range is five orders wide and a scene that knows its ground sets its own. On the
+forest it is used as the bed's loss everywhere, so that a lake stands or falls by its catchment
+and a `leak_m3s` is left to say only what no rate over the bed can: one floor that passes more.
 
 **A dry or a former lake** is as natural as a full one: alpine lakes last decades to thousands of
 years before their inflow's sediment fills them, and a floor of talus or moraine can pass all a

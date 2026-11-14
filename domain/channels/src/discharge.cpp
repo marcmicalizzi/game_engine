@@ -109,6 +109,86 @@ bool network_flow(const ChannelLayer& layer, const ChannelNetwork& network, Netw
       from = 0;
     }
   }
+  // **A lake's outlet carries what its lake does not lose** (W122; channels.md, "Hollows", the
+  // balance). The planner's balance gave each lake of the plan its loss at the year's mean
+  // (evaporation and seepage over its water, its floor's leak), and the runoff summed over the
+  // area above knows none of it. It is taken off here: from every point of the outlet, and of
+  // each link its water goes on into, and no discharge is left under zero. The
+  // loss is not scaled by the stage of the year (a bed seeps in a dry month too). A plan read
+  // from its file holds no lattice of bodies, so an outlet's lake is found by the sill the
+  // outlet holds (`outlet_level`, `k_sill_over_m` over the lake's level) and, between lakes at
+  // one level, by the nearest spill; an outlet link has no cells of its own (it is the part of a
+  // link past a lake), so the link it goes on into is the one that begins at its last point's
+  // cell. With no loss named no lake has one and nothing here runs.
+  {
+    Vector<std::pair<u32, u32>> heads;  // (first cell, link)
+    for (u32 k = 0; k < count; ++k)
+      if (!network.links[k].cells.empty() && !network.links[k].outlet)
+        heads.push_back({network.links[k].cells.front(), k});
+    std::sort(heads.begin(), heads.end());
+    const auto goes_on_into = [&](u32 k) -> u32 {
+      if (out.links[k].down != ~0u) return out.links[k].down;
+      const ChannelLink& link = network.links[k];
+      if (!link.outlet || link.mouth || link.line.empty() || network.spacing_mm <= 0) return ~0u;
+      const i64 c =
+          (scene_gen::nearest_mm(link.line.back().at.x) - network.x_mm + network.spacing_mm / 2) /
+          network.spacing_mm;
+      const i64 r =
+          (scene_gen::nearest_mm(link.line.back().at.z) - network.z_mm + network.spacing_mm / 2) /
+          network.spacing_mm;
+      if (c < 0 || r < 0 || c >= static_cast<i64>(network.width) ||
+          r >= static_cast<i64>(network.depth))
+        return ~0u;
+      const u32 cell = static_cast<u32>(r) * network.width + static_cast<u32>(c);
+      const auto it = std::lower_bound(heads.begin(), heads.end(), std::pair<u32, u32>{cell, 0u});
+      return it != heads.end() && it->first == cell && it->second != k ? it->second : ~0u;
+    };
+    // Each outlet's lake, by index into the hollows; ~0u for a link that is none's.
+    const u32 hollows = network.basins.hollows.size();
+    Vector<u32> lake_of(count, ~0u);
+    for (u32 k = 0; k < count; ++k) {
+      const ChannelLink& link = network.links[k];
+      if (!link.outlet || link.line.empty() || out.links[k].discharge.empty()) continue;
+      f64 nearest = 1e300;
+      for (u32 h = 0; h < hollows; ++h) {
+        const Hollow& lake = network.basins.hollows[h];
+        if (lake.kind != HollowKind::Lake || !(lake.loss_m3s > 0)) continue;
+        if (round_to(lake.level_m + detail::k_sill_over_m, 1e3) != round_to(link.outlet_level, 1e3))
+          continue;
+        const f64 dx = lake.spill_x - link.line.front().at.x;
+        const f64 dz = lake.spill_z - link.line.front().at.z;
+        if (dx * dx + dz * dz < nearest) {
+          nearest = dx * dx + dz * dz;
+          lake_of[k] = h;
+        }
+      }
+    }
+    // A lake's loss is taken once from each link below it, however many of its lines leave it:
+    // the lines that cross a lake's water leave it as several outlets (each the part of a link
+    // past the shore), which meet again at the lip or below it.
+    Vector<u8> below(count, 0);
+    for (u32 h = 0; h < hollows; ++h) {
+      std::fill(below.begin(), below.end(), u8{0});
+      bool any = false;
+      for (u32 k = 0; k < count; ++k) {
+        if (lake_of[k] != h) continue;
+        any = true;
+        u32 at = k;
+        for (u32 hops = 0; at != ~0u && hops <= count && below[at] == 0; ++hops) {
+          below[at] = 1;
+          at = goes_on_into(at);
+        }
+      }
+      if (!any) continue;
+      const f64 takes = network.basins.hollows[h].loss_m3s;
+      ++out.lake_outlets;
+      out.lake_loss_m3s += takes;
+      for (u32 k = 0; k < count; ++k)
+        if (below[k] != 0)
+          for (f64& q : out.links[k].discharge)
+            q = std::max(0.0, q - takes);
+    }
+  }
   // Where each link is wet: from the first kept point whose discharge over a metre of its bed is
   // a sheet's.
   const f64 sheet = wide(flow.wet_depth_m);

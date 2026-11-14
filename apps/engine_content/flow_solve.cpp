@@ -305,6 +305,8 @@ int flow_solve_command(int argc, char** argv) {
   u32 entries = 0, links = 0, wet = 0, dry_sheet = 0, dry_short = 0, sources = 0, authored = 0;
   u32 replaced = 0, kept = 0, laid = 0;
   f64 wet_m = 0, dry_m = 0, largest = 0, smallest_wet = 0;
+  u32 lake_outlets = 0;  // W122: outlets of the plan's lakes that lose water, and what they lose
+  f64 lake_loss = 0;
   f64 flow_seconds = 0, solve_seconds = 0;
   Vector<std::string> writers;  // what the blocks this cook writes declare (`derived_from`)
   const auto seconds_since = [](std::chrono::steady_clock::time_point from) {
@@ -387,6 +389,8 @@ int flow_solve_command(int argc, char** argv) {
       wet_m += flow.wet_m;
       dry_m += flow.dry_m;
       largest = std::max(largest, flow.largest_m3s);
+      lake_outlets += flow.lake_outlets;
+      lake_loss += flow.lake_loss_m3s;
       if (flow.wet > 0)
         smallest_wet = smallest_wet > 0 ? std::min(smallest_wet, flow.smallest_wet_m3s)
                                         : flow.smallest_wet_m3s;
@@ -543,6 +547,8 @@ int flow_solve_command(int argc, char** argv) {
   line["sources"] = JsonValue(sources);
   line["discharge_largest_m3s"] = JsonValue(round3(largest));
   line["discharge_smallest_wet_l_s"] = JsonValue(round3(smallest_wet * 1e3));
+  line["lake_outlets_losing"] = JsonValue(lake_outlets);
+  line["lake_loss_l_s"] = JsonValue(round3(lake_loss * 1e3));
   line["authored_lines"] = JsonValue(authored);
   line["blocks_replaced"] = JsonValue(replaced);
   line["blocks_kept"] = JsonValue(kept);

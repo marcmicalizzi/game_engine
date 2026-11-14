@@ -413,7 +413,6 @@ Vector<f64> lengths_of(const Vector<ChannelPoint>& line) {
 // ground at the point stands under the body's level. A mouth into one carries the body's level
 // exactly, and what leaves it carries it as its `outlet_level`.
 constexpr f64 k_run_min_m = 4.0;
-constexpr f64 k_sill_over_m = .02;
 void apply_water(ChannelNetwork& n, const scene_gen::Ground& ground,
                  const scene_gen::Exclusion* water) {
   const bool scene_bodies = water != nullptr && water->body_count() > 0;
@@ -737,6 +736,31 @@ void classify(const ChannelLayer& p, ChannelLink& link) {
 // The top of the bank at point i: the ground at the line less the seat (W116).
 f64 top_of(const ChannelLink& link, u32 i) {
   return link.line[i].at.y - (i < link.seat.size() ? wide(link.seat[i]) : 0.0);
+}
+// **A lip is held by every link that begins on it** (W122; channels.md, "Hollows"). A lake of the
+// plan stands a notch under its spill, so the cells between its shore and its lip are dry ground
+// inside the hollow, and the lines that cross the water merge there as readily as under it. A
+// link that begins at such a junction, or at the spill itself, begins at no shore and is no
+// outlet: its cut dug the lip to its own bed, under the lake's level, with only the natural rim
+// beside it between that pit and the water (on the forest 0.12 to 0.29 m under the level at the
+// spills of its three largest lakes, the rim holding by 1 to 9 cm). So a link that begins within
+// a cell and a half of a lake's spill holds that lake's sill from its first point for as long as
+// its points stay that near: point `i` of `link` is such a point, and `sill` the level to hold
+// where the top stands over it. An outlet holds its own (`cut_bed`).
+bool lip_sill(const ChannelNetwork& n, const ChannelLink& link, u32 i, f64& sill) {
+  if (link.outlet || link.line.empty() || n.basins.hollows.empty()) return false;
+  const f64 reach = 1.5 * static_cast<f64>(n.spacing_mm) / 1000.0;
+  const auto near = [&](const ChannelPoint& pt, const Hollow& h) {
+    const f64 dx = pt.at.x - h.spill_x, dz = pt.at.z - h.spill_z;
+    return dx * dx + dz * dz <= reach * reach;
+  };
+  for (const Hollow& h : n.basins.hollows) {
+    if (h.kind != HollowKind::Lake) continue;
+    if (!near(link.line.front(), h) || !near(link.line[i], h)) continue;
+    sill = round_to(h.level_m + k_sill_over_m, 1e3);
+    return true;
+  }
+  return false;
 }
 void cut_bed(const ChannelLayer& p, ChannelLink& link,
              f64 start = std::numeric_limits<f64>::infinity()) {
@@ -2112,6 +2136,18 @@ bool detail::plan_from_lattice(const ChannelLayer& p, const scene_gen::Ground& g
   for (const ChannelLink& link : n.links)
     n.length_m += link.length_m;
   confluences(p, n);
+  // W122: a lip is held by every link that begins on it (`lip_sill`), after the confluences'
+  // grade: a run of points from the link's first, raised to the sill where the top stands over
+  // it, so the bed's line steps down past the lip and rises nowhere.
+  for (ChannelLink& link : n.links) {
+    for (u32 i = 0; i < link.line.size() && i < link.bed.size(); ++i) {
+      f64 sill = 0;
+      if (!lip_sill(n, link, i, sill)) break;
+      const f64 top = round_to(top_of(link, i), 1e3);
+      if (top >= sill)
+        link.bed[i] = std::max(link.bed[i], std::min(sill, round_to(top - .01, 1e3)));
+    }
+  }
   for (ChannelLink& link : n.links) {
     link.area_end = link.cells.empty() ? 0u : n.area_cells[link.cells.back()];
     plan_section(p, link);
@@ -2487,6 +2523,9 @@ JsonValue terrain_cuts_json(const ChannelLayer& p, const ChannelNetwork& n) {
       // An outlet's start the same, where the ground stands over the level it leaves.
       if (link.outlet && top >= round_to(link.outlet_level, 1e3))
         depth = std::min(depth, std::max(1e-3, top - round_to(link.outlet_level, 1e3)));
+      // And a link that begins on a lake's lip (W122; `lip_sill`): no pool or swell under the sill.
+      if (f64 sill = 0; lip_sill(n, link, i, sill) && top >= sill)
+        depth = std::min(depth, std::max(1e-3, top - sill));
       depths.push_back(JsonValue(round_to(depth, 1e3)));
       left.push_back(JsonValue(round_to(section.slope_left, 1e4)));
       right.push_back(JsonValue(round_to(section.slope_right, 1e4)));
@@ -2522,6 +2561,8 @@ JsonValue terrain_cuts_json(const ChannelLayer& p, const ChannelNetwork& n) {
         if (link.outlet && round_to(top_of(link, i), 1e3) >= round_to(link.outlet_level, 1e3))
           under =
               std::min(under, round_to(top_of(link, i), 1e3) - round_to(link.outlet_level, 1e3));
+        if (f64 sill = 0; lip_sill(n, link, i, sill) && round_to(top_of(link, i), 1e3) >= sill)
+          under = std::min(under, round_to(top_of(link, i), 1e3) - sill);
         fl.push_back(JsonValue(round_to(wide(link.flood_left[i]), 1e3)));
         fr.push_back(JsonValue(round_to(wide(link.flood_right[i]), 1e3)));
         fd.push_back(JsonValue(round_to(under, 1e3)));

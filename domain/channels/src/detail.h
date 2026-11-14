@@ -13,6 +13,9 @@
 namespace engine::channels::detail {
 
 inline constexpr f64 k_pi = 3.141592653589793;
+// How far over its level a body of the plan's sill stands (channels.md, "Hollows"): what its
+// outlet carries as `outlet_level`, and how the discharge finds an outlet's lake again.
+inline constexpr f64 k_sill_over_m = .02;
 
 inline bool fail(std::string& error, std::string_view field) {
   error = "engine.channels: invalid " + std::string(field);

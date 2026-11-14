@@ -5,6 +5,7 @@
 #include <core/jobs/job_system.h>
 #include <core/json/json.h>
 #include <domain/channels/channels.h>
+#include <domain/channels/discharge.h>
 
 #include <doctest/doctest.h>
 
@@ -389,6 +390,32 @@ TEST_CASE("hollows: a basin its catchment cannot fill stands lower, with no outl
   CHECK(only(half, HollowKind::Lake)->level_m == lake->level_m);
   CHECK(only(half, HollowKind::Lake)->loss_m3s > 0);
   CHECK(only(half, HollowKind::Lake)->loss_m3s < only(half, HollowKind::Lake)->inflow_m3s);
+  // That lake's outlet carries what the lake does not lose (`network_flow`): the runoff over the
+  // area above each of its points, less the loss; above the lake nothing changes, and a lake
+  // that loses nothing takes nothing off its outlet.
+  {
+    const f64 loss = only(half, HollowKind::Lake)->loss_m3s;
+    NetworkFlow with, without;
+    REQUIRE_MESSAGE(network_flow(p, half, with, error), error);
+    REQUIRE_MESSAGE(network_flow(layer(), full, without, error), error);
+    CHECK(without.lake_outlets == 0);
+    CHECK(without.lake_loss_m3s == 0);
+    CHECK(with.lake_outlets == 1);
+    CHECK(with.lake_loss_m3s == doctest::Approx(loss));
+    REQUIRE(half.links.size() == full.links.size());
+    u32 outlets = 0;
+    for (u32 k = 0; k < half.links.size(); ++k) {
+      REQUIRE(with.links[k].discharge.size() == without.links[k].discharge.size());
+      const f64 less = half.links[k].outlet ? loss : 0.0;
+      outlets += half.links[k].outlet ? 1u : 0u;
+      for (u32 i = 0; i < with.links[k].discharge.size(); ++i) {
+        CHECK(without.links[k].discharge[i] > less);
+        CHECK(with.links[k].discharge[i] ==
+              doctest::Approx(without.links[k].discharge[i] - less).epsilon(1e-9));
+      }
+    }
+    CHECK(outlets == 1);
+  }
   // A floor that leaks more than runs in: nothing stands, and the lines end at its floor.
   ChannelLayer leaky = layer();
   ChannelBasin talus;
@@ -403,6 +430,87 @@ TEST_CASE("hollows: a basin its catchment cannot fill stands lower, with no outl
   CHECK(dry.water.outlets == 0);
   CHECK(plan_bodies_json(leaky, dry).as_array().empty());
   CHECK(measure_hollows(leaky, dry).climbing == 0);
+}
+
+namespace {
+// Two valleys that meet at one lip: each falls 8 % from the region's far end into a hollow of
+// its own, three metres deep, and the two hollows' low lines converge on the lattice point
+// (128, 200), the lowest point of both rims, with a ridge between them all the way. Below the
+// lip one V-notch falls 5 % to z = 0. So two lakes share one spill, the lines that cross them
+// meet there, and the link that goes on begins AT the spill: at no shore, and no outlet.
+f64 two_arms(const void*, i64 x, i64 z) noexcept {
+  const f64 xx = static_cast<f64>(x) / 1000.0, zz = static_cast<f64>(z) / 1000.0;
+  const f64 off = std::abs(xx - 128);
+  if (zz <= 200) return 10 - .05 * (200 - zz) + .15 * off;
+  const f64 base = zz <= 300 ? 10 - std::min(.1 + .05 * (zz - 204), 3.0) : 7 + .08 * (zz - 300);
+  const f64 centre = 4 + std::min(28.0, zz - 204);
+  // Between the lip's row and the first row of the arms the ground is the higher of the two.
+  const f64 arm = base + .15 * std::abs(off - centre);
+  return zz < 204 ? std::max(arm, 10 + .15 * off) : arm;
+}
+}  // namespace
+
+TEST_CASE("hollows: a link that begins on a lake's lip holds the lake's sill") {
+  ChannelLayer p = layer();
+  p.head_threshold_m2 = 300;
+  // A notch smaller than a small stream's thalweg, so the cut at the lip reaches under the level.
+  p.basin_notch_m = .05f;
+  scene_gen::Ground g;
+  g.surface_fn = &two_arms;
+  std::string error;
+  ChannelNetwork n;
+  REQUIRE_MESSAGE(plan_channels(p, g, 0, nullptr, n, error), error);
+  // Two lakes of the plan, one spill.
+  u32 lakes = 0;
+  f64 level = 0;
+  for (const Hollow& h : n.basins.hollows) {
+    if (h.kind != HollowKind::Lake) continue;
+    ++lakes;
+    level = h.level_m;
+    CHECK(h.spill_x == doctest::Approx(128));
+    CHECK(h.spill_z == doctest::Approx(200));
+    CHECK(h.spill_m == doctest::Approx(10.0));
+    CHECK(h.level_m == doctest::Approx(9.95));
+  }
+  REQUIRE(lakes == 2);
+  const f64 sill = level + .02;
+  // The link that goes on from the spill: it begins there, on dry ground, and is no outlet.
+  u32 from_lip = 0;
+  const JsonValue cuts = terrain_cuts_json(p, n);
+  for (u32 k = 0; k < n.links.size(); ++k) {
+    const ChannelLink& link = n.links[k];
+    if (link.line.size() < 2 || link.outlet) continue;
+    if (std::fabs(link.line.front().at.x - 128) > 1e-6 ||
+        std::fabs(link.line.front().at.z - 200) > 1e-6)
+      continue;
+    ++from_lip;
+    // Its bed stands at the sill on the lip, where its own section would have dug under the
+    // lake's level, and steps down past it; nowhere within the lip's reach is it under the
+    // lake's level where the ground stands over the sill.
+    CHECK(link.bed.front() == doctest::Approx(sill).epsilon(1e-9));
+    CHECK(link.bed.back() < level - 1.0);
+    for (u32 i = 0; i < link.line.size(); ++i) {
+      const f64 dx = link.line[i].at.x - 128, dz = link.line[i].at.z - 200;
+      if (dx * dx + dz * dz > 6.0 * 6.0) break;
+      // (At the sill, or a centimetre under a top that stands within a centimetre of it.)
+      if (link.line[i].at.y >= sill) CHECK(link.bed[i] > level);
+    }
+    // The cut the scene is handed says the same: no pool or swell under the sill at the lip.
+    bool found = false;
+    for (const JsonValue& cut : cuts.as_array()) {
+      if (cut.find("name")->as_string() != p.name + " link " + std::to_string(k)) continue;
+      found = true;
+      f64 top = 0, depth = 0;
+      REQUIRE(cut.find("points")->as_array()[0].as_array()[1].get_f64(top));
+      REQUIRE(cut.find("depth_m")->as_array()[0].get_f64(depth));
+      CHECK(top - depth >= sill - 1e-6);
+    }
+    CHECK(found);
+  }
+  CHECK(from_lip == 1);
+  const HollowStats stats = measure_hollows(p, n);
+  CHECK(stats.climbing == 0);
+  CHECK(stats.ends_higher == 0);
 }
 
 TEST_CASE("hollows: the same plan at one job and six, and through its file") {

@@ -1757,10 +1757,17 @@ temperate lakes), so every hollow fills unless its bed seeps or its floor leaks.
 inflow does not cover its losses at the spill takes cells from its floor up until they do (Barnes
 et al. 2021 grow the same queue from the pit cell until it holds the water), which is coarser than
 their Fill-Spill-Merge: one level a hollow, the inflow not divided between its sub-basins. A source
-feeds every hollow its water passes on the way down. **Not in the balance**: a lake's loss is not
-taken off the flow of the lake below it, nor off its own outlet's discharge (the solver sums the
-runoff over the area: with a loss named, an outlet's flow is overstated by that loss); the stage
-of the year is not read.
+feeds every hollow its water passes on the way down. **A lake's outlet carries what its lake
+does not lose** (`network_flow`, discharge.cpp): the lake's loss is taken off every point of its
+outlet and of each link that outlet runs on into, never more than reaches the outlet's first
+point, and not scaled by `flow.stage` (a bed seeps in a dry month too); the command's line counts
+them (`lake_outlets_losing`, `lake_loss_l_s`). A plan read from its file holds no lattice of
+bodies, so an outlet's lake is the one whose sill it holds, the nearest spill between two at one
+level. **Not in the balance**: a lake's loss is not taken off the inflow of the lake below it
+(the planner gives each hollow its whole catchment's runoff), nor carried through that lower
+lake to its outlet; the lake's own area still sends its runoff down the outlet as land would
+(the rain on it less its evaporation is about half that in the climate the default describes);
+the stage of the year is not read by the planner.
 
 **What the author gives** (`ChannelLayer.basins`, each `{name, at: [x, z], dry, leak_m3s}`): what
 the ground cannot say about the pit that holds `at`. `dry`: no body, whatever its depth and
@@ -1794,6 +1801,34 @@ plan's level exactly, its fan grades to it and its bed stands nowhere under it; 
 cut's stamp leaves a thread of the lip under the body's level for its flood to follow down the
 channel), and the outlet's bed is held there wherever the ground at the line stands over it: a
 lake spills over its sill, and the cut is the sill's notch.
+
+**A lip is held by every link that begins on it** (`lip_sill`, network.cpp; found on the forest
+on 2026-11-14 by sampling the drawn ground round each spill). A lake stands a notch under its
+spill, so the cells between its shore and its lip are dry ground inside the hollow, and the lines
+that cross the water (they follow the fill's own routing over the flat) merge on that shelf as
+readily as under it. A link that begins at such a junction, or at the spill itself, begins at no
+shore and was no outlet: its cut dug the lip to its own bed. At the spills of the forest's three
+largest lakes that bed stood 0.12, 0.17 and 0.29 m **under the lake's level**, the lake's own
+outlets arriving beside it held at the sill, and only the natural rim between that pit and the
+water: the lakes held by 1 to 9 cm. So a link that begins within a cell and a half of a lake's spill holds
+that lake's sill from its first point for as long as its points stay that near and its top
+stands over the sill, in the plan's bed and in the cut's depth (no pool or swell under it); the
+bed's line then steps down past the lip and rises nowhere. The case is two lakes that share one
+spill (`hollow_tests.cpp`).
+
+**The level against the ground between the lattice's points** (measured, not yet a rule of the
+cook). The plan finds a spill on its 4 m lattice and stands the body a notch (0.25 m) under it;
+the water's flood (`water::fill_body`) runs on a lattice of two thirds of a metre and refuses a
+body whose level finds a way out. On the forest's mix the drawn ground was sampled on the
+water's own lattice in a 96 m window round each of the nineteen bodies' spills (402,816 points)
+and the lowest pass from the lake's side to its outlet's channel below the lip was found: in the
+fourteen with an outlet's cut to follow the pass stands **1 to 26 cm over the level, 2 cm (the
+sill) in six of them**, and in none under it; one lowland pond beside the authored lake at -2 m
+could not be told from that lake's own low ground in the window. So the notch covers what the
+lattice steps over wherever it was looked for, by centimetres. It was looked for round the spill
+only: a saddle elsewhere on a rim that the lattice missed is not excluded, and the whole check is
+the water's own flood at the level, which the cook does not run (designed: `engine-content flow
+solve` has the drawn ground and the bodies, and would lower a level that escapes and say so).
 
 **A breach's top.** Where the bed is held more than a thalweg under its section's own depth the
 banks keep their slopes by reaching the top further out, so the cut widens with its depth
@@ -1834,15 +1869,67 @@ floor stands under the open sea's level, which is a sink. 179 mouths, 32 outlets
 | falls | 872 | 752 |
 | the seat: the most, and the line seated | 126 m, 134 km | 1.83 m, 35.5 km |
 
-**What is not zero, and is not traced.** The rule is held on the plan's own bed by the engine's
-cases; on the forest's solved lines 27 still end higher than they begin and 163 hollows over a
-metre remain, 0.26 km of line between them, a metre and a half long on average: the shape of a
-pit at a step's foot. They are not the seat's any more (it reads no bank across a knickpoint,
-and its most is 1.83 m), and the plan's bed does not rise there, so they are made between the
-plan's bed and the composed ground the solve reads: the cut's stamp at a step, a step under
-`fall_min_m` that is no knickpoint, or the solve's reading of a fall's foot. The wet line is a
-third shorter because the lines that crossed the basins' filled flats are gone, not because
-streams dried.
+**What is not zero, traced** (2026-11-14, from the run's own files). The rule is held on the
+plan's own bed by the engine's cases, and on the forest's plan no bed's line rises (`climbing`
+0). On the solved lines 27 still end higher than they begin and 163 hollows over a metre remain,
+0.26 km of line between them, a metre and a half long on average. **They stand where the plan's
+line turns sharply in one step**: 130 of the 163 (16 of the 17 over 4 m) have their lowest
+station within 3 m of a point where the line turns 45 degrees or more between one metre-long
+step and the next, and the plan has only 470 such points in 237,049 (27 of them over 90
+degrees, the sharpest 178). The deepest, 7.7 m in 0.24 m on link 644, is a hairpin of a metre's
+radius in a cut 3.7 m wide at the top of an 8 m step: the plan's bed there is level to a
+centimetre (214.97 to 214.87 m over ten points), and the solver's sections, which stand across
+the line, swing through 120 degrees in under a metre, reach their 7 m limit over the step's edge
+and read its foot (207.3 m) as the station's bed. So what is left is the line's shape, not its
+level: a turn tighter than the cut is wide, at a lip. The case that bounds a line's turn
+(`the line's turn between consecutive points is bounded on every reach`) holds on the engine's
+scenes and not on these points, which were moved after it (the seat's and the bank's moves are
+the suspects; not traced further). The mend is the planner's (a turn no tighter than half the
+cut's width, held after every move of a point) or the solver's (a section's direction taken
+over the cut's width, not one step); neither is built. The wet line is a third shorter because
+the lines that crossed the basins' filled flats are gone, not because streams dried.
+
+**The forest's mix** (2026-11-14, the owner's "probably a mix ... maybe one dried out over time
+with no glacier or well feeding it"; the same staging, with the losses grounded on
+[the hollows page](../experiments/hollows.md): `basin_evaporation_mm_y` 0, since the rain on a
+lake passes its evaporation in this climate, `basin_seepage_mm_y` 2,190, the published median,
+and two entries under `basins`). The plan: 726 links, 122.1 km, 91 pits breached, **eighteen
+lakes with outlets, one body below its spill, one basin named dry**, the authored pond at mark
+8 where its basin's water ends; no bed's line rises. Of the 726 links 280 are wet (24.9 km).
+With the bed's seepage alone every hollow still fills: the balance leaves the eight mountain
+basins 61 to 90 % of what runs in, so a lake below its spill needs a floor that leaks (the
+smallest catchment for its area, 90 ha feeding 15, is short by 20 l/s), and a dry one a name.
+
+| Basin (floor x, z) | Level m | Water ha | Deepest m | Catchment ha | In l/s | Lost l/s | Became |
+|---|---|---|---|---|---|---|---|
+| (332, 4908) | 157.31 | 43.6 | 88 | 494 | 135.0 | 30.1 | a lake at its spill; 105 l/s leaves |
+| (144, 8080) | 322.46 | 18.9 | 135 | 134 | 34.5 | 13.1 | a lake at its spill; 21 l/s leaves |
+| (-1412, 4824) | 263.24 | 10.8 | 91 | 153 | 42.6 | 7.5 | a lake at its spill, which is the region's west edge |
+| (-488, 6932) | 592.57 | 10.6 | 124 | 94 | 25.0 | 7.3 | a lake at its spill; 18 l/s leaves |
+| (-404, 8848) | 714.57 | 6.8 | 76 | 81 | 22.2 | 4.7 | a lake at its spill; 17 l/s leaves |
+| (-1088, 8856) | 804.01 | 2.9 | 28 | 39 | 10.9 | 2.0 | a lake at its spill; 9 l/s leaves |
+| (-1416, 7172), `leak_m3s` 0.02 | 660.07 | 7.1 | 57 | 90 | 24.9 | 24.9 | **a body 33.7 m below its spill** (693.81), no outlet: its floor passes 20 l/s and its bed 4.9 |
+| (-1420, 7968), `dry` | none | none | bowl 58 | 23 | 6.8 | all | **the dried lake**: the highest and the least fed; its lines end at its floor |
+
+The twelve lowland ponds, 1.0 to 3.3 m deep, all at their spills with outlets: the two large
+ones are **14.8 ha at (576, -768)**, level 3.59 m, 1.9 m deep, fed 18.8 l/s by 74 ha, and
+**3.9 ha at (-1016, 256)**, level 3.88 m, 1.1 m deep, on a stream of 133 l/s; then 2.8 ha at
+(-640, -768), 2.5 ha at (-44, 8), 1.3 ha at (-896, -704), 1.2 ha at (-976, 444), 1.0 ha at
+(-144, -136), 0.6 ha at (-448, -768), 0.5 ha at (132, -28), 0.3 ha at (-640, 1316), 0.2 ha at
+(68, 128) and 0.07 ha at (4, 1312). A scene that wants none of them sets `breach_max_m` 3.5.
+
+**What stands where the owner's marks and the old climbing links were** (by position; a link's
+number moves with the plan). Old links 37 and 779, which left the lowland lake at -2 m and
+climbed to 2.6 and 0.2 m: gone. Nothing is cut within 25 m of link 37's line; along link 779's,
+two short lines now run the other way, down into the lake (-0.90 to -2.02 m), beside a pond of
+the plan at -0.71 m. Old link 360 (the owner's mark 6, the pocket in the hillside): its place
+is **under the largest lake**, 3.7 to 5.2 m down; the nearest cut is 121 m away. Old link 482
+(mark 7): the same line, still wet, and its station-to-station rises are still there (the
+largest 2.0 m): it stands on a steep reach with the turns described above, not in a hollow of
+the plan. Old link 778 (mark 8), the outlet that climbed out of the pond: gone; two lines now
+end at the pond, which is where its basin's water ends. Their solved water stands 0.45 and 0.75
+m under the pond's level at their last stations, flagged over the bank: the solver gives a line
+that ends at an authored body under its spill no mouth to meet (not traced; the solver's).
 
 **General purpose.** The fill, the breach and the bodies come from the heights of whatever
 ground the scene names, an imported heightfield as readily as a generated one: nothing reads
