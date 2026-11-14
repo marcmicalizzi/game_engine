@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "S107",
+  "reason": "S107: water.md gains Where the water is (the body's definition, the surface no light's occluder, the case and its numbers); renderer.md's caster policy gains the water body's line",
+  "date": "2026-11-14",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/renderer.md": 495,
+    "page:docs/subsystems/water.md": 4144
+  }
+}

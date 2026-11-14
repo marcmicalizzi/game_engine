@@ -4855,6 +4855,7 @@ defaults sets none, so every existing scene's instances are the bytes they were.
   with the 50 m run (6.00 ms) taken beside a busy GPU (3% → 98%). Ring 0's trees are near enough
   that the option moves little there; it stays off until a view with swaying trees far off asks.
 - **The far forest carries no policy** ([The far forest](#the-far-forest), ADR-0059): a moved instance's flags are its placement's alone (`GpuScene::place_instances`), so a policy on an instance the hand-off moves would not survive its first move; it casts as a rigid tree does.
+- **A water body's surface takes the policy too** (S107, 2026-11-14; [water](water.md#where-the-water-is)): `mesh_caster_policy` gives a body's mesh — a `SceneWater` that is not a channel — `k_instance_untraced` and no cascade (bits 2–4 hold 1, "the 0 nearest"), whatever the flora switch below says. The water branch lights what is under the surface itself, so as a caster the surface only ever shadowed ground beyond its outline under its level, which the body's definition says is dry.
 - `renderer.flora.caster_policy=false` casts every species as a tree does, for a before-and-after.
   `FloraStats::casters_nearest`, `casters_rest` and `untraced` count the instances by policy, when
   the instances change.
