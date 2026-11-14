@@ -1821,14 +1821,18 @@ cook). The plan finds a spill on its 4 m lattice and stands the body a notch (0.
 the water's flood (`water::fill_body`) runs on a lattice of two thirds of a metre and refuses a
 body whose level finds a way out. On the forest's mix the drawn ground was sampled on the
 water's own lattice in a 96 m window round each of the nineteen bodies' spills (402,816 points)
-and the lowest pass from the lake's side to its outlet's channel below the lip was found: in the
-fourteen with an outlet's cut to follow the pass stands **1 to 26 cm over the level, 2 cm (the
-sill) in six of them**, and in none under it; one lowland pond beside the authored lake at -2 m
-could not be told from that lake's own low ground in the window. So the notch covers what the
-lattice steps over wherever it was looked for, by centimetres. It was looked for round the spill
-only: a saddle elsewhere on a rim that the lattice missed is not excluded, and the whole check is
-the water's own flood at the level, which the cook does not run (designed: `engine-content flow
-solve` has the drawn ground and the bodies, and would lower a level that escapes and say so).
+and the lowest pass from the lake's side to its outlet's channel below the lip was found. Of the
+thirteen with an outlet's cut to follow, in twelve the pass stands **2 to 26 cm over the level
+(the sill's 2 cm in five of them; 1 cm in one before the lip was held)**; the thirteenth, a pond
+at -0.71 m beside the authored lake at -2 m, could not be told from that lake's own low ground
+in the window. Of the six without (one leaves by the region's edge, one stands 34 m under its
+spill, four are small ponds whose outlet the search did not find), the drawn ground within 2 m
+of the spill stands 2 to 25 cm over the level in five and **7 cm under it at one** (0.5 ha at
+(132, -28)), not decided. So the notch covers what the lattice steps over wherever it was
+looked for, by centimetres. It was looked for round the spill only: a saddle elsewhere on a rim
+that the lattice missed is not excluded, and the whole check is the water's own flood at the
+level, which the cook does not run (designed: `engine-content flow solve` has the drawn ground
+and the bodies, and would lower a level that escapes and say so).
 
 **A breach's top.** Where the bed is held more than a thalweg under its section's own depth the
 banks keep their slopes by reaching the top further out, so the cut widens with its depth
@@ -1911,9 +1915,13 @@ smallest catchment for its area, 90 ha feeding 15, is short by 20 l/s), and a dr
 | (-1416, 7172), `leak_m3s` 0.02 | 660.07 | 7.1 | 57 | 90 | 24.9 | 24.9 | **a body 33.7 m below its spill** (693.81), no outlet: its floor passes 20 l/s and its bed 4.9 |
 | (-1420, 7968), `dry` | none | none | bowl 58 | 23 | 6.8 | all | **the dried lake**: the highest and the least fed; its lines end at its floor |
 
-The twelve lowland ponds, 1.0 to 3.3 m deep, all at their spills with outlets: the two large
-ones are **14.8 ha at (576, -768)**, level 3.59 m, 1.9 m deep, fed 18.8 l/s by 74 ha, and
-**3.9 ha at (-1016, 256)**, level 3.88 m, 1.1 m deep, on a stream of 133 l/s; then 2.8 ha at
+The areas are under the spill; a deep bowl's water a notch lower covers the same to a tenth of
+a hectare (43.4 and 18.8 ha flooded on a 4 m grid), a shallow pond's much less.
+
+The twelve lowland ponds, 1.0 to 3.3 m deep, all at their spills with outlets (areas under
+their spills): the two large ones are **14.8 ha at (576, -768)**, level 3.59 m, 1.9 m deep, fed
+18.8 l/s by 74 ha, of which the water at its level floods 4.5 ha about its floor on a 4 m grid,
+and **3.9 ha at (-1016, 256)**, level 3.88 m, 1.1 m deep, on a stream of 133 l/s; then 2.8 ha at
 (-640, -768), 2.5 ha at (-44, 8), 1.3 ha at (-896, -704), 1.2 ha at (-976, 444), 1.0 ha at
 (-144, -136), 0.6 ha at (-448, -768), 0.5 ha at (132, -28), 0.3 ha at (-640, 1316), 0.2 ha at
 (68, 128) and 0.07 ha at (4, 1312). A scene that wants none of them sets `breach_max_m` 3.5.
