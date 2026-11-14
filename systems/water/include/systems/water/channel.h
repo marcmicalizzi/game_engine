@@ -206,6 +206,12 @@ struct ChannelAt {
   // how far along its run of drawn stretches from either end; < 0 outside, or on an undrawn one.
   f32 inside = -1.0f;
   f32 wet_inside = -1.0f;    // the same without the margin: > 0 within the wet reach itself
+  // The terms of it, which the sheet's pieces take their own least of: how far along the line the
+  // place is (past the line's own ends for a place beyond them), how far inside the wet reach,
+  // and the margin under the bank there (0 at a station over its bank, and on a nappe).
+  f32 along = 0.0f;
+  f32 lateral = -1.0f;
+  f32 margin = 0.0f;
   f32 level = 0.0f;          // metres over the origin's y; on a fall the nappe's parabola
   f32 slope = 0.0f;          // d level / d metre along the heading
   Vec2 heading{1.0f, 0.0f};  // the stretch's direction in plan, unit, downstream
@@ -225,6 +231,10 @@ struct ChannelLine {
   Vector<f32> length;   // one a stretch, in plan
   Vector<f32> run_from; // one a stretch: the station its run of drawn stretches starts at
   Vector<f32> run_to;   // ... and ends at (both 0 for a stretch that is not drawn)
+  // One a stretch: the stations its **piece** starts and ends at — its run cut at every fall's lip
+  // and foot, so a nappe is a piece of its own and a lip is an edge of the mesh.
+  Vector<f32> piece_from;
+  Vector<f32> piece_to;
   Vector<f32> hydraulic;  // one a station: station_hydraulic_depth
 };
 ChannelLine channel_line(const Channel& channel);

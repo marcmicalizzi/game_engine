@@ -915,13 +915,16 @@ float3 water_channel_pixel(ResolveParams* params, SceneGeometry geo, InstanceDes
   const WaterChannelFlow f =
       water_channel_flow(tri.p[0], tri.p[1], tri.p[2], uv0.x, uv1.x, uv2.x);
   // **The solve, read** (S106): UV.y is the section's hydraulic depth, and on a fall less the
-  // nappe's thickness, so a triangle with a negative corner is a fall's, of the mean of its
-  // negative corners' thickness. The depth under a reach's pixel is the map's (the level less the
-  // ground); with no map it is the hydraulic depth; a fall's is its sheet's thickness, and its
-  // sheet is not marched against the map, whose depths lie under the nappe's foot.
+  // nappe's thickness, so a triangle with a negative corner is a fall's. A nappe is a piece of the
+  // mesh of its own, so all three of its corners are negative and the pixel's thickness is the
+  // interpolated one; a triangle the simplifier left with corners of both kinds takes the mean of
+  // its negative ones. The depth under a reach's pixel is the map's (the level less the ground);
+  // with no map it is the hydraulic depth; a fall's is its sheet's thickness, and its sheet is not
+  // marched against the map, whose depths lie under the nappe's foot.
   const float3 falls = float3(max(-uv0.y, 0.0), max(-uv1.y, 0.0), max(-uv2.y, 0.0));
   const float fallen = float(uv0.y < 0.0) + float(uv1.y < 0.0) + float(uv2.y < 0.0);
-  const float nappe = fallen > 0.0 ? (falls.x + falls.y + falls.z) / fallen : 0.0;
+  const float nappe = fallen > 2.5 ? max(-s.uv.y, 1e-4)
+                                   : (fallen > 0.0 ? (falls.x + falls.y + falls.z) / fallen : 0.0);
   const float hydraulic = max(s.uv.y, 0.0);
   if (nappe > 0.0) {
     depth = nappe;
@@ -929,8 +932,11 @@ float3 water_channel_pixel(ResolveParams* params, SceneGeometry geo, InstanceDes
   } else if (!has_map) {
     depth = hydraulic;
   }
-  // The surface's own plane, facing out of the water whichever side the eye is on.
-  const float3 plane = dot(s.geometric, s.normal) < 0.0 ? -s.geometric : s.geometric;
+  // The surface's own plane, facing out of the water whichever side the eye is on. A nappe is a
+  // curve the lattice draws in a few flat cells: it is shaded by its vertices' normals, which are
+  // the parabola's own, so its facets do not show.
+  float3 plane = dot(s.geometric, s.normal) < 0.0 ? -s.geometric : s.geometric;
+  if (nappe > 0.0) plane = normalize(s.normal);
   const WaterChannelSurface c =
       water_channel_surface(f, local, plane, s.uv.x, params->water_time_s, footprint, depth,
                             hydraulic, nappe, w.roughness, w.seed);

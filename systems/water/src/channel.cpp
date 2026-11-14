@@ -24,12 +24,6 @@ bool finite(f32 v) noexcept { return std::isfinite(v); }
 
 f32 lerp(f32 a, f32 b, f32 t) noexcept { return a + (b - a) * t; }
 
-f32 cross_t(f32 inside, f32 outside) noexcept {
-  const f32 span = inside - outside;
-  const f32 t = span > 0.0f ? inside / span : 0.5f;
-  return std::clamp(t, k_edge_margin, 1.0f - k_edge_margin);
-}
-
 f32 margin_at(const Channel& c, u32 i) noexcept {
   return (c.flags[i] & scene_gen::k_channel_over_bank) != 0 ? 0.0f : k_channel_under_bank_m;
 }
@@ -218,6 +212,25 @@ ChannelLine channel_line(const Channel& c) {
     }
     i = end + 1;
   }
+  // The pieces: a run, cut at each fall's lip and foot (a nappe is a piece of its own).
+  line.piece_from.resize(n - 1);
+  line.piece_to.resize(n - 1);
+  for (u32 i = 0; i + 1 < n;) {
+    if (!stretch_drawn(c, i)) {
+      line.piece_from[i] = line.piece_to[i] = 0.0f;
+      ++i;
+      continue;
+    }
+    u32 end = i;
+    if (!(fall_drop(c, i) > 0.0f))
+      while (end + 2 < n && stretch_drawn(c, end + 1) && !(fall_drop(c, end + 1) > 0.0f))
+        ++end;
+    for (u32 k = i; k <= end; ++k) {
+      line.piece_from[k] = line.station[i];
+      line.piece_to[k] = line.station[end + 1];
+    }
+    i = end + 1;
+  }
   return line;
 }
 
@@ -247,7 +260,12 @@ ChannelAt channel_at_stretch(const Channel& c, const ChannelLine& line, u32 i, f
   if (i + 2 == n && u > len) along = line.station[i] + u;
   const f32 wet = at.left ? lerp(c.wet_left_m[i], c.wet_left_m[i + 1], t)
                           : lerp(c.wet_right_m[i], c.wet_right_m[i + 1], t);
-  const f32 margin = lerp(margin_at(c, i), margin_at(c, i + 1), t);
+  const f32 drop = fall_drop(c, i);
+  // A nappe is in the air: nothing hides a margin, so it has none.
+  const f32 margin = drop > 0.0f ? 0.0f : lerp(margin_at(c, i), margin_at(c, i + 1), t);
+  at.along = along;
+  at.lateral = wet - at.distance_m;
+  at.margin = margin;
   if (stretch_drawn(c, i)) {
     const f32 run = std::min(along - line.run_from[i], line.run_to[i] - along);
     at.inside = std::min(wet + margin - at.distance_m, run);
@@ -257,7 +275,6 @@ ChannelAt channel_at_stretch(const Channel& c, const ChannelLine& line, u32 i, f
     at.inside = at.wet_inside = -std::max(into, 0.0f);
   }
   at.depth_m = lerp(c.depth_m[i], c.depth_m[i + 1], t);
-  const f32 drop = fall_drop(c, i);
   if (drop > 0.0f) {
     // The nappe: a projectile from the lip that lands at the foot's place and level, so its
     // fall time is the free fall's, its horizontal speed the run over it, and its height a
@@ -487,8 +504,50 @@ bool build_sheet(const Channel& c, const ChannelLine& line, f32 h, ChannelMesh& 
     if (raw[a].hydraulic < 0.0f || raw[b].hydraulic < 0.0f || raw[cc].hydraulic < 0.0f)
       ++out.fall_triangles;
   };
+  // **The pieces**: each run of drawn stretches, cut at every fall's lip and foot, so a nappe is a
+  // piece of its own. Each piece is the lattice's cells clipped to its own region — within the
+  // wet reach (and, off a nappe, the margin under the bank) and between the piece's two ends along
+  // the line — so a lip and a foot are straight edges of the mesh and never a line drawn through
+  // triangles, and every vertex of a piece is the piece's kind: a reach's carry a hydraulic depth,
+  // a nappe's its thickness. Two pieces that meet share their cut's points to the bit (below).
+  struct Piece {
+    u32 first;
+    u32 last;
+    f32 from;
+    f32 to;
+    bool fall;
+  };
+  Vector<Piece> pieces;
+  for (u32 i = 0; i + 1 < n;) {
+    if (!stretch_drawn(c, i)) {
+      ++i;
+      continue;
+    }
+    u32 end = i;
+    while (end + 2 < n && stretch_drawn(c, end + 1) &&
+           line.piece_from[end + 1] == line.piece_from[i] &&
+           line.piece_to[end + 1] == line.piece_to[i])
+      ++end;
+    pieces.push_back(Piece{i, end, line.piece_from[i], line.piece_to[i], fall_drop(c, i) > 0.0f});
+    i = end + 1;
+  }
   u32 poly[8];
   bool poly_edge[8];
+  for (const Piece& piece : pieces) {
+  std::fill(node_vertex.begin(), node_vertex.end(), k_none);
+  std::fill(edge_vertex.begin(), edge_vertex.end(), k_none);
+  // The piece's region is where three fields are all positive: past its first station, short of
+  // its last, and inside the wet reach (with the margin, off a nappe).
+  const auto fields = [&](const ChannelAt& at, f32 out_fields[3]) {
+    out_fields[0] = at.along - piece.from;
+    out_fields[1] = piece.to - at.along;
+    out_fields[2] = at.lateral + (piece.fall ? 0.0f : at.margin);
+  };
+  const auto field = [&](const ChannelAt& at) {
+    f32 f[3];
+    fields(at, f);
+    return std::min(f[0], std::min(f[1], f[2]));
+  };
   for (u32 node = 0; node < count; ++node) {
     const u64 key = keys[node];
     const u32 cn[4] = {node, find(key + 1), find(key + wide + 1), find(key + wide)};
@@ -500,28 +559,51 @@ bool build_sheet(const Channel& c, const ChannelLine& line, f32 h, ChannelMesh& 
     bool in[4];
     u32 inside = 0;
     for (u32 k = 0; k < 4; ++k) {
-      v[k] = nodes[cn[k]].inside;
+      v[k] = field(nodes[cn[k]]);
       in[k] = v[k] > 0.0f;
       inside += in[k] ? 1u : 0u;
     }
     if (inside == 0) continue;
+    // A vertex is the solve at its place among the piece's own stretches.
     const auto corner = [&](u32 k) {
-      if (node_vertex[cn[k]] == k_none) node_vertex[cn[k]] = add(places[cn[k]], nodes[cn[k]]);
+      if (node_vertex[cn[k]] == k_none) {
+        const ChannelAt& own = nodes[cn[k]];
+        const bool within = own.stretch >= piece.first && own.stretch <= piece.last;
+        node_vertex[cn[k]] =
+            add(places[cn[k]], within ? own
+                                      : channel_at(c, line, places[cn[k]].x, places[cn[k]].y,
+                                                   piece.first, piece.last));
+      }
       return node_vertex[cn[k]];
     };
     const auto edge = [&](u32 k) {
       if (edge_vertex[e[k]] == k_none) {
+        // The crossing: of the fields that are not positive at the outside node, the one whose
+        // own zero along this edge is nearest the inside node — each field's crossing by itself,
+        // not the crossing of their least, which between a cut and a bank is on neither. It is
+        // measured from the edge's lower node whichever end is inside: where two pieces meet,
+        // their fields along the line are each other's negatives at both nodes, so the two compute
+        // the same quotient and the same point, to the bit.
         const u32 k1 = (k + 1) & 3;
-        const u32 a = in[k] ? k : k1;
-        const u32 b = in[k] ? k1 : k;
+        const u32 a = cn[k] < cn[k1] ? k : k1;
+        const u32 b = cn[k] < cn[k1] ? k1 : k;
         const Vec2 pa = places[cn[a]];
         const Vec2 pb = places[cn[b]];
-        const f32 t = cross_t(v[a], v[b]);
+        f32 fa[3];
+        f32 fb[3];
+        fields(nodes[cn[a]], fa);
+        fields(nodes[cn[b]], fb);
+        const bool low_inside = in[a];
+        f32 t = low_inside ? 1.0f : 0.0f;
+        for (u32 f = 0; f < 3; ++f) {
+          if ((low_inside ? fb[f] : fa[f]) > 0.0f) continue;
+          const f32 span = fa[f] - fb[f];
+          const f32 at_f = span != 0.0f ? fa[f] / span : 0.5f;
+          t = low_inside ? std::min(t, at_f) : std::max(t, at_f);
+        }
+        t = std::clamp(t, k_edge_margin, 1.0f - k_edge_margin);
         const Vec2 p{pa.x + (pb.x - pa.x) * t, pa.y + (pb.y - pa.y) * t};
-        // The crossing's own nearest place, among the stretches about its two nodes'.
-        const u32 sa = nodes[cn[a]].stretch, sb = nodes[cn[b]].stretch;
-        const u32 lo = std::min(sa, sb), hi = std::max(sa, sb);
-        edge_vertex[e[k]] = add(p, channel_at(c, line, p.x, p.y, lo > 0 ? lo - 1 : 0, hi + 1));
+        edge_vertex[e[k]] = add(p, channel_at(c, line, p.x, p.y, piece.first, piece.last));
       }
       return edge_vertex[e[k]];
     };
@@ -563,6 +645,7 @@ bool build_sheet(const Channel& c, const ChannelLine& line, f32 h, ChannelMesh& 
       if (poly_edge[k] && poly_edge[k1]) segment(poly[k], poly[k1]);
     }
     if (m.positions.size() > k_max_vertices) return false;
+  }
   }
   return true;
 }
@@ -702,10 +785,7 @@ ChannelEdge channel_edge_exposed(const Channel& c, const ChannelMesh& mesh,
       const ChannelAt at = channel_at(c, line, p.x, p.z);
       // A cut across the line: the sample is well inside the wet reach's margin, so what ended
       // the sheet here is its run, not its bank. A fall's sides are the nappe's own, in the air.
-      const f32 wet = at.left ? lerp(c.wet_left_m[at.stretch], c.wet_left_m[at.stretch + 1], at.t)
-                              : lerp(c.wet_right_m[at.stretch], c.wet_right_m[at.stretch + 1], at.t);
-      const f32 margin = lerp(margin_at(c, at.stretch), margin_at(c, at.stretch + 1), at.t);
-      if (wet + margin - at.distance_m > 0.02f || at.fall) {
+      if (at.lateral + at.margin > 0.02f || at.fall) {
         ++edge.cuts;
         continue;
       }

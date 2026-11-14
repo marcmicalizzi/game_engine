@@ -309,6 +309,10 @@ TEST_CASE("water channel: the step's fall is a parabola and its jump a ramp at t
       CHECK(static_cast<f64>(-m.uvs[k].y) == doctest::Approx(thickness).epsilon(1e-3));
       // Facing downstream as it steepens.
       CHECK(m.normals[k].x >= 0.0f);
+      // In the air nothing hides a margin: the nappe is as wide as the wet reach, the lip's to
+      // the foot's.
+      const f64 z = b.channel.origin.z + static_cast<f64>(m.positions[k].z);
+      CHECK(std::abs(z) <= 1.377 + (1.137 - 1.377) * t + 1e-3);
     } else if (x > 41.246 + 1e-3 && x < 44.201 - 1e-3) {
       // **The jump**: the level a ramp from the head's to the foot's, the head's hydraulic depth
       // (so the head's Froude number, 3.19: white water) held to the foot.
@@ -328,6 +332,41 @@ TEST_CASE("water channel: the step's fall is a parabola and its jump a ramp at t
   CHECK(on_jump > 0);
   CHECK(rising > 0);
   CHECK(plan_cover(m, 0.05f).most == 1);
+  // **The lip and the foot are edges of the mesh**: the nappe is a piece of its own, so no
+  // triangle has corners of both kinds (a lip drawn through triangles is a saw-tooth line), and
+  // the pieces either side of a cut put their vertices on the same points, so there is no crack.
+  u32 fall_triangles = 0;
+  for (u32 t = 0; t < m.indices.size(); t += 3) {
+    const bool f0 = m.uvs[m.indices[t]].y < 0.0f;
+    const bool f1 = m.uvs[m.indices[t + 1]].y < 0.0f;
+    const bool f2 = m.uvs[m.indices[t + 2]].y < 0.0f;
+    CHECK(f0 == f1);
+    CHECK(f1 == f2);
+    fall_triangles += f0 ? 1u : 0u;
+  }
+  CHECK(fall_triangles == b.sheet.fall_triangles);
+  u32 on_lip_reach = 0, on_lip_fall = 0, matched = 0;
+  for (u32 k = 0; k < m.positions.size(); ++k) {
+    const f64 x = b.channel.origin.x + static_cast<f64>(m.positions[k].x);
+    if (std::abs(x - 38.0) > 1e-4) continue;
+    if (m.uvs[k].y >= 0.0f) {
+      ++on_lip_reach;
+      continue;
+    }
+    ++on_lip_fall;
+    for (u32 j = 0; j < m.positions.size(); ++j) {
+      if (m.uvs[j].y < 0.0f || m.positions[j].x != m.positions[k].x ||
+          m.positions[j].z != m.positions[k].z)
+        continue;
+      CHECK(m.positions[j].y == doctest::Approx(m.positions[k].y).epsilon(1e-6));
+      ++matched;
+      break;
+    }
+  }
+  CHECK(on_lip_fall > 2);
+  // Every point of the nappe's top edge is a point of the reach's last edge, to the bit in plan.
+  CHECK(matched == on_lip_fall);
+  CHECK(on_lip_reach >= on_lip_fall);
   // The fall's travel time is the free fall's, and the jump's its length at the head's speed.
   const water::ChannelLine line = water::channel_line(b.channel);
   CHECK(line.tau[7] - line.tau[6] == doctest::Approx(fall_time).epsilon(1e-6));
@@ -544,8 +583,8 @@ TEST_CASE("water channel: the files are the same bytes twice, pinned, and the ge
           " bytes, hash ", map_hash);
   // Taken on MSVC (2026-11-14, S106): the toolchains reproduce them, since every number is
   // + - * / and sqrt in a fixed order.
-  CHECK(glb_hash == 17413192459257434341ull);  // 24,752 bytes
-  CHECK(map_hash == 4474027355344884547ull);   // 82,462 bytes
+  CHECK(glb_hash == 4896157926021888350ull);   // 25,184 bytes
+  CHECK(map_hash == 17670608434784788963ull);  // 82,462 bytes
   // The importer reads it as the renderer will: positions, normals and the phase and depth UVs.
   assets::MeshData data;
   std::string error;
