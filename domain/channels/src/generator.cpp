@@ -23,7 +23,8 @@ namespace {
 using namespace detail;
 
 constexpr u32 k_plan_magic = 0x4C504843u;  // "CHPL"
-constexpr u32 k_plan_format = 3;           // 2 (W97): a link's sediment; 3 (W116): its seat
+// 2 (W97): a link's sediment; 3 (W116): its seat; 4 (W121): an outlet's body's level.
+constexpr u32 k_plan_format = 4;
 static_assert(sizeof(ChannelPoint) == 40, "a point is written as its bytes: no padding");
 static_assert(sizeof(ChannelSediment) == 32, "a sediment is written as its bytes: no padding");
 
@@ -101,6 +102,7 @@ void write_link(Writer& w, const ChannelLink& l) {
   w.put(static_cast<u8>(l.mouth));
   w.put(static_cast<u8>(l.outlet));
   w.put(l.mouth_level);
+  w.put(l.outlet_level);
 }
 bool read_link(Reader& r, ChannelLink& l) {
   r.list(l.cells);
@@ -136,6 +138,7 @@ bool read_link(Reader& r, ChannelLink& l) {
   l.mouth = r.get<u8>() != 0;
   l.outlet = r.get<u8>() != 0;
   l.mouth_level = r.get<f64>();
+  l.outlet_level = r.get<f64>();
   if (!r.ok) return false;
   // What every reader of a link indexes by a point of its line is one a point, or absent.
   const u32 m = l.line.size();

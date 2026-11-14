@@ -176,6 +176,9 @@ struct ChannelLink {
   bool mouth = false;
   bool outlet = false;
   f64 mouth_level = 0;
+  // W121: the level of the body an outlet begins in (its first point is that body's shoreline),
+  // which its cut stands under nowhere the ground stood over it; 0 for a link that is no outlet.
+  f64 outlet_level = 0;
 };
 
 // What the water bodies did to a network (W90): the links that end at a shoreline, the links

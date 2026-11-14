@@ -1432,7 +1432,12 @@ either. So on a link that ends in a body:
 - the section's depth (`terrain_cuts_json`: a bend's pool, a riffle's swell) and the flood bed's
   (`flood_depth_m`) take no point under the level either.
 
-What is left under the level outside the body is the round top's crease, `bank_round` times the
+**An outlet's start the same** (`ChannelLink::outlet_level`, the level of the body it leaves,
+plan format 4): wherever the ground at the line stands at or over that level its bed is held at
+it, and its section's depth and flood bed take nothing under it; where the ground falls under the
+level, as it does below a sill, the cut is the outlet's own. A lake spills over its outlet's sill
+at its level, so a bed under the level where the ground stands over it was a dry hollow under the
+waterline beside the body. What is left under the level outside the body is the round top's crease, `bank_round` times the
 depth over four (a few centimetres), where the cut's surface meets ground standing at the level.
 **A fan is what lies below a cliff** (W119): the fan's span is the last `fan_widths` widths less
 everything above the last stretch in them whose ground falls at 45 degrees or more
@@ -1469,7 +1474,18 @@ the ground the cut left:
   8.2 m), on 61ccce67 and with W121. The stamp is not the fault: with a seat no deeper than the
   bank slope over the half width, the run-out meets any hillside under about 70 degrees. The seat
   is W120's row (it absorbs W117's cap, `65eed9cd`); the case is marked `may_fail` until it lands.
-- **Mark 8, the black triangle beside a teal one: the fan under the body's level** (above). The
+- **Mark 8 on the forest is an outlet, and its line climbs.** W120's solve of the forest (its
+  `flow.json`) has link 778 *leaving* the polygon pond `freshwater-swamp`: its first station is the
+  pond's spill, 2 m inside the outline, and its level climbs from 1.12 m to 2.09 m down the line,
+  422 of its 435 stations over a bank: a line the planner routed out of a hollow over the filled
+  lattice. The climb is the plan's to mend (a row of its own). What the cut did where it met the
+  pond is this row's: the outlet's bed, held down the line from the shore, ran under the pond's
+  level up the climb and out past the outline (an engine scene of the shape, a pond 0.5 m under its
+  rim: 2.25 m² of ground that stood over the level cut under it, the worst 0.22 m; none with W121).
+  Link 360 (mark 6) climbs too: 18 stations, a fall into a 0.41 m pool and the level rising 1.5 m
+  to its end, 16 of them over a bank. Link 482 (mark 7) falls 75 m and has 89 stations of 550 over
+  a bank; at the mark a pool 0.47 m deep behind a lip.
+- **The black triangle beside a teal one at a mouth: the fan under the body's level** (above). The
   teal triangle is the body's own surface (`systems/water`'s ring of the outline, at the level
   over the whole outline), seen where the fan's cut took the ground under the level inside the
   outline: water rightly drawn. The black one beside it is the same cut outside the outline, dry

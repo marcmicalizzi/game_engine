@@ -473,6 +473,13 @@ void apply_water(ChannelNetwork& n, const scene_gen::Ground& ground,
       if (run.a > 0) {
         out.outlet = true;
         out.line.push_back(shore(link.line[run.a], link.line[run.a - 1]));
+        // The level of the body it leaves (W121), read where the line was last under it.
+        const ChannelPoint& under = link.line[run.a - 1];
+        f64 level = 0;
+        out.outlet_level = out.line.back().at.y;
+        if (water->water_level_mm(ground, scene_gen::nearest_mm(under.at.x),
+                                  scene_gen::nearest_mm(under.at.z), level))
+          out.outlet_level = level;
       }
       for (u32 i = run.a; i < run.b; ++i)
         out.line.push_back(link.line[i]);
@@ -714,6 +721,20 @@ void cut_bed(const ChannelLayer& p, ChannelLink& link) {
       if (!(link.knick[i] && link.knick[i + 1]) &&
           link.bed[i] - link.bed[i + 1] >= k_fall_gradient * (s[i + 1] - s[i]))
         ++link.steep_left;
+  }
+  // **An outlet's start** (W121; channels.md, "The base level, and a fan below a cliff"): the cut
+  // of a link that leaves a body stands under that body's level nowhere the ground at the line
+  // stood over it. A lake spills over its outlet's sill at its level, so a bed under the level
+  // where the ground stands over it is a dry hollow under the waterline beside the body (the
+  // owner's mark 8 was one, at the start of an outlet whose line climbed out of the pond). Where
+  // the ground falls under the level, as below a sill it does, the bed is the cut's own.
+  if (link.outlet) {
+    const f64 level = round_to(link.outlet_level, 1e3);
+    for (u32 i = 0; i < m; ++i) {
+      const f64 top = round_to(top_of(link, i), 1e3);
+      if (top >= level)
+        link.bed[i] = std::max(link.bed[i], std::min(level, round_to(top - .01, 1e3)));
+    }
   }
   if (!link.mouth || m < 2) return;
   const Vector<f64> s = lengths_of(link.line);
@@ -1843,6 +1864,9 @@ JsonValue terrain_cuts_json(const ChannelLayer& p, const ChannelNetwork& n) {
       // link that ends in a body under the body's level.
       if (link.mouth)
         depth = std::min(depth, std::max(1e-3, top - round_to(link.mouth_level, 1e3)));
+      // An outlet's start the same, where the ground stands over the level it leaves.
+      if (link.outlet && top >= round_to(link.outlet_level, 1e3))
+        depth = std::min(depth, std::max(1e-3, top - round_to(link.outlet_level, 1e3)));
       depths.push_back(JsonValue(round_to(depth, 1e3)));
       left.push_back(JsonValue(round_to(section.slope_left, 1e4)));
       right.push_back(JsonValue(round_to(section.slope_right, 1e4)));
@@ -1875,6 +1899,9 @@ JsonValue terrain_cuts_json(const ChannelLayer& p, const ChannelNetwork& n) {
         if (link.mouth)
           under = std::min(under, std::max(0.0, round_to(top_of(link, i), 1e3) -
                                                     round_to(link.mouth_level, 1e3)));
+        if (link.outlet && round_to(top_of(link, i), 1e3) >= round_to(link.outlet_level, 1e3))
+          under =
+              std::min(under, round_to(top_of(link, i), 1e3) - round_to(link.outlet_level, 1e3));
         fl.push_back(JsonValue(round_to(wide(link.flood_left[i]), 1e3)));
         fr.push_back(JsonValue(round_to(wide(link.flood_right[i]), 1e3)));
         fd.push_back(JsonValue(round_to(under, 1e3)));

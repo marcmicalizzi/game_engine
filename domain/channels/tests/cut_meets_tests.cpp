@@ -1,4 +1,5 @@
-// W121 (docs/subsystems/channels.md, "Where a cut meets a bank or a body"; the owner's walk of
+// W121 (docs/subsystems/channels.md, "Where a cut meets a bank: the owner's marks 6 and 7", and
+// "The base level, and a fan below a cliff (W121)"; the owner's walk of
 // 2026-11-13, marks 6, 7 and 8, and W119): the holes a cut left where it met a bank or a body,
 // read on the tile set's own edited ground. The plan's cuts are compiled by
 // `tileset::TerrainEdits` and applied to a window of the 25 cm lattice the forest's set is built
@@ -346,6 +347,72 @@ TEST_CASE("channels: a mouth cuts no dry ground under its body's level") {
             << ", " << wz << ")");
     CHECK(dry == 0);
   }
+}
+
+namespace {
+// The notch with a hollow 3 m deep and 30 m across about (128, 400): water standing in it spills
+// down the notch over a rim at z = 370 m, 18.5 m.
+f64 hollow(const void*, i64 x, i64 z) noexcept {
+  const f64 xx = static_cast<f64>(x) / 1000.0, zz = static_cast<f64>(z) / 1000.0;
+  const f64 r2 = (xx - 128) * (xx - 128) + (zz - 400) * (zz - 400);
+  return .05 * zz + .15 * std::abs(xx - 128) - 3 * std::max(0.0, 1 - r2 / 900);
+}
+}  // namespace
+
+// **Mark 8 as the forest has it: an outlet's start.** The forest's link 778 leaves the pond
+// `freshwater-swamp` (its first station is the pond's spill, 2 m inside the outline) and its line
+// climbs a metre out of the pond's hollow: the plan's line, routed over the filled lattice. The
+// hollow here holds a pond at 18 m, 0.5 m under its rim, whose outline reaches 2 m past the level's
+// contour on the outlet's side; the line leaves at the contour and climbs over the rim. Where the
+// ground stood over the level outside the outline, the cut takes nothing under it (a hole: no water
+// is drawn there). The climb is the plan's to answer; what the cut leaves where it meets the body
+// is held. On 61ccce67 the outlet's bed, held down the line from the shore, ran under the level up
+// the climb and out past the outline.
+TEST_CASE("channels: an outlet's start cuts no dry ground under its body's level") {
+  const scene_gen::Ground g = ground(&hollow);
+  ChannelLayer p;
+  p.name = "outlet";
+  p.region_min = {0, 0};
+  p.region_max = {256, 512};
+  scene::WaterBody body;
+  body.name = "pond";
+  body.level_m = 18.0;
+  for (const auto& [x, z] : {std::pair<f64, f64>{100, 371.6}, {156, 371.6}, {156, 430}, {100, 430}})
+    body.shape.polygon.push_back(WorldPos{x, 0, z});
+  const Vector<scene::WaterBody> bodies{body};
+  scene_gen::Exclusion water;
+  std::string error;
+  REQUIRE(water.build({}, {bodies.data(), bodies.size()}, {}, &error));
+  ChannelNetwork n;
+  REQUIRE(plan_channels(p, g, 0, nullptr, n, error, &water));
+  const ChannelLink* outlet = nullptr;
+  for (const ChannelLink& link : n.links)
+    if (link.outlet) outlet = &link;
+  REQUIRE(outlet != nullptr);
+  const Window w = edited(g, edits_of(p, n), 100, 340, 156, 380);
+  u64 dry = 0;
+  f64 worst = 0, wx = 0, wz = 0;
+  for (i64 j = 0; j < w.nz; ++j)
+    for (i64 i = 0; i < w.nx; ++i) {
+      const size_t k = static_cast<size_t>(j * w.nx + i);
+      const f64 under = 18.0 - static_cast<f64>(w.cut[k]) / 1000.0;
+      // Ground that stood 10 cm or more over the level, outside the outline, left more than 2 cm
+      // under it. Below the rim the ground itself falls under the level and the outlet's own cut
+      // there is no hole: its section, interpolated along a stretch of the line (half a metre)
+      // and as wide as the channel, trims the banks beside the line to the line's own ground
+      // within a metre or two below the sill, where the bank stands a few centimetres over the
+      // level and the line's ground under it.
+      if (w.uncut[k] < 18100 || under <= .02 || inside(body, w.x(i), w.z(j))) continue;
+      ++dry;
+      if (under > worst) worst = under, wx = w.x(i), wz = w.z(j);
+    }
+  MESSAGE("the outlet from (" << outlet->line.front().at.x << ", " << outlet->line.front().at.z
+                              << "), its body's level " << outlet->outlet_level << " m; " << dry
+                              << " points (" << static_cast<f64>(dry) * .0625
+                              << " m2) of ground over the level outside the pond cut under it, "
+                              << "the worst " << worst << " m at (" << wx << ", " << wz << ")");
+  CHECK(outlet->outlet_level == 18.0);
+  CHECK(dry == 0);
 }
 
 // **W119: a mouth's fan does not grade over a cliff.** The notch over its sea cliff: the link ends
