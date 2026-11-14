@@ -26,7 +26,7 @@ engine_module(NAME channels LAYER domain OPTIONAL WHOLE_ARCHIVE
 if(TARGET engine_tileset)
   engine_module_tests(NAME channels
     SOURCES tests/channels_tests.cpp tests/seat_ground_tests.cpp tests/size_table.cpp
-            tests/falls_tests.cpp
+            tests/falls_tests.cpp tests/cut_meets_tests.cpp
     DEPS tileset)
 else()
   engine_module_tests(NAME channels

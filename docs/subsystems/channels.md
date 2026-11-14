@@ -1129,8 +1129,14 @@ shorter than `max(4 m, 2 w)` is dropped. Nothing of a link — cut, pieces, wate
 the body.
 
 The cut ends in a **fan**: over the last `fan_widths` (3) widths its bed grades from where it was to
-half a thalweg under the body's level, and its width grows by `fan_spread` (1, so to twice) at the
-shore. The water's surface grades over the fan to the body's level at the shore, and on a link that
+the body's level at the shore (W121; until then to half a thalweg under it), and its width grows by
+`fan_spread` (1, so to twice) at the shore. `mouth_level` is **the body's own level**
+(`Exclusion::water_level_mm` at the line's first point under water; until W121 the ground at the
+shoreline, which is the level only where the body's outline is the level's contour, and under it
+where an author's outline stands in water). **Nothing of the cut stands under that level outside
+the body** ([the base level](#the-base-level-and-a-fan-below-a-cliff-w121)), and **a fan is what
+lies below a cliff**: where the ground under the line falls at 45 degrees or more between two of
+the fan's points, the fan begins below it. The water's surface grades over the fan to the body's level at the shore, and on a link that
 ends in a body never stands below that level anywhere (the body backs it up). The grade starts at
 the first fan point itself and never runs under the bed: at least a centimetre of water stands over
 it (W91 continuation). W90 anchored the grade at the first fan point but already applied that
@@ -1161,6 +1167,44 @@ box where the ground is below the level, not the flood `water::depth_at` traces,
 lake's level within its box ends a link as the lake would. The placement generator reads them from
 `Context::exclusion`, which the host builds only with placement exclusion on: without it the pieces
 run on (the subcommand always reads the scene's bodies).
+
+### The base level, and a fan below a cliff (W121)
+
+(2026-11-13, roadmap W121; the owner's walk of that day, mark 8: where the forest's link 778 meets
+the polygon pond `freshwater-swamp`, "a black triangular hole in the ground and a teal triangle";
+and W119, the fan over a sea cliff that S104's cook found.) **A stream cuts no deeper than the
+body it ends in.** The level of the sea, a lake or a pond a stream flows into is its *base level*,
+the lowest level to which it can erode its bed (Powell 1875 named it; Mackin 1948 made it the
+control the graded profile adjusts to); a channel's bed under that level near its mouth is under
+the body's water, a backwater. The engine draws a body's water over its outline and nowhere else
+(water.md, "The mesh": a ring of the outline, or a fill's flood), so W90's fan, which graded the
+shore to half a thalweg under the ground at the shoreline and spread to twice the width there,
+left whatever of its cut lay outside the outline under the waterline **and dry**: on an oblique
+shore the fan's spread and its round cap past the last point dig the bank beside the shoreline,
+and a dry link (one under the description's area, as link 778 is) has no ribbon over its bed
+either. So on a link that ends in a body:
+
+- `mouth_level` is the body's level (above), not the ground at the shoreline;
+- the fan grades the bed to that level at the shore, and **every point's bed is held at the level
+  wherever the cut's top stands over it**; where the ground at the line itself stands under it (an
+  outline that falls short of the contour leaves such ground dry), the section's top is the level,
+  so the cut lowers only ground over it and does not deepen what the outline left dry (that is the
+  outline's to answer);
+- the section's depth (`terrain_cuts_json`: a bend's pool, a riffle's swell) and the flood bed's
+  (`flood_depth_m`) take no point under the level either.
+
+What is left under the level outside the body is the round top's crease, `bank_round` times the
+depth over four (a few centimetres), where the cut's surface meets ground standing at the level.
+**A fan is what lies below a cliff** (W119): the fan's span is the last `fan_widths` widths less
+everything above the last stretch in them whose ground falls at 45 degrees or more
+(`k_fall_gradient`, where the water leaves its bed), so over a sea cliff the bed follows the cut's
+own line to the lip and the water falls, where W90 graded the cliff's top into a ramp. The fan's
+spread and the seat's exemption still read the fan's whole length (`fan_share`).
+
+**What an author's channel gets.** The rule is the planner's, applied where it writes a mouth: a
+`TerrainEdit` written by hand is the author's section, and the stamp (tileset.md, "Channels cut
+into the ground") knows nothing of bodies. A hand-made channel into a hand-made body meets the
+same hole if its bed runs under the body's level outside the outline.
 
 ## Confluences
 

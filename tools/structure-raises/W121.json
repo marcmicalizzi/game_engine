@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "W121",
+  "reason": "W121: channels.md says the base level a link that ends in a body is cut to (mouth_level the body's own, nothing of the cut under it outside the body), the fan that begins below a cliff (W119), what an author's channel gets, and the marks' measured holes",
+  "date": "2026-11-13",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/channels.md": 3522
+  }
+}
