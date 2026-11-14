@@ -423,8 +423,8 @@ TEST_CASE("channels: an outlet's start cuts no dry ground under its body's level
   CHECK(dry == 0);
 }
 
-// **Marks 6, 7 and 8 are lines in hollows** (W120's solve of the forest; `scratch\b64\W120\
-// hollows.txt`: 44 % of the forest's wet line lies in a hollow of its own line, link 360 wholly in
+// **Marks 6, 7 and 8 are lines in hollows** (W120's solve of the forest, the scratch note
+// `hollows.txt`: 44 % of the forest's wet line lies in a hollow of its own line, link 360 wholly in
 // one 1.89 m deep, link 482 in one 0.42 m deep at the mark, link 778 in one 1.77 m deep at its
 // pond). The planner routes over the pit-filled lattice; the cut, which only lowers, does not fill
 // what the routing filled, so the line runs down into the hollow and climbs out of it, and the cut
