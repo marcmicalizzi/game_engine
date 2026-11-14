@@ -21,6 +21,7 @@
 #include <domain/scene_gen/derived_root.h>
 #include <domain/scene_gen/scene_gen.h>
 #include <domain/scene_gen/sky.h>
+#include <domain/scene_gen/water_channel.h>
 #include <domain/texture/material_textures.h>
 #include <domain/texture/texture_build.h>
 #include <domain/texture/texture_file.h>
@@ -1976,12 +1977,17 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
     error = std::string(path) + ":" + std::to_string(parsed.line) + ": " + parsed.message;
     return false;
   }
+  // The water's cook reads the ground and writes the channels: the file's own are left out (W120).
+  if (options.without_water_channels && root.is_object() && root.contains("water_channels"))
+    root.set("water_channels", JsonValue::array());
   // One grammar, and it is the schema's: an unknown field is refused with its path rather than
   // skipped, because a misspelt `"ground"` that quietly did nothing would float a building.
   scene::Scene file;
   schema::ReadContext ctx;
   profiling::TraceStage schema_stage("schema read");
-  const bool schema_read = schema::from_json(file, root, ctx);
+  // (A channel block of versions 3 to 5 is read through `WaterChannel`'s migration: W120.)
+  const bool schema_read =
+      scene_gen::migrate_scene_water_channels(root, ctx) && schema::from_json(file, root, ctx);
   schema_stage.end();
   if (!schema_read || !ctx.ok()) {
     error = path + ": " + schema_errors(ctx);

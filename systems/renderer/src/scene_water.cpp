@@ -15,6 +15,7 @@
 #include <domain/gfx/wet_ground.h>
 #include <domain/scene_gen/derived_root.h>
 #include <domain/scene_gen/scene_gen.h>
+#include <domain/scene_gen/water_channel.h>
 #include <foundation/io/vfs.h>
 
 #include <algorithm>
@@ -423,8 +424,15 @@ bool read_scene_water_channels(const scene::Scene& file, const std::string& path
   context.ddc = root;
   if (out.terrain.enabled) context.ground = ground.provider().view();
   JsonValue list = JsonValue::array();
-  for (const scene::WaterChannel& channel : file.water_channels)
+  for (const scene::WaterChannel& channel : file.water_channels) {
+    // W120: a description is solved or it is refused by name; none is read in the old meaning.
+    std::string why;
+    if (!scene_gen::water_channel_solved(channel, &why)) {
+      error = where + ": " + why;
+      return false;
+    }
     list.push_back(schema::to_json(channel));
+  }
   JsonValue params = JsonValue::object();
   params.set("channels", std::move(list));
   // The channels whose falls land in a body (S98): the body draws the plunge, and a channel that

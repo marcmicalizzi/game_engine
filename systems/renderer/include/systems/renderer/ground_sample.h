@@ -37,8 +37,10 @@ class SceneGround {
   // `excluded` names `footprints` where an entry's shapes stand). `ddc` is the host's root, as
   // `--ddc` is. `uncut` asks the same terrain less every edit, the scene's and the plans'. False,
   // with the reader's sentence, for a scene that does not read or has no terrain.
+  // `without_water_channels`: the file's `water_channels` are not read
+  // (`SceneFileOptions::without_water_channels`: the water's cook, which writes them).
   bool open(const std::string& scene_path, const std::string& ddc, bool uncut, bool placements,
-            std::string& error);
+            std::string& error, bool without_water_channels = false);
 
   // The head line: the scene, the provider, whether it is the uncut ground, the terrain's own grid
   // spacing (the bound on how far this bilinear answer stands from the drawn triangles, for a
@@ -56,6 +58,11 @@ class SceneGround {
   JsonValue sample(const GroundQuestion& q, f64 skirt_m) const;
 
   static constexpr f64 k_gradient_radius_m = 0.25;
+
+  // The same ground as a sampler a domain module can be handed (W120: the channels' profile
+  // solver reads its sections from the composed ground and may not link the renderer): valid
+  // while this object stands open, absent before `open`.
+  scene_gen::Ground ground() const;
 
   // The placement generators the scene names that this executable does not carry, read through
   // the plan alone: not refused, since nothing of them expands, but whatever they would have
