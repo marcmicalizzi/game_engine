@@ -219,6 +219,54 @@ TEST_CASE("deposits far: what the DAG's own distance form keeps of a dense tile,
   CHECK(level_triangles[0] * 4 < triangles[0]);
 }
 
+TEST_CASE("deposits far: a 64 m tile at the forest's budget hands a far tile a block of 2 x 2") {
+  // rocks.md, "A far tile a block, under the cluster limit": a whole 64 m tile's far tile built
+  // over 4,096 clusters on G191's streamed scene and was refused; its blocks are each a far tile,
+  // each instance naming its own mesh (the first split named mesh 0 for every block, which drew
+  // one block twice and the other not at all: half the band missing from 300 m).
+  test::TempDir scratch;
+  scene_gen::Context c;
+  c.dir = scratch.path();
+  c.ddc = scratch.path();
+  c.ground.surface_fn = &massif;
+  c.tile_size = 64;
+  DepositLayer p;
+  p.region_min = {0, 0};
+  p.region_max = {128, 64};
+  p.spacing_m = 1;
+  p.patch_m = 16;
+  p.patch.triangle_budget = 128000;
+  p.sediment_depth_m = 0;
+  p.far_rings = 2;
+  const auto* desc = scene_gen::GeneratorRegistry::global().find_placement("deposits");
+  REQUIRE(desc != nullptr);
+  std::string error;
+  void* state = nullptr;
+  REQUIRE_MESSAGE(desc->open(schema::to_json(p), c, &state, &error), error);
+  scene_gen::Placements near, far;
+  c.ring = 0;
+  REQUIRE_MESSAGE(desc->tile(state, {0, 0}, c, near, &error), error);
+  c.ring = 1;
+  REQUIRE_MESSAGE(desc->tile(state, {0, 0}, c, far, &error), error);
+  desc->close(state);
+  REQUIRE_FALSE(near.meshes.empty());
+  MESSAGE(near.meshes.size(), " near meshes, ", far.meshes.size(), " far tiles");
+  CHECK(far.meshes.size() > 1u);
+  CHECK(far.meshes.size() <= 4u);
+  REQUIRE(far.instances.size() == far.meshes.size());
+  usize members = 0;
+  for (u32 k = 0; k < far.instances.size(); ++k) {
+    CHECK(far.instances[k].mesh == k);
+    REQUIRE(scene_gen::is_far_tile(far.meshes[k]));
+    scene_gen::FarTile tile;
+    REQUIRE_MESSAGE(scene_gen::read_far_tile(far.meshes[k].recipe, tile, &error), error);
+    members += tile.placements.size();
+    for (u32 j = 0; j < k; ++j)
+      CHECK(far.instances[j].id != far.instances[k].id);
+  }
+  CHECK(members == near.instances.size());
+}
+
 TEST_CASE("deposits far: a ring past near_rings hands one far tile of what the near ring hands") {
   test::TempDir scratch;
   const std::string dir = scratch.path();

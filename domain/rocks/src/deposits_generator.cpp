@@ -592,7 +592,7 @@ void hand_far_block(const Entry& e, scene_gen::TileCoord tile, const scene_gen::
                  static_cast<f64>(z0) / 1000.0};
   // Named past every piece's: the patch count times the most pieces a patch is cut into.
   at.id = static_cast<u32>(first_id + k_far_tile_id_base);
-  at.mesh = 0;
+  at.mesh = out.meshes.size();  // a tile's blocks each hand their own far tile; no resident kit
   out.meshes.push_back(std::move(mesh));
   out.instances.push_back(at);
 }
