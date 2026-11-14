@@ -422,15 +422,11 @@ bool read_scene_water_channels(const scene::Scene& file, const std::string& path
   context.ddc = root;
   if (out.terrain.enabled) context.ground = ground.provider().view();
   JsonValue list = JsonValue::array();
-  for (const scene::WaterChannel& channel : file.water_channels) {
-    // W120: a description is solved or it is refused by name; none is read in the old meaning.
-    std::string why;
-    if (!scene_gen::water_channel_solved(channel, &why)) {
-      error = where + ": " + why;
-      return false;
-    }
+  // A description is solved or it is refused by name, and the refusal is the water capability's
+  // (`water::read_channel`, through `scene_gen::water_channel_solved`): the generator's `open`
+  // below reads every channel and names the one it refuses.
+  for (const scene::WaterChannel& channel : file.water_channels)
     list.push_back(schema::to_json(channel));
-  }
   JsonValue params = JsonValue::object();
   params.set("channels", std::move(list));
   // The channels whose falls land in a body (S98): the body draws the plunge. (Until S106 a
