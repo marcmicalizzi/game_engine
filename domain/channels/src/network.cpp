@@ -514,14 +514,19 @@ void apply_water(ChannelNetwork& n, const scene_gen::Ground& ground,
       if (run.a > 0) {
         out.outlet = true;
         out.line.push_back(shore(link.line[run.a], link.line[run.a - 1], under[run.a - 1]));
-        // The level of the body it leaves: the plan's own body's exactly, a scene's body's as the
-        // ground at its shoreline.
-        // The plan's body stands `k_sill_over_m` under the sill its outlet holds, so no rounding
-        // of the cut's stamp puts a thread of the lip under the body's level for its flood to
-        // follow down the channel.
-        out.outlet_level = under[run.a - 1] >= 2
-                               ? n.basins.hollows[under[run.a - 1] - 2].level_m + k_sill_over_m
-                               : out.line.back().at.y;
+        // The level of the body it leaves (W121), read where the line was last under it.
+        const ChannelPoint& last = link.line[run.a - 1];
+        f64 level = 0;
+        out.outlet_level = out.line.back().at.y;
+        if (under[run.a - 1] >= 2)
+          // The plan's own body (W122) stands `k_sill_over_m` under the sill its outlet holds,
+          // so no rounding of the cut's stamp puts a thread of the lip under the body's level
+          // for its flood to follow down the channel.
+          out.outlet_level = n.basins.hollows[under[run.a - 1] - 2].level_m + k_sill_over_m;
+        else if (water != nullptr &&
+                 water->water_level_mm(ground, scene_gen::nearest_mm(last.at.x),
+                                       scene_gen::nearest_mm(last.at.z), level))
+          out.outlet_level = level;
       }
       for (u32 i = run.a; i < run.b; ++i)
         out.line.push_back(link.line[i]);
@@ -529,7 +534,18 @@ void apply_water(ChannelNetwork& n, const scene_gen::Ground& ground,
       if (run.b < m) {
         const ChannelPoint end = shore(link.line[run.b - 1], link.line[run.b], under[run.b]);
         out.mouth = true;
-        out.mouth_level = under[run.b] >= 2 ? n.basins.hollows[under[run.b] - 2].level_m : end.at.y;
+        // The body's own level (W121): the ground at the shoreline is it only where the body's
+        // outline is the level's contour; an outline standing in water puts the ground under it.
+        // The plan's own body's level is the plan's (W122).
+        out.mouth_level = end.at.y;
+        const ChannelPoint& first = link.line[run.b];
+        f64 level = 0;
+        if (under[run.b] >= 2)
+          out.mouth_level = n.basins.hollows[under[run.b] - 2].level_m;
+        else if (water != nullptr &&
+                 water->water_level_mm(ground, scene_gen::nearest_mm(first.at.x),
+                                       scene_gen::nearest_mm(first.at.z), level))
+          out.mouth_level = level;
         out.line.push_back(end);
       }
       out.length_m = lengths_of(out.line).back();
@@ -711,20 +727,14 @@ void classify(const ChannelLayer& p, ChannelLink& link) {
 // the top of the bank less the thalweg, **held at its running minimum down the line** — a bed
 // never rises downstream, so where the ground at the line rises the cut is that much deeper (a
 // breach) — and begun no higher than `start`, the lowest bed that ends where the link begins;
-// then lowered by the steps' pools; then, on a link that ends at a shoreline, graded over the
-// fan's length to half a thalweg under the body's level, whatever was there.
+// then lowered by the steps' pools; then W121's rules where the link meets a body: an outlet's
+// lip held at the level it leaves, a mouth's fan graded to its body's level and no bed under it.
 //
 // Until W122 the hold reached two thalwegs under the ground and no further, so past a rise of one
 // thalweg the bed climbed with the ground: on the forest 110 wet lines climbed out of basins 28
 // to 134 m deep. A hollow deeper than `breach_max_m` is no longer crossed by a line at all (it is
 // a body of the plan, or a sink), so what is left to hold through is a lip the limit bounds, or a
 // rise the line itself strays over; both are counted (`measure_hollows`).
-//
-// **An outlet's lip** (the rule W121 states on its own branch, written here because a plan's body
-// drains down a cut that breaks it): from the shore to the last point whose top stands at or over
-// the level of the body the link leaves, the bed is that level (a centimetre under the top where
-// the top is the level itself), so the body spills over its sill and the cut is the sill's notch.
-// The running minimum begins past the lip.
 // The top of the bank at point i: the ground at the line less the seat (W116).
 f64 top_of(const ChannelLink& link, u32 i) {
   return link.line[i].at.y - (i < link.seat.size() ? wide(link.seat[i]) : 0.0);
@@ -734,25 +744,11 @@ void cut_bed(const ChannelLayer& p, ChannelLink& link,
   const u32 m = link.line.size();
   link.bed.assign(m, 0.0);
   link.steep_left = 0;
-  const f64 level = round_to(link.outlet_level, 1e3);
-  u32 lip = 0;
-  bool held = false;
-  if (link.outlet)
-    for (u32 i = 0; i < m; ++i)
-      if (round_to(top_of(link, i), 1e3) >= level) {
-        lip = i;
-        held = true;
-      }
   f64 bed = start;
   Vector<f64> floor(m, 0.0);
   for (u32 i = 0; i < m; ++i) {
     const ChannelPoint& pt = link.line[i];
     const f64 top = round_to(top_of(link, i), 1e3);
-    if (held && i <= lip) {
-      link.bed[i] = std::min(level, top);
-      floor[i] = link.bed[i];
-      continue;
-    }
     const f64 thalweg =
         round_to(section_of(wide(pt.width_m), wide(pt.depth_m), wide(p.bank_slope)).thalweg, 1e3);
     bed = std::min(bed, round_to(top - thalweg, 1e3));
@@ -781,23 +777,53 @@ void cut_bed(const ChannelLayer& p, ChannelLink& link,
           link.bed[i] - link.bed[i + 1] >= k_fall_gradient * (s[i + 1] - s[i]))
         ++link.steep_left;
   }
+  // **An outlet's start** (W121; channels.md, "The base level, and a fan below a cliff"): the cut
+  // of a link that leaves a body stands under that body's level nowhere the ground at the line
+  // stood over it. A lake spills over its outlet's sill at its level, so a bed under the level
+  // where the ground stands over it is a dry hollow under the waterline beside the body (the
+  // owner's mark 8 was one, at the start of an outlet whose line climbed out of the pond). Where
+  // the ground falls under the level, as below a sill it does, the bed is the cut's own.
+  if (link.outlet) {
+    const f64 level = round_to(link.outlet_level, 1e3);
+    for (u32 i = 0; i < m; ++i) {
+      const f64 top = round_to(top_of(link, i), 1e3);
+      if (top >= level)
+        link.bed[i] = std::max(link.bed[i], std::min(level, round_to(top - .01, 1e3)));
+    }
+  }
   if (!link.mouth || m < 2) return;
   const Vector<f64> s = lengths_of(link.line);
   const ChannelPoint& end = link.line[m - 1];
-  const f64 thalweg_end =
-      section_of(wide(end.width_m), wide(end.depth_m), wide(p.bank_slope)).thalweg;
-  const f64 target = round_to(link.mouth_level - .5 * thalweg_end, 1e3);
+  // **The base level** (W121; channels.md, "Mouths"): the fan grades the bed to the body's level
+  // at the shore, and nowhere does the cut stand under it. A stream is graded to the body it ends
+  // in and cuts no deeper than that level, its base level (Powell 1875; Mackin 1948); and a body's
+  // water ends at its outline, so a bed under the level outside it was a dry hole under the
+  // waterline beside the body (the owner's walk of 2026-11-13, mark 8: W90's fan graded the shore
+  // to half a thalweg under the level and spread to twice the width, and its cap and spread dug the
+  // dry ground beside an oblique shore). Every point but the shore's lies outside the body, so the
+  // bed is held at the level wherever the cut's top stands over it, and a centimetre under the top
+  // where the ground itself stands under it (an outline standing in water).
+  const f64 level = round_to(link.mouth_level, 1e3);
   const f64 fan = wide(p.fan_widths) * wide(end.width_m);
   u32 f = m - 1;
   while (f > 0 && s[m - 1] - s[f - 1] <= fan)
     --f;
+  // **A fan is what lies below a cliff** (W121 with W119): where the ground under the line falls
+  // at 45 degrees or more between two of the fan's points (a sea cliff's face), the fan begins
+  // below it and the bed above follows the cut's own line to the lip, so the water falls there.
+  // Graded from above the cliff, the last three widths of bed were an 80-degree ramp cut into the
+  // cliff's top.
+  for (u32 i = f; i + 1 < m; ++i)
+    if (link.line[i].at.y - link.line[i + 1].at.y >= k_fall_gradient * (s[i + 1] - s[i])) f = i + 1;
   const f64 b0 = link.bed[f], span = s[m - 1] - s[f];
   for (u32 i = f; i < m; ++i) {
     const f64 t = span > 0 ? (s[i] - s[f]) / span : 1.0;
     const f64 top = round_to(top_of(link, i), 1e3);
-    // Never raised (W122): a bed already under the grade stays where the running minimum put it.
-    link.bed[i] = std::min(
-        link.bed[i], std::min(round_to(b0 + t * (target - b0), 1e3), round_to(top - .01, 1e3)));
+    link.bed[i] = std::min(round_to(b0 + t * (level - b0), 1e3), round_to(top - .01, 1e3));
+  }
+  for (u32 i = 0; i < m; ++i) {
+    const f64 top = round_to(top_of(link, i), 1e3);
+    link.bed[i] = std::max(link.bed[i], std::min(level, round_to(top - .01, 1e3)));
   }
 }
 
@@ -2414,7 +2440,11 @@ JsonValue terrain_cuts_json(const ChannelLayer& p, const ChannelNetwork& n) {
     for (u32 i = 0; i < link.line.size(); ++i) {
       const ChannelPoint& pt = link.line[i];
       // The seated top (W116): under the ground at the line by the seat, at the lower bank's top.
-      const f64 top = round_to(top_of(link, i), 1e3);
+      f64 top = round_to(top_of(link, i), 1e3);
+      // The base level (W121; `cut_bed`): where the ground at the line stands under the level of
+      // the body the link ends in (an outline that falls short of the level's contour leaves such
+      // ground dry), the section's top is the level, so the cut lowers only ground over it.
+      if (link.mouth) top = std::max(top, round_to(link.mouth_level, 1e3));
       JsonValue at = JsonValue::array();
       at.push_back(JsonValue(round_to(pt.at.x, 1e3)));
       at.push_back(JsonValue(top));
@@ -2448,8 +2478,11 @@ JsonValue terrain_cuts_json(const ChannelLayer& p, const ChannelNetwork& n) {
       f64 depth =
           std::max(1e-3, round_to(top - link.bed[i], 1e3) + (section.thalweg - line_thalweg)) +
           section.pool;
-      // An outlet's lip (`cut_bed`): no bend's pool and no riffle's swell takes a point of it
-      // under the level of the body the link leaves.
+      // The base level (W121; `cut_bed`): a bend's pool or a riffle's swell takes no point of a
+      // link that ends in a body under the body's level.
+      if (link.mouth)
+        depth = std::min(depth, std::max(1e-3, top - round_to(link.mouth_level, 1e3)));
+      // An outlet's start the same, where the ground stands over the level it leaves.
       if (link.outlet && top >= round_to(link.outlet_level, 1e3))
         depth = std::min(depth, std::max(1e-3, top - round_to(link.outlet_level, 1e3)));
       depths.push_back(JsonValue(round_to(depth, 1e3)));
@@ -2478,7 +2511,15 @@ JsonValue terrain_cuts_json(const ChannelLayer& p, const ChannelNetwork& n) {
         const ChannelPoint& pt = link.line[i];
         const f64 thalweg =
             section_of(wide(pt.width_m), wide(pt.depth_m), wide(p.bank_slope)).thalweg;
-        const f64 under = wide(p.flood_bed_depth) * thalweg;
+        f64 under = wide(p.flood_bed_depth) * thalweg;
+        // The base level (W121; `cut_bed`): on a link that ends in a body the flood bed stands no
+        // lower than the body's level either, a wide dry flat under the waterline otherwise.
+        if (link.mouth)
+          under = std::min(under, std::max(0.0, round_to(top_of(link, i), 1e3) -
+                                                    round_to(link.mouth_level, 1e3)));
+        if (link.outlet && round_to(top_of(link, i), 1e3) >= round_to(link.outlet_level, 1e3))
+          under =
+              std::min(under, round_to(top_of(link, i), 1e3) - round_to(link.outlet_level, 1e3));
         fl.push_back(JsonValue(round_to(wide(link.flood_left[i]), 1e3)));
         fr.push_back(JsonValue(round_to(wide(link.flood_right[i]), 1e3)));
         fd.push_back(JsonValue(round_to(under, 1e3)));

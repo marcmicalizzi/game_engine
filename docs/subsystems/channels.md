@@ -1453,8 +1453,14 @@ shorter than `max(4 m, 2 w)` is dropped. Nothing of a link — cut, pieces, wate
 the body.
 
 The cut ends in a **fan**: over the last `fan_widths` (3) widths its bed grades from where it was to
-half a thalweg under the body's level, and its width grows by `fan_spread` (1, so to twice) at the
-shore. The water's surface grades over the fan to the body's level at the shore, and on a link that
+the body's level at the shore (W121; until then to half a thalweg under it), and its width grows by
+`fan_spread` (1, so to twice) at the shore. `mouth_level` is **the body's own level**
+(`Exclusion::water_level_mm` at the line's first point under water; until W121 the ground at the
+shoreline, which is the level only where the body's outline is the level's contour, and under it
+where an author's outline stands in water). **Nothing of the cut stands under that level outside
+the body** ([the base level](#the-base-level-and-a-fan-below-a-cliff-w121)), and **a fan is what
+lies below a cliff**: where the ground under the line falls at 45 degrees or more between two of
+the fan's points, the fan begins below it. The water's surface grades over the fan to the body's level at the shore, and on a link that
 ends in a body never stands below that level anywhere (the body backs it up). The grade starts at
 the first fan point itself and never runs under the bed: at least a centimetre of water stands over
 it (W91 continuation). W90 anchored the grade at the first fan point but already applied that
@@ -1485,6 +1491,109 @@ box where the ground is below the level, not the flood `water::depth_at` traces,
 lake's level within its box ends a link as the lake would. The placement generator reads them from
 `Context::exclusion`, which the host builds only with placement exclusion on: without it the pieces
 run on (the subcommand always reads the scene's bodies).
+
+### The base level, and a fan below a cliff (W121)
+
+(2026-11-13, roadmap W121; the owner's walk of that day, mark 8: where the forest's link 778 meets
+the polygon pond `freshwater-swamp`, "a black triangular hole in the ground and a teal triangle";
+and W119, the fan over a sea cliff that S104's cook found.) **A stream cuts no deeper than the
+body it ends in.** The level of the sea, a lake or a pond a stream flows into is its *base level*,
+the lowest level to which it can erode its bed (Powell 1875 named it; Mackin 1948 made it the
+control the graded profile adjusts to); a channel's bed under that level near its mouth is under
+the body's water, a backwater. The engine draws a body's water over its outline and nowhere else
+(water.md, "The mesh": a ring of the outline, or a fill's flood), so W90's fan, which graded the
+shore to half a thalweg under the ground at the shoreline and spread to twice the width there,
+left whatever of its cut lay outside the outline under the waterline **and dry**: on an oblique
+shore the fan's spread and its round cap past the last point dig the bank beside the shoreline,
+and a dry link (one under the description's area, as link 778 is) has no ribbon over its bed
+either. So on a link that ends in a body:
+
+- `mouth_level` is the body's level (above), not the ground at the shoreline;
+- the fan grades the bed to that level at the shore, and **every point's bed is held at the level
+  wherever the cut's top stands over it**; where the ground at the line itself stands under it (an
+  outline that falls short of the contour leaves such ground dry), the section's top is the level,
+  so the cut lowers only ground over it and does not deepen what the outline left dry (that is the
+  outline's to answer);
+- the section's depth (`terrain_cuts_json`: a bend's pool, a riffle's swell) and the flood bed's
+  (`flood_depth_m`) take no point under the level either.
+
+**An outlet's start the same** (`ChannelLink::outlet_level`, the level of the body it leaves,
+plan format 4): wherever the ground at the line stands at or over that level its bed is held at
+it, and its section's depth and flood bed take nothing under it; where the ground falls under the
+level, as it does below a sill, the cut is the outlet's own. A lake spills over its outlet's sill
+at its level, so a bed under the level where the ground stands over it was a dry hollow under the
+waterline beside the body. What is left under the level outside the body is the round top's crease, `bank_round` times the
+depth over four (a few centimetres), where the cut's surface meets ground standing at the level.
+**A fan is what lies below a cliff** (W119): the fan's span is the last `fan_widths` widths less
+everything above the last stretch in them whose ground falls at 45 degrees or more
+(`k_fall_gradient`, where the water leaves its bed), so over a sea cliff the bed follows the cut's
+own line to the lip and the water falls, where W90 graded the cliff's top into a ramp. The fan's
+spread and the seat's exemption still read the fan's whole length (`fan_share`).
+
+**What an author's channel gets.** The rule is the planner's, applied where it writes a mouth: a
+`TerrainEdit` written by hand is the author's section, and the stamp (tileset.md, "Channels cut
+into the ground") knows nothing of bodies. A hand-made channel into a hand-made body meets the
+same hole if its bed runs under the body's level outside the outline. A scene with no body costs
+nothing of this: a link that ends at the region's edge or a junction is cut as it was.
+
+### Where a cut meets a bank: the owner's marks 6 and 7
+
+(2026-11-13, W121.) **What made the holes, by stage.** Each mark was reproduced on an engine scene
+of its shape (`scratch\b64\W121\scenes\`: S104's V valley with cliffs of 3 to 14 m; the notch into
+a pond turned 30 degrees whose outline falls 4 m short of the contour; the notch over a 20 m sea
+cliff) and read two ways: on the tile set's edited ground at 25 cm (`cut_meets_tests.cpp`, the cuts
+compiled by `tileset::TerrainEdits` and applied as the set's build applies them) and in a capture's
+ids and depth (`render.capture`'s channels). **No capture had a pixel with nothing drawn under
+drawn ground**: no stage leaves triangles out, every level and tile seam is whole. Each "hole" is
+the ground the cut left:
+
+- **Marks 6 and 7, a pocket in a hillside and a dark hole in a bank: the seat** (W116,
+  `seat_section`). Where a point's lower-bank reading lands past a drop — a cliff the line meets at
+  an angle, a cliff edge beside a contour stream, a trough across a bend — the top is lowered by the
+  whole drop and the lowering dilated over two points either way; the cut's face then rises a
+  thalweg at its slope and runs out to at most 20 rises over that top (tileset.md, "A face that runs
+  out"), so where the hillside stands higher the cut ends in a wall: a closed pit metres deep with
+  walls, which traced light draws black. Measured as the deepest closed hollow the cut made that
+  the ground did not have (a priority flood over the window, Barnes, Lehman & Mulla 2014): **12.7 m
+  at S104's 14 m cliff (seed 2), 0.85 m (seed 1), 7.7 and 7.8 m along a cliff's edge** (the seat
+  8.2 m), on 61ccce67 and with W121. The stamp is not the fault: with a seat no deeper than the
+  bank slope over the half width, the run-out meets any hillside under about 70 degrees. The seat
+  is W120's row (it absorbs W117's cap, `65eed9cd`); the case is marked `may_fail` until it lands.
+- **Mark 8 on the forest is an outlet, and its line climbs.** W120's solve of the forest (its
+  `flow.json`) has link 778 *leaving* the polygon pond `freshwater-swamp`: its first station is the
+  pond's spill, 2 m inside the outline, and its level climbs from 1.12 m to 2.09 m down the line,
+  422 of its 435 stations over a bank: a line the planner routed out of a hollow over the filled
+  lattice. The climb is the plan's to mend (a row of its own). What the cut did where it met the
+  pond is this row's: the outlet's bed, held down the line from the shore, ran under the pond's
+  level up the climb and out past the outline (an engine scene of the shape, a pond 0.5 m under its
+  rim: 2.25 m² of ground that stood over the level cut under it, the worst 0.22 m; none with W121).
+  Link 360 (mark 6) climbs too: 18 stations, a fall into a 0.41 m pool and the level rising 1.5 m
+  to its end, 16 of them over a bank. Link 482 (mark 7) falls 75 m and has 89 stations of 550 over
+  a bank; at the mark a pool 0.47 m deep behind a lip. **All three marks are lines in hollows**
+  (W120's `hollows.txt`: the planner routes over the pit-filled lattice, which the cut, only
+  lowering, does not reproduce; link 360 lies wholly in a hollow 1.89 m deep, link 482 in one
+  0.42 m deep at the mark, link 778 in one 1.77 m deep at its pond), so the pockets are first the
+  plan's (W122), and the seat's where a bank is read past a drop. "a line through a hollow leaves
+  no pocket on its own line" (`may_fail`; the notch's 3 m hollow with no body: 79 of 184 points of
+  the line in a pocket deeper than 0.3 m, the deepest 1.55 m) is the case that says when the plan
+  is mended.
+- **The black triangle beside a teal one at a mouth: the fan under the body's level** (above). The
+  teal triangle is the body's own surface (`systems/water`'s ring of the outline, at the level
+  over the whole outline), seen where the fan's cut took the ground under the level inside the
+  outline: water rightly drawn. The black one beside it is the same cut outside the outline, dry
+  under the waterline: 11.25 m² under the level, the worst 0.31 m, on the scene whose outline
+  falls short (none with W121); 0.56 m², the worst 7 cm, where the outline reaches past the contour.
+- **On the forest the black triangle stays** (2026-11-14, W121's binary, the staging re-cut with
+  W121's plan into a derived-data root of its own, the owner's mark 8 camera, `--raster hw
+  --shadows rt`, GI sky): the outlet's bed is held at the pond's 1.179 m outside the outline (the
+  ground sampled there is 1.179 m), yet a band about 4 m across below the outline's straight edge
+  draws near black (rgb 9 to 17), and the ids say it is the ground's own instance, not an empty
+  pixel and not the water. So what darkens it is not the cut: ground at the body's level (or under
+  it, where the author's outline falls short) beside a body that draws no surface over it. It is
+  handed to the water's row with the capture (W121's hand-back); the engine scenes above show the
+  cut's part of it and not this shading.
+- **W119**: over the sea cliff, 6 of 24 points in the last 12 m above it had their bed graded up to
+  16.9 m under the cut's own floor; none with W121.
 
 ## Confluences
 

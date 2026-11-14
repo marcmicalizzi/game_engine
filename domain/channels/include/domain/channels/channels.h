@@ -75,10 +75,12 @@ namespace engine::channels {
 // 10 (W116): a line across a slope is seated under its lower bank (`ChannelLink::seat`), its flood
 //    bed reaches no further than the ground holds its level, and the line is moved toward a bank
 //    only where the move finds one.
-// 11 (W122): a hollow deeper than the breach limit is a body of the plan or a sink and no line
+// 11 (W121): a link that ends in a body is cut to the body's own level and nowhere under it
+//    outside the body (its base level), and a mouth's fan begins below a cliff.
+// 12 (W122): a hollow deeper than the breach limit is a body of the plan or a sink and no line
 //    crosses it; a link's bed never rises downstream, in itself or across a junction; the cut's
 //    top widens with what the bed is held under its section; the seat reads no bank past a step.
-inline constexpr u32 k_channels_version = 11;
+inline constexpr u32 k_channels_version = 12;
 
 // **The bed's surface sediment at a point** (W97; channels.md, "Bed sediment"; the sources in
 // docs/experiments/channels.md, "Bed sediment"): the surface grain-size distribution a pebble count
@@ -181,8 +183,9 @@ struct ChannelLink {
   bool mouth = false;
   bool outlet = false;
   f64 mouth_level = 0;
-  // The level of the body an outlet leaves (W122, and W121's rule): its bed stands under that
-  // level nowhere the ground at the line stands over it, so the body does not drain down the cut.
+  // W121: the level of the body an outlet begins in (its first point is that body's shoreline),
+  // which its cut stands under nowhere the ground stood over it; 0 for a link that is no outlet.
+  // W122: for a body of the plan it is the body's sill, two centimetres over its level.
   f64 outlet_level = 0;
 };
 

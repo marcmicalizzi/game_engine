@@ -23,8 +23,8 @@ namespace {
 using namespace detail;
 
 constexpr u32 k_plan_magic = 0x4C504843u;  // "CHPL"
-// 2 (W97): a link's sediment; 3 (W116): its seat; 4 is W121's on its own branch (an outlet's
-// body's level, which this format carries too); 5 (W122): the hollows.
+// 2 (W97): a link's sediment; 3 (W116): its seat; 4 (W121): an outlet's body's level; 5 (W122):
+// the hollows, and how much wider a breach's top is.
 constexpr u32 k_plan_format = 5;
 static_assert(sizeof(ChannelPoint) == 40, "a point is written as its bytes: no padding");
 static_assert(sizeof(ChannelSediment) == 32, "a sediment is written as its bytes: no padding");

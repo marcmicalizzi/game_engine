@@ -401,6 +401,20 @@ bool Exclusion::excluded_mm(const Ground& ground, i64 x_mm, i64 z_mm, u32 kinds)
   return false;
 }
 
+bool Exclusion::water_level_mm(const Ground& ground, i64 x_mm, i64 z_mm,
+                               f64& level) const noexcept {
+  const f64 x = static_cast<f64>(x_mm) * 0.001;
+  const f64 z = static_cast<f64>(z_mm) * 0.001;
+  bool found = false;
+  for (const Body& body : bodies_) {
+    if (!body.open && !inside(body, x, z)) continue;
+    if (!(ground.surface_mm(x_mm, z_mm) < body.level)) continue;
+    if (!found || body.level > level) level = body.level;
+    found = true;
+  }
+  return found;
+}
+
 f64 Exclusion::channel_distance_mm(i64 x_mm, i64 z_mm) const noexcept {
   if (cells_.empty()) return k_far;
   const f64 gap = nearest_gap(static_cast<f64>(x_mm) * 0.001, static_cast<f64>(z_mm) * 0.001);
