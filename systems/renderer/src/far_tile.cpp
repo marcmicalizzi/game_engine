@@ -49,6 +49,62 @@ struct Part {
   Vector<u32> indices;
 };
 
+u32 bits_of(f32 v) noexcept {
+  u32 b = 0;
+  std::memcpy(&b, &v, sizeof(b));
+  return b;
+}
+
+// **A far form is drawn smooth.** Its vertices are its mesh's own, split wherever the near form
+// had a hard edge — a faceted stone at every edge — and a triangle that shares no corner with its
+// neighbour fills a cluster's 64 vertices with 21 triangles: the forest's tile built 2,356
+// clusters for 61,738 triangles. So a part's vertices that stand at one point with one UV are one
+// vertex, its normal the area-weighted mean of the triangles round it, which at the distance a far
+// form is drawn from is a pixel's shading, and an atlas seam (two UVs at a point) stays a seam.
+void weld_part(Part& part) {
+  const u32 n = part.positions.size();
+  struct Key {
+    u32 w[5];
+    u32 v;
+  };
+  Vector<Key> order;
+  order.reserve(n);
+  for (u32 v = 0; v < n; ++v) {
+    const Vec3 p = part.positions[v];
+    order.push_back(Key{{bits_of(p.x), bits_of(p.y), bits_of(p.z), bits_of(part.uvs[v].x),
+                         bits_of(part.uvs[v].y)},
+                        v});
+  }
+  std::sort(order.begin(), order.end(), [](const Key& a, const Key& b) {
+    for (u32 k = 0; k < 5; ++k)
+      if (a.w[k] != b.w[k]) return a.w[k] < b.w[k];
+    return a.v < b.v;
+  });
+  // Each run's first vertex (the lowest index) stands for it; the survivors keep their order.
+  Vector<u32> rep(n);
+  for (u32 k = 0; k < n; ++k) {
+    const bool same = k > 0 && std::memcmp(order[k].w, order[k - 1].w, sizeof(order[k].w)) == 0;
+    rep[order[k].v] = same ? rep[order[k - 1].v] : order[k].v;
+  }
+  Vector<u32> remap(n, ~0u);
+  Vector<Vec3> positions;
+  Vector<Vec2> uvs;
+  for (u32 v = 0; v < n; ++v) {
+    if (rep[v] != v) continue;
+    remap[v] = positions.size();
+    positions.push_back(part.positions[v]);
+    uvs.push_back(part.uvs[v]);
+  }
+  for (u32& i : part.indices)
+    i = remap[rep[i]];
+  part.positions = std::move(positions);
+  part.uvs = std::move(uvs);
+  part.normals.clear();
+  geometry::compute_vertex_normals(
+      std::span<const Vec3>(part.positions.data(), part.positions.size()),
+      std::span<const u32>(part.indices.data(), part.indices.size()), part.normals);
+}
+
 // One DAG a part with triangles, merged: `drawn` the parts that had any, in order, which are the
 // merged mesh's parts (`part_of_cluster` indexes `drawn`).
 bool cluster_parts(Vector<Part>& parts, const geometry::ClusterLodOptions& lod,
@@ -60,6 +116,7 @@ bool cluster_parts(Vector<Part>& parts, const geometry::ClusterLodOptions& lod,
   for (u32 p = 0; p < parts.size(); ++p) {
     Part& part = parts[p];
     if (part.indices.empty()) continue;
+    weld_part(part);
     geometry::AttributeSource attributes;
     attributes.normals = std::span<const Vec3>(part.normals.data(), part.normals.size());
     attributes.uvs = std::span<const Vec2>(part.uvs.data(), part.uvs.size());
