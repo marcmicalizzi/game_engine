@@ -1955,6 +1955,25 @@ end at the pond, which is where its basin's water ends. Their solved water stand
 m under the pond's level at their last stations, flagged over the bank: the solver gives a line
 that ends at an authored body under its spill no mouth to meet (not traced; the solver's).
 
+**Seen on the forest** (2026-11-14, the mix loaded in `engine-view` at the owner's settings,
+1920 by 1080: 19 minutes cold, 49 GB of commit at its peak, no body refused; twenty-one views
+with ids and depth, kept outside the repository). The bodies are lakes: each follows its
+valley's contour, with a turquoise fringe of shallows and the sky in it. What a person objects
+to, most damaging first. **The forest stands in them**: the proof of concept's trees, logs and
+rocks are authored instances placed before the lakes existed, and nothing removes an author's
+instance under a body of the plan, so whole stands rise out of the water (about 17,000 of the
+scene's 470,641 instances stand under the seven mountain bodies, 12,349 of them under the
+largest); the bodies are in the scene's `water` for the author's own placement to read, and a
+generator's placements read them through the exclusion as they read any body. **A lake has no
+shore**: a bare slope enters the water as a ruled line with one thin white stroke along it, no
+beach, no wet band, no rock, sedge or drift, where the reels' lakes have a strip of stones and
+grass and trees to the waterline. **The body below its spill and the dried basin say nothing of
+what they are**: the first is a lake in a bare bowl with no mark of the higher water, the second
+a wooded hollow with no flat floor (what a dry hollow's floor is, above, is not built). **The
+streams' own draw is not this row's and is wrong on this description** (flat cyan polygons and
+slabs at the old link 482's place and at a lake's lip). The pond at the owner's mark 8 has a
+whole shore: no hole and no triangle.
+
 **General purpose.** The fill, the breach and the bodies come from the heights of whatever
 ground the scene names, an imported heightfield as readily as a generated one: nothing reads
 which generator made it, and every limit is a field of the layer. **A scene with no `channels`
