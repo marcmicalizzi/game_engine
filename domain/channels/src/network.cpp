@@ -1661,7 +1661,7 @@ Hollow hollow_of(const ChannelNetwork& n, const Pit& pit, HollowKind kind) {
   h.spill_z = cell_z(n, pit.spill);
   h.area_m2 = static_cast<f64>(pit.under) * spacing * spacing;
   h.volume_m3 = round_to(pit.volume_um / 1e6 * spacing * spacing, 1e3);
-  h.catchment_m2 = static_cast<f64>(n.area_cells[pit.entry]) * spacing * spacing;
+  h.catchment_m2 = static_cast<f64>(n.area_cells[pit.spill]) * spacing * spacing;
   const u32 fc = pit.floor % n.width, fr = pit.floor / n.width;
   h.extent_m = spacing * static_cast<f64>(std::max(std::max(fc - pit.c0, pit.c1 - fc),
                                                    std::max(fr - pit.r0, pit.r1 - fr)));
@@ -1725,7 +1725,7 @@ bool route_hollows(const ChannelLayer& p, const scene_gen::Ground& ground,
     losses = losses || b.leak_m3s > 0;
   // A hollow's inflow and losses with `wet` cells of it under water, m3/s.
   const auto inflow_of = [&](const Pit& pit, u32 wet) {
-    const u32 catchment = n.area_cells[pit.entry];
+    const u32 catchment = n.area_cells[pit.spill];
     return runoff * static_cast<f64>(catchment > wet ? catchment - wet : 0u) * cell_area + pit.gain;
   };
   const auto loss_of = [&](const Pit& pit, u32 wet) {
@@ -1881,7 +1881,7 @@ bool route_hollows(const ChannelLayer& p, const scene_gen::Ground& ground,
         // The most cells whose losses the inflow still covers: runoff (C - m) a + gain - leak >=
         // rate m a, so m <= (runoff C a + gain - leak) / ((runoff + rate) a).
         const f64 most =
-            (runoff * static_cast<f64>(n.area_cells[pit.entry]) * cell_area + pit.gain - pit.leak) /
+            (runoff * static_cast<f64>(n.area_cells[pit.spill]) * cell_area + pit.gain - pit.leak) /
             ((runoff + rate) * cell_area);
         const u32 holds = most >= 1 ? std::min<u32>(static_cast<u32>(most), b - a - 1) : 0u;
         // The level is the ground of the first cell left dry; cells level with it stay dry too.
@@ -2581,7 +2581,10 @@ HollowStats measure_hollows(const ChannelLayer& p, const ChannelNetwork& n) {
     bool climbs = false;
     for (u32 i = 0; i < m; ++i) {
       const ChannelPoint& pt = link.line[i];
-      if (i > lip) {
+      // A mouth's bed at or under its body's level is the body's own floor to the stream: W121
+      // holds it at the level and lets it follow ground that stands under it, drowned either way.
+      const bool drowned = link.mouth && line_at(i) <= round_to(link.mouth_level, 1e3) + 1e-3;
+      if (i > lip && !drowned) {
         const f64 rise = line_at(i) - line_at(i - 1);
         if (rise > 1e-3 + 1e-9) {
           climbs = true;
@@ -2601,7 +2604,10 @@ HollowStats measure_hollows(const ChannelLayer& p, const ChannelNetwork& n) {
       if (i > 0 && trench > thalweg) out.trench_line_m += s[i] - s[i - 1];
     }
     if (climbs) ++out.climbing;
-    if (line_at(m - 1) > line_at(0) + 1e-3) ++out.ends_higher;
+    // Measured from past an outlet's lip, and not where a mouth's last bed is its body's level.
+    const u32 from = std::min(lip + (link.outlet ? 1u : 0u), m - 1);
+    const bool at_level = link.mouth && line_at(m - 1) <= round_to(link.mouth_level, 1e3) + 1e-3;
+    if (!at_level && line_at(m - 1) > line_at(from) + 1e-3) ++out.ends_higher;
   }
   return out;
 }

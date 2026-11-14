@@ -1786,11 +1786,14 @@ earlier run wrote (by that name), so it plans over the same bodies and writes th
 its lines split at the plan's bodies and nothing writes those bodies into its scene; the host's
 reader would have to take them from the plan, as it would the water's description.
 
-**An outlet's lip.** A lake spills over its sill. From the shore to the last point whose ground
-stands at or over the sill, an outlet's bed is the sill's level (two centimetres over the
-body's, so no rounding of the cut's stamp leaves a thread of the lip under the body's level for
-its flood to follow down the channel), and the bed's running minimum begins past the lip. W121
-states the same rule for a scene's body on its own branch (`outlet_level`); this is that field.
+**A body of the plan is a body like any other where a link meets it.** Its mouths and its
+outlet take W121's rules as a scene's body's do
+([the base level](#the-base-level-and-a-fan-below-a-cliff-w121)): a mouth's `mouth_level` is the
+plan's level exactly, its fan grades to it and its bed stands nowhere under it; an outlet's
+`outlet_level` is the body's sill, **two centimetres over its level** (so no rounding of the
+cut's stamp leaves a thread of the lip under the body's level for its flood to follow down the
+channel), and the outlet's bed is held there wherever the ground at the line stands over it: a
+lake spills over its sill, and the cut is the sill's notch.
 
 **A breach's top.** Where the bed is held more than a thalweg under its section's own depth the
 banks keep their slopes by reaching the top further out, so the cut widens with its depth
