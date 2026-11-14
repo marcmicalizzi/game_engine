@@ -199,3 +199,4 @@ Tree expansion: [species profiles](tree-species-expansion.md) and [season design
 [G116: wetland plants](wetland-plants.md) records dimensions, authored controls and budget validation.
 [G129: branch-aware broadleaf taper](tree-branch-taper.md) replaces the single-scaffold trunk shoulder.
 [G144: the site a placement reads](site-and-ecotope.md) grounds the site query and the scatter kinds' ecotope responses: heat load, the treeline and its aspect shift, the krummholz band, unimodal responses.
+[R153: sampling over time](temporal-sampling.md) measures what one sample a pixel costs dense foliage against the same view supersampled (leaf-cards and the forest's staging), names the content faults no accumulation fixes, and designs the inputs, the engine's own accumulation, a reconstruction provider's registration point and the vendors' methods against ADR-0014, with a proposed decision that every measurement stays native.
