@@ -219,9 +219,21 @@ void run_jobs(jobs::JobSystem& pool, Vector<T>& items, void (*fn)(void*)) {
     pointers.push_back(&item);
   run_jobs<T>(pool, std::span<T* const>(pointers.data(), pointers.size()), fn);
 }
+// The same with no pool: every item on the calling thread, in order.
+template <typename T>
+void run_jobs(jobs::JobSystem* pool, Vector<T>& items, void (*fn)(void*)) {
+  if (pool != nullptr) {
+    run_jobs(*pool, items, fn);
+    return;
+  }
+  for (T& item : items)
+    fn(&item);
+}
 
+// `pool` null: a pass with no pool of its own (a tile's mesh, `load_placement_textures`) looks up
+// and probes on the calling thread and makes a pool only when something has to be built.
 void prepare_scene_textures(const SceneDesc& desc, Vector<SourceMesh>& sources,
-                            content_build::ImageIdentities& identities, jobs::JobSystem& pool,
+                            content_build::ImageIdentities& identities, jobs::JobSystem* pool,
                             SceneLoadReport& report) {
   if (!desc.cache || desc.ddc.empty()) return;
   const i64 start_ns = time::monotonic_ns();
@@ -369,9 +381,19 @@ void prepare_scene_textures(const SceneDesc& desc, Vector<SourceMesh>& sources,
       mesh_of.push_back(refs[keys[build_key[b]].first_ref].mesh);
     }
     Vector<content_build::TextureResult> results;
+    // A build is the one step that wants threads; with no pool of the caller's, one of two for the
+    // length of the step (a cold cache only: a warm one never gets here).
+    std::optional<jobs::JobSystem> own;
+    if (pool == nullptr) {
+      jobs::JobSystemConfig config;
+      config.performance_workers = 1;
+      config.efficiency_workers = 1;
+      own.emplace(config);
+    }
     content_build::run_texture_step(
         std::span<const content_build::TextureSource* const>(pointers.data(), pointers.size()),
-        std::span<const u32>(mesh_of.data(), mesh_of.size()), desc.ddc, pool, results);
+        std::span<const u32>(mesh_of.data(), mesh_of.size()), desc.ddc,
+        pool != nullptr ? *pool : *own, results);
     for (const content_build::TextureResult& result : results) {
       switch (result.state) {
         case content_build::TextureState::Built: ++report.built; break;
@@ -2662,7 +2684,7 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   // Every mesh's textures at once: one identity per distinct image, a built one trusted from its
   // header, the rest built on the same pool (`prepare_scene_textures`). Before the authored forms
   // below copy the records, so a form carries its mesh's keys.
-  prepare_scene_textures(resolved, out.sources, identities, *pool, out.load);
+  prepare_scene_textures(resolved, out.sources, identities, &*pool, out.load);
   // Each mesh's path as the scene named it, for a sentence about it (a form copies its source's).
   for (u32 m = 0; m < out.sources.size() && m < resolved.meshes.size(); ++m)
     out.sources[m].path = resolved.meshes[m];
@@ -3090,17 +3112,17 @@ void load_placement_textures(const SceneDesc& desc, const PlacementMeshOptions& 
   if (out.source.textures.size() != image_count)
     return refuse("the mesh records no built textures");
   {
-    // A pool of its own, two threads for the length of the pass: the pass wants one, and this
-    // thread may be a worker of the host's pool, which must not wait on its own.
-    jobs::JobSystemConfig config;
-    config.performance_workers = 1;
-    config.efficiency_workers = 1;
-    jobs::JobSystem pool(config);
+    // **No pool of its own** (T129; docs/experiments/memory-commit-accounting.md, "Who made the
+    // unnamed commit"): the look-up and the probes of a mesh's handful of images run on this thread
+    // (it may be a worker of the host's pool, which must not wait on its own), and only a build on
+    // a cold cache makes threads. A pool of two made and joined per mesh cost two threads a tile's
+    // mesh, and every thread that names itself to the profiler keeps 4 MiB of commit until the
+    // process ends: 6.2 GB on the forest's staging after its tiles came in twice.
     content_build::ImageIdentities identities(desc.ddc, materials::pack_at(desc.materials));
     Vector<SourceMesh> one;
     one.push_back(std::move(out.source));
     SceneLoadReport report;
-    prepare_scene_textures(desc, one, identities, pool, report);
+    prepare_scene_textures(desc, one, identities, nullptr, report);
     out.source = std::move(one[0]);
   }
   for (u32 i = 0; i < image_count; ++i) {

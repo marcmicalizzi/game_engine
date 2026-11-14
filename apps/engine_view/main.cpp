@@ -3176,6 +3176,8 @@ int run_offscreen(Options& options, Interactive& interactive) {
                         log::field("reason", why));
       }
     }
+    // Both scenes are uploaded: what nothing reads again goes (T129), unless pages copy from it.
+    if (!resolved.stream || page_source.valid()) renderer::release_uploaded_streams(scene_data);
     renderer::SceneRenderer::Desc renderer_desc;
     renderer_desc.page_source = page_source.valid() ? &page_source : nullptr;
     renderer_desc.width = options.width;
@@ -6152,6 +6154,8 @@ int run_view(int argc, char** argv) {
                         log::field("reason", why));
       }
     }
+    // The scene is uploaded: what nothing reads again goes (T129), unless pages copy from it.
+    if (!resolved.stream || page_source.valid()) renderer::release_uploaded_streams(scene_data);
     renderer::SceneRenderer::Desc renderer_desc;
     renderer_desc.page_source = page_source.valid() ? &page_source : nullptr;
     renderer_desc.width = swapchain.extent().width;
@@ -7345,6 +7349,8 @@ int run_view(int argc, char** argv) {
     loading_text = write_json(block, JsonWriteOptions{.pretty = false});
   }
   view::memory_report().take("exit", &device);  // a window logs its two lines (memory_report.h)
+  const std::string memory_text =               // and its summary line carries the block (null off)
+      write_json(view::memory_report().block(), JsonWriteOptions{.pretty = false});
   // `--startup-trace` in a window: the same block an offscreen run's summary carries (null off).
   std::string startup_text;
   {
@@ -7436,7 +7442,8 @@ int run_view(int argc, char** argv) {
         "\"rt\":%.4f,\"clas\":%.4f,\"deform\":%.4f,\"deform_alloc\":%.4f,"
         "\"trace\":%.4f,\"shadow\":%.4f,\"shadow_cull\":%.4f,\"total\":%.4f,"
         "\"frames\":%llu},\"captured\":%s,\"interactive\":%s,\"time_lapse\":%s,\"sun\":%s,"
-        "\"output\":%s,\"medium\":%s,\"flora\":%s,\"loading\":%s,\"startup\":%s}\n",
+        "\"output\":%s,\"medium\":%s,\"flora\":%s,\"loading\":%s,\"startup\":%s,"
+        "\"memory\":%s}\n",
         static_cast<unsigned long long>(rendered), seconds, avg_ms, extent_width, extent_height,
         scene_data.cluster_count(), scene_data.leaf_count(), scene_data.lod.leaf_triangle_count,
         scene_data.lod.level_cluster_counts.size(), static_cast<f64>(scene_data.build_ns) / 1.0e6,
@@ -7481,7 +7488,7 @@ int run_view(int argc, char** argv) {
         stats.total_ms(), static_cast<unsigned long long>(stats.timed_frames),
         captured ? "true" : "false", interactive_text.c_str(), time_lapse_text.c_str(),
         sun_text.c_str(), output_text.c_str(), medium_text.c_str(), flora_text.c_str(),
-        loading_text.c_str(), startup_text.c_str());
+        loading_text.c_str(), startup_text.c_str(), memory_text.c_str());
     std::fputs(summary_text.c_str(), stdout);
     g_report.summary_line = summary_text.substr(0, summary_text.find_last_not_of('\n') + 1);
     std::fflush(stdout);

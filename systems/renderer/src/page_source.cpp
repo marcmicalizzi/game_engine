@@ -244,4 +244,23 @@ bool attach_page_source(SceneData& data, const GpuScene& scene, jobs::JobSystem&
   return true;
 }
 
+u64 release_uploaded_streams(SceneData& data) {
+  geometry::ClusterMesh& mesh = data.lod.mesh;
+  const u64 quantized = u64{mesh.quantized.capacity()} * sizeof(u16);
+  const u64 attributes = u64{mesh.attributes.capacity()} * sizeof(geometry::VertexAttributes);
+  const u64 ids = u64{mesh.vertex_ids.capacity()} * sizeof(u32);
+  // Shrunk, not cleared: a capacity nobody fills again is the memory this gives back.
+  mesh.quantized.clear();
+  mesh.quantized.shrink_to_fit();
+  mesh.attributes.clear();
+  mesh.attributes.shrink_to_fit();
+  mesh.vertex_ids.clear();
+  mesh.vertex_ids.shrink_to_fit();
+  const u64 freed = quantized + attributes + ids;
+  ENGINE_LOG_INFO(log_renderer, "uploaded host streams released", log::field("bytes", freed),
+                  log::field("quantized", quantized), log::field("attributes", attributes),
+                  log::field("vertex_ids", ids));
+  return freed;
+}
+
 }  // namespace engine::renderer
