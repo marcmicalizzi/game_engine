@@ -246,6 +246,8 @@ bool PlacementTiles::create(const renderer::SceneData& scene, const PlacementTil
   tiles_.reserve(spare_tiles_.size());
   ranks_.reserve(spare_tiles_.size());
   runs_.reserve(spare_tiles_.size());
+  // The tail, for a consumer that writes it every commit (an instance sink, or none). A run sink
+  // gives it back (`set_run_sink`).
   tail_.reserve(total);
   tail_tags_.reserve(total);
   earlier_.reserve(largest);

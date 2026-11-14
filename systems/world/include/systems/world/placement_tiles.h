@@ -260,9 +260,18 @@ class PlacementTiles {
   // and writes no tail; the instance sink above is not called. The runs of the last commit stay
   // readable (`runs`) until the next.
   using RunSink = bool (*)(void* context, std::span<const TileRange> runs, std::string* error);
+  // **The tail's room goes with it** (T131, the memory row's finding): `create` reserves the tail
+  // for every authored instance of every entry, for a consumer that writes it each commit; with a
+  // run sink it is written only when `tail()` is asked (a handover pass, a game's props) and grows
+  // to what the drawn tiles hold. Kept, the reserve committed 64.6 MiB on the forest staging and
+  // touched 0.1.
   void set_run_sink(RunSink sink, void* context) noexcept {
     run_sink_ = sink;
     run_sink_context_ = context;
+    if (sink != nullptr) {
+      Vector<renderer::SceneInstance>().swap(tail_);
+      Vector<u8>().swap(tail_tags_);
+    }
   }
   std::span<const TileRange> runs() const noexcept { return {runs_.data(), runs_.size()}; }
   // Whether the pair budget left an active tile's placements out of the tail at the last commit.
