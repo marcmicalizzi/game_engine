@@ -1,13 +1,11 @@
 // The far form of a rigid mesh (far_form.h; docs/subsystems/geometry.md, "The far form"; G198).
-#include <domain/geometry/far_form.h>
-
 #include <core/hash/hash.h>
-
-#include <meshoptimizer.h>
+#include <domain/geometry/far_form.h>
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <meshoptimizer.h>
 
 namespace engine::geometry {
 namespace {
@@ -264,8 +262,7 @@ bool bake_far_form(const ClusterLodMesh& mesh, std::span<const u32> material, Fa
       const f32 budget = std::max(e - previous_error[mi], 0.0f);
       const size_t count = meshopt_simplifyWithAttributes(
           dest.data(), subset.data(), subset.size(), &vertices[0].position.x, n,
-          sizeof(FarFormVertex), uv.data(), 2 * sizeof(f32), uv_weights, 2, lock.data(), 0,
-          budget,
+          sizeof(FarFormVertex), uv.data(), 2 * sizeof(f32), uv_weights, 2, lock.data(), 0, budget,
           meshopt_SimplifyLockBorder | meshopt_SimplifySparse | meshopt_SimplifyErrorAbsolute |
               meshopt_SimplifyPermissive,
           &reported);

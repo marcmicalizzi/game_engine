@@ -453,8 +453,8 @@ TEST_CASE("deposits: a dense patch is handed as pieces that keep what it holds")
                         (piece.sample_z + piece.patch.depth < whole.depth);
       cut_walls += static_cast<u64>(inner) * 32 * 6 * 2;
     }
-    MESSAGE(pieces.size(), " pieces: the whole's finest form ", triangles, " triangles, the pieces' ",
-            sum);
+    MESSAGE(pieces.size(), " pieces: the whole's finest form ", triangles,
+            " triangles, the pieces' ", sum);
     CHECK(fragments == whole.fragments);
     CHECK(blocks == whole.blocks.size());
     CHECK(sum >= triangles);
@@ -468,8 +468,9 @@ TEST_CASE("deposits: a dense patch is handed as pieces that keep what it holds")
   }
 }
 
-TEST_CASE("deposits: each piece of a patch at the forest's density builds under the cluster "
-          "limit, and a container over it is refused by name") {
+TEST_CASE(
+    "deposits: each piece of a patch at the forest's density builds under the cluster "
+    "limit, and a container over it is refused by name") {
   // G191: the build is what holds the bound. Every piece of the densest case builds under 4,096
   // clusters at its first build (nothing is built again at half its budget), and a container that
   // stays over a limit is refused with a sentence naming the patch and its count.
@@ -606,10 +607,10 @@ TEST_CASE("deposits: what a kilometre of massif foot costs at load and a tile (m
   // G191's pieces: how many meshes the patches were handed as, the longest one mesh's build (a
   // tile's meshes build on the host's pool, so the longest is what a tile waits at least), and how
   // many containers were built again at half their budget (none is the pieces' purpose).
-  MESSAGE("meshes ", whole.meshes.size(), " for ", whole.things, " patches; one mesh's build median ",
-          mesh_ms.empty() ? 0.0 : mesh_ms[mesh_ms.size() / 2], " ms, max ",
-          mesh_ms.empty() ? 0.0 : mesh_ms.back(), " ms; built again at half the budget ",
-          deposit_builds_reduced() - reduced);
+  MESSAGE("meshes ", whole.meshes.size(), " for ", whole.things,
+          " patches; one mesh's build median ", mesh_ms.empty() ? 0.0 : mesh_ms[mesh_ms.size() / 2],
+          " ms, max ", mesh_ms.empty() ? 0.0 : mesh_ms.back(),
+          " ms; built again at half the budget ", deposit_builds_reduced() - reduced);
   CHECK(deposit_builds_reduced() == reduced);
   MESSAGE("a kilometre of massif foot at ", budget, " a patch: ", whole.instances.size(),
           " meshes over ", tile_ms.size(), " tiles; open ", open_ms, " ms, the second open ",

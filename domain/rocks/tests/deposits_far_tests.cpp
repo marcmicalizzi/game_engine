@@ -1,8 +1,10 @@
 // G198: a far form for any rigid mesh, rocks first (docs/subsystems/geometry.md, "The far form";
 // rocks.md, "A deposit past the first ring"). What a tile of deposits at the forest's density costs
 // in a ring past the first as the DAG's own distance form, and as the far form.
+#include <core/hash/hash.h>
 #include <core/json/json.h>
 #include <core/schema/json_reflect.h>
+#include <core/time/time.h>
 #include <domain/geometry/cluster_file.h>
 #include <domain/geometry/cluster_lod.h>
 #include <domain/rocks/deposits.h>
@@ -10,9 +12,6 @@
 
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
-
-#include <core/hash/hash.h>
-#include <core/time/time.h>
 
 #include <algorithm>
 #include <cmath>
@@ -147,8 +146,8 @@ TEST_CASE("deposits far: what the DAG's own distance form keeps of a dense tile,
     vertices += data.far_form.vertices.size();
     for (u32 l = 0; l < data.far_form.levels.size(); ++l) {
       level_triangles[l] += data.far_form.levels[l].triangles;
-      level_from[l] = std::max(level_from[l], geometry::far_form_distance(
-                                                  data.far_form.levels[l], 1037.33f, 1.0f));
+      level_from[l] = std::max(
+          level_from[l], geometry::far_form_distance(data.far_form.levels[l], 1037.33f, 1.0f));
     }
   }
   for (u32 l = 0; l < geometry::k_far_form_levels; ++l)
@@ -158,10 +157,11 @@ TEST_CASE("deposits far: what the DAG's own distance form keeps of a dense tile,
   // What every rigid container build now pays (geometry.md, "The far form"): the bake's share of
   // the meshes' build, and the bytes it adds.
   MESSAGE("bake ", static_cast<f64>(bake_ns) / 1.0e6, " ms against the build's ",
-          static_cast<f64>(build_ns) / 1.0e6, " ms (", 100.0 * static_cast<f64>(bake_ns) /
-          static_cast<f64>(build_ns), " %); containers ", bytes_without, " bytes, ", bytes_with,
-          " with the far form (+", 100.0 * static_cast<f64>(bytes_with - bytes_without) /
-          static_cast<f64>(bytes_without), " %)");
+          static_cast<f64>(build_ns) / 1.0e6, " ms (",
+          100.0 * static_cast<f64>(bake_ns) / static_cast<f64>(build_ns), " %); containers ",
+          bytes_without, " bytes, ", bytes_with, " with the far form (+",
+          100.0 * static_cast<f64>(bytes_with - bytes_without) / static_cast<f64>(bytes_without),
+          " %)");
   // The pin (determinism): every piece's far form hashed in order, the same bytes from every
   // toolchain and thread count.
   u64 pin = 0;

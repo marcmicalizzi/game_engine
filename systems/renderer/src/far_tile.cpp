@@ -1,6 +1,4 @@
 // The far tile (far_tile.h; renderer.md, "The far tile"; G198).
-#include <systems/renderer/far_tile.h>
-
 #include <core/hash/hash.h>
 #include <core/time/time.h>
 #include <domain/geometry/cluster.h>
@@ -10,6 +8,7 @@
 #include <domain/geometry/material_sampling.h>
 #include <domain/scene_gen/far_tile.h>
 #include <foundation/io/vfs.h>
+#include <systems/renderer/far_tile.h>
 
 #include <algorithm>
 #include <cmath>
@@ -71,9 +70,9 @@ void weld_part(Part& part) {
   order.reserve(n);
   for (u32 v = 0; v < n; ++v) {
     const Vec3 p = part.positions[v];
-    order.push_back(Key{{bits_of(p.x), bits_of(p.y), bits_of(p.z), bits_of(part.uvs[v].x),
-                         bits_of(part.uvs[v].y)},
-                        v});
+    order.push_back(Key{
+        {bits_of(p.x), bits_of(p.y), bits_of(p.z), bits_of(part.uvs[v].x), bits_of(part.uvs[v].y)},
+        v});
   }
   std::sort(order.begin(), order.end(), [](const Key& a, const Key& b) {
     for (u32 k = 0; k < 5; ++k)
@@ -135,8 +134,8 @@ bool cluster_parts(Vector<Part>& parts, const geometry::ClusterLodOptions& lod,
     return false;
   }
   return geometry::merge_cluster_lod(
-      std::span<const geometry::ClusterLodMesh>(dags.data(), dags.size()), merged,
-      &part_of_cluster, &error);
+      std::span<const geometry::ClusterLodMesh>(dags.data(), dags.size()), merged, &part_of_cluster,
+      &error);
 }
 
 // The far tile as a container in the derived-data cache: its DAG, its cluster-to-material map, its
@@ -182,9 +181,9 @@ void write_far_tile(const std::string& path, const scene_gen::PlacementMesh& mes
   std::string error;
   const io::Status made = io::make_directories(io::parent_path(path));
   if (made != io::Status::Ok || !geometry::write_cluster_file(path, data, &error)) {
-    ENGINE_LOG_WARN(log_renderer, "far tile cache not written", log::field("path", path),
-                    log::field("error", made != io::Status::Ok ? std::string(io::status_name(made))
-                                                               : error));
+    ENGINE_LOG_WARN(
+        log_renderer, "far tile cache not written", log::field("path", path),
+        log::field("error", made != io::Status::Ok ? std::string(io::status_name(made)) : error));
   }
 }
 
@@ -293,10 +292,9 @@ bool load_far_tile(const scene_gen::PlacementMesh& mesh, const PlacementMeshOpti
     forms[k] = std::move(members[k].source.far_form);
     if (forms[k].empty()) {
       const Vector<u32>& parts = members[k].source.part_of_cluster;
-      const std::span<const u32> material =
-          parts.size() == members[k].lod.mesh.clusters.size()
-              ? std::span<const u32>(parts.data(), parts.size())
-              : std::span<const u32>();
+      const std::span<const u32> material = parts.size() == members[k].lod.mesh.clusters.size()
+                                                ? std::span<const u32>(parts.data(), parts.size())
+                                                : std::span<const u32>();
       if (!geometry::bake_far_form(members[k].lod, material, forms[k], &why)) {
         error = mesh.path + ": its member " + member.name + ": " + why;
         return false;
@@ -380,8 +378,8 @@ bool load_far_tile(const scene_gen::PlacementMesh& mesh, const PlacementMeshOpti
     const Vec3 offset{static_cast<f32>(static_cast<f64>(p.x_mm) / 1000.0),
                       static_cast<f32>(static_cast<f64>(p.y_mm) / 1000.0),
                       static_cast<f32>(static_cast<f64>(p.z_mm) / 1000.0)};
-    const f32 scale_max = std::max(std::fabs(p.scale.x), std::max(std::fabs(p.scale.y),
-                                                                   std::fabs(p.scale.z)));
+    const f32 scale_max =
+        std::max(std::fabs(p.scale.x), std::max(std::fabs(p.scale.y), std::fabs(p.scale.z)));
     s.error_m = std::max(s.error_m, geometry::FarForm::level_error(record) * scale_max);
     s.source_triangles += form.header.source_triangles;
     for (u32 q = record.first_part; q < record.first_part + record.part_count; ++q) {
@@ -464,7 +462,8 @@ bool load_far_tile(const scene_gen::PlacementMesh& mesh, const PlacementMeshOpti
                   log::field("members", s.members), log::field("placements", s.placements),
                   log::field("baked", s.baked), log::field("triangles", s.triangles),
                   log::field("source_triangles", s.source_triangles),
-                  log::field("clusters", s.clusters), log::field("error_m", static_cast<f64>(s.error_m)),
+                  log::field("clusters", s.clusters),
+                  log::field("error_m", static_cast<f64>(s.error_m)),
                   log::field("members_ms", s.members_ms), log::field("build_ms", s.build_ms));
   return true;
 }

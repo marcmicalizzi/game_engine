@@ -292,8 +292,8 @@ u64 encode(const ClusterFileData& data, std::string& out) {
                 f.levels.size(), f.levels.data());
     add_section(payloads, ClusterSection::FarFormParts, static_cast<u32>(sizeof(FarFormPart)),
                 f.parts.size(), f.parts.data());
-    add_section(payloads, ClusterSection::FarFormVertices,
-                static_cast<u32>(sizeof(FarFormVertex)), f.vertices.size(), f.vertices.data());
+    add_section(payloads, ClusterSection::FarFormVertices, static_cast<u32>(sizeof(FarFormVertex)),
+                f.vertices.size(), f.vertices.data());
     add_section(payloads, ClusterSection::FarFormIndices, static_cast<u32>(sizeof(u32)),
                 f.indices.size(), f.indices.data());
   }

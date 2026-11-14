@@ -37,8 +37,9 @@ constexpr u64 k_room_cluster_bytes = 48 + 48 + 4 + 64 * (6 + 8 + 12) + 124 * (4 
 f64 mib(u64 clusters) { return static_cast<f64>(clusters * k_room_cluster_bytes) / 1048576.0; }
 }  // namespace
 
-TEST_CASE("far tile: a dense tile of deposits is one instance of a sixth of its meshes' clusters "
-          "past the first ring") {
+TEST_CASE(
+    "far tile: a dense tile of deposits is one instance of a sixth of its meshes' clusters "
+    "past the first ring") {
   // The forest's 128,000 triangles a 16 m patch at 1 m samples, 96 loose stones a patch, one 32 m
   // tile of the massif's foot: the near ring's meshes built as a host builds them (into the cache),
   // then the far tile from the same entries. About 20 s in debug, every second of it the 16 near
@@ -86,8 +87,9 @@ TEST_CASE("far tile: a dense tile of deposits is one instance of a sixth of its 
   renderer::PlacementMeshData tile;
   renderer::FarTileStats stats;
   REQUIRE_MESSAGE(renderer::load_far_tile(far.meshes[0], options, tile, error, &stats), error);
-  MESSAGE("near: ", near.meshes.size(), " meshes, ", near_clusters, " clusters (", mib(near_clusters),
-          " MiB of room), ", near_triangles, " triangles, built in ", near_ms, " ms");
+  MESSAGE("near: ", near.meshes.size(), " meshes, ", near_clusters, " clusters (",
+          mib(near_clusters), " MiB of room), ", near_triangles, " triangles, built in ", near_ms,
+          " ms");
   MESSAGE("far tile: 1 mesh, ", stats.clusters, " clusters (", mib(stats.clusters),
           " MiB of room), ", stats.triangles, " triangles, ", stats.materials, " parts, error ",
           stats.error_m, " m; members ", stats.members_ms, " ms from the cache, built in ",
@@ -112,9 +114,9 @@ TEST_CASE("far tile: a dense tile of deposits is one instance of a sixth of its 
   REQUIRE(renderer::load_far_tile(far.meshes[0], options, again, error, &hit));
   CHECK(hit.cache_hit);
   MESSAGE("far tile again: from the cache in ", hit.build_ms, " ms");
-  const u64 pin =
-      hash_combine(hash_bytes(tile.lod.mesh.vertices.data(), tile.lod.mesh.vertices.size() * sizeof(Vec3)),
-                   hash_bytes(tile.lod.mesh.triangles.data(), tile.lod.mesh.triangles.size() * 4));
+  const u64 pin = hash_combine(
+      hash_bytes(tile.lod.mesh.vertices.data(), tile.lod.mesh.vertices.size() * sizeof(Vec3)),
+      hash_bytes(tile.lod.mesh.triangles.data(), tile.lod.mesh.triangles.size() * 4));
   MESSAGE("far tile hash ", pin);
   // Taken on MSVC 14.51, 2026-11-13 (k_far_form_version 1, k_far_tile_version 1, the default LOD
   // options): the merged far tile's positions and triangles, built by one thread in the recipe's

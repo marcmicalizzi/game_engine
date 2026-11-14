@@ -3,8 +3,8 @@
 // costs fewer pairs than the DAG's cut. An imported boulder field with no generator behind it: a
 // 16 m sheet strewn with 300 four-centimetre stones, which a DAG cannot remove and a far form
 // leaves out. Uses `ring_forms_tests.cpp`'s placement generator "ring-forms-field".
-#include <foundation/io/vfs.h>
 #include <domain/geometry/cluster_file.h>
+#include <foundation/io/vfs.h>
 #include <systems/renderer/ring_forms.h>
 #include <systems/renderer/scene.h>
 
@@ -59,9 +59,9 @@ geometry::ClusterFileData strewn_sheet() {
   attributes.normals = std::span<const Vec3>(normals.data(), normals.size());
   attributes.uvs = std::span<const Vec2>(uvs.data(), uvs.size());
   std::string error;
-  REQUIRE_MESSAGE(
-      geometry::build_cluster_lod(p, ix, geometry::ClusterLodOptions{}, data.mesh, &error, attributes),
-      error);
+  REQUIRE_MESSAGE(geometry::build_cluster_lod(p, ix, geometry::ClusterLodOptions{}, data.mesh,
+                                              &error, attributes),
+                  error);
   data.cluster_material.assign(data.mesh.mesh.clusters.size(), 0u);
   data.materials.push_back(geometry::ClusterFileMaterial{});
   return data;
@@ -75,8 +75,9 @@ std::string slashes(std::string path) {
 
 }  // namespace
 
-TEST_CASE("far offered: a resident field is offered its far form's levels, and the rule draws the "
-          "cheaper") {
+TEST_CASE(
+    "far offered: a resident field is offered its far form's levels, and the rule draws the "
+    "cheaper") {
   const test::TempDir tmp("world_far_offered");
   REQUIRE(tmp.ok());
   std::string error;

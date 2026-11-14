@@ -98,8 +98,9 @@ ClusterFileData build(const Fixture& f) {
 
 }  // namespace
 
-TEST_CASE("far form: small pieces leave by level, the rest simplifies within its error, and the "
-          "border stays") {
+TEST_CASE(
+    "far form: small pieces leave by level, the rest simplifies within its error, and the "
+    "border stays") {
   const Fixture f = talus();
   ClusterFileData data = build(f);
   REQUIRE(far_form_applies(data));
@@ -136,8 +137,8 @@ TEST_CASE("far form: small pieces leave by level, the rest simplifies within its
   // of every level.
   for (u32 l = 0; l < form.levels.size(); ++l) {
     Vector<u8> used(form.vertices.size(), 0);
-    for (u32 p = form.levels[l].first_part; p < form.levels[l].first_part + form.levels[l].part_count;
-         ++p)
+    for (u32 p = form.levels[l].first_part;
+         p < form.levels[l].first_part + form.levels[l].part_count; ++p)
       for (u32 i = 0; i < form.parts[p].index_count; ++i)
         used[form.indices[form.parts[p].first_index + i]] = 1;
     u32 found = 0;

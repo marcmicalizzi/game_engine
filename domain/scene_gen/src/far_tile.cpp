@@ -1,8 +1,7 @@
 // A far tile's recipe (far_tile.h; scene_gen.md, "A far tile"; G198).
-#include <domain/scene_gen/far_tile.h>
-
 #include <core/hash/hash.h>
 #include <core/json/json.h>
+#include <domain/scene_gen/far_tile.h>
 #include <foundation/io/vfs.h>
 
 #include <cstdio>
@@ -92,8 +91,7 @@ bool read_far_tile(std::string_view recipe, FarTile& out, std::string* error) {
   out.level = static_cast<u32>(level);
   const JsonValue* meshes = root.find("meshes");
   const JsonValue* placements = root.find("placements");
-  if (meshes == nullptr || !meshes->is_array() || placements == nullptr ||
-      !placements->is_array())
+  if (meshes == nullptr || !meshes->is_array() || placements == nullptr || !placements->is_array())
     return refuse(error, "no meshes or placements");
   for (const JsonValue& m : meshes->as_array()) {
     std::string_view path, name, text;

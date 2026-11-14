@@ -1,14 +1,14 @@
 #pragma once
 
-// **The far form of a rigid mesh** (docs/subsystems/geometry.md, "The far form"; roadmap G198): what
-// a mesh draws as once it is far, made from the mesh alone — baked on first offer, or carried in its
-// container (sections 43 to 47) when a tool wrote one — so an imported boulder and a generated talus
-// get the same one and no generator is asked what its far form is.
+// **The far form of a rigid mesh** (docs/subsystems/geometry.md, "The far form"; roadmap G198):
+// what a mesh draws as once it is far, made from the mesh alone — baked on first offer, or carried
+// in its container (sections 43 to 47) when a tool wrote one — so an imported boulder and a
+// generated talus get the same one and no generator is asked what its far form is.
 //
-// **What it is.** The mesh's finest level, welded by source vertex, then for each of a few levels of
-// rising error `e_k = e_0 * 2^k`: every connected piece of it whose extent is at most `e_k` left out
-// (a loose stone a pixel across), and the rest simplified to `e_k` with its open border locked, so
-// two meshes that met edge to edge still meet. `e_0` is the mesh's radius over
+// **What it is.** The mesh's finest level, welded by source vertex, then for each of a few levels
+// of rising error `e_k = e_0 * 2^k`: every connected piece of it whose extent is at most `e_k` left
+// out (a loose stone a pixel across), and the rest simplified to `e_k` with its open border locked,
+// so two meshes that met edge to edge still meet. `e_0` is the mesh's radius over
 // `k_far_form_radius_px`: **a level stands in once the mesh's radius projects under
 // `k_far_form_radius_px` pixels times its step**, where its error is under a pixel. Each level
 // records the error it was held to and the two things that make it up — what the simplifier
@@ -17,10 +17,10 @@
 //
 // **Why not the DAG's own cut.** A far ring of the forest's talus is about 40 meshes of up to 2,442
 // clusters each, every cluster a pair and a share of the mesh room whether or not it draws; a
-// distance form keeps the DAG's top, which over a field of loose stones is still most of it, because
-// a cluster DAG coarsens what is connected and never removes a piece. A far form is a few hundred
-// triangles a mesh, merged per tile by its consumer into one mesh of a few clusters (the renderer's
-// far tile, renderer.md, "The far tile").
+// distance form keeps the DAG's top, which over a field of loose stones is still most of it,
+// because a cluster DAG coarsens what is connected and never removes a piece. A far form is a few
+// hundred triangles a mesh, merged per tile by its consumer into one mesh of a few clusters (the
+// renderer's far tile, renderer.md, "The far tile").
 //
 // Deterministic: meshoptimizer's simplifier (the DAG's own, contraction off tree-wide), integer
 // union-find, and sorts on integer keys; the same bytes from every toolchain and thread count.
@@ -60,8 +60,8 @@ struct FarFormPart {
 };
 
 // One level, rising. `error_m` is what it was held to (mesh units); `simplify_m` the largest error
-// the simplifier reported over its parts, `dropped_m` the largest extent of a piece it left out; the
-// level's honest error is the larger of the two, at most `error_m`. 32 bytes.
+// the simplifier reported over its parts, `dropped_m` the largest extent of a piece it left out;
+// the level's honest error is the larger of the two, at most `error_m`. 32 bytes.
 struct FarFormLevel {
   f32 error_m = 0.0f;
   f32 simplify_m = 0.0f;

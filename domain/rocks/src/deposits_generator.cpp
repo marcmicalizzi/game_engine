@@ -11,8 +11,8 @@
 #include <core/json/json.h>
 #include <core/log/log.h>
 #include <core/schema/json_reflect.h>
-#include <domain/rocks/deposits.h>
 #include <domain/geometry/far_form.h>
+#include <domain/rocks/deposits.h>
 #include <domain/scene_gen/derived_root.h>
 #include <domain/scene_gen/far_tile.h>
 #include <foundation/io/vfs.h>

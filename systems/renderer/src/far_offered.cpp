@@ -1,12 +1,11 @@
 // A resident mesh's far form, offered to the rings' rule (G198; far_tile.h; ring_forms.h,
 // `OfferedForm`; renderer.md, "The far tile").
-#include <scene_far.h>
-
 #include <domain/geometry/cluster_lod.h>
 #include <domain/geometry/far_form.h>
 
 #include <algorithm>
 #include <renderer_log.h>
+#include <scene_far.h>
 
 namespace engine::renderer {
 
