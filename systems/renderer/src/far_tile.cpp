@@ -48,6 +48,39 @@ struct Part {
   Vector<u32> indices;
 };
 
+// One DAG a part with triangles, merged: `drawn` the parts that had any, in order, which are the
+// merged mesh's parts (`part_of_cluster` indexes `drawn`).
+bool cluster_parts(Vector<Part>& parts, const geometry::ClusterLodOptions& lod,
+                   geometry::ClusterLodMesh& merged, Vector<u32>& part_of_cluster,
+                   Vector<u32>& drawn, std::string& error) {
+  Vector<geometry::ClusterLodMesh> dags;
+  dags.reserve(parts.size());
+  drawn.clear();
+  for (u32 p = 0; p < parts.size(); ++p) {
+    Part& part = parts[p];
+    if (part.indices.empty()) continue;
+    geometry::AttributeSource attributes;
+    attributes.normals = std::span<const Vec3>(part.normals.data(), part.normals.size());
+    attributes.uvs = std::span<const Vec2>(part.uvs.data(), part.uvs.size());
+    geometry::ClusterLodMesh dag;
+    if (!geometry::build_cluster_lod(
+            std::span<const Vec3>(part.positions.data(), part.positions.size()),
+            std::span<const u32>(part.indices.data(), part.indices.size()), lod, dag, &error,
+            attributes)) {
+      return false;
+    }
+    dags.push_back(std::move(dag));
+    drawn.push_back(p);
+  }
+  if (dags.empty()) {
+    error = "its far forms draw nothing";
+    return false;
+  }
+  return geometry::merge_cluster_lod(
+      std::span<const geometry::ClusterLodMesh>(dags.data(), dags.size()), merged,
+      &part_of_cluster, &error);
+}
+
 }  // namespace
 
 bool load_far_tile(const scene_gen::PlacementMesh& mesh, const PlacementMeshOptions& options,
@@ -198,45 +231,18 @@ bool load_far_tile(const scene_gen::PlacementMesh& mesh, const PlacementMeshOpti
   }
   if (!textures_whole) source.textures.clear();
 
-  // One DAG a part, merged: the far tile's clusters, one material each.
-  Vector<geometry::ClusterLodMesh> dags;
-  dags.reserve(parts.size());
-  for (Part& part : parts) {
-    if (part.indices.empty()) continue;
-    geometry::AttributeSource attributes;
-    attributes.normals = std::span<const Vec3>(part.normals.data(), part.normals.size());
-    attributes.uvs = std::span<const Vec2>(part.uvs.data(), part.uvs.size());
-    geometry::ClusterLodMesh dag;
-    if (!geometry::build_cluster_lod(
-            std::span<const Vec3>(part.positions.data(), part.positions.size()),
-            std::span<const u32>(part.indices.data(), part.indices.size()), options.lod, dag,
-            &error, attributes)) {
-      error = mesh.path + ": " + error;
-      return false;
-    }
-    s.triangles += dag.leaf_triangle_count;
-    dags.push_back(std::move(dag));
-  }
-  if (dags.empty()) {
-    error = mesh.path + ": its members' far forms draw nothing";
-    return false;
-  }
   geometry::ClusterLodMesh merged;
   Vector<u32> part_of_cluster;
-  if (!geometry::merge_cluster_lod(std::span<const geometry::ClusterLodMesh>(dags.data(), dags.size()),
-                                   merged, &part_of_cluster, &error)) {
+  Vector<u32> drawn;
+  if (!cluster_parts(parts, options.lod, merged, part_of_cluster, drawn, error)) {
     error = mesh.path + ": " + error;
     return false;
   }
-  // The parts with triangles, in order, are the DAGs merged; their materials are the parts'.
-  {
-    u32 drawn = 0;
-    for (u32 p = 0; p < parts.size(); ++p) {
-      if (!parts[p].indices.empty()) source.part_material.push_back(static_cast<i32>(p));
-      drawn += parts[p].indices.empty() ? 0u : 1u;
-    }
-    s.materials = drawn;
-  }
+  s.triangles = merged.leaf_triangle_count;
+  s.materials = drawn.size();
+  // The parts with triangles, in order, are the DAGs merged; part p draws material p.
+  for (const u32 p : drawn)
+    source.part_material.push_back(static_cast<i32>(p));
   source.part_of_cluster = std::move(part_of_cluster);
   // As `load_placement_mesh` lays out a tile's mesh: leaves first, its streams with it.
   Vector<geometry::ClusterLodMesh> one(1);
