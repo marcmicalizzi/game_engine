@@ -1,14 +1,15 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "T129",
-  "reason": "engine-view --memory-report: the flag, the first-frame and exit snapshots in both loops (nine lines), and its sections in apps.md and gfx.md (what the report holds; the device's large-buffer log and the driver's backing)",
-  "date": "2026-11-13",
+  "reason": "engine-view --memory-report: the flag, the first-frame and exit snapshots in both loops, and its sections in apps.md and gfx.md (what the report holds; the device's large-buffer log and the driver's backing); leg 2: engine-view releases the uploaded host streams in both loops and a window's summary line carries the memory block; renderer.md says what of the scene's host copy stays after the upload and why",
+  "date": "2026-11-14",
   "by": "Marc Micalizzi",
   "deltas": {
-    "engine_view.main_cpp.lines": 14,
-    "engine_view.run_view.lines": 5,
-    "engine_view.run_offscreen.lines": 4,
-    "page:docs/subsystems/apps.md": 4216,
+    "engine_view.main_cpp.lines": 21,
+    "engine_view.run_view.lines": 10,
+    "engine_view.run_offscreen.lines": 6,
+    "page:docs/subsystems/renderer.md": 1429,
+    "page:docs/subsystems/apps.md": 4266,
     "page:docs/subsystems/gfx.md": 2206
   }
 }

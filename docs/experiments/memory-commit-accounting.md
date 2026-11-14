@@ -99,16 +99,48 @@ The merged arrays are the bytes they hold and nothing is copied twice; the pictu
 | frame, median ms | 17.081 | 17.092 | 17.070 | 17.074 |
 | peak private (sampler) | 41.64 GB | 40.50 GB | 40.26 GB | 40.65 GB |
 
-Unchanged within 0.01 ms (4B's p95 of 44.5 ms is one hitch beside another agent's work; its median is the others'). The sampler's peak moves by a gigabyte between two runs of one binary, which is why the cut is judged by the report's exit commit above and not by it. **A held view grows the same ten gigabytes the hop flight did** (32 GB after six frames, 40 to 42 GB after 120 at one place): what grows after the load comes with frames, not with travel.
+Unchanged within 0.01 ms (4B's p95 of 44.5 ms is one hitch beside another agent's work; its median is the others'). The sampler's peak moves by a gigabyte between two runs of one binary, which is why the cut is judged by the report's exit commit above and not by it. **A held view grows the same ten gigabytes the hop flight did** (32 GB after six frames, 40 to 42 GB after 120 at one place). It looked like frames; it is the world's tiles arriving, which the path's jump from the staging's camera makes happen twice ("Who made the unnamed commit", above).
+
+## The second cuts
+
+Leg 2, 2026-11-14. Two cuts, each landing in an owner of its own, so one pair of runs measures both: **the tile mesh's texture pass makes no pool** (above) and **engine-view releases the uploaded host streams** (`renderer::release_uploaded_streams`: the merged scene's 16-bit positions, attributes and canonical vertex ids, given back once every `GpuScene::create` of the run is done; [renderer](../subsystems/renderer.md), "The scene's host copy after the upload", has what stays and why). Q2, one lease: A is leg 1's binary (r4: the report and the merge's reservation), B is the branch at 246a2e07; the staging's south-lake path held 120 frames at the owner's settings, the report on for the commit pair and off for the frame pair; other agents at 24 to 91 % of the CPU, free commit 54 to 57 GB at each start.
+
+| exit, MiB | A (r4) | B (the cuts) | B − A |
+|---|---|---|---|
+| **process commit** | **41,404** | **33,369** | **−8,035** |
+| peak commit (the OS's) | 41,660 | 33,776 | −7,885 |
+| private, no named owner | 7,743 | 1,414 | **−6,329** (the pools) |
+| the engine heap, live | 15,909 | 14,212 | **−1,697** (the streams) |
+| the C runtime's heaps | 16,930 | 15,239 | −1,691 |
+| device-local blocks (and the driver's backing) | 16,243 | 16,243 | 0 |
+| working set | 16,395 | 14,697 | −1,698 |
+| peak private (sampler, 5 s) | 40.43 GB | 32.83 GB | −7.6 GB |
+
+The streams B released, from its log: 16-bit positions 538 MiB, attributes 717 MiB, vertex ids 442 MiB (1,780 MB in all). The no-owner commit that remains, 1.4 GB, is the long-lived pools' 4 MiB a thread and the driver's own pools, and no longer grows with the tiles.
+
+**The frame's time** (the report off, alternating; medians):
+
+| | 1A | 2B | 3A | 4B |
+|---|---|---|---|---|
+| GPU total, ms | 16.968 | 16.959 | 16.976 | 16.658 |
+| resolve, ms | 10.714 | 10.709 | 10.728 | 10.392 |
+| frame, ms | 17.090 | 17.100 | 17.104 | 16.834 |
+| others' CPU at the end | 57 % | 51 % | 24 % | 49 % |
+
+Unchanged: neither cut is on the frame's path, and the 0.3 ms 4B shows is the run-to-run mode this machine has tonight — the commit pair's A ran at 16.648 total and 10.396 resolve, B at 17.004 and 10.721.
+
+## The traced chain's storage
+
+The third cut on the list, the traced chain's cluster storage (2,848 MiB on the GPU and as much of commit; `gpu_scene_rt_step.cpp`, `make_rt_step` → `gfx::create_cluster_storage`), is **not made**. It is reserved at the driver's most per cluster because the frame's set builds with implicit destinations, and R143 measured that naming smaller totals does not change what the driver reserves ([rt-small-instances](rt-small-instances-2026-11-10.md#what-a-structure-of-the-frames-own-set-reserves)). Two shapes would size it by what is built, both a change to the records-to-TLAS chain on the frame's path: a second set with a smaller per-cluster most for the clusters of meshes that never pass it (a forest's leaf cards: 64 vertices, about 30 triangles), or explicit destinations packed from sizes the device computes in the frame. `cluster set: what a set reserves follows its per-cluster most` (`domain/gfx/tests/clas_records_tests.cpp`) asks the driver what a cluster reserves at each most, so the design row starts from the driver's numbers: GPU_SIZES.
 
 ## What this means for holding memory by distance and speed
 
+- **What grew with travel was a leak, now gone**: each textured tile mesh that arrived cost 8 MiB of commit for the rest of the process (two pool threads' profiler heaps), so a walk's commit rose with every tile it brought in, 6.2 GB on the staging's double arrival alone; after the cut, a tile that leaves gives back what it brought.
 - **Released behind a walker today**: anything that lives in a buffer sized by the frame or the ring — the traced chain's steps (released after `renderer.rt.shrink_seconds`, 120 s), the pair tables, the flora's tail — and with it, on Windows, its backing commit. A policy that moves fast has to count the GPU's bytes as the process's too.
-- **Not releasable until something is restructured**: the scene's geometry, on the GPU (4.5 GB, one global set of buffers built at load) and on the CPU (4.5 GB, the one merged mesh), is held whole for the session wherever the walker is; releasing it behind a walker needs the static scene split into pageable pieces (the cluster pages `--stream` already has for meshes) and the CPU copy dropped after upload or kept per page. The opacity micromaps and the structure cache are the same: built once for the whole scene.
+- **Not releasable until something is restructured**: the scene's geometry, on the GPU (4.5 GB, one global set of buffers built at load) and on the CPU (4.5 GB, the one merged mesh), is held whole for the session wherever the walker is; releasing it behind a walker needs the static scene split into pageable pieces (the cluster pages `--stream` already has for meshes). Of the CPU copy, 1.7 GB is now given back after the upload; the 2.1 GB left (float positions, triangles, vertex sources, descriptors) is read by the crown priors, the tail trees' padding and the collision, and goes when those take their own (renderer.md, "The scene's host copy after the upload"). The opacity micromaps and the structure cache are the same: built once for the whole scene.
 - **The ceiling is the commit limit, not the memory**: 64 GB of memory and a 118 GB limit means about 54 GB of commit can be promised beyond what is touched; the driver's backing spends that at the GPU's rate. A policy row should take its budget from free commit, not free memory.
 
 ## Not measured
 
-- The owner's own walk (v43, the game module, the animals, a window): run it with `--memory-report` and read the two `view.memory` lines; the summary line of a window does not carry the block yet.
-- Who allocates the 7.8 GB of untouched read-write 4 to 16 MiB regions that appear over the first frames: a debugger's view of one such region at exit (`cdb -pv`, `!address <base>`: its usage and the module whose code reserved it) or a count of `VirtualAlloc` calls by caller over the first hundred frames would say.
-- Linux: the walk and the report are tested in the container; no forest number.
+- The owner's own walk (v43, the game module, the animals, a window): run it with `--memory-report` and read the two `view.memory` lines, or the summary line's `memory` block, which a window's line now carries too.
+- Linux: the walk and the report are tested in the container; no forest number. rpmalloc maps the same way there, so the pools' cost was the same on Linux; Linux charges no commit for the GPU's bytes.
