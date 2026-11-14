@@ -1,11 +1,11 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "S106",
-  "reason": "S106: the channel's surface from the solve is a new section of water.md (the sheet and its pieces, what is not drawn, the pairs, what the draw bounds, a channel written by hand, the fall's rule on the forest's counts, what still reads wrong); the ribbon's five paragraphs it replaces were shorter. Second leg: where the refusal of an unsolved channel is made, the plunge's picture case restated under the same light with what was measured of the nappe's shadow, a sheet of water as an opaque caster, and what the forest weighs and showed (the counts not drawn, the first load, the pair at the owner's marks)",
+  "reason": "S106: the channel's surface from the solve is a new section of water.md (the sheet and its pieces, what is not drawn, the pairs, what the draw bounds, a channel written by hand, the fall's rule on the forest's counts, what still reads wrong); the ribbon's five paragraphs it replaces were shorter. Second leg: where the refusal of an unsolved channel is made, the plunge's picture case restated under the same light with what was measured of the nappe's shadow, a sheet of water as an opaque caster, and what the forest weighs and showed (the counts not drawn, the first load, the pair at the owner's marks, the look at four drawn stretches)",
   "date": "2026-11-14",
   "by": "Marc Micalizzi",
   "deltas": {
-    "page:docs/subsystems/water.md": 22426,
+    "page:docs/subsystems/water.md": 23515,
     "page:docs/subsystems/channels.md": -5
   }
 }
