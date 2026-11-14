@@ -327,7 +327,7 @@ bool load_far_tile(const scene_gen::PlacementMesh& mesh, const PlacementMeshOpti
                   log::field("members", s.members), log::field("placements", s.placements),
                   log::field("baked", s.baked), log::field("triangles", s.triangles),
                   log::field("source_triangles", s.source_triangles),
-                  log::field("clusters", s.clusters), log::field("error_m", s.error_m),
+                  log::field("clusters", s.clusters), log::field("error_m", static_cast<f64>(s.error_m)),
                   log::field("members_ms", s.members_ms), log::field("build_ms", s.build_ms));
   return true;
 }
