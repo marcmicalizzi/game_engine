@@ -173,6 +173,10 @@ bool load_far_tile(const scene_gen::PlacementMesh& mesh, const PlacementMeshOpti
       }
       ++s.baked;
     }
+    // Only its far form and its materials are read from here: its clusters go now, so a far tile
+    // of forty members holds one member's streams at a time.
+    members[k].lod = geometry::ClusterLodMesh{};
+    members[k].textures.clear();
   }
   const i64 members_ns = time::monotonic_ns();
   s.members_ms = static_cast<f64>(members_ns - start_ns) / 1.0e6;
