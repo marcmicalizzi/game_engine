@@ -75,9 +75,9 @@ remain resident while the host supplies their normal distance forms. `max_cells`
 per tile and rejects an excessive lattice at open, rather than dropping its tail.
 `max_total_cells` (1048576 by default) also bounds a whole read before expansion.
 
-**A whole read may run on the job system's performance pool, and by default does not** (T125,
-2026-11-12; the tunable `litter.whole_read_jobs`: 1 one thread, the default; 0 the host's pool; a
-larger number a cap on it). On the pool the window's tiles, in row-major order, go in bands of
+**A whole read runs on the job system's performance pool** (T125, 2026-11-12; the default since
+T128, 2026-11-13; the tunable `litter.whole_read_jobs`: 0 the host's pool, the default; 1 one
+thread; a larger number a cap on it). On the pool the window's tiles, in row-major order, go in bands of
 whole rows, each band cut into contiguous runs, each run placed by one job into a list of its own,
 and the lists joined in band and run order, never in the order the jobs finish; so the instances,
 their ids rising, are the bytes one thread makes, and a refusal is the earliest tile's, the one the
@@ -87,7 +87,23 @@ move it. Nothing is drawn from a shared stream: every draw is the cell's own has
 `tests/litter_pool_tests.cpp` holds the bytes at one, four and eight threads, the whole pool and a
 cap of three, and pins the bytes of the serial walk this replaced (`0x5a1878e19758bd3e`).
 
-**Why one thread is the default: on a "tiles" ground the pool is slower.** Every height a cell asks
+**Since T128 the pool is the default, because on a "tiles" ground it is now the faster.** The tile
+set answers a resident point with no lock and counts its hits per thread ([tileset](tileset.md#the-readers-lock)).
+`engine_litter_bench`, `msvc-release`, the 1 km frame's 16,384 cells, medians of three, a pair of
+binaries from one tree (the base 61ccce67 and the branch), the machine shared (other agents' work at
+38 % and 47 % of the CPU in the two runs, the GPU lock held by another row's walk), so upper bounds:
+
+| | one thread | 2 | 4 | 8 | 16 | the whole pool |
+|---|---|---|---|---|---|---|
+| before (61ccce67) | 37.5 ms | 56.1 | 67.8 | 79.2 | 186.3 | 199.9 |
+| after (T128) | 18.3 ms | 13.3 | 11.4 | 8.0 | 6.4 | 6.6 |
+| a ground with no reader (`expand.unlocked`) | 5.1 ms | 5.1 | 4.6 | 3.9 | 3.8 | — |
+
+What one thread still pays over the readerless ground (18.3 against 5.1 ms) is the point read's
+own work: a hint, a pin raised and let go, and its hit counted, for each of ten heights a cell.
+The paragraph below is what T125 found before.
+
+**Why one thread was the default until T128: on a "tiles" ground the pool was slower.** Every height a cell asks
 of a tile set's reader takes its lock twice (the pin and the unpin, `TileSet::tile`) and bumps a
 shared counter, so concurrent cells queue on one mutex. Measured in `msvc-release` with
 `engine_litter_bench` (the 1 km frame, 16,384 cells, medians of three; the machine was shared, 53 %
@@ -167,10 +183,11 @@ litter_schemas, jobs (a whole read's pool) and tunables (`litter.whole_read_jobs
 of another solver is its public `deadwood::solve` and identity API. Where the tile-set capability
 is in the build, the tests add `tests/litter_masks_tests.cpp` and the module has a bench,
 `engine_litter_bench` (`litter.mask_cook`, `litter.expand.serial`, `litter.expand.pool`, each at a
-frame one and three kilometres wide), both linking `tileset` as a test target may; the module
+frame one and three kilometres wide; `litter.mask_cook.workers` and `litter.expand.workers` over
+pool sizes, T128), both linking `tileset` as a test target may; the module
 itself does not. Hosts link litter conditionally. Registration points are the mesh and placement registries
 and schema descriptions. No protocol method. One tunable, `litter.whole_read_jobs` (how many jobs a
-whole read runs on, 1 by default: "Placement"), which changes no byte; every other control is
+whole read runs on, the host's pool by default since T128: "Placement"), which changes no byte; every other control is
 recipe data.
 Determinism is derived and cross-toolchain. The twig and tangle container pins follow the
 deadwood solver they reuse: a change to deadwood's geometry or `k_deadwood_version` moves those
