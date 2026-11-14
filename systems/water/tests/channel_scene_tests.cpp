@@ -357,7 +357,21 @@ TEST_CASE("water channel: a fall's foot in a body is the body's plunge") {
   CHECK(low.mesh_info[0].water->plunges.empty());
 }
 
-TEST_CASE("water channel: a fall's foot in the pool is whiter than the pool beside it") {
+// **Whiter than the pool under the same light** (S106's second leg, 2026-11-14). S98 wrote the
+// case to hold that the plunge is white water: its pixels a tenth brighter than the pool's water.
+// It took "the pool's water" from the rest of the pool's pixels, which is the pool under the foot's
+// light only while nothing lights the two apart. The solved fall's nappe lands Rand's 3.13 m out
+// and leans over its own foot, and three things of the nappe's darken the pool there and not
+// beside it, each measured by taking it away (the captures are the row's, not kept here): 29 of
+// the foot's 556 pixels are in its shadow on the surface (the shadow view); the rest show its
+// reflection (3.5 of 255, `renderer.water.reflect` off) and its shadow on the bed under them,
+// which the volume tier lights through a second ray (8 of 255; with no channel in the scene the
+// same pixels are the pool's 136.1 to a tenth). So without the plunge the foot's pixels are 123.8
+// where the pool beside them is 135.5, and the foot's 148.8 read 1.098 against the pool beside it
+// while being 1.20 times the water it lies on. The case holds what it was written to: **the foot
+// against the same pixels with the plunge cleared**, which is the pool under the foot's own light,
+// pixel for pixel. The bound is S98's 1.1, unmoved.
+TEST_CASE("water channel: a fall's foot in the pool is whiter than the pool's water there") {
   if (!gpu_here()) return;
   const test::TempDir tmp("water_channel_plunge_picture");
   const std::string path = tmp.file("scene.json");
@@ -375,7 +389,7 @@ TEST_CASE("water channel: a fall's foot in the pool is whiter than the pool besi
   const u32 pixels = a.width * a.height;
   // The pool's pixels the plunge changed are brighter, and many; no pixel of anything else moved.
   u32 pool = 0, changed = 0, brighter = 0, elsewhere = 0;
-  f64 lift = 0.0, white = 0.0, beside = 0.0;
+  f64 lift = 0.0, white = 0.0, under = 0.0, beside = 0.0;
   for (u32 p = 0; p < pixels; ++p) {
     const u32 id = a.ids[p * k_id_words];
     bool same = true;
@@ -394,19 +408,22 @@ TEST_CASE("water channel: a fall's foot in the pool is whiter than the pool besi
     const f32 d = luminance(a, p) - luminance(without.frame, p);
     lift += static_cast<f64>(d);
     white += static_cast<f64>(luminance(a, p));
+    under += static_cast<f64>(luminance(without.frame, p));
     if (d > 0.0f) ++brighter;
   }
+  const f64 n = static_cast<f64>(changed > 0 ? changed : 1);
   MESSAGE(pool << " pool pixels, " << changed << " changed by the plunge (" << brighter
-               << " brighter, mean lift " << (changed > 0 ? lift / changed : 0.0) << "); "
-               << elsewhere << " elsewhere; the foot's luminance "
-               << white / (changed > 0 ? changed : 1) << " against the pool's beside it "
-               << beside / (pool > changed ? pool - changed : 1));
+               << " brighter, mean lift " << lift / n << "); " << elsewhere
+               << " elsewhere; the foot's luminance " << white / n
+               << " against the same pixels' with the plunge cleared " << under / n
+               << " (the rest of the pool's, under another light: "
+               << beside / (pool > changed ? pool - changed : 1) << ")");
   CHECK(pool > 1000u);
   CHECK(changed > 200u);
   CHECK(brighter > changed * 9 / 10);
-  // Whiter than the pool beside it: the foot's mean luminance over the rest of the pool's.
-  CHECK(white / static_cast<f64>(changed > 0 ? changed : 1) >
-        1.1 * beside / static_cast<f64>(pool > changed ? pool - changed : 1));
+  // Whiter than the pool's water there: the foot's mean luminance over the same pixels' with the
+  // plunge cleared (the comment above the case says why not over the rest of the pool's).
+  CHECK(white / n > 1.1 * under / n);
   CHECK(elsewhere == 0u);
   if (changed <= 200u || elsewhere != 0u) {
     tmp.keep();
