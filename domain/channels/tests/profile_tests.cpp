@@ -80,6 +80,53 @@ f64 trench_height(const void* context, i64 x_mm, i64 z_mm) noexcept {
   return rise <= t.bank ? bed + rise : bed + t.bank - 0.1 * (rise - t.bank);
 }
 
+// A trench whose bed is a polyline along +x: a flat bed `half` either side of z = 0 between banks
+// rising 1:1 for 3 m. From `shelf_x0` to `shelf_x1` the left bank is instead a hump 12 cm high a
+// lattice from the bed, a shelf 4 m wide behind it standing 8 cm over the bed, and then the bank:
+// a level that passes the hump wets the shelf at once.
+struct Long {
+  f64 x[8]{};
+  f64 y[8]{};
+  u32 count = 0;
+  f64 half = 1.0;
+  f64 shelf_x0 = 1e9, shelf_x1 = -1e9;
+};
+f64 long_height(const void* context, i64 x_mm, i64 z_mm) noexcept {
+  const Long& g = *static_cast<const Long*>(context);
+  const f64 x = static_cast<f64>(x_mm) / 1000.0, z = static_cast<f64>(z_mm) / 1000.0;
+  f64 bed = x <= g.x[0] ? g.y[0] : g.y[g.count - 1];
+  for (u32 i = 0; i + 1 < g.count; ++i)
+    if (x >= g.x[i] && x <= g.x[i + 1])
+      bed = g.y[i] + (g.y[i + 1] - g.y[i]) * (x - g.x[i]) / (g.x[i + 1] - g.x[i]);
+  const f64 d = std::fabs(z) - g.half;
+  if (d <= 0.0) return bed;
+  if (z > 0.0 && x >= g.shelf_x0 && x <= g.shelf_x1) {
+    if (d <= 0.25) return bed + 0.48 * d;
+    if (d <= 0.5) return bed + 0.12 - 0.16 * (d - 0.25);
+    if (d <= 4.5) return bed + 0.08;
+    return bed + 0.08 + std::min(d - 4.5, 3.0);
+  }
+  return bed + std::min(d, 3.0);
+}
+scene_gen::Ground long_ground(const Long& g) {
+  scene_gen::Ground ground;
+  ground.surface_fn = &long_height;
+  ground.context = &g;
+  return ground;
+}
+f64 head_of(const ProfileStation& s) { return s.level + s.speed * s.speed / (2.0 * k_gravity); }
+// The total head never rises from one station to the next, a fall's lip and foot included.
+void check_head_falls(const Profile& p) {
+  for (u32 i = 0; i + 1 < p.stations.size(); ++i) {
+    const ProfileStation& a = p.stations[i];
+    const ProfileStation& b = p.stations[i + 1];
+    CHECK_MESSAGE(head_of(b) <= head_of(a) + 0.001,
+                  "station " << i << " (flags " << a.flags << ", level " << a.level << ", head "
+                             << head_of(a) << ") to " << i + 1 << " (flags " << b.flags
+                             << ", level " << b.level << ", head " << head_of(b) << ")");
+  }
+}
+
 }  // namespace
 
 TEST_CASE("profile: a uniform reach stands at normal depth, to rounding") {
@@ -234,8 +281,11 @@ TEST_CASE("profile: a step is critical at its crest, falls, shoots, jumps and me
   const std::string text = write_json(schema::to_json(block), flat);
   CHECK(text == write_json(schema::to_json(describe_profile("step", again, 12)), flat));
   // Taken on MSVC (msvc-debug, 2026-11-13); linux-clang-debug, linux-gcc-release and
-  // linux-gcc-release-v2 reproduce it.
-  CHECK(hash_bytes(text.data(), text.size()) == 8605109305383583938ull);
+  // linux-gcc-release-v2 reproduce it. (Taken again the same night, from 8605109305383583938:
+  // a jump's head carries its two nodes' flows blended — its speed 4.0757 to 4.0748 m/s, its
+  // Froude number 3.1912 to 3.1902 — every station's speed is the solved level's and not the
+  // level rounded to the millimetre's, and the block's text carries `derived_from`, empty.)
+  CHECK(hash_bytes(text.data(), text.size()) == 10561116533633154432ull);
 }
 
 TEST_CASE("profile: a line with no width on a ground it knows nothing of, by Jarrett's law") {
@@ -257,7 +307,9 @@ TEST_CASE("profile: a line with no width on a ground it knows nothing of, by Jar
     CHECK(s.manning_n == doctest::Approx(nn).epsilon(1e-6));
     // (to the millimetre the level is written at).
     CHECK(s.speed == doctest::Approx(std::cbrt(radius * radius) * 0.1 / nn).epsilon(1e-3));
-    CHECK(s.speed * k_t.area(y) == doctest::Approx(0.8).epsilon(1e-6));
+    // The speed is the solved level's and the depth is that level written to the millimetre: the
+    // discharge through the written depth is Q to half a millimetre of the surface's width.
+    CHECK(s.speed * k_t.area(y) == doctest::Approx(0.8).epsilon(0.0005 * k_t.top(y) / k_t.area(y)));
     // The width it was not given is the section's, crest to crest, to the lattice.
     CHECK(std::fabs(s.width - (8.0 + 0.02 * (s.x - 8.0))) <= 0.5);
     CHECK(s.manning_n > 0.05);  // a steep bed is rougher than 0.04
@@ -354,4 +406,171 @@ TEST_CASE("profile: a fall whose foot stands in deep water has no jump") {
       CHECK(s.level >= 11.2);
     }
   CHECK(p.stats.rises_other == 0);
+}
+
+// ---- The head never rises (W120, the second pass: each kind seen on the forest's lines) --------
+
+TEST_CASE("profile: a jump's head between two nodes of a falling bed is shooting water") {
+  // A chute at 0.15 that steepens to 0.8 for a metre (under a face's gradient: no fall) into a
+  // level pool: the jump stands on the steep metre, where the bed falls 0.2 m from node to node.
+  Long g;
+  g.count = 4;
+  g.x[0] = 0, g.y[0] = 20.0;
+  g.x[1] = 20, g.y[1] = 17.0;
+  g.x[2] = 21, g.y[2] = 16.2;
+  g.x[3] = 40, g.y[3] = 16.2;
+  FlowLine line = fixture_line("falling", 0, 40, 0, 1.0);
+  line.tail_level = true;
+  line.level = 17.05;
+  std::string error;
+  Profile p;
+  REQUIRE_MESSAGE(solve_profile(line, long_ground(g), manning(), p, error), error);
+  CHECK(p.stats.jumps == 1);
+  CHECK(p.stats.head_rises == 0);
+  check_head_falls(p);
+  for (u32 i = 0; i + 1 < p.stations.size(); ++i)
+    if ((p.stations[i].flags & scene_gen::k_channel_jump_head) != 0) {
+      MESSAGE("head at x " << p.stations[i].x << " depth " << p.stations[i].depth << " Froude "
+                           << p.stations[i].froude << "; foot depth " << p.stations[i + 1].depth);
+      CHECK(p.stations[i].froude > 1.0);
+      CHECK(p.stations[i + 1].froude < 1.0);
+    }
+}
+
+TEST_CASE("profile: shooting water into a pool behind a lip jumps in the pool, not at the lip") {
+  // A chute into a pool three nodes long whose floor stands 0.2 m under the lip that holds it,
+  // then a 2 m fall. The pool is tranquil and the lip critical: a jump's foot is in the pool.
+  Long g;
+  g.count = 7;
+  g.x[0] = 0, g.y[0] = 20.0;
+  g.x[1] = 19.75, g.y[1] = 17.0375;
+  g.x[2] = 20, g.y[2] = 16.9;
+  g.x[3] = 20.75, g.y[3] = 16.9;
+  g.x[4] = 21, g.y[4] = 17.1;
+  g.x[5] = 21.25, g.y[5] = 15.1;
+  g.x[6] = 35, g.y[6] = 15.1;
+  FlowLine line = fixture_line("pool", 0, 35, 0, 1.0);
+  line.tail_level = true;
+  line.level = 15.5;
+  std::string error;
+  Profile p;
+  REQUIRE_MESSAGE(solve_profile(line, long_ground(g), manning(), p, error), error);
+  CHECK(p.stats.falls == 1);
+  CHECK(p.stats.head_rises == 0);
+  check_head_falls(p);
+  for (const ProfileStation& s : p.stations) {
+    const bool foot = (s.flags & scene_gen::k_channel_jump_foot) != 0;
+    // A jump's foot is tranquil water: never the critical lip itself.
+    if (foot)
+      CHECK((s.flags & (scene_gen::k_channel_control | scene_gen::k_channel_fall_lip)) == 0);
+    if (foot) CHECK(s.froude < 1.0);
+  }
+}
+
+TEST_CASE("profile: a fall whose tailwater stands over its lip is no fall") {
+  FlowFixture f;
+  std::string error;
+  REQUIRE_MESSAGE(make_flow_fixture(f, error), error);
+  FlowLine line = fixture_line("over the lip", 8, 58, 0, f.numbers.discharge_m3s);
+  line.tail_level = true;
+  line.level = 12.5;  // the crest stands at 11.7 and passes critical at 12.077
+  Profile p;
+  REQUIRE_MESSAGE(solve_profile(line, fixture_ground(), manning(), p, error), error);
+  CHECK(p.stats.falls == 0);
+  CHECK(p.stats.jumps == 0);
+  CHECK(p.stats.head_rises == 0);
+  check_head_falls(p);
+  for (u32 i = 0; i < p.stations.size(); ++i) {
+    const ProfileStation& s = p.stations[i];
+    CHECK((s.flags & (scene_gen::k_channel_fall_lip | scene_gen::k_channel_fall_foot)) == 0);
+    CHECK(s.froude < 1.0);
+    CHECK(s.level >= 12.5);
+    if (i > 0) CHECK(s.level <= p.stations[i - 1].level);
+  }
+}
+
+TEST_CASE("profile: a last station brought down to the level it meets keeps the arriving flow") {
+  FlowFixture f;
+  std::string error;
+  REQUIRE_MESSAGE(make_flow_fixture(f, error), error);
+  // The uniform reach, ending in a stem whose level stands 2 cm over the reach's last bed.
+  FlowLine line = fixture_line("hangs", 8, 48, -20, f.numbers.discharge_m3s);
+  line.tail_level = true;
+  line.level = 9.62;
+  line.tail = scene_gen::ChannelControl::Confluence;
+  Profile p;
+  REQUIRE_MESSAGE(solve_profile(line, fixture_ground(), manning(), p, error), error);
+  const ProfileStation& last = p.stations[p.stations.size() - 1];
+  CHECK(last.level == 9.62);
+  CHECK(last.flags == scene_gen::channel_control_flags(scene_gen::ChannelControl::Confluence));
+  // The water arrives at critical depth and drops to the stem: its speed is the arriving flow's,
+  // not the discharge through 2 cm of the reach's own section (40 m/s, a Froude number of 90).
+  MESSAGE("last station: speed " << last.speed << " Froude " << last.froude << " slope "
+                                 << last.friction);
+  CHECK(last.froude == doctest::Approx(1.0).epsilon(0.01));
+  CHECK(p.stats.froude_max < 1.02);
+  CHECK(p.stats.head_rises == 0);
+  check_head_falls(p);
+}
+
+TEST_CASE("profile: a fall's foot keeps Rand's speed where the discharge grows across the fall") {
+  FlowFixture f;
+  std::string error;
+  REQUIRE_MESSAGE(make_flow_fixture(f, error), error);
+  // The step, with a tributary's worth of water joining across the crest: 0.7 m3/s at the lip
+  // (x = 38), 1.6 at the foot.
+  FlowLine line;
+  line.name = "grows";
+  for (const f64 x : {8.0, 37.9, 38.3, 58.0})
+    line.points.push_back(WorldPos{x, 0.0, 0.0});
+  for (const f64 q : {0.4, 0.4, 1.6, 1.6})
+    line.discharge.push_back(q);
+  line.tail_level = true;
+  line.level = f.numbers.pool_level_m;
+  Profile p;
+  REQUIRE_MESSAGE(solve_profile(line, fixture_ground(), manning(), p, error), error);
+  REQUIRE(p.stats.falls == 1);
+  for (u32 i = 0; i + 1 < p.stations.size(); ++i) {
+    const ProfileStation& lip = p.stations[i];
+    if ((lip.flags & scene_gen::k_channel_fall_lip) == 0) continue;
+    const ProfileStation& foot = p.stations[i + 1];
+    // Rand's ratio of speeds, from the lip's own critical flow: D_c = V_c^2 / g, h = 2 m.
+    const f64 dc = lip.speed * lip.speed / k_gravity;
+    const f64 expected =
+        lip.speed / (k_drop_foot_share * std::exp(k_drop_foot_exponent * std::log(dc / 2.0)));
+    MESSAGE("lip " << lip.discharge << " m3/s at " << lip.speed << " m/s; foot " << foot.discharge
+                   << " m3/s at " << foot.speed << " m/s against Rand's " << expected);
+    CHECK(foot.speed == doctest::Approx(expected).epsilon(0.03));
+  }
+  check_head_falls(p);
+}
+
+TEST_CASE("profile: a fall's foot beside a shelf has no more head than its lip") {
+  // A 2 m fall in a trench half a metre wide onto a bed steep enough to shoot down; at the foot
+  // the left bank is a hump with a shelf behind it, so the area under a level steps up by
+  // 0.16 m2 as the level passes the hump, and Rand's area for the foot (0.15 m2) is one no level
+  // has.
+  Long g;
+  g.count = 4;
+  g.half = 0.25;
+  g.x[0] = 0, g.y[0] = 12.3;
+  g.x[1] = 30, g.y[1] = 12.0;
+  g.x[2] = 30.25, g.y[2] = 10.0;
+  g.x[3] = 50, g.y[3] = 9.0125;
+  g.shelf_x0 = 31.0;
+  g.shelf_x1 = 34.0;
+  FlowLine line = fixture_line("shelf", 0, 50, 0, 0.835);
+  std::string error;
+  Profile p;
+  ProfileOptions o = manning();
+  o.reach_m = 9.0;
+  REQUIRE_MESSAGE(solve_profile(line, long_ground(g), o, p, error), error);
+  REQUIRE(p.stats.falls == 1);
+  for (u32 i = 0; i + 1 < p.stations.size(); ++i)
+    if ((p.stations[i].flags & scene_gen::k_channel_fall_lip) != 0)
+      MESSAGE("lip head " << head_of(p.stations[i]) << "; foot at x " << p.stations[i + 1].x
+                          << " level " << p.stations[i + 1].level << " speed "
+                          << p.stations[i + 1].speed << " head " << head_of(p.stations[i + 1]));
+  CHECK(p.stats.head_rises == 0);
+  check_head_falls(p);
 }

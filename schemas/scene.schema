@@ -1498,7 +1498,9 @@ struct WaterBody @version(6) {
 /// mouth's the body's. Refused with a sentence: fewer than two points; a per-station array that
 /// is not the points' long; a width, depth or discharge that is not positive; a negative slope,
 /// speed, Froude number or wet reach; an unknown flag; a head or a lip without its foot.
-struct WaterChannel @version(6) {
+///
+/// Version 7 adds `derived_from`: what wrote a block that is not its author's own.
+struct WaterChannel @version(7) {
   name: string
   /// The centreline, downstream, world positions; each point's y is the **water surface's**
   /// height there: the solved level. There is no second level.
@@ -1576,6 +1578,13 @@ struct WaterChannel @version(6) {
   /// A head is followed by its foot and a lip by its foot: a discontinuity is that pair, and
   /// between any other two neighbours the surface is the straight line between them.
   flags: u16[] @since(6)
+  /// **What derives this block**, when it is not its author's own (W120): the placement entry a
+  /// cook writes it from, as `<generator> <the entry's name>` (the channels planner's links carry
+  /// `channels <layer name>`). Empty: an author's line. `engine-content flow solve` reads nothing
+  /// else to tell the two apart: it replaces every block that names an entry it solves, keeps one
+  /// that names an entry it does not, and solves every block that names none — whatever the
+  /// block is called. Any writer of channels may declare itself here; no reader draws by it.
+  derived_from: string @since(7)
 }
 
 /// One bed of a formation's sequence (`Formation`; renderer.md, "Formation bands"; the grounding,
