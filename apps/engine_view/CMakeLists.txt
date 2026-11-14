@@ -144,7 +144,7 @@ if(TARGET engine::animation)
 endif()
 
 engine_app(NAME engine_view OUTPUT engine-view
-  SOURCES main.cpp report.cpp startup.cpp loading.cpp ${_view_interactive} ${_view_world}
+  SOURCES main.cpp report.cpp startup.cpp loading.cpp memory_report.cpp ${_view_interactive} ${_view_world}
           ${_view_game}
           ${_view_animation}
   DEPS ${_view_deps} profiling

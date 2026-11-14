@@ -178,4 +178,16 @@ bool attach_page_source(SceneData& data, const GpuScene& scene, jobs::JobSystem&
 // What the paged host streams of `data` cost right now, which is what attaching a source saves.
 u64 paged_stream_bytes(const SceneData& data) noexcept;
 
+// **The host streams nothing reads once the GPU has them** (T129; renderer.md, "The scene's host
+// copy after the upload"): the 16-bit positions, the vertex attributes and the canonical vertex
+// ids of the merged scene, shrunk to nothing. Returns the bytes given back. For a host that
+// uploads the scene once and never again from this `SceneData` (engine-view, after every
+// `GpuScene::create` of the run): a host that rebuilds its GPU scene from it (engine-host's
+// `ensure_renderer`), or a streamed scene that pages from host memory (no page source attached),
+// must not call it. **Kept**: the float positions, the packed triangles and the per-vertex source
+// indices, which the crown priors, a swaying tail tree's padding and the collision's cut proxies
+// read after the upload; the cluster and LOD descriptors; skin and morph streams (whether the scene
+// is skinned or morphed is read from them).
+u64 release_uploaded_streams(SceneData& data);
+
 }  // namespace engine::renderer

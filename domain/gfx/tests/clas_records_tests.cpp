@@ -1127,6 +1127,53 @@ TEST_CASE("cluster set: what a set reserves does not follow its totals") {
   device.destroy();
 }
 
+TEST_CASE("cluster set: what a set reserves follows its per-cluster most") {
+  // **What a smaller per-cluster most would buy** (T129; docs/experiments/
+  // memory-commit-accounting.md, "The traced chain's storage"). The totals buy nothing (above), so
+  // the one lever left in implicit mode is the per-cluster most a set is created with: a second set
+  // for the clusters of meshes that never pass a smaller one (a forest's leaf cards: 64 vertices,
+  // about 30 triangles). This asks the driver what a cluster reserves at each most; no number is
+  // pinned — it is the driver's — and the one thing held is that a smaller most never reserves
+  // more.
+  gfx::Device device;
+  if (!gfx_test::open_device(device)) return;
+  gfx::ClusterAsProperties props;
+  if (!gfx::cluster_as_properties(device, props)) {
+    MESSAGE("no cluster acceleration structures");
+    device.destroy();
+    return;
+  }
+  constexpr u32 k_clusters = 65536;
+  for (const bool micromaps : {false, true}) {
+    u64 previous = 0;
+    for (const u32 triangles : {124u, 96u, 64u, 48u, 32u, 16u}) {
+      for (const u32 vertices : {64u, 32u}) {
+        gfx::ClusterSetLimits limits;
+        limits.max_clusters = k_clusters;
+        limits.max_geometry_index = k_clusters - 1;
+        limits.opacity_micromaps = micromaps;
+        limits.max_triangles_per_cluster = triangles;
+        limits.max_vertices_per_cluster = vertices;
+        gfx::ClusterBuildSizes sizes;
+        if (!gfx::cluster_set_build_sizes(device, limits, sizes)) {
+          MESSAGE("the driver gave no size at " << triangles << " triangles, " << vertices
+                                                << " vertices");
+          continue;
+        }
+        MESSAGE(std::string(micromaps ? "with micromaps, " : "plain, ")
+                << triangles << " triangles and " << vertices << " vertices a cluster: "
+                << sizes.data_bytes / k_clusters << " bytes a cluster of storage, "
+                << sizes.scratch_bytes / k_clusters << " of scratch");
+        if (vertices == 64u) {
+          if (previous != 0) CHECK(sizes.data_bytes <= previous);  // a smaller most, never more
+          previous = sizes.data_bytes;
+        }
+      }
+    }
+  }
+  device.destroy();
+}
+
 TEST_CASE("tlas references: the bottom-level build is over the instances that reference anything") {
   // **The bottom-level build is over what the frame drew** (R143; renderer.md, "The bottom-level
   // build is over what the frame drew"). The ranges write a bottom-level record per instance slot

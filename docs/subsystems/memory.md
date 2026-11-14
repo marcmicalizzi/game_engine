@@ -15,6 +15,7 @@
 - `core/memory/memory.h`: `TagId`, `register_tag`, `tag_name`, `current_tag`, `TagScope`, `Stats`, `stats(tag)`, `total_stats()`, `tracking_enabled()`, `allocation_counter()`, `allocations_on_thread()`, `allocate`, `try_allocate`, `deallocate`.
 - `core/memory/allocator.h`: `AllocatorPolicy` concept, `DefaultAlloc` (empty; the global tagged heap).
 - `core/memory/arena.h`: `Arena` (allocate, create, create_array, mark/rewind, reset, release, statistics), `ArenaAlloc` policy (one pointer).
+- `core/memory/large_allocations.h`: `set_large_allocation_log`, `large_allocation_log`, `large_allocations`, `large_allocations_dropped`, `LargeAllocation` ([below](#who-sized-the-largest-blocks)).
 
 **Tagging model.** Tags follow the code path, not the object: `mem::TagScope scope(tag)` on the current thread attributes every allocation made inside it. Containers therefore store no tag. Tags are registered once per module at startup; names are copied and truncated to 47 characters.
 
@@ -29,6 +30,14 @@ symbols to resolve them. These APIs and capture work exist only under `ENGINE_DE
 allocation counter remains identical in all builds. The frame-loop flight captures 64 distinct
 sites per submission, pauses over its bookkeeping, and prints allocating recorded frames, so a
 failed zero-allocation test carries attribution rather than only a total.
+
+## Who sized the largest blocks
+
+**The large-allocation log** (`core/memory/large_allocations.h`; roadmap T129): while it is on, every allocation through `mem::allocate` of `k_large_allocation_bytes` (16 MiB) or more that is still live is kept in a static table of `k_large_allocation_slots` (512) entries with its address, size, tag and twelve return addresses of its call stack (`CaptureStackBackTrace`, `backtrace`), in **every build**, release included, because the question it answers — which line of source sized the block the address-space walk found ([platform](platform.md#where-the-commit-is)) — is asked of the binaries a person runs. A free removes its entry; a full table counts what it could not keep (`large_allocations_dropped`). `set_large_allocation_log(true)` allocates nothing; allocations made before it are not in the table, so a host turns it on before its load (engine-view's [`--memory-report`](apps.md#--memory-report-where-the-commit-is)), and `large_allocations(out, capacity)` copies the live entries out.
+
+**Off — the default — an allocation of 16 MiB or more pays one relaxed atomic load, and a smaller one nothing beyond the size compare**; on, a large one takes a spin lock and a stack capture, which is nothing beside committing 16 MiB. Why a separate header: `memory.h` is included by every translation unit of the tree, and the log is read by one host.
+
+**Tested** (`tests/memory_tests.cpp`): a 32 MiB block made while the log is off is not in it; one made while it is on is, with its address, size, tag and a stack; a block under the threshold is not; a freed block leaves; turning the log off empties it.
 
 **Depends on.** `base`, `hash` (for the tracker's pointer hashing).
 

@@ -1,5 +1,6 @@
 #include <core/base/assert.h>
 #include <core/hash/hash.h>
+#include <core/memory/large_allocations.h>
 #include <core/memory/memory.h>
 
 #include <atomic>
@@ -12,14 +13,12 @@
 #include <malloc.h>
 #endif
 
-#if ENGINE_DEBUG
 #if ENGINE_PLATFORM_WINDOWS
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
 #else
 #include <execinfo.h>
-#endif
 #endif
 
 #ifndef ENGINE_MEMORY_TRACKING
@@ -234,7 +233,73 @@ Shard& shard_for(void* p) noexcept {
 
 #endif  // ENGINE_MEMORY_TRACKING
 
+// --- the large-allocation log ---------------------------------------------------------------
+
+std::atomic<bool> g_large_on{false};
+std::atomic<bool> g_large_lock{false};
+LargeAllocation g_large[k_large_allocation_slots];
+u32 g_large_count = 0;  // under g_large_lock; live entries are [0, count)
+std::atomic<u64> g_large_dropped{0};
+
+void large_lock() noexcept {
+  while (g_large_lock.exchange(true, std::memory_order_acquire)) {
+  }
+}
+void large_unlock() noexcept { g_large_lock.store(false, std::memory_order_release); }
+
+void record_large(void* p, usize bytes) noexcept {
+  LargeAllocation entry{};
+  entry.address = static_cast<u64>(reinterpret_cast<usize>(p));
+  entry.bytes = bytes;
+  entry.tag = t_current_tag;
+#if ENGINE_PLATFORM_WINDOWS
+  entry.depth = ::CaptureStackBackTrace(2, k_large_allocation_frames, entry.stack, nullptr);
+#else
+  const int depth = ::backtrace(entry.stack, static_cast<int>(k_large_allocation_frames));
+  entry.depth = static_cast<u16>(depth > 0 ? depth : 0);
+#endif
+  large_lock();
+  if (g_large_count < k_large_allocation_slots) {
+    g_large[g_large_count++] = entry;
+  } else {
+    g_large_dropped.fetch_add(1, std::memory_order_relaxed);
+  }
+  large_unlock();
+}
+
+void forget_large(void* p) noexcept {
+  const u64 address = static_cast<u64>(reinterpret_cast<usize>(p));
+  large_lock();
+  for (u32 i = 0; i < g_large_count; ++i) {
+    if (g_large[i].address != address) continue;
+    g_large[i] = g_large[--g_large_count];
+    break;
+  }
+  large_unlock();
+}
+
 }  // namespace
+
+void set_large_allocation_log(bool on) noexcept {
+  g_large_on.store(on, std::memory_order_relaxed);
+  if (on) return;
+  large_lock();
+  g_large_count = 0;
+  large_unlock();
+}
+
+bool large_allocation_log() noexcept { return g_large_on.load(std::memory_order_relaxed); }
+
+u32 large_allocations(LargeAllocation* out, u32 capacity) noexcept {
+  large_lock();
+  const u32 count = g_large_count;
+  for (u32 i = 0; i < count && i < capacity; ++i)
+    out[i] = g_large[i];
+  large_unlock();
+  return count;
+}
+
+u64 large_allocations_dropped() noexcept { return g_large_dropped.load(std::memory_order_relaxed); }
 
 // --- tags -----------------------------------------------------------------------------------
 
@@ -253,6 +318,7 @@ TagId register_tag(const char* name) {
 }
 
 const char* tag_name(TagId tag) noexcept {
+  if (tag.value == 0) return "untagged";  // before any module registered a tag, too
   if (tag.value >= g_tag_count.load(std::memory_order_acquire)) return "<unregistered>";
   return g_tag_names[tag.value].text;
 }
@@ -355,6 +421,8 @@ void* try_allocate(usize bytes, usize align) noexcept {
   shard.insert(p, bytes, tag);
   shard.unlock();
 #endif
+  if (bytes >= k_large_allocation_bytes && g_large_on.load(std::memory_order_relaxed))
+    record_large(p, bytes);
   return p;
 }
 
@@ -380,6 +448,8 @@ void deallocate(void* p, usize bytes, [[maybe_unused]] usize align) noexcept {
     bytes = entry.bytes;
   }
 #endif
+  if (bytes >= k_large_allocation_bytes && g_large_on.load(std::memory_order_relaxed))
+    forget_large(p);
   g_total.record_free(bytes);
   backend_free(p);
 }
