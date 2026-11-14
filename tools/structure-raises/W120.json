@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "W120",
+  "reason": "the water's description is a solved contract (WaterChannel version 6: fields, flags, pins, refusals) with its closed-form fixture derived on channels.md; the laid description's section it replaces was a fifth the size",
+  "date": "2026-11-13",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/channels.md": 8394
+  }
+}

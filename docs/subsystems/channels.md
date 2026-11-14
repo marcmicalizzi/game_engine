@@ -502,31 +502,153 @@ and for the uncut ground's set, so the subcommand and the host are given one `--
 
 ## The water's description
 
-`engine-content channels <scene.json> <out.json> [--min-area-m2 <m2>] [--stage <f>] [--entry <i>] [--cut]`
-reads the scene's terrain through the ground provider it names (the registry the renderer uses) and
-runs every `channels` placement (or the one at `--entry`) through `plan_channels`, and writes
-`{"water_channels": [...]}`: one block per link whose last point drains at least `--min-area-m2`
-(50,000 m² by default), each
+(2026-11-13, roadmap W120; the owner's proposal after walking batch 63; the grounding is
+[stream-profile](../experiments/stream-profile.md).) Until W120 a channel's water was a description
+laid on a bed that was cut separately: a level at a share of the cut's depth, clamped never to rise
+downstream; a described width; a described parabola for its depth; wet where a catchment passed an
+area. The owner walked it as steps, overhangs, water going uphill and beds with no water, and five
+rows mended one symptom each of the description not being the ground. **The description is now
+solved**: `engine.scene.WaterChannel` version 6 carries, at every station, the steady
+one-dimensional flow of the station's discharge through the ground's own section there.
 
-```json
-{"name": "<layer> link <k>", "points": [[x, y, z], ...], "width_m": [...], "depth_m": [...],
- "slope": [...], "seed": <u64>}
-```
+| Field, one entry a station | What it is |
+|---|---|
+| `points[i]` | the line, x and z to the millimetre; **y is the solved level**, and there is no second level |
+| `width_m` | the cut's bankfull width (the exclusion's bank reach reads it; the draw does not) |
+| `depth_m` | the solved greatest depth: the level less the lowest ground connected to the line under it. No parabola: the bed is the ground |
+| `slope` | the friction slope. No reader derives a speed from it |
+| `discharge_m3s` | what the sources upstream send through the station |
+| `speed_mps` | the section's mean speed, Q / A |
+| `froude` | the speed over sqrt(g A / T), T the surface's width, g the falls' 9.81 |
+| `wet_left_m`, `wet_right_m` | metres from the line to the wet edge, left the side of (-dz, dx) (W93's). Only ground connected to the line under the level counts |
+| `flags` | what the station is, below |
 
-— `engine.scene.WaterChannel` version 1, the shape agreed with the flowing-water row (S96), which
-declares the type in `scene.schema`: `points` the line downstream, every resampled point (`step_m`),
-x and z to the millimetre and **y the water's surface**, which is the bed (the ground's running minimum
-down the line) plus `--stage` (0.5) of the bankfull depth, never rising downstream; `depth_m` the bed
-below that surface; `width_m` the bankfull width; `slope` the bed's fall per metre there. It prints
-one JSON line: entries, heads, links, metres of channel, the region's km² and km per km², blocks
-written. `water_channels_json` is the function, and the subcommand's end-to-end test holds its output
-to the network planned in-process over the same provider.
+**The flags** (`domain/scene_gen/water_channel.h` holds the constants, so the writer, the draw and
+the scene's reader share one copy):
+
+| Bit | Value | Meaning |
+|---|---|---|
+| 0 | 1 | a **control**: a station the flow is solved from |
+| 1, 2 | 0, 2, 4, 6 | the control's kind: 0 a **crest** (critical depth over a step's or a fall's lip), 1 a **mouth** (the body's level), 2 a **confluence** (the main stem's level), 3 a **spill** (a pool's outlet) |
+| 3 | 8 | a hydraulic **jump's head**: the supercritical level |
+| 4 | 16 | the **jump's foot**: the sequent level, a jump's length downstream |
+| 5 | 32 | a **fall's lip** |
+| 6 | 64 | the **fall's foot**: where the channel's surface resumes |
+| 7 | 128 | **over bank**: the solved level stands over a bank's top here |
+
+**A discontinuity is a pair of neighbouring stations**: a head is always followed by its foot and a
+lip by its foot. Between a fall's lip and its foot there is no channel surface (the falls' cook,
+S104, owns the water in the air). A tributary's last station carries the main stem's level there
+to the millimetre, and a mouth's the body's.
+
+### Stations
+
+The profile is solved on nodes one ground lattice apart, and the description keeps the fewest of
+them that hold three **pins** (`domain/channels/stations.h`, `select_stations`), so a reader joins
+neighbours by straight lines and needs no curve:
+
+- between two neighbours that are not a jump's or a fall's pair, the straight line stands within
+  **1 cm** of the profile's level (`k_station_level_m`) and within **5 cm** of each wet reach
+  (`k_station_wet_m`) at every node between them;
+- two neighbours are never farther apart than **8 m** along the line (`k_station_max_m`);
+- and never closer than the ground's lattice, since a station is a node and nodes are a lattice
+  apart (a jump's two stations stand at the jump's own places, which the nodes about them keep a
+  lattice clear of).
+
+The selection is greedy from upstream and holds each chord to the pins less a millimetre, which is
+what rounding a level and a reach to the description's millimetre may move. On the fixture below
+the three channels keep 6, 12 and 11 stations of 161, 182 and 321 nodes (150, 240 and 138 a
+kilometre): a uniform reach and a backwater are a station every 8 m, and the drawdown to a crest
+takes them as close as its curve needs (three in the last metre).
+
+### The fixture
+
+`engine-content flow fixture <dir>` writes a scene — `ground.json` with its grid, and `scene.json`
+whose terrain is that heightfield through the `tiles` provider — holding three solved channels
+and two bodies. **Every number in it is from the closed forms of steady flow in a trapezoid**,
+evaluated directly and integrated by the direct step method (`domain/channels/flow_fixture.h`), and
+none is from the solver: it is what the solver's cases are held to, and what a draw can be built
+against before the solver is whole. It is written by a command and not committed because its
+ground is a binary grid.
+
+**The ground** is 96 m by 60 m at a quarter of a metre: three trenches along +x at z = -20, 0 and
+20 under a flat cap at y = 13, each a trapezoid with a flat bed b = 2 m and banks rising a metre a
+metre (z = 1). The ground is `min(13, bed(x) + max(0, |z - z_line| - half(x)))`, a sum of a
+function of x and a function of z that are each linear between lattice points, so the lattice's
+bilinear surface **is** the trapezoid and a section sampled from the ground is exact.
+
+**The flow** is one discharge in all three, with Manning's n = 0.04 held everywhere (the fixture
+tests the profile, not a resistance law). With A = (b + z y) y, P = b + 2 y sqrt(1 + z^2),
+T = b + 2 z y:
+
+- **Normal depth is chosen**, y_n = 0.5 m on a slope of 0.01, and the discharge follows from
+  Manning's equation: A = 1.25 m2, P = 3.4142 m, R = 0.36612 m, Q = (1 / 0.04) A R^(2/3) 0.01^(1/2)
+  = **1.59930 m3/s**. The speed is 1.279 m/s and the Froude number 0.633: a mild reach.
+- **Critical depth** is the root of Q^2 T = g A^3: **y_c = 0.37674 m** (A = 0.89541 m2, T = 2.7535 m;
+  both sides 7.0427).
+
+**"uniform"** (z = -20, x 8 to 48, bed 10 - 0.01 (x - 8)): normal depth at every station, the level
+10.5 falling to 10.1, six stations 8 m apart, no flags. The friction slope equals the bed's.
+
+**"step"** (z = 0, bed 12 - 0.01 (x - 8) to a crest at x = 38, a face dropping 2 m over one lattice
+cell, a level apron at 9.7 to a mouth at x = 58 in a pool):
+
+- *The approach* is an M2 curve: critical depth at the crest (station 6: level 12.077, Froude 1.000,
+  flags 33 = control, crest, fall's lip), and upstream of it the direct step
+  dx = dE / (S_0 - S_f) summed from y_c toward y_n in 40,000 equal steps of depth. At the head,
+  30 m upstream, the depth is 0.49860 m: 1.4 mm under normal.
+- *The fall's foot* is Rand's (1955) drop, in the reading [stream-profile](../experiments/stream-profile.md)
+  gives it for a section that is not a rectangle. The hydraulic depth at critical is
+  D_c = A_c / T_c = 0.32519 m and the drop h = 2 m, so the area at the foot is
+  0.54 (D_c / h)^0.275 A_c = 0.29341 m2, a depth of **0.13728 m** at 5.451 m/s, Froude 4.85; the
+  foot stands 4.30 h (D_c / h)^0.81 = 1.975 m from the lip, taken up to the lattice: x = 40
+  (station 7, flags 64).
+- *Below the foot* the water shoots along a level apron and thickens (an H3 curve by the same
+  direct step with S_0 = 0): its level **rises** downstream, 9.837 to 9.880 over 1.25 m, which is
+  what shooting water does when friction slows it.
+- *The jump* stands where the shooting depth's sequent depth — the depth on the tranquil side with
+  the same specific force M = Q^2 / (g A) + b y^2 / 2 + z y^3 / 3 — is the depth the pool's
+  backwater holds a jump's length downstream, the length 6 (y_2 - y_1). The head is at x = 41.246
+  with 0.18004 m (Froude 3.19; station 8, flags 8); its sequent depth is **0.67247 m**; the jump is
+  2.955 m long and its foot is at x = 44.201 (station 9, flags 16), level 10.372.
+- *The pool's backwater* is an H2 curve from the mouth back: 0.6 m deep at the mouth (station 11,
+  level 10.300, the pool's level to the millimetre; flags 3 = control, mouth).
+
+**"mouth"** (z = 20, x 8 to 88, bed 10 - 0.01 (x - 8), into a lake at 10.4): an M1 curve from 1.2 m
+at the mouth (station 10, flags 3) back toward normal depth, 0.54378 m at the head 80 m upstream.
+The level falls 14.4 cm in 80 m where the bed falls 80 cm.
+
+The fixture's own case (`flow_fixture_tests.cpp`) checks each closed form against a second
+evaluation — Manning's equation at the normal depth, Q^2 T = g A^3 at the crest, the specific
+force either side of the jump, the lattice against the ground's function — and the solver's cases
+solve the fixture's ground and are held to these stations.
+
+### What refuses a description
+
+`scene_gen::water_channel_solved` is the one check, made by the scene's reader before a channel
+reaches the draw: fewer than two points; a per-station array that is not the points' long; a
+width, depth or discharge that is not positive; a negative slope, speed, Froude number or wet
+reach; a flag bit the build does not know; a head or a lip without its foot. **A block with none
+of the solved arrays is refused by name, "cooked before W120: cook again"**: nothing is read in the
+old meaning (`fit`, version 3's record of a ribbon narrowed onto the ground, is gone with the
+ribbon). A block that names only a discharge is an author's line waiting for its solve, and says
+so.
+
+### Who writes it, and what a scene without one costs
+
+**The solver takes a line, a discharge and a ground.** The channels planner is one writer of lines;
+a `WaterChannel` an author writes by hand on an imported terrain — its `points` and a
+`discharge_m3s` of one entry or one a point — is solved by the same command, and gets everything a
+planned link gets. A scene with no `water_channels` reads none, solves none and pays nothing; the
+check is a few comparisons a station at load. *Stage 0 (the first commit of W120) carries the
+description, its check and the fixture; the solver and `engine-content flow solve` follow in the
+row's next commits, and until they do `engine-content channels` still writes version 5's blocks,
+which every reader now refuses.*
 
 **A recipe whose banks are not the defaults** writes `bank_width_widths` and `bank_width_m` on every
 block (`WaterChannel` version 4; T78, 2026-11-09): they are the reach the placements leave bare beyond
-the water's edge ([scene_gen](scene_gen.md#exclusion)), which `scene_gen` reads from the description
-because it may not name this capability. At the defaults neither is written, so every description
-written before is still the bytes it was, and a scene that holds one reads at the defaults.
+the cut's edge ([scene_gen](scene_gen.md#exclusion)), which `scene_gen` reads from the description
+because it may not name this capability.
 
 ## The cut
 

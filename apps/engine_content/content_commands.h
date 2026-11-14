@@ -73,6 +73,10 @@ int channels_command(int argc, char** argv);
 // entry's plan (falls_commands.cpp, docs/subsystems/channels.md, "Where the water leaves its bed
 // (S104)"); present when this build has the channels capability.
 int falls_command(int argc, char** argv);
+// A stream's water from its discharge (flow_commands.cpp, docs/subsystems/channels.md, "The
+// water's description"; W120): `flow fixture`, the closed-form scene the solver and the draw are
+// held to. Present when this build has the channels capability and the tiles ground provider.
+int flow_command(int argc, char** argv);
 // A region sketch solved into an authored heightfield and its fields (landform_commands.cpp,
 // docs/subsystems/landform.md); present when this build has the landform capability.
 int landform_command(int argc, char** argv);
