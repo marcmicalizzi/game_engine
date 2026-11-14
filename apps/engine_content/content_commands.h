@@ -56,6 +56,9 @@ int normal_cases_command(int argc, char** argv);
 int ruins_command(int argc, char** argv);
 int ruins_kit_command(int argc, char** argv);
 int ruins_block_kit_command(int argc, char** argv);
+// The static world's kit: plain glTF meshes and PNGs carrying nothing a generator adds
+// (static_kit_commands.cpp; content/test-scenes/static-world/). Present in every configuration.
+int static_kit_command(int argc, char** argv);
 int terrain_command(int argc, char** argv);
 int tileset_command(int argc, char** argv);      // terrain-synth, terrain-tiles, terrain-masks
 int masks_check_command(int argc, char** argv);  // masks_check_commands.cpp: masks check (T72)
