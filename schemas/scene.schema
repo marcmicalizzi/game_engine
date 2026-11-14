@@ -2685,7 +2685,7 @@ struct FlythroughAnimation @version(1) {
 ///
 /// Version 17: `load`, what the load read for its meshes and textures and what the device's
 /// pipeline cache did (roadmap W75; docs/subsystems/apps.md, "The summary's load block").
-struct FlythroughSummary @version(18) {
+struct FlythroughSummary @version(19) {
   /// "engine.flythrough.v1".
   format: string
   scene: string
@@ -2802,4 +2802,9 @@ struct FlythroughSummary @version(18) {
   /// unbuilt, the source images answered from a pack's index, hashed and read (count and bytes),
   /// and the pipeline cache's file, whether it loaded and why not. Null where nothing was loaded.
   load: json @since(17)
+  /// Where the process's commit is (`--memory-report`, apps/engine_view/memory_report.h): at the
+  /// first frame and at exit, the address space by kind (committed, resident, reserved only), the
+  /// owners the engine can name, the largest private allocations and the live large allocations by
+  /// call stack with what of each is resident. Null without the flag.
+  memory: json @since(19)
 }

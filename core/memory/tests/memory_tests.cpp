@@ -1,4 +1,5 @@
 #include <core/memory/allocator.h>
+#include <core/memory/large_allocations.h>
 #include <core/memory/memory.h>
 
 #include <doctest/doctest.h>
@@ -186,3 +187,38 @@ TEST_CASE("memory: bounded allocation capture excludes paused work and counts ov
   mem::deallocate(overflow, 64, 16);
 }
 #endif
+
+// The large-allocation log (memory.md, "Who sized the largest blocks"): off, a large allocation is
+// not kept; on, a live one is kept with its size, tag and a call stack, and leaves when it is
+// freed.
+TEST_CASE("memory: the large-allocation log keeps live large blocks while it is on") {
+  constexpr usize k_bytes = mem::k_large_allocation_bytes * 2;
+  mem::LargeAllocation seen[mem::k_large_allocation_slots];
+  void* before_on = mem::allocate(k_bytes, 64);
+  mem::set_large_allocation_log(true);
+  CHECK(mem::large_allocation_log());
+  const mem::TagId tag = mem::register_tag("test.large");
+  void* p = nullptr;
+  {
+    mem::TagScope scope(tag);
+    p = mem::allocate(k_bytes, 64);
+  }
+  void* small = mem::allocate(mem::k_large_allocation_bytes - 1, 64);
+  u32 n = mem::large_allocations(seen, mem::k_large_allocation_slots);
+  REQUIRE(n == 1);
+  CHECK(seen[0].address == reinterpret_cast<u64>(p));
+  CHECK(seen[0].bytes == k_bytes);
+  CHECK(seen[0].tag == tag);
+  CHECK(seen[0].depth > 0);
+  mem::deallocate(p, k_bytes, 64);
+  n = mem::large_allocations(seen, mem::k_large_allocation_slots);
+  CHECK(n == 0);
+  mem::set_large_allocation_log(false);
+  CHECK_FALSE(mem::large_allocation_log());
+  void* after_off = mem::allocate(k_bytes, 64);
+  CHECK(mem::large_allocations(seen, mem::k_large_allocation_slots) == 0);
+  mem::deallocate(after_off, k_bytes, 64);
+  mem::deallocate(small, mem::k_large_allocation_bytes - 1, 64);
+  mem::deallocate(before_on, k_bytes, 64);
+  CHECK(mem::large_allocations_dropped() == 0);
+}

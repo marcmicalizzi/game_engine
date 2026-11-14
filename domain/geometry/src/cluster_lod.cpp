@@ -1666,6 +1666,29 @@ bool merge_cluster_meshes(std::span<const ClusterLodMesh> parts, ClusterLodMesh&
     if (!any_ids) out.mesh.vertex_id_source = whole.mesh.vertex_id_source;
     any_ids = true;
   }
+  // **Every stream reserved at its merged size before the first append** (roadmap T129;
+  // docs/experiments/memory-commit-accounting.md). The merge is the scene's whole geometry — on the
+  // forest 116 million vertices, a 1.3 GB position array — and appending part by part grew each
+  // array by doubling: every step copied what was there and committed a block up to twice the
+  // size, whose tail nothing ever wrote. Sized once, the blocks are the bytes the merge holds and
+  // nothing is copied twice.
+  {
+    u32 vertices = 0, triangles = 0, clusters = 0;
+    for (const ClusterLodMesh& whole : parts) {
+      vertices += whole.mesh.vertices.size();
+      triangles += whole.mesh.triangles.size();
+      clusters += whole.mesh.clusters.size();
+    }
+    out.mesh.vertices.reserve(vertices);
+    out.mesh.vertex_source.reserve(vertices);
+    if (attributes) out.mesh.attributes.reserve(vertices);
+    if (skinned) out.mesh.skin.reserve(vertices);
+    out.mesh.triangles.reserve(triangles);
+    out.mesh.quantized.reserve(vertices * 3 + 1);
+    out.mesh.clusters.reserve(clusters);
+    out.lod.reserve(clusters);
+    if (source_of_cluster != nullptr) source_of_cluster->reserve(clusters);
+  }
   if (any_morph) out.mesh.morph_cluster_slices.push_back(0);
   for (u32 p = 0; p < parts.size(); ++p) {
     const ClusterLodMesh& whole = parts[p];

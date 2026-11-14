@@ -24,6 +24,7 @@
 // them: it draws through the vertex-shader baseline tier.
 #include "fly_camera.h"
 #include "loading.h"
+#include "memory_report.h"
 #include "pacing.h"
 #include "report.h"
 #include "startup.h"
@@ -196,7 +197,7 @@ constexpr const char* k_usage =
     "                   [--replay-input <log.jsonl>] [--windowed]\n"
     "                   [--inject-input <log.jsonl>] [--input-map <map.json>]\n"
     "                   [--game <module.dll> [--game-state <state.json>]] [--report <report.json>]\n"
-    "                   [--startup-trace <trace.json>]\n"
+    "                   [--startup-trace <trace.json>] [--memory-report]\n"
     "                   [--present <mode>] [--swapchain-images <n>] [--frames-in-flight <n>]\n"
     "                   [--pace auto|display|off] [--present-max-hz <n>] [--borderless] [--fullscreen]\n"
     "                   [--no-present-timing]\n"
@@ -559,6 +560,10 @@ constexpr const char* k_usage =
     "                   20 ms, and the milestones up to nearby_stable; written to <f> as Chrome\n"
     "                   trace JSON (chrome://tracing, Perfetto) and summarized as the summary's\n"
     "                   \"startup\" block\n"
+    "  --memory-report  where the process's commit is, at the first frame and at exit: the address\n"
+    "                   space by kind, committed against resident, the owners the engine can name\n"
+    "                   and the live blocks of 16 MiB or more by call stack; the summary's\n"
+    "                   \"memory\" block and one log line each (apps.md, \"--memory-report\")\n"
     "  --no-loading-overlay  a window's load shows cleared frames, not its stage and bar (a\n"
     "                   --game module with game_loading draws its own either way)\n"
     "  --load-on-main   the window's load as it was before W79: every stage on the main thread,\n"
@@ -3417,6 +3422,8 @@ int run_offscreen(Options& options, Interactive& interactive) {
         const i64 begun = time::monotonic_ns();
         take_folded(view_renderer, folded, pending, records);
         startup.frame(readiness());
+        if (view::memory_report().on() && !records.empty())
+          view::memory_report().take("first_frame", &device);
         const i64 ready = time::monotonic_ns();
         const u64 before_tick = session.tick().value;
         const u64 to = before_tick + ticks_per_frame < end ? before_tick + ticks_per_frame : end;
@@ -4014,6 +4021,8 @@ int run_offscreen(Options& options, Interactive& interactive) {
       summary.startup = startup.finish(&why);
       if (!why.empty()) std::fprintf(stderr, "engine-view: --startup-trace: %s\n", why.c_str());
     }
+    view::memory_report().take("exit", &device);
+    summary.memory = view::memory_report().block();
     summary_line = write_json(schema::to_json(summary), JsonWriteOptions{.pretty = false});
     if (!options.benchmark.empty()) {
       const io::Status status = write_benchmark(
@@ -4834,6 +4843,8 @@ int run_view(int argc, char** argv) {
       g_report.frames.enable();
     } else if (a == "--startup-trace") {
       if (!next_value(argc, argv, i, a, options.startup_trace)) return k_exit_usage;
+    } else if (a == "--memory-report") {
+      view::memory_report().enable();  // before the load, so its blocks are logged
     } else if (a == "--no-loading-overlay") {
       options.loading_overlay = false;
     } else if (a == "--load-on-main") {
@@ -6940,6 +6951,8 @@ int run_view(int argc, char** argv) {
         r.ground_settled = !ground_now.has_value() ||
                            (ground_now->chunks_built == 0 && ground_now->layout_lag_m == 0.0);
         startup.frame(r);
+        if (r.frame_done && view::memory_report().on())
+          view::memory_report().take("first_frame", &device);
         if (load_controllable_ns == 0 && startup.reached("player_controllable"))
           load_controllable_ns = time::monotonic_ns();
         if (startup.reached(view::k_startup_milestones[load_ready_rung])) {
@@ -7331,6 +7344,7 @@ int run_view(int argc, char** argv) {
     block.set("first_game_tick", game_first_tick());
     loading_text = write_json(block, JsonWriteOptions{.pretty = false});
   }
+  view::memory_report().take("exit", &device);  // a window logs its two lines (memory_report.h)
   // `--startup-trace` in a window: the same block an offscreen run's summary carries (null off).
   std::string startup_text;
   {

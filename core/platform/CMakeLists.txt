@@ -5,7 +5,8 @@
 engine_module(NAME platform LAYER core
   DEPS base memory containers
   SOURCES src/topology.cpp src/cpu_features.cpp src/cpu_baseline.cpp src/thread.cpp
-          src/process.cpp src/error_dialogs.cpp src/fault_report.cpp src/random.cpp)
+          src/process.cpp src/error_dialogs.cpp src/fault_report.cpp src/random.cpp
+          src/address_space.cpp)
 
 # The secure random source (random.h) is BCryptGenRandom on Windows.
 if(WIN32)
@@ -24,7 +25,7 @@ engine_strip_cpu_baseline(engine_platform)
 engine_module_tests(NAME platform
   SOURCES tests/topology_tests.cpp tests/cpu_features_tests.cpp tests/cpu_baseline_tests.cpp
           tests/process_tests.cpp tests/error_dialogs_tests.cpp tests/fault_report_tests.cpp
-          tests/random_tests.cpp tests/size_table.cpp)
+          tests/random_tests.cpp tests/address_space_tests.cpp tests/size_table.cpp)
 
 # A process that fails on request — an access violation, a stack overflow, abort() and the rest,
 # one argument per kind — for the test that reads the line its death prints
