@@ -111,6 +111,21 @@ bool bake_far_form(const ClusterLodMesh& mesh, std::span<const u32> material, Fa
     unite(parent, tri[3 * t], tri[3 * t + 1]);
     unite(parent, tri[3 * t], tri[3 * t + 2]);
   }
+  // What the simplifier may not cross: a vertex two materials share stays where it is (each
+  // material is simplified alone, and the two must still meet), and one whose point another vertex
+  // with another UV shares is protected (an atlas seam: geometry.md, "What the simplifier is given,
+  // and why"). Everything else — a faceted stone's hard edges among them — may collapse across its
+  // attributes, which is what lets a field of faceted stones simplify at all.
+  Vector<u32> vertex_material(n, ~0u);
+  Vector<u8> lock(n, 0);
+  for (u32 t = 0; t < triangles; ++t)
+    for (u32 k = 0; k < 3; ++k) {
+      const u32 v = tri[3 * t + k];
+      if (vertex_material[v] == ~0u)
+        vertex_material[v] = tri_mat[t];
+      else if (vertex_material[v] != tri_mat[t])
+        lock[v] = meshopt_SimplifyVertex_Lock;
+    }
   {
     struct Key {
       u32 x, y, z, v;
@@ -132,7 +147,34 @@ bool bake_far_form(const ClusterLodMesh& mesh, std::span<const u32> material, Fa
       const Key& b = order[k];
       if (a.x == b.x && a.y == b.y && a.z == b.z) unite(parent, a.v, b.v);
     }
+    // Each run of one point: a seam of materials locks it, a seam of UVs protects it.
+    for (u32 first = 0; first < n;) {
+      u32 last = first + 1;
+      while (last < n && order[last].x == order[first].x && order[last].y == order[first].y &&
+             order[last].z == order[first].z)
+        ++last;
+      bool materials = false, uvs = false;
+      for (u32 k = first + 1; k < last; ++k) {
+        materials = materials || vertex_material[order[k].v] != vertex_material[order[first].v];
+        uvs = uvs || vertices[order[k].v].uv_half2 != vertices[order[first].v].uv_half2;
+      }
+      for (u32 k = first; k < last && (materials || uvs); ++k) {
+        u8& l = lock[order[k].v];
+        if (materials) l = meshopt_SimplifyVertex_Lock;
+        if (uvs && l == 0) l = meshopt_SimplifyVertex_Protect;
+      }
+      first = last;
+    }
   }
+  // The attribute the simplifier weighs: the UV, as the DAG's own simplification weighs it
+  // (`ClusterLodOptions::uv_weight`, 0.5).
+  Vector<f32> uv(2 * n);
+  for (u32 v = 0; v < n; ++v) {
+    const Vec2 t = decode_half2(vertices[v].uv_half2);
+    uv[2 * v] = t.x;
+    uv[2 * v + 1] = t.y;
+  }
+  const f32 uv_weights[2] = {0.5f, 0.5f};
   Vector<u32> piece_of(n, ~0u);
   u32 pieces = 0;
   for (u32 v = 0; v < n; ++v) {
@@ -175,12 +217,12 @@ bool bake_far_form(const ClusterLodMesh& mesh, std::span<const u32> material, Fa
   // the level's error after it.
   Vector<u32> raw;  // every level's indices, into `vertices`, before the compaction
   Vector<Vector<u32>> previous(mats.size());
-  for (u32 m = 0; m < mats.size(); ++m) {
+  for (u32 mi = 0; mi < mats.size(); ++mi) {
     for (u32 t = 0; t < triangles; ++t) {
-      if (tri_mat[t] != mats[m]) continue;
-      previous[m].push_back(tri[3 * t]);
-      previous[m].push_back(tri[3 * t + 1]);
-      previous[m].push_back(tri[3 * t + 2]);
+      if (tri_mat[t] != mats[mi]) continue;
+      previous[mi].push_back(tri[3 * t]);
+      previous[mi].push_back(tri[3 * t + 1]);
+      previous[mi].push_back(tri[3 * t + 2]);
     }
   }
   Vector<f32> previous_error(mats.size(), 0.0f);
@@ -206,39 +248,41 @@ bool bake_far_form(const ClusterLodMesh& mesh, std::span<const u32> material, Fa
         record.dropped_m = std::max(record.dropped_m, extent[k]);
       }
     }
-    for (u32 m = 0; m < mats.size(); ++m) {
+    for (u32 mi = 0; mi < mats.size(); ++mi) {
       subset.clear();
-      const Vector<u32>& from = previous[m];
+      const Vector<u32>& from = previous[mi];
       for (u32 i = 0; i + 2 < from.size(); i += 3) {
         if (piece_kept[piece_of[from[i]]] == 0) continue;
         subset.push_back(from[i]);
         subset.push_back(from[i + 1]);
         subset.push_back(from[i + 2]);
       }
-      previous[m].clear();
+      previous[mi].clear();
       if (subset.empty()) continue;
       dest.resize(subset.size());
       f32 reported = 0.0f;
-      const f32 budget = std::max(e - previous_error[m], 0.0f);
-      const size_t count = meshopt_simplify(
+      const f32 budget = std::max(e - previous_error[mi], 0.0f);
+      const size_t count = meshopt_simplifyWithAttributes(
           dest.data(), subset.data(), subset.size(), &vertices[0].position.x, n,
-          sizeof(FarFormVertex), 0, budget,
-          meshopt_SimplifyLockBorder | meshopt_SimplifySparse | meshopt_SimplifyErrorAbsolute,
+          sizeof(FarFormVertex), uv.data(), 2 * sizeof(f32), uv_weights, 2, lock.data(), 0,
+          budget,
+          meshopt_SimplifyLockBorder | meshopt_SimplifySparse | meshopt_SimplifyErrorAbsolute |
+              meshopt_SimplifyPermissive,
           &reported);
-      previous_error[m] = previous_error[m] + reported;
+      previous_error[mi] = previous_error[mi] + reported;
       if (count == 0) continue;
       FarFormPart part;
       part.first_index = raw.size();
       part.index_count = static_cast<u32>(count);
-      part.material = mats[m];
+      part.material = mats[mi];
       part.level = level;
       for (size_t i = 0; i < count; ++i) {
         raw.push_back(dest[static_cast<u32>(i)]);
-        previous[m].push_back(dest[static_cast<u32>(i)]);
+        previous[mi].push_back(dest[static_cast<u32>(i)]);
       }
       out.parts.push_back(part);
       record.triangles += part.index_count / 3;
-      record.simplify_m = std::max(record.simplify_m, previous_error[m]);
+      record.simplify_m = std::max(record.simplify_m, previous_error[mi]);
     }
     record.part_count = out.parts.size() - record.first_part;
     out.levels.push_back(record);

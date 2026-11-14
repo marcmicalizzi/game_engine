@@ -131,8 +131,8 @@ bool far_form_level_mesh(const geometry::FarForm& form, u32 level,
 bool load_far_tile(const scene_gen::PlacementMesh& mesh, const PlacementMeshOptions& options,
                    PlacementMeshData& out, std::string& error, FarTileStats* stats) {
   out = PlacementMeshData{};
-  FarTileStats local;
-  FarTileStats& s = stats != nullptr ? *stats : local;
+  FarTileStats own_stats;
+  FarTileStats& s = stats != nullptr ? *stats : own_stats;
   s = FarTileStats{};
   scene_gen::FarTile tile;
   if (!scene_gen::read_far_tile(mesh.recipe, tile, &error)) {
