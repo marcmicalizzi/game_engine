@@ -440,7 +440,7 @@ bool write_cluster_cache(const std::string& path, const std::string& source,
                          const Vector<u32>& part_of_cluster, geometry::ClusterLodMesh& lod,
                          geometry::ClusterPages& pages,
                          Vector<geometry::ClusterFileTexture>& textures, u64 source_hash,
-                         u64 build_key, bool far_form = false) {
+                         u64 build_key) {
   geometry::ClusterFileData data;
   data.mesh = std::move(lod);
   data.pages = std::move(pages);
@@ -499,9 +499,6 @@ bool write_cluster_cache(const std::string& path, const std::string& source,
   // two apps' entries stay the same bytes; the records come back to the caller whether or not the
   // entry lands, because the texture lookup does not depend on it (texture.md).
   texture::fill_cluster_texture_records(data);
-  // The far form (G198; geometry.md, "The far form"), as engine-content build bakes it, so the two
-  // apps' entries stay the same bytes; a mesh it does not apply to carries none.
-  if (far_form) geometry::ensure_far_form(data);
 
   std::string error;
   const io::Status status = io::make_directories(io::parent_path(path));
@@ -1075,7 +1072,7 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expect
   // `build-all` takes the entry as current.
   if (!cache_path.empty()) {
     if (write_cluster_cache(cache_path, path, out.data, out.part_material, out.part_of_cluster, lod,
-                            built, out.textures, source_hash, cache_key, true)) {
+                            built, out.textures, source_hash, cache_key)) {
       // The entry this load just wrote holds the same bytes in the same order this mesh is now in,
       // so a streamed run may read its pages back out of it rather than out of host memory.
       out.container = cache_path;
@@ -3396,6 +3393,41 @@ bool load_placement_mesh(const scene_gen::PlacementMesh& mesh, const PlacementMe
   if (!out.source.lod_coverage.empty())
     geometry::permute_cluster_array(order, out.source.lod_coverage);
   out.source.path = mesh.path;
+  out.reach = ground_radius(out.lod, out.part.first_cluster, out.part.cluster_count);
+  if (options.textures) load_placement_textures(desc, options, out);
+  return true;
+}
+
+// A tile mesh from a container already in hand (G198; scene_far.h): the far tile's own
+// derived-data entry, read back as `load_placement_mesh` reads any container.
+bool placement_mesh_from_container(geometry::ClusterFileData& data, const std::string& where,
+                                   const PlacementMeshOptions& options, PlacementMeshData& out,
+                                   std::string& error) {
+  out = PlacementMeshData{};
+  SceneDesc desc;
+  desc.lod = options.lod;
+  desc.ddc = options.ddc;
+  desc.cache = options.cache && !options.ddc.empty();
+  desc.materials = options.materials;
+  out.source.texture_ddc = desc.cache ? desc.ddc : std::string();
+  Vector<geometry::ClusterLodMesh> dags(1);
+  geometry::ClusterPages pages;
+  adopt_container(data, where, desc, out.source, dags[0], pages);
+  Vector<geometry::ClusterMeshPart> parts;
+  Vector<u32> source_of_cluster;
+  if (!geometry::merge_cluster_meshes(
+          std::span<const geometry::ClusterLodMesh>(dags.data(), dags.size()), out.lod, parts,
+          &error, geometry::ClusterOrder::leaves_first, &source_of_cluster)) {
+    error = where + ": " + error;
+    return false;
+  }
+  out.part = parts[0];
+  geometry::permute_cluster_array(
+      std::span<const u32>(source_of_cluster.data() + out.part.first_cluster,
+                           out.part.cluster_count),
+      out.source.part_of_cluster);
+  out.source.path = where;
+  out.source.cache = "hit";
   out.reach = ground_radius(out.lod, out.part.first_cluster, out.part.cluster_count);
   if (options.textures) load_placement_textures(desc, options, out);
   return true;

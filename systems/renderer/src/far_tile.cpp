@@ -139,6 +139,55 @@ bool cluster_parts(Vector<Part>& parts, const geometry::ClusterLodOptions& lod,
       &part_of_cluster, &error);
 }
 
+// The far tile as a container in the derived-data cache: its DAG, its cluster-to-material map, its
+// materials, images and their built-texture records, the identity it was built for. A cache that
+// cannot be written costs the next activation a build and nothing else.
+void write_far_tile(const std::string& path, const scene_gen::PlacementMesh& mesh, u64 key,
+                    const SourceMesh& source, const geometry::ClusterLodMesh& lod,
+                    const Vector<u32>& material_of_cluster) {
+  geometry::ClusterFileData data;
+  data.mesh = lod;
+  data.cluster_material = material_of_cluster;
+  for (const assets::Material& m : source.data.materials) {
+    geometry::ClusterFileMaterial material;
+    material.base_color = m.base_color;
+    material.metallic = m.metallic;
+    material.roughness = m.roughness;
+    material.base_color_image = m.base_color_image;
+    material.normal_image = m.normal_image;
+    material.metallic_roughness_image = geometry::encode_optional_image(m.metallic_roughness_image);
+    material.occlusion_image = geometry::encode_optional_image(m.occlusion_image);
+    material.emissive_image = geometry::encode_optional_image(m.emissive_image);
+    material.emissive = m.emissive;
+    material.normal_scale = m.normal_scale;
+    material.alpha = geometry::encode_alpha_word(m.alpha_mode, m.double_sided, m.alpha_cutoff);
+    data.materials.push_back(material);
+    data.material_sampling.push_back(
+        geometry::encode_material_sampling(m.sampling, m.occlusion_strength));
+  }
+  for (u32 k = 0; k < data.material_sampling.size() && k < source.material_sampling_flags.size();
+       ++k)
+    data.material_sampling[k].flags = source.material_sampling_flags[k];
+  for (const assets::ImageRef& image : source.data.images) {
+    data.image_paths.push_back(image.uri);
+    geometry::ClusterImage carried;
+    carried.mime_type = image.mime_type;
+    carried.bytes = image.bytes;
+    data.images.push_back(std::move(carried));
+  }
+  if (source.textures.size() == source.data.images.size()) data.textures = source.textures;
+  data.source_path = mesh.path;
+  data.source_hash = placement_mesh_identity(mesh);
+  data.build_key = key;
+  std::string error;
+  const io::Status made = io::make_directories(io::parent_path(path));
+  if (made != io::Status::Ok || !geometry::write_cluster_file(path, data, &error)) {
+    ENGINE_LOG_WARN(log_renderer, "far tile cache not written", log::field("path", path),
+                    log::field("error", made != io::Status::Ok ? std::string(io::status_name(made))
+                                                               : error));
+  }
+}
+
 }  // namespace
 
 bool far_form_level_mesh(const geometry::FarForm& form, u32 level,
@@ -197,6 +246,30 @@ bool load_far_tile(const scene_gen::PlacementMesh& mesh, const PlacementMeshOpti
     return false;
   }
   const i64 start_ns = time::monotonic_ns();
+  // **Its own derived-data entry** (renderer.md, "The far tile"): keyed by the recipe's identity —
+  // which covers every member's recipe and place — the far form's and the recipe's versions and the
+  // load's LOD options, so a far tile built once is read back whole, its members never touched.
+  const bool cached = options.cache && !options.ddc.empty();
+  const u64 key = hash_combine(
+      geometry::cluster_cache_key(placement_mesh_identity(mesh), options.lod, false, 0),
+      hash_combine(geometry::k_far_form_version, scene_gen::k_far_tile_version));
+  const std::string cache_path = cached ? geometry::cluster_cache_path(options.ddc, key) : "";
+  if (cached && io::exists(cache_path)) {
+    geometry::ClusterFileData data;
+    std::string why;
+    if (geometry::read_cluster_file(cache_path, data, &why) && data.build_key == key &&
+        placement_mesh_from_container(data, mesh.path, options, out, why)) {
+      s.cache_hit = true;
+      s.clusters = out.lod.mesh.clusters.size();
+      s.triangles = out.lod.leaf_triangle_count;
+      s.members = tile.meshes.size();
+      s.placements = tile.placements.size();
+      s.build_ms = static_cast<f64>(time::monotonic_ns() - start_ns) / 1.0e6;
+      return true;
+    }
+    ENGINE_LOG_WARN(log_renderer, "far tile cache entry ignored", log::field("path", cache_path),
+                    log::field("error", why));
+  }
   // Every member as a near tile builds it, with no textures: the far tile's own pass reads them.
   PlacementMeshOptions member_options = options;
   member_options.textures = false;
@@ -348,6 +421,13 @@ bool load_far_tile(const scene_gen::PlacementMesh& mesh, const PlacementMeshOpti
   s.materials = drawn.size();
   // The parts with triangles, in order, are the DAGs merged; part p draws material p.
   for (const u32 p : drawn)
+    source.part_material.push_back(static_cast<i32>(p));
+  for (u32& part : part_of_cluster)
+    part = drawn[part];
+  if (cached) write_far_tile(cache_path, mesh, key, source, merged, part_of_cluster);
+  // The material map as `adopt_container` leaves a container's: part p is material p.
+  source.part_material.clear();
+  for (u32 p = 0; p < source.data.materials.size(); ++p)
     source.part_material.push_back(static_cast<i32>(p));
   source.part_of_cluster = std::move(part_of_cluster);
   // As `load_placement_mesh` lays out a tile's mesh: leaves first, its streams with it.

@@ -347,9 +347,6 @@ bool build_generated(const std::string& input, const std::string& output,
     error.message = input + ": the generator built under another identity than it hashed";
     return false;
   }
-  // The far form of a rigid mesh (G198; geometry.md, "The far form"), measured from what the
-  // generator built, as the renderer's scene reader bakes it into the same entry.
-  geometry::ensure_far_form(data);
   if (!geometry::write_cluster_file(output, data, &message)) {
     error.rule = "output.unwritable";
     error.message = message;
@@ -662,8 +659,6 @@ bool build_one(const std::string& input, const std::string& output, const MeshOp
   // writer calls the same function, because the two share cache entries byte for byte.
   texture::fill_cluster_texture_records(data);
   collect_texture_sources(data, io::parent_path(input), out.texture_sources);
-  // The far form (G198; geometry.md, "The far form"), as engine-view's cache writer bakes it.
-  geometry::ensure_far_form(data);
 
   // The source as it was given, so the renderer resolves the image paths above against its
   // directory however it came by the container, and the source's identity, so that a later build

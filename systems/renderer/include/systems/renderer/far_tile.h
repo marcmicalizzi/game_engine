@@ -29,7 +29,8 @@ struct FarTileStats {
   u32 source_triangles = 0;  // the members' finest levels, summed over the placements
   f32 error_m = 0.0f;     // the largest honest error of a member's level, times its scale
   f64 members_ms = 0.0;   // loading the members
-  f64 build_ms = 0.0;     // the merge and the DAG
+  f64 build_ms = 0.0;     // the merge and the DAG; for a cache hit, the read
+  bool cache_hit = false;  // read whole from its derived-data entry, no member touched
 };
 
 // Builds the far tile `mesh` names (`scene_gen::is_far_tile`). False, with a sentence, for a recipe

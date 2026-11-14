@@ -11,8 +11,12 @@
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
 
+#include <core/hash/hash.h>
+#include <core/time/time.h>
+
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 
 using namespace engine;
 using namespace engine::rocks;
@@ -27,7 +31,9 @@ f64 massif(const void*, i64 x_mm, i64 z_mm) noexcept {
   return bump(60, 40) + bump(40, 70) + .02 * x;
 }
 
-// The forest's density over the massif's foot, one 32 m tile's meshes as a host builds them.
+// The forest's density over the massif's foot, one 32 m tile's meshes as a host builds them, and
+// the build's wall time.
+i64 build_ns = 0;
 void forest_tile(Vector<geometry::ClusterFileData>& out) {
   test::TempDir scratch;
   const std::string dir = scratch.path();
@@ -61,9 +67,17 @@ void forest_tile(Vector<geometry::ClusterFileData>& out) {
     schema::ReadContext ctx;
     REQUIRE(schema::from_json(patch, json, ctx));
     geometry::ClusterFileData data;
+    const i64 start = time::monotonic_ns();
     REQUIRE_MESSAGE(build_deposit_container(patch, {}, 0, data, error), error);
+    build_ns += time::monotonic_ns() - start;
     out.push_back(std::move(data));
   }
+}
+
+u64 file_bytes(const std::string& path) {
+  std::error_code ec;
+  const auto size = std::filesystem::file_size(path, ec);
+  return ec ? 0 : static_cast<u64>(size);
 }
 }  // namespace
 
@@ -116,10 +130,20 @@ TEST_CASE("deposits far: what the DAG's own distance form keeps of a dense tile,
   u64 level_triangles[geometry::k_far_form_levels] = {};
   f32 level_from[geometry::k_far_form_levels] = {};
   u64 vertices = 0;
+  i64 bake_ns = 0;
+  u64 bytes_without = 0, bytes_with = 0;
+  test::TempDir files;
   for (auto& data : meshes) {
     std::string error;
     REQUIRE(geometry::far_form_applies(data));
+    const std::string path = files.path() + "/mesh.clusters";
+    REQUIRE(geometry::write_cluster_file(path, data, &error));
+    bytes_without += file_bytes(path);
+    const i64 start = time::monotonic_ns();
     REQUIRE_MESSAGE(geometry::ensure_far_form(data, &error), error);
+    bake_ns += time::monotonic_ns() - start;
+    REQUIRE(geometry::write_cluster_file(path, data, &error));
+    bytes_with += file_bytes(path);
     vertices += data.far_form.vertices.size();
     for (u32 l = 0; l < data.far_form.levels.size(); ++l) {
       level_triangles[l] += data.far_form.levels[l].triangles;
@@ -131,6 +155,21 @@ TEST_CASE("deposits far: what the DAG's own distance form keeps of a dense tile,
     MESSAGE("far form level ", l, ": ", level_triangles[l], " triangles over ", meshes.size(),
             " meshes, standing in from ", level_from[l], " m");
   MESSAGE("far form vertices, every level: ", vertices);
+  // What every rigid container build now pays (geometry.md, "The far form"): the bake's share of
+  // the meshes' build, and the bytes it adds.
+  MESSAGE("bake ", static_cast<f64>(bake_ns) / 1.0e6, " ms against the build's ",
+          static_cast<f64>(build_ns) / 1.0e6, " ms (", 100.0 * static_cast<f64>(bake_ns) /
+          static_cast<f64>(build_ns), " %); containers ", bytes_without, " bytes, ", bytes_with,
+          " with the far form (+", 100.0 * static_cast<f64>(bytes_with - bytes_without) /
+          static_cast<f64>(bytes_without), " %)");
+  // The pin (determinism): every piece's far form hashed in order, the same bytes from every
+  // toolchain and thread count.
+  u64 pin = 0;
+  for (const auto& data : meshes)
+    pin = hash_combine(pin, geometry::far_form_hash(data.far_form));
+  MESSAGE("far forms' hash ", pin);
+  // Taken on MSVC 14.51, 2026-11-13 (k_far_form_version 1, k_deposit_version 11).
+  CHECK(pin == 9186255482497582130ull);
   CHECK(level_triangles[0] * 4 < triangles[0]);
 }
 

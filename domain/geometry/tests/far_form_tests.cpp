@@ -164,6 +164,9 @@ TEST_CASE("far form: carried in the container, read back whole, the same bytes f
   REQUIRE(ensure_far_form(again));
   CHECK(far_form_hash(data.far_form) == far_form_hash(again.far_form));
   MESSAGE("far form hash ", far_form_hash(data.far_form));
+  // Taken on MSVC 14.51, 2026-11-13, at k_far_form_version 1; GCC and Clang at v3 and GCC at v2
+  // reproduce it (the containers' runs, G198's hand-back).
+  CHECK(far_form_hash(data.far_form) == 8751553704110674218ull);
   test::TempDir scratch;
   const std::string path = scratch.path() + "/talus.clusters";
   std::string error;

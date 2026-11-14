@@ -105,9 +105,21 @@ TEST_CASE("far tile: a dense tile of deposits is one instance of a sixth of its 
   CHECK(stats.source_triangles <= near_triangles);  // less any the weld made degenerate
   CHECK(stats.source_triangles * 100 >= near_triangles * 99);
 
-  // The same far tile again is the same bytes.
+  // The same far tile again is read whole from its derived-data entry, no member touched, and is
+  // the same bytes.
   renderer::PlacementMeshData again;
-  REQUIRE(renderer::load_far_tile(far.meshes[0], options, again, error));
+  renderer::FarTileStats hit;
+  REQUIRE(renderer::load_far_tile(far.meshes[0], options, again, error, &hit));
+  CHECK(hit.cache_hit);
+  MESSAGE("far tile again: from the cache in ", hit.build_ms, " ms");
+  const u64 pin =
+      hash_combine(hash_bytes(tile.lod.mesh.vertices.data(), tile.lod.mesh.vertices.size() * sizeof(Vec3)),
+                   hash_bytes(tile.lod.mesh.triangles.data(), tile.lod.mesh.triangles.size() * 4));
+  MESSAGE("far tile hash ", pin);
+  // Taken on MSVC 14.51, 2026-11-13 (k_far_form_version 1, k_far_tile_version 1, the default LOD
+  // options): the merged far tile's positions and triangles, built by one thread in the recipe's
+  // order, so the same at any job count.
+  CHECK(pin == 1162762295732236574ull);
   REQUIRE(again.lod.mesh.vertices.size() == tile.lod.mesh.vertices.size());
   CHECK(hash_bytes(again.lod.mesh.vertices.data(), again.lod.mesh.vertices.size() * sizeof(Vec3)) ==
         hash_bytes(tile.lod.mesh.vertices.data(), tile.lod.mesh.vertices.size() * sizeof(Vec3)));
