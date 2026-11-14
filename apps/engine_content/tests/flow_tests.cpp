@@ -116,3 +116,101 @@ TEST_CASE("engine-content flow: the fixture, solved again as an author's lines, 
   }
 #endif
 }
+
+TEST_CASE("engine-content flow: what a block declares decides what the cook does with it") {
+#if !ENGINE_CONTENT_CHANNELS || !ENGINE_CONTENT_TILESET
+  MESSAGE("no channels capability or tiles ground provider in this configuration");
+#else
+  test::TempDir tmp("flow_declares_cmd");
+  REQUIRE(tmp.ok());
+  const std::string dir = tmp.file("fixture");
+  const auto made = run({"flow", "fixture", dir});
+  REQUIRE_MESSAGE(made.code == 0, made.text);
+  std::string text;
+  JsonValue scene;
+  REQUIRE(io::read_file(dir + "/scene.json", text) == io::Status::Ok);
+  REQUIRE(parse_json(text, scene).ok);
+  // A channels entry called "region", so the planner's links would be "region link <n>".
+  JsonValue params = JsonValue::object();
+  params.set("name", JsonValue("region"));
+  params.set("seed", JsonValue(u64{3}));
+  JsonValue lo = JsonValue::array(), hi = JsonValue::array();
+  lo.push_back(JsonValue(4.0));
+  lo.push_back(JsonValue(-24.0));
+  hi.push_back(JsonValue(92.0));
+  hi.push_back(JsonValue(24.0));
+  params.set("region_min", std::move(lo));
+  params.set("region_max", std::move(hi));
+  JsonValue entry = JsonValue::object();
+  entry.set("generator", JsonValue("channels"));
+  entry.set("params", std::move(params));
+  JsonValue placements = JsonValue::array();
+  placements.push_back(std::move(entry));
+  scene.set("placements", std::move(placements));
+  JsonValue& channels = *scene.find("water_channels");
+  REQUIRE(channels.size() == 3);
+  // The author's own line, called what a planner's link is called: solved, whatever its name.
+  channels[0].set("name", JsonValue("region link 0"));
+  // Another writer's block: kept as it is.
+  channels[1].set("derived_from", JsonValue("bridges culvert"));
+  JsonWriteOptions flat;
+  flat.pretty = false;
+  const std::string theirs = write_json(channels[1], flat);
+  // A description laid before W120 (a width, a depth and a slope a point, `fit`, no discharge
+  // and nothing solved): read through the migration, and dropped.
+  for (const char* gone :
+       {"discharge_m3s", "speed_mps", "froude", "wet_left_m", "wet_right_m", "flags"})
+    channels[2].as_object().erase(std::string(gone));
+  JsonValue fit = JsonValue::array();
+  for (u32 i = 0; i < channels[2].find("points")->size(); ++i)
+    fit.push_back(JsonValue(u64{0}));
+  channels[2].set("fit", std::move(fit));
+  REQUIRE(io::write_file_atomic(dir + "/scene-mixed.json", write_json(scene, flat)) ==
+          io::Status::Ok);
+
+  const auto solved = run({"flow", "solve", dir + "/scene-mixed.json", tmp.file("flow.json"),
+                           "--ddc", tmp.file("ddc"), "--resistance", "manning", "--reach", "6"});
+  REQUIRE_MESSAGE(solved.code == 0, solved.text);
+  CHECK(solved.text.find("\"authored_lines\":1") != std::string::npos);
+  CHECK(solved.text.find("\"blocks_kept\":1") != std::string::npos);
+  CHECK(solved.text.find("\"blocks_laid_dropped\":1") != std::string::npos);
+  CHECK(solved.text.find("\"blocks_replaced\":0") != std::string::npos);
+  JsonValue out;
+  REQUIRE(io::read_file(tmp.file("flow.json"), text) == io::Status::Ok);
+  REQUIRE(parse_json(text, out).ok);
+  const JsonValue& blocks = *out.find("water_channels");
+  bool author = false, other = false;
+  for (u32 k = 0; k < blocks.size(); ++k) {
+    const std::string name(blocks[k].find("name")->as_string());
+    CHECK(name != "mouth");
+    if (name == "step") {
+      other = true;
+      CHECK(write_json(blocks[k], flat) == theirs);
+    }
+    const JsonValue* from = blocks[k].find("derived_from");
+    const bool declared = from != nullptr && from->is_string() && !from->as_string().empty();
+    if (name == "region link 0" && !declared) {
+      // (A link of the entry's own, were the planner to find one here, declares the entry.)
+      author = true;
+      CHECK(blocks[k].find("flags")->size() == blocks[k].find("points")->size());
+    }
+  }
+  CHECK(author);
+  CHECK(other);
+
+  // Cooked again from its own output: the entry's blocks are replaced, never solved twice.
+  JsonValue again = scene;
+  again.set("water_channels", blocks);
+  REQUIRE(io::write_file_atomic(dir + "/scene-again.json", write_json(again, flat)) ==
+          io::Status::Ok);
+  const auto twice = run({"flow", "solve", dir + "/scene-again.json", tmp.file("flow-2.json"),
+                          "--ddc", tmp.file("ddc"), "--resistance", "manning", "--reach", "6"});
+  REQUIRE_MESSAGE(twice.code == 0, twice.text);
+  CHECK(twice.text.find("\"authored_lines\":1") != std::string::npos);
+  CHECK(twice.text.find("\"blocks_kept\":1") != std::string::npos);
+  JsonValue out2;
+  REQUIRE(io::read_file(tmp.file("flow-2.json"), text) == io::Status::Ok);
+  REQUIRE(parse_json(text, out2).ok);
+  CHECK(out2.find("water_channels")->size() == blocks.size());
+#endif
+}
