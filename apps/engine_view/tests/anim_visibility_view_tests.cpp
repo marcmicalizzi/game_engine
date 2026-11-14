@@ -96,9 +96,9 @@ Seen seen(const Run& run) {
   return out;
 }
 
-// The bar at a twelfth of a metre's scale in a scene of its own, its block with `bias`, and a path
+// The bar at 7 % of its size in a scene of its own, its block with `bias`, and a path
 // holding the camera 100 m in front of it at the bar's height.
-constexpr f32 k_scale = 0.077f;
+constexpr f32 k_scale = 0.07f;
 constexpr f64 k_distance_m = 100.0;
 
 void write_scene(const test::TempDir& tmp, const char* name, f32 bias) {
@@ -138,7 +138,8 @@ TEST_CASE("anim visibility view: the same bar at 100 m moves with the projection
   // held at LOD2 and draws its rest pose, whose run is empty and hashes as nothing (`k_hash_seed`,
   // animation.cpp `animation_summary`) at any step.
   const Seen small_a = run_at(tmp, "plain.json", 960, 540, 20);
-  // The geometry is chosen for the bend clip's bound on this bar (about 1.6 m at scale 1): the case
+  // The geometry is chosen for the bend clip's bound on this bar (2.12 m at scale 1, measured
+  // 2026-11-14: 0.77 px at 540 rows, 1.54 at 1080 at this scale): the case
   // means what it says only while the travel the rule read keeps the 540-row run under the band's
   // pixel widened by the hysteresis and the 1080-row run over it.
   const f64 travel = small_a.travel_m;
