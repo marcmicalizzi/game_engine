@@ -42,7 +42,12 @@ struct TileConsumerFrame @version(1) {
 /// log"; W81): the tiles generated, the commit's own work, and the renderer taking the tail, split
 /// as `renderer::TileStats` splits it — the part a streamed world's load-in is made of. Each number
 /// is this update's, the difference of the run's counters across it.
-struct TilePlacementsFrame @version(1) {
+///
+/// Version 2 (T131): what the update's tiles cost off the frame's thread and at the pair cap — the
+/// generators' milliseconds on the worker, the tiles a commit took from a job and the ones let go
+/// because their tile changed while it was built, and the drawn tiles the pair budget let go and
+/// the ones it drew again while they were still held (a trade).
+struct TilePlacementsFrame @version(2) {
   /// Tiles the generators built (activations, ring changes that redraw, re-stood tiles) and their
   /// wall milliseconds.
   built: u32 = 0
@@ -76,6 +81,11 @@ struct TilePlacementsFrame @version(1) {
   compactions: u32 = 0
   tight: u32 = 0
   relayouts: u32 = 0
+  worker_ms: f64 = 0 @since(2)
+  collected: u32 = 0 @since(2)
+  discarded: u32 = 0 @since(2)
+  released: u32 = 0 @since(2)
+  returned: u32 = 0 @since(2)
 }
 
 /// One world update, as engine-view's `--world-log` and a headless run record it
@@ -163,7 +173,8 @@ struct TileHandover @version(2) {
   pairs_after: u32 = 0
 }
 /// A world's run, the last line of engine-view's world log: what the ring did and what it cost.
-struct TileWorldSummary @version(3) {
+/// Version 4 (T131): the tiles' builds off the frame's thread and the trades at the pair cap.
+struct TileWorldSummary @version(4) {
   format: string = "engine.world-log.v1"
   tile_size: f32 = 0
   radius: f32[]
@@ -217,4 +228,16 @@ struct TileWorldSummary @version(3) {
   /// (`PlacementTiles::room_bytes`, version 3): about the authored instance count times a
   /// `SceneInstance` and a tag, a second copy of them (docs/subsystems/world.md, "The consumers").
   placement_room_bytes: u64 = 0 @since(3)
+  /// The jobs that built tiles, the generators' milliseconds on the worker, the tiles taken from
+  /// them and let go, and the most one commit's hand-over took on the frame's thread (version 4).
+  build_jobs: u64 = 0 @since(4)
+  worker_ms: f64 = 0 @since(4)
+  collected: u64 = 0 @since(4)
+  discarded: u64 = 0 @since(4)
+  collect_ms_max: f64 = 0 @since(4)
+  /// Drawn tiles the pair budget let go, and of them the ones drawn again while still held: trades.
+  released: u64 = 0 @since(4)
+  returned: u64 = 0 @since(4)
+  /// Tiles that gave their meshes up to a nearer one (`PlacementTilesStats::mesh_yielded`).
+  mesh_yielded: u64 = 0 @since(4)
 }

@@ -89,21 +89,21 @@ bool ViewWorld::create(const renderer::SceneData& data, renderer::SceneRenderer&
     // tracing chain, what the device's geometry indices name over the views.
     placements_config_.max_pairs = renderer.scene().pair_limit();
     placements_config_.fixed_pairs = renderer.scene().static_pair_count();
+    world::admission_tunables(placements_config_);  // no trading at the cap (T131)
     if (!placements_.create(data, placements_config_, error)) return false;
     placements_.set_run_sink(&ViewWorld::hand_over, this);
-    // A tile's meshes go into the scene's mesh room, built off this thread (world.md, "A tile's
-    // meshes: residency by reference"): a pool of its own, made only for a scene that has the
-    // room — one of whose generators hands meshes with its tiles — and small, since a tile's mesh
-    // is a few hundred kilobytes and the frame's own jobs keep the machine's workers.
-    if (renderer.scene().mesh_room().slots != 0) {
-      jobs::JobSystemConfig pool;
-      pool.performance_workers = 1;
-      pool.efficiency_workers = 2;
-      pool.pin_threads = false;
-      mesh_jobs_.emplace(pool);
-    }
+    // A streamed world's tiles are built off this thread, and a tile's meshes too (world.md,
+    // "Builds off the frame's thread", "A tile's meshes: residency by reference"): a pool of its
+    // own, small — one job of tiles at a time and a mesh build or two beside it — since the frame's
+    // own jobs keep the machine's workers.
+    jobs::JobSystemConfig pool;
+    pool.performance_workers = 1;
+    pool.efficiency_workers = renderer.scene().mesh_room().slots != 0 ? 3u : 1u;
+    pool.pin_threads = false;
+    if (!mesh_jobs_.has_value()) mesh_jobs_.emplace(pool);
+    placements_.set_build_jobs(&*mesh_jobs_);
     world::connect_scene_meshes(placements_, renderer,
-                                mesh_jobs_.has_value() ? &*mesh_jobs_ : nullptr);
+                                renderer.scene().mesh_room().slots != 0 ? &*mesh_jobs_ : nullptr);
     world::add_scene_consumers(world_, nullptr, &placements_);
     // Each scene mesh's kind for `nearest_placement`: the generator of the streamed entry whose
     // resident meshes it is (`StreamedPlacements::meshes`), by the generator's registered name.
@@ -318,8 +318,8 @@ bool ViewWorld::update(const renderer::Camera& camera, u64 tick, Mode mode, u32 
   // builds at most the tunable's tiles, nearest first, and the rest of a burst waits for the next
   // updates; a restart or a complete fill builds every tile it holds.
   // The handover pass builds every tile in its event, since it measures each tile's pop there.
-  placements_.begin_update(mode == Mode::Budgeted && !whole_builds_ ? world::max_builds_tunable()
-                                                                    : 0u);
+  const bool budgeted = mode == Mode::Budgeted || mode == Mode::Fill;
+  placements_.begin_update(budgeted && !whole_builds_ ? world::max_builds_tunable() : 0u);
   {
     // The world log is the measurement's and not the frame loop's: what it allocates (a line a
     // frame, the ring's times for the summary) a flight leaves out of the frame-loop count.
@@ -389,6 +389,11 @@ bool ViewWorld::update(const renderer::Camera& camera, u64 tick, Mode mode, u32 
     p.compactions = static_cast<u32>(t.compactions - t0.compactions);
     p.tight = static_cast<u32>(t.tight - t0.tight);
     p.relayouts = static_cast<u32>(t.relayouts - t0.relayouts);
+    p.worker_ms = ms(static_cast<f64>(now.worker_ns - then.worker_ns));
+    p.collected = static_cast<u32>(now.collected - then.collected);
+    p.discarded = static_cast<u32>(now.discarded - then.discarded);
+    p.released = static_cast<u32>(now.released - then.released);
+    p.returned = static_cast<u32>(now.returned - then.returned);
     line.placements = std::move(p);
   }
   log_text_ += write_json(schema::to_json(line), JsonWriteOptions{.pretty = false});
@@ -420,6 +425,14 @@ world::TileWorldSummary ViewWorld::summary() const {
   summary.insert_ms_max = static_cast<f64>(s.max_sink_ns) / 1.0e6;
   summary.handed = s.handed;
   summary.placement_room_bytes = placements_.room_bytes();
+  summary.build_jobs = s.jobs;
+  summary.worker_ms = static_cast<f64>(s.worker_ns) / 1.0e6;
+  summary.collected = s.collected;
+  summary.discarded = s.discarded;
+  summary.collect_ms_max = static_cast<f64>(s.max_collect_ns) / 1.0e6;
+  summary.released = s.released;
+  summary.returned = s.returned;
+  summary.mesh_yielded = s.mesh_yielded;
   const renderer::GpuScene& scene = renderer_->scene();
   summary.prefix_pairs = scene.static_pair_count();
   summary.slot_pairs = scene.ring_slot_pairs();

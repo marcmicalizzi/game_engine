@@ -332,7 +332,9 @@ TEST_CASE(
                     error);
     CHECK_FALSE(change.tight);
     CHECK(layout.pair_end() == reserved);
-    // Every tile drawn outranks every tile withheld: by ring, then by the ring's score.
+    // No tile withheld outranks a tile drawn by more than the admission's bias (T131; world.md, "No
+    // trading at the pair cap"): by ring, then by the ring's score less a drawn tile's bias. Until
+    // 2026-11-13 the bias was none, and the walk at the cap traded tiles a metre apart.
     f32 worst_drawn[3] = {-1.0f, -1.0f, -1.0f};
     u8 best_withheld_ring = k_inactive;
     f32 best_withheld_score = 1.0e30f;
@@ -356,7 +358,8 @@ TEST_CASE(
     for (u8 r = 0; r < 3; ++r) {
       if (worst_drawn[r] < 0.0f) continue;
       CHECK(r <= best_withheld_ring);
-      if (r == best_withheld_ring) CHECK(worst_drawn[r] <= best_withheld_score);
+      if (r == best_withheld_ring)
+        CHECK(worst_drawn[r] <= best_withheld_score + config.admit_bias * config.tile_size);
     }
   }
   CHECK(ruins.stats().refused >= ruins.stats().withheld);
