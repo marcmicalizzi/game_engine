@@ -386,9 +386,12 @@ asked what its far form is.
    (`k_far_form_radius_px`). Level *k* of three is held to `e_k = e_0 · 2^k`.
 4. For each level: every piece whose extent is at most `e_k` is left out — a stone that small is
    under a pixel wherever the level draws, and leaving it out moves the surface by at most its
-   extent — and the rest is simplified to `e_k`, one material at a time, by meshoptimizer's
-   simplifier with the open border locked (`meshopt_SimplifyLockBorder`), so two meshes that met
-   edge to edge — a patch and the next, cut by a tile — still meet.
+   extent — and the rest is simplified, one material at a time, by meshoptimizer's simplifier with
+   the open border locked (`meshopt_SimplifyLockBorder`), so two meshes that met edge to edge — a
+   patch and the next, cut by a tile — still meet. Each level is simplified **from the one before
+   it** (the first from the finest), so a level costs the triangles of the one before and not the
+   mesh's; the errors of its steps add (`simplify_m` is their sum), and each step's target is what
+   is left of `e_k` after the steps before it.
 5. The vertices some level names, in the order the levels first name them, and the levels' indices
    into them.
 
