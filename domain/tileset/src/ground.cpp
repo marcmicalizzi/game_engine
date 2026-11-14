@@ -3,6 +3,7 @@
 // `tiles` block's `manifest` names, or the one its `heightfield` builds into the derived-data
 // cache on a miss — and answers every height from it. It has no time: the set does not move, so
 // it has no `evaluate`, `travel_m`, `wind` or `transport`, and a time-lapse moves nothing of it.
+#include <core/jobs/job_system.h>
 #include <core/log/log.h>
 #include <core/profiling/startup_trace.h>
 #include <domain/geometry/cluster_file.h>
@@ -15,6 +16,7 @@
 #include <algorithm>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <schemas/scene.h>
 
 namespace engine::tileset {
@@ -33,6 +35,28 @@ tunables::Int read_run_kib{"tileset.read_run_kib", 256, 0, 65536,
                            "Adjacent authored terrain tiles read as one run up to this, KiB"};
 tunables::Bool unbuffered{"tileset.unbuffered", false,
                           "Read authored terrain archives past the OS's file cache"};
+// **The mask level's cook on the pool** (T128; tileset.md, "The mask level's cook"): 0 composes
+// its tiles on every performance thread, 1 on the asking thread alone, more caps the threads. The
+// level is the same bytes at any value.
+tunables::Int mask_cook_jobs{"tileset.mask_cook_jobs", 0, 0, 4096,
+                             "Threads the mask level's cook composes tiles on: 0 the performance "
+                             "pool, 1 the asking thread, more a cap"};
+
+// The cook's pool, made on the first ask, which only a cook makes (a hit composes nothing), and
+// gone when the ask returns: a cook is minutes once a key, and a provider asked for its masks
+// keeps no threads.
+struct CookPool {
+  std::optional<jobs::JobSystem> pool;
+  static jobs::JobSystem* get(void* context) {
+    auto* self = static_cast<CookPool*>(context);
+    if (!self->pool.has_value()) {
+      jobs::JobSystemConfig config;
+      config.efficiency_workers = 1;  // nothing here runs on it
+      self->pool.emplace(config);
+    }
+    return &*self->pool;
+  }
+};
 
 TileSet::ReadOptions read_options() {
   TileSet::ReadOptions o;
@@ -91,8 +115,16 @@ bool tiles_masks(const void* state, scene_gen::GroundMasks& out, std::string* er
     g.mask_tried = true;
     MaskBuildResult built;
     std::string why;
-    if (!ensure_mask_level(g.set, g.mask_inputs, std::string(), g.ddc, false, built, why) ||
-        !g.masks.open(built.manifest, why))
+    CookPool pool;
+    MaskCookJobs cook;
+    cook.lanes = static_cast<u32>(mask_cook_jobs.get());
+    if (cook.lanes != 1) {
+      cook.get = &CookPool::get;
+      cook.context = &pool;
+    }
+    // The level as `ensure_mask_level` opened it: one parse of its manifest an ask, not two.
+    if (!ensure_mask_level(g.set, g.mask_inputs, std::string(), g.ddc, false, built, why, cook,
+                           &g.masks))
       g.mask_error = "the ground provider \"tiles\" could not build its masks: " + why;
     // A layer under one quantization step is dropped from its tile rather than counted against
     // the budget (masks.h, `k_mask_step`). **One line a layer, not a tile** (T122): every drop is

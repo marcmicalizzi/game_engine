@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "T128",
+  "reason": "T128: engine-content terrain-masks gains --jobs <n> (the mask cook on the performance pool); its synopsis line in apps.md names the flag",
+  "date": "2026-11-13",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/apps.md": 13
+  }
+}

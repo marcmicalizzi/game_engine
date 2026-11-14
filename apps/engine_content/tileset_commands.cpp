@@ -9,7 +9,8 @@
 //                 [--ring-spacing-mm <s>] [--far-ratio <r>] [--far-levels <n>]
 //                 [--vertical-scale <v>] [--offset-mm <x,y,z>] [--force]
 //
-//   terrain-masks <scene.json> [<out dir>] [--ddc <root>] [--force] [--write-priors <dir>]
+//   terrain-masks <scene.json> [<out dir>] [--ddc <root>] [--force] [--jobs <n>]
+//                 [--write-priors <dir>]
 //
 // `terrain-masks` builds the mask level of a scene terrain's `masks` block (ground materials by
 // place; tileset.md, "The mask level") over the tile set its `tiles` block names, as the `tiles`
@@ -59,6 +60,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <optional>
 #include <schemas/scene.h>
 #endif
 
@@ -100,6 +102,8 @@ constexpr int k_exit_error = 1;
     "      --ddc <root>             the derived-data root (default: the tiles block's, or the\n"
     "                               repository's round the scene)\n"
     "      --force                  build even when the cache holds the key\n"
+    "      --jobs <n>               threads the cook composes tiles on: 0 every performance\n"
+    "                               thread (default), 1 this one; the level is the same bytes\n"
     "      --write-priors <dir>     also write the priors as greyscale PNGs, one per role\n";
 
 [[maybe_unused]] const char* k_read_usage =
@@ -278,6 +282,20 @@ int tiles_command(int argc, char** argv) {
   return k_exit_ok;
 }
 
+// The mask cook's pool, made on the cook's first ask (`tileset::MaskCookJobs`).
+struct CookPool {
+  std::optional<jobs::JobSystem> pool;
+  static jobs::JobSystem* get(void* context) {
+    auto* self = static_cast<CookPool*>(context);
+    if (!self->pool.has_value()) {
+      jobs::JobSystemConfig config;
+      config.efficiency_workers = 1;
+      self->pool.emplace(config);
+    }
+    return &*self->pool;
+  }
+};
+
 int masks_command(int argc, char** argv) {
   if (argc < 3) return usage(k_masks_usage, "");
   const std::string scene_path = argv[2];
@@ -285,6 +303,7 @@ int masks_command(int argc, char** argv) {
   std::string ddc;
   std::string priors_dir;
   bool force = false;
+  u32 jobs = 0;
   int i = 3;
   if (i < argc && argv[i][0] != '-') out_dir = argv[i++];
   for (; i < argc; ++i) {
@@ -292,6 +311,8 @@ int masks_command(int argc, char** argv) {
     const bool has_value = i + 1 < argc;
     if (a == "--ddc" && has_value) {
       ddc = argv[++i];
+    } else if (a == "--jobs" && has_value && parse_int(argv[i + 1], jobs)) {
+      ++i;
     } else if (a == "--write-priors" && has_value) {
       priors_dir = argv[++i];
     } else if (a == "--force") {
@@ -329,7 +350,15 @@ int masks_command(int argc, char** argv) {
     return failed("terrain-masks", error);
   const i64 start = time::monotonic_ns();
   tileset::MaskBuildResult built;
-  if (!tileset::ensure_mask_level(set, inputs, out_dir, ddc, force, built, error))
+  // The cook on the performance pool (T128), made only if the cook runs: a hit starts no threads.
+  CookPool pool;
+  tileset::MaskCookJobs cook;
+  cook.lanes = jobs;
+  if (jobs != 1) {
+    cook.get = &CookPool::get;
+    cook.context = &pool;
+  }
+  if (!tileset::ensure_mask_level(set, inputs, out_dir, ddc, force, built, error, cook))
     return failed("terrain-masks", error);
   if (!priors_dir.empty()) {
     Vector<std::string> written;
