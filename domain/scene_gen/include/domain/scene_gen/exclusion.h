@@ -149,6 +149,12 @@ class Exclusion {
   // the surface the water bodies are compared against (absent: flat at 0).
   bool excluded_mm(const Ground& ground, i64 x_mm, i64 z_mm,
                    u32 kinds = k_exclude_all) const noexcept;
+  // **The level of the water over a point** (W121; scene_gen.md, "Exclusion"): the highest level of
+  // the bodies whose water covers the world point (whole millimetres) — the points the water kind
+  // above excludes — or false where none does. A channel's mouth reads it: its cut is graded to the
+  // level of the body it ends in, which is the ground at its shoreline only where the outline is
+  // the level's contour.
+  bool water_level_mm(const Ground& ground, i64 x_mm, i64 z_mm, f64& level) const noexcept;
   // Metres from the point to the nearest channel's bank edge (0 inside it), or a very large number
   // when none is within `k_riparian_reach_m` of it.
   f64 channel_distance_mm(i64 x_mm, i64 z_mm) const noexcept;
