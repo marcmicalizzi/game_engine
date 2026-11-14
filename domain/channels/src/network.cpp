@@ -1732,8 +1732,8 @@ bool route_hollows(const ChannelLayer& p, const scene_gen::Ground& ground,
                        : 0;
     // An open body covers ground under its level anywhere: asked far outside the region.
     f64 sea = 0;
-    const i64 far = n.x_mm - 4'000'000'000ll;
-    if (body_level_at(*water, far, far, -1e6, 1e6, sea)) {
+    const i64 outside_mm = n.x_mm - 4'000'000'000ll;
+    if (body_level_at(*water, outside_mm, outside_mm, -1e6, 1e6, sea)) {
       const i64 sea_um = std::llround(sea * 1e6);
       for (u32 i = 0; i < cells; ++i)
         if (covered[i] && n.ground_um[i] < sea_um) sink[i] = 1;
@@ -1746,8 +1746,9 @@ bool route_hollows(const ChannelLayer& p, const scene_gen::Ground& ground,
         floor_div(scene_gen::nearest_mm(b.at[0]) - n.x_mm + n.spacing_mm / 2, n.spacing_mm);
     const i64 r =
         floor_div(scene_gen::nearest_mm(b.at[1]) - n.z_mm + n.spacing_mm / 2, n.spacing_mm);
-    dry_at.push_back(static_cast<u32>(std::clamp<i64>(r, 0, n.depth - 1)) * n.width +
-                     static_cast<u32>(std::clamp<i64>(c, 0, n.width - 1)));
+    const i64 last_r = static_cast<i64>(n.depth) - 1, last_c = static_cast<i64>(n.width) - 1;
+    dry_at.push_back(static_cast<u32>(std::clamp<i64>(r, 0, last_r)) * n.width +
+                     static_cast<u32>(std::clamp<i64>(c, 0, last_c)));
   }
   Vector<u32> pit_of;
   Vector<Pit> pits;
