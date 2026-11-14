@@ -126,7 +126,8 @@ TEST_CASE("far form: small pieces leave by level, the rest simplifies within its
             level.kept_pieces, " pieces kept, ", level.dropped_pieces, " left out");
     CHECK(level.dropped_pieces == dropped[l]);
     CHECK(level.kept_pieces + level.dropped_pieces == form.header.pieces);
-    CHECK(FarForm::level_error(level) <= level.error_m);
+    // A level's steps add their errors, which a float sum may carry an ulp past.
+    CHECK(FarForm::level_error(level) <= level.error_m * 1.000001f);
     CHECK(level.triangles < before);
     before = level.triangles;
   }

@@ -439,7 +439,7 @@ bool write_cluster_cache(const std::string& path, const std::string& source,
                          const Vector<u32>& part_of_cluster, geometry::ClusterLodMesh& lod,
                          geometry::ClusterPages& pages,
                          Vector<geometry::ClusterFileTexture>& textures, u64 source_hash,
-                         u64 build_key) {
+                         u64 build_key, bool far_form = false) {
   geometry::ClusterFileData data;
   data.mesh = std::move(lod);
   data.pages = std::move(pages);
@@ -498,6 +498,9 @@ bool write_cluster_cache(const std::string& path, const std::string& source,
   // two apps' entries stay the same bytes; the records come back to the caller whether or not the
   // entry lands, because the texture lookup does not depend on it (texture.md).
   texture::fill_cluster_texture_records(data);
+  // The far form (G198; geometry.md, "The far form"), as engine-content build bakes it, so the two
+  // apps' entries stay the same bytes; a mesh it does not apply to carries none.
+  if (far_form) geometry::ensure_far_form(data);
 
   std::string error;
   const io::Status status = io::make_directories(io::parent_path(path));
@@ -1071,7 +1074,7 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expect
   // `build-all` takes the entry as current.
   if (!cache_path.empty()) {
     if (write_cluster_cache(cache_path, path, out.data, out.part_material, out.part_of_cluster, lod,
-                            built, out.textures, source_hash, cache_key)) {
+                            built, out.textures, source_hash, cache_key, true)) {
       // The entry this load just wrote holds the same bytes in the same order this mesh is now in,
       // so a streamed run may read its pages back out of it rather than out of host memory.
       out.container = cache_path;

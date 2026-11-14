@@ -121,6 +121,9 @@ bool load_generated_mesh(const std::string& path, const SceneDesc& desc, u64 exp
     return false;
   }
   data.source_path = path;
+  // The far form of a rigid mesh (G198; geometry.md, "The far form"), measured from what the
+  // generator built and never asked of it, as engine-content build bakes it.
+  geometry::ensure_far_form(data);
   ENGINE_LOG_INFO(log_renderer, "mesh generated", log::field("path", path),
                   log::field("generator", generator->name), log::field("kind", data.generator_kind),
                   log::field("triangles", data.mesh.leaf_triangle_count),

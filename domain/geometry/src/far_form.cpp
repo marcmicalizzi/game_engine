@@ -169,7 +169,21 @@ bool bake_far_form(const ClusterLodMesh& mesh, std::span<const u32> material, Fa
   std::sort(mats.begin(), mats.end());
   mats.resize(static_cast<u32>(std::unique(mats.begin(), mats.end()) - mats.begin()));
 
+  // Each level is simplified from the one before it (the finest for the first), so a level costs
+  // the triangles of the one before and not the mesh's; its simplifier error then adds to the one
+  // before's, which is what `simplify_m` records, and the target of each step is what is left of
+  // the level's error after it.
   Vector<u32> raw;  // every level's indices, into `vertices`, before the compaction
+  Vector<Vector<u32>> previous(mats.size());
+  for (u32 m = 0; m < mats.size(); ++m) {
+    for (u32 t = 0; t < triangles; ++t) {
+      if (tri_mat[t] != mats[m]) continue;
+      previous[m].push_back(tri[3 * t]);
+      previous[m].push_back(tri[3 * t + 1]);
+      previous[m].push_back(tri[3 * t + 2]);
+    }
+  }
+  Vector<f32> previous_error(mats.size(), 0.0f);
   Vector<u32> subset;
   Vector<u32> dest;
   f32 e = radius / k_far_form_radius_px;
@@ -192,33 +206,39 @@ bool bake_far_form(const ClusterLodMesh& mesh, std::span<const u32> material, Fa
         record.dropped_m = std::max(record.dropped_m, extent[k]);
       }
     }
-    for (const u32 mat : mats) {
+    for (u32 m = 0; m < mats.size(); ++m) {
       subset.clear();
-      for (u32 t = 0; t < triangles; ++t) {
-        if (tri_mat[t] != mat || piece_kept[piece_of[tri[3 * t]]] == 0) continue;
-        subset.push_back(tri[3 * t]);
-        subset.push_back(tri[3 * t + 1]);
-        subset.push_back(tri[3 * t + 2]);
+      const Vector<u32>& from = previous[m];
+      for (u32 i = 0; i + 2 < from.size(); i += 3) {
+        if (piece_kept[piece_of[from[i]]] == 0) continue;
+        subset.push_back(from[i]);
+        subset.push_back(from[i + 1]);
+        subset.push_back(from[i + 2]);
       }
+      previous[m].clear();
       if (subset.empty()) continue;
       dest.resize(subset.size());
       f32 reported = 0.0f;
+      const f32 budget = std::max(e - previous_error[m], 0.0f);
       const size_t count = meshopt_simplify(
           dest.data(), subset.data(), subset.size(), &vertices[0].position.x, n,
-          sizeof(FarFormVertex), 0, e,
+          sizeof(FarFormVertex), 0, budget,
           meshopt_SimplifyLockBorder | meshopt_SimplifySparse | meshopt_SimplifyErrorAbsolute,
           &reported);
+      previous_error[m] = previous_error[m] + reported;
       if (count == 0) continue;
       FarFormPart part;
       part.first_index = raw.size();
       part.index_count = static_cast<u32>(count);
-      part.material = mat;
+      part.material = mats[m];
       part.level = level;
-      for (size_t i = 0; i < count; ++i)
+      for (size_t i = 0; i < count; ++i) {
         raw.push_back(dest[static_cast<u32>(i)]);
+        previous[m].push_back(dest[static_cast<u32>(i)]);
+      }
       out.parts.push_back(part);
       record.triangles += part.index_count / 3;
-      record.simplify_m = std::max(record.simplify_m, reported);
+      record.simplify_m = std::max(record.simplify_m, previous_error[m]);
     }
     record.part_count = out.parts.size() - record.first_part;
     out.levels.push_back(record);
