@@ -16,7 +16,7 @@
       "file": "systems/renderer/src/scene_renderer.cpp",
       "function": "SceneRenderer::record_frame",
       "why": "every pass and every feature flag of a frame",
-      "ceiling": 3504
+      "ceiling": 3507
     },
     {
       "id": "renderer.record_frame.add_pass",
@@ -46,7 +46,7 @@
       "measure": "file-lines",
       "file": "apps/engine_view/main.cpp",
       "why": "every play feature and every flag",
-      "ceiling": 7479
+      "ceiling": 7538
     },
     {
       "id": "engine_view.run_view.lines",
@@ -54,7 +54,7 @@
       "file": "apps/engine_view/main.cpp",
       "function": "run_view",
       "why": "the windowed loop",
-      "ceiling": 3166
+      "ceiling": 3174
     },
     {
       "id": "engine_view.run_offscreen.lines",
@@ -62,7 +62,7 @@
       "file": "apps/engine_view/main.cpp",
       "function": "run_offscreen",
       "why": "the offscreen loop",
-      "ceiling": 1160
+      "ceiling": 1166
     },
     {
       "id": "gfx.resolve_modules",
@@ -85,7 +85,7 @@
       "path": "apps/engine_view/main.cpp",
       "macro_prefix": "ENGINE_VIEW_",
       "why": "a capability wired into the viewer by hand",
-      "ceiling": 84
+      "ceiling": 85
     },
     {
       "id": "engine_view.if_engine_view",
@@ -93,7 +93,7 @@
       "path": "apps/engine_view",
       "macro_prefix": "ENGINE_VIEW_",
       "why": "the same, in every source file of the app and its tests",
-      "ceiling": 146
+      "ceiling": 148
     },
     {
       "id": "engine_host.ops_methods.if_engine_host",
@@ -107,25 +107,25 @@
       "id": "page:docs/subsystems/renderer.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/renderer.md",
-      "ceiling": 1080530
+      "ceiling": 1089314
     },
     {
       "id": "page:docs/subsystems/apps.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/apps.md",
-      "ceiling": 667417
+      "ceiling": 686082
     },
     {
       "id": "page:docs/subsystems/gfx.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/gfx.md",
-      "ceiling": 321369
+      "ceiling": 324280
     },
     {
       "id": "page:docs/subsystems/geometry.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/geometry.md",
-      "ceiling": 268873
+      "ceiling": 270126
     },
     {
       "id": "page:docs/subsystems/flora.md",
@@ -149,7 +149,7 @@
       "id": "page:docs/subsystems/water.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/water.md",
-      "ceiling": 199873
+      "ceiling": 211030
     },
     {
       "id": "page:docs/subsystems/protocol.md",
@@ -173,7 +173,7 @@
       "id": "page:docs/subsystems/world.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/world.md",
-      "ceiling": 111390
+      "ceiling": 122279
     },
     {
       "id": "page:AGENTS.md",
@@ -1131,6 +1131,164 @@
           "id": "page:docs/subsystems/landform.md",
           "old": 100000,
           "new": 112217
+        }
+      ]
+    },
+    {
+      "date": "2026-11-14",
+      "by": "Marc Micalizzi",
+      "reason": "",
+      "commit": "84f6d872",
+      "folded": [
+        {
+          "name": "A43",
+          "reason": "A43: what a game module can ask the world (hotload ABI 10). apps.md gains its section (the casts, the water at a point, the supports, what an imported asset gets, what was measured and found), water.md 'The water at a point', geometry.md 'Perches' (section 43); main.cpp's Wading builds the game's water query beside the walker's depth (the bodies' cooked maps and the channels' descriptions) and hands it to the runner under one ENGINE_VIEW_GAME line; walk.cpp's two module queries sit in one ENGINE_VIEW_WALK_PHYSICS block",
+          "date": "2026-11-14",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "engine_view.main_cpp.lines": 40,
+            "engine_view.main_cpp.if_engine_view": 1,
+            "engine_view.if_engine_view": 2,
+            "page:docs/subsystems/apps.md": 10257,
+            "page:docs/subsystems/geometry.md": 1257,
+            "page:docs/subsystems/water.md": 4060
+          }
+        },
+        {
+          "name": "A44",
+          "reason": "apps.md documents hotload ABI 11's three actor entries (the tier bias, the clip list, the seek), --animate offscreen and the anim-lod flags' new meaning (A44)",
+          "date": "2026-11-14",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "engine_view.main_cpp.lines": -2,
+            "engine_view.run_view.lines": -2,
+            "page:docs/subsystems/apps.md": 3832
+          }
+        },
+        {
+          "name": "S105",
+          "reason": "S105: the cascades' texel cut leaves out every mesh that faces the sky. record_frame hands the cascades' cull the measured table (3 lines); renderer.md's 'The ground takes the picture's cut in every cascade' gains why the rule by a terrain level missed the still grid and the lifted water, the measurement, what any asset gets and what it costs, and the row's cost pair (main and branch alternating on the desert overlook and the oasis pool); gfx.md gains the CullParams fields; water.md's One sheet gains what the two shadow paths owe the sheet",
+          "date": "2026-11-14",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.record_frame.lines": 3,
+            "page:docs/subsystems/renderer.md": 6860,
+            "page:docs/subsystems/gfx.md": 705,
+            "page:docs/subsystems/water.md": 1347
+          }
+        },
+        {
+          "name": "S107",
+          "reason": "S107: water.md gains Where the water is (the body's definition, the surface no light's occluder, the case, the cost pair and the sea it cleaned); renderer.md's caster policy gains the water body's line",
+          "date": "2026-11-14",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 495,
+            "page:docs/subsystems/water.md": 5750
+          }
+        },
+        {
+          "name": "T128",
+          "reason": "T128: engine-content terrain-masks gains --jobs <n> (the mask cook on the performance pool); its synopsis line in apps.md names the flag",
+          "date": "2026-11-13",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 13
+          }
+        },
+        {
+          "name": "T129",
+          "reason": "engine-view --memory-report: the flag, the first-frame and exit snapshots in both loops, and its sections in apps.md and gfx.md (what the report holds; the device's large-buffer log and the driver's backing); leg 2: engine-view releases the uploaded host streams in both loops and a window's summary line carries the memory block; renderer.md says what of the scene's host copy stays after the upload and why",
+          "date": "2026-11-14",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "engine_view.main_cpp.lines": 21,
+            "engine_view.run_view.lines": 10,
+            "engine_view.run_offscreen.lines": 6,
+            "page:docs/subsystems/renderer.md": 1429,
+            "page:docs/subsystems/apps.md": 4266,
+            "page:docs/subsystems/gfx.md": 2206
+          }
+        },
+        {
+          "name": "T130",
+          "reason": "engine-content static-kit, the static world's kit writer, is a new command of the content tool: its usage line and one bullet (the rest is on docs/experiments/static-asset-world.md)",
+          "date": "2026-11-14",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 297
+          }
+        },
+        {
+          "name": "T131",
+          "reason": "T131 with W118: the world's tile builds moved off the frame's thread (with engine-view's first fill and the tail's reserve), the pair budget's no-trading rule and the mesh room's yield of waiting tiles are new behaviour the page owns; the measurements went to a page of their own",
+          "date": "2026-11-14",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/world.md": 10889
+          }
+        }
+      ],
+      "changes": [
+        {
+          "id": "renderer.record_frame.lines",
+          "old": 3504,
+          "new": 3507
+        },
+        {
+          "id": "engine_view.main_cpp.lines",
+          "old": 7479,
+          "new": 7538
+        },
+        {
+          "id": "engine_view.run_view.lines",
+          "old": 3166,
+          "new": 3174
+        },
+        {
+          "id": "engine_view.run_offscreen.lines",
+          "old": 1160,
+          "new": 1166
+        },
+        {
+          "id": "engine_view.main_cpp.if_engine_view",
+          "old": 84,
+          "new": 85
+        },
+        {
+          "id": "engine_view.if_engine_view",
+          "old": 146,
+          "new": 148
+        },
+        {
+          "id": "page:docs/subsystems/renderer.md",
+          "old": 1080530,
+          "new": 1089314
+        },
+        {
+          "id": "page:docs/subsystems/apps.md",
+          "old": 667417,
+          "new": 686082
+        },
+        {
+          "id": "page:docs/subsystems/gfx.md",
+          "old": 321369,
+          "new": 324280
+        },
+        {
+          "id": "page:docs/subsystems/geometry.md",
+          "old": 268873,
+          "new": 270126
+        },
+        {
+          "id": "page:docs/subsystems/water.md",
+          "old": 199873,
+          "new": 211030
+        },
+        {
+          "id": "page:docs/subsystems/world.md",
+          "old": 111390,
+          "new": 122279
         }
       ]
     }
