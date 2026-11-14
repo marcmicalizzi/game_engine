@@ -35,6 +35,7 @@
 #include <core/math/math.h>
 #include <domain/geometry/cluster_lod.h>
 #include <domain/geometry/cluster_pages.h>
+#include <domain/geometry/far_form.h>
 #include <domain/geometry/material_sampling.h>
 #include <foundation/io/vfs.h>
 
@@ -221,10 +222,24 @@ enum class ClusterSection : u32 {
   // whose mesh stands on the ground** (the flora's trees, a standing deadwood remain), like 34 to
   // 41, so every other container is the bytes it was; a reader without it seats nothing. Resident.
   Seat = 42,
+  // **The far form of a rigid mesh** (G198; far_form.h; geometry.md, "The far form"): what the mesh
+  // draws as once its radius projects under 128 pixels — its finest level with the pieces a level's
+  // error covers left out and the rest simplified to it, a few levels of rising error. 43 is exactly
+  // one `FarFormHeader`; 44 one `FarFormLevel` a level; 45 one `FarFormPart` a (level, material);
+  // 46 the `FarFormVertex` the levels share; 47 their `u32` indices. Five kinds because the format's
+  // rule is one fixed-size element per section. **Written only when the build bakes one** (a rigid
+  // mesh: no skin, no morph, no motion contract, no impostor chain), like 34 to 42; a reader without
+  // them has no far form, and a host that wants one bakes it from the finest level, the same bytes.
+  // Resident.
+  FarForm = 43,
+  FarFormLevels = 44,
+  FarFormParts = 45,
+  FarFormVertices = 46,
+  FarFormIndices = 47,
 };
 
 // One past the highest kind this build knows, which is how wide a by-kind table has to be.
-inline constexpr u32 k_cluster_section_kinds = static_cast<u32>(ClusterSection::Seat) + 1;
+inline constexpr u32 k_cluster_section_kinds = static_cast<u32>(ClusterSection::FarFormIndices) + 1;
 
 // Names the kinds this build knows, "unknown" for anything else; for diagnostics and for
 // `engine-content info`.
@@ -524,7 +539,19 @@ struct ClusterFileData {
   // Written only when the radius is positive.
   ClusterFileSeat seat{};
   bool has_seat() const noexcept { return seat.radius_m > 0.0f; }
+  // The far form (sections 43 to 47): empty for a mesh whose build baked none. Written only when not
+  // empty.
+  FarForm far_form;
 };
+
+// Whether a container's mesh is one a far form is baked for (G198; geometry.md, "The far form"): a
+// rigid mesh — no skin, no morph channels, no motion contract (it sways) and no impostor chain (it
+// has a far form of its own) — with finest triangles. Measured from the data, never asked of the
+// generator that made it.
+bool far_form_applies(const ClusterFileData& data) noexcept;
+// Bakes `data.far_form` when it applies and is empty; true when the data then has one. A failed
+// bake leaves it empty and says why in `error`.
+bool ensure_far_form(ClusterFileData& data, std::string* error = nullptr);
 
 // Material `material`'s sampling record, or the default one (repeat, linear, no transform,
 // occlusion strength 1) when the container carries none — which is what every container written

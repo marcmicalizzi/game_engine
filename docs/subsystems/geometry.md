@@ -363,6 +363,71 @@ instead — coarser, never a hole. The renderer builds its forms for the session
 ([renderer](renderer.md#authored-instances-per-tile)), so it is a window resized after the scene is
 read, or a capture at another size, that sees it.
 
+## The far form
+
+Roadmap G198 (2026-11-13; `far_form.h`, the container's sections 43 to 47). The owner, after a
+walk: "rocks need impostors at distance". A distance form keeps the top of a mesh's DAG, and a DAG
+**coarsens what is connected and never removes a piece**: a talus patch is a bed and a hundred
+loose stones and blocks, each a closed piece that the simplifier can shrink to a few triangles and
+no further, so a far ring of the forest's talus kept most of every patch's clusters (the measurement
+is on [rocks](rocks.md#a-deposit-past-the-first-ring)), and every kept cluster is a pair and a share
+of the mesh room whether or not it draws. The far form is the mesh as it can be drawn from far
+enough that a piece of it is under a pixel: **made from the mesh alone**, for any rigid mesh — an
+imported boulder and a generated talus alike — and carried in its container, so no generator is
+asked what its far form is.
+
+**The bake** (`bake_far_form`, from the finest level and the cluster-to-material map):
+
+1. The finest level's triangles, welded by source vertex.
+2. Its **pieces**: vertices joined by a triangle or standing at the same point (a seam's two
+   copies), by union-find with the smaller root winning, so the pieces are a function of the
+   vertices' order. Each piece's extent is its box's diagonal.
+3. The mesh's centre (its box's) and radius (the farthest vertex), and `e_0 = radius / 128`
+   (`k_far_form_radius_px`). Level *k* of three is held to `e_k = e_0 · 2^k`.
+4. For each level: every piece whose extent is at most `e_k` is left out — a stone that small is
+   under a pixel wherever the level draws, and leaving it out moves the surface by at most its
+   extent — and the rest is simplified to `e_k`, one material at a time, by meshoptimizer's
+   simplifier with the open border locked (`meshopt_SimplifyLockBorder`), so two meshes that met
+   edge to edge — a patch and the next, cut by a tile — still meet.
+5. The vertices some level names, in the order the levels first name them, and the levels' indices
+   into them.
+
+Each level records what it was held to (`error_m`), what the simplifier reported (`simplify_m`) and
+the largest piece it left out (`dropped_m`); the larger of the last two is its **honest error**, at
+most `error_m`. `far_form_distance` turns it into the nearest a camera may stand for the level to be
+within a threshold under a projection — so a level stands in once **the mesh's radius projects under
+128 pixels times its step** (a 16 m patch, radius about 11 m, from about 90 m at 1080p and the
+default camera), and a consumer that knows its own projection says where, instead of trusting a
+constant. Why 128: a ring past the first of a streamed world (a 64 m tile at 1.5 tiles) starts
+96 m out, and the forest's deposit pieces are 8 to 16 m across.
+
+**Which meshes get one** (`far_form_applies`): a rigid mesh with finest triangles — no skin, no
+morph channels, no motion contract (it sways, and its far form would not), no impostor chain (a tree
+has a far form of its own, [flora](flora.md#the-impostor-chain)). Measured from the data, never
+asked. A container that carries none (written before section 43, or by a build that bakes none) is
+baked from its finest level by whoever wants it, **the same bytes**: the bake reads nothing the
+container does not hold.
+
+**The record.** 43 is one `FarFormHeader` (48 bytes: the version, the level count, the finest
+triangles, the pieces, the centre, the radius, the 128), 44 one `FarFormLevel` a level (32), 45 one
+`FarFormPart` a (level, material) (16: a run of 47 and the container's material), 46 the shared
+`FarFormVertex` (20: a position and the two GPU attribute words as the mesh carries them), 47 the
+`u32` indices. All five are written only when the far form is not empty, and all five are resident.
+The size table pins the four records.
+
+**Determinism.** meshoptimizer's simplifier (the DAG's own; contraction off tree-wide), integer
+union-find and sorts on integer keys: the same bytes from every toolchain and any thread count
+(`far_form_tests.cpp` pins the hash).
+
+**What it is not.** Not an impostor: a baked card or a star of planes stands in for foliage, where a
+pixel is coverage and colour, and a camera-facing quad has no shader here
+([renderer](renderer.md#impostors-are-masked-clusters)); a rock is opaque and seen from above on a
+slope, where a star of planes reads as crossed cards and casts their shadow, and every piece of a
+talus is a different mesh, so a per-mesh atlas would not be shared. A far form keeps the near
+form's own triangles, materials and UVs, so it casts what the near form casts within its error and
+shades with the same textures, and the hand-over moves no colour. Its consumer merges many of them
+into one mesh per tile ([renderer](renderer.md#the-far-tile)).
+
 ## UV-degenerate triangles: the repair
 
 **What it repairs.** E10 ([experiment](../experiments/e10-generated-props.md)) found that the commonest atlas failure on generated props is not fragmentation but a single island of **no area** in an otherwise sound atlas: eight of twenty Meshy props, all four of Tripo's island failures, and both TRELLIS.2 samples failed the harness's one-texel check on one to a few triangles, in atlases whose median island was hundreds to tens of thousands of texels. Nothing about such an island needs a texture pipeline. It covers less than a texel, so nothing in it can be sampled as itself at any mip, and no seam-respecting simplification can coarsen it; folding it into the island beside it loses nothing and needs no repack and no rebake. `geometry::repair_uv_degenerate_triangles` (`uv_repair.h`) does that, and both builders run it through `assets::repair_uv_degenerate_triangles` **after the load and before the weld** — `engine-content build` and the renderer's glTF path behind `engine-view --mesh`, which share cache entries and must build the same bytes.

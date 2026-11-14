@@ -3935,6 +3935,57 @@ vertices); and on a GPU, with the ring holding the four tiles round the origin a
 the forest's edge: **937 pixels of far trees** where the scene without the far forest drew none (tree
 pixels 1,090 against 174), **no far pixel in a tile the tail holds**, none at all with every tile
 held, and more with none held (RTX 5090, `msvc-debug`, 2026-10-31).
+
+**What of it keys on its generator** (read for G198, which does not copy it): its coarsest form is
+the DAG's terminal clusters, which is the whole-tree star only because the flora capability bakes
+one (section 38 is written by flora alone), and the cross is found from that star's shape; its
+`min_height_m` of 4 m is the forest's understory line. Neither is wrong for trees, and neither says
+what a rock's far form is: a rock's terminal clusters are its DAG's top, which over a talus is most
+of the mesh ([geometry](geometry.md#the-far-form)).
+
+## The far tile
+
+Roadmap G198 (2026-11-13; `far_tile.h`, `far_tile.cpp`; scene_gen's `far_tile.h`). **A tile mesh
+that is its members' far forms** ([geometry](geometry.md#the-far-form)): a generator, or a host's
+form rule, hands a recipe `<dir>/far-<hash>.far.json` — the mesh generator "far" — that names other
+placement meshes exactly as a near tile hands them (a recipe's bytes, or a file and its hash) and
+where each stands from the far tile's origin, in whole millimetres with a turn and a scale, and the
+far form level they draw. `load_placement_mesh` answers it through `load_far_tile`, on whichever
+thread builds the tile's meshes:
+
+1. Every member is built or found as a near tile builds it (`load_placement_mesh`, the same
+   derived-data entry, no textures), and its far form is the one its container carried, or the
+   same bake from its finest level.
+2. Each placement's level is turned, scaled and moved to its place; a normal is turned with the
+   inverse of the scale. One part a distinct material: a member's materials and images are taken
+   once, an image's relative path made absolute against its member's directory, and two members
+   whose materials are the same record over the same images share a part — every piece of a talus
+   is its own mesh with its rock's one set, so a far tile of forty pieces is one part.
+3. Each part is clustered with its own DAG (`build_cluster_lod`, the load's options), the parts
+   merged, and the clusters laid out leaves first as every tile mesh is; its textures are the
+   load's pass over the one mesh, as every tile mesh's are.
+
+So the far tile is **one instance**: one run of pairs, one bottom-level structure, one admission into
+the mesh room, where the meshes it stands for were one each; and **they need not be resident** — a
+far tile reads its members' containers while it builds and keeps nothing of them. It is rigid, casts
+as any rigid instance does (traced shadows trace it in the frame's structures; the cascades draw it
+where their frusta reach), and casts what its members cast within its error, which is under a pixel
+where it is drawn. What it costs and how its hand-over reads are on the deposits' page
+([rocks](rocks.md#a-deposit-past-the-first-ring)), its first user.
+
+**What an imported mesh gets.** The same: a `.clusters` or glTF member is a file `PlacementMesh`,
+built through the same door, its far form baked from its finest level (`far_tile_tests.cpp` places
+an imported boulder field three times, one of them turned, and holds the far tile to one material,
+three times the level's triangles, under a quarter of the three meshes' clusters, and the same bytes
+whether the container carried its far form or not). **A scene with none of it** pays nothing: no
+recipe names the generator, and `load_placement_mesh` asks one suffix of the path.
+
+**Not yet.** The far tile is not kept in the derived-data cache of its own: a far tile built again (a
+ring change back, a restart) reads its members' containers again, each a few milliseconds from the
+cache; a member's container built for the first time is the near build's cost, on the pool. The
+resident meshes a world's rings draw by the form rule ([world](world.md)) take a far form as an
+offered form there, a mesh a source, rather than merged a tile.
+
 ## Relief
 
 **Contract, 2026-10-26 (R105, proposed; the engine path is not started).**

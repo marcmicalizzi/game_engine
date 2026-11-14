@@ -637,6 +637,10 @@ struct SourceMesh {
   // on the ground by (`scene_gen::seat_on_ground`). A radius of zero for every other mesh; a
   // distance form keeps its source's.
   geometry::ClusterFileSeat seat{};
+  // **The far form** (G198; the container's sections 43 to 47; renderer.md, "The far tile"): what a
+  // far tile draws this mesh as, its parts' materials this mesh's parts. Empty for a container that
+  // carries none, which a far tile bakes from the finest level instead (the same bytes).
+  geometry::FarForm far_form;
   bool has_motion() const noexcept { return !motion_parts.empty() && !motion_vertices.empty(); }
 };
 

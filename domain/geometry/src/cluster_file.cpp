@@ -283,6 +283,20 @@ u64 encode(const ClusterFileData& data, std::string& out) {
     add_section(payloads, ClusterSection::Seat, static_cast<u32>(sizeof(ClusterFileSeat)), 1,
                 &data.seat);
   }
+  // The far form, and only for a mesh whose build baked one (G198; geometry.md, "The far form").
+  if (!data.far_form.empty()) {
+    const FarForm& f = data.far_form;
+    add_section(payloads, ClusterSection::FarForm, static_cast<u32>(sizeof(FarFormHeader)), 1,
+                &f.header);
+    add_section(payloads, ClusterSection::FarFormLevels, static_cast<u32>(sizeof(FarFormLevel)),
+                f.levels.size(), f.levels.data());
+    add_section(payloads, ClusterSection::FarFormParts, static_cast<u32>(sizeof(FarFormPart)),
+                f.parts.size(), f.parts.data());
+    add_section(payloads, ClusterSection::FarFormVertices,
+                static_cast<u32>(sizeof(FarFormVertex)), f.vertices.size(), f.vertices.data());
+    add_section(payloads, ClusterSection::FarFormIndices, static_cast<u32>(sizeof(u32)),
+                f.indices.size(), f.indices.data());
+  }
 
   u64 offset = k_header_bytes + k_record_bytes * payloads.size();
   for (Payload& payload : payloads) {
@@ -463,6 +477,11 @@ const char* cluster_section_name(u32 kind) noexcept {
     case ClusterSection::CoverMask: return "cover_mask";
     case ClusterSection::SwardVertex: return "sward_vertex";
     case ClusterSection::Seat: return "seat";
+    case ClusterSection::FarForm: return "far_form";
+    case ClusterSection::FarFormLevels: return "far_form_levels";
+    case ClusterSection::FarFormParts: return "far_form_parts";
+    case ClusterSection::FarFormVertices: return "far_form_vertices";
+    case ClusterSection::FarFormIndices: return "far_form_indices";
   }
   return "unknown";
 }
@@ -714,6 +733,45 @@ bool read_cluster_file_memory(std::span<const u8> bytes, ClusterFileData& out, s
     Vector<ClusterFileSeat> records;
     copy_section(bytes, *seat, records);
     result.seat = records[0];
+  }
+  // The far form (G198): five sections or none; a file without them has none.
+  if (const ClusterFileSection* far = found[static_cast<u32>(ClusterSection::FarForm)];
+      far != nullptr && far->element_count != 0) {
+    if (far->element_size != sizeof(FarFormHeader) || far->element_count != 1)
+      return fail(error, "cluster file section far_form is not one 48-byte record");
+    Vector<FarFormHeader> header_record;
+    copy_section(bytes, *far, header_record);
+    FarForm& f = result.far_form;
+    f.header = header_record[0];
+    const struct {
+      ClusterSection kind;
+      usize size;
+    } rest[] = {{ClusterSection::FarFormLevels, sizeof(FarFormLevel)},
+                {ClusterSection::FarFormParts, sizeof(FarFormPart)},
+                {ClusterSection::FarFormVertices, sizeof(FarFormVertex)},
+                {ClusterSection::FarFormIndices, sizeof(u32)}};
+    for (const auto& r : rest) {
+      const ClusterFileSection* s = found[static_cast<u32>(r.kind)];
+      if (s == nullptr || s->element_size != r.size)
+        return fail(error, "cluster file has a far form but no well-formed " +
+                               section_label(static_cast<u32>(r.kind)) + " section");
+    }
+    copy_section(bytes, *found[static_cast<u32>(ClusterSection::FarFormLevels)], f.levels);
+    copy_section(bytes, *found[static_cast<u32>(ClusterSection::FarFormParts)], f.parts);
+    copy_section(bytes, *found[static_cast<u32>(ClusterSection::FarFormVertices)], f.vertices);
+    copy_section(bytes, *found[static_cast<u32>(ClusterSection::FarFormIndices)], f.indices);
+    bool whole = f.levels.size() == f.header.levels && !f.levels.empty();
+    for (u32 l = 0; whole && l < f.levels.size(); ++l) {
+      const FarFormLevel& level = f.levels[l];
+      whole = u64{level.first_part} + level.part_count <= f.parts.size();
+      for (u32 p = level.first_part; whole && p < level.first_part + level.part_count; ++p)
+        whole = f.parts[p].level == l &&
+                u64{f.parts[p].first_index} + f.parts[p].index_count <= f.indices.size() &&
+                f.parts[p].index_count % 3 == 0;
+    }
+    for (u32 i = 0; whole && i < f.indices.size(); ++i)
+      whole = f.indices[i] < f.vertices.size();
+    if (!whole) return fail(error, "cluster file far form names a level, part or vertex it lacks");
   }
 
   // The morph stream. A file with no `morph_channels` section, or with an empty one, is a mesh
@@ -1163,6 +1221,13 @@ constexpr ClusterSection k_resident_kinds[] = {
     ClusterSection::CoverMask,
     // 12 bytes, and only in a mesh that stands on the ground: its seat.
     ClusterSection::Seat,
+    // A few hundred triangles' worth, and only in a rigid mesh whose build baked one: its far form,
+    // which a host reads without the paged streams.
+    ClusterSection::FarForm,
+    ClusterSection::FarFormLevels,
+    ClusterSection::FarFormParts,
+    ClusterSection::FarFormVertices,
+    ClusterSection::FarFormIndices,
 };
 
 // The per-page streams, which a resident read leaves on disk. They are still *listed*, with zero
@@ -1401,6 +1466,26 @@ std::string find_ddc_root(std::string_view start) {
     dir = std::move(parent);
   }
   return std::string();
+}
+
+// ---- the far form (G198; geometry.md, "The far form") ------------------------------------------
+
+bool far_form_applies(const ClusterFileData& data) noexcept {
+  const ClusterLodMesh& m = data.mesh;
+  return !m.mesh.clusters.empty() && m.leaf_triangle_count > 0 && m.mesh.skin.empty() &&
+         m.mesh.morph_channels.empty() && data.motion_parts.empty() && data.impostors.empty();
+}
+
+bool ensure_far_form(ClusterFileData& data, std::string* error) {
+  if (!data.far_form.empty()) return true;
+  if (!far_form_applies(data)) return false;
+  const std::span<const u32> material =
+      data.cluster_material.size() == data.mesh.mesh.clusters.size()
+          ? std::span<const u32>(data.cluster_material.data(), data.cluster_material.size())
+          : std::span<const u32>();
+  if (bake_far_form(data.mesh, material, data.far_form, error)) return true;
+  data.far_form = FarForm{};
+  return false;
 }
 
 }  // namespace engine::geometry

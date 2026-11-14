@@ -316,6 +316,9 @@ TEST_CASE("deposits: a tile's patches arrive with it, none past far_rings, and o
   CHECK(desc->tile_meshes);
   DepositLayer p = layer(991);
   p.far_rings = 2;
+  // Both rings draw the patches themselves (G198: the default draws the second as a far tile,
+  // which deposits_far_tests.cpp holds).
+  p.near_rings = 2;
   std::string error;
   const u64 made = deposit_plans_made();
   void* first = nullptr;

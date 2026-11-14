@@ -6,7 +6,7 @@ engine_module(NAME geometry LAYER domain
   DEPS base containers math hash io
   EXTERNAL_DEPS meshoptimizer
   SOURCES src/cluster.cpp src/cluster_lod.cpp src/cluster_pages.cpp src/cluster_file.cpp
-          src/material_sampling.cpp
+          src/material_sampling.cpp src/far_form.cpp
           src/stress_mesh.cpp src/uv_repair.cpp src/zero_area_repair.cpp src/limit_surface.cpp
           src/surface_binding.cpp)
 target_include_directories(engine_geometry SYSTEM PUBLIC
@@ -22,7 +22,7 @@ engine_module_tests(NAME geometry
           tests/uv_repair_tests.cpp tests/zero_area_repair_tests.cpp tests/limit_surface_tests.cpp
           tests/surface_binding_tests.cpp
           tests/vertex_id_tests.cpp tests/size_table.cpp
-          tests/determinism_tests.cpp tests/heightfield_fold_tests.cpp)
+          tests/determinism_tests.cpp tests/heightfield_fold_tests.cpp tests/far_form_tests.cpp)
 
 # The per-frame half of the limit surface: the operator's matvec at the fixture's size and at the
 # cage-size limit, and the displacement transfer over a region's bound vertices.

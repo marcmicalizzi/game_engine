@@ -165,6 +165,10 @@ Tests (`tests/exclusion_tests.cpp`): a band's edge at five places in and out and
 
 **A generator whose tiles may hand an alpha-tested material says so** (`PlacementGeneratorDesc::tile_meshes_masked`, R147, beside `tile_meshes`): a host chooses its masked pipelines when the scene is made, and a tile's mesh is not among the materials it can see then; one handed without the declaration is drawn opaque, by name — [texture](texture.md#textures-that-arrive-after-the-load).
 
+### A far tile
+
+`far_tile.h` (G198): a tile may hand **one mesh standing for the far forms of several** — a recipe `<dir>/far-<hash>.far.json` (`far_tile_mesh`, canonical bytes; `read_far_tile`) whose members are `PlacementMesh`es exactly as a near tile hands them, placed in whole millimetres from its own origin with a turn and a scale, and drawn at one far form level. It names no generator but its members' paths, so any placement generator, or a host's form rule, may hand one; the renderer builds it ([renderer](renderer.md#the-far-tile)). The deposits draw their rings past `near_rings` with it ([rocks](rocks.md#a-deposit-past-the-first-ring)).
+
 ## What an entry plans for the ground
 
 **A placement generator that changes the ground says so through one hook, before the ground is made, and nothing is pasted into the scene** (roadmap R144, 2026-11-11). W98 made a ground edit a thing that cuts, fills or benches, and W96's routes plan treads as `Bench` edits; until this row they reached a scene only as the output of `engine-content routes` pasted into `terrain.tiles.edits`, and a cave mouth's opening as a pasted `holes.json`. The hook is the last entry of `PlacementGeneratorDesc`:

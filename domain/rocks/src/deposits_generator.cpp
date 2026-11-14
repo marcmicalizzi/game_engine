@@ -12,7 +12,9 @@
 #include <core/log/log.h>
 #include <core/schema/json_reflect.h>
 #include <domain/rocks/deposits.h>
+#include <domain/geometry/far_form.h>
 #include <domain/scene_gen/derived_root.h>
+#include <domain/scene_gen/far_tile.h>
 #include <foundation/io/vfs.h>
 
 #include <algorithm>
@@ -67,11 +69,17 @@ bool migrate_layer_1(JsonValue& object, schema::ReadContext&) {
 }
 // DepositLayer 2 -> 3 (G191): `far_rings` is new and takes its default; nothing else moved.
 bool migrate_layer_2(JsonValue&, schema::ReadContext&) { return true; }
+// DepositLayer 3 -> 4 (G198): `near_rings` is new and takes its default; nothing else moved.
+bool migrate_layer_3(JsonValue&, schema::ReadContext&) { return true; }
 const bool k_migration_registered = [] {
   schema::MigrationRegistry::global().add({"engine.rocks.DepositLayer", 1, &migrate_layer_1});
   schema::MigrationRegistry::global().add({"engine.rocks.DepositLayer", 2, &migrate_layer_2});
+  schema::MigrationRegistry::global().add({"engine.rocks.DepositLayer", 3, &migrate_layer_3});
   return true;
 }();
+// G198: a far tile's placement id, past every piece's (a piece's is its patch's plus k times the
+// patch count, k under 16), so the far tile is named apart from every near placement.
+constexpr u32 k_far_tile_id_base = 0x40000000u;
 
 // ---- T120: the plan once a load (rocks.md, "A tile solves") ----
 // The scene reader opens an entry to read it and closes it, and the world's placements consumer
@@ -276,6 +284,8 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
     return refused(error, "deposits require static ground; rebake for changed terrain");
   if (!(e->layer.far_rings >= 1 && e->layer.far_rings <= 8))
     return refused(error, "engine.rocks.DepositLayer: far_rings 1..8");
+  if (!(e->layer.near_rings >= 1 && e->layer.near_rings <= e->layer.far_rings))
+    return refused(error, "engine.rocks.DepositLayer: near_rings 1..far_rings");
   DepositPatch validation = e->layer.patch;
   validation.width = 2;
   validation.depth = 2;
@@ -442,7 +452,8 @@ bool allowed(const Entry& e, const PatchPlace& p, const scene_gen::Context& c) {
 // finest form is over `k_deposit_piece_triangles` as its pieces (rocks.md, "A patch under the
 // cluster limit"), each its own mesh and placement at its own corner, so no mesh a tile hands is
 // over a streamed host's cluster limit and none is coarser or sparser than the patch it is of.
-void hand(const Entry& e, const PatchPlace& at, scene_gen::Placements& out) {
+void hand(const Entry& e, const PatchPlace& at, Vector<scene_gen::PlacementMesh>& meshes,
+          Vector<scene_gen::Placement>& instances) {
   DepositPatch p;
   i64 x0 = 0, z0 = 0, x1 = 0, z1 = 0;
   f64 y0 = 0, overhang = 0;
@@ -477,18 +488,70 @@ void hand(const Entry& e, const PatchPlace& at, scene_gen::Placements& out) {
         static_cast<f64>(z0 + static_cast<i64>(pieces[k].sample_z) * spacing_mm) / 1000.0;
     // The first piece keeps the patch's name; the k-th is named past every patch's.
     placed.id = static_cast<u32>(at.placement.id + k * patch_count);
-    placed.mesh = out.meshes.size();  // no resident kit: a tile's meshes are all its own
-    out.meshes.push_back(scene_gen::PlacementMesh(io::join_path(e.root, name),
-                                                  std::string("deposits/") + name, 0,
-                                                  std::move(text), static_cast<f32>(reach)));
-    out.instances.push_back(placed);
+    placed.mesh = meshes.size();  // no resident kit: a tile's meshes are all its own
+    meshes.push_back(scene_gen::PlacementMesh(io::join_path(e.root, name),
+                                              std::string("deposits/") + name, 0, std::move(text),
+                                              static_cast<f32>(reach)));
+    instances.push_back(placed);
   }
+}
+void hand(const Entry& e, const PatchPlace& at, scene_gen::Placements& out) {
+  hand(e, at, out.meshes, out.instances);
   ++out.things;
 }
-// The form a ring draws (G191): 0 the patches, 1 nothing past `far_rings`. A whole read is near.
+// The form a ring draws (G191, G198): 0 the patches before `near_rings`; 2 + k the far tile at the
+// far form's level k (rocks.md, "A deposit past the first ring"); 1 nothing past `far_rings`. A
+// whole read is near.
 u8 form_of(const Entry& e, const scene_gen::Context& c) {
-  if (c.ring == scene_gen::k_no_ring) return 0;
-  return c.ring < e.layer.far_rings ? u8{0} : u8{1};
+  if (c.ring == scene_gen::k_no_ring || c.ring < e.layer.near_rings) return 0;
+  if (c.ring >= e.layer.far_rings) return 1;
+  const u32 level = std::min<u32>(c.ring - e.layer.near_rings, geometry::k_far_form_levels - 1);
+  return static_cast<u8>(2 + level);
+}
+// G198: a tile's patches past `near_rings` as one far tile (scene_gen/far_tile.h): every piece the
+// near form hands, as a member, at its place from the tile's corner, drawn at `level`; one
+// placement at the corner. Nothing when no patch of the tile is allowed.
+void hand_far(const Entry& e, scene_gen::TileCoord tile, const scene_gen::Context& c, u32 level,
+              scene_gen::Placements& out) {
+  Vector<scene_gen::PlacementMesh> meshes;
+  Vector<scene_gen::Placement> instances;
+  u32 first_id = 0;
+  for (const auto& p : e.patches) {
+    if (!(p.tile == tile) || !allowed(e, p, c)) continue;
+    if (first_id == 0) first_id = p.placement.id;
+    hand(e, p, meshes, instances);
+    ++out.things;
+  }
+  if (instances.empty()) return;
+  const i64 tile_mm = scene_gen::nearest_mm(static_cast<f64>(c.tile_size));
+  const i64 x0 = static_cast<i64>(tile.x) * tile_mm, z0 = static_cast<i64>(tile.z) * tile_mm;
+  const i64 y0 = scene_gen::nearest_mm(instances[0].position.y);
+  scene_gen::FarTile far;
+  far.level = level;
+  far.meshes = std::move(meshes);
+  f64 reach = 0;
+  for (const scene_gen::Placement& placed : instances) {
+    scene_gen::FarTilePlacement fp;
+    fp.mesh = placed.mesh;
+    fp.x_mm = scene_gen::nearest_mm(placed.position.x) - x0;
+    fp.y_mm = scene_gen::nearest_mm(placed.position.y) - y0;
+    fp.z_mm = scene_gen::nearest_mm(placed.position.z) - z0;
+    far.placements.push_back(fp);
+    const f64 dx = static_cast<f64>(fp.x_mm) / 1000.0, dz = static_cast<f64>(fp.z_mm) / 1000.0;
+    reach = std::max(reach, std::sqrt(dx * dx + dz * dz) +
+                                static_cast<f64>(far.meshes[placed.mesh].reach));
+  }
+  scene_gen::PlacementMesh mesh;
+  std::string why;
+  if (!scene_gen::far_tile_mesh(far, e.root, static_cast<f32>(reach), mesh, &why)) return;
+  scene_gen::Placement at;
+  at.position = {static_cast<f64>(x0) / 1000.0, static_cast<f64>(y0) / 1000.0,
+                 static_cast<f64>(z0) / 1000.0};
+  // Named past every piece's: the patch count times the most pieces a patch is cut into.
+  at.id = static_cast<u32>(first_id + k_far_tile_id_base);
+  at.mesh = 0;
+  out.meshes.push_back(std::move(mesh));
+  out.instances.push_back(at);
 }
 bool expand(void* state, const scene_gen::Context& c, scene_gen::Placements& out,
             std::string* error) {
@@ -506,8 +569,14 @@ bool tile(void* state, scene_gen::TileCoord tile, const scene_gen::Context& c,
     return refused(error, "deposits require static ground; rebake for changed terrain");
   out.clear();
   const auto& e = *static_cast<Entry*>(state);
-  out.kind = form_of(e, c);
-  if (out.kind != 0) return true;
+  const u8 form = form_of(e, c);
+  // A host counts at most four kinds: the far tile's levels past the first share the last.
+  out.kind = std::min<u8>(form, 3);
+  if (form == 1) return true;
+  if (form >= 2) {
+    hand_far(e, tile, c, form - 2u, out);
+    return true;
+  }
   for (const auto& p : e.patches)
     if (p.tile == tile && allowed(e, p, c)) hand(e, p, out);
   return true;

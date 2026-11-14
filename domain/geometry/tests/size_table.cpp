@@ -24,6 +24,14 @@ ENGINE_EXPECT_SIZE(12, 4, geometry::PageRequest);
 
 ENGINE_EXPECT_SIZE(8, 4, geometry::VertexAttributes);
 
+// The far form's records (G198; far_form.h) are laid over a container's bytes (sections 43 to 46),
+// so their layout is the file format: a vertex is a position and the two GPU attribute words, a
+// part and a level are whole words, the header one record of twelve.
+ENGINE_EXPECT_SIZE(20, 4, geometry::FarFormVertex);
+ENGINE_EXPECT_SIZE(16, 4, geometry::FarFormPart);
+ENGINE_EXPECT_SIZE(32, 4, geometry::FarFormLevel);
+ENGINE_EXPECT_SIZE(48, 4, geometry::FarFormHeader);
+
 // The skin binding is the same eight bytes a vertex as the attributes, and it is read by the
 // deform pass through a device address, so its layout is the shader contract too: four u8 joint
 // indices then four u8 weights, no padding, alignment 1 so the stream is a plain byte array.

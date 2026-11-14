@@ -1785,6 +1785,32 @@ would have been 72%. The same tile at the forest's budget is
 handed as 16 pieces of 23,000 to 34,000 triangles, the most 1,342 clusters, 1.3% more triangles in
 all than the 4 whole patches (the walls along the cuts), and nothing is built again at half its
 budget (`deposit_builds_reduced()` unmoved over every case).
+
+### A deposit past the first ring
+
+G198 (2026-11-13; `DepositLayer` version 4). The owner: "rocks need impostors at distance". With
+G191 a tile's patches were drawn as themselves in every ring before `far_rings` and as nothing past
+it, and the forest's density made that a choice between two faults: a 64 m tile of talus is about 40
+meshes and a third of the default 256 MiB mesh room, so with three rings the room was full after the
+first fill and no deposit drew again, and with one ring the talus ended in a straight line where the
+next tile appears, about 63 m ahead.
+
+**`near_rings`** (1 by default, 1..`far_rings`): the rings before it draw the patches; the rings from
+it to `far_rings` draw each tile as **one far tile** ([renderer](renderer.md#the-far-tile)) — every
+piece the near ring hands, recipe for recipe, as a member at its place from the tile's corner, drawn
+as its far form ([geometry](geometry.md#the-far-form)), the ring at `near_rings` at the far form's
+first level and each ring after at the next; past `far_rings`, nothing. The generator's
+representation is 0 near, 2 + the level far and 1 nothing, so a tile is built again exactly when its
+ring changes what it draws; its far placement is named past every piece's (`0x40000000` plus the
+tile's first patch id). Nothing of the far form is the generator's: it hands the recipes it hands a
+near ring, and the far form is measured from each built mesh.
+
+**Why the first level from the ring past the first.** A piece's first level is held to its radius
+over 128 (a 16 m patch: about 9 cm), which at 1080p and the default camera is a pixel from about
+90 m; the deposit scenes' second ring starts 96 m out (a 64 m tile at 1.5 tiles), so the hand-over
+moves nothing a pixel resolves. A scene whose first ring is smaller draws the far form nearer than
+it is held for, and says so in no sentence yet (a row this leaves).
+
 ### Foothill exposure and repeated-material limits
 
 [G132's v29 controls](../experiments/v29-cliff-diagnosis.md) distinguish the continuous authored

@@ -19,6 +19,7 @@
 #include <domain/geometry/stress_mesh.h>
 #include <domain/materials/materials.h>
 #include <domain/scene_gen/derived_root.h>
+#include <domain/scene_gen/far_tile.h>
 #include <domain/scene_gen/scene_gen.h>
 #include <domain/scene_gen/sky.h>
 #include <domain/texture/material_textures.h>
@@ -27,6 +28,7 @@
 #include <foundation/image/png.h>
 #include <foundation/io/vfs.h>
 #include <foundation/tunables/tunables.h>
+#include <systems/renderer/far_tile.h>
 #include <systems/renderer/flora_motion.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/terrain.h>
@@ -591,6 +593,8 @@ void adopt_container(geometry::ClusterFileData& container_data, const std::strin
   out.textures = std::move(container_data.textures);  // where the built textures are, if any
   // What a host seats an instance of it by (G201 stage 2; section 42): none but a tree's.
   out.seat = container_data.seat;
+  // Its far form (G198; section 43): none but a rigid mesh's whose build baked one.
+  out.far_form = std::move(container_data.far_form);
   // A generated tree's motion contract, for the flora stage and the collision (renderer.md, "The
   // flora stage"): kept only when its per-vertex records cover the mesh, which is what a reader may
   // index them by.
@@ -3189,6 +3193,8 @@ bool load_placement_mesh(const scene_gen::PlacementMesh& mesh, const PlacementMe
     error = "a tile's mesh names no path";
     return false;
   }
+  // A far tile (G198; far_tile.h) is its members' far forms, which only a host can build.
+  if (scene_gen::is_far_tile(mesh)) return load_far_tile(mesh, options, out, error);
   // The load's own per-mesh pass (`load_source_mesh`), under the load's options: one cache entry
   // whichever of the two asked first, and the same bytes from either.
   SceneDesc desc;
