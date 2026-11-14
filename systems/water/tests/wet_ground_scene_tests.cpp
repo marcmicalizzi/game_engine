@@ -39,17 +39,23 @@ TEST_CASE("water banks: a channel's stretches carry its bank's fringe and its re
   const std::string path = tmp.path() + "/scene.json";
   {
     std::ofstream out(path, std::ios::binary);
-    // The brook of channel_scene_tests: the first stretch subcritical (Froude 0.93 at both ends),
-    // the second ends at Froude 1.73 (Manning, n 0.04, 0.35 m deep at a slope of 0.067), and a
-    // third that falls 3 m over 2 m.
+    // The brook of channel_scene_tests, solved by the same closed forms (S106): the first stretch
+    // from Froude 0.93 to the critical crest (not past 1 at either end), the second ending at
+    // Froude 1.73 (the steep reach's normal depth, 0.35 m at a slope of 0.067), and a third that
+    // falls 3 m: its lip the steep reach's last station, its foot Rand's drop for h = 3 m and
+    // y_c = (1.124^2 / g)^(1/3) = 0.505 m, 4.30 h (y_c / h)^0.81 = 3.05 m on, 0.167 m deep at
+    // 6.73 m/s.
     out << R"({
   "format": "engine.scene.v1",
   "name": "banks-test",
   "terrain": {"size": 65, "extent": 32, "seed": 4, "dune_height": 0},
   "water_channels": [{"name": "brook",
-    "points": [[-12, 2.0, 4], [0, 1.8, 4], [12, 1.0, 4], [14, -2.0, 4]],
-    "width_m": [3, 3, 2.5, 2.5], "depth_m": [0.5, 0.5, 0.35, 0.35],
-    "slope": [0.017, 0.017, 0.067, 0.067], "seed": 3}]
+    "points": [[-12, 2.0, 4], [0, 1.8, 4], [12, 1.0, 4], [15.05, -2.0, 4]],
+    "width_m": [3, 3, 2.74, 2.74], "depth_m": [0.5, 0.4755, 0.35, 0.167],
+    "slope": [0.017, 0.03, 0.067, 0.067], "discharge_m3s": [3.08, 3.08, 3.08, 3.08],
+    "speed_mps": [2.053, 2.159, 3.213, 6.73], "froude": [0.927, 1.0, 1.734, 5.26],
+    "wet_left_m": [1.5, 1.5, 1.37, 1.37], "wet_right_m": [1.5, 1.5, 1.37, 1.37],
+    "flags": [0, 1, 32, 64], "seed": 3}]
 }
 )";
   }
@@ -83,7 +89,7 @@ TEST_CASE("water banks: a channel's stretches carry its bank's fringe and its re
   CHECK(static_cast<f64>(channel->banks[0].stretch_a.y) == doctest::Approx(4.0 - z0));
   CHECK(static_cast<f64>(channel->banks[0].stretch_a.z) == doctest::Approx(2.0 - y0));
   CHECK(channel->banks[0].stretch_a.w == 1.5f);
-  CHECK(channel->banks[1].stretch_b.w == 1.25f);
+  CHECK(channel->banks[1].stretch_b.w == 1.37f);  // half the solved wet reach
   for (const gfx::WaterShore& bank : channel->banks) {
     CHECK(bank.material == 0xffffffffu);  // never a body's record
     CHECK(bank.run_up_m == 0.0f);         // no swash
