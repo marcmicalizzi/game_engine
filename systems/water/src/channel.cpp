@@ -1,5 +1,10 @@
-// Channels of flowing water (channel.h; docs/subsystems/water.md, "Channels"; roadmap S96).
+// Channels of flowing water (channel.h; docs/subsystems/water.md, "Channels"; roadmap S96, S106).
+//
+// Every number the mesh and the depth map hold is f32 and f64 + - * / and sqrt of the description
+// and the ground, in a fixed order (the lattice's nodes sorted by their index, the cells in that
+// order), so both files are the same bytes from every toolchain and at any job count.
 #include <core/schema/json_reflect.h>
+#include <domain/scene_gen/water_channel.h>
 #include <systems/water/channel.h>
 
 #include <algorithm>
@@ -9,23 +14,24 @@ namespace engine::water {
 
 namespace {
 
+constexpr u32 k_none = 0xffffffffu;
+// An edge point is kept off the nodes by this share of a cell, so no triangle is degenerate.
+constexpr f32 k_edge_margin = 1.0f / 64.0f;
+// The least surface width a fall's unit discharge is taken over, metres.
+constexpr f32 k_lip_width_min_m = 0.05f;
+
 bool finite(f32 v) noexcept { return std::isfinite(v); }
 
-f32 horizontal(Vec3 d) noexcept { return std::sqrt(d.x * d.x + d.z * d.z); }
+f32 lerp(f32 a, f32 b, f32 t) noexcept { return a + (b - a) * t; }
 
-// The unit horizontal direction a point's sections are laid across: the mean of its stretches'
-// horizontal directions (a mitre at a bend), from the stretches that have a horizontal run; the
-// previous point's where none has (a fall straight down with no run before or after it).
-Vec2 point_heading(const Channel& c, u32 i, Vec2 previous) noexcept {
-  Vec2 sum{0.0f, 0.0f};
-  const u32 n = c.points.size();
-  for (u32 s = (i == 0 ? 0u : i - 1); s <= i && s + 1 < n; ++s) {
-    const Vec3 d = c.points[s + 1] - c.points[s];
-    const f32 h = horizontal(d);
-    if (h > 1e-4f) sum = Vec2{sum.x + d.x / h, sum.y + d.z / h};
-  }
-  const f32 len = std::sqrt(sum.x * sum.x + sum.y * sum.y);
-  return len > 1e-4f ? Vec2{sum.x / len, sum.y / len} : previous;
+f32 margin_at(const Channel& c, u32 i) noexcept {
+  return (c.flags[i] & scene_gen::k_channel_over_bank) != 0 ? 0.0f : k_channel_under_bank_m;
+}
+
+// A fall's drop, metres; 0 for a stretch that is not one, or whose foot does not stand lower.
+f32 fall_drop(const Channel& c, u32 i) noexcept {
+  if (!stretch_falls(c, i)) return 0.0f;
+  return std::max(0.0f, c.points[i].y - c.points[i + 1].y);
 }
 
 }  // namespace
@@ -37,13 +43,10 @@ bool read_channel(const scene::WaterChannel& block, Channel& out, std::string* e
   };
   out = Channel{};
   out.name = block.name;
+  // Solved or refused (W120; channels.md, "What refuses a description"): the one check every
+  // reader of a description makes, here so no host can hand the draw a laid level.
+  if (!scene_gen::water_channel_solved(block, error)) return false;
   const u32 n = block.points.size();
-  if (n < 2) return fail("it has fewer than two points; a channel runs from one point to another");
-  if (block.width_m.size() != n || block.depth_m.size() != n || block.slope.size() != n)
-    return fail("its points, width_m, depth_m and slope must have one entry each per point (" +
-                std::to_string(n) + " points, " + std::to_string(block.width_m.size()) +
-                " widths, " + std::to_string(block.depth_m.size()) + " depths, " +
-                std::to_string(block.slope.size()) + " slopes)");
   if (!(block.manning_n > 0.0f) || !finite(block.manning_n))
     return fail("its manning_n must be positive");
   if (!(block.shore_m >= 0.0f) || !finite(block.shore_m))
@@ -57,29 +60,20 @@ bool read_channel(const scene::WaterChannel& block, Channel& out, std::string* e
   f64 lo_x = 1e300, hi_x = -1e300, lo_z = 1e300, hi_z = -1e300;
   for (u32 i = 0; i < n; ++i) {
     const WorldPos& p = block.points[i];
-    if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z))
-      return fail("its point " + std::to_string(i) + " is not a number");
-    if (!(block.width_m[i] > 0.0f) || !finite(block.width_m[i]))
-      return fail("its width_m at point " + std::to_string(i) + " must be positive");
-    if (!(block.depth_m[i] > 0.0f) || !finite(block.depth_m[i]))
-      return fail("its depth_m at point " + std::to_string(i) + " must be positive");
-    if (!finite(block.slope[i]))
-      return fail("its slope at point " + std::to_string(i) + " is not a number");
     lo_x = std::min(lo_x, p.x);
     hi_x = std::max(hi_x, p.x);
     lo_z = std::min(lo_z, p.z);
     hi_z = std::max(hi_z, p.z);
+    if (i == 0) continue;
+    const f64 dx = p.x - block.points[i - 1].x;
+    const f64 dz = p.z - block.points[i - 1].z;
+    if (!(dx * dx + dz * dz > 1e-8))
+      return fail("its points " + std::to_string(i - 1) + " and " + std::to_string(i) +
+                  " stand at one place in plan; a station is a place along the line, and a "
+                  "fall's foot stands downstream of its lip");
   }
-  // A slope is the surface's fall along the line: where the line descends into or out of a point,
-  // a negative one says the water runs uphill.
-  for (u32 i = 0; i < n; ++i) {
-    const bool into = i > 0 && block.points[i].y < block.points[i - 1].y;
-    const bool out_of = i + 1 < n && block.points[i + 1].y < block.points[i].y;
-    if ((into || out_of) && block.slope[i] < 0.0f)
-      return fail("its slope at point " + std::to_string(i) +
-                  " is negative where the line descends; slope is the fall per metre downstream");
-  }
-  out.origin = WorldPos{0.5 * (lo_x + hi_x), block.points[0].y, 0.5 * (lo_z + hi_z)};
+  out.origin = WorldPos{std::floor(0.5 * (lo_x + hi_x)), block.points[0].y,
+                        std::floor(0.5 * (lo_z + hi_z))};
   out.points.reserve(n);
   for (u32 i = 0; i < n; ++i) {
     const WorldPos& p = block.points[i];
@@ -87,9 +81,18 @@ bool read_channel(const scene::WaterChannel& block, Channel& out, std::string* e
                               static_cast<f32>(p.y - out.origin.y),
                               static_cast<f32>(p.z - out.origin.z)});
   }
-  out.width_m = block.width_m;
   out.depth_m = block.depth_m;
-  out.slope = block.slope;
+  out.discharge_m3s = block.discharge_m3s;
+  out.wet_left_m = block.wet_left_m;
+  out.wet_right_m = block.wet_right_m;
+  out.flags = block.flags;
+  out.speed_mps.reserve(n);
+  out.froude.reserve(n);
+  for (u32 i = 0; i < n; ++i) {
+    out.speed_mps.push_back(
+        std::clamp(block.speed_mps[i], k_channel_min_speed, k_channel_max_speed));
+    out.froude.push_back(std::min(block.froude[i], k_channel_froude_max));
+  }
   out.manning_n = block.manning_n;
   out.shore_m = block.shore_m;
   out.seed = block.seed;
@@ -97,8 +100,8 @@ bool read_channel(const scene::WaterChannel& block, Channel& out, std::string* e
 }
 
 // The cube root of a >= 0 by Newton's iteration from above, + - * / alone, a fixed number of
-// steps, so the speeds — and the mesh's phases — are the same bits on every toolchain (the C
-// library's cbrt is not correctly rounded, and differs between them).
+// steps, so it is the same bits on every toolchain (the C library's cbrt is not correctly rounded,
+// and differs between them).
 f64 cube_root(f64 a) noexcept {
   if (!(a > 0.0)) return 0.0;
   f64 y = std::max(a, 1.0);
@@ -110,8 +113,7 @@ f64 cube_root(f64 a) noexcept {
 f32 manning_speed(f32 n, f32 depth_m, f32 slope) noexcept {
   const f64 d = std::max(static_cast<f64>(depth_m), 0.0);
   const f64 s = std::max(static_cast<f64>(slope), 0.0);
-  const f64 v = cube_root(d * d) * std::sqrt(s) / static_cast<f64>(n);
-  return static_cast<f32>(std::max(v, static_cast<f64>(k_channel_min_speed)));
+  return static_cast<f32>(cube_root(d * d) * std::sqrt(s) / static_cast<f64>(n));
 }
 
 f64 shear_velocity(f64 speed, f64 depth_m, f64 n) noexcept {
@@ -125,274 +127,546 @@ f32 froude(f32 speed, f32 depth_m) noexcept {
   return static_cast<f32>(static_cast<f64>(speed) / std::sqrt(k_gravity * d));
 }
 
-bool stretch_falls(const Channel& channel, u32 i) noexcept {
-  if (i + 1 >= channel.points.size()) return false;
-  const Vec3 d = channel.points[i + 1] - channel.points[i];
-  const f32 drop = -d.y;
-  return drop > 0.0f && drop >= k_channel_fall_gradient * horizontal(d);
+f64 lateral_speed_share(f64 d, f64 hydraulic_depth) noexcept {
+  if (!(d > 0.0) || !(hydraulic_depth > 0.0)) return 0.0;
+  const f64 r = d / hydraulic_depth;
+  return std::min(k_channel_conveyance * cube_root(r * r), k_channel_profile_max);
 }
 
-Channel with_plunge_stretch(const Channel& channel) {
-  Channel c = channel;
+f64 nappe_breakup_m(f64 unit_discharge) noexcept {
+  return unit_discharge > 0.0 ? 5.89 * std::pow(unit_discharge, 0.319) : 0.0;
+}
+
+f32 station_hydraulic_depth(const Channel& c, u32 i) noexcept {
+  const f64 fr = static_cast<f64>(c.froude[i]);
+  const f64 v = static_cast<f64>(c.speed_mps[i]);
+  const f64 d = fr > 0.0 ? v * v / (k_gravity * fr * fr) : static_cast<f64>(c.depth_m[i]);
+  return static_cast<f32>(std::max(d, static_cast<f64>(k_channel_depth_min_m)));
+}
+
+bool stretch_falls(const Channel& c, u32 i) noexcept {
+  return i + 1 < c.points.size() && (c.flags[i] & scene_gen::k_channel_fall_lip) != 0 &&
+         (c.flags[i + 1] & scene_gen::k_channel_fall_foot) != 0;
+}
+
+bool stretch_jumps(const Channel& c, u32 i) noexcept {
+  return i + 1 < c.points.size() && (c.flags[i] & scene_gen::k_channel_jump_head) != 0 &&
+         (c.flags[i + 1] & scene_gen::k_channel_jump_foot) != 0;
+}
+
+bool stretch_drawn(const Channel& c, u32 i) noexcept {
+  if (i + 1 >= c.points.size()) return false;
+  return (c.flags[i] & c.flags[i + 1] & scene_gen::k_channel_over_bank) == 0;
+}
+
+ChannelLine channel_line(const Channel& c) {
+  ChannelLine line;
   const u32 n = c.points.size();
-  if (c.pooled || n < 2 || !stretch_falls(c, n - 2)) return c;
-  // The fall's top: the first of the run of falling stretches into the last point.
-  u32 top = n - 2;
-  while (top > 0 && stretch_falls(c, top - 1))
-    --top;
-  const f32 height = c.points[top].y - c.points[n - 1].y;
-  const f32 length =
-      std::clamp(k_channel_plunge_share * height, k_channel_plunge_min_m, k_channel_plunge_max_m);
-  // On along the last horizontal run there is, the fall's own or the reach's above it.
-  Vec2 heading{1.0f, 0.0f};
-  for (u32 s = n - 1; s-- > 0;) {
-    const Vec3 d = c.points[s + 1] - c.points[s];
-    const f32 h = horizontal(d);
-    if (h > 1e-4f) {
-      heading = Vec2{d.x / h, d.z / h};
-      break;
-    }
-  }
-  const Vec3 foot = c.points[n - 1];
-  c.points.push_back(Vec3{foot.x + heading.x * length, foot.y, foot.z + heading.y * length});
-  c.width_m.push_back(c.width_m[n - 1]);
-  c.depth_m.push_back(c.depth_m[n - 1]);
-  c.slope.push_back(0.0f);
-  return c;
-}
-
-f32 channel_spacing(const Channel& channel) noexcept {
-  // The body's rule — three vertices across the shore fade — and at least four across the width.
-  f32 narrow = 1e30f;
-  for (const f32 w : channel.width_m)
-    narrow = std::min(narrow, w);
-  return std::clamp(std::min(channel.shore_m / 3.0f, narrow / 4.0f), 0.25f, 1.0f);
-}
-
-void build_channel_mesh(const Channel& described, ChannelMesh& out) {
-  out = ChannelMesh{};
-  const Channel c = with_plunge_stretch(described);
-  const u32 n = c.points.size();
-  if (n < 2) return;
-  f32 widest = 0.0f;
-  for (const f32 w : c.width_m)
-    widest = std::max(widest, w);
-  const f32 span = 1.0f + 2.0f * k_channel_edge_extend;
-  f32 spacing = channel_spacing(c);
-  // The vertex budget, as a body's: the spacing grows by a quarter until the ribbon fits (the
-  // wraps' second copies included, at most one a section).
-  u32 columns = 0;
-  for (;;) {
-    columns = std::clamp(static_cast<u32>(std::ceil(widest * span / spacing)), 4u, 64u);
-    u32 sections = 1;
-    for (u32 i = 0; i + 1 < n; ++i)
-      sections += std::max(
-          1u, static_cast<u32>(std::ceil(length(c.points[i + 1] - c.points[i]) / spacing)));
-    if (2u * sections * (columns + 1) <= k_max_vertices) break;
-    spacing *= 1.25f;
-  }
-  out.columns = columns;
-  out.mesh.spacing = spacing;
-  out.mesh.edge = columns + 1;
-
-  // Each point's heading, and the speed at it: Manning's on the bed, the free fall's where the
-  // stretch into it falls (from the lip's speed, sqrt(v_lip^2 + 2 g h)).
-  Vector<Vec2> heading(n);
-  Vec2 previous{1.0f, 0.0f};
-  for (u32 i = 0; i < n; ++i) {
-    heading[i] = point_heading(c, i, previous);
-    previous = heading[i];
-  }
-  // A fall's stretch takes the heading of the bed around it, so its face is square to the flow.
-  for (u32 i = 0; i + 1 < n; ++i) {
-    if (!stretch_falls(c, i)) continue;
-    const Vec3 d = c.points[i + 1] - c.points[i];
-    if (horizontal(d) <= 1e-4f) heading[i + 1] = heading[i];
-  }
-  Vector<f32> bed_speed(n);
+  if (n < 2) return line;
+  line.station.resize(n);
+  line.tau.resize(n);
+  line.hydraulic.resize(n);
+  line.heading.resize(n - 1);
+  line.length.resize(n - 1);
+  line.run_from.resize(n - 1);
+  line.run_to.resize(n - 1);
+  line.station[0] = 0.0f;
+  line.tau[0] = 0.0;
   for (u32 i = 0; i < n; ++i)
-    bed_speed[i] = manning_speed(c.manning_n, c.depth_m[i], c.slope[i]);
-  // The brink (channel.h): the speed at a lip point i a fall leaves from, and the reach over which
-  // a subcritical approach speeds up to it (0: none).
-  Vector<f32> brink_speed(n);
-  Vector<f32> brink_reach(n, 0.0f);
-  for (u32 i = 0; i < n; ++i) {
-    brink_speed[i] = bed_speed[i];
-    if (i == 0 || i + 1 >= n || !stretch_falls(c, i) || stretch_falls(c, i - 1)) continue;
-    const f64 v = static_cast<f64>(bed_speed[i]);
-    const f64 d = static_cast<f64>(c.depth_m[i]);
-    if (!(v < std::sqrt(k_gravity * d))) continue;  // supercritical: over as it is
-    const f64 q = v * d;
-    const f64 dc = cube_root(q * q / k_gravity);
-    brink_speed[i] = static_cast<f32>(q / (k_channel_brink_depth_share * dc));
-    brink_reach[i] = static_cast<f32>(k_channel_brink_reach * dc);
-  }
-
-  // The sections, stretch by stretch: the station along the line, the place, the heading, the
-  // width, the depth, and the speed.
-  struct Section {
-    Vec3 p;
-    Vec2 heading;
-    f32 width;
-    f32 depth;
-    f32 speed;
-    f32 s;
-    bool falls;  // the strip below it is a fall
-  };
-  Vector<Section> sections;
-  f32 station = 0.0f;
-  // The plunge: after a fall the jet's speed decays back to the bed's over `plunge_len`.
-  f32 plunge_left = 0.0f;
-  f32 plunge_len = 0.0f;
-  f32 impact = 0.0f;
-  // A fall of several stretches is one fall: its top is the first stretch's lip, and each stretch
-  // falls on from the speed the one above it reached.
-  f32 fall_top = 0.0f;
-  f32 lip_speed = 0.0f;
+    line.hydraulic[i] = station_hydraulic_depth(c, i);
   for (u32 i = 0; i + 1 < n; ++i) {
-    const Vec3 a = c.points[i];
-    const Vec3 b = c.points[i + 1];
-    const f32 len = length(b - a);
-    const u32 steps = std::max(1u, static_cast<u32>(std::ceil(len / spacing)));
-    const bool falls = stretch_falls(c, i);
-    const bool falling_on = falls && i > 0 && stretch_falls(c, i - 1);
-    if (falls && !falling_on) fall_top = a.y;
-    lip_speed = falling_on ? sections.back().speed : brink_speed[i];
-    for (u32 k = (i == 0 ? 0u : 1u); k <= steps; ++k) {
-      const f32 t = static_cast<f32>(k) / static_cast<f32>(steps);
-      Section sec;
-      sec.p = a + (b - a) * t;
-      const Vec2 h{heading[i].x + (heading[i + 1].x - heading[i].x) * t,
-                   heading[i].y + (heading[i + 1].y - heading[i].y) * t};
-      const f32 hl = std::sqrt(h.x * h.x + h.y * h.y);
-      sec.heading = hl > 1e-4f ? Vec2{h.x / hl, h.y / hl} : heading[i];
-      sec.width = c.width_m[i] + (c.width_m[i + 1] - c.width_m[i]) * t;
-      sec.depth = c.depth_m[i] + (c.depth_m[i + 1] - c.depth_m[i]) * t;
-      const f32 ds = len / static_cast<f32>(steps);
-      if (k > 0) station += ds;
-      sec.s = station;
-      if (falls) {
-        const f64 h_fall = std::max(0.0, static_cast<f64>(a.y - sec.p.y));
-        sec.speed = static_cast<f32>(std::sqrt(
-            static_cast<f64>(lip_speed) * static_cast<f64>(lip_speed) + 2.0 * k_gravity * h_fall));
-        if (k == steps) {
-          impact = sec.speed;
-          plunge_len = std::clamp(k_channel_plunge_share * (fall_top - b.y), k_channel_plunge_min_m,
-                                  k_channel_plunge_max_m);
-          plunge_left = plunge_len;
-        }
-      } else {
-        const f32 bed = bed_speed[i] + (bed_speed[i + 1] - bed_speed[i]) * t;
-        sec.speed = bed;
-        if (plunge_left > 0.0f && k > 0) {
-          plunge_left = std::max(0.0f, plunge_left - ds);
-          const f32 share = plunge_left / plunge_len;
-          sec.speed = bed + (std::max(impact, bed) - bed) * share * share;
-        }
-        // Into a brink: the last of the reach before a subcritical lip speeds up to it.
-        const f32 reach = brink_reach[i + 1];
-        const f32 to_lip = len * (1.0f - t);
-        if (reach > 0.0f && to_lip < reach) {
-          const f32 share = 1.0f - to_lip / reach;
-          sec.speed = std::max(sec.speed, bed + (brink_speed[i + 1] - bed) * share * share);
-        }
-      }
-      // The strip below a section inside this stretch is this stretch's; the strip below its last
-      // section is the next stretch's (set after the loop).
-      sec.falls = falls && k < steps;
-      sections.push_back(sec);
+    const f32 dx = c.points[i + 1].x - c.points[i].x;
+    const f32 dz = c.points[i + 1].z - c.points[i].z;
+    const f32 len = std::sqrt(dx * dx + dz * dz);
+    line.length[i] = len;
+    line.heading[i] = len > 0.0f ? Vec2{dx / len, dz / len} : Vec2{1.0f, 0.0f};
+    line.station[i + 1] = line.station[i] + len;
+    // The stretch's travel time: a fall's is the free fall's from the lip to the foot's level; a
+    // jump's is the head's speed over its length (the head's state holds to the foot); a reach's
+    // is its length over the mean slowness of its two stations.
+    const f64 l = static_cast<f64>(len);
+    const f64 drop = static_cast<f64>(fall_drop(c, i));
+    f64 dt = 0.0;
+    if (drop > 0.0) {
+      dt = std::sqrt(2.0 * drop / k_gravity);
+    } else if (stretch_jumps(c, i)) {
+      dt = l / static_cast<f64>(c.speed_mps[i]);
+    } else {
+      dt = 0.5 * l *
+           (1.0 / static_cast<f64>(c.speed_mps[i]) + 1.0 / static_cast<f64>(c.speed_mps[i + 1]));
     }
-    // The last section of a stretch is the first of the next; it heads the next strip.
-    if (i + 2 < n) sections.back().falls = stretch_falls(c, i + 1);
+    line.tau[i + 1] = line.tau[i] + dt;
   }
-  if (!sections.empty()) sections.back().falls = false;
-
-  // The rows: each section's vertices across, its phase the travel time from the head, wrapped.
-  Mesh& m = out.mesh;
-  const u32 cols = columns;
-  f64 tau = 0.0;
-  f64 base = 0.0;
-  const f64 period = static_cast<f64>(k_channel_phase_period_s);
-  // For each section, the row the strip above it ends on and the row the strip below starts from.
-  Vector<u32> row_in;
-  Vector<u32> row_out;
-  const auto emit_row = [&](const Section& sec, f64 phase) {
-    const u32 first = m.positions.size();
-    const Vec3 across{-sec.heading.y, 0.0f, sec.heading.x};
-    // The ribbon's normal: across x along, along the line's tangent here.
-    for (u32 j = 0; j <= cols; ++j) {
-      const f32 u = (static_cast<f32>(j) / static_cast<f32>(cols) - 0.5f) * span;  // of width
-      const f32 a = u * sec.width;
-      m.positions.push_back(sec.p + across * a);
-      m.normals.push_back(Vec3{0.0f, 1.0f, 0.0f});  // set below, once the tangents are known
-      const f32 x = 2.0f * u;                       // -1 and 1 at the edges of the width
-      const f32 depth = std::max(0.0f, sec.depth * (1.0f - x * x));
-      m.uvs.push_back(Vec2{static_cast<f32>(phase), depth});
-      m.max_depth = std::max(m.max_depth, depth);
+  for (u32 i = 0; i + 1 < n;) {
+    if (!stretch_drawn(c, i)) {
+      line.run_from[i] = line.run_to[i] = 0.0f;
+      ++i;
+      continue;
     }
-    return first;
-  };
-  for (u32 k = 0; k < sections.size(); ++k) {
-    const Section& sec = sections[k];
-    if (k > 0) {
-      const Section& prev = sections[k - 1];
-      const f64 ds = static_cast<f64>(sec.s - prev.s);
-      tau += 0.5 * ds * (1.0 / static_cast<f64>(prev.speed) + 1.0 / static_cast<f64>(sec.speed));
+    u32 end = i;
+    while (end + 2 < n && stretch_drawn(c, end + 1))
+      ++end;
+    for (u32 k = i; k <= end; ++k) {
+      line.run_from[k] = line.station[i];
+      line.run_to[k] = line.station[end + 1];
     }
-    out.section_s.push_back(sec.s);
-    out.section_speed.push_back(sec.speed);
-    out.section_tau.push_back(tau);
-    out.section_falls.push_back(sec.falls ? 1u : 0u);
-    const u32 in = emit_row(sec, tau - base);
-    u32 row = in;
-    if (tau - base >= period) {
-      // The wrap: the strip above ends here at `tau - base`, the strip below starts at a period
-      // less, the same pattern on both sides of the seam.
-      while (tau - base >= period)
-        base += period;
-      row = emit_row(sec, tau - base);
-    }
-    row_in.push_back(in);
-    row_out.push_back(row);
+    i = end + 1;
   }
-  m.rings = static_cast<u32>(m.positions.size() / (cols + 1));
-
-  // The normals: across x along, from the neighbouring sections' places.
-  for (u32 k = 0; k < sections.size(); ++k) {
-    const Vec3 lo = sections[k == 0 ? 0 : k - 1].p;
-    const Vec3 hi = sections[std::min<u32>(k + 1, sections.size() - 1)].p;
-    const Vec3 along = hi - lo;
-    const Vec3 across{-sections[k].heading.y, 0.0f, sections[k].heading.x};
-    Vec3 nrm = cross(across, along);
-    const f32 l = length(nrm);
-    nrm = l > 1e-8f ? nrm * (1.0f / l) : Vec3{0.0f, 1.0f, 0.0f};
-    for (u32 j = 0; j <= cols; ++j) {
-      m.normals[row_in[k] + j] = nrm;
-      if (row_out[k] != row_in[k]) m.normals[row_out[k] + j] = nrm;
+  // The pieces: a run, cut at each fall's lip and foot (a nappe is a piece of its own).
+  line.piece_from.resize(n - 1);
+  line.piece_to.resize(n - 1);
+  for (u32 i = 0; i + 1 < n;) {
+    if (!stretch_drawn(c, i)) {
+      line.piece_from[i] = line.piece_to[i] = 0.0f;
+      ++i;
+      continue;
     }
-  }
-
-  // The strips: (b - a) x (c - a) is across x along, the ribbon's normal (channel.h).
-  for (u32 k = 0; k + 1 < sections.size(); ++k) {
-    const u32 top = row_out[k];
-    const u32 bottom = row_in[k + 1];
-    for (u32 j = 0; j < cols; ++j) {
-      const u32 a = top + j, b = top + j + 1, cc = bottom + j + 1, d = bottom + j;
-      m.indices.push_back(a);
-      m.indices.push_back(b);
-      m.indices.push_back(cc);
-      m.indices.push_back(a);
-      m.indices.push_back(cc);
-      m.indices.push_back(d);
+    u32 end = i;
+    if (!(fall_drop(c, i) > 0.0f))
+      while (end + 2 < n && stretch_drawn(c, end + 1) && !(fall_drop(c, end + 1) > 0.0f))
+        ++end;
+    for (u32 k = i; k <= end; ++k) {
+      line.piece_from[k] = line.station[i];
+      line.piece_to[k] = line.station[end + 1];
     }
+    i = end + 1;
   }
+  return line;
 }
 
-void build_channel_depth_map(const Channel& described, const ChannelMesh& mesh, DepthMap& out) {
+ChannelAt channel_at_stretch(const Channel& c, const ChannelLine& line, u32 i, f32 x,
+                             f32 z) noexcept {
+  ChannelAt at;
+  const u32 n = c.points.size();
+  if (n < 2 || i + 1 >= n) return at;
+  at.stretch = i;
+  const Vec2 dir = line.heading[i];
+  const f32 len = line.length[i];
+  const f32 px = x - c.points[i].x;
+  const f32 pz = z - c.points[i].z;
+  const f32 u = px * dir.x + pz * dir.y;
+  const f32 tc = std::clamp(u, 0.0f, len);
+  const f32 qx = px - dir.x * tc;
+  const f32 qz = pz - dir.y * tc;
+  at.distance_m = std::sqrt(qx * qx + qz * qz);
+  at.left = dir.x * pz - dir.y * px > 0.0f;
+  at.heading = dir;
+  const f32 t = len > 0.0f ? tc / len : 0.0f;
+  at.t = t;
+  // Along the line, past the line's own two ends as far as the place is past them, so the sheet
+  // is cut square across at its head and its last station.
+  f32 along = line.station[i] + tc;
+  if (i == 0 && u < 0.0f) along = line.station[0] + u;
+  if (i + 2 == n && u > len) along = line.station[i] + u;
+  const f32 wet = at.left ? lerp(c.wet_left_m[i], c.wet_left_m[i + 1], t)
+                          : lerp(c.wet_right_m[i], c.wet_right_m[i + 1], t);
+  const f32 drop = fall_drop(c, i);
+  // A nappe is in the air: nothing hides a margin, so it has none.
+  const f32 margin = drop > 0.0f ? 0.0f : lerp(margin_at(c, i), margin_at(c, i + 1), t);
+  at.along = along;
+  at.lateral = wet - at.distance_m;
+  at.margin = margin;
+  if (stretch_drawn(c, i)) {
+    const f32 run = std::min(along - line.run_from[i], line.run_to[i] - along);
+    at.inside = std::min(wet + margin - at.distance_m, run);
+    at.wet_inside = std::min(wet - at.distance_m, run);
+  } else {
+    const f32 into = std::min(along - line.station[i], line.station[i + 1] - along);
+    at.inside = at.wet_inside = -std::max(into, 0.0f);
+  }
+  at.depth_m = lerp(c.depth_m[i], c.depth_m[i + 1], t);
+  if (drop > 0.0f) {
+    // The nappe: a projectile from the lip that lands at the foot's place and level, so its
+    // fall time is the free fall's, its horizontal speed the run over it, and its height a
+    // parabola of the run.
+    const f64 time = std::sqrt(2.0 * static_cast<f64>(drop) / k_gravity);
+    const f64 across = static_cast<f64>(len) / time;
+    const f64 down = k_gravity * time * static_cast<f64>(t);
+    const f64 speed = std::min(std::sqrt(across * across + down * down),
+                               static_cast<f64>(k_channel_max_speed));
+    at.fall = true;
+    at.level = c.points[i].y - drop * t * t;
+    at.slope = len > 0.0f ? -2.0f * drop * t / len : 0.0f;
+    at.speed = static_cast<f32>(speed);
+    at.tau = line.tau[i] + time * static_cast<f64>(t);
+    const f64 width = std::max(static_cast<f64>(c.wet_left_m[i]) + static_cast<f64>(c.wet_right_m[i]),
+                               static_cast<f64>(k_lip_width_min_m));
+    const f64 thickness =
+        std::clamp(static_cast<f64>(c.discharge_m3s[i]) / width / speed,
+                   static_cast<f64>(k_channel_depth_min_m), static_cast<f64>(line.hydraulic[i]));
+    at.hydraulic = -static_cast<f32>(thickness);
+    return at;
+  }
+  at.level = lerp(c.points[i].y, c.points[i + 1].y, t);
+  at.slope = len > 0.0f ? (c.points[i + 1].y - c.points[i].y) / len : 0.0f;
+  if (stretch_jumps(c, i)) {
+    // The roller: the head's shooting flow holds over the jump's length, and the foot's tranquil
+    // flow begins at the foot.
+    at.speed = c.speed_mps[i];
+    at.tau = line.tau[i] + static_cast<f64>(tc) / static_cast<f64>(c.speed_mps[i]);
+    at.hydraulic = line.hydraulic[i];
+    return at;
+  }
+  const f64 slow_a = 1.0 / static_cast<f64>(c.speed_mps[i]);
+  const f64 slow_b = 1.0 / static_cast<f64>(c.speed_mps[i + 1]);
+  const f64 td = static_cast<f64>(t);
+  at.speed = static_cast<f32>(1.0 / (slow_a + (slow_b - slow_a) * td));
+  at.tau = line.tau[i] + static_cast<f64>(len) * (td * slow_a + 0.5 * td * td * (slow_b - slow_a));
+  at.hydraulic = lerp(line.hydraulic[i], line.hydraulic[i + 1], t);
+  return at;
+}
+
+namespace {
+
+// The distance in plan from (x, z) to stretch `i`.
+f32 stretch_distance(const Channel& c, const ChannelLine& line, u32 i, f32 x, f32 z) noexcept {
+  const Vec2 dir = line.heading[i];
+  const f32 px = x - c.points[i].x;
+  const f32 pz = z - c.points[i].z;
+  const f32 tc = std::clamp(px * dir.x + pz * dir.y, 0.0f, line.length[i]);
+  const f32 qx = px - dir.x * tc;
+  const f32 qz = pz - dir.y * tc;
+  return std::sqrt(qx * qx + qz * qz);
+}
+
+// How far from the line a stretch's sheet can reach, metres.
+f32 stretch_reach(const Channel& c, u32 i) noexcept {
+  return std::max(std::max(c.wet_left_m[i], c.wet_left_m[i + 1]),
+                  std::max(c.wet_right_m[i], c.wet_right_m[i + 1])) +
+         k_channel_under_bank_m;
+}
+
+}  // namespace
+
+ChannelAt channel_at(const Channel& c, const ChannelLine& line, f32 x, f32 z, u32 first,
+                     u32 last) noexcept {
+  const u32 n = c.points.size();
+  if (n < 2) return ChannelAt{};
+  last = std::min(last, n - 2);
+  first = std::min(first, last);
+  u32 best = first;
+  f32 best_d = stretch_distance(c, line, first, x, z);
+  for (u32 i = first + 1; i <= last; ++i) {
+    const f32 d = stretch_distance(c, line, i, x, z);
+    if (d < best_d) {
+      best_d = d;
+      best = i;
+    }
+  }
+  return channel_at_stretch(c, line, best, x, z);
+}
+
+f32 channel_lattice(const Channel& c) noexcept {
+  f32 narrow = 1e30f;
+  for (u32 i = 0; i + 1 < c.points.size(); ++i) {
+    if (!stretch_drawn(c, i)) continue;
+    for (u32 k = i; k <= i + 1; ++k)
+      narrow = std::min(narrow, c.wet_left_m[k] + c.wet_right_m[k] + 2.0f * margin_at(c, k));
+  }
+  return std::clamp(narrow / 4.0f, k_channel_lattice_min_m, k_channel_lattice_max_m);
+}
+
+namespace {
+
+struct Node {
+  u64 key;
+  f32 distance;
+  u32 stretch;
+};
+
+// The sheet over a lattice of `h` metres: false when it would pass the vertex budget.
+bool build_sheet(const Channel& c, const ChannelLine& line, f32 h, ChannelMesh& out) {
+  out = ChannelMesh{};
+  out.lattice_m = h;
+  out.mesh.spacing = h;
+  const u32 n = c.points.size();
+  // The lattice's nodes within reach of the line, each with the stretch it is nearest to: a
+  // stretch's own bounding box, grown by its reach and two cells so every corner of a cell the
+  // sheet touches is found.
+  f32 lo_x = 1e30f, lo_z = 1e30f, hi_x = -1e30f, widest = 0.0f;
+  for (u32 i = 0; i < n; ++i) {
+    lo_x = std::min(lo_x, c.points[i].x);
+    hi_x = std::max(hi_x, c.points[i].x);
+    lo_z = std::min(lo_z, c.points[i].z);
+    widest = std::max(widest, std::max(c.wet_left_m[i], c.wet_right_m[i]));
+  }
+  const f32 pad = widest + k_channel_under_bank_m + 3.0f * h;
+  const i64 x0 = static_cast<i64>(std::floor((lo_x - pad) / h)) - 1;
+  const i64 z0 = static_cast<i64>(std::floor((lo_z - pad) / h)) - 1;
+  const i64 x1 = static_cast<i64>(std::ceil((hi_x + pad) / h)) + 1;
+  const u64 wide = static_cast<u64>(x1 - x0 + 1);
+  Vector<Node> found;
+  for (u32 i = 0; i + 1 < n; ++i) {
+    const f32 reach = stretch_reach(c, i) + 2.0f * h;
+    const f32 ax = c.points[i].x, az = c.points[i].z, bx = c.points[i + 1].x,
+              bz = c.points[i + 1].z;
+    const i64 i0 = static_cast<i64>(std::floor((std::min(ax, bx) - reach) / h));
+    const i64 i1 = static_cast<i64>(std::ceil((std::max(ax, bx) + reach) / h));
+    const i64 j0 = static_cast<i64>(std::floor((std::min(az, bz) - reach) / h));
+    const i64 j1 = static_cast<i64>(std::ceil((std::max(az, bz) + reach) / h));
+    for (i64 j = j0; j <= j1; ++j) {
+      for (i64 ii = i0; ii <= i1; ++ii) {
+        const f32 d =
+            stretch_distance(c, line, i, static_cast<f32>(ii) * h, static_cast<f32>(j) * h);
+        if (d > reach) continue;
+        found.push_back(
+            Node{static_cast<u64>(j - z0) * wide + static_cast<u64>(ii - x0), d, i});
+      }
+    }
+  }
+  std::sort(found.begin(), found.end(), [](const Node& a, const Node& b) {
+    if (a.key != b.key) return a.key < b.key;
+    if (a.distance != b.distance) return a.distance < b.distance;
+    return a.stretch < b.stretch;
+  });
+  Vector<u64> keys;
+  Vector<ChannelAt> nodes;
+  Vector<Vec2> places;
+  for (u32 k = 0; k < found.size(); ++k) {
+    if (k > 0 && found[k].key == found[k - 1].key) continue;
+    const i64 ii = static_cast<i64>(found[k].key % wide) + x0;
+    const i64 j = static_cast<i64>(found[k].key / wide) + z0;
+    const Vec2 p{static_cast<f32>(ii) * h, static_cast<f32>(j) * h};
+    keys.push_back(found[k].key);
+    places.push_back(p);
+    nodes.push_back(channel_at_stretch(c, line, found[k].stretch, p.x, p.y));
+  }
+  const u32 count = nodes.size();
+  const auto find = [&](u64 key) {
+    const auto it = std::lower_bound(keys.begin(), keys.end(), key);
+    return it != keys.end() && *it == key ? static_cast<u32>(it - keys.begin()) : k_none;
+  };
+
+  // The vertices as the cells make them, before the phase's wrap: a node's, or a lattice edge's
+  // crossing (keyed 2 * node + axis), so two cells that share an edge share its vertex.
+  struct Raw {
+    Vec3 p;
+    Vec3 normal;
+    f64 tau;
+    f32 hydraulic;
+    f32 depth;
+  };
+  Vector<Raw> raw;
+  Vector<u32> node_vertex(count);
+  Vector<u32> edge_vertex(count * 2);
+  std::fill(node_vertex.begin(), node_vertex.end(), k_none);
+  std::fill(edge_vertex.begin(), edge_vertex.end(), k_none);
+  const auto add = [&](Vec2 p, const ChannelAt& at) {
+    Raw r;
+    r.p = Vec3{p.x, at.level, p.y};
+    const Vec3 up{-at.slope * at.heading.x, 1.0f, -at.slope * at.heading.y};
+    r.normal = up * (1.0f / length(up));
+    r.tau = at.tau;
+    r.hydraulic = at.hydraulic;
+    r.depth = at.depth_m;
+    raw.push_back(r);
+    return static_cast<u32>(raw.size() - 1);
+  };
+  // The final vertices: a raw vertex once for each wrap of the phase a triangle reads it under.
+  Mesh& m = out.mesh;
+  struct Wrapped {
+    i64 wrap[2] = {-1, -1};
+    u32 vertex[2] = {k_none, k_none};
+  };
+  Vector<Wrapped> wrapped;
+  const f64 period = static_cast<f64>(k_channel_phase_period_s);
+  const auto emit = [&](u32 r, i64 wrap) {
+    if (wrapped.size() < raw.size()) wrapped.resize(raw.size());
+    Wrapped& w = wrapped[r];
+    for (u32 k = 0; k < 2; ++k)
+      if (w.wrap[k] == wrap) return w.vertex[k];
+    const Raw& v = raw[r];
+    m.positions.push_back(v.p);
+    m.normals.push_back(v.normal);
+    m.uvs.push_back(Vec2{static_cast<f32>(v.tau - static_cast<f64>(wrap) * period), v.hydraulic});
+    m.max_depth = std::max(m.max_depth, v.depth);
+    const u32 index = m.positions.size() - 1;
+    for (u32 k = 0; k < 2; ++k) {
+      if (w.wrap[k] >= 0) continue;
+      w.wrap[k] = wrap;
+      w.vertex[k] = index;
+      if (k == 1) ++out.wrap_vertices;
+      return index;
+    }
+    ++out.wrap_vertices;  // a third wrap at one vertex: written, not shared
+    return index;
+  };
+  const auto tri = [&](u32 a, u32 b, u32 cc) {
+    const Vec3 pa = raw[a].p, pb = raw[b].p, pc = raw[cc].p;
+    const f32 ny = (pc.x - pa.x) * (pb.z - pa.z) - (pb.x - pa.x) * (pc.z - pa.z);
+    const f64 least = std::min(raw[a].tau, std::min(raw[b].tau, raw[cc].tau));
+    const i64 wrap = static_cast<i64>(std::floor(least / period));
+    const u32 va = emit(a, wrap), vb = emit(b, wrap), vc = emit(cc, wrap);
+    m.indices.push_back(va);
+    m.indices.push_back(ny >= 0.0f ? vb : vc);
+    m.indices.push_back(ny >= 0.0f ? vc : vb);
+    ++out.triangles;
+    if (raw[a].hydraulic < 0.0f || raw[b].hydraulic < 0.0f || raw[cc].hydraulic < 0.0f)
+      ++out.fall_triangles;
+  };
+  // **The pieces**: each run of drawn stretches, cut at every fall's lip and foot, so a nappe is a
+  // piece of its own. Each piece is the lattice's cells clipped to its own region — within the
+  // wet reach (and, off a nappe, the margin under the bank) and between the piece's two ends along
+  // the line — so a lip and a foot are straight edges of the mesh and never a line drawn through
+  // triangles, and every vertex of a piece is the piece's kind: a reach's carry a hydraulic depth,
+  // a nappe's its thickness. Two pieces that meet share their cut's points to the bit (below).
+  struct Piece {
+    u32 first;
+    u32 last;
+    f32 from;
+    f32 to;
+    bool fall;
+  };
+  Vector<Piece> pieces;
+  for (u32 i = 0; i + 1 < n;) {
+    if (!stretch_drawn(c, i)) {
+      ++i;
+      continue;
+    }
+    u32 end = i;
+    while (end + 2 < n && stretch_drawn(c, end + 1) &&
+           line.piece_from[end + 1] == line.piece_from[i] &&
+           line.piece_to[end + 1] == line.piece_to[i])
+      ++end;
+    pieces.push_back(Piece{i, end, line.piece_from[i], line.piece_to[i], fall_drop(c, i) > 0.0f});
+    i = end + 1;
+  }
+  u32 poly[8];
+  bool poly_edge[8];
+  for (const Piece& piece : pieces) {
+  std::fill(node_vertex.begin(), node_vertex.end(), k_none);
+  std::fill(edge_vertex.begin(), edge_vertex.end(), k_none);
+  // The piece's region is where three fields are all positive: past its first station, short of
+  // its last, and inside the wet reach (with the margin, off a nappe).
+  const auto fields = [&](const ChannelAt& at, f32 out_fields[3]) {
+    out_fields[0] = at.along - piece.from;
+    out_fields[1] = piece.to - at.along;
+    out_fields[2] = at.lateral + (piece.fall ? 0.0f : at.margin);
+  };
+  const auto field = [&](const ChannelAt& at) {
+    f32 f[3];
+    fields(at, f);
+    return std::min(f[0], std::min(f[1], f[2]));
+  };
+  for (u32 node = 0; node < count; ++node) {
+    const u64 key = keys[node];
+    const u32 cn[4] = {node, find(key + 1), find(key + wide + 1), find(key + wide)};
+    if (cn[1] == k_none || cn[2] == k_none || cn[3] == k_none) continue;
+    // Along +x from a node only if the next key is in the same row (the grid's pad keeps the last
+    // column clear, so it is).
+    const u32 e[4] = {2 * cn[0], 2 * cn[1] + 1, 2 * cn[3], 2 * cn[0] + 1};
+    f32 v[4];
+    bool in[4];
+    u32 inside = 0;
+    for (u32 k = 0; k < 4; ++k) {
+      v[k] = field(nodes[cn[k]]);
+      in[k] = v[k] > 0.0f;
+      inside += in[k] ? 1u : 0u;
+    }
+    if (inside == 0) continue;
+    // A vertex is the solve at its place among the piece's own stretches.
+    const auto corner = [&](u32 k) {
+      if (node_vertex[cn[k]] == k_none) {
+        const ChannelAt& own = nodes[cn[k]];
+        const bool within = own.stretch >= piece.first && own.stretch <= piece.last;
+        node_vertex[cn[k]] =
+            add(places[cn[k]], within ? own
+                                      : channel_at(c, line, places[cn[k]].x, places[cn[k]].y,
+                                                   piece.first, piece.last));
+      }
+      return node_vertex[cn[k]];
+    };
+    const auto edge = [&](u32 k) {
+      if (edge_vertex[e[k]] == k_none) {
+        // The crossing: of the fields that are not positive at the outside node, the one whose
+        // own zero along this edge is nearest the inside node — each field's crossing by itself,
+        // not the crossing of their least, which between a cut and a bank is on neither. It is
+        // measured from the edge's lower node whichever end is inside: where two pieces meet,
+        // their fields along the line are each other's negatives at both nodes, so the two compute
+        // the same quotient and the same point, to the bit.
+        const u32 k1 = (k + 1) & 3;
+        const u32 a = cn[k] < cn[k1] ? k : k1;
+        const u32 b = cn[k] < cn[k1] ? k1 : k;
+        const Vec2 pa = places[cn[a]];
+        const Vec2 pb = places[cn[b]];
+        f32 fa[3];
+        f32 fb[3];
+        fields(nodes[cn[a]], fa);
+        fields(nodes[cn[b]], fb);
+        const bool low_inside = in[a];
+        f32 t = low_inside ? 1.0f : 0.0f;
+        for (u32 f = 0; f < 3; ++f) {
+          if ((low_inside ? fb[f] : fa[f]) > 0.0f) continue;
+          const f32 span = fa[f] - fb[f];
+          const f32 at_f = span != 0.0f ? fa[f] / span : 0.5f;
+          t = low_inside ? std::min(t, at_f) : std::max(t, at_f);
+        }
+        t = std::clamp(t, k_edge_margin, 1.0f - k_edge_margin);
+        const Vec2 p{pa.x + (pb.x - pa.x) * t, pa.y + (pb.y - pa.y) * t};
+        edge_vertex[e[k]] = add(p, channel_at(c, line, p.x, p.y, piece.first, piece.last));
+      }
+      return edge_vertex[e[k]];
+    };
+    const auto segment = [&](u32 a, u32 b) {
+      out.boundary.push_back(raw[a].p);
+      out.boundary.push_back(raw[b].p);
+    };
+    const bool saddle = in[0] == in[2] && in[1] == in[3] && in[0] != in[1];
+    const bool joined = (v[0] + v[1] + v[2] + v[3]) > 0.0f;
+    if (saddle && !joined) {
+      for (u32 k = 0; k < 4; ++k) {
+        if (!in[k]) continue;
+        const u32 a = corner(k);
+        const u32 b = edge(k);
+        const u32 d = edge((k + 3) & 3);
+        tri(a, b, d);
+        segment(b, d);
+      }
+      continue;
+    }
+    // The inside polygon, walked round the cell's corners: a corner inside, and an edge point
+    // where the inside begins or ends; convex in every case marching squares makes, so a fan.
+    // Two edge points in a row are a piece of the sheet's boundary.
+    u32 np = 0;
+    for (u32 k = 0; k < 4; ++k) {
+      if (in[k]) {
+        poly_edge[np] = false;
+        poly[np++] = corner(k);
+      }
+      if (in[k] != in[(k + 1) & 3]) {
+        poly_edge[np] = true;
+        poly[np++] = edge(k);
+      }
+    }
+    for (u32 k = 1; k + 1 < np; ++k)
+      tri(poly[0], poly[k], poly[k + 1]);
+    for (u32 k = 0; k < np; ++k) {
+      const u32 k1 = (k + 1) % np;
+      if (poly_edge[k] && poly_edge[k1]) segment(poly[k], poly[k1]);
+    }
+    if (m.positions.size() > k_max_vertices) return false;
+  }
+  }
+  return true;
+}
+
+}  // namespace
+
+void build_channel_mesh(const Channel& c, ChannelMesh& out) {
+  out = ChannelMesh{};
+  if (c.points.size() < 2) return;
+  const ChannelLine line = channel_line(c);
+  // The vertex budget, as a body's: the lattice grows by a quarter until the sheet fits.
+  for (f32 h = channel_lattice(c);; h *= 1.25f)
+    if (build_sheet(c, line, h, out)) return;
+}
+
+void build_channel_depth_map(const Channel& c, const ChannelMesh& mesh,
+                             const scene_gen::Ground& ground, DepthMap& out) {
   out = DepthMap{};
-  const Channel c = with_plunge_stretch(described);
   const Mesh& m = mesh.mesh;
   if (m.positions.empty()) return;
+  const ChannelLine line = channel_line(c);
   f32 lo_x = 1e30f, lo_z = 1e30f, hi_x = -1e30f, hi_z = -1e30f;
   for (const Vec3& p : m.positions) {
     lo_x = std::min(lo_x, p.x);
@@ -400,29 +674,45 @@ void build_channel_depth_map(const Channel& described, const ChannelMesh& mesh, 
     lo_z = std::min(lo_z, p.z);
     hi_z = std::max(hi_z, p.z);
   }
+  // The origin is a whole metre of the world, so a texel of a quarter metre counted from it is the
+  // world's multiple; a coarser texel is counted from the square's own corner.
   const f64 side = static_cast<f64>(std::max(hi_x - lo_x, hi_z - lo_z));
-  const f64 target = static_cast<f64>(m.spacing) * 0.25;
-  const f64 wanted = target > 0.0 ? std::ceil(side / target) + 1.0 : 0.0;
-  const u32 size = static_cast<u32>(
-      std::clamp(wanted, static_cast<f64>(k_depth_map_min), static_cast<f64>(k_depth_map_max)));
-  const f64 texel = side / static_cast<f64>(size - 1);
-  const f64 x0 = 0.5 * (static_cast<f64>(lo_x) + static_cast<f64>(hi_x)) - 0.5 * side;
-  const f64 z0 = 0.5 * (static_cast<f64>(lo_z) + static_cast<f64>(hi_z)) - 0.5 * side;
+  f64 texel = static_cast<f64>(k_channel_map_texel_m);
+  if (side / texel + 3.0 > static_cast<f64>(k_depth_map_max))
+    texel = side / static_cast<f64>(k_depth_map_max - 3);
+  const bool aligned = texel == static_cast<f64>(k_channel_map_texel_m);
+  const f64 mid_x = 0.5 * (static_cast<f64>(lo_x) + static_cast<f64>(hi_x));
+  const f64 mid_z = 0.5 * (static_cast<f64>(lo_z) + static_cast<f64>(hi_z));
+  f64 x0 = mid_x - 0.5 * side - texel;
+  f64 z0 = mid_z - 0.5 * side - texel;
+  if (aligned) {
+    x0 = std::floor(x0 / texel) * texel;
+    z0 = std::floor(z0 / texel) * texel;
+  }
+  const u32 size = static_cast<u32>(std::clamp(std::ceil(side / texel) + 3.0,
+                                               static_cast<f64>(k_depth_map_min),
+                                               static_cast<f64>(k_depth_map_max)));
   out.size = size;
   out.origin = Vec2{static_cast<f32>(x0), static_cast<f32>(z0)};
   out.texel_m = static_cast<f32>(texel);
+  out.bank_max = k_depth_map_bank_min;
+  out.mesh_far_m = mesh.lattice_m;
+  out.mesh_near_m = mesh.lattice_m;
+  out.mesh_grade = 0.0f;
   const f64 ox = static_cast<f64>(out.origin.x);
   const f64 oz = static_cast<f64>(out.origin.y);
   const f64 tm = static_cast<f64>(out.texel_m);
-  Vector<f64> depth(size * size, 0.0);
-  // Each stretch's bed over the texels within its reach: the parabola across its width at the
-  // texel's nearest place on the stretch (in x and z), the deepest stretch winning.
-  for (u32 i = 0; i + 1 < c.points.size(); ++i) {
-    const Vec3 a = c.points[i];
-    const Vec3 b = c.points[i + 1];
-    const f64 reach = 0.5 * static_cast<f64>(std::max(c.width_m[i], c.width_m[i + 1])) + tm;
-    const f64 ax = static_cast<f64>(a.x), az = static_cast<f64>(a.z), bx = static_cast<f64>(b.x),
-              bz = static_cast<f64>(b.z);
+  const f64 bank = static_cast<f64>(out.bank_max);
+  // Each texel's nearest stretch, stretch by stretch over the texels within its reach.
+  Vector<f32> nearest(size * size);
+  Vector<u32> stretch(size * size);
+  std::fill(nearest.begin(), nearest.end(), 1e30f);
+  std::fill(stretch.begin(), stretch.end(), k_none);
+  const u32 n = c.points.size();
+  for (u32 i = 0; i + 1 < n; ++i) {
+    const f64 reach = static_cast<f64>(stretch_reach(c, i)) + 2.0 * tm;
+    const f64 ax = static_cast<f64>(c.points[i].x), az = static_cast<f64>(c.points[i].z);
+    const f64 bx = static_cast<f64>(c.points[i + 1].x), bz = static_cast<f64>(c.points[i + 1].z);
     const i64 i0 =
         std::max<i64>(0, static_cast<i64>(std::floor((std::min(ax, bx) - reach - ox) / tm)));
     const i64 i1 =
@@ -431,35 +721,115 @@ void build_channel_depth_map(const Channel& described, const ChannelMesh& mesh, 
         std::max<i64>(0, static_cast<i64>(std::floor((std::min(az, bz) - reach - oz) / tm)));
     const i64 j1 =
         std::min<i64>(size - 1, static_cast<i64>(std::ceil((std::max(az, bz) + reach - oz) / tm)));
-    const f64 dx = bx - ax, dz = bz - az;
-    const f64 len2 = dx * dx + dz * dz;
     for (i64 j = j0; j <= j1; ++j) {
       for (i64 ii = i0; ii <= i1; ++ii) {
-        const f64 x = ox + static_cast<f64>(ii) * tm;
-        const f64 z = oz + static_cast<f64>(j) * tm;
-        const f64 t =
-            len2 > 1e-12 ? std::clamp(((x - ax) * dx + (z - az) * dz) / len2, 0.0, 1.0) : 0.0;
-        const f64 px = ax + dx * t - x, pz = az + dz * t - z;
-        const f64 dist = std::sqrt(px * px + pz * pz);
-        const f64 w = static_cast<f64>(c.width_m[i]) +
-                      (static_cast<f64>(c.width_m[i + 1]) - static_cast<f64>(c.width_m[i])) * t;
-        const f64 d = static_cast<f64>(c.depth_m[i]) +
-                      (static_cast<f64>(c.depth_m[i + 1]) - static_cast<f64>(c.depth_m[i])) * t;
-        const f64 r = 2.0 * dist / w;
-        const f64 bed = d * (1.0 - r * r);
-        f64& slot = depth[static_cast<u32>(j) * size + static_cast<u32>(ii)];
-        slot = std::max(slot, bed);
+        const f32 x = static_cast<f32>(ox + static_cast<f64>(ii) * tm);
+        const f32 z = static_cast<f32>(oz + static_cast<f64>(j) * tm);
+        const f32 d = stretch_distance(c, line, i, x, z);
+        const u32 at = static_cast<u32>(j) * size + static_cast<u32>(ii);
+        if (d < nearest[at]) {
+          nearest[at] = d;
+          stretch[at] = i;
+        }
       }
     }
   }
+  Vector<f64> depth(size * size);
   f64 deepest = 0.0;
-  for (const f64 d : depth)
-    deepest = std::max(deepest, d);
+  for (u32 j = 0; j < size; ++j) {
+    for (u32 i = 0; i < size; ++i) {
+      const u32 t = j * size + i;
+      depth[t] = -bank;
+      if (stretch[t] == k_none) continue;
+      const f32 x = static_cast<f32>(ox + static_cast<f64>(i) * tm);
+      const f32 z = static_cast<f32>(oz + static_cast<f64>(j) * tm);
+      const ChannelAt at = channel_at_stretch(c, line, stretch[t], x, z);
+      // Within a texel of the sheet: the level less the ground. Past it: bank.
+      if (!(at.inside > -static_cast<f32>(tm))) continue;
+      f64 d = 0.0;
+      if (ground.present()) {
+        const f64 level = c.origin.y + static_cast<f64>(at.level);
+        const WorldPos world{c.origin.x + static_cast<f64>(x), level,
+                             c.origin.z + static_cast<f64>(z)};
+        d = level - static_cast<f64>(ground.surface(world));
+      } else {
+        d = at.wet_inside > 0.0f ? static_cast<f64>(at.depth_m) : -bank;
+      }
+      if (!(at.inside > 0.0f)) d = std::min(d, 0.0);
+      depth[t] = std::max(d, -bank);
+      deepest = std::max(deepest, d);
+    }
+  }
   out.depth_max = static_cast<f32>(deepest);
   out.texels.resize(size * size);
-  const f64 scale = out.depth_max > 0.0f ? 65535.0 / static_cast<f64>(out.depth_max) : 0.0;
+  const f64 range = static_cast<f64>(out.depth_max) + bank;
   for (u32 t = 0; t < size * size; ++t)
-    out.texels[t] = static_cast<u16>(std::clamp(std::floor(depth[t] * scale + 0.5), 0.0, 65535.0));
+    out.texels[t] = static_cast<u16>(
+        std::clamp(std::floor((depth[t] + bank) / range * 65535.0 + 0.5), 0.0, 65535.0));
+}
+
+ChannelEdge channel_edge_exposed(const Channel& c, const ChannelMesh& mesh,
+                                 const scene_gen::Ground& ground, f32 step, f32 clear_m) {
+  ChannelEdge edge;
+  const ChannelLine line = channel_line(c);
+  for (u32 k = 0; k + 1 < mesh.boundary.size(); k += 2) {
+    const Vec3 a = mesh.boundary[k];
+    const Vec3 b = mesh.boundary[k + 1];
+    const f32 dx = b.x - a.x, dz = b.z - a.z;
+    const f32 len = std::sqrt(dx * dx + dz * dz);
+    const u32 steps = std::max(1u, static_cast<u32>(std::ceil(len / step)));
+    for (u32 s = 0; s <= steps; ++s) {
+      const f32 t = static_cast<f32>(s) / static_cast<f32>(steps);
+      const Vec3 p = a + (b - a) * t;
+      ++edge.samples;
+      const ChannelAt at = channel_at(c, line, p.x, p.z);
+      // A cut across the line: the sample is well inside the wet reach's margin, so what ended
+      // the sheet here is its run, not its bank. A fall's sides are the nappe's own, in the air.
+      if (at.lateral + at.margin > 0.02f || at.fall) {
+        ++edge.cuts;
+        continue;
+      }
+      const f64 level = c.origin.y + static_cast<f64>(p.y);
+      const WorldPos world{c.origin.x + static_cast<f64>(p.x), level,
+                           c.origin.z + static_cast<f64>(p.z)};
+      const f32 over = static_cast<f32>(level - static_cast<f64>(ground.surface(world)));
+      if (over > clear_m) {
+        ++edge.exposed;
+        edge.worst_m = std::max(edge.worst_m, over);
+      }
+    }
+  }
+  return edge;
+}
+
+bool channel_sample(const Channel& c, const ChannelLine& line, const scene_gen::Ground& ground,
+                    WorldPos at_world, ChannelSample& out) noexcept {
+  out = ChannelSample{};
+  if (c.points.size() < 2) return false;
+  const f32 x = static_cast<f32>(at_world.x - c.origin.x);
+  const f32 z = static_cast<f32>(at_world.z - c.origin.z);
+  const ChannelAt at = channel_at(c, line, x, z);
+  if (!(at.wet_inside > 0.0f)) return false;
+  const f64 level = c.origin.y + static_cast<f64>(at.level);
+  f64 depth = static_cast<f64>(at.depth_m);
+  if (ground.present())
+    depth = level - static_cast<f64>(ground.surface(WorldPos{at_world.x, level, at_world.z}));
+  if (!(depth > 0.0)) return false;
+  out.level_m = level;
+  out.depth_m = static_cast<f32>(depth);
+  out.fall = at.fall;
+  f64 speed = static_cast<f64>(at.speed);
+  if (!at.fall) {
+    const f64 hydraulic = static_cast<f64>(at.hydraulic);
+    out.froude = static_cast<f32>(speed / std::sqrt(k_gravity * hydraulic));
+    speed *= k_channel_surface_factor * lateral_speed_share(depth, hydraulic);
+  }
+  const f64 rise = static_cast<f64>(at.slope);
+  const f64 unit = 1.0 / std::sqrt(1.0 + rise * rise);
+  out.velocity = Vec3{static_cast<f32>(speed * unit * static_cast<f64>(at.heading.x)),
+                      static_cast<f32>(speed * unit * rise),
+                      static_cast<f32>(speed * unit * static_cast<f64>(at.heading.y))};
+  return true;
 }
 
 JsonValue channel_generator_params(std::span<const scene::WaterChannel> channels) {

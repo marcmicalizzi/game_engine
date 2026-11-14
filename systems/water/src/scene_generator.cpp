@@ -203,15 +203,6 @@ bool open_channels(const JsonValue& params, const scene_gen::Context& context, v
     }
     entry->channels.push_back(std::move(channel));
   }
-  // The channels whose last point is a fall landing in a body (S98; channel.h, `pooled`): the
-  // renderer's reader names them, and their ribbons build no plunge stretch over the pool.
-  if (const JsonValue* pooled = params.find("pooled"); pooled != nullptr && pooled->is_array()) {
-    for (usize i = 0; i < pooled->size(); ++i) {
-      u64 k = 0;
-      if ((*pooled)[i].get_u64(k) && k < entry->channels.size())
-        entry->channels[static_cast<u32>(k)].pooled = true;
-    }
-  }
   *state = entry.release();
   return true;
 }
@@ -230,13 +221,27 @@ bool expand_channels(void* state, const scene_gen::Context& context, scene_gen::
   }
   const std::string mesh_dir =
       !ddc.empty() ? io::join_path(ddc, "water") : resolve(entry.dir, "water");
+  // The depth map is the level less the ground the scene draws, as it stands now (a body's rule).
+  const scene_gen::Ground& ground = context.stand.present() ? context.stand : context.ground;
   for (u32 k = 0; k < entry.channels.size(); ++k) {
     const Channel& channel = entry.channels[k];
     ChannelMesh mesh;
     build_channel_mesh(channel, mesh);
+    if (mesh.mesh.indices.empty()) {
+      // A channel with no drawn stretch (every station over its bank: channel.h, `stretch_drawn`)
+      // has no sheet. Mesh k is still channel k: an entry with no path, which the reader skips.
+      scene_gen::PlacementMesh none;
+      none.name = "water/" + (channel.name.empty() ? "channel" + std::to_string(k) : channel.name);
+      out.meshes.push_back(std::move(none));
+      scene_gen::Placement nowhere;
+      nowhere.position = channel.origin;
+      nowhere.mesh = k;
+      out.instances.push_back(nowhere);
+      continue;
+    }
     const Vector<u8> glb = mesh_glb(mesh.mesh, Vec3{0.30f, 0.55f, 0.50f}, 0.08f);
     DepthMap map;
-    build_channel_depth_map(channel, mesh, map);
+    build_channel_depth_map(channel, mesh, ground, map);
     const Vector<u8> map_file = depth_map_bytes(map);
     const std::span<const u8> bytes(glb.data(), glb.size());
     const std::span<const u8> map_bytes(map_file.data(), map_file.size());
