@@ -50,14 +50,16 @@ geometry::ClusterFileData boulders() {
         indices.push_back(base + t[c]);
   }
   Vector<Vec3> normals;
-  geometry::compute_vertex_normals(positions, indices, normals);
+  const std::span<const Vec3> p(positions.data(), positions.size());
+  const std::span<const u32> ix(indices.data(), indices.size());
+  geometry::compute_vertex_normals(p, ix, normals);
   geometry::ClusterFileData data;
   geometry::AttributeSource attributes;
   attributes.normals = std::span<const Vec3>(normals.data(), normals.size());
   attributes.uvs = std::span<const Vec2>(uvs.data(), uvs.size());
   std::string error;
-  REQUIRE_MESSAGE(geometry::build_cluster_lod(positions, indices, geometry::ClusterLodOptions{},
-                                              data.mesh, &error, attributes),
+  REQUIRE_MESSAGE(geometry::build_cluster_lod(p, ix, geometry::ClusterLodOptions{}, data.mesh,
+                                              &error, attributes),
                   error);
   data.cluster_material.assign(data.mesh.mesh.clusters.size(), 0u);
   geometry::ClusterFileMaterial grey;

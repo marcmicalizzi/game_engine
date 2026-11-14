@@ -76,7 +76,8 @@ Fixture talus() {
     cube(f, Vec3{x, 1.0f, 6.0f}, 0.15f);
     cube(f, Vec3{x, 1.0f, 10.0f}, 0.6f);
   }
-  compute_vertex_normals(f.positions, f.indices, f.normals);
+  compute_vertex_normals(std::span<const Vec3>(f.positions.data(), f.positions.size()),
+                         std::span<const u32>(f.indices.data(), f.indices.size()), f.normals);
   return f;
 }
 
@@ -86,8 +87,9 @@ ClusterFileData build(const Fixture& f) {
   attributes.normals = std::span<const Vec3>(f.normals.data(), f.normals.size());
   attributes.uvs = std::span<const Vec2>(f.uvs.data(), f.uvs.size());
   std::string error;
-  REQUIRE_MESSAGE(build_cluster_lod(f.positions, f.indices, ClusterLodOptions{}, data.mesh, &error,
-                                    attributes),
+  REQUIRE_MESSAGE(build_cluster_lod(std::span<const Vec3>(f.positions.data(), f.positions.size()),
+                                    std::span<const u32>(f.indices.data(), f.indices.size()),
+                                    ClusterLodOptions{}, data.mesh, &error, attributes),
                   error);
   data.cluster_material.assign(data.mesh.mesh.clusters.size(), 0u);
   data.materials.push_back(ClusterFileMaterial{});
