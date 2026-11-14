@@ -71,6 +71,8 @@ endif()
 if(TARGET engine::rocks)
   # The consumer's derived-data root (T119): a streamed deposits entry, reached through the registry.
   list(APPEND _world_tests tests/placement_roots_tests.cpp)
+  # G198: a dense tile of deposits as its near meshes and as its far tile, built as a host builds them.
+  list(APPEND _world_tests tests/far_tile_deposits_tests.cpp)
 endif()
 engine_module_tests(NAME world SOURCES ${_world_tests})
 foreach(_gen authored city rocks ruins sky terrain)
