@@ -70,21 +70,11 @@ constexpr const char* k_scene =
     R"("extent_m":1.3,"background":1.0}}]})";
 
 std::vector<std::string> base_args(const test::TempDir& tmp) {
-  return {"--scene",
-          tmp.file("scene.json"),
-          "--camera-path",
-          tmp.file("path.json"),
-          "--offscreen",
-          "--width",
-          "320",
-          "--height",
-          "180",
-          "--shadows",
-          "off",
-          "--lod-fade",
-          "0",
-          "--ddc",
-          tmp.file("ddc")};
+  return {"--scene", tmp.file("scene.json"), "--camera-path", tmp.file("path.json"), "--offscreen",
+          "--width", "320", "--height", "180",
+          // Traced where the device traces: a static form's frontier would change at a handover
+          // there (renderer.md, "A placement's form by ring"), and the litter's forms are not.
+          "--shadows", "auto", "--lod-fade", "0", "--ddc", tmp.file("ddc")};
 }
 
 }  // namespace

@@ -1,11 +1,11 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "G197",
-  "reason": "G197: a placement's form by ring is new behaviour, described where each reader looks: renderer.md gains 'A placement's form by ring' (the load's table, the rule, the read, the hand-over, what an imported mesh gets), world.md the consumer's read and the ring's hold-off",
+  "reason": "G197: a placement's form by ring is new behaviour, described where each reader looks: renderer.md gains 'A placement's form by ring' (the load's table, the rule, the read, the hand-over and the static form measured at it, what an imported mesh gets), world.md the consumer's read and the ring's hold-off",
   "date": "2026-11-13",
   "by": "Marc Micalizzi",
   "deltas": {
-    "page:docs/subsystems/renderer.md": 4383,
+    "page:docs/subsystems/renderer.md": 5088,
     "page:docs/subsystems/world.md": 1956
   }
 }

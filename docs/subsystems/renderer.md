@@ -4905,9 +4905,11 @@ owner's walk sat at the pair cap ([the count](../experiments/rt-chain-walk-2026-
 that picks its own forms (`StreamedPlacements::own_forms`, the `authored` entry's) — and for each
 ring past the first cuts a distance form of it for that ring's floor (`geometry::extract_lod_form`,
 the authored forms' cut, the same floor `(radius[r − 1] − √2/2 − 1/4) × tile`, the same projection
-and thresholds), appended as a mesh of its own with `form_source` and `form_rigid` set, so it is a
-static form under the ray tracing chain ([above](#static-structures-for-rigid-forms)) and its fit,
-materials, textures and caster policy are its source's. A ring whose cut keeps every cluster the
+and thresholds), appended as a mesh of its own with `form_source` set, its fit, materials,
+textures and caster policy its source's. It is a **static form** under the ray tracing chain
+([above](#static-structures-for-rigid-forms); `form_rigid` 1) only when its caster policy traces
+it: a static form draws its frontier at every distance, so where nothing traces it (the litter) it
+would buy no structure and cost a change at the ring's edge (below). A ring whose cut keeps every cluster the
 ring inside it kept reuses that one. Then **the rule** (`choose_ring_forms`) picks per ring the
 cheapest, in pairs, of: the ring's cut; a form the mesh **offers** (`OfferedForm`: a far form its
 container carries, the seam G198 fills), where the mesh's projected diameter at the ring's floor is
@@ -4926,10 +4928,15 @@ entries after it, so the next entry places the same in every ring.
 **The hand-over.** A cut drawn from at least its floor selects exactly the clusters its source
 selects from there, with the same fade splits ([geometry](geometry.md#distance-forms)), so the
 move from the mesh to its cut at a ring's edge changes no pixel: the same rule the authored forms
-and R91's measure for trees rest on. Where a scene's static forms are on (a traced scene,
-[above](#static-structures-for-rigid-forms)), a rigid form draws its frontier at every distance,
-which is what the mesh draws at the floor and finer than it draws farther: the same price an
-authored form pays (R94), in pairs and never in a coarser picture. What can show is a form drawn nearer than its floor — a tile
+and R91's measure for trees rest on. **A static form is the exception**: under traced shadows or
+primaries a rigid form draws its frontier at every distance (R94), which is finer than the mesh
+draws past the floor, so a tile moved inward, from the form to the mesh, changes. Measured on the
+streamed litter scene under `--shadows rt` with the forms static (the hook's first commit): 106
+handovers, the outward ones behind the walker, the inward ones 3,341 changed colours over 4,100
+of their tiles' pixels — at 80 m a patch's form drew 552 pixels where the mesh's own cut drew 156,
+the mesh's coarse levels having lost the leaves its frontier kept. So a form is static only when
+its caster policy traces it, and the litter's are not; a traced mesh's forms (a rock's) keep the
+structure built once and this price, which its maker answers at the hand-over. What can show is a form drawn nearer than its floor — a tile
 moved inward and not yet built again — which the quarter tile in the floor covers, as for an
 authored form; and the step to nothing, which happens only under `min_px`. An offered form draws
 what its maker says it draws, and its hand-over is its maker's to show.

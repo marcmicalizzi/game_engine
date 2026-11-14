@@ -1897,6 +1897,13 @@ bool make_placement_forms(SceneDesc& resolved, Vector<SourceMesh>& sources,
         continue;
       }
     }
+    // **A form is a static form only where a ray sees it** (renderer.md, "A placement's form by
+    // ring"): a static form draws its frontier at every distance (the structures built once), so a
+    // mesh drawn nearer as itself, at its own LOD, would change at the ring's edge. A mesh its
+    // caster policy leaves untraced (the litter) gains nothing from a structure built once, and its
+    // forms are cut forms the cull chooses over like the mesh, which hand over with no pixel.
+    const geometry::FloraSpeciesInfo* policy = geometry::flora_species_info(own.species);
+    const u8 static_form = policy == nullptr || policy->casters.traced ? 1u : 0u;
     // The mesh's frame as a placement places it (its fit), and how far it reaches from there.
     FitParts fit;
     const MeshFit& mf = resolved.mesh_info[m].fit;
@@ -1954,7 +1961,7 @@ bool make_placement_forms(SceneDesc& resolved, Vector<SourceMesh>& sources,
           sources.push_back(std::move(copy));
           dags.push_back(std::move(form));
           out.form_source.push_back(m);
-          out.form_rigid.push_back(1);
+          out.form_rigid.push_back(static_form);
           ++table.cuts;
           table.cut_clusters += kept;
         }
