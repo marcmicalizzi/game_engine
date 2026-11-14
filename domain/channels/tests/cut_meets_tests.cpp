@@ -415,6 +415,50 @@ TEST_CASE("channels: an outlet's start cuts no dry ground under its body's level
   CHECK(dry == 0);
 }
 
+// **Marks 6, 7 and 8 are lines in hollows** (W120's solve of the forest; `scratch\b64\W120\
+// hollows.txt`: 44 % of the forest's wet line lies in a hollow of its own line, link 360 wholly in
+// one 1.89 m deep, link 482 in one 0.42 m deep at the mark, link 778 in one 1.77 m deep at its
+// pond). The planner routes over the pit-filled lattice; the cut, which only lowers, does not fill
+// what the routing filled, so the line runs down into the hollow and climbs out of it, and the cut
+// leaves a closed pocket on its own line. Here the notch's 3 m hollow with no body: at every point
+// the line keeps, the edited ground's closed hollow there (its spill height less the ground) is at
+// most 0.3 m (a step-pool's pool on these channels is under 0.2 m). It fails on 61ccce67 and with
+// W121, whose rules are the cut's meeting with a body: it is the plan's (W122: a hollow too deep to
+// breach becomes a body at its spill, a shallow one is breached), and passes when the plan is
+// mended.
+TEST_CASE("channels: a line through a hollow leaves no pocket on its own line" *
+          doctest::may_fail()) {
+  const scene_gen::Ground g = ground(&hollow);
+  ChannelLayer p;
+  p.name = "hollow";
+  p.region_min = {0, 0};
+  p.region_max = {256, 512};
+  ChannelNetwork n;
+  std::string error;
+  REQUIRE(plan_channels(p, g, 0, nullptr, n, error));
+  const Window w = edited(g, edits_of(p, n), 96, 340, 160, 450);
+  const std::vector<i32> level = spill(w, w.cut);
+  u32 read = 0, pocketed = 0;
+  f64 most = 0, mx = 0, mz = 0;
+  for (const ChannelLink& link : n.links)
+    for (u32 i = 0; i < link.line.size(); ++i) {
+      const ChannelPoint& pt = link.line[i];
+      const i64 ii = static_cast<i64>(std::llround(pt.at.x * 4)) - w.i0;
+      const i64 jj = static_cast<i64>(std::llround(pt.at.z * 4)) - w.j0;
+      if (ii <= 0 || jj <= 0 || ii >= w.nx - 1 || jj >= w.nz - 1) continue;
+      const size_t k = static_cast<size_t>(jj * w.nx + ii);
+      const f64 d = static_cast<f64>(level[k] - w.cut[k]) / 1000.0;
+      ++read;
+      if (d > .3) ++pocketed;
+      if (d > most) most = d, mx = pt.at.x, mz = pt.at.z;
+    }
+  MESSAGE("a line through the notch's 3 m hollow: "
+          << read << " points read, " << pocketed << " in a pocket over 0.3 m deep, the deepest "
+          << most << " m at (" << mx << ", " << mz << ")");
+  REQUIRE(read > 100);
+  CHECK(pocketed == 0);
+}
+
 // **W119: a mouth's fan does not grade over a cliff.** The notch over its sea cliff: the link ends
 // on the cliff's face at the sea's level. Its fan graded the last three widths of bed, cliff top
 // included, from the lip's bed to the sea's level, an 80-degree ramp cut into the top of the

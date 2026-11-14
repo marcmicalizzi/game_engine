@@ -1484,7 +1484,14 @@ the ground the cut left:
   rim: 2.25 m² of ground that stood over the level cut under it, the worst 0.22 m; none with W121).
   Link 360 (mark 6) climbs too: 18 stations, a fall into a 0.41 m pool and the level rising 1.5 m
   to its end, 16 of them over a bank. Link 482 (mark 7) falls 75 m and has 89 stations of 550 over
-  a bank; at the mark a pool 0.47 m deep behind a lip.
+  a bank; at the mark a pool 0.47 m deep behind a lip. **All three marks are lines in hollows**
+  (W120's `hollows.txt`: the planner routes over the pit-filled lattice, which the cut, only
+  lowering, does not reproduce; link 360 lies wholly in a hollow 1.89 m deep, link 482 in one
+  0.42 m deep at the mark, link 778 in one 1.77 m deep at its pond), so the pockets are first the
+  plan's (W122), and the seat's where a bank is read past a drop. "a line through a hollow leaves
+  no pocket on its own line" (`may_fail`; the notch's 3 m hollow with no body: 79 of 184 points of
+  the line in a pocket deeper than 0.3 m, the deepest 1.55 m) is the case that says when the plan
+  is mended.
 - **The black triangle beside a teal one at a mouth: the fan under the body's level** (above). The
   teal triangle is the body's own surface (`systems/water`'s ring of the outline, at the level
   over the whole outline), seen where the fan's cut took the ground under the level inside the
