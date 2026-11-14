@@ -915,10 +915,10 @@ TEST_CASE("tileset: points on many threads through a cache smaller than the set 
   for (std::thread& t : threads)
     t.join();
   const TileSet::ReaderStats stats = set.reader_stats();
-  MESSAGE(u64{k_threads} * k_points << " points on " << k_threads << " threads: " << stats.hits
-                                    << " hits, " << stats.misses << " misses, "
-                                    << set.cache_stats().evictions << " evictions, " << stats.locks
-                                    << " locks");
+  const u64 asked = u64{k_threads} * k_points;
+  MESSAGE(asked << " points on " << k_threads << " threads: " << stats.hits << " hits, "
+                << stats.misses << " misses, " << set.cache_stats().evictions << " evictions, "
+                << stats.locks << " locks");
   CHECK(wrong.load() == 0);
   CHECK(set.failures() == 0);
   CHECK(set.cache_stats().evictions > 0);

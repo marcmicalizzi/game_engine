@@ -759,6 +759,7 @@ struct TileOut {
   bool over = false;
   OverBudgetTile over_tile;
   std::string record;
+  u64 record_hash = 0;  // `hash_bytes` of `record`, taken on the lane that made it
 };
 
 // A lane's scratch: one tile's scan and the record's words.
@@ -826,8 +827,33 @@ void compose_tile(const Field& f, i32 tx, i32 tz, bool records, TileWork& work, 
   out.record.clear();
   if (out.over)
     out.over_tile = over_budget_tile(in, tx, tz, s, c, scan.dense, n0 * n0, scan.table);
-  else if (records && out.present)
+  else if (records && out.present) {
     tile_record(f, tx, tz, work, out.record);
+    out.record_hash = hash_bytes(out.record.data(), out.record.size());
+  }
+}
+
+// One lane's share of a batch: the tiles `lane`, `lane + lanes`, ... of the batch's `n` from
+// `start`, composed into `outs` by the batch's index.
+struct LaneJob {
+  const Field* f = nullptr;
+  const TileRange* r = nullptr;
+  bool records = false;
+  u64 start = 0;
+  u32 n = 0;
+  u32 lanes = 1;
+  u32 lane = 0;
+  TileWork* work = nullptr;
+  TileOut* outs = nullptr;
+};
+void run_lane(void* context) {
+  const LaneJob& j = *static_cast<const LaneJob*>(context);
+  const u32 wide = static_cast<u32>(j.r->tx1 - j.r->tx0 + 1);
+  for (u32 k = j.lane; k < j.n; k += j.lanes) {
+    const u64 t = j.start + k;
+    compose_tile(*j.f, j.r->tx0 + static_cast<i32>(t % wide), j.r->tz0 + static_cast<i32>(t / wide),
+                 j.records, *j.work, j.outs[k]);
+  }
 }
 
 // **Every tile of the range, composed on the pool and handed on in tile order** (T128; tileset.md,
@@ -835,8 +861,10 @@ void compose_tile(const Field& f, i32 tx, i32 tz, bool records, TileWork& work, 
 // into batches of 16 tiles a lane; a batch's tiles dealt round the lanes, each lane with scratch of
 // its own, and then handed to `deliver(tx, tz, out)` one by one in order on the calling thread —
 // so what is written, refused, dropped and hashed is the same at any number of lanes, and never
-// depends on which finished first. A batch holds its records until it is handed on, so memory is
-// a batch's records, not the level's twice.
+// depends on which finished first. The next batch is composed while the calling thread hands on
+// the last (two buffers of outputs, the lanes' scratch used by one batch at a time), so the
+// writer's appends are not a pause the pool waits through. Memory is two batches' records, not the
+// level's twice.
 template <class Deliver>
 void scan_range(const Field& f, const TileRange& r, bool records, const MaskCookJobs& cook,
                 Deliver&& deliver) {
@@ -846,30 +874,52 @@ void scan_range(const Field& f, const TileRange& r, bool records, const MaskCook
   jobs::JobSystem* pool = count > 1 && cook.lanes != 1 ? cook.jobs() : nullptr;
   u32 lanes = pool != nullptr ? pool->worker_count(jobs::Pool::Performance) + 1 : 1;
   if (cook.lanes > 1) lanes = std::min(lanes, cook.lanes);
+  if (lanes <= 1) pool = nullptr;
   const u64 batch = static_cast<u64>(lanes) * 16;
+  const u32 held = static_cast<u32>(std::min(batch, count));
   Vector<TileWork> work(lanes);
-  Vector<TileOut> outs(static_cast<u32>(std::min(batch, count)));
-  for (u64 start = 0; start < count; start += batch) {
+  Vector<TileOut> outs[2] = {Vector<TileOut>(held), Vector<TileOut>(pool != nullptr ? held : 0)};
+  Vector<LaneJob> lane_jobs(lanes);
+  Vector<jobs::Job> job_list(lanes);
+  const auto start_batch = [&](u64 start, TileOut* into, jobs::Counter& counter) {
     const u32 n = static_cast<u32>(std::min(batch, count - start));
-    const auto run = [&](u32 lane) {
-      for (u32 k = lane; k < n; k += lanes) {
-        const u64 t = start + k;
-        compose_tile(f, r.tx0 + static_cast<i32>(t % wide), r.tz0 + static_cast<i32>(t / wide),
-                     records, work[lane], outs[k]);
-      }
-    };
-    if (lanes == 1) {
-      run(0);
-    } else {
-      pool->parallel_for(jobs::Pool::Performance, lanes, 1, [&](u32 begin, u32 end) {
-        for (u32 lane = begin; lane < end; ++lane)
-          run(lane);
-      });
+    for (u32 lane = 0; lane < lanes; ++lane) {
+      lane_jobs[lane] = LaneJob{&f, &r, records, start, n, lanes, lane, &work[lane], into};
+      job_list[lane] = jobs::Job{&run_lane, &lane_jobs[lane], nullptr};
     }
+    if (pool == nullptr) {
+      run_lane(&lane_jobs[0]);
+      return;
+    }
+    pool->schedule(jobs::Pool::Performance,
+                   std::span<const jobs::Job>(job_list.data(), job_list.size()), counter);
+  };
+  const auto hand_on = [&](u64 start, TileOut* from) {
+    const u32 n = static_cast<u32>(std::min(batch, count - start));
     for (u32 k = 0; k < n; ++k) {
       const u64 t = start + k;
-      deliver(r.tx0 + static_cast<i32>(t % wide), r.tz0 + static_cast<i32>(t / wide), outs[k]);
+      deliver(r.tx0 + static_cast<i32>(t % wide), r.tz0 + static_cast<i32>(t / wide), from[k]);
     }
+  };
+  if (pool == nullptr) {
+    jobs::Counter unused;
+    for (u64 start = 0; start < count; start += batch) {
+      start_batch(start, outs[0].data(), unused);
+      hand_on(start, outs[0].data());
+    }
+    return;
+  }
+  jobs::Counter first;
+  start_batch(0, outs[0].data(), first);
+  pool->wait(first);
+  for (u64 start = 0, b = 0; start < count; start += batch, ++b) {
+    TileOut* done = outs[b % 2].data();
+    // The next batch on the pool, into the other buffer, while this one is handed on.
+    jobs::Counter next;
+    const bool more = start + batch < count;
+    if (more) start_batch(start + batch, outs[(b + 1) % 2].data(), next);
+    hand_on(start, done);
+    if (more) pool->wait(next);
   }
 }
 
@@ -1081,13 +1131,13 @@ bool build_mask_level(const TileSet& set, const MaskInputs& in, const std::strin
       return;
     }
     if (!ordered) return;
-    if (!writer.add(tx, tz, t.record)) {
+    if (!writer.add(tx, tz, t.record, t.record_hash)) {
       error = "terrain.masks: the tile (" + std::to_string(tx) + ", " + std::to_string(tz) +
               ") is out of the archive's order";
       ordered = false;
       return;
     }
-    level_hash = hash_combine(level_hash, hash_bytes(t.record.data(), t.record.size()));
+    level_hash = hash_combine(level_hash, t.record_hash);
     manifest.present.push_back(tx);
     manifest.present.push_back(tz);
     out.bytes += t.record.size();
