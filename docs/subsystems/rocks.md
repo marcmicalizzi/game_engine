@@ -1805,9 +1805,31 @@ ring changes what it draws; its far placement is named past every piece's (`0x40
 tile's first patch id). Nothing of the far form is the generator's: it hands the recipes it hands a
 near ring, and the far form is measured from each built mesh.
 
+**What it costs, measured** (msvc-debug, 2026-11-13; the counts do not depend on the build or the
+machine). One 32 m tile of the massif's foot at the forest's budget (128,000 triangles a 16 m patch,
+96 loose stones a patch), handed as 15 pieces — `deposits far: what the DAG's own distance form
+keeps of a dense tile, ring by ring` and the world's `far tile: a dense tile of deposits is one
+instance of a sixth of its meshes' clusters past the first ring`:
+
+| The tile drawn as | Instances | Clusters (pairs) | Mesh room | Triangles drawn at the ring's floor |
+|---|---:|---:|---:|---:|
+| its 15 meshes (G191, every ring) | 15 | 13,939 | 35.0 MiB | 736,769 at 0 m |
+| the DAG's own distance form, cut for 96 m | 15 | 3,184 | (not a tile mesh) | 79,725 |
+| the DAG's own distance form, cut for 256 m | 15 | 1,599 | (not a tile mesh) | 38,135 |
+| **the far tile, level 0** (ring 1, 96 m) | **1** | **2,261** | **5.7 MiB** | 61,738 at the leaves |
+| the far form, level 1 / level 2 (summed over the pieces) | | | | 41,488 / 35,882 |
+
+The mesh room at 2,632 bytes a cluster (ray tracing on, the default cluster). The far tile's
+clusters are 1,025 leaves of 60 triangles and its own DAG over them (580, 320, 206, 75 and down to
+one), which coarsens it across the ring. Its honest error is 7.7 cm (a pixel from 79 m at 1080p and
+the default camera); its 15 members read back from the cache in 0.28 s and it builds in 0.77 s, on the
+pool, in debug. The distance form is shown for what a DAG keeps; a tile's meshes arrive after the load
+and are cut by nothing (G197's rule cuts the resident meshes), so before this row the choice past the
+first ring was the first row of the table or nothing.
+
 **Why the first level from the ring past the first.** A piece's first level is held to its radius
-over 128 (a 16 m patch: about 9 cm), which at 1080p and the default camera is a pixel from about
-90 m; the deposit scenes' second ring starts 96 m out (a 64 m tile at 1.5 tiles), so the hand-over
+over 128 (a 16 m patch: about 9 cm; the forest tile's pieces measured at most 7.7 cm honest), which
+at 1080p and the default camera is a pixel from about 90 m (79 m measured); the deposit scenes' second ring starts 96 m out (a 64 m tile at 1.5 tiles), so the hand-over
 moves nothing a pixel resolves. A scene whose first ring is smaller draws the far form nearer than
 it is held for, and says so in no sentence yet (a row this leaves).
 
