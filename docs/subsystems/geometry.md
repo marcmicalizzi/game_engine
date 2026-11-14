@@ -365,7 +365,7 @@ read, or a capture at another size, that sees it.
 
 ## The far form
 
-Roadmap G198 (2026-11-13; `far_form.h`, the container's sections 43 to 47). The owner, after a
+Roadmap G198 (2026-11-13; `far_form.h`, the container's sections 44 to 48). The owner, after a
 walk: "rocks need impostors at distance". A distance form keeps the top of a mesh's DAG, and a DAG
 **coarsens what is connected and never removes a piece**: a talus patch is a bed and a hundred
 loose stones and blocks, each a closed piece that the simplifier can shrink to a few triangles and
@@ -462,13 +462,15 @@ mesh's content build for the meshes a scene places far, so no build bakes it: th
 what its members carry none of and keeps **its own** result in the derived-data cache
 ([renderer](renderer.md#the-far-tile)), and the load bakes what it offers the rings' rule. A scene
 that places nothing far pays nothing, and no cache version moved: every entry is the bytes it was.
-Sections 43 to 47 are the format a container carries the far form in when a tool writes one
-(`ensure_far_form`); none does yet.
+Sections 44 to 48 are the format a container carries the far form in when a tool writes one
+(`ensure_far_form`; path 1's cached levels, [renderer](renderer.md#what-path-1-costs-a-load), are the
+one writer so far). 43 is another row's (A43's perches), handed over first; this row moved its five
+kinds up one.
 
-**The record.** 43 is one `FarFormHeader` (48 bytes: the version, the level count, the finest
-triangles, the pieces, the centre, the radius, the 128), 44 one `FarFormLevel` a level (32), 45 one
-`FarFormPart` a (level, material) (16: a run of 47 and the container's material), 46 the shared
-`FarFormVertex` (20: a position and the two GPU attribute words as the mesh carries them), 47 the
+**The record.** 44 is one `FarFormHeader` (48 bytes: the version, the level count, the finest
+triangles, the pieces, the centre, the radius, the 128), 45 one `FarFormLevel` a level (32), 46 one
+`FarFormPart` a (level, material) (16: a run of 48 and the container's material), 47 the shared
+`FarFormVertex` (20: a position and the two GPU attribute words as the mesh carries them), 48 the
 `u32` indices. All five are written only when the far form is not empty, and all five are resident.
 The size table pins the four records.
 

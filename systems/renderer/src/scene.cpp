@@ -594,7 +594,7 @@ void adopt_container(geometry::ClusterFileData& container_data, const std::strin
   out.textures = std::move(container_data.textures);  // where the built textures are, if any
   // What a host seats an instance of it by (G201 stage 2; section 42): none but a tree's.
   out.seat = container_data.seat;
-  // Its far form (G198; section 43): none but a rigid mesh's whose build baked one.
+  // Its far form (G198; sections 44 to 48): none but a rigid mesh's whose build baked one.
   out.far_form = std::move(container_data.far_form);
   // A generated tree's motion contract, for the flora stage and the collision (renderer.md, "The
   // flora stage"): kept only when its per-vertex records cover the mesh, which is what a reader may

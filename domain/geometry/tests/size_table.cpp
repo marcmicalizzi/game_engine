@@ -24,7 +24,7 @@ ENGINE_EXPECT_SIZE(12, 4, geometry::PageRequest);
 
 ENGINE_EXPECT_SIZE(8, 4, geometry::VertexAttributes);
 
-// The far form's records (G198; far_form.h) are laid over a container's bytes (sections 43 to 46),
+// The far form's records (G198; far_form.h) are laid over a container's bytes (sections 44 to 47),
 // so their layout is the file format: a vertex is a position and the two GPU attribute words, a
 // part and a level are whole words, the header one record of twelve.
 ENGINE_EXPECT_SIZE(20, 4, geometry::FarFormVertex);

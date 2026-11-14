@@ -2,7 +2,7 @@
 
 // **The far form of a rigid mesh** (docs/subsystems/geometry.md, "The far form"; roadmap G198):
 // what a mesh draws as once it is far, made from the mesh alone — baked on first offer, or carried
-// in its container (sections 43 to 47) when a tool wrote one — so an imported boulder and a
+// in its container (sections 44 to 48) when a tool wrote one — so an imported boulder and a
 // generated talus get the same one and no generator is asked what its far form is.
 //
 // **What it is.** The mesh's finest level, welded by source vertex, then for each of a few levels
@@ -75,7 +75,7 @@ struct FarFormLevel {
   u32 part_count = 0;
 };
 
-// The record a container carries (section 43). 48 bytes.
+// The record a container carries (section 44). 48 bytes.
 struct FarFormHeader {
   u32 version = k_far_form_version;
   u32 levels = 0;

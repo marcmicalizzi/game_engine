@@ -224,20 +224,20 @@ enum class ClusterSection : u32 {
   Seat = 42,
   // **The far form of a rigid mesh** (G198; far_form.h; geometry.md, "The far form"): what the mesh
   // draws as once its radius projects under 128 pixels — its finest level with the pieces a level's
-  // error covers left out and the rest simplified to it, a few levels of rising error. 43 is
-  // exactly one `FarFormHeader`; 44 one `FarFormLevel` a level; 45 one `FarFormPart` a (level,
-  // material); 46 the `FarFormVertex` the levels share; 47 their `u32` indices. Five kinds because
+  // error covers left out and the rest simplified to it, a few levels of rising error. 44 is
+  // exactly one `FarFormHeader`; 45 one `FarFormLevel` a level; 46 one `FarFormPart` a (level,
+  // material); 47 the `FarFormVertex` the levels share; 48 their `u32` indices. Five kinds because
   // the format's rule is one fixed-size element per section. **Written only when the data carries
   // one**
   // (`ensure_far_form`, a rigid mesh: no skin, no morph, no motion contract, no impostor chain),
   // like 34 to 42, and no content build bakes one by default (it is baked on first offer); a reader
   // without them has no far form, and a host that wants one bakes it from the finest level, the
-  // same bytes. Resident.
-  FarForm = 43,
-  FarFormLevels = 44,
-  FarFormParts = 45,
-  FarFormVertices = 46,
-  FarFormIndices = 47,
+  // same bytes. Resident. (43 is another row's, A43's perches; this branch leaves it unnamed.)
+  FarForm = 44,
+  FarFormLevels = 45,
+  FarFormParts = 46,
+  FarFormVertices = 47,
+  FarFormIndices = 48,
 };
 
 // One past the highest kind this build knows, which is how wide a by-kind table has to be.
@@ -541,7 +541,7 @@ struct ClusterFileData {
   // Written only when the radius is positive.
   ClusterFileSeat seat{};
   bool has_seat() const noexcept { return seat.radius_m > 0.0f; }
-  // The far form (sections 43 to 47): empty for a mesh whose build baked none. Written only when
+  // The far form (sections 44 to 48): empty for a mesh whose build baked none. Written only when
   // not empty.
   FarForm far_form;
 };
