@@ -72,9 +72,10 @@ constexpr const char* k_scene =
 std::vector<std::string> base_args(const test::TempDir& tmp) {
   return {"--scene", tmp.file("scene.json"), "--camera-path", tmp.file("path.json"), "--offscreen",
           "--width", "320", "--height", "180",
-          // Traced where the device traces: a static form's frontier would change at a handover
-          // there (renderer.md, "A placement's form by ring"), and the litter's forms are not.
-          "--shadows", "auto", "--lod-fade", "0", "--ddc", tmp.file("ddc")};
+          // No `--shadows`: the default traces where the device traces, where a static form's
+          // frontier would change at a handover (renderer.md, "A placement's form by ring"), and
+          // the litter's forms are not static.
+          "--lod-fade", "0", "--ddc", tmp.file("ddc")};
 }
 
 }  // namespace
