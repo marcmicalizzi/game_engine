@@ -496,6 +496,7 @@ bool write_cluster_cache(const std::string& path, const std::string& source,
   // two apps' entries stay the same bytes; the records come back to the caller whether or not the
   // entry lands, because the texture lookup does not depend on it (texture.md).
   texture::fill_cluster_texture_records(data);
+  data.perches = mesh_data.perches;  // section 43 (A43): the perches the glTF declares, if any
 
   std::string error;
   const io::Status status = io::make_directories(io::parent_path(path));
@@ -591,6 +592,7 @@ void adopt_container(geometry::ClusterFileData& container_data, const std::strin
   out.textures = std::move(container_data.textures);  // where the built textures are, if any
   // What a host seats an instance of it by (G201 stage 2; section 42): none but a tree's.
   out.seat = container_data.seat;
+  out.perches = std::move(container_data.perches);  // section 43 (A43): declared perches, if any
   // A generated tree's motion contract, for the flora stage and the collision (renderer.md, "The
   // flora stage"): kept only when its per-vertex records cover the mesh, which is what a reader may
   // index them by.
@@ -983,6 +985,7 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expect
   ENGINE_STARTUP_STAGE("mesh build");  // a miss: the import, the repairs, the DAG, the write
   if (!assets::load_gltf(path, out.data, &error)) return false;
   out.image_dir = std::string(io::parent_path(path));
+  out.perches = out.data.perches;  // A43: the perches its nodes declare, as a container's 43
   // The two repairs, exactly where `engine-content build` runs them — after the load, before the
   // weld, the zero-area repair first — because the two write and read the same cache entries and
   // have to build the same bytes ([geometry](geometry.md), "Zero-area triangles: the repair" and

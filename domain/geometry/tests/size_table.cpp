@@ -75,6 +75,10 @@ ENGINE_EXPECT_SIZE(128, 4, geometry::ClusterFileMaterialSampling);
 // three floats laid over the file's bytes.
 ENGINE_EXPECT_SIZE(12, 4, geometry::ClusterFileSeat);
 
+// A perch a mesh declares (section 43, A43): the point, the up direction, the foot's size and a
+// zero word for the next field, laid over the file's bytes.
+ENGINE_EXPECT_SIZE(32, 4, geometry::ClusterFilePerch);
+
 // The surface binding record (surface_binding.h; plan 07 §7.11's proposed packing): a u16 refined
 // triangle, two u16 barycentrics, a half-float normal offset and a u16 blend weight, five u16 and
 // no padding. It is stored once per bound render vertex and read once per frame by the transfer,

@@ -554,6 +554,131 @@ TEST_CASE(
   CHECK(current.morph_count == 2);
 }
 
+TEST_CASE(
+    "hotload: ABI 10's world queries forward, answer Unsupported without services or through a "
+    "table that ends before them, and copy back only as far as the module's struct") {
+  ModuleHost host;
+  const HostApi* api = host.context()->api;
+  CHECK(ENGINE_HOTLOAD_HAS(api, cast_ray));
+  CHECK(ENGINE_HOTLOAD_HAS(api, supports_near));
+  HostApi v9 = *api;
+  v9.size = static_cast<u32>(offsetof(HostApi, cast_ray));
+  CHECK_FALSE(ENGINE_HOTLOAD_HAS(&v9, cast_ray));
+  CHECK_FALSE(ENGINE_HOTLOAD_HAS(&v9, supports_near));
+  CHECK(ENGINE_HOTLOAD_HAS(&v9, actor_morph_info));
+  const f64 at[3] = {1.0, 2.0, 3.0};
+  const f32 down[3] = {0.0f, -1.0f, 0.0f};
+  CastHit hit;
+  WaterSample water;
+  Support out[4];
+  SupportQuery query;
+  ModuleContext old_host{&v9, nullptr};
+  CHECK(cast_ray(&old_host, at, down, 10.0f, hit) == Result::Unsupported);
+  CHECK(cast_sphere(&old_host, at, down, 10.0f, 0.5f, hit) == Result::Unsupported);
+  CHECK(water_at(&old_host, 1.0, 3.0, water) == Result::Unsupported);
+  CHECK(supports_near(&old_host, at, 4.0f, 0.0f, out, 4, query) == Result::Unsupported);
+  // No services: Unsupported, after the host's own checks (null pointers, short structs).
+  ModuleContext context{api, nullptr};
+  CHECK(cast_ray(&context, at, down, 10.0f, hit) == Result::Unsupported);
+  CHECK(water_at(&context, 1.0, 3.0, water) == Result::Unsupported);
+  CHECK(supports_near(&context, at, 4.0f, 0.0f, out, 4, query) == Result::Unsupported);
+  CHECK(api->cast_ray(api->host, nullptr, down, 10.0f, &hit) == Result::InvalidArgument);
+  CastHit short_hit;
+  short_hit.size = 16;
+  CHECK(api->cast_ray(api->host, at, down, 10.0f, &short_hit) == Result::InvalidArgument);
+  WaterSample short_water;
+  short_water.size = 8;
+  CHECK(api->water_at(api->host, 1.0, 3.0, &short_water) == Result::InvalidArgument);
+  SupportQuery small_records;
+  small_records.support_size = 16;
+  small_records.capacity = 1;
+  small_records.out = out;
+  CHECK(api->supports_near(api->host, at, &small_records) == Result::InvalidArgument);
+  SupportQuery no_out;
+  no_out.capacity = 2;
+  CHECK(api->supports_near(api->host, at, &no_out) == Result::InvalidArgument);
+
+  struct Seen {
+    u32 flags = 0;
+    f32 radius = -1.0f;
+    u32 capacity = 0;
+  } seen;
+  GameServices services;
+  services.user = &seen;
+  services.cast_ray = [](void* user, const f64*, const f32*, f32, CastHit& h) {
+    static_cast<Seen*>(user)->flags = h.flags;
+    h.what = static_cast<u32>(WorldHit::Ground);
+    h.distance = 2.5f;
+    h.covered = 1;
+    return Result::Ok;
+  };
+  services.cast_sphere = [](void* user, const f64*, const f32*, f32, f32 radius, CastHit& h) {
+    static_cast<Seen*>(user)->radius = radius;
+    h.covered = 0;
+    return Result::NotFound;
+  };
+  services.water_at = [](void*, f64, f64, WaterSample& w) {
+    w.wet = 1;
+    w.level = -0.45;
+    w.depth = 1.25f;
+    w.source = k_water_body;
+    return Result::Ok;
+  };
+  services.supports_near = [](void* user, const f64*, SupportQuery& q) {
+    static_cast<Seen*>(user)->capacity = q.capacity;
+    for (u32 i = 0; i < q.capacity && i < 3; ++i) {
+      q.out[i] = Support{};
+      q.out[i].kind = k_support_limb;
+      q.out[i].distance = static_cast<f32>(i);
+    }
+    q.count = q.capacity < 3 ? q.capacity : 3;
+    q.found = 3;
+    q.covered = 1;
+    return Result::Ok;
+  };
+  host.set_game_services(services);
+  hit.flags = k_cast_water;
+  CHECK(cast_ray(&context, at, down, 10.0f, hit) == Result::Ok);
+  CHECK(seen.flags == k_cast_water);  // the module's flags reach the service
+  CHECK(hit.size == sizeof(CastHit));
+  CHECK(hit.what == static_cast<u32>(WorldHit::Ground));
+  CHECK(hit.distance == 2.5f);
+  CHECK(hit.covered == 1u);
+  // A miss copies back too: `covered` is the answer to whether the miss can be trusted.
+  CHECK(cast_sphere(&context, at, down, 10.0f, 0.5f, hit) == Result::NotFound);
+  CHECK(seen.radius == 0.5f);
+  CHECK(hit.covered == 0u);
+  CHECK(water_at(&context, 1.0, 3.0, water) == Result::Ok);
+  CHECK(water.size == sizeof(WaterSample));
+  CHECK(water.wet == 1u);
+  CHECK(water.level == -0.45);
+  CHECK(water.depth == 1.25f);
+  // Straight into the module's array, as many as it holds.
+  CHECK(supports_near(&context, at, 4.0f, 0.0f, out, 2, query) == Result::Ok);
+  CHECK(seen.capacity == 2u);
+  CHECK(query.count == 2u);
+  CHECK(query.found == 3u);
+  CHECK(query.covered == 1u);
+  CHECK(out[1].kind == k_support_limb);
+  CHECK(out[1].distance == 1.0f);
+  // Records larger than ABI 10's (a later header's) arrive at the module's stride, each one's own
+  // later field untouched.
+  struct Wider {
+    Support s;
+    u64 later = 0x55;
+  } wider[3];
+  SupportQuery wide;
+  wide.support_size = sizeof(Wider);
+  wide.capacity = 3;
+  wide.out = &wider[0].s;
+  CHECK(api->supports_near(api->host, at, &wide) == Result::Ok);
+  CHECK(wide.count == 3u);
+  CHECK(wider[2].s.kind == k_support_limb);
+  CHECK(wider[2].s.distance == 2.0f);
+  CHECK(wider[1].later == 0x55u);
+  CHECK(wider[2].later == 0x55u);
+}
+
 TEST_CASE("hotload: ABI 4's entries forward to the game services, and answer Unsupported without") {
   // No module: the table the host hands every module, called as one would call it.
   ModuleHost host;

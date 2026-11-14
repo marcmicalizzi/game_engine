@@ -105,6 +105,7 @@
 #if ENGINE_VIEW_WATER
 // Wading (brief-water, roadmap S63; docs/subsystems/water.md, "Wading").
 #include <systems/renderer/terrain.h>
+#include <systems/water/query.h>  // a game module's water at a point (A43)
 #include <systems/water/water.h>
 #endif
 
@@ -2182,14 +2183,41 @@ struct Wading {
     return water::depth_at(std::span<const water::Body>(w.bodies.data(), w.bodies.size()), w.ground,
                            at);
   }
+  // **A game module's water at a point** (ABI 10, A43; water/query.h): the bodies with the depth
+  // maps the reader cooked beside their meshes, and the channels' descriptions.
+  water::WaterQuery query;
+  static bool sample(const void* self, f64 x, f64 z, hotload::WaterSample& out) noexcept {
+    water::WaterPoint p;
+    static_cast<const Wading*>(self)->query.sample(WorldPos{x, 0.0, z}, p);
+    out.wet = p.wet ? 1u : 0u;
+    out.level = p.level;
+    out.depth = p.depth;
+    out.velocity[0] = p.velocity.x;
+    out.velocity[1] = p.velocity.y;
+    out.source = p.source;
+    out.index = p.index;
+    return true;
+  }
   void attach(const renderer::SceneData& scene, view::Walker& walker) {
     bodies.clear();
+#if ENGINE_VIEW_GAME
+    // Dry is an answer: a scene with no water answers every point dry, in a build that has water.
+    if (g_game != nullptr) g_game->set_water(&Wading::sample, this);
+#endif
+    Vector<const renderer::SceneWaterDepth*> maps;  // the bodies' cooked depth maps, in order
     for (const renderer::SceneMeshInfo& info : scene.mesh_info) {
       if (!info.water.has_value()) continue;
+      water::Channel channel;
+      if (info.water->channel &&
+          water::read_channel(info.water->channel_source, channel, nullptr)) {
+        query.add_channel(std::move(channel));
+      }
       water::Body body;
-      if (water::read_body(info.water->body, body, nullptr)) bodies.push_back(std::move(body));
+      if (!water::read_body(info.water->body, body, nullptr)) continue;
+      bodies.push_back(std::move(body));
+      maps.push_back(&info.water->depth);
     }
-    if (bodies.empty()) return;
+    if (bodies.empty() && query.empty()) return;
     if (scene.terrain.enabled) {
       terrain = std::make_unique<renderer::TerrainSampler>(scene.terrain);
       if (terrain->ok()) ground = terrain->provider().view();
@@ -2200,7 +2228,19 @@ struct Wading {
     // that fails here keeps the unflooded answer.
     for (water::Body& body : bodies)
       if (body.fill) (void)water::fill_body(body, ground, nullptr);
-    walker.set_water(&Wading::depth, this);
+    query.set_ground(&ground);
+    for (u32 b = 0; b < bodies.size(); ++b) {
+      const renderer::SceneWaterDepth& d = *maps[b];
+      water::DepthMap map;
+      map.size = d.size;
+      map.origin = d.origin;
+      map.texel_m = d.texel_m;
+      map.depth_max = d.depth_max;
+      map.bank_max = d.bank_max;
+      map.texels = d.texels;
+      query.add_body(bodies[b], std::move(map));
+    }
+    if (!bodies.empty()) walker.set_water(&Wading::depth, this);
   }
 };
 #endif

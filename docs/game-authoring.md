@@ -235,6 +235,29 @@ a world) answers `actor_place` with `Unsupported`, and `actor_spawn` — a chara
 answers `Unsupported` everywhere ([apps.md, "Actors"](subsystems/apps.md#actors-the-characters-a-game-moves)
 says what each needs). An actor does not collide: check reach from `actor_state`'s position.
 
+## Asking the world: casts, the water and somewhere to perch (hotload ABI 10)
+
+ABI 10 (2026-11-14) appended four services and loads modules built against 3 to 9 unchanged
+([apps.md, "What a module can ask the world"](subsystems/apps.md#what-a-module-can-ask-the-world)).
+**Casts**: `cast_ray(context, origin, direction, length, hit)` and `cast_sphere(…, radius, hit)` meet
+what stops the walker — the ground, every placement's collision, a tree's trunk and load-bearing
+limbs, never its leaves — and say where, the normal (facing the cast), the distance and what it was
+(`WorldHit::Ground`, `Instance` with its index, `Placement` with its entry). Set `k_cast_water` in
+`hit.flags` and water stops it too. They see only the tiles the collision holds round the walker
+(about 48 m): `hit.covered` 0 means part of the cast was not looked at, so a miss there is not a
+clear path. **The water**: `water_at(context, x, z, sample)` says whether the point is wet, the
+surface's level, the depth and the water's velocity (a stream's flow; zero in a pond) — dry is an
+answer, so an animal can choose water, avoid it, wade or drink. **Somewhere to perch**:
+`supports_near(context, point, radius, min_size, out, capacity, query)` fills `out` with the places
+a small animal can stand within the radius, nearest first: the **perches your meshes declare**
+(name a node in Blender `perch` or give it a custom property `perch` with `size_m`, and the import
+reads it), then a generated tree's **limbs and branches** (the `part` it names is the branch the
+renderer sways, for a later perch that rides it), then **the top of anything else** (a rock, a log, a
+wall). Each support's `up` and `size_m` say how to stand there; `min_size` leaves out the twigs a
+foot will not hold. All four allocate nothing, change nothing a replay walks, and answer
+`Unsupported` on an older host (or, for the casts and supports, in a session whose walker has no
+collision).
+
 ## The HUD, and how far `nearest_placement` sees
 
 The HUD is a proof-of-concept panel, not the game UI framework

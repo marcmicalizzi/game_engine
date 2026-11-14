@@ -133,6 +133,13 @@ if(TARGET engine::hotload)
   # The HUD on an HDR target and the game's own art (ABI 6, roadmap P49): the fixture's panel image
   # and font line captured in sdr8, hdr10 and scrgb, end to end (tests/game_hud_hdr_view_tests.cpp).
   list(APPEND _view_tests tests/game_hud_hdr_view_tests.cpp)
+  # What a module can ask the world (ABI 10, roadmap A43; apps.md "What a module can ask the
+  # world"): the casts, the supports and the water in the oasis pool with a tree, a post that
+  # declares a perch and a boulder, end to end, replayed offscreen.
+  if(TARGET engine::water AND TARGET engine::flora AND TARGET engine::scene_collision AND
+     TARGET engine::terrain AND TARGET engine::scatter AND TARGET engine::sky)
+    list(APPEND _view_tests tests/world_queries_view_tests.cpp)
+  endif()
 endif()
 if(TARGET engine::animation)
   # The animation-LOD glue is a header beside main.cpp (`anim_lod.h`) rather than a block inside

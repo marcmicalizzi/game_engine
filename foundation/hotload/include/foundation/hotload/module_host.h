@@ -135,6 +135,18 @@ struct GameServices {
   Result (*actor_morph)(void* user, u32 actor, const f32* weights, u32 count) = nullptr;
   Result (*actor_scale)(void* user, u32 actor, f32 scale) = nullptr;
   Result (*actor_morph_info)(void* user, u32 actor, MorphInfo& io) = nullptr;
+  // ABI 10 (module_abi.h): what a module can ask the world. The host checks the pointers and each
+  // struct's size, hands the runner its own struct (`CastHit::flags`, the query's inputs copied in)
+  // and copies the answer back only as far as the module's struct reaches; the values (a unit
+  // direction, the ranges, a finite point) are the runner's to judge. `supports_near`'s records are
+  // written by the runner into `out` (the host's own `Support`s, `capacity` of them) and copied to
+  // the module's array at its stride. Null, each answers `Unsupported`.
+  Result (*cast_ray)(void* user, const f64* origin, const f32* direction, f32 length,
+                     CastHit& hit) = nullptr;
+  Result (*cast_sphere)(void* user, const f64* origin, const f32* direction, f32 length, f32 radius,
+                        CastHit& hit) = nullptr;
+  Result (*water_at)(void* user, f64 x, f64 z, WaterSample& io) = nullptr;
+  Result (*supports_near)(void* user, const f64* point, SupportQuery& query) = nullptr;
 };
 
 struct HostConfig {

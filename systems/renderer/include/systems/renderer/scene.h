@@ -216,6 +216,10 @@ struct SceneWater {
   // mesh's UV.x is the flow phase, and the GPU scene sets `gfx::k_material_water_channel` on its
   // material. `body` then holds the channel's name and optics under a body's names, and no shape.
   bool channel = false;
+  // A channel's description as the scene gave it (A43): what a host's water at a point answers a
+  // channel from (`water::channel_water_at`; apps.md, "What a module can ask the world"). Default
+  // for a body.
+  scene::WaterChannel channel_source{};
   // A body's **plunges** (water.md, "The plunge"; S98): the feet of the scene's channels' falls
   // that land in it — inside its depth map, within a metre of its level — body-local,
   // the highest falls first, at most `gfx::k_water_plunges` (the reader drops the rest and says
@@ -637,6 +641,10 @@ struct SourceMesh {
   // on the ground by (`scene_gen::seat_on_ground`). A radius of zero for every other mesh; a
   // distance form keeps its source's.
   geometry::ClusterFileSeat seat{};
+  // **The perches the mesh declares** (A43; the container's section 43, or the glTF's nodes;
+  // apps.md, "What a module can ask the world"): mesh space, read by the collision's supports.
+  // Empty for every mesh that declares none.
+  Vector<geometry::ClusterFilePerch> perches;
   bool has_motion() const noexcept { return !motion_parts.empty() && !motion_vertices.empty(); }
 };
 

@@ -572,6 +572,81 @@ struct HostCallbacks {
     }
     return r;
   }
+  // ---- ABI 10: what a module can ask the world ----
+  // A `CastHit` from ABI 10's size up: the host's own struct goes to the runner with the module's
+  // `flags`, and the answer comes back up to the module's `size`, as `ground_sample`'s does. Copied
+  // back on `NotFound` too, which carries `covered`.
+  static Result cast(void* host, const f64* origin, const f32* direction, f32 length, f32 radius,
+                     bool sphere, CastHit* hit) {
+    const GameServices& g = self(host).game_;
+    if (origin == nullptr || direction == nullptr || hit == nullptr || hit->size < sizeof(CastHit))
+      return Result::InvalidArgument;
+    if ((sphere ? g.cast_sphere == nullptr : g.cast_ray == nullptr)) return Result::Unsupported;
+    CastHit answer;
+    answer.flags = hit->flags;
+    const Result r = sphere ? g.cast_sphere(g.user, origin, direction, length, radius, answer)
+                            : g.cast_ray(g.user, origin, direction, length, answer);
+    if (r == Result::Ok || r == Result::NotFound) {
+      const u32 size = hit->size;
+      const usize n = size < sizeof(CastHit) ? size : sizeof(CastHit);
+      std::memcpy(static_cast<void*>(hit), &answer, n);
+      hit->size = size;
+    }
+    return r;
+  }
+  static Result cast_ray(void* host, const f64* origin, const f32* direction, f32 length,
+                         CastHit* hit) {
+    return cast(host, origin, direction, length, 0.0f, false, hit);
+  }
+  static Result cast_sphere(void* host, const f64* origin, const f32* direction, f32 length,
+                            f32 radius, CastHit* hit) {
+    return cast(host, origin, direction, length, radius, true, hit);
+  }
+  static Result water_at(void* host, f64 x, f64 z, WaterSample* io) {
+    const GameServices& g = self(host).game_;
+    if (io == nullptr || io->size < sizeof(WaterSample)) return Result::InvalidArgument;
+    if (g.water_at == nullptr) return Result::Unsupported;
+    WaterSample sample;
+    const Result r = g.water_at(g.user, x, z, sample);
+    if (r == Result::Ok) {
+      const u32 size = io->size;
+      const usize n = size < sizeof(WaterSample) ? size : sizeof(WaterSample);
+      std::memcpy(static_cast<void*>(io), &sample, n);
+      io->size = size;
+    }
+    return r;
+  }
+  // The records go straight into the module's array when it is built with this host's `Support`;
+  // a module whose records are larger (a newer header's, which this host would have refused to
+  // load, but the check costs nothing) gets them through a buffer, at most `k_buffered` of them.
+  static Result supports_near(void* host, const f64* point, SupportQuery* io) {
+    const GameServices& g = self(host).game_;
+    if (point == nullptr || io == nullptr || io->size < sizeof(SupportQuery) ||
+        io->support_size < sizeof(Support) || (io->out == nullptr && io->capacity > 0)) {
+      return Result::InvalidArgument;
+    }
+    if (g.supports_near == nullptr) return Result::Unsupported;
+    constexpr u32 k_buffered = 64;
+    Support buffer[k_buffered];
+    SupportQuery query;
+    query.radius_m = io->radius_m;
+    query.min_size_m = io->min_size_m;
+    const bool direct = io->support_size == sizeof(Support);
+    query.capacity =
+        direct ? io->capacity : (io->capacity < k_buffered ? io->capacity : k_buffered);
+    query.out = direct ? io->out : buffer;
+    const Result r = g.supports_near(g.user, point, query);
+    if (r != Result::Ok) return r;
+    if (!direct) {
+      u8* to = reinterpret_cast<u8*>(io->out);
+      for (u32 i = 0; i < query.count; ++i)
+        std::memcpy(to + static_cast<usize>(i) * io->support_size, &buffer[i], sizeof(Support));
+    }
+    io->count = query.count;
+    io->found = query.found;
+    io->covered = query.covered;
+    return r;
+  }
   static Result ground_height(void* host, f64 x, f64 z, f64* out_height) {
     const GameServices& g = self(host).game_;
     if (out_height == nullptr) return Result::InvalidArgument;
@@ -664,6 +739,10 @@ ModuleHost::ModuleHost(HostConfig config) : config_(std::move(config)) {
   api_.actor_morph = &HostCallbacks::actor_morph;
   api_.actor_scale = &HostCallbacks::actor_scale;
   api_.actor_morph_info = &HostCallbacks::actor_morph_info;
+  api_.cast_ray = &HostCallbacks::cast_ray;
+  api_.cast_sphere = &HostCallbacks::cast_sphere;
+  api_.water_at = &HostCallbacks::water_at;
+  api_.supports_near = &HostCallbacks::supports_near;
   context_.api = &api_;
   context_.state = nullptr;
 }

@@ -1,0 +1,15 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "A43",
+  "reason": "A43: what a game module can ask the world (hotload ABI 10). apps.md gains its section (the casts, the water at a point, the supports and what an imported asset gets), water.md 'The water at a point', geometry.md 'Perches' (section 43); main.cpp's Wading builds the game's water query beside the walker's depth (the bodies' cooked maps and the channels' descriptions) and hands it to the runner under one ENGINE_VIEW_GAME line; walk.cpp's two module queries sit in one ENGINE_VIEW_WALK_PHYSICS block",
+  "date": "2026-11-14",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "engine_view.main_cpp.lines": 40,
+    "engine_view.main_cpp.if_engine_view": 1,
+    "engine_view.if_engine_view": 2,
+    "page:docs/subsystems/apps.md": 9080,
+    "page:docs/subsystems/geometry.md": 1257,
+    "page:docs/subsystems/water.md": 3944
+  }
+}

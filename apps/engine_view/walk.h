@@ -38,6 +38,7 @@
 
 #include <memory>
 #include <schemas/scene.h>
+#include <span>
 #include <string>
 
 namespace engine::renderer {
@@ -193,6 +194,43 @@ struct WalkTiming {
   i64 recent_max_query_ns = 0;
 };
 
+// **What a cast met** (`Walker::cast`): `what` 0 nothing, 1 the ground, 2 a piece of the
+// placements — a scene instance (`instance`) or a streamed entry's placement (`entry`), `mesh` its
+// scene mesh where it has one; `covered` whether the whole cast lay over the tiles the collision
+// holds. The indices are `k_no_walk_index` where they name nothing.
+inline constexpr u32 k_no_walk_index = 0xFFFFFFFFu;
+struct WalkCast {
+  bool hit = false;
+  WorldPos position{};
+  Vec3 normal{0.0f, 1.0f, 0.0f};
+  f32 distance = 0.0f;
+  u8 what = 0;
+  u32 mesh = k_no_walk_index;
+  u32 instance = k_no_walk_index;
+  u32 entry = k_no_walk_index;
+  bool covered = false;
+};
+// **A support** (`Walker::supports`; scene_collision.h, `Support`): `kind` 1 a perch, 2 a limb, 3
+// a top; `part` the limb's motion part or the perch's index.
+struct WalkSupport {
+  WorldPos position{};
+  Vec3 up{0.0f, 1.0f, 0.0f};
+  f32 size_m = 0.0f;
+  f32 distance = 0.0f;
+  u8 kind = 0;
+  u32 mesh = k_no_walk_index;
+  u32 instance = k_no_walk_index;
+  u32 entry = k_no_walk_index;
+  u32 part = k_no_walk_index;
+};
+struct WalkSupports {
+  u32 count = 0;
+  u32 found = 0;
+  bool covered = false;
+};
+// The most supports one `Walker::supports` call returns: its scratch, made once at `start`.
+inline constexpr u32 k_max_walk_supports = 256;
+
 class Walker {
  public:
   Walker();
@@ -272,6 +310,20 @@ class Walker {
   // or before `start`). Drawn only: it reads the world at its state now and changes nothing a step
   // computes, so a session and its replay walk the same whether it is asked or not.
   bool cast_boom(WorldPos from, Vec3 direction, f32 length, f32& out) const noexcept;
+
+  // ---- what a game module can ask the world (A43; apps.md, "What a module can ask the world")
+  // ----
+  // **A ray** (`radius` 0) **or a sphere** from `origin` along `direction` (unit) for `length`
+  // metres against the static bodies the walker stands among, the same bodies `cast_boom` sweeps:
+  // what it met into `out`. False where there is no collision world (the ground-follow, a build
+  // without physics, before `start`). Read only, like `cast_boom`: a session and its replay walk
+  // the same whether a module asks or not.
+  bool cast(WorldPos origin, Vec3 direction, f32 length, f32 radius, WalkCast& out) const noexcept;
+  // **The supports within `radius` of `at`** over the tiles the collision holds
+  // (scene_collision.h, `supports_near`), at most `out.size()` of them and at most
+  // `k_max_walk_supports`, nearest first. False where `cast` is.
+  bool supports(WorldPos at, f32 radius, f32 min_size, std::span<WalkSupport> out,
+                WalkSupports& answer) const noexcept;
 
   const WalkStats& stats() const noexcept;
   // The walk's wall time so far, by where it went (`WalkTiming`).

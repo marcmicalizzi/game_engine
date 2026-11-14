@@ -1,6 +1,7 @@
 #include "game_runner.h"
 
 #include "time_controls.h"
+#include "walk.h"
 
 #include <core/json/json.h>
 #include <core/schema/json_reflect.h>
@@ -10,6 +11,7 @@
 #include <foundation/io/vfs.h>
 #include <systems/renderer/clocks.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -257,6 +259,20 @@ struct GameRunner::Impl {
   bool spawn_said = false;
   u64 ground_queries = 0;
   u64 ground_samples = 0;  // ABI 8's `ground_sample` answers
+  // ABI 10 (A43): what a module can ask the world, and what the asking cost (wall time on the
+  // tick's thread, for the summary's `world_queries`).
+  const Walker* walker = nullptr;
+  WaterQueryFn water = nullptr;
+  const void* water_user = nullptr;
+  u64 casts = 0;
+  u64 cast_hits = 0;
+  i64 cast_ns = 0;
+  u64 water_queries = 0;
+  i64 water_ns = 0;
+  u64 support_queries = 0;
+  u64 supports_returned = 0;
+  i64 support_ns = 0;
+  WalkSupport support_buffer[k_max_walk_supports];
   // The walker's services (ABI 3): the session they go to, and what they did.
   FlySession* session = nullptr;
   u64 walker_sets = 0;
@@ -943,6 +959,183 @@ struct GameRunner::Impl {
     return r == hotload::Result::Ok ? host->morph_info(actor, io) : r;
   }
 
+  // ---- ABI 10: what a module can ask the world (apps.md, "What a module can ask the world") ----
+  // The runner judges what the ABI promises — finite numbers, a unit direction, the ranges — and
+  // the walker's collision and the water answer the rest.
+  static bool finite3(const f64* p) noexcept {
+    return std::isfinite(p[0]) && std::isfinite(p[1]) && std::isfinite(p[2]);
+  }
+  // **The water along a cast** (`k_cast_water`): the segment sampled every quarter metre up to
+  // `limit`, the first sample whose bottom (the centre less the radius) is at or below a wet
+  // point's level found, and the crossing refined by eight halvings between it and the sample
+  // before. Bounded: a 256 m cast is 1,025 water samples at most.
+  bool water_along(WorldPos origin, Vec3 direction, f32 limit, f32 radius,
+                   hotload::CastHit& hit) const noexcept {
+    if (water == nullptr || !(limit > 0.0f)) return false;
+    const auto under = [&](f32 s, hotload::WaterSample& sample) {
+      const WorldPos p = origin + DVec3{direction * s};
+      sample = hotload::WaterSample{};
+      return water(water_user, p.x, p.z, sample) && sample.wet != 0 &&
+             p.y - static_cast<f64>(radius) <= sample.level;
+    };
+    constexpr f32 k_step = 0.25f;
+    const u32 steps = static_cast<u32>(std::ceil(limit / k_step));
+    hotload::WaterSample sample;
+    f32 before = 0.0f;
+    for (u32 i = 0; i <= steps; ++i) {
+      const f32 s = std::min(limit, static_cast<f32>(i) * k_step);
+      if (!under(s, sample)) {
+        before = s;
+        continue;
+      }
+      f32 lo = before;
+      f32 hi = s;
+      if (i > 0) {
+        hotload::WaterSample probe;
+        for (u32 k = 0; k < 8; ++k) {
+          const f32 mid = 0.5f * (lo + hi);
+          if (under(mid, probe)) {
+            hi = mid;
+            sample = probe;
+          } else {
+            lo = mid;
+          }
+        }
+      } else {
+        hi = 0.0f;
+      }
+      const WorldPos p = origin + DVec3{direction * hi};
+      hit.position[0] = p.x;
+      hit.position[1] = p.y;
+      hit.position[2] = p.z;
+      hit.normal[0] = 0.0f;
+      hit.normal[1] = 1.0f;
+      hit.normal[2] = 0.0f;
+      hit.distance = hi;
+      hit.what = static_cast<u32>(hotload::WorldHit::Water);
+      hit.index = sample.index;
+      hit.instance = hotload::k_no_world_index;
+      hit.entry = hotload::k_no_world_index;
+      hit.mesh = hotload::k_no_world_index;
+      return true;
+    }
+    return false;
+  }
+  static hotload::Result cast_any(void* user, const f64* origin, const f32* direction, f32 length,
+                                  f32 radius, bool sphere, hotload::CastHit& hit) {
+    Impl& self = *static_cast<Impl*>(user);
+    const Vec3 d{direction[0], direction[1], direction[2]};
+    const f32 norm = length_of(d);
+    if (!finite3(origin) || !std::isfinite(d.x) || !std::isfinite(d.y) || !std::isfinite(d.z) ||
+        !(std::fabs(norm - 1.0f) <= 1.0e-3f) || !std::isfinite(length) || !(length > 0.0f) ||
+        length > hotload::k_cast_max_m ||
+        (sphere &&
+         (!std::isfinite(radius) || !(radius > 0.0f) || radius > hotload::k_cast_radius_max_m))) {
+      return hotload::Result::InvalidArgument;
+    }
+    if (self.walker == nullptr) return hotload::Result::Unsupported;
+    const i64 started = time::monotonic_ns();
+    const WorldPos from{origin[0], origin[1], origin[2]};
+    WalkCast c;
+    if (!self.walker->cast(from, d, length, sphere ? radius : 0.0f, c)) {
+      self.cast_ns += time::monotonic_ns() - started;
+      return hotload::Result::Unsupported;
+    }
+    ++self.casts;
+    hit.covered = c.covered ? 1u : 0u;
+    hit.index = hotload::k_no_world_index;
+    bool met = false;
+    if (c.hit) {
+      met = true;
+      hit.position[0] = c.position.x;
+      hit.position[1] = c.position.y;
+      hit.position[2] = c.position.z;
+      hit.normal[0] = c.normal.x;
+      hit.normal[1] = c.normal.y;
+      hit.normal[2] = c.normal.z;
+      hit.distance = c.distance;
+      hit.mesh = c.mesh;
+      hit.instance = c.instance;
+      hit.entry = c.entry;
+      hit.what = c.what == 1   ? static_cast<u32>(hotload::WorldHit::Ground)
+                 : c.what == 2 ? static_cast<u32>(c.instance != k_no_walk_index
+                                                      ? hotload::WorldHit::Instance
+                                                      : hotload::WorldHit::Placement)
+                               : static_cast<u32>(hotload::WorldHit::None);
+    }
+    // The water's surface, when asked, short of whatever the collision met.
+    if ((hit.flags & hotload::k_cast_water) != 0 &&
+        self.water_along(from, d, c.hit ? c.distance : length, sphere ? radius : 0.0f, hit)) {
+      met = true;
+    }
+    if (met) ++self.cast_hits;
+    self.cast_ns += time::monotonic_ns() - started;
+    return met ? hotload::Result::Ok : hotload::Result::NotFound;
+  }
+  static f32 length_of(Vec3 v) noexcept { return std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z); }
+  static hotload::Result cast_ray(void* user, const f64* origin, const f32* direction, f32 length,
+                                  hotload::CastHit& hit) {
+    return cast_any(user, origin, direction, length, 0.0f, false, hit);
+  }
+  static hotload::Result cast_sphere(void* user, const f64* origin, const f32* direction,
+                                     f32 length, f32 radius, hotload::CastHit& hit) {
+    return cast_any(user, origin, direction, length, radius, true, hit);
+  }
+  static hotload::Result water_at(void* user, f64 x, f64 z, hotload::WaterSample& io) {
+    Impl& self = *static_cast<Impl*>(user);
+    if (!std::isfinite(x) || !std::isfinite(z)) return hotload::Result::InvalidArgument;
+    if (self.water == nullptr) return hotload::Result::Unsupported;
+    const i64 started = time::monotonic_ns();
+    const bool ok = self.water(self.water_user, x, z, io);
+    ++self.water_queries;
+    self.water_ns += time::monotonic_ns() - started;
+    return ok ? hotload::Result::Ok : hotload::Result::Unsupported;
+  }
+  static hotload::Result supports_near(void* user, const f64* point, hotload::SupportQuery& q) {
+    Impl& self = *static_cast<Impl*>(user);
+    if (!finite3(point) || !std::isfinite(q.radius_m) || !(q.radius_m > 0.0f) ||
+        q.radius_m > hotload::k_support_radius_max_m || !std::isfinite(q.min_size_m) ||
+        q.min_size_m < 0.0f) {
+      return hotload::Result::InvalidArgument;
+    }
+    if (self.walker == nullptr) return hotload::Result::Unsupported;
+    const i64 started = time::monotonic_ns();
+    const u32 room = q.capacity < k_max_walk_supports ? q.capacity : k_max_walk_supports;
+    WalkSupports answer;
+    if (!self.walker->supports(WorldPos{point[0], point[1], point[2]}, q.radius_m, q.min_size_m,
+                               std::span<WalkSupport>(self.support_buffer, room), answer)) {
+      self.support_ns += time::monotonic_ns() - started;
+      return hotload::Result::Unsupported;
+    }
+    for (u32 i = 0; i < answer.count; ++i) {
+      const WalkSupport& s = self.support_buffer[i];
+      hotload::Support& o = q.out[i];
+      o = hotload::Support{};
+      o.position[0] = s.position.x;
+      o.position[1] = s.position.y;
+      o.position[2] = s.position.z;
+      o.up[0] = s.up.x;
+      o.up[1] = s.up.y;
+      o.up[2] = s.up.z;
+      o.size_m = s.size_m;
+      o.distance = s.distance;
+      o.kind = s.kind;
+      o.what = static_cast<u32>(s.instance != k_no_walk_index ? hotload::WorldHit::Instance
+                                                              : hotload::WorldHit::Placement);
+      o.instance = s.instance;
+      o.entry = s.entry;
+      o.mesh = s.mesh;
+      o.part = s.part;
+    }
+    q.count = answer.count;
+    q.found = answer.found;
+    q.covered = answer.covered ? 1u : 0u;
+    ++self.support_queries;
+    self.supports_returned += answer.count;
+    self.support_ns += time::monotonic_ns() - started;
+    return hotload::Result::Ok;
+  }
+
   // Sound: not built yet (roadmap P43, the third stage). `Unsupported`, said once.
   static hotload::Result sound_clip(void* user, std::string_view, u32*, std::string*) {
     Impl& self = *static_cast<Impl*>(user);
@@ -1030,6 +1223,10 @@ bool GameRunner::start(const Config& config, const input::ActionMap& map, u32 ti
   services.actor_morph = &Impl::actor_morph;
   services.actor_scale = &Impl::actor_scale;
   services.actor_morph_info = &Impl::actor_morph_info;
+  services.cast_ray = &Impl::cast_ray;
+  services.cast_sphere = &Impl::cast_sphere;
+  services.water_at = &Impl::water_at;
+  services.supports_near = &Impl::supports_near;
   host.set_game_services(services);
 
   const auto refuse = [&](const std::string& why) {
@@ -1260,6 +1457,13 @@ void GameRunner::set_ground(GroundQuery query, void* user) noexcept {
   impl_->ground_user = user;
 }
 
+void GameRunner::set_walker(const Walker* walker) noexcept { impl_->walker = walker; }
+
+void GameRunner::set_water(WaterQueryFn query, const void* user) noexcept {
+  impl_->water = query;
+  impl_->water_user = user;
+}
+
 const std::string& GameRunner::module_name() const noexcept {
   static const std::string none;
   return impl_->host ? impl_->host->module_name() : none;
@@ -1293,6 +1497,9 @@ void GameRunner::observe(void* user, const FlySession& session, const input::Inp
   in.walking = session.walking();
   in.input = &input;
   const Walker* walker = session.walker();
+  // The casts and the supports (ABI 10) are the session's walker's collision, whether it walks or
+  // flies: its ring is updated from its own feet, so it holds the tiles round where it stands.
+  if (walker != nullptr) g.walker = walker;
   if (walker != nullptr && session.walking()) {
     in.feet = walker->feet();
     in.on_ground = walker->on_ground();
@@ -1617,6 +1824,19 @@ JsonValue GameRunner::summary_json() const {
     out.set("actor_calls", std::move(calls));
   }
   out.set("ground", g.ground != nullptr);
+  // What the module asked of the world (ABI 10, A43), and the wall time on the tick's thread.
+  JsonValue world = JsonValue::object();
+  world.set("collision", g.walker != nullptr);
+  world.set("water", g.water != nullptr);
+  world.set("casts", g.casts);
+  world.set("cast_hits", g.cast_hits);
+  world.set("cast_us", static_cast<f64>(g.cast_ns) / 1000.0);
+  world.set("water_queries", g.water_queries);
+  world.set("water_us", static_cast<f64>(g.water_ns) / 1000.0);
+  world.set("support_queries", g.support_queries);
+  world.set("supports_returned", g.supports_returned);
+  world.set("support_us", static_cast<f64>(g.support_ns) / 1000.0);
+  out.set("world_queries", std::move(world));
   JsonValue walker = JsonValue::object();
   walker.set("sets", g.walker_sets);
   walker.set("teleports", g.teleports);

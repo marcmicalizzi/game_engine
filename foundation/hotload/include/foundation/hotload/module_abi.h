@@ -97,7 +97,14 @@ namespace engine::hotload {
 // read as ABI 8's fields are: the host copies out only as far as the module's `size` (an ABI 8
 // module passes `k_actor_state_v8_size`). Additive as 4 to 8 were: a module built against 3 to 8
 // loads on a host of 9 and runs unchanged, and an actor nobody shapes is drawn exactly as it was.
-inline constexpr u32 k_abi_version = 9;
+//
+// **10** (2026-11-14): `HostApi` gained, at its end, **what a module can ask the world** (roadmap
+// A43; apps.md, "What a module can ask the world"): a ray and a sphere cast against what stops a
+// walker (`cast_ray`, `cast_sphere`, a `CastHit`), the water at a point (`water_at`, a
+// `WaterSample`) and the places a small animal can stand near a point (`supports_near`, a
+// `SupportQuery` of `Support`s). Additive as 4 to 9 were: a module built against 3 to 9 loads on a
+// host of 10 and runs unchanged, and each new struct is led by its size like ABI 4's.
+inline constexpr u32 k_abi_version = 10;
 // The oldest module ABI a host of this header loads (4, above, says why 3 and not 4).
 inline constexpr u32 k_abi_oldest = 3;
 
@@ -368,6 +375,110 @@ inline constexpr f32 k_ground_footprint_max_m = 64.0f;
 inline constexpr f32 k_default_max_tilt_rad = 0.5235987756f;
 inline constexpr f32 k_max_tilt_rad_limit = 1.5707963268f;
 
+// ---- ABI 10: what a module can ask the world (roadmap A43; apps.md, "What a module can ask the
+// world") ----
+
+// What a cast met, or what a support belongs to.
+enum class WorldHit : u32 {
+  None = 0,
+  Ground = 1,     // the scene's ground (its collision heightfield)
+  Placement = 2,  // a piece a streamed placement entry put on a tile (`entry` names the entry)
+  Instance = 3,   // one of the scene's own instances (`instance` names it)
+  Water = 4,      // a water surface (`CastHit`, with `k_cast_water` asked)
+};
+// An index a struct below has none of.
+inline constexpr u32 k_no_world_index = 0xFFFFFFFFu;
+// `CastHit::flags` (in): a water body's or a channel's surface stops the cast as well, where the
+// water is (`water_at`'s level, met along the cast's path).
+inline constexpr u32 k_cast_water = 1u;
+// The longest cast and the largest sphere a module may ask for, metres: a query is bounded.
+inline constexpr f32 k_cast_max_m = 256.0f;
+inline constexpr f32 k_cast_radius_max_m = 4.0f;
+
+// **A cast's answer** (`cast_ray`, `cast_sphere`), led by its size like the other structs: `flags`
+// goes in, the rest comes out. A cast sees **what stops a walker** — the ground's heightfield and
+// the placements' collision proxies, a tree by its wood alone (its trunk and the limbs its
+// structural table keeps; never a leaf, a frond or a twig) — and only over the tiles the collision
+// holds round the walker; `covered` says whether the whole cast lay over them, so a miss with
+// `covered` 0 is not a clear path. For a sphere, `position` is where its centre stood when it
+// touched and `distance` how far its centre travelled; `normal` points out of what was hit.
+struct CastHit {
+  u32 size = sizeof(CastHit);
+  u32 flags = 0;                       // in: `k_cast_water`
+  f64 position[3] = {0.0, 0.0, 0.0};   // out: world metres
+  f32 normal[3] = {0.0f, 1.0f, 0.0f};  // out: unit, facing the cast
+  f32 distance = 0.0f;                 // out: metres along the cast from its origin
+  u32 what = 0;                        // out: a `WorldHit`
+  u32 instance = k_no_world_index;     // out: the scene instance (`Instance`)
+  u32 entry = k_no_world_index;        // out: the streamed placement entry (`Placement`)
+  u32 mesh = k_no_world_index;         // out: the scene mesh, where the piece has one
+  u32 index = k_no_world_index;        // out: the water body or channel (`Water`), scene order
+  u32 covered = 0;                     // out: 1 when the whole cast lay over held tiles
+};
+
+// `WaterSample::source`.
+inline constexpr u32 k_water_none = 0;
+inline constexpr u32 k_water_body = 1;     // a water body (`engine.scene.WaterBody`)
+inline constexpr u32 k_water_channel = 2;  // a channel of flowing water (`WaterChannel`)
+// **The water at a point** (`water_at`), all out but `size`. `wet` 1 where the point's (x, z) is
+// under water: `level` the surface's height there (world metres), `depth` the surface less the bed,
+// and `velocity` the water's in the ground plane (x, z, m/s): a channel's flow there, zero for a
+// still body. Where two waters hold the point the deeper answers. Dry: `wet` 0, the rest at its
+// defaults, and `Ok` all the same — dry is an answer.
+struct WaterSample {
+  u32 size = sizeof(WaterSample);
+  u32 wet = 0;
+  f64 level = 0.0;
+  f32 depth = 0.0f;
+  f32 velocity[2] = {0.0f, 0.0f};
+  u32 source = k_water_none;
+  u32 index = k_no_world_index;  // the body or channel, in the scene's order
+  u32 reserved = 0;
+};
+
+// `Support::kind`, in the order a piece's supports come from (apps.md, "Supports"): the perches its
+// mesh declares, else the limbs and branches of its structural table (a generated tree's), else the
+// top of its bounds.
+inline constexpr u32 k_support_perch = 1;
+inline constexpr u32 k_support_limb = 2;
+inline constexpr u32 k_support_top = 3;
+// **A place a small animal can stand or land** (`supports_near`): where (`position`, world metres,
+// on the surface), which way is up there (`up`, unit), how large a foot it holds (`size_m`: a
+// perch's declared size, a limb's diameter there, a top's smaller half extent), what it belongs to
+// (`what`, `instance` or `entry`, `mesh`) and, for a tree's limb, `part`: the part's id in the
+// mesh's motion table (cluster file section 35), which is what the renderer's flora poser moves a
+// frame at a time — so a later row can let a perch ride its branch in the wind. A perch's `part` is
+// its index among the mesh's declared perches; a top's is `k_no_world_index`.
+struct Support {
+  f64 position[3] = {0.0, 0.0, 0.0};
+  f32 up[3] = {0.0f, 1.0f, 0.0f};
+  f32 size_m = 0.0f;
+  f32 distance = 0.0f;  // from the point asked, metres
+  u32 kind = 0;         // `k_support_*`
+  u32 what = 0;         // a `WorldHit`: Placement or Instance
+  u32 instance = k_no_world_index;
+  u32 entry = k_no_world_index;
+  u32 mesh = k_no_world_index;
+  u32 part = k_no_world_index;
+  u32 reserved = 0;
+};
+// **The question and its answer** (`supports_near`): the supports within `radius_m` of the point,
+// nearest first, at least `min_size_m` large, written into `out` (`capacity` of them, each
+// `support_size` bytes as the module built `Support`) up to `count`; `found` is how many there were
+// in all; `covered` 1 when the whole disc lay over held tiles.
+struct SupportQuery {
+  u32 size = sizeof(SupportQuery);
+  f32 radius_m = 0.0f;                 // in: at most `k_support_radius_max_m`
+  f32 min_size_m = 0.0f;               // in: smaller supports are left out
+  u32 capacity = 0;                    // in
+  u32 support_size = sizeof(Support);  // in
+  u32 count = 0;                       // out
+  Support* out = nullptr;              // in: `capacity` records
+  u32 found = 0;                       // out
+  u32 covered = 0;                     // out
+};
+inline constexpr f32 k_support_radius_max_m = 64.0f;
+
 // **The startup's milestones** (ABI 7; apps.md, "--startup-trace"), in the order a load reaches
 // them: what `game_ready_milestone` names and `GameLoadProgress::milestones` has a bit for.
 enum class GameMilestone : u32 {
@@ -633,6 +744,28 @@ struct HostApi {
   // caller's struct up to its size. `NotFound` for a handle that is not an actor, `InvalidArgument`
   // for a struct smaller than ABI 9's.
   Result (*actor_morph_info)(void* host, u32 actor, MorphInfo* io);
+
+  // ---- ABI 10: what a module can ask the world (roadmap A43; apps.md, "What a module can ask the
+  // world") ----
+  // **A ray** from `origin` (world metres, three f64) along `direction` (three f32, unit within
+  // 1e-3) for `length` metres (at most `k_cast_max_m`), and **a sphere** of `radius` (at most
+  // `k_cast_radius_max_m`) swept the same way, into `hit` (`CastHit`, up to its size). `Ok`: it
+  // hit, `hit` says what; `NotFound`: nothing within the length (`hit->covered` says whether all of
+  // it was looked at); `InvalidArgument` for a non-finite or out-of-range number, a direction that
+  // is not unit, or a struct smaller than ABI 10's; `Unsupported` where the session holds no
+  // collision (a build without physics, a scene with no ground, or before the walker's first tick).
+  Result (*cast_ray)(void* host, const f64* origin, const f32* direction, f32 length, CastHit* hit);
+  Result (*cast_sphere)(void* host, const f64* origin, const f32* direction, f32 length, f32 radius,
+                        CastHit* hit);
+  // **The water at (x, z)** (`WaterSample`): `Ok` wet or dry; `InvalidArgument` for a non-finite
+  // coordinate or a struct smaller than ABI 10's; `Unsupported` in a build without the water
+  // capability. A function of the point and the scene, so asking it changes nothing a replay walks.
+  Result (*water_at)(void* host, f64 x, f64 z, WaterSample* io);
+  // **Supports near `point`** (world metres, three f64; `SupportQuery`). `Ok` with `count` written
+  // (0 is an answer); `InvalidArgument` for a non-finite point, a radius outside (0,
+  // k_support_radius_max_m], a null `out` with a capacity, a `support_size` smaller than ABI 10's
+  // `Support`, or a query struct smaller than ABI 10's; `Unsupported` where `cast_ray` is.
+  Result (*supports_near)(void* host, const f64* point, SupportQuery* io);
 };
 
 // Whether the host's table reaches the entry at `offset` (`offsetof(HostApi, hud_element)`): a
@@ -992,6 +1125,40 @@ inline Result hud_font(const ModuleContext* context, const char* path, f32 size_
                        u32& font) noexcept {
   if (!ENGINE_HOTLOAD_HAS(context->api, hud_font)) return Result::Unsupported;
   return context->api->hud_font(context->api->host, path, text_length(path), size_px, &font);
+}
+
+// ---- what a module can ask the world (ABI 10) ----
+// Each answers `Unsupported` on a host whose table ends before the entry (ABI 9 or older).
+
+inline Result cast_ray(const ModuleContext* context, const f64* origin, const f32* direction,
+                       f32 length, CastHit& hit) noexcept {
+  if (!ENGINE_HOTLOAD_HAS(context->api, cast_ray)) return Result::Unsupported;
+  return context->api->cast_ray(context->api->host, origin, direction, length, &hit);
+}
+
+inline Result cast_sphere(const ModuleContext* context, const f64* origin, const f32* direction,
+                          f32 length, f32 radius, CastHit& hit) noexcept {
+  if (!ENGINE_HOTLOAD_HAS(context->api, cast_sphere)) return Result::Unsupported;
+  return context->api->cast_sphere(context->api->host, origin, direction, length, radius, &hit);
+}
+
+inline Result water_at(const ModuleContext* context, f64 x, f64 z, WaterSample& io) noexcept {
+  if (!ENGINE_HOTLOAD_HAS(context->api, water_at)) return Result::Unsupported;
+  return context->api->water_at(context->api->host, x, z, &io);
+}
+
+// The supports within `radius_m` of `point`, at least `min_size_m` large, into `out[0..capacity)`;
+// `count` the ones written. `query` is the whole answer (`found`, `covered`).
+inline Result supports_near(const ModuleContext* context, const f64* point, f32 radius_m,
+                            f32 min_size_m, Support* out, u32 capacity,
+                            SupportQuery& query) noexcept {
+  if (!ENGINE_HOTLOAD_HAS(context->api, supports_near)) return Result::Unsupported;
+  query = SupportQuery{};
+  query.radius_m = radius_m;
+  query.min_size_m = min_size_m;
+  query.capacity = capacity;
+  query.out = out;
+  return context->api->supports_near(context->api->host, point, &query);
 }
 
 template <class State>

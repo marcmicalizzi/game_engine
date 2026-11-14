@@ -2,6 +2,7 @@
 #include <domain/geometry/cluster_file.h>
 #include <foundation/io/vfs.h>
 
+#include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <utility>
@@ -283,6 +284,11 @@ u64 encode(const ClusterFileData& data, std::string& out) {
     add_section(payloads, ClusterSection::Seat, static_cast<u32>(sizeof(ClusterFileSeat)), 1,
                 &data.seat);
   }
+  // The perches, and only for a mesh that declares one (A43; geometry.md, "Perches").
+  if (!data.perches.empty()) {
+    add_section(payloads, ClusterSection::Perches, static_cast<u32>(sizeof(ClusterFilePerch)),
+                data.perches.size(), data.perches.data());
+  }
 
   u64 offset = k_header_bytes + k_record_bytes * payloads.size();
   for (Payload& payload : payloads) {
@@ -463,6 +469,7 @@ const char* cluster_section_name(u32 kind) noexcept {
     case ClusterSection::CoverMask: return "cover_mask";
     case ClusterSection::SwardVertex: return "sward_vertex";
     case ClusterSection::Seat: return "seat";
+    case ClusterSection::Perches: return "perches";
   }
   return "unknown";
 }
@@ -714,6 +721,22 @@ bool read_cluster_file_memory(std::span<const u8> bytes, ClusterFileData& out, s
     Vector<ClusterFileSeat> records;
     copy_section(bytes, *seat, records);
     result.seat = records[0];
+  }
+  // The perches (A43): a size that is positive and an `up` that is unit, or the file is refused.
+  if (const ClusterFileSection* perches = found[static_cast<u32>(ClusterSection::Perches)];
+      perches != nullptr && perches->element_count != 0) {
+    if (perches->element_size != sizeof(ClusterFilePerch))
+      return fail(error, "cluster file section perches is not 32-byte records");
+    copy_section(bytes, *perches, result.perches);
+    for (const ClusterFilePerch& p : result.perches) {
+      const f32 up = p.up.x * p.up.x + p.up.y * p.up.y + p.up.z * p.up.z;
+      if (!(p.size_m > 0.0f) || !(up > 0.998f && up < 1.002f) || !std::isfinite(p.position.x) ||
+          !std::isfinite(p.position.y) || !std::isfinite(p.position.z)) {
+        return fail(error,
+                    "cluster file section perches has a perch with no size, an up that "
+                    "is not unit, or a point that is not finite");
+      }
+    }
   }
 
   // The morph stream. A file with no `morph_channels` section, or with an empty one, is a mesh
@@ -1163,6 +1186,8 @@ constexpr ClusterSection k_resident_kinds[] = {
     ClusterSection::CoverMask,
     // 12 bytes, and only in a mesh that stands on the ground: its seat.
     ClusterSection::Seat,
+    // 32 bytes a perch, and only in a mesh that declares one.
+    ClusterSection::Perches,
 };
 
 // The per-page streams, which a resident read leaves on disk. They are still *listed*, with zero
