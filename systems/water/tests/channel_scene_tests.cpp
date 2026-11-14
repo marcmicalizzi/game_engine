@@ -255,7 +255,10 @@ namespace {
 // normal depth 0.4 m in 2 m of width (slope 0.033: 2.466 m/s, Froude 1.245, 1.973 m3/s), which
 // goes over its lip as it is; the foot is Rand's drop for h = 5 m and y_c = (q^2 / g)^(1/3) =
 // 0.463 m: 4.30 h (y_c / h)^0.81 = 3.13 m from the lip, 0.54 (y_c / h)^0.275 y_c = 0.13 m deep at
-// 7.59 m/s, and it is the channel's mouth in the pool (flags 64 + 3).
+// 7.59 m/s, and it is the channel's mouth in the pool (flags 64 + 3). The foot moved 2.13 m
+// downstream of where S98's metre of run put it, so the pool and the camera of the picture case
+// moved 2.13 m with it: the foot stands where it stood in the pool (2 m short of its middle) and
+// in the frame, and the picture's bounds are S98's, of the same view.
 bool write_plunge_scene(const std::string& path) {
   std::ofstream out(path, std::ios::binary);
   out << R"({
@@ -263,7 +266,7 @@ bool write_plunge_scene(const std::string& path) {
   "name": "plunge-test",
   "terrain": {"size": 65, "extent": 32, "seed": 4, "dune_height": 0.6, "dune_wavelength": 12},
   "water": [{"name": "pool", "level_m": 1.0,
-    "shape": {"circle": {"center": [3, 0, -6], "radius_m": 5}}, "wind_follow": false,
+    "shape": {"circle": {"center": [5.13, 0, -6], "radius_m": 5}}, "wind_follow": false,
     "wave_amplitude_m": 0}],
   "water_channels": [{"name": "spout",
     "points": [[-12, 6.4, -6], [0, 6.0, -6], [3.13, 1.0, -6]],
@@ -312,8 +315,8 @@ void shoot_plunge(const gfx::Device& device, const std::string& path, const std:
   CaptureChannels channels;
   channels.ids = true;
   FrameDesc frame;
-  frame.camera.position = WorldPos{9.0, 7.0, 3.0};
-  frame.camera.target = WorldPos{1.0, 1.0, -6.0};
+  frame.camera.position = WorldPos{11.13, 7.0, 3.0};
+  frame.camera.target = WorldPos{3.13, 1.0, -6.0};
   frame.world_time_s = 10.0;
   REQUIRE_MESSAGE(renderer.capture(frame, channels, out.frame, &error), error);
 }
@@ -331,9 +334,9 @@ TEST_CASE("water channel: a fall's foot in a body is the body's plunge") {
   REQUIRE(desc.mesh_info[0].water.has_value());
   const SceneWater& pool = *desc.mesh_info[0].water;
   REQUIRE(pool.plunges.size() == 1);
-  // The foot (3.13, 1, -6) less the pool's place (3, 1, -6); the radius the 5 m fall over four,
-  // the speed the free fall's from rest.
-  CHECK(pool.plunges[0].at.x == doctest::Approx(0.13f).epsilon(1e-4));
+  // The foot (3.13, 1, -6) less the pool's place (5.13, 1, -6); the radius the 5 m fall over
+  // four, the speed the free fall's from rest.
+  CHECK(pool.plunges[0].at.x == doctest::Approx(-2.0f).epsilon(1e-4));
   CHECK(pool.plunges[0].at.y == doctest::Approx(0.0f));
   CHECK(pool.plunges[0].radius_m == doctest::Approx(1.25f));
   CHECK(pool.plunges[0].speed_m_s == doctest::Approx(std::sqrt(2.0 * 9.81 * 5.0)).epsilon(1e-5));
