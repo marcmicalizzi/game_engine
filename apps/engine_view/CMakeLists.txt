@@ -78,6 +78,12 @@ if(TARGET engine::flora AND TARGET engine::authored AND TARGET engine::world)
   # picture where every tile is in the inner ring, and no pixel changed by a ring's handover.
   list(APPEND _view_tests tests/authored_view_tests.cpp)
 endif()
+if(TARGET engine::litter AND TARGET engine::world)
+  # A placement's form by ring (G197; renderer.md, "A placement's form by ring"): a streamed
+  # litter entry's patches drawn as their rings' cuts, fewer pairs, and no pixel changed by a
+  # ring's handover.
+  list(APPEND _view_tests tests/ring_forms_view_tests.cpp)
+endif()
 if(TARGET engine::flora)
   # A walk along a megaflora's major limb, replayed offscreen (docs/subsystems/flora.md,
   # "Megaflora"): the elder-grove scene's ancient trees solved by the test to find the limb.

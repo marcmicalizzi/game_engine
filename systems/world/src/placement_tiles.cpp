@@ -11,6 +11,9 @@ namespace {
 
 ENGINE_LOG_CATEGORY_DEFINE(log_world_placements, "world.placements");
 
+// The load's ring forms are made for as many rings as the world can have (G197).
+static_assert(renderer::k_ring_forms_max == k_max_rings, "ring forms cover every ring");
+
 }  // namespace
 
 const char* ring_ruins_name(RingRuins ruins) noexcept {
@@ -204,6 +207,14 @@ bool PlacementTiles::redraws(TileCoord tile, u8 from, u8 to) const noexcept {
     if (g.representation == nullptr ||
         g.representation(entry->state, context_for(*entry, from)) !=
             g.representation(entry->state, context_for(*entry, to))) {
+      return true;
+    }
+    // **Or draws one of its meshes as another form** (G197; ring_forms.h): the load's table says
+    // so, for every scale, from the entry's resident meshes alone.
+    const Vector<u32>& meshes = entry->source->meshes;
+    if (!entry->source->own_forms &&
+        !renderer::same_ring_forms(scene_->ring_forms,
+                                   std::span<const u32>(meshes.data(), meshes.size()), from, to)) {
       return true;
     }
   }
@@ -440,8 +451,11 @@ bool PlacementTiles::build(TileCoord tile, u8 ring, TileBlock& out, u32 entries,
       }
       // At the placement's `WorldPos`, with its rotation and scale (ADR-0053): the renderer adds
       // the mesh's fit to it in f64 (`renderer::instance_translation`).
+      // **Its form in the tile's ring** (G197; ring_forms.h): the mesh, a cheaper form or nothing;
+      // a placement drawn as nothing still hands its footprint to the entries after it.
+      const u32 form = renderer::pick_ring_form(scene_->ring_forms, scene_mesh, ring, p.scale);
       renderer::SceneInstance instance;
-      instance.mesh = scene_mesh;
+      instance.mesh = form;
       instance.transform = p.turn();
       instance.origin = p.position;
       instance.handoff = p.handoff;  // the near and far forms' hand-off (G136)
@@ -454,8 +468,10 @@ bool PlacementTiles::build(TileCoord tile, u8 ring, TileBlock& out, u32 entries,
       // (renderer.md, "Streamed trees sway").
       if (entry.source->motion_key_base != renderer::k_motion_key_load && p.id != 0)
         instance.motion_key = entry.source->motion_key_base + (p.id - 1);
-      out.instances.push_back(instance);
-      out.tags.push_back(p.tag);
+      if (form != renderer::k_no_ring_form) {
+        out.instances.push_back(instance);
+        out.tags.push_back(p.tag);
+      }
       if (e + 1 < entries_.size()) {
         const f32 scale = std::max(std::fabs(p.scale.x), std::fabs(p.scale.z));
         earlier_.push_back(scene_gen::Footprint{scene_gen::nearest_mm(p.position.x),
