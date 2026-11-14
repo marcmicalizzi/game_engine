@@ -508,7 +508,7 @@ laid on a bed that was cut separately: a level at a share of the cut's depth, cl
 downstream; a described width; a described parabola for its depth; wet where a catchment passed an
 area. The owner walked it as steps, overhangs, water going uphill and beds with no water, and five
 rows mended one symptom each of the description not being the ground. **The description is now
-solved**: `engine.scene.WaterChannel` version 6 carries, at every station, the steady
+solved**: `engine.scene.WaterChannel` (version 6; 7 adds `derived_from`, "The cook") carries, at every station, the steady
 one-dimensional flow of the station's discharge through the ground's own section there.
 
 | Field, one entry a station | What it is |
@@ -640,15 +640,276 @@ so.
 a `WaterChannel` an author writes by hand on an imported terrain — its `points` and a
 `discharge_m3s` of one entry or one a point — is solved by the same command, and gets everything a
 planned link gets. A scene with no `water_channels` reads none, solves none and pays nothing; the
-check is a few comparisons a station at load. *Stage 0 (the first commit of W120) carries the
-description, its check and the fixture; the solver and `engine-content flow solve` follow in the
-row's next commits, and until they do `engine-content channels` still writes version 5's blocks,
-which every reader now refuses.*
+check is a few comparisons a station at load. `engine-content flow solve` is the writer
+("The cook", below).
 
 **A recipe whose banks are not the defaults** writes `bank_width_widths` and `bank_width_m` on every
 block (`WaterChannel` version 4; T78, 2026-11-09): they are the reach the placements leave bare beyond
 the cut's edge ([scene_gen](scene_gen.md#exclusion)), which `scene_gen` reads from the description
 because it may not name this capability.
+
+### Discharge
+
+(W120 stage A; `discharge.h`, `network_flow`.) **The water comes from somewhere.** The discharge at
+a point of a link is
+
+    Q = stage x (runoff x the point's contributing area + the springs and outlets upstream)
+        + the melts upstream x each one's season
+
+and it is conserved at every confluence by construction, since the contributing areas are. The
+numbers are the channels entry's `flow` block (`engine.channels.ChannelFlow`):
+
+- **`runoff_l_s_km2`**, the specific runoff, 30 by default: a humid temperate mountain's (the Swiss
+  atlas's national mean is 32 and its basins run 8 to 73; a semi-arid basin is under 3).
+- **`stage`**, the stage of the year: today's flow over the year's mean, 1 by default. No ratio of
+  the mean annual to the bankfull discharge was found in a source, so none is assumed: the cook
+  solves today's water through the bed as it is cut and reports every station whose level stands
+  over a bank, which is the bed's bankfull flow measured rather than supposed.
+- **`sources`**, the point sources a scene names (`ChannelSource`): a `Spring` and an `Outlet` (a
+  lake's spill) with a flow that scales with the stage, a `Melt` with a flow at its peak and its
+  own `season`, since melt is highest when rain-fed flow is lowest. A source joins the channel
+  point nearest it (within `snap_m`, 25 m) and everything downstream, through every confluence,
+  to a mouth; one that stands on no channel is refused by name with the distance. What a lake
+  passes on to its outlet is the author's to name as an `Outlet`: a source's flow is not traced
+  through a body.
+
+**A link is wet from where its water is a sheet.** The threshold is the falls' own
+(`k_fall_min_critical_m`): a discharge whose critical depth over a metre of the bed's width is a
+centimetre, sqrt(g d^3) = 3.13 l/s a metre (`wet_depth_m`). Under it the water runs between the
+bed's stones and not over them. At the default runoff a bed a metre wide is wet below about
+0.10 km2 of catchment, the low end of where a survey of Colorado mountain streams found flow to
+begin (0.1 to 0.5 km2, read as a snippet). `--min-area-m2`, an area with no bed in it, is gone.
+A link that never reaches a sheet is **dry and says so**: the cook lists it with its discharge and
+the film's depth, as an ephemeral gully. Its cut stays as the plan made it; dressing it as a gully
+— no fresh gravel, no clasts, the sward down its banks — changes the bed's mask regions and the
+tile pieces and is not done in this row.
+
+`flow` is **not part of what a plan is keyed by** (`plan_layer_hash` leaves the field out of the
+hashed text), so naming a spring or changing the stage re-plans and re-cuts nothing.
+
+### The profile
+
+(W120 stage B; `profile.h`, `solve_profile`.) Steady, gradually varied flow in one dimension
+through **the sections the ground has**, by the textbook's method
+([stream-profile](../experiments/stream-profile.md)):
+
+- **Nodes** a ground lattice apart down the line. At each, the ground is sampled across the line a
+  lattice apart. The **thalweg** is the lowest sample within the bed's half width of the line (the
+  nearest hollow to the line where the line names no width); each **bank's crest** is the highest
+  ground reached walking out from it before the ground falls away by 2 cm and a quarter of what
+  it has climbed (so a ledge on a high bank's face is not its top). A level wets only ground
+  connected to the thalweg under it, and no further than the crests: a hollow beyond a bank is
+  not wet, and water is never written outside its bed. Area, wetted perimeter, top width and first
+  moment are sums over the wet samples' trapezoids; there is no described shape.
+- **Critical depth** where Q^2 T = g A^3. **Resistance** is Jarrett's (1984) n = 0.32 S^0.38
+  R^-0.16 by the bed's own slope over 10 m either way and the section's hydraulic radius, each
+  held to his data's range; one Manning's n instead with `--resistance manning`.
+- **The standard step method both ways**: tranquil water upstream from every control, shooting
+  water downstream from every node the tranquil profile passes critical depth at and from every
+  fall's foot.
+- **The regime by specific force.** Shooting water holds while its sequent level — the tranquil
+  level with the same specific force — stands over what the tranquil profile holds a jump's
+  length downstream; where it no longer does, a **jump**: its head between the two nodes the test
+  changed at, its foot six rises on at the sequent level (HEC-RAS's comparison of specific force
+  at one section is this rule with a jump of no length). Where shooting water meets a node it has
+  not the head to pass even at critical depth (a **choke**), the jump stands at the last shooting
+  node that still has the head the tranquil profile holds below it, so the total head never
+  rises; a fall's foot with less head than that is drowned.
+- **A fall** where the bed drops at a metre a metre or more by at least three critical depths, the
+  critical depth at least a centimetre (S104's test, at the solved critical depth and not a share
+  of a cut): critical at the lip, Rand's (1955) drop at the foot, no surface between. A foot the
+  tailwater's sequent test drowns stands in tranquil water: a plunge pool.
+- **Controls**: a crest (critical), a mouth (the body's level), a confluence (the main stem's
+  level; links are solved downstream first), a spill (a link that begins at a body's outlet).
+  What a line ends in is what its last station carries, to the millimetre, even where the water
+  arrives over that level; only a tributary hanging over its main stem — the stem's level under
+  the tributary's bed — cannot carry it, and is counted.
+- **Tranquil water never rises downstream.** Where the energy equation alone would have the level
+  climb as fast water slows into a pool, the velocity head it would recover is taken as lost in
+  the expansion and the level is held. This is an expansion coefficient of at most 1 where
+  HEC-RAS suggests 0.3 to 0.8; it is a choice for the picture, and in a channel that does not
+  change section it changes nothing (the fixture's backwater is the integral to 0.4 mm).
+- **Over a bank**: the level is solved with a wall at each crest, and where it stands over the
+  lower crest the station is flagged, counted and reported, and written **at the crest** with
+  the solved flow's speed. Once tranquil water has spilled it is written no higher downstream
+  than where it spilled, until its solved level comes down under that (those stations are flagged
+  too), so the written level does not climb from one crest to the next. **A line that climbs** —
+  the planner routes over a lattice with its pits filled, and where the ground itself is not
+  filled a line runs down into a hollow and up to its spill point — is over its bank all the way
+  up: the water that would pass the sill is a pool standing at the sill's level, far outside any
+  bed. The cook writes a film at the bed there, flags every station of it, and reports the worst;
+  it does not draw the lake the ground is missing. A reader that draws flagged stations draws
+  that film going uphill. **The cut does not grow**: the solve runs on the composed ground after
+  the cut is in it, and the bankfull section is the plan's contract with the exclusion, the
+  sediment and the flood bed. The count is the author's lever: a lower `stage`, or a wider law.
+
+**Against the closed forms** (`profile_tests.cpp`, the fixture's ground through
+`flow_fixture_ground`, n = 0.04): the uniform reach stands at normal depth to the last bit; the
+M1 backwater is within 0.43 mm of the direct step integral at every station, which is the
+millimetre the level is written to; the crest's depth is 0.377 m against 0.37674 m; the M2
+drawdown is within 2 mm of the fixture's stations (the standard step's quarter-metre steps
+against a curve that is vertical at the crest); the fall's foot is Rand's to the millimetre; the
+jump's head stands at x = 41.241 m against 41.246 m and its foot's depth is the head's sequent
+depth by the closed form. The step's description is pinned by hash, the same bytes from MSVC,
+Clang and GCC.
+
+**What rises.** The total head never rises downstream. The level may, and each rise is counted by
+kind: across a flagged jump; along a shooting run (water that shoots and is slowed thickens, so
+on a flat bed its level climbs: the fixture's 4.3 cm below its fall); beside a station written at
+its bank; and any other, of which there are none in any case here.
+
+**The head never rises, and what holds it** (the second pass of W120, after the forest's first
+solve counted 27 rises of the head, the worst 12.7 cm). The count (`head_rises`) is taken from the
+description's own numbers — a station's level plus its speed's head — between every station and
+the next, **a fall's lip and its foot and a line's last station included**; only a pair with a
+station over its bank is left out, since the level written there is the bank's. Five things each
+made the head rise, and each has a case that fails without its mend (`profile_tests.cpp`):
+
+- **A jump's head stands between two nodes**, and where the bed falls from one to the other the
+  level between them is no level of either node's section: read in the lower node's it is deep,
+  slow water with less head than the jump's foot. The head's station carries the two nodes'
+  flows blended (`Out::from`): its area, surface width, speed and Froude number are between the
+  two shooting flows', so a head is shooting water by construction.
+- **A jump loses head, or it stands elsewhere.** A jump whose foot as it is written would carry
+  more head than its head has — the sections change between the two — stands instead at the last
+  shooting node that still has the head the tranquil profile holds below it, as at a choke.
+  And **a jump's foot is tranquil water**: a stretch that ends at critical depth (a fall's lip, a
+  hanging end) has no tranquil water at that node, so the tranquil level a jump is tested against
+  is read no further than the node before it, the foot stands no further, and shooting water that
+  reaches such an end shoots over it. (A jump was being written with a critical lip as its foot.)
+- **A fall whose tailwater stands over its lip's critical level is no fall.** The stretches
+  between falls are taken from the line's end upstream; where the tranquil level at a fall's foot
+  is the lip's critical level or more, the pool below reaches up over the step, the two
+  stretches are one, and the profile is carried up through the step as through any other node.
+  (On the forest a tributary's last fall stood 1.8 m under the stem it joined, and its foot was
+  written 1.8 m over its lip.)
+- **A fall's foot has no more head than its lip.** Rand's area is for the lip's discharge; where
+  the discharge grows across the fall the area grows with it, so the ratio of the two speeds is
+  his; and the foot's level is never under the shooting level whose head is the lip's.
+- **A section's area is not continuous in the level**: a level that passes a hump wets the
+  hollow behind it at once. A root looked for by bisection (the level of an area, of a head, of a
+  specific force) may then be a step and not a root, and the answer taken is the step's **upper
+  side**, where the area is the larger and the speed the lower: the side that has lost head. The
+  lower side gave a fall's foot on the forest 1.04 m more head than its lip.
+
+**What a station's speed is.** `speed_mps`, `froude` and `slope` are the flow's at the solved
+level, and the level and the depth are that level written to the millimetre: the discharge
+through the written depth is Q to half a millimetre of the surface's width (a tenth of a thin
+sheet's area, which is why the speed is not read back from the rounded level). Three stations
+carry a flow that is not the written level's at all, and say so by what they are: one over its
+bank (the solved flow with a wall at each crest); a jump's head (the blend above); and **a last
+station brought down to the level its line meets** — the water arrives critical or shooting over
+the stem's or the body's level and drops to it, and the station carries the arriving flow, not
+the discharge through the film the met level leaves in the line's own section (which was 27 m/s
+and a Froude number of 109 on the forest, and 40 m/s and 90 in the case that now holds it).
+
+**How large a Froude number is.** A fall's foot is Rand's sheet, thin and fast, and that is
+where every large number stands: on the forest all 290 stations at 5 or more are a fall's foot,
+the largest 14.5 below the 9.5 m fall, and away from a foot the largest is 4.3 and the fastest
+water 2.4 m/s (4.7 m/s at a foot). The friction slope at a foot is that sheet's under a law fit
+to streams 15 cm deep and more — tens to hundreds — and says only that the sheet is stopped
+within a lattice, which is what the solve then does (a jump at the foot); away from a foot it is
+under 2.
+
+**What it is not.** One dimension: a braided bed is one thread, a confluence is a level and not a
+mixing, a bend has no superelevation, and the flow round a boulder is S103's. A solve on a band
+of the bed's own lattice is the forest's needs' third size and a later row.
+
+**Lines that climb, sized on the forest** (2026-11-13; the ground sampled at the planner's own
+4 m lattice and filled by its rule, each wet line's bed laid against it). The planner
+(`detail::plan_from_lattice`) fills every pit by priority flood into `filled_um`, routes D8 over
+the filled heights, and nothing after the routing reads the fill: `build_line` gives a point the
+unfilled ground, and `cut_bed` holds the bed at its running minimum only while the ground stands
+within two thalwegs of it. So a line crosses a basin on its floor and climbs its far wall. The
+forest's ground holds **eight closed basins 28 to 134 m deep** (2.9 to 43 ha, 47 million m3) with
+no water body in any, and a lowland one whose lake stands 5.5 m under its spill; 110 wet lines
+cross the eight (46 over one), 16.1 km of the 36.9 km of wet line lies in a hollow of its own
+line, and 91 % of the over-bank stations are in one. By the hollow's depth: under 0.25 m, 778
+hollows and 3.07 km; to 1 m, 278 and 4.59 km; to 5 m, 225 and 3.89 km; to 20 m, 22 and 1.77 km;
+over, 13 and 2.77 km. A breach of the lip mends the 1,030 hollows (6.74 km) with no basin under
+them or one under a metre deep; only a body filled to its spill mends the 207 (6.71 km, 57 % of
+the over-bank stations) over a basin 5 m deep or more. The row that mends it — a pit past a
+breach limit becomes a standing body of the plan at its spill, links split at its shore as at a
+scene's body, a shallower pit breached by the cut — is not built.
+
+### The cook
+
+`engine-content flow solve <scene.json> <out.json> [--ddc <dir>] [--entry <i>] [--lattice <m>]
+[--resistance jarrett|manning] [--manning-n <n>] [--reach <m>] [--jobs <n>] [--scene-out <scene>]`
+opens **the composed ground the scene draws** (`renderer::SceneGround`, handed to this module as a
+`scene_gen::Ground`: a function pointer and a context) and solves on it every wet link of every
+`channels` entry, and every `water_channels` block that is not one of those links' — an author's
+line. So the order of a cook is: `engine-content channels --cut` for the plan and the cuts; the
+cuts pasted into the scene's `tiles.edits` and the plan's key into the entry; then `flow solve`,
+whose `water_channels` are pasted (or written whole with `--scene-out`). The scene's own
+`water_channels` are not read for the ground (`SceneFileOptions::without_water_channels`).
+
+**What a block declares and holds says what the cook does with it, never what it is called**
+(`WaterChannel.derived_from`, version 7; the first cut told a planner's block by its name's
+prefix, which is a convention of one generator and no property of a block):
+
+| The block | The cook |
+|---|---|
+| `derived_from` names an entry this cook solved (`channels <layer name>`) | that entry's last cook: replaced by the links solved now |
+| `derived_from` names anything else | another writer's: kept as it is |
+| no `derived_from`, a `discharge_m3s` | an author's line: solved (again, from its stations, if it was solved before) |
+| no `derived_from`, no discharge, a depth and a slope a point | laid before W120, and nothing to solve it from: dropped and counted (`blocks_laid_dropped`) |
+| no `derived_from` and none of those | an author's line that names no discharge: refused |
+
+Any writer of channels may declare itself in `derived_from`; no reader draws by it. So a scene
+cooked before W120 is cooked again by the same command, and a scene cooked twice holds each
+link once. **A block of versions 3 to 5 reads** — in the cook and in every host — through
+`WaterChannel`'s registered migration (`scene_gen::migrate_water_channel_5`, which drops `fit`,
+as `schemas/README.md` asks of a removed field): a scene file stores no version, so the stored
+version is told from the block (one that names `fit`), and the block is then refused by the
+check for what it is, "cooked before W120: cook again", and not for a field's name. The lattice is the tile
+set's heightfield's spacing unless `--lattice` names one. It writes the blocks and a `dry` list
+(each dry link, its reason, its discharge and the film's depth) and prints one line: links wet and
+dry, the scene's own blocks replaced, kept and dropped as laid, kilometres, stations a
+kilometre, crests, falls, jumps, drowned feet, hanging tails, the largest Froude number, the
+stations over a bank (count, worst, where), the rises by kind with the worst of each and where,
+and the solve's seconds a kilometre. `--jobs` is 1 by default: until the tile set's point read
+gives up its lock (T128), readers on a pool are slower than one thread.
+
+**An author's line** is a `water_channels` block whose name is not a planner's link: its `points`
+and a `discharge_m3s`. It is solved with Jarrett's law unless `--resistance manning` holds its own
+`manning_n`; a line that runs into a body — a lattice past its last point stands inside a body's
+circle or polygon — ends at the body's level as a mouth, and any other ends at normal depth. The
+block keeps its optics, its seed and its banks, and takes the solve's stations. The end-to-end
+case (`flow_tests.cpp`) writes the fixture, solves its three channels again this way through the
+tiles provider, and holds them to the fixture's stations: the same flags in the same order, the
+levels within 2 mm.
+
+**Measured** (2026-11-13, `msvc-release`, one thread, beside other agents' builds, so the seconds
+are upper bounds): `terrain-synth` heightfields at 0.5 m with a `channels` entry, cut, then solved.
+
+| Scene | Stage | Links wet of all | Solved km | Stations a km | Crests | Falls (highest) | Jumps | Feet drowned | Over bank: stations, lines, worst | Rises: jump, shooting, at a bank, other | Head rises | s a km |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| mountain, 2 km square | 1 | 13 of 16 | 9.44 | 1,491 | 34 | 0 | 0 | 0 | 18, 4, 0.21 m | 0, 0, 0, 0 | 0 | 0.15 |
+| the same | 20 | 16 of 16 | 12.06 | 1,818 | 0 | 0 | 0 | 0 | 5,088, 11, 2.22 m | 0, 0, 677, 0 | 0 | 0.16 |
+| steps, 1 km square | 1 | 6 of 23 | 1.60 | 1,455 | 6 | 6 (1.73 m) | 0 | 4 | 464, 1, 0.08 m | 0, 0, 0, 0 | 0 | 0.14 |
+| the same | 20 | 23 of 23 | 7.74 | 1,909 | 30 | 36 (1.96 m) | 4 | 28 | 13,723, 21, 0.49 m | 4 (0.12 m), 0, 256, 0 | 0 | 0.13 |
+
+(Taken again at the row's last solver commit, 2026-11-14 00:35, the same way; the first table was
+from before the bank's crest was read past a ledge, which is what took the mountain's over-bank
+stations in flood from 12,183 to 5,088. The largest Froude numbers are 1.0, 3.1, 8.7 and 8.6,
+the last two at a fall's foot.)
+
+At the year's mean the three dry links of the mountain end with 2.8, 3.5 and 4.0 l/s over beds
+wider than a metre, films of 8 to 10 mm; the stepped scene's sixteen are smaller still. A stage
+of 20 is a flood put through beds cut for far less, to see what the cook says: more than half the
+stations stand over a bank on the stepped scene, and the level written there steps up where the
+bed itself stands over the last spill (the 677 and 256 rises "at a bank"). **No tranquil rise
+that is not at a bank remains in any scene, none at all at the mean, and the head rises
+nowhere** (the stepped scene in flood had one rise of 3.7 cm before "The head never rises, and
+what holds it"). The four rises across a jump there, to 12 cm, are steps a walker sees, drawn as
+pairs.
+
+**Stations a kilometre are about 1,500 on these grounds**, against 150 to 240 on the fixture and
+against the 1,780 points a kilometre the laid description wrote here. The level's pin is not
+what holds them: the wet reach's is. A bed two or three lattice cells wide is jagged at the
+lattice, so the water's edge moves by more than 5 cm from one node to the next and almost every
+node is a station. The lever, if the draw wants fewer, is `k_station_wet_m`.
 
 ## The cut
 

@@ -12,6 +12,8 @@
 // a share of a cut's depth) and is refused by name; there is no reading of it in the old meaning.
 
 #include <core/base/types.h>
+#include <core/json/json_value.h>
+#include <core/schema/json_reflect.h>
 
 #include <cmath>
 #include <schemas/scene.h>
@@ -55,6 +57,41 @@ inline constexpr bool channel_is_control(u16 flags) noexcept {
 inline constexpr ChannelControl channel_control_kind(u16 flags) noexcept {
   return static_cast<ChannelControl>((flags & k_channel_control_kind_mask) >>
                                      k_channel_control_kind_shift);
+}
+
+// **`WaterChannel` 5 to 6** (the evolution rules of schemas/README.md ask, of a field removed, a
+// version bump and a registered `Migration` that rewrites the JSON). Version 6 removed `fit`,
+// version 3's record of
+// a ribbon narrowed onto the ground: the migration drops it, so a block written by versions 3 to
+// 5 reads, and is then refused by the check below for what it is — "cooked before W120: cook
+// again" — and not for a field's name.
+inline bool migrate_water_channel_5(JsonValue& object, schema::ReadContext&) {
+  if (object.is_object()) object.as_object().erase(std::string("fit"));
+  return true;
+}
+// 6 to 7: `derived_from` is new and takes its default (an author's line); nothing else moved.
+inline bool migrate_water_channel_6(JsonValue&, schema::ReadContext&) { return true; }
+inline const bool k_water_channel_migration_registered = [] {
+  schema::MigrationRegistry::global().add(
+      {"engine.scene.WaterChannel", 5, &migrate_water_channel_5});
+  schema::MigrationRegistry::global().add(
+      {"engine.scene.WaterChannel", 6, &migrate_water_channel_6});
+  return true;
+}();
+// **A scene file stores no version** (it is read as one unversioned object), so the stored version
+// of a block is told from the block: one that names `fit` was written by versions 3 to 5, and is
+// read through the registered migrations from 5. Called on a scene's root before its schema read;
+// false with the context's errors when a migration refuses.
+inline bool migrate_scene_water_channels(JsonValue& root, schema::ReadContext& ctx) {
+  JsonValue* list = root.is_object() ? root.find("water_channels") : nullptr;
+  if (list == nullptr || !list->is_array()) return true;
+  (void)k_water_channel_migration_registered;
+  for (JsonValue& block : list->as_array())
+    if (block.is_object() && block.contains("fit") &&
+        !schema::MigrationRegistry::global().migrate(schema::type_of<scene::WaterChannel>(), block,
+                                                     5, ctx))
+      return false;
+  return true;
 }
 
 // **The check** (the contract's refusals, each a sentence naming the channel): two points or more;

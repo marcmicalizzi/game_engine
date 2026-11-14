@@ -77,6 +77,9 @@ int falls_command(int argc, char** argv);
 // water's description"; W120): `flow fixture`, the closed-form scene the solver and the draw are
 // held to. Present when this build has the channels capability and the tiles ground provider.
 int flow_command(int argc, char** argv);
+// `flow solve` (flow_solve.cpp; channels.md, "The cook"): the scene's streams solved on the
+// ground it draws — its channels placements' wet links and its authors' lines.
+int flow_solve_command(int argc, char** argv);
 // A region sketch solved into an authored heightfield and its fields (landform_commands.cpp,
 // docs/subsystems/landform.md); present when this build has the landform capability.
 int landform_command(int argc, char** argv);

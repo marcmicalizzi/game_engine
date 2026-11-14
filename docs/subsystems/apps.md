@@ -253,6 +253,8 @@ engine-content terrain-tiles <heightfield.json> [<out dir>] [--ddc <root>] [--ce
 engine-content terrain-masks <scene.json> [<out dir>] [--ddc <root>] [--force] [--write-priors <dir>]
 engine-content masks check <scene.json> [--ddc <root>]
 engine-content ground sample <scene.json> (--point <x,z[,radius]> ... | --points <file.jsonl>) [--skirt <m>] [--uncut] [--placements] [--ddc <root>]
+engine-content flow solve <scene.json> <out.json> [--ddc <dir>] [--entry <i>] [--lattice <m>] [--resistance jarrett|manning] [--manning-n <n>] [--reach <m>] [--jobs <n>] [--scene-out <scene.json>]
+engine-content flow fixture <dir>
 engine-content terrain-read <manifest.json | dir> [--pattern level|windows|points|pool|queue|files] [--level <n>] [--depth <n>] [--run-kib <n>] [--window <n>] [--cache-mib <n>] [--pool-workers <n>] [--unbuffered] [--masks]
 engine-content city params <params.json>
 engine-content city plan <params.json> (--out <dir> | --cache [--ddc <dir>] | --no-write) [--jobs <n>]
@@ -419,6 +421,24 @@ one JSON line (`entries`, `heads`, `links`, `channel_m`, `region_km2`, `km_per_k
 `engine.scene.TerrainEdit` blocks for `tiles.edits`, one per link, and the water's surface stands in
 the cut ([channels](channels.md#the-cut)); it plans over the ground before the scene's own cuts. Exit 1 for a scene with no terrain, no `channels` placement or a refused layer, 2
 for usage. It requires the channels capability; see [channels](channels.md#the-waters-description).
+
+## engine-content flow: a stream's water from its discharge
+
+`engine-content flow solve <scene.json> <out.json> [--ddc <dir>] [--entry <i>] [--lattice <m>]
+[--resistance jarrett|manning] [--manning-n <n>] [--reach <m>] [--jobs <n>] [--scene-out <scene.json>]`
+(W120) writes the scene's `water_channels`: every wet link of its `channels` entries and every
+line an author wrote (`points` and a `discharge_m3s`), solved as steady one-dimensional flow
+through the sections of **the ground the scene draws**, which it opens as `ground sample` does. It
+runs after `engine-content channels --cut` and after the cuts are in the scene, and takes the
+same `--ddc`. Its one JSON line counts links wet and dry, stations a kilometre, falls, jumps,
+stations over a bank, rises of the level by kind and of the head (`rises.head`, which is zero),
+with the solve's seconds a kilometre; the `dry` list in `<out.json>` gives every link that
+carries no water its reason. What it does with a block the scene already holds is read from the
+block's `derived_from` and what it carries, never from its name (`blocks_replaced`,
+`blocks_kept`, `blocks_laid_dropped`).
+`engine-content flow fixture <dir>` writes the closed-form scene the solver is held to. What is
+solved and why, the description's fields and the fixture's derivation:
+[channels](channels.md#the-waters-description).
 
 ## engine-content falls: where the water leaves its bed
 
