@@ -5023,7 +5023,18 @@ frame of their own: not this row's, handed to T131.
 **What a ring change costs, and the swap it could be.** Where the base did not rebuild — the
 engine's litter scene, whose only entries draw every ring alike — the forms do: on the like-for-like
 walk 34 → 73 tiles built, 151 → 278 ms on the frame's thread (each about 3.8 ms, its generators
-called again). The placements do not move, so the change could rewrite each instance's mesh
+called again). **Since T131's merge** (`bin-merged` B3B09B11…, b64-G197 at 7f18339d) the same 73
+tiles are built by the build job on the efficiency pool, 483 ms there, and the frame's thread keeps
+the hand-over: 5 ms over the walk, 0.10 ms at its 99th percentile and 0.21 at most, where it was
+3.71 and 7.60; the GPU's frame the same (0.577 ms). A tile whose ring changed keeps drawing its old
+forms until its job's result is installed, about 7 frames of the walk later at the median and 22
+at most (a FIFO match of ring events to collected tiles, so approximate): 1 to 3 m of walking, well
+inside the quarter tile the floor is cut with, and no hole. In a window over the full rings (the
+first walk, 106 ring changes, 205 tiles built by each; the session locked, so frames ran
+unpaced; others at 85 to 88% of the CPU) the tile work on the frame's thread went from 1,004 ms
+to 15 (p99 7.01 → 0.18 ms, at most 13.1 → 0.3), and the frames over 50 ms from 1 to 3, all
+three with no tile work: two in the first second, behind the first fill's table rebuild (50 ms
+of `tables`), and one at the end. The placements do not move, so the change could rewrite each instance's mesh
 through `pick_ring_form` with no generator call; that needs the block to keep each placement's
 source mesh and scale, those drawn as nothing included, and `change_ring` to rewrite in place
 where `redraws` finds only forms differing — when a tile is built, which is T131's — so it is a
