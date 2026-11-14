@@ -592,6 +592,24 @@ struct FakeActors final : view::ActorHost {
     io.name_length = std::string_view(io.name).size();
     return hotload::Result::Ok;
   }
+  // ABI 11 (A44): what the runner hands on.
+  f32 bias = 1.0f;
+  f32 seek_s = -1.0f;
+  hotload::Result lod_bias(u32, f32 b) override {
+    bias = b;
+    return hotload::Result::Ok;
+  }
+  hotload::Result clip_info(u32, hotload::ClipInfo& io) override {
+    io.count = 1;
+    io.name = io.index == 0 ? "bar/bend" : "";
+    io.name_length = std::string_view(io.name).size();
+    io.duration_s = io.index == 0 ? 1.0f : 0.0f;
+    return hotload::Result::Ok;
+  }
+  hotload::Result seek(u32, f32 s) override {
+    seek_s = s;
+    return hotload::Result::Ok;
+  }
   JsonValue to_json() const override { return JsonValue::array(); }
   JsonValue summary_json() const override { return JsonValue::array(); }
   JsonValue calls_json() const override { return JsonValue::object(); }

@@ -45,12 +45,19 @@ struct Mesh @version(1) {
 }
 
 /// A skinned instance's clip, carried for the host and never read by the renderer.
-struct Animation @version(1) {
+///
+/// Version 2: `lod_bias` (roadmap A44; docs/subsystems/animation.md, "The LOD policy: what the
+/// eye can see").
+struct Animation @version(2) {
   /// The clip's name; empty is the skin's first clip.
   clip: string
   speed: f32 = 1
   /// Seconds added to the starting playhead.
   phase: f32 = 0
+  /// A factor on the animation tier's rule, in [0, 64]: above 1 an actor stays finer than its
+  /// limbs' travel on the screen asks (a bird against the sky), below 1 coarser (a prop's idle),
+  /// 0 the coarsest tier always.
+  lod_bias: f32 = 1 @since(2)
 }
 
 // ---- Ruins assembled from a kit (docs/subsystems/ruins.md, plan 07 §7.6) -----------------------
@@ -2626,7 +2633,10 @@ struct FlythroughOutput @version(2) {
 /// The three hashes are hex u64s over the player's clip ids, over its playhead (time, rate, fade)
 /// as bits, and over the bytes of the joint matrices the last frame handed the renderer for it — an
 /// empty run (LOD2, LOD3: the rest pose) hashes as nothing. Functions of the clock's ticks alone.
-struct AnimatedInstance @version(1) {
+///
+/// Version 2 (roadmap A44): what the tier rule read for it — the travel of its clip's limbs in
+/// world metres and its bias (docs/subsystems/animation.md, "The LOD policy: what the eye can see").
+struct AnimatedInstance @version(2) {
   /// The scene instance.
   instance: u32 = 0
   /// The clip it was attached with, by its library name ("bar/bend").
@@ -2636,11 +2646,18 @@ struct AnimatedInstance @version(1) {
   clip_hash: string
   playhead_hash: string
   pose_hash: string
+  /// How far the clip it plays moves a vertex from rest, world metres (0: a skin at its bind pose).
+  travel_m: f32 = 0 @since(2)
+  /// The factor on the rule a scene block or a game gave it.
+  lod_bias: f32 = 1 @since(2)
 }
 
 /// The animated world's block of a summary (`FlythroughSummary.animation`, and the windowed summary
 /// line's `anim`).
-struct FlythroughAnimation @version(1) {
+///
+/// Version 2: the budget (roadmap A44; docs/subsystems/animation.md, "The budget"): the ceilings in
+/// force and the most actors any step held back under each.
+struct FlythroughAnimation @version(2) {
   /// Whether the camera drives the tiers (`--anim-lod`), and the band scale (`--anim-lod-scale`).
   on: bool = true
   scale: f64 = 1
@@ -2664,6 +2681,13 @@ struct FlythroughAnimation @version(1) {
   /// Over every instance's three hashes, in instance order.
   hash: string
   animated: AnimatedInstance[]
+  /// The ceilings (`animation.lod.full_max`, `animation.lod.skinned_max`; 0 none), and the most
+  /// actors one step held at LOD1 that wanted LOD0 (`fell_back_full`) and at LOD2 that wanted a
+  /// skinned tier (`fell_back_skinned`).
+  full_max: u32 = 0 @since(2)
+  skinned_max: u32 = 0 @since(2)
+  fell_back_full: u32 = 0 @since(2)
+  fell_back_skinned: u32 = 0 @since(2)
 }
 
 /// The last line of a flythrough benchmark's `.jsonl`, and engine-view's summary line. An

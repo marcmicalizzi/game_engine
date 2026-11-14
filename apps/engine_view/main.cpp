@@ -5392,11 +5392,9 @@ int run_view(int argc, char** argv) {
                  "with --offscreen or in the window\n");
     return k_exit_usage;
   }
-  if (options.offscreen && (options.animate || options.morph_animate || options.reference != 0)) {
-    std::fprintf(stderr,
-                 "engine-view: --offscreen, --benchmark, --verify-occlusion and --marker-captures "
-                 "draw rigid scenes; --animate, --morph-animate and --reference have their own "
-                 "paths\n");
+  // `--animate` runs offscreen since A44 (apps.md, "Animation in a session").
+  if (options.offscreen && (options.morph_animate || options.reference != 0)) {
+    std::fprintf(stderr, "engine-view: --offscreen draws no --morph-animate or --reference\n");
     return k_exit_usage;
   }
   // An interactive session ends when its log does or its window closes, not after a default count.

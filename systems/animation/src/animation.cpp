@@ -17,19 +17,21 @@ namespace {
 
 // ---- tunables (ADR-0011) ----------------------------------------------------------------------
 //
-// The LOD band boundaries, in metres of observer score. They are much tighter than
-// `sim::TierParams`' defaults (32 / 128 / 1024) because the thing being decided is different: a
-// settlement's economy is worth simulating a kilometre away, and a character's fingers are not
-// worth sampling at forty metres. These are the one knob a game is most likely to move, which is
-// exactly ADR-0011's case for a tunable rather than a constant.
+// The LOD band boundaries, in metres of observer score **for the reference actor** (visibility.h):
+// one whose limbs travel a metre, seen through a lens of 1,000 pixels a radian. A host's importance
+// carries the actor's own travel, the view's lens and the actor's bias (`motion_importance`), so a
+// boundary of `D` metres is a threshold of `1000 / D` pixels of limb travel on the screen, and the
+// defaults are 4, 1 and 1/3 of a pixel (animation.md, "The LOD policy: what the eye can see", has
+// the derivation of each). Until A44 they were 12 / 40 / 120 m of plain distance, which froze a
+// deer at 40 m on a 2160-row screen where its legs still swung twenty pixels.
 // `tunables::Float` takes f64: a float literal here is a widening conversion and
 // -Wdouble-promotion is an error on both Linux compilers.
-tunables::Float lod_near{"animation.lod.near", 12.0, 0.0, 4096.0,
-                         "Observer score below which an instance is animated every tick"};
-tunables::Float lod_mid{"animation.lod.mid", 40.0, 0.0, 4096.0,
-                        "Observer score below which an instance is animated every second tick"};
-tunables::Float lod_far{"animation.lod.far", 120.0, 0.0, 8192.0,
-                        "Observer score below which an instance is sampled every fourth tick"};
+tunables::Float lod_near{"animation.lod.near", 250.0, 0.0, 1.0e6,
+                         "Reference metres (1000/D px of limb travel) under which every tick"};
+tunables::Float lod_mid{"animation.lod.mid", 1000.0, 0.0, 1.0e6,
+                        "Reference metres (1000/D px of limb travel) under which skinned"};
+tunables::Float lod_far{"animation.lod.far", 3000.0, 0.0, 1.0e6,
+                        "Reference metres (1000/D px of limb travel) under which sampled"};
 tunables::Float lod_hysteresis{"animation.lod.hysteresis", 0.15, 0.0, 4.0,
                                "Demotion tests the band boundary widened by this fraction"};
 tunables::Int lod_max_promotions{"animation.lod.max_promotions", 64, 1, 1 << 20,
@@ -116,6 +118,11 @@ sim::TierParams tier_params() noexcept {
   params.hysteresis = static_cast<f32>(lod_hysteresis.get());
   params.max_promotions = static_cast<u32>(lod_max_promotions.get());
   params.max_demotions = static_cast<u32>(lod_max_demotions.get());
+  // The importance is the rule's (visibility.h): a ten-centimetre wing at a kilometre through a
+  // 1080-row lens is 1e-4 of the reference, and the tier code's default floor of 1/16 would score
+  // it as if it were a metre limb sixteen times nearer. The floor stays only to keep a zero (a skin
+  // with no travel) from dividing by zero.
+  params.min_importance = 1.0e-6f;
   return params;
 }
 

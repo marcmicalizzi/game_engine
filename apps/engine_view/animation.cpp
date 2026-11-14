@@ -163,6 +163,21 @@ u32 find_clip(const animation::Library& library, u32 skeleton, std::string_view 
   return animation::Library::k_not_found;
 }
 
+f32 clip_travel(AnimatedScene& scene, u32 mesh, u32 clip) {
+  if (clip >= scene.clip_travel.size() || mesh >= scene.mesh_bounds.size()) return 0.0f;
+  if (scene.clip_travel[clip] < 0.0f) {
+    // The first time a game plays a clip the actor was not attached with: measured once, against
+    // the same per-joint spheres the attach measured its own clip against.
+    const animation::ClipAsset& asset = scene.library.clip(clip);
+    scene.clip_travel[clip] = asset.skeleton == animation::Library::k_not_found
+                                  ? 0.0f
+                                  : animation::clip_displacement_bound(
+                                        scene.library.skeleton_data(asset.skeleton),
+                                        scene.library.clip_data(clip), scene.mesh_bounds[mesh]);
+  }
+  return scene.clip_travel[clip];
+}
+
 // `--animate` refuses a mesh with no skin — it has no skeleton to tick — so before this a
 // morph-only file (every Khronos morph sample is one) played its default weights however
 // `--morph-animate` was spelled. A file with neither a skin nor a weight curve has nothing to add
@@ -317,7 +332,28 @@ void update_animation_lod(AnimatedScene& scene, const renderer::ViewSet& views,
   view_importance(views, camera.position,
                   std::span<const WorldPos>(scene.positions.data(), scene.positions.size()),
                   std::span<const f32>(scene.radii.data(), scene.radii.size()),
+                  std::span<const f32>(scene.travel.data(), scene.travel.size()),
+                  std::span<const f32>(scene.bias.data(), scene.bias.size()),
                   std::span<f32>(scene.importance.data(), scene.importance.size()));
+  // The budget (A44, `animation::cap_tiers`): when more rows want the finest tiers than the
+  // ceilings pay for, the lowest scores — the nearest and the largest on screen — keep them and the
+  // rest have their importance lowered to just past the band, so the tier code's own hysteresis and
+  // rate limits move them. A score per row first, at the importance the rule gave it.
+  if (scene.budget.full != 0 || scene.budget.skinned != 0) {
+    for (u32 r = 0; r < scene.row_instance.size(); ++r) {
+      scene.scores[r] = sim::TierAssignment::score(scene.positions[r], scene.importance[r],
+                                                   scene.observers, scene.tier_params);
+    }
+    scene.budget_last = animation::cap_tiers(
+        std::span<const f32>(scene.scores.data(), scene.scores.size()),
+        std::span<const u8>(scene.tier_state.data(), scene.tier_state.size()), scene.tier_params,
+        scene.budget, std::span<f32>(scene.importance.data(), scene.importance.size()),
+        scene.order);
+    if (scene.budget_last.fell_back_full > scene.fell_back_full_max)
+      scene.fell_back_full_max = scene.budget_last.fell_back_full;
+    if (scene.budget_last.fell_back_skinned > scene.fell_back_skinned_max)
+      scene.fell_back_skinned_max = scene.budget_last.fell_back_skinned;
+  }
   sim::TierInput input;
   input.positions = {scene.positions.data(), scene.positions.size()};
   input.importance = {scene.importance.data(), scene.importance.size()};
@@ -620,9 +656,14 @@ bool attach_instances(AnimatedScene& scene, const renderer::SceneDesc& desc,
   // of the instance, so both halves are computed once and cached: the per-joint influence spheres
   // per mesh, and the displacement bound per clip. A thousand-strong crowd of one character
   // samples its clip once.
-  Vector<animation::JointBounds> bounds_of_mesh(data.parts.size());
+  Vector<animation::JointBounds>& bounds_of_mesh = scene.mesh_bounds;
+  bounds_of_mesh.clear();
+  bounds_of_mesh.resize(data.parts.size());
   Vector<bool> bounds_built(data.parts.size(), false);
-  Vector<f32> padding_of_clip(scene.library.clip_count(), -1.0f);
+  Vector<f32>& padding_of_clip = scene.clip_travel;
+  padding_of_clip.assign(scene.library.clip_count(), k_travel_unknown);
+  // The bias each instance's block gave it (A44), carried to its tier row below.
+  Vector<f32> instance_bias(count, 1.0f);
 
   for (u32 i = 0; i < count; ++i) {
     if (data.instance_joints.empty() || data.instance_joints[i] == 0) continue;
@@ -640,6 +681,12 @@ bool attach_instances(AnimatedScene& scene, const renderer::SceneDesc& desc,
       if (request.clip.empty()) request.clip = options.clip;
       request.speed *= options.speed;
     }
+    if (!(request.lod_bias >= 0.0f) || request.lod_bias > animation::k_lod_bias_max) {
+      error = "instance " + std::to_string(read) + ": animation.lod_bias " +
+              std::to_string(request.lod_bias) + " is outside [0, 64]";
+      return false;
+    }
+    instance_bias[i] = request.lod_bias;
     const u32 clip_index = find_clip(scene.library, skeleton_index, request.clip);
     // **A skin with no clip stands at its bind pose** (P61): an authored export (a module
     // assembly, a textured preset) arrives with no animation at all, and its only pose is the
@@ -760,8 +807,16 @@ bool attach_instances(AnimatedScene& scene, const renderer::SceneDesc& desc,
     scene.positions.push_back(to_world(placed) + DVec3{offset.xyz()});
     scene.radii.push_back((mesh_radius[instance.mesh] + instance.bounds_padding) *
                           instance.scale_max);
+    // The rule's travel (A44): the clip's displacement bound — the padding above, 0 for a skin at
+    // its bind pose — in world metres, and the block's bias.
+    scene.row_scale.push_back(instance.scale_max);
+    scene.travel.push_back(instance.bounds_padding * instance.scale_max);
+    scene.bias.push_back(instance_bias[i]);
   }
   scene.importance.resize(scene.row_instance.size(), 1.0f);
+  scene.scores.resize(scene.row_instance.size(), 0.0f);
+  scene.order.reserve(scene.row_instance.size());
+  scene.budget = animation::tier_budget();
   // Every instance starts at tier 0, which is where `AnimationSystem::attach` put it, so the first
   // step's assignment is the only one that has a whole population to move and the rate limits in
   // `sim::TierParams` spread it over the steps after it.
@@ -799,6 +854,10 @@ scene::FlythroughAnimation animation_summary(const AnimatedScene& scene, u64 fra
   out.promotions = scene.promotions;
   out.demotions = scene.demotions;
   out.deferred = scene.deferred;
+  out.full_max = scene.budget.full;
+  out.skinned_max = scene.budget.skinned;
+  out.fell_back_full = scene.fell_back_full_max;
+  out.fell_back_skinned = scene.fell_back_skinned_max;
   const f64 divisor = frames > 0 ? static_cast<f64>(frames) : 1.0;
   JsonValue ms = JsonValue::object();
   ms.set("tick", scene.tick_ns / 1.0e6 / divisor);
@@ -818,6 +877,14 @@ scene::FlythroughAnimation animation_summary(const AnimatedScene& scene, u64 fra
     scene::AnimatedInstance entry;
     entry.instance = read;
     entry.tier = i < scene.instance_tier.size() ? scene.instance_tier[i] : 0u;
+    // What the tier rule read for it (A44): its row's travel and bias. The rows are the animated
+    // instances in instance order, so the row is found by a walk only the summary pays for.
+    for (u32 r = 0; r < scene.row_instance.size(); ++r) {
+      if (scene.row_instance[r] != i) continue;
+      entry.travel_m = r < scene.travel.size() ? scene.travel[r] : 0.0f;
+      entry.lod_bias = r < scene.bias.size() ? scene.bias[r] : 1.0f;
+      break;
+    }
     const u32 clip_index = scene.instance_clip[i];
     if (clip_index != animation::Library::k_not_found)
       entry.clip = scene.library.clip(clip_index).name;
@@ -971,6 +1038,18 @@ struct GameActors::Impl {
   u64 aligned = 0,
       clamped = 0;  // ABI 8: `place_aligned` calls answered Ok, and held to the maximum
   u64 morphs = 0, scales = 0, morph_writes = 0;  // ABI 9: calls answered Ok, and renderer writes
+  u64 biases = 0, seeks = 0;                     // ABI 11: calls answered Ok
+
+  // The rule's travel for the actor's tier row (A44): clip `clip`'s displacement bound through the
+  // scene's scale and the actor's own factor. A clip the actor was not attached with is measured
+  // the first time it is played (`clip_travel`).
+  void set_travel(Actor& a, u32 clip) {
+    if (a.row == ~0u || a.row >= scene->travel.size()) return;
+    const f32 bound = clip == animation::Library::k_not_found
+                          ? 0.0f
+                          : clip_travel(*scene, a.placement.mesh, clip);
+    scene->travel[a.row] = bound * scene->row_scale[a.row] * a.scale;
+  }
 
   // Stands the actor at `at` in `rotation` (a unit quaternion) and moves its tier row with it.
   void stand(Actor& a, const WorldPos& at, f32 yaw, Quat rotation, Vec3 up, f32 tilt,
@@ -1225,6 +1304,7 @@ hotload::Result GameActors::play(u32 instance, std::string_view clip, f32 fade_s
     ++g.refused;
     return hotload::Result::NotFound;
   }
+  g.set_travel(*a, index);  // the tier rule's travel is the new clip's (A44)
   animation::AnimationPlayer after;
   (void)g.read(*a, after);
   if (from_rest && fade_s > 0.0f) {
@@ -1331,8 +1411,87 @@ hotload::Result GameActors::scale(u32 instance, f32 factor) {
     g.scene->positions[a->row] =
         a->position + DVec3{rotate(a->placement.transform.rotation, a->centre * factor)};
     g.scene->radii[a->row] = a->base_radius * factor;
+    // The limbs travel as far as the body is scaled (A44): the clip it is heading for, scaled.
+    animation::AnimationPlayer p;
+    f32 time = 0.0f;
+    bool looping = false;
+    g.set_travel(*a,
+                 g.read(*a, p) ? g.target_clip(p, time, looping) : animation::Library::k_not_found);
   }
   ++g.scales;
+  return hotload::Result::Ok;
+}
+
+// ABI 11 (A44): the actor's factor on the tier rule, into its row; the next tier decision reads it.
+hotload::Result GameActors::lod_bias(u32 instance, f32 bias) {
+  Impl& g = *impl_;
+  Impl::Actor* a = g.find(instance);
+  if (a == nullptr) return hotload::Result::NotFound;
+  if (!std::isfinite(bias) || bias < 0.0f || bias > animation::k_lod_bias_max) {
+    ++g.refused;
+    return hotload::Result::InvalidArgument;
+  }
+  if (a->row != ~0u && a->row < g.scene->bias.size()) g.scene->bias[a->row] = bias;
+  ++g.biases;
+  return hotload::Result::Ok;
+}
+
+// ABI 11: the skeleton's clips in the library's order — the order `find_clip` counts an index in,
+// so clip k's name and the digits of k name the same clip to `actor_play`.
+hotload::Result GameActors::clip_info(u32 instance, hotload::ClipInfo& io) {
+  Impl& g = *impl_;
+  const Impl::Actor* a = g.find(instance);
+  if (a == nullptr) return hotload::Result::NotFound;
+  const animation::Library& library = g.scene->library;
+  io.count = 0;
+  io.duration_s = 0.0f;
+  io.name = "";
+  io.name_length = 0;
+  for (u32 c = 0; c < library.clip_count(); ++c) {
+    if (a->skeleton == animation::Library::k_not_found || library.clip(c).skeleton != a->skeleton)
+      continue;
+    if (io.count == io.index) {
+      const std::string& name = library.clip(c).name;  // the library's, alive while it is loaded
+      io.name = name.c_str();
+      io.name_length = name.size();
+      io.duration_s = library.clip_data(c).duration;
+    }
+    ++io.count;
+  }
+  return hotload::Result::Ok;
+}
+
+// ABI 11: the playhead of the clip the actor is heading for, at the tick and before its step. The
+// capability's `set_playhead` keeps the rate; a looping clip wraps, another is held to its length,
+// so a seek lands where the playhead could have been and never past a clip's end.
+hotload::Result GameActors::seek(u32 instance, f32 seconds) {
+  Impl& g = *impl_;
+  Impl::Actor* a = g.find(instance);
+  if (a == nullptr) return hotload::Result::NotFound;
+  if (!std::isfinite(seconds)) {
+    ++g.refused;
+    return hotload::Result::InvalidArgument;
+  }
+  animation::AnimationPlayer p;
+  if (!g.read(*a, p)) return hotload::Result::NotFound;
+  f32 now = 0.0f;
+  bool looping = false;
+  const u32 clip = g.target_clip(p, now, looping);
+  if (clip == animation::Library::k_not_found) return hotload::Result::NotFound;  // at rest
+  const f32 duration = g.scene->library.clip_data(clip).duration;
+  f32 at = seconds;
+  if (looping && duration > 0.0f) {
+    at = std::fmod(at, duration);
+    if (at < 0.0f) at += duration;
+  } else {
+    at = at < 0.0f ? 0.0f : (at > duration ? duration : at);
+  }
+  const bool fading = !p.fade_clip.is_null();
+  if (!g.scene->system.set_playhead(a->entity, fading ? p.time : at, fading ? at : p.fade_time,
+                                    p.speed)) {
+    return hotload::Result::NotFound;
+  }
+  ++g.seeks;
   return hotload::Result::Ok;
 }
 
@@ -1601,6 +1760,8 @@ JsonValue GameActors::calls_json() const {
   out.set("morphs", g.morphs);           // ABI 9: `morph` and `scale` calls answered Ok, and the
   out.set("scales", g.scales);           // weights written to the renderer (one per actor a frame
   out.set("morph_writes", g.morph_writes);  // whose weights changed since the last)
+  out.set("lod_biases", g.biases);          // ABI 11: `lod_bias` and `seek` calls answered Ok
+  out.set("seeks", g.seeks);
   out.set("plays", g.plays);
   out.set("stops", g.stops);
   out.set("speeds", g.speeds);

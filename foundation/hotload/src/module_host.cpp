@@ -647,6 +647,33 @@ struct HostCallbacks {
     io->covered = query.covered;
     return r;
   }
+  // ---- ABI 11 ----
+  static Result actor_lod_bias(void* host, u32 actor, f32 bias) {
+    const GameServices& g = self(host).game_;
+    if (g.actor_lod_bias == nullptr) return Result::Unsupported;
+    return g.actor_lod_bias(g.user, actor, bias);
+  }
+  static Result actor_clip_info(void* host, u32 actor, ClipInfo* io) {
+    const GameServices& g = self(host).game_;
+    if (io == nullptr || io->size < sizeof(ClipInfo)) return Result::InvalidArgument;
+    if (g.actor_clip_info == nullptr) return Result::Unsupported;
+    // The host's own struct in, as `actor_morph_info` does: only `index` is read from the module's.
+    ClipInfo info;
+    info.index = io->index;
+    const Result r = g.actor_clip_info(g.user, actor, info);
+    if (r == Result::Ok) {
+      const u32 size = io->size;
+      const usize n = size < sizeof(ClipInfo) ? size : sizeof(ClipInfo);
+      std::memcpy(static_cast<void*>(io), &info, n);
+      io->size = size;
+    }
+    return r;
+  }
+  static Result actor_seek(void* host, u32 actor, f32 seconds) {
+    const GameServices& g = self(host).game_;
+    if (g.actor_seek == nullptr) return Result::Unsupported;
+    return g.actor_seek(g.user, actor, seconds);
+  }
   static Result ground_height(void* host, f64 x, f64 z, f64* out_height) {
     const GameServices& g = self(host).game_;
     if (out_height == nullptr) return Result::InvalidArgument;
@@ -743,6 +770,9 @@ ModuleHost::ModuleHost(HostConfig config) : config_(std::move(config)) {
   api_.cast_sphere = &HostCallbacks::cast_sphere;
   api_.water_at = &HostCallbacks::water_at;
   api_.supports_near = &HostCallbacks::supports_near;
+  api_.actor_lod_bias = &HostCallbacks::actor_lod_bias;
+  api_.actor_clip_info = &HostCallbacks::actor_clip_info;
+  api_.actor_seek = &HostCallbacks::actor_seek;
   context_.api = &api_;
   context_.state = nullptr;
 }

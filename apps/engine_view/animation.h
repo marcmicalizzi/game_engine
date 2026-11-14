@@ -50,6 +50,7 @@
 #include <domain/sim/tiers.h>
 #include <foundation/input/input.h>
 #include <systems/animation/animation.h>
+#include <systems/animation/visibility.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/scene_renderer.h>
 
@@ -128,6 +129,27 @@ struct AnimatedScene {
   Vector<u8> tier_state;       // in/out of assign_tiers; the tier each row is at
   Vector<u8> instance_tier;    // the same, indexed by scene instance, for `step_animation`
   Vector<sim::TierChange> changes;
+  // **What the eye can see** (A44; systems/animation/visibility.h): per row, how far the limbs of
+  // the clip it plays travel from rest, in world metres — the clip's displacement bound through the
+  // instance's scale (`row_scale`, world metres a mesh unit, times a game actor's own factor) — and
+  // the bias a scene block or a game gave it. `clip_travel` is that bound per library clip in mesh
+  // units, measured once (`k_travel_unknown` until a clip is first played), and `mesh_bounds` the
+  // per-joint influence spheres it is measured against, kept so a clip a game plays later is
+  // measured against the same mesh.
+  Vector<f32> travel;
+  Vector<f32> bias;
+  Vector<f32> row_scale;
+  Vector<f32> clip_travel;
+  Vector<animation::JointBounds> mesh_bounds;
+  // **The budget** (`animation::cap_tiers`): the ceilings read at attach, each step's scores and
+  // ranking scratch (sized at attach, so a step allocates nothing), and what the ceiling held back:
+  // the last step's and the most in any step of the run.
+  animation::TierBudget budget;
+  Vector<f32> scores;
+  Vector<u32> order;
+  animation::TierBudgetStats budget_last;
+  u32 fell_back_full_max = 0;
+  u32 fell_back_skinned_max = 0;
   u32 histogram[animation::k_tier_count] = {};
   u32 promotions = 0;
   u32 demotions = 0;
@@ -215,6 +237,15 @@ Id128 instance_id(u32 instance);
 // its full library name, or its name without the library's prefix; an empty request takes the
 // skeleton's first clip. `k_not_found` when nothing matches.
 u32 find_clip(const animation::Library& library, u32 skeleton, std::string_view request);
+
+// **How far clip `clip` moves a vertex of scene mesh `mesh` from rest**, in the mesh's units: the
+// clip's displacement bound against the mesh's joint influence spheres (`animation::
+// clip_displacement_bound`), the number the cull pads the instance's spheres by and the rule's
+// travel (A44). Measured the first time a clip is asked for and kept
+// (`AnimatedScene::clip_travel`); 0 for a mesh with no skin data or a clip the library does not
+// hold.
+inline constexpr f32 k_travel_unknown = -1.0f;
+f32 clip_travel(AnimatedScene& scene, u32 mesh, u32 clip);
 
 // `--morph-animate`'s clips when nothing is skinned: the weight curves of every glTF the scene
 // names that a generator did not make, in a library of their own. A file with neither a skin nor a
@@ -357,6 +388,14 @@ class GameActors final : public ActorHost {
   hotload::Result morph(u32 instance, const f32* weights, u32 count) override;
   hotload::Result scale(u32 instance, f32 scale) override;
   hotload::Result morph_info(u32 instance, hotload::MorphInfo& io) override;
+  // ABI 11 (A44; apps.md, "Actors"): the bias goes into the actor's tier row at once and is read
+  // by the next tier decision; the clips are the skeleton's, in the library's order; a seek puts
+  // the playhead of the clip the actor is heading for at the tick, before its step. **The bias is
+  // the game's state, as the shape is**: `to_json` does not write it, and a cold restore starts the
+  // actor at its scene block's bias until the module says it again.
+  hotload::Result lod_bias(u32 instance, f32 bias) override;
+  hotload::Result clip_info(u32 instance, hotload::ClipInfo& io) override;
+  hotload::Result seek(u32 instance, f32 seconds) override;
   JsonValue to_json() const override;
   JsonValue summary_json() const override;
   JsonValue calls_json() const override;

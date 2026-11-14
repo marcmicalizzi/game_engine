@@ -26,24 +26,28 @@
 #include <core/math/math.h>
 #include <core/math/world.h>
 #include <domain/sim/tiers.h>
+#include <systems/animation/visibility.h>
 #include <systems/renderer/view_set.h>
 
 #include <span>
 
 namespace engine::view {
 
-// What an instance no view can see is worth. It divides the distance, so 1/16 makes an off-screen
-// character score sixteen times as far away as it is — past `animation.lod.far` (120 m of observer
-// score) for anything but a character standing on the camera, which is the intent: **off screen is
-// tier 3**, the playhead frozen and the pool slot given back.
+// What an instance no view can see is worth: a constant, whatever its travel, its bias or the
+// lens, because nothing off screen travels across a pixel. It divides the distance, so against the
+// default bands (250 / 1000 / 3000 reference metres) an off-screen character is sampled for its
+// pose within 7.5 m (LOD2, the pose a foot-plant query may ask for), skinned within 2.5 m and
+// every tick within 0.6 m, and frozen past that — **off screen is tier 3** for anything but a
+// character standing on the camera, which is where the old 1/16 against the old 12 / 40 / 120 m put
+// it (A44 kept the behaviour and moved the number with the bands).
 //
-// Sixteen rather than infinity, and the difference matters. A score of infinity would pin an
+// A factor rather than infinity, and the difference matters. A score of infinity would pin an
 // off-screen instance at the coarsest tier however close it is; a factor lets a character two
-// metres behind the camera — about to be turned back towards — stay at tier 2 and keep its pose
-// for the foot plant a gameplay query may ask about. It is also what keeps the rule *conservative*
-// in the right direction when the frustum test is wrong: a frustum test that misses by a pixel
-// costs a tier, not a pop from frozen.
-inline constexpr f32 k_offscreen_importance = 1.0f / 16.0f;
+// metres behind the camera — about to be turned back towards — keep its pose for the foot plant a
+// gameplay query may ask about. It is also what keeps the rule *conservative* in the right
+// direction when the frustum test is wrong: a frustum test that misses by a pixel costs a tier,
+// not a pop from frozen.
+inline constexpr f32 k_offscreen_importance = 1.0f / 400.0f;
 
 // The weight of one view as an observer. The centre view of a surround is what the player is
 // looking at and the side monitors are peripheral vision, which is the same thing
@@ -90,9 +94,17 @@ inline f32 max_view_weight(const renderer::ViewSet& views) noexcept {
   return best > 0.0f ? best : 1.0f;
 }
 
-// What the camera says one instance is worth, as a `sim::TierInput::importance` factor: the best
-// weight among the views whose frustum contains its padded bounds, over the best weight in the set,
-// or `k_offscreen_importance` when no view contains it.
+// What the camera says one instance is worth, as a `sim::TierInput::importance` factor: **the
+// pixels its limbs travel on the screen, against the reference's** (A44; `animation::
+// motion_importance`, systems/animation/visibility.h) — its `travel` (world metres: the clip's
+// displacement bound through the instance's scale), the best `weight * proj_scale` among the views
+// whose frustum contains its padded bounds over the best weight in the set, and its `bias` — or,
+// when no view contains it, `k_offscreen_importance`, the bias left out (off screen, nothing is
+// conspicuous). Before A44 this was the weight alone, and the bands were plain metres.
+//
+// **Why the lens is the view's own** (`renderer::View::proj_scale`, source pixels a radian): it is
+// what the cull pass bounds a cluster's error in, so the same projection decides what geometry and
+// what motion a view can resolve, at 1080p, at 2160 and on each monitor of a surround alike.
 //
 // **Why the frustum test is on the CPU and against a padded sphere.** The renderer already knows
 // exactly what it drew — but it knows it one frame late and on the device (`renderer.md`, "The
@@ -106,26 +118,32 @@ inline f32 max_view_weight(const renderer::ViewSet& views) noexcept {
 // `views` are the frame's, whose origin is the camera's eye (ADR-0053), and `positions` are world
 // positions, so each is taken into that frame — `relative(position, eye)`, in f64 and then a float
 // the size of its distance from the eye — before the test. `eye` is the camera's position.
+// `travel` and `bias` are per instance like `positions`; an instance past the end of either takes
+// the reference's travel (`animation::k_reference_travel_m`) and a bias of 1.
 inline void view_importance(const renderer::ViewSet& views, WorldPos eye,
                             std::span<const WorldPos> positions, std::span<const f32> radii,
+                            std::span<const f32> travel, std::span<const f32> bias,
                             std::span<f32> out) {
   const f32 best_weight = max_view_weight(views);
   Frustum frusta[renderer::k_max_views];
-  f32 weights[renderer::k_max_views];
+  f32 seen_by[renderer::k_max_views];  // weight over the best weight, times the view's lens
   const u32 view_count = views.size();
   for (u32 v = 0; v < view_count; ++v) {
     frusta[v] = frustum_from_view_proj(views[v].view_proj);
-    weights[v] = view_weight(views[v]);
+    seen_by[v] = view_weight(views[v]) / best_weight * views[v].proj_scale;
   }
   for (u32 i = 0; i < positions.size() && i < out.size(); ++i) {
     const f32 radius = i < radii.size() ? radii[i] : 0.0f;
+    const f32 limb = i < travel.size() ? travel[i] : animation::k_reference_travel_m;
+    const f32 factor = i < bias.size() ? bias[i] : 1.0f;
     f32 seen = 0.0f;
     for (u32 v = 0; v < view_count; ++v) {
-      if (weights[v] <= seen) continue;  // a lesser view cannot improve the answer
+      if (seen_by[v] <= seen) continue;  // a lesser view cannot improve the answer
       if (frustum_contains_sphere(frusta[v], relative(positions[i], eye), radius))
-        seen = weights[v];
+        seen = seen_by[v];
     }
-    out[i] = seen > 0.0f ? seen / best_weight : k_offscreen_importance;
+    out[i] =
+        seen > 0.0f ? animation::motion_importance(limb, seen, factor) : k_offscreen_importance;
   }
 }
 
