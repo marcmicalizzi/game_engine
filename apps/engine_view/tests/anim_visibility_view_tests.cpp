@@ -115,10 +115,17 @@ void write_scene(const test::TempDir& tmp, const char* name, f32 bias) {
   REQUIRE(io::write_file(tmp.file("still.json"), path) == io::Status::Ok);
 }
 
-Seen run_at(const test::TempDir& tmp, const char* scene, u32 width, u32 height, u32 frames) {
+// `available` false: engine-view had no device here (exit 3, a runner with no GPU driver), and the
+// case says so and skips, as engine-view's other end-to-end cases do.
+Seen run_at(const test::TempDir& tmp, const char* scene, u32 width, u32 height, u32 frames,
+            bool* available = nullptr) {
   const Run run = run_view({"--scene", tmp.file(scene), "--camera-path", tmp.file("still.json"),
                             "--animate", "--offscreen", "--frames", std::to_string(frames),
                             "--width", std::to_string(width), "--height", std::to_string(height)});
+  if (available != nullptr) {
+    *available = run.exit_code != 3;
+    if (!*available) return Seen{};
+  }
   REQUIRE_MESSAGE(run.exit_code == 0, run.output);
   return seen(run);
 }
@@ -137,7 +144,12 @@ TEST_CASE("anim visibility view: the same bar at 100 m moves with the projection
   // kept to what it must show. 960 x 540: the bar's limbs travel under a pixel at 100 m, so it is
   // held at LOD2 and draws its rest pose, whose run is empty and hashes as nothing (`k_hash_seed`,
   // animation.cpp `animation_summary`) at any step.
-  const Seen small_a = run_at(tmp, "plain.json", 960, 540, 20);
+  bool available = true;
+  const Seen small_a = run_at(tmp, "plain.json", 960, 540, 20, &available);
+  if (!available) {
+    MESSAGE("engine-view unavailable here (exit 3), skipping the far bar's case");
+    return;
+  }
   // The geometry is chosen for the bend clip's bound on this bar (2.12 m at scale 1, measured
   // 2026-11-14: 0.77 px at 540 rows, 1.54 at 1080 at this scale): the case
   // means what it says only while the travel the rule read keeps the 540-row run under the band's
