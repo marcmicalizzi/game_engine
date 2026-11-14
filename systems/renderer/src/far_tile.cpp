@@ -368,11 +368,11 @@ bool load_far_tile(const scene_gen::PlacementMesh& mesh, const PlacementMeshOpti
     assets::ImageRef ref = m.data.images[static_cast<u32>(image)];
     if (!ref.uri.empty() && !std::filesystem::path(ref.uri).is_absolute() && !m.image_dir.empty())
       ref.uri = io::join_path(m.image_dir, ref.uri);
-    const u64 key = hash_combine(hash_bytes(ref.uri.data(), ref.uri.size()),
-                                 hash_bytes(ref.bytes.data(), ref.bytes.size()));
+    const u64 image_key = hash_combine(hash_bytes(ref.uri.data(), ref.uri.size()),
+                                       hash_bytes(ref.bytes.data(), ref.bytes.size()));
     for (u32 i = 0; i < image_keys.size(); ++i)
-      if (image_keys[i] == key) return static_cast<i32>(i);
-    image_keys.push_back(key);
+      if (image_keys[i] == image_key) return static_cast<i32>(i);
+    image_keys.push_back(image_key);
     source.data.images.push_back(std::move(ref));
     if (m.textures.size() == m.data.images.size())
       source.textures.push_back(m.textures[static_cast<u32>(image)]);
@@ -403,12 +403,12 @@ bool load_far_tile(const scene_gen::PlacementMesh& mesh, const PlacementMeshOpti
     material.normal_image = images[2];
     material.occlusion_image = images[3];
     material.emissive_image = images[4];
-    const u64 key = hash_combine(material_key(material, images), flags);
+    const u64 part_key = hash_combine(material_key(material, images), flags);
     for (u32 p = 0; p < parts.size(); ++p) {
-      if (parts[p].key == key) return map[member_part] = p;
+      if (parts[p].key == part_key) return map[member_part] = p;
     }
     Part part;
-    part.key = key;
+    part.key = part_key;
     parts.push_back(std::move(part));
     source.data.materials.push_back(std::move(material));
     source.material_sampling_flags.push_back(flags);
