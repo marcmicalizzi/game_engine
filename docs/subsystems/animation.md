@@ -128,8 +128,11 @@ So **the bands stay metres and mean one thing**: the distance at which a referen
 | A44, 1 | 185 / 120 / 85 / 10 | 0.957 | 0.041 | 2.637 / 3.630 | 0.0338 |
 | main, 2 | 40 / 124 / 96 / 140 | 0.425 | 0.026 | 2.594 / 2.898 | 0.0248 |
 | A44, 2 | 185 / 120 / 85 / 10 | 0.869 | 0.037 | 2.609 / 3.099 | 0.0343 |
+| A44, ceilings 32 / 96 | 32 / 64 / 294 / 10 | 0.372 | 0.052 | 2.600 / 2.949 | 0.0208 |
+| A44, `--anim-lod off` (all LOD0) | 400 / 0 / 0 / 0 | 1.252 | 0.001 | 2.633 / 3.220 | 0.0397 |
+| A44, bands at a millimetre (all LOD3) | 0 / 0 / 0 / 400 | 0.031 | 0.031 | 2.590 / 2.776 | 0.0160 |
 
-The rule keeps **305 of the 400 skinned where main kept 164**, because the residents 40 to 600 m away still move by a pixel or more at 2160 rows. That costs **+0.46 ms of CPU a frame** in the world's step (single-threaded, on a loaded box), **+0.01 ms** in the tier decision (the importance's multiply and the budget's score pass), and on the GPU **+0.009 ms of deformation and +0.015 to 0.02 ms of the frame's median** — which is the skinning of 141 more small meshes and nothing else, since every pass but `deform` is the same scene drawn the same way.
+The rule keeps **305 of the 400 skinned where main kept 164**, because the residents 40 to 600 m away still move by a pixel or more at 2160 rows. That costs **+0.46 ms of CPU a frame** in the world's step (single-threaded, on a loaded box), **+0.01 ms** in the tier decision (the importance's multiply and the budget's score pass), and on the GPU **+0.009 ms of deformation and +0.015 to 0.02 ms of the frame's median** — which is the skinning of 141 more small meshes and nothing else, since every pass but `deform` is the same scene drawn the same way. **What a tier costs one of these actors**, from the last two rows (the same lease, others at 52–65 % of the CPU): LOD0 is **3.1 µs of CPU a step** (1.252 ms over 400; the 18- and 9-joint rigs and the per-instance run lookup) and **0.06 µs of GPU deformation** ((0.0397 − 0.0160) ms over 400 small meshes), LOD3 0.08 µs of CPU and nothing of the GPU's. **Overloaded** — ceilings of 32 at LOD0 and 96 skinned, against the 185 and 305 the rule wanted — the crowd held 32 / 64 skinned and 294 at their rest pose, and the block said so: `"fell_back_full":64,"fell_back_skinned":209` (the most in any step: 96 − 32 held at LOD1, 305 − 96 at LOD2), with the tick at 0.372 ms.
 
 ## The renderer contract
 
