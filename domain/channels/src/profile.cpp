@@ -28,7 +28,12 @@ constexpr f64 k_head_rise_m = 0.001;
 constexpr f64 k_choke_jump_m = k_station_level_m;
 
 // The root of a function rising through zero between lo and hi, bisected until the bracket is one
-// float wide: the same bits wherever it runs.
+// float wide: the same bits wherever it runs. **The answer is the bracket's upper end**, where the
+// function is not negative. A section's area is not continuous in the level — a level that
+// passes a hump wets the hollow behind it at once — so a function of the level may step through
+// zero and have no root; of the two sides of the step, the upper is the one with the larger area
+// and the lower speed, which is the side that has lost head and never the one that has gained it
+// (on the forest's ground the lower side gave a fall's foot 1.04 m more head than its lip).
 template <typename F>
 f64 bisect(f64 lo, f64 hi, F&& f) noexcept {
   for (u32 i = 0; i < 200; ++i) {
@@ -39,7 +44,7 @@ f64 bisect(f64 lo, f64 hi, F&& f) noexcept {
     else
       hi = mid;
   }
-  return 0.5 * (lo + hi);
+  return hi;
 }
 
 // The nodes of a line and the ground across each.
@@ -172,6 +177,16 @@ struct Solver {
     return bisect(bed + k_depth_min_m, bed + k_depth_max_m,
                   [&](f64 level) { return wet_at(c, node, level).area - area; });
   }
+  // The shooting level whose head is `head`, or critical depth where even that carries more.
+  f64 level_of_head(u32 node, f64 head) const noexcept {
+    const f64 lc = c.critical[node];
+    const auto fn = [&](f64 level) {
+      const Flow f = at(node, level);
+      return f.ok ? head - f.head : -1.0;
+    };
+    if (fn(lc) < 0.0) return lc;
+    return bisect(c.bed[node] + k_depth_min_m, lc, fn);
+  }
   // The tranquil level on the far side of critical with the same specific force.
   f64 sequent(u32 node, f64 level) const noexcept {
     const f64 force = at(node, level).force;
@@ -215,6 +230,7 @@ struct Solver {
 
 // A station before the selection: where it is along the line, its level, the node whose section
 // it is read in, its flags, and whether it and the next are a pair.
+constexpr u32 k_no_node = ~0u;
 struct Out {
   f64 s = 0;
   f64 level = 0;
@@ -222,6 +238,19 @@ struct Out {
   u16 flags = 0;
   bool keep = false;
   bool pair = false;
+  // **A station between two nodes** (a jump's head): `share` of the way from node `from`, whose
+  // water stands at `from_level`, to `node`, whose water stands at `to_level`. Its level is the
+  // line between the two, and its flow is the two nodes' flows blended: where the bed falls from
+  // one node to the next, the level between them is not a level of either node's section, and
+  // read in the lower node's it is deep, slow water with less head than the jump's foot.
+  u32 from = k_no_node;
+  f64 from_level = 0, to_level = 0, share = 0;
+  // **A last station brought down to the level its line meets**: the level the water arrived at,
+  // whose flow the station carries (the discharge through the film left in the line's own
+  // section at the met level is no speed of this water: 27 m/s and a Froude number of 109 on the
+  // forest).
+  bool met = false;
+  f64 arrived = 0;
 };
 
 bool refuse(std::string& error, const std::string& name, const char* why) {
@@ -360,7 +389,8 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
       for (u32 j = t + 1; j < c.across; ++j) {
         if (row[j] > row[crest]) {
           crest = j;
-        } else if (row[j] < row[crest] - k_bank_crest_drop_m) {
+        } else if (row[j] < row[crest] - k_bank_crest_drop_m -
+                                k_bank_crest_drop_share * (row[crest] - row[t])) {
           break;
         }
       }
@@ -369,7 +399,8 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
       for (u32 j = t; j-- > 0;) {
         if (row[j] > row[crest]) {
           crest = j;
-        } else if (row[j] < row[crest] - k_bank_crest_drop_m) {
+        } else if (row[j] < row[crest] - k_bank_crest_drop_m -
+                                k_bank_crest_drop_share * (row[crest] - row[t])) {
           break;
         }
       }
@@ -417,21 +448,22 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
     }
   }
 
-  // ---- Each stretch between falls ---------------------------------------------------------------
+  // ---- The stretches between falls, and the tranquil profile of each ---------------------------
   Vector<f64> sub(n, 0.0);
   Vector<u8> crit(n, 0);
   Vector<Out> outs;
   ProfileStats& stats = out.stats;
   const u16 tail_flags = scene_gen::channel_control_flags(line.tail);
   const u16 crest_flags = scene_gen::channel_control_flags(scene_gen::ChannelControl::Crest);
-  const u32 stretches = drops.size() + 1;
-  for (u32 r = 0; r < stretches; ++r) {
-    const u32 a = r == 0 ? 0u : drops[r - 1].foot;
-    const u32 b = r + 1 < stretches ? drops[r].lip : n - 1;
-    const bool lip = r + 1 < stretches;
+  // The tranquil profile of nodes a to b, from b back to a: critical depth at b where b is a
+  // fall's lip, else what the line ends in (`tail_control`: a level the line meets). `from` is
+  // the node it is taken up from: b for a stretch not yet solved; for one whose head has moved
+  // upstream (a fall drowned out, below), the highest node whose reach the old head was in —
+  // every node below that has the slope and the level it had.
+  const u32 window = std::max<u32>(1, static_cast<u32>(std::ceil(k_reach_slope_m / c.run)));
+  const auto tranquil_profile = [&](u32 a, u32 b, bool lip, u32 from, bool& tail_control) {
     // The bed's slope over the reach about each node, inside this stretch.
-    const u32 window = std::max<u32>(1, static_cast<u32>(std::ceil(k_reach_slope_m / c.run)));
-    for (u32 i = a; i <= b; ++i) {
+    for (u32 i = a; i <= from; ++i) {
       const u32 i0 = i - a > window ? i - window : a;
       const u32 i1 = b - i > window ? i + window : b;
       const f64 slope =
@@ -441,20 +473,22 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
                               k_jarrett_slope_exponent);
     }
     // The tranquil profile, from the stretch's foot back to its head.
-    bool tail_control = false;
-    if (lip) {
-      sub[b] = c.critical[b];
-      crit[b] = 1;
-    } else if (line.tail_level) {
-      tail_control = line.level > c.critical[b];
-      sub[b] = tail_control ? line.level : c.critical[b];
-      crit[b] = tail_control ? 0 : 1;
-    } else {
-      const f64 level = solver.normal(b);
-      crit[b] = level > c.critical[b] ? 0 : 1;
-      sub[b] = crit[b] != 0 ? c.critical[b] : level;
+    if (from == b) {
+      tail_control = false;
+      if (lip) {
+        sub[b] = c.critical[b];
+        crit[b] = 1;
+      } else if (line.tail_level) {
+        tail_control = line.level > c.critical[b];
+        sub[b] = tail_control ? line.level : c.critical[b];
+        crit[b] = tail_control ? 0 : 1;
+      } else {
+        const f64 level = solver.normal(b);
+        crit[b] = level > c.critical[b] ? 0 : 1;
+        sub[b] = crit[b] != 0 ? c.critical[b] : level;
+      }
     }
-    for (u32 i = b; i-- > a;) {
+    for (u32 i = from == b ? b : from + 1; i-- > a;) {
       bool is_critical = false;
       f64 level = solver.tranquil(i, solver.at(i + 1, sub[i + 1]), is_critical);
       // The level never rises downstream in tranquil flow: where the energy equation alone would
@@ -467,17 +501,93 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
       sub[i] = level;
       crit[i] = is_critical ? 1 : 0;
     }
+  };
+  // Taken from the line's end upstream, because what a fall drops into decides whether it is
+  // one: **a fall whose tailwater stands over its lip's critical level is drowned out** — the
+  // pool below reaches up over the step — so its two stretches are one, and the tranquil profile
+  // is carried up through the step as through any other node. (On the forest a tributary's last
+  // fall stood 1.8 m under the stem it joined, and its foot was written over its lip.)
+  struct Stretch {
+    u32 a = 0, b = 0;
+    bool lip = false;   // b is a fall's lip
+    bool foot = false;  // a is a fall's foot,
+    u32 from_lip = 0;   // ... that fall's lip,
+    f64 foot_area = 0;  // ... and Rand's area at the foot for the lip's own discharge
+    bool tail_control = false;
+  };
+  Vector<Stretch> stretches;  // the line's last first
+  {
+    u32 b = n - 1;
+    bool lip = false;
+    u32 d = drops.size();  // the fall at the head of the stretch in hand is drops[d - 1]
+    u32 from = b;
+    bool tail_control = false;
+    for (;;) {
+      const u32 a = d > 0 ? drops[d - 1].foot : 0u;
+      tranquil_profile(a, b, lip, from, tail_control);
+      if (d > 0 && sub[a] >= c.critical[drops[d - 1].lip]) {
+        from = std::min(b, a + window);
+        --d;
+        continue;
+      }
+      Stretch s;
+      s.a = a;
+      s.b = b;
+      s.lip = lip;
+      s.foot = d > 0;
+      s.from_lip = d > 0 ? drops[d - 1].lip : 0u;
+      s.foot_area = d > 0 ? drops[d - 1].area : 0.0;
+      s.tail_control = tail_control;
+      stretches.push_back(s);
+      if (d == 0) break;
+      b = drops[d - 1].lip;
+      from = b;
+      lip = true;
+      --d;
+    }
+  }
+  // The flow at a station: its node's at its level, or the two nodes' blended (`Out::from`).
+  const auto flow_of = [&](const Out& o) {
+    if (o.from == k_no_node) return solver.at(o.node, o.level);
+    const Flow fa = solver.at(o.from, o.from_level);
+    const Flow fb = solver.at(o.node, o.to_level);
+    const f64 u = o.share;
+    Flow f;
+    f.ok = fa.ok && fb.ok;
+    if (!f.ok) return f;
+    f.level = o.level;
+    f.area = fa.area + u * (fb.area - fa.area);
+    f.top = fa.top + u * (fb.top - fa.top);
+    f.radius = fa.radius + u * (fb.radius - fa.radius);
+    f.speed = (c.q[o.from] + u * (c.q[o.node] - c.q[o.from])) / f.area;
+    f.head = o.level + f.speed * f.speed / (2.0 * k_gravity);
+    f.friction = fa.friction + u * (fb.friction - fa.friction);
+    f.froude = f.speed / std::sqrt(k_gravity * f.area / f.top);
+    f.force = fa.force + u * (fb.force - fa.force);
+    f.n = fa.n + u * (fb.n - fa.n);
+    return f;
+  };
+  f64 lip_head = 0.0;  // the head the water left the last lip with
+  for (u32 r = stretches.size(); r-- > 0;) {
+    const Stretch& stretch = stretches[r];
+    const u32 a = stretch.a, b = stretch.b;
+    const bool lip = stretch.lip;
+    const bool tail_control = stretch.tail_control;
     const f64 s_a = c.run * static_cast<f64>(a);
+    // The last node of the stretch that holds tranquil water: a stretch that ends at critical
+    // depth (a fall's lip, a hanging end) has none at that end, so a jump's foot is never there —
+    // shooting water that reaches such an end shoots over it.
+    const u32 last = crit[b] != 0 && b > a ? b - 1 : b;
     const auto tail_at = [&](f64 s) {
-      const f64 f = std::clamp((s - s_a) / c.run, 0.0, static_cast<f64>(b - a));
-      const u32 i = std::min<u32>(b - a, static_cast<u32>(f));
-      const u32 j = std::min<u32>(b - a, i + 1);
+      const f64 f = std::clamp((s - s_a) / c.run, 0.0, static_cast<f64>(last - a));
+      const u32 i = std::min<u32>(last - a, static_cast<u32>(f));
+      const u32 j = std::min<u32>(last - a, i + 1);
       return sub[a + i] + (f - static_cast<f64>(i)) * (sub[a + j] - sub[a + i]);
     };
     // What a node is besides its level.
     const auto node_flags = [&](u32 i, bool critical_here, bool tranquil_here) {
       u16 flags = 0;
-      if (i == a && r > 0) flags |= scene_gen::k_channel_fall_foot;
+      if (i == a && stretch.foot) flags |= scene_gen::k_channel_fall_foot;
       if (i == b && lip) flags |= scene_gen::k_channel_fall_lip;
       if (critical_here) flags |= crest_flags;
       if (i == n - 1 && tail_control && tranquil_here) flags |= tail_flags;
@@ -502,8 +612,12 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
     while (i <= b) {
       bool start = false, critical_start = false;
       f64 level = 0.0;
-      if (i == a && r > 0) {
-        const f64 foot = solver.level_of_area(a, drops[r - 1].area);
+      if (i == a && stretch.foot) {
+        // Rand's area is for the lip's discharge; where the discharge grows across the fall the
+        // area grows with it, so the ratio of the two speeds is still his. And the water lands
+        // with no more head than it left the lip with.
+        const f64 area = stretch.foot_area * c.q[a] / c.q[stretch.from_lip];
+        const f64 foot = std::max(solver.level_of_area(a, area), solver.level_of_head(a, lip_head));
         if (foot < c.critical[a]) {
           const f64 seq = solver.sequent(a, foot);
           if (seq - tail_at(s_a + k_jump_length_rises * (seq - foot)) > 0.0) {
@@ -533,28 +647,47 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
                                                   k_jump_length_rises * (before_seq - level));
       u32 next = b + 1;
       bool ended = false;
+      // **A choke**: the shooting flow has not the head to pass `first` (not even at critical
+      // depth there, or against the level the line ends in), so the water is tranquil from
+      // somewhere upstream of it. The jump stands at the last shooting node that still has the
+      // head the tranquil profile holds one node below it, so the total head never rises
+      // downstream; a fall's foot with less head than that is drowned. Returns the node the
+      // tranquil profile goes on from.
+      const auto settle = [&](u32 first) {
+        u32 j = first - 1;
+        while (j > i && solver.at(j, outs.back().level).head < solver.at(j + 1, sub[j + 1]).head) {
+          outs.pop_back();
+          --j;
+        }
+        if (j == i && !critical_start &&
+            solver.at(i, outs.back().level).head < solver.at(i + 1, sub[i + 1]).head) {
+          outs.back().level = sub[i];
+          ++stats.drowned_feet;
+          return i + 1;
+        }
+        if (sub[j + 1] - outs.back().level > k_choke_jump_m && !(j == i && critical_start)) {
+          Out& jump = outs.back();
+          jump.flags |= scene_gen::k_channel_jump_head;
+          jump.keep = jump.pair = true;
+          emit(j + 1, sub[j + 1], crit[j + 1] != 0, true);
+          outs.back().flags |= scene_gen::k_channel_jump_foot;
+          outs.back().keep = true;
+          ++stats.jumps;
+          return j + 2;
+        }
+        return j + 1;
+      };
       for (u32 k = i + 1; k <= b; ++k) {
         f64 here = 0.0;
         if (!solver.shooting(k, up, here)) {
-          // A choke: tranquil from here. Drawn as a jump where the level steps up.
-          if (sub[k] - before_level > k_choke_jump_m && !(k - 1 == i && critical_start)) {
-            Out& head = outs.back();
-            head.flags |= scene_gen::k_channel_jump_head;
-            head.keep = head.pair = true;
-            emit(k, sub[k], false, true);
-            outs.back().flags |= scene_gen::k_channel_jump_foot;
-            outs.back().keep = true;
-            ++stats.jumps;
-            next = k + 1;
-          } else {
-            next = k;
-          }
+          next = settle(k);  // a choke
           ended = true;
           break;
         }
         const f64 s_k = c.run * static_cast<f64>(k);
         const f64 seq = solver.sequent(k, here);
-        const f64 gap = seq - tail_at(s_k + k_jump_length_rises * (seq - here));
+        // (Past the last tranquil node there is no tranquil water to jump to.)
+        const f64 gap = k > last ? 1.0 : seq - tail_at(s_k + k_jump_length_rises * (seq - here));
         if (gap > 0.0) {
           emit(k, here, false, false);
           up = solver.at(k, here);
@@ -572,15 +705,17 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
         // **The jump**: its head where the shooting level's sequent level is the level the
         // tranquil profile holds a jump's length downstream — between the last node the gap was
         // open at and this one — and its foot that length on, at the sequent level.
-        f64 u = 1.0;
-        if (k - 1 > i) {
-          u = before_gap > gap ? before_gap / (before_gap - gap) : 1.0;
-          outs.pop_back();  // the node a lattice short of the head
-        }
+        const f64 u = k - 1 > i && before_gap > gap ? before_gap / (before_gap - gap) : 1.0;
         Out head;
         head.s = round_to(s_k - (1.0 - u) * c.run, 1e3);
         head.level = before_level + u * (here - before_level);
         head.node = k;
+        if (u < 1.0) {
+          head.from = k - 1;
+          head.from_level = before_level;
+          head.to_level = here;
+          head.share = u;
+        }
         head.flags = scene_gen::k_channel_jump_head;
         head.keep = head.pair = true;
         const f64 sequent_level = before_seq + u * (seq - before_seq);
@@ -590,19 +725,37 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
         foot.level = sequent_level;
         foot.flags = scene_gen::k_channel_jump_foot;
         foot.keep = true;
-        const f64 s_b = c.run * static_cast<f64>(b);
-        next = static_cast<u32>(std::ceil((foot.s + c.run) / c.run - 1e-9));
-        if (foot.s > s_b - c.run || next > b) {
-          // The jump runs to the stretch's end: its foot is the end's station.
-          foot.s = s_b;
-          foot.level = sub[b];
-          foot.node = b;
-          foot.flags |= node_flags(b, crit[b] != 0, true);
-          foot.pair = lip;
-          next = b + 1;
+        // Where the tranquil profile already stands over that sequent level at the foot (the bed
+        // drops away between two nodes and the pool below reaches up under the shooting water),
+        // the jump stands where the head allows it instead, as at a choke: a foot written under
+        // the pool it meets would have the level climb after it.
+        if (tail_at(foot.s) > sequent_level + k_choke_jump_m) {
+          next = settle(k);
+          break;
+        }
+        const f64 s_last = c.run * static_cast<f64>(last);
+        u32 after = static_cast<u32>(std::ceil((foot.s + c.run) / c.run - 1e-9));
+        if (foot.s > s_last - c.run || after > last) {
+          // The jump runs to the end of the stretch's tranquil water: its foot is that node's
+          // station (never a critical end's own: a jump's foot is tranquil water).
+          foot.s = s_last;
+          foot.level = sub[last];
+          foot.node = last;
+          foot.flags |= node_flags(last, crit[last] != 0, true);
+          foot.pair = last == b && lip;
+          after = last + 1;
         } else {
           foot.node = static_cast<u32>(std::floor(foot.s / c.run + 0.5));
         }
+        // **A jump loses head.** Where the foot as it is written would stand with more head than
+        // the jump's head has (the sections change between the two), or no farther down the line
+        // than the head, the jump stands where the head allows it instead, as at a choke.
+        if (!(foot.s > head.s) || solver.at(foot.node, foot.level).head > flow_of(head).head) {
+          next = settle(k);
+          break;
+        }
+        if (k - 1 > i) outs.pop_back();  // the node a lattice short of the head
+        next = after;
         outs.push_back(head);
         outs.push_back(foot);
         ++stats.jumps;
@@ -610,29 +763,30 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
       }
       if (!ended && tail_control && b > i && sub[b] - outs.back().level > k_choke_jump_m) {
         // The flow shot to a mouth or a confluence whose level stands over it: the jump stands
-        // at the end, and the last station carries the level it meets.
-        Out& foot = outs.back();
-        foot.level = sub[b];
-        foot.flags = static_cast<u16>(node_flags(b, false, true) | scene_gen::k_channel_jump_foot);
-        foot.keep = true;
-        Out& head = outs[outs.size() - 2];
-        head.flags |= scene_gen::k_channel_jump_head;
-        head.keep = head.pair = true;
-        ++stats.jumps;
+        // where the shooting flow still has the head for it, and the last station carries the
+        // level the line meets.
+        outs.pop_back();
+        next = settle(b);
       }
       i = next;
     }
+    if (lip && !outs.empty()) lip_head = flow_of(outs.back()).head;
   }
 
   // **What the line ends in is what its last station carries**, to the millimetre: where the
   // flow arrives over that level (critical at a hanging lip, or shooting), the last station still
-  // stands at it, and the surface comes down to it over the last lattice. A level under the bed
+  // stands at it, and the surface comes down to it over the last lattice. Its speed, Froude
+  // number and friction slope are then the arriving flow's (`Out::met`). A level under the bed
   // (a tributary hanging over its main stem) cannot be carried: the line ends as it arrived.
   if (line.tail_level && !outs.empty()) {
     Out& end = outs.back();
     if (end.node == n - 1 && (end.flags & tail_flags) != tail_flags) {
       if (line.level >= c.bed[n - 1] + k_station_depth_min_m) {
         if ((end.flags & scene_gen::k_channel_control) != 0 && stats.crests > 0) --stats.crests;
+        if (end.level > line.level) {
+          end.met = true;
+          end.arrived = end.level;
+        }
         end.level = line.level;
         end.flags = static_cast<u16>(
             (end.flags & (scene_gen::k_channel_jump_foot | scene_gen::k_channel_fall_foot)) |
@@ -647,18 +801,45 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
   // ---- The stations -----------------------------------------------------------------------------
   // What a station is written with: the solved level, or the lower bank's crest where the level
   // stands over it (water is never written outside its bed).
-  const auto written = [&](const Out& o) {
-    const f64 bank = std::max(c.bank[o.node], c.bed[o.node] + k_station_depth_min_m);
-    return o.level > c.bank[o.node] + k_over_bank_m
-               ? bank
-               : std::max(o.level, c.bed[o.node] + k_station_depth_min_m);
+  // Once tranquil water has spilled over a bank it stands no higher downstream than where it
+  // spilled, until its solved level comes down under that: so the written level never climbs from
+  // one bank's crest to the next one's.
+  // A station's bed and lower bank, and what a level wets there: its node's, or between its two
+  // nodes' (`Out::from`).
+  const auto between = [&](const Out& o, const Vector<f64>& of) {
+    return o.from == k_no_node ? of[o.node] : of[o.from] + o.share * (of[o.node] - of[o.from]);
   };
+  const auto wet_of = [&](const Out& o, f64 level) {
+    if (o.from == k_no_node) return wet_at(c, o.node, level);
+    const Wet wa = wet_at(c, o.from, o.from_level);
+    Wet w = wet_at(c, o.node, o.to_level);
+    w.left = wa.left + o.share * (w.left - wa.left);
+    w.right = wa.right + o.share * (w.right - wa.right);
+    return w;
+  };
+  Vector<f64> put(outs.size(), 0.0);
+  Vector<u8> held(outs.size(), 0);
+  {
+    f64 cap = 1e300;
+    for (u32 k = 0; k < outs.size(); ++k) {
+      const Out& o = outs[k];
+      const f64 bank = between(o, c.bank);
+      const bool tranquil = o.from == k_no_node && o.level >= c.critical[o.node] - 1e-9;
+      if (!tranquil || (k > 0 && outs[k - 1].pair)) cap = 1e300;
+      f64 level = o.level > bank + k_over_bank_m ? bank : o.level;
+      if (tranquil && level > cap) level = cap;
+      held[k] = level < o.level - k_over_bank_m ? 1 : 0;
+      cap = level < o.level && tranquil ? level : 1e300;  // while it is lowered at all
+      put[k] = std::max(level, between(o, c.bed) + k_station_depth_min_m);
+    }
+  }
   Vector<StationNode> nodes;
-  for (const Out& o : outs) {
-    const Wet w = wet_at(c, o.node, written(o));
+  for (u32 k = 0; k < outs.size(); ++k) {
+    const Out& o = outs[k];
+    const Wet w = wet_of(o, put[k]);
     StationNode s;
     s.s = o.s;
-    s.level = written(o);
+    s.level = put[k];
     s.wet_left = w.left;
     s.wet_right = w.right;
     s.keep = o.keep;
@@ -669,14 +850,23 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
   stats.length_m = total;
   for (const u32 index : select_stations(nodes)) {
     const Out& o = outs[index];
-    const f64 level = round_to(written(o), 1e3);
+    const f64 level = round_to(put[index], 1e3);
     // Where the level stands over a bank the level written is the bank's, and the speed, the
     // Froude number and the friction slope are the solved flow's (the discharge through the bed
     // with a wall at each crest), not the discharge forced through what the bed holds.
-    const bool over_bank = o.level > c.bank[o.node] + k_over_bank_m;
-    const Flow f =
-        solver.at(o.node, over_bank ? o.level : std::max(level, c.bed[o.node] + k_depth_min_m));
-    const Wet w = wet_at(c, o.node, level);
+    // So are a last station's that was brought down to the level its line meets (the arriving
+    // flow's), and a station's between two nodes (the two nodes' flows, blended). Everywhere
+    // else they are the flow's at the level before it is rounded to the description's
+    // millimetre: half a millimetre is a tenth of a thin sheet's area, and where the area steps
+    // (`bisect`) the rounded level may stand on the other side of the step.
+    const bool over_bank = held[index] != 0;
+    const f64 bed = between(o, c.bed);
+    const Flow f = o.from != k_no_node
+                       ? flow_of(o)
+                       : solver.at(o.node, over_bank ? o.level
+                                           : o.met   ? o.arrived
+                                                     : std::max(put[index], bed + k_depth_min_m));
+    const Wet w = wet_of(o, put[index]);
     if (!f.ok) return refuse(error, line.name, "a station has no water in its section");
     ProfileStation st;
     st.s = o.s;
@@ -687,10 +877,10 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
     st.x = round_to(c.x[i0] + u * (c.x[i1] - c.x[i0]), 1e3);
     st.z = round_to(c.z[i0] + u * (c.z[i1] - c.z[i0]), 1e3);
     st.level = level;
-    st.bed = c.bed[o.node];
+    st.bed = bed;
     st.depth = level - st.bed;
     st.friction = f.friction;
-    st.discharge = c.q[o.node];
+    st.discharge = between(o, c.q);
     st.speed = f.speed;
     st.froude = f.froude;
     st.wet_left = w.left;
@@ -701,8 +891,8 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
             : std::max(c.step, c.step * static_cast<f64>(c.left_end[o.node] - c.right_end[o.node]));
     st.manning_n = f.n;
     st.flags = o.flags;
-    if (o.level > c.bank[o.node] + k_over_bank_m) {
-      st.over_m = o.level - c.bank[o.node];
+    if (over_bank) {
+      st.over_m = o.level - level;
       st.flags |= scene_gen::k_channel_over_bank;
       ++stats.over_bank;
       if (st.over_m > stats.over_bank_worst_m) {
@@ -721,16 +911,18 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
     if (k + 1 == out.stations.size()) break;
     const ProfileStation& q = out.stations[k + 1];
     n_sum += 0.5 * (p.manning_n + q.manning_n) * (q.s - p.s);
-    if ((p.flags & scene_gen::k_channel_fall_lip) != 0) {
-      stats.highest_fall_m = std::max(stats.highest_fall_m, p.level - q.level);
-      continue;
-    }
+    // The head, as the description's own numbers give it, from every station to the next: a
+    // fall's lip to its foot and a line's last station included.
     const f64 head_p = p.level + p.speed * p.speed / (2.0 * k_gravity);
     const f64 head_q = q.level + q.speed * q.speed / (2.0 * k_gravity);
     const bool over = ((p.flags | q.flags) & scene_gen::k_channel_over_bank) != 0;
     if (head_q > head_p + k_head_rise_m && !over) {
       ++stats.head_rises;
       stats.head_rise_worst_m = std::max(stats.head_rise_worst_m, head_q - head_p);
+    }
+    if ((p.flags & scene_gen::k_channel_fall_lip) != 0) {
+      stats.highest_fall_m = std::max(stats.highest_fall_m, p.level - q.level);
+      continue;
     }
     const f64 rise = q.level - p.level;
     if (!(rise > k_rise_m)) continue;

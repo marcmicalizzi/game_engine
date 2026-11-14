@@ -431,8 +431,11 @@ line an author wrote (`points` and a `discharge_m3s`), solved as steady one-dime
 through the sections of **the ground the scene draws**, which it opens as `ground sample` does. It
 runs after `engine-content channels --cut` and after the cuts are in the scene, and takes the
 same `--ddc`. Its one JSON line counts links wet and dry, stations a kilometre, falls, jumps,
-stations over a bank and rises of the level by kind, with the solve's seconds a kilometre; the
-`dry` list in `<out.json>` gives every link that carries no water its reason.
+stations over a bank, rises of the level by kind and of the head (`rises.head`, which is zero),
+with the solve's seconds a kilometre; the `dry` list in `<out.json>` gives every link that
+carries no water its reason. What it does with a block the scene already holds is read from the
+block's `derived_from` and what it carries, never from its name (`blocks_replaced`,
+`blocks_kept`, `blocks_laid_dropped`).
 `engine-content flow fixture <dir>` writes the closed-form scene the solver is held to. What is
 solved and why, the description's fields and the fixture's derivation:
 [channels](channels.md#the-waters-description).

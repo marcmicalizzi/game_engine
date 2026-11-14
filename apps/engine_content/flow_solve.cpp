@@ -12,8 +12,10 @@
 //     discharge down the network from the entry's `flow` (the runoff over each point's catchment
 //     and the point sources it names), a link wet from where that is a sheet's — downstream links
 //     first, so a tributary meets the level its main stem was solved to;
-//   * every `water_channels` block of the scene that is not one of those links' (an author's
-//     line: its `points` and a `discharge_m3s` of one entry or one a point), by the same solver.
+//   * every `water_channels` block of the scene that declares no writer (`derived_from` empty:
+//     an author's line, its `points` and a `discharge_m3s` of one entry or one a point), by the
+//     same solver. A block that declares an entry solved here is replaced; one that declares
+//     another writer is kept; one laid before W120 is dropped (channels.md, "The cook").
 //
 // Writes `{"water_channels": [...], "dry": [...]}` — the blocks for the scene's `water_channels`,
 // and every link that carries no water with its reason — and prints one JSON line: links wet and
@@ -69,6 +71,35 @@ JsonValue place(const WorldPos& at) {
   out.push_back(JsonValue(at.y));
   out.push_back(JsonValue(at.z));
   return out;
+}
+
+// The scene's water bodies that read (one that does not is the water capability's to refuse).
+Vector<scene::WaterBody> read_bodies(const JsonValue& scene) {
+  Vector<scene::WaterBody> bodies;
+  if (const JsonValue* water = scene.find("water"); water != nullptr && water->is_array())
+    for (const JsonValue& b : water->as_array()) {
+      scene::WaterBody body;
+      schema::ReadContext reader;
+      if (schema::from_json(body, b, reader) && reader.ok()) bodies.push_back(std::move(body));
+    }
+  return bodies;
+}
+
+// Whether (x, z) stands inside a body's circle or polygon (a flood's region is not known here).
+bool inside_body(const scene::WaterBody& body, f64 x, f64 z) {
+  if (body.shape.circle.has_value()) {
+    const scene::WaterCircle& c = *body.shape.circle;
+    const f64 dx = x - c.center.x, dz = z - c.center.z, r = static_cast<f64>(c.radius_m);
+    return dx * dx + dz * dz <= r * r;
+  }
+  bool in = false;
+  const u32 n = body.shape.polygon.size();
+  for (u32 i = 0, j = n > 0 ? n - 1 : 0; i < n; j = i++) {
+    const WorldPos& a = body.shape.polygon[i];
+    const WorldPos& b = body.shape.polygon[j];
+    if ((a.z > z) != (b.z > z) && x < (b.x - a.x) * (z - a.z) / (b.z - a.z) + a.x) in = !in;
+  }
+  return in;
 }
 
 // The sums of every line's stats, the worst kept with where.
@@ -200,6 +231,17 @@ int flow_solve_command(int argc, char** argv) {
   const auto parsed = parse_json(text, json);
   if (!parsed.ok)
     return solve_fail(scene_path + ":" + std::to_string(parsed.line) + ": " + parsed.message);
+  {
+    // A channel block of versions 3 to 5 reads through `WaterChannel`'s migrations, as it does
+    // in every host: a scene cooked before W120 is cooked again by this command.
+    schema::ReadContext migrated;
+    if (!scene_gen::migrate_scene_water_channels(json, migrated) || !migrated.ok()) {
+      std::string message = scene_path + ": water_channels";
+      for (const auto& d : migrated.diagnostics)
+        message += "; " + d.path + ": " + d.message;
+      return solve_fail(message);
+    }
+  }
   const JsonValue* terrain_json = json.find("terrain");
   if (terrain_json == nullptr) return solve_fail(scene_path + " has no terrain");
   scene::Terrain terrain;
@@ -239,7 +281,7 @@ int flow_solve_command(int argc, char** argv) {
 
   // The ground the scene draws.
   renderer::SceneGround composed;
-  if (!composed.open(scene_path, ddc, false, false, error)) return solve_fail(error);
+  if (!composed.open(scene_path, ddc, false, false, error, true)) return solve_fail(error);
   const scene_gen::Ground ground = composed.ground();
   if (!ground.present()) return solve_fail(scene_path + ": the scene's ground gives no heights");
   for (const std::string& name : composed.not_carried())
@@ -261,9 +303,10 @@ int flow_solve_command(int argc, char** argv) {
   JsonValue dry = JsonValue::array();
   Totals totals;
   u32 entries = 0, links = 0, wet = 0, dry_sheet = 0, dry_short = 0, sources = 0, authored = 0;
+  u32 replaced = 0, kept = 0, laid = 0;
   f64 wet_m = 0, dry_m = 0, largest = 0, smallest_wet = 0;
   f64 flow_seconds = 0, solve_seconds = 0;
-  Vector<std::string> prefixes;  // "<layer> link ": the planner's blocks' names
+  Vector<std::string> writers;  // what the blocks this cook writes declare (`derived_from`)
   const auto seconds_since = [](std::chrono::steady_clock::time_point from) {
     return std::chrono::duration<f64>(std::chrono::steady_clock::now() - from).count();
   };
@@ -302,8 +345,8 @@ int flow_solve_command(int argc, char** argv) {
           message += "; " + d.path + ": " + d.message;
         return solve_fail(message);
       }
-      prefixes.push_back(layer.name + " link ");
       if (only >= 0 && static_cast<i64>(k) != only) continue;
+      writers.push_back(channels::flow_writer(layer));
       const std::string where = scene_path + ": placements " + std::to_string(k);
       scene_gen::Context context;
       context.world_seed = terrain.seed;
@@ -315,7 +358,7 @@ int flow_solve_command(int argc, char** argv) {
         // Planned as `engine-content channels` plans it: over the ground before its cuts.
         if (uncut == nullptr) {
           uncut = std::make_unique<renderer::SceneGround>();
-          if (!uncut->open(scene_path, ddc, true, false, error)) return solve_fail(error);
+          if (!uncut->open(scene_path, ddc, true, false, error, true)) return solve_fail(error);
         }
         context.ground = uncut->ground();
       } else {
@@ -372,7 +415,15 @@ int flow_solve_command(int argc, char** argv) {
     }
   }
 
-  // ---- An author's lines ----------------------------------------------------------------------
+  // ---- The scene's own blocks -----------------------------------------------------------------
+  // **What a block declares and holds says what the cook does with it**, never what it is called:
+  //   * `derived_from` names an entry this cook solved: the block is that entry's last cook, and
+  //     the blocks above replace it;
+  //   * `derived_from` names anything else: another writer's, kept as it is;
+  //   * no `derived_from` and a discharge: an author's line, solved;
+  //   * no `derived_from`, no discharge, and a depth and a slope a point: a description laid
+  //     before W120, which nothing can be solved from — dropped and counted;
+  //   * no `derived_from` and none of those: an author's line that names no discharge, refused.
   if (const JsonValue* list = json.find("water_channels"); list != nullptr && list->is_array()) {
     for (u32 k = 0; k < list->as_array().size(); ++k) {
       scene::WaterChannel block;
@@ -383,22 +434,51 @@ int flow_solve_command(int argc, char** argv) {
           message += "; " + d.path + ": " + d.message;
         return solve_fail(message);
       }
-      bool planners = false;
-      for (const std::string& prefix : prefixes)
-        planners = planners || block.name.compare(0, prefix.size(), prefix) == 0;
-      if (planners) continue;  // solved above, from its plan
+      if (!block.derived_from.empty()) {
+        bool mine = false;
+        for (const std::string& writer : writers)
+          mine = mine || writer == block.derived_from;
+        if (mine) {
+          ++replaced;
+        } else {
+          blocks.push_back((*list)[k]);
+          ++kept;
+        }
+        continue;
+      }
       const std::string where =
           scene_path + ": water_channels " + std::to_string(k) + " \"" + block.name + "\"";
-      if (block.discharge_m3s.empty())
+      if (block.discharge_m3s.empty()) {
+        if (!block.depth_m.empty() && !block.slope.empty()) {
+          ++laid;
+          continue;
+        }
         return solve_fail(where +
                           " names no discharge_m3s: a line is solved from its points and "
                           "a discharge (one entry for the line, or one a point)");
+      }
       channels::FlowLine line;
       line.name = block.name;
       for (const WorldPos& p : block.points)
         line.points.push_back(p);
       for (const f32 q : block.discharge_m3s)
         line.discharge.push_back(static_cast<f64>(q));
+      // **A line that runs into a body ends at the body's level**: a lattice past its last
+      // point, along its last stretch, stands inside a body's circle or polygon.
+      if (line.points.size() >= 2) {
+        const WorldPos& end = line.points[line.points.size() - 1];
+        const WorldPos& before = line.points[line.points.size() - 2];
+        const f64 dx = end.x - before.x, dz = end.z - before.z;
+        const f64 length = std::sqrt(dx * dx + dz * dz);
+        if (length > 0.0)
+          for (const scene::WaterBody& body : read_bodies(json))
+            if (inside_body(body, end.x + lattice * dx / length, end.z + lattice * dz / length)) {
+              line.tail_level = true;
+              line.level = std::round(body.level_m * 1e3) / 1e3;
+              line.tail = scene_gen::ChannelControl::Mouth;
+              break;
+            }
+      }
       channels::ProfileOptions own = options;
       if (own.resistance == channels::Resistance::Manning)
         own.manning_n = static_cast<f64>(block.manning_n);
@@ -464,6 +544,9 @@ int flow_solve_command(int argc, char** argv) {
   line["discharge_largest_m3s"] = JsonValue(round3(largest));
   line["discharge_smallest_wet_l_s"] = JsonValue(round3(smallest_wet * 1e3));
   line["authored_lines"] = JsonValue(authored);
+  line["blocks_replaced"] = JsonValue(replaced);
+  line["blocks_kept"] = JsonValue(kept);
+  line["blocks_laid_dropped"] = JsonValue(laid);
   line["water_channels"] = JsonValue(written);
   line["solved_km"] = JsonValue(round3(km));
   line["nodes"] = JsonValue(totals.nodes);

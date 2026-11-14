@@ -41,7 +41,7 @@ Vector<std::string> generators_not_carried(const std::string& scene_path) {
 SceneGround::~SceneGround() = default;
 
 bool SceneGround::open(const std::string& scene_path, const std::string& ddc, bool uncut,
-                       bool placements, std::string& error) {
+                       bool placements, std::string& error, bool without_water_channels) {
   sampler_.reset();
   desc_ = SceneDesc{};
   desc_.ddc = ddc;
@@ -49,6 +49,7 @@ bool SceneGround::open(const std::string& scene_path, const std::string& ddc, bo
   uncut_ = uncut;
   SceneFileOptions options;
   options.ground_only = !placements;
+  options.without_water_channels = without_water_channels;
   if (!read_scene_file(scene_path, options, desc_, error)) return false;
   // Read through the plan alone, an entry this build does not carry is not refused (nothing of it
   // expands); what it would have planned is missing, so it is named.

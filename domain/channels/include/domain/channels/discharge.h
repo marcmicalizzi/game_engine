@@ -76,6 +76,9 @@ struct SolvedLink {
   Profile profile;
   scene::WaterChannel block;
 };
+// What a link's block declares as its writer (`WaterChannel.derived_from`): the cook replaces
+// the blocks that carry it and solves the ones that carry none, and reads no name to tell which.
+inline std::string flow_writer(const ChannelLayer& layer) { return "channels " + layer.name; }
 // **The planner's lines, solved** on `ground` — the composed ground the scene draws, cuts and
 // all. Links are solved downstream first; `jobs` (nullable) solves the links of one generation a
 // job each, and the result does not depend on it. `out` holds one entry a link, in link order.

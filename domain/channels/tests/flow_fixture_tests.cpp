@@ -2,6 +2,8 @@
 // fixture"; roadmap W120 stage 0): every closed form the fixture is derived from, evaluated a
 // second way; the ground's lattice against the function it samples; the stations against the
 // contract's pins; and what the check refuses.
+#include <core/json/json.h>
+#include <core/schema/json_reflect.h>
 #include <domain/channels/flow_fixture.h>
 #include <domain/channels/hydraulics.h>
 #include <domain/channels/stations.h>
@@ -242,6 +244,55 @@ TEST_CASE("water channel: a description that is not solved is refused by name") 
   for (u32 i = 0; i < foot.flags.size(); ++i)
     foot.flags[i] = static_cast<u16>(foot.flags[i] & ~scene_gen::k_channel_jump_head);
   refused(foot, "does not follow a jump's head");
+}
+
+TEST_CASE(
+    "water channel: a block of version 5 reads through its migration, and is refused by name") {
+  FlowFixture f;
+  std::string error;
+  REQUIRE_MESSAGE(make_flow_fixture(f, error), error);
+  // A block as versions 3 to 5 wrote it: laid, with `fit` a point.
+  scene::WaterChannel old = f.channels[0];
+  old.discharge_m3s.clear();
+  old.speed_mps.clear();
+  old.froude.clear();
+  old.wet_left_m.clear();
+  old.wet_right_m.clear();
+  old.flags.clear();
+  JsonValue block = schema::to_json(old);
+  JsonValue fit = JsonValue::array();
+  for (u32 i = 0; i < old.points.size(); ++i)
+    fit.push_back(JsonValue(u64{0}));
+  block.set("fit", std::move(fit));
+  JsonValue root = JsonValue::object();
+  JsonValue list = JsonValue::array();
+  list.push_back(block);
+  root.set("water_channels", std::move(list));
+  // Unmigrated, the schema refuses the field by its name.
+  {
+    scene::WaterChannel read;
+    schema::ReadContext ctx;
+    CHECK_FALSE((schema::from_json(read, block, ctx) && ctx.ok()));
+  }
+  // Through the migration the scene's reader applies, it reads, and the check says what it is.
+  schema::ReadContext ctx;
+  REQUIRE(scene_gen::migrate_scene_water_channels(root, ctx));
+  const JsonValue& migrated = (*root.find("water_channels"))[0];
+  CHECK_FALSE(migrated.contains("fit"));
+  scene::WaterChannel read;
+  REQUIRE((schema::from_json(read, migrated, ctx) && ctx.ok()));
+  CHECK(read.points.size() == old.points.size());
+  std::string why;
+  CHECK_FALSE(scene_gen::water_channel_solved(read, &why));
+  CHECK_MESSAGE(why.find("cooked before W120: cook again") != std::string::npos, why);
+  // A solved block names no `fit` and is not touched.
+  JsonValue solved_root = JsonValue::object();
+  JsonValue solved_list = JsonValue::array();
+  solved_list.push_back(schema::to_json(f.channels[1]));
+  solved_root.set("water_channels", std::move(solved_list));
+  const std::string before = write_json(solved_root, JsonWriteOptions{});
+  REQUIRE(scene_gen::migrate_scene_water_channels(solved_root, ctx));
+  CHECK(write_json(solved_root, JsonWriteOptions{}) == before);
 }
 
 TEST_CASE("stations: the fewest nodes that hold the pins") {

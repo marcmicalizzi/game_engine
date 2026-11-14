@@ -236,6 +236,7 @@ bool solve_network(const ChannelLayer& layer, const ChannelNetwork& network,
         if (!solve_profile(line, ground, options, solved.profile, errors[k])) continue;
         solved.wet = true;
         solved.block = describe_profile(line.name, solved.profile, link.seed);
+        solved.block.derived_from = flow_writer(layer);
         // What the planner's writer always carried beside the water: the reach's code at each
         // station and the flood bed's reach each side (the cut's own numbers, for the placements'
         // exclusion), read at the line's point nearest the station.
