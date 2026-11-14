@@ -592,11 +592,7 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
         // **The jump**: its head where the shooting level's sequent level is the level the
         // tranquil profile holds a jump's length downstream — between the last node the gap was
         // open at and this one — and its foot that length on, at the sequent level.
-        f64 u = 1.0;
-        if (k - 1 > i) {
-          u = before_gap > gap ? before_gap / (before_gap - gap) : 1.0;
-          outs.pop_back();  // the node a lattice short of the head
-        }
+        const f64 u = k - 1 > i && before_gap > gap ? before_gap / (before_gap - gap) : 1.0;
         Out head;
         head.s = round_to(s_k - (1.0 - u) * c.run, 1e3);
         head.level = before_level + u * (here - before_level);
@@ -610,6 +606,15 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
         foot.level = sequent_level;
         foot.flags = scene_gen::k_channel_jump_foot;
         foot.keep = true;
+        // Where the tranquil profile already stands over that sequent level at the foot (the bed
+        // drops away between two nodes and the pool below reaches up under the shooting water),
+        // the jump stands where the head allows it instead, as at a choke: a foot written under
+        // the pool it meets would have the level climb after it.
+        if (tail_at(foot.s) > sequent_level + k_choke_jump_m) {
+          next = settle(k);
+          break;
+        }
+        if (k - 1 > i) outs.pop_back();  // the node a lattice short of the head
         const f64 s_b = c.run * static_cast<f64>(b);
         next = static_cast<u32>(std::ceil((foot.s + c.run) / c.run - 1e-9));
         if (foot.s > s_b - c.run || next > b) {
