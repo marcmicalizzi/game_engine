@@ -200,6 +200,7 @@ Soil morphology: [soil-banks-tree-throw](soil-banks-tree-throw.md), research and
 Tree expansion: [species profiles](tree-species-expansion.md) and [season design](tree-seasons.md).
 [G116: wetland plants](wetland-plants.md) records dimensions, authored controls and budget validation.
 [G129: branch-aware broadleaf taper](tree-branch-taper.md) replaces the single-scaffold trunk shoulder.
+[T131 with W118: a streamed world's tile work off the frame's thread](tile-work-off-the-frame-2026-11-13.md) reads the owner's walk of 2026-11-13 and measures the pair on three engine scenes at the pair cap and the mesh room.
 [G144: the site a placement reads](site-and-ecotope.md) grounds the site query and the scatter kinds' ecotope responses: heat load, the treeline and its aspect shift, the krummholz band, unimodal responses.
 
 [T130: the static-asset world](static-asset-world.md): a world of imported glTF and hand placement flown at every gate, and the audit of what such a world gets from each feature built for generated ones, what that costs it, and what would make it work.

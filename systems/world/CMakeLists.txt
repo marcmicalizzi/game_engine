@@ -49,6 +49,9 @@ set(_world_tests tests/world_tests.cpp tests/tile_store_tests.cpp tests/consumer
                  tests/save_tests.cpp tests/scene_order_tests.cpp tests/drawn_tiles_tests.cpp
                  tests/tile_meshes_tests.cpp tests/tile_mesh_textures_tests.cpp
                  tests/size_table.cpp
+                 # T131 with W118: when a tile is admitted, released and built, and on which
+                 # thread, over fixture generators of the test's own.
+                 tests/tile_admission_tests.cpp
                  # G201 stage 2: a streamed tile's trees seated where the whole read seats them,
                  # over a ground and a generator of the test's own.
                  tests/seat_tiles_tests.cpp)

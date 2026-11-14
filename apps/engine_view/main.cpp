@@ -6691,14 +6691,14 @@ int run_view(int argc, char** argv) {
       }
 
 #if ENGINE_VIEW_WORLD
-      // The streamed world from the last frame's camera, before this frame begins: the first
-      // frame fills the ring whole round where the camera starts.
+      // The streamed world from the last frame's camera, before this frame begins (the first
+      // fills the ring round the camera: `ViewWorld::window_mode`).
       const view::ViewWorld::Counters world_then = view_world.counters();
+      const bool settled = !options.capture.empty() || !options.marker_captures.empty();
       if (view_world.valid() && world_camera_set &&
-          !view_world.update(
-              world_camera, rendered,
-              rendered <= 1 ? view::ViewWorld::Mode::Complete : view::ViewWorld::Mode::Budgeted, 0,
-              static_cast<u32>(rendered), true, &error)) {
+          !view_world.update(world_camera, rendered,
+                             view::ViewWorld::window_mode(rendered, settled), 0,
+                             static_cast<u32>(rendered), true, &error)) {
         exit_code = fail("world", error);
         break;
       }

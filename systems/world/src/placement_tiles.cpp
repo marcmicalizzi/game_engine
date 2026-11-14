@@ -1,5 +1,6 @@
 #include <core/log/log.h>
 #include <core/time/time.h>
+#include <foundation/tunables/tunables.h>
 #include <systems/world/placement_tiles.h>
 
 #include <algorithm>
@@ -11,7 +12,70 @@ namespace {
 
 ENGINE_LOG_CATEGORY_DEFINE(log_world_placements, "world.placements");
 
+// **No trading at the pair cap** (T131; world.md, "No trading at the pair cap"). The owner's walk
+// on 2026-11-13 sat at the cap with a tile let go and another drawn in its place every few frames:
+// each trade rebuilds the tiles' runs, and the scene's tables after them. A tile now displaces a
+// drawn one only when it is a tile nearer (a walker's whole stride at 4.5 m/s is a 64 m tile in
+// fourteen seconds), grows the drawn set only into room it leaves a sixty-fourth of the budget
+// beyond itself (what the departures behind a walker free before the arrivals ahead are built),
+// and a tile let go waits two seconds of commits before it grows the set again.
+tunables::Float placements_admit_bias{
+    "world.placements.admit_bias", 1.0, 0.0, 64.0,
+    "Tiles a held tile must be nearer than a drawn one, in the same ring, to take its place at the "
+    "pair budget"};
+tunables::Int placements_admit_spare{
+    "world.placements.admit_spare_pairs", 0, 0, 1 << 24,
+    "Pairs of the budget a tile past every drawn tile must leave free to be admitted (0: a "
+    "sixty-fourth of the budget)"};
+tunables::Int placements_admit_hold_off{
+    "world.placements.admit_hold_off", 120, 0, 1 << 20,
+    "Commits a tile the pair budget let go waits before it may be admitted past the drawn tiles "
+    "again"};
+
 }  // namespace
+
+void admission_tunables(PlacementTilesConfig& config) noexcept {
+  config.admit_bias = static_cast<f32>(placements_admit_bias.get());
+  config.admit_spare_pairs = static_cast<u32>(placements_admit_spare.get());
+  config.admit_hold_off = static_cast<u32>(placements_admit_hold_off.get());
+}
+
+// **The job** (T131; world.md, "Builds off the frame's thread"): up to a budget of due tiles, each
+// with the ring and the serial it was due with, built one after another by `generate` on the job
+// system's efficiency pool. The committing thread writes the slots before it schedules the job and
+// reads them only once `counter` is done; the job writes only the slots.
+struct PlacementTiles::Job {
+  struct Slot {
+    u64 key = 0;
+    u8 ring = 0;
+    u64 serial = 0;
+    Vector<renderer::SceneInstance> instances;
+    Vector<u8> tags;
+    Generated built;
+  };
+  PlacementTiles* owner = nullptr;
+  jobs::Counter counter;
+  bool in_flight = false;
+  u32 count = 0;
+  Vector<Slot> slots;  // `count` of them used; their room is kept from job to job
+  const renderer::TerrainSampler* stand = nullptr;
+  f64 stood = 0.0;                       // the surface time `stand` stands at
+  Vector<scene_gen::Footprint> earlier;  // the job's own
+};
+
+void PlacementTiles::Generated::reset() noexcept {
+  ok = true;
+  buildings = 0;
+  stood = 0.0;
+  meshes.clear();
+  copied = 0;
+  for (u32 k = 0; k < k_placement_kinds; ++k) {
+    built[k] = 0;
+    build_ns[k] = 0;
+  }
+  seated = lowered = 0;
+  seat_ns = ns = 0;
+}
 
 const char* ring_ruins_name(RingRuins ruins) noexcept {
   switch (ruins) {
@@ -36,10 +100,20 @@ struct PlacementTiles::Entry {
 };
 
 PlacementTiles::PlacementTiles() = default;
-PlacementTiles::~PlacementTiles() = default;
+PlacementTiles::~PlacementTiles() {
+  // A job still building reads the entries this lets go.
+  if (job_ != nullptr && job_->in_flight) build_jobs_->wait(job_->counter);
+}
 
 scene_gen::Context PlacementTiles::context_for(const Entry& entry, u8 ring,
                                                bool scene_ground) const noexcept {
+  return context_in(entry, ring, scene_ground ? nullptr : stand_.get(),
+                    std::span<const scene_gen::Footprint>(earlier_.data(), earlier_.size()));
+}
+
+scene_gen::Context PlacementTiles::context_in(
+    const Entry& entry, u8 ring, const renderer::TerrainSampler* stand,
+    std::span<const scene_gen::Footprint> earlier) const noexcept {
   scene_gen::Context context;
   context.world_seed = scene_->terrain.enabled ? scene_->terrain.seed : 0;
   context.tile_size = config_.tile_size;
@@ -51,14 +125,14 @@ scene_gen::Context PlacementTiles::context_for(const Entry& entry, u8 ring,
   context.site = &scene_->terrain.site;
   if (scene_->terrain.formation.has_value()) context.formation = &*scene_->terrain.formation;
   context.uncut_ground = uncut_hook_;
-  if (stand_ != nullptr && !scene_ground) context.stand = stand_->provider().view();
-  context.earlier = std::span<const scene_gen::Footprint>(earlier_.data(), earlier_.size());
+  if (stand != nullptr) context.stand = stand->provider().view();
+  context.earlier = earlier;
   context.world = &world_rings_;
   context.ring = ring;
   return context;
 }
 
-void PlacementTiles::seat(renderer::SceneInstance& instance) {
+void PlacementTiles::seat(renderer::SceneInstance& instance, Generated& counts) const {
   const u32 m = instance.mesh;
   if (m >= scene_->sources.size() || !(scene_->sources[m].seat.radius_m > 0.0f)) return;
   if (m < scene_->mesh_info.size() && scene_->mesh_info[m].fit.active()) return;
@@ -70,14 +144,15 @@ void PlacementTiles::seat(renderer::SceneInstance& instance) {
       instance.transform.scale, instance.origin);
   if (r.seated) {
     instance.slope = r.slope;
-    ++stats_.seated;
-    if (r.lowered_m > 0.0) ++stats_.lowered;
+    ++counts.seated;
+    if (r.lowered_m > 0.0) ++counts.lowered;
   }
-  stats_.seat_ns += time::monotonic_ns() - start;
+  counts.seat_ns += time::monotonic_ns() - start;
 }
 
 bool PlacementTiles::create(const renderer::SceneData& scene, const PlacementTilesConfig& config,
                             std::string* error) {
+  settle();  // a job of the last scene's still reads its entries
   scene_ = &scene;
   config_ = config;
   entries_.clear();
@@ -103,6 +178,8 @@ bool PlacementTiles::create(const renderer::SceneData& scene, const PlacementTil
   }
   ground_.reset();
   stand_.reset();
+  job_stand_.reset();
+  if (job_ != nullptr) job_->count = 0;
   stand_time_ = scene.terrain.enabled ? scene.terrain.time_s : 0.0;
   earlier_.clear();
   if (scene.terrain.enabled) ground_ = std::make_unique<renderer::TerrainSampler>(scene.terrain);
@@ -169,6 +246,8 @@ bool PlacementTiles::create(const renderer::SceneData& scene, const PlacementTil
   tiles_.reserve(spare_tiles_.size());
   ranks_.reserve(spare_tiles_.size());
   runs_.reserve(spare_tiles_.size());
+  // The tail, for a consumer that writes it every commit (an instance sink, or none). A run sink
+  // gives it back (`set_run_sink`).
   tail_.reserve(total);
   tail_tags_.reserve(total);
   earlier_.reserve(largest);
@@ -222,6 +301,13 @@ void PlacementTiles::set_meshes(const TileMeshConfig& config, TileMeshSink sink,
   if (scene_ == nullptr) return;
   meshes_.create(scene_->mesh_options, config, sink, jobs);
 }
+
+void PlacementTiles::set_build_jobs(jobs::JobSystem* jobs) noexcept {
+  settle();
+  build_jobs_ = jobs;
+}
+
+void PlacementTiles::settle() { collect(true); }
 
 void PlacementTiles::release_tickets(Vector<u32>& tickets) noexcept {
   for (const u32 slot : tickets)
@@ -332,25 +418,26 @@ std::span<const u8> PlacementTiles::tail_tags() const {
 }
 
 // The tile's placements in `ring`'s representation: every entry's, in the scene's order, each
-// exactly what the whole read put on the tile. False when a generator refused the tile (a kit whose
-// footprints do not fit it); what did build is kept.
-bool PlacementTiles::build(TileCoord tile, u8 ring, TileBlock& out, u32 entries, bool for_query) {
+// exactly what the whole read put on the tile, into `instances` and `tags`. False when a generator
+// refused the tile (a kit whose footprints do not fit it); what did build is kept. **It reads only
+// what `create` made and the entries' own state** (T131): no stat, no mesh table, no member scratch
+// — `earlier` is the caller's — so it is the same function on the committing thread and on a job,
+// and a tile is the same bytes whichever built it. The meshes the tile's entries hand are listed in
+// `out.meshes`, and an instance of one names `k_handed | k` until `install` gives it its slot.
+bool PlacementTiles::generate(TileCoord tile, u8 ring, u32 entries, bool for_query,
+                              const renderer::TerrainSampler* stand,
+                              Vector<scene_gen::Footprint>& earlier,
+                              Vector<renderer::SceneInstance>& instances, Vector<u8>& tags,
+                              Generated& out) const {
   const i64 build_started = time::monotonic_ns();
-  out.ring = ring;
-  if (!for_query) out.due = out.fresh = false;  // its instances are its ring's from here
-  // With room for a tile's meshes, what the tile draws now is kept while the build waits for its
-  // own (`stage`); without, the build replaces it in place, as it always did.
-  const bool staged = !for_query && meshes_.enabled();
-  if (staged) stage(out);
-  out.instances.clear();
-  out.tags.clear();
-  out.buildings = 0;
-  out.stood = for_query ? (scene_->terrain.enabled ? scene_->terrain.time_s : 0.0) : stand_time_;
+  out.reset();
+  instances.clear();
+  tags.clear();
   const scene_gen::TileCoord at{tile.x, tile.z};
   bool ok = true;
   // Each entry is handed the footprints of the entries before it on this tile (ADR-0046 decision
   // 4, as built): the tile is a function of the entries, the seed, the tile, the ground and those.
-  earlier_.clear();
+  earlier.clear();
   // **The shapes the entries before this one occupy on the tile** (R144; scene_gen.md, "The shapes
   // a tile occupies"): the scene's exclusion with them added, made the first time an entry of this
   // tile hands any — a tile no shape reaches is handed the scene's own object, as it always was.
@@ -367,7 +454,9 @@ bool PlacementTiles::build(TileCoord tile, u8 ring, TileBlock& out, u32 entries,
     placed.clear();
     std::string why;
     const i64 start = time::monotonic_ns();
-    scene_gen::Context context = context_for(entry, ring, for_query);
+    scene_gen::Context context =
+        context_in(entry, ring, for_query ? nullptr : stand,
+                   std::span<const scene_gen::Footprint>(earlier.data(), earlier.size()));
     if (has_shaped) context.exclusion = &shaped;
     if (!entry.generator->tile(entry.state, at, context, placed, &why)) {
       ok = false;
@@ -377,7 +466,7 @@ bool PlacementTiles::build(TileCoord tile, u8 ring, TileBlock& out, u32 entries,
       continue;
     }
     // Its shapes, for the entries after it: into the tile's exclusion and, after its placements'
-    // discs, into `earlier_`. A polygon's points are the entry's own `placed`, which stands until
+    // discs, into `earlier`. A polygon's points are the entry's own `placed`, which stands until
     // the entry's next tile.
     if (!placed.shapes.empty() && e + 1 < entries_.size()) {
       if (!has_shaped) shaped = scene_->terrain.exclusion;
@@ -392,31 +481,15 @@ bool PlacementTiles::build(TileCoord tile, u8 ring, TileBlock& out, u32 entries,
     if (placed.things == 0 && placed.instances.empty() && placed.shapes.empty())
       continue;  // nothing on this tile
     const Vector<u32>& meshes = entry.source->meshes;
-    // **The meshes the tile handed** (scene_gen.md, "A tile's meshes"): each named in the table
-    // of them (`TileMeshes`), which builds one the first time a tile names it and holds it while
-    // any tile does. A query's tile names none: it is a function of the scene alone, and a tile's
-    // mesh is resident only while a held tile draws it.
-    handed_.clear();
-    for (const scene_gen::PlacementMesh& mesh : placed.meshes) {
-      u32 slot = TileMeshes::k_none;
-      if (!for_query) {
-        std::string refused;
-        slot = meshes_.acquire(mesh, entry.source->dir, &refused);
-        if (slot == TileMeshes::k_none) {
-          ok = false;
-          // Once a streamed entry and a few times a run, not once a tile: a world whose host made
-          // no room would otherwise say it for every tile of every ring.
-          if (mesh_refusals_logged_ < 8) {
-            ++mesh_refusals_logged_;
-            ENGINE_LOG_WARN(log_world_placements, "a tile's mesh has no room",
-                            log::field("entry", entry.source->where), log::field("x", tile.x),
-                            log::field("z", tile.z), log::field("error", refused));
-          }
-        } else {
-          out.tickets.push_back(slot);
-        }
-      }
-      handed_.push_back(slot);
+    // **The meshes the tile handed** (scene_gen.md, "A tile's meshes"): listed here, in the order
+    // handed, and named in the table of them (`TileMeshes`) by `install`, on the committing thread
+    // — which builds one the first time a tile names it and holds it while any tile does. A query's
+    // tile names none: it is a function of the scene alone, and a tile's mesh is resident only
+    // while a held tile draws it.
+    const u32 handed_base = out.meshes.size();
+    if (!for_query) {
+      for (u32 k = 0; k < placed.meshes.size(); ++k)
+        out.meshes.push_back(MeshRef{e, k});
     }
     for (const scene_gen::Placement& p : placed.instances) {
       // One list: the entry's resident meshes, then this tile's own.
@@ -428,10 +501,7 @@ bool PlacementTiles::build(TileCoord tile, u8 ring, TileBlock& out, u32 entries,
       } else if (p.mesh - meshes.size() < placed.meshes.size()) {
         const u32 k = p.mesh - meshes.size();
         reach = placed.meshes[k].reach;  // the generator's word: nothing is built yet
-        if (!for_query) {
-          if (handed_[k] == TileMeshes::k_none) continue;  // refused above: not drawn
-          scene_mesh = meshes_.scene_mesh(handed_[k]);
-        }
+        if (!for_query) scene_mesh = k_handed | (handed_base + k);
       } else {
         ok = false;
         ENGINE_LOG_WARN(log_world_placements, "a tile's placement names a mesh it did not hold",
@@ -448,37 +518,91 @@ bool PlacementTiles::build(TileCoord tile, u8 ring, TileBlock& out, u32 entries,
       instance.grounded = true;
       // Seated by its footprint (G201 stage 2): a resident mesh with a seat, on the scene's ground,
       // by the function the load seats a whole read's with, so the two place it alike.
-      if (!entry.source->seated && ground_ != nullptr && p.mesh < meshes.size()) seat(instance);
+      if (!entry.source->seated && ground_ != nullptr && p.mesh < meshes.size())
+        seat(instance, out);
       // The whole read's place, for an entry whose ids name it (the `authored` entry's): what a
       // swaying tree's phase is hashed from, so it sways as it would loaded, whenever its tile came
       // (renderer.md, "Streamed trees sway").
       if (entry.source->motion_key_base != renderer::k_motion_key_load && p.id != 0)
         instance.motion_key = entry.source->motion_key_base + (p.id - 1);
-      out.instances.push_back(instance);
-      out.tags.push_back(p.tag);
+      instances.push_back(instance);
+      tags.push_back(p.tag);
+      // Its footprint for the entries after it, whether or not the room takes its mesh: what a tile
+      // is never depends on what is resident (T131; until then a placement whose mesh the table
+      // refused left no footprint, so a later entry stood where it would have been).
       if (e + 1 < entries_.size()) {
         const f32 scale = std::max(std::fabs(p.scale.x), std::fabs(p.scale.z));
-        earlier_.push_back(scene_gen::Footprint{scene_gen::nearest_mm(p.position.x),
-                                                scene_gen::nearest_mm(p.position.z),
-                                                static_cast<f64>(reach * scale)});
+        earlier.push_back(scene_gen::Footprint{scene_gen::nearest_mm(p.position.x),
+                                               scene_gen::nearest_mm(p.position.z),
+                                               static_cast<f64>(reach * scale)});
       }
     }
     if (e + 1 < entries_.size())
       for (const scene_gen::Footprint& shape : placed.shapes.span())
-        earlier_.push_back(shape);
-    if (for_query) {
-      stats_.query_ns += time::monotonic_ns() - start;
-    } else {
-      const u32 kind = placed.kind < k_placement_kinds ? placed.kind : k_placement_kinds - 1;
-      stats_.build_ns[kind] += time::monotonic_ns() - start;
-      ++stats_.built[kind];
-    }
+        earlier.push_back(shape);
+    const u32 kind = placed.kind < k_placement_kinds ? placed.kind : k_placement_kinds - 1;
+    out.build_ns[kind] += time::monotonic_ns() - start;
+    ++out.built[kind];
     out.buildings += placed.things;
   }
-  if (for_query) {
-    out.pairs = 0;  // never drawn: nothing to budget
-    return ok;
+  out.ok = ok;
+  out.ns = time::monotonic_ns() - build_started;
+  return ok;
+}
+
+// The hand-over of one tile's build, on the committing thread: its handed meshes named in the table
+// in the order handed (so their slots, and the tile's tickets, are what a build in place gave), its
+// instances of them given their slots — or left out where the table refused one, said a few times a
+// run — and then what the tile draws. `block.instances` and `block.tags` hold the build.
+bool PlacementTiles::install(TileBlock& block, Generated& built) {
+  bool ok = built.ok;
+  handed_.clear();
+  for (u32 k = 0; k < built.meshes.size(); ++k) {
+    const MeshRef ref = built.meshes[k];
+    const Entry& entry = *entries_[ref.entry];
+    const scene_gen::PlacementMesh& mesh =
+        k < built.copied ? built.copies[k] : entry.placed.meshes[ref.index];
+    std::string refused;
+    const u32 slot = meshes_.acquire(mesh, entry.source->dir, &refused);
+    if (slot == TileMeshes::k_none) {
+      ok = false;
+      // Once a streamed entry and a few times a run, not once a tile: a world whose host made no
+      // room would otherwise say it for every tile of every ring.
+      if (mesh_refusals_logged_ < 8) {
+        ++mesh_refusals_logged_;
+        ENGINE_LOG_WARN(log_world_placements, "a tile's mesh has no room",
+                        log::field("entry", entry.source->where), log::field("error", refused));
+      }
+    } else {
+      block.tickets.push_back(slot);
+    }
+    handed_.push_back(slot);
   }
+  if (!built.meshes.empty()) {
+    u32 kept = 0;
+    for (u32 i = 0; i < block.instances.size(); ++i) {
+      renderer::SceneInstance instance = block.instances[i];
+      if ((instance.mesh & k_handed) != 0) {
+        const u32 slot = handed_[instance.mesh & ~k_handed];
+        if (slot == TileMeshes::k_none) continue;  // refused above: not drawn
+        instance.mesh = meshes_.scene_mesh(slot);
+      }
+      block.instances[kept] = instance;
+      block.tags[kept] = block.tags[i];
+      ++kept;
+    }
+    block.instances.resize(kept);
+    block.tags.resize(kept);
+  }
+  block.buildings = built.buildings;
+  block.stood = built.stood;
+  for (u32 k = 0; k < k_placement_kinds; ++k) {
+    stats_.built[k] += built.built[k];
+    stats_.build_ns[k] += built.build_ns[k];
+  }
+  stats_.seated += built.seated;
+  stats_.lowered += built.lowered;
+  stats_.seat_ns += built.seat_ns;
   // **A build that names a mesh not yet resident waits** (world.md, "A tile's meshes: residency by
   // reference"): the tile goes on drawing what it held, with the pairs and the version of that,
   // until a commit has every mesh in (`admit_meshes`). Any other build is what the tile draws at
@@ -486,15 +610,44 @@ bool PlacementTiles::build(TileCoord tile, u8 ring, TileBlock& out, u32 entries,
   // tells the renderer a tile no update rebuilt is the block it holds without reading it — and
   // its pairs are counted from the meshes it names, the scene's and the table's.
   bool wait = false;
-  for (const u32 slot : out.tickets)
+  for (const u32 slot : block.tickets)
     wait = wait || !meshes_.resident(slot);
   if (wait) {
-    out.waiting = true;
-    if (out.held_instances.empty()) out.pairs = 0;  // it draws nothing meanwhile
+    block.waiting = true;
+    if (block.held_instances.empty()) block.pairs = 0;  // it draws nothing meanwhile
   } else {
-    finalize(out);
+    finalize(block);
   }
   ++stats_.tiles_built;
+  return ok;
+}
+
+// A tile built where it is asked for: the generators' half and the hand-over, one after the other,
+// on this thread. No job may be in flight (`settle` first): it asks the same entries.
+bool PlacementTiles::build(TileCoord tile, u8 ring, TileBlock& out, u32 entries, bool for_query) {
+  const i64 build_started = time::monotonic_ns();
+  ENGINE_ASSERT(job_ == nullptr || !job_->in_flight, "a tile built beside a job in flight");
+  out.ring = ring;
+  if (for_query) {
+    const bool ok =
+        generate(tile, ring, entries, true, nullptr, earlier_, out.instances, out.tags, inline_);
+    out.buildings = inline_.buildings;
+    out.stood = scene_->terrain.enabled ? scene_->terrain.time_s : 0.0;
+    out.pairs = 0;  // never drawn: nothing to budget
+    stats_.query_ns += inline_.ns;
+    stats_.seated += inline_.seated;
+    stats_.lowered += inline_.lowered;
+    stats_.seat_ns += inline_.seat_ns;
+    return ok;
+  }
+  out.due = out.fresh = false;  // its instances are its ring's from here
+  // With room for a tile's meshes, what the tile draws now is kept while the build waits for its
+  // own (`stage`); without, the build replaces it in place, as it always did.
+  if (meshes_.enabled()) stage(out);
+  bool ok = generate(tile, ring, entries, false, stand_.get(), earlier_, out.instances, out.tags,
+                     inline_);
+  inline_.stood = stand_time_;
+  ok = install(out, inline_) && ok;
   stats_.tiles_ns += time::monotonic_ns() - build_started;
   return ok;
 }
@@ -519,6 +672,9 @@ std::span<const renderer::SceneInstance> PlacementTiles::query_tile(TileCoord ti
   // The innermost ring's representation (ring 0), the scene's own ground: a function of the scene
   // and the tile. What did not build is logged by `build` and left out, as a streamed tile's is.
   ++stats_.queried;
+  // The entries' generators are a job's while it runs: a query waits for it (a game module's ask,
+  // a few tiles a second at most, and a cache hit after the first).
+  settle();
   (void)build(tile, 0, query_scratch_, want, true);
   QueryTile& slot = query_tiles_[key];
   slot.entries = want;
@@ -551,9 +707,14 @@ u32 PlacementTiles::restand(f64 surface_time_s, u32 budget) {
     // once a time the host hands over (the dunes' is a closed form of time; terrain.md).
     renderer::TerrainDesc at = scene_->terrain;
     at.time_s = surface_time_s;
+    // A job in flight stands its tiles on the surface it was given, kept until it is collected.
+    if (job_ != nullptr && job_->in_flight && stand_ != nullptr && job_->stand == stand_.get())
+      job_stand_ = std::move(stand_);
     stand_ = std::make_unique<renderer::TerrainSampler>(at);
     stand_time_ = surface_time_s;
   }
+  // Built here, a job's tiles first: it asks the same entries (and may let a tile go).
+  if (!on_jobs()) settle();
   // The tiles still standing on another time, innermost ring first, then nearest, then in tile
   // order — the order the pair budget draws them in — so a frame's budget goes where it is seen.
   ranks_.clear();
@@ -575,6 +736,19 @@ u32 PlacementTiles::restand(f64 surface_time_s, u32 budget) {
   });
   const i64 start = time::monotonic_ns();
   u32 built = 0;
+  if (on_jobs()) {
+    // **Off the frame's thread** (T131): the tiles are made due, and the job builds them in the
+    // pair budget's order with the others, standing on the surface at its time; each draws what it
+    // stood on until then. The next commit hands them over.
+    for (const Rank& rank : ranks_) {
+      if (built >= budget) break;
+      mark_due(tiles_.value_at(rank.index));
+      ++built;
+    }
+    stats_.restood += built;
+    stats_.restand_ns += time::monotonic_ns() - start;
+    return built;
+  }
   for (const Rank& rank : ranks_) {
     if (built >= budget) break;
     TileBlock& held = tiles_.value_at(rank.index);
@@ -597,7 +771,7 @@ bool PlacementTiles::take(const TileEvent& event) {
     // it holds until then, and a new one is held empty and drawn as nothing.
     if (held != nullptr) {
       held->ring = event.to;
-      held->due = true;
+      mark_due(*held);  // a job's result for its last ask is let go when it comes
       ++stats_.deferred;
       return true;
     }
@@ -615,10 +789,16 @@ bool PlacementTiles::take(const TileEvent& event) {
     block.pairs = 0;
     block.ring = event.to;
     block.withheld = false;
-    block.due = true;
+    mark_due(block);
     block.fresh = true;
     tiles_.insert_or_assign(key, std::move(block));
     return true;
+  }
+  // Built in its event: a job's tiles first, since it asks the same entries. `held` is looked up
+  // again, since taking them may have let a tile go.
+  if (job_ != nullptr && job_->in_flight) {
+    settle();
+    held = tiles_.find_value(key);
   }
   if (held != nullptr) {
     const bool built = build(event.tile, event.to, *held);
@@ -657,6 +837,10 @@ void PlacementTiles::recycle(u64 key, TileBlock&& block) {
   block.held_buildings = 0;
   block.waiting = false;
   block.starved = false;
+  block.admitted = false;
+  block.released = false;
+  block.due = false;
+  block.fresh = false;
   block.instances.clear();
   block.tags.clear();
   if (TileBlock* spare = spare_tiles_.find_value(key)) {
@@ -698,8 +882,15 @@ void PlacementTiles::deactivate(void* context, const TileEvent& event) {
 // function of the tiles held, their rings and the observers, like the ring itself.
 // The due tiles a commit builds (W82): the first `build_budget_` of them in the pair budget's order
 // — innermost ring, nearest, tile order — or all of them with no budget. A build that puts nothing
-// on its tile lets the tile go, as an event's build does.
+// on its tile lets the tile go, as an event's build does. **With a job system and a budget** (T131)
+// none of that is here: the commit takes what the last job finished and starts the next.
 void PlacementTiles::build_due() {
+  if (on_jobs()) {
+    collect(false);
+    start_job();
+    return;
+  }
+  settle();  // a whole commit: a job of an earlier update's first, then the rest here
   ranks_.clear();
   for (u32 i = 0; i < tiles_.size(); ++i) {
     if (!tiles_.value_at(i).due) continue;
@@ -733,18 +924,33 @@ void PlacementTiles::build_due() {
   }
 }
 
+// **No trading at the cap** (T131; world.md, "No trading at the pair cap"). The order is the one
+// above with a drawn tile ranked `admit_bias` tiles nearer than it stands, so a held tile takes a
+// drawn one's place only when it is that much nearer, and a small move reorders nothing. A tile
+// ranked before the farthest drawn one is admitted while it fits, as before — an arrival beside the
+// observer displaces the farthest drawn tile at once. A tile ranked past every drawn tile grows the
+// drawn set, and does so only with `admit_spare_pairs` of the budget still free after it and not
+// within `admit_hold_off` commits of the budget letting it go: room a departure frees is not filled
+// from the horizon only to be taken back when the arrival it was freed for is built. Either way
+// none is admitted after the first that is not, so no withheld tile outranks a drawn one by more
+// than the bias.
 void PlacementTiles::admit() {
+  ++commits_;
   ranks_.clear();
+  const f32 bias = config_.admit_bias * config_.tile_size;
   for (u32 i = 0; i < tiles_.size(); ++i) {
     const u64 key = tiles_.key_at(i);
+    TileBlock& block = tiles_.value_at(i);
     // A tile held and never built is not drawn and takes nothing of the budget (W82).
-    if (tiles_.value_at(i).fresh) {
-      tiles_.value_at(i).withheld = true;
+    if (block.fresh) {
+      block.withheld = true;
+      block.admitted = false;
       continue;
     }
     Rank rank;
-    rank.ring = tiles_.value_at(i).ring;
+    rank.ring = block.ring;
     rank.score = ring_ != nullptr ? ring_->score_of(tile_of_key(key)) : 0.0f;
+    if (block.admitted) rank.score -= bias;
     rank.key = key;
     rank.index = i;
     ranks_.push_back(rank);
@@ -754,20 +960,39 @@ void PlacementTiles::admit() {
     if (a.score != b.score) return a.score < b.score;
     return a.key < b.key;
   });
+  // The farthest drawn tile in that order: a tile past it grows the drawn set.
+  u32 last_drawn = 0;
+  bool any_drawn = false;
+  for (u32 r = 0; r < ranks_.size(); ++r) {
+    if (!tiles_.value_at(ranks_[r].index).admitted) continue;
+    last_drawn = r;
+    any_drawn = true;
+  }
   const u32 fixed = config_.fixed_pairs != 0 ? config_.fixed_pairs : scene_->pair_count;
+  // A sixty-fourth of what the tiles may hold, by default: the budget less the fixed prefix.
+  const u64 tile_room = config_.max_pairs > fixed ? u64{config_.max_pairs - fixed} : 0u;
+  const u64 spare =
+      config_.admit_spare_pairs != 0 ? u64{config_.admit_spare_pairs} : tile_room / 64u;
   u64 pairs = fixed;
   u64 live_pairs = 0;
   bool full = false;
   u32 withheld = 0;
   u32 newly = 0;
   u8 nearest = k_inactive;
-  for (const Rank& rank : ranks_) {
+  for (u32 r = 0; r < ranks_.size(); ++r) {
+    const Rank& rank = ranks_[r];
     TileBlock& block = tiles_.value_at(rank.index);
     const u32 reserved = renderer::reserved_tile_pairs(block.pairs);
-    if (!full && pairs + reserved <= config_.max_pairs) {
+    const bool grows = !block.admitted && (!any_drawn || r > last_drawn);
+    const bool held_off =
+        grows && block.released && commits_ - block.released_at < u64{config_.admit_hold_off};
+    const u64 room = grows ? spare : 0u;
+    if (!full && !held_off && pairs + reserved + room <= config_.max_pairs) {
       pairs += reserved;
       live_pairs += block.pairs;
+      if (!block.admitted && block.released) ++stats_.returned;  // out and back in: a trade
       block.withheld = false;
+      block.admitted = true;
       continue;
     }
     full = true;
@@ -775,6 +1000,12 @@ void PlacementTiles::admit() {
     newly += block.withheld ? 0u : 1u;
     nearest = rank.ring < nearest ? rank.ring : nearest;
     block.withheld = true;
+    if (block.admitted) {
+      block.admitted = false;
+      block.released = true;
+      block.released_at = commits_;
+      ++stats_.released;
+    }
   }
   tail_pairs_ = static_cast<u32>(live_pairs);
   if (withheld != 0 && withheld != stats_.withheld) {
@@ -786,16 +1017,30 @@ void PlacementTiles::admit() {
   stats_.withheld = withheld;
 }
 
-// The farthest drawn tile that names a mesh, when it is farther than `wanting`: its meshes'
-// references go (so what only it named can be let go for room) and it is due again — built at a
-// later commit, when it will wait in its turn. The order is the pair budget's, so a tile is only
-// ever displaced by one that outranks it, and nothing swings back.
+// The farthest tile past `wanting` that names a mesh — drawn, or **waiting** with meshes of its
+// build in or what it drew before — gives every mesh it names up (so what only it named can be let
+// go for room) and is due again: built at a later commit, when it will wait in its turn, and drawn
+// as nothing until then. The order is the pair budget's, so a tile is only ever displaced by one
+// that outranks it, and nothing swings back. **W118** (T131): until 2026-11-13 only a drawn tile
+// that was not waiting gave its meshes up, and a ring step makes every tile it moves wait — its new
+// form's meshes partly in, its old form's held for what it draws — so after the first step of a
+// walk at the room's size nothing past the first fill had anything to give, and no new tile was
+// drawn (the forest's deposits, `far_rings` 3 at the default 256 MiB).
 bool PlacementTiles::yield_farthest(const Rank& wanting) {
   u32 farthest = ~0u;
   Rank far_rank;
+  // Only a tile that holds a mesh in the room has room to give: a waiting tile whose build is still
+  // building, or built and not admitted, would be built again for nothing.
+  const auto holds_room = [this](const TileBlock& block) {
+    for (const u32 slot : block.tickets)
+      if (meshes_.resident(slot)) return true;
+    for (const u32 slot : block.held_tickets)
+      if (meshes_.resident(slot)) return true;
+    return false;
+  };
   for (u32 i = 0; i < tiles_.size(); ++i) {
     const TileBlock& block = tiles_.value_at(i);
-    if (block.waiting || block.fresh || block.tickets.empty()) continue;
+    if (block.fresh || !holds_room(block)) continue;
     Rank rank;
     rank.ring = block.ring;
     rank.key = tiles_.key_at(i);
@@ -815,12 +1060,19 @@ bool PlacementTiles::yield_farthest(const Rank& wanting) {
   if (farthest == ~0u) return false;
   TileBlock& block = tiles_.value_at(farthest);
   release_tickets(block.tickets);
+  release_tickets(block.held_tickets);
   block.instances.clear();
   block.tags.clear();
+  block.held_instances.clear();
+  block.held_tags.clear();
   block.buildings = 0;
+  block.held_buildings = 0;
+  block.waiting = false;
+  block.starved = false;
+  block.admitted = false;
   block.pairs = 0;
   block.version = ++next_version_;
-  block.due = true;
+  mark_due(block);
   block.fresh = true;  // it draws nothing until it is built again and its meshes are in
   ++stats_.mesh_yielded;
   return true;
@@ -860,6 +1112,7 @@ void PlacementTiles::admit_meshes() {
   for (const Rank& rank : waiting_) {
     // By key: a yield above this point changed no index (nothing is erased until the end).
     TileBlock& block = tiles_.value_at(rank.index);
+    if (!block.waiting) continue;  // it gave its meshes up to a nearer one above
     bool ready = true;
     bool refused = false;
     for (u32 t = 0; t < block.tickets.size();) {
@@ -926,6 +1179,125 @@ void PlacementTiles::admit_meshes() {
                     log::field("room_clusters", meshes_.config().clusters),
                     log::field("resident_mib", static_cast<f64>(held.bytes) / (1024.0 * 1024.0)));
   }
+}
+
+// ---- the job (T131; world.md, "Builds off the frame's thread") ---------------------------------
+
+void PlacementTiles::mark_due(TileBlock& block) noexcept {
+  block.due = true;
+  block.serial = ++next_serial_;
+}
+
+// On a worker of the efficiency pool: each slot's tile, one after another, by the same function a
+// build in place calls, and the meshes each handed copied out of its entries' scratch before the
+// next tile overwrites it.
+void PlacementTiles::run_job(void* data) noexcept {
+  Job& job = *static_cast<Job*>(data);
+  const PlacementTiles& self = *job.owner;
+  for (u32 s = 0; s < job.count; ++s) {
+    Job::Slot& slot = job.slots[s];
+    Generated& built = slot.built;
+    (void)self.generate(tile_of_key(slot.key), slot.ring, ~0u, false, job.stand, job.earlier,
+                        slot.instances, slot.tags, built);
+    built.stood = job.stood;
+    if (built.copies.size() < built.meshes.size()) built.copies.resize(built.meshes.size());
+    for (u32 k = 0; k < built.meshes.size(); ++k) {
+      const MeshRef ref = built.meshes[k];
+      built.copies[k] = self.entries_[ref.entry]->placed.meshes[ref.index];
+    }
+    built.copied = built.meshes.size();
+  }
+}
+
+// What the job finished, handed over: each tile still held and still due for the ask the job
+// answered is staged, given the job's instances — copied into its own room, so what the world keeps
+// resident is the tiles' and not the job's — and installed, as a build in place is. A tile that was
+// let go, or asked for again (a ring change, a yield) while the job built it, is not: its next job
+// builds it. This is the frame's whole share of a tile's building: a copy and a few table lookups a
+// tile, `budget` tiles at most a commit (`collect_ns`).
+void PlacementTiles::collect(bool wait) {
+  if (job_ == nullptr || !job_->in_flight) return;
+  Job& job = *job_;
+  if (!job.counter.done()) {
+    if (!wait) return;
+    build_jobs_->wait(job.counter);
+  }
+  job.in_flight = false;
+  const i64 started = time::monotonic_ns();
+  emptied_.clear();
+  for (u32 s = 0; s < job.count; ++s) {
+    Job::Slot& slot = job.slots[s];
+    stats_.worker_ns += slot.built.ns;
+    TileBlock* block = tiles_.find_value(slot.key);
+    if (block == nullptr || !block->due || block->serial != slot.serial) {
+      ++stats_.discarded;
+      continue;
+    }
+    block->due = block->fresh = false;
+    if (meshes_.enabled()) stage(*block);
+    block->instances.assign(slot.instances.begin(), slot.instances.end());
+    block->tags.assign(slot.tags.begin(), slot.tags.end());
+    if (!install(*block, slot.built)) ++stats_.failures;
+    ++stats_.collected;
+    if (block->instances.empty()) emptied_.push_back(slot.key);
+  }
+  for (const u64 key : emptied_) {
+    TileBlock* block = tiles_.find_value(key);
+    if (block == nullptr) continue;
+    recycle(key, std::move(*block));
+    tiles_.erase(key);
+  }
+  job.count = 0;
+  job_stand_.reset();  // nothing reads the surface it stood on now
+  const i64 dt = time::monotonic_ns() - started;
+  stats_.collect_ns += dt;
+  stats_.tiles_ns += dt;
+  stats_.max_collect_ns = dt > stats_.max_collect_ns ? dt : stats_.max_collect_ns;
+}
+
+// The next job: the first `build_budget_` due tiles in the pair budget's order — innermost ring,
+// nearest, tile order — each with the ring and the serial it is due with, standing on the surface
+// the held tiles stand on now.
+void PlacementTiles::start_job() {
+  if (job_ == nullptr) {
+    job_ = std::make_unique<Job>();
+    job_->owner = this;
+  }
+  Job& job = *job_;
+  if (job.in_flight) return;
+  ranks_.clear();
+  for (u32 i = 0; i < tiles_.size(); ++i) {
+    if (!tiles_.value_at(i).due) continue;
+    Rank rank;
+    rank.ring = tiles_.value_at(i).ring;
+    rank.key = tiles_.key_at(i);
+    rank.score = ring_ != nullptr ? ring_->score_of(tile_of_key(rank.key)) : 0.0f;
+    rank.index = i;
+    ranks_.push_back(rank);
+  }
+  if (ranks_.empty()) return;
+  std::sort(ranks_.begin(), ranks_.end(), [](const Rank& a, const Rank& b) {
+    if (a.ring != b.ring) return a.ring < b.ring;
+    if (a.score != b.score) return a.score < b.score;
+    return a.key < b.key;
+  });
+  const u32 count = build_budget_ < ranks_.size() ? build_budget_ : ranks_.size();
+  if (job.slots.size() < count) job.slots.resize(count);
+  for (u32 r = 0; r < count; ++r) {
+    const TileBlock& block = tiles_.value_at(ranks_[r].index);
+    Job::Slot& slot = job.slots[r];
+    slot.key = ranks_[r].key;
+    slot.ring = block.ring;
+    slot.serial = block.serial;
+  }
+  job.count = count;
+  job.stand = stand_.get();
+  job.stood = stand_time_;
+  job.in_flight = true;
+  job.counter.add(1);
+  ++stats_.jobs;
+  build_jobs_->schedule(jobs::Pool::Efficiency,
+                        jobs::Job{&PlacementTiles::run_job, &job, &job.counter});
 }
 
 void PlacementTiles::commit(void* context) {
