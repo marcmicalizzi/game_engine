@@ -85,6 +85,97 @@ Vector<scene::WaterBody> read_bodies(const JsonValue& scene) {
   return bodies;
 }
 
+// **Does a body that fills hold its level on the ground the scene draws?** (W122; channels.md,
+// "Hollows", "The level against the ground between the lattice's points"). The channels' plan
+// stands a body a notch under a spill it found on its own lattice; the water capability floods
+// the level over the drawn ground on a finer lattice of its own, four neighbours a node, and
+// refuses a body whose flood reaches its extent, when the scene is loaded. This is that flood by
+// the water's own rule (water.md, "A body that fills": a spacing of `shore_m / 3` held between
+// 0.25 and 1 m, grown by a quarter while the lattice's side passes 4,097 nodes or the region's
+// nodes and edge crossings pass 65,536; a node is wet where the ground stands under the level),
+// run here, where the cuts are already in the ground, so that a cook names the body a load
+// would refuse. It changes nothing in the scene. The rule is the water's and is mirrored, not
+// called (this command does not link the capability): the two move together.
+struct FillCheck {
+  u64 nodes = 0;    // the nodes the last flood wetted
+  f64 spacing = 0;  // that flood's lattice
+  bool holds = false;
+  bool seed_dry = false;  // the seed stands on ground at or over the level: nothing fills
+};
+FillCheck check_fill(const scene::WaterBody& body, const scene_gen::Ground& ground) {
+  constexpr u32 k_max_side = 4097;
+  constexpr u64 k_max_vertices = 65536;
+  FillCheck out;
+  const scene::WaterFill& f = *body.shape.fill;
+  const f64 level = static_cast<f64>(body.level_m);
+  const f64 extent = static_cast<f64>(f.max_extent_m);
+  f32 spacing = std::clamp(body.shore_m / 3.0f, 0.25f, 1.0f);
+  while (2.0 * std::ceil(extent / static_cast<f64>(spacing)) + 1.0 > static_cast<f64>(k_max_side))
+    spacing *= 1.25f;
+  Vector<u8> state;  // 0 not asked, 1 wet, 2 asked and dry
+  Vector<u32> stack;
+  for (;;) {
+    const u32 half = static_cast<u32>(std::ceil(extent / static_cast<f64>(spacing)));
+    const u32 side = 2 * half + 1;
+    state.assign(side * side, u8{0});
+    stack.clear();
+    const auto wet = [&](u32 node) {
+      const f64 x = static_cast<f64>(static_cast<i64>(node % side) - static_cast<i64>(half)) *
+                    static_cast<f64>(spacing);
+      const f64 z = static_cast<f64>(static_cast<i64>(node / side) - static_cast<i64>(half)) *
+                    static_cast<f64>(spacing);
+      return level - ground.surface(WorldPos{f.seed.x + x, level, f.seed.z + z}) > 0.0;
+    };
+    out.spacing = static_cast<f64>(spacing);
+    out.nodes = 0;
+    const u32 seed = half * side + half;
+    if (!wet(seed)) {
+      out.seed_dry = true;
+      return out;
+    }
+    state[seed] = 1;
+    stack.push_back(seed);
+    u32 i0 = half, i1 = half, j0 = half, j1 = half;
+    bool spilled = false;
+    while (!stack.empty()) {
+      const u32 node = stack.back();
+      stack.pop_back();
+      ++out.nodes;
+      const u32 i = node % side, j = node / side;
+      i0 = std::min(i0, i);
+      i1 = std::max(i1, i);
+      j0 = std::min(j0, j);
+      j1 = std::max(j1, j);
+      if (i == 0 || j == 0 || i + 1 == side || j + 1 == side) {
+        spilled = true;
+        break;
+      }
+      const u32 next[4] = {node - 1, node + 1, node - side, node + side};
+      for (const u32 n : next) {
+        if (state[n] != 0) continue;
+        const bool under = wet(n);
+        state[n] = under ? 1 : 2;
+        if (under) stack.push_back(n);
+      }
+    }
+    if (spilled) return out;
+    // The lattice edges between a wet node and one that is not: the mesh's edge vertices.
+    u64 crossings = 0;
+    for (u32 j = j0 - 1; j <= j1 + 1; ++j) {
+      for (u32 i = i0 - 1; i <= i1 + 1; ++i) {
+        const bool in = state[j * side + i] == 1;
+        if (i + 1 <= i1 + 1 && in != (state[j * side + i + 1] == 1)) ++crossings;
+        if (j + 1 <= j1 + 1 && in != (state[(j + 1) * side + i] == 1)) ++crossings;
+      }
+    }
+    if (out.nodes + crossings <= k_max_vertices) {
+      out.holds = true;
+      return out;
+    }
+    spacing *= 1.25f;
+  }
+}
+
 // Whether (x, z) stands inside a body's circle or polygon (a flood's region is not known here).
 bool inside_body(const scene::WaterBody& body, f64 x, f64 z) {
   if (body.shape.circle.has_value()) {
@@ -531,7 +622,57 @@ int flow_solve_command(int argc, char** argv) {
 
   const f64 km = totals.metres / 1000.0;
   const auto round3 = [](f64 v) { return std::round(v * 1e3) / 1e3; };
+
+  // ---- The bodies that fill: does each hold its level on this ground? (`check_fill`) ----------
+  JsonValue fills = JsonValue::object();
+  {
+    const auto fills_began = std::chrono::steady_clock::now();
+    u32 filling = 0, spilling = 0, seed_dry = 0;
+    JsonValue fill_list = JsonValue::array();
+    const Vector<scene::WaterBody> filling_bodies = read_bodies(json);
+    for (const scene::WaterBody& body : filling_bodies) {
+      if (!body.shape.fill.has_value() || body.shape.circle.has_value() ||
+          !body.shape.polygon.empty())
+        continue;
+      const scene::WaterFill& shape = *body.shape.fill;
+      if (!std::isfinite(static_cast<f64>(body.level_m)) || !std::isfinite(shape.seed.x) ||
+          !std::isfinite(shape.seed.z) || !(shape.max_extent_m > 0.0f))
+        continue;  // the water capability's to refuse, by its own sentence
+      ++filling;
+      const FillCheck check = check_fill(body, ground);
+      JsonValue one = JsonValue::object();
+      one["name"] = JsonValue(body.name);
+      one["level_m"] = JsonValue(round3(static_cast<f64>(body.level_m)));
+      one["spacing_m"] = JsonValue(round3(check.spacing));
+      one["nodes"] = JsonValue(check.nodes);
+      one["holds"] = JsonValue(check.holds);
+      if (check.seed_dry) {
+        ++seed_dry;
+        one["seed_dry"] = JsonValue(true);
+        std::fprintf(stderr,
+                     "flow solve: water body \"%s\": its fill's seed stands on ground at or above "
+                     "its level %.3f m on the ground the scene draws: a load will refuse it\n",
+                     body.name.c_str(), static_cast<f64>(body.level_m));
+      } else if (!check.holds) {
+        ++spilling;
+        std::fprintf(stderr,
+                     "flow solve: water body \"%s\": at its level %.3f m its fill reaches its "
+                     "max_extent_m (%g m) on the ground the scene draws (a lattice of %.3f m): the "
+                     "level spills out of the hollow, and a load will refuse it\n",
+                     body.name.c_str(), static_cast<f64>(body.level_m),
+                     static_cast<f64>(shape.max_extent_m), check.spacing);
+      }
+      fill_list.push_back(std::move(one));
+    }
+    fills["bodies"] = JsonValue(filling);
+    fills["spilling"] = JsonValue(spilling);
+    fills["seed_dry"] = JsonValue(seed_dry);
+    fills["seconds"] = JsonValue(round3(seconds_since(fills_began)));
+    fills["list"] = std::move(fill_list);
+  }
+
   JsonValue line = JsonValue::object();
+  line["fills"] = std::move(fills);
   line["scene"] = JsonValue(scene_path);
   line["out"] = JsonValue(out_path);
   line["lattice_m"] = JsonValue(lattice);

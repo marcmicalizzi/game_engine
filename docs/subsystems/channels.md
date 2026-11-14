@@ -1830,9 +1830,22 @@ spill, four are small ponds whose outlet the search did not find), the drawn gro
 of the spill stands 2 to 25 cm over the level in five and **7 cm under it at one** (0.5 ha at
 (132, -28)), not decided. So the notch covers what the lattice steps over wherever it was
 looked for, by centimetres. It was looked for round the spill only: a saddle elsewhere on a rim
-that the lattice missed is not excluded, and the whole check is the water's own flood at the
-level, which the cook does not run (designed: `engine-content flow solve` has the drawn ground
-and the bodies, and would lower a level that escapes and say so).
+that the lattice missed is not excluded by it.
+
+**The cook says which body a load would refuse** (`check_fill`, flow_solve.cpp). The whole check
+is the water's own flood at the level, so `engine-content flow solve`, which has the drawn
+ground with the cuts in it and the scene's bodies, runs it for every body that fills: the
+water's rule mirrored (a lattice of `shore_m / 3` held between 0.25 and 1 m about the seed, four
+neighbours a node, wet where the ground stands under the level, grown by a quarter until the
+region's nodes and edge crossings fit 65,536; water.md, "A body that fills"), not called, since
+the command does not link the capability: the two move together. Its line gains `fills`:
+`bodies`, `spilling`, `seed_dry`, `seconds` and a `list` of each body's `level_m`, `spacing_m`,
+`nodes` and `holds`; a body whose level reaches its `max_extent_m`, or whose seed stands dry, is
+named on stderr with the water's own reason. The scene is not changed and the exit code is the
+solve's: lowering a level that escapes is the author's, or the plan's when its notch is sized
+from this (not built). An authored body that fills on an imported ground is checked the same; a
+scene with none pays nothing. The case is three bodies in the fixture's pool
+(`flow_tests.cpp`).
 
 **A breach's top.** Where the bed is held more than a thalweg under its section's own depth the
 banks keep their slopes by reaching the top further out, so the cut widens with its depth
