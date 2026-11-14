@@ -85,7 +85,59 @@ struct ChannelSurface @version(1) {
 /// Version 10 (W97): the bed's sediment (`clast_min_mm`, `rounding_m`) and the bars' material
 /// (`bar_material`); `piece_m` is gone, since a piece is a tile's clasts.
 /// Version 11 (W116): `bank_move`, the switch for the line's move toward a lower bank.
-struct ChannelLayer @version(11) {
+/// What a point source is (W120; channels.md, "Discharge"). An enumerator is never renumbered.
+enum ChannelSourceKind : u8 {
+  /// Groundwater reaching the surface: a steady flow, scaled with the year's stage like the
+  /// runoff it is the slow part of.
+  Spring
+  /// A lake's or a pool's outflow where it spills: the flow the body passes on, scaled with the
+  /// year's stage.
+  Outlet
+  /// Snow or ice melting: a flow with a season of its own (`season`), not the year's stage — melt
+  /// is highest when rain-fed flow is lowest.
+  Melt
+}
+
+/// **A point source of water** (W120; channels.md, "Discharge"): where it rises and what it
+/// gives. Its flow joins the channel point nearest `at` (within `ChannelFlow.snap_m`; a source
+/// standing on no channel is refused by name) and every point downstream of it, through every
+/// confluence, to a mouth.
+struct ChannelSource @version(1) {
+  name: string
+  kind: ChannelSourceKind = Spring
+  /// Where it rises: x and z; y is not read.
+  at: worldpos @unit(m)
+  /// Its flow at the year's mean (a melt's: at its peak), m^3/s, > 0 and at most 10,000.
+  flow_m3s: f32 = 0
+  /// A melt's share of its peak today, 0 to 1. Read only for `Melt`.
+  season: f32 = 1
+}
+
+/// **A channel network's water** (W120; channels.md, "Discharge"; the grounding,
+/// docs/experiments/stream-profile.md): the discharge at every point of every link is the runoff
+/// over its contributing area plus the point sources upstream of it, so it is conserved at every
+/// confluence by construction.
+struct ChannelFlow @version(1) {
+  /// **Specific runoff**: what a square kilometre of catchment sends to its channel at the year's
+  /// mean, litres a second, 0 to 200. 30 is a humid temperate mountain's (the Swiss atlas's
+  /// national mean is 32, its basins 8 to 73); a semi-arid basin's is under 3.
+  runoff_l_s_km2: f32 = 30
+  /// **The stage of the year**: today's flow over the year's mean, 0 to 100. 1 is the mean; a
+  /// dry late summer is a few tenths; a flood several. Scales the runoff, the springs and the
+  /// outlets; a melt has its own `season`.
+  stage: f32 = 1
+  /// **Where a bed is wet**: a link carries water from the first point at which its discharge a
+  /// metre of bed is a sheet's — its critical depth at least this, metres (0.001 to 1). The
+  /// default is the falls' own (`k_fall_min_critical_m`, 1 cm: 3.1 l/s a metre); under it the
+  /// water runs between the bed's stones and not over them, and the bed is an ephemeral gully.
+  wet_depth_m: f32 = 0.01 @unit(m)
+  /// The point sources.
+  sources: ChannelSource[]
+  /// How far from a channel point a source may stand and still join it, metres, 0 to 1,000.
+  snap_m: f32 = 25 @unit(m)
+}
+
+struct ChannelLayer @version(12) {
   name: string
   seed: u64 = 1
   /// The region drained, world metres, x and z, each a whole number of spacings.
@@ -277,6 +329,11 @@ struct ChannelLayer @version(11) {
   /// on by default; off plans the line where the trough test left it, which is what the case
   /// holding that the move earns its place compares against.
   bank_move: bool = true @since(11)
+  /// **Where the water comes from** (W120; channels.md, "Discharge"): the runoff over the
+  /// catchment, the point sources the scene names and the stage of the year. Read by
+  /// `engine-content flow solve` and by nothing that plans, cuts or places: not part of what a plan
+  /// is keyed by, so naming a spring re-plans nothing.
+  flow: ChannelFlow @since(12)
 }
 
 /// A placed piece's recipe, written by the generator as `<hash>.channel.json` and built by the mesh

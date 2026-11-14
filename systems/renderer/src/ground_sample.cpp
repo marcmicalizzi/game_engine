@@ -68,6 +68,10 @@ bool SceneGround::open(const std::string& scene_path, const std::string& ddc, bo
   return true;
 }
 
+scene_gen::Ground SceneGround::ground() const {
+  return sampler_ != nullptr ? sampler_->provider().view() : scene_gen::Ground{};
+}
+
 JsonValue SceneGround::head() const {
   JsonValue out = JsonValue::object();
   out.set("scene", JsonValue(path_));

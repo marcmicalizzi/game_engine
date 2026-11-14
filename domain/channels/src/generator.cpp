@@ -174,7 +174,14 @@ u64 plan_layer_hash(const ChannelLayer& layer) {
   copy.plan.clear();
   JsonWriteOptions compact;
   compact.pretty = false;
-  const std::string text = write_json(schema::to_json(copy), compact);
+  // **The water is not what a plan is made from** (W120): `flow` is left out of the hashed text
+  // altogether, so a layer hashes as it did before the field existed and naming a spring keeps
+  // every plan already made.
+  const JsonValue whole = schema::to_json(copy);
+  JsonValue hashed = JsonValue::object();
+  for (const auto& member : whole.as_object())
+    if (member.first != "flow") hashed.set(member.first, member.second);
+  const std::string text = write_json(hashed, compact);
   return hash_combine(hash_bytes(text.data(), text.size()), k_channels_version);
 }
 std::string plan_key_text(u64 key) {

@@ -30,7 +30,8 @@ namespace engine::content {
 namespace {
 
 const char* k_flow_usage =
-    "usage: engine-content flow fixture <dir>\n"
+    "usage: engine-content flow solve <scene.json> <out.json> [...]   (flow solve: its own usage)\n"
+    "       engine-content flow fixture <dir>\n"
     "  fixture: writes <dir>/ground.json (+ its grid) and <dir>/scene.json, the flow fixture: a\n"
     "           uniform reach, a step with a fall and a jump into a pool, a reach into a lake,\n"
     "           each channel's stations from the closed forms; prints the derivation as JSON\n";
@@ -137,6 +138,7 @@ int flow_command(int argc, char** argv) {
 #else
   // argv[1] is "flow", argv[2] the subcommand.
   if (argc == 4 && std::string_view(argv[2]) == "fixture") return flow_fixture(argv[3]);
+  if (argc >= 3 && std::string_view(argv[2]) == "solve") return flow_solve_command(argc, argv);
   std::fputs(k_flow_usage, stderr);
   return 2;
 #endif
