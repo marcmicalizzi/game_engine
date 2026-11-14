@@ -1113,6 +1113,11 @@ class SceneRenderer {
   // mesh and the grids behind them, made once at load beside the cache where a mesh has a crown.
   gfx::BufferResource gi_crowns_;
   u32 gi_crown_count_ = 0;
+  // The meshes that face the sky everywhere (S105; shadow_cascades.h, `sky_facing_meshes`): one
+  // word a mesh of the load, made once where the cascades are cut by their texels, which every
+  // cascade's cull reads (gfx::CullParams::sky_facing); empty where no mesh is one.
+  gfx::BufferResource sky_facing_;
+  u32 sky_facing_count_ = 0;
   // The cache's own frame count: its stamps' clock and the sample pass's rotation, counted by the
   // frames that record its passes rather than taken from `FrameDesc::frame_index`, which a caller
   // that captures one pose again and again leaves at zero.
