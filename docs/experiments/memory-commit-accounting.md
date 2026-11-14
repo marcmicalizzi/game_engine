@@ -136,7 +136,20 @@ Unchanged: neither cut is on the frame's path, and the 0.3 ms 4B shows is the ru
 | process commit | 1,405 / 1,406 | 1,108 / 1,107 | 2,860 / 2,853 | 2,567 / 2,598 |
 | private, no named owner | 685 / 688 | 391 / 392 | 748 / 747 | 460 / 489 |
 
-About 290 MiB a run, the same in both scenes: the long-lived pools' threads (about 75 of them) at 3.75 MiB each. The staging was not flown with it (its lease would have been the night's third); its 1.4 GB with no owner should fall by at least as much.
+About 290 MiB a run, the same in both scenes: the long-lived pools' threads (about 75 of them) at 3.75 MiB each.
+
+**All three on the hop flight** (leg 1's `hop-path.json`, 75 views one a second, the report on): A is r4, B the branch at 962b77a4; H1 ran B alone (its A was refused at the lease, free commit 38.6 GB under the 40 the script asks), H2 ran A then B in one lease.
+
+| exit, MiB | H2 A (r4) | H2 B | H1 B | B − A |
+|---|---|---|---|---|
+| **process commit** | **41,581** | **32,710** | 32,740 | **−8,871** |
+| peak commit (the OS's) | 41,961 | 33,419 | 33,426 | −8,542 |
+| private, no named owner | 7,752 | 628 | 659 | −7,124 |
+| the engine heap, live | 14,970 | 13,273 | 13,273 | −1,697 |
+| working set | 16,404 | 14,569 | 14,591 | −1,835 |
+| peak private (sampler) | 40.86 GB | 32.42 GB | 32.55 GB | −8.4 GB |
+
+With the span count the no-owner commit on the staging is 0.63 GB, from 1.41 GB on the lake path with the first two cuts alone.
 
 ## The traced chain's storage
 
