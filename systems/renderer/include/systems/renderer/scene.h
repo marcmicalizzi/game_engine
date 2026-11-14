@@ -28,6 +28,7 @@
 #include <domain/texture/texture_file.h>
 #include <systems/renderer/far_forest.h>
 #include <systems/renderer/fire.h>
+#include <systems/renderer/ring_forms.h>
 #include <systems/renderer/terrain.h>
 
 #include <memory>
@@ -297,6 +298,10 @@ struct StreamedPlacements {
   // ground among them, before it handed them on. Every other entry's placements stand on the ground
   // and the world's placements seat them at activation, by the same function.
   bool seated = false;
+  // **Its generator picks its own forms by ring** (the `authored` entry's: its resident meshes are
+  // already each ring's distance form, `AuthoredForms`), so the load makes no ring forms of its
+  // meshes (G197; ring_forms.h). Every other entry's resident meshes take the load's table.
+  bool own_forms = false;
   // Finite entries can size the consumer's per-tile storage at load. The authored reader knows
   // the exact count in every tile; a distance form changes the mesh, never this count. Empty for
   // generators without a finite bound (their tile storage is pooled at its high-water mark).
@@ -784,6 +789,12 @@ struct SceneData {
   // Per mesh, 1 for a distance form cut for a ring past `AuthoredStreaming::sway_m`, which a tail
   // instance draws rigid (empty: none).
   Vector<u8> form_rigid;
+  // **A placement's form by ring** (G197; ring_forms.h): per scene mesh, what a streamed entry's
+  // placement of it is drawn as in each ring — itself, a cut of its DAG for the ring's floor, a
+  // form it offers, or nothing — which the world's placements consumer reads per placement. Its cut
+  // forms are meshes of their own after the load's others, with `form_source` and `form_rigid` set
+  // as an authored form's. Empty for a scene that streams no entry.
+  RingFormTable ring_forms;
   // The far forest the load built (far_forest.h): one mesh and one prefix instance per world tile
   // with a far tree, which `SceneRenderer` hands off with the tail. Empty when the scene streams
   // none or the host did not ask (`AuthoredStreaming::far_forest`).

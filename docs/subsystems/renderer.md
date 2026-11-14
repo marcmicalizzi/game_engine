@@ -4943,6 +4943,58 @@ way at load** (`adopt_container`, grass alone, since a tree's table also feeds t
 meadow's card containers keep 14 to 16 blades of 270 to 1,040 — `d100-v0/distance.clusters`
 1,040 → 16.
 
+### A placement's form by ring
+
+Roadmap G197 (2026-11-13). **A generator's placement of a resident mesh takes a form by its tile's
+ring, as an authored instance does.** Until this row a placement entry's meshes were placed as
+themselves in every ring: the forest's litter, four patches of 55 to 245 clusters, held 63% of one
+staging scene's pairs and 53% of the next at 148 pairs an instance whatever the distance, and the
+owner's walk sat at the pair cap ([the count](../experiments/rt-chain-walk-2026-11-12.md#what-a-far-placement-draws)).
+
+**The table** (`ring_forms.h`, `SceneData::ring_forms`). After the authored forms, `load_scene`
+(`make_placement_forms`) takes every scene mesh a streamed entry holds resident — except an entry
+that picks its own forms (`StreamedPlacements::own_forms`, the `authored` entry's) — and for each
+ring past the first cuts a distance form of it for that ring's floor (`geometry::extract_lod_form`,
+the authored forms' cut, the same floor `(radius[r − 1] − √2/2 − 1/4) × tile`, the same projection
+and thresholds), appended as a mesh of its own with `form_source` and `form_rigid` set, so it is a
+static form under the ray tracing chain ([above](#static-structures-for-rigid-forms)) and its fit,
+materials, textures and caster policy are its source's. A ring whose cut keeps every cluster the
+ring inside it kept reuses that one. Then **the rule** (`choose_ring_forms`) picks per ring the
+cheapest, in pairs, of: the ring's cut; a form the mesh **offers** (`OfferedForm`: a far form its
+container carries, the seam G198 fills), where the mesh's projected diameter at the ring's floor is
+no more than what the form says it serves. A cut is cut for a placement scaled up to
+`renderer.forms.cut_scale` (1.5) and an offered form serves the scales its size covers; and a
+placement whose projected diameter at the ring's floor is under `renderer.forms.min_px` (1 px at the
+session's projection, `AuthoredStreaming::proj_scale`) is drawn as nothing there.
+
+**The read** (`pick_ring_form`, the world's placements consumer, per placement as it builds a tile;
+[world](world.md#a-placements-form-by-ring)): the ring's entry when the placement's scale is
+within what it serves, else the ring before's, down to the mesh itself; nothing when it is smaller
+than the ring's `min_px` bound. A pure read of the load's table — no allocation, no state — so it
+answers the same from any thread. A placement drawn as nothing still hands its footprint to the
+entries after it, so the next entry places the same in every ring.
+
+**The hand-over.** A cut drawn from at least its floor selects exactly the clusters its source
+selects from there, with the same fade splits ([geometry](geometry.md#distance-forms)), so the
+move from the mesh to its cut at a ring's edge changes no pixel: the same rule the authored forms
+and R91's measure for trees rest on. Where a scene's static forms are on (a traced scene,
+[above](#static-structures-for-rigid-forms)), a rigid form draws its frontier at every distance,
+which is what the mesh draws at the floor and finer than it draws farther: the same price an
+authored form pays (R94), in pairs and never in a coarser picture. What can show is a form drawn nearer than its floor — a tile
+moved inward and not yet built again — which the quarter tile in the floor covers, as for an
+authored form; and the step to nothing, which happens only under `min_px`. An offered form draws
+what its maker says it draws, and its hand-over is its maker's to show.
+
+**What an imported mesh gets, and what a scene with none of it costs.** Every input is what any mesh
+has or can be measured for — its DAG, its size, a form its container offers — never which
+generator placed it, so an imported boulder scattered by a scene file is cut, chosen and dropped by
+the same rule; a mesh that offers no far form is drawn by its cuts. A mesh that deforms (a skin,
+morphs, the motion contract: the sward's cards, swaying trees) keeps itself in every ring, and so
+does every mesh of a paged scene, whose page tables a form has none of. A scene that streams no
+entry makes no table; one whose meshes are small enough that no cut drops a cluster makes the table
+and no mesh. A tile's own meshes (those that arrive with the tile, [above](#meshes-that-come-and-go))
+are not in the table: they are built after the load, and draw themselves.
+
 ### A commit past the tail's budget withholds its farthest tiles
 
 Also R95, and R137 (2026-11-07). **The tail's room never grows past `renderer.flora.tail_budget_mib`**
