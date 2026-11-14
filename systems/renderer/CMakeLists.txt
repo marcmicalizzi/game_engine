@@ -40,7 +40,7 @@ engine_module(NAME renderer LAYER systems
           src/terrain_time.cpp
           src/terrain_rings.cpp src/terrain_tiles.cpp src/sky.cpp src/request.cpp
           src/overlay.cpp src/scene_water.cpp src/scene_flora.cpp src/flora_motion.cpp
-          src/flora_poser.cpp src/scene_fire.cpp src/far_forest.cpp src/far_tile.cpp src/water_reflect.cpp
+          src/flora_poser.cpp src/scene_fire.cpp src/far_forest.cpp src/far_tile.cpp src/far_offered.cpp src/water_reflect.cpp
           src/water_refract.cpp
           src/scene_ground_plan.cpp
           src/resolve_classes.cpp)

@@ -1,5 +1,6 @@
 #include "far_forest_build.h"
 #include "scene_flora.h"
+#include "scene_far.h"
 #include "scene_ground_plan.h"
 
 #include <core/containers/hash_map.h>
@@ -2841,8 +2842,12 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
       return false;
     }
     // Every other streamed entry's meshes, a form a ring (G197). `offered` is where a form a mesh
-    // carries for distance is handed to the rule (ring_forms.h, `OfferedForm`): none yet.
-    const Vector<OfferedForm> offered;
+    // carries for distance is handed to the rule (ring_forms.h, `OfferedForm`): each rigid resident
+    // mesh's far form, a level a scene mesh of its own (G198; far_tile.h, renderer.md, "The far
+    // tile").
+    Vector<OfferedForm> offered;
+    if (!offer_far_forms(resolved, out.sources, dags, paged_scene, out, offered, error))
+      return false;
     if (!make_placement_forms(resolved, out.sources, dags, paged_scene,
                               std::span<const OfferedForm>(offered.data(), offered.size()), out,
                               error)) {
