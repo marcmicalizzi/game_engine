@@ -59,7 +59,10 @@ class ViewWorld {
   // the ring with no budget from where it is (a capture from a camera the ring has not followed);
   // `Restart` drops every tile first and then fills it — a flythrough's repeat, so every repeat
   // starts from the same world, since with hysteresis a ring's state depends on how it got there.
-  enum class Mode : u8 { Budgeted, Complete, Restart };
+  // `Fill` (T131) fills the ring with no budget but builds its placements as `Budgeted` does, off
+  // the frame's thread: a window's first frame, which until 2026-11-13 waited 16 to 64 s for every
+  // tile of a deposits walk (world.md, "Builds off the frame's thread").
+  enum class Mode : u8 { Budgeted, Complete, Restart, Fill };
   // One update from `camera`, the log line with it.
   bool update(const renderer::Camera& camera, u64 tick, Mode mode, u32 repeat, u32 frame,
               bool recorded, std::string* error);
@@ -129,9 +132,9 @@ class ViewWorld {
   world::WorldLog log_;
   std::string log_path_;  // empty: no log
   std::string log_text_;
-  // Where the tiles' meshes are built (world.md, "A tile's meshes: residency by reference"): made
-  // for a scene with a mesh room, and declared before the placements, whose table waits for its
-  // builds before the pool goes.
+  // Where a budgeted update's tiles and the tiles' meshes are built (world.md, "Builds off the
+  // frame's thread", "A tile's meshes: residency by reference"): made for a scene with streamed
+  // placements, and declared before them, since they wait for their jobs before the pool goes.
   std::optional<jobs::JobSystem> mesh_jobs_;
   world::PlacementTiles placements_;
   world::PlacementTilesConfig placements_config_;
