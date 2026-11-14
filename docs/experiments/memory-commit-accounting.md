@@ -129,6 +129,15 @@ The streams B released, from its log: 16-bit positions 538 MiB, attributes 717 M
 
 Unchanged: neither cut is on the frame's path, and the 0.3 ms 4B shows is the run-to-run mode this machine has tonight — the commit pair's A ran at 16.648 total and 10.396 resolve, B at 17.004 and 10.721.
 
+**And the 4 MiB a thread itself** (962b77a4): Tracy's client is now built with `DEFAULT_SPAN_MAP_COUNT=4` (`cmake/EngineProfiling.cmake`; [profiling](../subsystems/profiling.md)), so a thread that names itself maps 256 KiB of rpmalloc heap, not 4 MiB. The engine's own scenes at the owner's settings, six frames, `--memory-report`, A the branch at 246a2e07 and B at 962b77a4, alternating twice in one lease (S):
+
+| exit, MiB | grove A | grove B | streamed forest A | streamed forest B |
+|---|---|---|---|---|
+| process commit | 1,405 / 1,406 | 1,108 / 1,107 | 2,860 / 2,853 | 2,567 / 2,598 |
+| private, no named owner | 685 / 688 | 391 / 392 | 748 / 747 | 460 / 489 |
+
+About 290 MiB a run, the same in both scenes: the long-lived pools' threads (about 75 of them) at 3.75 MiB each. The staging was not flown with it (its lease would have been the night's third); its 1.4 GB with no owner should fall by at least as much.
+
 ## The traced chain's storage
 
 The third cut on the list, the traced chain's cluster storage (2,848 MiB on the GPU and as much of commit; `gpu_scene_rt_step.cpp`, `make_rt_step` → `gfx::create_cluster_storage`), is **not made**. It is reserved at the driver's most per cluster because the frame's set builds with implicit destinations, and R143 measured that naming smaller totals does not change what the driver reserves ([rt-small-instances](rt-small-instances-2026-11-10.md#what-a-structure-of-the-frames-own-set-reserves)). Two shapes would size it by what is built, both a change to the records-to-TLAS chain on the frame's path: a second set with a smaller per-cluster most for the clusters of meshes that never pass it (a forest's leaf cards: 64 vertices, about 30 triangles), or explicit destinations packed from sizes the device computes in the frame. `cluster set: what a set reserves follows its per-cluster most` (`domain/gfx/tests/clas_records_tests.cpp`) asks the driver what a cluster reserves at each most, so the design row starts from the driver's numbers (RTX 5090, driver of 2026-11, 65,536 clusters a set):
