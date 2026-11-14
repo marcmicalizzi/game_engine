@@ -523,9 +523,8 @@ void apply_water(ChannelNetwork& n, const scene_gen::Ground& ground,
           // so no rounding of the cut's stamp puts a thread of the lip under the body's level
           // for its flood to follow down the channel.
           out.outlet_level = n.basins.hollows[under[run.a - 1] - 2].level_m + k_sill_over_m;
-        else if (water != nullptr &&
-                 water->water_level_mm(ground, scene_gen::nearest_mm(last.at.x),
-                                       scene_gen::nearest_mm(last.at.z), level))
+        else if (water != nullptr && water->water_level_mm(ground, scene_gen::nearest_mm(last.at.x),
+                                                           scene_gen::nearest_mm(last.at.z), level))
           out.outlet_level = level;
       }
       for (u32 i = run.a; i < run.b; ++i)
@@ -950,18 +949,17 @@ void seat_section(const ChannelLayer& p, const scene_gen::Ground& ground, Channe
     for (const Heading& h : {along, local}) {
       for (u32 k = 0; k <= 8; ++k) {
         const f64 half = .5 * w * (1 + swell * (static_cast<f64>(k) / 4 - 1));
-        lower = std::min(lower, ground_at(ground, pt.at.x - h.z * half, pt.at.z + h.x * half));
-        lower = std::min(lower, ground_at(ground, pt.at.x + h.z * half, pt.at.z - h.x * half));
+        // **A bank is read only where it is one** (W122; channels.md, "The seat, reshaped"):
+        // ground that stands further under the line than it lies from it, past a 45-degree fall
+        // across, is a face's foot or the ground below a cliff's edge, and seats nothing.
+        for (const f64 side : {1.0, -1.0}) {
+          const f64 g = ground_at(ground, pt.at.x - side * h.z * half, pt.at.z + side * h.x * half);
+          if (pt.at.y - g <= half) lower = std::min(lower, g);
+        }
       }
     }
-    // **A cross-slope's seat, and no more** (W122; channels.md, "The seat, reshaped"): the seat
-    // is what a slope across the line takes off the downhill bank over
-    // the half width, so it is bounded by the fall of a 45-degree cross-slope there. Past that
-    // the line is on a face, where no section seats; and the reading that passed it was a bank
-    // read across a step the line met at an angle (below), whose "lower bank" is the step's foot.
-    const f64 most = .5 * w * (1 + swell);
-    seat[i] = std::min(std::max(0.0, std::ceil((pt.at.y - lower) * 1e3) / 1e3),
-                       std::ceil(most * 1e3) / 1e3);
+    if (!(lower < std::numeric_limits<f64>::infinity())) lower = pt.at.y;
+    seat[i] = std::max(0.0, std::ceil((pt.at.y - lower) * 1e3) / 1e3);
   }
   // **No bank is read across a step** (W122; S104's finding, `seat-eats-step`): at a knickpoint
   // the ground falls along the line, and a line that meets the step at an angle has one bank on

@@ -1380,8 +1380,10 @@ bank. Three things about it changed, and one about the bed it lowers:
   seat read there was the step's height. A knickpoint's points, and those within the read's own
   reach and the dilation's two points of one, take no seat: the water falls there, and what bounds
   it is the fall, not a bank.
-- **A seat is a cross-slope's, and no more**: at most the fall of a 45-degree slope across the
-  half width the read reaches. Past that the line is on a face.
+- **A bank is read only where it is one**: ground that stands further under the line than it
+  lies from it across (past a 45-degree fall) is a face's foot, or the ground below a cliff's
+  edge, and is left out of the read. A stream along a cliff's edge is seated by the bench it
+  runs on, not by the cliff (the forest's link 613 was seated 126 m).
 - **A seat never reaches under the lip below it.** The bed does not rise, so what a seat lowers
   it by is carried down the line until the ground has fallen that far. Above each knickpoint's
   first point a seat is at most the ground's own fall from its point to that one, so a seated
