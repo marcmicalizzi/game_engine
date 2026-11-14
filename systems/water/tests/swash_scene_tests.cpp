@@ -503,17 +503,27 @@ struct RestoreFilm {
   }
 };
 
-}  // namespace
+// The device of the project's GPU runner without ray queries (the TITAN Xp; renderer_tests.cpp's
+// TITAN-Xp-like case has the same rows): the vertex path and the cascaded shadow maps.
+gfx::DeviceOptions titan_xp_like() {
+  gfx::DeviceOptions options;
+  for (const char* row :
+       {"VK_EXT_mesh_shader", "VK_KHR_ray_query", "VK_NV_cluster_acceleration_structure",
+        "VK_EXT_memory_decompression", "VK_KHR_fragment_shading_rate"}) {
+    options.overrides.absent.push_back(row);
+  }
+  return options;
+}
 
-TEST_CASE("water swash: the sheet on the sand is one surface across the mesh's edge") {
-  if (!gpu_here()) return;
+void check_sheet(const gfx::DeviceOptions& options, const std::string& tier) {
   const test::TempDir tmp("water_sheet");
   gfx::Device device;
   std::string error;
-  REQUIRE_MESSAGE(device.create(gfx::DeviceOptions{}, &error), error);
-  RestoreFilm restore;
-  // The sheet mirrors the stand-in sky, the one light the bound knows.
-  REQUIRE(tunables::apply_overrides("renderer.water.reflect=0"));
+  REQUIRE_MESSAGE(device.create(options, &error), error);
+  MESSAGE("sheet on " << tier << ": ray queries "
+                      << std::string(device.features().ray_query ? "yes" : "no")
+                      << ", mesh shaders "
+                      << std::string(device.features().mesh_shader ? "yes" : "no"));
   SheetShots on, off;
   shoot_sheet(device, tmp, "on", on);
   // With the film off (a measurement switch) the ground under the sheet is wet sand and nothing
@@ -606,15 +616,38 @@ TEST_CASE("water swash: the sheet on the sand is one surface across the mesh's e
         }
       }
     }
-    MESSAGE("sheet, eye " << e << ": " << pairs << " water/ground neighbours inside the sheet over "
-                          << k_sheet_times << " times; the largest step " << worst_step
-                          << " codes, " << worst_share << " of its bound; " << over
-                          << " over it; with the sheet off " << seen_off << " are; " << saturated
-                          << " channel pairs at white, left out");
+    MESSAGE("sheet on " << tier << ", eye " << e << ": " << pairs
+                        << " water/ground neighbours inside the sheet over " << k_sheet_times
+                        << " times; the largest step " << worst_step << " codes, " << worst_share
+                        << " of its bound; " << over << " over it; with the sheet off " << seen_off
+                        << " are; " << saturated << " channel pairs at white, left out");
     CHECK(pairs > 100u);   // the edge is in the picture
     CHECK(over == 0u);     // and is not seen
     CHECK(seen_off > 0u);  // where without the sheet's shading it is
   }
+}
+
+}  // namespace
+
+// On the GPU as it is, and — where it has ray queries — again as the GPU runner without them (the
+// vertex path, the cascaded shadow maps, the water modules without the ray), so a machine with
+// everything sees what the other shadow path does to the edge (S105: the server leg of batch 63
+// was the first to).
+TEST_CASE("water swash: the sheet on the sand is one surface across the mesh's edge") {
+  if (!gpu_here()) return;
+  RestoreFilm restore;
+  // The sheet mirrors the stand-in sky, the one light the bound knows.
+  REQUIRE(tunables::apply_overrides("renderer.water.reflect=0"));
+  bool traced = false;
+  {
+    gfx::Device probe;
+    std::string error;
+    REQUIRE_MESSAGE(probe.create(gfx::DeviceOptions{}, &error), error);
+    traced = probe.features().ray_query;
+    probe.destroy();
+  }
+  check_sheet(gfx::DeviceOptions{}, "this GPU");
+  if (traced) check_sheet(titan_xp_like(), "the TITAN Xp's absences");
 }
 
 #endif

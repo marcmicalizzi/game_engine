@@ -835,7 +835,16 @@ TEST_CASE("the line: a wait that runs out says where the process stood") {
   gpu_lock::HoldConfig config = config_at(path);
   config.out = out;
   config.look_ms = 50;
-  config.wait_until_unix_s = now_s() + 1;
+  // The deadline is whole Unix seconds and a look gives up once the clock's second reaches it, so
+  // `now + 1` waits anywhere from a second to nothing: a run that reads `now` late in its second
+  // reaches the deadline at its first look and gives up with no wait, and a give-up with no wait
+  // owes no "waiting" line (its give-up line already names the holder and the place). This case is
+  // about a wait that happened, so its deadline holds at least the first look: that look comes
+  // before any sleep, after a few file operations (a ticket written, the line and the lock read),
+  // far under the clock's one-second resolution, so one second past the resolution is enough —
+  // `now + 2` waits between one and two seconds, and the first look always finds the second
+  // before the deadline. (The 50 ms looks after it only decide how soon past the deadline it ends.)
+  config.wait_until_unix_s = now_s() + 2;
   {
     gpu_lock::DeviceHold hold;
     CHECK(hold.acquire(config) == gpu_lock::HoldMode::GaveUp);

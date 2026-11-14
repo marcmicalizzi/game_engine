@@ -124,7 +124,10 @@ struct CullParams {
   float cascade_cover_m;
   uint hiz_flags;    // gfx::k_cull_hiz_*: the Hi-Z feeds the term only; the term's mip bias
   uint handoff_tick; // gfx::CullParams::handoff_tick: the hand-off's clock (scene.slang)
-  uint handoff_pad[3];
+  // gfx::CullParams::sky_facing_count / sky_facing (S105): one word per mesh, non-zero where the
+  // mesh faces the sky everywhere; such an instance takes the camera's cut in a cascade (cull_pair).
+  uint sky_facing_count;
+  uint64_t sky_facing;
 };
 
 // gfx::CullParams::hiz_flags and the debug counters' layout (gfx::k_hidden_*).
@@ -735,13 +738,29 @@ void cull_pair(uint pair, bool vertex_draw) {
     // tile's coarser clusters shadowed a 10 m patch of open ground; the camera's cut alone, as for
     // every receiver before R103, draws none of it.
     const bool by_texels = instance.terrain == 0;
+    // **Nor, by its world error, a mesh that faces the sky everywhere** (S105; renderer.md, the
+    // same section): the ground the scene's own grid builds standing still, a water body the pool
+    // lifts, an imported ground or deck — receivers under everything, for which the half-texel
+    // bias holds the texel cut's error only with the sun overhead, and on which the cut's error
+    // shadowed whole lit triangles of sand and the swash's edge under a sun 53 degrees up. Measured
+    // from the mesh at load (`renderer::sky_facing_meshes`), one word a mesh; a mesh past the
+    // table keeps the cut. Its coverage half stays (a leaf lying on the ground keeps R103's
+    // foliage lever); an opaque mesh has none. A property of the instance, so every cluster of
+    // one transition reads the same answer and the cut keeps one cluster on every path.
+    bool by_error = by_texels;
+    if (by_error && params->sky_facing != 0 && instance.mesh < params->sky_facing_count) {
+      by_error = ((uint*)params->sky_facing)[instance.mesh] == 0u;
+    }
+    const float own_texel_error = by_error ? own_error : k_terminal_error;
+    const float parent_texel_error = by_error ? parent_error : k_terminal_error;
     const bool own_ok =
         transition_acceptable(own, own_cover, own_threshold, own_foliage) ||
-        (by_texels && cascade_accepts(params, own_error, own_cover_error * instance.scale_max));
+        (by_texels &&
+         cascade_accepts(params, own_texel_error, own_cover_error * instance.scale_max));
     const bool parent_ok =
         transition_acceptable(parent, parent_cover, parent_threshold, parent_foliage) ||
         (by_texels &&
-         cascade_accepts(params, parent_error, parent_cover_error * instance.scale_max));
+         cascade_accepts(params, parent_texel_error, parent_cover_error * instance.scale_max));
     if (params->streaming == 0) {
       // The cross-fade, for a transition with a coverage error: both sides draw across the band and
       // each keeps the pixels between its splits (alpha_mask.slang, ade_keeps).

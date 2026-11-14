@@ -228,4 +228,63 @@ void shadow_map_params(const ShadowCascades& cascades, u32 texture, u32 tiles, u
   out.tiles = tiles > cascades.count ? tiles : cascades.count;
 }
 
+namespace {
+
+// Every triangle of `cluster` with an area turns its counter-clockwise face above the horizon; a
+// triangle with none (all three corners on a line) faces nowhere and is passed over.
+bool triangles_face_sky(const geometry::ClusterMesh& mesh, const geometry::ClusterDesc& cluster) {
+  if (u64{cluster.triangle_offset} + cluster.triangle_count > mesh.triangles.size()) return false;
+  for (u32 t = 0; t < cluster.triangle_count; ++t) {
+    const u32 packed = mesh.triangles[cluster.triangle_offset + t];
+    const u32 local[3] = {packed & 0xffu, (packed >> 8) & 0xffu, (packed >> 16) & 0xffu};
+    Dvec p[3];
+    for (u32 k = 0; k < 3; ++k) {
+      const u64 v = u64{cluster.vertex_offset} + local[k];
+      if (local[k] >= cluster.vertex_count || v >= mesh.vertices.size()) return false;
+      p[k] = dvec(mesh.vertices[static_cast<u32>(v)]);
+    }
+    const Dvec e1{p[1].x - p[0].x, p[1].y - p[0].y, p[1].z - p[0].z};
+    const Dvec e2{p[2].x - p[0].x, p[2].y - p[0].y, p[2].z - p[0].z};
+    const Dvec n{e1.y * e2.z - e1.z * e2.y, e1.z * e2.x - e1.x * e2.z, e1.x * e2.y - e1.y * e2.x};
+    if (n.x == 0.0 && n.y == 0.0 && n.z == 0.0) continue;
+    if (!(n.y > 0.0)) return false;
+  }
+  return true;
+}
+
+}  // namespace
+
+u32 sky_facing_meshes(const geometry::ClusterMesh& mesh,
+                      std::span<const geometry::ClusterMeshPart> parts, Vector<u32>& out) {
+  out.clear();
+  out.resize(static_cast<u32>(parts.size()), 0u);
+  u32 count = 0;
+  for (u32 m = 0; m < out.size(); ++m) {
+    const geometry::ClusterMeshPart& part = parts[m];
+    const u64 first = u64{part.first_cluster} + part.first_leaf_cluster;
+    if (part.leaf_cluster_count == 0 || first + part.leaf_cluster_count > mesh.clusters.size())
+      continue;
+    bool sky = true;
+    for (u32 i = 0; i < part.leaf_cluster_count && sky; ++i) {
+      const geometry::ClusterDesc& cluster = mesh.clusters[static_cast<u32>(first) + i];
+      // The cone first: within its half-angle of the axis is above the horizon everywhere when
+      // a.y > c |a|, for c >= 0 a.y > 0 and a.y^2 > c^2 |a|^2, in f64 so the squares are exact for
+      // snorm8 values. A cone says nothing when there is none (two-sided, too spread, a sliver the
+      // grid turned over) and is a bound, not the answer, when it reaches past the horizon: then
+      // the triangles themselves.
+      const geometry::NormalCone cone = geometry::decode_cone(cluster.cone);
+      const f64 x = static_cast<f64>(cone.axis.x);
+      const f64 y = static_cast<f64>(cone.axis.y);
+      const f64 z = static_cast<f64>(cone.axis.z);
+      const f64 c = static_cast<f64>(cone.cutoff);
+      sky = (cone.cutoff < 1.0f && y > 0.0 &&
+             (c <= 0.0 || y * y > c * c * (x * x + y * y + z * z))) ||
+            triangles_face_sky(mesh, cluster);
+    }
+    out[m] = sky ? 1u : 0u;
+    count += sky ? 1u : 0u;
+  }
+  return count;
+}
+
 }  // namespace engine::renderer

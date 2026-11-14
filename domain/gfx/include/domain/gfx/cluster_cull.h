@@ -323,9 +323,17 @@ struct CullParams {
   // `k_handoff_ramp_frames` of its stamp is not dropped short of its band, so the cards it replaced
   // stay drawn while the near form fades in. It took the block to 1,760 bytes.
   u32 handoff_tick = 0;
-  u32 handoff_pad[3] = {};
+  // **The surfaces that face the sky take the picture's cut in every cascade** (S105; renderer.md,
+  // "The ground takes the picture's cut in every cascade"): on a cascade's block cut by its texels,
+  // one u32 per mesh, `sky_facing_count` of them, non-zero where every cluster of the mesh faces
+  // the sky (`renderer::sky_facing_meshes`). An instance of such a mesh takes the camera's test
+  // alone, as a terrain level does; a mesh past the count, or 0 here, keeps the texel cut. They
+  // took the last three pad words; the block is still 1,760 bytes.
+  u32 sky_facing_count = 0;
+  u64 sky_facing = 0;
 };
 static_assert(sizeof(CullParams) == 1760);
+static_assert(offsetof(CullParams, sky_facing) == 1752);
 static_assert(offsetof(CullParams, hidden_counts) % 8 == 0);
 
 // CullParams::hiz_flags.
