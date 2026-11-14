@@ -60,7 +60,7 @@ The traced chain is the one worst-case-shaped consumer: its storage is reserved 
 
 **Smaller blocks committed whole and never touched** (F2): `world::PlacementTiles::create`'s `Vector<SceneInstance>` 64.6 MiB, 0.1 resident (`systems/world`, the other coordinator's module tonight); `GpuScene::fit_tables`' `Vector<FloraInstance>` 21.7 MiB, 1.2 resident; the JSON reader's vectors 16 MiB, 5 untouched.
 
-**Private with no named owner grows in the flight** (1.0 GB after the warm load, 7.7 GB after the hop flight, all untouched, in 4 to 16 MiB regions). r2, the binary that flew F2, did not yet record protections; the next flight with r3 or later says whether it is write-combined (the driver keeping the backing of memory the chain's 30-odd resizes freed) or ordinary read-write. That is the first measurement of leg 2.
+**Private with no named owner grows with frames** (1.0 GB after the warm load's six frames, 7.7 GB after the hop flight's 75 and 7.8 GB after 120 frames held at the south lake, F3 with r4). F3 by protection: the write-combined regions (`0x404`) are 525 allocations, 16,671 MiB committed, 32 MiB resident, against 16,243 MiB of device-local blocks — the driver's backing and nothing else; plain read-write (`0x4`) is 3,485 allocations, 24,668 MiB committed, 16,220 resident, and the C runtime's heaps account for 16,944 of it. **So the 7.8 GB no owner names is ordinary read-write memory, outside every heap, never touched, in 4 to 16 MiB allocations (the size bucket holds 2,535 of them, 18.7 GB committed, 10.7 resident), and it appears over the first hundred frames.** Not the driver's backing of freed GPU memory (that would be write-combined), not the engine heap (its blocks are the heap's). The candidates are the driver's own host-side pools (command recording, descriptor and query memory) and another library's direct `VirtualAlloc`; which one is the first measurement of leg 2 (below).
 
 ## The first cut: the merge reserves its arrays
 
@@ -74,7 +74,18 @@ The traced chain is the one worst-case-shaped consumer: its storage is reserved 
 | peak private (sampler, 5 s) | 31.98 GB | 31.40 GB | −0.58 GB |
 | whole run | 223 s | 217 s | −6 s |
 
-The merged arrays are the bytes they hold and nothing is copied twice; the picture and every byte uploaded are unchanged (the same appends into larger first blocks). It cannot change a frame's time: nothing a frame reads moved. A flight pair was not flown (free commit stayed under the flight's floor from 22:10).
+The merged arrays are the bytes they hold and nothing is copied twice; the picture and every byte uploaded are unchanged (the same appends into larger first blocks).
+
+**The frame's time, the report off** (P3, one lease, alternating, main's binary A against the branch's B with the cut and the report compiled in and not asked for; the staging's south-lake view held for 120 frames at the owner's settings, `--warmup 0`; other agents at 16 % of the CPU, not quiet):
+
+| | 1A main | 2B branch | 3A main | 4B branch |
+|---|---|---|---|---|
+| GPU total, median ms | 16.967 | 16.960 | 16.963 | 16.953 |
+| resolve, median ms | 10.704 | 10.699 | 10.688 | 10.703 |
+| frame, median ms | 17.081 | 17.092 | 17.070 | 17.074 |
+| peak private (sampler) | 41.64 GB | 40.50 GB | 40.26 GB | 40.65 GB |
+
+Unchanged within 0.01 ms (4B's p95 of 44.5 ms is one hitch beside another agent's work; its median is the others'). The sampler's peak moves by a gigabyte between two runs of one binary, which is why the cut is judged by the report's exit commit above and not by it. **A held view grows the same ten gigabytes the hop flight did** (32 GB after six frames, 40 to 42 GB after 120 at one place): what grows after the load comes with frames, not with travel.
 
 ## What this means for holding memory by distance and speed
 
@@ -85,5 +96,5 @@ The merged arrays are the bytes they hold and nothing is copied twice; the pictu
 ## Not measured
 
 - The owner's own walk (v43, the game module, the animals, a window): run it with `--memory-report` and read the two `view.memory` lines; the summary line of a window does not carry the block yet.
-- A flight pair for the merge cut, and the flight's unnamed 7.7 GB by protection.
+- Who allocates the 7.8 GB of untouched read-write 4 to 16 MiB regions that appear over the first frames: a debugger's view of one such region at exit (`cdb -pv`, `!address <base>`: its usage and the module whose code reserved it) or a count of `VirtualAlloc` calls by caller over the first hundred frames would say.
 - Linux: the walk and the report are tested in the container; no forest number.
