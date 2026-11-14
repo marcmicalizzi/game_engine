@@ -1,0 +1,14 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "T129",
+  "reason": "engine-view --memory-report: the flag, the first-frame and exit snapshots in both loops (nine lines), and its sections in apps.md and gfx.md (what the report holds; the device's large-buffer log and the driver's backing)",
+  "date": "2026-11-13",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "engine_view.main_cpp.lines": 14,
+    "engine_view.run_view.lines": 5,
+    "engine_view.run_offscreen.lines": 4,
+    "page:docs/subsystems/apps.md": 4216,
+    "page:docs/subsystems/gfx.md": 2206
+  }
+}
