@@ -1443,7 +1443,40 @@ spread and the seat's exemption still read the fan's whole length (`fan_share`).
 **What an author's channel gets.** The rule is the planner's, applied where it writes a mouth: a
 `TerrainEdit` written by hand is the author's section, and the stamp (tileset.md, "Channels cut
 into the ground") knows nothing of bodies. A hand-made channel into a hand-made body meets the
-same hole if its bed runs under the body's level outside the outline.
+same hole if its bed runs under the body's level outside the outline. A scene with no body costs
+nothing of this: a link that ends at the region's edge or a junction is cut as it was.
+
+### Where a cut meets a bank: the owner's marks 6 and 7
+
+(2026-11-13, W121.) **What made the holes, by stage.** Each mark was reproduced on an engine scene
+of its shape (`scratch\b64\W121\scenes\`: S104's V valley with cliffs of 3 to 14 m; the notch into
+a pond turned 30 degrees whose outline falls 4 m short of the contour; the notch over a 20 m sea
+cliff) and read two ways: on the tile set's edited ground at 25 cm (`cut_meets_tests.cpp`, the cuts
+compiled by `tileset::TerrainEdits` and applied as the set's build applies them) and in a capture's
+ids and depth (`render.capture`'s channels). **No capture had a pixel with nothing drawn under
+drawn ground**: no stage leaves triangles out, every level and tile seam is whole. Each "hole" is
+the ground the cut left:
+
+- **Marks 6 and 7, a pocket in a hillside and a dark hole in a bank: the seat** (W116,
+  `seat_section`). Where a point's lower-bank reading lands past a drop — a cliff the line meets at
+  an angle, a cliff edge beside a contour stream, a trough across a bend — the top is lowered by the
+  whole drop and the lowering dilated over two points either way; the cut's face then rises a
+  thalweg at its slope and runs out to at most 20 rises over that top (tileset.md, "A face that runs
+  out"), so where the hillside stands higher the cut ends in a wall: a closed pit metres deep with
+  walls, which traced light draws black. Measured as the deepest closed hollow the cut made that
+  the ground did not have (a priority flood over the window, Barnes, Lehman & Mulla 2014): **12.7 m
+  at S104's 14 m cliff (seed 2), 0.85 m (seed 1), 7.7 and 7.8 m along a cliff's edge** (the seat
+  8.2 m), on 61ccce67 and with W121. The stamp is not the fault: with a seat no deeper than the
+  bank slope over the half width, the run-out meets any hillside under about 70 degrees. The seat
+  is W120's row (it absorbs W117's cap, `65eed9cd`); the case is marked `may_fail` until it lands.
+- **Mark 8, the black triangle beside a teal one: the fan under the body's level** (above). The
+  teal triangle is the body's own surface (`systems/water`'s ring of the outline, at the level
+  over the whole outline), seen where the fan's cut took the ground under the level inside the
+  outline: water rightly drawn. The black one beside it is the same cut outside the outline, dry
+  under the waterline: 11.25 m² under the level, the worst 0.31 m, on the scene whose outline
+  falls short (none with W121); 0.56 m², the worst 7 cm, where the outline reaches past the contour.
+- **W119**: over the sea cliff, 6 of 24 points in the last 12 m above it had their bed graded up to
+  16.9 m under the cut's own floor; none with W121.
 
 ## Confluences
 
