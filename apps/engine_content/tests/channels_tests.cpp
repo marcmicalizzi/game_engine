@@ -168,7 +168,9 @@ TEST_CASE("engine-content channels, routes and bridges write under --ddc, never 
   const std::string scene =
       R"({"format":"engine.scene.v1","name":"valley",)" + terrain +
       R"(,"placements":[{"generator":"channels","params":{"name":"valley","seed":2,)"
-      R"("region_min":[0,0],"region_max":[128,256],"head_threshold_m2":300}},)"
+      R"("region_min":[0,0],"region_max":[128,256],"head_threshold_m2":300,)"
+      // A flood on a wet coast, so a valley of three hectares runs water for a bridge to cross.
+      R"("flow":{"stage":100,"runoff_l_s_km2":200}}},)"
       R"({"generator":"routes","params":{"name":"path","region_min":[0,0],"region_max":[128,256],)"
       R"("routes":[{"name":"a","waypoints":[[20,0,30],[110,0,220]]}]}}]})";
   REQUIRE(io::write_file_atomic(scenes + "/scene.json", scene) == io::Status::Ok);
@@ -203,10 +205,18 @@ TEST_CASE("engine-content channels, routes and bridges write under --ddc, never 
   CHECK(std::filesystem::exists(host + "/routes"));
   nothing_beside("routes");
 
-  // The bridges over the scene with the channels' water and the route's plan named.
+  // The streams' water, solved on the scene's ground (W120): the plan under the host's root is
+  // the one `channels` made, and nothing is written beside the scene or the working directory.
+  const auto flow =
+      run({"flow", "solve", scenes + "/scene.json", tmp.file("flow.json"), "--ddc", host});
+  REQUIRE_MESSAGE(flow.code == 0, flow.text);
+  CHECK(flow.text.find("\"links_wet\":0,") == std::string::npos);
+  nothing_beside("flow solve");
+
+  // The bridges over the scene with the solved water and the route's plan named.
   std::string text;
   JsonValue water, planned;
-  REQUIRE(io::read_file(tmp.file("channels.json"), text) == io::Status::Ok);
+  REQUIRE(io::read_file(tmp.file("flow.json"), text) == io::Status::Ok);
   REQUIRE(parse_json(text, water).ok);
   REQUIRE(io::read_file(tmp.file("routes.json"), text) == io::Status::Ok);
   REQUIRE(parse_json(text, planned).ok);

@@ -710,7 +710,10 @@ through **the sections the ground has**, by the textbook's method
   level with the same specific force — stands over what the tranquil profile holds a jump's
   length downstream; where it no longer does, a **jump**: its head between the two nodes the test
   changed at, its foot six rises on at the sequent level (HEC-RAS's comparison of specific force
-  at one section is this rule with a jump of no length).
+  at one section is this rule with a jump of no length). Where shooting water meets a node it has
+  not the head to pass even at critical depth (a **choke**), the jump stands at the last shooting
+  node that still has the head the tranquil profile holds below it, so the total head never
+  rises; a fall's foot with less head than that is drowned.
 - **A fall** where the bed drops at a metre a metre or more by at least three critical depths, the
   critical depth at least a centimetre (S104's test, at the solved critical depth and not a share
   of a cut): critical at the lip, Rand's (1955) drop at the foot, no surface between. A foot the
@@ -727,7 +730,9 @@ through **the sections the ground has**, by the textbook's method
   change section it changes nothing (the fixture's backwater is the integral to 0.4 mm).
 - **Over a bank**: the level is solved with a wall at each crest, and where it stands over the
   lower crest the station is flagged, counted and reported, and written **at the crest** with
-  the solved flow's speed. **The cut does not grow**: the solve runs on the composed ground after
+  the solved flow's speed. Once tranquil water has spilled it is written no higher downstream
+  than where it spilled, until its solved level comes down under that (those stations are flagged
+  too), so the written level does not climb from one crest to the next. **The cut does not grow**: the solve runs on the composed ground after
   the cut is in it, and the bankfull section is the plan's contract with the exclusion, the
   sediment and the flood bed. The count is the author's lever: a lower `stage`, or a wider law.
 
@@ -766,6 +771,39 @@ dry, kilometres, stations a kilometre, crests, falls, jumps, drowned feet, hangi
 stations over a bank (count, worst, where), the rises by kind with the worst of each and where,
 and the solve's seconds a kilometre. `--jobs` is 1 by default: until the tile set's point read
 gives up its lock (T128), readers on a pool are slower than one thread.
+
+**An author's line** is a `water_channels` block whose name is not a planner's link: its `points`
+and a `discharge_m3s`. It is solved with Jarrett's law unless `--resistance manning` holds its own
+`manning_n`; a line that runs into a body — a lattice past its last point stands inside a body's
+circle or polygon — ends at the body's level as a mouth, and any other ends at normal depth. The
+block keeps its optics, its seed and its banks, and takes the solve's stations. The end-to-end
+case (`flow_tests.cpp`) writes the fixture, solves its three channels again this way through the
+tiles provider, and holds them to the fixture's stations: the same flags in the same order, the
+levels within 2 mm.
+
+**Measured** (2026-11-13, `msvc-release`, one thread, beside other agents' builds, so the seconds
+are upper bounds): `terrain-synth` heightfields at 0.5 m with a `channels` entry, cut, then solved.
+
+| Scene | Stage | Links wet of all | Solved km | Stations a km | Crests | Falls (highest) | Jumps | Feet drowned | Over bank: stations, lines, worst | Rises: jump, shooting, at a bank, other | Head rises | s a km |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| mountain, 2 km square | 1 | 13 of 16 | 9.44 | 1,491 | 34 | 0 | 0 | 0 | 45, 5, 0.21 m | 0, 0, 0, 0 | 0 | 0.12 |
+| the same | 20 | 16 of 16 | 12.06 | 1,784 | 0 | 0 | 0 | 0 | 12,183, 16, 2.23 m | 0, 0, 681, 0 | 0 | 0.12 |
+| steps, 1 km square | 1 | 6 of 23 | 1.60 | 1,455 | 6 | 6 (1.73 m) | 0 | 4 | 465, 2, 0.16 m | 0, 0, 0, 0 | 0 | 0.11 |
+| the same | 20 | 23 of 23 | 7.74 | 1,838 | 30 | 36 (1.96 m) | 4 | 28 | 13,881, 22, 0.48 m | 4 (0.10 m), 0, 292, 0 | 1 (0.037 m) | 0.11 |
+
+At the year's mean the three dry links of the mountain end with 2.8, 3.5 and 4.0 l/s over beds
+wider than a metre, films of 8 to 10 mm; the stepped scene's sixteen are smaller still. A stage
+of 20 is a flood put through beds cut for far less, to see what the cook says: more than half the
+stations stand over a bank, and the level written there steps up where the bed itself stands
+over the last spill (the 681 and 292 rises "at a bank"). **No tranquil rise that is not at a bank
+remains in any scene, and none at all at the mean.** The one head rise, 3.7 cm on the stepped
+scene in flood, is not traced.
+
+**Stations a kilometre are about 1,500 on these grounds**, against 150 to 240 on the fixture and
+against the 1,780 points a kilometre the laid description wrote here. The level's pin is not
+what holds them: the wet reach's is. A bed two or three lattice cells wide is jagged at the
+lattice, so the water's edge moves by more than 5 cm from one node to the next and almost every
+node is a station. The lever, if the draw wants fewer, is `k_station_wet_m`.
 
 ## The cut
 

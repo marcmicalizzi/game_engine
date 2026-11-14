@@ -71,6 +71,35 @@ JsonValue place(const WorldPos& at) {
   return out;
 }
 
+// The scene's water bodies that read (one that does not is the water capability's to refuse).
+Vector<scene::WaterBody> read_bodies(const JsonValue& scene) {
+  Vector<scene::WaterBody> bodies;
+  if (const JsonValue* water = scene.find("water"); water != nullptr && water->is_array())
+    for (const JsonValue& b : water->as_array()) {
+      scene::WaterBody body;
+      schema::ReadContext reader;
+      if (schema::from_json(body, b, reader) && reader.ok()) bodies.push_back(std::move(body));
+    }
+  return bodies;
+}
+
+// Whether (x, z) stands inside a body's circle or polygon (a flood's region is not known here).
+bool inside_body(const scene::WaterBody& body, f64 x, f64 z) {
+  if (body.shape.circle.has_value()) {
+    const scene::WaterCircle& c = *body.shape.circle;
+    const f64 dx = x - c.center.x, dz = z - c.center.z, r = static_cast<f64>(c.radius_m);
+    return dx * dx + dz * dz <= r * r;
+  }
+  bool in = false;
+  const u32 n = body.shape.polygon.size();
+  for (u32 i = 0, j = n > 0 ? n - 1 : 0; i < n; j = i++) {
+    const WorldPos& a = body.shape.polygon[i];
+    const WorldPos& b = body.shape.polygon[j];
+    if ((a.z > z) != (b.z > z) && x < (b.x - a.x) * (z - a.z) / (b.z - a.z) + a.x) in = !in;
+  }
+  return in;
+}
+
 // The sums of every line's stats, the worst kept with where.
 struct Totals {
   u32 lines = 0;
@@ -399,6 +428,22 @@ int flow_solve_command(int argc, char** argv) {
         line.points.push_back(p);
       for (const f32 q : block.discharge_m3s)
         line.discharge.push_back(static_cast<f64>(q));
+      // **A line that runs into a body ends at the body's level**: a lattice past its last
+      // point, along its last stretch, stands inside a body's circle or polygon.
+      if (line.points.size() >= 2) {
+        const WorldPos& end = line.points[line.points.size() - 1];
+        const WorldPos& before = line.points[line.points.size() - 2];
+        const f64 dx = end.x - before.x, dz = end.z - before.z;
+        const f64 length = std::sqrt(dx * dx + dz * dz);
+        if (length > 0.0)
+          for (const scene::WaterBody& body : read_bodies(json))
+            if (inside_body(body, end.x + lattice * dx / length, end.z + lattice * dz / length)) {
+              line.tail_level = true;
+              line.level = std::round(body.level_m * 1e3) / 1e3;
+              line.tail = scene_gen::ChannelControl::Mouth;
+              break;
+            }
+      }
       channels::ProfileOptions own = options;
       if (own.resistance == channels::Resistance::Manning)
         own.manning_n = static_cast<f64>(block.manning_n);
