@@ -1830,6 +1830,23 @@ far tile case). The distance form is shown for what a DAG keeps; a tile's meshes
 and are cut by nothing (G197's rule cuts the resident meshes), so before this row the choice past the
 first ring was the first row of the table or nothing.
 
+**The streamed walk** (G191's scene and walk, `far_rings` 3 and the default 256 MiB room, windowed,
+1600×900, 150 s along the foot at 2 m/s; `msvc-release`, the base `61ccce67` against this row's
+tip, each from a cold derived-data root and the row's again warm; other processes held 47 % of the
+CPU at the cold runs' start and 77 % at the warm one's, so every time is an upper bound):
+
+| | First fill (frame's thread) | Deposit instances drawn after the walker moves | Frames over 50 / 100 ms |
+|---|---:|---|---:|
+| base, cold | 68.2 s | none from about 50 s on (the room full, every tile withheld) | 122 / 2 of 7,100 |
+| far tiles, cold | 69.3 s | 49 to 98 instances, 65,000 to 116,000 pairs, the whole walk | 128 / 1 of 7,486 |
+| far tiles, warm | 4.9 s | the same | 200 / 1 of 11,856 |
+
+Cold, the first fill is no shorter: a far tile whose members were never built builds them (into
+the cache, once), so the first visit still pays every piece's solve. Warm, every far tile is read
+whole from its own entry and the first fill drops to 4.9 s. In one offscreen capture from 300 m
+(all 28 deposit tiles in rings 1 and 2), the base drew no deposit at all and this row drew 28 far
+tiles, 61,847 pairs, none withheld.
+
 **Why the first level from the ring past the first.** A piece's first level is held to its radius
 over 128 (a 16 m patch: about 9 cm; the forest tile's pieces measured at most 7.7 cm honest), which
 at 1080p and the default camera is a pixel from about 90 m (79 m measured); the deposit scenes' second ring starts 96 m out (a 64 m tile at 1.5 tiles), so the hand-over
