@@ -158,6 +158,9 @@ const char* k_usage =
     "                                          measurements\n"
     "  ruins-block-kit <directory> [--fidelity low|mid|high]\n"
     "                                          the synthetic block kit, for ruins --blocks\n"
+    "  static-kit <directory>                  the static world's kit: ground, a branch-card\n"
+    "                                          tree, a bush, grass and a rock as plain glTF\n"
+    "                                          with PNGs, carrying nothing a generator adds\n"
     "  terrain <scene.json> --tile <x,z> [--time <s>]   one tile of the scene's dune field at a\n"
     "                                          game time as one JSON line (terrain --help);\n"
     "                                          present with the terrain capability\n"
@@ -1422,6 +1425,7 @@ int main(int argc, char** argv) {
   if (command == "ruins") return content::ruins_command(argc, argv);
   if (command == "ruins-kit") return content::ruins_kit_command(argc, argv);
   if (command == "ruins-block-kit") return content::ruins_block_kit_command(argc, argv);
+  if (command == "static-kit") return content::static_kit_command(argc, argv);
   if (command == "terrain") return content::terrain_command(argc, argv);
   if (command == "terrain-synth" || command == "terrain-tiles" || command == "terrain-masks" ||
       command == "terrain-read")

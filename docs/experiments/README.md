@@ -199,3 +199,5 @@ Tree expansion: [species profiles](tree-species-expansion.md) and [season design
 [G116: wetland plants](wetland-plants.md) records dimensions, authored controls and budget validation.
 [G129: branch-aware broadleaf taper](tree-branch-taper.md) replaces the single-scaffold trunk shoulder.
 [G144: the site a placement reads](site-and-ecotope.md) grounds the site query and the scatter kinds' ecotope responses: heat load, the treeline and its aspect shift, the krummholz band, unimodal responses.
+
+[T130: the static-asset world](static-asset-world.md): a world of imported glTF and hand placement flown at every gate, and the audit of what such a world gets from each feature built for generated ones, what that costs it, and what would make it work.

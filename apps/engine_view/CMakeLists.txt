@@ -44,7 +44,7 @@ set(_view_tests tests/view_tests.cpp tests/mesh_view_tests.cpp tests/fly_tests.c
                 tests/interactive_tests.cpp tests/time_controls_tests.cpp tests/walk_tests.cpp
                 tests/walk_view_tests.cpp tests/far_tests.cpp tests/frame_loop_tests.cpp
                 tests/game_view_tests.cpp tests/startup_trace_view_tests.cpp
-                tests/loading_view_tests.cpp
+                tests/loading_view_tests.cpp tests/static_world_view_tests.cpp
                 ${_view_interactive})
 if(TARGET engine::tileset)
   # A scene naming a built tile set drawn offscreen, the set written by engine-content beside it;
