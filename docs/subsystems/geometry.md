@@ -400,6 +400,46 @@ asked what its far form is.
 5. The vertices some level names, in the order the levels first name them, and the levels' indices
    into them.
 
+### The far form meets its neighbour
+
+G198's second pass (2026-11-13; `k_far_form_version` 2). The first captures of the far tiles showed
+dark lines on the talus 100 to 130 m out, evenly spaced up the slope, and from 300 m the band read as
+paving. The normals channel put them on the pieces' cuts, and the cause was the bake: a deposit's
+piece is a **closed** mesh (its top, a buried underside and walls round it), so it has no open border
+for `meshopt_SimplifyLockBorder` to hold, and its build locks the cut instead
+(`AttributeSource::locked`; [rocks](rocks.md#the-coarse-forms-keep-the-patchs-border)). The first
+bake did not know the locks, so each piece's far form pulled its top off the line it shares with its
+neighbour its own way, the tops parted and the walls showed between them — G143's fault again, one
+level down. Measured on the forest tile's 15 pieces (`deposits far: what the DAG's own distance form
+keeps …`): of 59,307 points of the pieces' locked bed rectangles over the three levels, **50,932 were
+no longer vertices** of the level; with the rule below, none.
+
+**The rule: what the mesh's own DAG never moved stays where it is.** A lock is never collapsed, so
+every vertex the build locked is still a vertex of the DAG's **roots**, the clusters with no coarser
+version (`parent_error` is `k_lod_terminal_error`). The container does not record the locks, but the
+roots do, so the bake locks every finest vertex at a point a root holds. It is measured from the mesh
+alone, as the rest of the far form is: an imported mesh's builder locked nothing and its roots are
+only its coarsest form. It locks more than the builder did — each part's coarsest vertices — which
+alone cost the forest tile 15 % more triangles at level 0 (61,738 to 70,842). A neighbour's point is
+never moved, so two far forms meet wherever their near forms did.
+
+**Welded by its bytes, in an order of the surface alone.** The finest level is welded by source
+vertex, and the first bake then took its vertices and triangles in cluster order. A DAG built in a
+load and the same DAG read back from its container lay their clusters out differently (leaves
+first), and the simplifier's result follows its input's order: the imported scene's cold and warm
+loads offered far forms two clusters apart ([renderer](renderer.md#what-path-1-costs-a-load)). The
+bake now sorts the vertices by their bytes — position, normal and UV words — with one vertex where
+every byte is the same, rotates each triangle to start at its smallest vertex with its winding kept,
+and sorts the triangles by material and corners, so the far form is a function of the surface and
+not of how its clusters were laid out. The weld by bytes also joins copies the source numbering kept
+apart (a deposit piece's bed has them), so the simplifier sees one surface where it saw strips: with
+both rules the forest tile's levels are **42,876, 35,854 and 31,358 triangles** (the first pass:
+61,738, 41,488 and 35,882) with every cut point kept, and its far tile **1,368 clusters, 3.4 MiB of
+the room** (2,261 and 5.7 MiB). The bake is 3.2 s against the pieces' 12.8 s of build in debug, beside
+other agents' builds. **The lesson for any consumer that simplifies
+a mesh again**: honour what its builder locked, and where the container does not carry it, its
+DAG's roots do.
+
 Each level records what it was held to (`error_m`), what the simplifier reported (`simplify_m`) and
 the largest piece it left out (`dropped_m`); the larger of the last two is its **honest error**, at
 most `error_m`. `far_form_distance` turns it into the nearest a camera may stand for the level to be
@@ -435,7 +475,12 @@ The size table pins the four records.
 **Determinism.** meshoptimizer's simplifier (the DAG's own; contraction off tree-wide), integer
 union-find and sorts on integer keys, one thread: the same bytes from every toolchain and any thread
 count (`far_form_tests.cpp` pins the fixture's hash, `deposits_far_tests.cpp` the forest tile's 15
-far forms').
+far forms'). The fixture's first pin was taken over a relief made with `std::sin` and `std::cos`, and
+Clang's container did not reproduce it: the C library's last bit differs between MSVC's and glibc's,
+so the fixture's positions moved, not the bake. The relief is now two parabolas a period, arithmetic
+alone (`wave` in the test). The deposit tile's pins (rocks' and the world's) stand on a massif
+written with `std::sin` and `std::cos` too and did reproduce on Clang; if a toolchain ever does not,
+that massif is the first suspect, not the bake.
 
 **What it is not.** Not an impostor: a baked card or a star of planes stands in for foliage, where a
 pixel is coverage and colour, and a camera-facing quad has no shader here

@@ -97,6 +97,77 @@ bool bake_far_form(const ClusterLodMesh& mesh, std::span<const u32> material, Fa
       tri_mat.push_back(mat);
     }
   }
+  if (tri_mat.empty()) return fail(error, "far form: the mesh has no finest triangles");
+
+  // **In an order of the surface alone, not of its clusters** (G198's second pass): a DAG built
+  // here and the same DAG read from its container lay their clusters out in different orders
+  // (leaves first), and the simplifier's result follows its input's order, so the first bake gave
+  // a cold load and a warm one two clusters apart on the imported scene. The vertices are sorted
+  // by their bytes (one vertex where every byte is the same), each triangle rotated to start at
+  // its smallest vertex with its winding kept, and the triangles sorted by material and corners.
+  // The weld by bytes also joins copies the source numbering kept apart (a deposit piece's), which
+  // lets the simplifier treat the surface as one: the forest tile's first level went from 70,842
+  // triangles to 42,876 with every cut point kept (geometry.md, "The far form meets its
+  // neighbour").
+  {
+    struct VertexKey {
+      u32 w[5];
+      u32 v;
+    };
+    Vector<VertexKey> keyed;
+    keyed.reserve(vertices.size());
+    for (u32 v = 0; v < vertices.size(); ++v) {
+      const FarFormVertex& fv = vertices[v];
+      keyed.push_back(VertexKey{{bits_of(fv.position.x), bits_of(fv.position.y),
+                                 bits_of(fv.position.z), fv.normal_oct, fv.uv_half2},
+                                v});
+    }
+    std::sort(keyed.begin(), keyed.end(), [](const VertexKey& a, const VertexKey& b) {
+      for (u32 k = 0; k < 5; ++k)
+        if (a.w[k] != b.w[k]) return a.w[k] < b.w[k];
+      return a.v < b.v;
+    });
+    Vector<u32> moved(vertices.size());
+    Vector<FarFormVertex> sorted;
+    sorted.reserve(vertices.size());
+    for (u32 k = 0; k < keyed.size(); ++k) {
+      const bool same =
+          k > 0 && std::memcmp(keyed[k].w, keyed[k - 1].w, sizeof(keyed[k].w)) == 0;
+      if (!same) sorted.push_back(vertices[keyed[k].v]);
+      moved[keyed[k].v] = sorted.size() - 1;
+    }
+    vertices = std::move(sorted);
+    struct TriKey {
+      u32 mat, a, b, c;
+    };
+    Vector<TriKey> tris;
+    tris.reserve(tri_mat.size());
+    for (u32 t = 0; t < tri_mat.size(); ++t) {
+      u32 a = moved[tri[3 * t]], b = moved[tri[3 * t + 1]], c = moved[tri[3 * t + 2]];
+      if (a == b || b == c || a == c) continue;
+      while (a > b || a > c) {  // rotate, keeping the winding
+        const u32 first = a;
+        a = b;
+        b = c;
+        c = first;
+      }
+      tris.push_back(TriKey{tri_mat[t], a, b, c});
+    }
+    std::sort(tris.begin(), tris.end(), [](const TriKey& x, const TriKey& y) {
+      if (x.mat != y.mat) return x.mat < y.mat;
+      if (x.a != y.a) return x.a < y.a;
+      if (x.b != y.b) return x.b < y.b;
+      return x.c < y.c;
+    });
+    tri.clear();
+    tri_mat.clear();
+    for (const TriKey& t : tris) {
+      tri.push_back(t.a);
+      tri.push_back(t.b);
+      tri.push_back(t.c);
+      tri_mat.push_back(t.mat);
+    }
+  }
   const u32 triangles = tri_mat.size();
   if (triangles == 0) return fail(error, "far form: the mesh has no finest triangles");
 
@@ -162,6 +233,42 @@ bool bake_far_form(const ClusterLodMesh& mesh, std::span<const u32> material, Fa
         if (uvs && l == 0) l = meshopt_SimplifyVertex_Protect;
       }
       first = last;
+    }
+  }
+  // **What the mesh's own DAG never moved stays where it is** (geometry.md, "The far form meets
+  // its neighbour"). A mesh built in pieces that meet edge to edge — a deposit's pieces and patches,
+  // a terrain's chunks — is usually closed (walls round it, so it stays two-manifold), so it has no
+  // open border for `meshopt_SimplifyLockBorder` to hold, and its builder locked the cut instead
+  // (`AttributeSource::locked`). A lock is never collapsed, so every locked vertex is still a vertex
+  // of the DAG's roots (the clusters with no coarser version); the container does not record the
+  // locks, but the roots do. Every finest vertex at a root vertex's point is locked here too, so
+  // two neighbours' far forms meet wherever their near forms do. It locks more than the builder
+  // did (each part's coarsest vertices), which costs triangles only where the DAG's roots are
+  // finer than the far form would go, and moves nothing a neighbour shares.
+  {
+    struct Point {
+      u32 x, y, z;
+    };
+    auto less = [](const Point& a, const Point& b) {
+      if (a.x != b.x) return a.x < b.x;
+      if (a.y != b.y) return a.y < b.y;
+      return a.z < b.z;
+    };
+    Vector<Point> roots;
+    for (u32 c = 0; c < clusters; ++c) {
+      if (mesh.lod[c].parent_error != k_lod_terminal_error) continue;
+      const ClusterDesc& cl = m.clusters[c];
+      for (u32 v = 0; v < cl.vertex_count; ++v) {
+        const Vec3 p = m.vertices[cl.vertex_offset + v];
+        roots.push_back(Point{bits_of(p.x), bits_of(p.y), bits_of(p.z)});
+      }
+    }
+    std::sort(roots.begin(), roots.end(), less);
+    for (u32 v = 0; v < n; ++v) {
+      const Vec3 p = vertices[v].position;
+      const Point at{bits_of(p.x), bits_of(p.y), bits_of(p.z)};
+      if (std::binary_search(roots.begin(), roots.end(), at, less))
+        lock[v] = meshopt_SimplifyVertex_Lock;
     }
   }
   // The attribute the simplifier weighs: the UV, as the DAG's own simplification weighs it

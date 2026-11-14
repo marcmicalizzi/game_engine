@@ -1796,14 +1796,26 @@ first fill and no deposit drew again, and with one ring the talus ended in a str
 next tile appears, about 63 m ahead.
 
 **`near_rings`** (1 by default, 1..`far_rings`): the rings before it draw the patches; the rings from
-it to `far_rings` draw each tile as **one far tile** ([renderer](renderer.md#the-far-tile)) — every
+it to `far_rings` draw each tile as **far tiles** ([renderer](renderer.md#the-far-tile)) — every
 piece the near ring hands, recipe for recipe, as a member at its place from the tile's corner, drawn
 as its far form ([geometry](geometry.md#the-far-form)), the ring at `near_rings` at the far form's
 first level and each ring after at the next; past `far_rings`, nothing. The generator's
 representation is 0 near, 2 + the level far and 1 nothing, so a tile is built again exactly when its
-ring changes what it draws; its far placement is named past every piece's (`0x40000000` plus the
-tile's first patch id). Nothing of the far form is the generator's: it hands the recipes it hands a
+ring changes what it draws; each far placement is named past every piece's (`0x40000000` plus its
+block's first patch id). Nothing of the far form is the generator's: it hands the recipes it hands a
 near ring, and the far form is measured from each built mesh.
+
+**A far tile a block, under the cluster limit** (G198's second pass). The first pass handed a whole
+tile as one far tile, and on G191's streamed scene (64 m tiles) a ring-1 tile built **4,385 to 4,761
+clusters**, over a streamed host's `renderer.meshes.max_clusters` (4,096): without ray tracing, where
+the mesh room had space, 20 far tiles were refused by name (`a tile's mesh was refused … 4761
+clusters`), and the talus showed a gap of sand 250 to 450 m out with a lone far tile standing past
+it. A tile's patches are now handed as one far tile **a square block of the patch lattice**, as many
+patches a block as `k_far_tile_budget_triangles` (512,000) of their recipe budget holds — a power of
+two on a side, at least one: 2 × 2 patches of 16 m at the forest's 128,000, whose far tile measured
+2,261 clusters at the first pass and **1,368** now (33 % of the limit; geometry.md, "The far form
+meets its neighbour"). Each block's far tile stands at the tile's corner. The members, the pairs and
+the room a tile takes are what one far tile took; only the limit's margin moves.
 
 **What it costs, measured** (msvc-debug, 2026-11-13; the counts do not depend on the build or the
 machine). One 32 m tile of the massif's foot at the forest's budget (128,000 triangles a 16 m patch,

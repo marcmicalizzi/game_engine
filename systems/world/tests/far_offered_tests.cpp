@@ -12,6 +12,7 @@
 #include <test_temp_dir.h>
 
 #include <cmath>
+#include <filesystem>
 #include <string>
 
 using namespace engine;
@@ -124,4 +125,49 @@ TEST_CASE(
   CHECK(offered >= 1u);
   CHECK(far.mesh != source);
   CHECK(scene.form_source[far.mesh] == source);
+}
+
+TEST_CASE("far offered: a resident mesh's offered levels are kept in the derived-data cache") {
+  // renderer.md, "What path 1 costs a load": a container that records what it was built from is
+  // keyed by it; the first load builds each offered level and writes it, the second reads them and
+  // draws the same forms.
+  const test::TempDir tmp("world_far_offered_cache");
+  REQUIRE(tmp.ok());
+  std::string error;
+  const std::string field = tmp.file("field.clusters");
+  geometry::ClusterFileData data = strewn_sheet();
+  data.source_hash = 0x5eed0198u;
+  data.build_key = 0xb0170198u;
+  REQUIRE_MESSAGE(geometry::write_cluster_file(field, data, &error), error);
+  const std::string text = std::string(R"({"format":"engine.scene.v1","name":"far-offered",)") +
+                           R"("placements":[{"generator":"ring-forms-field","params":{"path":")" +
+                           slashes(field) +
+                           R"("}}],"world":{"tile_size":8,"rings":[{"radius":1.5},)"
+                           R"({"radius":15},{"radius":30}]},)" +
+                           R"("terrain":{"size":17,"extent":40,"seed":3,"dune_height":0.0}})";
+  REQUIRE(io::write_file(tmp.file("scene.json"), text) == io::Status::Ok);
+  auto offered_counts = [&](Vector<u32>& counts) {
+    renderer::SceneDesc desc;
+    REQUIRE_MESSAGE(renderer::read_scene_file(tmp.file("scene.json"), desc, error), error);
+    desc.cache = true;
+    desc.ddc = tmp.file("ddc");
+    renderer::SceneData scene;
+    REQUIRE_MESSAGE(renderer::load_scene(desc, scene, error), error);
+    counts.clear();
+    for (u32 m = 0; m < scene.mesh_info.size(); ++m)
+      if (scene.mesh_info[m].name.find("(far form") != std::string::npos)
+        counts.push_back(scene.parts[m].cluster_count);
+  };
+  Vector<u32> first, second;
+  offered_counts(first);
+  REQUIRE_FALSE(first.empty());
+  u32 entries = 0;
+  for (const auto& e : std::filesystem::recursive_directory_iterator(tmp.file("ddc")))
+    entries += e.is_regular_file() && e.path().extension() == ".clusters" ? 1u : 0u;
+  MESSAGE(first.size(), " offered levels, ", entries, " cluster entries in the cache");
+  CHECK(entries >= first.size());
+  offered_counts(second);
+  REQUIRE(second.size() == first.size());
+  for (u32 k = 0; k < first.size(); ++k)
+    CHECK(second[k] == first[k]);
 }

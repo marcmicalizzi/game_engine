@@ -36,7 +36,9 @@
 namespace engine::geometry {
 
 // Moves whenever what a bake makes from the same mesh moves.
-inline constexpr u32 k_far_form_version = 1;
+// 2: every finest vertex at a point of the DAG's roots is locked (geometry.md, "The far form meets
+// its neighbour").
+inline constexpr u32 k_far_form_version = 2;
 // A level's error is the mesh's radius over this, times its step: it stands in for the mesh once
 // the radius projects under this many pixels (one pixel of error).
 inline constexpr f32 k_far_form_radius_px = 128.0f;

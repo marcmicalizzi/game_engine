@@ -40,7 +40,18 @@ void cube(Fixture& f, Vec3 at, f32 side) {
       f.indices.push_back(base + t[k]);
 }
 
-f32 relief(f32 x, f32 z) { return 0.3f * std::sin(x * 0.7f) * std::cos(z * 0.5f); }
+// A sine's shape from arithmetic alone: two parabolas a period, `wave(t)` 0 at whole t, 1 at a
+// quarter and -1 at three quarters. Not `std::sin`: the C library's differs between MSVC's and
+// glibc's in the last bit, which moved the fixture's positions and the pin below on Clang (G198).
+f32 wave(f32 t) {
+  const f32 f = t - std::floor(t);
+  return f < 0.5f ? 16.0f * f * (0.5f - f) : -16.0f * (f - 0.5f) * (1.0f - f);
+}
+
+// 0.3 sin(0.7 x) cos(0.5 z) in shape: periods of 2 pi / 0.7 and 2 pi / 0.5 metres.
+f32 relief(f32 x, f32 z) {
+  return 0.3f * wave(x * 0.11140846f) * wave(z * 0.07957747f + 0.25f);
+}
 
 Fixture talus() {
   Fixture f;
@@ -165,9 +176,11 @@ TEST_CASE("far form: carried in the container, read back whole, the same bytes f
   REQUIRE(ensure_far_form(again));
   CHECK(far_form_hash(data.far_form) == far_form_hash(again.far_form));
   MESSAGE("far form hash ", far_form_hash(data.far_form));
-  // Taken on MSVC 14.51, 2026-11-13, at k_far_form_version 1; GCC and Clang at v3 and GCC at v2
-  // reproduce it (the containers' runs, G198's hand-back).
-  CHECK(far_form_hash(data.far_form) == 8751553704110674218ull);
+  // Taken on MSVC 14.51, 2026-11-13, at k_far_form_version 2, with the fixture's relief made of
+  // arithmetic alone (`wave`); GCC and Clang at v3 and GCC at v2 reproduce it (the containers'
+  // runs, G198's hand-back). Version 1's pin was taken over `std::sin`, and Clang's run did not
+  // reproduce it.
+  CHECK(far_form_hash(data.far_form) == 10725759836556730505ull);
   test::TempDir scratch;
   const std::string path = scratch.path() + "/talus.clusters";
   std::string error;

@@ -94,14 +94,30 @@ void weld_part(Part& part) {
     positions.push_back(part.positions[v]);
     uvs.push_back(part.uvs[v]);
   }
+  // Each survivor's normal is the mean of the near form's own normals at its copies, in their
+  // order (G198's second pass): a deposit's bed carries the plan's gradient, the same on both
+  // sides of a piece's cut, where normals made again from the far form's large triangles gave
+  // every piece its own and the band read as paving from 300 m. A run whose copies cancel (two
+  // faces of a thin plate) takes the faces' area-weighted normal.
+  Vector<Vec3> sums(positions.size(), Vec3{0.0f, 0.0f, 0.0f});
+  const bool carried = part.normals.size() == n;
+  if (carried)
+    for (u32 v = 0; v < n; ++v)
+      sums[remap[rep[v]]] = sums[remap[rep[v]]] + part.normals[v];
   for (u32& i : part.indices)
     i = remap[rep[i]];
   part.positions = std::move(positions);
   part.uvs = std::move(uvs);
-  part.normals.clear();
+  Vector<Vec3> faces;
   geometry::compute_vertex_normals(
       std::span<const Vec3>(part.positions.data(), part.positions.size()),
-      std::span<const u32>(part.indices.data(), part.indices.size()), part.normals);
+      std::span<const u32>(part.indices.data(), part.indices.size()), faces);
+  part.normals.clear();
+  for (u32 v = 0; v < part.positions.size(); ++v) {
+    const Vec3 s = sums[v];
+    const f32 len2 = s.x * s.x + s.y * s.y + s.z * s.z;
+    part.normals.push_back(carried && len2 > 1.0e-6f ? s * (1.0f / std::sqrt(len2)) : faces[v]);
+  }
 }
 
 // One DAG a part with triangles, merged: `drawn` the parts that had any, in order, which are the
@@ -251,7 +267,8 @@ bool load_far_tile(const scene_gen::PlacementMesh& mesh, const PlacementMeshOpti
   const bool cached = options.cache && !options.ddc.empty();
   const u64 key = hash_combine(
       geometry::cluster_cache_key(placement_mesh_identity(mesh), options.lod, false, 0),
-      hash_combine(geometry::k_far_form_version, scene_gen::k_far_tile_version));
+      hash_combine(hash_combine(geometry::k_far_form_version, scene_gen::k_far_tile_version),
+                   k_far_tile_build_version));
   const std::string cache_path = cached ? geometry::cluster_cache_path(options.ddc, key) : "";
   if (cached && io::exists(cache_path)) {
     geometry::ClusterFileData data;

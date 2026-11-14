@@ -16,6 +16,8 @@
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <tuple>
+#include <vector>
 
 using namespace engine;
 using namespace engine::rocks;
@@ -33,7 +35,10 @@ f64 massif(const void*, i64 x_mm, i64 z_mm) noexcept {
 // The forest's density over the massif's foot, one 32 m tile's meshes as a host builds them, and
 // the build's wall time.
 i64 build_ns = 0;
+// Each mesh's bed rectangle, as the build locks it: x and z from 0 to these (deposits.cpp).
+Vector<Vec2> spans;
 void forest_tile(Vector<geometry::ClusterFileData>& out) {
+  spans.clear();
   test::TempDir scratch;
   const std::string dir = scratch.path();
   scene_gen::Context c;
@@ -70,6 +75,9 @@ void forest_tile(Vector<geometry::ClusterFileData>& out) {
     REQUIRE_MESSAGE(build_deposit_container(patch, {}, 0, data, error), error);
     build_ns += time::monotonic_ns() - start;
     out.push_back(std::move(data));
+    const i64 spacing_mm = std::llround(static_cast<f64>(patch.spacing_m) * 1000.0);
+    spans.push_back(Vec2{static_cast<f32>(static_cast<f64>(spacing_mm * (patch.width - 1)) / 1000.0),
+                         static_cast<f32>(static_cast<f64>(spacing_mm * (patch.depth - 1)) / 1000.0)});
   }
 }
 
@@ -154,6 +162,44 @@ TEST_CASE("deposits far: what the DAG's own distance form keeps of a dense tile,
     MESSAGE("far form level ", l, ": ", level_triangles[l], " triangles over ", meshes.size(),
             " meshes, standing in from ", level_from[l], " m");
   MESSAGE("far form vertices, every level: ", vertices);
+  // **The far forms meet where the near forms do** (geometry.md, "The far form meets its
+  // neighbour"): every point of a piece's locked bed rectangle that its finest level draws is still
+  // a vertex of every far form level, so two pieces' far forms share their cut and no wall shows
+  // between them. A far form that ignored the build's locks parted them (the dark lines along the
+  // pieces' cuts in G198's first captures).
+  u64 border_points = 0, border_missing = 0;
+  for (u32 k = 0; k < meshes.size(); ++k) {
+    const geometry::ClusterLodMesh& lod = meshes[k].mesh;
+    const geometry::FarForm& form = meshes[k].far_form;
+    Vector<Vec3> border;
+    for (u32 c = 0; c < lod.mesh.clusters.size(); ++c) {
+      if (lod.lod[c].level != 0) continue;
+      const auto& cl = lod.mesh.clusters[c];
+      for (u32 v = 0; v < cl.vertex_count; ++v) {
+        const Vec3 at = lod.mesh.vertices[cl.vertex_offset + v];
+        if (at.x == 0.0f || at.z == 0.0f || at.x == spans[k].x || at.z == spans[k].y)
+          border.push_back(at);
+      }
+    }
+    for (u32 l = 0; l < form.levels.size(); ++l) {
+      std::vector<std::tuple<f32, f32, f32>> used;
+      const auto& level = form.levels[l];
+      for (u32 p = level.first_part; p < level.first_part + level.part_count; ++p)
+        for (u32 i = 0; i < form.parts[p].index_count; ++i) {
+          const Vec3 at = form.vertices[form.indices[form.parts[p].first_index + i]].position;
+          used.emplace_back(at.x, at.y, at.z);
+        }
+      std::sort(used.begin(), used.end());
+      for (const Vec3 want : border) {
+        ++border_points;
+        if (!std::binary_search(used.begin(), used.end(), std::make_tuple(want.x, want.y, want.z)))
+          ++border_missing;
+      }
+    }
+  }
+  MESSAGE("bed border points over every level: ", border_points, ", missing ", border_missing);
+  CHECK(border_points > 0);
+  CHECK(border_missing == 0);
   // What every rigid container build now pays (geometry.md, "The far form"): the bake's share of
   // the meshes' build, and the bytes it adds.
   MESSAGE("bake ", static_cast<f64>(bake_ns) / 1.0e6, " ms against the build's ",
@@ -168,8 +214,8 @@ TEST_CASE("deposits far: what the DAG's own distance form keeps of a dense tile,
   for (const auto& data : meshes)
     pin = hash_combine(pin, geometry::far_form_hash(data.far_form));
   MESSAGE("far forms' hash ", pin);
-  // Taken on MSVC 14.51, 2026-11-13 (k_far_form_version 1, k_deposit_version 11).
-  CHECK(pin == 9186255482497582130ull);
+  // Taken on MSVC 14.51, 2026-11-13 (k_far_form_version 2, k_deposit_version 11).
+  CHECK(pin == 11231041873535240146ull);
   CHECK(level_triangles[0] * 4 < triangles[0]);
 }
 

@@ -508,17 +508,58 @@ u8 form_of(const Entry& e, const scene_gen::Context& c) {
   const u32 level = std::min<u32>(c.ring - e.layer.near_rings, geometry::k_far_form_levels - 1);
   return static_cast<u8>(2 + level);
 }
-// G198: a tile's patches past `near_rings` as one far tile (scene_gen/far_tile.h): every piece the
-// near form hands, as a member, at its place from the tile's corner, drawn at `level`; one
-// placement at the corner. Nothing when no patch of the tile is allowed.
+// G198's second pass: the patches' recipe budget one far tile stands for, at most. Four patches at
+// the forest's budget (128,000 triangles each) built a far tile of 2,261 clusters, 55% of a
+// streamed host's 4,096 (`renderer.meshes.max_clusters`); a whole 64 m tile of them built 4,385 to
+// 4,761 on G191's streamed scene and was refused by name (rocks.md, "A deposit past the first
+// ring"). So a tile's patches are handed as far tiles of square blocks of the patch lattice, as
+// many patches a block as this holds, at the least one.
+constexpr u64 k_far_tile_budget_triangles = 512'000;
+// The side of a far tile's block, in patches: the largest power of two whose square of patches'
+// budgets is within `k_far_tile_budget_triangles`.
+i64 far_block_patches(const Entry& e) {
+  const u64 each = std::max<u64>(e.layer.patch.triangle_budget, 1);
+  i64 side = 1;
+  while (side < 64 && static_cast<u64>(4 * side * side) * each <= k_far_tile_budget_triangles)
+    side *= 2;
+  return side;
+}
+void hand_far_block(const Entry& e, scene_gen::TileCoord tile, const scene_gen::Context& c,
+                    u32 level, i64 side, i64 block_x, i64 block_z, scene_gen::Placements& out);
+// G198: a tile's patches past `near_rings` as far tiles (scene_gen/far_tile.h), one a block of
+// `far_block_patches` patches: every piece the near form hands, as a member, at its place from the
+// tile's corner, drawn at `level`; each far tile one placement at the corner. Nothing when no patch
+// of the tile is allowed.
 void hand_far(const Entry& e, scene_gen::TileCoord tile, const scene_gen::Context& c, u32 level,
               scene_gen::Placements& out) {
+  const i64 side = far_block_patches(e);
+  // The blocks in the order their first patch comes, and each patch's block.
+  Vector<i64> block_x, block_z;
+  for (const auto& p : e.patches) {
+    if (!(p.tile == tile) || !allowed(e, p, c)) continue;
+    const i64 bx = floor_div(p.bx, side), bz = floor_div(p.bz, side);
+    bool seen = false;
+    for (u32 b = 0; b < block_x.size() && !seen; ++b)
+      seen = block_x[b] == bx && block_z[b] == bz;
+    if (!seen) {
+      block_x.push_back(bx);
+      block_z.push_back(bz);
+    }
+  }
+  for (u32 b = 0; b < block_x.size(); ++b)
+    hand_far_block(e, tile, c, level, side, block_x[b], block_z[b], out);
+}
+void hand_far_block(const Entry& e, scene_gen::TileCoord tile, const scene_gen::Context& c,
+                    u32 level, i64 side, i64 block_x, i64 block_z, scene_gen::Placements& out) {
   Vector<scene_gen::PlacementMesh> meshes;
   Vector<scene_gen::Placement> instances;
   u32 first_id = 0;
+  bool first = true;
   for (const auto& p : e.patches) {
     if (!(p.tile == tile) || !allowed(e, p, c)) continue;
-    if (first_id == 0) first_id = p.placement.id;
+    if (floor_div(p.bx, side) != block_x || floor_div(p.bz, side) != block_z) continue;
+    if (first) first_id = p.placement.id;
+    first = false;
     hand(e, p, meshes, instances);
     ++out.things;
   }

@@ -3961,16 +3961,20 @@ thread builds the tile's meshes:
    once, an image's relative path made absolute against its member's directory, and two members
    whose materials are the same record over the same images share a part — every piece of a talus
    is its own mesh with its rock's one set, so a far tile of forty pieces is one part.
-3. Each part is **welded** by point and UV, its normals the area-weighted mean round each vertex —
-   a far form keeps its mesh's vertices, split wherever the near form had a hard edge, and a
-   triangle that shares no corner fills a cluster's 64 vertices with 21 triangles; a far form is
-   drawn smooth, which at its distance is a pixel's shading, and an atlas seam stays a seam — then
+3. Each part is **welded** by point and UV — a far form keeps its mesh's vertices, split wherever
+   the near form had a hard edge, and a triangle that shares no corner fills a cluster's 64
+   vertices with 21 triangles; a far form is drawn smooth, which at its distance is a pixel's
+   shading, and an atlas seam stays a seam. A welded vertex's normal is **the mean of the near
+   form's own normals at its copies** (`k_far_tile_build_version` 2): a deposit's bed carries the
+   plan's gradient, the same on both sides of a piece's cut, where the first pass made normals
+   again from the far form's large triangles, gave every piece its own, and the band read as
+   paving from 300 m; a run whose copies cancel takes the faces' area-weighted normal — then
    clustered with its own DAG (`build_cluster_lod`, the load's options), the parts merged, and the
    clusters laid out leaves first as every tile mesh is; its textures are the load's pass over the
    one mesh, as every tile mesh's are.
 4. **It keeps itself in the derived-data cache**, a container under a key over the recipe's
-   identity (every member's recipe and place), the far form's and the recipe's versions and the
-   load's LOD options. Activated again — a ring step back, another run, another host — it is read
+   identity (every member's recipe and place), the far form's, the recipe's and the build's
+   versions and the load's LOD options. Activated again — a ring step back, another run, another host — it is read
    whole and no member is touched (33 ms for the forest tile below, debug).
 
 So the far tile is **one instance**: one run of pairs, one bottom-level structure, one admission into
@@ -4011,6 +4015,43 @@ level's DAG only for a mesh a far form can help; a mesh with a fit is not offere
 diameter is the fitted one about the fit's anchor). `far_offered_tests.cpp` holds the offer on an
 imported field of 300 small stones; there the DAG's own cut at the ring's floor is one cluster and
 wins, which is the rule doing its work.
+
+### What path 1 costs a load
+
+G198's second pass, on a scene that scatters **seven imported glTF meshes** (the Khronos Avocado,
+BoomBox, Corset, Lantern, FlightHelmet, SciFiHelmet and Suzanne, through the scatter generator's
+`mesh` kinds) over a gentle terrain, streamed in rings of 1.5, 4 and 8 tiles of 64 m, with no
+deposit and no other generator's mesh (msvc-release, RTX 5090; other agents' builds were running,
+so every time is an upper bound). The offer bakes the seven far forms and builds **19** offered
+levels (1,235 clusters), of which the rule drew **3**:
+
+| | Load-scene stage | Path 1 (`far forms offered … ms`) |
+|---|---:|---:|
+| base `61ccce67`, cold / warm | 14.2 s / 0.21 s | none |
+| first pass, cold / warm (baked every load) | 14.4 s / 1.15 s | 0.73 s / 0.80 s |
+| this pass, cold / warm (kept in the cache) | PENDING | PENDING |
+
+So the first pass made a warm load of this scene five times longer: every load baked every rigid
+resident mesh's far form and built every offered level's DAG again. **Each offered level is now kept
+in the derived-data cache** (`far_offered.cpp`): a container of its DAG, its part map and the far
+form it came from, under a key over the mesh's source identity (a glTF's file hash, or the identity
+a container records of what it was built from), the load's LOD options, `k_far_form_version` and
+`k_far_tile_build_version`; a warm load reads it and neither bakes nor builds. A mesh with no source
+identity at all is baked every load, as before. `far offered: a resident mesh's offered levels are
+kept in the derived-data cache` holds the entries and the same forms on the second load.
+
+**And the same bytes cold and warm.** The first bake followed its input's order: a DAG built in the
+load and the same DAG read back from its container lay their clusters out differently (leaves
+first), and the cold and warm loads offered 1,235 and 1,233 clusters. The bake now sorts the finest
+level's vertices by their bytes and its triangles by material and corners before anything else
+([geometry](geometry.md#the-far-form)), so its result is a function of the surface alone.
+
+**What an imported mesh gets, and what a scene with none of it pays.** Any rigid, unfitted mesh a
+streamed entry places as a resident mesh is offered its far form's levels, the cheaper of a level
+and the DAG's cut drawn per ring; an imported boulder gets exactly what a generated one gets. A mesh
+with a fit is not offered yet (a row). A scene that streams nothing pays nothing (`offer_far_forms`
+returns before its loop); a streamed scene whose meshes are all deforming or fitted pays the loop
+over its meshes and no bake.
 
 ## Relief
 

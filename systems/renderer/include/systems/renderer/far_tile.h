@@ -19,6 +19,11 @@
 
 namespace engine::renderer {
 
+// Moves whenever what the far tile's build makes from the same members' far forms moves; in the
+// far tile's derived-data key beside the far form's and the recipe's versions. 2: a welded vertex
+// keeps the mean of its copies' own normals (renderer.md, "The far tile").
+inline constexpr u32 k_far_tile_build_version = 2;
+
 struct FarTileStats {
   u32 members = 0;           // distinct meshes it stands for
   u32 placements = 0;        // their placements

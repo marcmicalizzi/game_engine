@@ -101,8 +101,9 @@ TEST_CASE(
   CHECK(stats.members == near.meshes.size());
   CHECK(stats.materials == 1);
   CHECK(stats.clusters <= 4096);  // a streamed host's limit for one mesh
-  // Measured 2,261 against 13,939 (2026-11-13): the leaves are 1,025 clusters of 60 triangles, and
-  // the far tile's own DAG, which coarsens it across the ring, the rest.
+  // Measured 1,368 against 13,939 (2026-11-13, k_far_form_version 2; 2,261 at version 1, before
+  // the far form kept the pieces' cuts and welded its input by its bytes): the leaves are 651
+  // clusters, and the far tile's own DAG, which coarsens it across the ring, the rest.
   CHECK(stats.clusters * 5 < near_clusters);
   CHECK(stats.source_triangles <= near_triangles);  // less any the weld made degenerate
   CHECK(stats.source_triangles * 100 >= near_triangles * 99);
@@ -115,13 +116,17 @@ TEST_CASE(
   CHECK(hit.cache_hit);
   MESSAGE("far tile again: from the cache in ", hit.build_ms, " ms");
   const u64 pin = hash_combine(
-      hash_bytes(tile.lod.mesh.vertices.data(), tile.lod.mesh.vertices.size() * sizeof(Vec3)),
-      hash_bytes(tile.lod.mesh.triangles.data(), tile.lod.mesh.triangles.size() * 4));
+      hash_combine(
+          hash_bytes(tile.lod.mesh.vertices.data(), tile.lod.mesh.vertices.size() * sizeof(Vec3)),
+          hash_bytes(tile.lod.mesh.triangles.data(), tile.lod.mesh.triangles.size() * 4)),
+      hash_bytes(tile.lod.mesh.attributes.data(),
+                 tile.lod.mesh.attributes.size() * sizeof(geometry::VertexAttributes)));
   MESSAGE("far tile hash ", pin);
-  // Taken on MSVC 14.51, 2026-11-13 (k_far_form_version 1, k_far_tile_version 1, the default LOD
-  // options): the merged far tile's positions and triangles, built by one thread in the recipe's
-  // order, so the same at any job count.
-  CHECK(pin == 1162762295732236574ull);
+  // Taken on MSVC 14.51, 2026-11-13 (k_far_form_version 2, k_far_tile_build_version 2, the default LOD
+  // options): the merged far tile's positions, triangles and attributes (the normals the weld
+  // carries from the near form), built by one thread in the recipe's order, so the same at any job
+  // count.
+  CHECK(pin == 3832989870798787416ull);
   REQUIRE(again.lod.mesh.vertices.size() == tile.lod.mesh.vertices.size());
   CHECK(hash_bytes(again.lod.mesh.vertices.data(), again.lod.mesh.vertices.size() * sizeof(Vec3)) ==
         hash_bytes(tile.lod.mesh.vertices.data(), tile.lod.mesh.vertices.size() * sizeof(Vec3)));
