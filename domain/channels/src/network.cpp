@@ -815,10 +815,14 @@ void cut_bed(const ChannelLayer& p, ChannelLink& link,
   for (u32 i = f; i + 1 < m; ++i)
     if (link.line[i].at.y - link.line[i + 1].at.y >= k_fall_gradient * (s[i + 1] - s[i])) f = i + 1;
   const f64 b0 = link.bed[f], span = s[m - 1] - s[f];
+  // The fan's bed takes its running minimum too (W122): where the ground dips inside the fan
+  // the grade would follow it down and climb back out of the dip.
+  f64 low = std::numeric_limits<f64>::infinity();
   for (u32 i = f; i < m; ++i) {
     const f64 t = span > 0 ? (s[i] - s[f]) / span : 1.0;
     const f64 top = round_to(top_of(link, i), 1e3);
-    link.bed[i] = std::min(round_to(b0 + t * (level - b0), 1e3), round_to(top - .01, 1e3));
+    low = std::min(low, std::min(round_to(b0 + t * (level - b0), 1e3), round_to(top - .01, 1e3)));
+    link.bed[i] = low;
   }
   for (u32 i = 0; i < m; ++i) {
     const f64 top = round_to(top_of(link, i), 1e3);
@@ -2585,7 +2589,15 @@ HollowStats measure_hollows(const ChannelLayer& p, const ChannelNetwork& n) {
       // holds it at the level and lets it follow ground that stands under it, drowned either way.
       const bool drowned = link.mouth && line_at(i) <= round_to(link.mouth_level, 1e3) + 1e-3;
       if (i > lip && !drowned) {
-        const f64 rise = line_at(i) - line_at(i - 1);
+        // The bed's own rise, less what a step-pool's pool comes back up by here (its tail,
+        // where the pool's depth shrinks toward the next crest). Read on the bed and not on the
+        // bed with the pools added back: the chute lowers a bed above a riser, and added back
+        // there the pool's depth read as a rise the bed does not have.
+        const f64 tail =
+            i < link.step_depth.size()
+                ? std::max(0.0, wide(link.step_depth[i - 1]) - wide(link.step_depth[i]))
+                : 0.0;
+        const f64 rise = link.bed[i] - link.bed[i - 1] - tail;
         if (rise > 1e-3 + 1e-9) {
           climbs = true;
           if (rise > out.rise_max_m) {

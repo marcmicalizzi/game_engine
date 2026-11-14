@@ -1810,6 +1810,40 @@ began (`ends_higher`, 0), and what the breaches dig (`trench_max_m`, `trench_lin
 line is the cut's bed with a step-pool's own pool taken back out, since a pool below a step is a
 hollow the reach is made of, and an outlet's lip is its body's sill, held and not measured.
 
+**On the forest** (2026-11-14, `msvc-release`, the staging scene of the proof of concept
+re-planned, re-cut and solved with this row's `engine-content` into a derived-data root of its
+own; other agents building, 44 to 53 GB of commit free; against the stream solver's figures for
+the plan of 2026-11-12 at the same solver, in brackets). The plan: 724 links (784), 121.4 km of
+line, made in 17 s with two fills. **91 pits breached** (the deepest 0.99 m, 19.5 ha between
+them). **Twenty bodies of the plan**: the eight mountain basins, 28 to 135 m deep and 2.9 to
+43.6 ha, each at its spill less the notch with one outlet; and twelve lowland ponds 1.0 to 3.3 m
+deep, 0.07 to 14.8 ha, which a scene that does not want them breaches by raising `breach_max_m`
+to 3.5. **One authored body under its spill**: the pond at the owner's mark 8, 1.18 m in a
+hollow that spills at 4.05 m, where the outlet that climbed 1.77 m out of it no longer begins.
+The lowland lake authored at -2 m is no longer in a hollow of the routing at all: its basin's
+floor stands under the open sea's level, which is a sink. 179 mouths, 32 outlets.
+
+| On the solved lines | before | after |
+|---|---|---|
+| stations over a bank | 31,964 on 255 lines, the worst 74.7 m | 6,447 on 161 lines, the worst 7.8 m |
+| of them in a hollow of their own line | 26,395 | 3,567 |
+| hollows over 20 m / 5 to 20 m / 1 to 5 m | 13 / 22 / 225 | 0 / 6 / 157 |
+| lines that end higher than they begin | 88 | 27 |
+| rises beside an over-bank station | 14,240 | 1,171 |
+| wet links, wet line | 393, 37.0 km | 277, 25.2 km |
+| falls | 872 | 752 |
+| the seat: the most, and the line seated | 126 m, 134 km | 1.83 m, 35.5 km |
+
+**What is not zero, and is not traced.** The rule is held on the plan's own bed by the engine's
+cases; on the forest's solved lines 27 still end higher than they begin and 163 hollows over a
+metre remain, 0.26 km of line between them, a metre and a half long on average: the shape of a
+pit at a step's foot. They are not the seat's any more (it reads no bank across a knickpoint,
+and its most is 1.83 m), and the plan's bed does not rise there, so they are made between the
+plan's bed and the composed ground the solve reads: the cut's stamp at a step, a step under
+`fall_min_m` that is no knickpoint, or the solve's reading of a fall's foot. The wet line is a
+third shorter because the lines that crossed the basins' filled flats are gone, not because
+streams dried.
+
 **General purpose.** The fill, the breach and the bodies come from the heights of whatever
 ground the scene names, an imported heightfield as readily as a generated one: nothing reads
 which generator made it, and every limit is a field of the layer. **A scene with no `channels`
