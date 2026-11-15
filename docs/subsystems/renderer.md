@@ -1836,7 +1836,13 @@ can be scaled), so every path sees one of the two levels per sample. With the ch
 are alpha-tested even with no pack's image (flora.md), because an opaque side cannot dither: an
 opaque cluster of a fading mesh — the bark under the star — switches at the band's fine end, so its
 masked replacement is whole before it goes. The reference tracer's frames take no fade
-(`FrameDesc::lod_fade`), since its rays have no table.
+(`FrameDesc::lod_fade`), since its rays have no table. **Nor does a frame drawn with culling off**
+(`RenderSettings::cull` false, the capacity draw of one mesh): the table is the cull pass's output and
+such a frame has no cut to fade between, so `resolve_settings` sets its `lod_fade` to zero, its masked
+readers are given no table and keep every pixel the mask keeps. Until an imported alpha-tested mesh
+carried coverage errors (T147) no scene with them could be drawn that way; the first that could, the
+masked quad of `alpha_mask_tests.cpp`, read an unwritten table and drew nothing, which is how the
+rule came to be written down.
 
 **What holds** (`impostor_view_tests.cpp`, the 8 m oak at 480 × 480, the camera 15 m off while the
 threshold sweeps from 0.8 to 1.25 times the settings' over 20 frames, so only the switch moves): the

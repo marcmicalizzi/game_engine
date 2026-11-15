@@ -929,11 +929,12 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   out.gi_shell_rays = static_cast<u32>(gi_shell_rays.get());
   out.gi_shell_refresh = static_cast<u32>(gi_shell_refresh.get());
   // The accumulation reads the inputs, so it turns them on; neither on the direct path.
-  out.accumulation = out.settings.raster != RasterMode::Direct ? reconstruction_accumulation.get()
-                                                               : Accumulation::Off;
+  // (`s`, the settings being resolved: `out.settings` is still the caller's until the end.)
+  out.accumulation =
+      s.raster != RasterMode::Direct ? reconstruction_accumulation.get() : Accumulation::Off;
   out.reconstruction_inputs =
       (reconstruction_inputs.get() || out.accumulation != Accumulation::Off) &&
-      out.settings.raster != RasterMode::Direct;
+      s.raster != RasterMode::Direct;
   out.reconstruction_phases = out.accumulation != Accumulation::Off
                                   ? static_cast<u32>(reconstruction_phases.get())
                                   : k_sample_phases;
@@ -1128,6 +1129,12 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
     }
   }
   out.stream = s.stream;
+  // **No cull pass, no cross-fade.** The fade's table is the cull pass's output (renderer.md, "The
+  // cross-fade"), and a frame drawn with culling off — one mesh, every cluster — has no cut to
+  // fade between. Left on, its masked readers were handed a table nothing had written and kept no
+  // pixel: the masked quad of alpha_mask_tests.cpp, once an import carried coverage errors (T147).
+  // Here, after the last rule that can force the pass on.
+  if (!s.cull) s.lod_fade = 0.0f;
   // **Shadow casters.** The cone test drops a cluster that faces away from the *camera*, and the
   // shadow rays trace what the cull pass kept, so without this a card seen from behind casts no
   // shadow and a lit box seen from its dark side loses part of its own (docs/subsystems/

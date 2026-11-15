@@ -1,14 +1,14 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "b65-stack",
-  "reason": "batch 65's stack: record_frame and gpu_scene.cpp each measure one line more merged than the rows' own raises sum to (R154 with R158 in record_frame; T137, T138, G197 and G204 in gpu_scene.cpp), each row having counted its delta against main alone; AGENTS.md's waiting rule says why 170 s",
+  "reason": "batch 65's stack: record_frame and gpu_scene.cpp each measure one line more merged than the rows' own raises sum to (R154 with R158 in record_frame; T137, T138, G197 and G204 in gpu_scene.cpp), each row having counted its delta against main alone; AGENTS.md's waiting rule says why 170 s; renderer.md says a frame drawn with culling off takes no cross-fade (the gate's one failure, alpha_mask_tests.cpp's capacity draw)",
   "date": "2026-11-15",
   "by": "Marc Micalizzi",
   "deltas": {
     "renderer.record_frame.lines": 1,
     "renderer.gpu_scene_cpp.lines": 1,
     "renderer.gpu_scene_h.lines": -1,
-    "page:docs/subsystems/renderer.md": -51,
+    "page:docs/subsystems/renderer.md": 528,
     "page:AGENTS.md": 191
   }
 }
