@@ -34,13 +34,14 @@ constexpr i32 k_corner_cm = 40;       // an opening's edge to its room's corner
 constexpr i32 k_pier_cm = 60;         // between two openings in one wall
 constexpr i32 k_stack_pier_cm = 20;   // a window's edge to a stack that stands against its wall
 constexpr i32 k_door_margin_cm = 25;  // a partition doorway's jamb to the outer wall's face
-constexpr i32 k_landing_jamb_cm = 8;  // a landing doorway's jamb to each end of its landing
+constexpr i32 k_landing_pier_cm = 15;  // a landing doorway's jamb to the outer wall's face
+constexpr i32 k_landing_end_cm = 5;    // and its other jamb to the first riser's line
 constexpr i32 k_approach_cm = 90;     // the floor kept clear before a doorway (plan 14 §14.4)
 constexpr i32 k_stair_window_cm = 60;
 constexpr u32 k_max_windows = 4;
 
 // Hearths ("The hearth and its stack").
-constexpr i32 k_gable_stack_cm = 60;   // a gable hearth's breast, into the room
+constexpr i32 k_gable_stack_cm = 40;   // a wall hearth's breast, into the room
 constexpr i32 k_axial_stack_cm = 100;  // an axial stack, along the house
 constexpr i32 k_stack_jamb_cm = 30;    // each side of the opening
 constexpr i32 k_hall_opening_cm = 120;
@@ -661,8 +662,8 @@ bool plan_interior(const InteriorParams& params, InteriorPlan& out, std::string*
   i32 landing_door = p.doorway_cm;
   if (upper) {
     const i32 least_landing = head_len < foot_len ? head_len : foot_len;
-    if (landing_door > least_landing - 2 * k_landing_jamb_cm) {
-      landing_door = least_landing - 2 * k_landing_jamb_cm;
+    if (landing_door > least_landing - k_landing_pier_cm - k_landing_end_cm) {
+      landing_door = least_landing - k_landing_pier_cm - k_landing_end_cm;
     }
     if (landing_door < 80) {
       return fail(error, "interior: a landing too short for a doorway beside it");
@@ -673,7 +674,7 @@ bool plan_interior(const InteriorParams& params, InteriorPlan& out, std::string*
     const Band& b = l.ground[i + 1];
     const u32 w = build.wall(0, a.u1, a.room, b.room);
     if (a.kind == RoomKind::Stair || b.kind == RoomKind::Stair) {
-      build.doorway(w, v_len - foot_len / 2, landing_door);
+      build.doorway(w, v_len - k_landing_pier_cm - (landing_door - landing_door / 2), landing_door);
     } else {
       build.doorway(w, partition_at, p.doorway_cm);
     }
@@ -694,9 +695,9 @@ bool plan_interior(const InteriorParams& params, InteriorPlan& out, std::string*
     upper_stair_room = build.room(RoomKind::Stair, 1, l.strip_u0, l.strip_u1, 0);
     const u32 after = build.room(RoomKind::Chamber, 1, l.strip_u1, u_len, lived);
     const u32 w0 = build.wall(1, l.strip_u0, before, upper_stair_room);
-    build.doorway(w0, head_len / 2, landing_door);
+    build.doorway(w0, k_landing_pier_cm + landing_door / 2, landing_door);
     const u32 w1 = build.wall(1, l.strip_u1, upper_stair_room, after);
-    build.doorway(w1, head_len / 2, landing_door);
+    build.doorway(w1, k_landing_pier_cm + landing_door / 2, landing_door);
 
     Stair s;
     s.strip = frame.rect(l.strip_u0, 0, l.strip_u1, v_len);

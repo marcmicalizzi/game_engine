@@ -3,6 +3,8 @@
 
 #include <domain/dwellings/rural_filler.h>
 
+#include <domain/dwellings/describe.h>
+
 #include <core/hash/hash.h>
 
 namespace engine::dwellings {
@@ -103,12 +105,17 @@ bool choose_rural(const RuralPlot& plot, const Household& household, const Rural
                   u64 seed, RuralChoice& out, std::string* error) {
   out = RuralChoice{};
   const i32 walls = 2 * i32{style.outer_wall_cm};
-  const i32 clear_width = down10(plot.frontage_cm - walls);
-  const i32 clear_depth = down10(plot.depth_cm - walls);
+  // What the plot holds, and never more than a description reaches.
+  const i32 reach = max_clear_cm(style.outer_wall_cm);
+  i32 clear_width = down10(plot.frontage_cm - walls);
+  if (clear_width > reach) clear_width = reach;
+  i32 clear_depth = down10(plot.depth_cm - walls);
+  if (clear_depth > reach) clear_depth = reach;
 
   InteriorParams asked;
   apply(style, asked);
   household_asks(household, asked);
+  if (asked.storeys == 1) asked.storey_cm = style.single_storey_cm;
 
   // The household's house, then what a smaller plot still holds, largest first: the same rooms on
   // two storeys, the plan one room wide, the two rooms on one floor, the cot.
@@ -119,6 +126,7 @@ bool choose_rural(const RuralPlot& plot, const Household& household, const Rural
     InteriorParams c = asked;
     c.type = type;
     c.storeys = storeys;
+    c.storey_cm = storeys == 1 ? style.single_storey_cm : style.storey_cm;
     c.inner_room = false;
     candidates[count++] = c;
   };

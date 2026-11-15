@@ -89,6 +89,52 @@ cot's front. The type fixes the rest. The ridge runs along the longer side.
 
 The filler never looks at the ground: whoever places the house cuts or fills its pad.
 
+## The description a plan becomes
+
+`describe(plan, choice, name, seed, out)` (`describe.h`) writes the plan and the shell it stands in
+as the structures capability's `engine.structure.Description`
+([structures](structures.md)), and `fill_rural(plot, household, style, seed, name, out)` is the
+whole filler: choose, plan, describe, and the mesher's own `validate`. The description's frame is
+the plan's moved by half the outer wall's thickness on both axes (`description_offset_cm`): the
+plan lies between the outer walls' inner faces, the description on the walls' centre lines, both
+from (0, 0), the front wall along z = 0 and the lane on its -z side.
+
+| The plan's | becomes |
+|---|---|
+| the clear rectangle and the outer wall's thickness | the footprint; four exterior walls a storey (left, back, right, front, the footprint's order). A wall names one room: the one its door opens into, else the first that meets it |
+| storeys | `Storey` records: 2.4 m floor to floor under an upper storey, 2.2 m to the plate for a house of one; a one-room house is open to its roof, divided rooms are ceiled |
+| `Room` | `Room`, its id its index, its outline on the centre lines. An inner room is a `parlour`, a stair's compartment a `passage`; `name` keeps the plan's word |
+| `InnerWall`, `Doorway` | `Wall{inner}` from one exterior wall's centre line to the other's (a T at each end), `Opening{doorway}` |
+| `OuterOpening` | `Opening{door}` or `{window}` in its side's wall, `at` measured the way that wall runs |
+| `Stair` | `Stair{straight}`: the foot at the middle of the first riser, the direction, the risers, a going of 28 cm, the well. Its width is the strip's clear width and 2 cm, so the steps run a centimetre into each wall and no face of a step lies in a wall's face |
+| `Hearth` | `Chimney`: a wall stack runs through its wall and stands 8 cm proud outside, as the mesher's example does; every stack rises from the footing to 75 cm over the roof where it comes through. Before it, two `Box` members: the hearth stone and the bressumer over the opening |
+| the choice's ridge | one gable `Roof` over the outer faces, its pitch, overhang and covering the mesher's example's ([the shell's grounding](../experiments/vernacular-shell.md)) |
+
+Every coordinate of a description lies within 15 m of its origin, the roof's outer faces and a
+stack's proud face among them, so a house's clear length is at most 14.1 m at the default wall
+(`max_clear_cm`); the filler's ranges stop there.
+
+**What an imported or hand-authored building gets.** Nothing here is the filler's alone: a
+description written by hand with rooms, inner walls, doorways and a stair is meshed and walked by
+the same code, and `plan_interior` lays a plan into any clear rectangle an author names.
+
+**Budgets.** Measured by `tests/describe_tests.cpp` over 324 houses (`msvc-debug`, the mesher at
+`k_structure_version` 1): a cot is 488 to 640 triangles, a two-storey hall and parlour about 2,050,
+a two-up two-down about 1,760, and the largest, a two-storey cross-passage house with an inner room
+13.5 m by 5.5 m clear, 2,848. The test holds every house under 6,000. What the cluster DAG does to
+them at a distance is the mesher's ([structures](structures.md)).
+
+## The filler as a tool
+
+`engine-content dwelling <out-dir> [--name <n>] [--persons <n>] [--means <0|1|2>] [--frontage <cm>]
+[--depth <cm>] [--seed <n>] [--scope whole|exterior|interior]` runs the filler once and writes
+three files: `<n>.structure.json`, the mesh generator `structure`'s recipe, which a scene names like
+any generated mesh; `<n>.plan.txt`, each storey drawn as text; and `<n>.walk.json`, the tour and
+the views in metres in the description's frame (`tour`: points with the floor's height under each
+and the room; `views`: an eye and a point looked at, a room). It prints one JSON line: the type,
+storeys, rooms, the clear and outer sizes, whether the plot demoted the house, and the triangles.
+What it writes is a starting point its author owns; nothing runs it again.
+
 ## The tour and the views
 
 `tour_interior(plan, outside_cm, points)` (`tour.h`) is a walk through the whole house read from

@@ -20,8 +20,8 @@ namespace {
 
 // Taken on MSVC 19.44 (msvc-debug) on 2026-11-14 at k_interior_version 1 and
 // k_rural_filler_version 1.
-constexpr u64 k_plans_pin = 0x0ull;
-constexpr u64 k_houses_pin = 0x0ull;
+constexpr u64 k_plans_pin = 0x5c01de15f6f37a18ull;
+constexpr u64 k_houses_pin = 0xdafc24fbe9f3fa51ull;
 
 }  // namespace
 

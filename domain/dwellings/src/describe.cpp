@@ -1,0 +1,352 @@
+// A plan as a description (describe.h). Integer centimetres throughout; the mesher's conventions
+// are structures.md's: walls on centre lines, a wall's `a` the room on the left of its direction
+// seen from above (the left of +x is -z, the left of +z is +x), an opening's `at` along its wall
+// from the wall's `from`.
+
+#include <domain/dwellings/describe.h>
+
+#include <domain/structures/structures.h>
+
+namespace engine::dwellings {
+
+namespace {
+
+template <class T>
+u32 count_of(const Vector<T>& v) noexcept {
+  return static_cast<u32>(v.size());
+}
+
+constexpr i32 k_stack_proud_cm = 8;    // a wall stack stands this far out of its wall's outer face
+constexpr i32 k_over_roof_cm = 75;     // a stack's top over the roof where it comes through
+constexpr i32 k_ground_floor_cm = 20;  // the ground storey's slab
+constexpr i32 k_hearth_stone_cm = 45;  // the stone before a hearth, its depth
+constexpr i32 k_bressumer_cm = 18;     // the beam over a hearth's opening, its height
+
+// The exterior walls of a storey, in the footprint's order: counter-clockwise seen from above.
+constexpr u32 k_wall_left = 0;
+constexpr u32 k_wall_back = 1;
+constexpr u32 k_wall_right = 2;
+constexpr u32 k_wall_front = 3;
+
+u32 wall_of(Side side) noexcept {
+  switch (side) {
+    case Side::Left: return k_wall_left;
+    case Side::Back: return k_wall_back;
+    case Side::Right: return k_wall_right;
+    default: return k_wall_front;
+  }
+}
+
+// A direction as the description's quarter turn: 0 +x, 1 +z, 2 -x, 3 -z.
+u8 quarter_of(Side looks) noexcept {
+  switch (looks) {
+    case Side::Right: return 0;
+    case Side::Back: return 1;
+    case Side::Left: return 2;
+    default: return 3;
+  }
+}
+
+structure::RoomKind kind_of(RoomKind kind) noexcept {
+  switch (kind) {
+    case RoomKind::Hall: return structure::RoomKind::hall;
+    case RoomKind::Parlour: return structure::RoomKind::parlour;
+    case RoomKind::Inner: return structure::RoomKind::parlour;
+    case RoomKind::Kitchen: return structure::RoomKind::kitchen;
+    case RoomKind::Chamber: return structure::RoomKind::chamber;
+    case RoomKind::Service: return structure::RoomKind::service;
+    default: return structure::RoomKind::passage;  // a passage, and a stair's compartment
+  }
+}
+
+bool touches(const InteriorPlan& plan, const Room& room, Side side) noexcept {
+  switch (side) {
+    case Side::Front: return room.rect.z0 == 0;
+    case Side::Back: return room.rect.z1 == plan.params.depth_cm;
+    case Side::Left: return room.rect.x0 == 0;
+    default: return room.rect.x1 == plan.params.width_cm;
+  }
+}
+
+}  // namespace
+
+i32 max_clear_cm(u16 outer_wall_cm) noexcept {
+  const i32 wall = i32{outer_wall_cm};
+  return (structures::k_reach_cm - wall - wall / 2 - k_stack_proud_cm) / 10 * 10;
+}
+
+void describe(const InteriorPlan& plan, const RuralChoice& choice, std::string_view name,
+              u64 seed, structure::Description& out) {
+  const InteriorParams& p = plan.params;
+  out = structure::Description{};
+  const i32 wall = i32{choice.outer_wall_cm};
+  const i32 off = wall / 2;
+  const i32 a = p.width_cm + wall;  // the centre lines' rectangle
+  const i32 b = p.depth_cm + wall;
+  out.name = std::string(name);
+  out.style = std::string("rural/") + plan_type_name(p.type);
+  const i32 corners[4][2] = {{0, 0}, {0, b}, {a, b}, {a, 0}};
+  for (const auto& c : corners) {
+    out.footprint.push_back(c[0]);
+    out.footprint.push_back(c[1]);
+  }
+
+  // Storeys. A one-room house is open to its roof; rooms divided by walls are ceiled.
+  structure::Storey ground;
+  ground.elevation = 0;
+  ground.height = p.storey_cm;
+  ground.floor_thickness = k_ground_floor_cm;
+  ground.ceiling = p.storeys == 1 && count_of(plan.rooms) > 1;
+  out.storeys.push_back(ground);
+  if (p.storeys == 2) {
+    structure::Storey above;
+    above.elevation = p.storey_cm;
+    above.height = p.upper_clear_cm;
+    above.floor_thickness = p.floor_cm;
+    above.ceiling = true;
+    out.storeys.push_back(above);
+  }
+  const structure::Storey& top = out.storeys[count_of(out.storeys) - 1];
+  const i32 eaves = top.elevation + top.height;
+
+  // Rooms, on the walls' centre lines.
+  auto on_lines_x = [&](i32 x) { return x == 0 ? 0 : (x == p.width_cm ? a : x + off); };
+  auto on_lines_z = [&](i32 z) { return z == 0 ? 0 : (z == p.depth_cm ? b : z + off); };
+  for (u32 i = 0; i < count_of(plan.rooms); ++i) {
+    const Room& r = plan.rooms[i];
+    structure::Room room;
+    room.id = i;
+    room.storey = r.storey;
+    room.kind = kind_of(r.kind);
+    room.name = room_kind_name(r.kind);
+    const i32 x0 = on_lines_x(r.rect.x0);
+    const i32 x1 = on_lines_x(r.rect.x1);
+    const i32 z0 = on_lines_z(r.rect.z0);
+    const i32 z1 = on_lines_z(r.rect.z1);
+    const i32 outline[8] = {x0, z0, x0, z1, x1, z1, x1, z0};
+    for (const i32 v : outline) room.outline.push_back(v);
+    out.rooms.push_back(room);
+  }
+
+  // Exterior walls: four a storey. A wall names one room: the one its door opens into, else the
+  // first that meets it.
+  for (u8 storey = 0; storey < p.storeys; ++storey) {
+    constexpr Side k_sides[4] = {Side::Left, Side::Back, Side::Right, Side::Front};
+    for (u32 i = 0; i < 4; ++i) {
+      structure::Wall w;
+      w.storey = storey;
+      w.from[0] = corners[i][0];
+      w.from[1] = corners[i][1];
+      w.to[0] = corners[(i + 1) % 4][0];
+      w.to[1] = corners[(i + 1) % 4][1];
+      w.thickness = wall;
+      w.kind = structure::WallKind::exterior;
+      w.b = -1;
+      for (u32 r = 0; r < count_of(plan.rooms) && w.a < 0; ++r) {
+        if (plan.rooms[r].storey == storey && touches(plan, plan.rooms[r], k_sides[i])) {
+          w.a = static_cast<i32>(r);
+        }
+      }
+      for (const OuterOpening& o : plan.openings) {
+        if (o.door() && o.storey() == storey && o.side == k_sides[i]) {
+          w.a = static_cast<i32>(o.room);
+        }
+      }
+      out.walls.push_back(w);
+    }
+  }
+  const u32 first_inner = count_of(out.walls);
+  for (const InnerWall& iw : plan.walls) {
+    structure::Wall w;
+    w.storey = iw.storey;
+    w.thickness = iw.thickness_cm;
+    w.kind = structure::WallKind::inner;
+    if (iw.x0 == iw.x1) {
+      // Along +z, from the front wall's line to the back's: the left of +z is +x.
+      w.from[0] = iw.x0 + off;
+      w.from[1] = 0;
+      w.to[0] = iw.x0 + off;
+      w.to[1] = b;
+      w.a = static_cast<i32>(iw.b);
+      w.b = static_cast<i32>(iw.a);
+    } else {
+      // Along +x, from the left wall's line to the right's: the left of +x is -z.
+      w.from[0] = 0;
+      w.from[1] = iw.z0 + off;
+      w.to[0] = a;
+      w.to[1] = iw.z0 + off;
+      w.a = static_cast<i32>(iw.a);
+      w.b = static_cast<i32>(iw.b);
+    }
+    out.walls.push_back(w);
+  }
+
+  // Openings.
+  for (const OuterOpening& o : plan.openings) {
+    structure::Opening opening;
+    opening.wall = u32{o.storey()} * 4 + wall_of(o.side);
+    opening.kind = o.door() ? structure::OpeningKind::door : structure::OpeningKind::window;
+    switch (o.side) {
+      case Side::Left:
+      case Side::Back: opening.at = off + o.at_cm; break;
+      case Side::Right: opening.at = p.depth_cm + off - o.at_cm; break;
+      default: opening.at = p.width_cm + off - o.at_cm; break;
+    }
+    opening.width = o.width_cm;
+    opening.sill = o.sill_cm;
+    opening.head = o.head_cm;
+    out.openings.push_back(opening);
+  }
+  for (const Doorway& d : plan.doorways) {
+    structure::Opening opening;
+    opening.wall = first_inner + d.wall;
+    opening.kind = structure::OpeningKind::doorway;
+    opening.at = off + d.at_cm;
+    opening.width = d.width_cm;
+    opening.sill = 0;
+    opening.head = d.head_cm;
+    out.openings.push_back(opening);
+  }
+
+  // The stair: its steps run into the strip's two walls by a centimetre, so no face of a step lies
+  // in a wall's face.
+  for (const Stair& s : plan.stairs) {
+    structure::Stair stair;
+    stair.kind = structure::StairKind::straight;
+    stair.storey = s.from_storey;
+    const bool along_z = s.rises == Side::Front || s.rises == Side::Back;
+    const i32 mid_x = (s.strip.x0 + s.strip.x1) / 2;
+    const i32 mid_z = (s.strip.z0 + s.strip.z1) / 2;
+    switch (s.rises) {
+      case Side::Front:
+        stair.foot[0] = mid_x + off;
+        stair.foot[1] = s.flight.z1 + off;
+        break;
+      case Side::Back:
+        stair.foot[0] = mid_x + off;
+        stair.foot[1] = s.flight.z0 + off;
+        break;
+      case Side::Left:
+        stair.foot[0] = s.flight.x1 + off;
+        stair.foot[1] = mid_z + off;
+        break;
+      default:
+        stair.foot[0] = s.flight.x0 + off;
+        stair.foot[1] = mid_z + off;
+        break;
+    }
+    stair.dir = quarter_of(s.rises);
+    const i32 across = along_z ? s.strip.x1 - s.strip.x0 : s.strip.z1 - s.strip.z0;
+    stair.width = across - p.inner_wall_cm + 2;
+    stair.risers = s.risers;
+    stair.going = k_stair_going_cm;
+    const RectCm well = s.well();
+    stair.well[0] = well.x0 + off;
+    stair.well[1] = well.z0 + off;
+    stair.well[2] = well.x1 + off;
+    stair.well[3] = well.z1 + off;
+    stair.from_room = static_cast<i32>(s.lower_room);
+    stair.to_room = static_cast<i32>(s.upper_room);
+    out.stairs.push_back(stair);
+  }
+
+  // One gable roof, its ridge along the longer side; the covering's numbers are the mesher's
+  // example's (docs/experiments/vernacular-shell.md).
+  structure::Roof roof = structures::example_cot().roofs[0];
+  roof.form = structure::RoofForm::gable;
+  roof.rect[0] = -off;
+  roof.rect[1] = -off;
+  roof.rect[2] = a + off;
+  roof.rect[3] = b + off;
+  roof.ridge_along_x = choice.ridge_along_front;
+  roof.eaves = eaves;
+  out.roofs.push_back(roof);
+
+  // A chimney a hearth: a wall stack runs through its wall and stands proud of it outside; every
+  // stack rises from the footing to 75 cm over the roof where it comes through.
+  for (const Hearth& h : plan.hearths) {
+    structure::Chimney c;
+    c.rect[0] = h.stack.x0 == 0 ? -off - k_stack_proud_cm : h.stack.x0 + off;
+    c.rect[1] = h.stack.z0 == 0 ? -off - k_stack_proud_cm : h.stack.z0 + off;
+    c.rect[2] = h.stack.x1 == p.width_cm ? a + off + k_stack_proud_cm : h.stack.x1 + off;
+    c.rect[3] = h.stack.z1 == p.depth_cm ? b + off + k_stack_proud_cm : h.stack.z1 + off;
+    c.base = -out.foundation;
+    // The roof's height over the stack's highest part: its run in from the nearer eave.
+    const i32 lo = roof.ridge_along_x ? c.rect[1] : c.rect[0];
+    const i32 hi = roof.ridge_along_x ? c.rect[3] : c.rect[2];
+    const i32 eave_lo = roof.ridge_along_x ? roof.rect[1] : roof.rect[0];
+    const i32 eave_hi = roof.ridge_along_x ? roof.rect[3] : roof.rect[2];
+    const i32 half = (eave_hi - eave_lo) / 2;
+    const i32 ridge = eave_lo + half;
+    i32 run = half;
+    if (hi < ridge) run = hi - eave_lo;
+    if (lo > ridge) run = eave_hi - lo;
+    c.top = eaves + roof.pitch * run / 1000 + 2 * roof.thickness + k_over_roof_cm;
+    c.hearth_side = quarter_of(h.faces);
+    c.hearth_storey = h.storey;
+    c.hearth_width = h.opening_cm;
+    c.hearth_head = h.lintel_cm;
+    out.chimneys.push_back(c);
+
+    // The hearth stone before the opening and the bressumer over it, on the stack's face.
+    const i32 floor_top = out.storeys[h.storey].elevation;
+    const bool faces_x = h.faces == Side::Left || h.faces == Side::Right;
+    const i32 mid = faces_x ? (h.stack.z0 + h.stack.z1) / 2 + off : (h.stack.x0 + h.stack.x1) / 2 + off;
+    const i32 half_open = h.opening_cm / 2;
+    const i32 half_stack = (faces_x ? h.stack.z1 - h.stack.z0 : h.stack.x1 - h.stack.x0) / 2;
+    i32 face = 0;  // the stack's face, and the way out of it
+    i32 outward = 1;
+    switch (h.faces) {
+      case Side::Right: face = h.stack.x1 + off; break;
+      case Side::Left:
+        face = h.stack.x0 + off;
+        outward = -1;
+        break;
+      case Side::Back: face = h.stack.z1 + off; break;
+      default:
+        face = h.stack.z0 + off;
+        outward = -1;
+        break;
+    }
+    auto member = [&](i32 depth, i32 half_width, i32 y0, i32 y1, structure::Surface surface) {
+      structure::Box box;
+      const i32 near_edge = outward > 0 ? face - 1 : face - depth;
+      const i32 far_edge = outward > 0 ? face + depth : face + 1;
+      box.min[0] = faces_x ? near_edge : mid - half_width;
+      box.max[0] = faces_x ? far_edge : mid + half_width;
+      box.min[1] = y0;
+      box.max[1] = y1;
+      box.min[2] = faces_x ? mid - half_width : near_edge;
+      box.max[2] = faces_x ? mid + half_width : far_edge;
+      box.surface = surface;
+      box.solid = false;
+      box.room = static_cast<i32>(h.room);
+      out.boxes.push_back(box);
+    };
+    member(k_hearth_stone_cm, half_open + 10, floor_top - 2, floor_top + 4,
+           structure::Surface::floor);
+    member(4, half_stack + 2, floor_top + h.lintel_cm, floor_top + h.lintel_cm + k_bressumer_cm,
+           structure::Surface::timber);
+  }
+
+  out.provenance.filler = "rural";
+  out.provenance.version = k_rural_filler_version;
+  out.provenance.seed = seed;
+}
+
+bool fill_rural(const RuralPlot& plot, const Household& household, const RuralStyle& style,
+                u64 seed, std::string_view name, structure::Description& out,
+                std::string* error) {
+  RuralChoice choice;
+  InteriorPlan plan;
+  if (!plan_rural(plot, household, style, seed, choice, plan, error)) return false;
+  describe(plan, choice, name, seed, out);
+  std::string why;
+  if (!structures::validate(out, why)) {
+    if (error != nullptr) *error = "rural filler: the mesher refuses the description: " + why;
+    return false;
+  }
+  return true;
+}
+
+}  // namespace engine::dwellings

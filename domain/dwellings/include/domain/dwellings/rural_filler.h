@@ -49,7 +49,8 @@ struct Household {
 struct RuralStyle {
   u16 outer_wall_cm = 50;
   u16 inner_wall_cm = 10;
-  u16 storey_cm = 240;       // floor to floor
+  u16 storey_cm = 240;         // floor to floor, under an upper storey
+  u16 single_storey_cm = 220;  // the floor to the wall plate of a house of one storey
   u16 upper_clear_cm = 220;
   u16 floor_cm = 20;
   u16 door_cm = 95;

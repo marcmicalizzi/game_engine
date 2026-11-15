@@ -214,6 +214,11 @@ const char* k_usage =
     "                                          the footbridges where the scene's routes ford its\n"
     "                                          streams: a bridges entry, approaches (edits) and\n"
     "                                          footprints; present with the bridges capability\n"
+    "  dwelling <out-dir> [--name <n>] [--persons <n>] [--means <0|1|2>] [--frontage <cm>]\n"
+    "           [--depth <cm>] [--seed <n>] [--scope whole|exterior|interior]\n"
+    "                                          the rural filler: a house for a plot and a\n"
+    "                                          household as <n>.structure.json, its plan as\n"
+    "                                          text and its walk; with the dwellings capability\n"
     "  cave-plan <network.json> <out dir> [--ground <valley>,<slope_x>[,<flank_m>]] [--cells]\n"
     "                                          a cave network's plan against a hillside: a plan\n"
     "                                          view, a long section, the holes its mouths ask\n"
@@ -1443,6 +1448,7 @@ int main(int argc, char** argv) {
   if (command == "matgen") return content::matgen_command(argc, argv);
   if (command == "routes") return content::routes_command(argc, argv);
   if (command == "bridges") return content::bridges_command(argc, argv);
+  if (command == "dwelling") return content::dwelling_command(argc, argv);
   if (command == "cave-plan") return content::caves_command(argc, argv);
   if (command == "vine") return content::vine_command(argc, argv);
   if (command == "cover") return content::cover_command(argc, argv);
