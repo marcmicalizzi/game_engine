@@ -277,7 +277,7 @@ Vec3 camera_forward(const Camera& camera) noexcept {
   return n > 0.0 ? narrow(d / n) : Vec3{0.0f, 0.0f, -1.0f};
 }
 
-void ViewSet::update(const Camera& camera) noexcept {
+void ViewSet::update(const Camera& camera, f32 offset_x, f32 offset_y) noexcept {
   // **The frame's eye is the origin of every matrix made here** (ADR-0053; renderer.md, "The
   // frame's origin"): the views look from (0, 0, 0) along the camera's direction, which is the f64
   // difference of its two points normalized in f64, so a camera anywhere in the world gives the
@@ -313,7 +313,40 @@ void ViewSet::update(const Camera& camera) noexcept {
     view.view_proj = projection * view_matrix;
     view.clip_to_ray = gfx::clip_to_ray(projection, view_matrix);
     view.proj_scale = projection.at(1, 1) * static_cast<f32>(view.source_height) * 0.5f;
+    view.view_proj_center = view.view_proj;
+    view.offset_x = offset_x;
+    view.offset_y = offset_y;
+    if (offset_x != 0.0f || offset_y != 0.0f) {
+      // **The frame's sub-pixel offset** (view_set.h; ADR-0064): a sample `(jx, jy)` pixels from
+      // each pixel's centre is the picture's content moved by `(-jx, -jy)` pixels, which in clip
+      // space is `x += shift_x * w` and `y += shift_y * w` with shift = (-2 jx / W, +2 jy / H), y
+      // up. The projection's `w` is `-z` (its row 3 is (0, 0, -1, 0)), so the shift goes into the
+      // third column with its sign turned. Only here, behind the test for zero, so a frame with no
+      // offset computes exactly what it always did.
+      Mat4 sheared = projection;
+      sheared.at(0, 2) -= -2.0f * offset_x / static_cast<f32>(view.source_width);
+      sheared.at(1, 2) -= 2.0f * offset_y / static_cast<f32>(view.source_height);
+      view.view_proj = sheared * view_matrix;
+      view.clip_to_ray = gfx::clip_to_ray(sheared, view_matrix);
+    }
   }
+}
+
+void sample_offset(u32 phase, f32& x, f32& y) noexcept {
+  // The radical inverse of `index` in base 2 and in base 3: the sum of digit / base^k, in plain
+  // float operations, so every compiler gives the same bits.
+  const auto radical = [](u32 index, u32 base) noexcept {
+    f32 result = 0.0f;
+    f32 scale = 1.0f / static_cast<f32>(base);
+    while (index > 0) {
+      result += static_cast<f32>(index % base) * scale;
+      index /= base;
+      scale /= static_cast<f32>(base);
+    }
+    return result;
+  };
+  x = radical(phase + 1, 2) - 0.5f;
+  y = radical(phase + 1, 3) - 0.5f;
 }
 
 }  // namespace engine::renderer

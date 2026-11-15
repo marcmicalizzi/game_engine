@@ -37,6 +37,11 @@
   -WaitQuiet (seconds, default 600) waits for a quiet machine before each run and then runs either
   way; -RequireQuiet refuses to measure on a busy one (engine-view exits 4 and the run is marked).
 
+  Every row is a native measurement (ADR-0064): the matrix passes no flag that turns sampling over
+  time on, and a run whose summary says otherwise (a `reconstruction` block with a provider or an
+  internal size below the output's, or times under `reconstructed`) gets a row that says
+  "refused" in place of its numbers and fails the script.
+
   Exit code: 0 when every run succeeded, 1 otherwise.
 #>
 [CmdletBinding()]
@@ -66,6 +71,8 @@ param(
 $ErrorActionPreference = 'Stop'
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $IsWin = $IsWindows -or ($env:OS -eq 'Windows_NT')
+# The measurement rule's one implementation (ADR-0064): Get-ReconstructionRefusal.
+Import-Module (Join-Path $PSScriptRoot 'lib/FrameBudget.psm1') -Force
 if (-not $Exe) {
   $Exe = Join-Path $Root ("build/$Preset/bin/engine-view" + $(if ($IsWin) { '.exe' } else { '' }))
 }
@@ -192,6 +199,16 @@ $md = @(
 )
 foreach ($r in $results) {
   $s = $r.Summary
+  # The measurement rule (ADR-0064): a run that was not a native measurement has no cost to put in
+  # the table. Its row says so, and the script fails: the matrix never turns reconstruction on, so
+  # one that was is a flag in -Extra that does not belong in a measurement.
+  $refusal = Get-ReconstructionRefusal -Summary $s
+  if ($refusal) {
+    $failed++
+    Write-Warning "flythrough: $($r.Tag) refused: $refusal"
+    $md += '| {0} | {1} | {2} | {3} | {4} | {5} x {6} | refused: {7} |||||||||||||' -f $r.Resolution, $s.views, $r.Occlusion, $s.raster, $s.shadows, $s.frames, $s.repeats, $refusal
+    continue
+  }
   $raster = [double]$s.gpu_ms.hw.median + [double]$s.gpu_ms.sw.median
   # The shadow maps' column is every pass that draws them; an older engine-view's summary has none.
   $shadow = if ($null -ne $s.gpu_ms.shadow) { Format-Ms $s.gpu_ms.shadow.median } else { '-' }

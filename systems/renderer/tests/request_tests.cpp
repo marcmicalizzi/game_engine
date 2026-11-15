@@ -246,6 +246,10 @@ const FrameRow k_frame_rows[] = {
     {"dt_s",
      "a host's own step, for the frame passes (frame_pass.h); render.* registers none, so "
      "no call draws a medium (systems/volumetrics; engine-host's render.* is a later stage)"},
+    {"history_reset",
+     "a host's own, on a camera cut, a teleport or a load (renderer.md, \"Sampling over time: the "
+     "inputs\"); read only under renderer.reconstruction.inputs, which no call sets, and a call's "
+     "frames are each their own picture"},
 };
 
 }  // namespace
@@ -266,8 +270,8 @@ TEST_CASE("request: every RenderSettings and FrameDesc field says how a request 
   // the row says which.
   renderer::FrameDesc frame;
   [[maybe_unused]] auto& [f00, f01, f02, f03, f04, f05, f06, f07, f08, f09, f10, f11, f12, f13, f14,
-                          f15, f16, f17, f18] = frame;
-  static_assert(std::size(k_frame_rows) == 19, "one row per FrameDesc field");
+                          f15, f16, f17, f18, f19] = frame;
+  static_assert(std::size(k_frame_rows) == 20, "one row per FrameDesc field");
   for (const FrameRow& row : k_frame_rows) {
     CHECK_MESSAGE(std::strlen(row.source) > 0, row.field);
   }

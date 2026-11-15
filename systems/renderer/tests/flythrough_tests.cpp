@@ -786,7 +786,8 @@ TEST_CASE("flythrough: percentiles and the per-frame summary") {
       scene::FrameRecord record;
       record.repeat = r;
       record.frame = f;
-      record.gpu_ms.total = 1.0 + f + (f == 1 && r == 1 ? 100.0 : 0.0);
+      record.gpu_ms = scene::PassMs{};
+      record.gpu_ms->total = 1.0 + f + (f == 1 && r == 1 ? 100.0 : 0.0);
       record.visible_pairs = 10 + f + (f == 2 && r == 2 ? 1u : 0u);
       record.uploads = 1;
       // The CPU's and the wall's milliseconds summarize like a pass does; ticks add up.
@@ -803,8 +804,9 @@ TEST_CASE("flythrough: percentiles and the per-frame summary") {
   scene::FlythroughSummary summary;
   summarize_frames(std::span<const scene::FrameRecord>(records.data(), records.size()), 3, 3, path,
                    summary);
-  CHECK(summary.gpu_ms.total.median == doctest::Approx(2.0));
-  CHECK(summary.gpu_ms.total.max == doctest::Approx(3.0));
+  REQUIRE(summary.gpu_ms.has_value());
+  CHECK(summary.gpu_ms->total.median == doctest::Approx(2.0));
+  CHECK(summary.gpu_ms->total.max == doctest::Approx(3.0));
   CHECK_FALSE(summary.deterministic);
   CHECK(summary.mismatched_frames == 1);
   CHECK(summary.uploads == 9);
@@ -841,11 +843,12 @@ TEST_CASE("flythrough: the summary carries a median, p95 and p99 for every pass 
   for (u32 f = 0; f < 3; ++f) {
     scene::FrameRecord record;
     record.frame = f;
+    record.gpu_ms = scene::PassMs{};
     for (u32 k = 0; k < buckets.fields.size(); ++k) {
       const schema::FieldInfo& field = buckets.fields[k];
       REQUIRE(field.type.kind == schema::Kind::F64);
       f64 value = static_cast<f64>(k + 1) * static_cast<f64>(f + 1);
-      std::memcpy(reinterpret_cast<u8*>(&record.gpu_ms) + field.offset, &value, sizeof(value));
+      std::memcpy(reinterpret_cast<u8*>(&*record.gpu_ms) + field.offset, &value, sizeof(value));
     }
     records.push_back(record);
   }
@@ -874,6 +877,91 @@ TEST_CASE("flythrough: the summary carries a median, p95 and p99 for every pass 
         CHECK_MESSAGE(got >= median, "gpu_ms." << name << "." << stat << " below its median");
     }
   }
+}
+
+// **The measurement rule** (ADR-0064; renderer.md, "Sampling over time: the measurement rule"): a
+// frame's times are a cost only when nothing reconstructed it and it was drawn at the output's
+// size. Held where the record and the summary are made, so both hosts' lines carry it: a native
+// frame's record has `gpu_ms` and the block; a frame with a provider, or drawn at another size,
+// has `gpu_ms` null and its times under `reconstructed`; and one such record in a run leaves the
+// summary with no `gpu_ms` and no marker time. Fails without the rule: the first check of the
+// second block (the record's `gpu_ms` would hold the reconstructed frame's times).
+TEST_CASE("flythrough: a frame's times are a cost only when it is a native measurement") {
+  FrameStats stats;
+  stats.gpu_total = 4.0;
+  stats.gpu_motion = 0.25;
+  stats.reconstruction.internal_width = stats.reconstruction.output_width = 3840;
+  stats.reconstruction.internal_height = stats.reconstruction.output_height = 2160;
+  // Native, the inputs on: still a cost (the motion pass is in it), and the block says so.
+  stats.reconstruction.inputs = true;
+  const scene::FrameRecord native = frame_record(stats, 0, 0, 0.0);
+  REQUIRE(native.gpu_ms.has_value());
+  CHECK_FALSE(native.reconstructed.has_value());
+  CHECK(native.gpu_ms->total == doctest::Approx(4.0));
+  CHECK(native.gpu_ms->motion == doctest::Approx(0.25));
+  CHECK(native.reconstruction.provider == "off");
+  CHECK(native.reconstruction.mode == "native");
+  CHECK(native.reconstruction.inputs);
+  CHECK(native.reconstruction.internal_width == 3840);
+  CHECK(native.reconstruction.output_height == 2160);
+  CHECK(record_pass_ms(native) == &*native.gpu_ms);
+
+  // A provider on: no `gpu_ms`, the times under `reconstructed`, and the JSON a tool reads has a
+  // null where the cost was.
+  stats.reconstruction.provider = ReconstructionProvider::Engine;
+  const scene::FrameRecord accumulated = frame_record(stats, 0, 1, 0.0);
+  CHECK_FALSE(accumulated.gpu_ms.has_value());
+  REQUIRE(accumulated.reconstructed.has_value());
+  CHECK(accumulated.reconstructed->gpu_ms.total == doctest::Approx(4.0));
+  CHECK(accumulated.reconstruction.provider == "engine");
+  const JsonValue line = schema::to_json(accumulated);
+  const JsonValue* cost = line.find("gpu_ms");
+  CHECK((cost == nullptr || cost->is_null()));
+  const JsonValue* labelled = line.find("reconstructed");
+  REQUIRE(labelled != nullptr);
+  CHECK(labelled->find("gpu_ms") != nullptr);
+
+  // No provider, but drawn below the output's size: not a cost either.
+  stats.reconstruction.provider = ReconstructionProvider::Off;
+  stats.reconstruction.internal_width = 2560;
+  stats.reconstruction.internal_height = 1440;
+  const scene::FrameRecord scaled = frame_record(stats, 0, 2, 0.0);
+  CHECK_FALSE(scaled.gpu_ms.has_value());
+  CHECK(scaled.reconstructed.has_value());
+  CHECK(scaled.reconstruction.mode == "ratio");
+
+  // A run of native frames summarizes as a cost; one record that was not and the summary has
+  // none, carries that record's block, and its marker's time is zero.
+  CameraPath path;
+  std::string error;
+  REQUIRE(parse_camera_path(R"({"fps":2,"keys":[{"time":0,"position":[0,0,0]},
+      {"time":1,"position":[1,0,0]}],"markers":[{"frame":1,"name":"mid"}]})",
+                            nullptr, path, error));
+  Vector<scene::FrameRecord> records;
+  records.push_back(native);
+  scene::FrameRecord second = native;
+  second.frame = 1;
+  records.push_back(second);
+  scene::FlythroughSummary summary;
+  summarize_frames(std::span<const scene::FrameRecord>(records.data(), records.size()), 2, 1, path,
+                   summary);
+  REQUIRE(summary.gpu_ms.has_value());
+  CHECK_FALSE(summary.reconstructed.has_value());
+  CHECK(summary.gpu_ms->total.median == doctest::Approx(4.0));
+  CHECK(summary.gpu_ms->motion.median == doctest::Approx(0.25));
+  CHECK(summary.reconstruction.provider == "off");
+  REQUIRE(summary.markers.size() == 1);
+  CHECK(summary.markers[0].total_ms == doctest::Approx(4.0));
+
+  records[1] = accumulated;
+  summarize_frames(std::span<const scene::FrameRecord>(records.data(), records.size()), 2, 1, path,
+                   summary);
+  CHECK_FALSE(summary.gpu_ms.has_value());
+  REQUIRE(summary.reconstructed.has_value());
+  CHECK(summary.reconstructed->gpu_ms.total.median == doctest::Approx(4.0));
+  CHECK(summary.reconstruction.provider == "engine");
+  REQUIRE(summary.markers.size() == 1);
+  CHECK(summary.markers[0].total_ms == 0.0);
 }
 
 // What a host records for the benchmark inside its hook is left out of the frame-loop count, once

@@ -31,7 +31,7 @@ set(_renderer_deps base containers hash math time jobs log platform io image geo
                    gfx json texture tunables content_build schema schemas scene_gen profiling)
 engine_module(NAME renderer LAYER systems
   DEPS ${_renderer_deps}
-  SOURCES src/settings.cpp src/view_set.cpp src/scene.cpp src/gpu_scene.cpp src/gpu_scene_meshes.cpp src/gpu_scene_textures.cpp src/gpu_scene_rt_step.cpp
+  SOURCES src/settings.cpp src/view_set.cpp src/motion_pass.cpp src/scene.cpp src/gpu_scene.cpp src/gpu_scene_meshes.cpp src/gpu_scene_textures.cpp src/gpu_scene_rt_step.cpp
           src/lighting.cpp
           src/page_source.cpp src/streaming.cpp src/scene_renderer.cpp src/reference.cpp
           src/capture.cpp src/terrain.cpp src/terrain_materials.cpp src/camera_path.cpp src/flythrough.cpp
@@ -57,6 +57,8 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     tests/shadow_caster_tests.cpp tests/flythrough_tests.cpp
                     tests/visibility_tie_tests.cpp tests/rt_capacity_tests.cpp
                     tests/world_translation_tests.cpp tests/hdr_output_tests.cpp
+                    # R154: sampling over time's inputs (the offset, the motion pass, off is exact).
+                    tests/motion_tests.cpp
                     tests/shadow_map_tests.cpp tests/texture_tests.cpp
                     tests/dynamic_instances_tests.cpp tests/fire_tests.cpp
                     tests/tile_layout_tests.cpp tests/alpha_mask_tests.cpp

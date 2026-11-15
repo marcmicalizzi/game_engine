@@ -5,6 +5,25 @@ built: no default changes, no shader changes, no engine code was added for it. W
 afterwards, in what order and with which vendors, is the owner's choice from
 [the stages](#part-4-the-plan-in-stages) and [the proposed decision](#proposed-decision).
 
+**Status, 2026-11-14 (roadmap R154).** The owner agreed the nine decisions the same day, and the
+proposed decision is [ADR-0064](../adr/0064-every-measurement-is-native.md), Accepted, with the
+order it records (DLSS and DLAA before any other vendor, FSR last, frame generation its own later
+decision). **Stage 0 and stage 1 are built**: the measurement rule in the records and the tools,
+and the inputs under `renderer.reconstruction.inputs`, off by default
+([renderer](../subsystems/renderer.md#sampling-over-time-the-measurement-rule),
+[the inputs](../subsystems/renderer.md#sampling-over-time-the-inputs)). Where the build differs
+from Part 2 below, the renderer's page says why: motion is written to a buffer and not an image;
+the cull's frustum and Hi-Z tests take the offset with the rest of the frame; a moved instance is
+found in a table by search, since `InstanceDesc` has no flag bit left; way (c) of a deformed
+vertex's last position is built and way (a) is not, so the pair this page asks of stage 1 is not
+flown; a moving terrain's levels and a world's tail instances that move have no motion of their
+own yet. **The roadmap numbers the rows after R154 in this page's order**, which is not the page's
+own proposal: R155 a masked material's coverage and R156 the far crowns (as here), R157 the native
+frame on every machine (R161 below), R158 the engine's own accumulation (R157 below), R159 the
+registration point (R158), R160 internal resolution below the output's (R159), R161 a vendor's
+provider (R160), R162 rays given back (as here), R163 the methods in the table's last row. The
+text below keeps the numbers it was written with.
+
 **What was asked.** The owner, after two walks of the forest (2026-11-14): "just for figuring out
 visual artifacts from just so many leaves creating interference patterns (it's not a visual defect
 persey but it is noticeable), and for frame rates too, maybe it's time to start thinking about TAA,

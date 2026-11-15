@@ -1270,7 +1270,10 @@ void run_benchmark(Bridge& b, const JsonValue& args, ToolOutcome& out) {
   if (const JsonValue* m = r.find("machine_state"); m != nullptr) out.data.set("machine_state", *m);
   if (flythrough != nullptr && flythrough->is_object()) {
     JsonValue f = JsonValue::object();
-    for (const char* key : {"frames", "repeats", "deterministic", "gpu_ms", "visible_pairs"}) {
+    // `reconstruction` and `reconstructed` with them (ADR-0064): a run that was not a native
+    // measurement has a null `gpu_ms`, and its client has to see why and where the times went.
+    for (const char* key : {"frames", "repeats", "deterministic", "gpu_ms", "visible_pairs",
+                            "reconstruction", "reconstructed"}) {
       if (const JsonValue* v = flythrough->find(key); v != nullptr) f.set(key, *v);
     }
     out.data.set("flythrough", std::move(f));

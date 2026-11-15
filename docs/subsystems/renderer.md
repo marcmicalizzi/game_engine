@@ -5197,3 +5197,145 @@ policy. A regression checks contact, fixed roots, a distant unaffected blade and
 This remains the existing 12-tick (0.2 s at 60 Hz) recovery, not persistent walked-track history.
 The separately briefed field-motion path needs a quality-gated world-space contact/history
 field before long-lived flattened paths can be claimed; the solver adds no such frame allocation.
+
+## Sampling over time: the measurement rule
+
+[ADR-0064](../adr/0064-every-measurement-is-native.md) (the owner, 2026-11-14): every budget,
+cost pair, benchmark and walk is taken with reconstruction off at the output's own resolution, and
+no cost is accepted because a reconstruction mode makes the frame rate acceptable. The renderer's
+part of holding that is that **every record says what sampled its frame, and a record that is not
+a native measurement has no cost in it**.
+
+- `renderer::Reconstruction` (`settings.h`) is the state: the provider (`Off` until one is built,
+  roadmap R158), whether the inputs below were on, and the internal and the output sizes.
+  `Reconstruction::native()` is the rule: no provider, and drawn at the output's size.
+  `SceneRenderer::reconstruction()` gives the renderer's, and every folded frame's `FrameStats`
+  carries it.
+- `renderer::frame_record` writes it as the record's `reconstruction` block
+  (`engine.scene.Reconstruction`) and puts the frame's times in `gpu_ms` only when it is native;
+  otherwise they go under `reconstructed.gpu_ms` and `gpu_ms` is null. `summarize_frames` holds a
+  summary to the same rule over its records: one record that was not native and the summary has no
+  `gpu_ms`, carries that record's block, and its markers' `total_ms` are zero.
+  `renderer::measurement_keys` is the same rule for the summary line engine-view writes by hand.
+  Both hosts' benchmark lines go through these, so neither can write a reconstructed figure where
+  a cost is read.
+- **The inputs alone are a native frame.** With `renderer.reconstruction.inputs` on and no
+  provider the frame is drawn at an offset and costs the motion pass more; its record keeps
+  `gpu_ms`, says `inputs: true`, and names the pass's time as `gpu_ms.motion`. That is ADR-0064's
+  one exception, reconstruction's own cost, which is measured on and off at native size.
+- The tools' half is `Get-ReconstructionRefusal` (`tools/lib/FrameBudget.psm1`), which
+  `tools/frame-budget.ps1` (exit 5) and `tools/flythrough.ps1` (a row that says "refused") ask
+  before they read a number ([bench](bench.md#frame-budgets), [apps](apps.md#flythroughs)).
+
+What is not under the rule yet: `render.capture`'s and `render.load`'s statistics
+(`engine.protocol.RenderStats`), which carry no block. Nothing can turn a provider on through the
+protocol today; roadmap R159 adds the block there with the registration point.
+
+## Sampling over time: the inputs
+
+Roadmap R154, from [the design](../experiments/temporal-sampling.md#part-2-what-the-renderer-must-provide).
+Every method that samples over time, the engine's own and any vendor's, reads the same things: a
+frame drawn at a sub-pixel offset, where each pixel's surface was in the last frame, the depth, and
+last frame's own state. This section is what the renderer makes of them. **Nothing reads them
+yet** (the accumulation is roadmap R158), and **all of it is behind one switch, off by default**:
+`renderer.reconstruction.inputs` (a tunable read at load; `ResolvedSettings::reconstruction_inputs`,
+never on the direct path). Off, the renderer holds a null pointer where the state would be: no
+buffer, no pipeline, no pass, no offset, and the frame is the frame it always was to the byte,
+which is what every other test of this module runs as. On, `src/motion_pass.h` (`MotionPass`) owns
+everything below.
+
+**The sub-pixel offset** is in one place, `ViewSet::update(camera, offset_x, offset_y)`: the
+sample of every pixel sits that far from its centre, in source pixels, x right and y down, which
+is a shear of the projection's third column. `View::view_proj` and `View::clip_to_ray` are made
+from the sheared projection, so the rasterizers' pixels, the traced primaries' rays and the
+resolve's reconstruction move together and a pixel still meets its triangle exactly; the depth a
+pixel holds does not move. The sequence is Halton(2, 3) less a half (`sample_offset`), the phase
+the renderer's own count of frames since the last reset modulo eight (`k_sample_phases`); a ratio
+of n will take `ceil(8 n²)` (R160). **Not offset**: the LOD's scale (`proj_scale`, so the cut does
+not change with the phase) and `View::view_proj_center`, the view-projection the offset was added
+to, which is what motion is measured with. **Offset, where the design said not**: the cull's
+frustum and its Hi-Z tests. They read `view_proj` like every other pass, and that is the right
+matrix for them: the frustum that must hold every cluster the picture draws is the one the picture
+was drawn through (the un-offset one would lose a cluster from a strip of edge pixels up to half a
+pixel wide), and pass 2 tests the Hi-Z built from this frame's own offset depth, so the test and
+the pyramid agree and occlusion still never changes the picture.
+
+**Last frame's state.** `MotionPass` keeps last frame's un-offset view-projection per view and its
+eye as a `WorldPos` (the eyes' difference between two frames is taken in f64 on the CPU and handed
+to the pass inside a matrix: [ADR-0053](../adr/0053-world-positions-are-f64-and-the-gpu-sees-none.md)),
+and **last frame's visibility buffer**: the renderer has two, and each frame draws into the one
+the frame before last drew into (`swap_visibility`, at the top of `record_frame`), so the other
+still holds last frame's words when this frame's passes run. Nothing reads it in this stage; it is
+there for R158's history test, at 8 bytes a pixel. `FrameDesc::history_reset` (and
+`SceneRenderer::reset_history`) is how a host says a frame has no frame before it, a camera cut, a
+teleport or a load: its motion is measured from itself and the phase starts again. A resize resets
+too.
+
+**The moved instances.** `SceneRenderer::move_instances` hands the indices to `note_moves` before
+the scene writes the new placements, and an instance that has ever moved keeps an entry in a table
+sorted by instance (`gfx::MovedInstance`: its cell and its 3x4), holding **last frame's**
+transform: each frame's copy of the table goes into that frame slot's own buffer, and then every
+entry takes the transform this frame draws. An instance that moved once and stopped is in the
+table with the transform it has, so its vectors are the still scene's. The design flagged moved
+instances in `gfx::InstanceDesc`; its `flags` word has no bit left (the hand-off's stamp takes the
+top 22), so the pass searches the table instead, a binary search a pixel, and only in a frame
+whose table is not empty. The table holds `k_motion_moved_capacity` (4,096) instances; one moved
+past that is not followed (its motion is the camera's) and the renderer says so once. **Not
+followed at all: an instance of a world's tail that moves between frames.** A tail's slots are
+handed over whole (`set_dynamic_instances`) and an instance has no identity across two tails, so
+the pass cannot know where one stood; its vectors are the camera's. That is the common case for a
+streamed world's actors and is R158's to close before it trusts a history under one.
+
+**A deformed vertex's last position: the pool pass writes each vertex twice** (the design's way
+(c)). The deformed-vertex pool is suballocated per frame, so last frame's position of a vertex is
+not at this frame's address. The pool pass's push block already names everything a stage reads
+that changes from frame to frame (the deform table, the deformer's clock, the trees' part poses),
+so the second write is **the same pipeline dispatched again over the same blocks**, into a second
+pool of the same size, with last frame's values in those three fields (`MotionPass::previous`) and
+no normal pool. No shader changed, and a stage a capability adds later gets motion by being run
+twice. It is exact at a cut change (the blocks are this frame's) and costs the pool pass again
+whatever the resolution or the number of views. What "last frame's" is good for: the clock is a
+number, so wherever there was a last frame; the table and the part poses are regions of per-slot
+buffers, so only while last frame's slot has not been rewritten (two or more frames in flight) and
+the scene's tables did not change under them (a streamed world's tail). Where they are not, the
+second write reads this frame's inputs and a deformed vertex's motion is its instance's and the
+camera's. **Not in it: a moving terrain's levels**, whose second write reads this frame's table
+(last frame's fields may already be on their way back to the scene), so a dune ground in
+time-lapse has no motion of its own; and the shadow cascades' runs, which no pixel names. **Way
+(a)**, keeping last frame's pool with its slots and a pair-to-entry table per view, was not built:
+it would save the second dispatch and cost the pool again plus four bytes a pair a view (67 MB a
+view on the forest's 16.7 million pairs), and is wrong for a frame wherever the cut changed. The
+second dispatch's milliseconds are the most it could give back; they are `gpu_ms.motion` less the
+motion pass, and the pair is R158's to fly on the forest.
+
+**The motion pass** is `motion.slang`, one thread a pixel over the finished visibility buffer,
+recorded before the resolve; [gfx](gfx.md#motion-from-the-visibility-buffer) has the block and
+what each kind of pixel reads. It writes **a buffer, not an image**: a `u32` a source pixel, the
+views back to back as the visibility buffer is, two half floats, the pixels the pixel's point
+moved across the picture since the last frame with neither frame's offset in them. The design
+asked for an image because a vendor's method wants one; the engine's own reads an address like
+everything else here, and the copy into an image is the vendor adapter's (R161), as the depth's
+is. Its declaration is in `record_frame` (the graph's handles are there) and its body is
+`MotionPass::record`; the second pool write rides the existing "deform" pass. Zones "motion" and
+"motion pool", summed into `FrameStats::gpu_motion`, `Stats::gpu_motion` and the record's
+`gpu_ms.motion`.
+
+**Reading it**: `CaptureChannels::motion` fills `CapturedFrame::motion`, two floats a pixel in the
+target's pixels (a Panini view through the resolve's own map), zero where the point was behind
+last frame's camera; refused, with a sentence, by a renderer without the inputs.
+
+**What it keeps on the device** (`SceneRenderer::motion_bytes`): 4 bytes a source pixel of motion
+and 8 of last frame's visibility buffer, the pool's bytes again where the scene has a pool, and
+per frame slot the views' blocks (416 bytes a view) and the moved table (256 KB). At 3840 × 2160
+that is 33 MB and 66 MB, and 8 MiB of pool by default (64 MiB at the owner's setting).
+
+**Held by** `tests/motion_tests.cpp`: the offset moves a view's picture by exactly its pixels and
+leaves the LOD's scale and the depth alone (no device); without the inputs the renderer keeps
+nothing and refuses the channel; a camera turned and stepped reprojects every pixel of a still
+scene and its sky within 0.02 px of the CPU's double arithmetic, at an offset, and a frame with no
+frame before it measures zero; a rigid instance moved and scaled follows its two transforms within
+the same, and stands still a frame later; a deformed surface (the procedural deformer) through the
+two pools matches the still scene's vectors with its clock held, moves when the clock does and
+stops when it does not. **Not held**: a swaying tree's and a skinned actor's vectors against their
+CPU mirrors (`gfx::flora_bend`, `anim`); they take the same deformed path, and their per-slot
+inputs' "last frame" is only argued above. R158 takes both fixtures.
