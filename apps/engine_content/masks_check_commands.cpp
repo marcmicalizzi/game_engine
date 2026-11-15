@@ -24,6 +24,7 @@
 #include <string_view>
 
 #if ENGINE_CONTENT_TILESET
+#include <core/jobs/job_system.h>
 #include <core/json/json.h>
 #include <core/json/json_value.h>
 #include <core/schema/json_reflect.h>
@@ -35,6 +36,7 @@
 #include <systems/renderer/scene.h>
 #include <systems/renderer/terrain.h>
 
+#include <optional>
 #include <schemas/scene.h>
 #endif
 
@@ -130,7 +132,21 @@ int check_scene(const std::string& scene_path, std::string ddc) {
   if (!tileset::mask_inputs(entry, std::string_view(), inputs, error)) return failed(error);
   if (!tileset::validate_mask_inputs(inputs, error)) return failed(error);
   tileset::MaskBudgetReport report;
-  if (!tileset::check_mask_budget(set, inputs, report, error)) return failed(error);
+  // The composition on the performance pool, as the cook's (T128): the report is the same.
+  struct Pool {
+    std::optional<jobs::JobSystem> system;
+    static jobs::JobSystem* get(void* context) {
+      auto* self = static_cast<Pool*>(context);
+      if (!self->system.has_value()) {
+        jobs::JobSystemConfig config;
+        config.efficiency_workers = 1;
+        self->system.emplace(config);
+      }
+      return &*self->system;
+    }
+  } pool;
+  const tileset::MaskCookJobs cook{&Pool::get, &pool, 0};
+  if (!tileset::check_mask_budget(set, inputs, report, error, cook)) return failed(error);
   std::string out;
   for (const tileset::OverBudgetTile& tile : report.over)
     out += tile_line(tile) + "\n";

@@ -207,14 +207,17 @@ struct Harness {
   SceneRenderer renderer;
   bool ready = false;
   bool from_file = false;
+  u64 released = 0;
   std::string skip;
 
   // `jobs` non-null asks for the container-backed page source: the meshes' `.clusters` files are
   // opened and the merged host streams are released, so the run reads its pages off disk. `slow`
   // non-null serves the pages from a `SlowPageSource` of `latency` ticks instead, over the host
   // streams, which it keeps.
+  // `release` gives back the streams nothing reads after the upload (`release_uploaded_streams`)
+  // between the scene and the renderer, where engine-view does.
   bool build(const SceneDesc& desc, const RenderSettings& settings, jobs::JobSystem* jobs = nullptr,
-             SlowPageSource* slow = nullptr, u32 latency = 0) {
+             SlowPageSource* slow = nullptr, u32 latency = 0, bool release = false) {
     std::string error;
     if (!device.create(gfx::DeviceOptions{}, &error)) {
       skip = "device unavailable: " + error;
@@ -246,6 +249,7 @@ struct Harness {
       rd.page_source = slow;
       from_file = true;
     }
+    if (release) released = release_uploaded_streams(data);
     REQUIRE_MESSAGE(renderer.create(device, scene, resolved, rd, &error), "renderer: " << error);
     ready = true;
     return true;
@@ -659,6 +663,48 @@ TEST_CASE("streaming: a scene with no container behind it keeps the in-memory so
   // And nothing was released: a refusal leaves the scene exactly as it was, or the run that
   // followed it would have no pages to copy at all.
   CHECK(paged_stream_bytes(h.data) > 0);
+}
+
+TEST_CASE("streaming: a whole scene draws the same bytes after its uploaded streams go") {
+  // **The host copy after the upload** (T129; renderer.md, "The scene's host copy after the
+  // upload"). engine-view gives back the 16-bit positions, the attributes and the vertex ids once
+  // the GPU scene has them; nothing drawn may change. The same heightfield, uploaded whole, drawn
+  // with and without the release: the same colour bytes and the same ids, and the streams gone.
+  RenderSettings settings;
+  settings.raster = RasterMode::Hardware;
+  settings.shadows = ShadowMode::Off;
+  Harness kept;
+  if (!kept.build(heightfield_desc(false), settings)) {
+    MESSAGE(kept.skip);
+    return;
+  }
+  Harness released;
+  REQUIRE(released.build(heightfield_desc(false), settings, nullptr, nullptr, 0, true));
+  CHECK(released.released > 0);
+  CHECK(released.data.lod.mesh.quantized.empty());
+  CHECK(released.data.lod.mesh.attributes.empty());
+  CHECK(released.data.lod.mesh.vertex_ids.empty());
+  // What stays, because something reads it after the upload.
+  CHECK(released.data.lod.mesh.vertices.size() == kept.data.lod.mesh.vertices.size());
+  CHECK(released.data.lod.mesh.triangles.size() == kept.data.lod.mesh.triangles.size());
+  CHECK(released.data.lod.mesh.clusters.size() == kept.data.lod.mesh.clusters.size());
+  std::string error;
+  CapturedFrame shots[2];
+  Harness* harnesses[2] = {&kept, &released};
+  for (u32 h = 0; h < 2; ++h) {
+    for (u32 f = 0; f < 4; ++f)
+      REQUIRE_MESSAGE(
+          harnesses[h]->renderer.render_offscreen(frame_at(harnesses[h]->data, 3.0f, f), &error),
+          error);
+    REQUIRE_MESSAGE(harnesses[h]->renderer.capture(frame_at(harnesses[h]->data, 3.0f, 4),
+                                                   {.color = true, .ids = true}, shots[h], &error),
+                    error);
+  }
+  CHECK(shots[0].covered > 0);
+  CHECK(shots[0].covered == shots[1].covered);
+  CHECK(shots[0].color == shots[1].color);
+  CHECK(shots[0].ids == shots[1].ids);
+  MESSAGE("released " << released.released << " bytes; " << shots[0].covered << " pixels covered");
 }
 
 TEST_CASE("streaming: a fly-in is coarser at every step and never has a hole") {

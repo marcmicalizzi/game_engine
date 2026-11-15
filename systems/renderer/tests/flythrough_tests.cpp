@@ -614,7 +614,24 @@ TEST_CASE(
   CHECK(near(old_desc.instances[1].transform.scale, Vec3{1, 2, 1}));
   CHECK(old_desc.instances[1].animation.play);
   CHECK(old_desc.instances[1].animation.phase == doctest::Approx(0.25f));
+  CHECK(old_desc.instances[1].animation.lod_bias == 1.0f);  // A44: absent, the rule alone
   CHECK_FALSE(old_desc.instances[0].animation.play);
+
+  // A44: the animation tier's bias is read, and refused outside [0, 64] with its instance named.
+  const std::string biased = slashes(dir / "biased.json");
+  REQUIRE(write_text(biased, R"({"meshes":[{"path":"cube.glb"}],"instances":[
+      {"mesh":0,"animation":{"lod_bias":4}},{"mesh":0,"animation":{"lod_bias":0}}]})"));
+  SceneDesc biased_desc;
+  REQUIRE_MESSAGE(read_scene_file(biased, biased_desc, error), error);
+  CHECK(biased_desc.instances[0].animation.lod_bias == 4.0f);
+  CHECK(biased_desc.instances[1].animation.lod_bias == 0.0f);
+  const std::string wild = slashes(dir / "wild.json");
+  REQUIRE(write_text(wild, R"({"meshes":[{"path":"cube.glb"}],"instances":[
+      {"mesh":0,"animation":{"lod_bias":65}}]})"));
+  SceneDesc wild_desc;
+  CHECK_FALSE(read_scene_file(wild, wild_desc, error));
+  CHECK(error.find("lod_bias") != std::string::npos);
+  CHECK(error.find("instance 0") != std::string::npos);
   CHECK_FALSE(old_desc.terrain.enabled);
   CHECK(old_desc.file_hash != 0);
   CHECK(old_desc.camera_path.empty());  // a scene that names no path: the orbit

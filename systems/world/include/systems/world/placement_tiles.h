@@ -27,6 +27,17 @@
 // budget — the visibility id's 2^24 pairs by default — is withheld at the commit, over every tile
 // held: by ring, innermost first, then nearest first, then in tile order, and none after the first
 // that does not fit. A withheld tile stays active and draws nothing until the budget has room.
+// **It does not trade at the cap** (T131; world.md, "No trading at the pair cap"): a drawn tile
+// keeps its place against one less than `admit_bias` nearer, a tile that would grow the drawn set
+// past its farthest member waits for `admit_spare_pairs` of room beyond itself, and a tile the
+// budget let go waits `admit_hold_off` commits before it may grow the set again.
+//
+// **None of a tile's building is on the frame's thread** (T131; world.md, "Builds off the frame's
+// thread"): with a job system (`set_build_jobs`) and a budgeted update, the due tiles are built by
+// one job at a time on the job system's efficiency pool, `budget` tiles a job, and a commit hands
+// over what the last job finished — its instances copied into the tile, its meshes named — which is
+// the frame's whole share. A whole update (budget 0) waits for the job and builds the rest where it
+// is, so a capture or a restart is the same tail either way.
 
 #include <core/base/macros.h>
 #include <core/base/types.h>
@@ -67,7 +78,21 @@ struct PlacementTilesConfig {
   u32 max_pairs = renderer::k_max_pairs;
   // The renderer's prefix plus all reserved terrain slots. Zero uses the file prefix.
   u32 fixed_pairs = 0;
+  // **No trading at the cap** (T131; world.md, "No trading at the pair cap"). A drawn tile ranks as
+  // if it were `admit_bias` tiles nearer than it is, so a tile must be that much nearer to take its
+  // place; a tile ranked past every drawn tile is admitted only with `admit_spare_pairs` of the
+  // budget still free after it (zero: a sixty-fourth of what the tiles may hold, `max_pairs` less
+  // the fixed pairs); and a tile the budget let go
+  // does not come back past the drawn set for `admit_hold_off` commits. The defaults are the
+  // tunables' (`admission_tunables`). None of it moves `max_pairs`.
+  f32 admit_bias = 1.0f;
+  u32 admit_spare_pairs = 0;
+  u32 admit_hold_off = 120;
 };
+
+// The tunables' values (`world.placements.admit_bias`, `admit_spare_pairs`, `admit_hold_off`),
+// written into a host's config.
+void admission_tunables(PlacementTilesConfig& config) noexcept;
 
 // Where the tail goes once an update. False with `error` is logged and counted, and the tail is
 // offered again on the next change.
@@ -82,8 +107,23 @@ struct PlacementTilesStats {
   // Every tile built for the ring (activated, moved between rings that draw it differently, or
   // re-stood), whatever its generators put on it, and the whole build's wall time: the generators'
   // calls above and the tile's pair count after them (W82: the frame record's `world.tiles_ms`).
+  // `tiles_ns` is the frame's share: the generators' calls where the build ran on the committing
+  // thread, and the hand-over of what a job built (`collect_ns`) where it did not.
   u64 tiles_built = 0;
   i64 tiles_ns = 0;
+  // **Builds off the frame's thread** (T131, `set_build_jobs`): the jobs started, the generators'
+  // wall time on the worker, the tiles a commit took from a job (and the time it took, the most of
+  // one commit), and the results let go because their tile changed or went while it was built.
+  u64 jobs = 0;
+  i64 worker_ns = 0;
+  u64 collected = 0;
+  i64 collect_ns = 0;
+  i64 max_collect_ns = 0;
+  u64 discarded = 0;
+  // **Trades at the pair cap** (T131): drawn tiles the budget let go, and of those the ones drawn
+  // again while they were still held — a tile that went out and came back, which is a trade.
+  u64 released = 0;
+  u64 returned = 0;
   // **Seating by the footprint** (G201 stage 2; world.md, "A tile's trees are seated"): placements
   // standing on the ground whose mesh has a seat, over the run (17 ground queries each, inside
   // `tiles_ns`), the ones of those lowered, and the seating's own wall time.
@@ -166,6 +206,15 @@ class PlacementTiles {
   // withholds (`PlacementTilesStats::mesh_starved`), as the pair budget's does.
   void set_meshes(const TileMeshConfig& config, TileMeshSink sink, jobs::JobSystem* jobs = nullptr);
   const TileMeshes& meshes() const noexcept { return meshes_; }
+  // **Where a budgeted update's tiles are built** (T131; world.md, "Builds off the frame's
+  // thread"): with `jobs`, on its efficiency pool, one job at a time; null (the default), on the
+  // committing thread, as before. The entries' generators are asked for one tile at a time either
+  // way, since an entry's state is its own scratch; their `occupies` and `representation` may be
+  // asked on the committing thread while a job runs `tile`, and read only what `open` made.
+  void set_build_jobs(jobs::JobSystem* jobs) noexcept;
+  // Waits for a job in flight and takes what it built. Called before anything that asks a
+  // generator on this thread (a whole commit, a query's tile, `restand` without a job system).
+  void settle();
 
   // The tail as it was last handed on, in tile order. With a run sink (`set_run_sink`) a commit
   // writes no tail, and this writes it out of the drawn tiles when first asked after a commit.
@@ -211,9 +260,18 @@ class PlacementTiles {
   // and writes no tail; the instance sink above is not called. The runs of the last commit stay
   // readable (`runs`) until the next.
   using RunSink = bool (*)(void* context, std::span<const TileRange> runs, std::string* error);
+  // **The tail's room goes with it** (T131, the memory row's finding): `create` reserves the tail
+  // for every authored instance of every entry, for a consumer that writes it each commit; with a
+  // run sink it is written only when `tail()` is asked (a handover pass, a game's props) and grows
+  // to what the drawn tiles hold. Kept, the reserve committed 64.6 MiB on the forest staging and
+  // touched 0.1.
   void set_run_sink(RunSink sink, void* context) noexcept {
     run_sink_ = sink;
     run_sink_context_ = context;
+    if (sink != nullptr) {
+      Vector<renderer::SceneInstance>().swap(tail_);
+      Vector<u8>().swap(tail_tags_);
+    }
   }
   std::span<const TileRange> runs() const noexcept { return {runs_.data(), runs_.size()}; }
   // Whether the pair budget left an active tile's placements out of the tail at the last commit.
@@ -279,8 +337,15 @@ class PlacementTiles {
     // mesh, which draws its build at once as it always did.
     bool waiting = false;
     bool starved = false;  // waiting, and the mesh room refused it at the last commit
-    u32 pairs = 0;         // of what it draws
-    u32 buildings = 0;     // of its last build
+    // The pair budget's memory of it (T131): drawn at the last commit; let go by the budget once
+    // since it was held, and the commit it was let go at.
+    bool admitted = false;
+    bool released = false;
+    u64 released_at = 0;
+    // Changed whenever it is made due, so a job's result for an older ask is known and let go.
+    u64 serial = 0;
+    u32 pairs = 0;                              // of what it draws
+    u32 buildings = 0;                          // of its last build
     Vector<renderer::SceneInstance> instances;  // its last build
     Vector<u8> tags;                            // parallel to `instances`
     Vector<u32> tickets;  // the mesh slots `instances` name, a reference each (`TileMeshes`)
@@ -314,10 +379,64 @@ class PlacementTiles {
   // (a query's tile). `entries`: how many of the entries to run, in the scene's order.
   scene_gen::Context context_for(const Entry& entry, u8 ring,
                                  bool scene_ground = false) const noexcept;
+  // The same, standing on `stand` (null: the scene's ground) with `earlier` the footprints of the
+  // entries before this one on the tile: what a job asks its generators with.
+  scene_gen::Context context_in(const Entry& entry, u8 ring, const renderer::TerrainSampler* stand,
+                                std::span<const scene_gen::Footprint> earlier) const noexcept;
+
+  // ---- one tile's build, in two halves (T131) --------------------------------------------------
+  // The generators' half (`generate`) reads only what `create` made and the entries' own state, so
+  // it runs on the committing thread or on a job; the hand-over (`install`) names the tile's meshes
+  // in the table and decides what the tile draws, on the committing thread.
+  struct MeshRef {
+    u32 entry = 0;  // whose `placed.meshes`
+    u32 index = 0;
+  };
+  struct Generated {
+    bool ok = true;
+    u32 buildings = 0;
+    f64 stood = 0.0;
+    // The meshes the tile's entries handed, in the order they handed them: an instance of one names
+    // `k_handed | k` until `install` gives it the mesh's slot. A job copies them (`copies`), since
+    // its entries' scratch moves on to the next tile.
+    Vector<MeshRef> meshes;
+    Vector<scene_gen::PlacementMesh> copies;
+    u32 copied = 0;  // of `copies`, the ones that are this build's
+    u64 built[k_placement_kinds] = {};
+    i64 build_ns[k_placement_kinds] = {};
+    u64 seated = 0;
+    u64 lowered = 0;
+    i64 seat_ns = 0;
+    i64 ns = 0;  // the whole half's wall time
+    void reset() noexcept;
+  };
+  static constexpr u32 k_handed = 0x80000000u;
   // Seats a placement standing on the ground by its mesh's seat (G201 stage 2; `ground_`, the
   // scene's own ground at its own time, as the load's): nothing for a mesh with none or a fit.
-  void seat(renderer::SceneInstance& instance);
+  void seat(renderer::SceneInstance& instance, Generated& counts) const;
+  bool generate(TileCoord tile, u8 ring, u32 entries, bool for_query,
+                const renderer::TerrainSampler* stand, Vector<scene_gen::Footprint>& earlier,
+                Vector<renderer::SceneInstance>& instances, Vector<u8>& tags, Generated& out) const;
+  // Its meshes named, its handed instances given their slots, and the build is what it draws (or
+  // waits for its meshes); the generators' counts added to the stats.
+  bool install(TileBlock& block, Generated& built);
   bool build(TileCoord tile, u8 ring, TileBlock& out, u32 entries = ~0u, bool for_query = false);
+  Generated inline_;  // the committing thread's half
+
+  // ---- the job (T131) --------------------------------------------------------------------------
+  struct Job;
+  std::unique_ptr<Job> job_;
+  jobs::JobSystem* build_jobs_ = nullptr;
+  static void run_job(void* data) noexcept;
+  bool on_jobs() const noexcept { return build_jobs_ != nullptr && build_budget_ != 0; }
+  void collect(bool wait);  // takes a finished job's tiles (waiting for it with `wait`)
+  void start_job();         // the next due tiles, in the pair budget's order
+  void mark_due(TileBlock& block) noexcept;
+  u64 next_serial_ = 0;
+  u64 commits_ = 0;  // admissions made: what a hold-off is counted in
+  // The surface a job in flight stands its tiles on, kept until the job is collected when
+  // `restand` moves on (`stand_` is the newest).
+  std::unique_ptr<renderer::TerrainSampler> job_stand_;
   bool take(const TileEvent& event);
   void recycle(u64 key, TileBlock&& block);
   void build_due();

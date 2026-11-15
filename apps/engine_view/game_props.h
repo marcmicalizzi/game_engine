@@ -208,6 +208,12 @@ class ActorHost {
   virtual hotload::Result morph(u32 instance, const f32* weights, u32 count) = 0;
   virtual hotload::Result scale(u32 instance, f32 scale) = 0;
   virtual hotload::Result morph_info(u32 instance, hotload::MorphInfo& io) = 0;
+  // ABI 11 (A44): a factor on the animation tier's rule, the clips its skeleton has, and a seek of
+  // the playhead it is heading for; apps.md, "Actors". The values are checked by the
+  // implementation.
+  virtual hotload::Result lod_bias(u32 instance, f32 bias) = 0;
+  virtual hotload::Result clip_info(u32 instance, hotload::ClipInfo& io) = 0;
+  virtual hotload::Result seek(u32 instance, f32 seconds) = 0;
   // The state file's `actors` (every bound actor's placement and player), and the summary's.
   virtual JsonValue to_json() const = 0;
   virtual JsonValue summary_json() const = 0;

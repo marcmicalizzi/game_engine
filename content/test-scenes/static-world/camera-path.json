@@ -1,0 +1,88 @@
+{
+  "format": "engine.camera-path.v1",
+  "name": "static-world",
+  "description": "Twenty-four seconds: a half circle round the grove 30 to 40 m out and 7 to 9 m up, looking at its middle, then down to eye height among the trees and the helmet's rock, ending at the first lantern.",
+  "interpolation": "Smooth",
+  "fps": 60,
+  "znear": 0.1,
+  "keys": [
+    {
+      "time": 0.0,
+      "position": [
+        -38.0,
+        11.322,
+        -30.0
+      ],
+      "target": [
+        0.0,
+        3.0,
+        0.0
+      ]
+    },
+    {
+      "time": 6.0,
+      "position": [
+        -8.0,
+        7.3,
+        -42.0
+      ],
+      "target": [
+        0.0,
+        3.0,
+        0.0
+      ]
+    },
+    {
+      "time": 12.0,
+      "position": [
+        30.0,
+        10.864,
+        -26.0
+      ],
+      "target": [
+        2.0,
+        3.0,
+        0.0
+      ]
+    },
+    {
+      "time": 16.0,
+      "position": [
+        26.0,
+        5.193,
+        6.0
+      ],
+      "target": [
+        8.0,
+        1.5,
+        8.0
+      ]
+    },
+    {
+      "time": 20.0,
+      "position": [
+        12.0,
+        2.086,
+        0.0
+      ],
+      "target": [
+        -4.0,
+        3.0,
+        12.0
+      ]
+    },
+    {
+      "time": 24.0,
+      "position": [
+        2.5,
+        2.236,
+        -6.5
+      ],
+      "target": [
+        1.5,
+        1.4,
+        -1.0
+      ]
+    }
+  ]
+}

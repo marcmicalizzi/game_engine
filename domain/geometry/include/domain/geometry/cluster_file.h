@@ -222,6 +222,13 @@ enum class ClusterSection : u32 {
   // whose mesh stands on the ground** (the flora's trees, a standing deadwood remain), like 34 to
   // 41, so every other container is the bytes it was; a reader without it seats nothing. Resident.
   Seat = 42,
+  // **The perches a mesh declares** (A43; geometry.md, "Perches"; apps.md, "What a module can ask
+  // the world"): one `ClusterFilePerch` per place the asset says a small animal may stand or land —
+  // a glTF node named `perch...` or carrying `extras.perch` (assets.md, "Perches"), or a
+  // generator's own — in the mesh's space. The first of a game module's supports, before a tree's
+  // limbs and the top of a mesh's bounds. **Written only when a mesh declares one**, like 34 to 42,
+  // so every other container is the bytes it was. Resident.
+  Perches = 43,
   // **The far form of a rigid mesh** (G198; far_form.h; geometry.md, "The far form"): what the mesh
   // draws as once its radius projects under 128 pixels — its finest level with the pieces a level's
   // error covers left out and the rest simplified to it, a few levels of rising error. 44 is
@@ -230,9 +237,9 @@ enum class ClusterSection : u32 {
   // the format's rule is one fixed-size element per section. **Written only when the data carries
   // one**
   // (`ensure_far_form`, a rigid mesh: no skin, no morph, no motion contract, no impostor chain),
-  // like 34 to 42, and no content build bakes one by default (it is baked on first offer); a reader
+  // like 34 to 43, and no content build bakes one by default (it is baked on first offer); a reader
   // without them has no far form, and a host that wants one bakes it from the finest level, the
-  // same bytes. Resident. (43 is another row's, A43's perches; this branch leaves it unnamed.)
+  // same bytes. Resident.
   FarForm = 44,
   FarFormLevels = 45,
   FarFormParts = 46,
@@ -410,6 +417,18 @@ struct ClusterFileSeat {
   f32 skirt_y_m = 0.0f;
 };
 
+// **A perch**, as section 43 records it (A43; geometry.md, "Perches"). 32 bytes, the mesh's own
+// space: where a small animal may stand (`position`, on the surface), which way is up there (`up`,
+// unit), and how large a foot it holds (`size_m`: about the diameter of the branch or the width of
+// the ledge). `flags` is zero, the next field's place. A record whose size is not positive, or
+// whose `up` is not unit within 1e-3, is refused by the reader.
+struct ClusterFilePerch {
+  Vec3 position{};
+  Vec3 up{0.0f, 1.0f, 0.0f};
+  f32 size_m = 0.0f;
+  u32 flags = 0;
+};
+
 // One part's thickness, as section 37 records it (flora.md, "The structural table"). 16 bytes.
 // `part` is the part's id in section 35, the records in ascending id and so parents first; the
 // part's axis is the segment from its `pivot` along its `direction` for its `length`, and its
@@ -460,6 +479,7 @@ static_assert(sizeof(ClusterFileMotionVertex) == 4, "a cluster file motion verte
 static_assert(sizeof(ClusterFileStructuralPart) == 16,
               "a cluster file structural part is 16 bytes");
 static_assert(sizeof(ClusterFileImpostor) == 48, "a cluster file impostor record is 48 bytes");
+static_assert(sizeof(ClusterFilePerch) == 32, "a cluster file perch is 32 bytes");
 static_assert(sizeof(ClusterFileSection) == 24, "a cluster file section record is 24 bytes");
 static_assert(sizeof(ClusterFileScalars) == 32, "the cluster file scalars section is 32 bytes");
 static_assert(sizeof(ClusterFileMaterial) == 64, "ClusterFileMaterial is a 64-byte GPU record");
@@ -541,6 +561,9 @@ struct ClusterFileData {
   // Written only when the radius is positive.
   ClusterFileSeat seat{};
   bool has_seat() const noexcept { return seat.radius_m > 0.0f; }
+  // The perches the mesh declares (section 43), in the mesh's space; empty for most. Written only
+  // when not empty.
+  Vector<ClusterFilePerch> perches;
   // The far form (sections 44 to 48): empty for a mesh whose build baked none. Written only when
   // not empty.
   FarForm far_form;

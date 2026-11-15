@@ -1123,6 +1123,53 @@ TEST_CASE("cluster file: a seat round-trips, and a mesh without one writes no se
   CHECK(from_disk.seat.radius_m == 0.41f);
 }
 
+// A43 (geometry.md, "Perches"): a mesh's perches are 32-byte records of section 43, written only
+// when it declares one, read back by the whole read and the resident one; a perch with no size or
+// an `up` that is not unit is refused.
+TEST_CASE(
+    "cluster file: perches round-trip, a mesh without one writes no section, a bad one is "
+    "refused") {
+  const test::TempDir tmp("engine_cluster_file");
+  ClusterFileData data;
+  Vector<u32> indices;
+  make_fixture(data, indices);
+  std::string error;
+  REQUIRE_MESSAGE(write_cluster_file(tmp.file("plain.clusters"), data, &error), error);
+  ClusterFilePerch perch;
+  perch.position = Vec3{0.1f, 1.2f, -0.3f};
+  perch.up = Vec3{0.0f, 1.0f, 0.0f};
+  perch.size_m = 0.04f;
+  data.perches.push_back(perch);
+  perch.position = Vec3{-0.4f, 0.9f, 0.0f};
+  perch.up = Vec3{0.6f, 0.8f, 0.0f};
+  perch.size_m = 0.02f;
+  data.perches.push_back(perch);
+  const std::string path = tmp.file("perches.clusters");
+  REQUIRE_MESSAGE(write_cluster_file(path, data, &error), error);
+  std::string plain;
+  std::string perched;
+  REQUIRE(io::read_file(tmp.file("plain.clusters"), plain) == io::Status::Ok);
+  REQUIRE(io::read_file(path, perched) == io::Status::Ok);
+  CHECK(perched.size() >= plain.size() + 64);  // the two records, at least
+  ClusterFileData none;
+  REQUIRE_MESSAGE(read_cluster_file_memory(view(plain), none, &error), error);
+  CHECK(none.perches.empty());
+  ClusterFileData read;
+  REQUIRE_MESSAGE(read_cluster_file(path, read, &error), error);
+  REQUIRE(read.perches.size() == 2u);
+  CHECK(read.perches[0].position == Vec3{0.1f, 1.2f, -0.3f});
+  CHECK(read.perches[1].up == Vec3{0.6f, 0.8f, 0.0f});
+  CHECK(read.perches[1].size_m == 0.02f);
+  CHECK(std::string(cluster_section_name(static_cast<u32>(ClusterSection::Perches))) == "perches");
+  data.perches[1].up = Vec3{0.0f, 2.0f, 0.0f};
+  REQUIRE_MESSAGE(write_cluster_file(tmp.file("bad.clusters"), data, &error), error);
+  std::string bad;
+  REQUIRE(io::read_file(tmp.file("bad.clusters"), bad) == io::Status::Ok);
+  ClusterFileData refused;
+  CHECK_FALSE(read_cluster_file_memory(view(bad), refused, &error));
+  CHECK(error.find("perches") != std::string::npos);
+}
+
 TEST_CASE("cluster file: the source identity reads back without decoding the mesh") {
   const test::TempDir tmp("engine_cluster_file");
   ClusterFileData data;

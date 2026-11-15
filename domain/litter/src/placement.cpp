@@ -14,11 +14,11 @@
 
 namespace engine::litter {
 namespace {
-// **How many jobs a whole read places its tiles on at once** (T125; litter.md, "Placement"): 1, one
-// thread, by measurement — on a "tiles" ground every height a cell asks takes the tile set reader's
-// lock, and the pool measured slower than one thread at every size tried — and 0 for the host's
-// pool, or a number to cap it. The bytes are the same at any value.
-tunables::Int whole_read_jobs{"litter.whole_read_jobs", 1, 0, 4096,
+// **How many jobs a whole read places its tiles on at once** (T125, T128; litter.md, "Placement"):
+// 0, the host's pool, by measurement — since the tile set answers a resident point with no lock
+// (T128) the pool is the faster at every size tried, where before it was the slower — 1 for one
+// thread, or a number to cap it. The bytes are the same at any value.
+tunables::Int whole_read_jobs{"litter.whole_read_jobs", 0, 0, 4096,
                               "Jobs a whole litter read places its tiles on at once: 1 one "
                               "thread, 0 the host's pool, more a cap on it"};
 struct Entry {
