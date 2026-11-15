@@ -194,3 +194,32 @@ TEST_CASE("crown prior: a solid mask counts the whole card and an empty one has 
   const CrownPriorTable empty = crowns_of(tmp, "leaves");
   CHECK(empty.leaf_area_m2 == 0.0);
 }
+
+// A forest's thousands of tree meshes share a few leaf images; decoding each mesh's own copy was
+// a minute of a 3,000-tree load (static-asset-world.md, "Bought foliage"). Two meshes naming one
+// image under one test decode it once, and each still counts its own leaf.
+TEST_CASE("crown prior: meshes that share a leaf image decode it once") {
+  test::TempDir tmp("crown-prior-shared");
+  REQUIRE(write_mask(tmp.file("mask.png"), 5));
+  REQUIRE(write_cards(tmp.path(), "first", 12, 1.2f, 1.0f));
+  REQUIRE(write_cards(tmp.path(), "second", 12, 1.2f, 1.0f));
+  SceneDesc desc;
+  desc.meshes.push_back(tmp.file("first.gltf"));
+  desc.meshes.push_back(tmp.file("second.gltf"));
+  desc.cache = false;
+  SceneInstance a;
+  SceneInstance b;
+  b.mesh = 1;
+  desc.instances.push_back(a);
+  desc.instances.push_back(b);
+  SceneData data;
+  std::string error;
+  REQUIRE_MESSAGE(load_scene(desc, data, error), error);
+  CrownPriorTable table;
+  build_crown_priors(data, table);
+  REQUIRE(table.crowns == 2);
+  CHECK(table.mask_decodes == 1);
+  const CrownPriorTable one = crowns_of(tmp, "first");
+  CHECK(one.mask_decodes == 1);
+  CHECK(table.leaf_area_m2 == doctest::Approx(2.0 * one.leaf_area_m2).epsilon(1e-6));
+}

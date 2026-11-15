@@ -1,3 +1,4 @@
+#include <core/hash/hash.h>
 #include <core/time/time.h>
 #include <domain/assets/gltf.h>
 #include <domain/geometry/cluster.h>
@@ -59,6 +60,32 @@ bool decode_mask(const SourceMesh& source, const assets::Material& material, Mas
   return true;
 }
 
+// Which decode a material's mask is: its base colour image (the resolved file, or the embedded
+// bytes) under its test (the factor's alpha and the cutoff). A forest's thousands of tree meshes
+// share a handful of leaf images, so a mask is decoded once a load and not once a mesh: measured
+// at about 18 ms a 2K image, one a mesh was a minute of a 3,000-tree load (T139, second leg).
+u64 mask_key(const SourceMesh& source, const assets::Material& material) {
+  const i32 index = material.base_color_image;
+  if (index < 0 || static_cast<u32>(index) >= source.data.images.size()) return 0;
+  const assets::ImageRef& ref = source.data.images[static_cast<u32>(index)];
+  u64 key = 0;
+  if (!ref.bytes.empty()) {
+    key = hash_bytes(ref.bytes.data(), ref.bytes.size());
+  } else if (!ref.uri.empty()) {
+    const std::string file = source.image_dir.empty() || io::is_absolute_path(ref.uri)
+                                 ? ref.uri
+                                 : io::join_path(source.image_dir, ref.uri);
+    key = hash_bytes(file.data(), file.size());
+  } else {
+    return 0;
+  }
+  u32 factor = 0;
+  u32 cutoff = 0;
+  std::memcpy(&factor, &material.base_color.w, sizeof(factor));
+  std::memcpy(&cutoff, &material.alpha_cutoff, sizeof(cutoff));
+  return hash_combine(hash_combine(key, u64{factor}), u64{cutoff}) | 1u;  // 0 is "no image"
+}
+
 // The share of one triangle its mask keeps: the material's test (base colour factor's alpha times
 // the texel's, against the cutoff, at level 0, through the slot's UV transform and repeat wrap)
 // asked at the centroids of the triangle's 4 x 4 equal-area sub-triangles — the alpha coverage
@@ -114,10 +141,16 @@ void build_crown_priors(const SceneData& data, CrownPriorTable& out) {
   Vector<u8> grids;
   Vector<Vec3> corners;
   Vector<f32> fill;  // one a triangle of `corners`: the share its mask keeps
+  // The load's masks, one a distinct image and test (`mask_key`); entry 0 is the material with no
+  // image, whose test is its factor's alone. `mask_of` takes a mesh's material to its entry.
+  Vector<u64> mask_keys;
   Vector<MaskImage> masks;
-  // What measuring the masks costs the load: one CPU decode a (mesh, masked material), timed, so
-  // a world's count of masked materials says what its load pays (static-asset-world.md, "Bought
-  // foliage").
+  mask_keys.push_back(0);
+  masks.push_back(MaskImage{});
+  masks[0].tried = true;
+  Vector<u32> mask_of;
+  // What measuring the masks costs the load: one CPU decode a distinct mask, timed, so a world's
+  // count of leaf images says what its load pays (static-asset-world.md, "Bought foliage").
   u32 decodes = 0;
   i64 decode_ns = 0;
   const bool has_uvs = mesh.attributes.size() == mesh.vertices.size();
@@ -144,8 +177,8 @@ void build_crown_priors(const SceneData& data, CrownPriorTable& out) {
     const SourceMesh& source = data.sources[m];
     corners.clear();
     fill.clear();
-    masks.clear();
-    masks.resize(source.data.materials.size());
+    mask_of.clear();
+    mask_of.resize(source.data.materials.size(), ~0u);
     Vec3 lo{1e30f, 1e30f, 1e30f};
     Vec3 hi{-1e30f, -1e30f, -1e30f};
     f32 leaf_lo = 1e30f;
@@ -178,17 +211,33 @@ void build_crown_priors(const SceneData& data, CrownPriorTable& out) {
         continue;
       }
       const assets::Material& leaf = source.data.materials[static_cast<u32>(material)];
-      MaskImage& mask = masks[static_cast<u32>(material)];
-      if (!mask.tried) {
-        const i64 start_ns = time::monotonic_ns();
-        const bool decoded = decode_mask(source, leaf, mask);
-        decode_ns += time::monotonic_ns() - start_ns;
-        ++decodes;
-        if (!decoded) {
+      u32& entry = mask_of[static_cast<u32>(material)];
+      if (entry == ~0u) {
+        const u64 key = mask_key(source, leaf);
+        entry = 0;
+        for (u32 k = 1; key != 0 && k < mask_keys.size(); ++k) {
+          if (mask_keys[k] == key) {
+            entry = k;
+            break;
+          }
+        }
+        if (key != 0 && entry == 0) {
+          entry = static_cast<u32>(masks.size());
+          mask_keys.push_back(key);
+          masks.push_back(MaskImage{});
+          const i64 start_ns = time::monotonic_ns();
+          decode_mask(source, leaf, masks[entry]);
+          decode_ns += time::monotonic_ns() - start_ns;
+          ++decodes;
+          // With no UVs only the mean is read: the texels go now, not at the end of the load.
+          if (!has_uvs) masks[entry].alpha = image::Image{};
+        }
+        if (!masks[entry].ok) {
           ENGINE_LOG_INFO(log_renderer, "crown prior mask read from the factor alone",
                           log::field("mesh", m), log::field("material", material));
         }
       }
+      const MaskImage& mask = masks[entry];
       for (u32 t = 0; t < cluster.triangle_count; ++t) {
         const u32 packed = mesh.triangles[cluster.triangle_offset + t];
         Vec2 uv[3];
@@ -240,6 +289,7 @@ void build_crown_priors(const SceneData& data, CrownPriorTable& out) {
                     log::field("dims", records[m].dims));
   }
   out.meshes = meshes;
+  out.mask_decodes = decodes;
   if (decodes > 0) {
     ENGINE_LOG_INFO(log_renderer, "crown prior masks decoded", log::field("decodes", decodes),
                     log::field("ms", static_cast<f64>(decode_ns) / 1.0e6));
