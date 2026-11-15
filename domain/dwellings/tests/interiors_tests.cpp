@@ -203,7 +203,7 @@ TEST_CASE("interiors: the stair is one a person climbs") {
     CHECK(rise_mm * 10000 <= going_mm * 9004);
     // The flight is exactly its goings, and the last tread's top is one riser under the floor.
     const i32 run = s.rises == Side::Front || s.rises == Side::Back ? s.flight.z1 - s.flight.z0
-                                                                  : s.flight.x1 - s.flight.x0;
+                                                                    : s.flight.x1 - s.flight.x0;
     CHECK(run == (s.risers - 1) * k_stair_going_cm);
     CHECK(s.tread_mm(s.risers - 1u) == s.rise_mm);
     CHECK(s.rise_mm - s.tread_mm(s.risers - 2u) <= k_stair_max_rise_mm);
@@ -306,9 +306,9 @@ TEST_CASE("interiors: a plan draws as text, the lane below") {
       if (!plan.stairs.empty()) {
         CHECK(text.find(storey == 0 ? 'f' : 'h') != std::string::npos);
       }
-      MESSAGE(plan_type_name(plan.params.type) << ", storey " << int{storey} << ", "
-                                               << p.width_cm << " x " << p.depth_cm << " cm\n"
-                                               << text);
+      MESSAGE(plan_type_name(plan.params.type)
+              << ", storey " << int{storey} << ", " << p.width_cm << " x " << p.depth_cm << " cm\n"
+              << text);
     }
   }
 }

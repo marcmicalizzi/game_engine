@@ -120,8 +120,7 @@ int dwelling_command(int argc, char** argv) {
   const std::string base = out_dir + "/" + name;
   if (io::write_file_atomic(base + ".structure.json", structures::canonical_json(recipe)) !=
       io::Status::Ok) {
-    std::fprintf(stderr, "engine-content dwelling: cannot write %s.structure.json\n",
-                 base.c_str());
+    std::fprintf(stderr, "engine-content dwelling: cannot write %s.structure.json\n", base.c_str());
     return 1;
   }
 
@@ -158,25 +157,29 @@ int dwelling_command(int argc, char** argv) {
     const dwellings::Room& room = plan.rooms[v.room];
     walk += i == 0 ? "\n    " : ",\n    ";
     walk += "{ \"room\": " + std::to_string(v.room) + ", \"kind\": \"" +
-            dwellings::room_kind_name(room.kind) + "\", \"storey\": " +
-            std::to_string(room.storey);
-    append(walk, ", \"eye\": [%.2f, %.3f, %.2f]", (v.eye_x_cm + off) / 100.0,
-           v.eye_y_mm / 1000.0, (v.eye_z_cm + off) / 100.0);
+            dwellings::room_kind_name(room.kind) + "\", \"storey\": " + std::to_string(room.storey);
+    append(walk, ", \"eye\": [%.2f, %.3f, %.2f]", (v.eye_x_cm + off) / 100.0, v.eye_y_mm / 1000.0,
+           (v.eye_z_cm + off) / 100.0);
     append(walk, ", \"at\": [%.2f, %.3f, %.2f] }", (v.at_x_cm + off) / 100.0, v.at_y_mm / 1000.0,
            (v.at_z_cm + off) / 100.0);
   }
   walk += "\n  ]\n}\n";
   if (io::write_file_atomic(base + ".walk.json", walk) != io::Status::Ok) return 1;
 
-  std::printf("{\"name\":\"%s\",\"type\":\"%s\",\"storeys\":%u,\"rooms\":%u,\"hearths\":%u,"
-              "\"clear_cm\":[%d,%d],\"outer_cm\":[%d,%d],\"ridge_along_front\":%s,"
-              "\"demoted\":%s,\"triangles\":%u,\"structure\":\"%s.structure.json\"}\n",
-              name.c_str(), dwellings::plan_type_name(plan.params.type),
-              static_cast<unsigned>(plan.params.storeys), static_cast<unsigned>(plan.rooms.size()),
-              static_cast<unsigned>(plan.hearths.size()), plan.params.width_cm,
-              plan.params.depth_cm, choice.outer_width_cm, choice.outer_depth_cm,
-              choice.ridge_along_front ? "true" : "false", choice.demoted ? "true" : "false",
-              report.triangles, base.c_str());
+  // The path with forward slashes, so the line is JSON whatever the shell handed in.
+  std::string shown = base;
+  for (char& c : shown) {
+    if (c == '\\') c = '/';
+  }
+  std::printf(
+      "{\"name\":\"%s\",\"type\":\"%s\",\"storeys\":%u,\"rooms\":%u,\"hearths\":%u,"
+      "\"clear_cm\":[%d,%d],\"outer_cm\":[%d,%d],\"ridge_along_front\":%s,"
+      "\"demoted\":%s,\"triangles\":%u,\"structure\":\"%s.structure.json\"}\n",
+      name.c_str(), dwellings::plan_type_name(plan.params.type),
+      static_cast<unsigned>(plan.params.storeys), static_cast<unsigned>(plan.rooms.size()),
+      static_cast<unsigned>(plan.hearths.size()), plan.params.width_cm, plan.params.depth_cm,
+      choice.outer_width_cm, choice.outer_depth_cm, choice.ridge_along_front ? "true" : "false",
+      choice.demoted ? "true" : "false", report.triangles, shown.c_str());
   return 0;
 #else
   (void)argc;

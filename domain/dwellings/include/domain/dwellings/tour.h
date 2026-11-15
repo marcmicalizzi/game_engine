@@ -11,10 +11,9 @@
 // it reached). Every leg is parallel to a wall, and the line keeps `k_tour_clear_cm` from every
 // wall's face and every stack, except where it crosses a doorway.
 
-#include <domain/dwellings/interiors.h>
-
 #include <core/base/types.h>
 #include <core/containers/vector.h>
+#include <domain/dwellings/interiors.h>
 
 namespace engine::dwellings {
 
@@ -25,7 +24,7 @@ inline constexpr i32 k_tour_clear_cm = 35;
 struct TourPoint {
   i32 x_cm = 0;
   i32 z_cm = 0;
-  i32 y_mm = 0;  // the floor under the point, above the ground storey's floor
+  i32 y_mm = 0;          // the floor under the point, above the ground storey's floor
   u32 room = k_no_room;  // the room the point stands in; k_no_room outside the house
 };
 

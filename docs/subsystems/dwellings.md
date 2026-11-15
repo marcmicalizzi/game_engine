@@ -17,9 +17,12 @@ centimetres, and the structures capability's mesher draws it.
 - **A capability of its own, where plan 14 puts the rural filler inside `structures`.** The plan's
   argument against splitting ([§14.3](../plan/14-structures.md#143-the-description-the-mesher-and-the-fillers),
   "Why not five") is that the solvers share the description, the kit and the stair rule. The
-  interior plan shares none of the mesher's code: it needs `base`, `containers` and `hash`. The edge
-  runs one way, from this module to the description it fills, as the village filler's does. If the
-  two are folded together later it is a move of files; no plan changes.
+  interior plan shares none of the mesher's code: `interiors.cpp`, `rural_filler.cpp` and `tour.cpp`
+  need `base`, `containers` and `hash`, and only `describe.cpp` names the description. The edge
+  runs one way, from this module to the description it fills, as the village filler's does
+  (`engine_capability_requires(dwellings structures)`). The documentation check also allows no
+  page without a module, and the legs that built this on one night each needed a page. If the two
+  are folded together later it is a move of files; no plan changes.
 - **Four plan types, by what could be grounded** ([the grounding](../experiments/vernacular-interiors.md#plan-types)):
   the one-room cot, the hall and parlour, the cross-passage house and the two-up two-down. Each is a
   row of **bands**: rooms side by side along one axis, every inner wall running the full depth
@@ -102,7 +105,7 @@ from (0, 0), the front wall along z = 0 and the lane on its -z side.
 | The plan's | becomes |
 |---|---|
 | the clear rectangle and the outer wall's thickness | the footprint; four exterior walls a storey (left, back, right, front, the footprint's order). A wall names one room: the one its door opens into, else the first that meets it |
-| storeys | `Storey` records: 2.4 m floor to floor under an upper storey, 2.2 m to the plate for a house of one; a one-room house is open to its roof, divided rooms are ceiled |
+| storeys | `Storey` records: 2.4 m floor to floor under an upper storey and 2.5 m from the upper floor to its plate, 2.4 m to the plate for a house of one; a one-room house is open to its roof, divided rooms are ceiled. The upper storey is that high because a thatch's eave hangs 54 cm under the plate: at 2.2 m the first pictures showed every upper window's head behind it |
 | `Room` | `Room`, its id its index, its outline on the centre lines. An inner room is a `parlour`, a stair's compartment a `passage`; `name` keeps the plan's word |
 | `InnerWall`, `Doorway` | `Wall{inner}` from one exterior wall's centre line to the other's (a T at each end), `Opening{doorway}` |
 | `OuterOpening` | `Opening{door}` or `{window}` in its side's wall, `at` measured the way that wall runs |
@@ -184,7 +187,15 @@ filler's houses, on MSVC, reproduced by Clang and GCC in the containers. `k_inte
 `interior_min_extent`, `draw_interior`), `rural_filler.h` (`household_asks`, `choose_rural`,
 `plan_rural`), `tour.h` (`tour_interior`, `room_views`).
 
-**Depends on.** `base`, `containers`, `hash`.
+**Depends on.** `base`, `containers`, `hash`, `math`, and the `structures` capability with its
+schema types (`structures_schemas`).
+
+**What looks wrong in the first pictures** (one hall and parlour on a flat ground, `--shadows rt`,
+`renderer.gi.mode=bounce`, 2026-11-14; a person's objections, most damaging first): a hearth is a
+blank stone breast with a beam across it, because the mesher cuts no opening into a stack yet;
+every room is empty, with no furniture, no door leaves and no glass; a ceiling has no joists and a
+stair no nosing, string or newel; and at the sky's exposure a room lit by its windows is nearly
+black, so the pictures were taken four stops over it.
 
 **Testing.** `tools/dev.ps1 test -Filter dwellings`.
 
@@ -208,12 +219,12 @@ the scheduler, or another capability, and it can be removed from the build the s
 
 | Registration point | This capability | Status |
 |---|---|---|
-| Capabilities it requires | none | the plan stands alone |
+| Capabilities it requires | `structures` | `engine_capability_requires(dwellings structures)`: it writes that capability's description |
 | Component and event types | none | a plan is plain records; nothing ticks |
 | Tick scheduler entry | none | nothing ticks |
 | Render-graph passes | none | it draws nothing |
 | Content-build derived step | none | a plan is made when asked, never cached |
-| Protocol methods | none | `structure.fill` comes with the records |
+| Protocol methods | none | `structure.fill` comes with the records; `engine-content dwelling` is the filler as a tool until then |
 | Tunables | none | a caller's style is a struct; a plan is a pure function of it |
 | LOD policy | `dwellings::k_lod`: none of its own | description data; the mesher's interior mesh and its DAG are what a distance changes |
 | Determinism | `dwellings::k_determinism` | integer, pinned on three compilers |

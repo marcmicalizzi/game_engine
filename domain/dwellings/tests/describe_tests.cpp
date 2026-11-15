@@ -3,11 +3,10 @@
 // every room; its walk records hold the plan's doorways, doors and flight where the plan put them;
 // and the descriptions are the same on every toolchain.
 
+#include <core/hash/hash.h>
 #include <domain/dwellings/describe.h>
 #include <domain/dwellings/tour.h>
 #include <domain/structures/structures.h>
-
-#include <core/hash/hash.h>
 
 #include <doctest/doctest.h>
 
@@ -21,7 +20,7 @@ namespace {
 
 // Taken on MSVC (msvc-debug) on 2026-11-14 at k_interior_version 1, k_rural_filler_version 1 and
 // k_structure_version 1.
-constexpr u64 k_descriptions_pin = 0x658625892607bdaaull;
+constexpr u64 k_descriptions_pin = 0xf109f353ed345becull;
 
 bool near_cm(f32 metres, i32 cm) {
   const f32 d = metres * 100.0f - static_cast<f32>(cm);
@@ -44,10 +43,10 @@ TEST_CASE("describe: every house the filler writes is one the mesher takes") {
           InteriorPlan plan;
           std::string error;
           const u64 house_seed = seed * 131 + persons;
-          INFO("plot " << plot.frontage_cm << " persons " << int{persons} << " means "
-                       << int{means} << " seed " << seed);
-          REQUIRE(plan_rural(plot, Household{persons, means}, style, house_seed, choice, plan,
-                             &error));
+          INFO("plot " << plot.frontage_cm << " persons " << int{persons} << " means " << int{means}
+                       << " seed " << seed);
+          REQUIRE(
+              plan_rural(plot, Household{persons, means}, style, house_seed, choice, plan, &error));
           structure::Description d;
           describe(plan, choice, "house", house_seed, d);
           std::string why;
@@ -62,7 +61,8 @@ TEST_CASE("describe: every house the filler writes is one the mesher takes") {
           Vector<structures::RoomLink> links;
           structures::room_links(d, links);
           u32 doors = 0;
-          for (const OuterOpening& o : plan.openings) doors += o.door() ? 1u : 0u;
+          for (const OuterOpening& o : plan.openings)
+            doors += o.door() ? 1u : 0u;
           CHECK(links.size() == plan.doorways.size() + plan.stairs.size() + doors);
           CHECK(d.rooms.size() == plan.rooms.size());
           CHECK(d.chimneys.size() == plan.hearths.size());
@@ -105,7 +105,8 @@ TEST_CASE("describe: every house the filler writes is one the mesher takes") {
             REQUIRE(tour_interior(plan, 150, tour));
             bool on_tour = false;
             for (const TourPoint& t : tour) {
-              on_tour = on_tour || (near_cm(f.foot.x, t.x_cm + off) && near_cm(f.foot.z, t.z_cm + off));
+              on_tour =
+                  on_tour || (near_cm(f.foot.x, t.x_cm + off) && near_cm(f.foot.z, t.z_cm + off));
             }
             CHECK(on_tour);
           }

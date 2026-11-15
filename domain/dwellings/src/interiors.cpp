@@ -6,9 +6,8 @@
 // a two-up two-down lays them away from the lane (u = z). The stair, when there is one, is a band
 // of its own, the strip, with its flight along v.
 
-#include <domain/dwellings/interiors.h>
-
 #include <core/hash/hash.h>
+#include <domain/dwellings/interiors.h>
 
 namespace engine::dwellings {
 
@@ -22,21 +21,21 @@ u32 count_of(const Vector<T>& v) noexcept {
 // Least sizes (docs/experiments/vernacular-interiors.md, "Room sizes").
 constexpr i32 k_min_cot_length_cm = 400;
 constexpr i32 k_min_depth_cm = 330;
-constexpr i32 k_min_pair_cm = 640;      // a hall and its second room together
+constexpr i32 k_min_pair_cm = 640;  // a hall and its second room together
 constexpr i32 k_min_hall_cm = 350;
-constexpr i32 k_min_second_cm = 240;    // a parlour, a service room
+constexpr i32 k_min_second_cm = 240;  // a parlour, a service room
 constexpr i32 k_min_inner_cm = 270;
 constexpr i32 k_min_two_up_room_cm = 300;
 constexpr i32 k_min_axial_depth_cm = 400;
 
 // Where openings sit (the same page, "Where doors and windows sit").
-constexpr i32 k_corner_cm = 40;       // an opening's edge to its room's corner
-constexpr i32 k_pier_cm = 60;         // between two openings in one wall
-constexpr i32 k_stack_pier_cm = 20;   // a window's edge to a stack that stands against its wall
-constexpr i32 k_door_margin_cm = 25;  // a partition doorway's jamb to the outer wall's face
+constexpr i32 k_corner_cm = 40;        // an opening's edge to its room's corner
+constexpr i32 k_pier_cm = 60;          // between two openings in one wall
+constexpr i32 k_stack_pier_cm = 20;    // a window's edge to a stack that stands against its wall
+constexpr i32 k_door_margin_cm = 25;   // a partition doorway's jamb to the outer wall's face
 constexpr i32 k_landing_pier_cm = 15;  // a landing doorway's jamb to the outer wall's face
 constexpr i32 k_landing_end_cm = 5;    // and its other jamb to the first riser's line
-constexpr i32 k_approach_cm = 90;     // the floor kept clear before a doorway (plan 14 §14.4)
+constexpr i32 k_approach_cm = 90;      // the floor kept clear before a doorway (plan 14 §14.4)
 constexpr i32 k_stair_window_cm = 60;
 constexpr u32 k_max_windows = 4;
 
@@ -151,8 +150,7 @@ struct Builder {
     plan.rooms[room_index].flags = static_cast<u8>(plan.rooms[room_index].flags | k_room_entrance);
   }
 
-  void hearth(u32 room_index, u8 storey, i32 u0, i32 v0, i32 u1, i32 v1, Local looks,
-              i32 opening) {
+  void hearth(u32 room_index, u8 storey, i32 u0, i32 v0, i32 u1, i32 v1, Local looks, i32 opening) {
     Hearth h;
     h.stack = frame.rect(u0, v0, u1, v1);
     h.room = room_index;
@@ -190,7 +188,8 @@ RectCm flip(const RectCm& r, i32 width) noexcept {
 // The plan flipped left to right: x becomes width - x.
 void mirror_plan(InteriorPlan& plan) noexcept {
   const i32 width = plan.params.width_cm;
-  for (Room& r : plan.rooms) r.rect = flip(r.rect, width);
+  for (Room& r : plan.rooms)
+    r.rect = flip(r.rect, width);
   for (u32 i = 0; i < count_of(plan.walls); ++i) {
     InnerWall& w = plan.walls[i];
     if (w.x0 == w.x1) {
@@ -251,7 +250,8 @@ struct Free {
       if (hi < f.hi && n < 16) kept[n++] = Interval{hi, f.hi};
     }
     count = n;
-    for (u32 i = 0; i < n; ++i) at[i] = kept[i];
+    for (u32 i = 0; i < n; ++i)
+      at[i] = kept[i];
   }
 
   // The widest interval, the lowest of equals; false when none holds `width`.
@@ -399,7 +399,7 @@ struct Layout {
   u32 ground_count = 0;
   i32 strip_u0 = -1;  // the strip's band, when there is a stair
   i32 strip_u1 = -1;
-  i32 inner_u1 = 0;   // the inner room's far edge, 0 with none
+  i32 inner_u1 = 0;  // the inner room's far edge, 0 with none
 };
 
 void push(Layout& l, RoomKind kind, i32 length, u8 flags) noexcept {
@@ -643,11 +643,10 @@ bool plan_interior(const InteriorParams& params, InteriorPlan& out, std::string*
   for (u32 i = 0; i < l.ground_count; ++i) {
     const Band& b = l.ground[i];
     const i32 length = b.u1 - b.u0;
-    const i32 least = b.kind == RoomKind::Hall
-                          ? k_min_hall_cm
-                          : (b.kind == RoomKind::Passage || b.kind == RoomKind::Stair
-                                 ? 100
-                                 : k_min_second_cm);
+    const i32 least =
+        b.kind == RoomKind::Hall
+            ? k_min_hall_cm
+            : (b.kind == RoomKind::Passage || b.kind == RoomKind::Stair ? 100 : k_min_second_cm);
     if (length < least) return fail(error, "interior: a room came out under its least size");
   }
 
@@ -729,8 +728,8 @@ bool plan_interior(const InteriorParams& params, InteriorPlan& out, std::string*
   };
   auto gable_high = [&](const Band& b, i32 opening) {
     const i32 half = (opening + 2 * k_stack_jamb_cm) / 2;
-    build.hearth(b.room, 0, u_len - k_gable_stack_cm, v_mid - half, u_len, v_mid + half,
-                 Local::Low, opening);
+    build.hearth(b.room, 0, u_len - k_gable_stack_cm, v_mid - half, u_len, v_mid + half, Local::Low,
+                 opening);
   };
   switch (p.type) {
     case PlanType::Cot: {
@@ -822,10 +821,10 @@ u64 hash_interior(const InteriorPlan& plan) noexcept {
                           u64{p.mirror ? 1u : 0u} << 16 | u64{p.inner_room ? 1u : 0u} << 8 |
                           p.hearths);
   pair(p.width_cm, p.depth_cm);
-  h = hash_combine(h, u64{p.storey_cm} << 48 | u64{p.upper_clear_cm} << 32 |
-                          u64{p.floor_cm} << 16 | p.inner_wall_cm);
-  h = hash_combine(h, u64{p.door_cm} << 48 | u64{p.doorway_cm} << 32 | u64{p.head_cm} << 16 |
-                          p.window_cm);
+  h = hash_combine(h, u64{p.storey_cm} << 48 | u64{p.upper_clear_cm} << 32 | u64{p.floor_cm} << 16 |
+                          p.inner_wall_cm);
+  h = hash_combine(
+      h, u64{p.door_cm} << 48 | u64{p.doorway_cm} << 32 | u64{p.head_cm} << 16 | p.window_cm);
   h = hash_combine(h, p.sill_cm);
   h = hash_combine(h, p.seed);
   h = hash_combine(h, plan.rooms.size());
@@ -1012,12 +1011,12 @@ bool validate_interior(const InteriorPlan& plan, Vector<InteriorFinding>& findin
     if (foot < k_stair_landing_cm) found(InteriorRule::StairLanding, i, foot, k_stair_landing_cm);
     if (head < k_stair_landing_cm) found(InteriorRule::StairLanding, i, head, k_stair_landing_cm);
     // Headroom over every tread and both landings.
-    i32 least = stair_headroom_cm(plan, s, (s.foot.x0 + s.foot.x1) / 2,
-                                  (s.foot.z0 + s.foot.z1) / 2, 0);
+    i32 least =
+        stair_headroom_cm(plan, s, (s.foot.x0 + s.foot.x1) / 2, (s.foot.z0 + s.foot.z1) / 2, 0);
     for (u32 t = 0; t + 1 < s.risers; ++t) {
       const RectCm tread = s.tread(t);
-      const i32 h = stair_headroom_cm(plan, s, (tread.x0 + tread.x1) / 2,
-                                      (tread.z0 + tread.z1) / 2, s.tread_mm(t));
+      const i32 h = stair_headroom_cm(plan, s, (tread.x0 + tread.x1) / 2, (tread.z0 + tread.z1) / 2,
+                                      s.tread_mm(t));
       if (h < least) least = h;
     }
     const i32 over_head = stair_headroom_cm(plan, s, (s.head.x0 + s.head.x1) / 2,
@@ -1127,9 +1126,8 @@ bool validate_interior(const InteriorPlan& plan, Vector<InteriorFinding>& findin
       const bool along_z = w.x0 == w.x1;
       const i32 lo = (along_z ? w.z0 : w.x0) + d.at_cm - d.width_cm / 2;
       const i32 hi = lo + d.width_cm;
-      const RectCm approach = along_z
-                                  ? RectCm{w.x0 - k_approach_cm, lo, w.x0 + k_approach_cm, hi}
-                                  : RectCm{lo, w.z0 - k_approach_cm, hi, w.z0 + k_approach_cm};
+      const RectCm approach = along_z ? RectCm{w.x0 - k_approach_cm, lo, w.x0 + k_approach_cm, hi}
+                                      : RectCm{lo, w.z0 - k_approach_cm, hi, w.z0 + k_approach_cm};
       if (overlaps(x.stack, approach)) found(InteriorRule::HearthClear, i, 2, 0);
     }
     for (const OuterOpening& o : plan.openings) {
@@ -1139,9 +1137,7 @@ bool validate_interior(const InteriorPlan& plan, Vector<InteriorFinding>& findin
       RectCm approach;
       switch (o.side) {
         case Side::Front: approach = RectCm{lo, 0, hi, k_approach_cm}; break;
-        case Side::Back:
-          approach = RectCm{lo, p.depth_cm - k_approach_cm, hi, p.depth_cm};
-          break;
+        case Side::Back: approach = RectCm{lo, p.depth_cm - k_approach_cm, hi, p.depth_cm}; break;
         case Side::Left: approach = RectCm{0, lo, k_approach_cm, hi}; break;
         default: approach = RectCm{p.width_cm - k_approach_cm, lo, p.width_cm, hi}; break;
       }
@@ -1162,13 +1158,16 @@ std::string draw_interior(const InteriorPlan& plan, u8 storey, i32 cell_cm) {
   auto cell = [&](i32 col, i32 row) -> char& {
     return out[static_cast<usize>((rows - row) * stride + col + 1)];
   };
-  for (i32 row = -1; row <= rows; ++row) out[static_cast<usize>((rows - row) * stride + cols + 2)] = '\n';
+  for (i32 row = -1; row <= rows; ++row)
+    out[static_cast<usize>((rows - row) * stride + cols + 2)] = '\n';
   for (i32 row = 0; row < rows; ++row) {
-    for (i32 col = 0; col < cols; ++col) cell(col, row) = ' ';
+    for (i32 col = 0; col < cols; ++col)
+      cell(col, row) = ' ';
   }
   auto fill = [&](const RectCm& r, char c) {
     for (i32 row = r.z0 / cell_cm; row * cell_cm < r.z1 && row < rows; ++row) {
-      for (i32 col = r.x0 / cell_cm; col * cell_cm < r.x1 && col < cols; ++col) cell(col, row) = c;
+      for (i32 col = r.x0 / cell_cm; col * cell_cm < r.x1 && col < cols; ++col)
+        cell(col, row) = c;
     }
   };
   for (const Stair& s : plan.stairs) {
@@ -1193,7 +1192,8 @@ std::string draw_interior(const InteriorPlan& plan, u8 storey, i32 cell_cm) {
       bool open = false;
       for (const Doorway& d : plan.doorways) {
         const i32 lo = d.at_cm - d.width_cm / 2;
-        if (d.wall == i && at + cell_cm / 2 >= lo && at + cell_cm / 2 < lo + d.width_cm) open = true;
+        if (d.wall == i && at + cell_cm / 2 >= lo && at + cell_cm / 2 < lo + d.width_cm)
+          open = true;
       }
       const i32 col = (along_z ? w.x0 : w.x0 + at) / cell_cm;
       const i32 row = (along_z ? w.z0 + at : w.z0) / cell_cm;

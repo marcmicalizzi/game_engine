@@ -80,7 +80,8 @@ void check_tour(const InteriorPlan& plan) {
     }
     if (a.room != k_no_room && a.room != b.room) CHECK(crossing_ok(plan, a, b));
   }
-  for (u32 r = 0; r < plan.rooms.size(); ++r) CHECK(seen[r] == 1);
+  for (u32 r = 0; r < plan.rooms.size(); ++r)
+    CHECK(seen[r] == 1);
   if (!plan.stairs.empty()) {
     const Stair& s = plan.stairs[0];
     const TourPoint& last = tour.back();
@@ -98,8 +99,8 @@ void check_tour(const InteriorPlan& plan) {
     CHECK((v.eye_x_cm != v.at_x_cm || v.eye_z_cm != v.at_z_cm));
     if ((room.flags & k_room_habitable) != 0) {
       // It looks at a window: a point on an outer wall's inner face, at glass height.
-      const bool on_wall = v.at_x_cm == 0 || v.at_x_cm == plan.params.width_cm ||
-                           v.at_z_cm == 0 || v.at_z_cm == plan.params.depth_cm;
+      const bool on_wall = v.at_x_cm == 0 || v.at_x_cm == plan.params.width_cm || v.at_z_cm == 0 ||
+                           v.at_z_cm == plan.params.depth_cm;
       CHECK(on_wall);
       const i32 above = v.at_y_mm - (room.storey == 0 ? 0 : plan.params.storey_cm * 10);
       CHECK(above == (plan.params.sill_cm + plan.params.head_cm) * 5);

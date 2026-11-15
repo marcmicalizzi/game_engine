@@ -10,9 +10,8 @@
 // plan is laid out between the outer walls' inner faces from (0, 0), the description on the walls'
 // centre lines from (0, 0), the front wall along z = 0 and the lane on its -z side.
 
-#include <domain/dwellings/rural_filler.h>
-
 #include <core/base/types.h>
+#include <domain/dwellings/rural_filler.h>
 
 #include <schemas/structures.h>
 #include <string>
@@ -34,13 +33,12 @@ i32 max_clear_cm(u16 outer_wall_cm) noexcept;
 // exterior walls a storey, the inner walls, every door, window and doorway, the rooms, the stair,
 // a chimney a hearth with its hearth stone and bressumer, one gable roof with its ridge along the
 // longer side, and the filler's provenance. `out` is replaced.
-void describe(const InteriorPlan& plan, const RuralChoice& choice, std::string_view name,
-              u64 seed, structure::Description& out);
+void describe(const InteriorPlan& plan, const RuralChoice& choice, std::string_view name, u64 seed,
+              structure::Description& out);
 
 // The rural filler: a plot, a household and a seed to a description that passes the mesher's
 // validator. False with a sentence when the plot holds no house.
 bool fill_rural(const RuralPlot& plot, const Household& household, const RuralStyle& style,
-                u64 seed, std::string_view name, structure::Description& out,
-                std::string* error);
+                u64 seed, std::string_view name, structure::Description& out, std::string* error);
 
 }  // namespace engine::dwellings

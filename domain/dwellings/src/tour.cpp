@@ -187,8 +187,10 @@ struct Walker {
     if (at.x != to.x && at.z != to.z) {
       const P x_first{to.x, at.z};
       const P z_first{at.x, to.z};
-      const bool x_clear = !leg_hits(plan, storey, at, x_first) && !leg_hits(plan, storey, x_first, to);
-      const bool z_clear = !leg_hits(plan, storey, at, z_first) && !leg_hits(plan, storey, z_first, to);
+      const bool x_clear =
+          !leg_hits(plan, storey, at, x_first) && !leg_hits(plan, storey, x_first, to);
+      const bool z_clear =
+          !leg_hits(plan, storey, at, z_first) && !leg_hits(plan, storey, z_first, to);
       emit(x_clear || !z_clear ? x_first : z_first, room);
     }
     emit(to, room);

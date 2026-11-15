@@ -63,8 +63,9 @@ style default. Headroom is the plan's 2.1 m, 0.1 m over the regulation's.
 ladder: steeper than a walker's and turning on treads that taper to nothing. The walker's 0.28 m
 going at the walking line and the collision proxy's 5 cm cut hold neither, so **the stair built is a
 straight enclosed flight between two walls**, which is also what the early two-up two-down had. Twelve
-risers run 3.08 m, and with a level landing of a metre at each end (**authored**: a doorway of 0.84 m
-beside it and 8 cm of jamb each side) the stair's strip is 5.08 m long. A house with an upper floor
+risers run 3.08 m, and with a level landing of a metre at each end (**authored**: a doorway of 0.8 m
+beside it, 15 cm of wall between it and the outer wall as the mesher asks, 5 cm before the first
+riser) the stair's strip is 5.08 m long. A house with an upper floor
 is therefore **at least 5.1 m clear in the direction its stair runs**: Emsworthy's 5.0 m, the top of
 the measured range, where Whittaker's Cottages are 12 ft (3.66 m). The filler builds upper floors
 only on houses that deep; a smaller house is one storey. Lofts under the roof (the one-and-a-half
@@ -80,7 +81,7 @@ headroom rule, and that is a row of its own.
 | Clear depth, two storeys | the stair's strip, 5.1–5.5 m | the stair, above |
 | A hall and parlour's clear length | 6.4–9.0 m (7.4–10.0 m with a stair between) | 20–40 ft overall, less the walls |
 | Hall to second room | the hall 56–62 % of the pair, at least 3.5 m; the second room at least 2.4 m | the hall is "the larger"; Houndtor's hall about 6 × 4 m. The split is **authored** |
-| A cross-passage house's clear length | 8.4–10.5 m, to 15.0 m with an inner room and a stair | Dinna Clerk 14.63 m, Houndtor 14.2 m, Emsworthy 15.0 m, byre included |
+| A cross-passage house's clear length | 8.4–10.5 m, to 14.1 m with an inner room and a stair | Dinna Clerk 14.63 m, Houndtor 14.2 m, Emsworthy 15.0 m, byre included. 14.1 m is where a building description's reach of 15 m stops a house with 0.5 m walls, not a source's figure |
 | The passage | 1.6–2.0 m | **authored**; the one figure seen is 9 ft (*snippet*) |
 | An inner room | 22 % of the house less its passage, at least 2.7 m | **authored** |
 | A two-up two-down's rooms | each at least 3.0 m deep, 5.1–5.5 m wide | Whittaker's 20 ft over two rooms is 10 ft each; a secondary page's 13 × 13 ft "standard" (*snippet*). The width is the stair's, not the source's 12 ft |
@@ -103,7 +104,7 @@ headroom rule, and that is a row of its own.
 |---|---|---|
 | Where | a cot and a hall: against the gable, under the ridge. A cross-passage hall: **backing onto the passage**. A two-up two-down: the front room, on a side wall. A second hearth (means 2): the parlour's or service room's far gable, the kitchen's side wall | Hall and parlor (gable-end chimneys); Hall house and the Dartmoor pages (the hearth at the hall's lower end); Whittaker's (the front room has the only fire); buildingconservation.com, *Fireplaces* (whole): back-to-back stacks and a smaller upper fire from the 17th century |
 | The opening | 1.2 m in a hall, 0.9 m elsewhere, 1.3 m to the lintel | **authored**. No opened source measures an inglenook; a Rumford fireplace's opening is 30–50 in wide and 20–28 in deep (rumford.com, *snippet*), the lower bound of anything a cottage cooked on |
-| The stack in plan | the opening and 0.3 m each side; 0.6 m into the room against a gable, 1.0 m along the house when axial | **authored**; Poplar Cottage's smoke bay is about 4 ft (1.2 m) long, the upper bound |
+| The stack in plan | the opening and 0.3 m each side; against a wall, 0.4 m into the room, through the wall and 8 cm proud of it outside (0.98 m in all at a 0.5 m wall); 1.0 m along the house when axial | **authored**; Poplar Cottage's smoke bay is about 4 ft (1.2 m) long, the upper bound. The 8 cm is the mesher's example's |
 | The chimney | the stack carried up through every storey; its height over the ridge is the shell's | a flue within 0.6 m of the ridge ends at least 0.6 m over it (Approved Document J, *snippet*) |
 
 ## What is not built, and why
