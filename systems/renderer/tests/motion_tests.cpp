@@ -10,16 +10,22 @@
 // step is 1/128 px under 16 px of motion, so its rounding is 0.004, and the rest is the shader's
 // float arithmetic against the double here.
 //
-// What is **not** held here: a swaying tree's and a skinned actor's vectors against their CPU
-// mirrors. Their path is the deformed one this file holds on the procedural deformer (the corners
-// from the two pools, the barycentrics, the instance's transform), and their inputs' "last frame"
-// is the same block the deformer's clock goes through; the two fixtures are roadmap R158's.
+// A swaying tree and a walking skinned actor are held against CPU mirrors of their deformers
+// (`gfx::flora_bend` over the poses `flora_pose_instances` gives, `anim::skin_positions`), over
+// three frames with two in flight, so "last frame's inputs" is read from the other frame slot's
+// part poses and bone matrices both ways round.
 #include <core/math/math.h>
 #include <core/math/world.h>
+#include <domain/anim/skeleton.h>
+#include <domain/geometry/cluster.h>
+#include <domain/geometry/cluster_lod.h>
 #include <domain/gfx/device.h>
+#include <domain/gfx/flora_motion.h>
 #include <domain/gfx/motion.h>
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/capture.h>
+#include <systems/renderer/flora_motion.h>
+#include <systems/renderer/flora_poser.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/scene_renderer.h>
@@ -27,9 +33,11 @@
 #include <systems/renderer/view_set.h>
 
 #include <doctest/doctest.h>
+#include <test_temp_dir.h>
 
 #include <cmath>
 #include <cstring>
+#include <fstream>
 #include <string>
 
 using namespace engine;
@@ -82,6 +90,12 @@ struct Rig {
 
   bool build(const gfx::Device& device, const SceneDesc& desc, const RenderSettings& settings) {
     if (!load_scene(desc, data, error)) return false;
+    return finish(device, settings);
+  }
+
+  // The same from a `SceneData` the caller filled in itself (the skinned bar), with two frames in
+  // flight: the motion pass's "last frame" is the other slot's inputs.
+  bool finish(const gfx::Device& device, const RenderSettings& settings) {
     resolve_settings(settings, device.features(), &data, resolved);
     const RenderAvailability availability = check_availability(resolved, device.features());
     if (availability != RenderAvailability::Ok) {
@@ -92,6 +106,7 @@ struct Rig {
     SceneRenderer::Desc rd;
     rd.width = k_width;
     rd.height = k_height;
+    rd.frames_in_flight = 2;
     return renderer.create(device, scene, resolved, rd, &error);
   }
 };
@@ -555,3 +570,452 @@ TEST_CASE("motion: a deformed surface's pixels are measured from last frame's sh
   MESSAGE("both held: worst " << worst << " px");
   CHECK(worst <= k_tolerance_px);
 }
+
+// ---- deformed instances against their deformers' CPU mirrors ----------------------------------
+//
+// The reference for a deformed pixel is built without the pools: the triangle the ids name, its
+// corners deformed on the CPU by the deformer's own mirror for this frame's inputs and for last
+// frame's, the pixel's ray met with the first triangle in double, and the point carried to the
+// second by its barycentrics. The pass reads the same corners out of its two pools, so the two
+// agree to the pools' float rounding and the half float's step, and a "last frame" that is really
+// this frame's (the other slot's region rewritten, or never read) leaves the deformer's whole
+// motion as the error.
+namespace {
+
+struct D3 {
+  f64 x = 0.0;
+  f64 y = 0.0;
+  f64 z = 0.0;
+};
+D3 operator+(D3 a, D3 b) { return D3{a.x + b.x, a.y + b.y, a.z + b.z}; }
+D3 operator-(D3 a, D3 b) { return D3{a.x - b.x, a.y - b.y, a.z - b.z}; }
+D3 operator*(D3 a, f64 s) { return D3{a.x * s, a.y * s, a.z * s}; }
+f64 dot3(D3 a, D3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+D3 cross3(D3 a, D3 b) {
+  return D3{a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
+}
+
+// The mesh's rest pose as the pool reads it: off its 16-bit grid.
+Vector<Vec3> grid_positions(const geometry::ClusterMesh& mesh) {
+  Vector<Vec3> out(mesh.vertices.size());
+  for (u32 v = 0; v < out.size(); ++v)
+    out[v] = geometry::dequantize_position(mesh, v);
+  return out;
+}
+
+// Mesh-space positions placed by `instance` in the space of a frame whose eye is `eye` (the eye at
+// the origin), through the matrix the renderer itself builds for that eye.
+Vector<D3> placed(std::span<const Vec3> positions, const gfx::InstanceDesc& instance,
+                  const WorldPos& eye) {
+  Camera camera;
+  camera.position = eye;
+  const M4 to_frame = widen(gfx::instance_matrix(instance, frame_eye(camera)));
+  const u32 count = static_cast<u32>(positions.size());
+  Vector<D3> out(count);
+  for (u32 v = 0; v < count; ++v) {
+    const f64 p[4] = {positions[v].x, positions[v].y, positions[v].z, 1.0};
+    f64 q[4];
+    apply(to_frame, p, q);
+    out[v] = D3{q[0], q[1], q[2]};
+  }
+  return out;
+}
+
+// The worst difference, in pixels, between the pass's vectors and the mirror's over the pixels of
+// `instance`. `now_corners` are the mesh's vertices as this frame deformed and placed them, in its
+// space; `then_corners` as last frame's inputs did, in last frame's.
+f64 worst_deformed(const Shot& now, const Shot& before, u32 instance,
+                   const geometry::ClusterMesh& mesh, const Vector<D3>& now_corners,
+                   const Vector<D3>& then_corners, u32& counted, f64& longest,
+                   f64& worst_sine) {
+  worst_sine = 1.0;
+  const M4 inverse = inverse_of(widen(now.view.view_proj));
+  f64 worst = 0.0;
+  counted = 0;
+  longest = 0.0;
+  for (u32 y = 0; y < k_height; ++y) {
+    for (u32 x = 0; x < k_width; ++x) {
+      const u32 p = y * k_width + x;
+      const u32* id = &now.frame.ids[u64{p} * k_id_words];
+      if (id[0] != instance || id[1] >= mesh.clusters.size()) continue;
+      const geometry::ClusterDesc& cluster = mesh.clusters[id[1]];
+      const u32 packed = mesh.triangles[cluster.triangle_offset + id[2]];
+      D3 a[3];
+      D3 b[3];
+      for (u32 k = 0; k < 3; ++k) {
+        const u32 v = cluster.vertex_offset + geometry::ClusterMesh::unpack(packed, k);
+        a[k] = now_corners[v];
+        b[k] = then_corners[v];
+      }
+      // The pixel's ray (the eye is the origin) met with the triangle's plane.
+      f64 ray[4];
+      point_of(now, inverse, x, y, ray);
+      if (ray[3] == 0.0) continue;
+      const D3 dir{ray[0] / ray[3], ray[1] / ray[3], ray[2] / ray[3]};
+      const D3 e1 = a[1] - a[0];
+      const D3 e2 = a[2] - a[0];
+      const D3 normal = cross3(e1, e2);
+      const f64 facing = dot3(normal, dir);
+      if (facing == 0.0) continue;
+      const D3 d = dir * (dot3(normal, a[0]) / facing) - a[0];
+      const f64 d11 = dot3(e1, e1);
+      const f64 d12 = dot3(e1, e2);
+      const f64 d22 = dot3(e2, e2);
+      const f64 denom = d11 * d22 - d12 * d12;
+      if (!(denom > 0.0)) continue;
+      const f64 v = (d22 * dot3(d, e1) - d12 * dot3(d, e2)) / denom;
+      const f64 w = (d11 * dot3(d, e2) - d12 * dot3(d, e1)) / denom;
+      const D3 then = b[0] * (1.0 - v - w) + b[1] * v + b[2] * w;
+      const f64 was[4] = {then.x, then.y, then.z, 1.0};
+      f64 mx = 0.0;
+      f64 my = 0.0;
+      if (!expected_motion(now, before, was, x, y, mx, my)) continue;
+      const f64 ex = static_cast<f64>(now.frame.motion[p * 2]) - mx;
+      const f64 ey = static_cast<f64>(now.frame.motion[p * 2 + 1]) - my;
+      const f64 error = std::sqrt(ex * ex + ey * ey);
+      if (error > worst) {
+        worst = error;
+        // Where it was: the sine of the triangle's angle at its first corner says how much of a
+        // sliver it is, which is what float barycentrics lose bits to.
+        worst_sine = std::sqrt(dot3(normal, normal) / (d11 * d22));
+      }
+      longest = std::max(longest, std::sqrt(mx * mx + my * my));
+      ++counted;
+    }
+  }
+  return worst;
+}
+
+// A two-bone bar (the skinning fixture of renderer_tests.cpp, smaller): a square column from y = 0
+// to y = 2, its rings bound root to tip by height, so a turn of the tip joint bends the top half.
+struct SkinnedBar {
+  anim::Skeleton skeleton;
+  Vector<Vec3> positions;
+  Vector<geometry::SkinBinding> bindings;
+  Vector<u32> indices;
+  static constexpr u32 k_rings = 17;
+  static constexpr f32 k_height = 2.0f;
+  static constexpr f32 k_half = 0.25f;
+};
+
+void build_skinned_bar(SkinnedBar& bar) {
+  bar.skeleton.resize(2);
+  bar.skeleton.names[0] = "root";
+  bar.skeleton.names[1] = "tip";
+  bar.skeleton.parents[0] = anim::k_no_joint;
+  bar.skeleton.parents[1] = 0;
+  bar.skeleton.local_bind[0] = Transform3::identity();
+  bar.skeleton.local_bind[1] = Transform3::identity();
+  bar.skeleton.local_bind[1].position = Vec3{0.0f, 0.5f * SkinnedBar::k_height, 0.0f};
+  anim::compute_inverse_bind(bar.skeleton);
+  const f32 h = SkinnedBar::k_half;
+  const Vec3 ring[4] = {Vec3{-h, 0, -h}, Vec3{h, 0, -h}, Vec3{h, 0, h}, Vec3{-h, 0, h}};
+  for (u32 r = 0; r < SkinnedBar::k_rings; ++r) {
+    const f32 t = static_cast<f32>(r) / static_cast<f32>(SkinnedBar::k_rings - 1);
+    const f32 tip = t < 0.25f ? 0.0f : (t > 0.75f ? 1.0f : (t - 0.25f) * 2.0f);
+    const u32 joints[4] = {0, 1, 0, 0};
+    const f32 weights[4] = {1.0f - tip, tip, 0.0f, 0.0f};
+    const geometry::SkinBinding binding = geometry::make_skin_binding(joints, weights);
+    for (const Vec3& c : ring) {
+      bar.positions.push_back(Vec3{c.x, t * SkinnedBar::k_height, c.z});
+      bar.bindings.push_back(binding);
+    }
+  }
+  for (u32 r = 0; r + 1 < SkinnedBar::k_rings; ++r) {
+    for (u32 c = 0; c < 4; ++c) {
+      const u32 a = r * 4 + c;
+      const u32 b = r * 4 + (c + 1) % 4;
+      const u32 tri[6] = {a, a + 4, b, b, a + 4, b + 4};  // counter-clockwise seen from outside
+      for (const u32 i : tri)
+        bar.indices.push_back(i);
+    }
+  }
+  const u32 top = (SkinnedBar::k_rings - 1) * 4;
+  const u32 caps[12] = {0, 2, 1, 0, 3, 2, top, top + 1, top + 2, top, top + 2, top + 3};
+  for (const u32 i : caps)
+    bar.indices.push_back(i);
+}
+
+// The bar as a one-instance `SceneData`, skinned by its two joints, its spheres padded by
+// `padding` metres for the bend.
+bool make_bar_scene(const SkinnedBar& bar, f32 padding, SceneData& out, std::string& error) {
+  geometry::AttributeSource attributes;
+  attributes.skin =
+      std::span<const geometry::SkinBinding>(bar.bindings.data(), bar.bindings.size());
+  attributes.joint_count = bar.skeleton.joint_count();
+  if (!geometry::build_cluster_lod(
+          std::span<const Vec3>(bar.positions.data(), bar.positions.size()),
+          std::span<const u32>(bar.indices.data(), bar.indices.size()),
+          geometry::ClusterLodOptions{}, out.lod, &error, attributes)) {
+    return false;
+  }
+  geometry::ClusterMeshPart part;
+  part.cluster_count = out.lod.mesh.clusters.size();
+  part.leaf_cluster_count = out.lod.level_cluster_counts[0];
+  part.quant_origin = out.lod.mesh.quant_origin;
+  part.quant_scale = out.lod.mesh.quant_scale;
+  out.parts.push_back(part);
+  SourceMesh source;
+  source.part_material.push_back(-1);
+  source.part_of_cluster.resize(part.cluster_count, 0u);
+  out.sources.push_back(std::move(source));
+  out.mesh_fit.push_back(Mat4::identity());  // what `move_instances` places the mesh by
+  gfx::InstanceDesc instance{};
+  gfx::set_instance_transform(instance, Mat4::identity());
+  instance.first_pair = 0;
+  instance.bounds_padding = padding;
+  out.pair_count = part.cluster_count;
+  out.instances.push_back(instance);
+  out.instance_joints.push_back(static_cast<u32>(bar.skeleton.joint_count()));
+  out.skinned_instances = 1;
+  out.max_joints = static_cast<u32>(bar.skeleton.joint_count());
+  update_scene_bounds(out);
+  return true;
+}
+
+// The bar's skinning matrices for a bend of the tip joint by `degrees` about +z.
+void bar_matrices(const SkinnedBar& bar, f32 degrees, Vector<anim::JointMatrix>& out) {
+  anim::Pose pose;
+  anim::rest_pose(bar.skeleton, pose);
+  pose.rotation[1] = quat_from_axis_angle(Vec3{0.0f, 0.0f, 1.0f}, radians(degrees));
+  Vector<Mat4> model(bar.skeleton.joint_count(), Mat4::identity());
+  anim::local_to_model(bar.skeleton, pose, std::span<Mat4>(model.data(), model.size()));
+  out.resize(bar.skeleton.joint_count());
+  anim::skinning_matrices(
+      std::span<const Mat4>(model.data(), model.size()),
+      std::span<const Mat4>(bar.skeleton.inverse_bind.data(), bar.skeleton.inverse_bind.size()),
+      std::span<anim::JointMatrix>(out.data(), out.size()));
+}
+
+}  // namespace
+
+// A skinned actor walking: each frame its tip joint bends further and the instance takes a step,
+// under a still camera, so a pixel's motion is its bones' and its step's together. Three frames
+// with two in flight: the second reads the first's bone matrices out of slot 0's region while it
+// draws from slot 1's, and the third the other way round. Fails if the pool's second write reads
+// this frame's matrices (the bend's motion, up to pixels, is left as the error), and without the
+// moved table (the step's). Drawn by the mesh path and again by the vertex tier's indexed draw
+// (`RasterMode::Vertex`, which this card takes when asked), whose visibility buffers are the same.
+static void walking_actor(const gfx::Device& device, RasterMode raster) {
+  ScopedTunable inputs("renderer.reconstruction.inputs", "true");
+  SkinnedBar bar;
+  build_skinned_bar(bar);
+  Rig rig;
+  // A bend of the top metre by 40 degrees moves no vertex 0.7 m; a metre of padding holds it.
+  REQUIRE_MESSAGE(make_bar_scene(bar, 1.0f, rig.data, rig.error), rig.error);
+  RenderSettings settings = plain_settings();
+  settings.raster = raster;
+  REQUIRE_MESSAGE(rig.finish(device, settings), rig.error);
+  REQUIRE(rig.resolved.vertex_path == (raster == RasterMode::Vertex));
+  REQUIRE(rig.resolved.deform_pass);
+  REQUIRE(rig.renderer.frames_in_flight() == 2);
+  const geometry::ClusterMesh& mesh = rig.data.lod.mesh;
+  REQUIRE(mesh.skin.size() == mesh.vertices.size());
+  const Vector<Vec3> rest = grid_positions(mesh);
+  const InstanceJoints runs[1] = {{0u, 2u}};  // the bar's two joints
+  // From +z, where a bend about +z is a sideways swing on the picture.
+  const Camera camera =
+      orbit_camera_at(rig.data.center, rig.data.radius, 30.0f, radians(90.0f), k_orbit_pitch);
+
+  std::string why;
+  Shot shots[3];
+  Vector<D3> corners[3];
+  for (u32 k = 0; k < 3; ++k) {
+    if (k > 0) {
+      SceneInstance step;
+      step.transform.position = Vec3{0.06f * static_cast<f32>(k), 0.0f, 0.02f};
+      step.joints = 2;
+      step.bounds_padding = 1.0f;
+      const u32 index = 0;
+      REQUIRE_MESSAGE(rig.renderer.move_instances(std::span<const u32>(&index, 1),
+                                                  std::span<const SceneInstance>(&step, 1), &why),
+                      why);
+    }
+    Vector<anim::JointMatrix> matrices;
+    bar_matrices(bar, 10.0f + 15.0f * static_cast<f32>(k), matrices);
+    FrameDesc frame;
+    frame.camera = camera;
+    frame.joints = std::span<const anim::JointMatrix>(matrices.data(), matrices.size());
+    frame.instance_joints = std::span<const InstanceJoints>(runs, 1);
+    frame.history_reset = k == 0;
+    REQUIRE_MESSAGE(shoot(rig, frame, shots[k], why), why);
+    const gfx::InstanceDesc* placed_now = rig.scene.instance_record(0);
+    REQUIRE(placed_now != nullptr);
+    Vector<Vec3> skinned(rest.size());
+    anim::skin_positions(std::span<const Vec3>(rest.data(), rest.size()),
+                         std::span<const geometry::SkinBinding>(mesh.skin.data(), mesh.skin.size()),
+                         std::span<const anim::JointMatrix>(matrices.data(), matrices.size()),
+                         std::span<Vec3>(skinned.data(), skinned.size()));
+    corners[k] = placed(std::span<const Vec3>(skinned.data(), skinned.size()), *placed_now,
+                        shots[k].eye);
+  }
+  for (u32 k = 1; k < 3; ++k) {
+    u32 counted = 0;
+    f64 longest = 0.0;
+    f64 sine = 1.0;
+    const f64 worst = worst_deformed(shots[k], shots[k - 1], 0, mesh, corners[k],
+                                     corners[k - 1], counted, longest, sine);
+    MESSAGE(std::string(raster_name(raster)) << ", step " << k << ": worst " << worst << " px (a triangle of "
+                                << "corner sine " << sine << ") over " << counted
+                                << " pixels, the longest vector " << longest << " px");
+    CHECK(counted > 200);
+    CHECK(longest > 1.0);
+    CHECK(longest < 16.0);  // the tolerance's premise: a half float's step is 1/128 px under 16
+    CHECK(worst <= k_tolerance_px);
+  }
+}
+
+TEST_CASE("motion: a walking skinned actor's pixels follow its bones and its steps") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("skipped: " << gpu.why);
+    return;
+  }
+  walking_actor(gpu.device, RasterMode::Hardware);
+  walking_actor(gpu.device, RasterMode::Vertex);
+}
+
+#if ENGINE_RENDERER_TESTS_FLORA
+// A young palm in a wind of 1.5 from +x, its sway's clock a quarter second on each frame under a
+// still camera: every pixel of it follows its part's two poses. The poses are the poser's own
+// function run beside the renderer (`flora_pose_instances`, over a tree laid out as `GpuScene`
+// lays it out), and a vertex's bend is `gfx::flora_bend`, the stage's mirror. Three frames with
+// two in flight, as for the actor: last frame's poses come out of the other slot's region of the
+// part-pose table. Fails if the second write reads this frame's poses.
+TEST_CASE("motion: a swaying tree's pixels follow its parts' poses") {
+  const test::TempDir tmp("renderer_motion_palm");
+  REQUIRE(tmp.ok());
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("skipped: " << gpu.why);
+    return;
+  }
+  ScopedTunable inputs("renderer.reconstruction.inputs", "true");
+  const std::string path = tmp.file("young.flora.json");
+  {
+    std::ofstream f(path, std::ios::binary);
+    f << R"({"species":"date_palm","palm":{"seed":4,"height_m":3.5,"frond_count":10,)"
+         R"("leaflet_count":12,"dead_skirt_fronds":3,"triangle_budget":9000}})";
+  }
+  SceneDesc desc;
+  desc.meshes.push_back(path);
+  desc.ddc = tmp.file("ddc");
+  desc.cache = true;
+  Rig rig;
+  REQUIRE_MESSAGE(rig.build(gpu.device, desc, plain_settings()), rig.error);
+  REQUIRE(rig.renderer.frames_in_flight() == 2);
+  REQUIRE(rig.data.sources.size() == 1);
+  const SourceMesh& source = rig.data.sources[0];
+  REQUIRE(source.has_motion());
+  REQUIRE(rig.scene.flora_stats().instances == 1);
+  const geometry::ClusterMesh& mesh = rig.data.lod.mesh;
+  REQUIRE(rig.data.parts.size() == 1);
+  REQUIRE(rig.data.parts[0].first_vertex == 0);
+  REQUIRE(source.motion_vertices.size() == mesh.vertices.size());
+  const Vector<Vec3> rest = grid_positions(mesh);
+
+  // The mirror's tree, laid out as `GpuScene::flora_instance` lays the scene's out: the mesh's
+  // part table, its rest bounds, the instance's seed from its motion key and its 3x3 inverted.
+  FloraMesh tree;
+  REQUIRE(flora_mesh(
+      std::span<const geometry::ClusterFileMotionPart>(source.motion_parts.data(),
+                                                       source.motion_parts.size()),
+      std::span<const geometry::ClusterFileStructuralPart>(source.structural_parts.data(),
+                                                           source.structural_parts.size()),
+      source.species, tree));
+  Vec3 lo = mesh.vertices[0];
+  Vec3 hi = mesh.vertices[0];
+  for (const Vec3& v : mesh.vertices) {
+    lo = min(lo, v);
+    hi = max(hi, v);
+  }
+  const Vec4 bound{(lo + hi) * 0.5f, length(hi - lo) * 0.5f};
+  const gfx::InstanceDesc* placed_tree = rig.scene.instance_record(0);
+  REQUIRE(placed_tree != nullptr);
+  const gfx::InstanceDesc tree_desc = *placed_tree;
+  FloraInstance fi;
+  fi.instance = 0;
+  fi.mesh = 0;
+  fi.first_part = 0;
+  const u32 key = rig.data.motion_keys.empty() ? 0u : rig.data.motion_keys[0];
+  fi.seed = key * 0x9e3779b9u + 0x632be5abu;
+  {
+    const Vec3 r0 = tree_desc.rows[0].xyz();
+    const Vec3 r1 = tree_desc.rows[1].xyz();
+    const Vec3 r2 = tree_desc.rows[2].xyz();
+    const Vec3 c0{r0.x, r1.x, r2.x};
+    const Vec3 c1{r0.y, r1.y, r2.y};
+    const Vec3 c2{r0.z, r1.z, r2.z};
+    const f32 det = dot(c0, cross(c1, c2));
+    REQUIRE(det != 0.0f);
+    const f32 inv = 1.0f / det;
+    fi.inverse[0] = cross(c1, c2) * inv;
+    fi.inverse[1] = cross(c2, c0) * inv;
+    fi.inverse[2] = cross(c0, c1) * inv;
+    fi.inverse_scale = tree_desc.scale_max > 0.0f ? 1.0f / tree_desc.scale_max : 1.0f;
+  }
+  Vector<FloraPartState> state(tree.part_count(), FloraPartState{});
+  Vector<gfx::FloraPartPose> poses(tree.part_count(), gfx::FloraPartPose{});
+  FloraPoseInputs in;
+  in.instances = std::span<FloraInstance>(&fi, 1);
+  in.meshes = std::span<const FloraMesh>(&tree, 1);
+  in.bounds = std::span<const Vec4>(&bound, 1);
+  in.placed = std::span<const gfx::InstanceDesc>(&tree_desc, 1);
+  in.state = std::span<FloraPartState>(state.data(), state.size());
+  in.region = poses.data();
+
+  Camera camera;
+  camera.position = WorldPos{0.0, 2.0, 7.0};
+  camera.target = WorldPos{0.0, 2.0, 0.0};
+  FrameFlora wind;
+  wind.wind_set = true;
+  wind.wind_to = Vec2{-1.0f, 0.0f};
+  wind.wind_strength = 1.5f;
+
+  std::string why;
+  Shot shots[3];
+  Vector<D3> corners[3];
+  for (u32 k = 0; k < 3; ++k) {
+    FrameDesc frame;
+    frame.camera = camera;
+    frame.frame_index = 60 + k;
+    frame.world_time_s = 2.0 + 0.25 * static_cast<f64>(k);
+    frame.flora = wind;
+    frame.history_reset = k == 0;
+    REQUIRE_MESSAGE(shoot(rig, frame, shots[k], why), why);
+    FloraPoseFrame pose_frame;
+    pose_frame.wind_to = wind.wind_to;
+    pose_frame.wind_strength = wind.wind_strength;
+    pose_frame.time_s = frame.world_time_s;
+    pose_frame.frame_index = frame.frame_index;
+    pose_frame.flora = &frame.flora;
+    (void)flora_pose_instances(in, pose_frame, 0, 1);
+    Vector<Vec3> bent(rest.size());
+    for (u32 v = 0; v < rest.size(); ++v) {
+      const geometry::ClusterFileMotionVertex record = source.motion_vertices[v];
+      bent[v] = rest[v];
+      if (record.part >= tree.part_count()) continue;  // the stage leaves it at rest
+      Vec3 normal;
+      gfx::flora_bend(poses[record.part],
+                      static_cast<f32>(record.weight) * static_cast<f32>(1.0 / 65535.0), rest[v],
+                      Vec3{0.0f, 1.0f, 0.0f}, bent[v], normal);
+    }
+    corners[k] =
+        placed(std::span<const Vec3>(bent.data(), bent.size()), tree_desc, shots[k].eye);
+  }
+  for (u32 k = 1; k < 3; ++k) {
+    u32 counted = 0;
+    f64 longest = 0.0;
+    f64 sine = 1.0;
+    const f64 worst = worst_deformed(shots[k], shots[k - 1], 0, mesh, corners[k],
+                                     corners[k - 1], counted, longest, sine);
+    MESSAGE("a quarter second " << k << ": worst " << worst << " px (a triangle of corner sine "
+                                << sine << ") over " << counted << " pixels, the longest vector "
+                                << longest << " px");
+    CHECK(counted > 500);
+    CHECK(longest > 1.0);
+    CHECK(longest < 16.0);
+    CHECK(worst <= k_tolerance_px);
+  }
+}
+#endif  // ENGINE_RENDERER_TESTS_FLORA

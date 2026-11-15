@@ -5336,6 +5336,9 @@ scene and its sky within 0.02 px of the CPU's double arithmetic, at an offset, a
 frame before it measures zero; a rigid instance moved and scaled follows its two transforms within
 the same, and stands still a frame later; a deformed surface (the procedural deformer) through the
 two pools matches the still scene's vectors with its clock held, moves when the clock does and
-stops when it does not. **Not held**: a swaying tree's and a skinned actor's vectors against their
-CPU mirrors (`gfx::flora_bend`, `anim`); they take the same deformed path, and their per-slot
-inputs' "last frame" is only argued above. R158 takes both fixtures.
+stops when it does not; and, with two frames in flight over three frames so each reads last frame's
+inputs out of the other slot's region, a skinned bar that bends further and steps each frame
+(the bones and the moved table together, on the mesh path and again on the vertex tier's indexed
+draw) and a young palm swaying in a wind, each against its deformer's CPU mirror (`anim::skin_positions`;
+`gfx::flora_bend` over the poses `flora_pose_instances` gives a tree laid out as `GpuScene` lays
+it out): 0.0032 px and 0.0024 px at worst under vectors of 4 px.
