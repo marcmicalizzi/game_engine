@@ -2040,8 +2040,13 @@ catchment's runoff less the lake's loss: nothing, in the engine's case (a spring
 into a bowl whose bed seeps three times what its catchment sends), and 14 l/s below 0.66 m3/s
 on the streams' judging scene, whose bed below the lake was drawn dry. A source now goes on
 through a lake of the plan into its outlet. This is `network_flow`'s, which the cook's solve
-reads and the plan does not: no plan changes, `k_channels_version` stays 15, and a scene with
-no source (the forest has none) solves to the same bytes.
+reads and the plan does not: no plan changes and `k_channels_version` stays 15. The same walk
+carries a lake's loss below the next lake down, which it did not, and that is all the forest
+sees of it, having no source: solved again on run `n`'s plan (run `p`), 14 of its 278 lines
+carry less, by 8 l/s at the most (0.128 to 0.121 m3/s on `region link 314`), and the solved
+lines come to 47,949 stations, 4,868 of them over a bank on 152 lines and 2,689 of those in a
+hollow of their own line; the hollows, the 23 lines, the nineteen bodies that hold, the 13,884
+instances under water and the two lines at mark 8 are as run `n` left them.
 
 *The forest again* (run `k`: the owner's mix with the dried basin named `infilled`; this row's
 `engine-content` at `k_channels_version` 13, one job, into last night's derived-data root; the

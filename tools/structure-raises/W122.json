@@ -2,11 +2,11 @@
   "format": "engine.structure-raise.v1",
   "name": "W122",
   "reason": "the hollows: what a pit of the ground becomes (breach, lake, body below its spill, dry, sink, ground), the balance that decides it, the plan's bodies, the forest measured and the seat reshaped, on channels.md; the second pass adds the lip held by every link that begins on it, the level checked against the drawn ground and by the cook, the forest's mix as a table and as seen, where the owner's marks stand now and the remaining hollows traced; to the gate, three sections of their own: a dried lake's floor, a lake's look, what stands in the water; apps.md gains the channels command's water and hollows output and flow solve's --under-water; and the forest measured again at the gate; the forest's mark 8 as its re-run left it, and a spring's water through a lake of the plan",
-  "date": "2026-11-14",
+  "date": "2026-11-15",
   "by": "Marc Micalizzi",
   "deltas": {
     "page:docs/subsystems/apps.md": 727,
     "page:docs/subsystems/geometry.md": 4,
-    "page:docs/subsystems/channels.md": 42794
+    "page:docs/subsystems/channels.md": 43278
   }
 }
