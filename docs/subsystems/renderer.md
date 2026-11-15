@@ -4910,6 +4910,50 @@ row of its own (below). A placement that carries a hand-off role must keep the m
 thinning is the pool pass's, which a still form does not run; the engine's one user of the roles
 (the sward) names them in ring 0 alone, where every placement is the mesh.
 
+**Measured** (2026-11-14, `msvc-release`, main ae9efac5 against this, one tree; the machine shared
+with a dozen agents' builds and GPU work at 85 to 100% of the CPU, so the times are upper bounds
+and the counts are counts). A 2 km ridge streamed on the forest staging's tiles and inner rings
+(64 m; radii 1.25, 3, 10 and 14 tiles: floors 18.75, 130.7 and 578.7 m) under a sward at whole
+density (two tall-sod patches of 277 and 279 clusters, their cards 3) and a scatter of the engine's
+arching fern (0.9 m fronds, 112 clusters) and creeping fern (60) at the staging's density, 50 a
+tile, at the forest's wind (0.7). At 3840 × 2160 with traced primaries and shadows and the bounce,
+from one place on the flank:
+
+| ring | pairs, before | pairs, after | what changed |
+|---|---:|---:|---|
+| 0 | 4,240,812 | 4,240,812 | nothing: the sward's near forms, 4,176,362 of it |
+| 1 | 419,531 | 419,531 | nothing: a cut from 12 m keeps every cluster of both ferns |
+| 2 | 1,323,760 | 661,880 | swaying cuts: the arching fern 112 → 56, the creeping 60 → 30 |
+| 3 | 1,274,740 | 637,370 | the arching fern its swaying cut (56), the creeping its still cut (30) |
+| tail | 7,258,843 | 5,959,593 | the ferns 2,744,588 → 1,445,338; the sward 4,514,255 in both |
+
+The ferns halve and no more because their DAGs end there: the cut from 386 m keeps the clusters
+the cut from 87 m keeps, 56 and 30 of them for a plant three pixels tall — the fern's own coarsest
+level, which a cut cannot go under and a far form of its own would (a row; G198's offered forms
+are weighed in the still rings already). By the rule at one pixel the creeping fern stands still in
+the fourth ring and the arching one does not (the load's answers bound their reaches there: under
+0.67 px and between 0.67 and 1.33 px at their own size; a 0.9 m frond at the leaf's compliance
+works out at about one): swaying instances 29,416 → 24,541 and their pose table 161.6 → 134.8
+MiB. **At two pixels** (`renderer.forms.still_px=2`, the far field's own measure) both stand still
+there: 15,771 swaying instances, 86.6 MiB. The two captures differ in 177 of 8,294,400 pixels, by
+at most 4 of 255, all in the band of the picture where the fourth ring lies.
+
+**The frame**, like for like on the ferns alone (the same scene without its sward, whose blades
+inside the rest distance otherwise fill the chain's budget of 338,072 cluster structures in both
+binaries and hide everything else), a 140 m walk at 4.5 m/s, 1920 × 1080, traced shadows: the
+GPU's frame 10.16 → 6.23 ms median, the chain's cluster builds 6.05 → 3.49, `rt` 6.99 → 4.17, the
+pool's pass 2.09 → 0.80, the cull 0.080 → 0.051 (pairs 3,142,460 → 1,631,736), the frame's CPU
+3.75 → 2.43 ms. On the whole scene's 10 s flight at 3840 × 2160 the frame is the sward's: 20.12 →
+19.84 ms.
+
+**The hand-overs** on that walk (the handover pass, the cross-fade off, traced shadows and again
+with the cascades: the same counts): 81 ring changes of occupied tiles. The 31 between the mesh
+and a swaying cut, in the wind, changed no pixel. Of the 50 between the swaying cut and the still
+one, the 8 outward lay behind the walker and the 42 inward changed 103 values over their tiles
+(10 of coverage, 58 of depth, 35 of colour; 21 in the worst), two or three a tile 600 m away: the
+creeping ferns' poses coming back. `sway_forms_view_tests.cpp` holds the two exact cases: at rest,
+and between swaying cuts in the wind, no pixel.
+
 ### The caster policy
 
 Also R95. **Per species: in the ray tracing chain at all, how many of the sun's nearest cascades,
