@@ -83,12 +83,13 @@ struct Rig {
   SceneRenderer renderer;
   std::string error;
 
-  bool build(const gfx::Device& device, const SceneDesc& desc) {
+  bool build(const gfx::Device& device, const SceneDesc& desc,
+             RasterMode raster = RasterMode::Hardware) {
     if (!load_scene(desc, data, error)) return false;
     // The picture's own rasterizer on whatever the device is (mesh shaders, or the vertex tier), no
     // shadows, and no dither: a difference of frames has to be the offsets' alone.
     RenderSettings settings;
-    settings.raster = RasterMode::Hardware;
+    settings.raster = raster;
     settings.shadows = ShadowMode::Off;
     settings.dither = false;
     resolve_settings(settings, device.features(), &data, resolved);
@@ -371,4 +372,36 @@ TEST_CASE("accumulation: the pixels a moved instance leaves hold no trail of it"
                             << (counted > 0 ? is / counted : 0.0) << " the frame after");
   REQUIRE(counted > 30);  // the fixture's premise
   CHECK(is <= 0.25 * was);
+}
+
+// The vertex tier runs it: the pass reads buffers and images and no rasterizer, and the vertex
+// tier's visibility buffer is the mesh path's word for word (the vertex path tests), so the same
+// frames accumulate to the same bytes. `RasterMode::Vertex` takes the vertex tier on a card with
+// mesh shaders too. Fails if the pass is left out of the vertex tier's frame, or reads anything the
+// two paths write differently.
+TEST_CASE("accumulation: the vertex tier accumulates the mesh path's bytes") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("skipped: " << gpu.why);
+    return;
+  }
+  ScopedTunable mode("renderer.reconstruction.accumulation", "on");
+  ScopedTunable phases("renderer.reconstruction.phases", "8");
+  CapturedFrame drawn[2];
+  const RasterMode modes[2] = {RasterMode::Hardware, RasterMode::Vertex};
+  for (u32 m = 0; m < 2; ++m) {
+    Rig rig;
+    REQUIRE_MESSAGE(rig.build(gpu.device, ground_scene(), modes[m]), rig.error);
+    REQUIRE(rig.resolved.vertex_path == (modes[m] == RasterMode::Vertex));
+    REQUIRE(rig.resolved.accumulation == Accumulation::On);
+    FrameDesc frame = held_frame(rig);
+    for (u32 k = 0; k < 12; ++k) {
+      frame.history_reset = k == 0;
+      REQUIRE_MESSAGE(rig.shoot(frame, drawn[m]), rig.error);
+    }
+  }
+  const Difference apart = difference(drawn[0].color, drawn[1].color);
+  MESSAGE("mesh path against the vertex tier after twelve frames: worst " << apart.worst
+                                                                          << " codes");
+  CHECK(std::memcmp(drawn[0].color.data(), drawn[1].color.data(), drawn[0].color.size()) == 0);
 }

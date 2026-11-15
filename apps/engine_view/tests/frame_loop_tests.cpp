@@ -106,6 +106,7 @@ struct Flown {
   u64 first_buffers = 0;
   std::string first;             // the first frames that allocated, for the message
   std::string allocation_sites;  // debug child output, printed only when zero is violated
+  std::string provider;          // the last record's `reconstruction.provider`
   JsonValue summary;
 };
 
@@ -156,6 +157,10 @@ Flown fly(const test::TempDir& tmp, const std::string& name, const std::string& 
       continue;
     }
     ++out.records;
+    if (const JsonValue* rec = value.find("reconstruction"); rec != nullptr) {
+      if (const JsonValue* provider = rec->find("provider"); provider != nullptr)
+        out.provider = provider->as_string();
+    }
     const u64 a = number(value, "allocations");
     const u64 b = number(value, "buffers");
     REQUIRE_MESSAGE(a != ~u64{0}, "a record without `allocations`: " << line.substr(0, 200));
@@ -192,16 +197,13 @@ Flown fly(const test::TempDir& tmp, const std::string& name, const std::string& 
   return out;
 }
 
-}  // namespace
-
-TEST_CASE("frame loop: the desert overlook allocates nothing in its second flight" *
-          doctest::skip()) {
-  const test::TempDir tmp("engine_view_frame_loop_overlook");
+// The desert overlook made small, written into `tmp`; empty (and a MESSAGE) where it cannot be.
+std::string overlook_scene(const test::TempDir& tmp) {
   const std::string dir = committed_dir("desert-overlook");
   JsonValue scene;
   if (!read_json(dir + "/scene.json", scene)) {
     MESSAGE("the desert overlook is not in this bundle");
-    return;
+    return {};
   }
   // Its meshes are the Khronos samples, named relative to the committed file: made absolute so
   // the copy in the scratch directory finds them, and the flight skipped where they were not
@@ -217,7 +219,7 @@ TEST_CASE("frame loop: the desert overlook allocates nothing in its second fligh
             .string());
     if (!test::path_exists(absolute)) {
       MESSAGE("the desert overlook's samples are not fetched here (" << absolute << "); skipped");
-      return;
+      return {};
     }
     mesh.set("path", JsonValue(absolute));
   }
@@ -227,8 +229,37 @@ TEST_CASE("frame loop: the desert overlook allocates nothing in its second fligh
   scene.set("camera_path", JsonValue(forward_slashes(dir + "/camera-path.json")));
   const std::string file = tmp.file("overlook.json");
   REQUIRE(io::write_file(file, write_json(scene)) == io::Status::Ok);
-  const Flown flown = fly(tmp, "desert-overlook", file, dir + "/camera-path.json", {});
+  return file;
+}
+
+}  // namespace
+
+TEST_CASE("frame loop: the desert overlook allocates nothing in its second flight" *
+          doctest::skip()) {
+  const test::TempDir tmp("engine_view_frame_loop_overlook");
+  const std::string file = overlook_scene(tmp);
+  if (file.empty()) return;
+  const Flown flown =
+      fly(tmp, "desert-overlook", file, committed_dir("desert-overlook") + "/camera-path.json", {});
   if (!flown.ran) return;
+  CHECK_MESSAGE(flown.allocations == 0, flown.first << '\n' << flown.allocation_sites);
+  CHECK(flown.buffers == 0);
+}
+
+// Roadmap R158 (renderer.md, "Sampling over time: the accumulation"): with the engine's own
+// accumulation on, its images are made at load and at a resize and nothing in a frame, and its
+// inputs (the motion pass, last frame's buffers, the moved table) keep what they had. The same
+// flight as above, accumulating.
+TEST_CASE("frame loop: the desert overlook accumulating allocates nothing in its second flight" *
+          doctest::skip()) {
+  const test::TempDir tmp("engine_view_frame_loop_accumulation");
+  const std::string file = overlook_scene(tmp);
+  if (file.empty()) return;
+  const Flown flown = fly(tmp, "desert-overlook accumulating", file,
+                          committed_dir("desert-overlook") + "/camera-path.json",
+                          {"--tunable", "renderer.reconstruction.accumulation=on"});
+  if (!flown.ran) return;
+  REQUIRE(flown.provider == "engine");  // the premise: these frames were accumulated
   CHECK_MESSAGE(flown.allocations == 0, flown.first << '\n' << flown.allocation_sites);
   CHECK(flown.buffers == 0);
 }

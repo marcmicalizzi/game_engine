@@ -5550,12 +5550,18 @@ the phase, so the screen door is not blended (the design's third content fault).
 world's tail that moves has the camera's motion only, so its history is looked up in the wrong
 place and the clip is all that bounds its ghost. Water's reactivity mask and a channel's flow are
 not written, so a water pixel's history is its surface's. No lock for a one-pixel feature. The
-shaders' hot reload does not rebuild this pass's pipeline. `engine_view.frame_loop` was not flown
-with it on; the pass makes its images at load and at a resize and nothing in a frame.
+shaders' hot reload does not rebuild this pass's pipeline.
+
+**It allocates nothing in a frame.** The pass makes its images at load and at a resize, and
+`engine_view.frame_loop` flies the desert overlook accumulating as well as plain (its records name
+the `engine` provider): no engine allocation and no device buffer on the frame's thread in either
+flight (R154 leg 2b, 2026-11-15, `msvc-release`).
 
 **Held by** `tests/accumulation_tests.cpp`: off keeps nothing; a `mean` capture is the mean of the
 cycle's offset frames within two codes and a second one is the same bytes; in `on` mode a held
 view's error against that mean after sixteen frames is under half of one frame's, a replay from a
 reset draws the same bytes, and the frame after a reset is the frame a fresh renderer draws; and
 the pixels a moved instance leaves are, the frame after, within a quarter of what the mover's own
-colour was from what they settle to (a blend that kept the history would leave nine tenths).
+colour was from what they settle to (a blend that kept the history would leave nine tenths); and
+the vertex tier (`RasterMode::Vertex`, which a card with mesh shaders takes when asked) accumulates
+twelve frames to the mesh path's bytes.
