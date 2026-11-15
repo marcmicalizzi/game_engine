@@ -522,13 +522,15 @@ TEST_CASE("engine-content: city makes the committed plan, fragment and yield on 
 // Batch 65's stack (2026-11-15, MSVC 14.51): A45 and G203 were pinned apart, each against main.
 // Together the broadleaf and the pine move by both (sections 15 and 37 by A45, section 32 by
 // G203) and the ancient by G203 alone; A45 alone gave 0xfabf028f7d41943f (broadleaf) and
-// 0x4a8e33064c1a9eb8 (pine), G203 alone 0x7a35ee118d2ee70d and 0xa8fafcd968ddbe28.
-constexpr u64 k_broadleaf_container_golden = 0xfabf028f7d41943full;  // STACK-PIN
+// 0x4a8e33064c1a9eb8 (pine), G203 alone 0x7a35ee118d2ee70d and 0xa8fafcd968ddbe28. The two below
+// are the stacked tree's own run, in which every other pin of this file and of flora, geometry,
+// texture, matgen, wetland and deadwood held; the two were not separated by section again.
+constexpr u64 k_broadleaf_container_golden = 0xce11985a0f441bafull;
 constexpr u64 k_ancient_container_golden = 0x222a6d4a9af0e6e6ull;
 // G120 (2026-11-01, MSVC 14.51): a pine, the conifer solver's chain — one three-plane card group a
 // live branch and the star, coverage-kept and fitted to the needles' coverage — at small tiles so
 // a debug run builds it in seconds. Its section 15 carries `k_conifer_chain_version`.
-constexpr u64 k_pine_container_golden = 0x4a8e33064c1a9eb8ull;  // STACK-PIN
+constexpr u64 k_pine_container_golden = 0xcb41f869870c00cdull;
 
 TEST_CASE("engine-content: the allometric crowns build the committed bytes on every toolchain") {
   const test::TempDir tmp("engine_content_flora_determinism");
