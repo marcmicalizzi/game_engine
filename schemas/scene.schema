@@ -2071,7 +2071,9 @@ struct FrameWalk @version(2) {
 /// `withheld` tiles after it), the commit's runs (`commit_ms`) and the renderer taking them
 /// (`handover_ms`, `SceneRenderer::set_dynamic_instances`). Inside `handover_ms`: the blocks
 /// compared, laid out, written (`compare_ms`, `layout_ms`, `write_ms`, with `slots_written`,
-/// `compactions` and how many of them `tight`), what follows the tables (`after_ms`), the props'
+/// `compactions` — every tile laid out again and every slot written — and `tight`, the changes
+/// that met the pair cap: since T137 those number the pairs again and write no slot, so `tight`
+/// is no longer a count of compactions), what follows the tables (`after_ms`), the props'
 /// fires (`fires_ms`), the far forest's hand-off (`far_ms`, of which `place_ms` is
 /// `GpuScene::place_instances`), and a relayout's wait for the device (`relayout_ms`).
 struct FrameWorld @version(1) {
