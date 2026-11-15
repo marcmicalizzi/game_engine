@@ -49,14 +49,37 @@ inline Frame2 axis_frame(f64 ox, f64 oz, u32 turn) noexcept {
 // and where each side's face ends once the wall is joined to its neighbours (structures.md,
 // "Joins"): `sl[e]` and `sr[e]` are the left and the right face's end stations at end `e` (0 at
 // `from`, 1 at `to`), `cap[e]` a free end that is drawn closed.
+//
+// An exterior wall's outer face may lean (`Wall.top_thickness`) and its plinth may stand proud
+// (`Description.plinth_proud`), so the joins are solved three times: `ends[0]` with the faces as
+// described (`sl` and `sr` are its `[..][0]` and `[..][1]`), `ends[1]` with every outer face
+// leaned in to its top thickness, `ends[2]` with every outer face stood out by the plinth's
+// projection. `ends[m][side][e]`: side 0 the left face, 1 the right. `neighbour[e]` is the one
+// wall that shares end `e` at a corner of two (-1 otherwise), `neighbour_from[e]` whether it
+// leaves the corner from its own `from` end.
 struct WallGeom {
   Frame2 frame;
   f64 length = 0;
   f64 half = 0;
   f64 sl[2] = {0, 0};
   f64 sr[2] = {0, 0};
+  f64 ends[3][2][2] = {};
+  i32 neighbour[2] = {-1, -1};
+  bool neighbour_from[2] = {false, false};
   bool cap[2] = {true, true};
 };
+
+// How an exterior wall's outer face leans: `total` centimetres in between `y0` (the plinth's top,
+// or the storey's floor) and `y1` (the storey's top), plumb above. `total` 0: it does not.
+struct Lean {
+  f64 total = 0, y0 = 0, y1 = 1;
+  f64 fraction(f64 y) const noexcept {
+    const f64 f = (y - y0) / (y1 - y0);
+    return f < 0.0 ? 0.0 : (f > 1.0 ? 1.0 : f);
+  }
+  f64 at(f64 y) const noexcept { return total * fraction(y); }
+};
+Lean lean_of(const structure::Description& d, const structure::Wall& w) noexcept;
 
 // What a mesh pass reads: the description, its walls solved, the scope, and where triangles go.
 struct Context {

@@ -68,6 +68,14 @@ struct Wall @version(1) {
   /// Q16, positive bulging to the left of `from` to `to` (not meshed yet: refused).
   bulge: i32 = 0
   thickness: i32 = 45
+  /// An exterior wall's batter: its thickness at its storey's top, its outer face leaning in
+  /// from the plinth's top (or its floor) to there and plumb above (a gable). 0, or `thickness`:
+  /// one thickness all the way up. A cob wall's, which is thinner at the plate than at the foot.
+  top_thickness: i32 = 0
+  /// How far its faces wander, millimetres from hollow to swell: a hand-laid wall under a thick
+  /// render. 0: flat. A waved face is drawn as a grid about 45 cm square and never falls behind
+  /// its plane.
+  wave: i32 = 0
   kind: WallKind = exterior
   /// The rooms on the left (`a`) and the right (`b`) of `from` to `to`; -1 is outside.
   a: i32 = -1
@@ -238,6 +246,12 @@ struct Description @version(1) {
   foundation: i32 = 60
   /// The top of the plinth band above the origin; at or below `-foundation`: no plinth.
   plinth_top: i32 = 30
+  /// How far the plinth's face stands outside the wall's face over it, with a ledge between
+  /// them at `plinth_top`. 0: the plinth lies in the wall's plane.
+  plinth_proud: i32 = 0
+  /// The radius the exterior walls' outer corners are rounded to (a cob wall's, and a thick
+  /// render's, are never sharp). 0: a sharp arris.
+  arris: i32 = 0
   storeys: Storey[] = []
   walls: Wall[] = []
   openings: Opening[] = []

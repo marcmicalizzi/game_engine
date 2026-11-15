@@ -90,6 +90,21 @@ grounding should bring a distribution, and one bay of 4.5 m is the commoner size
 | Lintel | 140 mm deep, bearing 150 mm each side | | **no source** |
 | Threshold | 20 mm | | the mesher's, to keep the reveal's foot out of the floor's plane; under the walker's 0.35 m step |
 
+## A cob wall's shape
+
+| Number | Value used (the example cot) | Range | Source |
+|---|---|---|---|
+| Thickness at the foot | 60 cm | about 600 mm | 10 |
+| Thickness at the plate | 45 cm (`top_thickness`) | "diminishes with height", perhaps no more than 300 mm at the wall plate | 9. The cot's wall is 2.1 m of cob, not two storeys of it, so it is taken three quarters of the way and not to 300: **a choice inside the source's range** |
+| Which face leans | the outer | | **not found**: no source read gives a batter as a ratio or says which face; the outer is the common account and is chosen |
+| Plinth height | 30 cm (`plinth_top`) | 300 to 450 mm above ground (a pamphlet's snippet); footings of brick or rubble 150 to 1,200 mm high | 10; the pamphlet in a search snippet only |
+| Plinth proud of the cob | 4 cm (`plinth_proud`) | | **not found**: whether a plinth stands proud of, flush with or behind the face, and by how much. A choice |
+| Corners | rounded to 12 cm (`arris`) | "gently rounded rather than sharp"; no radius | 6 (snippet). The radius is **a choice** |
+| The face's wander | 12 mm (`wave`) | | **not found**: no source measures it. A choice, small enough to be a render over lifts and large enough to light |
+| Lifts | (not modelled) | usually no more than 600 mm, visible on unrendered walls | 9 |
+| Render | (the material's) | coats of 8 to 10 mm, three for about 20 mm | trade guides, snippets only |
+| Roof overhang over cob | (the roof's `overhang`) | 400 to 700 mm | 9, which confirms source 3's summary |
+
 ## Leaves, shutters and unglazed windows
 
 | Number | Value used | Range | Source |

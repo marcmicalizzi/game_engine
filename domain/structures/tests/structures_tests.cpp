@@ -124,6 +124,9 @@ Description two_storeys() {
   d.roofs[0].eaves = 360;
   d.chimneys[0].top += 120;
   for (u32 i = 0; i < 4; ++i) {
+    // Two storeys of plumb wall: a batter is one storey's, and the upper wall stands on the
+    // lower one's top.
+    d.walls[i].top_thickness = 0;
     structure::Wall w = d.walls[i];
     w.storey = 1;
     w.a = 2;
@@ -183,7 +186,7 @@ TEST_CASE("structures: the example cot meshes into every surface it has") {
     CHECK(triangles(s, surface) > 0);
   CHECK(triangles(s, Surface::ceiling) == 0);  // one storey, open to the roof
   CHECK(triangles(s, Surface::boards) == 0);   // and a thatch shows its own underside
-  CHECK(s.report.triangles < 4000);            // structures.md, "Budgets"
+  CHECK(s.report.triangles < 12000);           // structures.md, "Budgets"
   std::printf("structures: the example cot is %u triangles\n", s.report.triangles);
 }
 
@@ -230,9 +233,10 @@ TEST_CASE("structures: an opening is clear where its description puts it, the wa
         through(cot, o.wall, station, o.sill + fy * (o.head - o.sill), a, b);
         CHECK(crossings(s, a, b) == 0);
       }
-    // The pier beside it and the wall over it are two faces thick.
+    // The pier beside it is two faces thick (off the opening's middle height, which a waved
+    // face's grid has a line at).
     D3 a, b;
-    through(cot, o.wall, o.at + 0.5 * o.width + 8.0, o.sill + 0.5 * (o.head - o.sill), a, b);
+    through(cot, o.wall, o.at + 0.5 * o.width + 8.0, o.sill + 0.45 * (o.head - o.sill), a, b);
     CHECK(crossings(s, a, b) == 2);
   }
   // A door's frame stands inside its reveal: clear a frame's width in from the jamb, timber
@@ -594,9 +598,82 @@ TEST_CASE("structures: the same description is the same bytes") {
   // Pinned on MSVC (x86-64-v3); GCC and Clang reproduce them (structures.md, "Determinism"). A
   // mesher change that moves a triangle bumps `k_structure_version` and re-takes these.
   // Version 3 (2026-11-14): the example gained a door's leaf, mullions and shutters; they moved
-  // from 0x2b883646101c556a and 0x24f1154db8bc316e.
-  CHECK(mesh_hash(a) == 0xa26bd94ba21a24ddull);
-  CHECK(mesh_hash(two) == 0x3689e3bab9b845edull);
+  // from 0x2b883646101c556a and 0x24f1154db8bc316e to 0xa26bd94ba21a24dd and 0x3689e3bab9b845ed.
+  // Version 4 (2026-11-15): the example's walls batter, wander and round their corners over a
+  // plinth that stands proud.
+  CHECK(mesh_hash(a) == 0x9449998706a7e6d6ull);
+  CHECK(mesh_hash(two) == 0x9d0069d08c45511cull);
+  // A description that states none of what versions 3 and 4 added is the mesh it was at
+  // version 2, to the bit: the first cot's pin.
+  Description plain = example_cot();
+  for (structure::Opening& o : plain.openings) {
+    o.leaf = structure::LeafKind::none;
+    o.leaves = 1;
+    o.hinge_at_to = false;
+    o.leaf_open = 0;
+    o.mullions = 0;
+  }
+  for (structure::Wall& w : plain.walls) {
+    w.top_thickness = 0;
+    w.wave = 0;
+  }
+  plain.plinth_proud = 0;
+  plain.arris = 0;
+  Solved flat;
+  solved(plain, MeshScope::whole, flat);
+  CHECK(mesh_hash(flat) == 0x2b883646101c556aull);
+}
+
+TEST_CASE("structures: a cob wall batters, wanders and rounds its corners over a proud plinth") {
+  // structures.md, "Faces that are not planes". The cot's walls are 60 cm at the foot and 45 at
+  // the plate, wander 12 mm, round their corners to 12 cm, on a plinth 4 cm proud to 30 cm up.
+  const Description cot = example_cot();
+  Solved s;
+  solved(cot, MeshScope::whole, s);
+  f32 plinth_lo = 1e9f, plate_lo = 1e9f, foot_lo = 1e9f;
+  for (const Vec3 p : s.parts[static_cast<u32>(Surface::plinth)].positions)
+    plinth_lo = std::min(plinth_lo, p.x);
+  for (const Vec3 p : s.parts[static_cast<u32>(Surface::wall_outer)].positions) {
+    foot_lo = std::min(foot_lo, p.x);
+    if (p.y > 2.39f && p.y < 2.41f) plate_lo = std::min(plate_lo, p.x);
+  }
+  CHECK(plinth_lo == doctest::Approx(-0.34).epsilon(1e-5));  // the wall's face and 4 cm
+  CHECK(foot_lo == doctest::Approx(-0.30).epsilon(1e-5));    // the cob starts on its plane
+  CHECK(plate_lo > -0.30f + 0.15f - 0.0125f);  // leaned in 15 cm, less at most the wander
+  CHECK(plate_lo < -0.30f + 0.15f + 0.001f);
+  // The shell is closed round a corner at every height: from outside to inside, off the
+  // diagonal, a line meets the outer skin once (the plinth, the arc, the leaned face) and an
+  // inner face once.
+  for (const f64 y : {0.12, 0.29, 0.31, 0.8, 1.5, 2.0})
+    for (const f64 dz : {-0.47, -0.42, -0.36, -0.31}) {
+      CAPTURE(y);
+      CAPTURE(dz);
+      CHECK(crossings(s, {-0.6, y, dz}, {0.6, y, dz + 0.9}) == 2);
+    }
+  // The far corner too (walls 1 and 2 meet at x = 6.6, z = 4.6), and it is drawn once.
+  for (const f64 y : {0.12, 1.1, 2.0})
+    CHECK(crossings(s, {7.2, y, 5.05}, {6.0, y, 4.2}) == 2);
+  // The plinth's ledge is there: a plumb line down the step, 2 cm outside the wall's face,
+  // meets it once.
+  CHECK(crossings(s, {-0.32, 0.45, 1.0}, {-0.32, 0.25, 1.0}) == 1);
+  // The wander needs a grid: more triangles than the same cot with flat faces, and every one of
+  // them still inside the budget the first test holds.
+  Description still = cot;
+  for (structure::Wall& w : still.walls)
+    w.wave = 0;
+  Solved calm;
+  solved(still, MeshScope::whole, calm);
+  CHECK(triangles(s, Surface::wall_outer) > triangles(calm, Surface::wall_outer));
+  // A batter is an exterior wall's, and never thinner than half its foot.
+  Description bad = cot;
+  bad.walls[0].top_thickness = 20;
+  std::string why;
+  CHECK(!validate(bad, why));
+  CHECK(why.find("top_thickness") != std::string::npos);
+  bad = cot;
+  bad.arris = 60;
+  CHECK(!validate(bad, why));
+  CHECK(why.find("arris") != std::string::npos);
 }
 
 TEST_CASE("structures: the corpus keeps its rooms and doors where its descriptions put them") {
@@ -640,7 +717,8 @@ TEST_CASE("structures: the corpus keeps its rooms and doors where its descriptio
         through(d, o.wall, station, base + o.sill + 0.3 * (o.head - o.sill), a, b);
         if (!across) CHECK(crossings(s, a, b) == 0);
       }
-      through(d, o.wall, o.at + 0.5 * o.width + 8.0, base + o.sill + 0.5 * (o.head - o.sill), a, b);
+      through(d, o.wall, o.at + 0.5 * o.width + 8.0, base + o.sill + 0.45 * (o.head - o.sill), a,
+              b);
       CHECK(crossings(s, a, b) == 2);
     }
     for (const structure::Room& room : d.rooms) {

@@ -117,6 +117,11 @@ bool validate(const Description& d, std::string& why) {
     why = "foundation: " + num(d.foundation) + " cm is outside 0..300";
     return false;
   }
+  if (d.plinth_proud < 0 || d.plinth_proud > 20 || d.arris < 0 || d.arris > 40) {
+    why = "plinth_proud " + num(d.plinth_proud) + " cm is outside 0..20, or arris " + num(d.arris) +
+          " cm outside 0..40";
+    return false;
+  }
   if (d.footprint.size() < 6 || d.footprint.size() % 2 != 0) {
     why = "footprint: an outline is at least three corners, x and z each";
     return false;
@@ -167,6 +172,19 @@ bool validate(const Description& d, std::string& why) {
     if (w.thickness < k_min_wall_cm || w.thickness > k_max_wall_cm) {
       why = name + ": thickness " + num(w.thickness) + " cm is outside " + num(k_min_wall_cm) +
             ".." + num(k_max_wall_cm);
+      return false;
+    }
+    // A batter is an exterior wall's, outside on one side, and leaves the top at least half the
+    // foot and 25 cm (a frame's set and depth stand behind the leaned face).
+    const bool one_outside = w.kind == structure::WallKind::exterior && (w.a < 0) != (w.b < 0);
+    if (w.top_thickness != 0 && (!one_outside || w.top_thickness > w.thickness ||
+                                 2 * w.top_thickness < w.thickness || w.top_thickness < 25)) {
+      why = name + ": top_thickness " + num(w.top_thickness) + " cm is an exterior wall's, from " +
+            "half its thickness (and 25 cm) to its thickness, " + num(w.thickness);
+      return false;
+    }
+    if (w.wave < 0 || w.wave > 40) {
+      why = name + ": wave " + num(w.wave) + " mm is outside 0..40";
       return false;
     }
     if (!in_reach(w.from[0]) || !in_reach(w.from[1]) || !in_reach(w.to[0]) || !in_reach(w.to[1])) {
@@ -542,11 +560,17 @@ structure::Description example_cot(i32 width, i32 depth, i32 wall) {
     w.from[0] = corners[i][0], w.from[1] = corners[i][1];
     w.to[0] = corners[(i + 1) % 4][0], w.to[1] = corners[(i + 1) % 4][1];
     w.thickness = wall;
+    // Cob: three quarters as thick at the plate as at the foot, and no face of it flat.
+    w.top_thickness = std::max(25, wall * 3 / 4);
+    w.wave = 12;
     w.kind = structure::WallKind::exterior;
     w.a = 0;
     w.b = -1;
     d.walls.push_back(w);
   }
+  // The stone plinth stands 4 cm proud of the cob over it, and the cob's corners are rounded.
+  d.plinth_proud = 4;
+  d.arris = 12;
   const auto opening = [&d](u32 w, structure::OpeningKind kind, i32 at, i32 wide, i32 sill,
                             i32 head) {
     structure::Opening o;

@@ -55,9 +55,9 @@ the left of +x is -z, so an outline that runs **counter-clockwise seen from abov
 | Field | What it is |
 |---|---|
 | `footprint` | The exterior walls' centre lines as one outline, `x0 z0 x1 z1 ...`: what every floor spans. |
-| `foundation`, `plinth_top` | How far below the origin the exterior walls reach into the ground, and the top of the plinth band at their foot. |
+| `foundation`, `plinth_top`, `plinth_proud`, `arris` | How far below the origin the exterior walls reach into the ground, the top of the plinth band at their foot, how far that band stands proud of the wall over it, and the radius the walls' outer corners are rounded to ([faces that are not planes](#faces-that-are-not-planes)). |
 | `storeys[]` | `elevation` (the floor's top), `height` (to the top of this storey's walls: the next floor's top, or the wall plate), `floor_thickness`, and for the top storey `ceiling`. Storeys stack: each one's elevation is the one below's elevation plus height. |
-| `walls[]` | A centre line `from` to `to` on a `storey`, a `thickness`, a `kind` (`exterior`, `inner`), the rooms on its left (`a`) and right (`b`), -1 for outside, and `bulge` (0: straight). |
+| `walls[]` | A centre line `from` to `to` on a `storey`, a `thickness`, a `kind` (`exterior`, `inner`), the rooms on its left (`a`) and right (`b`), -1 for outside, `bulge` (0: straight), and, stated or absent, `top_thickness` (a batter) and `wave` (millimetres its faces wander). |
 | `openings[]` | A span of a wall: its centre `at` along the wall from `from`, its clear `width`, its `sill` and `head` above the storey's floor, and a `kind`: `door` (a frame and a threshold), `window` (a frame, glazing bars or `mullions`, a sill board), `doorway` (a bare opening). **What hangs in it is stated or absent**: `leaf` (`none`, `ledged`), `leaves` (1, or a pair), `hinge_at_to`, `opens_right`, `leaf_open` (degrees from shut, 0 to 90) ([leaves and mullions](#leaves-and-mullions)). |
 | `rooms[]` | An `id`, a `storey`, a `kind`, a name and an outline on the walls' centre lines. |
 | `stairs[]` | A flight from a storey's floor to the next: its `foot`, the quarter turn it climbs along, its `width`, `risers` and `going`, the `well` it leaves in the floor above, and the rooms at its foot and head. |
@@ -133,6 +133,46 @@ without a lap:
 - **A free end** is closed with a face.
 
 A wall's top is drawn only where nothing stands on it (no storey above, no roof over it).
+
+### Faces that are not planes
+
+A wall of earth under a thick render is not a box, and four fields say how far a description's
+walls are from one. **Each is absent unless stated, and a description that states none of them
+meshes to the same bits it did before they existed** (the test holds the first cot's pin). They
+key on what the description states, never on a role's name or on who wrote it.
+
+- **`Wall.top_thickness`: a batter.** An exterior wall's outer face leans in from the plinth's
+  top (or its storey's floor) to its storey's top, where the wall is `top_thickness` thick, and
+  stands plumb above that (a gable). The inner face stays plumb. The joins are solved a second
+  time with every outer face leaned in, so a corner between two battered walls is the leaning
+  line both faces end on; the wall's top is the roof's underside over the leaned face; a reveal's
+  jamb follows the face, in two pieces where it crosses the level the lean starts at; a frame
+  stands plumb, its set kept at the head, and a sill board and a lintel stand proud of the face
+  where it is at their own height. The validator wants an exterior wall with one side outside and
+  a top at least half the foot and 25 cm. A batter is one storey's: an upper wall stands on the
+  lower one's top as the description says, and the mesher does not carry a lean through a floor.
+- **`Description.plinth_proud`.** The plinth band's face stands that far outside the wall's face
+  over it, with a level **ledge** between them at `plinth_top`, stopped at a door (whose reveal
+  is drawn out to the plinth's face under that level). Joins are solved a third time for it.
+- **`Description.arris`: rounded corners.** Where two exterior walls meet at a corner that is
+  convex seen from outside, both outer faces stop short of it and an arc of three strips joins
+  them, from the foot to the roof's underside, the plinth's band on its own larger arc with its
+  ledge, the wall's leaning as its faces do. The arc is a rational quadratic through the two
+  faces' ends (a circle's arc with no trigonometric function), its normals the circle's, so the
+  corner is lit round. Re-entrant corners, stars and free ends stay sharp, and so do the arrises
+  of an opening's reveal (a row this leaves: a cob reveal is as round as its corner). The strip
+  meets each face along one straight line but not vertex for vertex: the face's grid has corners
+  there the strip does not.
+- **`Wall.wave`: a face that wanders.** Both faces of the wall are drawn as a grid about 45 cm
+  square and each corner stands out from its plane by up to `wave` millimetres: smooth value
+  noise from integer mixing (a swell about 90 cm across and a quarter as much at 37), with the
+  normals of that surface, so the light shows it. It dies away over 30 cm toward every edge the
+  face must meet exactly (an opening, an end, the plinth's ledge or the floor, the top), and it
+  never falls behind the plane, so a partition's end and a floor's edge stay buried in it. This
+  is what costs triangles: the cot goes from 1,504 to 3,672, nearly all of it this grid.
+
+What a filler should know: with a batter the roof's rectangle is still the walls' outer faces
+at their **foot**, so the eaves overhang the leaned face by the lean more than `overhang` says.
 
 ### Openings
 
@@ -330,6 +370,10 @@ Each is a case in `tests/structures_tests.cpp`:
 - An inner wall butts the wall it meets and reaches nothing outside; a well is a hole in the floor
   and the ceiling; a flight's steps rise to the landing.
 - The exterior and the interior are the whole between them.
+- A description that states no leaf, mullion, batter, wander, rounding or proud plinth is the
+  mesh it was before those fields, to the bit.
+- A battered, waved, round-cornered shell on a proud plinth is closed: a line from outside to
+  inside through a corner meets the outer skin once at every height, and the ledge is there.
 - A leaf is four boards and three ledges of closed timber, shut across its opening or, a quarter
   turn open, clear of it; the walk records carry it where it stands; a doorway takes none.
 - The validator refuses by name.
@@ -423,5 +467,6 @@ is listed there under `disabled_capabilities`. Everything else must still build 
 - Glass in a window, and iron (strap hinges, latches): no surface draws either.
 - The kit of solved parts beyond boxes: hewn beams, warped planks, thatch bundles, shingles (G64).
 - The record drawn from a document (D37's other half).
-- A plinth that stands proud of the wall over it, a cob wall's batter and rounded corners, a
-  thatch's courses and cut eave: the shell is planes.
+- Rounded arrises at an opening's reveal and at a re-entrant corner; a batter carried through
+  a floor; a leaned top and end face on a wall that stands free (they are drawn plumb).
+- A thatch's courses and cut eave.
