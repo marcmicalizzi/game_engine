@@ -4847,10 +4847,23 @@ farther, a placement of the mesh stands still when
 **Why one pixel of reach.** The reach is the whole offset between a pose and the rest pose, so it
 bounds what a hand-over to a still form can show; the sway about its mean lean is half of it (a
 part turns between 0.6 and 1.4 of its lean with the gust, and flutters by at most 0.6 of it), so
-under one pixel of reach nothing travels more than half a pixel about where it stands. The far
-field's rest stops grass where its reach is about two pixels (a 0.4 m blade at 120 m and the
-forest's wind: 11 cm against 5.8 cm a pixel), which it can because it fades the sway out over 40 m;
-a ring's hand-over has no fade of its own, so it takes half of that. **The answer is a scale**:
+under one pixel of reach nothing travels more than half a pixel about where it stands.
+
+**Why this is not the far field's number.** [The far field's rest](#the-far-field-at-rest) is the
+engine's other rule for where a plant stops swaying, and in this rule's measure it stops grass at a
+reach of two pixels (a 0.4 m blade at 120 m and the forest's wind: 11 cm against 5.8 cm a pixel).
+The two are kept apart because they promise different things. The far field's is **a loss its page
+names and measured**: the sway ends where a typical tip still travels half a pixel to a pixel in
+its flutter, and the motion of 1.5% of the worst view's pixels went with it. It can stop there
+because nothing happens at its boundary: the sway fades by the blade over the 40 m before, so the
+last frame a blade is posed in, its pose is the rest pose, and the lean the gust holds a blade at
+is never dropped, only faded. A ring's hand-over drops the pose whole, a tile at a time: what can
+show is the whole reach, the lean included, and a still tile beside a swaying one. This rule's
+promise is **no visible change**, so it holds that whole offset under a pixel. On the engine
+scene's walk two pixels stills the creeping fern a ring nearer, and a hand-over between the second
+and third rings, which changed no value at one pixel, changes 29 of its tile's 641; what the
+second pixel buys is in the measurements below, and `renderer.forms.still_px=2` is the far field's
+trade for an operator who wants it here. **The answer is a scale**:
 `still_scale` gives the largest placement scale that stands still from the floor. A ring has one
 form, so its form stands still when that scale covers every placement a ring's cut serves
 (`renderer.forms.cut_scale`, 1.5): no placement drawn still moves more than the rule's pixel, and
