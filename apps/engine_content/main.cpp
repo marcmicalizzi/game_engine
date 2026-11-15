@@ -954,6 +954,32 @@ int texture_command_run(const TextureCommandOptions& options) {
   summary.set("width", JsonValue(data.width));
   summary.set("height", JsonValue(data.height));
   summary.set("levels", JsonValue(data.levels.size()));
+  // A mask's coverage, level by level, as the GPU will read it (decoded): the share of the
+  // filtered surface at the cutoff, which the build holds to level 0's, and the share of texels,
+  // which a nearest sampler would draw. An author reads level 0's to know how opaque the image is.
+  if ((data.flags & texture::k_texture_alpha_coverage) != 0) {
+    JsonValue mask = JsonValue::object();
+    mask.set("cutoff", JsonValue(u32{options.build.alpha_cutoff}));
+    JsonValue filtered = JsonValue::array();
+    JsonValue texels = JsonValue::array();
+    Vector<u8> decoded;
+    for (u32 i = 0; i < data.levels.size(); ++i) {
+      const texture::TextureFileLevel& level = data.levels[i];
+      if (!texture::decode_level(data.format, data.level_bytes(i), level.width, level.height,
+                                 decoded, nullptr)) {
+        break;
+      }
+      const std::span<const u8> rgba(decoded.data(), decoded.size());
+      filtered.push_back(JsonValue(texture::alpha_coverage_filtered(
+          rgba, level.width, level.height, options.build.alpha_cutoff, options.build.edge_x,
+          options.build.edge_y)));
+      texels.push_back(JsonValue(
+          texture::alpha_coverage(rgba, level.width, level.height, options.build.alpha_cutoff)));
+    }
+    mask.set("coverage", std::move(filtered));
+    mask.set("texel_share", std::move(texels));
+    summary.set("mask", std::move(mask));
+  }
   summary.set("block_bytes", JsonValue(data.data.size()));
   summary.set("bytes", JsonValue(written));
   summary.set("psnr", finite_or_null(report.psnr));
@@ -992,6 +1018,14 @@ int texture_command(int argc, char** argv) {
       options.build.normal_map = true;
     } else if (a == "--no-mips") {
       options.build.mips = false;
+    } else if (a == "--alpha-cutoff") {
+      // The image as a material that tests its alpha at this cutoff builds it (texture.md,
+      // "Alpha-tested masks"): the same bytes and cache entry as the mesh build's texture step.
+      // The 8-bit code the test reads: 128 for a material's cutoff of 0.5 (`alpha_cutoff_code`).
+      u32 code = 0;
+      if (!next_u32(argc, argv, i, code)) return k_exit_usage;
+      if (code < 1 || code > 255) return usage("--alpha-cutoff is the 8-bit code, 1 to 255");
+      options.build.alpha_cutoff = static_cast<u8>(code);
     } else if (a == "--wrap") {
       std::string value;
       if (!next_value(argc, argv, i, value)) return k_exit_usage;

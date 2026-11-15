@@ -90,7 +90,11 @@ constexpr Golden k_golden[] = {
     {0x9e3e44481cd09458ull, 0xfd256e6c797136c7ull},  // bc7_png: version 2 build key (R97)
     {0x1adc7d36da7a4d37ull, 0x89e5ef4589f71741ull},  // bc7_srgb_repeat
     {0xf5e93d7a5f5da5a1ull, 0xb4badd3d1713d530ull},  // bc5_normal_mirror: section 5, version 2
-    {0xc78271ddba4d997dull, 0xed264b7a54ed58c8ull},  // bc7_srgb_mask
+    // bc7_srgb_mask: 0xc78271ddba4d997d / 0xed264b7a54ed58c8 until G203 (2026-11-14) held each
+    // level's filtered coverage in place of its texel count, kept the closest pass, stored the 1x1
+    // level beside the cutoff, and gave a mask's key its own version (texture.md, "Alpha-tested
+    // masks"): the chain's alpha and the build key both moved, on this row alone.
+    {0x59d3b841a5eade71ull, 0x92fc6a95ff1a7c98ull},  // bc7_srgb_mask
 };
 static_assert(std::size(k_golden) == std::size(k_cases));
 

@@ -508,12 +508,21 @@ TEST_CASE("engine-content: city makes the committed plan, fragment and yield on 
 // A45's third leg (2026-11-15, MSVC 14.51): the trunk is flagged full sway in section 37, and
 // `k_flora_structure_version` 3 moves section 15; nothing else moves, the ancient included. The
 // folds were 0x5c5759895db85465 (broadleaf) and 0x7f0141b2949c7e9b (pine).
-constexpr u64 k_broadleaf_container_golden = 0xfabf028f7d41943full;
-constexpr u64 k_ancient_container_golden = 0x308513fb082108d9ull;
+// G203 (2026-11-14, MSVC 14.51): a mask's texture key mixes `texture::k_alpha_mask_version` (2),
+// so the build keys of the embedded alpha-tested atlases (section 32) move and nothing else does:
+// main's `engine-content` against the branch's on these three recipes differ in section 32 alone,
+// 38, 39 and 38 other sections identical. The folds were 0x8b8915bc944c047d (broadleaf),
+// 0x308513fb082108d9 (ancient) and 0xc6f1032af64051fd (pine).
+// Batch 65's stack (2026-11-15, MSVC 14.51): A45 and G203 were pinned apart, each against main.
+// Together the broadleaf and the pine move by both (sections 15 and 37 by A45, section 32 by
+// G203) and the ancient by G203 alone; A45 alone gave 0xfabf028f7d41943f (broadleaf) and
+// 0x4a8e33064c1a9eb8 (pine), G203 alone 0x7a35ee118d2ee70d and 0xa8fafcd968ddbe28.
+constexpr u64 k_broadleaf_container_golden = 0xfabf028f7d41943full;  // STACK-PIN
+constexpr u64 k_ancient_container_golden = 0x222a6d4a9af0e6e6ull;
 // G120 (2026-11-01, MSVC 14.51): a pine, the conifer solver's chain — one three-plane card group a
 // live branch and the star, coverage-kept and fitted to the needles' coverage — at small tiles so
 // a debug run builds it in seconds. Its section 15 carries `k_conifer_chain_version`.
-constexpr u64 k_pine_container_golden = 0x4a8e33064c1a9eb8ull;
+constexpr u64 k_pine_container_golden = 0x4a8e33064c1a9eb8ull;  // STACK-PIN
 
 TEST_CASE("engine-content: the allometric crowns build the committed bytes on every toolchain") {
   const test::TempDir tmp("engine_content_flora_determinism");

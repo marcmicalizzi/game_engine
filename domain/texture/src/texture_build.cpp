@@ -169,7 +169,9 @@ bool resolve_texture_format(const TextureBuildOptions& options, u32 source_chann
 u64 texture_cache_key(u64 source_hash, const TextureBuildOptions& options) noexcept {
   u64 key = hash_combine(source_hash, 0x7465787475726521ull);  // "texture!": not a cluster key
   key = hash_combine(key, k_texture_cache_version);
-  return hash_combine(key, pack_texture_options(options));
+  key = hash_combine(key, pack_texture_options(options));
+  // A mask's chain has a version of its own, so changing it rebuilds the masks and nothing else.
+  return options.alpha_cutoff != 0 ? hash_combine(key, k_alpha_mask_version) : key;
 }
 
 std::string texture_cache_path(std::string_view ddc_root, u64 key) {
@@ -240,31 +242,136 @@ void dilate_under_mask(Vector<u8>& rgba, u32 width, u32 height, u8 cutoff, u32 r
   }
 }
 
-void preserve_alpha_coverage(Vector<u8>& rgba, u32 width, u32 height, u8 cutoff, f64 coverage) {
-  const usize texels = static_cast<usize>(width) * height;
-  if (texels == 0 || rgba.size() < texels * 4 || cutoff == 0) return;
-  // How many texels each 8-bit alpha holds; `at_least[t]` is the count at or above t.
-  u8* px = rgba.data();
-  u64 histogram[256] = {};
-  for (usize i = 0; i < texels; ++i)
-    ++histogram[px[i * 4 + 3]];
-  const f64 wanted = coverage * static_cast<f64>(texels);
-  u64 at_least = 0;
-  u32 best = cutoff;
-  f64 best_miss = std::numeric_limits<f64>::infinity();
-  for (i32 t = 255; t >= 1; --t) {
-    at_least += histogram[t];
-    const f64 miss = std::fabs(static_cast<f64>(at_least) - wanted);
-    if (miss < best_miss) {  // strictly: the largest t of the closest counts
-      best_miss = miss;
-      best = static_cast<u32>(t);
+namespace {
+
+// The texel a bilinear tap reads one step along an axis: the sampler's wrap, seen from the build.
+// A clamped and a mirrored edge both read the edge texel again.
+u32 neighbour_texel(u32 i, bool forward, u32 size, EdgeMode mode) noexcept {
+  if (forward) return i + 1 < size ? i + 1 : (mode == EdgeMode::repeat ? 0u : size - 1);
+  return i > 0 ? i - 1 : (mode == EdgeMode::repeat ? size - 1 : 0u);
+}
+
+// How many of the sixteen samples a texel of an alpha plane the filtered surface passes at
+// (`alpha_coverage_filtered`), summed over the plane. A sample at 1/8, 3/8, 5/8 or 7/8 of a texel
+// is 3/8 or 1/8 of a texel from its centre, so the tap there weighs the texel 5 or 7 eighths and
+// its neighbour on that side the rest; the two axes' weights multiply, and the blend is an integer
+// in sixty-fourths of a code.
+u64 filtered_samples_kept(const u8* alpha, u32 width, u32 height, u8 cutoff, EdgeMode edge_x,
+                          EdgeMode edge_y) noexcept {
+  constexpr u32 k_own[4] = {5, 7, 7, 5};
+  const u32 pass = static_cast<u32>(cutoff) * 64u;
+  u64 kept = 0;
+  for (u32 y = 0; y < height; ++y) {
+    const u8* rows[3] = {
+        alpha + static_cast<usize>(neighbour_texel(y, false, height, edge_y)) * width,
+        alpha + static_cast<usize>(y) * width,
+        alpha + static_cast<usize>(neighbour_texel(y, true, height, edge_y)) * width};
+    for (u32 x = 0; x < width; ++x) {
+      const u32 columns[3] = {neighbour_texel(x, false, width, edge_x), x,
+                              neighbour_texel(x, true, width, edge_x)};
+      u32 a[3][3];
+      u32 least = 255;
+      u32 most = 0;
+      for (u32 j = 0; j < 3; ++j) {
+        for (u32 i = 0; i < 3; ++i) {
+          a[j][i] = rows[j][columns[i]];
+          least = a[j][i] < least ? a[j][i] : least;
+          most = a[j][i] > most ? a[j][i] : most;
+        }
+      }
+      // Most texels of a mask are deep inside it or far outside: every blend of a neighbourhood
+      // lies between its least and its most.
+      if (least >= cutoff) {
+        kept += 16;
+        continue;
+      }
+      if (most < cutoff) continue;
+      for (u32 sy = 0; sy < 4; ++sy) {
+        const u32 wy = k_own[sy];
+        const u32 jy = sy < 2 ? 0u : 2u;
+        for (u32 sx = 0; sx < 4; ++sx) {
+          const u32 wx = k_own[sx];
+          const u32 ix = sx < 2 ? 0u : 2u;
+          const u32 blend = a[1][1] * wx * wy + a[1][ix] * (8 - wx) * wy +
+                            a[jy][1] * wx * (8 - wy) + a[jy][ix] * (8 - wx) * (8 - wy);
+          if (blend >= pass) ++kept;
+        }
+      }
     }
   }
-  if (best == cutoff) return;
-  for (usize i = 0; i < texels; ++i) {
-    const u32 scaled = static_cast<u32>(px[i * 4 + 3]) * cutoff / best;  // rounded down
-    px[i * 4 + 3] = static_cast<u8>(scaled > 255u ? 255u : scaled);
+  return kept;
+}
+
+}  // namespace
+
+f64 alpha_coverage_filtered(std::span<const u8> rgba, u32 width, u32 height, u8 cutoff,
+                            EdgeMode edge_x, EdgeMode edge_y) noexcept {
+  const usize texels = static_cast<usize>(width) * height;
+  if (texels == 0 || rgba.size() < texels * 4) return 0.0;
+  Vector<u8> alpha(static_cast<u32>(texels), u8{0});
+  for (usize i = 0; i < texels; ++i)
+    alpha[static_cast<u32>(i)] = rgba[i * 4 + 3];
+  return static_cast<f64>(
+             filtered_samples_kept(alpha.data(), width, height, cutoff, edge_x, edge_y)) /
+         (16.0 * static_cast<f64>(texels));
+}
+
+void preserve_alpha_coverage(Vector<u8>& rgba, u32 width, u32 height, u8 cutoff, f64 coverage,
+                             EdgeMode edge_x, EdgeMode edge_y) {
+  const usize texels = static_cast<usize>(width) * height;
+  if (texels == 0 || rgba.size() < texels * 4 || cutoff == 0) return;
+  u8* px = rgba.data();
+  Vector<u8> alpha(static_cast<u32>(texels), u8{0});
+  for (usize i = 0; i < texels; ++i)
+    alpha[static_cast<u32>(i)] = px[i * 4 + 3];
+  Vector<u8> scaled(static_cast<u32>(texels), u8{0});
+  // The level's alpha as the scale for `t` leaves it: `cutoff / t`, rounded down, clamped.
+  auto scale_for = [&](u32 t, u8* table) {
+    for (u32 v = 0; v < 256; ++v) {
+      const u32 s = v * cutoff / t;
+      table[v] = static_cast<u8>(s > 255u ? 255u : s);
+    }
+  };
+  const f64 samples = 16.0 * static_cast<f64>(texels);
+  auto share_at = [&](u32 t) {
+    u8 table[256];
+    scale_for(t, table);
+    for (usize i = 0; i < texels; ++i)
+      scaled[static_cast<u32>(i)] = table[alpha[static_cast<u32>(i)]];
+    return static_cast<f64>(
+               filtered_samples_kept(scaled.data(), width, height, cutoff, edge_x, edge_y)) /
+           samples;
+  };
+  // The share falls as t rises (a smaller scale passes no sample a larger one refused). The
+  // largest t that still reaches the coverage, then whichever of it and the next is closer: the
+  // larger on a tie, which is the smaller change to the level.
+  u32 best = 1;
+  if (share_at(1) >= coverage) {
+    u32 lo = 1;
+    u32 hi = 255;
+    while (lo < hi) {
+      const u32 mid = (lo + hi + 1) / 2;
+      if (share_at(mid) >= coverage) {
+        lo = mid;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    best = lo;
+    if (lo < 255 && std::fabs(share_at(lo + 1) - coverage) <= std::fabs(share_at(lo) - coverage)) {
+      best = lo + 1;
+    }
   }
+  // A level the cutoff itself holds as well as any scale is left alone, byte for byte.
+  if (best != cutoff &&
+      std::fabs(share_at(cutoff) - coverage) <= std::fabs(share_at(best) - coverage)) {
+    best = cutoff;
+  }
+  if (best == cutoff) return;
+  u8 table[256];
+  scale_for(best, table);
+  for (usize i = 0; i < texels; ++i)
+    px[i * 4 + 3] = table[px[i * 4 + 3]];
 }
 
 bool build_texture(std::span<const u8> rgba, u32 width, u32 height, u32 source_channels,
@@ -319,7 +426,11 @@ bool build_texture(std::span<const u8> rgba, u32 width, u32 height, u32 source_c
   Vector<MipLevel> chain;
   build_mip_chain(source, width, height, mode, options.mips, chain, pool, options.edge_x,
                   options.edge_y);
-  const f64 coverage = masked ? alpha_coverage(source, width, height, options.alpha_cutoff) : 0.0;
+  // What a linear sampler draws of level 0 (the ray loops test it there, and a rasterizer does
+  // wherever the mask is magnified): the coverage every level below is held to.
+  const f64 coverage = masked ? alpha_coverage_filtered(source, width, height, options.alpha_cutoff,
+                                                        options.edge_x, options.edge_y)
+                              : 0.0;
   if (masked) out.flags |= k_texture_alpha_coverage;
   r.mip_ms = ms_since(mip_start);
 
@@ -348,6 +459,8 @@ bool build_texture(std::span<const u8> rgba, u32 width, u32 height, u32 source_c
   const i64 encode_start = time::monotonic_ns();
   Vector<u8> unscaled;
   Vector<u8> check;
+  Vector<u8> best_blocks;
+  Vector<u8> best_rgba;
   for (u32 i = 0; i < chain.size(); ++i) {
     MipLevel& level = chain[i];
     const TextureFileLevel& record = out.levels[i];
@@ -364,22 +477,62 @@ bool build_texture(std::span<const u8> rgba, u32 width, u32 height, u32 source_c
     // is fed back into the target and the level is scaled again from its unscaled alpha, at most
     // `k_coverage_passes` times: deterministic, because the encoder is, and only a mask pays it.
     unscaled = level.rgba;
+    if (level.width == 1 && level.height == 1) {
+      // **One texel holds all or nothing**, and a card two pixels across is drawn from the blend
+      // of this level with the one above. So it is stored where that blend is decided by the
+      // level above, which does hold the share: at the cutoff when the coverage rounds to all,
+      // one code under it when it rounds to nothing (a level far under the cutoff drags every
+      // blend past its half under with it, and a far crown's cards vanished there). The encoder
+      // may move a code, so the side is read back and the alpha stepped away until it holds.
+      const bool all = coverage >= 0.5;
+      for (u32 step = 0; step < 8; ++step) {
+        const i32 wanted =
+            all ? static_cast<i32>(options.alpha_cutoff) + static_cast<i32>(step)
+                : static_cast<i32>(options.alpha_cutoff) - 1 - static_cast<i32>(step);
+        level.rgba = unscaled;
+        level.rgba[3] = static_cast<u8>(wanted < 0 ? 0 : (wanted > 255 ? 255 : wanted));
+        encode_level(format, std::span<const u8>(level.rgba.data(), level.rgba.size()), level.width,
+                     level.height, perceptual, blocks, pool);
+        if (!decode_level(format, std::span<const u8>(blocks.data(), blocks.size()), level.width,
+                          level.height, check, nullptr)) {
+          break;
+        }
+        if ((check[3] >= options.alpha_cutoff) == all) break;
+      }
+      continue;
+    }
+    // The pass that landed closest is the one kept: a small level can step over the coverage and
+    // back, and the last pass is then no better than the first.
     f64 target = coverage;
+    f64 best_miss = std::numeric_limits<f64>::infinity();
+    bool last_is_best = true;
     for (u32 pass = 0; pass < k_coverage_passes; ++pass) {
       level.rgba = unscaled;
-      preserve_alpha_coverage(level.rgba, level.width, level.height, options.alpha_cutoff, target);
+      preserve_alpha_coverage(level.rgba, level.width, level.height, options.alpha_cutoff, target,
+                              options.edge_x, options.edge_y);
       encode_level(format, std::span<const u8>(level.rgba.data(), level.rgba.size()), level.width,
                    level.height, perceptual, blocks, pool);
       if (!decode_level(format, std::span<const u8>(blocks.data(), blocks.size()), level.width,
                         level.height, check, nullptr)) {
         break;
       }
-      const f64 measured = alpha_coverage(std::span<const u8>(check.data(), check.size()),
-                                          level.width, level.height, options.alpha_cutoff);
+      const f64 measured = alpha_coverage_filtered(std::span<const u8>(check.data(), check.size()),
+                                                   level.width, level.height, options.alpha_cutoff,
+                                                   options.edge_x, options.edge_y);
       const f64 miss = coverage - measured;
+      last_is_best = std::fabs(miss) < best_miss;
+      if (last_is_best) {
+        best_miss = std::fabs(miss);
+        best_blocks.assign(blocks.data(), blocks.data() + blocks.size());
+        best_rgba = level.rgba;
+      }
       if (std::fabs(miss) <= k_coverage_slack) break;
       target = target + miss;
       target = target < 0.0 ? 0.0 : (target > 1.0 ? 1.0 : target);
+    }
+    if (!last_is_best && best_blocks.size() == blocks.size()) {
+      std::memcpy(blocks.data(), best_blocks.data(), blocks.size());
+      level.rgba = best_rgba;
     }
   }
   if (options.normal_map &&

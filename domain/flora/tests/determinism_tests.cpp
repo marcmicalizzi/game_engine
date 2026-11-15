@@ -18,9 +18,14 @@ using namespace engine;
 
 TEST_CASE("regeneration: every cooked section has a cross-compiler pin") {
   // All 39 serialized sections, folded in section order; first MSVC pins, juvenile version 1.
-  constexpr u64 pins[] = {14638356608917655802ull, 924883813919887783ull,  3543767975535335084ull,
-                          17023047174142128883ull, 9673179043758828519ull, 12990953087382750004ull,
-                          613653092068049302ull};
+  // Until G203 (2026-11-14, b63cc940) they were 14638356608917655802, 924883813919887783,
+  // 3543767975535335084, 17023047174142128883, 9673179043758828519, 12990953087382750004 and
+  // 613653092068049302: a container records the key of the alpha-tested atlas it carries, and a
+  // mask's texture key now mixes `texture::k_alpha_mask_version`; the texture records' section
+  // moved and no other.
+  constexpr u64 pins[] = {0x3cbb5d26c157a101ull, 0xb14926c57ee397bfull, 0xdd3501b2a804a158ull,
+                          0x64867543b19e98e2ull, 0x97deb502dca36d8bull, 0x06972c041b66f18full,
+                          0xea6a9bb339b3ab3cull};
   u32 n = 0;
   for (const auto& profile : flora::regeneration_profiles()) {
     flora::FloraFile recipe;

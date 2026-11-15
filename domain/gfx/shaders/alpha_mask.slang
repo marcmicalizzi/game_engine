@@ -7,9 +7,11 @@
 //
 // **The mask is the base colour's alpha** times the base colour factor's (glTF's rule), and a
 // pixel or a hit is kept where that is at or above the material's cutoff (`gfx::set_alpha_mask`
-// packs both into `uv_offset.zw`). A rasterizer samples it with the quad's own derivatives, which is
-// the level the chain's coverage was kept at (texture.md, "Alpha-tested masks"); a ray has no quad,
-// and samples level 0: a ray cone could pick the level, and nothing here needs one yet.
+// packs both into `uv_offset.zw`). A rasterizer samples it with the quad's own derivatives, one tap
+// at the level of the footprint's shorter axis and with no anisotropy (`mask_keeps`), which is a
+// level the chain's coverage was kept at (texture.md, "Alpha-tested masks"); a ray has no quad, and samples
+// level 0, whose coverage is the one every level is held to: a ray cone could pick the level, and
+// nothing here needs one yet.
 
 #ifndef ENGINE_ALPHA_MASK_SLANG
 #define ENGINE_ALPHA_MASK_SLANG
@@ -25,12 +27,37 @@ ResolveMaterial mask_material(MaskTables tables, uint material) {
 float mask_cutoff(ResolveMaterial material) { return material.uv_offset.z; }
 
 // A fragment stage's test, with the quad's derivatives of the interpolated UV.
+//
+// **One tap of one level, and the level is the footprint's shorter axis's** (renderer.md,
+// "Alpha-tested geometry"; G203). The material's own sampler is anisotropic: it picks that same
+// level and then averages up to sixteen taps along the longer axis — an average the build never
+// scaled, so on a card seen at a slant (most of a crown's) a thin mask's alpha falls under the
+// cutoff and the card draws nothing. One tap is a point sample of a level the build held to level
+// 0's coverage, so it passes in that share whatever the slant: across the shorter axis the level
+// is the pixel's own, and along the longer one the test is a sample, as a ray's is everywhere.
+// The level of the *longer* axis would be the filtered answer and is the wrong one for the same
+// reason a far level is hard to hold: a card at a slant reaches the chain's last few texels, and
+// an atlas's tiles are mixed together well before them. The shorter axis is held to a sixteenth
+// of the longer, the sampler's own limit. Two gradients of one length at right angles ask the
+// sampler for a ratio of one, which is one trilinear tap.
 bool mask_keeps(ResolveMaterial material, float2 uv) {
   float alpha = material.uv_offset.w;
   if (material.albedo_texture != k_no_texture) {
+    const float2 st = material_uv(material, uv);
+    const float2 dx = ddx(st);
+    const float2 dy = ddy(st);
+    const float lx = dot(dx, dx);
+    const float ly = dot(dy, dy);
+    const float2 minor = lx <= ly ? dx : dy;
+    const float longer = sqrt(max(lx, ly));
+    const float shorter = sqrt(min(lx, ly));
+    // The tap's footprint: the shorter axis's length, or a sixteenth of the longer's if that is
+    // more, along the shorter axis's direction (any direction, if the quad gave none).
+    const float reach = max(shorter, longer * (1.0 / 16.0));
+    const float2 along = shorter > 0.0 ? minor * (reach / shorter) : float2(reach, 0.0);
     alpha *= g_textures[NonUniformResourceIndex(material.albedo_texture)]
-                 .Sample(g_samplers[NonUniformResourceIndex(material.sampler)],
-                         material_uv(material, uv))
+                 .SampleGrad(g_samplers[NonUniformResourceIndex(material.sampler)], st, along,
+                             float2(-along.y, along.x))
                  .a;
   }
   return alpha >= mask_cutoff(material);
