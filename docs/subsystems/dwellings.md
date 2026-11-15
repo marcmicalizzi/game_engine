@@ -296,12 +296,18 @@ or placed.
 **Depends on.** `base`, `containers`, `hash`, `math`, and the `structures` capability with its
 schema types (`structures_schemas`).
 
-**What looks wrong in the first pictures** (one hall and parlour on a flat ground, `--shadows rt`,
-`renderer.gi.mode=bounce`, 2026-11-14; a person's objections, most damaging first): a hearth is a
-blank stone breast with a beam across it, because the mesher cuts no opening into a stack yet;
-every room is empty, with no furniture, no door leaves and no glass; a ceiling has no joists and a
-stair no nosing, string or newel; and at the sky's exposure a room lit by its windows is nearly
-black, so the pictures were taken four stops over it.
+**What looked wrong in the first pictures** (one hall and parlour on a flat ground, `--shadows rt`,
+`renderer.gi.mode=bounce`, 2026-11-14; a person's objections, most damaging first): a hearth was a
+blank stone breast with a beam across it; every room was empty, with no furniture, no door leaves
+and no glass; a ceiling had no joists and a stair no nosing, string or newel; and at the sky's
+exposure a room lit by its windows was nearly black, so the pictures were taken four stops over
+it. Since then the mesher cuts the hearth and hangs leaves and shutters, and the description
+states the joists, the beam, the nosings, the newels and the furniture above. **No picture of a
+furnished room has been judged yet** (2026-11-15: the pictures stood in the GPU's line when this
+was written), so what the members look like in a room's light — a bed's linen drawn with the
+ceiling's plaster, legs and rails as plain boxes with no chamfer, a stair with newels and no rail
+— is still to be said from a picture. Still missing whatever the pictures show: glass, a string
+under the stair, and the black room at the sky's exposure, which is the renderer's.
 
 **Testing.** `tools/dev.ps1 test -Filter dwellings`.
 
