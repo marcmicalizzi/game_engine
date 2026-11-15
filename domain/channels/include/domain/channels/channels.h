@@ -80,7 +80,12 @@ namespace engine::channels {
 // 12 (W122): a hollow deeper than the breach limit is a body of the plan or a sink and no line
 //    crosses it; a link's bed never rises downstream, in itself or across a junction; the cut's
 //    top widens with what the bed is held under its section; the seat reads no bank past a step.
-inline constexpr u32 k_channels_version = 12;
+// 13 (W122, to the gate): what moved a plan's content inside 12 without moving it (a hollow's
+//    catchment read at its spill, the fan's running minimum, the sill held by every link that
+//    begins on a lake's lip), and with them a line's turn bounded after its points are moved, a
+//    mouth for a line that ends at an authored body under its spill, a body of the plan written
+//    with its own look, and a dry hollow's floor.
+inline constexpr u32 k_channels_version = 13;
 
 // **The bed's surface sediment at a point** (W97; channels.md, "Bed sediment"; the sources in
 // docs/experiments/channels.md, "Bed sediment"): the surface grain-size distribution a pebble count
