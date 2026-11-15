@@ -261,7 +261,13 @@ u64 container_hash(const FloraFile& file) {
     h = hash_combine(h, k_conifer_chain_version);
   // The seat (G201 stage 2) is the container's and not the tree's shape: keyed here, so a tree's
   // entry rebuilds to carry it and the deadwood's key, which takes the shape, does not move.
-  return seated_species(file) ? hash_combine(h, k_flora_seat_version) : h;
+  if (seated_species(file)) h = hash_combine(h, k_flora_seat_version);
+  // The broadleaf's and the conifer's structural table (A45), the same way.
+  const std::string& s = file.species;
+  if (!file.regeneration &&
+      (s == k_species_broadleaf || s == k_species_conifer || detail::is_tree_species(s)))
+    h = hash_combine(h, k_flora_structure_version);
+  return h;
 }
 }  // namespace
 

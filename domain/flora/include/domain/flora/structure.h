@@ -35,6 +35,15 @@ inline constexpr u32 k_straight = geometry::k_structural_straight;
 // A part that stops a walker though no structure may hang from it: a shrub's stem at least
 // `k_shrub_collider_radius_m` thick at the ground (understory.h).
 inline constexpr u32 k_collider = geometry::k_structural_collider;
+// A part some leaf or needle card rides (A45): the walker's push reaches it as far as the leaves
+// stand out from it, as it did before the part had a radius; the broadleaf and the conifer set it
+// (`mark_foliage`, kit.h).
+inline constexpr u32 k_foliage = geometry::k_structural_foliage;
+// A load-bearing part that keeps its class's full compliance in the wind (A45's third leg): it
+// carries load (it collides, a structure may rest on it) without being held nearly still, which a
+// load-bearing part without the flag is (`renderer::k_flora_load_bearing`). The broadleaf and the
+// conifer set it on their trunks, which sway as they did before they had a table.
+inline constexpr u32 k_full_sway = geometry::k_structural_full_sway;
 
 // The point at arc `s` along a part's axis by the rule above.
 inline Vec3 structural_point(const MotionPart& part, f32 s) noexcept {

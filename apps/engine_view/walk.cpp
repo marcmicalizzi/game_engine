@@ -656,6 +656,8 @@ bool Walker::supports(WorldPos at, f32 radius, f32 min_size, std::span<WalkSuppo
     o.instance = s.piece.instance;
     o.entry = s.piece.entry;
     o.part = s.part;
+    o.along = s.along;
+    o.placement = s.placement;
   }
   return true;
 }

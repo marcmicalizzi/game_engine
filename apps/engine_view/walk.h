@@ -225,6 +225,8 @@ struct WalkSupport {
   u32 instance = k_no_walk_index;
   u32 entry = k_no_walk_index;
   u32 part = k_no_walk_index;
+  Vec3 along{};       // a limb's axis there, unit; zero for a perch or a top (A45)
+  u64 placement = 0;  // the piece's name in the world (`scene_collision::support_placement`)
 };
 struct WalkSupports {
   u32 count = 0;

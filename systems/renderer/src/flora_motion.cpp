@@ -223,7 +223,11 @@ bool flora_mesh(std::span<const geometry::ClusterFileMotionPart> parts,
     const bool wooden = !structured || structure[p].base_radius > 0.0f;
     f32 c = depth[p] == 0 ? stiffness.trunk : depth[p] == 1 ? stiffness.limb : stiffness.twig;
     if (!wooden) c = stiffness.leaf;
-    if (load_bearing) c *= k_flora_load_bearing;
+    // A load-bearing part is held nearly still unless the table says it sways as its class does
+    // (`k_structural_full_sway`, A45): carrying load and being held still are separate claims.
+    const bool full_sway =
+        structured && (structure[p].flags & geometry::k_structural_full_sway) != 0;
+    if (load_bearing && !full_sway) c *= k_flora_load_bearing;
     out.compliance[p] = c;
     if (!root) {
       const geometry::ClusterFileMotionPart& parent = parts[part.parent];
@@ -234,7 +238,12 @@ bool flora_mesh(std::span<const geometry::ClusterFileMotionPart> parts,
     }
     const f32 wood =
         structured ? std::fmax(structure[p].base_radius, structure[p].tip_radius) : 0.0f;
-    out.reach[p] = wood > 0.0f ? wood : k_flora_leaf_reach * part.length;
+    // A part with wood is reached within its wood, unless leaves or needles ride it (the table's
+    // foliage flag, A45): then as far as they stand out, the reach a part with no table has.
+    const f32 leaves = k_flora_leaf_reach * part.length;
+    const bool foliage =
+        structured && (structure[p].flags & geometry::k_structural_foliage) != 0;
+    out.reach[p] = wood > 0.0f ? (foliage ? std::fmax(wood, leaves) : wood) : leaves;
     // A part that collides is never pushed: the walker stops at it rather than bending it.
     const bool collider = structured && (structure[p].flags & geometry::k_structural_collider) != 0;
     // Sward's contract is one parentless non-woody part per blade, including part zero.

@@ -15,6 +15,7 @@
 #include "view_process.h"
 
 #include <core/json/json.h>
+#include <foundation/hotload/module_abi.h>
 #include <foundation/input/input_log.h>
 #include <foundation/io/vfs.h>
 #include <systems/water/water.h>
@@ -24,6 +25,7 @@
 #include <test_temp_dir.h>
 
 #include <cmath>
+#include <cstddef>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -268,6 +270,12 @@ TEST_CASE("engine-view: a module asks the world for casts, supports and the wate
   CHECK(num(t, "size_m") >= 0.03);
   CHECK(element(t, "up", 1) > 0.5);
   CHECK(num(t, "landed") == 1.0);
+  // ABI 12 (A45): the limb's axis, unit and near level, and the tree's name (its instance, 0).
+  CHECK(num(t, "flags") == 3.0);  // k_support_has_along | k_support_has_placement
+  const f64 ax = element(t, "along", 0), ay = element(t, "along", 1), az = element(t, "along", 2);
+  CHECK(std::sqrt(ax * ax + ay * ay + az * az) == doctest::Approx(1.0).epsilon(1.0e-5));
+  CHECK(std::fabs(ay) <= 0.8660254 + 1.0e-6);  // within 60 degrees of level, or not a limb
+  CHECK(num(t, "placement") == 0.0);
   // On the post's declared perch: its top centre, 4 cm.
   const JsonValue* p = result->find("post");
   REQUIRE(p != nullptr);
@@ -335,6 +343,30 @@ TEST_CASE("engine-view: a module asks the world for casts, supports and the wate
                          << " m, the map " << want << " m");
     CHECK(num(&w, "depth") == doctest::Approx(static_cast<f64>(want)).epsilon(1.0e-6));
     CHECK(element(&w, "velocity", 0) == 0.0);
+  }
+  // **Every entry of the table, once, through the host** (A45; the case ABI 11 never got): the
+  // module answered as many as the header's table holds, each with a result code, and the ones
+  // this scene can answer answered `Ok`.
+  const JsonValue* entries = result->find("entries");
+  REQUIRE(entries != nullptr);
+  REQUIRE(entries->is_object());
+  const u32 table_entries = static_cast<u32>(
+      (sizeof(hotload::HostApi) - offsetof(hotload::HostApi, allocate)) / sizeof(void (*)()));
+  CHECK(num(result, "entry_count") == static_cast<f64>(table_entries));
+  CHECK(entries->size() == table_entries);
+  // (`nearest_prop` looks round the walker, not round the point the prop was put at, so its
+  // `NotFound` here is an answer.)
+  for (const char* ok :
+       {"allocate", "tick", "fixed_step", "prop_mesh", "prop_place", "prop_move", "prop_remove", "walker_set", "walker_teleport", "graphics_state", "ground_height",
+        "ground_sample", "cast_ray", "cast_sphere", "water_at", "supports_near"}) {
+    CAPTURE(ok);
+    CHECK(num(entries, ok) == 0.0);
+  }
+  for (usize k = 0; k < entries->size(); ++k) {
+    f64 code = -1.0;
+    REQUIRE(entries->as_object().value_at(static_cast<u32>(k)).get_f64(code));
+    CHECK(code >= 0.0);
+    CHECK(code <= 6.0);  // a `hotload::Result`
   }
 }
 

@@ -1150,6 +1150,13 @@ struct GameRunner::Impl {
       o.entry = s.entry;
       o.mesh = s.mesh;
       o.part = s.part;
+      // ABI 12 (A45): the limb's axis there and the piece's name in the world; the module holder
+      // writes them only to a module whose records reach them.
+      o.along[0] = s.along.x;
+      o.along[1] = s.along.y;
+      o.along[2] = s.along.z;
+      o.placement = s.placement;
+      o.flags = hotload::k_support_has_along | hotload::k_support_has_placement;
     }
     q.count = answer.count;
     q.found = answer.found;

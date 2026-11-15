@@ -12,12 +12,16 @@
 //     ray down into the pond that stops at the water;
 //   - the water at five points of the pond;
 // and ends the run with every answer. A fixture: its coordinates are the test scene's, and it keeps
-// no state (a reload starts it again).
+// no state (a reload starts it again). With `WALK_POC_WORLD_WALK` set it asks round the walker's
+// feet along a line instead ("the walk mode", below): A45's check of a streamed forest.
 
 #include <foundation/hotload/module_abi.h>
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 using namespace engine;
 using namespace engine::hotload;
@@ -31,7 +35,7 @@ u32 g_bird = 0;
 bool g_props = false;
 
 // The answer, built in a fixed buffer: a module allocates nothing on a tick.
-char g_json[16384];
+char g_json[32768];
 u32 g_at = 0;
 void put(const char* text) {
   while (*text != '\0' && g_at + 1 < sizeof(g_json))
@@ -65,6 +69,11 @@ void supports(ModuleContext* context, const char* name, f64 x, f64 y, f64 z, f32
                   s.position[2], static_cast<f64>(s.up[0]), static_cast<f64>(s.up[1]),
                   static_cast<f64>(s.up[2]), static_cast<f64>(s.size_m));
     put(line);
+    // ABI 12 (A45): the limb's axis and the piece's name, and the flags saying they are filled.
+    std::snprintf(line, sizeof line, ",\"flags\":%u,\"along\":[%.9g,%.9g,%.9g],\"placement\":%llu",
+                  s.flags, static_cast<f64>(s.along[0]), static_cast<f64>(s.along[1]),
+                  static_cast<f64>(s.along[2]), static_cast<unsigned long long>(s.placement));
+    put(line);
     if (g_props) {
       u32 prop = 0;
       const Result placed =
@@ -74,6 +83,127 @@ void supports(ModuleContext* context, const char* name, f64 x, f64 y, f64 z, f32
     }
   }
   put("}");
+}
+
+// One entry's answer into the "entries" object: its result code, or 0 for a call with none.
+u32 g_entries = 0;
+void entry(const char* name, Result r) {
+  char line[96];
+  std::snprintf(line, sizeof line, "%s\"%s\":%d", g_entries == 0 ? "" : ",", name,
+                static_cast<i32>(r));
+  put(line);
+  ++g_entries;
+}
+
+// **Every entry of the host's table, once** (A45; the case ABI 11 never had): what this module did
+// not already ask above, each with arguments a module would pass — the props and the HUD's on
+// things this module makes, the actors' on a name the scene has none of (`NotFound` is their
+// answer), the schema's on a type it does not have — so the end-to-end case holds that every entry
+// a host of this header has answers through the host, and the count against the table's size.
+void table(ModuleContext* context, const f64* at) {
+  const HostApi* api = context->api;
+  void* h = api->host;
+  const auto text = [](const char* s) { return static_cast<u64>(std::strlen(s)); };
+  g_entries = 0;
+  put(",\"entries\":{");
+  void* p = api->allocate(h, 64, 16);
+  entry("allocate", p != nullptr ? Result::Ok : Result::NotFound);
+  api->deallocate(h, p, 64, 16);
+  entry("deallocate", Result::Ok);
+  api->log(h, LogLevel::Info, "table probe", text("table probe"));
+  entry("log", Result::Ok);
+  entry("tick", api->tick(h) > 0 ? Result::Ok : Result::NotFound);
+  entry("fixed_step", api->fixed_step(h) > 0.0 ? Result::Ok : Result::NotFound);
+  FieldRef ref{};
+  entry("resolve", api->resolve(h, "NoSuchType", text("NoSuchType"), "x", 1, &ref));
+  i64 enumerator = 0;
+  entry("enum_value", api->enum_value(h, ref, "x", 1, &enumerator));
+  Value value{};
+  entry("read", api->read(h, View{}, ref, &value));
+  entry("read_element", api->read_element(h, View{}, ref, 0, &value));
+  // `fail` only words a failure the tick then returns; this tick returns, so it is dropped.
+  api->fail(h, "table probe", text("table probe"));
+  entry("fail", Result::Ok);
+  u32 bit = 0;
+  entry("game_action", api->game_action(h, "no_such_action", text("no_such_action"), &bit));
+  api->hud_text(h, 0, "table probe", text("table probe"));
+  entry("hud_text", Result::Ok);
+  api->hud_meter(h, "probe", text("probe"), 1.0, 2.0);
+  entry("hud_meter", Result::Ok);
+  entry("end_run", Result::Ok);  // called last, with this object
+  f64 position[3] = {0.0, 0.0, 0.0};
+  f64 distance = 0.0;
+  entry("nearest_placement",
+        api->nearest_placement(h, "tree", text("tree"), 30.0, position, &distance));
+  u32 mesh = 0;
+  const Result has_mesh = api->prop_mesh(h, "bird", text("bird"), &mesh);
+  entry("prop_mesh", has_mesh);
+  u32 prop = 0;
+  entry("prop_place", api->prop_place(h, mesh, at, 0.0f, 1.0f, &prop));
+  entry("prop_move", api->prop_move(h, prop, at, 0.5f));
+  u32 found_prop = 0;
+  entry("nearest_prop", api->nearest_prop(h, mesh, 5.0, &found_prop, position, &distance));
+  entry("prop_remove", api->prop_remove(h, prop));
+  entry("walker_set", api->walker_set(h, 1.0f, 1.0f));
+  // Where the session started, so the walker stays where the questions above were asked.
+  const f64 start[3] = {0.0, ground(context, 0.0, 12.5), 12.5};
+  entry("walker_teleport", api->walker_teleport(h, start, 3.14159265f, 0.0f));
+  u32 clip = 0;
+  entry("sound_clip", api->sound_clip(h, "no_such_clip", text("no_such_clip"), &clip));
+  u32 voice = 0;
+  entry("sound_play", api->sound_play(h, clip, at, 1.0f, &voice));
+  entry("sound_stop", api->sound_stop(h, voice));
+  HudElement element;
+  element.id = 7;
+  entry("hud_element", api->hud_element(h, &element));
+  entry("hud_remove", api->hud_remove(h, 7));
+  GraphicsState graphics;
+  entry("graphics_state", api->graphics_state(h, &graphics));
+  GraphicsRequest request;
+  entry("request_graphics", api->request_graphics(h, &request));
+  u32 actor = 0;
+  entry("actor_find", api->actor_find(h, "no_such_actor", text("no_such_actor"), &actor));
+  entry("actor_spawn", api->actor_spawn(h, "no_such_mesh", text("no_such_mesh"), at, 0.0f, &actor));
+  entry("actor_place", api->actor_place(h, actor, at, 0.0f));
+  entry("actor_play", api->actor_play(h, actor, "walk", text("walk"), 0.0f, 1));
+  entry("actor_stop", api->actor_stop(h, actor, 0.0f));
+  entry("actor_speed", api->actor_speed(h, actor, 1.0f));
+  ActorState state;
+  entry("actor_state", api->actor_state(h, actor, &state));
+  f64 height = 0.0;
+  entry("ground_height", api->ground_height(h, 0.0, 12.5, &height));
+  HudImage image;
+  entry("hud_image", api->hud_image(h, &image));
+  u32 font = 0;
+  entry("hud_font", api->hud_font(h, "no_such_font.ttf", text("no_such_font.ttf"), 18.0f, &font));
+  const f32 up[3] = {0.0f, 1.0f, 0.0f};
+  entry("actor_place_aligned", api->actor_place_aligned(h, actor, at, 0.0f, up, 0.3f));
+  GroundSample sample;
+  entry("ground_sample", api->ground_sample(h, 0.0, 12.5, &sample));
+  const f32 weights[1] = {0.0f};
+  entry("actor_morph", api->actor_morph(h, actor, weights, 1));
+  entry("actor_scale", api->actor_scale(h, actor, 1.0f));
+  MorphInfo morph;
+  entry("actor_morph_info", api->actor_morph_info(h, actor, &morph));
+  CastHit hit;
+  const f32 down[3] = {0.0f, -1.0f, 0.0f};
+  entry("cast_ray", api->cast_ray(h, at, down, 20.0f, &hit));
+  entry("cast_sphere", api->cast_sphere(h, at, down, 20.0f, 0.1f, &hit));
+  WaterSample water;
+  entry("water_at", api->water_at(h, 0.0, 0.0, &water));
+  Support found[4];
+  SupportQuery query;
+  query.radius_m = 4.0f;
+  query.capacity = 4;
+  query.out = found;
+  entry("supports_near", api->supports_near(h, at, &query));
+  entry("actor_lod_bias", api->actor_lod_bias(h, actor, 1.0f));
+  ClipInfo info;
+  entry("actor_clip_info", api->actor_clip_info(h, actor, &info));
+  entry("actor_seek", api->actor_seek(h, actor, 0.0f));
+  char line[64];
+  std::snprintf(line, sizeof line, "},\"entry_count\":%u", g_entries);
+  put(line);
 }
 
 void cast_json(const char* name, Result r, const CastHit& hit) {
@@ -154,7 +284,143 @@ void probe(ModuleContext* context) {
                   static_cast<f64>(w.velocity[1]), w.source, w.index);
     put(line);
   }
-  put("]}");
+  put("]");
+  // And every other entry of the table once (A45), from a point beside the boulder.
+  const f64 beside[3] = {-6.0, ground(context, -6.0, 14.0) + 1.0, 14.0};
+  table(context, beside);
+  put("}");
+  context->api->end_run(context->api->host, g_json, g_at);
+}
+
+// ---- the walk mode (A45's forest check) ----
+//
+// With `WALK_POC_WORLD_WALK="x0,z0,x1,z1,n"` in its environment the module asks round the walker's
+// feet instead of at the test scene's coordinates: it puts the walker at `n` points evenly from
+// (x0, z0) to (x1, z1) (`walker_teleport`), waits at each until the collision's tiles cover the
+// disc it asks over (or a minute of ticks), asks the supports within `k_walk_radius` of a point 3 m
+// over the feet, and counts them by kind and by the scene entry and mesh they stand on. At the
+// last point it times a thousand supports queries and a thousand rays straight down. One run, one
+// answer through `end_run`; nothing allocated on a tick.
+constexpr f32 k_walk_radius = 24.0f;
+constexpr u32 k_walk_capacity = 1024;
+constexpr u32 k_walk_settle = 480;      // two seconds of ticks before the first look at a point
+constexpr u32 k_walk_patience = 14400;  // a minute of ticks: the point is asked uncovered then
+constexpr u32 k_walk_cells = 256;
+bool g_walk = false;
+f64 g_walk_from[2] = {0.0, 0.0};
+f64 g_walk_to[2] = {0.0, 0.0};
+u32 g_walk_points = 0;
+u32 g_walk_point = 0;
+u32 g_walk_waited = 0;
+Support g_walk_found[k_walk_capacity];
+struct WalkCell {
+  u32 entry = k_no_world_index;
+  u32 mesh = k_no_world_index;
+  u32 kinds[4] = {0, 0, 0, 0};
+};
+WalkCell g_walk_cells[k_walk_cells];
+u32 g_walk_cell_count = 0;
+u32 g_walk_overflow = 0;
+
+void walk_count(const Support& s) {
+  for (u32 c = 0; c < g_walk_cell_count; ++c) {
+    if (g_walk_cells[c].entry == s.entry && g_walk_cells[c].mesh == s.mesh) {
+      ++g_walk_cells[c].kinds[s.kind < 4 ? s.kind : 0];
+      return;
+    }
+  }
+  if (g_walk_cell_count == k_walk_cells) {
+    ++g_walk_overflow;
+    return;
+  }
+  WalkCell& cell = g_walk_cells[g_walk_cell_count++];
+  cell.entry = s.entry;
+  cell.mesh = s.mesh;
+  ++cell.kinds[s.kind < 4 ? s.kind : 0];
+}
+
+void walk_at(u32 k, f64& x, f64& z) {
+  const f64 t = g_walk_points > 1 ? static_cast<f64>(k) / static_cast<f64>(g_walk_points - 1) : 0.0;
+  x = g_walk_from[0] + (g_walk_to[0] - g_walk_from[0]) * t;
+  z = g_walk_from[1] + (g_walk_to[1] - g_walk_from[1]) * t;
+}
+
+// A thousand of each question at the point, in microseconds a question.
+void walk_costs(ModuleContext* context, const f64* point) {
+  SupportQuery query;
+  const auto t0 = std::chrono::steady_clock::now();
+  u32 answered = 0;
+  for (u32 i = 0; i < 1000; ++i) {
+    if (supports_near(context, point, k_walk_radius, 0.0f, g_walk_found, k_walk_capacity, query) ==
+        Result::Ok)
+      answered += query.count;
+  }
+  const auto t1 = std::chrono::steady_clock::now();
+  const f32 down[3] = {0.0f, -1.0f, 0.0f};
+  u32 hits = 0;
+  for (u32 i = 0; i < 1000; ++i) {
+    // A ray straight down from 20 m over a point of a 10 m square round the feet, a fixed lattice.
+    const f64 from[3] = {point[0] - 5.0 + static_cast<f64>(i % 32) * (10.0 / 31.0), point[1] + 17.0,
+                         point[2] - 5.0 + static_cast<f64>(i / 32) * (10.0 / 31.0)};
+    CastHit hit;
+    if (cast_ray(context, from, down, 40.0f, hit) == Result::Ok) ++hits;
+  }
+  const auto t2 = std::chrono::steady_clock::now();
+  const f64 supports_us = std::chrono::duration<f64, std::micro>(t1 - t0).count() / 1000.0;
+  const f64 rays_us = std::chrono::duration<f64, std::micro>(t2 - t1).count() / 1000.0;
+  char line[256];
+  std::snprintf(line, sizeof line,
+                ",\"cost\":{\"supports_us\":%.4g,\"supports_returned\":%u,\"rays_us\":%.4g,"
+                "\"rays_hit\":%u}",
+                supports_us, answered, rays_us, hits);
+  put(line);
+}
+
+void walk_tick(ModuleContext* context) {
+  f64 x = 0.0;
+  f64 z = 0.0;
+  walk_at(g_walk_point, x, z);
+  if (g_walk_waited == 0) {
+    const f64 feet[3] = {x, ground(context, x, z) + 1.0, z};
+    (void)walker_teleport(context, feet, 0.0f, 0.0f);
+  }
+  ++g_walk_waited;
+  if (g_walk_waited < k_walk_settle) return;
+  const f64 point[3] = {x, ground(context, x, z) + 3.0, z};
+  SupportQuery query;
+  const Result r =
+      supports_near(context, point, k_walk_radius, 0.0f, g_walk_found, k_walk_capacity, query);
+  if (r == Result::Ok && query.covered == 0 && g_walk_waited < k_walk_patience) return;
+  u32 kinds[4] = {0, 0, 0, 0};
+  if (r == Result::Ok) {
+    for (u32 i = 0; i < query.count; ++i) {
+      ++kinds[g_walk_found[i].kind < 4 ? g_walk_found[i].kind : 0];
+      walk_count(g_walk_found[i]);
+    }
+  }
+  char line[320];
+  std::snprintf(line, sizeof line,
+                "%s{\"x\":%.6g,\"z\":%.6g,\"result\":%u,\"covered\":%u,\"ticks\":%u,\"found\":%u,"
+                "\"count\":%u,\"perch\":%u,\"limb\":%u,\"top\":%u}",
+                g_walk_point == 0 ? "" : ",", x, z, static_cast<u32>(r), query.covered,
+                g_walk_waited, query.found, query.count, kinds[k_support_perch],
+                kinds[k_support_limb], kinds[k_support_top]);
+  put(line);
+  g_walk_waited = 0;
+  if (++g_walk_point < g_walk_points) return;
+  put("]");
+  walk_costs(context, point);
+  put(",\"by_entry_mesh\":[");
+  for (u32 c = 0; c < g_walk_cell_count; ++c) {
+    const WalkCell& cell = g_walk_cells[c];
+    std::snprintf(line, sizeof line, "%s{\"entry\":%u,\"mesh\":%u,\"perch\":%u,\"limb\":%u,\"top\":%u}",
+                  c == 0 ? "" : ",", cell.entry, cell.mesh, cell.kinds[k_support_perch],
+                  cell.kinds[k_support_limb], cell.kinds[k_support_top]);
+    put(line);
+  }
+  std::snprintf(line, sizeof line, "],\"cells_overflow\":%u}", g_walk_overflow);
+  put(line);
+  g_done = true;
   context->api->end_run(context->api->host, g_json, g_at);
 }
 
@@ -164,11 +430,57 @@ i32 on_load(ModuleContext* context) {
   g_props = context->api->prop_mesh(context->api->host, name, 4, &g_bird) == Result::Ok;
   g_ticks = 0;
   g_done = false;
+  // The walk mode, from the environment (a fixture's switch; read once, at load).
+  g_walk = false;
+  g_walk_point = 0;
+  g_walk_waited = 0;
+  g_walk_cell_count = 0;
+  g_walk_overflow = 0;
+  char walk[256] = {};
+#if defined(_MSC_VER)
+  // getenv as MSVC compiles it without a deprecation warning (tests/support/test_paths.h's way).
+  char* value = nullptr;
+  usize size = 0;
+  if (_dupenv_s(&value, &size, "WALK_POC_WORLD_WALK") == 0 && value != nullptr) {
+    std::snprintf(walk, sizeof walk, "%s", value);
+    std::free(value);
+  }
+#else
+  if (const char* value = std::getenv("WALK_POC_WORLD_WALK"); value != nullptr)
+    std::snprintf(walk, sizeof walk, "%s", value);
+#endif
+  if (walk[0] != '\0') {
+    f64 numbers[5] = {};
+    u32 read = 0;
+    const char* at = walk;
+    for (; read < 5; ++read) {
+      char* end = nullptr;
+      numbers[read] = std::strtod(at, &end);
+      if (end == at) break;
+      at = *end == ',' ? end + 1 : end;
+    }
+    g_walk_from[0] = numbers[0];
+    g_walk_from[1] = numbers[1];
+    g_walk_to[0] = numbers[2];
+    g_walk_to[1] = numbers[3];
+    const f64 n = numbers[4];
+    if (read == 5 && n >= 1.0 && n <= 64.0) {
+      g_walk = true;
+      g_walk_points = static_cast<u32>(n);
+      g_at = 0;
+      put("{\"mode\":\"walk\",\"radius\":24,\"points\":[");
+    }
+  }
   return 0;
 }
 
 void game_tick(ModuleContext* context, View, f32) {
   if (g_done) return;
+  if (g_walk) {
+    if (++g_ticks < k_probe_tick) return;
+    walk_tick(context);
+    return;
+  }
   if (++g_ticks < k_probe_tick) return;
   g_done = true;
   probe(context);

@@ -317,6 +317,12 @@ f64 pipe_radius_of(f64 root_radius, f64 tips, f64 total);
 u32 begin_structural_part(Emitter& out, D3 pivot, D3 direction, f64 length, u32 parent, f64 r0,
                           f64 r1, u32 flags);
 
+// Flags `k_foliage` on the structural row of every part a vertex of the triangles in
+// [`first_index`, `index_end`) of `mesh` rides — the leaf or needle cards — so the walker's push
+// reaches a leafy twig or a needled branch as far as its leaves stand out (A45; flora.md, "The
+// structural table"). Nothing where the motion carries no table.
+void mark_foliage(const assets::MeshData& mesh, u32 first_index, u32 index_end, Motion& motion);
+
 // A tube along a shoot's grown axis, resampled at `rows`, as its own structural part. Returns the
 // part.
 u32 emit_tube_part(Emitter& out, const Axis& axis, f64 r0, f64 r1, u32 rows, u32 sides, u32 parent,

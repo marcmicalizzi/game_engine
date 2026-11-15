@@ -898,7 +898,9 @@ for a host at sixty frames at real time, so a replay sways as it did.
 (part 0), a limb (a child of the trunk; a palm's fronds), a twig (deeper), a leaf (a part the
 structural table gives no wood: a spray of cards, a willow's curtain). A part the structural table
 flags **load-bearing** takes a quarter of its class's (`k_flora_load_bearing`), which is what keeps
-the ancient tree's limbs, which a village hangs from, nearly still.
+the ancient tree's limbs, which a village hangs from, nearly still — unless the table also flags it
+**full sway** (`k_structural_full_sway`, A45): the broadleaf's and the conifer's trunks carry load and
+keep their class's compliance, so they sway as they did before they had a table.
 
 | Species | Trunk | Limb | Twig | Leaf |
 |---|---|---|---|---|
@@ -933,7 +935,8 @@ stout stem) is never pushed.
 **The push.** A walker's capsule (its feet, 0.3 m radius, 1.8 m tall: [apps](apps.md#walking)) is
 handed to the frame. A part that is neither the trunk nor load-bearing whose rest axis comes within
 the capsule's radius plus the part's own reach — its wood's radius, or an eighth of its length for a
-part with none (a frond's leaflets stand out from its rachis) — plus 5 cm of the capsule's axis is
+part with none (a frond's leaflets stand out from its rachis) or one the structural table flags
+**foliage** (leaves or needles ride it: the larger of the two, A45) — plus 5 cm of the capsule's axis is
 turned about its pivot, away from the walker, by the angle that carries its nearest point clear, at
 most 0.9 rad; the push eases in and out over 12 frame ticks (0.2 s), a smoothstep of a ramp held per
 part between frames. A part's children go with it. The walker's own collision leaves those parts out
@@ -1771,6 +1774,9 @@ second batch emits it beside the motion contract, `Motion::structure`: one
 |---|---|
 | `k_structural_load_bearing` (1) | a trunk, a stem, a major limb: a structure may hang from it; its base radius is at least the species' `load_bearing_min_radius` |
 | `k_structural_straight` (2) | its axis is the segment from `pivot` along `direction` for `length`, to the millimetre |
+| `k_structural_collider` (4) | it stops a walker though nothing hangs from it: a shrub's stout stem ("The shrub") |
+| `k_structural_foliage` (8) | leaves or needles ride it: the walker's push reaches it as far as they stand out (an eighth of its length) when that is more than its wood's radius (A45; the broadleaf and the conifer set it, `mark_foliage`) |
+| `k_structural_full_sway` (16) | a load-bearing part that keeps its class's full compliance in the wind: it carries load (it collides, a structure may rest on it) without being held nearly still at `k_flora_load_bearing` (A45's third leg; the broadleaf's and the conifer's trunks, nothing else) |
 
 **The rule a structure solver may rely on.** Records come parent-first (their order is the parts'),
 so one pass meets every parent before its children. A part's axis is the segment from its pivot
@@ -1792,10 +1798,47 @@ lowest limb to 0.69 m at the highest (2.4 m to 1.4 m thick), every limb's first 
 and its later segments down to 0.25 m — 56 parts.
 
 **In the container** the table is **section 37**, `structural_parts`, resident, appended after the
-motion contract and **written only when a species emits it**: the palm, the broadleaf and the
-conifer emit none — the shared helper that opens a part (`Emitter::begin_part`) knows no radius, and
-their solvers' code paths stay as they were, so their containers are the bytes they were — and an
-imported mesh's container never has it. A reader refuses a record naming a part the motion table
+motion contract and **written only when a species emits it**: the palm emits none (its fronds are
+leaf parts and its trunk the only wood) and an imported mesh's container never has it. **The
+broadleaf and the conifer emit it since A45** (2026-11-15): until then they opened their parts with
+the helper that knows no radius (`Emitter::begin_part`), so an oak, a beech, an ash, a maple, a
+walnut, a spruce, a pine or a fir — most of the proof of concept's forest — offered a game module's
+`supports_near` no limb at all (its need 95), while the birch and the willow beside them did. The rule
+is now the one every tree solver follows: **every part has its row, the trunk load-bearing** (as the
+willow's and the orchard's trunk and the birch's stems are), every named limb, recursion shoot,
+conifer branch (live or dead) and compound leaf's rachis its radii and no flag. What it costs: 16
+bytes a part, resident with the mesh, not per instance — the default broadleaf's 220 rows are 3,520
+bytes, a default oak's 80 are 1,280, the determinism test's 10 m pine's 105 are 1,680 — and section 15's
+identity takes `k_flora_structure_version`, so those species' containers rebuild (and nothing else of
+them moves: the determinism test's broadleaf and pine differ from their containers before A45 in
+sections 15 and 37 alone). **What the table does not change: the sway and the collision.** "Load-bearing"
+had meant both "it carries load" and "it is held nearly still"; the two solvers' trunks are the first
+and not the second, so they are flagged `k_structural_full_sway` as well (`k_flora_structure_version`
+3) and keep their class's compliance. Measured by the renderer's `flora_motion_tests.cpp` ("a
+broadleaf's and a conifer's trunk sway as with no table") over twelve seconds of a mean wind (strength
+1; 2 doubles every figure), the trunk's top and an outer limb's tip move **exactly as with no table**,
+to the bit, and every part's compliance is the same: the default broadleaf's (10.7 m) top 6.2 cm on
+average and 11.3 at most, its 5.8 m limb's tip 18.4 and 30.2; a default oak's (10.2 m) 5.8 and 10.8,
+its 7.6 m limb 23.7 and 40.6; a default spruce's (20 m) 14.7 and 28.8, its 3.4 m bough 11.9 and 21.0.
+(A45's first two legs had the trunk at the quarter: the tops moved 1.5, 1.5 and 3.7 cm.) Neither
+main's figures nor the quarter are grounded — the stiffness table above is chosen by eye, the quarter
+for the ancient's village-carrying limbs — and the birch, willow, orchard, ancient, shrubs and
+understory keep the quarter (the same file's birch case); grounding trunk sway in measurements is a
+row of its own. The collision is the same parts as with no table: with none, part 0 alone collides
+(`flora_part_collides`), and with the table the load-bearing parts, which for these two solvers are
+the trunk alone — **no limb collided before the table, and none does now** (one part of 220, 80 and
+179 in the default broadleaf, oak and spruce, the same test). What still differs from no table:
+
+| Behaviour | With no table (before A45) | With the table |
+|---|---|---|
+| sway (trunk, limbs, every part's compliance) | by class | the same, to the bit |
+| collision | part 0 | part 0 (the trunk, load-bearing), the same parts |
+| a leafy or needled part's push reach | `k_flora_leaf_reach` × length | the same (`k_structural_foliage`): 176 of 219 pushable parts of the default broadleaf, 69 of 79 of an oak, 144 of 178 of a spruce |
+| a bare wooden part's push reach (a dead branch, a bare limb) | `k_flora_leaf_reach` × length: mean 0.31 m (broadleaf, 43 parts), 0.73 m (oak, 10), 0.18 m (spruce, 34) | its wood's radius: 0.06, 0.14 and 0.02 m |
+| supports a module's `supports_near` finds | the top alone | every part with a radius (limbs, branches), and the top |
+| a climber's holds (`assets::host_mesh_of`) | part 0 | the load-bearing parts: part 0 |
+
+A reader refuses a record naming a part the motion table
 does not have, or out of order. The default ancient tree's table is 496 rows (7,936 bytes); the
 first 15 are what a village plan reads: the trunk (5.0 → 2.0 m), and seven runs, each followed by
 the first segment of its limb past it (part 1 + 2i is limb i's run, the order `ancient_limbs`

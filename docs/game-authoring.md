@@ -274,9 +274,15 @@ a small animal can stand within the radius, nearest first: the **perches your me
 reads it), then a generated tree's **limbs and branches** (the `part` it names is the branch the
 renderer sways, for a later perch that rides it), then **the top of anything else** (a rock, a log, a
 wall). Each support's `up` and `size_m` say how to stand there; `min_size` leaves out the twigs a
-foot will not hold. All four allocate nothing, change nothing a replay walks, and answer
-`Unsupported` on an older host (or, for the casts and supports, in a session whose walker has no
-collision).
+foot will not hold (it is a width: a limb's diameter, a perch's size, a top's width across), and
+`radius` is measured in three dimensions to the support's own point. All four allocate nothing,
+change nothing a replay walks, and answer `Unsupported` on an older host (or, for the casts and
+supports, in a session whose walker has no collision). **ABI 12** (2026-11-15) added to each support
+`along`, the branch's direction there (face along it or sit across it; zero for a perch or a top),
+and `placement`, the piece's name in the world: **key a reservation by `placement`**, not by
+`instance` and `entry`, because in a streamed world every tree of one entry has the same entry and
+no instance. A module built against 10 or 11 still gets its 72-byte records; check `flags` for
+`k_support_has_along` before reading the new fields on a host you did not build against.
 
 ## The HUD, and how far `nearest_placement` sees
 
