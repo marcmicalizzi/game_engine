@@ -12,6 +12,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <random>
 #include <span>
 #include <string>
@@ -40,7 +41,21 @@ struct Slot {
   u32 index = 0;
   u32 first_pair = 0;
   bool live = false;
+  u32 pairs = 0;  // a live slot's own pairs, for `number_first_pairs`
 };
+
+// `GpuScene::number_first_pairs`: after a change whose layout is `tight`, every tail slot's first
+// pair again from the slots before it. Returns how many moved.
+u32 number_first_pairs(Vector<Slot>& table, u32 static_slots, u32 static_pairs, u32 end) {
+  u32 pair = static_pairs;
+  u32 moved = 0;
+  for (u32 s = static_slots; s < end; ++s) {
+    moved += table[s].first_pair != pair ? 1u : 0u;
+    table[s].first_pair = pair;
+    if (table[s].live) pair += table[s].pairs;
+  }
+  return moved;
+}
 
 // `GpuScene::write_slots`, with each live instance `pairs_per[instance]` pairs long.
 void apply_writes(std::span<const SlotWrite> writes, std::span<const Request> requests,
@@ -55,6 +70,7 @@ void apply_writes(std::span<const SlotWrite> writes, std::span<const Request> re
         slot.index = k;
         slot.live = true;
         slot.first_pair = pair;
+        slot.pairs = pairs_of[write.source][k];
         pair += pairs_of[write.source][k];
       } else {
         slot = Slot{};
@@ -292,11 +308,31 @@ TEST_CASE("tile layout: a random world keeps the table sorted and every tile whe
   std::string error;
   u32 compactions = 0;
   u32 reused = 0;
+  // **Under the cap and at it** (T137). At the cap the world is held to it as a streamed world's
+  // pair budget holds it — the last tiles are withheld — so nearly every change finds the classes'
+  // slack past the cap: the pairs are numbered again, and no tile that stayed moves a slot.
+  u32 cap = 1u << 24;
+  SUBCASE("under the cap") {}
+  SUBCASE("at the cap") { cap = 12000; }
+  u32 tights = 0;
+  u32 peak_slots = 0;
   for (u32 step = 0; step < 400; ++step) {
     for (Tile& t : tiles) {
       const u32 roll = rng() % 16;
       if (roll == 0) t.present = !t.present;
       if (roll == 1) t.kind = rng() % 4;
+    }
+    for (u32 k = k_tiles; k-- > 0;) {
+      u64 total = 500;
+      for (const Tile& t : tiles)
+        total += t.present ? u64{kinds[t.kind][0]} * kinds[t.kind][1] : 0u;
+      if (total <= cap) break;
+      tiles[k].present = false;
+    }
+    u32 slot_before[k_tiles];
+    for (u32 k = 0; k < k_tiles; ++k) {
+      const TileBlock* held = layout.find(k + 1);
+      slot_before[k] = held != nullptr ? held->inst_begin : ~u32{0};
     }
     Vector<Request> requests;
     Vector<Vector<u32>> pairs_of;
@@ -313,15 +349,36 @@ TEST_CASE("tile layout: a random world keeps the table sorted and every tile whe
       pairs_of.push_back(std::move(pairs));
       first += instances;
     }
-    REQUIRE(layout.apply(std::span<const Request>(requests.data(), requests.size()), 25, false,
-                         1u << 24, writes, change, &error));
+    REQUIRE_MESSAGE(layout.apply(std::span<const Request>(requests.data(), requests.size()), 25,
+                                 false, cap, writes, change, &error),
+                    error);
     compactions += change.compacted ? 1u : 0u;
+    tights += change.tight ? 1u : 0u;
     reused += change.reused;
     REQUIRE_MESSAGE(layout.validate(&error), error);
+    REQUIRE(layout.pair_end() <= cap);
+    // A tile that stayed keeps its slots unless everything was laid out again: numbering the
+    // pairs again moves none, and writes none of them.
+    u32 kept_written = 0;
+    for (const Request& request : requests) {
+      if (!request.same || change.compacted) continue;
+      const TileBlock* held = layout.find(request.key);
+      REQUIRE(held != nullptr);
+      REQUIRE(held->inst_begin == slot_before[request.key - 1]);
+      for (const SlotWrite& write : writes) {
+        if (write.inst_begin < held->inst_begin + held->inst_cap &&
+            write.inst_begin + write.inst_count > held->inst_begin) {
+          ++kept_written;
+        }
+      }
+    }
+    REQUIRE(kept_written == 0);
     apply_writes(std::span<const SlotWrite>(writes.data(), writes.size()),
                  std::span<const Request>(requests.data(), requests.size()),
                  std::span<const Vector<u32>>(pairs_of.data(), pairs_of.size()),
                  layout.instance_end(), table);
+    if (change.tight) (void)number_first_pairs(table, 3, 500, layout.instance_end());
+    peak_slots = std::max(peak_slots, layout.live_instances());
     // Sorted by first pair, which is all the binary search asks.
     for (u32 s = 1; s < layout.instance_end(); ++s)
       REQUIRE(table[s].first_pair >= table[s - 1].first_pair);
@@ -365,8 +422,20 @@ TEST_CASE("tile layout: a random world keeps the table sorted and every tile whe
       REQUIRE((found.live && pair - found.first_pair < length) == owned);
     }
   }
-  MESSAGE("400 random changes: " << compactions << " compactions, " << reused
-                                 << " blocks reused, last " << layout.block_count() << " blocks, "
-                                 << layout.hole_pairs() << " hole pairs of " << layout.pair_end());
+  MESSAGE("400 random changes, cap "
+          << cap << ": " << compactions << " compactions, " << tights << " numbered again, "
+          << reused << " blocks reused, last " << layout.block_count() << " blocks, "
+          << layout.hole_pairs() << " hole pairs of " << layout.pair_end() << ", "
+          << layout.instance_end() << " slots for at most " << peak_slots << " live");
   CHECK(reused > 0);
+  if (cap < (1u << 24)) {
+    // The cap was met and answered by numbering (every one of these was a whole rewrite until
+    // T137; the loop held each to no slot moved and none written), and the table stays within the
+    // classes' slack and the free share of what was ever live. A compaction here is the holes' or
+    // the free slots', which the loop's `pair_end() <= cap` shows never left the layout past it.
+    CHECK(tights > 0);
+    CHECK(layout.instance_end() <= 3 + 2 * peak_slots + k_compact_min_free_slots);
+  } else {
+    CHECK(tights == 0);
+  }
 }

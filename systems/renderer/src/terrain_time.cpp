@@ -1034,6 +1034,7 @@ void TerrainMotion::run_rings(RingTask& task) {
   task.built = rings_->last_built();
   task.kept = rings_->last_kept();
   task.dropped = before > task.kept ? before - task.kept : 0;
+  rings_->last_build_cpu(task.heights_cpu_ms, task.mesh_cpu_ms);
   task.ms = ms_since(started);
 }
 
@@ -1048,8 +1049,10 @@ void TerrainMotion::wait_worker() {
   {
     const profiling::TraceWait wait("terrain worker wait",
                                     g_terrain_task_stage.load(std::memory_order_relaxed));
+    const i64 waited_from = time::monotonic_ns();
     std::unique_lock<std::mutex> lock(mutex_);
     done_.wait(lock, [&] { return !busy_ || task_.done; });
+    frame_layout_.wait_ms += ms_since(waited_from);  // the frame's thread, standing still (T137)
   }
   take_finished();
 }
@@ -1286,7 +1289,12 @@ bool TerrainMotion::take_rings(bool block) {
     if (block) {
       const profiling::TraceWait wait("terrain rebuild wait",
                                       g_terrain_ring_stage.load(std::memory_order_relaxed));
+      // **The offscreen wait** (T137; renderer.md, "What a frame waits for"): the frame's thread
+      // stands here for the whole rebuild, which a window's never does. Named in the frame's
+      // record (`terrain.wait_ms`) so that a flight's long frames say they are this.
+      const i64 waited_from = time::monotonic_ns();
       ring_done_.wait(lock, [&] { return ring_task_.done; });
+      frame_layout_.wait_ms += ms_since(waited_from);
     }
     if (!ring_task_.done) return false;
     finished = std::move(ring_task_);
@@ -1302,6 +1310,8 @@ bool TerrainMotion::take_rings(bool block) {
   pending_built_ = finished.built;
   pending_dropped_ = finished.dropped;
   pending_rebuild_ms_ = finished.ms;
+  pending_heights_cpu_ms_ = finished.heights_cpu_ms;
+  pending_mesh_cpu_ms_ = finished.mesh_cpu_ms;
   if (!finished.ok) {
     abandon_recentre(finished.error);
     return true;
@@ -1575,6 +1585,8 @@ void TerrainMotion::swap_rings() {
   frame_layout_.built = pending_built_;
   frame_layout_.dropped = pending_dropped_;
   frame_layout_.rebuild_ms = pending_rebuild_ms_;
+  frame_layout_.heights_cpu_ms = pending_heights_cpu_ms_;
+  frame_layout_.mesh_cpu_ms = pending_mesh_cpu_ms_;
   // The frozen levels want their next fields again from here: a freeze is not a field's
   // turnaround.
   for (u32 k = 1; k < levels_.size(); ++k) {

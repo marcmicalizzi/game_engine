@@ -263,6 +263,15 @@ class GpuScene {
   // null instance, whose structure is empty anyway. The bottom-level address is the frame's.
   gfx::TlasInstance tlas_record(u32 slot) const noexcept;
   u32 static_instance_count() const noexcept { return static_instances_; }
+  // **A pair cap below the visibility id's** (T137): the tail's layout answers `limit` exactly as
+  // it answers 2^24 — a change that would pass it packed with no slack is refused, and one whose
+  // classes' slack would pass it has its pairs numbered again. For a host that holds its world to
+  // fewer pairs, and for the tests of the layout at the cap, which no test scene reaches at 2^24.
+  // Never below what the scene holds now, never above the id's.
+  void set_pair_limit(u32 limit) noexcept {
+    const u32 most = static_cast<u32>(k_max_pairs);
+    pair_limit_ = limit < pair_count_ ? pair_count_ : limit > most ? most : limit;
+  }
   u32 static_pair_count() const noexcept { return static_pairs_; }
   // The tail's instances and pairs — what the blocks hold, not the slots and pairs they reserve.
   u32 dynamic_instance_count() const noexcept { return layout_.live_instances(); }
@@ -274,6 +283,9 @@ class GpuScene {
     TileLayoutChange layout;
     bool grew = false;
     u32 slots_written = 0;
+    // Slots whose first pair alone moved, at the cap (`TileLayoutChange::tight`): not written,
+    // copied again by each table set.
+    u32 slots_renumbered = 0;
     // Instances read to tell whether a block is the one its key holds: a block with no version, or
     // another one, is compared instance by instance; one with the version held, not at all (W81).
     u64 compared = 0;
@@ -436,10 +448,11 @@ class GpuScene {
   // mesh (the records pass's `instance_cached` for a field instance; renderer.md, "The far field
   // at rest").
   bool field_rested(const gfx::InstanceDesc& instance) const noexcept {
-    if (instance.mesh >= rt_cache_base_.size() || rt_cache_base_[instance.mesh] == ~0u) return false;
-    return gfx::field_rests(
-        instance, relative(gfx::instance_cell(instance), gfx::world_eye(field_last_.eye)),
-        field_last_);
+    if (instance.mesh >= rt_cache_base_.size() || rt_cache_base_[instance.mesh] == ~0u)
+      return false;
+    return gfx::field_rests(instance,
+                            relative(gfx::instance_cell(instance), gfx::world_eye(field_last_.eye)),
+                            field_last_);
   }
   u32 rt_instance_rank(u32 index) const noexcept {
     return index < slot_rank_.size() ? slot_rank_[index] : 0u;
@@ -1518,7 +1531,16 @@ class GpuScene {
     gfx::BufferResource pairs;
     Vector<InstanceRange> pending;
     bool all = true;
+    // Slots whose `first_pair` alone changed since this set was last written (T137,
+    // `number_first_pairs`): their records are copied and their pairs expanded again, and their
+    // top-level records, which name no pair, are not.
+    InstanceRange renumbered;
   };
+  Vector<InstanceRange> desc_runs_;  // `prepare_tables`' scratch: the pending runs and that one
+  // **The tail's first pairs, numbered again from the instances it holds** (T137; renderer.md,
+  // "At the cap the pairs are numbered again"): after a change whose layout is `tight`, an
+  // addition a slot. `renumbered` gets the slots whose number moved.
+  void number_first_pairs(u32& renumbered);
   // What a live tail slot was made from, to tell a block that came back unchanged.
   struct InstanceKey {
     u32 mesh = 0;
@@ -1861,7 +1883,7 @@ class GpuScene {
   // (`gfx::FloraFieldPart`), and whether any mesh is one. Per scene mesh the InstanceDesc flag bits
   // of its species' caster policy, ORed into every instance of it, the load's and the tail's.
   Vector<u32> field_deform_;
-  FloraFieldRest field_rest_;  // the far field at rest's scene part (R152)
+  FloraFieldRest field_rest_;        // the far field at rest's scene part (R152)
   gfx::FloraFieldFrame field_last_;  // the last frame's field block, for the census
   gfx::BufferResource flora_field_parts_;
   bool flora_field_ = false;
