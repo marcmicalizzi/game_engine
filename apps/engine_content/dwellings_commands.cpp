@@ -31,7 +31,7 @@ void usage() {
                "[--means <0|1|2>]\n"
                "         [--frontage <cm>] [--depth <cm>] [--seed <n>] "
                "[--scope whole|exterior|interior]\n"
-               "         [--bare timber|furniture|all]\n");
+               "         [--bare timber|furniture|dress|all]...\n");
 }
 
 // A length with two decimals (a centimetre) or three (a millimetre). Each format is a literal:
@@ -100,12 +100,13 @@ int dwelling_command(int argc, char** argv) {
       }
     } else if (a == "--bare") {
       const std::string_view s = value;
-      if (s != "timber" && s != "furniture" && s != "all") {
+      if (s != "timber" && s != "furniture" && s != "dress" && s != "all") {
         usage();
         return 2;
       }
-      style.timber = s == "furniture";
-      style.furniture = s == "timber";
+      if (s == "timber" || s == "all") style.timber = false;
+      if (s == "furniture" || s == "all") style.furniture = false;
+      if (s == "dress" || s == "all") style.dressed = false;
     } else {
       usage();
       return 2;
@@ -167,8 +168,7 @@ int dwelling_command(int argc, char** argv) {
   for (u32 i = 0; i < tour.size(); ++i) {
     const dwellings::TourPoint& t = tour[i];
     walk += i == 0 ? "\n    " : ",\n    ";
-    walk += "{ \"at\": " +
-            point((t.x_cm + off) / 100.0, t.y_mm / 1000.0, (t.z_cm + off) / 100.0) +
+    walk += "{ \"at\": " + point((t.x_cm + off) / 100.0, t.y_mm / 1000.0, (t.z_cm + off) / 100.0) +
             ", \"room\": ";
     walk += t.room == dwellings::k_no_room ? "-1 }" : std::to_string(t.room) + " }";
   }
@@ -179,8 +179,8 @@ int dwelling_command(int argc, char** argv) {
     walk += i == 0 ? "\n    " : ",\n    ";
     walk += "{ \"room\": " + std::to_string(v.room) + ", \"kind\": \"" +
             dwellings::room_kind_name(room.kind) + "\", \"storey\": " + std::to_string(room.storey);
-    walk += ", \"eye\": " + point((v.eye_x_cm + off) / 100.0, v.eye_y_mm / 1000.0,
-                                  (v.eye_z_cm + off) / 100.0);
+    walk += ", \"eye\": " +
+            point((v.eye_x_cm + off) / 100.0, v.eye_y_mm / 1000.0, (v.eye_z_cm + off) / 100.0);
     walk += ", \"at\": " +
             point((v.at_x_cm + off) / 100.0, v.at_y_mm / 1000.0, (v.at_z_cm + off) / 100.0) + " }";
   }

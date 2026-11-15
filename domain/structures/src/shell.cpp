@@ -85,9 +85,21 @@ void solve_walls(const Description& d, Vector<WallGeom>& out) {
     g.frame.nx = g.frame.dz;
     g.frame.nz = -g.frame.dx;
     g.half = static_cast<f64>(w.thickness) * 0.5;
-    g.sl[0] = g.sr[0] = 0.0;
-    g.sl[1] = g.sr[1] = g.length;
+    for (u32 m = 0; m < 3; ++m)
+      for (u32 side = 0; side < 2; ++side)
+        g.ends[m][side][0] = 0.0, g.ends[m][side][1] = g.length;
   }
+  // A side's distance from its wall's centre line in mode `m` (emit.h, `WallGeom::ends`): an
+  // outer face leaned in to its top thickness (1), or stood out by the plinth's projection (2).
+  const auto side_half = [&](u32 wall, f64 wall_side, u32 m) {
+    const structure::Wall& w = d.walls[wall];
+    const f64 half = out[wall].half;
+    const bool outside = w.kind == structure::WallKind::exterior && (wall_side > 0 ? w.a : w.b) < 0;
+    if (!outside) return half;
+    if (m == 1) return half - lean_of(d, w).total;
+    if (m == 2 && w.storey == 0) return half + static_cast<f64>(d.plinth_proud);
+    return half;
+  };
   for (u32 i = 0; i < n; ++i) {
     const structure::Wall& w = d.walls[i];
     WallGeom& g = out[i];
@@ -107,50 +119,77 @@ void solve_walls(const Description& d, Vector<WallGeom>& out) {
         if (first < 0 || turns_before(u, v, first_v)) first = static_cast<i32>(j), first_v = v;
         if (last < 0 || turns_before(u, last_v, v)) last = static_cast<i32>(j), last_v = v;
       }
-      f64 lambda[2] = {0, 0};  // the outgoing left side's, the outgoing right side's
-      if (first >= 0) {
-        // A corner or a star (structures.md, "Joins"): each side's line runs to the facing side's
-        // line of the neighbour on that side, so the two walls' faces meet in one edge.
-        for (u32 k = 0; k < 2; ++k) {
-          const u32 j = static_cast<u32>(k == 0 ? first : last);
-          const IV v = k == 0 ? first_v : last_v;
-          const f64 side = k == 0 ? 1.0 : -1.0;
-          const f64 vl = std::sqrt(static_cast<f64>(dot(v, v)));
-          const F2 vv{static_cast<f64>(v.x) / vl, static_cast<f64>(v.z) / vl};
-          const f64 hj = out[j].half;
-          const F2 b{-side * vv.z * hj, side * vv.x * hj};
-          lambda[k] = meet(uu, g.half, side, b, vv, 3.0 * (g.half + hj));
-        }
-        g.cap[e] = false;
-      } else {
-        // A wall that ends on another's span butts its near face.
-        for (u32 j = 0; j < n; ++j) {
-          if (j == i || d.walls[j].storey != w.storey) continue;
-          const IV a = from_of(d.walls[j]), b = to_of(d.walls[j]);
-          const IV dj{b.x - a.x, b.z - a.z}, ap{p.x - a.x, p.z - a.z};
-          const i64 along = dot(ap, dj);
-          if (cross(dj, ap) != 0 || along <= 0 || along >= dot(dj, dj)) continue;
-          const WallGeom& h = out[j];
-          const F2 vv{h.frame.dx, h.frame.dz};
-          const f64 near_side = h.frame.nx * uu.x + h.frame.nz * uu.z > 0 ? 1.0 : -1.0;
-          const F2 base{static_cast<f64>(a.x - p.x) + near_side * h.frame.nx * h.half,
-                        static_cast<f64>(a.z - p.z) + near_side * h.frame.nz * h.half};
-          for (u32 k = 0; k < 2; ++k)
-            lambda[k] = meet(uu, g.half, k == 0 ? 1.0 : -1.0, base, vv, 3.0 * (g.half + h.half));
+      const auto from_here = [&](i32 j) {
+        const IV a = from_of(d.walls[static_cast<u32>(j)]);
+        return a.x == p.x && a.z == p.z;
+      };
+      g.neighbour[e] = first >= 0 && first == last ? first : -1;
+      g.neighbour_from[e] = g.neighbour[e] >= 0 && from_here(first);
+      for (u32 m = 0; m < 3; ++m) {
+        f64 lambda[2] = {0, 0};  // the outgoing left side's, the outgoing right side's
+        if (first >= 0) {
+          // A corner or a star (structures.md, "Joins"): each side's line runs to the facing
+          // side's line of the neighbour on that side, so the two walls' faces meet in one edge.
+          // The outgoing left is the wall's left at its `from` end and its right at its `to`
+          // end; the neighbour's facing side is its outgoing right for this wall's left.
+          for (u32 k = 0; k < 2; ++k) {
+            const i32 j = k == 0 ? first : last;
+            const IV v = k == 0 ? first_v : last_v;
+            const f64 side = k == 0 ? 1.0 : -1.0;
+            const f64 vl = std::sqrt(static_cast<f64>(dot(v, v)));
+            const F2 vv{static_cast<f64>(v.x) / vl, static_cast<f64>(v.z) / vl};
+            const f64 hi = side_half(i, side * sign, m);
+            const f64 hj = side_half(static_cast<u32>(j), -side * (from_here(j) ? 1.0 : -1.0), m);
+            const F2 b{-side * vv.z * hj, side * vv.x * hj};
+            lambda[k] = meet(uu, hi, side, b, vv, 3.0 * (g.half + out[static_cast<u32>(j)].half));
+          }
           g.cap[e] = false;
-          break;
+        } else {
+          // A wall that ends on another's span butts its near face.
+          for (u32 j = 0; j < n; ++j) {
+            if (j == i || d.walls[j].storey != w.storey) continue;
+            const IV a = from_of(d.walls[j]), b = to_of(d.walls[j]);
+            const IV dj{b.x - a.x, b.z - a.z}, ap{p.x - a.x, p.z - a.z};
+            const i64 along = dot(ap, dj);
+            if (cross(dj, ap) != 0 || along <= 0 || along >= dot(dj, dj)) continue;
+            const WallGeom& h = out[j];
+            const F2 vv{h.frame.dx, h.frame.dz};
+            const f64 near_side = h.frame.nx * uu.x + h.frame.nz * uu.z > 0 ? 1.0 : -1.0;
+            const F2 base{static_cast<f64>(a.x - p.x) + near_side * h.frame.nx * h.half,
+                          static_cast<f64>(a.z - p.z) + near_side * h.frame.nz * h.half};
+            for (u32 k = 0; k < 2; ++k)
+              lambda[k] = meet(uu, g.half, k == 0 ? 1.0 : -1.0, base, vv, 3.0 * (g.half + h.half));
+            g.cap[e] = false;
+            break;
+          }
         }
-      }
-      // The outgoing left is the wall's left at its `from` end and its right at its `to` end.
-      if (e == 0) {
-        g.sl[0] = lambda[0];
-        g.sr[0] = lambda[1];
-      } else {
-        g.sr[1] = g.length - lambda[0];
-        g.sl[1] = g.length - lambda[1];
+        if (e == 0) {
+          g.ends[m][0][0] = lambda[0];
+          g.ends[m][1][0] = lambda[1];
+        } else {
+          g.ends[m][1][1] = g.length - lambda[0];
+          g.ends[m][0][1] = g.length - lambda[1];
+        }
       }
     }
+    g.sl[0] = g.ends[0][0][0], g.sl[1] = g.ends[0][0][1];
+    g.sr[0] = g.ends[0][1][0], g.sr[1] = g.ends[0][1][1];
   }
+}
+
+Lean lean_of(const Description& d, const structure::Wall& w) noexcept {
+  Lean l;
+  const structure::Storey& storey = d.storeys[w.storey];
+  l.y0 = storey.elevation;
+  if (w.storey == 0 && d.plinth_top > storey.elevation) l.y0 = d.plinth_top;
+  l.y1 = storey.elevation + storey.height;
+  const bool one_outside = (w.a < 0) != (w.b < 0);
+  if (w.kind == structure::WallKind::exterior && one_outside && w.top_thickness > 0 &&
+      w.top_thickness < w.thickness && l.y1 > l.y0 + 1.0)
+    l.total = static_cast<f64>(w.thickness - w.top_thickness);
+  else
+    l.y1 = l.y0 + 1.0;
+  return l;
 }
 
 f64 roof_underside(const structure::Roof& roof, f64 x, f64 z) noexcept {
@@ -204,6 +243,36 @@ Cut cut_of(const Description& d, const structure::Opening& o) noexcept {
   return c;
 }
 
+// A leaf's boards are about this wide, so a door of 75 to 80 cm has four (vernacular-shell.md:
+// four planks common from the seventeenth century); a mullion's side (a choice: no source read
+// gives a section).
+constexpr f64 k_leaf_board_cm = 19.0;
+constexpr f64 k_mullion_cm = 4.5;
+
+// An opening's frame: its depth through the wall, its face, and how far back from the outer face
+// it stands (an inner wall's sits in its middle).
+struct Joinery {
+  f64 depth = 0, width = 0, set = 0;
+};
+Joinery joinery_of(const Description& d, const structure::Wall& w,
+                   const structure::Opening& o) noexcept {
+  const bool door = o.kind == structure::OpeningKind::door;
+  const bool exterior = w.kind == structure::WallKind::exterior;
+  const f64 h = static_cast<f64>(w.thickness) * 0.5;
+  Joinery j;
+  j.depth = door ? 10.0 : 7.0;
+  j.width = door ? 6.0 : 5.0;
+  const f64 set = exterior ? (door ? 6.0 : 8.0) : h - 0.5 * j.depth;
+  j.set = std::max(1.0, std::min(set, 2.0 * h - j.depth - 1.0));
+  // A frame stands plumb behind a leaning face: its set is kept at the head, where the face has
+  // leaned in farthest.
+  j.set += lean_of(d, w).at(static_cast<f64>(d.storeys[w.storey].elevation + o.head));
+  return j;
+}
+// Depth `t` from a wall's outer face inward is `q = out_sign * (half - t)`: it runs toward the
+// wall's left where its right is the outside, and from its left face otherwise.
+f64 out_sign_of(const structure::Wall& w) noexcept { return w.b < 0 && w.a >= 0 ? -1.0 : 1.0; }
+
 void sort_unique(Vector<f64>& v) {
   std::sort(v.data(), v.data() + v.size());
   u32 kept = 0;
@@ -212,15 +281,211 @@ void sort_unique(Vector<f64>& v) {
   v.resize(kept);
 }
 
+// A waved face is a grid about this square, and its wave dies away over this distance from an
+// edge it must meet exactly (an opening, an end, its foot, its top). Choices: no source read
+// measures a cob face's wander (vernacular-shell.md).
+constexpr f64 k_wave_cell_cm = 45.0;
+constexpr f64 k_wave_fade_cm = 30.0;
+// A rounded corner is this many flat strips.
+constexpr u32 k_arris_segments = 3;
+
+// Cuts every interval of the sorted `v` from index `from` on into parts no longer than `cell`.
+void subdivide(Vector<f64>& v, u32 from, f64 cell) {
+  const u32 n = v.size();
+  for (u32 i = from; i + 1 < n; ++i) {
+    const f64 a = v[i], b = v[i + 1];
+    const u32 parts = static_cast<u32>((b - a) / cell + 0.999);
+    for (u32 k = 1; k < parts; ++k)
+      v.push_back(a + (b - a) * static_cast<f64>(k) / static_cast<f64>(parts));
+  }
+  std::sort(v.data(), v.data() + v.size());
+}
+
+// A value in [-1, 1) for a lattice point of one face, by integer mixing alone.
+f64 lattice(u32 wall, u32 side, i64 x, i64 y) noexcept {
+  u64 h = (static_cast<u64>(wall) * 2 + side + 1) * 0x9e3779b97f4a7c15ull;
+  h ^= static_cast<u64>(x) * 0xbf58476d1ce4e5b9ull;
+  h ^= h >> 31;
+  h += static_cast<u64>(y) * 0x94d049bb133111ebull;
+  h ^= h >> 29;
+  h *= 0xd6e8feb86659fd93ull;
+  h ^= h >> 32;
+  return static_cast<f64>(h >> 11) * (2.0 / 9007199254740992.0) - 1.0;
+}
+// Smooth value noise over a lattice `period` centimetres square, in [-1, 1].
+f64 value_noise(u32 wall, u32 side, f64 s, f64 y, f64 period) noexcept {
+  const f64 fs = s / period, fy = y / period;
+  i64 is = static_cast<i64>(fs), iy = static_cast<i64>(fy);
+  if (static_cast<f64>(is) > fs) --is;
+  if (static_cast<f64>(iy) > fy) --iy;
+  f64 ts = fs - static_cast<f64>(is), ty = fy - static_cast<f64>(iy);
+  ts = ts * ts * (3.0 - 2.0 * ts);
+  ty = ty * ty * (3.0 - 2.0 * ty);
+  const f64 a = lattice(wall, side, is, iy), b = lattice(wall, side, is + 1, iy);
+  const f64 c = lattice(wall, side, is, iy + 1), e = lattice(wall, side, is + 1, iy + 1);
+  return (a + (b - a) * ts) * (1.0 - ty) + (c + (e - c) * ts) * ty;
+}
+// A face's wander at a point of it, in [-1, 1]: a swell about 90 cm across and a third as much
+// at 37 (structures.md, "Faces that are not planes").
+f64 wave_at(u32 wall, u32 side, f64 s, f64 y) noexcept {
+  return 0.75 * value_noise(wall, side, s, y, 90.0) +
+         0.25 * value_noise(wall, side + 2, s, y, 37.0);
+}
+
+// A rounded corner at end `e` of a wall's outside face (`Description.arris`): this face and the
+// one round the corner each stop `back[m]` short of where they would meet (in the modes of
+// `WallGeom::ends`) and an arc joins them. `a` and `b` are the unit directions from the corner
+// along this face and along the other.
+struct Round {
+  bool on = false;
+  f64 back[3] = {0, 0, 0};
+  u32 other = 0;
+  F2 a, b;
+};
+Round round_of(const Context& ctx, u32 wall, f64 side, u32 e) noexcept {
+  Round r;
+  const Description& d = *ctx.d;
+  const structure::Wall& w = d.walls[wall];
+  const WallGeom& g = ctx.walls[wall];
+  const bool outside = w.kind == structure::WallKind::exterior && (side > 0 ? w.a : w.b) < 0;
+  if (d.arris <= 0 || g.neighbour[e] < 0 || !outside) return r;
+  const u32 j = static_cast<u32>(g.neighbour[e]);
+  const structure::Wall& wj = d.walls[j];
+  const WallGeom& gj = ctx.walls[j];
+  // This face is its wall's outgoing left or right at this end, and the face it meets is the
+  // neighbour's facing side, as `solve_walls` pairs them.
+  const f64 sign = e == 0 ? 1.0 : -1.0;
+  const f64 out_side = side * sign;
+  const f64 j_sign = g.neighbour_from[e] ? 1.0 : -1.0;
+  const f64 j_side = -out_side * j_sign;
+  if (wj.kind != structure::WallKind::exterior || (j_side > 0 ? wj.a : wj.b) >= 0) return r;
+  r.a = {g.frame.dx * sign, g.frame.dz * sign};
+  r.b = {gj.frame.dx * j_sign, gj.frame.dz * j_sign};
+  // Convex seen from outside: the neighbour leaves toward the other side of this wall.
+  const f64 turn = r.a.z * r.b.x - r.a.x * r.b.z;
+  if (!(out_side * turn < -1e-6)) return r;
+  const f64 k = (1.0 + r.a.x * r.b.x + r.a.z * r.b.z) / (turn < 0 ? -turn : turn);
+  const f64 radius = d.arris;
+  r.back[0] = r.back[1] = radius * k;
+  r.back[2] = (radius + (w.storey == 0 ? static_cast<f64>(d.plinth_proud) : 0.0)) * k;
+  if (r.back[2] > 0.4 * std::min(g.length, gj.length)) return r;
+  r.on = true;
+  r.other = j;
+  return r;
+}
+
+// The arc that joins two outer faces at a rounded corner: `k_arris_segments` strips from the
+// foot to the top, the plinth's band standing proud with its ledge, the wall's leaning in as
+// its faces do. The arc is a rational quadratic through the two faces' ends, which is a circle's
+// with no trigonometric function.
+void round_corner(const Context& ctx, u32 wall, f64 side, u32 e, const Round& r, f64 foot,
+                  f64 plinth, const Lean& lean, f64 proud) {
+  const Description& d = *ctx.d;
+  const WallGeom& g = ctx.walls[wall];
+  const u32 side_index = side > 0 ? 0u : 1u;
+  const u32 columns = k_arris_segments + 1;
+  const f64 shift[3] = {0.0, -lean.total, proud};
+  const f64 cosine = r.a.x * r.b.x + r.a.z * r.b.z;
+  const f64 weight = std::sqrt(0.5 * (1.0 - cosine));
+  F2 pos[3][k_arris_segments + 1];
+  Vec3 normals[k_arris_segments + 1];
+  f64 along[k_arris_segments + 1];
+  for (u32 m = 0; m < 3; ++m) {
+    const f64 s = g.ends[m][side_index][e], q = side * (g.half + shift[m]);
+    const F2 c{g.frame.ox + g.frame.dx * s + g.frame.nx * q,
+               g.frame.oz + g.frame.dz * s + g.frame.nz * q};
+    const F2 ta{c.x + r.a.x * r.back[m], c.z + r.a.z * r.back[m]};
+    const F2 tb{c.x + r.b.x * r.back[m], c.z + r.b.z * r.back[m]};
+    const F2 centre{c.x + (r.a.x + r.b.x) * r.back[m] / (1.0 + cosine),
+                    c.z + (r.a.z + r.b.z) * r.back[m] / (1.0 + cosine)};
+    for (u32 i = 0; i < columns; ++i) {
+      const f64 u = static_cast<f64>(i) / static_cast<f64>(k_arris_segments);
+      const f64 w0 = (1.0 - u) * (1.0 - u), w1 = 2.0 * u * (1.0 - u) * weight, w2 = u * u;
+      const f64 sum = w0 + w1 + w2;
+      pos[m][i] = {(w0 * ta.x + w1 * c.x + w2 * tb.x) / sum,
+                   (w0 * ta.z + w1 * c.z + w2 * tb.z) / sum};
+      if (m != 0) continue;
+      const f64 nx = pos[0][i].x - centre.x, nz = pos[0][i].z - centre.z;
+      const f64 nl = std::sqrt(nx * nx + nz * nz);
+      normals[i] = {static_cast<f32>(nx / nl), 0.0f, static_cast<f32>(nz / nl)};
+      const f64 step =
+          i == 0 ? 0.0
+                 : std::sqrt((pos[0][i].x - pos[0][i - 1].x) * (pos[0][i].x - pos[0][i - 1].x) +
+                             (pos[0][i].z - pos[0][i - 1].z) * (pos[0][i].z - pos[0][i - 1].z));
+      // u runs on from the face's own end: past it at the wall's `to` end, before it at `from`.
+      const f64 sense = e == 0 ? -1.0 : 1.0;
+      along[i] = i == 0 ? s - sense * r.back[0] : along[i - 1] + sense * step;
+    }
+  }
+  f64 tops[k_arris_segments + 1];
+  for (u32 i = 0; i < columns; ++i)
+    tops[i] = wall_top(d, wall, pos[1][i].x, pos[1][i].z);
+  // One strip of a band: from mode `m0` at `y0` to mode `m1` at the heights `y1`.
+  const auto band = [&](MeshPart& part, u32 m0, f64 y0, u32 m1, const f64* y1, f64 tilt) {
+    for (u32 i = 0; i + 1 < columns; ++i) {
+      if (!(y1[i] > y0 + k_eps) && !(y1[i + 1] > y0 + k_eps)) continue;
+      Vec3 points[4];
+      Vec2 uvs[4];
+      Vec3 ns[4];
+      u32 count = 0;
+      const auto add = [&](u32 m, u32 column, f64 y) {
+        points[count] = metres(pos[m][column].x, y, pos[m][column].z);
+        uvs[count] = {static_cast<f32>(along[column] * k_m), static_cast<f32>(y * k_m)};
+        ns[count] = normalize(normals[column] + Vec3{0, 1, 0} * static_cast<f32>(tilt));
+        ++count;
+      };
+      add(m0, i, y0);
+      add(m0, i + 1, y0);
+      if (y1[i + 1] > y0 + k_eps) add(m1, i + 1, y1[i + 1]);
+      if (y1[i] > y0 + k_eps) add(m1, i, y1[i]);
+      polygon_smooth(part, points, uvs, ns, count, normalize(normals[i] + normals[i + 1]));
+    }
+  };
+  const bool banded = plinth > foot + k_eps;
+  f64 level[k_arris_segments + 1];
+  const auto flat = [&](f64 y) {
+    for (u32 i = 0; i < columns; ++i)
+      level[i] = y;
+    return &level[0];
+  };
+  f64 from = foot;
+  if (banded) {
+    MeshPart& stone = ctx.part(Surface::plinth);
+    band(stone, 2, foot, 2, flat(plinth), 0.0);
+    if (proud > 0.0)
+      for (u32 i = 0; i + 1 < columns; ++i) {
+        const Vec3 points[4] = {metres(pos[2][i].x, plinth, pos[2][i].z),
+                                metres(pos[2][i + 1].x, plinth, pos[2][i + 1].z),
+                                metres(pos[0][i + 1].x, plinth, pos[0][i + 1].z),
+                                metres(pos[0][i].x, plinth, pos[0][i].z)};
+        const Vec2 uvs[4] = {{static_cast<f32>(along[i] * k_m), 0.0f},
+                             {static_cast<f32>(along[i + 1] * k_m), 0.0f},
+                             {static_cast<f32>(along[i + 1] * k_m), static_cast<f32>(proud * k_m)},
+                             {static_cast<f32>(along[i] * k_m), static_cast<f32>(proud * k_m)}};
+        polygon(stone, points, uvs, 4, Vec3{0, 1, 0});
+      }
+    from = plinth;
+  }
+  MeshPart& face = ctx.part(Surface::wall_outer);
+  if (lean.total > 0.0) {
+    if (lean.y0 > from + k_eps) band(face, 0, from, 0, flat(lean.y0), 0.0);
+    band(face, 0, lean.y0, 1, flat(lean.y1), lean.total / (lean.y1 - lean.y0));
+    band(face, 1, lean.y1, 1, tops, 0.0);
+  } else {
+    band(face, 0, from, 0, tops, 0.0);
+  }
+}
+
 // A face's corners shared between its cells, so a face is one welded sheet.
 struct FaceVerts {
   Vector<f64> s, y;
   Vector<u32> index;
-  u32 get(MeshPart& part, const Frame2& frame, f64 q, Vec3 normal, f64 ss, f64 yy) {
+  // The corner at `(ss, yy)`: found, or made at `position` with `normal`.
+  u32 get(MeshPart& part, f64 ss, f64 yy, Vec3 position, Vec3 normal) {
     for (u32 i = 0; i < s.size(); ++i)
       if (s[i] == ss && y[i] == yy) return index[i];
     const u32 id = part.positions.size();
-    part.positions.push_back(frame.at(ss, yy, q));
+    part.positions.push_back(position);
     part.normals.push_back(normal);
     part.uvs.push_back({static_cast<f32>(ss * k_m), static_cast<f32>(yy * k_m)});
     s.push_back(ss);
@@ -241,14 +506,28 @@ void wall_face(const Context& ctx, u32 wall, f64 side) {
   const structure::Storey& storey = d.storeys[w.storey];
   const bool outside = w.kind == structure::WallKind::exterior && (side > 0 ? w.a : w.b) < 0;
   if (!ctx.wants(outside)) return;
-  const f64 s_begin = side > 0 ? g.sl[0] : g.sr[0];
-  const f64 s_end = side > 0 ? g.sl[1] : g.sr[1];
+  // Where the face begins and ends in each mode of `WallGeom::ends`: at its joins, or short of a
+  // rounded corner (structures.md, "Faces that are not planes").
+  const u32 side_index = side > 0 ? 0u : 1u;
+  const Round rounds[2] = {round_of(ctx, wall, side, 0), round_of(ctx, wall, side, 1)};
+  f64 begin[3], end[3];
+  for (u32 m = 0; m < 3; ++m) {
+    begin[m] = g.ends[m][side_index][0] + (rounds[0].on ? rounds[0].back[m] : 0.0);
+    end[m] = g.ends[m][side_index][1] - (rounds[1].on ? rounds[1].back[m] : 0.0);
+  }
+  const f64 s_begin = begin[0], s_end = end[0];
   if (!(s_end - s_begin > k_eps)) return;
   const f64 q = side * g.half;
   const f64 elevation = storey.elevation;
   const f64 foot =
       outside && w.storey == 0 ? elevation - static_cast<f64>(d.foundation) : elevation;
   const f64 plinth = outside && w.storey == 0 ? static_cast<f64>(d.plinth_top) : foot;
+  const bool banded = plinth > foot + k_eps;
+  const Lean lean = outside ? lean_of(d, w) : Lean{};
+  const f64 proud = outside && banded ? static_cast<f64>(d.plinth_proud) : 0.0;
+  const f64 q_top = side * (g.half - lean.total);
+  const f64 wave = static_cast<f64>(w.wave) * 0.1;
+  const f64 wave_foot = banded ? plinth : foot;
 
   Vector<f64> stations;
   stations.push_back(s_begin);
@@ -282,25 +561,87 @@ void wall_face(const Context& ctx, u32 wall, f64 side) {
     }
   }
   sort_unique(stations);
+  if (wave > 0.0) subdivide(stations, 0, k_wave_cell_cm);
+  const u32 last = stations.size() - 1;
   Vector<f64> tops;
   Vector<f64> levels;
   levels.push_back(foot);
-  if (plinth > foot + k_eps) levels.push_back(plinth);
+  if (banded) levels.push_back(plinth);
   for (const Cut& c : cuts) {
     levels.push_back(c.y0);
     levels.push_back(c.y1);
   }
-  for (const f64 s : stations) {
-    f64 x, z;
-    ground(s, x, z);
-    tops.push_back(wall_top(d, wall, x, z));
+  for (u32 i = 0; i <= last; ++i) {
+    // The top is the roof's underside over the face where it stands at its top: leaned in, and at
+    // its ends where the leaned corner is.
+    const f64 s = i == 0 ? begin[1] : (i == last ? end[1] : stations[i]);
+    tops.push_back(wall_top(d, wall, g.frame.ox + g.frame.dx * s + g.frame.nx * q_top,
+                            g.frame.oz + g.frame.dz * s + g.frame.nz * q_top));
     levels.push_back(tops.back());
   }
+  if (lean.total > 0.0) {
+    levels.push_back(lean.y0);
+    levels.push_back(lean.y1);
+  }
   sort_unique(levels);
+  if (wave > 0.0) {
+    u32 from = 0;
+    while (from + 1 < levels.size() && levels[from] < wave_foot - k_eps)
+      ++from;
+    subdivide(levels, from, k_wave_cell_cm);
+  }
 
   const Vec3 normal{static_cast<f32>(side * g.frame.nx), 0.0f, static_cast<f32>(side * g.frame.nz)};
   const Surface face_surface = outside ? Surface::wall_outer : Surface::wall_inner;
   FaceVerts face_verts, plinth_verts;
+  // Where the grid's corner `(ss, yy)` stands along the wall: the first and the last cells are
+  // stretched to the face's own end at that height, which moves as the corner leans and stands
+  // out with the plinth.
+  const f64 st0 = stations[0], st1 = stations[1], stm = stations[last - 1], stn = stations[last];
+  const auto actual_s = [&](f64 ss, f64 yy, bool in_plinth) {
+    const f64 f = lean.fraction(yy);
+    const f64 b = in_plinth ? begin[2] : begin[0] + (begin[1] - begin[0]) * f;
+    const f64 e = in_plinth ? end[2] : end[0] + (end[1] - end[0]) * f;
+    if (ss < st1 && b != st0) return st1 - (st1 - ss) * (st1 - b) / (st1 - st0);
+    if (ss > stm && e != stn) return stm + (ss - stm) * (e - stm) / (stn - stm);
+    return ss;
+  };
+  const Vec3 up{0.0f, 1.0f, 0.0f};
+  // The corner's vertex: on the face's plane, or off it by the plinth's projection, the lean at
+  // its height and the face's wander, which dies away toward every edge the face must meet.
+  const auto place = [&](FaceVerts& verts, MeshPart& part, bool in_plinth, f64 ss, f64 yy,
+                         f64 top_here) {
+    f64 off = in_plinth ? proud : -lean.at(yy);
+    Vec3 n = normal;
+    if (!in_plinth && lean.total > 0.0 && yy < lean.y1 + k_eps && yy > lean.y0 - k_eps)
+      n = normalize(normal + up * static_cast<f32>(lean.total / (lean.y1 - lean.y0)));
+    if (wave > 0.0 && !in_plinth) {
+      f64 reach = std::min(std::min(ss - st0, stn - ss), std::min(yy - wave_foot, top_here - yy));
+      for (const Cut& c : cuts) {
+        const f64 ds = std::max(std::max(c.s0 - ss, ss - c.s1), 0.0);
+        const f64 dy = std::max(std::max(c.y0 - yy, yy - c.y1), 0.0);
+        reach = std::min(reach, std::max(ds, dy));
+      }
+      if (reach > 0.0) {
+        // Half the stated wander either way about a face stood out by that half, so the face
+        // never falls behind its plane: what butts it (a partition's end, a floor's edge) stays
+        // buried in it.
+        const f64 amp = 0.5 * wave * (reach >= k_wave_fade_cm ? 1.0 : reach / k_wave_fade_cm);
+        off += amp;
+        const f64 ws =
+            (wave_at(wall, side_index, ss + 4.0, yy) - wave_at(wall, side_index, ss - 4.0, yy)) /
+            8.0;
+        const f64 wy =
+            (wave_at(wall, side_index, ss, yy + 4.0) - wave_at(wall, side_index, ss, yy - 4.0)) /
+            8.0;
+        off += amp * wave_at(wall, side_index, ss, yy);
+        n = normalize(n - g.frame.dir() * static_cast<f32>(amp * ws) -
+                      up * static_cast<f32>(amp * wy));
+      }
+    }
+    return verts.get(part, ss, yy,
+                     g.frame.at(actual_s(ss, yy, in_plinth), yy, side * (g.half + off)), n);
+  };
   for (u32 i = 0; i + 1 < stations.size(); ++i) {
     const f64 sa = stations[i], sb = stations[i + 1];
     const f64 ta = tops[i], tb = tops[i + 1];
@@ -346,12 +687,15 @@ void wall_face(const Context& ctx, u32 wall, f64 side) {
         count = kept;
         if (count < 3) continue;
       }
-      const bool is_plinth = outside && lb <= plinth + k_eps && plinth > foot + k_eps;
+      const bool is_plinth = outside && lb <= plinth + k_eps && banded;
       MeshPart& part = ctx.part(is_plinth ? Surface::plinth : face_surface);
       FaceVerts& verts = is_plinth ? plinth_verts : face_verts;
       u32 ids[4];
-      for (u32 c = 0; c < count; ++c)
-        ids[c] = verts.get(part, g.frame, q, normal, ps[c], py[c]);
+      for (u32 c = 0; c < count; ++c) {
+        // The top over this corner: its station's, or its own height on the top's line.
+        const f64 top_here = ps[c] == sa ? ta : (ps[c] == sb ? tb : py[c]);
+        ids[c] = place(verts, part, is_plinth, ps[c], py[c], top_here);
+      }
       // Counter-clockwise in (s, y) faces the wall's right; the left face is wound the other way.
       for (u32 c = 1; c + 1 < count; ++c) {
         part.indices.push_back(ids[0]);
@@ -360,6 +704,32 @@ void wall_face(const Context& ctx, u32 wall, f64 side) {
       }
     }
   }
+  if (!outside) return;
+  // The plinth's ledge: the step between its face and the wall's over it, except across a door.
+  if (proud > 0.0) {
+    MeshPart& stone = ctx.part(Surface::plinth);
+    for (u32 i = 0; i + 1 < stations.size(); ++i) {
+      const f64 sa = stations[i], sb = stations[i + 1], sm = 0.5 * (sa + sb);
+      bool open = false;
+      for (const Cut& c : cuts)
+        open = open || (sm > c.s0 && sm < c.s1 && plinth > c.y0 && plinth < c.y1);
+      if (open) continue;
+      const f64 out = side * (g.half + proud);
+      const Vec3 points[4] = {g.frame.at(actual_s(sa, plinth, true), plinth, out),
+                              g.frame.at(actual_s(sb, plinth, true), plinth, out),
+                              g.frame.at(actual_s(sb, plinth, false), plinth, q),
+                              g.frame.at(actual_s(sa, plinth, false), plinth, q)};
+      const Vec2 uvs[4] = {{static_cast<f32>(sa * k_m), 0.0f},
+                           {static_cast<f32>(sb * k_m), 0.0f},
+                           {static_cast<f32>(sb * k_m), static_cast<f32>(proud * k_m)},
+                           {static_cast<f32>(sa * k_m), static_cast<f32>(proud * k_m)}};
+      polygon(stone, points, uvs, 4, up);
+    }
+  }
+  // A rounded corner is drawn once, by the lower-numbered of its two walls.
+  for (u32 e = 0; e < 2; ++e)
+    if (rounds[e].on && wall < rounds[e].other)
+      round_corner(ctx, wall, side, e, rounds[e], foot, plinth, lean, proud);
 }
 
 Vec2 uv(f64 u_cm, f64 v_cm) noexcept {
@@ -417,57 +787,153 @@ void wall_opening(const Context& ctx, const structure::Opening& o) {
   const Cut c = cut_of(d, o);
   const f64 h = g.half;
   const bool door = o.kind == structure::OpeningKind::door;
+  // The reveal runs from the wall's one face to the other where each stands at that height: an
+  // outer face leans in over the plinth's top and stands out with the plinth under it, so a jamb
+  // that crosses that level is two pieces.
+  const f64 out_sign = out_sign_of(w);
+  const bool has_out = exterior && ((w.a < 0) != (w.b < 0));
+  const Lean lean = lean_of(d, w);
+  const f64 ground =
+      static_cast<f64>(d.storeys[w.storey].elevation) - static_cast<f64>(d.foundation);
+  const f64 proud = has_out && w.storey == 0 && static_cast<f64>(d.plinth_top) > ground + k_eps
+                        ? static_cast<f64>(d.plinth_proud)
+                        : 0.0;
+  const auto face_q = [&](f64 sign, f64 y, bool low) {
+    if (!has_out || sign != out_sign) return sign * h;
+    return sign * (h + (low ? proud : -lean.at(y)));
+  };
   {
     MeshPart& part = ctx.part(Surface::wall_inner);
-    const Vec3 lo[4] = {g.frame.at(c.s0, c.y0, -h), g.frame.at(c.s0, c.y0, h),
-                        g.frame.at(c.s0, c.y1, h), g.frame.at(c.s0, c.y1, -h)};
-    const Vec3 hi[4] = {g.frame.at(c.s1, c.y0, -h), g.frame.at(c.s1, c.y0, h),
-                        g.frame.at(c.s1, c.y1, h), g.frame.at(c.s1, c.y1, -h)};
-    const Vec2 jamb[4] = {uv(-h, c.y0), uv(h, c.y0), uv(h, c.y1), uv(-h, c.y1)};
-    polygon(part, lo, jamb, 4, g.frame.dir());
-    polygon(part, hi, jamb, 4, g.frame.dir() * -1.0f);
-    const Vec3 head[4] = {lo[3], lo[2], hi[2], hi[3]};
-    const Vec3 sill[4] = {lo[0], lo[1], hi[1], hi[0]};
-    const Vec2 flat[4] = {uv(c.s0, -h), uv(c.s0, h), uv(c.s1, h), uv(c.s1, -h)};
-    polygon(part, head, flat, 4, Vec3{0, -1, 0});
-    polygon(door ? ctx.part(Surface::floor) : part, sill, flat, 4, Vec3{0, 1, 0});
+    const bool low_sill = proud > 0.0 && c.y0 < lean.y0 - k_eps;
+    const bool low_head = proud > 0.0 && c.y1 <= lean.y0 + k_eps;
+    const bool spans = has_out && (proud > 0.0 || lean.total > 0.0) && c.y0 < lean.y0 - k_eps &&
+                       c.y1 > lean.y0 + k_eps;
+    const auto jamb = [&](f64 s, f64 y0, f64 y1, bool low, Vec3 facing) {
+      const f64 qa0 = face_q(-1.0, y0, low), qb0 = face_q(1.0, y0, low);
+      const f64 qa1 = face_q(-1.0, y1, low), qb1 = face_q(1.0, y1, low);
+      const Vec3 points[4] = {g.frame.at(s, y0, qa0), g.frame.at(s, y0, qb0),
+                              g.frame.at(s, y1, qb1), g.frame.at(s, y1, qa1)};
+      const Vec2 uvs[4] = {uv(qa0, y0), uv(qb0, y0), uv(qb1, y1), uv(qa1, y1)};
+      polygon(part, points, uvs, 4, facing);
+    };
+    for (u32 k = 0; k < 2; ++k) {
+      const f64 s = k == 0 ? c.s0 : c.s1;
+      const Vec3 facing = g.frame.dir() * (k == 0 ? 1.0f : -1.0f);
+      if (spans) {
+        jamb(s, c.y0, lean.y0, low_sill, facing);
+        jamb(s, lean.y0, c.y1, false, facing);
+      } else {
+        jamb(s, c.y0, c.y1, low_head, facing);
+      }
+    }
+    const f64 ha = face_q(-1.0, c.y1, low_head), hb = face_q(1.0, c.y1, low_head);
+    const f64 sa = face_q(-1.0, c.y0, low_sill), sb = face_q(1.0, c.y0, low_sill);
+    const Vec3 head[4] = {g.frame.at(c.s0, c.y1, ha), g.frame.at(c.s0, c.y1, hb),
+                          g.frame.at(c.s1, c.y1, hb), g.frame.at(c.s1, c.y1, ha)};
+    const Vec3 sill[4] = {g.frame.at(c.s0, c.y0, sa), g.frame.at(c.s0, c.y0, sb),
+                          g.frame.at(c.s1, c.y0, sb), g.frame.at(c.s1, c.y0, sa)};
+    const Vec2 head_uv[4] = {uv(c.s0, ha), uv(c.s0, hb), uv(c.s1, hb), uv(c.s1, ha)};
+    const Vec2 sill_uv[4] = {uv(c.s0, sa), uv(c.s0, sb), uv(c.s1, sb), uv(c.s1, sa)};
+    polygon(part, head, head_uv, 4, Vec3{0, -1, 0});
+    polygon(door ? ctx.part(Surface::floor) : part, sill, sill_uv, 4, Vec3{0, 1, 0});
   }
   if (o.kind == structure::OpeningKind::doorway) return;
-  // Depth `t` is from the outer face inward; an inner wall's frame sits in its middle.
-  const f64 out_sign = w.b < 0 && w.a >= 0 ? -1.0 : 1.0;
+  // Depth `t` is from the outer face's plane inward; an inner wall's frame sits in its middle.
   const f64 thick = 2.0 * h;
   MeshPart& timber = ctx.part(Surface::timber);
   const auto member = [&](f64 s0, f64 s1, f64 y0, f64 y1, f64 t0, f64 t1, u32 grain) {
     const f64 qa = out_sign * (h - t0), qb = out_sign * (h - t1);
     box(timber, g.frame, s0, s1, y0, y1, std::min(qa, qb), std::max(qa, qb), grain);
   };
-  const f64 depth = door ? 10.0 : 7.0;  // the frame's depth through the wall
-  const f64 width = door ? 6.0 : 5.0;   // its face
-  f64 set = exterior ? (door ? 6.0 : 8.0) : h - 0.5 * depth;
-  set = std::max(1.0, std::min(set, thick - depth - 1.0));
+  const Joinery joinery = joinery_of(d, w, o);
+  const f64 depth = joinery.depth, width = joinery.width, set = joinery.set;
   // The frame: two jambs to the head's top, a head between them, a window's sill member.
   member(c.s0 - 1.0, c.s0 + width, c.y0 - 1.0, c.y1 + 1.0, set, set + depth, 1);
   member(c.s1 - width, c.s1 + 1.0, c.y0 - 1.0, c.y1 + 1.0, set, set + depth, 1);
   member(c.s0 + width, c.s1 - width, c.y1 - width, c.y1 + 1.0, set, set + depth, 0);
   if (!door) {
     member(c.s0 + width, c.s1 - width, c.y0 - 1.0, c.y0 + width, set, set + depth, 0);
-    // Glazing bars: an upright every half metre or so, a transom in a tall light.
     const f64 clear = c.s1 - c.s0 - 2.0 * width;
-    const u32 uprights = static_cast<u32>(clear / 45.0);
-    for (u32 i = 1; i <= uprights; ++i) {
-      const f64 s = c.s0 + width + clear * static_cast<f64>(i) / static_cast<f64>(uprights + 1);
-      member(s - 1.5, s + 1.5, c.y0 + width, c.y1 - width, set + 2.0, set + 5.0, 1);
-    }
-    if (c.y1 - c.y0 > 100.0) {
-      const f64 y = 0.5 * (c.y0 + c.y1);
-      member(c.s0 + width, c.s1 - width, y - 1.5, y + 1.5, set + 2.0, set + 5.0, 0);
+    if (o.mullions > 0) {
+      // An unglazed window's mullions: square timbers set on the cant (a corner toward the
+      // weather), sunk a centimetre into the sill and the head, in the frame's middle.
+      const f64 r = 0.5 * k_mullion_cm;
+      const f64 q = out_sign * (h - set - 0.5 * depth);
+      const f64 k = std::sqrt(0.5);
+      for (u32 i = 1; i <= o.mullions; ++i) {
+        const f64 s = c.s0 + width + clear * static_cast<f64>(i) / static_cast<f64>(o.mullions + 1);
+        Frame3 frame;
+        frame.o[0] = g.frame.ox + g.frame.dx * s + g.frame.nx * q;
+        frame.o[1] = 0.0;
+        frame.o[2] = g.frame.oz + g.frame.dz * s + g.frame.nz * q;
+        frame.axis[0][0] = 0.0, frame.axis[0][1] = 1.0, frame.axis[0][2] = 0.0;
+        frame.axis[1][0] = (g.frame.dx + g.frame.nx) * k, frame.axis[1][1] = 0.0;
+        frame.axis[1][2] = (g.frame.dz + g.frame.nz) * k;
+        frame.axis[2][0] = (g.frame.dx - g.frame.nx) * k, frame.axis[2][1] = 0.0;
+        frame.axis[2][2] = (g.frame.dz - g.frame.nz) * k;
+        box3(timber, frame, c.y0 + width - 1.0, c.y1 - width + 1.0, -r, r, -r, r, 0);
+      }
+    } else {
+      // Glazing bars: an upright every half metre or so, a transom in a tall light.
+      const u32 uprights = static_cast<u32>(clear / 45.0);
+      for (u32 i = 1; i <= uprights; ++i) {
+        const f64 s = c.s0 + width + clear * static_cast<f64>(i) / static_cast<f64>(uprights + 1);
+        member(s - 1.5, s + 1.5, c.y0 + width, c.y1 - width, set + 2.0, set + 5.0, 1);
+      }
+      if (c.y1 - c.y0 > 100.0) {
+        const f64 y = 0.5 * (c.y0 + c.y1);
+        member(c.s0 + width, c.s1 - width, y - 1.5, y + 1.5, set + 2.0, set + 5.0, 0);
+      }
     }
     // The sill board, proud of the outer face.
-    if (exterior) member(c.s0 - 6.0, c.s1 + 6.0, c.y0 - 4.0, c.y0 + 1.0, -5.0, set + 1.0, 0);
+    if (exterior)
+      member(c.s0 - 6.0, c.s1 + 6.0, c.y0 - 4.0, c.y0 + 1.0, -5.0 + lean.at(c.y0 - 4.0), set + 1.0,
+             0);
   }
-  // The lintel: a timber over the opening, bearing on the wall either side, proud of the face.
-  if (exterior)
-    member(c.s0 - 15.0, c.s1 + 15.0, c.y1 - 1.0, c.y1 + 13.0, -1.5, std::min(12.0, thick - 2.0), 0);
+  // The lintel: a timber over the opening, bearing on the wall either side, proud of the face
+  // where the face stands at its foot.
+  if (exterior) {
+    const f64 back = lean.at(c.y1 - 1.0);
+    member(c.s0 - 15.0, c.s1 + 15.0, c.y1 - 1.0, c.y1 + 13.0, back - 1.5,
+           back + std::min(12.0, thick - 2.0), 0);
+  }
+  // The leaves (structures.md, "Leaves and mullions"): upright boards of unequal widths, every
+  // other one a few millimetres proud so the joints read, on ledges across the face the leaf
+  // opens toward: three to a door, two to a shutter. Each ledge is sunk a centimetre into its
+  // boards.
+  LeafPlace places[2];
+  const u32 leaves = leaf_places(d, o, places);
+  for (u32 l = 0; l < leaves; ++l) {
+    const LeafPlace& p = places[l];
+    Frame3 frame;
+    frame.o[0] = p.px, frame.o[1] = 0.0, frame.o[2] = p.pz;
+    frame.axis[0][0] = p.ux, frame.axis[0][1] = 0.0, frame.axis[0][2] = p.uz;
+    frame.axis[1][0] = 0.0, frame.axis[1][1] = 1.0, frame.axis[1][2] = 0.0;
+    frame.axis[2][0] = p.vx, frame.axis[2][1] = 0.0, frame.axis[2][2] = p.vz;
+    const u32 boards =
+        std::min(8u, std::max(1u, static_cast<u32>(p.width / k_leaf_board_cm + 0.5)));
+    const f64 share[4] = {1.12, 0.92, 1.06, 0.90};
+    f64 total = 0.0;
+    for (u32 b = 0; b < boards; ++b)
+      total += share[b % 4];
+    f64 at = 0.0;
+    for (u32 b = 0; b < boards; ++b) {
+      const f64 wide = p.width * share[b % 4] / total;
+      const f64 stand = b % 2 == 1 ? 0.3 : 0.0;
+      box3(timber, frame, at, at + wide, p.y0, p.y1, p.ledges, p.ledges + p.boards + stand, 1);
+      at += wide;
+    }
+    const f64 tall = p.y1 - p.y0;
+    const u32 ledges = tall > 120.0 ? 3u : 2u;
+    const f64 ledge = p.door ? 15.0 : 9.0;
+    const f64 inset = std::min(20.0, tall * 0.12);
+    for (u32 i = 0; i < ledges; ++i) {
+      const f64 y =
+          p.y0 + inset +
+          (tall - 2.0 * inset - ledge) * static_cast<f64>(i) / static_cast<f64>(ledges - 1);
+      box3(timber, frame, 2.0, p.width - 2.0, y, y + ledge, 0.0, p.ledges + 1.0, 0);
+    }
+  }
 }
 
 // A roof: each slope a slab over its rectangle and its overhangs, the covering on top, at the
@@ -686,6 +1152,50 @@ void mesh_chimney(const Context& ctx, const structure::Chimney& c) {
 }
 
 }  // namespace
+
+u32 leaf_places(const Description& d, const structure::Opening& o, LeafPlace (&out)[2]) noexcept {
+  if (o.leaf == structure::LeafKind::none || o.kind == structure::OpeningKind::doorway) return 0;
+  const structure::Wall& w = d.walls[o.wall];
+  const f64 wx = static_cast<f64>(w.to[0] - w.from[0]), wz = static_cast<f64>(w.to[1] - w.from[1]);
+  const f64 length = std::sqrt(wx * wx + wz * wz);
+  const f64 dx = wx / length, dz = wz / length;
+  const f64 nx = dz, nz = -dx;  // the wall's left
+  const Cut c = cut_of(d, o);
+  const Joinery j = joinery_of(d, w, o);
+  const f64 h = static_cast<f64>(w.thickness) * 0.5;
+  const f64 out_sign = out_sign_of(w);
+  const bool door = o.kind == structure::OpeningKind::door;
+  // The side it opens to, as a sense along the wall's left, and the frame's face on that side:
+  // the leaf's own face there is flush with it, its ledges and then its boards behind.
+  const f64 swing = o.opens_right ? -1.0 : 1.0;
+  const f64 qa = out_sign * (h - j.set), qb = out_sign * (h - j.set - j.depth);
+  const f64 q = swing * qa > swing * qb ? qa : qb;
+  const f64 clear = c.s1 - c.s0 - 2.0 * j.width - 0.6;
+  const u32 count = o.leaves >= 2 ? 2u : 1u;
+  f64 sine = 0.0, cosine = 1.0;
+  turn_deg(o.leaf_open, sine, cosine);
+  for (u32 k = 0; k < count; ++k) {
+    const bool at_to = count == 2 ? k == 1 : o.hinge_at_to;
+    const f64 sigma = at_to ? -1.0 : 1.0;  // from the hinge toward the free edge when shut
+    const f64 s = at_to ? c.s1 - j.width - 0.3 : c.s0 + j.width + 0.3;
+    LeafPlace& p = out[k];
+    p.px = static_cast<f64>(w.from[0]) + dx * s + nx * q;
+    p.pz = static_cast<f64>(w.from[1]) + dz * s + nz * q;
+    // Shut, `u` runs along the wall and `v` back from the face into the frame; open, both turn
+    // about the pivot toward the side it opens to.
+    p.ux = cosine * sigma * dx + sine * swing * nx;
+    p.uz = cosine * sigma * dz + sine * swing * nz;
+    p.vx = -cosine * swing * nx + sine * sigma * dx;
+    p.vz = -cosine * swing * nz + sine * sigma * dz;
+    p.width = count == 2 ? clear * 0.5 - 0.15 : clear;
+    p.y0 = c.y0 + (door ? 0.5 : j.width + 0.3);
+    p.y1 = c.y1 - j.width - 0.3;
+    p.boards = door ? 3.0 : 2.0;
+    p.ledges = door ? 2.5 : 2.0;
+    p.door = door;
+  }
+  return count;
+}
 
 void mesh_shell(const Context& ctx) {
   const Description& d = *ctx.d;

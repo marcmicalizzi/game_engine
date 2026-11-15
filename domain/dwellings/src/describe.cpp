@@ -3,6 +3,7 @@
 // seen from above (the left of +x is -z, the left of +z is +x), an opening's `at` along its wall
 // from the wall's `from`.
 
+#include <core/hash/hash.h>
 #include <domain/dwellings/describe.h>
 #include <domain/dwellings/furnish.h>
 #include <domain/structures/structures.h>
@@ -58,6 +59,53 @@ structure::RoomKind kind_of(RoomKind kind) noexcept {
   }
 }
 
+// What one house's shell differs from its neighbour's in, drawn from the house's seed: one draw
+// a statement, a purpose each (dwellings.md, "What a house's seed varies in its shell").
+constexpr u64 k_draw_wave = 301;
+constexpr u64 k_draw_batter = 303;
+constexpr u64 k_draw_arris = 304;
+constexpr u64 k_draw_plinth = 305;
+constexpr u64 k_draw_windows = 306;
+constexpr u64 k_draw_inner_leaf = 307;
+constexpr u64 k_draw_inner_side = 308;
+
+u64 draw(u64 seed, u64 purpose, u32 index = 0) noexcept {
+  return mix64(hash_combine(hash_combine(hash_combine(k_hash_seed, seed), purpose), u64{index}));
+}
+
+struct Dress {
+  i32 wave_mm = 0;            // the exterior walls' faces, hollow to swell
+  i32 partition_wave_mm = 0;  // a thin partition's
+  i32 top_thickness = 0;      // a batter: the exterior walls' thickness at the plate
+  i32 arris = 0;              // the outer corners' radius
+  i32 plinth_proud = 0;
+  bool mullions = false;  // unglazed windows with mullions; else glazing bars
+  bool shutters = false;  // a shutter or a pair on every window 70 cm wide or more
+};
+
+Dress dress_of(u64 seed, i32 wall, u8 storeys) noexcept {
+  Dress d;
+  // Hand-laid walls under a render: 8, 12 or 16 mm, 12 the commonest.
+  constexpr i32 k_waves[4] = {8, 12, 12, 16};
+  d.wave_mm = k_waves[draw(seed, k_draw_wave) % 4];
+  // A partition stays flat: waved, its two faces cost a house of nine rooms two thousand
+  // triangles for 6 mm on a board 10 cm thick.
+  d.partition_wave_mm = 0;
+  // A batter is a wall of one storey's (the mesher carries a lean cleanly on one): two houses of
+  // three, three quarters of the foot's thickness at the plate, as cob's.
+  if (storeys == 1 && draw(seed, k_draw_batter) % 3 != 0) {
+    d.top_thickness = wall * 3 / 4 < 25 ? 25 : wall * 3 / 4;
+  }
+  // Corners as round as cob's under a batter, else by the draw.
+  d.arris = d.top_thickness != 0 ? 12 : (draw(seed, k_draw_arris) % 2 == 0 ? 6 : 12);
+  constexpr i32 k_proud[4] = {0, 3, 4, 5};
+  d.plinth_proud = k_proud[draw(seed, k_draw_plinth) % 4];
+  const u64 windows = draw(seed, k_draw_windows) % 4;
+  d.mullions = windows == 1 || windows == 2;
+  d.shutters = windows == 1 || windows == 3;
+  return d;
+}
+
 bool touches(const InteriorPlan& plan, const Room& room, Side side) noexcept {
   switch (side) {
     case Side::Front: return room.rect.z0 == 0;
@@ -84,6 +132,9 @@ void describe(const InteriorPlan& plan, const RuralChoice& choice, std::string_v
   const i32 b = p.depth_cm + wall;
   out.name = std::string(name);
   out.style = std::string("rural/") + plan_type_name(p.type);
+  const Dress dress = choice.dressed ? dress_of(seed, wall, p.storeys) : Dress{};
+  out.arris = dress.arris;
+  out.plinth_proud = dress.plinth_proud;
   const i32 corners[4][2] = {{0, 0}, {0, b}, {a, b}, {a, 0}};
   for (const auto& c : corners) {
     out.footprint.push_back(c[0]);
@@ -142,6 +193,8 @@ void describe(const InteriorPlan& plan, const RuralChoice& choice, std::string_v
       w.thickness = wall;
       w.kind = structure::WallKind::exterior;
       w.b = -1;
+      w.wave = dress.wave_mm;
+      w.top_thickness = dress.top_thickness;
       for (u32 r = 0; r < count_of(plan.rooms) && w.a < 0; ++r) {
         if (plan.rooms[r].storey == storey && touches(plan, plan.rooms[r], k_sides[i])) {
           w.a = static_cast<i32>(r);
@@ -161,6 +214,7 @@ void describe(const InteriorPlan& plan, const RuralChoice& choice, std::string_v
     w.storey = iw.storey;
     w.thickness = iw.thickness_cm;
     w.kind = structure::WallKind::inner;
+    w.wave = dress.partition_wave_mm;
     if (iw.x0 == iw.x1) {
       // Along +z, from the front wall's line to the back's: the left of +z is +x.
       w.from[0] = iw.x0 + off;
@@ -195,6 +249,32 @@ void describe(const InteriorPlan& plan, const RuralChoice& choice, std::string_v
     opening.width = o.width_cm;
     opening.sill = o.sill_cm;
     opening.head = o.head_cm;
+    if (choice.dressed && o.door()) {
+      // A ledged leaf, open a quarter turn (the walk goes through it), opening inward, hung on
+      // the jamb nearer its room's corner so the open leaf stands by a wall.
+      opening.leaf = structure::LeafKind::ledged;
+      opening.leaf_open = 90;
+      const Room& room = plan.rooms[o.room];
+      const bool along_x = o.side == Side::Front || o.side == Side::Back;
+      const i32 low_gap = o.at_cm - i32{o.width_cm} / 2 - (along_x ? room.rect.x0 : room.rect.z0);
+      const i32 high_gap = (along_x ? room.rect.x1 : room.rect.z1) - o.at_cm - i32{o.width_cm} / 2;
+      const bool hinge_low = low_gap <= high_gap;
+      // The left and the back walls run toward high z and high x; the right and the front back.
+      const bool wall_rises = o.side == Side::Left || o.side == Side::Back;
+      opening.hinge_at_to = wall_rises ? !hinge_low : hinge_low;
+    } else if (choice.dressed) {
+      // One mullion to about every 17 cm of light; a shutter on a window 70 cm wide or more (a
+      // narrower one's would stand out of its reveal), a pair on one of 80, folded back.
+      const i32 light = i32{o.width_cm} - 10;
+      if (dress.mullions && light >= 12 * (light / 17 + 1)) {
+        opening.mullions = static_cast<u32>(light / 17);
+      }
+      if (dress.shutters && o.width_cm >= 70) {
+        opening.leaf = structure::LeafKind::ledged;
+        opening.leaves = o.width_cm >= 80 ? u8{2} : u8{1};
+        opening.leaf_open = 90;
+      }
+    }
     out.openings.push_back(opening);
   }
   for (const Doorway& d : plan.doorways) {
@@ -205,6 +285,20 @@ void describe(const InteriorPlan& plan, const RuralChoice& choice, std::string_v
     opening.width = d.width_cm;
     opening.sill = 0;
     opening.head = d.head_cm;
+    // A partition's doorway, two of three, is a door: a frame and a ledged leaf open a quarter
+    // turn, hung on the jamb nearer the outer wall, opening into either room by the draw. A
+    // landing's doorway stays bare: its 80 cm less a frame is under what the walker passes.
+    const u32 index = count_of(out.openings);
+    if (choice.dressed && d.width_cm >= p.doorway_cm && p.doorway_cm >= 85 &&
+        draw(seed, k_draw_inner_leaf, index) % 3 != 0) {
+      const InnerWall& iw = plan.walls[d.wall];
+      const i32 length = iw.x0 == iw.x1 ? p.depth_cm : p.width_cm;
+      opening.kind = structure::OpeningKind::door;
+      opening.leaf = structure::LeafKind::ledged;
+      opening.leaf_open = 90;
+      opening.hinge_at_to = d.at_cm > length / 2;
+      opening.opens_right = draw(seed, k_draw_inner_side, index) % 2 == 0;
+    }
     out.openings.push_back(opening);
   }
 

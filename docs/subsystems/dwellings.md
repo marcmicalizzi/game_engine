@@ -127,21 +127,44 @@ the same code, and `plan_interior` lays a plan into any clear rectangle an autho
 
 | timber and furniture ([below](#timber-and-furniture)) | a `Box` a member, in the room it stands in; the one member of each furniture piece that covers its footprint `solid`, the rest and all the timber not |
 
+**What a house's seed varies in its shell.** Eight houses of one village are not one wall, one
+window and one door: `describe` states the mesher's optional fields
+([structures](structures.md)) from draws on the house's seed, one draw a statement and a purpose
+each, so a field added later moves no other.
+
+| Stated | Drawn | Fixed |
+|---|---|---|
+| `Wall.wave` on the exterior walls | 8, 12 or 16 mm, 12 twice as likely | a partition stays flat: waved, its faces cost a nine-room house two thousand triangles |
+| `Wall.top_thickness`, a batter | two one-storey houses of three: three quarters of the foot's thickness at the plate | never on two storeys (the mesher carries a lean cleanly on one) |
+| `Description.arris` | 6 or 12 cm | 12 under a batter |
+| `Description.plinth_proud` | 0, 3, 4 or 5 cm | |
+| a window's `mullions` and shutters (`leaf`, a pair on a window 80 cm wide or more) | one of four a house: glazing bars; mullions and shutters; mullions; bars and shutters | one mullion to every 17 cm of light; shutters folded back; none on a window under 70 cm (the head landing's), whose leaf would stand out of its reveal |
+| an outer door's `leaf` | | every outer door: ledged, opening inward, open a quarter turn (the walk goes through it), hung on the jamb nearer its room's corner so the open leaf stands by a wall |
+| a partition's doorway as a `door` with a leaf | two of three, and which room it opens into | hung on the jamb nearer the outer wall, open a quarter turn; a landing's 80 cm doorway stays bare, because a frame would leave less than the walker's 66 cm |
+
+`RuralStyle::dressed = false` writes the plain shell. `tests/describe_tests.cpp` holds that eight
+seeds of one household give at least five different shells (they give eight), that some and not
+all are battered, mullioned and shuttered, and that every leaf hangs in a door or a window and
+stands open.
+
 **Budgets.** Measured by `tests/describe_tests.cpp` over 324 houses (`msvc-debug`, the mesher at
-`k_structure_version` 2) and by `engine-content dwelling` on five of them, bare (`--bare all`) and
-as the filler writes them:
+`k_structure_version` 4) and by `engine-content dwelling` on five of them: bare (`--bare all`, at
+version 2), with the timber and the furniture (`--bare dress`), and as the filler writes them.
 
-| House | Bare | With timber and furniture | Members |
-|---|---|---|---|
-| a cot, 4.9 m by 4.1 m clear | 1,268 | 1,616 | 29 |
-| a hall and parlour on one floor | 866 | 1,334 | 39 |
-| a two-up two-down | 1,834 | 2,914 | 90 |
-| a hall and parlour on two storeys | 2,162 | 3,326 | 97 |
-| the largest: a two-storey cross-passage house with an inner room, 13.5 m by 5.5 m clear | 2,960 | 4,424 | 122 |
+| House | Bare | With timber and furniture | Dressed, as written | Members |
+|---|---|---|---|---|
+| a cot, 4.9 m by 4.1 m clear | 1,268 | 1,496 | 3,328 | 19 |
+| a hall and parlour on one floor | 866 | 1,334 | 4,104 | 39 |
+| a two-up two-down | 1,834 | 3,046 | 7,314 | 101 |
+| a hall and parlour on two storeys | 2,162 | 3,326 | 8,417 | 97 |
+| a two-storey cross-passage house with an inner room, 13.5 m by 5.5 m clear | 2,960 | 4,424 | 11,272 | 122 |
 
-A member is a closed box of twelve triangles, so the timber and the furniture are a third of a
-furnished house. The test holds every house under 6,000. A bare cot was 488 to 640 triangles and
-the largest house 2,848 at `k_structure_version` 1: the rest of the bare column is the mesher's
+**The walls' wander is the cost**: a waved face is a 45 cm grid, and it more than doubles a house
+(the largest of the 324 is 11,734). A member is a closed box of twelve triangles, so the timber and
+the furniture are a third of a plain house and an eighth of a dressed one; a leaf is 84 triangles,
+a shutter 48. The test holds every house under 16,000, where it held 6,000 before the walls
+wandered; plan 14's budget for a building's exterior is 30,000. A bare cot was 488 to 640 triangles
+and the largest house 2,848 at `k_structure_version` 1: the rest of the bare column is the mesher's
 thatch, roof timbers and hearth. What the cluster DAG does to them at a distance is the mesher's
 ([structures](structures.md)).
 
@@ -190,13 +213,14 @@ collision and a walker meets them; legs, rails and all the timber are seen and n
 ## The filler as a tool
 
 `engine-content dwelling <out-dir> [--name <n>] [--persons <n>] [--means <0|1|2>] [--frontage <cm>]
-[--depth <cm>] [--seed <n>] [--scope whole|exterior|interior] [--bare timber|furniture|all]` runs
+[--depth <cm>] [--seed <n>] [--scope whole|exterior|interior] [--bare timber|furniture|dress|all]`
+(`--bare` may be given more than once) runs
 the filler once and writes three files: `<n>.structure.json`, the mesh generator `structure`'s
 recipe, which a scene names like any generated mesh; `<n>.plan.txt`, each storey drawn as text; and
 `<n>.walk.json`, the tour and the views in metres in the description's frame (`tour`: points with
 the floor's height under each and the room; `views`: an eye and a point looked at, a room;
 `pieces`: every piece of timber and furniture, its kind, room, members and footprint). `--bare`
-leaves the timber, the furniture or both out of the description. It prints one JSON line: the type,
+leaves the timber, the furniture, the shell's dress or all three out of the description. It prints one JSON line: the type,
 storeys, rooms, the clear and outer sizes, whether the plot demoted the house, the triangles, and
 the pieces and members.
 What it writes is a starting point its author owns; nothing runs it again.

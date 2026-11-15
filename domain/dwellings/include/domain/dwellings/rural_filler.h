@@ -64,6 +64,10 @@ struct RuralStyle {
   // furniture. Each is a caller's to leave out: a bare house is the same plan.
   bool timber = true;
   bool furniture = true;
+  // What one house's shell differs from the next one's in (describe.h): door leaves, shutters,
+  // mullions, walls that wander and batter, rounded corners, a proud plinth, drawn from the seed.
+  // False: the plain shell, every house's joinery and walls the mesher's defaults.
+  bool dressed = true;
 };
 
 // What the filler chose, before any description is written.
@@ -76,6 +80,7 @@ struct RuralChoice {
   bool demoted = false;           // the plot was too small for what the household asked
   bool timber = true;             // the style's: what `describe` states besides the plan
   bool furniture = true;
+  bool dressed = true;
 };
 
 // The type, storeys and hearths a household asks for, on a plot with room for anything.

@@ -43,7 +43,10 @@ namespace engine::structures {
 // The mesher's version, in every recipe's source hash: a change that moves a triangle bumps it
 // (plan 14 §14.1: an upgrade may move triangles, never a room or a door).
 // 2: a thatch's rounded eave and ridge course, the roof's rafters and collars, the hearth.
-inline constexpr u32 k_structure_version = 2;
+// 3: leaves (a door's, a shutter's) and an unglazed window's mullions.
+// 4: a wall's batter and wander, rounded corners, a plinth standing proud (a description that
+//    states none of them meshes to the same bits as before).
+inline constexpr u32 k_structure_version = 4;
 
 // Determinism stance (ADR-0010): "derived": a mesh is content, never read back into gameplay, and
 // the same bytes from every toolchain all the same (structures.md, "Determinism").
@@ -140,6 +143,17 @@ struct WalkBox {
   u32 box = 0;
   Vec3 min, max;
 };
+// A leaf as it stands in opening `opening` (`Opening::leaf`): a plumb slab `thickness` deep about
+// the line from `hinge` to `tip` (x and z), from `y0` to `y1`, `open_deg` degrees from shut. A
+// shut leaf closes its opening; one open a quarter turn lies beside its hinge jamb, in a thick
+// wall's reveal. The opening's own record is the same with or without a leaf.
+struct WalkLeaf {
+  u32 opening = 0;
+  Vec2 hinge, tip;
+  f32 y0 = 0, y1 = 0;
+  f32 thickness = 0;
+  i32 open_deg = 0;
+};
 struct Walk {
   Vector<WalkFloor> floors;
   Vector<Vec2> outline;  // the floors' outlines, x and z
@@ -148,6 +162,7 @@ struct Walk {
   Vector<WalkOpening> openings;
   Vector<WalkFlight> flights;
   Vector<WalkBox> boxes;
+  Vector<WalkLeaf> leaves;
 };
 
 // ---- the rooms' graph

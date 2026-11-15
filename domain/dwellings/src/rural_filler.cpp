@@ -167,6 +167,7 @@ bool choose_rural(const RuralPlot& plot, const Household& household, const Rural
   out.demoted = chosen != 0;
   out.timber = style.timber;
   out.furniture = style.furniture;
+  out.dressed = style.dressed;
   return true;
 }
 

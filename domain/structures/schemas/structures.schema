@@ -21,6 +21,11 @@ enum WallKind : u8 { exterior = 0, inner = 1 }
 /// `doorway` is a bare opening through a wall, lined by the wall's own reveal.
 enum OpeningKind : u8 { door = 0, window = 1, doorway = 2 }
 
+/// What hangs in an opening's frame. `none`: nothing; the opening stands open. `ledged`: a leaf
+/// of upright boards on ledges across the side it opens to: a door's leaf, a window's shutter
+/// (structures.md, "Leaves and mullions").
+enum LeafKind : u8 { none = 0, ledged = 1 }
+
 /// A roof's form over its rectangle. `gable`: two slopes meeting at a ridge, the end walls rising
 /// into gables. `hip`: four slopes, the eaves level all round. `mono`: one slope from the high
 /// side (the side `ridge_along_x` and the rectangle's low x or z name) to the low.
@@ -63,6 +68,14 @@ struct Wall @version(1) {
   /// Q16, positive bulging to the left of `from` to `to` (not meshed yet: refused).
   bulge: i32 = 0
   thickness: i32 = 45
+  /// An exterior wall's batter: its thickness at its storey's top, its outer face leaning in
+  /// from the plinth's top (or its floor) to there and plumb above (a gable). 0, or `thickness`:
+  /// one thickness all the way up. A cob wall's, which is thinner at the plate than at the foot.
+  top_thickness: i32 = 0
+  /// How far its faces wander, millimetres from hollow to swell: a hand-laid wall under a thick
+  /// render. 0: flat. A waved face is drawn as a grid about 45 cm square and never falls behind
+  /// its plane.
+  wave: i32 = 0
   kind: WallKind = exterior
   /// The rooms on the left (`a`) and the right (`b`) of `from` to `to`; -1 is outside.
   a: i32 = -1
@@ -80,6 +93,21 @@ struct Opening @version(1) {
   /// The sill and the head above the wall's storey's floor top. A door's sill is 0.
   sill: i32 = 0
   head: i32 = 200
+  /// What hangs in its frame (a `door` or a `window`; a `doorway` has no frame to hang one in).
+  /// Absent unless stated: an opening that states no leaf stands open.
+  leaf: LeafKind = none
+  /// How many leaves: 1, or 2 hung on both jambs and meeting in the middle (a pair of shutters).
+  leaves: u8 = 1
+  /// One leaf's hinges: false on the jamb nearer the wall's `from` end, true on the other.
+  hinge_at_to: bool = false
+  /// The side a leaf opens to: false the wall's left (its `a`: the inside of an exterior wall
+  /// drawn counter-clockwise), true its right. The leaf hangs on that face of the frame.
+  opens_right: bool = false
+  /// How far a leaf stands open, degrees from shut: 0 to 90.
+  leaf_open: i32 = 0
+  /// A `window` only: how many upright mullions set on the cant stand between its sill and its
+  /// head (an unglazed window's); 0 keeps the glazing bars.
+  mullions: u32 = 0
 }
 
 /// A room: a region of one storey bounded by walls. Two rooms are joined where an opening stands
@@ -218,6 +246,12 @@ struct Description @version(1) {
   foundation: i32 = 60
   /// The top of the plinth band above the origin; at or below `-foundation`: no plinth.
   plinth_top: i32 = 30
+  /// How far the plinth's face stands outside the wall's face over it, with a ledge between
+  /// them at `plinth_top`. 0: the plinth lies in the wall's plane.
+  plinth_proud: i32 = 0
+  /// The radius the exterior walls' outer corners are rounded to (a cob wall's, and a thick
+  /// render's, are never sharp). 0: a sharp arris.
+  arris: i32 = 0
   storeys: Storey[] = []
   walls: Wall[] = []
   openings: Opening[] = []
