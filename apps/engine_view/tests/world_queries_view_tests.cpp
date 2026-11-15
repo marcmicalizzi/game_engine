@@ -354,9 +354,10 @@ TEST_CASE("engine-view: a module asks the world for casts, supports and the wate
       (sizeof(hotload::HostApi) - offsetof(hotload::HostApi, allocate)) / sizeof(void (*)()));
   CHECK(num(result, "entry_count") == static_cast<f64>(table_entries));
   CHECK(entries->size() == table_entries);
+  // (`nearest_prop` looks round the walker, not round the point the prop was put at, so its
+  // `NotFound` here is an answer.)
   for (const char* ok :
-       {"allocate", "tick", "fixed_step", "prop_mesh", "prop_place", "prop_move", "nearest_prop",
-        "prop_remove", "walker_set", "walker_teleport", "graphics_state", "ground_height",
+       {"allocate", "tick", "fixed_step", "prop_mesh", "prop_place", "prop_move", "prop_remove", "walker_set", "walker_teleport", "graphics_state", "ground_height",
         "ground_sample", "cast_ray", "cast_sphere", "water_at", "supports_near"}) {
     CAPTURE(ok);
     CHECK(num(entries, ok) == 0.0);

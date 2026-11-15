@@ -722,7 +722,8 @@ TEST_CASE("hotload: ABI 12's supports reach a module only as far as its records"
   CHECK(api->supports_near(api->host, at, &old_query) == Result::Ok);
   CHECK(old_query.count == 2u);
   Support second;
-  std::memcpy(&second, old_records + k_support_v10_size, k_support_v10_size);
+  // Its first 72 bytes over a whole record's defaults, as a module of 11 would read them.
+  std::memcpy(static_cast<void*>(&second), old_records + k_support_v10_size, k_support_v10_size);
   CHECK(second.kind == k_support_limb);
   CHECK(second.part == 8u);
   CHECK(second.flags == 0u);  // what was its `reserved`
