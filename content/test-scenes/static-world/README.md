@@ -42,6 +42,21 @@ build/msvc-release/bin/engine-content static-kit content/test-scenes/static-worl
 build/msvc-release/bin/engine-view --scene content/test-scenes/static-world/scene.json --camera-path content/test-scenes/static-world/camera-path.json --offscreen --raster rt --shadows rt --benchmark static.jsonl
 ```
 
+**`scene-bought.json`: the same world with real bought foliage beside the kit** (roadmap T139).
+Twelve CC0 plants from Poly Haven — two conifer saplings, two broadleaf trees, four shrubs, four
+ground plants and a grass — and an ambientCG leaf atlas on three crossed cards, 23 instances more,
+every one written at the kit ground's height. They are not in the repository: `tools/fetch-foliage.ps1`
+fetches them by pinned URL and SHA-256 into the git-ignored `content/samples/foliage/` after reading
+each item's own page for CC0, and writes the `*.masked.gltf` the scene names (the shipped glTF keeps
+its leaves' opacity in a map it does not reference; [the static-asset world](../../../docs/experiments/static-asset-world.md#bought-foliage)
+says what that and the rest of the set showed). It is not flown at the gate, which fetches nothing;
+nothing in a test reads it.
+
+```powershell
+pwsh tools/fetch-foliage.ps1          # once, after a build: ~435 MB, and the masked variants
+build/msvc-release/bin/engine-view --scene content/test-scenes/static-world/scene-bought.json --camera-path content/test-scenes/static-world/camera-path.json --offscreen --raster rt --shadows rt --benchmark bought.jsonl
+```
+
 `camera-path.json` is 24 seconds: a half circle round the grove 30 to 40 m out and 7 to 9 m up,
 looking at its middle, then down to eye height among the trees and past the helmet's boulder,
 ending at the first lantern.

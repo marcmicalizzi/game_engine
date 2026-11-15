@@ -336,6 +336,38 @@ TEST_CASE("gltf: a .gltf with an external buffer merges its primitives in world 
   check_cube_materials(mesh);
 }
 
+// static-asset-world.md, "Bought foliage": a bought plant's leaves that say BLEND were drawn as
+// solid cards, because the engine has no sorted transparency. A BLEND material whose alpha is a
+// picture (a base colour image) is read as MASK at glTF's default cutoff; one whose alpha is the
+// factor alone ("bumped" above, a pane of glass) stays BLEND and is drawn opaque, as before.
+TEST_CASE("gltf: a BLEND material with a base colour image is read as MASK") {
+  const TempDir tmp("engine_assets_gltf_blend");
+  const Cube cube = make_cube();
+  REQUIRE(io::write_file(io::join_path(tmp.path(), "cube.bin"), view_of(cube_buffer(cube))) ==
+          io::Status::Ok);
+  std::string json = cube_json("cube.bin");
+  const std::string factor_only = "\"roughnessFactor\": 1.0}, \"normalTexture\"";
+  const std::size_t at = json.find(factor_only);
+  REQUIRE(at != std::string::npos);
+  json.replace(at, factor_only.size(),
+               "\"roughnessFactor\": 1.0, \"baseColorTexture\": {\"index\": 0}},"
+               " \"normalTexture\"");
+  const std::string path = io::join_path(tmp.path(), "leaves.gltf");
+  REQUIRE(io::write_file(path, json) == io::Status::Ok);
+
+  MeshData mesh;
+  std::string error;
+  REQUIRE_MESSAGE(load_gltf(path, mesh, &error), error);
+  REQUIRE(mesh.materials.size() == 2u);
+  CHECK(mesh.materials[1].name == "bumped");
+  CHECK(mesh.materials[1].base_color_image == 0);
+  CHECK(mesh.materials[1].alpha_mode == k_alpha_mask);
+  CHECK(std::fabs(mesh.materials[1].alpha_cutoff - 0.5f) < 1e-6f);
+  // The MASK material beside it keeps its own cutoff.
+  CHECK(mesh.materials[0].alpha_mode == k_alpha_mask);
+  CHECK(std::fabs(mesh.materials[0].alpha_cutoff - 0.25f) < 1e-6f);
+}
+
 TEST_CASE("gltf: the source hash answers to the glTF and to the buffers it names") {
   const TempDir tmp("engine_assets_gltf_hash");
   const Cube cube = make_cube();

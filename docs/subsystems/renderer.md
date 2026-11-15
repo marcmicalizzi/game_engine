@@ -2623,12 +2623,17 @@ G = 0.5 for leaves of no preferred direction), averaged over the directions it c
 
 - **Each mesh with a crown carries a grid of its own shade** (`gfx::build_crown_prior`,
   `domain/gfx/crown_prior.h`; `renderer::build_crown_priors`, `crown_priors.h`). At load, the
-  finest level's alpha-tested triangles of a mesh are its leaves; their area (times 0.7, a card's
-  share that is blade) is gathered into a grid over the mesh's bounds, at most 16 cells an axis and
+  finest level's alpha-tested triangles of a mesh are its leaves; each one's area times **the share
+  of it its own mask keeps** — the material's base colour alpha asked at the triangle's 16
+  sub-triangle centroids on the CPU, as the coverage bake asks it (T146; it was a constant 0.7, a
+  solver's blade, and cards over 0.05 m² were refused, which left every bought tree without a
+  crown; a host that released the mesh's UVs before the prior is built — `engine-view` today,
+  `release_uploaded_streams` — gets each image's mean instead, exact for a card that maps its
+  whole image) — is gathered into a grid over the mesh's bounds, at most 16 cells an axis and
   a quarter metre a cell, and from each cell's centre the grid is marched along twelve directions
   of the upper hemisphere and their mirror images. A cell keeps two bytes: the mean transmitted
   fraction from above and from below. A mesh whose leaves stand under 1.5 m has none (a sward's
-  shade is its own solver's). One buffer holds a 32-byte `gfx::CrownPriorDesc` a mesh and the
+  shade is its own solver's), and the load logs it (`crown prior skipped: …`). One buffer holds a 32-byte `gfx::CrownPriorDesc` a mesh and the
   grids behind them (`ResolveParams::gi_crowns`, `gi_crown_count`; the block grew a row, 576 to
   592 bytes): 11.8 KB for the grove's three crowns. **No vertex carries a byte for it**, the field
   is the same for every LOD and every instance (optical depth does not change under a uniform

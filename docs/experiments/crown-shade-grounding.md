@@ -55,11 +55,15 @@ say so.
   metre, so clumping at the scale of a branch and above is in the grid itself. Clumping inside a
   cell (a conifer's needles on a shoot) is not: the solver's cards stand for shoots, and a card's
   share that is leaf is the next number.
-- **A card's share that is leaf, 0.7** (`k_crown_card_fill`): the solver places
+- **A card's share that is leaf, measured from its own mask** (T146, 2026-11-14; it was the
+  constant 0.7, `k_crown_card_fill`): the solver places
   `leaf_area_index × footprint ÷ (leaf_width × leaf_length²)` cards ([flora](../subsystems/flora.md),
   "The budget of a crown"), so a card of `leaf_length²` carries `leaf_width` of it as blade, 0.7 on
-  the default broadleaf. One constant for every species: a species whose `leaf_width` is far from
-  it has its density off by that ratio, and the solver's own number per mesh is the mend.
+  the default broadleaf — and a bought tree's branch card carries what its artist drew, 0.315 on
+  the static world's kit, 0.15 to 0.78 of the texels of the Poly Haven set's leaf images
+  ([static-asset world](static-asset-world.md#bought-foliage)). So each leaf triangle now counts
+  the share its own material's mask keeps, asked at the triangle's 16 sub-triangle centroids as
+  the coverage bake asks it, and every species, generated or bought, is counted at its own blade.
 - **Diffuse light is a mean over directions, not a beam** (the brief's third point; Campbell and
   Norman's diffuse extinction is the hemisphere's integral of the beam's): the prior is the mean of
   exp(−G u s) over a hemisphere's directions, **two** of them a point — the upper hemisphere and
@@ -94,8 +98,12 @@ The oak's 0.46 m²/m³ is inside what the lidar studies treat as ordinary (their
 interior sits on the floor. The palm has no grid: its fronds are not alpha-tested cards, and its
 leaves read as everything else does. Two rules keep what is counted leaf: a distance form reads
 its source's grid (its own finest cards are merged ones), and a mesh whose alpha-tested
-triangles average over 0.05 m² — a far forest's impostors — has none (`k_crown_card_max_m2`);
-counted as leaf, those gave the forest crowns of 10 to 170 m² a cubic metre. The forest's crowns are on
+triangles averaged over 0.05 m² — a far forest's impostors — had none (`k_crown_card_max_m2`);
+counted as whole cards, those gave the forest crowns of 10 to 170 m² a cubic metre. **That cap is
+gone (T146)**: it refused every bought tree's branch cards (1.17 m² a triangle on the kit), and a
+card now counts the leaf its mask keeps, not its whole area; a far forest's tile (many trees'
+impostors merged over a world tile) is named and skipped, as a distance form is. The table above was counted at 0.7 a card
+and is the solver's own; its rows move by each species' measured blade over 0.7. The forest's crowns are on
 [the cache's page](gi-cache-2026-11-07.md#stage-7-a-crowns-shade-as-a-prior) with its flight.
 
 ## What shipped foliage does, and why this is not that

@@ -59,6 +59,11 @@ int ruins_block_kit_command(int argc, char** argv);
 // The static world's kit: plain glTF meshes and PNGs carrying nothing a generator adds
 // (static_kit_commands.cpp; content/test-scenes/static-world/). Present in every configuration.
 int static_kit_command(int argc, char** argv);
+
+// engine-content alpha-merge: a base colour and a separate opacity map made one RGBA PNG, for
+// bought foliage whose glTF ships its mask outside the material (alpha_merge_commands.cpp;
+// tools/fetch-foliage.ps1; roadmap T139). Present in every configuration.
+int alpha_merge_command(int argc, char** argv);
 int terrain_command(int argc, char** argv);
 int tileset_command(int argc, char** argv);      // terrain-synth, terrain-tiles, terrain-masks
 int masks_check_command(int argc, char** argv);  // masks_check_commands.cpp: masks check (T72)

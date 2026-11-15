@@ -31,6 +31,7 @@ struct CrownPriorTable {
   f64 leaf_area_m2 = 0.0;    // over every crown, one-sided
   f64 leaf_volume_m3 = 0.0;  // the cells that hold a leaf
   f32 min_up = 1.0f;         // the deepest shade any crown's leaves stand in
+  u32 mask_decodes = 0;      // CPU decodes of leaf masks: one a distinct image and test
 };
 
 // Builds the table from the scene's merged meshes: level 0 of each (the source geometry), the

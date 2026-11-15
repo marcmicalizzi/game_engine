@@ -120,6 +120,8 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     tests/tail_budget_tests.cpp tests/mesh_room_tests.cpp tests/mesh_texture_tests.cpp
                     # R69: indirect light from the world-space cache.
                     tests/gi_cache_tests.cpp
+                    # T146: a crown's leaf measured from its cards' own masks, on the CPU.
+                    tests/crown_prior_measure_tests.cpp
                     # R151: the resolve drawn once per pixel class is the one draw's bytes.
                     tests/resolve_class_tests.cpp)
 if(TARGET engine::ruins)

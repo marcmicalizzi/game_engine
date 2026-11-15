@@ -547,11 +547,15 @@ TEST_CASE("gi cache key: a crown's cells share no key with a face's") {
 
 namespace {
 
+// A card's share that is leaf, as a mask measures it: 0.7, which is the value the prior once
+// assumed for every card, so the ball is the one this case always built.
+constexpr f32 k_ball_fill = 0.7f;
+
 // A ball of uniform leaf: one small triangle at every point of a lattice inside `radius`, sized so
-// that the leaf area a cubic metre (after the cards' fill) is `density`.
+// that the leaf area a cubic metre (after the cards' fill, `k_ball_fill`) is `density`.
 void leaf_ball(f32 radius, f32 spacing, f64 density, Vector<Vec3>& corners) {
   const f64 area = density * static_cast<f64>(spacing) * static_cast<f64>(spacing) *
-                   static_cast<f64>(spacing) / k_crown_card_fill;
+                   static_cast<f64>(spacing) / static_cast<f64>(k_ball_fill);
   const f32 leg = static_cast<f32>(std::sqrt(2.0 * area));
   const i32 n = static_cast<i32>(radius / spacing) + 1;
   for (i32 z = -n; z < n; ++z) {
@@ -597,8 +601,10 @@ TEST_CASE("gi cache key: a crown's prior in a ball of uniform leaf is Beer-Lambe
   CrownPriorDesc desc;
   Vector<u8> bytes;
   CrownPriorStats stats;
-  build_crown_prior({corners.data(), corners.size()}, Vec3{-radius, -radius, -radius},
-                    Vec3{radius, radius, radius}, desc, bytes, &stats);
+  const Vector<f32> fill(corners.size() / 3, k_ball_fill);
+  build_crown_prior({corners.data(), corners.size()}, {fill.data(), fill.size()},
+                    Vec3{-radius, -radius, -radius}, Vec3{radius, radius, radius}, desc, bytes,
+                    &stats);
   CHECK((desc.dims & 0xffu) == k_crown_cells);
   // The leaf it gathered is the ball's: u times the ball's volume, within the lattice's edge.
   const f64 volume = 4.0 / 3.0 * 3.14159265358979 * 64.0;

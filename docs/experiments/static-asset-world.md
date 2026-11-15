@@ -156,6 +156,137 @@ Proposed as open rows; the coordinator numbers them.
    (`extras`) or the scene's `Mesh` names, so a large imported surface stops tiling.
 6. **The caster policy as data on the scene's `Mesh`**, for an imported species.
 
+## Bought foliage
+
+Roadmap T139, 2026-11-14. The owner permitted CC0 foliage ("CC0 foliage is fine"), so the kit's
+cards now stand beside real bought plants: `tools/fetch-foliage.ps1` fetches the set pinned in
+`tools/fetch-foliage.json` — every file a URL, a SHA-256 and a size, each item's own page read for
+CC0 before its first file — into the git-ignored `content/samples/foliage/`, and
+`content/test-scenes/static-world/scene-bought.json` places 23 instances of it beside the kit.
+
+**The first thing a bought plant does is arrive broken.** Every Poly Haven plant ships its glTF with
+a JPEG base colour — no alpha channel — and its opacity as a separate `*_alpha` map **the glTF does
+not reference**, under a material that says `MASK` (seven), `BLEND` (five materials over five
+plants) or nothing at all (the conifer saplings' twigs). glTF has no opacity slot: its only mask is
+the base colour's alpha. So as shipped, every leaf of every plant is a solid card, and a `BLEND`
+material is drawn opaque besides, because the engine draws into a visibility buffer and has no
+sorted transparency (`assets::k_alpha_blend` reaches the renderer as opaque). A consumer fixes this
+in their DCC; the fetch script fixes it the same way, with `engine-content alpha-merge` (the base
+colour's RGB and the map's first channel as one RGBA PNG, through the engine's own decoder and
+writer) and a `<id>.masked.gltf` beside the shipped file whose leaf materials sample it as `MASK`
+at the glTF default cutoff, 0.5. The shipped file is kept as it came.
+
+**The second thing: a bought tree's leaves are gone a few metres away** (T147). At the default
+1 px threshold the two broadleaf trees and the two conifer saplings stand as bare branches from
+about 5 m out, with a few specks where leaves were, in every rasterizer, masked or as shipped; at
+`--lod 0.05` every leaf is there. Their leaves are disconnected cards — 0.4 to 2 million triangles
+of them a tree — and a group of disconnected quads is what meshoptimizer's regular simplifier cannot
+collapse (every vertex is on an open border), so the cluster DAG falls back to the sloppy
+simplifier, whose error, scaled by `simplify_error_factor_sloppy`, is far smaller than what it
+takes away: vertex clustering reduces a card to a sliver that samples whatever its corners' UVs
+land on. The kit's cards survive because they are few (117 a tree) and each one is large next to a
+group. A generated tree never meets this: the flora baker builds its own coarser levels as
+authored card and impostor levels with coverage errors (section 39) and does not hand its leaves to
+the DAG's simplifier. So the rule for the row is not "add coverage errors" alone — a coverage error
+can only make a transition *acceptable* sooner (`acceptable = geometric || coverage`) — but **make
+a masked transition's geometric error honest**: what the coarser level loses of the mask's kept
+area, as a length that projects as the geometric error does, then section 39's coverage errors and
+an impostor chain on top.
+
+**Smaller things the set showed.** Most Poly Haven plant files hold three or four variants side by
+side under separate nodes (the dandelions, ferns, nettles, grass clumps, rooibos and searsia), and
+the importer flattens a file's default scene into one mesh, so an instance places the whole row;
+a scene `Mesh` cannot name one node. The conifer saplings are 1.3 m tall, under the crown prior's
+1.5 m, so they have no crown, as a sward has none. Nothing the bought set did drew a log line: a
+tree that loses its leaves to LOD, stands rigid, or arrives with its mask outside its material was
+silent. Three of these now say so (T139's second leg): the import reads a `BLEND` material with a
+base colour image as `MASK` and logs it, one line a file, and logs a file whose default scene has
+several roots carrying meshes ([assets](../subsystems/assets.md)); the crown prior logs a mesh it
+skips for standing under its minimum height ([renderer](../subsystems/renderer.md#stage-7-a-crowns-shade-as-a-prior)).
+A mask that ships outside its material, a lost leaf and a rigid tree are still silent.
+
+**Every configuration flies it** (`msvc-release` of this branch, 1920 × 1080, the static path,
+`--shadows rt` unless named, no bounce, 60 warm-up frames; the machine was busy throughout — other
+processes on 100 % of the CPU at every start, so these are upper bounds; GPU passes are what is
+compared): `hw` 0.416 / 0.775 ms (median / p99 GPU total), `vertex` 0.419 / 0.895, `sw` 0.335 /
+0.378 (no traced shadows), `rt` 0.552 / 1.006, `hw` with the cascaded maps 0.309 / 0.429; 638
+visible pairs at the median (635 with the maps), and **no allocation and no buffer on the frame's
+thread in any flight**. The 7.6 million alpha-tested triangles all reach the opacity micromaps
+(`opacity micromaps baked triangles=7582992`, 6,985,696 of them with data), where the kit alone
+had 358.
+
+**The crown prior, measured (T146), and what it costs.** The pair at the owner's setting: 3840 ×
+2160, `--raster rt --shadows rt --tunable renderer.gi.mode=bounce`, the static path after 60
+warm-up frames, main's copied-out build (84f6d872) and this branch's alternating, two rounds each,
+`--materials` the worktree's generated sets; the machine busy (others on 99 to 100 % of the CPU),
+so upper bounds, GPU passes compared:
+
+| Scene | main, GPU total median / p99 ms | this branch | resolve, main → branch | crowns, main → branch |
+|---|---|---|---|---|
+| `scene.json` (the gate's) | 2.757 / 4.107, 2.727 / 4.089 | 2.601 / 3.798, 2.531 / 3.685 | 1.485, 1.343 → 1.289, 1.169 | 0 → 1 (the kit tree: 234 cards, 86.1 m² of leaf at its image's 0.315) |
+| `scene-bought.json` | 3.063 / 5.558, 3.043 / 5.303 | 2.976 / 5.540, 2.938 / 5.449 | 1.669, 1.632 → 1.520, 1.522 | 4 → 5 (48.6 → 116.4 m² of leaf) |
+
+The prior costs nothing and reads cheaper here: the resolve's 0.1 to 0.2 ms less is the kit
+tree's foliage now read through its crown instead of by faces, measured twice each way on a busy
+machine. Main already gave four of the bought plants a crown — their leaves are millimetre quads,
+under the 0.05 m² cap — counting each at 0.7; this branch counts each image's own share (in
+`engine-view` the image's mean, because its release of the uploaded streams takes the UVs before
+the prior is built: renderer.md, "Stage 7"). The pictures differ on 1 to 2 % of samples by more
+than 4 of 255 in luma, the bounce's own noise included, means equal.
+
+**What the measure does to generated crowns** (T139's second leg; no forest load). The flora
+recipes with alpha-tested leaves, each on tree-species' ground under an earth sky (latitude 47°,
+day 172, 10:00, exposure fixed at EV100 14), 3840 × 2160, `--raster rt --shadows rt`, the bounce on,
+two seconds held before each capture, leaves' images from the forest's v35 materials (read only);
+main's copied-out build against this branch's. Luma is the mean Rec. 709 luma of the 8-bit picture
+over the instance's own pixels (its ids); two rounds of the grove gave identical numbers.
+
+| Recipe | leaf m², main (0.7) → measured | image's share | mean / least `up`, main → branch | crown luma |
+|---|---|---|---|---|
+| oak (grove) | 397.5 → 347.3 | 0.612 | 0.41 / 0.14 → 0.44 / 0.17 | +0.01 to +0.07 % |
+| birch, hazel, oak sapling, birch clump | 151.7, 37.7, 12.1, 151.7 → ×0.874 | 0.612 | e.g. birch 0.49 / 0.23 → 0.53 / 0.28 | +0.01 to +0.07 % |
+| spruce, tall (grove) | 405.4 → 147.7 | 0.255 | 0.20 / 0.034 → 0.45 / 0.24 | −0.07 to +0.43 % |
+| spruce, young (grove) | 34.3 → 12.5 | 0.255 | 0.29 / 0.039 → 0.55 / 0.26 | +0.03 to +0.91 % |
+| ancient | 6,052 → 8,646 | 1.0 (its leaf material names no image) | 0.47 / 0.13 → 0.37 / 0.061 | −0.04 % |
+
+tree-species' ten recipes are flat-coloured with no alpha-tested leaf, and willow and the orchard
+apple have none either: no crown on either build, pictures identical. **The prior's change hardly
+reaches the picture** because a crown cell's mean is a ratio of sums — the samples' light over the
+sum of their priors (renderer.md, "Stage 7") — and each foliage pixel multiplies it back by its own
+prior, so a crown whose prior rises everywhere by one factor reads the same light; what moves is the
+prior's shape (the spruce's deepest cells from 0.034 to 0.24, its mean from 0.20 to 0.45) and how
+fast a cell's count fills (priors are added in sixteenths, so a conifer cell fills about 2.3 times
+faster). The conifers' crowns read up to 0.9 % brighter, which is the "too thin" direction the owner
+named but a hundredth of a stop: T146 neither causes nor answers it. The ancient counts its leaf
+cards whole because its leaf material names no image, which is what the rasterizer draws.
+
+**What the measure costs a load, and why it is now once an image.** Decoding a leaf image on the
+CPU took 6 to 25 ms on the busy machine (grove: 3 decodes, 55 and 74 ms; the row of seven: 5
+decodes, 32 ms). Done once a mesh and material, the forest's staging scene — about 3,000 tree meshes
+over a handful of pack images — would have spent 20 to 75 s of its load decoding the same files. So
+the masks are kept for the whole build, keyed by the image (its resolved file, or its embedded
+bytes' hash) and the material's test: the grove decodes 2 (28 ms), the row of seven 1 (8 ms), and
+a world pays one decode a distinct leaf image — under half a second for thirty. Where the UVs are
+gone only the mean is kept. The built texture's own coverage at level 0 (row G203) would cost nothing
+and is the better home once it is on main.
+
+### The audit's table again, with the bought trees as its input
+
+| Feature | What the bought set gets now | Row |
+|---|---|---|
+| Drawing its leaves at all | **nothing past a few metres at the default threshold**: the DAG's sloppy fallback eats disconnected cards | T147 |
+| Its mask, as shipped | nothing: the opacity is a map outside the material; the fetch merges it | T139 (the fetch) |
+| `BLEND` foliage | read as `MASK` at import when its alpha is an image, with a line a file; factor-only `BLEND` still opaque | T139 |
+| The crown prior | **yes** (T146): every tree 1.5 m and taller, its leaf measured from its own mask | T146 |
+| The bounce's foliage cells | yes, through the crown | T146 |
+| Opacity micromaps, the shadow proxy's bake, pixel classes, the structure cache | yes, as before | — |
+| Sway, the field kind | rigid, silently | T148 |
+| Coverage LOD, the cross-fade, an impostor chain | nothing | T147 |
+| The off-ground check, seating, water depth over the mesh ground | nothing | T149 |
+| Stochastic sampling | nothing (the ground still tiles) | T150 |
+| The caster policy | defaults | T151 |
+| One variant of a multi-variant file | nothing: the whole row is one mesh, now with a line at import | (a row: a scene `Mesh` naming a node) |
+
 ## Real bought assets, for the owner to approve
 
 The kit's cards are made the way a marketplace tree's are, but they are the engine's own. Permissively

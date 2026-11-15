@@ -161,6 +161,8 @@ const char* k_usage =
     "  static-kit <directory>                  the static world's kit: ground, a branch-card\n"
     "                                          tree, a bush, grass and a rock as plain glTF\n"
     "                                          with PNGs, carrying nothing a generator adds\n"
+    "  alpha-merge <color> <alpha> <out.png>   a base colour and a separate opacity map as\n"
+    "                                          one RGBA PNG (bought foliage's mask)\n"
     "  terrain <scene.json> --tile <x,z> [--time <s>]   one tile of the scene's dune field at a\n"
     "                                          game time as one JSON line (terrain --help);\n"
     "                                          present with the terrain capability\n"
@@ -1460,6 +1462,7 @@ int main(int argc, char** argv) {
   if (command == "ruins-kit") return content::ruins_kit_command(argc, argv);
   if (command == "ruins-block-kit") return content::ruins_block_kit_command(argc, argv);
   if (command == "static-kit") return content::static_kit_command(argc, argv);
+  if (command == "alpha-merge") return content::alpha_merge_command(argc, argv);
   if (command == "terrain") return content::terrain_command(argc, argv);
   if (command == "terrain-synth" || command == "terrain-tiles" || command == "terrain-masks" ||
       command == "terrain-read")

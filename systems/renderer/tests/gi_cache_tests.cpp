@@ -469,10 +469,11 @@ bool write_crown(const std::string& path) {
   return write_glb(path, m, Vec3{0.25f, 0.45f, 0.15f}, 0.8f, true);
 }
 
-// **A crown of leaf cards** (stage 8): the same ball of 1.5 m, filled with 340 two-sided square
-// cards 0.3 m a side turned every way, alpha-tested. A card's triangle is 0.045 m2 (a leaf's, by
-// `gfx::k_crown_card_max_m2`), and 340 cards are 30.6 m2 of card, 21.4 m2 of leaf at the card's
-// fill of 0.7, in 14.1 m3: **1.5 m2 of leaf a cubic metre**, a tall spruce's (the grounding page
+// **A crown of leaf cards** (stage 8): the same ball of 1.5 m, filled with 238 two-sided square
+// cards 0.3 m a side turned every way, alpha-tested with no texture, so the prior measures every
+// card whole as leaf (T146: a card's fill is what its mask keeps). 238 cards are 21.4 m2 of leaf —
+// the 340 cards this fixture had when the prior counted 0.7 of every card, the same leaf — in
+// 14.1 m3: **1.5 m2 of leaf a cubic metre**, a tall spruce's (the grounding page
 // counts 0.46 for the oak, 1.47 for the tall spruce and 4.0 for the young one; the forest's
 // ninetieth percentile is 1.82), where the cubes above count 6.5 and put every prior on its
 // floor. Through its centre the optical depth is 0.5 x 1.5 x 1.5 = 1.1, so the priors run from
@@ -480,7 +481,7 @@ bool write_crown(const std::string& path) {
 bool write_leaf_crown(const std::string& path) {
   const f32 radius = 1.5f;
   const f32 h = 0.15f;
-  const u32 cards = 340;
+  const u32 cards = 238;
   MeshBuilder m;
   u32 state = 20261112u;
   auto unit = [&state]() {
