@@ -204,6 +204,32 @@ Cut cut_of(const Description& d, const structure::Opening& o) noexcept {
   return c;
 }
 
+// A leaf's boards are about this wide, so a door of 75 to 80 cm has four (vernacular-shell.md:
+// four planks common from the seventeenth century); a mullion's side (a choice: no source read
+// gives a section).
+constexpr f64 k_leaf_board_cm = 19.0;
+constexpr f64 k_mullion_cm = 4.5;
+
+// An opening's frame: its depth through the wall, its face, and how far back from the outer face
+// it stands (an inner wall's sits in its middle).
+struct Joinery {
+  f64 depth = 0, width = 0, set = 0;
+};
+Joinery joinery_of(const structure::Wall& w, const structure::Opening& o) noexcept {
+  const bool door = o.kind == structure::OpeningKind::door;
+  const bool exterior = w.kind == structure::WallKind::exterior;
+  const f64 h = static_cast<f64>(w.thickness) * 0.5;
+  Joinery j;
+  j.depth = door ? 10.0 : 7.0;
+  j.width = door ? 6.0 : 5.0;
+  const f64 set = exterior ? (door ? 6.0 : 8.0) : h - 0.5 * j.depth;
+  j.set = std::max(1.0, std::min(set, 2.0 * h - j.depth - 1.0));
+  return j;
+}
+// Depth `t` from a wall's outer face inward is `q = out_sign * (half - t)`: it runs toward the
+// wall's left where its right is the outside, and from its left face otherwise.
+f64 out_sign_of(const structure::Wall& w) noexcept { return w.b < 0 && w.a >= 0 ? -1.0 : 1.0; }
+
 void sort_unique(Vector<f64>& v) {
   std::sort(v.data(), v.data() + v.size());
   u32 kept = 0;
@@ -434,33 +460,52 @@ void wall_opening(const Context& ctx, const structure::Opening& o) {
   }
   if (o.kind == structure::OpeningKind::doorway) return;
   // Depth `t` is from the outer face inward; an inner wall's frame sits in its middle.
-  const f64 out_sign = w.b < 0 && w.a >= 0 ? -1.0 : 1.0;
+  const f64 out_sign = out_sign_of(w);
   const f64 thick = 2.0 * h;
   MeshPart& timber = ctx.part(Surface::timber);
   const auto member = [&](f64 s0, f64 s1, f64 y0, f64 y1, f64 t0, f64 t1, u32 grain) {
     const f64 qa = out_sign * (h - t0), qb = out_sign * (h - t1);
     box(timber, g.frame, s0, s1, y0, y1, std::min(qa, qb), std::max(qa, qb), grain);
   };
-  const f64 depth = door ? 10.0 : 7.0;  // the frame's depth through the wall
-  const f64 width = door ? 6.0 : 5.0;   // its face
-  f64 set = exterior ? (door ? 6.0 : 8.0) : h - 0.5 * depth;
-  set = std::max(1.0, std::min(set, thick - depth - 1.0));
+  const Joinery joinery = joinery_of(w, o);
+  const f64 depth = joinery.depth, width = joinery.width, set = joinery.set;
   // The frame: two jambs to the head's top, a head between them, a window's sill member.
   member(c.s0 - 1.0, c.s0 + width, c.y0 - 1.0, c.y1 + 1.0, set, set + depth, 1);
   member(c.s1 - width, c.s1 + 1.0, c.y0 - 1.0, c.y1 + 1.0, set, set + depth, 1);
   member(c.s0 + width, c.s1 - width, c.y1 - width, c.y1 + 1.0, set, set + depth, 0);
   if (!door) {
     member(c.s0 + width, c.s1 - width, c.y0 - 1.0, c.y0 + width, set, set + depth, 0);
-    // Glazing bars: an upright every half metre or so, a transom in a tall light.
     const f64 clear = c.s1 - c.s0 - 2.0 * width;
-    const u32 uprights = static_cast<u32>(clear / 45.0);
-    for (u32 i = 1; i <= uprights; ++i) {
-      const f64 s = c.s0 + width + clear * static_cast<f64>(i) / static_cast<f64>(uprights + 1);
-      member(s - 1.5, s + 1.5, c.y0 + width, c.y1 - width, set + 2.0, set + 5.0, 1);
-    }
-    if (c.y1 - c.y0 > 100.0) {
-      const f64 y = 0.5 * (c.y0 + c.y1);
-      member(c.s0 + width, c.s1 - width, y - 1.5, y + 1.5, set + 2.0, set + 5.0, 0);
+    if (o.mullions > 0) {
+      // An unglazed window's mullions: square timbers set on the cant (a corner toward the
+      // weather), sunk a centimetre into the sill and the head, in the frame's middle.
+      const f64 r = 0.5 * k_mullion_cm;
+      const f64 q = out_sign * (h - set - 0.5 * depth);
+      const f64 k = std::sqrt(0.5);
+      for (u32 i = 1; i <= o.mullions; ++i) {
+        const f64 s = c.s0 + width + clear * static_cast<f64>(i) / static_cast<f64>(o.mullions + 1);
+        Frame3 frame;
+        frame.o[0] = g.frame.ox + g.frame.dx * s + g.frame.nx * q;
+        frame.o[1] = 0.0;
+        frame.o[2] = g.frame.oz + g.frame.dz * s + g.frame.nz * q;
+        frame.axis[0][0] = 0.0, frame.axis[0][1] = 1.0, frame.axis[0][2] = 0.0;
+        frame.axis[1][0] = (g.frame.dx + g.frame.nx) * k, frame.axis[1][1] = 0.0;
+        frame.axis[1][2] = (g.frame.dz + g.frame.nz) * k;
+        frame.axis[2][0] = (g.frame.dx - g.frame.nx) * k, frame.axis[2][1] = 0.0;
+        frame.axis[2][2] = (g.frame.dz - g.frame.nz) * k;
+        box3(timber, frame, c.y0 + width - 1.0, c.y1 - width + 1.0, -r, r, -r, r, 0);
+      }
+    } else {
+      // Glazing bars: an upright every half metre or so, a transom in a tall light.
+      const u32 uprights = static_cast<u32>(clear / 45.0);
+      for (u32 i = 1; i <= uprights; ++i) {
+        const f64 s = c.s0 + width + clear * static_cast<f64>(i) / static_cast<f64>(uprights + 1);
+        member(s - 1.5, s + 1.5, c.y0 + width, c.y1 - width, set + 2.0, set + 5.0, 1);
+      }
+      if (c.y1 - c.y0 > 100.0) {
+        const f64 y = 0.5 * (c.y0 + c.y1);
+        member(c.s0 + width, c.s1 - width, y - 1.5, y + 1.5, set + 2.0, set + 5.0, 0);
+      }
     }
     // The sill board, proud of the outer face.
     if (exterior) member(c.s0 - 6.0, c.s1 + 6.0, c.y0 - 4.0, c.y0 + 1.0, -5.0, set + 1.0, 0);
@@ -468,6 +513,43 @@ void wall_opening(const Context& ctx, const structure::Opening& o) {
   // The lintel: a timber over the opening, bearing on the wall either side, proud of the face.
   if (exterior)
     member(c.s0 - 15.0, c.s1 + 15.0, c.y1 - 1.0, c.y1 + 13.0, -1.5, std::min(12.0, thick - 2.0), 0);
+  // The leaves (structures.md, "Leaves and mullions"): upright boards of unequal widths, every
+  // other one a few millimetres proud so the joints read, on ledges across the face the leaf
+  // opens toward: three to a door, two to a shutter. Each ledge is sunk a centimetre into its
+  // boards.
+  LeafPlace places[2];
+  const u32 leaves = leaf_places(d, o, places);
+  for (u32 l = 0; l < leaves; ++l) {
+    const LeafPlace& p = places[l];
+    Frame3 frame;
+    frame.o[0] = p.px, frame.o[1] = 0.0, frame.o[2] = p.pz;
+    frame.axis[0][0] = p.ux, frame.axis[0][1] = 0.0, frame.axis[0][2] = p.uz;
+    frame.axis[1][0] = 0.0, frame.axis[1][1] = 1.0, frame.axis[1][2] = 0.0;
+    frame.axis[2][0] = p.vx, frame.axis[2][1] = 0.0, frame.axis[2][2] = p.vz;
+    const u32 boards =
+        std::min(8u, std::max(1u, static_cast<u32>(p.width / k_leaf_board_cm + 0.5)));
+    const f64 share[4] = {1.12, 0.92, 1.06, 0.90};
+    f64 total = 0.0;
+    for (u32 b = 0; b < boards; ++b)
+      total += share[b % 4];
+    f64 at = 0.0;
+    for (u32 b = 0; b < boards; ++b) {
+      const f64 wide = p.width * share[b % 4] / total;
+      const f64 proud = b % 2 == 1 ? 0.3 : 0.0;
+      box3(timber, frame, at, at + wide, p.y0, p.y1, p.ledges, p.ledges + p.boards + proud, 1);
+      at += wide;
+    }
+    const f64 tall = p.y1 - p.y0;
+    const u32 ledges = tall > 120.0 ? 3u : 2u;
+    const f64 ledge = p.door ? 15.0 : 9.0;
+    const f64 inset = std::min(20.0, tall * 0.12);
+    for (u32 i = 0; i < ledges; ++i) {
+      const f64 y =
+          p.y0 + inset +
+          (tall - 2.0 * inset - ledge) * static_cast<f64>(i) / static_cast<f64>(ledges - 1);
+      box3(timber, frame, 2.0, p.width - 2.0, y, y + ledge, 0.0, p.ledges + 1.0, 0);
+    }
+  }
 }
 
 // A roof: each slope a slab over its rectangle and its overhangs, the covering on top, at the
@@ -686,6 +768,50 @@ void mesh_chimney(const Context& ctx, const structure::Chimney& c) {
 }
 
 }  // namespace
+
+u32 leaf_places(const Description& d, const structure::Opening& o, LeafPlace (&out)[2]) noexcept {
+  if (o.leaf == structure::LeafKind::none || o.kind == structure::OpeningKind::doorway) return 0;
+  const structure::Wall& w = d.walls[o.wall];
+  const f64 wx = static_cast<f64>(w.to[0] - w.from[0]), wz = static_cast<f64>(w.to[1] - w.from[1]);
+  const f64 length = std::sqrt(wx * wx + wz * wz);
+  const f64 dx = wx / length, dz = wz / length;
+  const f64 nx = dz, nz = -dx;  // the wall's left
+  const Cut c = cut_of(d, o);
+  const Joinery j = joinery_of(w, o);
+  const f64 h = static_cast<f64>(w.thickness) * 0.5;
+  const f64 out_sign = out_sign_of(w);
+  const bool door = o.kind == structure::OpeningKind::door;
+  // The side it opens to, as a sense along the wall's left, and the frame's face on that side:
+  // the leaf's own face there is flush with it, its ledges and then its boards behind.
+  const f64 swing = o.opens_right ? -1.0 : 1.0;
+  const f64 qa = out_sign * (h - j.set), qb = out_sign * (h - j.set - j.depth);
+  const f64 q = swing * qa > swing * qb ? qa : qb;
+  const f64 clear = c.s1 - c.s0 - 2.0 * j.width - 0.6;
+  const u32 count = o.leaves >= 2 ? 2u : 1u;
+  f64 sine = 0.0, cosine = 1.0;
+  turn_deg(o.leaf_open, sine, cosine);
+  for (u32 k = 0; k < count; ++k) {
+    const bool at_to = count == 2 ? k == 1 : o.hinge_at_to;
+    const f64 sigma = at_to ? -1.0 : 1.0;  // from the hinge toward the free edge when shut
+    const f64 s = at_to ? c.s1 - j.width - 0.3 : c.s0 + j.width + 0.3;
+    LeafPlace& p = out[k];
+    p.px = static_cast<f64>(w.from[0]) + dx * s + nx * q;
+    p.pz = static_cast<f64>(w.from[1]) + dz * s + nz * q;
+    // Shut, `u` runs along the wall and `v` back from the face into the frame; open, both turn
+    // about the pivot toward the side it opens to.
+    p.ux = cosine * sigma * dx + sine * swing * nx;
+    p.uz = cosine * sigma * dz + sine * swing * nz;
+    p.vx = -cosine * swing * nx + sine * sigma * dx;
+    p.vz = -cosine * swing * nz + sine * sigma * dz;
+    p.width = count == 2 ? clear * 0.5 - 0.15 : clear;
+    p.y0 = c.y0 + (door ? 0.5 : j.width + 0.3);
+    p.y1 = c.y1 - j.width - 0.3;
+    p.boards = door ? 3.0 : 2.0;
+    p.ledges = door ? 2.5 : 2.0;
+    p.door = door;
+  }
+  return count;
+}
 
 void mesh_shell(const Context& ctx) {
   const Description& d = *ctx.d;

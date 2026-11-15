@@ -21,6 +21,11 @@ enum WallKind : u8 { exterior = 0, inner = 1 }
 /// `doorway` is a bare opening through a wall, lined by the wall's own reveal.
 enum OpeningKind : u8 { door = 0, window = 1, doorway = 2 }
 
+/// What hangs in an opening's frame. `none`: nothing; the opening stands open. `ledged`: a leaf
+/// of upright boards on ledges across the side it opens to: a door's leaf, a window's shutter
+/// (structures.md, "Leaves and mullions").
+enum LeafKind : u8 { none = 0, ledged = 1 }
+
 /// A roof's form over its rectangle. `gable`: two slopes meeting at a ridge, the end walls rising
 /// into gables. `hip`: four slopes, the eaves level all round. `mono`: one slope from the high
 /// side (the side `ridge_along_x` and the rectangle's low x or z name) to the low.
@@ -80,6 +85,21 @@ struct Opening @version(1) {
   /// The sill and the head above the wall's storey's floor top. A door's sill is 0.
   sill: i32 = 0
   head: i32 = 200
+  /// What hangs in its frame (a `door` or a `window`; a `doorway` has no frame to hang one in).
+  /// Absent unless stated: an opening that states no leaf stands open.
+  leaf: LeafKind = none
+  /// How many leaves: 1, or 2 hung on both jambs and meeting in the middle (a pair of shutters).
+  leaves: u8 = 1
+  /// One leaf's hinges: false on the jamb nearer the wall's `from` end, true on the other.
+  hinge_at_to: bool = false
+  /// The side a leaf opens to: false the wall's left (its `a`: the inside of an exterior wall
+  /// drawn counter-clockwise), true its right. The leaf hangs on that face of the frame.
+  opens_right: bool = false
+  /// How far a leaf stands open, degrees from shut: 0 to 90.
+  leaf_open: i32 = 0
+  /// A `window` only: how many upright mullions set on the cant stand between its sill and its
+  /// head (an unglazed window's); 0 keeps the glazing bars.
+  mullions: u32 = 0
 }
 
 /// A room: a region of one storey bounded by walls. Two rooms are joined where an opening stands

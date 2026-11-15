@@ -88,6 +88,18 @@ void through(const Description& d, u32 wall, f64 s, f64 y, D3& a, D3& b) {
   b = {(x - uz * reach) * 0.01, y * 0.01, (z + ux * reach) * 0.01};
 }
 
+// Two stations inside an opening that stand clear of its joinery: off its middle and its frame,
+// and in a mullioned window the middle of the second light from each jamb (a window's frame is
+// 5 cm a side; a leaf folded back lies within 10 cm of its jamb).
+void clear_stations(const structure::Opening& o, f64 (&out)[2]) {
+  out[0] = o.at - 0.25 * o.width;
+  out[1] = o.at + 0.25 * o.width;
+  if (o.mullions == 0) return;
+  const f64 light = (o.width - 10.0) / (o.mullions + 1);
+  out[0] = o.at - 0.5 * o.width + 5.0 + 1.5 * light;
+  out[1] = o.at + 0.5 * o.width - 5.0 - 1.5 * light;
+}
+
 u64 mesh_hash(const Solved& s) {
   u64 h = 0;
   for (const MeshPart& part : s.parts) {
@@ -208,11 +220,14 @@ TEST_CASE("structures: an opening is clear where its description puts it, the wa
   for (u32 i = 0; i < cot.openings.size(); ++i) {
     const structure::Opening& o = cot.openings[i];
     CAPTURE(i);
-    // Off the middle, where a window's glazing bar stands, and off the frame at the edges.
-    for (const f64 fs : {0.25, 0.75})
+    // Off the middle, where a window's glazing bar stands, off the frame at the edges, between
+    // its mullions, and (every leaf of the cot standing open) beside its leaves.
+    f64 stations[2];
+    clear_stations(o, stations);
+    for (const f64 station : stations)
       for (const f64 fy : {0.3, 0.7}) {
         D3 a, b;
-        through(cot, o.wall, o.at + (fs - 0.5) * o.width, o.sill + fy * (o.head - o.sill), a, b);
+        through(cot, o.wall, station, o.sill + fy * (o.head - o.sill), a, b);
         CHECK(crossings(s, a, b) == 0);
       }
     // The pier beside it and the wall over it are two faces thick.
@@ -506,6 +521,66 @@ TEST_CASE("structures: the recipe's file, its hash and its container") {
               report.clusters, report.root_triangles);
 }
 
+TEST_CASE("structures: a leaf hangs in its frame, shut across the opening or open beside it") {
+  // structures.md, "Leaves and mullions". The cot's door is opening 0, in the front wall (wall 3,
+  // which runs toward -x with the room on its left, +z).
+  Description cot = example_cot();
+  Solved open;
+  solved(cot, MeshScope::whole, open);
+  cot.openings[0].leaf_open = 0;
+  Solved shut;
+  solved(cot, MeshScope::whole, shut);
+  cot.openings[0].leaf = structure::LeafKind::none;
+  Solved bare;
+  solved(cot, MeshScope::whole, bare);
+  // A door's leaf is four boards and three ledges, every one a closed box of timber.
+  CHECK(triangles(shut, Surface::timber) == triangles(bare, Surface::timber) + 7 * 12);
+  CHECK(open.report.triangles == shut.report.triangles);
+  // Shut, a line through the doorway's middle passes through a board (two faces); through a
+  // ledge's height, the board and the ledge sunk into it; open a quarter turn, nothing.
+  const structure::Opening& door = cot.openings[0];
+  D3 a, b;
+  through(cot, door.wall, door.at, 60.0, a, b);
+  CHECK(crossings(shut, a, b) == 2);
+  CHECK(crossings(open, a, b) == 0);
+  CHECK(crossings(bare, a, b) == 0);
+  through(cot, door.wall, door.at, 30.0, a, b);
+  CHECK(crossings(shut, a, b) == 4);
+  // The walk records carry each leaf where it stands: shut, the door's lies along the wall
+  // inside the wall's thickness; open, it lies square to the wall, into the room.
+  cot = example_cot();
+  Walk walk;
+  std::string error;
+  REQUIRE(walk_records(cot, walk, error));
+  REQUIRE(walk.leaves.size() == 4);  // the door's, a pair of shutters, one shutter
+  const WalkLeaf& leaf = walk.leaves[0];
+  CHECK(leaf.opening == 0);
+  CHECK(leaf.open_deg == 90);
+  CHECK(leaf.tip.x == doctest::Approx(leaf.hinge.x).epsilon(1e-4));
+  CHECK(leaf.tip.y - leaf.hinge.y == doctest::Approx(0.774).epsilon(1e-3));  // 90 less the frame
+  CHECK(leaf.thickness == doctest::Approx(0.055));
+  CHECK(leaf.y1 - leaf.y0 == doctest::Approx(1.90 - 0.02 - 0.005 - 0.063).epsilon(1e-3));
+  CHECK(walk.openings.size() == cot.openings.size());  // an opening's record is as it was
+  cot.openings[0].leaf_open = 0;
+  REQUIRE(walk_records(cot, walk, error));
+  CHECK(walk.leaves[0].tip.y == doctest::Approx(walk.leaves[0].hinge.y).epsilon(1e-4));
+  CHECK(std::fabs(walk.leaves[0].tip.x - walk.leaves[0].hinge.x) ==
+        doctest::Approx(0.774).epsilon(1e-3));
+  // An unglazed window's mullions are closed boxes too, and a doorway takes no leaf.
+  cot = example_cot();
+  cot.openings[1].mullions = 0;
+  cot.openings[1].leaf = structure::LeafKind::none;
+  Solved glazed;
+  solved(cot, MeshScope::whole, glazed);
+  // Three mullions and two shutters of two boards and two ledges for one glazing bar.
+  CHECK(triangles(open, Surface::timber) == triangles(glazed, Surface::timber) + (3 + 8 - 1) * 12);
+  cot.openings[0].kind = structure::OpeningKind::doorway;
+  cot.openings[0].leaf = structure::LeafKind::ledged;
+  std::string why;
+  CHECK(!validate(cot, why));
+  CHECK(why.find("a leaf hangs in a door or a window") != std::string::npos);
+}
+
 TEST_CASE("structures: the same description is the same bytes") {
   Solved a, b;
   solved(example_cot(), MeshScope::whole, a);
@@ -518,8 +593,10 @@ TEST_CASE("structures: the same description is the same bytes") {
               static_cast<unsigned long long>(mesh_hash(two)));
   // Pinned on MSVC (x86-64-v3); GCC and Clang reproduce them (structures.md, "Determinism"). A
   // mesher change that moves a triangle bumps `k_structure_version` and re-takes these.
-  CHECK(mesh_hash(a) == 0x2b883646101c556aull);
-  CHECK(mesh_hash(two) == 0x24f1154db8bc316eull);
+  // Version 3 (2026-11-14): the example gained a door's leaf, mullions and shutters; they moved
+  // from 0x2b883646101c556a and 0x24f1154db8bc316e.
+  CHECK(mesh_hash(a) == 0xa26bd94ba21a24ddull);
+  CHECK(mesh_hash(two) == 0x3689e3bab9b845edull);
 }
 
 TEST_CASE("structures: the corpus keeps its rooms and doors where its descriptions put them") {
@@ -554,10 +631,14 @@ TEST_CASE("structures: the corpus keeps its rooms and doors where its descriptio
       const f64 base = d.storeys[d.walls[o.wall].storey].elevation;
       CAPTURE(i);
       D3 a, b;
-      for (const f64 fs : {0.25, 0.75}) {
-        through(d, o.wall, o.at + (fs - 0.5) * o.width, base + o.sill + 0.3 * (o.head - o.sill), a,
-                b);
-        CHECK(crossings(s, a, b) == 0);
+      // An opening is clear beside its joinery unless a leaf stands across it (one open less
+      // than a quarter turn), and then it is closed by exactly that leaf.
+      f64 stations[2];
+      clear_stations(o, stations);
+      const bool across = o.leaf != structure::LeafKind::none && o.leaf_open < 90;
+      for (const f64 station : stations) {
+        through(d, o.wall, station, base + o.sill + 0.3 * (o.head - o.sill), a, b);
+        if (!across) CHECK(crossings(s, a, b) == 0);
       }
       through(d, o.wall, o.at + 0.5 * o.width + 8.0, base + o.sill + 0.5 * (o.head - o.sill), a, b);
       CHECK(crossings(s, a, b) == 2);
@@ -586,7 +667,10 @@ TEST_CASE("structures: the corpus keeps its rooms and doors where its descriptio
     if (name == "cot.structure.json") {
       structure::Recipe example;
       example.description = example_cot();
-      CHECK(canonical_json(recipe) == canonical_json(example));
+      const bool same = canonical_json(recipe) == canonical_json(example);
+      CHECK(same);
+      // What the committed file should hold when the example moves.
+      if (!same) std::printf("structures: example_cot is %s\n", canonical_json(example).c_str());
     }
   }
   CHECK(files >= 2);

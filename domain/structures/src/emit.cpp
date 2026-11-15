@@ -39,6 +39,23 @@ void fan(MeshPart& part, const Vec3* points, const Vec2* uvs, const Vec3* normal
 
 }  // namespace
 
+void turn_deg(i32 degrees, f64& sine, f64& cosine) noexcept {
+  const i32 deg = degrees < 0 ? 0 : (degrees > 90 ? 90 : degrees);
+  // Over 45 degrees the two change places, so the series runs on at most a quarter of pi, where
+  // nine terms are past an f64's last bit.
+  const bool swap = deg > 45;
+  const f64 x = static_cast<f64>(swap ? 90 - deg : deg) * 0.017453292519943295;
+  const f64 x2 = x * x;
+  f64 s = 1.0, c = 1.0;
+  for (i32 k = 9; k >= 1; --k) {
+    s = 1.0 - s * x2 / static_cast<f64>((2 * k) * (2 * k + 1));
+    c = 1.0 - c * x2 / static_cast<f64>((2 * k - 1) * (2 * k));
+  }
+  s *= x;
+  sine = swap ? c : s;
+  cosine = swap ? s : c;
+}
+
 void polygon(MeshPart& part, const Vec3* points, const Vec2* uvs, u32 n, Vec3 normal) {
   fan(part, points, uvs, nullptr, normal, n, normal);
 }

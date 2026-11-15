@@ -58,7 +58,7 @@ the left of +x is -z, so an outline that runs **counter-clockwise seen from abov
 | `foundation`, `plinth_top` | How far below the origin the exterior walls reach into the ground, and the top of the plinth band at their foot. |
 | `storeys[]` | `elevation` (the floor's top), `height` (to the top of this storey's walls: the next floor's top, or the wall plate), `floor_thickness`, and for the top storey `ceiling`. Storeys stack: each one's elevation is the one below's elevation plus height. |
 | `walls[]` | A centre line `from` to `to` on a `storey`, a `thickness`, a `kind` (`exterior`, `inner`), the rooms on its left (`a`) and right (`b`), -1 for outside, and `bulge` (0: straight). |
-| `openings[]` | A span of a wall: its centre `at` along the wall from `from`, its clear `width`, its `sill` and `head` above the storey's floor, and a `kind`: `door` (a frame and a threshold; the leaf is not built yet and the doorway stands open), `window` (a frame, glazing bars, a sill board), `doorway` (a bare opening). |
+| `openings[]` | A span of a wall: its centre `at` along the wall from `from`, its clear `width`, its `sill` and `head` above the storey's floor, and a `kind`: `door` (a frame and a threshold), `window` (a frame, glazing bars or `mullions`, a sill board), `doorway` (a bare opening). **What hangs in it is stated or absent**: `leaf` (`none`, `ledged`), `leaves` (1, or a pair), `hinge_at_to`, `opens_right`, `leaf_open` (degrees from shut, 0 to 90) ([leaves and mullions](#leaves-and-mullions)). |
 | `rooms[]` | An `id`, a `storey`, a `kind`, a name and an outline on the walls' centre lines. |
 | `stairs[]` | A flight from a storey's floor to the next: its `foot`, the quarter turn it climbs along, its `width`, `risers` and `going`, the `well` it leaves in the floor above, and the rooms at its foot and head. |
 | `roofs[]` | A `form` (`gable`, `mono`; `hip` is refused until it is meshed) over a rectangle (the outer faces of the walls that carry it), the ridge's axis, the `eaves` height, the `pitch` as rise over run in permille, the `overhang` at the eaves and the `verge` at the gables, and the covering's `thickness`. |
@@ -146,6 +146,34 @@ face (a door's 60 mm back and 100 mm deep, a window's 80 and 70), a window's gla
 upright about every 450 mm, a transom in a light over a metre tall) and its sill board proud of
 the wall, and over an exterior opening a lintel bearing 150 mm on the wall either side. A window
 has no glass: there is no transmissive material to draw it with (a row this leaves).
+
+### Leaves and mullions
+
+**A description that states no leaf has none**: `Opening.leaf` is `none` by default and the
+opening stands open, as every opening did before the field. `ledged` hangs a leaf in the frame
+of a `door` or a `window` (a `doorway` has no frame and the validator refuses one there):
+upright boards of unequal widths, about 19 cm each so a door of 75 to 80 cm has four, every other
+one 3 mm proud so the joints catch the light, on **ledges** across the face the leaf opens
+toward (three to a door, two to a shutter under 1.2 m), each ledge sunk a centimetre into its
+boards. A door's boards are 3 cm and its ledges 2.5 by 15; a shutter's 2 cm and 2 by 9. There
+is no brace: the grounding page has ledged-and-braced doors from the nineteenth century only.
+There is no ironwork either (strap hinges, a latch): none of the nine surfaces is iron.
+
+**Where it hangs.** The leaf's face is flush with the frame's face on the side it opens to
+(`opens_right` false: the wall's left, which is the inside of an exterior wall drawn
+counter-clockwise), its ledges and then its boards behind, inside the frame's depth. Its pivot is
+that face's edge at the hinge jamb (`hinge_at_to` picks the jamb; `leaves` 2 hangs one on each
+and they meet in the middle), and `leaf_open` turns it about the pivot toward the side it opens
+to, 0 to 90 degrees. The sine and cosine are a polynomial of sums and products
+(`detail::turn_deg`), exact at 0 and 90, so every toolchain hangs a leaf on the same bits. Open a
+quarter turn in a thick wall, the leaf lies in the reveal beside its hinge jamb and **takes its
+own thickness, 5.5 cm, off the clear width**, as a real one does; shut, it closes the opening.
+`leaf_places` (`src/emit.h`) is the one function the mesher and the walk records both ask.
+
+**Mullions.** `Opening.mullions` (a window's; 0 keeps the glazing bars) stands that many square
+timbers, 4.5 cm a side, **set on the cant** between the sill and the head in the frame's middle,
+evenly spaced: the unglazed window of an early cottage, closed by its shutters. It is how a
+window reads as one until there is glass to draw. The validator wants 12 cm a light.
 
 ### Roofs
 
@@ -246,8 +274,12 @@ reading a mesh, in the building's frame, metres: a `WalkFloor` a storey (its hei
 outline), a `WalkWell` a stair (the hole in the floor above), a `WalkWall` a wall (its centre
 line, thickness, foot and lowest top), a `WalkOpening` an opening (its two jambs' feet on the
 centre line, its sill and head, the wall's thickness and the rooms either side), a `WalkFlight` a
-stair (its foot, direction, width, rise, going, risers and the height it lands on) and a `WalkBox`
-a solid member. Each carries the index of what it came from, so a failure names a description's
+stair (its foot, direction, width, rise, going, risers and the height it lands on), a `WalkBox`
+a solid member, and a `WalkLeaf` a leaf **where it stands**: a plumb slab `thickness` deep about
+the line from `hinge` to `tip`, from `y0` to `y1`, with the degrees it stands open. An opening's
+own record is the same with or without a leaf, so a consumer that reads no leaves walks through
+a shut door; one that wants a shut door to stop a walker, or an open one to narrow the way,
+adds the slab. Each carries the index of what it came from, so a failure names a description's
 element.
 
 ## The file and the container
@@ -298,6 +330,8 @@ Each is a case in `tests/structures_tests.cpp`:
 - An inner wall butts the wall it meets and reaches nothing outside; a well is a hole in the floor
   and the ceiling; a flight's steps rise to the landing.
 - The exterior and the interior are the whole between them.
+- A leaf is four boards and three ledges of closed timber, shut across its opening or, a quarter
+  turn open, clear of it; the walk records carry it where it stands; a doorway takes none.
 - The validator refuses by name.
 - A recipe's canonical form reads back to itself.
 - **The conformance corpus** (`content/structures/`, plan 14 §14.1): every committed description
@@ -384,8 +418,9 @@ is listed there under `disabled_capabilities`. Everything else must still build 
 ## Not yet
 
 - Arcs and splines (`Wall.bulge`), hip, cone, shell and sweep roofs (plan 14 §14.3).
-- A door's leaf as a mesh of its own, and the `Door` record with its state (S91).
-- Glass in a window.
+- The `Door` record with its state (S91): a leaf is drawn where the description says and does
+  not move; a leaf that swings is a mesh of its own.
+- Glass in a window, and iron (strap hinges, latches): no surface draws either.
 - The kit of solved parts beyond boxes: hewn beams, warped planks, thatch bundles, shingles (G64).
 - The record drawn from a document (D37's other half).
 - A plinth that stands proud of the wall over it, a cob wall's batter and rounded corners, a

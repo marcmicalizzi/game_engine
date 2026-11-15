@@ -224,6 +224,22 @@ bool validate(const Description& d, std::string& why) {
       why = name + ": the head, " + num(o.head) + " cm, is not 20 cm over the sill, " + num(o.sill);
       return false;
     }
+    // A leaf hangs in a frame, one or two of them, shut or open up to a quarter turn; mullions
+    // stand in a window, with a hand's breadth between them.
+    const bool framed = o.kind != structure::OpeningKind::doorway;
+    if (o.leaf != structure::LeafKind::none &&
+        (!framed || o.leaf != structure::LeafKind::ledged || o.leaves < 1 || o.leaves > 2 ||
+         o.leaf_open < 0 || o.leaf_open > 90 || o.width < 40)) {
+      why = name + ": a leaf hangs in a door or a window at least 40 cm wide, 1 or 2 of them, " +
+            "open 0..90 degrees (leaves " + num(o.leaves) + ", leaf_open " + num(o.leaf_open) + ")";
+      return false;
+    }
+    if (o.mullions > 0 && (o.kind != structure::OpeningKind::window || o.mullions > 16 ||
+                           (o.width - 10) < 12 * (static_cast<i32>(o.mullions) + 1))) {
+      why = name + ": " + num(o.mullions) + " mullions want a window with 12 cm a light, and " +
+            "this one is " + num(o.width) + " cm wide";
+      return false;
+    }
     const structure::Wall& w = d.walls[o.wall];
     const f64 dx = static_cast<f64>(w.to[0] - w.from[0]),
               dz = static_cast<f64>(w.to[1] - w.from[1]);
@@ -471,6 +487,22 @@ bool walk_records(const Description& d, Walk& out, std::string& error) {
     r.room_a = w.a;
     r.room_b = w.b;
     out.openings.push_back(r);
+    detail::LeafPlace places[2];
+    const u32 leaves = detail::leaf_places(d, o, places);
+    for (u32 k = 0; k < leaves; ++k) {
+      const detail::LeafPlace& p = places[k];
+      const f64 deep = p.boards + p.ledges;
+      WalkLeaf leaf;
+      leaf.opening = i;
+      leaf.hinge = {m(p.px + p.vx * deep * 0.5), m(p.pz + p.vz * deep * 0.5)};
+      leaf.tip = {m(p.px + p.vx * deep * 0.5 + p.ux * p.width),
+                  m(p.pz + p.vz * deep * 0.5 + p.uz * p.width)};
+      leaf.y0 = m(p.y0);
+      leaf.y1 = m(p.y1);
+      leaf.thickness = m(deep);
+      leaf.open_deg = o.leaf_open;
+      out.leaves.push_back(leaf);
+    }
   }
   for (u32 i = 0; i < d.boxes.size(); ++i) {
     const structure::Box& b = d.boxes[i];
@@ -529,6 +561,18 @@ structure::Description example_cot(i32 width, i32 depth, i32 wall) {
   opening(3, structure::OpeningKind::door, a * 38 / 100, 90, 0, 190);
   opening(3, structure::OpeningKind::window, a * 76 / 100, 80, 95, 180);
   opening(1, structure::OpeningKind::window, a / 2, 90, 95, 180);
+  // The door's leaf stands open a quarter turn in its reveal, hung on the jamb away from the
+  // hearth; the windows are unglazed, mullioned, their shutters folded back into the reveals.
+  d.openings[0].leaf = structure::LeafKind::ledged;
+  d.openings[0].hinge_at_to = true;
+  d.openings[0].leaf_open = 90;
+  d.openings[1].mullions = 3;
+  d.openings[1].leaf = structure::LeafKind::ledged;
+  d.openings[1].leaves = 2;
+  d.openings[1].leaf_open = 90;
+  d.openings[2].mullions = 4;
+  d.openings[2].leaf = structure::LeafKind::ledged;
+  d.openings[2].leaf_open = 90;
   structure::Roof roof;
   roof.form = structure::RoofForm::gable;
   roof.rect[0] = -wall / 2, roof.rect[1] = -wall / 2;

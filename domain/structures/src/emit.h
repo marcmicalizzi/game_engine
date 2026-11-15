@@ -81,6 +81,28 @@ f64 wall_top(const structure::Description& d, u32 wall, f64 x, f64 z) noexcept;
 // A roof's underside over `(x, z)`, centimetres above the origin.
 f64 roof_underside(const structure::Roof& roof, f64 x, f64 z) noexcept;
 
+// The sine and the cosine of a whole number of degrees, 0 to 90, by sums and products alone (a
+// polynomial over at most 45 degrees), so every toolchain turns a leaf by the same bits; 0 and 90
+// are exact.
+void turn_deg(i32 degrees, f64& sine, f64& cosine) noexcept;
+
+// One leaf of an opening as it stands (structures.md, "Leaves and mullions"): its pivot on the
+// ground, the unit direction from its hinge to its free edge (`u`) and through its thickness
+// from the face it opens toward (`v`), its width, its foot and head, and its boards' and ledges'
+// thicknesses. Centimetres, the building's frame.
+struct LeafPlace {
+  f64 px = 0, pz = 0;
+  f64 ux = 1, uz = 0;
+  f64 vx = 0, vz = 1;
+  f64 width = 0;
+  f64 y0 = 0, y1 = 0;
+  f64 boards = 0, ledges = 0;
+  bool door = true;
+};
+// The leaves of opening `o` (0, 1 or 2), for the mesher and the walk records alike (shell.cpp).
+u32 leaf_places(const structure::Description& d, const structure::Opening& o,
+                LeafPlace (&out)[2]) noexcept;
+
 // The two halves of the mesher. `mesh_shell` (shell.cpp): the walls with their openings, reveals
 // and frames, the roofs and the chimneys. `mesh_interior` (interior.cpp, **the interiors' seam**):
 // the floors and their wells, the ceilings, the stairs and the plain members.
