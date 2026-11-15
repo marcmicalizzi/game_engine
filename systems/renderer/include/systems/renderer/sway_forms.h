@@ -22,11 +22,12 @@
 //   - it is a field (the sward's kind) and the ring's floor lies past the far field's rest
 //     distance by its roots' reach (renderer.md, "The far field at rest"): there the mesh is drawn
 //     at rest already, to the bit, so a form with no pose is the same picture.
-// The answer is the largest placement scale that stands still, so a ring's still form serves the
-// placements small enough for it and a larger one keeps swaying (`pick_ring_form` walks to the
-// ring before's entry). Between the mesh itself and a still form a ring draws a **swaying cut**: a
-// cut of the mesh's DAG for the ring's floor that keeps its motion contract, as an authored tree's
-// swaying distance form does (renderer.md, "Streamed trees sway").
+// The answer is the largest placement scale that stands still. A ring has one form, so its form
+// stands still when that scale covers every placement a ring's cut serves
+// (`RingFormRules::cut_scale`), and a larger placement draws the ring before's form as any does.
+// Between the mesh itself and a still form a ring draws a **swaying cut**: a cut of the mesh's DAG
+// for the ring's floor that keeps its motion contract, as an authored tree's swaying distance
+// form does (renderer.md, "Streamed trees sway").
 //
 // Everything here is a pure function of its arguments but `sway_form_rules`, which reads the
 // tunables once, at the load.
@@ -81,12 +82,6 @@ SwayMeasure measure_sway(const FloraMesh& mesh, std::span<const Vec3> vertices,
 
 // What `still_scale` answers for a mesh that stands still at every scale.
 inline constexpr f32 k_still_every_scale = 3.0e38f;
-
-// The least still scale a ring's still form is made for: a ring's form stands still when a
-// placement half the mesh's own size does, seen from its floor. A cost rule, not a visibility
-// one — the form serves exactly the scales `still_scale` says, and below this the form would be a
-// mesh of its own that few placements could take.
-inline constexpr f32 k_still_form_scale = 0.5f;
 
 // The largest placement scale of a mesh measured `sway` that stands still seen from `floor_m`
 // metres or farther; 0 for none. `proj_scale` is the host's projection (`LodView::proj_scale`) and

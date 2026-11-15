@@ -167,9 +167,10 @@ TEST_CASE(
   const ScopedTunable motion("renderer.flora.motion", "true");
   const ScopedTunable wind("renderer.forms.still_wind", "1");
   // The plant's reach is about 0.54 m: 0.22 px from ring 2's floor and 0.11 px from ring 3's at a
-  // projection of 1000. At 0.1 px a placement of 0.44 of its size stands still in ring 2, too
-  // small for a still form to be made there (`k_still_form_scale`), and one of 0.89 in ring 3.
-  const ScopedTunable px("renderer.forms.still_px", "0.1");
+  // projection of 1000. At 0.225 px a placement up to its own size stands still in ring 2, short
+  // of the 1.5 a ring's cut serves, so ring 2 keeps a swaying cut; in ring 3 one up to twice its
+  // size does, and the ring's form stands still.
+  const ScopedTunable px("renderer.forms.still_px", "0.225");
   std::string error;
   SceneData scene;
   REQUIRE_MESSAGE(load_plants(tmp, "fern.clusters", scene, error), error);
@@ -223,20 +224,20 @@ TEST_CASE(
   CHECK(scene.still_padding[still] == bound);
   CHECK(scene.still_padding[source] == 0.0f);
   CHECK(scene.still_padding[swaying] == 0.0f);
+  // Its largest still scale there is past what a cut serves, so the entry serves a cut's scales.
   const f32 reach_px = 0.5f * bound * 1000.0f / table.floor_m[3];
-  CHECK(forms.ring[3].max_scale == doctest::Approx(0.1f / reach_px));
-  CHECK(forms.ring[3].max_scale >= k_still_form_scale);
-  CHECK(forms.ring[3].max_scale < 1.0f);
+  CHECK(0.225f / reach_px >= 1.5f);
+  CHECK(0.225f / (0.5f * bound * 1000.0f / table.floor_m[2]) < 1.5f);
+  CHECK(forms.ring[3].max_scale == doctest::Approx(1.5f));
 
-  // The read: the still form for a placement small enough to stand still there; past what it
-  // serves, the swaying cut of the ring before; past what a cut serves, the mesh itself.
+  // The read: each ring's form for every placement a cut serves; past that, the mesh itself.
   const Vec3 one = Vec3::one();
-  const Vec3 small{0.8f, 0.8f, 0.8f};
+  const Vec3 large{1.4f, 1.4f, 1.4f};
   CHECK(pick_ring_form(table, source, 0, one) == source);
   CHECK(pick_ring_form(table, source, 2, one) == swaying);
-  CHECK(pick_ring_form(table, source, 2, small) == swaying);
-  CHECK(pick_ring_form(table, source, 3, small) == still);
-  CHECK(pick_ring_form(table, source, 3, one) == swaying);
+  CHECK(pick_ring_form(table, source, 2, large) == swaying);
+  CHECK(pick_ring_form(table, source, 3, one) == still);
+  CHECK(pick_ring_form(table, source, 3, large) == still);
   CHECK(pick_ring_form(table, source, 3, Vec3{2.0f, 2.0f, 2.0f}) == source);
   const u32 subject[1] = {source};
   CHECK_FALSE(same_ring_forms(table, subject, 2, 3));

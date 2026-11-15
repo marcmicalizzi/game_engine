@@ -1990,12 +1990,14 @@ bool make_placement_forms(SceneDesc& resolved, Vector<SourceMesh>& sources,
     u32 kept = own_clusters;
     for (u32 r = 1; r < rings; ++r) {
       if (floor_m[r] > 0.0f) {
-        // **This ring's form stands still** when a placement at least `k_still_form_scale` of the
-        // mesh's own size does, seen from its floor (G204): by its reach in pixels, or a field's
-        // rest distance. The floors grow with the ring, so once still, still.
+        // **This ring's form stands still** when every placement its cut serves does, seen from
+        // its floor (G204): the largest still scale, by the mesh's reach in pixels or a field's
+        // rest distance, is at least the scale a cut is cut for. A ring has one form, so a ring
+        // where only the smaller placements would stand still keeps the swaying cut for all of
+        // them. The floors grow with the ring, so once still, still.
         if (sways)
           still_at[r] = still_scale(sway, floor_m[r], proj, field_root * fit.scale, sway_rules);
-        const bool still = sways && still_at[r] >= k_still_form_scale;
+        const bool still = sways && still_at[r] >= rules.cut_scale;
         geometry::LodFormCut cut;
         cut.origin = fit.anchor;
         cut.distance = floor_m[r] / (fit.scale * rules.cut_scale);

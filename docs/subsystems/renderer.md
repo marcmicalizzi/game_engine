@@ -4850,11 +4850,11 @@ part turns between 0.6 and 1.4 of its lean with the gust, and flutters by at mos
 under one pixel of reach nothing travels more than half a pixel about where it stands. The far
 field's rest stops grass where its reach is about two pixels (a 0.4 m blade at 120 m and the
 forest's wind: 11 cm against 5.8 cm a pixel), which it can because it fades the sway out over 40 m;
-a ring's hand-over has no fade of its own, so it takes half of that. **The answer is a scale, not a
-yes**: `still_scale` gives the largest placement scale that stands still from the floor, the
-ring's still form serves placements up to it (`RingForm::max_scale`), and a larger one draws the
-ring before's form, which sways (`pick_ring_form` walks inward). A ring's form is still when the
-mesh at its own size is (the scale is at least 1).
+a ring's hand-over has no fade of its own, so it takes half of that. **The answer is a scale**:
+`still_scale` gives the largest placement scale that stands still from the floor. A ring has one
+form, so its form stands still when that scale covers every placement a ring's cut serves
+(`renderer.forms.cut_scale`, 1.5): no placement drawn still moves more than the rule's pixel, and
+a ring where only the smaller placements would stand still keeps its swaying cut for all of them.
 
 **The forms** (`make_placement_forms`, with a rigid mesh's). A swaying subject's cut for a ring is
 cut for the sway's padded spheres, as an authored tree's swaying form is

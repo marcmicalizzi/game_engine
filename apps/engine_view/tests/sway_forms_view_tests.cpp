@@ -114,29 +114,13 @@ constexpr const char* k_scene =
     R"("scale_min":0.9,"scale_max":1.1}],"budget":{"per_tile":40}}}]})";
 
 std::vector<std::string> base_args(const test::TempDir& tmp, const char* tag) {
-  return {"--scene",
-          tmp.file("scene.json"),
-          "--camera-path",
-          tmp.file("path.json"),
-          "--offscreen",
-          "--width",
-          "320",
-          "--height",
-          "180",
-          "--lod-fade",
-          "0",
-          "--ddc",
-          tmp.file("ddc"),
-          "--frames",
-          "40",
-          "--benchmark",
-          tmp.file(std::string("bench-") + tag + ".jsonl"),
-          "--tunable",
-          "renderer.flora.motion=true",
+  return {"--scene", tmp.file("scene.json"), "--camera-path", tmp.file("path.json"), "--offscreen",
+          "--width", "320", "--height", "180", "--lod-fade", "0", "--ddc", tmp.file("ddc"),
+          "--frames", "40", "--benchmark", tmp.file(std::string("bench-") + tag + ".jsonl"),
+          "--tunable", "renderer.flora.motion=true",
           // Every tile built in its event, so what a flight holds at its end is the scene's and
           // not the build job's pace.
-          "--tunable",
-          "world.placements.max_builds=0"};
+          "--tunable", "world.placements.max_builds=0"};
 }
 
 void add(std::vector<std::string>& args, std::initializer_list<const char*> more) {
@@ -163,8 +147,11 @@ TEST_CASE(
   // the mesh to its swaying cut, a swaying cut to the still one and back — draws the rest pose on
   // both sides, so it changes no pixel.
   std::vector<std::string> calm = base_args(tmp, "calm");
-  add(calm, {"--tunable", "renderer.flora.wind_strength=0", "--tunable",
-             "renderer.forms.still_wind=1", "--world-handover"});
+  // (Two pixels of reach, so this small picture's outer ring stands still: at 320 x 180 a fern
+  // a half larger than the recipe's is a little over one pixel of reach from its floor.)
+  add(calm,
+      {"--tunable", "renderer.flora.wind_strength=0", "--tunable", "renderer.forms.still_wind=1",
+       "--tunable", "renderer.forms.still_px=2", "--world-handover"});
   calm.push_back(tmp.file("handover-calm.jsonl"));
   const Run rest = view(calm);
   if (rest.exit_code == 3) {
