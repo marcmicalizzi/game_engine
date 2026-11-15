@@ -184,9 +184,12 @@ TEST_CASE("engine-view: a ring change of forms alone calls no generator and is r
                      R"({"format":"engine.camera-path.v1","name":"across","fps":10,"keys":[)"
                      R"({"time":0,"position":[-120,3,4],"target":[0,0,0]},)"
                      R"({"time":4,"position":[120,3,-4],"target":[200,0,0]}]})"));
+  // Every tile built in its event (no build budget, so no job): which tiles a budgeted flight has
+  // built by its last frame is a matter of timing, and the two flights would not count alike.
   auto fly = [&](const char* log, bool forms) {
     std::vector<std::string> args = base_args(tmp);
-    for (const char* a : {"--frames", "40", "--shadows", "off", "--world-log"})
+    for (const char* a : {"--frames", "40", "--shadows", "off", "--tunable",
+                          "world.placements.max_builds=0", "--world-log"})
       args.push_back(a);
     args.push_back(tmp.file(log));
     if (!forms) {
