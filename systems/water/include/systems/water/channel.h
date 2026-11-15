@@ -50,8 +50,9 @@ namespace engine::water {
 // The placement generator the renderer's scene reader hands a scene's `water_channels` to.
 inline constexpr std::string_view k_channel_generator = "water_channel";
 // The channel mesh builder's version: part of every channel file's bytes. 2: the sheet from the
-// solved description (S106).
-inline constexpr u32 k_channel_mesh_version = 2;
+// solved description (S106). 3: the sheets cut where they meet, a pool over its bank drawn, a
+// nappe as wide as its lip and thinning to its sides (S108).
+inline constexpr u32 k_channel_mesh_version = 3;
 // The flow phase's period, seconds (water.slang's `k_channel_period_s`): UV.x lies in
 // [0, period + one triangle's travel time).
 inline constexpr f32 k_channel_phase_period_s = 8.0f;
@@ -165,6 +166,13 @@ struct Channel {
   f32 manning_n = 0.04f;
   f32 shore_m = 2.0f;
   u64 seed = 1;
+  // **An end that meets other water is round, not square** (S108; `channel_joins`): where the
+  // channel's head or its last station stands in another channel's water, the sheet is not cut
+  // across the line there but runs on as far past the station as it is wide, level at the
+  // station's level, so no wedge of dry bed is left between two sheets whose headings differ. Set
+  // by whoever knows the other channels (the generator); a channel alone is cut square.
+  bool cap_head = false;
+  bool cap_tail = false;
 };
 
 // The description, checked. **Solved or refused** (`scene_gen::water_channel_solved`: a block
@@ -190,8 +198,22 @@ f32 station_hydraulic_depth(const Channel& channel, u32 i) noexcept;
 // What the stretch from station `i` to station `i + 1` is.
 bool stretch_falls(const Channel& channel, u32 i) noexcept;  // a lip and its foot
 bool stretch_jumps(const Channel& channel, u32 i) noexcept;  // a jump's head and its foot
-// **Drawn unless both its stations stand over a bank** (W120's films along lines that climb out of
-// a hollow: drawing them is water going uphill).
+// **Drawn unless both its stations stand over a bank and the water written there is a film or
+// climbs** (S108). W120 flags a station whose solved level would stand over its lower bank and
+// writes it at that bank's crest. Two kinds of stretch carry the flag at both ends. Along a line
+// that climbs out of a hollow the ground does not fill, the cook writes a 5 mm film at the bed
+// rising to the spill: drawing that is water going uphill, and it is not drawn. Below a spill it
+// writes the pool the bed holds, level at the spill's height with centimetres to decimetres of
+// water (48 m of it below the judging scene's rock step): that water is there, brim-full to its
+// lower bank, and leaving it out is a bed with no water. So such a stretch is drawn when both
+// stations hold at least `k_channel_over_bank_depth_m` and the level does not rise along it by
+// more than `k_channel_over_bank_rise_m`. (Until S108 no stretch flagged at both ends was drawn.)
+inline constexpr f32 k_channel_over_bank_depth_m = 0.02f;
+inline constexpr f64 k_channel_over_bank_rise_m = 0.001;
+inline bool over_bank_stretch_drawn(f32 depth_a, f32 depth_b, f64 level_a, f64 level_b) noexcept {
+  return depth_a >= k_channel_over_bank_depth_m && depth_b >= k_channel_over_bank_depth_m &&
+         level_b <= level_a + k_channel_over_bank_rise_m;
+}
 bool stretch_drawn(const Channel& channel, u32 i) noexcept;
 
 // **The surface at a place** (the one evaluation the mesh, the depth map and `channel_sample` all
@@ -236,6 +258,11 @@ struct ChannelLine {
   Vector<f32> piece_from;
   Vector<f32> piece_to;
   Vector<f32> hydraulic;  // one a station: station_hydraulic_depth
+  // The stations' bounds in plan, metres from the origin, and the widest wet reach of any: what a
+  // search for a channel near a place rejects by (S108).
+  Vec2 lo{};
+  Vec2 hi{};
+  f32 widest = 0.0f;
 };
 ChannelLine channel_line(const Channel& channel);
 // The surface at (x, z) given the stretch it is nearest to, and the search for that stretch over
@@ -244,6 +271,49 @@ ChannelAt channel_at_stretch(const Channel& channel, const ChannelLine& line, u3
                              f32 z) noexcept;
 ChannelAt channel_at(const Channel& channel, const ChannelLine& line, f32 x, f32 z, u32 first = 0,
                      u32 last = 0xffffffffu) noexcept;
+
+// **Where channels meet** (S108; water.md, "Where channels meet"). A network's links are separate
+// descriptions that share a station: two end at a confluence and a third begins there, each
+// carrying the level of the water it meets. Drawn each by itself they overlap as plates (a
+// tributary's last stretch lies across the stream it joins, at its own level) and leave wedges of
+// dry bed where their square ends turn. So **a link's water ends where the water it joins
+// begins, and meets it at its level**: of the channels that meet at a station, the one carrying
+// more water there (on a tie the one that begins there, then the lower index) keeps its sheet
+// whole; each other is cut where it enters that one's wet reach — less one cell of its own
+// lattice, so the two lap and no lattice leaves a gap — and its level comes down to the joined
+// water's over the last
+// `k_channel_join_blend_m` before it, ending `k_channel_join_under_m` under it, so the two
+// surfaces cross without a step and the joined water lies on top where both are.
+inline constexpr f32 k_channel_join_blend_m = 1.5f;
+inline constexpr f32 k_channel_join_under_m = 0.03f;
+// How near an end stands to another channel's wet reach and still meets it, metres.
+inline constexpr f32 k_channel_join_reach_m = 0.5f;
+struct ChannelJoin {
+  const Channel* other = nullptr;       // the water joined (it outranks this channel here)
+  const ChannelLine* line = nullptr;    // its line
+  u32 first = 0;                        // its stretches within the meeting's reach
+  u32 last = 0;
+  Vec2 centre{};                        // the meeting, metres from this channel's origin
+  f32 radius = 0.0f;                    // past it no place of this channel is cut or lowered
+  Vec3 shift{};                         // this channel's origin less the other's, metres
+  bool from_left = false;               // the side of the other's line this channel arrives from
+};
+struct ChannelJoins {
+  Vector<ChannelJoin> list;
+};
+// The joins of channel `k` among `channels` (their lines in `lines`, one each), and whether its
+// two ends are round: `cap_head` and `cap_tail` for `channels[k]`.
+ChannelJoins channel_joins(std::span<const Channel> channels, std::span<const ChannelLine> lines,
+                           u32 k, bool& cap_head, bool& cap_tail);
+// A place of the channel against its joins: `outside`, how far the place is from the nearest
+// joined water's wet reach (negative inside it; the sheet is kept where it is more than less one
+// lattice), and the level there, brought down to the joined water's near it. With no join in
+// reach: a large `outside` and `level` as given.
+struct ChannelMeet {
+  f32 outside = 1e30f;
+  f32 level = 0.0f;
+};
+ChannelMeet channel_meet(const ChannelJoins& joins, f32 x, f32 z, f32 level) noexcept;
 
 // **The sheet** (above; water.md, "The surface from the solve").
 struct ChannelMesh {
@@ -257,7 +327,9 @@ struct ChannelMesh {
   Vector<Vec3> boundary;
 };
 f32 channel_lattice(const Channel& channel) noexcept;
-void build_channel_mesh(const Channel& channel, ChannelMesh& out);
+// `joins`: the waters the channel meets (`channel_joins`); none for a channel alone.
+void build_channel_mesh(const Channel& channel, ChannelMesh& out,
+                        const ChannelJoins* joins = nullptr);
 
 // **The depth map** (water.md, "The depth map"): **the level less the ground**, signed as a
 // body's (the bank above the level negative, to `k_depth_map_bank_min`), over the sheet's bounding
@@ -266,7 +338,8 @@ void build_channel_mesh(const Channel& channel, ChannelMesh& out);
 // that is not drawn, a texel is never wet. `ground` absent (a scene with no terrain): the bed is
 // level at the solved greatest depth across the wet reach, since there is no ground to subtract.
 void build_channel_depth_map(const Channel& channel, const ChannelMesh& mesh,
-                             const scene_gen::Ground& ground, DepthMap& out);
+                             const scene_gen::Ground& ground, DepthMap& out,
+                             const ChannelJoins* joins = nullptr);
 
 // **How much of the sheet's edge the ground does not hide**: the boundary's points, sampled every
 // `step` metres, that stand more than `clear_m` above the ground — a mesh edge a pixel can show.

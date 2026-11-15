@@ -314,13 +314,18 @@ TEST_CASE("water channel: the step's fall is a parabola and its jump a ramp at t
       const f64 thickness =
           std::min(1.5993 / (2.0 * 1.377) / std::sqrt(across * across + down * down),
                    1.7861 * 1.7861 / 9.81);
-      CHECK(static_cast<f64>(-m.uvs[k].y) == doctest::Approx(thickness).epsilon(1e-3));
+      // In the air nothing hides a margin and nothing spreads the water: the nappe is as wide as
+      // its lip's wet reach all the way down (S108; it was drawn to the foot's, a trapezoid).
+      const f64 z = b.channel.origin.z + static_cast<f64>(m.positions[k].z);
+      CHECK(std::abs(z) <= 1.377 + 1e-3);
+      // Whole over the middle of the lip, thinning to the least the mesh writes over the outer
+      // two fifths of each side's reach (S108), so the white the resolve draws by how much water
+      // there is has no straight side.
+      const f64 taper = std::clamp((1.377 - std::abs(z)) / (0.4 * 1.377), 0.0, 1.0);
+      CHECK(std::abs(static_cast<f64>(-m.uvs[k].y) - std::max(thickness * taper, 0.001)) <=
+            1e-3 * thickness + 2e-4);
       // Facing downstream as it steepens.
       CHECK(m.normals[k].x >= 0.0f);
-      // In the air nothing hides a margin: the nappe is as wide as the wet reach, the lip's to
-      // the foot's.
-      const f64 z = b.channel.origin.z + static_cast<f64>(m.positions[k].z);
-      CHECK(std::abs(z) <= 1.377 + (1.137 - 1.377) * t + 1e-3);
     } else if (x > 41.246 + 1e-3 && x < 44.201 - 1e-3) {
       // **The jump**: the level a ramp from the head's to the foot's, the head's hydraulic depth
       // (so the head's Froude number, 3.19: white water) held to the foot.
@@ -384,10 +389,52 @@ TEST_CASE("water channel: the step's fall is a parabola and its jump a ramp at t
         doctest::Approx(0.5 * 8.0 * (1.0 / 1.2837 + 1.0 / 1.2905)).epsilon(1e-6));
 }
 
-TEST_CASE("water channel: nothing is drawn between two stations that stand over a bank") {
-  // Stations 3, 4 and 5 of the mouth's eleven over their banks: stretches 3 and 4 (x 32 to 48)
-  // are not drawn, and the sheet either side ends square at x 32 and x 48.
-  const Built b = build(flagged(channel_fixture::mouth(), {3, 4, 5}, scene_gen::k_channel_over_bank));
+// W120's film along a line that climbs out of a hollow: the stations over their banks, each with
+// the 5 mm of water the cook writes there.
+scene::WaterChannel filmed(scene::WaterChannel block, std::initializer_list<u32> stations) {
+  for (const u32 i : stations) {
+    block.flags[i] = static_cast<u16>(block.flags[i] | scene_gen::k_channel_over_bank);
+    block.depth_m[i] = 0.005f;
+  }
+  return block;
+}
+
+TEST_CASE("water channel: a pool over its bank is drawn; a film, or water that climbs, is not") {
+  // **Below a spill** (S108): stations 3, 4 and 5 of the mouth's eleven flagged over their banks
+  // with the water they hold (half a metre and more, the level falling): stretches 3 and 4 are the
+  // pool the bed holds, and are drawn. Until S108 any stretch flagged at both ends was left out,
+  // which on the base draws no triangle between x 32 and x 48.
+  {
+    const Built pool =
+        build(flagged(channel_fixture::mouth(), {3, 4, 5}, scene_gen::k_channel_over_bank));
+    CHECK(water::stretch_drawn(pool.channel, 3));
+    CHECK(water::stretch_drawn(pool.channel, 4));
+    u32 between = 0;
+    const water::Mesh& m = pool.sheet.mesh;
+    for (u32 t = 0; t < m.indices.size(); t += 3) {
+      f64 x = 0.0;
+      for (u32 k = 0; k < 3; ++k)
+        x += (pool.channel.origin.x + static_cast<f64>(m.positions[m.indices[t + k]].x)) / 3.0;
+      between += x > 33.0 && x < 47.0 ? 1u : 0u;
+    }
+    CHECK(between > 0);
+    // **Water that climbs** is not drawn whatever its depth: station 4 a centimetre over station
+    // 3, so stretch 3 rises along the line and stretch 4, which falls from it, is still the pool.
+    scene::WaterChannel rising =
+        flagged(channel_fixture::mouth(), {3, 4, 5}, scene_gen::k_channel_over_bank);
+    rising.points[4].y = rising.points[3].y + 0.01;
+    water::Channel read;
+    std::string error;
+    REQUIRE_MESSAGE(water::read_channel(rising, read, &error), error);
+    CHECK_FALSE(water::stretch_drawn(read, 3));
+    CHECK(water::stretch_drawn(read, 4));
+    CHECK(water::over_bank_stretch_drawn(0.02f, 0.5f, 10.0, 10.001));
+    CHECK_FALSE(water::over_bank_stretch_drawn(0.019f, 0.5f, 10.0, 9.9));
+    CHECK_FALSE(water::over_bank_stretch_drawn(0.5f, 0.5f, 10.0, 10.0011));
+  }
+  // **A film** (W120's 5 mm along a line that climbs out of a hollow): stretches 3 and 4 (x 32 to
+  // 48) are not drawn, and the sheet either side ends square at x 32 and x 48.
+  const Built b = build(filmed(channel_fixture::mouth(), {3, 4, 5}));
   CHECK_FALSE(water::stretch_drawn(b.channel, 3));
   CHECK_FALSE(water::stretch_drawn(b.channel, 4));
   CHECK(water::stretch_drawn(b.channel, 2));
@@ -414,10 +461,93 @@ TEST_CASE("water channel: nothing is drawn between two stations that stand over 
   }
   // A line that stands over its bank at every station (W120's film along a line that climbs out
   // of a hollow) draws nothing at all.
-  const Built film = build(flagged(channel_fixture::mouth(), {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
-                                   scene_gen::k_channel_over_bank));
+  const Built film = build(filmed(channel_fixture::mouth(), {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10}));
   CHECK(film.sheet.triangles == 0);
   CHECK(film.sheet.mesh.positions.empty());
+}
+
+TEST_CASE("water channel: a tributary's sheet ends where the stream it joins begins, at its level") {
+  // The mouth's reach along +x at z 20, and the uniform reach turned to run along +z into it at
+  // x 40: its last station on the stream's line, at the stream's level there, carrying half as
+  // much (S108; channel.h, "Where channels meet"). On the base the tributary's sheet lies across
+  // the stream to its line, cut square, at its own level.
+  const scene::WaterChannel stream = channel_fixture::mouth();
+  scene::WaterChannel side = channel_fixture::uniform();
+  const u32 n = side.points.size();
+  const f64 meet_level = stream.points[4].y;
+  for (u32 i = 0; i < n; ++i) {
+    const f64 back = 8.0 * static_cast<f64>(n - 1 - i);  // metres up the tributary from the meeting
+    side.points[i] = WorldPos{40.0, meet_level + 0.02 * back, 20.0 - back};
+    side.discharge_m3s[i] *= 0.5f;
+  }
+  water::Channel channels[2];
+  std::string error;
+  REQUIRE_MESSAGE(water::read_channel(stream, channels[0], &error), error);
+  REQUIRE_MESSAGE(water::read_channel(side, channels[1], &error), error);
+  const water::ChannelLine lines[2] = {water::channel_line(channels[0]),
+                                       water::channel_line(channels[1])};
+  // The stream is met in its middle by less water: it is not cut and neither end is round.
+  bool head = true, tail = true;
+  const water::ChannelJoins none = water::channel_joins(channels, lines, 0, head, tail);
+  CHECK(none.list.empty());
+  CHECK_FALSE(head);
+  CHECK_FALSE(tail);
+  const water::ChannelJoins joins = water::channel_joins(channels, lines, 1, head, tail);
+  REQUIRE(joins.list.size() == 1);
+  CHECK_FALSE(head);
+  CHECK(tail);
+  CHECK(joins.list[0].other == &channels[0]);
+  channels[1].cap_tail = tail;
+  water::ChannelMesh whole, cut;
+  water::build_channel_mesh(channels[1], whole);
+  water::build_channel_mesh(channels[1], cut, &joins);
+  CHECK(cut.triangles > 0);
+  CHECK(cut.triangles < whole.triangles);
+  // The stream's wet edge on the tributary's side (its right: the tributary comes from -z).
+  const f64 wet_least = static_cast<f64>(
+      std::min(stream.wet_right_m[3], std::min(stream.wet_right_m[4], stream.wet_right_m[5])));
+  const f64 wet_most = static_cast<f64>(
+      std::max(stream.wet_right_m[3], std::max(stream.wet_right_m[4], stream.wet_right_m[5])));
+  u32 lowered = 0, own = 0;
+  for (u32 k = 0; k < cut.mesh.positions.size(); ++k) {
+    const f64 x = channels[1].origin.x + static_cast<f64>(cut.mesh.positions[k].x);
+    const f64 y = channels[1].origin.y + static_cast<f64>(cut.mesh.positions[k].y);
+    const f64 z = channels[1].origin.z + static_cast<f64>(cut.mesh.positions[k].z);
+    // **Cut**: no vertex further into the stream's wet reach than one cell of its own lattice.
+    CHECK(z <= 20.0 - wet_least + static_cast<f64>(cut.lattice_m) + 1e-3);
+    const water::ChannelAt at =
+        water::channel_at(channels[0], lines[0], static_cast<f32>(x - channels[0].origin.x),
+                          static_cast<f32>(z - channels[0].origin.z));
+    const f64 stream_level = channels[0].origin.y + static_cast<f64>(at.level);
+    if (z >= 20.0 - wet_least) {
+      // **At its level**: inside the stream's wet reach, 3 cm under the stream's surface there.
+      CHECK(y == doctest::Approx(stream_level - 0.03).epsilon(2e-4));
+      ++lowered;
+    } else if (z <= 20.0 - wet_most - 1.5 - 1e-3) {
+      // Past the blend the tributary stands at its own solved level.
+      CHECK(y == doctest::Approx(meet_level + 0.02 * (20.0 - z)).epsilon(1e-5));
+      ++own;
+    } else {
+      // Between: coming down, never above its own level nor under the stream's less 3 cm.
+      CHECK(y <= meet_level + 0.02 * (20.0 - z) + 1e-4);
+      CHECK(y >= stream_level - 0.03 - 1e-4);
+    }
+  }
+  CHECK(lowered > 0);
+  CHECK(own > 0);
+  // **A round end**: uncut, the tributary's sheet runs past its last station as far as it is
+  // wide (it has no square end to leave a wedge beside), which the cut then takes back.
+  f64 furthest = -1e30;
+  for (const Vec3& p : whole.mesh.positions)
+    furthest = std::max(furthest, channels[1].origin.z + static_cast<f64>(p.z));
+  CHECK(furthest > 20.0 + 0.5);
+  // **A channel that meets nothing builds what it built**: no joins is the channel alone.
+  const water::ChannelJoins empty;
+  water::ChannelMesh a, b2;
+  water::build_channel_mesh(channels[0], a);
+  water::build_channel_mesh(channels[0], b2, &empty);
+  CHECK(a.mesh.positions.size() == b2.mesh.positions.size());
+  CHECK(a.triangles == b2.triangles);
 }
 
 TEST_CASE("water channel: a hairpin tighter than the wet reach does not fold") {
@@ -494,8 +624,7 @@ TEST_CASE("water channel: the depth map is the level less the ground") {
   }
   {
     // A stretch that is not drawn holds no water in the map either.
-    const Built b =
-        build(flagged(channel_fixture::mouth(), {3, 4, 5}, scene_gen::k_channel_over_bank));
+    const Built b = build(filmed(channel_fixture::mouth(), {3, 4, 5}));
     water::DepthMap map;
     water::build_channel_depth_map(b.channel, b.sheet, ground, map);
     // (Zero, to the half step of 16 bits over the map's 3.2 m.)
@@ -592,8 +721,11 @@ TEST_CASE("water channel: the files are the same bytes twice, pinned, and the ge
           " bytes, hash ", map_hash);
   // Taken on MSVC (2026-11-14, S106): the toolchains reproduce them, since every number is
   // + - * / and sqrt in a fixed order.
-  CHECK(glb_hash == 4896157926021888350ull);   // 25,184 bytes
-  CHECK(map_hash == 17670608434784788963ull);  // 82,462 bytes
+  // Re-pinned for S108 (2026-11-15, MSVC): the nappe is as wide as its lip and thins to its sides,
+  // which moves the step's vertices on its fall and the map's texels under it
+  // (4896157926021888350 and 17670608434784788963 until then).
+  CHECK(glb_hash == 12899224097281003011ull);
+  CHECK(map_hash == 6676494692881848469ull);
   // The importer reads it as the renderer will: positions, normals and the phase and depth UVs.
   assets::MeshData data;
   std::string error;
@@ -609,8 +741,7 @@ TEST_CASE("water channel: the files are the same bytes twice, pinned, and the ge
   // A channel, and one that stands over its bank from end to end: mesh k is channel k either
   // way, and the second's has no path, which is how a reader knows it draws nothing.
   const scene::WaterChannel blocks[2] = {
-      channel_fixture::step(), flagged(channel_fixture::mouth(), {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
-                                       scene_gen::k_channel_over_bank)};
+      channel_fixture::step(), filmed(channel_fixture::mouth(), {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10})};
   scene_gen::Context context;
   const std::string dir = tmp.path();
   context.dir = dir;

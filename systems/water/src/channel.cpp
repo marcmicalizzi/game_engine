@@ -19,6 +19,8 @@ constexpr u32 k_none = 0xffffffffu;
 constexpr f32 k_edge_margin = 1.0f / 64.0f;
 // The least surface width a fall's unit discharge is taken over, metres.
 constexpr f32 k_lip_width_min_m = 0.05f;
+// The share of each side's wet reach over which a nappe thins to nothing at its side.
+constexpr f64 k_nappe_taper = 0.4;
 
 bool finite(f32 v) noexcept { return std::isfinite(v); }
 
@@ -156,7 +158,10 @@ bool stretch_jumps(const Channel& c, u32 i) noexcept {
 
 bool stretch_drawn(const Channel& c, u32 i) noexcept {
   if (i + 1 >= c.points.size()) return false;
-  return (c.flags[i] & c.flags[i + 1] & scene_gen::k_channel_over_bank) == 0;
+  if ((c.flags[i] & c.flags[i + 1] & scene_gen::k_channel_over_bank) == 0) return true;
+  return over_bank_stretch_drawn(c.depth_m[i], c.depth_m[i + 1],
+                                 static_cast<f64>(c.points[i].y),
+                                 static_cast<f64>(c.points[i + 1].y));
 }
 
 ChannelLine channel_line(const Channel& c) {
@@ -172,8 +177,13 @@ ChannelLine channel_line(const Channel& c) {
   line.run_to.resize(n - 1);
   line.station[0] = 0.0f;
   line.tau[0] = 0.0;
-  for (u32 i = 0; i < n; ++i)
+  line.lo = line.hi = Vec2{c.points[0].x, c.points[0].z};
+  for (u32 i = 0; i < n; ++i) {
     line.hydraulic[i] = station_hydraulic_depth(c, i);
+    line.lo = Vec2{std::min(line.lo.x, c.points[i].x), std::min(line.lo.y, c.points[i].z)};
+    line.hi = Vec2{std::max(line.hi.x, c.points[i].x), std::max(line.hi.y, c.points[i].z)};
+    line.widest = std::max(line.widest, std::max(c.wet_left_m[i], c.wet_right_m[i]));
+  }
   for (u32 i = 0; i + 1 < n; ++i) {
     const f32 dx = c.points[i + 1].x - c.points[i].x;
     const f32 dz = c.points[i + 1].z - c.points[i].z;
@@ -258,16 +268,28 @@ ChannelAt channel_at_stretch(const Channel& c, const ChannelLine& line, u32 i, f
   f32 along = line.station[i] + tc;
   if (i == 0 && u < 0.0f) along = line.station[0] + u;
   if (i + 2 == n && u > len) along = line.station[i] + u;
-  const f32 wet = at.left ? lerp(c.wet_left_m[i], c.wet_left_m[i + 1], t)
-                          : lerp(c.wet_right_m[i], c.wet_right_m[i + 1], t);
   const f32 drop = fall_drop(c, i);
+  // A nappe is as wide as its lip all the way down (S108): the water leaves the lip's wet reach
+  // and nothing spreads it in the air, where the foot's wet reach is the pool's it lands in (the
+  // sheet drawn to that width was a trapezoid wider at its foot than its lip).
+  const f32 wet = drop > 0.0f ? (at.left ? c.wet_left_m[i] : c.wet_right_m[i])
+                              : (at.left ? lerp(c.wet_left_m[i], c.wet_left_m[i + 1], t)
+                                         : lerp(c.wet_right_m[i], c.wet_right_m[i + 1], t));
   // A nappe is in the air: nothing hides a margin, so it has none.
   const f32 margin = drop > 0.0f ? 0.0f : lerp(margin_at(c, i), margin_at(c, i + 1), t);
   at.along = along;
   at.lateral = wet - at.distance_m;
   at.margin = margin;
   if (stretch_drawn(c, i)) {
-    const f32 run = std::min(along - line.run_from[i], line.run_to[i] - along);
+    // A round end (S108; channel.h, `Channel::cap_head`): no cut across the line at a station
+    // that stands in other water, so past it the sheet reaches as far as it is wide.
+    const f32 run_lo = c.cap_head && line.run_from[i] == line.station[0]
+                           ? 1e30f
+                           : along - line.run_from[i];
+    const f32 run_hi = c.cap_tail && line.run_to[i] == line.station[n - 1]
+                           ? 1e30f
+                           : line.run_to[i] - along;
+    const f32 run = std::min(run_lo, run_hi);
     at.inside = std::min(wet + margin - at.distance_m, run);
     at.wet_inside = std::min(wet - at.distance_m, run);
   } else {
@@ -291,9 +313,18 @@ ChannelAt channel_at_stretch(const Channel& c, const ChannelLine& line, u32 i, f
     at.tau = line.tau[i] + time * static_cast<f64>(t);
     const f64 width = std::max(static_cast<f64>(c.wet_left_m[i]) + static_cast<f64>(c.wet_right_m[i]),
                                static_cast<f64>(k_lip_width_min_m));
+    // **The sheet thins to nothing at its two sides** (S108): whole over the middle of the lip's
+    // wet reach, and down to the least the mesh writes over the outer `k_nappe_taper` of each
+    // side's reach, where the lip's water is the shallows by its banks. The resolve draws white
+    // water by how much water there is, so a fall's white has no straight side.
+    const f64 side = std::max(static_cast<f64>(wet), static_cast<f64>(k_lip_width_min_m));
+    const f64 taper = std::clamp(static_cast<f64>(at.lateral) / (k_nappe_taper * side), 0.0, 1.0);
     const f64 thickness =
-        std::clamp(static_cast<f64>(c.discharge_m3s[i]) / width / speed,
-                   static_cast<f64>(k_channel_depth_min_m), static_cast<f64>(line.hydraulic[i]));
+        std::max(std::clamp(static_cast<f64>(c.discharge_m3s[i]) / width / speed,
+                            static_cast<f64>(k_channel_depth_min_m),
+                            static_cast<f64>(line.hydraulic[i])) *
+                     taper,
+                 static_cast<f64>(k_channel_depth_min_m));
     at.hydraulic = -static_cast<f32>(thickness);
     return at;
   }
@@ -356,6 +387,104 @@ ChannelAt channel_at(const Channel& c, const ChannelLine& line, f32 x, f32 z, u3
   return channel_at_stretch(c, line, best, x, z);
 }
 
+// ---- where channels meet (channel.h, "Where channels meet"; S108) -------------------------------
+
+ChannelJoins channel_joins(std::span<const Channel> channels, std::span<const ChannelLine> lines,
+                           u32 k, bool& cap_head, bool& cap_tail) {
+  ChannelJoins joins;
+  cap_head = cap_tail = false;
+  const Channel& c = channels[k];
+  const u32 n = c.points.size();
+  if (n < 2) return joins;
+  for (u32 e = 0; e < 2; ++e) {
+    const u32 s = e == 0 ? 0u : n - 1;
+    const f64 ex = c.origin.x + static_cast<f64>(c.points[s].x);
+    const f64 ez = c.origin.z + static_cast<f64>(c.points[s].z);
+    const f32 own_reach = std::max(c.wet_left_m[s], c.wet_right_m[s]);
+    for (u32 j = 0; j < channels.size(); ++j) {
+      if (j == k) continue;
+      const Channel& o = channels[j];
+      const ChannelLine& ol = lines[j];
+      if (o.points.size() < 2) continue;
+      const f32 x = static_cast<f32>(ex - o.origin.x);
+      const f32 z = static_cast<f32>(ez - o.origin.z);
+      const f32 pad = ol.widest + k_channel_join_reach_m;
+      if (x < ol.lo.x - pad || x > ol.hi.x + pad || z < ol.lo.y - pad || z > ol.hi.y + pad)
+        continue;
+      const ChannelAt at = channel_at(o, ol, x, z);
+      if (!stretch_drawn(o, at.stretch) || at.lateral < -k_channel_join_reach_m) continue;
+      (e == 0 ? cap_head : cap_tail) = true;
+      // Which of the two keeps its sheet whole here: the one carrying more water; on a tie the one
+      // that begins at the meeting (the link below a confluence), then the lower index.
+      const u32 so = at.t < 0.5f ? at.stretch : at.stretch + 1;
+      const f32 q_own = c.discharge_m3s[s];
+      const f32 q_other = o.discharge_m3s[so];
+      const bool own_head = e == 0;
+      const bool other_head = so == 0;
+      const bool outranked =
+          q_other > q_own ||
+          (q_other == q_own && (other_head != own_head ? other_head : j < k));
+      if (!outranked) continue;
+      ChannelJoin join;
+      join.other = &o;
+      join.line = &ol;
+      const f32 wet_there = at.lateral + at.distance_m;
+      join.radius = own_reach + wet_there + 2.0f * k_channel_under_bank_m +
+                    k_channel_join_blend_m + 2.0f;
+      // The other's stretches within that reach of the meeting, along its line.
+      join.first = at.stretch;
+      while (join.first > 0 &&
+             ol.station[at.stretch] - ol.station[join.first] <= 2.0f * join.radius)
+        --join.first;
+      join.last = at.stretch;
+      while (join.last + 2 < o.points.size() &&
+             ol.station[join.last + 1] - ol.station[at.stretch + 1] <= 2.0f * join.radius)
+        ++join.last;
+      // The side of the other's line this channel arrives from: where its next station stands.
+      const u32 before = e == 0 ? 1u : n - 2;
+      join.from_left =
+          channel_at_stretch(o, ol, at.stretch,
+                             static_cast<f32>(c.origin.x + static_cast<f64>(c.points[before].x) -
+                                              o.origin.x),
+                             static_cast<f32>(c.origin.z + static_cast<f64>(c.points[before].z) -
+                                              o.origin.z))
+              .left;
+      join.centre = Vec2{c.points[s].x, c.points[s].z};
+      join.shift = Vec3{static_cast<f32>(c.origin.x - o.origin.x),
+                        static_cast<f32>(c.origin.y - o.origin.y),
+                        static_cast<f32>(c.origin.z - o.origin.z)};
+      joins.list.push_back(join);
+    }
+  }
+  return joins;
+}
+
+ChannelMeet channel_meet(const ChannelJoins& joins, f32 x, f32 z, f32 level) noexcept {
+  ChannelMeet m;
+  m.level = level;
+  for (const ChannelJoin& j : joins.list) {
+    const f32 dx = x - j.centre.x;
+    const f32 dz = z - j.centre.y;
+    if (dx * dx + dz * dz > j.radius * j.radius) continue;
+    const ChannelAt at =
+        channel_at(*j.other, *j.line, x + j.shift.x, z + j.shift.z, j.first, j.last);
+    // How far outside the joined water's wet reach the place is; negative inside it. Inside it and
+    // across its line from where this channel arrives, the place is wholly the joined water's:
+    // without this the lap of one cell would keep a sliver of a round end along the far bank.
+    const f32 out = at.wet_inside > 0.0f && at.left != j.from_left ? -1e3f : -at.wet_inside;
+    m.outside = std::min(m.outside, out);
+    const f32 w = std::clamp(1.0f - out / k_channel_join_blend_m, 0.0f, 1.0f);
+    if (!(w > 0.0f)) continue;
+    // The joined water's level in this channel's frame, and a little under it, so where both
+    // sheets are the joined water's lies on top. Never raised: a channel that arrives lower than
+    // the water it meets keeps its own level.
+    const f32 joined = at.level - j.shift.y - k_channel_join_under_m;
+    const f32 share = w * w * (3.0f - 2.0f * w);
+    m.level = std::min(m.level, m.level + (joined - m.level) * share);
+  }
+  return m;
+}
+
 f32 channel_lattice(const Channel& c) noexcept {
   f32 narrow = 1e30f;
   for (u32 i = 0; i + 1 < c.points.size(); ++i) {
@@ -375,7 +504,8 @@ struct Node {
 };
 
 // The sheet over a lattice of `h` metres: false when it would pass the vertex budget.
-bool build_sheet(const Channel& c, const ChannelLine& line, f32 h, ChannelMesh& out) {
+bool build_sheet(const Channel& c, const ChannelLine& line, f32 h, const ChannelJoins* joins,
+                 ChannelMesh& out) {
   out = ChannelMesh{};
   out.lattice_m = h;
   out.mesh.spacing = h;
@@ -432,6 +562,17 @@ bool build_sheet(const Channel& c, const ChannelLine& line, f32 h, ChannelMesh& 
     nodes.push_back(channel_at_stretch(c, line, found[k].stretch, p.x, p.y));
   }
   const u32 count = nodes.size();
+  // Each node against the waters the channel meets (S108): how far outside their wet reaches it
+  // is. A place's solve is its own with the level brought down to the joined water's near it.
+  Vector<f32> outside(count);
+  for (u32 k = 0; k < count; ++k)
+    outside[k] = joins != nullptr
+                     ? channel_meet(*joins, places[k].x, places[k].y, nodes[k].level).outside + h
+                     : 1e30f;
+  const auto solved = [&](Vec2 p, ChannelAt at) {
+    if (joins != nullptr) at.level = channel_meet(*joins, p.x, p.y, at.level).level;
+    return at;
+  };
   const auto find = [&](u64 key) {
     const auto it = std::lower_bound(keys.begin(), keys.end(), key);
     return it != keys.end() && *it == key ? static_cast<u32>(it - keys.begin()) : k_none;
@@ -536,17 +677,22 @@ bool build_sheet(const Channel& c, const ChannelLine& line, f32 h, ChannelMesh& 
   for (const Piece& piece : pieces) {
   std::fill(node_vertex.begin(), node_vertex.end(), k_none);
   std::fill(edge_vertex.begin(), edge_vertex.end(), k_none);
-  // The piece's region is where three fields are all positive: past its first station, short of
-  // its last, and inside the wet reach (with the margin, off a nappe).
-  const auto fields = [&](const ChannelAt& at, f32 out_fields[3]) {
-    out_fields[0] = at.along - piece.from;
-    out_fields[1] = piece.to - at.along;
+  // The piece's region is where four fields are all positive: past its first station, short of
+  // its last (neither at a round end: channel.h, `Channel::cap_head`), inside the wet reach (with
+  // the margin, off a nappe), and outside the waters the channel joins, less a cell (S108).
+  const bool round_head = c.cap_head && piece.from == line.station[0];
+  const bool round_tail = c.cap_tail && piece.to == line.station[n - 1];
+  const auto fields = [&](u32 node, f32 out_fields[4]) {
+    const ChannelAt& at = nodes[node];
+    out_fields[0] = round_head ? 1e30f : at.along - piece.from;
+    out_fields[1] = round_tail ? 1e30f : piece.to - at.along;
     out_fields[2] = at.lateral + (piece.fall ? 0.0f : at.margin);
+    out_fields[3] = outside[node];
   };
-  const auto field = [&](const ChannelAt& at) {
-    f32 f[3];
-    fields(at, f);
-    return std::min(f[0], std::min(f[1], f[2]));
+  const auto field = [&](u32 node) {
+    f32 f[4];
+    fields(node, f);
+    return std::min(std::min(f[0], f[1]), std::min(f[2], f[3]));
   };
   for (u32 node = 0; node < count; ++node) {
     const u64 key = keys[node];
@@ -559,7 +705,7 @@ bool build_sheet(const Channel& c, const ChannelLine& line, f32 h, ChannelMesh& 
     bool in[4];
     u32 inside = 0;
     for (u32 k = 0; k < 4; ++k) {
-      v[k] = field(nodes[cn[k]]);
+      v[k] = field(cn[k]);
       in[k] = v[k] > 0.0f;
       inside += in[k] ? 1u : 0u;
     }
@@ -570,9 +716,11 @@ bool build_sheet(const Channel& c, const ChannelLine& line, f32 h, ChannelMesh& 
         const ChannelAt& own = nodes[cn[k]];
         const bool within = own.stretch >= piece.first && own.stretch <= piece.last;
         node_vertex[cn[k]] =
-            add(places[cn[k]], within ? own
-                                      : channel_at(c, line, places[cn[k]].x, places[cn[k]].y,
-                                                   piece.first, piece.last));
+            add(places[cn[k]],
+                solved(places[cn[k]],
+                       within ? own
+                              : channel_at(c, line, places[cn[k]].x, places[cn[k]].y, piece.first,
+                                           piece.last)));
       }
       return node_vertex[cn[k]];
     };
@@ -589,13 +737,13 @@ bool build_sheet(const Channel& c, const ChannelLine& line, f32 h, ChannelMesh& 
         const u32 b = cn[k] < cn[k1] ? k1 : k;
         const Vec2 pa = places[cn[a]];
         const Vec2 pb = places[cn[b]];
-        f32 fa[3];
-        f32 fb[3];
-        fields(nodes[cn[a]], fa);
-        fields(nodes[cn[b]], fb);
+        f32 fa[4];
+        f32 fb[4];
+        fields(cn[a], fa);
+        fields(cn[b], fb);
         const bool low_inside = in[a];
         f32 t = low_inside ? 1.0f : 0.0f;
-        for (u32 f = 0; f < 3; ++f) {
+        for (u32 f = 0; f < 4; ++f) {
           if ((low_inside ? fb[f] : fa[f]) > 0.0f) continue;
           const f32 span = fa[f] - fb[f];
           const f32 at_f = span != 0.0f ? fa[f] / span : 0.5f;
@@ -603,7 +751,8 @@ bool build_sheet(const Channel& c, const ChannelLine& line, f32 h, ChannelMesh& 
         }
         t = std::clamp(t, k_edge_margin, 1.0f - k_edge_margin);
         const Vec2 p{pa.x + (pb.x - pa.x) * t, pa.y + (pb.y - pa.y) * t};
-        edge_vertex[e[k]] = add(p, channel_at(c, line, p.x, p.y, piece.first, piece.last));
+        edge_vertex[e[k]] =
+            add(p, solved(p, channel_at(c, line, p.x, p.y, piece.first, piece.last)));
       }
       return edge_vertex[e[k]];
     };
@@ -652,17 +801,19 @@ bool build_sheet(const Channel& c, const ChannelLine& line, f32 h, ChannelMesh& 
 
 }  // namespace
 
-void build_channel_mesh(const Channel& c, ChannelMesh& out) {
+void build_channel_mesh(const Channel& c, ChannelMesh& out, const ChannelJoins* joins) {
   out = ChannelMesh{};
   if (c.points.size() < 2) return;
   const ChannelLine line = channel_line(c);
+  if (joins != nullptr && joins->list.empty()) joins = nullptr;
   // The vertex budget, as a body's: the lattice grows by a quarter until the sheet fits.
   for (f32 h = channel_lattice(c);; h *= 1.25f)
-    if (build_sheet(c, line, h, out)) return;
+    if (build_sheet(c, line, h, joins, out)) return;
 }
 
 void build_channel_depth_map(const Channel& c, const ChannelMesh& mesh,
-                             const scene_gen::Ground& ground, DepthMap& out) {
+                             const scene_gen::Ground& ground, DepthMap& out,
+                             const ChannelJoins* joins) {
   out = DepthMap{};
   const Mesh& m = mesh.mesh;
   if (m.positions.empty()) return;
@@ -748,7 +899,10 @@ void build_channel_depth_map(const Channel& c, const ChannelMesh& mesh,
       if (!(at.inside > -static_cast<f32>(tm))) continue;
       f64 d = 0.0;
       if (ground.present()) {
-        const f64 level = c.origin.y + static_cast<f64>(at.level);
+        // The level the sheet stands at here: the solve's, brought down to the water it joins.
+        const f32 stands =
+            joins != nullptr ? channel_meet(*joins, x, z, at.level).level : at.level;
+        const f64 level = c.origin.y + static_cast<f64>(stands);
         const WorldPos world{c.origin.x + static_cast<f64>(x), level,
                              c.origin.z + static_cast<f64>(z)};
         d = level - static_cast<f64>(ground.surface(world));

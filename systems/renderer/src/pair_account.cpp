@@ -19,8 +19,12 @@ u32 mesh_caster_policy(const SceneData& scene, u32 mesh) noexcept {
   // As a caster the surface answered a second time, by where a ray crosses its level: ground under
   // the level but outside the outline, dry by the body's definition, lay in its shadow and under it
   // as under a lid. So no light's ray meets it and no cascade draws it; it is drawn as before.
-  if (mesh < scene.mesh_info.size() && scene.mesh_info[mesh].water.has_value() &&
-      !scene.mesh_info[mesh].water->channel)
+  // **A channel's sheet is the same water** (S108; water.md, "A sheet of water stops no light"):
+  // its branch lights its bed through the same refracted query, and as a caster a clear curtain
+  // shadowed its own foot and the bed under it as a wall would (the plunge's case measured a tenth
+  // of the pool's light gone under a spout), and a sheet under a bank's ground laid a line of
+  // shadow along the waterline.
+  if (mesh < scene.mesh_info.size() && scene.mesh_info[mesh].water.has_value())
     return gfx::k_instance_untraced | (1u << gfx::k_instance_cascade_shift);
   if (!caster_policy.get() || mesh >= scene.sources.size()) return 0;
   const auto* info = geometry::flora_species_info(scene.sources[mesh].species);

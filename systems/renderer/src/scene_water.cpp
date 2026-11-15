@@ -287,9 +287,15 @@ Vector<gfx::WaterShore> channel_bank_records(const scene::WaterChannel& c, const
       c.flags.size() != n)
     return out;
   for (u32 i = 0; i + 1 < n; ++i) {
-    if ((c.flags[i] & c.flags[i + 1] & scene_gen::k_channel_over_bank) != 0) continue;
     const WorldPos& p = c.points[i];
     const WorldPos& q = c.points[i + 1];
+    // A stretch with no sheet has no banks: both stations over a bank, and the water written
+    // there a film or climbing (the water capability's `stretch_drawn`, channel.h, whose two
+    // numbers these are: a film under 2 cm, a rise over a millimetre; S108).
+    if ((c.flags[i] & c.flags[i + 1] & scene_gen::k_channel_over_bank) != 0 &&
+        (c.depth_m.size() != n || c.depth_m[i] < 0.02f || c.depth_m[i + 1] < 0.02f ||
+         q.y > p.y + 0.001))
+      continue;
     f32 spray = 0.0f;
     if (stretch_falls_here(c, i)) {
       const f64 drop = p.y - q.y;

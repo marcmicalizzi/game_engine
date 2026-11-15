@@ -1189,9 +1189,17 @@ static const float k_channel_wave_steepness = 0.12;
 static const float k_channel_breakup_scale = 5.89;
 static const float k_channel_breakup_power = 0.319;
 static const float k_channel_breakup_from = 0.6;
-// The fall's streaks: cycles a metre across the face and cycles of the phase a period along it.
-static const float k_channel_streak_across[3] = {1.3, 2.9, 5.1};
-static const float k_channel_streak_cycles[3] = {3.0, 5.0, 7.0};
+// The fall's strands (S108): cells this wide across the face, metres, and this many cells of the
+// phase a period down it (a quarter second of travel: a metre at 4 m/s).
+static const float k_channel_strand_m = 0.12;
+static const int k_channel_strand_cells = 32;
+// A nappe's white needs water: none in a sheet thinner than the first, whole by the second, metres
+// (a choice: a film of 2 mm over rock shows the rock; a centimetre of broken water is opaque).
+static const float k_channel_veil_from_m = 0.0015;
+static const float k_channel_veil_full_m = 0.010;
+// A channel's shore fades over this much depth, metres (S108; visibility_resolve.slang,
+// `water_channel_pixel`): the meniscus's centimetres, not a body's calm quarter metre.
+static const float k_channel_shore_depth = 0.03;
 // The long trains: cycles of the phase a period, a static spatial frequency (cycles a metre).
 static const float k_channel_train_cycles[2] = {17.0, 29.0};
 static const float2 k_channel_train_space[2] = {float2(0.23, -0.31), float2(-0.37, 0.19)};
@@ -1265,6 +1273,30 @@ float3 water_channel_noise(float2 x, uint seed) {
   const float2 d = ga + u.x * (gb - ga) + u.y * (gc - ga) + u.x * u.y * (ga - gb - gc + gd) +
                    du * (float2(vb - va, vc - va) + u.yx * k4);
   return float3(value, d);
+}
+
+// The same noise's value, **periodic in y** with period `wrap` cells, over twice its rms (so about
+// [-1, 1] with an rms of a half): what a pattern carried by the wrapped phase is drawn with (a
+// fall's strands, S108), since a lattice that repeats every `wrap` cells is the same either side
+// of the phase's wrap.
+float water_channel_noise_wrapped(float2 x, int wrap, uint seed) {
+  const float2 i = floor(x);
+  const float2 f = x - i;
+  const float2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  const int cx = int(i.x) + int(seed % 4093u);
+  const int y0 = ((int(i.y) % wrap) + wrap) % wrap;
+  const int y1 = (y0 + 1) % wrap;
+  const int row = int((seed / 4093u) % 4093u);
+  const float2 ga = k_channel_gradients[(water_hash2(int2(cx, y0 + row)) >> 13) & 7u];
+  const float2 gb = k_channel_gradients[(water_hash2(int2(cx + 1, y0 + row)) >> 13) & 7u];
+  const float2 gc = k_channel_gradients[(water_hash2(int2(cx, y1 + row)) >> 13) & 7u];
+  const float2 gd = k_channel_gradients[(water_hash2(int2(cx + 1, y1 + row)) >> 13) & 7u];
+  const float va = dot(ga, f);
+  const float vb = dot(gb, f - float2(1.0, 0.0));
+  const float vc = dot(gc, f - float2(0.0, 1.0));
+  const float vd = dot(gd, f - float2(1.0, 1.0));
+  const float value = va + u.x * (vb - va) + u.y * (vc - va) + u.x * u.y * (va - vb - vc + vd);
+  return value / (2.0 * k_channel_noise_rms);
 }
 
 // **The flow map's two copies** (Vlachos 2010): copy k's place is `velocity t_k` downstream of
@@ -1408,25 +1440,46 @@ WaterChannelSurface water_channel_surface(WaterChannelFlow f, float3 p, float3 g
     const float la = length(across);
     across = la > 1e-6 ? across / la : normalize(cross(float3(0.0, 1.0, 0.0), f.direction + float3(1e-6, 0.0, 0.0)));
     const float u = dot(p, across);
-    float streak = 0.0;
-    for (uint i = 0; i < 3; ++i) {
-      const float cyc = water_channel_cycle(k_channel_streak_cycles[i], tau, time,
-                                            u * k_channel_streak_across[i] +
-                                                water_phase(seed, 8u + i));
-      const float keep = clamp(1.0 / (k_channel_streak_across[i] * 2.0 * max(footprint, 1e-4)) -
-                                   1.0, 0.0, 1.0);
-      streak += keep * sin(k_water_two_pi * cyc) / 3.0;
+    // **The strands** (S108; in place of S96's three sines across the face, which drew ruled
+    // stripes): gradient noise in cells `k_channel_strand_m` across the face and a
+    // `k_channel_strand_cells`-th of the phase's period down it, in two octaves, carried down by
+    // the phase — a whole number of cells a period, the noise wrapped at it, so the phase's wrap
+    // is seamless — which at a fall's speed are cells several times longer than wide.
+    const float carried =
+        frac(frac(tau / k_channel_period_s) - frac(time / k_channel_period_s) + 1.0);
+    const float cells = float(k_channel_strand_cells);
+    const float keep = clamp(k_channel_strand_m / (2.0 * max(footprint, 1e-4)) - 1.0, 0.0, 1.0);
+    float strands = 0.0;
+    if (keep > 0.0) {
+      strands = 0.7 * water_channel_noise_wrapped(float2(u / k_channel_strand_m, carried * cells),
+                                                  k_channel_strand_cells, seed + 31u) +
+                0.3 * water_channel_noise_wrapped(
+                          float2(2.0 * u / k_channel_strand_m, 2.0 * carried * cells),
+                          2 * k_channel_strand_cells, seed + 67u);
+      strands *= keep;
     }
     c.speed = f.speed;
     c.froude = f.speed / sqrt(k_water_g * max(nappe, k_channel_depth_min));
-    c.normal = normalize(geometric + across * (0.08 * streak));
+    c.normal = normalize(geometric + across * (0.10 * strands));
     c.roughness = 0.12;
     const float fallen =
         f.speed * f.speed * (1.0 - geometric.y * geometric.y) / (2.0 * k_water_g);
     const float breakup =
         k_channel_breakup_scale * pow(max(f.speed * nappe, 1e-6), k_channel_breakup_power);
-    c.foam = smoothstep(k_channel_breakup_from * breakup, breakup, fallen);
-    c.foam_shade = 0.82 + 0.18 * streak;
+    // **White by how far the sheet has broken up and by how much water there is** (S108): a film
+    // of a millimetre or two has no white in it however far it has fallen, a sheet of a
+    // centimetre all of it, so a thin veil over a step is the rock seen through water with white
+    // strands in it, and the sheet's sides — where the mesh thins it to nothing — have no white
+    // and no straight edge. Where it is partly white it is white **in strands**: the pattern's
+    // threshold falls as the share rises, from a few strands to all but a few dark gaps; far
+    // away the strands average to their share.
+    const float share = smoothstep(k_channel_breakup_from * breakup, breakup, fallen) *
+                        smoothstep(k_channel_veil_from_m, k_channel_veil_full_m, nappe);
+    const float threshold = lerp(0.9, -0.9, share);
+    c.foam = share > 0.0
+                 ? lerp(share, smoothstep(threshold - 0.35, threshold + 0.35, strands), keep)
+                 : 0.0;
+    c.foam_shade = 0.85 + 0.15 * clamp(strands, -1.0, 1.0);
     return c;
   }
   // The flow along the surface, x z, and across it.
