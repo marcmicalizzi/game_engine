@@ -198,7 +198,7 @@ if ($Name.Count -gt 0 -and $selected.Count -ne $Name.Count) {
   throw "fetch-foliage: unknown item in '$($Name -join ', ')'; known: $(($manifest.items | ForEach-Object id) -join ', ')"
 }
 $tool = if ($NoPrepare) { $null } else { Find-EngineContent }
-$rows = @()
+$madeById = @{}
 foreach ($item in $selected) {
   Write-Host "== $($item.id) ($($item.kind), $($item.source))"
   Assert-Cc0 $item
@@ -226,7 +226,36 @@ foreach ($item in $selected) {
   } elseif (-not $NoPrepare) {
     Write-Warning "fetch-foliage: no engine-content found (build it, or pass -EngineContent); the masked variants were not written"
   }
-  $rows += "| $($item.id) | $($item.kind) | $($item.licence) | $($item.authors) | $($item.page) | $(if ($made) { $made } else { '-' }) |"
+  $madeById[$item.id] = $made
+}
+
+# LICENSES.md names every item that is on disk, not only those this run was asked for: a run with
+# -Name rewrites the file, so it lists what an earlier run fetched too (an item counts as on disk
+# when every one of its pinned files is there at its pinned size; its hashes were checked when it
+# was fetched). What was made from an item fetched earlier is read from the files beside it.
+function Get-MadeOnDisk($item) {
+  $dir = Join-Path $Out $item.id
+  $made = @()
+  foreach ($f in "$($item.id).masked.gltf", "$($item.id)_rgba.png", "$($item.id)_cards.gltf") {
+    if (Test-Path (Join-Path $dir $f)) { $made += $f }
+  }
+  return ($made -join ', ')
+}
+$rows = @()
+foreach ($item in $manifest.items) {
+  $present = $true
+  foreach ($file in $item.files) {
+    $path = Join-Path $Out (Join-Path $item.id $file.path)
+    if (-not (Test-Path $path) -or (Get-Item $path).Length -ne $file.size) { $present = $false; break }
+  }
+  if (-not $present) { continue }
+  $made = if ($madeById.ContainsKey($item.id)) { $madeById[$item.id] } else { Get-MadeOnDisk $item }
+  # A licence stated site-wide rather than on the item's page is quoted, with the page that states
+  # it and the day it was read (ambientCG: its item pages say CC0 only through that sentence).
+  $licence = if ($item.licence_quote) {
+    "$($item.licence): `"$($item.licence_quote)`" ($($item.licence_page), read $($item.licence_read))"
+  } else { $item.licence }
+  $rows += "| $($item.id) | $($item.kind) | $licence | $($item.authors) | $($item.page) | $(if ($made) { $made } else { '-' }) |"
 }
 
 $licenseFile = Join-Path $Out 'LICENSES.md'

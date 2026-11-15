@@ -1,3 +1,4 @@
+#include <core/time/time.h>
 #include <domain/assets/gltf.h>
 #include <domain/geometry/cluster.h>
 #include <domain/geometry/material_sampling.h>
@@ -114,6 +115,11 @@ void build_crown_priors(const SceneData& data, CrownPriorTable& out) {
   Vector<Vec3> corners;
   Vector<f32> fill;  // one a triangle of `corners`: the share its mask keeps
   Vector<MaskImage> masks;
+  // What measuring the masks costs the load: one CPU decode a (mesh, masked material), timed, so
+  // a world's count of masked materials says what its load pays (static-asset-world.md, "Bought
+  // foliage").
+  u32 decodes = 0;
+  i64 decode_ns = 0;
   const bool has_uvs = mesh.attributes.size() == mesh.vertices.size();
   if (!has_uvs && meshes > 0) {
     ENGINE_LOG_INFO(log_renderer, "crown prior measured by image means",
@@ -173,9 +179,15 @@ void build_crown_priors(const SceneData& data, CrownPriorTable& out) {
       }
       const assets::Material& leaf = source.data.materials[static_cast<u32>(material)];
       MaskImage& mask = masks[static_cast<u32>(material)];
-      if (!mask.tried && !decode_mask(source, leaf, mask)) {
-        ENGINE_LOG_INFO(log_renderer, "crown prior mask read from the factor alone",
-                        log::field("mesh", m), log::field("material", material));
+      if (!mask.tried) {
+        const i64 start_ns = time::monotonic_ns();
+        const bool decoded = decode_mask(source, leaf, mask);
+        decode_ns += time::monotonic_ns() - start_ns;
+        ++decodes;
+        if (!decoded) {
+          ENGINE_LOG_INFO(log_renderer, "crown prior mask read from the factor alone",
+                          log::field("mesh", m), log::field("material", material));
+        }
       }
       for (u32 t = 0; t < cluster.triangle_count; ++t) {
         const u32 packed = mesh.triangles[cluster.triangle_offset + t];
@@ -197,7 +209,15 @@ void build_crown_priors(const SceneData& data, CrownPriorTable& out) {
                                  : factor_only);
       }
     }
-    if (corners.empty() || leaf_hi - leaf_lo < gfx::k_crown_min_height_m) continue;
+    if (corners.empty()) continue;
+    if (leaf_hi - leaf_lo < gfx::k_crown_min_height_m) {
+      // Said, not silent: a bought sapling of 1.3 m is a tree to its owner and gets no crown here.
+      ENGINE_LOG_INFO(log_renderer, "crown prior skipped: leaves under the minimum height",
+                      log::field("mesh", m),
+                      log::field("leaf_height_m", static_cast<f64>(leaf_hi - leaf_lo)),
+                      log::field("minimum_m", static_cast<f64>(gfx::k_crown_min_height_m)));
+      continue;
+    }
     // Leaf, not card: each triangle counts the share of it its own mask keeps (T146), so a solver's
     // 2 cm leaf card and a bought tree's 1.2 m branch card both count the leaf they show, and no
     // card is refused for its size.
@@ -220,6 +240,10 @@ void build_crown_priors(const SceneData& data, CrownPriorTable& out) {
                     log::field("dims", records[m].dims));
   }
   out.meshes = meshes;
+  if (decodes > 0) {
+    ENGINE_LOG_INFO(log_renderer, "crown prior masks decoded", log::field("decodes", decodes),
+                    log::field("ms", static_cast<f64>(decode_ns) / 1.0e6));
+  }
   if (out.crowns == 0) return;
   for (u32 m = 0; m < meshes; ++m) {
     if (!is_form(m) || data.form_source[m] >= meshes) continue;

@@ -1,6 +1,7 @@
 #include <core/hash/hash.h>
 #include <core/json/json.h>
 #include <core/json/json_value.h>
+#include <core/log/log.h>
 #include <domain/assets/gltf.h>
 #include <foundation/io/vfs.h>
 
@@ -37,7 +38,22 @@
 
 namespace engine::assets {
 
+ENGINE_LOG_CATEGORY_DEFINE(log_assets, "assets");
+
 namespace {
+
+// **A BLEND material whose alpha is a picture is read as MASK** (static-asset-world.md, "Bought
+// foliage"). The engine draws into a visibility buffer and has no sorted transparency, so BLEND
+// reached the renderer as opaque, and a bought plant whose leaves say BLEND stood as solid cards
+// without a word. With a base colour image the alpha is a shape — leaves, a fence, a decal — and a
+// test at glTF's default cutoff (0.5; a BLEND material's own alphaCutoff means nothing) draws the
+// shape. With the factor alone (a pane of glass) a mask would draw all of it or none, so it stays
+// BLEND and is drawn opaque, as before. Either way the import says so, one line a file.
+bool blend_read_as_mask(const cgltf_material& material) noexcept {
+  return material.alpha_mode == cgltf_alpha_mode_blend && material.has_pbr_metallic_roughness &&
+         material.pbr_metallic_roughness.base_color_texture.texture != nullptr &&
+         material.pbr_metallic_roughness.base_color_texture.texture->image != nullptr;
+}
 
 bool fail(std::string* error, std::string message) {
   if (error != nullptr) *error = std::move(message);
@@ -815,6 +831,10 @@ bool collect_materials(const cgltf_data& data, MeshData& out, std::string* error
         source.alpha_mode == cgltf_alpha_mode_mask
             ? k_alpha_mask
             : (source.alpha_mode == cgltf_alpha_mode_blend ? k_alpha_blend : k_alpha_opaque);
+    if (blend_read_as_mask(source)) {
+      entry.alpha_mode = k_alpha_mask;
+      entry.alpha_cutoff = 0.5f;
+    }
     entry.double_sided = source.double_sided != 0;
     out.materials.push_back(std::move(entry));
   }
@@ -1070,10 +1090,62 @@ bool build_mesh(const cgltf_data& data, MeshData& out, std::string* error) {
   return true;
 }
 
+bool subtree_has_mesh(const cgltf_node& node, u32 depth) noexcept {
+  if (node.mesh != nullptr) return true;
+  if (depth > 256) return false;  // deeper than any hierarchy a plant needs; never a cycle's loop
+  for (cgltf_size i = 0; i < node.children_count; ++i) {
+    if (node.children[i] != nullptr && subtree_has_mesh(*node.children[i], depth + 1)) return true;
+  }
+  return false;
+}
+
+// What an import did that its owner would not see in the picture, one line each a file: BLEND
+// materials read as MASK or left opaque (`blend_read_as_mask`), and a default scene of several
+// roots carrying meshes — a bought plant file's three or four variants side by side — flattened
+// into one mesh, which a scene `Mesh` places whole (static-asset-world.md, "Bought foliage").
+void log_import(const cgltf_data& data, std::string_view name) {
+  u32 masked = 0;
+  u32 opaque = 0;
+  for (cgltf_size i = 0; i < data.materials_count; ++i) {
+    if (data.materials[i].alpha_mode != cgltf_alpha_mode_blend) continue;
+    if (blend_read_as_mask(data.materials[i])) {
+      ++masked;
+    } else {
+      ++opaque;
+    }
+  }
+  if (masked + opaque > 0) {
+    ENGINE_LOG_INFO(log_assets, "glTF BLEND materials: with an image read as MASK, without opaque",
+                    log::field("file", name), log::field("read_as_mask", masked),
+                    log::field("drawn_opaque", opaque));
+  }
+  const cgltf_scene* scene = data.scene;
+  if (scene == nullptr && data.scenes_count > 0) scene = &data.scenes[0];
+  if (scene == nullptr) return;
+  u32 roots = 0;
+  for (cgltf_size i = 0; i < scene->nodes_count; ++i) {
+    if (scene->nodes[i] != nullptr && subtree_has_mesh(*scene->nodes[i], 0)) ++roots;
+  }
+  if (roots > 1) {
+    ENGINE_LOG_INFO(log_assets, "glTF scene of several mesh roots imported as one mesh",
+                    log::field("file", name), log::field("roots", roots));
+  }
+}
+
+bool load_bytes(std::span<const u8> bytes, std::string_view base_dir, std::string_view name,
+                MeshData& out, std::string* error);
+
 }  // namespace
 
 bool load_gltf_memory(std::span<const u8> bytes, std::string_view base_dir, MeshData& out,
                       std::string* error) {
+  return load_bytes(bytes, base_dir, base_dir, out, error);
+}
+
+namespace {
+
+bool load_bytes(std::span<const u8> bytes, std::string_view base_dir, std::string_view name,
+                MeshData& out, std::string* error) {
   out = MeshData{};
   if (bytes.empty()) return fail(error, "glTF: the input is empty");
 
@@ -1103,8 +1175,11 @@ bool load_gltf_memory(std::span<const u8> bytes, std::string_view base_dir, Mesh
     out = MeshData{};
     return false;
   }
+  log_import(*document.data, name);
   return true;
 }
+
+}  // namespace
 
 bool load_gltf(std::string_view path, MeshData& out, std::string* error) {
   out = MeshData{};
@@ -1114,7 +1189,7 @@ bool load_gltf(std::string_view path, MeshData& out, std::string* error) {
     return fail(error, std::string("glTF: cannot read '") + std::string(path) +
                            "': " + io::status_name(status));
   const std::span<const u8> bytes(reinterpret_cast<const u8*>(contents.data()), contents.size());
-  return load_gltf_memory(bytes, io::parent_path(path), out, error);
+  return load_bytes(bytes, io::parent_path(path), path, out, error);
 }
 
 bool source_mesh_hash(std::string_view path, u64& out, std::string* error) {
@@ -1146,6 +1221,15 @@ bool source_mesh_hash(std::string_view path, u64& out, std::string* error) {
     std::string buffer;
     if (io::read_file(file, buffer) != io::Status::Ok) buffer.clear();
     hash = hash_combine(hash, hash_bytes(buffer.data(), buffer.size()));
+  }
+  // A file with a BLEND material read as MASK imports differently since T139, so its key moves
+  // and a cache built from the old reading is rebuilt; every other file keeps its key (and the
+  // derived data cached under it), which a bump of the cache version would have thrown away.
+  for (cgltf_size i = 0; i < document.data->materials_count; ++i) {
+    if (blend_read_as_mask(document.data->materials[i])) {
+      hash = hash_combine(hash, u64{0x424c454e444d534bull});  // "BLENDMSK"
+      break;
+    }
   }
   out = hash;
   return true;

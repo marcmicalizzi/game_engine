@@ -668,6 +668,9 @@
       "kind": "leaf atlas",
       "page": "https://ambientcg.com/view?id=LeafSet024",
       "licence": "CC0-1.0",
+      "licence_page": "https://docs.ambientcg.com/license/",
+      "licence_quote": "All ambientCG assets are provided under the Creative Commons CC0 1.0 Universal License.",
+      "licence_read": "2026-11-14",
       "authors": "ambientCG (Lennart Demes)",
       "files": [
         {

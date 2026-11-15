@@ -197,9 +197,13 @@ an impostor chain on top.
 side under separate nodes (the dandelions, ferns, nettles, grass clumps, rooibos and searsia), and
 the importer flattens a file's default scene into one mesh, so an instance places the whole row;
 a scene `Mesh` cannot name one node. The conifer saplings are 1.3 m tall, under the crown prior's
-1.5 m, so they have no crown, as a sward has none. Nothing the bought set does draws a log line: a
-tree that loses its leaves to LOD, stands rigid, or arrives with its mask outside its material is
-silent.
+1.5 m, so they have no crown, as a sward has none. Nothing the bought set did drew a log line: a
+tree that loses its leaves to LOD, stands rigid, or arrives with its mask outside its material was
+silent. Three of these now say so (T139's second leg): the import reads a `BLEND` material with a
+base colour image as `MASK` and logs it, one line a file, and logs a file whose default scene has
+several roots carrying meshes ([assets](../subsystems/assets.md)); the crown prior logs a mesh it
+skips for standing under its minimum height ([renderer](../subsystems/renderer.md#stage-7-a-crowns-shade-as-a-prior)).
+A mask that ships outside its material, a lost leaf and a rigid tree are still silent.
 
 **Every configuration flies it** (`msvc-release` of this branch, 1920 × 1080, the static path,
 `--shadows rt` unless named, no bounce, 60 warm-up frames; the machine was busy throughout — other
@@ -236,7 +240,7 @@ than 4 of 255 in luma, the bounce's own noise included, means equal.
 |---|---|---|
 | Drawing its leaves at all | **nothing past a few metres at the default threshold**: the DAG's sloppy fallback eats disconnected cards | T147 |
 | Its mask, as shipped | nothing: the opacity is a map outside the material; the fetch merges it | T139 (the fetch) |
-| `BLEND` foliage | drawn opaque; the fetch writes `MASK` | (a row: `BLEND` read as `MASK` with a line) |
+| `BLEND` foliage | read as `MASK` at import when its alpha is an image, with a line a file; factor-only `BLEND` still opaque | T139 |
 | The crown prior | **yes** (T146): every tree 1.5 m and taller, its leaf measured from its own mask | T146 |
 | The bounce's foliage cells | yes, through the crown | T146 |
 | Opacity micromaps, the shadow proxy's bake, pixel classes, the structure cache | yes, as before | — |
@@ -245,7 +249,7 @@ than 4 of 255 in luma, the bounce's own noise included, means equal.
 | The off-ground check, seating, water depth over the mesh ground | nothing | T149 |
 | Stochastic sampling | nothing (the ground still tiles) | T150 |
 | The caster policy | defaults | T151 |
-| One variant of a multi-variant file | nothing: the whole row is one mesh | (a row: a scene `Mesh` naming a node) |
+| One variant of a multi-variant file | nothing: the whole row is one mesh, now with a line at import | (a row: a scene `Mesh` naming a node) |
 
 ## Real bought assets, for the owner to approve
 
