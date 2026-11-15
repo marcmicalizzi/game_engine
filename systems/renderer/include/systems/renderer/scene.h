@@ -818,6 +818,12 @@ struct SceneData {
   // Per loaded instance, the key its sway's seed is hashed from (`SceneInstance::motion_key`, its
   // index when the source named none). Empty: every instance's index.
   Vector<u32> motion_keys;
+  // **A still form keeps its swaying source's padding** (G204; sway_forms.h; renderer.md, "A
+  // swaying mesh's form by ring"): per mesh, the slack its instances' spheres take, mesh units —
+  // for a still cut of a swaying mesh the sway bound the cull pads the mesh's own instances by, so
+  // its choice over the form is its choice over the mesh; zero for every other mesh. Added by
+  // `make_instance`. Empty: no still form.
+  Vector<f32> still_padding;
   // Per loaded instance, the plane under its rim its seat fitted (`SceneInstance::slope`, G201
   // stage 2), four bytes each, kept for the conformed foot; zero for one not seated.
   Vector<scene_gen::GroundSlope> ground_slopes;

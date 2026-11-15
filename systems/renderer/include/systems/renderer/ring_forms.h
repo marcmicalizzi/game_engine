@@ -69,7 +69,11 @@ static_assert(sizeof(RingForm) == 16, "RingForm is 16 bytes");
 struct MeshRingForms {
   RingForm ring[k_ring_forms_max] = {};
   bool active = false;
-  u8 pad[3] = {};
+  // The first ring whose entry stands still for a mesh that sways (G204; sway_forms.h): from it
+  // outward the forms carry no motion contract, and each serves the placement scales that stand
+  // still seen from its ring's floor. 0: the mesh does not sway, or sways in every ring.
+  u8 still_from = 0;
+  u8 pad[2] = {};
 };
 
 // The load's table (`SceneData::ring_forms`): one record per scene mesh the load made, or empty.
@@ -84,6 +88,10 @@ struct RingFormTable {
   u32 cuts = 0;
   u64 cut_clusters = 0;
   u32 offered = 0;
+  // ... and of them (G204; sway_forms.h): the subjects that sway, and the cut forms that stand
+  // still (the rest of a swaying subject's cuts sway as it does).
+  u32 swaying = 0;
+  u32 stills = 0;
 };
 
 // The scene mesh a placement of `mesh` at `scale` (its rotation's axes scaled: the largest of the

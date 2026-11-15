@@ -91,6 +91,12 @@ if(TARGET engine::litter AND TARGET engine::world)
   # ring's handover.
   list(APPEND _view_tests tests/ring_forms_view_tests.cpp)
 endif()
+if(TARGET engine::flora AND TARGET engine::scatter AND TARGET engine::world)
+  # A swaying mesh's form by ring (G204; renderer.md, "A swaying mesh's form by ring"): a streamed
+  # scatter of ferns drawn as swaying cuts and still ones, fewer pairs, and no pixel changed by a
+  # ring's handover between two forms at rest or two that sway.
+  list(APPEND _view_tests tests/sway_forms_view_tests.cpp)
+endif()
 if(TARGET engine::flora)
   # A walk along a megaflora's major limb, replayed offscreen (docs/subsystems/flora.md,
   # "Megaflora"): the elder-grove scene's ancient trees solved by the test to find the limb.
