@@ -5,7 +5,8 @@
 //
 // The discharge at a point of a link is the specific runoff over the point's contributing area
 // plus the point sources upstream of it (`ChannelFlow`): a sum down the links, conserved at every
-// confluence because the areas are. A link is **wet** from the first point at which that
+// confluence because the areas are, and carried through a lake of the plan into its outlet
+// (W122), less what the lake loses. A link is **wet** from the first point at which that
 // discharge, over a metre of its bed, is a sheet's (a critical depth of `wet_depth_m`, the falls'
 // own threshold); a link that never reaches it is dry, and says why.
 //
@@ -36,8 +37,9 @@ enum class DryReason : u8 {
 };
 
 // One link's water: the discharge at each point of its line, today, m^3/s; the first point that
-// is wet (`line.size()` when none is); the link its water goes on into (~0u: a mouth, the
-// region's edge, or a body between); and what it came to.
+// is wet (`line.size()` when none is); the link its water goes on into by the cell it ends at
+// (~0u: a mouth, the region's edge, or a body between; a source's flow and a lake's loss go on
+// through a lake of the plan all the same, `network_flow`); and what it came to.
 struct LinkFlow {
   Vector<f64> discharge;
   u32 first_wet = 0;
