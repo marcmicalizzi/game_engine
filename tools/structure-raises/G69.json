@@ -1,10 +1,10 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "G69",
-  "reason": "engine-content village: the command's section in apps.md (the plan, the treads' mask regions, a camera path into a house)",
-  "date": "2026-11-14",
+  "reason": "engine-content village: the command's section in apps.md (the plan, the wear's mask regions, the plots' boundaries as a walls entry, a camera path into a house)",
+  "date": "2026-11-15",
   "by": "Marc Micalizzi",
   "deltas": {
-    "page:docs/subsystems/apps.md": 687
+    "page:docs/subsystems/apps.md": 725
   }
 }

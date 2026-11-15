@@ -50,11 +50,11 @@ bool walk_points(const VillageLayer& layer, const VillagePlan& plan, u32 house,
   out.push_back(WalkPoint{middle, "lane at the path", false});
   out.push_back(WalkPoint{WorldPos{metres(p.path_x_mm), top, metres(p.path_z_mm)}, "path", false});
   // A step short of the threshold, on the pad, then the threshold on the house's floor.
-  out.push_back(WalkPoint{WorldPos{metres(p.door_x_mm) - p.inward_x * 0.7, pad,
-                                   metres(p.door_z_mm) - p.inward_z * 0.7},
-                          "before the door", false});
-  out.push_back(WalkPoint{WorldPos{metres(p.door_x_mm), pad + metres(h.floor_mm), metres(p.door_z_mm)},
-                          "door", true});
+  out.push_back(WalkPoint{
+      WorldPos{metres(p.door_x_mm) - p.inward_x * 0.7, pad, metres(p.door_z_mm) - p.inward_z * 0.7},
+      "before the door", false});
+  out.push_back(WalkPoint{
+      WorldPos{metres(p.door_x_mm), pad + metres(h.floor_mm), metres(p.door_z_mm)}, "door", true});
   for (u32 k = 0; k < h.route.size(); ++k) {
     const RoutePoint& r = h.route[k];
     out.push_back(WalkPoint{house_point(p, r.x_mm, r.y_mm, r.z_mm),
@@ -71,7 +71,9 @@ bool flight_json(const VillageLayer& layer, const VillagePlan& plan, u32 house, 
   if (!walk_points(layer, plan, house, walk, look, error)) return false;
   const f64 fps = 60.0;
   JsonValue keys = JsonValue::array(), markers = JsonValue::array();
-  const auto eye = [&](const WalkPoint& w) { return WorldPos{w.feet.x, w.feet.y + eye_m, w.feet.z}; };
+  const auto eye = [&](const WalkPoint& w) {
+    return WorldPos{w.feet.x, w.feet.y + eye_m, w.feet.z};
+  };
   const auto add_key = [&](f64 seconds, WorldPos position, WorldPos toward, const char* what) {
     JsonValue k = JsonValue::object();
     k["time"] = JsonValue(std::round(seconds * 1000.0) / 1000.0);

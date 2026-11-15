@@ -22,9 +22,7 @@ constexpr i64 k_shape_reach_mm = 2000;
 struct TileKey {
   i64 z = 0;
   i64 x = 0;
-  constexpr bool operator<(const TileKey& o) const noexcept {
-    return z != o.z ? z < o.z : x < o.x;
-  }
+  constexpr bool operator<(const TileKey& o) const noexcept { return z != o.z ? z < o.z : x < o.x; }
   constexpr bool operator==(const TileKey&) const = default;
 };
 

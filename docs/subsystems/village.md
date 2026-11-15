@@ -126,6 +126,52 @@ collision's case walks a capsule along ([scene_collision](scene_collision.md#str
 point. The route is the house filler's to give because only it knows the rooms; the plan adds
 nothing to a house that gives none.
 
+## The wear
+
+A lane drawn as one band of one material reads as a ribbon laid on a lawn, which is what the first
+pictures of this scene showed. What makes a village street read as one is that the ground is worn
+by degrees: the middle beaten to stone and dust, a margin of bare earth where feet and wheels
+wander, a verge of short trodden grass out to the plots' fronts, and bare ground where people stand
+at a door. `ground_regions_json(layer, plan, names)` writes that as mask regions
+(`engine.scene.TerrainMaskRegion`), in the order they are laid, each over the last:
+
+| Region | Outline | Layer (default name) | Feather inward |
+|---|---|---|---|
+| a lane's **verge** | the street's whole width, front to front | `verge` | a metre, or as far as the wear if that is nearer |
+| a lane's **wear** | the tread and `k_wear_margin_mm` (45 cm) past each edge | `worn` | 90 cm, so the tread's surveyed edge is the middle of the fade |
+| a lane's **tread** | the tread less 45 cm each side | `lane` | 45 cm |
+| a built plot's **door yard** | a T: the path from inside the tread's wear to the plot's front, and from there to the wall the ground `yard_m` (1.6 m) each side of the door, kept 30 cm inside the plot's sides | `worn` | 40 cm |
+
+The fades are wide on purpose: the mask level blends by the materials' heights
+([tileset](tileset.md#the-mask-level), `height_blend`), so across a feather the stones of one layer
+stand through the other and the edge is ragged at the scale of the texture, not a line at the
+scale of the polygon. An empty layer name leaves its regions out, so a scene with two layers to
+spare names two. The widths are choices, marked so on
+[the grounding page](../experiments/village-plan-grounding.md#the-wear-and-the-boundaries); they
+are not the entry's fields except `yard_m`, because nothing but the picture reads them.
+
+The wear changes no height and hands no shape: the cover still keeps off the tread, the pads and
+the paths alone, so a tuft may stand in a yard's corner or on the verge, as weeds do.
+
+## The boundaries
+
+A plot a person would call a toft has an edge. `plot_boundaries(layer, plan, out)` gives the lines
+that edge stands on, whole millimetres: a built plot's front, its two sides and its back, with
+**one gateway on the front where the door's path crosses it** (its middle as arc length from the
+line's first point). A side two built neighbours share belongs to the earlier plot's line and is
+left out of the later one's, so nothing stands twice on one line; a plot with both sides its own is
+a closed loop, one with a side taken is an open run that starts or ends at the neighbour's corner,
+and one with both taken is its front and its back.
+
+**The village stands nothing on those lines itself.** What a boundary is made of — a hedge, a
+bank, a fence, a wall — is another capability's, and the lines are general: a plan's geometry and
+no building's name. `engine-content village` writes them twice in its output, as `boundaries` (the
+lines as they are) and as `walls`, the same lines as a ready `walls` placement entry
+([walls](walls.md): `points_mm`, `closed`, `gateways_cm`) 1.1 m high with 1.5 m gateways, which is
+what the scene pastes. A wall, because it is the one boundary the engine can build today; the
+grounding page says what the sources give for banks, ditches and walls and that a hedge is the
+commoner case this cannot yet stand.
+
 ## In a scene
 
 ```json
@@ -138,9 +184,11 @@ nothing to a house that gives none.
 ```
 
 The terrain must be a tile set (`provider: "tiles"`): a planned edit on any other ground is
-refused by the reader, with the entry named. The treads' material is not handed across (a planned
-mask region is not a list of `GroundPlan` yet): `engine-content village <scene> <out.json>` writes
-each tread as a mask region to paste into `terrain.masks.regions`, with the plan's summary.
+refused by the reader, with the entry named. The wear's materials and the boundaries are not handed
+across (a planned mask region is not a list of `GroundPlan` yet, and a generator cannot stand
+another's entry): `engine-content village <scene> <out.json>` writes, with the plan's summary,
+`mask_regions` to paste into `terrain.masks.regions` (the palette needs the layers `verge`, `worn`
+and `lane`) and `walls` to paste into `placements` after the village.
 
 A streamed scene gets a house with the tile its origin stands on, its mesh named by the tile
 (`tile_meshes`), and every tile is handed the shapes that reach within 2 m of it; a scene read
@@ -166,6 +214,10 @@ Each is held by a case of `tests/village_tests.cpp`.
 - The shapes cover the treads, the pads and the paths and not a garden; the tiles' shapes
   together are the whole read's.
 - A plot too steep or in water is empty and counted, and the houses stand further along.
+- A lane's wear is three bands, each inside the last; a yard holds the ground before its door, a
+  metre along the wall from it and the path's end at the tread, and not the plot's back.
+- Every side of every built plot is on exactly one boundary line, and a front's gateway is on the
+  front, square to the street from the path's end.
 - The plan is the same bytes on every toolchain (`plan_hash`, pinned on MSVC, reproduced by GCC
   and Clang in the containers).
 - An entry out of range is refused with a sentence naming the field.
@@ -175,7 +227,9 @@ Each is held by a case of `tests/village_tests.cpp`.
 `include/domain/village/village.h`: `k_village_version`; the house seam (`HouseAsk`, `House`,
 `HouseFn`, `box_house`); the plan (`LaneStation`, `LaneLine`, `PlotState`, `Plot`, `VillagePlan`,
 `layer_in_range`, `plan_village`, `plan_hash`); what it is handed over as (`ground_edits`,
-`footprints`, `tread_regions_json`, `plan_json`, `house_placement`, `house_point`).
+`footprints`, `plan_json`, `house_placement`, `house_point`); the wear (`GroundLayers`,
+`k_wear_margin_mm`, `ground_regions_json`) and the boundaries (`BoundaryLine`, `plot_boundaries`).
+`include/domain/village/flight.h`: `WalkPoint`, `walk_points`, `flight_json`.
 
 ## Depends on
 
@@ -248,7 +302,12 @@ indoors: the visible pairs are about 3,750 either side). The whole flight's GPU 
 
 `tools/dev.ps1 test -Filter village`: the cases above, with no device. The walk through a house is
 the collision's case ([scene_collision](scene_collision.md)); the scene is
-`content/test-scenes/village/`.
+`content/test-scenes/village/`. **End to end** (`apps/engine_view/tests/village_view_tests.cpp`, on
+a GPU): engine-content writes a level ground, plans a street of two houses and writes the flight;
+engine-view draws every marker with the ids beside, and the case holds that the houses are meshes
+with clusters, that every frame the flight calls inside is one building from within (seven tenths
+of its pixels one instance's, over three clusters or more, a twentieth or less empty) and that the
+load dropped, withheld, buried and floated nothing.
 
 ## Not yet
 
@@ -258,10 +317,16 @@ the collision's case ([scene_collision](scene_collision.md)); the scene is
   regenerated from its entry at every load, which is what plan 14 says an authored village must
   not be.
 - **Row plans only**: no agglomeration, no radial or grid plan, no green with a pond, no back
-  lane, no church, well, fences, woodpiles or carts. A bend's inside corner is left open.
-- **The tread's material is pasted, not planned** (`GroundPlan` has no mask list).
-- **A lane has no camber, ruts or worn verge**, and the plots' gardens are whatever the scene's
-  cover grows.
+  lane, no church, well, woodpiles or carts. A bend's inside corner is left open.
+- **The wear and the boundaries are pasted, not planned** (`GroundPlan` has no mask list, and an
+  entry cannot hand another generator's entry): a change to the plan means running the tool and
+  pasting again, and the scene's README says so.
+- **A boundary is a wall or nothing.** No hedge, bank and ditch, or fence can be stood on the
+  lines yet (a hedge needs a generator that plants along a line; a fence a mesh generator of posts
+  and rails); the lines do not choose which sides a plot bounds, and a wall on a pad's rim stands
+  on the pad's bank where a house is within 10 cm of its plot's side.
+- **A lane has no camber and no ruts**, the wear is the same along its whole length (no puddle,
+  no wider wear at a door or a bend), and the plots' gardens are whatever the scene's cover grows.
 - **A house's pad is level**: a house on a slope gets no plinth or stilts, and the plan leaves the
   plot empty past `max_pad_step_m`.
 

@@ -19,9 +19,14 @@ door, through the rooms, up the stair and to a window.
 - **The cover**, after the village so it keeps off the pads, the tread and the paths: grass tufts,
   nettles and daisies (`village-cover`), and apple trees and hazels (`village-trees`), from the
   recipes in `content/flora/`.
-- **The tread's material**: a mask region pasted from `engine-content village`'s output (a planned
-  mask region is not handed across yet).
-- A sky at 52° north in midsummer; no water, no fires, no `world` block (the scene is read whole).
+- **The wear and the walls**, pasted from `engine-content village`'s output (a planned mask region
+  and another generator's entry are not handed across yet): the lane's verge, worn margin and stony
+  tread and each house's door yard as mask regions over three palette layers (`verge`, `worn`,
+  `lane`), and each plot's boundary as a dry-stone wall 1.1 m high with a gateway where its path
+  crosses its front (`placements[1]`, generator `walls`). `plan.json` holds both as the tool wrote
+  them; **after a change to the plan, run the tool and paste again**.
+- A sky at 52° north in midsummer, **at three in the afternoon** (the terrain's `time`, 54,000 s
+  past the epoch's midnight: the scene opens in daylight with no flag); no water, no fires, no `world` block (the scene is read whole).
 
 ## Write the heightfield first
 

@@ -1,8 +1,10 @@
 // `engine-content village` (docs/subsystems/apps.md, "engine-content village"; village.md, "In a
 // scene"): the plan a scene's `village` placements make over its terrain, for a person to read and
-// for the two things a scene's author pastes or keeps beside the scene — each lane's tread as a
-// terrain mask region (a planned mask region is not handed across), and a camera path that goes in
-// at a house's door, through its rooms, up its stair and to a window. It calls the functions the
+// for the three things a scene's author pastes or keeps beside the scene — the wear (each lane's
+// verge, worn margin and tread, each house's door yard) as terrain mask regions naming the palette
+// layers `verge`, `worn` and `lane` (a planned mask region is not handed across), the plots'
+// boundaries as the lines of a `walls` entry, and a camera path that goes in at a house's door,
+// through its rooms, up its stair and to a window. It calls the functions the
 // placement generator calls, over the ground the scene's terrain names before any edit, found
 // through the same registry the renderer finds it through.
 #include "content_commands.h"
@@ -31,14 +33,14 @@ int village_command(int argc, char** argv) {
   return 1;
 #else
   const char* usage =
-      "usage: engine-content village <scene.json> <out.json> [--ddc <dir>] [--material <layer>]\n"
+      "usage: engine-content village <scene.json> <out.json> [--ddc <dir>]\n"
       "                              [--house <index>] [--flight <camera-path.json>]\n";
   if (argc < 4) {
     std::fputs(usage, stderr);
     return 2;
   }
   const std::string scene_path = argv[2], out_path = argv[3];
-  std::string ddc, material = "trail", flight_path;
+  std::string ddc, flight_path;
   i64 house = 0;
   for (int i = 4; i < argc; ++i) {
     const std::string_view flag = argv[i];
@@ -50,8 +52,6 @@ int village_command(int argc, char** argv) {
     bool ok = true;
     if (flag == "--ddc") {
       ddc = std::string(value);
-    } else if (flag == "--material") {
-      material = std::string(value);
     } else if (flag == "--flight") {
       flight_path = std::string(value);
     } else if (flag == "--house") {
@@ -129,6 +129,7 @@ int village_command(int argc, char** argv) {
   if (!water.empty()) context.exclusion = &water;
 
   JsonValue villages = JsonValue::array(), regions = JsonValue::array();
+  JsonValue boundaries = JsonValue::array(), wall_lines = JsonValue::array();
   u32 entries = 0, houses = 0, plots = 0, edits = 0, shapes = 0;
   bool flown = false;
   const JsonValue* placements = json.find("placements");
@@ -155,9 +156,34 @@ int village_command(int argc, char** argv) {
       JsonValue summary = village::plan_json(layer, plan);
       summary["entry"] = JsonValue(k);
       villages.push_back(std::move(summary));
-      const JsonValue outlines = village::tread_regions_json(layer, plan, material);
+      const JsonValue outlines = village::ground_regions_json(layer, plan);
       for (const JsonValue& r : outlines.as_array())
         regions.push_back(r);
+      // The plots' boundaries: the lines themselves, and the same as the lines of a `walls` entry
+      // (engine.walls.Layer: centimetres along a line for a gateway) for an author to paste.
+      Vector<village::BoundaryLine> bounds;
+      village::plot_boundaries(layer, plan, bounds);
+      for (const village::BoundaryLine& b : bounds) {
+        JsonValue points = JsonValue::array(), gates_mm = JsonValue::array(),
+                  gates_cm = JsonValue::array();
+        for (const i64 v : b.points_mm)
+          points.push_back(JsonValue(v));
+        for (const i64 g : b.gateways_mm) {
+          gates_mm.push_back(JsonValue(g));
+          gates_cm.push_back(JsonValue((g + 5) / 10));
+        }
+        JsonValue line = JsonValue::object();
+        line["plot"] = JsonValue(b.plot);
+        line["points_mm"] = points;
+        line["closed"] = JsonValue(b.closed);
+        line["gateways_mm"] = std::move(gates_mm);
+        boundaries.push_back(std::move(line));
+        JsonValue wall = JsonValue::object();
+        wall["points_mm"] = std::move(points);
+        wall["closed"] = JsonValue(b.closed);
+        wall["gateways_cm"] = std::move(gates_cm);
+        wall_lines.push_back(std::move(wall));
+      }
       Vector<scene::TerrainEdit> planned;
       village::ground_edits(layer, plan, planned);
       scene_gen::FootprintList occupied;
@@ -183,6 +209,22 @@ int village_command(int argc, char** argv) {
   const u32 region_count = regions.as_array().size();
   out["villages"] = std::move(villages);
   out["mask_regions"] = std::move(regions);
+  const u32 boundary_count = boundaries.as_array().size();
+  out["boundaries"] = std::move(boundaries);
+  // A toft's wall: breast high, a gateway a person and a barrow pass (the grounding's "The wear
+  // and the boundaries"), and a base narrowed with the height so the batter stays in the wallers'
+  // 1 in 6 to 1 in 10 (walls.md: 11 cm a side over the 75.5 cm under the cover is 1 in 6.9);
+  // every other number is the walls capability's default.
+  JsonValue wall_params = JsonValue::object();
+  wall_params["seed"] = JsonValue(static_cast<u64>(1));
+  wall_params["height_cm"] = JsonValue(static_cast<u64>(110));
+  wall_params["base_width_cm"] = JsonValue(static_cast<u64>(62));
+  wall_params["gateway_cm"] = JsonValue(static_cast<u64>(150));
+  wall_params["lines"] = std::move(wall_lines);
+  JsonValue walls = JsonValue::object();
+  walls["generator"] = JsonValue("walls");
+  walls["params"] = std::move(wall_params);
+  out["walls"] = std::move(walls);
   const std::string written = write_json(out);
   if (io::write_file_atomic(out_path, written) != io::Status::Ok)
     return fail("cannot write " + out_path);
@@ -196,6 +238,7 @@ int village_command(int argc, char** argv) {
   line["edits"] = JsonValue(edits);
   line["shapes"] = JsonValue(shapes);
   line["mask_regions"] = JsonValue(region_count);
+  line["boundaries"] = JsonValue(boundary_count);
   if (flown) line["flight"] = JsonValue(flight_path);
   JsonWriteOptions compact;
   compact.pretty = false;

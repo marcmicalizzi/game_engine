@@ -51,6 +51,13 @@ if(TARGET engine::tileset)
   # and a provider no build has refused with a sentence that lists `tiles` (tileset.md).
   list(APPEND _view_tests tests/tiles_view_tests.cpp)
 endif()
+if(TARGET engine::tileset AND TARGET engine::village AND TARGET engine::dwellings
+   AND TARGET engine::structures)
+  # A village on a tile set's ground flown in at a door (village.md, "In a scene"): the houses
+  # stand as instances with clusters, the flight's inside frames are one building seen from within,
+  # nothing dropped or withheld. Its scene needs the ground, the plan, the filler and the mesher.
+  list(APPEND _view_tests tests/village_view_tests.cpp)
+endif()
 if(TARGET engine::tileset AND TARGET engine::routes AND TARGET engine::world)
   # What a placement entry plans for the ground and the shapes it occupies (R144; scene_gen.md):
   # a routes entry's treads planned at the read against the same treads pasted, two editing entries,

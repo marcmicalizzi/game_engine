@@ -1,14 +1,14 @@
 // The village's plan (docs/subsystems/village.md, "The plan"): lanes stationed on the ground, plots
 // of whole perches along them, a house on each plot the ground allows, and what the plan is handed
 // over as — ground edits, footprints, mask regions, placements.
-#include <domain/village/village.h>
-
 #include <core/hash/hash.h>
+#include <domain/village/village.h>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <initializer_list>
 #include <utility>
 
 namespace engine::village {
@@ -131,27 +131,33 @@ bool layer_in_range(const VillageLayer& p, std::string& error) {
         return bad("two waypoints of a lane at one place");
   }
   if (p.houses < 1 || p.houses > 256) return bad("houses out of range (1 to 256)");
-  if (!in_range(static_cast<f64>(p.perch_m), 4.5, 6.1)) return bad("perch_m out of range (4.5 to 6.1)");
+  if (!in_range(static_cast<f64>(p.perch_m), 4.5, 6.1))
+    return bad("perch_m out of range (4.5 to 6.1)");
   if (p.frontage_min_perches < 1 || p.frontage_max_perches > 12 ||
       p.frontage_min_perches > p.frontage_max_perches)
     return bad("frontage perches out of range (1 to 12, the least no more than the most)");
-  if (p.depth_perches < 2 || p.depth_perches > 30) return bad("depth_perches out of range (2 to 30)");
+  if (p.depth_perches < 2 || p.depth_perches > 30)
+    return bad("depth_perches out of range (2 to 30)");
   if (!in_range(static_cast<f64>(p.street_width_m), 2.0, 40.0))
     return bad("street_width_m out of range (2 to 40)");
   if (!in_range(static_cast<f64>(p.tread_width_m), 1.0, static_cast<f64>(p.street_width_m)))
     return bad("tread_width_m out of range (1 to the street's width)");
-  if (!in_range(static_cast<f64>(p.setback_m), 0.0, 20.0)) return bad("setback_m out of range (0 to 20)");
-  if (!in_range(static_cast<f64>(p.station_m), 0.5, 8.0)) return bad("station_m out of range (0.5 to 8)");
+  if (!in_range(static_cast<f64>(p.setback_m), 0.0, 20.0))
+    return bad("setback_m out of range (0 to 20)");
+  if (!in_range(static_cast<f64>(p.station_m), 0.5, 8.0))
+    return bad("station_m out of range (0.5 to 8)");
   if (!in_range(static_cast<f64>(p.pad_margin_m), 0.0, 4.0))
     return bad("pad_margin_m out of range (0 to 4)");
   if (!in_range(static_cast<f64>(p.max_pad_step_m), 0.1, 10.0))
     return bad("max_pad_step_m out of range (0.1 to 10)");
   if (!in_range(static_cast<f64>(p.path_width_m), 0.0, 3.0))
     return bad("path_width_m out of range (0 to 3)");
+  if (!in_range(static_cast<f64>(p.yard_m), 0.0, 6.0)) return bad("yard_m out of range (0 to 6)");
   if (!in_range(static_cast<f64>(p.bank_slope), 0.25, 8.0) ||
       !in_range(static_cast<f64>(p.fill_slope), 0.1, 8.0))
     return bad("bank_slope (0.25 to 8) or fill_slope (0.1 to 8) out of range");
-  if (!in_range(static_cast<f64>(p.face_m), 0.1, 10.0)) return bad("face_m out of range (0.1 to 10)");
+  if (!in_range(static_cast<f64>(p.face_m), 0.1, 10.0))
+    return bad("face_m out of range (0.1 to 10)");
   if (p.storeys < 1 || p.storeys > 2) return bad("storeys out of range (1 or 2)");
   return true;
 }
@@ -189,7 +195,8 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
     // not put a step in the tread.
     LaneLine line;
     for (u32 k = 0; k + 1 < points; ++k) {
-      const i64 steps = std::max<i64>(1, (static_cast<i64>(dirs[k].length_mm) + station - 1) / station);
+      const i64 steps =
+          std::max<i64>(1, (static_cast<i64>(dirs[k].length_mm) + station - 1) / station);
       for (i64 q = 0; q < steps; ++q)
         line.stations.push_back(LaneStation{wx[k] + div_round((wx[k + 1] - wx[k]) * q, steps),
                                             wz[k] + div_round((wz[k + 1] - wz[k]) * q, steps), 0});
@@ -200,7 +207,8 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
     for (const LaneStation& s : line.stations) {
       const f64 h = ground.surface_mm(s.x_mm, s.z_mm);
       if (!std::isfinite(h))
-        return refuse(error, "village: the ground under " + lane_name(layer, li) + " is not finite");
+        return refuse(error,
+                      "village: the ground under " + lane_name(layer, li) + " is not finite");
       raw.push_back(mm_of(h));
     }
     const i64 count = static_cast<i64>(raw.size());
@@ -234,10 +242,10 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
         const i64 gap_end = k + 2 < points ? gap_at(d, dirs[k + 1]) : 0;
         i64 cursor = gap_start;
         for (u32 n = 0;; ++n) {
-          const u64 seed = hash_combine(
-              hash_combine(hash_combine(hash_combine(layer.seed, li), k), side), n);
-          const i64 frontage =
-              perch * static_cast<i64>(layer.frontage_min_perches + static_cast<u32>(mix64(seed) % spread));
+          const u64 seed =
+              hash_combine(hash_combine(hash_combine(hash_combine(layer.seed, li), k), side), n);
+          const i64 frontage = perch * static_cast<i64>(layer.frontage_min_perches +
+                                                        static_cast<u32>(mix64(seed) % spread));
           if (cursor + frontage > length - gap_end) break;
           Plot p;
           p.lane = li;
@@ -309,16 +317,17 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
     const i64 x1 = std::max(std::max(cx[0], cx[1]), std::max(cx[2], cx[3]));
     const i64 z0 = std::min(std::min(cz[0], cz[1]), std::min(cz[2], cz[3]));
     const i64 z1 = std::max(std::max(cz[0], cz[1]), std::max(cz[2], cz[3]));
-    if (turns == 4 || x1 - x0 + 2 * k_side_gap_mm > p.frontage_mm || setback + (z1 - z0) > p.depth_mm) {
+    if (turns == 4 || x1 - x0 + 2 * k_side_gap_mm > p.frontage_mm ||
+        setback + (z1 - z0) > p.depth_mm) {
       p.state = PlotState::no_fit;
       ++out.no_fit;
       if (out.first_refusal.empty()) {
         char text[200];
-        std::snprintf(text, sizeof(text),
-                      "a house %.2f m along the street by %.2f m deep does not fit a plot of %.2f m "
-                      "frontage (half a metre each side) and %.2f m behind its setback",
-                      metres(x1 - x0), metres(z1 - z0), metres(p.frontage_mm),
-                      metres(p.depth_mm - setback));
+        std::snprintf(
+            text, sizeof(text),
+            "a house %.2f m along the street by %.2f m deep does not fit a plot of %.2f m "
+            "frontage (half a metre each side) and %.2f m behind its setback",
+            metres(x1 - x0), metres(z1 - z0), metres(p.frontage_mm), metres(p.depth_mm - setback));
         out.first_refusal = text;
       }
       continue;
@@ -339,7 +348,8 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
       i64 x = 0, z = 0;
       to_world(sx[c], sz[c], x, z);
       const f64 gh = ground.surface_mm(x, z);
-      if (!std::isfinite(gh)) return refuse(error, "village: the ground under a plot is not finite");
+      if (!std::isfinite(gh))
+        return refuse(error, "village: the ground under a plot is not finite");
       const i64 g = mm_of(gh);
       lo = c == 0 ? g : std::min(lo, g);
       hi = c == 0 ? g : std::max(hi, g);
@@ -383,8 +393,9 @@ u64 plan_hash(const VillagePlan& plan) {
   for (const LaneLine& lane : plan.lanes) {
     h = hash_combine(h, static_cast<u64>(lane.length_mm));
     for (const LaneStation& s : lane.stations)
-      h = hash_combine(hash_combine(hash_combine(h, static_cast<u64>(s.x_mm)), static_cast<u64>(s.z_mm)),
-                       static_cast<u64>(s.top_mm));
+      h = hash_combine(
+          hash_combine(hash_combine(h, static_cast<u64>(s.x_mm)), static_cast<u64>(s.z_mm)),
+          static_cast<u64>(s.top_mm));
   }
   const auto bits = [](f64 v) {
     u64 b = 0;
@@ -415,12 +426,13 @@ u64 plan_hash(const VillagePlan& plan) {
     for (const u64 w : words)
       h = hash_combine(h, w);
     for (u32 c = 0; c < 4; ++c)
-      h = hash_combine(hash_combine(h, static_cast<u64>(p.pad_x_mm[c])), static_cast<u64>(p.pad_z_mm[c]));
+      h = hash_combine(hash_combine(h, static_cast<u64>(p.pad_x_mm[c])),
+                       static_cast<u64>(p.pad_z_mm[c]));
   }
   for (const House& house : plan.houses) {
-    const i64 words[] = {house.min_x_mm, house.min_z_mm,  house.max_x_mm, house.max_z_mm,
-                         house.door_x_mm, house.door_z_mm, house.out_x,    house.out_z,
-                         house.floor_mm};
+    const i64 words[] = {house.min_x_mm, house.min_z_mm,  house.max_x_mm,
+                         house.max_z_mm, house.door_x_mm, house.door_z_mm,
+                         house.out_x,    house.out_z,     house.floor_mm};
     for (const i64 w : words)
       h = hash_combine(h, static_cast<u64>(w));
     h = hash_combine(h, hash_bytes(house.recipe.data(), house.recipe.size()));
@@ -459,7 +471,8 @@ void ground_edits(const VillageLayer& layer, const VillagePlan& plan,
     pad.name = prefix + number + " pad";
     shaped(pad);
     for (u32 c = 0; c < 4; ++c)
-      pad.outline.push_back(WorldPos{metres(p.pad_x_mm[c]), metres(p.pad_mm), metres(p.pad_z_mm[c])});
+      pad.outline.push_back(
+          WorldPos{metres(p.pad_x_mm[c]), metres(p.pad_mm), metres(p.pad_z_mm[c])});
     out.push_back(std::move(pad));
     if (!(layer.path_width_m > 0.0f)) continue;
     if (p.door_x_mm == p.path_x_mm && p.door_z_mm == p.path_z_mm) continue;
@@ -467,7 +480,8 @@ void ground_edits(const VillageLayer& layer, const VillagePlan& plan,
     path.name = prefix + number + " path";
     shaped(path);
     path.points.push_back(WorldPos{metres(p.door_x_mm), metres(p.pad_mm), metres(p.door_z_mm)});
-    path.points.push_back(WorldPos{metres(p.path_x_mm), metres(p.path_top_mm), metres(p.path_z_mm)});
+    path.points.push_back(
+        WorldPos{metres(p.path_x_mm), metres(p.path_top_mm), metres(p.path_z_mm)});
     path.width_m.push_back(layer.path_width_m);
     path.width_m.push_back(layer.path_width_m);
     out.push_back(std::move(path));
@@ -506,36 +520,189 @@ void footprints(const VillageLayer& layer, const VillagePlan& plan, scene_gen::F
   }
 }
 
-JsonValue tread_regions_json(const VillageLayer& layer, const VillagePlan& plan,
-                             std::string_view material) {
+namespace {
+
+// A world point (whole millimetres) as a mask region's point: metres to the centimetre.
+JsonValue region_point(i64 x_mm, i64 z_mm) {
+  return point_json(static_cast<f64>(div_round(x_mm, 10)) / 100.0, 0.0,
+                    static_cast<f64>(div_round(z_mm, 10)) / 100.0);
+}
+
+JsonValue region(std::string name, JsonValue polygon, std::string_view material, f64 feather_m) {
+  JsonValue o = JsonValue::object();
+  o["name"] = JsonValue(std::move(name));
+  o["polygon"] = std::move(polygon);
+  o["material"] = JsonValue(material);
+  o["feather_m"] = JsonValue(feather_m);
+  return o;
+}
+
+// A lane's band `half_mm` each side of its line as an outline: its left edge out, its right edge
+// back. Two points an end and two a bend: a station on a straight stretch adds nothing to the
+// outline and is left out, so a street of three waypoints is six points and not two a station.
+JsonValue band_polygon(const Vector<LaneStation>& st, f64 half_mm) {
+  JsonValue outline = JsonValue::array();
+  Vector<i64> rx, rz;
+  for (u32 q = 0; q < st.size(); ++q) {
+    const LaneStation& a = st[q > 0 ? q - 1 : 0];
+    const LaneStation& b = st[q + 1 < st.size() ? q + 1 : q];
+    const LaneStation& c = st[q];
+    if (q > 0 && q + 1 < st.size()) {
+      const Dir in = direction(a.x_mm, a.z_mm, c.x_mm, c.z_mm);
+      const Dir on = direction(c.x_mm, c.z_mm, b.x_mm, b.z_mm);
+      const f64 turn = in.x * on.z - in.z * on.x;
+      if (turn < 1e-3 && turn > -1e-3) continue;
+    }
+    const Dir d = direction(a.x_mm, a.z_mm, b.x_mm, b.z_mm);
+    const i64 ox = mm_of(d.z * half_mm / 1000.0), oz = mm_of(d.x * half_mm / 1000.0);
+    outline.push_back(region_point(c.x_mm - ox, c.z_mm + oz));
+    rx.push_back(c.x_mm + ox);
+    rz.push_back(c.z_mm - oz);
+  }
+  for (u32 q = rx.size(); q-- > 0;)
+    outline.push_back(region_point(rx[q], rz[q]));
+  return outline;
+}
+
+// Where a world point stands in a plot's frame, millimetres: `u` along the street from the middle
+// of the plot's front, `v` into the plot.
+void plot_frame(const Plot& p, i64 x_mm, i64 z_mm, f64& u, f64& v) noexcept {
+  const f64 dx = static_cast<f64>(x_mm - p.front_x_mm), dz = static_cast<f64>(z_mm - p.front_z_mm);
+  u = dx * p.along_x + dz * p.along_z;
+  v = dx * p.inward_x + dz * p.inward_z;
+}
+
+}  // namespace
+
+JsonValue ground_regions_json(const VillageLayer& layer, const VillagePlan& plan,
+                              const GroundLayers& names) {
   JsonValue list = JsonValue::array();
-  const f64 half = static_cast<f64>(layer.tread_width_m) * 0.5;
+  const f64 half_street = static_cast<f64>(mm_of(static_cast<f64>(layer.street_width_m) * 0.5));
+  const f64 half_tread = static_cast<f64>(mm_of(static_cast<f64>(layer.tread_width_m) * 0.5));
+  const f64 half_path = static_cast<f64>(mm_of(static_cast<f64>(layer.path_width_m) * 0.5));
+  const f64 yard = static_cast<f64>(mm_of(static_cast<f64>(layer.yard_m)));
+  const f64 margin = static_cast<f64>(k_wear_margin_mm);
   const std::string prefix = layer.name.empty() ? std::string("village") : layer.name;
   for (u32 k = 0; k < plan.lanes.size(); ++k) {
     const Vector<LaneStation>& st = plan.lanes[k].stations;
     if (st.size() < 2) continue;
-    JsonValue left = JsonValue::array();
-    Vector<f64> rx, rz;
-    for (u32 q = 0; q < st.size(); ++q) {
-      const LaneStation& a = st[q > 0 ? q - 1 : 0];
-      const LaneStation& b = st[q + 1 < st.size() ? q + 1 : q];
-      const Dir d = direction(a.x_mm, a.z_mm, b.x_mm, b.z_mm);
-      const LaneStation& c = st[q];
-      const auto cm = [](f64 v) { return static_cast<f64>(mm_of(v * 0.1)) / 100.0; };
-      left.push_back(point_json(cm(metres(c.x_mm) - d.z * half), 0.0, cm(metres(c.z_mm) + d.x * half)));
-      rx.push_back(cm(metres(c.x_mm) + d.z * half));
-      rz.push_back(cm(metres(c.z_mm) - d.x * half));
+    const std::string lane = prefix + " " + lane_name(layer, k);
+    // The verge is whole a metre inside the plots' fronts, or where the wear begins if that is
+    // nearer; the wear's fade straddles the tread's edge; the middle is whole a margin inside it.
+    if (!names.verge.empty() && half_street > half_tread + margin)
+      list.push_back(region(lane + " verge", band_polygon(st, half_street), names.verge,
+                            std::min(1.0, (half_street - half_tread - margin) / 1000.0)));
+    if (!names.worn.empty())
+      list.push_back(region(lane + " wear", band_polygon(st, half_tread + margin), names.worn,
+                            2.0 * margin / 1000.0));
+    if (!names.tread.empty() && half_tread > 2.0 * margin)
+      list.push_back(region(lane + " tread", band_polygon(st, half_tread - margin), names.tread,
+                            margin / 1000.0));
+  }
+  if (names.worn.empty()) return list;
+  // The door yards: a T, its stem the path from inside the tread's wear to the plot's front, its
+  // bar the yard from the plot's front to the wall. A plot with no path keeps the bar alone, one
+  // with no yard a stem to the door.
+  const f64 half_yard = std::max(yard, half_path);
+  if (!(half_yard > 0.0)) return list;
+  for (u32 k = 0; k < plan.plots.size(); ++k) {
+    const Plot& p = plan.plots[k];
+    if (p.state != PlotState::built) continue;
+    f64 du = 0.0, dv = 0.0;
+    plot_frame(p, p.door_x_mm, p.door_z_mm, du, dv);
+    if (!(dv > 1.0)) continue;  // a house on its plot's front has no ground before its door
+    const f64 reach = static_cast<f64>(p.frontage_mm) * 0.5 - 300.0;
+    const f64 y0 = std::max(du - half_yard, -reach), y1 = std::min(du + half_yard, reach);
+    if (!(y1 > y0)) continue;
+    const f64 s0 = std::max(du - half_path, y0), s1 = std::min(du + half_path, y1);
+    const f64 stem = half_street - half_tread + margin;
+    JsonValue outline = JsonValue::array();
+    const auto add = [&](f64 u, f64 v) {
+      i64 x = 0, z = 0;
+      plot_point(p, u, v, x, z);
+      outline.push_back(region_point(x, z));
+    };
+    const bool stemmed = half_path > 0.0 && s1 > s0;
+    if (stemmed) {
+      add(s0, -stem);
+      add(s1, -stem);
+      if (s1 < y1 - 1.0) add(s1, 0.0);
     }
-    for (u32 q = rx.size(); q-- > 0;)
-      left.push_back(point_json(rx[q], 0.0, rz[q]));
-    JsonValue o = JsonValue::object();
-    o["name"] = JsonValue(prefix + " " + lane_name(layer, k) + " tread");
-    o["polygon"] = std::move(left);
-    o["material"] = JsonValue(material);
-    o["feather_m"] = JsonValue(0.5);
-    list.push_back(std::move(o));
+    add(y1, 0.0);
+    add(y1, dv);
+    add(y0, dv);
+    add(y0, 0.0);
+    if (stemmed && s0 > y0 + 1.0) add(s0, 0.0);
+    char number[24];
+    std::snprintf(number, sizeof(number), " plot %u", k);
+    list.push_back(region(prefix + number + " yard", std::move(outline), names.worn, 0.4));
   }
   return list;
+}
+
+void plot_boundaries(const VillageLayer& layer, const VillagePlan& plan,
+                     Vector<BoundaryLine>& out) {
+  struct Side {
+    i64 ax = 0, az = 0, bx = 0, bz = 0;
+  };
+  // Two plots laid from one lane's stations round their shared corner each from its own front, so
+  // the two stand within a millimetre or two; two centimetres is far under any boundary's width.
+  const auto same = [](i64 ax, i64 az, i64 bx, i64 bz) {
+    const i64 dx = ax - bx, dz = az - bz;
+    return dx <= 20 && dx >= -20 && dz <= 20 && dz >= -20;
+  };
+  Vector<Side> stood;
+  const auto shared = [&](const Side& s) {
+    for (const Side& t : stood)
+      if ((same(s.ax, s.az, t.ax, t.az) && same(s.bx, s.bz, t.bx, t.bz)) ||
+          (same(s.ax, s.az, t.bx, t.bz) && same(s.bx, s.bz, t.ax, t.az)))
+        return true;
+    return false;
+  };
+  const bool gated = layer.path_width_m > 0.0f;
+  for (u32 k = 0; k < plan.plots.size(); ++k) {
+    const Plot& p = plan.plots[k];
+    if (p.state != PlotState::built) continue;
+    const f64 half = static_cast<f64>(p.frontage_mm) * 0.5, depth = static_cast<f64>(p.depth_mm);
+    // The corners, round the plot: 0 and 1 on its front, 2 and 3 behind them.
+    i64 cx[4] = {0, 0, 0, 0}, cz[4] = {0, 0, 0, 0};
+    plot_point(p, -half, 0.0, cx[0], cz[0]);
+    plot_point(p, half, 0.0, cx[1], cz[1]);
+    plot_point(p, half, depth, cx[2], cz[2]);
+    plot_point(p, -half, depth, cx[3], cz[3]);
+    const Side far_side{cx[1], cz[1], cx[2], cz[2]}, near_side{cx[3], cz[3], cx[0], cz[0]};
+    const bool has_far = !shared(far_side), has_near = !shared(near_side);
+    stood.push_back(far_side);
+    stood.push_back(near_side);
+    // The gateway: where the path crosses the front, from corner 0.
+    f64 du = 0.0, dv = 0.0;
+    plot_frame(p, p.path_x_mm, p.path_z_mm, du, dv);
+    const f64 gate = std::clamp(du + half, 0.0, 2.0 * half);
+    const auto line = [&](std::initializer_list<u32> corners, bool closed, f64 before_front) {
+      BoundaryLine b;
+      b.plot = k;
+      b.closed = closed;
+      for (const u32 c : corners) {
+        b.points_mm.push_back(cx[c]);
+        b.points_mm.push_back(cz[c]);
+      }
+      if (gated && before_front >= 0.0) b.gateways_mm.push_back(mm_of((before_front + gate) / 1000.0));
+      out.push_back(std::move(b));
+    };
+    if (has_far && has_near) {
+      line({0, 1, 2, 3}, true, 0.0);
+    } else if (has_far) {
+      line({0, 1, 2, 3}, false, 0.0);
+    } else if (has_near) {
+      // From the back's far corner round to the front's: the back and the near side come first.
+      const f64 before = direction(cx[2], cz[2], cx[3], cz[3]).length_mm +
+                         direction(cx[3], cz[3], cx[0], cz[0]).length_mm;
+      line({2, 3, 0, 1}, false, before);
+    } else {
+      line({0, 1}, false, 0.0);
+      line({2, 3}, false, -1.0);
+    }
+  }
 }
 
 JsonValue plan_json(const VillageLayer& layer, const VillagePlan& plan) {
@@ -574,7 +741,8 @@ JsonValue plan_json(const VillageLayer& layer, const VillagePlan& plan) {
       const House& h = plan.houses[p.house];
       q["house"] = JsonValue(h.name);
       q["at"] = point_json(metres(p.house_x_mm), metres(p.pad_mm), metres(p.house_z_mm));
-      q["door"] = point_json(metres(p.door_x_mm), metres(p.pad_mm + h.floor_mm), metres(p.door_z_mm));
+      q["door"] =
+          point_json(metres(p.door_x_mm), metres(p.pad_mm + h.floor_mm), metres(p.door_z_mm));
       q["length_m"] = JsonValue(metres(h.max_x_mm - h.min_x_mm));
       q["width_m"] = JsonValue(metres(h.max_z_mm - h.min_z_mm));
     }
@@ -631,8 +799,8 @@ bool box_house(void* context, const HouseAsk& ask, House& out, std::string&) {
   out.out_x = 0;
   out.out_z = -1;
   out.name = gable ? "box, gable-on" : "box";
-  out.reach = static_cast<f32>(
-      std::sqrt(static_cast<f64>(across * across + deep * deep)) * 0.5 / 1000.0);
+  out.reach =
+      static_cast<f32>(std::sqrt(static_cast<f64>(across * across + deep * deep)) * 0.5 / 1000.0);
   return true;
 }
 

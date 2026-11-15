@@ -140,9 +140,10 @@ struct Plot {
   u32 segment = 0;  // of the lane's waypoints
   u8 side = 0;      // 0 left, 1 right
   PlotState state = PlotState::spare;
-  u8 quarter_turns = 0;  // of the house's frame, before the row's turn, so its door faces the street
+  u8 quarter_turns =
+      0;  // of the house's frame, before the row's turn, so its door faces the street
   u8 pad = 0;
-  u32 house = 0;         // into `VillagePlan::houses`, for a built plot
+  u32 house = 0;  // into `VillagePlan::houses`, for a built plot
   // The middle of the plot's front on the street's edge, and the two unit directions of its frame:
   // `along` the street (so that `inward`, the left normal of `along`, points into the plot).
   i64 front_x_mm = 0, front_z_mm = 0;
@@ -207,11 +208,39 @@ void ground_edits(const VillageLayer& layer, const VillagePlan& plan,
 void footprints(const VillageLayer& layer, const VillagePlan& plan, scene_gen::FootprintList& out,
                 i64 tile_mm = 0, i64 tile_x = 0, i64 tile_z = 0, i64 reach_mm = 0);
 
-// **The treads as mask regions** (`engine.scene.TerrainMaskRegion`): one polygon a lane, the
-// tread's two edges, naming `material` — what an author pastes into `terrain.masks.regions`, since
-// a planned mask region is not handed across (scene_gen.md, "What an entry plans for the ground").
-JsonValue tread_regions_json(const VillageLayer& layer, const VillagePlan& plan,
-                             std::string_view material);
+// The palette layers the village's wear names (village.md, "The wear"): an empty name leaves its
+// regions out.
+struct GroundLayers {
+  std::string_view verge = "verge";  // the street between the plots' fronts, outside the tread
+  std::string_view worn = "worn";    // the tread's ragged margin, the paths and the yards
+  std::string_view tread = "lane";   // the tread's middle, where the wheels and the feet go
+};
+
+// **The wear as mask regions** (`engine.scene.TerrainMaskRegion`), in the order they are laid, each
+// over the last: a lane, the street's whole width as verge, the tread and `k_wear_margin_mm` past
+// each edge as worn ground, and the tread's middle; then a built plot, its **door yard** and path
+// as one outline, the bare ground `yard_m` each side of the door from the wall to the plot's front
+// and the path on from there under the tread's margin. Each is feathered inward, so a band's edge
+// is where the two materials' heights decide (the masks' height blend), not a line. What an author
+// pastes into `terrain.masks.regions`, since a planned mask region is not handed across
+// (scene_gen.md, "What an entry plans for the ground").
+inline constexpr i64 k_wear_margin_mm = 450;
+JsonValue ground_regions_json(const VillageLayer& layer, const VillagePlan& plan,
+                              const GroundLayers& names = {});
+
+// **A plot's boundary** (village.md, "The boundaries"; the grounding's "Boundaries"): the line a
+// hedge, a fence, a bank or a wall stands on, whole millimetres, x and z pairs. A built plot is
+// bounded along its front, its two sides and its back; a side two built neighbours share is one
+// line's, the earlier plot's, so nothing stands twice. The front carries one **gateway** where the
+// door's path crosses it: its middle as arc length from the line's first point.
+struct BoundaryLine {
+  u32 plot = 0;  // into `VillagePlan::plots`
+  bool closed = false;
+  Vector<i64> points_mm;
+  Vector<i64> gateways_mm;
+};
+void plot_boundaries(const VillageLayer& layer, const VillagePlan& plan,
+                     Vector<BoundaryLine>& out);
 
 // The plan for a person or a tool: the lanes' lengths, each plot's place, state and house, the
 // counts and the size class.

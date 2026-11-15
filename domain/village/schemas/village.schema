@@ -59,6 +59,10 @@ struct VillageLayer @version(1) {
   max_pad_step_m: f32 = 1.5 @unit(m)
   /// The path from a house's door to the lane's tread: its width, metres, 0 (none) to 3.
   path_width_m: f32 = 1.2 @unit(m)
+  /// The bare yard before a house's door: how far the trodden ground reaches along the wall each
+  /// side of the door, metres, 0 (the path alone) to 6, from the wall to the plot's front. A mask
+  /// region the plan writes (village.md, "The wear"); it changes no height and no shape.
+  yard_m: f32 = 1.6 @unit(m)
   /// The cut bank and the fill face of the pads, the treads and the paths, rise over run
   /// (`TerrainEdit.bank_slope`, `fill_slope`), 0.1 to 8, and how far each runs before it meets the
   /// ground (`face_m`, `fill_m`), metres, 0.1 to 10.

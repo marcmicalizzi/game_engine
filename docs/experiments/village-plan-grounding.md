@@ -75,6 +75,44 @@ fourteenth-century longhouse about 20 by 80 ft (W); Gainsthorpe's houses 20 to 3
 A 9 m house long side to the street needs a 2-perch frontage with half a metre to spare each
 side, a 12 m one 3 perches.
 
+## The wear and the boundaries
+
+Added 2026-11-15, when the first pictures showed a street as a dark ribbon on a lawn and houses
+standing on open grass. **How far this was read: less far than the plan.** One search and two page
+fetches; the earthwork survey report that the search's digest quotes (source E below) is a set of
+PDFs each over the fetcher's size limit and was **not opened**, and the one page that did open
+(an Internet Archaeology gazetteer entry for Wharram Percy) names a boundary bank of the village
+and a boundary ditch and gives no material or measure for a toft's edge. So what follows is a
+digest's word for the forms and the walls page's sources for the one dimension, and every width of
+the wear is a choice.
+
+| # | Source | Read |
+|---|---|---|
+| E | English Heritage, earthwork survey report of Wharram Percy (Archaeology Data Service, five PDFs) | **a search digest only**: the report itself was not opened |
+| T | [dry-stone walls](dry-stone-walls.md), this repository's grounding for the walls capability | its numbers, as that page restates them |
+
+- **What bounds a toft** (E, digest): the survey maps toft boundaries of two phases; the crofts'
+  boundaries are **banks**, some **ditched along their outside edges**; one boundary was
+  **augmented by a wall** after the manor went, and the surveyors read chalk walling in the
+  sharpness of another's sides. R has each house's toft running back to a back lane or the field's
+  edge. So: a toft is enclosed, front to back; in earthwork what survives is a bank and often a
+  ditch (what stood on the bank, a hedge or a fence, does not survive and no opened source says);
+  walls are attested where there is stone.
+- **What the plan gives**: the lines (`plot_boundaries`), along the front, the sides and the back,
+  a shared side once, a gateway where the path crosses the front. No source opened gives which
+  sides were bounded or where a gate stood; all four sides and a gate at the path are **a choice**.
+- **What stands on them in the scene**: a dry-stone wall, **1.1 m** to the cope's top, with a
+  **1.5 m** gateway. T's range for a field wall is 1.2 m against cattle to 1.6 m against sheep,
+  and its module accepts 1.0 to 1.8 m; a wall round a garden keeps stock out and is looked over,
+  so the low end, a choice below T's field figures. A wall and not a hedged bank because the
+  engine has a wall solver and no hedge; in most of lowland England the commoner boundary is the
+  hedge, and this page does not claim otherwise.
+- **The wear** (the verge a metre in from the fronts, the worn margin 45 cm each side of the
+  tread's edge, the stony middle, a door yard 1.6 m each side of the door): **choices**, from no
+  source. They are sized against the plan's own numbers (a 3 m tread in a 6.1 m street leaves
+  1.55 m of verge a side) and against the mask level's 25 cm texels, so that each band is at least
+  three texels wide and each fade a texel and a half or more.
+
 ## Where the budgets and the engine rule instead
 
 - **The ground under a house is a pad** (a `Bench` patch, [tileset](../subsystems/tileset.md)),
@@ -83,8 +121,8 @@ side, a 12 m one 3 perches.
   for a lot too steep for its plinth. That number is a choice about earthworks a village would
   not dig, not a source's.
 - **A lane is a ground edit and bare ground**, not a mesh: a `Bench` line the tile set writes into
-  its heights, whose bands the cover keeps off. Its ruts, its camber and its verge's worn grass
-  are not built.
+  its heights, whose bands the cover keeps off; its wear is mask regions over that ground (above).
+  Its ruts and its camber are not built.
 - **Plots are laid out in whole perches from the lane's first point**, in integer millimetres, so
   the same entry gives the same village on every toolchain; a plot never straddles a bend of the
   lane (a gap is left on the inside of a bend), which a real row would have filled with a

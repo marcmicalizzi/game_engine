@@ -28,10 +28,10 @@ using structures::WalkOpening;
 // The capsule is 0.6 m across and 1.8 m tall and climbs a 0.35 m step. A doorway's clear width is
 // its opening less the frame's 6 cm each side (structures.md, "Openings").
 constexpr f64 k_frame_m = 0.06;
-constexpr f64 k_min_clear_m = 0.66;   // the capsule and 3 cm each side
-constexpr f64 k_min_head_m = 1.85;    // the capsule and 5 cm
-constexpr f64 k_max_rise_m = 0.25;    // plan 14's riser, under the walker's 0.35 m step
-constexpr f64 k_min_going_m = 0.20;   // a tread a foot stands on
+constexpr f64 k_min_clear_m = 0.66;  // the capsule and 3 cm each side
+constexpr f64 k_min_head_m = 1.85;   // the capsule and 5 cm
+constexpr f64 k_max_rise_m = 0.25;   // plan 14's riser, under the walker's 0.35 m step
+constexpr f64 k_min_going_m = 0.20;  // a tread a foot stands on
 
 // ---- one storey's free ground, as a grid ------------------------------------------------------
 //
@@ -64,8 +64,10 @@ f64 segment_distance(f64 px, f64 pz, f64 ax, f64 az, f64 bx, f64 bz) noexcept {
 bool inside_outline(const Walk& walk, u32 first, u32 count, f64 px, f64 pz) noexcept {
   bool in = false;
   for (u32 k = 0, j = count - 1; k < count; j = k++) {
-    const f64 ax = static_cast<f64>(walk.outline[first + k].x), az = static_cast<f64>(walk.outline[first + k].y);
-    const f64 bx = static_cast<f64>(walk.outline[first + j].x), bz = static_cast<f64>(walk.outline[first + j].y);
+    const f64 ax = static_cast<f64>(walk.outline[first + k].x),
+              az = static_cast<f64>(walk.outline[first + k].y);
+    const f64 bx = static_cast<f64>(walk.outline[first + j].x),
+              bz = static_cast<f64>(walk.outline[first + j].y);
     if ((az > pz) != (bz > pz) && px < (bx - ax) * (pz - az) / (bz - az) + ax) in = !in;
   }
   return in;
@@ -97,7 +99,8 @@ bool storey_grid(const structure::Description& d, const Walk& walk, u32 storey, 
         ok = ok || (f.storey == storey && inside_outline(walk, f.first, f.count, px, pz));
       for (const structures::WalkWall& w : walk.walls) {
         if (!ok) break;
-        if (!(static_cast<f64>(w.y0) <= level + 0.5 && static_cast<f64>(w.y1) > level + 0.5)) continue;
+        if (!(static_cast<f64>(w.y0) <= level + 0.5 && static_cast<f64>(w.y1) > level + 0.5))
+          continue;
         if (segment_distance(px, pz, static_cast<f64>(w.from.x), static_cast<f64>(w.from.y),
                              static_cast<f64>(w.to.x), static_cast<f64>(w.to.y)) <
             static_cast<f64>(w.thickness) * 0.5 + k_clear_m)
@@ -105,9 +108,12 @@ bool storey_grid(const structure::Description& d, const Walk& walk, u32 storey, 
       }
       for (const structures::WalkBox& b : walk.boxes) {
         if (!ok) break;
-        if (static_cast<f64>(b.max.y) < level + 0.1 || static_cast<f64>(b.min.y) > level + 1.8) continue;
-        if (px > static_cast<f64>(b.min.x) - k_clear_m && px < static_cast<f64>(b.max.x) + k_clear_m &&
-            pz > static_cast<f64>(b.min.z) - k_clear_m && pz < static_cast<f64>(b.max.z) + k_clear_m)
+        if (static_cast<f64>(b.max.y) < level + 0.1 || static_cast<f64>(b.min.y) > level + 1.8)
+          continue;
+        if (px > static_cast<f64>(b.min.x) - k_clear_m &&
+            px < static_cast<f64>(b.max.x) + k_clear_m &&
+            pz > static_cast<f64>(b.min.z) - k_clear_m &&
+            pz < static_cast<f64>(b.max.z) + k_clear_m)
           ok = false;
       }
       for (const structures::WalkWell& w : walk.wells) {
@@ -258,7 +264,8 @@ bool room_chain(const Walk& walk, i32 from_room, i32 to_room, Vector<u32>& out) 
   for (u32 head = 0; head < seen.size(); ++head) {
     const i32 room = seen[head];
     if (room == to_room) {
-      for (i32 k = static_cast<i32>(head); parent[static_cast<u32>(k)] >= 0; k = parent[static_cast<u32>(k)])
+      for (i32 k = static_cast<i32>(head); parent[static_cast<u32>(k)] >= 0;
+           k = parent[static_cast<u32>(k)])
         out.push_back(via[static_cast<u32>(k)]);
       std::reverse(out.begin(), out.end());
       return true;
@@ -297,9 +304,8 @@ bool passable(const WalkOpening& o, const char* what, std::string& why) {
     return false;
   }
   if (height < k_min_head_m) {
-    std::snprintf(text, sizeof(text),
-                  "%s (opening %u) stands %.2f m high: the walker needs %.2f m", what, o.opening,
-                  height, k_min_head_m);
+    std::snprintf(text, sizeof(text), "%s (opening %u) stands %.2f m high: the walker needs %.2f m",
+                  what, o.opening, height, k_min_head_m);
     why = text;
     return false;
   }
@@ -345,7 +351,8 @@ bool route_through(const structure::Description& d, const Walk& walk, const Walk
       }
       at_x = cx + nx * reach;
       at_z = cz + nz * reach;
-      out.route.push_back(RoutePoint{scene_gen::nearest_mm(at_x), y_mm, scene_gen::nearest_mm(at_z)});
+      out.route.push_back(
+          RoutePoint{scene_gen::nearest_mm(at_x), y_mm, scene_gen::nearest_mm(at_z)});
       room = next;
     }
     return true;
@@ -356,12 +363,14 @@ bool route_through(const structure::Description& d, const Walk& walk, const Walk
     for (const structures::WalkFlight& f : walk.flights) {
       if (f.stair >= d.stairs.size() || d.stairs[f.stair].storey != storey) continue;
       Vector<u32> chain;
-      if (flight == nullptr && room_chain(walk, room, d.stairs[f.stair].from_room, chain)) flight = &f;
+      if (flight == nullptr && room_chain(walk, room, d.stairs[f.stair].from_room, chain))
+        flight = &f;
     }
     if (flight == nullptr) break;
     const structure::Stair& stair = d.stairs[flight->stair];
     char text[200];
-    if (static_cast<f64>(flight->rise) > k_max_rise_m || static_cast<f64>(flight->going) < k_min_going_m) {
+    if (static_cast<f64>(flight->rise) > k_max_rise_m ||
+        static_cast<f64>(flight->going) < k_min_going_m) {
       std::snprintf(text, sizeof(text),
                     "stair %u rises %.3f m a step on a going of %.3f m: the walker's are at most "
                     "%.2f and at least %.2f",
@@ -380,7 +389,8 @@ bool route_through(const structure::Description& d, const Walk& walk, const Walk
       return false;
     }
     const f64 run = static_cast<f64>(flight->risers > 0 ? flight->risers - 1 : 0) *
-                        static_cast<f64>(flight->going) + k_through_m;
+                        static_cast<f64>(flight->going) +
+                    k_through_m;
     at_x = fx + dx * run;
     at_z = fz + dz * run;
     storey = stair.storey + 1;
@@ -417,7 +427,8 @@ bool route_through(const structure::Description& d, const Walk& walk, const Walk
   return true;
 }
 
-// ---- the description a plot gets ------------------------------------------------------------------
+// ---- the description a plot gets
+// ------------------------------------------------------------------
 
 // **The house filler** (the structures capability's rural filler when it is linked; until then the
 // one-room cot of `structures::example_cot`, sized to the plot by the seed).
@@ -496,7 +507,8 @@ bool house_for(void*, const HouseAsk& ask, House& out, std::string& why) {
   for (const structure::Roof& roof : d.roofs) {
     const bool eaves_side = roof.ridge_along_x ? out.out_z != 0 : out.out_x != 0;
     const f64 edge = (static_cast<f64>(roof.eaves) -
-                      static_cast<f64>(roof.overhang) * static_cast<f64>(roof.pitch) / 1000.0) / 100.0;
+                      static_cast<f64>(roof.overhang) * static_cast<f64>(roof.pitch) / 1000.0) /
+                     100.0;
     if (eaves_side && edge < k_min_head_m - 0.03) {
       char text[200];
       std::snprintf(text, sizeof(text),
@@ -512,7 +524,8 @@ bool house_for(void*, const HouseAsk& ask, House& out, std::string& why) {
   out.door_z_mm = scene_gen::nearest_mm(cz + nz * half);
   const f64 ax = static_cast<f64>(entrance->a.x), az = static_cast<f64>(entrance->a.y);
   const f64 bx = static_cast<f64>(entrance->b.x), bz = static_cast<f64>(entrance->b.y);
-  out.door_width_mm = scene_gen::nearest_mm(std::sqrt((bx - ax) * (bx - ax) + (bz - az) * (bz - az)));
+  out.door_width_mm =
+      scene_gen::nearest_mm(std::sqrt((bx - ax) * (bx - ax) + (bz - az) * (bz - az)));
   // The ground floor's top stands 3 cm over the pad, so the threshold (2 cm more) is a 5 cm lip:
   // the capsule's round foot meets its edge at 34 degrees from level and walks up it as a slope
   // (the walker's limit is 40), with no step-up under the lintel; and the foundation's depth keeps
@@ -531,7 +544,8 @@ bool house_for(void*, const HouseAsk& ask, House& out, std::string& why) {
   out.path = file;
   out.name = d.name.empty() ? std::string("house") : d.name;
   // The walls' furthest corner from the frame's origin, and a metre for the eaves.
-  const f64 fx = std::max(std::fabs(lo_x), std::fabs(hi_x)), fz = std::max(std::fabs(lo_z), std::fabs(hi_z));
+  const f64 fx = std::max(std::fabs(lo_x), std::fabs(hi_x)),
+            fz = std::max(std::fabs(lo_z), std::fabs(hi_z));
   out.reach = static_cast<f32>(std::sqrt(fx * fx + fz * fz) + 1.0);
   return true;
 }

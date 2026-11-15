@@ -182,8 +182,8 @@ TEST_CASE("scene_collision: a walker enters a house by its door, crosses it and 
     f32 highest = 0.0f;
     const u32 reached = walk_along(walker, points, stuck, highest);
     INFO("stopped at (" << stuck.x << ", " << stuck.y << ", " << stuck.z << ") on the way to '"
-                        << std::string(points[std::min(reached, points.size() - 1)].what) << "' at ("
-                        << points[std::min(reached, points.size() - 1)].feet.x << ", "
+                        << std::string(points[std::min(reached, points.size() - 1)].what)
+                        << "' at (" << points[std::min(reached, points.size() - 1)].feet.x << ", "
                         << points[std::min(reached, points.size() - 1)].feet.y << ", "
                         << points[std::min(reached, points.size() - 1)].feet.z << ")");
     CHECK(reached == points.size());
@@ -208,15 +208,14 @@ TEST_CASE("scene_collision: a walker enters a house by its door, crosses it and 
                         static_cast<f64>(plot->door_z_mm - plot->front_z_mm) * plot->along_z) /
                        1000.0;
     // Toward the middle of the front, so the walker faces wall and not the house's corner.
-    const f64 aside = (door_u > 0.0 ? -1.0 : 1.0) *
-                      (static_cast<f64>(house.door_width_mm) / 2000.0 + 0.9);
+    const f64 aside =
+        (door_u > 0.0 ? -1.0 : 1.0) * (static_cast<f64>(house.door_width_mm) / 2000.0 + 0.9);
     const f64 setback = static_cast<f64>(v.layer.setback_m);
     const auto front_point = [&](f64 u, f64 back) {
-      return WorldPos{static_cast<f64>(plot->front_x_mm) / 1000.0 + plot->along_x * u +
-                          plot->inward_x * back,
-                      pad + 0.05,
-                      static_cast<f64>(plot->front_z_mm) / 1000.0 + plot->along_z * u +
-                          plot->inward_z * back};
+      return WorldPos{
+          static_cast<f64>(plot->front_x_mm) / 1000.0 + plot->along_x * u + plot->inward_x * back,
+          pad + 0.05,
+          static_cast<f64>(plot->front_z_mm) / 1000.0 + plot->along_z * u + plot->inward_z * back};
     };
     physics::CharacterBody blocked;
     REQUIRE(blocked.create(physics, c, front_point(door_u + aside, setback - 1.2)) ==
