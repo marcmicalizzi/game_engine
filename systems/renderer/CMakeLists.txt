@@ -70,8 +70,9 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     # block and references the chain's resident structures (R152).
                     tests/field_rest_tests.cpp
                     # A swaying mesh's form by ring: its motion measured, and where it stands still
-                    # (G204; sway_forms.h), on the CPU.
-                    tests/sway_forms_tests.cpp
+                    # (G204; sway_forms.h), on the CPU; and the load's forms of a swaying mesh, over
+                    # a generator and a container of the test's own.
+                    tests/sway_forms_tests.cpp tests/sway_forms_load_tests.cpp
                     # The off-frustum shadow casters' volumes against a brute-force membership, on
                     # the CPU (caster_volume.h).
                     tests/caster_volume_tests.cpp

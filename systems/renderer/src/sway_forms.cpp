@@ -30,7 +30,8 @@ SwayFormRules sway_form_rules() noexcept {
   SwayFormRules rules;
   rules.enabled = forms_sway.get();
   rules.still_px = static_cast<f32>(forms_still_px.get());
-  rules.motion = flora_motion_tunable();
+  // The subjects are a streamed world's placements: they sway when its tail does.
+  rules.motion = flora_motion_tunable() && flora_tail_tunable();
   const f32 asked = static_cast<f32>(forms_still_wind.get());
   f32 wind = asked < 0.0f ? flora_wind_default().strength : asked;
   wind = wind < 0.0f ? 0.0f : (wind > k_flora_max_wind ? k_flora_max_wind : wind);
@@ -65,8 +66,8 @@ f32 still_scale(const SwayMeasure& sway, f32 floor_m, f32 proj_scale, f32 field_
   // By the far field's rest: every root of a placement scaled s lies within field_root_m * s of
   // its origin, and the origin is at least the floor away.
   if (sway.field && rules.field_rest_m > 0.0f && floor_m > rules.field_rest_m) {
-    const f32 by_rest = field_root_m > 0.0f ? (floor_m - rules.field_rest_m) / field_root_m
-                                            : k_still_every_scale;
+    const f32 by_rest =
+        field_root_m > 0.0f ? (floor_m - rules.field_rest_m) / field_root_m : k_still_every_scale;
     best = by_rest > best ? by_rest : best;
   }
   return best;

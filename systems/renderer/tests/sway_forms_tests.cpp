@@ -42,9 +42,9 @@ Blade blade_of(const char* species, f32 length) {
 }
 
 SwayMeasure measured(const Blade& b, f32 fit, const SwayFormRules& rules) {
-  return measure_sway(
-      b.mesh, std::span<const Vec3>(b.vertices.data(), b.vertices.size()),
-      std::span<const ClusterFileMotionVertex>(b.motion.data(), b.motion.size()), fit, rules);
+  return measure_sway(b.mesh, std::span<const Vec3>(b.vertices.data(), b.vertices.size()),
+                      std::span<const ClusterFileMotionVertex>(b.motion.data(), b.motion.size()),
+                      fit, rules);
 }
 
 }  // namespace

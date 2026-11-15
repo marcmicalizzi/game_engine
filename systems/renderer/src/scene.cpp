@@ -29,6 +29,7 @@
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/flora_motion.h>
 #include <systems/renderer/scene.h>
+#include <systems/renderer/sway_forms.h>
 #include <systems/renderer/terrain.h>
 #include <systems/renderer/terrain_materials.h>
 
@@ -1863,9 +1864,11 @@ bool stream_authored(SceneDesc& resolved, Vector<SourceMesh>& sources,
 // for each ring's floor — a mesh of its own after every other, with its source's fit, materials,
 // textures and grid, as an authored form is — and the rule's choice per ring among the cuts, the
 // forms the mesh offers (`offered`: a far form its container carries) and nothing. Only what any
-// mesh has is read: its DAG, its size and what it offers. A mesh that deforms (a skin, morphs, the
-// motion contract) keeps itself in every ring; so does every mesh of a paged scene, whose page
-// table a form has none of.
+// mesh has is read: its DAG, its size and what it offers. **A mesh that sways** takes a swaying
+// cut in a ring where its motion is seen and a still one where it is not, by what its motion
+// measures (G204; sway_forms.h; renderer.md, "A swaying mesh's form by ring"). A mesh that deforms
+// any other way (a skin, morphs) keeps itself in every ring; so does every mesh of a paged scene,
+// whose page table a form has none of.
 bool make_placement_forms(SceneDesc& resolved, Vector<SourceMesh>& sources,
                           Vector<geometry::ClusterLodMesh>& dags, bool paged,
                           std::span<const OfferedForm> offered, SceneData& out,
@@ -1903,6 +1906,28 @@ bool make_placement_forms(SceneDesc& resolved, Vector<SourceMesh>& sources,
       out.form_source[m] = m;
   }
   if (out.form_rigid.size() < meshes) out.form_rigid.resize(meshes, u8{0});
+  // **A swaying mesh's forms** (G204; sway_forms.h): the rule's knobs, and the scene's largest
+  // field root offset, mesh units, which the far field's rest takes every root of an instance to
+  // lie within of its origin (`flora_field_rest_of`) — over every mesh a field instance may be of.
+  const SwayFormRules sway_rules = sway_form_rules();
+  f32 field_root = 0.0f;
+  if (sway_rules.enabled && sway_rules.motion && sway_rules.field_rest_m > 0.0f) {
+    for (u32 m = 0; m < meshes; ++m) {
+      const SourceMesh& s = sources[m];
+      if (!s.has_motion()) continue;
+      FloraMesh field;
+      if (!flora_mesh(std::span<const geometry::ClusterFileMotionPart>(s.motion_parts.data(),
+                                                                       s.motion_parts.size()),
+                      std::span<const geometry::ClusterFileStructuralPart>(
+                          s.structural_parts.data(), s.structural_parts.size()),
+                      s.species, field) ||
+          !field.field) {
+        continue;
+      }
+      for (const geometry::ClusterFileMotionPart& part : field.parts)
+        field_root = std::max(field_root, length(part.pivot));
+    }
+  }
   Vector<MeshRingForms> chosen(meshes);
   for (u32 m = 0; m < meshes; ++m) {
     if (subject[m] == 0 || resolved.meshes[m].empty()) continue;
@@ -1910,16 +1935,21 @@ bool make_placement_forms(SceneDesc& resolved, Vector<SourceMesh>& sources,
     if (mesh.clusters.empty() || !mesh.skin.empty() || !mesh.morph_channels.empty()) continue;
     // **A mesh moves when its motion contract makes a pose** (`flora_mesh`, which the flora stage
     // poses by): a sway or a field. A contract whose species never moves (the litter's, `none`)
-    // is a rigid mesh, and is formed like one.
+    // is a rigid mesh, and is formed like one; so is every contract in a session that poses no
+    // tail (`SwayFormRules::motion`). **One that sways is formed by what its motion measures**
+    // (G204): with the rule off, or a contract that does not cover its vertices (the stage draws
+    // that one rigid and says so), it keeps itself in every ring, as before.
     const SourceMesh& own = sources[m];
+    FloraMesh pose;
+    bool sways = false;
     if (own.has_motion()) {
-      FloraMesh pose;
       if (flora_mesh(std::span<const geometry::ClusterFileMotionPart>(own.motion_parts.data(),
                                                                       own.motion_parts.size()),
                      std::span<const geometry::ClusterFileStructuralPart>(
                          own.structural_parts.data(), own.structural_parts.size()),
                      own.species, pose)) {
-        continue;
+        if (!sway_rules.enabled || own.motion_vertices.size() != mesh.vertices.size()) continue;
+        sways = sway_rules.motion;
       }
     }
     // **A form is a static form only where a ray sees it** (renderer.md, "A placement's form by
@@ -1938,7 +1968,22 @@ bool make_placement_forms(SceneDesc& resolved, Vector<SourceMesh>& sources,
     for (const geometry::ClusterDesc& c : mesh.clusters)
       most = std::max(most, length(c.center - fit.anchor) + c.radius);
     const f32 diameter_m = 2.0f * most * fit.scale;
-    // `mesh` is not read past here: a form pushed onto `dags` may move it.
+    // What a swaying mesh's motion measures (G204): its reach at the rule's wind, the padding the
+    // cull gives its instances, and per ring the largest placement scale that stands still there.
+    SwayMeasure sway;
+    f32 still_at[k_ring_forms_max] = {};
+    u32 still_from = 0;
+    bool was_still = false;
+    const std::string own_name = resolved.mesh_info[m].name;
+    if (sways) {
+      sway = measure_sway(
+          pose, std::span<const Vec3>(mesh.vertices.data(), mesh.vertices.size()),
+          std::span<const geometry::ClusterFileMotionVertex>(own.motion_vertices.data(),
+                                                             own.motion_vertices.size()),
+          fit.scale, sway_rules);
+    }
+    // `mesh` and `own` are not read past here: a form pushed onto `dags` and `sources` may move
+    // them.
     const u32 own_clusters = mesh.clusters.size();
     RingCut cuts[k_ring_forms_max];
     cuts[0] = RingCut{m, own_clusters};
@@ -1946,9 +1991,20 @@ bool make_placement_forms(SceneDesc& resolved, Vector<SourceMesh>& sources,
     u32 kept = own_clusters;
     for (u32 r = 1; r < rings; ++r) {
       if (floor_m[r] > 0.0f) {
+        // **This ring's form stands still** when a placement at least `k_still_form_scale` of the
+        // mesh's own size does, seen from its floor (G204): by its reach in pixels, or a field's
+        // rest distance. The floors grow with the ring, so once still, still.
+        if (sways)
+          still_at[r] = still_scale(sway, floor_m[r], proj, field_root * fit.scale, sway_rules);
+        const bool still = sways && still_at[r] >= k_still_form_scale;
         geometry::LodFormCut cut;
         cut.origin = fit.anchor;
         cut.distance = floor_m[r] / (fit.scale * rules.cut_scale);
+        // A swaying mesh's cut is cut for the sway's padded spheres, as an authored tree's swaying
+        // form is (`stream_authored`): its instances are padded in every form, the still one's
+        // too (`SceneData::still_padding`), so the cull chooses over the form from this ring what
+        // it chooses over the mesh.
+        if (sways) cut.distance = std::max(0.0f, cut.distance - sway.padding);
         cut.proj_scale = proj;
         cut.threshold_px = lod_rules.threshold_px;
         cut.foliage_px = lod_rules.foliage_px;
@@ -1966,35 +2022,82 @@ bool make_placement_forms(SceneDesc& resolved, Vector<SourceMesh>& sources,
           return false;
         }
         // A cut that keeps what the ring inside it kept is that one (the cut only drops more as
-        // the distance grows).
-        if (map.clusters.size() < kept) {
+        // the distance grows) — but the first ring that stands still, whose form drops the
+        // contract whatever clusters it keeps (G204).
+        const bool first_still = still && !was_still;
+        if (map.clusters.size() < kept || first_still) {
           SourceMesh copy = source;
           copy.part_of_cluster.clear();
           for (const u32 c : map.clusters)
             copy.part_of_cluster.push_back(source.part_of_cluster[c]);
           copy.lod_coverage = std::move(coverage);
           copy.motion_vertices.clear();
-          copy.motion_parts.clear();
+          if (sways && !still) {
+            // **A swaying cut** keeps its vertices' records and the parts they use, each with its
+            // source's id, so it sways in its source's phase (`prune_form_parts`).
+            for (const u32 v : map.vertices)
+              copy.motion_vertices.push_back(source.motion_vertices[v]);
+            prune_form_parts(copy);
+          } else {
+            copy.motion_parts.clear();
+          }
           drawn = resolved.meshes.size();
           kept = map.clusters.size();
           std::string path = resolved.meshes[m];  // a copy: never push a Vector's own element
           resolved.meshes.push_back(std::move(path));
           SceneMeshInfo info = resolved.mesh_info[m];
-          info.name += " (ring form " + std::to_string(r) + ")";
+          info.name += (still ? " (still form " : " (ring form ") + std::to_string(r) + ")";
           info.origin = "form";
           resolved.mesh_info.push_back(std::move(info));
           sources.push_back(std::move(copy));
           dags.push_back(std::move(form));
           out.form_source.push_back(m);
-          out.form_rigid.push_back(static_form);
+          // **A swaying mesh's form is never a static form** (G204): a static form draws its
+          // frontier at every distance, which is not what the swaying ring beside it draws; the
+          // resident cache gives a still instance its structures built once without it.
+          out.form_rigid.push_back(sways ? u8{0} : static_form);
           ++table.cuts;
           table.cut_clusters += kept;
+          if (still) {
+            // The still form's instances keep the mesh's padding (`make_instance`).
+            out.still_padding.resize(resolved.meshes.size(), 0.0f);
+            out.still_padding[drawn] = sway.padding;
+            ++table.stills;
+          }
         }
+        if (first_still) still_from = r;
+        was_still = still;
       }
       cuts[r] = RingCut{drawn, kept};
     }
     chosen[m] = choose_ring_forms(m, own_clusters, diameter_m, std::span<const f32>(floor_m, rings),
                                   std::span<const RingCut>(cuts, rings), offered, rules);
+    if (sways) {
+      // A form the mesh offers is rigid: it is weighed only where the mesh stands still, and a
+      // still entry serves only the scales that stand still there (a larger placement draws the
+      // ring before's form, which sways).
+      const MeshRingForms cut_only =
+          choose_ring_forms(m, own_clusters, diameter_m, std::span<const f32>(floor_m, rings),
+                            std::span<const RingCut>(cuts, rings), {}, rules);
+      for (u32 r = 1; r < rings; ++r) {
+        if (still_from == 0 || r < still_from) {
+          chosen[m].ring[r] = cut_only.ring[r];
+        } else if (chosen[m].ring[r].max_scale > still_at[r]) {
+          chosen[m].ring[r].max_scale = still_at[r];
+        }
+      }
+      chosen[m].still_from = static_cast<u8>(still_from);
+      if (chosen[m].active) {
+        ++table.swaying;
+        ENGINE_LOG_INFO(log_renderer, "a swaying mesh's ring forms", log::field("name", own_name),
+                        log::field("reach_m", static_cast<f64>(sway.reach_m)),
+                        log::field("padding_m", static_cast<f64>(sway.padding * fit.scale)),
+                        log::field("field", sway.field), log::field("still_from", still_from),
+                        log::field("still_scale",
+                                   static_cast<f64>(still_from != 0 ? still_at[still_from] : 0.0f)),
+                        log::field("last_ring_scale", static_cast<f64>(still_at[rings - 1])));
+      }
+    }
     if (!chosen[m].active) continue;
     ++table.subjects;
     for (u32 r = 1; r < rings; ++r)
@@ -2006,9 +2109,14 @@ bool make_placement_forms(SceneDesc& resolved, Vector<SourceMesh>& sources,
     table.floor_m[r] = floor_m[r];
   chosen.resize(resolved.meshes.size());  // the forms themselves draw as they are
   table.meshes = std::move(chosen);
+  if (!out.still_padding.empty()) out.still_padding.resize(resolved.meshes.size(), 0.0f);
   ENGINE_LOG_INFO(log_renderer, "placements' ring forms", log::field("meshes", table.subjects),
                   log::field("cuts", table.cuts), log::field("cut_clusters", table.cut_clusters),
                   log::field("offered", table.offered), log::field("rings", rings),
+                  log::field("swaying", table.swaying), log::field("still_forms", table.stills),
+                  log::field("still_px", static_cast<f64>(sway_rules.still_px)),
+                  log::field("still_wind", static_cast<f64>(sway_rules.wind)),
+                  log::field("proj_scale", static_cast<f64>(proj)),
                   log::field("min_px", static_cast<f64>(rules.min_px)),
                   log::field("cut_scale", static_cast<f64>(rules.cut_scale)));
   return true;

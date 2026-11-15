@@ -82,6 +82,12 @@ SwayMeasure measure_sway(const FloraMesh& mesh, std::span<const Vec3> vertices,
 // What `still_scale` answers for a mesh that stands still at every scale.
 inline constexpr f32 k_still_every_scale = 3.0e38f;
 
+// The least still scale a ring's still form is made for: a ring's form stands still when a
+// placement half the mesh's own size does, seen from its floor. A cost rule, not a visibility
+// one — the form serves exactly the scales `still_scale` says, and below this the form would be a
+// mesh of its own that few placements could take.
+inline constexpr f32 k_still_form_scale = 0.5f;
+
 // The largest placement scale of a mesh measured `sway` that stands still seen from `floor_m`
 // metres or farther; 0 for none. `proj_scale` is the host's projection (`LodView::proj_scale`) and
 // `field_root_m` the scene's largest field root offset times the mesh's fit scale, metres — what

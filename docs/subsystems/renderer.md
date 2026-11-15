@@ -5181,8 +5181,10 @@ the ground's own layer under it, not placements a pixel wide.
 **What an imported mesh gets, and what a scene with none of it costs.** Every input is what any mesh
 has or can be measured for — its DAG, its size, a form its container offers — never which
 generator placed it, so an imported boulder scattered by a scene file is cut, chosen and dropped by
-the same rule; a mesh that offers no far form is drawn by its cuts. A mesh that deforms (a skin,
-morphs, the motion contract: the sward's cards, swaying trees) keeps itself in every ring, and so
+the same rule; a mesh that offers no far form is drawn by its cuts. A mesh that sways (the motion
+contract: the sward's cards, ferns, swaying trees) takes its forms by
+[what its motion measures](#a-swaying-meshs-form-by-ring) (G204); one that deforms any other way
+(a skin, morphs) keeps itself in every ring, and so
 does every mesh of a paged scene, whose page tables a form has none of. A scene that streams no
 entry makes no table; one whose meshes are small enough that no cut drops a cluster makes the table
 and no mesh. A tile's own meshes (those that arrive with the tile, [above](#meshes-that-come-and-go))
