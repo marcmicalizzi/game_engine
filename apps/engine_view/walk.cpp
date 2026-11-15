@@ -9,6 +9,7 @@
 #include <core/time/time.h>
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/flora_motion.h>
+#include <systems/renderer/page_source.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/terrain.h>
 
@@ -1115,6 +1116,11 @@ scene::FrameWalk WalkProbe::end() noexcept {
   thread_ = thread;
   all_ = all;
   return out;
+}
+
+u64 release_host_geometry(renderer::SceneData& scene, bool collision_reads) {
+  return renderer::release_uploaded_streams(
+      scene, collision_reads ? renderer::HostReaders::collision : renderer::HostReaders::none);
 }
 
 }  // namespace engine::view

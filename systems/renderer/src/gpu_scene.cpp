@@ -21,7 +21,6 @@
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/rt_capacity.h>
-#include <systems/renderer/shadow_cascades.h>
 #include <systems/renderer/terrain_materials.h>
 #include <systems/renderer/water_refract.h>
 
@@ -900,14 +899,7 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
     destroy();
     return false;
   }
-  // The two things a renderer made over this scene measures from the host's float positions and
-  // triangles, measured now (T138), so a host may release those once this returns: the crowns'
-  // priors where the indirect light will read them, and the meshes that face the sky.
-  if (resolved.gi_mode != GiMode::Off && resolved.gi_crown_prior) {
-    build_crown_priors(data, crown_priors_);
-    crown_priors_built_ = true;
-  }
-  sky_facing_count_ = sky_facing_meshes(data.lod.mesh, data.parts, sky_facing_);
+  measure_host_reads(data, resolved);  // before a host may release what they read (T138)
   // The sand's detail: the terrain's ground, asked for the wind the ripples lie across, and the
   // time its surface stands at — the scene's own until a moving terrain's motion moves it
   // (renderer.md, "The sand close up").
@@ -2402,20 +2394,7 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
     }
     flora_instances_.clear();
     flora_parts_ = 0;
-    // Every mesh's sway bound, measured here from the float positions (T138): a tail tree may first
-    // appear long after the upload, and by then a host that uploads once has given the positions
-    // back (`release_uploaded_streams`, renderer.md "The scene's host copy after the upload").
-    flora_padding_.assign(flora_meshes_.size(), 0.0f);
-    for (u32 m = 0; m < flora_meshes_.size() && m < data_->sources.size(); ++m) {
-      if (flora_meshes_[m].part_count() == 0) continue;
-      const SourceMesh& source = data_->sources[m];
-      flora_padding_[m] = flora_bounds_padding(
-          flora_meshes_[m],
-          std::span<const Vec3>(lod.mesh.vertices.data() + data_->parts[m].first_vertex,
-                                source.motion_vertices.size()),
-          std::span<const geometry::ClusterFileMotionVertex>(source.motion_vertices.data(),
-                                                             source.motion_vertices.size()));
-    }
+    measure_flora_padding();  // every mesh's sway bound, now (T138; gpu_scene_place.cpp)
     // **A streamed world's trees sway too** (renderer.md, "Streamed trees sway"): when a mesh the
     // tail may name carries the motion contract, the tail's trees get records of their own past
     // the load's, made and given back as their tiles come and go.
@@ -5507,10 +5486,9 @@ bool GpuScene::create_rt_cache(std::string* error) {
   if (!dynamic_) {
     served.assign(data.parts.size(), u8{0});
     for (const gfx::InstanceDesc& instance : instance_table_) {
-      const bool rigid =
-          instance.deform == gfx::k_invalid_deform &&
-          (instance.flags & gfx::k_instance_static_rt) == 0 &&
-          ((instance.flags & gfx::k_instance_untraced) == 0 || rt_untraced_drawn_);
+      const bool rigid = instance.deform == gfx::k_invalid_deform &&
+                         (instance.flags & gfx::k_instance_static_rt) == 0 &&
+                         ((instance.flags & gfx::k_instance_untraced) == 0 || rt_untraced_drawn_);
       // A field instance past its rest distance is served too (R152), untraced or not.
       const bool rests = field_rest() && instance.deform - field_rest_.first < field_rest_.count;
       if ((rigid || rests) && instance.mesh < served.size()) served[instance.mesh] = 1;

@@ -397,7 +397,7 @@ void MemoryReport::enable() noexcept {
 // count of the device bytes it holds where the eye stands, beside the walk's owners, so a budget's
 // pools can be read off one snapshot.
 static JsonValue place_block(const char* when, const renderer::GpuScene& scene) {
-  const renderer::GpuScene::PlaceBytes p = scene.place_bytes();
+  const renderer::PlaceBytes p = scene.place_bytes();
   JsonValue out = JsonValue::object();
   out.set("geometry_mib", mib(p.geometry));
   out.set("companions_mib", mib(p.companions));
@@ -410,17 +410,14 @@ static JsonValue place_block(const char* when, const renderer::GpuScene& scene) 
   out.set("pages_mib", mib(p.pages));
   out.set("device_total_mib", mib(p.device_total()));
   out.set("host_geometry_mib", mib(p.host_geometry));
-  ENGINE_LOG_INFO(log_view_memory, "what the place holds", log::field("when", when),
-                  log::field("geometry_mib", mib(p.geometry)),
-                  log::field("companions_mib", mib(p.companions)),
-                  log::field("micromaps_mib", mib(p.micromaps)),
-                  log::field("materials_mib", mib(p.materials)),
-                  log::field("textures_mib", mib(p.textures)),
-                  log::field("structures_mib", mib(p.structures)),
-                  log::field("tiles_mib", mib(p.tiles)), log::field("frame_mib", mib(p.frame)),
-                  log::field("pages_mib", mib(p.pages)),
-                  log::field("device_total_mib", mib(p.device_total())),
-                  log::field("host_geometry_mib", mib(p.host_geometry)));
+  ENGINE_LOG_INFO(
+      log_view_memory, "what the place holds", log::field("when", when),
+      log::field("geometry_mib", mib(p.geometry)), log::field("companions_mib", mib(p.companions)),
+      log::field("micromaps_mib", mib(p.micromaps)), log::field("materials_mib", mib(p.materials)),
+      log::field("textures_mib", mib(p.textures)), log::field("structures_mib", mib(p.structures)),
+      log::field("tiles_mib", mib(p.tiles)), log::field("frame_mib", mib(p.frame)),
+      log::field("pages_mib", mib(p.pages)), log::field("device_total_mib", mib(p.device_total())),
+      log::field("host_geometry_mib", mib(p.host_geometry)));
   return out;
 }
 

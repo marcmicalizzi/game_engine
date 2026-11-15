@@ -809,8 +809,7 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
     if (resolved_.gi_crown_prior && !scene.crown_priors_built())
       build_crown_priors(scene.data(), built_here);
     if (resolved_.gi_crown_prior &&
-        !upload_crown_priors(device,
-                             scene.crown_priors_built() ? scene.crown_priors() : built_here,
+        !upload_crown_priors(device, scene.crown_priors_built() ? scene.crown_priors() : built_here,
                              gi_crowns_, gi_crown_count_, error)) {
       destroy();
       return false;
@@ -3952,10 +3951,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // chain as it was before the cache, and the cache's tables and slots wait for an instance that
   // needs them.
   // A field instance past its rest distance is one too (R152), which only the frame's eye says.
-  const bool rt_cache =
-      rt_chain && scene.rt_cache() &&
-      (scene.rt_cache_instances() > 0 ||
-       (field_block != 0 && scene.flora_stats().field_instances > 0));
+  const bool rt_cache = rt_chain && scene.rt_cache() &&
+                        (scene.rt_cache_instances() > 0 ||
+                         (field_block != 0 && scene.flora_stats().field_instances > 0));
   rt_cache_recording_ = rt_cache;
   // **The drop order's scan, on the frames that may need it** (R106; clas_records.slang, "past
   // the capacity"): its three passes are recorded while a frame read back in the last

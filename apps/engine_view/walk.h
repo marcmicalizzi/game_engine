@@ -376,4 +376,12 @@ class WalkProbe {
   Reader all_;
 };
 
+// **The scene's host geometry once every `GpuScene::create` of the run is done** (T129, T138;
+// renderer.md, "The scene's host copy after the upload"): what nothing reads again is given back
+// (`renderer::release_uploaded_streams`), the float positions, triangles and source indices too
+// unless `collision_reads` — a session with a walker, whose collision cuts its proxies from them,
+// or
+// `--collision-draw`. Returns the bytes given back.
+u64 release_host_geometry(renderer::SceneData& scene, bool collision_reads);
+
 }  // namespace engine::view

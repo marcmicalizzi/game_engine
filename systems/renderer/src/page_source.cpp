@@ -258,7 +258,8 @@ u64 release_uploaded_streams(SceneData& data, HostReaders readers) {
   mesh.vertex_ids.shrink_to_fit();
   // The float positions, the packed triangles and the per-vertex source indices (T138): the
   // collision's cut proxies read them for as long as a walker walks, and nothing else does once
-  // `GpuScene::create` has measured the sway bounds, the crowns and the sky-facing meshes from them.
+  // `GpuScene::create` has measured the sway bounds, the crowns and the sky-facing meshes from
+  // them.
   u64 floats = 0;
   if (readers == HostReaders::none) {
     floats = u64{mesh.vertices.capacity()} * sizeof(Vec3) +

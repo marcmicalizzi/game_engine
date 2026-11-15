@@ -870,12 +870,6 @@ renderer::FrameClock frames_clock(const Options& options, const renderer::SceneD
   if (!(clock.world_rate > 0.0)) clock.world_rate = 0.0;
   return clock;
 }
-// Who reads the scene's host geometry after the upload (T138; renderer.md, "The scene's host copy
-// after the upload"): the walker's collision in a session, and `--collision-draw`'s; else nobody.
-renderer::HostReaders host_readers(const Options& options, bool walking) {
-  return walking || options.collision_draw ? renderer::HostReaders::collision
-                                           : renderer::HostReaders::none;
-}
 // What the command line changes about a loaded scene for looking at it: `--sky-disc-scale` on a
 // scene with a sky (scene.schema `Sky.disc_scale`; renderer.md, "The sky").
 void look_overrides(const Options& options, renderer::SceneData& scene) {
@@ -3222,10 +3216,8 @@ int run_offscreen(Options& options, Interactive& interactive) {
                         log::field("reason", why));
       }
     }
-    // Both scenes are uploaded: what nothing reads again goes (T129), unless pages copy from it;
-    // the float geometry too unless a walker or the collision draw will cut proxies from it (T138).
-    if (!resolved.stream || page_source.valid())
-      renderer::release_uploaded_streams(scene_data, host_readers(options, interactive.on));
+    if (!resolved.stream || page_source.valid())  // both uploaded: what nobody reads goes (walk.h)
+      view::release_host_geometry(scene_data, interactive.on || options.collision_draw);
     renderer::SceneRenderer::Desc renderer_desc;
     renderer_desc.page_source = page_source.valid() ? &page_source : nullptr;
     renderer_desc.width = options.width;
@@ -6200,10 +6192,8 @@ int run_view(int argc, char** argv) {
                         log::field("reason", why));
       }
     }
-    // The scene is uploaded: what nothing reads again goes (T129), unless pages copy from it; the
-    // float geometry too unless a walker or the collision draw will cut proxies from it (T138).
-    if (!resolved.stream || page_source.valid())
-      renderer::release_uploaded_streams(scene_data, host_readers(options, interactive.on));
+    if (!resolved.stream || page_source.valid())  // uploaded: what nobody reads goes (walk.h)
+      view::release_host_geometry(scene_data, interactive.on || options.collision_draw);
     renderer::SceneRenderer::Desc renderer_desc;
     renderer_desc.page_source = page_source.valid() ? &page_source : nullptr;
     renderer_desc.width = swapchain.extent().width;
@@ -7397,7 +7387,7 @@ int run_view(int argc, char** argv) {
     loading_text = write_json(block, JsonWriteOptions{.pretty = false});
   }
   view::memory_report().take("exit", &device, &scene);  // a window logs its lines (memory_report.h)
-  const std::string memory_text =               // and its summary line carries the block (null off)
+  const std::string memory_text =  // and its summary line carries the block (null off)
       write_json(view::memory_report().block(), JsonWriteOptions{.pretty = false});
   // `--startup-trace` in a window: the same block an offscreen run's summary carries (null off).
   std::string startup_text;

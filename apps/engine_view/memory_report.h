@@ -37,8 +37,7 @@ class MemoryReport {
   // device may be null (no device yet, or none any more). With a scene, the snapshot carries
   // `place`: what that scene holds where the eye stands, by kind (`GpuScene::place_bytes`, T138),
   // and one more log line. Does nothing when off or when a snapshot of that name was already taken.
-  void take(const char* when, const gfx::Device* device,
-            const renderer::GpuScene* scene = nullptr);
+  void take(const char* when, const gfx::Device* device, const renderer::GpuScene* scene = nullptr);
   // `{ "first_frame": {...}, "exit": {...} }` as taken so far, or null when off.
   JsonValue block() const;
 

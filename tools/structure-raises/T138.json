@@ -1,0 +1,14 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "T138",
+  "reason": "T138: GpuScene measures at create what the renderer read from the host's float geometry and holds it, so a host may release it; renderer.md and apps.md say what is now released, what a place holds by kind (the memory report's place block), and the designed second cluster set",
+  "date": "2026-11-14",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "renderer.record_frame.lines": -1,
+    "renderer.gpu_scene_cpp.lines": -4,
+    "renderer.gpu_scene_h.lines": 22,
+    "page:docs/subsystems/renderer.md": 6287,
+    "page:docs/subsystems/apps.md": 467
+  }
+}

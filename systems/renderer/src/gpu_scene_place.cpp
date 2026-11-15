@@ -4,22 +4,65 @@
 // call. Its own file so that the hub `gpu_scene.cpp` does not grow for a report.
 
 #include <systems/renderer/gpu_scene.h>
+#include <systems/renderer/shadow_cascades.h>
 
 #include <initializer_list>
+#include <renderer_log.h>
 
 namespace engine::renderer {
+
+// **What the renderer reads from the host's float positions and triangles, measured at `create`**
+// (T138; renderer.md, "The scene's host copy after the upload"), so that a host may give them back
+// once `create` returns: the crowns' priors where the indirect light will read them, and the meshes
+// that face the sky. And the load's clusters by the triangles each holds (renderer.md, "The ray
+// tracing chain's memory"): what a second cluster set reserved for few triangles would take, by
+// population, since the driver reserves a structure by the most triangles its set allows.
+void GpuScene::measure_host_reads(const SceneData& data, const ResolvedSettings& resolved) {
+  if (resolved.gi_mode != GiMode::Off && resolved.gi_crown_prior) {
+    build_crown_priors(data, crown_priors_);
+    crown_priors_built_ = true;
+  }
+  sky_facing_count_ = sky_facing_meshes(data.lod.mesh, data.parts, sky_facing_);
+  u32 bins[5] = {};  // up to 32, 48, 64 and 96 triangles, and more
+  for (const geometry::ClusterDesc& c : data.lod.mesh.clusters) {
+    const u32 t = c.triangle_count;
+    ++bins[t <= 32u ? 0 : t <= 48u ? 1 : t <= 64u ? 2 : t <= 96u ? 3 : 4];
+  }
+  ENGINE_LOG_INFO(log_renderer, "clusters by triangles", log::field("upto_32", bins[0]),
+                  log::field("upto_48", bins[1]), log::field("upto_64", bins[2]),
+                  log::field("upto_96", bins[3]), log::field("more", bins[4]));
+}
+
+// Every swaying mesh's sway bound, measured at the upload from the float positions (T138): a tail
+// tree may first appear long after it, by when a host that uploads once has given them back
+// (`release_uploaded_streams`). `flora_padding_of` only reads the table.
+void GpuScene::measure_flora_padding() {
+  flora_padding_.assign(flora_meshes_.size(), 0.0f);
+  const geometry::ClusterMesh& mesh = data_->lod.mesh;
+  for (u32 m = 0; m < flora_meshes_.size() && m < data_->sources.size(); ++m) {
+    if (flora_meshes_[m].part_count() == 0) continue;
+    const SourceMesh& source = data_->sources[m];
+    flora_padding_[m] = flora_bounds_padding(
+        flora_meshes_[m],
+        std::span<const Vec3>(mesh.vertices.data() + data_->parts[m].first_vertex,
+                              source.motion_vertices.size()),
+        std::span<const geometry::ClusterFileMotionVertex>(source.motion_vertices.data(),
+                                                           source.motion_vertices.size()));
+  }
+}
 
 namespace {
 
 u64 sum(std::initializer_list<const gfx::BufferResource*> buffers) noexcept {
   u64 total = 0;
-  for (const gfx::BufferResource* b : buffers) total += b->size;
+  for (const gfx::BufferResource* b : buffers)
+    total += b->size;
   return total;
 }
 
 }  // namespace
 
-GpuScene::PlaceBytes GpuScene::place_bytes() const noexcept {
+PlaceBytes GpuScene::place_bytes() const noexcept {
   PlaceBytes out;
   // The geometry buffers hold the load's meshes, then the arenas a world's tiles arrive into (the
   // mesh room and the terrain's rings, `vertex_capacity_`'s "scene + arenas"): the arenas are the
@@ -28,10 +71,10 @@ GpuScene::PlaceBytes GpuScene::place_bytes() const noexcept {
       sum({&clusters, &quantized, &vertices, &triangles, &lods, &attributes, &meshes});
   const u64 arenas = mesh_room_.bytes + terrain_ring_bytes_;
   out.geometry = geometry_buffers > arenas ? geometry_buffers - arenas : 0u;
-  out.companions = sum({&indices8, &skin, &lod_coverage, &shadow_coverage, &flora_motion_,
-                        &morph_channels, &morph_directory, &morph_slices, &morph_indices,
-                        &morph_deltas, &morph_normals, &static_cache, &flora_field_parts_,
-                        &clas_templates.data});
+  out.companions =
+      sum({&indices8, &skin, &lod_coverage, &shadow_coverage, &flora_motion_, &morph_channels,
+           &morph_directory, &morph_slices, &morph_indices, &morph_deltas, &morph_normals,
+           &static_cache, &flora_field_parts_, &clas_templates.data});
   out.micromaps = micromap_bytes();
   out.materials = sum({&materials, &cluster_materials, &terrain_masks, &terrain_formation});
   out.textures = texture_bytes_;
@@ -40,15 +83,18 @@ GpuScene::PlaceBytes GpuScene::place_bytes() const noexcept {
                         &instance_counts, &blas_records, &blas_dense, &blas_slots,
                         &clas_chunk_counts, &static_clas_.data, &static_blas_.data}) +
                    rt_cache_bytes_;
-  for (const gfx::ClusterSet& chunk : clas_chunks_) out.structures += chunk.data.size;
+  for (const gfx::ClusterSet& chunk : clas_chunks_)
+    out.structures += chunk.data.size;
   out.tiles = arenas + staging_ring_.size + terrain_table_.size;
   for (const TerrainLevel& level : terrain_)
-    for (const gfx::BufferResource& field : level.fields) out.tiles += field.size;
-  out.frame = sum({&instances, &fade, &visible, &pair_entries, &pair_table, &draw_args[0],
-                   &draw_args[1], &sw_args, &shadow_args, &flags[0], &flags[1], &vertex_headers,
-                   &vertex_records, &vertex_indices, &deform_pool, &deform_slots, &deform_blocks,
-                   &deform_table, &joints, &deform_frames, &morph_weights, &deform_normals,
-                   &flora_poses_, &ring_pairs_});
+    for (const gfx::BufferResource& field : level.fields)
+      out.tiles += field.size;
+  out.frame =
+      sum({&instances,     &fade,           &visible,        &pair_entries,   &pair_table,
+           &draw_args[0],  &draw_args[1],   &sw_args,        &shadow_args,    &flags[0],
+           &flags[1],      &vertex_headers, &vertex_records, &vertex_indices, &deform_pool,
+           &deform_slots,  &deform_blocks,  &deform_table,   &joints,         &deform_frames,
+           &morph_weights, &deform_normals, &flora_poses_,   &ring_pairs_});
   out.pages = sum({&page_table, &page_of_cluster, &page_children, &residency, &page_used,
                    &page_requests, &page_stage});
   if (data_ != nullptr) {

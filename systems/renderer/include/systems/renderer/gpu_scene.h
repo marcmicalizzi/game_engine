@@ -41,6 +41,7 @@
 #include <systems/renderer/flora_motion.h>
 #include <systems/renderer/flora_poser.h>
 #include <systems/renderer/pair_account.h>
+#include <systems/renderer/place_bytes.h>
 #include <systems/renderer/rt_capacity.h>
 #include <systems/renderer/rt_step.h>
 #include <systems/renderer/scene.h>
@@ -434,10 +435,11 @@ class GpuScene {
   // mesh (the records pass's `instance_cached` for a field instance; renderer.md, "The far field
   // at rest").
   bool field_rested(const gfx::InstanceDesc& instance) const noexcept {
-    if (instance.mesh >= rt_cache_base_.size() || rt_cache_base_[instance.mesh] == ~0u) return false;
-    return gfx::field_rests(
-        instance, relative(gfx::instance_cell(instance), gfx::world_eye(field_last_.eye)),
-        field_last_);
+    if (instance.mesh >= rt_cache_base_.size() || rt_cache_base_[instance.mesh] == ~0u)
+      return false;
+    return gfx::field_rests(instance,
+                            relative(gfx::instance_cell(instance), gfx::world_eye(field_last_.eye)),
+                            field_last_);
   }
   u32 rt_instance_rank(u32 index) const noexcept {
     return index < slot_rank_.size() ? slot_rank_[index] : 0u;
@@ -517,29 +519,7 @@ class GpuScene {
     return std::span<const u32>(sky_facing_.data(), sky_facing_.size());
   }
   u32 sky_facing_count() const noexcept { return sky_facing_count_; }
-  // **What the place holds resident, by kind** (T138; docs/experiments/streaming-by-travel.md, row
-  // a; renderer.md, "What a place holds"): the device bytes of every buffer this scene owns at the
-  // moment of asking, summed into the kinds a budget would have to hold, and the host bytes of the
-  // scene's merged streams still kept. Counters only: nothing here changes what is held. A scene
-  // read whole holds the same at every place but for `structures`, `frame` and `tiles`; a world's
-  // `tiles` follow the eye.
-  struct PlaceBytes {
-    u64 geometry = 0;    // the load's meshes: cluster and LOD tables, positions, attributes, triangles
-    u64 companions = 0;  // beside them: 8-bit indices, skin, morphs, motion, coverage, shadow proxy
-    u64 micromaps = 0;   // the opacity micromaps' resident bytes
-    u64 materials = 0;   // the material table and the material of every cluster
-    u64 textures = 0;    // the materials' images on the device
-    u64 structures = 0;  // the traced chain's sets, bottom and top levels, scratch, cache, static
-    u64 tiles = 0;       // the world's tiles: the mesh room, the terrain's rings and fields, staging
-    u64 frame = 0;       // sized by the frame or the instances: visible lists, pair tables, pools
-    u64 pages = 0;       // a paged scene's pool and its tables
-    u64 host_geometry = 0;  // the merged streams the host still keeps (`SceneData::lod.mesh`)
-    u64 device_total() const noexcept {
-      return geometry + companions + micromaps + materials + textures + structures + tiles + frame +
-             pages;
-    }
-  };
-  PlaceBytes place_bytes() const noexcept;
+  PlaceBytes place_bytes() const noexcept;  // what the place holds, by kind (place_bytes.h, T138)
   // A mesh of the scene carries coverage errors (geometry.md, "Two errors"): `lod_coverage` holds
   // them and `fade` the cross-fade's tables.
   bool has_coverage() const noexcept { return has_coverage_; }
@@ -1600,6 +1580,8 @@ class GpuScene {
   // The tail's trees (renderer.md, "Streamed trees sway").
   bool tail_sways(u32 mesh) const noexcept;
   f32 flora_padding_of(u32 mesh);
+  void measure_flora_padding();  // gpu_scene_place.cpp, with `measure_host_reads` (T138)
+  void measure_host_reads(const SceneData& data, const ResolvedSettings& resolved);
   FloraInstance flora_instance(u32 instance, u32 mesh, u32 first_part, u32 key) const noexcept;
   void release_tail_tree(u32 slot) noexcept;
   void acquire_tail_tree(u32 slot, const SceneInstance& source);
@@ -1822,7 +1804,7 @@ class GpuScene {
   Vector<f32> flora_padding_;                // per mesh, the sway's bound, measured at the upload
   CrownPriorTable crown_priors_;             // T138: measured at `create`, before any release
   bool crown_priors_built_ = false;
-  Vector<u32> sky_facing_;                   // T138: `sky_facing_meshes` at `create`
+  Vector<u32> sky_facing_;  // T138: `sky_facing_meshes` at `create`
   u32 sky_facing_count_ = 0;
   // **The tail's trees** (renderer.md, "Streamed trees sway"). A record is a deform entry and a run
   // of the pose table, made for one mesh and reused by the next tree of that mesh to arrive: its
@@ -1898,7 +1880,7 @@ class GpuScene {
   // (`gfx::FloraFieldPart`), and whether any mesh is one. Per scene mesh the InstanceDesc flag bits
   // of its species' caster policy, ORed into every instance of it, the load's and the tail's.
   Vector<u32> field_deform_;
-  FloraFieldRest field_rest_;  // the far field at rest's scene part (R152)
+  FloraFieldRest field_rest_;        // the far field at rest's scene part (R152)
   gfx::FloraFieldFrame field_last_;  // the last frame's field block, for the census
   gfx::BufferResource flora_field_parts_;
   bool flora_field_ = false;

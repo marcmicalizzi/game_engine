@@ -36,8 +36,8 @@ struct CrownPriorTable {
 // Builds the table from the scene's merged meshes: level 0 of each (the source geometry), the
 // clusters whose material is alpha-tested as the leaves. It reads the float positions and the
 // triangles, so `GpuScene::create` builds it (T138) before a host may release them
-// (`release_uploaded_streams`, `attach_page_source`); built from a scene whose positions are gone it
-// has no crowns.
+// (`release_uploaded_streams`, `attach_page_source`); built from a scene whose positions are gone
+// it has no crowns.
 void build_crown_priors(const SceneData& data, CrownPriorTable& out);
 
 // The table on the device, or nothing where no mesh has a crown (`count` 0, `buffer` untouched).
