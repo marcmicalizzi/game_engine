@@ -461,16 +461,18 @@ distance: by 50 m the cut has dropped half of it, and a kilometre off the house 
 triangles than the flat one was.
 
 **Against plan 14 §14.7's estimate** (a timber-frame house's exterior at 30,000 triangles and its
-interior at 45,000): the cot is 1,192 because nothing in it is a kit part yet. Its thatch is a
-profile, not bundles; its boards are a face, not planks; its timbers are boxes. The budget a
+interior at 45,000): the cot is 3,836 because little in it is a kit part yet. Its thatch is a
+coursed profile, not bundles; a leaf's boards are boxes, a floor's are a face; its timbers are
+boxes. The budget a
 house is held to is the plan's until the kit (G64) lands and is measured: **30,000 triangles for
 an exterior, 2.5 times that with its interior**, and a house a few hundred triangles past a
 kilometre.
 
-**Why the cut barely coarsens inside 200 m.** The finest level is so coarse already that its
-first simplifications move a surface by about 10 cm (a frame's section, a reveal's depth),
-which is a pixel at 200 m. That is the right answer for a mesh this small, and it will stop
-being one when the kit multiplies the triangles: then the first levels should drop the parts
+**Why the cut halves by 50 m and then holds to 200 m.** What goes first is the walls' wander,
+a centimetre of displacement that is under a pixel well inside 50 m. What is left is as coarse
+as the flat cot was, and its next simplifications move a surface by about 10 cm (a frame's
+section, a reveal's depth), which is a pixel at 200 m. That is the right answer for a mesh this
+small, and it will stop being one when the kit multiplies the triangles: then the first levels should drop the parts
 nobody resolves (battens, glazing bars) long before the walls move, which wants per-part error
 or an authored mid form, as the walls capability has ([walls](walls.md)).
 
