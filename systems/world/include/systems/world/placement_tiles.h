@@ -147,6 +147,12 @@ struct PlacementTilesStats {
   // Tiles built again for a moving ground (`restand`), and their wall time.
   u64 restood = 0;
   i64 restand_ns = 0;
+  // **Forms changed in place** (G202; world.md, "A ring change rewrites the forms in place"): ring
+  // changes that only changed forms, each a rewrite of the tile's meshes with no generator called;
+  // the drawn instances whose form changed; and the rewrites' wall time, on the committing thread.
+  u64 reformed = 0;
+  u64 reformed_instances = 0;
+  i64 reform_ns = 0;
   // Tiles generated for queries (`query_tile`: cache misses), and their wall time.
   u64 queried = 0;
   i64 query_ns = 0;
@@ -228,12 +234,14 @@ class PlacementTiles {
   // Whether some streamed entry puts anything on `tile`.
   bool occupied(TileCoord tile) const noexcept;
   // Whether some entry on `tile` draws rings `from` and `to` differently (its generator's
-  // `representation`): a ring change it builds the tile again for, which is a handover a host can
-  // measure. A generator with no `representation` draws every ring its own.
+  // `representation`, or a resident mesh's form, `renderer::same_ring_forms`): a ring change that
+  // is a handover a host can measure — built again for a representation, rewritten in place for
+  // forms alone (G202). A generator with no `representation` draws every ring its own.
   bool redraws(TileCoord tile, u8 from, u8 to) const noexcept;
   // The bytes of instance and tag room the tile blocks hold, wherever a block is at the moment: the
   // finite entries' exact per-tile room made at load, the active tiles' and the free list's. It is
-  // about the authored instance count times (sizeof(SceneInstance) + 1), the world over, resident
+  // about the authored instance count times (sizeof(SceneInstance) + 5: the tag and the mesh it was
+  // picked from, G202), and a whole instance more for each its ring draws as nothing, resident
   // for the whole run (world.md, "Finite placement storage"). Excludes the tail and its scratch.
   u64 room_bytes() const noexcept;
   // The instances one active tile holds; empty for another tile.
@@ -253,6 +261,14 @@ class PlacementTiles {
     // neither copied nor compared.
     const renderer::SceneInstance* instances = nullptr;
     u64 version = 0;
+    // **What changed since the version the consumer was last handed** (G202): set when the tile's
+    // forms were changed in place since the last commit — `from_version` the version handed then,
+    // `changed` the indices of the instances that are not what it held, ascending — so the
+    // renderer rewrites those (`renderer::DynamicBlock::from_version`) and reads none of the rest.
+    // Zero and empty for every other tile.
+    u64 from_version = 0;
+    const u32* changed = nullptr;
+    u32 changed_count = 0;
   };
   void tile_ranges(Vector<TileRange>& out) const;
   // **The hand-over that costs the change** (W81; world.md, "The consumers"): with a run sink set,
@@ -323,6 +339,30 @@ class PlacementTiles {
 
  private:
   struct Entry;
+  // **What a tile's placements are drawn from** (G202; world.md, "A ring change rewrites the forms
+  // in place"), beside its instances, so a ring change that changes only forms rewrites each
+  // instance's mesh through `renderer::pick_ring_form` and calls no generator: the mesh each drawn
+  // instance was picked from (4 bytes a drawn placement; its scale is its own `transform.scale`),
+  // and every placement its ring draws as nothing, whole, with its tag and its place among the
+  // drawn ones (the instance, its tag and 4 bytes).
+  struct Forms {
+    Vector<u32> sources;                     // parallel to the drawn instances
+    Vector<renderer::SceneInstance> unseen;  // drawn as nothing; `mesh` is the source
+    Vector<u8> unseen_tags;
+    Vector<u32> unseen_at;  // the drawn instances before it in the tile's order; ascending
+    void clear() noexcept {
+      sources.clear();
+      unseen.clear();
+      unseen_tags.clear();
+      unseen_at.clear();
+    }
+    void assign(const Forms& from) {
+      sources.assign(from.sources.begin(), from.sources.end());
+      unseen.assign(from.unseen.begin(), from.unseen.end());
+      unseen_tags.assign(from.unseen_tags.begin(), from.unseen_tags.end());
+      unseen_at.assign(from.unseen_at.begin(), from.unseen_at.end());
+    }
+  };
   struct TileBlock {
     u8 ring = k_inactive;
     bool withheld = false;  // held, and left out of the tail by the pair budget
@@ -348,6 +388,14 @@ class PlacementTiles {
     u32 buildings = 0;                          // of its last build
     Vector<renderer::SceneInstance> instances;  // its last build
     Vector<u8> tags;                            // parallel to `instances`
+    Forms forms;                                // what `instances` were picked from (G202)
+    // The version a run sink was last handed of this tile, 0 when it was not drawn then; and a
+    // form change since, for the next hand-over (`TileRange::from_version`, `changed`), which
+    // `reform_handed` marks handed once a commit has.
+    u64 handed = 0;
+    u64 reformed_from = 0;
+    Vector<u32> changed;
+    bool reform_handed = false;
     Vector<u32> tickets;  // the mesh slots `instances` name, a reference each (`TileMeshes`)
     Vector<renderer::SceneInstance> held_instances;  // drawn while `waiting`
     Vector<u8> held_tags;
@@ -416,7 +464,21 @@ class PlacementTiles {
   void seat(renderer::SceneInstance& instance, Generated& counts) const;
   bool generate(TileCoord tile, u8 ring, u32 entries, bool for_query,
                 const renderer::TerrainSampler* stand, Vector<scene_gen::Footprint>& earlier,
-                Vector<renderer::SceneInstance>& instances, Vector<u8>& tags, Generated& out) const;
+                Vector<renderer::SceneInstance>& instances, Vector<u8>& tags, Forms& forms,
+                Generated& out) const;
+  // **A ring change that changes only forms** (G202): the tile's instances for `ring`, rewritten in
+  // place from `forms` through the load's table — what `generate` gives for that ring, with no
+  // generator called — and, where what it draws changed, a new version and the instances changed.
+  // Whether a ring change between `from` and `to` needs the generators: some entry on the tile
+  // draws the two rings as different representations, or has none.
+  bool rebuilds(TileCoord tile, u8 from, u8 to) const noexcept;
+  void reform(TileBlock& block, u8 ring);
+  Forms reform_forms_;  // reform's scratch, swapped with the block's
+  Vector<renderer::SceneInstance> reform_instances_;
+  Vector<u8> reform_tags_;
+  Vector<u32> reform_scratch_;  // the instances one rewrite changed
+  Vector<u32> reform_merge_;
+  Forms query_forms_;  // a query's tile's, never kept
   // Its meshes named, its handed instances given their slots, and the build is what it draws (or
   // waits for its meshes); the generators' counts added to the stats.
   bool install(TileBlock& block, Generated& built);

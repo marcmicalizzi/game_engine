@@ -1841,7 +1841,8 @@ bool stream_authored(SceneDesc& resolved, Vector<SourceMesh>& sources,
   entry.where = (resolved.name.empty() ? std::string("scene") : resolved.name) + ": instances";
   entry.meshes = std::move(resident);
   entry.motion_key_base = first;  // id n is instance first + n - 1 of the whole read
-  entry.seated = true;  // the load seated every grounded one before handing it on (G201 stage 2)
+  entry.seated = true;     // the load seated every grounded one before handing it on (G201 stage 2)
+  entry.own_forms = true;  // its meshes are its rings' forms already (G197: no table of them)
   entry.tile_instances = std::move(tile_instances);
   resolved.streamed.push_back(std::move(entry));
   stats.streamed = taken;
@@ -1854,6 +1855,162 @@ bool stream_authored(SceneDesc& resolved, Vector<SourceMesh>& sources,
                   log::field("form_parts_after", stats.form_parts_after),
                   log::field("whole_pairs", stats.whole_pairs),
                   log::field("tile_floor_pairs", out.tail_floor_pairs));
+  return true;
+}
+
+// **A placement's form by ring** (G197; ring_forms.h; renderer.md, "A placement's form by ring"):
+// for every resident mesh of a streamed entry that does not pick its own forms, a cut of its DAG
+// for each ring's floor — a mesh of its own after every other, with its source's fit, materials,
+// textures and grid, as an authored form is — and the rule's choice per ring among the cuts, the
+// forms the mesh offers (`offered`: a far form its container carries) and nothing. Only what any
+// mesh has is read: its DAG, its size and what it offers. A mesh that deforms (a skin, morphs, the
+// motion contract) keeps itself in every ring; so does every mesh of a paged scene, whose page
+// table a form has none of.
+bool make_placement_forms(SceneDesc& resolved, Vector<SourceMesh>& sources,
+                          Vector<geometry::ClusterLodMesh>& dags, bool paged,
+                          std::span<const OfferedForm> offered, SceneData& out,
+                          std::string& error) {
+  RingFormTable& table = out.ring_forms;
+  table = RingFormTable{};
+  if (!resolved.world.enabled || paged || resolved.streamed.empty()) return true;
+  if (resolved.mesh_info.size() != resolved.meshes.size() ||
+      dags.size() != resolved.meshes.size() || sources.size() != resolved.meshes.size()) {
+    return true;
+  }
+  const AuthoredStreaming& lod_rules = resolved.authored;  // the host's projection and thresholds
+  const f32 proj = lod_rules.proj_scale > 0.0f ? lod_rules.proj_scale : k_default_form_proj_scale;
+  const RingFormRules rules = ring_form_rules(proj);
+  if (!rules.enabled) return true;
+  const u32 rings = std::min(world_ring_count(resolved.world), k_ring_forms_max);
+  if (rings < 2) return true;
+  f32 floor_m[k_ring_forms_max] = {};
+  for (u32 r = 1; r < rings; ++r)
+    floor_m[r] = ring_floor_m(resolved.world, r);
+  // The subjects: every scene mesh an entry without forms of its own holds resident, once.
+  const u32 meshes = resolved.meshes.size();
+  Vector<u8> subject(meshes, u8{0});
+  for (const StreamedPlacements& entry : resolved.streamed) {
+    if (entry.own_forms) continue;
+    for (const u32 m : entry.meshes)
+      if (m < meshes) subject[m] = 1;
+  }
+  // `form_source` and `form_rigid` cover every mesh from here (the authored forms may have made
+  // them already; the far forest grows them only when they are not empty).
+  if (out.form_source.size() < meshes) {
+    const u32 had = out.form_source.size();
+    out.form_source.resize(meshes);
+    for (u32 m = had; m < meshes; ++m)
+      out.form_source[m] = m;
+  }
+  if (out.form_rigid.size() < meshes) out.form_rigid.resize(meshes, u8{0});
+  Vector<MeshRingForms> chosen(meshes);
+  for (u32 m = 0; m < meshes; ++m) {
+    if (subject[m] == 0 || resolved.meshes[m].empty()) continue;
+    const geometry::ClusterMesh& mesh = dags[m].mesh;
+    if (mesh.clusters.empty() || !mesh.skin.empty() || !mesh.morph_channels.empty()) continue;
+    // **A mesh moves when its motion contract makes a pose** (`flora_mesh`, which the flora stage
+    // poses by): a sway or a field. A contract whose species never moves (the litter's, `none`)
+    // is a rigid mesh, and is formed like one.
+    const SourceMesh& own = sources[m];
+    if (own.has_motion()) {
+      FloraMesh pose;
+      if (flora_mesh(std::span<const geometry::ClusterFileMotionPart>(own.motion_parts.data(),
+                                                                      own.motion_parts.size()),
+                     std::span<const geometry::ClusterFileStructuralPart>(
+                         own.structural_parts.data(), own.structural_parts.size()),
+                     own.species, pose)) {
+        continue;
+      }
+    }
+    // **A form is a static form only where a ray sees it** (renderer.md, "A placement's form by
+    // ring"): a static form draws its frontier at every distance (the structures built once), so a
+    // mesh drawn nearer as itself, at its own LOD, would change at the ring's edge. A mesh its
+    // caster policy leaves untraced (the litter) gains nothing from a structure built once, and its
+    // forms are cut forms the cull chooses over like the mesh, which hand over with no pixel.
+    const geometry::FloraSpeciesInfo* policy = geometry::flora_species_info(own.species);
+    const u8 static_form = policy == nullptr || policy->casters.traced ? 1u : 0u;
+    // The mesh's frame as a placement places it (its fit), and how far it reaches from there.
+    FitParts fit;
+    const MeshFit& mf = resolved.mesh_info[m].fit;
+    if (mf.active())
+      fit = fit_parts(mf, std::span<const Vec3>(mesh.vertices.data(), mesh.vertices.size()));
+    f32 most = 0.0f;
+    for (const geometry::ClusterDesc& c : mesh.clusters)
+      most = std::max(most, length(c.center - fit.anchor) + c.radius);
+    const f32 diameter_m = 2.0f * most * fit.scale;
+    // `mesh` is not read past here: a form pushed onto `dags` may move it.
+    const u32 own_clusters = mesh.clusters.size();
+    RingCut cuts[k_ring_forms_max];
+    cuts[0] = RingCut{m, own_clusters};
+    u32 drawn = m;
+    u32 kept = own_clusters;
+    for (u32 r = 1; r < rings; ++r) {
+      if (floor_m[r] > 0.0f) {
+        geometry::LodFormCut cut;
+        cut.origin = fit.anchor;
+        cut.distance = floor_m[r] / (fit.scale * rules.cut_scale);
+        cut.proj_scale = proj;
+        cut.threshold_px = lod_rules.threshold_px;
+        cut.foliage_px = lod_rules.foliage_px;
+        cut.fade = lod_rules.fade;
+        geometry::ClusterLodMesh form;
+        Vector<u32> coverage;
+        geometry::LodFormMap map;
+        const SourceMesh& source = sources[m];
+        if (!geometry::extract_lod_form(
+                dags[m],
+                std::span<const u32>(source.lod_coverage.data(), source.lod_coverage.size()), cut,
+                form, coverage, map, &error)) {
+          error =
+              resolved.mesh_info[m].name + ": its ring " + std::to_string(r) + " form: " + error;
+          return false;
+        }
+        // A cut that keeps what the ring inside it kept is that one (the cut only drops more as
+        // the distance grows).
+        if (map.clusters.size() < kept) {
+          SourceMesh copy = source;
+          copy.part_of_cluster.clear();
+          for (const u32 c : map.clusters)
+            copy.part_of_cluster.push_back(source.part_of_cluster[c]);
+          copy.lod_coverage = std::move(coverage);
+          copy.motion_vertices.clear();
+          copy.motion_parts.clear();
+          drawn = resolved.meshes.size();
+          kept = map.clusters.size();
+          std::string path = resolved.meshes[m];  // a copy: never push a Vector's own element
+          resolved.meshes.push_back(std::move(path));
+          SceneMeshInfo info = resolved.mesh_info[m];
+          info.name += " (ring form " + std::to_string(r) + ")";
+          info.origin = "form";
+          resolved.mesh_info.push_back(std::move(info));
+          sources.push_back(std::move(copy));
+          dags.push_back(std::move(form));
+          out.form_source.push_back(m);
+          out.form_rigid.push_back(static_form);
+          ++table.cuts;
+          table.cut_clusters += kept;
+        }
+      }
+      cuts[r] = RingCut{drawn, kept};
+    }
+    chosen[m] = choose_ring_forms(m, own_clusters, diameter_m, std::span<const f32>(floor_m, rings),
+                                  std::span<const RingCut>(cuts, rings), offered, rules);
+    if (!chosen[m].active) continue;
+    ++table.subjects;
+    for (u32 r = 1; r < rings; ++r)
+      table.offered += chosen[m].ring[r].kind == RingFormKind::offered ? 1u : 0u;
+  }
+  if (table.subjects == 0) return true;
+  table.rings = rings;
+  for (u32 r = 0; r < rings; ++r)
+    table.floor_m[r] = floor_m[r];
+  chosen.resize(resolved.meshes.size());  // the forms themselves draw as they are
+  table.meshes = std::move(chosen);
+  ENGINE_LOG_INFO(log_renderer, "placements' ring forms", log::field("meshes", table.subjects),
+                  log::field("cuts", table.cuts), log::field("cut_clusters", table.cut_clusters),
+                  log::field("offered", table.offered), log::field("rings", rings),
+                  log::field("min_px", static_cast<f64>(rules.min_px)),
+                  log::field("cut_scale", static_cast<f64>(rules.cut_scale)));
   return true;
 }
 
@@ -2715,6 +2872,14 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
       paged_scene = paged_scene && !table.pages.empty();
     if (!stream_authored(resolved, out.sources, dags, paged_scene, out,
                          pool.has_value() ? &*pool : nullptr, error)) {
+      return false;
+    }
+    // Every other streamed entry's meshes, a form a ring (G197). `offered` is where a form a mesh
+    // carries for distance is handed to the rule (ring_forms.h, `OfferedForm`): none yet.
+    const Vector<OfferedForm> offered;
+    if (!make_placement_forms(resolved, out.sources, dags, paged_scene,
+                              std::span<const OfferedForm>(offered.data(), offered.size()), out,
+                              error)) {
       return false;
     }
     tables.resize(dags.size());

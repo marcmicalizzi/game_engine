@@ -281,8 +281,10 @@ bool TileLayout::apply(std::span<const Request> requests, u32 compact_pct, bool 
       block.pairs = request.pairs;
       block.tail_first = request.first;
       block.version = request.version;
-      writes.push_back(
-          SlotWrite{block.inst_begin, block.inst_cap, block.pair_begin, r, block.instances});
+      const u32 keep = request.keep < block.instances ? request.keep : 0u;
+      writes.push_back(SlotWrite{block.inst_begin + keep, block.inst_cap - keep,
+                                 block.pair_begin + (keep != 0 ? request.keep_pairs : 0u), r,
+                                 block.instances - keep, keep});
       ++change.rewritten;
     } else {
       // Placed after every block that stays is known, so it cannot land on one: the free runs are

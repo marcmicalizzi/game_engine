@@ -47,7 +47,12 @@ struct TileConsumerFrame @version(1) {
 /// generators' milliseconds on the worker, the tiles a commit took from a job and the ones let go
 /// because their tile changed while it was built, and the drawn tiles the pair budget let go and
 /// the ones it drew again while they were still held (a trade).
-struct TilePlacementsFrame @version(2) {
+///
+/// Version 3 (G202): the ring changes that changed only forms, rewritten in place with no generator
+/// called (`reformed`), the drawn instances whose form changed (`reformed_instances`), the
+/// rewrites' milliseconds on the committing thread (`reform_ms`), and the instances the renderer
+/// was told changed and so did not compare (`told`).
+struct TilePlacementsFrame @version(3) {
   /// Tiles the generators built (activations, ring changes that redraw, re-stood tiles) and their
   /// wall milliseconds.
   built: u32 = 0
@@ -86,6 +91,10 @@ struct TilePlacementsFrame @version(2) {
   discarded: u32 = 0 @since(2)
   released: u32 = 0 @since(2)
   returned: u32 = 0 @since(2)
+  reformed: u32 = 0 @since(3)
+  reformed_instances: u32 = 0 @since(3)
+  reform_ms: f64 = 0 @since(3)
+  told: u64 = 0 @since(3)
 }
 
 /// One world update, as engine-view's `--world-log` and a headless run record it
