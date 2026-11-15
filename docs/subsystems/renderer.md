@@ -4944,7 +4944,12 @@ binaries and hide everything else), a 140 m walk at 4.5 m/s, 1920 × 1080, trace
 GPU's frame 10.16 → 6.23 ms median, the chain's cluster builds 6.05 → 3.49, `rt` 6.99 → 4.17, the
 pool's pass 2.09 → 0.80, the cull 0.080 → 0.051 (pairs 3,142,460 → 1,631,736), the frame's CPU
 3.75 → 2.43 ms. On the whole scene's 10 s flight at 3840 × 2160 the frame is the sward's: 20.12 →
-19.84 ms.
+19.84 ms at one pixel, the chain still at its budget. **At two pixels** the arching ferns of the
+fourth ring leave the chain and it comes under its budget: the frame 17.08 ms, the cluster builds
+6.32 → 4.71, `rt` 8.09 → 5.97, the pool's pass 2.00 → 1.13, the frame's CPU 3.60 → 1.94 ms, the
+posing 1.3 ms a frame. So what one pixel of strictness costs on this scene is 2.8 ms of a 4K frame,
+for a sway of a plant three pixels tall; the default stays at one pixel, the rule as it was asked
+for, and the lever is the operator's.
 
 **The hand-overs** on that walk (the handover pass, the cross-fade off, traced shadows and again
 with the cascades: the same counts): 81 ring changes of occupied tiles. The 31 between the mesh
