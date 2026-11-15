@@ -466,9 +466,10 @@ TEST_CASE("engine-content: build writes a cluster file that reads back and valid
   u64 source_hash = 0;
   std::string error;
   REQUIRE_MESSAGE(assets::source_mesh_hash(mesh, source_hash, &error), error);
-  const u64 key =
-      geometry::cluster_cache_key(source_hash, geometry::ClusterLodOptions{}, /*weld=*/true,
-                                  geometry::ClusterPagesOptions{}.page_bytes);
+  // An import's key: the defaults with the loose-island rule on (geometry.md, "Loose islands").
+  const u64 key = geometry::cluster_cache_key(
+      source_hash, geometry::imported_lod_options(geometry::ClusterLodOptions{}), /*weld=*/true,
+      geometry::ClusterPagesOptions{}.page_bytes);
   CHECK(number(built.result, "source_hash") == source_hash);
   CHECK(number(built.result, "build_key") == key);
 
@@ -633,8 +634,9 @@ TEST_CASE("engine-content: --cache writes the container the source's hash addres
   std::string error;
   REQUIRE_MESSAGE(assets::source_mesh_hash(mesh, source_hash, &error), error);
   const std::string expected = geometry::cluster_cache_path(
-      ddc, geometry::cluster_cache_key(source_hash, geometry::ClusterLodOptions{}, true,
-                                       geometry::ClusterPagesOptions{}.page_bytes));
+      ddc, geometry::cluster_cache_key(
+               source_hash, geometry::imported_lod_options(geometry::ClusterLodOptions{}), true,
+               geometry::ClusterPagesOptions{}.page_bytes));
 
   const Run cached = content({"build", mesh, "--cache", "--ddc", ddc});
   REQUIRE_MESSAGE(cached.exit_code == 0, cached.output);
@@ -999,8 +1001,9 @@ TEST_CASE("engine-content: build-all builds a manifest once and skips what is up
   std::string error;
   REQUIRE_MESSAGE(assets::source_mesh_hash(first, source_hash, &error), error);
   const std::string entry = geometry::cluster_cache_path(
-      ddc, geometry::cluster_cache_key(source_hash, geometry::ClusterLodOptions{}, true,
-                                       geometry::ClusterPagesOptions{}.page_bytes));
+      ddc, geometry::cluster_cache_key(
+               source_hash, geometry::imported_lod_options(geometry::ClusterLodOptions{}), true,
+               geometry::ClusterPagesOptions{}.page_bytes));
   CHECK(text_of(to_cache.lines[0], "path") == entry);
   CHECK(std::filesystem::exists(entry));
   const Run cache_hit = content({"build-all", cached_manifest, "--cache", "--ddc", ddc});

@@ -193,6 +193,131 @@ a masked transition's geometric error honest**: what the coarser level loses of 
 area, as a length that projects as the geometric error does, then section 39's coverage errors and
 an impostor chain on top.
 
+**What it was, and what the builder does now** (T147's first leg, 2026-11-15;
+[geometry](../subsystems/geometry.md#loose-islands-removed-whole-the-rest-grown) has the rule, its
+sources and its test). The reading above was wrong about the path: built with the rule off, 2,527
+of the island tree's 2,529 groups and 1,480 of the fir sapling's 1,481 keep the **regular**
+simplifier's result, and the sloppy fallback runs in two and in one. A border vertex collapses
+along its border, so a leaf shrinks level by level and then goes, for an error of about half its
+width, and its area goes to nothing. `engine-content cuts` on the two containers
+(`engine-content build --no-loose-islands`, then the default), at 1080p and the default
+thresholds:
+
+| | island_tree_02, 1,072,213 triangles | | | fir_sapling, 433,021 triangles | | |
+|---|---|---|---|---|---|---|
+| distance | triangles | area | silhouette | triangles | area | silhouette |
+| 3 m | 431,228 → 654,971 | 95.6 → 100.1 % | 98.6 → 99.7 % | 3,107 → 218,970 | 8.0 → 99.7 % | 10.0 → 99.0 % |
+| 10 m | 61,319 → 401,435 | 63.6 → 100.1 % | 80.5 → 100.0 % | 355 → 186,853 | 2.9 → 98.4 % | 1.8 → 98.7 % |
+| 30 m | 1,791 → 294,051 | 21.5 → 99.4 % | 25.0 → 99.9 % | 195 → 94,123 | 2.4 → 97.7 % | 1.1 → 99.2 % |
+| 100 m | 253 → 129,687 | 13.4 → 98.4 % | 15.5 → 99.8 % | 195 → 23,689 | 2.4 → 94.9 % | 1.1 → 100.0 % |
+| 300 m | 129 → 43,492 | 10.1 → 90.4 % | 11.0 → 100.0 % | 195 → 7,530 | 2.4 → 87.9 % | 1.1 → 100.0 % |
+| 1 km | 129 → 5,838 | 10.1 → 82.9 % | 11.0 → 95.1 % | 195 → 379 | 2.4 → 79.2 % | 1.1 → 100.0 % |
+
+The builds take 5.4 s against 4.8 s and 1.7 s against 1.5 s, and the containers are 83.5 MB
+against 82.2 and 45.9 against 47.6. **The price is the triangles**: a tree that drew 1,791
+triangles of bare branches at 30 m draws 294,051 with its leaves, because a leaf 20 cm across may
+not go until it is a pixel wide, and until then the most the builder can do is bring each leaf
+down to a few triangles. That is what an honest geometric error costs a mesh of a million leaf
+triangles, and it is the reason the second leg is section 39 for an imported mesh: a level made
+by removing islands and growing their neighbours keeps the covered area by construction, which is
+what a coverage error is for, and held to the foliage threshold (5 px) instead of one pixel it
+would let the same leaves go at a fifth of the distance.
+
+**The second leg: the leaves kept, and not every one of them paid for** (T147, 2026-11-15;
+[geometry](../subsystems/geometry.md#what-the-eye-loses-when-an-island-goes) has the four rules
+and their sources). A removed island's error is its **covered size** and not its extent; a long
+island is **thickened** instead of scaled about its centre; an island a level gutted is removed
+whole instead of grown back from a sliver; and **every `MASK` primitive carries coverage errors**
+(container section 39, the forest's own mechanism), counted for the share of the card its mask
+keeps, so a leaf coarsens under the foliage threshold. The same two containers, the first leg's
+build and this one, `engine-content cuts` at 1080p and the default thresholds:
+
+| | island_tree_02 | | | fir_sapling | | |
+|---|---|---|---|---|---|---|
+| distance | triangles | area | silhouette | triangles | area | silhouette |
+| 3 m | 654,971 → 428,840 | 100.1 → 100.8 % | 99.7 → 100.0 % | 218,970 → 70,058 | 99.7 → 101.7 % | 99.0 → 100.0 % |
+| 10 m | 401,435 → 303,387 | 100.1 → 101.2 % | 100.0 → 100.0 % | 186,853 → 13,280 | 98.4 → 102.1 % | 98.7 → 100.0 % |
+| 30 m | 294,051 → 124,245 | 99.4 → 100.2 % | 99.9 → 100.0 % | 94,123 → 911 | 97.7 → 99.1 % | 99.2 → 100.0 % |
+| 100 m | 129,687 → 21,700 | 98.4 → 96.3 % | 99.8 → 100.0 % | 23,689 → 190 | 94.9 → 99.1 % | 100.0 → 100.0 % |
+| 300 m | 43,492 → 5,402 | 90.4 → 93.5 % | 100.0 → 100.0 % | 7,530 → 190 | 87.9 → 99.1 % | 100.0 → 100.0 % |
+| 1 km | 5,838 → 278 | 82.9 → 94.7 % | 95.1 → 100.0 % | 379 → 190 | 79.2 → 99.1 % | 100.0 → 100.0 % |
+
+The kit tree (778 triangles) draws 302 at 100 m as it did and 94 at 300 m where it drew 267, with
+99.0 % of its area and all of its silhouette. **Against a generated tree**: the birch
+(`birch-single`, 49,997 triangles) draws 5,805 at 100 m and 804 at 300 m, so the island tree, a
+source twenty-one times as heavy, is at **3.7 times a generated tree at 100 m and 6.7 times at
+300 m** (it was 22 and 54 times), and the fir sapling is under it at both. **Why not less**: of
+the island tree's 21,700 triangles at 100 m, 148 are its 714,744 triangles of leaf and 21,345
+are its 330,171 triangles of twig. The twigs are opaque tubes with no mask to say they are
+foliage, so they are held to one pixel of covered size, and nothing above them stands in for
+them: a generated tree's bark hands over to its cards and its star (an authored chain, section
+38), which an import does not have. The impostor is what closes the rest, and the audit's row
+for it stays open.
+
+The rest of the bought set, at 100 m, 300 m and a kilometre (triangles, area): the small tree
+(2,062,487 triangles) 15,090, 2,322 and 207, never under 95 %; the pine sapling 419, 303 and 303
+at 90.5 % or over; the searsia 32,212, 1,035 and 738, **88.9 % at 300 m** (its opaque wood keeps
+66 % there: closed twigs, which the area rule does not grow, and the one figure of the set under
+90 %); the rooibos, the shrubs, the fern, the nettle, the dandelion and the grass clump at 97 %
+or over. The kit bush (12 crossed cards) keeps its area and 70 % of its least silhouette at its
+one coarse level: six cards that cross at one point have no neighbours in space, and the pairing
+does not read which way a card faces.
+
+**The frame again, and what the cross-fade costs** (the same setting and path as the pair above;
+main's copied-out build, the first leg's binary and this branch's under two GPU leases,
+2026-11-15 02:33 and 02:57, 1,441 frames a flight; other processes on 14 to 16 % of the CPU in
+the flights read for it, so upper bounds; no allocation and no buffer on the frame's thread in
+any flight). `scene-bought.json`:
+
+| build | GPU total, median / p99 ms | resolve | rt | blas | visible pairs, median |
+|---|---|---|---|---|---|
+| main | 2.72 / 4.72, 2.71 / 4.76 | 1.32, 1.31 | 0.30 | 0.14 | 1,895 |
+| the first leg | 2.99 / 5.27, 2.94 / 5.15 | 1.39, 1.34 | 0.40, 0.41 | 0.20 | 71,687 |
+| this branch | 3.10 / 5.45, 3.11 / 5.45 | 1.53, 1.53 | 0.36 | 0.17 | 23,472 |
+| this branch, `renderer.lod.fade=0` | 2.83 / 4.84 | 1.32 | 0.35 | 0.16 | 19,045 |
+| this branch, `renderer.lod.foliage_px=0` | 3.05 / 5.45 | 1.42 | 0.41 | 0.20 | 67,116 |
+
+A third of the first leg's pairs, and the ray-tracing chain is cheaper for it (rt 0.40 to 0.36,
+the bottom-level build 0.20 to 0.17). **The frame is not, and the reason is not the triangles**:
+the resolve costs 0.2 ms more, and with the cross-fade off it costs what main's does. A leaf's
+transitions now carry coverage errors, so they take the cross-fade (`renderer.lod.fade`, 0.1 by
+default) exactly as the forest's cards do, and on this scene at 3840 × 2160 that is 0.21 ms of
+the resolve and 0.27 ms of the frame. So with the engine's defaults the bought scene is 0.14 ms
+dearer than the first leg's and 0.39 ms dearer than main's bare trees; with the fade off it is
+0.13 ms cheaper than the first leg's and 0.11 ms over main, leaves and all. The fade is the
+forest's own cost, met here on an import for the first time; that it is paid outside the band it
+fades is a renderer row this page asks for and does not take. The gate's scene (`scene.json`):
+2.45 / 3.57 on main and 2.37 / 3.29 here, 379 and 433 pairs.
+
+**The pictures** (1920 × 1080, `--raster rt --shadows rt`, the default LOD, the conifer marker):
+the first leg's and this branch's trees read the same to the eye, full crowns on every bought
+tree and sapling; outside the two lanterns the pictures differ by 2.3 of 255 in mean luma, 4 to
+6 % of samples by more than 8. **The lanterns differ, and the first leg's were wrong**: its
+picture had them a tenth too small, because a mesh's `fit` read the box of every level's
+vertices and a grown island's corners are outside the source's (renderer.md, "Fit"); the fit now
+reads the source's surface, and this branch's lanterns are main's (1.8 of 255 over their region,
+against 12.0 for the first leg's).
+
+**The frame, at the owner's setting** (3840 × 2160, `--raster rt --shadows rt
+--tunable renderer.gi.mode=bounce`, the static path after 60 warm-up frames, 1,441 frames a
+flight, main's copied-out build at 84f6d872 and this branch's alternating under one GPU lease,
+2026-11-15 01:10; other processes on 23 to 30 % of the CPU and this row's own debug build beside
+them, so upper bounds; GPU passes compared; no allocation and no buffer on the frame's thread in
+any flight):
+
+| Scene | main, GPU total median / p99 ms | this branch | visible pairs, median | rt, clas, blas, resolve (median ms), main → branch |
+|---|---|---|---|---|
+| `scene-bought.json` | 2.71 / 4.73, 2.73 / 4.76 | 2.95 / 5.11, 2.93 / 5.13 | 1,895 → 71,687 | 0.30 → 0.41, 0.01 → 0.08, 0.13 → 0.20, 1.31 → 1.35 |
+| `scene.json` (the gate's) | 2.46 / 3.68 | 2.33 / 3.28 | 379 → 440 | 0.17 → 0.17, 0.01 → 0.01, 0.06 → 0.06, 1.22 → 1.13 |
+
+Thirty-eight times the pairs for 0.22 ms of the median frame and 0.37 ms of its 99th centile:
+the leaves that are drawn now cost the ray-tracing chain's build and the trace, and little else.
+The gate's scene has no bought foliage; its kit tree's 117 cards are loose islands too, so its
+cut moved (the kit tree keeps 99 % of its area at a kilometre where it kept 16 %), and its one
+flight reads 0.13 ms cheaper, which on this machine tonight is noise. The flown binary was the
+first commit's, with the rule on for every caller; a scene with no generator builds the same
+containers with the rule on for imports alone.
+
 **Smaller things the set showed.** Most Poly Haven plant files hold three or four variants side by
 side under separate nodes (the dandelions, ferns, nettles, grass clumps, rooibos and searsia), and
 the importer flattens a file's default scene into one mesh, so an instance places the whole row;
@@ -274,14 +399,15 @@ and is the better home once it is on main.
 
 | Feature | What the bought set gets now | Row |
 |---|---|---|
-| Drawing its leaves at all | **nothing past a few metres at the default threshold**: the DAG's sloppy fallback eats disconnected cards | T147 |
+| Drawing its leaves at all | **yes** since T147's first leg (it was nothing past a few metres at the default threshold): loose islands are removed whole and their neighbours grown, at a level whose error is the island's own size | T147 |
 | Its mask, as shipped | nothing: the opacity is a map outside the material; the fetch merges it | T139 (the fetch) |
 | `BLEND` foliage | read as `MASK` at import when its alpha is an image, with a line a file; factor-only `BLEND` still opaque | T139 |
 | The crown prior | **yes** (T146): every tree 1.5 m and taller, its leaf measured from its own mask | T146 |
 | The bounce's foliage cells | yes, through the crown | T146 |
 | Opacity micromaps, the shadow proxy's bake, pixel classes, the structure cache | yes, as before | — |
 | Sway, the field kind | rigid, silently | T148 |
-| Coverage LOD, the cross-fade, an impostor chain | nothing | T147 |
+| Coverage LOD, the cross-fade | **yes** for every `MASK` primitive since T147's second leg: coverage errors (section 39) on its island levels, so its leaves go by the foliage threshold and take the cross-fade as the forest's do; opaque twigs stay on the geometric threshold | T147 |
+| An impostor chain | nothing: what would bring a bought tree's wood down to a generated one's | T147 (section 38, not started) |
 | The off-ground check, seating, water depth over the mesh ground | nothing | T149 |
 | Stochastic sampling | nothing (the ground still tiles) | T150 |
 | The caster policy | defaults | T151 |

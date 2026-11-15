@@ -791,6 +791,9 @@ bool read_cluster_file_identity(std::string_view path, u64& source_hash, u64& bu
 //    container at 15; but the renderer's glTF path drew it, and an entry it built at 15 keeps the
 //    triangle — its index stream and DAG differ from what either builder makes now under the same
 //    key. A source with none builds the same bytes as before and merely moves to a new cache path.
+// (2026-11-15, T147: the loose-island rule moved no version. `ClusterLodOptions::loose_islands`
+//    is in the key when it is on, and every import sets it, so an imported mesh's entry from
+//    before the rule is simply never read again; a mesh built without it keeps its key.)
 inline constexpr u32 k_cluster_cache_version = 16;
 
 // The cache key: the source's content hash (`assets::source_mesh_hash`) mixed with the build

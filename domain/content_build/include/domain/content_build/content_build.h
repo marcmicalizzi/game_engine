@@ -67,6 +67,16 @@ struct MeshOptions {
   f32 uv_weight = geometry::ClusterLodOptions{}.uv_weight;
   geometry::SeamRule uv_seams = geometry::ClusterLodOptions{}.uv_seams;
   geometry::SeamRule normal_seams = geometry::ClusterLodOptions{}.normal_seams;
+  // `build --loose-islands off`: the LOD builder before the loose-island rule (geometry.md, "Loose
+  // islands: removed whole, the rest grown"), so what the rule does to an asset is a pair of
+  // builds. On by default, as every import is (`geometry::imported_lod_options`), and in the key
+  // (`geometry::cluster_cache_key`); a manifest never sets it off.
+  bool loose_islands = true;
+  // `build --generator-loose-islands`: **a measurement, and nothing that ships sets it.** A
+  // generated mesh's decimated levels are built without the rule (geometry.md, "Generators: what
+  // each would gain"); this builds them with it, under another key, so what the rule would do to
+  // a generator is a pair of command lines before the generator takes it.
+  bool generator_loose_islands = false;
   // `build --no-morph`: drop the source's morph targets before anything else sees them, so the
   // container is the one the same file would give with no channels — welded without the deltas in
   // the key, simplified without `morph_seams`, and with the seven morph sections empty. It exists
@@ -104,6 +114,21 @@ void attach_repository_pack(std::string_view source, std::string_view executable
 // the question it answered.
 u64 build_key_of(u64 source_hash, const MeshOptions& options) noexcept;
 geometry::ClusterLodOptions lod_options_of(const MeshOptions& options);
+// The same for an **imported** mesh: with the loose-island rule as `options.loose_islands` has it
+// (on unless `--no-loose-islands`). `lod_options_of` leaves the rule off, which is what a
+// generated mesh is built and keyed with on every route (geometry.md, "Generators: what each
+// would gain"); `build_key_of` and the import's build use this one.
+geometry::ClusterLodOptions import_lod_options_of(const MeshOptions& options);
+// **The share each alpha-tested primitive's mask keeps** (`ClusterLodOptions::mask_cover`;
+// geometry.md, "Coverage errors for an imported alpha-tested part"): one entry a primitive of
+// `mesh`, 0 for a primitive whose material is not `k_alpha_mask`. The base colour image is decoded
+// once a material (its bytes, or its file under `image_dir`) and asked through the primitive's own
+// UVs (`geometry::measure_mask_cover`); an image that cannot be read, or a transform with a
+// rotation, counts the factor alone or the whole image's share. Every host that imports a mesh
+// calls this at the same point, after the weld, because they build the same container under the
+// same key.
+void measure_mask_covers(const assets::MeshData& mesh, std::string_view image_dir,
+                         Vector<f32>& out);
 // The cluster format's own limits: 4..256 triangles and 1..255 vertices a cluster.
 bool options_in_range(const MeshOptions& options);
 
@@ -201,6 +226,9 @@ struct BuildResult {
   // What the two repairs did, in the order they run; all zero when they had nothing to do.
   geometry::ZeroAreaRepairReport zero_area_repair;
   geometry::UvRepairReport uv_repair;
+  // What the loose-island rule did, summed over the primitives; zero for a generated mesh, whose
+  // generator builds its own levels.
+  geometry::AggregateStats loose_islands;
   bool repacked = false;  // `--atlas repack` ran (whether or not it changed anything)
   atlas::RepackReport atlas;
   // The images the texture step builds for this mesh, from the records the container carries.

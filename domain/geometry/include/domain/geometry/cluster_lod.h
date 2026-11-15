@@ -125,6 +125,68 @@ struct ClusterLodOptions {
   // triangle over. It is the "before" the guard's test and the fold census are taken against;
   // nothing that draws sets it.
   bool refuse_folds = true;
+
+  // ---- loose islands (geometry.md, "Loose islands: removed whole, the rest grown") ---------
+  //
+  // A mesh of parts that share no vertex -- a crown of leaf cards, a pile of stones, the rivets on
+  // a plate -- cannot be coarsened by collapsing edges: a card has no interior to collapse into.
+  // Upstream's builder then falls back to the sloppy simplifier, which removes whole parts and
+  // reports an error that says nothing of it, so the cut takes the coarse level a few metres away
+  // (the sloppy simplifier is the lesser part: it is the regular one that collapses a card away
+  // along its open border, for half the card's width of error) and a bought tree stands bare
+  // (roadmap T147). With this set, a group whose free islands the
+  // regular simplifier cannot halve, or halves by halving each card, is coarsened **by islands**:
+  // one of each neighbouring pair removed whole, the other grown until it covers the area of both
+  // (new vertices, each standing for the corner it was copied from), and the level's error the
+  // **covered size** of what it removed: the side of the square whose area is the most the island
+  // can cover on a screen (geometry.md, "What the eye loses when an island goes"), which for a
+  // compact island is near its width and for a twig or a needle far under its length; and any
+  // simplifier's result admits to at least the covered size of every island it removed whole. It
+  // reads nothing but the triangles: no material, no generator. A group that is one connected
+  // surface is built exactly as before, and so is every heightfield (`up`). False is the build
+  // before the rule, byte for byte.
+  //
+  // **Off by default, and on for every imported mesh** (`imported_lod_options`, which the content
+  // build and the renderer's import both go through). A generator that calls this builder was
+  // shaped against the old behaviour and has to be measured before it takes the rule (geometry.md
+  // has the table by generator). An imported mesh has no generator to have shaped anything, and
+  // without the rule it is drawn bare.
+  bool loose_islands = false;
+
+  // **The share of an alpha-tested part its mask keeps**, in (0, 1]; 0 (the default) says the
+  // part is not alpha-tested. Read only with `loose_islands`. With it set the build also fills
+  // `ClusterLodMesh::coverage`: every transition's **coverage error** (geometry.md, "Two errors"),
+  // which is the level's geometric error with each island it removed counted for the part of its
+  // covered size the mask keeps (the covered size times the square root of this), so a leaf card
+  // coarsens under the foliage threshold, as the forest's own cards do, and a card whose mask is
+  // half empty counts for the half that is drawn. The caller measures it from the part's own mask
+  // (`measure_mask_cover`). It moves no geometry: the triangles, the vertices and the geometric
+  // errors of a part are the same with it and without.
+  f32 mask_cover = 0.0f;
+};
+
+// The options an imported mesh's levels are built with: the caller's, with the loose-island rule
+// on. One function, so that every host that imports a mesh builds the same container under the
+// same cache key.
+inline ClusterLodOptions imported_lod_options(ClusterLodOptions options) noexcept {
+  options.loose_islands = true;
+  return options;
+}
+
+// What the loose-island rule did during one build, counted by the builder and **not stored in a
+// container**: a mesh read from a file reports zeros, and so does a heightfield (`up`), whose
+// groups are never read for islands.
+struct AggregateStats {
+  u32 groups = 0;           // groups simplified
+  u32 regular = 0;          // kept the regular simplifier's result
+  u32 by_islands = 0;       // coarsened by removing islands and growing their neighbours
+  u32 sloppy = 0;           // took the sloppy fallback
+  u32 islands_removed = 0;  // by the island rule, all levels
+  u32 islands_grown = 0;
+  u32 islands_restored = 0;  // open islands a regular result shrank, grown back to their area
+  u32 vertices_added = 0;    // the grown islands' corners: positions no source vertex has
+  u32 errors_raised =
+      0;  // regular or sloppy results raised to the extent of an island they removed
 };
 
 // What the heightfield guard saw during one build (`ClusterLodOptions::up`), counted by the
@@ -147,7 +209,27 @@ struct ClusterLodMesh {
   u32 group_count = 0;
   u32 leaf_triangle_count = 0;  // level 0 total, equal to the source triangle count
   FoldGuardStats fold_guard;    // the build's own; zero for a mesh read from a container
+  AggregateStats aggregate;     // likewise
+  // The build's coverage errors (`ClusterLodOptions::mask_cover`): empty, or one
+  // `pack_lod_coverage` word per cluster. The build's own too: `merge_cluster_lod` carries it (a
+  // part without one reads `k_lod_no_coverage`), and the importer moves it into the container's
+  // section 39 (`ClusterFileData::lod_coverage`) once the clusters have their final order. Nothing
+  // else reads it, and a mesh read from a container has none here.
+  Vector<u32> coverage;
 };
+
+// The share of an alpha-tested part its mask keeps (`ClusterLodOptions::mask_cover`): the
+// material's test (the factor's alpha times the texel's, against the cutoff, at level 0, through
+// `scale` and `offset` and a repeat wrap) asked at the centroids of each triangle's 4 x 4
+// equal-area sub-triangles, weighted by the triangle's area in the mesh. `alpha` is the base
+// colour's alpha channel, `width` x `height` texels, rows top first; empty asks the factor alone.
+// Counted in integers and summed in double in triangle order, then rounded to a 256th and held to
+// at least a 16th, so it is the same number on every toolchain and a mask that keeps almost
+// nothing does not make an error of nothing. 1 for a part with no triangles of any area.
+f32 measure_mask_cover(std::span<const Vec3> positions, std::span<const Vec2> uvs,
+                       std::span<const u32> indices, std::span<const u8> alpha, u32 width,
+                       u32 height, f32 alpha_factor, f32 alpha_cutoff, Vec2 scale = {1.0f, 1.0f},
+                       Vec2 offset = {0.0f, 0.0f}) noexcept;
 
 bool build_cluster_lod(std::span<const Vec3> positions, std::span<const u32> indices,
                        const ClusterLodOptions& options, ClusterLodMesh& out,
@@ -302,6 +384,25 @@ u32 select_lod(const ClusterLodMesh& mesh, const LodView& view, std::span<const 
                Vector<u32>& out);
 // The same with a threshold on raw mesh-space error (no camera): own <= t < parent.
 u32 select_lod_raw(const ClusterLodMesh& mesh, f32 threshold, Vector<u32>& out);
+
+// ---- what a cut covers (geometry.md, "Loose islands") -------------------------------------------
+//
+// The two numbers a level of loose parts is judged by, which an error says nothing of: the area
+// a cut draws, and the silhouette it fills in three orthographic views (`k_lod_cover_bitmap`
+// squared, along x, y and z, in one frame for every cut of the mesh: the cube about the box of all
+// its vertices). A crown that keeps its cards keeps both; one that sheds them loses both while its
+// errors stay under a pixel. `engine-content cuts` prints them by distance for a container, and
+// the loose-island test holds a build to them.
+inline constexpr u32 k_lod_cover_bitmap = 256;
+struct LodCutCover {
+  u32 clusters = 0;
+  u32 triangles = 0;
+  f64 area = 0.0;                 // the drawn triangles', mesh units squared
+  u32 silhouette[3] = {0, 0, 0};  // covered pixels seen along x, y and z
+};
+// Fails on an empty mesh or a cluster index out of range.
+bool measure_lod_cover(const ClusterLodMesh& mesh, std::span<const u32> cut, LodCutCover& out,
+                       std::string* error = nullptr);
 
 // ---- a distance form (geometry.md, "Distance forms") --------------------------------------------
 //

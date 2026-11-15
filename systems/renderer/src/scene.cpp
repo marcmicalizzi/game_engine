@@ -465,6 +465,10 @@ bool write_cluster_cache(const std::string& path, const std::string& source,
                          u64 build_key) {
   geometry::ClusterFileData data;
   data.mesh = std::move(lod);
+  // Section 39: an alpha-tested import's coverage errors, which the build left on the mesh in the
+  // clusters' final order (`ClusterLodMesh::coverage`) and the caller keeps a copy of.
+  data.lod_coverage = std::move(data.mesh.coverage);
+  data.mesh.coverage = Vector<u32>();
   data.pages = std::move(pages);
   data.source_path = source;
   data.source_hash = source_hash;
@@ -975,8 +979,10 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expect
     if (desc.cache) {
       // The page target is part of the key, so this has to be the one the build below uses —
       // and the one engine-content uses by default, or the two apps would stop sharing entries.
-      cache_key = geometry::cluster_cache_key(source_hash, desc.lod, true,
-                                              geometry::ClusterPagesOptions{}.page_bytes);
+      // An import's levels are built with the loose-island rule, here and in engine-content alike
+      // (`geometry::imported_lod_options`), and the key says so.
+      cache_key = geometry::cluster_cache_key(source_hash, geometry::imported_lod_options(desc.lod),
+                                              true, geometry::ClusterPagesOptions{}.page_bytes);
       cache_path = geometry::cluster_cache_path(desc.ddc, cache_key);
       out.cache = "miss";
       if (io::exists(cache_path)) container = cache_path;
@@ -1062,13 +1068,21 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expect
       log::field("materials", out.data.materials.size()),
       log::field("skins", out.data.skins.size()), log::field("images", out.data.images.size()));
   const geometry::AttributeSource attribute_source = assets::attribute_source(out.data);
+  // What each alpha-tested primitive's mask keeps, measured where `engine-content build` measures
+  // it and by the same function, because the two build the same container (geometry.md, "Coverage
+  // errors for an imported alpha-tested part").
+  Vector<f32> mask_covers;
+  content_build::measure_mask_covers(out.data, out.image_dir, mask_covers);
   Vector<geometry::ClusterLodMesh> parts;
   for (const assets::Primitive& primitive : out.data.primitives) {
     if (primitive.index_count < 3) continue;
     const std::span<const u32> range(out.data.indices.data() + primitive.first_index,
                                      primitive.index_count);
+    geometry::ClusterLodOptions part_options = geometry::imported_lod_options(desc.lod);
+    part_options.mask_cover =
+        mask_covers[static_cast<u32>(&primitive - out.data.primitives.data())];
     geometry::ClusterLodMesh part;
-    if (!geometry::build_cluster_lod(out.data.positions, range, desc.lod, part, &error,
+    if (!geometry::build_cluster_lod(out.data.positions, range, part_options, part, &error,
                                      attribute_source)) {
       return false;
     }
@@ -1088,10 +1102,15 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expect
   if (geometry::build_cluster_pages(lod, geometry::ClusterPagesOptions{}, built, &page_error,
                                     &source_of_cluster)) {
     geometry::permute_cluster_array(source_of_cluster, out.part_of_cluster);
+    if (!lod.coverage.empty()) geometry::permute_cluster_array(source_of_cluster, lod.coverage);
   } else {
     ENGINE_LOG_WARN(log_renderer, "cluster pages not built", log::field("path", path),
                     log::field("error", page_error));
   }
+  // The coverage errors this mesh draws by, as a container's section 39 would hand them over; the
+  // cache write below takes the mesh's own copy.
+  out.lod_coverage = lod.coverage;
+  if (cache_path.empty()) lod.coverage = Vector<u32>();
   // Into the cache for the next run, as the same container engine-content build writes, the
   // source's identity included (T78): either app fills the cache, either app finds it, and
   // `build-all` takes the entry as current.
@@ -1381,20 +1400,32 @@ bool expand_placements(const scene::Scene& file, const std::string& path, const 
   return true;
 }
 
-// A mesh's fit (`MeshFit`) from the box of its vertices — every level's, which for an edge-collapse
-// DAG are a subset of the source's, so the box is the source's box: the uniform scale and the
-// point that goes to the origin. The one place the load computes it, for the instances' placement
-// and for the authored instances' reach.
+// A mesh's fit (`MeshFit`) from the box of its **source's surface**, which is its level 0
+// clusters' vertices: the uniform scale and the point that goes to the origin. The one place the
+// load computes it, for the instances' placement and for the authored instances' reach.
+//
+// It was the box of every level's vertices while those were a subset of the source's. They no
+// longer are: a level that grows an island holds corners no source vertex has (geometry.md, "Loose
+// islands: removed whole, the rest grown"), and fitted by that box the static world's lantern
+// stood a tenth shorter than its 2.4 m the moment its parts were islands (T147: the first leg's
+// pictures showed it and read it as a scene's difference). `first_cluster` and `cluster_count`
+// name the mesh's run of `dag`.
 struct FitParts {
   f32 scale = 1.0f;
   Vec3 anchor{};
 };
-FitParts fit_parts(const MeshFit& fit, std::span<const Vec3> vertices) {
+FitParts fit_parts(const MeshFit& fit, const geometry::ClusterLodMesh& dag, u32 first_cluster,
+                   u32 cluster_count) {
   Vec3 lo{1e30f, 1e30f, 1e30f};
   Vec3 hi{-1e30f, -1e30f, -1e30f};
-  for (const Vec3 p : vertices) {
-    lo = Vec3{std::min(lo.x, p.x), std::min(lo.y, p.y), std::min(lo.z, p.z)};
-    hi = Vec3{std::max(hi.x, p.x), std::max(hi.y, p.y), std::max(hi.z, p.z)};
+  for (u32 c = first_cluster; c < first_cluster + cluster_count; ++c) {
+    if (dag.lod[c].level != 0) continue;
+    const geometry::ClusterDesc& cluster = dag.mesh.clusters[c];
+    for (u32 v = 0; v < cluster.vertex_count; ++v) {
+      const Vec3 p = dag.mesh.vertices[cluster.vertex_offset + v];
+      lo = Vec3{std::min(lo.x, p.x), std::min(lo.y, p.y), std::min(lo.z, p.z)};
+      hi = Vec3{std::max(hi.x, p.x), std::max(hi.y, p.y), std::max(hi.z, p.z)};
+    }
   }
   const Vec3 size = hi - lo;
   const f32 longest = std::max(size.x, std::max(size.y, size.z));
@@ -1616,8 +1647,7 @@ bool stream_authored(SceneDesc& resolved, Vector<SourceMesh>& sources,
     }
     if (reach[m] < 0.0f) {
       const MeshFit& mf = resolved.mesh_info[m].fit;
-      if (mf.active())
-        fit[m] = fit_parts(mf, std::span<const Vec3>(mesh.vertices.data(), mesh.vertices.size()));
+      if (mf.active()) fit[m] = fit_parts(mf, dags[m], 0, dags[m].mesh.clusters.size());
       f32 most = 0.0f;
       for (const geometry::ClusterDesc& c : mesh.clusters)
         most = std::max(most, length(c.center - fit[m].anchor) + c.radius);
@@ -3020,10 +3050,9 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   } else if (instances.empty()) {
     instances.push_back(SceneInstance{0, Transform3::identity()});
   }
-  // Each fitted mesh's own transform, from the box of its vertices — every level's vertices, which
-  // for an edge-collapse DAG are a subset of the source's, so the box is the source's box. It is
-  // read here, while the merged float positions still exist (a streamed scene releases them once
-  // its page source is attached).
+  // Each fitted mesh's own transform, from the box of its source's surface: its level 0 clusters'
+  // vertices (`fit_parts` has why not every level's). It is read here, while the merged float
+  // positions still exist (a streamed scene releases them once its page source is attached).
   Vector<Mat4> fit_of_mesh(out.parts.size(), Mat4::identity());
   if (described) {
     for (u32 m = 0; m < out.parts.size(); ++m) {
@@ -3035,11 +3064,8 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
         fit_of_mesh[m] = fit_of_mesh[out.form_source[m]];
         continue;
       }
-      const u32 first = out.parts[m].first_vertex;
-      const u32 end =
-          m + 1 < out.parts.size() ? out.parts[m + 1].first_vertex : out.lod.mesh.vertices.size();
       const FitParts parts =
-          fit_parts(fit, std::span<const Vec3>(out.lod.mesh.vertices.data() + first, end - first));
+          fit_parts(fit, out.lod, out.parts[m].first_cluster, out.parts[m].cluster_count);
       fit_of_mesh[m] =
           scaling(Vec3{parts.scale, parts.scale, parts.scale}) * translation(-parts.anchor);
     }

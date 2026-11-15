@@ -1,0 +1,12 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "T147",
+  "reason": "geometry.md takes the loose-island rule's section and, in the second leg, three subsections under it (what the eye loses when an island goes, a long island is thickened, coverage errors for an imported alpha-tested part), the generators' table and the star's silhouette; apps.md the usage of engine-content cuts and two build flags; renderer.md one sentence on what a fit reads",
+  "date": "2026-11-15",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/renderer.md": 360,
+    "page:docs/subsystems/apps.md": 331,
+    "page:docs/subsystems/geometry.md": 27007
+  }
+}
