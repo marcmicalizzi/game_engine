@@ -1334,3 +1334,86 @@ TEST_CASE("terrain: the ground's colour does not move when the LOD cut does") {
   CHECK(static_cast<f64>(colour_moved) / static_cast<f64>(cut_changed) < 0.015);
   CHECK(worst_marker < 0.002);
 }
+
+// T137: a long frame names the span that took it, from the record of the frame whose interval it
+// is. The numbers are the forest walk's (batch 64's preflight): frame 188's record held its own
+// 542 ms as the ground's offscreen wait, and frame 189's `frame_ms` — the interval before it —
+// was what a reader took for 189's own.
+TEST_CASE("flythrough: a slow frame is named by the span that took it") {
+  const auto record = [](u32 frame, f64 wall, f64 host, f64 submit) {
+    scene::FrameRecord r;
+    r.frame = frame;
+    scene::FrameSections s;
+    s.wall_ms = wall;
+    s.host_ms = host;
+    s.submit_ms = submit;
+    s.slot_wait_ms = wall - host - submit;
+    r.sections = s;
+    r.world = scene::FrameWorld{};
+    return r;
+  };
+  Vector<scene::FrameRecord> records;
+  // The load's frame: left out of every count.
+  records.push_back(record(0, 4046.0, 4000.0, 40.0));
+  // An ordinary frame: the GPU's.
+  records.push_back(record(1, 14.4, 0.5, 2.0));
+  // The offscreen wait for the ground's rebuild.
+  scene::FrameRecord waited = record(188, 542.07, 538.74, 3.13);
+  waited.world->ground_ms = 537.92;
+  waited.world->update_ms = 0.8;
+  scene::FrameTerrain terrain;
+  terrain.host_ms = 537.92;
+  terrain.wait_ms = 533.0;
+  terrain.rebuild_ms = 532.64;
+  waited.terrain = terrain;
+  records.push_back(waited);
+  // The instance table written whole.
+  scene::FrameRecord written = record(189, 75.29, 56.63, 18.56);
+  written.world->update_ms = 56.6;
+  written.world->handover_ms = 52.71;
+  written.world->write_ms = 51.69;
+  written.world->tiles_ms = 2.65;
+  written.cpu.tables = 15.85;
+  records.push_back(written);
+  // The tables staged again for the next set.
+  scene::FrameRecord staged = record(196, 44.9, 2.3, 33.5);
+  staged.cpu.tables = 30.4;
+  staged.cpu.passes = 2.2;
+  records.push_back(staged);
+  // A host's turn spread over its parts: no part holds half of it, so the turn is the answer.
+  scene::FrameRecord spread = record(300, 60.0, 58.0, 1.0);
+  spread.world->update_ms = 20.0;
+  spread.world->ground_ms = 19.0;
+  spread.world->props_ms = 19.0;
+  records.push_back(spread);
+
+  CHECK(slowest_span(records[1]).span == "slot_wait");
+  const scene::SlowFrame w = slowest_span(waited);
+  CHECK(w.span == "host.ground.wait");
+  CHECK(w.span_ms == doctest::Approx(533.0));
+  CHECK(w.wall_ms == doctest::Approx(542.07));
+  CHECK(slowest_span(written).span == "host.update.handover.write");
+  CHECK(slowest_span(staged).span == "submit.tables");
+  CHECK(slowest_span(spread).span == "host");
+
+  scene::FlythroughSummary summary;
+  summarize_slow(std::span<const scene::FrameRecord>(records.data(), records.size()),
+                 k_slow_frame_ms, summary);
+  REQUIRE(summary.slow.has_value());
+  CHECK(summary.slow->limit_ms == k_slow_frame_ms);
+  CHECK(summary.slow->over_33 == 4);
+  CHECK(summary.slow->over_50 == 3);
+  CHECK(summary.slow->over_100 == 1);
+  CHECK(summary.slow->ground_waits == 1);
+  CHECK(summary.slow->wall_ms.max == doctest::Approx(542.07));
+  REQUIRE(summary.slow->worst.size() == 3);
+  CHECK(summary.slow->worst[0].frame == 188);
+  CHECK(summary.slow->worst[1].frame == 189);
+  CHECK(summary.slow->worst[2].frame == 300);
+  // A run whose records carry no sections has no such block.
+  for (scene::FrameRecord& r : records)
+    r.sections.reset();
+  summarize_slow(std::span<const scene::FrameRecord>(records.data(), records.size()),
+                 k_slow_frame_ms, summary);
+  CHECK_FALSE(summary.slow.has_value());
+}

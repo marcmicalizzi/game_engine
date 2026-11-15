@@ -171,6 +171,23 @@ scene::Percentiles percentiles(std::span<const f64> values);
 void summarize_frames(std::span<const scene::FrameRecord> records, u32 frames, u32 repeats,
                       const CameraPath& path, scene::FlythroughSummary& out);
 
+// **A run's frames by their own intervals, the slowest named** (T137; apps.md, "The summary's slow
+// frames"). A record's `sections.wall_ms` is its frame's own loop iteration and every part of the
+// record is a part of it; `frame_ms` is the interval *before* the frame, and reading a long one
+// against its own record's parts is how the forest walk's 32 stalls came to be called time "no
+// section names" for a batch — each was named, `world.ground_ms`, in the record before.
+// `summarize_frames` calls `summarize_slow` with `k_slow_frame_ms`: the counts over 33, 50 and
+// 100 ms, the percentiles to p99.9, and the `k_slow_frames_named` slowest frames over the limit,
+// each with `slowest_span`'s answer — the largest part at each step down the record's sections,
+// `world` and `cpu` blocks while one part holds at least half of the one above it
+// (`host.ground.wait`, `host.update.handover.write`, `submit.tables`, `slot_wait`). It reads the
+// records after the run, so it costs a frame nothing.
+inline constexpr f64 k_slow_frame_ms = 50.0;
+inline constexpr u32 k_slow_frames_named = 32;
+scene::SlowFrame slowest_span(const scene::FrameRecord& record);
+void summarize_slow(std::span<const scene::FrameRecord> records, f64 limit_ms,
+                    scene::FlythroughSummary& out);
+
 // The run frame a marker at the path's own rate lands on when the path is flown in `frames`.
 u32 marker_frame(const CameraPath& path, u32 marker, u32 frames) noexcept;
 
