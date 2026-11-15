@@ -118,6 +118,12 @@ bool build_container(const structure::Recipe& recipe, const assets::MeshGenerato
         if (!r.role.empty()) role = r.role;
     const materials::MaterialSet* set =
         role.empty() ? nullptr : materials::find_role(inputs.materials, role);
+    // A variant (`<base>_<variant>`: a limewash's tint, a thatch's age) the pack lacks is drawn
+    // with its base, so a village described for one pack still has walls under another.
+    const auto slash = role.find('/'), variant = role.rfind('_');
+    if (set == nullptr && slash != std::string_view::npos && variant != std::string_view::npos &&
+        variant > slash)
+      set = materials::find_role(inputs.materials, role.substr(0, variant));
     const std::string_view behind = fallback_role(surface);
     if (set == nullptr && !behind.empty() && behind != role)
       set = materials::find_role(inputs.materials, behind);

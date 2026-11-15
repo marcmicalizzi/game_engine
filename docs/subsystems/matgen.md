@@ -307,6 +307,8 @@ consumer's to turn.
 | `stone/flag` | masonry | 4 m at 2,048 | laid flags: rows 35 to 60 cm wide of flags 45 to 90 cm long in a fine sandstone worn by feet, 8 mm joints of trodden earth 4 mm down, arrises worn | a building's ground floor |
 | `stone/rubble` | masonry | 2 m | coursed rubble: courses 10 to 20 cm of rough stones 15 to 40 cm long, round-cornered, their joints wandering, 18 mm of lime mortar nearly flush | a building's plinth and chimney |
 | `thatch/straw` | wood | 2 m | a straw coat: the figure's bands as stems 3.5 mm across, nearly straight, gold weathering to grey-brown, short dark checks between bundles, no knot | a building's roof |
+| `plaster/lime_white`, `_cream`, `_ochre`, `_pink` | rock | 2 m | `plaster/lime`'s recipe with the wash's colour changed: this year's white, a little yellow ochre, a yellow ochre wash, red ochre | one village's houses ([structures](structures.md#variety-a-description-states)) |
+| `thatch/straw_new`, `thatch/straw_old` | wood | 2 m | `thatch/straw`'s recipe a year old (gold, hardly stained) and long past silvering (charcoal, stained, its gaps opened) | the same |
 
 ### A building's surfaces
 

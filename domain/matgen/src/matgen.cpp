@@ -820,6 +820,45 @@ Set thatch_straw() {
   return s;
 }
 
+// ---- what one village's houses differ by (structures.md, "Variety a description states";
+// vernacular-shell.md, "Tint and age"): a role a description names, `<base>_<variant>`.
+
+// A limewash pigmented with an ochre, or fresh: the aged wash's recipe with its wash's colour.
+Set plaster_tint(const char* role, u64 seed, u32 r, u32 g, u32 b) {
+  Set s = plaster_lime();
+  s.role = role;
+  s.seed = seed;
+  s.rock.minerals[0].r_permille = r;
+  s.rock.minerals[0].g_permille = g;
+  s.rock.minerals[0].b_permille = b;
+  return s;
+}
+
+// A coat in its first year or two, still gold, and one long past silvering: charcoal grey, its
+// stains strong and its bundles' gaps opened.
+Set thatch_new() {
+  Set s = thatch_straw();
+  s.role = "thatch/straw_new";
+  s.seed = 0x6e6577ull;
+  s.wood.grey_permille = 150;
+  s.wood.grey_patch_permille = 120;
+  s.wood.stain_permille = 150;
+  return s;
+}
+Set thatch_old() {
+  Set s = thatch_straw();
+  s.role = "thatch/straw_old";
+  s.seed = 0x6f6c64ull;
+  s.wood.grey_r_permille = 150;
+  s.wood.grey_g_permille = 142;
+  s.wood.grey_b_permille = 128;
+  s.wood.grey_permille = 950;
+  s.wood.grey_patch_permille = 50;
+  s.wood.stain_permille = 700;
+  s.wood.checks_per_m2 = 700;
+  return s;
+}
+
 }  // namespace
 
 Set variant_of(const Set& set, u32 index) {
@@ -843,6 +882,10 @@ Vector<Set> default_sets() {
   sets.push_back(ground_thatch());
   sets.push_back(ground_turf());
   sets.push_back(plaster_lime());
+  sets.push_back(plaster_tint("plaster/lime_cream", 0x637265616dull, 760, 700, 560));
+  sets.push_back(plaster_tint("plaster/lime_ochre", 0x6f63687265ull, 700, 590, 390));
+  sets.push_back(plaster_tint("plaster/lime_pink", 0x70696e6bull, 720, 560, 500));
+  sets.push_back(plaster_tint("plaster/lime_white", 0x7768697465ull, 820, 810, 770));
   sets.push_back(rock_basalt());
   sets.push_back(rock_granite());
   sets.push_back(rock_granite_wet());
@@ -853,6 +896,8 @@ Vector<Set> default_sets() {
   sets.push_back(stone_flag());
   sets.push_back(stone_rubble());
   sets.push_back(thatch_straw());
+  sets.push_back(thatch_new());
+  sets.push_back(thatch_old());
   sets.push_back(wood_log());
   sets.push_back(wood_plank());
   return sets;

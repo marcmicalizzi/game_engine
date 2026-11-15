@@ -237,8 +237,16 @@ TEST_CASE("matgen: every default's colour and roughness means are in its materia
       {"stone/flag", 0.10, 0.40, 0.60, 0.95},
       {"stone/rubble", 0.12, 0.42, 0.75, 0.97},
       {"thatch/straw", 0.08, 0.35, 0.60, 0.95},
+      // What one village's houses differ by (structures.md, "Variety a description states"): a
+      // limewash white, cream, ochre or pink, and a thatch new (gold) or old (charcoal).
+      {"plaster/lime_white", 0.62, 0.85, 0.80, 0.98},
+      {"plaster/lime_cream", 0.50, 0.78, 0.80, 0.98},
+      {"plaster/lime_ochre", 0.40, 0.68, 0.80, 0.98},
+      {"plaster/lime_pink", 0.40, 0.68, 0.80, 0.98},
+      {"thatch/straw_new", 0.20, 0.50, 0.60, 0.95},
+      {"thatch/straw_old", 0.05, 0.22, 0.60, 0.95},
   };
-  // Eighteen sets, and the variants of the three tiled granular ones.
+  // Twenty-four sets, and the variants of the three tiled granular ones.
   CHECK(matgen::default_sets().size() == std::size(ranges) + 3 * matgen::k_tiled_variants);
   for (const Range& r : ranges) {
     CAPTURE(r.role);

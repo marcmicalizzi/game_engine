@@ -94,14 +94,29 @@ grounding should bring a distribution, and one bay of 4.5 m is the commoner size
 
 | Number | Value used (the example cot) | Range | Source |
 |---|---|---|---|
-| Courses up a slope | 30 cm apart (`course`): 13 on the cot's 4.1 m of slope above the eave | fixings 300 mm apart up the roof; most roofs have 10 to 20 courses; a course about 150 mm thick (combed wheat reed about 100) | 11 |
-| A course's step | 25 mm (`course_step_mm`) | | **not found**: a dressed coat is close to one plane, and no source read gives how far a course's butts stand. A choice, small |
+| Courses up a slope | 30 cm apart (`course`): 12 on the cot's 3.5 m of slope between the cut eave and the ridge course | fixings 300 mm apart up the roof; most roofs have 10 to 20 courses; a course about 150 mm thick (combed wheat reed about 100) | 11 |
+| A course's step | 12 mm (`course_step_mm`) | | **not found**: a dressed coat is close to one plane, and no source read gives how far a course's butts stand. A choice, small: the first picture, at 25 mm, read as weatherboard |
 | The coat's depth | 30 cm (`thickness`) | 225 to 375 mm; long straw at least 350 new | 11, 13 |
 | The eave's cut | square to the slope (`eave_cut`) | cut with an eaves knife; the front edge straight and level; a water reed eave one coat thick and very even, a straw eave on an old roof thicker | 13, 14. The cut's **angle is not found**: square to the slope is the plane of the stems' butts, and is chosen |
 | Eave overhang by material | (the roof's `overhang`) | long straw 375 to 450 mm, combed wheat reed 300 to 375, water reed 375 to 450 | 11 |
 | The ridge | a block, 6 to 8 cm proud over the last 45 cm of slope | a block ridge cut straight, 75 to 100 mm thick; a wrap-over ridge 100 to 150 mm over its roll; a butts-up ridge covers about 900 mm down each side | 12, 13. The 45 cm skirt is **a choice** between them |
 | Ridge renewed | (see "Tint and age") | every 8 to 12 years | 13 |
 | Not modelled | | the brow course (about half a course thick); liggers on a long straw roof's eaves and barges, sparred about every 100 mm; a patterned ridge; netting | 11, 12, 13 |
+
+## Tint and age
+
+What the generated variants `plaster/lime_*` and `thatch/straw_*` stand on
+([structures](../subsystems/structures.md#variety-a-description-states)). Their colours are
+linear albedos **chosen by eye against the words below**: no source read gives a measured colour.
+
+| Number | Value used | Range | Source |
+|---|---|---|---|
+| Limewash pigments | white, cream, ochre, pink | red and yellow ochre, giving cream through pink to red; pink and pale yellow are the tints most associated with Suffolk | 17 (snippets). A local society calls "Suffolk pink" as an old tradition contested (snippet) |
+| Where walls are plain | the base and `_white` | East Dorset cob is off-white over a sand-and-hair render, and coloured walls are not characteristic there | 6 (snippet) |
+| A dark plinth | (not modelled) | East Dorset plinths are often rendered and painted black; tar became popular in the Victorian period. **No band height found** | 6, 17 (snippets) |
+| How long a coat stays gold | `_new`: its first year or two | looks new for one to two years, then charcoal grey; "silvered down" from bright yellow after 15 to 18 months | 18 (snippets) |
+| A ridge's age against its coat's | (one role a roof) | a ridge is replaced every 8 to 12 years, so it is usually newer than the coat under it | 13 |
+| The mix within one village | the filler's | | **not found**: only the regional statements above |
 
 ## A cob wall's shape
 
@@ -157,6 +172,11 @@ leaf, inside, folding back into the reveal); which way a cottage door opens (inw
 
 - The door, window, storey-height and joinery numbers stand without a source. They are fields or
   named constants, so a read of Brunskill or a county survey changes numbers, not shapes.
-- A cob wall's taper, a thatch's courses and its ridge (flush or block) are not modelled.
+- What the second reading looked for and did not find stands as choices, each named under its
+  table: a batter's ratio and which face leans, a corner's radius, a plinth's projection, a
+  face's wander, a course's step, an eave's cut angle, a leaf's and a mullion's sections, a
+  flag's length, a rubble wall's joint, and every colour.
+- Not modelled: a cob wall's lifts, a rounded reveal, a thatch's brow course, liggers and
+  patterned ridge, a tarred plinth, ironwork, glass.
 - Pitch and depth for slate, stone slate and tile want the same table before a filler offers
   them.

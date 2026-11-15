@@ -315,11 +315,36 @@ behind it, else a flat colour, and the lookup says once which role is missing. U
 surface (a wall's u along it and v up, a floor's x and z, a roof's u up the slope and v along the
 ridge, a timber's u along its grain), so a set tiles at its own `tile_m`.
 
-**The four roles no pack had are generated sets now** (`plaster/lime`, `stone/flag`,
-`stone/rubble`, `thatch/straw`: [matgen](matgen.md#a-buildings-surfaces)), each a recipe of a
-generator kind that stood already, built by `engine-content matgen` with the rest. They are the
-least that gives each surface a set of its own: a thatch's courses, a wall's coursing and a
-floor's bond are not in them, and that page says so.
+**The four roles no pack had are generated sets** (`plaster/lime`, `stone/flag`,
+`stone/rubble`, `thatch/straw`: [matgen](matgen.md#a-buildings-surfaces)), built by
+`engine-content matgen` with the rest. The flag floor and the rubble are laid work (the kind
+`masonry`: rows of flags, coursed stones); the plaster and the thatch are recipes of kinds that
+stood already.
+
+### Variety a description states
+
+Two houses of one village need not be one colour, and what differs is **a role's name in the
+description**, never a decision of the mesher: `Roles.wall_outer` (and `wall_inner`, `ceiling`)
+and `Roof.role` take any role the host's pack has. The generated sets give the fillers six to
+choose from beside the bases:
+
+| Role | What |
+|---|---|
+| `plaster/lime` | the base: a wash yellowed with age |
+| `plaster/lime_white` | a wash put on this year |
+| `plaster/lime_cream` | a wash with a little yellow ochre |
+| `plaster/lime_ochre` | a yellow ochre wash |
+| `plaster/lime_pink` | a wash with red ochre |
+| `thatch/straw` | the base: a coat some years old, grey-brown |
+| `thatch/straw_new` | a coat in its first year or two, still gold |
+| `thatch/straw_old` | a coat long past silvering: charcoal, stained, its bundles opened |
+
+**A variant the pack lacks is drawn with its base**: a role `<base>_<variant>` that is not
+found falls back to `<base>` before the surface's own fallback, so a village described for the
+generated sets still has walls under a pack that carries only `plaster/lime`. Which tints suit
+which country, and how long a coat stays gold, are on
+[the grounding page](../experiments/vernacular-shell.md#tint-and-age); how many houses of a
+village take which is the filler's.
 
 ## Walk records
 
@@ -354,7 +379,11 @@ mistake there (to be measured with the village).
 `example_cot(width, depth, wall)` is a one-room cot: a room 6 by 4 m inside walls 60 cm thick, one
 storey 2.4 m to the wall plate and open to a thatched gable roof at fifty degrees whose eaves
 overhang 35 cm (so the eave's edge stands 1.98 m over the floor, clear of the door's head), a door
-and a window in the front wall, a window in the back, a stack with a hearth on one gable. The
+and a window in the front wall, a window in the back, a stack with a hearth on one gable. It
+states everything a description can about a cob-and-thatch house: walls 52 cm at the plate that
+wander 12 mm, corners rounded to 12 cm, a plinth 4 cm proud, a ledged door standing open a
+quarter turn, unglazed mullioned windows with their shutters folded back, a thatch in courses
+30 cm apart with a cut eave. The
 same description is committed as `content/structures/cot.structure.json`. Its numbers and where they
 come from are on [the grounding page](../experiments/vernacular-shell.md).
 
@@ -416,13 +445,20 @@ counts and no times):
 
 | What | Value |
 |---|---|
-| Triangles, finest | 1,192 (the test holds it under 4,000) |
-| Clusters, finest cut | 38; 60 with the DAG's coarser levels |
-| The DAG's cut from 5 m and 50 m (2160 lines, 60° field of view, 1 px) | 1,192 triangles in 38 clusters: the finest |
-| The cut from 200 m | 1,048 triangles in 33 clusters |
-| The cut from a kilometre | 472 triangles in 14 clusters |
-| The DAG's root | 194 triangles |
+| Triangles, finest | 3,836 (the test holds it under 12,000); 1,192 before the leaves, the walls' shape and the thatch's courses (2026-11-15) |
+| Clusters, finest cut | 82; 146 with the DAG's coarser levels (38 and 60 before) |
+| The DAG's cut from 5 m (2160 lines, 60° field of view, 1 px) | 3,836 triangles in 82 clusters: the finest |
+| The cut from 50 m | 1,977 triangles in 62 clusters (the finest, 1,192, before) |
+| The cut from 200 m | 1,712 triangles in 55 clusters (1,048 before) |
+| The cut from a kilometre | 318 triangles in 10 clusters (472 before) |
+| The DAG's root | 230 triangles (194 before) |
 | Materials (surfaces with triangles) | 7 |
+
+**Where the triangles went**: about 2,200 are the walls' wander (a 45 cm grid on eight faces),
+about 300 the leaves, mullions and shutters, about 160 the thatch's courses, and the rest the
+corners' arcs and the plinth's ledge. The wander is the one that is bought, not needed, at
+distance: by 50 m the cut has dropped half of it, and a kilometre off the house is fewer
+triangles than the flat one was.
 
 **Against plan 14 §14.7's estimate** (a timber-frame house's exterior at 30,000 triangles and its
 interior at 45,000): the cot is 1,192 because nothing in it is a kit part yet. Its thatch is a
