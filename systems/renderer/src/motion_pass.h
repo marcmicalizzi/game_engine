@@ -33,9 +33,9 @@ class MotionPass {
     u32 slot = 0;
     WorldPos eye{};  // the frame's camera, in f64: the eyes' difference is taken here
     gfx::FrameEye gpu_eye;
-    u64 visibility = 0;                    // this frame's visibility buffer, its first word
-    u64 vis_offset[k_max_views] = {};      // each view's first element of it
-    u64 pair_entries[k_max_views] = {};    // each view's pair -> entry table, or 0
+    u64 visibility = 0;                  // this frame's visibility buffer, its first word
+    u64 vis_offset[k_max_views] = {};    // each view's first element of it
+    u64 pair_entries[k_max_views] = {};  // each view's pair -> entry table, or 0
     u64 pairs = 0;
     u64 visible = 0;
     u64 instances = 0;
@@ -101,7 +101,7 @@ class MotionPass {
   gfx::BufferResource output_;    // u32 a source pixel, the views back to back
   gfx::BufferResource prev_vis_;  // last frame's visibility buffer
   gfx::BufferResource prev_pool_;
-  Vector<gfx::BufferResource> params_;  // per frame slot: MotionParams a view, host-visible
+  Vector<gfx::BufferResource> params_;         // per frame slot: MotionParams a view, host-visible
   Vector<gfx::BufferResource> moved_buffers_;  // per frame slot: the moved table, host-visible
   Vector<gfx::MovedInstance> moved_;           // sorted by instance: last frame's transforms
   Last last_;

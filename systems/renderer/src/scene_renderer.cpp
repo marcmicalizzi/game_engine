@@ -24,6 +24,7 @@
 #include <cstddef>
 #include <cstring>
 #include <memory>
+#include <motion_pass.h>
 #include <renderer_log.h>
 #include <resolve_classes.h>
 #include <shaders/alpha_coverage.spv.h>
@@ -40,14 +41,13 @@
 #include <shaders/gi_update.spv.h>
 #include <shaders/gi_update_terrain.spv.h>
 #include <shaders/hiz_build.spv.h>
+#include <shaders/motion.spv.h>
 #include <shaders/opacity_micromap_bake.spv.h>
 #include <shaders/overlay.spv.h>
 #include <shaders/pair_expand.spv.h>
 #include <shaders/ray_visibility.spv.h>
 #include <shaders/resolve_classify.spv.h>
 #include <shaders/resolve_classify_water.spv.h>
-#include <motion_pass.h>
-#include <shaders/motion.spv.h>
 #include <shaders/resolve_half_sun.spv.h>
 #include <shaders/tlas_references.spv.h>
 #include <shaders/vertex_expand.spv.h>
@@ -1099,8 +1099,9 @@ u64 SceneRenderer::motion_bytes() const noexcept {
 bool SceneRenderer::read_motion(CapturedFrame& out, std::string* error) {
   if (motion_ == nullptr) {
     if (error != nullptr) {
-      *error = "the motion channel needs renderer.reconstruction.inputs=true: without it the "
-               "renderer writes no motion";
+      *error =
+          "the motion channel needs renderer.reconstruction.inputs=true: without it the "
+          "renderer writes no motion";
     }
     return false;
   }

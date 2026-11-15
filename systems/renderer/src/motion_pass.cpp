@@ -1,6 +1,5 @@
-#include <motion_pass.h>
-
 #include <cstring>
+#include <motion_pass.h>
 #include <renderer_log.h>
 
 namespace engine::renderer {
@@ -116,8 +115,8 @@ bool MotionPass::create(const gfx::Device& device, const GpuScene& scene, const 
   for (u32 slot = 0; slot < frames_in_flight; ++slot) {
     if (!gfx::create_buffer(device, sizeof(gfx::MotionParams) * k_max_views, k_address, true,
                             params_[slot], error) ||
-        !gfx::create_buffer(device, sizeof(gfx::MovedInstance) * k_motion_moved_capacity,
-                            k_address, true, moved_buffers_[slot], error)) {
+        !gfx::create_buffer(device, sizeof(gfx::MovedInstance) * k_motion_moved_capacity, k_address,
+                            true, moved_buffers_[slot], error)) {
       return false;
     }
   }

@@ -7451,7 +7451,8 @@ int run_view(int argc, char** argv) {
                               stderr);
     // The measurement rule (ADR-0064): the `reconstruction` block, then the times as `gpu_ms` for
     // a native measurement and under `reconstructed` for any other (renderer::measurement_keys).
-    const renderer::MeasurementKeys measured = renderer::measurement_keys(stats.last.reconstruction);
+    const renderer::MeasurementKeys measured =
+        renderer::measurement_keys(stats.last.reconstruction);
     const std::string summary_text = format_text(
         "{\"frames\":%llu,\"seconds\":%.3f,\"avg_ms\":%.3f,\"width\":%u,\"height\":%u,"
         "\"clusters\":%u,\"leaf_clusters\":%u,\"triangles\":%u,\"lod_levels\":%u,\"build_ms\":%.1f,"
@@ -7527,9 +7528,9 @@ int run_view(int argc, char** argv) {
         stats.hiz_ms(), stats.resolve_ms(), stats.rt_ms(), stats.clas_ms(), stats.deform_ms(),
         stats.deform_alloc_ms(), stats.trace_ms(), stats.shadow_ms(), stats.shadow_cull_ms(),
         stats.motion_ms(), stats.total_ms(), static_cast<unsigned long long>(stats.timed_frames),
-        measured.close, captured ? "true" : "false", interactive_text.c_str(), time_lapse_text.c_str(),
-        sun_text.c_str(), output_text.c_str(), medium_text.c_str(), flora_text.c_str(),
-        loading_text.c_str(), startup_text.c_str(), memory_text.c_str());
+        measured.close, captured ? "true" : "false", interactive_text.c_str(),
+        time_lapse_text.c_str(), sun_text.c_str(), output_text.c_str(), medium_text.c_str(),
+        flora_text.c_str(), loading_text.c_str(), startup_text.c_str(), memory_text.c_str());
     std::fputs(summary_text.c_str(), stdout);
     g_report.summary_line = summary_text.substr(0, summary_text.find_last_not_of('\n') + 1);
     std::fflush(stdout);

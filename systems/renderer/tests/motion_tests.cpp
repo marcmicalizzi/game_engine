@@ -273,7 +273,8 @@ TEST_CASE("motion: the sub-pixel offset moves a view's picture by exactly its pi
   CHECK(moved.offset_y == jy);
   // Points in the frame's space (the eye at the origin), in front of the camera.
   const Vec3 forward = camera_forward(camera);
-  for (const Vec3 side : {Vec3{0.0f, 0.0f, 0.0f}, Vec3{1.5f, 0.4f, 0.0f}, Vec3{-2.0f, -1.0f, 0.5f}}) {
+  for (const Vec3 side :
+       {Vec3{0.0f, 0.0f, 0.0f}, Vec3{1.5f, 0.4f, 0.0f}, Vec3{-2.0f, -1.0f, 0.5f}}) {
     const Vec3 point = forward * 7.0f + side;
     const Vec4 a = plain.view_proj * Vec4{point.x, point.y, point.z, 1.0f};
     const Vec4 b = moved.view_proj * Vec4{point.x, point.y, point.z, 1.0f};
@@ -379,14 +380,15 @@ TEST_CASE("motion: a camera's turn and step reproject every pixel of a still sce
   Shot second;
   REQUIRE_MESSAGE(shoot(rig, frame, second, why), why);
   CHECK((second.view.offset_x != 0.0f || second.view.offset_y != 0.0f));
-  CHECK((second.view.offset_x != first.view.offset_x || second.view.offset_y != first.view.offset_y));
+  CHECK(
+      (second.view.offset_x != first.view.offset_x || second.view.offset_y != first.view.offset_y));
   worst = worst_error(second, first, every, still(second, first), counted, longest);
   u32 covered = 0;
   for (u32 p = 0; p < k_width * k_height; ++p)
     covered += second.frame.depth[p] != 0.0f ? 1u : 0u;
   MESSAGE("turned and stepped: worst " << worst << " px over " << counted << " pixels, " << covered
-                                        << " of them covered, the longest vector " << longest
-                                        << " px");
+                                       << " of them covered, the longest vector " << longest
+                                       << " px");
   CHECK(counted == k_width * k_height);
   // The fixture's own premise, not a bound on the pass: both a surface and a sky in the picture
   // (the heightfield from this orbit covers about a fifth of it).
@@ -442,7 +444,8 @@ TEST_CASE("motion: a moved rigid instance's pixels follow its two transforms") {
   const DVec3 eye = frame.camera.position - WorldPos::origin();
   const DVec3 now_at = DVec3{placed.transform.position} - eye;
   const DVec3 was_at = DVec3{mover.transform.position} - eye;
-  const f64 ratio = static_cast<f64>(mover.transform.scale.x) / static_cast<f64>(placed.transform.scale.x);
+  const f64 ratio =
+      static_cast<f64>(mover.transform.scale.x) / static_cast<f64>(placed.transform.scale.x);
   const auto through = [=](const f64 here[4], f64 then[4]) {
     const f64 w = here[3];
     then[0] = (here[0] - now_at.x * w) * ratio + was_at.x * w;
@@ -471,7 +474,8 @@ TEST_CASE("motion: a moved rigid instance's pixels follow its two transforms") {
   // the still scene's.
   Shot third;
   REQUIRE_MESSAGE(shoot(rig, frame, third, why), why);
-  worst = worst_error(third, second, [](u32) { return true; }, still(third, second), counted, longest);
+  worst =
+      worst_error(third, second, [](u32) { return true; }, still(third, second), counted, longest);
   MESSAGE("a frame after the move: worst " << worst << " px");
   CHECK(worst <= k_tolerance_px);
 }
@@ -520,9 +524,8 @@ TEST_CASE("motion: a deformed surface's pixels are measured from last frame's sh
   u32 counted = 0;
   f64 longest = 0.0;
   f64 worst = worst_error(second, first, covered(second), still(second, first), counted, longest);
-  MESSAGE("the clock held, the camera moved: worst " << worst << " px over " << counted
-                                                      << " pixels, the longest vector " << longest
-                                                      << " px");
+  MESSAGE("the clock held, the camera moved: worst "
+          << worst << " px over " << counted << " pixels, the longest vector " << longest << " px");
   CHECK(counted > k_width * k_height / 8);  // the fixture's premise: a fifth of the picture
   CHECK(longest > 1.0);
   CHECK(worst <= k_tolerance_px);

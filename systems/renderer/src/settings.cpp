@@ -523,7 +523,8 @@ tunables::Int gi_shell_refresh{
     "0: never) (renderer.md, Indirect light, Stage 8; read at load)"};
 tunables::Bool reconstruction_inputs{
     "renderer.reconstruction.inputs", false,
-    "Draw every frame at a sub-pixel offset (Halton 2,3 over eight frames), write the motion pass's "
+    "Draw every frame at a sub-pixel offset (Halton 2,3 over eight frames), write the motion "
+    "pass's "
     "vectors and keep last frame's views, visibility buffer and deformed positions: what sampling "
     "over time reads, with nothing reading it yet (false: none of it exists and the frame is "
     "unchanged to the byte) (ADR-0064; renderer.md, Sampling over time: the inputs; read at load)"};
@@ -889,7 +890,8 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   out.gi_shell_m = static_cast<f32>(gi_shell_m.get());
   out.gi_shell_rays = static_cast<u32>(gi_shell_rays.get());
   out.gi_shell_refresh = static_cast<u32>(gi_shell_refresh.get());
-  out.reconstruction_inputs = reconstruction_inputs.get() && out.settings.raster != RasterMode::Direct;
+  out.reconstruction_inputs =
+      reconstruction_inputs.get() && out.settings.raster != RasterMode::Direct;
   out.gi_shell_clip = gi_shell_clip.get();
   out.gi_shell_first = gi_shell_first.get();
   out.gi_preroll = static_cast<u32>(gi_preroll.get());

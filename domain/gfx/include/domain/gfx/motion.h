@@ -62,20 +62,20 @@ struct MotionParams {
   Mat4 unproject;
   // Last frame's un-offset view-projection, from last frame's space (its eye at the origin).
   Mat4 prev_view_proj;
-  FrameEye eye;       // this frame's
-  FrameEye prev_eye;  // last frame's: where an instance stood from it
+  FrameEye eye;             // this frame's
+  FrameEye prev_eye;        // last frame's: where an instance stood from it
   u64 visibility = 0;       // u64[width * height]: this view's region of this frame's buffer
   u64 prev_visibility = 0;  // the same region of last frame's, kept; nothing in this pass reads it
-  u64 pairs = 0;            // u32[2 * pair_count]: the scene's {instance, cluster} per pair; 0: none
-  u64 pair_entries = 0;     // u32[pair_count]: this view's pair -> visible entry; 0: the pair is it
-  u64 visible = 0;          // u32[2 * entries]: the visible list, read only without `pairs`
-  u64 instances = 0;        // InstanceDesc[]
-  u64 meshes = 0;           // MeshDesc[]
-  u64 clusters = 0;         // ClusterDesc[]
-  u64 triangles = 0;        // u32[]: packed local indices
-  u64 output = 0;           // u32[width * height]: this view's region of the motion buffer
-  u64 moved = 0;            // MovedInstance[moved_count], sorted by instance; 0: none
-  u64 prev_pool = 0;        // f32[3 * pool_vertices]: the pool as last frame's inputs wrote it; 0
+  u64 pairs = 0;         // u32[2 * pair_count]: the scene's {instance, cluster} per pair; 0: none
+  u64 pair_entries = 0;  // u32[pair_count]: this view's pair -> visible entry; 0: the pair is it
+  u64 visible = 0;       // u32[2 * entries]: the visible list, read only without `pairs`
+  u64 instances = 0;     // InstanceDesc[]
+  u64 meshes = 0;        // MeshDesc[]
+  u64 clusters = 0;      // ClusterDesc[]
+  u64 triangles = 0;     // u32[]: packed local indices
+  u64 output = 0;        // u32[width * height]: this view's region of the motion buffer
+  u64 moved = 0;         // MovedInstance[moved_count], sorted by instance; 0: none
+  u64 prev_pool = 0;     // f32[3 * pool_vertices]: the pool as last frame's inputs wrote it; 0
   u32 width = 0;
   u32 height = 0;
   u32 instance_count = 0;

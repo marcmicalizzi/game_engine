@@ -89,10 +89,10 @@ scene::Reconstruction reconstruction_block(const Reconstruction& state) {
   scene::Reconstruction out;
   out.provider = reconstruction_provider_name(state.provider);
   // The ratio's name once there is one (roadmap R160); until then a frame is the output's size.
-  out.mode = state.internal_width == state.output_width &&
-                     state.internal_height == state.output_height
-                 ? "native"
-                 : "ratio";
+  out.mode =
+      state.internal_width == state.output_width && state.internal_height == state.output_height
+          ? "native"
+          : "ratio";
   out.inputs = state.inputs;
   out.internal_width = state.internal_width;
   out.internal_height = state.internal_height;
@@ -103,10 +103,10 @@ scene::Reconstruction reconstruction_block(const Reconstruction& state) {
 
 MeasurementKeys measurement_keys(const Reconstruction& state) {
   MeasurementKeys keys;
-  keys.open = "\"reconstruction\":" +
-              write_json(schema::to_json(reconstruction_block(state)),
-                         JsonWriteOptions{.pretty = false}) +
-              (state.native() ? ",\"gpu_ms\":" : ",\"gpu_ms\":null,\"reconstructed\":{\"gpu_ms\":");
+  keys.open =
+      "\"reconstruction\":" +
+      write_json(schema::to_json(reconstruction_block(state)), JsonWriteOptions{.pretty = false}) +
+      (state.native() ? ",\"gpu_ms\":" : ",\"gpu_ms\":null,\"reconstructed\":{\"gpu_ms\":");
   keys.close = state.native() ? "" : "}";
   return keys;
 }

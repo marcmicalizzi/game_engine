@@ -36,8 +36,8 @@ struct CaptureChannels {
   bool ids = false;
   bool depth = false;
   bool normals = false;
-  // The motion pass's vectors (renderer.md, "Sampling over time: the inputs"; gfx/motion.h): refused
-  // by a renderer without `renderer.reconstruction.inputs`, which writes none.
+  // The motion pass's vectors (renderer.md, "Sampling over time: the inputs"; gfx/motion.h):
+  // refused by a renderer without `renderer.reconstruction.inputs`, which writes none.
   bool motion = false;
 
   bool any_visibility() const noexcept { return ids || depth; }
@@ -58,10 +58,10 @@ struct CodeHistogram {
 struct CapturedFrame {
   u32 width = 0;
   u32 height = 0;
-  Vector<u8> color;      // RGBA8, rows tightly packed, top row first
-  Vector<u8> normals;    // RGB8, the world normal encoded n * 0.5 + 0.5
-  Vector<u32> ids;       // k_id_words per pixel: instance, cluster, triangle
-  Vector<f32> depth;     // reversed-Z clip depth; 0 where the scene did not cover the pixel
+  Vector<u8> color;    // RGBA8, rows tightly packed, top row first
+  Vector<u8> normals;  // RGB8, the world normal encoded n * 0.5 + 0.5
+  Vector<u32> ids;     // k_id_words per pixel: instance, cluster, triangle
+  Vector<f32> depth;   // reversed-Z clip depth; 0 where the scene did not cover the pixel
   // Two per pixel: the pixels the pixel's surface point moved across the picture since the frame
   // before, x right and y down, neither frame's sub-pixel offset in it (gfx/motion.h). Zero where
   // no view covers the pixel or the point was behind last frame's camera.
