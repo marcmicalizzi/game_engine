@@ -132,7 +132,11 @@ std::vector<std::string> base_args(const test::TempDir& tmp, const char* tag) {
           "--benchmark",
           tmp.file(std::string("bench-") + tag + ".jsonl"),
           "--tunable",
-          "renderer.flora.motion=true"};
+          "renderer.flora.motion=true",
+          // Every tile built in its event, so what a flight holds at its end is the scene's and
+          // not the build job's pace.
+          "--tunable",
+          "world.placements.max_builds=0"};
 }
 
 void add(std::vector<std::string>& args, std::initializer_list<const char*> more) {
@@ -148,11 +152,12 @@ TEST_CASE(
   const test::TempDir tmp("engine_view_sway_forms");
   REQUIRE(write_text(tmp.file("fern.flora.json"), k_fern));
   REQUIRE(write_text(tmp.file("scene.json"), k_scene));
-  // Low across the field from one side to the other, so tiles cross every ring both ways.
+  // Low across the field from one side to its middle, so tiles cross every ring and the flight
+  // ends with every ring full.
   REQUIRE(write_text(tmp.file("path.json"),
                      R"({"format":"engine.camera-path.v1","name":"across","fps":10,"keys":[)"
                      R"({"time":0,"position":[-120,3,4],"target":[0,0,0]},)"
-                     R"({"time":4,"position":[120,3,-4],"target":[200,0,0]}]})"));
+                     R"({"time":4,"position":[0,3,-4],"target":[120,0,0]}]})"));
 
   // **At rest**: a calm flight, the rule measuring the ferns at a mean wind. Every hand-over —
   // the mesh to its swaying cut, a swaying cut to the still one and back — draws the rest pose on

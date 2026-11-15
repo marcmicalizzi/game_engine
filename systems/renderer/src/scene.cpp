@@ -1976,11 +1976,10 @@ bool make_placement_forms(SceneDesc& resolved, Vector<SourceMesh>& sources,
     bool was_still = false;
     const std::string own_name = resolved.mesh_info[m].name;
     if (sways) {
-      sway = measure_sway(
-          pose, std::span<const Vec3>(mesh.vertices.data(), mesh.vertices.size()),
-          std::span<const geometry::ClusterFileMotionVertex>(own.motion_vertices.data(),
-                                                             own.motion_vertices.size()),
-          fit.scale, sway_rules);
+      sway = measure_sway(pose, std::span<const Vec3>(mesh.vertices.data(), mesh.vertices.size()),
+                          std::span<const geometry::ClusterFileMotionVertex>(
+                              own.motion_vertices.data(), own.motion_vertices.size()),
+                          fit.scale, sway_rules);
     }
     // `mesh` and `own` are not read past here: a form pushed onto `dags` and `sources` may move
     // them.
