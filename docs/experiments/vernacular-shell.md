@@ -90,12 +90,25 @@ grounding should bring a distribution, and one bay of 4.5 m is the commoner size
 | Lintel | 140 mm deep, bearing 150 mm each side | | **no source** |
 | Threshold | 20 mm | | the mesher's, to keep the reveal's foot out of the floor's plane; under the walker's 0.35 m step |
 
+## A thatch's courses, eave and ridge
+
+| Number | Value used (the example cot) | Range | Source |
+|---|---|---|---|
+| Courses up a slope | 30 cm apart (`course`): 13 on the cot's 4.1 m of slope above the eave | fixings 300 mm apart up the roof; most roofs have 10 to 20 courses; a course about 150 mm thick (combed wheat reed about 100) | 11 |
+| A course's step | 25 mm (`course_step_mm`) | | **not found**: a dressed coat is close to one plane, and no source read gives how far a course's butts stand. A choice, small |
+| The coat's depth | 30 cm (`thickness`) | 225 to 375 mm; long straw at least 350 new | 11, 13 |
+| The eave's cut | square to the slope (`eave_cut`) | cut with an eaves knife; the front edge straight and level; a water reed eave one coat thick and very even, a straw eave on an old roof thicker | 13, 14. The cut's **angle is not found**: square to the slope is the plane of the stems' butts, and is chosen |
+| Eave overhang by material | (the roof's `overhang`) | long straw 375 to 450 mm, combed wheat reed 300 to 375, water reed 375 to 450 | 11 |
+| The ridge | a block, 6 to 8 cm proud over the last 45 cm of slope | a block ridge cut straight, 75 to 100 mm thick; a wrap-over ridge 100 to 150 mm over its roll; a butts-up ridge covers about 900 mm down each side | 12, 13. The 45 cm skirt is **a choice** between them |
+| Ridge renewed | (see "Tint and age") | every 8 to 12 years | 13 |
+| Not modelled | | the brow course (about half a course thick); liggers on a long straw roof's eaves and barges, sparred about every 100 mm; a patterned ridge; netting | 11, 12, 13 |
+
 ## A cob wall's shape
 
 | Number | Value used (the example cot) | Range | Source |
 |---|---|---|---|
 | Thickness at the foot | 60 cm | about 600 mm | 10 |
-| Thickness at the plate | 45 cm (`top_thickness`) | "diminishes with height", perhaps no more than 300 mm at the wall plate | 9. The cot's wall is 2.1 m of cob, not two storeys of it, so it is taken three quarters of the way and not to 300: **a choice inside the source's range** |
+| Thickness at the plate | 52 cm (`top_thickness`) | "diminishes with height", perhaps no more than 300 mm at the wall plate | 9. The cot's wall is 2.1 m of cob, not two storeys of it, so it is taken an eighth of the way and not to 300: **a choice inside the source's range**. The first pictures had 45 cm, which read as a tent: 15 cm in 2.1 m is more lean than a cottage shows |
 | Which face leans | the outer | | **not found**: no source read gives a batter as a ratio or says which face; the outer is the common account and is chosen |
 | Plinth height | 30 cm (`plinth_top`) | 300 to 450 mm above ground (a pamphlet's snippet); footings of brick or rubble 150 to 1,200 mm high | 10; the pamphlet in a search snippet only |
 | Plinth proud of the cob | 4 cm (`plinth_proud`) | | **not found**: whether a plinth stands proud of, flush with or behind the face, and by how much. A choice |

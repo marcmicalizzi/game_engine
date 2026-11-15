@@ -61,7 +61,7 @@ the left of +x is -z, so an outline that runs **counter-clockwise seen from abov
 | `openings[]` | A span of a wall: its centre `at` along the wall from `from`, its clear `width`, its `sill` and `head` above the storey's floor, and a `kind`: `door` (a frame and a threshold), `window` (a frame, glazing bars or `mullions`, a sill board), `doorway` (a bare opening). **What hangs in it is stated or absent**: `leaf` (`none`, `ledged`), `leaves` (1, or a pair), `hinge_at_to`, `opens_right`, `leaf_open` (degrees from shut, 0 to 90) ([leaves and mullions](#leaves-and-mullions)). |
 | `rooms[]` | An `id`, a `storey`, a `kind`, a name and an outline on the walls' centre lines. |
 | `stairs[]` | A flight from a storey's floor to the next: its `foot`, the quarter turn it climbs along, its `width`, `risers` and `going`, the `well` it leaves in the floor above, and the rooms at its foot and head. |
-| `roofs[]` | A `form` (`gable`, `mono`; `hip` is refused until it is meshed) over a rectangle (the outer faces of the walls that carry it), the ridge's axis, the `eaves` height, the `pitch` as rise over run in permille, the `overhang` at the eaves and the `verge` at the gables, and the covering's `thickness`. |
+| `roofs[]` | A `form` (`gable`, `mono`; `hip` is refused until it is meshed) over a rectangle (the outer faces of the walls that carry it), the ridge's axis, the `eaves` height, the `pitch` as rise over run in permille, the `overhang` at the eaves and the `verge` at the gables, the covering's `thickness`, its own `role` (empty: `roles.roof`), and, stated or absent, a thatch's `course`, `course_step_mm` and `eave_cut`. |
 | `chimneys[]` | A stack's rectangle, its `base` and `top`, and a hearth's side, storey, width and head. |
 | `boxes[]` | Plain members: an axis-aligned box drawn with a surface's role (a hearth stone, a bench, a post), `solid` or not. |
 | `roles` | The material role of each of the nine surfaces. |
@@ -230,6 +230,20 @@ over the last 45 cm (a thatch is laid thickest and capped at its ridge); its nor
 of the segments each corner joins, and straight up at the ridge. A thin covering's profile is the
 eave's plumb face and the plane. The verge is the profile's cut end. UVs run **u up the slope and
 v along the ridge**, so a thatch's stems, drawn along its set's u, lie up the roof.
+
+**A thatch's courses and cut eave** are stated or absent (`Roof.course`, `course_step_mm`,
+`eave_cut`; only a soft coat takes them, and a roof that states neither is the mesh it was).
+`course` lays the slope between the eave and the ridge course in courses that far apart up it
+(the nearest whole number of equal ones, at most 40): each course's surface falls
+`course_step_mm` square to the slope from its own butts to the next course's, which stand as a
+step, so no course stands above the coat's depth; every course's face keeps its own plane, so
+the light shows the steps where a smoothed coat would wash them out. With courses the ridge
+course is a **block**: its skirt's lower edge is one cut step of 6 cm. `eave_cut` cuts the eave
+**square to the slope**: its face looks down and out over the coat's whole depth, the coat's
+top edge stays where the overhang puts it, and the underside starts in from that edge by the
+depth times the pitch over the slope's length (23 cm for 30 cm at fifty degrees; never nearer
+the wall than 6 cm). The verge's end is cut to the same face. What the mesh still lacks is on
+the grounding page: the brow course, liggers, a ridge's pattern, the sweep up to a chimney.
 
 **The underside** is the covering's own role for a soft coat (a thatch shows its straw between
 its battens) and the `boards` role for a thin one.
@@ -469,4 +483,5 @@ is listed there under `disabled_capabilities`. Everything else must still build 
 - The record drawn from a document (D37's other half).
 - Rounded arrises at an opening's reveal and at a re-entrant corner; a batter carried through
   a floor; a leaned top and end face on a wall that stands free (they are drawn plumb).
-- A thatch's courses and cut eave.
+- A thatch's brow course, liggers at the eaves and verges, a patterned ridge, and its sweep up
+  round a chimney.

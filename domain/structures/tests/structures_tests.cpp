@@ -601,8 +601,11 @@ TEST_CASE("structures: the same description is the same bytes") {
   // from 0x2b883646101c556a and 0x24f1154db8bc316e to 0xa26bd94ba21a24dd and 0x3689e3bab9b845ed.
   // Version 4 (2026-11-15): the example's walls batter, wander and round their corners over a
   // plinth that stands proud.
-  CHECK(mesh_hash(a) == 0x9449998706a7e6d6ull);
-  CHECK(mesh_hash(two) == 0x9d0069d08c45511cull);
+  // (0x9449998706a7e6d6 and 0x9d0069d08c45511c.) Version 5 (2026-11-15): the example's thatch
+  // is laid in courses with a cut eave, its batter is eased to seven eighths, and a leaf's
+  // boards each have their own grain.
+  CHECK(mesh_hash(a) == 0x0e7f2753a6e46f1cull);
+  CHECK(mesh_hash(two) == 0xbda81d7d48292935ull);
   // A description that states none of what versions 3 and 4 added is the mesh it was at
   // version 2, to the bit: the first cot's pin.
   Description plain = example_cot();
@@ -619,13 +622,15 @@ TEST_CASE("structures: the same description is the same bytes") {
   }
   plain.plinth_proud = 0;
   plain.arris = 0;
+  plain.roofs[0].course = 0;
+  plain.roofs[0].eave_cut = false;
   Solved flat;
   solved(plain, MeshScope::whole, flat);
   CHECK(mesh_hash(flat) == 0x2b883646101c556aull);
 }
 
 TEST_CASE("structures: a cob wall batters, wanders and rounds its corners over a proud plinth") {
-  // structures.md, "Faces that are not planes". The cot's walls are 60 cm at the foot and 45 at
+  // structures.md, "Faces that are not planes". The cot's walls are 60 cm at the foot and 52 at
   // the plate, wander 12 mm, round their corners to 12 cm, on a plinth 4 cm proud to 30 cm up.
   const Description cot = example_cot();
   Solved s;
@@ -639,8 +644,28 @@ TEST_CASE("structures: a cob wall batters, wanders and rounds its corners over a
   }
   CHECK(plinth_lo == doctest::Approx(-0.34).epsilon(1e-5));  // the wall's face and 4 cm
   CHECK(foot_lo == doctest::Approx(-0.30).epsilon(1e-5));    // the cob starts on its plane
-  CHECK(plate_lo > -0.30f + 0.15f - 0.0125f);  // leaned in 15 cm, less at most the wander
-  CHECK(plate_lo < -0.30f + 0.15f + 0.001f);
+  CHECK(plate_lo > -0.30f + 0.08f - 0.0125f);  // leaned in 8 cm, less at most the wander
+  CHECK(plate_lo < -0.30f + 0.08f + 0.001f);
+  // The thatch is laid in courses and its eave is cut: more of the roof than the same coat as
+  // one plane with a rolled eave, the cut eave's foot in from the eave's edge, and no course
+  // standing above the coat's depth.
+  Description smooth = cot;
+  smooth.roofs[0].course = 0;
+  smooth.roofs[0].eave_cut = false;
+  Solved rolled;
+  solved(smooth, MeshScope::whole, rolled);
+  CHECK(triangles(s, Surface::roof) > triangles(rolled, Surface::roof) + 40);
+  f32 roof_top = -1e9f, rolled_top = -1e9f;
+  for (const Vec3 p : s.parts[static_cast<u32>(Surface::roof)].positions)
+    roof_top = std::max(roof_top, p.y);
+  for (const Vec3 p : rolled.parts[static_cast<u32>(Surface::roof)].positions)
+    rolled_top = std::max(rolled_top, p.y);
+  CHECK(roof_top == doctest::Approx(rolled_top).epsilon(1e-6));  // the ridge is where it was
+  Description steep = cot;
+  steep.roofs[0].thickness = 10;
+  std::string refused;
+  CHECK(!validate(steep, refused));
+  CHECK(refused.find("course") != std::string::npos);
   // The shell is closed round a corner at every height: from outside to inside, off the
   // diagonal, a line meets the outer skin once (the plinth, the arc, the leaned face) and an
   // inner face once.
