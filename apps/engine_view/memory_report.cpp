@@ -10,6 +10,7 @@
 #include <core/time/time.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/device_memory.h>
+#include <systems/renderer/gpu_scene.h>
 
 #include <cmath>
 #include <cstdio>
@@ -392,12 +393,45 @@ void MemoryReport::enable() noexcept {
   gfx::set_large_buffer_log(true);
 }
 
-void MemoryReport::take(const char* when, const gfx::Device* device) {
+// **What the place holds, by kind** (T138; renderer.md, "What a place holds"): the scene's own
+// count of the device bytes it holds where the eye stands, beside the walk's owners, so a budget's
+// pools can be read off one snapshot.
+static JsonValue place_block(const char* when, const renderer::GpuScene& scene) {
+  const renderer::GpuScene::PlaceBytes p = scene.place_bytes();
+  JsonValue out = JsonValue::object();
+  out.set("geometry_mib", mib(p.geometry));
+  out.set("companions_mib", mib(p.companions));
+  out.set("micromaps_mib", mib(p.micromaps));
+  out.set("materials_mib", mib(p.materials));
+  out.set("textures_mib", mib(p.textures));
+  out.set("structures_mib", mib(p.structures));
+  out.set("tiles_mib", mib(p.tiles));
+  out.set("frame_mib", mib(p.frame));
+  out.set("pages_mib", mib(p.pages));
+  out.set("device_total_mib", mib(p.device_total()));
+  out.set("host_geometry_mib", mib(p.host_geometry));
+  ENGINE_LOG_INFO(log_view_memory, "what the place holds", log::field("when", when),
+                  log::field("geometry_mib", mib(p.geometry)),
+                  log::field("companions_mib", mib(p.companions)),
+                  log::field("micromaps_mib", mib(p.micromaps)),
+                  log::field("materials_mib", mib(p.materials)),
+                  log::field("textures_mib", mib(p.textures)),
+                  log::field("structures_mib", mib(p.structures)),
+                  log::field("tiles_mib", mib(p.tiles)), log::field("frame_mib", mib(p.frame)),
+                  log::field("pages_mib", mib(p.pages)),
+                  log::field("device_total_mib", mib(p.device_total())),
+                  log::field("host_geometry_mib", mib(p.host_geometry)));
+  return out;
+}
+
+void MemoryReport::take(const char* when, const gfx::Device* device,
+                        const renderer::GpuScene* scene) {
   if (!on_) return;
   const bool first = std::strcmp(when, "first_frame") == 0;
   JsonValue& slot = first ? first_frame_ : exit_;
   if (!slot.is_null()) return;
   slot = snapshot(when, device);
+  if (scene != nullptr) slot.set("place", place_block(when, *scene));
 }
 
 JsonValue MemoryReport::block() const {

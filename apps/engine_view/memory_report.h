@@ -22,6 +22,9 @@
 namespace engine::gfx {
 class Device;
 }
+namespace engine::renderer {
+class GpuScene;
+}
 
 namespace engine::view {
 
@@ -31,9 +34,11 @@ class MemoryReport {
   void enable() noexcept;
   bool on() const noexcept { return on_; }
   // A snapshot named `when` ("first_frame", "exit"), logged as one line and kept for `block`. The
-  // device may be null (no device yet, or none any more). Does nothing when off or when a snapshot
-  // of that name was already taken.
-  void take(const char* when, const gfx::Device* device);
+  // device may be null (no device yet, or none any more). With a scene, the snapshot carries
+  // `place`: what that scene holds where the eye stands, by kind (`GpuScene::place_bytes`, T138),
+  // and one more log line. Does nothing when off or when a snapshot of that name was already taken.
+  void take(const char* when, const gfx::Device* device,
+            const renderer::GpuScene* scene = nullptr);
   // `{ "first_frame": {...}, "exit": {...} }` as taken so far, or null when off.
   JsonValue block() const;
 

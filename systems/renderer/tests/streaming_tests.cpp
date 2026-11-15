@@ -215,7 +215,8 @@ struct Harness {
   // non-null serves the pages from a `SlowPageSource` of `latency` ticks instead, over the host
   // streams, which it keeps.
   // `release` gives back the streams nothing reads after the upload (`release_uploaded_streams`)
-  // between the scene and the renderer, where engine-view does.
+  // between the scene and the renderer, where engine-view does, keeping what `readers` reads.
+  HostReaders readers = HostReaders::collision;
   bool build(const SceneDesc& desc, const RenderSettings& settings, jobs::JobSystem* jobs = nullptr,
              SlowPageSource* slow = nullptr, u32 latency = 0, bool release = false) {
     std::string error;
@@ -249,7 +250,7 @@ struct Harness {
       rd.page_source = slow;
       from_file = true;
     }
-    if (release) released = release_uploaded_streams(data);
+    if (release) released = release_uploaded_streams(data, readers);
     REQUIRE_MESSAGE(renderer.create(device, scene, resolved, rd, &error), "renderer: " << error);
     ready = true;
     return true;
@@ -705,6 +706,56 @@ TEST_CASE("streaming: a whole scene draws the same bytes after its uploaded stre
   CHECK(shots[0].color == shots[1].color);
   CHECK(shots[0].ids == shots[1].ids);
   MESSAGE("released " << released.released << " bytes; " << shots[0].covered << " pixels covered");
+}
+
+TEST_CASE("streaming: a whole scene draws the same bytes after its float geometry goes too") {
+  // **The host copy with no collision to read it** (T138; renderer.md, "The scene's host copy after
+  // the upload"). With `HostReaders::none` the float positions, the triangles and the source
+  // indices go as well, before the renderer is made: what the renderer measures from them (the
+  // meshes that face the sky, which the cascades' cut reads) the GPU scene measured at its upload,
+  // so the cascaded picture is the same bytes and the measurement the same words.
+  RenderSettings settings;
+  settings.raster = RasterMode::Hardware;
+  settings.shadows = ShadowMode::Cascaded;
+  Harness kept;
+  if (!kept.build(heightfield_desc(false), settings)) {
+    MESSAGE(kept.skip);
+    return;
+  }
+  Harness released;
+  released.readers = HostReaders::none;
+  REQUIRE(released.build(heightfield_desc(false), settings, nullptr, nullptr, 0, true));
+  const geometry::ClusterMesh& mesh = released.data.lod.mesh;
+  CHECK(mesh.vertices.empty());
+  CHECK(mesh.triangles.empty());
+  CHECK(mesh.vertex_source.empty());
+  CHECK(mesh.clusters.size() == kept.data.lod.mesh.clusters.size());
+  const u64 floats = u64{kept.data.lod.mesh.vertices.size()} * sizeof(Vec3) +
+                     u64{kept.data.lod.mesh.triangles.size()} * sizeof(u32);
+  CHECK(released.released > floats);
+  // Measured before the release, so the same as a scene that kept everything.
+  CHECK(released.scene.sky_facing_count() == kept.scene.sky_facing_count());
+  CHECK(released.scene.sky_facing().size() == kept.scene.sky_facing().size());
+  for (u32 m = 0; m < kept.scene.sky_facing().size(); ++m)
+    CHECK(released.scene.sky_facing()[m] == kept.scene.sky_facing()[m]);
+  std::string error;
+  CapturedFrame shots[2];
+  Harness* harnesses[2] = {&kept, &released};
+  for (u32 h = 0; h < 2; ++h) {
+    for (u32 f = 0; f < 4; ++f)
+      REQUIRE_MESSAGE(
+          harnesses[h]->renderer.render_offscreen(frame_at(harnesses[h]->data, 3.0f, f), &error),
+          error);
+    REQUIRE_MESSAGE(harnesses[h]->renderer.capture(frame_at(harnesses[h]->data, 3.0f, 4),
+                                                   {.color = true, .ids = true}, shots[h], &error),
+                    error);
+  }
+  CHECK(shots[0].covered > 0);
+  CHECK(shots[0].covered == shots[1].covered);
+  CHECK(shots[0].color == shots[1].color);
+  CHECK(shots[0].ids == shots[1].ids);
+  MESSAGE("released " << released.released << " bytes (" << floats << " of float geometry); "
+                      << kept.scene.sky_facing_count() << " meshes face the sky");
 }
 
 TEST_CASE("streaming: a fly-in is coarser at every step and never has a hole") {

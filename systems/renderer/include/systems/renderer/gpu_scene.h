@@ -37,6 +37,7 @@
 #include <domain/gfx/rhi.h>
 #include <domain/gfx/shader_library.h>
 #include <domain/gfx/visibility_resolve.h>
+#include <systems/renderer/crown_priors.h>
 #include <systems/renderer/flora_motion.h>
 #include <systems/renderer/flora_poser.h>
 #include <systems/renderer/pair_account.h>
@@ -504,6 +505,41 @@ class GpuScene {
   }
   const gfx::MicromapStats& micromap_stats() const noexcept { return micromaps_.stats; }
   u64 micromap_bytes() const noexcept { return micromaps_.resident_bytes(); }
+  // **What the renderer reads from the host's float positions, measured at the upload** (T138;
+  // renderer.md, "The scene's host copy after the upload"), so that a host may give the positions
+  // and the triangles back once `create` returns and every renderer made over the scene after that
+  // still has them: the crowns' priors (`crown_priors.h`; built when the settings' indirect light
+  // reads them, `crown_priors_built`) and the meshes that face the sky (`sky_facing_meshes`, a word
+  // a mesh, always).
+  bool crown_priors_built() const noexcept { return crown_priors_built_; }
+  const CrownPriorTable& crown_priors() const noexcept { return crown_priors_; }
+  std::span<const u32> sky_facing() const noexcept {
+    return std::span<const u32>(sky_facing_.data(), sky_facing_.size());
+  }
+  u32 sky_facing_count() const noexcept { return sky_facing_count_; }
+  // **What the place holds resident, by kind** (T138; docs/experiments/streaming-by-travel.md, row
+  // a; renderer.md, "What a place holds"): the device bytes of every buffer this scene owns at the
+  // moment of asking, summed into the kinds a budget would have to hold, and the host bytes of the
+  // scene's merged streams still kept. Counters only: nothing here changes what is held. A scene
+  // read whole holds the same at every place but for `structures`, `frame` and `tiles`; a world's
+  // `tiles` follow the eye.
+  struct PlaceBytes {
+    u64 geometry = 0;    // the load's meshes: cluster and LOD tables, positions, attributes, triangles
+    u64 companions = 0;  // beside them: 8-bit indices, skin, morphs, motion, coverage, shadow proxy
+    u64 micromaps = 0;   // the opacity micromaps' resident bytes
+    u64 materials = 0;   // the material table and the material of every cluster
+    u64 textures = 0;    // the materials' images on the device
+    u64 structures = 0;  // the traced chain's sets, bottom and top levels, scratch, cache, static
+    u64 tiles = 0;       // the world's tiles: the mesh room, the terrain's rings and fields, staging
+    u64 frame = 0;       // sized by the frame or the instances: visible lists, pair tables, pools
+    u64 pages = 0;       // a paged scene's pool and its tables
+    u64 host_geometry = 0;  // the merged streams the host still keeps (`SceneData::lod.mesh`)
+    u64 device_total() const noexcept {
+      return geometry + companions + micromaps + materials + textures + structures + tiles + frame +
+             pages;
+    }
+  };
+  PlaceBytes place_bytes() const noexcept;
   // A mesh of the scene carries coverage errors (geometry.md, "Two errors"): `lod_coverage` holds
   // them and `fade` the cross-fade's tables.
   bool has_coverage() const noexcept { return has_coverage_; }
@@ -1783,7 +1819,11 @@ class GpuScene {
   FloraStats flora_stats_;
   bool flora_moving_ = false;                // any part of any tree off its rest pose this frame
   const char* flora_wind_source_ = nullptr;  // the last frame's: "frame", "ground", "tunables"
-  Vector<f32> flora_padding_;                // per mesh, the sway's bound; -1 until measured
+  Vector<f32> flora_padding_;                // per mesh, the sway's bound, measured at the upload
+  CrownPriorTable crown_priors_;             // T138: measured at `create`, before any release
+  bool crown_priors_built_ = false;
+  Vector<u32> sky_facing_;                   // T138: `sky_facing_meshes` at `create`
+  u32 sky_facing_count_ = 0;
   // **The tail's trees** (renderer.md, "Streamed trees sway"). A record is a deform entry and a run
   // of the pose table, made for one mesh and reused by the next tree of that mesh to arrive: its
   // entry never changes once written, so a frame in flight that still draws the tree that left

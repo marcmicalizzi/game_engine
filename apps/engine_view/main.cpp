@@ -870,6 +870,12 @@ renderer::FrameClock frames_clock(const Options& options, const renderer::SceneD
   if (!(clock.world_rate > 0.0)) clock.world_rate = 0.0;
   return clock;
 }
+// Who reads the scene's host geometry after the upload (T138; renderer.md, "The scene's host copy
+// after the upload"): the walker's collision in a session, and `--collision-draw`'s; else nobody.
+renderer::HostReaders host_readers(const Options& options, bool walking) {
+  return walking || options.collision_draw ? renderer::HostReaders::collision
+                                           : renderer::HostReaders::none;
+}
 // What the command line changes about a loaded scene for looking at it: `--sky-disc-scale` on a
 // scene with a sky (scene.schema `Sky.disc_scale`; renderer.md, "The sky").
 void look_overrides(const Options& options, renderer::SceneData& scene) {
@@ -3216,8 +3222,10 @@ int run_offscreen(Options& options, Interactive& interactive) {
                         log::field("reason", why));
       }
     }
-    // Both scenes are uploaded: what nothing reads again goes (T129), unless pages copy from it.
-    if (!resolved.stream || page_source.valid()) renderer::release_uploaded_streams(scene_data);
+    // Both scenes are uploaded: what nothing reads again goes (T129), unless pages copy from it;
+    // the float geometry too unless a walker or the collision draw will cut proxies from it (T138).
+    if (!resolved.stream || page_source.valid())
+      renderer::release_uploaded_streams(scene_data, host_readers(options, interactive.on));
     renderer::SceneRenderer::Desc renderer_desc;
     renderer_desc.page_source = page_source.valid() ? &page_source : nullptr;
     renderer_desc.width = options.width;
@@ -3465,7 +3473,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
         take_folded(view_renderer, folded, pending, records);
         startup.frame(readiness());
         if (view::memory_report().on() && !records.empty())
-          view::memory_report().take("first_frame", &device);
+          view::memory_report().take("first_frame", &device, &scene);
         const i64 ready = time::monotonic_ns();
         const u64 before_tick = session.tick().value;
         const u64 to = before_tick + ticks_per_frame < end ? before_tick + ticks_per_frame : end;
@@ -4063,7 +4071,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
       summary.startup = startup.finish(&why);
       if (!why.empty()) std::fprintf(stderr, "engine-view: --startup-trace: %s\n", why.c_str());
     }
-    view::memory_report().take("exit", &device);
+    view::memory_report().take("exit", &device, &scene);
     summary.memory = view::memory_report().block();
     summary_line = write_json(schema::to_json(summary), JsonWriteOptions{.pretty = false});
     if (!options.benchmark.empty()) {
@@ -6192,8 +6200,10 @@ int run_view(int argc, char** argv) {
                         log::field("reason", why));
       }
     }
-    // The scene is uploaded: what nothing reads again goes (T129), unless pages copy from it.
-    if (!resolved.stream || page_source.valid()) renderer::release_uploaded_streams(scene_data);
+    // The scene is uploaded: what nothing reads again goes (T129), unless pages copy from it; the
+    // float geometry too unless a walker or the collision draw will cut proxies from it (T138).
+    if (!resolved.stream || page_source.valid())
+      renderer::release_uploaded_streams(scene_data, host_readers(options, interactive.on));
     renderer::SceneRenderer::Desc renderer_desc;
     renderer_desc.page_source = page_source.valid() ? &page_source : nullptr;
     renderer_desc.width = swapchain.extent().width;
@@ -6994,7 +7004,7 @@ int run_view(int argc, char** argv) {
                            (ground_now->chunks_built == 0 && ground_now->layout_lag_m == 0.0);
         startup.frame(r);
         if (r.frame_done && view::memory_report().on())
-          view::memory_report().take("first_frame", &device);
+          view::memory_report().take("first_frame", &device, &scene);
         if (load_controllable_ns == 0 && startup.reached("player_controllable"))
           load_controllable_ns = time::monotonic_ns();
         if (startup.reached(view::k_startup_milestones[load_ready_rung])) {
@@ -7386,7 +7396,7 @@ int run_view(int argc, char** argv) {
     block.set("first_game_tick", game_first_tick());
     loading_text = write_json(block, JsonWriteOptions{.pretty = false});
   }
-  view::memory_report().take("exit", &device);  // a window logs its two lines (memory_report.h)
+  view::memory_report().take("exit", &device, &scene);  // a window logs its lines (memory_report.h)
   const std::string memory_text =               // and its summary line carries the block (null off)
       write_json(view::memory_report().block(), JsonWriteOptions{.pretty = false});
   // `--startup-trace` in a window: the same block an offscreen run's summary carries (null off).

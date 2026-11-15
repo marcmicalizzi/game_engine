@@ -21,6 +21,7 @@
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/rt_capacity.h>
+#include <systems/renderer/shadow_cascades.h>
 #include <systems/renderer/terrain_materials.h>
 #include <systems/renderer/water_refract.h>
 
@@ -899,6 +900,14 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
     destroy();
     return false;
   }
+  // The two things a renderer made over this scene measures from the host's float positions and
+  // triangles, measured now (T138), so a host may release those once this returns: the crowns'
+  // priors where the indirect light will read them, and the meshes that face the sky.
+  if (resolved.gi_mode != GiMode::Off && resolved.gi_crown_prior) {
+    build_crown_priors(data, crown_priors_);
+    crown_priors_built_ = true;
+  }
+  sky_facing_count_ = sky_facing_meshes(data.lod.mesh, data.parts, sky_facing_);
   // The sand's detail: the terrain's ground, asked for the wind the ripples lie across, and the
   // time its surface stands at — the scene's own until a moving terrain's motion moves it
   // (renderer.md, "The sand close up").
@@ -1191,17 +1200,9 @@ f32 GpuScene::flora_padding_of(u32 mesh) {
   const u32 m = source_mesh < flora_meshes_.size() && flora_meshes_[source_mesh].part_count() > 0
                     ? source_mesh
                     : mesh;
-  if (flora_padding_[m] < 0.0f) {
-    const SourceMesh& source = data_->sources[m];
-    const geometry::ClusterMeshPart& part = data_->parts[m];
-    flora_padding_[m] = flora_bounds_padding(
-        flora_meshes_[m],
-        std::span<const Vec3>(data_->lod.mesh.vertices.data() + part.first_vertex,
-                              source.motion_vertices.size()),
-        std::span<const geometry::ClusterFileMotionVertex>(source.motion_vertices.data(),
-                                                           source.motion_vertices.size()));
-  }
-  return flora_padding_[m];
+  // Measured for every mesh at the upload (`upload_geometry`), so nothing here reads the host's
+  // float positions, which a host that uploads once has released by the time a tail tree appears.
+  return m < flora_padding_.size() ? flora_padding_[m] : 0.0f;
 }
 
 FloraInstance GpuScene::flora_instance(u32 instance, u32 mesh, u32 first_part,
@@ -2401,7 +2402,20 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
     }
     flora_instances_.clear();
     flora_parts_ = 0;
-    flora_padding_.assign(flora_meshes_.size(), -1.0f);  // computed for a mesh once
+    // Every mesh's sway bound, measured here from the float positions (T138): a tail tree may first
+    // appear long after the upload, and by then a host that uploads once has given the positions
+    // back (`release_uploaded_streams`, renderer.md "The scene's host copy after the upload").
+    flora_padding_.assign(flora_meshes_.size(), 0.0f);
+    for (u32 m = 0; m < flora_meshes_.size() && m < data_->sources.size(); ++m) {
+      if (flora_meshes_[m].part_count() == 0) continue;
+      const SourceMesh& source = data_->sources[m];
+      flora_padding_[m] = flora_bounds_padding(
+          flora_meshes_[m],
+          std::span<const Vec3>(lod.mesh.vertices.data() + data_->parts[m].first_vertex,
+                                source.motion_vertices.size()),
+          std::span<const geometry::ClusterFileMotionVertex>(source.motion_vertices.data(),
+                                                             source.motion_vertices.size()));
+    }
     // **A streamed world's trees sway too** (renderer.md, "Streamed trees sway"): when a mesh the
     // tail may name carries the motion contract, the tail's trees get records of their own past
     // the load's, made and given back as their tiles come and go.
@@ -6456,6 +6470,10 @@ void GpuScene::destroy() noexcept {
   flora_moving_ = false;
   flora_wind_source_ = nullptr;
   flora_padding_.clear();
+  crown_priors_ = CrownPriorTable{};
+  crown_priors_built_ = false;
+  sky_facing_.clear();
+  sky_facing_count_ = 0;
   tail_trees_.clear();
   tail_tree_free_.clear();
   tail_tree_of_slot_.clear();
