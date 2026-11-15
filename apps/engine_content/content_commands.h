@@ -90,6 +90,11 @@ int routes_command(int argc, char** argv);
 // approaches as ground edits and the footprints (bridges_commands.cpp, docs/subsystems/bridges.md);
 // present when this build has the bridges and routes capabilities.
 int bridges_command(int argc, char** argv);
+
+// The rural filler as a tool: a plot, a household and a seed to a house's `.structure.json`, its
+// plan as text and its walk (dwellings_commands.cpp, docs/subsystems/dwellings.md); present when
+// this build has the dwellings capability.
+int dwelling_command(int argc, char** argv);
 // A scene's village as its plan, its treads' mask regions and a camera path into one of its houses
 // (village_commands.cpp, docs/subsystems/village.md); present when this build has the village
 // capability.

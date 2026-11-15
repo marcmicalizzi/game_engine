@@ -86,6 +86,7 @@ One page per module, created in the same change that creates the module. Templat
 | routes | domain | [routes.md](routes.md) |
 | bridges | domain | [bridges.md](bridges.md) |
 | structures | domain | [structures.md](structures.md) |
+| dwellings | domain | [dwellings.md](dwellings.md) |
 | village | domain | [village.md](village.md) |
 | renderer | systems | [renderer.md](renderer.md) |
 | animation | systems | [animation.md](animation.md) |

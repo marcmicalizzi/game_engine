@@ -7,6 +7,7 @@
 #include "detail.h"
 
 #include <core/hash/hash.h>
+#include <domain/dwellings/describe.h>
 #include <domain/structures/structures.h>
 
 #include <algorithm>
@@ -417,40 +418,24 @@ bool route_through(const structure::Description& d, const Walk& walk, const Walk
 // **The house filler** (the structures capability's rural filler when it is linked; until then the
 // one-room cot of `structures::example_cot`, sized to the plot by the seed).
 bool describe(const HouseAsk& ask, structure::Description& d, std::string& why) {
-  (void)why;
-  const i32 wall = 60;
-  // Inside 5 to 8 m by 3.8 to 4.6 m (the grounding's peasant houses), no wider than the frontage
-  // holds with half a metre each side.
-  const i32 widths[4] = {500, 600, 700, 800};
-  const i32 depths[3] = {380, 420, 460};
-  i32 width = widths[mix64(ask.seed) % 4];
-  const i32 depth = depths[mix64(ask.seed ^ 0x9E3779B97F4A7C15ull) % 3];
-  const i32 most = static_cast<i32>((ask.frontage_mm - 1000) / 10) - 2 * wall;
-  width = std::min(width, most);
-  if (width < 400) {
-    why = "the frontage holds no house";
-    return false;
-  }
-  d = structures::example_cot(width, depth, wall);
-  // **Walls a walker can come in under.** The example's 2.1 m walls and 45 cm eaves put the
-  // thatch's edge 1.56 m over the floor, and the collision's proxy keeps it: a 1.8 m walker is
-  // stopped 0.72 m short of the door (the first walk of this row). 2.4 m walls and 30 cm eaves
-  // stand the edge at 2.04 m.
-  d.storeys[0].height = 240;
-  for (structure::Roof& roof : d.roofs) {
-    roof.eaves = 240;
-    roof.overhang = 30;
-  }
-  for (structure::Chimney& chimney : d.chimneys)
-    chimney.top += 30;
-  // And a door a walker fits: plan 14's 2.0 m and a little, where the example's is 1.90 m.
-  for (structure::Opening& o : d.openings)
-    if (o.kind == structure::OpeningKind::door) o.head = 210;
-  // No seed in the provenance: two plots given the same cot must be one description, so that they
-  // share one mesh.
-  d.provenance.filler = "village/cot";
-  d.provenance.version = k_village_version;
-  return true;
+  // **The rural filler** (dwellings.md): a house for the rectangle the plot leaves it — the
+  // frontage less half a metre each side, the depth behind the setback — and a household drawn
+  // from the plot's seed: three to eight persons, and the means that give the storeys asked (the
+  // filler's two-storey types are its `means` 2; one storey draws 0 or 1). A plot the household's
+  // house does not fit gets the filler's smaller type, which is the filler's rule.
+  dwellings::RuralPlot plot;
+  plot.frontage_cm = static_cast<i32>((ask.frontage_mm - 1000) / 10);
+  plot.depth_cm = static_cast<i32>((ask.depth_mm - ask.setback_mm) / 10);
+  dwellings::Household household;
+  household.persons = static_cast<u8>(3 + mix64(ask.seed) % 6);
+  household.means =
+      ask.storeys >= 2 ? u8{2} : static_cast<u8>(mix64(ask.seed ^ 0x9E3779B97F4A7C15ull) % 2);
+  const dwellings::RuralStyle style;
+  // The name carries no plot: two plots given one household and one frontage are one description,
+  // so they share one mesh, when the filler's own seed is the household's and not the plot's.
+  const u64 seed = hash_combine(hash_combine(household.persons, household.means),
+                                static_cast<u64>(plot.frontage_cm));
+  return dwellings::fill_rural(plot, household, style, seed, "house", d, &why);
 }
 
 bool house_for(void*, const HouseAsk& ask, House& out, std::string& why) {
@@ -508,12 +493,12 @@ bool house_for(void*, const HouseAsk& ask, House& out, std::string& why) {
     const bool eaves_side = roof.ridge_along_x ? out.out_z != 0 : out.out_x != 0;
     const f64 edge = (static_cast<f64>(roof.eaves) -
                       static_cast<f64>(roof.overhang) * static_cast<f64>(roof.pitch) / 1000.0) / 100.0;
-    if (eaves_side && edge < k_min_head_m + 0.05) {
+    if (eaves_side && edge < k_min_head_m - 0.03) {
       char text[200];
       std::snprintf(text, sizeof(text),
                     "the eaves over the entrance stand %.2f m over the floor at their edge: the "
                     "walker needs %.2f m to come in under them",
-                    edge, k_min_head_m + 0.05);
+                    edge, k_min_head_m - 0.03);
       why = text;
       return false;
     }

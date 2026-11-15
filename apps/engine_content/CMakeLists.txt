@@ -114,6 +114,11 @@ endif()
 if(TARGET engine::village)
   list(APPEND _content_deps village village_schemas schema schemas scene_gen)
 endif()
+# `dwelling` the same way, with the dwellings capability (docs/subsystems/dwellings.md): the rural
+# filler as a tool, a plot, a household and a seed to a `.structure.json`, its plan and its walk.
+if(TARGET engine::dwellings)
+  list(APPEND _content_deps dwellings structures structures_schemas)
+endif()
 # `cave-plan` the same way, with the caves capability (docs/subsystems/caves.md): a network's
 # plan as a survey. Linked, it is also what makes `build` take a `.cavecell.json`.
 if(TARGET engine::caves)
@@ -146,7 +151,7 @@ engine_app(NAME engine_content OUTPUT engine-content
           normal_cases.cpp clip_commands.cpp terrain_commands.cpp tileset_commands.cpp masks_check_commands.cpp npc_commands.cpp
           flora_commands.cpp rocks_commands.cpp channels_commands.cpp cover_commands.cpp soil_commands.cpp morphs.cpp
           landform_commands.cpp matgen_commands.cpp routes_commands.cpp caves_commands.cpp
-          bridges_commands.cpp ground_commands.cpp falls_commands.cpp static_kit_commands.cpp
+          bridges_commands.cpp dwellings_commands.cpp ground_commands.cpp falls_commands.cpp static_kit_commands.cpp
           village_commands.cpp
   DEPS ${_content_deps}
   E2E_TESTS ${_content_tests} tests/soil_tests.cpp tests/morphs_tests.cpp tests/matgen_tests.cpp)
@@ -257,6 +262,9 @@ if(TARGET engine::bridges AND TARGET engine::routes)
 endif()
 if(TARGET engine::village)
   target_compile_definitions(engine_engine_content PRIVATE ENGINE_CONTENT_VILLAGE=1)
+endif()
+if(TARGET engine::dwellings)
+  target_compile_definitions(engine_engine_content PRIVATE ENGINE_CONTENT_DWELLINGS=1)
 endif()
 if(TARGET engine::caves)
   target_compile_definitions(engine_engine_content PRIVATE ENGINE_CONTENT_CAVES=1)
