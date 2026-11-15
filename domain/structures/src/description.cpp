@@ -263,6 +263,37 @@ bool validate(const Description& d, std::string& why) {
           return false;
         }
       }
+    // A way out is not under an eave lower than its own head: outside the wall over the
+    // opening's middle, just clear of the face and at the eave's edge, the roof's underside
+    // stands at least as high (a steep roof's overhang drops fast: a 50 degree thatch 45 cm out
+    // hangs 54 cm under its wall plate).
+    const bool outside_left = w.a < 0, outside_right = w.b < 0;
+    if (o.kind != structure::OpeningKind::window && w.kind == structure::WallKind::exterior &&
+        (outside_left || outside_right)) {
+      for (const structure::Roof& r : d.roofs) {
+        for (const f64 out : {5.0, static_cast<f64>(r.overhang) - 1.0}) {
+          const f64 q = (outside_left ? 1.0 : -1.0) * (half + out);
+          const f64 x = static_cast<f64>(w.from[0]) + ux * static_cast<f64>(o.at) + uz * q;
+          const f64 z = static_cast<f64>(w.from[1]) + uz * static_cast<f64>(o.at) - ux * q;
+          const f64 along = r.ridge_along_x ? x : z, across = r.ridge_along_x ? z : x;
+          const f64 along_lo = static_cast<f64>(r.ridge_along_x ? r.rect[0] : r.rect[1]) - r.verge;
+          const f64 along_hi = static_cast<f64>(r.ridge_along_x ? r.rect[2] : r.rect[3]) + r.verge;
+          const f64 cross_lo =
+              static_cast<f64>(r.ridge_along_x ? r.rect[1] : r.rect[0]) - r.overhang;
+          const f64 cross_hi =
+              static_cast<f64>(r.ridge_along_x ? r.rect[3] : r.rect[2]) + r.overhang;
+          if (along < along_lo || along > along_hi || across < cross_lo || across > cross_hi)
+            continue;
+          const f64 under = detail::roof_underside(r, x, z);
+          if (under < head) {
+            why = name + ": the roof's eave hangs " +
+                  num(static_cast<i64>(under) - d.storeys[w.storey].elevation) +
+                  " cm over the floor outside it, under its head, " + num(o.head) + " cm";
+            return false;
+          }
+        }
+      }
+    }
   }
   bool wells = false;
   for (u32 i = 0; i < d.stairs.size(); ++i) {
@@ -464,7 +495,7 @@ structure::Description example_cot(i32 width, i32 depth, i32 wall) {
   }
   structure::Storey storey;
   storey.elevation = 0;
-  storey.height = 210;
+  storey.height = 240;  // with the overhang below, the eave's edge clears the door's head
   storey.floor_thickness = 15;
   d.storeys.push_back(storey);
   structure::Room room;
@@ -505,7 +536,7 @@ structure::Description example_cot(i32 width, i32 depth, i32 wall) {
   roof.ridge_along_x = true;
   roof.eaves = storey.height;
   roof.pitch = 1192;  // fifty degrees: a thatch's
-  roof.overhang = 45;
+  roof.overhang = 35;
   roof.verge = 25;
   roof.thickness = 30;
   d.roofs.push_back(roof);

@@ -88,7 +88,11 @@ corners that does not cross itself, every coordinate within ±15 m (so UVs in me
 (`bulge` 0), naming rooms that exist; openings 30 to 400 cm wide with a head at least 20 cm over
 the sill, **15 cm of wall kept between an opening and its wall's end (past the half thickness the
 join takes) and between two openings**, and the head 5 cm under the wall's top at both jambs on
-both faces; roofs over a non-empty rectangle with a pitch of 50 to 4000 permille; a straight stair
+both faces; **a door or a doorway to the outside not under an eave lower than its own head**
+(outside the wall over the opening's middle, the roof's underside stands at least as high as the
+head: a steep roof's overhang drops fast, and the first cot's 45 cm eave at fifty degrees hung at
+1.56 m over a 1.9 m door); roofs over a non-empty rectangle with a pitch of 50 to 4000 permille; a
+hearth that leaves its stack a back and two cheeks; a straight stair
 of 2 to 40 risers with a storey above it; a well only in an outline of axis-aligned edges.
 The walker's rules of plan 14 §14.4 (riser, going, headroom, a doorway's width) are **not** held
 here yet: they are S89's validators, over the walk records.
@@ -262,8 +266,10 @@ mistake there (to be measured with the village).
 ## The example
 
 `example_cot(width, depth, wall)` is a one-room cot: a room 6 by 4 m inside walls 60 cm thick, one
-storey 2.1 m to the wall plate and open to a thatched gable roof at fifty degrees, a door and a
-window in the front wall, a window in the back, a stack on one gable. Its numbers and where they
+storey 2.4 m to the wall plate and open to a thatched gable roof at fifty degrees whose eaves
+overhang 35 cm (so the eave's edge stands 1.98 m over the floor, clear of the door's head), a door
+and a window in the front wall, a window in the back, a stack with a hearth on one gable. The
+same description is committed as `content/structures/cot.structure.json`. Its numbers and where they
 come from are on [the grounding page](../experiments/vernacular-shell.md).
 
 ## Forms and the LOD policy
@@ -294,6 +300,14 @@ Each is a case in `tests/structures_tests.cpp`:
 - The exterior and the interior are the whole between them.
 - The validator refuses by name.
 - A recipe's canonical form reads back to itself.
+- **The conformance corpus** (`content/structures/`, plan 14 §14.1): every committed description
+  meshes, every opening of it is clear where it is described with the wall solid beside it, every
+  room's floor is at its storey's height, every room is reached from outside, and the committed
+  cot is `example_cot()` to the byte of its canonical form. A mesher change may move triangles and
+  the mesh pins; it may not fail this.
+- The DAG's cut of the cot never grows with distance, and a kilometre off it is under half the
+  finest.
+- A way out is not under an eave lower than its head (the validator's refusal).
 
 **Public API.** `include/domain/structures/structures.h`.
 
@@ -305,8 +319,35 @@ Each is a case in `tests/structures_tests.cpp`:
 
 ## Budgets
 
-To be measured with the first pictures: the example cot's triangles by surface, its clusters, its
-DAG's root, and the mesher's time. The test holds the cot under 4,000 triangles.
+Measured on the example cot (`structures_tests.cpp` prints them; 2026-11-14, `msvc-debug`, so
+counts and no times):
+
+| What | Value |
+|---|---|
+| Triangles, finest | 1,192 (the test holds it under 4,000) |
+| Clusters, finest cut | 38; 60 with the DAG's coarser levels |
+| The DAG's cut from 5 m and 50 m (2160 lines, 60° field of view, 1 px) | 1,192 triangles in 38 clusters: the finest |
+| The cut from 200 m | 1,048 triangles in 33 clusters |
+| The cut from a kilometre | 472 triangles in 14 clusters |
+| The DAG's root | 194 triangles |
+| Materials (surfaces with triangles) | 7 |
+
+**Against plan 14 §14.7's estimate** (a timber-frame house's exterior at 30,000 triangles and its
+interior at 45,000): the cot is 1,192 because nothing in it is a kit part yet. Its thatch is a
+profile, not bundles; its boards are a face, not planks; its timbers are boxes. The budget a
+house is held to is the plan's until the kit (G64) lands and is measured: **30,000 triangles for
+an exterior, 2.5 times that with its interior**, and a house a few hundred triangles past a
+kilometre.
+
+**Why the cut barely coarsens inside 200 m.** The finest level is so coarse already that its
+first simplifications move a surface by about 10 cm (a frame's section, a reveal's depth),
+which is a pixel at 200 m. That is the right answer for a mesh this small, and it will stop
+being one when the kit multiplies the triangles: then the first levels should drop the parts
+nobody resolves (battens, glazing bars) long before the walls move, which wants per-part error
+or an authored mid form, as the walls capability has ([walls](walls.md)).
+
+The mesher's time is not measured in a release build yet (`structures.solve`,
+`structures.walk_records` in the bench).
 
 **What a scene with no structure pays.** Nothing: the generator is reached through the registry
 by a file's name, and a scene that names no `.structure.json` never calls it.
@@ -346,4 +387,6 @@ is listed there under `disabled_capabilities`. Everything else must still build 
 - A door's leaf as a mesh of its own, and the `Door` record with its state (S91).
 - Glass in a window.
 - The kit of solved parts beyond boxes: hewn beams, warped planks, thatch bundles, shingles (G64).
-- The record drawn from a document (D37's other half), and the conformance corpus.
+- The record drawn from a document (D37's other half).
+- A plinth that stands proud of the wall over it, a cob wall's batter and rounded corners, a
+  thatch's courses and cut eave: the shell is planes.
