@@ -21,9 +21,9 @@
                 `test -Affected` would run: the affected modules' libraries, tests and benches,
                 the apps that link them, and every app when the tools' own tests run, since
                 they start the apps (tools/lib/Affected.psm1, Get-AffectedTargets). A link that
-                fails with LNK1236 (a corrupt object) is repaired once: the object and its library
-                are moved to build/<preset>/lnk1236/, that target is rebuilt with CCACHE_RECACHE=1
-                and the build runs again (docs/ci/local-linux.md, "A corrupt object at the link").
+                fails with LNK1236 or LNK1107 (a corrupt object or library) is repaired once: the
+                files are moved to build/<preset>/lnk1236/, that target is rebuilt with
+                CCACHE_RECACHE=1 at a lower parallel level, and the build runs again (docs/ci/local-linux.md, "A corrupt object at the link").
     test       Run CTest for the preset. -Filter is a regex on test names. Tests take the
                 machine-wide GPU lock themselves, per GPU device, so do not wrap this in
                 tools/gpu-lock.ps1 run: that still works, and holds the GPU for the whole
@@ -203,12 +203,20 @@ function Invoke-Build {
   if ($repairs.Count -eq 0) { throw "build failed ($($built.Code))" }
   foreach ($r in $repairs) {
     if ($r.Remove.Count -eq 0) {
-      Write-Host "build: LNK1236 (corrupt COFF sections) in $($r.Named), which the build graph does not show; not retried" -ForegroundColor Yellow
+      Write-Host "build: $($r.Code) in $($r.Named), which the build graph does not show; not retried" -ForegroundColor Yellow
       throw "build failed ($($built.Code))"
     }
   }
   # The bad files are moved aside, not deleted: the cause is not known, and they are the evidence.
+  # The lead is a short write under pressure (2026-11-14: a library LNK1107 twice while free commit
+  # fell from 53 to 29 GB, then linked at parallel level 4 with 38 GB free), so the line says the
+  # free commit and the rebuild runs at a quarter of the cores, at most 4.
   $kept = Join-Path $BuildDir ("lnk1236/{0:yyyyMMdd-HHmmss}" -f (Get-Date))
+  $free = ''
+  if ($IsWin) {
+    try { $free = ", {0:N1} GB of commit free" -f ((Get-CimInstance Win32_OperatingSystem).FreeVirtualMemory / 1MB) } catch { }
+  }
+  $jobs = [Math]::Max(1, [Math]::Min(4, [int][Math]::Floor([Environment]::ProcessorCount / 4)))
   foreach ($r in $repairs) {
     foreach ($f in $r.Remove) {
       $from = Join-Path $BuildDir $f
@@ -217,12 +225,13 @@ function Invoke-Build {
       New-Item -ItemType Directory -Force -Path (Split-Path -Parent $to) | Out-Null
       Move-Item -LiteralPath $from -Destination $to -Force
     }
-    Write-Host ("build: LNK1236 (corrupt COFF sections) in {0}: moved {1} to {2}, rebuilding {3} once with CCACHE_RECACHE=1" -f
-                $r.Named, ($r.Remove -join ', '), $kept, $r.Target) -ForegroundColor Yellow
+    $sizes = ($r.Remove | ForEach-Object { $i = Get-Item -LiteralPath (Join-Path $kept $_) -ErrorAction Ignore; if ($i) { "$($i.Length) B" } }) -join ', '
+    Write-Host ("build: {0} (a corrupt object or library) in {1}: moved {2} ({3}) to {4}, rebuilding {5} once with CCACHE_RECACHE=1 at -j {6}{7}" -f
+                $r.Code, $r.Named, ($r.Remove -join ', '), $sizes, $kept, $r.Target, $jobs, $free) -ForegroundColor Yellow
   }
   $recache = $env:CCACHE_RECACHE
   $env:CCACHE_RECACHE = '1'
-  try { $rebuilt = Invoke-CMakeBuild (@('--build', '--preset', $Preset, '--target') + @($repairs | ForEach-Object { $_.Target })) }
+  try { $rebuilt = Invoke-CMakeBuild (@('--build', '--preset', $Preset, '--parallel', "$jobs", '--target') + @($repairs | ForEach-Object { $_.Target })) }
   finally { $env:CCACHE_RECACHE = $recache }
   if ($rebuilt.Code -ne 0) { throw "build failed ($($rebuilt.Code))" }
   $built = Invoke-CMakeBuild $buildArgs

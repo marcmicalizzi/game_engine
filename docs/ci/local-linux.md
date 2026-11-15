@@ -476,9 +476,15 @@ line names, whose path it takes from the failed link's command line or CMake's p
 moves the object and the library aside to `build/<preset>/lnk1236/<time>/` (the evidence, kept
 because the cause is not known), rebuilds that library (or the object, when it was linked
 directly) with `CCACHE_RECACHE=1` — so a cache entry, if that is where the bad bytes were, is
-compiled and stored again rather than served again — and runs the build once more, printing one
-line, `build: LNK1236 (corrupt COFF sections) in <object>: moved <paths> to <dir>, rebuilding
-<target> once with CCACHE_RECACHE=1`. A second failure, or an LNK1236 on an object the graph does not show,
+compiled and stored again rather than served again — at a quarter of the cores (at most 4), and
+runs the build once more, printing one line, `build: <code> (a corrupt object or library) in
+<file>: moved <paths> (<sizes>) to <dir>, rebuilding <target> once with CCACHE_RECACHE=1 at -j <n>,
+<free> GB of commit free`. **LNK1107** ("invalid or corrupt file: cannot read at 0x…") is repaired
+the same way: it names the library or object itself, and a library is archived again from its
+objects. The same night another row's flora library came out LNK1107 twice, past every object
+recompiled with `CCACHE_RECACHE=1`, while the machine's free commit fell from 53 GB to 29 GB, and a
+third build at parallel level 4 with 38 GB free linked: so the rebuild runs narrower, and the line
+says the sizes and the free commit, to see whether a short file and a short machine go together. A second failure, or an LNK1236 on an object the graph does not show,
 fails as before. The recognition is tested on the gate's own lines in `tools.linux_build`
 (`Find-CorruptObjectError`, `Get-CorruptObjectRepair` in `tools/lib/CompilerCache.psm1`). Keeping
 the output means `cmake --build` writes to a pipe, so Ninja prints each step on its own line
@@ -502,8 +508,12 @@ instead of rewriting one status line.
   30 GB its launchers pass, 4,073 cleanups so far; 139 errors in 874,717 calls, 132 of them "input
   file modified during compilation" and 7 unreadable inputs; nothing about results or outputs.
 
-What is left: a transient read at the link under the night's load (the gate logged 56.5 GB of
-commit to spare and 22.6 GB of physical memory free just after), or a writer outside Ninja's graph.
+What is left, and now the stronger lead: a short or truncated write (or read) of an object or
+library while commit or the disk is under pressure or many writers run at once — the flora
+library's LNK1107 above, and the gate's, which logged 56.5 GB of commit to spare and 22.6 GB of
+physical memory free just after — or a writer outside Ninja's graph. The next one to look at:
+whether the kept file is shorter than its own header says (an archive member's size field, a COFF
+section's raw data past the end), and the build's parallel level and the free commit then.
 The next one `dev.ps1` meets leaves its library and object in `lnk1236/`; compare them with the
 rebuilt ones (`dumpbin /headers`, or the bytes) and note the time, `ccache -s -v` and what else was
 building. The gate's own retry (`gate.ps1`, outside this tree) reruns the build without moving

@@ -453,8 +453,20 @@ Test-That 'a member the build graph does not show is named and not repaired' {
   $r = @(Get-CorruptObjectRepair -Lines @('engine_x.lib(gone.cpp.obj) : fatal error LNK1236: corrupt or invalid COFF sections') -Query { param($t) @() })
   $r.Count -eq 1 -and $r[0].Remove.Count -eq 0 -and $r[0].Named -eq 'engine_x.lib(gone.cpp.obj)'
 }
+Test-That 'LNK1107 on a library (a short archive, 2026-11-14) re-archives that library alone' {
+  $r = @(Get-CorruptObjectRepair -Lines @(
+      'domain\flora\engine_flora.lib : fatal error LNK1107: invalid or corrupt file: cannot read at 0x8000009E',
+      'LINK : fatal error LNK1107: ignored, it names no file') -Query $fakeNinja)
+  $r.Count -eq 1 -and $r[0].Code -eq 'LNK1107' -and $r[0].Target -eq 'domain\flora\engine_flora.lib' -and
+    ($r[0].Remove -join '|') -eq 'domain\flora\engine_flora.lib' -and $r[0].Objects.Count -eq 0
+}
+Test-That 'and on an object, that object' {
+  $r = @(Get-CorruptObjectRepair -Lines @('apps\x\CMakeFiles\x.dir\main.cpp.obj : fatal error LNK1107: invalid or corrupt file: cannot read at 0x10') -Query $fakeNinja)
+  $r.Count -eq 1 -and $r[0].Code -eq 'LNK1107' -and $r[0].Target -eq 'apps\x\CMakeFiles\x.dir\main.cpp.obj'
+}
 Test-That 'tools/dev.ps1 build retries once, with CCACHE_RECACHE=1 for the rebuild only, and fails as before otherwise' {
   $dev = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'dev.ps1')
+  $dev -match "'--parallel', `"\`$jobs`"" -and $dev -match 'FreeVirtualMemory' -and
   $dev -match 'Get-CorruptObjectRepair -Lines \$built\.Lines' -and $dev -match "\`$env:CCACHE_RECACHE = '1'" -and
     $dev -match 'finally \{ \$env:CCACHE_RECACHE = \$recache \}' -and
     ([regex]::Matches($dev, 'throw "build failed')).Count -ge 4

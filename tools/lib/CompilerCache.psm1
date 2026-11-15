@@ -224,13 +224,18 @@ function Read-CachedLauncher([string]$BuildDir) {
 function Find-CorruptObjectError([string[]]$Lines) {
   $found = [ordered]@{}
   foreach ($line in @($Lines)) {
-    if ("$line" -notmatch '^\s*(?<where>\S.*?)\s*:\s*fatal error LNK1236\b') { continue }
+    if ("$line" -notmatch '^\s*(?<where>\S.*?)\s*:\s*fatal error (?<code>LNK1236|LNK1107)\b') { continue }
     $where = $Matches['where'].Trim('"')
-    if ($found.Contains($where)) { continue }
+    $code = $Matches['code']
+    if ($where -match '^LINK$' -or $found.Contains($where)) { continue }
     if ($where -match '^(?<lib>.+?\.lib)\((?<member>[^()]+)\)$') {
-      $found[$where] = [pscustomobject]@{ Library = $Matches['lib']; Member = $Matches['member']; Object = $null; Named = $where }
+      $found[$where] = [pscustomobject]@{ Code = $code; Library = $Matches['lib']; Member = $Matches['member']; Object = $null; Named = $where }
+    } elseif ($where -match '\.lib$') {
+      # LNK1107 names the archive itself ("invalid or corrupt file: cannot read at 0x..."): the
+      # library is what is short, not one object in it.
+      $found[$where] = [pscustomobject]@{ Code = $code; Library = $where; Member = $null; Object = $null; Named = $where }
     } else {
-      $found[$where] = [pscustomobject]@{ Library = $null; Member = $null; Object = $where; Named = $where }
+      $found[$where] = [pscustomobject]@{ Code = $code; Library = $null; Member = $null; Object = $where; Named = $where }
     }
   }
   return @($found.Values)
@@ -289,10 +294,16 @@ function Get-CorruptObjectRepair {
   $repairs = New-Object System.Collections.Generic.List[object]
   foreach ($e in (Find-CorruptObjectError $Lines)) {
     if ($e.Object) {
-      $repairs.Add([pscustomobject]@{ Named = $e.Named; Library = $null; Objects = @($e.Object); Target = $e.Object; Remove = @($e.Object) })
+      $repairs.Add([pscustomobject]@{ Code = $e.Code; Named = $e.Named; Library = $null; Objects = @($e.Object); Target = $e.Object; Remove = @($e.Object) })
       continue
     }
     $lib = Resolve-LinkedLibrary $Lines $e.Library $Query
+    if (-not $e.Member) {   # the library itself (LNK1107): archived again from its objects
+      [string[]]$own = @()
+      if ($lib) { $own = @($lib) }
+      $repairs.Add([pscustomobject]@{ Code = $e.Code; Named = $e.Named; Library = $lib; Objects = @(); Target = $lib; Remove = $own })
+      continue
+    }
     $objects = @()
     if ($lib -and $Query) {
       $leaf = Get-PathLeaf $e.Member
@@ -300,7 +311,7 @@ function Get-CorruptObjectRepair {
     }
     [string[]]$remove = @()
     if ($objects.Count -gt 0) { $remove = @($objects) + @($lib) }
-    $repairs.Add([pscustomobject]@{ Named = $e.Named; Library = $lib; Objects = $objects; Target = $lib; Remove = $remove })
+    $repairs.Add([pscustomobject]@{ Code = $e.Code; Named = $e.Named; Library = $lib; Objects = $objects; Target = $lib; Remove = $remove })
   }
   return $repairs.ToArray()
 }
