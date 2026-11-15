@@ -99,6 +99,20 @@ foreach ($r in $runs) {
   $jsonl = Join-Path $Out "$($r.id).jsonl"
   if (-not $FromSummaries) {
     Write-Host "== $($r.id)" -ForegroundColor Cyan
+    # A run whose scene names files the tree does not commit says how to write them: `prepare` is
+    # a program of the preset's bin/ and its arguments, run from the repository root before the
+    # lock is taken (the static world's kit: `engine-content static-kit`, roadmap T130).
+    if ($r.PSObject.Properties['prepare'] -and $r.prepare) {
+      $tool = Join-Path (Split-Path $Exe) ("$(@($r.prepare)[0])" + $(if ($IsWin) { '.exe' } else { '' }))
+      $prep = @(@($r.prepare) | Select-Object -Skip 1 | ForEach-Object { "$_" })
+      Push-Location $Root
+      try { $prepared = @(& $tool @prep 2>&1 | ForEach-Object { "$_" }); $pcode = $LASTEXITCODE } finally { Pop-Location }
+      if ($pcode -ne 0) {
+        $prepared | Select-Object -Last 5 | ForEach-Object { Write-Warning $_ }
+        $results += [pscustomobject]@{ Id = $r.id; Verdict = 'failed'; Device = ''; Quiet = $false; Rows = @(); Missing = @(); MachineState = "prepare exited $pcode" }
+        continue
+      }
+    }
     $argv = Get-FrameBudgetArgs -Run $r -Root $Root -Jsonl $jsonl -WaitQuiet $WaitQuiet
     # One lock per run, as `tools/dev.ps1 bench -GpuLock` takes one per executable: another agent
     # waiting for the card gets it between two runs rather than after all of them.

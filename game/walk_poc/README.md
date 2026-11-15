@@ -80,7 +80,12 @@ refused shape calls' answers in its state (`shape_codes`: too many weights, a Na
 5, of 0.1 and NaN), what `actor_state` reports of its scale and channels each tick, and none of the
 run's HUD lines, so a capture after a restore is the picture of the shape alone) are what
 engine-view's tests check the refusals, the tail, the actors, the loading hooks, the creator and the
-replay rules with.
+replay rules with. Beside them, a module of its own source, **`walk_poc_world`**
+(`world_probe.cpp`, hotload ABI 10, roadmap A43), stateless: once the ground under the feet has
+collision it asks the world — the supports near a tree's crown, a post's declared perch and a
+boulder's top, landing a prop `bird` on each; a ray at the trunk, sixteen down through the crown, a
+sphere at the boulder and a ray into the pond that stops at the water; the water at five points of
+the pond — and ends the run with every answer, which `world_queries_view_tests.cpp` holds.
 
 **Its own art** (hotload ABI 6): with `hud/panel.png` beside the scene file (or the module), every
 build draws that image nine-sliced as a panel behind the `[E] Pick up` prompt, and with

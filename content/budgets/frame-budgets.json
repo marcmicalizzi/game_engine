@@ -355,6 +355,102 @@
         "p99": 1.024
       },
       "sources": "Every number re-measured 2026-11-07 on main 8be9c6d4 (this baseline; the reason has the climb), hw kept from 2026-10-12. The 2026-10-07 seed: its medians agreed with docs/experiments/world-positions-renderer-2026-10-05.md (stage 2 cost, rt after: cull 0.065, deform 0.039, hw 0.312, rt 0.944, resolve 1.861, total 4.363 ms) to within 8% pass by pass and 2% in total (4.454 today). Its cpu_ms median agrees with docs/experiments/frame-thread-spikes-2026-10-04.md (0.43 ms, traced shadows after) at 0.455; its p99 is 1.305 against that page's 0.71, on a machine this run called busy."
+    },
+    {
+      "id": "static-1080p-rt",
+      "scene": "content/test-scenes/static-world/scene.json",
+      "path": "content/test-scenes/static-world/camera-path.json",
+      "width": 1920,
+      "height": 1080,
+      "views": "single",
+      "repeat": 1,
+      "warmup": 60,
+      "prepare": [
+        "engine-content",
+        "static-kit",
+        "content/test-scenes/static-world/kit"
+      ],
+      "args": [
+        "--raster",
+        "rt",
+        "--shadows",
+        "rt"
+      ],
+      "gpu_ms": {
+        "blas": {
+          "median": 0.051,
+          "p99": 0.058
+        },
+        "clas": {
+          "median": 0.006,
+          "p99": 0.006
+        },
+        "clas_cache": {
+          "median": 0.007,
+          "p99": 0.064
+        },
+        "cull": {
+          "median": 0.017,
+          "p99": 0.019
+        },
+        "resolve": {
+          "median": 0.171,
+          "p99": 0.217
+        },
+        "rt": {
+          "median": 0.159,
+          "p99": 0.23
+        },
+        "rt_cache": {
+          "median": 0.002,
+          "p99": 0.019
+        },
+        "rt_drop": {
+          "median": 0.005,
+          "p99": 0.01
+        },
+        "rt_emit": {
+          "median": 0.005,
+          "p99": 0.005
+        },
+        "rt_ranges": {
+          "median": 0.008,
+          "p99": 0.009
+        },
+        "rt_records": {
+          "median": 0.002,
+          "p99": 0.002
+        },
+        "tlas": {
+          "median": 0.067,
+          "p99": 0.071
+        },
+        "total": {
+          "median": 0.521,
+          "p99": 0.658
+        },
+        "trace": {
+          "median": 0.166,
+          "p99": 0.237
+        }
+      },
+      "baseline": {
+        "date": "2026-11-14",
+        "by": "Claude Opus 5.5 (agent, roadmap T130)",
+        "reason": "The first budget for the static world (T130): the branch's own flight with the run's flags (it also passed --log info), on a machine others kept 83 to 89% busy, so an upper bound; the coordinator re-baselines it at the merge.",
+        "commit": "420aa4d7 (with uncommitted changes)",
+        "device": "NVIDIA GeForce RTX 5090",
+        "quiet": false,
+        "machine_state": "busy (start 76.4% others, GPU 29%; end 80.0% others, GPU 0%)",
+        "identity": "8b9aac137c27a896",
+        "frames": 1441,
+        "repeats": 1
+      },
+      "cpu_ms": {
+        "median": 0.228,
+        "p99": 0.854
+      },
+      "sources": "Measured by its author on the branch (roadmap T130, docs/experiments/static-asset-world.md) from an engine-view flight with the run's flags; the coordinator re-baselines it at the merge."
     }
   ]
 }

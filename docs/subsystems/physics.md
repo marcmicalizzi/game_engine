@@ -98,6 +98,14 @@ and a ray meets each adopted compound at the fraction it meets the world's own, 
 its counts by it and by `shape_count`. Every built shape must be released before its world shuts
 down — a release after would reach freed memory — and `shutdown` asserts that none is alive.
 
+## Which piece a cast hit
+
+**`RayHit::child` and `ShapeHit::child`** (roadmap A43): the child of the hit body's compound the cast met, as its index in the order `create_compound` or `build_compound` was given the children — Jolt's static compound keeps its sub-shapes in that order, and the sub-shape id of the hit decodes to it (`CompoundShape::GetSubShapeIndexFromID`). 0 for a body whose shape has no children, which is also the answer for a compound of one, since that is built as the child placed. **Why**: a caller that keeps a table beside its compound — the collision's tile of placements, one compound of every piece on the tile — can then say what was met (a tree, a rock, a wall) without a second query; `scene_collision`'s `describe_hit` is that table's reader ([scene_collision](scene_collision.md#what-a-module-can-ask)). `RayHit` grew to 56 bytes (from 48); `ShapeHit` took the word its padding had (56).
+
+## A sphere of any radius
+
+**`cast_sphere(start, radius, sweep, &hit)`** sweeps a sphere the call makes on its stack — Jolt's `SphereShape`, embedded so its reference count never frees it — and never puts it in the shape table, where `cast_shape` sweeps a shape the table holds. **Why**: a game module asks with whatever radius its animal has, and a shape made for each would change the ids every later shape is given (the collision's proxies and compounds are adopted into the table as the walker's ring moves, and a replay must make the same ones). The answer is `cast_shape`'s: the deepest point, the normal from the hit body towards the sphere, the fraction along the sweep, and the child.
+
 ## Why nothing from Jolt is public
 
 [ADR-0026](../adr/0026-deformable-volumes-first-class.md) decision 3 says replacing the solver

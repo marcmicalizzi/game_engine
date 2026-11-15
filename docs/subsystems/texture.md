@@ -381,7 +381,10 @@ first row again by `mesh_texture_tests.cpp`, which stages one:
    already has, on the job system's efficiency pool — runs the load's texture pass for the one
    mesh when `PlacementMeshOptions::textures` is set (the world sets it for a host that draws; the
    collision leaves it off). It is the load's own function, `prepare_scene_textures`, over a list
-   of one, not a copy of its rule: every image a material samples gets its `.tex` key (the
+   of one, not a copy of its rule, run on the building thread with no pool of its own — threads are
+   made only when a `.tex` has to be built (T129: a pool of two made and joined per mesh kept 4 MiB
+   of commit a thread for the life of the process, 6.2 GB on the forest's staging;
+   [the measurement](../experiments/memory-commit-accounting.md#who-made-the-unnamed-commit)): every image a material samples gets its `.tex` key (the
    container's record for an image the mesh carries, the load's identity of the file for one named
    by path), its `.tex` is trusted from its header or built by the content build's own step, and
    then its bytes are read — unless the scene says it holds that key

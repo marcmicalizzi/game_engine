@@ -1,4 +1,6 @@
 #include <core/hash/hash.h>
+#include <core/json/json.h>
+#include <core/json/json_value.h>
 #include <domain/assets/gltf.h>
 #include <foundation/io/vfs.h>
 
@@ -664,8 +666,39 @@ u32 begin_mesh_morph(Context& ctx, const cgltf_node& node, const cgltf_mesh& mes
   return base;
 }
 
+// **A perch the file declares** (A43; gltf.h, `MeshData::perches`; assets.md, "Perches"): a node
+// named `perch...` or whose extras have a `perch` member — an empty in Blender, exported with its
+// custom properties as extras — at its world translation, its world +y for up, and
+// `extras.perch.size_m` (else the default) for the foot it holds. A node with a mesh may be a
+// perch too; the perch is the node's origin either way.
+void collect_perch(Context& ctx, const cgltf_node& node, const Mat4& world) {
+  bool named = node.name != nullptr && std::strncmp(node.name, "perch", 5) == 0;
+  f32 size = k_default_perch_size_m;
+  if (node.extras.data != nullptr) {
+    JsonValue extras;
+    if (parse_json(node.extras.data, extras).ok && extras.is_object()) {
+      if (const JsonValue* perch = extras.find("perch")) {
+        named = true;
+        const JsonValue* declared = perch->is_object() ? perch->find("size_m") : nullptr;
+        if (declared != nullptr && declared->is_number() && declared->as_float() > 0.0)
+          size = static_cast<f32>(declared->as_float());
+      }
+    }
+  }
+  if (!named) return;
+  const Vec3 up_axis = world.c[1].xyz();
+  const f32 length = std::sqrt(dot(up_axis, up_axis));
+  if (!(length > 0.0f) || !std::isfinite(length)) return;  // a degenerate node says no direction
+  geometry::ClusterFilePerch perch;
+  perch.position = world.c[3].xyz();
+  perch.up = up_axis * (1.0f / length);
+  perch.size_m = size;
+  ctx.mesh->perches.push_back(perch);
+}
+
 bool append_node(Context& ctx, const cgltf_node& node, const Mat4& parent) {
   const Mat4 world = parent * local_transform(node);
+  collect_perch(ctx, node, world);
   if (node.mesh != nullptr) {
     i32 skin_index = -1;
     if (node.skin != nullptr && !ctx.mesh->skins.empty())

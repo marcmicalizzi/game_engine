@@ -4,6 +4,7 @@
 #include "archive.h"
 
 #include <core/hash/hash.h>
+#include <core/jobs/job_system.h>
 #include <core/json/json.h>
 #include <core/json/json_value.h>
 #include <core/schema/json_reflect.h>
@@ -16,8 +17,10 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <mutex>
+#include <span>
 
 namespace engine::tileset {
 
@@ -120,6 +123,7 @@ struct Field {
   Vector<i32> index_layer;
   bool has_index = false;
   Vector<Region> regions;
+  Vector<u32> all_regions;  // 0 .. regions - 1: what a point asked alone evaluates
 };
 
 i32 layer_of(const MaskInputs& in, const std::string& name) {
@@ -255,6 +259,7 @@ bool make_field(const TileSet& set, const MaskInputs& in, Field& f, std::string&
     r.wet_m = static_cast<f64>(src.wet_m);
     r.reach = std::max(r.margin_m, r.wet_m);
     f.regions.push_back(std::move(r));
+    f.all_regions.push_back(f.all_regions.size());
   }
   return true;
 }
@@ -272,15 +277,44 @@ void lay(Vector<f64>& w, i32 layer, f64 share) noexcept {
   w[static_cast<u32>(layer)] += share;
 }
 
+// The ground the priors read at a point, millimetres: the point and its four neighbours one step
+// away along x and z — `TileSet::point_mm` at each, whether asked one at a time or read from a
+// tile's window (`TileSet::surface_mm`), which are the same values to the bit.
+struct Stencil {
+  f64 h = 0, x_lo = 0, x_hi = 0, z_lo = 0, z_hi = 0;
+};
+Stencil stencil_at(const TileSet& set, i64 x_mm, i64 z_mm, i64 step_mm) noexcept {
+  return {set.point_mm(x_mm, z_mm), set.point_mm(x_mm - step_mm, z_mm),
+          set.point_mm(x_mm + step_mm, z_mm), set.point_mm(x_mm, z_mm - step_mm),
+          set.point_mm(x_mm, z_mm + step_mm)};
+}
+// The ground for a point asked alone: its stencil when the priors read one, else nothing read.
+Stencil point_stencil(const Field& f, i64 x_mm, i64 z_mm, i64 step_mm) noexcept {
+  return f.priors ? stencil_at(*f.set, x_mm, z_mm, step_mm) : Stencil{};
+}
+
+// Whether region `r` can lay anything at a point in [x0, x1] x [z0, z1] metres: the point test of
+// `evaluate` below, for the box's nearest corner, so a region this refuses is one every point of
+// the box would find outside its reach.
+bool region_reaches(const Region& r, f64 x0, f64 x1, f64 z0, f64 z1) noexcept {
+  const f64 reach = r.reach + 1.0;
+  return !(x1 < r.min_x - reach || x0 > r.max_x + reach || z1 < r.min_z - reach ||
+           z0 > r.max_z + reach);
+}
+
 // The composite at one point: priors, paints, the index, the regions, each over the last.
-void evaluate(const Field& f, i64 x_mm, i64 z_mm, i64 step_mm, Vector<f64>& w, f64& wet,
-              Vector<f64>& region_d) {
+// `active` lists the regions that can reach the point, in the block's order (every region, for a
+// point asked alone; those whose box reaches the tile, for a tile's — the others' distance is the
+// same -1e300 either way, and laying a share of 0 changes nothing). `region_d` is indexed by
+// region and only `active`'s entries are written.
+void evaluate(const Field& f, i64 x_mm, i64 z_mm, i64 step_mm, const Stencil& ground,
+              std::span<const u32> active, Vector<f64>& w, f64& wet, Vector<f64>& region_d) {
   w.assign(f.palette, 0.0);
   wet = 0.0;
   const f64 xm = static_cast<f64>(x_mm) / 1000.0;
   const f64 zm = static_cast<f64>(z_mm) / 1000.0;
   region_d.resize(f.regions.size());
-  for (u32 i = 0; i < f.regions.size(); ++i) {
+  for (const u32 i : active) {
     const Region& r = f.regions[i];
     const f64 reach = r.reach + 1.0;
     region_d[i] =
@@ -289,12 +323,9 @@ void evaluate(const Field& f, i64 x_mm, i64 z_mm, i64 step_mm, Vector<f64>& w, f
             : signed_distance(r, xm, zm);
   }
   if (f.priors) {
-    const TileSet& set = *f.set;
-    const f64 h = set.point_mm(x_mm, z_mm);
-    const f64 gx = (set.point_mm(x_mm + step_mm, z_mm) - set.point_mm(x_mm - step_mm, z_mm)) /
-                   static_cast<f64>(2 * step_mm);
-    const f64 gz = (set.point_mm(x_mm, z_mm + step_mm) - set.point_mm(x_mm, z_mm - step_mm)) /
-                   static_cast<f64>(2 * step_mm);
+    const f64 h = ground.h;
+    const f64 gx = (ground.x_hi - ground.x_lo) / static_cast<f64>(2 * step_mm);
+    const f64 gz = (ground.z_hi - ground.z_lo) / static_cast<f64>(2 * step_mm);
     const f64 g = std::sqrt(gx * gx + gz * gz);
     const f64 rock = smoothstep(f.rock_lo, f.rock_hi, g);
     const f64 scree = smoothstep(f.scree_lo, f.scree_hi, g) * (1.0 - rock);
@@ -308,7 +339,7 @@ void evaluate(const Field& f, i64 x_mm, i64 z_mm, i64 step_mm, Vector<f64>& w, f
                          (1.0 - smoothstep(f.sluff_lo, f.sluff_hi, g));
     // A region's `base` stands in for the soil inside it.
     f64 soil_left = soil;
-    for (u32 i = 0; i < f.regions.size(); ++i) {
+    for (const u32 i : active) {
       const Region& r = f.regions[i];
       if (r.base < 0) continue;
       const f64 share = inside_share(region_d[i], r.feather);
@@ -326,7 +357,7 @@ void evaluate(const Field& f, i64 x_mm, i64 z_mm, i64 step_mm, Vector<f64>& w, f
     // paints, as it would on flat ground below the snowline with a soil role. Before T109 a base
     // with no priors laid nothing and said nothing, and the ground palette showed through.
     f64 soil_left = 1.0;
-    for (u32 i = 0; i < f.regions.size(); ++i) {
+    for (const u32 i : active) {
       const Region& r = f.regions[i];
       if (r.base < 0) continue;
       const f64 share = inside_share(region_d[i], r.feather);
@@ -344,7 +375,7 @@ void evaluate(const Field& f, i64 x_mm, i64 z_mm, i64 step_mm, Vector<f64>& w, f
     const u32 code = nearest(f.index, u, v);
     if (code < f.index_layer.size()) lay(w, f.index_layer[code], 1.0);
   }
-  for (u32 i = 0; i < f.regions.size(); ++i) {
+  for (const u32 i : active) {
     const Region& r = f.regions[i];
     const f64 d = region_d[i];
     if (d <= -1e299) continue;
@@ -568,7 +599,10 @@ bool mask_point(const TileSet& set, const MaskInputs& in, i64 x_mm, i64 z_mm, Ve
   Field f;
   if (!make_field(set, in, f, error)) return false;
   Vector<f64> scratch;
-  evaluate(f, x_mm, z_mm, in.masks.spacing_mm, weights, wetness, scratch);
+  const i64 s = in.masks.spacing_mm;
+  evaluate(f, x_mm, z_mm, s, point_stencil(f, x_mm, z_mm, s),
+           std::span<const u32>(f.all_regions.data(), f.all_regions.size()), weights, wetness,
+           scratch);
   return true;
 }
 
@@ -650,6 +684,12 @@ struct TileScan {
   Vector<f64> dense, wet, w, scratch, peak;
   Vector<u32> used, table;
   bool any_wet = false;
+  // **The tile's ground, read once** (T128): the set's surface at the tile's points and one point
+  // round them, `(cells + 3)` a side (`TileSet::surface_mm`), where each point used to ask five
+  // `point_mm`s of its own; and the regions whose box reaches the tile, where each point used to
+  // test every region of the block.
+  Vector<f64> ground;
+  Vector<u32> active;
   bool present() const noexcept { return !table.empty() || any_wet; }
 };
 
@@ -657,18 +697,43 @@ void scan_tile(const Field& f, i32 tx, i32 tz, TileScan& t) {
   const i64 s = f.in->masks.spacing_mm;
   const u32 c = f.in->masks.tile_cells;
   const u32 n0 = c + 1;
+  const u32 side = c + 3;
   t.dense.resize(n0 * n0 * f.palette);
   t.wet.resize(n0 * n0);
   t.used.assign(f.palette, 0u);
   t.peak.assign(f.palette, 0.0);
   t.table.clear();
   t.any_wet = false;
+  const i64 i0 = static_cast<i64>(tx) * c;
+  const i64 j0 = static_cast<i64>(tz) * c;
+  if (f.priors) {
+    t.ground.resize(side * side);
+    if (!f.set->surface_mm(s, i0 - 1, j0 - 1, side, side,
+                           std::span<f64>(t.ground.data(), t.ground.size())))
+      std::fill(t.ground.begin(), t.ground.end(), std::numeric_limits<f64>::quiet_NaN());
+  }
+  // The tile's points span [i0, i0 + c] x [j0, j0 + c] spacings: the same metres `evaluate` divides
+  // each point's millimetres into.
+  const f64 x0 = static_cast<f64>(i0 * s) / 1000.0;
+  const f64 x1 = static_cast<f64>((i0 + c) * s) / 1000.0;
+  const f64 z0 = static_cast<f64>(j0 * s) / 1000.0;
+  const f64 z1 = static_cast<f64>((j0 + c) * s) / 1000.0;
+  t.active.clear();
+  for (u32 i = 0; i < f.regions.size(); ++i)
+    if (region_reaches(f.regions[i], x0, x1, z0, z1)) t.active.push_back(i);
+  const std::span<const u32> active(t.active.data(), t.active.size());
   for (u32 b = 0; b < n0; ++b) {
     for (u32 a = 0; a < n0; ++a) {
-      const i64 xm = (static_cast<i64>(tx) * c + a) * s;
-      const i64 zm = (static_cast<i64>(tz) * c + b) * s;
+      const i64 xm = (i0 + a) * s;
+      const i64 zm = (j0 + b) * s;
+      Stencil ground;
+      if (f.priors) {
+        const u32 at = (b + 1) * side + (a + 1);
+        ground = {t.ground[at], t.ground[at - 1], t.ground[at + 1], t.ground[at - side],
+                  t.ground[at + side]};
+      }
       f64 point_wet = 0;
-      evaluate(f, xm, zm, s, t.w, point_wet, t.scratch);
+      evaluate(f, xm, zm, s, ground, active, t.w, point_wet, t.scratch);
       const u32 p = b * n0 + a;
       for (u32 k = 0; k < f.palette; ++k) {
         t.dense[p * f.palette + k] = t.w[k];
@@ -681,6 +746,186 @@ void scan_tile(const Field& f, i32 tx, i32 tz, TileScan& t) {
   }
   for (u32 k = 0; k < f.palette; ++k)
     if (t.used[k] != 0) t.table.push_back(k);
+}
+
+// **What one tile gives the build and the check** (T128), computed on any thread and handed on in
+// tile order: the layers it drops, whether it is present and how many layers it names, the tile
+// over the budget as the refusal lists it, and — for a build, a present tile within the budget —
+// its record's bytes.
+struct TileOut {
+  Vector<DroppedLayer> dropped;
+  bool present = false;
+  u32 layers = 0;
+  bool over = false;
+  OverBudgetTile over_tile;
+  std::string record;
+  u64 record_hash = 0;  // `hash_bytes` of `record`, taken on the lane that made it
+};
+
+// A lane's scratch: one tile's scan and the record's words.
+struct TileWork {
+  TileScan scan;
+  Vector<u32> channel[scene_gen::k_mask_channels];
+  Vector<u32> wet_points;
+  Vector<u32> tile_words;
+};
+
+// A tile's record, `MaskHeader` and the words the GPU reads (masks.h, "A tile's record"): the
+// table, the four channels' weights at every mip, a byte of wetness a point.
+void tile_record(const Field& f, i32 tx, i32 tz, TileWork& work, std::string& bytes) {
+  const i64 s = f.in->masks.spacing_mm;
+  const u32 c = f.in->masks.tile_cells;
+  const u32 n0 = c + 1;
+  const u32 points = scene_gen::mask_points(c);
+  const u32 words = scene_gen::mask_tile_words(c);
+  const TileScan& scan = work.scan;
+  const Vector<u32>& table = scan.table;
+  work.tile_words.assign(words, 0u);
+  u32 packed = 0xFFFFFFFFu;
+  for (u32 ch = 0; ch < table.size(); ++ch)
+    packed = (packed & ~(0xFFu << (8 * ch))) | (table[ch] << (8 * ch));
+  work.tile_words[0] = packed;
+  for (u32 ch = 0; ch < scene_gen::k_mask_channels; ++ch) {
+    work.channel[ch].assign(points, 0u);
+    if (ch >= table.size()) continue;
+    for (u32 p = 0; p < n0 * n0; ++p)
+      work.channel[ch][p] = quantize(scan.dense[static_cast<u32>(p) * f.palette + table[ch]]);
+    fill_mips(c, work.channel[ch]);
+  }
+  work.wet_points.assign(points, 0u);
+  for (u32 p = 0; p < n0 * n0; ++p)
+    work.wet_points[p] = quantize(scan.wet[p]);
+  fill_mips(c, work.wet_points);
+  for (u32 p = 0; p < points; ++p) {
+    work.tile_words[1 + p] = work.channel[0][p] | (work.channel[1][p] << 8) |
+                             (work.channel[2][p] << 16) | (work.channel[3][p] << 24);
+    work.tile_words[1 + points + p / 4] |= work.wet_points[p] << (8 * (p % 4));
+  }
+  MaskHeader header;
+  header.cells = c;
+  header.words = words;
+  header.spacing_mm = s;
+  header.tx = tx;
+  header.tz = tz;
+  bytes.assign(sizeof(header) + static_cast<u32>(words) * 4, '\0');
+  std::memcpy(bytes.data(), &header, sizeof(header));
+  std::memcpy(bytes.data() + sizeof(header), work.tile_words.data(), static_cast<u32>(words) * 4);
+}
+
+void compose_tile(const Field& f, i32 tx, i32 tz, bool records, TileWork& work, TileOut& out) {
+  const MaskInputs& in = *f.in;
+  const i64 s = in.masks.spacing_mm;
+  const u32 c = in.masks.tile_cells;
+  const u32 n0 = c + 1;
+  scan_tile(f, tx, tz, work.scan);
+  const TileScan& scan = work.scan;
+  out.dropped.clear();
+  note_dropped(in, tx, tz, scan.used, scan.peak, out.dropped);
+  out.present = scan.present();
+  out.layers = static_cast<u32>(scan.table.size());
+  out.over = out.layers > in.budget;
+  out.record.clear();
+  if (out.over)
+    out.over_tile = over_budget_tile(in, tx, tz, s, c, scan.dense, n0 * n0, scan.table);
+  else if (records && out.present) {
+    tile_record(f, tx, tz, work, out.record);
+    out.record_hash = hash_bytes(out.record.data(), out.record.size());
+  }
+}
+
+// One lane's share of a batch: the tiles `lane`, `lane + lanes`, ... of the batch's `n` from
+// `start`, composed into `outs` by the batch's index.
+struct LaneJob {
+  const Field* f = nullptr;
+  const TileRange* r = nullptr;
+  bool records = false;
+  u64 start = 0;
+  u32 n = 0;
+  u32 lanes = 1;
+  u32 lane = 0;
+  TileWork* work = nullptr;
+  TileOut* outs = nullptr;
+};
+void run_lane(void* context) {
+  const LaneJob& j = *static_cast<const LaneJob*>(context);
+  const u32 wide = static_cast<u32>(j.r->tx1 - j.r->tx0 + 1);
+  for (u32 k = j.lane; k < j.n; k += j.lanes) {
+    const u64 t = j.start + k;
+    compose_tile(*j.f, j.r->tx0 + static_cast<i32>(t % wide), j.r->tz0 + static_cast<i32>(t / wide),
+                 j.records, *j.work, j.outs[k]);
+  }
+}
+
+// **Every tile of the range, composed on the pool and handed on in tile order** (T128; tileset.md,
+// "The mask level's cook"): the range in row-major order, which is the archive's (`tile_key`), cut
+// into batches of about 16 tiles of 32 cells' points a lane; a batch's tiles dealt round the lanes,
+// each lane with scratch of its own, and then handed to `deliver(tx, tz, out)` one by one in order
+// on the calling thread — so what is written, refused, dropped and hashed is the same at any number
+// of lanes, and never depends on which finished first. The next batch is composed while the calling
+// thread hands on the last (two buffers of outputs, the lanes' scratch used by one batch at a
+// time), so the writer's appends are not a pause the pool waits through. Memory is two batches'
+// records, not the level's twice.
+template <class Deliver>
+void scan_range(const Field& f, const TileRange& r, bool records, const MaskCookJobs& cook,
+                Deliver&& deliver) {
+  const u32 wide = static_cast<u32>(r.tx1 - r.tx0 + 1);
+  const u64 count = static_cast<u64>(wide) * static_cast<u64>(r.tz1 - r.tz0 + 1);
+  if (count == 0) return;
+  jobs::JobSystem* pool = count > 1 && cook.lanes != 1 ? cook.jobs() : nullptr;
+  u32 lanes = pool != nullptr ? pool->worker_count(jobs::Pool::Performance) + 1 : 1;
+  if (cook.lanes > 1) lanes = std::min(lanes, cook.lanes);
+  if (lanes <= 1) pool = nullptr;
+  // A lane's share of a batch is about 16 tiles of 32 cells' worth of points (17,424), so a level
+  // of small tiles (the forest's are 8 cells) is not a batch, and a pause, every few hundred
+  // microseconds.
+  const u64 n0 = static_cast<u64>(f.in->masks.tile_cells) + 1;
+  const u64 per_lane = std::max<u64>(16, (16 * 33 * 33) / (n0 * n0));
+  const u64 batch = static_cast<u64>(lanes) * per_lane;
+  const u32 held = static_cast<u32>(std::min(batch, count));
+  Vector<TileWork> work(lanes);
+  Vector<TileOut> outs[2] = {Vector<TileOut>(held), Vector<TileOut>(pool != nullptr ? held : 0)};
+  Vector<LaneJob> lane_jobs(lanes);
+  Vector<jobs::Job> job_list(lanes);
+  const auto start_batch = [&](u64 start, TileOut* into, jobs::Counter& counter) {
+    const u32 n = static_cast<u32>(std::min(batch, count - start));
+    for (u32 lane = 0; lane < lanes; ++lane) {
+      lane_jobs[lane] = LaneJob{&f, &r, records, start, n, lanes, lane, &work[lane], into};
+      job_list[lane] = jobs::Job{&run_lane, &lane_jobs[lane], nullptr};
+    }
+    if (pool == nullptr) {
+      run_lane(&lane_jobs[0]);
+      return;
+    }
+    pool->schedule(jobs::Pool::Performance,
+                   std::span<const jobs::Job>(job_list.data(), job_list.size()), counter);
+  };
+  const auto hand_on = [&](u64 start, TileOut* from) {
+    const u32 n = static_cast<u32>(std::min(batch, count - start));
+    for (u32 k = 0; k < n; ++k) {
+      const u64 t = start + k;
+      deliver(r.tx0 + static_cast<i32>(t % wide), r.tz0 + static_cast<i32>(t / wide), from[k]);
+    }
+  };
+  if (pool == nullptr) {
+    jobs::Counter unused;
+    for (u64 start = 0; start < count; start += batch) {
+      start_batch(start, outs[0].data(), unused);
+      hand_on(start, outs[0].data());
+    }
+    return;
+  }
+  jobs::Counter first;
+  start_batch(0, outs[0].data(), first);
+  pool->wait(first);
+  for (u64 start = 0, b = 0; start < count; start += batch, ++b) {
+    TileOut* done = outs[b % 2].data();
+    // The next batch on the pool, into the other buffer, while this one is handed on.
+    jobs::Counter next;
+    const bool more = start + batch < count;
+    if (more) start_batch(start + batch, outs[(b + 1) % 2].data(), next);
+    hand_on(start, done);
+    if (more) pool->wait(next);
+  }
 }
 
 }  // namespace
@@ -726,27 +971,22 @@ std::string describe_over_budget(const MaskBudgetReport& report, u32 cap) {
 }
 
 bool check_mask_budget(const TileSet& set, const MaskInputs& in, MaskBudgetReport& out,
-                       std::string& error) {
+                       std::string& error, const MaskCookJobs& cook) {
   out = MaskBudgetReport{};
   Field f;
   if (!make_field(set, in, f, error)) return false;
   const i64 s = in.masks.spacing_mm;
   const u32 c = in.masks.tile_cells;
   const TileRange r = tile_range(set.manifest(), s, c);
-  const u32 n0 = c + 1;
-  TileScan scan;
   out.budget = in.budget;
-  for (i32 tz = r.tz0; tz <= r.tz1; ++tz) {
-    for (i32 tx = r.tx0; tx <= r.tx1; ++tx) {
-      scan_tile(f, tx, tz, scan);
-      note_dropped(in, tx, tz, scan.used, scan.peak, out.dropped);
-      ++out.tiles;
-      if (scan.present()) ++out.present;
-      out.largest = std::max(out.largest, static_cast<u32>(scan.table.size()));
-      if (scan.table.size() > in.budget)
-        out.over.push_back(over_budget_tile(in, tx, tz, s, c, scan.dense, n0 * n0, scan.table));
-    }
-  }
+  scan_range(f, r, false, cook, [&](i32, i32, TileOut& t) {
+    for (DroppedLayer& d : t.dropped)
+      out.dropped.push_back(std::move(d));
+    ++out.tiles;
+    if (t.present) ++out.present;
+    out.largest = std::max(out.largest, t.layers);
+    if (t.over) out.over.push_back(std::move(t.over_tile));
+  });
   // The size the renderer would hold, by the function it counts with, against the scene's figure.
   const u64 range = static_cast<u64>(r.tx1 - r.tx0 + 1) * static_cast<u64>(r.tz1 - r.tz0 + 1);
   out.resident_bytes = scene_gen::mask_resident_bytes(range, out.present, c);
@@ -849,7 +1089,7 @@ bool check_masks_early(const scene::Terrain& entry, std::string_view dir, const 
 }
 
 bool build_mask_level(const TileSet& set, const MaskInputs& in, const std::string& dir,
-                      MaskBuildResult& out, std::string& error) {
+                      MaskBuildResult& out, std::string& error, const MaskCookJobs& cook) {
   out = MaskBuildResult{};
   Field f;
   if (!make_field(set, in, f, error)) return false;
@@ -881,71 +1121,34 @@ bool build_mask_level(const TileSet& set, const MaskInputs& in, const std::strin
   manifest.wetness = in.masks.wetness;
   manifest.height_blend = in.masks.height_blend;
 
-  const u32 n0 = c + 1;
-  const u32 points = scene_gen::mask_points(c);
-  const u32 words = scene_gen::mask_tile_words(c);
-  TileScan scan;
-  const Vector<f64>& dense = scan.dense;
-  const Vector<f64>& wet = scan.wet;
-  const Vector<u32>& table = scan.table;
-  Vector<u32> channel[scene_gen::k_mask_channels];
-  Vector<u32> wet_points;
-  Vector<u32> tile_words(words);
-  std::string bytes;
   u64 level_hash = hash_combine(k_hash_seed, out.key);
   archive::Writer writer("EMSK", s, record_bytes(c));
-  for (i32 tz = tz0; tz <= tz1; ++tz) {
-    for (i32 tx = tx0; tx <= tx1; ++tx) {
-      scan_tile(f, tx, tz, scan);
-      note_dropped(in, tx, tz, scan.used, scan.peak, out.dropped);
-      if (!scan.present()) continue;
-      if (table.size() > in.budget) {
-        // Every tile over is named, not the first: the scan goes on and the sentence lists them.
-        over.over.push_back(over_budget_tile(in, tx, tz, s, c, dense, n0 * n0, table));
-        continue;
-      }
-      std::fill(tile_words.begin(), tile_words.end(), 0u);
-      u32 packed = 0xFFFFFFFFu;
-      for (u32 ch = 0; ch < table.size(); ++ch)
-        packed = (packed & ~(0xFFu << (8 * ch))) | (table[ch] << (8 * ch));
-      tile_words[0] = packed;
-      for (u32 ch = 0; ch < scene_gen::k_mask_channels; ++ch) {
-        channel[ch].assign(points, 0u);
-        if (ch >= table.size()) continue;
-        for (u32 p = 0; p < n0 * n0; ++p)
-          channel[ch][p] = quantize(dense[static_cast<u32>(p) * f.palette + table[ch]]);
-        fill_mips(c, channel[ch]);
-      }
-      wet_points.assign(points, 0u);
-      for (u32 p = 0; p < n0 * n0; ++p)
-        wet_points[p] = quantize(wet[p]);
-      fill_mips(c, wet_points);
-      for (u32 p = 0; p < points; ++p) {
-        tile_words[1 + p] =
-            channel[0][p] | (channel[1][p] << 8) | (channel[2][p] << 16) | (channel[3][p] << 24);
-        tile_words[1 + points + p / 4] |= wet_points[p] << (8 * (p % 4));
-      }
-      MaskHeader header;
-      header.cells = c;
-      header.words = words;
-      header.spacing_mm = s;
-      header.tx = tx;
-      header.tz = tz;
-      bytes.assign(sizeof(header) + static_cast<u32>(words) * 4, '\0');
-      std::memcpy(bytes.data(), &header, sizeof(header));
-      std::memcpy(bytes.data() + sizeof(header), tile_words.data(), static_cast<u32>(words) * 4);
-      if (!writer.add(tx, tz, bytes)) {
-        error = "terrain.masks: the tile (" + std::to_string(tx) + ", " + std::to_string(tz) +
-                ") is out of the archive's order";
-        return false;
-      }
-      level_hash = hash_combine(level_hash, hash_bytes(bytes.data(), bytes.size()));
-      manifest.present.push_back(tx);
-      manifest.present.push_back(tz);
-      out.bytes += bytes.size();
-      ++out.tiles;
+  bool ordered = true;
+  // Composed on the pool, written here in tile order (`scan_range`): the archive wants its records
+  // by `tile_key`, and the level's hash is over them in that order.
+  scan_range(f, range, true, cook, [&](i32 tx, i32 tz, TileOut& t) {
+    for (DroppedLayer& d : t.dropped)
+      out.dropped.push_back(std::move(d));
+    if (!t.present) return;
+    if (t.over) {
+      // Every tile over is named, not the first: the scan goes on and the sentence lists them.
+      over.over.push_back(std::move(t.over_tile));
+      return;
     }
-  }
+    if (!ordered) return;
+    if (!writer.add(tx, tz, t.record, t.record_hash)) {
+      error = "terrain.masks: the tile (" + std::to_string(tx) + ", " + std::to_string(tz) +
+              ") is out of the archive's order";
+      ordered = false;
+      return;
+    }
+    level_hash = hash_combine(level_hash, t.record_hash);
+    manifest.present.push_back(tx);
+    manifest.present.push_back(tz);
+    out.bytes += t.record.size();
+    ++out.tiles;
+  });
+  if (!ordered) return false;
   if (!over.over.empty()) {
     error = describe_over_budget(over, k_over_budget_listed);
     return false;
@@ -967,8 +1170,8 @@ bool build_mask_level(const TileSet& set, const MaskInputs& in, const std::strin
 }
 
 bool ensure_mask_level(const TileSet& set, const MaskInputs& in, const std::string& dir,
-                       const std::string& ddc, bool force, MaskBuildResult& out,
-                       std::string& error) {
+                       const std::string& ddc, bool force, MaskBuildResult& out, std::string& error,
+                       const MaskCookJobs& cook, MaskLevel* opened) {
   out = MaskBuildResult{};
   u64 key = 0;
   if (!validate_mask_inputs(in, error) || !mask_key(set.manifest(), in, key, error)) return false;
@@ -987,10 +1190,13 @@ bool ensure_mask_level(const TileSet& set, const MaskInputs& in, const std::stri
       for (const char ch : level.manifest().hash)
         h = (h << 4) | static_cast<u64>(ch <= '9' ? ch - '0' : ch - 'a' + 10);
       out.hash = h;
+      // The level the hit opened, handed on rather than parsed again by the caller (T128).
+      if (opened != nullptr) *opened = std::move(level);
       return true;
     }
   }
-  return build_mask_level(set, in, target, out, error);
+  if (!build_mask_level(set, in, target, out, error, cook)) return false;
+  return opened == nullptr || opened->open(out.manifest, error);
 }
 
 bool write_mask_priors(const TileSet& set, const MaskInputs& in, const std::string& dir,
@@ -1037,7 +1243,8 @@ bool write_mask_priors(const TileSet& set, const MaskInputs& in, const std::stri
         const i64 xm = in.map_x0_mm + (2 * static_cast<i64>(x) + 1) * in.map_size_mm / (2 * side);
         const i64 zm = in.map_z0_mm + (2 * static_cast<i64>(z) + 1) * in.map_size_mm / (2 * side);
         f64 wet = 0;
-        evaluate(p, xm, zm, s, w, wet, scratch);
+        evaluate(p, xm, zm, s, point_stencil(p, xm, zm, s), std::span<const u32>(), w, wet,
+                 scratch);
         const u8 v = static_cast<u8>(quantize(w[static_cast<u32>(role.layer)]));
         const u32 at = (static_cast<u32>(z) * side + x) * 4;
         pixels[at] = pixels[at + 1] = pixels[at + 2] = v;

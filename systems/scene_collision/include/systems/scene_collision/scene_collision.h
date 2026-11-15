@@ -249,6 +249,39 @@ struct HeldTile {
   std::span<const f32> heights;
   u32 pieces = 0;  // `held_piece`'s count: 0 unless `Config::keep_shapes`
 };
+// **What a cast met** (`describe_hit`; docs: "What a module can ask"): the ground of a held tile,
+// or one piece of its placements — a scene mesh's instance (`instance`) or a streamed entry's
+// placement (`entry`; `mesh` its scene mesh, or none for a mesh the tile handed).
+enum class HitKind : u8 { none = 0, ground = 1, piece = 2 };
+struct HitInfo {
+  HitKind kind = HitKind::none;
+  u32 mesh = k_no_index;
+  u32 instance = k_no_index;
+  u32 entry = k_no_index;
+};
+
+// **A place a small animal can stand** (`supports_near`; docs: "Supports"). `kind` is 1 a perch the
+// mesh declares, 2 a limb or branch of its structural table, 3 the top of its bounds — the
+// order a piece's supports come from — and `part` the limb's id in the mesh's motion table (the
+// perch's index among the mesh's perches; `k_no_index` for a top).
+inline constexpr u8 k_support_perch = 1;
+inline constexpr u8 k_support_limb = 2;
+inline constexpr u8 k_support_top = 3;
+struct Support {
+  WorldPos position{};
+  Vec3 up{0.0f, 1.0f, 0.0f};
+  f32 size_m = 0.0f;
+  f32 distance = 0.0f;  // from the point asked
+  u8 kind = 0;
+  HitInfo piece;
+  u32 part = k_no_index;
+};
+struct SupportAnswer {
+  u32 count = 0;         // written, nearest first
+  u32 found = 0;         // within the radius in all
+  bool covered = false;  // the whole disc lay over held tiles
+};
+
 struct HeldPiece {
   u32 mesh = 0;               // the scene mesh
   u32 instance = k_no_index;  // the loaded instance it is (a bin's), or none (a streamed placement)
@@ -335,6 +368,26 @@ class SceneCollision {
   // no held tile covers the point, and over a terrain's hole (W87): a cell with a corner the hole
   // took out of the heightfield.
   bool ground_height(WorldPos at, f32& out) const noexcept;
+
+  // ---- what a module can ask (docs: "What a module can ask"; roadmap A43) ----
+  // **What a cast met**: the held tile whose ground or placements `body` is, and for placements the
+  // piece the compound's `child` is (`physics::RayHit::child`). `none` for a body this consumer
+  // does not hold.
+  HitInfo describe_hit(physics::BodyId body, u32 child) const noexcept;
+  // Whether a held tile covers (x, z), and whether held tiles cover every point of the segment from
+  // `a` to `b` in x and z (walked a tile at a time).
+  bool covers(WorldPos at) const noexcept;
+  bool covers_segment(WorldPos a, WorldPos b) const noexcept;
+  // **The supports within `radius` of `at`** over the held tiles' pieces, at least `min_size`
+  // large, the nearest `out.size()` of them into `out`, nearest first, ties by piece order (docs:
+  // "Supports"). A piece's are the perches its mesh declares, else the parts of its structural
+  // table (a tree's limbs and branches, each an axis with a radius) that lie within 60 degrees of
+  // level, at the point of each nearest the asker, else the top of its
+  // bounds — found by a ray down the bounds' top centre onto the piece itself, kept where that
+  // surface is within 40 degrees of level. Reads the held tiles and casts into `physics`; changes
+  // nothing and allocates nothing.
+  SupportAnswer supports_near(WorldPos at, f32 radius, f32 min_size,
+                              std::span<Support> out) const noexcept;
   const Stats& stats() const noexcept { return stats_; }
   // **What is held** (docs: "Seeing the collision"): the held tiles, in the consumer's order, and a
   // tile's pieces where `Config::keep_shapes` kept them. False past the count.
@@ -353,6 +406,17 @@ class SceneCollision {
   // A proxy is built once, on whichever thread first asks for it, and shared for the consumer's
   // life by every compound of every tile (each holds the backend's reference): its address is
   // stable, so a compound being built on a worker can name it while the tick adds others.
+  // A support in the proxy's frame (the mesh's, at the proxy's scale): a perch (`a` its point,
+  // `up`), or a limb's axis from `a` to `b` with its radius `r0` to `r1`. A top is the bounds'.
+  struct LocalSupport {
+    u8 kind = 0;
+    u32 part = k_no_index;
+    Vec3 a{};
+    Vec3 b{};
+    Vec3 up{0.0f, 1.0f, 0.0f};
+    f32 r0 = 0.0f;
+    f32 r1 = 0.0f;
+  };
   struct Proxy {
     physics::BuiltShape shape;
     u32 triangles = 0;
@@ -360,6 +424,11 @@ class SceneCollision {
     Vector<Vec3> vertices;
     Vector<u32> indices;
     Vector<u32> parts;
+    // **Its supports** (docs: "Supports"), always: the bounds of the triangles the shape was built
+    // from, and the perches or the limbs, in the proxy's frame. Empty supports: its top.
+    Vec3 lo{};
+    Vec3 hi{};
+    Vector<LocalSupport> supports;
   };
   // One piece of a held tile, with `Config::keep_shapes`.
   struct PieceRecord {
@@ -435,9 +504,18 @@ class SceneCollision {
     f64 time_b = 0.0;
     f64 blend = 0.0;
     bool moving = false;
-    Vector<PieceRecord> pieces_held;  // with `Config::keep_shapes`
-    Vector<u64> tile_proxies;         // the references its compound's pieces hold
+    // Its compound's pieces in child order, always (a cast's `child` and the supports read them;
+    // `held_piece` too, with `Config::keep_shapes`).
+    Vector<PieceRecord> pieces_held;
+    Vector<u64> tile_proxies;  // the references its compound's pieces hold
   };
+  // The supports a proxy carries, from its source mesh at its scale, and its bounds from the
+  // triangles in `scratch` (`proxy_for`, `tile_proxy_for`).
+  static void fill_supports(const renderer::SourceMesh* source, Vec3 scale,
+                            const PlacementScratch& scratch, Proxy& proxy);
+  // One piece's supports into the answer (`supports_near`).
+  void piece_supports(const Tile& tile, u32 piece, WorldPos at, f32 radius, f32 min_size,
+                      std::span<Support> out, SupportAnswer& answer) const noexcept;
 
   static bool activate(void* context, const world::TileEvent& event);
   static void deactivate(void* context, const world::TileEvent& event);

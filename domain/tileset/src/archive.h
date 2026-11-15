@@ -59,6 +59,9 @@ class Writer {
   Writer(std::string_view record, i64 spacing_mm, u32 record_bytes);
   // Appends a record. False for one out of `tile_key` order or not `record_bytes` long.
   bool add(i32 tx, i32 tz, std::string_view bytes);
+  // The same with the record's `hash_bytes` given, computed where the record was made (T128: the
+  // mask cook hashes its records on the pool, so the writer's thread only appends them).
+  bool add(i32 tx, i32 tz, std::string_view bytes, u64 bytes_hash);
   u32 count() const noexcept { return toc_.size(); }
   u64 records_hash() const noexcept { return header_.records_hash; }
   // The archive's bytes: header, records, table.

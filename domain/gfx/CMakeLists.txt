@@ -42,7 +42,8 @@ engine_shaders(NAME gfx SOURCES shaders/cluster_mesh.slang shaders/cluster_cull.
                              shaders/opacity_micromap_bake.slang)
 engine_module(NAME gfx LAYER domain
   DEPS base containers memory hash json log math platform schemas io gpu_lock time jobs tunables
-  SOURCES src/adapter.cpp src/device.cpp src/device_caps.cpp src/requirements.cpp src/vma.cpp
+  SOURCES src/adapter.cpp src/device.cpp src/device_memory.cpp src/device_caps.cpp
+          src/requirements.cpp src/vma.cpp
           src/frame.cpp src/render_graph.cpp src/commands.cpp src/rhi_vulkan.cpp
           src/bindless.cpp src/swapchain.cpp src/capture.cpp src/shader_library.cpp src/pipeline_cache.cpp
           src/pipeline_batch.cpp
@@ -100,6 +101,7 @@ engine_shaders(NAME gfx_tests
           shaders/formation_probe.slang)
 if(TARGET engine_gfx_tests)
   target_sources(engine_gfx_tests PRIVATE tests/compute_tests.cpp tests/frame_tests.cpp
+                                          tests/device_memory_tests.cpp
                                           tests/pipeline_cache_tests.cpp
                                           tests/render_graph_tests.cpp tests/bindless_tests.cpp
                                           tests/raster_tests.cpp tests/mesh_shader_tests.cpp

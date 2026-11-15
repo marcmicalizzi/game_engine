@@ -75,7 +75,8 @@ TEST_CASE("anim lod: a view's weight is its LOD scale, and the set has one obser
   CHECK(observers.weight(1) > observers.weight(0));
 }
 
-TEST_CASE("anim lod: importance is the best view that sees an instance, and 1/16 off screen") {
+TEST_CASE(
+    "anim lod: importance is the best view's lens on the instance's travel, and 1/400 off screen") {
   const renderer::Camera camera = looking_down_z(10.0f);
   const renderer::ViewSet surround =
       make_views(renderer::ViewLayout::Surround3, 4.0f, 1920, 480, camera);
@@ -103,11 +104,28 @@ TEST_CASE("anim lod: importance is the best view that sees an instance, and 1/16
                                  absolute(WorldPos::origin(), behind)};
   const f32 radii[3] = {0.0f, 0.0f, 0.0f};
   f32 importance[3] = {};
+  // No travel or bias given: the reference's metre of travel and a bias of 1, so the importance is
+  // the view's weight times its lens over the reference lens (A44; visibility.h).
   view::view_importance(surround, camera.position, std::span<const WorldPos>(positions, 3),
-                        std::span<const f32>(radii, 3), std::span<f32>(importance, 3));
-  CHECK(importance[0] == doctest::Approx(1.0f));                          // the centre sees it
-  CHECK(importance[1] == doctest::Approx(0.25f));                         // only a side monitor
+                        std::span<const f32>(radii, 3), {}, {}, std::span<f32>(importance, 3));
+  const f32 centre_lens = surround[1].proj_scale / animation::k_reference_px_per_rad;
+  const f32 side_lens = surround[0].proj_scale / animation::k_reference_px_per_rad;
+  REQUIRE(centre_lens > 0.0f);
+  CHECK(importance[0] == doctest::Approx(centre_lens));                   // the centre sees it
+  CHECK(importance[1] == doctest::Approx(0.25f * side_lens));             // only a side monitor
   CHECK(importance[2] == doctest::Approx(view::k_offscreen_importance));  // no view at all
+
+  // The instance's own travel and bias multiply it on screen and leave it alone off screen: half a
+  // metre of travel and a bias of 3 are 1.5 times the reference.
+  const f32 travel[3] = {0.5f, 0.5f, 0.5f};
+  const f32 bias[3] = {3.0f, 3.0f, 3.0f};
+  f32 own[3] = {};
+  view::view_importance(surround, camera.position, std::span<const WorldPos>(positions, 3),
+                        std::span<const f32>(radii, 3), std::span<const f32>(travel, 3),
+                        std::span<const f32>(bias, 3), std::span<f32>(own, 3));
+  CHECK(own[0] == doctest::Approx(1.5f * centre_lens));
+  CHECK(own[1] == doctest::Approx(1.5f * 0.25f * side_lens));
+  CHECK(own[2] == doctest::Approx(view::k_offscreen_importance));
 
   // The radius is the conservative half: an instance whose centre is outside a frustum but whose
   // padded bounds reach into it is on screen, which is the direction a skinned limb needs.
@@ -115,8 +133,33 @@ TEST_CASE("anim lod: importance is the best view that sees an instance, and 1/16
   const f32 huge[1] = {60.0f};
   f32 padded[1] = {};
   view::view_importance(surround, camera.position, std::span<const WorldPos>(outside, 1),
-                        std::span<const f32>(huge, 1), std::span<f32>(padded, 1));
+                        std::span<const f32>(huge, 1), {}, {}, std::span<f32>(padded, 1));
   CHECK(padded[0] > view::k_offscreen_importance);
+}
+
+TEST_CASE("anim lod: the same actor's importance doubles with the rows of the target") {
+  // The rule moves with the projection (A44): a target twice as tall is a lens twice as long, so
+  // an instance's travel subtends twice the pixels and it scores half as far — the same tier at
+  // twice the distance.
+  const renderer::Camera camera = looking_down_z(10.0f);
+  const renderer::ViewSet small =
+      make_views(renderer::ViewLayout::Single, 1.0f, 1920, 1080, camera);
+  const renderer::ViewSet large =
+      make_views(renderer::ViewLayout::Single, 1.0f, 3840, 2160, camera);
+  CHECK(large[0].proj_scale == doctest::Approx(2.0f * small[0].proj_scale));
+  const WorldPos at[1] = {absolute(WorldPos::origin(), Vec3{})};
+  const f32 radius[1] = {0.5f};
+  const f32 travel[1] = {0.25f};
+  f32 a[1] = {};
+  f32 b[1] = {};
+  view::view_importance(small, camera.position, std::span<const WorldPos>(at, 1),
+                        std::span<const f32>(radius, 1), std::span<const f32>(travel, 1), {},
+                        std::span<f32>(a, 1));
+  view::view_importance(large, camera.position, std::span<const WorldPos>(at, 1),
+                        std::span<const f32>(radius, 1), std::span<const f32>(travel, 1), {},
+                        std::span<f32>(b, 1));
+  CHECK(b[0] == doctest::Approx(2.0f * a[0]));
+  CHECK(a[0] == doctest::Approx(0.25f * small[0].proj_scale / animation::k_reference_px_per_rad));
 }
 
 TEST_CASE(
@@ -149,7 +192,7 @@ TEST_CASE(
     importance.assign(k_count, 0.0f);
     view::view_importance(views, camera.position,
                           std::span<const WorldPos>(positions.data(), positions.size()),
-                          std::span<const f32>(radii.data(), radii.size()),
+                          std::span<const f32>(radii.data(), radii.size()), {}, {},
                           std::span<f32>(importance.data(), importance.size()));
     sim::ObserverSet observers;
     view::build_observers(views, camera, observers);
@@ -219,18 +262,22 @@ TEST_CASE("anim lod: a crowd walking across a boundary does not thrash") {
   sim::TierAssignment assignment;
 
   const WorldPos eye = camera.position;  // f64, as the camera holds it (ADR-0053)
+  // Out past the last band for the reference's metre of travel through this view's lens (A44: the
+  // bands are pixels of travel, so how far that is depends on the lens), and a fifth beyond.
+  const f32 reach =
+      1.2f * params.boundaries[2] * views[0].proj_scale / animation::k_reference_px_per_rad;
   u32 worst_tick = 0;
   for (u32 tick = 0; tick < k_ticks; ++tick) {
     // A slow sweep towards the camera and away again: every instance spends several ticks within a
     // whisker of each boundary, which is exactly where an unhysteretic policy oscillates.
     const f32 phase = static_cast<f32>(tick) / static_cast<f32>(k_ticks);
-    const f32 depth = 200.0f * (1.0f - std::fabs(2.0f * phase - 1.0f));
+    const f32 depth = reach * (1.0f - std::fabs(2.0f * phase - 1.0f));
     for (u32 i = 0; i < k_instances; ++i) {
       const f32 spread = static_cast<f32>(i) * 0.05f;
       positions[i] = WorldPos{0.0, 0.0, eye.z - static_cast<f64>(depth) - static_cast<f64>(spread)};
     }
     view::view_importance(views, eye, std::span<const WorldPos>(positions.data(), positions.size()),
-                          std::span<const f32>(radii.data(), radii.size()),
+                          std::span<const f32>(radii.data(), radii.size()), {}, {},
                           std::span<f32>(importance.data(), importance.size()));
     sim::TierInput input;
     input.positions = {positions.data(), positions.size()};

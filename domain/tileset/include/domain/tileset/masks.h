@@ -125,11 +125,25 @@ struct MaskBudgetReport {
   u32 resident_mib = 0;
   std::string resident_refusal;
 };
+// **Where a cook's tiles are composed** (T128; tileset.md, "The mask level's cook"): the job
+// system's performance pool `jobs()` returns — asked only when there are tiles to compose, so a
+// hit starts no pool — or the calling thread alone when it returns null. `lanes` is how many of
+// the pool's threads (the caller's counted) work at once: 0 all of them, 1 the calling thread
+// alone, more a cap. **The level is the same bytes at any value**: tiles are composed in any
+// order and handed to the archive, the hash and the refusal in tile order.
+struct MaskCookJobs {
+  jobs::JobSystem* (*get)(void* context) = nullptr;
+  void* context = nullptr;
+  u32 lanes = 0;
+  jobs::JobSystem* jobs() const { return get != nullptr ? get(context) : nullptr; }
+};
+
 // The composition a build runs, scanned for the budget and the resident size: no archive is
 // written. Every tile over is listed, not the first. False, with a sentence, only when the inputs
-// cannot be composed; a level over either is in the report (`over`, `resident_refusal`).
+// cannot be composed; a level over either is in the report (`over`, `resident_refusal`). On the
+// pool as a build is (`cook`), the report the same at any number of threads.
 bool check_mask_budget(const TileSet& set, const MaskInputs& in, MaskBudgetReport& out,
-                       std::string& error);
+                       std::string& error, const MaskCookJobs& cook = {});
 
 // **A level's footprint before anything is built** (T122): the mask tiles its tile set's lattice
 // spans, read from the set's manifest when the terrain names one, else from its heightfield's
@@ -170,14 +184,17 @@ std::string describe_over_budget(const MaskBudgetReport& report, u32 cap);
 // Builds the level of `in` over `set` into `dir`, the manifest last. **Refused, with a sentence
 // naming every tile over (up to `k_over_budget_listed`), its place and its layers, when a tile's
 // points name more layers than the budget**: a dropped layer would show on one side of a seam and
-// not the other.
+// not the other. Its tiles are composed on `cook`'s pool and written in tile order (T128).
 bool build_mask_level(const TileSet& set, const MaskInputs& in, const std::string& dir,
-                      MaskBuildResult& out, std::string& error);
+                      MaskBuildResult& out, std::string& error, const MaskCookJobs& cook = {});
+class MaskLevel;
 // The content step as a library call: into `dir`, or with it empty into `mask_cache_dir(ddc, key)`,
-// unless the manifest there records this key (a hit; `force` builds anyway).
+// unless the manifest there records this key (a hit; `force` builds anyway). `opened`, when given,
+// is the level opened: on a hit the one the key's check opened, so a caller that reads the level
+// does not parse its manifest a second time (T128).
 bool ensure_mask_level(const TileSet& set, const MaskInputs& in, const std::string& dir,
-                       const std::string& ddc, bool force, MaskBuildResult& out,
-                       std::string& error);
+                       const std::string& ddc, bool force, MaskBuildResult& out, std::string& error,
+                       const MaskCookJobs& cook = {}, MaskLevel* opened = nullptr);
 
 // **The priors as images an author keeps or edits**: one greyscale PNG per role named (soil,
 // scree, bedrock, snow), its R the role's weight over the map frame at the mask's spacing, which a

@@ -36,5 +36,13 @@ if(ENGINE_TRACY)
     GIT_TAG        v0.14.1
     GIT_SHALLOW    TRUE)
   FetchContent_MakeAvailable(tracy)
+  # Tracy's allocator, rpmalloc, maps each thread that first allocates through it (every thread
+  # that names itself: every job pool's worker) a heap of DEFAULT_SPAN_MAP_COUNT spans of 64 KiB at
+  # once, committed, and the thread's name it keeps there for the life of the process pins the
+  # whole mapping when the thread ends. At rpmalloc's 64 that is 4 MiB of commit a thread, for
+  # good: 6.2 GB on the forest's staging when a pool was made per tile mesh (T129;
+  # docs/subsystems/profiling.md). Four spans is 256 KiB a thread; the allocator maps more as it
+  # needs them, which only a connected profiler's queues ever do.
+  target_compile_definitions(TracyClient PRIVATE DEFAULT_SPAN_MAP_COUNT=4)
   message(STATUS "engine: Tracy profiling enabled (on-demand)")
 endif()

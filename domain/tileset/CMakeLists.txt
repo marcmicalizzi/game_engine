@@ -12,12 +12,13 @@
 #
 # `scene_gen` for the registry and the tile source, `schemas` for the scene's terrain entry (its
 # `tiles` block), `geometry` for the repository's derived-data root (`find_ddc_root`), `io` for the
-# files. No GPU, no ECS, no renderer.
+# files, `jobs` for the mask level's cook on the performance pool (T128). No GPU, no ECS, no
+# renderer.
 engine_schema_library(NAME tileset_schemas SCHEMAS schemas/tileset.schema CAPABILITY tileset)
 
 engine_module(NAME tileset LAYER domain OPTIONAL WHOLE_ARCHIVE GENERATOR ground:tiles
   DEPS base containers math hash json schema schemas tileset_schemas io image geometry scene_gen log
-       tunables time profiling
+       tunables time profiling jobs
   SOURCES src/archive.cpp src/cuts.cpp src/tileset.cpp src/masks.cpp src/ground.cpp)
 
 # WALL_CLOCK: tileset_tests.cpp holds one height lookup beside a building window under 50 ms, so the

@@ -805,7 +805,9 @@ bool SceneCollision::held_tile(u32 index, HeldTile& out) const noexcept {
     out.heights = std::span<const f32>(tile.heights.data(), tile.heights.size());
   }
   out.spacing_m = static_cast<f64>(spacing_mm_) / 1000.0;
-  out.pieces = tile.pieces_held.size();
+  // The records are kept always now (the casts and the supports read them, A43); a debug draw's
+  // count is still "0 unless kept", as the header says.
+  out.pieces = config_.keep_shapes ? tile.pieces_held.size() : 0u;
   return true;
 }
 
@@ -827,6 +829,266 @@ bool SceneCollision::held_piece(u32 tile_index, u32 piece, HeldPiece& out) const
     out.parts = std::span<const u32>(record.proxy->parts.data(), record.proxy->parts.size());
   }
   return true;
+}
+
+// ---- what a module can ask (docs: "What a module can ask"; roadmap A43) ----------------------
+
+namespace {
+// A limb steeper than this from level is a trunk or a riser, not something to land on (sin 60°).
+constexpr f32 k_limb_max_rise = 0.8660254f;
+// A top whose surface leans further than this from level is not one to stand on (cos 40°, the
+// walker's own slope limit, `WalkParams::max_slope_deg`).
+constexpr f32 k_top_min_up = 0.7660444f;
+// How far above a piece's bounds the ray down onto its top starts, metres.
+constexpr f32 k_top_ray_lift_m = 0.25f;
+
+i32 floor_tile(f64 metres, i64 tile_mm) noexcept {
+  const f64 mm = std::floor(metres * 1000.0 + 0.5);
+  const i64 v = static_cast<i64>(mm);
+  i64 q = v / tile_mm;
+  if (v % tile_mm != 0 && v < 0) --q;
+  return static_cast<i32>(q);
+}
+}  // namespace
+
+// The supports a proxy carries (docs: "Supports"), in its own frame — the mesh's at the proxy's
+// scale, as its triangles are: the bounds of those triangles, and the perches the mesh declares,
+// else the parts of its structural table. A limb's radius is scaled by the smallest of the scale's
+// axes, the size a foot can trust.
+void SceneCollision::fill_supports(const renderer::SourceMesh* source, Vec3 scale,
+                                   const PlacementScratch& scratch, Proxy& proxy) {
+  proxy.supports.clear();
+  proxy.lo = Vec3{};
+  proxy.hi = Vec3{};
+  if (!scratch.vertices.empty()) {
+    proxy.lo = scratch.vertices[0];
+    proxy.hi = scratch.vertices[0];
+    for (const Vec3& v : scratch.vertices) {
+      proxy.lo =
+          Vec3{std::min(proxy.lo.x, v.x), std::min(proxy.lo.y, v.y), std::min(proxy.lo.z, v.z)};
+      proxy.hi =
+          Vec3{std::max(proxy.hi.x, v.x), std::max(proxy.hi.y, v.y), std::max(proxy.hi.z, v.z)};
+    }
+  }
+  if (source == nullptr) return;
+  const auto scaled = [&](Vec3 p) { return Vec3{p.x * scale.x, p.y * scale.y, p.z * scale.z}; };
+  const f32 smallest =
+      std::min(std::fabs(scale.x), std::min(std::fabs(scale.y), std::fabs(scale.z)));
+  if (!source->perches.empty()) {
+    for (u32 i = 0; i < source->perches.size(); ++i) {
+      const geometry::ClusterFilePerch& p = source->perches[i];
+      LocalSupport s;
+      s.kind = k_support_perch;
+      s.part = i;
+      s.a = scaled(p.position);
+      // A direction under a non-uniform scale goes by the inverse scale, as a normal does.
+      const Vec3 up{p.up.x / (scale.x != 0.0f ? scale.x : 1.0f),
+                    p.up.y / (scale.y != 0.0f ? scale.y : 1.0f),
+                    p.up.z / (scale.z != 0.0f ? scale.z : 1.0f)};
+      s.up = length(up) > 0.0f ? normalize(up) : Vec3{0.0f, 1.0f, 0.0f};
+      s.r0 = 0.5f * p.size_m * smallest;
+      s.r1 = s.r0;
+      proxy.supports.push_back(s);
+    }
+    return;
+  }
+  const geometry::FloraSpeciesInfo* species = geometry::flora_species_info(source->species);
+  if (species == nullptr || species->motion != geometry::FloraMotionKind::parts) return;
+  // Every part the table gives a radius, load-bearing or not: a bird perches on a branch no walker
+  // could stand on. The size a caller asks for (`min_size`) is what leaves the twigs out.
+  for (const geometry::ClusterFileStructuralPart& record : source->structural_parts) {
+    if (record.part >= source->motion_parts.size() || !(record.base_radius > 0.0f)) continue;
+    const geometry::ClusterFileMotionPart& part = source->motion_parts[record.part];
+    LocalSupport s;
+    s.kind = k_support_limb;
+    s.part = record.part;
+    s.a = scaled(part.pivot);
+    s.b = scaled(part.pivot + part.direction * part.length);
+    s.r0 = record.base_radius * smallest;
+    s.r1 = record.tip_radius * smallest;
+    proxy.supports.push_back(s);
+  }
+}
+
+HitInfo SceneCollision::describe_hit(physics::BodyId body, u32 child) const noexcept {
+  HitInfo out;
+  if (!body) return out;
+  for (u32 i = 0; i < tiles_.size(); ++i) {
+    const Tile& tile = tiles_.value_at(i);
+    if (tile.ground == body) {
+      out.kind = HitKind::ground;
+      return out;
+    }
+    if (tile.placements == body) {
+      out.kind = HitKind::piece;
+      if (child < tile.pieces_held.size()) {
+        const PieceRecord& record = tile.pieces_held[child];
+        out.mesh = record.mesh;
+        out.instance = record.instance;
+        out.entry = record.entry;
+      }
+      return out;
+    }
+  }
+  return out;
+}
+
+bool SceneCollision::covers(WorldPos at) const noexcept {
+  const world::TileCoord coord{floor_tile(at.x, tile_mm_), floor_tile(at.z, tile_mm_)};
+  return tiles_.find_value(world::tile_key(coord)) != nullptr;
+}
+
+// The segment's (x, z) sampled every eighth of a tile, its two ends included, each point's tile
+// asked whether it is held: a tile the segment only grazes for less than an eighth of a tile may be
+// missed, which errs towards "covered" by at most that corner. Bounded: a 256 m cast over 32 m
+// tiles is 65 looks.
+bool SceneCollision::covers_segment(WorldPos a, WorldPos b) const noexcept {
+  const f64 step = static_cast<f64>(tile_mm_) / 8000.0;
+  const f64 dx = b.x - a.x;
+  const f64 dz = b.z - a.z;
+  const f64 run = std::sqrt(dx * dx + dz * dz);
+  const u32 n = static_cast<u32>(std::min(4096.0, std::ceil(run / step)));
+  for (u32 i = 0; i <= n; ++i) {
+    const f64 t = n == 0 ? 0.0 : static_cast<f64>(i) / static_cast<f64>(n);
+    if (!covers(WorldPos{a.x + dx * t, 0.0, a.z + dz * t})) return false;
+  }
+  return true;
+}
+
+void SceneCollision::piece_supports(const Tile& tile, u32 piece, WorldPos at, f32 radius,
+                                    f32 min_size, std::span<Support> out,
+                                    SupportAnswer& answer) const noexcept {
+  const PieceRecord& record = tile.pieces_held[piece];
+  const Proxy* proxy = record.proxy;
+  if (proxy == nullptr) return;
+  const WorldPos origin = tile_corner(tile.coord) + DVec3{record.offset};
+  // A scene's instance is a piece of every tile its bounds reach (the bins), and answers once: from
+  // the tile that holds its origin. A streamed placement is its own tile's alone.
+  if (record.instance != k_no_index && (floor_tile(origin.x, tile_mm_) != tile.coord.x ||
+                                        floor_tile(origin.z, tile_mm_) != tile.coord.z)) {
+    return;
+  }
+  // The piece's bounds as a sphere, for the rejection: its centre and half diagonal.
+  const Vec3 centre_local = (proxy->lo + proxy->hi) * 0.5f;
+  const f32 reach = 0.5f * length(proxy->hi - proxy->lo);
+  const WorldPos centre = origin + DVec3{rotate(record.rotation, centre_local)};
+  if (length(centre - at) > static_cast<f64>(radius + reach)) return;
+  HitInfo owner;
+  owner.kind = HitKind::piece;
+  owner.mesh = record.mesh;
+  owner.instance = record.instance;
+  owner.entry = record.entry;
+  const auto offer = [&](u8 kind, u32 part, WorldPos position, Vec3 up, f32 size) {
+    if (size < min_size) return;
+    const f64 d = length(position - at);
+    if (d > static_cast<f64>(radius)) return;
+    ++answer.found;
+    // Insertion into the nearest so far: ties keep the earlier (the piece order, then the
+    // support's own order), so the answer is the same for the same held tiles.
+    u32 slot = answer.count;
+    while (slot > 0 && static_cast<f64>(out[slot - 1].distance) > d)
+      --slot;
+    if (slot >= out.size()) return;
+    const u32 last = answer.count < out.size() ? answer.count : static_cast<u32>(out.size()) - 1u;
+    for (u32 k = last; k > slot; --k)
+      out[k] = out[k - 1];
+    Support& s = out[slot];
+    s.position = position;
+    s.up = up;
+    s.size_m = size;
+    s.distance = static_cast<f32>(d);
+    s.kind = kind;
+    s.piece = owner;
+    s.part = part;
+    if (answer.count < out.size()) ++answer.count;
+  };
+  if (proxy->supports.empty()) {
+    // The top of its bounds: a ray down the top's centre onto the piece itself.
+    const Vec3 top_local{centre_local.x, proxy->hi.y, centre_local.z};
+    const WorldPos top = origin + DVec3{rotate(record.rotation, top_local)};
+    const f32 height = proxy->hi.y - proxy->lo.y;
+    physics::RayHit hit;
+    const WorldPos from = top + DVec3{0.0, static_cast<f64>(k_top_ray_lift_m), 0.0};
+    const physics::LayerMask statics = physics::LayerMask::of(physics::Layer::Static);
+    if (!physics_->cast_ray(from, Vec3{0.0f, -(height + 2.0f * k_top_ray_lift_m), 0.0f}, hit,
+                            statics)) {
+      return;
+    }
+    // A triangle's normal is its winding's, which an asset may have either way round: the top's
+    // faces the ray, which came from above.
+    const Vec3 up = hit.normal.y < 0.0f ? hit.normal * -1.0f : hit.normal;
+    if (up.y < k_top_min_up) return;
+    // On this piece: this tile's child, or the same instance in a neighbouring tile's compound,
+    // which stands in the same place.
+    if (hit.body != tile.placements || hit.child != piece) {
+      const HitInfo met = describe_hit(hit.body, hit.child);
+      if (met.kind != HitKind::piece || record.instance == k_no_index ||
+          met.instance != record.instance) {
+        return;
+      }
+    }
+    const f32 half_x = 0.5f * (proxy->hi.x - proxy->lo.x);
+    const f32 half_z = 0.5f * (proxy->hi.z - proxy->lo.z);
+    offer(k_support_top, k_no_index, hit.position, up, std::min(half_x, half_z));
+    return;
+  }
+  for (const LocalSupport& s : proxy->supports) {
+    if (s.kind == k_support_perch) {
+      offer(k_support_perch, s.part, origin + DVec3{rotate(record.rotation, s.a)},
+            rotate(record.rotation, s.up), 2.0f * s.r0);
+      continue;
+    }
+    // A limb: the point of its axis nearest the asker, on the axis's top, where the radius is.
+    const Vec3 a = rotate(record.rotation, s.a);
+    const Vec3 b = rotate(record.rotation, s.b);
+    const Vec3 axis = b - a;
+    const f32 len = length(axis);
+    if (!(len > 0.0f) || std::fabs(axis.y) > k_limb_max_rise * len) continue;
+    const Vec3 dir = axis * (1.0f / len);
+    const Vec3 to = relative(at, origin) - a;
+    f32 t = dot(to, dir) / len;
+    t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+    // Toward the base where the tip is thinner than the foot asked for.
+    const f32 r_t = s.r0 + (s.r1 - s.r0) * t;
+    if (2.0f * r_t < min_size && s.r1 < s.r0 && 2.0f * s.r0 >= min_size) {
+      t = (s.r0 - 0.5f * min_size) / (s.r0 - s.r1);
+    }
+    const f32 r = s.r0 + (s.r1 - s.r0) * t;
+    // The limb's top: world up less its share along the axis.
+    const Vec3 world_up{0.0f, 1.0f, 0.0f};
+    const Vec3 lift = normalize(world_up - dir * dot(world_up, dir));
+    offer(k_support_limb, s.part, origin + DVec3{a + dir * (t * len) + lift * r}, lift, 2.0f * r);
+  }
+}
+
+SupportAnswer SceneCollision::supports_near(WorldPos at, f32 radius, f32 min_size,
+                                            std::span<Support> out) const noexcept {
+  SupportAnswer answer;
+  const f64 r = static_cast<f64>(radius);
+  // Covered when the disc's bounding square lies over held tiles (its four corners' tiles and
+  // the ones between them).
+  const i32 x0 = floor_tile(at.x - r, tile_mm_);
+  const i32 x1 = floor_tile(at.x + r, tile_mm_);
+  const i32 z0 = floor_tile(at.z - r, tile_mm_);
+  const i32 z1 = floor_tile(at.z + r, tile_mm_);
+  answer.covered = true;
+  for (i32 z = z0; z <= z1 && answer.covered; ++z) {
+    for (i32 x = x0; x <= x1; ++x) {
+      if (tiles_.find_value(world::tile_key(world::TileCoord{x, z})) == nullptr) {
+        answer.covered = false;
+        break;
+      }
+    }
+  }
+  // The held tiles in the consumer's order (sorted by key), each piece in its child order: the
+  // same answer for the same held tiles, whatever order they came in.
+  for (u32 i = 0; i < tiles_.size(); ++i) {
+    const Tile& tile = tiles_.value_at(i);
+    if (tile.coord.x < x0 || tile.coord.x > x1 || tile.coord.z < z0 || tile.coord.z > z1) continue;
+    for (u32 p = 0; p < tile.pieces_held.size(); ++p)
+      piece_supports(tile, p, at, radius, min_size, out, answer);
+  }
+  return answer;
 }
 
 bool SceneCollision::ground_body(physics::BodyId body) const noexcept {
@@ -1002,6 +1264,8 @@ const SceneCollision::Proxy* SceneCollision::proxy_for(u32 mesh, Vec3 scale,
     proxy->indices = indices;
     proxy->parts = scratch.parts;
   }
+  fill_supports(mesh < scene_->sources.size() ? &scene_->sources[mesh] : nullptr, scale, scratch,
+                *proxy);
   if (!indices.empty() &&
       physics_->build_mesh(std::span<const Vec3>(vertices.data(), vertices.size()),
                            std::span<const u32>(indices.data(), indices.size()),
@@ -1071,6 +1335,7 @@ const SceneCollision::Proxy* SceneCollision::tile_proxy_for(const scene_gen::Pla
       made->proxy.indices = scratch.indices;
       made->proxy.parts = scratch.parts;
     }
+    fill_supports(&data.source, scale, scratch, made->proxy);
     if (!scratch.indices.empty() &&
         physics_->build_mesh(
             std::span<const Vec3>(scratch.vertices.data(), scratch.vertices.size()),
@@ -1119,15 +1384,14 @@ bool SceneCollision::add_tile_piece(const scene_gen::PlacementMesh& mesh, const 
   child.transform.position = relative(at, corner);
   child.transform.rotation = placed.rotation;
   scratch.children.push_back(child);
-  if (config_.keep_shapes) {
-    PieceRecord record;
-    record.mesh = k_no_index;  // no scene mesh: it arrived with the tile
-    record.entry = entry;
-    record.offset = child.transform.position;
-    record.rotation = placed.rotation;
-    record.proxy = proxy;  // resident while the tile holds its reference
-    scratch.records.push_back(record);
-  }
+  // The piece's record, always, in child order (a cast's `child` names it; A43).
+  PieceRecord record;
+  record.mesh = k_no_index;  // no scene mesh: it arrived with the tile
+  record.entry = entry;
+  record.offset = child.transform.position;
+  record.rotation = placed.rotation;
+  record.proxy = proxy;  // resident while the tile holds its reference
+  scratch.records.push_back(record);
   return true;
 }
 
@@ -1151,16 +1415,15 @@ bool SceneCollision::add_piece(u32 mesh, const Mat4& linear, WorldPos at, WorldP
   child.transform.position = relative(at, corner);
   child.transform.rotation = placed.rotation;
   scratch.children.push_back(child);
-  if (config_.keep_shapes) {
-    PieceRecord record;
-    record.mesh = mesh;
-    record.instance = instance;
-    record.entry = entry;
-    record.offset = child.transform.position;
-    record.rotation = placed.rotation;
-    record.proxy = proxy;  // the cache's: its address is stable for the consumer's life
-    scratch.records.push_back(record);
-  }
+  // The piece's record, always, in child order (a cast's `child` names it; A43).
+  PieceRecord record;
+  record.mesh = mesh;
+  record.instance = instance;
+  record.entry = entry;
+  record.offset = child.transform.position;
+  record.rotation = placed.rotation;
+  record.proxy = proxy;  // the cache's: its address is stable for the consumer's life
+  scratch.records.push_back(record);
   return true;
 }
 
@@ -1283,7 +1546,7 @@ void SceneCollision::gather_placements(world::TileCoord coord, PlacementScratch&
     }
   }
   if (scratch.children.empty()) return;
-  if (config_.keep_shapes) out.records = scratch.records;
+  out.records = scratch.records;
   if (physics_->build_compound(
           std::span<const physics::BuiltChild>(scratch.children.data(), scratch.children.size()),
           out.compound) != physics::Status::Ok) {
@@ -1347,7 +1610,7 @@ bool SceneCollision::build_placements(Tile& tile, Build* build) {
   }
   tile.pieces = placed->pieces;
   give_back.keep = true;
-  if (config_.keep_shapes) tile.pieces_held = std::move(placed->records);
+  tile.pieces_held = std::move(placed->records);
   ++stats_.bodies_created;
   return placed->ok;
 }

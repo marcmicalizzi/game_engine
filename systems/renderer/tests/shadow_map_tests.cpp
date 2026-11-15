@@ -1328,6 +1328,79 @@ TEST_CASE(
   MESSAGE("opposite answers inside the footprint's band, every map and view: " << opposite_total);
 }
 
+// **Which meshes face the sky** (S105; renderer.md, "The ground takes the picture's cut in every
+// cascade"): on the CPU. The mesh as built — its leaves — is asked. A cluster answers by its packed
+// cone where the cone stays above the horizon (a.y > cutoff), and by its own triangles where there
+// is no cone or the cone reaches past it; a wall, a face turned down or a mesh whose leaves are not
+// in the array (a paged scene) make a mesh not one, while a sliver with no area and a fold in a
+// coarser level do not; and the heightfield is one. (The S105 bay's water, whose coarser levels
+// hold six folded triangles, is one; the water suite's sheet case draws it.)
+TEST_CASE("renderer: a mesh faces the sky when every triangle it was built with faces above it") {
+  geometry::ClusterMesh mesh;
+  // One triangle a cluster, its corners given; counter-clockwise seen from above faces up.
+  const auto add = [&mesh](Vec3 a, Vec3 b, Vec3 c, Vec3 axis, f32 cutoff) {
+    geometry::ClusterDesc cluster;
+    cluster.vertex_offset = mesh.vertices.size();
+    cluster.triangle_offset = mesh.triangles.size();
+    cluster.vertex_count = 3;
+    cluster.triangle_count = 1;
+    cluster.cone = cutoff >= 1.0f ? geometry::k_cone_none : geometry::encode_cone(axis, cutoff);
+    mesh.vertices.push_back(a);
+    mesh.vertices.push_back(b);
+    mesh.vertices.push_back(c);
+    mesh.triangles.push_back(0u | (1u << 8) | (2u << 16));
+    mesh.clusters.push_back(cluster);
+  };
+  const Vec3 o{0.0f, 0.0f, 0.0f};
+  const Vec3 x{1.0f, 0.0f, 0.0f};
+  const Vec3 z{0.0f, 0.0f, 1.0f};
+  const Vec3 up{0.0f, 1.0f, 0.0f};
+  const Vec3 ramp{0.0f, 0.5f, 1.0f};  // up the slope towards +z, 27 degrees
+  // Mesh 0: level with a cone; a ramp with a cone too wide to say (cutoff 0.95), so its triangle;
+  // a level face with no cone; a sliver with no area.
+  add(o, z, x, up, 0.1f);
+  add(o, ramp, x, Vec3{0.5f, std::sqrt(0.75f), 0.0f}, 0.95f);
+  add(o, z, x, up, 1.0f);
+  add(o, x, Vec3{2.0f, 0.0f, 0.0f}, up, 1.0f);
+  // Mesh 1: level, then a wall with no cone.
+  add(o, z, x, up, 0.1f);
+  add(o, up, x, up, 1.0f);
+  // Mesh 2: a face turned down (clockwise from above), no cone.
+  add(o, x, z, up, 1.0f);
+  // Mesh 3: a level leaf, and a coarser level that folded a triangle over in its plane.
+  add(o, z, x, up, 0.1f);
+  add(o, x, z, up, 1.0f);
+  Vector<geometry::ClusterMeshPart> parts(5);
+  const auto part = [&parts](u32 m, u32 first, u32 count, u32 leaves) {
+    parts[m].first_cluster = first;
+    parts[m].cluster_count = count;
+    parts[m].leaf_cluster_count = leaves;
+  };
+  part(0, 0, 4, 4);
+  part(1, 4, 2, 2);
+  part(2, 6, 1, 1);
+  part(3, 7, 2, 1);
+  part(4, 9, 3, 3);  // past the array, as a paged scene's leaves are
+  Vector<u32> sky;
+  CHECK(sky_facing_meshes(mesh, parts, sky) == 2u);
+  REQUIRE(sky.size() == 5u);
+  CHECK(sky[0] == 1u);
+  CHECK(sky[1] == 0u);
+  CHECK(sky[2] == 0u);
+  CHECK(sky[3] == 1u);
+  CHECK(sky[4] == 0u);
+
+  SceneDesc desc;
+  desc.meshes.push_back("");
+  desc.heightfield_grid = 129;
+  desc.cache = false;
+  SceneData data;
+  std::string error;
+  REQUIRE_MESSAGE(load_scene(desc, data, error), error);
+  CHECK(sky_facing_meshes(data.lod.mesh, data.parts, sky) == 1u);
+  CHECK(sky.size() == 1u);
+}
+
 TEST_CASE("renderer: the cascades' light-view cull never changes the shadow") {
   Gpu gpu;
   if (!gpu.ok) {
