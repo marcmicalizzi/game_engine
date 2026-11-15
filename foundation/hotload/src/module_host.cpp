@@ -617,12 +617,14 @@ struct HostCallbacks {
     return r;
   }
   // The records go straight into the module's array when it is built with this host's `Support`;
-  // a module whose records are larger (a newer header's, which this host would have refused to
-  // load, but the check costs nothing) gets them through a buffer, at most `k_buffered` of them.
+  // a module whose records are another size gets them through a buffer, at most `k_buffered` of
+  // them, each written as far as its `support_size` reaches: an ABI 10 or 11 module's 72 bytes
+  // (`k_support_v10_size`, ABI 12's `along` and `placement` left out and its `flags` 0, as that
+  // word always was), or a newer header's larger record with its later fields untouched.
   static Result supports_near(void* host, const f64* point, SupportQuery* io) {
     const GameServices& g = self(host).game_;
     if (point == nullptr || io == nullptr || io->size < sizeof(SupportQuery) ||
-        io->support_size < sizeof(Support) || (io->out == nullptr && io->capacity > 0)) {
+        io->support_size < k_support_v10_size || (io->out == nullptr && io->capacity > 0)) {
       return Result::InvalidArgument;
     }
     if (g.supports_near == nullptr) return Result::Unsupported;
@@ -639,8 +641,12 @@ struct HostCallbacks {
     if (r != Result::Ok) return r;
     if (!direct) {
       u8* to = reinterpret_cast<u8*>(io->out);
-      for (u32 i = 0; i < query.count; ++i)
-        std::memcpy(to + static_cast<usize>(i) * io->support_size, &buffer[i], sizeof(Support));
+      const usize reach = io->support_size < sizeof(Support) ? io->support_size : sizeof(Support);
+      for (u32 i = 0; i < query.count; ++i) {
+        // A record the module built before ABI 12 has no `along` or `placement` to say it has.
+        if (reach < sizeof(Support)) buffer[i].flags = 0;
+        std::memcpy(to + static_cast<usize>(i) * io->support_size, &buffer[i], reach);
+      }
     }
     io->count = query.count;
     io->found = query.found;

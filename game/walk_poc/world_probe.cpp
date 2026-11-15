@@ -18,6 +18,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 
 using namespace engine;
 using namespace engine::hotload;
@@ -65,6 +66,11 @@ void supports(ModuleContext* context, const char* name, f64 x, f64 y, f64 z, f32
                   s.position[2], static_cast<f64>(s.up[0]), static_cast<f64>(s.up[1]),
                   static_cast<f64>(s.up[2]), static_cast<f64>(s.size_m));
     put(line);
+    // ABI 12 (A45): the limb's axis and the piece's name, and the flags saying they are filled.
+    std::snprintf(line, sizeof line, ",\"flags\":%u,\"along\":[%.9g,%.9g,%.9g],\"placement\":%llu",
+                  s.flags, static_cast<f64>(s.along[0]), static_cast<f64>(s.along[1]),
+                  static_cast<f64>(s.along[2]), static_cast<unsigned long long>(s.placement));
+    put(line);
     if (g_props) {
       u32 prop = 0;
       const Result placed =
@@ -74,6 +80,127 @@ void supports(ModuleContext* context, const char* name, f64 x, f64 y, f64 z, f32
     }
   }
   put("}");
+}
+
+// One entry's answer into the "entries" object: its result code, or 0 for a call with none.
+u32 g_entries = 0;
+void entry(const char* name, Result r) {
+  char line[96];
+  std::snprintf(line, sizeof line, "%s\"%s\":%d", g_entries == 0 ? "" : ",", name,
+                static_cast<i32>(r));
+  put(line);
+  ++g_entries;
+}
+
+// **Every entry of the host's table, once** (A45; the case ABI 11 never had): what this module did
+// not already ask above, each with arguments a module would pass — the props and the HUD's on
+// things this module makes, the actors' on a name the scene has none of (`NotFound` is their
+// answer), the schema's on a type it does not have — so the end-to-end case holds that every entry
+// a host of this header has answers through the host, and the count against the table's size.
+void table(ModuleContext* context, const f64* at) {
+  const HostApi* api = context->api;
+  void* h = api->host;
+  const auto text = [](const char* s) { return static_cast<u64>(std::strlen(s)); };
+  g_entries = 0;
+  put(",\"entries\":{");
+  void* p = api->allocate(h, 64, 16);
+  entry("allocate", p != nullptr ? Result::Ok : Result::NotFound);
+  api->deallocate(h, p, 64, 16);
+  entry("deallocate", Result::Ok);
+  api->log(h, LogLevel::Info, "table probe", text("table probe"));
+  entry("log", Result::Ok);
+  entry("tick", api->tick(h) > 0 ? Result::Ok : Result::NotFound);
+  entry("fixed_step", api->fixed_step(h) > 0.0 ? Result::Ok : Result::NotFound);
+  FieldRef ref{};
+  entry("resolve", api->resolve(h, "NoSuchType", text("NoSuchType"), "x", 1, &ref));
+  i64 enumerator = 0;
+  entry("enum_value", api->enum_value(h, ref, "x", 1, &enumerator));
+  Value value{};
+  entry("read", api->read(h, View{}, ref, &value));
+  entry("read_element", api->read_element(h, View{}, ref, 0, &value));
+  // `fail` only words a failure the tick then returns; this tick returns, so it is dropped.
+  api->fail(h, "table probe", text("table probe"));
+  entry("fail", Result::Ok);
+  u32 bit = 0;
+  entry("game_action", api->game_action(h, "no_such_action", text("no_such_action"), &bit));
+  api->hud_text(h, 0, "table probe", text("table probe"));
+  entry("hud_text", Result::Ok);
+  api->hud_meter(h, "probe", text("probe"), 1.0, 2.0);
+  entry("hud_meter", Result::Ok);
+  entry("end_run", Result::Ok);  // called last, with this object
+  f64 position[3] = {0.0, 0.0, 0.0};
+  f64 distance = 0.0;
+  entry("nearest_placement",
+        api->nearest_placement(h, "tree", text("tree"), 30.0, position, &distance));
+  u32 mesh = 0;
+  const Result has_mesh = api->prop_mesh(h, "bird", text("bird"), &mesh);
+  entry("prop_mesh", has_mesh);
+  u32 prop = 0;
+  entry("prop_place", api->prop_place(h, mesh, at, 0.0f, 1.0f, &prop));
+  entry("prop_move", api->prop_move(h, prop, at, 0.5f));
+  u32 found_prop = 0;
+  entry("nearest_prop", api->nearest_prop(h, mesh, 5.0, &found_prop, position, &distance));
+  entry("prop_remove", api->prop_remove(h, prop));
+  entry("walker_set", api->walker_set(h, 1.0f, 1.0f));
+  // Where the session started, so the walker stays where the questions above were asked.
+  const f64 start[3] = {0.0, ground(context, 0.0, 12.5), 12.5};
+  entry("walker_teleport", api->walker_teleport(h, start, 3.14159265f, 0.0f));
+  u32 clip = 0;
+  entry("sound_clip", api->sound_clip(h, "no_such_clip", text("no_such_clip"), &clip));
+  u32 voice = 0;
+  entry("sound_play", api->sound_play(h, clip, at, 1.0f, &voice));
+  entry("sound_stop", api->sound_stop(h, voice));
+  HudElement element;
+  element.id = 7;
+  entry("hud_element", api->hud_element(h, &element));
+  entry("hud_remove", api->hud_remove(h, 7));
+  GraphicsState graphics;
+  entry("graphics_state", api->graphics_state(h, &graphics));
+  GraphicsRequest request;
+  entry("request_graphics", api->request_graphics(h, &request));
+  u32 actor = 0;
+  entry("actor_find", api->actor_find(h, "no_such_actor", text("no_such_actor"), &actor));
+  entry("actor_spawn", api->actor_spawn(h, "no_such_mesh", text("no_such_mesh"), at, 0.0f, &actor));
+  entry("actor_place", api->actor_place(h, actor, at, 0.0f));
+  entry("actor_play", api->actor_play(h, actor, "walk", text("walk"), 0.0f, 1));
+  entry("actor_stop", api->actor_stop(h, actor, 0.0f));
+  entry("actor_speed", api->actor_speed(h, actor, 1.0f));
+  ActorState state;
+  entry("actor_state", api->actor_state(h, actor, &state));
+  f64 height = 0.0;
+  entry("ground_height", api->ground_height(h, 0.0, 12.5, &height));
+  HudImage image;
+  entry("hud_image", api->hud_image(h, &image));
+  u32 font = 0;
+  entry("hud_font", api->hud_font(h, "no_such_font.ttf", text("no_such_font.ttf"), 18.0f, &font));
+  const f32 up[3] = {0.0f, 1.0f, 0.0f};
+  entry("actor_place_aligned", api->actor_place_aligned(h, actor, at, 0.0f, up, 0.3f));
+  GroundSample sample;
+  entry("ground_sample", api->ground_sample(h, 0.0, 12.5, &sample));
+  const f32 weights[1] = {0.0f};
+  entry("actor_morph", api->actor_morph(h, actor, weights, 1));
+  entry("actor_scale", api->actor_scale(h, actor, 1.0f));
+  MorphInfo morph;
+  entry("actor_morph_info", api->actor_morph_info(h, actor, &morph));
+  CastHit hit;
+  const f32 down[3] = {0.0f, -1.0f, 0.0f};
+  entry("cast_ray", api->cast_ray(h, at, down, 20.0f, &hit));
+  entry("cast_sphere", api->cast_sphere(h, at, down, 20.0f, 0.1f, &hit));
+  WaterSample water;
+  entry("water_at", api->water_at(h, 0.0, 0.0, &water));
+  Support found[4];
+  SupportQuery query;
+  query.radius_m = 4.0f;
+  query.capacity = 4;
+  query.out = found;
+  entry("supports_near", api->supports_near(h, at, &query));
+  entry("actor_lod_bias", api->actor_lod_bias(h, actor, 1.0f));
+  ClipInfo info;
+  entry("actor_clip_info", api->actor_clip_info(h, actor, &info));
+  entry("actor_seek", api->actor_seek(h, actor, 0.0f));
+  char line[64];
+  std::snprintf(line, sizeof line, "},\"entry_count\":%u", g_entries);
+  put(line);
 }
 
 void cast_json(const char* name, Result r, const CastHit& hit) {
@@ -154,7 +281,11 @@ void probe(ModuleContext* context) {
                   static_cast<f64>(w.velocity[1]), w.source, w.index);
     put(line);
   }
-  put("]}");
+  put("]");
+  // And every other entry of the table once (A45), from a point beside the boulder.
+  const f64 beside[3] = {-6.0, ground(context, -6.0, 14.0) + 1.0, 14.0};
+  table(context, beside);
+  put("}");
   context->api->end_run(context->api->host, g_json, g_at);
 }
 

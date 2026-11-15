@@ -2,6 +2,7 @@
 // docs/experiments/conifer-shoots.md).
 #include "kit.h"
 
+#include <domain/flora/structure.h>
 #include <domain/flora/trees.h>
 #include <domain/geometry/cluster.h>
 
@@ -433,18 +434,22 @@ bool detail::solve_conifer_rules(const Conifer& p, const GrowthRules& rules, ass
   emit.wood.seed = p.seed;
 
   // The bark: the trunk (part 0) tapering to the leader's tip, then every branch's woody shoot,
-  // each a part of its own hanging from the trunk; a dead branch's on every rung.
-  emit.begin_part(s.trunk.point[0], s.trunk.tangent[0], s.trunk.length,
-                  geometry::k_motion_no_parent);
+  // each a part of its own hanging from the trunk; a dead branch's on every rung. Each with its
+  // row of the structural table (section 37; A45), the trunk load-bearing, so a bird can stand on
+  // a spruce's branch as on a birch's limb.
+  const f64 trunk_tip = std::min(.01, s.trunk_r0 * .3);
+  begin_structural_part(emit, s.trunk.point[0], s.trunk.tangent[0], s.trunk.length,
+                        geometry::k_motion_no_parent, s.trunk_r0, trunk_tip, k_load_bearing);
   emit.skirt = true;  // the trunk stands on the ground (G201)
-  build_tube(resample_axis(s.trunk, plan.trunk_rows), s.trunk_r0, std::min(.01, s.trunk_r0 * .3),
-             plan.trunk_sides, Vec2{0.0f, 0.0f}, emit);
+  build_tube(resample_axis(s.trunk, plan.trunk_rows), s.trunk_r0, trunk_tip, plan.trunk_sides,
+             Vec2{0.0f, 0.0f}, emit);
   emit.skirt = false;
   Vector<u32> part_of(s.branches.size());
   u32 laterals = 0;
   for (u32 i = 0; i < s.branches.size(); ++i) {
     const Branch& b = s.branches[i];
-    part_of[i] = emit.begin_part(b.axis.point[0], b.axis.tangent[0], b.axis.length, k_trunk_part);
+    part_of[i] = begin_structural_part(emit, b.axis.point[0], b.axis.tangent[0], b.axis.length,
+                                       k_trunk_part, b.r0, b.r1, 0u);
     if (b.dead) {
       build_tube(resample_axis(b.axis, dead_rows(plan)), b.r0, b.r1, dead_sides(plan),
                  Vec2{0.0f, 0.0f}, emit);

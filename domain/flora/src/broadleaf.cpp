@@ -1,6 +1,7 @@
 // The broadleaf's solver (trees.h; docs/subsystems/flora.md, "The broadleaf", "Allometry").
 #include "kit.h"
 
+#include <domain/flora/structure.h>
 #include <domain/flora/trees.h>
 #include <domain/geometry/cluster.h>
 
@@ -367,14 +368,19 @@ bool detail::solve_broadleaf_rules(const Broadleaf& p, const GrowthRules& rules,
   emit.wood = rules.wood;
   emit.wood.seed = p.seed;
 
-  // The bark: the trunk and the limbs, then the recursion parents first, each part a tube.
+  // The bark: the trunk and the limbs, then the recursion parents first, each part a tube. Every
+  // part has its row of the structural table (section 37; flora.md, "The structural table"), as the
+  // birch's and the willow's have — the trunk load-bearing, every limb and shoot its radii — so a
+  // creature can stand on an oak's or an ash's limb (A45: until then only the birch, the willow,
+  // the orchard tree and the ancient carried one).
   Vector<u32> named_first;
   for (u32 i = 0; i < crown.first_recursion; ++i) {
     CrownNode& n = crown.nodes[i];
     const u32 order = i == 0 ? 0u : 1u;
     const Axis& axis = crown.axes[n.axis];
-    n.part = emit.begin_part(axis.point[0], axis.tangent[0], axis.length,
-                             i == 0 ? geometry::k_motion_no_parent : crown.nodes[0].part);
+    n.part = begin_structural_part(emit, axis.point[0], axis.tangent[0], axis.length,
+                                   i == 0 ? geometry::k_motion_no_parent : crown.nodes[0].part,
+                                   n.r0, n.r1, i == 0 ? k_load_bearing : 0u);
     named_first.push_back(out.positions.size());
     crown_seat(crown, i, emit);
     emit.skirt = i == 0;  // the trunk stands on the ground (G201)
@@ -387,7 +393,7 @@ bool detail::solve_broadleaf_rules(const Broadleaf& p, const GrowthRules& rules,
   emit.seat_length = 0;
   crown_bind_relays(crown, named_first, plan.rows[0], plan.sides[0], plan.rows[1], plan.sides[1],
                     out, parts);
-  crown_emit_wood(crown, plan.crown, emit, false);
+  crown_emit_wood(crown, plan.crown, emit, true);
   assets::Primitive bark;
   bark.first_index = 0;
   bark.index_count = out.indices.size();

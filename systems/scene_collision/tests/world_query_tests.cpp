@@ -6,8 +6,10 @@
 
 #include <core/containers/flat_map.h>
 #include <core/hash/hash.h>
+#include <core/json/json_value.h>
 #include <domain/geometry/cluster_lod.h>
 #include <domain/physics/physics.h>
+#include <domain/scene_gen/scene_gen.h>
 #include <systems/renderer/scene.h>
 #include <systems/scene_collision/scene_collision.h>
 #include <systems/world/world.h>
@@ -88,7 +90,56 @@ struct World {
   world::World ring;
 };
 
-void build(World& w) {
+// **The same world streamed** (A45, the forest's need 94): every piece a placement of a generator
+// of the test's own, on the tile its origin is on — a streamed placement has no scene instance —
+// and a second boulder beside the tree, so a tile's compound holds a rock among other pieces.
+struct StreamedPiece {
+  u32 mesh;
+  WorldPos at;
+};
+constexpr StreamedPiece k_streamed[] = {{0, WorldPos{0.0, 0.0, 20.0}},
+                                        {1, WorldPos{6.0, 0.0, 16.0}},
+                                        {2, WorldPos{-6.0, 0.0, 16.0}},
+                                        {2, WorldPos{10.0, 0.0, 26.0}}};
+bool pieces_open(const JsonValue&, const scene_gen::Context&, void** state, std::string*) {
+  *state = nullptr;
+  return true;
+}
+void pieces_close(void*) noexcept {}
+bool pieces_expand(void*, const scene_gen::Context&, scene_gen::Placements&, std::string*) {
+  return true;
+}
+bool pieces_meshes(void*, const scene_gen::Context&, Vector<scene_gen::PlacementMesh>& out,
+                   std::string*) {
+  out.push_back(scene_gen::PlacementMesh{"tree", "tree", 0, {}, 0.0f});
+  out.push_back(scene_gen::PlacementMesh{"post", "post", 0, {}, 0.0f});
+  out.push_back(scene_gen::PlacementMesh{"boulder", "boulder", 0, {}, 0.0f});
+  return true;
+}
+bool pieces_tile(void*, scene_gen::TileCoord tile, const scene_gen::Context& context,
+                 scene_gen::Placements& out, std::string*) {
+  const f64 size = static_cast<f64>(context.tile_size);
+  for (const StreamedPiece& piece : k_streamed) {
+    if (static_cast<i32>(std::floor(piece.at.x / size)) != tile.x ||
+        static_cast<i32>(std::floor(piece.at.z / size)) != tile.z)
+      continue;
+    scene_gen::Placement p;
+    p.mesh = piece.mesh;
+    p.position = piece.at;
+    out.instances.push_back(p);
+    ++out.things;
+  }
+  return true;
+}
+constexpr scene_gen::PlacementGeneratorDesc k_pieces{.name = "query_test_pieces",
+                                                     .open = &pieces_open,
+                                                     .close = &pieces_close,
+                                                     .expand = &pieces_expand,
+                                                     .meshes = &pieces_meshes,
+                                                     .tile = &pieces_tile};
+const scene_gen::Registrar k_pieces_registrar{k_pieces};
+
+void build(World& w, bool streamed = false) {
   MeshSource tree;
   add_box(tree, Vec3{-0.2f, 0.0f, -0.2f}, Vec3{0.2f, 4.0f, 0.2f});
   add_box(tree, Vec3{0.2f, 2.4f, -0.1f}, Vec3{2.0f, 2.6f, 0.1f});
@@ -163,7 +214,18 @@ void build(World& w) {
 
   const Vec3 at[3] = {{0.0f, 0.0f, 20.0f}, {6.0f, 0.0f, 16.0f}, {-6.0f, 0.0f, 16.0f}};
   u32 first = 0;
-  for (u32 k = 0; k < 3; ++k) {
+  if (streamed) {
+    renderer::StreamedPlacements entry;
+    entry.generator = "query_test_pieces";
+    entry.params = JsonValue::object();
+    entry.where = "test.json: placements 0";
+    for (u32 m = 0; m < 3; ++m)
+      entry.meshes.push_back(m);
+    scene.streamed.push_back(entry);
+    scene.world.enabled = true;
+    scene.dynamic = true;
+  }
+  for (u32 k = 0; k < (streamed ? 0u : 3u); ++k) {
     renderer::SceneInstance i;
     i.mesh = k;
     i.transform.position = at[k];
@@ -306,6 +368,8 @@ TEST_CASE("scene_collision: the supports near a point are a limb, a perch and a 
   CHECK(out[0].position.z == doctest::Approx(20.0).epsilon(1.0e-4));
   CHECK(out[0].up.y == doctest::Approx(1.0f).epsilon(1.0e-4));
   CHECK(out[0].size_m == doctest::Approx(0.2f).epsilon(1.0e-4));
+  CHECK(out[0].along.x == doctest::Approx(1.0f).epsilon(1.0e-5));  // the limb runs +x (A45)
+  CHECK(out[0].placement == 0u);                                   // instance 0's name
   for (u32 i = 0; i < a.count; ++i)
     CHECK(out[i].part != 0u);  // the trunk rises steeper than 60 degrees
   // A foot larger than the limb: none.
@@ -336,6 +400,62 @@ TEST_CASE("scene_collision: the supports near a point are a limb, a perch and a 
   CHECK(a.found == 3u);
   CHECK(a.count == 2u);
   CHECK(out[0].distance <= out[1].distance);
+}
+
+// **A streamed world answers as a scene of instances does** (A45; the forest's need 94: perch 0,
+// limb 0, top 0 with 416 animals among trees and a boulder 8 m away). The same three meshes, each a
+// placement of a generator on its tile, and a second boulder sharing the tree's tile: every kind of
+// support is found, on the piece the generator placed (no scene instance; the entry and the mesh
+// name it), wherever in its tile's compound the piece is.
+TEST_CASE("scene_collision: a streamed world's supports are a limb, a perch and a rock's top") {
+  World w;
+  build(w, true);
+  REQUIRE(w.collision.streamed());
+  Support out[16];
+  SupportAnswer a = w.collision.supports_near(WorldPos{1.2, 3.2, 20.3}, 1.5f, 0.03f, out);
+  REQUIRE(a.count >= 1u);
+  CHECK(a.covered);
+  CHECK(out[0].kind == k_support_limb);
+  CHECK(out[0].part == 1u);
+  CHECK(out[0].piece.instance == k_no_index);
+  CHECK(out[0].piece.entry == 0u);
+  CHECK(out[0].piece.mesh == 0u);
+  CHECK(out[0].position.y == doctest::Approx(2.6).epsilon(1.0e-4));
+  // Along the limb, base to tip (+x), and the tree's name: its entry, tile (0, 0) and first place
+  // there, the generator naming none.
+  CHECK(out[0].along.x == doctest::Approx(1.0f).epsilon(1.0e-5));
+  CHECK(std::fabs(out[0].along.y) < 1.0e-5f);
+  CHECK(out[0].placement == support_placement(k_no_index, 0, 0, 0, 0, 0));
+  CHECK((out[0].placement >> 63) == 1u);
+  a = w.collision.supports_near(WorldPos{6.2, 1.5, 16.1}, 1.0f, 0.0f, out);
+  REQUIRE(a.count == 1u);
+  CHECK(out[0].kind == k_support_perch);
+  CHECK(out[0].piece.mesh == 1u);
+  CHECK(out[0].along == Vec3{});  // a perch holds a foot any way round
+  // The boulder alone on its tile, and the one among the tree and the post on theirs.
+  const WorldPos rocks[2] = {{-6.0, 2.0, 16.0}, {10.0, 2.0, 26.0}};
+  u64 names[2] = {};
+  for (u32 k = 0; k < 2; ++k) {
+    CAPTURE(rocks[k].x);
+    a = w.collision.supports_near(rocks[k], 1.0f, 0.0f, out);
+    REQUIRE(a.count == 1u);
+    CHECK(out[0].kind == k_support_top);
+    CHECK(out[0].piece.mesh == 2u);
+    CHECK(out[0].piece.instance == k_no_index);
+    CHECK(out[0].position.y >= 1.35 - 1.0e-4);
+    CHECK(out[0].position.y <= 1.4 + 1.0e-4);
+    CHECK(out[0].up.y >= 0.937f);
+    // Its size is the width across the ball's proxy, within the 5 cm cut of 1.6 m.
+    CHECK(out[0].size_m >= 1.5f);
+    CHECK(out[0].size_m <= 1.6f + 1.0e-4f);
+    names[k] = out[0].placement;
+  }
+  // Two rocks of one entry and one mesh: two names (A43 gave them one, `entry` and no instance).
+  CHECK(names[0] != names[1]);
+  CHECK(names[1] == support_placement(k_no_index, 0, 0, 0, 0, 2));
+  // Everything from the middle: the limb, the perch, both tops.
+  a = w.collision.supports_near(WorldPos{2.0, 1.0, 20.0}, 12.0f, 0.0f, out);
+  CHECK(a.found == 4u);
 }
 
 TEST_CASE("scene_collision: a module's answers are pinned, the same from every toolchain") {
@@ -374,13 +494,19 @@ TEST_CASE("scene_collision: a module's answers are pinned, the same from every t
       h = bits(h, out[i].size_m);
       h = hash_combine(h, out[i].kind);
       h = hash_combine(h, out[i].part);
+      h = bits(h, out[i].along.x);  // ABI 12 (A45)
+      h = bits(h, out[i].along.y);
+      h = bits(h, out[i].along.z);
+      h = hash_combine(h, out[i].placement);
     }
   }
   char text[32];
   std::snprintf(text, sizeof text, "%016llx", static_cast<unsigned long long>(h));
   MESSAGE("the answers' hash: " << text);
   // Taken on MSVC at x86-64-v3 (2026-11-14); GCC and Clang in the Linux containers reproduce it.
-  CHECK(std::string(text) == "df949c8f5fc626b3");
+  // Re-pinned by A45 (was df949c8f5fc626b3): a top's size is its width across, no longer half of
+  // it, and the hash takes ABI 12's `along` and `placement`.
+  CHECK(std::string(text) == "9a31d089c211baa4");
 
   // And the cost, for the page: a thousand casts and a thousand supports queries in one step.
   const auto t0 = std::chrono::steady_clock::now();

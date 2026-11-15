@@ -100,7 +100,8 @@ TEST_CASE("hotload: load, call, read through a view, and a poll that finds no ch
   CHECK(counter.host.module_abi() == k_abi_version);
 }
 
-TEST_CASE("hotload: modules built against ABI 3 to 8 load on this header's host and run unchanged") {
+TEST_CASE(
+    "hotload: modules built against ABI 3 to 8 load on this header's host and run unchanged") {
   // ABI 4 to 11 appended to the table and moved nothing (module_abi.h, `k_abi_oldest`): a build
   // that declares 3 to 8 is what a module compiled against that header hands the host. It loads,
   // its exports run, it reads through a view, and a rebuild against `k_abi_version` takes over
@@ -677,6 +678,59 @@ TEST_CASE(
   CHECK(wider[2].s.distance == 2.0f);
   CHECK(wider[1].later == 0x55u);
   CHECK(wider[2].later == 0x55u);
+}
+
+// ABI 12 (A45): `Support` grew by the limb's axis and the piece's name. A module built against 10
+// or 11 passes 72-byte records and gets 72 bytes each, its `flags` (its `reserved`) 0 and nothing
+// past its record touched; a module of 12 gets the whole record and the flags that say it is whole.
+TEST_CASE("hotload: ABI 12's supports reach a module only as far as its records") {
+  ModuleHost host;
+  const HostApi* api = host.context()->api;
+  GameServices services;
+  services.supports_near = [](void*, const f64*, SupportQuery& q) {
+    for (u32 i = 0; i < q.capacity && i < 2; ++i) {
+      q.out[i] = Support{};
+      q.out[i].kind = k_support_limb;
+      q.out[i].part = 7 + i;
+      q.out[i].along[0] = 1.0f;
+      q.out[i].placement = 0x1234 + i;
+      q.out[i].flags = k_support_has_along | k_support_has_placement;
+    }
+    q.count = q.capacity < 2 ? q.capacity : 2;
+    q.found = 2;
+    return Result::Ok;
+  };
+  host.set_game_services(services);
+  const f64 at[3] = {1.0, 2.0, 3.0};
+  ModuleContext context{api, nullptr};
+  Support whole[2];
+  SupportQuery query;
+  CHECK(supports_near(&context, at, 4.0f, 0.0f, whole, 2, query) == Result::Ok);
+  CHECK(query.count == 2u);
+  CHECK(whole[1].part == 8u);
+  CHECK(whole[1].along[0] == 1.0f);
+  CHECK(whole[1].placement == 0x1235u);
+  CHECK(whole[1].flags == (k_support_has_along | k_support_has_placement));
+  // An ABI 11 module's records: 72 bytes each, back to back, and a guard word after the last.
+  u8 old_records[2 * k_support_v10_size + 8];
+  std::memset(old_records, 0xAB, sizeof old_records);
+  SupportQuery old_query;
+  old_query.support_size = k_support_v10_size;
+  old_query.radius_m = 4.0f;
+  old_query.capacity = 2;
+  old_query.out = reinterpret_cast<Support*>(old_records);
+  CHECK(api->supports_near(api->host, at, &old_query) == Result::Ok);
+  CHECK(old_query.count == 2u);
+  Support second;
+  std::memcpy(&second, old_records + k_support_v10_size, k_support_v10_size);
+  CHECK(second.kind == k_support_limb);
+  CHECK(second.part == 8u);
+  CHECK(second.flags == 0u);  // what was its `reserved`
+  for (u32 b = 2 * k_support_v10_size; b < sizeof old_records; ++b)
+    CHECK(old_records[b] == 0xABu);
+  // Smaller than ABI 10's is refused, as it was.
+  old_query.support_size = k_support_v10_size - 8;
+  CHECK(api->supports_near(api->host, at, &old_query) == Result::InvalidArgument);
 }
 
 TEST_CASE(

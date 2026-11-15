@@ -96,6 +96,17 @@ inline constexpr u32 k_conifer_chain_version = 1;
 //    height and the skirt's bottom, which the hosts seat an instance on the ground by.
 inline constexpr u32 k_flora_seat_version = 1;
 
+// **The structural table of the broadleaf and the conifer** (A45; flora.md, "The structural
+// table"): mixed into the container's source hash of every species the broadleaf or the conifer
+// solver builds (`broadleaf`, `conifer` and every species profile: oak, beech, ash, maple, walnut,
+// spruce, pine, fir, ...), after the seat's version, and not into `flora_source_hash`, the tree's
+// shape, which the table does not change and the deadwood keys by. Bump it with a change to what
+// those two solvers' tables record alone.
+//
+// 1: the two solvers write section 37 (until then only the birch, willow, orchard, ancient, shrub
+//    and understory solvers did): the trunk load-bearing, every limb, branch and shoot its radii.
+inline constexpr u32 k_flora_structure_version = 1;
+
 // The species `engine.flora.FloraFile.species` names; the solver reads the parameters of the same
 // member (`palm`, `broadleaf`, `conifer`, `birch`, `willow`, `orchard`, `ancient`).
 inline constexpr const char* k_species_date_palm = "date_palm";

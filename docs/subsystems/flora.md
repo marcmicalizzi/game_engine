@@ -1792,10 +1792,24 @@ lowest limb to 0.69 m at the highest (2.4 m to 1.4 m thick), every limb's first 
 and its later segments down to 0.25 m — 56 parts.
 
 **In the container** the table is **section 37**, `structural_parts`, resident, appended after the
-motion contract and **written only when a species emits it**: the palm, the broadleaf and the
-conifer emit none — the shared helper that opens a part (`Emitter::begin_part`) knows no radius, and
-their solvers' code paths stay as they were, so their containers are the bytes they were — and an
-imported mesh's container never has it. A reader refuses a record naming a part the motion table
+motion contract and **written only when a species emits it**: the palm emits none (its fronds are
+leaf parts and its trunk the only wood) and an imported mesh's container never has it. **The
+broadleaf and the conifer emit it since A45** (2026-11-15): until then they opened their parts with
+the helper that knows no radius (`Emitter::begin_part`), so an oak, a beech, an ash, a maple, a
+walnut, a spruce, a pine or a fir — most of the proof of concept's forest — offered a game module's
+`supports_near` no limb at all (its need 95), while the birch and the willow beside them did. The rule
+is now the one every tree solver follows: **every part has its row, the trunk load-bearing** (as the
+willow's and the orchard's trunk and the birch's stems are), every named limb, recursion shoot,
+conifer branch (live or dead) and compound leaf's rachis its radii and no flag. What it costs: 16
+bytes a part, resident with the mesh, not per instance — the default broadleaf's 220 rows are 3,520
+bytes, a default oak's 80 are 1,280, the determinism test's 10 m pine's 105 are 1,680 — and section 15's
+identity takes `k_flora_structure_version`, so those species' containers rebuild (and nothing else of
+them moves: the determinism test's broadleaf and pine differ from their containers before A45 in
+sections 15 and 37 alone). What the table changes downstream, as it did for the birch: a trunk that
+is load-bearing sways at `k_flora_load_bearing` of its class's compliance (renderer.md, "The flora
+stage"); a part with wood is pushed aside by the walker within its wood's radius rather than within
+`k_flora_leaf_reach` of its length; and the trunk collides as before (`flora_part_collides`: a
+present table's flags decide, and the trunk is flagged). A reader refuses a record naming a part the motion table
 does not have, or out of order. The default ancient tree's table is 496 rows (7,936 bytes); the
 first 15 are what a village plan reads: the trunk (5.0 → 2.0 m), and seven runs, each followed by
 the first segment of its limb past it (part 1 + 2i is limb i's run, the order `ancient_limbs`

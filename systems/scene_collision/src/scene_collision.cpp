@@ -303,6 +303,8 @@ bool SceneCollision::create(physics::World& physics, const renderer::SceneData& 
   if (spacing_mm_ < 1) spacing_mm_ = 1;
   tile_mm_ = static_cast<i64>(std::llround(static_cast<f64>(config.tile_size) * 1000.0));
   stats_ = Stats{};
+  told_.clear();
+  told_.resize(scene.parts.size(), u8{0});
 
   // The scene's world block, which a generator reads a ring's representation from: its rings'
   // words and radii, or the world's defaults for a scene that streams with none.
@@ -851,6 +853,15 @@ i32 floor_tile(f64 metres, i64 tile_mm) noexcept {
 }
 }  // namespace
 
+u64 support_placement(u32 instance, u32 entry, u32 id, i32 tile_x, i32 tile_z, u32 index) noexcept {
+  if (instance != k_no_index) return instance;
+  if (id != 0) return (u64{entry} << 32) | id;
+  u64 h = hash_combine(k_hash_seed, entry);
+  h = hash_combine(h, static_cast<u32>(tile_x));
+  h = hash_combine(h, static_cast<u32>(tile_z));
+  return hash_combine(h, index) | (u64{1} << 63);
+}
+
 // The supports a proxy carries (docs: "Supports"), in its own frame — the mesh's at the proxy's
 // scale, as its triangles are: the bounds of those triangles, and the perches the mesh declares,
 // else the parts of its structural table. A limb's radius is scaled by the smallest of the scale's
@@ -858,6 +869,7 @@ i32 floor_tile(f64 metres, i64 tile_mm) noexcept {
 void SceneCollision::fill_supports(const renderer::SourceMesh* source, Vec3 scale,
                                    const PlacementScratch& scratch, Proxy& proxy) {
   proxy.supports.clear();
+  proxy.bare_tree = false;
   proxy.lo = Vec3{};
   proxy.hi = Vec3{};
   if (!scratch.vertices.empty()) {
@@ -894,6 +906,9 @@ void SceneCollision::fill_supports(const renderer::SourceMesh* source, Vec3 scal
   }
   const geometry::FloraSpeciesInfo* species = geometry::flora_species_info(source->species);
   if (species == nullptr || species->motion != geometry::FloraMotionKind::parts) return;
+  // A tree with neither (an imported tree, a solver that writes no table): its top alone, and a
+  // line the first time a module asks near it (`piece_supports`).
+  proxy.bare_tree = source->structural_parts.empty() && source->has_motion();
   // Every part the table gives a radius, load-bearing or not: a bird perches on a branch no walker
   // could stand on. The size a caller asks for (`min_size`) is what leaves the twigs out.
   for (const geometry::ClusterFileStructuralPart& record : source->structural_parts) {
@@ -978,7 +993,19 @@ void SceneCollision::piece_supports(const Tile& tile, u32 piece, WorldPos at, f3
   owner.mesh = record.mesh;
   owner.instance = record.instance;
   owner.entry = record.entry;
-  const auto offer = [&](u8 kind, u32 part, WorldPos position, Vec3 up, f32 size) {
+  const u64 placement = support_placement(record.instance, record.entry, record.id, tile.coord.x,
+                                          tile.coord.z, record.index);
+  // Once a scene mesh (its proxies at every scale), once a proxy for a mesh a tile handed.
+  u8* told = record.mesh < told_.size() ? &told_[record.mesh] : nullptr;
+  if (proxy->bare_tree && !proxy->told && (told == nullptr || *told == 0)) {
+    proxy->told = true;
+    if (told != nullptr) *told = 1;
+    ENGINE_LOG_INFO(log_collision,
+                    "a tree with no structural table and no perch offers a module its top alone",
+                    log::field("mesh", record.mesh), log::field("entry", record.entry),
+                    log::field("instance", record.instance));
+  }
+  const auto offer = [&](u8 kind, u32 part, WorldPos position, Vec3 up, f32 size, Vec3 along) {
     if (size < min_size) return;
     const f64 d = length(position - at);
     if (d > static_cast<f64>(radius)) return;
@@ -1000,6 +1027,8 @@ void SceneCollision::piece_supports(const Tile& tile, u32 piece, WorldPos at, f3
     s.kind = kind;
     s.piece = owner;
     s.part = part;
+    s.along = along;
+    s.placement = placement;
     if (answer.count < out.size()) ++answer.count;
   };
   if (proxy->supports.empty()) {
@@ -1027,15 +1056,17 @@ void SceneCollision::piece_supports(const Tile& tile, u32 piece, WorldPos at, f3
         return;
       }
     }
-    const f32 half_x = 0.5f * (proxy->hi.x - proxy->lo.x);
-    const f32 half_z = 0.5f * (proxy->hi.z - proxy->lo.z);
-    offer(k_support_top, k_no_index, hit.position, up, std::min(half_x, half_z));
+    // Its size is the width of the foot it holds, as a limb's is its diameter: the bounds' smaller
+    // extent across (A45; until then half of it, so `min_size` meant half as much for a top).
+    const f32 width_x = proxy->hi.x - proxy->lo.x;
+    const f32 width_z = proxy->hi.z - proxy->lo.z;
+    offer(k_support_top, k_no_index, hit.position, up, std::min(width_x, width_z), Vec3{});
     return;
   }
   for (const LocalSupport& s : proxy->supports) {
     if (s.kind == k_support_perch) {
       offer(k_support_perch, s.part, origin + DVec3{rotate(record.rotation, s.a)},
-            rotate(record.rotation, s.up), 2.0f * s.r0);
+            rotate(record.rotation, s.up), 2.0f * s.r0, Vec3{});
       continue;
     }
     // A limb: the point of its axis nearest the asker, on the axis's top, where the radius is.
@@ -1057,7 +1088,8 @@ void SceneCollision::piece_supports(const Tile& tile, u32 piece, WorldPos at, f3
     // The limb's top: world up less its share along the axis.
     const Vec3 world_up{0.0f, 1.0f, 0.0f};
     const Vec3 lift = normalize(world_up - dir * dot(world_up, dir));
-    offer(k_support_limb, s.part, origin + DVec3{a + dir * (t * len) + lift * r}, lift, 2.0f * r);
+    offer(k_support_limb, s.part, origin + DVec3{a + dir * (t * len) + lift * r}, lift, 2.0f * r,
+          dir);
   }
 }
 
@@ -1500,15 +1532,29 @@ void SceneCollision::gather_placements(world::TileCoord coord, PlacementScratch&
                                          static_cast<f64>(reach * scale)});
       };
       const u32 resident = entry.source->meshes.size();
+      // The piece's name for a module's supports (`support_placement`): the generator's, and its
+      // place among the entry's placements on the tile, counted over every placement handed.
+      u32 nth = 0;
+      const auto name_piece = [&](bool added, const scene_gen::Placement& p) {
+        if (added) {
+          scratch.records.back().id = p.id;
+          scratch.records.back().index = nth;
+        }
+        ++nth;
+      };
       for (const scene_gen::Placement& p : scratch.placed.instances) {
         if (p.mesh >= resident) {
           // A mesh the tile handed (scene_gen.md, "A tile's meshes"): index `resident + k` is the
           // tile's own list. It stands where the renderer stands it — its fit is the identity.
           const u32 k = p.mesh - resident;
-          if (k >= scratch.placed.meshes.size()) continue;
+          if (k >= scratch.placed.meshes.size()) {
+            ++nth;
+            continue;
+          }
           disc(p, scratch.placed.meshes[k].reach);
-          (void)add_tile_piece(scratch.placed.meshes[k], mat4_from_transform(p.turn()), p.position,
-                               corner, scratch, out.tile_proxies, e);
+          name_piece(add_tile_piece(scratch.placed.meshes[k], mat4_from_transform(p.turn()),
+                                    p.position, corner, scratch, out.tile_proxies, e),
+                     p);
           continue;
         }
         const u32 mesh = entry.source->meshes[p.mesh];
@@ -1531,7 +1577,7 @@ void SceneCollision::gather_placements(world::TileCoord coord, PlacementScratch&
         // sum with the placement's `WorldPos` in f64 — where its generator put it, anywhere.
         const Mat4 linear = mat4_from_transform(p.turn()) * fit;
         const WorldPos stands = p.position + DVec3{linear.c[3].xyz()};
-        (void)add_piece(mesh, linear, stands, corner, scratch, k_no_index, e);
+        name_piece(add_piece(mesh, linear, stands, corner, scratch, k_no_index, e), p);
       }
       if (later)
         for (const scene_gen::Footprint& shape : scratch.placed.shapes.span())

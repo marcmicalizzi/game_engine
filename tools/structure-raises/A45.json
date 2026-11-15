@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "A45",
+  "reason": "apps.md documents hotload ABI 12's Support (along, placement, flags) and what radius and min_size mean; flora.md the broadleaf's and the conifer's structural table, its cost and what it changes downstream (A45)",
+  "date": "2026-11-14",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/apps.md": 1213,
+    "page:docs/subsystems/flora.md": 1411
+  }
+}

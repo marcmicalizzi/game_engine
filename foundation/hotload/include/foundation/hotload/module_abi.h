@@ -112,7 +112,13 @@ namespace engine::hotload {
 // has with their durations, and a playhead put where a phase-matched fade needs it. Additive as 4
 // to 10 were: a module built against 3 to 10 loads on a host of 11 and runs unchanged, and an
 // actor nobody biases is tiered by the rule alone.
-inline constexpr u32 k_abi_version = 11;
+//
+// **12** (2026-11-15): `Support` grew at its end, by the limb's axis at the point and the piece's
+// name in the world (`along`, `placement`; roadmap A45; apps.md, "Supports"), and its `reserved`
+// word became `flags`, saying which of the two the host filled. `HostApi` did not change. The host
+// writes each record only as far as the module's `support_size` reaches, as ABI 8's `ActorState`
+// is copied, so a module built against 3 to 11 loads on a host of 12 and runs unchanged.
+inline constexpr u32 k_abi_version = 12;
 // The oldest module ABI a host of this header loads (4, above, says why 3 and not 4).
 inline constexpr u32 k_abi_oldest = 3;
 
@@ -473,11 +479,24 @@ inline constexpr u32 k_support_limb = 2;
 inline constexpr u32 k_support_top = 3;
 // **A place a small animal can stand or land** (`supports_near`): where (`position`, world metres,
 // on the surface), which way is up there (`up`, unit), how large a foot it holds (`size_m`: a
-// perch's declared size, a limb's diameter there, a top's smaller half extent), what it belongs to
+// perch's declared size, a limb's diameter there, a top's smaller width across — ABI 12; half of
+// it before — so every kind is a width a foot spans), what it belongs to
 // (`what`, `instance` or `entry`, `mesh`) and, for a tree's limb, `part`: the part's id in the
 // mesh's motion table (cluster file section 35), which is what the renderer's flora poser moves a
 // frame at a time — so a later row can let a perch ride its branch in the wind. A perch's `part` is
 // its index among the mesh's declared perches; a top's is `k_no_world_index`.
+//
+// **ABI 12 grew it at its end** (roadmap A45; apps.md, "Supports"): `along`, the limb's axis at the
+// point (unit, from the limb's base toward its tip) so a bird can face along the branch or across
+// it, zero for a perch and a top, which hold a foot any way round; and `placement`, the piece's
+// name in the world — a scene instance's index, else a streamed placement's, the same whenever its
+// tile comes in — so two trees of one streamed entry no longer answer with one name for the same
+// part. What was `reserved` is `flags`: `k_support_has_along | k_support_has_placement` from a host
+// of 12, 0 from an older one. **The host writes a record only as far as the module's
+// `support_size`** (at least `k_support_v10_size`), so a module built against 10 or 11 reads what
+// it always read.
+inline constexpr u32 k_support_has_along = 1u;
+inline constexpr u32 k_support_has_placement = 2u;
 struct Support {
   f64 position[3] = {0.0, 0.0, 0.0};
   f32 up[3] = {0.0f, 1.0f, 0.0f};
@@ -489,12 +508,21 @@ struct Support {
   u32 entry = k_no_world_index;
   u32 mesh = k_no_world_index;
   u32 part = k_no_world_index;
+  u32 flags = 0;  // `k_support_has_*` (ABI 12; `reserved`, always 0, before)
+  // ---- ABI 12 ----
+  f32 along[3] = {0.0f, 0.0f, 0.0f};
   u32 reserved = 0;
+  u64 placement = 0;
 };
-// **The question and its answer** (`supports_near`): the supports within `radius_m` of the point,
-// nearest first, at least `min_size_m` large, written into `out` (`capacity` of them, each
+// The size of a `Support` as ABI 10 and 11 built it: what a module built against them passes as
+// `support_size`, and the least a host accepts.
+inline constexpr u32 k_support_v10_size = 72;
+// **The question and its answer** (`supports_near`): the supports whose point (`position`, on the
+// surface) lies within `radius_m` of the point asked — a distance in three dimensions, so a limb
+// 10 m up is not near a point on the ground under it — nearest first, whose `size_m` (a width
+// across, see `Support`) is at least `min_size_m`, written into `out` (`capacity` of them, each
 // `support_size` bytes as the module built `Support`) up to `count`; `found` is how many there were
-// in all; `covered` 1 when the whole disc lay over held tiles.
+// in all; `covered` 1 when the disc's bounding square in (x, z) lay over held tiles.
 struct SupportQuery {
   u32 size = sizeof(SupportQuery);
   f32 radius_m = 0.0f;                 // in: at most `k_support_radius_max_m`
@@ -793,7 +821,8 @@ struct HostApi {
   // **Supports near `point`** (world metres, three f64; `SupportQuery`). `Ok` with `count` written
   // (0 is an answer); `InvalidArgument` for a non-finite point, a radius outside (0,
   // k_support_radius_max_m], a null `out` with a capacity, a `support_size` smaller than ABI 10's
-  // `Support`, or a query struct smaller than ABI 10's; `Unsupported` where `cast_ray` is.
+  // `Support` (`k_support_v10_size`), or a query struct smaller than ABI 10's; `Unsupported` where
+  // `cast_ray` is. Each record is written as far as `support_size` reaches and no further.
   Result (*supports_near)(void* host, const f64* point, SupportQuery* io);
 
   // ---- ABI 11: an actor's animation detail and its clips (roadmap A44; apps.md, "Actors: the

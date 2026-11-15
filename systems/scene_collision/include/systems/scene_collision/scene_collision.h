@@ -267,6 +267,10 @@ struct HitInfo {
 inline constexpr u8 k_support_perch = 1;
 inline constexpr u8 k_support_limb = 2;
 inline constexpr u8 k_support_top = 3;
+// `along` (A45) is the limb's axis at the point, unit, base to tip, so an animal can sit along it
+// (or across it); zero for a perch and a top, which hold a foot any way round. `placement` names
+// the piece whatever tile holds it (`support_placement`): a streamed placement has no scene
+// instance, so without it two trees of one entry gave one name to their limbs of the same part.
 struct Support {
   WorldPos position{};
   Vec3 up{0.0f, 1.0f, 0.0f};
@@ -275,7 +279,16 @@ struct Support {
   u8 kind = 0;
   HitInfo piece;
   u32 part = k_no_index;
+  Vec3 along{};
+  u64 placement = 0;
 };
+// **A piece's name among every piece of the world** (A45; docs: "Supports"): a scene instance's
+// index; a streamed placement's entry with the name its generator gives it (`Placement::id`, the
+// `authored` entry's place in the file), or, from a generator that names none, its entry, its tile
+// and its place among the entry's placements there — the same whenever and in whatever order its
+// tile comes in, since a generator's tile is a function of the tile. The top bit tells the third
+// form from the second; `what` (an instance or a placement) tells the first from the others.
+u64 support_placement(u32 instance, u32 entry, u32 id, i32 tile_x, i32 tile_z, u32 index) noexcept;
 struct SupportAnswer {
   u32 count = 0;         // written, nearest first
   u32 found = 0;         // within the radius in all
@@ -429,7 +442,14 @@ class SceneCollision {
     Vec3 lo{};
     Vec3 hi{};
     Vector<LocalSupport> supports;
+    // A tree (a motion contract of the parts kind) that declares no perch and has no structural
+    // table: it offers only its top. Said once, the first time a module asks near it (`told`, the
+    // tick's alone: `supports_near` runs on the tick).
+    bool bare_tree = false;
+    mutable bool told = false;
   };
+  // Which scene meshes `supports_near` has said are bare trees (`Proxy::bare_tree`), by mesh.
+  mutable Vector<u8> told_;
   // One piece of a held tile, with `Config::keep_shapes`.
   struct PieceRecord {
     u32 mesh = 0;
@@ -438,6 +458,10 @@ class SceneCollision {
     Vec3 offset{};
     Quat rotation{};
     const Proxy* proxy = nullptr;
+    // A streamed placement's name within its entry (`Placement::id`), else 0; and its place among
+    // the entry's placements on its tile (`support_placement`).
+    u32 id = 0;
+    u32 index = 0;
   };
   // The proxy of a mesh a tile handed, at a scale: resident by reference (`refs`: the held tiles
   // and the builds ahead that name it), gone with the last.

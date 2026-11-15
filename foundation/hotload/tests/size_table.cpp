@@ -5,6 +5,8 @@
 #include <core/base/size_table.h>
 #include <foundation/hotload/module_abi.h>
 
+#include <cstddef>
+
 using namespace engine;
 
 ENGINE_EXPECT_SIZE(8, 4, hotload::View);
@@ -25,11 +27,13 @@ ENGINE_EXPECT_SIZE(424, 8, hotload::HostApi);
 // ABI 10's structs, each led by its size. A cast's answer: two words, the f64 point, the normal,
 // the distance and six words (72). The water at a point: two words, the f64 level, the depth, the
 // velocity and three words (40). A support: the f64 point, `up`, the size, the distance and seven
-// words (72; written at the query's `support_size` stride). The query: six words, the records'
-// pointer and two words (40).
+// words (72, `k_support_v10_size`; written at the query's `support_size` stride, as far as it
+// reaches). ABI 12 appended the limb's axis, a reserved word and the piece's u64 name (96 = 72 + 12
+// + 4 + 8); the prefix may not move. The query: six words, the records' pointer and two words (40).
 ENGINE_EXPECT_SIZE(72, 8, hotload::CastHit);
 ENGINE_EXPECT_SIZE(40, 8, hotload::WaterSample);
-ENGINE_EXPECT_SIZE(72, 8, hotload::Support);
+ENGINE_EXPECT_SIZE(96, 8, hotload::Support);
+static_assert(offsetof(hotload::Support, along) == hotload::k_support_v10_size);
 ENGINE_EXPECT_SIZE(40, 8, hotload::SupportQuery);
 // ABI 4's structs, each led by its own size so it can grow the way the table does: an element is
 // 56 bytes of fixed fields and the text's pointer and length; the graphics state is six words, five

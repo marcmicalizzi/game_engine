@@ -990,9 +990,15 @@ void crown_emit_wood(Crown& crown, const CrownPlan& plan, Emitter& out, bool str
     CrownNode& node = crown.nodes[i];
     crown_seat(crown, i, out);
     if (compound && (node.flags & k_crown_terminal) != 0u) {
-      if ((node.flags & k_crown_part) != 0u)
-        node.part = out.begin_part(node.base, normalized(node.tip - node.base), node.length,
-                                   crown.nodes[node.parent].part);
+      // A compound leaf's rachis: a part with its row too where the crown keeps a table, so the
+      // table covers every part (an ash's, a walnut's; A45).
+      if ((node.flags & k_crown_part) != 0u) {
+        const D3 direction = normalized(node.tip - node.base);
+        const u32 parent_part = crown.nodes[node.parent].part;
+        node.part = structural ? begin_structural_part(out, node.base, direction, node.length,
+                                                       parent_part, node.r0, node.r1, 0u)
+                               : out.begin_part(node.base, direction, node.length, parent_part);
+      }
       continue;
     }
     if ((node.flags & k_crown_part) != 0u) {
