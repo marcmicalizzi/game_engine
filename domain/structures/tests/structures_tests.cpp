@@ -556,7 +556,7 @@ TEST_CASE("structures: a leaf hangs in its frame, shut across the opening or ope
   Walk walk;
   std::string error;
   REQUIRE(walk_records(cot, walk, error));
-  REQUIRE(walk.leaves.size() == 4);  // the door's, a pair of shutters, one shutter
+  REQUIRE(walk.leaves.size() == 5);  // the door's, and a pair of shutters at each window
   const WalkLeaf& leaf = walk.leaves[0];
   CHECK(leaf.opening == 0);
   CHECK(leaf.open_deg == 90);
@@ -604,8 +604,11 @@ TEST_CASE("structures: the same description is the same bytes") {
   // (0x9449998706a7e6d6 and 0x9d0069d08c45511c.) Version 5 (2026-11-15): the example's thatch
   // is laid in courses with a cut eave, its batter is eased to seven eighths, and a leaf's
   // boards each have their own grain.
-  CHECK(mesh_hash(a) == 0x0e7f2753a6e46f1cull);
-  CHECK(mesh_hash(two) == 0xbda81d7d48292935ull);
+  // (0x0e7f2753a6e46f1c and 0xbda81d7d48292935 at 4ed45afd.) Re-taken once more at version 5
+  // for the example alone: its back window's shutter became a pair, since one leaf that wide
+  // stood square into the room. The mesher did not change.
+  CHECK(mesh_hash(a) == 0xd1cbbc4f83052550ull);
+  CHECK(mesh_hash(two) == 0xeb31abde321a4163ull);
   // A description that states none of what versions 3 and 4 added is the mesh it was at
   // version 2, to the bit: the first cot's pin.
   Description plain = example_cot();

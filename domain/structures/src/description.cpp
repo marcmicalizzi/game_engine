@@ -604,8 +604,11 @@ structure::Description example_cot(i32 width, i32 depth, i32 wall) {
   d.openings[1].leaf = structure::LeafKind::ledged;
   d.openings[1].leaves = 2;
   d.openings[1].leaf_open = 90;
+  // A pair again at the back: one leaf as wide as that window would stand square into the room
+  // past the reveal, which is 44 cm deep behind the frame.
   d.openings[2].mullions = 4;
   d.openings[2].leaf = structure::LeafKind::ledged;
+  d.openings[2].leaves = 2;
   d.openings[2].leaf_open = 90;
   structure::Roof roof;
   roof.form = structure::RoofForm::gable;
