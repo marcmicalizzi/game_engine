@@ -38,6 +38,7 @@ f32 fit_scale(const renderer::SceneData& scene, u32 index) noexcept {
 void ProxySource::clear() noexcept {
   meshes_.clear();
   clusters_.clear();
+  emptied_.clear();
   points_.clear();
   sources_.clear();
   triangles_.clear();
@@ -50,6 +51,7 @@ u32 ProxySource::add(const geometry::ClusterLodMesh& lod, const geometry::Cluste
   const geometry::ClusterMesh& merged = lod.mesh;
   Mesh out;
   out.first_cluster = clusters_.size();
+  out.first_emptied = emptied_.size();
   out.floor = least;
   out.copied = true;
   const bool has_lod = lod.lod.size() == merged.clusters.size();
@@ -119,12 +121,20 @@ u32 ProxySource::add(const geometry::ClusterLodMesh& lod, const geometry::Cluste
                            : u16{0});
     }
     copy.triangle_count = triangles_.size() - copy.first_triangle;
-    if (copy.triangle_count == 0 && copy.left_out == 0) continue;
+    if (copy.triangle_count == 0) {
+      // No points were copied for it: only its count, if a tree's wood left anything out.
+      if (copy.left_out != 0) {
+        emptied_.push_back(Emptied{copy.own_error, copy.parent_error, copy.left_out});
+        ++counts_.emptied;
+      }
+      continue;
+    }
     counts_.triangles += copy.triangle_count;
     ++counts_.clusters;
     clusters_.push_back(copy);
   }
   out.cluster_count = clusters_.size() - out.first_cluster;
+  out.emptied_count = emptied_.size() - out.first_emptied;
   ++counts_.meshes;
   meshes_.push_back(out);
   return meshes_.size() - 1;
@@ -176,6 +186,7 @@ void ProxySource::build(const renderer::SceneData& scene, f32 mesh_error_m) {
   }
   meshes_.shrink_to_fit();
   clusters_.shrink_to_fit();
+  emptied_.shrink_to_fit();
   points_.shrink_to_fit();
   sources_.shrink_to_fit();
   triangles_.shrink_to_fit();
@@ -189,15 +200,17 @@ void ProxySource::build(const renderer::SceneData& scene, f32 mesh_error_m) {
       log_proxy_source, "the collision's own copy", log::field("bytes", bytes()),
       log::field("scene_float_bytes", counts_.scene_float_bytes),
       log::field("meshes", counts_.meshes), log::field("clusters", counts_.clusters),
-      log::field("of_clusters", counts_.scene_clusters), log::field("triangles", counts_.triangles),
+      log::field("emptied", counts_.emptied), log::field("of_clusters", counts_.scene_clusters),
+      log::field("triangles", counts_.triangles),
       log::field("of_triangles", counts_.scene_triangles), log::field("mesh_error_m", mesh_error_m),
       log::field("headroom", k_copy_scale_headroom));
 }
 
 u64 ProxySource::bytes() const noexcept {
   return u64{meshes_.capacity()} * sizeof(Mesh) + u64{clusters_.capacity()} * sizeof(Cluster) +
-         u64{points_.capacity()} * sizeof(Vec3) + u64{sources_.capacity()} * sizeof(u32) +
-         u64{triangles_.capacity()} * sizeof(u32) + u64{parts_.capacity()} * sizeof(u16);
+         u64{emptied_.capacity()} * sizeof(Emptied) + u64{points_.capacity()} * sizeof(Vec3) +
+         u64{sources_.capacity()} * sizeof(u32) + u64{triangles_.capacity()} * sizeof(u32) +
+         u64{parts_.capacity()} * sizeof(u16);
 }
 
 }  // namespace engine::scene_collision

@@ -57,18 +57,30 @@ class ProxySource {
     u32 triangle_count = 0;
     u32 left_out = 0;
   };
-  // One mesh's run of `clusters`, and the smallest threshold it cuts exactly. `copied` false: the
-  // mesh gets no body (the terrain's, a water body's, a far forest tile's, one nothing places).
+  // A cluster a proxy keeps none of, but a tree's wood left triangles out of: all the cut needs of
+  // it is that count when it selects it. Most of a tree's clusters are leaves and twigs, so they
+  // are kept apart, at half a `Cluster`'s bytes.
+  struct Emptied {
+    f32 own_error = 0.0f;
+    f32 parent_error = 0.0f;
+    u32 left_out = 0;
+  };
+  // One mesh's runs of `clusters` and `emptied`, and the smallest threshold it cuts exactly.
+  // `copied` false: the mesh gets no body (the terrain's, a water body's, a far forest tile's, one
+  // nothing places).
   struct Mesh {
     u32 first_cluster = 0;
     u32 cluster_count = 0;
+    u32 first_emptied = 0;
+    u32 emptied_count = 0;
     f32 floor = 0.0f;
     bool copied = false;
   };
   // What `build` measured, for its log line and the tests.
   struct Counts {
     u32 meshes = 0;    // copied
-    u32 clusters = 0;  // copied, of `scene_clusters` in the copied meshes
+    u32 clusters = 0;  // copied with triangles, of `scene_clusters` in the copied meshes
+    u32 emptied = 0;   // copied for their left-out count alone
     u64 scene_clusters = 0;
     u64 triangles = 0;  // copied, of `scene_triangles` in the copied meshes
     u64 scene_triangles = 0;
@@ -91,8 +103,11 @@ class ProxySource {
   const Mesh* mesh(u32 index) const noexcept {
     return index < meshes_.size() && meshes_[index].copied ? &meshes_[index] : nullptr;
   }
-  std::span<const Cluster> clusters(const Mesh& mesh) const noexcept {
-    return {clusters_.data() + mesh.first_cluster, mesh.cluster_count};
+  std::span<const Cluster> clusters(const Mesh& m) const noexcept {
+    return {clusters_.data() + m.first_cluster, m.cluster_count};
+  }
+  std::span<const Emptied> emptied(const Mesh& m) const noexcept {
+    return {emptied_.data() + m.first_emptied, m.emptied_count};
   }
   // A copied vertex's position, in its mesh's frame, and its weld key (the scene's source index).
   std::span<const Vec3> points() const noexcept { return {points_.data(), points_.size()}; }
@@ -109,6 +124,7 @@ class ProxySource {
  private:
   Vector<Mesh> meshes_;
   Vector<Cluster> clusters_;
+  Vector<Emptied> emptied_;
   Vector<Vec3> points_;
   Vector<u32> sources_;
   Vector<u32> triangles_;

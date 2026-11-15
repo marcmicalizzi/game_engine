@@ -1204,6 +1204,9 @@ u32 SceneCollision::cut_proxy(const ProxySource& source, u32 mesh, Vec3 scale,
   // A mirror's scale — an odd number of negative axes — reverses the winding; put it back, so the
   // faces face out.
   const bool mirrored = ((scale.x < 0.0f) != (scale.y < 0.0f)) != (scale.z < 0.0f);
+  for (const ProxySource::Emptied& cluster : source.emptied(*copied))
+    if (cluster.own_error <= threshold && threshold < cluster.parent_error)
+      left_out += cluster.left_out;
   for (const ProxySource::Cluster& cluster : source.clusters(*copied)) {
     if (!(cluster.own_error <= threshold && threshold < cluster.parent_error)) continue;
     left_out += cluster.left_out;
