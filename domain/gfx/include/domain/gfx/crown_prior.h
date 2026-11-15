@@ -50,10 +50,11 @@ inline constexpr u32 k_no_crown = 0xffffffffu;
 // eq. 15.4 with x = 1. The transmitted fraction along a path of s metres through u square metres of
 // one-sided leaf a cubic metre is exp(-k_crown_g * u * s).
 inline constexpr f64 k_crown_g = 0.5;
-// The share of a leaf card's triangle that is leaf: the cards are alpha-tested, and the tree
-// solver gives a card `leaf_width` of its square as blade (0.7 on its default broadleaf;
-// flora.md, "The budget of a crown").
-inline constexpr f64 k_crown_card_fill = 0.7;
+// The share of a leaf card's triangle that is leaf is **measured, never assumed** (T146): the
+// caller hands `build_crown_prior` one fill a triangle, the share of it its own mask keeps
+// (renderer::build_crown_priors samples the material's base colour alpha over the triangle). It
+// was once a constant, the tree solver's default broadleaf `leaf_width` of 0.7, which counted a
+// bought tree's cards of a third leaf (0.315 on the static world's kit) 2.2 times over.
 // A grid's cells an axis at most, and the smallest cell: 16 cells of at least a quarter metre, so
 // a 10 m crown has 0.6 m cells and a mesh's grid is at most 8 KiB.
 inline constexpr u32 k_crown_cells = 16;
@@ -61,12 +62,11 @@ inline constexpr f32 k_crown_cell_min_m = 0.25f;
 // A mesh's leaves must stand this tall for a grid to be made: a crown, not a sward or a litter of
 // leaves on the ground (whose shade their own solvers already paint).
 inline constexpr f32 k_crown_min_height_m = 1.5f;
-// ... and its leaf triangles must be leaves: under this mean area, square metres. A leaf card is
-// centimetres (a 30 cm card's triangle is 0.045 m2); a card past that is a picture of many leaves
-// — a merged card of a far form, a far forest's impostor — whose area is not leaf area: counted
-// as leaf it gave the forest crowns of 10 to 170 m2 of leaf a cubic metre, every one of them on
-// the floor.
-inline constexpr f32 k_crown_card_max_m2 = 0.05f;
+// There is no cap on a card's size (T146): a bought tree's branch cards are a metre and more (1.17
+// m2 a triangle on the static world's kit, which a 0.05 m2 cap refused outright), and a card of
+// many leaves counts the leaf its mask keeps, as a leaf card does. A distance form and a far
+// forest's tile are not here at all: a form reads its source's grid, and a far tile (many trees'
+// impostors merged) has none (renderer::build_crown_priors).
 // The prior is never read below this: a sample divides by it, so its noise grows as the prior
 // falls, and past exp(-2.8) the light deep in a crown is the leaves' own scattering more than the
 // sky's, which no transmitted fraction describes (gi_cache.slang, `k_gi_crown_floor`).
@@ -78,7 +78,7 @@ inline constexpr u32 k_crown_spokes = 4;
 
 // What one grid was built from, for a log line and a page's table.
 struct CrownPriorStats {
-  f64 leaf_area_m2 = 0.0;    // one-sided, the cards' triangles times `k_crown_card_fill`
+  f64 leaf_area_m2 = 0.0;    // one-sided, each card triangle's area times its measured fill
   f64 leaf_volume_m3 = 0.0;  // of the cells that hold a leaf
   f32 mean_up = 1.0f;        // over the cells that hold a leaf, by leaf area
   f32 min_up = 1.0f;
@@ -113,13 +113,15 @@ inline CrownGrid crown_grid(Vec3 lo, Vec3 hi) noexcept {
   return g;
 }
 
-// The grid of one mesh: `corners` holds its leaf triangles, three corners each, in mesh space, and
-// `lo`..`hi` the bounds of the whole mesh (its trunk too, which reads the grid under the crown).
+// The grid of one mesh: `corners` holds its leaf triangles, three corners each, in mesh space,
+// `fill` one share of leaf a triangle (0 to 1, what its mask keeps), and `lo`..`hi` the bounds of
+// the whole mesh (its trunk too, which reads the grid under the crown).
 // Appends `grid.cells()` pairs of bytes to `bytes` — the upper hemisphere's mean transmitted
 // fraction and the lower one's, each times 255 — padded to a multiple of four, and fills `desc`
 // but for its `offset`, which is the caller's (where in its table the bytes went).
-inline void build_crown_prior(std::span<const Vec3> corners, Vec3 lo, Vec3 hi, CrownPriorDesc& desc,
-                              Vector<u8>& bytes, CrownPriorStats* stats = nullptr) {
+inline void build_crown_prior(std::span<const Vec3> corners, std::span<const f32> fill, Vec3 lo,
+                              Vec3 hi, CrownPriorDesc& desc, Vector<u8>& bytes,
+                              CrownPriorStats* stats = nullptr) {
   const CrownGrid g = crown_grid(lo, hi);
   const u32 cells = g.cells();
   // The leaf area of each cell, at each triangle's centroid: a card is centimetres and a cell
@@ -136,7 +138,7 @@ inline void build_crown_prior(std::span<const Vec3> corners, Vec3 lo, Vec3 hi, C
                      std::sqrt(static_cast<f64>(n.x) * static_cast<f64>(n.x) +
                                static_cast<f64>(n.y) * static_cast<f64>(n.y) +
                                static_cast<f64>(n.z) * static_cast<f64>(n.z)) *
-                     k_crown_card_fill;
+                     static_cast<f64>(t / 3 < fill.size() ? fill[t / 3] : 0.0f);
     const Vec3 m = (a + b + c) * (1.0f / 3.0f);
     const f32 at[3] = {(m.x - g.lo.x) / g.cell[0], (m.y - g.lo.y) / g.cell[1],
                        (m.z - g.lo.z) / g.cell[2]};

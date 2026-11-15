@@ -1,10 +1,98 @@
 #include <domain/assets/gltf.h>
+#include <domain/geometry/cluster.h>
+#include <domain/geometry/material_sampling.h>
+#include <foundation/image/decode.h>
+#include <foundation/io/vfs.h>
 #include <systems/renderer/crown_priors.h>
 
+#include <cmath>
 #include <cstring>
 #include <renderer_log.h>
+#include <string>
 
 namespace engine::renderer {
+
+namespace {
+
+// **A card's leaf, measured from its own mask** (T146; renderer.md, "Stage 7"). A material's
+// base colour alpha decoded once, on the CPU, for the triangles that sample it; `ok` false when
+// the material has no image (its alpha is the factor's alone) or the image cannot be read.
+struct MaskImage {
+  bool tried = false;
+  bool ok = false;
+  image::Image alpha;  // one channel
+};
+
+bool decode_mask(const SourceMesh& source, const assets::Material& material, MaskImage& out) {
+  out.tried = true;
+  const i32 index = material.base_color_image;
+  if (index < 0 || static_cast<u32>(index) >= source.data.images.size()) return false;
+  const assets::ImageRef& ref = source.data.images[static_cast<u32>(index)];
+  // Four channels and keep A: a one-channel request is the decoder's grey from RGB, not alpha.
+  image::Image rgba;
+  if (!ref.bytes.empty()) {
+    out.ok = image::decode_image({ref.bytes.data(), ref.bytes.size()}, rgba, 4);
+  } else if (!ref.uri.empty()) {
+    const std::string file = source.image_dir.empty() || io::is_absolute_path(ref.uri)
+                                 ? ref.uri
+                                 : io::join_path(source.image_dir, ref.uri);
+    out.ok = image::read_image(file, rgba, 4) == io::Status::Ok;
+  }
+  if (!out.ok) return false;
+  const u32 texels = rgba.width * rgba.height;
+  out.alpha.width = rgba.width;
+  out.alpha.height = rgba.height;
+  out.alpha.channels = 1;
+  out.alpha.pixels.resize(texels);
+  for (u32 t = 0; t < texels; ++t)
+    out.alpha.pixels[t] = rgba.pixels[t * 4 + 3];
+  return true;
+}
+
+// The share of one triangle its mask keeps: the material's test (base colour factor's alpha times
+// the texel's, against the cutoff, at level 0, through the slot's UV transform and repeat wrap)
+// asked at the centroids of the triangle's 4 x 4 equal-area sub-triangles — the alpha coverage
+// bake's sampling (alpha_coverage.slang), on the CPU because the prior is built from the CPU's
+// copy of the mesh.
+f32 triangle_fill(const assets::Material& material, const MaskImage& mask, Vec2 uv0, Vec2 uv1,
+                  Vec2 uv2) {
+  const f32 factor = material.base_color.w;
+  if (!mask.ok) return factor >= material.alpha_cutoff ? 1.0f : 0.0f;
+  const geometry::TextureTransform& transform = material.sampling[0].transform;
+  const f64 c = transform.rotation == 0.0f ? 1.0 : det::cos(static_cast<f64>(transform.rotation));
+  const f64 s = transform.rotation == 0.0f ? 0.0 : det::sin(static_cast<f64>(transform.rotation));
+  constexpr u32 n = 4;
+  u32 kept = 0;
+  const auto keeps = [&](f32 a, f32 b) {
+    const f32 u0 = uv0.x + a * (uv1.x - uv0.x) + b * (uv2.x - uv0.x);
+    const f32 v0 = uv0.y + a * (uv1.y - uv0.y) + b * (uv2.y - uv0.y);
+    // KHR_texture_transform: scale, then rotate, then offset.
+    const f64 su = static_cast<f64>(u0) * static_cast<f64>(transform.scale.x);
+    const f64 sv = static_cast<f64>(v0) * static_cast<f64>(transform.scale.y);
+    f64 u = c * su + s * sv + static_cast<f64>(transform.offset.x);
+    f64 v = -s * su + c * sv + static_cast<f64>(transform.offset.y);
+    u -= std::floor(u);
+    v -= std::floor(v);
+    u32 x = static_cast<u32>(u * static_cast<f64>(mask.alpha.width));
+    u32 y = static_cast<u32>(v * static_cast<f64>(mask.alpha.height));
+    x = x < mask.alpha.width ? x : mask.alpha.width - 1;
+    y = y < mask.alpha.height ? y : mask.alpha.height - 1;
+    const f32 alpha =
+        factor * static_cast<f32>(mask.alpha.pixels[y * mask.alpha.width + x]) / 255.0f;
+    return alpha >= material.alpha_cutoff;
+  };
+  for (u32 i = 0; i < n; ++i) {
+    for (u32 j = 0; i + j < n; ++j) {
+      const f32 fi = static_cast<f32>(i);
+      const f32 fj = static_cast<f32>(j);
+      if (keeps((fi + 1.0f / 3.0f) / n, (fj + 1.0f / 3.0f) / n)) ++kept;
+      if (i + j + 1 < n && keeps((fi + 2.0f / 3.0f) / n, (fj + 2.0f / 3.0f) / n)) ++kept;
+    }
+  }
+  return static_cast<f32>(kept) / static_cast<f32>(n * n);
+}
+
+}  // namespace
 
 void build_crown_priors(const SceneData& data, CrownPriorTable& out) {
   out = CrownPriorTable{};
@@ -15,17 +103,30 @@ void build_crown_priors(const SceneData& data, CrownPriorTable& out) {
   records.resize(meshes);
   Vector<u8> grids;
   Vector<Vec3> corners;
+  Vector<f32> fill;  // one a triangle of `corners`: the share its mask keeps
+  Vector<MaskImage> masks;
+  const bool has_uvs = mesh.attributes.size() == mesh.vertices.size();
   // A distance form (`SceneData::form_source`) is a cut of its source's own clusters in its
   // source's mesh space: it reads its source's grid, made from the source's leaves, and none of
   // its own (a form's finest cards are merged ones).
   const auto is_form = [&](u32 m) noexcept {
     return m < data.form_source.size() && data.form_source[m] != m;
   };
+  // A far forest's tile (far_forest.h) is many trees' impostors merged into one mesh over a world
+  // tile: not one crown, so it has no grid. It was kept out by the card-size cap before T146.
+  Vector<u8> far_tile;
+  far_tile.resize(meshes, u8{0});
+  for (const FarForestTile& tile : data.far_forest.tiles) {
+    if (tile.mesh < meshes) far_tile[tile.mesh] = 1;
+  }
   for (u32 m = 0; m < meshes; ++m) {
-    if (is_form(m)) continue;
+    if (is_form(m) || far_tile[m] != 0) continue;
     const geometry::ClusterMeshPart& part = data.parts[m];
     const SourceMesh& source = data.sources[m];
     corners.clear();
+    fill.clear();
+    masks.clear();
+    masks.resize(source.data.materials.size());
     Vec3 lo{1e30f, 1e30f, 1e30f};
     Vec3 hi{-1e30f, -1e30f, -1e30f};
     f32 leaf_lo = 1e30f;
@@ -57,34 +158,36 @@ void build_crown_priors(const SceneData& data, CrownPriorTable& out) {
           mesh.triangles.size()) {
         continue;
       }
+      const assets::Material& leaf = source.data.materials[static_cast<u32>(material)];
+      MaskImage& mask = masks[static_cast<u32>(material)];
+      if (!mask.tried && !decode_mask(source, leaf, mask)) {
+        ENGINE_LOG_INFO(log_renderer, "crown prior mask read from the factor alone",
+                        log::field("mesh", m), log::field("material", material));
+      }
       for (u32 t = 0; t < cluster.triangle_count; ++t) {
         const u32 packed = mesh.triangles[cluster.triangle_offset + t];
+        Vec2 uv[3];
         for (u32 k = 0; k < 3; ++k) {
           const u32 local = (packed >> (8 * k)) & 0xffu;
-          const Vec3 p =
-              mesh.vertices[cluster.vertex_offset + (local < cluster.vertex_count ? local : 0)];
+          const u32 v = cluster.vertex_offset + (local < cluster.vertex_count ? local : 0);
+          const Vec3 p = mesh.vertices[v];
+          uv[k] = has_uvs ? geometry::decode_half2(mesh.attributes[v].uv_half2) : Vec2{};
           leaf_lo = p.y < leaf_lo ? p.y : leaf_lo;
           leaf_hi = p.y > leaf_hi ? p.y : leaf_hi;
           corners.push_back(p);
         }
+        fill.push_back(has_uvs ? triangle_fill(leaf, mask, uv[0], uv[1], uv[2])
+                               : (leaf.base_color.w >= leaf.alpha_cutoff ? 1.0f : 0.0f));
       }
     }
     if (corners.empty() || leaf_hi - leaf_lo < gfx::k_crown_min_height_m) continue;
-    // Leaves, not pictures of leaves: a mesh whose alpha-tested triangles are large on average
-    // (a far forest's impostors, merged cards) has no leaf area to count.
-    f64 card_area = 0.0;
-    for (u32 t = 0; t + 2 < corners.size(); t += 3) {
-      card_area +=
-          0.5 *
-          static_cast<f64>(length(cross(corners[t + 1] - corners[t], corners[t + 2] - corners[t])));
-    }
-    if (card_area >
-        static_cast<f64>(gfx::k_crown_card_max_m2) * static_cast<f64>(corners.size() / 3)) {
-      continue;
-    }
+    // Leaf, not card: each triangle counts the share of it its own mask keeps (T146), so a solver's
+    // 2 cm leaf card and a bought tree's 1.2 m branch card both count the leaf they show, and no
+    // card is refused for its size.
     gfx::CrownPriorStats stats;
     const u32 at = static_cast<u32>(grids.size());
-    gfx::build_crown_prior({corners.data(), corners.size()}, lo, hi, records[m], grids, &stats);
+    gfx::build_crown_prior({corners.data(), corners.size()}, {fill.data(), fill.size()}, lo, hi,
+                           records[m], grids, &stats);
     records[m].offset = meshes * static_cast<u32>(sizeof(gfx::CrownPriorDesc)) + at;
     ++out.crowns;
     out.leaf_triangles += static_cast<u32>(corners.size() / 3);

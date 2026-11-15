@@ -2614,8 +2614,11 @@ G = 0.5 for leaves of no preferred direction), averaged over the directions it c
 
 - **Each mesh with a crown carries a grid of its own shade** (`gfx::build_crown_prior`,
   `domain/gfx/crown_prior.h`; `renderer::build_crown_priors`, `crown_priors.h`). At load, the
-  finest level's alpha-tested triangles of a mesh are its leaves; their area (times 0.7, a card's
-  share that is blade) is gathered into a grid over the mesh's bounds, at most 16 cells an axis and
+  finest level's alpha-tested triangles of a mesh are its leaves; each one's area times **the share
+  of it its own mask keeps** — the material's base colour alpha asked at the triangle's 16
+  sub-triangle centroids on the CPU, as the coverage bake asks it (T146; it was a constant 0.7, a
+  solver's blade, and cards over 0.05 m² were refused, which left every bought tree without a
+  crown) — is gathered into a grid over the mesh's bounds, at most 16 cells an axis and
   a quarter metre a cell, and from each cell's centre the grid is marched along twelve directions
   of the upper hemisphere and their mirror images. A cell keeps two bytes: the mean transmitted
   fraction from above and from below. A mesh whose leaves stand under 1.5 m has none (a sward's
