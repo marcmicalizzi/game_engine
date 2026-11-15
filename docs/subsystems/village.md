@@ -73,26 +73,44 @@ its door faces the street, then by the row's own direction, and refuses it if it
 `box_house` is the stand-in the plan's own tests use, a box with a door in its long side that turns
 gable-on where the frontage is too narrow for its length.
 
-**`src/houses.cpp` is the one file that names the structures capability**
-([structures](structures.md)). It asks for a building description, validates it, and reads only its
-**walk records** (`structures::walk_records`: floors, walls, openings, stair flights, solid
-members) — never the mesh:
+**`src/houses.cpp` is the one file that names the capabilities a house comes from**: the rural
+filler ([dwellings](dwellings.md), `fill_rural`) writes a building description, and
+[structures](structures.md) validates it and gives its **walk records**
+(`structures::walk_records`: floors, walls, openings, stair flights, solid members), which are all
+this module reads of a house — never its mesh:
 
+- **the household is drawn from the plot's seed**: three to eight persons, and the means that give
+  the storeys the entry asks (the filler's two-storey types are its `means` 2). The rectangle the
+  filler may fill is the frontage less half a metre each side by the depth behind the setback, so
+  the filler sizes the house to the plot. Its own seed is the household's and the frontage's, not
+  the plot's, so **two plots with one household and one frontage get one description and share
+  one mesh** (the generator's case counts eight houses of five meshes);
 - the box is the outer faces of the ground storey's exterior walls; the entrance is the first
   door between the outside and a ground-storey room, in a wall along an axis;
-- a description's origin is its ground floor's top, so the frame stands **12 cm over the pad**: a
-  14 cm step at the threshold, under the walker's 0.35 m, with the foundation's 60 cm below the
-  floor keeping the walls' feet in the ground;
+- a description's origin is its ground floor's top, and the frame stands **3 cm over the pad**, so
+  the threshold (2 cm more) is a 5 cm lip. The capsule's round foot meets that lip's edge 34° from
+  level and walks up it as a slope (the walker's limit is 40°). At 12 cm, a step the walker's
+  0.35 m step-up should take, the first walk of this row stood at the door: a step-up lifts the
+  capsule under the lintel. The foundation's depth keeps the walls' feet in the ground;
 - **the walker's rules are held here** (plan 14 §14.4's, the least of S89's validators): the
-  entrance and every doorway on the way through at least 0.66 m clear (the capsule's 0.6 m and
-  3 cm each side, after the frame's 6 cm a side) and 1.85 m from sill to head, a flight's rise at
-  most 0.25 m and its going at least 0.20 m. A house that fails one is refused with the sentence
-  (the rule, the opening or stair, what was measured), and its plot counted `refused`;
-- the recipe is the description's canonical JSON, named by its own source hash, so two plots given
-  one description share one mesh in the cache and in the scene.
+  entrance and every doorway on the way through at least 0.66 m clear across (the capsule's 0.6 m
+  and 3 cm each side, after the frame's 6 cm a side) and 1.85 m clear in height (after the
+  frame's head and the threshold, 8 cm: a 1.90 m door is 1.82 m clear and the 1.8 m capsule with
+  its 2 cm of padding does not enter it, which the first walk also found); the roof's underside
+  at the eaves' edge at least 1.82 m over the floor where the entrance is under an eaves side (the
+  collision's proxy keeps the roof, and a cot's 1.56 m eaves stopped the walker 0.72 m short of
+  the wall); a flight's rise at most 0.25 m and its going at least 0.20 m. A house that fails one
+  is refused with the sentence (the rule, the opening or stair, what was measured), its plot
+  counted `refused`, and the plan keeps the first such sentence (`VillagePlan::first_refusal`);
+- the recipe is the description's canonical JSON, named by its own source hash.
 
-Until the rural filler is linked, the description is `structures::example_cot`, sized to the plot
-by the seed (inside 5 to 8 m by 3.8 to 4.6 m, the grounding's peasant houses).
+**The way through it is found, not assumed** (`route_through`): the rooms' doorways from the walk
+records give the chain of rooms from the entrance to the first stair's foot and from its head to a
+window of the upper storey; within a room the way is a breadth-first search over a 10 cm grid of
+that storey's free floor — inside a floor's outline, 34 cm from every wall's face and solid member,
+off a flight's steps and a well — pulled straight wherever a straight stretch is clear; a doorway
+is crossed by a straight stretch through its middle, half a metre each side of the wall's faces.
+The search's neighbour order is fixed, so the same house gives the same way.
 
 So **a hand-authored building in a scene file needs nothing of this module** (it is a mesh
 placement whose recipe is its description), and **a game's own house filler** is another `HouseFn`.
@@ -186,8 +204,45 @@ it.
 
 ## What was measured
 
-Filled in by the row's final runs: the plan's time, a house's triangles, pairs and memory, the
-village's, and the frame inside a room against the frame outside.
+On `content/test-scenes/village/` (2026-11-14, `msvc-release`, an RTX 5090; the machine shared
+with other agents' builds and GPU suites, other processes at 88 to 99 % of the CPU through the
+flight, so every time is an upper bound).
+
+**The plan**: 14 plots along 129 m of street, 8 houses built (a village), 6 spare, none steep, wet,
+unfit or refused; 17 ground edits (a tread, 8 pads, 8 paths) and 82 shapes.
+
+**The houses** (the rural filler's, through the structures mesher at `k_structure_version` 2): six
+distinct meshes for eight houses, **2,210 to 2,872 triangles and 93 to 122 clusters each**, 14,584
+triangles and 619 clusters together, against plan 14 §14.7's estimate of 30,000 triangles for an
+exterior and 45,000 for an interior: the mesher is plain surfaces, with no kit of parts yet. The
+scene whole is 3,059 instances, 1,979 clusters and 128,578 pairs, nearly all of them the cover's
+tufts; the eight houses are about 840 pairs. The collision's proxies of two houses are 5,046
+triangles and 126 KB (`structure_walk_tests.cpp`, a debug build). What the cluster LOD makes of a
+house at 50 m, 200 m and a kilometre was not measured.
+
+**The frame, inside against outside** (`engine-view --camera-path camera-path.json --offscreen
+--terrain-tiles --shadows rt --tunable renderer.gi.mode=bounce --time-of-day 15 --width 3840
+--height 2160 --frames 600 --repeat 2 --benchmark`; native resolution, no reconstruction; GPU
+milliseconds, the median over each stretch's frames of both repeats; the two repeats drew the same
+pairs):
+
+| Pass | Outside (the lane and the path, frames 0 to 232) | Inside (the rooms, the stair, the window, frames 250 to 599) |
+|---|---|---|
+| total | 6.02 | 5.03 |
+| resolve | 4.16 | 2.78 |
+| gi_trace (the bounce) | 0.82 | 1.00 |
+| gi_fold | 0.11 | 0.11 |
+| rt (records, CLAS, BLAS, TLAS) | 0.48 | 0.48 |
+| hw raster | 0.21 | 0.25 |
+| deform | 0.14 | 0.11 |
+
+**A room costs less than the street, not more**: the resolve falls by a third indoors, because the
+picture is plaster, flagstone and boards — each one tiled set — where outdoors most pixels are the
+terrain's stochastic three-layer material and the sky; the bounce's sample pass costs a fifth
+more indoors, where every sampled pixel's ray meets a wall within a few metres and is lit again.
+The chain's cost is the scene's and does not change at the door (nothing is culled by being
+indoors: the visible pairs are about 3,750 either side). The whole flight's GPU median is 5.19 ms
+(p95 6.31).
 
 ## Testing
 

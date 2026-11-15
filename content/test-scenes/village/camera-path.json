@@ -1,0 +1,264 @@
+{
+  "description": "37 seconds at 1.2 m/s: along the lane, up the path, in at the door, through the rooms, up the stair and to a window (engine-content village --flight).",
+  "format": "engine.camera-path.v1",
+  "fps": 60.0,
+  "interpolation": "Smooth",
+  "keys": [
+    {
+      "fov_deg": 70.0,
+      "position": [
+        91.306,
+        3.378,
+        -43.096
+      ],
+      "target": [
+        90.995,
+        3.378,
+        -48.086
+      ],
+      "time": 0.0
+    },
+    {
+      "fov_deg": 70.0,
+      "position": [
+        90.558,
+        3.378,
+        -55.072
+      ],
+      "target": [
+        95.548,
+        3.378,
+        -55.384
+      ],
+      "time": 10.0
+    },
+    {
+      "fov_deg": 70.0,
+      "position": [
+        92.055,
+        3.378,
+        -55.166
+      ],
+      "target": [
+        97.044,
+        3.267,
+        -55.477
+      ],
+      "time": 11.25
+    },
+    {
+      "fov_deg": 70.0,
+      "position": [
+        94.899,
+        3.315,
+        -55.343
+      ],
+      "target": [
+        99.885,
+        3.529,
+        -55.655
+      ],
+      "time": 13.625
+    },
+    {
+      "fov_deg": 70.0,
+      "position": [
+        95.598,
+        3.345,
+        -55.387
+      ],
+      "target": [
+        100.588,
+        3.345,
+        -55.699
+      ],
+      "time": 14.375
+    },
+    {
+      "fov_deg": 70.0,
+      "position": [
+        96.597,
+        3.345,
+        -55.449
+      ],
+      "target": [
+        101.594,
+        3.345,
+        -55.278
+      ],
+      "time": 15.21
+    },
+    {
+      "fov_deg": 70.0,
+      "position": [
+        100.734,
+        3.345,
+        -55.307
+      ],
+      "target": [
+        101.046,
+        3.345,
+        -50.317
+      ],
+      "time": 18.659
+    },
+    {
+      "fov_deg": 70.0,
+      "position": [
+        100.802,
+        3.345,
+        -54.209
+      ],
+      "target": [
+        96.504,
+        5.889,
+        -53.994
+      ],
+      "time": 19.576
+    },
+    {
+      "fov_deg": 70.0,
+      "position": [
+        96.747,
+        5.745,
+        -54.006
+      ],
+      "target": [
+        96.483,
+        5.745,
+        -58.999
+      ],
+      "time": 23.506
+    },
+    {
+      "fov_deg": 70.0,
+      "position": [
+        96.692,
+        5.745,
+        -55.055
+      ],
+      "target": [
+        99.546,
+        5.745,
+        -59.16
+      ],
+      "time": 24.381
+    },
+    {
+      "fov_deg": 70.0,
+      "position": [
+        100.332,
+        5.745,
+        -60.292
+      ],
+      "target": [
+        100.02,
+        5.745,
+        -65.282
+      ],
+      "time": 29.696
+    },
+    {
+      "fov_deg": 70.0,
+      "position": [
+        100.264,
+        5.745,
+        -61.39
+      ],
+      "target": [
+        95.308,
+        5.745,
+        -62.055
+      ],
+      "time": 30.613
+    },
+    {
+      "fov_deg": 70.0,
+      "position": [
+        96.191,
+        5.745,
+        -61.937
+      ],
+      "target": [
+        70.492,
+        5.495,
+        -60.331
+      ],
+      "time": 34.037
+    },
+    {
+      "fov_deg": 70.0,
+      "position": [
+        96.191,
+        5.745,
+        -61.937
+      ],
+      "target": [
+        70.492,
+        5.495,
+        -60.331
+      ],
+      "time": 37.037
+    }
+  ],
+  "markers": [
+    {
+      "frame": 0,
+      "name": "lane"
+    },
+    {
+      "frame": 600,
+      "name": "lane at the path"
+    },
+    {
+      "frame": 675,
+      "name": "path"
+    },
+    {
+      "frame": 818,
+      "name": "before the door"
+    },
+    {
+      "frame": 863,
+      "name": "door"
+    },
+    {
+      "frame": 913,
+      "name": "inside"
+    },
+    {
+      "frame": 1120,
+      "name": "inside"
+    },
+    {
+      "frame": 1175,
+      "name": "inside"
+    },
+    {
+      "frame": 1410,
+      "name": "inside"
+    },
+    {
+      "frame": 1463,
+      "name": "inside"
+    },
+    {
+      "frame": 1782,
+      "name": "inside"
+    },
+    {
+      "frame": 1837,
+      "name": "inside"
+    },
+    {
+      "frame": 2042,
+      "name": "window"
+    },
+    {
+      "frame": 2222,
+      "name": "window, held"
+    }
+  ],
+  "name": "ridge foot house 0",
+  "znear": 0.05
+}

@@ -34,7 +34,10 @@
       "priors": {"soil": "soil"},
       "regions": [
         {"name": "meadow", "polygon": [[-128, 0, -128], [128, 0, -128], [128, 0, 128], [-128, 0, 128]],
-         "base": "turf", "feather_m": 0}
+         "base": "turf", "feather_m": 0},
+        {"name": "ridge foot street tread", "polygon": [[88.5, 0, -63.91], [92.51, 0, 0.16], [102.52, 0, 64.23],
+                                                         [105.48, 0, 63.77], [95.49, 0, -0.16], [91.5, 0, -64.09]],
+         "material": "trail", "feather_m": 0.5}
       ]
     }
   },
