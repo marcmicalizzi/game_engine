@@ -287,5 +287,6 @@ void build_granular(const Set& set, Field& field, SetStats& stats, Shade& shade)
 void build_rock(const Set& set, Field& field, SetStats& stats, Shade& shade);
 void build_ground(const Set& set, Field& field, SetStats& stats, Shade& shade);
 void build_wood(const Set& set, Field& field, SetStats& stats, Shade& shade);
+void build_masonry(const Set& set, Field& field, SetStats& stats, Shade& shade);
 
 }  // namespace engine::matgen::detail

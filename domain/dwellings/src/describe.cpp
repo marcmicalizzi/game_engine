@@ -68,6 +68,11 @@ constexpr u64 k_draw_plinth = 305;
 constexpr u64 k_draw_windows = 306;
 constexpr u64 k_draw_inner_leaf = 307;
 constexpr u64 k_draw_inner_side = 308;
+constexpr u64 k_draw_course = 309;
+constexpr u64 k_draw_course_step = 310;
+constexpr u64 k_draw_eave = 311;
+constexpr u64 k_draw_limewash = 312;
+constexpr u64 k_draw_thatch = 313;
 
 u64 draw(u64 seed, u64 purpose, u32 index = 0) noexcept {
   return mix64(hash_combine(hash_combine(hash_combine(k_hash_seed, seed), purpose), u64{index}));
@@ -81,6 +86,11 @@ struct Dress {
   i32 plinth_proud = 0;
   bool mullions = false;  // unglazed windows with mullions; else glazing bars
   bool shutters = false;  // a shutter or a pair on every window 70 cm wide or more
+  i32 course = 0;         // a thatch's courses, up the slope
+  i32 course_step_mm = 0;
+  bool eave_cut = false;       // the eave cut square to the slope, else rolled
+  const char* wall_role = "";  // the limewash: a variant of the outer wall's role
+  const char* roof_role = "";  // the thatch's age: a variant of the roof's role; "" the base
 };
 
 Dress dress_of(u64 seed, i32 wall, u8 storeys) noexcept {
@@ -92,9 +102,9 @@ Dress dress_of(u64 seed, i32 wall, u8 storeys) noexcept {
   // triangles for 6 mm on a board 10 cm thick.
   d.partition_wave_mm = 0;
   // A batter is a wall of one storey's (the mesher carries a lean cleanly on one): two houses of
-  // three, three quarters of the foot's thickness at the plate, as cob's.
+  // three, seven eighths of the foot's thickness at the plate (three quarters read as a tent).
   if (storeys == 1 && draw(seed, k_draw_batter) % 3 != 0) {
-    d.top_thickness = wall * 3 / 4 < 25 ? 25 : wall * 3 / 4;
+    d.top_thickness = wall * 7 / 8 < 25 ? 25 : wall * 7 / 8;
   }
   // Corners as round as cob's under a batter, else by the draw.
   d.arris = d.top_thickness != 0 ? 12 : (draw(seed, k_draw_arris) % 2 == 0 ? 6 : 12);
@@ -103,6 +113,23 @@ Dress dress_of(u64 seed, i32 wall, u8 storeys) noexcept {
   const u64 windows = draw(seed, k_draw_windows) % 4;
   d.mullions = windows == 1 || windows == 2;
   d.shutters = windows == 1 || windows == 3;
+  // The thatch: courses 26 to 34 cm apart, their butts standing 10 to 15 mm, the eave cut square
+  // on three houses of four and rolled on the fourth.
+  constexpr i32 k_courses[4] = {26, 30, 30, 34};
+  d.course = k_courses[draw(seed, k_draw_course) % 4];
+  constexpr i32 k_steps[3] = {10, 12, 15};
+  d.course_step_mm = k_steps[draw(seed, k_draw_course_step) % 3];
+  d.eave_cut = draw(seed, k_draw_eave) % 4 != 0;
+  // The limewash, of sixteen houses: six the aged base, five white, three cream, one ochre, one
+  // pink. The thatch: eight some years old (the base), six old, two new.
+  const u64 wash = draw(seed, k_draw_limewash) % 16;
+  d.wall_role = wash < 6    ? "plaster/lime"
+                : wash < 11 ? "plaster/lime_white"
+                : wash < 14 ? "plaster/lime_cream"
+                : wash < 15 ? "plaster/lime_ochre"
+                            : "plaster/lime_pink";
+  const u64 age = draw(seed, k_draw_thatch) % 16;
+  d.roof_role = age < 8 ? "" : (age < 14 ? "thatch/straw_old" : "thatch/straw_new");
   return d;
 }
 
@@ -354,6 +381,13 @@ void describe(const InteriorPlan& plan, const RuralChoice& choice, std::string_v
   roof.rect[3] = b + off;
   roof.ridge_along_x = choice.ridge_along_front;
   roof.eaves = eaves;
+  if (choice.dressed) {
+    roof.course = dress.course;
+    roof.course_step_mm = dress.course_step_mm;
+    roof.eave_cut = dress.eave_cut;
+    roof.role = dress.roof_role;
+    out.roles.wall_outer = dress.wall_role;
+  }
   // A way out stands under no eave lower than its own head (the mesher's validator refuses one):
   // the eave's edge hangs pitch * overhang under the plate, so where an outer door stands in a wall
   // the eave runs along, on the storey the roof sits on, the overhang is cut back until the edge

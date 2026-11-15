@@ -222,6 +222,16 @@ bool validate(const Description& d, std::string& why) {
       why = name + ": thickness 2..80 cm, overhang and verge 0..150 cm";
       return false;
     }
+    if (r.course != 0 && (r.course < 10 || r.course > 100 || r.thickness < 15)) {
+      why = name + ": course " + num(r.course) + " cm is outside 10..100, or the coat is under " +
+            "15 cm deep";
+      return false;
+    }
+    if (r.course_step_mm < 0 || r.course_step_mm > 80 || (r.eave_cut && r.thickness < 15)) {
+      why = name + ": course_step_mm " + num(r.course_step_mm) + " is outside 0..80, or a cut " +
+            "eave on a coat under 15 cm deep";
+      return false;
+    }
   }
   if (d.openings.size() > k_max_openings) {
     why = "openings: more than " + num(k_max_openings);
@@ -560,8 +570,8 @@ structure::Description example_cot(i32 width, i32 depth, i32 wall) {
     w.from[0] = corners[i][0], w.from[1] = corners[i][1];
     w.to[0] = corners[(i + 1) % 4][0], w.to[1] = corners[(i + 1) % 4][1];
     w.thickness = wall;
-    // Cob: three quarters as thick at the plate as at the foot, and no face of it flat.
-    w.top_thickness = std::max(25, wall * 3 / 4);
+    // Cob: seven eighths as thick at the plate as at the foot, and no face of it flat.
+    w.top_thickness = std::max(25, wall * 7 / 8);
     w.wave = 12;
     w.kind = structure::WallKind::exterior;
     w.a = 0;
@@ -607,6 +617,10 @@ structure::Description example_cot(i32 width, i32 depth, i32 wall) {
   roof.overhang = 35;
   roof.verge = 25;
   roof.thickness = 30;
+  // A straw thatch: its courses fixed 30 cm apart up the slope, the eave cut square.
+  roof.course = 30;
+  roof.course_step_mm = 12;
+  roof.eave_cut = true;
   d.roofs.push_back(roof);
   structure::Chimney chimney;
   chimney.rect[0] = -wall / 2 - 8, chimney.rect[1] = b / 2 - 65;

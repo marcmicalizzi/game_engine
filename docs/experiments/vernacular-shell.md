@@ -90,12 +90,40 @@ grounding should bring a distribution, and one bay of 4.5 m is the commoner size
 | Lintel | 140 mm deep, bearing 150 mm each side | | **no source** |
 | Threshold | 20 mm | | the mesher's, to keep the reveal's foot out of the floor's plane; under the walker's 0.35 m step |
 
+## A thatch's courses, eave and ridge
+
+| Number | Value used (the example cot) | Range | Source |
+|---|---|---|---|
+| Courses up a slope | 30 cm apart (`course`): 12 on the cot's 3.5 m of slope between the cut eave and the ridge course | fixings 300 mm apart up the roof; most roofs have 10 to 20 courses; a course about 150 mm thick (combed wheat reed about 100) | 11 |
+| A course's step | 12 mm (`course_step_mm`) | | **not found**: a dressed coat is close to one plane, and no source read gives how far a course's butts stand. A choice, small: the first picture, at 25 mm, read as weatherboard |
+| The coat's depth | 30 cm (`thickness`) | 225 to 375 mm; long straw at least 350 new | 11, 13 |
+| The eave's cut | square to the slope (`eave_cut`) | cut with an eaves knife; the front edge straight and level; a water reed eave one coat thick and very even, a straw eave on an old roof thicker | 13, 14. The cut's **angle is not found**: square to the slope is the plane of the stems' butts, and is chosen |
+| Eave overhang by material | (the roof's `overhang`) | long straw 375 to 450 mm, combed wheat reed 300 to 375, water reed 375 to 450 | 11 |
+| The ridge | a block, 6 to 8 cm proud over the last 45 cm of slope | a block ridge cut straight, 75 to 100 mm thick; a wrap-over ridge 100 to 150 mm over its roll; a butts-up ridge covers about 900 mm down each side | 12, 13. The 45 cm skirt is **a choice** between them |
+| Ridge renewed | (see "Tint and age") | every 8 to 12 years | 13 |
+| Not modelled | | the brow course (about half a course thick); liggers on a long straw roof's eaves and barges, sparred about every 100 mm; a patterned ridge; netting | 11, 12, 13 |
+
+## Tint and age
+
+What the generated variants `plaster/lime_*` and `thatch/straw_*` stand on
+([structures](../subsystems/structures.md#variety-a-description-states)). Their colours are
+linear albedos **chosen by eye against the words below**: no source read gives a measured colour.
+
+| Number | Value used | Range | Source |
+|---|---|---|---|
+| Limewash pigments | white, cream, ochre, pink | red and yellow ochre, giving cream through pink to red; pink and pale yellow are the tints most associated with Suffolk | 17 (snippets). A local society calls "Suffolk pink" as an old tradition contested (snippet) |
+| Where walls are plain | the base and `_white` | East Dorset cob is off-white over a sand-and-hair render, and coloured walls are not characteristic there | 6 (snippet) |
+| A dark plinth | (not modelled) | East Dorset plinths are often rendered and painted black; tar became popular in the Victorian period. **No band height found** | 6, 17 (snippets) |
+| How long a coat stays gold | `_new`: its first year or two | looks new for one to two years, then charcoal grey; "silvered down" from bright yellow after 15 to 18 months | 18 (snippets) |
+| A ridge's age against its coat's | (one role a roof) | a ridge is replaced every 8 to 12 years, so it is usually newer than the coat under it | 13 |
+| The mix within one village | the filler's | | **not found**: only the regional statements above |
+
 ## A cob wall's shape
 
 | Number | Value used (the example cot) | Range | Source |
 |---|---|---|---|
 | Thickness at the foot | 60 cm | about 600 mm | 10 |
-| Thickness at the plate | 45 cm (`top_thickness`) | "diminishes with height", perhaps no more than 300 mm at the wall plate | 9. The cot's wall is 2.1 m of cob, not two storeys of it, so it is taken three quarters of the way and not to 300: **a choice inside the source's range** |
+| Thickness at the plate | 52 cm (`top_thickness`) | "diminishes with height", perhaps no more than 300 mm at the wall plate | 9. The cot's wall is 2.1 m of cob, not two storeys of it, so it is taken an eighth of the way and not to 300: **a choice inside the source's range**. The first pictures had 45 cm, which read as a tent: 15 cm in 2.1 m is more lean than a cottage shows |
 | Which face leans | the outer | | **not found**: no source read gives a batter as a ratio or says which face; the outer is the common account and is chosen |
 | Plinth height | 30 cm (`plinth_top`) | 300 to 450 mm above ground (a pamphlet's snippet); footings of brick or rubble 150 to 1,200 mm high | 10; the pamphlet in a search snippet only |
 | Plinth proud of the cob | 4 cm (`plinth_proud`) | | **not found**: whether a plinth stands proud of, flush with or behind the face, and by how much. A choice |
@@ -104,6 +132,22 @@ grounding should bring a distribution, and one bay of 4.5 m is the commoner size
 | Lifts | (not modelled) | usually no more than 600 mm, visible on unrendered walls | 9 |
 | Render | (the material's) | coats of 8 to 10 mm, three for about 20 mm | trade guides, snippets only |
 | Roof overhang over cob | (the roof's `overhang`) | 400 to 700 mm | 9, which confirms source 3's summary |
+
+## Laid work
+
+What the generated sets `stone/flag` and `stone/rubble` are drawn to
+([matgen](../subsystems/matgen.md#masonry)).
+
+| Number | Value used | Range | Source |
+|---|---|---|---|
+| A flag floor's rows | 35 to 60 cm wide | laid in lines, successive rows varying slightly in width | 16 (snippet) |
+| A flag's width | (the row's) | up to 600 mm | a period-homes magazine, snippet only |
+| A flag's length | 45 to 90 cm | | **not found** in a source that opened: a choice |
+| A flag floor's joints | 8 mm, 4 mm down | about 3 to 5 mm, wider on earlier floors, lime-pointed or left open | 16 (snippet). 8 mm is the "earlier, wider" end, chosen so a joint is four texels |
+| A flag's thickness | (not drawn) | 40 mm to over 150 mm | a lime supplier's knowledge base, snippet only |
+| Coursed rubble's courses | 10 to 20 cm | regular coursed rubble: 4 to 8 in; random rubble built in courses is levelled every 12 to 14 in, two or three stones deep | 15 |
+| A rubble stone's length | 15 to 40 cm | | **not found**: a choice |
+| A rubble wall's joints | 18 mm, 9 mm down | | **not found**: a choice |
 
 ## Leaves, shutters and unglazed windows
 
@@ -128,6 +172,11 @@ leaf, inside, folding back into the reveal); which way a cottage door opens (inw
 
 - The door, window, storey-height and joinery numbers stand without a source. They are fields or
   named constants, so a read of Brunskill or a county survey changes numbers, not shapes.
-- A cob wall's taper, a thatch's courses and its ridge (flush or block) are not modelled.
+- What the second reading looked for and did not find stands as choices, each named under its
+  table: a batter's ratio and which face leans, a corner's radius, a plinth's projection, a
+  face's wander, a course's step, an eave's cut angle, a leaf's and a mullion's sections, a
+  flag's length, a rubble wall's joint, and every colour.
+- Not modelled: a cob wall's lifts, a rounded reveal, a thatch's brow course, liggers and
+  patterned ridge, a tarred plinth, ironwork, glass.
 - Pitch and depth for slate, stone slate and tile want the same table before a filler offers
   them.

@@ -25,7 +25,9 @@ namespace {
 // and again at k_furnish_version 1, when a description gained its timber and furniture as boxes.
 // And at k_structure_version 4 (0x3cbcd86acf0d2f28 before it), when the mesher's description
 // gained leaves, mullions and walls that wander and the filler began to state them by the seed.
-constexpr u64 k_descriptions_pin = 0x6f53539871304142ull;
+// And at k_structure_version 5 (0x6f53539871304142 before it): a thatch's courses and cut eave,
+// the limewash's and the thatch's variants by the seed, and a batter of seven eighths.
+constexpr u64 k_descriptions_pin = 0xbee0164e0fc3342full;
 
 bool near_cm(f32 metres, i32 cm) {
   const f32 d = metres * 100.0f - static_cast<f32>(cm);
@@ -256,6 +258,44 @@ TEST_CASE("describe: eight houses of one household are not one wall, one window 
     CHECK(o.leaf == structure::LeafKind::none);
     CHECK(o.mullions == 0);
   }
+}
+
+TEST_CASE("describe: a village's limewash and thatch are not one colour and one age") {
+  const RuralStyle style;
+  u32 washes = 0, base_wash = 0, aged = 0, cut = 0;
+  std::string seen_wash[5];
+  for (u64 seed = 0; seed < 24; ++seed) {
+    structure::Description d;
+    std::string error;
+    REQUIRE(fill_rural(RuralPlot{2400, 1500}, Household{4, 1}, style, seed + 400, "h", d, &error));
+    REQUIRE(d.roofs.size() == 1);
+    const structure::Roof& roof = d.roofs[0];
+    // A role's variant falls back to its base where a pack lacks it, so any name is safe; these
+    // are the names the generated sets answer.
+    CHECK(d.roles.wall_outer.rfind("plaster/lime", 0) == 0);
+    CHECK((roof.role.empty() || roof.role.rfind("thatch/straw_", 0) == 0));
+    CHECK(roof.course >= 26);
+    CHECK(roof.course <= 34);
+    CHECK(roof.course_step_mm >= 10);
+    CHECK(roof.course_step_mm <= 15);
+    bool fresh = true;
+    for (u32 i = 0; i < washes; ++i)
+      fresh = fresh && seen_wash[i] != d.roles.wall_outer;
+    if (fresh && washes < 5) seen_wash[washes++] = d.roles.wall_outer;
+    base_wash += d.roles.wall_outer == "plaster/lime" ? 1u : 0u;
+    aged += roof.role.empty() ? 0u : 1u;
+    cut += roof.eave_cut ? 1u : 0u;
+  }
+  std::printf(
+      "dwellings limewash over 24 houses: %u washes, %u the base; %u thatches not the "
+      "base's age; %u eaves cut square\n",
+      washes, base_wash, aged, cut);
+  CHECK(washes >= 3);
+  CHECK(base_wash < 24);
+  CHECK(aged >= 1);
+  CHECK(aged < 24);
+  CHECK(cut >= 1);
+  CHECK(cut < 24);
 }
 
 TEST_CASE("describe: a door under an eave keeps its head clear of the eave's edge") {

@@ -304,28 +304,48 @@ consumer's to turn.
 | `wood/plank` | wood | 2 m | sawn softwood boards weathered grey to brown: flat-sawn figure, latewood ridges, checks, knots, stains | a bridge's deck, rails and posts ([bridges](bridges.md)) |
 | `wood/log` | wood | 2 m | the outside of a debarked log, silvered: spiral grain, long drying checks, knots, bark on 15 % | a bridge's logs, sills and stringers |
 | `plaster/lime` | rock | 2 m | limewash over a lime render: one pale constituent worn here and there to the render, no joint, 6 mm of form, light streaks, nothing growing | a building's walls and ceilings ([structures](structures.md#materials-by-role)) |
-| `stone/flag` | rock | 2 m | a fine sandstone worn by feet, two straight joint sets, no lichen, no streak | a building's ground floor |
-| `stone/rubble` | granular | 2 m | D50 150 mm, angular, laid flat (alignment 0.9), a mortar of 0.8 mm sand over a quarter of the stones' faces | a building's plinth and chimney |
+| `stone/flag` | masonry | 4 m at 2,048 | laid flags: rows 35 to 60 cm wide of flags 45 to 90 cm long in a fine sandstone worn by feet, 8 mm joints of trodden earth 4 mm down, arrises worn | a building's ground floor |
+| `stone/rubble` | masonry | 2 m | coursed rubble: courses 10 to 20 cm of rough stones 15 to 40 cm long, round-cornered, their joints wandering, 18 mm of lime mortar nearly flush | a building's plinth and chimney |
 | `thatch/straw` | wood | 2 m | a straw coat: the figure's bands as stems 3.5 mm across, nearly straight, gold weathering to grey-brown, short dark checks between bundles, no knot | a building's roof |
+| `plaster/lime_white`, `_cream`, `_ochre`, `_pink` | rock | 2 m | `plaster/lime`'s recipe with the wash's colour changed: this year's white, a little yellow ochre, a yellow ochre wash, red ochre | one village's houses ([structures](structures.md#variety-a-description-states)) |
+| `thatch/straw_new`, `thatch/straw_old` | wood | 2 m | `thatch/straw`'s recipe a year old (gold, hardly stained) and long past silvering (charcoal, stained, its gaps opened) | the same |
 
 ### A building's surfaces
 
-The last four rows are the structures' roles (G65, 2026-11-14), and **each is a recipe of a kind
-that stood already**: the generator's code and every other set's bytes are unchanged, so
-`k_matgen_version` did not move. That is the least that gives a solved building a set of its own
-for each surface, and it is stated as that, not as a model of the material:
+The last four rows are the structures' roles (G65, 2026-11-14). They began as recipes of kinds
+that stood already, the least that gave a solved building a set for each surface; two still are,
+and are stated as that, not as a model of the material:
 
 - **`thatch/straw` is the kind `wood`**, because a coat of combed stems is, at a millimetre a
   texel, a grain: parallel bands of a few millimetres with dark gaps. u runs along the stems, so a
   roof's UVs run u up its slope. What it lacks is what makes a thatch a thatch close to: the
-  courses' steps every 15 cm, the stems' cut ends at the eave, the ridge's pattern, netting.
-- **`stone/rubble` is the kind `granular`**: a wall's stones as clasts and its mortar as the
-  matrix. It has no courses and no quoins, and its stones are a bed's shapes, not a mason's.
-- **`plaster/lime` and `stone/flag` are the kind `rock`** with nothing growing on them. A flag
-  floor's joints are a rock's joints, not flags laid to a bond.
+  stems' cut ends at the eave, the ridge's pattern, netting (the courses' steps are the
+  structures' mesh now, [structures](structures.md#roofs)).
+- **`plaster/lime` is the kind `rock`** with nothing growing on it.
+- **`stone/flag` and `stone/rubble` are the kind `masonry`** (below) since version 9. The first
+  pictures of a house said why: a jointed rock face reads as cracked rock, not laid flags, and a
+  bed of clasts in a matrix reads as cobbles, not a wall somebody coursed.
 
-A generator kind for laid masonry (courses, bond, quoins) and one for a thatch's courses are rows
-this leaves.
+### Masonry
+
+The kind `masonry` (`src/masonry.cpp`, `engine.matgen.Masonry`) draws **laid work**: units in
+courses along the image's u, each course its own height from a range and each unit its own
+length from a range, every course starting at its own place so perpends do not line up, with a
+joint between units that has a width, a filling's colour and a depth. A unit is one of the
+recipe's stones (its tone the unit's own), its top standing a little above or below its
+neighbours' (`lip_um`), its arris falling away over `arris_um` and holding the joint's dirt, its
+corners rounded in plan (`round_um`, so the joints widen where they cross), and its outline
+wandering from straight by `wander_um`: little for a dressed flag, a good deal for a rubble
+stone. Everything is on the torus: the courses' heights sum to the tile, each course's lengths
+sum to it, the wander is a periodic noise, so the tile has no seam and a windowed build is the
+same picture rotated. A wall's surface has u along it and v up and a floor's has x and z
+([structures](structures.md#materials-by-role)), so courses lie level on a wall and run in rows
+on a floor. The sets are **not** stochastic: three offset copies blended would cut every joint.
+
+What it does not draw: a bond (headers, through-stones), quoins at a corner (a set knows no
+corner), random rubble brought to courses every 30 to 35 cm, wear along a path, a slab's bedding
+planes. The ranges and their sources (a conservation guide's snippet for flags, a builder's
+textbook for rubble) are on [the structures' grounding page](../experiments/vernacular-shell.md#laid-work).
 
 Rock sets are `stochastic` (R131: a rock set is laid over cliffs many times its repeat, as
 `tools/pack-materials.ps1` defaults every `rock/*` role); the granular and ground sets are
@@ -415,7 +435,9 @@ test passed. Version 3 (the step removed; the granite and sandstone pins re-take
 `linux-gcc-release-v2` did not run for version 3 (the container lock was not had before the
 row's hand-back). Version 4 (G188) added the two wood pins and moved no other; version 5
 (G187) moved the turf's and added the moss's, the soil's and the thatch's. What the containers
-made of versions 4 and 5 is under "What it measured". The streaks' distance below a
+made of versions 4 and 5 is under "What it measured". Version 9 (the masonry kind, 2026-11-15)
+added the flag's and the rubble's pins, taken on MSVC in `msvc-debug`, and moved no other; its
+container run is in the structures' row of the night's hand-back, not here yet. The streaks' distance below a
 source is an integer from two sweeps round each column, the lichen's owner of a texel is decided
 by an f64 comparison of two quotients of the same arithmetic, so neither adds an operation a
 toolchain rounds its own way. Nothing was needed that `core/math/deterministic.h` lacks: a normal draw is Box and Muller's

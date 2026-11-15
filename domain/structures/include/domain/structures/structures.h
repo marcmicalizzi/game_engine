@@ -46,7 +46,9 @@ namespace engine::structures {
 // 3: leaves (a door's, a shutter's) and an unglazed window's mullions.
 // 4: a wall's batter and wander, rounded corners, a plinth standing proud (a description that
 //    states none of them meshes to the same bits as before).
-inline constexpr u32 k_structure_version = 4;
+// 5: a thatch's courses and cut eave (the same holds), a leaf's boards each with their own
+//    grain, and the example's batter eased to seven eighths.
+inline constexpr u32 k_structure_version = 5;
 
 // Determinism stance (ADR-0010): "derived": a mesh is content, never read back into gameplay, and
 // the same bytes from every toolchain all the same (structures.md, "Determinism").

@@ -165,6 +165,15 @@ struct Roof @version(1) {
   thickness: i32 = 30
   /// The role it is drawn with; empty takes `Roles.roof`.
   role: string = ""
+  /// A coat laid in courses (a thatch's): how far apart their butts stand up the slope, and how
+  /// far each course's surface falls to the next one's butts, which stand as a step. 0: the
+  /// slope is one plane. Only a coat 15 cm deep or more is coursed.
+  course: i32 = 0
+  course_step_mm: i32 = 20
+  /// True: the eave is cut square to the slope, its face looking down and out over the coat's
+  /// whole depth (a dressed thatch's), and the underside starts in from the eave's edge by the
+  /// cut. False: the eave's face is plumb and rolled over. Only a coat 15 cm deep or more.
+  eave_cut: bool = false
 }
 
 /// A chimney: a stack from its base through the roof, with a hearth open to a room.

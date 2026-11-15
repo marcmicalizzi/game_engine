@@ -67,7 +67,10 @@ namespace engine::matgen {
 ///    yellower crown, darker wet margins) instead of one tone a cell (a camouflage print).
 /// 8: the moss's cushions overlap widely (radii 0.85 to 1.4 cells) so its hollows are scattered
 ///    pockets, not a net round every cushion (version 7's read as a reticulated pattern at 15 m).
-inline constexpr u32 k_matgen_version = 8;
+/// 9: the masonry kind (2026-11-15): laid work in courses; `stone/flag` and `stone/rubble` are
+///    its recipes now (a jointed rock face read as cracked rock, a clast bed as cobbles). No
+///    other kind's images moved; every set's key did, because the recipe's type gained a field.
+inline constexpr u32 k_matgen_version = 9;
 
 /// Variants of a tiled role (G153): `default_sets` writes `<role>.1` .. `<role>.<n>` beside each
 /// tiled granular role, the same recipe from other seeds, so a consumer that picks one by place

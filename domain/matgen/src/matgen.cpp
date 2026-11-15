@@ -141,7 +141,28 @@ bool validate_set(const Set& set, std::string& error) {
         return fail(error, "wood bark is out of range");
       break;
     }
-    default: return fail(error, "kind is not granular, rock, ground or wood");
+    case Kind::masonry: {
+      const Masonry& m = set.masonry;
+      if (!constituents_ok(m.stones))
+        return fail(error, "masonry.stones is empty, too long or out of range");
+      if (m.course_min_mm < 20 || m.course_min_mm > m.course_max_mm || m.course_max_mm > 2000 ||
+          m.unit_min_mm < 30 || m.unit_min_mm > m.unit_max_mm || m.unit_max_mm > 3000)
+        return fail(error,
+                    "masonry courses (20 to 2000 mm) or units (30 to 3000 mm) are out of "
+                    "range, or a minimum is over its maximum");
+      if (m.course_max_mm > set.tile_mm || m.unit_max_mm > set.tile_mm)
+        return fail(error, "a masonry course or unit is larger than the tile");
+      if (m.joint_um < 500 || m.joint_um > 80000 || m.joint_depth_um > 60000)
+        return fail(error, "masonry joints are out of range (500 to 80000 um wide, 60000 deep)");
+      if (m.arris_um > 200000 || m.arris_drop_um > 50000 || m.round_um > 300000 ||
+          m.wander_um > 100000 || m.lip_um > 30000 || m.relief_um > 30000)
+        return fail(error, "a masonry arris, rounding, wander, lip or relief is out of range");
+      if (m.joint_r_permille > 1000 || m.joint_g_permille > 1000 || m.joint_b_permille > 1000 ||
+          m.joint_roughness_permille > 1000)
+        return fail(error, "a masonry joint colour or roughness is over 1000");
+      break;
+    }
+    default: return fail(error, "kind is not granular, rock, ground, wood or masonry");
   }
   return true;
 }
@@ -213,6 +234,7 @@ bool build_set(const Set& set, SetImages& out, SetStats* stats_out, std::string&
     case Kind::granular: detail::build_granular(set, field, stats, shade); break;
     case Kind::rock: detail::build_rock(set, field, stats, shade); break;
     case Kind::wood: detail::build_wood(set, field, stats, shade); break;
+    case Kind::masonry: detail::build_masonry(set, field, stats, shade); break;
     default: detail::build_ground(set, field, stats, shade); break;
   }
   const u32 count = n * n;
@@ -707,49 +729,62 @@ Set plaster_lime() {
   return s;
 }
 
-// A flagged floor: a fine sandstone worn by feet, its joints the flags' own, nothing growing on
-// it and no rain to streak it.
+// A flagged floor, laid (kind `masonry`): rows 35 to 60 cm wide of flags 45 to 90 cm long, a
+// fine sandstone worn by feet, the joints 8 mm of trodden earth and lime (vernacular-shell.md,
+// "Laid work": rows vary a little in width, flags run to 600 mm wide, joints 3 to 5 mm and wider
+// on earlier floors). The tile is four metres so a room's floor is not the same dozen flags
+// twice; it is not sampled stochastically, which would cut a joint off at every patch.
 Set stone_flag() {
-  Set s = base("stone/flag", Kind::rock, 0x666c6167ull, 2000);
-  s.stochastic = true;
-  Rock& r = s.rock;
-  r.grain_um = 300;
-  r.minerals.push_back(part(850, 330, 310, 280, 120, 800));  // the flag's stone
-  r.minerals.push_back(part(150, 250, 235, 215, 100, 750));  // its darker beds
-  r.relief_um = 1500;
-  r.joint_sets = 2;
-  r.joint_winding = 1;
-  r.joint_width_um = 8000;
-  r.rind_permille = 0;
-  r.lichen_permille = 0;
-  r.pits_permille = 30;
-  r.form_um = 4000;
-  r.streak_permille = 0;
+  Set s = base("stone/flag", Kind::masonry, 0x666c6167ull, 4000);
+  s.texels = 2048;
+  s.cavity_permille = 450;
+  Masonry& m = s.masonry;
+  m.course_min_mm = 350;
+  m.course_max_mm = 600;
+  m.unit_min_mm = 450;
+  m.unit_max_mm = 900;
+  m.joint_um = 8000;
+  m.joint_depth_um = 4000;
+  m.arris_um = 14000;
+  m.arris_drop_um = 2500;
+  m.round_um = 12000;
+  m.wander_um = 2500;
+  m.lip_um = 1500;
+  m.relief_um = 1200;
+  m.stones.push_back(part(850, 330, 310, 280, 120, 800, 40));  // the flag's stone
+  m.stones.push_back(part(150, 250, 235, 215, 100, 750, 40));  // its darker beds
+  m.joint_r_permille = 200;
+  m.joint_g_permille = 180;
+  m.joint_b_permille = 150;
+  m.joint_roughness_permille = 950;
   return s;
 }
 
-// Rubble walling in lime mortar: angular stones a hand to a forearm long laid on their beds, the
-// mortar standing nearly flush between them and over their edges.
+// Coursed rubble in lime mortar (kind `masonry`): courses 10 to 20 cm high of rough stones 15 to
+// 40 cm long, their corners round and their joints wandering, the mortar nearly flush
+// (vernacular-shell.md, "Laid work": regular coursed rubble's courses are 4 to 8 inches).
 Set stone_rubble() {
-  Set s = base("stone/rubble", Kind::granular, 0x727562626c65ull, 2000);
+  Set s = base("stone/rubble", Kind::masonry, 0x727562626c65ull, 2000);
   s.cavity_permille = 500;
-  Granular& g = s.granular;
-  g.d50_um = 150000;
-  g.sorting_milliphi = 600;
-  g.roundness_permille = 250;
-  g.ba_min_permille = 450;
-  g.ba_max_permille = 800;
-  g.cb_min_permille = 400;
-  g.cb_max_permille = 800;
-  g.cover_permille = 900;
-  g.imbrication_deg = 0;
-  g.scatter_deg = 8;
-  g.alignment_permille = 900;
-  g.openwork_permille = 0;
-  g.matrix_um = 800;
-  g.buried_permille = 250;
-  g.lithologies.push_back(part(600, 380, 360, 330, 180, 880, 60, 30));  // a grey gritstone
-  g.lithologies.push_back(part(400, 420, 370, 300, 160, 900, 40, 0));   // the same, iron-stained
+  Masonry& m = s.masonry;
+  m.course_min_mm = 100;
+  m.course_max_mm = 200;
+  m.unit_min_mm = 150;
+  m.unit_max_mm = 400;
+  m.joint_um = 18000;
+  m.joint_depth_um = 9000;
+  m.arris_um = 25000;
+  m.arris_drop_um = 8000;
+  m.round_um = 35000;
+  m.wander_um = 12000;
+  m.lip_um = 5000;
+  m.relief_um = 4000;
+  m.stones.push_back(part(600, 380, 360, 330, 180, 880, 60));  // a grey gritstone
+  m.stones.push_back(part(400, 420, 370, 300, 160, 900, 40));  // the same, iron-stained
+  m.joint_r_permille = 550;
+  m.joint_g_permille = 520;
+  m.joint_b_permille = 450;
+  m.joint_roughness_permille = 930;
   return s;
 }
 
@@ -785,6 +820,45 @@ Set thatch_straw() {
   return s;
 }
 
+// ---- what one village's houses differ by (structures.md, "Variety a description states";
+// vernacular-shell.md, "Tint and age"): a role a description names, `<base>_<variant>`.
+
+// A limewash pigmented with an ochre, or fresh: the aged wash's recipe with its wash's colour.
+Set plaster_tint(const char* role, u64 seed, u32 r, u32 g, u32 b) {
+  Set s = plaster_lime();
+  s.role = role;
+  s.seed = seed;
+  s.rock.minerals[0].r_permille = r;
+  s.rock.minerals[0].g_permille = g;
+  s.rock.minerals[0].b_permille = b;
+  return s;
+}
+
+// A coat in its first year or two, still gold, and one long past silvering: charcoal grey, its
+// stains strong and its bundles' gaps opened.
+Set thatch_new() {
+  Set s = thatch_straw();
+  s.role = "thatch/straw_new";
+  s.seed = 0x6e6577ull;
+  s.wood.grey_permille = 150;
+  s.wood.grey_patch_permille = 120;
+  s.wood.stain_permille = 150;
+  return s;
+}
+Set thatch_old() {
+  Set s = thatch_straw();
+  s.role = "thatch/straw_old";
+  s.seed = 0x6f6c64ull;
+  s.wood.grey_r_permille = 150;
+  s.wood.grey_g_permille = 142;
+  s.wood.grey_b_permille = 128;
+  s.wood.grey_permille = 950;
+  s.wood.grey_patch_permille = 50;
+  s.wood.stain_permille = 700;
+  s.wood.checks_per_m2 = 700;
+  return s;
+}
+
 }  // namespace
 
 Set variant_of(const Set& set, u32 index) {
@@ -808,6 +882,10 @@ Vector<Set> default_sets() {
   sets.push_back(ground_thatch());
   sets.push_back(ground_turf());
   sets.push_back(plaster_lime());
+  sets.push_back(plaster_tint("plaster/lime_cream", 0x637265616dull, 760, 700, 560));
+  sets.push_back(plaster_tint("plaster/lime_ochre", 0x6f63687265ull, 700, 590, 390));
+  sets.push_back(plaster_tint("plaster/lime_pink", 0x70696e6bull, 720, 560, 500));
+  sets.push_back(plaster_tint("plaster/lime_white", 0x7768697465ull, 820, 810, 770));
   sets.push_back(rock_basalt());
   sets.push_back(rock_granite());
   sets.push_back(rock_granite_wet());
@@ -818,6 +896,8 @@ Vector<Set> default_sets() {
   sets.push_back(stone_flag());
   sets.push_back(stone_rubble());
   sets.push_back(thatch_straw());
+  sets.push_back(thatch_new());
+  sets.push_back(thatch_old());
   sets.push_back(wood_log());
   sets.push_back(wood_plank());
   return sets;

@@ -61,7 +61,7 @@ the left of +x is -z, so an outline that runs **counter-clockwise seen from abov
 | `openings[]` | A span of a wall: its centre `at` along the wall from `from`, its clear `width`, its `sill` and `head` above the storey's floor, and a `kind`: `door` (a frame and a threshold), `window` (a frame, glazing bars or `mullions`, a sill board), `doorway` (a bare opening). **What hangs in it is stated or absent**: `leaf` (`none`, `ledged`), `leaves` (1, or a pair), `hinge_at_to`, `opens_right`, `leaf_open` (degrees from shut, 0 to 90) ([leaves and mullions](#leaves-and-mullions)). |
 | `rooms[]` | An `id`, a `storey`, a `kind`, a name and an outline on the walls' centre lines. |
 | `stairs[]` | A flight from a storey's floor to the next: its `foot`, the quarter turn it climbs along, its `width`, `risers` and `going`, the `well` it leaves in the floor above, and the rooms at its foot and head. |
-| `roofs[]` | A `form` (`gable`, `mono`; `hip` is refused until it is meshed) over a rectangle (the outer faces of the walls that carry it), the ridge's axis, the `eaves` height, the `pitch` as rise over run in permille, the `overhang` at the eaves and the `verge` at the gables, and the covering's `thickness`. |
+| `roofs[]` | A `form` (`gable`, `mono`; `hip` is refused until it is meshed) over a rectangle (the outer faces of the walls that carry it), the ridge's axis, the `eaves` height, the `pitch` as rise over run in permille, the `overhang` at the eaves and the `verge` at the gables, the covering's `thickness`, its own `role` (empty: `roles.roof`), and, stated or absent, a thatch's `course`, `course_step_mm` and `eave_cut`. |
 | `chimneys[]` | A stack's rectangle, its `base` and `top`, and a hearth's side, storey, width and head. |
 | `boxes[]` | Plain members: an axis-aligned box drawn with a surface's role (a hearth stone, a bench, a post), `solid` or not. |
 | `roles` | The material role of each of the nine surfaces. |
@@ -231,6 +231,20 @@ of the segments each corner joins, and straight up at the ridge. A thin covering
 eave's plumb face and the plane. The verge is the profile's cut end. UVs run **u up the slope and
 v along the ridge**, so a thatch's stems, drawn along its set's u, lie up the roof.
 
+**A thatch's courses and cut eave** are stated or absent (`Roof.course`, `course_step_mm`,
+`eave_cut`; only a soft coat takes them, and a roof that states neither is the mesh it was).
+`course` lays the slope between the eave and the ridge course in courses that far apart up it
+(the nearest whole number of equal ones, at most 40): each course's surface falls
+`course_step_mm` square to the slope from its own butts to the next course's, which stand as a
+step, so no course stands above the coat's depth; every course's face keeps its own plane, so
+the light shows the steps where a smoothed coat would wash them out. With courses the ridge
+course is a **block**: its skirt's lower edge is one cut step of 6 cm. `eave_cut` cuts the eave
+**square to the slope**: its face looks down and out over the coat's whole depth, the coat's
+top edge stays where the overhang puts it, and the underside starts in from that edge by the
+depth times the pitch over the slope's length (23 cm for 30 cm at fifty degrees; never nearer
+the wall than 6 cm). The verge's end is cut to the same face. What the mesh still lacks is on
+the grounding page: the brow course, liggers, a ridge's pattern, the sweep up to a chimney.
+
 **The underside** is the covering's own role for a soft coat (a thatch shows its straw between
 its battens) and the `boards` role for a thin one.
 
@@ -301,11 +315,36 @@ behind it, else a flat colour, and the lookup says once which role is missing. U
 surface (a wall's u along it and v up, a floor's x and z, a roof's u up the slope and v along the
 ridge, a timber's u along its grain), so a set tiles at its own `tile_m`.
 
-**The four roles no pack had are generated sets now** (`plaster/lime`, `stone/flag`,
-`stone/rubble`, `thatch/straw`: [matgen](matgen.md#a-buildings-surfaces)), each a recipe of a
-generator kind that stood already, built by `engine-content matgen` with the rest. They are the
-least that gives each surface a set of its own: a thatch's courses, a wall's coursing and a
-floor's bond are not in them, and that page says so.
+**The four roles no pack had are generated sets** (`plaster/lime`, `stone/flag`,
+`stone/rubble`, `thatch/straw`: [matgen](matgen.md#a-buildings-surfaces)), built by
+`engine-content matgen` with the rest. The flag floor and the rubble are laid work (the kind
+`masonry`: rows of flags, coursed stones); the plaster and the thatch are recipes of kinds that
+stood already.
+
+### Variety a description states
+
+Two houses of one village need not be one colour, and what differs is **a role's name in the
+description**, never a decision of the mesher: `Roles.wall_outer` (and `wall_inner`, `ceiling`)
+and `Roof.role` take any role the host's pack has. The generated sets give the fillers six to
+choose from beside the bases:
+
+| Role | What |
+|---|---|
+| `plaster/lime` | the base: a wash yellowed with age |
+| `plaster/lime_white` | a wash put on this year |
+| `plaster/lime_cream` | a wash with a little yellow ochre |
+| `plaster/lime_ochre` | a yellow ochre wash |
+| `plaster/lime_pink` | a wash with red ochre |
+| `thatch/straw` | the base: a coat some years old, grey-brown |
+| `thatch/straw_new` | a coat in its first year or two, still gold |
+| `thatch/straw_old` | a coat long past silvering: charcoal, stained, its bundles opened |
+
+**A variant the pack lacks is drawn with its base**: a role `<base>_<variant>` that is not
+found falls back to `<base>` before the surface's own fallback, so a village described for the
+generated sets still has walls under a pack that carries only `plaster/lime`. Which tints suit
+which country, and how long a coat stays gold, are on
+[the grounding page](../experiments/vernacular-shell.md#tint-and-age); how many houses of a
+village take which is the filler's.
 
 ## Walk records
 
@@ -340,7 +379,11 @@ mistake there (to be measured with the village).
 `example_cot(width, depth, wall)` is a one-room cot: a room 6 by 4 m inside walls 60 cm thick, one
 storey 2.4 m to the wall plate and open to a thatched gable roof at fifty degrees whose eaves
 overhang 35 cm (so the eave's edge stands 1.98 m over the floor, clear of the door's head), a door
-and a window in the front wall, a window in the back, a stack with a hearth on one gable. The
+and a window in the front wall, a window in the back, a stack with a hearth on one gable. It
+states everything a description can about a cob-and-thatch house: walls 52 cm at the plate that
+wander 12 mm, corners rounded to 12 cm, a plinth 4 cm proud, a ledged door standing open a
+quarter turn, unglazed mullioned windows with their shutters folded back, a thatch in courses
+30 cm apart with a cut eave. The
 same description is committed as `content/structures/cot.structure.json`. Its numbers and where they
 come from are on [the grounding page](../experiments/vernacular-shell.md).
 
@@ -402,25 +445,34 @@ counts and no times):
 
 | What | Value |
 |---|---|
-| Triangles, finest | 1,192 (the test holds it under 4,000) |
-| Clusters, finest cut | 38; 60 with the DAG's coarser levels |
-| The DAG's cut from 5 m and 50 m (2160 lines, 60° field of view, 1 px) | 1,192 triangles in 38 clusters: the finest |
-| The cut from 200 m | 1,048 triangles in 33 clusters |
-| The cut from a kilometre | 472 triangles in 14 clusters |
-| The DAG's root | 194 triangles |
+| Triangles, finest | 3,836 (the test holds it under 12,000); 1,192 before the leaves, the walls' shape and the thatch's courses (2026-11-15) |
+| Clusters, finest cut | 82; 146 with the DAG's coarser levels (38 and 60 before) |
+| The DAG's cut from 5 m (2160 lines, 60° field of view, 1 px) | 3,836 triangles in 82 clusters: the finest |
+| The cut from 50 m | 1,977 triangles in 62 clusters (the finest, 1,192, before) |
+| The cut from 200 m | 1,712 triangles in 55 clusters (1,048 before) |
+| The cut from a kilometre | 318 triangles in 10 clusters (472 before) |
+| The DAG's root | 230 triangles (194 before) |
 | Materials (surfaces with triangles) | 7 |
 
+**Where the triangles went**: about 2,200 are the walls' wander (a 45 cm grid on eight faces),
+about 300 the leaves, mullions and shutters, about 160 the thatch's courses, and the rest the
+corners' arcs and the plinth's ledge. The wander is the one that is bought, not needed, at
+distance: by 50 m the cut has dropped half of it, and a kilometre off the house is fewer
+triangles than the flat one was.
+
 **Against plan 14 §14.7's estimate** (a timber-frame house's exterior at 30,000 triangles and its
-interior at 45,000): the cot is 1,192 because nothing in it is a kit part yet. Its thatch is a
-profile, not bundles; its boards are a face, not planks; its timbers are boxes. The budget a
+interior at 45,000): the cot is 3,836 because little in it is a kit part yet. Its thatch is a
+coursed profile, not bundles; a leaf's boards are boxes, a floor's are a face; its timbers are
+boxes. The budget a
 house is held to is the plan's until the kit (G64) lands and is measured: **30,000 triangles for
 an exterior, 2.5 times that with its interior**, and a house a few hundred triangles past a
 kilometre.
 
-**Why the cut barely coarsens inside 200 m.** The finest level is so coarse already that its
-first simplifications move a surface by about 10 cm (a frame's section, a reveal's depth),
-which is a pixel at 200 m. That is the right answer for a mesh this small, and it will stop
-being one when the kit multiplies the triangles: then the first levels should drop the parts
+**Why the cut halves by 50 m and then holds to 200 m.** What goes first is the walls' wander,
+a centimetre of displacement that is under a pixel well inside 50 m. What is left is as coarse
+as the flat cot was, and its next simplifications move a surface by about 10 cm (a frame's
+section, a reveal's depth), which is a pixel at 200 m. That is the right answer for a mesh this
+small, and it will stop being one when the kit multiplies the triangles: then the first levels should drop the parts
 nobody resolves (battens, glazing bars) long before the walls move, which wants per-part error
 or an authored mid form, as the walls capability has ([walls](walls.md)).
 
@@ -469,4 +521,5 @@ is listed there under `disabled_capabilities`. Everything else must still build 
 - The record drawn from a document (D37's other half).
 - Rounded arrises at an opening's reveal and at a re-entrant corner; a batter carried through
   a floor; a leaned top and end face on a wall that stands free (they are drawn plumb).
-- A thatch's courses and cut eave.
+- A thatch's brow course, liggers at the eaves and verges, a patterned ridge, and its sweep up
+  round a chimney.

@@ -288,6 +288,9 @@ constexpr f64 k_wave_cell_cm = 45.0;
 constexpr f64 k_wave_fade_cm = 30.0;
 // A rounded corner is this many flat strips.
 constexpr u32 k_arris_segments = 3;
+// A slope is at most this many courses, and its profile that many steps and an eave and a ridge.
+constexpr u32 k_roof_courses = 40;
+constexpr u32 k_roof_profile = 2 * k_roof_courses + 12;
 
 // Cuts every interval of the sorted `v` from index `from` on into parts no longer than `cell`.
 void subdivide(Vector<f64>& v, u32 from, f64 cell) {
@@ -920,7 +923,12 @@ void wall_opening(const Context& ctx, const structure::Opening& o) {
     for (u32 b = 0; b < boards; ++b) {
       const f64 wide = p.width * share[b % 4] / total;
       const f64 stand = b % 2 == 1 ? 0.3 : 0.0;
-      box3(timber, frame, at, at + wide, p.y0, p.y1, p.ledges, p.ledges + p.boards + stand, 1);
+      // Each board is cut from its own length of timber: its grain starts somewhere else.
+      const f64 shift = 37.0 * static_cast<f64>(b + 1);
+      Frame3 board = frame;
+      board.o[1] = -shift;
+      box3(timber, board, at, at + wide, p.y0 + shift, p.y1 + shift, p.ledges,
+           p.ledges + p.boards + stand, 1);
       at += wide;
     }
     const f64 tall = p.y1 - p.y0;
@@ -980,22 +988,54 @@ void mesh_roof(const Context& ctx, const structure::Roof& r) {
     // the height above the underside's plane, measured plumb. A thin covering is its eave's
     // plumb face and its plane. A soft coat (a thatch) rounds its eave over the top fifth of its
     // depth and swells toward the ridge, where a thatch is laid thickest and capped.
-    f64 pr[8], ph[8];
+    //
+    // What a thatch states beyond its depth (structures.md, "Roofs"): `eave_cut` cuts the eave
+    // square to the slope, so its face looks down and out over the coat's whole depth and the
+    // underside starts `cut` in from the edge; `course` lays the slope in courses that far apart
+    // up it, each one's surface falling `course_step_mm` to the butts of the next, which stand
+    // as a small step. A course's face keeps its own plane (`hard`), so the light shows the
+    // steps.
+    f64 pr[k_roof_profile], ph[k_roof_profile];
+    bool hard[k_roof_profile] = {};
     u32 count = 0;
-    const auto add = [&](f64 run_at, f64 height) {
-      pr[count] = run_at, ph[count] = height, ++count;
+    const auto add = [&](f64 run_at, f64 height, bool crease = false) {
+      pr[count] = run_at, ph[count] = height, hard[count] = crease, ++count;
     };
-    add(0.0, 0.0);
+    const bool coursed = soft && r.course > 0;
+    f64 cut = 0.0;
+    if (soft && r.eave_cut)
+      cut = std::min(static_cast<f64>(r.thickness) * p / len, std::max(0.0, over - 6.0));
+    add(cut, 0.0);
     if (soft) {
       const f64 turn = std::min(0.6 * vertical, run * 0.2);
-      add(0.0, vertical * 0.55);
-      add(turn * 0.25, vertical * 0.82);
-      add(turn, vertical);
-      if (gable && run > 120.0) {
+      f64 from = turn;
+      if (cut > 0.0) {
+        add(cut * 0.06, vertical * 0.94, true);
+        add(cut * 0.3, vertical);
+        add(cut, vertical, coursed);
+        from = cut;
+      } else {
+        add(0.0, vertical * 0.55);
+        add(turn * 0.25, vertical * 0.82);
+        add(turn, vertical, coursed);
+      }
+      const bool ridged = gable && run > 120.0;
+      const f64 to = ridged ? run - 45.0 : run;
+      if (coursed) {
+        const f64 step = static_cast<f64>(r.course_step_mm) * 0.1 * len;
+        const u32 courses = std::min(
+            k_roof_courses, std::max(1u, static_cast<u32>((to - from) * len / r.course + 0.5)));
+        for (u32 c = 1; c <= courses; ++c) {
+          const f64 at = from + (to - from) * static_cast<f64>(c) / static_cast<f64>(courses);
+          add(at, vertical - step, true);
+          if (c < courses) add(at, vertical, true);
+        }
+        if (ridged) add(to, vertical + 6.0, true);  // a block ridge: its skirt's cut edge
+      } else if (ridged) {
         add(run - 45.0, vertical);
         add(run - 38.0, vertical + 6.0);  // the ridge course's lower edge, standing proud
       }
-      add(run, gable ? vertical + (run > 120.0 ? 8.0 : 0.0) : vertical);
+      add(run, gable ? vertical + (ridged ? 8.0 : 0.0) : vertical);
     } else {
       add(0.0, vertical);
       add(run, vertical);
@@ -1003,8 +1043,8 @@ void mesh_roof(const Context& ctx, const structure::Roof& r) {
     const auto at_c = [&](u32 i) { return ce - out * pr[i]; };
     const auto at_y = [&](u32 i) { return ye + p * pr[i] + ph[i]; };
     // A segment's outward normal in (a, c, y), and the length it adds to the surface.
-    Vec3 seg_n[8];
-    f64 seg_len[8];
+    Vec3 seg_n[k_roof_profile];
+    f64 seg_len[k_roof_profile];
     for (u32 i = 0; i + 1 < count; ++i) {
       const f64 dc = at_c(i + 1) - at_c(i), dy = at_y(i + 1) - at_y(i);
       seg_len[i] = std::sqrt(dc * dc + dy * dy);
@@ -1021,28 +1061,49 @@ void mesh_roof(const Context& ctx, const structure::Roof& r) {
       along_v += seg_len[i];
       // A soft coat's corner takes the mean of the two segments it joins; the ridge's the mean of
       // the two slopes (straight up); the eave's foot keeps the fascia's.
-      const Vec3 n0 = soft && i > 0 ? normalize(seg_n[i - 1] + seg_n[i]) : seg_n[i];
-      const Vec3 n1 = !soft ? seg_n[i]
-                            : (i + 2 < count ? normalize(seg_n[i] + seg_n[i + 1])
-                                             : (gable ? normalize(seg_n[i] + up) : seg_n[i]));
+      Vec3 n0 = soft && i > 0 ? normalize(seg_n[i - 1] + seg_n[i]) : seg_n[i];
+      Vec3 n1 = !soft ? seg_n[i]
+                      : (i + 2 < count ? normalize(seg_n[i] + seg_n[i + 1])
+                                       : (gable ? normalize(seg_n[i] + up) : seg_n[i]));
+      if (hard[i]) n0 = seg_n[i];
+      if (hard[i + 1]) n1 = seg_n[i];
       const Vec3 normals[4] = {n0, n0, n1, n1};
       polygon_smooth(cover, points, uvs, normals, 4, seg_n[i]);
       if (pr[i + 1] - pr[i] < k_eps) continue;
+      // Under a cut eave the coat's lower edge is the cut's face, not the underside's plane.
+      const auto lower = [&](f64 run_at) {
+        return run_at < cut ? vertical * (cut - run_at) / cut : 0.0;
+      };
       for (u32 e = 0; e < 2; ++e) {
         // The verge: the coat's cut end over the gable, a strip a segment.
         const f64 a = e == 0 ? a0 : a1;
         const f64 u0 = pr[i] * len, u1 = pr[i + 1] * len;
-        const Vec3 end[4] = {point(a, at_c(i), ye + p * pr[i]),
-                             point(a, at_c(i + 1), ye + p * pr[i + 1]),
-                             point(a, at_c(i + 1), at_y(i + 1)), point(a, at_c(i), at_y(i))};
-        const Vec2 end_uv[4] = {uv(u0, 0.0), uv(u1, 0.0), uv(u1, ph[i + 1]), uv(u0, ph[i])};
-        polygon(cover, end, end_uv, 4, vec(e == 0 ? -1.0 : 1.0, 0.0, 0.0));
+        const f64 low0 = lower(pr[i]), low1 = lower(pr[i + 1]);
+        Vec3 end[4];
+        Vec2 end_uv[4];
+        u32 corners = 0;
+        end[corners] = point(a, at_c(i), ye + p * pr[i] + low0);
+        end_uv[corners++] = uv(u0, low0);
+        end[corners] = point(a, at_c(i + 1), ye + p * pr[i + 1] + low1);
+        end_uv[corners++] = uv(u1, low1);
+        if (ph[i + 1] - low1 > k_eps) {
+          end[corners] = point(a, at_c(i + 1), at_y(i + 1));
+          end_uv[corners++] = uv(u1, ph[i + 1]);
+        }
+        if (ph[i] - low0 > k_eps) {
+          end[corners] = point(a, at_c(i), at_y(i));
+          end_uv[corners++] = uv(u0, ph[i]);
+        }
+        if (corners >= 3) polygon(cover, end, end_uv, corners, vec(e == 0 ? -1.0 : 1.0, 0.0, 0.0));
       }
     }
     {
-      const Vec3 points[4] = {point(a0, ce, ye), point(a1, ce, ye), point(a1, cr, yr),
+      // The underside, from the eave's foot (in from the edge under a cut eave) to the ridge.
+      const f64 cf = ce - out * cut, yf = ye + p * cut;
+      const Vec3 points[4] = {point(a0, cf, yf), point(a1, cf, yf), point(a1, cr, yr),
                               point(a0, cr, yr)};
-      const Vec2 uvs[4] = {uv(0.0, a0), uv(0.0, a1), uv(run * len, a1), uv(run * len, a0)};
+      const Vec2 uvs[4] = {uv(cut * len, a0), uv(cut * len, a1), uv(run * len, a1),
+                           uv(run * len, a0)};
       polygon(under, points, uvs, 4, slope_n * -1.0f);
     }
     if (!gable) {

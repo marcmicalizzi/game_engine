@@ -135,7 +135,10 @@ each, so a field added later moves no other.
 | Stated | Drawn | Fixed |
 |---|---|---|
 | `Wall.wave` on the exterior walls | 8, 12 or 16 mm, 12 twice as likely | a partition stays flat: waved, its faces cost a nine-room house two thousand triangles |
-| `Wall.top_thickness`, a batter | two one-storey houses of three: three quarters of the foot's thickness at the plate | never on two storeys (the mesher carries a lean cleanly on one) |
+| `Wall.top_thickness`, a batter | two one-storey houses of three: seven eighths of the foot's thickness at the plate (three quarters read as a tent in the mesher's pictures) | never on two storeys (the mesher carries a lean cleanly on one) |
+| `Roles.wall_outer`, the limewash | of sixteen houses six the aged base, five white, three cream, one ochre, one pink | the inside stays the base |
+| `Roof.role`, the thatch's age | of sixteen houses eight the base (some years old), six old, two new | |
+| `Roof.course`, `course_step_mm`, `eave_cut` | courses 26, 30 or 34 cm apart, their butts standing 10, 12 or 15 mm; the eave cut square on three houses of four, rolled on the fourth | the pitch, the coat and the verge are the mesher's example's |
 | `Description.arris` | 6 or 12 cm | 12 under a batter |
 | `Description.plinth_proud` | 0, 3, 4 or 5 cm | |
 | a window's `mullions` and shutters (`leaf`, a pair on a window 80 cm wide or more) | one of four a house: glazing bars; mullions and shutters; mullions; bars and shutters | one mullion to every 17 cm of light; shutters folded back; none on a window under 70 cm (the head landing's), whose leaf would stand out of its reveal |
@@ -148,19 +151,19 @@ all are battered, mullioned and shuttered, and that every leaf hangs in a door o
 stands open.
 
 **Budgets.** Measured by `tests/describe_tests.cpp` over 324 houses (`msvc-debug`, the mesher at
-`k_structure_version` 4) and by `engine-content dwelling` on five of them: bare (`--bare all`, at
-version 2), with the timber and the furniture (`--bare dress`), and as the filler writes them.
+`k_structure_version` 5) and by `engine-content dwelling` on five of them: bare (`--bare all`),
+with the timber and the furniture (`--bare dress`), and as the filler writes them.
 
 | House | Bare | With timber and furniture | Dressed, as written | Members |
 |---|---|---|---|---|
-| a cot, 4.9 m by 4.1 m clear | 1,268 | 1,496 | 3,328 | 19 |
-| a hall and parlour on one floor | 866 | 1,334 | 4,104 | 39 |
-| a two-up two-down | 1,834 | 3,046 | 7,314 | 101 |
-| a hall and parlour on two storeys | 2,162 | 3,326 | 8,417 | 97 |
-| a two-storey cross-passage house with an inner room, 13.5 m by 5.5 m clear | 2,960 | 4,424 | 11,272 | 122 |
+| a cot, 4.9 m by 4.1 m clear | 1,416 | 1,644 | 3,512 | 19 |
+| a hall and parlour on one floor | 1,046 | 1,514 | 4,284 | 39 |
+| a two-up two-down | 2,030 | 3,242 | 7,510 | 101 |
+| a hall and parlour on two storeys | 2,374 | 3,538 | 8,597 | 97 |
+| a two-storey cross-passage house with an inner room, 13.5 m by 5.5 m clear | 3,172 | 4,636 | 11,488 | 122 |
 
 **The walls' wander is the cost**: a waved face is a 45 cm grid, and it more than doubles a house
-(the largest of the 324 is 11,734). A member is a closed box of twelve triangles, so the timber and
+(the largest of the 324 is 11,914). A member is a closed box of twelve triangles, so the timber and
 the furniture are a third of a plain house and an eighth of a dressed one; a leaf is 84 triangles,
 a shutter 48. The test holds every house under 16,000, where it held 6,000 before the walls
 wandered; plan 14's budget for a building's exterior is 30,000. A bare cot was 488 to 640 triangles

@@ -18,7 +18,8 @@ engine_schema_library(NAME matgen_schemas SCHEMAS schemas/matgen.schema CAPABILI
 
 engine_module(NAME matgen LAYER domain OPTIONAL
   DEPS base containers math hash json schema log texture matgen_schemas
-  SOURCES src/matgen.cpp src/granular.cpp src/rock.cpp src/ground.cpp src/wood.cpp)
+  SOURCES src/matgen.cpp src/granular.cpp src/rock.cpp src/ground.cpp src/wood.cpp
+          src/masonry.cpp)
 
 engine_module_tests(NAME matgen
   SOURCES tests/matgen_tests.cpp tests/size_table.cpp)
