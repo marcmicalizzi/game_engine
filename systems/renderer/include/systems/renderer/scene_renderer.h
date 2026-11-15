@@ -960,6 +960,10 @@ class SceneRenderer {
   // The device bytes sampling over time's inputs keep (the motion buffer, last frame's visibility
   // buffer, the second pool, the blocks): zero without them.
   u64 motion_bytes() const noexcept;
+  // The device bytes the engine's own accumulation keeps beside them (its two images and its
+  // blocks; renderer.md, "Sampling over time: the accumulation"): zero without it. The linear
+  // image and the encode it draws through are the frame passes'.
+  u64 accumulation_bytes() const noexcept;
 
   // The overlay pass (overlay.h, ADR-0054), for its textures; a frame draws it when
   // `FrameDesc::overlay` names lists. A texture is removed only once no frame in flight reads it,
@@ -1125,6 +1129,9 @@ class SceneRenderer {
   bool create_motion(std::string* error);
   // Sampling over time's inputs (src/motion_pass.h): null unless `renderer.reconstruction.inputs`.
   class MotionPass* motion_ = nullptr;
+  // The engine's own accumulation (src/accumulation_pass.h): null unless
+  // `renderer.reconstruction.accumulation` is on or mean.
+  class AccumulationPass* accumulation_ = nullptr;
   u32 view_count() const noexcept { return views_.size(); }
 
   const gfx::Device* device_ = nullptr;

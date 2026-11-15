@@ -528,6 +528,44 @@ tunables::Bool reconstruction_inputs{
     "vectors and keep last frame's views, visibility buffer and deformed positions: what sampling "
     "over time reads, with nothing reading it yet (false: none of it exists and the frame is "
     "unchanged to the byte) (ADR-0064; renderer.md, Sampling over time: the inputs; read at load)"};
+// The engine's own accumulation (accumulation_pass.h; renderer.md, "Sampling over time: the
+// accumulation"; R158). Indexed by `Accumulation`.
+constexpr const char* k_accumulation_choices[] = {"off", "on", "mean"};
+tunables::Enum<Accumulation> reconstruction_accumulation{
+    "renderer.reconstruction.accumulation", Accumulation::Off, k_accumulation_choices,
+    "The engine's own accumulation at native resolution: off, the frame as drawn, to the byte; on, "
+    "each frame blended into the frames before it, looked up by the motion pass's vectors, held to "
+    "last frame's visibility buffer and clipped to the pixel's neighbourhood; mean, the plain mean "
+    "of the frames since the last reset at the pixel's own place, which after one cycle of offsets "
+    "is a function of the scene (a capture draws one cycle). Turns the inputs on; a frame drawn "
+    "with it is a reconstructed frame and its record has no cost (ADR-0064; renderer.md, Sampling "
+    "over time: the accumulation; read at load)"};
+tunables::Int reconstruction_phases{
+    "renderer.reconstruction.phases", 16, 1, 64,
+    "The sub-pixel offsets a cycle holds under the accumulation, Halton(2,3)'s first of them (the "
+    "inputs alone keep eight) (renderer.md, Sampling over time: the accumulation; read at load)"};
+tunables::Float reconstruction_weight{
+    "renderer.reconstruction.weight", 0.1, 0.01, 1.0,
+    "A new frame's share of an accumulated pixel once its history is longer than one over this; "
+    "before that every frame since the reset weighs alike (renderer.md, Sampling over time: the "
+    "accumulation; read at load)"};
+tunables::Float reconstruction_clip_still{
+    "renderer.reconstruction.clip_still", 0.0, 0.0, 64.0,
+    "The colour clip's width for a pixel whose surface moved no further across the picture than "
+    "renderer.reconstruction.motion_match, in standard deviations of its 3x3 round the mean; 0, "
+    "the default: no clip there (at 3 a still crown stands 10.6 codes from its reference where "
+    "it stands 6.2 without) (renderer.md, Sampling over time: the accumulation; read at load)"};
+tunables::Float reconstruction_clip_moving{
+    "renderer.reconstruction.clip_moving", 1.25, 0.0, 64.0,
+    "The colour clip's width for a pixel whose surface moved further than "
+    "renderer.reconstruction.motion_match since the last frame; 0: no clip (renderer.md, Sampling "
+    "over time: the accumulation; read at load)"};
+tunables::Float reconstruction_motion_match{
+    "renderer.reconstruction.motion_match", 0.25, 0.0, 8.0,
+    "Pixels a frame: a history tap whose surface was moving last frame within this of the pixel's "
+    "motion now is taken as the pixel's own without asking what it names (a held view, a pan, a "
+    "sway under it uncover nothing); past it the names decide; 0: the names always decide "
+    "(renderer.md, Sampling over time: the accumulation; read at load)"};
 tunables::Bool gi_shell_clip{
     "renderer.gi.shell_clip", false,
     "The rays the cache traces from the eye stop at renderer.gi.shell_m, the reach of the volume "
@@ -890,8 +928,19 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   out.gi_shell_m = static_cast<f32>(gi_shell_m.get());
   out.gi_shell_rays = static_cast<u32>(gi_shell_rays.get());
   out.gi_shell_refresh = static_cast<u32>(gi_shell_refresh.get());
+  // The accumulation reads the inputs, so it turns them on; neither on the direct path.
+  out.accumulation = out.settings.raster != RasterMode::Direct ? reconstruction_accumulation.get()
+                                                               : Accumulation::Off;
   out.reconstruction_inputs =
-      reconstruction_inputs.get() && out.settings.raster != RasterMode::Direct;
+      (reconstruction_inputs.get() || out.accumulation != Accumulation::Off) &&
+      out.settings.raster != RasterMode::Direct;
+  out.reconstruction_phases = out.accumulation != Accumulation::Off
+                                  ? static_cast<u32>(reconstruction_phases.get())
+                                  : k_sample_phases;
+  out.accumulation_weight = static_cast<f32>(reconstruction_weight.get());
+  out.accumulation_clip_still = static_cast<f32>(reconstruction_clip_still.get());
+  out.accumulation_clip_moving = static_cast<f32>(reconstruction_clip_moving.get());
+  out.accumulation_motion_match = static_cast<f32>(reconstruction_motion_match.get());
   out.gi_shell_clip = gi_shell_clip.get();
   out.gi_shell_first = gi_shell_first.get();
   out.gi_preroll = static_cast<u32>(gi_preroll.get());

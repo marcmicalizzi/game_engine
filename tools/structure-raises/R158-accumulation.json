@@ -1,0 +1,13 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "R158-accumulation",
+  "reason": "R158: the accumulation's stage, the motion handle and the display's curve in the frame-pass context (record_frame +10), --capture-channels motion (main.cpp +4), and the pages that describe the pass, its measurement and (leg 2b) the shipped wind rows, the vertex tier and the frame loop",
+  "date": "2026-11-15",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "renderer.record_frame.lines": 10,
+    "engine_view.main_cpp.lines": 4,
+    "page:docs/subsystems/renderer.md": 16472,
+    "page:docs/subsystems/apps.md": 1088
+  }
+}

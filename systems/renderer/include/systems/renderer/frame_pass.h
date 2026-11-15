@@ -47,10 +47,14 @@ struct FrameFire;
 struct SceneData;
 struct ShadowCascades;
 
-// Where in the frame a pass runs. One stage so far: after the resolve has written every view's
-// shaded pixels and its sky, before the encode and the overlay.
+// Where in the frame a pass runs: after the resolve has written every view's shaded pixels and its
+// sky, before the encode and the overlay. `AfterResolve` is a pass that composites light onto the
+// picture (a medium); `Reconstruction` runs after every one of those, whenever it was registered,
+// and is what samples the finished linear picture over time (the renderer's own accumulation,
+// renderer.md "Sampling over time: the accumulation"; a provider's, roadmap R159).
 enum class FramePassStage : u8 {
   AfterResolve = 0,
+  Reconstruction = 1,
 };
 
 // Passes a renderer holds at once.
@@ -94,6 +98,13 @@ struct FramePassReport {
   // visibility_m`), from the field the pass computed on the CPU — gameplay reads visibility from
   // the field, never from the picture (plan 04). Negative: the pass has no medium to report.
   f32 visibility_m = -1.0f;
+  // **The frame's picture is another image from here on**: a pass that wrote the whole target into
+  // an image of its own (a reconstruction's output, which is also its next frame's history) names
+  // it here, with its sampled slot in the bindless set, and the encode reads it in the colour
+  // image's place — the same format and the same meaning of alpha. Left invalid, the encode reads
+  // the colour image, as before.
+  gfx::RgImage color;
+  u32 color_sampled = gfx::BindlessSet::k_invalid_slot;
 };
 
 struct FramePassContext {
@@ -116,10 +127,21 @@ struct FramePassContext {
   u32 color_sampled = gfx::BindlessSet::k_invalid_slot;
   u32 width = 0;
   u32 height = 0;
+  // **The display's curve** the encode will draw the colour image through (gfx/display.h,
+  // `display_tone`): its knee (the sky's shoulder, or the ceiling with no sky) and its ceiling in
+  // the image's own units — 1 for an SDR picture, peak over paper white for an HDR one, the
+  // half's largest value for the linear picture, which has no curve. A pass that averages samples
+  // as they are shown (the accumulation) averages them through it.
+  f32 display_knee = 1.0f;
+  f32 display_ceiling = 1.0f;
   // The frame's depth: the visibility buffer every view rasterized into or traced (renderer.md,
   // "Frame passes" says why this and not a depth image: it is the one depth every path writes, and
   // it is already the buffer the resolve read). Read it as `gfx::Access::ComputeRead`.
   gfx::RgBuffer visibility;
+  // The motion pass's buffer (renderer.md, "Sampling over time: the inputs"), written before the
+  // resolve: valid only in a renderer with `renderer.reconstruction.inputs`. Read it as
+  // `gfx::Access::ComputeRead`.
+  gfx::RgBuffer motion;
   u32 view_count = 0;
   const FramePassView* views = nullptr;
   // The camera and the frame's origin (ADR-0053): no absolute position reaches the GPU. A pass that

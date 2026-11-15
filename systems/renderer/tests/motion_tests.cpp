@@ -613,7 +613,8 @@ Vector<D3> placed(std::span<const Vec3> positions, const gfx::InstanceDesc& inst
   const u32 count = static_cast<u32>(positions.size());
   Vector<D3> out(count);
   for (u32 v = 0; v < count; ++v) {
-    const f64 p[4] = {positions[v].x, positions[v].y, positions[v].z, 1.0};
+    const f64 p[4] = {static_cast<f64>(positions[v].x), static_cast<f64>(positions[v].y),
+                      static_cast<f64>(positions[v].z), 1.0};
     f64 q[4];
     apply(to_frame, p, q);
     out[v] = D3{q[0], q[1], q[2]};

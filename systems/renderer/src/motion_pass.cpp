@@ -136,12 +136,22 @@ bool MotionPass::resize(const gfx::Device& device, const ViewSet& views, std::st
   reset();
   const u64 pixels = views.source_pixels();
   return gfx::create_buffer(device, pixels * sizeof(u32), k_screen, false, output_, error) &&
-         gfx::create_buffer(device, pixels * sizeof(u64), k_screen, false, prev_vis_, error);
+         gfx::create_buffer(device, pixels * sizeof(u64), k_screen, false, prev_vis_, error) &&
+         (!keep_motion_ || keep_motion(device, views, error));
+}
+
+bool MotionPass::keep_motion(const gfx::Device& device, const ViewSet& views, std::string* error) {
+  keep_motion_ = true;
+  gfx::destroy_buffer(device, prev_output_);
+  prev_output_ = gfx::BufferResource{};
+  return gfx::create_buffer(device, views.source_pixels() * sizeof(u32), k_screen, false,
+                            prev_output_, error);
 }
 
 void MotionPass::destroy(const gfx::Device& device) noexcept {
   gfx::destroy_buffer(device, output_);
   gfx::destroy_buffer(device, prev_vis_);
+  gfx::destroy_buffer(device, prev_output_);
   gfx::destroy_buffer(device, prev_pool_);
   for (gfx::BufferResource& buffer : params_)
     gfx::destroy_buffer(device, buffer);
@@ -156,7 +166,7 @@ void MotionPass::reset() noexcept {
 }
 
 void MotionPass::frame_offset(f32& x, f32& y) const noexcept {
-  sample_offset(static_cast<u32>(phase_ % k_sample_phases), x, y);
+  sample_offset(static_cast<u32>(phase_ % phases_), x, y);
 }
 
 void MotionPass::swap_visibility(gfx::BufferResource& current) noexcept {
@@ -212,6 +222,16 @@ bool MotionPass::note_moves(const GpuScene& scene, std::span<const u32> indices)
 void MotionPass::prepare(const Frame& frame, const ViewSet& views, const GpuScene& scene) {
   view_count_ = views.size();
   had_history_ = last_.valid;
+  tables_changed_ = frame.tables_changed;
+  ++serial_;
+  // This frame writes the buffer the frame before last wrote; last frame's is kept.
+  if (keep_motion_) {
+    const gfx::BufferResource written = output_;
+    output_ = prev_output_;
+    prev_output_ = written;
+  }
+  for (u32 v = 0; v < view_count_; ++v)
+    view_offset_[v] = frame.vis_offset[v];
   // The moved table as it stands is last frame's transforms: into this slot's copy, and then each
   // entry takes the transform this frame draws, which is last frame's to the next.
   const u32 moved = static_cast<u32>(moved_.size());
@@ -312,7 +332,7 @@ void MotionPass::record(gfx::CommandList cb, const gfx::ComputePipeline& pipelin
 }
 
 u64 MotionPass::device_bytes() const noexcept {
-  u64 bytes = output_.size + prev_vis_.size + prev_pool_.size;
+  u64 bytes = output_.size + prev_vis_.size + prev_output_.size + prev_pool_.size;
   for (const gfx::BufferResource& buffer : params_)
     bytes += buffer.size;
   for (const gfx::BufferResource& buffer : moved_buffers_)

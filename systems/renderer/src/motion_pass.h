@@ -80,8 +80,38 @@ class MotionPass {
   const gfx::BufferResource& prev_pool() const noexcept { return prev_pool_; }
   const gfx::BufferResource& prev_visibility() const noexcept { return prev_vis_; }
   u32 moved_count() const noexcept { return static_cast<u32>(moved_.size()); }
+  // The moved table `slot`'s frame was prepared with (sorted by instance; 0 when it is empty): a
+  // reader asks it whether an instance is one that has ever been moved.
+  u64 moved_address(u32 slot) const noexcept {
+    return moved_.empty() ? 0 : moved_buffers_[slot].address;
+  }
   // Whether the last prepared frame had a last frame to measure from.
   bool had_history() const noexcept { return had_history_; }
+  // **What a reader of the inputs asks** (accumulation_pass.h): the frames prepared since the pass
+  // was made, which no reset turns back, so a reader knows whether the frame it last saw is the
+  // one this frame was measured from; each view's region of the motion buffer and of last frame's
+  // visibility buffer, as the last prepared frame's blocks name them; and whether the scene's
+  // tables changed under that frame, when a pair of last frame's may name another instance.
+  u64 serial() const noexcept { return serial_; }
+  u64 motion_address(u32 view) const noexcept {
+    return output_.address + view_offset_[view] * sizeof(u32);
+  }
+  u64 prev_visibility_address(u32 view) const noexcept {
+    return prev_vis_.address + view_offset_[view] * sizeof(u64);
+  }
+  bool tables_changed() const noexcept { return tables_changed_; }
+  // **Last frame's motion buffer, kept for a reader that asks** (the accumulation: whether the
+  // surface a history tap showed was moving as this pixel's is). A second buffer of the motion
+  // buffer's size, swapped with it each frame; without the ask there is one, as there always was.
+  bool keep_motion(const gfx::Device& device, const ViewSet& views, std::string* error);
+  const gfx::BufferResource& prev_motion() const noexcept { return prev_output_; }
+  u64 prev_motion_address(u32 view) const noexcept {
+    return prev_output_.address + view_offset_[view] * sizeof(u32);
+  }
+  // The offsets a cycle holds: `k_sample_phases` unless a reader of the inputs asks for another
+  // count (the accumulation's `renderer.reconstruction.phases`).
+  void set_phases(u32 phases) noexcept { phases_ = phases > 0 ? phases : 1; }
+  u32 phases() const noexcept { return phases_; }
   // What the inputs keep on the device: the motion buffer, the kept visibility buffer, the second
   // pool, the blocks and the moved tables.
   u64 device_bytes() const noexcept;
@@ -98,8 +128,10 @@ class MotionPass {
     u64 flora = 0;
   };
 
-  gfx::BufferResource output_;    // u32 a source pixel, the views back to back
-  gfx::BufferResource prev_vis_;  // last frame's visibility buffer
+  gfx::BufferResource output_;       // u32 a source pixel, the views back to back
+  gfx::BufferResource prev_vis_;     // last frame's visibility buffer
+  gfx::BufferResource prev_output_;  // last frame's motion buffer, only under `keep_motion`
+  bool keep_motion_ = false;
   gfx::BufferResource prev_pool_;
   Vector<gfx::BufferResource> params_;         // per frame slot: MotionParams a view, host-visible
   Vector<gfx::BufferResource> moved_buffers_;  // per frame slot: the moved table, host-visible
@@ -113,7 +145,11 @@ class MotionPass {
   u32 view_count_ = 0;
   u32 view_width_[k_max_views] = {};
   u32 view_height_[k_max_views] = {};
+  u64 view_offset_[k_max_views] = {};
   u64 phase_ = 0;
+  u64 serial_ = 0;
+  u32 phases_ = k_sample_phases;
+  bool tables_changed_ = false;
   bool had_history_ = false;
   bool full_warned_ = false;
 };
