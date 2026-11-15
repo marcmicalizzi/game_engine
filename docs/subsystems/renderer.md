@@ -5228,6 +5228,23 @@ built again and, coming back with its count and a new version, compared instance
 instances in `engine_view`'s "a streamed world's hand-over reads only the tiles it changed", which
 wants none, and passes again with the swap.
 
+**Measured** (2026-11-14, the litter scene's 1,698-frame walk offscreen at 1920 × 1080, `msvc-release`,
+`bin-base` 46B41458… at main ae9efac5 against `bin-final` FD45A149… at b65-G197 cb1e5ce2; a shared
+machine, the harness's `machine_state` at 100% of the CPU taken by others and the GPU lock another
+row's, so every millisecond is an upper bound): **the same 198 tiles built by the generators in
+both** (592.6 and 600.4 ms on the job), where G197 before the swap built 73 against 34 on last
+night's like-for-like walk; the 106 ring changes rewritten in place, 20,266 instances, 7.16 ms on the
+committing thread in all (about 0.07 ms a tile); 0 instances compared, 20,266 told. The tail
+15,980,404 → 4,803,897 pairs at the walk's end with 1,173 tiles withheld → none (by ring 422,845 /
+2,323,114 / 13,234,445 / 0 → 422,845 / 837,397 / 897,272 / 2,646,383), the GPU's median 1.34 →
+2.24 ms for 122 k → 902 k instances drawn (the 0.9 ms of newly drawn tiles G197 measured). **The
+paced stretch** across ring 1's edge (frames 1,050 on, 12 m back and forth at 4.5 m/s): 12 ring
+changes in both, 8 tiles built in both, the final's 12 rewritten in place (2,134 instances, 0.61 ms),
+none compared; the world's tile work on the frame's thread 0.8 ms over the stretch in both, at most
+0.28 and 0.22 ms a frame. Over the whole walk the frame's tile work is 17.3 → 34.8 ms, at most 1.6
+→ 9.3 ms in one frame (not traced; the rewrites are not in it), and the renderer's hand-over at most
+29 → 79 ms, its compactions over seven times the instances (T137's row).
+
 **What it looks like.** The litter scene with the generated sets (`engine-content matgen`; the
 ground `ground/soil`, stochastic at 2 m; `load.materials` the worktree's `content/materials`), at
 1920 × 1080, from 1.7 m across the inner ring's edge, from 12 m, and to the horizon: before and
