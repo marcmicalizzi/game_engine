@@ -18,14 +18,15 @@ using namespace engine::geometry;
 
 namespace {
 
-// A mesh of islands: `island_of_vertex` names each source vertex's part, `extent` each part's
-// size (twice the farthest corner from the mean of its corners).
+// A mesh of islands: `island_of_vertex` names each source vertex's part, `covered` each part's
+// **covered size** in closed form (geometry.md, "What the eye loses when an island goes"): the
+// side of the square whose area is the most of a screen the part can cover.
 struct Islands {
   Vector<Vec3> positions;
   Vector<Vec2> uvs;
   Vector<u32> indices;
   Vector<u32> island_of_vertex;
-  Vector<f64> extent;
+  Vector<f64> covered;
   f64 half = 0.0;  // the fixture lies inside [-half, half]^3
 };
 
@@ -60,19 +61,11 @@ V3 direction(u64 seed, u64& k) {
   }
 }
 
-void close_island(Islands& out, u32 first_vertex) {
-  const u32 island = out.extent.size();
-  V3 mean;
-  const u32 count = out.positions.size() - first_vertex;
-  for (u32 v = first_vertex; v < out.positions.size(); ++v) {
-    const V3 p = of(out.positions[v]);
-    mean = V3{mean.x + p.x / count, mean.y + p.y / count, mean.z + p.z / count};
-    out.island_of_vertex.push_back(island);
-  }
-  f64 r = 0.0;
+void close_island(Islands& out, u32 first_vertex, f64 covered) {
+  const u32 island = out.covered.size();
   for (u32 v = first_vertex; v < out.positions.size(); ++v)
-    r = std::max(r, norm(sub(of(out.positions[v]), mean)));
-  out.extent.push_back(2.0 * r);
+    out.island_of_vertex.push_back(island);
+  out.covered.push_back(covered);
 }
 
 // A crown: `cards` square cards of 4 to 8 cm, each two triangles over four vertices of its own
@@ -109,7 +102,47 @@ void make_crown(u32 cards, f64 radius, u64 seed, Islands& out) {
     }
     for (const u32 i : {0u, 1u, 2u, 0u, 2u, 3u})
       out.indices.push_back(first + i);
-    close_island(out, first);
+    // A square card covers at most its own area: its covered size is its side.
+    close_island(out, first, 2.0 * half);
+  }
+}
+
+// Needles: `count` flat quads `length` long and `width` wide, two triangles over four vertices of
+// their own each, placed and turned by the hash inside a ball of `radius`. A needle covers at most
+// its area, so its covered size is sqrt(length * width): a tenth of its length at 100 to 1.
+void make_needles(u32 count, f64 radius, f64 length, f64 width, u64 seed, Islands& out) {
+  out = Islands{};
+  out.half = radius + length;
+  u64 k = 0;
+  for (u32 c = 0; c < count; ++c) {
+    V3 centre;
+    for (;;) {
+      centre = V3{unit(seed, k) * 2.0 - 1.0, unit(seed, k + 1) * 2.0 - 1.0,
+                  unit(seed, k + 2) * 2.0 - 1.0};
+      k += 3;
+      if (norm(centre) <= 1.0) break;
+    }
+    centre = scaled(centre, radius);
+    const V3 u = direction(seed, k);
+    V3 v;
+    for (;;) {
+      v = cross(u, direction(seed, k));
+      if (norm(v) > 0.2) break;
+    }
+    v = scaled(v, 1.0 / norm(v));
+    const u32 first = out.positions.size();
+    const f64 su[4] = {-1.0, 1.0, 1.0, -1.0};
+    const f64 sv[4] = {-1.0, -1.0, 1.0, 1.0};
+    for (u32 q = 0; q < 4; ++q) {
+      const f64 a = 0.5 * length * su[q], b = 0.5 * width * sv[q];
+      out.positions.push_back(Vec3{static_cast<f32>(centre.x + a * u.x + b * v.x),
+                                   static_cast<f32>(centre.y + a * u.y + b * v.y),
+                                   static_cast<f32>(centre.z + a * u.z + b * v.z)});
+      out.uvs.push_back(Vec2{su[q] > 0.0 ? 1.0f : 0.0f, sv[q] > 0.0 ? 1.0f : 0.0f});
+    }
+    for (const u32 i : {0u, 1u, 2u, 0u, 2u, 3u})
+      out.indices.push_back(first + i);
+    close_island(out, first, std::sqrt(length * width));
   }
 }
 
@@ -143,7 +176,9 @@ void make_pile(u32 stones, f64 radius, u64 seed, Islands& out) {
     for (const auto& f : faces)
       for (const u32 i : f)
         out.indices.push_back(first + i);
-    close_island(out, first);
+    // A closed part shows at most half its area: eight triangles of side r sqrt(2) are
+    // 4 sqrt(3) r^2, so the covered size is r sqrt(2 sqrt(3)), a little under the 2 r across.
+    close_island(out, first, r * std::sqrt(2.0 * std::sqrt(3.0)));
   }
 }
 
@@ -152,7 +187,7 @@ struct CutMeasure {
   u32 triangles = 0;
   f64 area = 0.0;
   u32 islands_lost = 0;        // parts with no triangle of positive area left
-  f64 largest_lost = 0.0;      // the largest such part's extent
+  f64 largest_lost = 0.0;      // the largest such part's covered size
   u32 covered[3] = {0, 0, 0};  // pixels of a 256 x 256 orthographic silhouette along x, y and z
 };
 
@@ -180,7 +215,7 @@ void fill(Vector<u8>& bitmap, f64 ax, f64 ay, f64 bx, f64 by, f64 cx, f64 cy) {
 
 CutMeasure measure(const Islands& islands, const ClusterLodMesh& lod, std::span<const u32> cut) {
   CutMeasure out;
-  Vector<u8> alive(islands.extent.size(), u8{0});
+  Vector<u8> alive(islands.covered.size(), u8{0});
   Vector<u8> bitmap[3];
   for (auto& b : bitmap)
     b.resize(k_bitmap * k_bitmap, u8{0});
@@ -214,7 +249,7 @@ CutMeasure measure(const Islands& islands, const ClusterLodMesh& lod, std::span<
   for (u32 i = 0; i < alive.size(); ++i) {
     if (alive[i] != 0) continue;
     ++out.islands_lost;
-    out.largest_lost = std::max(out.largest_lost, islands.extent[i]);
+    out.largest_lost = std::max(out.largest_lost, islands.covered[i]);
   }
   for (u32 k = 0; k < 3; ++k)
     for (const u8 b : bitmap[k])
@@ -230,13 +265,15 @@ f64 silhouette(const CutMeasure& cut, const CutMeasure& finest) {
 }
 
 // `loose_islands` false is the builder before the rule, byte for byte: the defect's own build.
-bool build(const Islands& islands, ClusterLodMesh& lod, bool loose_islands = true) {
+bool build(const Islands& islands, ClusterLodMesh& lod, bool loose_islands = true,
+           f32 mask_cover = 0.0f) {
   AttributeSource attributes;
   attributes.uvs = std::span<const Vec2>(islands.uvs.data(), islands.uvs.size());
   std::string error;
   ClusterLodOptions options;
   options.normal_cones = false;  // two-sided cards
   options.loose_islands = loose_islands;
+  options.mask_cover = mask_cover;
   const bool ok =
       build_cluster_lod(islands.positions, islands.indices, options, lod, &error, attributes);
   if (!ok) MESSAGE(error);
@@ -285,12 +322,12 @@ void report(const char* name, const Islands& islands, const ClusterLodMesh& lod,
             const CutMeasure& finest) {
   char line[256];
   std::snprintf(line, sizeof line, "%s: %u parts, %u triangles, %u clusters in %u levels", name,
-                islands.extent.size(), finest.triangles, lod.mesh.clusters.size(),
+                islands.covered.size(), finest.triangles, lod.mesh.clusters.size(),
                 lod.level_cluster_counts.size());
   MESSAGE(line);
   std::snprintf(line, sizeof line,
                 "  build: %u groups, %u regular, %u by islands (%u removed, %u grown), %u sloppy, "
-                "%u errors raised to a removed part's extent, %u vertices added",
+                "%u errors raised to a removed part's covered size, %u vertices added",
                 lod.aggregate.groups, lod.aggregate.regular, lod.aggregate.by_islands,
                 lod.aggregate.islands_removed, lod.aggregate.islands_grown, lod.aggregate.sloppy,
                 lod.aggregate.errors_raised, lod.aggregate.vertices_added);
@@ -338,8 +375,8 @@ TEST_CASE("aggregate lod: a crown of loose cards keeps its covered area at every
                 "%.1f %%, silhouette at least %.1f %% of the finest",
                 h.worst_overstep, 100.0 * h.least_area, 100.0 * h.least_silhouette);
   MESSAGE(line);
-  // A cut's error is at least the extent of every card it no longer draws: drawn at one pixel of
-  // error, nothing wider than a pixel is missing.
+  // A cut's error is at least the covered size of every card it no longer draws: drawn at one
+  // pixel of error, nothing that covered a pixel is missing.
   CHECK(h.worst_overstep <= 1.0 + 1e-5);
   // A removed card's area goes to a kept neighbour, so the drawn area holds: exactly but for the
   // groups that end their chain, and a pair's float rounding. The silhouette is the union's, and
@@ -365,7 +402,9 @@ TEST_CASE("aggregate lod: a crown of loose cards keeps its covered area at every
                 "area down to %.1f %%, silhouette down to %.1f %% of the finest",
                 b.worst_overstep, 100.0 * b.least_area, 100.0 * b.least_silhouette);
   MESSAGE(line);
-  CHECK(b.worst_overstep > 1.5);
+  // The bound was 1.5 while a part's size was its extent; a square card's extent is its
+  // diagonal, sqrt(2) of the side its covered size is, so the same bound is 1.5 / sqrt(2).
+  CHECK(b.worst_overstep > 1.5 / 1.41421357);
   CHECK(b.least_area < 0.05);
   CHECK(b.least_silhouette < 0.05);
   CHECK(before.aggregate.regular == before.aggregate.groups);
@@ -437,4 +476,166 @@ TEST_CASE("aggregate lod: a pile of separate stones loses none wider than its er
   MESSAGE(line);
   CHECK(h.worst_overstep <= 1.0 + 1e-5);
   CHECK(h.least_silhouette >= 0.85);
+}
+
+TEST_CASE("aggregate lod: a needle goes by what it covers, and its neighbour is thickened") {
+  // 3,000 needles 20 cm long and 2 mm wide. A needle's extent is its length; what the eye loses
+  // when it goes is sqrt(0.2 * 0.002) = 2 cm of a screen.
+  constexpr f64 k_length = 0.2, k_width = 0.002;
+  Islands needles;
+  make_needles(3000, 1.5, k_length, k_width, 13, needles);
+  ClusterLodMesh lod;
+  REQUIRE(build(needles, lod));
+  std::string error;
+  CHECK_MESSAGE(validate_cluster_lod(lod, needles.indices, &error), error);
+  Vector<u32> leaves;
+  select_lod_raw(lod, 0.0f, leaves);
+  const CutMeasure finest = measure(needles, lod, leaves);
+  REQUIRE(finest.triangles == needles.indices.size() / 3);
+  report("needles", needles, lod, finest);
+
+  const Honesty h = sweep(needles, lod, finest);
+  char line[200];
+  std::snprintf(line, sizeof line,
+                "needles, every cut: a lost needle's covered size at most %.2f of the cut's error; "
+                "area at least %.1f %% of the finest",
+                h.worst_overstep, 100.0 * h.least_area);
+  MESSAGE(line);
+  CHECK(h.worst_overstep <= 1.0 + 1e-5);
+  CHECK(h.least_area >= 0.95);
+
+  // At an error of half a needle's length, the rule that held a needle until its whole length was
+  // under the error drew every one of them. By covered size the first levels are 2 cm, 2.8 cm,
+  // 4 cm ... (each survivor twice the area), so five halvings are under 10 cm: a sixteenth of the
+  // needles would be exact for equal needles, and an eighth leaves room for the groups' own shapes.
+  Vector<u32> cut;
+  select_lod_raw(lod, static_cast<f32>(0.5 * k_length), cut);
+  const CutMeasure half_length = measure(needles, lod, cut);
+  std::snprintf(line, sizeof line, "needles at an error of half their length: %u of %u triangles",
+                half_length.triangles, finest.triangles);
+  MESSAGE(line);
+  CHECK(half_length.triangles * 8 <= finest.triangles);
+  CHECK(half_length.area >= 0.95 * finest.area);
+
+  // Thickened, not lengthened: a needle grown about its centre in every direction by the square
+  // root of two a level would be 1.13 m long after those five levels and reach out of the 1.5 m
+  // ball its centre lies in by more than half a metre; grown across its length alone it stays
+  // 20 cm long, and no vertex of that cut lies farther out than a needle's own half length (and
+  // the width it gained, under 4 cm).
+  f64 farthest = 0.0;
+  for (const u32 c : cut) {
+    const ClusterDesc& desc = lod.mesh.clusters[c];
+    for (u32 v = 0; v < desc.vertex_count; ++v)
+      farthest = std::max(farthest, norm(of(lod.mesh.vertices[desc.vertex_offset + v])));
+  }
+  CHECK(farthest <= 1.5 + 0.5 * k_length + 0.04);
+}
+
+TEST_CASE("aggregate lod: an alpha-tested part carries coverage errors that count its mask") {
+  Islands crown;
+  make_crown(2400, 1.5, 7, crown);
+  ClusterLodMesh plain, masked;
+  REQUIRE(build(crown, plain));
+  REQUIRE(build(crown, masked, true, 0.25f));  // a mask that keeps a quarter of each card
+
+  // The mask moves no geometry and no geometric error.
+  const auto equal = [](const auto& x, const auto& y) {
+    return x.size() == y.size() &&
+           (x.size() == 0 || std::memcmp(x.data(), y.data(), x.size() * sizeof(x[0])) == 0);
+  };
+  CHECK(equal(plain.mesh.clusters, masked.mesh.clusters));
+  CHECK(equal(plain.lod, masked.lod));
+  CHECK(equal(plain.mesh.vertices, masked.mesh.vertices));
+  CHECK(equal(plain.mesh.triangles, masked.mesh.triangles));
+  CHECK(plain.coverage.empty());
+  REQUIRE(masked.coverage.size() == masked.mesh.clusters.size());
+
+  // Both errors rise along every path: a cluster's own transition is never dearer than its
+  // parent's, on either scale; a level 0 cluster's own is nothing; and a transition's coverage
+  // error is never over its geometric one (the mask only takes away).
+  u32 counted = 0;
+  f64 least_ratio = 1.0;
+  for (u32 c = 0; c < masked.mesh.clusters.size(); ++c) {
+    const ClusterLodDesc& d = masked.lod[c];
+    const f32 own = lod_coverage_own(masked.coverage[c]);
+    const f32 parent = lod_coverage_parent(masked.coverage[c]);
+    if (d.level == 0) CHECK(own == 0.0f);
+    CHECK(own <= parent);
+    CHECK(d.own_error <= d.parent_error);
+    if (d.parent_error < k_lod_terminal_error) {
+      // Half floats round to nearest: a part in a thousand of slack.
+      CHECK(static_cast<f64>(parent) <= static_cast<f64>(d.parent_error) * 1.001);
+      least_ratio = std::min(least_ratio, static_cast<f64>(parent) / static_cast<f64>(d.parent_error));
+      ++counted;
+    } else {
+      CHECK(std::isinf(parent));
+    }
+  }
+  REQUIRE(counted != 0);
+  // A level that removed a card counts it for sqrt(1/4) of its covered size, so somewhere the
+  // coverage error is half the geometric one (and never under: growth is a displacement on both).
+  CHECK(least_ratio <= 0.51);
+  CHECK(least_ratio >= 0.499);
+
+  // Under the foliage threshold the crown draws far fewer triangles at 100 m than under the
+  // geometric one, and keeps its area: the survivors were grown.
+  LodView view;
+  view.camera = Vec3{0.0f, 0.0f, 100.0f};
+  view.proj_scale = k_proj_1080p;
+  view.threshold_px = 1.0f;
+  view.foliage_px = k_default_foliage_px;
+  Vector<u32> leaves, by_error, by_coverage;
+  select_lod_raw(masked, 0.0f, leaves);
+  const CutMeasure finest = measure(crown, masked, leaves);
+  select_lod(masked, view, by_error);
+  select_lod(masked, view, std::span<const u32>(masked.coverage.data(), masked.coverage.size()),
+             by_coverage);
+  const CutMeasure a = measure(crown, masked, by_error);
+  const CutMeasure b = measure(crown, masked, by_coverage);
+  char line[200];
+  std::snprintf(line, sizeof line,
+                "masked crown at 100 m: %u triangles by the geometric error, %u by coverage "
+                "(area %.1f %%)",
+                a.triangles, b.triangles, 100.0 * b.area / finest.area);
+  MESSAGE(line);
+  CHECK(b.triangles * 10 <= a.triangles);
+  CHECK(b.area >= 0.95 * finest.area);
+
+  // A merge carries the words, and a part without them reads none.
+  ClusterLodMesh parts[2] = {std::move(masked), std::move(plain)};
+  const u32 first = parts[0].mesh.clusters.size();
+  ClusterLodMesh merged;
+  Vector<u32> part_of_cluster;
+  std::string error;
+  REQUIRE_MESSAGE(merge_cluster_lod(parts, merged, &part_of_cluster, &error), error);
+  REQUIRE(merged.coverage.size() == merged.mesh.clusters.size());
+  u32 with = 0;
+  for (u32 c = 0; c < merged.coverage.size(); ++c) {
+    if (part_of_cluster[c] == 1)
+      CHECK(merged.coverage[c] == k_lod_no_coverage);
+    else
+      ++with;
+  }
+  CHECK(with == first);
+}
+
+TEST_CASE("aggregate lod: a part's mask cover is the share of its triangles the test keeps") {
+  // One quad over the whole of a 4 x 4 mask whose left half is opaque.
+  const Vec3 positions[4] = {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}};
+  const Vec2 uvs[4] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+  const u32 indices[6] = {0, 1, 2, 0, 2, 3};
+  u8 alpha[16];
+  for (u32 y = 0; y < 4; ++y)
+    for (u32 x = 0; x < 4; ++x)
+      alpha[y * 4 + x] = x < 2 ? u8{255} : u8{0};
+  CHECK(measure_mask_cover(positions, uvs, indices, alpha, 4, 4, 1.0f, 0.5f) == 0.5f);
+  // The quad's left quarter alone, through a transform: all of it is kept.
+  CHECK(measure_mask_cover(positions, uvs, indices, alpha, 4, 4, 1.0f, 0.5f, Vec2{0.25f, 1.0f}) ==
+        1.0f);
+  // No UVs: the image's own share. No image: the factor against the cutoff.
+  CHECK(measure_mask_cover(positions, {}, indices, alpha, 4, 4, 1.0f, 0.5f) == 0.5f);
+  CHECK(measure_mask_cover(positions, uvs, indices, {}, 0, 0, 1.0f, 0.5f) == 1.0f);
+  // A mask that keeps nothing still counts for a sixteenth: an error is never nothing.
+  u8 none[16] = {};
+  CHECK(measure_mask_cover(positions, uvs, indices, none, 4, 4, 1.0f, 0.5f) == 0.0625f);
 }

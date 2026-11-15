@@ -92,6 +92,8 @@ const char* k_usage =
     "      --no-morph            drop the source's morph targets (what does the stream cost?)\n"
     "      --no-loose-islands    build the levels as before the loose-island rule (the 'before'\n"
     "                            of a pair; the summary's loose_islands says what the rule did)\n"
+    "      --generator-loose-islands  a measurement: build a generated mesh's decimated levels\n"
+    "                            with the rule, which no generator takes yet\n"
     "      --uv-seams <rule>     what a LOD collapse may do at a UV atlas island edge:\n"
     "                            none, protect (default), or lock\n"
     "      --normal-seams <rule> the same at a hard shading edge (default none)\n"
@@ -596,6 +598,8 @@ int build_command(int argc, char** argv) {
       options.mesh.morph = false;
     } else if (a == "--no-loose-islands") {
       options.mesh.loose_islands = false;
+    } else if (a == "--generator-loose-islands") {
+      options.mesh.generator_loose_islands = true;
     } else if (a == "--cache") {
       options.cache = true;
     } else if (a == "--strict") {
@@ -1394,6 +1398,20 @@ int cuts(const std::string& path) {
   }
   const Vec3 centre{(lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f, (lo.z + hi.z) * 0.5f};
   const auto share = [](f64 part, f64 whole) { return whole > 0.0 ? part / whole : 0.0; };
+  // The finest level's area by material, for the rows' shares by material.
+  const u32 materials = data.materials.size();
+  Vector<f64> finest_part(materials, 0.0);
+  if (materials > 1 && data.cluster_material.size() == lod.mesh.clusters.size()) {
+    for (u32 m = 0; m < materials; ++m) {
+      Vector<u32> part_cut;
+      for (const u32 c : cut)
+        if (data.cluster_material[c] == m) part_cut.push_back(c);
+      geometry::LodCutCover part;
+      if (!part_cut.empty() && !geometry::measure_lod_cover(lod, part_cut, part, &error))
+        return failed(error);
+      finest_part[m] = part.area;
+    }
+  }
   JsonValue rows = JsonValue::array();
   for (const f32 height : {1080.0f, 2160.0f}) {
     for (const f32 distance : {3.0f, 10.0f, 30.0f, 100.0f, 300.0f, 1000.0f}) {
@@ -1409,10 +1427,17 @@ int cuts(const std::string& path) {
                            cut);
       geometry::LodCutCover cover;
       if (!geometry::measure_lod_cover(lod, cut, cover, &error)) return failed(error);
+      // The least of the three views' shares, over the views the finest level shows anything in:
+      // a flat card seen along its own plane fills no pixel at any level, and counting that view
+      // as a share of nothing lost made one card's silhouette read 0 %.
       f64 silhouette = 1.0;
+      JsonValue views = JsonValue::array();  // along x, y and z, so a low share says which view
       for (u32 axis = 0; axis < 3; ++axis) {
-        silhouette = std::min(silhouette, share(static_cast<f64>(cover.silhouette[axis]),
-                                                static_cast<f64>(finest.silhouette[axis])));
+        const f64 view_share = share(static_cast<f64>(cover.silhouette[axis]),
+                                     static_cast<f64>(finest.silhouette[axis]));
+        views.push_back(JsonValue(view_share));
+        if (finest.silhouette[axis] == 0) continue;
+        silhouette = std::min(silhouette, view_share);
       }
       JsonValue row = JsonValue::object();
       row.set("height", JsonValue(static_cast<u32>(height)));
@@ -1421,6 +1446,25 @@ int cuts(const std::string& path) {
       row.set("triangles", JsonValue(cover.triangles));
       row.set("area_share", JsonValue(share(cover.area, finest.area)));
       row.set("silhouette_share", JsonValue(silhouette));
+      row.set("silhouette_views", std::move(views));
+      // The same by material, so a tree says which of its leaves and its wood a number is.
+      if (materials > 1 && data.cluster_material.size() == lod.mesh.clusters.size()) {
+        JsonValue parts = JsonValue::array();
+        for (u32 m = 0; m < materials; ++m) {
+          Vector<u32> part_cut;
+          for (const u32 c : cut)
+            if (data.cluster_material[c] == m) part_cut.push_back(c);
+          geometry::LodCutCover part;
+          if (!part_cut.empty() && !geometry::measure_lod_cover(lod, part_cut, part, &error))
+            return failed(error);
+          JsonValue entry = JsonValue::object();
+          entry.set("material", JsonValue(m));
+          entry.set("triangles", JsonValue(part.triangles));
+          entry.set("area_share", JsonValue(share(part.area, finest_part[m])));
+          parts.push_back(std::move(entry));
+        }
+        row.set("materials", std::move(parts));
+      }
       rows.push_back(std::move(row));
     }
   }
@@ -1431,6 +1475,37 @@ int cuts(const std::string& path) {
   summary.set("triangles", JsonValue(finest.triangles));
   summary.set("area", JsonValue(finest.area));
   summary.set("coverage_errors", JsonValue(!data.lod_coverage.empty()));
+  // What each level of each material holds and admits to: its clusters and triangles, and the
+  // median and the largest error its clusters' parents stand at (the terminal ones left out), so
+  // a mesh whose errors climb faster than its triangles fall shows where.
+  JsonValue level_rows = JsonValue::array();
+  const bool by_material = data.cluster_material.size() == lod.mesh.clusters.size();
+  for (u32 m = 0; m < (by_material ? materials : 1u); ++m) {
+    for (u32 level = 0; level < lod.level_cluster_counts.size(); ++level) {
+      u32 clusters = 0, triangles = 0;
+      std::vector<f32> errors;
+      for (u32 c = 0; c < lod.mesh.clusters.size(); ++c) {
+        if (lod.lod[c].level != level || (by_material && data.cluster_material[c] != m)) continue;
+        ++clusters;
+        triangles += lod.mesh.clusters[c].triangle_count;
+        if (lod.lod[c].parent_error < geometry::k_lod_terminal_error)
+          errors.push_back(lod.lod[c].parent_error);
+      }
+      if (clusters == 0) continue;
+      std::sort(errors.begin(), errors.end());
+      JsonValue row = JsonValue::object();
+      row.set("material", JsonValue(m));
+      row.set("level", JsonValue(level));
+      row.set("clusters", JsonValue(clusters));
+      row.set("triangles", JsonValue(triangles));
+      row.set("refined", JsonValue(static_cast<u32>(errors.size())));
+      row.set("parent_error_median",
+              JsonValue(errors.empty() ? 0.0 : static_cast<f64>(errors[errors.size() / 2])));
+      row.set("parent_error_max", JsonValue(errors.empty() ? 0.0 : static_cast<f64>(errors.back())));
+      level_rows.push_back(std::move(row));
+    }
+  }
+  summary.set("levels_by_material", std::move(level_rows));
   summary.set("cuts", std::move(rows));
   print_json(summary);
   return k_exit_ok;

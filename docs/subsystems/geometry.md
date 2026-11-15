@@ -342,14 +342,15 @@ position with it and no caller pinned it. For every group that is not a heightfi
    connected surface keeps its area to a few per cent; halving a card's triangles halves the
    card), the group is **coarsened by islands** instead. The free islands are ordered along a
    Morton curve of their centres and paired; of each pair the smaller in area is **removed whole**
-   and the other **grown about its centre** by √((A_kept + A_removed) / A_kept), so the pair's
-   covered area is exactly what it was and the group's triangles halve. The level's error is the
-   **extent of the largest island removed** (the diameter of the sphere about its area-weighted
-   centre) or, if larger, the farthest a grown corner moved; islands that are not free pass
-   through untouched. If that removes too little to count as a level (upstream's stuck threshold,
-   0.85) nothing is changed and the build goes on as upstream does.
+   and the other **grown** until it has the area of both ("A long island is thickened", below,
+   has how), so the pair's covered area is exactly what it was and the group's triangles halve.
+   The level's error is the **covered size of the largest island removed** ("What the eye loses
+   when an island goes", below; until the second leg it was the island's extent) or, if larger,
+   the farthest a grown corner moved; islands that are not free pass through untouched. If that
+   removes too little to count as a level (upstream's stuck threshold, 0.85) nothing is changed
+   and the build goes on as upstream does.
 3. Otherwise the regular result stands, or the sloppy one where upstream takes it, and **its
-   error is raised to the extent of every island it removed whole**, free or not.
+   error is raised to the covered size of every island it removed whole**, free or not.
 4. **A regular result gives every shrunk leaf its area back** (`restore_island_area`; Nanite's
    Preserve Area, above). Collapsing an island with an open border can only cut its outline's
    corners, so each level leaves a leaf a little smaller, and over a DAG's levels a crown thins by
@@ -362,6 +363,18 @@ position with it and no caller pinned it. For every group that is not a heightfi
    lost whole; the level's error is raised to the farthest a corner moved. With it the same tree
    keeps 100 % at 10 m and 98 % at 100 m, for half again the triangles at 10 m (401,435 against
    251,838): the growth is a displacement, the error admits to it, and the level is taken later.
+   Two things the second leg added to this step, both from the island tree's wood:
+   - **An island of a group of many is a part of an aggregate whatever its size**
+     (`k_aggregate_islands`, 8 free islands). A level's survivors are grown, so a crown's coarse
+     groups hold a few dozen cards a good part of the group across; held to the quarter alone
+     they stopped being given their area back, and every regular level above took up to a quarter
+     of it (the fir sapling kept 71.6 % of its area at 100 m, and 99.1 % with this).
+   - **An island the result gutted is removed whole** (`k_island_gutted`: under half its area
+     left). What is left of it is a sliver, and growing a sliver back to the island's area throws
+     its corners across the group: in 533 of the island tree's 586 opaque regular groups the
+     growth, not the simplifier, set the level's error, up to 71 cm in a tree 3.4 m tall, where
+     the simplifier's own was 4 cm. Its triangles are dropped, its area goes to the islands that
+     kept theirs, and the level admits to its covered size as for any island removed whole.
 
 A grown island's corners are **new vertices**: positions no source vertex has, the first time a
 level of the DAG is not a subset of the source's vertices. Each stands for the corner it was copied
@@ -375,78 +388,225 @@ with the islands — a level's survivors are √2 wider than the level below's, 
 √2 dearer — which is what keeps the cut's triangles proportional to the pixels the crown covers
 rather than to its leaves.
 
-**Why the extent and not the radius.** meshoptimizer prunes a component whose *radius* is under
-the error; this rule asks for the *diameter*. Drawn at one pixel of error, the first lets a part
-two pixels wide vanish and the second none wider than one, and a part's own size is what the eye
-loses when it goes. It costs one level: half the cards a pixel-wide crown would otherwise shed.
+### What the eye loses when an island goes
+
+(T147's second leg, 2026-11-15.) The first leg's error for a removed island was its **extent**,
+the diameter of the sphere about it, and that is the right size of a compact island and far too
+large a one for a long thin island: a twig 30 cm long and 6 mm thick could not go until 30 cm was
+a pixel, when what the picture loses with it is a line a fiftieth of a pixel wide. The bought
+trees paid for it (129,687 triangles at 100 m) and a generator's wood would have (the birch,
+below). The error is now the island's **covered size**: the side of the square whose area is the
+most of a screen the island can cover.
+
+**The derivation.** A cut drawn at an error of one pixel promises that nothing in the picture is
+wrong by more than a pixel. For a vertex that moved, that is a distance. For an island that is no
+longer drawn, what is wrong is the pixels it covered, and their number is its projected area: an
+island whose projected area is under one pixel changes the picture by less than one pixel's worth
+of coverage however that area is spread, a dot or a hair fifty pixels long and a fiftieth wide.
+So the length to project is the square root of the area the island can cover, and seen from any
+direction an island covers no more than
+
+- **its own area, and half of it when it is closed.** A flat card seen face on covers its area and
+  nothing covers more. Of a closed surface, what faces the eye and what faces away project to the
+  same area (the projections of a closed surface's faces sum to nothing), each is at most the sum
+  of the two halved, and what faces away is hidden; so a closed island covers at most half its
+  area. (The mean over all directions is half of that again for a convex one, a quarter of its
+  surface: Cauchy's surface area formula, proved by Cauchy for the plane and for space in 1841
+  and 1850; Tsukerman and Veomett, "A Simple Proof of Cauchy's Surface Area Formula",
+  arXiv:1604.05815, state it as Theorem 1. The builder takes the bound, not the mean: an error
+  is what a cut admits to from wherever it is seen.) An island is *open* when an edge of it
+  belongs to one triangle only.
+- **its length times its width.** It lies inside the cylinder about the line through its centre
+  and its farthest corner, twice its radius long and twice the farthest any corner lies from that
+  line across, and the cylinder's shadow is that rectangle to within its caps.
+
+`island_covered_size` is the square root of the smaller, computed in double from the float
+positions with no library call but the square root. For a square card it is the card's side
+(where the extent was its diagonal); for a closed stone a little under its width (an octahedron
+of radius r: r √(2√3) = 1.86 r against 2 r); for the twig above, 4.2 cm against 30.
+
+**What is published, and what could not be read.** That an element is pruned by the screen it
+covers and not by its length is how the offline source works: in Pixar's patent on the method of
+Cook et al. (US 7,973,789 B2, "Dynamic model generation methods and apparatus", read through a
+summarising fetch) pruning starts at the distance at which an element's shape can no longer be
+made out, usually when it is about a pixel in size; the share kept falls from there as
+u = z^(−log_h 2) (h the distance at which half are pruned; the form is as the fetch gave it and
+no constant here is taken from it); and the survivors' area is scaled by 1/u, in one dimension
+or in two. meshoptimizer says the same of triangles in clusterlod's
+optional edge limit ("we prefer using min edge length to reduce the number of triangles <1px
+thick, but need some stopgap for thin and long triangles like wires"). **Not read, a second
+time**: the body of the paper itself (Pixar's library redirects, and the ACM, Semantic Scholar,
+ResearchGate and archive copies refused the fetch) and the Nanite talk's slides (too large a
+file); nothing on this page is taken from either. Remolar et al. ("Geometric Simplification of
+Foliage", Eurographics 2002) and Zhang and Blaise (2003) replace two leaves by one of the pair's
+area, chosen by distance and planarity; only their abstracts were reached, and the pairing here
+(Morton neighbours) takes nothing from them.
+
+**What it costs in honesty.** By the extent, a cut at one pixel was missing nothing wider than a
+pixel; by the covered size it is missing nothing that covered a pixel, and a needle ten pixels
+long and a twentieth of one wide may be gone. Its area is not: the neighbour took it.
+
+### A long island is thickened
+
+Growing an island about its centre in every direction, as the first leg did, moves a corner by
+(√ratio − 1) of the island's radius: a twig 40 cm long given half again its area reaches 4.5 cm
+past both its ends, and that displacement, not what was removed, became the level's error.
+`grow_least` gives the island its area **the way that moves its corners least**: in every
+direction by √ratio, or **across its own length alone** by the ratio, which moves a corner
+(ratio − 1) of its half width. A leaf takes the first; a twig, a needle or a blade of grass the
+second, until it is less than about two and a half times as long as it is wide. That is what the
+published practice does with such elements: Unreal Engine's Preserve Area dilates open boundary
+edges, which for a leaf "has the same effect as scaling them up" and for a ribbon such as a grass
+blade thickens it ("Working with Nanite-Enabled Content", 5.9), and the patent above scales an
+element in one dimension or in two (its figures show a leaf widened and a leaf scaled both
+ways). The island's length is the line from its area-weighted centre to its farthest corner,
+so the rule reads a quad's diagonal for its length, which is within the quad's own width of it.
+
+### Coverage errors for an imported alpha-tested part
+
+The forest's own cards go by a **coverage error** held to the foliage threshold ("Two errors",
+below): what drawing the coarser form changes at the pixel, where a leaf is judged by its
+coverage and not by where each of its points is. An imported leaf card had no such error, so it
+was held to one pixel like a wall. Now **every primitive whose material is `MASK` is built with
+`ClusterLodOptions::mask_cover`** — the share of it its mask keeps, measured by
+`geometry::measure_mask_cover` from the base colour's own alpha through the primitive's own UVs
+(the material's test at the centroids of each triangle's 16 equal sub-triangles, weighted by the
+triangle's area, the crown prior's sampling; rounded to a 256th and held to at least a 16th) —
+and the build then fills a coverage word for every cluster of that part (container section 39,
+which until now only a generator wrote):
+
+- a level made **by islands** carries the covered size of the largest island it removed **times
+  the square root of the mask's share** (a card whose mask is half empty covered half of what its
+  quad does) or, if larger, the farthest a grown corner moved;
+- a **regular** level carries its geometric error (what a vertex moved, what a restored island's
+  corner moved), with any island it removed whole counted the same way;
+- a group's coverage error is merged up the DAG exactly as its geometric error is (the larger of
+  its clusters' and its own), so **both rise along every path** and the cut is one cluster a
+  path; a terminal group carries none, and a part that is not alpha-tested carries none at all
+  (`k_lod_no_coverage` after `merge_cluster_lod`), which is the one-threshold rule bit for bit.
+
+The mask moves no geometry: a part built with a mask cover and without has the same clusters,
+vertices and geometric errors (the test holds the bytes), and a mesh with no `MASK` material
+writes no section 39. What it changes is the cut: a transition of a masked part is acceptable
+when its coverage error projects under `renderer.lod.foliage_px` (5 px by default), so a leaf
+goes at about a fifth of the distance the geometric threshold held it to, **and its neighbour has
+been grown to cover it**, which is what makes that honest: the forest's cards are held to the
+same threshold for the same reason, and its wetland cards carry their parallax, a displacement,
+in the same word (`max(parallax, feature × difference)`). The island tree's 714,744 leaf
+triangles (its mask keeps 85 % of them: the leaves are cut close) draw 148 at 100 m.
+
+**What it does not cover.** Opaque parts: a bought tree's twigs are opaque tubes, and they are
+held to one pixel of covered size, which is why the island tree still draws 21,345 triangles of
+wood at 100 m beside those 148 of leaf. `BLEND` materials (drawn opaque; the static world's page
+has that row). A mask that changed while the glTF's bytes did not: the cache key is the
+source's hash and the measure is not in it.
 
 **Why grow and not refuse.** Refusing to coarsen a group that would lose area keeps every leaf at
 every distance: a 2 million triangle tree is 2 million triangles at a kilometre. Growing is what
 both the offline source and the shipping one do, and it is exact where it matters: once a card is
 a pixel wide the picture is the cards' covered area and not their places.
 
-**What it reads, and what it leaves alone.** Triangles and positions: no material, no alpha mode,
-no generator. A group that is one connected surface has at most one island and is built exactly as
-before, error included. A heightfield (`up`) is never read for islands. An opaque pile gets what a
-crown gets: the test's 1,200 separate octahedra lose no stone wider than the cut's error and keep
-99 % of their silhouette at every cut.
+**What it reads, and what it leaves alone.** Triangles and positions, and for the coverage word
+alone the one number the importer measured from the part's mask: no generator, and no material
+in any decision about a triangle. A group that is one connected surface has at most one island
+and is built exactly as before, error included. A heightfield (`up`) is never read for islands.
+An opaque pile gets what a crown gets: the test's 1,200 separate octahedra lose no stone whose
+covered size is over the cut's error and keep 99 % of their silhouette at every cut.
 
 **What moved.** Every imported mesh's cache key, and no version: `cluster_cache_key` mixes the
 rule in when it is on, as it mixes a heightfield's `up`, so an entry an import made before the
 rule is never read again (one rebuild per imported mesh per machine) and a mesh built without the
-rule keeps the key and the bytes it had. An imported mesh whose every group holds one connected
-surface builds the same sections under its new key: `determinism_tests.cpp`'s table did not move,
-and the test builds the shredded-atlas torus (288 UV islands, one surface by position) with the
-rule and without to the same bytes.
+rule keeps the key and the bytes it had. The constant names the rule as it stands, so the second
+leg's errors moved it again (the first leg's entries were never on `main`). An imported mesh
+whose every group holds one connected surface builds the same sections under its new key:
+`determinism_tests.cpp`'s table did not move in either leg, and the test builds the
+shredded-atlas torus (288 UV islands, one surface by position) with the rule and without to the
+same bytes.
 
-**Generators, and the error of a long thin island.** `build_cluster_lod` is one function for an
-import and for every generator that calls it, and the first build of this rule had it on for all
-of them. It is off for them now, and the reason is a measurement: the birch
-(`content/flora/birch-single.flora.json`, 49,997 triangles), whose wood is loose tubes decimated
-up to its first authored level, built 1,501 clusters in 6 levels against 1,559 in 9 and drew, at
-1080p, **18,223 triangles at 100 m and 13,555 at 300 m where it drew 5,805 and 804**. A twig 30 cm
-long and 6 mm thick may not go, by the extent, until 30 cm is a pixel; what the eye loses when it
-goes is a line a fraction of a pixel wide, long before that. So the extent is the right size of a
-compact island (a leaf, a stone) and too large a one for a long thin island (a twig, a needle, a
-blade of grass), whose loss is nearer the square root of the area it covers; meshoptimizer says the
-same of triangles in clusterlod's optional edge limit ("we prefer using min edge length to reduce
-the number of triangles <1px thick, but need some stopgap for thin and long triangles like
-wires"). That is the next leg's, with the coverage error: until the error of a removed island is
-its covered size and not its length, a generator takes the rule only by asking for it, and none
-does. An import takes it as it is, because without it an imported tree is bare, and pays for its
-needles by their length.
+**Generators: what each would gain.** `build_cluster_lod` is one function for an import and for
+every generator that calls it, and the first build of this rule had it on for all of them. It is
+off for them (`content_build`'s generator routes build and key without it), and with the error a
+covered size the measurement still says to leave it off. `engine-content build
+--generator-loose-islands` is that measurement and nothing that ships sets it; at 1080p, the
+triangles a container draws without the rule and with it:
+
+| generator | 10 m | 30 m | 100 m | 300 m |
+|---|---|---|---|---|
+| `birch-single` (49,997 triangles; its wood is loose tubes) | 44,411, 44,411 | 7,779, 18,223 | 5,805, 13,863 | 804, 3,817 |
+| `fern-arching` (1,778; two levels) | 1,442, 1,442 | the same | the same | the same |
+| `spruce-young` (4,082; spray cards over a star) | 3,285, 3,285 | 32, 32 | 32, 32 | 32, 32 |
+
+With the first leg's extent the birch drew 18,223 at 100 m and 13,555 at 300 m; by covered size
+it is 13,863 and 3,817, and still two and a half to five times what it draws without the rule.
+The difference is not waste the rule adds: without it the birch's twigs are collapsed away for
+half their width of error and their area goes to nothing, which is the defect, and the solver was
+shaped against it (its leaf cards and its star carry the crown, and its bark hands over to
+them). **So no generator gains triangles from the rule, and the proposal is that none takes it
+as it stands**: a tree's decimated wood under an authored chain is the one case where shedding
+twigs early is meant; the fern and the spray-card conifer do not reach it at all (their levels
+are authored). The generators the first leg's whole-tree run showed it changing (cover, deadwood,
+litter, wetland, channels) are loose opaque parts with no authored chain above them, and they are
+where it would be worth measuring next, each against its own pins.
 
 **On a bought tree** ([the static world's page](../experiments/static-asset-world.md#bought-foliage)
-has the table by distance). Poly Haven's island tree (1,072,213 triangles) and fir sapling
-(433,021), built without the rule: 2,527 of 2,529 and 1,480 of 1,481 groups keep the regular
-result and the sloppy fallback runs in 2 and in 1, the same as the fixture; at 1080p the fir keeps
-8 % of its area at 3 m and the tree 21 % at 30 m. With it: 468 and 636 groups coarsened by islands
-(33,351 and 48,677 islands removed and as many grown), 99.7 % at 3 m and 99.4 % at 30 m, and the
-builds 12 % and 10 % slower (5.4 s and 1.7 s).
+has the table by distance). Poly Haven's island tree (1,072,213 triangles: 27,298 of trunk,
+714,744 of masked leaf, 330,171 of opaque twigs) and fir sapling (433,021), built without the
+rule: 2,527 of 2,529 and 1,480 of 1,481 groups keep the regular result and the sloppy fallback
+runs in 2 and in 1, the same as the fixture; at 1080p the fir keeps 8 % of its area at 3 m and
+the tree 21 % at 30 m. With the rule as the first leg left it: 99.7 % at 3 m and 99.4 % at 30 m,
+and 129,687 and 23,689 triangles at 100 m. As it stands: 417 and 623 groups coarsened by islands
+(30,466 and 45,550 islands removed and as many grown), **21,700 and 190 triangles at 100 m, 5,402
+and 190 at 300 m**, the area never under 93.5 % and 99.1 % and the silhouette 100 % from 3 m to a
+kilometre, and the builds 5.4 s and 2.1 s. Of the tree's 21,700 at 100 m, 148 are leaf, 207
+trunk and 21,345 the opaque twigs.
 
 **The measurement.** `measure_lod_cover` gives a cut's triangles, drawn area and the pixels its
 silhouette fills in three orthographic views; `engine-content cuts <file.clusters>` prints them
-for the default thresholds from 3 m to 1 km at 1080p and 2160p, and `engine-content build
---no-loose-islands` is the builder before the rule, so what the rule does to an asset is a pair of
-command lines. On the fixture, at 1080p (the builder before the rule, then with it):
+for the default thresholds (the foliage one included, for a container with section 39) from 3 m
+to 1 km at 1080p and 2160p, with each row's triangles and area **by material**
+(`materials`), its three views' shares (`silhouette_views`; the row's `silhouette_share` is the
+least of the views the finest level shows anything in), and per material and level the clusters,
+the triangles and the median and largest error their parents stand at (`levels_by_material`:
+where errors climb faster than triangles fall, which is how the twigs' growth was found).
+`engine-content build --no-loose-islands` is the builder before the rule, so what the rule does
+to an asset is a pair of command lines. On the fixture, at 1080p (the builder before the rule,
+then with it; opaque, so by the geometric threshold):
 
 | distance | triangles | area | silhouette |
 |---|---|---|---|
 | 30 m | 4,800 → 4,800 | 100 % → 100 % | 100 % → 100 % |
-| 100 m | 18 → 4,224 | 0.6 % → 100.0 % | 0.7 % → 100.2 % |
-| 300 m | 18 → 300 | 0.6 % → 100.0 % | 0.7 % → 98.8 % |
+| 100 m | 18 → 1,496 | 0.6 % → 100.0 % | 0.7 % → 101.0 % |
+| 300 m | 18 → 150 | 0.6 % → 100.0 % | 0.7 % → 100.9 % |
 
-Over every cut of the DAG the area never falls under 100.0 % and the silhouette never under 96 %
-(fewer, larger cards of the same area overlap as often as many small ones: a Boolean model's
-covered share depends on the area alone), and no card wider than a cut's error is missing from it.
+(By the first leg's extent the last two were 4,224 and 300: a square card's side is its diagonal
+over √2, which is one level.) Over every cut of the DAG the area never falls under 100.0 % and
+the silhouette never under 96 % (fewer, larger cards of the same area overlap as often as many
+small ones: a Boolean model's covered share depends on the area alone), and no card whose covered
+size is over a cut's error is missing from it. With a mask that keeps a quarter of each card and
+the foliage threshold, the same crown draws 20 triangles at 100 m with all of its area.
+
+**Why a generated tree's star reads 0 % at a kilometre.** `cuts` printed a silhouette of 0 % for
+the birch's star on every build. The star is vertical cards: seen along x and z it fills 350 %
+of the pixels the leaves do, and seen from above it is edge on and fills none. The number was the
+least of the three views and is right about that view; `silhouette_views` now says which.
 
 **Testing.** `aggregate_lod_tests.cpp` (`-Filter geometry`): the crown above with the rule (every
-cut: no lost card wider than the cut's error, at least 95 % of the area, at least 85 % of the
-silhouette, and a coarsest cut under an eighth of the triangles) and without it (the defect: cards
-1.5 times wider than the error lost, under 5 % of the area and the silhouette left, every group
+cut: no lost card whose covered size is over the cut's error, at least 95 % of the area, at least
+85 % of the silhouette, and a coarsest cut under an eighth of the triangles) and without it (the
+defect: cards 1.48 times the error in covered size lost, where the bound is the first leg's 1.5
+over √2, under 5 % of the area and the silhouette left, every group
 through the regular simplifier and none through the sloppy one); the shredded-atlas torus built
-with the rule and without to the same bytes, with nothing removed, grown or raised; and the pile
-of stones.
+with the rule and without to the same bytes, with nothing removed, grown or raised; the pile
+of stones; 3,000 needles 20 cm by 2 mm (no lost needle's covered size over a cut's error, all of
+the area at every cut, a thirty-second of the triangles at an error of half a needle's length
+where the extent drew every one, and no vertex of that cut farther out than a needle's half
+length and the width it gained: thickened, not lengthened); the crown with a mask cover of a
+quarter (the same clusters, vertices and geometric errors as without; a coverage word a cluster
+whose own never exceeds its parent's and whose parent's never exceeds the geometric error; half
+the geometric error where a card was removed; a tenth of the triangles at 100 m under the foliage
+threshold with 95 % of the area; and the words carried through `merge_cluster_lod` beside a part
+that has none); and `measure_mask_cover` on a quad over a half-opaque mask, through a transform,
+with no UVs, with no image, and with a mask that keeps nothing.
 
 ## Authored levels
 

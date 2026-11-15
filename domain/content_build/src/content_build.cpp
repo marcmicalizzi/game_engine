@@ -15,6 +15,7 @@
 #include <domain/texture/material_textures.h>
 #include <domain/texture/texture_build.h>
 #include <domain/texture/texture_file.h>
+#include <foundation/image/decode.h>
 #include <foundation/io/vfs.h>
 
 #include <cmath>
@@ -94,14 +95,72 @@ geometry::ClusterLodOptions import_lod_options_of(const MeshOptions& options) {
   return lod_options;
 }
 
+void measure_mask_covers(const assets::MeshData& mesh, std::string_view image_dir,
+                         Vector<f32>& out) {
+  out.clear();
+  out.resize(mesh.primitives.size(), 0.0f);
+  // One decode a material: its base colour's alpha, kept while its primitives are measured.
+  i32 decoded_material = -1;
+  image::Image alpha;
+  bool alpha_ok = false;
+  for (u32 p = 0; p < mesh.primitives.size(); ++p) {
+    const assets::Primitive& primitive = mesh.primitives[p];
+    if (primitive.material < 0 || static_cast<u32>(primitive.material) >= mesh.materials.size())
+      continue;
+    const assets::Material& material = mesh.materials[static_cast<u32>(primitive.material)];
+    if (material.alpha_mode != assets::k_alpha_mask || primitive.index_count < 3) continue;
+    if (decoded_material != primitive.material) {
+      decoded_material = primitive.material;
+      alpha = image::Image{};
+      alpha_ok = false;
+      const i32 index = material.base_color_image;
+      if (index >= 0 && static_cast<u32>(index) < mesh.images.size()) {
+        const assets::ImageRef& ref = mesh.images[static_cast<u32>(index)];
+        // Four channels and keep A: a one-channel request is the decoder's grey, not alpha.
+        image::Image rgba;
+        if (!ref.bytes.empty()) {
+          alpha_ok = image::decode_image({ref.bytes.data(), ref.bytes.size()}, rgba, 4);
+        } else if (!ref.uri.empty()) {
+          const std::string file = image_dir.empty() || io::is_absolute_path(ref.uri)
+                                       ? ref.uri
+                                       : io::join_path(image_dir, ref.uri);
+          alpha_ok = image::read_image(file, rgba, 4) == io::Status::Ok;
+        }
+        if (alpha_ok) {
+          const u32 texels = rgba.width * rgba.height;
+          alpha.width = rgba.width;
+          alpha.height = rgba.height;
+          alpha.channels = 1;
+          alpha.pixels.resize(texels);
+          for (u32 t = 0; t < texels; ++t)
+            alpha.pixels[t] = rgba.pixels[t * 4 + 3];
+        }
+      }
+    }
+    const geometry::TextureTransform& transform = material.sampling[0].transform;
+    const bool by_uv = transform.rotation == 0.0f && mesh.uvs.size() == mesh.positions.size();
+    const std::span<const u32> range(mesh.indices.data() + primitive.first_index,
+                                     primitive.index_count);
+    out[p] = geometry::measure_mask_cover(
+        std::span<const Vec3>(mesh.positions.data(), mesh.positions.size()),
+        by_uv ? std::span<const Vec2>(mesh.uvs.data(), mesh.uvs.size()) : std::span<const Vec2>(),
+        range,
+        alpha_ok ? std::span<const u8>(alpha.pixels.data(), alpha.pixels.size())
+                 : std::span<const u8>(),
+        alpha.width, alpha.height, material.base_color.w, material.alpha_cutoff, transform.scale,
+        transform.offset);
+  }
+}
+
 namespace {
 
 // A generated mesh's levels: the same options without the loose-island rule, which is an
-// import's until a generator asks for it (geometry.md, "Generators, and the error of a long thin
-// island"), so a generated container and its key are what they were.
+// import's until a generator asks for it (geometry.md, "Generators: what each would gain"), so a
+// generated container and its key are what they were. `generator_loose_islands` is the
+// measurement that page's table was taken with, and nothing that ships sets it.
 geometry::ClusterLodOptions generator_lod_options_of(const MeshOptions& options) {
   geometry::ClusterLodOptions lod_options = lod_options_of(options);
-  lod_options.loose_islands = false;
+  lod_options.loose_islands = options.generator_loose_islands;  // false but for a measurement
   return lod_options;
 }
 
@@ -273,7 +332,7 @@ bool validate_mesh(const assets::MeshData& mesh, const std::string& source, Diag
 // nothing the jobs write is ordered by when they finish.
 struct PartBuild {
   const assets::MeshData* mesh = nullptr;
-  const geometry::ClusterLodOptions* options = nullptr;
+  geometry::ClusterLodOptions options;  // the build's, with this primitive's mask cover
   const geometry::AttributeSource* attributes = nullptr;
   u32 first_index = 0;
   u32 index_count = 0;
@@ -286,7 +345,7 @@ struct PartBuild {
 void build_part(void* data) {
   PartBuild& part = *static_cast<PartBuild*>(data);
   const std::span<const u32> range(part.mesh->indices.data() + part.first_index, part.index_count);
-  part.ok = geometry::build_cluster_lod(part.mesh->positions, range, *part.options, part.out,
+  part.ok = geometry::build_cluster_lod(part.mesh->positions, range, part.options, part.out,
                                         &part.error, *part.attributes);
 }
 
@@ -540,12 +599,25 @@ bool build_one(const std::string& input, const std::string& output, const MeshOp
   // parts' clusters and remembers which part each came from.
   const geometry::ClusterLodOptions lod_options = import_lod_options_of(options);
   const geometry::AttributeSource attributes = assets::attribute_source(mesh);
+  // What each alpha-tested primitive's mask keeps: its island levels' coverage errors count a
+  // removed card for that share (geometry.md, "Coverage errors for an imported alpha-tested
+  // part"). Only with the rule on, so `--no-loose-islands` is the builder before it.
+  Vector<f32> mask_covers;
+  if (lod_options.loose_islands)
+    measure_mask_covers(mesh, io::parent_path(input), mask_covers);
   Vector<PartBuild> parts;
   parts.reserve(mesh.primitives.size());
   for (const assets::Primitive& primitive : mesh.primitives) {
     PartBuild part;
     part.mesh = &mesh;
-    part.options = &lod_options;
+    part.options = lod_options;
+    const u32 index = static_cast<u32>(&primitive - mesh.primitives.data());
+    if (index < mask_covers.size()) part.options.mask_cover = mask_covers[index];
+    if (part.options.mask_cover > 0.0f) {
+      ENGINE_LOG_INFO(log_content, "mask cover measured", log::field("primitive", index),
+                      log::field("material", primitive.material),
+                      log::field("cover", static_cast<f64>(part.options.mask_cover)));
+    }
     part.attributes = &attributes;
     part.first_index = primitive.first_index;
     part.index_count = primitive.index_count;
@@ -630,7 +702,12 @@ bool build_one(const std::string& input, const std::string& output, const MeshOp
       return false;
     }
     geometry::permute_cluster_array(source_of_cluster, part_of_cluster);
+    if (!data.mesh.coverage.empty())
+      geometry::permute_cluster_array(source_of_cluster, data.mesh.coverage);
   }
+  // The alpha-tested primitives' coverage errors, in the clusters' final order: section 39.
+  data.lod_coverage = std::move(data.mesh.coverage);
+  data.mesh.coverage = Vector<u32>();
 
   data.materials.reserve(mesh.materials.size() + 1);
   for (const assets::Material& source : mesh.materials) {

@@ -187,7 +187,10 @@ constexpr u32 k_source_path_kind = 14;
 // repair, which moved row 15 alone (the fixture has no zero-area triangle); and on 2026-11-15 an
 // import's build key took the loose-island rule (T147: `geometry::imported_lod_options`, no
 // version moved), which moved row 15 alone again (the fixture is one connected surface, so the
-// rule changes none of its triangles). 723 clusters. The empty
+// rule changes none of its triangles), and the same day its second leg renamed the rule in the
+// key (a removed island's error is its covered size; coverage errors for a `MASK` part), which
+// moved row 15 alone once more: the fixture has no island and no masked material, so no
+// section 39 appears. 723 clusters. The empty
 // sections all hash to 0x9ca066f1a4ab2eea, `hash_bytes` of nothing.
 constexpr SectionHash k_golden[] = {
     {1, 0xcf16170acf2289bdull},   // clusters
@@ -203,7 +206,7 @@ constexpr SectionHash k_golden[] = {
     {11, 0x9ca066f1a4ab2eeaull},  // strings
     {12, 0xabbe4b9547eecfedull},  // scalars
     {13, 0x8de2d34a8650a3bcull},  // quantized
-    {15, 0x67db8476b52b2e1bull},  // source_hash: the source's hash and the build key
+    {15, 0xd2c629572352cde7ull},  // source_hash: the source's hash and the build key
     {16, 0x4e5e346448e74edeull},  // pages
     {17, 0xcac3ebbc6dcebd3aull},  // page_children
     {18, 0x1d46f3ca5f069ef3ull},  // page_scalars

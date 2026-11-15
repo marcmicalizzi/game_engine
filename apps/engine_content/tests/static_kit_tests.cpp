@@ -99,14 +99,22 @@ TEST_CASE("engine-content static-kit: plain glTF meshes that carry nothing a gen
     CHECK(read.find("impostors") == nullptr);
     const JsonValue* sections = read.find("sections");
     REQUIRE(sections != nullptr);
+    bool coverage_errors = false;
     for (usize s = 0; s < sections->size(); ++s) {
       const std::string_view name = (*sections)[s].find("name")->as_string();
       CAPTURE(name);
       for (const char* generated :
            {"generator", "motion_parts", "motion_vertices", "structural_parts", "impostors",
-            "lod_coverage", "cover_mask", "sward_vertex", "seat"})
+            "cover_mask", "sward_vertex", "seat"})
         CHECK(name != generated);
+      coverage_errors = coverage_errors || name == "lod_coverage";
     }
+    // Coverage errors are no longer a generator's alone (T147's second leg; geometry.md, "Coverage
+    // errors for an imported alpha-tested part"): an import whose material is `MASK` carries them,
+    // measured from its own mask, and one with none does not. The kit's tree, bush and grass are
+    // cards under a masked material; its ground and its rock are opaque.
+    const std::string_view kit_mesh = stem;
+    CHECK(coverage_errors == (kit_mesh == "tree" || kit_mesh == "bush" || kit_mesh == "grass"));
   }
   CHECK(run({"static-kit"}).exit_code == 2);
   CHECK(run({"static-kit", dir, "--bogus"}).exit_code == 2);

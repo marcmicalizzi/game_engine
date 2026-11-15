@@ -138,19 +138,31 @@ struct ClusterLodOptions {
   // regular simplifier cannot halve, or halves by halving each card, is coarsened **by islands**:
   // one of each neighbouring pair removed whole, the other grown until it covers the area of both
   // (new vertices, each standing for the corner it was copied from), and the level's error the
-  // extent of what it removed; and any simplifier's result admits to at least the extent of every
-  // island it removed whole. It reads nothing but the triangles: no material, no generator. A
-  // group that is one connected surface is built exactly as before, and so is every heightfield
-  // (`up`). False is the build before the rule, byte for byte.
+  // **covered size** of what it removed: the side of the square whose area is the most the island
+  // can cover on a screen (geometry.md, "What the eye loses when an island goes"), which for a
+  // compact island is near its width and for a twig or a needle far under its length; and any
+  // simplifier's result admits to at least the covered size of every island it removed whole. It
+  // reads nothing but the triangles: no material, no generator. A group that is one connected
+  // surface is built exactly as before, and so is every heightfield (`up`). False is the build
+  // before the rule, byte for byte.
   //
   // **Off by default, and on for every imported mesh** (`imported_lod_options`, which the content
   // build and the renderer's import both go through). A generator that calls this builder was
-  // shaped against the old behaviour and has to be measured before it takes the rule: the birch's
-  // wood is loose tubes, and with the rule its container draws 13,555 triangles at 300 m where it
-  // drew 804, because a twig may then not go until its whole length is a pixel (geometry.md has
-  // what that says about the error of a long thin island). An imported mesh has no generator to
-  // have shaped anything, and without the rule it is drawn bare.
+  // shaped against the old behaviour and has to be measured before it takes the rule (geometry.md
+  // has the table by generator). An imported mesh has no generator to have shaped anything, and
+  // without the rule it is drawn bare.
   bool loose_islands = false;
+
+  // **The share of an alpha-tested part its mask keeps**, in (0, 1]; 0 (the default) says the
+  // part is not alpha-tested. Read only with `loose_islands`. With it set the build also fills
+  // `ClusterLodMesh::coverage`: every transition's **coverage error** (geometry.md, "Two errors"),
+  // which is the level's geometric error with each island it removed counted for the part of its
+  // covered size the mask keeps (the covered size times the square root of this), so a leaf card
+  // coarsens under the foliage threshold, as the forest's own cards do, and a card whose mask is
+  // half empty counts for the half that is drawn. The caller measures it from the part's own mask
+  // (`measure_mask_cover`). It moves no geometry: the triangles, the vertices and the geometric
+  // errors of a part are the same with it and without.
+  f32 mask_cover = 0.0f;
 };
 
 // The options an imported mesh's levels are built with: the caller's, with the loose-island rule
@@ -197,7 +209,26 @@ struct ClusterLodMesh {
   u32 leaf_triangle_count = 0;  // level 0 total, equal to the source triangle count
   FoldGuardStats fold_guard;    // the build's own; zero for a mesh read from a container
   AggregateStats aggregate;     // likewise
+  // The build's coverage errors (`ClusterLodOptions::mask_cover`): empty, or one
+  // `pack_lod_coverage` word per cluster. The build's own too: `merge_cluster_lod` carries it (a
+  // part without one reads `k_lod_no_coverage`), and the importer moves it into the container's
+  // section 39 (`ClusterFileData::lod_coverage`) once the clusters have their final order. Nothing
+  // else reads it, and a mesh read from a container has none here.
+  Vector<u32> coverage;
 };
+
+// The share of an alpha-tested part its mask keeps (`ClusterLodOptions::mask_cover`): the
+// material's test (the factor's alpha times the texel's, against the cutoff, at level 0, through
+// `scale` and `offset` and a repeat wrap) asked at the centroids of each triangle's 4 x 4
+// equal-area sub-triangles, weighted by the triangle's area in the mesh. `alpha` is the base
+// colour's alpha channel, `width` x `height` texels, rows top first; empty asks the factor alone.
+// Counted in integers and summed in double in triangle order, then rounded to a 256th and held to
+// at least a 16th, so it is the same number on every toolchain and a mask that keeps almost
+// nothing does not make an error of nothing. 1 for a part with no triangles of any area.
+f32 measure_mask_cover(std::span<const Vec3> positions, std::span<const Vec2> uvs,
+                       std::span<const u32> indices, std::span<const u8> alpha, u32 width,
+                       u32 height, f32 alpha_factor, f32 alpha_cutoff, Vec2 scale = {1.0f, 1.0f},
+                       Vec2 offset = {0.0f, 0.0f}) noexcept;
 
 bool build_cluster_lod(std::span<const Vec3> positions, std::span<const u32> indices,
                        const ClusterLodOptions& options, ClusterLodMesh& out,

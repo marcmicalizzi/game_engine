@@ -47,6 +47,12 @@ struct BuildContext {
   // own error is a refined group's, and a group whose error is FLT_MAX is never refined.
   f32 cap = k_lod_terminal_error;
   u32 skipped = 0;
+  // The coverage errors of an alpha-tested part (`ClusterLodOptions::mask_cover`): per group, in
+  // output order, and the one the builder's loop computed for the group being emitted. Terminal
+  // (no coverage) for a group that is not refined.
+  bool masked = false;
+  Vector<f32> group_cover;
+  f32 pending_cover = k_lod_terminal_error;
 };
 
 // The attribute record the simplifier is given per source vertex: the normal, then the UV.
@@ -85,6 +91,7 @@ int emit_group(void* context, clodGroup group, const clodCluster* clusters, size
   const clodMesh& pool = *ctx->mesh;
   const int group_index = static_cast<int>(ctx->group_bounds.size());
   ctx->group_bounds.push_back(group.simplified);
+  ctx->group_cover.push_back(ctx->pending_cover);
   const u32 depth = group.depth >= 0 ? static_cast<u32>(group.depth) : 0;
   while (out.level_cluster_counts.size() <= depth)
     out.level_cluster_counts.push_back(0);
@@ -149,6 +156,13 @@ int emit_group(void* context, clodGroup group, const clodCluster* clusters, size
     lod.level = depth;
     lod.group = static_cast<u32>(group_index);
     out.lod.push_back(lod);
+    if (ctx->masked) {
+      // A level 0 cluster's own transition is always acceptable; the others' is their refined
+      // group's, and every cluster of this group shares its parent's.
+      const f32 own =
+          cluster.refined >= 0 ? ctx->group_cover[static_cast<u32>(cluster.refined)] : 0.0f;
+      out.coverage.push_back(pack_lod_coverage(own, ctx->pending_cover));
+    }
     ++out.level_cluster_counts[depth];
     if (depth == 0) out.leaf_triangle_count += desc.triangle_count;
   }
@@ -326,9 +340,15 @@ struct Island {
   u32 triangles = 0;
   bool free = true;
   bool alive = false;  // scratch: a result still draws a triangle of it
+  bool open = false;   // an edge of it belongs to one triangle only: a card, a tube without caps
   f64 area = 0.0;
   f64 centre[3] = {0.0, 0.0, 0.0};  // area-weighted; the mean of its corners when it has no area
   f64 radius = 0.0;                 // the farthest corner from `centre`
+  // Its own length: the unit vector from `centre` to that farthest corner (zero for a point), and
+  // the farthest a corner lies from the line through `centre` along it, which is half the
+  // island's width across its length.
+  f64 axis[3] = {0.0, 0.0, 0.0};
+  f64 half_width = 0.0;
 };
 
 struct IslandSet {
@@ -440,6 +460,7 @@ void find_islands(const clodMesh& mesh, const std::vector<unsigned int>& indices
       set.free_area += island.area;
     }
   }
+  std::vector<f64> axis(set.islands.size() * 3, 0.0);
   for (size_t t = 0; t < triangles; ++t) {
     Island& island = set.islands[set.of_triangle[t]];
     for (size_t k = 0; k < 3; ++k) {
@@ -448,17 +469,84 @@ void find_islands(const clodMesh& mesh, const std::vector<unsigned int>& indices
       const f64 dy = static_cast<f64>(p.y) - island.centre[1];
       const f64 dz = static_cast<f64>(p.z) - island.centre[2];
       const f64 r = std::sqrt(dx * dx + dy * dy + dz * dz);
-      if (r > island.radius) island.radius = r;
+      if (r > island.radius) {
+        island.radius = r;
+        // The island's own length runs through its farthest corner: the first to reach the radius,
+        // in the group's triangle order.
+        axis[set.of_triangle[t] * 3] = dx;
+        axis[set.of_triangle[t] * 3 + 1] = dy;
+        axis[set.of_triangle[t] * 3 + 2] = dz;
+      }
     }
+  }
+  for (size_t id = 0; id < set.islands.size(); ++id) {
+    Island& island = set.islands[id];
+    if (!(island.radius > 0.0)) continue;
+    for (size_t k = 0; k < 3; ++k)
+      island.axis[k] = axis[id * 3 + k] / island.radius;
+  }
+  for (size_t t = 0; t < triangles; ++t) {
+    const unsigned int id = set.of_triangle[t];
+    Island& island = set.islands[id];
+    if (!(island.radius > 0.0)) continue;
+    for (size_t k = 0; k < 3; ++k) {
+      const Vec3 p = position_of(mesh, indices[t * 3 + k]);
+      const f64 dx = static_cast<f64>(p.x) - island.centre[0];
+      const f64 dy = static_cast<f64>(p.y) - island.centre[1];
+      const f64 dz = static_cast<f64>(p.z) - island.centre[2];
+      const f64 along = dx * island.axis[0] + dy * island.axis[1] + dz * island.axis[2];
+      const f64 across_sq = dx * dx + dy * dy + dz * dz - along * along;
+      const f64 across = across_sq > 0.0 ? std::sqrt(across_sq) : 0.0;
+      if (across > island.half_width) island.half_width = across;
+    }
+  }
+  // An island is open when an edge of it belongs to one triangle only.
+  std::vector<u64> edges;
+  edges.reserve(indices.size());
+  for (size_t t = 0; t < triangles; ++t) {
+    for (size_t k = 0; k < 3; ++k) {
+      const unsigned int a = remap[indices[t * 3 + k]];
+      const unsigned int b = remap[indices[t * 3 + (k + 1) % 3]];
+      edges.push_back((u64{std::min(a, b)} << 32) | u64{std::max(a, b)});
+    }
+  }
+  std::sort(edges.begin(), edges.end());
+  for (size_t i = 0; i < edges.size();) {
+    size_t j = i + 1;
+    while (j < edges.size() && edges[j] == edges[i])
+      ++j;
+    if (j - i == 1) {
+      const unsigned int id = set.island_at(static_cast<unsigned int>(edges[i] >> 32));
+      if (id != ~0u) set.islands[id].open = true;
+    }
+    i = j;
   }
 }
 
-// An island's extent as an error: the diameter of the sphere about its centre, rounded up into
-// float, so a cut that no longer draws the island admits to at least its own size.
-float island_extent(const Island& island) noexcept {
-  const f64 extent = 2.0 * island.radius;
-  float e = static_cast<float>(extent);
-  while (static_cast<f64>(e) < extent)
+// **What the eye loses when an island goes** (geometry.md has the derivation): the most of a
+// screen it can cover, as a length. Seen from any direction an island covers no more than
+//
+//  - its own area, and half of it when it is closed (of a closed surface at most half the area
+//    faces any one way, and what faces away is behind what faces the eye), and
+//  - its length times its width: it lies inside the cylinder about the line through its centre
+//    and its farthest corner, `2 radius` long and `2 half_width` across, whose shadow that is to
+//    within the caps.
+//
+// The smaller of the two is its covered area, and the side of the square of that area is the
+// error a cut admits to when it no longer draws the island: under one pixel of it the island
+// held less than a pixel of the picture, however it was spread. For a compact island that is its
+// width, near enough (a square card: its side, where its extent is its diagonal); for a twig 30 cm
+// long and 6 mm thick it is 4 cm and not 30. Rounded up into float.
+f64 island_covered_area(const Island& island) noexcept {
+  const f64 faces = island.open ? island.area : 0.5 * island.area;
+  const f64 slab = 4.0 * island.radius * island.half_width;
+  return faces < slab ? faces : slab;
+}
+
+float island_covered_size(const Island& island) noexcept {
+  const f64 size = std::sqrt(island_covered_area(island));
+  float e = static_cast<float>(size);
+  while (static_cast<f64>(e) < size)
     e = std::nextafter(e, FLT_MAX);
   return e;
 }
@@ -504,6 +592,12 @@ constexpr f64 k_island_area_kept = 0.75;
 // The largest an island may be, against its group's radius, to count as a part of an aggregate
 // whose lost area is given back to it (`restore_island_area`).
 constexpr f64 k_island_part_of_group = 0.25;
+// Or the fewest free islands a group holds for every one of them to count as a part of an
+// aggregate, whatever its size.
+constexpr u32 k_aggregate_islands = 8;
+// The share of its area under which a regular result has gutted an island: what is left is
+// removed rather than grown back (`restore_island_area`).
+constexpr f64 k_island_gutted = 0.5;
 
 u32 morton10(u32 x, u32 y, u32 z) noexcept {
   const auto spread = [](u32 v) {
@@ -524,11 +618,37 @@ float rounded_up(f64 value) noexcept {
   return f;
 }
 
-// How one island grows: about `centre`, by `scale` (1: not at all).
+// How one island grows about `centre`: by `scale` along `axis` and by `across` across it (both 1:
+// not at all; equal: about the centre in every direction, and `axis` is not read).
 struct Growth {
   f64 scale = 1.0;
+  f64 across = 1.0;
   f64 centre[3] = {0.0, 0.0, 0.0};
+  f64 axis[3] = {0.0, 0.0, 0.0};
 };
+
+// **The growth that gives an island `ratio` times its area and moves its corners least**
+// (geometry.md, "A long island is thickened"). Grown about its centre in every direction, by the
+// square root of the ratio, a corner moves up to (sqrt(ratio) - 1) of the island's `radius`;
+// grown across its own length alone, by the ratio, up to (ratio - 1) of its `half_width`. A leaf
+// takes the first, and a twig, a needle or a blade the second: it is thickened and not
+// lengthened, which is what the published practice does with hair and ribbons. Returns how far a
+// corner may have moved.
+f64 grow_least(f64 ratio, f64 radius, f64 half_width, const f64 axis[3], Growth& growth) noexcept {
+  const f64 every = std::sqrt(ratio);
+  const f64 moved_every = (every - 1.0) * radius;
+  const f64 moved_across = (ratio - 1.0) * half_width;
+  if (moved_across < moved_every) {
+    growth.scale = 1.0;
+    growth.across = ratio;
+    for (size_t k = 0; k < 3; ++k)
+      growth.axis[k] = axis[k];
+    return moved_across;
+  }
+  growth.scale = every;
+  growth.across = every;
+  return moved_every;
+}
 
 // Grows the islands of `triangles` whose scale is over 1: each of their corners becomes a **new
 // vertex** behind the mesh's, at its position scaled about its island's centre, and `triangles`
@@ -548,7 +668,9 @@ u32 grow_islands(clodMesh& mesh, VertexPool& pool, std::vector<unsigned int>& tr
   const auto corner_less = [](const Corner& a, const Corner& b) {
     return a.island != b.island ? a.island < b.island : a.vertex < b.vertex;
   };
-  const auto grows = [&](u32 id) { return id != ~0u && growth[id].scale > 1.0; };
+  const auto grows = [&](u32 id) {
+    return id != ~0u && (growth[id].scale > 1.0 || growth[id].across > 1.0);
+  };
   std::vector<Corner> corners;
   for (size_t t = 0; t < island_of.size(); ++t) {
     if (!grows(island_of[t])) continue;
@@ -581,9 +703,21 @@ u32 grow_islands(clodMesh& mesh, VertexPool& pool, std::vector<unsigned int>& tr
     const Corner& corner = corners[i];
     const Growth& g = growth[corner.island];
     float grown[3];
-    for (size_t axis = 0; axis < 3; ++axis) {
-      const f64 p = static_cast<f64>(pool.positions[corner.vertex * stride + axis]);
-      grown[axis] = static_cast<float>(g.centre[axis] + g.scale * (p - g.centre[axis]));
+    if (g.across == g.scale) {
+      for (size_t axis = 0; axis < 3; ++axis) {
+        const f64 p = static_cast<f64>(pool.positions[corner.vertex * stride + axis]);
+        grown[axis] = static_cast<float>(g.centre[axis] + g.scale * (p - g.centre[axis]));
+      }
+    } else {
+      f64 d[3];
+      for (size_t axis = 0; axis < 3; ++axis)
+        d[axis] = static_cast<f64>(pool.positions[corner.vertex * stride + axis]) - g.centre[axis];
+      const f64 along = d[0] * g.axis[0] + d[1] * g.axis[1] + d[2] * g.axis[2];
+      for (size_t axis = 0; axis < 3; ++axis) {
+        const f64 on_axis = along * g.axis[axis];
+        grown[axis] = static_cast<float>(g.centre[axis] + g.scale * on_axis +
+                                         g.across * (d[axis] - on_axis));
+      }
     }
     // The position's class among the copies: the island's first corner at the same position.
     unsigned int canonical = static_cast<unsigned int>(base + i);
@@ -621,19 +755,21 @@ u32 grow_islands(clodMesh& mesh, VertexPool& pool, std::vector<unsigned int>& tr
 
 // **Stochastic simplification of an aggregate** (Cook et al. 2007; geometry.md has the sources):
 // the group's free islands are paired along a space-filling curve, the smaller of each pair is
-// removed whole and the other grown about its centre until it covers the area of both, so the
+// removed whole and the other grown until it covers the area of both (`grow_least`), so the
 // group's covered area holds while its triangles halve. The grown island's corners are new
 // vertices behind the source's, each standing for the corner it was copied from (`pool.origin`),
-// whose attributes, tags and position class it keeps. The level's error is the extent of the
-// largest island removed (and the farthest a grown corner moved, which is smaller): what is no
-// longer drawn where it was. Returns the group's triangles with the removed islands' dropped and
-// the grown islands' renamed; islands that are not free pass through as they are.
+// whose attributes, tags and position class it keeps. The level's error is the covered size of
+// the largest island removed (`island_covered_area`) or, if larger, the farthest a grown corner
+// moved: what is no longer drawn where it was. `cover` is the same with each removed island
+// counted for the part of its covered size the part's mask keeps (`mask_root`). Returns the
+// group's triangles with the removed islands' dropped and the grown islands' renamed; islands
+// that are not free pass through as they are.
 std::vector<unsigned int> coarsen_by_islands(clodMesh& mesh, VertexPool& pool,
                                              const std::vector<unsigned int>& indices,
                                              std::vector<unsigned char>& locks,
                                              std::vector<unsigned int>& remap, const IslandSet& set,
-                                             float stuck_threshold, float* error,
-                                             AggregateStats& stats) {
+                                             float stuck_threshold, f64 mask_root, float* error,
+                                             float* cover, AggregateStats& stats) {
   struct Ordered {
     u32 code;
     u32 first;
@@ -665,8 +801,14 @@ std::vector<unsigned int> coarsen_by_islands(clodMesh& mesh, VertexPool& pool,
 
   enum : unsigned char { keep = 0, removed = 1, grown = 2 };
   std::vector<unsigned char> action(set.islands.size(), keep);
-  std::vector<f64> scale(set.islands.size(), 1.0);
-  f64 worst = 0.0;
+  std::vector<Growth> growth(set.islands.size());
+  for (size_t id = 0; id < set.islands.size(); ++id) {
+    for (size_t axis = 0; axis < 3; ++axis)
+      growth[id].centre[axis] = set.islands[id].centre[axis];
+  }
+  // `worst` is the level's geometric error and `worst_cover` its coverage error: the same, with
+  // each removed island counted for the part of its covered size the part's mask keeps.
+  f64 worst = 0.0, worst_cover = 0.0;
   u32 removed_count = 0, grown_count = 0;
   for (size_t i = 0; i + 1 < order.size(); i += 2) {
     const u32 a = order[i].island, b = order[i + 1].island;
@@ -674,14 +816,18 @@ std::vector<unsigned int> coarsen_by_islands(clodMesh& mesh, VertexPool& pool,
     const u32 gone = kept == a ? b : a;
     action[gone] = removed;
     ++removed_count;
-    worst = std::max(worst, 2.0 * set.islands[gone].radius);
+    const f64 lost = std::sqrt(island_covered_area(set.islands[gone]));
+    worst = std::max(worst, lost);
+    worst_cover = std::max(worst_cover, mask_root * lost);
     const f64 area = set.islands[kept].area;
     if (area > 0.0 && set.islands[gone].area > 0.0) {
-      const f64 s = std::sqrt((area + set.islands[gone].area) / area);
+      const Island& island = set.islands[kept];
       action[kept] = grown;
-      scale[kept] = s;
       ++grown_count;
-      worst = std::max(worst, (s - 1.0) * set.islands[kept].radius);
+      const f64 moved = grow_least((area + set.islands[gone].area) / area, island.radius,
+                                   island.half_width, island.axis, growth[kept]);
+      worst = std::max(worst, moved);
+      worst_cover = std::max(worst_cover, moved);
     }
   }
   // Too little removed to count as a level (a few large islands beside many triangles that are
@@ -702,16 +848,11 @@ std::vector<unsigned int> coarsen_by_islands(clodMesh& mesh, VertexPool& pool,
     result.insert(result.end(), &indices[t * 3], &indices[t * 3] + 3);
     island_of.push_back(id);
   }
-  std::vector<Growth> growth(set.islands.size());
-  for (size_t id = 0; id < set.islands.size(); ++id) {
-    growth[id].scale = scale[id];
-    for (size_t axis = 0; axis < 3; ++axis)
-      growth[id].centre[axis] = set.islands[id].centre[axis];
-  }
   stats.islands_removed += removed_count;
   stats.islands_grown += grown_count;
   stats.vertices_added += grow_islands(mesh, pool, result, island_of, growth, locks, remap);
   *error = rounded_up(worst);
+  *cover = rounded_up(worst_cover);
   return result;
 }
 
@@ -723,7 +864,9 @@ std::vector<unsigned int> coarsen_by_islands(clodMesh& mesh, VertexPool& pool,
 // quarter. So after a regular result is kept, every free island with an open border is grown
 // about its own centre back to the area it had, plus its share (by area) of what the group's
 // islands of that kind lost whole. The result's error takes the farthest a corner moved.
-void restore_island_area(clodMesh& mesh, VertexPool& pool, const std::vector<unsigned int>& indices,
+// Returns the covered size of the largest island it removed for being gutted (0: none), which the
+// caller's error admits to.
+f64 restore_island_area(clodMesh& mesh, VertexPool& pool, const std::vector<unsigned int>& indices,
                          std::vector<unsigned int>& result, std::vector<unsigned char>& locks,
                          std::vector<unsigned int>& remap, const IslandSet& set, float* error,
                          AggregateStats& stats) {
@@ -756,6 +899,7 @@ void restore_island_area(clodMesh& mesh, VertexPool& pool, const std::vector<uns
   std::vector<f64> area(count, 0.0);
   std::vector<Growth> growth(count);
   std::vector<f64> radius(count, 0.0);
+  std::vector<f64> across(count, 0.0);  // what is left's half width across the island's length
   for (size_t t = 0; t < island_of.size(); ++t) {
     const unsigned int id = set.island_at(remap[result[t * 3]]);
     if (id == ~0u) continue;
@@ -769,32 +913,12 @@ void restore_island_area(clodMesh& mesh, VertexPool& pool, const std::vector<uns
       growth[id].centre[2] += a * static_cast<f64>(p.z);
     }
   }
-  f64 lost = 0.0, kept_before = 0.0;
-  for (size_t id = 0; id < count; ++id) {
-    const Island& island = set.islands[id];
-    if (!island.free || open[id] == 0) continue;
-    if (area[id] > 0.0) {
-      kept_before += island.area;
-      for (size_t axis = 0; axis < 3; ++axis)
-        growth[id].centre[axis] /= 3.0 * area[id];
-    } else {
-      lost += island.area;
-    }
-  }
-  for (size_t t = 0; t < island_of.size(); ++t) {
-    const u32 id = island_of[t];
-    if (id == ~0u || !(area[id] > 0.0)) continue;
-    for (size_t k = 0; k < 3; ++k) {
-      const Vec3 p = position_of(mesh, result[t * 3 + k]);
-      const f64 dx = static_cast<f64>(p.x) - growth[id].centre[0];
-      const f64 dy = static_cast<f64>(p.y) - growth[id].centre[1];
-      const f64 dz = static_cast<f64>(p.z) - growth[id].centre[2];
-      radius[id] = std::max(radius[id], std::sqrt(dx * dx + dy * dy + dz * dz));
-    }
-  }
   // Only a part of an aggregate grows: an island small against its group (a quarter of the
-  // group's own radius at most). A ground plane, a banner or a wall with an open border is an
-  // island too, and scaling one about its centre would move everything on it.
+  // group's own radius at most), or any island of a group of many. A ground plane, a banner or a
+  // wall with an open border is an island too, and scaling one about its centre would move
+  // everything on it; a level's survivors are grown, and a crown's coarse groups hold a few dozen
+  // cards a good part of the group across, which lose their area to every regular level as the
+  // small ones did.
   f64 lo[3] = {1e300, 1e300, 1e300}, hi[3] = {-1e300, -1e300, -1e300};
   for (const unsigned int v : indices) {
     const Vec3 p = position_of(mesh, v);
@@ -807,25 +931,84 @@ void restore_island_area(clodMesh& mesh, VertexPool& pool, const std::vector<uns
   const f64 group_radius = 0.5 * std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) +
                                            (hi[1] - lo[1]) * (hi[1] - lo[1]) +
                                            (hi[2] - lo[2]) * (hi[2] - lo[2]));
+  const bool aggregate = set.free_count >= k_aggregate_islands;
+  const auto part = [&](size_t id) {
+    const Island& island = set.islands[id];
+    return island.free && open[id] != 0 &&
+           (aggregate || island.radius <= k_island_part_of_group * group_radius);
+  };
+  // **An island the result gutted is removed whole** (`k_island_gutted`): what is left of it is a
+  // sliver, and growing a sliver back to the island's area throws its corners across the group (a
+  // twig collapsed to one triangle and grown seven times over moved 70 cm in a tree 3 m tall). Its
+  // triangles are dropped, its area goes to the islands that kept theirs, and the caller's error
+  // admits to its covered size, as for any island removed whole.
+  f64 lost = 0.0, kept_before = 0.0, worst_gone = 0.0;
+  std::vector<unsigned char> gutted(count, 0);
+  bool any_gutted = false;
+  for (size_t id = 0; id < count; ++id) {
+    const Island& island = set.islands[id];
+    if (!island.free || open[id] == 0) continue;
+    if (area[id] > 0.0 && part(id) && area[id] < k_island_gutted * island.area) {
+      gutted[id] = 1;
+      any_gutted = true;
+      worst_gone = std::max(worst_gone, std::sqrt(island_covered_area(island)));
+    }
+    if (area[id] > 0.0 && gutted[id] == 0) {
+      kept_before += island.area;
+      for (size_t axis = 0; axis < 3; ++axis)
+        growth[id].centre[axis] /= 3.0 * area[id];
+    } else {
+      lost += island.area;
+    }
+  }
+  if (any_gutted) {
+    size_t kept = 0;
+    for (size_t t = 0; t < island_of.size(); ++t) {
+      const u32 id = island_of[t];
+      if (id != ~0u && gutted[id] != 0) continue;
+      for (size_t k = 0; k < 3; ++k)
+        result[kept * 3 + k] = result[t * 3 + k];
+      island_of[kept++] = id;
+    }
+    result.resize(kept * 3);
+    island_of.resize(kept);
+    for (size_t id = 0; id < count; ++id)
+      if (gutted[id] != 0) area[id] = 0.0;
+  }
+  for (size_t t = 0; t < island_of.size(); ++t) {
+    const u32 id = island_of[t];
+    if (id == ~0u || !(area[id] > 0.0)) continue;
+    for (size_t k = 0; k < 3; ++k) {
+      const Vec3 p = position_of(mesh, result[t * 3 + k]);
+      const f64 dx = static_cast<f64>(p.x) - growth[id].centre[0];
+      const f64 dy = static_cast<f64>(p.y) - growth[id].centre[1];
+      const f64 dz = static_cast<f64>(p.z) - growth[id].centre[2];
+      radius[id] = std::max(radius[id], std::sqrt(dx * dx + dy * dy + dz * dz));
+      const f64* axis = set.islands[id].axis;
+      const f64 along = dx * axis[0] + dy * axis[1] + dz * axis[2];
+      const f64 across_sq = dx * dx + dy * dy + dz * dz - along * along;
+      if (across_sq > across[id] * across[id]) across[id] = std::sqrt(across_sq);
+    }
+  }
   f64 worst = 0.0;
   u32 restored = 0;
   for (size_t id = 0; id < count; ++id) {
     const Island& island = set.islands[id];
-    if (!island.free || open[id] == 0 || !(area[id] > 0.0)) continue;
-    if (island.radius > k_island_part_of_group * group_radius) continue;
+    if (!part(id) || !(area[id] > 0.0)) continue;
     const f64 share = kept_before > 0.0 ? lost * island.area / kept_before : 0.0;
-    const f64 s = std::sqrt((island.area + share) / area[id]);
-    // Under a part in a thousand is the simplifier's own rounding, not a loss.
-    if (!(s > 1.001)) continue;
-    growth[id].scale = s;
+    const f64 ratio = (island.area + share) / area[id];
+    // Under a part in a thousand (of its width) is the simplifier's own rounding, not a loss.
+    if (!(ratio > 1.002)) continue;
     ++restored;
-    worst = std::max(worst, (s - 1.0) * radius[id]);
+    worst = std::max(worst, grow_least(ratio, radius[id], across[id], island.axis, growth[id]));
   }
-  if (restored == 0) return;
-  stats.islands_restored += restored;
-  stats.vertices_added += grow_islands(mesh, pool, result, island_of, growth, locks, remap);
-  const float moved = rounded_up(worst);
-  if (moved > *error) *error = moved;
+  if (restored != 0) {
+    stats.islands_restored += restored;
+    stats.vertices_added += grow_islands(mesh, pool, result, island_of, growth, locks, remap);
+    const float moved = rounded_up(worst);
+    if (moved > *error) *error = moved;
+  }
+  return worst_gone;
 }
 
 // clusterlod's optional cap on a group's error by its longest edge (off in the default config),
@@ -958,6 +1141,9 @@ std::vector<unsigned int> simplify_heightfield(const clodConfig& config, const c
 // what they did.
 struct LooseBuild {
   bool enabled = true;
+  // The square root of the share of the part its mask keeps (`ClusterLodOptions::mask_cover`); 1
+  // for a part that is not alpha-tested, whose coverage errors nobody reads.
+  f64 mask_root = 1.0;
   VertexPool pool;
   AggregateStats stats;
 };
@@ -969,11 +1155,16 @@ struct LooseBuild {
 //    short of the target on it or thins it (its result keeps under `k_island_area_kept` of the free
 //    islands' area: a card's two triangles collapsed to one), instead of by the sloppy simplifier
 //    or by that result. `coarsen_by_islands` has what that does and the error it reports.
-//  - **A result's error is at least the extent of every island it removed whole**, whichever
-//    simplifier made it. The sloppy simplifier reports how far its cells' kept vertices lie from
-//    the planes of the triangles it merged, which for a card collapsed into one of its own corners
-//    is nothing at all; the regular one reports a collapse's quadric error, which for a lone
-//    triangle is a fraction of its edge. Neither says that the island is no longer drawn.
+//  - **A result's error is at least the covered size of every island it removed whole**
+//    (`island_covered_size`), whichever simplifier made it. The sloppy simplifier reports how far
+//    its cells' kept vertices lie from the planes of the triangles it merged, which for a card
+//    collapsed into one of its own corners is nothing at all; the regular one reports a collapse's
+//    quadric error, which for a lone triangle is a fraction of its edge. Neither says that the
+//    island is no longer drawn.
+//
+// `cover` is the level's **coverage error** for an alpha-tested part: the same error, with each
+// island removed whole counted for the part of its covered size the mask keeps
+// (`LooseBuild::mask_root`). The caller reads it only for such a part.
 //
 // With `LooseBuild::enabled` false, or on a group with no island of either kind, this is
 // upstream's `simplify` line for line, so a mesh that is one connected surface per group builds
@@ -982,7 +1173,8 @@ std::vector<unsigned int> simplify_loose(const clodConfig& config, clodMesh& mes
                                          const std::vector<unsigned int>& indices,
                                          std::vector<unsigned char>& locks,
                                          std::vector<unsigned int>& remap, size_t target_count,
-                                         float* error, LooseBuild& build) {
+                                         float* error, float* cover, LooseBuild& build) {
+  *cover = 0.0f;
   if (target_count > indices.size()) return indices;
 
   std::vector<unsigned int> lod;
@@ -999,7 +1191,8 @@ std::vector<unsigned int> simplify_loose(const clodConfig& config, clodMesh& mes
       if (stuck || thinned) {
         std::vector<unsigned int> coarse =
             coarsen_by_islands(mesh, build.pool, indices, locks, remap, set,
-                               config.simplify_threshold, error, build.stats);
+                               config.simplify_threshold, build.mask_root, error, cover,
+                               build.stats);
         if (!coarse.empty()) {
           ++build.stats.by_islands;
           return coarse;
@@ -1017,21 +1210,33 @@ std::vector<unsigned int> simplify_loose(const clodConfig& config, clodMesh& mes
     ++build.stats.regular;
   }
   limit_error_by_edges(config, mesh, indices, error);
+  *cover = *error;
 
   if (build.enabled) {
     mark_alive(mesh, remap, lod, set);
     float floor = 0.0f;
     for (const Island& island : set.islands) {
-      if (!island.alive) floor = std::max(floor, island_extent(island));
+      if (!island.alive) floor = std::max(floor, island_covered_size(island));
     }
     if (floor > *error) {
       *error = floor;
       ++build.stats.errors_raised;
     }
+    *cover = std::max(*cover, rounded_up(build.mask_root * static_cast<f64>(floor)));
     // A regular result's triangles each lie in one island; a sloppy one's may span two, and what
     // it merged has no area of its own to give back.
-    if (!sloppy && set.free_count != 0)
-      restore_island_area(mesh, build.pool, indices, lod, locks, remap, set, error, build.stats);
+    if (!sloppy && set.free_count != 0) {
+      const float before = *error;
+      const f64 gone = restore_island_area(mesh, build.pool, indices, lod, locks, remap, set,
+                                           error, build.stats);
+      // What a corner moved to give the area back is a displacement on either scale; an island
+      // removed for being gutted counts as any island removed whole.
+      if (*error > before) *cover = std::max(*cover, *error);
+      if (gone > 0.0) {
+        *error = std::max(*error, rounded_up(gone));
+        *cover = std::max(*cover, rounded_up(build.mask_root * gone));
+      }
+    }
   }
   return lod;
 }
@@ -1043,9 +1248,14 @@ std::vector<unsigned int> simplify_loose(const clodConfig& config, clodMesh& mes
 // function to compare with upstream's again; the determinism pins, and the guard's test that a
 // heightfield which never folds builds the same bytes with `up` set and without, are what catch a
 // drift.
+//
+// `group_cover` is where the loop leaves each group's **coverage error** before it is output
+// (geometry.md, "Two errors"; read only for an alpha-tested part): merged up the DAG exactly as
+// the geometric error is, from each level's own (`simplify_loose`), so it rises along every path
+// as the geometric one does, and terminal for a group that is not refined.
 size_t build_lod_groups(const clodConfig& config, clodMesh& mesh, const FoldGuard* guard,
-                        FoldGuardStats& stats, LooseBuild& loose, void* output_context,
-                        clodOutput output_callback) {
+                        FoldGuardStats& stats, LooseBuild& loose, f32* group_cover,
+                        void* output_context, clodOutput output_callback) {
   using namespace clod;
 
   std::vector<unsigned char> locks(mesh.vertex_count);
@@ -1073,6 +1283,8 @@ size_t build_lod_groups(const clodConfig& config, clodMesh& mesh, const FoldGuar
   std::vector<int> pending(clusters.size());
   for (size_t i = 0; i < clusters.size(); ++i)
     pending[i] = int(i);
+  // Each cluster's coverage error, as `Cluster::bounds.error` is its geometric one.
+  std::vector<float> cluster_cover(clusters.size(), 0.0f);
 
   int depth = 0;
   while (pending.size() > 1) {
@@ -1089,15 +1301,21 @@ size_t build_lod_groups(const clodConfig& config, clodMesh& mesh, const FoldGuar
 
       size_t target_size = size_t((merged.size() / 3) * config.simplify_ratio) * 3;
       clodBounds bounds = mergeGroups(clusters, groups[i]);
+      float below = 0.f;
+      for (size_t j = 0; j < groups[i].size(); ++j)
+        below = std::max(below, cluster_cover[static_cast<size_t>(groups[i][j])]);
 
       float error = 0.f;
+      float cover = 0.f;
       std::vector<unsigned int> simplified =
           guard != nullptr
               ? simplify_heightfield(config, mesh, merged, locks, target_size, &error, *guard,
                                      stats)
-              : simplify_loose(config, mesh, merged, locks, remap, target_size, &error, loose);
+              : simplify_loose(config, mesh, merged, locks, remap, target_size, &error, &cover,
+                               loose);
       if (simplified.size() > merged.size() * config.simplify_threshold) {
         bounds.error = FLT_MAX;
+        *group_cover = k_lod_terminal_error;
         outputGroup(config, mesh, clusters, groups[i], bounds, depth, output_context,
                     output_callback);
         continue;
@@ -1105,6 +1323,8 @@ size_t build_lod_groups(const clodConfig& config, clodMesh& mesh, const FoldGuar
 
       bounds.error = std::max(bounds.error * config.simplify_error_merge_previous, error) +
                      error * config.simplify_error_merge_additive;
+      *group_cover = std::max(below * config.simplify_error_merge_previous, cover) +
+                     cover * config.simplify_error_merge_additive;
       int refined = outputGroup(config, mesh, clusters, groups[i], bounds, depth, output_context,
                                 output_callback);
       for (size_t j = 0; j < groups[i].size(); ++j)
@@ -1115,6 +1335,7 @@ size_t build_lod_groups(const clodConfig& config, clodMesh& mesh, const FoldGuar
         cluster.refined = refined;
         cluster.bounds = bounds;
         clusters.push_back(std::move(cluster));
+        cluster_cover.push_back(*group_cover);
         pending.push_back(int(clusters.size()) - 1);
       }
     }
@@ -1125,6 +1346,7 @@ size_t build_lod_groups(const clodConfig& config, clodMesh& mesh, const FoldGuar
     const Cluster& cluster = clusters[pending[0]];
     clodBounds bounds = cluster.bounds;
     bounds.error = FLT_MAX;
+    *group_cover = k_lod_terminal_error;
     outputGroup(config, mesh, clusters, pending, bounds, depth, output_context, output_callback);
   }
 
@@ -1776,6 +1998,14 @@ bool build_lod(std::span<const Vec3> positions, std::span<const u32> indices,
   ctx.origin = &loose.pool.origin;
   ctx.out = &out;
   ctx.normal_cones = options.normal_cones;
+  // Coverage errors for an alpha-tested part built with the loose-island rule and no authored
+  // levels (a caller with levels brings coverage errors of its own, or none).
+  ctx.masked = options.loose_islands && options.mask_cover > 0.0f && levels.empty() &&
+               options.up.x == 0.0f && options.up.y == 0.0f && options.up.z == 0.0f;
+  if (ctx.masked) {
+    const f64 share = options.mask_cover < 1.0f ? static_cast<f64>(options.mask_cover) : 1.0;
+    loose.mask_root = std::sqrt(share);
+  }
   if (!levels.empty()) ctx.cap = levels[0].error;
   out.mesh.source_vertex_count = static_cast<u32>(positions.size());
   out.mesh.source_triangle_count = static_cast<u32>(indices.size() / 3);
@@ -1786,7 +2016,7 @@ bool build_lod(std::span<const Vec3> positions, std::span<const u32> indices,
   FoldGuardStats fold_guard;
   const FoldGuard guard = heightfield ? fold_guard_of(options, positions, indices) : FoldGuard{};
   const size_t produced = build_lod_groups(config, mesh, heightfield ? &guard : nullptr, fold_guard,
-                                           loose, &ctx, &emit_group);
+                                           loose, &ctx.pending_cover, &ctx, &emit_group);
   if (ctx.failed) {
     if (error != nullptr) *error = "build_cluster_lod: a cluster exceeded the format limits";
     out = ClusterLodMesh{};
@@ -1847,6 +2077,75 @@ u32 pack_lod_coverage(f32 own, f32 parent) noexcept {
 f32 lod_coverage_own(u32 packed) noexcept { return f16_to_f32(static_cast<u16>(packed & 0xFFFFu)); }
 
 f32 lod_coverage_parent(u32 packed) noexcept { return f16_to_f32(static_cast<u16>(packed >> 16)); }
+
+f32 measure_mask_cover(std::span<const Vec3> positions, std::span<const Vec2> uvs,
+                       std::span<const u32> indices, std::span<const u8> alpha, u32 width,
+                       u32 height, f32 alpha_factor, f32 alpha_cutoff, Vec2 scale,
+                       Vec2 offset) noexcept {
+  const bool image =
+      width != 0 && height != 0 && alpha.size() >= static_cast<size_t>(width) * height;
+  const auto keeps = [&](u8 texel) {
+    return alpha_factor * static_cast<f32>(texel) / 255.0f >= alpha_cutoff;
+  };
+  f64 share = 1.0;
+  if (!image) {
+    share = alpha_factor >= alpha_cutoff ? 1.0 : 0.0;
+  } else if (uvs.size() != positions.size()) {
+    // No UVs to ask with: the share of the whole image the test keeps.
+    u64 kept = 0;
+    const u64 texels = static_cast<u64>(width) * height;
+    for (u64 t = 0; t < texels; ++t)
+      kept += keeps(alpha[static_cast<size_t>(t)]) ? 1u : 0u;
+    share = static_cast<f64>(kept) / static_cast<f64>(texels);
+  } else {
+    constexpr u32 n = 4;
+    f64 kept_area = 0.0, area_sum = 0.0;
+    for (size_t i = 0; i + 2 < indices.size(); i += 3) {
+      const u32 ia = indices[i], ib = indices[i + 1], ic = indices[i + 2];
+      if (ia >= positions.size() || ib >= positions.size() || ic >= positions.size()) continue;
+      const Vec3 a = positions[ia], b = positions[ib], c = positions[ic];
+      const f64 e[3] = {static_cast<f64>(b.x) - static_cast<f64>(a.x),
+                        static_cast<f64>(b.y) - static_cast<f64>(a.y),
+                        static_cast<f64>(b.z) - static_cast<f64>(a.z)};
+      const f64 f[3] = {static_cast<f64>(c.x) - static_cast<f64>(a.x),
+                        static_cast<f64>(c.y) - static_cast<f64>(a.y),
+                        static_cast<f64>(c.z) - static_cast<f64>(a.z)};
+      const f64 nx = e[1] * f[2] - e[2] * f[1];
+      const f64 ny = e[2] * f[0] - e[0] * f[2];
+      const f64 nz = e[0] * f[1] - e[1] * f[0];
+      const f64 area = 0.5 * std::sqrt(nx * nx + ny * ny + nz * nz);
+      if (!(area > 0.0)) continue;
+      const f64 u0 = static_cast<f64>(uvs[ia].x), v0 = static_cast<f64>(uvs[ia].y);
+      const f64 du1 = static_cast<f64>(uvs[ib].x) - u0, dv1 = static_cast<f64>(uvs[ib].y) - v0;
+      const f64 du2 = static_cast<f64>(uvs[ic].x) - u0, dv2 = static_cast<f64>(uvs[ic].y) - v0;
+      u32 kept = 0;
+      const auto sample = [&](f64 s, f64 t) {
+        f64 u = (u0 + s * du1 + t * du2) * static_cast<f64>(scale.x) + static_cast<f64>(offset.x);
+        f64 v = (v0 + s * dv1 + t * dv2) * static_cast<f64>(scale.y) + static_cast<f64>(offset.y);
+        u -= std::floor(u);
+        v -= std::floor(v);
+        u32 x = static_cast<u32>(u * static_cast<f64>(width));
+        u32 y = static_cast<u32>(v * static_cast<f64>(height));
+        x = x < width ? x : width - 1;
+        y = y < height ? y : height - 1;
+        if (keeps(alpha[static_cast<size_t>(y) * width + x])) ++kept;
+      };
+      for (u32 p = 0; p < n; ++p) {
+        for (u32 q = 0; p + q < n; ++q) {
+          const f64 fp = static_cast<f64>(p), fq = static_cast<f64>(q);
+          sample((fp + 1.0 / 3.0) / n, (fq + 1.0 / 3.0) / n);
+          if (p + q + 1 < n) sample((fp + 2.0 / 3.0) / n, (fq + 2.0 / 3.0) / n);
+        }
+      }
+      kept_area += area * static_cast<f64>(kept) / static_cast<f64>(n * n);
+      area_sum += area;
+    }
+    share = area_sum > 0.0 ? kept_area / area_sum : 1.0;
+  }
+  f64 steps = std::floor(share * 256.0 + 0.5);
+  steps = steps < 16.0 ? 16.0 : (steps > 256.0 ? 256.0 : steps);
+  return static_cast<f32>(steps / 256.0);
+}
 
 // ---- what a cut covers (geometry.md, "Loose islands") -------------------------------------------
 
@@ -2289,9 +2588,16 @@ bool merge_cluster_lod(std::span<const ClusterLodMesh> parts, ClusterLodMesh& ou
   // Clusters: every part's leaves, then everything else, in part order. The morph directory is
   // filled in that same order, which is what keeps the delta runs in slice order.
   if (morph_template != nullptr) out.mesh.morph_cluster_slices.push_back(0);
+  // The parts' coverage errors (`ClusterLodMesh::coverage`), when any part has them: a part
+  // without reads none, which is the geometric rule for its clusters.
+  bool any_coverage = false;
+  for (u32 p = 0; p < part_count; ++p)
+    any_coverage = any_coverage || (!parts[p].coverage.empty() &&
+                                    parts[p].coverage.size() == parts[p].mesh.clusters.size());
   for (u32 pass = 0; pass < 2; ++pass) {
     for (u32 p = 0; p < part_count; ++p) {
       const ClusterLodMesh& part = parts[p];
+      const bool part_coverage = part.coverage.size() == part.mesh.clusters.size();
       for (u32 i = 0; i < part.mesh.clusters.size(); ++i) {
         const bool leaf = part.lod[i].level == 0;
         if (leaf != (pass == 0)) continue;
@@ -2302,6 +2608,8 @@ bool merge_cluster_lod(std::span<const ClusterLodMesh> parts, ClusterLodMesh& ou
         lod.group += group_base[p];
         out.mesh.clusters.push_back(desc);
         out.lod.push_back(lod);
+        if (any_coverage)
+          out.coverage.push_back(part_coverage ? part.coverage[i] : k_lod_no_coverage);
         if (morph_template != nullptr) {
           append_cluster_morph(out.mesh, part.mesh, i, 0, morph_normals);
           out.mesh.morph_cluster_slices.push_back(out.mesh.morph_slices.size());
