@@ -340,7 +340,6 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
         mem::allocations_on_thread() - FlightBookkeeping::allocations_left_out(),
         gfx::buffers_created_on_thread() - FlightBookkeeping::buffers_left_out()};
   };
-  bool repeat_start = false;  // the next submission is a repeat's first
   auto submit = [&](u32 f, bool recorded, u32 repeat, u32 warmup) {
 #if ENGINE_DEBUG
     mem::AllocationSite sites[64];
@@ -420,11 +419,12 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
     frame.frame_index = f;
     frame.world_time_s = options.world_rate * static_cast<f64>(f) / 60.0;
     frame.sky_time_s = options.sky_start_s + options.sun_rate * static_cast<f64>(f) / 60.0;
-    // A repeat's first submission starts sampling over time's history again (ADR-0064;
+    // A repeat's first path frame starts sampling over time's history again (ADR-0064;
     // renderer.md, "Sampling over time: the inputs"), so with the inputs on frame f of every
     // repeat is drawn at the same sub-pixel phase and draws the same cut, as `deterministic` asks.
-    frame.history_reset = repeat_start;
-    repeat_start = false;
+    // Not its first warm-up frame: a warm-up that runs for `warmup_seconds` is a different number
+    // of frames each repeat, and so would leave each repeat's path at another phase.
+    frame.history_reset = recorded && f == 0;
     submissions.push_back(Submission{repeat, f, recorded});
     submissions[submissions.size() - 1].world = world;
     const std::pair<u64, u64> before_submit = counted();
@@ -465,7 +465,6 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
     ~Counting() { renderer.count_frames(true); }
   } counting{renderer};
   for (u32 r = 0; r < repeats; ++r) {
-    repeat_start = true;
     const i64 warm_from = time::monotonic_ns();
     const i64 warm_ns = static_cast<i64>(options.warmup_seconds * 1.0e9);
     // The warm-up is drawn and not measured: it stays out of the run's drop sums (G133).

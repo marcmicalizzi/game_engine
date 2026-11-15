@@ -1148,12 +1148,13 @@ TEST_CASE("flythrough: the same path draws the same pairs, frame by frame, and s
 }
 
 // **With sampling over time's inputs on, every repeat of a flight draws the same pairs** (ADR-0064;
-// renderer.md, "Sampling over time: the inputs"): a repeat's first submission starts the history
+// renderer.md, "Sampling over time: the inputs"): a repeat's first path frame starts the history
 // again, so frame f of every repeat is drawn at the same sub-pixel phase, whose offset the cull's
 // frustum and Hi-Z tests take. Until R154 leg 1b a repeat's frame was drawn at whatever phase the
 // renderer's count had reached, and the grove and the overlook at 4K came back with
-// `deterministic: false`. A warm-up of three frames makes a repeat 15 frames long, which no phase
-// count of eight divides.
+// `deterministic: false`; reset at the warm-up's start instead, they still did, because
+// engine-view's warm-up runs for at least two seconds and so for another number of frames each
+// repeat. The warm-up here is timed too.
 TEST_CASE("flythrough: with the inputs on, every repeat draws the same pairs") {
   Gpu gpu;
   if (!gpu.ok) {
@@ -1184,6 +1185,7 @@ TEST_CASE("flythrough: with the inputs on, every repeat draws the same pairs") {
   options.frames = 12;
   options.repeats = 3;
   options.warmup = 3;
+  options.warmup_seconds = 0.05;  // as engine-view's two seconds: a count the clock decides
   options.frames_in_flight = 2;
   Flight flight;
   std::string error;
