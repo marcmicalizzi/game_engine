@@ -521,12 +521,20 @@ TEST_CASE("matgen: the same bytes from every toolchain") {
     u64 hash;
   };
   const Pin pins[] = {
-      {"gravel/bed", 6280004583196325757ull},     {"rock/scree", 15685960211907165185ull},
-      {"sand/bar", 6512822385822317515ull},       {"rock/granite", 1158326275606281670ull},
-      {"rock/sandstone", 2145369994992403863ull}, {"ground/turf", 6124285787784493336ull},
-      {"wood/plank", 14025903017001931447ull},    {"wood/log", 7590841734047759407ull},
-      {"ground/moss", 74344028886144336ull},      {"ground/soil", 13248924326901389473ull},
+      {"gravel/bed", 6280004583196325757ull},
+      {"rock/scree", 15685960211907165185ull},
+      {"sand/bar", 6512822385822317515ull},
+      {"rock/granite", 1158326275606281670ull},
+      {"rock/sandstone", 2145369994992403863ull},
+      {"ground/turf", 6124285787784493336ull},
+      {"wood/plank", 14025903017001931447ull},
+      {"wood/log", 7590841734047759407ull},
+      {"ground/moss", 74344028886144336ull},
+      {"ground/soil", 13248924326901389473ull},
       {"ground/thatch", 4229589913222796817ull},
+      // Version 9: the masonry kind's two recipes, which no earlier pin held.
+      {"stone/flag", 18260463309076001719ull},
+      {"stone/rubble", 5299574791394706583ull},
   };
   for (const Pin& pin : pins) {
     CAPTURE(pin.role);

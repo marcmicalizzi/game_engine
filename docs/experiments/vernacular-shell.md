@@ -105,6 +105,22 @@ grounding should bring a distribution, and one bay of 4.5 m is the commoner size
 | Render | (the material's) | coats of 8 to 10 mm, three for about 20 mm | trade guides, snippets only |
 | Roof overhang over cob | (the roof's `overhang`) | 400 to 700 mm | 9, which confirms source 3's summary |
 
+## Laid work
+
+What the generated sets `stone/flag` and `stone/rubble` are drawn to
+([matgen](../subsystems/matgen.md#masonry)).
+
+| Number | Value used | Range | Source |
+|---|---|---|---|
+| A flag floor's rows | 35 to 60 cm wide | laid in lines, successive rows varying slightly in width | 16 (snippet) |
+| A flag's width | (the row's) | up to 600 mm | a period-homes magazine, snippet only |
+| A flag's length | 45 to 90 cm | | **not found** in a source that opened: a choice |
+| A flag floor's joints | 8 mm, 4 mm down | about 3 to 5 mm, wider on earlier floors, lime-pointed or left open | 16 (snippet). 8 mm is the "earlier, wider" end, chosen so a joint is four texels |
+| A flag's thickness | (not drawn) | 40 mm to over 150 mm | a lime supplier's knowledge base, snippet only |
+| Coursed rubble's courses | 10 to 20 cm | regular coursed rubble: 4 to 8 in; random rubble built in courses is levelled every 12 to 14 in, two or three stones deep | 15 |
+| A rubble stone's length | 15 to 40 cm | | **not found**: a choice |
+| A rubble wall's joints | 18 mm, 9 mm down | | **not found**: a choice |
+
 ## Leaves, shutters and unglazed windows
 
 | Number | Value used | Range | Source |
