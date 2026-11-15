@@ -1972,10 +1972,56 @@ shore**: a bare slope enters the water as a ruled line with one thin white strok
 beach, no wet band, no rock, sedge or drift, where the reels' lakes have a strip of stones and
 grass and trees to the waterline. **The body below its spill and the dried basin say nothing of
 what they are**: the first is a lake in a bare bowl with no mark of the higher water, the second
-a wooded hollow with no flat floor (what a dry hollow's floor is, above, is not built). **The
+a wooded hollow with no flat floor (that night; [a dried lake's floor](#a-dried-lakes-floor) came the next). **The
 streams' own draw is not this row's and is wrong on this description** (flat cyan polygons and
 slabs at the old link 482's place and at a lake's lip). The pond at the owner's mark 8 has a
 whole shore: no hole and no triangle.
+
+**To the gate** (the night of 2026-11-14, on the streams' branch and batch 64's main; what the
+paragraphs above call not built, where it now is).
+
+*The section's direction.* The solver's sections stand across the chord between the nodes half
+the cut's width up and down the line, never less than one node each way (`solve_profile`,
+profile.cpp), where they stood across one step. That is the solver's half of the mend named
+above; the planner's (a turn no tighter than half the cut's width, held after every move of a
+point) is still not built, and the engine's case that bounds a line's turn is unchanged.
+
+*A line that ends on a scene's body under its spill ends in it.* The routing ends such a line
+at the body's cells, which are a sink, but the line's own last point can stand a step short of
+the outline, where the exclusion finds no water and the shorelines give no mouth: its bed was
+then cut under the body's level and the solver ended it over a bank (the owner's mark 8: two
+lines 0.45 and 0.75 m under the pond's 1.18 m). The link is now given the body's level as the
+base level a mouth is held to (`plan_from_lattice`, after the shorelines), asked of the lattice
+cell under the line's last point, since a piece the shorelines split off on its way holds no
+cells; one of the forest's two is such a piece, the outlet of a pool upstream, which is why
+the first form of the mend (the link's last cell, `k_channels_version` 13) missed it and the
+constant moved to 14. The engine's case (a pond three metres under its bowl's spill) holds the
+mouth and its level on every line that ends on the body's cells; it does not fail on the base,
+where that fixture's lines all reach the outline: the forest's two lines are what decide it.
+
+*The forest again* (run `k`: the owner's mix with the dried basin named `infilled`; this row's
+`engine-content` at `k_channels_version` 13, one job, into last night's derived-data root; the
+machine shared with seven other rows building and loading, 18 to 41 GB of commit free). The
+plan: 721 links, 122.5 km, 657 cuts, made in 48 s with two fills; 91 pits breached, **eighteen
+lakes with outlets, one body below its spill, one infilled floor** (0.98 million m3 of fill
+under 3.7 ha at 855.83 m), the authored pond where its basin's water ends; every level of the
+table above to the centimetre; no bed's line rises and none ends higher. All nineteen bodies
+hold by the cook's flood (2.7 s).
+
+| On the solved lines | last night (run `i`) | tonight (run `k`) |
+|---|---|---|
+| stations over a bank | 6,283 on 160 lines, the worst 7.8 m | 4,685 on 152 lines, the worst 6.5 m |
+| of them in a hollow of their own line | 3,567 (run `d`) | 2,609 |
+| hollows over 1 m / over 5 m, the deepest | 163 / 6, 7.7 m (run `d`) | 57 / 3, 6.4 m |
+| lines that end higher than they begin | 27 (run `d`) | 22 of 278 |
+| wet links, wet line | 280 of 726, 24.9 km | 278 of 721, 25.3 km |
+
+So the direction over the cut's width takes two thirds of the hollows over a metre and leaves
+57, three of them over 5 m; those and the 22 lines were not traced further. **13,884 of the
+scene's 470,641 authored instances stand in a body's water** (4.4 s to count and list them):
+5,922 in the largest lake, 1,699 and 990 in the two largest ponds, 21 in the sea and 6 in the
+authored pond. Last night's figure (about 17,000, 12,349 in the largest lake) was a count by
+box and level; this is by each body's own flood.
 
 **General purpose.** The fill, the breach and the bodies come from the heights of whatever
 ground the scene names, an imported heightfield as readily as a generated one: nothing reads

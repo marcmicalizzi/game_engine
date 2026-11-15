@@ -86,8 +86,8 @@ and a `leak_m3s` is left to say only what no rate over the bed can: one floor th
 **A dry or a former lake** is as natural as a full one: alpine lakes last decades to thousands of
 years before their inflow's sediment fills them, and a floor of talus or moraine can pass all a
 small catchment sends. The plan can say a hollow is dry (the author names it, or its leak takes
-its inflow); what its floor then looks like is not the channels' to make, and is designed on
-[channels](../subsystems/channels.md#hollows), "What a dry hollow's floor is".
+its inflow); what its floor then looks like is "A dried lake's floor", below, and on
+[channels](../subsystems/channels.md#a-dried-lakes-floor).
 
 ## The forest's hollows
 
