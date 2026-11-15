@@ -463,6 +463,7 @@ void apply_water(ChannelNetwork& n, const scene_gen::Ground& ground,
     return pt;
   };
   Vector<ChannelLink> extra;
+  Vector<std::pair<u32, f64>> ended;  // (the first cell of a link dropped whole, its body's level)
   const u32 count = n.links.size();
   for (u32 k = 0; k < count; ++k) {
     ChannelLink& link = n.links[k];
@@ -554,6 +555,22 @@ void apply_water(ChannelNetwork& n, const scene_gen::Ground& ground,
     }
     n.water.points_removed += m - kept;
     if (made.empty()) {
+      // **What ends where this link began ends in the body that took it** (W122; the owner's
+      // mark 8): a trunk that runs from a confluence straight into a body is dropped whole, and
+      // the links that met at the confluence then ended in the air a few metres from the water,
+      // their beds graded to a trunk that is not cut. The body's level is kept by the link's
+      // first cell, for them (below).
+      for (u32 i = 0; i < m && !link.cells.empty(); ++i) {
+        if (under[i] == 0) continue;
+        f64 end_level = 0;
+        if (under[i] >= 2)
+          ended.push_back({link.cells.front(), n.basins.hollows[under[i] - 2].level_m});
+        else if (water != nullptr &&
+                 water->water_level_mm(ground, scene_gen::nearest_mm(link.line[i].at.x),
+                                       scene_gen::nearest_mm(link.line[i].at.z), end_level))
+          ended.push_back({link.cells.front(), end_level});
+        break;
+      }
       link.line.clear();
       link.length_m = 0;
       ++n.water.dropped;
@@ -569,6 +586,28 @@ void apply_water(ChannelNetwork& n, const scene_gen::Ground& ground,
   }
   for (ChannelLink& l : extra)
     n.links.push_back(std::move(l));
+  // The links that end where a dropped trunk began: a mouth at the level of the body that took
+  // the trunk, which is the base level their beds are then held to (W121) and the level the
+  // solver ends them at. Asked of the lattice cell under the line's last point, since a piece
+  // the shorelines split off holds no cells.
+  for (ChannelLink& link : n.links) {
+    if (ended.empty() || link.mouth || link.line.size() < 2) continue;
+    const ChannelPoint& last = link.line.back();
+    const i64 c =
+        floor_div(scene_gen::nearest_mm(last.at.x) - n.x_mm + n.spacing_mm / 2, n.spacing_mm);
+    const i64 r =
+        floor_div(scene_gen::nearest_mm(last.at.z) - n.z_mm + n.spacing_mm / 2, n.spacing_mm);
+    if (c < 0 || r < 0 || c >= static_cast<i64>(n.width) || r >= static_cast<i64>(n.depth))
+      continue;
+    const u32 cell = static_cast<u32>(r) * n.width + static_cast<u32>(c);
+    for (const std::pair<u32, f64>& e : ended)
+      if (e.first == cell) {
+        link.mouth = true;
+        link.mouth_level = e.second;
+        ++n.water.mouths;
+        break;
+      }
+  }
 }
 
 // **Reaches and steps** (W90, W91; channels.md, "Reaches"): each point's reach from the ground's

@@ -1993,11 +1993,17 @@ then cut under the body's level and the solver ended it over a bank (the owner's
 lines 0.45 and 0.75 m under the pond's 1.18 m). The link is now given the body's level as the
 base level a mouth is held to (`plan_from_lattice`, after the shorelines), asked of the lattice
 cell under the line's last point, since a piece the shorelines split off on its way holds no
-cells; one of the forest's two is such a piece, the outlet of a pool upstream, which is why
-the first form of the mend (the link's last cell, `k_channels_version` 13) missed it and the
-constant moved to 14. The engine's case (a pond three metres under its bowl's spill) holds the
-mouth and its level on every line that ends on the body's cells; it does not fail on the base,
-where that fixture's lines all reach the outline: the forest's two lines are what decide it.
+cells. **That was not the forest's case**, which two re-plans found (`k_channels_version` 13
+and 14, each cooked on the forest and each leaving the two lines as they were): the two lines
+end at a confluence 27 m from the pond's floor, and the trunk that ran on from it into the
+pond is dropped whole by the shorelines, being under the water or too short to keep, so they
+ended in the air with their beds graded to a trunk that is not cut. **The links that end
+where a dropped trunk began end in the body that took it** (`apply_water`: the body's level
+kept by the trunk's first cell, and given as a mouth's level to every line whose last point
+stands on that cell), at `k_channels_version` 15. The engine's case (a pond three metres
+under its bowl's spill) holds the mouth and its level on every line that ends on the body's
+cells; no engine case has a confluence beside a body, so none fails on the base: the forest's
+two lines are what decide it, and the hand-back says what their re-run showed.
 
 *The forest again* (run `k`: the owner's mix with the dried basin named `infilled`; this row's
 `engine-content` at `k_channels_version` 13, one job, into last night's derived-data root; the

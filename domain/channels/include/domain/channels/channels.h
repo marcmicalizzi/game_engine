@@ -88,7 +88,10 @@ namespace engine::channels {
 // 14 (W122, the same night): that mouth asked of the cell under the line's last point, so a
 //    line the shorelines split off (it holds no cells) ends in the body too; the forest had
 //    been planned under 13 by then, so the constant moved rather than its plan be deleted.
-inline constexpr u32 k_channels_version = 14;
+// 15 (W122, the same night): the links that met at a confluence whose trunk a body took whole
+//    end in that body, at its level (what the forest's two lines at mark 8 were; 14 had been
+//    cooked by then).
+inline constexpr u32 k_channels_version = 15;
 
 // **The bed's surface sediment at a point** (W97; channels.md, "Bed sediment"; the sources in
 // docs/experiments/channels.md, "Bed sediment"): the surface grain-size distribution a pebble count
