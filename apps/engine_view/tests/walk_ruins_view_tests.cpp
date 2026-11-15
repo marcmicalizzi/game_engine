@@ -155,7 +155,8 @@ TEST_CASE("engine-view: a walk into a ruin's wall is stopped at the wall") {
       run_view({"--interactive", "--walk", "--start",
                 number_text(from.x) + "," + number_text(from.y + 20.0f) + "," + number_text(from.z),
                 number_text(yaw_deg) + ",0", "--inject-input", inject, "--record-input", recorded,
-                "--scene", scene, "--width", "160", "--height", "96", "--no-vsync", "--ddc", ddc});
+                "--scene", scene, "--width", "160", "--height", "96", "--no-vsync", "--ddc", ddc,
+                "--log", "info"});
   if (live.exit_code == 3) {
     MESSAGE("engine-view unavailable here: " << live.output);
     return;
@@ -180,6 +181,12 @@ TEST_CASE("engine-view: a walk into a ruin's wall is stopped at the wall") {
   CHECK(collision == "physics");
   CHECK(ahead > 0.3f - 0.05f);
   CHECK(ahead < 0.3f + 0.2f);
+  // **The walk released the scene's float geometry** (T138; scene_collision.md, "The collision's
+  // own copy"): the wall that stopped it was cut from the collision's own copy, built before the
+  // release, and nothing of the floats was kept for it.
+  CHECK(live.output.find("the collision's own copy") != std::string::npos);
+  CHECK(live.output.find("uploaded host streams released") != std::string::npos);
+  CHECK(live.output.find("kept_for=nothing") != std::string::npos);
 #else
   // Following the ground, nothing stands in the way: it walked on through.
   CHECK(collision == "ground-follow");
