@@ -27,7 +27,9 @@ bool write_text(const std::string& path, const std::string& text) {
   return f.good();
 }
 
-// A placement every `step` metres over the tile, one mesh, resident; every fourth at scale 2.
+// A placement every `step` metres over the tile, one mesh, resident; every fourth at scale 2, and
+// with `g_field_handoff` another fourth with a hand-off role (G202's case).
+bool g_field_handoff = false;
 struct Field {
   std::string path;
   f64 step = 2.0;
@@ -55,6 +57,7 @@ void field_place(const Field& f, f64 x0, f64 z0, f64 size, scene_gen::Placements
       p.position = WorldPos{x0 + f.step * (static_cast<f64>(i) + 0.5), 0.0,
                             z0 + f.step * (static_cast<f64>(j) + 0.5)};
       if ((i + j) % 4 == 0) p.scale = Vec3{2.0f, 2.0f, 2.0f};
+      if (g_field_handoff && (i + j) % 4 == 2) p.handoff = scene_gen::k_handoff_near;
       out.instances.push_back(p);
     }
   }
@@ -421,4 +424,38 @@ TEST_CASE("ring forms: a ring change of forms alone calls no generator and hands
           << tiles.stats().reformed_instances << " instances in "
           << static_cast<f64>(tiles.stats().reform_ns) / 1000.0 << " us; a placement keeps 4 bytes"
           << " drawn, " << sizeof(renderer::SceneInstance) + 5 << " drawn as nothing");
+
+  // **A hand-off role keeps its own mesh in every ring** (G204's ask): the sward's near form and
+  // its card are thinned by distance in the pool pass, so neither a build nor a rewrite gives them
+  // a ring's form. Four of the sixteen carry one here: rewritten for rings 2 and 3 they stay the
+  // mesh, drawn, while the rest take the cut and then nothing.
+  g_field_handoff = true;
+  PlacementTiles roles;
+  REQUIRE_MESSAGE(roles.create(scene, config, &error), error);
+  const TileConsumer role_consumer = roles.consumer();
+  REQUIRE(role_consumer.activate(role_consumer.context,
+                                 event(TileEventKind::Activate, 0, 0, k_inactive, 0)));
+  role_consumer.commit(role_consumer.context);
+  g_field_handoff = false;
+  REQUIRE(role_consumer.change_ring(role_consumer.context,
+                                    event(TileEventKind::ChangeRing, 0, 0, 0, 2)));
+  role_consumer.commit(role_consumer.context);
+  const std::span<const renderer::SceneInstance> at2 = roles.tile_instances(TileCoord{0, 0});
+  REQUIRE(at2.size() == 16u);
+  u32 kept_roles = 0;
+  for (const renderer::SceneInstance& s : at2) {
+    const bool large = s.transform.scale.x > 1.5f;
+    CHECK(s.mesh == (large || s.handoff != 0 ? source : far));
+    kept_roles += s.handoff != 0 ? 1u : 0u;
+  }
+  CHECK(kept_roles == 4u);
+  REQUIRE(role_consumer.change_ring(role_consumer.context,
+                                    event(TileEventKind::ChangeRing, 0, 0, 2, 3)));
+  role_consumer.commit(role_consumer.context);
+  const std::span<const renderer::SceneInstance> at3 = roles.tile_instances(TileCoord{0, 0});
+  REQUIRE(at3.size() == 4u);
+  for (const renderer::SceneInstance& s : at3) {
+    CHECK(s.handoff != 0);
+    CHECK(s.mesh == source);
+  }
 }

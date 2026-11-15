@@ -620,9 +620,8 @@ bool PlacementTiles::generate(TileCoord tile, u8 ring, u32 entries, bool for_que
       // a placement drawn as nothing still hands its footprint to the entries after it. Asked for a
       // resident mesh alone: a tile's own carries `k_handed | k` until `install`, and the load's
       // table has no row for it. A pure read of the table, so it answers alike on the job.
-      // **A placement with a hand-off role keeps its mesh** (G205): the two forms hand over by
-      // distance inside one ring, thinned by part in the pool pass, which a ring's form does not
-      // run; a far ring's generator places the far form alone, with no role.
+      // A placement with a hand-off role (the sward's near form and its card, G136) keeps its own
+      // mesh in every ring: its thinning by distance is the pool pass's, not a ring's (G204).
       const u32 form = p.mesh < meshes.size() && p.handoff == 0
                            ? renderer::pick_ring_form(scene_->ring_forms, scene_mesh, ring, p.scale)
                            : scene_mesh;
@@ -1036,10 +1035,11 @@ void PlacementTiles::reform(TileBlock& block, u8 ring) {
   const u32 drawn = static_cast<u32>(block.instances.size());
   u32 moved_at = ~0u;  // the first index of the new list a placement came into or left from
   auto place = [&](const renderer::SceneInstance& from, u32 source, u8 tag, bool was_drawn) {
-    // A placement with a hand-off role keeps its mesh, as `generate` keeps it (G205).
-    const u32 form = from.handoff != 0 ? source
-                                       : renderer::pick_ring_form(scene_->ring_forms, source, ring,
-                                                                  from.transform.scale);
+    // A hand-off role keeps its own mesh, as `generate` gives it (G204).
+    const u32 form =
+        from.handoff != 0
+            ? source
+            : renderer::pick_ring_form(scene_->ring_forms, source, ring, from.transform.scale);
     const bool shown = form != renderer::k_no_ring_form;
     if (shown != was_drawn && moved_at == ~0u)
       moved_at = static_cast<u32>(reform_instances_.size());
