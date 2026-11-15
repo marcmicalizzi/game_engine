@@ -89,6 +89,19 @@ geometry::ClusterLodOptions lod_options_of(const MeshOptions& options) {
   return lod_options;
 }
 
+namespace {
+
+// A generated mesh's levels: the same options without the loose-island rule, which is an
+// import's until a generator asks for it (geometry.md, "Generators, and the error of a long thin
+// island"), so a generated container and its key are what they were.
+geometry::ClusterLodOptions generator_lod_options_of(const MeshOptions& options) {
+  geometry::ClusterLodOptions lod_options = lod_options_of(options);
+  lod_options.loose_islands = false;
+  return lod_options;
+}
+
+}  // namespace
+
 const materials::Pack* repository_pack(std::string_view executable_dir) {
   return materials::pack_at(materials::default_pack_dir(executable_dir));
 }
@@ -335,9 +348,9 @@ bool build_generated(const std::string& input, const std::string& output,
   const std::span<const u8> bytes(reinterpret_cast<const u8*>(text.data()), text.size());
   // A vine's or a cover's host is read through the same seam the renderer's scene reader uses
   // (generator_hosts.h), under these options, so the two build one container.
-  const GeneratorHosts hosts(input, lod_options_of(options), options.page_bytes, options.materials);
-  if (!generator->build(bytes, hosts.inputs(), lod_options_of(options), options.page_bytes, data,
-                        message)) {
+  const geometry::ClusterLodOptions lod_options = generator_lod_options_of(options);
+  const GeneratorHosts hosts(input, lod_options, options.page_bytes, options.materials);
+  if (!generator->build(bytes, hosts.inputs(), lod_options, options.page_bytes, data, message)) {
     error.rule = "source.unreadable";
     error.message = input + ": " + message;
     return false;
@@ -399,7 +412,7 @@ u64 mesh_build_key(const std::string& path, u64 source_hash, const MeshOptions& 
   if (!assets::mesh_generator_of(path).empty())
     return assets::generated_mesh_build_key(source_hash,
                                             assets::MeshGeneratorInputs{options.materials},
-                                            lod_options_of(options), options.page_bytes);
+                                            generator_lod_options_of(options), options.page_bytes);
   return build_key_of(source_hash, options);
 }
 

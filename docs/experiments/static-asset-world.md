@@ -223,6 +223,26 @@ by removing islands and growing their neighbours keeps the covered area by const
 what a coverage error is for, and held to the foliage threshold (5 px) instead of one pixel it
 would let the same leaves go at a fifth of the distance.
 
+**The frame, at the owner's setting** (3840 × 2160, `--raster rt --shadows rt
+--tunable renderer.gi.mode=bounce`, the static path after 60 warm-up frames, 1,441 frames a
+flight, main's copied-out build at 84f6d872 and this branch's alternating under one GPU lease,
+2026-11-15 01:10; other processes on 23 to 30 % of the CPU and this row's own debug build beside
+them, so upper bounds; GPU passes compared; no allocation and no buffer on the frame's thread in
+any flight):
+
+| Scene | main, GPU total median / p99 ms | this branch | visible pairs, median | rt, clas, blas, resolve (median ms), main → branch |
+|---|---|---|---|---|
+| `scene-bought.json` | 2.71 / 4.73, 2.73 / 4.76 | 2.95 / 5.11, 2.93 / 5.13 | 1,895 → 71,687 | 0.30 → 0.41, 0.01 → 0.08, 0.13 → 0.20, 1.31 → 1.35 |
+| `scene.json` (the gate's) | 2.46 / 3.68 | 2.33 / 3.28 | 379 → 440 | 0.17 → 0.17, 0.01 → 0.01, 0.06 → 0.06, 1.22 → 1.13 |
+
+Thirty-eight times the pairs for 0.22 ms of the median frame and 0.37 ms of its 99th centile:
+the leaves that are drawn now cost the ray-tracing chain's build and the trace, and little else.
+The gate's scene has no bought foliage; its kit tree's 117 cards are loose islands too, so its
+cut moved (the kit tree keeps 99 % of its area at a kilometre where it kept 16 %), and its one
+flight reads 0.13 ms cheaper, which on this machine tonight is noise. The flown binary was the
+first commit's, with the rule on for every caller; a scene with no generator builds the same
+containers with the rule on for imports alone.
+
 **Smaller things the set showed.** Most Poly Haven plant files hold three or four variants side by
 side under separate nodes (the dandelions, ferns, nettles, grass clumps, rooibos and searsia), and
 the importer flattens a file's default scene into one mesh, so an instance places the whole row;
