@@ -32,7 +32,7 @@ paged with vertices, and validated for stride/count on full read. Unknown reader
 
 **Not yet.** Quantized positions for the acceleration structure builders (`gfx/acceleration.h`, `gfx/cluster_acceleration.h` and engine-view's `--raster rt` still read the float `vertices`, which is why both streams are kept; the builders take a vertex format, so this is a format change, not a shader change), per-cluster grids finer than the mesh-wide one, tangents, the per-level BVH clusterlod can build over groups (the flat cut is one thread per cluster, which is fine until scenes reach millions of clusters), the GPU half of streaming (pages are built and stored — see "Pages and streaming" below — but the feedback buffer and the GPU residency manager are not), and precomputed cluster-AS inputs.
 
-**Public API.** `domain/geometry/cluster.h`: `ClusterDesc`, `k_cone_none`, `k_cone_margin`, `k_cone_margin_cos`, `k_cone_margin_sin`, `NormalCone`, `encode_cone`, `decode_cone`, `cluster_backfacing`, `VertexAttributes`, `SkinBinding`, `k_max_skin_joints`, `make_skin_binding`, `MorphChannel`, `MorphSlice`, `MorphChannelSource`, `VertexIdSource`, `k_no_vertex_id`, `vertex_id_source_name`, `position_weld_ids`, `AttributeSource` (with `vertex_ids`, `vertex_id_source` and `locked`), `ClusterBuildOptions`, `ClusterMesh`, `weld_vertices`, `morph_vertex_keys`, `build_clusters`, `fill_cluster_attributes`, `fill_cluster_morph`, `pad_morph_streams`, `append_cluster_morph`, `morph_delta_at`, `validate_morph_stream`, `morph_bounds_padding`, `compute_vertex_normals`, `encode_normal_oct`, `decode_normal_oct`, `encode_half2`, `decode_half2`, `f32_to_f16`, `f16_to_f32`, `quantize_positions`, `dequantize_position`, `validate_clusters`. `domain/geometry/limit_surface.h`: `CsrMatrix` (`rows`, `nonzeros`, `max_row_width`, `bytes`), `apply`, `k_loop_max_level`, `LoopParentKind`, `LoopParent`, `LoopSurfaceOptions`, `LoopLimitSurface`, `build_loop_limit_surface`, `limit_normals`. `domain/geometry/surface_binding.h`: `SurfaceBinding` (10 bytes, pinned by the size table), `k_surface_binding_max_triangles`, `surface_binding_can_represent`, `binding_weight`, `binding_barycentrics`, `binding_normal_offset`, `SurfaceBindOptions`, `SurfaceBindReport`, `bind_to_surface`, `validate_surface_bindings`, `surface_displacement`, `apply_binding`. `domain/geometry/cluster_lod.h`: `ClusterLodDesc`, `SeamRule`, `ClusterLodOptions` (including `id_seams`, `up` and `refuse_folds`), `FoldGuardStats`, `ClusterLodMesh` (including `fold_guard`), `build_cluster_lod`, `ClusterLodLevel`, `build_cluster_lod_levels`, `authored_lod_sphere`, `widen_lod_spheres`, `ClusterLodHierarchyLevel`, `build_cluster_lod_hierarchy`, `k_lod_no_coverage`, `k_default_foliage_px`, `pack_lod_coverage`, `lod_coverage_own`, `lod_coverage_parent`, `lod_fade_split`, `merge_cluster_lod`, `ClusterMeshPart` (including `vertex_id_source`), `merge_cluster_meshes`, `LodView` (with `foliage_px` and `fade`), `projected_error`, `lod_selects` (with or without a coverage word), `select_lod` (likewise), `select_lod_raw`, `validate_cluster_lod`, `k_fold_facing`, `LodFoldLevel`, `count_lod_folds`, `AttributeErrorOptions`, `AttributeError`, `measure_lod_attribute_error`. `domain/geometry/stress_mesh.h`: `ShreddedAtlasOptions`, `ShreddedAtlasMesh`, `build_shredded_atlas_torus`, `build_atlas_probe_texture`, `MorphFixtureOptions`, `MorphFixtureMesh`, `build_morph_sphere`, `morph_fixture_position`, `morph_fixture_normal`. `domain/geometry/uv_repair.h`: `k_uv_degenerate_texels`, `UvRepairRange`, `UvRepairOptions`, `UvRepairReport`, `repair_uv_degenerate_triangles`, `uv_area_texels`, `stored_uv_area_texels`. `domain/geometry/zero_area_repair.h`: `ZeroAreaRepairRange`, `ZeroAreaRepairReport`, `spans_zero_area`, `repair_zero_area_triangles`. `domain/geometry/cluster_file.h`: `k_cluster_file_version`, `k_cluster_file_alignment`, `ClusterSection`, `cluster_section_name`, `ClusterFileHeader`, `ClusterFileSection`, `ClusterFileScalars`, `ClusterFileMaterial`, `encode_alpha_word`, `alpha_word_mode`, `alpha_word_double_sided`, `alpha_word_cutoff`, `encode_optional_image`, `decode_optional_image`, `ClusterFileImage`, `ClusterFileTexture`, `k_motion_no_parent`, `ClusterFileMotionPart`, `ClusterFileMotionVertex`, `k_structural_load_bearing`, `k_structural_straight`, `ClusterFileStructuralPart`, `ClusterImage`, `ClusterFileData` (with `textures`, `material_sampling`, the generator section's `generator`, `generator_kind`, `generator_params`, the motion contract's `motion_parts` and `motion_vertices`, the structural table's `structural_parts`, the chain's `impostors` and section 39's `lod_coverage`, section 40's `cover_mask` (a cover companion's per-vertex mask, written only by the cover generator: [cover](cover.md))), `cluster_material_sampling`, `write_cluster_file`, `read_cluster_file`, `read_cluster_file_memory`, `read_cluster_file_identity`, `cluster_file_hash`, `ClusterImageSummary`, `summarize_cluster_images`, `k_cluster_section_kinds`, `ClusterFileReader` (`open`, `close`, `valid`, `file`, `path`, `header_hash`, `element_count`, `range`). `domain/geometry/material_sampling.h` ("How a material samples its images" below): `k_slot_base_color`, `k_slot_metallic_roughness`, `k_slot_normal`, `k_slot_occlusion`, `k_slot_emissive`, `k_material_slots`, `TextureWrap`, `TextureFilter`, `TextureSampler`, `TextureTransform`, `TextureSlotSampling`, `pack_texture_sampler`, `unpack_texture_sampler`, `texture_wrap_name`, `ClusterFileSlotSampling`, `ClusterFileMaterialSampling`, `encode_material_sampling`, `decode_material_sampling`.
+**Public API.** `domain/geometry/cluster.h`: `ClusterDesc`, `k_cone_none`, `k_cone_margin`, `k_cone_margin_cos`, `k_cone_margin_sin`, `NormalCone`, `encode_cone`, `decode_cone`, `cluster_backfacing`, `VertexAttributes`, `SkinBinding`, `k_max_skin_joints`, `make_skin_binding`, `MorphChannel`, `MorphSlice`, `MorphChannelSource`, `VertexIdSource`, `k_no_vertex_id`, `vertex_id_source_name`, `position_weld_ids`, `AttributeSource` (with `vertex_ids`, `vertex_id_source` and `locked`), `ClusterBuildOptions`, `ClusterMesh`, `weld_vertices`, `morph_vertex_keys`, `build_clusters`, `fill_cluster_attributes`, `fill_cluster_morph`, `pad_morph_streams`, `append_cluster_morph`, `morph_delta_at`, `validate_morph_stream`, `morph_bounds_padding`, `compute_vertex_normals`, `encode_normal_oct`, `decode_normal_oct`, `encode_half2`, `decode_half2`, `f32_to_f16`, `f16_to_f32`, `quantize_positions`, `dequantize_position`, `validate_clusters`. `domain/geometry/limit_surface.h`: `CsrMatrix` (`rows`, `nonzeros`, `max_row_width`, `bytes`), `apply`, `k_loop_max_level`, `LoopParentKind`, `LoopParent`, `LoopSurfaceOptions`, `LoopLimitSurface`, `build_loop_limit_surface`, `limit_normals`. `domain/geometry/surface_binding.h`: `SurfaceBinding` (10 bytes, pinned by the size table), `k_surface_binding_max_triangles`, `surface_binding_can_represent`, `binding_weight`, `binding_barycentrics`, `binding_normal_offset`, `SurfaceBindOptions`, `SurfaceBindReport`, `bind_to_surface`, `validate_surface_bindings`, `surface_displacement`, `apply_binding`. `domain/geometry/cluster_lod.h`: `ClusterLodDesc`, `SeamRule`, `ClusterLodOptions` (including `id_seams`, `up`, `refuse_folds` and `loose_islands`), `FoldGuardStats`, `AggregateStats`, `ClusterLodMesh` (including `fold_guard` and `aggregate`), `k_lod_cover_bitmap`, `LodCutCover`, `measure_lod_cover`, `build_cluster_lod`, `ClusterLodLevel`, `build_cluster_lod_levels`, `authored_lod_sphere`, `widen_lod_spheres`, `ClusterLodHierarchyLevel`, `build_cluster_lod_hierarchy`, `k_lod_no_coverage`, `k_default_foliage_px`, `pack_lod_coverage`, `lod_coverage_own`, `lod_coverage_parent`, `lod_fade_split`, `merge_cluster_lod`, `ClusterMeshPart` (including `vertex_id_source`), `merge_cluster_meshes`, `LodView` (with `foliage_px` and `fade`), `projected_error`, `lod_selects` (with or without a coverage word), `select_lod` (likewise), `select_lod_raw`, `validate_cluster_lod`, `k_fold_facing`, `LodFoldLevel`, `count_lod_folds`, `AttributeErrorOptions`, `AttributeError`, `measure_lod_attribute_error`. `domain/geometry/stress_mesh.h`: `ShreddedAtlasOptions`, `ShreddedAtlasMesh`, `build_shredded_atlas_torus`, `build_atlas_probe_texture`, `MorphFixtureOptions`, `MorphFixtureMesh`, `build_morph_sphere`, `morph_fixture_position`, `morph_fixture_normal`. `domain/geometry/uv_repair.h`: `k_uv_degenerate_texels`, `UvRepairRange`, `UvRepairOptions`, `UvRepairReport`, `repair_uv_degenerate_triangles`, `uv_area_texels`, `stored_uv_area_texels`. `domain/geometry/zero_area_repair.h`: `ZeroAreaRepairRange`, `ZeroAreaRepairReport`, `spans_zero_area`, `repair_zero_area_triangles`. `domain/geometry/cluster_file.h`: `k_cluster_file_version`, `k_cluster_file_alignment`, `ClusterSection`, `cluster_section_name`, `ClusterFileHeader`, `ClusterFileSection`, `ClusterFileScalars`, `ClusterFileMaterial`, `encode_alpha_word`, `alpha_word_mode`, `alpha_word_double_sided`, `alpha_word_cutoff`, `encode_optional_image`, `decode_optional_image`, `ClusterFileImage`, `ClusterFileTexture`, `k_motion_no_parent`, `ClusterFileMotionPart`, `ClusterFileMotionVertex`, `k_structural_load_bearing`, `k_structural_straight`, `ClusterFileStructuralPart`, `ClusterImage`, `ClusterFileData` (with `textures`, `material_sampling`, the generator section's `generator`, `generator_kind`, `generator_params`, the motion contract's `motion_parts` and `motion_vertices`, the structural table's `structural_parts`, the chain's `impostors` and section 39's `lod_coverage`, section 40's `cover_mask` (a cover companion's per-vertex mask, written only by the cover generator: [cover](cover.md))), `cluster_material_sampling`, `write_cluster_file`, `read_cluster_file`, `read_cluster_file_memory`, `read_cluster_file_identity`, `cluster_file_hash`, `ClusterImageSummary`, `summarize_cluster_images`, `k_cluster_section_kinds`, `ClusterFileReader` (`open`, `close`, `valid`, `file`, `path`, `header_hash`, `element_count`, `range`). `domain/geometry/material_sampling.h` ("How a material samples its images" below): `k_slot_base_color`, `k_slot_metallic_roughness`, `k_slot_normal`, `k_slot_occlusion`, `k_slot_emissive`, `k_material_slots`, `TextureWrap`, `TextureFilter`, `TextureSampler`, `TextureTransform`, `TextureSlotSampling`, `pack_texture_sampler`, `unpack_texture_sampler`, `texture_wrap_name`, `ClusterFileSlotSampling`, `ClusterFileMaterialSampling`, `encode_material_sampling`, `decode_material_sampling`.
 
 **Depends on.** `base`, `containers`, `math`, `hash` (the container's content hash), `io` (atomic writes and reads); meshoptimizer v1.2 (MIT, third_party/LICENSES.md).
 
@@ -270,6 +270,164 @@ The leaf-level pictures are byte-identical in **both** poses (FLIP 0, SSIM 1), w
 **The census.** `count_lod_folds(mesh, up, on_grid, levels)` counts per DAG level the clusters, the triangles, the triangles **upside down** (normal more than `k_fold_facing` past square to `up`, 90.06°: a skirt faces exactly sideways and is not counted, and the census's folds were 105° to 166° from the ground they covered) and the triangles **overlapping** another of their own cluster seen along `up` (a separating-axis test in double; a shared edge or corner is not an overlap, and a triangle on edge overlaps nothing), on the floats or on the grid. `engine-content folds <file.clusters>` prints it for a container ([apps](apps.md)).
 
 **Testing.** `heightfield_fold_tests.cpp` (`-Filter geometry`): a 129×129 tile of the erg's kind made in integers — a slip-faced dune whose crest bends, waves across it and a grain of noise — built plain folds (38 triangles upside down and 153 overlapping in the floats, 43 and 171 on the grid, none at level 0), the count-only build is the plain build byte for byte and blames the regular simplifier (the sloppy fallback never runs), and the guarded build validates with zero of either at every level on both, 22 results refused and 25 simplifications again, 721 clusters against 725 in the same 10 levels; the same dunes a sixteenth as tall, which nothing folds, build the same bytes guarded; and a hand-made cluster with one triangle folded over its neighbour and a skirt under an edge counts one upside down and two overlapping on both, the skirt neither.
+
+## Loose islands: removed whole, the rest grown
+
+Roadmap T147 (2026-11-15). **A mesh of parts that share no vertex cannot be coarsened by collapsing
+edges**: a leaf card has no interior to collapse into, and a pile of separate stones, the rivets on
+a plate and the needles of a bought conifer are the same case. The static-asset world's bought
+trees ([the page](../experiments/static-asset-world.md#bought-foliage)) stood bare a few metres
+away at the default threshold for it, and the cause is not the one first read off the code.
+
+**The fault, proven** (`aggregate_lod_tests.cpp`, a crown of 2,400 square cards of 4 to 8 cm in a
+3 m ball, two triangles and four vertices of its own each, built with
+`ClusterLodOptions::loose_islands` off, which is the builder before this section byte for byte):
+
+- **The sloppy fallback never runs.** All 19 groups of the crown keep the *regular* simplifier's
+  result. Every vertex of a card is on an open border, and meshoptimizer collapses a border vertex
+  along its border: a card's two triangles become one, and the one becomes none.
+- **Its error is about half of what it removed.** The collapse's cost is the quadric of the
+  border edges it slid along, so a card that is gone is reported as a vertex that moved about half
+  the card's width. Over every cut of the DAG the widest card no longer drawn is 2.1 times the
+  error the cut admits to.
+- **And the area goes to nothing.** That is the larger half of the fault, and no error fixes it:
+  an honest error only moves the distance at which the cards go. At 1080p the crown draws all
+  4,800 triangles at 30 m and **18 triangles, 0.6 % of its area and 0.7 % of its silhouette, at
+  100 m**, where a card is still a pixel wide and the crown 28 pixels across. A real tree's leaves
+  are smaller than the fixture's (a bought conifer's needles are millimetre quads), so the same
+  thing happens to it at a few metres.
+
+**What is published about it.** Three sources, read before the design:
+
+- *Aggregate detail is not element detail.* Cook, Halstead, Planck and Ryu, "Stochastic
+  Simplification of Aggregate Detail" (ACM Transactions on Graphics 26(3), SIGGRAPH 2007, DOI
+  10.1145/1276377.1276476): surface simplification works on the detail of one element and not on
+  the detail that comes from the number of elements; for that, a scene is rendered by "randomly
+  selecting a subset of the geometric elements and altering those elements statistically to
+  preserve the overall appearance of the scene". The paper's own pages would not load when this
+  was written (Pixar's library redirects), so only its abstract is quoted and no constant is taken
+  from it; that keeping a share λ of equal elements and holding their covered area means giving
+  each survivor 1/λ of its area is arithmetic, not a citation.
+- *Nanite's answer for foliage is to give the lost area to what remains.* Unreal Engine's
+  documentation ("Working with Nanite-Enabled Content", 5.9) calls this case **aggregate
+  geometry**, "geometry that has many disjointed parts that become a volume in the distance, such
+  as hair, leaves on trees, and grass", which "breaks Nanite's level of detail and occlusion
+  culling techniques", and gives the setting **Preserve Area**: it "will redistribute that lost
+  area to the remaining triangles by dilating out the open boundary edges", and "dilation for
+  symmetric shapes like leaves has the same effect as scaling them up". The Nanite talk itself
+  (Karis, Stubbe and Wihlidal, SIGGRAPH 2021) is a file too large to fetch here and nothing is
+  quoted from it.
+- *meshoptimizer's own error for a removed component is its size.* The sloppy simplifier's
+  result error is, per grid cell, the quadric error of the vertex it kept against the planes of
+  the triangles it merged (`meshopt_simplifySloppy`, `fillCellQuadrics`): for a flat card
+  collapsed into one of its own corners, zero. The library's README (v1.2) says of it only that it
+  "doesn't follow the topology of the original mesh" and "can collapse internal details that are
+  too small to matter", and defines no error for it. Its *pruning* (`meshopt_SimplifyPrune`,
+  `meshopt_simplifyPrune`) is the one place it removes an isolated component on purpose, and
+  there "the `target_error` argument controls the cutoff of component radius": a component may go
+  when its radius is under the error, and the result error is raised to the largest radius
+  removed (`pruneComponents`). clusterlod (v1.2) does not pass that flag.
+
+**The rule** (`ClusterLodOptions::loose_islands`, on by default; `simplify_loose` and
+`coarsen_by_islands` in `cluster_lod.cpp`). An **island** of a group is a connected part of its
+triangles, joined through shared positions (clusterlod's position remap, so a UV seam does not
+split one). It is **free** when none of its vertices is locked: nothing outside the group shares a
+position with it and no caller pinned it. For every group that is not a heightfield's:
+
+1. The regular simplifier runs, as upstream runs it.
+2. **If the group holds two or more free islands and the result is stuck short of the target, or
+   keeps under three quarters of the free islands' area** (`k_island_area_kept`: collapsing a
+   connected surface keeps its area to a few per cent; halving a card's triangles halves the
+   card), the group is **coarsened by islands** instead. The free islands are ordered along a
+   Morton curve of their centres and paired; of each pair the smaller in area is **removed whole**
+   and the other **grown about its centre** by √((A_kept + A_removed) / A_kept), so the pair's
+   covered area is exactly what it was and the group's triangles halve. The level's error is the
+   **extent of the largest island removed** (the diameter of the sphere about its area-weighted
+   centre) or, if larger, the farthest a grown corner moved; islands that are not free pass
+   through untouched. If that removes too little to count as a level (upstream's stuck threshold,
+   0.85) nothing is changed and the build goes on as upstream does.
+3. Otherwise the regular result stands, or the sloppy one where upstream takes it, and **its
+   error is raised to the extent of every island it removed whole**, free or not.
+4. **A regular result gives every shrunk leaf its area back** (`restore_island_area`; Nanite's
+   Preserve Area, above). Collapsing an island with an open border can only cut its outline's
+   corners, so each level leaves a leaf a little smaller, and over a DAG's levels a crown thins by
+   a third without any one level losing a quarter: the first build of this rule, without this
+   step, kept the island tree 88 % of its area at 10 m and 74 % at 100 m. So every free island
+   with an open border (an edge of one triangle) that is small against its group (a quarter of
+   the group's radius at most, `k_island_part_of_group`: a ground plane or a banner is an open
+   island too, and scaling one about its centre would move everything on it) is grown about its
+   own centre to the area it had, plus its share by area of what the group's islands of that kind
+   lost whole; the level's error is raised to the farthest a corner moved. With it the same tree
+   keeps 100 % at 10 m and 98 % at 100 m, for half again the triangles at 10 m (401,435 against
+   251,838): the growth is a displacement, the error admits to it, and the level is taken later.
+
+A grown island's corners are **new vertices**: positions no source vertex has, the first time a
+level of the DAG is not a subset of the source's vertices. Each stands for the corner it was copied
+from: `ClusterMesh::vertex_source` names that source vertex, so its normal, UV, skin binding,
+morph deltas and canonical id are the corner's own, its seam tags and its position class (two
+wedges of one point stay one point) go with it, and `fill_cluster_attributes` and every stream
+read through `vertex_source` need no change. What no longer holds is
+`vertices[v] == positions[vertex_source[v]]` above level 0 of a mesh that grew an island; nothing
+in the tree read it, level 0 is the source exactly, and a heightfield never grows one. Errors grow
+with the islands — a level's survivors are √2 wider than the level below's, so the next removal is
+√2 dearer — which is what keeps the cut's triangles proportional to the pixels the crown covers
+rather than to its leaves.
+
+**Why the extent and not the radius.** meshoptimizer prunes a component whose *radius* is under
+the error; this rule asks for the *diameter*. Drawn at one pixel of error, the first lets a part
+two pixels wide vanish and the second none wider than one, and a part's own size is what the eye
+loses when it goes. It costs one level: half the cards a pixel-wide crown would otherwise shed.
+
+**Why grow and not refuse.** Refusing to coarsen a group that would lose area keeps every leaf at
+every distance: a 2 million triangle tree is 2 million triangles at a kilometre. Growing is what
+both the offline source and the shipping one do, and it is exact where it matters: once a card is
+a pixel wide the picture is the cards' covered area and not their places.
+
+**What it reads, and what it leaves alone.** Triangles and positions: no material, no alpha mode,
+no generator. A group that is one connected surface has at most one island and is built exactly as
+before, error included. A heightfield (`up`) is never read for islands. An opaque pile gets what a
+crown gets: the test's 1,200 separate octahedra lose no stone wider than the cut's error and keep
+99 % of their silhouette at every cut.
+
+**What moved.** `k_cluster_cache_version` is 17: an entry built at 16 from a mesh with loose parts
+carries the errors above. A mesh whose every group holds one connected surface builds the bytes it
+built, and merely changes cache path: `determinism_tests.cpp`'s table did not move, and the test
+builds the shredded-atlas torus (288 UV islands, one surface by position) with the rule and
+without to the same bytes. What does move is any mesh with a group of loose parts, whoever made
+it: `build_cluster_lod` is one function for an imported mesh and for every generator that calls
+it, and the rule is on by default for all of them.
+
+**On a bought tree** ([the static world's page](../experiments/static-asset-world.md#bought-foliage)
+has the table by distance). Poly Haven's island tree (1,072,213 triangles) and fir sapling
+(433,021), built without the rule: 2,527 of 2,529 and 1,480 of 1,481 groups keep the regular
+result and the sloppy fallback runs in 2 and in 1, the same as the fixture; at 1080p the fir keeps
+8 % of its area at 3 m and the tree 21 % at 30 m. With it: 468 and 636 groups coarsened by islands
+(33,351 and 48,677 islands removed and as many grown), 99.7 % at 3 m and 99.4 % at 30 m, and the
+builds 12 % and 10 % slower (5.4 s and 1.7 s).
+
+**The measurement.** `measure_lod_cover` gives a cut's triangles, drawn area and the pixels its
+silhouette fills in three orthographic views; `engine-content cuts <file.clusters>` prints them
+for the default thresholds from 3 m to 1 km at 1080p and 2160p, and `engine-content build
+--no-loose-islands` is the builder before the rule, so what the rule does to an asset is a pair of
+command lines. On the fixture, at 1080p (the builder before the rule, then with it):
+
+| distance | triangles | area | silhouette |
+|---|---|---|---|
+| 30 m | 4,800 → 4,800 | 100 % → 100 % | 100 % → 100 % |
+| 100 m | 18 → 4,224 | 0.6 % → 100.0 % | 0.7 % → 100.2 % |
+| 300 m | 18 → 300 | 0.6 % → 100.0 % | 0.7 % → 98.8 % |
+
+Over every cut of the DAG the area never falls under 100.0 % and the silhouette never under 96 %
+(fewer, larger cards of the same area overlap as often as many small ones: a Boolean model's
+covered share depends on the area alone), and no card wider than a cut's error is missing from it.
+
+**Testing.** `aggregate_lod_tests.cpp` (`-Filter geometry`): the crown above with the rule (every
+cut: no lost card wider than the cut's error, at least 95 % of the area, at least 85 % of the
+silhouette, and a coarsest cut under an eighth of the triangles) and without it (the defect: cards
+1.5 times wider than the error lost, under 5 % of the area and the silhouette left, every group
+through the regular simplifier and none through the sloppy one); the shredded-atlas torus built
+with the rule and without to the same bytes, with nothing removed, grown or raised; and the pile
+of stones.
 
 ## Authored levels
 

@@ -85,6 +85,7 @@ geometry::ClusterLodOptions lod_options_of(const MeshOptions& options) {
   lod_options.uv_weight = options.uv_weight;
   lod_options.uv_seams = options.uv_seams;
   lod_options.normal_seams = options.normal_seams;
+  lod_options.loose_islands = options.loose_islands;
   return lod_options;
 }
 
@@ -566,6 +567,17 @@ bool build_one(const std::string& input, const std::string& output, const MeshOp
   lods.reserve(parts.size());
   part_material.reserve(parts.size());
   for (PartBuild& part : parts) {
+    // What the loose-island rule did, summed over the primitives (the merge does not carry it).
+    const geometry::AggregateStats& a = part.out.aggregate;
+    out.loose_islands.groups += a.groups;
+    out.loose_islands.regular += a.regular;
+    out.loose_islands.by_islands += a.by_islands;
+    out.loose_islands.sloppy += a.sloppy;
+    out.loose_islands.islands_removed += a.islands_removed;
+    out.loose_islands.islands_grown += a.islands_grown;
+    out.loose_islands.islands_restored += a.islands_restored;
+    out.loose_islands.vertices_added += a.vertices_added;
+    out.loose_islands.errors_raised += a.errors_raised;
     lods.push_back(std::move(part.out));
     part_material.push_back(part.material);
   }

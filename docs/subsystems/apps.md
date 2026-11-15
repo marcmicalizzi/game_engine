@@ -220,7 +220,7 @@ Four things they say.
 
 **engine-content.**
 ```
-engine-content build <in.gltf|in.glb> <out.clusters> [--max-triangles <n>] [--max-vertices <n>] [--no-weld] [--no-morph] [--jobs <n>] [--strict] [--log <spec>]
+engine-content build <in.gltf|in.glb> <out.clusters> [--max-triangles <n>] [--max-vertices <n>] [--no-weld] [--no-morph] [--no-loose-islands] [--jobs <n>] [--strict] [--log <spec>]
                      [--uv-seams none|protect|lock] [--normal-seams none|protect|lock] [--uv-weight <n>] [--normal-weight <n>]
                      [--atlas keep|repack] [--atlas-normal-maps convert|resample] [--atlas-proxy <n>] [--atlas-chart-cost <n>]
 engine-content build <in.gltf|in.glb> --cache [--ddc <dir>] [--max-triangles <n>] [--max-vertices <n>] [--no-weld] [--atlas keep|repack] [--no-textures] [--jobs <n>] [--strict] [--log <spec>]
@@ -232,6 +232,7 @@ engine-content build <in.wav|flac|mp3> --cache [--ddc <dir>] [--log <spec>]
 engine-content info <file.clusters|file.tex|file.clip>
 engine-content stats <file.clusters>
 engine-content folds <file.clusters>
+engine-content cuts <file.clusters>     # what it draws from 3 m to 1 km at the default thresholds; `build`'s summary has `loose_islands` (geometry.md, "Loose islands")
 engine-content tissue import <interchange.json> <out.tissue>
 engine-content tissue info <file.tissue>
 engine-content tissue validate <file.tissue|interchange.json> [--no-modes] [--expect <expected.json> | --write-expect <expected.json>] [--source <reference.tissue>]

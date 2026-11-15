@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "T147",
+  "reason": "geometry.md takes a section of its own for the loose-island rule (the fault proven, the three published sources, the rule, its measurements and its test), and apps.md one usage line and one flag for engine-content cuts and build --no-loose-islands",
+  "date": "2026-11-15",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/apps.md": 190,
+    "page:docs/subsystems/geometry.md": 12502
+  }
+}

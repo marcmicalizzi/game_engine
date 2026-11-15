@@ -67,6 +67,10 @@ struct MeshOptions {
   f32 uv_weight = geometry::ClusterLodOptions{}.uv_weight;
   geometry::SeamRule uv_seams = geometry::ClusterLodOptions{}.uv_seams;
   geometry::SeamRule normal_seams = geometry::ClusterLodOptions{}.normal_seams;
+  // `build --loose-islands off`: the LOD builder before the loose-island rule (geometry.md, "Loose
+  // islands: removed whole, the rest grown"), so what the rule does to an asset is a pair of
+  // builds. Off moves the key (`geometry::cluster_cache_key`); a manifest never sets it.
+  bool loose_islands = true;
   // `build --no-morph`: drop the source's morph targets before anything else sees them, so the
   // container is the one the same file would give with no channels — welded without the deltas in
   // the key, simplified without `morph_seams`, and with the seven morph sections empty. It exists
@@ -201,6 +205,9 @@ struct BuildResult {
   // What the two repairs did, in the order they run; all zero when they had nothing to do.
   geometry::ZeroAreaRepairReport zero_area_repair;
   geometry::UvRepairReport uv_repair;
+  // What the loose-island rule did, summed over the primitives; zero for a generated mesh, whose
+  // generator builds its own levels.
+  geometry::AggregateStats loose_islands;
   bool repacked = false;  // `--atlas repack` ran (whether or not it changed anything)
   atlas::RepackReport atlas;
   // The images the texture step builds for this mesh, from the records the container carries.

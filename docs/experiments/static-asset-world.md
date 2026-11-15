@@ -193,6 +193,36 @@ a masked transition's geometric error honest**: what the coarser level loses of 
 area, as a length that projects as the geometric error does, then section 39's coverage errors and
 an impostor chain on top.
 
+**What it was, and what the builder does now** (T147's first leg, 2026-11-15;
+[geometry](../subsystems/geometry.md#loose-islands-removed-whole-the-rest-grown) has the rule, its
+sources and its test). The reading above was wrong about the path: built with the rule off, 2,527
+of the island tree's 2,529 groups and 1,480 of the fir sapling's 1,481 keep the **regular**
+simplifier's result, and the sloppy fallback runs in two and in one. A border vertex collapses
+along its border, so a leaf shrinks level by level and then goes, for an error of about half its
+width, and its area goes to nothing. `engine-content cuts` on the two containers
+(`engine-content build --no-loose-islands`, then the default), at 1080p and the default
+thresholds:
+
+| | island_tree_02, 1,072,213 triangles | | | fir_sapling, 433,021 triangles | | |
+|---|---|---|---|---|---|---|
+| distance | triangles | area | silhouette | triangles | area | silhouette |
+| 3 m | 431,228 → 654,971 | 95.6 → 100.1 % | 98.6 → 99.7 % | 3,107 → 218,970 | 8.0 → 99.7 % | 10.0 → 99.0 % |
+| 10 m | 61,319 → 401,435 | 63.6 → 100.1 % | 80.5 → 100.0 % | 355 → 186,853 | 2.9 → 98.4 % | 1.8 → 98.7 % |
+| 30 m | 1,791 → 294,051 | 21.5 → 99.4 % | 25.0 → 99.9 % | 195 → 94,123 | 2.4 → 97.7 % | 1.1 → 99.2 % |
+| 100 m | 253 → 129,687 | 13.4 → 98.4 % | 15.5 → 99.8 % | 195 → 23,689 | 2.4 → 94.9 % | 1.1 → 100.0 % |
+| 300 m | 129 → 43,492 | 10.1 → 90.4 % | 11.0 → 100.0 % | 195 → 7,530 | 2.4 → 87.9 % | 1.1 → 100.0 % |
+| 1 km | 129 → 5,838 | 10.1 → 82.9 % | 11.0 → 95.1 % | 195 → 379 | 2.4 → 79.2 % | 1.1 → 100.0 % |
+
+The builds take 5.4 s against 4.8 s and 1.7 s against 1.5 s, and the containers are 83.5 MB
+against 82.2 and 45.9 against 47.6. **The price is the triangles**: a tree that drew 1,791
+triangles of bare branches at 30 m draws 294,051 with its leaves, because a leaf 20 cm across may
+not go until it is a pixel wide, and until then the most the builder can do is bring each leaf
+down to a few triangles. That is what an honest geometric error costs a mesh of a million leaf
+triangles, and it is the reason the second leg is section 39 for an imported mesh: a level made
+by removing islands and growing their neighbours keeps the covered area by construction, which is
+what a coverage error is for, and held to the foliage threshold (5 px) instead of one pixel it
+would let the same leaves go at a fifth of the distance.
+
 **Smaller things the set showed.** Most Poly Haven plant files hold three or four variants side by
 side under separate nodes (the dandelions, ferns, nettles, grass clumps, rooibos and searsia), and
 the importer flattens a file's default scene into one mesh, so an instance places the whole row;
@@ -234,7 +264,7 @@ than 4 of 255 in luma, the bounce's own noise included, means equal.
 
 | Feature | What the bought set gets now | Row |
 |---|---|---|
-| Drawing its leaves at all | **nothing past a few metres at the default threshold**: the DAG's sloppy fallback eats disconnected cards | T147 |
+| Drawing its leaves at all | **yes** since T147's first leg (it was nothing past a few metres at the default threshold): loose islands are removed whole and their neighbours grown, at a level whose error is the island's own size | T147 |
 | Its mask, as shipped | nothing: the opacity is a map outside the material; the fetch merges it | T139 (the fetch) |
 | `BLEND` foliage | drawn opaque; the fetch writes `MASK` | (a row: `BLEND` read as `MASK` with a line) |
 | The crown prior | **yes** (T146): every tree 1.5 m and taller, its leaf measured from its own mask | T146 |

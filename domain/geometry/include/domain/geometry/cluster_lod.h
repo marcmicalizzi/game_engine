@@ -125,6 +125,38 @@ struct ClusterLodOptions {
   // triangle over. It is the "before" the guard's test and the fold census are taken against;
   // nothing that draws sets it.
   bool refuse_folds = true;
+
+  // ---- loose islands (geometry.md, "Loose islands: removed whole, the rest grown") ---------
+  //
+  // A mesh of parts that share no vertex -- a crown of leaf cards, a pile of stones, the rivets on
+  // a plate -- cannot be coarsened by collapsing edges: a card has no interior to collapse into.
+  // Upstream's builder then falls back to the sloppy simplifier, which removes whole parts and
+  // reports an error that says nothing of it, so the cut takes the coarse level a few metres away
+  // and a bought tree stands bare (roadmap T147). With this set, a group whose free islands the
+  // regular simplifier cannot halve, or halves by halving each card, is coarsened **by islands**:
+  // one of each neighbouring pair removed whole, the other grown until it covers the area of both
+  // (new vertices, each standing for the corner it was copied from), and the level's error the
+  // extent of what it removed; and any simplifier's result admits to at least the extent of every
+  // island it removed whole. It reads nothing but the triangles: no material, no generator. A
+  // group that is one connected surface is built exactly as before, and so is every heightfield
+  // (`up`). False is the build before the rule, byte for byte: the "before" of its test and of
+  // every measurement, which nothing that draws sets.
+  bool loose_islands = true;
+};
+
+// What the loose-island rule did during one build, counted by the builder and **not stored in a
+// container**: a mesh read from a file reports zeros, and so does a heightfield (`up`), whose
+// groups are never read for islands.
+struct AggregateStats {
+  u32 groups = 0;           // groups simplified
+  u32 regular = 0;          // kept the regular simplifier's result
+  u32 by_islands = 0;       // coarsened by removing islands and growing their neighbours
+  u32 sloppy = 0;           // took the sloppy fallback
+  u32 islands_removed = 0;  // by the island rule, all levels
+  u32 islands_grown = 0;
+  u32 islands_restored = 0;  // open islands a regular result shrank, grown back to their area
+  u32 vertices_added = 0;  // the grown islands' corners: positions no source vertex has
+  u32 errors_raised = 0;   // regular or sloppy results raised to the extent of an island they removed
 };
 
 // What the heightfield guard saw during one build (`ClusterLodOptions::up`), counted by the
@@ -147,6 +179,7 @@ struct ClusterLodMesh {
   u32 group_count = 0;
   u32 leaf_triangle_count = 0;  // level 0 total, equal to the source triangle count
   FoldGuardStats fold_guard;    // the build's own; zero for a mesh read from a container
+  AggregateStats aggregate;     // likewise
 };
 
 bool build_cluster_lod(std::span<const Vec3> positions, std::span<const u32> indices,
@@ -302,6 +335,25 @@ u32 select_lod(const ClusterLodMesh& mesh, const LodView& view, std::span<const 
                Vector<u32>& out);
 // The same with a threshold on raw mesh-space error (no camera): own <= t < parent.
 u32 select_lod_raw(const ClusterLodMesh& mesh, f32 threshold, Vector<u32>& out);
+
+// ---- what a cut covers (geometry.md, "Loose islands") -------------------------------------------
+//
+// The two numbers a level of loose parts is judged by, which an error says nothing of: the area
+// a cut draws, and the silhouette it fills in three orthographic views (`k_lod_cover_bitmap`
+// squared, along x, y and z, in one frame for every cut of the mesh: the cube about the box of all
+// its vertices). A crown that keeps its cards keeps both; one that sheds them loses both while its
+// errors stay under a pixel. `engine-content cuts` prints them by distance for a container, and
+// the loose-island test holds a build to them.
+inline constexpr u32 k_lod_cover_bitmap = 256;
+struct LodCutCover {
+  u32 clusters = 0;
+  u32 triangles = 0;
+  f64 area = 0.0;                // the drawn triangles', mesh units squared
+  u32 silhouette[3] = {0, 0, 0}; // covered pixels seen along x, y and z
+};
+// Fails on an empty mesh or a cluster index out of range.
+bool measure_lod_cover(const ClusterLodMesh& mesh, std::span<const u32> cut, LodCutCover& out,
+                       std::string* error = nullptr);
 
 // ---- a distance form (geometry.md, "Distance forms") --------------------------------------------
 //

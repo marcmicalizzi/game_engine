@@ -90,6 +90,8 @@ const char* k_usage =
     "                            page table and leaves the clusters in builder order\n"
     "      --no-weld             keep the file's duplicate vertices\n"
     "      --no-morph            drop the source's morph targets (what does the stream cost?)\n"
+    "      --no-loose-islands    build the levels as before the loose-island rule (the 'before'\n"
+    "                            of a pair; the summary's loose_islands says what the rule did)\n"
     "      --uv-seams <rule>     what a LOD collapse may do at a UV atlas island edge:\n"
     "                            none, protect (default), or lock\n"
     "      --normal-seams <rule> the same at a hard shading edge (default none)\n"
@@ -145,6 +147,9 @@ const char* k_usage =
     "  folds <file.clusters>                   a heightfield container's fold census per LOD\n"
     "                                          level: triangles facing down (-y) and triangles\n"
     "                                          overlapping another of their cluster from above\n"
+    "  cuts <file.clusters>                    what the container draws from 3 m to 1 km at the\n"
+    "                                          default thresholds: triangles, and the share of\n"
+    "                                          the finest level's area and silhouette kept\n"
     "  tissue import|info|validate|report|example ...   tissue definitions (engine-content tissue\n"
     "                                          help); present with the tissue capability\n"
     "  limit-dump <control.json> --level <n> --out <dump.json> [--mode <m>]\n"
@@ -471,6 +476,21 @@ int build(const BuildCommandOptions& options_in) {
   summary.set("leaf_clusters", JsonValue(result.leaf_clusters));
   summary.set("triangles", JsonValue(result.triangles));
   summary.set("lod_levels", JsonValue(result.lod_levels));
+  // What the loose-island rule did to the levels (geometry.md, "Loose islands").
+  {
+    const geometry::AggregateStats& a = result.loose_islands;
+    JsonValue loose = JsonValue::object();
+    loose.set("groups", JsonValue(a.groups));
+    loose.set("regular", JsonValue(a.regular));
+    loose.set("by_islands", JsonValue(a.by_islands));
+    loose.set("sloppy", JsonValue(a.sloppy));
+    loose.set("islands_removed", JsonValue(a.islands_removed));
+    loose.set("islands_grown", JsonValue(a.islands_grown));
+    loose.set("islands_restored", JsonValue(a.islands_restored));
+    loose.set("vertices_added", JsonValue(a.vertices_added));
+    loose.set("errors_raised", JsonValue(a.errors_raised));
+    summary.set("loose_islands", std::move(loose));
+  }
   summary.set("vertices", JsonValue(result.vertices));
   summary.set("pages", JsonValue(result.pages));
   summary.set("page_bytes", JsonValue(result.page_bytes));
@@ -574,6 +594,8 @@ int build_command(int argc, char** argv) {
       options.mesh.weld = false;
     } else if (a == "--no-morph") {
       options.mesh.morph = false;
+    } else if (a == "--no-loose-islands") {
+      options.mesh.loose_islands = false;
     } else if (a == "--cache") {
       options.cache = true;
     } else if (a == "--strict") {
@@ -1351,6 +1373,69 @@ int folds(const std::string& path) {
   return k_exit_ok;
 }
 
+// What a container draws by distance (geometry.md, "Loose islands: removed whole, the rest
+// grown"): the cut the default thresholds select from 3 m to 1 km at 1080p and at 2160p (a 60
+// degree field of view, the camera level with the mesh's centre), as clusters, triangles, and the
+// share of the finest level's area and silhouette it keeps. A mesh of loose cards that sheds them
+// shows it here as a share falling while every error stays under a pixel.
+int cuts(const std::string& path) {
+  geometry::ClusterFileData data;
+  std::string error;
+  if (!geometry::read_cluster_file(path, data, &error)) return failed(error);
+  const geometry::ClusterLodMesh& lod = data.mesh;
+  Vector<u32> cut;
+  geometry::select_lod_raw(lod, 0.0f, cut);
+  geometry::LodCutCover finest;
+  if (!geometry::measure_lod_cover(lod, cut, finest, &error)) return failed(error);
+  Vec3 lo = lod.mesh.vertices[0], hi = lo;
+  for (const Vec3& p : lod.mesh.vertices) {
+    lo = Vec3{std::min(lo.x, p.x), std::min(lo.y, p.y), std::min(lo.z, p.z)};
+    hi = Vec3{std::max(hi.x, p.x), std::max(hi.y, p.y), std::max(hi.z, p.z)};
+  }
+  const Vec3 centre{(lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f, (lo.z + hi.z) * 0.5f};
+  const auto share = [](f64 part, f64 whole) { return whole > 0.0 ? part / whole : 0.0; };
+  JsonValue rows = JsonValue::array();
+  for (const f32 height : {1080.0f, 2160.0f}) {
+    for (const f32 distance : {3.0f, 10.0f, 30.0f, 100.0f, 300.0f, 1000.0f}) {
+      geometry::LodView view;
+      view.camera = Vec3{centre.x, centre.y, centre.z + distance};
+      view.proj_scale = 1.7320508f * height * 0.5f;  // cot(30 degrees) * height / 2
+      view.threshold_px = 1.0f;
+      view.foliage_px = geometry::k_default_foliage_px;
+      cut.clear();
+      geometry::select_lod(lod,
+                           view,
+                           std::span<const u32>(data.lod_coverage.data(), data.lod_coverage.size()),
+                           cut);
+      geometry::LodCutCover cover;
+      if (!geometry::measure_lod_cover(lod, cut, cover, &error)) return failed(error);
+      f64 silhouette = 1.0;
+      for (u32 axis = 0; axis < 3; ++axis) {
+        silhouette = std::min(silhouette, share(static_cast<f64>(cover.silhouette[axis]),
+                                                static_cast<f64>(finest.silhouette[axis])));
+      }
+      JsonValue row = JsonValue::object();
+      row.set("height", JsonValue(static_cast<u32>(height)));
+      row.set("distance", JsonValue(static_cast<f64>(distance)));
+      row.set("clusters", JsonValue(cover.clusters));
+      row.set("triangles", JsonValue(cover.triangles));
+      row.set("area_share", JsonValue(share(cover.area, finest.area)));
+      row.set("silhouette_share", JsonValue(silhouette));
+      rows.push_back(std::move(row));
+    }
+  }
+  JsonValue summary = JsonValue::object();
+  summary.set("file", JsonValue(path));
+  summary.set("clusters", JsonValue(lod.mesh.clusters.size()));
+  summary.set("levels", JsonValue(lod.level_cluster_counts.size()));
+  summary.set("triangles", JsonValue(finest.triangles));
+  summary.set("area", JsonValue(finest.area));
+  summary.set("coverage_errors", JsonValue(!data.lod_coverage.empty()));
+  summary.set("cuts", std::move(rows));
+  print_json(summary);
+  return k_exit_ok;
+}
+
 int read_command(int argc, char** argv, const char* name, int (*run)(const std::string&)) {
   std::string log_spec;
   Vector<std::string> positional;
@@ -1421,6 +1506,7 @@ int main(int argc, char** argv) {
   if (command == "info") return read_command(argc, argv, "info", info);
   if (command == "stats") return read_command(argc, argv, "stats", stats);
   if (command == "folds") return read_command(argc, argv, "folds", folds);
+  if (command == "cuts") return read_command(argc, argv, "cuts", cuts);
   if (command == "tissue") return content::tissue_command(argc, argv);
   if (command == "limit-dump") return content::limit_dump_command(argc, argv);
   if (command == "normal-cases") return content::normal_cases_command(argc, argv);
