@@ -155,8 +155,7 @@ engine_app(NAME engine_content OUTPUT engine-content
           bridges_commands.cpp ground_commands.cpp falls_commands.cpp static_kit_commands.cpp
           alpha_merge_commands.cpp
           flow_commands.cpp flow_solve.cpp
-          bridges_commands.cpp dwellings_commands.cpp ground_commands.cpp falls_commands.cpp static_kit_commands.cpp
-          village_commands.cpp
+          dwellings_commands.cpp village_commands.cpp
   DEPS ${_content_deps}
   E2E_TESTS ${_content_tests} tests/soil_tests.cpp tests/morphs_tests.cpp tests/matgen_tests.cpp)
 
