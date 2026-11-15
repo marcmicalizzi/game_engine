@@ -395,6 +395,45 @@ TEST_CASE("hollows: a basin its catchment cannot fill stands lower, with no outl
   REQUIRE(only(fills, HollowKind::Lake) != nullptr);
   CHECK(only(fills, HollowKind::Lake)->level_m == lake->level_m);
   CHECK(fills.water.outlets == 1);
+  // **The spring's water leaves by the lake's outlet** (`network_flow`; S108's judging scene,
+  // where the bed below a lake fed by two springs ran with its catchment's 14 l/s): every point
+  // of the outlet carries the spring less what the lake loses, over the runoff that was all it
+  // carried, and the link into the lake carries the spring whole.
+  {
+    const Hollow* filled = only(fills, HollowKind::Lake);
+    NetworkFlow with, without;
+    // (The spring stands 28 m from the nearest kept point of a line: the balance asks only that
+    // it stand in the catchment, the discharge that it stand within `snap_m` of a channel.)
+    ChannelLayer near = fed;
+    near.flow.snap_m = 40;
+    REQUIRE_MESSAGE(network_flow(near, fills, with, error), error);
+    REQUIRE_MESSAGE(network_flow(p, fills, without, error), error);
+    CHECK(with.sources == 1);
+    CHECK(filled->loss_m3s > 0);
+    CHECK(filled->loss_m3s < 1.0);
+    const f64 rain = static_cast<f64>(fed.flow.runoff_l_s_km2) * 1e-9;
+    u32 outlets = 0, mouths = 0;
+    for (u32 k = 0; k < fills.links.size(); ++k) {
+      const ChannelLink& link = fills.links[k];
+      if (link.outlet) {
+        ++outlets;
+        CHECK(with.links[k].sources_m3s == doctest::Approx(1.0));
+        for (u32 i = 0; i < with.links[k].discharge.size(); ++i) {
+          CHECK(with.links[k].discharge[i] > 1.0 - filled->loss_m3s);
+          CHECK(with.links[k].discharge[i] ==
+                doctest::Approx(rain * static_cast<f64>(link.line[i].area_m2) + 1.0 -
+                                filled->loss_m3s)
+                    .epsilon(1e-9));
+        }
+      } else if (link.mouth && with.links[k].sources_m3s > 0) {
+        ++mouths;
+        CHECK(with.links[k].discharge.back() ==
+              doctest::Approx(without.links[k].discharge.back() + 1.0).epsilon(1e-9));
+      }
+    }
+    CHECK(outlets == 1);
+    CHECK(mouths == 1);
+  }
   // Half the seepage and the catchment alone fills it.
   p.basin_seepage_mm_y = static_cast<f32>(.5 * breakeven);
   ChannelNetwork half;

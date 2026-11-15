@@ -675,9 +675,16 @@ numbers are the channels entry's `flow` block (`engine.channels.ChannelFlow`):
   lake's spill) with a flow that scales with the stage, a `Melt` with a flow at its peak and its
   own `season`, since melt is highest when rain-fed flow is lowest. A source joins the channel
   point nearest it (within `snap_m`, 25 m) and everything downstream, through every confluence,
-  to a mouth; one that stands on no channel is refused by name with the distance. What a lake
-  passes on to its outlet is the author's to name as an `Outlet`: a source's flow is not traced
-  through a body.
+  to a mouth; one that stands on no channel is refused by name with the distance. **A lake of
+  the plan passes it on** (W122): a source's flow that reaches a mouth into one of the plan's
+  own lakes at its spill goes on into that lake's outlet (of the lines that leave the lake, the
+  one that begins nearest its spill) and everything below, through the next lake too, and the
+  lake's loss is taken off below it as it is from the runoff; so does a source that joins an
+  outlet, whose line holds no cells, into the link below it. Until then a lake fed by springs
+  stood at its spill by its balance, which counts them, over an outlet that ran with its
+  catchment's runoff alone (the streams' judging scene: 0.66 m3/s in, 14 l/s out). **A scene's
+  own body passes nothing on**, and neither does a body under its spill, which has no outlet:
+  what leaves an authored lake is the author's to name as an `Outlet` at its lip.
 
 **A link is wet from where its water is a sheet.** The threshold is the falls' own
 (`k_fall_min_critical_m`): a discharge whose critical depth over a metre of the bed's width is a
@@ -2003,7 +2010,38 @@ kept by the trunk's first cell, and given as a mouth's level to every line whose
 stands on that cell), at `k_channels_version` 15. The engine's case (a pond three metres
 under its bowl's spill) holds the mouth and its level on every line that ends on the body's
 cells; no engine case has a confluence beside a body, so none fails on the base: the forest's
-two lines are what decide it, and the hand-back says what their re-run showed.
+two lines are what decide it. **Their re-run (run `n`, version 15): both now end in a mouth,
+and neither at the pond's level.** `region link 25` and `region link 28` end at (-600, -276)
+with the mouth's flags, their last stations written at 1.102 and 1.111 m where the pond stands
+at 1.179: 7.7 and 6.8 cm under it, where they were 45 and 75. What is left is not the plan's
+to mend. The pond is the consumer's authored polygon, whose edge is 5 m past the confluence,
+and its level stands over the ground the lines cross to reach it. Held to the pond's level as
+their base, the beds are no longer cut under it (link 25's stood 1.2 m under the pond three
+quarters of the way down, lower than the pond's own floor; it is now at 1.17 m a quarter of
+the way down, 0.97 at three quarters and 1.10 at the confluence), and on that flat a bed at
+the pond's level has no bank to speak of: the pond's level, which the solver now carries up
+both lines as a mouth's backwater, stands over the lower bank at 280 of link 25's 339
+stations (from x -773 on; 92 of 190 before) and both of link 28's, and the solver writes a
+bank's crest there and flags the station, as it does wherever water would leave its bed. The
+depth written is 26 cm at the most and a film of 5 mm over the last 20 m, which the streams'
+draw leaves out, and link 28's two stations rise 6 cm (the 23rd line that ends higher than it
+begins): **a person sees a shallow bed whose water thins out and stops 5 m short of the
+pond**, where before they saw a wet trench ending in the air half a metre under it. A pond at
+that level would cover the flat the lines cross; its outline is the author's, and widening it
+to its level's contour (or naming it at the level its shore stands at) is theirs. The plan
+could carry a line across the short dry stretch a dropped trunk leaves (here 5 m, under the
+12 m a run is kept at) so that it ends on the outline itself: not built. On the whole forest
+the mend costs 185 stations over a bank (4,870 on 152 lines, 2,688 of them in a hollow of
+their own line) and leaves every other figure of the table below as run `k` had it.
+
+*A lake passes its springs on.* [The discharge](#discharge) carried a named source down to
+the first mouth and no further, so the outlet of a lake that springs had filled ran with its
+catchment's runoff less the lake's loss: nothing, in the engine's case (a spring of 1 m3/s
+into a bowl whose bed seeps three times what its catchment sends), and 14 l/s below 0.66 m3/s
+on the streams' judging scene, whose bed below the lake was drawn dry. A source now goes on
+through a lake of the plan into its outlet. This is `network_flow`'s, which the cook's solve
+reads and the plan does not: no plan changes, `k_channels_version` stays 15, and a scene with
+no source (the forest has none) solves to the same bytes.
 
 *The forest again* (run `k`: the owner's mix with the dried basin named `infilled`; this row's
 `engine-content` at `k_channels_version` 13, one job, into last night's derived-data root; the
