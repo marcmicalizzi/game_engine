@@ -169,7 +169,17 @@ key on what the description states, never on a role's name or on who wrote it.
   normals of that surface, so the light shows it. It dies away over 30 cm toward every edge the
   face must meet exactly (an opening, an end, the plinth's ledge or the floor, the top), and it
   never falls behind the plane, so a partition's end and a floor's edge stay buried in it. This
-  is what costs triangles: the cot goes from 1,504 to 3,672, nearly all of it this grid.
+  is what costs triangles: the cot goes from 1,504 to 3,672, nearly all of it this grid, and
+  the interiors' filler measured the same on its houses (a cot of 488 to 640 triangles about
+  1,400 with waved outer walls; a nine-room house two thousand more with its partitions waved,
+  which is why it leaves partitions flat). **What was weighed and what stands** (2026-11-15):
+  a grid twice as coarse would cost a quarter as much and sample a 90 cm swell at its own
+  period, and a wander carried in the normals alone would cost nothing and leave every
+  silhouette and shadow edge straight. Neither was built: the 45 cm grid stands because it was
+  the one measured and pinned on two toolchains when the machine stopped allowing a build, not
+  because it is right, and in the flat light the pictures have a centimetre of wander shows
+  little for what it costs. The row this leaves is to carry the wander in the normals and
+  displace only where an edge shows it (a corner's arc, an eave's line), and to state the grid.
 
 What a filler should know: with a batter the roof's rectangle is still the walls' outer faces
 at their **foot**, so the eaves overhang the leaned face by the lean more than `overhang` says.
@@ -445,23 +455,22 @@ counts and no times):
 
 | What | Value |
 |---|---|
-| Triangles, finest | 3,836 (the test holds it under 12,000); 1,192 before the leaves, the walls' shape and the thatch's courses (2026-11-15) |
-| Clusters, finest cut | 82; 146 with the DAG's coarser levels (38 and 60 before) |
-| The DAG's cut from 5 m (2160 lines, 60° field of view, 1 px) | 3,836 triangles in 82 clusters: the finest |
-| The cut from 50 m | 1,977 triangles in 62 clusters (the finest, 1,192, before) |
-| The cut from 200 m | 1,712 triangles in 55 clusters (1,048 before) |
-| The cut from a kilometre | 318 triangles in 10 clusters (472 before) |
-| The DAG's root | 230 triangles (194 before) |
+| Triangles, finest | 3,860 (the test holds it under 12,000); 1,192 before the leaves, the walls' shape and the thatch's courses (2026-11-15) |
+| Clusters, finest cut | 83; 149 with the DAG's coarser levels (38 and 60 before) |
+| The DAG's cut from 5 m (2160 lines, 60° field of view, 1 px) | 3,860 triangles in 83 clusters: the finest |
+| The cut from 50 m | 2,001 triangles in 63 clusters (the finest, 1,192, before) |
+| The cut from 200 m | 1,736 triangles in 56 clusters (1,048 before) |
+| The cut from a kilometre | 840 triangles in 21 clusters (472 before). **This one is not stable**: the same cot with one shutter in place of a pair (24 triangles fewer) cut to 318 in 10 clusters, so the DAG's top levels turn on how its clusters happen to group, and a house wants an authored far form before a village is counted on it |
+| The DAG's root | 242 triangles (194 before) |
 | Materials (surfaces with triangles) | 7 |
 
 **Where the triangles went**: about 2,200 are the walls' wander (a 45 cm grid on eight faces),
 about 300 the leaves, mullions and shutters, about 160 the thatch's courses, and the rest the
 corners' arcs and the plinth's ledge. The wander is the one that is bought, not needed, at
-distance: by 50 m the cut has dropped half of it, and a kilometre off the house is fewer
-triangles than the flat one was.
+distance: by 50 m the cut has dropped half of it.
 
 **Against plan 14 §14.7's estimate** (a timber-frame house's exterior at 30,000 triangles and its
-interior at 45,000): the cot is 3,836 because little in it is a kit part yet. Its thatch is a
+interior at 45,000): the cot is 3,860 because little in it is a kit part yet. Its thatch is a
 coursed profile, not bundles; a leaf's boards are boxes, a floor's are a face; its timbers are
 boxes. The budget a
 house is held to is the plan's until the kit (G64) lands and is measured: **30,000 triangles for
