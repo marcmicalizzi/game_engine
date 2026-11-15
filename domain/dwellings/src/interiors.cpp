@@ -1150,4 +1150,77 @@ bool validate_interior(const InteriorPlan& plan, Vector<InteriorFinding>& findin
   return findings.empty();
 }
 
+std::string draw_interior(const InteriorPlan& plan, u8 storey, i32 cell_cm) {
+  const InteriorParams& p = plan.params;
+  if (cell_cm < 5) cell_cm = 5;
+  const i32 cols = (p.width_cm + cell_cm - 1) / cell_cm;
+  const i32 rows = (p.depth_cm + cell_cm - 1) / cell_cm;
+  const i32 stride = cols + 3;  // a wall each side and the line's end
+  std::string out(static_cast<usize>(stride) * static_cast<usize>(rows + 2), '#');
+  // Row 0 is the back wall, the last row the front: the lane is below the picture.
+  auto cell = [&](i32 col, i32 row) -> char& {
+    return out[static_cast<usize>((rows - row) * stride + col + 1)];
+  };
+  for (i32 row = -1; row <= rows; ++row) out[static_cast<usize>((rows - row) * stride + cols + 2)] = '\n';
+  for (i32 row = 0; row < rows; ++row) {
+    for (i32 col = 0; col < cols; ++col) cell(col, row) = ' ';
+  }
+  auto fill = [&](const RectCm& r, char c) {
+    for (i32 row = r.z0 / cell_cm; row * cell_cm < r.z1 && row < rows; ++row) {
+      for (i32 col = r.x0 / cell_cm; col * cell_cm < r.x1 && col < cols; ++col) cell(col, row) = c;
+    }
+  };
+  for (const Stair& s : plan.stairs) {
+    if (storey != s.from_storey && storey != s.from_storey + 1) continue;
+    const bool below = storey == s.from_storey;
+    fill(s.foot, below ? 'f' : ':');
+    fill(s.head, below ? 'x' : 'h');
+    for (u32 t = 0; t + 1 < s.risers; ++t) {
+      const char mark = below ? ((t & 1) != 0 ? '=' : '-') : ':';
+      fill(s.tread(t), below && s.tread_mm(t) + i32{p.head_cm} * 10 > s.rise_mm ? 'x' : mark);
+    }
+  }
+  for (const Hearth& h : plan.hearths) {
+    if (h.storey <= storey) fill(h.stack, h.storey == storey ? 'H' : 'c');
+  }
+  for (u32 i = 0; i < count_of(plan.walls); ++i) {
+    const InnerWall& w = plan.walls[i];
+    if (w.storey != storey) continue;
+    const bool along_z = w.x0 == w.x1;
+    const i32 length = along_z ? w.z1 - w.z0 : w.x1 - w.x0;
+    for (i32 at = 0; at < length; at += cell_cm) {
+      bool open = false;
+      for (const Doorway& d : plan.doorways) {
+        const i32 lo = d.at_cm - d.width_cm / 2;
+        if (d.wall == i && at + cell_cm / 2 >= lo && at + cell_cm / 2 < lo + d.width_cm) open = true;
+      }
+      const i32 col = (along_z ? w.x0 : w.x0 + at) / cell_cm;
+      const i32 row = (along_z ? w.z0 + at : w.z0) / cell_cm;
+      if (col < cols && row < rows) cell(col, row) = open ? '.' : '%';
+    }
+  }
+  for (const Room& r : plan.rooms) {
+    if (r.storey != storey || r.kind == RoomKind::Stair) continue;
+    const char* name = room_kind_name(r.kind);
+    const i32 col = (r.rect.x0 + r.rect.x1) / 2 / cell_cm;
+    const i32 row = (r.rect.z0 + r.rect.z1) / 2 / cell_cm - 1;
+    if (cell(col, row) == ' ') cell(col, row) = static_cast<char>(name[0] - 'a' + 'A');
+  }
+  for (const OuterOpening& o : plan.openings) {
+    if (o.storey() != storey) continue;
+    const i32 lo = o.at_cm - o.width_cm / 2;
+    for (i32 at = lo; at < lo + o.width_cm; at += cell_cm) {
+      const i32 along = at / cell_cm;
+      const char mark = o.door() ? 'D' : 'W';
+      switch (o.side) {
+        case Side::Front: cell(along, -1) = mark; break;
+        case Side::Back: cell(along, rows) = mark; break;
+        case Side::Left: cell(-1, along) = mark; break;
+        default: cell(cols, along) = mark; break;
+      }
+    }
+  }
+  return out;
+}
+
 }  // namespace engine::dwellings

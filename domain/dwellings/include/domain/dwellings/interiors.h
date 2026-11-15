@@ -213,6 +213,14 @@ u64 hash_interior(const InteriorPlan& plan) noexcept;
 // room i. Returns how many.
 u32 reachable_rooms(const InteriorPlan& plan, Vector<u8>& reached);
 
+// One storey as text, a character a cell of `cell_cm`, the lane below the picture: '#' an outer
+// wall with 'D' and 'W' its doors and windows, '%' an inner wall and '.' a doorway through it, 'H'
+// a hearth's stack ('c' its chimney on a storey above), a room's initial near its middle, and the
+// stair seen from its lower storey as 'f' the foot landing, '-' and '=' the treads, 'x' where the
+// flight has passed under head height, or from its upper as 'h' the head landing and ':' the well.
+// For a person or an agent reviewing a plan in a terminal; nothing reads it back.
+std::string draw_interior(const InteriorPlan& plan, u8 storey, i32 cell_cm);
+
 // --- Validators (plan 14 §14.4's table, read from the plan) --------------------------------------
 
 enum class InteriorRule : u8 {

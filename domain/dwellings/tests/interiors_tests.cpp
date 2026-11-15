@@ -286,6 +286,33 @@ TEST_CASE("interiors: the validators find a plan broken by hand") {
   }
 }
 
+TEST_CASE("interiors: a plan draws as text, the lane below") {
+  for (u32 t = 0; t < k_plan_types; ++t) {
+    InteriorPlan plan;
+    std::string error;
+    InteriorParams p = params_for(static_cast<PlanType>(t), 2, true, 90, 7 + t);
+    p.hearths = 2;
+    REQUIRE(plan_interior(p, plan, &error));
+    for (u8 storey = 0; storey < plan.params.storeys; ++storey) {
+      const std::string text = draw_interior(plan, storey, 20);
+      const i32 cols = (p.width_cm + 19) / 20;
+      const i32 rows = (p.depth_cm + 19) / 20;
+      CHECK(text.size() == static_cast<usize>((cols + 3) * (rows + 2)));
+      CHECK(text.find('W') != std::string::npos);
+      if (storey == 0) {
+        CHECK(text.find('D') != std::string::npos);
+        CHECK(text.find('H') != std::string::npos);
+      }
+      if (!plan.stairs.empty()) {
+        CHECK(text.find(storey == 0 ? 'f' : 'h') != std::string::npos);
+      }
+      MESSAGE(plan_type_name(plan.params.type) << ", storey " << int{storey} << ", "
+                                               << p.width_cm << " x " << p.depth_cm << " cm\n"
+                                               << text);
+    }
+  }
+}
+
 TEST_CASE("interiors: a rectangle too small for its type is refused with a sentence") {
   for (u32 t = 0; t < k_plan_types; ++t) {
     InteriorParams p = params_for(static_cast<PlanType>(t), 2, t == 2, 0, 1);

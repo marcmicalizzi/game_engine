@@ -89,7 +89,29 @@ cot's front. The type fixes the rest. The ridge runs along the longer side.
 
 The filler never looks at the ground: whoever places the house cuts or fills its pad.
 
-**Invariants.** Each is a test (`tests/interiors_tests.cpp`, `tests/rural_filler_tests.cpp`):
+## The tour and the views
+
+`tour_interior(plan, outside_cm, points)` (`tour.h`) is a walk through the whole house read from
+the plan: in at the first outer door, a depth-first visit of every room through the doorways the
+graph has, the ground storey's rooms before the climb, and an end on the stair's head landing in
+front of its window. Every leg is parallel to a wall and keeps 0.35 m from every wall's face and
+every stack (the walker's capsule is 0.3 m in radius and stops 0.32 m from a face), except where it
+crosses a doorway through its middle. It exists so that a walk test and a camera path for any house
+a filler or an author wrote need nobody to measure the house: the collision's case walks the line,
+and a flight follows it. `room_views(plan, eye_height, views)` gives one place to stand a room, just
+inside the way in, and the point to look at: the room's farthest window, a passage's other door, a
+stair's flight from its foot, the landing's window from the top of the flight.
+
+`draw_interior(plan, storey, cell_cm)` draws a storey as text, for a person or an agent reviewing a
+plan in a terminal.
+
+**Invariants.** Each is a test (`tests/interiors_tests.cpp`, `tests/rural_filler_tests.cpp`,
+`tests/tour_tests.cpp`):
+
+- The tour reaches every room of every plan type and of the filler's houses, every leg parallel to
+  a wall, every point 0.35 m inside its room and clear of every stack, every change of room through
+  a doorway's middle or up a stair, ending on the head landing; every room has a view, and a
+  habitable room's looks at a window.
 
 - Every plan type at its least and at a generous size, mirrored and not, over seeds, passes every
   validator; every room is reached from an outer door.
@@ -113,7 +135,8 @@ filler's houses, on MSVC, reproduced by Clang and GCC in the containers. `k_inte
 
 **Public API.** `include/domain/dwellings/dwellings.h` (the two below), `interiors.h`
 (`plan_interior`, `validate_interior`, `reachable_rooms`, `stair_headroom_cm`, `hash_interior`,
-`interior_min_extent`), `rural_filler.h` (`household_asks`, `choose_rural`, `plan_rural`).
+`interior_min_extent`, `draw_interior`), `rural_filler.h` (`household_asks`, `choose_rural`,
+`plan_rural`), `tour.h` (`tour_interior`, `room_views`).
 
 **Depends on.** `base`, `containers`, `hash`.
 

@@ -12,8 +12,8 @@
 
 engine_module(NAME dwellings LAYER domain OPTIONAL
   DEPS base containers hash
-  SOURCES src/interiors.cpp src/rural_filler.cpp)
+  SOURCES src/interiors.cpp src/rural_filler.cpp src/tour.cpp)
 
 engine_module_tests(NAME dwellings
-  SOURCES tests/interiors_tests.cpp tests/rural_filler_tests.cpp tests/determinism_tests.cpp
-          tests/size_table.cpp)
+  SOURCES tests/interiors_tests.cpp tests/rural_filler_tests.cpp tests/tour_tests.cpp
+          tests/determinism_tests.cpp tests/size_table.cpp)
