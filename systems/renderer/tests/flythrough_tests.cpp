@@ -17,6 +17,7 @@
 #include <domain/gfx/visibility_resolve.h>
 #include <domain/scene_gen/scene_gen.h>
 #include <domain/texture/texture_build.h>
+#include <foundation/tunables/tunables.h>
 #include <systems/renderer/camera_path.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/flythrough.h>
@@ -1144,6 +1145,57 @@ TEST_CASE("flythrough: the same path draws the same pairs, frame by frame, and s
   for (u32 f = 3; f < a.size(); ++f)  // the first frames still see the last flight's history
     again += a[f] != c[f] ? 1u : 0u;
   CHECK(again == 0);
+}
+
+// **With sampling over time's inputs on, every repeat of a flight draws the same pairs** (ADR-0064;
+// renderer.md, "Sampling over time: the inputs"): a repeat's first submission starts the history
+// again, so frame f of every repeat is drawn at the same sub-pixel phase, whose offset the cull's
+// frustum and Hi-Z tests take. Until R154 leg 1b a repeat's frame was drawn at whatever phase the
+// renderer's count had reached, and the grove and the overlook at 4K came back with
+// `deterministic: false`. A warm-up of three frames makes a repeat 15 frames long, which no phase
+// count of eight divides.
+TEST_CASE("flythrough: with the inputs on, every repeat draws the same pairs") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("renderer unavailable here: " << gpu.why);
+    return;
+  }
+  tunables::Tunable* inputs = tunables::find("renderer.reconstruction.inputs");
+  REQUIRE(inputs != nullptr);
+  std::string previous;
+  inputs->append_value(previous);
+  REQUIRE(inputs->set_from_text("true"));
+  struct Restore {
+    tunables::Tunable* tunable;
+    const std::string& value;
+    ~Restore() { (void)tunable->set_from_text(value); }
+  } restore{inputs, previous};
+  World world;
+  REQUIRE_MESSAGE(world.write(), world.error);
+  RenderSettings settings;
+  settings.shadows = ShadowMode::Off;  // occlusion on: pairs depend on the history's Hi-Z
+  Rig rig;
+  REQUIRE_MESSAGE(rig.build(gpu.device, world.desc, settings, 160, 96), rig.error);
+  REQUIRE(rig.resolved.reconstruction_inputs);
+  CameraPath path;
+  REQUIRE_MESSAGE(parse_camera_path(k_path_json, &rig.data.terrain, path, world.error),
+                  world.error);
+  FlightOptions options;
+  options.frames = 12;
+  options.repeats = 3;
+  options.warmup = 3;
+  options.frames_in_flight = 2;
+  Flight flight;
+  std::string error;
+  REQUIRE_MESSAGE(fly_camera_path(rig.renderer, path, options, flight, &error), error);
+  REQUIRE(flight.records.size() == 36);
+  scene::FlythroughSummary summary;
+  summarize_frames(
+      std::span<const scene::FrameRecord>(flight.records.data(), flight.records.size()), 12, 3,
+      path, summary);
+  CHECK(summary.reconstruction.inputs);
+  CHECK(summary.mismatched_frames == 0);
+  CHECK(summary.deterministic);
 }
 
 // **Every millisecond of a frame is named** (R130, roadmap T71 part 3; apps.md, "The frame record's
