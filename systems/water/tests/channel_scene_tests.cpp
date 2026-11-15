@@ -424,6 +424,12 @@ TEST_CASE("water channel: a fall's foot in the pool is whiter than the pool's wa
   // Whiter than the pool's water there: the foot's mean luminance over the same pixels' with the
   // plunge cleared (the comment above the case says why not over the rest of the pool's).
   CHECK(white / n > 1.1 * under / n);
+  // **The sheet above stops no light** (S108; water.md, "A sheet of water stops no light"). While
+  // the nappe was a traced caster the pool under it, with the plunge cleared, read 123.8 where the
+  // rest of the pool read 135.5: its shadow on the surface and on the bed under it. A channel's
+  // sheet is met by no ray now, so the pool under the nappe is the pool beside it but for the view
+  // (0.914 of it then; the bound leaves the view four parts in a hundred).
+  CHECK(under / n > 0.96 * beside / static_cast<f64>(pool > changed ? pool - changed : 1));
   CHECK(elsewhere == 0u);
   if (changed <= 200u || elsewhere != 0u) {
     tmp.keep();

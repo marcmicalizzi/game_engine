@@ -1,11 +1,10 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "S108",
-  "reason": "S108: water.md gains 'Where channels meet', 'A sheet of water stops no light' and 'What a first load waits for', the over-bank rule's, the one call's and the fall's paragraphs: new behaviour, each its own section",
-  "date": "2026-11-14",
+  "reason": "S108: water.md gains 'Where channels meet', 'A sheet of water stops no light' and 'What a first load waits for', the over-bank rule's, the one call's and the fall's paragraphs, and what a lake of the channels' plan reads and draws: new behaviour, each its own section",
+  "date": "2026-11-15",
   "by": "Marc Micalizzi",
   "deltas": {
-    "page:docs/subsystems/geometry.md": 4,
-    "page:docs/subsystems/water.md": 10294
+    "page:docs/subsystems/water.md": 12609
   }
 }
