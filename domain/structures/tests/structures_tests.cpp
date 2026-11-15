@@ -395,6 +395,70 @@ TEST_CASE("structures: two storeys, an inner wall, a doorway and a stair through
   CHECK(which == 2);
 }
 
+TEST_CASE("structures: exterior walls split at a partition join it as a star, as the T does") {
+  // A filler that gives every exterior wall the one room it bounds splits the front and the back
+  // wall where a partition meets them: three walls end at one point, two of them in line.
+  Description d = example_cot(600, 400, 50);
+  d.walls.clear();
+  d.openings.clear();
+  d.chimneys.clear();
+  structure::Room parlour;
+  parlour.id = 1;
+  d.rooms.push_back(parlour);
+  const auto wall = [&d](i32 x0, i32 z0, i32 x1, i32 z1, i32 thick, i32 a, i32 b) {
+    structure::Wall w;
+    w.from[0] = x0, w.from[1] = z0, w.to[0] = x1, w.to[1] = z1;
+    w.thickness = thick;
+    w.kind = b < 0 ? structure::WallKind::exterior : structure::WallKind::inner;
+    w.a = a;
+    w.b = b;
+    d.walls.push_back(w);
+  };
+  wall(0, 0, 0, 450, 50, 0, -1);
+  wall(0, 450, 420, 450, 50, 0, -1);    // the back wall, the hall's part
+  wall(420, 450, 650, 450, 50, 1, -1);  // and the parlour's
+  wall(650, 450, 650, 0, 50, 1, -1);
+  wall(650, 0, 420, 0, 50, 1, -1);   // the front wall, the parlour's part
+  wall(420, 0, 0, 0, 50, 0, -1);     // and the hall's
+  wall(420, 0, 420, 450, 12, 1, 0);  // the partition, ending on both stars
+  structure::Opening door;
+  door.wall = 5;
+  door.at = 200;
+  door.head = 190;
+  d.openings.push_back(door);
+  structure::Opening doorway;
+  doorway.wall = 6;
+  doorway.kind = structure::OpeningKind::doorway;
+  doorway.at = 225;
+  doorway.width = 85;
+  d.openings.push_back(doorway);
+  std::string why;
+  const bool valid = validate(d, why);
+  INFO(why);
+  REQUIRE(valid);
+  CHECK(rooms_reachable(d));
+  Solved s;
+  solved(d, MeshScope::whole, s);
+  // The front wall is one wall still: nothing closes it where it was split (a line inside its
+  // thickness along it crosses no face), it is two faces thick either side of the split, the
+  // partition stands on its inner face and nothing of it shows outside.
+  CHECK(crossings(s, {4.0, 1.0, 0.0}, {4.4, 1.0, 0.0}) == 0);
+  CHECK(crossings(s, {4.1, 1.0, -0.6}, {4.1, 1.0, 0.24}) == 1);
+  CHECK(crossings(s, {4.4, 1.0, -0.6}, {4.4, 1.0, 0.6}) == 2);
+  CHECK(crossings(s, {4.0, 1.0, 0.30}, {4.4, 1.0, 0.30}) == 2);
+  CHECK(crossings(s, {4.0, 1.0, -0.35}, {4.4, 1.0, -0.35}) == 0);
+  // And every triangle of it faces the way its normals do.
+  u32 wrong = 0;
+  for (const MeshPart& part : s.parts)
+    for (u32 t = 0; t + 2 < part.indices.size(); t += 3) {
+      const u32 i0 = part.indices[t], i1 = part.indices[t + 1], i2 = part.indices[t + 2];
+      const D3 n = cross(sub(d3(part.positions[i1]), d3(part.positions[i0])),
+                         sub(d3(part.positions[i2]), d3(part.positions[i0])));
+      if (dot(n, d3(part.normals[i0])) <= 0) ++wrong;
+    }
+  CHECK(wrong == 0);
+}
+
 TEST_CASE("structures: the exterior and the interior are the whole between them") {
   for (const Description& d : {example_cot(), two_storeys()}) {
     Solved whole, outside, inside;
