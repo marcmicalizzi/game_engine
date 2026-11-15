@@ -336,7 +336,7 @@ void simplify_regular(const clodConfig& config, const clodMesh& mesh,
 // here is made in double from the float positions with no library call but a correctly rounded
 // square root (geometry.md, "The same bytes from every toolchain").
 struct Island {
-  u32 first = 0;      // its first triangle in the group's order: every sort's tie-break
+  u32 first = 0;  // its first triangle in the group's order: every sort's tie-break
   u32 triangles = 0;
   bool free = true;
   bool alive = false;  // scratch: a result still draws a triangle of it
@@ -715,8 +715,8 @@ u32 grow_islands(clodMesh& mesh, VertexPool& pool, std::vector<unsigned int>& tr
       const f64 along = d[0] * g.axis[0] + d[1] * g.axis[1] + d[2] * g.axis[2];
       for (size_t axis = 0; axis < 3; ++axis) {
         const f64 on_axis = along * g.axis[axis];
-        grown[axis] = static_cast<float>(g.centre[axis] + g.scale * on_axis +
-                                         g.across * (d[axis] - on_axis));
+        grown[axis] =
+            static_cast<float>(g.centre[axis] + g.scale * on_axis + g.across * (d[axis] - on_axis));
       }
     }
     // The position's class among the copies: the island's first corner at the same position.
@@ -867,9 +867,9 @@ std::vector<unsigned int> coarsen_by_islands(clodMesh& mesh, VertexPool& pool,
 // Returns the covered size of the largest island it removed for being gutted (0: none), which the
 // caller's error admits to.
 f64 restore_island_area(clodMesh& mesh, VertexPool& pool, const std::vector<unsigned int>& indices,
-                         std::vector<unsigned int>& result, std::vector<unsigned char>& locks,
-                         std::vector<unsigned int>& remap, const IslandSet& set, float* error,
-                         AggregateStats& stats) {
+                        std::vector<unsigned int>& result, std::vector<unsigned char>& locks,
+                        std::vector<unsigned int>& remap, const IslandSet& set, float* error,
+                        AggregateStats& stats) {
   const size_t count = set.islands.size();
   // An island has an open border when an edge of it belongs to one triangle only.
   std::vector<u64> edges;
@@ -928,9 +928,9 @@ f64 restore_island_area(clodMesh& mesh, VertexPool& pool, const std::vector<unsi
       hi[axis] = std::max(hi[axis], q[axis]);
     }
   }
-  const f64 group_radius = 0.5 * std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) +
-                                           (hi[1] - lo[1]) * (hi[1] - lo[1]) +
-                                           (hi[2] - lo[2]) * (hi[2] - lo[2]));
+  const f64 group_radius =
+      0.5 * std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
+                      (hi[2] - lo[2]) * (hi[2] - lo[2]));
   const bool aggregate = set.free_count >= k_aggregate_islands;
   const auto part = [&](size_t id) {
     const Island& island = set.islands[id];
@@ -1186,13 +1186,11 @@ std::vector<unsigned int> simplify_loose(const clodConfig& config, clodMesh& mes
     find_islands(mesh, indices, locks, remap, set);
     if (set.free_count >= 2) {
       const bool stuck = lod.size() > target_count;
-      const bool thinned =
-          mark_alive(mesh, remap, lod, set) < k_island_area_kept * set.free_area;
+      const bool thinned = mark_alive(mesh, remap, lod, set) < k_island_area_kept * set.free_area;
       if (stuck || thinned) {
-        std::vector<unsigned int> coarse =
-            coarsen_by_islands(mesh, build.pool, indices, locks, remap, set,
-                               config.simplify_threshold, build.mask_root, error, cover,
-                               build.stats);
+        std::vector<unsigned int> coarse = coarsen_by_islands(
+            mesh, build.pool, indices, locks, remap, set, config.simplify_threshold,
+            build.mask_root, error, cover, build.stats);
         if (!coarse.empty()) {
           ++build.stats.by_islands;
           return coarse;
@@ -1227,8 +1225,8 @@ std::vector<unsigned int> simplify_loose(const clodConfig& config, clodMesh& mes
     // it merged has no area of its own to give back.
     if (!sloppy && set.free_count != 0) {
       const float before = *error;
-      const f64 gone = restore_island_area(mesh, build.pool, indices, lod, locks, remap, set,
-                                           error, build.stats);
+      const f64 gone = restore_island_area(mesh, build.pool, indices, lod, locks, remap, set, error,
+                                           build.stats);
       // What a corner moved to give the area back is a displacement on either scale; an island
       // removed for being gutted counts as any island removed whole.
       if (*error > before) *cover = std::max(*cover, *error);
@@ -1308,11 +1306,10 @@ size_t build_lod_groups(const clodConfig& config, clodMesh& mesh, const FoldGuar
       float error = 0.f;
       float cover = 0.f;
       std::vector<unsigned int> simplified =
-          guard != nullptr
-              ? simplify_heightfield(config, mesh, merged, locks, target_size, &error, *guard,
-                                     stats)
-              : simplify_loose(config, mesh, merged, locks, remap, target_size, &error, &cover,
-                               loose);
+          guard != nullptr ? simplify_heightfield(config, mesh, merged, locks, target_size, &error,
+                                                  *guard, stats)
+                           : simplify_loose(config, mesh, merged, locks, remap, target_size, &error,
+                                            &cover, loose);
       if (simplified.size() > merged.size() * config.simplify_threshold) {
         bounds.error = FLT_MAX;
         *group_cover = k_lod_terminal_error;

@@ -70,8 +70,8 @@ TEST_CASE("engine-content static-kit: plain glTF meshes that carry nothing a gen
   REQUIRE_MESSAGE(last_json(kit.text, summary), kit.text);
   const JsonValue* triangles = summary.find("triangles");
   REQUIRE(triangles != nullptr);
-  // The shapes the scene's page describes: a ground of 160 x 160 quads, a tree of 117 cards over its
-  // wood, 24 cards of shrub, three of grass, a sphere of 48 x 24 facets.
+  // The shapes the scene's page describes: a ground of 160 x 160 quads, a tree of 117 cards over
+  // its wood, 24 cards of shrub, three of grass, a sphere of 48 x 24 facets.
   u64 v = 0;
   CHECK((triangles->find("ground")->get_u64(v) && v == 2u * 160u * 160u));
   CHECK((triangles->find("bush")->get_u64(v) && v == 48u));

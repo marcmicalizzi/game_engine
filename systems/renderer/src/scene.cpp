@@ -1074,7 +1074,8 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expect
     const std::span<const u32> range(out.data.indices.data() + primitive.first_index,
                                      primitive.index_count);
     geometry::ClusterLodOptions part_options = geometry::imported_lod_options(desc.lod);
-    part_options.mask_cover = mask_covers[static_cast<u32>(&primitive - out.data.primitives.data())];
+    part_options.mask_cover =
+        mask_covers[static_cast<u32>(&primitive - out.data.primitives.data())];
     geometry::ClusterLodMesh part;
     if (!geometry::build_cluster_lod(out.data.positions, range, part_options, part, &error,
                                      attribute_source)) {
@@ -1641,8 +1642,7 @@ bool stream_authored(SceneDesc& resolved, Vector<SourceMesh>& sources,
     }
     if (reach[m] < 0.0f) {
       const MeshFit& mf = resolved.mesh_info[m].fit;
-      if (mf.active())
-        fit[m] = fit_parts(mf, dags[m], 0, dags[m].mesh.clusters.size());
+      if (mf.active()) fit[m] = fit_parts(mf, dags[m], 0, dags[m].mesh.clusters.size());
       f32 most = 0.0f;
       for (const geometry::ClusterDesc& c : mesh.clusters)
         most = std::max(most, length(c.center - fit[m].anchor) + c.radius);

@@ -38,13 +38,17 @@ u64 mix(u64 x) {
 }
 
 // A float in [0, 1) that is the same on every toolchain: 24 bits of the hash over 2^24.
-f64 unit(u64 seed, u64 k) { return static_cast<f64>(mix(seed * 0x100000001b3ull + k) >> 40) / 16777216.0; }
+f64 unit(u64 seed, u64 k) {
+  return static_cast<f64>(mix(seed * 0x100000001b3ull + k) >> 40) / 16777216.0;
+}
 
 struct V3 {
   f64 x = 0.0, y = 0.0, z = 0.0;
 };
 V3 sub(V3 a, V3 b) { return V3{a.x - b.x, a.y - b.y, a.z - b.z}; }
-V3 cross(V3 a, V3 b) { return V3{a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x}; }
+V3 cross(V3 a, V3 b) {
+  return V3{a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
+}
 f64 norm(V3 a) { return std::sqrt(a.x * a.x + a.y * a.y + a.z * a.z); }
 V3 scaled(V3 a, f64 s) { return V3{a.x * s, a.y * s, a.z * s}; }
 V3 of(Vec3 p) { return V3{static_cast<f64>(p.x), static_cast<f64>(p.y), static_cast<f64>(p.z)}; }
@@ -95,9 +99,10 @@ void make_crown(u32 cards, f64 radius, u64 seed, Islands& out) {
     const f64 su[4] = {-1.0, 1.0, 1.0, -1.0};
     const f64 sv[4] = {-1.0, -1.0, 1.0, 1.0};
     for (u32 q = 0; q < 4; ++q) {
-      out.positions.push_back(Vec3{static_cast<f32>(centre.x + half * (su[q] * u.x + sv[q] * v.x)),
-                                   static_cast<f32>(centre.y + half * (su[q] * u.y + sv[q] * v.y)),
-                                   static_cast<f32>(centre.z + half * (su[q] * u.z + sv[q] * v.z))});
+      out.positions.push_back(
+          Vec3{static_cast<f32>(centre.x + half * (su[q] * u.x + sv[q] * v.x)),
+               static_cast<f32>(centre.y + half * (su[q] * u.y + sv[q] * v.y)),
+               static_cast<f32>(centre.z + half * (su[q] * u.z + sv[q] * v.z))});
       out.uvs.push_back(Vec2{su[q] > 0.0 ? 1.0f : 0.0f, sv[q] > 0.0 ? 1.0f : 0.0f});
     }
     for (const u32 i : {0u, 1u, 2u, 0u, 2u, 3u})
@@ -565,7 +570,8 @@ TEST_CASE("aggregate lod: an alpha-tested part carries coverage errors that coun
     if (d.parent_error < k_lod_terminal_error) {
       // Half floats round to nearest: a part in a thousand of slack.
       CHECK(static_cast<f64>(parent) <= static_cast<f64>(d.parent_error) * 1.001);
-      least_ratio = std::min(least_ratio, static_cast<f64>(parent) / static_cast<f64>(d.parent_error));
+      least_ratio =
+          std::min(least_ratio, static_cast<f64>(parent) / static_cast<f64>(d.parent_error));
       ++counted;
     } else {
       CHECK(std::isinf(parent));

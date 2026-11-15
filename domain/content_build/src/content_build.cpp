@@ -178,11 +178,11 @@ void attach_repository_pack(std::string_view source, std::string_view executable
 
 // Every key a build records: the geometry's, then the two steps outside it.
 u64 build_key_of(u64 source_hash, const MeshOptions& options) noexcept {
-  return atlas_key(morph_key(geometry::cluster_cache_key(source_hash,
-                                                         import_lod_options_of(options),
-                                                         options.weld, options.page_bytes),
-                             options),
-                   options);
+  return atlas_key(
+      morph_key(geometry::cluster_cache_key(source_hash, import_lod_options_of(options),
+                                            options.weld, options.page_bytes),
+                options),
+      options);
 }
 
 bool read_seam_rule(std::string_view text, geometry::SeamRule& out) {
@@ -603,8 +603,7 @@ bool build_one(const std::string& input, const std::string& output, const MeshOp
   // removed card for that share (geometry.md, "Coverage errors for an imported alpha-tested
   // part"). Only with the rule on, so `--no-loose-islands` is the builder before it.
   Vector<f32> mask_covers;
-  if (lod_options.loose_islands)
-    measure_mask_covers(mesh, io::parent_path(input), mask_covers);
+  if (lod_options.loose_islands) measure_mask_covers(mesh, io::parent_path(input), mask_covers);
   Vector<PartBuild> parts;
   parts.reserve(mesh.primitives.size());
   for (const assets::Primitive& primitive : mesh.primitives) {

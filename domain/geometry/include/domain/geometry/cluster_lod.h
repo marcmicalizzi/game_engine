@@ -184,8 +184,9 @@ struct AggregateStats {
   u32 islands_removed = 0;  // by the island rule, all levels
   u32 islands_grown = 0;
   u32 islands_restored = 0;  // open islands a regular result shrank, grown back to their area
-  u32 vertices_added = 0;  // the grown islands' corners: positions no source vertex has
-  u32 errors_raised = 0;   // regular or sloppy results raised to the extent of an island they removed
+  u32 vertices_added = 0;    // the grown islands' corners: positions no source vertex has
+  u32 errors_raised =
+      0;  // regular or sloppy results raised to the extent of an island they removed
 };
 
 // What the heightfield guard saw during one build (`ClusterLodOptions::up`), counted by the
@@ -396,8 +397,8 @@ inline constexpr u32 k_lod_cover_bitmap = 256;
 struct LodCutCover {
   u32 clusters = 0;
   u32 triangles = 0;
-  f64 area = 0.0;                // the drawn triangles', mesh units squared
-  u32 silhouette[3] = {0, 0, 0}; // covered pixels seen along x, y and z
+  f64 area = 0.0;                 // the drawn triangles', mesh units squared
+  u32 silhouette[3] = {0, 0, 0};  // covered pixels seen along x, y and z
 };
 // Fails on an empty mesh or a cluster index out of range.
 bool measure_lod_cover(const ClusterLodMesh& mesh, std::span<const u32> cut, LodCutCover& out,

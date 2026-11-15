@@ -1421,10 +1421,8 @@ int cuts(const std::string& path) {
       view.threshold_px = 1.0f;
       view.foliage_px = geometry::k_default_foliage_px;
       cut.clear();
-      geometry::select_lod(lod,
-                           view,
-                           std::span<const u32>(data.lod_coverage.data(), data.lod_coverage.size()),
-                           cut);
+      geometry::select_lod(
+          lod, view, std::span<const u32>(data.lod_coverage.data(), data.lod_coverage.size()), cut);
       geometry::LodCutCover cover;
       if (!geometry::measure_lod_cover(lod, cut, cover, &error)) return failed(error);
       // The least of the three views' shares, over the views the finest level shows anything in:
@@ -1501,7 +1499,8 @@ int cuts(const std::string& path) {
       row.set("refined", JsonValue(static_cast<u32>(errors.size())));
       row.set("parent_error_median",
               JsonValue(errors.empty() ? 0.0 : static_cast<f64>(errors[errors.size() / 2])));
-      row.set("parent_error_max", JsonValue(errors.empty() ? 0.0 : static_cast<f64>(errors.back())));
+      row.set("parent_error_max",
+              JsonValue(errors.empty() ? 0.0 : static_cast<f64>(errors.back())));
       level_rows.push_back(std::move(row));
     }
   }
