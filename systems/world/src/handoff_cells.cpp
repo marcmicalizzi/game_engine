@@ -256,11 +256,11 @@ u64 PlacementTiles::next_cell_key() {
 // ground plane, and goes when it is `handoff_hold_m` farther than that. The ground distance is
 // never more than the distance the cull pass measures, and the box never less than the placements,
 // so a cell that is out holds only instances the cull pass would drop. **The lead** is what the
-// eyes moved since the last update, `handoff_lead_updates` times, and at most the band's end: a
-// cell is handed on that many updates before the band reaches it, so its instances' load-in
-// (renderer.md, "The hand-off by distance": thirty frames from the change that wrote them) is over
-// before any of them could be drawn, as it is for a tile handed whole. With no eye known every
-// cell is in. True when a cell came or went.
+// eyes moved since the last update, `handoff_lead_updates` times, and at most the band's end:
+// slack for a host whose world update runs a frame behind the camera it draws from. (It is not
+// there for the load-in: a cell's block is as old as its tile's, `TileRange::part_of`.) Eyes first
+// seen, or not the ones the last update had, take no lead. With no eye known every cell is in.
+// True when a cell came or went.
 bool PlacementTiles::refresh_cells() {
   if (!cells_on()) return false;
   const i64 start = time::monotonic_ns();
@@ -280,7 +280,7 @@ bool PlacementTiles::refresh_cells() {
   // Once an update: a second look in the same update (a commit, then `end_update`) sees eyes that
   // did not move and keeps the lead the first one took.
   if (step != 0.0 || !cells_refreshed_) {
-    const f64 lead = step < 0.0 ? to : static_cast<f64>(config_.handoff_lead_updates) * step;
+    const f64 lead = step < 0.0 ? 0.0 : static_cast<f64>(config_.handoff_lead_updates) * step;
     cell_lead_ = lead < to ? lead : to;
   }
   last_eyes_.assign(eyes.begin(), eyes.end());

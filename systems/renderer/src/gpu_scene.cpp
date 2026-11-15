@@ -1872,9 +1872,14 @@ bool GpuScene::write_slots(std::span<const SceneInstance> tail,
         }
         // A patch's hand-off role carries the tick its tile's instances came at (G136; renderer.md,
         // "The hand-off by distance"), so a tile that arrives or moves inward fades its blades in.
+        // **Every block is stamped when it is written**, with a role among its instances or
+        // without (G205): a part of it handed later takes its age from it
+        // (`DynamicBlock::age_of`), and a tile whose own run holds no role is still the tile its
+        // near placements came with.
+        const u32 stamp = (k == 0 || source.handoff != 0) ? block_stamp(*block) : 0u;
         if (source.handoff != 0) {
           gfx::set_instance_handoff(desc, desc.flags & gfx::k_instance_handoff_mask, desc.band,
-                                    block_stamp(*block));
+                                    stamp);
         }
         if (source.mesh < mesh_policy_.size()) desc.flags |= mesh_policy_[source.mesh];
         desc.material_base =
