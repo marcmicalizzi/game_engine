@@ -170,6 +170,9 @@ struct VillagePlan {
   u32 built = 0, steep = 0, wet = 0, no_fit = 0, refused = 0, spare = 0;
   // "hamlet" under six houses, "village" from six (the grounding's threshold).
   const char* size_class = "hamlet";
+  // Why the first plot left empty by its house was: the filler's sentence for a refusal, the sizes
+  // for a house that did not fit. Empty when every plot asked got its house.
+  std::string first_refusal;
 };
 
 // The entry's numbers in range. False with a sentence.

@@ -94,7 +94,8 @@ void village_scene(Village& v) {
   scene_gen::Context context;
   std::string error;
   REQUIRE_MESSAGE(village::plan_scene_village(v.layer, context, v.plan, error), error);
-  REQUIRE(v.plan.built == 2);
+  REQUIRE_MESSAGE(v.plan.built == 2, "refused " << v.plan.refused << ", no fit " << v.plan.no_fit
+                                                << ": " << v.plan.first_refusal);
 }
 
 // Steers a walker at each point in turn. Returns how many it reached; `stuck` is where it stood

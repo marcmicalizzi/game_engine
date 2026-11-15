@@ -289,6 +289,7 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
     if (!house_fn(house_context, ask, h, why)) {
       p.state = PlotState::refused;
       ++out.refused;
+      if (out.first_refusal.empty()) out.first_refusal = why;
       continue;
     }
     // Turned by quarters until its door faces the street (-z of the plot's frame).
@@ -311,6 +312,15 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
     if (turns == 4 || x1 - x0 + 2 * k_side_gap_mm > p.frontage_mm || setback + (z1 - z0) > p.depth_mm) {
       p.state = PlotState::no_fit;
       ++out.no_fit;
+      if (out.first_refusal.empty()) {
+        char text[200];
+        std::snprintf(text, sizeof(text),
+                      "a house %.2f m along the street by %.2f m deep does not fit a plot of %.2f m "
+                      "frontage (half a metre each side) and %.2f m behind its setback",
+                      metres(x1 - x0), metres(z1 - z0), metres(p.frontage_mm),
+                      metres(p.depth_mm - setback));
+        out.first_refusal = text;
+      }
       continue;
     }
     p.quarter_turns = turns;

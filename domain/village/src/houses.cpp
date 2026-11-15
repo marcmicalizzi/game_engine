@@ -120,10 +120,14 @@ bool storey_grid(const structure::Description& d, const Walk& walk, u32 storey, 
       for (const structures::WalkFlight& f : walk.flights) {
         if (!ok) break;
         if (f.stair >= d.stairs.size() || d.stairs[f.stair].storey != storey) continue;
+        // The steps themselves, from the first riser on: the floor before the foot stays open (an
+        // enclosed stair's landing is a metre deep, and a margin behind the foot would close it).
         const f64 run = static_cast<f64>(f.risers) * static_cast<f64>(f.going);
-        const f64 ax = static_cast<f64>(f.foot.x), az = static_cast<f64>(f.foot.z);
-        const f64 bx = ax + static_cast<f64>(f.dir.x) * run, bz = az + static_cast<f64>(f.dir.y) * run;
-        if (segment_distance(px, pz, ax, az, bx, bz) < static_cast<f64>(f.width) * 0.5 + k_clear_m)
+        const f64 rx = px - static_cast<f64>(f.foot.x), rz = pz - static_cast<f64>(f.foot.z);
+        const f64 along = rx * static_cast<f64>(f.dir.x) + rz * static_cast<f64>(f.dir.y);
+        const f64 across = rx * static_cast<f64>(f.dir.y) - rz * static_cast<f64>(f.dir.x);
+        if (along > -0.05 && along < run + k_clear_m &&
+            std::fabs(across) < static_cast<f64>(f.width) * 0.5 + k_clear_m)
           ok = false;
       }
       g.open[static_cast<u32>(j * g.nx + i)] = ok ? 1 : 0;
