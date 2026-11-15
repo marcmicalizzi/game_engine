@@ -4,8 +4,8 @@
 // and the set's key is a hash over that text and the generator's version.
 namespace engine.matgen
 
-/// Which generator builds the set. `wood` is read from `Set` version 2.
-enum Kind : u8 { granular = 0, rock = 1, ground = 2, wood = 3 }
+/// Which generator builds the set. `wood` is read from `Set` version 2, `masonry` from 3.
+enum Kind : u8 { granular = 0, rock = 1, ground = 2, wood = 3, masonry = 4 }
 
 /// How a wood set's face was cut: a sawn board's face, or the outside of a log.
 enum WoodForm : u8 { sawn = 0, log = 1 }
@@ -189,8 +189,42 @@ struct Wood {
   bark_plate_mm: u32 = 45
 }
 
+/// Laid work: squared or rough units in courses along the image's u, with joints between them
+/// (matgen.md, "Masonry"): a flagged floor, a coursed rubble wall. Colours are linear albedo in
+/// thousandths.
+struct Masonry {
+  /// A course's height (a floor's row's width): each is drawn from this range, millimetres.
+  course_min_mm: u32 = 100
+  course_max_mm: u32 = 200
+  /// A unit's length along its course, millimetres. Perpends never line up by rule: every
+  /// course starts at its own place.
+  unit_min_mm: u32 = 150
+  unit_max_mm: u32 = 400
+  /// The joint between units: its width and how far its filling lies under the units' tops.
+  joint_um: u32 = 15000
+  joint_depth_um: u32 = 8000
+  /// A unit's arris: how far in from its edge its top starts to fall, and how far it falls.
+  arris_um: u32 = 20000
+  arris_drop_um: u32 = 6000
+  /// The radius a unit's corners are rounded to in plan.
+  round_um: u32 = 30000
+  /// How far a joint's line wanders from straight (a dressed flag's hardly, a rubble stone's a
+  /// good deal), its half range.
+  wander_um: u32 = 10000
+  /// How unevenly the units' tops stand against one another, and the relief of a top, half ranges.
+  lip_um: u32 = 4000
+  relief_um: u32 = 3000
+  /// The units' stones: each unit is one of them.
+  stones: Constituent[] = []
+  /// The joint's filling (mortar, or trodden earth).
+  joint_r_permille: u32 = 520
+  joint_g_permille: u32 = 490
+  joint_b_permille: u32 = 430
+  joint_roughness_permille: u32 = 930
+}
+
 /// One set: the role it stands for, the surface one repeat covers and the texels across it.
-struct Set @version(2) {
+struct Set @version(3) {
   /// `<word>/<word>`, as a material pack's role.
   role: string = ""
   kind: Kind = granular
@@ -211,4 +245,5 @@ struct Set @version(2) {
   rock: Rock
   ground: Ground
   wood: Wood @since(2)
+  masonry: Masonry @since(3)
 }

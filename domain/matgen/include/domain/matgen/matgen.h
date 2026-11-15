@@ -67,7 +67,10 @@ namespace engine::matgen {
 ///    yellower crown, darker wet margins) instead of one tone a cell (a camouflage print).
 /// 8: the moss's cushions overlap widely (radii 0.85 to 1.4 cells) so its hollows are scattered
 ///    pockets, not a net round every cushion (version 7's read as a reticulated pattern at 15 m).
-inline constexpr u32 k_matgen_version = 8;
+/// 9: the masonry kind (2026-11-15): laid work in courses; `stone/flag` and `stone/rubble` are
+///    its recipes now (a jointed rock face read as cracked rock, a clast bed as cobbles). No
+///    other kind's images moved; every set's key did, because the recipe's type gained a field.
+inline constexpr u32 k_matgen_version = 9;
 
 /// Variants of a tiled role (G153): `default_sets` writes `<role>.1` .. `<role>.<n>` beside each
 /// tiled granular role, the same recipe from other seeds, so a consumer that picks one by place
@@ -165,8 +168,10 @@ bool build_set(const Set& set, SetImages& out, SetStats* stats, std::string& err
 /// The sets the engine's solvers ask a pack for by role and no pack has (matgen.md, "The
 /// defaults"): `gravel/bed`, `sand/bar`, `rock/scree`, `rock/granite`, `rock/granite_wet`,
 /// `rock/basalt`, `rock/limestone`, `rock/sandstone`, `ground/soil`, `ground/moss`,
-/// `ground/thatch`, `ground/turf`, `wood/plank`, `wood/log`, and `k_tiled_variants` variants of
-/// each tiled granular role (`gravel/bed.1`, ...). Sorted by role.
+/// `ground/thatch`, `ground/turf`, `wood/plank`, `wood/log`, a building's surfaces
+/// (`plaster/lime`, `stone/flag`, `stone/rubble`, `thatch/straw`; matgen.md, "A building's
+/// surfaces"), and `k_tiled_variants` variants of each tiled granular role (`gravel/bed.1`, ...).
+/// Sorted by role.
 Vector<Set> default_sets();
 /// Variant `index` (1..) of a recipe: the same numbers from another seed, its role
 /// `<role>.<index>`.

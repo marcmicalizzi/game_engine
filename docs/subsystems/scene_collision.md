@@ -88,6 +88,31 @@ The tiles it holds (a heightfield body and shape, a compound body and shape, and
 What makes a forest's copy small is the wood, not the floor: a generated tree's DAG is coarse enough that most of its clusters have a parent's error above the 1.2 cm floor a headroom of four gives a 5 cm cut, but nearly all its triangles are leaves, needles and twigs, which no proxy keeps (3.4% of the streamed forest's triangles are wood). A cluster that keeps none of its triangles is still selected by some cut, and the cut counts what it leaves out, so it is kept as an **emptied** record of its two errors and that count (12 bytes; `ProxySource::Emptied`) rather than a cluster's 24: on the streamed forest 48,822 of them, 586 KB of the 2.0 MB (they were 1.2 MB of 2.6 as whole records). At the streamed forest's share the forest staging's 2.1 GB of floats leaves a copy of about 70 MB. The copy is held for the session, like the descriptors; a copy by page with the world's tiles, or proxies built at the content build, is the next cut if a world's copy grows large.
 
 **What a host does** (engine-view, [apps](apps.md#walking)): `view::copy_collision_geometry` builds the copy after the GPU scene is made and before `attach_page_source` or `view::release_host_geometry` can take the floats, when a walker will walk (`interactive.on`) or `--collision-draw` will draw; the walker (`Walker::start`) and the draw (`CollisionView::create`) are handed it, and the release passes `HostReaders::none` in every session. A walker over a `--stream` scene had been cutting from the arrays `attach_page_source` had already emptied; it now cuts from the copy too. `engine-view: a walk into a ruin's wall is stopped at the wall` (`apps/engine_view/tests/walk_ruins_view_tests.cpp`, on a device) holds it end to end: the walk logs the copy and the release with `kept_for=nothing`, is stopped at the wall's face less its radius, and replays to the same trajectory offscreen.
+## Structures
+
+(2026-11-14, roadmap S89; plan [14 §14.4](../plan/14-structures.md#144-walkability-and-collision).)
+**A building is a placement, so it collides as every placement does, and nothing here names one.**
+A house the village filler stands ([village](village.md)) is a mesh its tile hands as a recipe —
+the building description — so its proxy is built from that recipe with no device
+([A tile's meshes](#a-tiles-meshes)): the house's own LOD DAG cut at 5 cm and welded. That is the
+shell's walls with their thickness, the inner walls, the floors and the stair's treads as the
+mesher made them, and a doorway is open because the proxy is the surface and never a hull
+([Why this shape](#why-this-shape)). A hand-authored description placed by a scene file, and an
+imported glTF house, get the same proxy by the same path. What a walker needs of the building is
+therefore the **mesher's** to give — a door at least 0.8 m wide and 2.0 m high, a riser under the
+walker's 0.35 m step, headroom over a stair — and plan 14's table is held by the description's
+validators, not here.
+
+`tests/structure_walk_tests.cpp` (where the village and the structures capabilities are linked;
+no device) holds it on a streamed scene of one village entry and no terrain: the walker starts on
+the lane, follows the house's own way through it ([village](village.md#the-way-through-a-house)) —
+the path, the doorway, each room's doorway, the stair — and must reach every point, ending on the
+upper floor at a window, standing; and a second walker set down on the pad beside the doorway and
+walked at the house is stopped at the wall's face, a capsule's radius short of it.
+
+**Not built of S89**: a no-collision flag per part (a thatch fringe or a rope's strands are walls
+where the proxy keeps them), kinematic bodies (a door's leaf), and the nav agent held to the
+walker's numbers ([Not yet](#not-yet)).
 
 ## Holes
 

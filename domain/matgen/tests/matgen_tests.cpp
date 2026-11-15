@@ -221,13 +221,32 @@ TEST_CASE("matgen: every default's colour and roughness means are in its materia
       {"sand/bar", 0.25, 0.42, 0.80, 0.95},      // dry quartz sand
       {"rock/scree", 0.12, 0.35, 0.80, 0.95},    // dry grey rock, its voids in shade
       {"rock/granite", 0.15, 0.35, 0.70, 0.95},  // weathered granite
-      {"rock/granite_wet", 0.06, 0.18, 0.30, 0.60}, {"rock/basalt", 0.03, 0.12, 0.75, 0.95},
-      {"rock/limestone", 0.20, 0.50, 0.75, 0.95},   {"rock/sandstone", 0.18, 0.45, 0.75, 0.95},
-      {"ground/soil", 0.03, 0.10, 0.85, 0.98},      {"ground/moss", 0.03, 0.10, 0.85, 0.98},
-      {"ground/thatch", 0.08, 0.20, 0.70, 0.90},    {"ground/turf", 0.05, 0.14, 0.50, 0.85},
-      {"wood/plank", 0.10, 0.30, 0.70, 0.90},       {"wood/log", 0.08, 0.28, 0.70, 0.92},
+      {"rock/granite_wet", 0.06, 0.18, 0.30, 0.60},
+      {"rock/basalt", 0.03, 0.12, 0.75, 0.95},
+      {"rock/limestone", 0.20, 0.50, 0.75, 0.95},
+      {"rock/sandstone", 0.18, 0.45, 0.75, 0.95},
+      {"ground/soil", 0.03, 0.10, 0.85, 0.98},
+      {"ground/moss", 0.03, 0.10, 0.85, 0.98},
+      {"ground/thatch", 0.08, 0.20, 0.70, 0.90},
+      {"ground/turf", 0.05, 0.14, 0.50, 0.85},
+      {"wood/plank", 0.10, 0.30, 0.70, 0.90},
+      {"wood/log", 0.08, 0.28, 0.70, 0.92},
+      // A building's surfaces (structures.md, "Materials by role"): aged limewash, a worn
+      // flagstone, rubble in mortar, weathered straw.
+      {"plaster/lime", 0.45, 0.75, 0.80, 0.98},
+      {"stone/flag", 0.10, 0.40, 0.60, 0.95},
+      {"stone/rubble", 0.12, 0.42, 0.75, 0.97},
+      {"thatch/straw", 0.08, 0.35, 0.60, 0.95},
+      // What one village's houses differ by (structures.md, "Variety a description states"): a
+      // limewash white, cream, ochre or pink, and a thatch new (gold) or old (charcoal).
+      {"plaster/lime_white", 0.62, 0.85, 0.80, 0.98},
+      {"plaster/lime_cream", 0.50, 0.78, 0.80, 0.98},
+      {"plaster/lime_ochre", 0.40, 0.68, 0.80, 0.98},
+      {"plaster/lime_pink", 0.40, 0.68, 0.80, 0.98},
+      {"thatch/straw_new", 0.20, 0.50, 0.60, 0.95},
+      {"thatch/straw_old", 0.05, 0.22, 0.60, 0.95},
   };
-  // Fourteen sets, and the variants of the three tiled granular ones.
+  // Twenty-four sets, and the variants of the three tiled granular ones.
   CHECK(matgen::default_sets().size() == std::size(ranges) + 3 * matgen::k_tiled_variants);
   for (const Range& r : ranges) {
     CAPTURE(r.role);
@@ -510,12 +529,20 @@ TEST_CASE("matgen: the same bytes from every toolchain") {
     u64 hash;
   };
   const Pin pins[] = {
-      {"gravel/bed", 6280004583196325757ull},     {"rock/scree", 15685960211907165185ull},
-      {"sand/bar", 6512822385822317515ull},       {"rock/granite", 1158326275606281670ull},
-      {"rock/sandstone", 2145369994992403863ull}, {"ground/turf", 6124285787784493336ull},
-      {"wood/plank", 14025903017001931447ull},    {"wood/log", 7590841734047759407ull},
-      {"ground/moss", 74344028886144336ull},      {"ground/soil", 13248924326901389473ull},
+      {"gravel/bed", 6280004583196325757ull},
+      {"rock/scree", 15685960211907165185ull},
+      {"sand/bar", 6512822385822317515ull},
+      {"rock/granite", 1158326275606281670ull},
+      {"rock/sandstone", 2145369994992403863ull},
+      {"ground/turf", 6124285787784493336ull},
+      {"wood/plank", 14025903017001931447ull},
+      {"wood/log", 7590841734047759407ull},
+      {"ground/moss", 74344028886144336ull},
+      {"ground/soil", 13248924326901389473ull},
       {"ground/thatch", 4229589913222796817ull},
+      // Version 9: the masonry kind's two recipes, which no earlier pin held.
+      {"stone/flag", 18260463309076001719ull},
+      {"stone/rubble", 5299574791394706583ull},
   };
   for (const Pin& pin : pins) {
     CAPTURE(pin.role);

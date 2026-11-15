@@ -1,0 +1,298 @@
+// The building description (docs/subsystems/structures.md; docs/plan/14-structures.md §14.3; the
+// numbers and their sources, docs/experiments/vernacular-shell.md). A building is a description:
+// its storeys, its walls as centre lines with openings, its rooms, its stairs, its roofs and its
+// chimneys, **every length whole centimetres in the building's own frame** (x and z on the ground,
+// y up, the origin at the ground floor's top), so its canonical form and its key are integers and
+// no decision passes through a float. It is the city's description (domain/city, "a building")
+// generalised: walls, openings, floors and spaces keep the city's fields; a wall gains a bulge (an
+// arc), a building gains roofs, stairs, chimneys and material roles.
+//
+// One deterministic mesher turns a description into cluster geometry (the mesh generator
+// `structure`, a `<name>.structure.json` file holding a `Description`). A filler writes
+// descriptions; nothing re-derives one behind its author's back.
+namespace engine.structure
+
+/// Which side of a building a wall stands on. An `exterior` wall has the outside on one side (its
+/// `a` or `b` is -1) and wears the outer role there; an `inner` wall has a room on both.
+enum WallKind : u8 { exterior = 0, inner = 1 }
+
+/// What an opening holds. A `door` is a doorway with a frame and a threshold, its leaf a mesh of
+/// its own (not built yet: the doorway stands open); a `window` has a frame and glazing bars; a
+/// `doorway` is a bare opening through a wall, lined by the wall's own reveal.
+enum OpeningKind : u8 { door = 0, window = 1, doorway = 2 }
+
+/// What hangs in an opening's frame. `none`: nothing; the opening stands open. `ledged`: a leaf
+/// of upright boards on ledges across the side it opens to: a door's leaf, a window's shutter
+/// (structures.md, "Leaves and mullions").
+enum LeafKind : u8 { none = 0, ledged = 1 }
+
+/// A roof's form over its rectangle. `gable`: two slopes meeting at a ridge, the end walls rising
+/// into gables. `hip`: four slopes, the eaves level all round. `mono`: one slope from the high
+/// side (the side `ridge_along_x` and the rectangle's low x or z name) to the low.
+enum RoofForm : u8 { gable = 0, hip = 1, mono = 2 }
+
+/// What a room is for (the rooms' graph is the interiors' and the furnisher's; the mesher reads a
+/// room's storey and outline only).
+enum RoomKind : u8 {
+  hall = 0, parlour = 1, kitchen = 2, chamber = 3, passage = 4, service = 5, byre = 6, loft = 7,
+  porch = 8
+}
+
+/// How a stair climbs. `straight`: one flight along `dir`. `ladder`: a steep open flight (a loft's),
+/// drawn as stiles and rungs and not walked. `quarter`: a flight that turns a quarter at `turn_at`
+/// risers from the foot, left when `turn_left`, on a landing a tread wide.
+enum StairKind : u8 { straight = 0, ladder = 1, quarter = 2 }
+
+/// One storey. The storeys stack: storey i + 1's `elevation` is storey i's `elevation + height`.
+struct Storey @version(1) {
+  /// The floor's top above the building's origin.
+  elevation: i32 = 0
+  /// From the floor's top to the top of this storey's walls: the next storey's floor top, or for
+  /// the top storey the wall plate (the roof's `eaves`).
+  height: i32 = 240
+  /// The floor's own depth below its top: a slab on the ground for the lowest storey, joists and
+  /// boards for one above (its underside is the ceiling of the room below).
+  floor_thickness: i32 = 20
+  /// The top storey only: a ceiling at the wall's top, closing the rooms from the roof space.
+  /// False leaves them open to the roof's underside.
+  ceiling: bool = false
+}
+
+/// A wall on its centre line, as the city's, with a bulge.
+struct Wall @version(1) {
+  storey: u32 = 0
+  /// The centre line's ends, x and z.
+  from: i32[2]
+  to: i32[2]
+  /// 0: a straight wall. Otherwise an arc through the two ends, its sagitta over its half chord in
+  /// Q16, positive bulging to the left of `from` to `to` (not meshed yet: refused).
+  bulge: i32 = 0
+  thickness: i32 = 45
+  /// An exterior wall's batter: its thickness at its storey's top, its outer face leaning in
+  /// from the plinth's top (or its floor) to there and plumb above (a gable). 0, or `thickness`:
+  /// one thickness all the way up. A cob wall's, which is thinner at the plate than at the foot.
+  top_thickness: i32 = 0
+  /// How far its faces wander, millimetres from hollow to swell: a hand-laid wall under a thick
+  /// render. 0: flat. A waved face is drawn as a grid about 45 cm square and never falls behind
+  /// its plane.
+  wave: i32 = 0
+  kind: WallKind = exterior
+  /// The rooms on the left (`a`) and the right (`b`) of `from` to `to`; -1 is outside.
+  a: i32 = -1
+  b: i32 = -1
+}
+
+/// An opening through a wall: a span of its centre line with a sill and a head.
+struct Opening @version(1) {
+  wall: u32 = 0
+  kind: OpeningKind = door
+  /// Along the wall from its `from` end to the opening's centre.
+  at: i32 = 0
+  /// The clear width between the wall's reveals.
+  width: i32 = 90
+  /// The sill and the head above the wall's storey's floor top. A door's sill is 0.
+  sill: i32 = 0
+  head: i32 = 200
+  /// What hangs in its frame (a `door` or a `window`; a `doorway` has no frame to hang one in).
+  /// Absent unless stated: an opening that states no leaf stands open.
+  leaf: LeafKind = none
+  /// How many leaves: 1, or 2 hung on both jambs and meeting in the middle (a pair of shutters).
+  leaves: u8 = 1
+  /// One leaf's hinges: false on the jamb nearer the wall's `from` end, true on the other.
+  hinge_at_to: bool = false
+  /// The side a leaf opens to: false the wall's left (its `a`: the inside of an exterior wall
+  /// drawn counter-clockwise), true its right. The leaf hangs on that face of the frame.
+  opens_right: bool = false
+  /// How far a leaf stands open, degrees from shut: 0 to 90.
+  leaf_open: i32 = 0
+  /// A `window` only: how many upright mullions set on the cant stand between its sill and its
+  /// head (an unglazed window's); 0 keeps the glazing bars.
+  mullions: u32 = 0
+}
+
+/// A room: a region of one storey bounded by walls. Two rooms are joined where an opening stands
+/// in a wall that names both (its `a` and `b`), or a stair runs between them; the entrance is an
+/// opening in a wall with the outside on one side.
+struct Room @version(1) {
+  id: u32 = 0
+  storey: u32 = 0
+  kind: RoomKind = hall
+  name: string = ""
+  /// The room's outline on the walls' centre lines, x0 z0 x1 z1 ..., counter-clockwise seen from
+  /// above.
+  outline: i32[] = []
+}
+
+/// A stair from one storey's floor to the next one's.
+struct Stair @version(1) {
+  kind: StairKind = straight
+  /// The storey it rises from; it lands on storey `storey + 1`'s floor.
+  storey: u32 = 0
+  /// The middle of the first riser's foot, x and z.
+  foot: i32[2]
+  /// The direction it climbs, a quarter turn: 0 +x, 1 +z, 2 -x, 3 -z.
+  dir: u8 = 0
+  width: i32 = 80
+  /// How many risers; each is the storey's `height` over this count.
+  risers: u32 = 12
+  /// A tread's depth.
+  going: i32 = 23
+  /// `quarter` only: the riser the landing replaces, and which way the flight turns there.
+  turn_at: u32 = 0
+  turn_left: bool = false
+  /// The hole it leaves in the floor it lands on, x0 z0 x1 z1 (headroom over the flight).
+  well: i32[4]
+  /// The rooms at its foot and at its head (`Room.id`), -1 when the description names no rooms.
+  from_room: i32 = -1
+  to_room: i32 = -1
+}
+
+/// A roof over a rectangle.
+struct Roof @version(1) {
+  form: RoofForm = gable
+  /// What it covers, x0 z0 x1 z1: the outer faces of the walls that carry it.
+  rect: i32[4]
+  /// True: the ridge runs along x and the slopes fall toward low and high z.
+  ridge_along_x: bool = true
+  /// The roof's underside above the origin where it crosses the rectangle's edge: the wall plate.
+  eaves: i32 = 240
+  /// Rise over run, permille: 1000 is 45 degrees, 577 thirty, 1192 fifty.
+  pitch: i32 = 1000
+  /// How far the roof runs past the rectangle at the eaves and at the gables (the verge).
+  overhang: i32 = 45
+  verge: i32 = 20
+  /// The covering's depth square to the slope: a thatch's coat, or a slate on its battens.
+  thickness: i32 = 30
+  /// The role it is drawn with; empty takes `Roles.roof`.
+  role: string = ""
+  /// A coat laid in courses (a thatch's): how far apart their butts stand up the slope, and how
+  /// far each course's surface falls to the next one's butts, which stand as a step. 0: the
+  /// slope is one plane. Only a coat 15 cm deep or more is coursed.
+  course: i32 = 0
+  course_step_mm: i32 = 20
+  /// True: the eave is cut square to the slope, its face looking down and out over the coat's
+  /// whole depth (a dressed thatch's), and the underside starts in from the eave's edge by the
+  /// cut. False: the eave's face is plumb and rolled over. Only a coat 15 cm deep or more.
+  eave_cut: bool = false
+}
+
+/// A chimney: a stack from its base through the roof, with a hearth open to a room.
+struct Chimney @version(1) {
+  /// The stack in plan, x0 z0 x1 z1.
+  rect: i32[4]
+  /// Its base and its top above the origin.
+  base: i32 = 0
+  top: i32 = 600
+  /// The side its hearth opens on, a quarter turn (0 +x, 1 +z, 2 -x, 3 -z); 255: no hearth.
+  hearth_side: u8 = 255
+  /// The hearth's opening: the storey whose floor it stands on, its width, and its head above
+  /// that floor.
+  hearth_storey: u32 = 0
+  hearth_width: i32 = 120
+  hearth_head: i32 = 130
+  /// How deep the hearth's recess runs into the stack from its open face; the stack's back
+  /// stands behind it.
+  hearth_depth: i32 = 40
+}
+
+/// The material role each surface is drawn with (docs/subsystems/materials.md; structures.md,
+/// "Materials by role"). A role the host's pack lacks falls back as the page says, then to a flat
+/// colour.
+struct Roles @version(1) {
+  /// The outside face of an exterior wall, and the plinth band at its foot.
+  wall_outer: string = "plaster/lime"
+  plinth: string = "stone/rubble"
+  /// Every face inside: the inner side of an exterior wall, both sides of an inner wall, reveals.
+  wall_inner: string = "plaster/lime"
+  roof: string = "thatch/straw"
+  /// Frames, lintels, sills, joists, the roof's timbers.
+  timber: string = "wood/plank"
+  /// The lowest storey's floor.
+  floor: string = "stone/flag"
+  /// The floors above it and the stairs.
+  boards: string = "wood/plank"
+  ceiling: string = "plaster/lime"
+  chimney: string = "stone/rubble"
+}
+
+/// The surfaces a building is drawn with, one material each: the fields of `Roles`, in order.
+enum Surface : u8 {
+  wall_outer = 0, plinth = 1, wall_inner = 2, roof = 3, timber = 4, floor = 5, boards = 6,
+  ceiling = 7, chimney = 8
+}
+
+/// A plain member: an axis-aligned box in the building's frame, drawn with a surface's role (a
+/// hearth stone, a bench's plank, a post, a newel). The interiors' parts that are neither a wall,
+/// a floor nor a stair arrive as these and are meshed with the shell.
+struct Box @version(1) {
+  /// Its low and high corners, x y z.
+  min: i32[3]
+  max: i32[3]
+  surface: Surface = timber
+  /// False: seen and not walked into (the mesher's walk records leave it out).
+  solid: bool = true
+  /// The room it stands in (`Room.id`), -1 for none: a host that splits the meshes puts it with
+  /// the interior.
+  room: i32 = -1
+}
+
+/// Where a description came from when a filler wrote it: a record, never a recipe to re-run.
+struct Provenance @version(1) {
+  filler: string = ""
+  version: u32 = 0
+  seed: u64 = 0
+}
+
+/// A building's description: what the mesher, the validators, collision and a reviewing agent read.
+struct Description @version(1) {
+  name: string = ""
+  /// A style table's row (the fillers'; the mesher reads none of it).
+  style: string = ""
+  /// The outline of the exterior walls' centre lines, x0 z0 x1 z1 ..., counter-clockwise seen from
+  /// above: what the floors span.
+  footprint: i32[] = []
+  /// How far below the origin the exterior walls reach, into the ground the building stands on.
+  foundation: i32 = 60
+  /// The top of the plinth band above the origin; at or below `-foundation`: no plinth.
+  plinth_top: i32 = 30
+  /// How far the plinth's face stands outside the wall's face over it, with a ledge between
+  /// them at `plinth_top`. 0: the plinth lies in the wall's plane.
+  plinth_proud: i32 = 0
+  /// The radius the exterior walls' outer corners are rounded to (a cob wall's, and a thick
+  /// render's, are never sharp). 0: a sharp arris.
+  arris: i32 = 0
+  storeys: Storey[] = []
+  walls: Wall[] = []
+  openings: Opening[] = []
+  rooms: Room[] = []
+  stairs: Stair[] = []
+  roofs: Roof[] = []
+  chimneys: Chimney[] = []
+  boxes: Box[] = []
+  roles: Roles
+  provenance: Provenance
+}
+
+/// What one mesh of a description holds. `whole`: everything, one mesh. `exterior`: what is seen
+/// from outside (the walls' outer faces, the roof, the chimneys above it, the frames). `interior`:
+/// the rest. The two halves together are the whole, split so a host may keep an interior resident
+/// only where a walker can reach it.
+enum MeshScope : u8 { whole = 0, exterior = 1, interior = 2 }
+
+/// The mesh generator `structure`'s file (`<name>.structure.json`): a description and which of
+/// its meshes to build.
+struct Recipe @version(1) {
+  description: Description
+  scope: MeshScope = whole
+}
+
+/// A building as a **document record** (D37): its description, where it stands and how it is
+/// turned. The description is the authored artefact; a filler's output is written here once and is
+/// then the author's.
+struct Building @version(1) @kind(record) {
+  name: string
+  description: Description
+  translation: worldpos @unit(m)
+  /// Degrees about +y.
+  yaw_deg: f32 = 0
+}

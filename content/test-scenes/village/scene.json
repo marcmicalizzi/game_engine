@@ -1,0 +1,106 @@
+{
+  "format": "engine.scene.v1",
+  "name": "village",
+  "description": "A small row-plan village at the foot of a ridge (roadmap G69, S89; docs/subsystems/village.md): eight houses of two rows along a 129 m lane on an authored ground, each on a pad benched into the tile set, the lane's tread and the paths to the doors benched and kept bare and worn by degrees (a stony middle, a margin of bare earth, a trodden verge, a yard at each door), each plot walled with a gateway at its path, grass tufts, weeds, shrubs and apple trees scattered after the village so they keep off it, at three in a midsummer afternoon. Its camera path goes in at a door, through the rooms, up the stair and to a window. The heightfield is written first by engine-content terrain-synth (README.md).",
+  "camera_path": "camera-path.json",
+  "sky": {"latitude_deg": 52, "day_of_year": 170, "turbidity": 2.5},
+  "terrain": {
+    "size": 17,
+    "extent": 128,
+    "time": 54000,
+    "provider": "tiles",
+    "tiles": {"heightfield": "ground.json", "cells": 64},
+    "materials": {
+      "layer_budget": 4, "detail_near_m": 32, "detail_far_m": 128,
+      "layers": [
+        {"name": "turf", "base_color": "../../materials/generated/ground/turf/base_color.png",
+         "normal": "../../materials/generated/ground/turf/normal.png",
+         "roughness": "../../materials/generated/ground/turf/roughness.png",
+         "height": "../../materials/generated/ground/turf/height.png", "tile_m": 2, "porosity": 0.6},
+        {"name": "soil", "base_color": "../../materials/generated/ground/soil/base_color.png",
+         "normal": "../../materials/generated/ground/soil/normal.png",
+         "roughness": "../../materials/generated/ground/soil/roughness.png",
+         "height": "../../materials/generated/ground/soil/height.png", "tile_m": 2, "porosity": 0.7},
+        {"name": "verge", "base_color": "../../materials/generated/ground/turf/base_color.png",
+         "normal": "../../materials/generated/ground/turf/normal.png",
+         "roughness": "../../materials/generated/ground/turf/roughness.png",
+         "height": "../../materials/generated/ground/turf/height.png", "tile_m": 1.3, "porosity": 0.6,
+         "tint": [1.0, 0.93, 0.62]},
+        {"name": "worn", "base_color": "../../materials/generated/sand/bar/base_color.png",
+         "normal": "../../materials/generated/sand/bar/normal.png",
+         "roughness": "../../materials/generated/sand/bar/roughness.png",
+         "height": "../../materials/generated/sand/bar/height.png", "tile_m": 2.6, "porosity": 0.5,
+         "tint": [0.74, 0.64, 0.5]},
+        {"name": "lane", "base_color": "../../materials/generated/gravel/bed/base_color.png",
+         "normal": "../../materials/generated/gravel/bed/normal.png",
+         "roughness": "../../materials/generated/gravel/bed/roughness.png",
+         "height": "../../materials/generated/gravel/bed/height.png", "tile_m": 1.8, "porosity": 0.4,
+         "tint": [0.95, 0.86, 0.72]}
+      ]
+    },
+    "masks": {
+      "spacing_mm": 250,
+      "tile_cells": 64,
+      "height_blend": 0.2,
+      "priors": {"soil": "soil"},
+      "regions": [
+        {"name": "meadow", "polygon": [[-128, 0, -128], [128, 0, -128], [128, 0, 128], [-128, 0, 128]],
+         "base": "turf", "feather_m": 0},
+        {"name": "ridge foot street verge", "polygon": [[86.96, 0, -63.81], [90.97, 0, 0.33], [100.99, 0, 64.47], [107.01, 0, 63.53], [97.03, 0, -0.33], [93.04, 0, -64.19]], "material": "verge", "feather_m": 1},
+        {"name": "ridge foot street wear", "polygon": [[88.05, 0, -63.88], [92.06, 0, 0.21], [102.07, 0, 64.3], [105.93, 0, 63.7], [95.94, 0, -0.21], [91.95, 0, -64.12]], "material": "worn", "feather_m": 0.9},
+        {"name": "ridge foot street tread", "polygon": [[88.95, 0, -63.94], [92.96, 0, 0.11], [102.96, 0, 64.16], [105.04, 0, 63.84], [95.04, 0, -0.11], [91.05, 0, -64.07]], "material": "lane", "feather_m": 0.45},
+        {"name": "ridge foot plot 0 yard", "polygon": [[91.64, 0, -54.57], [91.57, 0, -55.76], [93.56, 0, -55.89], [93.5, 0, -56.89], [95.5, 0, -57.01], [95.7, 0, -53.82], [93.7, 0, -53.69], [93.64, 0, -54.69]], "material": "worn", "feather_m": 0.4},
+        {"name": "ridge foot plot 1 yard", "polygon": [[89.47, 0, -55.71], [89.54, 0, -54.52], [87.54, 0, -54.39], [87.61, 0, -53.39], [85.61, 0, -53.27], [85.41, 0, -56.46], [87.41, 0, -56.59], [87.47, 0, -55.59]], "material": "worn", "feather_m": 0.4},
+        {"name": "ridge foot plot 2 yard", "polygon": [[92.4, 0, -42.48], [92.32, 0, -43.68], [94.32, 0, -43.8], [94.26, 0, -44.8], [96.25, 0, -44.93], [96.45, 0, -41.73], [94.46, 0, -41.61], [94.39, 0, -42.6]], "material": "worn", "feather_m": 0.4},
+        {"name": "ridge foot plot 3 yard", "polygon": [[90.84, 0, -33.71], [90.92, 0, -32.51], [88.92, 0, -32.38], [88.98, 0, -31.39], [86.99, 0, -31.26], [86.79, 0, -34.46], [88.78, 0, -34.58], [88.85, 0, -33.58]], "material": "worn", "feather_m": 0.4},
+        {"name": "ridge foot plot 4 yard", "polygon": [[93.36, 0, -27.11], [93.28, 0, -28.3], [95.28, 0, -28.43], [95.22, 0, -29.43], [97.21, 0, -29.55], [97.41, 0, -26.36], [95.42, 0, -26.23], [95.35, 0, -27.23]], "material": "worn", "feather_m": 0.4},
+        {"name": "ridge foot plot 5 yard", "polygon": [[91.95, 0, -16.04], [92.02, 0, -14.84], [90.03, 0, -14.71], [90.09, 0, -13.72], [88.09, 0, -13.59], [87.89, 0, -16.78], [89.89, 0, -16.91], [89.95, 0, -15.91]], "material": "worn", "feather_m": 0.4},
+        {"name": "ridge foot plot 6 yard", "polygon": [[94.18, 0, -13.97], [94.1, 0, -15.17], [96.1, 0, -15.29], [96.04, 0, -16.29], [98.03, 0, -16.42], [98.23, 0, -13.22], [96.24, 0, -13.1], [96.18, 0, -14.1]], "material": "worn", "feather_m": 0.4},
+        {"name": "ridge foot plot 7 yard", "polygon": [[96.37, 0, 8.38], [96.19, 0, 7.19], [98.16, 0, 6.88], [98.01, 0, 5.9], [99.98, 0, 5.59], [100.48, 0, 8.75], [98.5, 0, 9.06], [98.35, 0, 8.07]], "material": "worn", "feather_m": 0.4}
+      ]
+    }
+  },
+  "placements": [
+    {"generator": "village", "params": {
+      "name": "ridge foot", "seed": 7, "houses": 8, "storeys": 2, "depth_perches": 5,
+      "lanes": [{"name": "street", "waypoints": [[90, 0, -64], [94, 0, 0], [104, 0, 64]]}]}},
+    {"generator": "walls", "params": {
+      "seed": 1, "height_cm": 110, "base_width_cm": 62, "gateway_cm": 150,
+      "lines": [
+        {"points_mm": [93986, -49130, 93044, -64190, 118145, -65759, 119087, -50699], "closed": true, "gateways_cm": [617]},
+        {"points_mm": [86955, -63809, 88211, -43729, 63110, -42160, 61854, -62241], "closed": true, "gateways_cm": [884]},
+        {"points_mm": [119086, -50698, 119714, -40658, 94613, -39089, 93985, -49129], "closed": false, "gateways_cm": [3933]},
+        {"points_mm": [88211, -43729, 89467, -23649, 64366, -22080, 63110, -42161], "closed": false, "gateways_cm": [1077]},
+        {"points_mm": [119713, -40658, 120969, -20577, 95868, -19009, 94612, -39089], "closed": false, "gateways_cm": [5411]},
+        {"points_mm": [89466, -23648, 90408, -8588, 65307, -7019, 64365, -22079], "closed": false, "gateways_cm": [835]},
+        {"points_mm": [120969, -20577, 121597, -10537, 96496, -8968, 95868, -19008], "closed": false, "gateways_cm": [4095]},
+        {"points_mm": [99545, 15730, 97215, 820, 122064, -3062, 124393, 11847], "closed": true, "gateways_cm": [835]}
+      ]}},
+    {"generator": "scatter", "params": {
+      "name": "village-cover", "seed": 31, "tile_size": 32,
+      "region": {"kind": "Polygon", "polygon": [[56, -96], [127, -96], [127, 96], [56, 96]]},
+      "density": {"kind": "Constant", "per_m2": 0.3},
+      "kinds": [
+        {"name": "fescue", "mesh": "../../flora/fescue.flora.json", "weight": 1.0, "spacing": 0.9,
+         "slope_max_deg": 30, "scale_min": 0.8, "scale_max": 1.25},
+        {"name": "hair-grass", "mesh": "../../flora/hair-grass.flora.json", "weight": 0.6, "spacing": 0.9,
+         "slope_max_deg": 30, "scale_min": 0.8, "scale_max": 1.2},
+        {"name": "nettle", "mesh": "../../flora/nettle.flora.json", "weight": 0.12, "spacing": 1.5,
+         "slope_max_deg": 25, "scale_min": 0.8, "scale_max": 1.15},
+        {"name": "daisy", "mesh": "../../flora/daisy.flora.json", "weight": 0.2, "spacing": 0.8,
+         "slope_max_deg": 25, "scale_min": 0.85, "scale_max": 1.15}
+      ],
+      "budget": {"per_tile": 400}}},
+    {"generator": "scatter", "params": {
+      "name": "village-trees", "seed": 32, "tile_size": 32,
+      "region": {"kind": "Polygon", "polygon": [[56, -96], [127, -96], [127, 96], [56, 96]]},
+      "density": {"kind": "Constant", "per_m2": 0.004},
+      "kinds": [
+        {"name": "apple", "mesh": "../../flora/orchard-apple.flora.json", "weight": 1.0, "spacing": 7,
+         "clearance": 3.0, "slope_max_deg": 20, "scale_min": 0.85, "scale_max": 1.1},
+        {"name": "hazel", "mesh": "../../flora/hazel.flora.json", "weight": 0.8, "spacing": 5,
+         "clearance": 2.0, "slope_max_deg": 25, "scale_min": 0.8, "scale_max": 1.15}
+      ],
+      "budget": {"per_tile": 12}}}
+  ]
+}
