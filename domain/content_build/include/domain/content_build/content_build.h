@@ -109,6 +109,11 @@ void attach_repository_pack(std::string_view source, std::string_view executable
 // the question it answered.
 u64 build_key_of(u64 source_hash, const MeshOptions& options) noexcept;
 geometry::ClusterLodOptions lod_options_of(const MeshOptions& options);
+// The same for an **imported** mesh: with the loose-island rule as `options.loose_islands` has it
+// (on unless `--no-loose-islands`). `lod_options_of` leaves the rule off, which is what a
+// generated mesh is built and keyed with on every route (geometry.md, "Generators, and the error
+// of a long thin island"); `build_key_of` and the import's build use this one.
+geometry::ClusterLodOptions import_lod_options_of(const MeshOptions& options);
 // The cluster format's own limits: 4..256 triangles and 1..255 vertices a cluster.
 bool options_in_range(const MeshOptions& options);
 

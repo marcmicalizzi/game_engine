@@ -140,8 +140,11 @@ TEST_CASE("content_build: the build key moves with --no-morph and --atlas repack
   const content_build::MeshOptions plain;
   const u64 source = 0x1234'5678'9abc'def0ull;
   const u64 key = content_build::build_key_of(source, plain);
-  CHECK(key == geometry::cluster_cache_key(source, content_build::lod_options_of(plain), plain.weld,
-                                           plain.page_bytes));
+  // An import's key is over its own options, the loose-island rule among them.
+  CHECK(key == geometry::cluster_cache_key(source, content_build::import_lod_options_of(plain),
+                                           plain.weld, plain.page_bytes));
+  CHECK(content_build::import_lod_options_of(plain).loose_islands);
+  CHECK(!content_build::lod_options_of(plain).loose_islands);
   content_build::MeshOptions no_morph = plain;
   no_morph.morph = false;
   content_build::MeshOptions repack = plain;

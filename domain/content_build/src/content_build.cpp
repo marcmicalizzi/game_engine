@@ -85,6 +85,11 @@ geometry::ClusterLodOptions lod_options_of(const MeshOptions& options) {
   lod_options.uv_weight = options.uv_weight;
   lod_options.uv_seams = options.uv_seams;
   lod_options.normal_seams = options.normal_seams;
+  return lod_options;
+}
+
+geometry::ClusterLodOptions import_lod_options_of(const MeshOptions& options) {
+  geometry::ClusterLodOptions lod_options = lod_options_of(options);
   lod_options.loose_islands = options.loose_islands;
   return lod_options;
 }
@@ -114,7 +119,8 @@ void attach_repository_pack(std::string_view source, std::string_view executable
 
 // Every key a build records: the geometry's, then the two steps outside it.
 u64 build_key_of(u64 source_hash, const MeshOptions& options) noexcept {
-  return atlas_key(morph_key(geometry::cluster_cache_key(source_hash, lod_options_of(options),
+  return atlas_key(morph_key(geometry::cluster_cache_key(source_hash,
+                                                         import_lod_options_of(options),
                                                          options.weld, options.page_bytes),
                              options),
                    options);
@@ -532,7 +538,7 @@ bool build_one(const std::string& input, const std::string& output, const MeshOp
 
   // One DAG per primitive, so every cluster belongs to exactly one material; merging keeps the
   // parts' clusters and remembers which part each came from.
-  const geometry::ClusterLodOptions lod_options = lod_options_of(options);
+  const geometry::ClusterLodOptions lod_options = import_lod_options_of(options);
   const geometry::AttributeSource attributes = assets::attribute_source(mesh);
   Vector<PartBuild> parts;
   parts.reserve(mesh.primitives.size());
