@@ -137,16 +137,18 @@ void motion_main(uint3 id : SV_DispatchThreadID) {
               a[i] = float3(now[slot], now[slot + 1], now[slot + 2]);
               b[i] = float3(before[slot], before[slot + 1], before[slot + 2]);
             }
+            // The barycentrics by the triangle's normal, not by its Gram determinant: for a sliver
+            // (a leaflet's tip, a blade) `|e1|^2 |e2|^2 - (e1.e2)^2` cancels to a few bits in
+            // float where `|e1 x e2|^2` keeps them, and the error is the point's, over pixels of
+            // motion (R154 leg 1b: 0.022 px against the swaying palm's mirror, past the 0.02).
             const float3 e1 = a[1] - a[0];
             const float3 e2 = a[2] - a[0];
             const float3 d = local - a[0];
-            const float d11 = dot(e1, e1);
-            const float d12 = dot(e1, e2);
-            const float d22 = dot(e2, e2);
-            const float denom = d11 * d22 - d12 * d12;
-            if (denom > 0.0) {
-              const float v = (d22 * dot(d, e1) - d12 * dot(d, e2)) / denom;
-              const float w = (d11 * dot(d, e2) - d12 * dot(d, e1)) / denom;
+            const float3 n = cross(e1, e2);
+            const float nn = dot(n, n);
+            if (nn > 0.0) {
+              const float v = dot(cross(d, e2), n) / nn;
+              const float w = dot(cross(e1, d), n) / nn;
               local = b[0] * (1.0 - v - w) + b[1] * v + b[2] * w;
             }
           }

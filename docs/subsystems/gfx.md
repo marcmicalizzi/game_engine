@@ -575,7 +575,10 @@ a view-projection with its own inverse is off by parts in 1e7, a thousandth of a
 motion at 3840 wide on a frame where nothing moved; and the eyes' difference never passes through a
 float sum of world positions ([ADR-0053](../adr/0053-world-positions-are-f64-and-the-gpu-sees-none.md)).
 A half float's step is 1/128 px under 16 px of motion and 1/16 px under 128: finer than the
-accumulation's bilinear lookup needs, and what the tests' 0.02 px is a bound on.
+accumulation's bilinear lookup needs, and what the tests' 0.02 px is a bound on. **A deformed
+point's barycentrics are taken by the triangle's normal** (`(d x e2) . n / |n|^2`), not by the Gram
+determinant `|e1|^2 |e2|^2 - (e1 . e2)^2`, which cancels in float on a sliver: on a swaying palm's
+leaflets the Gram form missed its mirror by 0.022 px and the normal's by 0.0024 (R154 leg 1b).
 
 **An imported asset gets all of it**: the three rows read a transform, a depth and the pool, and
 nothing reads what a generator emitted. **A scene with nothing moved and nothing deformed never
