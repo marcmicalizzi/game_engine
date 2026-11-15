@@ -1886,7 +1886,9 @@ each colour capture):
    `61ccce67`'s capture of the same view, where no deposit is drawn at all, and absent under traced
    shadows; walking on, it becomes several large polygons. Its caster is something the cascades draw
    that the picture and the traced structures do not; the cascaded maps (renderer.md, "Shadows") or
-   the ground's form in the cascades, not a placement.
+   the ground's form in the cascades, not a placement. **Gone on main `ae9efac5`** (batch 64 changed
+   the cascades' cull): the same view, camera and settings under `--shadows csm`, captured on
+   `ae9efac5` and on this row merged with it (2026-11-14), show none.
 4. **A vertical striped wedge where the talus ends: the mesh room's, then the world's.** With the
    room large enough (`renderer.meshes.budget_mib` 1024, a diagnosis setting) the band runs unbroken
    to the horizon at the ring's edge view. At the owner's 256 MiB, without ray tracing it fits
