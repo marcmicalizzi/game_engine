@@ -642,6 +642,120 @@ void summarize_frames(std::span<const scene::FrameRecord> records, u32 frames, u
     }
     out.markers.push_back(std::move(m));
   }
+  summarize_slow(records, k_slow_frame_ms, out);
+}
+
+namespace {
+
+struct Part {
+  const char* name;
+  f64 ms;
+};
+
+Part largest(std::span<const Part> parts) noexcept {
+  Part best = parts[0];
+  for (const Part& p : parts) {
+    if (p.ms > best.ms) best = p;
+  }
+  return best;
+}
+
+}  // namespace
+
+// The largest part at each step down, for as long as one part holds at least half of the one
+// above it: past that the time is spread, and the span above is the honest answer.
+scene::SlowFrame slowest_span(const scene::FrameRecord& r) {
+  scene::SlowFrame out;
+  out.frame = r.frame;
+  out.repeat = r.repeat;
+  if (!r.sections.has_value()) return out;
+  const scene::FrameSections& s = *r.sections;
+  out.wall_ms = s.wall_ms;
+  const Part sections[] = {
+      {"host", s.host_ms},     {"slot_wait", s.slot_wait_ms}, {"begin", s.begin_ms},
+      {"fold", s.fold_ms},     {"acquire", s.acquire_ms},     {"ticks", s.ticks_ms},
+      {"submit", s.submit_ms}, {"after", s.after_ms},         {"present", s.present_ms},
+      {"tail", s.tail_ms},     {"other", s.other_ms}};
+  Part at = largest(sections);
+  std::string span = at.name;
+  const auto down = [&](std::span<const Part> parts) {
+    const Part p = largest(parts);
+    if (p.ms * 2.0 < at.ms) return false;
+    span += '.';
+    span += p.name;
+    at = p;
+    return true;
+  };
+  if (span == "host" && r.world.has_value()) {
+    const scene::FrameWorld& w = *r.world;
+    const Part host[] = {{"update", w.update_ms},
+                         {"ground", w.ground_ms},
+                         {"props", w.props_ms},
+                         {"ticks", w.ticks_ms},
+                         {"input", w.input_ms}};
+    if (down(host)) {
+      if (std::strcmp(at.name, "update") == 0) {
+        const Part update[] = {{"tiles", w.tiles_ms},
+                               {"admit", w.admit_ms},
+                               {"commit", w.commit_ms},
+                               {"handover", w.handover_ms}};
+        if (down(update) && std::strcmp(at.name, "handover") == 0) {
+          const Part handover[] = {{"compare", w.compare_ms},  {"layout", w.layout_ms},
+                                   {"write", w.write_ms},      {"after", w.after_ms},
+                                   {"fires", w.fires_ms},      {"far", w.far_ms},
+                                   {"relayout", w.relayout_ms}};
+          (void)down(handover);
+        }
+      } else if (std::strcmp(at.name, "ground") == 0 && r.terrain.has_value()) {
+        const Part ground[] = {{"wait", r.terrain->wait_ms}};
+        (void)down(ground);
+      }
+    }
+  } else if (span == "submit") {
+    const Part submit[] = {{"tables", r.cpu.tables}, {"terrain", r.cpu.terrain},
+                           {"passes", r.cpu.passes}, {"compile", r.cpu.compile},
+                           {"record", r.cpu.record}, {"submit", r.cpu.submit}};
+    (void)down(submit);
+  }
+  out.span = std::move(span);
+  out.span_ms = at.ms;
+  return out;
+}
+
+void summarize_slow(std::span<const scene::FrameRecord> records, f64 limit_ms,
+                    scene::FlythroughSummary& out) {
+  out.slow.reset();
+  Vector<f64> walls;
+  Vector<const scene::FrameRecord*> over;
+  for (const scene::FrameRecord& r : records) {
+    // The first frame of a repeat is the load's or the path's jump back to its start.
+    if (!r.sections.has_value() || r.frame == 0) continue;
+    walls.push_back(r.sections->wall_ms);
+    if (r.sections->wall_ms > limit_ms) over.push_back(&r);
+  }
+  if (walls.empty()) return;
+  scene::FlythroughSlow slow;
+  slow.limit_ms = limit_ms;
+  slow.wall_ms = percentiles(std::span<const f64>(walls.data(), walls.size()));
+  std::sort(walls.begin(), walls.end());
+  const u32 at999 = static_cast<u32>(std::ceil(0.999 * static_cast<f64>(walls.size()))) - 1u;
+  slow.p999_ms = walls[std::min<u32>(at999, walls.size() - 1u)];
+  for (const f64 ms : walls) {
+    slow.over_33 += ms > 33.0 ? 1u : 0u;
+    slow.over_50 += ms > 50.0 ? 1u : 0u;
+    slow.over_100 += ms > 100.0 ? 1u : 0u;
+  }
+  std::sort(over.begin(), over.end(), [](const scene::FrameRecord* a, const scene::FrameRecord* b) {
+    if (a->sections->wall_ms != b->sections->wall_ms)
+      return a->sections->wall_ms > b->sections->wall_ms;
+    return a->repeat != b->repeat ? a->repeat < b->repeat : a->frame < b->frame;
+  });
+  for (const scene::FrameRecord* r : over) {
+    scene::SlowFrame frame = slowest_span(*r);
+    slow.ground_waits += frame.span == "host.ground.wait" ? 1u : 0u;
+    if (slow.worst.size() < k_slow_frames_named) slow.worst.push_back(std::move(frame));
+  }
+  out.slow = std::move(slow);
 }
 
 VisibleCensus::~VisibleCensus() { destroy(); }
@@ -777,14 +891,13 @@ bool VisibleCensus::count(const SceneData& data, const GpuScene& scene, const St
     ENGINE_LOG_INFO(
         log_renderer, "chain census", log::field("frame", counted_ - 1),
         log::field("drawn", static_cast<u32>(entry_count)),
-        log::field("casters", static_cast<u32>(caster_count)),
-        log::field("deform", kinds[0][0]), log::field("rigid", kinds[0][1]),
-        log::field("cached", kinds[0][2]), log::field("static", kinds[0][3]),
-        log::field("untraced_deform", kinds[0][4]), log::field("untraced_rigid", kinds[0][5]),
-        log::field("untraced_static", kinds[0][7]), log::field("untraced_cached", kinds[0][6]),
-        log::field("ref_r0", refs[0]), log::field("ref_r1", refs[1]), log::field("ref_r2", refs[2]),
-        log::field("ref_r3", refs[3]), log::field("ref_r4", refs[4]),
-        log::field("own_r0", own[0][0]),
+        log::field("casters", static_cast<u32>(caster_count)), log::field("deform", kinds[0][0]),
+        log::field("rigid", kinds[0][1]), log::field("cached", kinds[0][2]),
+        log::field("static", kinds[0][3]), log::field("untraced_deform", kinds[0][4]),
+        log::field("untraced_rigid", kinds[0][5]), log::field("untraced_static", kinds[0][7]),
+        log::field("untraced_cached", kinds[0][6]), log::field("ref_r0", refs[0]),
+        log::field("ref_r1", refs[1]), log::field("ref_r2", refs[2]), log::field("ref_r3", refs[3]),
+        log::field("ref_r4", refs[4]), log::field("own_r0", own[0][0]),
         log::field("own_r1", own[0][1]), log::field("own_r2", own[0][2]),
         log::field("own_r3", own[0][3]), log::field("own_r4", own[0][4]),
         log::field("own_r5", own[0][5]), log::field("c_deform", kinds[1][0]),

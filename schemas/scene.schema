@@ -1956,8 +1956,10 @@ struct FrameSections @version(1) {
 /// and how far behind game time the surface stood, its speed over the true one, and each level's.
 /// Version 3 added the ground's layout: how far behind the camera the rings or the world's tiles
 /// drawn this frame were, what a rebuild swapped in on this frame cost, and the frame thread's
-/// share of the ground (docs/subsystems/renderer.md, "What a frame waits for").
-struct FrameTerrain @version(3) {
+/// share of the ground (docs/subsystems/renderer.md, "What a frame waits for"). Version 4 (T137)
+/// says how much of that share was the frame's thread standing still, and what the rebuild's
+/// workers spent it on.
+struct FrameTerrain @version(4) {
   game_s: f64 = 0
   latency_s: f64 = 0
   lag_s: f64 = 0
@@ -1983,6 +1985,17 @@ struct FrameTerrain @version(3) {
   /// for, chunks staged, slots swapped — and offscreen the waits for all of it).
   chunk_upload_bytes: u64 = 0 @since(3)
   host_ms: f64 = 0 @since(3)
+  /// Of `host_ms`, the milliseconds the frame's thread stood waiting for the terrain's workers: a
+  /// rebuild's tiles, the pairs carried over, a field. **An offscreen run's alone** — it draws
+  /// every frame from the layout that frame asked for, so it waits; a window never does, and this
+  /// is zero there (`engine-view --terrain-async` steps an offscreen run as a window's). A flight
+  /// whose long frames are this is measuring the offscreen wait, not what a player's frame costs.
+  wait_ms: f64 = 0 @since(4)
+  /// The rebuild swapped in on this frame, on its workers: the CPU milliseconds, summed over
+  /// them, asking the source for the tiles' heights and building the tiles' meshes and cluster
+  /// DAGs. `rebuild_ms` is their wall time, the slowest tile's with a worker a tile.
+  rebuild_heights_cpu_ms: f64 = 0 @since(4)
+  rebuild_mesh_cpu_ms: f64 = 0 @since(4)
 }
 
 /// A walking session's frame (`engine-view` with a walker, docs/subsystems/apps.md, "The frame
@@ -2058,7 +2071,9 @@ struct FrameWalk @version(2) {
 /// `withheld` tiles after it), the commit's runs (`commit_ms`) and the renderer taking them
 /// (`handover_ms`, `SceneRenderer::set_dynamic_instances`). Inside `handover_ms`: the blocks
 /// compared, laid out, written (`compare_ms`, `layout_ms`, `write_ms`, with `slots_written`,
-/// `compactions` and how many of them `tight`), what follows the tables (`after_ms`), the props'
+/// `compactions` — every tile laid out again and every slot written — and `tight`, the changes
+/// that met the pair cap: since T137 those number the pairs again and write no slot, so `tight`
+/// is no longer a count of compactions), what follows the tables (`after_ms`), the props'
 /// fires (`fires_ms`), the far forest's hand-off (`far_ms`, of which `place_ms` is
 /// `GpuScene::place_instances`), and a relayout's wait for the device (`relayout_ms`).
 struct FrameWorld @version(1) {
@@ -2690,8 +2705,42 @@ struct FlythroughAnimation @version(2) {
   fell_back_skinned: u32 = 0 @since(2)
 }
 
+/// One frame of a run whose own interval was long, and the span of the loop that took it (T137;
+/// docs/subsystems/apps.md, "The summary's slow frames"). `span` is a path into the record, the
+/// largest part at each step down: `host.ground.wait` (the offscreen wait for the ground's
+/// rebuild), `host.update.handover.write` (the instance table written), `submit.tables`,
+/// `slot_wait` (the GPU). `span_ms` is that innermost part's own milliseconds.
+struct SlowFrame @version(1) {
+  frame: u32 = 0
+  repeat: u32 = 0
+  wall_ms: f64 = 0
+  span: string
+  span_ms: f64 = 0
+}
+
+/// **A run's frames by their own intervals** (T137): `FrameRecord.sections.wall_ms`, the frame's
+/// loop iteration from its start to the next one's, which is the number every part of the record
+/// is a part of — `frame_ms` is the interval *before* the frame, so a long `frame_ms` is explained
+/// by the record before it. The percentiles and the counts are over every recorded frame but the
+/// first (the load's); `worst` names the slowest frames over `limit_ms`, slowest first, each with
+/// the span that took it, so a stall says where it was before anyone opens a record.
+struct FlythroughSlow @version(1) {
+  limit_ms: f64 = 0
+  wall_ms: Percentiles
+  p999_ms: f64 = 0
+  over_33: u32 = 0
+  over_50: u32 = 0
+  over_100: u32 = 0
+  /// Of the frames over `limit_ms`, how many spent most of it in the offscreen wait for the
+  /// ground (`FrameTerrain.wait_ms`), which a window does not make.
+  ground_waits: u32 = 0
+  worst: SlowFrame[]
+}
+
 /// The last line of a flythrough benchmark's `.jsonl`, and engine-view's summary line. An
 /// interactive session measured with `--benchmark` ends its `.jsonl` with one too.
+///
+/// Version 20 (T137): `slow`, the frames by their own intervals and the slowest of them named.
 ///
 /// Version 12: `device`, the GPU the run drew on, and `frame_loop`, what the frame loop allocated
 /// (`FrameLoopAllocations`): what a frame budget is checked against and on
@@ -2709,7 +2758,7 @@ struct FlythroughAnimation @version(2) {
 ///
 /// Version 17: `load`, what the load read for its meshes and textures and what the device's
 /// pipeline cache did (roadmap W75; docs/subsystems/apps.md, "The summary's load block").
-struct FlythroughSummary @version(19) {
+struct FlythroughSummary @version(20) {
   /// "engine.flythrough.v1".
   format: string
   scene: string
@@ -2831,4 +2880,7 @@ struct FlythroughSummary @version(19) {
   /// owners the engine can name, the largest private allocations and the live large allocations by
   /// call stack with what of each is resident. Null without the flag.
   memory: json @since(19)
+  /// The frames by their own intervals, and the slowest named by the span that took them (see
+  /// `FlythroughSlow`). Null when no record carries its sections.
+  slow: FlythroughSlow? @since(20)
 }

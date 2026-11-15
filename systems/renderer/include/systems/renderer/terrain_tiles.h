@@ -335,6 +335,10 @@ class TerrainTileSet final : public TerrainLevelSet {
   f64 last_build_ms() const noexcept override { return last_build_ms_; }
   u32 last_built() const noexcept override { return last_built_; }
   u32 last_kept() const noexcept override { return last_kept_; }
+  void last_build_cpu(f64& heights_ms, f64& mesh_ms) const noexcept override {
+    heights_ms = last_phases_.heights_cpu_ms;
+    mesh_ms = last_phases_.mesh_cpu_ms;
+  }
 
   // The window's centre a camera at `camera` (its x and z) puts a level's fields at, millimetres:
   // its tile's corner.

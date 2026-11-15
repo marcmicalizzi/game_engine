@@ -67,6 +67,9 @@ inline constexpr u32 k_block_instance_granularity = 4;
 // fewest holes worth a compaction at all (a small scene's few hundred slack pairs cost nothing).
 inline constexpr u32 k_default_compact_pct = 25;
 inline constexpr u32 k_compact_min_holes = 4096;
+// At the cap the holes are slots, not pairs: the fewest free slots worth laying everything out
+// again for (a slot is 96 bytes of the table and a step of the cull's search).
+inline constexpr u32 k_compact_min_free_slots = 4096;
 // `renderer.tiles.compact_pct`: the share above, read once when a dynamic scene is created.
 u32 tile_compact_pct_tunable() noexcept;
 
@@ -112,7 +115,14 @@ struct TileLayoutChange {
   u32 appended = 0;   // placed at the end
   u32 freed = 0;      // let go: gone from the tail, or moved to a block it fits
   bool compacted = false;
-  bool tight = false;  // compacted with no slack at all, because the classes would pass the cap
+  // **The pairs were numbered again, and no slot moved** (T137; renderer.md, "At the cap the pairs
+  // are numbered again"): the classes' slack would have passed the cap, so every block now holds
+  // exactly its pairs, in slot order from the load's end, and a free run holds none. The writes'
+  // `pair_begin` are then superseded: whoever keeps the table numbers every slot's first pair
+  // again from the instances it holds (`GpuScene::number_first_pairs`), which costs an addition a
+  // slot. Until T137 this laid every tile out again and wrote every slot, 52 to 86 ms of the
+  // frame's thread at the forest's 300,000 slots.
+  bool tight = false;
 };
 
 class TileLayout {
@@ -142,6 +152,12 @@ class TileLayout {
   // again in the requests' order. `writes` are the slots to write, in order. False, with `error`
   // and nothing changed, when the layout would pass `max_pairs` even packed with no slack, or a key
   // repeats.
+  //
+  // **At the cap** (the classes' slack would pass `max_pairs`) no slot moves: the pairs alone are
+  // numbered again (`TileLayoutChange::tight`), and from then on a block that fits no free run by
+  // its pairs takes the smallest one that holds its slots, its pairs numbered in behind it. Free
+  // slots past `compact_pct` percent of the table (and `k_compact_min_free_slots`) then lay
+  // everything out again, as the holes do under the cap.
   bool apply(std::span<const Request> requests, u32 compact_pct, bool force_compact, u32 max_pairs,
              Vector<SlotWrite>& writes, TileLayoutChange& change, std::string* error = nullptr);
 
@@ -161,6 +177,13 @@ class TileLayout {
     for (const FreeRun& run : free_)
       pairs += run.pair_cap;
     return static_cast<u32>(pairs);
+  }
+  // The slots of free blocks: what holds the table open once the pairs are numbered tight.
+  u32 free_slots() const noexcept {
+    u64 slots = 0;
+    for (const FreeRun& run : free_)
+      slots += run.inst_cap;
+    return static_cast<u32>(slots);
   }
   u32 block_count() const noexcept { return live_.size(); }
   u32 free_count() const noexcept { return free_.size(); }
@@ -182,10 +205,11 @@ class TileLayout {
     u32 pair_cap = 0;
   };
   void free_block(const TileBlock& block, Vector<SlotWrite>& writes);
-  bool place(const Request& request, u32 source, TileBlock& out, Vector<SlotWrite>& writes,
-             TileLayoutChange& change);
+  bool place(const Request& request, u32 source, u32 max_pairs, TileBlock& out,
+             Vector<SlotWrite>& writes, TileLayoutChange& change, bool& number_again);
+  void number_pairs_again();
   void trim() noexcept;
-  void lay_out_again(std::span<const Request> requests, bool tight, Vector<SlotWrite>& writes);
+  void lay_out_again(std::span<const Request> requests, Vector<SlotWrite>& writes);
   void index() noexcept;
 
   u32 static_instances_ = 0;
@@ -202,6 +226,7 @@ class TileLayout {
   Vector<u32> old_block_;
   Vector<u8> stays_;
   Vector<TileBlock> next_;
+  Vector<u32> order_;  // the live blocks by slot, for `number_pairs_again`
   HashMap<u64, u32> seen_;
 };
 

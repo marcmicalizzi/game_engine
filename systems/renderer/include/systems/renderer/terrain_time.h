@@ -372,6 +372,12 @@ class TerrainMotion {
     f64 rebuild_ms = 0.0;
     u64 upload_bytes = 0;
     f64 host_ms = 0.0;
+    // Of `host_ms`, the frame's thread standing still for the workers (T137): offscreen only, a
+    // window never waits. And the swapped-in rebuild's CPU milliseconds over its workers, by what
+    // they did.
+    f64 wait_ms = 0.0;
+    f64 heights_cpu_ms = 0.0;
+    f64 mesh_cpu_ms = 0.0;
   };
   const FrameLayout& frame_layout() const noexcept { return frame_layout_; }
   // Where the re-centre in flight stands (`Recentre` below): 0 none, 1 rebuilding on the ring
@@ -548,6 +554,8 @@ class TerrainMotion {
     u32 kept = 0;
     u32 dropped = 0;  // chunks the levels held before and did not keep
     f64 ms = 0.0;
+    f64 heights_cpu_ms = 0.0;  // `TerrainLevelSet::last_build_cpu`
+    f64 mesh_cpu_ms = 0.0;
     bool ok = true;
     std::string error;
     bool done = false;
@@ -671,6 +679,8 @@ class TerrainMotion {
   u32 pending_built_ = 0;  // the rebuild on its way to a swap: what it built and let go
   u32 pending_dropped_ = 0;
   f64 pending_rebuild_ms_ = 0.0;
+  f64 pending_heights_cpu_ms_ = 0.0;
+  f64 pending_mesh_cpu_ms_ = 0.0;
   // The field worker: one task at a time, in the order asked.
   std::thread worker_;
   std::mutex mutex_;

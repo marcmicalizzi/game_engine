@@ -436,6 +436,9 @@ std::optional<scene::FrameTerrain> frame_terrain(const TerrainMotion& lapse) {
   out.rebuild_ms = layout.rebuild_ms;
   out.chunk_upload_bytes = layout.upload_bytes;
   out.host_ms = layout.host_ms;
+  out.wait_ms = layout.wait_ms;
+  out.rebuild_heights_cpu_ms = layout.heights_cpu_ms;
+  out.rebuild_mesh_cpu_ms = layout.mesh_cpu_ms;
   for (u32 k = 0; k < lapse.level_count(); ++k) {
     const TerrainMotion::LevelStats s = lapse.level_stats(k);
     scene::TerrainLevelFrame level;

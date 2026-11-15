@@ -197,6 +197,13 @@ class TerrainLevelSet {
   virtual f64 last_build_ms() const noexcept = 0;
   virtual u32 last_built() const noexcept = 0;
   virtual u32 last_kept() const noexcept = 0;
+  // Of the last `update`, the CPU milliseconds summed over its workers asking for the chunks'
+  // heights and building their meshes and DAGs (the frame record's `terrain`, T137); zero where a
+  // set does not time them.
+  virtual void last_build_cpu(f64& heights_ms, f64& mesh_ms) const noexcept {
+    heights_ms = 0.0;
+    mesh_ms = 0.0;
+  }
 };
 
 }  // namespace engine::renderer

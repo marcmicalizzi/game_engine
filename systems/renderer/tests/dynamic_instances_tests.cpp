@@ -615,6 +615,129 @@ TEST_CASE(
   run_tiles(gpu.device, settings, "vertex, occlusion", 2);
 }
 
+// T137 (renderer.md, "At the cap the pairs are numbered again"). A world held at its pair cap: the
+// cap is the load's pairs and the largest tail of the steps, to the pair, so every arrival's class
+// slack passes it. Until T137 each such change laid every tile out again and wrote every slot; now
+// the pairs alone are numbered again, the table sets copy the slots whose number moved without
+// their top-level records, and the picture at every step is still the loaded scene's — by id,
+// depth and colour, with the frames in flight reading the other sets.
+TEST_CASE("dynamic instances: at the pair cap the pairs are numbered again, and no slot moves") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE(gpu.why);
+    return;
+  }
+  RenderSettings settings;
+  settings.raster = RasterMode::Hardware;
+  settings.shadows = ShadowMode::Off;
+  settings.occlusion = true;
+  const Vector<SceneInstance> head = prefix();
+  const Tile a = make_tile(101, tile_a());
+  const Tile b = make_tile(202, tile_b());
+  const Tile c = make_tile(303, tile_c());
+  const Tile d = make_tile(404, tile_d());
+  const Tile a2 = make_tile(101, tile_a2(false));
+  for (const u32 frames_in_flight : {2u, 3u}) {
+    Rig dynamic;
+    REQUIRE_MESSAGE(
+        dynamic.build(gpu.device, std::span<const SceneInstance>(head.data(), head.size()), true,
+                      settings, frames_in_flight),
+        dynamic.error);
+    std::string error;
+    Vector<SceneInstance> tail;
+    Vector<DynamicBlock> blocks;
+    // The largest tail, handed over once to count its pairs, and let go again.
+    const Tile* largest[] = {&a2, &b, &c, &d};
+    tail_of(std::span<const Tile* const>(largest, 4), tail, blocks);
+    REQUIRE_MESSAGE(dynamic.renderer.set_dynamic_instances(
+                        std::span<const SceneInstance>(tail.data(), tail.size()),
+                        std::span<const DynamicBlock>(blocks.data(), blocks.size()), &error),
+                    error);
+    const u32 most = dynamic.scene.tile_layout().live_pairs();
+    const Tile* none[] = {nullptr, nullptr, nullptr, nullptr};
+    tail_of(std::span<const Tile* const>(none, 4), tail, blocks);
+    REQUIRE_MESSAGE(dynamic.renderer.set_dynamic_instances(
+                        std::span<const SceneInstance>(tail.data(), tail.size()),
+                        std::span<const DynamicBlock>(blocks.data(), blocks.size()), &error),
+                    error);
+    dynamic.scene.set_pair_limit(dynamic.scene.static_pair_count() + most);
+    const TileStep steps[] = {
+        {"a and c", {&a, &c, nullptr, nullptr}},
+        {"c: a leaves a free run", {&c, nullptr, nullptr, nullptr}},
+        {"c and d", {&c, &d, nullptr, nullptr}},
+        {"b, c and d", {&b, &c, &d, nullptr}},
+        {"a again, differently: the cap, to the pair", {&a2, &b, &c, &d}},
+        {"b and d: c leaves", {&b, &d, nullptr, nullptr}},
+        {"a, b and d: a takes c's slots", {&a, &b, &d, nullptr}},
+        {"the largest again", {&a2, &b, &c, &d}},
+    };
+    const u64 compactions_before = dynamic.scene.compactions();
+    const u64 tight_before = dynamic.renderer.stats().tiles.tight;
+    for (const TileStep& step : steps) {
+      tail_of(std::span<const Tile* const>(step.tiles, 4), tail, blocks);
+      REQUIRE_MESSAGE(dynamic.renderer.set_dynamic_instances(
+                          std::span<const SceneInstance>(tail.data(), tail.size()),
+                          std::span<const DynamicBlock>(blocks.data(), blocks.size()), &error),
+                      error);
+      REQUIRE_MESSAGE(dynamic.scene.validate_tables(&error), error);
+      REQUIRE(dynamic.scene.pair_count() <= dynamic.scene.pair_limit());
+      for (u32 f = 0; f < 3; ++f) {
+        REQUIRE_MESSAGE(dynamic.renderer.render_offscreen(
+                            frame_at(k_eye + Vec3{static_cast<f32>(f) - 1.0f, 0.0f, 0.0f}), &error),
+                        error);
+      }
+      CapturedFrame shot;
+      REQUIRE_MESSAGE(dynamic.renderer.capture(frame_at(k_eye), channels(), shot, &error), error);
+      const Vector<SceneInstance> whole = join({&head, &tail});
+      CapturedFrame expected;
+      REQUIRE_MESSAGE(
+          reference(gpu.device, std::span<const SceneInstance>(whole.data(), whole.size()),
+                    settings, expected, error),
+          error);
+      const Difference diff = compare_through_tail(shot, dynamic.scene, expected);
+      MESSAGE(frames_in_flight << " in flight, at a cap of " << dynamic.scene.pair_limit() << ", "
+                               << std::string(step.what) << ": "
+                               << dynamic.scene.tile_layout().block_count() << " blocks, "
+                               << dynamic.scene.tile_layout().free_count() << " free, "
+                               << dynamic.scene.pair_count() << " pairs, numbered again "
+                               << dynamic.renderer.stats().tiles.tight - tight_before
+                               << " times so far; " << diff.ids << " id, " << diff.depth
+                               << " depth and " << diff.color << " colour differences");
+      CHECK(shot.covered == expected.covered);
+      CHECK(diff.ids == 0);
+      CHECK(diff.depth == 0);
+      CHECK(diff.color == 0);
+    }
+    // The cap was met — on the first arrival, at the largest tail and at its return — and never
+    // answered by laying everything out again: the one compaction is the holes', when c leaves and
+    // 6,900 of the 7,000 pairs are free, as in the case above.
+    CHECK(dynamic.renderer.stats().tiles.tight - tight_before == 3);
+    CHECK(dynamic.scene.compactions() - compactions_before == 1);
+    // And the same changes on consecutive frames, none waited for.
+    for (const TileStep& step : steps) {
+      tail_of(std::span<const Tile* const>(step.tiles, 4), tail, blocks);
+      REQUIRE_MESSAGE(dynamic.renderer.set_dynamic_instances(
+                          std::span<const SceneInstance>(tail.data(), tail.size()),
+                          std::span<const DynamicBlock>(blocks.data(), blocks.size()), &error),
+                      error);
+      dynamic.renderer.begin_frame();
+      REQUIRE_MESSAGE(dynamic.renderer.submit_frame(frame_at(k_eye), &error) != 0, error);
+    }
+    CapturedFrame shot;
+    REQUIRE_MESSAGE(dynamic.renderer.capture(frame_at(k_eye), channels(), shot, &error), error);
+    const Vector<SceneInstance> whole = join({&head, &tail});
+    CapturedFrame expected;
+    REQUIRE_MESSAGE(
+        reference(gpu.device, std::span<const SceneInstance>(whole.data(), whole.size()), settings,
+                  expected, error),
+        error);
+    const Difference diff = compare_through_tail(shot, dynamic.scene, expected);
+    CHECK(diff.ids == 0);
+    CHECK(diff.depth == 0);
+    CHECK(diff.color == 0);
+  }
+}
+
 TEST_CASE("dynamic instances: the pair expansion's push constants are the shader's") {
   gfx::ShaderLibrary library;
   std::string error;

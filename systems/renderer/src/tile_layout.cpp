@@ -72,8 +72,9 @@ void TileLayout::free_block(const TileBlock& block, Vector<SlotWrite>& writes) {
     writes.push_back(SlotWrite{block.inst_begin, block.inst_cap, block.pair_begin, ~u32{0}, 0});
   }
   FreeRun run{block.inst_begin, block.inst_cap, block.pair_begin, block.pair_cap};
+  // By slot: the same order as by pair, and still strict where a free run holds no pairs (T137).
   u32 at = 0;
-  while (at < free_.size() && free_[at].pair_begin < run.pair_begin)
+  while (at < free_.size() && free_[at].inst_begin < run.inst_begin)
     ++at;
   free_.insert(at, run);
   // With the one after it, then with the one before.
@@ -111,8 +112,15 @@ void TileLayout::trim() noexcept {
 // request's class. The live slots and the slack are written whole, and so is what a split left,
 // because its null slots still carry the `first_pair` of the free run they were part of and the
 // block now in front of them has larger ones.
-bool TileLayout::place(const Request& request, u32 source, TileBlock& out,
-                       Vector<SlotWrite>& writes, TileLayoutChange& change) {
+//
+// **At the cap** (T137): when no free run holds the block by both and the end would take the
+// pairs past `max_pairs`, the pairs are going to be numbered again whatever is done here
+// (`number_again`), so the block takes the smallest free run that holds its *slots*, split by slots
+// alone, and its pairs are numbered in behind it; with no such run it goes to the end with exactly
+// its pairs. Without this a layout at the cap, whose free runs hold no pairs, would only ever
+// append, and the table would grow by every tile that came.
+bool TileLayout::place(const Request& request, u32 source, u32 max_pairs, TileBlock& out,
+                       Vector<SlotWrite>& writes, TileLayoutChange& change, bool& number_again) {
   const u32 want_inst = block_capacity(request.instances, k_block_instance_granularity);
   const u32 want_pairs = block_capacity(request.pairs, k_block_pair_granularity);
   u32 best = ~u32{0};
@@ -130,6 +138,45 @@ bool TileLayout::place(const Request& request, u32 source, TileBlock& out,
   out.pairs = request.pairs;
   out.tail_first = request.first;
   out.version = request.version;
+  if (best == ~u32{0} && u64{pair_end_} + want_pairs > max_pairs) {
+    number_again = true;
+    u32 slots = ~u32{0};
+    for (u32 i = 0; i < free_.size(); ++i) {
+      if (free_[i].inst_cap < request.instances) continue;
+      if (slots == ~u32{0} || free_[i].inst_cap < free_[slots].inst_cap) slots = i;
+    }
+    if (slots == ~u32{0}) {
+      out.inst_begin = inst_end_;
+      out.pair_begin = pair_end_;
+      out.inst_cap = want_inst;
+      out.pair_cap = request.pairs;
+      inst_end_ += want_inst;
+      pair_end_ += request.pairs;
+      writes.push_back(
+          SlotWrite{out.inst_begin, out.inst_cap, out.pair_begin, source, out.instances});
+      ++change.appended;
+      return true;
+    }
+    FreeRun& run = free_[slots];
+    const u32 inst = want_inst < run.inst_cap ? want_inst : run.inst_cap;
+    const bool split = run.inst_cap - inst >= k_block_instance_granularity;
+    out.inst_begin = run.inst_begin;
+    out.pair_begin = run.pair_begin;
+    out.inst_cap = split ? inst : run.inst_cap;
+    out.pair_cap = request.pairs;
+    writes.push_back(
+        SlotWrite{out.inst_begin, out.inst_cap, out.pair_begin, source, out.instances});
+    if (split) {
+      run.inst_begin += inst;
+      run.inst_cap -= inst;
+      run.pair_cap = 0;
+      writes.push_back(SlotWrite{run.inst_begin, run.inst_cap, run.pair_begin, ~u32{0}, 0});
+    } else {
+      free_.erase_at(slots);
+    }
+    ++change.reused;
+    return true;
+  }
   if (best != ~u32{0}) {
     FreeRun& run = free_[best];
     const u32 inst = want_inst < run.inst_cap ? want_inst : run.inst_cap;
@@ -168,10 +215,39 @@ bool TileLayout::place(const Request& request, u32 source, TileBlock& out,
   return true;
 }
 
-// Every block of `requests` again, in their order, from the load's end, at its class — or, `tight`,
-// at exactly its instances and pairs, which is the layout a scene loaded with this tail would have.
-void TileLayout::lay_out_again(std::span<const Request> requests, bool tight,
-                               Vector<SlotWrite>& writes) {
+// **The pairs numbered again where the slots stand** (T137): the blocks and the free runs in slot
+// order from the load's end, a block exactly its pairs and a free run none. Blocks and free runs
+// tile the slots, so walking them by slot is walking the pair space in the order the cull's search
+// needs; nothing here reads a pair field, which is what lets `place` leave one stale.
+void TileLayout::number_pairs_again() {
+  order_.clear();
+  for (u32 i = 0; i < live_.size(); ++i)
+    order_.push_back(i);
+  std::sort(order_.begin(), order_.end(),
+            [&](u32 a, u32 b) { return live_[a].inst_begin < live_[b].inst_begin; });
+  u32 pair = static_pairs_;
+  u32 f = 0;
+  for (const u32 i : order_) {
+    TileBlock& block = live_[i];
+    for (; f < free_.size() && free_[f].inst_begin < block.inst_begin; ++f) {
+      free_[f].pair_begin = pair;
+      free_[f].pair_cap = 0;
+    }
+    block.pair_begin = pair;
+    block.pair_cap = block.pairs;
+    pair += block.pairs;
+  }
+  for (; f < free_.size(); ++f) {
+    free_[f].pair_begin = pair;
+    free_[f].pair_cap = 0;
+  }
+  pair_end_ = pair;
+  trim();
+}
+
+// Every block of `requests` again, in their order, from the load's end, at its class. (Until T137
+// it also laid them out with no slack at the cap; `number_pairs_again` does that without a write.)
+void TileLayout::lay_out_again(std::span<const Request> requests, Vector<SlotWrite>& writes) {
   writes.clear();
   live_.clear();
   free_.clear();
@@ -188,10 +264,8 @@ void TileLayout::lay_out_again(std::span<const Request> requests, bool tight,
     block.version = request.version;
     block.inst_begin = inst_end_;
     block.pair_begin = pair_end_;
-    block.inst_cap =
-        tight ? request.instances : block_capacity(request.instances, k_block_instance_granularity);
-    block.pair_cap =
-        tight ? request.pairs : block_capacity(request.pairs, k_block_pair_granularity);
+    block.inst_cap = block_capacity(request.instances, k_block_instance_granularity);
+    block.pair_cap = block_capacity(request.pairs, k_block_pair_granularity);
     inst_end_ += block.inst_cap;
     pair_end_ += block.pair_cap;
     writes.push_back(
@@ -291,32 +365,46 @@ bool TileLayout::apply(std::span<const Request> requests, u32 compact_pct, bool 
     }
     next_.push_back(block);
   }
+  bool number_again = false;
   for (u32 r = 0; r < count; ++r) {
     if (requests[r].instances == 0 || action_[r] != 0) continue;
     TileBlock block;
-    place(requests[r], r, block, writes, change);
+    place(requests[r], r, max_pairs, block, writes, change, number_again);
     next_.push_back(block);
   }
   live_.swap(next_);
-  trim();
   live_instances_ = static_cast<u32>(live_instances);
   live_pairs_ = static_cast<u32>(live_pairs);
-
-  // Too many holes, or asked: everything again, in the caller's order.
-  const u64 holes = u64{pair_end_} - static_pairs_ - live_pairs_;
-  if (force_compact ||
-      (holes >= k_compact_min_holes && holes * 100 > u64{compact_pct} * pair_end_)) {
-    lay_out_again(requests, false, writes);
-    change.compacted = true;
+  // A block placed by its slots alone has no pairs of its own yet: number them before anything
+  // below reads the pair space.
+  if (number_again) {
+    number_pairs_again();
+    change.tight = true;
   }
-  // The classes' slack can take a layout past the visibility id's pairs that the tiles alone fit;
-  // packed with none it is the layout a scene loaded with this tail has. (W81 tried laying it out
-  // at the classes first: at the ceiling that left less than a tile of room, so the next append
-  // compacted again — 467 whole rewrites along the forest's flight against tight's 60;
+  trim();
+
+  // Too many holes, or asked: everything again, in the caller's order. At the cap the holes are
+  // slots — the pairs were numbered tight — and it is the free blocks' slots that are counted.
+  const u64 holes = u64{pair_end_} - static_pairs_ - live_pairs_;
+  const u64 open = change.tight ? u64{free_slots()} : 0;
+  if (force_compact ||
+      (holes >= k_compact_min_holes && holes * 100 > u64{compact_pct} * pair_end_) ||
+      (open >= k_compact_min_free_slots && open * 100 > u64{compact_pct} * inst_end_)) {
+    lay_out_again(requests, writes);
+    change.compacted = true;
+    change.tight = false;
+  }
+  // **The classes' slack can take a layout past the visibility id's pairs that the tiles alone
+  // fit. Then the pairs are numbered again where the slots stand** (T137): every block exactly its
+  // pairs, in slot order — the pair space a scene loaded with this tail has — and not one slot
+  // moved or made again. Until T137 this laid every tile out again with no slack and wrote every
+  // slot of the table: 52 to 86 ms of the frame's thread at the forest's 300,000 slots, 22 times
+  // along its 360 m walk, and the table's 29 MB staged again for every set after it. (W81 tried
+  // laying it out at the classes first: at the ceiling that left less than a tile of room, so the
+  // next append compacted again — 467 whole rewrites along the forest's flight against tight's 60;
   // docs/experiments/forest-load-in-2026-10-31.md.)
   if (pair_end_ > max_pairs) {
-    lay_out_again(requests, true, writes);
-    change.compacted = true;
+    number_pairs_again();
     change.tight = true;
   }  // A write past the end names slots nothing reads any more.
   for (SlotWrite& write : writes) {
@@ -354,8 +442,9 @@ bool TileLayout::validate(std::string* why) const {
   }
   for (const FreeRun& run : free_)
     runs.push_back(Run{run.inst_begin, run.inst_cap, run.pair_begin, run.pair_cap, false});
+  // By slot, which is by pair too and still strict where a free run holds no pairs (T137).
   std::sort(runs.begin(), runs.end(),
-            [](const Run& a, const Run& b) { return a.pair_begin < b.pair_begin; });
+            [](const Run& a, const Run& b) { return a.inst_begin < b.inst_begin; });
   u32 inst = static_instances_;
   u32 pair = static_pairs_;
   for (u32 i = 0; i < runs.size(); ++i) {
