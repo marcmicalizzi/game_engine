@@ -681,8 +681,8 @@ numbers are the channels entry's `flow` block (`engine.channels.ChannelFlow`):
   one that begins nearest its spill) and everything below, through the next lake too, and the
   lake's loss is taken off below it as it is from the runoff; so does a source that joins an
   outlet, whose line holds no cells, into the link below it. Until then a lake fed by springs
-  stood at its spill by its balance, which counts them, over an outlet that ran with its
-  catchment's runoff alone (the streams' judging scene: 0.66 m3/s in, 14 l/s out). **A scene's
+  stood at its spill (by its balance, which counts them wherever a loss is named, and with no
+  loss named as every lake does) over an outlet that ran with its catchment's runoff alone (the streams' judging scene: 0.66 m3/s in, 14 l/s out). **A scene's
   own body passes nothing on**, and neither does a body under its spill, which has no outlet:
   what leaves an authored lake is the author's to name as an `Outlet` at its lip.
 
@@ -2046,7 +2046,15 @@ sees of it, having no source: solved again on run `n`'s plan (run `p`), 14 of it
 carry less, by 8 l/s at the most (0.128 to 0.121 m3/s on `region link 314`), and the solved
 lines come to 47,949 stations, 4,868 of them over a bank on 152 lines and 2,689 of those in a
 hollow of their own line; the hollows, the 23 lines, the nineteen bodies that hold, the 13,884
-instances under water and the two lines at mark 8 are as run `n` left them.
+instances under water and the two lines at mark 8 are as run `n` left them. **What is left at
+a lake's lip** (the judging scene cooked again with the mend, read as text): the outlet
+carries 0.663 m3/s from its first station and runs 0.29 to 0.58 m deep from 10.6 m below the
+shore on, but over those first 10.6 m, the sill the cut holds 2 cm over the lake, the bed has
+no bank over it, so the solver writes a film of 5 mm at the sill's own height and flags the
+stations (18 of the outlet's 44), and the draw leaves a film dry: a bar of gravel between the
+lake and its stream, where two thirds of a cubic metre a second would go over the lip as a
+sheet some 15 cm deep. The sill wants a section of its own (a notch the width of the bed with
+banks, or the sheet written at its critical depth over the lip): not built.
 
 *The forest again* (run `k`: the owner's mix with the dried basin named `infilled`; this row's
 `engine-content` at `k_channels_version` 13, one job, into last night's derived-data root; the
