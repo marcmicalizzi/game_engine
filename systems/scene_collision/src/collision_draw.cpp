@@ -272,7 +272,8 @@ CollisionView::~CollisionView() = default;
 
 bool CollisionView::create(const renderer::SceneData& scene,
                            const scene_gen::GroundProvider* ground, Config config, f32 radius_tiles,
-                           std::string* error, const scene_gen::TileSource* tiles) {
+                           std::string* error, const scene_gen::TileSource* tiles,
+                           const ProxySource* proxies) {
   auto impl = std::make_unique<Impl>();
   physics::WorldOptions options;
   options.max_bodies = 4096;
@@ -295,7 +296,8 @@ bool CollisionView::create(const renderer::SceneData& scene,
   }
   config.keep_shapes = true;
   config.prefetch_radius_tiles = 0.0f;
-  if (!impl->consumer.create(impl->world, scene, ground, config, error, tiles)) return false;
+  if (!impl->consumer.create(impl->world, scene, ground, config, error, tiles, nullptr, proxies))
+    return false;
   impl->ring.add_consumer(impl->consumer.consumer());
   impl_ = std::move(impl);
   return true;

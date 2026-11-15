@@ -28,7 +28,7 @@ engine_shaders(NAME scene_collision SOURCES shaders/collision_lines.slang)
 engine_module(NAME scene_collision LAYER systems OPTIONAL WHOLE_ARCHIVE
   DEPS base containers math hash jobs log time tunables schemas geometry gfx scene_gen
        renderer physics world sim profiling
-  SOURCES src/scene_collision.cpp src/collision_draw.cpp)
+  SOURCES src/scene_collision.cpp src/collision_draw.cpp src/proxy_source.cpp)
 if(TARGET engine_scene_collision_impl AND TARGET engine_shaders_scene_collision)
   target_link_libraries(engine_scene_collision_impl PRIVATE engine_shaders_scene_collision)
 endif()

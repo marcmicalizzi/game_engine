@@ -107,10 +107,11 @@ class CollisionView {
   CollisionView();
   ~CollisionView();
   ENGINE_NON_COPYABLE(CollisionView);
-  // `config.keep_shapes` is set here. `radius_tiles` is the ring's.
+  // `config.keep_shapes` is set here. `radius_tiles` is the ring's. `proxies`: the collision's own
+  // copy the host built before releasing the scene's floats (`SceneCollision::create`).
   bool create(const renderer::SceneData& scene, const scene_gen::GroundProvider* ground,
               Config config, f32 radius_tiles, std::string* error = nullptr,
-              const scene_gen::TileSource* tiles = nullptr);
+              const scene_gen::TileSource* tiles = nullptr, const ProxySource* proxies = nullptr);
   // The ring round `at`: tiles made and let go, unlimited.
   void update(WorldPos at);
   const SceneCollision& collision() const noexcept;

@@ -11,6 +11,7 @@
 #include <domain/physics/character.h>
 #include <domain/physics/physics.h>
 #include <domain/scene_gen/scene_gen.h>
+#include <systems/renderer/page_source.h>
 #include <systems/renderer/scene.h>
 #include <systems/scene_collision/scene_collision.h>
 #include <systems/world/placement_tiles.h>
@@ -1047,6 +1048,157 @@ TEST_CASE("scene_collision: a proxy is the coarsest cut of its mesh within the e
   }
   MESSAGE("the 5 cm proxy's surface stands at most " << worst << " m off the leaves'");
   CHECK(worst <= 0.05f + 1.0e-3f);
+}
+
+namespace {
+
+// The cut as it read the scene's own float streams before T138: the collision's own copy must give
+// the same proxy, word for word, at every threshold at or above its floor.
+void reference_cut(const renderer::SceneData& scene, u32 mesh, Vec3 scale, f32 error_m,
+                   Vector<Vec3>& vertices, Vector<u32>& indices) {
+  const geometry::ClusterMesh& merged = scene.lod.mesh;
+  const geometry::ClusterMeshPart& part = scene.parts[mesh];
+  const f32 threshold = error_m / std::max(scale.x, std::max(scale.y, scale.z));
+  FlatMap<u32, u32> remap;
+  for (u32 c = 0; c < part.cluster_count; ++c) {
+    const geometry::ClusterLodDesc& d = scene.lod.lod[part.first_cluster + c];
+    if (!(d.own_error <= threshold && threshold < d.parent_error)) continue;
+    const geometry::ClusterDesc& cluster = merged.clusters[part.first_cluster + c];
+    for (u32 t = 0; t < cluster.triangle_count; ++t) {
+      const u32 packed = merged.triangles[cluster.triangle_offset + t];
+      u32 corner[3];
+      for (u32 k = 0; k < 3; ++k) {
+        const u32 v = cluster.vertex_offset + ((packed >> (8 * k)) & 0xFFu);
+        if (const u32* seen = remap.find_value(merged.vertex_source[v])) {
+          corner[k] = *seen;
+          continue;
+        }
+        const Vec3 p = merged.vertices[v];
+        corner[k] = vertices.size();
+        vertices.push_back(Vec3{p.x * scale.x, p.y * scale.y, p.z * scale.z});
+        remap.insert(merged.vertex_source[v], corner[k]);
+      }
+      if (corner[0] == corner[1] || corner[1] == corner[2] || corner[0] == corner[2]) continue;
+      for (const u32 i : corner)
+        indices.push_back(i);
+    }
+  }
+}
+
+}  // namespace
+
+TEST_CASE("scene_collision: a scene whose floats are gone collides from the collision's own copy") {
+  // **The collision's own copy** (T138; scene_collision.md, "The collision's own copy"). A host
+  // copies what the proxies are cut from before it gives the scene's float positions, triangles
+  // and source indices back, and the consumer made after the release cuts every proxy from the
+  // copy: the same triangles, word for word, as the old cut of the scene's own floats, and a walker
+  // is stopped by them.
+  const MeshSource meshes[] = {ball_mesh(3.0f, 5), box_mesh(Vec3{2.0f, 1.5f, 0.25f})};
+  Vector<renderer::SceneInstance> placed(2);
+  placed[0].mesh = 0;  // a ball 1.7 times its size, so its cut is finer than the unit ball's
+  placed[0].transform.position = Vec3{16.0f, 5.1f, 8.0f};
+  placed[0].transform.scale = Vec3{1.7f, 1.7f, 1.7f};
+  placed[1].mesh = 1;  // a wall across the walker's path
+  placed[1].transform.position = Vec3{16.0f, 0.0f, 24.0f};
+  renderer::SceneData kept;
+  build_scene(meshes, std::span<const renderer::SceneInstance>(placed.data(), placed.size()), kept);
+  renderer::SceneData released;
+  build_scene(meshes, std::span<const renderer::SceneInstance>(placed.data(), placed.size()),
+              released);
+  const u64 floats = u64{released.lod.mesh.vertices.size()} * sizeof(Vec3) +
+                     u64{released.lod.mesh.triangles.size()} * sizeof(u32) +
+                     u64{released.lod.mesh.vertex_source.size()} * sizeof(u32);
+  Config config;
+  config.keep_shapes = true;
+  ProxySource copy;
+  copy.build(released, config.mesh_error_m);
+  (void)renderer::release_uploaded_streams(released, renderer::HostReaders::none);
+  REQUIRE(released.lod.mesh.vertices.empty());
+  REQUIRE(released.lod.mesh.triangles.empty());
+  REQUIRE(released.lod.mesh.vertex_source.empty());
+  MESSAGE("the copy holds " << copy.bytes() << " bytes of the scene's " << floats << ": "
+                            << copy.counts().clusters << " of " << copy.counts().scene_clusters
+                            << " clusters, " << copy.counts().triangles << " of "
+                            << copy.counts().scene_triangles << " triangles");
+  CHECK(copy.bytes() < floats / 2);
+  CHECK(copy.counts().meshes == 2);
+
+  physics::World physics;
+  REQUIRE(physics.init(physics_options()) == physics::Status::Ok);
+  physics::ShapeId floor_shape;
+  REQUIRE(physics.create_box(Vec3{100.0f, 0.5f, 100.0f}, floor_shape) == physics::Status::Ok);
+  physics::BodyDesc floor;
+  floor.shape = floor_shape;
+  floor.transform.position = place(Vec3{0.0f, -0.5f, 0.0f});
+  floor.motion = physics::MotionType::Static;
+  floor.layer = physics::Layer::Static;
+  physics::BodyId floor_body;
+  REQUIRE(physics.create_body(floor, floor_body) == physics::Status::Ok);
+  SceneCollision collision;
+  std::string error;
+  REQUIRE_MESSAGE(
+      collision.create(physics, released, nullptr, config, &error, nullptr, nullptr, &copy), error);
+  world::World world(ring());
+  world.add_consumer(collision.consumer());
+  world.update(at(16.0f, 16.0f), 0, true);
+  CHECK(collision.stats().proxies == 2);
+  CHECK(collision.stats().proxies_coarsened == 0);
+
+  // Every held piece's proxy is the old cut of the kept scene's floats, word for word.
+  u32 compared = 0;
+  for (u32 t = 0; t < collision.held_tiles(); ++t) {
+    HeldTile tile;
+    REQUIRE(collision.held_tile(t, tile));
+    for (u32 p = 0; p < tile.pieces; ++p) {
+      HeldPiece piece;
+      REQUIRE(collision.held_piece(t, p, piece));
+      Vector<Vec3> vertices;
+      Vector<u32> indices;
+      reference_cut(kept, piece.mesh, placed[piece.mesh].transform.scale, config.mesh_error_m,
+                    vertices, indices);
+      REQUIRE(piece.vertices.size() == vertices.size());
+      REQUIRE(piece.indices.size() == indices.size());
+      for (u32 v = 0; v < vertices.size(); ++v)
+        CHECK(piece.vertices[v] == vertices[v]);
+      for (u32 i = 0; i < indices.size(); ++i)
+        CHECK(piece.indices[i] == indices[i]);
+      ++compared;
+    }
+  }
+  CHECK(compared >= 2);
+
+  // And a walker going north is stopped at the wall's face.
+  physics::CharacterBody walker;
+  physics::CharacterConfig c;
+  c.step_hz = 240;
+  REQUIRE(walker.create(physics, c, place(Vec3{16.3f, 0.02f, 16.0f})) == physics::Status::Ok);
+  physics::CharacterInput north;
+  north.move = Vec3{0.0f, 0.0f, 1.0f};
+  for (u32 k = 0; k < 8 * 240; ++k)
+    REQUIRE(walker.step(north) == physics::Status::Ok);
+  const f32 face = 24.0f - 0.25f;
+  const f32 z = local_of(walker.state().position).z;
+  MESSAGE("walked north into the wall's face at z " << face << ": stopped at z " << z);
+  CHECK(z < face - c.radius + 0.03f);
+  CHECK(z > face - c.radius - 0.1f);
+
+  // **The floor**: a consumer asking for a finer cut than the copy was built for (here every
+  // threshold under 5 cm, at an error of zero) cuts the floor instead and counts it.
+  physics::World finer_physics;
+  REQUIRE(finer_physics.init(physics_options()) == physics::Status::Ok);
+  Config finer = config;
+  finer.mesh_error_m = 0.0f;
+  SceneCollision coarsened;
+  REQUIRE_MESSAGE(
+      coarsened.create(finer_physics, released, nullptr, finer, &error, nullptr, nullptr, &copy),
+      error);
+  world::World finer_world(ring());
+  finer_world.add_consumer(coarsened.consumer());
+  finer_world.update(at(16.0f, 16.0f), 0, true);
+  CHECK(coarsened.stats().proxies_coarsened == 2);
+  // Not the leaves an error of zero would cut from the scene's floats: the floor's coarse cut.
+  CHECK(coarsened.stats().proxy_triangles < 8192u / 2u);
+  CHECK(coarsened.stats().proxy_triangles > 32u);
 }
 
 namespace {

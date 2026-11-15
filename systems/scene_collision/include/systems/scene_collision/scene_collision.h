@@ -60,6 +60,7 @@
 #include <core/math/math.h>
 #include <domain/physics/physics.h>
 #include <domain/scene_gen/scene_gen.h>
+#include <systems/scene_collision/proxy_source.h>
 #include <systems/world/tile_ring.h>
 #include <systems/world/world.h>
 
@@ -165,6 +166,9 @@ struct Stats {
   // A tree's triangles a proxy left out because a corner is of a frond, a leaf, a curtain or a twig
   // (scene_collision.md, "What gets no body").
   u32 flora_triangles_left_out = 0;
+  // Proxies cut at their mesh's floor in the copy rather than at `mesh_error_m`, because the
+  // placement was larger than the copy was built for (proxy_source.h, "The floor").
+  u32 proxies_coarsened = 0;
   // The scene's far-forest instances left out of the bins (docs: "What gets no body"): one a world
   // tile the load merged its streamed trees' coarsest forms into, which is drawn only where the
   // ring's tail does not draw the tile's trees (renderer.md, "The far forest").
@@ -314,10 +318,16 @@ class SceneCollision {
   //
   // `jobs`, when given with `Config::prefetch_radius_tiles`, builds tiles' ground ahead of the
   // ring (`prefetch`); it must outlive the consumer.
+  //
+  // **The proxies are cut from `proxies`** (proxy_source.h; docs: "The collision's own copy"),
+  // which a host built from `scene` before it released the scene's float geometry and which must
+  // outlive the consumer; null, the consumer builds its own from `scene` now, whose floats must
+  // still be there. Nothing here reads the scene's float positions, triangles or source indices
+  // after `create`.
   bool create(physics::World& physics, const renderer::SceneData& scene,
               const scene_gen::GroundProvider* ground, const Config& config,
               std::string* error = nullptr, const scene_gen::TileSource* tiles = nullptr,
-              jobs::JobSystem* jobs = nullptr);
+              jobs::JobSystem* jobs = nullptr, const ProxySource* proxies = nullptr);
   // The row to register: after the scene's ground and placements consumers where the world has
   // them (world.md, "The order"), acting in ring 0.
   world::TileConsumer consumer() noexcept;
@@ -451,6 +461,7 @@ class SceneCollision {
     u32 proxies = 0;
     u32 triangles = 0;
     u32 flora_left_out = 0;
+    u32 coarsened = 0;
     u64 bytes = 0;
     i64 ns = 0;
   };
@@ -468,6 +479,7 @@ class SceneCollision {
     std::unique_ptr<renderer::PlacementMeshData> tile_mesh;
     u64 tile_mesh_identity = 0;
     bool tile_mesh_ok = false;
+    ProxySource tile_source;  // that mesh's copy, at the one threshold asked (`tile_proxy_for`)
   };
   // A tile's placements as built (`gather_placements`): its compound's shape, not yet in the
   // physics world's table, and what it holds.
@@ -562,12 +574,13 @@ class SceneCollision {
   // The proxy of a mesh at a scale, built on first ask; null for a mesh with no surface to stand
   // on. Thread-safe.
   const Proxy* proxy_for(u32 mesh, Vec3 scale, PlacementScratch& scratch);
-  // The cut both kinds of proxy are made of: `part`'s clusters of `lod` where each cluster's own
-  // error is within the threshold and its parent's is not, welded by source vertex and scaled,
-  // into `scratch.vertices`, `.indices` and `.parts`. `tree`: a mesh with the motion contract,
-  // which keeps its wood. Returns the triangles left out for it.
-  u32 cut_proxy(const geometry::ClusterLodMesh& lod, const geometry::ClusterMeshPart& part,
-                const renderer::SourceMesh* tree, Vec3 scale, PlacementScratch& scratch) const;
+  // The cut both kinds of proxy are made of: mesh `mesh` of the copy `source`, its clusters where
+  // each cluster's own error is within the threshold and its parent's is not, welded by source
+  // vertex and scaled, into `scratch.vertices`, `.indices` and `.parts` — the copy holds a tree's
+  // wood alone. Returns the triangles left out for a tree; `coarsened` says the threshold was under
+  // the mesh's floor and the floor was cut instead (proxy_source.h, "The floor").
+  u32 cut_proxy(const ProxySource& source, u32 mesh, Vec3 scale, PlacementScratch& scratch,
+                bool& coarsened) const;
   // **A tile-handed mesh's proxy** (docs: "A tile's meshes"): keyed by the mesh's identity
   // (`renderer::placement_mesh_identity`) and the scale, built from the recipe through
   // `renderer::load_placement_mesh` — no device, the cache entry the renderer reads — outside the
@@ -585,6 +598,9 @@ class SceneCollision {
 
   physics::World* physics_ = nullptr;
   const renderer::SceneData* scene_ = nullptr;
+  // What the scene's proxies are cut from (`create`): the host's copy, or `own_source_`.
+  const ProxySource* proxy_source_ = nullptr;
+  std::unique_ptr<ProxySource> own_source_;
   const scene_gen::GroundProvider* ground_ = nullptr;
   // Where the ground's heights come from (`create`), and the time a still one stands at.
   scene_gen::TileSource source_;

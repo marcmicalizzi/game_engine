@@ -131,6 +131,14 @@ u64 proxy_key(u32 mesh, Vec3 s) noexcept {
   return h | (u64{1} << 63);
 }
 
+// A proxy's threshold, in the mesh's own units: the instance's scale (its fit included, since the
+// scale was taken from the whole world matrix) multiplies every error by up to its largest axis.
+f32 proxy_threshold(f32 mesh_error_m, Vec3 scale) noexcept {
+  const f32 largest =
+      std::max(std::fabs(scale.x), std::max(std::fabs(scale.y), std::fabs(scale.z)));
+  return mesh_error_m / (largest > 0.0f ? largest : 1.0f);
+}
+
 }  // namespace
 
 f32 spacing_tunable() noexcept { return static_cast<f32>(collision_spacing.get()); }
@@ -278,7 +286,7 @@ scene_gen::Context SceneCollision::context_for(const Entry& entry) const noexcep
 bool SceneCollision::create(physics::World& physics, const renderer::SceneData& scene,
                             const scene_gen::GroundProvider* ground, const Config& config,
                             std::string* error, const scene_gen::TileSource* tiles,
-                            jobs::JobSystem* jobs) {
+                            jobs::JobSystem* jobs, const ProxySource* proxies) {
   auto fail = [&](const std::string& why) {
     if (error != nullptr) *error = why;
     return false;
@@ -299,6 +307,15 @@ bool SceneCollision::create(physics::World& physics, const renderer::SceneData& 
                                  : scene_gen::TileSource{};
   own_time_s_ = scene.terrain.time_s;
   config_ = config;
+  // The collision's own copy (T138; docs: "The collision's own copy"): the host's, built before it
+  // released the scene's floats, or one of this consumer's from them now.
+  own_source_.reset();
+  proxy_source_ = proxies;
+  if (proxy_source_ == nullptr) {
+    own_source_ = std::make_unique<ProxySource>();
+    own_source_->build(scene, config.mesh_error_m);
+    proxy_source_ = own_source_.get();
+  }
   spacing_mm_ = static_cast<i64>(std::llround(static_cast<f64>(config.spacing_m) * 1000.0));
   if (spacing_mm_ < 1) spacing_mm_ = 1;
   tile_mm_ = static_cast<i64>(std::llround(static_cast<f64>(config.tile_size) * 1000.0));
@@ -455,6 +472,7 @@ void SceneCollision::note_bodies() noexcept {
   stats_.tile_proxies = tile_proxies_.size();
   stats_.proxy_triangles = proxy_stats_.triangles;
   stats_.flora_triangles_left_out = proxy_stats_.flora_left_out;
+  stats_.proxies_coarsened = proxy_stats_.coarsened;
   stats_.proxy_bytes = proxy_stats_.bytes;
   stats_.proxy_ns = proxy_stats_.ns;
 }
@@ -1153,85 +1171,62 @@ u32 SceneCollision::follow(physics::CharacterBody& walker) {
 // -------------------------------------------------------------------------------
 
 // The cut a proxy is made of (`proxy_for`, `tile_proxy_for`): see the header.
-u32 SceneCollision::cut_proxy(const geometry::ClusterLodMesh& lod,
-                              const geometry::ClusterMeshPart& part,
-                              const renderer::SourceMesh* tree, Vec3 scale,
-                              PlacementScratch& scratch) const {
+u32 SceneCollision::cut_proxy(const ProxySource& source, u32 mesh, Vec3 scale,
+                              PlacementScratch& scratch, bool& coarsened) const {
   Vector<Vec3>& vertices = scratch.vertices;
   Vector<u32>& indices = scratch.indices;
   FlatMap<u32, u32>& remap = scratch.remap;
   u32 left_out = 0;
-  const f32 largest =
-      std::max(std::fabs(scale.x), std::max(std::fabs(scale.y), std::fabs(scale.z)));
-  // The threshold is in the mesh's own units: the instance's scale (its fit included, since the
-  // scale was taken from the whole world matrix) multiplies every error by up to `largest`.
-  const f32 threshold = config_.mesh_error_m / (largest > 0.0f ? largest : 1.0f);
   vertices.clear();
   indices.clear();
   remap.clear();
   scratch.parts.clear();
-  const bool has_lod = lod.lod.size() == lod.mesh.clusters.size();
+  coarsened = false;
+  const ProxySource::Mesh* copied = source.mesh(mesh);
+  if (copied == nullptr) return 0;
+  // The threshold is in the mesh's own units (`proxy_threshold`). Under the copy's floor it has
+  // clusters the copy did not keep, so the floor is cut instead (proxy_source.h, "The floor").
+  f32 threshold = proxy_threshold(config_.mesh_error_m, scale);
+  if (threshold < copied->floor) {
+    threshold = copied->floor;
+    coarsened = true;
+  }
   // **A tree collides by its wood** (scene_collision.md, "What gets no body"): a mesh that carries
   // the motion contract keeps a triangle only when all three corners are of a part that stays a
   // collider — the trunk, and a load-bearing limb where the structural table says so — so the
   // walker walks into a palm's crown, where the renderer's push bends the fronds aside, and is
-  // still stopped by the trunk.
-  const std::span<const geometry::ClusterFileStructuralPart> structure =
-      tree != nullptr ? std::span<const geometry::ClusterFileStructuralPart>(
-                            tree->structural_parts.data(), tree->structural_parts.size())
-                      : std::span<const geometry::ClusterFileStructuralPart>();
-  const auto* species = tree != nullptr ? geometry::flora_species_info(tree->species) : nullptr;
-  const auto kind = species != nullptr ? species->motion : geometry::FloraMotionKind::none;
-  auto wooden = [&](u32 v) {
-    const u32 at = v - part.first_vertex;
-    return at < tree->motion_vertices.size() &&
-           renderer::flora_part_collides(structure, tree->motion_vertices[at].part, kind);
-  };
-  for (u32 c = 0; c < part.cluster_count; ++c) {
-    const u32 index = part.first_cluster + c;
-    if (has_lod) {
-      const geometry::ClusterLodDesc& d = lod.lod[index];
-      if (!(d.own_error <= threshold && threshold < d.parent_error)) continue;
-    } else if (c < part.first_leaf_cluster ||
-               c >= part.first_leaf_cluster + part.leaf_cluster_count) {
-      continue;
-    }
-    const geometry::ClusterDesc& cluster = lod.mesh.clusters[index];
+  // still stopped by the trunk. The copy decided it once (`ProxySource::add`), holds the wood
+  // alone, and counts per cluster what it left out.
+  const std::span<const Vec3> points = source.points();
+  const std::span<const u32> sources = source.sources();
+  const std::span<const u32> triangles = source.triangles();
+  const std::span<const u16> parts = source.parts();
+  // A mirror's scale — an odd number of negative axes — reverses the winding; put it back, so the
+  // faces face out.
+  const bool mirrored = ((scale.x < 0.0f) != (scale.y < 0.0f)) != (scale.z < 0.0f);
+  for (const ProxySource::Cluster& cluster : source.clusters(*copied)) {
+    if (!(cluster.own_error <= threshold && threshold < cluster.parent_error)) continue;
+    left_out += cluster.left_out;
     for (u32 t = 0; t < cluster.triangle_count; ++t) {
-      const u32 packed = lod.mesh.triangles[cluster.triangle_offset + t];
+      const u32 packed = triangles[cluster.first_triangle + t];
       const u32 local[3] = {packed & 0xFFu, (packed >> 8) & 0xFFu, (packed >> 16) & 0xFFu};
-      if (tree != nullptr &&
-          !(wooden(cluster.vertex_offset + local[0]) && wooden(cluster.vertex_offset + local[1]) &&
-            wooden(cluster.vertex_offset + local[2]))) {
-        ++left_out;
-        continue;
-      }
       u32 corner[3];
       for (u32 k = 0; k < 3; ++k) {
-        const u32 v = cluster.vertex_offset + local[k];
-        const u32 source = v < lod.mesh.vertex_source.size() ? lod.mesh.vertex_source[v] : v;
-        if (const u32* seen = remap.find_value(source)) {
+        const u32 v = cluster.first_point + local[k];
+        if (const u32* seen = remap.find_value(sources[v])) {
           corner[k] = *seen;
           continue;
         }
-        const Vec3 p = lod.mesh.vertices[v];
+        const Vec3 p = points[v];
         corner[k] = vertices.size();
         vertices.push_back(Vec3{p.x * scale.x, p.y * scale.y, p.z * scale.z});
-        remap.insert(source, corner[k]);
+        remap.insert(sources[v], corner[k]);
       }
       if (corner[0] == corner[1] || corner[1] == corner[2] || corner[0] == corner[2]) continue;
-      // A mirror's scale — an odd number of negative axes — reverses the winding; put it back, so
-      // the faces face out.
-      const bool mirrored = ((scale.x < 0.0f) != (scale.y < 0.0f)) != (scale.z < 0.0f);
       indices.push_back(corner[0]);
       indices.push_back(mirrored ? corner[2] : corner[1]);
       indices.push_back(mirrored ? corner[1] : corner[2]);
-      if (config_.keep_shapes) {
-        const u32 first = cluster.vertex_offset + local[0] - part.first_vertex;
-        scratch.parts.push_back(tree != nullptr && first < tree->motion_vertices.size()
-                                    ? u32{tree->motion_vertices[first].part}
-                                    : 0u);
-      }
+      if (config_.keep_shapes) scratch.parts.push_back(u32{parts[cluster.first_triangle + t]});
     }
   }
   return left_out;
@@ -1252,10 +1247,9 @@ const SceneCollision::Proxy* SceneCollision::proxy_for(u32 mesh, Vec3 scale,
   if (const std::unique_ptr<Proxy>* proxy = proxies_.find_value(key))
     return (*proxy)->shape ? proxy->get() : nullptr;
   const i64 start = time::monotonic_ns();
-  const renderer::SourceMesh* tree =
-      mesh < scene_->sources.size() && scene_->sources[mesh].has_motion() ? &scene_->sources[mesh]
-                                                                          : nullptr;
-  proxy_stats_.flora_left_out += cut_proxy(scene_->lod, scene_->parts[mesh], tree, scale, scratch);
+  bool coarsened = false;
+  proxy_stats_.flora_left_out += cut_proxy(*proxy_source_, mesh, scale, scratch, coarsened);
+  proxy_stats_.coarsened += coarsened ? 1u : 0u;
   const Vector<Vec3>& vertices = scratch.vertices;
   const Vector<u32>& indices = scratch.indices;
   auto proxy = std::make_unique<Proxy>();
@@ -1328,8 +1322,13 @@ const SceneCollision::Proxy* SceneCollision::tile_proxy_for(const scene_gen::Pla
   u32 left_out = 0;
   if (scratch.tile_mesh_ok) {
     const renderer::PlacementMeshData& data = *scratch.tile_mesh;
-    left_out = cut_proxy(data.lod, data.part, data.source.has_motion() ? &data.source : nullptr,
-                         scale, scratch);
+    // Copied at the one threshold this scale asks (proxy_source.h), so the cut is exact.
+    scratch.tile_source.clear();
+    const u32 copied = scratch.tile_source.add(data.lod, data.part,
+                                               data.source.has_motion() ? &data.source : nullptr,
+                                               proxy_threshold(config_.mesh_error_m, scale));
+    bool coarsened = false;
+    left_out = cut_proxy(scratch.tile_source, copied, scale, scratch, coarsened);
     if (config_.keep_shapes) {
       made->proxy.vertices = scratch.vertices;
       made->proxy.indices = scratch.indices;

@@ -45,6 +45,9 @@ namespace engine::renderer {
 struct SceneData;
 struct FrameFlora;
 }  // namespace engine::renderer
+namespace engine::scene_collision {
+class ProxySource;
+}
 
 namespace engine::view {
 
@@ -244,9 +247,11 @@ class Walker {
   // for a collision that cannot be made (a generator the build does not carry). `tiles`: the tile
   // source the renderer draws the world's tiles from, when it does, which the collision's ground is
   // then made of (renderer.md, "The ground from the world's tiles"): what is walked on is what is
-  // drawn. It must outlive the walker.
+  // drawn. It must outlive the walker. `proxies`: the collision's own copy (`CollisionCopy`), which
+  // its proxies are cut from once the scene's floats are released; it must outlive the walker.
   bool start(const WalkParams& params, u32 tick_hz, const renderer::SceneData& scene,
-             std::string* error, const scene_gen::TileSource* tiles = nullptr);
+             std::string* error, const scene_gen::TileSource* tiles = nullptr,
+             const scene_collision::ProxySource* proxies = nullptr);
   bool available() const noexcept;
   // "physics" or "ground-follow" (or "none" before `start` or without a terrain), and the sentence
   // saying why a walker is not the physical one.
@@ -376,12 +381,30 @@ class WalkProbe {
   Reader all_;
 };
 
+// **The collision's own copy** (T138; scene_collision.md, "The collision's own copy"): what a
+// walker's and `--collision-draw`'s proxies are cut from once the scene's float geometry is gone.
+// Empty in a build without the walker's collision. It must outlive the walker and the draw.
+class CollisionCopy {
+ public:
+  CollisionCopy();
+  ~CollisionCopy();
+  const scene_collision::ProxySource* get() const noexcept;
+
+ private:
+  friend void copy_collision_geometry(const renderer::SceneData&, const WalkParams*, bool,
+                                      CollisionCopy&);
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+};
+// Before anything gives the scene's floats back (`attach_page_source`, `release_host_geometry`):
+// the copy, at the smaller of the walk's `mesh_error_m` (`walk`, null with no walker) and the
+// draw's tunable (`collision_draw`), or nothing when neither will cut a proxy.
+void copy_collision_geometry(const renderer::SceneData& scene, const WalkParams* walk,
+                             bool collision_draw, CollisionCopy& out);
 // **The scene's host geometry once every `GpuScene::create` of the run is done** (T129, T138;
 // renderer.md, "The scene's host copy after the upload"): what nothing reads again is given back
-// (`renderer::release_uploaded_streams`), the float positions, triangles and source indices too
-// unless `collision_reads` — a session with a walker, whose collision cuts its proxies from them,
-// or
-// `--collision-draw`. Returns the bytes given back.
-u64 release_host_geometry(renderer::SceneData& scene, bool collision_reads);
+// (`renderer::release_uploaded_streams` with `HostReaders::none`), the float positions, triangles
+// and source indices included, walk or not: the collision cuts from its copy. Returns the bytes.
+u64 release_host_geometry(renderer::SceneData& scene);
 
 }  // namespace engine::view
