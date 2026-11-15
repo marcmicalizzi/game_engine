@@ -98,8 +98,10 @@ gpu_lock::State lock_at(const std::string& path) {
 
 // The variables a run around this one may have set, cleared for one case. The switch is off in
 // this process — so that a child's 75 does not end the test too — and the probes turn it on for
-// themselves with --on.
+// themselves with --on. The owner too: every agent runs with ENGINE_GPU_LOCK_OWNER set, and the
+// probes' tickets carried the agent's name where the cases expect the default (T140).
 struct Isolated {
+  test::ScopedEnv owner{"ENGINE_GPU_LOCK_OWNER", ""};
   test::ScopedEnv on{gpu_lock::k_env_on_device, "0"};
   test::ScopedEnv holder{gpu_lock::k_env_holder, ""};
   test::ScopedEnv hold_log{gpu_lock::k_env_log, ""};

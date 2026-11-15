@@ -21,6 +21,18 @@ $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'lib/MachineLock.psm1') -Force
 $cli = Join-Path $PSScriptRoot 'gpu-lock.ps1'
 
+# The caller's own lock settings are not this test's. Every agent runs with ENGINE_GPU_LOCK_OWNER
+# set (and a run under `gpu-lock.ps1 run` with ENGINE_GPU_LOCK_HOLDER), and the scripts this test
+# starts read them: a build's ticket would carry the agent's name where the cases expect the
+# default, and a holder variable would make every session a session inside one. So the test
+# clears everything the lock reads from the environment, sets per case what a case needs, and
+# puts the caller's values back at the end (roadmap T140).
+$callerLockEnvironment = @{}
+foreach ($name in 'ENGINE_GPU_LOCK', 'ENGINE_GPU_LOCK_OWNER', 'ENGINE_GPU_LOCK_HOLDER', 'ENGINE_LINUX_BUILD_LOCK') {
+  $callerLockEnvironment[$name] = [Environment]::GetEnvironmentVariable($name)
+  [Environment]::SetEnvironmentVariable($name, $null)
+}
+
 $failures = New-Object System.Collections.Generic.List[string]
 $checks = 0
 $scratch = Join-Path ([IO.Path]::GetTempPath()) "engine-machine-lock-$([guid]::NewGuid().ToString('N'))"
@@ -489,6 +501,7 @@ Add-Content -LiteralPath '$order' -Value 'doomed'
   } finally {
     $env:ENGINE_LINUX_BUILD_LOCK = $buildLockBefore
   }} finally {
+  foreach ($name in $callerLockEnvironment.Keys) { [Environment]::SetEnvironmentVariable($name, $callerLockEnvironment[$name]) }
   if ($KeepTemp) { Write-Host "kept $scratch" } else { Remove-Item -Recurse -Force -LiteralPath $scratch -ErrorAction SilentlyContinue }
 }
 
