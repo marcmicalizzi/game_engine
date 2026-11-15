@@ -234,6 +234,42 @@ under the 0.05 m² cap — counting each at 0.7; this branch counts each image's
 the prior is built: renderer.md, "Stage 7"). The pictures differ on 1 to 2 % of samples by more
 than 4 of 255 in luma, the bounce's own noise included, means equal.
 
+**What the measure does to generated crowns** (T139's second leg; no forest load). The flora
+recipes with alpha-tested leaves, each on tree-species' ground under an earth sky (latitude 47°,
+day 172, 10:00, exposure fixed at EV100 14), 3840 × 2160, `--raster rt --shadows rt`, the bounce on,
+two seconds held before each capture, leaves' images from the forest's v35 materials (read only);
+main's copied-out build against this branch's. Luma is the mean Rec. 709 luma of the 8-bit picture
+over the instance's own pixels (its ids); two rounds of the grove gave identical numbers.
+
+| Recipe | leaf m², main (0.7) → measured | image's share | mean / least `up`, main → branch | crown luma |
+|---|---|---|---|---|
+| oak (grove) | 397.5 → 347.3 | 0.612 | 0.41 / 0.14 → 0.44 / 0.17 | +0.01 to +0.07 % |
+| birch, hazel, oak sapling, birch clump | 151.7, 37.7, 12.1, 151.7 → ×0.874 | 0.612 | e.g. birch 0.49 / 0.23 → 0.53 / 0.28 | +0.01 to +0.07 % |
+| spruce, tall (grove) | 405.4 → 147.7 | 0.255 | 0.20 / 0.034 → 0.45 / 0.24 | −0.07 to +0.43 % |
+| spruce, young (grove) | 34.3 → 12.5 | 0.255 | 0.29 / 0.039 → 0.55 / 0.26 | +0.03 to +0.91 % |
+| ancient | 6,052 → 8,646 | 1.0 (its leaf material names no image) | 0.47 / 0.13 → 0.37 / 0.061 | −0.04 % |
+
+tree-species' ten recipes are flat-coloured with no alpha-tested leaf, and willow and the orchard
+apple have none either: no crown on either build, pictures identical. **The prior's change hardly
+reaches the picture** because a crown cell's mean is a ratio of sums — the samples' light over the
+sum of their priors (renderer.md, "Stage 7") — and each foliage pixel multiplies it back by its own
+prior, so a crown whose prior rises everywhere by one factor reads the same light; what moves is the
+prior's shape (the spruce's deepest cells from 0.034 to 0.24, its mean from 0.20 to 0.45) and how
+fast a cell's count fills (priors are added in sixteenths, so a conifer cell fills about 2.3 times
+faster). The conifers' crowns read up to 0.9 % brighter, which is the "too thin" direction the owner
+named but a hundredth of a stop: T146 neither causes nor answers it. The ancient counts its leaf
+cards whole because its leaf material names no image, which is what the rasterizer draws.
+
+**What the measure costs a load, and why it is now once an image.** Decoding a leaf image on the
+CPU took 6 to 25 ms on the busy machine (grove: 3 decodes, 55 and 74 ms; the row of seven: 5
+decodes, 32 ms). Done once a mesh and material, the forest's staging scene — about 3,000 tree meshes
+over a handful of pack images — would have spent 20 to 75 s of its load decoding the same files. So
+the masks are kept for the whole build, keyed by the image (its resolved file, or its embedded
+bytes' hash) and the material's test: the grove decodes 2 (28 ms), the row of seven 1 (8 ms), and
+a world pays one decode a distinct leaf image — under half a second for thirty. Where the UVs are
+gone only the mean is kept. The built texture's own coverage at level 0 (row G203) would cost nothing
+and is the better home once it is on main.
+
 ### The audit's table again, with the bought trees as its input
 
 | Feature | What the bought set gets now | Row |
