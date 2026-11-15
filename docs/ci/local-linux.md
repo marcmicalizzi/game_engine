@@ -464,6 +464,51 @@ do not share one path ([remote Linux](remote-linux.md#the-compiler-cache)).
 `build.cpu_baseline` reads `compile_commands.json`, which CMake writes without the launcher, and
 classifies each compile by its flags, which the launcher does not change; it is unaffected.
 
+#### A corrupt object at the link
+
+On 2026-11-14 MSVC's linker refused an object four times in one day with `fatal error LNK1236:
+corrupt or invalid COFF sections`: the gate's `msvc-release` build on
+`engine_schemas_impl.lib(protocol.cpp.obj)` (linking `engine_doc_tests.exe`), an agent's on a
+cached `domain/audio` `protocol.cpp.obj`, and two more on `collision_draw.cpp.obj` and another
+`protocol.cpp.obj`. **`tools/dev.ps1 build` now repairs it once**: it keeps the build's output,
+finds each LNK1236 line, finds the object in the build graph (`ninja -t query` on the library the
+line names, whose path it takes from the failed link's command line or CMake's phony alias),
+moves the object and the library aside to `build/<preset>/lnk1236/<time>/` (the evidence, kept
+because the cause is not known), rebuilds that library (or the object, when it was linked
+directly) with `CCACHE_RECACHE=1` — so a cache entry, if that is where the bad bytes were, is
+compiled and stored again rather than served again — and runs the build once more, printing one
+line, `build: LNK1236 (corrupt COFF sections) in <object>: moved <paths> to <dir>, rebuilding
+<target> once with CCACHE_RECACHE=1`. A second failure, or an LNK1236 on an object the graph does not show,
+fails as before. The recognition is tested on the gate's own lines in `tools.linux_build`
+(`Find-CorruptObjectError`, `Get-CorruptObjectRepair` in `tools/lib/CompilerCache.psm1`). Keeping
+the output means `cmake --build` writes to a pipe, so Ninja prints each step on its own line
+instead of rewriting one status line.
+
+**What causes it is not known; what it is not** (T140, about forty minutes of looking):
+
+- **Not two writers of one object.** The lead was a generated source of one name compiled into
+  several targets, or one object written by two edges. Each of the four objects has exactly one
+  edge in `build.ninja` (`schemas\...\generated\schemas\src\protocol.cpp.obj` in
+  `engine_schemas_impl`, `domain\audio\...\src\protocol.cpp.obj` in `engine_audio_impl`, which is
+  a hand-written source of the same file name, `collision_draw.cpp.obj` in
+  `engine_scene_collision_impl`), and their object directories differ, so no two compiles share an
+  output path.
+- **Not bytes that stayed bad on disk, at least at the gate.** The gate's second attempt relinked
+  `engine_doc_tests.exe` (step 3 of 480) from the *same* `engine_schemas_impl.lib`, which Ninja did
+  not rebuild, and it linked. Whatever the linker read the first time was not what the file held a
+  minute later, so the fault there was in the reading or in a write still under way, not in a
+  stored object — and so not in a cache entry either, which ccache 4 also checksums on every read.
+- **Not a cache that lost track of its size.** `ccache -s -v` on the shared cache: 27.9 GB of the
+  30 GB its launchers pass, 4,073 cleanups so far; 139 errors in 874,717 calls, 132 of them "input
+  file modified during compilation" and 7 unreadable inputs; nothing about results or outputs.
+
+What is left: a transient read at the link under the night's load (the gate logged 56.5 GB of
+commit to spare and 22.6 GB of physical memory free just after), or a writer outside Ninja's graph.
+The next one `dev.ps1` meets leaves its library and object in `lnk1236/`; compare them with the
+rebuilt ones (`dumpbin /headers`, or the bytes) and note the time, `ccache -s -v` and what else was
+building. The gate's own retry (`gate.ps1`, outside this tree) reruns the build without moving
+anything, which is what showed the file was good a minute later.
+
 #### `build -Affected`
 
 `tools/dev.ps1 build -Affected` builds only the targets `test -Affected` will run: for each module

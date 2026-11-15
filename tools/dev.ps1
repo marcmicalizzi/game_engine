@@ -20,8 +20,11 @@
     build       Build the preset (configures first if needed). -Affected builds only what
                 `test -Affected` would run: the affected modules' libraries, tests and benches,
                 the apps that link them, and every app when the tools' own tests run, since
-                they start the apps (tools/lib/Affected.psm1, Get-AffectedTargets).
-    test        Run CTest for the preset. -Filter is a regex on test names. Tests take the
+                they start the apps (tools/lib/Affected.psm1, Get-AffectedTargets). A link that
+                fails with LNK1236 (a corrupt object) is repaired once: the object and its library
+                are moved to build/<preset>/lnk1236/, that target is rebuilt with CCACHE_RECACHE=1
+                and the build runs again (docs/ci/local-linux.md, "A corrupt object at the link").
+    test       Run CTest for the preset. -Filter is a regex on test names. Tests take the
                 machine-wide GPU lock themselves, per GPU device, so do not wrap this in
                 tools/gpu-lock.ps1 run: that still works, and holds the GPU for the whole
                 run again (docs/subsystems/gpu_lock.md). Exits 75 when a test gave up
@@ -189,9 +192,60 @@ function Invoke-Build {
       $buildArgs += @('--target') + $targets
     }
   }
+  $built = Invoke-CMakeBuild $buildArgs
+  if ($built.Code -eq 0) { return }
+  # A corrupt object at the link (LNK1236; docs/ci/local-linux.md, "A corrupt object at the link"):
+  # the object and its library are removed, that target is rebuilt once with the cache told to
+  # compile and store again, and the build runs once more. Anything else fails as it always did.
+  $ninja = Get-NinjaProgram
+  $query = { param($target) & $ninja -C $BuildDir -t query $target 2>$null }
+  $repairs = @(Get-CorruptObjectRepair -Lines $built.Lines -Query $query)
+  if ($repairs.Count -eq 0) { throw "build failed ($($built.Code))" }
+  foreach ($r in $repairs) {
+    if ($r.Remove.Count -eq 0) {
+      Write-Host "build: LNK1236 (corrupt COFF sections) in $($r.Named), which the build graph does not show; not retried" -ForegroundColor Yellow
+      throw "build failed ($($built.Code))"
+    }
+  }
+  # The bad files are moved aside, not deleted: the cause is not known, and they are the evidence.
+  $kept = Join-Path $BuildDir ("lnk1236/{0:yyyyMMdd-HHmmss}" -f (Get-Date))
+  foreach ($r in $repairs) {
+    foreach ($f in $r.Remove) {
+      $from = Join-Path $BuildDir $f
+      if (-not (Test-Path -LiteralPath $from)) { continue }
+      $to = Join-Path $kept $f
+      New-Item -ItemType Directory -Force -Path (Split-Path -Parent $to) | Out-Null
+      Move-Item -LiteralPath $from -Destination $to -Force
+    }
+    Write-Host ("build: LNK1236 (corrupt COFF sections) in {0}: moved {1} to {2}, rebuilding {3} once with CCACHE_RECACHE=1" -f
+                $r.Named, ($r.Remove -join ', '), $kept, $r.Target) -ForegroundColor Yellow
+  }
+  $recache = $env:CCACHE_RECACHE
+  $env:CCACHE_RECACHE = '1'
+  try { $rebuilt = Invoke-CMakeBuild (@('--build', '--preset', $Preset, '--target') + @($repairs | ForEach-Object { $_.Target })) }
+  finally { $env:CCACHE_RECACHE = $recache }
+  if ($rebuilt.Code -ne 0) { throw "build failed ($($rebuilt.Code))" }
+  $built = Invoke-CMakeBuild $buildArgs
+  if ($built.Code -ne 0) { throw "build failed ($($built.Code))" }
+}
+
+# One `cmake --build`, its output shown as it comes and kept for the LNK1236 check above.
+function Invoke-CMakeBuild([string[]]$arguments) {
+  $lines = @()
   Push-Location $Root
-  try { & cmake @buildArgs; if ($LASTEXITCODE -ne 0) { throw "build failed ($LASTEXITCODE)" } }
+  try {
+    & cmake @arguments | Tee-Object -Variable lines | Out-Host
+    $code = $LASTEXITCODE
+  }
   finally { Pop-Location }
+  return [pscustomobject]@{ Code = $code; Lines = @($lines) }
+}
+
+function Get-NinjaProgram {
+  $ninja = Select-String -LiteralPath (Join-Path $BuildDir 'CMakeCache.txt') -Pattern '^CMAKE_MAKE_PROGRAM(:[A-Z]+)?=(.*)$' |
+    Select-Object -First 1 | ForEach-Object { $_.Matches[0].Groups[2].Value }
+  if (-not $ninja) { $ninja = 'ninja' }
+  return $ninja
 }
 
 # The targets of an affected set that this build tree has (tools/lib/Affected.psm1). The tree's own
