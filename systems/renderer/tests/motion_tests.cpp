@@ -626,8 +626,7 @@ Vector<D3> placed(std::span<const Vec3> positions, const gfx::InstanceDesc& inst
 // space; `then_corners` as last frame's inputs did, in last frame's.
 f64 worst_deformed(const Shot& now, const Shot& before, u32 instance,
                    const geometry::ClusterMesh& mesh, const Vector<D3>& now_corners,
-                   const Vector<D3>& then_corners, u32& counted, f64& longest,
-                   f64& worst_sine) {
+                   const Vector<D3>& then_corners, u32& counted, f64& longest, f64& worst_sine) {
   worst_sine = 1.0;
   const M4 inverse = inverse_of(widen(now.view.view_proj));
   f64 worst = 0.0;
@@ -846,18 +845,19 @@ static void walking_actor(const gfx::Device& device, RasterMode raster) {
                          std::span<const geometry::SkinBinding>(mesh.skin.data(), mesh.skin.size()),
                          std::span<const anim::JointMatrix>(matrices.data(), matrices.size()),
                          std::span<Vec3>(skinned.data(), skinned.size()));
-    corners[k] = placed(std::span<const Vec3>(skinned.data(), skinned.size()), *placed_now,
-                        shots[k].eye);
+    corners[k] =
+        placed(std::span<const Vec3>(skinned.data(), skinned.size()), *placed_now, shots[k].eye);
   }
   for (u32 k = 1; k < 3; ++k) {
     u32 counted = 0;
     f64 longest = 0.0;
     f64 sine = 1.0;
-    const f64 worst = worst_deformed(shots[k], shots[k - 1], 0, mesh, corners[k],
-                                     corners[k - 1], counted, longest, sine);
-    MESSAGE(std::string(raster_name(raster)) << ", step " << k << ": worst " << worst << " px (a triangle of "
-                                << "corner sine " << sine << ") over " << counted
-                                << " pixels, the longest vector " << longest << " px");
+    const f64 worst = worst_deformed(shots[k], shots[k - 1], 0, mesh, corners[k], corners[k - 1],
+                                     counted, longest, sine);
+    MESSAGE(std::string(raster_name(raster))
+            << ", step " << k << ": worst " << worst << " px (a triangle of "
+            << "corner sine " << sine << ") over " << counted << " pixels, the longest vector "
+            << longest << " px");
     CHECK(counted > 200);
     CHECK(longest > 1.0);
     CHECK(longest < 16.0);  // the tolerance's premise: a half float's step is 1/128 px under 16
@@ -917,12 +917,11 @@ TEST_CASE("motion: a swaying tree's pixels follow its parts' poses") {
   // The mirror's tree, laid out as `GpuScene::flora_instance` lays the scene's out: the mesh's
   // part table, its rest bounds, the instance's seed from its motion key and its 3x3 inverted.
   FloraMesh tree;
-  REQUIRE(flora_mesh(
-      std::span<const geometry::ClusterFileMotionPart>(source.motion_parts.data(),
-                                                       source.motion_parts.size()),
-      std::span<const geometry::ClusterFileStructuralPart>(source.structural_parts.data(),
-                                                           source.structural_parts.size()),
-      source.species, tree));
+  REQUIRE(flora_mesh(std::span<const geometry::ClusterFileMotionPart>(source.motion_parts.data(),
+                                                                      source.motion_parts.size()),
+                     std::span<const geometry::ClusterFileStructuralPart>(
+                         source.structural_parts.data(), source.structural_parts.size()),
+                     source.species, tree));
   Vec3 lo = mesh.vertices[0];
   Vec3 hi = mesh.vertices[0];
   for (const Vec3& v : mesh.vertices) {
@@ -1000,15 +999,14 @@ TEST_CASE("motion: a swaying tree's pixels follow its parts' poses") {
                       static_cast<f32>(record.weight) * static_cast<f32>(1.0 / 65535.0), rest[v],
                       Vec3{0.0f, 1.0f, 0.0f}, bent[v], normal);
     }
-    corners[k] =
-        placed(std::span<const Vec3>(bent.data(), bent.size()), tree_desc, shots[k].eye);
+    corners[k] = placed(std::span<const Vec3>(bent.data(), bent.size()), tree_desc, shots[k].eye);
   }
   for (u32 k = 1; k < 3; ++k) {
     u32 counted = 0;
     f64 longest = 0.0;
     f64 sine = 1.0;
-    const f64 worst = worst_deformed(shots[k], shots[k - 1], 0, mesh, corners[k],
-                                     corners[k - 1], counted, longest, sine);
+    const f64 worst = worst_deformed(shots[k], shots[k - 1], 0, mesh, corners[k], corners[k - 1],
+                                     counted, longest, sine);
     MESSAGE("a quarter second " << k << ": worst " << worst << " px (a triangle of corner sine "
                                 << sine << ") over " << counted << " pixels, the longest vector "
                                 << longest << " px");
