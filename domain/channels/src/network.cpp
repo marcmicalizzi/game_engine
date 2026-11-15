@@ -431,7 +431,10 @@ void apply_water(ChannelNetwork& n, const scene_gen::Ground& ground,
     if (c < 0 || r < 0 || c >= static_cast<i64>(n.width) || r >= static_cast<i64>(n.depth))
       return 0;
     const u32 body = n.body_of[static_cast<u32>(r) * n.width + static_cast<u32>(c)];
-    if (body == 0 || !(ground_at(ground, x, z) < n.basins.hollows[body - 1].level_m)) return 0;
+    // (A scene's own body under its spill marks its cells too; that one is the exclusion's.)
+    if (body == 0 || !n.basins.hollows[body - 1].body() ||
+        !(ground_at(ground, x, z) < n.basins.hollows[body - 1].level_m))
+      return 0;
     return 1 + body;
   };
   // Under body `id` (as `wet_id` numbers them) at a place between two of a line's points: a
@@ -1517,9 +1520,14 @@ bool layer_in_range(const ChannelLayer& p, std::string& error) {
       if (!in(b.at[a], p.region_min[a], p.region_max[a]))
         return fail(error, "basins (`at` inside the region): " + b.name);
     if (!in(wide(b.leak_m3s), 0, 1e4)) return fail(error, "basins (leak_m3s): " + b.name);
-    if (!b.dry && !(b.leak_m3s > 0))
-      return fail(error, "basins (an entry says `dry` or names a `leak_m3s`): " + b.name);
+    if (!b.dry && !b.infilled && !(b.leak_m3s > 0))
+      return fail(error,
+                  "basins (an entry says `dry` or `infilled`, or names a `leak_m3s`): " + b.name);
+    if (b.infilled && (b.dry || b.leak_m3s > 0))
+      return fail(
+          error, "basins (`infilled` is ground: it is not `dry` and has no `leak_m3s`): " + b.name);
   }
+  if (!in(wide(p.basin_wind_m_s), 0, 40)) return fail(error, "basin_wind_m_s");
   return surface_in_range(p.boulders, error);
 }
 
@@ -1604,12 +1612,14 @@ struct Pit {
   i64 level_um = 0;
   f64 volume_um = 0;  // the level less the ground, summed over `under`
   u32 c0 = 0, c1 = 0, r0 = 0, r1 = 0;
-  u32 hollow = ~0u;  // its record in `ChannelHollows::hollows`, once it has one
-  u8 decided = 0;    // made a sink in this pass
-  u8 terminal = 0;   // 1: its covered cells are sinks; 2: its balance's cells are
-  u32 wet = 0;       // cells whose ground stands under the level less the notch
-  f64 gain = 0;      // the named sources that drain into it, m3/s
-  f64 leak = 0;      // what its author says its floor passes underground, m3/s
+  u32 hollow = ~0u;       // its record in `ChannelHollows::hollows`, once it has one
+  u32 record = ~0u;       // an authored terminal's record, in the pass that made it one
+  u8 decided = 0;         // made a sink in this pass
+  u8 terminal = 0;        // 1: its covered cells are sinks; 2: its balance's cells are
+  u32 wet = 0;            // cells whose ground stands under the level less the notch
+  f64 wet_volume_um = 0;  // the level less the notch less the ground, summed over `wet`
+  f64 gain = 0;           // the named sources that drain into it, m3/s
+  f64 leak = 0;           // what its author says its floor passes underground, m3/s
 };
 void label(const ChannelNetwork& n, const Vector<u8>& covered, i64 notch_um, Vector<u32>& pit_of,
            Vector<Pit>& pits) {
@@ -1667,7 +1677,10 @@ void label(const ChannelNetwork& n, const Vector<u8>& covered, i64 notch_um, Vec
     if (depth <= 0) continue;
     ++pit.under;
     pit.volume_um += static_cast<f64>(depth);
-    if (depth > notch_um) ++pit.wet;
+    if (depth > notch_um) {
+      ++pit.wet;
+      pit.wet_volume_um += static_cast<f64>(depth - notch_um);
+    }
   }
 }
 f64 cell_x(const ChannelNetwork& n, u32 i) {
@@ -1804,6 +1817,7 @@ bool route_hollows(const ChannelLayer& p, const scene_gen::Ground& ground,
   }
   Vector<u32> pit_of;
   Vector<Pit> pits;
+  Vector<u8> floored(p.basins.size(), u8{0});  // an `infilled` entry whose hollow is ground now
   const auto level_of = [&](const Pit& pit, f64& level) {
     const u32 c = pit.covered;
     return body_level_at(*water, n.x_mm + static_cast<i64>(c % n.width) * n.spacing_mm,
@@ -1844,6 +1858,52 @@ bool route_hollows(const ChannelLayer& p, const scene_gen::Ground& ground,
         continue;
       }
       Pit& pit = pits[id];
+      if (p.basins[k].infilled) {
+        // **A lake that silted up is ground** (channels.md, "A dried lake's floor"): the hollow's
+        // cells are raised to its spill on the lattice, its floor kept as a grid for the edit
+        // that raises the drawn ground the same way, and the fill is taken again over what is
+        // now a flat. Once: the flat's own epsilon is no hollow of this entry's.
+        if (floored[k]) continue;
+        floored[k] = 1;
+        if (pit.decided) continue;
+        changed = true;
+        pit.decided = 1;
+        Hollow h = hollow_of(n, pit, HollowKind::Infilled);
+        h.name = p.basins[k].name;
+        const u32 c0 = pit.c0 >= 2 ? pit.c0 - 2 : 0u, r0 = pit.r0 >= 2 ? pit.r0 - 2 : 0u;
+        const u32 c1 = std::min(pit.c1 + 2, n.width - 1), r1 = std::min(pit.r1 + 2, n.depth - 1);
+        h.fill_x_mm = n.x_mm + static_cast<i64>(c0) * n.spacing_mm;
+        h.fill_z_mm = n.z_mm + static_cast<i64>(r0) * n.spacing_mm;
+        h.fill_nx = c1 - c0 + 1;
+        h.fill_nz = r1 - r0 + 1;
+        // (A ground edit's grid is at most 1,024 points a side: tileset.md.)
+        if (h.fill_nx > 1024 || h.fill_nz > 1024)
+          return fail(error, "basins (an infilled hollow over 1,024 lattice points a side): " +
+                                 p.basins[k].name);
+        h.fill_mm.assign(h.fill_nx * h.fill_nz, k_fill_none_mm);
+        const auto in_pit = [&](u32 c, u32 r) { return pit_of[r * n.width + c] == id; };
+        for (u32 r = r0; r <= r1; ++r)
+          for (u32 c = c0; c <= c1; ++c) {
+            i32& out = h.fill_mm[(r - r0) * h.fill_nx + (c - c0)];
+            if (in_pit(c, r)) {
+              out = 0;
+              continue;
+            }
+            // A cell of the rim, a neighbour of the hollow's, whose ground stands at the level
+            // or over it: the floor's level too, so the floor runs flat to its walls (no slot
+            // between a deep cell and the wall beside it) and nothing is raised over the level.
+            bool rim = false;
+            for (u32 d = 0; d < 8 && !rim; ++d) {
+              const u32 j = neighbour(r * n.width + c, n.width, n.depth, k_dx[d], k_dz[d]);
+              rim = j != ~0u && pit_of[j] == id;
+            }
+            if (rim) out = 0;
+          }
+        n.basins.hollows.push_back(std::move(h));
+        for (u32 i = 0; i < cells; ++i)
+          if (pit_of[i] == id) n.ground_um[i] = std::max(n.ground_um[i], pit.level_um);
+        continue;
+      }
       pit.leak += wide(p.basins[k].leak_m3s);
       if (!p.basins[k].dry || pit.decided) continue;
       pit.decided = 1;
@@ -1870,6 +1930,7 @@ bool route_hollows(const ChannelLayer& p, const scene_gen::Ground& ground,
         changed = true;
         Hollow h = hollow_of(n, pit, HollowKind::AuthoredTerminal);
         h.level_m = level;
+        pit.record = n.basins.hollows.size();
         n.basins.hollows.push_back(std::move(h));
         continue;
       }
@@ -1891,7 +1952,12 @@ bool route_hollows(const ChannelLayer& p, const scene_gen::Ground& ground,
       for (u32 i = 0; i < cells; ++i) {
         if (pit_of[i] == ~0u) continue;
         const Pit& pit = pits[pit_of[i]];
-        if (pit.terminal == 1 && covered[i]) sink[i] = 1;
+        if (pit.terminal == 1 && covered[i]) {
+          sink[i] = 1;
+          // The body's cells are the hollow's record's, as a body of the plan's are: a line that
+          // ends on one ends in the body (`plan_from_lattice`), at the body's level.
+          if (pit.record != ~0u) n.body_of[i] = pit.record + 1;
+        }
         if (pit.terminal == 2 && n.ground_um[i] < pit.level_um) balance.push_back({pit_of[i], i});
       }
       std::sort(balance.begin(), balance.end(),
@@ -1917,8 +1983,11 @@ bool route_hollows(const ChannelLayer& p, const scene_gen::Ground& ground,
         Hollow h = hollow_of(n, pit, HollowKind::Terminal);
         h.level_m = round_to(static_cast<f64>(level_um) / 1e6, 1e3);
         u32 wet = 0;
-        for (u32 q = a; q < b && n.ground_um[balance[q].second] < level_um; ++q)
+        f64 wet_volume_um = 0;
+        for (u32 q = a; q < b && n.ground_um[balance[q].second] < level_um; ++q) {
           ++wet;
+          wet_volume_um += static_cast<f64>(level_um - n.ground_um[balance[q].second]);
+        }
         const bool stands = holds > 0 &&
                             static_cast<f64>(wet) * cell_area >= wide(p.basin_min_area_m2) &&
                             h.level_m > h.floor_m;
@@ -1928,6 +1997,10 @@ bool route_hollows(const ChannelLayer& p, const scene_gen::Ground& ground,
         }
         h.inflow_m3s = inflow_of(pit, wet);
         h.loss_m3s = loss_of(pit, wet);
+        if (stands) {
+          h.water_m2 = static_cast<f64>(wet) * cell_area;
+          h.water_m3 = round_to(wet_volume_um / 1e6 * cell_area, 1e3);
+        }
         h.name = stands ? p.name + " basin " + std::to_string(n.basins.hollows.size()) : "";
         const u32 body = n.basins.hollows.size() + 1;
         sink[pit.floor] = 1;
@@ -1968,6 +2041,8 @@ bool route_hollows(const ChannelLayer& p, const scene_gen::Ground& ground,
     h.loss_m3s = loss_of(pit, stands ? pit.wet : 0u);
     if (stands) {
       h.level_m = round_to(static_cast<f64>(pit.level_um - notch_um) / 1e6, 1e3);
+      h.water_m2 = static_cast<f64>(pit.wet) * cell_area;
+      h.water_m3 = round_to(pit.wet_volume_um / 1e6 * cell_area, 1e3);
       h.name = p.name + " basin " + std::to_string(n.basins.hollows.size());
       pit.hollow = n.basins.hollows.size();
     }
@@ -2042,7 +2117,7 @@ bool detail::sample_lattice(const ChannelLayer& p, const scene_gen::Ground& grou
 
 // Steps 2 to 6 over a sampled lattice: the fill, the routing, the heads, the links and their
 // lines. The one place the planner runs, counted for `plans_made`.
-bool detail::plan_from_lattice(const ChannelLayer& p, const scene_gen::Ground& ground, u64 seed,
+bool detail::plan_from_lattice(const ChannelLayer& p, const scene_gen::Ground& uncut, u64 seed,
                                ChannelNetwork& n, std::string& error,
                                const scene_gen::Exclusion* water) {
   g_plans_made.fetch_add(1, std::memory_order_relaxed);
@@ -2051,7 +2126,7 @@ bool detail::plan_from_lattice(const ChannelLayer& p, const scene_gen::Ground& g
   // routing are run until no hollow changes what it is, since a hollow made a sink uncovers the
   // hollows the first fill had drowned in it.
   Vector<u32> order;
-  if (!route_hollows(p, ground, water, n, order, error)) return false;
+  if (!route_hollows(p, uncut, water, n, order, error)) return false;
   // Heads (Montgomery & Dietrich 1988, 1989): contributing area times the local slope to an
   // exponent at a threshold, above a floor of area; once a channel, a channel all the way down.
   const f64 spacing = static_cast<f64>(n.spacing_mm) / 1000.0;
@@ -2098,10 +2173,30 @@ bool detail::plan_from_lattice(const ChannelLayer& p, const scene_gen::Ground& g
                              hash_combine(static_cast<u64>(x), static_cast<u64>(z)));
     n.links.push_back(std::move(link));
   }
+  // **From here the ground is the ground with the plan's floors in it** (W122; channels.md, "A
+  // dried lake's floor"): an infilled hollow is ground, so every line, seat, section and flood
+  // bed below is laid on its floor and not in the bowl under it. With none, the ground itself.
+  FlooredGround held;
+  const scene_gen::Ground floored = floored_ground(n, uncut, held);
+  const scene_gen::Ground& ground = floored;
   for (ChannelLink& link : n.links)
     build_line(p, n, ground, link);
   // W90: the shorelines, the reaches and steps, the cut's bed, the confluences, in that order.
   apply_water(n, ground, water);
+  // **A line that ends on a scene's body under its spill ends in it** (W122; the owner's mark 8:
+  // two lines ended at such a pond with no mouth, their beds cut 0.45 and 0.75 m under its
+  // level). The routing ends at the body's cells, which are a sink; the line's own last point
+  // can stand a step short of the outline, where the exclusion finds no water and so no mouth.
+  // The link is given the body's level as the base level W121 holds a mouth to: its bed stands
+  // nowhere under it, and the solver ends the line at it.
+  for (ChannelLink& link : n.links) {
+    if (link.mouth || link.line.size() < 2 || link.cells.empty()) continue;
+    const u32 body = n.body_of[link.cells.back()];
+    if (body == 0 || n.basins.hollows[body - 1].kind != HollowKind::AuthoredTerminal) continue;
+    link.mouth = true;
+    link.mouth_level = n.basins.hollows[body - 1].level_m;
+    ++n.water.mouths;
+  }
   // **Upstream first** (W122): a link's bed begins no higher than the lowest bed that ends at its
   // first cell, so the bed does not rise across a junction either. A link that enters at a cell
   // has less contributing area at its own first cell than that cell has, so the area orders them.
@@ -2583,12 +2678,31 @@ JsonValue terrain_cuts_json(const ChannelLayer& p, const ChannelNetwork& n) {
 // its hollow's lowest cell at its level. The extent is the hollow's own reach from that cell and
 // two cells and four metres more, so the water's flood ends inside it or the level is wrong and
 // the scene says so. Millimetres, so the text is the same from every toolchain.
+//
+// **Its look is its size's** (channels.md, "A lake's look"; docs/experiments/hollows.md, "A
+// lake's look"). The wind: the layer's, times the cube root of Hondzo & Stefan's (1993)
+// sheltering by area, 1 - exp(-0.3 A / km2), which scales the wind's energy input, the cube of
+// its speed. The wet band: a medium sand's capillary rise (0.15 m), the wave that wind raises
+// over the body's own reach (the growth law the water capability draws by, H = 1.6e-3 U
+// sqrt(F / g), F the diagonal of the square of its area; its run-up is no more than its height
+// on a shore gentler than one in five, Hunt 1959) and half the median yearly range of a lake's
+// level (House 1985: 0.24 m with an outlet, 0.34 m without). The shore fade: two hundredths of
+// its side, between 0.75 and 2 m (a margin, not a source's). The depth the bottom fades by: its
+// mean depth, held to the range of Carlson's (1977) Secchi depths, 0.5 to 8 m. Centimetres.
 JsonValue plan_bodies_json(const ChannelLayer& p, const ChannelNetwork& n) {
-  (void)p;
   JsonValue list = JsonValue::array();
   const f64 spacing = static_cast<f64>(n.spacing_mm) / 1000.0;
+  u32 written = 0;
   for (const Hollow& h : n.basins.hollows) {
     if (!h.body()) continue;
+    // A plan read from a file older than the body's own area holds none: the hollow's.
+    const f64 area = h.water_m2 > 0 ? h.water_m2 : h.area_m2;
+    const f64 mean_depth = h.water_m2 > 0 ? h.water_m3 / h.water_m2 : 0.0;
+    const f64 shelter = 1.0 - det::exp(-0.3 * area / 1e6);
+    const f64 wind = round_to(wide(p.basin_wind_m_s) * powd(shelter, 1.0 / 3.0), 1e2);
+    const f64 fetch = std::min(std::sqrt(2.0 * area), 2.2e4 * wind * wind / 9.81);
+    const f64 wave = 1.6e-3 * wind * std::sqrt(fetch / 9.81);
+    const f64 range = h.kind == HollowKind::Terminal ? .34 : .24;
     JsonValue seed = JsonValue::array();
     seed.push_back(JsonValue(round_to(h.floor_x, 1e3)));
     seed.push_back(JsonValue(round_to(h.level_m, 1e3)));
@@ -2602,6 +2716,110 @@ JsonValue plan_bodies_json(const ChannelLayer& p, const ChannelNetwork& n) {
     o["name"] = JsonValue(h.name);
     o["level_m"] = JsonValue(round_to(h.level_m, 1e3));
     o["shape"] = std::move(shape);
+    if (wind > 0) o["wind_m_s"] = JsonValue(wind);
+    o["wet_m"] = JsonValue(round_to(.15 + wave + .5 * range, 1e2));
+    o["shore_m"] = JsonValue(round_to(std::clamp(.02 * std::sqrt(area), .75, 2.0), 1e2));
+    if (mean_depth > 0)
+      o["depth_fade_m"] = JsonValue(round_to(std::clamp(mean_depth, .5, 8.0), 1e2));
+    o["seed"] = JsonValue(1u + written);
+    ++written;
+    list.push_back(std::move(o));
+  }
+  return list;
+}
+
+namespace {
+// An infilled hollow's floor over a place, metres: its grid's bilinear surface, by the rule the
+// tile set's patch is read by (tileset cuts: held at the grid's edge), or far under any ground
+// outside the grid's box.
+f64 floor_at(const ChannelNetwork& n, const Hollow& h, i64 x_mm, i64 z_mm) noexcept {
+  const f64 s = static_cast<f64>(n.spacing_mm);
+  const f64 fx = static_cast<f64>(x_mm - h.fill_x_mm) / s;
+  const f64 fz = static_cast<f64>(z_mm - h.fill_z_mm) / s;
+  if (fx < 0 || fz < 0 || fx > static_cast<f64>(h.fill_nx - 1) ||
+      fz > static_cast<f64>(h.fill_nz - 1))
+    return -1e9;
+  const i64 i = std::min(static_cast<i64>(std::floor(fx)), static_cast<i64>(h.fill_nx) - 2);
+  const i64 j = std::min(static_cast<i64>(std::floor(fz)), static_cast<i64>(h.fill_nz) - 2);
+  const f64 u = fx - static_cast<f64>(i), v = fz - static_cast<f64>(j);
+  const auto at = [&](i64 a, i64 b) {
+    return static_cast<f64>(h.fill_mm[static_cast<u32>(b * h.fill_nx + a)]);
+  };
+  const f64 near_row = at(i, j) + u * (at(i + 1, j) - at(i, j));
+  const f64 far_row = at(i, j + 1) + u * (at(i + 1, j + 1) - at(i, j + 1));
+  return h.level_m + (near_row + v * (far_row - near_row)) / 1000.0;
+}
+f64 over_floors(const FlooredGround& g, f64 y, i64 x_mm, i64 z_mm) noexcept {
+  for (const Hollow& h : g.network->basins.hollows)
+    if (h.kind == HollowKind::Infilled && h.fill_nx >= 2 && h.fill_nz >= 2)
+      y = std::max(y, floor_at(*g.network, h, x_mm, z_mm));
+  return y;
+}
+f64 floored_surface(const void* context, i64 x_mm, i64 z_mm) noexcept {
+  const FlooredGround& g = *static_cast<const FlooredGround*>(context);
+  return over_floors(g, g.base.surface_mm(x_mm, z_mm), x_mm, z_mm);
+}
+f64 floored_floor(const void* context, i64 x_mm, i64 z_mm) noexcept {
+  const FlooredGround& g = *static_cast<const FlooredGround*>(context);
+  return over_floors(g, g.base.floor_mm(x_mm, z_mm), x_mm, z_mm);
+}
+}  // namespace
+
+scene_gen::Ground floored_ground(const ChannelNetwork& network, const scene_gen::Ground& base,
+                                 FlooredGround& held) {
+  bool any = false;
+  for (const Hollow& h : network.basins.hollows)
+    any = any || h.kind == HollowKind::Infilled;
+  if (!any) return base;
+  held.base = base;
+  held.network = &network;
+  scene_gen::Ground out;
+  out.context = &held;
+  out.surface_fn = &floored_surface;
+  if (base.floor_fn != nullptr) out.floor_fn = &floored_floor;
+  return out;
+}
+
+// **A dried lake's floor** (channels.md, "A dried lake's floor"): the hollow's box as the
+// patch's outline and its floor as the patch's grid. Outside the hollow and its rim the grid
+// stands far under any ground, so the fill raises nothing there and its faces meet nothing.
+JsonValue terrain_fills_json(const ChannelLayer& p, const ChannelNetwork& n) {
+  JsonValue list = JsonValue::array();
+  u32 floors = 0;
+  for (const Hollow& h : n.basins.hollows) {
+    if (h.kind != HollowKind::Infilled || h.fill_nx < 2 || h.fill_nz < 2) continue;
+    const f64 x0 = static_cast<f64>(h.fill_x_mm) / 1000.0;
+    const f64 z0 = static_cast<f64>(h.fill_z_mm) / 1000.0;
+    const f64 x1 =
+        static_cast<f64>(h.fill_x_mm + static_cast<i64>(h.fill_nx - 1) * n.spacing_mm) / 1000.0;
+    const f64 z1 =
+        static_cast<f64>(h.fill_z_mm + static_cast<i64>(h.fill_nz - 1) * n.spacing_mm) / 1000.0;
+    const f64 level = round_to(h.level_m, 1e3);
+    const auto corner = [&](f64 x, f64 z) {
+      JsonValue at = JsonValue::array();
+      at.push_back(JsonValue(x));
+      at.push_back(JsonValue(level));
+      at.push_back(JsonValue(z));
+      return at;
+    };
+    JsonValue outline = JsonValue::array();
+    outline.push_back(corner(x0, z0));
+    outline.push_back(corner(x1, z0));
+    outline.push_back(corner(x1, z1));
+    outline.push_back(corner(x0, z1));
+    JsonValue heights = JsonValue::array();
+    for (const i32 v : h.fill_mm)
+      heights.push_back(JsonValue(v));
+    JsonValue o = JsonValue::object();
+    o["name"] = JsonValue(p.name + " floor " + (h.name.empty() ? std::to_string(floors) : h.name));
+    o["mode"] = JsonValue("Fill");
+    o["outline"] = std::move(outline);
+    o["grid_origin"] = corner(x0, z0);
+    o["grid_spacing_mm"] = JsonValue(n.spacing_mm);
+    o["grid_nx"] = JsonValue(h.fill_nx);
+    o["grid_nz"] = JsonValue(h.fill_nz);
+    o["grid_mm"] = std::move(heights);
+    ++floors;
     list.push_back(std::move(o));
   }
   return list;

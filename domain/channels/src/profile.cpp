@@ -346,7 +346,18 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
   {
     f64 hx = 1.0, hz = 0.0;
     for (u32 k = 0; k < n; ++k) {
-      const u32 p = k > 0 ? k - 1 : k, r = k + 1 < n ? k + 1 : k;
+      // **The section stands across the line's direction over the cut's own width** (W122;
+      // channels.md, "Hollows", "What is not zero, traced"): the chord between the nodes half a
+      // width up and down the line, never less than one node each way. Read over one step, a line that
+      // turns tighter than its cut is wide (a hairpin of a metre's radius in a cut 3.7 m wide,
+      // at the lip of a step) swung its sections through 120 degrees in under a metre, and they
+      // reached over the lip and read the step's foot as the station's bed. A line that names
+      // no width keeps the one step.
+      const u32 reach_nodes =
+          line.width.empty() ? 1u
+                             : std::max<u32>(1, static_cast<u32>(0.5 * c.width[k] / c.run + 0.5));
+      const u32 p = k > reach_nodes ? k - reach_nodes : 0u;
+      const u32 r = std::min(k + reach_nodes, n - 1);
       const f64 dx = c.x[r] - c.x[p], dz = c.z[r] - c.z[p];
       const f64 l = std::sqrt(dx * dx + dz * dz);
       if (l > 1e-9) {

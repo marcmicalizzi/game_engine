@@ -88,6 +88,7 @@ struct ChannelSurface @version(1) {
 /// Version 12 (W120): `flow`, the water's sources.
 /// Version 13 (W122): the hollows (`breach_max_m`, `basin_min_area_m2`, `basin_notch_m`,
 /// `basin_evaporation_mm_y`, `basin_seepage_mm_y`, `basins`).
+/// Version 14 (W122, to the gate): `basin_wind_m_s`, the wind the plan's bodies are given.
 /// What a point source is (W120; channels.md, "Discharge"). An enumerator is never renumbered.
 enum ChannelSourceKind : u8 {
   /// Groundwater reaching the surface: a steady flow, scaled with the year's stage like the
@@ -149,14 +150,22 @@ struct ChannelFlow @version(1) {
 /// author's, since the plan draws no pipe between the two. What feeds it beyond its catchment
 /// (a spring, melt) is a `flow.sources` entry standing in its catchment. A point in no pit is
 /// refused by name.
-struct ChannelBasin @version(1) {
+///
+/// Version 2: `infilled`, **a lake that silted up** (channels.md, "A dried lake's floor"; the
+/// grounding, docs/experiments/hollows.md): the hollow is ground, filled flat to its spill — the
+/// plan writes the fill as a ground edit of its own beside its cuts — and the lines cross the
+/// floor and leave through the old outlet as over any ground. No body stands in it and nothing
+/// ends in it. Exclusive with `dry`, which keeps the bowl and ends its lines at the floor (a
+/// basin that drains underground).
+struct ChannelBasin @version(2) {
   name: string
   at: f64[2]
   dry: bool = false
   leak_m3s: f32 = 0
+  infilled: bool = false @since(2)
 }
 
-struct ChannelLayer @version(13) {
+struct ChannelLayer @version(14) {
   name: string
   seed: u64 = 1
   /// The region drained, world metres, x and z, each a whole number of spacings.
@@ -381,6 +390,14 @@ struct ChannelLayer @version(13) {
   basin_seepage_mm_y: f32 = 0.0 @since(13)
   /// The hollows the author decides (`ChannelBasin`).
   basins: ChannelBasin[] @since(13)
+  /// **The wind over the plan's bodies** (W122; channels.md, "A lake's look"; the grounding,
+  /// docs/experiments/hollows.md): the region's wind 10 m over open ground, m/s (0 to 40). Each
+  /// body the plan writes is given the share of it its own size lets through (a small lake lies
+  /// in the lee of its shores: Hondzo & Stefan 1993's sheltering by area), as its `wind_m_s`, so
+  /// its waves are the water capability's fetch-limited ones over its own reach and a pond is
+  /// nearly a mirror. 0: the plan names no wind, and a body's waves are a `WaterBody`'s defaults.
+  /// Not part of what a plan is keyed by: it is read when the bodies are written.
+  basin_wind_m_s: f32 = 4 @since(14) @unit("m/s")
 }
 
 /// A placed piece's recipe, written by the generator as `<hash>.channel.json` and built by the mesh

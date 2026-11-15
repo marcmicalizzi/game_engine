@@ -21,8 +21,10 @@
 #include <charconv>
 #include <chrono>
 #include <cmath>
+#include <memory>
 #include <schemas/scene.h>
 #include <string>
+#include <vector>
 #endif
 
 namespace engine::content {
@@ -174,10 +176,10 @@ int channels_command(int argc, char** argv) {
         bodies.push_back(std::move(body));
     }
   }
-  const scene_gen::Ground ground_view = ground.view();
+  const scene_gen::Ground uncut_view = ground.view();
   scene_gen::Exclusion shores;
   if (!shores.build({}, {bodies.data(), bodies.size()}, {}, &error)) return fail(error);
-  context.ground = ground_view;
+  context.ground = uncut_view;
   context.exclusion = &shores;
   JsonValue plans = JsonValue::array();
   u32 planned = 0;
@@ -211,7 +213,14 @@ int channels_command(int argc, char** argv) {
   // and whether any bed rises.
   JsonValue plan_bodies = JsonValue::array();
   JsonValue hollows = JsonValue::array();
-  u32 hollow_kinds[7] = {}, breached = 0, fills = 0;
+  struct Floored {
+    channels::ChannelPlan plan;
+    channels::FlooredGround held;
+  };
+  std::vector<std::unique_ptr<Floored>> kept;
+  scene_gen::Ground ground_view = uncut_view;  // through every plan's floors, as they are made
+  u32 floors = 0;
+  u32 hollow_kinds[8] = {}, breached = 0, fills = 0;
   f64 breached_max = 0, breached_area = 0;
   channels::HollowStats rule;
   if (placements != nullptr && placements->is_array()) {
@@ -235,13 +244,20 @@ int channels_command(int argc, char** argv) {
       // The key a pasted entry carries names the plan made last time; this run keys it again from
       // the ground before its cuts, as it clears the cuts above.
       layer.plan.clear();
-      channels::ChannelPlan plan;
+      // Kept to the end: the ground below is read through each plan's floors (W122).
+      kept.push_back(std::make_unique<Floored>());
+      channels::ChannelPlan& plan = kept.back()->plan;
       const auto began = std::chrono::steady_clock::now();
       if (!channels::ensure_plan(layer, context, plan_dir, plan, error))
         return fail(scene_path + ": placements " + std::to_string(k) + ": " + error);
       plan_seconds += std::chrono::duration<f64>(std::chrono::steady_clock::now() - began).count();
       planned += plan.planned ? 1u : 0u;
       const channels::ChannelNetwork& network = plan.network;
+      // **The ground the plan's lines lie on** (W122; channels.md, "A dried lake's floor"): this
+      // command holds the ground before its edits, where an infilled hollow is still its bowl,
+      // so everything below that sets a line against the ground asks it through the plan's
+      // floors, as a host's ground has them once the edits are in its tile set.
+      ground_view = channels::floored_ground(network, ground_view, kept.back()->held);
       {
         JsonValue named = JsonValue::object();
         named["entry"] = JsonValue(k);
@@ -290,8 +306,8 @@ int channels_command(int argc, char** argv) {
         const JsonValue made = channels::plan_bodies_json(layer, network);
         for (const JsonValue& b : made.as_array())
           plan_bodies.push_back(b);
-        const char* kinds[7] = {"breached",    "lake",     "authored_terminal", "dry",
-                                "deep_breach", "terminal", "authored"};
+        const char* kinds[8] = {"breached",    "lake",     "authored_terminal", "dry",
+                                "deep_breach", "terminal", "authored",          "infilled"};
         for (const channels::Hollow& h : network.basins.hollows) {
           JsonValue o = JsonValue::object();
           o["entry"] = JsonValue(k);
@@ -336,6 +352,11 @@ int channels_command(int argc, char** argv) {
         }
       }
       if (cut) {
+        // W122: an infilled hollow's floor, a fill, before the cuts made in it.
+        const JsonValue f = channels::terrain_fills_json(layer, network);
+        for (const JsonValue& b : f.as_array())
+          cuts.push_back(b);
+        floors += static_cast<u32>(f.as_array().size());
         const JsonValue c = channels::terrain_cuts_json(layer, network);
         for (const JsonValue& b : c.as_array())
           cuts.push_back(b);
@@ -366,9 +387,9 @@ int channels_command(int argc, char** argv) {
         // reaches half a bend's); and, stretch by stretch, how the line stands on its ground —
         // the ground at the two bank tops (half the width across the line each way) against the
         // cut's bed, and the line's heading against the ground's fall line over a width.
-        const u32 kept = std::min<u32>(l.keep, l.line.size());
+        const u32 line_kept = std::min<u32>(l.keep, l.line.size());
         bool in_pool = false;
-        for (u32 i = 0; i + 1 < kept; ++i) {
+        for (u32 i = 0; i + 1 < line_kept; ++i) {
           const channels::ChannelPoint& a = l.line[i];
           const channels::ChannelPoint& b = l.line[i + 1];
           const f64 dx = b.at.x - a.at.x, dz = b.at.z - a.at.z;
@@ -500,10 +521,11 @@ int channels_command(int argc, char** argv) {
     JsonValue h = JsonValue::object();
     h["bodies_written"] = JsonValue(body_count);
     h["bodies_replaced"] = JsonValue(own_bodies);
-    const char* kinds[7] = {"breached",    "lakes",    "authored_terminal", "dry",
-                            "deep_breach", "terminal", "authored"};
-    for (u32 q = 1; q < 7; ++q)
+    const char* kinds[8] = {"breached",    "lakes",    "authored_terminal", "dry",
+                            "deep_breach", "terminal", "authored",          "infilled"};
+    for (u32 q = 1; q < 8; ++q)
       h[kinds[q]] = JsonValue(hollow_kinds[q]);
+    h["floors_written"] = JsonValue(floors);
     h["breached"] = JsonValue(breached);
     h["breached_max_m"] = JsonValue(std::round(breached_max * 1e3) / 1e3);
     h["breached_ha"] = JsonValue(std::round(breached_area / 100) / 100);

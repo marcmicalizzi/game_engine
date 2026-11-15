@@ -24,8 +24,9 @@ using namespace detail;
 
 constexpr u32 k_plan_magic = 0x4C504843u;  // "CHPL"
 // 2 (W97): a link's sediment; 3 (W116): its seat; 4 (W121): an outlet's body's level; 5 (W122):
-// the hollows, and how much wider a breach's top is.
-constexpr u32 k_plan_format = 5;
+// the hollows, and how much wider a breach's top is; 6 (W122, to the gate): an infilled hollow's
+// floor, a grid of heights.
+constexpr u32 k_plan_format = 6;
 static_assert(sizeof(ChannelPoint) == 40, "a point is written as its bytes: no padding");
 static_assert(sizeof(ChannelSediment) == 32, "a sediment is written as its bytes: no padding");
 
@@ -109,25 +110,40 @@ void write_link(Writer& w, const ChannelLink& l) {
 // A hollow, field by field (a name is its length and its bytes).
 void write_hollow(Writer& w, const Hollow& h) {
   w.put(static_cast<u8>(h.kind));
-  for (const f64 v : {h.level_m, h.spill_m, h.floor_m, h.floor_x, h.floor_z, h.spill_x, h.spill_z,
-                      h.area_m2, h.volume_m3, h.catchment_m2, h.extent_m, h.inflow_m3s, h.loss_m3s})
+  for (const f64 v :
+       {h.level_m, h.spill_m, h.floor_m, h.floor_x, h.floor_z, h.spill_x, h.spill_z, h.area_m2,
+        h.volume_m3, h.catchment_m2, h.extent_m, h.inflow_m3s, h.loss_m3s, h.water_m2, h.water_m3})
     w.put(v);
   w.put(static_cast<u32>(h.name.size()));
   w.bytes.append(h.name);
+  // An infilled hollow's floor (format 6): the grid's corner, its sides and its heights.
+  w.put(h.fill_x_mm);
+  w.put(h.fill_z_mm);
+  w.put(h.fill_nx);
+  w.put(h.fill_nz);
+  w.list(h.fill_mm);
 }
 bool read_hollow(Reader& r, Hollow& h) {
   const u8 kind = r.get<u8>();
-  if (kind > static_cast<u8>(HollowKind::Authored)) return false;
+  if (kind > static_cast<u8>(HollowKind::Infilled)) return false;
   h.kind = static_cast<HollowKind>(kind);
-  for (f64* v :
-       {&h.level_m, &h.spill_m, &h.floor_m, &h.floor_x, &h.floor_z, &h.spill_x, &h.spill_z,
-        &h.area_m2, &h.volume_m3, &h.catchment_m2, &h.extent_m, &h.inflow_m3s, &h.loss_m3s})
+  for (f64* v : {&h.level_m, &h.spill_m, &h.floor_m, &h.floor_x, &h.floor_z, &h.spill_x, &h.spill_z,
+                 &h.area_m2, &h.volume_m3, &h.catchment_m2, &h.extent_m, &h.inflow_m3s, &h.loss_m3s,
+                 &h.water_m2, &h.water_m3})
     *v = r.get<f64>();
   const u32 size = r.get<u32>();
   if (!r.ok || static_cast<usize>(r.end - r.at) < size) return false;
   h.name.assign(r.at, size);
   r.at += size;
-  return true;
+  h.fill_x_mm = r.get<i64>();
+  h.fill_z_mm = r.get<i64>();
+  h.fill_nx = r.get<u32>();
+  h.fill_nz = r.get<u32>();
+  r.list(h.fill_mm);
+  // A floor is a whole grid on an infilled hollow, and nothing on any other.
+  const u64 points = u64{h.fill_nx} * h.fill_nz;
+  if (!r.ok || h.fill_mm.size() != points) return false;
+  return h.kind == HollowKind::Infilled ? h.fill_nx >= 2 && h.fill_nz >= 2 : points == 0;
 }
 bool read_link(Reader& r, ChannelLink& l) {
   r.list(l.cells);
@@ -209,8 +225,11 @@ u64 plan_layer_hash(const ChannelLayer& layer) {
   // every plan already made.
   const JsonValue whole = schema::to_json(copy);
   JsonValue hashed = JsonValue::object();
+  // Nor is the wind the plan's bodies are written with (W122; `plan_bodies_json` reads it when
+  // the bodies are written, and no line, bed or hollow depends on it).
   for (const auto& member : whole.as_object())
-    if (member.first != "flow") hashed.set(member.first, member.second);
+    if (member.first != "flow" && member.first != "basin_wind_m_s")
+      hashed.set(member.first, member.second);
   // **Unless a hollow's kind depends on it** (W122; channels.md, "Hollows"): where the layer
   // names a loss — evaporation, seepage or a basin's leak — whether a hollow fills is the runoff
   // and the sources against it, so those two are part of what the plan was made from. With no
@@ -351,8 +370,9 @@ bool read_plan(std::string_view bytes, ChannelPlan& out, std::string& error) {
   for (const ChannelLink& l : n.links)
     if (l.trunk != ~0u && l.trunk >= links) return refuse("holds a link whose trunk is no link");
   const u32 hollows = r.get<u32>();
-  // A hollow is at least its kind, its thirteen numbers and its name's length.
-  if (!r.ok || static_cast<usize>(r.end - r.at) / 109 < hollows)
+  // A hollow is at least its kind, its fifteen numbers, its name's length and its floor's
+  // corner, sides and count.
+  if (!r.ok || static_cast<usize>(r.end - r.at) / 153 < hollows)
     return refuse("names more hollows than it holds");
   n.basins.hollows.resize(hollows);
   for (Hollow& h : n.basins.hollows)
