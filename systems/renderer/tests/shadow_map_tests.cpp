@@ -48,8 +48,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <initializer_list>
 #include <string>
 #include <vector>
 
@@ -1195,16 +1198,107 @@ TEST_CASE("renderer: texel LOD preserves the near fixture on both cascade raster
   }
 }
 
+// The procedural heightfield's 129 x 129 grid (scene.cpp's `make_terrain`, the same surface) with a
+// skirt a metre deep round its edge, as a terrain tile carries one, written as a glTF file. The
+// skirt's faces are vertical, so the mesh does not face the sky (S105) and the cascades cut it by
+// their texels (T140): the plain heightfield faces the sky and takes the picture's cut.
+std::string write_skirted_heightfield(const test::TempDir& dir) {
+  constexpr u32 n = 129;
+  constexpr f32 extent = 10.0f;
+  std::vector<Vec3> p;
+  std::vector<u32> idx;
+  for (u32 z = 0; z < n; ++z) {
+    for (u32 x = 0; x < n; ++x) {
+      const f32 fx = -extent + 2.0f * extent * static_cast<f32>(x) / (n - 1);
+      const f32 fz = -extent + 2.0f * extent * static_cast<f32>(z) / (n - 1);
+      p.push_back(Vec3{fx,
+                       0.9f * std::sin(fx * 0.55f) * std::cos(fz * 0.4f) +
+                           0.35f * std::sin(fx * 1.7f + fz * 1.1f) +
+                           0.12f * std::cos(fx * 4.3f - fz * 3.7f),
+                       fz});
+    }
+  }
+  for (u32 z = 0; z + 1 < n; ++z) {
+    for (u32 x = 0; x + 1 < n; ++x) {
+      const u32 a = z * n + x;
+      for (const u32 v : {a, a + n, a + 1, a + 1, a + n, a + n + 1})
+        idx.push_back(v);
+    }
+  }
+  // Each border segment a quad down to a metre under its lower corner, wound to face outward.
+  const auto skirt = [&](u32 a, u32 b, Vec3 out) {
+    const u32 base = static_cast<u32>(p.size());
+    const f32 floor_y = std::min(p[a].y, p[b].y) - 1.0f;
+    p.push_back(Vec3{p[a].x, floor_y, p[a].z});
+    p.push_back(Vec3{p[b].x, floor_y, p[b].z});
+    const Vec3 nrm = cross(p[b] - p[a], p[base + 1] - p[a]);
+    const bool outward = dot(nrm, out) > 0.0f;
+    for (const u32 v : outward ? std::initializer_list<u32>{a, b, base + 1, a, base + 1, base}
+                               : std::initializer_list<u32>{a, base + 1, b, a, base, base + 1})
+      idx.push_back(v);
+  };
+  for (u32 i = 0; i + 1 < n; ++i) {
+    skirt(i, i + 1, Vec3{0.0f, 0.0f, -1.0f});                             // z = -extent
+    skirt((n - 1) * n + i, (n - 1) * n + i + 1, Vec3{0.0f, 0.0f, 1.0f});  // z = +extent
+    skirt(i * n, (i + 1) * n, Vec3{-1.0f, 0.0f, 0.0f});                   // x = -extent
+    skirt(i * n + n - 1, (i + 1) * n + n - 1, Vec3{1.0f, 0.0f, 0.0f});    // x = +extent
+  }
+  Vec3 lo = p[0];
+  Vec3 hi = p[0];
+  for (const Vec3& v : p) {
+    lo = Vec3{std::min(lo.x, v.x), std::min(lo.y, v.y), std::min(lo.z, v.z)};
+    hi = Vec3{std::max(hi.x, v.x), std::max(hi.y, v.y), std::max(hi.z, v.z)};
+  }
+  const u64 position_bytes = p.size() * sizeof(Vec3);
+  const u64 index_bytes = idx.size() * sizeof(u32);
+  const std::string bin = dir.file("skirted.bin");
+  {
+    std::ofstream f(bin, std::ios::binary);
+    f.write(reinterpret_cast<const char*>(p.data()), static_cast<std::streamsize>(position_bytes));
+    f.write(reinterpret_cast<const char*>(idx.data()), static_cast<std::streamsize>(index_bytes));
+    if (!f.good()) return {};
+  }
+  char json[1024];
+  std::snprintf(
+      json, sizeof(json),
+      "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[0]}],"
+      "\"nodes\":[{\"mesh\":0}],\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0},"
+      "\"indices\":1}]}],\"accessors\":[{\"bufferView\":0,\"componentType\":5126,\"count\":%zu,"
+      "\"type\":\"VEC3\",\"min\":[%.9g,%.9g,%.9g],\"max\":[%.9g,%.9g,%.9g]},{\"bufferView\":1,"
+      "\"componentType\":5125,\"count\":%zu,\"type\":\"SCALAR\"}],\"bufferViews\":[{\"buffer\":0,"
+      "\"byteOffset\":0,\"byteLength\":%llu},{\"buffer\":0,\"byteOffset\":%llu,\"byteLength\":%llu}"
+      "],"
+      "\"buffers\":[{\"byteLength\":%llu,\"uri\":\"skirted.bin\"}]}",
+      p.size(), lo.x, lo.y, lo.z, hi.x, hi.y, hi.z, idx.size(),
+      static_cast<unsigned long long>(position_bytes),
+      static_cast<unsigned long long>(position_bytes), static_cast<unsigned long long>(index_bytes),
+      static_cast<unsigned long long>(position_bytes + index_bytes));
+  const std::string path = dir.file("skirted.gltf");
+  std::ofstream f(path, std::ios::binary);
+  f << json;
+  return f.good() ? path : std::string();
+}
+
 // **The cascades cut by their own texels, on a receiver that is simplified** (R103; renderer.md,
 // "Cascaded shadow maps"). The fixture's casters are their own roots, so the texel cut cannot move
-// them; a heightfield's 129 x 129 grid has a real LOD DAG and shadows itself. Each map size is
-// drawn three times — the picture's cut alone, the texel cut, the texel cut on the vertex path —
-// and held to the rule the Khronos case holds the maps to against the rays: outside a band round
-// every shadow edge as wide as the filter's footprint, the texel cut answers every pixel as the
-// picture's cut does. The band is per pixel: the footprint (`k_footprint_texels` of the cascade
-// that holds the pixel's depth) in the pixel's own size at its depth. The picture (ids) is the
-// same, the two raster paths draw the same shadow to the byte, and the texel cut never draws more
-// pairs into the maps than the picture's (it is the coarser of the two cuts, never a finer one).
+// them; a heightfield's 129 x 129 grid has a real LOD DAG and shadows itself. Since S105 a mesh
+// that faces the sky takes the picture's cut in every cascade, so the receiver is the heightfield
+// with a skirt (T140), which does not, and the case first holds that it is cut by its texels: fewer
+// pairs in the maps than the picture's cut draws there. Each map size is drawn three times — the
+// picture's cut alone, the texel cut, the texel cut on the vertex path — and held to the rule the
+// Khronos case holds the maps to against the rays: outside a band round every shadow edge as wide
+// as the filter's footprint, the texel cut answers every pixel as the picture's cut does, wherever
+// the rule is owed. The band is per pixel: the footprint (`k_footprint_texels` of the cascade that
+// holds the pixel's depth) in the pixel's own size at its depth. **Where it is owed is derived**: a
+// cluster the texel cut takes stands at most its world error e <= tau texels off the finer surface,
+// which is e / (N.L) deeper along the light, and the maps' constant bias covers b =
+// `k_shadow_bias_texels` of a texel; so the texel cut cannot shadow a receiver the picture's cut
+// lights where N.L >= tau / b. At the default tau (half a texel) that is only the sun overhead,
+// which is why S105 took the ground out of the cut; the case asks tau = a quarter, N.L >= 0.5, of
+// the receiver's normal as captured (RGB8: each component within 1/255 of the true one, so N.L
+// within sum|L_i| / 255 = 0.0065, taken off the bound). The picture (ids) is the same, the two
+// raster paths draw the same shadow to the byte, and the texel cut never draws more pairs into the
+// maps than the picture's (it is the coarser of the two cuts, never a finer one).
 TEST_CASE(
     "renderer: a cascade cut by its texels shadows a simplified receiver as the picture's cut "
     "does") {
@@ -1213,13 +1307,23 @@ TEST_CASE(
     MESSAGE("renderer unavailable here: " << gpu.why);
     return;
   }
+  const test::TempDir dir("shadow_texel_cut_receiver");
   SceneDesc desc;
-  desc.meshes.push_back("");
-  desc.heightfield_grid = 129;
+  desc.meshes.push_back(write_skirted_heightfield(dir));
+  REQUIRE(!desc.meshes[0].empty());
   desc.cache = false;
   SceneData data;
   std::string error;
   REQUIRE_MESSAGE(load_scene(desc, data, error), error);
+  {
+    Vector<u32> sky;
+    REQUIRE(sky_facing_meshes(data.lod.mesh, data.parts, sky) == 0u);  // the cut applies to it
+  }
+  constexpr f32 k_texel_error = 0.25f;
+  const f32 k_lit_floor = k_texel_error / k_shadow_bias_texels +
+                          (std::fabs(k_sun.x) + std::fabs(k_sun.y) + std::fabs(k_sun.z)) / 255.0f;
+  u64 owed_total = 0;
+  u32 fewer_pairs = 0;
   constexpr u32 width = 480;
   constexpr u32 height = 270;
   // The 3 x 3 bilinear filter's reach: 4 x 4 texels (gfx.md, "The sun's cascaded shadow maps").
@@ -1249,6 +1353,7 @@ TEST_CASE(
         ResolvedSettings resolved;
         resolve_settings(settings, gpu.device.features(), &data, resolved);
         REQUIRE(resolved.shadow_texel_lod == (run != 0));
+        resolved.shadow_texel_error = k_texel_error;
         GpuScene scene;
         REQUIRE_MESSAGE(scene.create(gpu.device, data, resolved, &error), error);
         SceneRenderer renderer;
@@ -1259,6 +1364,7 @@ TEST_CASE(
         CaptureChannels channels;
         channels.ids = true;
         channels.depth = true;
+        channels.normals = run == 0;
         REQUIRE_MESSAGE(renderer.capture(frame, channels, shots[run], &error), error);
         pairs[run] = renderer.stats().shadow_pairs;
         if (run == 0) fit = renderer.shadow_cascades();
@@ -1285,6 +1391,7 @@ TEST_CASE(
       u32 changed = 0;
       u32 opposite = 0;
       u32 interior = 0;
+      u32 owed = 0;
       u32 path_differ = 0;
       for (u32 y = 0; y < height; ++y) {
         for (u32 x = 0; x < width; ++x) {
@@ -1308,16 +1415,25 @@ TEST_CASE(
           }
           if (!inside) continue;
           ++interior;
+          // The receiver's N.L, from the captured normal (n * 0.5 + 0.5 in RGB8).
+          const u8* nc = &shots[0].normals[u64{p} * 3];
+          const f32 n_dot_l = (nc[0] / 127.5f - 1.0f) * k_sun.x +
+                              (nc[1] / 127.5f - 1.0f) * k_sun.y + (nc[2] / 127.5f - 1.0f) * k_sun.z;
+          if (n_dot_l < k_lit_floor) continue;
+          ++owed;
           if (after != before && after != 2) ++opposite;
         }
       }
       opposite_total += opposite;
+      owed_total += owed;
+      if (pairs[1] < pairs[0]) ++fewer_pairs;
       MESSAGE("map " << resolution << ", view at " << v.distance << " radii: pairs " << pairs[0]
                      << " -> " << pairs[1] << ", " << fit.count << " cascade(s), texels "
                      << fit.cascades[0].texel_world << " to "
                      << fit.cascades[fit.count - 1].texel_world << " m; changed pixels " << changed
-                     << ", interior " << interior << ", opposite there " << opposite
-                     << ", hw/vertex differences " << path_differ);
+                     << ", interior " << interior << ", owed (N.L >= " << k_lit_floor << ") "
+                     << owed << ", opposite there " << opposite << ", hw/vertex differences "
+                     << path_differ);
       CHECK(pairs[1] <= pairs[0]);
       CHECK(opposite == 0);
       CHECK(shots[0].ids == shots[1].ids);
@@ -1325,7 +1441,11 @@ TEST_CASE(
       CHECK(shots[1].ids == shots[2].ids);
     }
   }
-  MESSAGE("opposite answers inside the footprint's band, every map and view: " << opposite_total);
+  MESSAGE("opposite answers inside the footprint's band where owed, every map and view: "
+          << opposite_total << " of " << owed_total
+          << "; maps cut coarser than the picture's: " << fewer_pairs << " of 9");
+  CHECK(owed_total > 0);
+  CHECK(fewer_pairs > 0);  // the texel cut is what this case draws, not the picture's again
 }
 
 // **Which meshes face the sky** (S105; renderer.md, "The ground takes the picture's cut in every
