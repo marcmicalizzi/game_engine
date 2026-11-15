@@ -30,13 +30,25 @@ void usage() {
                "usage: engine-content dwelling <out-dir> [--name <name>] [--persons <n>] "
                "[--means <0|1|2>]\n"
                "         [--frontage <cm>] [--depth <cm>] [--seed <n>] "
-               "[--scope whole|exterior|interior]\n");
+               "[--scope whole|exterior|interior]\n"
+               "         [--bare timber|furniture|dress|all]...\n");
 }
 
-void append(std::string& out, const char* format, double a, double b, double c) {
-  char buffer[128];
-  std::snprintf(buffer, sizeof buffer, format, a, b, c);
-  out += buffer;
+// A length with two decimals (a centimetre) or three (a millimetre). Each format is a literal:
+// GCC refuses one handed in as a parameter (-Werror=format-nonliteral).
+std::string cm(double metres) {
+  char buffer[48];
+  std::snprintf(buffer, sizeof buffer, "%.2f", metres);
+  return buffer;
+}
+std::string mm(double metres) {
+  char buffer[48];
+  std::snprintf(buffer, sizeof buffer, "%.3f", metres);
+  return buffer;
+}
+// "[x, y, z]", x and z to the centimetre and y to the millimetre.
+std::string point(double x, double y, double z) {
+  return "[" + cm(x) + ", " + mm(y) + ", " + cm(z) + "]";
 }
 
 }  // namespace
@@ -54,6 +66,7 @@ int dwelling_command(int argc, char** argv) {
   dwellings::Household household;
   u64 seed = 1;
   structure::MeshScope scope = structure::MeshScope::whole;
+  dwellings::RuralStyle style;
   for (int i = 3; i < argc; ++i) {
     const std::string_view a = argv[i];
     if (i + 1 >= argc) {
@@ -85,13 +98,21 @@ int dwelling_command(int argc, char** argv) {
         usage();
         return 2;
       }
+    } else if (a == "--bare") {
+      const std::string_view s = value;
+      if (s != "timber" && s != "furniture" && s != "dress" && s != "all") {
+        usage();
+        return 2;
+      }
+      if (s == "timber" || s == "all") style.timber = false;
+      if (s == "furniture" || s == "all") style.furniture = false;
+      if (s == "dress" || s == "all") style.dressed = false;
     } else {
       usage();
       return 2;
     }
   }
 
-  const dwellings::RuralStyle style;
   dwellings::RuralChoice choice;
   dwellings::InteriorPlan plan;
   std::string error;
@@ -147,8 +168,8 @@ int dwelling_command(int argc, char** argv) {
   for (u32 i = 0; i < tour.size(); ++i) {
     const dwellings::TourPoint& t = tour[i];
     walk += i == 0 ? "\n    " : ",\n    ";
-    append(walk, "{ \"at\": [%.2f, %.3f, %.2f], \"room\": ", (t.x_cm + off) / 100.0,
-           t.y_mm / 1000.0, (t.z_cm + off) / 100.0);
+    walk += "{ \"at\": " + point((t.x_cm + off) / 100.0, t.y_mm / 1000.0, (t.z_cm + off) / 100.0) +
+            ", \"room\": ";
     walk += t.room == dwellings::k_no_room ? "-1 }" : std::to_string(t.room) + " }";
   }
   walk += "\n  ],\n  \"views\": [";
@@ -158,10 +179,27 @@ int dwelling_command(int argc, char** argv) {
     walk += i == 0 ? "\n    " : ",\n    ";
     walk += "{ \"room\": " + std::to_string(v.room) + ", \"kind\": \"" +
             dwellings::room_kind_name(room.kind) + "\", \"storey\": " + std::to_string(room.storey);
-    append(walk, ", \"eye\": [%.2f, %.3f, %.2f]", (v.eye_x_cm + off) / 100.0, v.eye_y_mm / 1000.0,
-           (v.eye_z_cm + off) / 100.0);
-    append(walk, ", \"at\": [%.2f, %.3f, %.2f] }", (v.at_x_cm + off) / 100.0, v.at_y_mm / 1000.0,
-           (v.at_z_cm + off) / 100.0);
+    walk += ", \"eye\": " +
+            point((v.eye_x_cm + off) / 100.0, v.eye_y_mm / 1000.0, (v.eye_z_cm + off) / 100.0);
+    walk += ", \"at\": " +
+            point((v.at_x_cm + off) / 100.0, v.at_y_mm / 1000.0, (v.at_z_cm + off) / 100.0) + " }";
+  }
+  // The furniture and the timber, a piece a line: its footprint's low and high corners.
+  dwellings::Furnishing furnishing;
+  if (choice.timber) dwellings::timber_interior(plan, choice.ridge_along_front, furnishing);
+  if (choice.furniture) dwellings::furnish_interior(plan, seed, furnishing);
+  walk += "\n  ],\n  \"pieces\": [";
+  for (u32 i = 0; i < furnishing.pieces.size(); ++i) {
+    const dwellings::Piece& p = furnishing.pieces[i];
+    walk += i == 0 ? "\n    " : ",\n    ";
+    walk += "{ \"kind\": \"" + std::string(dwellings::piece_kind_name(p.kind)) +
+            "\", \"room\": " + std::to_string(p.room) +
+            ", \"storey\": " + std::to_string(p.storey) +
+            ", \"members\": " + std::to_string(p.member_count);
+    walk += ", \"low\": [" + cm((p.footprint.x0 + off) / 100.0) + ", " +
+            cm((p.footprint.z0 + off) / 100.0) + "], \"high\": [" +
+            cm((p.footprint.x1 + off) / 100.0) + ", " + cm((p.footprint.z1 + off) / 100.0) +
+            "], \"height\": " + cm(p.height_cm / 100.0) + " }";
   }
   walk += "\n  ]\n}\n";
   if (io::write_file_atomic(base + ".walk.json", walk) != io::Status::Ok) return 1;
@@ -174,12 +212,15 @@ int dwelling_command(int argc, char** argv) {
   std::printf(
       "{\"name\":\"%s\",\"type\":\"%s\",\"storeys\":%u,\"rooms\":%u,\"hearths\":%u,"
       "\"clear_cm\":[%d,%d],\"outer_cm\":[%d,%d],\"ridge_along_front\":%s,"
-      "\"demoted\":%s,\"triangles\":%u,\"structure\":\"%s.structure.json\"}\n",
+      "\"demoted\":%s,\"triangles\":%u,\"pieces\":%u,\"members\":%u,"
+      "\"structure\":\"%s.structure.json\"}\n",
       name.c_str(), dwellings::plan_type_name(plan.params.type),
       static_cast<unsigned>(plan.params.storeys), static_cast<unsigned>(plan.rooms.size()),
       static_cast<unsigned>(plan.hearths.size()), plan.params.width_cm, plan.params.depth_cm,
       choice.outer_width_cm, choice.outer_depth_cm, choice.ridge_along_front ? "true" : "false",
-      choice.demoted ? "true" : "false", report.triangles, shown.c_str());
+      choice.demoted ? "true" : "false", report.triangles,
+      static_cast<unsigned>(furnishing.pieces.size()),
+      static_cast<unsigned>(furnishing.members.size()), shown.c_str());
   return 0;
 #else
   (void)argc;

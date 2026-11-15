@@ -29,7 +29,7 @@
 namespace engine::dwellings {
 
 // Moves with any change to what `plan_interior` writes for the same parameters.
-inline constexpr u32 k_interior_version = 1;
+inline constexpr u32 k_interior_version = 2;
 
 enum class PlanType : u8 {
   Cot,           // one room, one storey, a gable hearth
@@ -125,7 +125,7 @@ struct Hearth {
 // walls, a level foot landing at one end entered through doorways in the strip's sides, a level
 // head landing at the other on the upper floor. The flight's (risers - 1) treads share
 // `flight` equally along `rises`; the last riser lands on the head landing. The upper floor has no
-// slab over `well`. 80 bytes.
+// slab over `well`, which ends where the flight does. 80 bytes.
 struct Stair {
   RectCm strip;   // the whole compartment, centre line to centre line of its side walls
   RectCm foot;    // the foot landing, at the lower floor's level
@@ -139,7 +139,8 @@ struct Stair {
   u8 from_storey = 0;
   u8 reserved = 0;
 
-  // The opening in the upper floor: the strip less the head landing.
+  // The opening in the upper floor: the flight's run across the strip. The foot landing keeps
+  // the upper floor over it, the storey's height less the floor above its own.
   RectCm well() const noexcept;
   // The top of tread `i` (0 is the first step up) above the lower floor, millimetres.
   i32 tread_mm(u32 i) const noexcept { return rise_mm * static_cast<i32>(i + 1) / risers; }

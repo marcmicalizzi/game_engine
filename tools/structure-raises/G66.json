@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "G66",
+  "reason": "engine-content dwelling is a new subcommand (G66, G72): apps.md lists every engine-content command, so the page gains its synopsis line and its paragraph",
+  "date": "2026-11-15",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/apps.md": 1367
+  }
+}

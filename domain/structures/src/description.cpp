@@ -117,6 +117,11 @@ bool validate(const Description& d, std::string& why) {
     why = "foundation: " + num(d.foundation) + " cm is outside 0..300";
     return false;
   }
+  if (d.plinth_proud < 0 || d.plinth_proud > 20 || d.arris < 0 || d.arris > 40) {
+    why = "plinth_proud " + num(d.plinth_proud) + " cm is outside 0..20, or arris " + num(d.arris) +
+          " cm outside 0..40";
+    return false;
+  }
   if (d.footprint.size() < 6 || d.footprint.size() % 2 != 0) {
     why = "footprint: an outline is at least three corners, x and z each";
     return false;
@@ -169,6 +174,19 @@ bool validate(const Description& d, std::string& why) {
             ".." + num(k_max_wall_cm);
       return false;
     }
+    // A batter is an exterior wall's, outside on one side, and leaves the top at least half the
+    // foot and 25 cm (a frame's set and depth stand behind the leaned face).
+    const bool one_outside = w.kind == structure::WallKind::exterior && (w.a < 0) != (w.b < 0);
+    if (w.top_thickness != 0 && (!one_outside || w.top_thickness > w.thickness ||
+                                 2 * w.top_thickness < w.thickness || w.top_thickness < 25)) {
+      why = name + ": top_thickness " + num(w.top_thickness) + " cm is an exterior wall's, from " +
+            "half its thickness (and 25 cm) to its thickness, " + num(w.thickness);
+      return false;
+    }
+    if (w.wave < 0 || w.wave > 40) {
+      why = name + ": wave " + num(w.wave) + " mm is outside 0..40";
+      return false;
+    }
     if (!in_reach(w.from[0]) || !in_reach(w.from[1]) || !in_reach(w.to[0]) || !in_reach(w.to[1])) {
       why = name + ": an end is outside +-" + num(k_reach_cm) + " cm";
       return false;
@@ -204,6 +222,16 @@ bool validate(const Description& d, std::string& why) {
       why = name + ": thickness 2..80 cm, overhang and verge 0..150 cm";
       return false;
     }
+    if (r.course != 0 && (r.course < 10 || r.course > 100 || r.thickness < 15)) {
+      why = name + ": course " + num(r.course) + " cm is outside 10..100, or the coat is under " +
+            "15 cm deep";
+      return false;
+    }
+    if (r.course_step_mm < 0 || r.course_step_mm > 80 || (r.eave_cut && r.thickness < 15)) {
+      why = name + ": course_step_mm " + num(r.course_step_mm) + " is outside 0..80, or a cut " +
+            "eave on a coat under 15 cm deep";
+      return false;
+    }
   }
   if (d.openings.size() > k_max_openings) {
     why = "openings: more than " + num(k_max_openings);
@@ -222,6 +250,22 @@ bool validate(const Description& d, std::string& why) {
     }
     if (o.sill < 0 || o.head < o.sill + 20) {
       why = name + ": the head, " + num(o.head) + " cm, is not 20 cm over the sill, " + num(o.sill);
+      return false;
+    }
+    // A leaf hangs in a frame, one or two of them, shut or open up to a quarter turn; mullions
+    // stand in a window, with a hand's breadth between them.
+    const bool framed = o.kind != structure::OpeningKind::doorway;
+    if (o.leaf != structure::LeafKind::none &&
+        (!framed || o.leaf != structure::LeafKind::ledged || o.leaves < 1 || o.leaves > 2 ||
+         o.leaf_open < 0 || o.leaf_open > 90 || o.width < 40)) {
+      why = name + ": a leaf hangs in a door or a window at least 40 cm wide, 1 or 2 of them, " +
+            "open 0..90 degrees (leaves " + num(o.leaves) + ", leaf_open " + num(o.leaf_open) + ")";
+      return false;
+    }
+    if (o.mullions > 0 && (o.kind != structure::OpeningKind::window || o.mullions > 16 ||
+                           (o.width - 10) < 12 * (static_cast<i32>(o.mullions) + 1))) {
+      why = name + ": " + num(o.mullions) + " mullions want a window with 12 cm a light, and " +
+            "this one is " + num(o.width) + " cm wide";
       return false;
     }
     const structure::Wall& w = d.walls[o.wall];
@@ -471,6 +515,22 @@ bool walk_records(const Description& d, Walk& out, std::string& error) {
     r.room_a = w.a;
     r.room_b = w.b;
     out.openings.push_back(r);
+    detail::LeafPlace places[2];
+    const u32 leaves = detail::leaf_places(d, o, places);
+    for (u32 k = 0; k < leaves; ++k) {
+      const detail::LeafPlace& p = places[k];
+      const f64 deep = p.boards + p.ledges;
+      WalkLeaf leaf;
+      leaf.opening = i;
+      leaf.hinge = {m(p.px + p.vx * deep * 0.5), m(p.pz + p.vz * deep * 0.5)};
+      leaf.tip = {m(p.px + p.vx * deep * 0.5 + p.ux * p.width),
+                  m(p.pz + p.vz * deep * 0.5 + p.uz * p.width)};
+      leaf.y0 = m(p.y0);
+      leaf.y1 = m(p.y1);
+      leaf.thickness = m(deep);
+      leaf.open_deg = o.leaf_open;
+      out.leaves.push_back(leaf);
+    }
   }
   for (u32 i = 0; i < d.boxes.size(); ++i) {
     const structure::Box& b = d.boxes[i];
@@ -510,11 +570,17 @@ structure::Description example_cot(i32 width, i32 depth, i32 wall) {
     w.from[0] = corners[i][0], w.from[1] = corners[i][1];
     w.to[0] = corners[(i + 1) % 4][0], w.to[1] = corners[(i + 1) % 4][1];
     w.thickness = wall;
+    // Cob: seven eighths as thick at the plate as at the foot, and no face of it flat.
+    w.top_thickness = std::max(25, wall * 7 / 8);
+    w.wave = 12;
     w.kind = structure::WallKind::exterior;
     w.a = 0;
     w.b = -1;
     d.walls.push_back(w);
   }
+  // The stone plinth stands 4 cm proud of the cob over it, and the cob's corners are rounded.
+  d.plinth_proud = 4;
+  d.arris = 12;
   const auto opening = [&d](u32 w, structure::OpeningKind kind, i32 at, i32 wide, i32 sill,
                             i32 head) {
     structure::Opening o;
@@ -529,6 +595,18 @@ structure::Description example_cot(i32 width, i32 depth, i32 wall) {
   opening(3, structure::OpeningKind::door, a * 38 / 100, 90, 0, 190);
   opening(3, structure::OpeningKind::window, a * 76 / 100, 80, 95, 180);
   opening(1, structure::OpeningKind::window, a / 2, 90, 95, 180);
+  // The door's leaf stands open a quarter turn in its reveal, hung on the jamb away from the
+  // hearth; the windows are unglazed, mullioned, their shutters folded back into the reveals.
+  d.openings[0].leaf = structure::LeafKind::ledged;
+  d.openings[0].hinge_at_to = true;
+  d.openings[0].leaf_open = 90;
+  d.openings[1].mullions = 3;
+  d.openings[1].leaf = structure::LeafKind::ledged;
+  d.openings[1].leaves = 2;
+  d.openings[1].leaf_open = 90;
+  d.openings[2].mullions = 4;
+  d.openings[2].leaf = structure::LeafKind::ledged;
+  d.openings[2].leaf_open = 90;
   structure::Roof roof;
   roof.form = structure::RoofForm::gable;
   roof.rect[0] = -wall / 2, roof.rect[1] = -wall / 2;
@@ -539,6 +617,10 @@ structure::Description example_cot(i32 width, i32 depth, i32 wall) {
   roof.overhang = 35;
   roof.verge = 25;
   roof.thickness = 30;
+  // A straw thatch: its courses fixed 30 cm apart up the slope, the eave cut square.
+  roof.course = 30;
+  roof.course_step_mm = 12;
+  roof.eave_cut = true;
   d.roofs.push_back(roof);
   structure::Chimney chimney;
   chimney.rect[0] = -wall / 2 - 8, chimney.rect[1] = b / 2 - 65;

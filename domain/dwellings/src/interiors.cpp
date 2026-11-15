@@ -468,11 +468,13 @@ void InteriorPlan::clear() noexcept {
 }
 
 RectCm Stair::well() const noexcept {
+  // The flight's run, across the whole strip: the last riser is the head landing's edge, and the
+  // foot landing keeps the upper floor over it (the mesher leaves a gap between the top tread and
+  // the floor under a longer well).
   switch (rises) {
-    case Side::Front: return RectCm{strip.x0, head.z1, strip.x1, strip.z1};
-    case Side::Back: return RectCm{strip.x0, strip.z0, strip.x1, head.z0};
-    case Side::Left: return RectCm{head.x1, strip.z0, strip.x1, strip.z1};
-    default: return RectCm{strip.x0, strip.z0, head.x0, strip.z1};
+    case Side::Front:
+    case Side::Back: return RectCm{strip.x0, flight.z0, strip.x1, flight.z1};
+    default: return RectCm{flight.x0, strip.z0, flight.x1, strip.z1};
   }
 }
 
