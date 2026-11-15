@@ -2968,6 +2968,12 @@ bool make_instance(const SceneData& scene, const SceneInstance& source, u32 firs
   const Mat4 fit =
       source.mesh < scene.mesh_fit.size() ? scene.mesh_fit[source.mesh] : Mat4::identity();
   place_instance(source, fit, first_pair, out);
+  // A still form's instance is padded as its swaying source's are (G204;
+  // `SceneData::still_padding`): the cull's choice over it is its choice over the mesh.
+  if (source.mesh < scene.still_padding.size() &&
+      scene.still_padding[source.mesh] > out.bounds_padding) {
+    out.bounds_padding = scene.still_padding[source.mesh];
+  }
   return true;
 }
 

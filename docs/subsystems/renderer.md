@@ -4815,6 +4815,101 @@ frame builds and the references add up to the rule-off frame's builds, nothing w
 and the picture is byte for byte the one drawn with `renderer.rt.cache=false`, the per-frame build
 of the same poses.
 
+### A swaying mesh's form by ring
+
+Roadmap G204 (2026-11-14). **A mesh that sways takes its forms by ring as a rigid one does: a cut
+of its DAG that still sways where its motion is seen, and a cut that stands still where it is
+not.** [The ring-form rule](#a-placements-form-by-ring) left every swaying mesh as itself in every
+ring, since a form that is not posed is not the mesh; after it the forest's tail was held by plants
+that sway, the understory's ferns at 64 and 33 pairs an instance out to the last ring among them.
+But a mesh's motion has a size, and past a distance that size is under a pixel.
+
+**The measure** (`sway_forms.h`, `measure_sway`): the farthest any vertex of the mesh leaves its
+rest position, in metres at placement scale 1, under the wind the session draws it in. It is the
+bound the cull already pads a swaying instance's spheres by (`flora_bounds_padding`: every part's
+most turn times each vertex's distance from the pivots of its chain), which is linear in the wind's
+strength, taken at the rule's wind instead of the strongest (2). The wind is the session's
+(`renderer.flora.wind_strength`), or `renderer.forms.still_wind` when a host says another: a
+session whose frames name stronger winds than its tunable (a ground with a wind record, a game's
+storm) sets it to the strongest it draws, or to 2 for every wind. The measure reads the motion
+contract as the flora stage reads it (`flora_mesh`), never a recipe.
+
+**The rule** (`still_scale`, asked per ring by `make_placement_forms`). Seen from a ring's floor or
+farther, a placement of the mesh stands still when
+
+- its reach there is under `renderer.forms.still_px` (1) pixels at the session's projection
+  (`AuthoredStreaming::proj_scale`, the projection the cuts and `min_px` use: at the owner's
+  3840 × 2160 and 55° a pixel is 0.48 mm a metre of distance); or
+- it is a field (the sward's kind) and the ring's floor lies past
+  [the far field's rest distance](#the-far-field-at-rest) by its roots' reach: there the mesh is
+  drawn at rest already, to the bit, so a form with no pose is the same picture.
+
+**Why one pixel of reach.** The reach is the whole offset between a pose and the rest pose, so it
+bounds what a hand-over to a still form can show; the sway about its mean lean is half of it (a
+part turns between 0.6 and 1.4 of its lean with the gust, and flutters by at most 0.6 of it), so
+under one pixel of reach nothing travels more than half a pixel about where it stands. The far
+field's rest stops grass where its reach is about two pixels (a 0.4 m blade at 120 m and the
+forest's wind: 11 cm against 5.8 cm a pixel), which it can because it fades the sway out over 40 m;
+a ring's hand-over has no fade of its own, so it takes half of that. **The answer is a scale, not a
+yes**: `still_scale` gives the largest placement scale that stands still from the floor, the
+ring's still form serves placements up to it (`RingForm::max_scale`), and a larger one draws the
+ring before's form, which sways (`pick_ring_form` walks inward). A ring's form is still when the
+mesh at its own size is (the scale is at least 1).
+
+**The forms** (`make_placement_forms`, with a rigid mesh's). A swaying subject's cut for a ring is
+cut for the sway's padded spheres, as an authored tree's swaying form is
+([streamed trees sway](#streamed-trees-sway)): from the ring's floor less the padding, so what the
+cull can choose over it from the ring is what it chooses over the mesh.
+
+- **A swaying cut**, in a ring where the motion is seen: it keeps its motion records, its part
+  table pruned to the parts it uses with their source ids (so it sways in its source's phase), and
+  is drawn as a tail's tree or a field's instance is. It costs the pairs of the cut, and a pose
+  record of the pruned table's class.
+- **A still cut**, from the first ring that stands still outward: the same cut with no motion
+  contract, so the frame builds nothing for it — no pose record, no pool block, and in the ray
+  tracing chain its clusters reference the resident cache's structures like any rigid mesh's
+  ([the kinds](#the-far-field-at-rest)). Its instances keep the source's padding
+  (`SceneData::still_padding`, added by `make_instance`), so the cull's choice over a still
+  instance is exactly its choice over the swaying one.
+- **Never a static form** (`form_rigid` stays 0), whatever its caster policy: a static form draws
+  its frontier at every distance, which is not what its swaying neighbour ring draws, and the
+  hand-over between the two is the one place this rule can be seen. The cache gives a rigid tail
+  instance its structures built once without the fixed cut.
+- A form the mesh **offers** (G198's) is rigid, so it is weighed only in the rings that stand
+  still. Under `renderer.forms.min_px` a swaying placement is drawn as nothing, as a rigid one is.
+
+**The hand-over.** Between the mesh and a swaying cut, and between two swaying cuts: no pixel, by
+the cut's rule and the shared phase. Into a still cut of a field past its rest distance: no pixel
+either, both sides drawing the rest pose over the same choice of clusters. Into a still cut by
+size: the pose is dropped, an offset under `still_px` at the ring's floor for the largest placement
+it serves, and nothing else changes; the tile's hand-over cross-fades it like any other. Under the
+cascades a still form casts its rest pose, where its swaying neighbour cast its pose unless its
+policy already said rest.
+
+**What decides where a plant stops swaying.** For a field, the rest distance does, by the blade
+and with its fade, and this rule only follows it: a ring wholly past the distance takes a form
+that says what is already drawn. For a mesh posed by parts there is no rest distance, and this
+rule decides, by ring and by the placement's size. `renderer.forms.sway=false` leaves every
+swaying mesh as itself in every ring, as before; `renderer.forms.still_px=0` keeps the swaying
+cuts and stills nothing by size.
+
+**What an imported plant gets, and what a scene with none costs.** A plant whose container carries
+the motion contract and that the flora stage sways is measured and formed by this rule, whoever
+made it. One the stage draws rigid — no contract, a contract that does not cover its vertices, or
+a kind the stage does not know: the compliance a part bends by still comes from
+`geometry::k_flora_species`, a closed list keyed by the container's generator kind, so an imported
+plant's contract sways only under one of its names — is a rigid mesh to the rule and is formed as
+one. A mesh that deforms any other way (a skin, morphs) keeps itself in every ring. A scene with
+no swaying subject makes no form and pays one `flora_mesh` a mesh that carries the contract, at
+the load.
+
+**What the rule does not reach.** Ring 0, whose floor is the eye: the sward's near forms there are
+drawn only inside the hand-off's band (29 m) but are placed, and counted as pairs, over the whole
+of the ring's tiles; a still form cannot help what is under the walker's feet, and the count is a
+row of its own (below). A placement that carries a hand-off role must keep the mesh itself: its
+thinning is the pool pass's, which a still form does not run; the engine's one user of the roles
+(the sward) names them in ring 0 alone, where every placement is the mesh.
+
 ### The caster policy
 
 Also R95. **Per species: in the ray tracing chain at all, how many of the sun's nearest cascades,

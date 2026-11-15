@@ -42,7 +42,7 @@ engine_module(NAME renderer LAYER systems
           src/overlay.cpp src/scene_water.cpp src/scene_flora.cpp src/flora_motion.cpp
           src/flora_poser.cpp src/scene_fire.cpp src/far_forest.cpp src/water_reflect.cpp
           src/water_refract.cpp
-          src/scene_ground_plan.cpp
+          src/scene_ground_plan.cpp src/sway_forms.cpp
           src/resolve_classes.cpp)
 # The renderer's own shader: the output encode after the frame passes (frame_pass.h,
 # shaders/frame_encode.slang), which includes domain/gfx's display.slang by its path.
@@ -69,6 +69,9 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     # The far field at rest: past a distance the sward stands still, takes no pool
                     # block and references the chain's resident structures (R152).
                     tests/field_rest_tests.cpp
+                    # A swaying mesh's form by ring: its motion measured, and where it stands still
+                    # (G204; sway_forms.h), on the CPU.
+                    tests/sway_forms_tests.cpp
                     # The off-frustum shadow casters' volumes against a brute-force membership, on
                     # the CPU (caster_volume.h).
                     tests/caster_volume_tests.cpp
