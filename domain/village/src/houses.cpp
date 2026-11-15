@@ -40,6 +40,7 @@ constexpr f64 k_min_going_m = 0.20;  // a tread a foot stands on
 // middle, never by the grid), off every solid member, off a stair's flight and off a well.
 constexpr f64 k_cell_m = 0.1;
 constexpr f64 k_clear_m = 0.34;
+constexpr f64 k_leaf_clear_m = 0.33;
 constexpr f64 k_through_m = 0.5;  // how far each side of a wall's face a doorway's stretch runs
 
 struct Grid {
@@ -114,6 +115,18 @@ bool storey_grid(const structure::Description& d, const Walk& walk, u32 storey, 
             px < static_cast<f64>(b.max.x) + k_clear_m &&
             pz > static_cast<f64>(b.min.z) - k_clear_m &&
             pz < static_cast<f64>(b.max.z) + k_clear_m)
+          ok = false;
+      }
+      // A leaf standing open is a slab in the room beside its doorway: the capsule's radius, its
+      // padding and a centimetre from its faces (less than a wall's margin, because the way
+      // through a doorway its own leaf has narrowed passes that near it).
+      for (const structures::WalkLeaf& leaf : walk.leaves) {
+        if (!ok) break;
+        if (static_cast<f64>(leaf.y1) < level + 0.1 || static_cast<f64>(leaf.y0) > level + 1.8)
+          continue;
+        if (segment_distance(px, pz, static_cast<f64>(leaf.hinge.x), static_cast<f64>(leaf.hinge.y),
+                             static_cast<f64>(leaf.tip.x), static_cast<f64>(leaf.tip.y)) <
+            static_cast<f64>(leaf.thickness) * 0.5 + k_leaf_clear_m)
           ok = false;
       }
       for (const structures::WalkWell& w : walk.wells) {
@@ -288,10 +301,55 @@ bool room_chain(const Walk& walk, i32 from_room, i32 to_room, Vector<u32>& out) 
   return false;
 }
 
-bool passable(const WalkOpening& o, const char* what, std::string& why) {
+// **What an opening's leaves take of it** (structures.md, "Leaves"; `Walk::leaves`). A leaf open a
+// quarter turn lies beside its hinge jamb, its thickness inside the frame: the clear way is that
+// much narrower and its middle has moved half of it along the wall, away from the hinge. A walker
+// sent through the opening's own middle meets the leaf's edge where the way is tight (a 73 cm
+// frame and a 5.5 cm leaf leave 31 cm on the hinge side of the middle, and the capsule with its
+// padding is 32), which is what stopped the first walk through a house with doors. A leaf less
+// than a quarter turn open stands across the way.
+struct LeafToll {
+  f64 taken = 0.0;                   // of the clear width, metres
+  f64 shift_x = 0.0, shift_z = 0.0;  // of the clear way's middle from the opening's
+  bool across = false;
+};
+LeafToll leaf_toll(const Walk& walk, const WalkOpening& o) {
+  LeafToll toll;
+  const f64 mx = (static_cast<f64>(o.a.x) + static_cast<f64>(o.b.x)) * 0.5;
+  const f64 mz = (static_cast<f64>(o.a.y) + static_cast<f64>(o.b.y)) * 0.5;
+  const f64 dx = static_cast<f64>(o.b.x) - static_cast<f64>(o.a.x);
+  const f64 dz = static_cast<f64>(o.b.y) - static_cast<f64>(o.a.y);
+  const f64 len = std::sqrt(dx * dx + dz * dz);
+  if (!(len > 0.0)) return toll;
+  for (const structures::WalkLeaf& leaf : walk.leaves) {
+    if (leaf.opening != o.opening) continue;
+    if (leaf.open_deg < 90) {
+      toll.across = true;
+      continue;
+    }
+    const f64 t = static_cast<f64>(leaf.thickness);
+    const f64 along =
+        ((static_cast<f64>(leaf.hinge.x) - mx) * dx + (static_cast<f64>(leaf.hinge.y) - mz) * dz) /
+        len;
+    const f64 away = along >= 0.0 ? -1.0 : 1.0;
+    toll.taken += t;
+    toll.shift_x += away * 0.5 * t * dx / len;
+    toll.shift_z += away * 0.5 * t * dz / len;
+  }
+  return toll;
+}
+
+bool passable(const Walk& walk, const WalkOpening& o, const char* what, std::string& why) {
   const f64 ax = static_cast<f64>(o.a.x), az = static_cast<f64>(o.a.y);
   const f64 bx = static_cast<f64>(o.b.x), bz = static_cast<f64>(o.b.y);
-  const f64 clear = std::sqrt((bx - ax) * (bx - ax) + (bz - az) * (bz - az)) - 2.0 * k_frame_m;
+  const LeafToll toll = leaf_toll(walk, o);
+  if (toll.across) {
+    why = std::string(what) + " (opening " + std::to_string(o.opening) +
+          ") has a leaf standing less than a quarter turn open, across the walker's way";
+    return false;
+  }
+  const f64 clear =
+      std::sqrt((bx - ax) * (bx - ax) + (bz - az) * (bz - az)) - 2.0 * k_frame_m - toll.taken;
   // Clear of the frame's head (6 cm, as its jambs) and the threshold (2 cm): the first walk of
   // this row stood at the example's 1.90 m door, whose 1.82 m clear the 1.8 m capsule and its
   // 2 cm of padding do not enter.
@@ -326,6 +384,10 @@ bool route_through(const structure::Description& d, const Walk& walk, const Walk
   }
   f64 cx = 0, cz = 0, nx = 0, nz = 0;
   opening_frame(entrance, hall, cx, cz, nx, nz);
+  // In through the middle of what the door's own leaf leaves clear (the plan's door is there too).
+  const LeafToll entrance_toll = leaf_toll(walk, entrance);
+  cx += entrance_toll.shift_x;
+  cz += entrance_toll.shift_z;
   f64 at_x = cx + nx * (static_cast<f64>(entrance.thickness) * 0.5 + k_through_m);
   f64 at_z = cz + nz * (static_cast<f64>(entrance.thickness) * 0.5 + k_through_m);
   out.route.push_back(RoutePoint{scene_gen::nearest_mm(at_x), y_mm, scene_gen::nearest_mm(at_z)});
@@ -339,9 +401,13 @@ bool route_through(const structure::Description& d, const Walk& walk, const Walk
     }
     for (const u32 k : chain) {
       const WalkOpening& o = walk.openings[k];
-      if (!passable(o, "a doorway on the way", why)) return false;
+      if (!passable(walk, o, "a doorway on the way", why)) return false;
       const i32 next = o.room_a == room ? o.room_b : o.room_a;
       opening_frame(o, next, cx, cz, nx, nz);
+      // Through the middle of what its leaves leave clear, not of the opening.
+      const LeafToll toll = leaf_toll(walk, o);
+      cx += toll.shift_x;
+      cz += toll.shift_z;
       const f64 reach = static_cast<f64>(o.thickness) * 0.5 + k_through_m;
       const f64 bx = cx - nx * reach, bz = cz - nz * reach;
       if (!way(grid, at_x, at_z, bx, bz, y_mm, out.route)) {
@@ -492,9 +558,14 @@ bool house_for(void*, const HouseAsk& ask, House& out, std::string& why) {
     why = "the house has no door from outside into a ground-storey room";
     return false;
   }
-  if (!passable(*entrance, "the entrance", why)) return false;
+  if (!passable(walk, *entrance, "the entrance", why)) return false;
   f64 cx = 0, cz = 0, nx = 0, nz = 0;
   opening_frame(*entrance, -1, cx, cz, nx, nz);  // the normal toward the outside
+  // The door the plan knows is the middle of the clear way beside the open leaf, so the path, the
+  // gateway and the walker all come to where a person would come in.
+  const LeafToll door_toll = leaf_toll(walk, *entrance);
+  cx += door_toll.shift_x;
+  cz += door_toll.shift_z;
   out.out_x = nx > 0.5 ? 1 : (nx < -0.5 ? -1 : 0);
   out.out_z = nz > 0.5 ? 1 : (nz < -0.5 ? -1 : 0);
   if ((out.out_x == 0) == (out.out_z == 0)) {

@@ -352,3 +352,24 @@ the scheduler, or another capability, and it can be removed from the build the s
 **Removing it.** `cmake --preset msvc-minimal` (or `-DENGINE_WITH_DWELLINGS=OFF`) drops the
 module and its tests; the module disappears from `build/<preset>/modules.json` and is listed there
 under `disabled_capabilities`. Everything else must still build and pass.
+## What the village's walk and pictures changed
+
+2026-11-15, by the village's leg after this module's own agents had stopped (`describe.cpp`, each
+with its reason beside the line; `k_descriptions_pin` re-taken, MSVC's alone until a container
+runs it). The walker (a capsule 0.6 m across with 2 cm of padding, on a collision proxy of the
+mesh good to 5 cm) was walked through a dressed, furnished house for the first time, and stopped
+three times at things that were the house's:
+
+- **A partition doorway made a door is 10 cm wider than the plan's doorway**, five each side: a
+  frame takes 12 cm and an open leaf 5.5, so an 85 cm doorway left 67.5 cm, 3.5 more than the
+  walker; at 95 cm it is the outer door's 77.5. The plan, its approach and the furniture's
+  clearances are unchanged.
+- **A partition's leaf never opens into a passage or a stair's strip**: a leaf a quarter turn
+  open stands square to its wall, which in a passage a metre wide is across it.
+- **A back door's leaf stands shut**: open, a cross-passage's back door stood 18 cm across the
+  stair's doorway, which opens off the passage 15 cm from the back wall.
+
+And one thing the pictures decided: **a roof states no courses and no cut eave**. With stepped
+courses and a square-cut eave a street of roofs read as slate or shingle; with a smooth coat and a
+rolled eave the same roofs read as thatch. The draws stay in `Dress`; the thatch's age still
+varies by its role.

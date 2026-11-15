@@ -280,7 +280,12 @@ void describe(const InteriorPlan& plan, const RuralChoice& choice, std::string_v
       // A ledged leaf, open a quarter turn (the walk goes through it), opening inward, hung on
       // the jamb nearer its room's corner so the open leaf stands by a wall.
       opening.leaf = structure::LeafKind::ledged;
-      opening.leaf_open = 90;
+      // **The back door stands shut** (2026-11-15, the village's walk): a cross-passage's second
+      // door is in the back wall, and the stair's doorway opens off the passage 15 cm from that
+      // wall, so the back door's leaf, open, stood 18 cm across the stair doorway's 80 and left
+      // the walker 62 cm of the 64 it needs. The way in is the front door; a back door is the one
+      // a household keeps shut, and shut it is in its wall and in nobody's way.
+      opening.leaf_open = o.side == Side::Back ? 0 : 90;
       const Room& room = plan.rooms[o.room];
       const bool along_x = o.side == Side::Front || o.side == Side::Back;
       const i32 low_gap = o.at_cm - i32{o.width_cm} / 2 - (along_x ? room.rect.x0 : room.rect.z0);
@@ -321,10 +326,31 @@ void describe(const InteriorPlan& plan, const RuralChoice& choice, std::string_v
       const InnerWall& iw = plan.walls[d.wall];
       const i32 length = iw.x0 == iw.x1 ? p.depth_cm : p.width_cm;
       opening.kind = structure::OpeningKind::door;
+      // **Ten centimetres wider than the plan's doorway, five each side** (2026-11-15, the
+      // village's walk): a door's frame takes 12 cm of the opening and its open leaf 5.5 more, so
+      // an 85 cm doorway made a door left 67.5 cm, 3.5 cm more than the walker's capsule and its
+      // padding (64 cm), and the collision's proxy of the mesh is good to 5 cm: the walker stuck
+      // in the first such door. At 95 cm the way beside the leaf is 77.5 cm, the outer door's.
+      // The plan's doorway, its approach and the furniture's clearance are unchanged: the jamb
+      // nearer the outer wall stands 20 cm from its face, over the mesher's 15 cm pier.
+      opening.width = d.width_cm + 10;
       opening.leaf = structure::LeafKind::ledged;
       opening.leaf_open = 90;
       opening.hinge_at_to = d.at_cm > length / 2;
       opening.opens_right = draw(seed, k_draw_inner_side, index) % 2 == 0;
+      // **Never into a passage or a stair** (2026-11-15, the village's first walk through a
+      // dressed house): a leaf a quarter turn open stands square to its wall, and in a passage a
+      // metre wide that is across the way — the walker stopped at it one step inside the front
+      // door, and a person would have hung it to open into the room. Where one side of the wall
+      // is a passage or a stair's strip and the other is a room, the leaf opens into the room;
+      // otherwise the draw stands.
+      const structure::Wall& hung = out.walls[first_inner + d.wall];
+      const auto narrow = [&](i32 room) {
+        return room >= 0 && static_cast<u32>(room) < plan.rooms.size() &&
+               (plan.rooms[static_cast<u32>(room)].kind == RoomKind::Passage ||
+                plan.rooms[static_cast<u32>(room)].kind == RoomKind::Stair);
+      };
+      if (narrow(hung.a) != narrow(hung.b)) opening.opens_right = narrow(hung.a);
     }
     out.openings.push_back(opening);
   }
@@ -382,9 +408,16 @@ void describe(const InteriorPlan& plan, const RuralChoice& choice, std::string_v
   roof.ridge_along_x = choice.ridge_along_front;
   roof.eaves = eaves;
   if (choice.dressed) {
-    roof.course = dress.course;
-    roof.course_step_mm = dress.course_step_mm;
-    roof.eave_cut = dress.eave_cut;
+    // **No courses and no cut eave are stated** (2026-11-15, the village's pictures, and the
+    // coordinator's reading of the structures leg's): with stepped courses and a square-cut eave
+    // the roofs of a whole street read as slate or shingle, a grid of rectangles under a hard
+    // bright edge, where the same roofs with a smooth coat and a rolled eave read as thatch. A
+    // finished thatch is a combed coat whose courses do not show as steps. The draws stay in
+    // `Dress` for the day the mesher's courses read as reed; the age still varies by the role.
+    // (Stated as none outright: the roof starts as the mesher's example's, which states both.)
+    roof.course = 0;
+    roof.course_step_mm = 0;
+    roof.eave_cut = false;
     roof.role = dress.roof_role;
     out.roles.wall_outer = dress.wall_role;
   }

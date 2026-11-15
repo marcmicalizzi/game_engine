@@ -27,7 +27,11 @@ namespace {
 // gained leaves, mullions and walls that wander and the filler began to state them by the seed.
 // And at k_structure_version 5 (0x6f53539871304142 before it): a thatch's courses and cut eave,
 // the limewash's and the thatch's variants by the seed, and a batter of seven eighths.
-constexpr u64 k_descriptions_pin = 0xbee0164e0fc3342full;
+// And on 2026-11-15 (0xbee0164e0fc3342f before it), for the village's walk and its pictures: a
+// partition doorway made a door is 10 cm wider, its leaf never opens into a passage or a stair, a
+// back door's leaf stands shut, and a roof states no courses and no cut eave. MSVC's alone until a
+// container has run it.
+constexpr u64 k_descriptions_pin = 0x05eaa3436b76acbfull;
 
 bool near_cm(f32 metres, i32 cm) {
   const f32 d = metres * 100.0f - static_cast<f32>(cm);
@@ -92,8 +96,11 @@ TEST_CASE("describe: every house the filler writes is one the mesher takes") {
               const f32 along = along_z ? (o.a.y + o.b.y) * 0.5f : (o.a.x + o.b.x) * 0.5f;
               const f32 across = along_z ? o.a.x : o.a.y;
               const f32 width = along_z ? o.b.y - o.a.y : o.b.x - o.a.x;
+              // A doorway made a door is 10 cm wider than the plan's, for its frame and its leaf.
+              const auto wide = static_cast<decltype(door.width_cm)>(
+                  door.width_cm + (o.kind == structure::OpeningKind::door ? 10 : 0));
               if (near_cm(across, line) && near_cm(along, mid) &&
-                  near_cm(width < 0 ? -width : width, door.width_cm) &&
+                  near_cm(width < 0 ? -width : width, wide) &&
                   near_cm(o.head - o.sill, door.head_cm)) {
                 ++found;
                 break;
@@ -274,10 +281,10 @@ TEST_CASE("describe: a village's limewash and thatch are not one colour and one 
     // are the names the generated sets answer.
     CHECK(d.roles.wall_outer.rfind("plaster/lime", 0) == 0);
     CHECK((roof.role.empty() || roof.role.rfind("thatch/straw_", 0) == 0));
-    CHECK(roof.course >= 26);
-    CHECK(roof.course <= 34);
-    CHECK(roof.course_step_mm >= 10);
-    CHECK(roof.course_step_mm <= 15);
+    // A smooth coat and a rolled eave: no courses and no cut eave are stated (describe.cpp, where
+    // the roof is written: stepped courses read as slate over a whole street).
+    CHECK(roof.course == 0);
+    CHECK(roof.course_step_mm == 0);
     bool fresh = true;
     for (u32 i = 0; i < washes; ++i)
       fresh = fresh && seen_wash[i] != d.roles.wall_outer;
@@ -294,8 +301,7 @@ TEST_CASE("describe: a village's limewash and thatch are not one colour and one 
   CHECK(base_wash < 24);
   CHECK(aged >= 1);
   CHECK(aged < 24);
-  CHECK(cut >= 1);
-  CHECK(cut < 24);
+  CHECK(cut == 0);
 }
 
 TEST_CASE("describe: a door under an eave keeps its head clear of the eave's edge") {

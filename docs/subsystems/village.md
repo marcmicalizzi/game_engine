@@ -102,6 +102,14 @@ this module reads of a house — never its mesh:
   the wall); a flight's rise at most 0.25 m and its going at least 0.20 m. A house that fails one
   is refused with the sentence (the rule, the opening or stair, what was measured), its plot
   counted `refused`, and the plan keeps the first such sentence (`VillagePlan::first_refusal`);
+- **a door's open leaf is part of the way** (`Walk::leaves`): a leaf a quarter turn open takes its
+  thickness from the clear width (the rule above is held to what is left) and moves the clear
+  way's middle half of it along the wall, away from the hinge; the way crosses a doorway, and the
+  plan's door stands, at that middle, not the opening's; a leaf's slab is kept 33 cm from in the
+  storey's grid; and a leaf less than a quarter turn open across the way refuses the house. The
+  first walk through a house with doors stopped at each of these in turn (2026-11-15), and at
+  three things that were the house's and were mended in the filler ([dwellings](dwellings.md),
+  "What the village's walk and pictures changed");
 - the recipe is the description's canonical JSON, named by its own source hash.
 
 **The way through it is found, not assumed** (`route_through`): the rooms' doorways from the walk
@@ -276,6 +284,15 @@ house's mesh is 181 to 244 KB as its container** (the file the renderer loads, i
 pages; 1.22 MB the six), about 83 bytes a triangle. The collision's proxies of two houses are
 5,046 triangles and 126 KB (`structure_walk_tests.cpp`, a debug build).
 
+**After the other two legs' second night** (2026-11-15, the tip's houses: walls that wander, door
+leaves, shutters, joists, a stair's nosings, furniture): **7,885 to 11,942 triangles and 279 to
+450 clusters a house, 585 to 942 KB a container** (4.3 MB the six); the cut about 4,000 to 7,600
+triangles at 50 m, 3,000 to 5,100 at 200 m and 1,050 to 2,300 at a kilometre, over a root of 395
+to 529; the scene 2,789 instances, 9,593 clusters and 144,431 pairs. The walker's case crosses a
+furnished house 0 and climbs its stair on proxies of 11,181 triangles and 296 KB for two houses.
+The figures of the next table and the frame record below are the first night's plain shells;
+the frame was not measured again on the dressed houses.
+
 **What the cluster LOD makes of a house** (`village_tests.cpp`, the last case: 2160 lines, a 60°
 field of view, a one-pixel threshold, the camera before the front):
 
@@ -356,6 +373,10 @@ these are what its next rows start from.
 - **The exposure is the sky's** (`ev100` 14.97 indoors and out, from the sky's light and not the
   picture's): a room is a tenth to a third of the street's brightness, and three stops more
   exposure gives a room a person would accept while the doorway burns out. Nothing adapts.
+- **The same pair in the furnished house** (the flight's seven inside frames at the tip): 20 to
+  37 of 255 at the sky's exposure with the bounce, 52 to 89 three stops up, and 113 to 146 with
+  no bounce against the lane's 120 — a room is either nearly black or brighter than the street,
+  and a hearth's recess, a bed and a beam are seen only at an exposure nothing chooses.
 - **No light leaked through a wall's thickness** in the 14 flight pictures and three stills of
   each traced setting; nothing here is lit by a lamp or a fire, so a local light's leak was not
   exercised.
