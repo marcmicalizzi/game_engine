@@ -262,9 +262,10 @@ u64 filtered_samples_kept(const u8* alpha, u32 width, u32 height, u8 cutoff, Edg
   const u32 pass = static_cast<u32>(cutoff) * 64u;
   u64 kept = 0;
   for (u32 y = 0; y < height; ++y) {
-    const u8* rows[3] = {alpha + static_cast<usize>(neighbour_texel(y, false, height, edge_y)) * width,
-                         alpha + static_cast<usize>(y) * width,
-                         alpha + static_cast<usize>(neighbour_texel(y, true, height, edge_y)) * width};
+    const u8* rows[3] = {
+        alpha + static_cast<usize>(neighbour_texel(y, false, height, edge_y)) * width,
+        alpha + static_cast<usize>(y) * width,
+        alpha + static_cast<usize>(neighbour_texel(y, true, height, edge_y)) * width};
     for (u32 x = 0; x < width; ++x) {
       const u32 columns[3] = {neighbour_texel(x, false, width, edge_x), x,
                               neighbour_texel(x, true, width, edge_x)};
@@ -291,8 +292,8 @@ u64 filtered_samples_kept(const u8* alpha, u32 width, u32 height, u8 cutoff, Edg
         for (u32 sx = 0; sx < 4; ++sx) {
           const u32 wx = k_own[sx];
           const u32 ix = sx < 2 ? 0u : 2u;
-          const u32 blend = a[1][1] * wx * wy + a[1][ix] * (8 - wx) * wy + a[jy][1] * wx * (8 - wy) +
-                            a[jy][ix] * (8 - wx) * (8 - wy);
+          const u32 blend = a[1][1] * wx * wy + a[1][ix] * (8 - wx) * wy +
+                            a[jy][1] * wx * (8 - wy) + a[jy][ix] * (8 - wx) * (8 - wy);
           if (blend >= pass) ++kept;
         }
       }
@@ -357,8 +358,7 @@ void preserve_alpha_coverage(Vector<u8>& rgba, u32 width, u32 height, u8 cutoff,
       }
     }
     best = lo;
-    if (lo < 255 &&
-        std::fabs(share_at(lo + 1) - coverage) <= std::fabs(share_at(lo) - coverage)) {
+    if (lo < 255 && std::fabs(share_at(lo + 1) - coverage) <= std::fabs(share_at(lo) - coverage)) {
       best = lo + 1;
     }
   }
@@ -486,8 +486,9 @@ bool build_texture(std::span<const u8> rgba, u32 width, u32 height, u32 source_c
       // may move a code, so the side is read back and the alpha stepped away until it holds.
       const bool all = coverage >= 0.5;
       for (u32 step = 0; step < 8; ++step) {
-        const i32 wanted = all ? static_cast<i32>(options.alpha_cutoff) + static_cast<i32>(step)
-                               : static_cast<i32>(options.alpha_cutoff) - 1 - static_cast<i32>(step);
+        const i32 wanted =
+            all ? static_cast<i32>(options.alpha_cutoff) + static_cast<i32>(step)
+                : static_cast<i32>(options.alpha_cutoff) - 1 - static_cast<i32>(step);
         level.rgba = unscaled;
         level.rgba[3] = static_cast<u8>(wanted < 0 ? 0 : (wanted > 255 ? 255 : wanted));
         encode_level(format, std::span<const u8>(level.rgba.data(), level.rgba.size()), level.width,
@@ -515,9 +516,9 @@ bool build_texture(std::span<const u8> rgba, u32 width, u32 height, u32 source_c
                         level.height, check, nullptr)) {
         break;
       }
-      const f64 measured =
-          alpha_coverage_filtered(std::span<const u8>(check.data(), check.size()), level.width,
-                                  level.height, options.alpha_cutoff, options.edge_x, options.edge_y);
+      const f64 measured = alpha_coverage_filtered(std::span<const u8>(check.data(), check.size()),
+                                                   level.width, level.height, options.alpha_cutoff,
+                                                   options.edge_x, options.edge_y);
       const f64 miss = coverage - measured;
       last_is_best = std::fabs(miss) < best_miss;
       if (last_is_best) {

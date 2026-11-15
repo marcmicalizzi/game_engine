@@ -498,12 +498,17 @@ TEST_CASE("engine-content: city makes the committed plan, fragment and yield on 
 // G201 stage 2 (2026-11-13, MSVC 14.51): the seat (section 42, appended) and
 // `k_flora_seat_version` in the identity (section 15); no mesh or bake section moves. The folds
 // were 0x288b2862a2405a77, 0xd2d924bfdff56084 and 0xa8e54c1fb193731a.
-constexpr u64 k_broadleaf_container_golden = 0x8b8915bc944c047dull;
-constexpr u64 k_ancient_container_golden = 0x308513fb082108d9ull;
+// G203 (2026-11-14, MSVC 14.51): a mask's texture key mixes `texture::k_alpha_mask_version` (2),
+// so the build keys of the embedded alpha-tested atlases (section 32) move and nothing else does:
+// main's `engine-content` against the branch's on these three recipes differ in section 32 alone,
+// 38, 39 and 38 other sections identical. The folds were 0x8b8915bc944c047d (broadleaf),
+// 0x308513fb082108d9 (ancient) and 0xc6f1032af64051fd (pine).
+constexpr u64 k_broadleaf_container_golden = 0x7a35ee118d2ee70dull;
+constexpr u64 k_ancient_container_golden = 0x222a6d4a9af0e6e6ull;
 // G120 (2026-11-01, MSVC 14.51): a pine, the conifer solver's chain — one three-plane card group a
 // live branch and the star, coverage-kept and fitted to the needles' coverage — at small tiles so
 // a debug run builds it in seconds. Its section 15 carries `k_conifer_chain_version`.
-constexpr u64 k_pine_container_golden = 0xc6f1032af64051fdull;
+constexpr u64 k_pine_container_golden = 0xa8fafcd968ddbe28ull;
 
 TEST_CASE("engine-content: the allometric crowns build the committed bytes on every toolchain") {
   const test::TempDir tmp("engine_content_flora_determinism");

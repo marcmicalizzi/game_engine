@@ -237,7 +237,8 @@ TEST_CASE("alpha mask: holding a level's texel count loses the coverage a linear
       u64 histogram[256] = {};
       for (usize t = 0; t < texels; ++t)
         ++histogram[counted[static_cast<u32>(t * 4 + 3)]];
-      const f64 wanted = alpha_coverage(source, k_side, k_side, k_cutoff) * static_cast<f64>(texels);
+      const f64 wanted =
+          alpha_coverage(source, k_side, k_side, k_cutoff) * static_cast<f64>(texels);
       u64 at_least = 0;
       u32 best = k_cutoff;
       f64 best_miss = 1e300;
@@ -264,9 +265,8 @@ TEST_CASE("alpha mask: holding a level's texel count loses the coverage a linear
     held += " " + std::to_string(level.width) + ":" + std::to_string(count_held / level0) + "/" +
             std::to_string(filtered_held / level0);
   }
-  MESSAGE("level-0 filtered coverage " << level0
-                                       << "; per level, of level 0's: texel count held / filtered held:"
-                                       << held);
+  MESSAGE("level-0 filtered coverage "
+          << level0 << "; per level, of level 0's: texel count held / filtered held:" << held);
   // Both in points of the surface, the currency of the build's own slack (half a point after the
   // encoder). The old rule: of level 0's 13.8 points the 128, 64, 16 and 8 texel levels drew 60,
   // 49, 32 and 49 percent (2026-11-14), so its worst level is more than four points short, twice

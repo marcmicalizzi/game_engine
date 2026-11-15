@@ -16,7 +16,10 @@ TEST_CASE("wetland: version four section identities") {
   // G203 (2026-11-14, b63cc940; still v4): the container hash of every row moved and nothing
   // else did. A container records the key of the alpha-tested image it carries, and a mask's
   // texture key now mixes `texture::k_alpha_mask_version` (2), so that the masks of a cache
-  // recook under the chain that holds the filtered coverage. The container hashes before it, in
+  // recook under the chain that holds the filtered coverage. Checked, not inferred: with the mix
+  // switched off this build hashes all eight containers to the values before it, and the sedge's
+  // and the reed's containers written both ways differ in section 32 (the texture records) alone,
+  // 38 other sections identical. The container hashes before it, in
   // the rows' order: 0x557be4544cd57d93, 0xc4f562e08098a03e, 0x415688211dbcb0b8,
   // 0xdb07bcb835b52d2a, 0x1c6c9435daeb1ad0, 0xf9f46fbaba89fa7f, 0xf8a1d946c51ccd3a,
   // 0xa3abaaf35556bc52.
