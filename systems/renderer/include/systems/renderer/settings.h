@@ -348,6 +348,32 @@ struct RenderSettings {
   bool operator==(const RenderSettings&) const = default;
 };
 
+// **What samples a frame over time** (ADR-0064; renderer.md, "Sampling over time: the measurement
+// rule"): the block every frame's statistics, every frame record and every summary carries, so a
+// reader of a cost knows what the frame was. `provider` is `Off` for every frame until a provider
+// is built (roadmap R158) and for every measurement; `inputs` says the frame was drawn at a
+// sub-pixel offset and wrote its motion (`renderer.reconstruction.inputs`, R154), which costs the
+// motion pass and is otherwise the native frame. The sizes are the views' rasterized extent and
+// the target's.
+enum class ReconstructionProvider : u8 { Off, Engine };
+const char* reconstruction_provider_name(ReconstructionProvider provider) noexcept;
+struct Reconstruction {
+  ReconstructionProvider provider = ReconstructionProvider::Off;
+  bool inputs = false;
+  u32 internal_width = 0;
+  u32 internal_height = 0;
+  u32 output_width = 0;
+  u32 output_height = 0;
+  // **A native measurement**: no provider, and drawn at the output's size. Only such a frame's
+  // times are a cost; any other frame's go under `reconstructed` in its record and its summary has
+  // no `gpu_ms` (flythrough.h, `frame_record`).
+  bool native() const noexcept {
+    return provider == ReconstructionProvider::Off && internal_width == output_width &&
+           internal_height == output_height;
+  }
+  bool operator==(const Reconstruction&) const = default;
+};
+
 // What the device and the scene made of a `RenderSettings`. The booleans are the frame's
 // actual shape; `settings` is the request with the overrides applied (`raster` may have fallen
 // back to the vertex path, `cull` may have been forced on, `rt_templates` may have been
@@ -428,6 +454,13 @@ struct ResolvedSettings {
   f32 gi_shell_m = 0.0f;        // `renderer.gi.shell_m`: the casters round the eye (stage 4)
   u32 gi_shell_rays = 0;        // `renderer.gi.shell_rays`: the samples round the eye (stage 4)
   u32 gi_shell_refresh = 1;     // `renderer.gi.shell_refresh`: a whole cell's bounce, frames apart
+  // **Sampling over time's inputs** (`renderer.reconstruction.inputs`, read at load; R154;
+  // renderer.md, "Sampling over time: the inputs"): every frame is drawn at a sub-pixel offset,
+  // the motion pass writes where each pixel's surface was last frame, and last frame's views,
+  // visibility buffer and deformed positions are kept. False, the default, makes none of it: no
+  // buffer, no pipeline, no pass, and the frame is the frame it always was to the byte. Never on
+  // the direct path, which has no visibility buffer to read.
+  bool reconstruction_inputs = false;
   bool gi_shell_clip = false;   // `renderer.gi.shell_clip`: the eye's rays stop at `gi_shell_m`
   bool gi_shell_first = false;  // `renderer.gi.shell_first`: the directions are the first threads
   u32 gi_preroll = 0;           // `renderer.gi.preroll`: steps before a cold frame's own (stage 5)

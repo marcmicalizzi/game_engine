@@ -37,7 +37,27 @@ namespace engine::renderer {
 // `ticks` are left at zero for the caller: they are measured around the renderer by whoever runs
 // the frame loop (`fly_camera_path` below, engine-view's interactive loop), which the renderer
 // does not see.
+//
+// **The measurement rule is here** (ADR-0064; renderer.md, "Sampling over time: the measurement
+// rule"): the record carries `stats.reconstruction` as its `reconstruction` block, and its times
+// are its `gpu_ms` only when that is a native measurement (`Reconstruction::native`); otherwise
+// they are under `reconstructed` and `gpu_ms` is null. `summarize_frames` holds a summary to the
+// same rule over its records: one record that was not native and the summary has no `gpu_ms`.
 scene::FrameRecord frame_record(const FrameStats& stats, u32 repeat, u32 frame, f64 time);
+// The block a record and a summary carry for `state`.
+scene::Reconstruction reconstruction_block(const Reconstruction& state);
+// A record's times wherever it carries them: `gpu_ms`, or `reconstructed.gpu_ms`; null for neither.
+// For a reader that prints or compares a figure knowing which it is; a cost reader takes `gpu_ms`.
+const scene::PassMs* record_pass_ms(const scene::FrameRecord& record) noexcept;
+// The same rule for a summary line a host writes by hand (engine-view's plain summary): `open` goes
+// where `"gpu_ms":` stood and `close` after the times' closing brace. Native, `open` is the
+// `reconstruction` block and `"gpu_ms":`; otherwise the block, `"gpu_ms":null` and
+// `"reconstructed":{"gpu_ms":`, with `close` the brace that ends it.
+struct MeasurementKeys {
+  std::string open;
+  const char* close = "";
+};
+MeasurementKeys measurement_keys(const Reconstruction& state);
 
 // **Every millisecond of a frame** (R130, roadmap T71 part 3; `scene::FrameSections`): what a
 // frame loop measured around one frame, in its order, on `time::monotonic_ns`'s clock. `start` is

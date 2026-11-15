@@ -1808,7 +1808,7 @@ struct CameraPath @version(1) {
 
 /// GPU milliseconds of one frame, pass by pass, from `gfx::GpuTimer` (`renderer::Stats` names).
 /// Version 5 added `sky`. Version 6 added `frame_passes`. Version 7 added `half_sun`.
-struct PassMs @version(10) {
+struct PassMs @version(11) {
   cull: f64 = 0
   hw: f64 = 0
   sw: f64 = 0
@@ -1872,6 +1872,39 @@ struct PassMs @version(10) {
   /// classify pass, every view's — each pixel's class written as depth. What the per-class draws
   /// cost is in `resolve`. Zero in a frame the resolve draws whole (`renderer.resolve.classes=off`).
   resolve_classify: f64 = 0 @since(10)
+  /// Version 11 (R154; docs/subsystems/renderer.md, "Sampling over time: the inputs"): the motion
+  /// pass over the visibility buffer and the pool pass's second write of every deformed vertex from
+  /// last frame's inputs, every view's. Zero unless `renderer.reconstruction.inputs` is on.
+  motion: f64 = 0 @since(11)
+}
+
+/// **What sampled the frame over time** (ADR-0064; docs/subsystems/renderer.md, "Sampling over
+/// time: the measurement rule"): the block every frame record and every summary carries, so a
+/// reader of a cost knows what the frame was. `provider` is "off" (every frame until a provider is
+/// built, and every measurement), "engine" (the engine's own accumulation) or a vendor's name;
+/// `mode` is "native" where the frame was drawn at the output's size, else the ratio's name;
+/// `inputs` says the frame was drawn at a sub-pixel offset with its motion pass (R154), which a
+/// provider needs and which nothing reads while `provider` is "off". The sizes are what the views
+/// were rasterized at and what the target holds.
+///
+/// **A record or a summary is a native measurement when `provider` is "off" and the two sizes are
+/// equal**, and only then does it carry `gpu_ms`: otherwise its times are under
+/// `reconstructed.gpu_ms` and `gpu_ms` is null, so a tool that reads a cost finds none
+/// (`tools/frame-budget.ps1`, `tools/flythrough.ps1`).
+struct Reconstruction @version(1) {
+  provider: string = "off"
+  mode: string = "native"
+  inputs: bool = false
+  internal_width: u32 = 0
+  internal_height: u32 = 0
+  output_width: u32 = 0
+  output_height: u32 = 0
+}
+
+/// A frame's times with reconstruction on (see `Reconstruction`): never a cost, and only ever
+/// printed beside the native figure of the same flight.
+struct ReconstructedMs @version(1) {
+  gpu_ms: PassMs
 }
 
 /// One terrain level's surface in one frame of a time-lapse (`engine-view --time-rate`;
@@ -2127,7 +2160,11 @@ struct FrameWorld @version(1) {
 /// Version 18: the water's reflection and refraction, `water_reflect*` and `water_refract*` (S86).
 ///
 /// Version 19: `gpu_ms` carries the resolve's classify pass, `resolve_classify` (R151).
-struct FrameRecord @version(19) {
+///
+/// Version 20 (ADR-0064): `reconstruction`, what sampled the frame over time; `gpu_ms` is null and
+/// the times are under `reconstructed` when it was not a native measurement (see `Reconstruction`);
+/// `gpu_ms` carries the motion pass, `motion` (R154).
+struct FrameRecord @version(20) {
   /// Which pass over the path, from 0.
   repeat: u32 = 0
   /// The path frame, from 0; an interactive session's frame, from 0.
@@ -2193,7 +2230,9 @@ struct FrameRecord @version(19) {
   /// Pairs the cascaded shadow maps' light-view culls drew into the atlas, summed over the
   /// cascades (`renderer::Stats::shadow_pairs`); zero without maps. Not visible pairs.
   shadow_pairs: u32 = 0 @since(3)
-  gpu_ms: PassMs
+  /// The frame's GPU time by pass. **Null when the frame was not a native measurement** (version
+  /// 20, ADR-0064: `reconstruction` below), where the times are under `reconstructed` instead.
+  gpu_ms: PassMs?
   /// Geometry streaming during this frame: pages copied into the pool and their bytes, pages
   /// evicted, requests written, and the pages resident after it. Zero when nothing streams.
   uploads: u32 = 0
@@ -2283,6 +2322,10 @@ struct FrameRecord @version(19) {
   water_refract: bool = false @since(18)
   water_refract_views: u32 = 0 @since(18)
   water_refract_floor_m: f32 = 0 @since(18) @unit(m)
+  /// Version 20 (ADR-0064): what sampled the frame over time, and its times when that was anything
+  /// but a native frame with no provider (`gpu_ms` is then null).
+  reconstruction: Reconstruction @since(20)
+  reconstructed: ReconstructedMs? = null @since(20)
 }
 
 /// What a flight's frame loop allocated on the frame's thread, over its recorded frames (every
@@ -2312,8 +2355,8 @@ struct Percentiles @version(1) {
 /// `PassMs`'s descriptor, so a bucket added there and not here fails the flythrough test that walks
 /// it ("the summary carries a median, p95 and p99 for every pass bucket"). Version 6 (T78) added
 /// the fifteen the hand-written list had missed since `PassMs` versions 3 to 9. Version 7 (R151):
-/// `resolve_classify`.
-struct PassPercentiles @version(7) {
+/// `resolve_classify`. Version 8 (R154): `motion`.
+struct PassPercentiles @version(8) {
   cull: Percentiles
   hw: Percentiles
   sw: Percentiles
@@ -2351,6 +2394,12 @@ struct PassPercentiles @version(7) {
   gi_trace: Percentiles @since(6)
   gi_fold: Percentiles @since(6)
   resolve_classify: Percentiles @since(7)
+  motion: Percentiles @since(8)
+}
+
+/// A path's times with reconstruction on (see `Reconstruction`): never a cost.
+struct ReconstructedPercentiles @version(1) {
+  gpu_ms: PassPercentiles
 }
 
 /// The frames' CPU stages over a path (`FrameRecord.cpu`, each frame's median across the repeats,
@@ -2758,7 +2807,10 @@ struct FlythroughSlow @version(1) {
 ///
 /// Version 17: `load`, what the load read for its meshes and textures and what the device's
 /// pipeline cache did (roadmap W75; docs/subsystems/apps.md, "The summary's load block").
-struct FlythroughSummary @version(20) {
+///
+/// Version 21 (ADR-0064): `reconstruction`, what sampled the run's frames over time; `gpu_ms` is
+/// null and the distribution is under `reconstructed` when the run was not a native measurement.
+struct FlythroughSummary @version(21) {
   /// "engine.flythrough.v1".
   format: string
   scene: string
@@ -2786,8 +2838,9 @@ struct FlythroughSummary @version(20) {
   frames: u32 = 0
   repeats: u32 = 0
   warmup: u32 = 0
-  /// Per pass, over the path's frames, of each frame's median across the repeats.
-  gpu_ms: PassPercentiles
+  /// Per pass, over the path's frames, of each frame's median across the repeats. **Null when the
+  /// run was not a native measurement** (version 21, ADR-0064: `reconstruction` below).
+  gpu_ms: PassPercentiles?
   visible_pairs: Percentiles
   /// The shadow chain's extra casters per frame (`FrameRecord.shadow_casters`).
   shadow_casters: Percentiles
@@ -2883,4 +2936,8 @@ struct FlythroughSummary @version(20) {
   /// The frames by their own intervals, and the slowest named by the span that took them (see
   /// `FlythroughSlow`). Null when no record carries its sections.
   slow: FlythroughSlow? @since(20)
+  /// Version 21 (ADR-0064): what sampled the run's frames over time (the first record's block), and
+  /// the run's distribution when that was anything but native frames with no provider.
+  reconstruction: Reconstruction @since(21)
+  reconstructed: ReconstructedPercentiles? = null @since(21)
 }

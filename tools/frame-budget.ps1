@@ -33,7 +33,10 @@
 
   Exit codes: 0 every run within budget (or re-baselined); 1 a run over budget on a quiet machine,
   a run that failed, or a summary missing a budgeted pass; 3 not the budget's machine; 4 the only
-  runs over budget ran on a busy machine (inconclusive: run again when it is quiet).
+  runs over budget ran on a busy machine (inconclusive: run again when it is quiet); 5 a summary
+  that is not a native measurement (ADR-0064: its `reconstruction` block names a provider or an
+  internal size below the output's, or its `gpu_ms` is null and its times are under
+  `reconstructed`): refused before any number of it is read, never compared and never a baseline.
 
   Where it runs and what it costs: docs/ci/what-to-run.md, "Frame budgets".
 #>
@@ -155,6 +158,10 @@ foreach ($r in $runs) {
     $plan.machine.device = $saved
   }
   $results += $result
+  if ($result.Verdict -eq 'reconstructed') {
+    Write-Host "   $($r.id): refused: $($result.MachineState)" -ForegroundColor Red
+    continue
+  }
   $overRows = @($result.Rows | Where-Object { $_.Over })
   $line = '   {0}: {1}; total {2:N3} / {3:N3} ms (median / p99) against {4:N3} / {5:N3}; {6}' -f $r.id, $result.Verdict,
     (Get-Measured $summary 'median'), (Get-Measured $summary 'p99'), [double]$r.gpu_ms.total.median, [double]$r.gpu_ms.total.p99, $result.MachineState
@@ -180,7 +187,7 @@ if ($Rebaseline) {
   $changed = 0
   foreach ($r in $runs) {
     $res = $results | Where-Object { $_.Id -eq $r.id } | Select-Object -First 1
-    if (-not $summaries.ContainsKey($r.id) -or $res.Verdict -in @('failed', 'device', 'malformed')) {
+    if (-not $summaries.ContainsKey($r.id) -or $res.Verdict -in @('failed', 'device', 'malformed', 'reconstructed')) {
       Write-Warning "frame-budget: $($r.id) not re-baselined: $($res.Verdict)"
       continue
     }
@@ -198,7 +205,8 @@ if ($Rebaseline) {
 }
 
 $code = Get-FrameBudgetExitCode -Results $results
-$word = @{ 0 = 'within budget'; 1 = 'OVER BUDGET or failed'; 3 = 'not the budget''s machine: skipped'; 4 = 'over budget on a busy machine: inconclusive, run again when it is quiet' }[$code]
+$word = @{ 0 = 'within budget'; 1 = 'OVER BUDGET or failed'; 3 = 'not the budget''s machine: skipped'; 4 = 'over budget on a busy machine: inconclusive, run again when it is quiet'
+           5 = 'REFUSED: a summary is not a native measurement (ADR-0064); a budget is measured with reconstruction off at the output''s size' }[$code]
 Write-Host "frame-budget: $word ($(@($results | Where-Object { $_.Verdict -eq 'pass' }).Count) of $($results.Count) runs pass)"
 Write-Host "results: $Out"
 exit $code

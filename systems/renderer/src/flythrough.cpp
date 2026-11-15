@@ -1,5 +1,7 @@
 #include <core/base/assert.h>
+#include <core/json/json.h>
 #include <core/memory/memory.h>
+#include <core/schema/json_reflect.h>
 #include <core/schema/type_info.h>
 #include <core/time/time.h>
 #include <domain/gfx/resources.h>
@@ -83,6 +85,38 @@ FlightBookkeeping::~FlightBookkeeping() {
 u64 FlightBookkeeping::allocations_left_out() noexcept { return t_left_out_allocations; }
 u64 FlightBookkeeping::buffers_left_out() noexcept { return t_left_out_buffers; }
 
+scene::Reconstruction reconstruction_block(const Reconstruction& state) {
+  scene::Reconstruction out;
+  out.provider = reconstruction_provider_name(state.provider);
+  // The ratio's name once there is one (roadmap R160); until then a frame is the output's size.
+  out.mode =
+      state.internal_width == state.output_width && state.internal_height == state.output_height
+          ? "native"
+          : "ratio";
+  out.inputs = state.inputs;
+  out.internal_width = state.internal_width;
+  out.internal_height = state.internal_height;
+  out.output_width = state.output_width;
+  out.output_height = state.output_height;
+  return out;
+}
+
+MeasurementKeys measurement_keys(const Reconstruction& state) {
+  MeasurementKeys keys;
+  keys.open =
+      "\"reconstruction\":" +
+      write_json(schema::to_json(reconstruction_block(state)), JsonWriteOptions{.pretty = false}) +
+      (state.native() ? ",\"gpu_ms\":" : ",\"gpu_ms\":null,\"reconstructed\":{\"gpu_ms\":");
+  keys.close = state.native() ? "" : "}";
+  return keys;
+}
+
+const scene::PassMs* record_pass_ms(const scene::FrameRecord& record) noexcept {
+  if (record.gpu_ms.has_value()) return &*record.gpu_ms;
+  if (record.reconstructed.has_value()) return &record.reconstructed->gpu_ms;
+  return nullptr;
+}
+
 scene::FrameRecord frame_record(const FrameStats& stats, u32 repeat, u32 frame, f64 time) {
   scene::FrameRecord out;
   out.repeat = repeat;
@@ -94,36 +128,48 @@ scene::FrameRecord frame_record(const FrameStats& stats, u32 repeat, u32 frame, 
   out.visible_pairs = stats.visible_pairs();
   out.shadow_casters = stats.shadow_casters;
   out.shadow_pairs = stats.shadow_pairs;
-  out.gpu_ms.cull = stats.gpu_cull;
-  out.gpu_ms.hw = stats.gpu_hw;
-  out.gpu_ms.sw = stats.gpu_sw;
-  out.gpu_ms.hiz = stats.gpu_hiz;
-  out.gpu_ms.resolve = stats.gpu_resolve;
-  out.gpu_ms.rt = stats.gpu_rt;
-  out.gpu_ms.clas = stats.gpu_clas;
-  out.gpu_ms.blas = stats.gpu_blas;
-  out.gpu_ms.deform = stats.gpu_deform;
-  out.gpu_ms.deform_alloc = stats.gpu_deform_alloc;
-  out.gpu_ms.trace = stats.gpu_trace;
-  out.gpu_ms.shadow = stats.gpu_shadow;
-  out.gpu_ms.shadow_cull = stats.gpu_shadow_cull;
-  out.gpu_ms.total = stats.gpu_total;
-  out.gpu_ms.tables = stats.gpu_tables;
-  out.gpu_ms.sky = stats.gpu_sky;
-  out.gpu_ms.frame_passes = stats.gpu_frame_passes;
-  out.gpu_ms.half_sun = stats.gpu_half_sun;
-  out.gpu_ms.gi_trace = stats.gpu_gi_trace;
-  out.gpu_ms.gi_fold = stats.gpu_gi_fold;
-  out.gpu_ms.resolve_classify = stats.gpu_resolve_classify;
-  out.gpu_ms.rt_records = stats.gpu_rt_records;
-  out.gpu_ms.rt_ranges = stats.gpu_rt_ranges;
-  out.gpu_ms.rt_drop = stats.gpu_rt_drop;
-  out.gpu_ms.rt_emit = stats.gpu_rt_emit;
-  out.gpu_ms.rt_cache = stats.gpu_rt_cache;
-  out.gpu_ms.clas_cache = stats.gpu_clas_cache;
-  out.gpu_ms.tlas = stats.gpu_tlas;
-  out.gpu_ms.terrain_upload = stats.gpu_terrain_upload;
-  out.gpu_ms.unbucketed = stats.gpu_unbucketed;
+  scene::PassMs ms;
+  ms.cull = stats.gpu_cull;
+  ms.hw = stats.gpu_hw;
+  ms.sw = stats.gpu_sw;
+  ms.hiz = stats.gpu_hiz;
+  ms.resolve = stats.gpu_resolve;
+  ms.rt = stats.gpu_rt;
+  ms.clas = stats.gpu_clas;
+  ms.blas = stats.gpu_blas;
+  ms.deform = stats.gpu_deform;
+  ms.deform_alloc = stats.gpu_deform_alloc;
+  ms.trace = stats.gpu_trace;
+  ms.shadow = stats.gpu_shadow;
+  ms.shadow_cull = stats.gpu_shadow_cull;
+  ms.total = stats.gpu_total;
+  ms.tables = stats.gpu_tables;
+  ms.sky = stats.gpu_sky;
+  ms.frame_passes = stats.gpu_frame_passes;
+  ms.half_sun = stats.gpu_half_sun;
+  ms.gi_trace = stats.gpu_gi_trace;
+  ms.gi_fold = stats.gpu_gi_fold;
+  ms.resolve_classify = stats.gpu_resolve_classify;
+  ms.rt_records = stats.gpu_rt_records;
+  ms.rt_ranges = stats.gpu_rt_ranges;
+  ms.rt_drop = stats.gpu_rt_drop;
+  ms.rt_emit = stats.gpu_rt_emit;
+  ms.rt_cache = stats.gpu_rt_cache;
+  ms.clas_cache = stats.gpu_clas_cache;
+  ms.tlas = stats.gpu_tlas;
+  ms.terrain_upload = stats.gpu_terrain_upload;
+  ms.unbucketed = stats.gpu_unbucketed;
+  ms.motion = stats.gpu_motion;
+  // **The measurement rule** (ADR-0064; renderer.md, "Sampling over time: the measurement rule"):
+  // the frame's times are a cost only when nothing reconstructed it and it was drawn at the
+  // output's size. Any other frame's go under `reconstructed`, and `gpu_ms` stays null, so a
+  // reader of a cost finds none.
+  out.reconstruction = reconstruction_block(stats.reconstruction);
+  if (stats.reconstruction.native()) {
+    out.gpu_ms = ms;
+  } else {
+    out.reconstructed = scene::ReconstructedMs{.gpu_ms = ms};
+  }
   out.uploads = stats.uploads;
   out.upload_bytes = stats.upload_bytes;
   out.evictions = stats.evictions;
@@ -373,6 +419,12 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
     frame.frame_index = f;
     frame.world_time_s = options.world_rate * static_cast<f64>(f) / 60.0;
     frame.sky_time_s = options.sky_start_s + options.sun_rate * static_cast<f64>(f) / 60.0;
+    // A repeat's first path frame starts sampling over time's history again (ADR-0064;
+    // renderer.md, "Sampling over time: the inputs"), so with the inputs on frame f of every
+    // repeat is drawn at the same sub-pixel phase and draws the same cut, as `deterministic` asks.
+    // Not its first warm-up frame: a warm-up that runs for `warmup_seconds` is a different number
+    // of frames each repeat, and so would leave each repeat's path at another phase.
+    frame.history_reset = recorded && f == 0;
     submissions.push_back(Submission{repeat, f, recorded});
     submissions[submissions.size() - 1].world = world;
     const std::pair<u64, u64> before_submit = counted();
@@ -554,8 +606,12 @@ void summarize_frames(std::span<const scene::FrameRecord> records, u32 frames, u
       for (u32 k = 0; k < repeats; ++k) {
         const scene::FrameRecord* r = slot[f * repeats + k];
         if (r == nullptr) continue;
+        // A record's times wherever it carries them (ADR-0064): its `gpu_ms`, or under
+        // `reconstructed` when it was not a native measurement.
+        const scene::PassMs* passes = record_pass_ms(*r);
+        if (passes == nullptr) continue;
         f64 ms = 0.0;
-        std::memcpy(&ms, reinterpret_cast<const u8*>(&r->gpu_ms) + offset, sizeof(ms));
+        std::memcpy(&ms, reinterpret_cast<const u8*>(passes) + offset, sizeof(ms));
         repeats_of.push_back(ms);
       }
       per_bucket[b].push_back(median_of(repeats_of));
@@ -590,14 +646,34 @@ void summarize_frames(std::span<const scene::FrameRecord> records, u32 frames, u
   auto over = [&](u32 p) {
     return percentiles(std::span<const f64>(per_frame[p].data(), per_frame[p].size()));
   };
-  out.gpu_ms = scene::PassPercentiles{};
+  // **The measurement rule** (ADR-0064): the summary's distribution is a cost only when every
+  // record was a native measurement. One record that was not puts the whole distribution under
+  // `reconstructed` and leaves `gpu_ms` null, and the block is that record's, so the summary says
+  // what a reader must not take for a cost.
+  bool native = true;
+  bool block_set = false;
+  for (const scene::FrameRecord* r : slot) {
+    if (r == nullptr) continue;
+    const bool record_native = r->gpu_ms.has_value() && !r->reconstructed.has_value();
+    if (!block_set || (native && !record_native)) out.reconstruction = r->reconstruction;
+    block_set = true;
+    native = native && record_native;
+  }
+  scene::PassPercentiles distribution{};
   for (u32 b = 0; b < buckets; ++b) {
     const schema::FieldInfo* to = summary_type.find_field(bucket_type.fields[b].name);
     ENGINE_ASSERT(to != nullptr && to->type.type == &schema::type_of<scene::Percentiles>(),
                   "every PassMs bucket has a PassPercentiles field of its name");
     if (to == nullptr || to->type.type != &schema::type_of<scene::Percentiles>()) continue;
-    *reinterpret_cast<scene::Percentiles*>(reinterpret_cast<u8*>(&out.gpu_ms) + to->offset) =
+    *reinterpret_cast<scene::Percentiles*>(reinterpret_cast<u8*>(&distribution) + to->offset) =
         percentiles(std::span<const f64>(per_bucket[b].data(), per_bucket[b].size()));
+  }
+  out.gpu_ms.reset();
+  out.reconstructed.reset();
+  if (native) {
+    out.gpu_ms = distribution;
+  } else {
+    out.reconstructed = scene::ReconstructedPercentiles{.gpu_ms = distribution};
   }
   out.visible_pairs = over(pairs);
   out.shadow_casters = over(casters);
@@ -629,7 +705,8 @@ void summarize_frames(std::span<const scene::FrameRecord> records, u32 frames, u
     m.frame = marker_frame(path, marker.frame, frames);
     m.name = marker.name;
     if (total < buckets && m.frame < per_bucket[total].size()) {
-      m.total_ms = per_bucket[total][m.frame];
+      // A marker's time is a cost too: zero in a summary that is not a native measurement.
+      m.total_ms = native ? per_bucket[total][m.frame] : 0.0;
       m.visible_pairs = static_cast<u32>(per_frame[pairs][m.frame]);
     }
     for (u32 k = 0; k < repeats; ++k) {

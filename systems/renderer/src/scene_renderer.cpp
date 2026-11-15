@@ -24,6 +24,7 @@
 #include <cstddef>
 #include <cstring>
 #include <memory>
+#include <motion_pass.h>
 #include <renderer_log.h>
 #include <resolve_classes.h>
 #include <shaders/alpha_coverage.spv.h>
@@ -40,6 +41,7 @@
 #include <shaders/gi_update.spv.h>
 #include <shaders/gi_update_terrain.spv.h>
 #include <shaders/hiz_build.spv.h>
+#include <shaders/motion.spv.h>
 #include <shaders/opacity_micromap_bake.spv.h>
 #include <shaders/overlay.spv.h>
 #include <shaders/pair_expand.spv.h>
@@ -346,6 +348,7 @@ void SceneRenderer::Pipelines::destroy(const gfx::Device& device) noexcept {
   gfx::destroy_compute_pipeline(device, clas_chunks);
   gfx::destroy_compute_pipeline(device, trace);
   gfx::destroy_compute_pipeline(device, half_sun);
+  gfx::destroy_compute_pipeline(device, motion);
   gfx::destroy_compute_pipeline(device, gi_sample);
   gfx::destroy_compute_pipeline(device, gi_fold);
   gfx::destroy_compute_pipeline(device, pair_expand);
@@ -600,7 +603,9 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
       // tables, sky-view, air and sums four more; the frame passes eight (frame_pass.h), the encode
       // after them one; the cluster cache's five passes and its build six; the chain's walk past
       // its capacity one (R130, "ranges drop").
-      !timer_.create(device, desc.frames_in_flight, 63 + 16 * (views - 1), error)) {
+      // And with sampling over time's inputs the motion pass one and the pool's second write three.
+      !timer_.create(device, desc.frames_in_flight,
+                     63 + 16 * (views - 1) + (resolved.reconstruction_inputs ? 4 : 0), error)) {
     destroy();
     return false;
   }
@@ -749,6 +754,7 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
                         shaders::k_deform_alloc_spirv_size);
   shaders_.add_embedded("pair_expand", shaders::k_pair_expand_spirv,
                         shaders::k_pair_expand_spirv_size);
+  shaders_.add_embedded("motion", shaders::k_motion_spirv, shaders::k_motion_spirv_size);
   shaders_.add_embedded("alpha_coverage", shaders::k_alpha_coverage_spirv,
                         shaders::k_alpha_coverage_spirv_size);
   shaders_.add_embedded("opacity_micromap_bake", shaders::k_opacity_micromap_bake_spirv,
@@ -787,7 +793,8 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
       !scene.bake_micromaps(shaders_, error) || !targets_.create(device, views_, error) ||
       !create_color_target(error) || !create_shadow_maps(error) ||
       !overlay_.create(device, scene.bindless(), shaders_, desc_.color_format,
-                       desc_.frames_in_flight, error)) {
+                       desc_.frames_in_flight, error) ||
+      !create_motion(error)) {
     destroy();
     return false;
   }
@@ -1067,6 +1074,74 @@ void SceneRenderer::remove_frame_pass(FramePassFn fn, void* user) noexcept {
   }
 }
 
+// **Sampling over time's inputs** (motion_pass.h; renderer.md, "Sampling over time: the inputs"):
+// made only under `renderer.reconstruction.inputs`, so a renderer without it holds a null pointer
+// and nothing else of this.
+bool SceneRenderer::create_motion(std::string* error) {
+  if (!resolved_.reconstruction_inputs) return true;
+  motion_ = new MotionPass;
+  if (!motion_->create(*device_, *scene_, views_, desc_.frames_in_flight, error)) return false;
+  // What the inputs keep on the device, said once at load (renderer.md, "Sampling over time: the
+  // inputs"), so a host's log carries the figure its summary does not.
+  ENGINE_LOG_INFO(log_renderer, "sampling over time's inputs",
+                  log::field("device_bytes", motion_->device_bytes()),
+                  log::field("pool_bytes", scene_->deform_pool.size));
+  return true;
+}
+
+Reconstruction SceneRenderer::reconstruction() const noexcept {
+  Reconstruction state;
+  state.inputs = motion_ != nullptr;
+  // What the views are rasterized at and what the target holds: one size until a ratio (R160).
+  state.internal_width = state.output_width = width_;
+  state.internal_height = state.output_height = height_;
+  return state;
+}
+
+void SceneRenderer::reset_history() noexcept {
+  if (motion_ != nullptr) motion_->reset();
+}
+
+u64 SceneRenderer::motion_bytes() const noexcept {
+  return motion_ != nullptr ? motion_->device_bytes() : 0;
+}
+
+// The motion buffer of the frame last drawn, in the target's pixels as `read_visibility` reads the
+// ids: two floats a pixel, zero where no view covers it or the word is `gfx::k_motion_invalid`.
+bool SceneRenderer::read_motion(CapturedFrame& out, std::string* error) {
+  if (motion_ == nullptr) {
+    if (error != nullptr) {
+      *error =
+          "the motion channel needs renderer.reconstruction.inputs=true: without it the "
+          "renderer writes no motion";
+    }
+    return false;
+  }
+  Vector<u8> bytes;
+  if (!read_buffer(*device_, motion_->output(), motion_->output().size, bytes, error)) return false;
+  const auto* words = reinterpret_cast<const u32*>(bytes.data());
+  out.motion.assign(static_cast<u32>(u64{width_} * height_ * 2), 0.0f);
+  for (u32 v = 0; v < views_.size(); ++v) {
+    const View& view = views_[v];
+    const ViewTarget& target = targets_.views[v];
+    for (u32 y = 0; y < view.rect.height; ++y) {
+      for (u32 x = 0; x < view.rect.width; ++x) {
+        u32 sx = x;
+        u32 sy = y;
+        if (views_.resample() && !panini_source_pixel(views_, view, x, y, sx, sy)) continue;
+        const u32 p = (view.rect.y + y) * width_ + view.rect.x + x;
+        f32 mx = 0.0f;
+        f32 my = 0.0f;
+        if (!gfx::unpack_motion(words[target.vis_offset + u64{sy} * target.width + sx], mx, my))
+          continue;
+        out.motion[p * 2] = mx;
+        out.motion[p * 2 + 1] = my;
+      }
+    }
+  }
+  return true;
+}
+
 bool SceneRenderer::create_color_target(std::string* error) {
   if (!desc_.offscreen) return true;
   if (color_.image.valid()) gfx::destroy_image(*device_, color_);
@@ -1129,6 +1204,14 @@ bool SceneRenderer::create_pipelines(std::string* error) {
         !gfx::create_compute_pipeline(device, alloc->module, "deform_alloc_place_main", {},
                                       sizeof(gfx::DeformAllocParams), pipelines_.deform_alloc_place,
                                       error)) {
+      return false;
+    }
+  }
+  if (resolved_.reconstruction_inputs) {
+    const gfx::Shader* motion = shaders_.get("motion", error);
+    if (motion == nullptr ||
+        !gfx::create_compute_pipeline(device, motion->module, "motion_main", {}, sizeof(u64),
+                                      pipelines_.motion, error)) {
       return false;
     }
   }
@@ -1444,6 +1527,11 @@ void SceneRenderer::destroy() noexcept {
   // The chain's retired buffers: the worker's finished, the rest freed now (the device is idle).
   delete rt_freer_;
   rt_freer_ = nullptr;
+  if (motion_ != nullptr) {
+    motion_->destroy(device);
+    delete motion_;
+    motion_ = nullptr;
+  }
   if (graph_ != nullptr) {
     graph_->reset();
     delete graph_;
@@ -1532,6 +1620,7 @@ bool SceneRenderer::resize(u32 width, u32 height, std::string* error) {
   if (!views_.build(desc_.views, width_, height_, error)) return false;
   fill_view_layout();
   if (!targets_.create(*device_, views_, error) || !create_color_target(error)) return false;
+  if (motion_ != nullptr && !motion_->resize(*device_, views_, error)) return false;
   // The frame passes' linear image and the overlay's UI layer are the target's size (frame_pass.h).
   if (ui_layer_.image.valid() && !create_ui_layer(error)) return false;
   return !linear_wanted() || create_linear_target(error);
@@ -2028,6 +2117,7 @@ void SceneRenderer::collect_slot(u32 slot) {
     last.gpu_terrain_upload = timer_.ms("terrain upload");
     last.gpu_sky = timer_.ms("sky");
     last.gpu_half_sun = timer_.ms("half sun");
+    last.gpu_motion = timer_.ms("motion") + timer_.ms("motion pool");
     last.gpu_resolve_classify = timer_.ms("resolve classify");
     last.gpu_gi_trace = timer_.ms("gi sample");
     last.gpu_gi_fold = timer_.ms("gi fold");
@@ -2042,11 +2132,14 @@ void SceneRenderer::collect_slot(u32 slot) {
                       last.gpu_deform + last.gpu_deform_alloc + last.gpu_trace + last.gpu_rt +
                       last.gpu_shadow + last.gpu_tables + last.gpu_terrain_upload + last.gpu_sky +
                       last.gpu_frame_passes + last.gpu_half_sun + last.gpu_gi_trace +
-                      last.gpu_gi_fold + last.gpu_resolve_classify;
+                      last.gpu_gi_fold + last.gpu_resolve_classify + last.gpu_motion;
     last.gpu_unbucketed = std::max(0.0, last.gpu_total - named);
     stats_.tiles.gpu_tables += last.gpu_tables;
     stats_.tiles.gpu_pair_expand += last.gpu_pair_expand;
   }
+  // What sampled the frame over time (ADR-0064): its record's block, and whether its times are a
+  // cost.
+  last.reconstruction = reconstruction();
   last.terrain_upload_bytes = slot < slot_terrain_bytes_.size() ? slot_terrain_bytes_[slot] : 0;
   last.cpu = slot < slot_cpu_.size() ? slot_cpu_[slot] : FrameCpu{};
   last.visibility_m = slot < slot_visibility_.size() ? slot_visibility_[slot] : -1.0f;
@@ -2089,6 +2182,8 @@ void SceneRenderer::collect_slot(u32 slot) {
     stats_.gpu_sky += timer_.ms("sky");
     // The half-rate sun pass, every view's under one name.
     stats_.gpu_half_sun += timer_.ms("half sun");
+    // The motion pass and the pool's second write (R154), every view's under two names.
+    stats_.gpu_motion += timer_.ms("motion") + timer_.ms("motion pool");
     // The resolve's classify pass (R151), every view's under one name.
     stats_.gpu_resolve_classify += timer_.ms("resolve classify");
     // The world-space cache's passes (R69), every view's sample pass under one name.
@@ -2708,8 +2803,17 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   const bool streaming = scene.streamed();
 
   // This frame's one camera through the layout: N view-projection matrices sharing one eye and
-  // one near plane, differing in orientation and in the shape of the frustum.
-  views_.update(frame.camera);
+  // one near plane, differing in orientation and in the shape of the frustum. With sampling over
+  // time's inputs on (motion_pass.h) the frame is drawn at its phase's sub-pixel offset, into the
+  // visibility buffer the frame before last drew into, and last frame's is kept.
+  f32 sample_x = 0.0f;
+  f32 sample_y = 0.0f;
+  if (motion_ != nullptr) {
+    if (frame.history_reset) motion_->reset();
+    motion_->swap_visibility(targets_.vis);
+    motion_->frame_offset(sample_x, sample_y);
+  }
+  views_.update(frame.camera, sample_x, sample_y);
 
   // **The frame's origin is its eye** (ADR-0053; renderer.md, "The frame's origin"). Every pass is
   // given it as a `gfx::FrameEye` and works relative to it, and every view's eye is at the origin
@@ -3761,6 +3865,31 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     }
   }
 
+  // The motion pass's blocks and its moved table, in this slot's buffers (motion_pass.h).
+  if (motion_ != nullptr) {
+    MotionPass::Frame mf;
+    mf.slot = slot;
+    mf.eye = frame.camera.position;
+    mf.gpu_eye = gpu_eye;
+    mf.visibility = targets_.vis.address;
+    for (u32 v = 0; v < views; ++v) {
+      mf.vis_offset[v] = targets_.views[v].vis_offset;
+      mf.pair_entries[v] = settings.cull ? scene.pair_entries_address(v) : 0;
+    }
+    mf.pairs = scene.pair_table.address;
+    mf.visible = scene.visible.address;
+    mf.instances = scene.instances.address;
+    mf.meshes = scene.meshes.address;
+    mf.clusters = scene.clusters.address;
+    mf.triangles = scene.triangles.address;
+    mf.instance_count = instance_count;
+    mf.deform_table = deform_table_address;
+    mf.deform_time = deform_time;
+    mf.flora = flora_table;
+    mf.tables_changed = write_tables;
+    motion_->prepare(mf, views_, scene);
+  }
+
   // ---- the shadow cascades' cull blocks, draws, index expansions and pool passes ---------------
   //
   // One cull block per cascade behind the views' pairs: the cascade's planes, the camera's LOD, no
@@ -4158,6 +4287,14 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     rg_blocks = graph.import_buffer("deform blocks", scene.deform_blocks);
     rg_deform_args = graph.import_buffer("deform args", scene.deform_args);
   }
+  // Sampling over time's inputs (motion_pass.h): the motion buffer, and the second pool the pool
+  // pass writes from last frame's inputs.
+  const bool motion_on = motion_ != nullptr && !direct;
+  const bool motion_pool = motion_on && resolved_.deform_pass && motion_->has_pool();
+  gfx::RgBuffer rg_motion{};
+  gfx::RgBuffer rg_prev_pool{};
+  if (motion_on) rg_motion = graph.import_buffer("motion", motion_->output());
+  if (motion_pool) rg_prev_pool = graph.import_buffer("deform pool before", motion_->prev_pool());
   // The terrain levels' fields: every field buffer this frame's table names, which the pool pass
   // reads, and the ones the host handed over, which this frame copies in from their staging. A
   // field slot is written only once no table still to be recorded names it, but frames already
@@ -4792,6 +4929,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           b.read(rg_visible, gfx::Access::ComputeRead);
           b.read(rg_slots, gfx::Access::ComputeRead);
           b.write(rg_pool, gfx::Access::ComputeWrite);
+          if (motion_pool) b.write(rg_prev_pool, gfx::Access::ComputeWrite);
           read_terrain(b);
           read_pool(b, gfx::Access::ComputeRead);
         },
@@ -4804,6 +4942,17 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             cb.dispatch_indirect(scene.deform_args.buffer, scene.deform_args_offset(v, run));
             timer.end(cb);
           }
+          // **Each vertex twice** (motion_pass.h; renderer.md, "Sampling over time: the inputs"):
+          // the same blocks of the second pool, from last frame's inputs, for the motion pass.
+          if (!motion_pool) return;
+          timer.begin(cb, "motion pool");
+          for (u32 v = 0; v < views; ++v) {
+            const gfx::DeformParams before = motion_->previous(deform_params[v][run]);
+            cb.push_constants(pipelines.deform.layout, gfx::ShaderStage::Compute, 0,
+                              sizeof(gfx::DeformParams), &before);
+            cb.dispatch_indirect(scene.deform_args.buffer, scene.deform_args_offset(v, run));
+          }
+          timer.end(cb);
         });
   };
   // The indexed draw's indices, between the cull pass that allocated them and the draw that reads
@@ -5604,6 +5753,28 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       add_sky("sky frame", sky_.frame_pipeline, 1, 1, sb_sky.frame, sb_sky.view,
               sb_sky.transmittance);
     }
+    // **The motion pass** (motion_pass.h; gfx.md, "Motion from the visibility buffer"; R154): one
+    // thread a pixel over the finished visibility buffer. Its body is the pass's own; what it reads
+    // is named here, where the frame's buffers are.
+    if (motion_on) {
+      graph.add_pass(
+          "motion", gfx::PassKind::Compute,
+          [&](gfx::PassBuilder& b) {
+            b.read(rg_vis, gfx::Access::ComputeRead);
+            if (cull_on) b.read(rg_pair_entries, gfx::Access::ComputeRead);
+            if (motion_pool) {
+              b.read(rg_pool, gfx::Access::ComputeRead);
+              b.read(rg_prev_pool, gfx::Access::ComputeRead);
+              b.read(rg_slots, gfx::Access::ComputeRead);
+            }
+            read_tables(b, gfx::Access::ComputeRead, true);
+            read_pool(b, gfx::Access::ComputeRead);
+            b.write(rg_motion, gfx::Access::ComputeWrite);
+          },
+          [&](gfx::CommandList cb, gfx::RenderGraph&) {
+            motion_->record(cb, pipelines.motion, timer, slot);
+          });
+    }
     // **The half-rate sun pass** (R126; renderer.md, "A shading rate by region"): one thread per
     // 2x2 block of each view's half-rate columns, reading the view's own resolve block, tracing the
     // sun's ray from the block's top-left pixel where the block holds one pair, and writing an
@@ -6189,6 +6360,9 @@ bool SceneRenderer::move_instances(std::span<const u32> indices,
   // after those frames and before that frame's readers. Until 2026-10-22 this waited for the device
   // here and wrote the table with a blocking submission, which made a host that moves actors every
   // frame pay its CPU and GPU time one after the other (docs/experiments/forest-cpu-2026-10-21.md).
+  // Where each stands now is where the motion pass says it was (motion_pass.h), read before the
+  // scene writes the new placements.
+  if (motion_ != nullptr) (void)motion_->note_moves(*scene_, indices);
   return scene_->place_instances(indices, placements, error);
 }
 
@@ -6253,6 +6427,7 @@ bool SceneRenderer::capture(const FrameDesc& frame, const CaptureChannels& chann
     out.height = shot.height;
   }
   if (channels.any_visibility() && !read_visibility(out, channels, error)) return false;
+  if (channels.motion && !read_motion(out, error)) return false;
   if (channels.normals) {
     // The normal is what the resolve reconstructs, and only the resolve knows it: a second
     // frame in the normals view mode is the honest way to read one back, and it costs exactly

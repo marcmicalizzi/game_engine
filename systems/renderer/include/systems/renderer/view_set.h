@@ -110,6 +110,14 @@ Camera orbit_camera_at(const WorldPos& center, f32 radius, f32 distance, f32 yaw
 Camera fly_camera(const WorldPos& center, f32 radius, f32 from, f32 to, u32 step,
                   u32 steps) noexcept;
 
+// **The sub-pixel offset of phase `phase`** (ADR-0064; renderer.md, "Sampling over time: the
+// inputs"): Halton(2, 3) at index `phase + 1`, less a half, so each component is in (-0.5, 0.5)
+// pixels of the pixel's centre. The renderer takes the phase modulo `k_sample_phases` at native
+// resolution; a ratio of n takes ceil(8 n^2) (roadmap R160). The radical inverses are plain IEEE
+// sums and divisions (contraction is off, ADR-0035), so the offsets are the same bits everywhere.
+inline constexpr u32 k_sample_phases = 8;
+void sample_offset(u32 phase, f32& x, f32& y) noexcept;
+
 // Reversed-Z perspective through an arbitrary rectangle on the near plane, which is what an
 // off-axis monitor needs and what `core/math`'s symmetric `perspective_reversed_z` cannot express.
 // Same conventions: the camera looks down -z, the near plane maps to 1 and the far plane to 0, and
@@ -191,6 +199,17 @@ struct View {
   // from, because the inverse of `view_proj` carries the camera's world position and, kilometres
   // from the origin, a direction made from it is wrong by pixels (gfx.md, "The sky").
   Mat4 clip_to_ray;
+  // **The same two without the frame's sub-pixel offset** (ADR-0064; renderer.md, "Sampling over
+  // time: the inputs"). `update` shears the projection by the offset, so `view_proj` and
+  // `clip_to_ray` are what the frame is drawn with — the rasterizers, the traced primaries, the
+  // cull's frustum and its Hi-Z tests, the resolve — and move together. This is the view-projection
+  // the offset was added to: what the motion pass measures both frames with, so a motion vector has
+  // neither frame's offset in it. Equal to `view_proj`, to the bit, with no offset.
+  Mat4 view_proj_center;
+  // The offset the frame was drawn at: where each pixel's sample sits from its centre, in source
+  // pixels, x right and y down. Zero unless `update` was given one.
+  f32 offset_x = 0.0f;
+  f32 offset_y = 0.0f;
   // The cull pass's LOD scale, cot(fov_y / 2) * source_height / 2 for a centred projection and
   // the same expression through the projection's own vertical scale for an off-axis one. In
   // *source* pixels, because that is where the error the threshold bounds is measured.
@@ -232,7 +251,15 @@ class ViewSet {
   // near plane are shared; only the orientation and the frustum differ. A surround whose frusta
   // were laid out at another field of view than the camera's is laid out again from the camera's
   // first, by the same function `build` uses, so its three views are one field of view.
-  void update(const Camera& camera) noexcept;
+  //
+  // **`offset_x`, `offset_y`: the frame's sub-pixel offset** (ADR-0064; renderer.md, "Sampling over
+  // time: the inputs"), in source pixels, the same for every view: each pixel's sample sits that
+  // far from its centre, x right and y down, so the picture's content moves the other way. It is a
+  // shear of the projection's third column, so everything made from `view_proj` and `clip_to_ray`
+  // moves together and a pixel still meets its triangle exactly. Not in it: the LOD's scale
+  // (`proj_scale`, so the cut does not change with the phase) and `view_proj_center`. Zero, the
+  // default, adds nothing and every matrix is the bits it always was.
+  void update(const Camera& camera, f32 offset_x = 0.0f, f32 offset_y = 0.0f) noexcept;
   // The vertical field of view the views' frusta are laid out from now: `desc().fov_y` after
   // `build`, and for a surround the last camera's after `update`.
   f32 fov_y() const noexcept { return fov_y_; }

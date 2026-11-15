@@ -2437,6 +2437,7 @@ void describe_run(const renderer::SceneData& scene_data, const Options& options,
   summary.scene_hash = renderer::hash_hex(scene_data.file_hash);
   summary.path = path_name;
   summary.path_hash = renderer::hash_hex(path_hash);
+  summary.reconstruction = renderer::reconstruction_block(view.reconstruction());  // ADR-0064
   u64 identity = hash_combine(scene_data.file_hash, path_hash);
   for (u32 m = 0; m < scene_data.parts.size(); ++m) {
     const renderer::SourceMesh& source = scene_data.sources[m];
@@ -7480,6 +7481,9 @@ int run_view(int argc, char** argv) {
     // into its middle.
     (void)bench::warn_if_busy(bench::worst_of(machine_start, machine_end), bench::QuietThresholds{},
                               stderr);
+    // The measurement rule (ADR-0064): the `reconstruction` block, then the times as `gpu_ms` for
+    // a native measurement and under `reconstructed` for any other (renderer::measurement_keys).
+    const auto measured = renderer::measurement_keys(stats.last.reconstruction);
     const std::string summary_text = format_text(
         "{\"frames\":%llu,\"seconds\":%.3f,\"avg_ms\":%.3f,\"width\":%u,\"height\":%u,"
         "\"clusters\":%u,\"leaf_clusters\":%u,\"triangles\":%u,\"lod_levels\":%u,\"build_ms\":%.1f,"
@@ -7507,10 +7511,10 @@ int run_view(int argc, char** argv) {
         "\"host_memory\":{\"bytes\":%llu,\"peak_bytes\":%llu},"
         "\"gpu_memory\":{\"budget_mib\":%llu,\"used_mib\":%llu,"
         "\"device_local_total_mib\":%llu},\"machine_state\":%s,"
-        "\"gpu_ms\":{\"cull\":%.4f,\"hw\":%.4f,\"sw\":%.4f,\"hiz\":%.4f,\"resolve\":%.4f,"
+        "%s{\"cull\":%.4f,\"hw\":%.4f,\"sw\":%.4f,\"hiz\":%.4f,\"resolve\":%.4f,"
         "\"rt\":%.4f,\"clas\":%.4f,\"deform\":%.4f,\"deform_alloc\":%.4f,"
-        "\"trace\":%.4f,\"shadow\":%.4f,\"shadow_cull\":%.4f,\"total\":%.4f,"
-        "\"frames\":%llu},\"captured\":%s,\"interactive\":%s,\"time_lapse\":%s,\"sun\":%s,"
+        "\"trace\":%.4f,\"shadow\":%.4f,\"shadow_cull\":%.4f,\"motion\":%.4f,\"total\":%.4f,"
+        "\"frames\":%llu}%s,\"captured\":%s,\"interactive\":%s,\"time_lapse\":%s,\"sun\":%s,"
         "\"output\":%s,\"medium\":%s,\"flora\":%s,\"loading\":%s,\"startup\":%s,"
         "\"memory\":%s}\n",
         static_cast<unsigned long long>(rendered), seconds, avg_ms, extent_width, extent_height,
@@ -7551,13 +7555,13 @@ int run_view(int argc, char** argv) {
         static_cast<unsigned long long>(stats.gpu_memory.budget_mib),
         static_cast<unsigned long long>(stats.gpu_memory.used_mib),
         static_cast<unsigned long long>(stats.gpu_memory.device_local_total_mib),
-        machine_text.c_str(), stats.cull_ms(), stats.hw_ms(), stats.sw_ms(), stats.hiz_ms(),
-        stats.resolve_ms(), stats.rt_ms(), stats.clas_ms(), stats.deform_ms(),
+        machine_text.c_str(), measured.open.c_str(), stats.cull_ms(), stats.hw_ms(), stats.sw_ms(),
+        stats.hiz_ms(), stats.resolve_ms(), stats.rt_ms(), stats.clas_ms(), stats.deform_ms(),
         stats.deform_alloc_ms(), stats.trace_ms(), stats.shadow_ms(), stats.shadow_cull_ms(),
-        stats.total_ms(), static_cast<unsigned long long>(stats.timed_frames),
-        captured ? "true" : "false", interactive_text.c_str(), time_lapse_text.c_str(),
-        sun_text.c_str(), output_text.c_str(), medium_text.c_str(), flora_text.c_str(),
-        loading_text.c_str(), startup_text.c_str(), memory_text.c_str());
+        stats.motion_ms(), stats.total_ms(), static_cast<unsigned long long>(stats.timed_frames),
+        measured.close, captured ? "true" : "false", interactive_text.c_str(),
+        time_lapse_text.c_str(), sun_text.c_str(), output_text.c_str(), medium_text.c_str(),
+        flora_text.c_str(), loading_text.c_str(), startup_text.c_str(), memory_text.c_str());
     std::fputs(summary_text.c_str(), stdout);
     g_report.summary_line = summary_text.substr(0, summary_text.find_last_not_of('\n') + 1);
     std::fflush(stdout);

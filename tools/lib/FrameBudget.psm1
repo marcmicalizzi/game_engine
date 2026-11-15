@@ -118,10 +118,19 @@ function Get-MeasuredValue($summary, $line, [string]$stat) {
              'busy'       a number over its limit on a busy machine: inconclusive
              'device'     the summary was drawn on another adapter than the budget's: skipped
              'malformed'  the summary lacks a budgeted line: the gate fails
+             'reconstructed'  the summary is not a native measurement (ADR-0064): refused before
+                          any number of it is read, whatever it measured and on whatever adapter
 #>
 function Test-FrameBudgetRun {
   [CmdletBinding()]
   param([Parameter(Mandatory)] $Budget, [Parameter(Mandatory)] $Run, [Parameter(Mandatory)] $Summary)
+  $refusal = Get-ReconstructionRefusal -Summary $Summary
+  if ($refusal) {
+    return [pscustomobject]@{
+      Id = $Run.id; Verdict = 'reconstructed'; Device = $(if ($Summary.PSObject.Properties['device']) { "$($Summary.device)" } else { '' })
+      Quiet = $false; Rows = @(); Missing = @(); MachineState = $refusal
+    }
+  }
   $rows = @()
   $over = $false
   $missing = @()
@@ -150,13 +159,15 @@ function Test-FrameBudgetRun {
   }
 }
 
-# The gate's exit code over every run's result: 1 when any run is over on a quiet machine, failed
-# or is malformed; 4 when the only overs were on a busy machine (measure again later); 3 when no
-# run was drawn on the budget's machine at all; 0 otherwise.
+# The gate's exit code over every run's result: 5 when any run was not a native measurement
+# (ADR-0064: nothing of such a gate is a verdict, so it wins over every other code); 1 when any run
+# is over on a quiet machine, failed or is malformed; 4 when the only overs were on a busy machine
+# (measure again later); 3 when no run was drawn on the budget's machine at all; 0 otherwise.
 function Get-FrameBudgetExitCode {
   [CmdletBinding()]
   param([Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Results)
   $verdicts = @($Results | ForEach-Object { $_.Verdict })
+  if ($verdicts | Where-Object { $_ -eq 'reconstructed' }) { return 5 }
   if ($verdicts | Where-Object { $_ -in @('over', 'malformed', 'failed') }) { return 1 }
   if ($verdicts | Where-Object { $_ -eq 'busy' }) { return 4 }
   if ($verdicts.Count -gt 0 -and -not ($verdicts | Where-Object { $_ -ne 'device' })) { return 3 }
@@ -212,6 +223,8 @@ function Set-FrameBudgetBaseline {
   param([Parameter(Mandatory)] $Run, [Parameter(Mandatory)] $Summary, [Parameter(Mandatory)] [string]$By,
         [Parameter(Mandatory)] [string]$Reason, [string]$Commit = '', [string]$Date = (Get-Date -Format 'yyyy-MM-dd'))
   if (-not $Reason.Trim()) { throw 'frame-budget: a re-baseline says why (-Reason)' }
+  $refusal = Get-ReconstructionRefusal -Summary $Summary
+  if ($refusal) { throw "frame-budget: a budget is never set from a summary that is $refusal" }
   $gpu = [ordered]@{}
   foreach ($p in $Summary.gpu_ms.PSObject.Properties) {
     $median = [double]$p.Value.median
@@ -232,5 +245,37 @@ function Set-FrameBudgetBaseline {
   return $Run
 }
 
+<#
+  **The measurement rule** (ADR-0064; docs/subsystems/renderer.md, "Sampling over time: the
+  measurement rule"): whether a summary or a frame record is a native measurement, and so a cost.
+  It is not when its `reconstruction` block names a provider other than "off" or an internal size
+  other than the output's, or when it carries `reconstructed` or has a null `gpu_ms`: any one of
+  them refuses it, so a writer that forgot one is still refused. A line with no `reconstruction`
+  block and a `gpu_ms` was written before the block existed and is native.
+  Returns $null for a native measurement, else the sentence that says why not: every tool that
+  reads a cost asks this first (tools/frame-budget.ps1, tools/flythrough.ps1).
+#>
+function Get-ReconstructionRefusal {
+  [CmdletBinding()]
+  param([Parameter(Mandatory)] $Summary)
+  $block = if ($Summary.PSObject.Properties['reconstruction']) { $Summary.reconstruction } else { $null }
+  if ($null -ne $block) {
+    $provider = if ($block.PSObject.Properties['provider']) { "$($block.provider)" } else { 'off' }
+    $sizes = '{0}x{1} -> {2}x{3}' -f $block.internal_width, $block.internal_height, $block.output_width, $block.output_height
+    if ($provider -and $provider -ne 'off') { return "reconstructed ($provider, $sizes): not a native measurement, so not a cost (ADR-0064)" }
+    if ([int64]$block.internal_width -ne [int64]$block.output_width -or [int64]$block.internal_height -ne [int64]$block.output_height) {
+      return "reconstructed (off, $sizes): drawn below the output's size, so not a cost (ADR-0064)"
+    }
+  }
+  if ($Summary.PSObject.Properties['reconstructed'] -and $null -ne $Summary.reconstructed) {
+    return 'reconstructed: its times are under `reconstructed`, so it has no cost to read (ADR-0064)'
+  }
+  if ($Summary.PSObject.Properties['gpu_ms'] -and $null -eq $Summary.gpu_ms -and $null -ne $block) {
+    return 'reconstructed: its `gpu_ms` is null, so it has no cost to read (ADR-0064)'
+  }
+  return $null
+}
+
 Export-ModuleMember -Function Read-FrameBudget, Assert-FrameBudget, Get-FrameBudgetArgs, Get-FrameBudgetLimit,
-  Test-FrameBudgetRun, Get-FrameBudgetExitCode, Format-FrameBudgetReport, Set-FrameBudgetBaseline, Format-MachineState
+  Test-FrameBudgetRun, Get-FrameBudgetExitCode, Format-FrameBudgetReport, Set-FrameBudgetBaseline, Format-MachineState,
+  Get-ReconstructionRefusal

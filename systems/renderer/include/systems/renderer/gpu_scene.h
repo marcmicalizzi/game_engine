@@ -361,6 +361,11 @@ class GpuScene {
   u32 instance_flags(u32 index) const noexcept {
     return index < instance_table_.size() ? instance_table_[index].flags : 0u;
   }
+  // An instance's record as the CPU's table holds it now, or null past the table: where it stands,
+  // which the motion pass keeps as where it stood (src/motion_pass.h).
+  const gfx::InstanceDesc* instance_record(u32 index) const noexcept {
+    return index < instance_table_.size() ? &instance_table_[index] : nullptr;
+  }
   u64 compactions() const noexcept { return compactions_; }
   // Where instance slot `slot` came from in the tail last handed over; ~0 for the load's own, a
   // hole and past the end. What a test compares a streamed scene's ids with a loaded one's through,

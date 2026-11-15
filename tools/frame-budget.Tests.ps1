@@ -105,8 +105,45 @@ $r = Test-FrameBudgetRun -Budget $b -Run $run -Summary $s
 Test-That 'a summary without a budgeted pass is malformed, and says which' { $r.Verdict -eq 'malformed' -and ($r.Missing -contains 'gpu_ms.cull.median') }
 Test-That 'the machine state is one line with both ends' { (Format-MachineState (New-Summary)) -match '^quiet \(start 3\.0% others, GPU 2%; end 4\.0% others, GPU 5%\)$' }
 
+Write-Host 'the measurement rule (ADR-0064): only a native measurement is a cost'
+# A summary as engine-view writes it since the rule: the block, and for anything but a native
+# measurement a null `gpu_ms` with the times under `reconstructed`.
+function Add-Block($summary, [string]$provider = 'off', [int]$iw = 1920, [int]$ih = 1080, [bool]$inputs = $false) {
+  $summary | Add-Member -NotePropertyName reconstruction -NotePropertyValue ([pscustomobject]@{
+    provider = $provider; mode = $(if ($iw -eq 1920) { 'native' } else { 'ratio' }); inputs = $inputs
+    internal_width = $iw; internal_height = $ih; output_width = 1920; output_height = 1080 })
+  $summary
+}
+function Move-Times($summary) {
+  $summary | Add-Member -NotePropertyName reconstructed -NotePropertyValue ([pscustomobject]@{ gpu_ms = $summary.gpu_ms })
+  $summary.gpu_ms = $null
+  $summary
+}
+Test-That 'a summary written before the block existed is native' { $null -eq (Get-ReconstructionRefusal -Summary (New-Summary)) }
+Test-That 'a native summary with the block is native' { $null -eq (Get-ReconstructionRefusal -Summary (Add-Block (New-Summary))) }
+$r = Test-FrameBudgetRun -Budget $b -Run $run -Summary (Add-Block (New-Summary))
+Test-That 'and is compared as it always was' { $r.Verdict -eq 'pass' -and $r.Rows.Count -eq 6 }
+$r = Test-FrameBudgetRun -Budget $b -Run $run -Summary (Add-Block (New-Summary) -inputs $true)
+Test-That 'the inputs on with no provider is still a native measurement: the motion pass is in its cost' { $r.Verdict -eq 'pass' }
+$r = Test-FrameBudgetRun -Budget $b -Run $run -Summary (Move-Times (Add-Block (New-Summary -total 0.1) -provider 'engine'))
+Test-That 'a provider on is refused, though its numbers would pass' { $r.Verdict -eq 'reconstructed' -and $r.Rows.Count -eq 0 -and $r.MachineState -match 'engine, 1920x1080 -> 1920x1080' }
+$r = Test-FrameBudgetRun -Budget $b -Run $run -Summary (Move-Times (Add-Block (New-Summary -total 0.1) -iw 1280 -ih 720))
+Test-That 'an internal size below the output''s is refused with no provider named' { $r.Verdict -eq 'reconstructed' -and $r.MachineState -match '1280x720 -> 1920x1080' }
+$r = Test-FrameBudgetRun -Budget $b -Run $run -Summary (Add-Block (New-Summary -total 0.1) -provider 'engine')
+Test-That 'a writer that left the times in `gpu_ms` beside a provider is refused all the same' { $r.Verdict -eq 'reconstructed' }
+$r = Test-FrameBudgetRun -Budget $b -Run $run -Summary (Move-Times (Add-Block (New-Summary)))
+Test-That 'and one whose block says native but whose times are under `reconstructed`' { $r.Verdict -eq 'reconstructed' }
+$r = Test-FrameBudgetRun -Budget $b -Run $run -Summary (Move-Times (Add-Block (New-Summary -device 'Another GPU') -provider 'engine'))
+Test-That 'the refusal comes before the adapter''s skip' { $r.Verdict -eq 'reconstructed' }
+Test-That 'a budget is never set from one' {
+  try { Set-FrameBudgetBaseline -Run (New-Budget).runs[0] -Summary (Move-Times (Add-Block (New-Summary) -provider 'engine')) -By 'me' -Reason 'a reason' | Out-Null; $false } catch { $_.Exception.Message -match 'ADR-0064' }
+}
+
 Write-Host 'the gate over every run'
 function V([string]$v) { [pscustomobject]@{ Verdict = $v } }
+Test-That 'a refused summary is 5, its own code, whatever else the gate holds' {
+  (Get-FrameBudgetExitCode -Results @((V 'pass'), (V 'reconstructed'))) -eq 5 -and (Get-FrameBudgetExitCode -Results @((V 'over'), (V 'reconstructed'), (V 'device'))) -eq 5
+}
 Test-That 'all pass is 0' { (Get-FrameBudgetExitCode -Results @((V 'pass'), (V 'pass'))) -eq 0 }
 Test-That 'one over is 1' { (Get-FrameBudgetExitCode -Results @((V 'pass'), (V 'over'))) -eq 1 }
 Test-That 'a failed run is 1' { (Get-FrameBudgetExitCode -Results @((V 'failed'))) -eq 1 }
@@ -184,6 +221,33 @@ try {
   Test-That 'one with a reason writes the measured numbers and the record' {
     $LASTEXITCODE -eq 0 -and $now.runs[0].gpu_ms.cull.median -eq 0.9 -and $now.runs[0].baseline.by -eq 'tester' -and $now.runs[0].baseline.reason -eq 'the cull does more now'
   }
+
+  # The measurement rule through the scripts (ADR-0064). The budget file is the re-baselined one.
+  $recon = Join-Path $scratch 'reconstructed'
+  Write-Run $recon (Move-Times (Add-Block (New-Summary -total 0.1 -cull 0.01) -provider 'engine'))
+  $said = & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'frame-budget.ps1') -Budget $budgetFile -FromSummaries $recon 2>&1 | Out-String
+  Test-That 'frame-budget.ps1 refuses a reconstructed summary with exit 5 and says why' { $LASTEXITCODE -eq 5 -and $said -match 'refused: reconstructed \(engine' -and $said -match 'REFUSED' }
+  & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'frame-budget.ps1') -Budget $budgetFile -FromSummaries $recon -Rebaseline -Reason 'it looked fast' -By 'tester' *> $null
+  Test-That 'and never re-baselines from it' { $LASTEXITCODE -ne 0 -and (Read-FrameBudget -Path $budgetFile).runs[0].gpu_ms.cull.median -eq 0.9 }
+
+  # tools/flythrough.ps1 over a stand-in for engine-view that prints one summary line: the matrix
+  # puts a native run's numbers in its table and refuses a reconstructed one.
+  $stub = Join-Path $scratch 'view-stub.ps1'
+  $line = { param($s) $s | Add-Member -NotePropertyName views -NotePropertyValue 'single' -PassThru | ConvertTo-Json -Depth 12 -Compress }
+  $nativeLine = & $line (Add-Block (New-Summary))
+  $reconLine = & $line (Move-Times (Add-Block (New-Summary) -provider 'engine'))
+  @("if (`$env:ENGINE_TEST_STUB_RECONSTRUCTED -eq '1') { @'", $reconLine, "'@ } else { @'", $nativeLine, "'@ }", 'exit 0') | Set-Content $stub
+  $flyArgs = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'flythrough.ps1'), '-Exe', $stub, '-Resolutions', '640x360', '-Occlusion', 'on', '-WaitQuiet', '0')
+  $env:ENGINE_TEST_STUB_RECONSTRUCTED = '0'
+  $nativeOut = Join-Path $scratch 'fly-native'
+  & pwsh @flyArgs -Out $nativeOut *> $null
+  Test-That 'flythrough.ps1 tabulates a native run' { $LASTEXITCODE -eq 0 -and (Get-Content (Join-Path $nativeOut 'summary.md') -Raw) -match '\| 2\.000 \|' }
+  $env:ENGINE_TEST_STUB_RECONSTRUCTED = '1'
+  $reconOut = Join-Path $scratch 'fly-reconstructed'
+  & pwsh @flyArgs -Out $reconOut *> $null
+  $table = Get-Content (Join-Path $reconOut 'summary.md') -Raw
+  Test-That 'flythrough.ps1 refuses a reconstructed run: exit 1, a row that says refused, and no number of it' { $LASTEXITCODE -eq 1 -and $table -match 'refused: reconstructed \(engine' -and $table -notmatch '\| 2\.000 \|' }
+  Remove-Item Env:ENGINE_TEST_STUB_RECONSTRUCTED -ErrorAction SilentlyContinue
 } finally {
   Remove-Item -Recurse -Force -LiteralPath $scratch -ErrorAction SilentlyContinue
 }

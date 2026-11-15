@@ -762,6 +762,19 @@ Two cases cover **`render.unload` and `render.scenes`**. On every machine: with 
 
 ## Flythroughs
 
+**Every line says what sampled its frames over time, and only a native measurement carries a cost**
+([ADR-0064](../adr/0064-every-measurement-is-native.md); [renderer](renderer.md#sampling-over-time-the-measurement-rule)).
+Each frame record and the summary of a `--benchmark` run, `render.benchmark`'s, and engine-view's
+plain summary line have a `reconstruction` block: `provider` ("off" until one is built), `mode`,
+`inputs`, and the internal and output sizes. When the provider is not "off" or the sizes differ,
+`gpu_ms` is null and the times are under `reconstructed.gpu_ms`, so `tools/frame-budget.ps1`
+(exit 5) and `tools/flythrough.ps1` (a row that says "refused") read no cost from it.
+`--tunable renderer.reconstruction.inputs=true` turns the inputs on (the sub-pixel offset and the
+motion pass; [renderer](renderer.md#sampling-over-time-the-inputs)): still a native measurement,
+its block says `inputs: true`, and `gpu_ms.motion` is what the pass and the pool's second write
+cost. engine-view's `--capture-channels` does not take `motion` yet; the channel is read through
+`SceneRenderer::capture` (`CaptureChannels::motion`).
+
 The benchmark corpus of [plan 09 §9.4](../plan/09-testing-profiling.md#94-benchmark-scene-corpus) measures a frame that streams, culls and occludes across a scene rather than one asset from one camera, and engine-view is the command line for it ([renderer](renderer.md#scenes-camera-paths-and-flythroughs) has the formats and the mechanism; [desert-overlook](../../content/test-scenes/desert-overlook/README.md) is the first scene and [its measurements](../experiments/flythrough-desert-overlook.md) the first numbers):
 
 ```powershell

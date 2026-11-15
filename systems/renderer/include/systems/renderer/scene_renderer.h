@@ -279,6 +279,12 @@ struct FrameStats {
   // none. `visibility_m` is what they reported (`Stats::visibility_m`), negative for none.
   f64 gpu_frame_passes = 0.0;
   f32 visibility_m = -1.0f;
+  // The motion pass and the pool's second write (R154; renderer.md, "Sampling over time: the
+  // inputs"), every view's: zero unless `renderer.reconstruction.inputs` is on.
+  f64 gpu_motion = 0.0;
+  // What sampled this frame over time (ADR-0064; settings.h): what its record says, and whether
+  // its times are a cost (`Reconstruction::native`).
+  Reconstruction reconstruction;
   // Where the frame thread's time went while this frame was begun, recorded and submitted.
   FrameCpu cpu;
 
@@ -546,6 +552,8 @@ struct Stats {
   SkyStats sky;
   // The half-rate sun pass (`FrameStats::gpu_half_sun`), summed; what it saves is in `gpu_resolve`.
   f64 gpu_half_sun = 0.0;
+  // The motion pass and the pool's second write (`FrameStats::gpu_motion`; R154), summed.
+  f64 gpu_motion = 0.0;
   // The resolve's classify pass (`FrameStats::gpu_resolve_classify`), summed.
   f64 gpu_resolve_classify = 0.0;
   // The world-space cache's passes (`FrameStats::gpu_gi_trace`, `gpu_gi_fold`), summed.
@@ -609,6 +617,7 @@ struct Stats {
   f64 sky_ms() const noexcept { return gpu_sky / timed(); }
   f64 frame_passes_ms() const noexcept { return gpu_frame_passes / timed(); }
   f64 half_sun_ms() const noexcept { return gpu_half_sun / timed(); }
+  f64 motion_ms() const noexcept { return gpu_motion / timed(); }
   f64 resolve_classify_ms() const noexcept { return gpu_resolve_classify / timed(); }
   f64 gi_trace_ms() const noexcept { return gpu_gi_trace / timed(); }
   f64 gi_fold_ms() const noexcept { return gpu_gi_fold / timed(); }
@@ -704,6 +713,11 @@ struct FrameDesc {
   // What sways the trees this frame: the wind, when the host names one, and the walker's capsule
   // (flora_motion.h, `FrameFlora`; renderer.md, "The flora stage").
   FrameFlora flora{};
+  // **The frame has no frame before it** (renderer.md, "Sampling over time: the inputs"): a camera
+  // cut, a teleport, a load. Its motion is measured from itself and the sub-pixel phase starts
+  // again. The host says it, as every reconstruction method requires; nothing reads it in a
+  // renderer without `renderer.reconstruction.inputs`.
+  bool history_reset = false;
 };
 
 class SceneRenderer {
@@ -937,6 +951,16 @@ class SceneRenderer {
   // The far forest's hand-off (renderer.md, "The far forest"): which far tiles are drawn now.
   const FarForestHandOff& far_forest() const noexcept { return far_forest_; }
 
+  // **What samples this renderer's frames over time** (ADR-0064; settings.h, `Reconstruction`): the
+  // block every frame's statistics carry. Its `native()` says whether a frame's times are a cost.
+  Reconstruction reconstruction() const noexcept;
+  // The next frame has no frame before it (`FrameDesc::history_reset`, for a host that knows before
+  // it has a frame to say it on). Nothing without `renderer.reconstruction.inputs`.
+  void reset_history() noexcept;
+  // The device bytes sampling over time's inputs keep (the motion buffer, last frame's visibility
+  // buffer, the second pool, the blocks): zero without them.
+  u64 motion_bytes() const noexcept;
+
   // The overlay pass (overlay.h, ADR-0054), for its textures; a frame draws it when
   // `FrameDesc::overlay` names lists. A texture is removed only once no frame in flight reads it,
   // which this waits for.
@@ -1023,6 +1047,8 @@ class SceneRenderer {
     // resolve_half_sun.slang: the sun's ray once per 2x2 block of the half-rate columns (R126;
     // renderer.md, "A shading rate by region"), built only where the resolve traces shadows.
     gfx::ComputePipeline half_sun;
+    // motion.slang (R154): built only under `renderer.reconstruction.inputs`.
+    gfx::ComputePipeline motion;
     // gi_update.slang: the world-space cache's sample and fold passes (R69; renderer.md, "Indirect
     // light: the world-space cache"), built only where `renderer.gi.mode` is on.
     gfx::ComputePipeline gi_sample;
@@ -1095,6 +1121,10 @@ class SceneRenderer {
   void fold_gi(u32 slot);
   void fill_view_layout() noexcept;
   bool read_visibility(CapturedFrame& out, const CaptureChannels& channels, std::string* error);
+  bool read_motion(CapturedFrame& out, std::string* error);
+  bool create_motion(std::string* error);
+  // Sampling over time's inputs (src/motion_pass.h): null unless `renderer.reconstruction.inputs`.
+  class MotionPass* motion_ = nullptr;
   u32 view_count() const noexcept { return views_.size(); }
 
   const gfx::Device* device_ = nullptr;
