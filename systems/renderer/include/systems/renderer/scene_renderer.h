@@ -331,6 +331,7 @@ struct TileStats {
   // chain's first sizing).
   u64 slots_written = 0;
   u64 compared = 0;  // instances compared with what their key held (`GpuScene::TileChange`)
+  u64 told = 0;      // instances a caller named as changed since the version held (G202)
   f64 compare_ns = 0.0;
   f64 layout_ns = 0.0;
   f64 write_ns = 0.0;

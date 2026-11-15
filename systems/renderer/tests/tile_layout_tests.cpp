@@ -105,6 +105,36 @@ TEST_CASE("tile layout: block capacities are a granule, then eight steps an octa
   }
 }
 
+TEST_CASE("tile layout: a block rewritten from its first changed instance keeps the slots before") {
+  // G202 (`Request::keep`, `DynamicBlock::changed`): a tile whose caller names the instances that
+  // changed is rewritten in place from the first of them; the slots before it, and their pairs,
+  // are not written.
+  TileLayout layout;
+  layout.reset(2, 100);
+  Vector<SlotWrite> writes;
+  TileLayoutChange change;
+  std::string error;
+  Vector<Request> first = {tile(10, 0, 6, 60)};
+  REQUIRE(layout.apply(std::span<const Request>(first.data(), first.size()), 25, false, 1u << 24,
+                       writes, change, &error));
+  const TileBlock held = *layout.find(10);
+  // Instances 3 to 5 change form, ten pairs each to five: the first three and their 30 pairs stay.
+  Vector<Request> swapped = {tile(10, 0, 6, 45)};
+  swapped[0].keep = 3;
+  swapped[0].keep_pairs = 30;
+  REQUIRE(layout.apply(std::span<const Request>(swapped.data(), swapped.size()), 25, false,
+                       1u << 24, writes, change, &error));
+  CHECK(change.rewritten == 1);
+  REQUIRE(writes.size() == 1);
+  CHECK(writes[0].inst_begin == held.inst_begin + 3);
+  CHECK(writes[0].inst_count == held.inst_cap - 3);
+  CHECK(writes[0].pair_begin == held.pair_begin + 30);
+  CHECK(writes[0].live == 3);
+  CHECK(writes[0].skip == 3);
+  CHECK(layout.find(10)->pairs == 45);
+  CHECK(layout.validate(&error));
+}
+
 TEST_CASE("tile layout: tiles are placed in order, kept, rewritten, freed, reused and trimmed") {
   TileLayout layout;
   layout.reset(2, 100);  // the load's own two instances and hundred pairs

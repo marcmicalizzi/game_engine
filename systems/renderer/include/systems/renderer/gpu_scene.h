@@ -289,6 +289,9 @@ class GpuScene {
     // Instances read to tell whether a block is the one its key holds: a block with no version, or
     // another one, is compared instance by instance; one with the version held, not at all (W81).
     u64 compared = 0;
+    // Instances a block's caller named as changed since the version held (G202): none compared,
+    // the slots before the first kept.
+    u64 told_instances = 0;
     // Where the change's CPU time went (renderer.md, "Instances that come and go", "What a change
     // costs"): the blocks checked against what each key holds, the layout, the slots written and
     // the buffers fitted, and what follows the tables (the drop order, the policy counts, the

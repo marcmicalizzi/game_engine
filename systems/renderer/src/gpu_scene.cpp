@@ -1689,7 +1689,12 @@ bool GpuScene::set_dynamic_instances(std::span<const SceneInstance> tail,
     // only a mesh the scene has, so a block that matches needs no other check and its pairs are
     // what it held.
     const TileBlock* held = layout_.find(block.key);
-    if (held != nullptr && held->instances == block.count) {
+    // **A block the caller says changed in these instances** (G202, `DynamicBlock::changed`) is
+    // not compared, and its slots before the first of them are kept as they are.
+    const bool told = held != nullptr && held->instances == block.count && block.from_version != 0 &&
+                      held->version == block.from_version && block.changed_count != 0;
+    if (told) request.keep = block.changed[0];
+    if (held != nullptr && held->instances == block.count && !told) {
       bool same = block.version != 0 && held->version == block.version;
       if (!same) {
         same = true;
@@ -1741,7 +1746,9 @@ bool GpuScene::set_dynamic_instances(std::span<const SceneInstance> tail,
         return false;
       }
       pairs += part.cluster_count;
+      if (k + 1 == request.keep) request.keep_pairs = static_cast<u32>(pairs);
     }
+    change.told_instances += told ? block.changed_count : 0u;
     request.pairs = pairs > k_max_pairs ? k_max_pairs + 1u : static_cast<u32>(pairs);
   }
   // **A commit past the tail's budget withholds its farthest tiles** (renderer.md; R95, R137): the
@@ -1853,7 +1860,7 @@ bool GpuScene::write_slots(std::span<const SceneInstance> tail,
       uncount_static(slot);
       policy_count(instance_table_[slot], false);
       if (block != nullptr && k < write.live) {
-        const SceneInstance& source = block_instances(tail, *block)[k];
+        const SceneInstance& source = block_instances(tail, *block)[write.skip + k];
         gfx::InstanceDesc& desc = instance_table_[slot];
         // A mesh of the room is placed as it was built: no fit (renderer.md, "Meshes that come
         // and go"). Checked resident before the layout was touched.

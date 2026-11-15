@@ -54,7 +54,10 @@ set(_world_tests tests/world_tests.cpp tests/tile_store_tests.cpp tests/consumer
                  tests/tile_admission_tests.cpp
                  # G201 stage 2: a streamed tile's trees seated where the whole read seats them,
                  # over a ground and a generator of the test's own.
-                 tests/seat_tiles_tests.cpp)
+                 tests/seat_tiles_tests.cpp
+                 # G197: a placement's form by ring, the load's rule and the consumer's read of
+                 # it, over a generator of the test's own.
+                 tests/ring_forms_tests.cpp)
 if(TARGET engine::ruins)
   # The placements consumer over a streamed ruins entry: the ruins reach it through the registry,
   # so the test links the capability as a host does.
