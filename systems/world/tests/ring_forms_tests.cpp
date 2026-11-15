@@ -72,8 +72,10 @@ bool field_meshes(void* state, const scene_gen::Context&, Vector<scene_gen::Plac
       scene_gen::PlacementMesh{static_cast<const Field*>(state)->path, "ring-forms-patch"});
   return true;
 }
+u32 g_field_tiles = 0;  // the generator's `tile` calls, for G202's case
 bool field_tile(void* state, scene_gen::TileCoord tile, const scene_gen::Context& context,
                 scene_gen::Placements& out, std::string*) {
+  ++g_field_tiles;
   const f64 t = static_cast<f64>(context.tile_size);
   field_place(*static_cast<const Field*>(state), t * tile.x, t * tile.z, t, out);
   return true;
@@ -259,4 +261,164 @@ TEST_CASE("ring forms: a streamed placement draws its ring's form, and stands wh
                                 << "-cluster patch: " << near_pairs << " pairs in ring 0, "
                                 << far_pairs << " in ring 2 (its cut "
                                 << scene.parts[far].cluster_count << " clusters)");
+}
+
+namespace {
+
+// What a run sink was handed for one tile at the last commit, copied out.
+struct Handed {
+  bool present = false;
+  u64 version = 0;
+  u64 from_version = 0;
+  Vector<u32> changed;
+  Vector<renderer::SceneInstance> instances;
+  static bool take(void* context, std::span<const PlacementTiles::TileRange> runs, std::string*) {
+    Handed& h = *static_cast<Handed*>(context);
+    h.present = false;
+    for (const PlacementTiles::TileRange& run : runs) {
+      if (run.key != tile_key(TileCoord{0, 0})) continue;
+      h.present = true;
+      h.version = run.version;
+      h.from_version = run.from_version;
+      h.changed.assign(run.changed, run.changed + run.changed_count);
+      h.instances.assign(run.instances, run.instances + run.count);
+    }
+    return true;
+  }
+};
+
+bool same_instance(const renderer::SceneInstance& a, const renderer::SceneInstance& b) {
+  return a.mesh == b.mesh && a.origin == b.origin && a.transform == b.transform &&
+         a.motion_key == b.motion_key && a.handoff == b.handoff;
+}
+
+}  // namespace
+
+TEST_CASE("ring forms: a ring change of forms alone calls no generator and hands over the changed") {
+  // G202 (world.md, "A ring change rewrites the forms in place"): a tile whose entries draw two
+  // rings as one representation keeps what its placements were picked from, so a ring change that
+  // changes only forms is a rewrite of its instances' meshes, with no `tile` call; what it hands
+  // the renderer names the version it was handed before and exactly the instances that changed;
+  // one that changes nothing keeps its version; a ring that draws everything as nothing keeps the
+  // tile, and the way back draws what a build for that ring draws, instance for instance.
+  const test::TempDir tmp("world_ring_reform");
+  REQUIRE(tmp.ok());
+  std::string error;
+  {
+    renderer::SceneDesc grid;
+    grid.meshes.push_back("");
+    grid.heightfield_grid = 33;
+    grid.cache = false;
+    renderer::SceneData made;
+    REQUIRE_MESSAGE(renderer::load_scene(grid, made, error), error);
+    geometry::ClusterFileData file;
+    file.mesh = std::move(made.lod);
+    REQUIRE_MESSAGE(geometry::write_cluster_file(tmp.file("patch.clusters"), file, &error), error);
+  }
+  const std::string patch = json_path(tmp.file("patch.clusters"));
+  // Ring 3's floor is 480 km: the 20 m patch is under a pixel there at any scale it is placed at.
+  const std::string text = std::string(R"({"format":"engine.scene.v1","name":"ring-reform",)") +
+                           R"("placements":[{"generator":"ring-forms-field","params":{"path":")" +
+                           patch +
+                           R"("}}],"world":{"tile_size":8,"rings":[{"radius":1.5},)"
+                           R"({"radius":300},{"radius":60000},{"radius":120000}]},)" +
+                           R"("terrain":{"size":17,"extent":40,"seed":3,"dune_height":0.0}})";
+  REQUIRE(write_text(tmp.file("scene.json"), text));
+  renderer::SceneDesc desc;
+  REQUIRE_MESSAGE(renderer::read_scene_file(tmp.file("scene.json"), desc, error), error);
+  desc.cache = false;
+  renderer::SceneData scene;
+  REQUIRE_MESSAGE(renderer::load_scene(desc, scene, error), error);
+  REQUIRE(scene.streamed.size() == 1u);
+  const u32 source = scene.streamed[0].meshes[0];
+  REQUIRE(scene.ring_forms.rings == 4u);
+  const renderer::MeshRingForms& forms = scene.ring_forms.meshes[source];
+  REQUIRE(forms.active);
+  const u32 far = forms.ring[2].mesh;
+  REQUIRE(far != source);
+  REQUIRE(forms.ring[3].none_below_scale > 2.0f);
+
+  PlacementTilesConfig config;
+  config.tile_size = 8.0f;
+  config.ring_count = 4;
+  PlacementTiles tiles;
+  REQUIRE_MESSAGE(tiles.create(scene, config, &error), error);
+  Handed handed;
+  tiles.set_run_sink(&Handed::take, &handed);
+  const TileConsumer consumer = tiles.consumer();
+  g_field_tiles = 0;
+  REQUIRE(consumer.activate(consumer.context, event(TileEventKind::Activate, 0, 0, k_inactive, 0)));
+  consumer.commit(consumer.context);
+  REQUIRE(g_field_tiles == 1u);
+  REQUIRE(handed.present);
+  REQUIRE(handed.instances.size() == 16u);
+  const u64 first = handed.version;
+  Vector<renderer::SceneInstance> near;
+  near.assign(handed.instances.begin(), handed.instances.end());
+
+  // 0 -> 1: ring 1's floor is inside the patch's reach, so every form is the mesh. Nothing changed:
+  // the version is the one handed, and nothing is named.
+  REQUIRE(consumer.change_ring(consumer.context, event(TileEventKind::ChangeRing, 0, 0, 0, 1)));
+  consumer.commit(consumer.context);
+  CHECK(g_field_tiles == 1u);
+  CHECK(handed.version == first);
+  CHECK(handed.from_version == 0u);
+  CHECK(handed.changed.empty());
+
+  // 1 -> 2: the twelve at scale 1 take ring 2's cut, the four at scale 2 stay the mesh. Named: the
+  // version handed before, and those twelve, ascending.
+  REQUIRE(consumer.change_ring(consumer.context, event(TileEventKind::ChangeRing, 0, 0, 1, 2)));
+  consumer.commit(consumer.context);
+  CHECK(g_field_tiles == 1u);
+  REQUIRE(handed.present);
+  REQUIRE(handed.instances.size() == near.size());
+  CHECK(handed.version != first);
+  CHECK(handed.from_version == first);
+  CHECK(handed.changed.size() == 12u);
+  u32 at = 0;
+  for (u32 i = 0; i < handed.instances.size(); ++i) {
+    const bool large = handed.instances[i].transform.scale.x > 1.5f;
+    CHECK(handed.instances[i].mesh == (large ? source : far));
+    CHECK(handed.instances[i].origin == near[i].origin);
+    if (!large) {
+      REQUIRE(at < handed.changed.size());
+      CHECK(handed.changed[at++] == i);
+    }
+  }
+  Vector<renderer::SceneInstance> ring2;
+  ring2.assign(handed.instances.begin(), handed.instances.end());
+  // What a build for ring 2 makes, instance for instance.
+  {
+    PlacementTiles built;
+    REQUIRE_MESSAGE(built.create(scene, config, &error), error);
+    const TileConsumer other = built.consumer();
+    REQUIRE(other.activate(other.context, event(TileEventKind::Activate, 0, 0, k_inactive, 2)));
+    other.commit(other.context);
+    const std::span<const renderer::SceneInstance> made = built.tile_instances(TileCoord{0, 0});
+    REQUIRE(made.size() == ring2.size());
+    for (u32 i = 0; i < made.size(); ++i)
+      CHECK(same_instance(made[i], ring2[i]));
+  }
+  g_field_tiles = 1;
+
+  // 2 -> 3: every placement drawn as nothing; the tile is kept, draws nothing, and is not handed.
+  REQUIRE(consumer.change_ring(consumer.context, event(TileEventKind::ChangeRing, 0, 0, 2, 3)));
+  consumer.commit(consumer.context);
+  CHECK(g_field_tiles == 1u);
+  CHECK(tiles.tile_instances(TileCoord{0, 0}).empty());
+  CHECK_FALSE(handed.present);
+  // 3 -> 2: back from what it kept, no generator, the same sixteen as ring 2's build.
+  REQUIRE(consumer.change_ring(consumer.context, event(TileEventKind::ChangeRing, 0, 0, 3, 2)));
+  consumer.commit(consumer.context);
+  CHECK(g_field_tiles == 1u);
+  REQUIRE(handed.present);
+  REQUIRE(handed.instances.size() == ring2.size());
+  for (u32 i = 0; i < ring2.size(); ++i)
+    CHECK(same_instance(handed.instances[i], ring2[i]));
+  CHECK(tiles.stats().reformed == 3u);
+  MESSAGE("a 16-placement tile, rings 0 -> 1 -> 2 -> 3 -> 2: " << g_field_tiles
+          << " generator call, " << tiles.stats().reformed << " rewrites of "
+          << tiles.stats().reformed_instances << " instances in "
+          << static_cast<f64>(tiles.stats().reform_ns) / 1000.0 << " us; a placement keeps 4 bytes"
+          << " drawn, " << sizeof(renderer::SceneInstance) + 5 << " drawn as nothing");
 }

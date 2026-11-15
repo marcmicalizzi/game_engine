@@ -234,9 +234,10 @@ TEST_CASE("world placements: finite tile storage survives arrivals, rebuilds and
   near.to = 0;
   TileEvent far = near;
   far.tile = {100, 5};
-  // The load's room is two tiles of two instances (one from each entry) and their tags, and it is
-  // the same number wherever the blocks are: in the pool, on an active tile, or back.
-  const u64 room = u64{2} * 2 * (sizeof(renderer::SceneInstance) + sizeof(u8));
+  // The load's room is two tiles of two instances (one from each entry), their tags and the mesh
+  // each was picked from (G202), and it is the same number wherever the blocks are: in the pool,
+  // on an active tile, or back.
+  const u64 room = u64{2} * 2 * (sizeof(renderer::SceneInstance) + sizeof(u8) + sizeof(u32));
   CHECK(placements.room_bytes() == room);
   // The second tile has never been built: its room comes from the load, not the warm-up.
   for (u32 repeat = 0; repeat < 3; ++repeat) {
