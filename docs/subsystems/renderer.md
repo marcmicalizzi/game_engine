@@ -3956,6 +3956,133 @@ vertices); and on a GPU, with the ring holding the four tiles round the origin a
 the forest's edge: **937 pixels of far trees** where the scene without the far forest drew none (tree
 pixels 1,090 against 174), **no far pixel in a tile the tail holds**, none at all with every tile
 held, and more with none held (RTX 5090, `msvc-debug`, 2026-10-31).
+
+**What of it keys on its generator** (read for G198, which does not copy it): its coarsest form is
+the DAG's terminal clusters, which is the whole-tree star only because the flora capability bakes
+one (section 38 is written by flora alone), and the cross is found from that star's shape; its
+`min_height_m` of 4 m is the forest's understory line. Neither is wrong for trees, and neither says
+what a rock's far form is: a rock's terminal clusters are its DAG's top, which over a talus is most
+of the mesh ([geometry](geometry.md#the-far-form)).
+
+## The far tile
+
+Roadmap G198 (2026-11-13; `far_tile.h`, `far_tile.cpp`; scene_gen's `far_tile.h`). **A tile mesh
+that is its members' far forms** ([geometry](geometry.md#the-far-form)): a generator, or a host's
+form rule, hands a recipe `<dir>/far-<hash>.far.json` — the mesh generator "far" — that names other
+placement meshes exactly as a near tile hands them (a recipe's bytes, or a file and its hash) and
+where each stands from the far tile's origin, in whole millimetres with a turn and a scale, and the
+far form level they draw. `load_placement_mesh` answers it through `load_far_tile`, on whichever
+thread builds the tile's meshes:
+
+1. Every member is built or found as a near tile builds it (`load_placement_mesh`, the same
+   derived-data entry, no textures), and its far form is the one its container carried, or the
+   same bake from its finest level.
+2. Each placement's level is turned, scaled and moved to its place; a normal is turned with the
+   inverse of the scale. One part a distinct material: a member's materials and images are taken
+   once, an image's relative path made absolute against its member's directory, and two members
+   whose materials are the same record over the same images share a part — every piece of a talus
+   is its own mesh with its rock's one set, so a far tile of forty pieces is one part.
+3. Each part is **welded** by point and UV — a far form keeps its mesh's vertices, split wherever
+   the near form had a hard edge, and a triangle that shares no corner fills a cluster's 64
+   vertices with 21 triangles; a far form is drawn smooth, which at its distance is a pixel's
+   shading, and an atlas seam stays a seam. A welded vertex's normal is **the mean of the near
+   form's own normals at its copies** (`k_far_tile_build_version` 2): a deposit's bed carries the
+   plan's gradient, the same on both sides of a piece's cut, where the first pass made normals
+   again from the far form's large triangles, gave every piece its own, and the band read as
+   paving from 300 m; a run whose copies cancel takes the faces' area-weighted normal. Copies
+   weld only within **60 degrees** of each other (`k_far_tile_build_version` 3): a piece's top and
+   the wall under its cut meet at a right angle on one point, and one vertex there took the mean
+   of both and tilted every cut's top toward its wall, which drew the lines between the paving's
+   slabs; a faceted stone's facets still weld (the forest tile: 1,368 clusters welded whole, 1,430
+   at 60 degrees) — then
+   clustered with its own DAG (`build_cluster_lod`, the load's options), the parts merged, and the
+   clusters laid out leaves first as every tile mesh is; its textures are the load's pass over the
+   one mesh, as every tile mesh's are.
+4. **It keeps itself in the derived-data cache**, a container under a key over the recipe's
+   identity (every member's recipe and place), the far form's, the recipe's and the build's
+   versions and the load's LOD options. Activated again — a ring step back, another run, another host — it is read
+   whole and no member is touched (33 ms for the forest tile below, debug).
+
+So the far tile is **one instance**: one run of pairs, one bottom-level structure, one admission into
+the mesh room, where the meshes it stands for were one each; and **they need not be resident** — a
+far tile reads its members' containers while it builds and keeps nothing of them. It is rigid, casts
+as any rigid instance does (traced shadows trace it in the frame's structures; the cascades draw it
+where their frusta reach), and casts what its members cast within its error, which is under a pixel
+where it is drawn. What it costs and how its hand-over reads are on the deposits' page
+([rocks](rocks.md#a-deposit-past-the-first-ring)), its first user.
+
+**What it costs to make and to hold** (the forest tile, rocks.md's table): 2.5 s of members cold
+from their cached containers (15 far forms baked, none carried) and 0.8 s to build, debug, on the
+pool; 33 ms read back. It holds one admission into the room (1,430 clusters, 3.6 MiB since G198's
+second pass; 2,261 and 5.7 MiB at the first) and **no near
+mesh**: a member is built only when its container is not in the cache, once, and its streams are let
+go as soon as its far form is read.
+
+**General purpose.** The recipe is `scene_gen`'s and names no generator but its members' paths;
+nothing in the renderer, the world or the recipe reads which generator handed a tile. A file member
+(a `.clusters` or a glTF) is built through the same door (`far_tile_tests.cpp` places an imported
+boulder field three times, one turned, and holds the far tile to one material, three times the
+level's triangles, under a quarter of the three meshes' clusters, and the same bytes whether the
+container carried its far form or not). **Tonight only the deposits hand one**
+([rocks](rocks.md#a-deposit-past-the-first-ring)): an imported mesh a scene file scatters is a
+resident mesh, and gets **its own far form per instance** through the rings' rule (below), not yet
+the merge into one instance a tile; the world-side merge — one call after `PlacementTiles::build`'s
+loop that hands a far ring's tile-mesh and resident placements as one far tile — is the row that
+closes it. **A scene with none of it** pays nothing: no recipe names the generator, and
+`load_placement_mesh` asks one suffix of the path.
+
+**A resident mesh's far form, offered** (G197's hook, `far_offered.cpp`): every rigid, unfitted
+resident mesh of a streamed entry that does not pick its own forms has each level of its far form
+made a scene mesh of its own (its source's materials and textures, its own DAG, `form_source` its
+source, rigid), offered to the rule with the projected diameter it serves — the source's diameter
+by the rule's own measure over the level's honest error, times the threshold — and the rule draws
+it where it serves for fewer pairs than the DAG's cut. A level that keeps half the mesh or more is
+not built (it would lose to the cut at every floor it serves), so a load pays the bake and the
+level's DAG only for a mesh a far form can help; a mesh with a fit is not offered yet (the rule's
+diameter is the fitted one about the fit's anchor). `far_offered_tests.cpp` holds the offer on an
+imported field of 300 small stones; there the DAG's own cut at the ring's floor is one cluster and
+wins, which is the rule doing its work.
+
+### What path 1 costs a load
+
+G198's second pass, on a scene that scatters **seven imported glTF meshes** (the Khronos Avocado,
+BoomBox, Corset, Lantern, FlightHelmet, SciFiHelmet and Suzanne, through the scatter generator's
+`mesh` kinds) over a gentle terrain, streamed in rings of 1.5, 4 and 8 tiles of 64 m, with no
+deposit and no other generator's mesh (msvc-release, RTX 5090; other agents' builds were running,
+so every time is an upper bound). The offer bakes the seven far forms and builds **19** offered
+levels (1,235 clusters), of which the rule drew **3**:
+
+| | Load-scene stage | Path 1 (`far forms offered … ms`) |
+|---|---:|---:|
+| base `61ccce67`, cold / warm | 14.2 s / 0.21 s | none |
+| first pass, cold / warm (baked every load) | 14.4 s / 1.15 s | 0.73 s / 0.80 s |
+| this pass, cold / warm (kept in the cache) | 15.5 s / 0.66 s | 0.90 s (7 baked, 19 built and written) / 0.35 s (19 read) |
+
+So the first pass made a warm load of this scene five times longer: every load baked every rigid
+resident mesh's far form and built every offered level's DAG again. **Each offered level is now kept
+in the derived-data cache** (`far_offered.cpp`): a container of its DAG, its part map and the far
+form it came from, under a key over the mesh's source identity (a glTF's file hash, or the identity
+a container records of what it was built from), the load's LOD options, `k_far_form_version` and
+`k_far_tile_build_version`; a warm load reads it and neither bakes nor builds. A mesh with no source
+identity at all is baked every load, as before. `far offered: a resident mesh's offered levels are
+kept in the derived-data cache` holds the entries and the same forms on the second load. What a warm
+load still pays, 0.35 s here, is reading 19 containers of which the rule draws 3; offering only the
+levels that can win a ring (the rule's own comparison before a level is built) is the row that
+would take it to the reads of those 3.
+
+**And the same bytes cold and warm.** The first bake followed its input's order: a DAG built in the
+load and the same DAG read back from its container lay their clusters out differently (leaves
+first), and the cold and warm loads offered 1,235 and 1,233 clusters. The bake now sorts the finest
+level's vertices by their bytes and its triangles by material and corners before anything else
+([geometry](geometry.md#the-far-form)), so its result is a function of the surface alone.
+
+**What an imported mesh gets, and what a scene with none of it pays.** Any rigid, unfitted mesh a
+streamed entry places as a resident mesh is offered its far form's levels, the cheaper of a level
+and the DAG's cut drawn per ring; an imported boulder gets exactly what a generated one gets. A mesh
+with a fit is not offered yet (a row). A scene that streams nothing pays nothing (`offer_far_forms`
+returns before its loop); a streamed scene whose meshes are all deforming or fitted pays the loop
+over its meshes and no bake.
+
 ## Relief
 
 **Contract, 2026-10-26 (R105, proposed; the engine path is not started).**

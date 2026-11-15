@@ -1785,6 +1785,140 @@ would have been 72%. The same tile at the forest's budget is
 handed as 16 pieces of 23,000 to 34,000 triangles, the most 1,342 clusters, 1.3% more triangles in
 all than the 4 whole patches (the walls along the cuts), and nothing is built again at half its
 budget (`deposit_builds_reduced()` unmoved over every case).
+
+### A deposit past the first ring
+
+G198 (2026-11-13; `DepositLayer` version 4). The owner: "rocks need impostors at distance". With
+G191 a tile's patches were drawn as themselves in every ring before `far_rings` and as nothing past
+it, and the forest's density made that a choice between two faults: a 64 m tile of talus is about 40
+meshes and a third of the default 256 MiB mesh room, so with three rings the room was full after the
+first fill and no deposit drew again, and with one ring the talus ended in a straight line where the
+next tile appears, about 63 m ahead.
+
+**`near_rings`** (1 by default, 1..`far_rings`): the rings before it draw the patches; the rings from
+it to `far_rings` draw each tile as **far tiles** ([renderer](renderer.md#the-far-tile)) — every
+piece the near ring hands, recipe for recipe, as a member at its place from the tile's corner, drawn
+as its far form ([geometry](geometry.md#the-far-form)), the ring at `near_rings` at the far form's
+first level and each ring after at the next; past `far_rings`, nothing. The generator's
+representation is 0 near, 2 + the level far and 1 nothing, so a tile is built again exactly when its
+ring changes what it draws; each far placement is named past every piece's (`0x40000000` plus its
+block's first patch id). Nothing of the far form is the generator's: it hands the recipes it hands a
+near ring, and the far form is measured from each built mesh.
+
+**A far tile a block, under the cluster limit** (G198's second pass). The first pass handed a whole
+tile as one far tile, and on G191's streamed scene (64 m tiles) a ring-1 tile built **4,385 to 4,761
+clusters**, over a streamed host's `renderer.meshes.max_clusters` (4,096): without ray tracing, where
+the mesh room had space, 20 far tiles were refused by name (`a tile's mesh was refused … 4761
+clusters`), and the talus showed a gap of sand 250 to 450 m out with a lone far tile standing past
+it. A tile's patches are now handed as one far tile **a square block of the patch lattice**, as many
+patches a block as `k_far_tile_budget_triangles` (512,000) of their recipe budget holds — a power of
+two on a side, at least one: 2 × 2 patches of 16 m at the forest's 128,000, whose far tile measured
+2,261 clusters at the first pass and **1,430** now (35 % of the limit; geometry.md, "The far form
+meets its neighbour"). Each block's far tile stands at the tile's corner. The members, the pairs and
+the room a tile takes are what one far tile took; only the limit's margin moves.
+
+**What it costs, measured** (msvc-debug, 2026-11-13; the counts do not depend on the build or the
+machine). One 32 m tile of the massif's foot at the forest's budget (128,000 triangles a 16 m patch,
+96 loose stones a patch), handed as 15 pieces — `deposits far: what the DAG's own distance form
+keeps of a dense tile, ring by ring` and the world's `far tile: a dense tile of deposits is one
+instance of a sixth of its meshes' clusters past the first ring`:
+
+| The tile drawn as | Instances | Clusters (pairs) | Mesh room | Triangles drawn at the ring's floor |
+|---|---:|---:|---:|---:|
+| its 15 meshes (G191, every ring) | 15 | 13,939 | 35.0 MiB | 736,769 at 0 m |
+| the DAG's own distance form, cut for 96 m | 15 | 3,184 | (not a tile mesh) | 79,725 |
+| the DAG's own distance form, cut for 256 m | 15 | 1,599 | (not a tile mesh) | 38,135 |
+| the far tile, level 0, G198's first pass | 1 | 2,261 | 5.7 MiB | 61,738 at the leaves |
+| **the far tile, level 0** (ring 1, 96 m), second pass | **1** | **1,430** | **3.6 MiB** | 42,876 at the leaves |
+| the far form, level 1 / level 2 (summed over the pieces), second pass | | | | 35,854 / 31,358 |
+
+The mesh room at 2,632 bytes a cluster (ray tracing on, the default cluster). The second pass's far
+tile is 773 leaves and its own DAG over them (334, 168, 84 and down to one), which coarsens it across
+the ring; it keeps every cut point of its pieces (geometry.md, "The far form meets its neighbour")
+and still costs a tenth of the pieces' pairs. Its honest error is 7.7 cm (a pixel from 79 m at 1080p and
+the default camera). Made cold from its members' cached containers it takes 2.5 s (their 15 far
+forms baked, since no container build bakes them) and 0.8 s to build, on the pool, in debug; it then
+keeps itself in the derived-data cache and reads back in 33 ms with no member touched. Its far forms
+and the merged mesh are pinned (`deposits far: what the DAG's own distance form keeps …`, the world's
+far tile case). The distance form is shown for what a DAG keeps; a tile's meshes arrive after the load
+and are cut by nothing (G197's rule cuts the resident meshes), so before this row the choice past the
+first ring was the first row of the table or nothing.
+
+**The streamed walk** (G191's scene and walk, `far_rings` 3 and the default 256 MiB room, windowed,
+1600×900, 150 s along the foot at 2 m/s; `msvc-release`, the base `61ccce67` against this row's
+tip, each from a cold derived-data root and the row's again warm; other processes held 47 % of the
+CPU at the cold runs' start and 77 % at the warm one's, so every time is an upper bound):
+
+| | First fill (frame's thread) | Deposit instances drawn after the walker moves | Frames over 50 / 100 ms |
+|---|---:|---|---:|
+| base, cold | 68.2 s | none from about 50 s on (the room full, every tile withheld) | 122 / 2 of 7,100 |
+| far tiles, cold | 69.3 s | 49 to 98 instances, 65,000 to 116,000 pairs, the whole walk | 128 / 1 of 7,486 |
+| far tiles, warm | 4.9 s | the same | 200 / 1 of 11,856 |
+
+Cold, the first fill is no shorter: a far tile whose members were never built builds them (into
+the cache, once), so the first visit still pays every piece's solve. Warm, every far tile is read
+whole from its own entry and the first fill drops to 4.9 s. In one offscreen capture from 300 m
+(all 28 deposit tiles in rings 1 and 2), the base drew no deposit at all and this row drew 28 far
+tiles, 61,847 pairs, none withheld.
+
+**Why the first level from the ring past the first.** A piece's first level is held to its radius
+over 128 (a 16 m patch: about 9 cm; the forest tile's pieces measured at most 7.7 cm honest), which
+at 1080p and the default camera is a pixel from about 90 m (79 m measured); the deposit scenes' second ring starts 96 m out (a 64 m tile at 1.5 tiles), so the hand-over
+moves nothing a pixel resolves. A scene whose first ring is smaller draws the far form nearer than
+it is held for, and says so in no sentence yet (a row this leaves).
+
+**What the pictures showed, and whose each fault was** (G198's second pass; G191's streamed scene,
+offscreen 1920×1080, the camera held 29 s on each view so every tile has arrived; `msvc-release`,
+RTX 5090, other agents' builds and containers running; the ids, depth and normals channels beside
+each colour capture):
+
+1. **Dark lines up the talus 100 to 130 m out, and paving from 300 m: the far form's.** The normals
+   put them on the pieces' cuts: the far forms did not keep the cut their pieces' builds lock, so the
+   tops parted and the walls showed (50,932 of 59,307 cut points gone); and the far tile's weld
+   tilted every cut's top toward its wall. Both fixed (geometry.md, "The far form meets its
+   neighbour"; renderer.md, "The far tile", step 3). From 300 m the band now reads as rubble with no
+   grid; what a person still sees there is a few dark wedges where a large simplified triangle's
+   normals swing, and a faint banding along the foot.
+2. **A gap of sand 250 to 450 m out with a lone slab past it: the far tile's.** Whole 64 m tiles
+   built over the cluster limit and were refused; and the block split's first form drew half the
+   blocks. Fixed (a far tile a block, above).
+3. **A long hard shadow on the sand under the cascaded maps: not the far tile's.** It is in the base
+   `61ccce67`'s capture of the same view, where no deposit is drawn at all, and absent under traced
+   shadows; walking on, it becomes several large polygons. Its caster is something the cascades draw
+   that the picture and the traced structures do not; the cascaded maps (renderer.md, "Shadows") or
+   the ground's form in the cascades, not a placement. **Gone on main `ae9efac5`** (batch 64 changed
+   the cascades' cull): the same view, camera and settings under `--shadows csm`, captured on
+   `ae9efac5` and on this row merged with it (2026-11-14), show none.
+4. **A vertical striped wedge where the talus ends: the mesh room's, then the world's.** With the
+   room large enough (`renderer.meshes.budget_mib` 1024, a diagnosis setting) the band runs unbroken
+   to the horizon at the ring's edge view. At the owner's 256 MiB, without ray tracing it fits
+   (209 instances, 176,271 pairs, nothing withheld); with ray tracing (101,989 clusters of room) 11
+   far tiles are withheld and the band ends about 200 m out in its pieces' end walls — the room and its
+   admission are section B's (W118, `b64-T131`). Where nothing is withheld the talus ends at the
+   world's last ring, 512 m: past `far_rings` and past the world there is no deposit, and a deposit is
+   a raised closed solid, so it ends in a face. A far representation past the world's rings (the
+   ground's own material, or a coarser far level to the horizon) is a row this leaves.
+
+**The hand-over, walked** (windowed 1600×900, 60 s along the foot at 2 m/s from z = -150, `msvc-release`
+at the second pass's tip, the affected build and other agents' containers running, so frame times
+are upper bounds). In a room the band fits in, the walk makes eight changes of what is drawn; the
+largest, about 43.8 s in, is a tile entering the first ring while the one behind leaves it: 257
+instances and 225,423 pairs to 193 and 163,727 over six frames, its frames 13 to 26 ms. Offscreen
+captures 4 m either side of it (frames 1,260 and 1,320 of the same path, traced and mapped) show
+the talus continuous across the far tiles' edge with the near pieces, no step, no wall, no line,
+and no shadow that appears or vanishes: traced shadows trace the far tile in the frame's
+structures, the cascades draw it as any rigid instance, and its error is under the pixel at the
+ring's floor. At the owner's room with ray tracing the same walk makes 21 changes, down to 21
+instances 43 s in while the room trades tiles (section B's). Frames over 50 ms: 68 of 2,261 in the
+roomy walk, 174 of 4,212 at the owner's room, 126 of 4,040 mapped.
+
+Beside reel sheet r22's scree (the fans under the Oeschinensee cliffs): a person still objects,
+most first, to the talus's uniform grey with no lighter fan heads and darker toes, no fines, no
+grass reaching into it; to its upper edge, a staircase where the deposit meets the face; to its end
+where the world ends; and from 300 m to a surface still too even for scree seen from across a
+valley. None is the far form's; the first three are the deposit's look (the row's material and
+outline work), the last its plan.
+
 ### Foothill exposure and repeated-material limits
 
 [G132's v29 controls](../experiments/v29-cliff-diagnosis.md) distinguish the continuous authored

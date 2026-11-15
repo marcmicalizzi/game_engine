@@ -40,7 +40,7 @@ engine_module(NAME renderer LAYER systems
           src/terrain_time.cpp
           src/terrain_rings.cpp src/terrain_tiles.cpp src/sky.cpp src/request.cpp
           src/overlay.cpp src/scene_water.cpp src/scene_flora.cpp src/flora_motion.cpp
-          src/flora_poser.cpp src/scene_fire.cpp src/far_forest.cpp src/water_reflect.cpp
+          src/flora_poser.cpp src/scene_fire.cpp src/far_forest.cpp src/far_tile.cpp src/far_offered.cpp src/water_reflect.cpp
           src/water_refract.cpp
           src/scene_ground_plan.cpp
           src/resolve_classes.cpp)
@@ -106,6 +106,8 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     # The far forest (R111): the load's per-tile meshes, their cache entries and
                     # their bytes at any job count, the hand-off, and on a GPU the trees past the ring.
                     tests/far_forest_tests.cpp
+                    # The far tile (G198): an imported mesh's far forms as one rigid mesh, CPU only.
+                    tests/far_tile_tests.cpp
                     # A tree's impostor chain drawn, against the full tree from a baked view (R89).
                     tests/impostor_view_tests.cpp
                     # Trees move: the flora stage's poses on the CPU, and a palm drawn through it.

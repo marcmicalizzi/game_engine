@@ -57,7 +57,9 @@ set(_world_tests tests/world_tests.cpp tests/tile_store_tests.cpp tests/consumer
                  tests/seat_tiles_tests.cpp
                  # G197: a placement's form by ring, the load's rule and the consumer's read of
                  # it, over a generator of the test's own.
-                 tests/ring_forms_tests.cpp)
+                 tests/ring_forms_tests.cpp
+                 # G198: a resident field's far form offered to that rule and drawn past the first ring.
+                 tests/far_offered_tests.cpp)
 if(TARGET engine::ruins)
   # The placements consumer over a streamed ruins entry: the ruins reach it through the registry,
   # so the test links the capability as a host does.
@@ -77,6 +79,8 @@ endif()
 if(TARGET engine::rocks)
   # The consumer's derived-data root (T119): a streamed deposits entry, reached through the registry.
   list(APPEND _world_tests tests/placement_roots_tests.cpp)
+  # G198: a dense tile of deposits as its near meshes and as its far tile, built as a host builds them.
+  list(APPEND _world_tests tests/far_tile_deposits_tests.cpp)
 endif()
 engine_module_tests(NAME world SOURCES ${_world_tests})
 foreach(_gen authored city rocks ruins sky terrain)

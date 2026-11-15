@@ -1,4 +1,5 @@
 #include "far_forest_build.h"
+#include "scene_far.h"
 #include "scene_flora.h"
 #include "scene_ground_plan.h"
 
@@ -19,6 +20,7 @@
 #include <domain/geometry/stress_mesh.h>
 #include <domain/materials/materials.h>
 #include <domain/scene_gen/derived_root.h>
+#include <domain/scene_gen/far_tile.h>
 #include <domain/scene_gen/scene_gen.h>
 #include <domain/scene_gen/sky.h>
 #include <domain/texture/material_textures.h>
@@ -27,6 +29,7 @@
 #include <foundation/image/png.h>
 #include <foundation/io/vfs.h>
 #include <foundation/tunables/tunables.h>
+#include <systems/renderer/far_tile.h>
 #include <systems/renderer/flora_motion.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/terrain.h>
@@ -615,6 +618,8 @@ void adopt_container(geometry::ClusterFileData& container_data, const std::strin
   // What a host seats an instance of it by (G201 stage 2; section 42): none but a tree's.
   out.seat = container_data.seat;
   out.perches = std::move(container_data.perches);  // section 43 (A43): declared perches, if any
+  // Its far form (G198; sections 44 to 48): none but a rigid mesh's whose build baked one.
+  out.far_form = std::move(container_data.far_form);
   // A generated tree's motion contract, for the flora stage and the collision (renderer.md, "The
   // flora stage"): kept only when its per-vertex records cover the mesh, which is what a reader may
   // index them by.
@@ -2875,8 +2880,12 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
       return false;
     }
     // Every other streamed entry's meshes, a form a ring (G197). `offered` is where a form a mesh
-    // carries for distance is handed to the rule (ring_forms.h, `OfferedForm`): none yet.
-    const Vector<OfferedForm> offered;
+    // carries for distance is handed to the rule (ring_forms.h, `OfferedForm`): each rigid resident
+    // mesh's far form, a level a scene mesh of its own (G198; far_tile.h, renderer.md, "The far
+    // tile").
+    Vector<OfferedForm> offered;
+    if (!offer_far_forms(resolved, out.sources, dags, paged_scene, out, offered, error))
+      return false;
     if (!make_placement_forms(resolved, out.sources, dags, paged_scene,
                               std::span<const OfferedForm>(offered.data(), offered.size()), out,
                               error)) {
@@ -3388,6 +3397,8 @@ bool load_placement_mesh(const scene_gen::PlacementMesh& mesh, const PlacementMe
     error = "a tile's mesh names no path";
     return false;
   }
+  // A far tile (G198; far_tile.h) is its members' far forms, which only a host can build.
+  if (scene_gen::is_far_tile(mesh)) return load_far_tile(mesh, options, out, error);
   // The load's own per-mesh pass (`load_source_mesh`), under the load's options: one cache entry
   // whichever of the two asked first, and the same bytes from either.
   SceneDesc desc;
@@ -3423,6 +3434,41 @@ bool load_placement_mesh(const scene_gen::PlacementMesh& mesh, const PlacementMe
   if (!out.source.lod_coverage.empty())
     geometry::permute_cluster_array(order, out.source.lod_coverage);
   out.source.path = mesh.path;
+  out.reach = ground_radius(out.lod, out.part.first_cluster, out.part.cluster_count);
+  if (options.textures) load_placement_textures(desc, options, out);
+  return true;
+}
+
+// A tile mesh from a container already in hand (G198; scene_far.h): the far tile's own
+// derived-data entry, read back as `load_placement_mesh` reads any container.
+bool placement_mesh_from_container(geometry::ClusterFileData& data, const std::string& where,
+                                   const PlacementMeshOptions& options, PlacementMeshData& out,
+                                   std::string& error) {
+  out = PlacementMeshData{};
+  SceneDesc desc;
+  desc.lod = options.lod;
+  desc.ddc = options.ddc;
+  desc.cache = options.cache && !options.ddc.empty();
+  desc.materials = options.materials;
+  out.source.texture_ddc = desc.cache ? desc.ddc : std::string();
+  Vector<geometry::ClusterLodMesh> dags(1);
+  geometry::ClusterPages pages;
+  adopt_container(data, where, desc, out.source, dags[0], pages);
+  Vector<geometry::ClusterMeshPart> parts;
+  Vector<u32> source_of_cluster;
+  if (!geometry::merge_cluster_meshes(
+          std::span<const geometry::ClusterLodMesh>(dags.data(), dags.size()), out.lod, parts,
+          &error, geometry::ClusterOrder::leaves_first, &source_of_cluster)) {
+    error = where + ": " + error;
+    return false;
+  }
+  out.part = parts[0];
+  geometry::permute_cluster_array(
+      std::span<const u32>(source_of_cluster.data() + out.part.first_cluster,
+                           out.part.cluster_count),
+      out.source.part_of_cluster);
+  out.source.path = where;
+  out.source.cache = "hit";
   out.reach = ground_radius(out.lod, out.part.first_cluster, out.part.cluster_count);
   if (options.textures) load_placement_textures(desc, options, out);
   return true;

@@ -1,0 +1,516 @@
+// The far tile (far_tile.h; renderer.md, "The far tile"; G198).
+#include <core/hash/hash.h>
+#include <core/time/time.h>
+#include <domain/geometry/cluster.h>
+#include <domain/geometry/cluster_file.h>
+#include <domain/geometry/cluster_lod.h>
+#include <domain/geometry/far_form.h>
+#include <domain/geometry/material_sampling.h>
+#include <domain/scene_gen/far_tile.h>
+#include <foundation/io/vfs.h>
+#include <systems/renderer/far_tile.h>
+
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+#include <filesystem>
+#include <renderer_log.h>
+#include <scene_far.h>
+
+namespace engine::renderer {
+
+// scene.cpp's: a tile mesh's textures, off the frame (texture.md, "Textures that arrive after the
+// load"), the load's own pass run over one mesh.
+void load_placement_textures(const SceneDesc& desc, const PlacementMeshOptions& options,
+                             PlacementMeshData& out);
+
+namespace {
+
+u64 material_key(const assets::Material& m, const i32 images[5]) {
+  const geometry::ClusterFileMaterialSampling sampling =
+      geometry::encode_material_sampling(m.sampling, m.occlusion_strength);
+  u64 h = hash_bytes(&sampling, sizeof(sampling));
+  const f32 words[12] = {m.base_color.x, m.base_color.y, m.base_color.z, m.base_color.w,
+                         m.emissive.x,   m.emissive.y,   m.emissive.z,   m.metallic,
+                         m.roughness,    m.normal_scale, m.alpha_cutoff, m.occlusion_strength};
+  h = hash_combine(h, hash_bytes(words, sizeof(words)));
+  h = hash_combine(h, hash_bytes(images, 5 * sizeof(i32)));
+  const u32 flags = static_cast<u32>(m.alpha_mode) | (m.double_sided ? 0x100u : 0u);
+  return hash_combine(h, flags);
+}
+
+// One distinct material of the far tile: its record, and its triangles over the tile's vertices.
+struct Part {
+  u64 key = 0;
+  Vector<Vec3> positions;
+  Vector<Vec3> normals;
+  Vector<Vec2> uvs;
+  Vector<u32> indices;
+};
+
+u32 bits_of(f32 v) noexcept {
+  u32 b = 0;
+  std::memcpy(&b, &v, sizeof(b));
+  return b;
+}
+
+// Two copies of a far form vertex at one point and one UV weld when their normals are within 60
+// degrees: a hard edge sharper than that (a slab's top and its wall) stays two vertices.
+constexpr f32 k_far_weld_cos = 0.5f;
+
+// **A far form is drawn smooth.** Its vertices are its mesh's own, split wherever the near form
+// had a hard edge — a faceted stone at every edge — and a triangle that shares no corner with its
+// neighbour fills a cluster's 64 vertices with 21 triangles: the forest's tile built 2,356
+// clusters for 61,738 triangles. So a part's vertices that stand at one point with one UV are one
+// vertex, its normal the area-weighted mean of the triangles round it, which at the distance a far
+// form is drawn from is a pixel's shading, and an atlas seam (two UVs at a point) stays a seam.
+void weld_part(Part& part) {
+  const u32 n = part.positions.size();
+  struct Key {
+    u32 w[5];
+    u32 v;
+  };
+  Vector<Key> order;
+  order.reserve(n);
+  for (u32 v = 0; v < n; ++v) {
+    const Vec3 p = part.positions[v];
+    order.push_back(Key{
+        {bits_of(p.x), bits_of(p.y), bits_of(p.z), bits_of(part.uvs[v].x), bits_of(part.uvs[v].y)},
+        v});
+  }
+  std::sort(order.begin(), order.end(), [](const Key& a, const Key& b) {
+    for (u32 k = 0; k < 5; ++k)
+      if (a.w[k] != b.w[k]) return a.w[k] < b.w[k];
+    return a.v < b.v;
+  });
+  // Within a run of one point and one UV, a copy joins the first group whose first normal is
+  // within `k_far_weld_cos` of its own, else starts one (G198's second pass): a piece's top and
+  // the wall under its cut meet at a right angle on one point, and one vertex there took the mean
+  // of both, tilting every cut's top toward its wall — the lines between the paving's slabs from
+  // 300 m. A faceted stone's facets, at a few tens of degrees, still weld. Each group's first copy
+  // (the lowest index) stands for it; the survivors keep their order.
+  const bool carried = part.normals.size() == n;
+  Vector<u32> rep(n);
+  for (u32 first = 0; first < n;) {
+    u32 last = first + 1;
+    while (last < n && std::memcmp(order[last].w, order[first].w, sizeof(order[first].w)) == 0)
+      ++last;
+    for (u32 k = first; k < last; ++k) {
+      const u32 v = order[k].v;
+      rep[v] = v;
+      if (!carried) {
+        rep[v] = order[first].v;
+        continue;
+      }
+      for (u32 j = first; j < k; ++j) {
+        const u32 u = order[j].v;
+        if (rep[u] != u) continue;
+        const Vec3 a = part.normals[u], b = part.normals[v];
+        if (a.x * b.x + a.y * b.y + a.z * b.z >= k_far_weld_cos) {
+          rep[v] = u;
+          break;
+        }
+      }
+    }
+    first = last;
+  }
+  Vector<u32> remap(n, ~0u);
+  Vector<Vec3> positions;
+  Vector<Vec2> uvs;
+  for (u32 v = 0; v < n; ++v) {
+    if (rep[v] != v) continue;
+    remap[v] = positions.size();
+    positions.push_back(part.positions[v]);
+    uvs.push_back(part.uvs[v]);
+  }
+  // Each survivor's normal is the mean of the near form's own normals at its copies, in their
+  // order (G198's second pass): a deposit's bed carries the plan's gradient, the same on both
+  // sides of a piece's cut, where normals made again from the far form's large triangles gave
+  // every piece its own and the band read as paving from 300 m. A run whose copies cancel (two
+  // faces of a thin plate) takes the faces' area-weighted normal.
+  Vector<Vec3> sums(positions.size(), Vec3{0.0f, 0.0f, 0.0f});
+  if (carried)
+    for (u32 v = 0; v < n; ++v)
+      sums[remap[rep[v]]] = sums[remap[rep[v]]] + part.normals[v];
+  for (u32& i : part.indices)
+    i = remap[rep[i]];
+  part.positions = std::move(positions);
+  part.uvs = std::move(uvs);
+  Vector<Vec3> faces;
+  geometry::compute_vertex_normals(
+      std::span<const Vec3>(part.positions.data(), part.positions.size()),
+      std::span<const u32>(part.indices.data(), part.indices.size()), faces);
+  part.normals.clear();
+  for (u32 v = 0; v < part.positions.size(); ++v) {
+    const Vec3 s = sums[v];
+    const f32 len2 = s.x * s.x + s.y * s.y + s.z * s.z;
+    part.normals.push_back(carried && len2 > 1.0e-6f ? s * (1.0f / std::sqrt(len2)) : faces[v]);
+  }
+}
+
+// One DAG a part with triangles, merged: `drawn` the parts that had any, in order, which are the
+// merged mesh's parts (`part_of_cluster` indexes `drawn`).
+bool cluster_parts(Vector<Part>& parts, const geometry::ClusterLodOptions& lod,
+                   geometry::ClusterLodMesh& merged, Vector<u32>& part_of_cluster,
+                   Vector<u32>& drawn, std::string& error) {
+  Vector<geometry::ClusterLodMesh> dags;
+  dags.reserve(parts.size());
+  drawn.clear();
+  for (u32 p = 0; p < parts.size(); ++p) {
+    Part& part = parts[p];
+    if (part.indices.empty()) continue;
+    weld_part(part);
+    geometry::AttributeSource attributes;
+    attributes.normals = std::span<const Vec3>(part.normals.data(), part.normals.size());
+    attributes.uvs = std::span<const Vec2>(part.uvs.data(), part.uvs.size());
+    geometry::ClusterLodMesh dag;
+    if (!geometry::build_cluster_lod(
+            std::span<const Vec3>(part.positions.data(), part.positions.size()),
+            std::span<const u32>(part.indices.data(), part.indices.size()), lod, dag, &error,
+            attributes)) {
+      return false;
+    }
+    dags.push_back(std::move(dag));
+    drawn.push_back(p);
+  }
+  if (dags.empty()) {
+    error = "its far forms draw nothing";
+    return false;
+  }
+  return geometry::merge_cluster_lod(
+      std::span<const geometry::ClusterLodMesh>(dags.data(), dags.size()), merged, &part_of_cluster,
+      &error);
+}
+
+// The far tile as a container in the derived-data cache: its DAG, its cluster-to-material map, its
+// materials, images and their built-texture records, the identity it was built for. A cache that
+// cannot be written costs the next activation a build and nothing else.
+void write_far_tile(const std::string& path, const scene_gen::PlacementMesh& mesh, u64 key,
+                    const SourceMesh& source, const geometry::ClusterLodMesh& lod,
+                    const Vector<u32>& material_of_cluster) {
+  geometry::ClusterFileData data;
+  data.mesh = lod;
+  data.cluster_material = material_of_cluster;
+  for (const assets::Material& m : source.data.materials) {
+    geometry::ClusterFileMaterial material;
+    material.base_color = m.base_color;
+    material.metallic = m.metallic;
+    material.roughness = m.roughness;
+    material.base_color_image = m.base_color_image;
+    material.normal_image = m.normal_image;
+    material.metallic_roughness_image = geometry::encode_optional_image(m.metallic_roughness_image);
+    material.occlusion_image = geometry::encode_optional_image(m.occlusion_image);
+    material.emissive_image = geometry::encode_optional_image(m.emissive_image);
+    material.emissive = m.emissive;
+    material.normal_scale = m.normal_scale;
+    material.alpha = geometry::encode_alpha_word(m.alpha_mode, m.double_sided, m.alpha_cutoff);
+    data.materials.push_back(material);
+    data.material_sampling.push_back(
+        geometry::encode_material_sampling(m.sampling, m.occlusion_strength));
+  }
+  for (u32 k = 0; k < data.material_sampling.size() && k < source.material_sampling_flags.size();
+       ++k)
+    data.material_sampling[k].flags = source.material_sampling_flags[k];
+  for (const assets::ImageRef& image : source.data.images) {
+    data.image_paths.push_back(image.uri);
+    geometry::ClusterImage carried;
+    carried.mime_type = image.mime_type;
+    carried.bytes = image.bytes;
+    data.images.push_back(std::move(carried));
+  }
+  if (source.textures.size() == source.data.images.size()) data.textures = source.textures;
+  data.source_path = mesh.path;
+  data.source_hash = placement_mesh_identity(mesh);
+  data.build_key = key;
+  std::string error;
+  const io::Status made = io::make_directories(io::parent_path(path));
+  if (made != io::Status::Ok || !geometry::write_cluster_file(path, data, &error)) {
+    ENGINE_LOG_WARN(
+        log_renderer, "far tile cache not written", log::field("path", path),
+        log::field("error", made != io::Status::Ok ? std::string(io::status_name(made)) : error));
+  }
+}
+
+}  // namespace
+
+bool far_form_level_mesh(const geometry::FarForm& form, u32 level,
+                         const geometry::ClusterLodOptions& lod, geometry::ClusterLodMesh& out,
+                         Vector<u32>& part_of_cluster, std::string& error) {
+  if (level >= form.levels.size()) {
+    error = "no far form level " + std::to_string(level);
+    return false;
+  }
+  const geometry::FarFormLevel& record = form.levels[level];
+  // One part a material the level draws, in the order its parts name them, over its own vertices.
+  Vector<Part> parts;
+  Vector<u32> material_of;
+  for (u32 q = record.first_part; q < record.first_part + record.part_count; ++q) {
+    const geometry::FarFormPart& fp = form.parts[q];
+    u32 to = ~0u;
+    for (u32 p = 0; p < material_of.size(); ++p)
+      if (material_of[p] == fp.material) to = p;
+    if (to == ~0u) {
+      to = parts.size();
+      parts.push_back(Part{});
+      material_of.push_back(fp.material);
+    }
+    Part& part = parts[to];
+    Vector<u32> local(form.vertices.size(), ~0u);
+    for (u32 i = fp.first_index; i < fp.first_index + fp.index_count; ++i) {
+      const u32 v = form.indices[i];
+      if (local[v] == ~0u) {
+        local[v] = part.positions.size();
+        part.positions.push_back(form.vertices[v].position);
+        part.normals.push_back(geometry::decode_normal_oct(form.vertices[v].normal_oct));
+        part.uvs.push_back(geometry::decode_half2(form.vertices[v].uv_half2));
+      }
+      part.indices.push_back(local[v]);
+    }
+  }
+  Vector<u32> drawn;
+  Vector<u32> merged_parts;
+  if (!cluster_parts(parts, lod, out, merged_parts, drawn, error)) return false;
+  part_of_cluster.clear();
+  part_of_cluster.reserve(merged_parts.size());
+  for (const u32 p : merged_parts)
+    part_of_cluster.push_back(material_of[drawn[p]]);
+  return true;
+}
+
+bool load_far_tile(const scene_gen::PlacementMesh& mesh, const PlacementMeshOptions& options,
+                   PlacementMeshData& out, std::string& error, FarTileStats* stats) {
+  out = PlacementMeshData{};
+  FarTileStats own_stats;
+  FarTileStats& s = stats != nullptr ? *stats : own_stats;
+  s = FarTileStats{};
+  scene_gen::FarTile tile;
+  if (!scene_gen::read_far_tile(mesh.recipe, tile, &error)) {
+    error = mesh.path + ": " + error;
+    return false;
+  }
+  const i64 start_ns = time::monotonic_ns();
+  // **Its own derived-data entry** (renderer.md, "The far tile"): keyed by the recipe's identity —
+  // which covers every member's recipe and place — the far form's and the recipe's versions and the
+  // load's LOD options, so a far tile built once is read back whole, its members never touched.
+  const bool cached = options.cache && !options.ddc.empty();
+  const u64 key = hash_combine(
+      geometry::cluster_cache_key(placement_mesh_identity(mesh), options.lod, false, 0),
+      hash_combine(hash_combine(geometry::k_far_form_version, scene_gen::k_far_tile_version),
+                   k_far_tile_build_version));
+  const std::string cache_path = cached ? geometry::cluster_cache_path(options.ddc, key) : "";
+  if (cached && io::exists(cache_path)) {
+    geometry::ClusterFileData data;
+    std::string why;
+    if (geometry::read_cluster_file(cache_path, data, &why) && data.build_key == key &&
+        placement_mesh_from_container(data, mesh.path, options, out, why)) {
+      s.cache_hit = true;
+      s.clusters = out.lod.mesh.clusters.size();
+      s.triangles = out.lod.leaf_triangle_count;
+      s.members = tile.meshes.size();
+      s.placements = tile.placements.size();
+      s.build_ms = static_cast<f64>(time::monotonic_ns() - start_ns) / 1.0e6;
+      return true;
+    }
+    ENGINE_LOG_WARN(log_renderer, "far tile cache entry ignored", log::field("path", cache_path),
+                    log::field("error", why));
+  }
+  // Every member as a near tile builds it, with no textures: the far tile's own pass reads them.
+  PlacementMeshOptions member_options = options;
+  member_options.textures = false;
+  s.members = tile.meshes.size();
+  s.placements = tile.placements.size();
+  Vector<PlacementMeshData> members(tile.meshes.size());
+  Vector<geometry::FarForm> forms(tile.meshes.size());
+  for (u32 k = 0; k < tile.meshes.size(); ++k) {
+    const scene_gen::PlacementMesh& member = tile.meshes[k];
+    if (scene_gen::is_far_tile(member)) {
+      error = mesh.path + ": a far tile names a far tile";
+      return false;
+    }
+    std::string why;
+    if (!load_placement_mesh(member, member_options, members[k], why)) {
+      error = mesh.path + ": its member " + member.name + ": " + why;
+      return false;
+    }
+    // The far form the member's container carried, or the same bake from its finest level: the
+    // material it names is the member's part.
+    forms[k] = std::move(members[k].source.far_form);
+    if (forms[k].empty()) {
+      const Vector<u32>& parts = members[k].source.part_of_cluster;
+      const std::span<const u32> material = parts.size() == members[k].lod.mesh.clusters.size()
+                                                ? std::span<const u32>(parts.data(), parts.size())
+                                                : std::span<const u32>();
+      if (!geometry::bake_far_form(members[k].lod, material, forms[k], &why)) {
+        error = mesh.path + ": its member " + member.name + ": " + why;
+        return false;
+      }
+      ++s.baked;
+    }
+    // Only its far form and its materials are read from here: its clusters go now, so a far tile
+    // of forty members holds one member's streams at a time.
+    members[k].lod = geometry::ClusterLodMesh{};
+    members[k].textures.clear();
+  }
+  const i64 members_ns = time::monotonic_ns();
+  s.members_ms = static_cast<f64>(members_ns - start_ns) / 1.0e6;
+
+  // The far tile's materials and images: each distinct one once, in the order the placements
+  // first name them, an image's relative path made absolute against its member's directory.
+  SourceMesh& source = out.source;
+  Vector<u64> image_keys;
+  bool textures_whole = true;
+  // Per member: its parts' far tile part (~0u: not drawn), its images' far tile images.
+  Vector<Vector<u32>> part_of(tile.meshes.size());
+  Vector<Part> parts;
+  auto image_of = [&](u32 k, i32 image) -> i32 {
+    const SourceMesh& m = members[k].source;
+    if (image < 0 || static_cast<u32>(image) >= m.data.images.size()) return -1;
+    assets::ImageRef ref = m.data.images[static_cast<u32>(image)];
+    if (!ref.uri.empty() && !std::filesystem::path(ref.uri).is_absolute() && !m.image_dir.empty())
+      ref.uri = io::join_path(m.image_dir, ref.uri);
+    const u64 image_key = hash_combine(hash_bytes(ref.uri.data(), ref.uri.size()),
+                                       hash_bytes(ref.bytes.data(), ref.bytes.size()));
+    for (u32 i = 0; i < image_keys.size(); ++i)
+      if (image_keys[i] == image_key) return static_cast<i32>(i);
+    image_keys.push_back(image_key);
+    source.data.images.push_back(std::move(ref));
+    if (m.textures.size() == m.data.images.size())
+      source.textures.push_back(m.textures[static_cast<u32>(image)]);
+    else
+      textures_whole = false;
+    return static_cast<i32>(source.data.images.size() - 1);
+  };
+  auto part_for = [&](u32 k, u32 member_part) -> u32 {
+    Vector<u32>& map = part_of[k];
+    if (map.empty()) map.assign(members[k].source.part_material.size() + 1, ~0u);
+    if (member_part >= map.size()) return ~0u;
+    if (map[member_part] != ~0u) return map[member_part];
+    const SourceMesh& m = members[k].source;
+    const i32 index = member_part < m.part_material.size() ? m.part_material[member_part] : -1;
+    assets::Material material;
+    u32 flags = 0;
+    if (index >= 0 && static_cast<u32>(index) < m.data.materials.size()) {
+      material = m.data.materials[static_cast<u32>(index)];
+      if (static_cast<u32>(index) < m.material_sampling_flags.size())
+        flags = m.material_sampling_flags[static_cast<u32>(index)];
+    }
+    i32 images[5] = {image_of(k, material.base_color_image),
+                     image_of(k, material.metallic_roughness_image),
+                     image_of(k, material.normal_image), image_of(k, material.occlusion_image),
+                     image_of(k, material.emissive_image)};
+    material.base_color_image = images[0];
+    material.metallic_roughness_image = images[1];
+    material.normal_image = images[2];
+    material.occlusion_image = images[3];
+    material.emissive_image = images[4];
+    const u64 part_key = hash_combine(material_key(material, images), flags);
+    for (u32 p = 0; p < parts.size(); ++p) {
+      if (parts[p].key == part_key) return map[member_part] = p;
+    }
+    Part part;
+    part.key = part_key;
+    parts.push_back(std::move(part));
+    source.data.materials.push_back(std::move(material));
+    source.material_sampling_flags.push_back(flags);
+    return map[member_part] = parts.size() - 1;
+  };
+
+  // Every placement's far form, turned, scaled and moved to its place from the tile's origin.
+  for (const scene_gen::FarTilePlacement& p : tile.placements) {
+    const geometry::FarForm& form = forms[p.mesh];
+    const u32 level = std::min(tile.level, static_cast<u32>(form.levels.size() - 1));
+    const geometry::FarFormLevel& record = form.levels[level];
+    const Vec3 offset{static_cast<f32>(static_cast<f64>(p.x_mm) / 1000.0),
+                      static_cast<f32>(static_cast<f64>(p.y_mm) / 1000.0),
+                      static_cast<f32>(static_cast<f64>(p.z_mm) / 1000.0)};
+    const f32 scale_max =
+        std::max(std::fabs(p.scale.x), std::max(std::fabs(p.scale.y), std::fabs(p.scale.z)));
+    s.error_m = std::max(s.error_m, geometry::FarForm::level_error(record) * scale_max);
+    s.source_triangles += form.header.source_triangles;
+    for (u32 q = record.first_part; q < record.first_part + record.part_count; ++q) {
+      const geometry::FarFormPart& fp = form.parts[q];
+      const u32 to = part_for(p.mesh, fp.material);
+      if (to == ~0u) continue;
+      Part& part = parts[to];
+      // The part's own copy of each vertex this placement's triangles name.
+      Vector<u32> local(form.vertices.size(), ~0u);
+      for (u32 i = fp.first_index; i < fp.first_index + fp.index_count; ++i) {
+        const u32 v = form.indices[i];
+        if (local[v] == ~0u) {
+          local[v] = part.positions.size();
+          const geometry::FarFormVertex& fv = form.vertices[v];
+          const Vec3 scaled{fv.position.x * p.scale.x, fv.position.y * p.scale.y,
+                            fv.position.z * p.scale.z};
+          part.positions.push_back(rotate(p.rotation, scaled) + offset);
+          const Vec3 n = geometry::decode_normal_oct(fv.normal_oct);
+          const Vec3 bent{n.x / p.scale.x, n.y / p.scale.y, n.z / p.scale.z};
+          part.normals.push_back(normalize(rotate(p.rotation, bent)));
+          part.uvs.push_back(geometry::decode_half2(fv.uv_half2));
+        }
+        part.indices.push_back(local[v]);
+      }
+    }
+  }
+  if (!textures_whole) source.textures.clear();
+
+  geometry::ClusterLodMesh merged;
+  Vector<u32> part_of_cluster;
+  Vector<u32> drawn;
+  if (!cluster_parts(parts, options.lod, merged, part_of_cluster, drawn, error)) {
+    error = mesh.path + ": " + error;
+    return false;
+  }
+  s.triangles = merged.leaf_triangle_count;
+  s.materials = drawn.size();
+  // The parts with triangles, in order, are the DAGs merged; part p draws material p.
+  for (const u32 p : drawn)
+    source.part_material.push_back(static_cast<i32>(p));
+  for (u32& part : part_of_cluster)
+    part = drawn[part];
+  if (cached) write_far_tile(cache_path, mesh, key, source, merged, part_of_cluster);
+  // The material map as `adopt_container` leaves a container's: part p is material p.
+  source.part_material.clear();
+  for (u32 p = 0; p < source.data.materials.size(); ++p)
+    source.part_material.push_back(static_cast<i32>(p));
+  source.part_of_cluster = std::move(part_of_cluster);
+  // As `load_placement_mesh` lays out a tile's mesh: leaves first, its streams with it.
+  Vector<geometry::ClusterLodMesh> one(1);
+  one[0] = std::move(merged);
+  Vector<geometry::ClusterMeshPart> layout;
+  Vector<u32> source_of_cluster;
+  if (!geometry::merge_cluster_meshes(
+          std::span<const geometry::ClusterLodMesh>(one.data(), one.size()), out.lod, layout,
+          &error, geometry::ClusterOrder::leaves_first, &source_of_cluster)) {
+    error = mesh.path + ": " + error;
+    return false;
+  }
+  out.part = layout[0];
+  geometry::permute_cluster_array(
+      std::span<const u32>(source_of_cluster.data() + out.part.first_cluster,
+                           out.part.cluster_count),
+      source.part_of_cluster);
+  source.path = mesh.path;
+  source.cache = "miss";
+  out.reach = ground_radius(out.lod, out.part.first_cluster, out.part.cluster_count);
+  s.clusters = out.lod.mesh.clusters.size();
+  s.build_ms = static_cast<f64>(time::monotonic_ns() - members_ns) / 1.0e6;
+  if (options.textures) {
+    SceneDesc desc;
+    desc.lod = options.lod;
+    desc.ddc = options.ddc;
+    desc.cache = options.cache && !options.ddc.empty();
+    desc.materials = options.materials;
+    source.texture_ddc = desc.cache ? desc.ddc : std::string();
+    load_placement_textures(desc, options, out);
+  }
+  ENGINE_LOG_INFO(log_renderer, "far tile built", log::field("path", mesh.path),
+                  log::field("members", s.members), log::field("placements", s.placements),
+                  log::field("baked", s.baked), log::field("triangles", s.triangles),
+                  log::field("source_triangles", s.source_triangles),
+                  log::field("clusters", s.clusters),
+                  log::field("error_m", static_cast<f64>(s.error_m)),
+                  log::field("members_ms", s.members_ms), log::field("build_ms", s.build_ms));
+  return true;
+}
+
+}  // namespace engine::renderer
