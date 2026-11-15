@@ -69,7 +69,8 @@ struct MeshOptions {
   geometry::SeamRule normal_seams = geometry::ClusterLodOptions{}.normal_seams;
   // `build --loose-islands off`: the LOD builder before the loose-island rule (geometry.md, "Loose
   // islands: removed whole, the rest grown"), so what the rule does to an asset is a pair of
-  // builds. Off moves the key (`geometry::cluster_cache_key`); a manifest never sets it.
+  // builds. On by default, as every import is (`geometry::imported_lod_options`), and in the key
+  // (`geometry::cluster_cache_key`); a manifest never sets it off.
   bool loose_islands = true;
   // `build --no-morph`: drop the source's morph targets before anything else sees them, so the
   // container is the one the same file would give with no channels — welded without the deltas in

@@ -970,8 +970,10 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expect
     if (desc.cache) {
       // The page target is part of the key, so this has to be the one the build below uses —
       // and the one engine-content uses by default, or the two apps would stop sharing entries.
-      cache_key = geometry::cluster_cache_key(source_hash, desc.lod, true,
-                                              geometry::ClusterPagesOptions{}.page_bytes);
+      // An import's levels are built with the loose-island rule, here and in engine-content alike
+      // (`geometry::imported_lod_options`), and the key says so.
+      cache_key = geometry::cluster_cache_key(source_hash, geometry::imported_lod_options(desc.lod),
+                                              true, geometry::ClusterPagesOptions{}.page_bytes);
       cache_path = geometry::cluster_cache_path(desc.ddc, cache_key);
       out.cache = "miss";
       if (io::exists(cache_path)) container = cache_path;
@@ -1063,7 +1065,8 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expect
     const std::span<const u32> range(out.data.indices.data() + primitive.first_index,
                                      primitive.index_count);
     geometry::ClusterLodMesh part;
-    if (!geometry::build_cluster_lod(out.data.positions, range, desc.lod, part, &error,
+    if (!geometry::build_cluster_lod(out.data.positions, range,
+                                     geometry::imported_lod_options(desc.lod), part, &error,
                                      attribute_source)) {
       return false;
     }

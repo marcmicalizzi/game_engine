@@ -1402,10 +1402,11 @@ u64 cluster_cache_key(u64 source_hash, const ClusterLodOptions& options, bool we
     key = hash_combine(key, (u64{up_bits[0]} << 32) | u64{up_bits[1]});
     key = hash_combine(key, (u64{up_bits[2]} << 1) | (options.refuse_folds ? 1ull : 0ull));
   }
-  // The loose-island rule off is the build before it (geometry.md, "Loose islands"): another mesh
-  // from the same source wherever a group held islands. Mixed in only when it is off, which
-  // nothing that draws sets.
-  if (!options.loose_islands) key = hash_combine(key, 0x6c6f6f7365ull);
+  // The loose-island rule (geometry.md, "Loose islands") builds another mesh from the same source
+  // wherever a group holds islands. Mixed in only when it is on, so a mesh built without it keeps
+  // the key it had; every imported mesh is built with it (`imported_lod_options`), so an entry an
+  // import made before the rule is never read again, and no version moved for it.
+  if (options.loose_islands) key = hash_combine(key, 0x6c6f6f7365ull);
   return hash_combine(key, page_bytes);
 }
 

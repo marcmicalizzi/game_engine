@@ -132,17 +132,34 @@ struct ClusterLodOptions {
   // a plate -- cannot be coarsened by collapsing edges: a card has no interior to collapse into.
   // Upstream's builder then falls back to the sloppy simplifier, which removes whole parts and
   // reports an error that says nothing of it, so the cut takes the coarse level a few metres away
-  // and a bought tree stands bare (roadmap T147). With this set, a group whose free islands the
+  // (the sloppy simplifier is the lesser part: it is the regular one that collapses a card away
+  // along its open border, for half the card's width of error) and a bought tree stands bare
+  // (roadmap T147). With this set, a group whose free islands the
   // regular simplifier cannot halve, or halves by halving each card, is coarsened **by islands**:
   // one of each neighbouring pair removed whole, the other grown until it covers the area of both
   // (new vertices, each standing for the corner it was copied from), and the level's error the
   // extent of what it removed; and any simplifier's result admits to at least the extent of every
   // island it removed whole. It reads nothing but the triangles: no material, no generator. A
   // group that is one connected surface is built exactly as before, and so is every heightfield
-  // (`up`). False is the build before the rule, byte for byte: the "before" of its test and of
-  // every measurement, which nothing that draws sets.
-  bool loose_islands = true;
+  // (`up`). False is the build before the rule, byte for byte.
+  //
+  // **Off by default, and on for every imported mesh** (`imported_lod_options`, which the content
+  // build and the renderer's import both go through). A generator that calls this builder was
+  // shaped against the old behaviour and has to be measured before it takes the rule: the birch's
+  // wood is loose tubes, and with the rule its container draws 13,555 triangles at 300 m where it
+  // drew 804, because a twig may then not go until its whole length is a pixel (geometry.md has
+  // what that says about the error of a long thin island). An imported mesh has no generator to
+  // have shaped anything, and without the rule it is drawn bare.
+  bool loose_islands = false;
 };
+
+// The options an imported mesh's levels are built with: the caller's, with the loose-island rule
+// on. One function, so that every host that imports a mesh builds the same container under the
+// same cache key.
+inline ClusterLodOptions imported_lod_options(ClusterLodOptions options) noexcept {
+  options.loose_islands = true;
+  return options;
+}
 
 // What the loose-island rule did during one build, counted by the builder and **not stored in a
 // container**: a mesh read from a file reports zeros, and so does a heightfield (`up`), whose

@@ -387,7 +387,8 @@ TEST_CASE("aggregate lod: a connected surface is built as it was") {
   AttributeSource attributes;
   attributes.normals = std::span<const Vec3>(torus.normals.data(), torus.normals.size());
   attributes.uvs = std::span<const Vec2>(torus.uvs.data(), torus.uvs.size());
-  ClusterLodOptions options;
+  ClusterLodOptions options = imported_lod_options(ClusterLodOptions{});
+  REQUIRE(options.loose_islands);
   ClusterLodMesh with, without;
   std::string error;
   REQUIRE_MESSAGE(

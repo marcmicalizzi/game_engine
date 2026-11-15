@@ -755,13 +755,10 @@ bool read_cluster_file_identity(std::string_view path, u64& source_hash, u64& bu
 //    container at 15; but the renderer's glTF path drew it, and an entry it built at 15 keeps the
 //    triangle — its index stream and DAG differ from what either builder makes now under the same
 //    key. A source with none builds the same bytes as before and merely moves to a new cache path.
-// 17: a group of loose islands is coarsened by islands, and no level's error is under the extent
-//    of an island it removed (`ClusterLodOptions::loose_islands`; geometry.md, "Loose islands:
-//    removed whole, the rest grown"; roadmap T147). An entry built at 16 from a mesh of parts that
-//    share no vertex -- a bought tree's leaf cards -- carries coarse levels whose errors admit to
-//    nothing, so it is drawn bare a few metres away. A source whose every group is one connected
-//    surface builds the same bytes as before and merely moves to a new cache path.
-inline constexpr u32 k_cluster_cache_version = 17;
+// (2026-11-15, T147: the loose-island rule moved no version. `ClusterLodOptions::loose_islands`
+//    is in the key when it is on, and every import sets it, so an imported mesh's entry from
+//    before the rule is simply never read again; a mesh built without it keeps its key.)
+inline constexpr u32 k_cluster_cache_version = 16;
 
 // The cache key: the source's content hash (`assets::source_mesh_hash`) mixed with the build
 // options and the version above. `page_bytes` is the streaming page target the container was
