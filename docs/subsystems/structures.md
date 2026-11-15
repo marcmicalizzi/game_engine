@@ -145,13 +145,39 @@ has no glass: there is no transmissive material to draw it with (a row this leav
 
 ### Roofs
 
-A roof is a slab over its rectangle and its overhangs, each slope its own planes: the covering on
-top, at the eaves (cut plumb) and at the verges, boards beneath. Its underside is the plane the
-walls rise to. The pitch is rise over run in permille, so no decision takes a trigonometric
-function; a slope's length and its normal take one square root. **A coat 15 cm deep or more is lit
-soft** — its normals turn over the ridge and round the eaves, across a band a quarter of a metre
-wide — and a thinner covering keeps its planes; the rule keys on the thickness the description
-states, not on a role's name.
+A roof is a slab over its rectangle and its overhangs: the covering on top, at the eaves and at
+the verges, and an underside that is the plane the walls rise to. The pitch is rise over run in
+permille, so no decision takes a trigonometric function; a slope's length and its normal take one
+square root.
+
+**A coat 15 cm deep or more is a soft one** (a thatch), and a thinner covering keeps its planes;
+the rule keys on the thickness the description states, not on a role's name. A soft coat's
+profile, from the eave's foot to the ridge, is the eave's face for the lower half of its depth,
+rounded over the top fifth, the slope, and on a gable a **ridge course** standing 6 to 8 cm proud
+over the last 45 cm (a thatch is laid thickest and capped at its ridge); its normals are the mean
+of the segments each corner joins, and straight up at the ridge. A thin covering's profile is the
+eave's plumb face and the plane. The verge is the profile's cut end. UVs run **u up the slope and
+v along the ridge**, so a thatch's stems, drawn along its set's u, lie up the roof.
+
+**The underside** is the covering's own role for a soft coat (a thatch shows its straw between
+its battens) and the `boards` role for a thin one.
+
+**The roof's timbers** are drawn where the top storey is open to them (no `ceiling`): a rafter 8
+by 10 cm about every 45 cm under each slope from the wall plate to the ridge, standing between
+the end walls (a rafter inside a gable wall would show through its face); under a soft coat a
+batten 5 by 2.5 cm every 30 cm up each slope; on a gable a collar across every third pair at
+three fifths of the rise. Each is a closed box sunk a centimetre into what it carries.
+
+### Chimneys
+
+A chimney is its stack as a box from `base` to under its cap, and the cap a course 4 cm wider.
+A hearth (`hearth_side` 0 to 3) opens the stack on that side over its storey's floor: there the
+stack is two cheeks and a back round a recess `hearth_depth` deep and `hearth_width` wide, up to
+`hearth_head`, on a hearth raised 3 cm (which keeps it out of the floor's plane), with a timber
+across the opening bearing on the cheeks. The validator holds a back of 10 cm and cheeks of 8.
+The stack is not cut out of the wall or the roof it passes through: it is a solid sunk through
+them, and what a description must do is stand it proud of a wall's face on the side its hearth
+opens, by at least the recess.
 
 ### The interiors' seam
 
@@ -200,8 +226,14 @@ that wants an interior resident only where a walker can reach it (plan 14 §14.7
 
 A surface takes its role's set from the host's pack ([materials](materials.md)), else the role
 behind it, else a flat colour, and the lookup says once which role is missing. UVs are metres of
-surface (a wall's u along it and v up, a floor's x and z, a roof's u along the ridge and v up the
-slope, a timber's u along its grain), so a set tiles at its own `tile_m`.
+surface (a wall's u along it and v up, a floor's x and z, a roof's u up the slope and v along the
+ridge, a timber's u along its grain), so a set tiles at its own `tile_m`.
+
+**The four roles no pack had are generated sets now** (`plaster/lime`, `stone/flag`,
+`stone/rubble`, `thatch/straw`: [matgen](matgen.md#a-buildings-surfaces)), each a recipe of a
+generator kind that stood already, built by `engine-content matgen` with the rest. They are the
+least that gives each surface a set of its own: a thatch's courses, a wall's coursing and a
+floor's bond are not in them, and that page says so.
 
 ## Walk records
 

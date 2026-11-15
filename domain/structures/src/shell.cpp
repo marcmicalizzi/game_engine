@@ -486,11 +486,10 @@ void mesh_roof(const Context& ctx, const structure::Roof& r) {
   const f64 vertical = static_cast<f64>(r.thickness) * len;  // the coat's depth measured plumb
   const f64 over = r.overhang;
   const bool soft = r.thickness >= 15;
-  const std::string_view own = r.role;
-  (void)own;
-  (void)d;
   MeshPart& cover = ctx.part(Surface::roof);
-  MeshPart& under = ctx.part(Surface::boards);
+  // What is seen from beneath: a thatch's own underside between its battens, a thin covering's
+  // boards.
+  MeshPart& under = ctx.part(soft ? Surface::roof : Surface::boards);
   const auto point = [&](f64 a, f64 c, f64 y) {
     return along_x ? metres(a, y, c) : metres(c, y, a);
   };
@@ -511,66 +510,179 @@ void mesh_roof(const Context& ctx, const structure::Roof& r) {
     const f64 yr = ye + p * run;
     const Vec3 slope_n = vec(0.0, out * p / len, 1.0 / len);
     const Vec3 up = vec(0.0, 0.0, 1.0);
-    const Vec3 eave_n = vec(0.0, out, 0.0);
-    // The top, in three bands so a soft coat's normals turn only near the eave and the ridge.
-    const f64 band = std::min(25.0, run * 0.25);
-    const f64 at[4] = {0.0, band, run - band, run};
-    for (u32 b = 0; b < 3; ++b) {
-      const f64 r0 = at[b], r1 = at[b + 1];
-      const f64 c0 = ce - out * r0, c1 = ce - out * r1;
-      const f64 y0 = ye + vertical + p * r0, y1 = ye + vertical + p * r1;
-      const Vec3 points[4] = {point(a0, c0, y0), point(a1, c0, y0), point(a1, c1, y1),
-                              point(a0, c1, y1)};
-      const Vec2 uvs[4] = {uv(a0, r0 * len), uv(a1, r0 * len), uv(a1, r1 * len), uv(a0, r1 * len)};
-      const Vec3 n0 = soft && b == 0 ? normalize(slope_n + eave_n * 0.6f) : slope_n;
-      const Vec3 n1 = soft && b == 2 && gable ? normalize(slope_n + up) : slope_n;
+    // The coat's profile from the eave's foot up to the ridge: `pr` the run from the eave and `ph`
+    // the height above the underside's plane, measured plumb. A thin covering is its eave's
+    // plumb face and its plane. A soft coat (a thatch) rounds its eave over the top fifth of its
+    // depth and swells toward the ridge, where a thatch is laid thickest and capped.
+    f64 pr[8], ph[8];
+    u32 count = 0;
+    const auto add = [&](f64 run_at, f64 height) {
+      pr[count] = run_at, ph[count] = height, ++count;
+    };
+    add(0.0, 0.0);
+    if (soft) {
+      const f64 turn = std::min(0.6 * vertical, run * 0.2);
+      add(0.0, vertical * 0.55);
+      add(turn * 0.25, vertical * 0.82);
+      add(turn, vertical);
+      if (gable && run > 120.0) {
+        add(run - 45.0, vertical);
+        add(run - 38.0, vertical + 6.0);  // the ridge course's lower edge, standing proud
+      }
+      add(run, gable ? vertical + (run > 120.0 ? 8.0 : 0.0) : vertical);
+    } else {
+      add(0.0, vertical);
+      add(run, vertical);
+    }
+    const auto at_c = [&](u32 i) { return ce - out * pr[i]; };
+    const auto at_y = [&](u32 i) { return ye + p * pr[i] + ph[i]; };
+    // A segment's outward normal in (a, c, y), and the length it adds to the surface.
+    Vec3 seg_n[8];
+    f64 seg_len[8];
+    for (u32 i = 0; i + 1 < count; ++i) {
+      const f64 dc = at_c(i + 1) - at_c(i), dy = at_y(i + 1) - at_y(i);
+      seg_len[i] = std::sqrt(dc * dc + dy * dy);
+      seg_n[i] = vec(0.0, out * dy / seg_len[i], -out * dc / seg_len[i]);
+    }
+    f64 along_v = 0.0;
+    for (u32 i = 0; i + 1 < count; ++i) {
+      const Vec3 points[4] = {point(a0, at_c(i), at_y(i)), point(a1, at_c(i), at_y(i)),
+                              point(a1, at_c(i + 1), at_y(i + 1)),
+                              point(a0, at_c(i + 1), at_y(i + 1))};
+      // u up the slope, v along the ridge: a thatch's stems, drawn along its set's u, lie up it.
+      const Vec2 uvs[4] = {uv(along_v, a0), uv(along_v, a1), uv(along_v + seg_len[i], a1),
+                           uv(along_v + seg_len[i], a0)};
+      along_v += seg_len[i];
+      // A soft coat's corner takes the mean of the two segments it joins; the ridge's the mean of
+      // the two slopes (straight up); the eave's foot keeps the fascia's.
+      const Vec3 n0 = soft && i > 0 ? normalize(seg_n[i - 1] + seg_n[i]) : seg_n[i];
+      const Vec3 n1 = !soft ? seg_n[i]
+                            : (i + 2 < count ? normalize(seg_n[i] + seg_n[i + 1])
+                                             : (gable ? normalize(seg_n[i] + up) : seg_n[i]));
       const Vec3 normals[4] = {n0, n0, n1, n1};
-      polygon_smooth(cover, points, uvs, normals, 4, slope_n);
+      polygon_smooth(cover, points, uvs, normals, 4, seg_n[i]);
+      if (pr[i + 1] - pr[i] < k_eps) continue;
+      for (u32 e = 0; e < 2; ++e) {
+        // The verge: the coat's cut end over the gable, a strip a segment.
+        const f64 a = e == 0 ? a0 : a1;
+        const f64 u0 = pr[i] * len, u1 = pr[i + 1] * len;
+        const Vec3 end[4] = {point(a, at_c(i), ye + p * pr[i]),
+                             point(a, at_c(i + 1), ye + p * pr[i + 1]),
+                             point(a, at_c(i + 1), at_y(i + 1)), point(a, at_c(i), at_y(i))};
+        const Vec2 end_uv[4] = {uv(u0, 0.0), uv(u1, 0.0), uv(u1, ph[i + 1]), uv(u0, ph[i])};
+        polygon(cover, end, end_uv, 4, vec(e == 0 ? -1.0 : 1.0, 0.0, 0.0));
+      }
     }
     {
       const Vec3 points[4] = {point(a0, ce, ye), point(a1, ce, ye), point(a1, cr, yr),
                               point(a0, cr, yr)};
-      const Vec2 uvs[4] = {uv(a0, 0.0), uv(a1, 0.0), uv(a1, run * len), uv(a0, run * len)};
+      const Vec2 uvs[4] = {uv(0.0, a0), uv(0.0, a1), uv(run * len, a1), uv(run * len, a0)};
       polygon(under, points, uvs, 4, slope_n * -1.0f);
-    }
-    {
-      // The eave's face, plumb.
-      const Vec3 points[4] = {point(a0, ce, ye), point(a1, ce, ye), point(a1, ce, ye + vertical),
-                              point(a0, ce, ye + vertical)};
-      const Vec2 uvs[4] = {uv(a0, 0.0), uv(a1, 0.0), uv(a1, vertical), uv(a0, vertical)};
-      const Vec3 top_n = soft ? normalize(slope_n + eave_n * 0.6f) : eave_n;
-      const Vec3 normals[4] = {eave_n, eave_n, top_n, top_n};
-      polygon_smooth(cover, points, uvs, normals, 4, eave_n);
-    }
-    for (u32 e = 0; e < 2; ++e) {
-      // The verge: the coat's cut end over the gable.
-      const f64 a = e == 0 ? a0 : a1;
-      const Vec3 points[4] = {point(a, ce, ye), point(a, cr, yr), point(a, cr, yr + vertical),
-                              point(a, ce, ye + vertical)};
-      const Vec2 uvs[4] = {uv(0.0, 0.0), uv(run * len, 0.0), uv(run * len, vertical),
-                           uv(0.0, vertical)};
-      polygon(cover, points, uvs, 4, vec(e == 0 ? -1.0 : 1.0, 0.0, 0.0));
     }
     if (!gable) {
       // A single slope's high edge.
       const Vec3 points[4] = {point(a0, cr, yr), point(a1, cr, yr), point(a1, cr, yr + vertical),
                               point(a0, cr, yr + vertical)};
-      const Vec2 uvs[4] = {uv(a0, 0.0), uv(a1, 0.0), uv(a1, vertical), uv(a0, vertical)};
+      const Vec2 uvs[4] = {uv(0.0, a0), uv(0.0, a1), uv(vertical, a1), uv(vertical, a0)};
       polygon(cover, points, uvs, 4, vec(0.0, 1.0, 0.0));
+    }
+  }
+  // **The roof's timbers**, where the top storey is open to them (structures.md, "Roofs"): a
+  // rafter every 45 cm or so under each slope from the wall plate to the ridge, a collar across
+  // every third pair, each a closed box sunk a centimetre into the boards it carries. They stand
+  // between the end walls: a rafter inside a gable wall would show through its face.
+  if (d.storeys[d.storeys.size() - 1].ceiling) return;
+  f64 inset = 0.0;
+  for (const structure::Wall& w : d.walls)
+    if (w.storey + 1 == d.storeys.size()) inset = std::max(inset, static_cast<f64>(w.thickness));
+  const f64 first = static_cast<f64>(along_x ? r.rect[0] : r.rect[1]) + inset + 12.0;
+  const f64 last = static_cast<f64>(along_x ? r.rect[2] : r.rect[3]) - inset - 12.0;
+  if (last - first < 30.0) return;
+  MeshPart& timber = ctx.part(Surface::timber);
+  const u32 bays = std::max(1u, static_cast<u32>((last - first) / 45.0 + 0.5));
+  const f64 mid = 0.5 * (lo + hi);
+  const f64 rise = gable ? p * (mid - lo) : p * (hi - lo);
+  const auto axis_of = [&](f64 a, f64 c, f64 y, f64* out3) {
+    out3[0] = along_x ? a : c, out3[1] = y, out3[2] = along_x ? c : a;
+  };
+  if (soft) {
+    // Under a thatch: the battens its courses are tied to, a lath every 30 cm up each slope.
+    for (u32 k = 0; k < slopes; ++k) {
+      const f64 out = k == 0 ? -1.0 : 1.0;
+      const f64 run = gable ? mid - lo : hi - lo;
+      Frame3 frame;
+      axis_of(first, k == 0 ? lo : hi, r.eaves, frame.o);
+      axis_of(0.0, -out / len, p / len, frame.axis[0]);
+      axis_of(0.0, out * p / len, 1.0 / len, frame.axis[1]);
+      axis_of(1.0, 0.0, 0.0, frame.axis[2]);
+      for (f64 u = inset * len + 20.0; u < run * len - 10.0; u += 30.0)
+        box3(timber, frame, u - 2.5, u + 2.5, -2.5, 1.0, -8.0, last - first + 8.0, 2);
+    }
+  }
+  for (u32 i = 0; i <= bays; ++i) {
+    const f64 a = first + (last - first) * static_cast<f64>(i) / static_cast<f64>(bays);
+    for (u32 k = 0; k < slopes; ++k) {
+      const f64 out = k == 0 ? -1.0 : 1.0;
+      const f64 foot = k == 0 ? lo : hi;
+      const f64 run = gable ? mid - lo : hi - lo;
+      Frame3 frame;
+      axis_of(a, foot, r.eaves, frame.o);
+      axis_of(0.0, -out / len, p / len, frame.axis[0]);       // up the slope
+      axis_of(0.0, out * p / len, 1.0 / len, frame.axis[1]);  // square to it, outward
+      axis_of(1.0, 0.0, 0.0, frame.axis[2]);                  // along the ridge
+      box3(timber, frame, 0.0, run * len, -10.0, 1.0, -4.0, 4.0, 0);
+    }
+    if (gable && i % 3 == 1 && rise > 150.0) {
+      // The collar at three fifths of the rise, its ends inside the rafters it ties.
+      const f64 y = static_cast<f64>(r.eaves) + 0.6 * rise;
+      const f64 half = (rise - 0.6 * rise) / p + 6.0;
+      Frame3 frame;
+      axis_of(a, mid, y, frame.o);
+      axis_of(0.0, 1.0, 0.0, frame.axis[0]);
+      axis_of(0.0, 0.0, 1.0, frame.axis[1]);
+      axis_of(1.0, 0.0, 0.0, frame.axis[2]);
+      box3(timber, frame, -half, half, -12.0, 0.0, -3.0, 3.0, 0);
     }
   }
 }
 
-// A chimney: the stack as a box from its base to under its cap, the cap a course wider.
+// A chimney (structures.md, "Chimneys"): the stack from its base to under its cap, the cap a
+// course wider. A hearth opens it on one side over its storey's floor: there the stack is two
+// cheeks and a back round a recess `hearth_depth` deep, on a hearth raised 3 cm, under a timber
+// across the opening.
 void mesh_chimney(const Context& ctx, const structure::Chimney& c) {
   if (!ctx.wants(true)) return;
+  const Description& d = *ctx.d;
   MeshPart& part = ctx.part(Surface::chimney);
-  const Frame2 axes = axis_frame(0.0, 0.0, 0);  // s is x, q is -z
-  box(part, axes, c.rect[0], c.rect[2], c.base, static_cast<f64>(c.top) - 6.0,
-      -static_cast<f64>(c.rect[3]), -static_cast<f64>(c.rect[1]), 3);
-  box(part, axes, static_cast<f64>(c.rect[0]) - 4.0, static_cast<f64>(c.rect[2]) + 4.0,
-      static_cast<f64>(c.top) - 12.0, c.top, -static_cast<f64>(c.rect[3]) - 4.0,
-      -static_cast<f64>(c.rect[1]) + 4.0, 3);
+  const f64 cx = 0.5 * (c.rect[0] + c.rect[2]), cz = 0.5 * (c.rect[1] + c.rect[3]);
+  const bool hearth = c.hearth_side < 4 && c.hearth_storey < d.storeys.size();
+  // In the frame whose `d` is the way the hearth faces (+x with none), the stack is `deep`
+  // along and `wide` across.
+  const u32 turn = hearth ? c.hearth_side : 0u;
+  const Frame2 frame = axis_frame(cx, cz, turn);
+  const f64 sx = c.rect[2] - c.rect[0], sz = c.rect[3] - c.rect[1];
+  const f64 deep = 0.5 * (turn % 2 == 0 ? sx : sz), wide = 0.5 * (turn % 2 == 0 ? sz : sx);
+  const f64 top = static_cast<f64>(c.top) - 6.0;
+  box(part, frame, -deep - 4.0, deep + 4.0, static_cast<f64>(c.top) - 12.0, c.top, -wide - 4.0,
+      wide + 4.0, 3);
+  const f64 base = c.base;
+  if (!hearth) {
+    box(part, frame, -deep, deep, base, top, -wide, wide, 3);
+    return;
+  }
+  const f64 level = static_cast<f64>(d.storeys[c.hearth_storey].elevation) + 3.0;
+  const f64 head = level - 3.0 + static_cast<f64>(c.hearth_head);
+  const f64 open = 0.5 * static_cast<f64>(c.hearth_width);
+  const f64 back = deep - static_cast<f64>(c.hearth_depth);
+  if (base < level) box(part, frame, -deep, deep, base, level, -wide, wide, 3);
+  box(part, frame, -deep, deep, level, head, -wide, -open, 3);
+  box(part, frame, -deep, deep, level, head, open, wide, 3);
+  box(part, frame, -deep, back, level, head, -open, open, 3);
+  box(part, frame, -deep, deep, head, top, -wide, wide, 3);
+  // The timber over the opening, bearing on the cheeks and proud of the stack's face.
+  const f64 bear = std::min(open + 15.0, wide + 2.0);
+  box(ctx.part(Surface::timber), frame, deep - 14.0, deep + 3.0, head - 1.0, head + 20.0, -bear,
+      bear, 2);
 }
 
 }  // namespace

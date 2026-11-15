@@ -299,6 +299,18 @@ bool validate(const Description& d, std::string& why) {
           "chimney " + num(i) + ": an empty rect, a top under its base, or a hearth_side not 0..3";
       return false;
     }
+    if (c.hearth_side > 3) continue;
+    // A hearth leaves the stack a back 10 cm thick and a cheek 8 cm wide each side, and its head
+    // stands under the stack's cap.
+    const i32 sx = c.rect[2] - c.rect[0], sz = c.rect[3] - c.rect[1];
+    const i32 deep = c.hearth_side % 2 == 0 ? sx : sz, wide = c.hearth_side % 2 == 0 ? sz : sx;
+    if (c.hearth_storey >= storeys || c.hearth_depth < 10 || c.hearth_depth > deep - 10 ||
+        c.hearth_width < 30 || c.hearth_width > wide - 16 || c.hearth_head < 40 ||
+        d.storeys[c.hearth_storey].elevation + c.hearth_head > c.top - 40) {
+      why = "chimney " + num(i) + ": its hearth does not fit its stack (a back of 10 cm, cheeks " +
+            "of 8 cm, a head 40 cm under the top), or its storey does not exist";
+      return false;
+    }
   }
   for (u32 i = 0; i < d.boxes.size(); ++i) {
     const structure::Box& b = d.boxes[i];
@@ -499,13 +511,14 @@ structure::Description example_cot(i32 width, i32 depth, i32 wall) {
   d.roofs.push_back(roof);
   structure::Chimney chimney;
   chimney.rect[0] = -wall / 2 - 8, chimney.rect[1] = b / 2 - 65;
-  chimney.rect[2] = wall / 2 + 35, chimney.rect[3] = b / 2 + 65;
+  chimney.rect[2] = wall / 2 + 50, chimney.rect[3] = b / 2 + 65;
   chimney.base = -d.foundation;
   const i32 half = (roof.rect[3] - roof.rect[1]) / 2;
   chimney.top = roof.eaves + roof.pitch * half / 1000 + 2 * roof.thickness + 75;
   chimney.hearth_side = 0;
   chimney.hearth_width = 100;
   chimney.hearth_head = 125;
+  chimney.hearth_depth = 40;
   d.chimneys.push_back(chimney);
   return d;
 }

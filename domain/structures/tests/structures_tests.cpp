@@ -160,11 +160,11 @@ TEST_CASE("structures: the example cot meshes into every surface it has") {
   REQUIRE(valid);
   Solved s;
   solved(cot, MeshScope::whole, s);
-  for (const Surface surface :
-       {Surface::wall_outer, Surface::plinth, Surface::wall_inner, Surface::roof, Surface::timber,
-        Surface::floor, Surface::boards, Surface::chimney})
+  for (const Surface surface : {Surface::wall_outer, Surface::plinth, Surface::wall_inner,
+                                Surface::roof, Surface::timber, Surface::floor, Surface::chimney})
     CHECK(triangles(s, surface) > 0);
   CHECK(triangles(s, Surface::ceiling) == 0);  // one storey, open to the roof
+  CHECK(triangles(s, Surface::boards) == 0);   // and a thatch shows its own underside
   CHECK(s.report.triangles < 4000);            // structures.md, "Budgets"
   std::printf("structures: the example cot is %u triangles\n", s.report.triangles);
 }
@@ -421,7 +421,7 @@ TEST_CASE("structures: the recipe's file, its hash and its container") {
   INFO(error);
   REQUIRE(built);
   CHECK(container.generator == "structure");
-  CHECK(container.materials.size() == 8);  // every surface of the cot but a ceiling
+  CHECK(container.materials.size() == 7);  // every surface of the cot: no ceiling, no boards
   CHECK(container.cluster_material.size() == container.mesh.mesh.clusters.size());
   CHECK(report.clusters > 0);
   CHECK(report.root_triangles > 0);
@@ -442,6 +442,6 @@ TEST_CASE("structures: the same description is the same bytes") {
               static_cast<unsigned long long>(mesh_hash(two)));
   // Pinned on MSVC (x86-64-v3); GCC and Clang reproduce them (structures.md, "Determinism"). A
   // mesher change that moves a triangle bumps `k_structure_version` and re-takes these.
-  CHECK(mesh_hash(a) == 0xbbd9965c04e1da47ull);
-  CHECK(mesh_hash(two) == 0x2b6c4cc1f9504659ull);
+  CHECK(mesh_hash(a) == 0x6609bb89560dde21ull);
+  CHECK(mesh_hash(two) == 0x1c294bf2f1c79005ull);
 }

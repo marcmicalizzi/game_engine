@@ -80,6 +80,42 @@ void box(MeshPart& part, const Frame2& frame, f64 s0, f64 s1, f64 y0, f64 y1, f6
   }
 }
 
+void box3(MeshPart& part, const Frame3& frame, f64 a0, f64 a1, f64 b0, f64 b1, f64 c0, f64 c1,
+          u32 grain) {
+  const f64 lo[3] = {a0, b0, c0}, hi[3] = {a1, b1, c1};
+  for (u32 axis = 0; axis < 3; ++axis) {
+    const u32 ua = axis == 0 ? 2u : 0u;
+    const u32 va = axis == 1 ? 2u : 1u;
+    for (u32 side = 0; side < 2; ++side) {
+      Vec3 points[4];
+      Vec2 uvs[4];
+      const u32 corner[4][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+      for (u32 c = 0; c < 4; ++c) {
+        u32 pick[3] = {0, 0, 0};
+        pick[axis] = side;
+        pick[ua] = corner[c][0];
+        pick[va] = corner[c][1];
+        f64 coords[3];
+        for (u32 k = 0; k < 3; ++k)
+          coords[k] = pick[k] == 0 ? lo[k] : hi[k];
+        f64 p[3];
+        for (u32 k = 0; k < 3; ++k)
+          p[k] = frame.o[k] + frame.axis[0][k] * coords[0] + frame.axis[1][k] * coords[1] +
+                 frame.axis[2][k] * coords[2];
+        points[c] = metres(p[0], p[1], p[2]);
+        const f64 u = grain == va ? coords[va] : coords[ua];
+        const f64 v = grain == va ? coords[ua] : coords[va];
+        uvs[c] = {static_cast<f32>(u * k_m), static_cast<f32>(v * k_m)};
+      }
+      const f64 sign = side == 0 ? -1.0 : 1.0;
+      const Vec3 normal{static_cast<f32>(frame.axis[axis][0] * sign),
+                        static_cast<f32>(frame.axis[axis][1] * sign),
+                        static_cast<f32>(frame.axis[axis][2] * sign)};
+      polygon(part, points, uvs, 4, normal);
+    }
+  }
+}
+
 bool triangulate(const Vector<i32>& outline, Vector<u32>& triangles) {
   triangles.clear();
   const u32 n = outline.size() / 2;
