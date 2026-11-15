@@ -74,8 +74,8 @@ bool read_channel(const scene::WaterChannel& block, Channel& out, std::string* e
                   " stand at one place in plan; a station is a place along the line, and a "
                   "fall's foot stands downstream of its lip");
   }
-  out.origin = WorldPos{std::floor(0.5 * (lo_x + hi_x)), block.points[0].y,
-                        std::floor(0.5 * (lo_z + hi_z))};
+  out.origin =
+      WorldPos{std::floor(0.5 * (lo_x + hi_x)), block.points[0].y, std::floor(0.5 * (lo_z + hi_z))};
   out.points.reserve(n);
   for (u32 i = 0; i < n; ++i) {
     const WorldPos& p = block.points[i];
@@ -159,8 +159,7 @@ bool stretch_jumps(const Channel& c, u32 i) noexcept {
 bool stretch_drawn(const Channel& c, u32 i) noexcept {
   if (i + 1 >= c.points.size()) return false;
   if ((c.flags[i] & c.flags[i + 1] & scene_gen::k_channel_over_bank) == 0) return true;
-  return over_bank_stretch_drawn(c.depth_m[i], c.depth_m[i + 1],
-                                 static_cast<f64>(c.points[i].y),
+  return over_bank_stretch_drawn(c.depth_m[i], c.depth_m[i + 1], static_cast<f64>(c.points[i].y),
                                  static_cast<f64>(c.points[i + 1].y));
 }
 
@@ -289,12 +288,10 @@ ChannelAt channel_at_stretch(const Channel& c, const ChannelLine& line, u32 i, f
   if (stretch_drawn(c, i)) {
     // A round end (S108; channel.h, `Channel::cap_head`): no cut across the line at a station
     // that stands in other water, so past it the sheet reaches as far as it is wide.
-    const f32 run_lo = c.cap_head && line.run_from[i] == line.station[0]
-                           ? 1e30f
-                           : along - line.run_from[i];
-    const f32 run_hi = c.cap_tail && line.run_to[i] == line.station[n - 1]
-                           ? 1e30f
-                           : line.run_to[i] - along;
+    const f32 run_lo =
+        c.cap_head && line.run_from[i] == line.station[0] ? 1e30f : along - line.run_from[i];
+    const f32 run_hi =
+        c.cap_tail && line.run_to[i] == line.station[n - 1] ? 1e30f : line.run_to[i] - along;
     const f32 run = std::min(run_lo, run_hi);
     at.inside = std::min(wet + margin - at.distance_m, run);
     at.wet_inside = std::min(wet - at.distance_m, run);
@@ -310,27 +307,27 @@ ChannelAt channel_at_stretch(const Channel& c, const ChannelLine& line, u32 i, f
     const f64 time = std::sqrt(2.0 * static_cast<f64>(drop) / k_gravity);
     const f64 across = static_cast<f64>(len) / time;
     const f64 down = k_gravity * time * static_cast<f64>(t);
-    const f64 speed = std::min(std::sqrt(across * across + down * down),
-                               static_cast<f64>(k_channel_max_speed));
+    const f64 speed =
+        std::min(std::sqrt(across * across + down * down), static_cast<f64>(k_channel_max_speed));
     at.fall = true;
     at.level = c.points[i].y - drop * t * t;
     at.slope = len > 0.0f ? -2.0f * drop * t / len : 0.0f;
     at.speed = static_cast<f32>(speed);
     at.tau = line.tau[i] + time * static_cast<f64>(t);
-    const f64 width = std::max(static_cast<f64>(c.wet_left_m[i]) + static_cast<f64>(c.wet_right_m[i]),
-                               static_cast<f64>(k_lip_width_min_m));
+    const f64 width =
+        std::max(static_cast<f64>(c.wet_left_m[i]) + static_cast<f64>(c.wet_right_m[i]),
+                 static_cast<f64>(k_lip_width_min_m));
     // **The sheet thins to nothing at its two sides** (S108): whole over the middle of the lip's
     // wet reach, and down to the least the mesh writes over the outer `k_nappe_taper` of each
     // side's reach, where the lip's water is the shallows by its banks. The resolve draws white
     // water by how much water there is, so a fall's white has no straight side.
     const f64 side = std::max(static_cast<f64>(wet), static_cast<f64>(k_lip_width_min_m));
     const f64 taper = std::clamp(static_cast<f64>(at.lateral) / (k_nappe_taper * side), 0.0, 1.0);
-    const f64 thickness =
-        std::max(std::clamp(static_cast<f64>(c.discharge_m3s[i]) / width / speed,
-                            static_cast<f64>(k_channel_depth_min_m),
-                            static_cast<f64>(line.hydraulic[i])) *
-                     taper,
-                 static_cast<f64>(k_channel_depth_min_m));
+    const f64 thickness = std::max(
+        std::clamp(static_cast<f64>(c.discharge_m3s[i]) / width / speed,
+                   static_cast<f64>(k_channel_depth_min_m), static_cast<f64>(line.hydraulic[i])) *
+            taper,
+        static_cast<f64>(k_channel_depth_min_m));
     at.hydraulic = -static_cast<f32>(thickness);
     return at;
   }
@@ -435,15 +432,14 @@ ChannelJoins channel_joins(std::span<const Channel> channels, std::span<const Ch
       const bool own_head = e == 0;
       const bool other_head = so == 0;
       const bool outranked =
-          q_other > q_own ||
-          (q_other == q_own && (other_head != own_head ? other_head : j < k));
+          q_other > q_own || (q_other == q_own && (other_head != own_head ? other_head : j < k));
       if (!outranked) continue;
       ChannelJoin join;
       join.other = &o;
       join.line = &ol;
       const f32 wet_there = at.lateral + at.distance_m;
-      join.radius = own_reach + wet_there + 2.0f * k_channel_under_bank_m +
-                    k_channel_join_blend_m + 2.0f;
+      join.radius =
+          own_reach + wet_there + 2.0f * k_channel_under_bank_m + k_channel_join_blend_m + 2.0f;
       // The other's stretches within that reach of the meeting, along its line.
       join.first = at.stretch;
       while (join.first > 0 &&
@@ -456,16 +452,15 @@ ChannelJoins channel_joins(std::span<const Channel> channels, std::span<const Ch
       // The side of the other's line this channel arrives from: where its next station stands.
       const u32 before = e == 0 ? 1u : n - 2;
       join.from_left =
-          channel_at_stretch(o, ol, at.stretch,
-                             static_cast<f32>(c.origin.x + static_cast<f64>(c.points[before].x) -
-                                              o.origin.x),
-                             static_cast<f32>(c.origin.z + static_cast<f64>(c.points[before].z) -
-                                              o.origin.z))
+          channel_at_stretch(
+              o, ol, at.stretch,
+              static_cast<f32>(c.origin.x + static_cast<f64>(c.points[before].x) - o.origin.x),
+              static_cast<f32>(c.origin.z + static_cast<f64>(c.points[before].z) - o.origin.z))
               .left;
       join.centre = Vec2{c.points[s].x, c.points[s].z};
-      join.shift = Vec3{static_cast<f32>(c.origin.x - o.origin.x),
-                        static_cast<f32>(c.origin.y - o.origin.y),
-                        static_cast<f32>(c.origin.z - o.origin.z)};
+      join.shift =
+          Vec3{static_cast<f32>(c.origin.x - o.origin.x), static_cast<f32>(c.origin.y - o.origin.y),
+               static_cast<f32>(c.origin.z - o.origin.z)};
       joins.list.push_back(join);
     }
   }
@@ -552,8 +547,7 @@ bool build_sheet(const Channel& c, const ChannelLine& line, f32 h, const Channel
         const f32 d =
             stretch_distance(c, line, i, static_cast<f32>(ii) * h, static_cast<f32>(j) * h);
         if (d > reach) continue;
-        found.push_back(
-            Node{static_cast<u64>(j - z0) * wide + static_cast<u64>(ii - x0), d, i});
+        found.push_back(Node{static_cast<u64>(j - z0) * wide + static_cast<u64>(ii - x0), d, i});
       }
     }
   }
@@ -688,126 +682,125 @@ bool build_sheet(const Channel& c, const ChannelLine& line, f32 h, const Channel
   u32 poly[8];
   bool poly_edge[8];
   for (const Piece& piece : pieces) {
-  std::fill(node_vertex.begin(), node_vertex.end(), k_none);
-  std::fill(edge_vertex.begin(), edge_vertex.end(), k_none);
-  // The piece's region is where four fields are all positive: past its first station, short of
-  // its last (neither at a round end: channel.h, `Channel::cap_head`), inside the wet reach (with
-  // the margin, off a nappe), and outside the waters the channel joins, less a cell (S108).
-  const bool round_head = c.cap_head && piece.from == line.station[0];
-  const bool round_tail = c.cap_tail && piece.to == line.station[n - 1];
-  const auto fields = [&](u32 node, f32 out_fields[4]) {
-    const ChannelAt& at = nodes[node];
-    out_fields[0] = round_head ? 1e30f : at.along - piece.from;
-    out_fields[1] = round_tail ? 1e30f : piece.to - at.along;
-    out_fields[2] = at.lateral + (piece.fall ? 0.0f : at.margin);
-    out_fields[3] = outside[node];
-  };
-  const auto field = [&](u32 node) {
-    f32 f[4];
-    fields(node, f);
-    return std::min(std::min(f[0], f[1]), std::min(f[2], f[3]));
-  };
-  for (u32 node = 0; node < count; ++node) {
-    const u64 key = keys[node];
-    const u32 cn[4] = {node, find(key + 1), find(key + wide + 1), find(key + wide)};
-    if (cn[1] == k_none || cn[2] == k_none || cn[3] == k_none) continue;
-    // Along +x from a node only if the next key is in the same row (the grid's pad keeps the last
-    // column clear, so it is).
-    const u32 e[4] = {2 * cn[0], 2 * cn[1] + 1, 2 * cn[3], 2 * cn[0] + 1};
-    f32 v[4];
-    bool in[4];
-    u32 inside = 0;
-    for (u32 k = 0; k < 4; ++k) {
-      v[k] = field(cn[k]);
-      in[k] = v[k] > 0.0f;
-      inside += in[k] ? 1u : 0u;
-    }
-    if (inside == 0) continue;
-    // A vertex is the solve at its place among the piece's own stretches.
-    const auto corner = [&](u32 k) {
-      if (node_vertex[cn[k]] == k_none) {
-        const ChannelAt& own = nodes[cn[k]];
-        const bool within = own.stretch >= piece.first && own.stretch <= piece.last;
-        node_vertex[cn[k]] =
-            add(places[cn[k]],
-                solved(places[cn[k]],
-                       within ? own
-                              : channel_at(c, line, places[cn[k]].x, places[cn[k]].y, piece.first,
-                                           piece.last)));
-      }
-      return node_vertex[cn[k]];
+    std::fill(node_vertex.begin(), node_vertex.end(), k_none);
+    std::fill(edge_vertex.begin(), edge_vertex.end(), k_none);
+    // The piece's region is where four fields are all positive: past its first station, short of
+    // its last (neither at a round end: channel.h, `Channel::cap_head`), inside the wet reach (with
+    // the margin, off a nappe), and outside the waters the channel joins, less a cell (S108).
+    const bool round_head = c.cap_head && piece.from == line.station[0];
+    const bool round_tail = c.cap_tail && piece.to == line.station[n - 1];
+    const auto fields = [&](u32 node, f32 out_fields[4]) {
+      const ChannelAt& at = nodes[node];
+      out_fields[0] = round_head ? 1e30f : at.along - piece.from;
+      out_fields[1] = round_tail ? 1e30f : piece.to - at.along;
+      out_fields[2] = at.lateral + (piece.fall ? 0.0f : at.margin);
+      out_fields[3] = outside[node];
     };
-    const auto edge = [&](u32 k) {
-      if (edge_vertex[e[k]] == k_none) {
-        // The crossing: of the fields that are not positive at the outside node, the one whose
-        // own zero along this edge is nearest the inside node — each field's crossing by itself,
-        // not the crossing of their least, which between a cut and a bank is on neither. It is
-        // measured from the edge's lower node whichever end is inside: where two pieces meet,
-        // their fields along the line are each other's negatives at both nodes, so the two compute
-        // the same quotient and the same point, to the bit.
-        const u32 k1 = (k + 1) & 3;
-        const u32 a = cn[k] < cn[k1] ? k : k1;
-        const u32 b = cn[k] < cn[k1] ? k1 : k;
-        const Vec2 pa = places[cn[a]];
-        const Vec2 pb = places[cn[b]];
-        f32 fa[4];
-        f32 fb[4];
-        fields(cn[a], fa);
-        fields(cn[b], fb);
-        const bool low_inside = in[a];
-        f32 t = low_inside ? 1.0f : 0.0f;
-        for (u32 f = 0; f < 4; ++f) {
-          if ((low_inside ? fb[f] : fa[f]) > 0.0f) continue;
-          const f32 span = fa[f] - fb[f];
-          const f32 at_f = span != 0.0f ? fa[f] / span : 0.5f;
-          t = low_inside ? std::min(t, at_f) : std::max(t, at_f);
-        }
-        t = std::clamp(t, k_edge_margin, 1.0f - k_edge_margin);
-        const Vec2 p{pa.x + (pb.x - pa.x) * t, pa.y + (pb.y - pa.y) * t};
-        edge_vertex[e[k]] =
-            add(p, solved(p, channel_at(c, line, p.x, p.y, piece.first, piece.last)));
-      }
-      return edge_vertex[e[k]];
+    const auto field = [&](u32 node) {
+      f32 f[4];
+      fields(node, f);
+      return std::min(std::min(f[0], f[1]), std::min(f[2], f[3]));
     };
-    const auto segment = [&](u32 a, u32 b) {
-      out.boundary.push_back(raw[a].p);
-      out.boundary.push_back(raw[b].p);
-    };
-    const bool saddle = in[0] == in[2] && in[1] == in[3] && in[0] != in[1];
-    const bool joined = (v[0] + v[1] + v[2] + v[3]) > 0.0f;
-    if (saddle && !joined) {
+    for (u32 node = 0; node < count; ++node) {
+      const u64 key = keys[node];
+      const u32 cn[4] = {node, find(key + 1), find(key + wide + 1), find(key + wide)};
+      if (cn[1] == k_none || cn[2] == k_none || cn[3] == k_none) continue;
+      // Along +x from a node only if the next key is in the same row (the grid's pad keeps the last
+      // column clear, so it is).
+      const u32 e[4] = {2 * cn[0], 2 * cn[1] + 1, 2 * cn[3], 2 * cn[0] + 1};
+      f32 v[4];
+      bool in[4];
+      u32 inside = 0;
       for (u32 k = 0; k < 4; ++k) {
-        if (!in[k]) continue;
-        const u32 a = corner(k);
-        const u32 b = edge(k);
-        const u32 d = edge((k + 3) & 3);
-        tri(a, b, d);
-        segment(b, d);
+        v[k] = field(cn[k]);
+        in[k] = v[k] > 0.0f;
+        inside += in[k] ? 1u : 0u;
       }
-      continue;
-    }
-    // The inside polygon, walked round the cell's corners: a corner inside, and an edge point
-    // where the inside begins or ends; convex in every case marching squares makes, so a fan.
-    // Two edge points in a row are a piece of the sheet's boundary.
-    u32 np = 0;
-    for (u32 k = 0; k < 4; ++k) {
-      if (in[k]) {
-        poly_edge[np] = false;
-        poly[np++] = corner(k);
+      if (inside == 0) continue;
+      // A vertex is the solve at its place among the piece's own stretches.
+      const auto corner = [&](u32 k) {
+        if (node_vertex[cn[k]] == k_none) {
+          const ChannelAt& own = nodes[cn[k]];
+          const bool within = own.stretch >= piece.first && own.stretch <= piece.last;
+          node_vertex[cn[k]] = add(
+              places[cn[k]],
+              solved(places[cn[k]], within ? own
+                                           : channel_at(c, line, places[cn[k]].x, places[cn[k]].y,
+                                                        piece.first, piece.last)));
+        }
+        return node_vertex[cn[k]];
+      };
+      const auto edge = [&](u32 k) {
+        if (edge_vertex[e[k]] == k_none) {
+          // The crossing: of the fields that are not positive at the outside node, the one whose
+          // own zero along this edge is nearest the inside node — each field's crossing by itself,
+          // not the crossing of their least, which between a cut and a bank is on neither. It is
+          // measured from the edge's lower node whichever end is inside: where two pieces meet,
+          // their fields along the line are each other's negatives at both nodes, so the two
+          // compute the same quotient and the same point, to the bit.
+          const u32 k1 = (k + 1) & 3;
+          const u32 a = cn[k] < cn[k1] ? k : k1;
+          const u32 b = cn[k] < cn[k1] ? k1 : k;
+          const Vec2 pa = places[cn[a]];
+          const Vec2 pb = places[cn[b]];
+          f32 fa[4];
+          f32 fb[4];
+          fields(cn[a], fa);
+          fields(cn[b], fb);
+          const bool low_inside = in[a];
+          f32 t = low_inside ? 1.0f : 0.0f;
+          for (u32 f = 0; f < 4; ++f) {
+            if ((low_inside ? fb[f] : fa[f]) > 0.0f) continue;
+            const f32 span = fa[f] - fb[f];
+            const f32 at_f = span != 0.0f ? fa[f] / span : 0.5f;
+            t = low_inside ? std::min(t, at_f) : std::max(t, at_f);
+          }
+          t = std::clamp(t, k_edge_margin, 1.0f - k_edge_margin);
+          const Vec2 p{pa.x + (pb.x - pa.x) * t, pa.y + (pb.y - pa.y) * t};
+          edge_vertex[e[k]] =
+              add(p, solved(p, channel_at(c, line, p.x, p.y, piece.first, piece.last)));
+        }
+        return edge_vertex[e[k]];
+      };
+      const auto segment = [&](u32 a, u32 b) {
+        out.boundary.push_back(raw[a].p);
+        out.boundary.push_back(raw[b].p);
+      };
+      const bool saddle = in[0] == in[2] && in[1] == in[3] && in[0] != in[1];
+      const bool joined = (v[0] + v[1] + v[2] + v[3]) > 0.0f;
+      if (saddle && !joined) {
+        for (u32 k = 0; k < 4; ++k) {
+          if (!in[k]) continue;
+          const u32 a = corner(k);
+          const u32 b = edge(k);
+          const u32 d = edge((k + 3) & 3);
+          tri(a, b, d);
+          segment(b, d);
+        }
+        continue;
       }
-      if (in[k] != in[(k + 1) & 3]) {
-        poly_edge[np] = true;
-        poly[np++] = edge(k);
+      // The inside polygon, walked round the cell's corners: a corner inside, and an edge point
+      // where the inside begins or ends; convex in every case marching squares makes, so a fan.
+      // Two edge points in a row are a piece of the sheet's boundary.
+      u32 np = 0;
+      for (u32 k = 0; k < 4; ++k) {
+        if (in[k]) {
+          poly_edge[np] = false;
+          poly[np++] = corner(k);
+        }
+        if (in[k] != in[(k + 1) & 3]) {
+          poly_edge[np] = true;
+          poly[np++] = edge(k);
+        }
       }
+      for (u32 k = 1; k + 1 < np; ++k)
+        tri(poly[0], poly[k], poly[k + 1]);
+      for (u32 k = 0; k < np; ++k) {
+        const u32 k1 = (k + 1) % np;
+        if (poly_edge[k] && poly_edge[k1]) segment(poly[k], poly[k1]);
+      }
+      if (m.positions.size() > k_max_vertices) return false;
     }
-    for (u32 k = 1; k + 1 < np; ++k)
-      tri(poly[0], poly[k], poly[k + 1]);
-    for (u32 k = 0; k < np; ++k) {
-      const u32 k1 = (k + 1) % np;
-      if (poly_edge[k] && poly_edge[k1]) segment(poly[k], poly[k1]);
-    }
-    if (m.positions.size() > k_max_vertices) return false;
-  }
   }
   return true;
 }
@@ -853,9 +846,9 @@ void build_channel_depth_map(const Channel& c, const ChannelMesh& mesh,
     x0 = std::floor(x0 / texel) * texel;
     z0 = std::floor(z0 / texel) * texel;
   }
-  const u32 size = static_cast<u32>(std::clamp(std::ceil(side / texel) + 3.0,
-                                               static_cast<f64>(k_depth_map_min),
-                                               static_cast<f64>(k_depth_map_max)));
+  const u32 size =
+      static_cast<u32>(std::clamp(std::ceil(side / texel) + 3.0, static_cast<f64>(k_depth_map_min),
+                                  static_cast<f64>(k_depth_map_max)));
   out.size = size;
   out.origin = Vec2{static_cast<f32>(x0), static_cast<f32>(z0)};
   out.texel_m = static_cast<f32>(texel);
@@ -913,8 +906,7 @@ void build_channel_depth_map(const Channel& c, const ChannelMesh& mesh,
       f64 d = 0.0;
       if (ground.present()) {
         // The level the sheet stands at here: the solve's, brought down to the water it joins.
-        const f32 stands =
-            joins != nullptr ? channel_meet(*joins, x, z, at.level).level : at.level;
+        const f32 stands = joins != nullptr ? channel_meet(*joins, x, z, at.level).level : at.level;
         const f64 level = c.origin.y + static_cast<f64>(stands);
         const WorldPos world{c.origin.x + static_cast<f64>(x), level,
                              c.origin.z + static_cast<f64>(z)};

@@ -309,9 +309,10 @@ Vector<gfx::WaterShore> channel_bank_records(const scene::WaterChannel& c, const
     const f64 len = std::sqrt(dx * dx + dz * dz);
     const f64 lx = len > 0.0 ? -dz / len : 0.0, lz = len > 0.0 ? dx / len : 0.0;
     const auto middle = [&](const WorldPos& s, u32 k) {
-      const f64 shift = 0.5 * (static_cast<f64>(c.wet_left_m[k]) - static_cast<f64>(c.wet_right_m[k]));
-      return Vec4{static_cast<f32>(s.x + lx * shift - at.x), static_cast<f32>(s.z + lz * shift - at.z),
-                  static_cast<f32>(s.y - at.y),
+      const f64 shift =
+          0.5 * (static_cast<f64>(c.wet_left_m[k]) - static_cast<f64>(c.wet_right_m[k]));
+      return Vec4{static_cast<f32>(s.x + lx * shift - at.x),
+                  static_cast<f32>(s.z + lz * shift - at.z), static_cast<f32>(s.y - at.y),
                   std::max(0.5f * (c.wet_left_m[k] + c.wet_right_m[k]), 0.01f)};
     };
     gfx::WaterShore r;

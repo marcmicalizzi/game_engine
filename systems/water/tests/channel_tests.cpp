@@ -7,6 +7,8 @@
 // depth map the level less the ground; no boundary of the sheet above the ground; a channel's
 // water at a point; the files the same bytes twice and pinned; the generator through the
 // registry. No device.
+#include "channel_fixture.h"
+
 #include <core/hash/hash.h>
 #include <core/math/math.h>
 #include <core/math/world.h>
@@ -26,8 +28,6 @@
 #include <cstring>
 #include <span>
 #include <string>
-
-#include "channel_fixture.h"
 
 using namespace engine;
 
@@ -119,7 +119,8 @@ f32 map_depth(const water::DepthMap& map, f32 x, f32 z) {
   REQUIRE(j + 1 < map.size);
   const f32 u = fi - static_cast<f32>(i), w = fj - static_cast<f32>(j);
   const f32 a = water::depth_map_depth(map, i, j), b = water::depth_map_depth(map, i + 1, j);
-  const f32 c = water::depth_map_depth(map, i, j + 1), d = water::depth_map_depth(map, i + 1, j + 1);
+  const f32 c = water::depth_map_depth(map, i, j + 1),
+            d = water::depth_map_depth(map, i + 1, j + 1);
   return (a * (1.0f - u) + b * u) * (1.0f - w) + (c * (1.0f - u) + d * u) * w;
 }
 
@@ -391,8 +392,7 @@ TEST_CASE("water channel: the step's fall is a parabola and its jump a ramp at t
 
 // W120's film along a line that climbs out of a hollow: the stations over their banks, each with
 // the 5 mm of water the cook writes there.
-static scene::WaterChannel filmed(scene::WaterChannel block,
-                                  std::initializer_list<u32> stations) {
+static scene::WaterChannel filmed(scene::WaterChannel block, std::initializer_list<u32> stations) {
   for (const u32 i : stations) {
     block.flags[i] = static_cast<u16>(block.flags[i] | scene_gen::k_channel_over_bank);
     block.depth_m[i] = 0.005f;
@@ -467,7 +467,8 @@ TEST_CASE("water channel: a pool over its bank is drawn; a film, or water that c
   CHECK(film.sheet.mesh.positions.empty());
 }
 
-TEST_CASE("water channel: a tributary's sheet ends where the stream it joins begins, at its level") {
+TEST_CASE(
+    "water channel: a tributary's sheet ends where the stream it joins begins, at its level") {
   // The mouth's reach along +x at z 20, and the uniform reach turned to run along +z into it at
   // x 40: its last station on the stream's line, at the stream's level there, carrying half as
   // much (S108; channel.h, "Where channels meet"). On the base the tributary's sheet lies across
@@ -742,7 +743,8 @@ TEST_CASE("water channel: the files are the same bytes twice, pinned, and the ge
   // A channel, and one that stands over its bank from end to end: mesh k is channel k either
   // way, and the second's has no path, which is how a reader knows it draws nothing.
   const scene::WaterChannel blocks[2] = {
-      channel_fixture::step(), filmed(channel_fixture::mouth(), {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10})};
+      channel_fixture::step(),
+      filmed(channel_fixture::mouth(), {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10})};
   scene_gen::Context context;
   const std::string dir = tmp.path();
   context.dir = dir;
@@ -863,7 +865,8 @@ TEST_CASE("water channel: from the section's mean to a vertical's and to the sur
   CHECK(water::k_channel_conveyance / triangle - 1.0 == doctest::Approx(0.0714).epsilon(1e-2));
   // The share itself: kappa (d / D)^(2/3), nothing where there is no depth, never past the bound.
   CHECK(water::lateral_speed_share(0.5, 0.5) == doctest::Approx(0.9).epsilon(1e-12));
-  CHECK(water::lateral_speed_share(1.0, 0.5) == doctest::Approx(0.9 * std::cbrt(4.0)).epsilon(1e-12));
+  CHECK(water::lateral_speed_share(1.0, 0.5) ==
+        doctest::Approx(0.9 * std::cbrt(4.0)).epsilon(1e-12));
   CHECK(water::lateral_speed_share(0.0, 0.5) == 0.0);
   CHECK(water::lateral_speed_share(5.0, 0.5) == water::k_channel_profile_max);
 }

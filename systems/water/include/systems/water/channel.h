@@ -156,13 +156,13 @@ struct Channel {
   WorldPos origin{};
   // The stations less the origin, metres: y the solved level.
   Vector<Vec3> points;
-  Vector<f32> depth_m;        // the solved greatest depth
-  Vector<f32> speed_mps;      // the section's mean, within [k_channel_min_speed, k_channel_max_speed]
-  Vector<f32> froude;         // within [0, k_channel_froude_max]
+  Vector<f32> depth_m;    // the solved greatest depth
+  Vector<f32> speed_mps;  // the section's mean, within [k_channel_min_speed, k_channel_max_speed]
+  Vector<f32> froude;     // within [0, k_channel_froude_max]
   Vector<f32> discharge_m3s;
-  Vector<f32> wet_left_m;     // left is the side of (-dz, dx) for a line running (dx, dz)
+  Vector<f32> wet_left_m;  // left is the side of (-dz, dx) for a line running (dx, dz)
   Vector<f32> wet_right_m;
-  Vector<u16> flags;          // scene_gen/water_channel.h
+  Vector<u16> flags;  // scene_gen/water_channel.h
   f32 manning_n = 0.04f;
   f32 shore_m = 2.0f;
   u64 seed = 1;
@@ -227,7 +227,7 @@ struct ChannelAt {
   // > 0 inside the sheet: the least of how far inside the wet reach and its margin the place is and
   // how far along its run of drawn stretches from either end; < 0 outside, or on an undrawn one.
   f32 inside = -1.0f;
-  f32 wet_inside = -1.0f;    // the same without the margin: > 0 within the wet reach itself
+  f32 wet_inside = -1.0f;  // the same without the margin: > 0 within the wet reach itself
   // The terms of it, which the sheet's pieces take their own least of: how far along the line the
   // place is (past the line's own ends for a place beyond them), how far inside the wet reach,
   // and the margin under the bank there (0 at a station over its bank, and on a nappe).
@@ -241,18 +241,18 @@ struct ChannelAt {
   f64 tau = 0.0;             // the travel time from the head, seconds, unwrapped
   // The section's hydraulic depth, metres; on a fall less the nappe's thickness (negative).
   f32 hydraulic = 0.0f;
-  f32 depth_m = 0.0f;        // the solved greatest depth at the place along the line
+  f32 depth_m = 0.0f;  // the solved greatest depth at the place along the line
   bool fall = false;
 };
 // The line's per-stretch constants, computed once: where each station is along the line in plan
 // and in travel time, each stretch's heading, and the runs of drawn stretches.
 struct ChannelLine {
-  Vector<f32> station;  // one a station, metres along the line in plan
-  Vector<f64> tau;      // one a station, seconds from the head
-  Vector<Vec2> heading; // one a stretch
-  Vector<f32> length;   // one a stretch, in plan
-  Vector<f32> run_from; // one a stretch: the station its run of drawn stretches starts at
-  Vector<f32> run_to;   // ... and ends at (both 0 for a stretch that is not drawn)
+  Vector<f32> station;   // one a station, metres along the line in plan
+  Vector<f64> tau;       // one a station, seconds from the head
+  Vector<Vec2> heading;  // one a stretch
+  Vector<f32> length;    // one a stretch, in plan
+  Vector<f32> run_from;  // one a stretch: the station its run of drawn stretches starts at
+  Vector<f32> run_to;    // ... and ends at (both 0 for a stretch that is not drawn)
   // One a stretch: the stations its **piece** starts and ends at — its run cut at every fall's lip
   // and foot, so a nappe is a piece of its own and a lip is an edge of the mesh.
   Vector<f32> piece_from;
@@ -289,14 +289,14 @@ inline constexpr f32 k_channel_join_under_m = 0.03f;
 // How near an end stands to another channel's wet reach and still meets it, metres.
 inline constexpr f32 k_channel_join_reach_m = 0.5f;
 struct ChannelJoin {
-  const Channel* other = nullptr;       // the water joined (it outranks this channel here)
-  const ChannelLine* line = nullptr;    // its line
-  u32 first = 0;                        // its stretches within the meeting's reach
+  const Channel* other = nullptr;     // the water joined (it outranks this channel here)
+  const ChannelLine* line = nullptr;  // its line
+  u32 first = 0;                      // its stretches within the meeting's reach
   u32 last = 0;
-  Vec2 centre{};                        // the meeting, metres from this channel's origin
-  f32 radius = 0.0f;                    // past it no place of this channel is cut or lowered
-  Vec3 shift{};                         // this channel's origin less the other's, metres
-  bool from_left = false;               // the side of the other's line this channel arrives from
+  Vec2 centre{};           // the meeting, metres from this channel's origin
+  f32 radius = 0.0f;       // past it no place of this channel is cut or lowered
+  Vec3 shift{};            // this channel's origin less the other's, metres
+  bool from_left = false;  // the side of the other's line this channel arrives from
 };
 struct ChannelJoins {
   Vector<ChannelJoin> list;
@@ -374,8 +374,8 @@ struct ChannelSample {
   bool fall = false;
 };
 bool channel_sample(const Channel& channel, const ChannelLine& line,
-                    const scene_gen::Ground& ground, WorldPos at, ChannelSample& out,
-                    u32 first = 0, u32 last = 0xffffffffu) noexcept;
+                    const scene_gen::Ground& ground, WorldPos at, ChannelSample& out, u32 first = 0,
+                    u32 last = 0xffffffffu) noexcept;
 
 // The generator's parameters as the reader hands them: `{"channels": [<WaterChannel>...]}`. Its
 // `expand` makes one mesh and one placement per channel, in order.
