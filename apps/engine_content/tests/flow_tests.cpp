@@ -117,6 +117,67 @@ TEST_CASE("engine-content flow: the fixture, solved again as an author's lines, 
 #endif
 }
 
+TEST_CASE("engine-content flow: the cook says which body that fills a load would refuse") {
+#if !ENGINE_CONTENT_CHANNELS || !ENGINE_CONTENT_TILESET
+  MESSAGE("no channels capability or tiles ground provider in this configuration");
+#else
+  // The fixture's pool is a hollow 17 m long with its floor at 8.7 m and its lowest rim at 9.7 m
+  // (W122; channels.md, "Hollows"). Three bodies that fill, all inside the pool's own outline: one
+  // that holds a level of 9 m, one whose extent the same level passes (what the water refuses a
+  // scene for: the level spills out of what it was given), and one seeded on the dry bank.
+  test::TempDir tmp("flow_fills_cmd");
+  REQUIRE(tmp.ok());
+  const std::string dir = tmp.file("fixture");
+  const auto made = run({"flow", "fixture", dir});
+  REQUIRE_MESSAGE(made.code == 0, made.text);
+  std::string text;
+  JsonValue scene;
+  REQUIRE(io::read_file(dir + "/scene.json", text) == io::Status::Ok);
+  REQUIRE(parse_json(text, scene).ok);
+  JsonValue& water = *scene.find("water");
+  for (
+      const char* body :
+      {R"({"name":"held","level_m":9.0,"shape":{"fill":{"seed":[68,9,0],"max_extent_m":30}}})",
+       R"({"name":"narrow","level_m":9.0,"shape":{"fill":{"seed":[68,9,0],"max_extent_m":4}}})",
+       R"({"name":"on the bank","level_m":9.0,"shape":{"fill":{"seed":[68,9,12],"max_extent_m":4}}})"}) {
+    JsonValue block;
+    REQUIRE(parse_json(body, block).ok);
+    water.push_back(std::move(block));
+  }
+  JsonWriteOptions flat;
+  flat.pretty = false;
+  REQUIRE(io::write_file_atomic(dir + "/scene-fills.json", write_json(scene, flat)) ==
+          io::Status::Ok);
+  const auto solved = run({"flow", "solve", dir + "/scene-fills.json", tmp.file("flow.json"),
+                           "--ddc", tmp.file("ddc"), "--resistance", "manning", "--reach", "6"});
+  REQUIRE_MESSAGE(solved.code == 0, solved.text);
+  CHECK(solved.text.find("\"bodies\":3") != std::string::npos);
+  CHECK(solved.text.find("\"spilling\":1") != std::string::npos);
+  CHECK(solved.text.find("\"seed_dry\":1") != std::string::npos);
+  // The one that holds: the pool's floor under 9 m, 17 m by about 6.6 m on a lattice of two
+  // thirds of a metre.
+  const usize held = solved.text.find("\"name\":\"held\"");
+  REQUIRE(held != std::string::npos);
+  const usize from = solved.text.rfind('{', held), to = solved.text.find('}', held);
+  REQUIRE(from != std::string::npos);
+  REQUIRE(to != std::string::npos);
+  JsonValue one;
+  REQUIRE(parse_json(solved.text.substr(from, to - from + 1), one).ok);
+  CHECK(one.find("holds")->as_bool());
+  CHECK(number(*one.find("nodes")) > 150);
+  CHECK(number(*one.find("nodes")) < 500);
+  CHECK(number(*one.find("spacing_m")) == doctest::Approx(0.667).epsilon(1e-3));
+  // The two a load would refuse are named, each with the water's own reason.
+  CHECK(solved.text.find("water body \"narrow\": at its level 9.000 m its fill reaches its "
+                         "max_extent_m (4 m)") != std::string::npos);
+  CHECK(solved.text.find("water body \"on the bank\": its fill's seed stands on ground at or "
+                         "above its level") != std::string::npos);
+  // The solve itself is the fixture's, as with no such body.
+  CHECK(solved.text.find("\"authored_lines\":3") != std::string::npos);
+  CHECK(solved.text.find("\"falls\":1") != std::string::npos);
+#endif
+}
+
 TEST_CASE("engine-content flow: what a block declares decides what the cook does with it") {
 #if !ENGINE_CONTENT_CHANNELS || !ENGINE_CONTENT_TILESET
   MESSAGE("no channels capability or tiles ground provider in this configuration");

@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "W122",
+  "reason": "the hollows: what a pit of the ground becomes (breach, lake, body below its spill, dry, sink), the balance that decides it, the plan's bodies, the forest measured and the seat reshaped, on channels.md; the second pass adds the lip held by every link that begins on it, the level checked against the drawn ground and by the cook, the forest's mix as a table and as seen, where the owner's marks stand now and the remaining hollows traced; apps.md gains one sentence on the channels command's water and hollows output",
+  "date": "2026-11-14",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/apps.md": 454,
+    "page:docs/subsystems/channels.md": 27932
+  }
+}

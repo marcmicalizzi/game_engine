@@ -2652,8 +2652,9 @@ TEST_CASE("channels: the clasts' recipes and mesh are pinned") {
   // re-pinned the recipes alone: `k_channels_version` 10 is in every recipe's hash, and the
   // positions and indices of this V-notch's pieces are the same bits (nothing in it is seated).
   // W121 re-pinned the recipes alone, for `k_channels_version` 11 (the V-notch ends in no body,
-  // so its pieces are the same bits).
-  CHECK(recipes == 10122370879145706239ull);
+  // so its pieces are the same bits). W122 the same, for `k_channels_version` 12 (this notch has
+  // no hollow and its bed no hold).
+  CHECK(recipes == 15634382224641872997ull);
   CHECK(positions == 14068701233020217500ull);
   CHECK(indices == 4152819545259226263ull);
 }

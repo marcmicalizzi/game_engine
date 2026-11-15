@@ -407,21 +407,48 @@ Vector<f64> lengths_of(const Vector<ChannelPoint>& line) {
 // (what leaves a lake again) is appended as an outlet link of its own. A run that ends at a
 // shoreline ends on the shoreline itself, found by bisection along the stretch that crosses it,
 // and the ground there is the body's level.
+//
+// **The plan's own bodies** (W122; channels.md, "Hollows") split a line the same way: a point is
+// under one where its nearest lattice cell is the body's (`ChannelNetwork::body_of`) and the
+// ground at the point stands under the body's level. A mouth into one carries the body's level
+// exactly, and what leaves it carries it as its `outlet_level`.
 constexpr f64 k_run_min_m = 4.0;
 void apply_water(ChannelNetwork& n, const scene_gen::Ground& ground,
                  const scene_gen::Exclusion* water) {
-  if (water == nullptr || water->body_count() == 0) return;
-  auto wet_at = [&](f64 x, f64 z) {
-    return water->excluded_mm(ground, scene_gen::nearest_mm(x), scene_gen::nearest_mm(z),
-                              scene_gen::k_exclude_water);
+  const bool scene_bodies = water != nullptr && water->body_count() > 0;
+  bool plan_bodies = false;
+  for (const Hollow& h : n.basins.hollows)
+    plan_bodies = plan_bodies || h.body();
+  if (!scene_bodies && !plan_bodies) return;
+  // 0 dry; 1 under a scene's body; 2 + k under the plan's body, hollow k.
+  auto wet_id = [&](f64 x, f64 z) -> u32 {
+    const i64 x_mm = scene_gen::nearest_mm(x), z_mm = scene_gen::nearest_mm(z);
+    if (scene_bodies && water->excluded_mm(ground, x_mm, z_mm, scene_gen::k_exclude_water))
+      return 1;
+    if (!plan_bodies || n.body_of.empty()) return 0;
+    const i64 c = floor_div(x_mm - n.x_mm + n.spacing_mm / 2, n.spacing_mm);
+    const i64 r = floor_div(z_mm - n.z_mm + n.spacing_mm / 2, n.spacing_mm);
+    if (c < 0 || r < 0 || c >= static_cast<i64>(n.width) || r >= static_cast<i64>(n.depth))
+      return 0;
+    const u32 body = n.body_of[static_cast<u32>(r) * n.width + static_cast<u32>(c)];
+    if (body == 0 || !(ground_at(ground, x, z) < n.basins.hollows[body - 1].level_m)) return 0;
+    return 1 + body;
+  };
+  // Under body `id` (as `wet_id` numbers them) at a place between two of a line's points: a
+  // scene's body by the exclusion; the plan's by the ground against its level, since a line's
+  // points next to one under the body are the body's own shore whichever cell is nearest them.
+  auto wet_at = [&](f64 x, f64 z, u32 id) {
+    if (id >= 2) return ground_at(ground, x, z) < n.basins.hollows[id - 2].level_m;
+    return wet_id(x, z) != 0;
   };
   // The shoreline between a dry point and a wet one: 16 halvings of the stretch (under 0.1 mm
   // for the 0.5 m step), the dry point's numbers, the ground's height there.
-  auto shore = [&](const ChannelPoint& dry, const ChannelPoint& wet) {
+  auto shore = [&](const ChannelPoint& dry, const ChannelPoint& wet, u32 id) {
     f64 lo = 0, hi = 1;
     for (u32 k = 0; k < 16; ++k) {
       const f64 mid = .5 * (lo + hi);
-      if (wet_at(dry.at.x + mid * (wet.at.x - dry.at.x), dry.at.z + mid * (wet.at.z - dry.at.z)))
+      if (wet_at(dry.at.x + mid * (wet.at.x - dry.at.x), dry.at.z + mid * (wet.at.z - dry.at.z),
+                 id))
         hi = mid;
       else
         lo = mid;
@@ -438,13 +465,26 @@ void apply_water(ChannelNetwork& n, const scene_gen::Ground& ground,
     ChannelLink& link = n.links[k];
     const u32 m = link.line.size();
     if (m < 2) continue;
+    Vector<u32> under(m, 0);
     Vector<u8> wet(m, 0);
     bool any = false;
     for (u32 i = 0; i < m; ++i) {
-      wet[i] = wet_at(link.line[i].at.x, link.line[i].at.z) ? 1 : 0;
-      any = any || wet[i] != 0;
+      under[i] = wet_id(link.line[i].at.x, link.line[i].at.z);
+      any = any || under[i] != 0;
     }
     if (!any) continue;
+    // A plan's body reaches along the line as far as the ground stands under its level: the
+    // lattice's cells end a cell short of the lip, and the lip is where the line leaves.
+    const auto reaches = [&](u32 i, u32 from) {
+      return under[i] == 0 && under[from] >= 2 &&
+             link.line[i].at.y < n.basins.hollows[under[from] - 2].level_m;
+    };
+    for (u32 i = 1; i < m; ++i)
+      if (reaches(i, i - 1)) under[i] = under[i - 1];
+    for (u32 i = m - 1; i-- > 0;)
+      if (reaches(i, i + 1)) under[i] = under[i + 1];
+    for (u32 i = 0; i < m; ++i)
+      wet[i] = under[i] != 0 ? 1 : 0;
     const Vector<f64> s = lengths_of(link.line);
 
     struct Run {
@@ -472,28 +512,37 @@ void apply_water(ChannelNetwork& n, const scene_gen::Ground& ground,
       if (r == 0) out.cells = link.cells;
       if (run.a > 0) {
         out.outlet = true;
-        out.line.push_back(shore(link.line[run.a], link.line[run.a - 1]));
+        out.line.push_back(shore(link.line[run.a], link.line[run.a - 1], under[run.a - 1]));
         // The level of the body it leaves (W121), read where the line was last under it.
-        const ChannelPoint& under = link.line[run.a - 1];
+        const ChannelPoint& last = link.line[run.a - 1];
         f64 level = 0;
         out.outlet_level = out.line.back().at.y;
-        if (water->water_level_mm(ground, scene_gen::nearest_mm(under.at.x),
-                                  scene_gen::nearest_mm(under.at.z), level))
+        if (under[run.a - 1] >= 2)
+          // The plan's own body (W122) stands `k_sill_over_m` under the sill its outlet holds,
+          // so no rounding of the cut's stamp puts a thread of the lip under the body's level
+          // for its flood to follow down the channel.
+          out.outlet_level = n.basins.hollows[under[run.a - 1] - 2].level_m + k_sill_over_m;
+        else if (water != nullptr && water->water_level_mm(ground, scene_gen::nearest_mm(last.at.x),
+                                                           scene_gen::nearest_mm(last.at.z), level))
           out.outlet_level = level;
       }
       for (u32 i = run.a; i < run.b; ++i)
         out.line.push_back(link.line[i]);
       kept += run.b - run.a;
       if (run.b < m) {
-        const ChannelPoint end = shore(link.line[run.b - 1], link.line[run.b]);
+        const ChannelPoint end = shore(link.line[run.b - 1], link.line[run.b], under[run.b]);
         out.mouth = true;
         // The body's own level (W121): the ground at the shoreline is it only where the body's
         // outline is the level's contour; an outline standing in water puts the ground under it.
+        // The plan's own body's level is the plan's (W122).
         out.mouth_level = end.at.y;
-        const ChannelPoint& under = link.line[run.b];
+        const ChannelPoint& first = link.line[run.b];
         f64 level = 0;
-        if (water->water_level_mm(ground, scene_gen::nearest_mm(under.at.x),
-                                  scene_gen::nearest_mm(under.at.z), level))
+        if (under[run.b] >= 2)
+          out.mouth_level = n.basins.hollows[under[run.b] - 2].level_m;
+        else if (water != nullptr &&
+                 water->water_level_mm(ground, scene_gen::nearest_mm(first.at.x),
+                                       scene_gen::nearest_mm(first.at.z), level))
           out.mouth_level = level;
         out.line.push_back(end);
       }
@@ -672,21 +721,53 @@ void classify(const ChannelLayer& p, ChannelLink& link) {
   knickpoints(p, link, s);
 }
 
-// The cut's bed down a link (channels.md, "The cut", and W90's steps, fan and grade): the top of
-// the bank less the thalweg, held down the line where the ground rises a little but **never more
-// than two thalwegs under the ground at the line**; then lowered by the steps' pools; then, on a
-// link that ends at a shoreline, graded over the fan's length to half a thalweg under the body's
-// level, whatever was there.
-constexpr f64 k_cut_depth_thalwegs = 2.0;
+// The cut's bed down a link (channels.md, "The cut", "Hollows", and W90's steps, fan and grade):
+// the top of the bank less the thalweg, **held at its running minimum down the line** — a bed
+// never rises downstream, so where the ground at the line rises the cut is that much deeper (a
+// breach) — and begun no higher than `start`, the lowest bed that ends where the link begins;
+// then lowered by the steps' pools; then W121's rules where the link meets a body: an outlet's
+// lip held at the level it leaves, a mouth's fan graded to its body's level and no bed under it.
+//
+// Until W122 the hold reached two thalwegs under the ground and no further, so past a rise of one
+// thalweg the bed climbed with the ground: on the forest 110 wet lines climbed out of basins 28
+// to 134 m deep. A hollow deeper than `breach_max_m` is no longer crossed by a line at all (it is
+// a body of the plan, or a sink), so what is left to hold through is a lip the limit bounds, or a
+// rise the line itself strays over; both are counted (`measure_hollows`).
 // The top of the bank at point i: the ground at the line less the seat (W116).
 f64 top_of(const ChannelLink& link, u32 i) {
   return link.line[i].at.y - (i < link.seat.size() ? wide(link.seat[i]) : 0.0);
 }
-void cut_bed(const ChannelLayer& p, ChannelLink& link) {
+// **A lip is held by every link that begins on it** (W122; channels.md, "Hollows"). A lake of the
+// plan stands a notch under its spill, so the cells between its shore and its lip are dry ground
+// inside the hollow, and the lines that cross the water merge there as readily as under it. A
+// link that begins at such a junction, or at the spill itself, begins at no shore and is no
+// outlet: its cut dug the lip to its own bed, under the lake's level, with only the natural rim
+// beside it between that pit and the water (on the forest 0.12 to 0.29 m under the level at the
+// spills of its three largest lakes, the rim holding by 1 to 9 cm). So a link that begins within
+// a cell and a half of a lake's spill holds that lake's sill from its first point for as long as
+// its points stay that near: point `i` of `link` is such a point, and `sill` the level to hold
+// where the top stands over it. An outlet holds its own (`cut_bed`).
+bool lip_sill(const ChannelNetwork& n, const ChannelLink& link, u32 i, f64& sill) {
+  if (link.outlet || link.line.empty() || n.basins.hollows.empty()) return false;
+  const f64 reach = 1.5 * static_cast<f64>(n.spacing_mm) / 1000.0;
+  const auto near = [&](const ChannelPoint& pt, const Hollow& h) {
+    const f64 dx = pt.at.x - h.spill_x, dz = pt.at.z - h.spill_z;
+    return dx * dx + dz * dz <= reach * reach;
+  };
+  for (const Hollow& h : n.basins.hollows) {
+    if (h.kind != HollowKind::Lake) continue;
+    if (!near(link.line.front(), h) || !near(link.line[i], h)) continue;
+    sill = round_to(h.level_m + k_sill_over_m, 1e3);
+    return true;
+  }
+  return false;
+}
+void cut_bed(const ChannelLayer& p, ChannelLink& link,
+             f64 start = std::numeric_limits<f64>::infinity()) {
   const u32 m = link.line.size();
   link.bed.assign(m, 0.0);
   link.steep_left = 0;
-  f64 bed = std::numeric_limits<f64>::infinity();
+  f64 bed = start;
   Vector<f64> floor(m, 0.0);
   for (u32 i = 0; i < m; ++i) {
     const ChannelPoint& pt = link.line[i];
@@ -694,11 +775,8 @@ void cut_bed(const ChannelLayer& p, ChannelLink& link) {
     const f64 thalweg =
         round_to(section_of(wide(pt.width_m), wide(pt.depth_m), wide(p.bank_slope)).thalweg, 1e3);
     bed = std::min(bed, round_to(top - thalweg, 1e3));
-    const f64 b = std::max(bed, round_to(top - k_cut_depth_thalwegs * thalweg, 1e3));
-    link.bed[i] = round_to(b - wide(link.step_depth[i]), 1e3);
-    floor[i] = round_to(
-        top - k_cut_depth_thalwegs * thalweg - .5 * wide(p.fall_min_m) - wide(link.step_depth[i]),
-        1e3);
+    link.bed[i] = round_to(bed - wide(link.step_depth[i]), 1e3);
+    floor[i] = round_to(bed - .5 * wide(p.fall_min_m) - wide(link.step_depth[i]), 1e3);
   }
   // **The chute** (W91; channels.md, "Reaches"): away from a knickpoint no stretch of the bed falls
   // at 45 degrees or more, so the water draws no fall where the ground has none to give it. Taken
@@ -761,10 +839,14 @@ void cut_bed(const ChannelLayer& p, ChannelLink& link) {
   for (u32 i = f; i + 1 < m; ++i)
     if (link.line[i].at.y - link.line[i + 1].at.y >= k_fall_gradient * (s[i + 1] - s[i])) f = i + 1;
   const f64 b0 = link.bed[f], span = s[m - 1] - s[f];
+  // The fan's bed takes its running minimum too (W122): where the ground dips inside the fan
+  // the grade would follow it down and climb back out of the dip.
+  f64 low = std::numeric_limits<f64>::infinity();
   for (u32 i = f; i < m; ++i) {
     const f64 t = span > 0 ? (s[i] - s[f]) / span : 1.0;
     const f64 top = round_to(top_of(link, i), 1e3);
-    link.bed[i] = std::min(round_to(b0 + t * (level - b0), 1e3), round_to(top - .01, 1e3));
+    low = std::min(low, std::min(round_to(b0 + t * (level - b0), 1e3), round_to(top - .01, 1e3)));
+    link.bed[i] = low;
   }
   for (u32 i = 0; i < m; ++i) {
     const f64 top = round_to(top_of(link, i), 1e3);
@@ -895,17 +977,63 @@ void seat_section(const ChannelLayer& p, const scene_gen::Ground& ground, Channe
     for (const Heading& h : {along, local}) {
       for (u32 k = 0; k <= 8; ++k) {
         const f64 half = .5 * w * (1 + swell * (static_cast<f64>(k) / 4 - 1));
-        lower = std::min(lower, ground_at(ground, pt.at.x - h.z * half, pt.at.z + h.x * half));
-        lower = std::min(lower, ground_at(ground, pt.at.x + h.z * half, pt.at.z - h.x * half));
+        // **A bank is read only where it is one** (W122; channels.md, "The seat, reshaped"):
+        // ground that stands further under the line than it lies from it, past a 45-degree fall
+        // across, is a face's foot or the ground below a cliff's edge, and seats nothing.
+        for (const f64 side : {1.0, -1.0}) {
+          const f64 g = ground_at(ground, pt.at.x - side * h.z * half, pt.at.z + side * h.x * half);
+          if (pt.at.y - g <= half) lower = std::min(lower, g);
+        }
       }
     }
+    if (!(lower < std::numeric_limits<f64>::infinity())) lower = pt.at.y;
     seat[i] = std::max(0.0, std::ceil((pt.at.y - lower) * 1e3) / 1e3);
+  }
+  // **No bank is read across a step** (W122; S104's finding, `seat-eats-step`): at a knickpoint
+  // the ground falls along the line, and a line that meets the step at an angle has one bank on
+  // the step's top and the other at its foot. Read there, the seat was the step's height: it cut
+  // the lip down a step's height a metre above the cliff and dug a pit as deep at the foot (12.9
+  // m at a 14 m cliff), which the bed then climbed out of. A knickpoint's points, and those
+  // within the read's own reach and the dilation's two points of one along the line, take no
+  // seat: the water falls there, and what bounds it is the fall (`falls.h`), not a bank.
+  Vector<u8> at_step(m, 0);
+  if (link.knick.size() == m) {
+    const f64 step = wide(p.step_m);
+    for (u32 i = 0; i < m; ++i) {
+      if (!link.knick[i]) continue;
+      const f64 w = wide(link.line[i].width_m);
+      const f64 clear = std::max(1.0, .5 * w * (1 + .5 * wide(p.step_widening))) + 2 * step;
+      for (u32 j = i;; --j) {
+        if (s[i] - s[j] > clear) break;
+        at_step[j] = 1;
+        if (j == 0) break;
+      }
+      for (u32 j = i + 1; j < m && s[j] - s[i] <= clear; ++j)
+        at_step[j] = 1;
+    }
   }
   for (u32 i = 0; i < m; ++i) {
     f64 most = 0;
     for (u32 j = i > 2 ? i - 2 : 0; j < std::min(i + 3, m); ++j)
-      most = std::max(most, seat[j]);
-    link.seat[i] = static_cast<f32>(most);
+      if (!at_step[j]) most = std::max(most, seat[j]);
+    link.seat[i] = at_step[i] ? 0.0f : static_cast<f32>(most);
+  }
+  // **And a seat never reaches under the lip below it.** The bed does not rise (`cut_bed`), so
+  // what a seat lowers it by is carried down the line until the ground has fallen that far; a
+  // seat a few metres above a knickpoint would notch the fall's lip by itself. Above each
+  // knickpoint's first point a seat is at most the ground's own fall from its point to that one.
+  if (link.knick.size() == m) {
+    f32 largest = 0;
+    for (const f32 v : link.seat)
+      largest = std::max(largest, v);
+    for (u32 lip = 1; lip < m; ++lip) {
+      if (!link.knick[lip] || link.knick[lip - 1]) continue;
+      for (u32 j = lip; j-- > 0;) {
+        const f64 fall = link.line[j].at.y - link.line[lip].at.y;
+        if (fall > wide(largest)) break;
+        link.seat[j] = std::min(link.seat[j], static_cast<f32>(std::max(0.0, fall)));
+      }
+    }
   }
 }
 
@@ -1012,6 +1140,61 @@ void plan_section(const ChannelLayer& p, ChannelLink& link) {
     link.asym[i] = static_cast<f32>(round_to(asym[i], 1e3));
     link.swell[i] = static_cast<f32>(round_to(swell[i], 1e4));
   }
+}
+
+// **How much wider a breach's top is** (W122; channels.md, "Hollows"), after the bed and the
+// section are final. Where the bed is held more than a thalweg under its section's own depth the
+// banks would keep their slopes by reaching the top `held / slope` further out each side; the
+// profile is one width about the line, so both sides move out by the same share of that, the
+// largest of 1, 3/4, 1/2 and 1/4 at which the ground at four places between the section's bank
+// top and the widened one, each side, still stands at or over the top. A top
+// carried out over ground that falls away would stand in the air there (the cut only lowers), so
+// on a hillside, or on a bench narrower than the breach wants, the width stays and the stamp
+// steepens the banks.
+void plan_widening(const ChannelLayer& p, const scene_gen::Ground& ground, ChannelLink& link) {
+  const u32 m = link.line.size();
+  link.widen.assign(m, 0.0f);
+  if (m < 3 || link.bed.size() != m) return;
+  for (u32 i = 1; i + 1 < m; ++i) {
+    const ChannelPoint& pt = link.line[i];
+    const f64 top = round_to(top_of(link, i), 1e3);
+    const f64 thalweg = section_of(wide(pt.width_m), wide(pt.depth_m), wide(p.bank_slope)).thalweg;
+    const f64 held = round_to(top - link.bed[i], 1e3) - 2 * thalweg -
+                     (i < link.step_depth.size() ? wide(link.step_depth[i]) : 0.0);
+    if (!(held > 0)) continue;
+    const BendSection section = bend_section(p, wide(pt.width_m), wide(pt.depth_m),
+                                             i < link.asym.size() ? wide(link.asym[i]) : 0.0,
+                                             i < link.swell.size() ? wide(link.swell[i]) : 0.0);
+    const f64 dx = link.line[i + 1].at.x - link.line[i - 1].at.x;
+    const f64 dz = link.line[i + 1].at.z - link.line[i - 1].at.z;
+    const f64 l = std::sqrt(dx * dx + dz * dz);
+    if (!(l > 0) || !(section.width > 0)) continue;
+    const f64 nx = -dz / l, nz = dx / l;
+    const f64 wider = held * (1 / section.slope_left + 1 / section.slope_right);
+    f64 share = 0;
+    for (const f64 tried : {1.0, .75, .5, .25}) {
+      bool holds = true;
+      for (u32 k = 1; k <= 4 && holds; ++k) {
+        const f64 d = .5 * section.width + .5 * tried * wider * static_cast<f64>(k) / 4;
+        holds = ground_at(ground, pt.at.x + nx * d, pt.at.z + nz * d) >= top &&
+                ground_at(ground, pt.at.x - nx * d, pt.at.z - nz * d) >= top;
+      }
+      if (holds) {
+        share = tried;
+        break;
+      }
+    }
+    link.widen[i] = static_cast<f32>(round_to(share * wider, 1e3));
+  }
+  link.widen[0] = link.widen[1];
+  link.widen[m - 1] = link.widen[m - 2];
+  // A top is as narrow as the narrowest reading near it: the cut joins two points' widths by a
+  // straight line and a neighbour's section reaches over a point's own cross-line where the
+  // line turns, so each point takes the least over itself and two neighbours either way.
+  const Vector<f32> read = link.widen;
+  for (u32 i = 0; i < m; ++i)
+    for (u32 j = i > 2 ? i - 2 : 0; j < std::min(i + 3, m); ++j)
+      link.widen[i] = std::min(link.widen[i], read[j]);
 }
 
 // **The flood bed** (W93; channels.md, "The flood bed"): the valley's confinement read from the
@@ -1324,12 +1507,481 @@ bool layer_in_range(const ChannelLayer& p, std::string& error) {
   if (!in(wide(p.step_m), .1, 4)) return fail(error, "step_m");
   if (!in(wide(p.clast_min_mm), 16, 1024)) return fail(error, "clast_min_mm");
   if (!in(wide(p.rounding_m), 10, 100000)) return fail(error, "rounding_m");
+  if (!in(wide(p.breach_max_m), 0, 50)) return fail(error, "breach_max_m");
+  if (!in(wide(p.basin_min_area_m2), 0, 1e6)) return fail(error, "basin_min_area_m2");
+  if (!in(wide(p.basin_notch_m), .01, 5)) return fail(error, "basin_notch_m");
+  if (!in(wide(p.basin_evaporation_mm_y), 0, 5000) || !in(wide(p.basin_seepage_mm_y), 0, 1e6))
+    return fail(error, "basin_evaporation_mm_y/basin_seepage_mm_y");
+  for (const ChannelBasin& b : p.basins) {
+    for (u32 a = 0; a < 2; ++a)
+      if (!in(b.at[a], p.region_min[a], p.region_max[a]))
+        return fail(error, "basins (`at` inside the region): " + b.name);
+    if (!in(wide(b.leak_m3s), 0, 1e4)) return fail(error, "basins (leak_m3s): " + b.name);
+    if (!b.dry && !(b.leak_m3s > 0))
+      return fail(error, "basins (an entry says `dry` or names a `leak_m3s`): " + b.name);
+  }
   return surface_in_range(p.boulders, error);
 }
 
 namespace {
 std::atomic<u64> g_plans_made{0};
+
+// ---- The fill, the routing and the hollows (W122; channels.md, "Hollows") ----
+
+bool on_edge(const ChannelNetwork& n, u32 i) {
+  const u32 c = i % n.width, r = i / n.width;
+  return c == 0 || r == 0 || c + 1 == n.width || r + 1 == n.depth;
 }
+// Pits filled by priority flood with a one-micrometre epsilon (Barnes, Lehman & Mulla 2014) from
+// the region's edge **and from every sink** (their ocean cells; Barnes, Callaghan & Wickert 2020,
+// section 3.1), so every other cell has a strictly lower neighbour and drains to one of them; a
+// flat drains along the way the flood came.
+void flood(ChannelNetwork& n, const Vector<u8>& sink) {
+  const u32 cells = n.width * n.depth;
+  n.filled_um.assign(cells, 0);
+  Vector<u8> seen(cells, 0);
+  Vector<Node> heap;
+  auto push = [&](u32 i, i64 v) {
+    n.filled_um[i] = v;
+    seen[i] = 1;
+    heap.push_back({v, i});
+    std::push_heap(heap.begin(), heap.end(), after);
+  };
+  for (u32 i = 0; i < cells; ++i)
+    if (sink[i] || on_edge(n, i)) push(i, n.ground_um[i]);
+  while (!heap.empty()) {
+    std::pop_heap(heap.begin(), heap.end(), after);
+    const Node top = heap.back();
+    heap.pop_back();
+    for (u32 d = 0; d < 8; ++d) {
+      const u32 j = neighbour(top.i, n.width, n.depth, k_dx[d], k_dz[d]);
+      if (j == ~0u || seen[j]) continue;
+      push(j, std::max(n.ground_um[j], top.h + 1));
+    }
+  }
+}
+// D8 (O'Callaghan & Mark 1984): the steepest drop over the filled heights, a diagonal's run
+// sqrt(2) spacings; ties go to the first direction. The region's edge and the sinks are the
+// outlets. Then the contributing area: every cell after all of its donors, which the filled
+// heights order.
+void route(ChannelNetwork& n, const Vector<u8>& sink, Vector<u32>& order) {
+  const u32 cells = n.width * n.depth;
+  n.receiver.assign(cells, ~0u);
+  for (u32 i = 0; i < cells; ++i) {
+    if (sink[i] || on_edge(n, i)) continue;
+    f64 best = 0;
+    for (u32 d = 0; d < 8; ++d) {
+      const u32 j = neighbour(i, n.width, n.depth, k_dx[d], k_dz[d]);
+      const i64 drop = n.filled_um[i] - n.filled_um[j];
+      if (drop <= 0) continue;
+      const f64 slope = static_cast<f64>(drop) / ((k_dx[d] != 0 && k_dz[d] != 0) ? k_sqrt2 : 1.0);
+      if (slope > best) {
+        best = slope;
+        n.receiver[i] = j;
+      }
+    }
+  }
+  order.resize(cells);
+  for (u32 i = 0; i < cells; ++i)
+    order[i] = i;
+  std::sort(order.begin(), order.end(), [&](u32 a, u32 b) {
+    return n.filled_um[a] != n.filled_um[b] ? n.filled_um[a] > n.filled_um[b] : a < b;
+  });
+  n.area_cells.assign(cells, 1);
+  for (u32 i : order)
+    if (n.receiver[i] != ~0u) n.area_cells[n.receiver[i]] += n.area_cells[i];
+}
+
+// A pit as the fill left it: the raised cells connected through their eight neighbours. The
+// flood reached it first at `entry`, from `spill`, whose ground is the pit's level: no lower
+// neighbour of `entry` exists, or the flood would have come from it.
+struct Pit {
+  u32 entry = 0;
+  u32 spill = 0;
+  u32 floor = 0;      // the lowest cell, by (ground, index)
+  u32 under = 0;      // cells whose ground stands under the level
+  u32 covered = ~0u;  // the lowest cell a scene's body covers, or none
+  i64 level_um = 0;
+  f64 volume_um = 0;  // the level less the ground, summed over `under`
+  u32 c0 = 0, c1 = 0, r0 = 0, r1 = 0;
+  u32 hollow = ~0u;  // its record in `ChannelHollows::hollows`, once it has one
+  u8 decided = 0;    // made a sink in this pass
+  u8 terminal = 0;   // 1: its covered cells are sinks; 2: its balance's cells are
+  u32 wet = 0;       // cells whose ground stands under the level less the notch
+  f64 gain = 0;      // the named sources that drain into it, m3/s
+  f64 leak = 0;      // what its author says its floor passes underground, m3/s
+};
+void label(const ChannelNetwork& n, const Vector<u8>& covered, i64 notch_um, Vector<u32>& pit_of,
+           Vector<Pit>& pits) {
+  const u32 cells = n.width * n.depth;
+  pit_of.assign(cells, ~0u);
+  pits.clear();
+  Vector<u32> stack;
+  const auto raised = [&](u32 i) { return n.filled_um[i] > n.ground_um[i]; };
+  const auto lower = [&](const Vector<i64>& h, u32 a, u32 b) {
+    return h[a] != h[b] ? h[a] < h[b] : a < b;
+  };
+  for (u32 i = 0; i < cells; ++i) {
+    if (pit_of[i] != ~0u || !raised(i)) continue;
+    const u32 id = pits.size();
+    Pit pit;
+    pit.entry = pit.floor = i;
+    pit.c0 = pit.c1 = i % n.width;
+    pit.r0 = pit.r1 = i / n.width;
+    pit_of[i] = id;
+    stack.push_back(i);
+    while (!stack.empty()) {
+      const u32 c = stack.back();
+      stack.pop_back();
+      if (lower(n.filled_um, c, pit.entry)) pit.entry = c;
+      if (lower(n.ground_um, c, pit.floor)) pit.floor = c;
+      if (!covered.empty() && covered[c] &&
+          (pit.covered == ~0u || lower(n.ground_um, c, pit.covered)))
+        pit.covered = c;
+      pit.c0 = std::min(pit.c0, c % n.width);
+      pit.c1 = std::max(pit.c1, c % n.width);
+      pit.r0 = std::min(pit.r0, c / n.width);
+      pit.r1 = std::max(pit.r1, c / n.width);
+      for (u32 d = 0; d < 8; ++d) {
+        const u32 j = neighbour(c, n.width, n.depth, k_dx[d], k_dz[d]);
+        if (j == ~0u || pit_of[j] != ~0u || !raised(j)) continue;
+        pit_of[j] = id;
+        stack.push_back(j);
+      }
+    }
+    pit.spill = pit.entry;
+    bool found = false;
+    for (u32 d = 0; d < 8; ++d) {
+      const u32 j = neighbour(pit.entry, n.width, n.depth, k_dx[d], k_dz[d]);
+      if (j == ~0u || raised(j)) continue;
+      if (!found || lower(n.filled_um, j, pit.spill)) pit.spill = j;
+      found = true;
+    }
+    pit.level_um = found ? n.ground_um[pit.spill] : n.filled_um[pit.entry];
+    pits.push_back(pit);
+  }
+  for (u32 i = 0; i < cells; ++i) {
+    if (pit_of[i] == ~0u) continue;
+    Pit& pit = pits[pit_of[i]];
+    const i64 depth = pit.level_um - n.ground_um[i];
+    if (depth <= 0) continue;
+    ++pit.under;
+    pit.volume_um += static_cast<f64>(depth);
+    if (depth > notch_um) ++pit.wet;
+  }
+}
+f64 cell_x(const ChannelNetwork& n, u32 i) {
+  return static_cast<f64>(n.x_mm + static_cast<i64>(i % n.width) * n.spacing_mm) / 1000.0;
+}
+f64 cell_z(const ChannelNetwork& n, u32 i) {
+  return static_cast<f64>(n.z_mm + static_cast<i64>(i / n.width) * n.spacing_mm) / 1000.0;
+}
+Hollow hollow_of(const ChannelNetwork& n, const Pit& pit, HollowKind kind) {
+  const f64 spacing = static_cast<f64>(n.spacing_mm) / 1000.0;
+  Hollow h;
+  h.kind = kind;
+  h.spill_m = round_to(static_cast<f64>(pit.level_um) / 1e6, 1e3);
+  h.level_m = h.spill_m;
+  h.floor_m = round_to(static_cast<f64>(n.ground_um[pit.floor]) / 1e6, 1e3);
+  h.floor_x = cell_x(n, pit.floor);
+  h.floor_z = cell_z(n, pit.floor);
+  h.spill_x = cell_x(n, pit.spill);
+  h.spill_z = cell_z(n, pit.spill);
+  h.area_m2 = static_cast<f64>(pit.under) * spacing * spacing;
+  h.volume_m3 = round_to(pit.volume_um / 1e6 * spacing * spacing, 1e3);
+  h.catchment_m2 = static_cast<f64>(n.area_cells[pit.spill]) * spacing * spacing;
+  const u32 fc = pit.floor % n.width, fr = pit.floor / n.width;
+  h.extent_m = spacing * static_cast<f64>(std::max(std::max(fc - pit.c0, pit.c1 - fc),
+                                                   std::max(fr - pit.r0, pit.r1 - fr)));
+  return h;
+}
+// A ground standing flat at the height its context holds.
+f64 level_plane(const void* context, i64, i64) noexcept {
+  return *static_cast<const f64*>(context);
+}
+// The level of the scene's body that covers a point, found by asking the exclusion's water kind
+// about a flat ground raised between the real ground there (covered) and `over` (not): 48
+// halvings. The exclusion has no question for a body's level on this branch; W121's
+// `water_level_mm` is one, and takes this function's place when the two meet.
+bool body_level_at(const scene_gen::Exclusion& water, i64 x_mm, i64 z_mm, f64 under, f64 over,
+                   f64& level) {
+  f64 height = 0;
+  scene_gen::Ground flat;
+  flat.context = &height;
+  flat.surface_fn = &level_plane;
+  const auto covered = [&](f64 h) {
+    height = h;
+    return water.excluded_mm(flat, x_mm, z_mm, scene_gen::k_exclude_water);
+  };
+  if (!covered(under) || covered(over)) return false;
+  f64 lo = under, hi = over;
+  for (u32 k = 0; k < 48; ++k) {
+    const f64 mid = .5 * (lo + hi);
+    if (covered(mid))
+      lo = mid;
+    else
+      hi = mid;
+  }
+  level = round_to(hi, 1e3);
+  return true;
+}
+
+constexpr u32 k_hollow_passes = 16;
+// A pit shallower than this is the fill's epsilon over a flat, not a hollow.
+constexpr i64 k_hollow_min_um = 1000;
+
+// **What becomes of every pit** (channels.md, "Hollows"). The fill and the routing, then each
+// pit by its depth, what stands in it and what the author named; a pit made a sink changes the
+// fill, so the whole is taken again until nothing changes. Leaves `n` routed, `n.basins` filled
+// and `n.body_of` marking the plan's bodies.
+bool route_hollows(const ChannelLayer& p, const scene_gen::Ground& ground,
+                   const scene_gen::Exclusion* water, ChannelNetwork& n, Vector<u32>& order,
+                   std::string& error) {
+  (void)ground;  // every height asked is one the lattice already holds
+  const u32 cells = n.width * n.depth;
+  const f64 spacing = static_cast<f64>(n.spacing_mm) / 1000.0;
+  const f64 cell_area = spacing * spacing;
+  const i64 breach_um = std::llround(wide(p.breach_max_m) * 1e6);
+  const i64 notch_um = std::llround(wide(p.basin_notch_m) * 1e6);
+  // The balance's rates, metres of water a second: the runoff a square metre of catchment sends
+  // (1 l/s/km2 is 1e-9 m/s) and what a square metre of standing water loses (a Julian year).
+  const f64 runoff = wide(p.flow.runoff_l_s_km2) * 1e-9;
+  const f64 rate =
+      (wide(p.basin_evaporation_mm_y) + wide(p.basin_seepage_mm_y)) / 1000.0 / 31'557'600.0;
+  bool losses = rate > 0;
+  for (const ChannelBasin& b : p.basins)
+    losses = losses || b.leak_m3s > 0;
+  // A hollow's inflow and losses with `wet` cells of it under water, m3/s.
+  const auto inflow_of = [&](const Pit& pit, u32 wet) {
+    const u32 catchment = n.area_cells[pit.spill];
+    return runoff * static_cast<f64>(catchment > wet ? catchment - wet : 0u) * cell_area + pit.gain;
+  };
+  const auto loss_of = [&](const Pit& pit, u32 wet) {
+    return rate * static_cast<f64>(wet) * cell_area + pit.leak;
+  };
+  n.basins = {};
+  n.body_of.assign(cells, 0);
+  Vector<u8> sink(cells, 0), covered;
+  // The scene's bodies: which cells one covers, and an open body's sea, whose every cell is where
+  // water ends (Barnes et al. 2020 seed the ocean first).
+  if (water != nullptr && water->body_count() > 0) {
+    covered.assign(cells, 0);
+    // Asked of the lattice's own heights, which are the ground's at these points.
+    scene_gen::Ground real;
+    real.context = &n;
+    real.surface_fn = +[](const void* context, i64 x_mm, i64 z_mm) noexcept -> f64 {
+      const ChannelNetwork& net = *static_cast<const ChannelNetwork*>(context);
+      const i64 c = (x_mm - net.x_mm) / net.spacing_mm, r = (z_mm - net.z_mm) / net.spacing_mm;
+      return static_cast<f64>(
+                 net.ground_um[static_cast<u32>(r) * net.width + static_cast<u32>(c)]) /
+             1e6;
+    };
+    for (u32 i = 0; i < cells; ++i)
+      covered[i] = water->excluded_mm(real, n.x_mm + static_cast<i64>(i % n.width) * n.spacing_mm,
+                                      n.z_mm + static_cast<i64>(i / n.width) * n.spacing_mm,
+                                      scene_gen::k_exclude_water)
+                       ? 1
+                       : 0;
+    // An open body covers ground under its level anywhere: asked far outside the region.
+    f64 sea = 0;
+    const i64 outside_mm = n.x_mm - 4'000'000'000ll;
+    if (body_level_at(*water, outside_mm, outside_mm, -1e6, 1e6, sea)) {
+      const i64 sea_um = std::llround(sea * 1e6);
+      for (u32 i = 0; i < cells; ++i)
+        if (covered[i] && n.ground_um[i] < sea_um) sink[i] = 1;
+    }
+  }
+  // The author's dry basins, by the cell nearest each.
+  Vector<u32> dry_at;
+  for (const ChannelBasin& b : p.basins) {
+    const i64 c =
+        floor_div(scene_gen::nearest_mm(b.at[0]) - n.x_mm + n.spacing_mm / 2, n.spacing_mm);
+    const i64 r =
+        floor_div(scene_gen::nearest_mm(b.at[1]) - n.z_mm + n.spacing_mm / 2, n.spacing_mm);
+    const i64 last_r = static_cast<i64>(n.depth) - 1, last_c = static_cast<i64>(n.width) - 1;
+    dry_at.push_back(static_cast<u32>(std::clamp<i64>(r, 0, last_r)) * n.width +
+                     static_cast<u32>(std::clamp<i64>(c, 0, last_c)));
+  }
+  Vector<u32> pit_of;
+  Vector<Pit> pits;
+  const auto level_of = [&](const Pit& pit, f64& level) {
+    const u32 c = pit.covered;
+    return body_level_at(*water, n.x_mm + static_cast<i64>(c % n.width) * n.spacing_mm,
+                         n.z_mm + static_cast<i64>(c / n.width) * n.spacing_mm,
+                         static_cast<f64>(n.ground_um[c]) / 1e6, 1e6, level);
+  };
+  for (u32 pass = 0;; ++pass) {
+    flood(n, sink);
+    route(n, sink, order);
+    label(n, covered, notch_um, pit_of, pits);
+    n.basins.passes = pass + 1;
+    bool changed = false;
+    // What the author gave: a source that stands in a hollow's catchment feeds every hollow its
+    // water passes through on the way down; a leak is its own hollow's.
+    if (losses)
+      for (const ChannelSource& source : p.flow.sources) {
+        const i64 c =
+            floor_div(scene_gen::nearest_mm(source.at.x) - n.x_mm + n.spacing_mm / 2, n.spacing_mm);
+        const i64 r =
+            floor_div(scene_gen::nearest_mm(source.at.z) - n.z_mm + n.spacing_mm / 2, n.spacing_mm);
+        if (c < 0 || r < 0 || c >= static_cast<i64>(n.width) || r >= static_cast<i64>(n.depth))
+          continue;
+        const f64 flow = wide(source.flow_m3s) *
+                         (source.kind == ChannelSourceKind::Melt ? wide(source.season) : 1.0);
+        u32 last = ~0u;
+        for (u32 at = static_cast<u32>(r) * n.width + static_cast<u32>(c); at != ~0u;
+             at = n.receiver[at]) {
+          if (pit_of[at] == ~0u || pit_of[at] == last) continue;
+          last = pit_of[at];
+          pits[last].gain += flow;
+        }
+      }
+    for (u32 k = 0; k < p.basins.size(); ++k) {
+      const u32 id = pit_of[dry_at[k]];
+      if (id == ~0u || pits[id].level_um - n.ground_um[pits[id].floor] < k_hollow_min_um) {
+        if (pass == 0)
+          return fail(error, "basins (no hollow of the ground holds `at`): " + p.basins[k].name);
+        continue;
+      }
+      Pit& pit = pits[id];
+      pit.leak += wide(p.basins[k].leak_m3s);
+      if (!p.basins[k].dry || pit.decided) continue;
+      pit.decided = 1;
+      sink[pit.floor] = 1;
+      changed = true;
+      if (pass == 0) {
+        Hollow h = hollow_of(n, pit, HollowKind::Dry);
+        h.inflow_m3s = inflow_of(pit, 0);
+        h.loss_m3s = loss_of(pit, 0);
+        h.name = p.basins[k].name;
+        n.basins.hollows.push_back(std::move(h));
+      }
+    }
+    for (Pit& pit : pits) {
+      if (pit.decided || pit.level_um - n.ground_um[pit.floor] <= breach_um) continue;
+      if (pit.covered != ~0u) {
+        // A scene's body stands in it. Within the limit of the spill it is the author's lake
+        // and keeps the outlet it had; further under, it is where the hollow's water ends.
+        f64 level = 0;
+        if (!level_of(pit, level)) continue;
+        if (pit.level_um - std::llround(level * 1e6) <= breach_um) continue;
+        pit.decided = 1;
+        pit.terminal = 1;
+        changed = true;
+        Hollow h = hollow_of(n, pit, HollowKind::AuthoredTerminal);
+        h.level_m = level;
+        n.basins.hollows.push_back(std::move(h));
+        continue;
+      }
+      // The balance (channels.md, "Hollows"): the hollow's inflow against what its water loses
+      // at the level it would stand at with an outlet. Short of it, the hollow has no outlet.
+      if (!losses || static_cast<f64>(pit.under) * cell_area < wide(p.basin_min_area_m2)) continue;
+      if (inflow_of(pit, pit.wet) < loss_of(pit, pit.wet)) {
+        pit.decided = 1;
+        pit.terminal = 2;
+        changed = true;
+      }
+    }
+    // The sinks of this pass's terminal pits: a scene's body's covered cells; and for a hollow
+    // its catchment cannot fill, its cells from the floor up until their area times the ratio
+    // is the catchment's (Barnes, Callaghan & Wickert 2021 grow the same queue from the pit
+    // cell until it holds the water).
+    {
+      Vector<std::pair<u32, u32>> balance;  // (pit, cell)
+      for (u32 i = 0; i < cells; ++i) {
+        if (pit_of[i] == ~0u) continue;
+        const Pit& pit = pits[pit_of[i]];
+        if (pit.terminal == 1 && covered[i]) sink[i] = 1;
+        if (pit.terminal == 2 && n.ground_um[i] < pit.level_um) balance.push_back({pit_of[i], i});
+      }
+      std::sort(balance.begin(), balance.end(),
+                [&](const std::pair<u32, u32>& a, const std::pair<u32, u32>& b) {
+                  if (a.first != b.first) return a.first < b.first;
+                  return n.ground_um[a.second] != n.ground_um[b.second]
+                             ? n.ground_um[a.second] < n.ground_um[b.second]
+                             : a.second < b.second;
+                });
+      for (u32 a = 0; a < balance.size();) {
+        u32 b = a;
+        while (b < balance.size() && balance[b].first == balance[a].first)
+          ++b;
+        const Pit& pit = pits[balance[a].first];
+        // The most cells whose losses the inflow still covers: runoff (C - m) a + gain - leak >=
+        // rate m a, so m <= (runoff C a + gain - leak) / ((runoff + rate) a).
+        const f64 most =
+            (runoff * static_cast<f64>(n.area_cells[pit.spill]) * cell_area + pit.gain - pit.leak) /
+            ((runoff + rate) * cell_area);
+        const u32 holds = most >= 1 ? std::min<u32>(static_cast<u32>(most), b - a - 1) : 0u;
+        // The level is the ground of the first cell left dry; cells level with it stay dry too.
+        const i64 level_um = n.ground_um[balance[std::min(a + holds, b - 1)].second];
+        Hollow h = hollow_of(n, pit, HollowKind::Terminal);
+        h.level_m = round_to(static_cast<f64>(level_um) / 1e6, 1e3);
+        u32 wet = 0;
+        for (u32 q = a; q < b && n.ground_um[balance[q].second] < level_um; ++q)
+          ++wet;
+        const bool stands = holds > 0 &&
+                            static_cast<f64>(wet) * cell_area >= wide(p.basin_min_area_m2) &&
+                            h.level_m > h.floor_m;
+        if (!stands) {
+          h.kind = HollowKind::Dry;  // the losses take everything, or too little is left to stand
+          wet = 0;
+        }
+        h.inflow_m3s = inflow_of(pit, wet);
+        h.loss_m3s = loss_of(pit, wet);
+        h.name = stands ? p.name + " basin " + std::to_string(n.basins.hollows.size()) : "";
+        const u32 body = n.basins.hollows.size() + 1;
+        sink[pit.floor] = 1;
+        for (u32 q = a; stands && q < a + wet; ++q) {
+          sink[balance[q].second] = 1;
+          n.body_of[balance[q].second] = body;
+        }
+        n.basins.hollows.push_back(std::move(h));
+        a = b;
+      }
+    }
+    if (!changed) break;
+    if (pass + 1 == k_hollow_passes)
+      return fail(error, "hollows (the sinks did not settle in 16 fills)");
+  }
+  // What is left is filled to its spill: breached, the author's own lake, or a body of the plan.
+  for (Pit& pit : pits) {
+    const i64 depth_um = pit.level_um - n.ground_um[pit.floor];
+    if (depth_um < k_hollow_min_um) continue;
+    if (depth_um <= breach_um) {
+      ++n.basins.breached;
+      n.basins.breached_max_m =
+          std::max(n.basins.breached_max_m, round_to(static_cast<f64>(depth_um) / 1e6, 1e3));
+      n.basins.breached_area_m2 += static_cast<f64>(pit.under) * cell_area;
+      continue;
+    }
+    if (pit.covered != ~0u) {
+      Hollow h = hollow_of(n, pit, HollowKind::Authored);
+      f64 level = 0;
+      if (level_of(pit, level)) h.level_m = level;
+      n.basins.hollows.push_back(std::move(h));
+      continue;
+    }
+    const bool stands = static_cast<f64>(pit.under) * cell_area >= wide(p.basin_min_area_m2) &&
+                        depth_um > notch_um + k_hollow_min_um;
+    Hollow h = hollow_of(n, pit, stands ? HollowKind::Lake : HollowKind::DeepBreach);
+    h.inflow_m3s = inflow_of(pit, stands ? pit.wet : 0u);
+    h.loss_m3s = loss_of(pit, stands ? pit.wet : 0u);
+    if (stands) {
+      h.level_m = round_to(static_cast<f64>(pit.level_um - notch_um) / 1e6, 1e3);
+      h.name = p.name + " basin " + std::to_string(n.basins.hollows.size());
+      pit.hollow = n.basins.hollows.size();
+    }
+    n.basins.hollows.push_back(std::move(h));
+  }
+  for (u32 i = 0; i < cells; ++i) {
+    if (pit_of[i] == ~0u || pits[pit_of[i]].hollow == ~0u) continue;
+    const u32 hollow = pits[pit_of[i]].hollow;
+    if (static_cast<f64>(n.ground_um[i]) / 1e6 < n.basins.hollows[hollow].level_m)
+      n.body_of[i] = hollow + 1;
+  }
+  return true;
+}
+}  // namespace
 u64 plans_made() noexcept { return g_plans_made.load(std::memory_order_relaxed); }
 
 bool plan_channels(const ChannelLayer& p, const scene_gen::Ground& ground, u64 seed,
@@ -1393,63 +2045,13 @@ bool detail::sample_lattice(const ChannelLayer& p, const scene_gen::Ground& grou
 bool detail::plan_from_lattice(const ChannelLayer& p, const scene_gen::Ground& ground, u64 seed,
                                ChannelNetwork& n, std::string& error,
                                const scene_gen::Exclusion* water) {
-  (void)error;
   g_plans_made.fetch_add(1, std::memory_order_relaxed);
   const u32 cells = n.width * n.depth;
-  // Pits filled by priority flood from the region's edge with a one-micrometre epsilon (Barnes,
-  // Lehman & Mulla 2014), so every interior cell has a strictly lower neighbour and drains to the
-  // edge; a flat drains along the way the flood came.
-  n.filled_um.assign(cells, 0);
-  Vector<u8> seen(cells, 0);
-  Vector<Node> heap;
-  auto push = [&](u32 i, i64 v) {
-    n.filled_um[i] = v;
-    seen[i] = 1;
-    heap.push_back({v, i});
-    std::push_heap(heap.begin(), heap.end(), after);
-  };
-  for (u32 i = 0; i < cells; ++i) {
-    const u32 c = i % n.width, r = i / n.width;
-    if (c == 0 || r == 0 || c + 1 == n.width || r + 1 == n.depth) push(i, n.ground_um[i]);
-  }
-  while (!heap.empty()) {
-    std::pop_heap(heap.begin(), heap.end(), after);
-    const Node top = heap.back();
-    heap.pop_back();
-    for (u32 d = 0; d < 8; ++d) {
-      const u32 j = neighbour(top.i, n.width, n.depth, k_dx[d], k_dz[d]);
-      if (j == ~0u || seen[j]) continue;
-      push(j, std::max(n.ground_um[j], top.h + 1));
-    }
-  }
-  // D8 (O'Callaghan & Mark 1984): the steepest drop over the filled heights, a diagonal's run
-  // sqrt(2) spacings; ties go to the first direction. The region's edge is the outlet.
-  n.receiver.assign(cells, ~0u);
-  for (u32 i = 0; i < cells; ++i) {
-    const u32 c = i % n.width, r = i / n.width;
-    if (c == 0 || r == 0 || c + 1 == n.width || r + 1 == n.depth) continue;
-    f64 best = 0;
-    for (u32 d = 0; d < 8; ++d) {
-      const u32 j = neighbour(i, n.width, n.depth, k_dx[d], k_dz[d]);
-      const i64 drop = n.filled_um[i] - n.filled_um[j];
-      if (drop <= 0) continue;
-      const f64 slope = static_cast<f64>(drop) / ((k_dx[d] != 0 && k_dz[d] != 0) ? k_sqrt2 : 1.0);
-      if (slope > best) {
-        best = slope;
-        n.receiver[i] = j;
-      }
-    }
-  }
-  // Contributing area: every cell after all of its donors, which the filled heights order.
-  Vector<u32> order(cells);
-  for (u32 i = 0; i < cells; ++i)
-    order[i] = i;
-  std::sort(order.begin(), order.end(), [&](u32 a, u32 b) {
-    return n.filled_um[a] != n.filled_um[b] ? n.filled_um[a] > n.filled_um[b] : a < b;
-  });
-  n.area_cells.assign(cells, 1);
-  for (u32 i : order)
-    if (n.receiver[i] != ~0u) n.area_cells[n.receiver[i]] += n.area_cells[i];
+  // The fill, the routing and the hollows (W122; channels.md, "Hollows"): the fill and the
+  // routing are run until no hollow changes what it is, since a hollow made a sink uncovers the
+  // hollows the first fill had drowned in it.
+  Vector<u32> order;
+  if (!route_hollows(p, ground, water, n, order, error)) return false;
   // Heads (Montgomery & Dietrich 1988, 1989): contributing area times the local slope to an
   // exponent at a threshold, above a floor of area; once a channel, a channel all the way down.
   const f64 spacing = static_cast<f64>(n.spacing_mm) / 1000.0;
@@ -1464,7 +2066,11 @@ bool detail::plan_from_lattice(const ChannelLayer& p, const scene_gen::Ground& g
     const f64 slope = std::max(0.0, static_cast<f64>(n.ground_um[i] - n.ground_um[r]) / 1e6 /
                                         (spacing * (diagonal ? k_sqrt2 : 1.0)));
     const f64 product = alpha == 0 ? area : area * powd(slope, alpha);
-    if (area >= wide(p.min_head_area_m2) && product >= wide(p.head_threshold_m2)) n.channel[i] = 1;
+    // No channel begins under a body of the plan (W122): the slope the rule reads there is the
+    // lake's floor's. One that comes in from above still runs on, to be cut at the shore.
+    if (n.body_of[i] == 0 && area >= wide(p.min_head_area_m2) &&
+        product >= wide(p.head_threshold_m2))
+      n.channel[i] = 1;
     if (n.channel[i]) n.channel[r] = 1;
   }
   Vector<u8> donors(cells, 0);
@@ -1496,16 +2102,56 @@ bool detail::plan_from_lattice(const ChannelLayer& p, const scene_gen::Ground& g
     build_line(p, n, ground, link);
   // W90: the shorelines, the reaches and steps, the cut's bed, the confluences, in that order.
   apply_water(n, ground, water);
-  for (ChannelLink& link : n.links) {
-    classify(p, link);
-    seat_section(p, ground, link);  // W116: the section under its lower bank
-    cut_bed(p, link);
-    n.length_m += link.length_m;
+  // **Upstream first** (W122): a link's bed begins no higher than the lowest bed that ends at its
+  // first cell, so the bed does not rise across a junction either. A link that enters at a cell
+  // has less contributing area at its own first cell than that cell has, so the area orders them.
+  {
+    Vector<u32> upstream_first(n.links.size());
+    for (u32 k = 0; k < n.links.size(); ++k)
+      upstream_first[k] = k;
+    const auto area_at = [&](u32 k) {
+      const ChannelLink& l = n.links[k];
+      return l.cells.empty() ? 0u : n.area_cells[l.cells.front()];
+    };
+    std::sort(upstream_first.begin(), upstream_first.end(), [&](u32 a, u32 b) {
+      const u32 x = area_at(a), y = area_at(b);
+      return x != y ? x < y : a < b;
+    });
+    const f64 none = std::numeric_limits<f64>::infinity();
+    Vector<f64> arriving(cells, none);
+    for (const u32 k : upstream_first) {
+      ChannelLink& link = n.links[k];
+      classify(p, link);
+      seat_section(p, ground, link);  // W116: the section under its lower bank
+      // Only a line that begins at its first cell meets what ends there: an outlet begins at a
+      // shore.
+      const bool joined = !link.cells.empty() && !link.outlet && link.line.size() >= 2;
+      cut_bed(p, link, joined ? arriving[link.cells.front()] : none);
+      if (!link.cells.empty() && !link.mouth && link.line.size() >= 2) {
+        f64& at = arriving[link.cells.back()];
+        at = std::min(at, link.bed.back());
+      }
+    }
   }
+  for (const ChannelLink& link : n.links)
+    n.length_m += link.length_m;
   confluences(p, n);
+  // W122: a lip is held by every link that begins on it (`lip_sill`), after the confluences'
+  // grade: a run of points from the link's first, raised to the sill where the top stands over
+  // it, so the bed's line steps down past the lip and rises nowhere.
+  for (ChannelLink& link : n.links) {
+    for (u32 i = 0; i < link.line.size() && i < link.bed.size(); ++i) {
+      f64 sill = 0;
+      if (!lip_sill(n, link, i, sill)) break;
+      const f64 top = round_to(top_of(link, i), 1e3);
+      if (top >= sill)
+        link.bed[i] = std::max(link.bed[i], std::min(sill, round_to(top - .01, 1e3)));
+    }
+  }
   for (ChannelLink& link : n.links) {
     link.area_end = link.cells.empty() ? 0u : n.area_cells[link.cells.back()];
     plan_section(p, link);
+    plan_widening(p, ground, link);  // W122: a breach's top, where the ground holds it
     plan_flood(p, ground, link);
   }
   // W97: the bed's sediment, from the reaches, the sections and the network's lengths.
@@ -1849,14 +2495,24 @@ JsonValue terrain_cuts_json(const ChannelLayer& p, const ChannelNetwork& n) {
       const BendSection section = bend_section(p, wide(pt.width_m), wide(pt.depth_m),
                                                i < link.asym.size() ? wide(link.asym[i]) : 0.0,
                                                i < link.swell.size() ? wide(link.swell[i]) : 0.0);
-      widths.push_back(JsonValue(round_to(section.width * spread, 1e3)));
+      // **A breach's top** (W122; channels.md, "Hollows"): where the bed is held more than a
+      // thalweg under its section's own depth (through a lip, down a chute, to a trunk's bed),
+      // the banks keep their slopes and reach the top that much further out, so the cut widens
+      // with its depth. At one width the stamp steepens both banks to a V (tileset.md, "Channels
+      // cut into the ground"), and a breach two metres deep in a stream a metre wide was a slot.
+      // The first thalweg of hold widens nothing, as it never did: the section's own width holds
+      // a bed two thalwegs down, and a top carried further out over a cross-slope would stand
+      // over the downhill ground the seat was read at.
+      // How much wider is the plan's (`plan_widening`), which asked the ground beside the line.
+      const f64 line_thalweg =
+          section_of(wide(pt.width_m), wide(pt.depth_m), wide(p.bank_slope)).thalweg;
+      const f64 wider = i < link.widen.size() ? wide(link.widen[i]) : 0.0;
+      widths.push_back(JsonValue(round_to(section.width * spread + wider, 1e3)));
       // The bed below the top: the thalweg, more where the cut runs through a rise, a step's pool
       // or a confluence's grade, and a bend's pool.
       // A riffle's bed stands that much over the bed's line and a pool's that much under it: the
       // section's own thalweg at its own width against the trapezoid's at the hydraulic
       // geometry's, so the area is kept as the width swells and narrows.
-      const f64 line_thalweg =
-          section_of(wide(pt.width_m), wide(pt.depth_m), wide(p.bank_slope)).thalweg;
       f64 depth =
           std::max(1e-3, round_to(top - link.bed[i], 1e3) + (section.thalweg - line_thalweg)) +
           section.pool;
@@ -1867,6 +2523,9 @@ JsonValue terrain_cuts_json(const ChannelLayer& p, const ChannelNetwork& n) {
       // An outlet's start the same, where the ground stands over the level it leaves.
       if (link.outlet && top >= round_to(link.outlet_level, 1e3))
         depth = std::min(depth, std::max(1e-3, top - round_to(link.outlet_level, 1e3)));
+      // And a link that begins on a lake's lip (W122; `lip_sill`): no pool or swell under the sill.
+      if (f64 sill = 0; lip_sill(n, link, i, sill) && top >= sill)
+        depth = std::min(depth, std::max(1e-3, top - sill));
       depths.push_back(JsonValue(round_to(depth, 1e3)));
       left.push_back(JsonValue(round_to(section.slope_left, 1e4)));
       right.push_back(JsonValue(round_to(section.slope_right, 1e4)));
@@ -1902,6 +2561,8 @@ JsonValue terrain_cuts_json(const ChannelLayer& p, const ChannelNetwork& n) {
         if (link.outlet && round_to(top_of(link, i), 1e3) >= round_to(link.outlet_level, 1e3))
           under =
               std::min(under, round_to(top_of(link, i), 1e3) - round_to(link.outlet_level, 1e3));
+        if (f64 sill = 0; lip_sill(n, link, i, sill) && round_to(top_of(link, i), 1e3) >= sill)
+          under = std::min(under, round_to(top_of(link, i), 1e3) - sill);
         fl.push_back(JsonValue(round_to(wide(link.flood_left[i]), 1e3)));
         fr.push_back(JsonValue(round_to(wide(link.flood_right[i]), 1e3)));
         fd.push_back(JsonValue(round_to(under, 1e3)));
@@ -1918,6 +2579,92 @@ JsonValue terrain_cuts_json(const ChannelLayer& p, const ChannelNetwork& n) {
   }
   return list;
 }
+// **The plan's standing bodies** (W122; channels.md, "Hollows"): a body that fills, seeded at
+// its hollow's lowest cell at its level. The extent is the hollow's own reach from that cell and
+// two cells and four metres more, so the water's flood ends inside it or the level is wrong and
+// the scene says so. Millimetres, so the text is the same from every toolchain.
+JsonValue plan_bodies_json(const ChannelLayer& p, const ChannelNetwork& n) {
+  (void)p;
+  JsonValue list = JsonValue::array();
+  const f64 spacing = static_cast<f64>(n.spacing_mm) / 1000.0;
+  for (const Hollow& h : n.basins.hollows) {
+    if (!h.body()) continue;
+    JsonValue seed = JsonValue::array();
+    seed.push_back(JsonValue(round_to(h.floor_x, 1e3)));
+    seed.push_back(JsonValue(round_to(h.level_m, 1e3)));
+    seed.push_back(JsonValue(round_to(h.floor_z, 1e3)));
+    JsonValue fill = JsonValue::object();
+    fill["seed"] = std::move(seed);
+    fill["max_extent_m"] = JsonValue(round_to(h.extent_m + 2 * spacing + 4, 1e3));
+    JsonValue shape = JsonValue::object();
+    shape["fill"] = std::move(fill);
+    JsonValue o = JsonValue::object();
+    o["name"] = JsonValue(h.name);
+    o["level_m"] = JsonValue(round_to(h.level_m, 1e3));
+    o["shape"] = std::move(shape);
+    list.push_back(std::move(o));
+  }
+  return list;
+}
+
+HollowStats measure_hollows(const ChannelLayer& p, const ChannelNetwork& n) {
+  HollowStats out;
+  for (u32 k = 0; k < n.links.size(); ++k) {
+    const ChannelLink& link = n.links[k];
+    const u32 m = link.line.size();
+    if (m < 2 || link.bed.size() != m) continue;
+    ++out.links;
+    const Vector<f64> s = lengths_of(link.line);
+    const auto line_at = [&](u32 i) {
+      return link.bed[i] + (i < link.step_depth.size() ? wide(link.step_depth[i]) : 0.0);
+    };
+    // An outlet's lip is its body's sill, held at the sill's level: not a bed that climbs.
+    u32 lip = 0;
+    if (link.outlet)
+      for (u32 i = 0; i < m; ++i)
+        if (round_to(top_of(link, i), 1e3) >= round_to(link.outlet_level, 1e3)) lip = i;
+    bool climbs = false;
+    for (u32 i = 0; i < m; ++i) {
+      const ChannelPoint& pt = link.line[i];
+      // A mouth's bed at or under its body's level is the body's own floor to the stream: W121
+      // holds it at the level and lets it follow ground that stands under it, drowned either way.
+      const bool drowned = link.mouth && line_at(i) <= round_to(link.mouth_level, 1e3) + 1e-3;
+      if (i > lip && !drowned) {
+        // The bed's own rise, less what a step-pool's pool comes back up by here (its tail,
+        // where the pool's depth shrinks toward the next crest). Read on the bed and not on the
+        // bed with the pools added back: the chute lowers a bed above a riser, and added back
+        // there the pool's depth read as a rise the bed does not have.
+        const f64 tail =
+            i < link.step_depth.size()
+                ? std::max(0.0, wide(link.step_depth[i - 1]) - wide(link.step_depth[i]))
+                : 0.0;
+        const f64 rise = link.bed[i] - link.bed[i - 1] - tail;
+        if (rise > 1e-3 + 1e-9) {
+          climbs = true;
+          if (rise > out.rise_max_m) {
+            out.rise_max_m = rise;
+            out.rise_link = k;
+          }
+        }
+      }
+      const f64 thalweg =
+          section_of(wide(pt.width_m), wide(pt.depth_m), wide(p.bank_slope)).thalweg;
+      const f64 trench = top_of(link, i) - thalweg - line_at(i);
+      if (trench > out.trench_max_m) {
+        out.trench_max_m = trench;
+        out.trench_link = k;
+      }
+      if (i > 0 && trench > thalweg) out.trench_line_m += s[i] - s[i - 1];
+    }
+    if (climbs) ++out.climbing;
+    // Measured from past an outlet's lip, and not where a mouth's last bed is its body's level.
+    const u32 from = std::min(lip + (link.outlet ? 1u : 0u), m - 1);
+    const bool at_level = link.mouth && line_at(m - 1) <= round_to(link.mouth_level, 1e3) + 1e-3;
+    if (!at_level && line_at(m - 1) > line_at(from) + 1e-3) ++out.ends_higher;
+  }
+  return out;
+}
+
 // **The bed's material** (channels.md, "The flood bed"): the outline of each stretch of bed, for
 // the terrain's masks. A stretch is a run of a link's kept points at least `bar_min_width_m` wide
 // and off a knickpoint; its outline reaches, each side, the further of the cut's own bank top and

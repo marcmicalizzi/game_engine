@@ -237,8 +237,14 @@ bool inside(const scene::WaterBody& body, f64 x, f64 z) {
 // where it is, and held under half a metre: deeper than any pool the plan cuts on these channels
 // (a step-pool's pool is at most a sixth of a width, 0.2 m on a 1.2 m stream). On 61ccce67 the seat
 // took a cliff's height into the cut (12.7 m at the 14 m cliff, seed 2).
-TEST_CASE("channels: a cut leaves no pocket where it meets a cliff or a cliff's edge" *
-          doctest::may_fail()) {
+//
+// **Since W122** (channels.md, "The seat, reshaped") the case is two. At the cliffs the seat reads
+// no bank across a step and the bed does not climb back: the deepest pocket is 0.08 and 0.09 m
+// (12.68 and 0.85 m before), and that half holds with no mark. Along a cliff's edge the seat no
+// longer reads the ground below the cliff (the most seat 0.59 and 0.86 m, where it was the cliff's
+// own 8 m) and the pocket is 1.04 and 1.29 m (7.7 and 7.8 m before): better, and still over the
+// half metre, so that half keeps its mark. What is left there was not traced tonight.
+TEST_CASE("channels: a cut leaves no pocket where it meets a cliff") {
   for (const u64 seed : {1ull, 2ull}) {
     ChannelLayer p;
     p.name = "steps";
@@ -262,6 +268,8 @@ TEST_CASE("channels: a cut leaves no pocket where it meets a cliff or a cliff's 
                             << " points of pockets past 0.5 m");
     CHECK(pk.depth <= .5);
   }
+}
+TEST_CASE("channels: a cut leaves no pocket along a cliff's edge" * doctest::may_fail()) {
   for (const f64 edge : {0.0, .25}) {
     ChannelLayer p;
     p.name = "edge";
@@ -425,9 +433,9 @@ TEST_CASE("channels: an outlet's start cuts no dry ground under its body's level
 // most 0.3 m (a step-pool's pool on these channels is under 0.2 m). It fails on 61ccce67 and with
 // W121, whose rules are the cut's meeting with a body: it is the plan's (W122: a hollow too deep to
 // breach becomes a body at its spill, a shallow one is breached), and passes when the plan is
-// mended.
-TEST_CASE("channels: a line through a hollow leaves no pocket on its own line" *
-          doctest::may_fail()) {
+// mended. **W122 mended it** (channels.md, "Hollows"): the hollow is a body of the plan at its
+// spill, the line ends at its shore and an outlet leaves from it, and the mark is gone.
+TEST_CASE("channels: a line through a hollow leaves no pocket on its own line") {
   const scene_gen::Ground g = ground(&hollow);
   ChannelLayer p;
   p.name = "hollow";
