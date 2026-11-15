@@ -42,7 +42,8 @@ namespace engine::structures {
 
 // The mesher's version, in every recipe's source hash: a change that moves a triangle bumps it
 // (plan 14 §14.1: an upgrade may move triangles, never a room or a door).
-inline constexpr u32 k_structure_version = 1;
+// 2: a thatch's rounded eave and ridge course, the roof's rafters and collars, the hearth.
+inline constexpr u32 k_structure_version = 2;
 
 // Determinism stance (ADR-0010): "derived": a mesh is content, never read back into gameplay, and
 // the same bytes from every toolchain all the same (structures.md, "Determinism").

@@ -303,6 +303,29 @@ consumer's to turn.
 | `ground/turf` | ground | 2 m | a grazed sward: live leaves in 110 mm tufts, short yellow-green lawns against tall dark rejected tufts, a fifth of the leaves dead, over litter, moss and soil | a terrain layer that names it, the meadow |
 | `wood/plank` | wood | 2 m | sawn softwood boards weathered grey to brown: flat-sawn figure, latewood ridges, checks, knots, stains | a bridge's deck, rails and posts ([bridges](bridges.md)) |
 | `wood/log` | wood | 2 m | the outside of a debarked log, silvered: spiral grain, long drying checks, knots, bark on 15 % | a bridge's logs, sills and stringers |
+| `plaster/lime` | rock | 2 m | limewash over a lime render: one pale constituent worn here and there to the render, no joint, 6 mm of form, light streaks, nothing growing | a building's walls and ceilings ([structures](structures.md#materials-by-role)) |
+| `stone/flag` | rock | 2 m | a fine sandstone worn by feet, two straight joint sets, no lichen, no streak | a building's ground floor |
+| `stone/rubble` | granular | 2 m | D50 150 mm, angular, laid flat (alignment 0.9), a mortar of 0.8 mm sand over a quarter of the stones' faces | a building's plinth and chimney |
+| `thatch/straw` | wood | 2 m | a straw coat: the figure's bands as stems 3.5 mm across, nearly straight, gold weathering to grey-brown, short dark checks between bundles, no knot | a building's roof |
+
+### A building's surfaces
+
+The last four rows are the structures' roles (G65, 2026-11-14), and **each is a recipe of a kind
+that stood already**: the generator's code and every other set's bytes are unchanged, so
+`k_matgen_version` did not move. That is the least that gives a solved building a set of its own
+for each surface, and it is stated as that, not as a model of the material:
+
+- **`thatch/straw` is the kind `wood`**, because a coat of combed stems is, at a millimetre a
+  texel, a grain: parallel bands of a few millimetres with dark gaps. u runs along the stems, so a
+  roof's UVs run u up its slope. What it lacks is what makes a thatch a thatch close to: the
+  courses' steps every 15 cm, the stems' cut ends at the eave, the ridge's pattern, netting.
+- **`stone/rubble` is the kind `granular`**: a wall's stones as clasts and its mortar as the
+  matrix. It has no courses and no quoins, and its stones are a bed's shapes, not a mason's.
+- **`plaster/lime` and `stone/flag` are the kind `rock`** with nothing growing on them. A flag
+  floor's joints are a rock's joints, not flags laid to a bond.
+
+A generator kind for laid masonry (courses, bond, quoins) and one for a thatch's courses are rows
+this leaves.
 
 Rock sets are `stochastic` (R131: a rock set is laid over cliffs many times its repeat, as
 `tools/pack-materials.ps1` defaults every `rock/*` role); the granular and ground sets are

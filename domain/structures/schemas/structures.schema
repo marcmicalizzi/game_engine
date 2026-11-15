@@ -153,6 +153,9 @@ struct Chimney @version(1) {
   hearth_storey: u32 = 0
   hearth_width: i32 = 120
   hearth_head: i32 = 130
+  /// How deep the hearth's recess runs into the stack from its open face; the stack's back
+  /// stands behind it.
+  hearth_depth: i32 = 40
 }
 
 /// The material role each surface is drawn with (docs/subsystems/materials.md; structures.md,

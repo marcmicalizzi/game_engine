@@ -165,8 +165,10 @@ bool build_set(const Set& set, SetImages& out, SetStats* stats, std::string& err
 /// The sets the engine's solvers ask a pack for by role and no pack has (matgen.md, "The
 /// defaults"): `gravel/bed`, `sand/bar`, `rock/scree`, `rock/granite`, `rock/granite_wet`,
 /// `rock/basalt`, `rock/limestone`, `rock/sandstone`, `ground/soil`, `ground/moss`,
-/// `ground/thatch`, `ground/turf`, `wood/plank`, `wood/log`, and `k_tiled_variants` variants of
-/// each tiled granular role (`gravel/bed.1`, ...). Sorted by role.
+/// `ground/thatch`, `ground/turf`, `wood/plank`, `wood/log`, a building's surfaces
+/// (`plaster/lime`, `stone/flag`, `stone/rubble`, `thatch/straw`; matgen.md, "A building's
+/// surfaces"), and `k_tiled_variants` variants of each tiled granular role (`gravel/bed.1`, ...).
+/// Sorted by role.
 Vector<Set> default_sets();
 /// Variant `index` (1..) of a recipe: the same numbers from another seed, its role
 /// `<role>.<index>`.
