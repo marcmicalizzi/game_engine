@@ -1,11 +1,9 @@
 // The rural filler's choice (rural_filler.h). Integers and the engine's hash; one draw a
 // statement, because a call's arguments are evaluated in the compiler's order.
 
-#include <domain/dwellings/rural_filler.h>
-
-#include <domain/dwellings/describe.h>
-
 #include <core/hash/hash.h>
+#include <domain/dwellings/describe.h>
+#include <domain/dwellings/rural_filler.h>
 
 namespace engine::dwellings {
 

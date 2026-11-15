@@ -19,9 +19,8 @@
 // Determinism: integer centimetres and the engine's hash, one draw a statement; the same plot,
 // household, style and seed give the same choice on every toolchain.
 
-#include <domain/dwellings/interiors.h>
-
 #include <core/base/types.h>
+#include <domain/dwellings/interiors.h>
 
 #include <string>
 
@@ -50,8 +49,10 @@ struct RuralStyle {
   u16 outer_wall_cm = 50;
   u16 inner_wall_cm = 10;
   u16 storey_cm = 240;         // floor to floor, under an upper storey
-  u16 single_storey_cm = 220;  // the floor to the wall plate of a house of one storey
-  u16 upper_clear_cm = 220;
+  u16 single_storey_cm = 240;  // the floor to the wall plate of a house of one storey
+  // The upper storey's floor to its plate: high enough that a window's head, 2.0 m, stands clear
+  // of a thatch's eave, which hangs half a metre under the plate.
+  u16 upper_clear_cm = 250;
   u16 floor_cm = 20;
   u16 door_cm = 95;
   u16 doorway_cm = 85;
@@ -63,7 +64,7 @@ struct RuralStyle {
 // What the filler chose, before any description is written.
 struct RuralChoice {
   InteriorParams interior;
-  i32 outer_width_cm = 0;   // the footprint, outer faces
+  i32 outer_width_cm = 0;  // the footprint, outer faces
   i32 outer_depth_cm = 0;
   u16 outer_wall_cm = 0;
   bool ridge_along_front = true;  // the ridge runs along the longer side

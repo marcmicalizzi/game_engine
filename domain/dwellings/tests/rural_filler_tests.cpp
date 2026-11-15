@@ -35,10 +35,10 @@ TEST_CASE("rural filler: every generated house passes the interior's rules") {
           InteriorPlan plan;
           std::string error;
           const Household household{persons, means};
-          const bool ok = plan_rural(plot, household, style, seed * 7919 + persons, choice, plan,
-                                     &error);
-          INFO("plot " << plot.frontage_cm << " persons " << int{persons} << " means "
-                       << int{means} << " seed " << seed << ": " << error);
+          const bool ok =
+              plan_rural(plot, household, style, seed * 7919 + persons, choice, plan, &error);
+          INFO("plot " << plot.frontage_cm << " persons " << int{persons} << " means " << int{means}
+                       << " seed " << seed << ": " << error);
           REQUIRE(ok);
           // The house stands inside its plot.
           CHECK(choice.outer_width_cm <= plot.frontage_cm);
@@ -54,8 +54,7 @@ TEST_CASE("rural filler: every generated house passes the interior's rules") {
             ++stairs;
             for (u32 t = 0; t + 1 < s.risers; ++t) {
               const RectCm tread = s.tread(t);
-              CHECK(stair_headroom_cm(plan, s, (tread.x0 + tread.x1) / 2,
-                                      (tread.z0 + tread.z1) / 2,
+              CHECK(stair_headroom_cm(plan, s, (tread.x0 + tread.x1) / 2, (tread.z0 + tread.z1) / 2,
                                       s.tread_mm(t)) >= k_headroom_cm);
             }
           }
@@ -76,7 +75,8 @@ TEST_CASE("rural filler: every generated house passes the interior's rules") {
     }
   }
   CHECK(houses == 3 * 9 * 3 * 40);
-  for (u32 t = 0; t < k_plan_types; ++t) CHECK(seen[t] > 0);
+  for (u32 t = 0; t < k_plan_types; ++t)
+    CHECK(seen[t] > 0);
   CHECK(stairs > 0);
 }
 
@@ -115,7 +115,8 @@ TEST_CASE("rural filler: the household fixes the type and the seed varies the si
       CHECK(p.width_cm % 10 == 0);
       CHECK(p.depth_cm % 10 == 0);
       bool fresh = true;
-      for (u32 i = 0; i < distinct; ++i) fresh = fresh && widths[i] != static_cast<u32>(p.width_cm);
+      for (u32 i = 0; i < distinct; ++i)
+        fresh = fresh && widths[i] != static_cast<u32>(p.width_cm);
       if (fresh) widths[distinct++] = static_cast<u32>(p.width_cm);
       if (p.mirror) ++mirrored;
     }

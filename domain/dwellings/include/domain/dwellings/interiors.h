@@ -114,8 +114,8 @@ struct OuterOpening {
 struct Hearth {
   RectCm stack;
   u32 room = k_no_room;
-  u16 opening_cm = 0;  // the opening's width, centred on the stack's face
-  u16 lintel_cm = 0;   // the opening's height
+  u16 opening_cm = 0;        // the opening's width, centred on the stack's face
+  u16 lintel_cm = 0;         // the opening's height
   Side faces = Side::Front;  // the direction the opening looks: Front is toward -z
   u8 storey = 0;
   u16 reserved = 0;
@@ -150,20 +150,20 @@ struct Stair {
 // What the generator is asked. Lengths are centimetres.
 struct InteriorParams {
   PlanType type = PlanType::Cot;
-  u8 storeys = 1;        // 1 or 2; a cot is always 1, a two-up two-down always 2
-  bool mirror = false;   // the plan flipped left to right
-  bool inner_room = false;  // a cross-passage house's room beyond the hall
-  u8 hearths = 1;        // 1, or 2 for a second hearth (the parlour's, the kitchen's)
-  i32 width_cm = 0;      // the clear inner rectangle, along the front
-  i32 depth_cm = 0;      // and away from the lane
-  u16 storey_cm = 240;   // floor to floor, the ground storey
-  u16 upper_clear_cm = 220;   // the upper storey's floor to its ceiling
-  u16 floor_cm = 20;     // the upper floor's thickness
+  u8 storeys = 1;            // 1 or 2; a cot is always 1, a two-up two-down always 2
+  bool mirror = false;       // the plan flipped left to right
+  bool inner_room = false;   // a cross-passage house's room beyond the hall
+  u8 hearths = 1;            // 1, or 2 for a second hearth (the parlour's, the kitchen's)
+  i32 width_cm = 0;          // the clear inner rectangle, along the front
+  i32 depth_cm = 0;          // and away from the lane
+  u16 storey_cm = 240;       // floor to floor, the ground storey
+  u16 upper_clear_cm = 250;  // the upper storey's floor to its ceiling
+  u16 floor_cm = 20;         // the upper floor's thickness
   u16 inner_wall_cm = 10;
-  u16 door_cm = 95;      // an outer door's width
-  u16 doorway_cm = 85;   // an inner doorway's
-  u16 head_cm = 200;     // a door's and a window's head above the floor
-  u16 window_cm = 90;    // a window's width
+  u16 door_cm = 95;     // an outer door's width
+  u16 doorway_cm = 85;  // an inner doorway's
+  u16 head_cm = 200;    // a door's and a window's head above the floor
+  u16 window_cm = 90;   // a window's width
   u16 sill_cm = 90;
   u64 seed = 0;
 };
@@ -184,9 +184,9 @@ struct InteriorPlan {
 // 210 mm on a going of 280 mm, so twice the rise plus the going stays at or under 700 mm.
 inline constexpr i32 k_stair_going_cm = 28;
 inline constexpr i32 k_stair_max_rise_mm = 210;
-inline constexpr i32 k_stair_strip_cm = 100;   // centre line to centre line
+inline constexpr i32 k_stair_strip_cm = 100;    // centre line to centre line
 inline constexpr i32 k_stair_landing_cm = 100;  // each landing's least length
-inline constexpr i32 k_headroom_cm = 210;      // plan 14 §14.4
+inline constexpr i32 k_headroom_cm = 210;       // plan 14 §14.4
 
 // The risers a storey of `rise_mm` takes, and the strip's least length for them.
 u32 stair_risers(i32 rise_mm) noexcept;
@@ -224,20 +224,20 @@ std::string draw_interior(const InteriorPlan& plan, u8 storey, i32 cell_cm);
 // --- Validators (plan 14 §14.4's table, read from the plan) --------------------------------------
 
 enum class InteriorRule : u8 {
-  RoomsTile,         // a storey's rooms cover its rectangle once
-  RoomReachable,     // every room is reached from an outer door
-  DoorwayClear,      // a doorway is at least 0.8 m wide and 2.0 m high, inside its wall
-  DoorwayJoins,      // a doorway lies on the boundary its wall's two rooms share
-  StairRise,         // a riser at most 0.25 m
-  StairGoing,        // a going at least 0.28 m
-  StairWidth,        // at least 0.8 m clear between the strip's faces
-  StairLanding,      // each landing at least 0.9 m
-  StairHeadroom,     // at least 2.1 m clear over every tread and both landings
-  StairLands,        // the head landing lies on the upper floor and a doorway leaves it
-  WindowInWall,      // a window's span, with its pier, meets no inner wall, stack or opening
-  WindowHeight,      // a sill and a head inside the storey
-  RoomLit,           // every habitable room has a window
-  HearthClear,       // a stack inside its room, off every doorway's approach and every stair
+  RoomsTile,      // a storey's rooms cover its rectangle once
+  RoomReachable,  // every room is reached from an outer door
+  DoorwayClear,   // a doorway is at least 0.8 m wide and 2.0 m high, inside its wall
+  DoorwayJoins,   // a doorway lies on the boundary its wall's two rooms share
+  StairRise,      // a riser at most 0.25 m
+  StairGoing,     // a going at least 0.28 m
+  StairWidth,     // at least 0.8 m clear between the strip's faces
+  StairLanding,   // each landing at least 0.9 m
+  StairHeadroom,  // at least 2.1 m clear over every tread and both landings
+  StairLands,     // the head landing lies on the upper floor and a doorway leaves it
+  WindowInWall,   // a window's span, with its pier, meets no inner wall, stack or opening
+  WindowHeight,   // a sill and a head inside the storey
+  RoomLit,        // every habitable room has a window
+  HearthClear,    // a stack inside its room, off every doorway's approach and every stair
 };
 const char* interior_rule_name(InteriorRule rule) noexcept;
 

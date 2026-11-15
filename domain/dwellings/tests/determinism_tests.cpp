@@ -4,9 +4,8 @@
 // centimetres and the engine's hash only: a pin moves when the layout's rules do, and
 // `k_interior_version` or `k_rural_filler_version` moves with it.
 
-#include <domain/dwellings/rural_filler.h>
-
 #include <core/hash/hash.h>
+#include <domain/dwellings/rural_filler.h>
 
 #include <doctest/doctest.h>
 
@@ -20,8 +19,8 @@ namespace {
 
 // Taken on MSVC 19.44 (msvc-debug) on 2026-11-14 at k_interior_version 1 and
 // k_rural_filler_version 1.
-constexpr u64 k_plans_pin = 0x5c01de15f6f37a18ull;
-constexpr u64 k_houses_pin = 0xdafc24fbe9f3fa51ull;
+constexpr u64 k_plans_pin = 0x2fd5eb8b995c3bfbull;
+constexpr u64 k_houses_pin = 0x8d2f548386dde551ull;
 
 }  // namespace
 
@@ -63,8 +62,8 @@ TEST_CASE("interiors: plans and the filler's houses are the same on every toolch
           houses = hash_combine(houses, hash_interior(plan));
           houses = hash_combine(houses, u64{static_cast<u32>(choice.outer_width_cm)} << 32 |
                                             static_cast<u32>(choice.outer_depth_cm));
-          houses = hash_combine(houses, u64{choice.ridge_along_front ? 1u : 0u} << 1 |
-                                            (choice.demoted ? 1u : 0u));
+          houses = hash_combine(
+              houses, u64{choice.ridge_along_front ? 1u : 0u} << 1 | (choice.demoted ? 1u : 0u));
         }
       }
     }

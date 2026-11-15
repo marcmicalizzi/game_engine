@@ -4,7 +4,6 @@
 // from the wall's `from`.
 
 #include <domain/dwellings/describe.h>
-
 #include <domain/structures/structures.h>
 
 namespace engine::dwellings {
@@ -75,8 +74,8 @@ i32 max_clear_cm(u16 outer_wall_cm) noexcept {
   return (structures::k_reach_cm - wall - wall / 2 - k_stack_proud_cm) / 10 * 10;
 }
 
-void describe(const InteriorPlan& plan, const RuralChoice& choice, std::string_view name,
-              u64 seed, structure::Description& out) {
+void describe(const InteriorPlan& plan, const RuralChoice& choice, std::string_view name, u64 seed,
+              structure::Description& out) {
   const InteriorParams& p = plan.params;
   out = structure::Description{};
   const i32 wall = i32{choice.outer_wall_cm};
@@ -124,7 +123,8 @@ void describe(const InteriorPlan& plan, const RuralChoice& choice, std::string_v
     const i32 z0 = on_lines_z(r.rect.z0);
     const i32 z1 = on_lines_z(r.rect.z1);
     const i32 outline[8] = {x0, z0, x0, z1, x1, z1, x1, z0};
-    for (const i32 v : outline) room.outline.push_back(v);
+    for (const i32 v : outline)
+      room.outline.push_back(v);
     out.rooms.push_back(room);
   }
 
@@ -291,7 +291,8 @@ void describe(const InteriorPlan& plan, const RuralChoice& choice, std::string_v
     // The hearth stone before the opening and the bressumer over it, on the stack's face.
     const i32 floor_top = out.storeys[h.storey].elevation;
     const bool faces_x = h.faces == Side::Left || h.faces == Side::Right;
-    const i32 mid = faces_x ? (h.stack.z0 + h.stack.z1) / 2 + off : (h.stack.x0 + h.stack.x1) / 2 + off;
+    const i32 mid =
+        faces_x ? (h.stack.z0 + h.stack.z1) / 2 + off : (h.stack.x0 + h.stack.x1) / 2 + off;
     const i32 half_open = h.opening_cm / 2;
     const i32 half_stack = (faces_x ? h.stack.z1 - h.stack.z0 : h.stack.x1 - h.stack.x0) / 2;
     i32 face = 0;  // the stack's face, and the way out of it
@@ -335,8 +336,7 @@ void describe(const InteriorPlan& plan, const RuralChoice& choice, std::string_v
 }
 
 bool fill_rural(const RuralPlot& plot, const Household& household, const RuralStyle& style,
-                u64 seed, std::string_view name, structure::Description& out,
-                std::string* error) {
+                u64 seed, std::string_view name, structure::Description& out, std::string* error) {
   RuralChoice choice;
   InteriorPlan plan;
   if (!plan_rural(plot, household, style, seed, choice, plan, error)) return false;
