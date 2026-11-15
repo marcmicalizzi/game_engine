@@ -1,12 +1,12 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "G198",
-  "reason": "G198: the far form, the far tile and the resident offer, and a deposit past the first ring (first pass); the second pass's far form meeting its neighbour, what path 1 costs a load, and the pictures' faults with whose each is (geometry.md, renderer.md, rocks.md): new behaviour and its measurements, each in its own section",
+  "reason": "G198: the far form, the far tile and the resident offer, and a deposit past the first ring; the far form's container sections renumbered 44 to 48 and the pictures' faults with whose each is (geometry.md, renderer.md, rocks.md): new behaviour and its measurements, each in its own section",
   "date": "2026-11-14",
   "by": "Marc Micalizzi",
   "deltas": {
     "page:docs/subsystems/renderer.md": 9905,
-    "page:docs/subsystems/geometry.md": 10292,
+    "page:docs/subsystems/geometry.md": 10472,
     "page:docs/subsystems/rocks.md": 10674
   }
 }
