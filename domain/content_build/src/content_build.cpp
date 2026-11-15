@@ -659,6 +659,8 @@ bool build_one(const std::string& input, const std::string& output, const MeshOp
   // writer calls the same function, because the two share cache entries byte for byte.
   texture::fill_cluster_texture_records(data);
   collect_texture_sources(data, io::parent_path(input), out.texture_sources);
+  // The perches its nodes declare (section 43; A43), as engine-view's own cache writer adds them.
+  data.perches = mesh.perches;
 
   // The source as it was given, so the renderer resolves the image paths above against its
   // directory however it came by the container, and the source's identity, so that a later build

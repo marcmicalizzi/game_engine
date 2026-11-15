@@ -220,9 +220,21 @@ void run_jobs(jobs::JobSystem& pool, Vector<T>& items, void (*fn)(void*)) {
     pointers.push_back(&item);
   run_jobs<T>(pool, std::span<T* const>(pointers.data(), pointers.size()), fn);
 }
+// The same with no pool: every item on the calling thread, in order.
+template <typename T>
+void run_jobs(jobs::JobSystem* pool, Vector<T>& items, void (*fn)(void*)) {
+  if (pool != nullptr) {
+    run_jobs(*pool, items, fn);
+    return;
+  }
+  for (T& item : items)
+    fn(&item);
+}
 
+// `pool` null: a pass with no pool of its own (a tile's mesh, `load_placement_textures`) looks up
+// and probes on the calling thread and makes a pool only when something has to be built.
 void prepare_scene_textures(const SceneDesc& desc, Vector<SourceMesh>& sources,
-                            content_build::ImageIdentities& identities, jobs::JobSystem& pool,
+                            content_build::ImageIdentities& identities, jobs::JobSystem* pool,
                             SceneLoadReport& report) {
   if (!desc.cache || desc.ddc.empty()) return;
   const i64 start_ns = time::monotonic_ns();
@@ -370,9 +382,19 @@ void prepare_scene_textures(const SceneDesc& desc, Vector<SourceMesh>& sources,
       mesh_of.push_back(refs[keys[build_key[b]].first_ref].mesh);
     }
     Vector<content_build::TextureResult> results;
+    // A build is the one step that wants threads; with no pool of the caller's, one of two for the
+    // length of the step (a cold cache only: a warm one never gets here).
+    std::optional<jobs::JobSystem> own;
+    if (pool == nullptr) {
+      jobs::JobSystemConfig config;
+      config.performance_workers = 1;
+      config.efficiency_workers = 1;
+      own.emplace(config);
+    }
     content_build::run_texture_step(
         std::span<const content_build::TextureSource* const>(pointers.data(), pointers.size()),
-        std::span<const u32>(mesh_of.data(), mesh_of.size()), desc.ddc, pool, results);
+        std::span<const u32>(mesh_of.data(), mesh_of.size()), desc.ddc,
+        pool != nullptr ? *pool : *own, results);
     for (const content_build::TextureResult& result : results) {
       switch (result.state) {
         case content_build::TextureState::Built: ++report.built; break;
@@ -497,6 +519,7 @@ bool write_cluster_cache(const std::string& path, const std::string& source,
   // two apps' entries stay the same bytes; the records come back to the caller whether or not the
   // entry lands, because the texture lookup does not depend on it (texture.md).
   texture::fill_cluster_texture_records(data);
+  data.perches = mesh_data.perches;  // section 43 (A43): the perches the glTF declares, if any
 
   std::string error;
   const io::Status status = io::make_directories(io::parent_path(path));
@@ -592,6 +615,7 @@ void adopt_container(geometry::ClusterFileData& container_data, const std::strin
   out.textures = std::move(container_data.textures);  // where the built textures are, if any
   // What a host seats an instance of it by (G201 stage 2; section 42): none but a tree's.
   out.seat = container_data.seat;
+  out.perches = std::move(container_data.perches);  // section 43 (A43): declared perches, if any
   // A generated tree's motion contract, for the flora stage and the collision (renderer.md, "The
   // flora stage"): kept only when its per-vertex records cover the mesh, which is what a reader may
   // index them by.
@@ -984,6 +1008,7 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expect
   ENGINE_STARTUP_STAGE("mesh build");  // a miss: the import, the repairs, the DAG, the write
   if (!assets::load_gltf(path, out.data, &error)) return false;
   out.image_dir = std::string(io::parent_path(path));
+  out.perches = out.data.perches;  // A43: the perches its nodes declare, as a container's 43
   // The two repairs, exactly where `engine-content build` runs them — after the load, before the
   // weld, the zero-area repair first — because the two write and read the same cache entries and
   // have to build the same bytes ([geometry](geometry.md), "Zero-area triangles: the repair" and
@@ -2410,6 +2435,15 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
       instance.animation.clip = entry.animation->clip;
       instance.animation.speed = entry.animation->speed;
       instance.animation.phase = entry.animation->phase;
+      // A factor on the animation tier's rule (A44; systems/animation/visibility.h), refused here
+      // outside [0, 64] rather than clamped, so a typo is a sentence at the read.
+      const f32 bias = entry.animation->lod_bias;
+      if (!(bias >= 0.0f) || bias > 64.0f) {
+        error = path + ": instance " + std::to_string(i) + ": animation.lod_bias " +
+                std::to_string(bias) + " is outside [0, 64]";
+        return false;
+      }
+      instance.animation.lod_bias = bias;
     }
     out.instances.push_back(instance);
   }
@@ -2668,7 +2702,7 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   // Every mesh's textures at once: one identity per distinct image, a built one trusted from its
   // header, the rest built on the same pool (`prepare_scene_textures`). Before the authored forms
   // below copy the records, so a form carries its mesh's keys.
-  prepare_scene_textures(resolved, out.sources, identities, *pool, out.load);
+  prepare_scene_textures(resolved, out.sources, identities, &*pool, out.load);
   // Each mesh's path as the scene named it, for a sentence about it (a form copies its source's).
   for (u32 m = 0; m < out.sources.size() && m < resolved.meshes.size(); ++m)
     out.sources[m].path = resolved.meshes[m];
@@ -3096,17 +3130,17 @@ void load_placement_textures(const SceneDesc& desc, const PlacementMeshOptions& 
   if (out.source.textures.size() != image_count)
     return refuse("the mesh records no built textures");
   {
-    // A pool of its own, two threads for the length of the pass: the pass wants one, and this
-    // thread may be a worker of the host's pool, which must not wait on its own.
-    jobs::JobSystemConfig config;
-    config.performance_workers = 1;
-    config.efficiency_workers = 1;
-    jobs::JobSystem pool(config);
+    // **No pool of its own** (T129; docs/experiments/memory-commit-accounting.md, "Who made the
+    // unnamed commit"): the look-up and the probes of a mesh's handful of images run on this thread
+    // (it may be a worker of the host's pool, which must not wait on its own), and only a build on
+    // a cold cache makes threads. A pool of two made and joined per mesh cost two threads a tile's
+    // mesh, and every thread that names itself to the profiler keeps 4 MiB of commit until the
+    // process ends: 6.2 GB on the forest's staging after its tiles came in twice.
     content_build::ImageIdentities identities(desc.ddc, materials::pack_at(desc.materials));
     Vector<SourceMesh> one;
     one.push_back(std::move(out.source));
     SceneLoadReport report;
-    prepare_scene_textures(desc, one, identities, pool, report);
+    prepare_scene_textures(desc, one, identities, nullptr, report);
     out.source = std::move(one[0]);
   }
   for (u32 i = 0; i < image_count; ++i) {

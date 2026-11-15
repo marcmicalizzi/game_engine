@@ -64,6 +64,11 @@ snowbed willow dwarf scrub and sparse plants rooted between rocks, at their bota
 
 [Rockfall deposits](rockfall-deposits/README.md) show connected talus, mixed fragments and drainage sediment.
 
+[`static-world/`](static-world/README.md) is the one scene here that no generator touches: imported
+glTF meshes (a ground mesh, branch-card trees, shrubs, grass, boulders, written by `engine-content
+static-kit`, and the Khronos lanterns and helmet) placed by hand, with no terrain, scatter or sky —
+what a consumer who uses none of the solvers has, flown at every gate (roadmap T130).
+
 [`steep-dip/`](steep-dip/README.md) is a mountain cut by beds dipping 57 degrees (the forest proof
 of concept's formation), so its flanks take every attitude of the beds to the slope; the `ledges`
 and `cliffs` generators dress it (roadmap G200).

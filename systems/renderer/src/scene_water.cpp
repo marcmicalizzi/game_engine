@@ -254,63 +254,65 @@ scene::WaterBody channel_body(const scene::WaterChannel& channel) {
   return body;
 }
 
-// **The plunges** (water.md, "The plunge"; roadmap S98). A stretch falls where it drops at least
-// as far as it runs (systems/water's `stretch_falls`, k_channel_fall_gradient 1, mirrored here
-// because the renderer may not call the capability); a run of falling stretches is one fall from
-// the first one's lip to the last one's foot. A foot that lies inside a body — a texel of the
-// body's depth map under it holds water — and within a metre of the body's level lands in it: the
-// body draws its white water (`SceneWater::plunges`), and a channel whose last point is such a foot
-// is "pooled", so the ribbon builds no plunge stretch over the pool (channel.h).
+// **The plunges** (water.md, "The plunge"; roadmap S98, S106). A stretch falls where the solve
+// says so: a station flagged a fall's lip and the next its foot (`scene_gen/water_channel.h`; the
+// description is checked before this reader sees it). A foot that lies inside a body — a texel of
+// the body's depth map under it holds water — and within a metre of the body's level lands in it,
+// and the body draws its white water (`SceneWater::plunges`).
 constexpr f64 k_plunge_level_m = 1.0;
 constexpr f64 k_plunge_radius_share = 0.25;  // the disc's radius: the fall's height over four
 constexpr f64 k_plunge_radius_min_m = 1.0;
 constexpr f64 k_plunge_radius_max_m = 8.0;
 
 bool stretch_falls_here(const scene::WaterChannel& c, u32 i) {
-  if (i + 1 >= c.points.size()) return false;
-  const f64 dx = c.points[i + 1].x - c.points[i].x;
-  const f64 dz = c.points[i + 1].z - c.points[i].z;
-  const f64 drop = c.points[i].y - c.points[i + 1].y;
-  return drop > 0.0 && drop >= std::sqrt(dx * dx + dz * dz);
+  if (i + 1 >= c.points.size() || i + 1 >= c.flags.size()) return false;
+  return (c.flags[i] & scene_gen::k_channel_fall_lip) != 0 &&
+         (c.flags[i + 1] & scene_gen::k_channel_fall_foot) != 0 &&
+         c.points[i].y > c.points[i + 1].y;
 }
 
-// **A channel's banks** (water.md, "Channels"; roadmap S99): one `gfx::WaterShore` stretch record a
-// stretch, its points relative to the channel instance's place `at`, its half widths, and its
-// fringe — the capillary rise of the bank's material (`gfx::capillary_fringe_m`; a channel's
-// description names no material, so `gfx::k_bank_default`) plus the spray band of its regime: a
-// fall (`stretch_falls_here`) its share of the drop, a rapid (Froude above 1 at either end, by
-// Manning's speed for a wide channel, systems/water's `manning_speed` and `froude` mirrored here
-// for the reason `stretch_falls_here` is) a fixed band. Static: no swash, `material` none.
+// **A channel's banks** (water.md, "Channels"; roadmap S99, S106): one `gfx::WaterShore` stretch
+// record a drawn stretch — one whose two stations do not both stand over a bank, as the sheet's
+// are — its two points the middles of the solved wet reach at its stations, relative to the
+// channel instance's place `at`, its half widths half the wet reach, and its fringe — the
+// capillary rise of the bank's material (`gfx::capillary_fringe_m`; a channel's description names
+// no material, so `gfx::k_bank_default`) plus the spray band of its regime: a fall
+// (`stretch_falls_here`) its share of the drop, a rapid (the solved Froude number above 1 at
+// either end) a fixed band. Static: no swash, `material` none.
 Vector<gfx::WaterShore> channel_bank_records(const scene::WaterChannel& c, const WorldPos& at) {
   Vector<gfx::WaterShore> out;
   const f32 fringe = gfx::capillary_fringe_m(gfx::k_bank_default);
-  const auto rapid_at = [&](u32 i) {
-    if (i >= c.depth_m.size() || i >= c.slope.size()) return false;
-    const f64 d = static_cast<f64>(c.depth_m[i]);
-    const f64 s = static_cast<f64>(c.slope[i]);
-    const f64 n = static_cast<f64>(c.manning_n);
-    if (!(d > 0.0) || !(s > 0.0) || !(n > 0.0)) return false;
-    const f64 speed = std::pow(d, 2.0 / 3.0) * std::sqrt(s) / n;
-    return speed / std::sqrt(9.81 * d) > 1.0;
-  };
-  for (u32 i = 0; i + 1 < c.points.size(); ++i) {
-    if (i + 1 >= c.width_m.size()) break;
+  const u32 n = c.points.size();
+  if (c.wet_left_m.size() != n || c.wet_right_m.size() != n || c.froude.size() != n ||
+      c.flags.size() != n)
+    return out;
+  for (u32 i = 0; i + 1 < n; ++i) {
+    if ((c.flags[i] & c.flags[i + 1] & scene_gen::k_channel_over_bank) != 0) continue;
     const WorldPos& p = c.points[i];
     const WorldPos& q = c.points[i + 1];
     f32 spray = 0.0f;
     if (stretch_falls_here(c, i)) {
       const f64 drop = p.y - q.y;
       spray = std::min(gfx::k_spray_fall_share * static_cast<f32>(drop), gfx::k_spray_fall_max_m);
-    } else if (rapid_at(i) || rapid_at(i + 1)) {
+    } else if (c.froude[i] > 1.0f || c.froude[i + 1] > 1.0f) {
       spray = gfx::k_spray_rapid_m;
     }
+    // Left of the line is the side of (-dz, dx): the wet reach's middle is half the difference of
+    // its two sides that way.
+    const f64 dx = q.x - p.x, dz = q.z - p.z;
+    const f64 len = std::sqrt(dx * dx + dz * dz);
+    const f64 lx = len > 0.0 ? -dz / len : 0.0, lz = len > 0.0 ? dx / len : 0.0;
+    const auto middle = [&](const WorldPos& s, u32 k) {
+      const f64 shift = 0.5 * (static_cast<f64>(c.wet_left_m[k]) - static_cast<f64>(c.wet_right_m[k]));
+      return Vec4{static_cast<f32>(s.x + lx * shift - at.x), static_cast<f32>(s.z + lz * shift - at.z),
+                  static_cast<f32>(s.y - at.y),
+                  std::max(0.5f * (c.wet_left_m[k] + c.wet_right_m[k]), 0.01f)};
+    };
     gfx::WaterShore r;
     r.wet_m = fringe + spray;
     r.material = 0xffffffffu;
-    r.stretch_a = Vec4{static_cast<f32>(p.x - at.x), static_cast<f32>(p.z - at.z),
-                       static_cast<f32>(p.y - at.y), 0.5f * c.width_m[i]};
-    r.stretch_b = Vec4{static_cast<f32>(q.x - at.x), static_cast<f32>(q.z - at.z),
-                       static_cast<f32>(q.y - at.y), 0.5f * c.width_m[i + 1]};
+    r.stretch_a = middle(p, i);
+    r.stretch_b = middle(q, i + 1);
     // The stretch's square, grown by its half width and where a 1:25 bank rises the fringe: the
     // run alone dries the ground there (water.slang's `water_channel_saturation`), so nothing past
     // it can be wet and the square ends at it.
@@ -336,10 +338,8 @@ bool over_water(const SceneWaterDepth& map, f64 x, f64 z) {
   return map.texels[static_cast<u32>(j) * map.size + static_cast<u32>(i)] > 0;
 }
 
-// Finds the bodies the channels' falls land in, fills their plunges, and returns the channels
-// whose last point lands in one.
-Vector<u32> find_plunges(const scene::Scene& file, SceneDesc& out) {
-  Vector<u32> pooled;
+// Finds the bodies the channels' falls land in and fills their plunges.
+void find_plunges(const scene::Scene& file, SceneDesc& out) {
   // The bodies already read: mesh index and the instance that places it.
   struct BodyAt {
     u32 mesh;
@@ -352,7 +352,7 @@ Vector<u32> find_plunges(const scene::Scene& file, SceneDesc& out) {
     if (!info.water.has_value() || info.water->channel || info.water->depth.size < 2) continue;
     bodies.push_back(BodyAt{instance.mesh, instance.origin});
   }
-  if (bodies.empty()) return pooled;
+  if (bodies.empty()) return;
   for (u32 k = 0; k < file.water_channels.size(); ++k) {
     const scene::WaterChannel& c = file.water_channels[k];
     const u32 n = c.points.size();
@@ -376,7 +376,6 @@ Vector<u32> find_plunges(const scene::Scene& file, SceneDesc& out) {
             k_plunge_radius_share * height, k_plunge_radius_min_m, k_plunge_radius_max_m));
         plunge.speed_m_s = static_cast<f32>(std::sqrt(2.0 * 9.81 * height));
         water.plunges.push_back(plunge);
-        if (i + 2 == n) pooled.push_back(k);
         break;
       }
     }
@@ -397,7 +396,6 @@ Vector<u32> find_plunges(const scene::Scene& file, SceneDesc& out) {
       list.resize(gfx::k_water_plunges);
     }
   }
-  return pooled;
 }
 
 }  // namespace
@@ -424,26 +422,17 @@ bool read_scene_water_channels(const scene::Scene& file, const std::string& path
   context.ddc = root;
   if (out.terrain.enabled) context.ground = ground.provider().view();
   JsonValue list = JsonValue::array();
-  for (const scene::WaterChannel& channel : file.water_channels) {
-    // W120: a description is solved or it is refused by name; none is read in the old meaning.
-    std::string why;
-    if (!scene_gen::water_channel_solved(channel, &why)) {
-      error = where + ": " + why;
-      return false;
-    }
+  // A description is solved or it is refused by name, and the refusal is the water capability's
+  // (`water::read_channel`, through `scene_gen::water_channel_solved`): the generator's `open`
+  // below reads every channel and names the one it refuses.
+  for (const scene::WaterChannel& channel : file.water_channels)
     list.push_back(schema::to_json(channel));
-  }
   JsonValue params = JsonValue::object();
   params.set("channels", std::move(list));
-  // The channels whose falls land in a body (S98): the body draws the plunge, and a channel that
-  // ends in one builds no plunge stretch over the pool.
-  const Vector<u32> pooled = find_plunges(file, out);
-  if (!pooled.empty()) {
-    JsonValue pooled_list = JsonValue::array();
-    for (const u32 k : pooled)
-      pooled_list.push_back(JsonValue(u64{k}));
-    params.set("pooled", std::move(pooled_list));
-  }
+  // The channels whose falls land in a body (S98): the body draws the plunge. (Until S106 a
+  // channel that ended in one was named to the generator so its ribbon built no plunge stretch;
+  // the solved description has the water below a foot, and the sheet builds nothing of its own.)
+  find_plunges(file, out);
   void* state = nullptr;
   if (!generator->open(params, context, &state, &error)) return false;
   struct Close {
@@ -460,6 +449,9 @@ bool read_scene_water_channels(const scene::Scene& file, const std::string& path
     return false;
   }
   for (u32 k = 0; k < count; ++k) {
+    // A channel with no drawn stretch has no sheet (S106: every station over its bank), which the
+    // generator says with a mesh of no path: no mesh, no instance and no banks.
+    if (placed.meshes[k].path.empty()) continue;
     const u32 mesh = out.meshes.size();
     out.meshes.push_back(placed.meshes[k].path);
     SceneMeshInfo info;
@@ -475,6 +467,7 @@ bool read_scene_water_channels(const scene::Scene& file, const std::string& path
     water.shading.shore_m = c.shore_m;
     water.shading.seed = water.body.seed;
     water.channel = true;
+    water.channel_source = c;  // A43: what a game module's `water_at` answers from
     water.depth = read_depth_map(placed.meshes[k].path);
     SceneInstance instance;
     instance.mesh = mesh;

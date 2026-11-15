@@ -809,6 +809,25 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
       return false;
     }
   }
+  // The surfaces that face the sky (S105; renderer.md, "The ground takes the picture's cut in every
+  // cascade"): measured once from the load's cones, for whichever frame cuts its cascades by their
+  // texels (a word a mesh, so it is made whatever the settings are now).
+  {
+    Vector<u32> sky;
+    const SceneData& data = scene.data();
+    const u32 meshes = sky_facing_meshes(data.lod.mesh, data.parts, sky);
+    ENGINE_LOG_INFO(log_renderer, "meshes that face the sky", log::field("meshes", meshes),
+                    log::field("of", static_cast<u64>(sky.size())));
+    if (meshes > 0) {
+      if (!gfx::upload_buffer(device, sky.data(), u64{sky.size()} * sizeof(u32),
+                              gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress,
+                              sky_facing_, error)) {
+        destroy();
+        return false;
+      }
+      sky_facing_count_ = sky.size();
+    }
+  }
   fill_view_layout();
   sample_gpu_memory();
   return true;
@@ -1441,6 +1460,8 @@ void SceneRenderer::destroy() noexcept {
   gfx::destroy_buffer(device, gi_cache_);
   gfx::destroy_buffer(device, gi_crowns_);
   gi_crown_count_ = 0;
+  gfx::destroy_buffer(device, sky_facing_);
+  sky_facing_count_ = 0;
   gi_count_ = 0;
   gi_reset_ = true;
   shaders_.destroy();
@@ -3779,6 +3800,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       const f32 texel_m = cascade.texel_world * settings.shadow_lod_scale;
       cull.cascade_error_m = texel_m * resolved_.shadow_texel_error;
       cull.cascade_cover_m = texel_m * resolved_.shadow_texel_cover;
+      // Except a mesh that faces the sky everywhere (S105), which takes the camera's cut.
+      cull.sky_facing = sky_facing_.address;
+      cull.sky_facing_count = sky_facing_count_;
       // The cascades' fade table is one per pair for all of them (`fade_cascade_block`), which
       // holds while every cascade takes the camera's cut. Cut by its own texels each cascade has
       // its own transitions, and the last cull would overwrite the others' splits; so a cascade

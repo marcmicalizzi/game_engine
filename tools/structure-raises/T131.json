@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "T131",
+  "reason": "T131 with W118: the world's tile builds moved off the frame's thread (with engine-view's first fill and the tail's reserve), the pair budget's no-trading rule and the mesh room's yield of waiting tiles are new behaviour the page owns; the measurements went to a page of their own",
+  "date": "2026-11-14",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/world.md": 10889
+  }
+}

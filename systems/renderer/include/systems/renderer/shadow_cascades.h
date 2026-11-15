@@ -35,8 +35,13 @@
 // the camera's cut, cannot do.
 
 #include <core/base/types.h>
+#include <core/containers/vector.h>
 #include <core/math/math.h>
+#include <domain/geometry/cluster.h>
+#include <domain/geometry/cluster_lod.h>
 #include <domain/gfx/visibility_resolve.h>
+
+#include <span>
 
 namespace engine::renderer {
 
@@ -122,5 +127,28 @@ void fit_shadow_cascades(const ViewSet& views, const Camera& camera, Vec3 toward
 // all use), and a nearest-filtering sampler's slot.
 void shadow_map_params(const ShadowCascades& cascades, u32 texture, u32 tiles, u32 sampler,
                        gfx::ShadowMapParams& out) noexcept;
+
+// **The meshes that face the sky everywhere** (S105; renderer.md, "The ground takes the picture's
+// cut in every cascade"): one word per mesh of `parts`, 1 where every triangle of the mesh as it
+// was built — its finest level, the surface the picture draws up close — turns its face above the
+// horizon, else 0. The coarser levels are not asked: they stand for that surface, and simplifying a
+// flat one folds a triangle over in its own plane now and then (the S105 bay's water has six such
+// in its coarser levels, one of 0.3 m², each facing straight down), which no more turns the surface
+// to the ground than it was. Each cluster is answered by its
+// normal cone (`geometry::ClusterDesc::cone`) where the cone can: a cone of axis a and cutoff
+// c = sin(half-angle) holds its normals within the half-angle of a, and every one of them points
+// above the horizon exactly when a.y > c — the cone test's own rule
+// (`geometry::cluster_backfacing`) for a view straight up from beneath the apex, on the packed
+// values, whose cutoff rounds up. Where there is no cone, or the cone reaches past the horizon, by
+// the cluster's float triangles, a triangle with no area facing nowhere. The cull pass takes such a
+// mesh's instances out of the cascades' texel cut by world error (gfx::CullParams::sky_facing). It
+// is a property of the asset's geometry, measured in its own space, so an imported ground, a deck
+// or a water body is one by the same rule as the scene's own grid; a closed mesh is not. A mesh
+// taken for one draws a finer cut into the maps than it needed, never a wrong one, and one missed
+// keeps R103's cut, so an instance that turns its mesh over costs pairs and nothing else. A mesh
+// whose leaves are not in `mesh` (a paged scene keeps them in its pages) is 0, which keeps the
+// texel cut. Returns how many are 1.
+u32 sky_facing_meshes(const geometry::ClusterMesh& mesh,
+                      std::span<const geometry::ClusterMeshPart> parts, Vector<u32>& out);
 
 }  // namespace engine::renderer

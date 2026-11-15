@@ -24,6 +24,7 @@
 // them: it draws through the vertex-shader baseline tier.
 #include "fly_camera.h"
 #include "loading.h"
+#include "memory_report.h"
 #include "pacing.h"
 #include "report.h"
 #include "startup.h"
@@ -105,6 +106,7 @@
 #if ENGINE_VIEW_WATER
 // Wading (brief-water, roadmap S63; docs/subsystems/water.md, "Wading").
 #include <systems/renderer/terrain.h>
+#include <systems/water/query.h>  // a game module's water at a point (A43)
 #include <systems/water/water.h>
 #endif
 
@@ -196,7 +198,7 @@ constexpr const char* k_usage =
     "                   [--replay-input <log.jsonl>] [--windowed]\n"
     "                   [--inject-input <log.jsonl>] [--input-map <map.json>]\n"
     "                   [--game <module.dll> [--game-state <state.json>]] [--report <report.json>]\n"
-    "                   [--startup-trace <trace.json>]\n"
+    "                   [--startup-trace <trace.json>] [--memory-report]\n"
     "                   [--present <mode>] [--swapchain-images <n>] [--frames-in-flight <n>]\n"
     "                   [--pace auto|display|off] [--present-max-hz <n>] [--borderless] [--fullscreen]\n"
     "                   [--no-present-timing]\n"
@@ -559,6 +561,10 @@ constexpr const char* k_usage =
     "                   20 ms, and the milestones up to nearby_stable; written to <f> as Chrome\n"
     "                   trace JSON (chrome://tracing, Perfetto) and summarized as the summary's\n"
     "                   \"startup\" block\n"
+    "  --memory-report  where the process's commit is, at the first frame and at exit: the address\n"
+    "                   space by kind, committed against resident, the owners the engine can name\n"
+    "                   and the live blocks of 16 MiB or more by call stack; the summary's\n"
+    "                   \"memory\" block and one log line each (apps.md, \"--memory-report\")\n"
     "  --no-loading-overlay  a window's load shows cleared frames, not its stage and bar (a\n"
     "                   --game module with game_loading draws its own either way)\n"
     "  --load-on-main   the window's load as it was before W79: every stage on the main thread,\n"
@@ -2182,14 +2188,41 @@ struct Wading {
     return water::depth_at(std::span<const water::Body>(w.bodies.data(), w.bodies.size()), w.ground,
                            at);
   }
+  // **A game module's water at a point** (ABI 10, A43; water/query.h): the bodies with the depth
+  // maps the reader cooked beside their meshes, and the channels' solved stations.
+  water::WaterQuery query;
+  static bool sample(const void* self, f64 x, f64 z, hotload::WaterSample& out) noexcept {
+    water::WaterPoint p;
+    static_cast<const Wading*>(self)->query.sample(WorldPos{x, 0.0, z}, p);
+    out.wet = p.wet ? 1u : 0u;
+    out.level = p.level;
+    out.depth = p.depth;
+    out.velocity[0] = p.velocity.x;
+    out.velocity[1] = p.velocity.y;
+    out.source = p.source;
+    out.index = p.index;
+    return true;
+  }
   void attach(const renderer::SceneData& scene, view::Walker& walker) {
     bodies.clear();
+#if ENGINE_VIEW_GAME
+    // Dry is an answer: a scene with no water answers every point dry, in a build that has water.
+    if (g_game != nullptr) g_game->set_water(&Wading::sample, this);
+#endif
+    Vector<const renderer::SceneWaterDepth*> maps;  // the bodies' cooked depth maps, in order
     for (const renderer::SceneMeshInfo& info : scene.mesh_info) {
       if (!info.water.has_value()) continue;
+      water::Channel channel;
+      if (info.water->channel &&
+          water::read_channel(info.water->channel_source, channel, nullptr)) {
+        query.add_channel(std::move(channel));
+      }
       water::Body body;
-      if (water::read_body(info.water->body, body, nullptr)) bodies.push_back(std::move(body));
+      if (!water::read_body(info.water->body, body, nullptr)) continue;
+      bodies.push_back(std::move(body));
+      maps.push_back(&info.water->depth);
     }
-    if (bodies.empty()) return;
+    if (bodies.empty() && query.empty()) return;
     if (scene.terrain.enabled) {
       terrain = std::make_unique<renderer::TerrainSampler>(scene.terrain);
       if (terrain->ok()) ground = terrain->provider().view();
@@ -2200,7 +2233,19 @@ struct Wading {
     // that fails here keeps the unflooded answer.
     for (water::Body& body : bodies)
       if (body.fill) (void)water::fill_body(body, ground, nullptr);
-    walker.set_water(&Wading::depth, this);
+    query.prepare(&ground);  // and the channels' index, once
+    for (u32 b = 0; b < bodies.size(); ++b) {
+      const renderer::SceneWaterDepth& d = *maps[b];
+      water::DepthMap map;
+      map.size = d.size;
+      map.origin = d.origin;
+      map.texel_m = d.texel_m;
+      map.depth_max = d.depth_max;
+      map.bank_max = d.bank_max;
+      map.texels = d.texels;
+      query.add_body(bodies[b], std::move(map));
+    }
+    if (!bodies.empty()) walker.set_water(&Wading::depth, this);
   }
 };
 #endif
@@ -3171,6 +3216,8 @@ int run_offscreen(Options& options, Interactive& interactive) {
                         log::field("reason", why));
       }
     }
+    // Both scenes are uploaded: what nothing reads again goes (T129), unless pages copy from it.
+    if (!resolved.stream || page_source.valid()) renderer::release_uploaded_streams(scene_data);
     renderer::SceneRenderer::Desc renderer_desc;
     renderer_desc.page_source = page_source.valid() ? &page_source : nullptr;
     renderer_desc.width = options.width;
@@ -3417,6 +3464,8 @@ int run_offscreen(Options& options, Interactive& interactive) {
         const i64 begun = time::monotonic_ns();
         take_folded(view_renderer, folded, pending, records);
         startup.frame(readiness());
+        if (view::memory_report().on() && !records.empty())
+          view::memory_report().take("first_frame", &device);
         const i64 ready = time::monotonic_ns();
         const u64 before_tick = session.tick().value;
         const u64 to = before_tick + ticks_per_frame < end ? before_tick + ticks_per_frame : end;
@@ -4014,6 +4063,8 @@ int run_offscreen(Options& options, Interactive& interactive) {
       summary.startup = startup.finish(&why);
       if (!why.empty()) std::fprintf(stderr, "engine-view: --startup-trace: %s\n", why.c_str());
     }
+    view::memory_report().take("exit", &device);
+    summary.memory = view::memory_report().block();
     summary_line = write_json(schema::to_json(summary), JsonWriteOptions{.pretty = false});
     if (!options.benchmark.empty()) {
       const io::Status status = write_benchmark(
@@ -4834,6 +4885,8 @@ int run_view(int argc, char** argv) {
       g_report.frames.enable();
     } else if (a == "--startup-trace") {
       if (!next_value(argc, argv, i, a, options.startup_trace)) return k_exit_usage;
+    } else if (a == "--memory-report") {
+      view::memory_report().enable();  // before the load, so its blocks are logged
     } else if (a == "--no-loading-overlay") {
       options.loading_overlay = false;
     } else if (a == "--load-on-main") {
@@ -5352,11 +5405,9 @@ int run_view(int argc, char** argv) {
                  "with --offscreen or in the window\n");
     return k_exit_usage;
   }
-  if (options.offscreen && (options.animate || options.morph_animate || options.reference != 0)) {
-    std::fprintf(stderr,
-                 "engine-view: --offscreen, --benchmark, --verify-occlusion and --marker-captures "
-                 "draw rigid scenes; --animate, --morph-animate and --reference have their own "
-                 "paths\n");
+  // `--animate` runs offscreen since A44 (apps.md, "Animation in a session").
+  if (options.offscreen && (options.morph_animate || options.reference != 0)) {
+    std::fprintf(stderr, "engine-view: --offscreen draws no --morph-animate or --reference\n");
     return k_exit_usage;
   }
   // An interactive session ends when its log does or its window closes, not after a default count.
@@ -6141,6 +6192,8 @@ int run_view(int argc, char** argv) {
                         log::field("reason", why));
       }
     }
+    // The scene is uploaded: what nothing reads again goes (T129), unless pages copy from it.
+    if (!resolved.stream || page_source.valid()) renderer::release_uploaded_streams(scene_data);
     renderer::SceneRenderer::Desc renderer_desc;
     renderer_desc.page_source = page_source.valid() ? &page_source : nullptr;
     renderer_desc.width = swapchain.extent().width;
@@ -6676,14 +6729,14 @@ int run_view(int argc, char** argv) {
       }
 
 #if ENGINE_VIEW_WORLD
-      // The streamed world from the last frame's camera, before this frame begins: the first
-      // frame fills the ring whole round where the camera starts.
+      // The streamed world from the last frame's camera, before this frame begins (the first
+      // fills the ring round the camera: `ViewWorld::window_mode`).
       const view::ViewWorld::Counters world_then = view_world.counters();
+      const bool settled = !options.capture.empty() || !options.marker_captures.empty();
       if (view_world.valid() && world_camera_set &&
-          !view_world.update(
-              world_camera, rendered,
-              rendered <= 1 ? view::ViewWorld::Mode::Complete : view::ViewWorld::Mode::Budgeted, 0,
-              static_cast<u32>(rendered), true, &error)) {
+          !view_world.update(world_camera, rendered,
+                             view::ViewWorld::window_mode(rendered, settled), 0,
+                             static_cast<u32>(rendered), true, &error)) {
         exit_code = fail("world", error);
         break;
       }
@@ -6940,6 +6993,8 @@ int run_view(int argc, char** argv) {
         r.ground_settled = !ground_now.has_value() ||
                            (ground_now->chunks_built == 0 && ground_now->layout_lag_m == 0.0);
         startup.frame(r);
+        if (r.frame_done && view::memory_report().on())
+          view::memory_report().take("first_frame", &device);
         if (load_controllable_ns == 0 && startup.reached("player_controllable"))
           load_controllable_ns = time::monotonic_ns();
         if (startup.reached(view::k_startup_milestones[load_ready_rung])) {
@@ -7331,6 +7386,9 @@ int run_view(int argc, char** argv) {
     block.set("first_game_tick", game_first_tick());
     loading_text = write_json(block, JsonWriteOptions{.pretty = false});
   }
+  view::memory_report().take("exit", &device);  // a window logs its two lines (memory_report.h)
+  const std::string memory_text =               // and its summary line carries the block (null off)
+      write_json(view::memory_report().block(), JsonWriteOptions{.pretty = false});
   // `--startup-trace` in a window: the same block an offscreen run's summary carries (null off).
   std::string startup_text;
   {
@@ -7422,7 +7480,8 @@ int run_view(int argc, char** argv) {
         "\"rt\":%.4f,\"clas\":%.4f,\"deform\":%.4f,\"deform_alloc\":%.4f,"
         "\"trace\":%.4f,\"shadow\":%.4f,\"shadow_cull\":%.4f,\"total\":%.4f,"
         "\"frames\":%llu},\"captured\":%s,\"interactive\":%s,\"time_lapse\":%s,\"sun\":%s,"
-        "\"output\":%s,\"medium\":%s,\"flora\":%s,\"loading\":%s,\"startup\":%s}\n",
+        "\"output\":%s,\"medium\":%s,\"flora\":%s,\"loading\":%s,\"startup\":%s,"
+        "\"memory\":%s}\n",
         static_cast<unsigned long long>(rendered), seconds, avg_ms, extent_width, extent_height,
         scene_data.cluster_count(), scene_data.leaf_count(), scene_data.lod.leaf_triangle_count,
         scene_data.lod.level_cluster_counts.size(), static_cast<f64>(scene_data.build_ns) / 1.0e6,
@@ -7467,7 +7526,7 @@ int run_view(int argc, char** argv) {
         stats.total_ms(), static_cast<unsigned long long>(stats.timed_frames),
         captured ? "true" : "false", interactive_text.c_str(), time_lapse_text.c_str(),
         sun_text.c_str(), output_text.c_str(), medium_text.c_str(), flora_text.c_str(),
-        loading_text.c_str(), startup_text.c_str());
+        loading_text.c_str(), startup_text.c_str(), memory_text.c_str());
     std::fputs(summary_text.c_str(), stdout);
     g_report.summary_line = summary_text.substr(0, summary_text.find_last_not_of('\n') + 1);
     std::fflush(stdout);

@@ -57,6 +57,10 @@ Writer::Writer(std::string_view record, i64 spacing_mm, u32 record_bytes) {
 }
 
 bool Writer::add(i32 tx, i32 tz, std::string_view bytes) {
+  return add(tx, tz, bytes, hash_bytes(bytes.data(), bytes.size()));
+}
+
+bool Writer::add(i32 tx, i32 tz, std::string_view bytes, u64 bytes_hash) {
   if (bytes.size() != header_.record_bytes) return false;
   if (!toc_.empty() && tile_key(tx, tz) <= tile_key(toc_.back().tx, toc_.back().tz)) return false;
   Entry e;
@@ -66,7 +70,7 @@ bool Writer::add(i32 tx, i32 tz, std::string_view bytes) {
   e.bytes = header_.record_bytes;
   toc_.push_back(e);
   data_.append(bytes.data(), bytes.size());
-  header_.records_hash = hash_combine(header_.records_hash, hash_bytes(bytes.data(), bytes.size()));
+  header_.records_hash = hash_combine(header_.records_hash, bytes_hash);
   return true;
 }
 

@@ -279,6 +279,8 @@ struct Walker::Impl {
   // make the same shapes in the same order whether a frame ever casts it.
   physics::ShapeId boom_sphere{};
   bool has_boom_sphere = false;
+  // A module's supports (`supports`, A43): the consumer's answer, made once at `start`.
+  mutable Vector<scene_collision::Support> support_scratch;
 
   physics::CharacterConfig character_config() const {
     physics::CharacterConfig c;
@@ -490,6 +492,7 @@ bool Walker::start(const WalkParams& params, u32 tick_hz, const renderer::SceneD
     const f32 boom_radius = fly_boom_from_tunables().radius_m;
     w.has_boom_sphere = boom_radius > 0.0f &&
                         w.world.create_sphere(boom_radius, w.boom_sphere) == physics::Status::Ok;
+    w.support_scratch.resize(k_max_walk_supports);
     w.physical = true;
     w.collision = "physics";
     w.why.clear();
@@ -577,6 +580,87 @@ bool Walker::cast_boom(WorldPos from, Vec3 direction, f32 length, f32& out) cons
   return false;
 #endif
 }
+
+// A module's cast (A43; walk.h): the physics world's ray, or its sphere of the call's own radius,
+// against the static bodies, and the collision's word for what the body and child were. Without
+// physics both of a module's questions answer that there is no collision to ask.
+#if ENGINE_VIEW_WALK_PHYSICS
+bool Walker::cast(WorldPos origin, Vec3 direction, f32 length, f32 radius,
+                  WalkCast& out) const noexcept {
+  const Impl& w = *impl_;
+  if (!w.physical) return false;
+  out = WalkCast{};
+  const Vec3 sweep = direction * length;
+  out.covered = w.consumer.covers_segment(origin, origin + DVec3{sweep});
+  const physics::LayerMask statics = physics::LayerMask::of(physics::Layer::Static);
+  physics::BodyId body{};
+  u32 child = 0;
+  f32 fraction = 0.0f;
+  if (radius > 0.0f) {
+    physics::ShapeHit hit;
+    if (!w.world.cast_sphere(origin, radius, sweep, hit, statics)) return true;
+    body = hit.body;
+    child = hit.child;
+    fraction = hit.fraction < 0.0f ? 0.0f : (hit.fraction > 1.0f ? 1.0f : hit.fraction);
+    out.normal = hit.normal;
+    // The centre where the sphere touched, not the deepest point of the contact.
+    out.position = origin + DVec3{sweep * fraction};
+  } else {
+    physics::RayHit hit;
+    if (!w.world.cast_ray(origin, sweep, hit, statics)) return true;
+    body = hit.body;
+    child = hit.child;
+    fraction = hit.fraction;
+    out.normal = hit.normal;
+    out.position = hit.position;
+  }
+  // A triangle's normal is its winding's, and an asset may wind either way: the answer's faces the
+  // cast, out of what it met.
+  const f32 facing =
+      out.normal.x * direction.x + out.normal.y * direction.y + out.normal.z * direction.z;
+  if (facing > 0.0f) out.normal = out.normal * -1.0f;
+  out.hit = true;
+  out.distance = fraction * length;
+  const scene_collision::HitInfo info = w.consumer.describe_hit(body, child);
+  out.what = static_cast<u8>(info.kind);
+  out.mesh = info.mesh;
+  out.instance = info.instance;
+  out.entry = info.entry;
+  return true;
+}
+
+bool Walker::supports(WorldPos at, f32 radius, f32 min_size, std::span<WalkSupport> out,
+                      WalkSupports& answer) const noexcept {
+  const Impl& w = *impl_;
+  if (!w.physical || w.support_scratch.empty()) return false;
+  const usize room = out.size() < w.support_scratch.size() ? out.size() : w.support_scratch.size();
+  scene_collision::Support* scratch = w.support_scratch.data();  // scratch, not state
+  const scene_collision::SupportAnswer a = w.consumer.supports_near(
+      at, radius, min_size, std::span<scene_collision::Support>(scratch, room));
+  answer.count = a.count;
+  answer.found = a.found;
+  answer.covered = a.covered;
+  for (u32 i = 0; i < a.count; ++i) {
+    const scene_collision::Support& s = scratch[i];
+    WalkSupport& o = out[i];
+    o.position = s.position;
+    o.up = s.up;
+    o.size_m = s.size_m;
+    o.distance = s.distance;
+    o.kind = s.kind;
+    o.mesh = s.piece.mesh;
+    o.instance = s.piece.instance;
+    o.entry = s.piece.entry;
+    o.part = s.part;
+  }
+  return true;
+}
+#else
+bool Walker::cast(WorldPos, Vec3, f32, f32, WalkCast&) const noexcept { return false; }
+bool Walker::supports(WorldPos, f32, f32, std::span<WalkSupport>, WalkSupports&) const noexcept {
+  return false;
+}
+#endif
 
 f32 walk_turn_rate_from_tunables() { return static_cast<f32>(walk_turn_rate.get()); }
 

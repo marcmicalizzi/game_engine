@@ -44,7 +44,7 @@ set(_view_tests tests/view_tests.cpp tests/mesh_view_tests.cpp tests/fly_tests.c
                 tests/interactive_tests.cpp tests/time_controls_tests.cpp tests/walk_tests.cpp
                 tests/walk_view_tests.cpp tests/far_tests.cpp tests/frame_loop_tests.cpp
                 tests/game_view_tests.cpp tests/startup_trace_view_tests.cpp
-                tests/loading_view_tests.cpp
+                tests/loading_view_tests.cpp tests/static_world_view_tests.cpp
                 ${_view_interactive})
 if(TARGET engine::tileset)
   # A scene naming a built tile set drawn offscreen, the set written by engine-content beside it;
@@ -133,6 +133,13 @@ if(TARGET engine::hotload)
   # The HUD on an HDR target and the game's own art (ABI 6, roadmap P49): the fixture's panel image
   # and font line captured in sdr8, hdr10 and scrgb, end to end (tests/game_hud_hdr_view_tests.cpp).
   list(APPEND _view_tests tests/game_hud_hdr_view_tests.cpp)
+  # What a module can ask the world (ABI 10, roadmap A43; apps.md "What a module can ask the
+  # world"): the casts, the supports and the water in the oasis pool with a tree, a post that
+  # declares a perch and a boulder, end to end, replayed offscreen.
+  if(TARGET engine::water AND TARGET engine::flora AND TARGET engine::scene_collision AND
+     TARGET engine::terrain AND TARGET engine::scatter AND TARGET engine::sky)
+    list(APPEND _view_tests tests/world_queries_view_tests.cpp)
+  endif()
 endif()
 if(TARGET engine::animation)
   # The animation-LOD glue is a header beside main.cpp (`anim_lod.h`) rather than a block inside
@@ -141,10 +148,13 @@ if(TARGET engine::animation)
   # these cases drive them with no GPU and no world. Without the capability the header is not
   # compiled at all, which is what the minimal build proves.
   list(APPEND _view_tests tests/anim_lod_tests.cpp)
+  # The rule by what the eye can see, end to end (A44; animation.md, "The LOD policy: what the eye
+  # can see"): one small bar at 100 m at two resolutions and with a bias, `--animate --offscreen`.
+  list(APPEND _view_tests tests/anim_visibility_view_tests.cpp)
 endif()
 
 engine_app(NAME engine_view OUTPUT engine-view
-  SOURCES main.cpp report.cpp startup.cpp loading.cpp ${_view_interactive} ${_view_world}
+  SOURCES main.cpp report.cpp startup.cpp loading.cpp memory_report.cpp ${_view_interactive} ${_view_world}
           ${_view_game}
           ${_view_animation}
   DEPS ${_view_deps} profiling

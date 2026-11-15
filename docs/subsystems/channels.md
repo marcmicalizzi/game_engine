@@ -631,8 +631,8 @@ solve the fixture's ground and are held to these stations.
 
 ### What refuses a description
 
-`scene_gen::water_channel_solved` is the one check, made by the scene's reader before a channel
-reaches the draw: fewer than two points; a per-station array that is not the points' long; a
+`scene_gen::water_channel_solved` is the one check, made by `water::read_channel` before a channel
+is drawn: fewer than two points; a per-station array that is not the points' long; a
 width, depth or discharge that is not positive; a negative slope, speed, Froude number or wet
 reach; a flag bit the build does not know; a head or a lip without its foot. **A block with none
 of the solved arrays is refused by name, "cooked before W120: cook again"**: nothing is read in the

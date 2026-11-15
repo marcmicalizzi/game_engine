@@ -1,0 +1,998 @@
+{
+  "format": "engine.scene.v1",
+  "name": "static-world",
+  "camera_path": "camera-path.json",
+  "description": "A world of imported assets placed by hand (roadmap T130): a 600 m ground mesh, seven branch-card trees, ten shrubs, forty grass clumps, six boulders, two Khronos lanterns and the flight helmet, every mesh a plain glTF file and every instance written here. No generator, no terrain, no scatter, no sky: what a consumer who uses none of the solvers has. Run `engine-content static-kit content/test-scenes/static-world/kit` first (README.md).",
+  "meshes": [
+    {
+      "name": "ground",
+      "path": "kit/ground.gltf"
+    },
+    {
+      "name": "tree",
+      "path": "kit/tree.gltf"
+    },
+    {
+      "name": "bush",
+      "path": "kit/bush.gltf"
+    },
+    {
+      "name": "grass",
+      "path": "kit/grass.gltf"
+    },
+    {
+      "name": "rock",
+      "path": "kit/rock.gltf"
+    },
+    {
+      "name": "lantern",
+      "path": "../../samples/Lantern/Lantern.glb",
+      "fit": {
+        "height": 2.4
+      }
+    },
+    {
+      "name": "flight helmet",
+      "path": "../../samples/FlightHelmet/FlightHelmet.gltf",
+      "fit": {
+        "height": 0.45
+      }
+    }
+  ],
+  "instances": [
+    {
+      "mesh": 0,
+      "name": "ground",
+      "translation": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "mesh": 1,
+      "name": "tree 1",
+      "translation": [
+        -12.0,
+        -0.001,
+        -6.0
+      ],
+      "yaw_deg": 0.0
+    },
+    {
+      "mesh": 1,
+      "name": "tree 2",
+      "translation": [
+        6.0,
+        0.278,
+        -14.0
+      ],
+      "yaw_deg": 70.0,
+      "scale": [
+        1.15,
+        1.15,
+        1.15
+      ]
+    },
+    {
+      "mesh": 1,
+      "name": "tree 3",
+      "translation": [
+        14.0,
+        0.743,
+        5.0
+      ],
+      "yaw_deg": 150.0,
+      "scale": [
+        0.9,
+        0.9,
+        0.9
+      ]
+    },
+    {
+      "mesh": 1,
+      "name": "tree 4",
+      "translation": [
+        -4.0,
+        -0.08,
+        13.0
+      ],
+      "yaw_deg": 230.0,
+      "scale": [
+        1.05,
+        1.05,
+        1.05
+      ]
+    },
+    {
+      "mesh": 1,
+      "name": "tree 5",
+      "translation": [
+        -22.0,
+        -0.42,
+        9.0
+      ],
+      "yaw_deg": 300.0,
+      "scale": [
+        1.2,
+        1.2,
+        1.2
+      ]
+    },
+    {
+      "mesh": 1,
+      "name": "tree 6",
+      "translation": [
+        23.0,
+        0.464,
+        -5.0
+      ],
+      "yaw_deg": 20.0,
+      "scale": [
+        0.95,
+        0.95,
+        0.95
+      ]
+    },
+    {
+      "mesh": 1,
+      "name": "tree 7",
+      "translation": [
+        -15.0,
+        0.828,
+        -22.0
+      ],
+      "yaw_deg": 110.0,
+      "scale": [
+        1.1,
+        1.1,
+        1.1
+      ]
+    },
+    {
+      "mesh": 2,
+      "name": "bush 1",
+      "translation": [
+        -9.0,
+        0.105,
+        -9.0
+      ],
+      "yaw_deg": 10.0
+    },
+    {
+      "mesh": 2,
+      "name": "bush 2",
+      "translation": [
+        -14.0,
+        -0.099,
+        -3.0
+      ],
+      "yaw_deg": 80.0,
+      "scale": [
+        0.8,
+        0.8,
+        0.8
+      ]
+    },
+    {
+      "mesh": 2,
+      "name": "bush 3",
+      "translation": [
+        8.0,
+        0.34,
+        -11.0
+      ],
+      "yaw_deg": 140.0,
+      "scale": [
+        1.2,
+        1.2,
+        1.2
+      ]
+    },
+    {
+      "mesh": 2,
+      "name": "bush 4",
+      "translation": [
+        4.0,
+        0.235,
+        -16.0
+      ],
+      "yaw_deg": 200.0,
+      "scale": [
+        0.9,
+        0.9,
+        0.9
+      ]
+    },
+    {
+      "mesh": 2,
+      "name": "bush 5",
+      "translation": [
+        16.0,
+        1.172,
+        7.0
+      ],
+      "yaw_deg": 260.0,
+      "scale": [
+        1.1,
+        1.1,
+        1.1
+      ]
+    },
+    {
+      "mesh": 2,
+      "name": "bush 6",
+      "translation": [
+        11.0,
+        0.452,
+        3.0
+      ],
+      "yaw_deg": 320.0,
+      "scale": [
+        0.7,
+        0.7,
+        0.7
+      ]
+    },
+    {
+      "mesh": 2,
+      "name": "bush 7",
+      "translation": [
+        -2.0,
+        -0.128,
+        15.0
+      ],
+      "yaw_deg": 30.0
+    },
+    {
+      "mesh": 2,
+      "name": "bush 8",
+      "translation": [
+        -20.0,
+        -0.42,
+        12.0
+      ],
+      "yaw_deg": 90.0,
+      "scale": [
+        1.3,
+        1.3,
+        1.3
+      ]
+    },
+    {
+      "mesh": 2,
+      "name": "bush 9",
+      "translation": [
+        21.0,
+        0.608,
+        -2.0
+      ],
+      "yaw_deg": 170.0,
+      "scale": [
+        0.9,
+        0.9,
+        0.9
+      ]
+    },
+    {
+      "mesh": 2,
+      "name": "bush 10",
+      "translation": [
+        -13.0,
+        0.494,
+        -19.0
+      ],
+      "yaw_deg": 250.0
+    },
+    {
+      "mesh": 4,
+      "name": "rock 1",
+      "translation": [
+        8.0,
+        0.203,
+        8.0
+      ],
+      "yaw_deg": 0.0,
+      "scale": [
+        1.3,
+        1.3,
+        1.3
+      ]
+    },
+    {
+      "mesh": 4,
+      "name": "rock 2",
+      "translation": [
+        -6.0,
+        -0.044,
+        -16.0
+      ],
+      "yaw_deg": 60.0,
+      "scale": [
+        0.8,
+        0.8,
+        0.8
+      ]
+    },
+    {
+      "mesh": 4,
+      "name": "rock 3",
+      "translation": [
+        18.0,
+        1.967,
+        14.0
+      ],
+      "yaw_deg": 40.0,
+      "scale": [
+        1.6,
+        1.6,
+        1.6
+      ]
+    },
+    {
+      "mesh": 4,
+      "name": "rock 4",
+      "translation": [
+        -17.0,
+        -0.398,
+        0.0
+      ],
+      "yaw_deg": 200.0
+    },
+    {
+      "mesh": 4,
+      "name": "rock 5",
+      "translation": [
+        27.0,
+        0.587,
+        -16.0
+      ],
+      "yaw_deg": 120.0,
+      "scale": [
+        2.2,
+        2.2,
+        2.2
+      ]
+    },
+    {
+      "mesh": 4,
+      "name": "rock 6",
+      "translation": [
+        -28.0,
+        -0.83,
+        20.0
+      ],
+      "yaw_deg": 300.0,
+      "scale": [
+        1.4,
+        1.4,
+        1.4
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "grass 1",
+      "translation": [
+        -5.07,
+        0.357,
+        2.83
+      ],
+      "yaw_deg": 243.0,
+      "scale": [
+        0.85,
+        0.85,
+        0.85
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "grass 2",
+      "translation": [
+        -5.9,
+        0.28,
+        3.94
+      ],
+      "yaw_deg": 217.0,
+      "scale": [
+        0.98,
+        0.98,
+        0.98
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "grass 3",
+      "translation": [
+        -7.46,
+        0.215,
+        3.25
+      ],
+      "yaw_deg": 297.0,
+      "scale": [
+        0.89,
+        0.89,
+        0.89
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "grass 4",
+      "translation": [
+        -7.21,
+        0.176,
+        4.86
+      ],
+      "yaw_deg": 284.0,
+      "scale": [
+        1.29,
+        1.29,
+        1.29
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "grass 5",
+      "translation": [
+        -4.2,
+        0.366,
+        3.79
+      ],
+      "yaw_deg": 194.0,
+      "scale": [
+        1.11,
+        1.11,
+        1.11
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "grass 6",
+      "translation": [
+        -7.5,
+        0.146,
+        5.22
+      ],
+      "yaw_deg": 258.0,
+      "scale": [
+        1.29,
+        1.29,
+        1.29
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "grass 7",
+      "translation": [
+        -7.03,
+        0.228,
+        3.67
+      ],
+      "yaw_deg": 255.0,
+      "scale": [
+        1.17,
+        1.17,
+        1.17
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "grass 8",
+      "translation": [
+        -7.96,
+        0.234,
+        1.09
+      ],
+      "yaw_deg": 282.0,
+      "scale": [
+        0.82,
+        0.82,
+        0.82
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "grass 9",
+      "translation": [
+        -5.42,
+        0.35,
+        2.47
+      ],
+      "yaw_deg": 200.0,
+      "scale": [
+        1.06,
+        1.06,
+        1.06
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "grass 10",
+      "translation": [
+        -6.62,
+        0.294,
+        2.1
+      ],
+      "yaw_deg": 233.0,
+      "scale": [
+        1.16,
+        1.16,
+        1.16
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "grass 11",
+      "translation": [
+        2.83,
+        0.589,
+        -3.17
+      ],
+      "yaw_deg": 300.0
+    },
+    {
+      "mesh": 3,
+      "name": "grass 12",
+      "translation": [
+        5.23,
+        0.44,
+        -8.25
+      ],
+      "yaw_deg": 219.0,
+      "scale": [
+        1.07,
+        1.07,
+        1.07
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "grass 13",
+      "translation": [
+        5.2,
+        0.555,
+        -3.58
+      ],
+      "yaw_deg": 143.0,
+      "scale": [
+        1.22,
+        1.22,
+        1.22
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "grass 14",
+      "translation": [
+        4.71,
+        0.423,
+        -8.9
+      ],
+      "yaw_deg": 135.0,
+      "scale": [
+        0.85,
+        0.85,
+        0.85
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "grass 15",
+      "translation": [
+        4.36,
+        0.497,
+        -6.78
+      ],
+      "yaw_deg": 54.0,
+      "scale": [
+        1.2,
+        1.2,
+        1.2
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "grass 16",
+      "translation": [
+        1.43,
+        0.443,
+        -8.49
+      ],
+      "yaw_deg": 71.0,
+      "scale": [
+        1.25,
+        1.25,
+        1.25
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "grass 17",
+      "translation": [
+        4.3,
+        0.518,
+        -6.07
+      ],
+      "yaw_deg": 135.0,
+      "scale": [
+        0.85,
+        0.85,
+        0.85
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "grass 18",
+      "translation": [
+        3.72,
+        0.491,
+        -7.15
+      ],
+      "yaw_deg": 136.0,
+      "scale": [
+        0.86,
+        0.86,
+        0.86
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "grass 19",
+      "translation": [
+        6.67,
+        0.513,
+        -4.25
+      ],
+      "yaw_deg": 156.0,
+      "scale": [
+        1.08,
+        1.08,
+        1.08
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "grass 20",
+      "translation": [
+        1.13,
+        0.587,
+        -3.24
+      ],
+      "yaw_deg": 57.0,
+      "scale": [
+        0.97,
+        0.97,
+        0.97
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "grass 21",
+      "translation": [
+        -12.51,
+        0.039,
+        -10.68
+      ],
+      "yaw_deg": 300.0,
+      "scale": [
+        0.89,
+        0.89,
+        0.89
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "grass 22",
+      "translation": [
+        -12.81,
+        0.249,
+        -14.69
+      ],
+      "yaw_deg": 357.0,
+      "scale": [
+        0.82,
+        0.82,
+        0.82
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "grass 23",
+      "translation": [
+        -16.04,
+        0.111,
+        -9.03
+      ],
+      "yaw_deg": 244.0,
+      "scale": [
+        0.82,
+        0.82,
+        0.82
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "grass 24",
+      "translation": [
+        -15.55,
+        0.235,
+        -11.16
+      ],
+      "yaw_deg": 57.0,
+      "scale": [
+        1.25,
+        1.25,
+        1.25
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "grass 25",
+      "translation": [
+        -14.37,
+        0.072,
+        -9.83
+      ],
+      "yaw_deg": 179.0,
+      "scale": [
+        0.88,
+        0.88,
+        0.88
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "grass 26",
+      "translation": [
+        -12.31,
+        0.225,
+        -14.98
+      ],
+      "yaw_deg": 287.0,
+      "scale": [
+        0.95,
+        0.95,
+        0.95
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "grass 27",
+      "translation": [
+        -16.22,
+        0.482,
+        -13.69
+      ],
+      "yaw_deg": 162.0,
+      "scale": [
+        0.92,
+        0.92,
+        0.92
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "grass 28",
+      "translation": [
+        -12.55,
+        0.042,
+        -10.72
+      ],
+      "yaw_deg": 101.0,
+      "scale": [
+        0.9,
+        0.9,
+        0.9
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "grass 29",
+      "translation": [
+        -12.97,
+        0.086,
+        -11.4
+      ],
+      "yaw_deg": 317.0,
+      "scale": [
+        0.91,
+        0.91,
+        0.91
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "grass 30",
+      "translation": [
+        -16.2,
+        0.322,
+        -11.65
+      ],
+      "yaw_deg": 356.0,
+      "scale": [
+        1.02,
+        1.02,
+        1.02
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "grass 31",
+      "translation": [
+        11.27,
+        0.378,
+        -3.64
+      ],
+      "yaw_deg": 103.0,
+      "scale": [
+        1.16,
+        1.16,
+        1.16
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "grass 32",
+      "translation": [
+        10.33,
+        0.415,
+        -1.89
+      ],
+      "yaw_deg": 153.0,
+      "scale": [
+        0.99,
+        0.99,
+        0.99
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "grass 33",
+      "translation": [
+        13.73,
+        0.45,
+        1.48
+      ],
+      "yaw_deg": 227.0,
+      "scale": [
+        1.04,
+        1.04,
+        1.04
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "grass 34",
+      "translation": [
+        12.42,
+        0.357,
+        -0.26
+      ],
+      "yaw_deg": 270.0,
+      "scale": [
+        1.25,
+        1.25,
+        1.25
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "grass 35",
+      "translation": [
+        11.42,
+        0.377,
+        -1.89
+      ],
+      "yaw_deg": 18.0,
+      "scale": [
+        1.02,
+        1.02,
+        1.02
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "grass 36",
+      "translation": [
+        11.73,
+        0.366,
+        -2.97
+      ],
+      "yaw_deg": 236.0,
+      "scale": [
+        1.26,
+        1.26,
+        1.26
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "grass 37",
+      "translation": [
+        13.74,
+        0.463,
+        1.7
+      ],
+      "yaw_deg": 332.0,
+      "scale": [
+        1.27,
+        1.27,
+        1.27
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "grass 38",
+      "translation": [
+        12.96,
+        0.337,
+        -1.01
+      ],
+      "yaw_deg": 227.0,
+      "scale": [
+        1.29,
+        1.29,
+        1.29
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "grass 39",
+      "translation": [
+        9.34,
+        0.44,
+        -3.83
+      ],
+      "yaw_deg": 114.0,
+      "scale": [
+        1.11,
+        1.11,
+        1.11
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "grass 40",
+      "translation": [
+        12.9,
+        0.33,
+        -3.29
+      ],
+      "yaw_deg": 215.0,
+      "scale": [
+        1.09,
+        1.09,
+        1.09
+      ]
+    },
+    {
+      "mesh": 5,
+      "name": "lantern 1",
+      "translation": [
+        1.5,
+        0.621,
+        -1.0
+      ],
+      "yaw_deg": 0.0
+    },
+    {
+      "mesh": 5,
+      "name": "lantern 2",
+      "translation": [
+        -3.0,
+        0.426,
+        4.0
+      ],
+      "yaw_deg": 90.0
+    },
+    {
+      "mesh": 6,
+      "name": "helmet on rock 1",
+      "translation": [
+        8,
+        1.554,
+        8
+      ],
+      "yaw_deg": 200
+    }
+  ]
+}

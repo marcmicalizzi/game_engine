@@ -15,14 +15,14 @@
 engine_module(NAME water LAYER systems OPTIONAL WHOLE_ARCHIVE
   GENERATOR placement:water placement:water_channel
   DEPS base containers math hash json schema schemas io log geometry scene_gen
-  SOURCES src/water.cpp src/fill.cpp src/channel.cpp src/scene_generator.cpp)
+  SOURCES src/water.cpp src/fill.cpp src/channel.cpp src/scene_generator.cpp src/query.cpp)
 
 # water_tests.cpp: the shapes, the mesh and its depths over a synthetic ground, `depth_at`, the
 # GLB, the generator through the registry, and the renderer's material packing; no device.
 # water_scene_tests.cpp: the renderer's reader over a scene with a `water` block (meshes, instances,
 # materials, the collision mark), and on a GPU the oasis pool's captures with and without it.
 engine_module_tests(NAME water
-  SOURCES tests/water_tests.cpp tests/water_scene_tests.cpp tests/fill_tests.cpp tests/shore_scene_tests.cpp tests/size_table.cpp tests/swash_tests.cpp tests/swash_scene_tests.cpp
+  SOURCES tests/water_tests.cpp tests/query_tests.cpp tests/water_scene_tests.cpp tests/fill_tests.cpp tests/shore_scene_tests.cpp tests/size_table.cpp tests/swash_tests.cpp tests/swash_scene_tests.cpp
           tests/channel_tests.cpp tests/channel_scene_tests.cpp tests/reflect_scene_tests.cpp
           tests/wet_ground_scene_tests.cpp
           tests/refract_scene_tests.cpp
