@@ -107,7 +107,9 @@ inline constexpr u32 k_flora_seat_version = 1;
 //    and understory solvers did): the trunk load-bearing, every limb, branch and shoot its radii.
 // 2: every part a leaf, a leaflet or a needle card rides is flagged `k_foliage` (A45's second leg),
 //    so the walker's push reaches it as far as before the table.
-inline constexpr u32 k_flora_structure_version = 2;
+// 3: the trunk is flagged `k_full_sway` as well (A45's third leg), so it sways as it did before
+//    the table rather than at `renderer::k_flora_load_bearing` of its class's compliance.
+inline constexpr u32 k_flora_structure_version = 3;
 
 // The species `engine.flora.FloraFile.species` names; the solver reads the parameters of the same
 // member (`palm`, `broadleaf`, `conifer`, `birch`, `willow`, `orchard`, `ancient`).

@@ -372,7 +372,8 @@ bool detail::solve_broadleaf_rules(const Broadleaf& p, const GrowthRules& rules,
   // part has its row of the structural table (section 37; flora.md, "The structural table"), as the
   // birch's and the willow's have — the trunk load-bearing, every limb and shoot its radii — so a
   // creature can stand on an oak's or an ash's limb (A45: until then only the birch, the willow,
-  // the orchard tree and the ancient carried one).
+  // the orchard tree and the ancient carried one). The trunk keeps its full sway (`k_full_sway`):
+  // it moves in the wind as it did before it had a table.
   Vector<u32> named_first;
   for (u32 i = 0; i < crown.first_recursion; ++i) {
     CrownNode& n = crown.nodes[i];
@@ -380,7 +381,7 @@ bool detail::solve_broadleaf_rules(const Broadleaf& p, const GrowthRules& rules,
     const Axis& axis = crown.axes[n.axis];
     n.part = begin_structural_part(emit, axis.point[0], axis.tangent[0], axis.length,
                                    i == 0 ? geometry::k_motion_no_parent : crown.nodes[0].part,
-                                   n.r0, n.r1, i == 0 ? k_load_bearing : 0u);
+                                   n.r0, n.r1, i == 0 ? k_load_bearing | k_full_sway : 0u);
     named_first.push_back(out.positions.size());
     crown_seat(crown, i, emit);
     emit.skirt = i == 0;  // the trunk stands on the ground (G201)

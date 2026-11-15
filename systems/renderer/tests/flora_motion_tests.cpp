@@ -892,8 +892,9 @@ TEST_CASE("flora motion: continued stem caps stay inside the scaffold in strong 
 // empty table — so main's behaviour is the same parts posed with no table, and the two are measured
 // side by side here. The push: every pushable part that leaves or needles ride keeps its reach
 // (the foliage flag), at least what it was; the sway: the trunk's top and an outer limb's tip over
-// twelve seconds of a mean wind and of the strength the sway saturates at.
-TEST_CASE("flora motion: a broadleaf's, an oak's and a spruce's push and sway with their table") {
+// twelve seconds of a mean wind and of the strength the sway saturates at, which since the third
+// leg equal main's to the bit (the trunk's `k_full_sway`); the collision: the same parts as main's.
+TEST_CASE("flora motion: a broadleaf's and a conifer's trunk sway as with no table") {
   for (const char* species : {"broadleaf", "oak", "spruce"}) {
     CAPTURE(std::string_view(species));
     flora::FloraFile file;
@@ -983,11 +984,68 @@ TEST_CASE("flora motion: a broadleaf's, an oak's and a spruce's push and sway wi
                       << table.parts[outer].length << " m, " << farthest << " m out) " << limb_mean[0]
                       << ", " << limb_peak[0] << " with none; " << limb_mean[1] << ", "
                       << limb_peak[1] << " with it");
-      // A load-bearing trunk takes a quarter of its class's compliance: it moves less, never more.
-      CHECK(trunk_mean[1] < trunk_mean[0]);
+      // A45's third leg: a broadleaf's and a conifer's trunk sway as with no table. The trunk is
+      // load-bearing (it collides, a structure may rest on it) and flagged `k_full_sway`, so it
+      // keeps its class's compliance, and so does every limb riding it: the same parts, the same
+      // compliance, the same clock give the same poses, to the bit.
+      CHECK(trunk_mean[1] == trunk_mean[0]);
+      CHECK(trunk_peak[1] == trunk_peak[0]);
+      CHECK(limb_mean[1] == limb_mean[0]);
+      CHECK(limb_peak[1] == limb_peak[0]);
       CHECK(trunk_mean[1] > 0.0f);
     }
+    // What the table still changes about the sway, part by part: a part the table gives no wood
+    // sways as a leaf where with no table it swayed by its depth.
+    u32 differ = 0;
+    for (u32 p = 0; p < table.part_count(); ++p) differ += table.compliance[p] != none.compliance[p];
+    MESSAGE(std::string_view(species) << ": " << differ << " of " << table.part_count()
+                                      << " parts sway otherwise than with no table");
+    // The collision: with no table the trunk alone collides (part zero); with it, the load-bearing
+    // parts, which for these two solvers are the trunk alone — so no limb that collided before the
+    // table stops colliding, and none starts.
+    const std::span<const ClusterFileStructuralPart> structure(motion.structure.data(),
+                                                               motion.structure.size());
+    u32 collides_table = 0;
+    u32 collides_none = 0;
+    for (u32 p = 0; p < table.part_count(); ++p) {
+      const bool with = flora_part_collides(structure, p, geometry::FloraMotionKind::parts);
+      const bool without = flora_part_collides({}, p, geometry::FloraMotionKind::parts);
+      CHECK(with == without);
+      collides_table += with ? 1u : 0u;
+      collides_none += without ? 1u : 0u;
+    }
+    MESSAGE(std::string_view(species) << ": " << collides_table << " parts collide with the table, "
+                                      << collides_none << " with none");
+    CHECK((motion.structure[0].flags & geometry::k_structural_load_bearing) != 0u);
+    CHECK((motion.structure[0].flags & geometry::k_structural_full_sway) != 0u);
+    CHECK(table.compliance[0] == none.compliance[0]);
   }
+}
+
+// The flag is the broadleaf's and the conifer's trunks' alone: a birch's load-bearing stem is
+// still held at `k_flora_load_bearing` of its class's compliance, as before A45's third leg, and
+// no part of it carries `k_full_sway`.
+TEST_CASE("flora motion: a birch's load-bearing stem is still held at a quarter") {
+  flora::FloraFile file;
+  file.species = "birch";
+  file.birch.seed = 17;
+  file.birch.stems = 1;
+  file.birch.card_bake_px = file.birch.impostor_px = 0;
+  assets::MeshData generated;
+  flora::Motion motion;
+  std::string error;
+  REQUIRE_MESSAGE(flora::solve_flora(file, generated, motion, nullptr, nullptr, error), error);
+  REQUIRE(motion.structure.size() == motion.parts.size());
+  const FloraMesh table = mesh_of(motion.parts, motion.structure, "birch");
+  const FloraMesh none = mesh_of(motion.parts, {}, "birch");
+  u32 bearing = 0;
+  for (u32 p = 0; p < table.part_count(); ++p) {
+    CHECK((motion.structure[p].flags & geometry::k_structural_full_sway) == 0u);
+    if ((motion.structure[p].flags & geometry::k_structural_load_bearing) == 0u) continue;
+    ++bearing;
+    CHECK(table.compliance[p] == none.compliance[p] * k_flora_load_bearing);
+  }
+  CHECK(bearing > 0);
 }
 
 #endif

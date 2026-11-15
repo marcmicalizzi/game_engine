@@ -223,7 +223,11 @@ bool flora_mesh(std::span<const geometry::ClusterFileMotionPart> parts,
     const bool wooden = !structured || structure[p].base_radius > 0.0f;
     f32 c = depth[p] == 0 ? stiffness.trunk : depth[p] == 1 ? stiffness.limb : stiffness.twig;
     if (!wooden) c = stiffness.leaf;
-    if (load_bearing) c *= k_flora_load_bearing;
+    // A load-bearing part is held nearly still unless the table says it sways as its class does
+    // (`k_structural_full_sway`, A45): carrying load and being held still are separate claims.
+    const bool full_sway =
+        structured && (structure[p].flags & geometry::k_structural_full_sway) != 0;
+    if (load_bearing && !full_sway) c *= k_flora_load_bearing;
     out.compliance[p] = c;
     if (!root) {
       const geometry::ClusterFileMotionPart& parent = parts[part.parent];

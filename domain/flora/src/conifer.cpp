@@ -436,10 +436,12 @@ bool detail::solve_conifer_rules(const Conifer& p, const GrowthRules& rules, ass
   // The bark: the trunk (part 0) tapering to the leader's tip, then every branch's woody shoot,
   // each a part of its own hanging from the trunk; a dead branch's on every rung. Each with its
   // row of the structural table (section 37; A45), the trunk load-bearing, so a bird can stand on
-  // a spruce's branch as on a birch's limb.
+  // a spruce's branch as on a birch's limb. The trunk keeps its full sway (`k_full_sway`): it moves
+  // in the wind as it did before it had a table.
   const f64 trunk_tip = std::min(.01, s.trunk_r0 * .3);
   begin_structural_part(emit, s.trunk.point[0], s.trunk.tangent[0], s.trunk.length,
-                        geometry::k_motion_no_parent, s.trunk_r0, trunk_tip, k_load_bearing);
+                        geometry::k_motion_no_parent, s.trunk_r0, trunk_tip,
+                        k_load_bearing | k_full_sway);
   emit.skirt = true;  // the trunk stands on the ground (G201)
   build_tube(resample_axis(s.trunk, plan.trunk_rows), s.trunk_r0, trunk_tip, plan.trunk_sides,
              Vec2{0.0f, 0.0f}, emit);

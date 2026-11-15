@@ -428,6 +428,9 @@ inline constexpr u32 k_structural_foliage = 8u;       // carries leaves or needl
                                                       // reaches it as far as its leaves stand
                                                       // out, not its wood alone (flora.md, "The
                                                       // structural table"; A45)
+inline constexpr u32 k_structural_full_sway = 16u;    // load-bearing yet it sways as its class
+                                                      // does: carrying load is not being held still
+                                                      // (flora.md, "The structural table"; A45)
 struct ClusterFileStructuralPart {
   u32 part = 0;
   f32 base_radius = 0.0f;
