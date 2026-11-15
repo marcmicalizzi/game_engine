@@ -22,8 +22,11 @@ where a sampler draws the *filtered surface* (the count-held levels of a needle 
 to five sixths of level 0's coverage), the encoder was taking a tenth of the spruce image's coverage at level 0 and
 nothing gave it back, and the rasterizers tested the mask through an anisotropic sampler, which
 averages a thin mask under the cutoff on every card at a slant. The hardware rasterizer drew these
-crowns 27 to 31 % thinner than the rays at 300 m; it now draws within 2 % of them from 10 to 100 m
-on the spruces and the far form's atlases are what is left at 300 m (the table below).
+crowns 27 to 31 % thinner than the rays at 300 m; it now draws within 1 % of them at 10 and 30 m
+on every tree and at 100 m on all but the pine (4.5 % under), and 7 to 11 % under at 300 m on the
+forest's thin images, where the far form's atlases are what is left (the second table below).
+None of it costs a frame anything: the stand's frame at the owner's settings is 0.15 to 0.3 ms
+*cheaper*, and the dense image's stand a third cheaper than the thin one's.
 
 ## What the literature says
 
@@ -145,9 +148,10 @@ Cause by cause:
    itself. The pine's wider strands lost nothing and did not move.
 6. **Threads.** At 100 m the pine's covered pixels come in runs of 3.1 with gaps of 4.2 under the
    rays, and 60 % of the outline's pixels are covered in some of the sixteen frames and not in
-   others: the crown is a dither whose mean is right. The rasterizer's levels draw the same mean
-   as runs of 5.3 with gaps of 7.3 and 27 % partly covered. That difference is not a coverage
-   fault and nothing here changes it: a ray tests level 0 ([renderer](../subsystems/renderer.md#alpha-tested-geometry)).
+   others: the crown is a dither whose mean is right. The rasterizer's levels, once they hold
+   the coverage (below), draw it as runs of 4.3 with gaps of 5.4 and 39 % partly covered. That
+   difference is not a coverage fault and nothing here changes it: a ray tests level 0
+   ([renderer](../subsystems/renderer.md#alpha-tested-geometry)).
 
 ## What changed, for any alpha-tested asset
 
@@ -162,11 +166,84 @@ Cause by cause:
   the *longer* axis's level, the filtered answer: it brought the spruces within 2 % to 100 m and
   left 300 m 5 to 11 % short, because a card at a slant then reaches the chain's last few texels
   and the far form's atlas mixes its tiles there. One tap of the shorter axis's level is a point
-  sample of a held level: unbiased at any slant, and a sample along the longer axis, as a ray's is
-  everywhere.
+  sample of a held level, and a sample along the longer axis, as a ray's is everywhere: it took
+  the pine at 100 m from 11 % under the rays to 4.5, the conifer at 300 m from 11 to 6.8, the
+  dense pine at 300 m from 5.9 to 1.5 and the opaque-card trees inside 2 %.
 - **`engine-content texture --alpha-cutoff <code>`** builds an image as a material testing it
   would and prints each level's coverage: the number an image's author needs, and how the
   figures above were taken without opening an image.
+
+Coverage inside the same outlines after it, percent; the rays' column moved only where level 0
+did (cause 5) and where the far form's atlases recooked:
+
+| tree, image | m | main rt | main hw | branch rt | branch hw | branch hw against rt |
+|---|---|---|---|---|---|---|
+| pine, 16.6 % | 10 | 64.1 | 62.7 | 64.1 | 64.3 | +0.3 % |
+| | 30 | 49.0 | 42.3 | 49.0 | 49.3 | +0.6 % |
+| | 100 | 41.3 | 35.9 | 44.6 | 42.6 | −4.5 % |
+| | 300 | 41.1 | 28.2 | 44.5 | 39.6 | −11.0 % |
+| spruce, 25.6 % | 10 | 72.1 | 76.0 | 76.9 | 76.7 | −0.3 % |
+| | 30 | 66.2 | 67.3 | 70.8 | 70.8 | 0.0 % |
+| | 100 | 67.4 | 65.3 | 68.3 | 67.9 | −0.6 % |
+| | 300 | 66.7 | 48.5 | 68.6 | 62.3 | −9.2 % |
+| conifer, 25.6 % | 10 | 70.6 | 75.0 | 76.0 | 75.9 | −0.1 % |
+| | 30 | 63.3 | 64.2 | 68.3 | 68.2 | −0.1 % |
+| | 100 | 65.3 | 63.4 | 66.3 | 65.9 | −0.6 % |
+| | 300 | 65.7 | 46.0 | 68.0 | 63.4 | −6.8 % |
+| pine, dense 45.3 % | 10 | 90.1 | 89.6 | 90.1 | 90.2 | +0.1 % |
+| | 30 | 72.7 | 70.3 | 72.7 | 72.8 | +0.1 % |
+| | 100 | 70.7 | 69.3 | 71.3 | 70.9 | −0.6 % |
+| | 300 | 70.9 | 58.7 | 73.3 | 72.2 | −1.5 % |
+| spruce, dense 45.3 % | 10 | 84.7 | 84.5 | 84.7 | 84.7 | 0.0 % |
+| | 30 | 79.0 | 78.0 | 79.0 | 79.0 | 0.0 % |
+| | 100 | 74.7 | 73.3 | 75.0 | 74.1 | −1.2 % |
+| | 300 | 74.2 | 55.6 | 75.3 | 71.8 | −4.6 % |
+| pine, opaque cards | 100 | 76.9 | 76.7 | 77.1 | 77.0 | −0.1 % |
+| | 300 | 78.5 | 70.5 | 79.7 | 79.0 | −0.9 % |
+| spruce, opaque cards | 100 | 77.2 | 76.0 | 77.7 | 77.5 | −0.3 % |
+| | 300 | 78.3 | 63.1 | 78.9 | 77.4 | −1.9 % |
+
+**What is left, and where.** The 2 % the row asked for holds at 10 and 30 m on every tree, at
+100 m on all but the pine, and at 300 m on the opaque-card trees and the dense pine. It does not
+hold at 300 m on the thin images (7 to 11 % under, from 27 to 31) nor on the pine at 100 m (4.5 %
+under, from 13). Those are the distances where the conifer's far form is drawn (its branch cards
+and its star), whose masks are baked atlases of many tiles, sparse where the crown is. **The cause
+was not measured; this is the reading that fits the table**: the build holds a level's coverage
+over the whole image, so a level's one scale leaves the sparse tiles under their share and the
+dense ones over it, and in a crown the dense regions were covered already, so the loss shows and
+the gain does not. If so the answer is a level that keeps its coverage **locally** (Yuksel's alpha
+distribution, cited in flora, diffuses the error from texel to texel), a row of its own with this
+table as its measure; an image of one spray, even across its square, would not need it, and the
+dense pine does hold.
+
+The rasterizer's crowns are made of larger pieces than the rays' at the same coverage (the pine
+at 100 m: runs of 4.3 pixels with gaps of 5.4 against the rays' 3.4 and 4.1): a level's blobs
+against level 0's strands.
+
+## What a frame pays
+
+A stand of 49 of the forest's pines and spruces 5 m apart, the eye 28 m off looking in, 3840 ×
+2160, `--raster rt --shadows rt`, `renderer.gi.mode=bounce`, the flora swaying, 120 frames after
+8 warm ones, GPU milliseconds from the engine's timers, medians; main's copied-out build against
+the branch's, alternating in one lease (2026-11-14 21:41, RTX 5090; **the machine was not quiet**:
+the harness recorded other processes at 96 to 100 % of the CPU, this row's own debug build and
+container among them, and 6.8 GB of GPU memory held by others; these are GPU times):
+
+| stand | build | frame | resolve | primary rays | hw column: frame |
+|---|---|---|---|---|---|
+| the forest's images (16.6 %, 25.6 %) | main | 9.17, 9.03 | 5.19, 5.10 | 2.00, 1.98 | 7.29 |
+| | branch | 8.83, 8.88 | 4.93, 4.96 | 1.94, 1.93 | 7.23 |
+| the dense image (45.3 %) | main | 6.33 | 3.44 | 1.21 | 5.33 |
+| | branch | 6.32 | 3.38 | 1.21 | 5.27 |
+
+So the change costs nothing and gives back 0.15 to 0.34 ms where a level-0 mask got its coverage
+back (presumably fewer rays pass through a card to test the next; the pass counts were not read). **And density is not a cost under the
+rays, it is a saving**: the stand with the 45 % image is 2.8 ms a frame cheaper than the same
+stand with the forest's images (primary rays 1.21 against 2.00 ms, the resolve and its shadow
+rays 3.44 against 5.19), because a ray that passes a sparse card goes on to test the ones behind
+it, and a ray that stops does not. The brief expected the opposite. Memory: an image's bytes do
+not depend on what is painted in it, so a card with a third of the memory pays the same for a
+dense image as for a thin one; the opacity micromaps' bytes by image were not read.
 
 ## What it costs, and what recooks
 
@@ -204,6 +281,8 @@ shader path.
 
 ## Not done
 
+- **The far form's atlases at 300 m** (above): 7 to 11 % under the rays on the thin images, the
+  cause read from the table and not measured.
 - **The engine's own default image.** `matgen` has no foliage set, so a checkout with no pack
   draws opaque cards (dense, and solid up close), and the generated spray above is a scratch
   script. A deterministic `conifer/needles`, `spruce/needles` and `pine/needles` in `matgen`,
