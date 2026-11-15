@@ -933,7 +933,8 @@ stout stem) is never pushed.
 **The push.** A walker's capsule (its feet, 0.3 m radius, 1.8 m tall: [apps](apps.md#walking)) is
 handed to the frame. A part that is neither the trunk nor load-bearing whose rest axis comes within
 the capsule's radius plus the part's own reach — its wood's radius, or an eighth of its length for a
-part with none (a frond's leaflets stand out from its rachis) — plus 5 cm of the capsule's axis is
+part with none (a frond's leaflets stand out from its rachis) or one the structural table flags
+**foliage** (leaves or needles ride it: the larger of the two, A45) — plus 5 cm of the capsule's axis is
 turned about its pivot, away from the walker, by the angle that carries its nearest point clear, at
 most 0.9 rad; the push eases in and out over 12 frame ticks (0.2 s), a smoothstep of a ramp held per
 part between frames. A part's children go with it. The walker's own collision leaves those parts out
@@ -1771,6 +1772,8 @@ second batch emits it beside the motion contract, `Motion::structure`: one
 |---|---|
 | `k_structural_load_bearing` (1) | a trunk, a stem, a major limb: a structure may hang from it; its base radius is at least the species' `load_bearing_min_radius` |
 | `k_structural_straight` (2) | its axis is the segment from `pivot` along `direction` for `length`, to the millimetre |
+| `k_structural_collider` (4) | it stops a walker though nothing hangs from it: a shrub's stout stem ("The shrub") |
+| `k_structural_foliage` (8) | leaves or needles ride it: the walker's push reaches it as far as they stand out (an eighth of its length) when that is more than its wood's radius (A45; the broadleaf and the conifer set it, `mark_foliage`) |
 
 **The rule a structure solver may rely on.** Records come parent-first (their order is the parts'),
 so one pass meets every parent before its children. A part's axis is the segment from its pivot
@@ -1807,8 +1810,23 @@ identity takes `k_flora_structure_version`, so those species' containers rebuild
 them moves: the determinism test's broadleaf and pine differ from their containers before A45 in
 sections 15 and 37 alone). What the table changes downstream, as it did for the birch: a trunk that
 is load-bearing sways at `k_flora_load_bearing` of its class's compliance (renderer.md, "The flora
-stage"); a part with wood is pushed aside by the walker within its wood's radius rather than within
-`k_flora_leaf_reach` of its length; and the trunk collides as before (`flora_part_collides`: a
+stage"); a bare wooden part is pushed aside by the walker within its wood's radius rather than within
+`k_flora_leaf_reach` of its length, while **a part leaves or needles ride keeps that reach**: the two
+solvers flag it `k_structural_foliage` from the parts their leaf and needle cards ride (`mark_foliage`,
+`k_flora_structure_version` 2), so a walker brushing a spruce's bough or an oak's leafy twig moves it
+as before the table — every pushable part of the default broadleaf, a default oak and a default
+spruce that carries foliage is reached at least as far as with no table (the renderer's
+`flora_motion_tests.cpp`, "push and sway with their table"); a dead branch and a bare limb are
+reached within their wood. **The sway moved**, measured by the same test over twelve seconds of a
+mean wind (strength 1; 2 doubles every figure): the trunk's top, a quarter as compliant, moves a
+quarter as far — the default broadleaf's (10.7 m) 1.5 cm on average and 2.8 cm at most where it
+moved 6.2 and 11.3, a default oak's (10.2 m) 1.5 and 2.7 where 5.8 and 10.8, a default spruce's
+(20 m) 3.7 and 7.2 where 14.7 and 28.8 — and an outer limb's tip, which rides the trunk, 3 to 7 %
+less (the broadleaf's 5.8 m limb 17.0 cm on average where 18.4, the oak's 7.6 m one 22.3 where 23.7,
+the spruce's 3.4 m bough 11.7 where 11.9). Neither figure is grounded: the stiffness table above is
+chosen by eye, and the load-bearing quarter was chosen to keep the ancient tree's village-carrying
+limbs still, not from a measured trunk; which of the two a broadleaf's trunk should take is open
+(A45's hand-back). And the trunk collides as before (`flora_part_collides`: a
 present table's flags decide, and the trunk is flagged). A reader refuses a record naming a part the motion table
 does not have, or out of order. The default ancient tree's table is 496 rows (7,936 bytes); the
 first 15 are what a village plan reads: the trunk (5.0 → 2.0 m), and seven runs, each followed by

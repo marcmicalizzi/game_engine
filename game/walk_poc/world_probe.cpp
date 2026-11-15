@@ -12,12 +12,15 @@
 //     ray down into the pond that stops at the water;
 //   - the water at five points of the pond;
 // and ends the run with every answer. A fixture: its coordinates are the test scene's, and it keeps
-// no state (a reload starts it again).
+// no state (a reload starts it again). With `WALK_POC_WORLD_WALK` set it asks round the walker's
+// feet along a line instead ("the walk mode", below): A45's check of a streamed forest.
 
 #include <foundation/hotload/module_abi.h>
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 using namespace engine;
@@ -32,7 +35,7 @@ u32 g_bird = 0;
 bool g_props = false;
 
 // The answer, built in a fixed buffer: a module allocates nothing on a tick.
-char g_json[16384];
+char g_json[32768];
 u32 g_at = 0;
 void put(const char* text) {
   while (*text != '\0' && g_at + 1 < sizeof(g_json))
@@ -289,17 +292,195 @@ void probe(ModuleContext* context) {
   context->api->end_run(context->api->host, g_json, g_at);
 }
 
+// ---- the walk mode (A45's forest check) ----
+//
+// With `WALK_POC_WORLD_WALK="x0,z0,x1,z1,n"` in its environment the module asks round the walker's
+// feet instead of at the test scene's coordinates: it puts the walker at `n` points evenly from
+// (x0, z0) to (x1, z1) (`walker_teleport`), waits at each until the collision's tiles cover the
+// disc it asks over (or a minute of ticks), asks the supports within `k_walk_radius` of a point 3 m
+// over the feet, and counts them by kind and by the scene entry and mesh they stand on. At the
+// last point it times a thousand supports queries and a thousand rays straight down. One run, one
+// answer through `end_run`; nothing allocated on a tick.
+constexpr f32 k_walk_radius = 24.0f;
+constexpr u32 k_walk_capacity = 1024;
+constexpr u32 k_walk_settle = 480;      // two seconds of ticks before the first look at a point
+constexpr u32 k_walk_patience = 14400;  // a minute of ticks: the point is asked uncovered then
+constexpr u32 k_walk_cells = 256;
+bool g_walk = false;
+f64 g_walk_from[2] = {0.0, 0.0};
+f64 g_walk_to[2] = {0.0, 0.0};
+u32 g_walk_points = 0;
+u32 g_walk_point = 0;
+u32 g_walk_waited = 0;
+Support g_walk_found[k_walk_capacity];
+struct WalkCell {
+  u32 entry = k_no_world_index;
+  u32 mesh = k_no_world_index;
+  u32 kinds[4] = {0, 0, 0, 0};
+};
+WalkCell g_walk_cells[k_walk_cells];
+u32 g_walk_cell_count = 0;
+u32 g_walk_overflow = 0;
+
+void walk_count(const Support& s) {
+  for (u32 c = 0; c < g_walk_cell_count; ++c) {
+    if (g_walk_cells[c].entry == s.entry && g_walk_cells[c].mesh == s.mesh) {
+      ++g_walk_cells[c].kinds[s.kind < 4 ? s.kind : 0];
+      return;
+    }
+  }
+  if (g_walk_cell_count == k_walk_cells) {
+    ++g_walk_overflow;
+    return;
+  }
+  WalkCell& cell = g_walk_cells[g_walk_cell_count++];
+  cell.entry = s.entry;
+  cell.mesh = s.mesh;
+  ++cell.kinds[s.kind < 4 ? s.kind : 0];
+}
+
+void walk_at(u32 k, f64& x, f64& z) {
+  const f64 t = g_walk_points > 1 ? static_cast<f64>(k) / static_cast<f64>(g_walk_points - 1) : 0.0;
+  x = g_walk_from[0] + (g_walk_to[0] - g_walk_from[0]) * t;
+  z = g_walk_from[1] + (g_walk_to[1] - g_walk_from[1]) * t;
+}
+
+// A thousand of each question at the point, in microseconds a question.
+void walk_costs(ModuleContext* context, const f64* point) {
+  SupportQuery query;
+  const auto t0 = std::chrono::steady_clock::now();
+  u32 answered = 0;
+  for (u32 i = 0; i < 1000; ++i) {
+    if (supports_near(context, point, k_walk_radius, 0.0f, g_walk_found, k_walk_capacity, query) ==
+        Result::Ok)
+      answered += query.count;
+  }
+  const auto t1 = std::chrono::steady_clock::now();
+  const f32 down[3] = {0.0f, -1.0f, 0.0f};
+  u32 hits = 0;
+  for (u32 i = 0; i < 1000; ++i) {
+    // A ray straight down from 20 m over a point of a 10 m square round the feet, a fixed lattice.
+    const f64 from[3] = {point[0] - 5.0 + static_cast<f64>(i % 32) * (10.0 / 31.0), point[1] + 17.0,
+                         point[2] - 5.0 + static_cast<f64>(i / 32) * (10.0 / 31.0)};
+    CastHit hit;
+    if (cast_ray(context, from, down, 40.0f, hit) == Result::Ok) ++hits;
+  }
+  const auto t2 = std::chrono::steady_clock::now();
+  const f64 supports_us = std::chrono::duration<f64, std::micro>(t1 - t0).count() / 1000.0;
+  const f64 rays_us = std::chrono::duration<f64, std::micro>(t2 - t1).count() / 1000.0;
+  char line[256];
+  std::snprintf(line, sizeof line,
+                ",\"cost\":{\"supports_us\":%.4g,\"supports_returned\":%u,\"rays_us\":%.4g,"
+                "\"rays_hit\":%u}",
+                supports_us, answered, rays_us, hits);
+  put(line);
+}
+
+void walk_tick(ModuleContext* context) {
+  f64 x = 0.0;
+  f64 z = 0.0;
+  walk_at(g_walk_point, x, z);
+  if (g_walk_waited == 0) {
+    const f64 feet[3] = {x, ground(context, x, z) + 1.0, z};
+    (void)walker_teleport(context, feet, 0.0f, 0.0f);
+  }
+  ++g_walk_waited;
+  if (g_walk_waited < k_walk_settle) return;
+  const f64 point[3] = {x, ground(context, x, z) + 3.0, z};
+  SupportQuery query;
+  const Result r =
+      supports_near(context, point, k_walk_radius, 0.0f, g_walk_found, k_walk_capacity, query);
+  if (r == Result::Ok && query.covered == 0 && g_walk_waited < k_walk_patience) return;
+  u32 kinds[4] = {0, 0, 0, 0};
+  if (r == Result::Ok) {
+    for (u32 i = 0; i < query.count; ++i) {
+      ++kinds[g_walk_found[i].kind < 4 ? g_walk_found[i].kind : 0];
+      walk_count(g_walk_found[i]);
+    }
+  }
+  char line[320];
+  std::snprintf(line, sizeof line,
+                "%s{\"x\":%.6g,\"z\":%.6g,\"result\":%u,\"covered\":%u,\"ticks\":%u,\"found\":%u,"
+                "\"count\":%u,\"perch\":%u,\"limb\":%u,\"top\":%u}",
+                g_walk_point == 0 ? "" : ",", x, z, static_cast<u32>(r), query.covered,
+                g_walk_waited, query.found, query.count, kinds[k_support_perch],
+                kinds[k_support_limb], kinds[k_support_top]);
+  put(line);
+  g_walk_waited = 0;
+  if (++g_walk_point < g_walk_points) return;
+  put("]");
+  walk_costs(context, point);
+  put(",\"by_entry_mesh\":[");
+  for (u32 c = 0; c < g_walk_cell_count; ++c) {
+    const WalkCell& cell = g_walk_cells[c];
+    std::snprintf(line, sizeof line, "%s{\"entry\":%u,\"mesh\":%u,\"perch\":%u,\"limb\":%u,\"top\":%u}",
+                  c == 0 ? "" : ",", cell.entry, cell.mesh, cell.kinds[k_support_perch],
+                  cell.kinds[k_support_limb], cell.kinds[k_support_top]);
+    put(line);
+  }
+  std::snprintf(line, sizeof line, "],\"cells_overflow\":%u}", g_walk_overflow);
+  put(line);
+  g_done = true;
+  context->api->end_run(context->api->host, g_json, g_at);
+}
+
 i32 on_load(ModuleContext* context) {
   // The bird the supports land: `Unsupported` (a scene with no props) is a plain answer.
   const char* name = "bird";
   g_props = context->api->prop_mesh(context->api->host, name, 4, &g_bird) == Result::Ok;
   g_ticks = 0;
   g_done = false;
+  // The walk mode, from the environment (a fixture's switch; read once, at load).
+  g_walk = false;
+  g_walk_point = 0;
+  g_walk_waited = 0;
+  g_walk_cell_count = 0;
+  g_walk_overflow = 0;
+  char walk[256] = {};
+#if defined(_MSC_VER)
+  // getenv as MSVC compiles it without a deprecation warning (tests/support/test_paths.h's way).
+  char* value = nullptr;
+  usize size = 0;
+  if (_dupenv_s(&value, &size, "WALK_POC_WORLD_WALK") == 0 && value != nullptr) {
+    std::snprintf(walk, sizeof walk, "%s", value);
+    std::free(value);
+  }
+#else
+  if (const char* value = std::getenv("WALK_POC_WORLD_WALK"); value != nullptr)
+    std::snprintf(walk, sizeof walk, "%s", value);
+#endif
+  if (walk[0] != '\0') {
+    f64 numbers[5] = {};
+    u32 read = 0;
+    const char* at = walk;
+    for (; read < 5; ++read) {
+      char* end = nullptr;
+      numbers[read] = std::strtod(at, &end);
+      if (end == at) break;
+      at = *end == ',' ? end + 1 : end;
+    }
+    g_walk_from[0] = numbers[0];
+    g_walk_from[1] = numbers[1];
+    g_walk_to[0] = numbers[2];
+    g_walk_to[1] = numbers[3];
+    const f64 n = numbers[4];
+    if (read == 5 && n >= 1.0 && n <= 64.0) {
+      g_walk = true;
+      g_walk_points = static_cast<u32>(n);
+      g_at = 0;
+      put("{\"mode\":\"walk\",\"radius\":24,\"points\":[");
+    }
+  }
   return 0;
 }
 
 void game_tick(ModuleContext* context, View, f32) {
   if (g_done) return;
+  if (g_walk) {
+    if (++g_ticks < k_probe_tick) return;
+    walk_tick(context);
+    return;
+  }
   if (++g_ticks < k_probe_tick) return;
   g_done = true;
   probe(context);

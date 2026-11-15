@@ -447,6 +447,9 @@ bool detail::solve_broadleaf_rules(const Broadleaf& p, const GrowthRules& rules,
   out.primitives.push_back(leaves);
   smooth_normals(out, leaf_vertex, leaf_first);
   crown_fit_motion(crown, parts);
+  // Every part a leaf, a leaflet or a compound leaf's rachis rides is foliage (A45): the walker
+  // brushes a leafy twig as far as its leaves stand out, as before the table gave it a radius.
+  mark_foliage(out, bark.index_count, out.indices.size(), parts);
 
   if (report != nullptr) {
     *report = TreeReport{};

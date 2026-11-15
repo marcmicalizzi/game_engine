@@ -424,6 +424,10 @@ inline constexpr u32 k_structural_straight = 2u;      // its axis is the segment
 inline constexpr u32 k_structural_collider = 4u;      // stops a walker though nothing hangs from
                                                       // it: a shrub's stout stem (flora.md,
                                                       // "The shrub")
+inline constexpr u32 k_structural_foliage = 8u;       // carries leaves or needles: a walker's push
+                                                      // reaches it as far as its leaves stand
+                                                      // out, not its wood alone (flora.md, "The
+                                                      // structural table"; A45)
 struct ClusterFileStructuralPart {
   u32 part = 0;
   f32 base_radius = 0.0f;

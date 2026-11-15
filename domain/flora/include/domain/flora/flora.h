@@ -105,7 +105,9 @@ inline constexpr u32 k_flora_seat_version = 1;
 //
 // 1: the two solvers write section 37 (until then only the birch, willow, orchard, ancient, shrub
 //    and understory solvers did): the trunk load-bearing, every limb, branch and shoot its radii.
-inline constexpr u32 k_flora_structure_version = 1;
+// 2: every part a leaf, a leaflet or a needle card rides is flagged `k_foliage` (A45's second leg),
+//    so the walker's push reaches it as far as before the table.
+inline constexpr u32 k_flora_structure_version = 2;
 
 // The species `engine.flora.FloraFile.species` names; the solver reads the parameters of the same
 // member (`palm`, `broadleaf`, `conifer`, `birch`, `willow`, `orchard`, `ancient`).

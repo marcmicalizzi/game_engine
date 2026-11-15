@@ -502,12 +502,15 @@ TEST_CASE("engine-content: city makes the committed plan, fragment and yield on 
 // 37, appended) and `k_flora_structure_version` joins the identity (section 15); no mesh or bake
 // section moves, and the ancient does not. The folds were 0x8b8915bc944c047d (broadleaf) and
 // 0xc6f1032af64051fd (pine).
-constexpr u64 k_broadleaf_container_golden = 0xb7e58f0544dad18eull;
+// A45's second leg (2026-11-15, MSVC 14.51): the parts leaf and needle cards ride are flagged
+// foliage in section 37, and `k_flora_structure_version` 2 moves section 15; no mesh or bake section
+// moves. The folds were 0xb7e58f0544dad18e (broadleaf) and 0x02983d79da59bddf (pine).
+constexpr u64 k_broadleaf_container_golden = 0x5c5759895db85465ull;
 constexpr u64 k_ancient_container_golden = 0x308513fb082108d9ull;
 // G120 (2026-11-01, MSVC 14.51): a pine, the conifer solver's chain — one three-plane card group a
 // live branch and the star, coverage-kept and fitted to the needles' coverage — at small tiles so
 // a debug run builds it in seconds. Its section 15 carries `k_conifer_chain_version`.
-constexpr u64 k_pine_container_golden = 0x02983d79da59bddfull;
+constexpr u64 k_pine_container_golden = 0x7f0141b2949c7e9bull;
 
 TEST_CASE("engine-content: the allometric crowns build the committed bytes on every toolchain") {
   const test::TempDir tmp("engine_content_flora_determinism");

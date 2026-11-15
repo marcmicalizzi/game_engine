@@ -549,6 +549,9 @@ bool detail::solve_conifer_rules(const Conifer& p, const GrowthRules& rules, ass
   needles.index_count = out.indices.size() - leaf_first;
   needles.material = 1;
   out.primitives.push_back(needles);
+  // Every live branch and the leader's top carry needles (A45): the walker brushes a needled bough
+  // as far as its needles stand out, as before the table gave it a radius; a dead branch has none.
+  mark_foliage(out, leaf_first, out.indices.size(), parts);
   {
     Vector<Vec3> normals;
     const std::span<const u32> range(out.indices.data() + leaf_first, needles.index_count);

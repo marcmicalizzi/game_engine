@@ -226,6 +226,16 @@ TEST_CASE("flora motion: a load-bearing limb moves less than the twig and the le
   CHECK(flora_part_collides(std::span<const ClusterFileStructuralPart>(stout.data(), stout.size()),
                             2));
   CHECK(mesh_of(parts, stout, "shrub").pushable[2] == 0);
+  // A twig is reached within its wood; flagged foliage (A45), as far as its leaves stand out —
+  // the reach it has with no table — and its sway is its wood's either way.
+  CHECK(mesh.reach[2] == doctest::Approx(0.03f));
+  Vector<ClusterFileStructuralPart> leafy = structure;
+  leafy[2].flags = geometry::k_structural_foliage;
+  const FloraMesh brushed = mesh_of(parts, leafy, "broadleaf");
+  CHECK(brushed.reach[2] == mesh_of(parts, {}, "broadleaf").reach[2]);
+  CHECK(brushed.reach[2] == doctest::Approx(k_flora_leaf_reach * 1.5f));
+  CHECK(brushed.compliance[2] == mesh.compliance[2]);
+  CHECK(brushed.pushable[2] == 1);
   CHECK(flora_stiffness("tuft").leaf > flora_stiffness("willow").leaf);
   Vector<FloraPartState> state(mesh.part_count(), FloraPartState{});
   Vector<gfx::FloraPartPose> poses(mesh.part_count(), gfx::FloraPartPose{});
@@ -873,6 +883,110 @@ TEST_CASE("flora motion: continued stem caps stay inside the scaffold in strong 
     CHECK(least_orientation > 0);
     CHECK(outside == 0);
     CHECK(worst_margin >= -1e-5f);
+  }
+}
+
+// A45's second leg (flora.md, "The structural table"; renderer.md, "The flora stage"): since the
+// broadleaf and the conifer write the structural table, a default broadleaf, an oak and a spruce
+// sway and are pushed as the table says. Before it they had none, which `flora_mesh` reads as an
+// empty table — so main's behaviour is the same parts posed with no table, and the two are measured
+// side by side here. The push: every pushable part that leaves or needles ride keeps its reach
+// (the foliage flag), at least what it was; the sway: the trunk's top and an outer limb's tip over
+// twelve seconds of a mean wind and of the strength the sway saturates at.
+TEST_CASE("flora motion: a broadleaf's, an oak's and a spruce's push and sway with their table") {
+  for (const char* species : {"broadleaf", "oak", "spruce"}) {
+    CAPTURE(std::string_view(species));
+    flora::FloraFile file;
+    file.species = species;
+    file.tree.card_bake_px = file.tree.impostor_px = 0;
+    file.broadleaf.card_bake_px = file.broadleaf.impostor_px = 0;
+    assets::MeshData generated;
+    flora::Motion motion;
+    std::string error;
+    REQUIRE_MESSAGE(flora::solve_flora(file, generated, motion, nullptr, nullptr, error), error);
+    REQUIRE(motion.structure.size() == motion.parts.size());
+    const FloraMesh table = mesh_of(motion.parts, motion.structure, species);
+    const FloraMesh none = mesh_of(motion.parts, {}, species);
+    // The push: the same parts pushable; a leafy or needled one reached at least as far as with
+    // no table (exactly as far wherever its leaves stand out past its wood); a bare one within
+    // its wood.
+    u32 pushable = 0;
+    u32 foliage = 0;
+    u32 kept = 0;
+    u32 bare = 0;
+    f32 bare_none = 0.0f;
+    f32 bare_table = 0.0f;
+    for (u32 p = 0; p < table.part_count(); ++p) {
+      CHECK(table.pushable[p] == none.pushable[p]);
+      if (table.pushable[p] == 0) continue;
+      ++pushable;
+      if ((motion.structure[p].flags & geometry::k_structural_foliage) != 0) {
+        ++foliage;
+        CHECK(table.reach[p] >= none.reach[p]);
+        if (table.reach[p] == none.reach[p]) ++kept;
+      } else {
+        ++bare;
+        bare_none += none.reach[p];
+        bare_table += table.reach[p];
+      }
+    }
+    MESSAGE(std::string_view(species) << ": " << table.part_count() << " parts, " << pushable
+                                      << " pushable, "
+                    << foliage << " carrying leaves or needles (" << kept
+                    << " reached exactly as with no table), " << bare << " bare: mean reach "
+                    << (bare > 0 ? bare_table / bare : 0.0f) << " m with the table, "
+                    << (bare > 0 ? bare_none / bare : 0.0f) << " m with none");
+    CHECK(foliage > 0);
+    CHECK(foliage * 2 > pushable);  // most of a crown's parts carry its leaves
+    // The sway. The outer limb: the trunk's child whose rest tip stands farthest from the trunk.
+    u32 outer = 0;
+    f32 farthest = -1.0f;
+    for (u32 p = 1; p < table.part_count(); ++p) {
+      if (table.parts[p].parent != 0) continue;
+      const Vec3 tip = table.parts[p].pivot + table.parts[p].direction * table.parts[p].length;
+      const f32 out = std::sqrt(tip.x * tip.x + tip.z * tip.z);
+      if (out > farthest) {
+        farthest = out;
+        outer = p;
+      }
+    }
+    REQUIRE(outer != 0);
+    for (const f32 strength : {1.0f, k_flora_max_wind}) {
+      f32 trunk_mean[2] = {};
+      f32 trunk_peak[2] = {};
+      f32 limb_mean[2] = {};
+      f32 limb_peak[2] = {};
+      const FloraMesh* meshes[2] = {&none, &table};
+      for (u32 m = 0; m < 2; ++m) {
+        const FloraMesh& mesh = *meshes[m];
+        Vector<FloraPartState> state(mesh.part_count(), FloraPartState{});
+        Vector<gfx::FloraPartPose> poses(mesh.part_count(), gfx::FloraPartPose{});
+        const Vec3 trunk_rest = mesh.parts[0].pivot + mesh.parts[0].direction * mesh.parts[0].length;
+        const Vec3 limb_rest =
+            mesh.parts[outer].pivot + mesh.parts[outer].direction * mesh.parts[outer].length;
+        constexpr u32 k_samples = 720;  // twelve seconds at 60 Hz
+        for (u32 k = 0; k < k_samples; ++k) {
+          pose(mesh, FloraWind{Vec3{1.0f, 0.0f, 0.0f}, strength}, k / 60.0, FloraPush{}, 1, state,
+               poses);
+          const f32 trunk = length(bent(poses, mesh, 0, 1.0f) - trunk_rest);
+          const f32 limb = length(bent(poses, mesh, outer, 1.0f) - limb_rest);
+          trunk_mean[m] += trunk / k_samples;
+          limb_mean[m] += limb / k_samples;
+          trunk_peak[m] = std::max(trunk_peak[m], trunk);
+          limb_peak[m] = std::max(limb_peak[m], limb);
+        }
+      }
+      MESSAGE(std::string_view(species) << " at wind " << strength << ": the trunk's top (" << table.parts[0].length
+                      << " m) moves " << trunk_mean[0] << " m on average, " << trunk_peak[0]
+                      << " at most with no table; " << trunk_mean[1] << ", " << trunk_peak[1]
+                      << " with it. The outer limb's tip (part " << outer << ", "
+                      << table.parts[outer].length << " m, " << farthest << " m out) " << limb_mean[0]
+                      << ", " << limb_peak[0] << " with none; " << limb_mean[1] << ", "
+                      << limb_peak[1] << " with it");
+      // A load-bearing trunk takes a quarter of its class's compliance: it moves less, never more.
+      CHECK(trunk_mean[1] < trunk_mean[0]);
+      CHECK(trunk_mean[1] > 0.0f);
+    }
   }
 }
 

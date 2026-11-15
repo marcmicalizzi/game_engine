@@ -395,6 +395,18 @@ u32 begin_structural_part(Emitter& out, D3 pivot, D3 direction, f64 length, u32 
   return part;
 }
 
+void mark_foliage(const assets::MeshData& mesh, u32 first_index, u32 index_end, Motion& motion) {
+  if (motion.structure.size() != motion.parts.size()) return;
+  const u32 end = std::min(index_end, static_cast<u32>(mesh.indices.size()));
+  for (u32 i = first_index; i < end; ++i) {
+    const u32 v = mesh.indices[i];
+    if (v >= motion.vertex_part.size()) continue;
+    const u32 part = motion.vertex_part[v];
+    if (part < motion.structure.size())
+      motion.structure[part].flags |= geometry::k_structural_foliage;
+  }
+}
+
 u32 emit_tube_part(Emitter& out, const Axis& axis, f64 r0, f64 r1, u32 rows, u32 sides, u32 parent,
                    u32 flags) {
   const u32 part = begin_structural_part(out, axis.point[0], axis.tangent[0], axis.length, parent,

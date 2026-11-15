@@ -19,7 +19,9 @@
 //          class of part (trunk, limb, twig, leaf; `flora_stiffness`), times `k_flora_load_bearing`
 //          for a part the structural table flags load-bearing.
 //   push   away from the walker: a part that is not load-bearing (and not the trunk) whose rest
-//          axis comes within the capsule's radius plus the part's own reach of the capsule's axis
+//          axis comes within the capsule's radius plus the part's own reach (its wood's radius,
+//          or `k_flora_leaf_reach` of its length for a part with no wood or one the table flags
+//          foliage, whichever is more) of the capsule's axis
 //          is turned, about its pivot, by the angle that carries its nearest point clear, at most
 //          `k_flora_push_max`, eased in and out over `k_flora_push_ease_ticks` frame ticks
 //          (smoothstep of a ramp, held per part between frames: `FloraPartState`).
