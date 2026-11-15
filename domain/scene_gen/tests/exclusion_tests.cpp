@@ -191,6 +191,36 @@ TEST_CASE("exclusion: a body excludes the points of its outline whose ground is 
   CHECK_FALSE(o.excluded_mm(ground_at(high), mm(5000.0), mm(-5000.0)));
 }
 
+// W121 (scene_gen.md, "Exclusion"): the level over a point is the level of the body whose water
+// covers it by the water kind's own test (inside the outline, the ground under the level; an open
+// body wherever the ground is under it), the highest where two do, and nothing where none does.
+TEST_CASE("exclusion: the level over a point is the covering body's") {
+  const scene::WaterBody lake = circle_body(100.0, 100.0, 20.0f, 2.0);
+  const scene::WaterBody pond = circle_body(110.0, 100.0, 5.0f, 2.5);
+  const scene::WaterBody bodies[2] = {lake, pond};
+  Exclusion ex;
+  REQUIRE(ex.build({}, {bodies, 2}, {}));
+  const f64 low = 0.5, middle = 2.2, high = 3.0;
+  f64 level = -1;
+  CHECK(ex.water_level_mm(ground_at(low), mm(95.0), mm(100.0), level));
+  CHECK(level == 2.0);
+  CHECK(ex.water_level_mm(ground_at(low), mm(110.0), mm(100.0), level));
+  CHECK(level == 2.5);  // both cover it: the higher
+  // The ground over the lake's level and under the pond's: the pond's alone.
+  CHECK(ex.water_level_mm(ground_at(middle), mm(110.0), mm(100.0), level));
+  CHECK(level == 2.5);
+  CHECK_FALSE(ex.water_level_mm(ground_at(middle), mm(95.0), mm(100.0), level));
+  CHECK_FALSE(ex.water_level_mm(ground_at(high), mm(110.0), mm(100.0), level));
+  CHECK_FALSE(ex.water_level_mm(ground_at(low), mm(130.0), mm(100.0), level));
+  // Wherever it answers, the water kind excludes the point, and the other way round.
+  for (i64 x = 70; x <= 130; x += 3)
+    for (const f64 h : {low, middle, high}) {
+      f64 l = 0;
+      CHECK(ex.water_level_mm(ground_at(h), mm(static_cast<f64>(x)), mm(100.0), l) ==
+            ex.excluded_mm(ground_at(h), mm(static_cast<f64>(x)), mm(100.0), k_exclude_water));
+    }
+}
+
 TEST_CASE("exclusion: the same scene answers the same, whichever way it was built") {
   const scene::TerrainHole hole = circle_hole(30.0, 30.0, 5.0f);
   const scene::WaterChannel a = straight_channel(0.0, 80.0, 3.0f);

@@ -174,6 +174,7 @@ struct ChannelEntry {
   std::string where;
   std::string dir;
   Vector<Channel> channels;
+  Vector<ChannelLine> lines;  // one a channel
 };
 
 bool open_channels(const JsonValue& params, const scene_gen::Context& context, void** state,
@@ -203,14 +204,23 @@ bool open_channels(const JsonValue& params, const scene_gen::Context& context, v
     }
     entry->channels.push_back(std::move(channel));
   }
-  // The channels whose last point is a fall landing in a body (S98; channel.h, `pooled`): the
-  // renderer's reader names them, and their ribbons build no plunge stretch over the pool.
-  if (const JsonValue* pooled = params.find("pooled"); pooled != nullptr && pooled->is_array()) {
-    for (usize i = 0; i < pooled->size(); ++i) {
-      u64 k = 0;
-      if ((*pooled)[i].get_u64(k) && k < entry->channels.size())
-        entry->channels[static_cast<u32>(k)].pooled = true;
-    }
+  // **Where channels meet** (channel.h, "Where channels meet"; S108): every channel's line once,
+  // and which of its two ends stand in another channel's water (round, not cut square), before
+  // any sheet is built, since a channel is cut against its neighbours as they will be drawn.
+  entry->lines.reserve(entry->channels.size());
+  for (const Channel& channel : entry->channels)
+    entry->lines.push_back(channel_line(channel));
+  Vector<u8> caps(entry->channels.size() * 2);
+  for (u32 k = 0; k < entry->channels.size(); ++k) {
+    bool head = false;
+    bool tail = false;
+    (void)channel_joins(entry->channels, entry->lines, k, head, tail);
+    caps[2 * k] = head ? 1 : 0;
+    caps[2 * k + 1] = tail ? 1 : 0;
+  }
+  for (u32 k = 0; k < entry->channels.size(); ++k) {
+    entry->channels[k].cap_head = caps[2 * k] != 0;
+    entry->channels[k].cap_tail = caps[2 * k + 1] != 0;
   }
   *state = entry.release();
   return true;
@@ -230,13 +240,30 @@ bool expand_channels(void* state, const scene_gen::Context& context, scene_gen::
   }
   const std::string mesh_dir =
       !ddc.empty() ? io::join_path(ddc, "water") : resolve(entry.dir, "water");
+  // The depth map is the level less the ground the scene draws, as it stands now (a body's rule).
+  const scene_gen::Ground& ground = context.stand.present() ? context.stand : context.ground;
   for (u32 k = 0; k < entry.channels.size(); ++k) {
     const Channel& channel = entry.channels[k];
     ChannelMesh mesh;
-    build_channel_mesh(channel, mesh);
+    bool head = false;
+    bool tail = false;
+    const ChannelJoins joins = channel_joins(entry.channels, entry.lines, k, head, tail);
+    build_channel_mesh(channel, mesh, &joins);
+    if (mesh.mesh.indices.empty()) {
+      // A channel with no drawn stretch (every station over its bank: channel.h, `stretch_drawn`)
+      // has no sheet. Mesh k is still channel k: an entry with no path, which the reader skips.
+      scene_gen::PlacementMesh none;
+      none.name = "water/" + (channel.name.empty() ? "channel" + std::to_string(k) : channel.name);
+      out.meshes.push_back(std::move(none));
+      scene_gen::Placement nowhere;
+      nowhere.position = channel.origin;
+      nowhere.mesh = k;
+      out.instances.push_back(nowhere);
+      continue;
+    }
     const Vector<u8> glb = mesh_glb(mesh.mesh, Vec3{0.30f, 0.55f, 0.50f}, 0.08f);
     DepthMap map;
-    build_channel_depth_map(channel, mesh, map);
+    build_channel_depth_map(channel, mesh, ground, map, &joins);
     const Vector<u8> map_file = depth_map_bytes(map);
     const std::span<const u8> bytes(glb.data(), glb.size());
     const std::span<const u8> map_bytes(map_file.data(), map_file.size());

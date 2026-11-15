@@ -1144,36 +1144,36 @@ float water_channel_saturation(WaterShore s, float3 local) {
 //     in the channel's frame (a function of the phase alone, never of the clock) at Kennedy's
 //     wavelength 2 pi v^2 / g, as the two whole numbers of cycles a period either side of it,
 //     cross-faded, so the wrap stays seamless.
-//   - **The lateral profile** (`water_channel_lateral`): the speed across the width is the 1/6
-//     power law's, v(a) = C v_mean (1 - (2a/w)^2)^(1/6), C making the discharge the section's,
-//     with (1 - (2a/w)^2) the depth under the pixel over the centreline's, which three samples of
-//     the depth map across the flow recover (the bed is the parabola the mesh's UV.y is).
+//   - **The solve, read** (S106): UV.y is the section's hydraulic depth A / T, so the section's
+//     Froude number is the phase's speed over sqrt(g UV.y), which is the solved one; nothing is
+//     fitted to the bed. The speed at a pixel is the section's mean times the surface factor 7/6
+//     (the 1/6 power law down a vertical) times its vertical's share of the mean, kappa (d /
+//     D)^(2/3) with d the depth map's depth under the pixel (Manning's flow a vertical at one
+//     friction slope; systems/water's channel.h has the derivation and kappa).
 //   - **Aeration** from the critical Froude number and a speed of a metre a second (Chanson): foam
 //     as advected noise blurred along the flow into streaks, densest in the thalweg.
-//   - **A fall** (the triangle's geometric normal within 45 degrees of horizontal): a glassy
-//     sheet at the lip, white water once the jet is fast enough to be aerated, streaked down the
-//     face.
+//   - **A fall** (a triangle with a corner whose UV.y is negative: less the nappe's thickness): a
+//     glassy sheet from the lip that turns white where it has fallen Horeni's break-up length for
+//     its unit discharge, streaked down the face.
 static const uint k_material_water_channel = 2097152u;  // gfx::k_material_water_channel (1 << 21; S97 took 20 the same night)
 static const float k_channel_period_s = 8.0;  // water::k_channel_phase_period_s
-// A geometric normal whose y is under this is a face steeper than 45 degrees: a fall.
-static const float k_channel_fall_cos = 0.70710678;
 // Froude: aeration starts at the critical flow and covers most of the surface at twice it.
 static const float k_channel_foam_froude = 1.0;
 static const float k_channel_foam_full = 2.0;
-// The depth the Froude number is never taken under, metres: at the bank's edge the depth goes to
-// nothing, and so would the denominator.
-static const float k_channel_depth_floor = 0.1;
+// The hydraulic depth is never read under this, metres (water::k_channel_depth_min_m; the mesh
+// writes none smaller, and a vertex pulled by the simplifier may).
+static const float k_channel_depth_min = 0.001;
+// From the section's mean to the surface, and across the section (water::k_channel_surface_factor,
+// k_channel_conveyance, k_channel_profile_max).
+static const float k_channel_surface_factor = 7.0 / 6.0;
+static const float k_channel_conveyance = 0.9;
+static const float k_channel_profile_max = 1.5;
 // The flow map's cycle, seconds: each copy is carried this long before it fades out. A divisor
 // of the clock's 1024 s, so the clock's wrap falls where both copies restart.
 static const float k_channel_flow_cycle_s = 1.0;
 // The bed's roughness the shear velocity is taken with (Manning's n; the description's own does
 // not reach the shader: flowing-water.md says so). Chow's gravel bed, normal.
 static const float k_channel_manning_n = 0.04;
-// The power law across the width: v ~ (1 - (2a/w)^2)^(1/6), Manning's own exponent (Chen 1991),
-// and the factor that makes its discharge over the parabolic bed the section's mean times its
-// area: (4/3) / integral_-1^1 (1 - x^2)^(7/6) dx.
-static const float k_channel_profile_power = 1.0 / 6.0;
-static const float k_channel_profile_mean = 1.045718;  // water::k_channel_profile_mean
 // Self-aeration needs a speed of about a metre a second (Cummings and Chanson's inception
 // velocities 0.74 to 1.58 m/s): the foam fades in over [0.8, 1.2] m/s.
 static const float k_channel_aeration_speed = 1.0;  // water::k_channel_aeration_speed
@@ -1183,14 +1183,23 @@ static const float k_channel_aeration_speed = 1.0;  // water::k_channel_aeration
 static const float k_channel_wave_froude_lo = 0.8;
 static const float k_channel_wave_froude_hi = 1.6;
 static const float k_channel_wave_steepness = 0.12;
-// A fall's sheet is glassy at the lip and aerated once the jet is this fast (m/s; a choice).
-static const float k_channel_fall_glassy_speed = 4.0;
-static const float k_channel_fall_white_speed = 6.5;
-// How far across the flow the lateral profile probes the depth map, metres.
-static const float k_channel_lateral_probe_m = 0.4;
-// The fall's streaks: cycles a metre across the face and cycles of the phase a period along it.
-static const float k_channel_streak_across[3] = {1.3, 2.9, 5.1};
-static const float k_channel_streak_cycles[3] = {3.0, 5.0, 7.0};
+// A fall's sheet is glassy until it has fallen Horeni's (1956) break-up length for its unit
+// discharge q, 5.89 q^0.319 m (water::nappe_breakup_m), and whitens over the last of it
+// (water::k_channel_breakup_from).
+static const float k_channel_breakup_scale = 5.89;
+static const float k_channel_breakup_power = 0.319;
+static const float k_channel_breakup_from = 0.6;
+// The fall's strands (S108): cells this wide across the face, metres, and this many cells of the
+// phase a period down it (a quarter second of travel: a metre at 4 m/s).
+static const float k_channel_strand_m = 0.12;
+static const int k_channel_strand_cells = 32;
+// A nappe's white needs water: none in a sheet thinner than the first, whole by the second, metres
+// (a choice: a film of 2 mm over rock shows the rock; a centimetre of broken water is opaque).
+static const float k_channel_veil_from_m = 0.0015;
+static const float k_channel_veil_full_m = 0.010;
+// A channel's shore fades over this much depth, metres (S108; visibility_resolve.slang,
+// `water_channel_pixel`): the meniscus's centimetres, not a body's calm quarter metre.
+static const float k_channel_shore_depth = 0.03;
 // The long trains: cycles of the phase a period, a static spatial frequency (cycles a metre).
 static const float k_channel_train_cycles[2] = {17.0, 29.0};
 static const float2 k_channel_train_space[2] = {float2(0.23, -0.31), float2(-0.37, 0.19)};
@@ -1264,6 +1273,30 @@ float3 water_channel_noise(float2 x, uint seed) {
   const float2 d = ga + u.x * (gb - ga) + u.y * (gc - ga) + u.x * u.y * (ga - gb - gc + gd) +
                    du * (float2(vb - va, vc - va) + u.yx * k4);
   return float3(value, d);
+}
+
+// The same noise's value, **periodic in y** with period `wrap` cells, over twice its rms (so about
+// [-1, 1] with an rms of a half): what a pattern carried by the wrapped phase is drawn with (a
+// fall's strands, S108), since a lattice that repeats every `wrap` cells is the same either side
+// of the phase's wrap.
+float water_channel_noise_wrapped(float2 x, int wrap, uint seed) {
+  const float2 i = floor(x);
+  const float2 f = x - i;
+  const float2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  const int cx = int(i.x) + int(seed % 4093u);
+  const int y0 = ((int(i.y) % wrap) + wrap) % wrap;
+  const int y1 = (y0 + 1) % wrap;
+  const int row = int((seed / 4093u) % 4093u);
+  const float2 ga = k_channel_gradients[(water_hash2(int2(cx, y0 + row)) >> 13) & 7u];
+  const float2 gb = k_channel_gradients[(water_hash2(int2(cx + 1, y0 + row)) >> 13) & 7u];
+  const float2 gc = k_channel_gradients[(water_hash2(int2(cx, y1 + row)) >> 13) & 7u];
+  const float2 gd = k_channel_gradients[(water_hash2(int2(cx + 1, y1 + row)) >> 13) & 7u];
+  const float va = dot(ga, f);
+  const float vb = dot(gb, f - float2(1.0, 0.0));
+  const float vc = dot(gc, f - float2(0.0, 1.0));
+  const float vd = dot(gd, f - float2(1.0, 1.0));
+  const float value = va + u.x * (vb - va) + u.y * (vc - va) + u.x * u.y * (va - vb - vc + vd);
+  return value / (2.0 * k_channel_noise_rms);
 }
 
 // **The flow map's two copies** (Vlachos 2010): copy k's place is `velocity t_k` downstream of
@@ -1344,44 +1377,6 @@ float water_channel_streaks(float2 p, WaterChannelPhases ph, float2 along, float
   return v * ph.norm / (k_channel_noise_rms * 1.7320508);
 }
 
-// **The lateral profile**: the share r = 1 - (2a/w)^2 of the centreline's depth under the pixel,
-// and that centreline depth, from the depth map across the flow (`across`, unit, x z). The bed is
-// the parabola d(a) = d_c - K (a - a_c)^2, so three samples a probe apart give K by the second
-// difference and the centre by the first: d_c = d_mid + K (a_mid - a_c)^2. Beside a bank one
-// probe falls dry, and the three are taken inwards instead (one more fetch). Where the bed is not
-// a parabola (a plunge pool's bowl, a bend's overlap, the low tier with no map) it says so (z 0),
-// and the pixel takes the section's speed over its own depth, as S96 drew it. float3(r, d_c, found).
-float3 water_channel_lateral(bool has_map, WaterDepthMap map, float2 p, float2 across,
-                             float depth) {
-  if (!has_map) return float3(1.0, depth, 0.0);
-  if (!(depth > 0.0)) return float3(0.0, 0.0, 1.0);
-  const float h = k_channel_lateral_probe_m;
-  const float dp = water_depth_sample(map, p + across * h);
-  const float dm = water_depth_sample(map, p - across * h);
-  float a = dm;
-  float b = depth;
-  float c = dp;
-  if (!(dp > 0.0) || !(dm > 0.0)) {
-    const float side = dp > dm ? 1.0 : -1.0;
-    a = depth;
-    b = max(dp, dm);
-    c = water_depth_sample(map, p + across * (2.0 * h * side));
-    if (side < 0.0) {
-      const float t = a;
-      a = c;
-      c = t;
-    }
-    if (!(c > 0.0) || !(a > 0.0)) return float3(1.0, depth, 0.0);
-  }
-  const float k = -(a - 2.0 * b + c) / (2.0 * h * h);
-  if (!(k > 1e-4)) return float3(1.0, depth, 0.0);
-  // The middle sample's place less the centre's.
-  const float off = -(c - a) / (4.0 * k * h);
-  const float dc = b + k * off * off;
-  if (!(dc > 0.0)) return float3(1.0, depth, 0.0);
-  return float3(clamp(depth / dc, 0.0, 1.0), max(dc, depth), 1.0);
-}
-
 // **Standing waves**: their slope at the phase `tau` over a triangle whose phase gradient is
 // `gradient` (s/m) and section speed `speed`, of Froude number `froude`, over a centreline depth
 // `dc`. Kennedy's wavelength 2 pi v^2 / g is g / (2 pi v) cycles a second of travel; the two whole
@@ -1418,66 +1413,94 @@ struct WaterChannelSurface {
   float roughness;
   float foam;        // the white share, [0, 1]
   float foam_shade;  // the foam's brightness, about 1
-  float froude;      // at the pixel: its speed over the centreline's depth
-  float speed;       // at the pixel, m/s: the section's by the lateral profile
+  float froude;      // at the pixel: its vertical's mean speed over the section's sqrt(g D)
+  float speed;       // at the pixel, m/s: the surface's
 };
 
 // The channel's surface at the body-local point `p` (metres from its instance), its phase `tau`,
-// the clock `time`, the pixel's `footprint` (metres), the `depth` under it, the triangle's
-// geometric normal `geometric` (unit, facing out of the water) and its flow `f`; the depth map
-// (`has_map`, `map`) for the lateral profile.
+// the clock `time`, the pixel's `footprint` (metres), the `depth` under it (the depth map's; the
+// hydraulic depth where there is no map), the section's `hydraulic` depth (UV.y), the triangle's
+// geometric normal `geometric` (unit, facing out of the water) and its flow `f`. `nappe` > 0: the
+// triangle is a fall's, and that is the sheet's thickness, metres.
 WaterChannelSurface water_channel_surface(WaterChannelFlow f, float3 p, float3 geometric,
                                           float tau, float time, float footprint, float depth,
-                                          float roughness, uint seed, bool has_map,
-                                          WaterDepthMap map) {
+                                          float hydraulic, float nappe, float roughness,
+                                          uint seed) {
   WaterChannelSurface c;
   const float calm = clamp(depth / k_water_calm_depth, 0.0, 1.0);
-  if (abs(geometric.y) < k_channel_fall_cos) {
-    // A fall: a glassy sheet at the lip (the brink's roll, bright by Fresnel on its steep face)
-    // turning white as the jet speeds up, streaked across the face and carried down it. Across is
-    // the face's own horizontal, from its plane alone: the phase's gradient differs a little from
-    // triangle to triangle, and times a body-local point tens of metres out that would shift the
-    // streaks at every edge.
+  if (nappe > 0.0) {
+    // A fall: a glassy sheet from the lip (the brink's roll, bright by Fresnel on its steepening
+    // face) turning white where it breaks up, streaked across the face and carried down it. Across
+    // is the face's own horizontal, from its plane alone: the phase's gradient differs a little
+    // from triangle to triangle, and times a body-local point tens of metres out that would shift
+    // the streaks at every edge. The phase runs at the nappe's horizontal speed, so the speed in
+    // the face's plane is the projectile's own, and the height it has fallen is its vertical
+    // part's, v^2 (1 - n_y^2) / 2g; its unit discharge is its speed times its thickness.
     float3 across = cross(float3(0.0, 1.0, 0.0), geometric);
     const float la = length(across);
-    across = la > 1e-6 ? across / la : float3(1.0, 0.0, 0.0);
+    across = la > 1e-6 ? across / la : normalize(cross(float3(0.0, 1.0, 0.0), f.direction + float3(1e-6, 0.0, 0.0)));
     const float u = dot(p, across);
-    float streak = 0.0;
-    for (uint i = 0; i < 3; ++i) {
-      const float cyc = water_channel_cycle(k_channel_streak_cycles[i], tau, time,
-                                            u * k_channel_streak_across[i] +
-                                                water_phase(seed, 8u + i));
-      const float keep = clamp(1.0 / (k_channel_streak_across[i] * 2.0 * max(footprint, 1e-4)) -
-                                   1.0, 0.0, 1.0);
-      streak += keep * sin(k_water_two_pi * cyc) / 3.0;
+    // **The strands** (S108; in place of S96's three sines across the face, which drew ruled
+    // stripes): gradient noise in cells `k_channel_strand_m` across the face and a
+    // `k_channel_strand_cells`-th of the phase's period down it, in two octaves, carried down by
+    // the phase — a whole number of cells a period, the noise wrapped at it, so the phase's wrap
+    // is seamless — which at a fall's speed are cells several times longer than wide.
+    const float carried =
+        frac(frac(tau / k_channel_period_s) - frac(time / k_channel_period_s) + 1.0);
+    const float cells = float(k_channel_strand_cells);
+    const float keep = clamp(k_channel_strand_m / (2.0 * max(footprint, 1e-4)) - 1.0, 0.0, 1.0);
+    float strands = 0.0;
+    if (keep > 0.0) {
+      strands = 0.7 * water_channel_noise_wrapped(float2(u / k_channel_strand_m, carried * cells),
+                                                  k_channel_strand_cells, seed + 31u) +
+                0.3 * water_channel_noise_wrapped(
+                          float2(2.0 * u / k_channel_strand_m, 2.0 * carried * cells),
+                          2 * k_channel_strand_cells, seed + 67u);
+      strands *= keep;
     }
     c.speed = f.speed;
-    c.froude = f.speed / sqrt(k_water_g * max(depth, k_channel_depth_floor));
-    c.normal = normalize(geometric + across * (0.08 * streak));
+    c.froude = f.speed / sqrt(k_water_g * max(nappe, k_channel_depth_min));
+    c.normal = normalize(geometric + across * (0.10 * strands));
     c.roughness = 0.12;
-    c.foam = smoothstep(k_channel_fall_glassy_speed, k_channel_fall_white_speed, f.speed);
-    c.foam_shade = 0.82 + 0.18 * streak;
+    const float fallen =
+        f.speed * f.speed * (1.0 - geometric.y * geometric.y) / (2.0 * k_water_g);
+    const float breakup =
+        k_channel_breakup_scale * pow(max(f.speed * nappe, 1e-6), k_channel_breakup_power);
+    // **White by how far the sheet has broken up and by how much water there is** (S108): a film
+    // of a millimetre or two has no white in it however far it has fallen, a sheet of a
+    // centimetre all of it, so a thin veil over a step is the rock seen through water with white
+    // strands in it, and the sheet's sides — where the mesh thins it to nothing — have no white
+    // and no straight edge. Where it is partly white it is white **in strands**: the pattern's
+    // threshold falls as the share rises, from a few strands to all but a few dark gaps; far
+    // away the strands average to their share.
+    const float share = smoothstep(k_channel_breakup_from * breakup, breakup, fallen) *
+                        smoothstep(k_channel_veil_from_m, k_channel_veil_full_m, nappe);
+    const float threshold = lerp(0.9, -0.9, share);
+    c.foam = share > 0.0
+                 ? lerp(share, smoothstep(threshold - 0.35, threshold + 0.35, strands), keep)
+                 : 0.0;
+    c.foam_shade = 0.85 + 0.15 * clamp(strands, -1.0, 1.0);
     return c;
   }
   // The flow along the surface, x z, and across it.
   const float gl = length(f.direction.xz);
   const float2 along = gl > 1e-6 ? f.direction.xz / gl : float2(1.0, 0.0);
-  const float2 across = float2(-along.y, along.x);
-  // The lateral profile: the pixel's speed and the centreline's depth.
-  const float3 lateral = water_channel_lateral(has_map, map, p.xz, across, depth);
-  const float r = lateral.x;
-  const bool profiled = lateral.z > 0.0;
-  const float dc = max(lateral.y, k_channel_depth_floor);
-  const float profile =
-      profiled ? (r > 0.0 ? k_channel_profile_mean * pow(r, k_channel_profile_power) : 0.0) : 1.0;
-  c.speed = f.speed * profile;
+  // The solve, read: the section's hydraulic depth and with it the section's Froude number; the
+  // pixel's vertical carries kappa (d / D)^(2/3) of the section's mean speed, and its surface runs
+  // at 7/6 of that.
+  const float dc = max(hydraulic, k_channel_depth_min);
+  const float dl = max(depth, k_channel_depth_min);
+  const float profile = depth > 0.0
+      ? min(k_channel_conveyance * pow(dl / dc, 2.0 / 3.0), k_channel_profile_max) : 0.0;
+  const float mean = f.speed * profile;
+  c.speed = mean * k_channel_surface_factor;
   const float section_froude = f.speed / sqrt(k_water_g * dc);
-  c.froude = c.speed / sqrt(k_water_g * dc);
+  c.froude = section_froude * profile;
   // Brocchini and Peregrine's surface: height q^2 / 2g with q the shear velocity at the pixel,
   // u* = v n sqrt(g) / d^(1/6) (Manning's), the largest eddies 1.5 depths across.
-  const float ustar = c.speed * k_channel_manning_n * sqrt(k_water_g) / pow(dc, 1.0 / 6.0);
+  const float ustar = mean * k_channel_manning_n * sqrt(k_water_g) / pow(dl, 1.0 / 6.0);
   const float height = ustar * ustar / (2.0 * k_water_g) * calm;
-  const float lambda0 = clamp(1.5 * dc, 0.2, 4.0);
+  const float lambda0 = clamp(1.5 * dl, 0.2, 4.0);
   const WaterChannelPhases ph = water_channel_phases(along * c.speed, time, seed);
   const WaterChannelDetail detail =
       water_channel_detail(p.xz, ph, lambda0, height, footprint, seed);
@@ -1503,10 +1526,10 @@ WaterChannelSurface water_channel_surface(WaterChannelFlow f, float3 p, float3 g
   }
   // The standing waves of a near-critical reach, strongest in the thalweg.
   slope += water_channel_standing(f.gradient, f.speed, tau, section_froude, dc, footprint, seed) *
-           (calm * (profiled ? r : 1.0));
+           (calm * min(profile, 1.0));
   c.normal = normalize(geometric - float3(slope.x, 0.0, slope.y));
   // The faded detail as roughness (its slope's rms), and the rapids' roughness.
-  c.roughness = min(roughness + sqrt(lost) + 0.25 * clamp(c.froude / 2.0, 0.0, 1.0), 1.0);
+  c.roughness = min(roughness + sqrt(lost) + 0.25 * calm * clamp(c.froude / 2.0, 0.0, 1.0), 1.0);
   // Aeration: from the critical flow at a metre a second, most of the surface by Froude 2, in
   // streaks along the flow as long as the turbulence's turnover carries them (v d / u*, cells
   // of half a depth stretched up to six times).

@@ -554,6 +554,10 @@ struct SceneFileOptions {
   // ground a load composes by the same code: `engine-content masks check` (T121) and
   // `engine-content ground sample` (G201 stage 2; `SceneGround`, ground_sample.h).
   bool ground_only = false;
+  // **The file's `water_channels` are not read** (W120): the caller is the cook that writes them
+  // (`engine-content flow solve`), so a scene whose channels were cooked before W120 — which any
+  // other reader refuses — still gives the cook its ground. The exclusion then holds no channel.
+  bool without_water_channels = false;
 };
 
 // Reads a scene file (schema `engine.scene.Scene`): meshes with an optional name, content hash,

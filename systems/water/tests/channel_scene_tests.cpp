@@ -44,11 +44,20 @@ bool write_channel_scene(const std::string& path, const std::string& channels) {
   return static_cast<bool>(out);
 }
 
-// A brook across the dunes along +x, a gentle reach and then a steep one (Froude above 1).
+// A brook across the dunes along +x, a gentle reach and then a steep one, **as a solved
+// description** (WaterChannel version 6; S106), each number a closed form of steady flow in a
+// rectangular section at Manning's n 0.04 carrying 3.08 m3/s: normal depth 0.5 m in 3 m of width
+// at the head (slope 0.017: 25 x 0.5^(2/3) x 0.017^(1/2) = 2.053 m/s, Froude 0.927), critical
+// depth at the break of slope (q = 1.027 m2/s, (q^2 / g)^(1/3) = 0.4755 m at 2.159 m/s; a crest
+// control), and the steep reach's normal depth 0.35 m in 2.74 m at the foot (slope 0.067: 3.213
+// m/s, Froude 1.734). A rectangle's hydraulic depth is its depth. It stands over the dunes, not
+// in a bed: the cases here hold what moves, not where the water's edge is.
 constexpr const char* k_brook = R"([{"name": "brook",
   "points": [[-12, 2.0, 4], [0, 1.8, 4], [12, 1.0, 4]],
-  "width_m": [3, 3, 2.5], "depth_m": [0.5, 0.5, 0.35], "slope": [0.017, 0.017, 0.067],
-  "seed": 3}])";
+  "width_m": [3, 3, 2.74], "depth_m": [0.5, 0.4755, 0.35], "slope": [0.017, 0.03, 0.067],
+  "discharge_m3s": [3.08, 3.08, 3.08], "speed_mps": [2.053, 2.159, 3.213],
+  "froude": [0.927, 1.0, 1.734], "wet_left_m": [1.5, 1.5, 1.37],
+  "wet_right_m": [1.5, 1.5, 1.37], "flags": [0, 1, 0], "seed": 3}])";
 
 bool gpu_here() {
   gfx::Device probe;
@@ -134,7 +143,13 @@ TEST_CASE(
   CHECK(brook.body.shore_m == 2.0f);  // a body's default, under a body's name
   CHECK(brook.body.transmission == 1.0f);
   CHECK_FALSE(brook.body.open);
-  CHECK(brook.depth.size >= water::k_depth_map_min);  // the description's bed, beside the mesh
+  CHECK(brook.depth.size >= water::k_depth_map_min);  // the level less the ground, beside the mesh
+  // The banks are the drawn stretches' (S99, S106): the wet reach's half width, a rapid's spray
+  // where the solved Froude number passes 1.
+  REQUIRE(brook.banks.size() == 2);
+  CHECK(brook.banks[0].stretch_a.w == 1.5f);
+  CHECK(brook.banks[1].stretch_b.w == 1.37f);
+  CHECK(brook.banks[1].wet_m > brook.banks[0].wet_m - 1e-6f);
   // The load carries it; the GPU scene sets the channel bit on its material (the picture case).
   {
     SceneDesc loaded;
@@ -235,8 +250,15 @@ TEST_CASE("water channel: the channel moves with the world's clock, and nothing 
 
 namespace {
 
-// A spout: a reach above the dunes falling 5 m over a metre of run into a pool whose level is its
-// foot's, so the foot lands in the pool (water.md, "The plunge").
+// A spout: a reach above the dunes falling 5 m into a pool whose level is its foot's, so the foot
+// lands in the pool (water.md, "The plunge"). Solved by closed forms (S106): a steep reach at its
+// normal depth 0.4 m in 2 m of width (slope 0.033: 2.466 m/s, Froude 1.245, 1.973 m3/s), which
+// goes over its lip as it is; the foot is Rand's drop for h = 5 m and y_c = (q^2 / g)^(1/3) =
+// 0.463 m: 4.30 h (y_c / h)^0.81 = 3.13 m from the lip, 0.54 (y_c / h)^0.275 y_c = 0.13 m deep at
+// 7.59 m/s, and it is the channel's mouth in the pool (flags 64 + 3). The foot moved 2.13 m
+// downstream of where S98's metre of run put it, so the pool and the camera of the picture case
+// moved 2.13 m with it: the foot stands where it stood in the pool (2 m short of its middle) and
+// in the frame, and the picture's bounds are S98's, of the same view.
 bool write_plunge_scene(const std::string& path) {
   std::ofstream out(path, std::ios::binary);
   out << R"({
@@ -244,12 +266,14 @@ bool write_plunge_scene(const std::string& path) {
   "name": "plunge-test",
   "terrain": {"size": 65, "extent": 32, "seed": 4, "dune_height": 0.6, "dune_wavelength": 12},
   "water": [{"name": "pool", "level_m": 1.0,
-    "shape": {"circle": {"center": [3, 0, -6], "radius_m": 5}}, "wind_follow": false,
+    "shape": {"circle": {"center": [5.13, 0, -6], "radius_m": 5}}, "wind_follow": false,
     "wave_amplitude_m": 0}],
   "water_channels": [{"name": "spout",
-    "points": [[-12, 6.4, -6], [0, 6.0, -6], [1, 1.0, -6]],
-    "width_m": [2, 2, 2], "depth_m": [0.4, 0.4, 0.4], "slope": [0.033, 0.033, 0.033],
-    "seed": 5}]
+    "points": [[-12, 6.4, -6], [0, 6.0, -6], [3.13, 1.0, -6]],
+    "width_m": [2, 2, 2], "depth_m": [0.4, 0.4, 0.13], "slope": [0.033, 0.033, 0.033],
+    "discharge_m3s": [1.973, 1.973, 1.973], "speed_mps": [2.466, 2.466, 7.59],
+    "froude": [1.245, 1.245, 6.72], "wet_left_m": [1, 1, 1], "wet_right_m": [1, 1, 1],
+    "flags": [0, 32, 67], "seed": 5}]
 }
 )";
   return static_cast<bool>(out);
@@ -291,15 +315,15 @@ void shoot_plunge(const gfx::Device& device, const std::string& path, const std:
   CaptureChannels channels;
   channels.ids = true;
   FrameDesc frame;
-  frame.camera.position = WorldPos{9.0, 7.0, 3.0};
-  frame.camera.target = WorldPos{1.0, 1.0, -6.0};
+  frame.camera.position = WorldPos{11.13, 7.0, 3.0};
+  frame.camera.target = WorldPos{3.13, 1.0, -6.0};
   frame.world_time_s = 10.0;
   REQUIRE_MESSAGE(renderer.capture(frame, channels, out.frame, &error), error);
 }
 
 }  // namespace
 
-TEST_CASE("water channel: a fall's foot in a body is the body's plunge, and the ribbon stops") {
+TEST_CASE("water channel: a fall's foot in a body is the body's plunge") {
   const test::TempDir tmp("water_channel_plunge_read");
   const std::string path = tmp.file("scene.json");
   REQUIRE(write_plunge_scene(path));
@@ -310,9 +334,9 @@ TEST_CASE("water channel: a fall's foot in a body is the body's plunge, and the 
   REQUIRE(desc.mesh_info[0].water.has_value());
   const SceneWater& pool = *desc.mesh_info[0].water;
   REQUIRE(pool.plunges.size() == 1);
-  // The foot (1, 1, -6) less the pool's place (3, 1, -6); the radius the 5 m fall over four, the
-  // speed the free fall's from rest.
-  CHECK(pool.plunges[0].at.x == doctest::Approx(-2.0f));
+  // The foot (3.13, 1, -6) less the pool's place (5.13, 1, -6); the radius the 5 m fall over
+  // four, the speed the free fall's from rest.
+  CHECK(pool.plunges[0].at.x == doctest::Approx(-2.0f).epsilon(1e-4));
   CHECK(pool.plunges[0].at.y == doctest::Approx(0.0f));
   CHECK(pool.plunges[0].radius_m == doctest::Approx(1.25f));
   CHECK(pool.plunges[0].speed_m_s == doctest::Approx(std::sqrt(2.0 * 9.81 * 5.0)).epsilon(1e-5));
@@ -333,7 +357,21 @@ TEST_CASE("water channel: a fall's foot in a body is the body's plunge, and the 
   CHECK(low.mesh_info[0].water->plunges.empty());
 }
 
-TEST_CASE("water channel: a fall's foot in the pool is whiter than the pool beside it") {
+// **Whiter than the pool under the same light** (S106's second leg, 2026-11-14). S98 wrote the
+// case to hold that the plunge is white water: its pixels a tenth brighter than the pool's water.
+// It took "the pool's water" from the rest of the pool's pixels, which is the pool under the foot's
+// light only while nothing lights the two apart. The solved fall's nappe lands Rand's 3.13 m out
+// and leans over its own foot, and three things of the nappe's darken the pool there and not
+// beside it, each measured by taking it away (the captures are the row's, not kept here): 29 of
+// the foot's 556 pixels are in its shadow on the surface (the shadow view); the rest show its
+// reflection (3.5 of 255, `renderer.water.reflect` off) and its shadow on the bed under them,
+// which the volume tier lights through a second ray (8 of 255; with no channel in the scene the
+// same pixels are the pool's 136.1 to a tenth). So without the plunge the foot's pixels are 123.8
+// where the pool beside them is 135.5, and the foot's 148.8 read 1.098 against the pool beside it
+// while being 1.20 times the water it lies on. The case holds what it was written to: **the foot
+// against the same pixels with the plunge cleared**, which is the pool under the foot's own light,
+// pixel for pixel. The bound is S98's 1.1, unmoved.
+TEST_CASE("water channel: a fall's foot in the pool is whiter than the pool's water there") {
   if (!gpu_here()) return;
   const test::TempDir tmp("water_channel_plunge_picture");
   const std::string path = tmp.file("scene.json");
@@ -351,7 +389,7 @@ TEST_CASE("water channel: a fall's foot in the pool is whiter than the pool besi
   const u32 pixels = a.width * a.height;
   // The pool's pixels the plunge changed are brighter, and many; no pixel of anything else moved.
   u32 pool = 0, changed = 0, brighter = 0, elsewhere = 0;
-  f64 lift = 0.0, white = 0.0, beside = 0.0;
+  f64 lift = 0.0, white = 0.0, under = 0.0, beside = 0.0;
   for (u32 p = 0; p < pixels; ++p) {
     const u32 id = a.ids[p * k_id_words];
     bool same = true;
@@ -370,19 +408,28 @@ TEST_CASE("water channel: a fall's foot in the pool is whiter than the pool besi
     const f32 d = luminance(a, p) - luminance(without.frame, p);
     lift += static_cast<f64>(d);
     white += static_cast<f64>(luminance(a, p));
+    under += static_cast<f64>(luminance(without.frame, p));
     if (d > 0.0f) ++brighter;
   }
+  const f64 n = static_cast<f64>(changed > 0 ? changed : 1);
   MESSAGE(pool << " pool pixels, " << changed << " changed by the plunge (" << brighter
-               << " brighter, mean lift " << (changed > 0 ? lift / changed : 0.0) << "); "
-               << elsewhere << " elsewhere; the foot's luminance "
-               << white / (changed > 0 ? changed : 1) << " against the pool's beside it "
-               << beside / (pool > changed ? pool - changed : 1));
+               << " brighter, mean lift " << lift / n << "); " << elsewhere
+               << " elsewhere; the foot's luminance " << white / n
+               << " against the same pixels' with the plunge cleared " << under / n
+               << " (the rest of the pool's, under another light: "
+               << beside / (pool > changed ? pool - changed : 1) << ")");
   CHECK(pool > 1000u);
   CHECK(changed > 200u);
   CHECK(brighter > changed * 9 / 10);
-  // Whiter than the pool beside it: the foot's mean luminance over the rest of the pool's.
-  CHECK(white / static_cast<f64>(changed > 0 ? changed : 1) >
-        1.1 * beside / static_cast<f64>(pool > changed ? pool - changed : 1));
+  // Whiter than the pool's water there: the foot's mean luminance over the same pixels' with the
+  // plunge cleared (the comment above the case says why not over the rest of the pool's).
+  CHECK(white / n > 1.1 * under / n);
+  // **The sheet above stops no light** (S108; water.md, "A sheet of water stops no light"). While
+  // the nappe was a traced caster the pool under it, with the plunge cleared, read 123.8 where the
+  // rest of the pool read 135.5: its shadow on the surface and on the bed under it. A channel's
+  // sheet is met by no ray now, so the pool under the nappe is the pool beside it but for the view
+  // (0.914 of it then; the bound leaves the view four parts in a hundred).
+  CHECK(under / n > 0.96 * beside / static_cast<f64>(pool > changed ? pool - changed : 1));
   CHECK(elsewhere == 0u);
   if (changed <= 200u || elsewhere != 0u) {
     tmp.keep();

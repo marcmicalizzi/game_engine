@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "W120",
+  "reason": "the water's description is a solved contract (WaterChannel version 6: fields, flags, pins, refusals) with its closed-form fixture derived on channels.md, and the discharge, the profile and the cook that write it with their measurements; apps.md gains the flow command's section; the second pass adds what holds the head from rising, what a block declares to the cook (derived_from, version 7) and the forest's climbing lines sized",
+  "date": "2026-11-14",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/apps.md": 1588,
+    "page:docs/subsystems/channels.md": 29237
+  }
+}

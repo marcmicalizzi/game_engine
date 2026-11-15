@@ -42,14 +42,18 @@ the subcommand call:
 1. **The lattice.** The region (`region_min/max`, whole spacings from the world's origin) at
    `spacing_m` (4 m), at most `max_samples` points. Heights are asked at whole millimetres and kept as
    integer micrometres; a job a row of rows when a job system is offered.
-2. **The fill.** Priority flood from the region's edge with a one-micrometre epsilon (Barnes et al.
-   2014), heap ordered by (height, index): every interior cell gets a strictly falling path to the
-   edge, and the order is total.
-3. **The routing.** D8 over the filled heights, ties to the first direction; the region's edge is the
-   outlet. Contributing area summed after sorting by filled height.
+2. **The fill.** Priority flood from the region's edge **and from every sink** with a
+   one-micrometre epsilon (Barnes et al. 2014), heap ordered by (height, index): every other cell
+   gets a strictly falling path to one of them, and the order is total.
+3. **The routing.** D8 over the filled heights, ties to the first direction; the region's edge and
+   the sinks are the outlets. Contributing area summed after sorting by filled height.
+   **Then the hollows** ([Hollows](#hollows), W122): every pit the fill raised is labelled and
+   becomes a breach, a standing body of the plan, or a sink; a pit made a sink changes the fill, so
+   steps 2 and 3 are taken again until nothing changes.
 4. **Heads.** A cell is a channel where `A ≥ min_head_area_m2` and `A · S^α ≥ head_threshold_m2`,
    `S` the ground's (unfilled) drop to its receiver over the run; every cell below a channel is one.
-   A head is a channel cell with no channel donor.
+   A head is a channel cell with no channel donor. **No channel begins under a body of the plan**:
+   the slope the rule reads there is the lake's floor's.
 5. **Links.** From every head and every junction (two or more channel donors) down to the next
    junction or the region's edge, in order of their first cell.
 6. **Lines.** A link's cell centres low-passed (σ = max(6 m, 2 w)), resampled every `step_m`, bent by
@@ -81,8 +85,9 @@ load the whole plan (24 to 32 s on v35).
 - **The file.** `<derived-data root>/channels/plan-<key>.channel-plan`, beside the recipes the
   generator already writes there (`derived_dir`: the host's `--ddc`, else the repository's
   `ddc/` found from the scene's directory, else `ddc/` beside the scene). It holds the links
-  with every per-point array, the heads and the counts, as integers and IEEE bits, little-endian,
-  closed by a hash of the whole (`plan_bytes`, `read_plan`); the lattice's own arrays (heights,
+  with every per-point array, the heads, the counts and the hollows (W122: every hollow that is
+  not simply breached, with its kind, its level and its balance), as integers and IEEE bits,
+  little-endian, closed by a hash of the whole (`plan_bytes`, `read_plan`); the lattice's own arrays (heights,
   fill, receivers, areas) are not in it, since no reader of a plan asks them (the one that did,
   the confluences' order in the water's description, now reads each link's `area_end`). A file
   that is short, of another `k_channels_version`, changed, or whose arrays disagree is refused
@@ -139,9 +144,10 @@ measurements, not the plan), and on the larger ground 6.2 s before, 5.9 s making
 4.7 s reading it.
 
 **Still pasted.** The second half of item 9, "the cut applied by the generator, not pasted from a
-subcommand", is not built: the terrain's `cuts`, the scene's `water_channels`, the entry's `plan`
-and, where the layer names its bed's material, the masks' `mask_regions` are four things the
-author pastes from one output. Closing it means the ground is made in
+subcommand", is not built: the terrain's `cuts`, the scene's `water_channels`, the entry's `plan`,
+where the layer names its bed's material the masks' `mask_regions`, and since W122 the plan's
+standing bodies for the scene's `water` ([Hollows](#hollows)) are five things the author pastes
+from one output. Closing it means the ground is made in
 two steps (the ground before the cuts, the plan, the cut ground) and the scene reader takes the
 water from the plan, which are the tile provider's and the scene reader's to change, with a
 registration point a placement generator contributes a ground edit through.
@@ -502,31 +508,421 @@ and for the uncut ground's set, so the subcommand and the host are given one `--
 
 ## The water's description
 
-`engine-content channels <scene.json> <out.json> [--min-area-m2 <m2>] [--stage <f>] [--entry <i>] [--cut]`
-reads the scene's terrain through the ground provider it names (the registry the renderer uses) and
-runs every `channels` placement (or the one at `--entry`) through `plan_channels`, and writes
-`{"water_channels": [...]}`: one block per link whose last point drains at least `--min-area-m2`
-(50,000 m² by default), each
+(2026-11-13, roadmap W120; the owner's proposal after walking batch 63; the grounding is
+[stream-profile](../experiments/stream-profile.md).) Until W120 a channel's water was a description
+laid on a bed that was cut separately: a level at a share of the cut's depth, clamped never to rise
+downstream; a described width; a described parabola for its depth; wet where a catchment passed an
+area. The owner walked it as steps, overhangs, water going uphill and beds with no water, and five
+rows mended one symptom each of the description not being the ground. **The description is now
+solved**: `engine.scene.WaterChannel` (version 6; 7 adds `derived_from`, "The cook") carries, at every station, the steady
+one-dimensional flow of the station's discharge through the ground's own section there.
 
-```json
-{"name": "<layer> link <k>", "points": [[x, y, z], ...], "width_m": [...], "depth_m": [...],
- "slope": [...], "seed": <u64>}
-```
+| Field, one entry a station | What it is |
+|---|---|
+| `points[i]` | the line, x and z to the millimetre; **y is the solved level**, and there is no second level |
+| `width_m` | the cut's bankfull width (the exclusion's bank reach reads it; the draw does not) |
+| `depth_m` | the solved greatest depth: the level less the lowest ground connected to the line under it. No parabola: the bed is the ground |
+| `slope` | the friction slope. No reader derives a speed from it |
+| `discharge_m3s` | what the sources upstream send through the station |
+| `speed_mps` | the section's mean speed, Q / A |
+| `froude` | the speed over sqrt(g A / T), T the surface's width, g the falls' 9.81 |
+| `wet_left_m`, `wet_right_m` | metres from the line to the wet edge, left the side of (-dz, dx) (W93's). Only ground connected to the line under the level counts |
+| `flags` | what the station is, below |
 
-— `engine.scene.WaterChannel` version 1, the shape agreed with the flowing-water row (S96), which
-declares the type in `scene.schema`: `points` the line downstream, every resampled point (`step_m`),
-x and z to the millimetre and **y the water's surface**, which is the bed (the ground's running minimum
-down the line) plus `--stage` (0.5) of the bankfull depth, never rising downstream; `depth_m` the bed
-below that surface; `width_m` the bankfull width; `slope` the bed's fall per metre there. It prints
-one JSON line: entries, heads, links, metres of channel, the region's km² and km per km², blocks
-written. `water_channels_json` is the function, and the subcommand's end-to-end test holds its output
-to the network planned in-process over the same provider.
+**The flags** (`domain/scene_gen/water_channel.h` holds the constants, so the writer, the draw and
+the scene's reader share one copy):
+
+| Bit | Value | Meaning |
+|---|---|---|
+| 0 | 1 | a **control**: a station the flow is solved from |
+| 1, 2 | 0, 2, 4, 6 | the control's kind: 0 a **crest** (critical depth over a step's or a fall's lip), 1 a **mouth** (the body's level), 2 a **confluence** (the main stem's level), 3 a **spill** (a pool's outlet) |
+| 3 | 8 | a hydraulic **jump's head**: the supercritical level |
+| 4 | 16 | the **jump's foot**: the sequent level, a jump's length downstream |
+| 5 | 32 | a **fall's lip** |
+| 6 | 64 | the **fall's foot**: where the channel's surface resumes |
+| 7 | 128 | **over bank**: the solved level stands over a bank's top here |
+
+**A discontinuity is a pair of neighbouring stations**: a head is always followed by its foot and a
+lip by its foot. Between a fall's lip and its foot there is no channel surface (the falls' cook,
+S104, owns the water in the air). A tributary's last station carries the main stem's level there
+to the millimetre, and a mouth's the body's.
+
+### Stations
+
+The profile is solved on nodes one ground lattice apart, and the description keeps the fewest of
+them that hold three **pins** (`domain/channels/stations.h`, `select_stations`), so a reader joins
+neighbours by straight lines and needs no curve:
+
+- between two neighbours that are not a jump's or a fall's pair, the straight line stands within
+  **1 cm** of the profile's level (`k_station_level_m`) and within **5 cm** of each wet reach
+  (`k_station_wet_m`) at every node between them;
+- two neighbours are never farther apart than **8 m** along the line (`k_station_max_m`);
+- and never closer than the ground's lattice, since a station is a node and nodes are a lattice
+  apart (a jump's two stations stand at the jump's own places, which the nodes about them keep a
+  lattice clear of).
+
+The selection is greedy from upstream and holds each chord to the pins less a millimetre, which is
+what rounding a level and a reach to the description's millimetre may move. On the fixture below
+the three channels keep 6, 12 and 11 stations of 161, 182 and 321 nodes (150, 240 and 138 a
+kilometre): a uniform reach and a backwater are a station every 8 m, and the drawdown to a crest
+takes them as close as its curve needs (three in the last metre).
+
+### The fixture
+
+`engine-content flow fixture <dir>` writes a scene — `ground.json` with its grid, and `scene.json`
+whose terrain is that heightfield through the `tiles` provider — holding three solved channels
+and two bodies. **Every number in it is from the closed forms of steady flow in a trapezoid**,
+evaluated directly and integrated by the direct step method (`domain/channels/flow_fixture.h`), and
+none is from the solver: it is what the solver's cases are held to, and what a draw can be built
+against before the solver is whole. It is written by a command and not committed because its
+ground is a binary grid.
+
+**The ground** is 96 m by 60 m at a quarter of a metre: three trenches along +x at z = -20, 0 and
+20 under a flat cap at y = 13, each a trapezoid with a flat bed b = 2 m and banks rising a metre a
+metre (z = 1). The ground is `min(13, bed(x) + max(0, |z - z_line| - half(x)))`, a sum of a
+function of x and a function of z that are each linear between lattice points, so the lattice's
+bilinear surface **is** the trapezoid and a section sampled from the ground is exact.
+
+**The flow** is one discharge in all three, with Manning's n = 0.04 held everywhere (the fixture
+tests the profile, not a resistance law). With A = (b + z y) y, P = b + 2 y sqrt(1 + z^2),
+T = b + 2 z y:
+
+- **Normal depth is chosen**, y_n = 0.5 m on a slope of 0.01, and the discharge follows from
+  Manning's equation: A = 1.25 m2, P = 3.4142 m, R = 0.36612 m, Q = (1 / 0.04) A R^(2/3) 0.01^(1/2)
+  = **1.59930 m3/s**. The speed is 1.279 m/s and the Froude number 0.633: a mild reach.
+- **Critical depth** is the root of Q^2 T = g A^3: **y_c = 0.37674 m** (A = 0.89541 m2, T = 2.7535 m;
+  both sides 7.0427).
+
+**"uniform"** (z = -20, x 8 to 48, bed 10 - 0.01 (x - 8)): normal depth at every station, the level
+10.5 falling to 10.1, six stations 8 m apart, no flags. The friction slope equals the bed's.
+
+**"step"** (z = 0, bed 12 - 0.01 (x - 8) to a crest at x = 38, a face dropping 2 m over one lattice
+cell, a level apron at 9.7 to a mouth at x = 58 in a pool):
+
+- *The approach* is an M2 curve: critical depth at the crest (station 6: level 12.077, Froude 1.000,
+  flags 33 = control, crest, fall's lip), and upstream of it the direct step
+  dx = dE / (S_0 - S_f) summed from y_c toward y_n in 40,000 equal steps of depth. At the head,
+  30 m upstream, the depth is 0.49860 m: 1.4 mm under normal.
+- *The fall's foot* is Rand's (1955) drop, in the reading [stream-profile](../experiments/stream-profile.md)
+  gives it for a section that is not a rectangle. The hydraulic depth at critical is
+  D_c = A_c / T_c = 0.32519 m and the drop h = 2 m, so the area at the foot is
+  0.54 (D_c / h)^0.275 A_c = 0.29341 m2, a depth of **0.13728 m** at 5.451 m/s, Froude 4.85; the
+  foot stands 4.30 h (D_c / h)^0.81 = 1.975 m from the lip, taken up to the lattice: x = 40
+  (station 7, flags 64).
+- *Below the foot* the water shoots along a level apron and thickens (an H3 curve by the same
+  direct step with S_0 = 0): its level **rises** downstream, 9.837 to 9.880 over 1.25 m, which is
+  what shooting water does when friction slows it.
+- *The jump* stands where the shooting depth's sequent depth — the depth on the tranquil side with
+  the same specific force M = Q^2 / (g A) + b y^2 / 2 + z y^3 / 3 — is the depth the pool's
+  backwater holds a jump's length downstream, the length 6 (y_2 - y_1). The head is at x = 41.246
+  with 0.18004 m (Froude 3.19; station 8, flags 8); its sequent depth is **0.67247 m**; the jump is
+  2.955 m long and its foot is at x = 44.201 (station 9, flags 16), level 10.372.
+- *The pool's backwater* is an H2 curve from the mouth back: 0.6 m deep at the mouth (station 11,
+  level 10.300, the pool's level to the millimetre; flags 3 = control, mouth).
+
+**"mouth"** (z = 20, x 8 to 88, bed 10 - 0.01 (x - 8), into a lake at 10.4): an M1 curve from 1.2 m
+at the mouth (station 10, flags 3) back toward normal depth, 0.54378 m at the head 80 m upstream.
+The level falls 14.4 cm in 80 m where the bed falls 80 cm.
+
+The fixture's own case (`flow_fixture_tests.cpp`) checks each closed form against a second
+evaluation — Manning's equation at the normal depth, Q^2 T = g A^3 at the crest, the specific
+force either side of the jump, the lattice against the ground's function — and the solver's cases
+solve the fixture's ground and are held to these stations.
+
+### What refuses a description
+
+`scene_gen::water_channel_solved` is the one check, made by `water::read_channel` before a channel
+is drawn: fewer than two points; a per-station array that is not the points' long; a
+width, depth or discharge that is not positive; a negative slope, speed, Froude number or wet
+reach; a flag bit the build does not know; a head or a lip without its foot. **A block with none
+of the solved arrays is refused by name, "cooked before W120: cook again"**: nothing is read in the
+old meaning (`fit`, version 3's record of a ribbon narrowed onto the ground, is gone with the
+ribbon). A block that names only a discharge is an author's line waiting for its solve, and says
+so.
+
+### Who writes it, and what a scene without one costs
+
+**The solver takes a line, a discharge and a ground.** The channels planner is one writer of lines;
+a `WaterChannel` an author writes by hand on an imported terrain — its `points` and a
+`discharge_m3s` of one entry or one a point — is solved by the same command, and gets everything a
+planned link gets. A scene with no `water_channels` reads none, solves none and pays nothing; the
+check is a few comparisons a station at load. `engine-content flow solve` is the writer
+("The cook", below).
 
 **A recipe whose banks are not the defaults** writes `bank_width_widths` and `bank_width_m` on every
 block (`WaterChannel` version 4; T78, 2026-11-09): they are the reach the placements leave bare beyond
-the water's edge ([scene_gen](scene_gen.md#exclusion)), which `scene_gen` reads from the description
-because it may not name this capability. At the defaults neither is written, so every description
-written before is still the bytes it was, and a scene that holds one reads at the defaults.
+the cut's edge ([scene_gen](scene_gen.md#exclusion)), which `scene_gen` reads from the description
+because it may not name this capability.
+
+### Discharge
+
+(W120 stage A; `discharge.h`, `network_flow`.) **The water comes from somewhere.** The discharge at
+a point of a link is
+
+    Q = stage x (runoff x the point's contributing area + the springs and outlets upstream)
+        + the melts upstream x each one's season
+
+and it is conserved at every confluence by construction, since the contributing areas are. The
+numbers are the channels entry's `flow` block (`engine.channels.ChannelFlow`):
+
+- **`runoff_l_s_km2`**, the specific runoff, 30 by default: a humid temperate mountain's (the Swiss
+  atlas's national mean is 32 and its basins run 8 to 73; a semi-arid basin is under 3).
+- **`stage`**, the stage of the year: today's flow over the year's mean, 1 by default. No ratio of
+  the mean annual to the bankfull discharge was found in a source, so none is assumed: the cook
+  solves today's water through the bed as it is cut and reports every station whose level stands
+  over a bank, which is the bed's bankfull flow measured rather than supposed.
+- **`sources`**, the point sources a scene names (`ChannelSource`): a `Spring` and an `Outlet` (a
+  lake's spill) with a flow that scales with the stage, a `Melt` with a flow at its peak and its
+  own `season`, since melt is highest when rain-fed flow is lowest. A source joins the channel
+  point nearest it (within `snap_m`, 25 m) and everything downstream, through every confluence,
+  to a mouth; one that stands on no channel is refused by name with the distance. **A lake of
+  the plan passes it on** (W122): a source's flow that reaches a mouth into one of the plan's
+  own lakes at its spill goes on into that lake's outlet (of the lines that leave the lake, the
+  one that begins nearest its spill) and everything below, through the next lake too, and the
+  lake's loss is taken off below it as it is from the runoff; so does a source that joins an
+  outlet, whose line holds no cells, into the link below it. Until then a lake fed by springs
+  stood at its spill (by its balance, which counts them wherever a loss is named, and with no
+  loss named as every lake does) over an outlet that ran with its catchment's runoff alone (the streams' judging scene: 0.66 m3/s in, 14 l/s out). **A scene's
+  own body passes nothing on**, and neither does a body under its spill, which has no outlet:
+  what leaves an authored lake is the author's to name as an `Outlet` at its lip.
+
+**A link is wet from where its water is a sheet.** The threshold is the falls' own
+(`k_fall_min_critical_m`): a discharge whose critical depth over a metre of the bed's width is a
+centimetre, sqrt(g d^3) = 3.13 l/s a metre (`wet_depth_m`). Under it the water runs between the
+bed's stones and not over them. At the default runoff a bed a metre wide is wet below about
+0.10 km2 of catchment, the low end of where a survey of Colorado mountain streams found flow to
+begin (0.1 to 0.5 km2, read as a snippet). `--min-area-m2`, an area with no bed in it, is gone.
+A link that never reaches a sheet is **dry and says so**: the cook lists it with its discharge and
+the film's depth, as an ephemeral gully. Its cut stays as the plan made it; dressing it as a gully
+— no fresh gravel, no clasts, the sward down its banks — changes the bed's mask regions and the
+tile pieces and is not done in this row.
+
+`flow` is **not part of what a plan is keyed by** (`plan_layer_hash` leaves the field out of the
+hashed text), so naming a spring or changing the stage re-plans and re-cuts nothing.
+
+### The profile
+
+(W120 stage B; `profile.h`, `solve_profile`.) Steady, gradually varied flow in one dimension
+through **the sections the ground has**, by the textbook's method
+([stream-profile](../experiments/stream-profile.md)):
+
+- **Nodes** a ground lattice apart down the line. At each, the ground is sampled across the line a
+  lattice apart. The **thalweg** is the lowest sample within the bed's half width of the line (the
+  nearest hollow to the line where the line names no width); each **bank's crest** is the highest
+  ground reached walking out from it before the ground falls away by 2 cm and a quarter of what
+  it has climbed (so a ledge on a high bank's face is not its top). A level wets only ground
+  connected to the thalweg under it, and no further than the crests: a hollow beyond a bank is
+  not wet, and water is never written outside its bed. Area, wetted perimeter, top width and first
+  moment are sums over the wet samples' trapezoids; there is no described shape.
+- **Critical depth** where Q^2 T = g A^3. **Resistance** is Jarrett's (1984) n = 0.32 S^0.38
+  R^-0.16 by the bed's own slope over 10 m either way and the section's hydraulic radius, each
+  held to his data's range; one Manning's n instead with `--resistance manning`.
+- **The standard step method both ways**: tranquil water upstream from every control, shooting
+  water downstream from every node the tranquil profile passes critical depth at and from every
+  fall's foot.
+- **The regime by specific force.** Shooting water holds while its sequent level — the tranquil
+  level with the same specific force — stands over what the tranquil profile holds a jump's
+  length downstream; where it no longer does, a **jump**: its head between the two nodes the test
+  changed at, its foot six rises on at the sequent level (HEC-RAS's comparison of specific force
+  at one section is this rule with a jump of no length). Where shooting water meets a node it has
+  not the head to pass even at critical depth (a **choke**), the jump stands at the last shooting
+  node that still has the head the tranquil profile holds below it, so the total head never
+  rises; a fall's foot with less head than that is drowned.
+- **A fall** where the bed drops at a metre a metre or more by at least three critical depths, the
+  critical depth at least a centimetre (S104's test, at the solved critical depth and not a share
+  of a cut): critical at the lip, Rand's (1955) drop at the foot, no surface between. A foot the
+  tailwater's sequent test drowns stands in tranquil water: a plunge pool.
+- **Controls**: a crest (critical), a mouth (the body's level), a confluence (the main stem's
+  level; links are solved downstream first), a spill (a link that begins at a body's outlet).
+  What a line ends in is what its last station carries, to the millimetre, even where the water
+  arrives over that level; only a tributary hanging over its main stem — the stem's level under
+  the tributary's bed — cannot carry it, and is counted.
+- **Tranquil water never rises downstream.** Where the energy equation alone would have the level
+  climb as fast water slows into a pool, the velocity head it would recover is taken as lost in
+  the expansion and the level is held. This is an expansion coefficient of at most 1 where
+  HEC-RAS suggests 0.3 to 0.8; it is a choice for the picture, and in a channel that does not
+  change section it changes nothing (the fixture's backwater is the integral to 0.4 mm).
+- **Over a bank**: the level is solved with a wall at each crest, and where it stands over the
+  lower crest the station is flagged, counted and reported, and written **at the crest** with
+  the solved flow's speed. Once tranquil water has spilled it is written no higher downstream
+  than where it spilled, until its solved level comes down under that (those stations are flagged
+  too), so the written level does not climb from one crest to the next. **A line that climbs** —
+  the planner routes over a lattice with its pits filled, and where the ground itself is not
+  filled a line runs down into a hollow and up to its spill point — is over its bank all the way
+  up: the water that would pass the sill is a pool standing at the sill's level, far outside any
+  bed. The cook writes a film at the bed there, flags every station of it, and reports the worst;
+  it does not draw the lake the ground is missing. A reader that draws flagged stations draws
+  that film going uphill. **The cut does not grow**: the solve runs on the composed ground after
+  the cut is in it, and the bankfull section is the plan's contract with the exclusion, the
+  sediment and the flood bed. The count is the author's lever: a lower `stage`, or a wider law.
+
+**Against the closed forms** (`profile_tests.cpp`, the fixture's ground through
+`flow_fixture_ground`, n = 0.04): the uniform reach stands at normal depth to the last bit; the
+M1 backwater is within 0.43 mm of the direct step integral at every station, which is the
+millimetre the level is written to; the crest's depth is 0.377 m against 0.37674 m; the M2
+drawdown is within 2 mm of the fixture's stations (the standard step's quarter-metre steps
+against a curve that is vertical at the crest); the fall's foot is Rand's to the millimetre; the
+jump's head stands at x = 41.241 m against 41.246 m and its foot's depth is the head's sequent
+depth by the closed form. The step's description is pinned by hash, the same bytes from MSVC,
+Clang and GCC.
+
+**What rises.** The total head never rises downstream. The level may, and each rise is counted by
+kind: across a flagged jump; along a shooting run (water that shoots and is slowed thickens, so
+on a flat bed its level climbs: the fixture's 4.3 cm below its fall); beside a station written at
+its bank; and any other, of which there are none in any case here.
+
+**The head never rises, and what holds it** (the second pass of W120, after the forest's first
+solve counted 27 rises of the head, the worst 12.7 cm). The count (`head_rises`) is taken from the
+description's own numbers — a station's level plus its speed's head — between every station and
+the next, **a fall's lip and its foot and a line's last station included**; only a pair with a
+station over its bank is left out, since the level written there is the bank's. Five things each
+made the head rise, and each has a case that fails without its mend (`profile_tests.cpp`):
+
+- **A jump's head stands between two nodes**, and where the bed falls from one to the other the
+  level between them is no level of either node's section: read in the lower node's it is deep,
+  slow water with less head than the jump's foot. The head's station carries the two nodes'
+  flows blended (`Out::from`): its area, surface width, speed and Froude number are between the
+  two shooting flows', so a head is shooting water by construction.
+- **A jump loses head, or it stands elsewhere.** A jump whose foot as it is written would carry
+  more head than its head has — the sections change between the two — stands instead at the last
+  shooting node that still has the head the tranquil profile holds below it, as at a choke.
+  And **a jump's foot is tranquil water**: a stretch that ends at critical depth (a fall's lip, a
+  hanging end) has no tranquil water at that node, so the tranquil level a jump is tested against
+  is read no further than the node before it, the foot stands no further, and shooting water that
+  reaches such an end shoots over it. (A jump was being written with a critical lip as its foot.)
+- **A fall whose tailwater stands over its lip's critical level is no fall.** The stretches
+  between falls are taken from the line's end upstream; where the tranquil level at a fall's foot
+  is the lip's critical level or more, the pool below reaches up over the step, the two
+  stretches are one, and the profile is carried up through the step as through any other node.
+  (On the forest a tributary's last fall stood 1.8 m under the stem it joined, and its foot was
+  written 1.8 m over its lip.)
+- **A fall's foot has no more head than its lip.** Rand's area is for the lip's discharge; where
+  the discharge grows across the fall the area grows with it, so the ratio of the two speeds is
+  his; and the foot's level is never under the shooting level whose head is the lip's.
+- **A section's area is not continuous in the level**: a level that passes a hump wets the
+  hollow behind it at once. A root looked for by bisection (the level of an area, of a head, of a
+  specific force) may then be a step and not a root, and the answer taken is the step's **upper
+  side**, where the area is the larger and the speed the lower: the side that has lost head. The
+  lower side gave a fall's foot on the forest 1.04 m more head than its lip.
+
+**What a station's speed is.** `speed_mps`, `froude` and `slope` are the flow's at the solved
+level, and the level and the depth are that level written to the millimetre: the discharge
+through the written depth is Q to half a millimetre of the surface's width (a tenth of a thin
+sheet's area, which is why the speed is not read back from the rounded level). Three stations
+carry a flow that is not the written level's at all, and say so by what they are: one over its
+bank (the solved flow with a wall at each crest); a jump's head (the blend above); and **a last
+station brought down to the level its line meets** — the water arrives critical or shooting over
+the stem's or the body's level and drops to it, and the station carries the arriving flow, not
+the discharge through the film the met level leaves in the line's own section (which was 27 m/s
+and a Froude number of 109 on the forest, and 40 m/s and 90 in the case that now holds it).
+
+**How large a Froude number is.** A fall's foot is Rand's sheet, thin and fast, and that is
+where every large number stands: on the forest all 290 stations at 5 or more are a fall's foot,
+the largest 14.5 below the 9.5 m fall, and away from a foot the largest is 4.3 and the fastest
+water 2.4 m/s (4.7 m/s at a foot). The friction slope at a foot is that sheet's under a law fit
+to streams 15 cm deep and more — tens to hundreds — and says only that the sheet is stopped
+within a lattice, which is what the solve then does (a jump at the foot); away from a foot it is
+under 2.
+
+**What it is not.** One dimension: a braided bed is one thread, a confluence is a level and not a
+mixing, a bend has no superelevation, and the flow round a boulder is S103's. A solve on a band
+of the bed's own lattice is the forest's needs' third size and a later row.
+
+**Lines that climb, sized on the forest** (2026-11-13; the ground sampled at the planner's own
+4 m lattice and filled by its rule, each wet line's bed laid against it). The planner
+(`detail::plan_from_lattice`) fills every pit by priority flood into `filled_um`, routes D8 over
+the filled heights, and nothing after the routing reads the fill: `build_line` gives a point the
+unfilled ground, and `cut_bed` holds the bed at its running minimum only while the ground stands
+within two thalwegs of it. So a line crosses a basin on its floor and climbs its far wall. The
+forest's ground holds **eight closed basins 28 to 134 m deep** (2.9 to 43 ha, 47 million m3) with
+no water body in any, and a lowland one whose lake stands 5.5 m under its spill; 110 wet lines
+cross the eight (46 over one), 16.1 km of the 36.9 km of wet line lies in a hollow of its own
+line, and 91 % of the over-bank stations are in one. By the hollow's depth: under 0.25 m, 778
+hollows and 3.07 km; to 1 m, 278 and 4.59 km; to 5 m, 225 and 3.89 km; to 20 m, 22 and 1.77 km;
+over, 13 and 2.77 km. A breach of the lip mends the 1,030 hollows (6.74 km) with no basin under
+them or one under a metre deep; only a body filled to its spill mends the 207 (6.71 km, 57 % of
+the over-bank stations) over a basin 5 m deep or more. The row that mends it — a pit past a
+breach limit becomes a standing body of the plan at its spill, links split at its shore as at a
+scene's body, a shallower pit breached by the cut — is not built.
+
+### The cook
+
+`engine-content flow solve <scene.json> <out.json> [--ddc <dir>] [--entry <i>] [--lattice <m>]
+[--resistance jarrett|manning] [--manning-n <n>] [--reach <m>] [--jobs <n>] [--scene-out <scene>]`
+opens **the composed ground the scene draws** (`renderer::SceneGround`, handed to this module as a
+`scene_gen::Ground`: a function pointer and a context) and solves on it every wet link of every
+`channels` entry, and every `water_channels` block that is not one of those links' — an author's
+line. So the order of a cook is: `engine-content channels --cut` for the plan and the cuts; the
+cuts pasted into the scene's `tiles.edits` and the plan's key into the entry; then `flow solve`,
+whose `water_channels` are pasted (or written whole with `--scene-out`). The scene's own
+`water_channels` are not read for the ground (`SceneFileOptions::without_water_channels`).
+
+**What a block declares and holds says what the cook does with it, never what it is called**
+(`WaterChannel.derived_from`, version 7; the first cut told a planner's block by its name's
+prefix, which is a convention of one generator and no property of a block):
+
+| The block | The cook |
+|---|---|
+| `derived_from` names an entry this cook solved (`channels <layer name>`) | that entry's last cook: replaced by the links solved now |
+| `derived_from` names anything else | another writer's: kept as it is |
+| no `derived_from`, a `discharge_m3s` | an author's line: solved (again, from its stations, if it was solved before) |
+| no `derived_from`, no discharge, a depth and a slope a point | laid before W120, and nothing to solve it from: dropped and counted (`blocks_laid_dropped`) |
+| no `derived_from` and none of those | an author's line that names no discharge: refused |
+
+Any writer of channels may declare itself in `derived_from`; no reader draws by it. So a scene
+cooked before W120 is cooked again by the same command, and a scene cooked twice holds each
+link once. **A block of versions 3 to 5 reads** — in the cook and in every host — through
+`WaterChannel`'s registered migration (`scene_gen::migrate_water_channel_5`, which drops `fit`,
+as `schemas/README.md` asks of a removed field): a scene file stores no version, so the stored
+version is told from the block (one that names `fit`), and the block is then refused by the
+check for what it is, "cooked before W120: cook again", and not for a field's name. The lattice is the tile
+set's heightfield's spacing unless `--lattice` names one. It writes the blocks and a `dry` list
+(each dry link, its reason, its discharge and the film's depth) and prints one line: links wet and
+dry, the scene's own blocks replaced, kept and dropped as laid, kilometres, stations a
+kilometre, crests, falls, jumps, drowned feet, hanging tails, the largest Froude number, the
+stations over a bank (count, worst, where), the rises by kind with the worst of each and where,
+and the solve's seconds a kilometre. `--jobs` is 1 by default: until the tile set's point read
+gives up its lock (T128), readers on a pool are slower than one thread.
+
+**An author's line** is a `water_channels` block whose name is not a planner's link: its `points`
+and a `discharge_m3s`. It is solved with Jarrett's law unless `--resistance manning` holds its own
+`manning_n`; a line that runs into a body — a lattice past its last point stands inside a body's
+circle or polygon — ends at the body's level as a mouth, and any other ends at normal depth. The
+block keeps its optics, its seed and its banks, and takes the solve's stations. The end-to-end
+case (`flow_tests.cpp`) writes the fixture, solves its three channels again this way through the
+tiles provider, and holds them to the fixture's stations: the same flags in the same order, the
+levels within 2 mm.
+
+**Measured** (2026-11-13, `msvc-release`, one thread, beside other agents' builds, so the seconds
+are upper bounds): `terrain-synth` heightfields at 0.5 m with a `channels` entry, cut, then solved.
+
+| Scene | Stage | Links wet of all | Solved km | Stations a km | Crests | Falls (highest) | Jumps | Feet drowned | Over bank: stations, lines, worst | Rises: jump, shooting, at a bank, other | Head rises | s a km |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| mountain, 2 km square | 1 | 13 of 16 | 9.44 | 1,491 | 34 | 0 | 0 | 0 | 18, 4, 0.21 m | 0, 0, 0, 0 | 0 | 0.15 |
+| the same | 20 | 16 of 16 | 12.06 | 1,818 | 0 | 0 | 0 | 0 | 5,088, 11, 2.22 m | 0, 0, 677, 0 | 0 | 0.16 |
+| steps, 1 km square | 1 | 6 of 23 | 1.60 | 1,455 | 6 | 6 (1.73 m) | 0 | 4 | 464, 1, 0.08 m | 0, 0, 0, 0 | 0 | 0.14 |
+| the same | 20 | 23 of 23 | 7.74 | 1,909 | 30 | 36 (1.96 m) | 4 | 28 | 13,723, 21, 0.49 m | 4 (0.12 m), 0, 256, 0 | 0 | 0.13 |
+
+(Taken again at the row's last solver commit, 2026-11-14 00:35, the same way; the first table was
+from before the bank's crest was read past a ledge, which is what took the mountain's over-bank
+stations in flood from 12,183 to 5,088. The largest Froude numbers are 1.0, 3.1, 8.7 and 8.6,
+the last two at a fall's foot.)
+
+At the year's mean the three dry links of the mountain end with 2.8, 3.5 and 4.0 l/s over beds
+wider than a metre, films of 8 to 10 mm; the stepped scene's sixteen are smaller still. A stage
+of 20 is a flood put through beds cut for far less, to see what the cook says: more than half the
+stations stand over a bank on the stepped scene, and the level written there steps up where the
+bed itself stands over the last spill (the 677 and 256 rises "at a bank"). **No tranquil rise
+that is not at a bank remains in any scene, none at all at the mean, and the head rises
+nowhere** (the stepped scene in flood had one rise of 3.7 cm before "The head never rises, and
+what holds it"). The four rises across a jump there, to 12 cm, are steps a walker sees, drawn as
+pairs.
+
+**Stations a kilometre are about 1,500 on these grounds**, against 150 to 240 on the fixture and
+against the 1,780 points a kilometre the laid description wrote here. The level's pin is not
+what holds them: the wet reach's is. A bed two or three lattice cells wide is jagged at the
+lattice, so the water's edge moves by more than 5 cm from one node to the next and almost every
+node is a station. The lever, if the draw wants fewer, is `k_station_wet_m`.
 
 ## The cut
 
@@ -543,11 +939,12 @@ the rills' too, each point with
 - **the bed's depth below the top**: the section's thalweg, a trapezoid with banks at the layer's
   `bank_slope` (rise over run, 1 by default) whose area is the width times the hydraulic geometry's
   mean depth (`D (W − D / m) = W d̄`; a V of twice the mean where the banks are too gentle for that
-  area), the bed held down the line where the ground at it rises a little (the cut runs through a
-  small rise deeper than a thalweg) but **never more than two thalwegs under the ground at the line**:
-  where the line climbs out of a filled depression or over a lake's outlet the bed climbs with it (on
-  v35 the running minimum alone would have cut 103 m through one, and 8.6 % of the network's points
-  more than a metre);
+  area), **the bed held at its running minimum down the line**: a bed never rises downstream, in a
+  link or across a junction, so where the ground at the line rises the cut runs through the rise
+  that much deeper. (Until W122 the hold reached two thalwegs under the ground and no further,
+  because on v35 the running minimum alone would have cut 103 m through a filled depression: where
+  a line climbed out of one the bed climbed with it, which is the water going uphill of the
+  owner's walk. A depression that deep is no longer crossed by a line at all: [Hollows](#hollows).)
 - and the bank slope.
 
 The author pastes them into the `tiles` block (`terrain.tiles.cuts`), and **the tile set is built
@@ -979,6 +1376,38 @@ every such point (58 of 1,969 on the valley, none excepted), that the section's 
 that bank by no more than the bound, and that the move leaves fewer such points than no move
 (58 against 370 with `ChannelLayer::bank_move` off, `ChannelLayer` version 11).
 
+**The seat, reshaped** (2026-11-14, roadmap W122; S104's finding that the seat eats a step, and
+the stream solver's that 147 hollows a metre to 7 m deep and under 2 m long stood at the feet of
+steps). The seat is kept: a section whose downhill bank stands under its bed holds no water, and
+the solver, which finds the level in the real section, can only flag such a station as over its
+bank. Three things about it changed, and one about the bed it lowers:
+
+- **No bank is read across a step.** At a knickpoint the ground falls along the line, and a line
+  that meets the step at an angle has one bank on the step's top and the other at its foot; the
+  seat read there was the step's height. A knickpoint's points, and those within the read's own
+  reach and the dilation's two points of one, take no seat: the water falls there, and what bounds
+  it is the fall, not a bank.
+- **A bank is read only where it is one**: ground that stands further under the line than it
+  lies from it across (past a 45-degree fall) is a face's foot, or the ground below a cliff's
+  edge, and is left out of the read. A stream along a cliff's edge is seated by the bench it
+  runs on, not by the cliff (the forest's link 613 was seated 126 m).
+- **A seat never reaches under the lip below it.** The bed does not rise, so what a seat lowers
+  it by is carried down the line until the ground has fallen that far. Above each knickpoint's
+  first point a seat is at most the ground's own fall from its point to that one, so a seated
+  stretch a few metres above a cliff does not notch the cliff's lip.
+- **The bed does not climb back.** Where a seat ended, the bed used to return to a thalweg under
+  the ground within a point or two: a pit at the seat's foot. It now holds its level until the
+  ground comes down to it ([The cut](#the-cut)).
+
+On the cliffs' scene of S104's count (a valley at 3 % with cliffs of 3, 7, 10 and 14 m, eight
+plans): **the seat within three metres of every cliff is 0** (it was 12.9 m at the 14 m cliff of
+seed 2), **every cliff is one run, a plunge, with no pit at its foot and nothing tiered** (they
+were two runs with a pit 12.7 m deep), held by `falls: no seat is read across a cliff, so each is
+one fall with no pit at its foot`. The older case, which asks each drop within 0.25 m of its
+cliff, keeps its `may_fail` for one run of the eight, and that is the count's: a point of the
+line stands half-way down the cliff's 25 cm ramp, the stretch into it falls at 44.5 degrees, and
+the fall is begun below it, half a metre short.
+
 ## Seen: the section, the flood bed and the proof of concept's items 6, 7 and 8
 
 (2026-11-10, W93; `msvc-release`, 1920×1080, `--raster hw --shadows rt --terrain-tiles
@@ -1113,7 +1542,7 @@ that steepens by degrees then had no lip, and the chute's limit cut the whole fa
 are read on every reach, since a scarp inside a cascade is a fall too. **The chute's limit**: away
 from a knickpoint, a stretch of the bed that would fall at 45° or more (a bump of the ground, the
 lattice's 0.5 m noise) lowers the bed above it to `chute_gradient_max` (0.9, 42°) per metre, never
-raising the one below and never more than half `fall_min_m` past the cut's two thalwegs, and the
+raising the one below and never more than half `fall_min_m` under the bed's own line, and the
 lowering runs on upstream while it leaves the next stretch that steep; a stretch still that steep is
 counted (`steep_left`).
 
@@ -1129,8 +1558,14 @@ shorter than `max(4 m, 2 w)` is dropped. Nothing of a link — cut, pieces, wate
 the body.
 
 The cut ends in a **fan**: over the last `fan_widths` (3) widths its bed grades from where it was to
-half a thalweg under the body's level, and its width grows by `fan_spread` (1, so to twice) at the
-shore. The water's surface grades over the fan to the body's level at the shore, and on a link that
+the body's level at the shore (W121; until then to half a thalweg under it), and its width grows by
+`fan_spread` (1, so to twice) at the shore. `mouth_level` is **the body's own level**
+(`Exclusion::water_level_mm` at the line's first point under water; until W121 the ground at the
+shoreline, which is the level only where the body's outline is the level's contour, and under it
+where an author's outline stands in water). **Nothing of the cut stands under that level outside
+the body** ([the base level](#the-base-level-and-a-fan-below-a-cliff-w121)), and **a fan is what
+lies below a cliff**: where the ground under the line falls at 45 degrees or more between two of
+the fan's points, the fan begins below it. The water's surface grades over the fan to the body's level at the shore, and on a link that
 ends in a body never stands below that level anywhere (the body backs it up). The grade starts at
 the first fan point itself and never runs under the bed: at least a centimetre of water stands over
 it (W91 continuation). W90 anchored the grade at the first fan point but already applied that
@@ -1162,6 +1597,109 @@ lake's level within its box ends a link as the lake would. The placement generat
 `Context::exclusion`, which the host builds only with placement exclusion on: without it the pieces
 run on (the subcommand always reads the scene's bodies).
 
+### The base level, and a fan below a cliff (W121)
+
+(2026-11-13, roadmap W121; the owner's walk of that day, mark 8: where the forest's link 778 meets
+the polygon pond `freshwater-swamp`, "a black triangular hole in the ground and a teal triangle";
+and W119, the fan over a sea cliff that S104's cook found.) **A stream cuts no deeper than the
+body it ends in.** The level of the sea, a lake or a pond a stream flows into is its *base level*,
+the lowest level to which it can erode its bed (Powell 1875 named it; Mackin 1948 made it the
+control the graded profile adjusts to); a channel's bed under that level near its mouth is under
+the body's water, a backwater. The engine draws a body's water over its outline and nowhere else
+(water.md, "The mesh": a ring of the outline, or a fill's flood), so W90's fan, which graded the
+shore to half a thalweg under the ground at the shoreline and spread to twice the width there,
+left whatever of its cut lay outside the outline under the waterline **and dry**: on an oblique
+shore the fan's spread and its round cap past the last point dig the bank beside the shoreline,
+and a dry link (one under the description's area, as link 778 is) has no ribbon over its bed
+either. So on a link that ends in a body:
+
+- `mouth_level` is the body's level (above), not the ground at the shoreline;
+- the fan grades the bed to that level at the shore, and **every point's bed is held at the level
+  wherever the cut's top stands over it**; where the ground at the line itself stands under it (an
+  outline that falls short of the contour leaves such ground dry), the section's top is the level,
+  so the cut lowers only ground over it and does not deepen what the outline left dry (that is the
+  outline's to answer);
+- the section's depth (`terrain_cuts_json`: a bend's pool, a riffle's swell) and the flood bed's
+  (`flood_depth_m`) take no point under the level either.
+
+**An outlet's start the same** (`ChannelLink::outlet_level`, the level of the body it leaves,
+plan format 4): wherever the ground at the line stands at or over that level its bed is held at
+it, and its section's depth and flood bed take nothing under it; where the ground falls under the
+level, as it does below a sill, the cut is the outlet's own. A lake spills over its outlet's sill
+at its level, so a bed under the level where the ground stands over it was a dry hollow under the
+waterline beside the body. What is left under the level outside the body is the round top's crease, `bank_round` times the
+depth over four (a few centimetres), where the cut's surface meets ground standing at the level.
+**A fan is what lies below a cliff** (W119): the fan's span is the last `fan_widths` widths less
+everything above the last stretch in them whose ground falls at 45 degrees or more
+(`k_fall_gradient`, where the water leaves its bed), so over a sea cliff the bed follows the cut's
+own line to the lip and the water falls, where W90 graded the cliff's top into a ramp. The fan's
+spread and the seat's exemption still read the fan's whole length (`fan_share`).
+
+**What an author's channel gets.** The rule is the planner's, applied where it writes a mouth: a
+`TerrainEdit` written by hand is the author's section, and the stamp (tileset.md, "Channels cut
+into the ground") knows nothing of bodies. A hand-made channel into a hand-made body meets the
+same hole if its bed runs under the body's level outside the outline. A scene with no body costs
+nothing of this: a link that ends at the region's edge or a junction is cut as it was.
+
+### Where a cut meets a bank: the owner's marks 6 and 7
+
+(2026-11-13, W121.) **What made the holes, by stage.** Each mark was reproduced on an engine scene
+of its shape (`scratch\b64\W121\scenes\`: S104's V valley with cliffs of 3 to 14 m; the notch into
+a pond turned 30 degrees whose outline falls 4 m short of the contour; the notch over a 20 m sea
+cliff) and read two ways: on the tile set's edited ground at 25 cm (`cut_meets_tests.cpp`, the cuts
+compiled by `tileset::TerrainEdits` and applied as the set's build applies them) and in a capture's
+ids and depth (`render.capture`'s channels). **No capture had a pixel with nothing drawn under
+drawn ground**: no stage leaves triangles out, every level and tile seam is whole. Each "hole" is
+the ground the cut left:
+
+- **Marks 6 and 7, a pocket in a hillside and a dark hole in a bank: the seat** (W116,
+  `seat_section`). Where a point's lower-bank reading lands past a drop — a cliff the line meets at
+  an angle, a cliff edge beside a contour stream, a trough across a bend — the top is lowered by the
+  whole drop and the lowering dilated over two points either way; the cut's face then rises a
+  thalweg at its slope and runs out to at most 20 rises over that top (tileset.md, "A face that runs
+  out"), so where the hillside stands higher the cut ends in a wall: a closed pit metres deep with
+  walls, which traced light draws black. Measured as the deepest closed hollow the cut made that
+  the ground did not have (a priority flood over the window, Barnes, Lehman & Mulla 2014): **12.7 m
+  at S104's 14 m cliff (seed 2), 0.85 m (seed 1), 7.7 and 7.8 m along a cliff's edge** (the seat
+  8.2 m), on 61ccce67 and with W121. The stamp is not the fault: with a seat no deeper than the
+  bank slope over the half width, the run-out meets any hillside under about 70 degrees. The seat
+  is W120's row (it absorbs W117's cap, `65eed9cd`); the case is marked `may_fail` until it lands.
+- **Mark 8 on the forest is an outlet, and its line climbs.** W120's solve of the forest (its
+  `flow.json`) has link 778 *leaving* the polygon pond `freshwater-swamp`: its first station is the
+  pond's spill, 2 m inside the outline, and its level climbs from 1.12 m to 2.09 m down the line,
+  422 of its 435 stations over a bank: a line the planner routed out of a hollow over the filled
+  lattice. The climb is the plan's to mend (a row of its own). What the cut did where it met the
+  pond is this row's: the outlet's bed, held down the line from the shore, ran under the pond's
+  level up the climb and out past the outline (an engine scene of the shape, a pond 0.5 m under its
+  rim: 2.25 m² of ground that stood over the level cut under it, the worst 0.22 m; none with W121).
+  Link 360 (mark 6) climbs too: 18 stations, a fall into a 0.41 m pool and the level rising 1.5 m
+  to its end, 16 of them over a bank. Link 482 (mark 7) falls 75 m and has 89 stations of 550 over
+  a bank; at the mark a pool 0.47 m deep behind a lip. **All three marks are lines in hollows**
+  (W120's `hollows.txt`: the planner routes over the pit-filled lattice, which the cut, only
+  lowering, does not reproduce; link 360 lies wholly in a hollow 1.89 m deep, link 482 in one
+  0.42 m deep at the mark, link 778 in one 1.77 m deep at its pond), so the pockets are first the
+  plan's (W122), and the seat's where a bank is read past a drop. "a line through a hollow leaves
+  no pocket on its own line" (`may_fail`; the notch's 3 m hollow with no body: 79 of 184 points of
+  the line in a pocket deeper than 0.3 m, the deepest 1.55 m) is the case that says when the plan
+  is mended.
+- **The black triangle beside a teal one at a mouth: the fan under the body's level** (above). The
+  teal triangle is the body's own surface (`systems/water`'s ring of the outline, at the level
+  over the whole outline), seen where the fan's cut took the ground under the level inside the
+  outline: water rightly drawn. The black one beside it is the same cut outside the outline, dry
+  under the waterline: 11.25 m² under the level, the worst 0.31 m, on the scene whose outline
+  falls short (none with W121); 0.56 m², the worst 7 cm, where the outline reaches past the contour.
+- **On the forest the black triangle stays** (2026-11-14, W121's binary, the staging re-cut with
+  W121's plan into a derived-data root of its own, the owner's mark 8 camera, `--raster hw
+  --shadows rt`, GI sky): the outlet's bed is held at the pond's 1.179 m outside the outline (the
+  ground sampled there is 1.179 m), yet a band about 4 m across below the outline's straight edge
+  draws near black (rgb 9 to 17), and the ids say it is the ground's own instance, not an empty
+  pixel and not the water. So what darkens it is not the cut: ground at the body's level (or under
+  it, where the author's outline falls short) beside a body that draws no surface over it. It is
+  handed to the water's row with the capture (W121's hand-back); the engine scenes above show the
+  cut's part of it and not this shading.
+- **W119**: over the sea cliff, 6 of 24 points in the last 12 m above it had their bed graded up to
+  16.9 m under the cut's own floor; none with W121.
+
 ## Confluences
 
 At each junction the incoming link of the largest contributing area is the **trunk**, which runs on
@@ -1173,6 +1711,487 @@ own widths to the trunk's bed, reaching it at that point and holding it to the j
 surface is lowered the same way to the trunk's surface there (keeping a centimetre of water), so the
 two ribbons meet at the trunk's bank line without overlapping. The tributary's cut runs on to the
 junction, where the tile set's union of sections opens it into the trunk's.
+
+## Hollows
+
+(2026-11-14, roadmap W122; the owner's walk of the forest on 2026-11-13: "we have water going up
+hill, we have stream beds with no water"; the grounding is
+[the hollows page](../experiments/hollows.md).) **A line never leaves a hollow uphill.**
+
+**The fault.** The planner filled every pit flat, routed and gathered area across the filled
+flat, and then nothing after the routing knew the fill: a line took the unfilled ground at each
+point, the cut's bed held its running minimum only within two thalwegs of that ground, and so a
+line ran down into a hollow and climbed out of it. The head rule read the unfilled slope, so a
+lake's sloping floor began channels on the lake's surface (46 wet links over one basin of the
+forest). On the forest the stream solver sized it: eight closed mountain basins 28 to 134 m deep
+with no water body in any, 110 wet lines climbing out of them, 44 % of the wet line in a hollow of
+its own, and 91 % of the 28,999 stations it flags as over a bank.
+
+**What a hollow is.** After the fill, the cells it raised, connected through their eight
+neighbours, are one pit. The flood reached it first at one cell, from a neighbour that was not
+raised: that neighbour is the **spill**, the lowest point of the rim on the lattice, and its
+ground is the pit's level. The floor is the lowest cell; the area and the volume are what lies
+under the level; the catchment is what drains through the spill. All of it is exact on the
+lattice and integer, so it is the same on every toolchain.
+
+**What the plan makes of one** (`HollowKind`; `route_hollows`, network.cpp):
+
+| A pit that is | becomes | and its lines |
+|---|---|---|
+| no deeper than `breach_max_m` (1 m) | **breached** | cross it; their bed is carried through its lip at the level it came in at |
+| deeper, at least `basin_min_area_m2` (200 m2), and fed more than it loses at its spill | **a lake of the plan**, at the spill less `basin_notch_m` (0.25 m) | end at its shore (a mouth at its level); one outlet link leaves, from the shore through the lip |
+| deeper, fed less than it loses at its spill | **a body of the plan below its spill**, at the level where its losses meet its inflow | end at its shore; nothing leaves |
+| deeper, and its losses take all it is fed, or its author says `dry` | **dry** | end at its floor (a swallow hole, a playa, a basin that drains underground) |
+| named `infilled` by its author | **ground**: a lake that silted up, filled flat to its spill ([a dried lake's floor](#a-dried-lakes-floor)) | cross its floor and leave by the old outlet |
+| deeper, under the least area | a **deep breach**, counted | cross it |
+| holding a scene's own body within `breach_max_m` of the spill | the **author's lake** | end at its shore; its outlet runs through the lip, a breach inside the limit |
+| holding a scene's own body further under the spill | **where the basin's water ends** | end at its shore; nothing begins there |
+
+A body, a dry floor's lowest cell, a scene's body under its spill and every cell of an **open**
+body's sea are **sinks**: the fill is seeded from them as it is from the region's edge (Barnes et
+al. 2020 seed their ocean the same way), so everything in the basin drains to them and no route
+crosses the rim. A basin made a sink no longer drowns the hollows inside it, so the fill, the
+routing and the labelling are taken again until no pit changes (twice on a ground with one
+terminal basin; refused past sixteen).
+
+**The balance** is the year's mean, in the scene's own units:
+
+    inflow  = flow.runoff_l_s_km2 x (catchment - the water's area) + flow.sources that drain in
+    losses  = (basin_evaporation_mm_y + basin_seepage_mm_y) x the water's area + the basin's leak
+
+`basin_evaporation_mm_y` is **net of the rain on the water**, 0 by default: the default runoff
+(946 mm a year) is a climate whose rain passes a lake's evaporation (500 to 900 mm on cold
+temperate lakes), so every hollow fills unless its bed seeps or its floor leaks. A hollow whose
+inflow does not cover its losses at the spill takes cells from its floor up until they do (Barnes
+et al. 2021 grow the same queue from the pit cell until it holds the water), which is coarser than
+their Fill-Spill-Merge: one level a hollow, the inflow not divided between its sub-basins. A source
+feeds every hollow its water passes on the way down. **A lake's outlet carries what its lake
+does not lose** (`network_flow`, discharge.cpp): the lake's loss is taken off every point of its
+outlet and of each link that outlet runs on into, never more than reaches the outlet's first
+point, and not scaled by `flow.stage` (a bed seeps in a dry month too); the command's line counts
+them (`lake_outlets_losing`, `lake_loss_l_s`). A plan read from its file holds no lattice of
+bodies, so an outlet's lake is the one whose sill it holds, the nearest spill between two at one
+level. **Not in the balance**: a lake's loss is not taken off the inflow of the lake below it
+(the planner gives each hollow its whole catchment's runoff), nor carried through that lower
+lake to its outlet; the lake's own area still sends its runoff down the outlet as land would
+(the rain on it less its evaporation is about half that in the climate the default describes);
+the stage of the year is not read by the planner.
+
+**What the author gives** (`ChannelLayer.basins`, each `{name, at: [x, z], dry, leak_m3s,
+infilled}`): what the ground cannot say about the pit that holds `at`. `dry`: no body, whatever
+its depth and inflow. `infilled`: the hollow is a lake that silted up, and is ground (below);
+it is not `dry` and names no leak. `leak_m3s`: what its floor passes underground (talus, moraine, karst); a spring where
+that water returns is a `flow.sources` entry of the author's, since the plan draws no pipe
+between the two. What feeds a hollow beyond its catchment is a `flow.sources` entry standing in
+its catchment. An entry that names neither, a point outside the region and a point in no pit are
+each refused by the entry's name. To refuse a lake an author names its basin dry, or raises
+`breach_max_m` over its depth (a canyon through the lip), or authors a body of their own there.
+
+**The plan's key.** `flow` is not what a plan is made from (W120), so naming a spring re-plans
+nothing. That stays so wherever no loss is named. With a loss or a leak a hollow's kind is the
+runoff and the sources against it, and `plan_layer_hash` takes those two in.
+
+**The body the plan writes** (`plan_bodies_json`; `engine-content channels` puts them under
+`water` in its output, for the scene's `water`): `{name: "<layer> basin <n>", level_m, shape:
+{fill: {seed, max_extent_m}}}`, seeded at the hollow's lowest cell, the extent the hollow's own
+reach from it and a margin. It is an ordinary `engine.scene.WaterBody` that fills, so the water
+capability floods it over the drawn ground and draws it as any body, with
+[the look its size gives it](#a-lakes-look); every other field is the author's to set on the
+pasted block. A second run of the command leaves out the bodies an
+earlier run wrote (by that name), so it plans over the same bodies and writes the same ones.
+**Not built**: an entry that names no plan (whose cuts reach the ground through the hook) has
+its lines split at the plan's bodies and nothing writes those bodies into its scene; the host's
+reader would have to take them from the plan, as it would the water's description.
+
+**A body of the plan is a body like any other where a link meets it.** Its mouths and its
+outlet take W121's rules as a scene's body's do
+([the base level](#the-base-level-and-a-fan-below-a-cliff-w121)): a mouth's `mouth_level` is the
+plan's level exactly, its fan grades to it and its bed stands nowhere under it; an outlet's
+`outlet_level` is the body's sill, **two centimetres over its level** (so no rounding of the
+cut's stamp leaves a thread of the lip under the body's level for its flood to follow down the
+channel), and the outlet's bed is held there wherever the ground at the line stands over it: a
+lake spills over its sill, and the cut is the sill's notch.
+
+**A lip is held by every link that begins on it** (`lip_sill`, network.cpp; found on the forest
+on 2026-11-14 by sampling the drawn ground round each spill). A lake stands a notch under its
+spill, so the cells between its shore and its lip are dry ground inside the hollow, and the lines
+that cross the water (they follow the fill's own routing over the flat) merge on that shelf as
+readily as under it. A link that begins at such a junction, or at the spill itself, begins at no
+shore and was no outlet: its cut dug the lip to its own bed. At the spills of the forest's three
+largest lakes that bed stood 0.12, 0.17 and 0.29 m **under the lake's level**, the lake's own
+outlets arriving beside it held at the sill, and only the natural rim between that pit and the
+water: the lakes held by 1 to 9 cm. So a link that begins within a cell and a half of a lake's spill holds
+that lake's sill from its first point for as long as its points stay that near and its top
+stands over the sill, in the plan's bed and in the cut's depth (no pool or swell under it); the
+bed's line then steps down past the lip and rises nowhere. The case is two lakes that share one
+spill (`hollow_tests.cpp`).
+
+**The level against the ground between the lattice's points** (measured, not yet a rule of the
+cook). The plan finds a spill on its 4 m lattice and stands the body a notch (0.25 m) under it;
+the water's flood (`water::fill_body`) runs on a lattice of two thirds of a metre and refuses a
+body whose level finds a way out. On the forest's mix the drawn ground was sampled on the
+water's own lattice in a 96 m window round each of the nineteen bodies' spills (402,816 points)
+and the lowest pass from the lake's side to its outlet's channel below the lip was found. Of the
+thirteen with an outlet's cut to follow, in twelve the pass stands **2 to 26 cm over the level
+(the sill's 2 cm in five of them; 1 cm in one before the lip was held)**; the thirteenth, a pond
+at -0.71 m beside the authored lake at -2 m, could not be told from that lake's own low ground
+in the window. Of the six without (one leaves by the region's edge, one stands 34 m under its
+spill, four are small ponds whose outlet the search did not find), the drawn ground within 2 m
+of the spill stands 2 to 25 cm over the level in five and **7 cm under it at one** (0.5 ha at
+(132, -28)), not decided. So the notch covers what the lattice steps over wherever it was
+looked for, by centimetres. It was looked for round the spill only: a saddle elsewhere on a rim
+that the lattice missed is not excluded by it.
+
+**The cook says which body a load would refuse** (`check_fill`, flow_solve.cpp). The whole check
+is the water's own flood at the level, so `engine-content flow solve`, which has the drawn
+ground with the cuts in it and the scene's bodies, runs it for every body that fills: the
+water's rule mirrored (a lattice of `shore_m / 3` held between 0.25 and 1 m about the seed, four
+neighbours a node, wet where the ground stands under the level, grown by a quarter until the
+region's nodes and edge crossings fit 65,536; water.md, "A body that fills"), not called, since
+the command does not link the capability: the two move together. Its line gains `fills`:
+`bodies`, `spilling`, `seed_dry`, `seconds` and a `list` of each body's `level_m`, `spacing_m`,
+`nodes` and `holds`; a body whose level reaches its `max_extent_m`, or whose seed stands dry, is
+named on stderr with the water's own reason. The scene is not changed and the exit code is the
+solve's: lowering a level that escapes is the author's, or the plan's when its notch is sized
+from this (not built). An authored body that fills on an imported ground is checked the same; a
+scene with none pays nothing. The case is three bodies in the fixture's pool
+(`flow_tests.cpp`). **On the forest's mix all nineteen bodies hold** (4.3 s for the nineteen
+floods, beside a solve of 7.7 s): the pond beside the authored lake and the pond with ground
+under its level by its spill among them, at lattices from 0.67 m (eleven ponds) to 3.18 m (the
+43 ha lake, 42,959 nodes), so no load refuses the scene for a body of the plan.
+
+**A breach's top.** Where the bed is held more than a thalweg under its section's own depth the
+banks keep their slopes by reaching the top further out, so the cut widens with its depth
+(`ChannelLink::widen`, `plan_widening`): at one width the stamp steepens both banks to a V, and a
+breach two metres deep in a stream a metre wide was a slot. The top is carried out only as far as
+the ground beside the line stands at or over it (the largest of the whole, three quarters, a half
+and a quarter of what the slopes ask, the narrowest reading over two points either way): over
+ground that falls away it would stand in the air, since a cut only lowers, so on a hillside or a
+bench the width stays and the stamp steepens the banks as it did.
+
+**The rule, measured** (`measure_hollows`; the command's `hollows` object): the links whose
+bed's line rises anywhere (`climbing`, 0), the largest rise, the links that end over where they
+began (`ends_higher`, 0), and what the breaches dig (`trench_max_m`, `trench_line_m`). The bed's
+line is the cut's bed with a step-pool's own pool taken back out, since a pool below a step is a
+hollow the reach is made of, and an outlet's lip is its body's sill, held and not measured.
+
+**On the forest** (2026-11-14, `msvc-release`, the staging scene of the proof of concept
+re-planned, re-cut and solved with this row's `engine-content` into a derived-data root of its
+own; other agents building, 44 to 53 GB of commit free; against the stream solver's figures for
+the plan of 2026-11-12 at the same solver, in brackets). The plan: 724 links (784), 121.4 km of
+line, made in 17 s with two fills. **91 pits breached** (the deepest 0.99 m, 19.5 ha between
+them). **Twenty bodies of the plan**: the eight mountain basins, 28 to 135 m deep and 2.9 to
+43.6 ha, each at its spill less the notch with one outlet; and twelve lowland ponds 1.0 to 3.3 m
+deep, 0.07 to 14.8 ha, which a scene that does not want them breaches by raising `breach_max_m`
+to 3.5. **One authored body under its spill**: the pond at the owner's mark 8, 1.18 m in a
+hollow that spills at 4.05 m, where the outlet that climbed 1.77 m out of it no longer begins.
+The lowland lake authored at -2 m is no longer in a hollow of the routing at all: its basin's
+floor stands under the open sea's level, which is a sink. 179 mouths, 32 outlets.
+
+| On the solved lines | before | after |
+|---|---|---|
+| stations over a bank | 31,964 on 255 lines, the worst 74.7 m | 6,447 on 161 lines, the worst 7.8 m |
+| of them in a hollow of their own line | 26,395 | 3,567 |
+| hollows over 20 m / 5 to 20 m / 1 to 5 m | 13 / 22 / 225 | 0 / 6 / 157 |
+| lines that end higher than they begin | 88 | 27 |
+| rises beside an over-bank station | 14,240 | 1,171 |
+| wet links, wet line | 393, 37.0 km | 277, 25.2 km |
+| falls | 872 | 752 |
+| the seat: the most, and the line seated | 126 m, 134 km | 1.83 m, 35.5 km |
+
+**What is not zero, traced** (2026-11-14, from the run's own files). The rule is held on the
+plan's own bed by the engine's cases, and on the forest's plan no bed's line rises (`climbing`
+0). On the solved lines 27 still end higher than they begin and 163 hollows over a metre remain,
+0.26 km of line between them, a metre and a half long on average. **They stand where the plan's
+line turns sharply in one step**: 130 of the 163 (16 of the 17 over 4 m) have their lowest
+station within 3 m of a point where the line turns 45 degrees or more between one metre-long
+step and the next, and the plan has only 470 such points in 237,049 (27 of them over 90
+degrees, the sharpest 178). The deepest, 7.7 m in 0.24 m on link 644, is a hairpin of a metre's
+radius in a cut 3.7 m wide at the top of an 8 m step: the plan's bed there is level to a
+centimetre (214.97 to 214.87 m over ten points), and the solver's sections, which stand across
+the line, swing through 120 degrees in under a metre, reach their 7 m limit over the step's edge
+and read its foot (207.3 m) as the station's bed. So what is left is the line's shape, not its
+level: a turn tighter than the cut is wide, at a lip. The case that bounds a line's turn
+(`the line's turn between consecutive points is bounded on every reach`) holds on the engine's
+scenes and not on these points, which were moved after it (the seat's and the bank's moves are
+the suspects; not traced further). The mend is the planner's (a turn no tighter than half the
+cut's width, held after every move of a point) or the solver's (a section's direction taken
+over the cut's width, not one step); neither is built. The wet line is a third shorter because
+the lines that crossed the basins' filled flats are gone, not because streams dried.
+
+**The forest's mix** (2026-11-14, the owner's "probably a mix ... maybe one dried out over time
+with no glacier or well feeding it"; the same staging, with the losses grounded on
+[the hollows page](../experiments/hollows.md): `basin_evaporation_mm_y` 0, since the rain on a
+lake passes its evaporation in this climate, `basin_seepage_mm_y` 2,190, the published median,
+and two entries under `basins`). The plan: 726 links, 122.1 km, 91 pits breached, **eighteen
+lakes with outlets, one body below its spill, one basin named dry**, the authored pond at mark
+8 where its basin's water ends; no bed's line rises. Of the 726 links 280 are wet (24.9 km).
+With the bed's seepage alone every hollow still fills: the balance leaves the eight mountain
+basins 61 to 90 % of what runs in, so a lake below its spill needs a floor that leaks (the
+smallest catchment for its area, 90 ha feeding 15, is short by 20 l/s), and a dry one a name.
+
+| Basin (floor x, z) | Level m | Water ha | Deepest m | Catchment ha | In l/s | Lost l/s | Became |
+|---|---|---|---|---|---|---|---|
+| (332, 4908) | 157.31 | 43.6 | 88 | 494 | 135.0 | 30.1 | a lake at its spill; 105 l/s leaves |
+| (144, 8080) | 322.46 | 18.9 | 135 | 134 | 34.5 | 13.1 | a lake at its spill; 21 l/s leaves |
+| (-1412, 4824) | 263.24 | 10.8 | 91 | 153 | 42.6 | 7.5 | a lake at its spill, which is the region's west edge |
+| (-488, 6932) | 592.57 | 10.6 | 124 | 94 | 25.0 | 7.3 | a lake at its spill; 18 l/s leaves |
+| (-404, 8848) | 714.57 | 6.8 | 76 | 81 | 22.2 | 4.7 | a lake at its spill; 17 l/s leaves |
+| (-1088, 8856) | 804.01 | 2.9 | 28 | 39 | 10.9 | 2.0 | a lake at its spill; 9 l/s leaves |
+| (-1416, 7172), `leak_m3s` 0.02 | 660.07 | 7.1 | 57 | 90 | 24.9 | 24.9 | **a body 33.7 m below its spill** (693.81), no outlet: its floor passes 20 l/s and its bed 4.9 |
+| (-1420, 7968), `dry` | none | none | bowl 58 | 23 | 6.8 | all | **the dried lake**: the highest and the least fed; its lines end at its floor |
+
+The areas are under the spill; a deep bowl's water a notch lower covers the same to a tenth of
+a hectare (43.4 and 18.8 ha flooded on a 4 m grid), a shallow pond's much less.
+
+The twelve lowland ponds, 1.0 to 3.3 m deep, all at their spills with outlets (areas under
+their spills): the two large ones are **14.8 ha at (576, -768)**, level 3.59 m, 1.9 m deep, fed
+18.8 l/s by 74 ha, of which the water at its level floods 4.5 ha about its floor on a 4 m grid,
+and **3.9 ha at (-1016, 256)**, level 3.88 m, 1.1 m deep, on a stream of 133 l/s; then 2.8 ha at
+(-640, -768), 2.5 ha at (-44, 8), 1.3 ha at (-896, -704), 1.2 ha at (-976, 444), 1.0 ha at
+(-144, -136), 0.6 ha at (-448, -768), 0.5 ha at (132, -28), 0.3 ha at (-640, 1316), 0.2 ha at
+(68, 128) and 0.07 ha at (4, 1312). A scene that wants none of them sets `breach_max_m` 3.5.
+
+**What stands where the owner's marks and the old climbing links were** (by position; a link's
+number moves with the plan). Old links 37 and 779, which left the lowland lake at -2 m and
+climbed to 2.6 and 0.2 m: gone. Nothing is cut within 25 m of link 37's line; along link 779's,
+two short lines now run the other way, down into the lake (-0.90 to -2.02 m), beside a pond of
+the plan at -0.71 m. Old link 360 (the owner's mark 6, the pocket in the hillside): its place
+is **under the largest lake**, 3.7 to 5.2 m down; the nearest cut is 121 m away. Old link 482
+(mark 7): the same line, still wet, and its station-to-station rises are still there (the
+largest 2.0 m): it stands on a steep reach with the turns described above, not in a hollow of
+the plan. Old link 778 (mark 8), the outlet that climbed out of the pond: gone; two lines now
+end at the pond, which is where its basin's water ends. Their solved water stands 0.45 and 0.75
+m under the pond's level at their last stations, flagged over the bank: the solver gives a line
+that ends at an authored body under its spill no mouth to meet (not traced; the solver's).
+
+**Seen on the forest** (2026-11-14, the mix loaded in `engine-view` at the owner's settings,
+1920 by 1080: 19 minutes cold, 49 GB of commit at its peak, no body refused; twenty-one views
+with ids and depth, kept outside the repository). The bodies are lakes: each follows its
+valley's contour, with a turquoise fringe of shallows and the sky in it. What a person objects
+to, most damaging first. **The forest stands in them**: the proof of concept's trees, logs and
+rocks are authored instances placed before the lakes existed, and nothing removes an author's
+instance under a body of the plan, so whole stands rise out of the water (about 17,000 of the
+scene's 470,641 instances stand under the seven mountain bodies, 12,349 of them under the
+largest); the bodies are in the scene's `water` for the author's own placement to read, and a
+generator's placements read them through the exclusion as they read any body. **A lake has no
+shore**: a bare slope enters the water as a ruled line with one thin white stroke along it, no
+beach, no wet band, no rock, sedge or drift, where the reels' lakes have a strip of stones and
+grass and trees to the waterline. **The body below its spill and the dried basin say nothing of
+what they are**: the first is a lake in a bare bowl with no mark of the higher water, the second
+a wooded hollow with no flat floor (that night; [a dried lake's floor](#a-dried-lakes-floor) came the next). **The
+streams' own draw is not this row's and is wrong on this description** (flat cyan polygons and
+slabs at the old link 482's place and at a lake's lip). The pond at the owner's mark 8 has a
+whole shore: no hole and no triangle.
+
+**To the gate** (the night of 2026-11-14, on the streams' branch and batch 64's main; what the
+paragraphs above call not built, where it now is).
+
+*The section's direction.* The solver's sections stand across the chord between the nodes half
+the cut's width up and down the line, never less than one node each way (`solve_profile`,
+profile.cpp), where they stood across one step. That is the solver's half of the mend named
+above; the planner's (a turn no tighter than half the cut's width, held after every move of a
+point) is still not built, and the engine's case that bounds a line's turn is unchanged.
+
+*A line that ends on a scene's body under its spill ends in it.* The routing ends such a line
+at the body's cells, which are a sink, but the line's own last point can stand a step short of
+the outline, where the exclusion finds no water and the shorelines give no mouth: its bed was
+then cut under the body's level and the solver ended it over a bank (the owner's mark 8: two
+lines 0.45 and 0.75 m under the pond's 1.18 m). The link is now given the body's level as the
+base level a mouth is held to (`plan_from_lattice`, after the shorelines), asked of the lattice
+cell under the line's last point, since a piece the shorelines split off on its way holds no
+cells. **That was not the forest's case**, which two re-plans found (`k_channels_version` 13
+and 14, each cooked on the forest and each leaving the two lines as they were): the two lines
+end at a confluence 27 m from the pond's floor, and the trunk that ran on from it into the
+pond is dropped whole by the shorelines, being under the water or too short to keep, so they
+ended in the air with their beds graded to a trunk that is not cut. **The links that end
+where a dropped trunk began end in the body that took it** (`apply_water`: the body's level
+kept by the trunk's first cell, and given as a mouth's level to every line whose last point
+stands on that cell), at `k_channels_version` 15. The engine's case (a pond three metres
+under its bowl's spill) holds the mouth and its level on every line that ends on the body's
+cells; no engine case has a confluence beside a body, so none fails on the base: the forest's
+two lines are what decide it. **Their re-run (run `n`, version 15): both now end in a mouth,
+and neither at the pond's level.** `region link 25` and `region link 28` end at (-600, -276)
+with the mouth's flags, their last stations written at 1.102 and 1.111 m where the pond stands
+at 1.179: 7.7 and 6.8 cm under it, where they were 45 and 75. What is left is not the plan's
+to mend. The pond is the consumer's authored polygon, whose edge is 5 m past the confluence,
+and its level stands over the ground the lines cross to reach it. Held to the pond's level as
+their base, the beds are no longer cut under it (link 25's stood 1.2 m under the pond three
+quarters of the way down, lower than the pond's own floor; it is now at 1.17 m a quarter of
+the way down, 0.97 at three quarters and 1.10 at the confluence), and on that flat a bed at
+the pond's level has no bank to speak of: the pond's level, which the solver now carries up
+both lines as a mouth's backwater, stands over the lower bank at 280 of link 25's 339
+stations (from x -773 on; 92 of 190 before) and both of link 28's, and the solver writes a
+bank's crest there and flags the station, as it does wherever water would leave its bed. The
+depth written is 26 cm at the most and a film of 5 mm over the last 20 m, which the streams'
+draw leaves out, and link 28's two stations rise 6 cm (the 23rd line that ends higher than it
+begins): **a person sees a shallow bed whose water thins out and stops 5 m short of the
+pond**, where before they saw a wet trench ending in the air half a metre under it. A pond at
+that level would cover the flat the lines cross; its outline is the author's, and widening it
+to its level's contour (or naming it at the level its shore stands at) is theirs. The plan
+could carry a line across the short dry stretch a dropped trunk leaves (here 5 m, under the
+12 m a run is kept at) so that it ends on the outline itself: not built. On the whole forest
+the mend costs 185 stations over a bank (4,870 on 152 lines, 2,688 of them in a hollow of
+their own line) and leaves every other figure of the table below as run `k` had it.
+
+*A lake passes its springs on.* [The discharge](#discharge) carried a named source down to
+the first mouth and no further, so the outlet of a lake that springs had filled ran with its
+catchment's runoff less the lake's loss: nothing, in the engine's case (a spring of 1 m3/s
+into a bowl whose bed seeps three times what its catchment sends), and 14 l/s below 0.66 m3/s
+on the streams' judging scene, whose bed below the lake was drawn dry. A source now goes on
+through a lake of the plan into its outlet. This is `network_flow`'s, which the cook's solve
+reads and the plan does not: no plan changes and `k_channels_version` stays 15. The same walk
+carries a lake's loss below the next lake down, which it did not, and that is all the forest
+sees of it, having no source: solved again on run `n`'s plan (run `p`), 14 of its 278 lines
+carry less, by 8 l/s at the most (0.128 to 0.121 m3/s on `region link 314`), and the solved
+lines come to 47,949 stations, 4,868 of them over a bank on 152 lines and 2,689 of those in a
+hollow of their own line; the hollows, the 23 lines, the nineteen bodies that hold, the 13,884
+instances under water and the two lines at mark 8 are as run `n` left them. **What is left at
+a lake's lip** (the judging scene cooked again with the mend, read as text): the outlet
+carries 0.663 m3/s from its first station and runs 0.29 to 0.58 m deep from 10.6 m below the
+shore on, but over those first 10.6 m, the sill the cut holds 2 cm over the lake, the bed has
+no bank over it, so the solver writes a film of 5 mm at the sill's own height and flags the
+stations (18 of the outlet's 44), and the draw leaves a film dry: a bar of gravel between the
+lake and its stream, where two thirds of a cubic metre a second would go over the lip as a
+sheet some 15 cm deep. The sill wants a section of its own (a notch the width of the bed with
+banks, or the sheet written at its critical depth over the lip): not built.
+
+*The forest again* (run `k`: the owner's mix with the dried basin named `infilled`; this row's
+`engine-content` at `k_channels_version` 13, one job, into last night's derived-data root; the
+machine shared with seven other rows building and loading, 18 to 41 GB of commit free). The
+plan: 721 links, 122.5 km, 657 cuts, made in 48 s with two fills; 91 pits breached, **eighteen
+lakes with outlets, one body below its spill, one infilled floor** (0.98 million m3 of fill
+under 3.7 ha at 855.83 m), the authored pond where its basin's water ends; every level of the
+table above to the centimetre; no bed's line rises and none ends higher. All nineteen bodies
+hold by the cook's flood (2.7 s).
+
+| On the solved lines | last night (run `i`) | tonight (run `k`) |
+|---|---|---|
+| stations over a bank | 6,283 on 160 lines, the worst 7.8 m | 4,685 on 152 lines, the worst 6.5 m |
+| of them in a hollow of their own line | 3,567 (run `d`) | 2,609 |
+| hollows over 1 m / over 5 m, the deepest | 163 / 6, 7.7 m (run `d`) | 57 / 3, 6.4 m |
+| lines that end higher than they begin | 27 (run `d`) | 22 of 278 |
+| wet links, wet line | 280 of 726, 24.9 km | 278 of 721, 25.3 km |
+
+So the direction over the cut's width takes two thirds of the hollows over a metre and leaves
+57, three of them over 5 m; those and the 22 lines were not traced further. **13,884 of the
+scene's 470,641 authored instances stand in a body's water** (4.4 s to count and list them):
+5,922 in the largest lake, 1,699 and 990 in the two largest ponds, 21 in the sea and 6 in the
+authored pond. Last night's figure (about 17,000, 12,349 in the largest lake) was a count by
+box and level; this is by each body's own flood.
+
+**General purpose.** The fill, the breach and the bodies come from the heights of whatever
+ground the scene names, an imported heightfield as readily as a generated one: nothing reads
+which generator made it, and every limit is a field of the layer. **A scene with no `channels`
+entry pays nothing**: none of this runs. **A hand-drawn `WaterChannel` through a hollow** gets
+what it got: the solver's over-bank flag on the stations in the hollow; what this adds for its
+author is the plan's list of hollows (`engine-content channels`, `hollows.list`: each one's
+floor, spill, depth, area and what became of it), where one stands on the same ground.
+
+**What it costs.** The fill, the routing and the labelling are one more sweep of the lattice a
+pass and one more pass a ground with a terminal or an infilled basin; the plan's file grows by
+153 bytes a hollow that is not simply breached, four bytes a point of line (`widen`), and four
+bytes a lattice point of an infilled hollow's box.
+
+### A dried lake's floor
+
+(2026-11-14, the owner on the forest's dried basin: "maybe one dried out over time". The
+grounding is [the hollows page](../experiments/hollows.md#a-dried-lakes-floor).) Two things a
+dry hollow can be, and the author says which. **One that drains underground** (`dry`) keeps its
+bowl, and its lines end at its floor; nothing was read about what such a floor looks like, and
+nothing is built for it. **One that silted up** (`infilled`) is a lake that filled with its own
+sediment: the surveyed floors of relict lakes stand at 0 to 3 % with 0 % the representative
+slope, at about the level of the old outlet, with a low-gradient stream crossing them.
+
+**An infilled hollow is ground.** In `route_hollows` the hollow's cells are raised to its spill
+on the plan's own lattice and the fill and the routing are taken again over what is now a flat,
+so the lines that reach it cross it along the fill's own routing and leave through the old lip
+as over any ground: no body, no sink, no mouth, and the bed's line falls or holds all the way
+(the flat's bed is a thalweg under the floor, which is what passes the lip). The hollow's record
+(`HollowKind::Infilled`, `level_m` the floor) carries **the floor as a grid** on that lattice:
+0 on the hollow's cells and on the ring of cells round them, so the floor runs flat to its
+walls with no slot between a deep cell and the wall beside it and nothing is raised over the
+level; far under any ground everywhere else in its box, so nothing else is raised.
+
+**The edit** (`terrain_fills_json`; `engine-content channels --cut` writes it among `edits`,
+and counts `hollows.floors_written`): one `engine.scene.TerrainEdit` of mode `Fill` a floor, a
+patch whose outline is the grid's box and whose grid is the floor. The tile set composes every
+fill before every cut, so the cuts of the lines that cross the floor are made in it. A hollow
+whose box passes a ground edit's 1,024 points a side is refused by its entry's name.
+
+**The ground the plan's lines lie on** (`floored_ground`). The planner lays its lines, seats,
+sections and flood beds on the ground with its floors in it, by the edit's own rule (the grid's
+bilinear surface where it stands over the ground), since the bowl under the floor is not where
+the line is. A host's ground has the edit in its tile set. `engine-content channels`, which
+holds the ground before its edits, asks the same wrapped ground for everything it sets a line
+against (the water's ribbon, the seat's measure, the clasts).
+
+**Its cover is the ground's own.** The masks are built from the tile set's heights with the
+edit in them, so a level floor takes what the priors give level ground (their soil, no scree,
+no bedrock), and the placements that read the ground stand on it as on any flat. **Not built**:
+a fen's or a wet meadow's own material and sedges (nothing names one), the floor's own
+wetness, the stream's sinuosity beyond the planner's meander rule, a fen's pond.
+
+**What it costs.** One more pass of the fill and the routing; the floor's grid in the plan
+(four bytes a lattice point of the box); one patch in the tile set's edits, read only by the
+tiles its box touches. **A scene with no `infilled` basin pays nothing**: no pass, no edit, and
+`floored_ground` hands back the ground it was given. The case
+(`hollows: a lake that silted up is a floor its stream crosses`) is the bowl on a slope named
+infilled: the floor flat at the old spill, the ground itself everywhere else and nowhere
+raised over the level, the stream on the floor with its bed under it, the edit, the same
+through the plan's file, and the plan's and the edit's bytes pinned for every toolchain.
+
+### A lake's look
+
+(2026-11-14; the grounding is [the hollows page](../experiments/hollows.md#a-lakes-look).) A
+body the plan wrote was a `WaterBody` at its defaults: a pool. `plan_bodies_json` now gives
+each what its own size says, from the body's own water (`Hollow::water_m2`, `water_m3`: the
+area and volume under its level, which for a shallow pond a notch under its spill is far less
+than its hollow holds):
+
+| Field | What it is given | From |
+|---|---|---|
+| `wind_m_s` | the layer's `basin_wind_m_s` (4 m/s; 0 writes none) times `(1 - exp(-0.3 A / km2))^(1/3)` | Hondzo & Stefan's sheltering by area, which scales the wind's energy; the cube root is this page's step |
+| `wet_m` | 0.15 m, that wind's wave over the body's reach, and half the yearly range of a lake's level (0.12 m with an outlet, 0.17 m without) | a sand's capillary rise; the growth law the water draws by; House 1985 |
+| `depth_fade_m` | the mean depth, between 0.5 and 8 m | Carlson's range of Secchi depths; the selector is this page's |
+| `shore_m` | two hundredths of the body's side, between 0.75 and 2 m | not from a source: what a pond can spare |
+| `seed` | its place among the plan's bodies | so two lakes' waves are not one |
+
+With a wind the water capability draws a closed body's waves from the spectrum over its own
+reach, with a lee under the shore the wind comes from, in place of four regular sines; a pond
+of a fifth of a hectare gets a twelfth of the region's wind and is nearly a mirror. The wind
+is **not part of what a plan is keyed by** (`plan_layer_hash` leaves it out, as it leaves the
+flow): it is read when the bodies are written. The exponential and the cube root are the
+tree's own (`det::exp`, `det::log`), so the block is the same text from every toolchain, and
+the case pins it. **What it costs**: nothing at a load beyond what a body with a wind costs
+the water (its rings past the outline for the swash); a scene whose author wants the old
+blocks sets `basin_wind_m_s` 0. **For the water's owner**: a body with a wind grows its mesh
+over the bank by twice its wave and a quarter metre, and the cook's flood check
+(`check_fill`) mirrors the flood at the level only.
+
+### What stands in the water
+
+(2026-11-14.) A body the plan writes stands where a scene's author placed things before it
+existed, and nothing removes an author's instance. **The cook counts and lists them**:
+`engine-content flow solve`, which already floods every body that fills over the drawn ground,
+asks of each of the scene's own `instances` whether the ground at its x and z stands under a
+body's level in that body's water (a filling body's own flood; a circle's or a polygon's
+inside; an open body's anywhere), counts it under the first body of the scene's list that
+covers it, prints `under_water` on its line (`instances`, `under`, `by_body`) and a sentence
+on stderr, and with `--under-water <list.json>` writes every one: its place in the scene's
+`instances`, its mesh, where it stands and how deep the ground under it is, a body at a time.
+That file is what a consumer's own placement reads to move or drop them. An authored body is
+counted as the plan's are; a scene with no body or no instance pays one look.
+
+**A generator's placements keep off a body of the plan as off any body**: the plan's block is
+an ordinary `WaterBody` in the scene's `water`, which is what the exclusion every placement
+generator asks is built from. The case
+(`hollows: a body of the plan carries its size's look, and placements keep off it`) reads the
+block through the scene's schema, builds the exclusion from it and holds every lattice point
+of the plan's own water excluded, the valley above and beside it not. **A finding, not this
+row's to mend**: the exclusion knows a filling body as its box and the ground under its level
+in it (the flood runs later), so on a mountainside it also keeps placements off dry ground
+that lies under the lake's level inside the box, down the outlet's valley.
 
 ## The planform
 
@@ -1384,6 +2403,9 @@ and leaves a pit a step deep at the foot, until the floor of two thalwegs under 
 the bed back up. Seed 2 down the fall line: 12.9 m of seat at the 14 m cliff, two runs, drops of
 21.9 and 13.9 m; with the move off, 0.64 m. A case marked `may_fail` holds what the rule should
 give (each cliff one run of its own height, no pit at its foot), for the row that fixes the seat.
+**W122 fixed the seat** ([The section seated under its lower bank](#the-section-seated-under-its-lower-bank-w116),
+"The seat, reshaped"): every cliff is one run with no pit on all eight plans, and what the marked
+case still fails on is one run's drop, short by the count's own 45-degree test at a lip.
 
 **A sea cliff at a mouth** (a valley at 3 % over a 20 m cliff whose foot stands in the sea): the
 link ends at the shoreline on the cliff's face and its fan grades the last three widths of bed to
@@ -1395,6 +2417,15 @@ rule for a stream meeting a body over low ground, not over a cliff.
 
 - The network is a function of the layer, the seed and the ground's answers at the lattice's
   millimetres: the same at one job and six (test: "the same network at one job and six").
+- **No link's bed rises downstream** (W122): the bed's line (the cut's bed less a step-pool's own
+  pools) never stands over itself a point upstream, in a link or across a junction, and no link
+  ends over where it began; an outlet's lip, held at its body's sill, is the one stretch not
+  measured (tests: `hollows: a bowl on a slope stands at its spill, and no line climbs out of
+  it`, and each of the hollows' cases after it).
+- **No line lies under a body of the plan and no channel begins on one**; a mouth into one
+  carries its level exactly (the same test).
+- **The plan is the same bytes at one job and six and through its file**, hollows and bodies
+  included (`hollows: the same plan at one job and six, and through its file`).
 - Every channel cell drains to the edge through channel cells; a head has no channel donor; a link
   ends at a junction or the edge (test: "one channel down a V-notch").
 - Width and depth follow the hydraulic-geometry power law exactly at every point (same test).

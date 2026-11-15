@@ -200,6 +200,15 @@ const char* k_usage =
     "                                          every run of the bed's steps tested and the falls\n"
     "                                          cooked beside each entry's plan; present with the\n"
     "                                          channels capability\n"
+    "  flow solve <scene.json> <out.json> [--ddc <dir>] [--entry <i>] [--lattice <m>]\n"
+    "             [--resistance jarrett|manning] [--scene-out <scene.json>]\n"
+    "                                          the scene's streams solved in their own beds on\n"
+    "                                          the ground it draws: the solved WaterChannel\n"
+    "                                          blocks, and every dry link with its reason\n"
+    "  flow fixture <dir>                      a stream's water from its discharge: the\n"
+    "                                          closed-form fixture scene (a uniform reach, a\n"
+    "                                          step with a fall and a jump, a reach into a\n"
+    "                                          lake); present with the channels capability\n"
     "  landform <sketch.json> <out dir> [--name <stem>] [--jobs <n>] [--no-relief]\n"
     "                                          solve a region sketch into an authored\n"
     "                                          heightfield, its fields (drainage area,\n"
@@ -1636,6 +1645,7 @@ int main(int argc, char** argv) {
   if (command == "rocks") return content::rocks_command(argc, argv);
   if (command == "channels") return content::channels_command(argc, argv);
   if (command == "falls") return content::falls_command(argc, argv);
+  if (command == "flow") return content::flow_command(argc, argv);
   if (command == "landform") return content::landform_command(argc, argv);
   if (command == "matgen") return content::matgen_command(argc, argv);
   if (command == "routes") return content::routes_command(argc, argv);

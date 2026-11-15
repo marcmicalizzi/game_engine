@@ -85,7 +85,8 @@ endif()
 # channel description from a scene's channels placements over its terrain. Its test runs either
 # way, and without the capability checks the refusal.
 list(APPEND _content_tests tests/channels_tests.cpp tests/channel_cut_tests.cpp
-     tests/channel_mouth_tests.cpp tests/channel_reach_tests.cpp tests/falls_tests.cpp)
+     tests/channel_mouth_tests.cpp tests/channel_reach_tests.cpp tests/falls_tests.cpp
+     tests/flow_tests.cpp)
 if(TARGET engine::channels)
   list(APPEND _content_deps channels channels_schemas schema schemas scene_gen)
 endif()
@@ -143,6 +144,7 @@ engine_app(NAME engine_content OUTPUT engine-content
           landform_commands.cpp matgen_commands.cpp routes_commands.cpp caves_commands.cpp
           bridges_commands.cpp ground_commands.cpp falls_commands.cpp static_kit_commands.cpp
           alpha_merge_commands.cpp
+          flow_commands.cpp flow_solve.cpp
   DEPS ${_content_deps}
   E2E_TESTS ${_content_tests} tests/soil_tests.cpp tests/morphs_tests.cpp tests/matgen_tests.cpp)
 

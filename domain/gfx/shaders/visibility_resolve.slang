@@ -903,45 +903,78 @@ float3 water_white_water(ResolveParams* params, Surface s, float3 plane, float r
 // roughness and the foam from it (`water_channel_surface`), the water under them shaded by the
 // tier's own path with the ripples' normal and the shore faded by depth, and the foam laid over it
 // as a white diffuse surface lit by the sun (through the same shadow query) and the sky's light.
-float3 water_channel_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instance,
-                           uint index, TriangleFetch tri, Surface s, float3 from_eye,
-                           WaterParams w, uint flags, float ray_bias, float3 local,
-                           float footprint, float depth, bool has_map, WaterDepthMap map,
-                           float3 dp_dx, float3 dp_dy) {
+//
+// **It shades nothing itself** (S108). What the flow makes of the surface is handed back to
+// `water_pixel`, which shades it by the one call every water takes: until S108 this function made
+// its own calls of the tier's surface path and of the white water, so the resolve's water modules
+// held the volume tier — the ground's material under the water, two shadow queries, the
+// reflection's and the refraction's traces — once more for channels alone, in a pipeline whose
+// first compile is the longest wait of a cold load (water.md, "What a first load waits for").
+struct WaterChannelPixel {
+  float3 normal;
+  float3 plane;      // the surface's own plane, facing out of the water; a nappe's is its vertices'
+  float roughness;
+  float depth;
+  bool has_map;
+  float edge;        // what the shore fades by
+  float2 slope;      // the bottom's slope under the pixel where there is no map (a nappe: its face's)
+  float white;       // the white water's share, and its brightness
+  float white_shade;
+};
+
+WaterChannelPixel water_channel_pixel(ResolveParams* params, SceneGeometry geo, TriangleFetch tri,
+                                      Surface s, WaterParams w, float3 local, float footprint,
+                                      float depth, bool has_map) {
   VertexAttributes* attributes = (VertexAttributes*)geo.attributes;
-  const WaterChannelFlow f = water_channel_flow(
-      tri.p[0], tri.p[1], tri.p[2], decode_half2(attributes[tri.local[0]].uv_half2).x,
-      decode_half2(attributes[tri.local[1]].uv_half2).x,
-      decode_half2(attributes[tri.local[2]].uv_half2).x);
-  // The surface's own plane, facing out of the water whichever side the eye is on.
-  const float3 plane = dot(s.geometric, s.normal) < 0.0 ? -s.geometric : s.geometric;
+  const float2 uv0 = decode_half2(attributes[tri.local[0]].uv_half2);
+  const float2 uv1 = decode_half2(attributes[tri.local[1]].uv_half2);
+  const float2 uv2 = decode_half2(attributes[tri.local[2]].uv_half2);
+  const WaterChannelFlow f =
+      water_channel_flow(tri.p[0], tri.p[1], tri.p[2], uv0.x, uv1.x, uv2.x);
+  // **The solve, read** (S106): UV.y is the section's hydraulic depth, and on a fall less the
+  // nappe's thickness, so a triangle with a negative corner is a fall's. A nappe is a piece of the
+  // mesh of its own, so all three of its corners are negative and the pixel's thickness is the
+  // interpolated one; a triangle the simplifier left with corners of both kinds takes the mean of
+  // its negative ones. The depth under a reach's pixel is the map's (the level less the ground);
+  // with no map it is the hydraulic depth; a fall's is its sheet's thickness, and its sheet is not
+  // marched against the map, whose depths lie under the nappe's foot.
+  const float3 falls = float3(max(-uv0.y, 0.0), max(-uv1.y, 0.0), max(-uv2.y, 0.0));
+  const float fallen = float(uv0.y < 0.0) + float(uv1.y < 0.0) + float(uv2.y < 0.0);
+  const float nappe = fallen > 2.5 ? max(-s.uv.y, 1e-4)
+                                   : (fallen > 0.0 ? (falls.x + falls.y + falls.z) / fallen : 0.0);
+  const float hydraulic = max(s.uv.y, 0.0);
+  if (nappe > 0.0) {
+    depth = nappe;
+    has_map = false;
+  } else if (!has_map) {
+    depth = hydraulic;
+  }
+  // The surface's own plane, facing out of the water whichever side the eye is on. A nappe is a
+  // curve the lattice draws in a few flat cells: it is shaded by its vertices' normals, which are
+  // the parabola's own, so its facets do not show.
+  float3 plane = dot(s.geometric, s.normal) < 0.0 ? -s.geometric : s.geometric;
+  if (nappe > 0.0) plane = normalize(s.normal);
   const WaterChannelSurface c =
       water_channel_surface(f, local, plane, s.uv.x, params->water_time_s, footprint, depth,
-                            w.roughness, w.seed, has_map, map);
-  WaterParams wc = w;
-  wc.roughness = c.roughness;
-  const float3 view = normalize(-from_eye);
-  const float edge = w.shore * clamp(depth / k_water_calm_depth, 0.0, 1.0);
-  float3 color = float3(0.0);
-  if (c.foam < 1.0) {
-    if ((flags & k_material_water_volume) != 0) {
-      color = water_pixel_volume(params, geo, instance, index, float2(0.0, 0.0), dp_dx, dp_dy, s,
-                                 local, c.normal, view, wc, ray_bias, depth, has_map, map, edge, 0.0);
-    } else {
-      color = water_pixel_low(params, s, c.normal, view, wc, ray_bias, depth, edge, 0.0);
-    }
-  }
-  if (c.foam <= 0.0) return color;
-  return lerp(color, water_white_water(params, s, plane, ray_bias, c.foam_shade), c.foam);
-}
-
-// A fall's plunge laid over a body's water (S98; water.md, "The plunge"): white water of the
-// channels' own, by its share `plunge`.
-float3 water_plunge_over(ResolveParams* params, Surface s, float ray_bias, float plunge,
-                        float3 color) {
-  if (!(plunge > 0.0)) return color;
-  const float3 plane = dot(s.geometric, s.normal) < 0.0 ? -s.geometric : s.geometric;
-  return lerp(color, water_white_water(params, s, plane, ray_bias, 1.0), plunge);
+                            hydraulic, nappe, w.roughness, w.seed);
+  WaterChannelPixel o;
+  o.normal = c.normal;
+  o.plane = plane;
+  o.roughness = c.roughness;
+  o.depth = depth;
+  o.has_map = has_map;
+  // **The shore fades over the last centimetres of water, not the last quarter metre** (S108). The
+  // fade hides the line where the sheet meets its bank; taken over `k_water_calm_depth` it took
+  // the sky's reflection off every stream shallower than that, and a brook 10 cm deep was a film
+  // over its bed with no surface (the owner's "pale film"): 2 cm of water mirrors the sky as a
+  // metre does. A nappe is thin everywhere and has no shore.
+  o.edge = nappe > 0.0 ? w.shore : w.shore * clamp(depth / k_channel_shore_depth, 0.0, 1.0);
+  // Under a nappe the ground seen through the sheet is the face it falls down: lit as that face
+  // (the sheet's own plane), not as level ground, which drew a bright window of rock in the air.
+  o.slope = nappe > 0.0 ? plane.xz / max(plane.y, 0.12) : float2(0.0, 0.0);
+  o.white = c.foam;
+  o.white_shade = c.foam_shade;
+  return o;
 }
 
 float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instance,
@@ -959,20 +992,42 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
   // The depth under the pixel: the body's depth map where it has one (k_material_water_depth_map,
   // in the entry after the material), the mesh's interpolated vertex depth otherwise.
   float depth = s.uv.y;
-  const bool has_map = (material.flags & k_material_water_depth_map) != 0;
+  bool has_map = (material.flags & k_material_water_depth_map) != 0;
   WaterDepthMap map = {};
   if (has_map) {
     ResolveMaterial* materials = (ResolveMaterial*)geo.materials;
     map = water_depth_map_of(materials[index + 1]);
     depth = water_depth_sample(map, local.xz);
   }
-  if ((material.flags & k_material_water_channel) != 0 && geo.attributes != 0)
-    return water_channel_pixel(params, geo, instance, index, tri, s, from_eye, w, material.flags,
-                               ray_bias, local, footprint, depth, has_map, map, dp_dx, dp_dy);
+  // What the one call below is made with (S108): a body's from its waves, its shore and its swash,
+  // a channel's from its flow (`water_channel_pixel`). `white` is white water laid over the result:
+  // a channel's foam, a body's plunge.
+  const float3 view = normalize(-from_eye);
+  WaterShore swash = {};
+  float3 n = float3(0.0, 1.0, 0.0);
+  float edge = 0.0;
+  float foam = 0.0;
+  float bared_wet = -1.0;
+  float2 slope = float2(0.0, 0.0);
+  float white = 0.0;
+  float white_shade = 1.0;
+  float3 white_plane = dot(s.geometric, s.normal) < 0.0 ? -s.geometric : s.geometric;
+  if ((material.flags & k_material_water_channel) != 0 && geo.attributes != 0) {
+    const WaterChannelPixel c =
+        water_channel_pixel(params, geo, tri, s, w, local, footprint, depth, has_map);
+    n = c.normal;
+    w.roughness = c.roughness;
+    depth = c.depth;
+    has_map = c.has_map;
+    edge = c.edge;
+    slope = c.slope;
+    white = c.white;
+    white_shade = c.white_shade;
+    white_plane = c.plane;
+  } else {
   // The body's record of a wind or a tide (S94; water.md, "The shore"), found by its material, and
   // with it the body's surface (S100): a body whose mesh the pool lifted is shaded with the height
   // function's own gradient, so the normal is the surface's.
-  WaterShore swash = {};
   bool swashing = false;
   if ((material.flags & k_material_water_shore) != 0 && has_map && params->water_shore_count != 0) {
     WaterShore* shores = (WaterShore*)params->water_shores;
@@ -989,7 +1044,6 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
   // height function's own away from the swash's band (water.slang, `water_surface_normal`).
   float surface_y = local.y;
   float bank_share = 0.0;  // the share of the swash's band at the pixel: 1 over the bank
-  float3 n;
   if (swash.surface != 0) {
     float wave_y = 0.0;
     float bank = 0.0;
@@ -1005,18 +1059,15 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
   // the lobe (S100 stage B; water.slang, `water_micro_normal` and `water_roughness`).
   w.roughness = water_roughness(w.roughness, (1.0 - k_water_micro_share) * dropped);
   n = water_micro_normal(n, local.xz, params->water_time_s, footprint, dropped, w.direction);
-  const float3 view = normalize(-from_eye);
-  float edge = water_edge(w, material.flags, s.uv.x, depth);
+  edge = water_edge(w, material.flags, s.uv.x, depth);
   // The shore where the level meets the ground (k_material_water_shore; water.md, "The shore"):
   // the fade over the distance from the map's waterline, not from the mesh's edge, and the foam
   // line along it. Only with the map, which the flag needs.
-  float foam = 0.0;
   // The swash (S94; water.md, "The shore"): with a record of a wind or a tide for this body, the
   // waterline is where the ground meets the front and the tide at this time, not the still level:
   // the depth near the shore follows them, a pixel whose ground the backwash or the falling tide
   // has bared is the bottom alone, darkened as the clock says it is wet, and the foam rides the
   // front. Without one, the shore is S97's.
-  float bared_wet = -1.0;
   if ((material.flags & k_material_water_shore) != 0 && has_map) {
     if (swashing) {
       const float t = params->water_time_s;
@@ -1086,38 +1137,46 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
     }
   }
   // A fall's plunge into this body (k_material_water_plunge; water.md, "The plunge"; S98).
-  const float plunge = water_plunge_foam(geo.materials, index, material.flags, local.xz,
-                                         params->water_time_s, footprint, w.seed);
-  if ((material.flags & k_material_water_volume) != 0) {
-    // No map: the depth's slope over the triangle, d = d0 + g.(x - x0) through its three corners.
-    float2 slope = float2(0.0, 0.0);
-    if (!has_map && geo.attributes != 0) {
-      VertexAttributes* attributes = (VertexAttributes*)geo.attributes;
-      const float d0 = decode_half2(attributes[tri.local[0]].uv_half2).y;
-      const float d1 = decode_half2(attributes[tri.local[1]].uv_half2).y - d0;
-      const float d2 = decode_half2(attributes[tri.local[2]].uv_half2).y - d0;
-      const float2 e1 = (tri.p[1] - tri.p[0]).xz;
-      const float2 e2 = (tri.p[2] - tri.p[0]).xz;
-      const float det = e1.x * e2.y - e1.y * e2.x;
-      if (abs(det) > 1e-8) slope = float2(d1 * e2.y - d2 * e1.y, e1.x * d2 - e2.x * d1) / det;
-    }
-    // **The ground under a lifted body's water is wet** (S102, second pass; water.md, "One sheet"):
-    // the bottom's material takes the saturation of sand under water, as the ground beside the
-    // sheet takes it under its film — Lekner and Dorf's darkening is that of a surface under a
-    // layer of water, whatever the layer's depth. Until this pass only a bared pixel's bottom was
-    // wet, and the sheet's sand was drawn dry beside the wet sand it lies on.
-    const float bottom_s = swash.surface != 0 && depth > 0.0 ? 1.0 : max(bared_wet, 0.0);
-    const float3 c = water_plunge_over(params, s, ray_bias, plunge,
-                                       water_pixel_volume(params, geo, instance, index, slope, dp_dx,
-                                                          dp_dy, s, local, n, view, w, ray_bias, depth,
-                                                          has_map, map, edge, foam, bottom_s));
-    return c;
+  white = water_plunge_foam(geo.materials, index, material.flags, local.xz,
+                            params->water_time_s, footprint, w.seed);
+  // No map: the depth's slope over the triangle, d = d0 + g.(x - x0) through its three corners.
+  if ((material.flags & k_material_water_volume) != 0 && !has_map && geo.attributes != 0) {
+    VertexAttributes* attributes = (VertexAttributes*)geo.attributes;
+    const float d0 = decode_half2(attributes[tri.local[0]].uv_half2).y;
+    const float d1 = decode_half2(attributes[tri.local[1]].uv_half2).y - d0;
+    const float d2 = decode_half2(attributes[tri.local[2]].uv_half2).y - d0;
+    const float2 e1 = (tri.p[1] - tri.p[0]).xz;
+    const float2 e2 = (tri.p[2] - tri.p[0]).xz;
+    const float det = e1.x * e2.y - e1.y * e2.x;
+    if (abs(det) > 1e-8) slope = float2(d1 * e2.y - d2 * e1.y, e1.x * d2 - e2.x * d1) / det;
   }
+  }
+  // **One call shades every water** (S108): a body's and a channel's surface go through the same
+  // tier, and the white water — a channel's foam, a body's plunge — is laid over the result as a
+  // white diffuse surface lit by the sun and the sky. A pixel that is all white water asks the
+  // tier nothing.
+  float3 color = float3(0.0);
+  if (white < 1.0) {
+    if ((material.flags & k_material_water_volume) != 0) {
+      // **The ground under a lifted body's water is wet** (S102, second pass; water.md, "One
+      // sheet"): the bottom's material takes the saturation of sand under water, as the ground
+      // beside the sheet takes it under its film — Lekner and Dorf's darkening is that of a surface
+      // under a layer of water, whatever the layer's depth. Until this pass only a bared pixel's
+      // bottom was wet, and the sheet's sand was drawn dry beside the wet sand it lies on.
+      const float bottom_s = swash.surface != 0 && depth > 0.0 ? 1.0 : max(bared_wet, 0.0);
+      color = water_pixel_volume(params, geo, instance, index, slope, dp_dx, dp_dy, s, local, n,
+                                 view, w, ray_bias, depth, has_map, map, edge, foam, bottom_s);
+    } else {
+      color = water_pixel_low(params, s, n, view, w, ray_bias, depth, edge, foam);
+    }
+  }
+  if (white > 0.0)
+    color = lerp(color, water_white_water(params, s, white_plane, ray_bias, white_shade), white);
   // The low tier draws the bottom as the body's shallow tint, so a bared pixel is that tint's
   // Lekner and Dorf darkening (S99: no longer a fixed sand's 0.35).
-  const float3 c = water_plunge_over(params, s, ray_bias, plunge,
-                                     water_pixel_low(params, s, n, view, w, ray_bias, depth, edge, foam));
-  return bared_wet >= 0.0 ? c * water_wet_darkening(w.shallow, bared_wet) : c;
+  if ((material.flags & k_material_water_volume) == 0 && bared_wet >= 0.0)
+    color *= water_wet_darkening(w.shallow, bared_wet);
+  return color;
 }
 
 // **The open sea past its body's outline** (docs/subsystems/water.md, "To the horizon"; roadmap

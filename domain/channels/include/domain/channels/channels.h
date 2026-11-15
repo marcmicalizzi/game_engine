@@ -75,7 +75,23 @@ namespace engine::channels {
 // 10 (W116): a line across a slope is seated under its lower bank (`ChannelLink::seat`), its flood
 //    bed reaches no further than the ground holds its level, and the line is moved toward a bank
 //    only where the move finds one.
-inline constexpr u32 k_channels_version = 10;
+// 11 (W121): a link that ends in a body is cut to the body's own level and nowhere under it
+//    outside the body (its base level), and a mouth's fan begins below a cliff.
+// 12 (W122): a hollow deeper than the breach limit is a body of the plan or a sink and no line
+//    crosses it; a link's bed never rises downstream, in itself or across a junction; the cut's
+//    top widens with what the bed is held under its section; the seat reads no bank past a step.
+// 13 (W122, to the gate): what moved a plan's content inside 12 without moving it (a hollow's
+//    catchment read at its spill, the fan's running minimum, the sill held by every link that
+//    begins on a lake's lip), and with them a line's turn bounded after its points are moved, a
+//    mouth for a line that ends at an authored body under its spill, a body of the plan written
+//    with its own look, and a dry hollow's floor.
+// 14 (W122, the same night): that mouth asked of the cell under the line's last point, so a
+//    line the shorelines split off (it holds no cells) ends in the body too; the forest had
+//    been planned under 13 by then, so the constant moved rather than its plan be deleted.
+// 15 (W122, the same night): the links that met at a confluence whose trunk a body took whole
+//    end in that body, at its level (what the forest's two lines at mark 8 were; 14 had been
+//    cooked by then).
+inline constexpr u32 k_channels_version = 15;
 
 // **The bed's surface sediment at a point** (W97; channels.md, "Bed sediment"; the sources in
 // docs/experiments/channels.md, "Bed sediment"): the surface grain-size distribution a pebble count
@@ -162,6 +178,10 @@ struct ChannelLink {
   Vector<f32> flood_left;
   Vector<f32> flood_right;
   Vector<f32> entrenchment;
+  // **W122** (channels.md, "Hollows"), one per point of `line`: how much wider than its section
+  // the cut's top is, metres, where the bed is held through a lip more than a thalweg under the
+  // section's own depth and the ground beside the line stands high enough to carry the banks out.
+  Vector<f32> widen;
   // **W97** (channels.md, "Bed sediment"), one per point of `line`: the bed's surface sediment.
   Vector<ChannelSediment> sediment;
   // The points the water and the pieces run to: `line.size()`, less for a tributary whose last
@@ -174,6 +194,85 @@ struct ChannelLink {
   bool mouth = false;
   bool outlet = false;
   f64 mouth_level = 0;
+  // W121: the level of the body an outlet begins in (its first point is that body's shoreline),
+  // which its cut stands under nowhere the ground stood over it; 0 for a link that is no outlet.
+  // W122: for a body of the plan it is the body's sill, two centimetres over its level.
+  f64 outlet_level = 0;
+};
+
+// **A hollow of the ground, and what the plan made of it** (W122; channels.md, "Hollows"; the
+// grounding in docs/experiments/hollows.md). A hollow is a pit the fill raised: the cells
+// connected under one spill. Its `spill_m` is the ground at the cell the flood entered it from
+// (the lowest point of its rim, on the lattice), its `floor_m` its lowest cell's ground, its area
+// and volume what lies under the spill, its catchment the area that drains through its spill.
+enum class HollowKind : u8 {
+  // No deeper than `breach_max_m`: the lines cross it, their bed carried through its lip.
+  Breached = 0,
+  // A standing body of the plan at `level_m` (the spill less `basin_notch_m`), with an outlet.
+  Lake = 1,
+  // A scene's own body stands in it more than `breach_max_m` under its spill: the body is where
+  // the hollow's water ends, and nothing leaves it. `level_m` is the body's.
+  AuthoredTerminal = 2,
+  // No water stands in it: the author named it dry (`ChannelLayer.basins`), or its losses take
+  // all its inflow. Its lowest cell is where its lines end.
+  Dry = 3,
+  // Deeper than the limit and under `basin_min_area_m2`: breached all the same.
+  DeepBreach = 4,
+  // Its inflow does not cover its water's losses at the spill: a body of the plan at the level
+  // where the two are equal, `level_m`, with no outlet.
+  Terminal = 5,
+  // A scene's own body stands in it within `breach_max_m` of its spill: the author's lake, with
+  // the outlet it had.
+  Authored = 6,
+  // The author named it `infilled`: a lake that silted up. The hollow is ground, filled flat to
+  // its spill (`fill_*`: the floor, which the plan writes as a ground edit), and the lines cross
+  // it as they cross any ground. `level_m` is the floor's, the spill.
+  Infilled = 7,
+};
+struct Hollow {
+  HollowKind kind = HollowKind::Breached;
+  f64 level_m = 0;  // the water's, for a kind that holds any; else the spill
+  f64 spill_m = 0;
+  f64 floor_m = 0;
+  f64 floor_x = 0, floor_z = 0;  // the lowest cell, world metres
+  f64 spill_x = 0, spill_z = 0;  // the cell the flood entered it from
+  f64 area_m2 = 0;               // under the spill
+  f64 volume_m3 = 0;             // under the spill
+  f64 catchment_m2 = 0;          // what drains through the spill, the hollow itself included
+  f64 extent_m = 0;              // the farthest cell from the lowest, in x or z
+  // The balance at the year's mean, m3/s: what runs in (the runoff over the catchment less the
+  // water's own area, and the named sources) and what the water loses at the level it stands at
+  // (evaporation and seepage over its area, and the basin's leak). A lake's outlet carries the
+  // difference; a body with none stands where the two meet.
+  f64 inflow_m3s = 0;
+  f64 loss_m3s = 0;
+  // A body of the plan's own water: its area and volume under `level_m`, on the lattice (a
+  // shallow pond a notch under its spill floods far less than its hollow does under the spill).
+  f64 water_m2 = 0;
+  f64 water_m3 = 0;
+  std::string name;  // a body's name (the plan's or the author's `basins` entry)
+  // **An infilled hollow's floor** (channels.md, "A dried lake's floor"): a grid of heights on
+  // the plan's own lattice, `fill_nx` by `fill_nz` points from the corner (`fill_x_mm`,
+  // `fill_z_mm`), rows of x in order of z, each whole millimetres over `level_m`: 0 on the
+  // hollow's own cells and on the cells of its rim (so the floor runs flat to its walls, with
+  // no slot between, and raises nothing over the level), and `k_fill_none_mm` everywhere else,
+  // far under any ground, so the edit raises nothing there. Empty on every other kind.
+  i64 fill_x_mm = 0, fill_z_mm = 0;
+  u32 fill_nx = 0, fill_nz = 0;
+  Vector<i32> fill_mm;
+  f64 depth_m() const noexcept { return spill_m - floor_m; }
+  // Whether the plan writes a body for it.
+  bool body() const noexcept { return kind == HollowKind::Lake || kind == HollowKind::Terminal; }
+};
+// What the fill found and the plan did with it. `hollows` holds every hollow that is not simply
+// breached, deepest first within a kind's order of discovery (by lowest cell); the breached ones
+// are counted.
+struct ChannelHollows {
+  Vector<Hollow> hollows;
+  u32 breached = 0;          // pits deeper than a millimetre, no deeper than the limit
+  f64 breached_max_m = 0;    // the deepest of them
+  f64 breached_area_m2 = 0;  // their area under their spills
+  u32 passes = 0;            // how many times the fill ran
 };
 
 // What the water bodies did to a network (W90): the links that end at a shoreline, the links
@@ -203,6 +302,10 @@ struct ChannelNetwork {
   Vector<ChannelLink> links;  // by their first cell, ascending
   f64 length_m = 0;           // every link's line, summed
   ChannelWaterCounts water;   // W90
+  // W122: the hollows, and over the lattice (empty in a plan read from its file) 1 + the index of
+  // the plan's body whose water stands over each cell, 0 where none does.
+  ChannelHollows basins;
+  Vector<u32> body_of;
   f64 area_m2() const noexcept {
     const f64 s = static_cast<f64>(spacing_mm) / 1000.0;
     return static_cast<f64>(width - 1) * s * static_cast<f64>(depth - 1) * s;
@@ -315,9 +418,59 @@ JsonValue water_channels_json(const ChannelLayer& layer, const ChannelNetwork& n
 // W89): one object per link of the network (every link, the rills' too), in link order, each
 // `{name, points, width_m, depth_m, bank_slope}` — `points` the line with y the top of the bank
 // (the ground under the line), `width_m` the bankfull width, `depth_m` the bed below the top: the
-// section's thalweg (`bank_slope`'s trapezoid of the hydraulic geometry's area), the bed held
-// down the line, never more than two thalwegs under the ground at it — as a JSON array.
+// section's thalweg (`bank_slope`'s trapezoid of the hydraulic geometry's area), the bed held at
+// its running minimum down the line (W122: it never rises downstream), and `width_m` wider than
+// the section by `ChannelLink::widen` where a breach is held deep — as a JSON array.
 JsonValue terrain_cuts_json(const ChannelLayer& layer, const ChannelNetwork& network);
+
+// **The plan's standing bodies** (W122; channels.md, "Hollows"): one `engine.scene.WaterBody` a
+// hollow the plan stands water in (`Hollow::body`), in the hollows' order, each `{name, level_m,
+// shape: {fill: {seed, max_extent_m}}}` — seeded at the hollow's lowest cell, the extent the
+// hollow's own reach from it and a margin — for the scene's `water`, where the water capability
+// floods it over the ground as it does any body that fills. **Its look is its size's** (W122;
+// channels.md, "A lake's look"; the grounding in docs/experiments/hollows.md): `wind_m_s` the
+// layer's `basin_wind_m_s` times the cube root of Hondzo & Stefan's sheltering by area (none
+// written at 0), `wet_m` a sand's capillary rise and that wind's fetch-limited wave over the
+// body's own reach, `shore_m` and `depth_fade_m` by its area and its mean depth, `seed` its
+// place in the list. Every other field is the body's default, the author's to set on the block.
+JsonValue plan_bodies_json(const ChannelLayer& layer, const ChannelNetwork& network);
+
+// **A dried lake's floor** (W122; channels.md, "A dried lake's floor"): one
+// `engine.scene.TerrainEdit` of mode `Fill` an infilled hollow, in the hollows' order — a patch
+// over the hollow's box whose grid is the hollow's floor (`Hollow::fill_mm`) — for the `tiles`
+// block's `edits`, before the cuts: the ground is raised to the floor, and the cuts of the lines
+// that cross it are made in it. Empty for a plan with no infilled hollow.
+inline constexpr i32 k_fill_none_mm = -1'000'000;
+JsonValue terrain_fills_json(const ChannelLayer& layer, const ChannelNetwork& network);
+// **The ground with the plan's floors in it**: `base` raised to every infilled hollow's floor,
+// by the edit's own rule (the grid's bilinear surface where it stands over the ground). What
+// the planner lays its lines on after the hollows are decided, and what a reader of the plan
+// that holds the ground **before its edits** asks in its place (`engine-content channels`); a
+// host's ground has the edit in it already. `held` must outlive the returned ground; with no
+// infilled hollow the result is `base` itself.
+struct FlooredGround {
+  scene_gen::Ground base;
+  const ChannelNetwork* network = nullptr;
+};
+scene_gen::Ground floored_ground(const ChannelNetwork& network, const scene_gen::Ground& base,
+                                 FlooredGround& held);
+
+// **The rule, measured on a plan** (W122; channels.md, "Hollows"): a link climbs where its bed's
+// line — the cut's bed with a step-pool's own pool taken back out, since a pool below a step is a
+// hollow the reach is made of — stands over the same line a point upstream by more than a
+// millimetre. `trench` is how far the bed is held under its section's own depth (the top less the
+// thalweg): what a breach digs.
+struct HollowStats {
+  u32 links = 0;         // links with a line
+  u32 climbing = 0;      // of them, those whose bed's line rises anywhere
+  f64 rise_max_m = 0;    // the largest single rise between two neighbours
+  u32 rise_link = ~0u;   // and its link
+  f64 trench_max_m = 0;  // the deepest hold under the section
+  u32 trench_link = ~0u;
+  f64 trench_line_m = 0;  // metres of line held more than a thalweg under its section
+  u32 ends_higher = 0;    // links whose last bed stands over their first
+};
+HollowStats measure_hollows(const ChannelLayer& layer, const ChannelNetwork& network);
 
 // **The bed's material** (channels.md, "The flood bed"; W93): each stretch of bed — the cut between
 // its bank tops and its flood bed — as an `engine.scene.TerrainMaskRegion` naming the layer's
