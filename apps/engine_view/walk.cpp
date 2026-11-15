@@ -9,6 +9,7 @@
 #include <core/time/time.h>
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/flora_motion.h>
+#include <systems/renderer/page_source.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/terrain.h>
 
@@ -424,9 +425,11 @@ Walker::Walker() : impl_(std::make_unique<Impl>()) {}
 Walker::~Walker() = default;
 
 bool Walker::start(const WalkParams& params, u32 tick_hz, const renderer::SceneData& scene,
-                   std::string* error, const scene_gen::TileSource* tiles) {
+                   std::string* error, const scene_gen::TileSource* tiles,
+                   const scene_collision::ProxySource* proxies) {
   (void)error;
-  (void)tiles;  // the collision's, where the build has it
+  (void)tiles;    // the collision's, where the build has it
+  (void)proxies;  // likewise
   Impl& w = *impl_;
   w.params = params;
   w.tick_hz = tick_hz > 0 ? tick_hz : 240u;
@@ -484,7 +487,8 @@ bool Walker::start(const WalkParams& params, u32 tick_hz, const renderer::SceneD
     why = "the physics world could not be made";
   } else if (!w.ring.configure(ring, &ring_error)) {
     why = std::string("the collision ring: ") + ring_error;
-  } else if (!w.consumer.create(w.world, scene, w.ground, config, &why, tiles, w.jobs.get())) {
+  } else if (!w.consumer.create(w.world, scene, w.ground, config, &why, tiles, w.jobs.get(),
+                                proxies)) {
     // `why` says what
   } else {
     w.ring.add_consumer(w.consumer.consumer());
@@ -1115,6 +1119,33 @@ scene::FrameWalk WalkProbe::end() noexcept {
   thread_ = thread;
   all_ = all;
   return out;
+}
+
+#if ENGINE_VIEW_WALK_PHYSICS
+struct CollisionCopy::Impl {
+  scene_collision::ProxySource source;
+};
+const scene_collision::ProxySource* CollisionCopy::get() const noexcept {
+  return impl_ != nullptr ? &impl_->source : nullptr;
+}
+void copy_collision_geometry(const renderer::SceneData& scene, const WalkParams* walk,
+                             bool collision_draw, CollisionCopy& out) {
+  if (walk == nullptr && !collision_draw) return;
+  f32 error = walk != nullptr ? walk->mesh_error_m : scene_collision::mesh_error_tunable();
+  if (collision_draw) error = std::min(error, scene_collision::mesh_error_tunable());
+  out.impl_ = std::make_unique<CollisionCopy::Impl>();
+  out.impl_->source.build(scene, error);
+}
+#else
+struct CollisionCopy::Impl {};
+const scene_collision::ProxySource* CollisionCopy::get() const noexcept { return nullptr; }
+void copy_collision_geometry(const renderer::SceneData&, const WalkParams*, bool, CollisionCopy&) {}
+#endif
+CollisionCopy::CollisionCopy() = default;
+CollisionCopy::~CollisionCopy() = default;
+
+u64 release_host_geometry(renderer::SceneData& scene) {
+  return renderer::release_uploaded_streams(scene, renderer::HostReaders::none);
 }
 
 }  // namespace engine::view

@@ -1221,7 +1221,8 @@ struct ViewCollisionDraw {
 
 bool start_collision_draw(ViewCollisionDraw& out, const gfx::Device& device,
                           renderer::SceneRenderer& view, const renderer::SceneData& scene,
-                          const Options& options, std::string& error) {
+                          const Options& options, std::string& error,
+                          const scene_collision::ProxySource* proxies) {
   if (!options.collision_draw) return true;
 #if ENGINE_VIEW_WALK_PHYSICS
   const scene_gen::GroundProvider* ground = nullptr;
@@ -1234,7 +1235,8 @@ bool start_collision_draw(ViewCollisionDraw& out, const gfx::Device& device,
   const f32 radius_m =
       options.collision_draw_radius > 0.0f ? options.collision_draw_radius : ring * tile;
   scene_collision::Config config = scene_collision::config_from_tunables(tile);
-  if (!out.view.create(scene, ground, config, std::max(ring, radius_m / tile + 0.5f), &error))
+  if (!out.view.create(scene, ground, config, std::max(ring, radius_m / tile + 0.5f), &error,
+                       nullptr, proxies))
     return false;
   scene_collision::DrawOptions draw;
   draw.radius_m = radius_m;
@@ -1246,6 +1248,7 @@ bool start_collision_draw(ViewCollisionDraw& out, const gfx::Device& device,
   (void)device;
   (void)view;
   (void)scene;
+  (void)proxies;
   error = "--collision-draw: this build has no collision (ENGINE_WITH_SCENE_COLLISION is off)";
   return false;
 #endif
@@ -2991,6 +2994,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
   renderer::ResolvedSettings scene_off_requested;
   renderer::GpuScene scene_off;
   renderer::SceneRenderer renderer_off;
+  view::CollisionCopy collision_copy;  // T138: before the draw and the walker, which read it
   ViewMedium medium;  // brief-volumetrics: after the renderer, so it unregisters first
   ViewCollisionDraw collision_draw;  // P62: after the renderer, so it unregisters first
   renderer::VisibleCensus census;
@@ -3220,6 +3224,8 @@ int run_offscreen(Options& options, Interactive& interactive) {
       }
       resolved_off = scene_off.resolved();
     }
+    view::copy_collision_geometry(scene_data, interactive.on ? &interactive.header.walk : nullptr,
+                                  options.collision_draw, collision_copy);  // before any release
     if (resolved.stream && options.page_source != Options::PageSource::host) {
       std::string why;
       if (!renderer::attach_page_source(scene_data, scene, page_jobs, page_source, &why)) {
@@ -3231,8 +3237,8 @@ int run_offscreen(Options& options, Interactive& interactive) {
                         log::field("reason", why));
       }
     }
-    // Both scenes are uploaded: what nothing reads again goes (T129), unless pages copy from it.
-    if (!resolved.stream || page_source.valid()) renderer::release_uploaded_streams(scene_data);
+    if (!resolved.stream || page_source.valid())  // both uploaded: what nobody reads goes (walk.h)
+      view::release_host_geometry(scene_data);
     renderer::SceneRenderer::Desc renderer_desc;
     renderer_desc.page_source = page_source.valid() ? &page_source : nullptr;
     renderer_desc.width = options.width;
@@ -3256,8 +3262,8 @@ int run_offscreen(Options& options, Interactive& interactive) {
         exit_code = fail("medium", error);  // brief-volumetrics
         break;
       }
-      if (!start_collision_draw(collision_draw, device, view_renderer, scene_data, options,
-                                error)) {
+      if (!start_collision_draw(collision_draw, device, view_renderer, scene_data, options, error,
+                                collision_copy.get())) {
         exit_code = fail("collision-draw", error);  // P62
         break;
       }
@@ -3369,8 +3375,8 @@ int run_offscreen(Options& options, Interactive& interactive) {
       // With the recording's walk numbers, on the scene as loaded (walk.h): a recorded walk
       // replays bit for bit over the scene it was recorded on.
       profiling::TraceStage session_stage("session");
-      if (!walker.start(interactive.header.walk, tick_hz, scene_data, &error,
-                        ground.tile_source())) {
+      if (!walker.start(interactive.header.walk, tick_hz, scene_data, &error, ground.tile_source(),
+                        collision_copy.get())) {
         exit_code = fail("walk", error);
         break;
       }
@@ -3480,7 +3486,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
         take_folded(view_renderer, folded, pending, records);
         startup.frame(readiness());
         if (view::memory_report().on() && !records.empty())
-          view::memory_report().take("first_frame", &device);
+          view::memory_report().take("first_frame", &device, &scene);
         const i64 ready = time::monotonic_ns();
         const u64 before_tick = session.tick().value;
         const u64 to = before_tick + ticks_per_frame < end ? before_tick + ticks_per_frame : end;
@@ -4084,7 +4090,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
       summary.startup = startup.finish(&why);
       if (!why.empty()) std::fprintf(stderr, "engine-view: --startup-trace: %s\n", why.c_str());
     }
-    view::memory_report().take("exit", &device);
+    view::memory_report().take("exit", &device, &scene);
     summary.memory = view::memory_report().block();
     summary_line = write_json(schema::to_json(summary), JsonWriteOptions{.pretty = false});
     if (!options.benchmark.empty()) {
@@ -5733,6 +5739,7 @@ int run_view(int argc, char** argv) {
       jobs::JobSystemConfig{.performance_workers = 1, .efficiency_workers = 2});
   renderer::FilePageSource page_source;
   renderer::SceneRenderer view_renderer;
+  view::CollisionCopy collision_copy;  // T138: before the draw and the walker, which read it
   ViewMedium medium;  // brief-volumetrics: after the renderer, so it unregisters first
   ViewCollisionDraw collision_draw;  // P62: after the renderer, so it unregisters first
 #if ENGINE_VIEW_WORLD
@@ -6200,6 +6207,8 @@ int run_view(int argc, char** argv) {
     // Where a streamed page's bytes come from. Attaching the container-backed source is also what
     // releases the merged host streams, so it happens here, after the upload and before the
     // renderer that will read from it.
+    view::copy_collision_geometry(scene_data, interactive.on ? &interactive.header.walk : nullptr,
+                                  options.collision_draw, collision_copy);  // before any release
     if (resolved.stream && options.page_source != Options::PageSource::host) {
       std::string why;
       // Which source won is reported by the summary out of `StreamStats::from_file`, not from
@@ -6213,8 +6222,8 @@ int run_view(int argc, char** argv) {
                         log::field("reason", why));
       }
     }
-    // The scene is uploaded: what nothing reads again goes (T129), unless pages copy from it.
-    if (!resolved.stream || page_source.valid()) renderer::release_uploaded_streams(scene_data);
+    if (!resolved.stream || page_source.valid())  // uploaded: what nobody reads goes (walk.h)
+      view::release_host_geometry(scene_data);
     renderer::SceneRenderer::Desc renderer_desc;
     renderer_desc.page_source = page_source.valid() ? &page_source : nullptr;
     renderer_desc.width = swapchain.extent().width;
@@ -6244,7 +6253,8 @@ int run_view(int argc, char** argv) {
       exit_code = fail("medium", error);  // brief-volumetrics
       break;
     }
-    if (!start_collision_draw(collision_draw, device, view_renderer, scene_data, options, error)) {
+    if (!start_collision_draw(collision_draw, device, view_renderer, scene_data, options, error,
+                              collision_copy.get())) {
       exit_code = fail("collision-draw", error);  // P62
       break;
     }
@@ -6319,7 +6329,7 @@ int run_view(int argc, char** argv) {
       // The walker, on the scene as loaded and the ground as the first frame draws it; with the
       // header's numbers, so a replay walks with the recording's (walk.h).
       if (!walker.start(interactive.header.walk, interactive.header.params.tick_hz, scene_data,
-                        &error, ground.tile_source())) {
+                        &error, ground.tile_source(), collision_copy.get())) {
         exit_code = fail("walk", error);
         break;
       }
@@ -7015,7 +7025,7 @@ int run_view(int argc, char** argv) {
                            (ground_now->chunks_built == 0 && ground_now->layout_lag_m == 0.0);
         startup.frame(r);
         if (r.frame_done && view::memory_report().on())
-          view::memory_report().take("first_frame", &device);
+          view::memory_report().take("first_frame", &device, &scene);
         if (load_controllable_ns == 0 && startup.reached("player_controllable"))
           load_controllable_ns = time::monotonic_ns();
         if (startup.reached(view::k_startup_milestones[load_ready_rung])) {
@@ -7407,8 +7417,8 @@ int run_view(int argc, char** argv) {
     block.set("first_game_tick", game_first_tick());
     loading_text = write_json(block, JsonWriteOptions{.pretty = false});
   }
-  view::memory_report().take("exit", &device);  // a window logs its two lines (memory_report.h)
-  const std::string memory_text =               // and its summary line carries the block (null off)
+  view::memory_report().take("exit", &device, &scene);  // a window logs its lines (memory_report.h)
+  const std::string memory_text =  // and its summary line carries the block (null off)
       write_json(view::memory_report().block(), JsonWriteOptions{.pretty = false});
   // `--startup-trace` in a window: the same block an offscreen run's summary carries (null off).
   std::string startup_text;

@@ -184,10 +184,17 @@ u64 paged_stream_bytes(const SceneData& data) noexcept;
 // uploads the scene once and never again from this `SceneData` (engine-view, after every
 // `GpuScene::create` of the run): a host that rebuilds its GPU scene from it (engine-host's
 // `ensure_renderer`), or a streamed scene that pages from host memory (no page source attached),
-// must not call it. **Kept**: the float positions, the packed triangles and the per-vertex source
-// indices, which the crown priors, a swaying tail tree's padding and the collision's cut proxies
-// read after the upload; the cluster and LOD descriptors; skin and morph streams (whether the scene
-// is skinned or morphed is read from them).
-u64 release_uploaded_streams(SceneData& data);
+// must not call it. **With `HostReaders::none`** the float positions, the packed triangles and the
+// per-vertex source indices go too (T138): `GpuScene::create` measures what the renderer reads from
+// them (a swaying tail tree's padding, the crowns' priors, the meshes that face the sky) before it
+// returns, so after it only the collision's cut proxies read them, and a host with no walker passes
+// `none`. **`HostReaders::collision`** keeps those three for the proxies. **Always kept**: the
+// cluster and LOD descriptors; skin and morph streams (whether the scene is skinned or morphed is
+// read from them).
+enum class HostReaders : u8 {
+  none,       // nothing reads the scene's host geometry after the upload
+  collision,  // a walker's collision cuts proxies from the float positions and triangles
+};
+u64 release_uploaded_streams(SceneData& data, HostReaders readers);
 
 }  // namespace engine::renderer

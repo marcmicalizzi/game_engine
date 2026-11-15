@@ -1,0 +1,18 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "T138",
+  "reason": "T138: GpuScene measures at create what the renderer read from the host's float geometry and holds it, so a host may release it; renderer.md and apps.md say what is now released, what a place holds by kind (the memory report's place block), and the designed second cluster set. Leg 2: the collision's own copy has to be built before attach_page_source and the release in both of engine-view's runs and handed to the walker and the collision draw (one physics-guarded block in walk.cpp); renderer.md says the walk now releases the floats too",
+  "date": "2026-11-15",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "renderer.record_frame.lines": -1,
+    "renderer.gpu_scene_cpp.lines": -4,
+    "renderer.gpu_scene_h.lines": 22,
+    "engine_view.main_cpp.lines": 10,
+    "engine_view.run_view.lines": 4,
+    "engine_view.run_offscreen.lines": 3,
+    "engine_view.if_engine_view": 1,
+    "page:docs/subsystems/renderer.md": 6724,
+    "page:docs/subsystems/apps.md": 467
+  }
+}

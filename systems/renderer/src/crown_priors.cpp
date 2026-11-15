@@ -112,11 +112,9 @@ void build_crown_priors(const SceneData& data, CrownPriorTable& out) {
   std::memcpy(out.bytes.data() + head, grids.data(), grids.size());
 }
 
-bool upload_crown_priors(const gfx::Device& device, const SceneData& data,
+bool upload_crown_priors(const gfx::Device& device, const CrownPriorTable& table,
                          gfx::BufferResource& buffer, u32& count, std::string* error) {
   count = 0;
-  CrownPriorTable table;
-  build_crown_priors(data, table);
   if (table.crowns == 0) return true;
   if (!gfx::upload_buffer(device, table.bytes.data(), table.bytes.size(),
                           gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress, buffer,

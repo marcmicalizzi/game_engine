@@ -244,7 +244,7 @@ bool attach_page_source(SceneData& data, const GpuScene& scene, jobs::JobSystem&
   return true;
 }
 
-u64 release_uploaded_streams(SceneData& data) {
+u64 release_uploaded_streams(SceneData& data, HostReaders readers) {
   geometry::ClusterMesh& mesh = data.lod.mesh;
   const u64 quantized = u64{mesh.quantized.capacity()} * sizeof(u16);
   const u64 attributes = u64{mesh.attributes.capacity()} * sizeof(geometry::VertexAttributes);
@@ -256,10 +256,27 @@ u64 release_uploaded_streams(SceneData& data) {
   mesh.attributes.shrink_to_fit();
   mesh.vertex_ids.clear();
   mesh.vertex_ids.shrink_to_fit();
-  const u64 freed = quantized + attributes + ids;
+  // The float positions, the packed triangles and the per-vertex source indices (T138): the
+  // collision's cut proxies read them for as long as a walker walks, and nothing else does once
+  // `GpuScene::create` has measured the sway bounds, the crowns and the sky-facing meshes from
+  // them.
+  u64 floats = 0;
+  if (readers == HostReaders::none) {
+    floats = u64{mesh.vertices.capacity()} * sizeof(Vec3) +
+             u64{mesh.triangles.capacity()} * sizeof(u32) +
+             u64{mesh.vertex_source.capacity()} * sizeof(u32);
+    mesh.vertices.clear();
+    mesh.vertices.shrink_to_fit();
+    mesh.triangles.clear();
+    mesh.triangles.shrink_to_fit();
+    mesh.vertex_source.clear();
+    mesh.vertex_source.shrink_to_fit();
+  }
+  const u64 freed = quantized + attributes + ids + floats;
   ENGINE_LOG_INFO(log_renderer, "uploaded host streams released", log::field("bytes", freed),
                   log::field("quantized", quantized), log::field("attributes", attributes),
-                  log::field("vertex_ids", ids));
+                  log::field("vertex_ids", ids), log::field("floats", floats),
+                  log::field("kept_for", readers == HostReaders::none ? "nothing" : "collision"));
   return freed;
 }
 

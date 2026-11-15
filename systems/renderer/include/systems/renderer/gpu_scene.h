@@ -37,9 +37,11 @@
 #include <domain/gfx/rhi.h>
 #include <domain/gfx/shader_library.h>
 #include <domain/gfx/visibility_resolve.h>
+#include <systems/renderer/crown_priors.h>
 #include <systems/renderer/flora_motion.h>
 #include <systems/renderer/flora_poser.h>
 #include <systems/renderer/pair_account.h>
+#include <systems/renderer/place_bytes.h>
 #include <systems/renderer/rt_capacity.h>
 #include <systems/renderer/rt_step.h>
 #include <systems/renderer/scene.h>
@@ -520,6 +522,19 @@ class GpuScene {
   }
   const gfx::MicromapStats& micromap_stats() const noexcept { return micromaps_.stats; }
   u64 micromap_bytes() const noexcept { return micromaps_.resident_bytes(); }
+  // **What the renderer reads from the host's float positions, measured at the upload** (T138;
+  // renderer.md, "The scene's host copy after the upload"), so that a host may give the positions
+  // and the triangles back once `create` returns and every renderer made over the scene after that
+  // still has them: the crowns' priors (`crown_priors.h`; built when the settings' indirect light
+  // reads them, `crown_priors_built`) and the meshes that face the sky (`sky_facing_meshes`, a word
+  // a mesh, always).
+  bool crown_priors_built() const noexcept { return crown_priors_built_; }
+  const CrownPriorTable& crown_priors() const noexcept { return crown_priors_; }
+  std::span<const u32> sky_facing() const noexcept {
+    return std::span<const u32>(sky_facing_.data(), sky_facing_.size());
+  }
+  u32 sky_facing_count() const noexcept { return sky_facing_count_; }
+  PlaceBytes place_bytes() const noexcept;  // what the place holds, by kind (place_bytes.h, T138)
   // A mesh of the scene carries coverage errors (geometry.md, "Two errors"): `lod_coverage` holds
   // them and `fade` the cross-fade's tables.
   bool has_coverage() const noexcept { return has_coverage_; }
@@ -1589,6 +1604,8 @@ class GpuScene {
   // The tail's trees (renderer.md, "Streamed trees sway").
   bool tail_sways(u32 mesh) const noexcept;
   f32 flora_padding_of(u32 mesh);
+  void measure_flora_padding();  // gpu_scene_place.cpp, with `measure_host_reads` (T138)
+  void measure_host_reads(const SceneData& data, const ResolvedSettings& resolved);
   FloraInstance flora_instance(u32 instance, u32 mesh, u32 first_part, u32 key) const noexcept;
   void release_tail_tree(u32 slot) noexcept;
   void acquire_tail_tree(u32 slot, const SceneInstance& source);
@@ -1808,7 +1825,11 @@ class GpuScene {
   FloraStats flora_stats_;
   bool flora_moving_ = false;                // any part of any tree off its rest pose this frame
   const char* flora_wind_source_ = nullptr;  // the last frame's: "frame", "ground", "tunables"
-  Vector<f32> flora_padding_;                // per mesh, the sway's bound; -1 until measured
+  Vector<f32> flora_padding_;                // per mesh, the sway's bound, measured at the upload
+  CrownPriorTable crown_priors_;             // T138: measured at `create`, before any release
+  bool crown_priors_built_ = false;
+  Vector<u32> sky_facing_;  // T138: `sky_facing_meshes` at `create`
+  u32 sky_facing_count_ = 0;
   // **The tail's trees** (renderer.md, "Streamed trees sway"). A record is a deform entry and a run
   // of the pose table, made for one mesh and reused by the next tree of that mesh to arrive: its
   // entry never changes once written, so a frame in flight that still draws the tree that left

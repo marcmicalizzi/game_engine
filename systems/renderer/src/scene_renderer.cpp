@@ -803,19 +803,25 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
     }
     gi_reset_ = true;
     // The crowns' priors (stage 7): each mesh's own shade, from its own leaves, once.
+    // Measured by the scene at its upload (T138), so a host that released the float positions
+    // since still has them; built here only where the scene's settings did not ask for them.
+    CrownPriorTable built_here;
+    if (resolved_.gi_crown_prior && !scene.crown_priors_built())
+      build_crown_priors(scene.data(), built_here);
     if (resolved_.gi_crown_prior &&
-        !upload_crown_priors(device, scene.data(), gi_crowns_, gi_crown_count_, error)) {
+        !upload_crown_priors(device, scene.crown_priors_built() ? scene.crown_priors() : built_here,
+                             gi_crowns_, gi_crown_count_, error)) {
       destroy();
       return false;
     }
   }
   // The surfaces that face the sky (S105; renderer.md, "The ground takes the picture's cut in every
   // cascade"): measured once from the load's cones, for whichever frame cuts its cascades by their
-  // texels (a word a mesh, so it is made whatever the settings are now).
+  // texels (a word a mesh, so it is made whatever the settings are now). The scene measured it at
+  // its upload (T138), before a host could release the positions it is measured from.
   {
-    Vector<u32> sky;
-    const SceneData& data = scene.data();
-    const u32 meshes = sky_facing_meshes(data.lod.mesh, data.parts, sky);
+    const std::span<const u32> sky = scene.sky_facing();
+    const u32 meshes = scene.sky_facing_count();
     ENGINE_LOG_INFO(log_renderer, "meshes that face the sky", log::field("meshes", meshes),
                     log::field("of", static_cast<u64>(sky.size())));
     if (meshes > 0) {
@@ -825,7 +831,7 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
         destroy();
         return false;
       }
-      sky_facing_count_ = sky.size();
+      sky_facing_count_ = static_cast<u32>(sky.size());
     }
   }
   fill_view_layout();
@@ -3946,10 +3952,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // chain as it was before the cache, and the cache's tables and slots wait for an instance that
   // needs them.
   // A field instance past its rest distance is one too (R152), which only the frame's eye says.
-  const bool rt_cache =
-      rt_chain && scene.rt_cache() &&
-      (scene.rt_cache_instances() > 0 ||
-       (field_block != 0 && scene.flora_stats().field_instances > 0));
+  const bool rt_cache = rt_chain && scene.rt_cache() &&
+                        (scene.rt_cache_instances() > 0 ||
+                         (field_block != 0 && scene.flora_stats().field_instances > 0));
   rt_cache_recording_ = rt_cache;
   // **The drop order's scan, on the frames that may need it** (R106; clas_records.slang, "past
   // the capacity"): its three passes are recorded while a frame read back in the last
