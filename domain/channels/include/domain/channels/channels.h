@@ -85,7 +85,10 @@ namespace engine::channels {
 //    begins on a lake's lip), and with them a line's turn bounded after its points are moved, a
 //    mouth for a line that ends at an authored body under its spill, a body of the plan written
 //    with its own look, and a dry hollow's floor.
-inline constexpr u32 k_channels_version = 13;
+// 14 (W122, the same night): that mouth asked of the cell under the line's last point, so a
+//    line the shorelines split off (it holds no cells) ends in the body too; the forest had
+//    been planned under 13 by then, so the constant moved rather than its plan be deleted.
+inline constexpr u32 k_channels_version = 14;
 
 // **The bed's surface sediment at a point** (W97; channels.md, "Bed sediment"; the sources in
 // docs/experiments/channels.md, "Bed sediment"): the surface grain-size distribution a pebble count

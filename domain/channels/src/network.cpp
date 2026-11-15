@@ -2189,9 +2189,19 @@ bool detail::plan_from_lattice(const ChannelLayer& p, const scene_gen::Ground& u
   // can stand a step short of the outline, where the exclusion finds no water and so no mouth.
   // The link is given the body's level as the base level W121 holds a mouth to: its bed stands
   // nowhere under it, and the solver ends the line at it.
+  // Asked of the cell nearest the line's last point, not of the link's last cell: a line that
+  // left another body on its way is a piece the shorelines split off, and holds no cells (on the
+  // forest one of the two at mark 8 is the outlet of a pool upstream).
   for (ChannelLink& link : n.links) {
-    if (link.mouth || link.line.size() < 2 || link.cells.empty()) continue;
-    const u32 body = n.body_of[link.cells.back()];
+    if (link.mouth || link.line.size() < 2) continue;
+    const ChannelPoint& last = link.line.back();
+    const i64 c =
+        floor_div(scene_gen::nearest_mm(last.at.x) - n.x_mm + n.spacing_mm / 2, n.spacing_mm);
+    const i64 r =
+        floor_div(scene_gen::nearest_mm(last.at.z) - n.z_mm + n.spacing_mm / 2, n.spacing_mm);
+    if (c < 0 || r < 0 || c >= static_cast<i64>(n.width) || r >= static_cast<i64>(n.depth))
+      continue;
+    const u32 body = n.body_of[static_cast<u32>(r) * n.width + static_cast<u32>(c)];
     if (body == 0 || n.basins.hollows[body - 1].kind != HollowKind::AuthoredTerminal) continue;
     link.mouth = true;
     link.mouth_level = n.basins.hollows[body - 1].level_m;
