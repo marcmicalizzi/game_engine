@@ -80,7 +80,18 @@ namespace engine::channels {
 // 12 (W122): a hollow deeper than the breach limit is a body of the plan or a sink and no line
 //    crosses it; a link's bed never rises downstream, in itself or across a junction; the cut's
 //    top widens with what the bed is held under its section; the seat reads no bank past a step.
-inline constexpr u32 k_channels_version = 12;
+// 13 (W122, to the gate): what moved a plan's content inside 12 without moving it (a hollow's
+//    catchment read at its spill, the fan's running minimum, the sill held by every link that
+//    begins on a lake's lip), and with them a line's turn bounded after its points are moved, a
+//    mouth for a line that ends at an authored body under its spill, a body of the plan written
+//    with its own look, and a dry hollow's floor.
+// 14 (W122, the same night): that mouth asked of the cell under the line's last point, so a
+//    line the shorelines split off (it holds no cells) ends in the body too; the forest had
+//    been planned under 13 by then, so the constant moved rather than its plan be deleted.
+// 15 (W122, the same night): the links that met at a confluence whose trunk a body took whole
+//    end in that body, at its level (what the forest's two lines at mark 8 were; 14 had been
+//    cooked by then).
+inline constexpr u32 k_channels_version = 15;
 
 // **The bed's surface sediment at a point** (W97; channels.md, "Bed sediment"; the sources in
 // docs/experiments/channels.md, "Bed sediment"): the surface grain-size distribution a pebble count
@@ -213,6 +224,10 @@ enum class HollowKind : u8 {
   // A scene's own body stands in it within `breach_max_m` of its spill: the author's lake, with
   // the outlet it had.
   Authored = 6,
+  // The author named it `infilled`: a lake that silted up. The hollow is ground, filled flat to
+  // its spill (`fill_*`: the floor, which the plan writes as a ground edit), and the lines cross
+  // it as they cross any ground. `level_m` is the floor's, the spill.
+  Infilled = 7,
 };
 struct Hollow {
   HollowKind kind = HollowKind::Breached;
@@ -231,7 +246,20 @@ struct Hollow {
   // difference; a body with none stands where the two meet.
   f64 inflow_m3s = 0;
   f64 loss_m3s = 0;
+  // A body of the plan's own water: its area and volume under `level_m`, on the lattice (a
+  // shallow pond a notch under its spill floods far less than its hollow does under the spill).
+  f64 water_m2 = 0;
+  f64 water_m3 = 0;
   std::string name;  // a body's name (the plan's or the author's `basins` entry)
+  // **An infilled hollow's floor** (channels.md, "A dried lake's floor"): a grid of heights on
+  // the plan's own lattice, `fill_nx` by `fill_nz` points from the corner (`fill_x_mm`,
+  // `fill_z_mm`), rows of x in order of z, each whole millimetres over `level_m`: 0 on the
+  // hollow's own cells and on the cells of its rim (so the floor runs flat to its walls, with
+  // no slot between, and raises nothing over the level), and `k_fill_none_mm` everywhere else,
+  // far under any ground, so the edit raises nothing there. Empty on every other kind.
+  i64 fill_x_mm = 0, fill_z_mm = 0;
+  u32 fill_nx = 0, fill_nz = 0;
+  Vector<i32> fill_mm;
   f64 depth_m() const noexcept { return spill_m - floor_m; }
   // Whether the plan writes a body for it.
   bool body() const noexcept { return kind == HollowKind::Lake || kind == HollowKind::Terminal; }
@@ -399,9 +427,33 @@ JsonValue terrain_cuts_json(const ChannelLayer& layer, const ChannelNetwork& net
 // hollow the plan stands water in (`Hollow::body`), in the hollows' order, each `{name, level_m,
 // shape: {fill: {seed, max_extent_m}}}` — seeded at the hollow's lowest cell, the extent the
 // hollow's own reach from it and a margin — for the scene's `water`, where the water capability
-// floods it over the ground as it does any body that fills. Every other field is the body's
-// default: the look is the author's to set on the pasted block.
+// floods it over the ground as it does any body that fills. **Its look is its size's** (W122;
+// channels.md, "A lake's look"; the grounding in docs/experiments/hollows.md): `wind_m_s` the
+// layer's `basin_wind_m_s` times the cube root of Hondzo & Stefan's sheltering by area (none
+// written at 0), `wet_m` a sand's capillary rise and that wind's fetch-limited wave over the
+// body's own reach, `shore_m` and `depth_fade_m` by its area and its mean depth, `seed` its
+// place in the list. Every other field is the body's default, the author's to set on the block.
 JsonValue plan_bodies_json(const ChannelLayer& layer, const ChannelNetwork& network);
+
+// **A dried lake's floor** (W122; channels.md, "A dried lake's floor"): one
+// `engine.scene.TerrainEdit` of mode `Fill` an infilled hollow, in the hollows' order — a patch
+// over the hollow's box whose grid is the hollow's floor (`Hollow::fill_mm`) — for the `tiles`
+// block's `edits`, before the cuts: the ground is raised to the floor, and the cuts of the lines
+// that cross it are made in it. Empty for a plan with no infilled hollow.
+inline constexpr i32 k_fill_none_mm = -1'000'000;
+JsonValue terrain_fills_json(const ChannelLayer& layer, const ChannelNetwork& network);
+// **The ground with the plan's floors in it**: `base` raised to every infilled hollow's floor,
+// by the edit's own rule (the grid's bilinear surface where it stands over the ground). What
+// the planner lays its lines on after the hollows are decided, and what a reader of the plan
+// that holds the ground **before its edits** asks in its place (`engine-content channels`); a
+// host's ground has the edit in it already. `held` must outlive the returned ground; with no
+// infilled hollow the result is `base` itself.
+struct FlooredGround {
+  scene_gen::Ground base;
+  const ChannelNetwork* network = nullptr;
+};
+scene_gen::Ground floored_ground(const ChannelNetwork& network, const scene_gen::Ground& base,
+                                 FlooredGround& held);
 
 // **The rule, measured on a plan** (W122; channels.md, "Hollows"): a link climbs where its bed's
 // line — the cut's bed with a step-pool's own pool taken back out, since a pool below a step is a

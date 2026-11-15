@@ -144,13 +144,47 @@ TEST_CASE("engine-content flow: the cook says which body that fills a load would
     REQUIRE(parse_json(body, block).ok);
     water.push_back(std::move(block));
   }
+  // What stands in the water (W122; channels.md, "What stands in the water"): three instances of
+  // the scene's own, one on the pool's floor, one on its dry bank where the third body's seed
+  // stands, one far up the reach. The first is counted and listed under the body that holds.
+  JsonValue instances = JsonValue::array();
+  for (const char* placed :
+       {R"({"mesh":0,"name":"in the pool","translation":[68,8.7,0]})",
+        R"({"mesh":0,"translation":[68,9.7,12]})", R"({"mesh":0,"translation":[20,0,0]})"}) {
+    JsonValue block;
+    REQUIRE(parse_json(placed, block).ok);
+    instances.push_back(std::move(block));
+  }
+  scene.set("instances", std::move(instances));
   JsonWriteOptions flat;
   flat.pretty = false;
   REQUIRE(io::write_file_atomic(dir + "/scene-fills.json", write_json(scene, flat)) ==
           io::Status::Ok);
   const auto solved = run({"flow", "solve", dir + "/scene-fills.json", tmp.file("flow.json"),
-                           "--ddc", tmp.file("ddc"), "--resistance", "manning", "--reach", "6"});
+                           "--ddc", tmp.file("ddc"), "--resistance", "manning", "--reach", "6",
+                           "--under-water", tmp.file("under.json")});
   REQUIRE_MESSAGE(solved.code == 0, solved.text);
+  CHECK(solved.text.find("1 of the scene's 3 instances stand under a water body's level") !=
+        std::string::npos);
+  {
+    // Under the first body of the scene's list that covers it (the fixture's own pool, which
+    // stands over the three added here), with the depth of the ground under that body's level.
+    JsonValue listed;
+    REQUIRE(io::read_file(tmp.file("under.json"), text) == io::Status::Ok);
+    REQUIRE(parse_json(text, listed).ok);
+    CHECK(number(*listed.find("instances")) == 3);
+    CHECK(number(*listed.find("under")) == 1);
+    const JsonValue& under_bodies = *listed.find("bodies");
+    REQUIRE(under_bodies.size() == 1);
+    CHECK(number(*under_bodies[0].find("count")) == 1);
+    const JsonValue& list = *under_bodies[0].find("instances");
+    REQUIRE(list.size() == 1);
+    CHECK(number(*list[0].find("index")) == 0);
+    CHECK(list[0].find("name")->as_string() == "in the pool");
+    const f64 level = number(*under_bodies[0].find("level_m"));
+    CHECK(number(*list[0].find("depth_m")) == doctest::Approx(level - 8.7).epsilon(0.02));
+    CHECK(number(*under_bodies[0].find("deepest_m")) == number(*list[0].find("depth_m")));
+  }
   CHECK(solved.text.find("\"bodies\":3") != std::string::npos);
   CHECK(solved.text.find("\"spilling\":1") != std::string::npos);
   CHECK(solved.text.find("\"seed_dry\":1") != std::string::npos);

@@ -3,7 +3,7 @@
 //
 //   flow solve <scene.json> <out.json> [--ddc <dir>] [--entry <i>] [--lattice <m>]
 //              [--resistance jarrett|manning] [--manning-n <n>] [--reach <m>] [--jobs <n>]
-//              [--scene-out <scene.json>]
+//              [--scene-out <scene.json>] [--under-water <list.json>]
 //
 // Opens **the composed ground the scene draws** (`renderer::SceneGround`: the terrain with the
 // scene's edits and every edit its entries plan, the channels' cuts among them) and solves on it:
@@ -56,9 +56,10 @@ const char* k_solve_usage =
     "usage: engine-content flow solve <scene.json> <out.json> [--ddc <dir>] [--entry <i>]\n"
     "                                  [--lattice <m>] [--resistance jarrett|manning]\n"
     "                                  [--manning-n <n>] [--reach <m>] [--jobs <n>]\n"
-    "                                  [--scene-out <scene.json>]\n"
+    "                                  [--scene-out <scene.json>] [--under-water <list.json>]\n"
     "  solves the scene's streams on the ground it draws: every wet link of its channels\n"
-    "  placements and every water_channels block an author wrote (points and a discharge)\n";
+    "  placements and every water_channels block an author wrote (points and a discharge);\n"
+    "  --under-water lists the scene's instances that stand in a water body's water\n";
 
 int solve_fail(const std::string& why) {
   std::fprintf(stderr, "flow solve: %s\n", why.c_str());
@@ -101,6 +102,23 @@ struct FillCheck {
   f64 spacing = 0;  // that flood's lattice
   bool holds = false;
   bool seed_dry = false;  // the seed stands on ground at or over the level: nothing fills
+  // The last flood's lattice, for whoever asks what stands in the water: `side` nodes a side
+  // about the seed at node (`half`, `half`); a node is 0 not asked, 1 wet, 2 asked and dry.
+  Vector<u8> state;
+  u32 side = 0, half = 0;
+  // Whether (x, z) stands in the flood: one of the four nodes about it is wet. (The ground at the
+  // point itself against the level is the caller's to ask.)
+  bool wets(const scene::WaterFill& f, f64 x, f64 z) const {
+    if (!holds || side == 0) return false;
+    const f64 fi = std::floor((x - f.seed.x) / spacing) + static_cast<f64>(half);
+    const f64 fj = std::floor((z - f.seed.z) / spacing) + static_cast<f64>(half);
+    if (!(fi >= 0.0) || !(fj >= 0.0) || fi + 1.0 >= static_cast<f64>(side) ||
+        fj + 1.0 >= static_cast<f64>(side))
+      return false;
+    const u32 i = static_cast<u32>(fi), j = static_cast<u32>(fj);
+    return state[j * side + i] == 1 || state[j * side + i + 1] == 1 ||
+           state[(j + 1) * side + i] == 1 || state[(j + 1) * side + i + 1] == 1;
+  }
 };
 FillCheck check_fill(const scene::WaterBody& body, const scene_gen::Ground& ground) {
   constexpr u32 k_max_side = 4097;
@@ -112,11 +130,13 @@ FillCheck check_fill(const scene::WaterBody& body, const scene_gen::Ground& grou
   f32 spacing = std::clamp(body.shore_m / 3.0f, 0.25f, 1.0f);
   while (2.0 * std::ceil(extent / static_cast<f64>(spacing)) + 1.0 > static_cast<f64>(k_max_side))
     spacing *= 1.25f;
-  Vector<u8> state;  // 0 not asked, 1 wet, 2 asked and dry
+  Vector<u8>& state = out.state;
   Vector<u32> stack;
   for (;;) {
     const u32 half = static_cast<u32>(std::ceil(extent / static_cast<f64>(spacing)));
     const u32 side = 2 * half + 1;
+    out.half = half;
+    out.side = side;
     state.assign(side * side, u8{0});
     stack.clear();
     const auto wet = [&](u32 node) {
@@ -266,7 +286,7 @@ int flow_solve_command(int argc, char** argv) {
   }
   const std::string scene_path = argv[3];
   const std::string out_path = argv[4];
-  std::string ddc, scene_out;
+  std::string ddc, scene_out, under_path;
   i64 only = -1;
   u32 job_count = 1;
   f64 lattice = 0.0;
@@ -287,6 +307,8 @@ int flow_solve_command(int argc, char** argv) {
       ddc = std::string(value);
     } else if (flag == "--scene-out") {
       scene_out = std::string(value);
+    } else if (flag == "--under-water") {
+      under_path = std::string(value);
     } else if (flag == "--entry") {
       ok = number && v >= 0 && v == std::floor(v);
       only = static_cast<i64>(v);
@@ -625,12 +647,14 @@ int flow_solve_command(int argc, char** argv) {
 
   // ---- The bodies that fill: does each hold its level on this ground? (`check_fill`) ----------
   JsonValue fills = JsonValue::object();
+  const Vector<scene::WaterBody> filling_bodies = read_bodies(json);
+  Vector<FillCheck> floods(filling_bodies.size());  // a body's flood, where it fills and holds
   {
     const auto fills_began = std::chrono::steady_clock::now();
     u32 filling = 0, spilling = 0, seed_dry = 0;
     JsonValue fill_list = JsonValue::array();
-    const Vector<scene::WaterBody> filling_bodies = read_bodies(json);
-    for (const scene::WaterBody& body : filling_bodies) {
+    for (u32 b = 0; b < filling_bodies.size(); ++b) {
+      const scene::WaterBody& body = filling_bodies[b];
       if (!body.shape.fill.has_value() || body.shape.circle.has_value() ||
           !body.shape.polygon.empty())
         continue;
@@ -639,7 +663,8 @@ int flow_solve_command(int argc, char** argv) {
           !std::isfinite(shape.seed.z) || !(shape.max_extent_m > 0.0f))
         continue;  // the water capability's to refuse, by its own sentence
       ++filling;
-      const FillCheck check = check_fill(body, ground);
+      floods[b] = check_fill(body, ground);
+      const FillCheck& check = floods[b];
       JsonValue one = JsonValue::object();
       one["name"] = JsonValue(body.name);
       one["level_m"] = JsonValue(round3(static_cast<f64>(body.level_m)));
@@ -671,8 +696,112 @@ int flow_solve_command(int argc, char** argv) {
     fills["list"] = std::move(fill_list);
   }
 
+  // ---- The scene's own instances that stand in a body's water (W122; channels.md, "Hollows",
+  // "What stands in the water") ------------------------------------------------------------------
+  // A body the plan writes stands where the scene's author placed things before it existed, and
+  // nothing removes an author's instance: the cook counts them, a body at a time, and with
+  // `--under-water` lists each (its place in the scene's `instances`, its mesh, where it stands
+  // and how deep the ground under it is), for whoever places them to read. An instance is under a
+  // body where the ground at its own x and z stands under the body's level **in the body's
+  // water**: a filling body's own flood (above), a circle's or a polygon's inside, an open body's
+  // anywhere. It is counted under the first body of the scene's list that covers it. Authored
+  // bodies are counted as the plan's are; a scene with no body or no instance pays the look.
+  JsonValue under = JsonValue::object();
+  {
+    const auto under_began = std::chrono::steady_clock::now();
+    const JsonValue* instances = json.find("instances");
+    const u32 instance_count =
+        instances != nullptr && instances->is_array() ? static_cast<u32>(instances->size()) : 0u;
+    Vector<u64> counts(filling_bodies.size(), u64{0});
+    Vector<f64> deepest(filling_bodies.size(), 0.0);
+    Vector<JsonValue> lists(filling_bodies.size());
+    const bool listing = !under_path.empty();
+    for (JsonValue& l : lists)
+      l = JsonValue::array();
+    u64 total = 0;
+    for (u32 k = 0; k < instance_count && !filling_bodies.empty(); ++k) {
+      const JsonValue& instance = (*instances)[k];
+      const JsonValue* t = instance.find("translation");
+      f64 x = 0, y = 0, z = 0;
+      if (t == nullptr || !t->is_array() || t->size() != 3 || !(*t)[0].get_f64(x) ||
+          !(*t)[1].get_f64(y) || !(*t)[2].get_f64(z))
+        continue;
+      for (u32 b = 0; b < filling_bodies.size(); ++b) {
+        const scene::WaterBody& body = filling_bodies[b];
+        const bool in = body.shape.fill.has_value() ? floods[b].wets(*body.shape.fill, x, z)
+                                                    : (body.open || inside_body(body, x, z));
+        if (!in) continue;
+        const f64 level = static_cast<f64>(body.level_m);
+        const f64 depth = level - ground.surface(WorldPos{x, level, z});
+        if (!(depth > 0.0)) continue;
+        ++counts[b];
+        ++total;
+        deepest[b] = std::max(deepest[b], depth);
+        if (listing) {
+          JsonValue one = JsonValue::object();
+          one["index"] = JsonValue(k);
+          f64 mesh = 0;
+          if (const JsonValue* m = instance.find("mesh"); m != nullptr && m->get_f64(mesh))
+            one["mesh"] = JsonValue(static_cast<u32>(mesh));
+          if (const JsonValue* name = instance.find("name");
+              name != nullptr && name->is_string() && !name->as_string().empty())
+            one["name"] = JsonValue(std::string(name->as_string()));
+          JsonValue at = JsonValue::array();
+          at.push_back(JsonValue(round3(x)));
+          at.push_back(JsonValue(round3(y)));
+          at.push_back(JsonValue(round3(z)));
+          one["at"] = std::move(at);
+          one["depth_m"] = JsonValue(round3(depth));
+          lists[b].push_back(std::move(one));
+        }
+        break;
+      }
+    }
+    JsonValue by_body = JsonValue::object();
+    JsonValue file_bodies = JsonValue::array();
+    u32 most = 0;
+    for (u32 b = 0; b < filling_bodies.size(); ++b) {
+      if (counts[b] == 0) continue;
+      if (counts[b] > counts[most]) most = b;
+      by_body[filling_bodies[b].name] = JsonValue(counts[b]);
+      if (listing) {
+        JsonValue one = JsonValue::object();
+        one["name"] = JsonValue(filling_bodies[b].name);
+        one["level_m"] = JsonValue(round3(static_cast<f64>(filling_bodies[b].level_m)));
+        one["count"] = JsonValue(counts[b]);
+        one["deepest_m"] = JsonValue(round3(deepest[b]));
+        one["instances"] = std::move(lists[b]);
+        file_bodies.push_back(std::move(one));
+      }
+    }
+    under["instances"] = JsonValue(instance_count);
+    under["under"] = JsonValue(total);
+    under["by_body"] = std::move(by_body);
+    if (listing) {
+      JsonValue file = JsonValue::object();
+      file["scene"] = JsonValue(scene_path);
+      file["instances"] = JsonValue(instance_count);
+      file["under"] = JsonValue(total);
+      file["bodies"] = std::move(file_bodies);
+      JsonWriteOptions compact;
+      compact.pretty = false;
+      if (io::write_file_atomic(under_path, write_json(file, compact) + "\n") != io::Status::Ok)
+        return solve_fail("cannot write " + under_path);
+      under["file"] = JsonValue(under_path);
+    }
+    under["seconds"] = JsonValue(round3(seconds_since(under_began)));
+    if (total > 0)
+      std::fprintf(stderr,
+                   "flow solve: %llu of the scene's %u instances stand under a water body's level "
+                   "(the most under \"%s\": %llu)%s\n",
+                   static_cast<unsigned long long>(total), instance_count,
+                   filling_bodies[most].name.c_str(), static_cast<unsigned long long>(counts[most]),
+                   listing ? "" : "; --under-water <file> lists them");
+  }
+
   JsonValue line = JsonValue::object();
   line["fills"] = std::move(fills);
+  line["under_water"] = std::move(under);
   line["scene"] = JsonValue(scene_path);
   line["out"] = JsonValue(out_path);
   line["lattice_m"] = JsonValue(lattice);

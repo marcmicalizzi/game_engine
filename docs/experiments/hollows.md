@@ -86,8 +86,8 @@ and a `leak_m3s` is left to say only what no rate over the bed can: one floor th
 **A dry or a former lake** is as natural as a full one: alpine lakes last decades to thousands of
 years before their inflow's sediment fills them, and a floor of talus or moraine can pass all a
 small catchment sends. The plan can say a hollow is dry (the author names it, or its leak takes
-its inflow); what its floor then looks like is not the channels' to make, and is designed on
-[channels](../subsystems/channels.md#hollows), "What a dry hollow's floor is".
+its inflow); what its floor then looks like is "A dried lake's floor", below, and on
+[channels](../subsystems/channels.md#a-dried-lakes-floor).
 
 ## The forest's hollows
 
@@ -101,10 +101,95 @@ them, and 26,395 of the 28,999 stations the solver flagged as standing over a ba
 hollow of their own line. A ninth, lowland basin holds an authored lake at -2 m whose basin spills
 at 3.49 m. What this row's plan makes of each, measured, is in channels.md's "Hollows".
 
+## A dried lake's floor
+
+(2026-11-14, the owner's "maybe one dried out over time". Read tonight, with how far.)
+
+- **How flat an infilled basin is.** USDA-NRCS ecological site R022BI217CA, "Frigid Lacustrine
+  Flat" (relict glacial lake meadows of the Sierra Nevada; the concept, physiography and soils
+  sections read): slopes 0 to 3 %, the representative value 0 %. Site R022AX104CA, "Sphagnum
+  Fen" (fens in closed basins and relict glacial lakes; the same sections): 0 to 2 %, "typically
+  below 1 percent". Weixelman et al. 2011 (USFS, a field key to the Sierra Nevada's meadow
+  types; the key and the type descriptions read): basin peatlands "occur on a horizontal
+  surface, have a flat water table". A large lake plain (Lake Agassiz's floor, USGS Bulletin
+  611, one passage): about a foot to the mile, 0.0002. Nothing numeric was found for a delta's
+  topset.
+- **Where the fill stands against the old sill.** No source read says it as a number. What was
+  read: a lacustrine-fringe meadow is "at the same (approximate) elevation as the lake"
+  (Weixelman); an outlet lake "cannot rise much above the outlet level" (House 1985, below); the
+  water table stands 0 to 30 cm under a fen's surface and 0 to 150 cm under a lacustrine flat's
+  (NRCS). **So the floor is taken at the sill**, the hollow's spill, and the stream's bed a
+  thalweg under it, graded to the old outlet: an inference from those three, said as one.
+- **What the floor is made of, and what crosses it.** Herbaceous peat and muck 13 to 36 cm over
+  stratified glaciolacustrine silt loams to loamy sands, gleyed, under sedges (*Carex
+  nebrascensis*, *C. vesicaria*) on the flat; moss peat to three metres with a floating mat and
+  often a small pond in the fen, a drier rim of hairgrass meadow (NRCS, both sites). The stream
+  is "E or a C type" entering or leaving the basin (NRCS); low-gradient riparian meadows have a
+  stream gradient under 2 %, riffle-pool and sinuous, with a floodplain (Weixelman). Rosgen's E
+  type (sinuosity over 1.5, slope under 0.02, width to depth under 12) is from a search
+  summary of the handbook's table only.
+- **A basin that drains underground instead.** Vallon 1989 (*Annals of Glaciology* 13; the
+  abstract and the water-balance section read): Lake Arsine, behind a moraine in the French
+  Alps, has no surface outlet; it seeps 10 to 30 l/s under a threshold level and about 150 l/s
+  more for every metre over it, and its level ranges 10 to 12 m in a year. That is the order of
+  the forest's leaking tarn (20 l/s through its floor). What the floor of such a basin looks
+  like (bare blocks, a playa) was found in nothing read.
+
+**What follows** (channels.md, "A dried lake's floor"). `basins: [{at, infilled: true}]`: the
+hollow is ground, filled flat to its spill (0 % is the sites' representative slope; the plan's
+flat is level to the micrometre the fill steps by), and the stream crosses it and leaves by the
+old outlet. Not built from these sources: the peat's and the sedges' cover (the ground's masks
+give a level floor their soil, and nothing names a fen), the stream's sinuosity on the floor
+(the planner's own meander rule decides, by slope), and a fen's pond.
+
+## A lake's look
+
+(2026-11-14. A body the plan writes was a `WaterBody` at its defaults.)
+
+- **The wind over a small lake.** Hondzo & Stefan 1993 (*J. Hydraul. Eng.* 119): **not opened**
+  (the publisher and the university's copy both refused). The formula as quoted in Stepanenko et
+  al. 2013 (*Geosci. Model Dev.* 6, the supplement; the passage read): a wind sheltering
+  coefficient `Wstr = 1.0 - exp(-0.3 As)`, a function of the lake's surface area, calibrated on
+  Minnesota lakes; `As` in km2 is from a lake-modelling package's code, read as a summary.
+  **What it multiplies** is the wind's input of turbulent kinetic energy, `Wstr` times the
+  integral of `rho u*^3` over the lake (Markfort et al. 2012, an AMS extended abstract, read
+  whole), so the speed that gives the same input is `Wstr^(1/3)` of the open wind's: that step
+  is this page's, not a source's. Markfort et al. 2010 (*Water Resources Research* 46; the
+  abstract read) put the sheltered reach at about 50 canopy heights downwind, and their
+  area formula for a round lake gives 0.22 where Hondzo & Stefan's gives 0.26 at 1 km2 behind
+  15 m trees: the two agree where they were compared. **No source read gives a typical wind
+  over inland lakes**: the layer's default, 4 m/s, is a moderate breeze and a scene's number.
+- **The wet band.** Capillary rise: 13.5 cm measured in 0.4 to 0.7 mm sand (Salim & Hampton
+  2013, a GSA abstract, read whole, which cites Fetter 1994: about 1.5 cm in fine gravel, 15 cm
+  in that sand, a metre in very fine sand); lecture-note ranges after Silin-Bekchurin 1958 give
+  2 to 5 cm in coarse sand and 12 to 35 cm in sand. Run-up: Hunt's `R / H = tan(beta) /
+  sqrt(H / L0)` and Stockdon et al. 2006, both from secondary pages (the paper's copy refused);
+  for a wave 0.1 m high on a shore of one in ten they give 4 to 6 cm, and on any shore gentler
+  than one in five no more than the wave's height. A lake's level: House 1985 (USGS and the
+  Wisconsin survey, Information Circular 49; the abstract, the classification and the summary
+  read): the median yearly fluctuation is 0.24 m on headwater drainage lakes and 0.34 m on
+  lakes with no continuous outlet, which also range most between years.
+- **How clear.** Carlson's trophic state index as the North American Lake Management Society
+  reproduces it (read whole; Carlson 1977 not opened): `TSI = 60 - 14.41 ln(SD)`, a Secchi
+  depth of 8 m at 30, 4 m at 40, 2 m at 50, 1 m at 60 and 0.5 m at 70. **No source read ties a
+  lake's kind to its index**: that a deep bowl is clear and a shallow pond is not is this
+  page's selector, by the body's mean depth, over Carlson's range.
+
+**What follows** (`plan_bodies_json`; channels.md, "A lake's look"). `wind_m_s`: the layer's
+`basin_wind_m_s` times `(1 - exp(-0.3 A / km2))^(1/3)`, A the body's own water. `wet_m`: 0.15 m
+of capillary rise, the significant height of that wind's wave over the body's reach (the growth
+law the water capability draws by), and half the yearly range of its kind (0.12 m with an
+outlet, 0.17 m without). `depth_fade_m`: the mean depth, between 0.5 and 8 m. `shore_m`: two
+hundredths of the body's side, between 0.75 and 2 m, which is **not from a source**: it is the
+distance a pond 26 m across can spare and the default a lake keeps.
+
 ## What was not grounded
 
 - The breach limit's default and the notch are not from a source. The page says what each stands
   for.
+- The region's wind, the shore fade's share of a body's side, and the choice of a body's mean
+  depth for its clarity (above).
+- What a basin that drains underground has for a floor.
 - No published rule was found for which mountain basins hold lakes; the plan's answer is the
   balance and the author's.
 - Karst and talus sinks: no source was found, and the plan derives none.

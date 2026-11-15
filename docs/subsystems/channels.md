@@ -1734,7 +1734,8 @@ lattice and integer, so it is the same on every toolchain.
 | no deeper than `breach_max_m` (1 m) | **breached** | cross it; their bed is carried through its lip at the level it came in at |
 | deeper, at least `basin_min_area_m2` (200 m2), and fed more than it loses at its spill | **a lake of the plan**, at the spill less `basin_notch_m` (0.25 m) | end at its shore (a mouth at its level); one outlet link leaves, from the shore through the lip |
 | deeper, fed less than it loses at its spill | **a body of the plan below its spill**, at the level where its losses meet its inflow | end at its shore; nothing leaves |
-| deeper, and its losses take all it is fed, or its author says `dry` | **dry** | end at its floor (a swallow hole, a playa, a lake long gone) |
+| deeper, and its losses take all it is fed, or its author says `dry` | **dry** | end at its floor (a swallow hole, a playa, a basin that drains underground) |
+| named `infilled` by its author | **ground**: a lake that silted up, filled flat to its spill ([a dried lake's floor](#a-dried-lakes-floor)) | cross its floor and leave by the old outlet |
 | deeper, under the least area | a **deep breach**, counted | cross it |
 | holding a scene's own body within `breach_max_m` of the spill | the **author's lake** | end at its shore; its outlet runs through the lip, a breach inside the limit |
 | holding a scene's own body further under the spill | **where the basin's water ends** | end at its shore; nothing begins there |
@@ -1769,9 +1770,10 @@ lake to its outlet; the lake's own area still sends its runoff down the outlet a
 (the rain on it less its evaporation is about half that in the climate the default describes);
 the stage of the year is not read by the planner.
 
-**What the author gives** (`ChannelLayer.basins`, each `{name, at: [x, z], dry, leak_m3s}`): what
-the ground cannot say about the pit that holds `at`. `dry`: no body, whatever its depth and
-inflow. `leak_m3s`: what its floor passes underground (talus, moraine, karst); a spring where
+**What the author gives** (`ChannelLayer.basins`, each `{name, at: [x, z], dry, leak_m3s,
+infilled}`): what the ground cannot say about the pit that holds `at`. `dry`: no body, whatever
+its depth and inflow. `infilled`: the hollow is a lake that silted up, and is ground (below);
+it is not `dry` and names no leak. `leak_m3s`: what its floor passes underground (talus, moraine, karst); a spring where
 that water returns is a `flow.sources` entry of the author's, since the plan draws no pipe
 between the two. What feeds a hollow beyond its catchment is a `flow.sources` entry standing in
 its catchment. An entry that names neither, a point outside the region and a point in no pit are
@@ -1786,8 +1788,9 @@ runoff and the sources against it, and `plan_layer_hash` takes those two in.
 `water` in its output, for the scene's `water`): `{name: "<layer> basin <n>", level_m, shape:
 {fill: {seed, max_extent_m}}}`, seeded at the hollow's lowest cell, the extent the hollow's own
 reach from it and a margin. It is an ordinary `engine.scene.WaterBody` that fills, so the water
-capability floods it over the drawn ground and draws it as any body, and its look is the
-author's to set on the pasted block. A second run of the command leaves out the bodies an
+capability floods it over the drawn ground and draws it as any body, with
+[the look its size gives it](#a-lakes-look); every other field is the author's to set on the
+pasted block. A second run of the command leaves out the bodies an
 earlier run wrote (by that name), so it plans over the same bodies and writes the same ones.
 **Not built**: an entry that names no plan (whose cuts reach the ground through the hook) has
 its lines split at the plan's bodies and nothing writes those bodies into its scene; the host's
@@ -1969,10 +1972,62 @@ shore**: a bare slope enters the water as a ruled line with one thin white strok
 beach, no wet band, no rock, sedge or drift, where the reels' lakes have a strip of stones and
 grass and trees to the waterline. **The body below its spill and the dried basin say nothing of
 what they are**: the first is a lake in a bare bowl with no mark of the higher water, the second
-a wooded hollow with no flat floor (what a dry hollow's floor is, above, is not built). **The
+a wooded hollow with no flat floor (that night; [a dried lake's floor](#a-dried-lakes-floor) came the next). **The
 streams' own draw is not this row's and is wrong on this description** (flat cyan polygons and
 slabs at the old link 482's place and at a lake's lip). The pond at the owner's mark 8 has a
 whole shore: no hole and no triangle.
+
+**To the gate** (the night of 2026-11-14, on the streams' branch and batch 64's main; what the
+paragraphs above call not built, where it now is).
+
+*The section's direction.* The solver's sections stand across the chord between the nodes half
+the cut's width up and down the line, never less than one node each way (`solve_profile`,
+profile.cpp), where they stood across one step. That is the solver's half of the mend named
+above; the planner's (a turn no tighter than half the cut's width, held after every move of a
+point) is still not built, and the engine's case that bounds a line's turn is unchanged.
+
+*A line that ends on a scene's body under its spill ends in it.* The routing ends such a line
+at the body's cells, which are a sink, but the line's own last point can stand a step short of
+the outline, where the exclusion finds no water and the shorelines give no mouth: its bed was
+then cut under the body's level and the solver ended it over a bank (the owner's mark 8: two
+lines 0.45 and 0.75 m under the pond's 1.18 m). The link is now given the body's level as the
+base level a mouth is held to (`plan_from_lattice`, after the shorelines), asked of the lattice
+cell under the line's last point, since a piece the shorelines split off on its way holds no
+cells. **That was not the forest's case**, which two re-plans found (`k_channels_version` 13
+and 14, each cooked on the forest and each leaving the two lines as they were): the two lines
+end at a confluence 27 m from the pond's floor, and the trunk that ran on from it into the
+pond is dropped whole by the shorelines, being under the water or too short to keep, so they
+ended in the air with their beds graded to a trunk that is not cut. **The links that end
+where a dropped trunk began end in the body that took it** (`apply_water`: the body's level
+kept by the trunk's first cell, and given as a mouth's level to every line whose last point
+stands on that cell), at `k_channels_version` 15. The engine's case (a pond three metres
+under its bowl's spill) holds the mouth and its level on every line that ends on the body's
+cells; no engine case has a confluence beside a body, so none fails on the base: the forest's
+two lines are what decide it, and the hand-back says what their re-run showed.
+
+*The forest again* (run `k`: the owner's mix with the dried basin named `infilled`; this row's
+`engine-content` at `k_channels_version` 13, one job, into last night's derived-data root; the
+machine shared with seven other rows building and loading, 18 to 41 GB of commit free). The
+plan: 721 links, 122.5 km, 657 cuts, made in 48 s with two fills; 91 pits breached, **eighteen
+lakes with outlets, one body below its spill, one infilled floor** (0.98 million m3 of fill
+under 3.7 ha at 855.83 m), the authored pond where its basin's water ends; every level of the
+table above to the centimetre; no bed's line rises and none ends higher. All nineteen bodies
+hold by the cook's flood (2.7 s).
+
+| On the solved lines | last night (run `i`) | tonight (run `k`) |
+|---|---|---|
+| stations over a bank | 6,283 on 160 lines, the worst 7.8 m | 4,685 on 152 lines, the worst 6.5 m |
+| of them in a hollow of their own line | 3,567 (run `d`) | 2,609 |
+| hollows over 1 m / over 5 m, the deepest | 163 / 6, 7.7 m (run `d`) | 57 / 3, 6.4 m |
+| lines that end higher than they begin | 27 (run `d`) | 22 of 278 |
+| wet links, wet line | 280 of 726, 24.9 km | 278 of 721, 25.3 km |
+
+So the direction over the cut's width takes two thirds of the hollows over a metre and leaves
+57, three of them over 5 m; those and the 22 lines were not traced further. **13,884 of the
+scene's 470,641 authored instances stand in a body's water** (4.4 s to count and list them):
+5,922 in the largest lake, 1,699 and 990 in the two largest ponds, 21 in the sea and 6 in the
+authored pond. Last night's figure (about 17,000, 12,349 in the largest lake) was a count by
+box and level; this is by each body's own flood.
 
 **General purpose.** The fill, the breach and the bodies come from the heights of whatever
 ground the scene names, an imported heightfield as readily as a generated one: nothing reads
@@ -1982,17 +2037,110 @@ what it got: the solver's over-bank flag on the stations in the hollow; what thi
 author is the plan's list of hollows (`engine-content channels`, `hollows.list`: each one's
 floor, spill, depth, area and what became of it), where one stands on the same ground.
 
-**What a dry hollow's floor is** (designed, not built). A lake that silted up has a flat floor
-at about its old sill, a meadow or a fen with the stream wandering across it; one that leaks
-keeps its bowl, floored with bare blocks. The plan says which hollows are dry and at what level
-each would have stood; the floor is the landform solver's (a deposit to that level:
-`domain/landform`), the masks' (a fen or meadow material over the infill), the scatter's and the
-sward's (wetland cover by the site's wetness) and the rocks' deposits (a talus floor). Until
-those read the hollow list, a dry hollow is its bare bowl with a line ending at its floor.
-
 **What it costs.** The fill, the routing and the labelling are one more sweep of the lattice a
-pass and one more pass a ground with a terminal basin; the plan's file grows by 109 bytes a
-hollow that is not simply breached and four bytes a point of line (`widen`).
+pass and one more pass a ground with a terminal or an infilled basin; the plan's file grows by
+153 bytes a hollow that is not simply breached, four bytes a point of line (`widen`), and four
+bytes a lattice point of an infilled hollow's box.
+
+### A dried lake's floor
+
+(2026-11-14, the owner on the forest's dried basin: "maybe one dried out over time". The
+grounding is [the hollows page](../experiments/hollows.md#a-dried-lakes-floor).) Two things a
+dry hollow can be, and the author says which. **One that drains underground** (`dry`) keeps its
+bowl, and its lines end at its floor; nothing was read about what such a floor looks like, and
+nothing is built for it. **One that silted up** (`infilled`) is a lake that filled with its own
+sediment: the surveyed floors of relict lakes stand at 0 to 3 % with 0 % the representative
+slope, at about the level of the old outlet, with a low-gradient stream crossing them.
+
+**An infilled hollow is ground.** In `route_hollows` the hollow's cells are raised to its spill
+on the plan's own lattice and the fill and the routing are taken again over what is now a flat,
+so the lines that reach it cross it along the fill's own routing and leave through the old lip
+as over any ground: no body, no sink, no mouth, and the bed's line falls or holds all the way
+(the flat's bed is a thalweg under the floor, which is what passes the lip). The hollow's record
+(`HollowKind::Infilled`, `level_m` the floor) carries **the floor as a grid** on that lattice:
+0 on the hollow's cells and on the ring of cells round them, so the floor runs flat to its
+walls with no slot between a deep cell and the wall beside it and nothing is raised over the
+level; far under any ground everywhere else in its box, so nothing else is raised.
+
+**The edit** (`terrain_fills_json`; `engine-content channels --cut` writes it among `edits`,
+and counts `hollows.floors_written`): one `engine.scene.TerrainEdit` of mode `Fill` a floor, a
+patch whose outline is the grid's box and whose grid is the floor. The tile set composes every
+fill before every cut, so the cuts of the lines that cross the floor are made in it. A hollow
+whose box passes a ground edit's 1,024 points a side is refused by its entry's name.
+
+**The ground the plan's lines lie on** (`floored_ground`). The planner lays its lines, seats,
+sections and flood beds on the ground with its floors in it, by the edit's own rule (the grid's
+bilinear surface where it stands over the ground), since the bowl under the floor is not where
+the line is. A host's ground has the edit in its tile set. `engine-content channels`, which
+holds the ground before its edits, asks the same wrapped ground for everything it sets a line
+against (the water's ribbon, the seat's measure, the clasts).
+
+**Its cover is the ground's own.** The masks are built from the tile set's heights with the
+edit in them, so a level floor takes what the priors give level ground (their soil, no scree,
+no bedrock), and the placements that read the ground stand on it as on any flat. **Not built**:
+a fen's or a wet meadow's own material and sedges (nothing names one), the floor's own
+wetness, the stream's sinuosity beyond the planner's meander rule, a fen's pond.
+
+**What it costs.** One more pass of the fill and the routing; the floor's grid in the plan
+(four bytes a lattice point of the box); one patch in the tile set's edits, read only by the
+tiles its box touches. **A scene with no `infilled` basin pays nothing**: no pass, no edit, and
+`floored_ground` hands back the ground it was given. The case
+(`hollows: a lake that silted up is a floor its stream crosses`) is the bowl on a slope named
+infilled: the floor flat at the old spill, the ground itself everywhere else and nowhere
+raised over the level, the stream on the floor with its bed under it, the edit, the same
+through the plan's file, and the plan's and the edit's bytes pinned for every toolchain.
+
+### A lake's look
+
+(2026-11-14; the grounding is [the hollows page](../experiments/hollows.md#a-lakes-look).) A
+body the plan wrote was a `WaterBody` at its defaults: a pool. `plan_bodies_json` now gives
+each what its own size says, from the body's own water (`Hollow::water_m2`, `water_m3`: the
+area and volume under its level, which for a shallow pond a notch under its spill is far less
+than its hollow holds):
+
+| Field | What it is given | From |
+|---|---|---|
+| `wind_m_s` | the layer's `basin_wind_m_s` (4 m/s; 0 writes none) times `(1 - exp(-0.3 A / km2))^(1/3)` | Hondzo & Stefan's sheltering by area, which scales the wind's energy; the cube root is this page's step |
+| `wet_m` | 0.15 m, that wind's wave over the body's reach, and half the yearly range of a lake's level (0.12 m with an outlet, 0.17 m without) | a sand's capillary rise; the growth law the water draws by; House 1985 |
+| `depth_fade_m` | the mean depth, between 0.5 and 8 m | Carlson's range of Secchi depths; the selector is this page's |
+| `shore_m` | two hundredths of the body's side, between 0.75 and 2 m | not from a source: what a pond can spare |
+| `seed` | its place among the plan's bodies | so two lakes' waves are not one |
+
+With a wind the water capability draws a closed body's waves from the spectrum over its own
+reach, with a lee under the shore the wind comes from, in place of four regular sines; a pond
+of a fifth of a hectare gets a twelfth of the region's wind and is nearly a mirror. The wind
+is **not part of what a plan is keyed by** (`plan_layer_hash` leaves it out, as it leaves the
+flow): it is read when the bodies are written. The exponential and the cube root are the
+tree's own (`det::exp`, `det::log`), so the block is the same text from every toolchain, and
+the case pins it. **What it costs**: nothing at a load beyond what a body with a wind costs
+the water (its rings past the outline for the swash); a scene whose author wants the old
+blocks sets `basin_wind_m_s` 0. **For the water's owner**: a body with a wind grows its mesh
+over the bank by twice its wave and a quarter metre, and the cook's flood check
+(`check_fill`) mirrors the flood at the level only.
+
+### What stands in the water
+
+(2026-11-14.) A body the plan writes stands where a scene's author placed things before it
+existed, and nothing removes an author's instance. **The cook counts and lists them**:
+`engine-content flow solve`, which already floods every body that fills over the drawn ground,
+asks of each of the scene's own `instances` whether the ground at its x and z stands under a
+body's level in that body's water (a filling body's own flood; a circle's or a polygon's
+inside; an open body's anywhere), counts it under the first body of the scene's list that
+covers it, prints `under_water` on its line (`instances`, `under`, `by_body`) and a sentence
+on stderr, and with `--under-water <list.json>` writes every one: its place in the scene's
+`instances`, its mesh, where it stands and how deep the ground under it is, a body at a time.
+That file is what a consumer's own placement reads to move or drop them. An authored body is
+counted as the plan's are; a scene with no body or no instance pays one look.
+
+**A generator's placements keep off a body of the plan as off any body**: the plan's block is
+an ordinary `WaterBody` in the scene's `water`, which is what the exclusion every placement
+generator asks is built from. The case
+(`hollows: a body of the plan carries its size's look, and placements keep off it`) reads the
+block through the scene's schema, builds the exclusion from it and holds every lattice point
+of the plan's own water excluded, the valley above and beside it not. **A finding, not this
+row's to mend**: the exclusion knows a filling body as its box and the ground under its level
+in it (the flood runs later), so on a mountainside it also keeps placements off dry ground
+that lies under the lake's level inside the box, down the outlet's valley.
 
 ## The planform
 

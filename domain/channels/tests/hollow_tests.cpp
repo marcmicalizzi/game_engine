@@ -4,11 +4,13 @@
 // the author names dry has no body, and in every case no link's bed rises downstream.
 #include <core/jobs/job_system.h>
 #include <core/json/json.h>
+#include <core/schema/json_reflect.h>
 #include <domain/channels/channels.h>
 #include <domain/channels/discharge.h>
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <string>
 
@@ -248,6 +250,17 @@ TEST_CASE("hollows: a scene's body under its basin's spill is where the basin's 
     CHECK(n.water.outlets == 0);
     for (const ChannelLink& link : n.links)
       if (link.mouth) CHECK(link.line.back().at.y == doctest::Approx(spill - 3.0).epsilon(1e-3));
+    // Every line the routing ends on the body's cells ends in the body: a mouth at its level,
+    // and a bed nowhere under it (the owner's mark 8: two lines ended at such a pond with no
+    // mouth and their beds under its level).
+    u32 ends_on_it = 0;
+    for (const ChannelLink& link : n.links) {
+      if (link.line.size() < 2 || link.cells.empty() || n.body_of[link.cells.back()] == 0) continue;
+      ++ends_on_it;
+      CHECK(link.mouth);
+      CHECK(link.mouth_level == doctest::Approx(spill - 3.0).epsilon(1e-5));
+    }
+    CHECK(ends_on_it >= 1);
     const HollowStats stats = measure_hollows(p, n);
     CHECK(stats.climbing == 0);
     CHECK(stats.ends_higher == 0);
@@ -548,4 +561,199 @@ TEST_CASE("hollows: the same plan at one job and six, and through its file") {
   CHECK(a.climbing == 0);
   CHECK(c.climbing == 0);
   CHECK(a.trench_max_m == c.trench_max_m);
+  // **The same bytes from every toolchain** (geometry.md, "The same bytes from every
+  // toolchain"): the plan's file and the bodies it writes, pinned on MSVC and reproduced by GCC
+  // and Clang in the Linux containers. The bodies' look goes through the tree's own exponential
+  // and logarithm, never the C library's.
+  const std::string bodies = write_json(plan_bodies_json(p, serial.network));
+  MESSAGE("plan " << hash_bytes(bytes.data(), bytes.size()) << ", bodies "
+                  << hash_bytes(bodies.data(), bodies.size()));
+  CHECK(hash_bytes(bytes.data(), bytes.size()) == 15913977674637492989ull);
+  CHECK(hash_bytes(bodies.data(), bodies.size()) == 5206442785375341018ull);
+}
+
+TEST_CASE("hollows: a body of the plan carries its size's look, and placements keep off it") {
+  ChannelLayer p = layer();
+  const Bowl b;
+  std::string error;
+  ChannelNetwork n;
+  REQUIRE_MESSAGE(plan_channels(p, ground(b), 0, nullptr, n, error), error);
+  const Hollow* lake = only(n, HollowKind::Lake);
+  REQUIRE(lake != nullptr);
+  // The body's own water: under its level, less than the hollow holds under its spill.
+  CHECK(lake->water_m2 > 0);
+  CHECK(lake->water_m2 <= lake->area_m2);
+  CHECK(lake->water_m3 > 0);
+  CHECK(lake->water_m3 < lake->volume_m3);
+  const JsonValue bodies = plan_bodies_json(p, n);
+  REQUIRE(bodies.as_array().size() == 1);
+  const auto field = [&](const JsonValue& body, const char* name) {
+    f64 v = -1;
+    const JsonValue* f = body.find(name);
+    REQUIRE(f != nullptr);
+    REQUIRE(f->get_f64(v));
+    return v;
+  };
+  // A pond a fifth of a hectare lies in the lee of its shores: a small share of the region's
+  // wind (the cube root of 1 - exp(-0.3 A / km2): under a fifth for anything under 2 ha), so
+  // its waves are millimetres and its wet band is the sand's capillary rise and half a lake's
+  // yearly range.
+  const f64 wind = field(bodies[0], "wind_m_s");
+  CHECK(wind > 0.05);
+  CHECK(wind < 0.2 * static_cast<f64>(p.basin_wind_m_s));
+  CHECK(field(bodies[0], "wet_m") >= 0.27);
+  CHECK(field(bodies[0], "wet_m") <= 0.29);
+  CHECK(field(bodies[0], "shore_m") >= 0.75);
+  CHECK(field(bodies[0], "shore_m") <= 2.0);
+  const f64 mean = lake->water_m3 / lake->water_m2;
+  CHECK(field(bodies[0], "depth_fade_m") ==
+        doctest::Approx(std::clamp(mean, .5, 8.0)).epsilon(.01));
+  CHECK(field(bodies[0], "seed") == 1);
+  // More wind over the region, more over the pond; none, and the plan names none.
+  ChannelLayer windy = p;
+  windy.basin_wind_m_s = 40;
+  CHECK(field(plan_bodies_json(windy, n)[0], "wind_m_s") ==
+        doctest::Approx(10 * wind).epsilon(.05));
+  CHECK(field(plan_bodies_json(windy, n)[0], "wet_m") > field(bodies[0], "wet_m"));
+  ChannelLayer still = p;
+  still.basin_wind_m_s = 0;
+  CHECK(plan_bodies_json(still, n)[0].find("wind_m_s") == nullptr);
+  // The wind is not what a plan is made from: the layer hashes as it did.
+  CHECK(plan_layer_hash(windy) == plan_layer_hash(p));
+
+  // **The block is an ordinary body of the scene's `water`**, so what every placement
+  // generator asks before it stands anything — the exclusion's water — keeps off it as off any
+  // body: the bowl's floor and a place a few metres in from its shore are excluded, the valley
+  // above and below the bowl and its side are not.
+  scene::WaterBody body;
+  schema::ReadContext reader;
+  REQUIRE(schema::from_json(body, bodies[0], reader));
+  REQUIRE(reader.ok());
+  CHECK(body.name == lake->name);
+  CHECK(body.wind_m_s == doctest::Approx(wind));
+  scene_gen::Exclusion water;
+  REQUIRE(water.build({}, {&body, 1}, {}, &error));
+  const scene_gen::Ground g = ground(b);
+  const auto excluded = [&](f64 x, f64 z) {
+    return water.excluded_mm(g, scene_gen::nearest_mm(x), scene_gen::nearest_mm(z),
+                             scene_gen::k_exclude_water);
+  };
+  CHECK(excluded(lake->floor_x, lake->floor_z));
+  CHECK(excluded(lake->floor_x + 6, lake->floor_z + 6));
+  CHECK_FALSE(excluded(128, 420));
+  CHECK_FALSE(excluded(60, 300));
+  // Every place the plan's own water stands on the lattice is excluded.
+  u32 wet = 0, kept_off = 0;
+  for (u32 i = 0; i < n.body_of.size(); ++i) {
+    if (n.body_of[i] == 0) continue;
+    ++wet;
+    const f64 x = static_cast<f64>(n.x_mm + static_cast<i64>(i % n.width) * n.spacing_mm) / 1e3;
+    const f64 z = static_cast<f64>(n.z_mm + static_cast<i64>(i / n.width) * n.spacing_mm) / 1e3;
+    kept_off += excluded(x, z) ? 1u : 0u;
+  }
+  CHECK(wet > 20);
+  CHECK(kept_off == wet);
+}
+
+TEST_CASE("hollows: a lake that silted up is a floor its stream crosses") {
+  ChannelLayer p = layer();
+  const Bowl b;
+  std::string error;
+  ChannelNetwork bare;
+  REQUIRE_MESSAGE(plan_channels(p, ground(b), 0, nullptr, bare, error), error);
+  const Hollow* lake = only(bare, HollowKind::Lake);
+  REQUIRE(lake != nullptr);
+  ChannelBasin silted;
+  silted.name = "the meadow";
+  silted.at = {128, 300};
+  silted.infilled = true;
+  p.basins.push_back(silted);
+  ChannelPlan plan;
+  ChannelNetwork& n = plan.network;
+  REQUIRE_MESSAGE(plan_channels(p, ground(b), 0, nullptr, n, error), error);
+  // The hollow is ground: no body, nothing ends in it and nothing begins at it.
+  const Hollow* meadow = only(n, HollowKind::Infilled);
+  REQUIRE(meadow != nullptr);
+  CHECK(n.basins.hollows.size() == 1);
+  CHECK(meadow->name == "the meadow");
+  CHECK(meadow->level_m == lake->spill_m);
+  CHECK(plan_bodies_json(p, n).as_array().empty());
+  CHECK(n.water.mouths == 0);
+  CHECK(n.water.outlets == 0);
+  // The ground with the floor in it: flat at the old spill over the bowl, the ground itself
+  // away from it, and nowhere under the ground.
+  FlooredGround held;
+  const scene_gen::Ground bowl_ground = ground(b);
+  const scene_gen::Ground floored = floored_ground(n, bowl_ground, held);
+  CHECK(floored.surface(WorldPos{lake->floor_x, 0, lake->floor_z}) ==
+        doctest::Approx(meadow->level_m).epsilon(1e-9));
+  for (const f64 z : {100.0, 240.0, 300.0, 360.0, 480.0})
+    for (const f64 x : {40.0, 100.0, 128.0, 131.0, 200.0}) {
+      const f64 was = bowl_ground.surface(WorldPos{x, 0, z});
+      const f64 is = floored.surface(WorldPos{x, 0, z});
+      CHECK(is >= was);
+      if (std::fabs(z - 300) > 80 || std::fabs(x - 128) > 80) CHECK(is == was);
+      CHECK(is <= std::max(was, meadow->level_m) + 1e-9);
+    }
+  // The stream crosses the floor at the floor's own level, its bed a thalweg under it, and
+  // goes on below the old lip: no bed's line rises and no line ends in the hollow.
+  u32 on_floor = 0;
+  f64 lowest_end = 1e9;
+  for (const ChannelLink& link : n.links) {
+    if (link.line.size() < 2) continue;
+    lowest_end = std::min(lowest_end, link.line.back().at.z);
+    for (u32 i = 0; i < link.line.size(); ++i) {
+      const ChannelPoint& pt = link.line[i];
+      const f64 dx = pt.at.x - lake->floor_x, dz = pt.at.z - lake->floor_z;
+      if (dx * dx + dz * dz > 8 * 8) continue;
+      ++on_floor;
+      CHECK(pt.at.y == doctest::Approx(meadow->level_m).epsilon(1e-6));
+      CHECK(link.bed[i] < meadow->level_m);
+      CHECK(link.bed[i] > meadow->level_m - 1.0);
+    }
+  }
+  CHECK(on_floor >= 8);
+  CHECK(lowest_end < 40);
+  const HollowStats stats = measure_hollows(p, n);
+  CHECK(stats.climbing == 0);
+  CHECK(stats.ends_higher == 0);
+  // The edit the plan writes: one fill, a patch over the hollow's box whose grid is the floor
+  // (0 on the hollow's cells and its rim's, far under everything else).
+  const JsonValue fills = terrain_fills_json(p, n);
+  REQUIRE(fills.as_array().size() == 1);
+  CHECK(fills[0].find("mode")->as_string() == "Fill");
+  CHECK(fills[0].find("name")->as_string() == "test floor the meadow");
+  CHECK(fills[0].find("outline")->size() == 4);
+  const JsonValue& grid = *fills[0].find("grid_mm");
+  REQUIRE(grid.size() == meadow->fill_nx * meadow->fill_nz);
+  u32 floor_cells = 0, rim_cells = 0, none_cells = 0;
+  for (const i32 v : meadow->fill_mm) {
+    floor_cells += v == 0 ? 1u : 0u;
+    rim_cells += v > 0 ? 1u : 0u;
+    none_cells += v == k_fill_none_mm ? 1u : 0u;
+  }
+  CHECK(floor_cells + none_cells == meadow->fill_mm.size());
+  CHECK(rim_cells == 0);
+  CHECK(static_cast<f64>(floor_cells) * 16.0 > lake->area_m2);
+  CHECK(none_cells > 8);
+  CHECK(terrain_fills_json(p, bare).as_array().empty());
+  // Through the plan's file, the same floor and the same cuts; and the same bytes everywhere.
+  const std::string bytes = plan_bytes(plan);
+  ChannelPlan read;
+  REQUIRE_MESSAGE(read_plan(bytes, read, error), error);
+  CHECK(write_json(terrain_fills_json(p, read.network)) == write_json(fills));
+  CHECK(write_json(terrain_cuts_json(p, read.network)) == write_json(terrain_cuts_json(p, n)));
+  CHECK(plan_bytes(read) == bytes);
+  const std::string text = write_json(fills);
+  MESSAGE("plan " << hash_bytes(bytes.data(), bytes.size()) << ", floor "
+                  << hash_bytes(text.data(), text.size()));
+  CHECK(hash_bytes(bytes.data(), bytes.size()) == 14829757048360263025ull);
+  CHECK(hash_bytes(text.data(), text.size()) == 6907369038180736851ull);
+  // A floor is ground: an entry that is also `dry`, or leaks, is refused by its name.
+  ChannelLayer both = layer();
+  silted.dry = true;
+  both.basins.push_back(silted);
+  ChannelNetwork none;
+  CHECK_FALSE(plan_channels(both, ground(b), 0, nullptr, none, error));
+  CHECK(error.find("the meadow") != std::string::npos);
 }
