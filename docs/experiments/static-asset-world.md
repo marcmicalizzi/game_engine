@@ -156,6 +156,26 @@ Proposed as open rows; the coordinator numbers them.
    (`extras`) or the scene's `Mesh` names, so a large imported surface stops tiling.
 6. **The caster policy as data on the scene's `Mesh`**, for an imported species.
 
+## Bought foliage
+
+Roadmap T139, 2026-11-14. The owner permitted CC0 foliage ("CC0 foliage is fine"), so the kit's
+cards now stand beside real bought plants: `tools/fetch-foliage.ps1` fetches the set pinned in
+`tools/fetch-foliage.json` — every file a URL, a SHA-256 and a size, each item's own page read for
+CC0 before its first file — into the git-ignored `content/samples/foliage/`, and
+`content/test-scenes/static-world/scene-bought.json` places 23 instances of it beside the kit.
+
+**The first thing a bought plant does is arrive broken.** Every Poly Haven plant ships its glTF with
+a JPEG base colour — no alpha channel — and its opacity as a separate `*_alpha` map **the glTF does
+not reference**, under a material that says `MASK` (seven), `BLEND` (five materials over five
+plants) or nothing at all (the conifer saplings' twigs). glTF has no opacity slot: its only mask is
+the base colour's alpha. So as shipped, every leaf of every plant is a solid card, and a `BLEND`
+material is drawn opaque besides, because the engine draws into a visibility buffer and has no
+sorted transparency (`assets::k_alpha_blend` reaches the renderer as opaque). A consumer fixes this
+in their DCC; the fetch script fixes it the same way, with `engine-content alpha-merge` (the base
+colour's RGB and the map's first channel as one RGBA PNG, through the engine's own decoder and
+writer) and a `<id>.masked.gltf` beside the shipped file whose leaf materials sample it as `MASK`
+at the glTF default cutoff, 0.5. The shipped file is kept as it came.
+
 ## Real bought assets, for the owner to approve
 
 The kit's cards are made the way a marketplace tree's are, but they are the engine's own. Permissively
