@@ -105,7 +105,13 @@ and the checkout, and an expiry. An expired lock may be broken, an unexpired one
   leaves a ticket nobody refreshes: it stops counting when its 30 s lease runs out, so the build
   behind it starts **under 32 s** after the kill. A script from another worktree that predates the
   line takes no ticket and retries every 20 s as it did: it is outside the order, usually behind
-  it, and can neither stall nor corrupt it.
+  it, and can neither stall nor corrupt it. **Removing a ticket that is already gone is no error**:
+  every waiter that looks removes the dead tickets it sees, so two of them regularly reach the same
+  file, and on 2026-11-12 a queued build and a `gpu-lock.ps1 run` waiter died of it — PowerShell's
+  `Remove-Item` raises a file that vanishes between its resolution of the path and its delete as a
+  terminating error, which `-ErrorAction SilentlyContinue` does not silence. Every removal of a
+  ticket is `[IO.File]::Delete` now (`Remove-MachineLockTicketFile`), and `tools.machine_lock`
+  races six looks over one dead ticket a few hundred times to keep it so (T140).
 - **The lease is ten minutes, refreshed every two** from a background thread while the build runs,
   so a build whose script is killed outright holds the machine for ten minutes and not for as long
   as the build would have taken. Ctrl+C is not killed outright: the script removes the container it

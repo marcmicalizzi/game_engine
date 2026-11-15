@@ -255,6 +255,20 @@ $script:DeclaredCapSeconds = 1800
 
 function Get-MachineLockLineDirectory([string]$path) { return "$path.line" }
 
+# Removes one ticket file, and is content when it is already gone. Every waiter that looks removes
+# the dead tickets it sees, so two of them, or a ticket's own owner coming back, regularly race to
+# the same file. `Remove-Item -ErrorAction SilentlyContinue` is not enough for that: when the file
+# goes between the cmdlet's resolution of the path and its delete, the file system provider raises
+# "An object at the specified path ... does not exist" as a terminating error, which no
+# -ErrorAction silences, and a queued linux-build.ps1 and a `gpu-lock.ps1 run` waiter both died of
+# it on 2026-11-12 (roadmap T140). [IO.File]::Delete of a missing file is no error at all; any
+# other failure (a reader holding it open) leaves the ticket for the next look, which is what
+# that look is for. True when the file is gone afterwards.
+function Remove-MachineLockTicketFile([string]$path) {
+  try { [IO.File]::Delete($path) } catch [IO.DirectoryNotFoundException] { return $true } catch { return $false }
+  return $true
+}
+
 # One counter for the process: thread jobs share a pid and not this module's variables, and two
 # tickets of one process in one millisecond must still be two names.
 function Get-NextMachineLockTicketCounter {
@@ -296,7 +310,7 @@ function Get-MachineLockLine {
       $alive = $age -le $StaleSeconds
     }                                      # else: being renamed over this instant, and alive
     if (-not $alive) {
-      if ($RemoveDead) { Remove-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue }
+      if ($RemoveDead) { Remove-MachineLockTicketFile $full | Out-Null }
       continue
     }
     $keyMs = [long]$name.Substring(2, 16)
@@ -688,7 +702,7 @@ function Invoke-WithMachineLock {
   }
 }
 
-Export-ModuleMember -Function Get-MachineLockPath, Get-MachineLockOwner, Read-MachineLock,
+Export-ModuleMember -Function Get-MachineLockPath, Get-MachineLockOwner, Read-MachineLock, Remove-MachineLockTicketFile,
   Format-MachineLockHolder, Enter-MachineLock, Update-MachineLock, Exit-MachineLock,
   Start-MachineLockHeartbeat, Stop-MachineLockHeartbeat, Open-MachineLockSession,
   Close-MachineLockSession, Invoke-WithMachineLock, ConvertTo-MachineLockTime,
