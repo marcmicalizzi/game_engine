@@ -4,6 +4,7 @@
 #include "view_process.h"
 
 #include <core/json/json.h>
+#include <foundation/io/vfs.h>
 
 #include <doctest/doctest.h>
 #include <test_paths.h>
@@ -110,6 +111,39 @@ TEST_CASE("engine-view: the summary says which material pack the load used") {
   REQUIRE_MESSAGE(named.exit_code == 0, named.output);
   REQUIRE_MESSAGE(materials_of(named, used), named.output);
   CHECK(used == tmp.file("pack"));
+}
+
+// R158 (apps.md, renderer.md "Sampling over time: the accumulation"): `--capture-channels motion`
+// writes the motion pass's vectors beside the picture: two f32 a pixel, a picture of them, and a
+// header that says the size and the picture's scale.
+TEST_CASE("engine-view: --capture-channels motion writes the vectors beside the picture") {
+  const test::TempDir tmp("engine_view_motion");
+  REQUIRE(tmp.ok());
+  const std::string capture = tmp.file("shot.png");
+  const Run run =
+      view({"--offscreen", "--width", "64", "--height", "48", "--grid", "33", "--frames", "3",
+            "--ddc", tmp.file("ddc"), "--tunable", "renderer.reconstruction.inputs=true",
+            "--capture-channels", "motion", "--capture", capture});
+  if (run.exit_code == 3) {
+    MESSAGE("engine-view unavailable here: " << run.output);
+    return;
+  }
+  REQUIRE_MESSAGE(run.exit_code == 0, run.output);
+  CHECK(std::filesystem::exists(capture));
+  CHECK(std::filesystem::exists(tmp.file("shot.motion.png")));
+  const std::string bin = tmp.file("shot.motion.bin");
+  REQUIRE(std::filesystem::exists(bin));
+  CHECK(std::filesystem::file_size(bin) == u64{64} * 48 * 2 * sizeof(f32));
+  std::string header;
+  REQUIRE(io::read_file(tmp.file("shot.motion.json"), header) == io::Status::Ok);
+  JsonValue parsed;
+  REQUIRE_MESSAGE(parse_json(header, parsed).ok, header);
+  u64 width = 0;
+  u64 height = 0;
+  REQUIRE(parsed.find("width") != nullptr);
+  REQUIRE(parsed.find("height") != nullptr);
+  CHECK((parsed.find("width")->get_u64(width) && width == 64));
+  CHECK((parsed.find("height")->get_u64(height) && height == 48));
 }
 
 TEST_CASE("engine-view: renders frames and captures the last one") {
