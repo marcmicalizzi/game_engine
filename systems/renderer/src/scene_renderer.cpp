@@ -1074,7 +1074,13 @@ void SceneRenderer::remove_frame_pass(FramePassFn fn, void* user) noexcept {
 bool SceneRenderer::create_motion(std::string* error) {
   if (!resolved_.reconstruction_inputs) return true;
   motion_ = new MotionPass;
-  return motion_->create(*device_, *scene_, views_, desc_.frames_in_flight, error);
+  if (!motion_->create(*device_, *scene_, views_, desc_.frames_in_flight, error)) return false;
+  // What the inputs keep on the device, said once at load (renderer.md, "Sampling over time: the
+  // inputs"), so a host's log carries the figure its summary does not.
+  ENGINE_LOG_INFO(log_renderer, "sampling over time's inputs",
+                  log::field("device_bytes", motion_->device_bytes()),
+                  log::field("pool_bytes", scene_->deform_pool.size));
+  return true;
 }
 
 Reconstruction SceneRenderer::reconstruction() const noexcept {

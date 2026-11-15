@@ -7451,8 +7451,7 @@ int run_view(int argc, char** argv) {
                               stderr);
     // The measurement rule (ADR-0064): the `reconstruction` block, then the times as `gpu_ms` for
     // a native measurement and under `reconstructed` for any other (renderer::measurement_keys).
-    const renderer::MeasurementKeys measured =
-        renderer::measurement_keys(stats.last.reconstruction);
+    const auto measured = renderer::measurement_keys(stats.last.reconstruction);
     const std::string summary_text = format_text(
         "{\"frames\":%llu,\"seconds\":%.3f,\"avg_ms\":%.3f,\"width\":%u,\"height\":%u,"
         "\"clusters\":%u,\"leaf_clusters\":%u,\"triangles\":%u,\"lod_levels\":%u,\"build_ms\":%.1f,"
