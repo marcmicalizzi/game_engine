@@ -391,7 +391,8 @@ TEST_CASE("water channel: the step's fall is a parabola and its jump a ramp at t
 
 // W120's film along a line that climbs out of a hollow: the stations over their banks, each with
 // the 5 mm of water the cook writes there.
-scene::WaterChannel filmed(scene::WaterChannel block, std::initializer_list<u32> stations) {
+static scene::WaterChannel filmed(scene::WaterChannel block,
+                                  std::initializer_list<u32> stations) {
   for (const u32 i : stations) {
     block.flags[i] = static_cast<u16>(block.flags[i] | scene_gen::k_channel_over_bank);
     block.depth_m[i] = 0.005f;
