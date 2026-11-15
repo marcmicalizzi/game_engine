@@ -105,7 +105,8 @@ Seen read_ids(const std::string& path) {
     if (words[0] == seen.instance) clusters.push_back(words[1]);
   }
   std::sort(clusters.begin(), clusters.end());
-  seen.clusters = static_cast<u32>(std::unique(clusters.begin(), clusters.end()) - clusters.begin());
+  seen.clusters =
+      static_cast<u32>(std::unique(clusters.begin(), clusters.end()) - clusters.begin());
   return seen;
 }
 
@@ -114,9 +115,9 @@ Seen read_ids(const std::string& path) {
 TEST_CASE("engine-view: a village's flight goes in at a door and sees the house from within") {
   const test::TempDir tmp("engine_view_village");
   // Level ground 64 m square at 50 cm, so the plan is the entry's alone.
-  const Run synth = run_app(content_exe(),
-                            {"terrain-synth", tmp.file("ground.json"), "--kind", "flat", "--size",
-                             "129", "--spacing-mm", "500", "--origin-mm", "-32000,-32000"});
+  const Run synth =
+      run_app(content_exe(), {"terrain-synth", tmp.file("ground.json"), "--kind", "flat", "--size",
+                              "129", "--spacing-mm", "500", "--origin-mm", "-32000,-32000"});
   REQUIRE_MESSAGE(synth.exit_code == 0, synth.output);
   // One street of two rows, two houses of two storeys, plots two perches deep so both rows stand
   // on the ground there is.
@@ -137,10 +138,10 @@ TEST_CASE("engine-view: a village's flight goes in at a door and sees the house 
   REQUIRE(io::exists(flight));
 
   const std::string shots = tmp.file("shots");
-  const Run drawn = run_app(
-      view_exe(), {"--scene", scene, "--camera-path", flight, "--offscreen", "--width", "320",
-                   "--height", "180", "--shadows", "off", "--marker-captures", shots,
-                   "--capture-channels", "ids", "--ddc", tmp.file("ddc")});
+  const Run drawn =
+      run_app(view_exe(), {"--scene", scene, "--camera-path", flight, "--offscreen", "--width",
+                           "320", "--height", "180", "--shadows", "off", "--marker-captures", shots,
+                           "--capture-channels", "ids", "--ddc", tmp.file("ddc")});
   if (drawn.exit_code == 3) {
     MESSAGE("engine-view unavailable here: " << drawn.output);
     return;

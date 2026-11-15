@@ -686,7 +686,8 @@ void plot_boundaries(const VillageLayer& layer, const VillagePlan& plan,
         b.points_mm.push_back(cx[c]);
         b.points_mm.push_back(cz[c]);
       }
-      if (gated && before_front >= 0.0) b.gateways_mm.push_back(mm_of((before_front + gate) / 1000.0));
+      if (gated && before_front >= 0.0)
+        b.gateways_mm.push_back(mm_of((before_front + gate) / 1000.0));
       out.push_back(std::move(b));
     };
     if (has_far && has_near) {

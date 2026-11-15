@@ -4,8 +4,10 @@
 #include <core/hash/hash.h>
 #include <core/json/json.h>
 #include <core/schema/json_reflect.h>
+#include <domain/geometry/cluster_lod.h>
 #include <domain/scene_gen/exclusion.h>
 #include <domain/scene_gen/scene_gen.h>
+#include <domain/structures/structures.h>
 #include <domain/tileset/cuts.h>
 #include <domain/village/village.h>
 
@@ -15,6 +17,7 @@
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 using namespace engine;
 using namespace engine::village;
@@ -346,7 +349,6 @@ TEST_CASE("village: the shapes cover the treads, the pads and the paths and noth
   scene_gen::FootprintList far_tile;
   footprints(p, plan, far_tile, 32000, 40, 40, 2000);
   CHECK(far_tile.size() == 0);
-
 }
 
 namespace {
@@ -400,10 +402,12 @@ TEST_CASE("village: the wear is a verge, a worn margin and a tread a lane, and a
     if (q.state != PlotState::built) continue;
     const JsonValue& yard = *regions[r++].find("polygon");
     CHECK(regions[r - 1].find("material")->as_string() == "worn");
-    const f64 dx = static_cast<f64>(q.door_x_mm) / 1000.0, dz = static_cast<f64>(q.door_z_mm) / 1000.0;
+    const f64 dx = static_cast<f64>(q.door_x_mm) / 1000.0,
+              dz = static_cast<f64>(q.door_z_mm) / 1000.0;
     CHECK(inside(yard, dx - q.inward_x * 0.3, dz - q.inward_z * 0.3));
     CHECK(inside(yard, dx - q.inward_x * 0.3 + q.along_x, dz - q.inward_z * 0.3 + q.along_z));
-    CHECK(inside(yard, static_cast<f64>(q.path_x_mm) / 1000.0, static_cast<f64>(q.path_z_mm) / 1000.0));
+    CHECK(inside(yard, static_cast<f64>(q.path_x_mm) / 1000.0,
+                 static_cast<f64>(q.path_z_mm) / 1000.0));
     CHECK(!inside(yard, dx + q.inward_x * 12.0, dz + q.inward_z * 12.0));
   }
   // No layer named, no region; no yard and no path, the lanes' alone.
@@ -444,7 +448,8 @@ TEST_CASE("village: a plot is bounded once, and its front has a gateway where th
       // Walk the line to the station: the point there is on the plot's front, at the path's place.
       f64 left = static_cast<f64>(station), gx = 0.0, gz = 0.0;
       for (u32 k = 0; k + 1 < n; ++k) {
-        const f64 ax = static_cast<f64>(b.points_mm[2 * k]), az = static_cast<f64>(b.points_mm[2 * k + 1]);
+        const f64 ax = static_cast<f64>(b.points_mm[2 * k]),
+                  az = static_cast<f64>(b.points_mm[2 * k + 1]);
         const f64 dx = static_cast<f64>(b.points_mm[2 * k + 2]) - ax;
         const f64 dz = static_cast<f64>(b.points_mm[2 * k + 3]) - az;
         const f64 length = std::sqrt(dx * dx + dz * dz);
@@ -455,8 +460,10 @@ TEST_CASE("village: a plot is bounded once, and its front has a gateway where th
         }
         left -= length;
       }
-      const f64 off_x = gx - static_cast<f64>(q.path_x_mm), off_z = gz - static_cast<f64>(q.path_z_mm);
-      CHECK(std::fabs(off_x * q.along_x + off_z * q.along_z) < 5.0);  // square to the street from it
+      const f64 off_x = gx - static_cast<f64>(q.path_x_mm),
+                off_z = gz - static_cast<f64>(q.path_z_mm);
+      CHECK(std::fabs(off_x * q.along_x + off_z * q.along_z) <
+            5.0);  // square to the street from it
       const f64 fx = gx - static_cast<f64>(q.front_x_mm), fz = gz - static_cast<f64>(q.front_z_mm);
       CHECK(std::fabs(fx * q.inward_x + fz * q.inward_z) < 5.0);  // on the front
     }
@@ -470,8 +477,10 @@ TEST_CASE("village: a plot is bounded once, and its front has a gateway where th
     const f64 cu[4] = {-half, half, half, -half}, cv[4] = {0.0, 0.0, depth, depth};
     i64 cx[4], cz[4];
     for (u32 c = 0; c < 4; ++c) {
-      cx[c] = q.front_x_mm + scene_gen::nearest_mm((q.along_x * cu[c] + q.inward_x * cv[c]) / 1000.0);
-      cz[c] = q.front_z_mm + scene_gen::nearest_mm((q.along_z * cu[c] + q.inward_z * cv[c]) / 1000.0);
+      cx[c] =
+          q.front_x_mm + scene_gen::nearest_mm((q.along_x * cu[c] + q.inward_x * cv[c]) / 1000.0);
+      cz[c] =
+          q.front_z_mm + scene_gen::nearest_mm((q.along_z * cu[c] + q.inward_z * cv[c]) / 1000.0);
     }
     for (u32 c = 0; c < 4; ++c) {
       const u32 d = (c + 1) % 4;
@@ -630,4 +639,58 @@ TEST_CASE("village: an entry out of range is refused with a sentence") {
   std::string error;
   CHECK(!plan_village(p, context.ground, context, nullptr, nullptr, plan, error));
   CHECK(error.find("house filler") != std::string::npos);
+}
+
+TEST_CASE("village: a house's cut coarsens with distance and never falls under its root") {
+  // What the cluster LOD makes of the houses the scene's own filler writes (village.md, "What was
+  // measured"): each distinct house of a street meshed as the tile would mesh it, and its DAG cut
+  // from 50 m, 200 m and a kilometre before its front, at 2160 lines and a 60 degree field of view
+  // with a one-pixel threshold (the structures capability's own case, on its cot).
+  VillageLayer p = street(0, 0, 130, 0);
+  p.seed = 7;
+  scene_gen::Context context;
+  context.ground = ground(gentle);
+  VillagePlan plan;
+  std::string error;
+  REQUIRE_MESSAGE(plan_scene_village(p, context, plan, error), error);
+  REQUIRE(plan.built > 0);
+  std::vector<std::string> measured;
+  for (const House& h : plan.houses) {
+    if (std::find(measured.begin(), measured.end(), h.path) != measured.end()) continue;
+    measured.push_back(h.path);
+    structure::Recipe recipe;
+    REQUIRE_MESSAGE(structures::read_file(h.recipe, recipe, error), error);
+    geometry::ClusterFileData container;
+    structures::Report report;
+    const assets::MeshGeneratorInputs inputs;
+    const geometry::ClusterLodOptions lod;
+    REQUIRE_MESSAGE(structures::build_container(recipe, inputs, lod, 0, container, report, error),
+                    error);
+    u32 before = ~0u;
+    u32 cut_triangles[3] = {0, 0, 0}, cut_clusters[3] = {0, 0, 0};
+    const f32 distances[3] = {50.0f, 200.0f, 1000.0f};
+    for (u32 k = 0; k < 3; ++k) {
+      geometry::LodView view;
+      view.camera = {static_cast<f32>(h.min_x_mm + h.max_x_mm) * 0.0005f, 1.7f,
+                     static_cast<f32>(h.min_z_mm) * 0.001f - distances[k]};
+      view.proj_scale = 1.7320508f * 1080.0f;
+      view.threshold_px = 1.0f;
+      Vector<u32> cut;
+      geometry::select_lod(container.mesh, view, cut);
+      for (const u32 c : cut)
+        cut_triangles[k] += container.mesh.mesh.clusters[c].triangle_count;
+      cut_clusters[k] = cut.size();
+      CHECK(cut_triangles[k] > 0);
+      CHECK(cut_triangles[k] <= before);
+      before = cut_triangles[k];
+    }
+    CHECK(before >= report.root_triangles);
+    std::printf(
+        "village: %s: %u triangles in %u clusters; the cut at 50 m %u in %u, at 200 m %u "
+        "in %u, at 1 km %u in %u; root %u\n",
+        h.name.c_str(), report.triangles, report.clusters, cut_triangles[0], cut_clusters[0],
+        cut_triangles[1], cut_clusters[1], cut_triangles[2], cut_clusters[2],
+        report.root_triangles);
+  }
+  CHECK(measured.size() >= 2);
 }

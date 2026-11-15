@@ -239,8 +239,7 @@ struct BoundaryLine {
   Vector<i64> points_mm;
   Vector<i64> gateways_mm;
 };
-void plot_boundaries(const VillageLayer& layer, const VillagePlan& plan,
-                     Vector<BoundaryLine>& out);
+void plot_boundaries(const VillageLayer& layer, const VillagePlan& plan, Vector<BoundaryLine>& out);
 
 // The plan for a person or a tool: the lanes' lengths, each plot's place, state and house, the
 // counts and the size class.

@@ -263,16 +263,39 @@ with other agents' builds and GPU suites, other processes at 88 to 99 % of the C
 flight, so every time is an upper bound).
 
 **The plan**: 14 plots along 129 m of street, 8 houses built (a village), 6 spare, none steep, wet,
-unfit or refused; 17 ground edits (a tread, 8 pads, 8 paths) and 82 shapes.
+unfit or refused; 17 ground edits (a tread, 8 pads, 8 paths), 82 shapes, 11 mask regions (a lane's
+three and eight yards) and 8 boundary lines. `village.plan` (2026-11-15, `msvc-release`, the
+stand-in box house, other processes at 84 % of the CPU, so upper bounds): **13 µs** for a street
+of 8 houses, 150 µs for 64, 1.13 ms for 256, the medians; 1.7 to 4.4 µs a house.
 
 **The houses** (the rural filler's, through the structures mesher at `k_structure_version` 2): six
-distinct meshes for eight houses, **2,210 to 2,872 triangles and 93 to 122 clusters each**, 14,584
-triangles and 619 clusters together, against plan 14 §14.7's estimate of 30,000 triangles for an
-exterior and 45,000 for an interior: the mesher is plain surfaces, with no kit of parts yet. The
-scene whole is 3,059 instances, 1,979 clusters and 128,578 pairs, nearly all of them the cover's
-tufts; the eight houses are about 840 pairs. The collision's proxies of two houses are 5,046
-triangles and 126 KB (`structure_walk_tests.cpp`, a debug build). What the cluster LOD makes of a
-house at 50 m, 200 m and a kilometre was not measured.
+distinct meshes for eight houses, **2,210 to 2,872 triangles and 92 to 121 clusters each**, 14,584
+triangles and 609 clusters together, against plan 14 §14.7's estimate of 30,000 triangles for an
+exterior and 45,000 for an interior: the mesher is plain surfaces, with no kit of parts yet. **A
+house's mesh is 181 to 244 KB as its container** (the file the renderer loads, its DAG and its
+pages; 1.22 MB the six), about 83 bytes a triangle. The collision's proxies of two houses are
+5,046 triangles and 126 KB (`structure_walk_tests.cpp`, a debug build).
+
+**What the cluster LOD makes of a house** (`village_tests.cpp`, the last case: 2160 lines, a 60°
+field of view, a one-pixel threshold, the camera before the front):
+
+| House | Finest | 50 m | 200 m | 1 km | Root |
+|---|---|---|---|---|---|
+| the two largest (2,872 triangles) | 117 and 121 clusters | 2,835 in 83 | 1,847 to 2,168 in 42 to 54 | 1,425 to 1,460 in 33 | 376 to 427 |
+| the four others (2,210 triangles) | 92 to 94 clusters | 2,210 in 65 | 1,454 to 1,510 in 34 to 36 | 945 to 1,071 in 24 to 25 | 382 to 397 |
+
+At 50 m a house draws whole. **A kilometre off, where it is about 25 pixels wide, it still draws
+43 to 51 % of its triangles, two and a half times its root**: the DAG's error for large flat
+plaster and thatch surfaces stays under a pixel only that slowly, so a village seen from a ridge
+pays about a thousand triangles a house until an authored far form stands in (plan 14 §14.7; the
+structures page says the same of its cot).
+
+**The scene whole** (with the walls and the wear, 2026-11-15): 2,789 instances, 8,146 clusters,
+142,400 pairs, 51 meshes. Of those the eight houses are 609 clusters; the cover's six plants 1,348;
+and **the walls' kit of 39 solved modules 6,177 clusters, 142,936 triangles and 13.8 MB of
+containers** — eleven times the houses' memory for the boundary round them, resident whatever the
+number of plots (the walls page's trade: a kit, not a mesh a tile). A scene that walls its plots
+pays that once; a scene with no `walls` entry pays nothing.
 
 **The frame, inside against outside** (`engine-view --camera-path camera-path.json --offscreen
 --terrain-tiles --shadows rt --tunable renderer.gi.mode=bounce --time-of-day 15 --width 3840
@@ -297,6 +320,41 @@ more indoors, where every sampled pixel's ray meets a wall within a few metres a
 The chain's cost is the scene's and does not change at the door (nothing is culled by being
 indoors: the visible pairs are about 3,750 either side). The whole flight's GPU median is 5.19 ms
 (p95 6.31).
+
+**A room's light, measured and not mended** (2026-11-15; house 0's cross-passage, whose door
+faces west, at 15:00 with the sun 45° up and 22° off the door's normal; 1280×720; the mean of the
+picture's luminance out of 255, at the exposure the sky metered). The renderer was not edited:
+these are what its next rows start from.
+
+| Setting | The lane | Looking back at the door from inside | The passage | An upper room |
+|---|---|---|---|---|
+| traced shadows, `gi.mode=bounce` | 99 | 38 | 38 | 31 |
+| traced shadows, `gi.mode=sky` | 86 | 16 | 10 | 9 |
+| traced shadows, `gi.mode=off` | 120 | 135 | 145 | 147 |
+| cascaded shadow maps (no ray queries) | 120 | 135 | 145 | 147 |
+| no shadows | 125 | 152 | 159 | 178 |
+| bounce, exposure +3 stops | 209 | 95 | 96 | 79 |
+
+- **Without a traced cache a room is brighter than the street** (the third and fourth rows, the
+  same to a digit): the resolve's ambient is the sky's harmonics with nothing in the way, so every
+  wall is lit as if the house had no roof and the ceiling is lit from below by the ground's share.
+  That is every device without ray queries.
+- **The sun does come in at the door**: its patch on the flags is drawn right under traced shadows
+  at 15:00, the wall beside it lifts with the bounce, and it is absent at 12:00 (the sun is along
+  the wall) and at 18:00 (the sun is 18° up and the house across the street shades the door).
+  What barely comes in is the sky: with the cache fed by sky rays alone the walls beside an open
+  door are 10 to 16 of 255, and with the bounce the passage is a level 28 to 38 from the door to
+  its far end, where a room lit by a doorway falls off with every metre from it. These are the
+  cache settled, not caught young: a still camera gives the same means to 0.2 of 255 after 8
+  frames and after 600.
+- **No setting darkens a corner or the meeting of wall and ceiling**: there is no short-range
+  occlusion term in any of them.
+- **The exposure is the sky's** (`ev100` 14.97 indoors and out, from the sky's light and not the
+  picture's): a room is a tenth to a third of the street's brightness, and three stops more
+  exposure gives a room a person would accept while the doorway burns out. Nothing adapts.
+- **No light leaked through a wall's thickness** in the 14 flight pictures and three stills of
+  each traced setting; nothing here is lit by a lamp or a fire, so a local light's leak was not
+  exercised.
 
 ## Testing
 
