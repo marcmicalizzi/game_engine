@@ -1695,6 +1695,7 @@ bool SceneRenderer::set_dynamic_instances(std::span<const SceneInstance> tail,
   tiles.grows += change.grew ? 1u : 0u;
   tiles.slots_written += change.slots_written;
   tiles.compared += change.compared;
+  tiles.told += change.told_instances;
   tiles.compare_ns += static_cast<f64>(change.compare_ns);
   tiles.layout_ns += static_cast<f64>(change.layout_ns);
   tiles.write_ns += static_cast<f64>(change.write_ns);

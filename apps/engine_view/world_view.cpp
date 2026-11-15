@@ -147,7 +147,9 @@ bool ViewWorld::hand_over(void* context, std::span<const world::PlacementTiles::
   u32 total = 0;
   for (const world::PlacementTiles::TileRange& range : runs) {
     self->blocks_.push_back(renderer::DynamicBlock{range.key, range.first, range.count, range.ring,
-                                                   range.instances, range.version});
+                                                   range.instances, range.version,
+                                                   range.from_version, range.changed,
+                                                   range.changed_count});
     total = range.first + range.count;
   }
   // The appended block (game_props.h): after the tiles, under its own key, from the props' own
@@ -398,6 +400,10 @@ bool ViewWorld::update(const renderer::Camera& camera, u64 tick, Mode mode, u32 
     p.discarded = static_cast<u32>(now.discarded - then.discarded);
     p.released = static_cast<u32>(now.released - then.released);
     p.returned = static_cast<u32>(now.returned - then.returned);
+    p.reformed = static_cast<u32>(now.reformed - then.reformed);
+    p.reformed_instances = static_cast<u32>(now.reformed_instances - then.reformed_instances);
+    p.reform_ms = ms(static_cast<f64>(now.reform_ns - then.reform_ns));
+    p.told = t.told - t0.told;
     line.placements = std::move(p);
   }
   log_text_ += write_json(schema::to_json(line), JsonWriteOptions{.pretty = false});

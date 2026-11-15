@@ -5054,11 +5054,22 @@ first walk, 106 ring changes, 205 tiles built by each; the session locked, so fr
 unpaced; others at 85 to 88% of the CPU) the tile work on the frame's thread went from 1,004 ms
 to 15 (p99 7.01 → 0.18 ms, at most 13.1 → 0.3), and the frames over 50 ms from 1 to 3, all
 three with no tile work: two in the first second, behind the first fill's table rebuild (50 ms
-of `tables`), and one at the end. The placements do not move, so the change could rewrite each instance's mesh
-through `pick_ring_form` with no generator call; that needs the block to keep each placement's
-source mesh and scale, those drawn as nothing included, and `change_ring` to rewrite in place
-where `redraws` finds only forms differing — when a tile is built, which is T131's — so it is a
-row, G202 ([world](world.md#a-placements-form-by-ring)).
+of `tables`), and one at the end.
+
+**The swap, since G202** ([world](world.md#a-ring-change-rewrites-the-forms-in-place)): a ring
+change between two rings an entry draws as one representation rewrites each kept placement's mesh
+through `pick_ring_form` on the committing thread, with no generator call, and hands the renderer
+what it changed. `DynamicBlock::from_version`, `changed` and `changed_count` say it: **a block the
+renderer holds at `from_version` with the same count is that block with exactly the instances
+`changed` names different**, so it is not compared (`TileChange::told_instances`, `TileStats::told`)
+and is rewritten in place from its first changed instance — `TileLayout::Request::keep` and
+`keep_pairs`, a `SlotWrite` whose `skip` leaves the slots before it, and their pairs, as they were
+(an instance's `first_pair` is a prefix sum within its block, so every slot after the first
+changed one moves anyway). A block held at another version, or with another count, is read as
+before; the renderer trusts the claim only against the version it holds. Until G202 such a tile was
+built again and, coming back with its count and a new version, compared instance by instance: 440
+instances in `engine_view`'s "a streamed world's hand-over reads only the tiles it changed", which
+wants none, and passes again with the swap.
 
 **What it looks like.** The litter scene with the generated sets (`engine-content matgen`; the
 ground `ground/soil`, stochastic at 2 m; `load.materials` the worktree's `content/materials`), at

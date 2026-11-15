@@ -35,6 +35,13 @@ tunables::Int placements_admit_hold_off{
     "Commits a tile the pair budget let go waits before it may be admitted past the drawn tiles "
     "again"};
 
+// A tile that holds no placement at all, drawn or drawn as nothing in its ring (G202): what a build
+// lets go. One whose ring draws every placement as nothing is kept, so a move inward rewrites it.
+template <class Block>
+bool holds_nothing(const Block& block) noexcept {
+  return block.instances.empty() && block.forms.unseen.empty();
+}
+
 }  // namespace
 
 void admission_tunables(PlacementTilesConfig& config) noexcept {
@@ -54,6 +61,7 @@ struct PlacementTiles::Job {
     u64 serial = 0;
     Vector<renderer::SceneInstance> instances;
     Vector<u8> tags;
+    Forms forms;
     Generated built;
   };
   PlacementTiles* owner = nullptr;
@@ -243,6 +251,7 @@ bool PlacementTiles::create(const renderer::SceneData& scene, const PlacementTil
     const u32 count = tile_counts.value_at(i);
     spare.instances.reserve(count);
     spare.tags.reserve(count);
+    spare.forms.sources.reserve(count);  // what each was picked from (G202): 4 bytes an instance
     total += count;
     largest = std::max(largest, count);
   }
@@ -278,7 +287,7 @@ bool PlacementTiles::occupied(TileCoord tile) const noexcept {
   return false;
 }
 
-bool PlacementTiles::redraws(TileCoord tile, u8 from, u8 to) const noexcept {
+bool PlacementTiles::rebuilds(TileCoord tile, u8 from, u8 to) const noexcept {
   const scene_gen::TileCoord at{tile.x, tile.z};
   for (const std::unique_ptr<Entry>& entry : entries_) {
     const scene_gen::PlacementGeneratorDesc& g = *entry->generator;
@@ -288,6 +297,16 @@ bool PlacementTiles::redraws(TileCoord tile, u8 from, u8 to) const noexcept {
             g.representation(entry->state, context_for(*entry, to))) {
       return true;
     }
+  }
+  return false;
+}
+
+bool PlacementTiles::redraws(TileCoord tile, u8 from, u8 to) const noexcept {
+  if (rebuilds(tile, from, to)) return true;
+  const scene_gen::TileCoord at{tile.x, tile.z};
+  for (const std::unique_ptr<Entry>& entry : entries_) {
+    const scene_gen::PlacementGeneratorDesc& g = *entry->generator;
+    if (g.occupies != nullptr && !g.occupies(entry->state, at)) continue;
     // **Or draws one of its meshes as another form** (G197; ring_forms.h): the load's table says
     // so, for every scale, from the entry's resident meshes alone.
     const Vector<u32>& meshes = entry->source->meshes;
@@ -363,13 +382,23 @@ void PlacementTiles::finalize(TileBlock& block) {
   block.starved = false;
   block.pairs = count_pairs(block);
   block.version = ++next_version_;
+  // A build is a new block, not the one a form change was counted against (G202).
+  block.reformed_from = 0;
+  block.changed.clear();
+  block.reform_handed = false;
 }
 
 u64 PlacementTiles::room_bytes() const noexcept {
   const auto room = [](const TileBlock& block) {
-    return u64{block.instances.capacity() + block.held_instances.capacity()} *
+    // With what the tile's placements were picked from (G202): a source mesh a drawn instance,
+    // and the whole of each its ring draws as nothing.
+    const Forms& f = block.forms;
+    return u64{block.instances.capacity() + block.held_instances.capacity() +
+               f.unseen.capacity()} *
                sizeof(renderer::SceneInstance) +
-           u64{block.tags.capacity() + block.held_tags.capacity()} * sizeof(u8);
+           u64{block.tags.capacity() + block.held_tags.capacity() + f.unseen_tags.capacity()} *
+               sizeof(u8) +
+           u64{f.sources.capacity() + f.unseen_at.capacity()} * sizeof(u32);
   };
   u64 bytes = 0;
   for (u32 i = 0; i < spare_tiles_.size(); ++i)
@@ -396,8 +425,13 @@ void PlacementTiles::tile_ranges(Vector<TileRange>& out) const {
     const std::span<const renderer::SceneInstance> drawn = block.drawn();
     if (drawn.empty()) continue;  // a new tile whose first build still waits draws nothing
     const u32 count = static_cast<u32>(drawn.size());
-    out.push_back(
-        TileRange{tiles_.key_at(i), first, count, block.ring, drawn.data(), block.version});
+    TileRange range{tiles_.key_at(i), first, count, block.ring, drawn.data(), block.version};
+    if (block.reformed_from != 0) {  // its forms changed in place since the last hand-over (G202)
+      range.from_version = block.reformed_from;
+      range.changed = block.changed.data();
+      range.changed_count = static_cast<u32>(block.changed.size());
+    }
+    out.push_back(range);
     first += count;
   }
 }
@@ -439,11 +473,12 @@ bool PlacementTiles::generate(TileCoord tile, u8 ring, u32 entries, bool for_que
                               const renderer::TerrainSampler* stand,
                               Vector<scene_gen::Footprint>& earlier,
                               Vector<renderer::SceneInstance>& instances, Vector<u8>& tags,
-                              Generated& out) const {
+                              Forms& forms, Generated& out) const {
   const i64 build_started = time::monotonic_ns();
   out.reset();
   instances.clear();
   tags.clear();
+  forms.clear();
   const scene_gen::TileCoord at{tile.x, tile.z};
   bool ok = true;
   // Each entry is handed the footprints of the entries before it on this tile (ADR-0046 decision
@@ -529,13 +564,15 @@ bool PlacementTiles::generate(TileCoord tile, u8 ring, u32 entries, bool for_que
                            ? renderer::pick_ring_form(scene_->ring_forms, scene_mesh, ring, p.scale)
                            : scene_mesh;
       renderer::SceneInstance instance;
-      instance.mesh = form;
+      instance.mesh = scene_mesh;
       instance.transform = p.turn();
       instance.origin = p.position;
       instance.handoff = p.handoff;  // the near and far forms' hand-off (G136)
       instance.grounded = true;
       // Seated by its footprint (G201 stage 2): a resident mesh with a seat, on the scene's ground,
-      // by the function the load seats a whole read's with, so the two place it alike.
+      // by the function the load seats a whole read's with, so the two place it alike. By the
+      // source mesh's seat in every ring (G202): a placement stands where it stands whatever form
+      // draws it, so a form changed in place needs no seat of its own (a cut carries its source's).
       if (!entry.source->seated && ground_ != nullptr && p.mesh < meshes.size())
         seat(instance, out);
       // The whole read's place, for an entry whose ids name it (the `authored` entry's): what a
@@ -543,9 +580,17 @@ bool PlacementTiles::generate(TileCoord tile, u8 ring, u32 entries, bool for_que
       // (renderer.md, "Streamed trees sway").
       if (entry.source->motion_key_base != renderer::k_motion_key_load && p.id != 0)
         instance.motion_key = entry.source->motion_key_base + (p.id - 1);
+      // What it was picked from, kept beside it (G202): a drawn one's source mesh, or the whole of
+      // one its ring draws as nothing, so a ring change of forms alone rewrites it in place.
       if (form != renderer::k_no_ring_form) {
+        forms.sources.push_back(scene_mesh);
+        instance.mesh = form;
         instances.push_back(instance);
         tags.push_back(p.tag);
+      } else {
+        forms.unseen_at.push_back(static_cast<u32>(instances.size()));
+        forms.unseen.push_back(instance);
+        forms.unseen_tags.push_back(p.tag);
       }
       // Its footprint for the entries after it, whether or not the room takes its mesh or its ring
       // draws it: what a tile is never depends on what is resident (T131; until then a placement
@@ -600,20 +645,29 @@ bool PlacementTiles::install(TileBlock& block, Generated& built) {
     handed_.push_back(slot);
   }
   if (!built.meshes.empty()) {
+    Forms& forms = block.forms;
     u32 kept = 0;
+    u32 u = 0;  // the next unseen placement, whose place among the drawn moves with the drops
     for (u32 i = 0; i < block.instances.size(); ++i) {
+      while (u < forms.unseen_at.size() && forms.unseen_at[u] <= i)
+        forms.unseen_at[u++] = kept;
       renderer::SceneInstance instance = block.instances[i];
       if ((instance.mesh & k_handed) != 0) {
         const u32 slot = handed_[instance.mesh & ~k_handed];
         if (slot == TileMeshes::k_none) continue;  // refused above: not drawn
         instance.mesh = meshes_.scene_mesh(slot);
+        forms.sources[i] = instance.mesh;  // a tile's own mesh draws itself in every ring
       }
       block.instances[kept] = instance;
       block.tags[kept] = block.tags[i];
+      forms.sources[kept] = forms.sources[i];
       ++kept;
     }
+    while (u < forms.unseen_at.size())
+      forms.unseen_at[u++] = kept;
     block.instances.resize(kept);
     block.tags.resize(kept);
+    forms.sources.resize(kept);
   }
   block.buildings = built.buildings;
   block.stood = built.stood;
@@ -650,8 +704,8 @@ bool PlacementTiles::build(TileCoord tile, u8 ring, TileBlock& out, u32 entries,
   ENGINE_ASSERT(job_ == nullptr || !job_->in_flight, "a tile built beside a job in flight");
   out.ring = ring;
   if (for_query) {
-    const bool ok =
-        generate(tile, ring, entries, true, nullptr, earlier_, out.instances, out.tags, inline_);
+    const bool ok = generate(tile, ring, entries, true, nullptr, earlier_, out.instances, out.tags,
+                             query_forms_, inline_);
     out.buildings = inline_.buildings;
     out.stood = scene_->terrain.enabled ? scene_->terrain.time_s : 0.0;
     out.pairs = 0;  // never drawn: nothing to budget
@@ -666,7 +720,7 @@ bool PlacementTiles::build(TileCoord tile, u8 ring, TileBlock& out, u32 entries,
   // own (`stage`); without, the build replaces it in place, as it always did.
   if (meshes_.enabled()) stage(out);
   bool ok = generate(tile, ring, entries, false, stand_.get(), earlier_, out.instances, out.tags,
-                     inline_);
+                     out.forms, inline_);
   inline_.stood = stand_time_;
   ok = install(out, inline_) && ok;
   stats_.tiles_ns += time::monotonic_ns() - build_started;
@@ -824,7 +878,7 @@ bool PlacementTiles::take(const TileEvent& event) {
   if (held != nullptr) {
     const bool built = build(event.tile, event.to, *held);
     if (!built) ++stats_.failures;
-    if (held->instances.empty()) {
+    if (holds_nothing(*held)) {
       recycle(key, std::move(*held));
       tiles_.erase(key);
     }
@@ -839,7 +893,7 @@ bool PlacementTiles::take(const TileEvent& event) {
   }
   const bool built = build(event.tile, event.to, block);
   if (!built) ++stats_.failures;
-  if (block.instances.empty()) {
+  if (holds_nothing(block)) {
     recycle(key, std::move(block));
     return built;
   }
@@ -864,6 +918,10 @@ void PlacementTiles::recycle(u64 key, TileBlock&& block) {
   block.fresh = false;
   block.instances.clear();
   block.tags.clear();
+  block.forms.clear();
+  block.handed = block.reformed_from = 0;
+  block.changed.clear();
+  block.reform_handed = false;
   if (TileBlock* spare = spare_tiles_.find_value(key)) {
     *spare = std::move(block);
   } else if (block.instances.capacity() != 0 || block.tags.capacity() != 0) {
@@ -877,14 +935,114 @@ bool PlacementTiles::activate(void* context, const TileEvent& event) {
 
 bool PlacementTiles::change_ring(void* context, const TileEvent& event) {
   auto* self = static_cast<PlacementTiles*>(context);
-  // Only when some entry on the tile draws the two rings differently (the ruins: sections with
-  // debris to walls only is a change, and so is anything to or from blocks); two rings that draw
-  // the same need nothing built again.
-  if (!self->redraws(event.tile, event.from, event.to)) {
-    if (TileBlock* held = self->tiles_.find_value(tile_key(event.tile))) held->ring = event.to;
-    return true;
+  // Built again only when some entry on the tile draws the two rings as different representations
+  // (the ruins: sections with debris to walls only is a change, and so is anything to or from
+  // blocks), or has none. **Forms alone are rewritten in place** (G202): the placements are the
+  // same in both rings, so the tile's instances take the new ring's forms from what it keeps
+  // (`reform`), and no generator is asked. A tile due for a build keeps its ask: it is built for
+  // the ring it is in when its turn comes, or rewritten for it when a job built it for the last.
+  // A tile not held put nothing on its tile in any form, so a form change gives it nothing.
+  if (self->rebuilds(event.tile, event.from, event.to)) return self->take(event);
+  TileBlock* held = self->tiles_.find_value(tile_key(event.tile));
+  if (held == nullptr) return true;
+  held->ring = event.to;
+  if (!held->due) self->reform(*held, event.to);
+  return true;
+}
+
+// **The forms rewritten in place** (G202; world.md, "A ring change rewrites the forms in place"):
+// every placement the tile keeps — its drawn instances by their source meshes and the ones its last
+// ring drew as nothing — in the tile's order, each asked `pick_ring_form` for `ring` with its own
+// scale, so the result is what `generate` makes for that ring, instance for instance. Where what it
+// draws changed, the tile takes a new version and records which instances the renderer holds
+// otherwise: the indices whose mesh moved, or every index from the first placement that was drawn
+// and is not (or the reverse), counted against the version the renderer was last handed. A tile
+// whose build waits for its meshes rewrites the build and draws what it held meanwhile.
+void PlacementTiles::reform(TileBlock& block, u8 ring) {
+  const i64 start = time::monotonic_ns();
+  Forms& next = reform_forms_;
+  next.clear();
+  reform_instances_.clear();
+  reform_tags_.clear();
+  const Forms& had = block.forms;
+  const u32 drawn = static_cast<u32>(block.instances.size());
+  u32 moved_at = ~0u;  // the first index of the new list a placement came into or left from
+  auto place = [&](const renderer::SceneInstance& from, u32 source, u8 tag, bool was_drawn) {
+    const u32 form = renderer::pick_ring_form(scene_->ring_forms, source, ring, from.transform.scale);
+    const bool shown = form != renderer::k_no_ring_form;
+    if (shown != was_drawn && moved_at == ~0u) moved_at = static_cast<u32>(reform_instances_.size());
+    if (!shown) {
+      next.unseen_at.push_back(static_cast<u32>(reform_instances_.size()));
+      next.unseen.push_back(from);
+      next.unseen.back().mesh = source;
+      next.unseen_tags.push_back(tag);
+      return;
+    }
+    next.sources.push_back(source);
+    reform_instances_.push_back(from);
+    reform_instances_.back().mesh = form;
+    reform_tags_.push_back(tag);
+  };
+  u32 u = 0;
+  for (u32 i = 0; i <= drawn; ++i) {
+    for (; u < had.unseen.size() && had.unseen_at[u] == i; ++u)
+      place(had.unseen[u], had.unseen[u].mesh, had.unseen_tags[u], false);
+    if (i < drawn) place(block.instances[i], had.sources[i], block.tags[i], true);
   }
-  return self->take(event);
+  // The instances the renderer would hold otherwise: every one past the first that came or went,
+  // and before it each whose form moved (the same placements in the same order there).
+  const u32 now = static_cast<u32>(reform_instances_.size());
+  const u32 aligned = moved_at < now ? moved_at : now;
+  u32 changes = 0;
+  const bool shift = moved_at != ~0u || now != drawn;
+  reform_scratch_.clear();
+  for (u32 i = 0; i < aligned && i < drawn; ++i) {
+    if (reform_instances_[i].mesh != block.instances[i].mesh) reform_scratch_.push_back(i);
+  }
+  if (shift) {
+    for (u32 i = aligned; i < now; ++i)
+      reform_scratch_.push_back(i);
+  }
+  changes = reform_scratch_.size();
+  block.instances.swap(reform_instances_);
+  block.tags.swap(reform_tags_);
+  std::swap(block.forms, next);
+  stats_.reform_ns += time::monotonic_ns() - start;
+  if (changes == 0 && !shift) return;  // the same instances: the block it was, its version kept
+  ++stats_.reformed;
+  stats_.reformed_instances += changes;
+  if (block.waiting) return;  // drawn when its meshes are in, as a new block (`finalize`)
+  block.pairs = count_pairs(block);
+  // Counted against what the renderer holds: the version it was handed, with this change and any
+  // made since that hand-over; a tile built since it was handed is new to it in every instance.
+  if (block.reform_handed) {
+    block.reformed_from = 0;
+    block.changed.clear();
+    block.reform_handed = false;
+  }
+  if (block.reformed_from == 0 && block.version == block.handed && block.handed != 0) {
+    block.reformed_from = block.handed;
+    block.changed.assign(reform_scratch_.begin(), reform_scratch_.end());
+  } else if (block.reformed_from != 0 && !shift) {
+    // A second change before a hand-over: the union of the two, in order.
+    reform_merge_.clear();
+    u32 a = 0;
+    u32 b = 0;
+    while (a < block.changed.size() || b < reform_scratch_.size()) {
+      const u32 x = a < block.changed.size() ? block.changed[a] : ~0u;
+      const u32 y = b < reform_scratch_.size() ? reform_scratch_[b] : ~0u;
+      reform_merge_.push_back(x < y ? x : y);
+      a += x <= y ? 1u : 0u;
+      b += y <= x ? 1u : 0u;
+    }
+    block.changed.swap(reform_merge_);
+  } else {
+    block.reformed_from = block.handed;
+    block.changed.clear();
+    for (u32 i = 0; i < now; ++i)
+      block.changed.push_back(i);
+  }
+  block.version = ++next_version_;
 }
 
 void PlacementTiles::deactivate(void* context, const TileEvent& event) {
@@ -935,7 +1093,7 @@ void PlacementTiles::build_due() {
   for (u32 r = 0; r < count; ++r) {
     TileBlock& block = tiles_.value_at(ranks_[r].index);
     if (!build(tile_of_key(ranks_[r].key), block.ring, block)) ++stats_.failures;
-    if (block.instances.empty()) emptied_.push_back(ranks_[r].key);
+    if (holds_nothing(block)) emptied_.push_back(ranks_[r].key);
   }
   for (const u64 key : emptied_) {
     TileBlock* block = tiles_.find_value(key);
@@ -1147,15 +1305,23 @@ void PlacementTiles::admit_meshes() {
       if (result == TileMeshes::Admit::failed) {
         // Its mesh could not be built (said once, by the table): the tile draws the rest.
         const u32 scene_mesh = meshes_.scene_mesh(slot);
+        Forms& forms = block.forms;
         u32 kept = 0;
+        u32 u = 0;  // as `install` drops a refused mesh's instances (G202)
         for (u32 k = 0; k < block.instances.size(); ++k) {
+          while (u < forms.unseen_at.size() && forms.unseen_at[u] <= k)
+            forms.unseen_at[u++] = kept;
           if (block.instances[k].mesh == scene_mesh) continue;
           block.instances[kept] = block.instances[k];
           block.tags[kept] = block.tags[k];
+          forms.sources[kept] = forms.sources[k];
           ++kept;
         }
+        while (u < forms.unseen_at.size())
+          forms.unseen_at[u++] = kept;
         block.instances.resize(kept);
         block.tags.resize(kept);
+        forms.sources.resize(kept);
         meshes_.release(slot);
         block.tickets.erase(block.tickets.begin() + t);
         ++stats_.failures;
@@ -1170,7 +1336,7 @@ void PlacementTiles::admit_meshes() {
     }
     if (ready) {
       finalize(block);
-      if (block.instances.empty()) emptied_.push_back(rank.key);
+      if (holds_nothing(block)) emptied_.push_back(rank.key);
       continue;
     }
     ++stats_.mesh_waiting;
@@ -1219,7 +1385,7 @@ void PlacementTiles::run_job(void* data) noexcept {
     Job::Slot& slot = job.slots[s];
     Generated& built = slot.built;
     (void)self.generate(tile_of_key(slot.key), slot.ring, ~0u, false, job.stand, job.earlier,
-                        slot.instances, slot.tags, built);
+                        slot.instances, slot.tags, slot.forms, built);
     built.stood = job.stood;
     if (built.copies.size() < built.meshes.size()) built.copies.resize(built.meshes.size());
     for (u32 k = 0; k < built.meshes.size(); ++k) {
@@ -1258,9 +1424,13 @@ void PlacementTiles::collect(bool wait) {
     if (meshes_.enabled()) stage(*block);
     block->instances.assign(slot.instances.begin(), slot.instances.end());
     block->tags.assign(slot.tags.begin(), slot.tags.end());
+    block->forms.assign(slot.forms);
     if (!install(*block, slot.built)) ++stats_.failures;
+    // A ring change of forms alone while the job built it (G202): the tile was left due with the
+    // serial the job answered, and its forms are rewritten for the ring it is in now.
+    if (block->ring != slot.ring) reform(*block, block->ring);
     ++stats_.collected;
-    if (block->instances.empty()) emptied_.push_back(slot.key);
+    if (holds_nothing(*block)) emptied_.push_back(slot.key);
   }
   for (const u64 key : emptied_) {
     TileBlock* block = tiles_.find_value(key);
@@ -1387,8 +1557,27 @@ void PlacementTiles::commit_tail() {
   // tail and the renderer compared all of it: the v23 forest's flight spent 6.3 s of its 40 s
   // writing it and 2.7 s comparing it (docs/experiments/forest-load-in-2026-10-31.md).
   if (self->run_sink_ != nullptr) {
+    // A form change handed at the last commit is the renderer's now (G202), and the runs say what
+    // this commit hands; then each drawn tile's version is the one handed.
+    for (u32 i = 0; i < self->tiles_.size(); ++i) {
+      TileBlock& block = self->tiles_.value_at(i);
+      if (!block.reform_handed) continue;
+      block.reformed_from = 0;
+      block.changed.clear();
+      block.reform_handed = false;
+    }
     self->tile_ranges(self->runs_);
     self->tail_stale_ = true;
+    for (u32 i = 0; i < self->tiles_.size(); ++i) {
+      TileBlock& block = self->tiles_.value_at(i);
+      const bool shown = !block.withheld && !block.drawn().empty();
+      block.handed = shown ? block.version : 0;
+      block.reform_handed = shown && block.reformed_from != 0;
+      if (!shown) {
+        block.reformed_from = 0;
+        block.changed.clear();
+      }
+    }
   } else {
     self->write_tail();
   }

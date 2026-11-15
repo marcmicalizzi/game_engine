@@ -56,6 +56,13 @@ struct DynamicBlock {
   // with the version and the count the renderer holds is the same block, and its instances are not
   // read at all; 0 says nothing, and the renderer compares them as it always did.
   u64 version = 0;
+  // **What changed since a version the caller handed before** (G202): when the renderer holds the
+  // key at `from_version` with the same count, the block is that one with exactly the instances
+  // `changed` names (ascending indices) different, so nothing is compared and the slots before the
+  // first of them are kept as they are; any other held block is read as above. 0: nothing said.
+  u64 from_version = 0;
+  const u32* changed = nullptr;
+  u32 changed_count = 0;
 };
 
 // The granularities a block's reserved runs are rounded to: sixteen pairs, four instance slots.
@@ -102,6 +109,9 @@ struct SlotWrite {
   u32 pair_begin = 0;
   u32 source = ~u32{0};
   u32 live = 0;
+  // The source's instances before the first written (G202: a block rewritten from its first
+  // changed instance on), so slot `inst_begin + k` holds instance `skip + k`.
+  u32 skip = 0;
 };
 
 // What one change did, block by block.
@@ -126,6 +136,10 @@ class TileLayout {
     u32 pairs = 0;
     bool same = false;
     u64 version = 0;  // carried into the block (`DynamicBlock::version`)
+    // Rewritten in place, its first `keep` instances and their `keep_pairs` pairs are the block's
+    // own already (G202, `DynamicBlock::changed`): only the slots after them are written.
+    u32 keep = 0;
+    u32 keep_pairs = 0;
   };
 
   // Empty, behind the load's own instances and pairs, which never move.

@@ -140,3 +140,77 @@ TEST_CASE("engine-view: litter handed to its ring's form changes no pixel and ho
   CHECK(field_u64(*with, "refused") == 0);
   CHECK(field_u64(*with, "tail_pairs") < field_u64(*without, "tail_pairs"));
 }
+
+namespace {
+
+// The world log's placements, summed over a flight.
+struct Placements {
+  u64 built = 0;
+  u64 reformed = 0;
+  u64 reformed_instances = 0;
+  u64 told = 0;
+  u64 compared = 0;
+};
+Placements sum_placements(const std::string& path) {
+  Placements out;
+  std::ifstream log(path, std::ios::binary);
+  std::string line;
+  while (std::getline(log, line)) {
+    JsonValue frame;
+    if (!parse_json(line, frame).ok) continue;
+    const JsonValue* p = frame.find("placements");
+    if (p == nullptr || !p->is_object()) continue;
+    out.built += field_u64(*p, "built");
+    out.reformed += field_u64(*p, "reformed");
+    out.reformed_instances += field_u64(*p, "reformed_instances");
+    out.told += field_u64(*p, "told");
+    out.compared += field_u64(*p, "compared");
+  }
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("engine-view: a ring change of forms alone calls no generator and is read as named") {
+  // G202 (world.md, "A ring change rewrites the forms in place"): the litter's tiles crossing
+  // every ring both ways have their forms rewritten in place, so the flight asks its generators for
+  // exactly the tiles the same flight with the forms off asks for (its arrivals), and the renderer
+  // is told which instances each rewritten tile changed and compares none.
+  const test::TempDir tmp("engine_view_ring_reform");
+  REQUIRE(write_text(tmp.file("leaf.litter.json"), R"({"seed":17,"kind":"leaf"})"));
+  REQUIRE(write_text(tmp.file("bark.litter.json"), R"({"seed":19,"kind":"bark"})"));
+  REQUIRE(write_text(tmp.file("scene.json"), k_scene));
+  REQUIRE(write_text(tmp.file("path.json"),
+                     R"({"format":"engine.camera-path.v1","name":"across","fps":10,"keys":[)"
+                     R"({"time":0,"position":[-120,3,4],"target":[0,0,0]},)"
+                     R"({"time":4,"position":[120,3,-4],"target":[200,0,0]}]})"));
+  auto fly = [&](const char* log, bool forms) {
+    std::vector<std::string> args = base_args(tmp);
+    for (const char* a : {"--frames", "40", "--shadows", "off", "--world-log"})
+      args.push_back(a);
+    args.push_back(tmp.file(log));
+    if (!forms) {
+      args.push_back("--tunable");
+      args.push_back("renderer.forms.enabled=false");
+    }
+    return view(args);
+  };
+  const Run on = fly("on.jsonl", true);
+  if (on.exit_code == 3) {
+    MESSAGE("engine-view unavailable here: " << on.output);
+    return;
+  }
+  REQUIRE_MESSAGE(on.exit_code == 0, on.output);
+  const Run off = fly("off.jsonl", false);
+  REQUIRE_MESSAGE(off.exit_code == 0, off.output);
+  const Placements with = sum_placements(tmp.file("on.jsonl"));
+  const Placements without = sum_placements(tmp.file("off.jsonl"));
+  MESSAGE("forms on: " << with.built << " tiles built, " << with.reformed << " rewritten in place ("
+                       << with.reformed_instances << " instances), " << with.told
+                       << " told, " << with.compared << " compared; forms off: " << without.built
+                       << " built, " << without.compared << " compared");
+  CHECK(with.reformed > 0);
+  CHECK(with.told > 0);
+  CHECK(with.built == without.built);
+  CHECK(with.compared == 0);
+}
