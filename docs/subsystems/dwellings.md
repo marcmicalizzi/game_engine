@@ -125,21 +125,80 @@ stack's proud face among them, so a house's clear length is at most 14.1 m at th
 description written by hand with rooms, inner walls, doorways and a stair is meshed and walked by
 the same code, and `plan_interior` lays a plan into any clear rectangle an author names.
 
+| timber and furniture ([below](#timber-and-furniture)) | a `Box` a member, in the room it stands in; the one member of each furniture piece that covers its footprint `solid`, the rest and all the timber not |
+
 **Budgets.** Measured by `tests/describe_tests.cpp` over 324 houses (`msvc-debug`, the mesher at
-`k_structure_version` 1): a cot is 488 to 640 triangles, a two-storey hall and parlour about 2,050,
-a two-up two-down about 1,760, and the largest, a two-storey cross-passage house with an inner room
-13.5 m by 5.5 m clear, 2,848. The test holds every house under 6,000. What the cluster DAG does to
-them at a distance is the mesher's ([structures](structures.md)).
+`k_structure_version` 2) and by `engine-content dwelling` on five of them, bare (`--bare all`) and
+as the filler writes them:
+
+| House | Bare | With timber and furniture | Members |
+|---|---|---|---|
+| a cot, 4.9 m by 4.1 m clear | 1,268 | 1,616 | 29 |
+| a hall and parlour on one floor | 866 | 1,334 | 39 |
+| a two-up two-down | 1,834 | 2,914 | 90 |
+| a hall and parlour on two storeys | 2,162 | 3,326 | 97 |
+| the largest: a two-storey cross-passage house with an inner room, 13.5 m by 5.5 m clear | 2,960 | 4,424 | 122 |
+
+A member is a closed box of twelve triangles, so the timber and the furniture are a third of a
+furnished house. The test holds every house under 6,000. A bare cot was 488 to 640 triangles and
+the largest house 2,848 at `k_structure_version` 1: the rest of the bare column is the mesher's
+thatch, roof timbers and hearth. What the cluster DAG does to them at a distance is the mesher's
+([structures](structures.md)).
+
+## Timber and furniture
+
+`furnish.h`. What a room shows besides its walls, **every piece made of members** — axis-aligned
+boards, posts and rails in whole centimetres — and every member a plain `Box` of the description,
+so a hand-authored `.structure.json` states the same pieces and no mesher code is the filler's
+alone. `add_piece(furnishing, kind, footprint, against, storey, room)` builds any furniture piece
+into a rectangle its author names. The sizes and their sources are the grounding's
+([timber](../experiments/vernacular-interiors.md#timber),
+[furniture](../experiments/vernacular-interiors.md#furniture)).
+
+| Piece | Members | Where |
+|---|---|---|
+| joists | one a joist, 12 by 10 cm at 52 cm centres | under an upper floor, a room at a time, across the ridge, their ends 2 cm in the walls; never over a stair's compartment |
+| beam | one, 24 cm wide, 18 cm under the ceiling | along the ridge under the joists' middle, where they span 3 m or more |
+| nosings | one a riser, 2 cm past it and 3 cm deep | every tread's edge and the head landing's |
+| newel | one, 9 by 5 cm | a half-newel against the wall on the climber's right, astride the first riser and the last (5 cm of wall is all that stands between a landing's doorway and the flight) |
+| table set | 20: a top, four legs, four rails, three stretchers, and two benches of a seat, two slab ends and a stretcher | a hall, a kitchen, a two-up two-down's parlour: under a window where one is free, else along any wall |
+| settle | 5: a back, two ends, a seat, a front board | a heated room that is lived in: the nearest free place to the stack, within 3.2 m |
+| bed | 10: four posts, a head and a foot board, two rails, a mattress and a bolster in the ceiling's white | a parlour with no chamber over the house, an inner room, a chamber, a cot's one room: a corner before the middle of a wall, far from the way in, its head or its side to the wall |
+| chest | 4: two ends, a body, a lid | beside the bed |
+
+**Never in the tour's way.** `furnish_interior` places each piece against a wall of its room on a
+10 cm module, and a place is free when the piece keeps the tour's own 35 cm from the tour's line,
+stands in no doorway's approach (90 cm each side, 20 cm past each jamb) and no outer door's (1 m,
+for a leaf), not before a hearth (1.1 m) or in a stack, not before the upper storey's first window
+(the one the village's walker is led to) and 10 cm from the piece before it. Only a settle is kept
+from the other windows: its back stands over a sill. A piece that fits nowhere at its least size is
+left out, so a room keeps its way through before it keeps its table: over 648 houses 740 of 784
+lived-in rooms have a table, 584 of 704 heated ones a settle, and 928 of 944 slept-in rooms a bed
+(`tests/furnish_tests.cpp` holds nine in ten, six in ten and nine in ten). A cot's one room takes
+its bed before its table. `validate_furnishing` reads all of it back and repairs nothing.
+
+**What varies, from the house's seed** (one draw a purpose and a room): which of two equal places
+a piece takes, the bed's width (a 137 or a 122 cm mattress first), the chest's length (90 to
+120 cm). What a room's use fixes: which pieces it gets and in what order they are placed. The
+timber draws nothing.
+
+**The walk records carry the furniture**: `structures::walk_records` lists a description's solid
+boxes, so a table's top, a bench's seat, a settle's seat, a mattress and a chest's body reach
+collision and a walker meets them; legs, rails and all the timber are seen and not walked into.
+`RuralStyle::furniture` and `RuralStyle::timber` leave either out (a bare house is the same plan).
 
 ## The filler as a tool
 
 `engine-content dwelling <out-dir> [--name <n>] [--persons <n>] [--means <0|1|2>] [--frontage <cm>]
-[--depth <cm>] [--seed <n>] [--scope whole|exterior|interior]` runs the filler once and writes
-three files: `<n>.structure.json`, the mesh generator `structure`'s recipe, which a scene names like
-any generated mesh; `<n>.plan.txt`, each storey drawn as text; and `<n>.walk.json`, the tour and
-the views in metres in the description's frame (`tour`: points with the floor's height under each
-and the room; `views`: an eye and a point looked at, a room). It prints one JSON line: the type,
-storeys, rooms, the clear and outer sizes, whether the plot demoted the house, and the triangles.
+[--depth <cm>] [--seed <n>] [--scope whole|exterior|interior] [--bare timber|furniture|all]` runs
+the filler once and writes three files: `<n>.structure.json`, the mesh generator `structure`'s
+recipe, which a scene names like any generated mesh; `<n>.plan.txt`, each storey drawn as text; and
+`<n>.walk.json`, the tour and the views in metres in the description's frame (`tour`: points with
+the floor's height under each and the room; `views`: an eye and a point looked at, a room;
+`pieces`: every piece of timber and furniture, its kind, room, members and footprint). `--bare`
+leaves the timber, the furniture or both out of the description. It prints one JSON line: the type,
+storeys, rooms, the clear and outer sizes, whether the plot demoted the house, the triangles, and
+the pieces and members.
 What it writes is a starting point its author owns; nothing runs it again.
 
 ## The tour and the views
@@ -181,17 +240,31 @@ plan in a terminal.
 - Every house the filler plans, over three plots, nine household sizes, three means and forty
   seeds, passes the same rules and stands inside its plot; the household fixes the type; sizes stay
   in the measured ranges; a plot too small for a cot is refused.
+- Every furniture piece of 648 houses stands on its room's free floor, clear of the tour's line by
+  35 cm (measured again in the test, from the tour's points), of the approaches, the stacks and the
+  other pieces; a stair's compartment, a passage and a service room hold none; every piece is made
+  of members inside its footprint with one solid; a wrong size is refused
+  (`tests/furnish_tests.cpp`). The walk records hold a box for every solid member and no other
+  (`tests/describe_tests.cpp`).
+- Joists hang from the ceiling of every ground room under an upper floor but the stair's, at 52 cm
+  centres, with no member under a door's head; a stair has a nosing a riser and two newels; a
+  house of one storey shows no joists.
 
 **Determinism.** Integer centimetres and millimetres, the engine's hash of the seed and a purpose,
 one draw a statement; no floating point and no C library call in the module. `hash_interior` covers
 every field of every record, and `tests/determinism_tests.cpp` pins it over every type and over the
-filler's houses, on MSVC, reproduced by Clang and GCC in the containers. `k_interior_version` and
-`k_rural_filler_version` move with any change to what is laid out.
+filler's houses, `hash_furnishing` every piece and member (`tests/furnish_tests.cpp` pins it over
+648 houses), and `tests/describe_tests.cpp` the descriptions' source hashes: pins taken on MSVC,
+which Clang and GCC in the containers must reproduce. `k_interior_version`,
+`k_rural_filler_version` and `k_furnish_version` move with any change to what is laid out, written
+or placed.
 
-**Public API.** `include/domain/dwellings/dwellings.h` (the two below), `interiors.h`
+**Public API.** `include/domain/dwellings/dwellings.h` (the three below), `interiors.h`
 (`plan_interior`, `validate_interior`, `reachable_rooms`, `stair_headroom_cm`, `hash_interior`,
 `interior_min_extent`, `draw_interior`), `rural_filler.h` (`household_asks`, `choose_rural`,
-`plan_rural`), `tour.h` (`tour_interior`, `room_views`).
+`plan_rural`), `furnish.h` (`add_piece`, `furnish_interior`, `timber_interior`,
+`validate_furnishing`, `hash_furnishing`), `tour.h` (`tour_interior`, `room_views`), `describe.h`
+(`describe`, `fill_rural`).
 
 **Depends on.** `base`, `containers`, `hash`, `math`, and the `structures` capability with its
 schema types (`structures_schemas`).
@@ -212,7 +285,11 @@ nothing**: the module registers nothing and runs nothing until called.
 ## What is not built
 
 - **Lofts and half storeys**, the lobby-entry house and the winder: the grounding page says why.
-- **Furniture** (G66 names it): no row is grounded yet.
+- **A stair's handrail and balusters**: a rail slopes and a `Box` does not; it waits for a member
+  between two points in the description. **What a service room, a passage and a hearth hold**
+  (a dresser, stools, chairs, a cupboard, the fire's irons): the grounding opened no inventory.
+  **The furnisher as a table of rows** a city's rooms can share (G66's last clause, G44): the
+  pieces and the placement are functions today.
 - **Footprints that are not rectangles**, and a back range or outshut: plan 14's rural filler takes a
   polygon or a circle; this one takes a rectangle, because every grounded plan is one.
 - **`structure.fill` as a protocol method**, and the filler's provenance on a document record: they

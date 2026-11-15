@@ -107,11 +107,46 @@ headroom rule, and that is a row of its own.
 | The stack in plan | the opening and 0.3 m each side; against a wall, 0.4 m into the room, through the wall and 8 cm proud of it outside (0.98 m in all at a 0.5 m wall); 1.0 m along the house when axial | **authored**; Poplar Cottage's smoke bay is about 4 ft (1.2 m) long, the upper bound. The 8 cm is the mesher's example's |
 | The chimney | the stack carried up through every storey; its height over the ridge is the shell's | a flue within 0.6 m of the ridge ends at least 0.6 m over it (Approved Document J, *snippet*) |
 
+## Timber
+
+Added 2026-11-15, before the timber and the furniture were designed
+([dwellings](../subsystems/dwellings.md#timber-and-furniture)). Read the same way as above: a
+fetch tool's summary of each page, put to a question.
+
+| Quantity | Built | From |
+|---|---|---|
+| What carries an upper floor | a large beam in the ceiling of a room carrying joists (a summer or spine beam), the joists spanning between it and the walls; a **single floor**: one set of joists carries the boards and is the ceiling | en.wikipedia.org, *Joist* (whole): "a large beam in the ceiling of a room carrying joists is a summer beam"; single and double floors. Joists mortised into a spine beam in a Hampshire house, two stop-chamfered spine beams and plain joists in a Welsh cottage's listing (*snippets*) |
+| Which way the beam runs | along the ridge, under the middle of the joists' span | historicipswich.net, *First period construction* (whole): the summer beam is "usually longitudinal" at the first floor's ceiling. Massachusetts houses of 1680–1700 by English carpenters, not English cottages: the nearest opened source that says a direction |
+| Joist centres | 52 cm | the same page: 20½ in at the Giddings-Burnham house (c. 1680–90), 21 in at the Goodale house (c. 1700) |
+| A joist's section | 12 cm wide, 10 cm deep, laid flat | the same page: the earliest joists are "wider across the bottom than they are high". The two numbers are **a choice**: no opened source gives a section. *Joist*'s rule of thumb (half the span in feet and two, as inches of depth) is for modern joists on edge and gives 6 in for a 2.5 m span |
+| The beam's section | 24 cm wide, 18 cm showing under the ceiling, where the joists span 3 m or more | **a choice**: no opened source gives one. 18 cm keeps its soffit at 2.02 m under a 2.2 m ceiling, over a door's head |
+| How a joist meets the beam | its soffit 8 cm over the beam's, its end in the beam's side | *Joist* (whole): lodged on the beam, or tenoned into it (a soffit or tusk tenon). The drawing is the tenoned joist's; the joint itself is not modelled |
+| A nosing | 2 cm past the riser, 3 cm deep | designingbuildings.co.uk, *Nosing* (whole): a nosing is the leading edge of a tread and projects "no more than 25 mm" (the figure is for buildings other than dwellings; the page gives none for a house). The depth is **a choice**: a board's thickness |
+| A newel | a half-newel against the wall at the first riser and at the last, 9 cm by 5 cm, a metre over the tread it stands by | en.wikipedia.org, *Stairs* (characters 0 to 100,000 of 161,000): a newel anchors the handrail at the foot and at landings, and "a half-newel is used where a railing ends in a wall". The section is **a choice** |
+| A handrail | **not built**: 900–1000 mm over the pitch line, 50 mm by 39 mm, 50–75 mm clear of the wall | designingbuildings.co.uk, *Handrail* (whole), giving Approved Document K. A rail slopes, and the description's one plain member is an axis-aligned box: it waits for a member between two points |
+
+## Furniture
+
+| Quantity | Built | From |
+|---|---|---|
+| What stands in a hall | a table between two benches, and a settle by the hearth | en.wikipedia.org, *Settle* (whole): settles were "most often placed near the fire in the common sitting-room", common in farmhouse kitchens, and in Irish houses stood along a wall near the hearth with the back to the wall. *Trestle table* (whole): the trestle table gave way to framed tables in the 16th century. That a hall's table had forms beside it is **not sourced**: the inventory studies a search listed (the Regional Furniture Society's, Suffolk Records Society's) are PDFs and were not opened |
+| What stands in a parlour | a bed and a chest | pirtonhistory.org.uk, *Inventories* (whole): the parlour was "a ground-floor sitting room and bedroom" and stayed the best bedroom until the early 18th century, when bedrooms moved upstairs. So a parlour under a chamber (the two-up two-down's, a 19th-century house) is furnished as a sitting room, and a chamber gets the bed. The chest: *Chest* (whole) says only what one holds (clothing, linen, valuables) and that a low chest served as a bench |
+| A bed in a cot's one room | built | a Massachusetts study's "often there was also a bed in the hall" (*snippet*) |
+| A settle | 120, 150 or 180 cm long, 58 cm deep, 105 cm high, a seat at 45 cm | *Settle* (whole): a 17th-century oak settle 70 in (180 cm) long, 41.5 in (105 cm) high and 23 in (58 cm) deep; "long enough for three or four people". The shorter lengths and the seat's height are **a choice** |
+| A table | 73 cm wide, its top 75 cm up, 120, 150 or 180 cm long | *Settle* (whole): a 17th-century settle table is 29.5 in (75 cm) high as a table and 28.75 in (73 cm) wide; *Table* (whole) gives 46–76 cm as the common range of heights. The lengths are **a choice** (a settle's) |
+| A bench | 28 cm wide, its seat 45 cm up, on two slab ends with a stretcher | **a choice**: no opened source measures a form |
+| A bed | a mattress 137, 122 or 91 cm wide and 190 cm long in a frame 10 cm larger each way, head posts 110 cm and foot posts 70 cm | en.wikipedia.org, *Bed size* (whole): the British double is 4 ft 6 in by 6 ft 3 in (137 by 191 cm), the three-quarter 4 ft (122 cm), the single 3 ft (91 cm), and 190 cm was the common length in northern Europe until the 1980s. Modern mattress sizes, used because no opened source measures a 17th-century bedstead. The posts and the frame are **a choice** |
+| A chest | 70 to 120 cm long, 45 cm deep, 52 cm high, its ends reaching the floor | **a choice**: *Chest* gives no size. A boarded chest's ends stand as its feet |
+| The floor kept clear | the tour's line by 35 cm; 90 cm each side of a doorway and 1 m before an outer door, 20 cm past each jamb; 1.1 m before a hearth; 1 m before the upper storey's first window | the walker's capsule (plan 14 §14.4) and the plan's own approach; the rest **a choice** |
+
 ## What is not built, and why
 
+- **A stair's handrail**, and so its balusters: see the timber's table.
+- **What a service room, a kitchen's hearth and a passage hold** (a dresser, a cupboard, stools,
+  chairs, the hearth's irons, a salting trough): no opened source lists a room's goods, so only the
+  pieces above are placed. The inventories are the source to open.
 - **The lobby-entry house.** Its stair is a winder against the stack; with the walker's stair it
   becomes a different house. It wants the winder (a tapered tread the collision proxy holds) first.
 - **Lofts and half storeys**, as above.
 - **The byre end.** A longhouse's lower room is built as a service room: a shippon's drain, its wide
   doorway and its beasts are a game's.
-- **Furniture** (plan 14's G66 names it): no row here grounds a bed's or a table's place.

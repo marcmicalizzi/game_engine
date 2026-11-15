@@ -24,6 +24,7 @@
 //   [x] zero cost unused  nothing is registered and nothing runs until a caller asks for a plan
 //   [x] docs, tests, size table
 
+#include <domain/dwellings/furnish.h>
 #include <domain/dwellings/interiors.h>
 #include <domain/dwellings/rural_filler.h>
 

@@ -4,6 +4,7 @@
 // from the wall's `from`.
 
 #include <domain/dwellings/describe.h>
+#include <domain/dwellings/furnish.h>
 #include <domain/structures/structures.h>
 
 namespace engine::dwellings {
@@ -301,6 +302,31 @@ void describe(const InteriorPlan& plan, const RuralChoice& choice, std::string_v
     // The recess, the raised hearth and the timber over the opening are the mesher's, from these
     // fields: its default recess of 40 cm is the depth a wall stack stands into its room.
     out.chimneys.push_back(c);
+  }
+
+  // The timber a room shows and its furniture (furnish.h), as plain members: each a box in the
+  // room it stands in, the one that covers its piece's footprint solid, so the walk records carry
+  // the furniture and a walker meets it.
+  Furnishing furnishing;
+  if (choice.timber) timber_interior(plan, choice.ridge_along_front, furnishing);
+  if (choice.furniture) furnish_interior(plan, seed, furnishing);
+  for (const Member& m : furnishing.members) {
+    structure::Box box;
+    const i32 floor_top = out.storeys[m.storey].elevation;
+    box.min[0] = m.x0 + off;
+    box.min[1] = floor_top + m.y0;
+    box.min[2] = m.z0 + off;
+    box.max[0] = m.x1 + off;
+    box.max[1] = floor_top + m.y1;
+    box.max[2] = m.z1 + off;
+    switch (m.surface) {
+      case MemberSurface::Boards: box.surface = structure::Surface::boards; break;
+      case MemberSurface::Linen: box.surface = structure::Surface::ceiling; break;
+      default: box.surface = structure::Surface::timber; break;
+    }
+    box.solid = m.solid;
+    box.room = static_cast<i32>(m.room);
+    out.boxes.push_back(box);
   }
 
   out.provenance.filler = "rural";

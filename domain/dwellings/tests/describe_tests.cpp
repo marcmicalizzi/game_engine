@@ -21,8 +21,9 @@ namespace {
 // Taken on MSVC (msvc-debug) on 2026-11-14 at k_interior_version 2, k_rural_filler_version 2 and
 // k_structure_version 2. Version 1's was 0xf109f353ed345bec: it moved because a stair's well ends
 // where its flight does, a hearth's stone and timber are the mesher's and no longer two boxes, and
-// a one-storey house's overhang is cut back to clear its door's head.
-constexpr u64 k_descriptions_pin = 0x722929a1172e24dfull;
+// a one-storey house's overhang is cut back to clear its door's head (0x722929a1172e24df then);
+// and again at k_furnish_version 1, when a description gained its timber and furniture as boxes.
+constexpr u64 k_descriptions_pin = 0x3cbcd86acf0d2f28ull;
 
 bool near_cm(f32 metres, i32 cm) {
   const f32 d = metres * 100.0f - static_cast<f32>(cm);
@@ -92,6 +93,12 @@ TEST_CASE("describe: every house the filler writes is one the mesher takes") {
             }
           }
           CHECK(found == plan.doorways.size());
+          // The furniture is in the walk records: a box for every solid member, and nothing else.
+          u32 solid_boxes = 0;
+          for (const structure::Box& box : d.boxes)
+            solid_boxes += box.solid ? 1u : 0u;
+          CHECK(walk.boxes.size() == solid_boxes);
+          if (plan.params.type != PlanType::TwoUpTwoDown) CHECK(solid_boxes >= 1);
           REQUIRE(walk.flights.size() == plan.stairs.size());
           CHECK(walk.wells.size() == plan.stairs.size());
           for (u32 i = 0; i < plan.stairs.size(); ++i) {

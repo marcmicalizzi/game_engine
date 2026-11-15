@@ -30,7 +30,8 @@ void usage() {
                "usage: engine-content dwelling <out-dir> [--name <name>] [--persons <n>] "
                "[--means <0|1|2>]\n"
                "         [--frontage <cm>] [--depth <cm>] [--seed <n>] "
-               "[--scope whole|exterior|interior]\n");
+               "[--scope whole|exterior|interior]\n"
+               "         [--bare timber|furniture|all]\n");
 }
 
 void append(std::string& out, const char* format, double a, double b, double c) {
@@ -54,6 +55,7 @@ int dwelling_command(int argc, char** argv) {
   dwellings::Household household;
   u64 seed = 1;
   structure::MeshScope scope = structure::MeshScope::whole;
+  dwellings::RuralStyle style;
   for (int i = 3; i < argc; ++i) {
     const std::string_view a = argv[i];
     if (i + 1 >= argc) {
@@ -85,13 +87,20 @@ int dwelling_command(int argc, char** argv) {
         usage();
         return 2;
       }
+    } else if (a == "--bare") {
+      const std::string_view s = value;
+      if (s != "timber" && s != "furniture" && s != "all") {
+        usage();
+        return 2;
+      }
+      style.timber = s == "furniture";
+      style.furniture = s == "timber";
     } else {
       usage();
       return 2;
     }
   }
 
-  const dwellings::RuralStyle style;
   dwellings::RuralChoice choice;
   dwellings::InteriorPlan plan;
   std::string error;
@@ -163,6 +172,23 @@ int dwelling_command(int argc, char** argv) {
     append(walk, ", \"at\": [%.2f, %.3f, %.2f] }", (v.at_x_cm + off) / 100.0, v.at_y_mm / 1000.0,
            (v.at_z_cm + off) / 100.0);
   }
+  // The furniture and the timber, a piece a line: its footprint's low and high corners.
+  dwellings::Furnishing furnishing;
+  if (choice.timber) dwellings::timber_interior(plan, choice.ridge_along_front, furnishing);
+  if (choice.furniture) dwellings::furnish_interior(plan, seed, furnishing);
+  walk += "\n  ],\n  \"pieces\": [";
+  for (u32 i = 0; i < furnishing.pieces.size(); ++i) {
+    const dwellings::Piece& p = furnishing.pieces[i];
+    walk += i == 0 ? "\n    " : ",\n    ";
+    walk += "{ \"kind\": \"" + std::string(dwellings::piece_kind_name(p.kind)) +
+            "\", \"room\": " + std::to_string(p.room) +
+            ", \"storey\": " + std::to_string(p.storey) +
+            ", \"members\": " + std::to_string(p.member_count);
+    append(walk, ", \"low\": [%.2f, %.2f], \"high\": [%.2f", (p.footprint.x0 + off) / 100.0,
+           (p.footprint.z0 + off) / 100.0, (p.footprint.x1 + off) / 100.0);
+    append(walk, ", %.2f], \"height\": %.2f }", (p.footprint.z1 + off) / 100.0, p.height_cm / 100.0,
+           0.0);
+  }
   walk += "\n  ]\n}\n";
   if (io::write_file_atomic(base + ".walk.json", walk) != io::Status::Ok) return 1;
 
@@ -174,12 +200,15 @@ int dwelling_command(int argc, char** argv) {
   std::printf(
       "{\"name\":\"%s\",\"type\":\"%s\",\"storeys\":%u,\"rooms\":%u,\"hearths\":%u,"
       "\"clear_cm\":[%d,%d],\"outer_cm\":[%d,%d],\"ridge_along_front\":%s,"
-      "\"demoted\":%s,\"triangles\":%u,\"structure\":\"%s.structure.json\"}\n",
+      "\"demoted\":%s,\"triangles\":%u,\"pieces\":%u,\"members\":%u,"
+      "\"structure\":\"%s.structure.json\"}\n",
       name.c_str(), dwellings::plan_type_name(plan.params.type),
       static_cast<unsigned>(plan.params.storeys), static_cast<unsigned>(plan.rooms.size()),
       static_cast<unsigned>(plan.hearths.size()), plan.params.width_cm, plan.params.depth_cm,
       choice.outer_width_cm, choice.outer_depth_cm, choice.ridge_along_front ? "true" : "false",
-      choice.demoted ? "true" : "false", report.triangles, shown.c_str());
+      choice.demoted ? "true" : "false", report.triangles,
+      static_cast<unsigned>(furnishing.pieces.size()),
+      static_cast<unsigned>(furnishing.members.size()), shown.c_str());
   return 0;
 #else
   (void)argc;

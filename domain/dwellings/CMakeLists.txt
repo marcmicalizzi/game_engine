@@ -14,8 +14,9 @@ engine_capability_requires(dwellings structures)
 
 engine_module(NAME dwellings LAYER domain OPTIONAL
   DEPS base containers hash math structures structures_schemas
-  SOURCES src/interiors.cpp src/rural_filler.cpp src/tour.cpp src/describe.cpp)
+  SOURCES src/interiors.cpp src/rural_filler.cpp src/tour.cpp src/furnish.cpp src/describe.cpp)
 
 engine_module_tests(NAME dwellings
   SOURCES tests/interiors_tests.cpp tests/rural_filler_tests.cpp tests/tour_tests.cpp
-          tests/describe_tests.cpp tests/determinism_tests.cpp tests/size_table.cpp)
+          tests/furnish_tests.cpp tests/describe_tests.cpp tests/determinism_tests.cpp
+          tests/size_table.cpp)

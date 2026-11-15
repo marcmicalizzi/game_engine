@@ -59,6 +59,11 @@ struct RuralStyle {
   u16 head_cm = 200;
   u16 window_cm = 90;
   u16 sill_cm = 90;
+  // What the description states besides the shell and the plan (furnish.h): the timber a room
+  // shows (joists and a beam under an upper floor, a stair's nosings and newels) and its
+  // furniture. Each is a caller's to leave out: a bare house is the same plan.
+  bool timber = true;
+  bool furniture = true;
 };
 
 // What the filler chose, before any description is written.
@@ -69,6 +74,8 @@ struct RuralChoice {
   u16 outer_wall_cm = 0;
   bool ridge_along_front = true;  // the ridge runs along the longer side
   bool demoted = false;           // the plot was too small for what the household asked
+  bool timber = true;             // the style's: what `describe` states besides the plan
+  bool furniture = true;
 };
 
 // The type, storeys and hearths a household asks for, on a plot with room for anything.

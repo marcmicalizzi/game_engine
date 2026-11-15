@@ -165,6 +165,8 @@ bool choose_rural(const RuralPlot& plot, const Household& household, const Rural
   out.outer_depth_cm = p.depth_cm + walls;
   out.ridge_along_front = out.outer_width_cm >= out.outer_depth_cm;
   out.demoted = chosen != 0;
+  out.timber = style.timber;
+  out.furniture = style.furniture;
   return true;
 }
 
