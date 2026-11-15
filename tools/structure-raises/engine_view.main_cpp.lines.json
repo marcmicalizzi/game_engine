@@ -1,0 +1,12 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "engine_view.main_cpp.lines",
+  "reason": "R154 leg 1b: a summary with no frame records says what drew it (describe_run), the measured 4K costs and bytes of sampling over time's inputs and the repeat reset (renderer.md), and the motion pass's barycentrics by the normal (gfx.md)",
+  "date": "2026-11-14",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "engine_view.main_cpp.lines": 1,
+    "page:docs/subsystems/renderer.md": 2201,
+    "page:docs/subsystems/gfx.md": 307
+  }
+}

@@ -2434,6 +2434,7 @@ void describe_run(const renderer::SceneData& scene_data, const Options& options,
   summary.scene_hash = renderer::hash_hex(scene_data.file_hash);
   summary.path = path_name;
   summary.path_hash = renderer::hash_hex(path_hash);
+  summary.reconstruction = renderer::reconstruction_block(view.reconstruction());  // ADR-0064
   u64 identity = hash_combine(scene_data.file_hash, path_hash);
   for (u32 m = 0; m < scene_data.parts.size(); ++m) {
     const renderer::SourceMesh& source = scene_data.sources[m];

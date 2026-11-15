@@ -5327,7 +5327,29 @@ last frame's camera; refused, with a sentence, by a renderer without the inputs.
 **What it keeps on the device** (`SceneRenderer::motion_bytes`): 4 bytes a source pixel of motion
 and 8 of last frame's visibility buffer, the pool's bytes again where the scene has a pool, and
 per frame slot the views' blocks (416 bytes a view) and the moved table (256 KB). At 3840 × 2160
-that is 33 MB and 66 MB, and 8 MiB of pool by default (64 MiB at the owner's setting).
+that is 33 MB and 66 MB, and 8 MiB of pool by default (64 MiB at the owner's setting). The log
+says it once at load ("sampling over time's inputs", `device_bytes`, `pool_bytes`): measured
+100,063,744 bytes on the desert overlook (no pool) and 107,845,144 on the grove (7,781,400 of
+pool).
+
+**What it costs, measured** (R154 leg 1b, 2026-11-14, `msvc-release`, RTX 5090, 3840 × 2160,
+`--raster rt --shadows rt`, the bounce on, the scene's camera path, 240 warm-up frames, three
+repeats; others held 70 to 99 % of the CPU throughout). Off, a capture of 16 frames is the same
+bytes as main's copied-out build (84f6d872) on both scenes, and the path's median total is
+within the pair's noise: grove 4.489, 4.456 and 4.440 ms on main, 4.622, 4.461 and 4.583 on the
+branch (the two high ones all in the resolve, 0.1 ms, on a frame whose bytes are main's; the
+inputs-on flights less their motion pass come to 4.45 to 4.49); overlook 2.894 and 2.937 on main,
+2.940 and 2.877 on the branch; the vertex tier on the grove (`--raster vertex`), 3.683 on main and
+3.691 on the branch. On, `gpu_ms.motion` (the pass and the pool's second write) is 0.067 ms at the
+median and 0.068 at p99 on the overlook (no deformed instance: the pass alone), 0.088 to 0.095
+at the median and 0.119 to 0.124 at p99 on the grove, whose twelve swaying trees add the second
+write, and 0.096 (0.106) on the grove's vertex tier. A frame's whole total moves by about the same.
+Not measured: a scene with hundreds of moved instances (the moved table's search; no host moves
+that many yet), the forest. **A flight's repeats each start the history again at their first path
+frame** (`fly_camera_path` marks it `history_reset`), so frame f of every repeat is drawn at the
+same phase: before, the offset differed from repeat to repeat, the cut with it, and an inputs-on
+flight was never `deterministic`. Not at the warm-up's first frame: engine-view's warm-up runs for
+at least two seconds, a different number of frames each repeat.
 
 **Held by** `tests/motion_tests.cpp`: the offset moves a view's picture by exactly its pixels and
 leaves the LOD's scale and the depth alone (no device); without the inputs the renderer keeps
