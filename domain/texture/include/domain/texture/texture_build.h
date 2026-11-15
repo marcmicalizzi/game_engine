@@ -30,6 +30,13 @@ namespace engine::texture {
 // 2: optional normal-variance chain (R97, 2026-10-26).
 inline constexpr u32 k_texture_cache_version = 2;
 
+// Mixed into the key of a **mask's** build alone (`alpha_cutoff` not zero), so a change to how a
+// mask's chain is made rebuilds the masks of a cache and nothing else in it.
+// 1 (implicit, never mixed): each level's share of *texels* at the cutoff held to level 0's.
+// 2: each level's share of its *bilinearly filtered surface* at the cutoff held to level 0's
+//    (G203, 2026-11-14): what a sampler draws, which the texel count overstated on thin masks.
+inline constexpr u32 k_alpha_mask_version = 2;
+
 // What a build is asked for. `format` may be `auto`, which `resolve_texture_format` turns into a
 // concrete format from the options and what the source stored.
 enum class FormatChoice : u8 {
@@ -62,8 +69,9 @@ struct TextureBuildOptions {
   // an image no material tests. With a cutoff and a source that has alpha, the build dilates the
   // colour under the mask (`k_alpha_dilation_texels` rings of the texels that pass) so the filtered
   // fringe is the leaf's colour and not the black or white an editor left under the cut, and scales
-  // every level's alpha so that the share of texels at or above the cutoff stays level 0's
-  // (Castaño 2010, "Computing alpha mipmaps"): a mask filtered as stored loses coverage down the
+  // every level's alpha so that the share of the level's **filtered surface** at or above the
+  // cutoff stays level 0's (Castaño 2010, "Computing alpha mipmaps", measured as a bilinear sampler
+  // reads the level: `alpha_coverage_filtered`): a mask filtered as stored loses coverage down the
   // chain, and a tree's far leaves thin to nothing. The cutoff is part of the options and so of the
   // cache key: one image tested at two cutoffs is two textures.
   u8 alpha_cutoff = 0;
@@ -75,16 +83,32 @@ struct TextureBuildOptions {
 inline constexpr u32 k_alpha_dilation_texels = 8;
 
 // The share of `level`'s texels whose alpha is at or above `cutoff` (8-bit, as the mask test reads
-// it): what the build holds every level of a mask's chain to. 0 for an empty level.
+// it): a nearest sampler's coverage. 0 for an empty level.
 f64 alpha_coverage(std::span<const u8> rgba, u32 width, u32 height, u8 cutoff) noexcept;
+
+// The share of the level's **bilinearly filtered surface** at or above `cutoff`: what a linear
+// sampler draws of the mask, and what the build holds every level of a mask's chain to (texture.md,
+// "Alpha-tested masks"). Sixteen samples a texel, four a side at eighths of it, each the blend of
+// the texel and its three neighbours on that side that a bilinear tap makes there, read past an
+// edge as the sampler's wrap reads it. Integers only (the blend's weights are eighths), so the
+// share is the same number on every compiler. A texel that just reaches the cutoff among
+// neighbours below it counts once for `alpha_coverage` and for nothing here, which is the
+// difference between the two on a thin mask.
+f64 alpha_coverage_filtered(std::span<const u8> rgba, u32 width, u32 height, u8 cutoff,
+                            EdgeMode edge_x = EdgeMode::clamp,
+                            EdgeMode edge_y = EdgeMode::clamp) noexcept;
 
 // The build's two passes over a mask, public because the tests measure them: the colour of every
 // texel below `cutoff` replaced, ring by ring for `rings` rings, by the average of its passing (or
-// already filled) 8-neighbours; and a level's alpha scaled by `cutoff / t`, where `t` is the
-// smallest 8-bit alpha whose share of texels at or above it is closest to `coverage` — rounded
-// down, so exactly the texels at or above `t` reach the cutoff and none below it does.
+// already filled) 8-neighbours; and a level's alpha scaled by `cutoff / t`, rounded down and
+// clamped to 255, where `t` is the 8-bit alpha (the largest of the closest) at which the scaled
+// level's filtered coverage (`alpha_coverage_filtered`) is closest to `coverage`. The coverage
+// falls as `t` rises, so `t` is found by bisection, each trial the scaled level measured whole:
+// the clamp at 255 takes coverage back that the scale alone would give, and only the measurement
+// knows how much.
 void dilate_under_mask(Vector<u8>& rgba, u32 width, u32 height, u8 cutoff, u32 rings);
-void preserve_alpha_coverage(Vector<u8>& rgba, u32 width, u32 height, u8 cutoff, f64 coverage);
+void preserve_alpha_coverage(Vector<u8>& rgba, u32 width, u32 height, u8 cutoff, f64 coverage,
+                             EdgeMode edge_x = EdgeMode::clamp, EdgeMode edge_y = EdgeMode::clamp);
 
 const char* format_choice_name(FormatChoice choice) noexcept;
 bool parse_format_choice(std::string_view name, FormatChoice& out) noexcept;

@@ -1744,7 +1744,14 @@ point, which now collapses a masked pair (the mesh stage emits no primitives for
 stages a degenerate corner), then its masked variant **over the same run of the visible list**,
 which keeps only the masked pairs, emits the UV per vertex and the material flat, and in the
 fragment stage samples the mask with the quad's derivatives, discards below the cutoff and writes
-exactly the opaque stage's word. A second run per pass would have kept the masked pairs out of the
+exactly the opaque stage's word. **The mask's sample is one trilinear tap at the level of the
+footprint's shorter axis, never the material's anisotropic one** (`mask_keeps`, G203): the
+anisotropic tap averages up to sixteen taps along the longer axis, an average the texture build
+never held to anything, and a thin mask on a card at a slant fell under the cutoff whole — with
+the chain's texel-count rule that was the hardware rasterizer drawing a conifer 27 to 31 % thinner
+than the rays at 300 m; one tap is a point sample of a level the build holds to level 0's coverage
+([texture](texture.md#alpha-tested-masks)), and what is left after it is the far form's atlases
+([the measurement](../experiments/conifer-crown-coverage.md)). A second run per pass would have kept the masked pairs out of the
 opaque draw's work, but it is a run more of the list per view and pass, every per-entry table
 (the pool's blocks, the indexed draw's records, the CLAS records) sized and indexed by one more,
 and the classification would have had to happen before the vertex path's allocation; a second draw

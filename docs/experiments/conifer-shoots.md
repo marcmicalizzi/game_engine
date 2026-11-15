@@ -103,6 +103,10 @@ bit).
 
 ## What a pack's needle image should be
 
+**Superseded in its number (G203, 2026-11-14)**: the 25–35 % below leaves a crown at 63 to 71 %
+of its outline where a spruce's is about 80; [conifer crown coverage](conifer-crown-coverage.md)
+measured it and asks for a spray drawn as a mass, 45 to 60 % opaque. The rest stands.
+
 The solver gives each card the whole image (u along the shoot it hangs from, v out from it). For a
 spruce that image should be **one foliated shoot**, its axis along v from the card's base: a twig
 with its side shoots and needles all round them, about 25–35 % of the square opaque (a shoot's

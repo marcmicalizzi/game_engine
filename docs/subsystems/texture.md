@@ -187,14 +187,36 @@ does not, and says it did them with `k_texture_alpha_coverage` in the file's fla
 - **Every level keeps level 0's coverage at the cutoff** (Castaño, "Computing Alpha Mipmaps", 2010;
   the method *The Witness* shipped). A mask filtered as stored loses its thin parts down the chain:
   a needle a texel wide is half alpha one level down and is cut away whole, so a conifer goes bald
-  with distance. `preserve_alpha_coverage` finds the 8-bit alpha `t` whose share of the level's
-  texels at or above it is closest to level 0's share at the cutoff and scales the level's alpha by
-  `cutoff / t`, rounded down, so exactly those texels reach the cutoff. **The share is measured
-  after the encoder**, decoded: BC7 moves an alpha by a code or two and a filtered level holds many
+  with distance. `preserve_alpha_coverage` scales the level's alpha by `cutoff / t`, rounded down
+  and clamped, for the 8-bit `t` at which the level's coverage is closest to level 0's. **The
+  coverage is the share of the level's bilinearly filtered surface at the cutoff, not its share of
+  texels** (`alpha_coverage_filtered`, G203): sixteen samples a texel, four a side at eighths of
+  it, each the blend a bilinear tap makes there with the texel's neighbours on that side, read past
+  an edge as the sampler's wrap reads it, in integers (the weights are eighths). Until 2026-11-14
+  the build held the texel count, and a texel scaled *just* to the cutoff among lower neighbours
+  counts as covered and draws nothing: every blend with a neighbour is under the cutoff. On the
+  needle test's chain the count-held levels drew, under a linear filter, as little as a third of
+  level 0's coverage (the test restates the old rule and measures it), and in the engine the
+  hardware rasterizer drew a conifer's crown a quarter to a third thinner than the rays at 300 m
+  ([the measurement](../experiments/conifer-crown-coverage.md)). The coverage falls as `t` rises,
+  so `t` is found by bisection, each trial the scaled level measured whole: the clamp at 255 takes
+  back coverage the scale alone would give, and only the measurement knows how much. A level the
+  cutoff itself holds as well as any scale is left byte for byte. **The share is measured after
+  the encoder**, decoded: BC7 moves an alpha by a code or two and a filtered level holds many
   texels within a code of the cutoff, so a scale exact before the encoder was 3.4% off after it on
   the needle test; the miss is fed back into the target and the level rescaled from its unscaled
   alpha, at most four times (`k_coverage_passes`), until it lands within half a percent. Only a
-  mask pays the extra encodes.
+  mask pays the extra encodes and the measurements (nine or ten of the level a pass).
+- **The readers sample it where it was held.** A ray tests level 0. A rasterizer tests one
+  trilinear tap at the level of the pixel footprint's *shorter* axis, with no anisotropy
+  (`mask_keeps`, [renderer](renderer.md#alpha-tested-geometry)): an anisotropic tap averages up to
+  sixteen taps of that level along the footprint, an average no build scaled, and a thin mask
+  seen at a slant falls under the cutoff whole; one tap is a point sample of a held level, and
+  passes in level 0's share.
+- **One texel holds all or nothing**, so the 1 × 1 level is stored beside the cutoff — at it when
+  the coverage rounds to all, one code under it when it rounds to nothing — where its blend with
+  the 2 × 2 level is decided by that level, which holds the share. **The pass kept is the closest
+  one**, not the last: a small level steps over the coverage and back.
 
 The alternative the literature offers is a **signed-distance mask** (Green, "Improved
 Alpha-Tested Magnification for Vector Textures and Special Effects", SIGGRAPH 2007): the alpha
@@ -203,7 +225,15 @@ magnification. It needs the source to be a shape rather than a painted alpha, an
 in every reader; coverage scaling works on any painted mask with the test unchanged, which is why
 it was chosen. **No cache-version bump**: the cutoff is part of the options and so of the key, so a
 masked image keys a texture of its own and every other image keys exactly what it did — the ten
-committed hashes did not move.
+committed hashes did not move. **A mask's chain has a version of its own**, `k_alpha_mask_version`
+(2 since the filtered coverage), mixed into the key of a build with a cutoff and of no other: a
+change to how a mask is made rebuilds the masks of a cache and leaves every other texture's key
+where it was. A container that *recorded* a mask's key (an image it carries; a flora tree's images
+are named by path and keyed by the host) keeps naming the old texture until the container is built
+again. `engine-content texture <image> <out.tex> --alpha-cutoff <code>` builds an image as a
+material testing it at that 8-bit code would, and its summary's `mask` block lists each level's
+filtered coverage and texel share as decoded: level 0's is how opaque the image is, the number an
+author of a needle or leaf image wants ([flora](flora.md#the-conifer)).
 
 A level too small to hold the share — a 4x4 level of a 14% mask holds 2 texels or 3 — lands within
 two texels of it; such a level is a tree a few pixels across. A perfectly periodic mask (needles at

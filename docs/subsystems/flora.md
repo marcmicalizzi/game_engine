@@ -1395,10 +1395,17 @@ Parts: the trunk (which owns the tuft) and every branch, dead or alive, the bran
 its sprays one part, a lateral's vertices weighted by their arc from the branch's base — 179 on the
 default.
 
-**What a pack's needle image should be**: one foliated shoot per image, its axis along *v*, about
-25–35 % opaque and irregular, every needle two texels wide at 512 (conifer shoots, "What a pack's
-needle image should be"). A periodic image defeats the build's coverage-preserving mips, which is
-half of why the first forest's spruces read as bare branches.
+**What a pack's needle image should be**: one foliated spray per image, its axis along *v*, drawn
+as a mass — a twig with its side shoots filling most of the card, needles touching — **45 to 60 %
+opaque** and irregular, every needle four texels or more at 1024 (two at 512). The 25–35 % this
+page gave until G203 was a single narrow shoot in a square card, and the card is most of the
+crown's area: measured on the forest's trees, cards 16.6 % opaque leave a pine covering 41 to
+49 % of its outline and cards 25.6 % a spruce 63 to 71 %, where the same trees with every card
+opaque cover 77 to 87 % and a healthy conifer's crown 75 to 90; a spray 45 % opaque gives 71 to
+79 % ([conifer crown coverage](../experiments/conifer-crown-coverage.md) has the table, the
+sources and `engine-content texture --alpha-cutoff`, which prints an image's coverage). A
+periodic image defeats the build's coverage-preserving mips, which is half of why the first
+forest's spruces read as bare branches.
 
 **The budget** (default 40,000; 8,000 to 2,000,000). The default is 23,742 triangles at full detail
 — bark 7,058, needles 16,684 — where before G80 it was 12,882 (5,510 and 7,372); the forest's three

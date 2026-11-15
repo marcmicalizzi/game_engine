@@ -76,14 +76,82 @@ void needle_image(u32 side, Vector<u8>& out) {
     }
   }
 }
+// A level's coverage as the build holds it: the share of its bilinearly filtered surface at the
+// cutoff.
 f64 decoded_coverage(const TextureData& data, u32 level, u8 cutoff) {
   Vector<u8> rgba;
   const TextureFileLevel& l = data.levels[level];
   REQUIRE(decode_level(data.format, data.level_bytes(level), l.width, l.height, rgba, nullptr));
-  return alpha_coverage(std::span<const u8>(rgba.data(), rgba.size()), l.width, l.height, cutoff);
+  return alpha_coverage_filtered(std::span<const u8>(rgba.data(), rgba.size()), l.width, l.height,
+                                 cutoff);
+}
+
+// The same coverage found another way, as a sampler would: `count` points of a fixed sequence
+// over the level, each a clamped bilinear tap in floats, tested at the cutoff. It shares no code
+// with the build's integer measure, so the two agreeing is the measure checked and not restated.
+f64 sampled_coverage(const TextureData& data, u32 level, u8 cutoff, u32 count) {
+  Vector<u8> rgba;
+  const TextureFileLevel& l = data.levels[level];
+  REQUIRE(decode_level(data.format, data.level_bytes(level), l.width, l.height, rgba, nullptr));
+  u32 state = 2463534242u;
+  auto unit = [&state]() {
+    state ^= state << 13;
+    state ^= state >> 17;
+    state ^= state << 5;
+    return static_cast<f64>(state >> 8) / 16777216.0;
+  };
+  auto alpha_at = [&](i64 x, i64 y) {
+    const i64 cx = x < 0 ? 0 : (x >= static_cast<i64>(l.width) ? static_cast<i64>(l.width) - 1 : x);
+    const i64 cy =
+        y < 0 ? 0 : (y >= static_cast<i64>(l.height) ? static_cast<i64>(l.height) - 1 : y);
+    return static_cast<f64>(rgba[static_cast<u32>((cy * l.width + cx) * 4 + 3)]);
+  };
+  u32 kept = 0;
+  for (u32 i = 0; i < count; ++i) {
+    const f64 u = unit() * static_cast<f64>(l.width) - 0.5;
+    const f64 v = unit() * static_cast<f64>(l.height) - 0.5;
+    const f64 fx = std::floor(u);
+    const f64 fy = std::floor(v);
+    const f64 tx = u - fx;
+    const f64 ty = v - fy;
+    const i64 x = static_cast<i64>(fx);
+    const i64 y = static_cast<i64>(fy);
+    const f64 a = (alpha_at(x, y) * (1.0 - tx) + alpha_at(x + 1, y) * tx) * (1.0 - ty) +
+                  (alpha_at(x, y + 1) * (1.0 - tx) + alpha_at(x + 1, y + 1) * tx) * ty;
+    if (a >= static_cast<f64>(cutoff)) ++kept;
+  }
+  return static_cast<f64>(kept) / static_cast<f64>(count);
 }
 
 }  // namespace
+
+TEST_CASE("alpha mask: the filtered coverage is what a linear sampler draws, not a texel count") {
+  // One texel exactly at the cutoff among texels below it: a nearest sampler draws the texel, a
+  // linear one draws nothing, since every blend with a neighbour is under the cutoff.
+  constexpr u32 k_side = 8;
+  Vector<u8> pixels(static_cast<usize>(k_side) * k_side * 4, u8{0});
+  pixels[(3 * k_side + 3) * 4 + 3] = 128;
+  const std::span<const u8> one(pixels.data(), pixels.size());
+  CHECK(alpha_coverage(one, k_side, k_side, 128) == doctest::Approx(1.0 / 64.0));
+  CHECK(alpha_coverage_filtered(one, k_side, k_side, 128) == 0.0);
+  // The same texel opaque: the surface passes where the blend keeps half, 12 of its 16 samples
+  // (the four at 3/8 on both axes hold 25/64 of it).
+  pixels[(3 * k_side + 3) * 4 + 3] = 255;
+  CHECK(alpha_coverage_filtered(one, k_side, k_side, 128) == doctest::Approx(12.0 / (16.0 * 64.0)));
+  // Solid and empty are 1 and 0, edges included; a repeating edge reads the far side.
+  Vector<u8> solid(static_cast<usize>(k_side) * k_side * 4, u8{255});
+  CHECK(alpha_coverage_filtered({solid.data(), solid.size()}, k_side, k_side, 128) == 1.0);
+  Vector<u8> column(static_cast<usize>(k_side) * k_side * 4, u8{0});
+  for (u32 y = 0; y < k_side; ++y)
+    column[(y * k_side) * 4 + 3] = 200;  // the left edge's column
+  const std::span<const u8> edge(column.data(), column.size());
+  // Of the column's four samples across: 7/8 of 200 passes and 5/8 of it (125) does not. Clamped,
+  // the two samples towards the edge read the column again and pass: three of thirty-two across.
+  CHECK(alpha_coverage_filtered(edge, k_side, k_side, 128) == doctest::Approx(3.0 / 32.0));
+  // Repeating, they blend with the empty far side, and the outer one fails: two.
+  CHECK(alpha_coverage_filtered(edge, k_side, k_side, 128, EdgeMode::repeat, EdgeMode::clamp) ==
+        doctest::Approx(2.0 / 32.0));
+}
 
 TEST_CASE("alpha mask: the chain keeps level 0's coverage at the cutoff, within 2% a level") {
   constexpr u32 k_side = 256;
@@ -91,7 +159,7 @@ TEST_CASE("alpha mask: the chain keeps level 0's coverage at the cutoff, within 
   Vector<u8> pixels;
   needle_image(k_side, pixels);
   const std::span<const u8> source(pixels.data(), pixels.size());
-  const f64 level0 = alpha_coverage(source, k_side, k_side, k_cutoff);
+  const f64 level0 = alpha_coverage_filtered(source, k_side, k_side, k_cutoff);
   REQUIRE(level0 > 0.1);
   REQUIRE(level0 < 0.6);
 
@@ -126,6 +194,86 @@ TEST_CASE("alpha mask: the chain keeps level 0's coverage at the cutoff, within 
   // The test can tell: the same chain filtered as stored drifts further than the tolerance.
   MESSAGE("level-0 coverage " << level0 << "; the unscaled chain's worst drift " << worst_plain);
   CHECK(worst_plain > 0.02);
+
+  // **What a sampler draws of each level** (G203): random bilinear taps of the decoded level, in
+  // floats, pass the cutoff in level 0's share. Before the build measured the filtered surface it
+  // held the share of *texels* at the cutoff, and a texel scaled just to the cutoff among lower
+  // neighbours draws nothing under a linear filter, which is the crown a rasterizer drew thinner
+  // than a ray; the next case measures how much that rule lost on these needles.
+  constexpr u32 k_taps = 200000;  // a standard error of 0.1% at this coverage
+  const f64 sampled0 = sampled_coverage(masked, 0, k_cutoff, k_taps);
+  CHECK(std::fabs(sampled0 - level0) <= 0.01);
+  for (u32 i = 1; i < masked.levels.size(); ++i) {
+    const TextureFileLevel& l = masked.levels[i];
+    if (static_cast<f64>(l.width) * l.height < 64.0) break;
+    const f64 sampled = sampled_coverage(masked, i, k_cutoff, k_taps);
+    CAPTURE(i);
+    CAPTURE(sampled);
+    CHECK(std::fabs(sampled - sampled0) <= 0.025);
+  }
+}
+
+TEST_CASE("alpha mask: holding a level's texel count loses the coverage a linear sampler draws") {
+  // The rule the build had until G203, restated here so the test above can be told from it: scale
+  // a level's alpha so the share of texels at the cutoff is level 0's. Measured as a sampler
+  // reads the level, the needles' chain then draws well under level 0's coverage.
+  constexpr u32 k_side = 256;
+  constexpr u8 k_cutoff = 128;
+  Vector<u8> pixels;
+  needle_image(k_side, pixels);
+  const std::span<const u8> source(pixels.data(), pixels.size());
+  const f64 level0 = alpha_coverage_filtered(source, k_side, k_side, k_cutoff);
+  Vector<MipLevel> chain;
+  build_mip_chain(source, k_side, k_side, MipMode::srgb, true, chain);
+  f64 worst_count_held = 0.0;
+  f64 worst_filtered_held = 0.0;
+  std::string held;
+  for (u32 i = 1; i < chain.size(); ++i) {
+    MipLevel& level = chain[i];
+    const usize texels = static_cast<usize>(level.width) * level.height;
+    if (texels < 64) break;
+    Vector<u8> counted = level.rgba;
+    {
+      u64 histogram[256] = {};
+      for (usize t = 0; t < texels; ++t)
+        ++histogram[counted[static_cast<u32>(t * 4 + 3)]];
+      const f64 wanted = alpha_coverage(source, k_side, k_side, k_cutoff) * static_cast<f64>(texels);
+      u64 at_least = 0;
+      u32 best = k_cutoff;
+      f64 best_miss = 1e300;
+      for (i32 t = 255; t >= 1; --t) {
+        at_least += histogram[t];
+        const f64 miss = std::fabs(static_cast<f64>(at_least) - wanted);
+        if (miss < best_miss) {
+          best_miss = miss;
+          best = static_cast<u32>(t);
+        }
+      }
+      for (usize t = 0; t < texels; ++t) {
+        const u32 scaled = static_cast<u32>(counted[static_cast<u32>(t * 4 + 3)]) * k_cutoff / best;
+        counted[static_cast<u32>(t * 4 + 3)] = static_cast<u8>(scaled > 255u ? 255u : scaled);
+      }
+    }
+    const f64 count_held = alpha_coverage_filtered({counted.data(), counted.size()}, level.width,
+                                                   level.height, k_cutoff);
+    preserve_alpha_coverage(level.rgba, level.width, level.height, k_cutoff, level0);
+    const f64 filtered_held = alpha_coverage_filtered({level.rgba.data(), level.rgba.size()},
+                                                      level.width, level.height, k_cutoff);
+    worst_count_held = std::fmax(worst_count_held, std::fabs(count_held - level0));
+    worst_filtered_held = std::fmax(worst_filtered_held, std::fabs(filtered_held - level0));
+    held += " " + std::to_string(level.width) + ":" + std::to_string(count_held / level0) + "/" +
+            std::to_string(filtered_held / level0);
+  }
+  MESSAGE("level-0 filtered coverage " << level0
+                                       << "; per level, of level 0's: texel count held / filtered held:"
+                                       << held);
+  // Both in points of the surface, the currency of the build's own slack (half a point after the
+  // encoder). The old rule: of level 0's 13.8 points the 128, 64, 16 and 8 texel levels drew 60,
+  // 49, 32 and 49 percent (2026-11-14), so its worst level is more than four points short, twice
+  // what the chain test above allows. The build's: within a point before the encoder, on levels
+  // where one step of the 8-bit scale moves many of a few hundred samples at once.
+  CHECK(worst_count_held > 0.04);
+  CHECK(worst_filtered_held < 0.01);
 }
 
 TEST_CASE("alpha mask: the colour under the cut is the leaf's, a few texels out") {
