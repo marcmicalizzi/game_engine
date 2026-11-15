@@ -305,21 +305,25 @@ pairs):
 
 | Pass | Outside (the lane and the path, frames 0 to 232) | Inside (the rooms, the stair, the window, frames 250 to 599) |
 |---|---|---|
-| total | 6.02 | 5.03 |
-| resolve | 4.16 | 2.78 |
-| gi_trace (the bounce) | 0.82 | 1.00 |
-| gi_fold | 0.11 | 0.11 |
-| rt (records, CLAS, BLAS, TLAS) | 0.48 | 0.48 |
-| hw raster | 0.21 | 0.25 |
-| deform | 0.14 | 0.11 |
+| total | 6.36 | 5.18 |
+| resolve | 4.35 | 2.85 |
+| gi_trace (the bounce) | 0.90 | 1.01 |
+| gi_fold | 0.12 | 0.11 |
+| rt (records, CLAS, BLAS, TLAS) | 0.48 | 0.47 |
+| hw raster | 0.29 | 0.27 |
+| deform | 0.12 | 0.10 |
+
+(The scene with its walls and its wear, 2026-11-15 at 7e615e23, the scene's own hour, other
+processes at 100 % of the CPU and another row's test holding a GPU device: upper bounds. Before
+the walls and the wear, at f11c6f3e, the totals were 6.02 and 5.03: the walls cost the street a
+third of a millisecond, most of it the resolve's and the raster's.)
 
 **A room costs less than the street, not more**: the resolve falls by a third indoors, because the
 picture is plaster, flagstone and boards — each one tiled set — where outdoors most pixels are the
 terrain's stochastic three-layer material and the sky; the bounce's sample pass costs a fifth
 more indoors, where every sampled pixel's ray meets a wall within a few metres and is lit again.
 The chain's cost is the scene's and does not change at the door (nothing is culled by being
-indoors: the visible pairs are about 3,750 either side). The whole flight's GPU median is 5.19 ms
-(p95 6.31).
+indoors). The whole flight's GPU median is 5.38 ms (p95 6.70).
 
 **A room's light, measured and not mended** (2026-11-15; house 0's cross-passage, whose door
 faces west, at 15:00 with the sun 45° up and 22° off the door's normal; 1280×720; the mean of the
