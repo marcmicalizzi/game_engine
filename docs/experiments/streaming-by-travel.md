@@ -62,7 +62,7 @@ T129's table (branch `b64-T129`; the forest's staging copy, the owner's renderer
 | Terrain | 256 | Yes: slots round the eye |
 | Images and buffers under 16 MiB (textures, the frame's targets, the indirect light's cache) | 3,755 | Not split by T129 |
 | **On the host** | | |
-| The merged geometry's CPU copy | 4,672 (3,608 resident) | No |
+| The merged geometry's CPU copy | 4,672 (3,608 resident) | No; since T129 1.7 GB of it goes after the upload, and since T138 2.1 GB more where no walker's collision reads it, leaving the descriptors ([memory accounting](memory-commit-accounting.md#the-third-cut-the-float-geometry-t138)) |
 | The rest of the engine heap | 11,158 | Not split by T129 |
 | C runtime heaps beyond the engine heap's live blocks | 1,689 | |
 | The device's host-visible blocks | 812 | |
