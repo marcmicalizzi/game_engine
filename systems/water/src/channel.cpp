@@ -176,7 +176,13 @@ ChannelLine channel_line(const Channel& c) {
   line.run_from.resize(n - 1);
   line.run_to.resize(n - 1);
   line.station[0] = 0.0f;
-  line.tau[0] = 0.0;
+  // A round head (channel.h, `Channel::cap_head`) reaches before the first station as far as the
+  // sheet is wide there; the phase starts that far's travel late, so it is positive in the cap.
+  line.tau[0] = c.cap_head
+                    ? static_cast<f64>(std::max(c.wet_left_m[0], c.wet_right_m[0]) +
+                                       k_channel_under_bank_m + 2.0f * k_channel_lattice_max_m) /
+                          static_cast<f64>(c.speed_mps[0])
+                    : 0.0;
   line.lo = line.hi = Vec2{c.points[0].x, c.points[0].z};
   for (u32 i = 0; i < n; ++i) {
     line.hydraulic[i] = station_hydraulic_depth(c, i);
@@ -343,6 +349,13 @@ ChannelAt channel_at_stretch(const Channel& c, const ChannelLine& line, u32 i, f
   const f64 td = static_cast<f64>(t);
   at.speed = static_cast<f32>(1.0 / (slow_a + (slow_b - slow_a) * td));
   at.tau = line.tau[i] + static_cast<f64>(len) * (td * slow_a + 0.5 * td * td * (slow_b - slow_a));
+  // **In a round end the phase runs on at the end station's speed** (S108). Held at the station's
+  // phase, the triangles across the station had a phase gradient near nothing, which the resolve
+  // reads as a speed near infinite — a Froude number past every bound — and drew them as a white
+  // wedge at every meeting. (A head's round end is before the head: `channel_line` starts the
+  // phase late enough there that it is never negative.)
+  if (c.cap_tail && i + 2 == n && u > len) at.tau += static_cast<f64>(u - len) * slow_b;
+  if (c.cap_head && i == 0 && u < 0.0f) at.tau += static_cast<f64>(u) * slow_a;
   at.hydraulic = lerp(line.hydraulic[i], line.hydraulic[i + 1], t);
   return at;
 }
