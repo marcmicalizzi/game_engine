@@ -1233,8 +1233,11 @@ std::string write_skirted_heightfield(const test::TempDir& dir) {
     p.push_back(Vec3{p[b].x, floor_y, p[b].z});
     const Vec3 nrm = cross(p[b] - p[a], p[base + 1] - p[a]);
     const bool outward = dot(nrm, out) > 0.0f;
-    for (const u32 v : outward ? std::initializer_list<u32>{a, b, base + 1, a, base + 1, base}
-                               : std::initializer_list<u32>{a, base + 1, b, a, base, base + 1})
+    // Two named arrays: a conditional between two initializer lists leaves the loop a dangling
+    // range (GCC 13, -Wdangling-pointer).
+    const u32 facing_out[6] = {a, b, base + 1, a, base + 1, base};
+    const u32 facing_in[6] = {a, base + 1, b, a, base, base + 1};
+    for (const u32 v : outward ? facing_out : facing_in)
       idx.push_back(v);
   };
   for (u32 i = 0; i + 1 < n; ++i) {
@@ -1269,7 +1272,8 @@ std::string write_skirted_heightfield(const test::TempDir& dir) {
       "\"byteOffset\":0,\"byteLength\":%llu},{\"buffer\":0,\"byteOffset\":%llu,\"byteLength\":%llu}"
       "],"
       "\"buffers\":[{\"byteLength\":%llu,\"uri\":\"skirted.bin\"}]}",
-      p.size(), lo.x, lo.y, lo.z, hi.x, hi.y, hi.z, idx.size(),
+      p.size(), static_cast<f64>(lo.x), static_cast<f64>(lo.y), static_cast<f64>(lo.z),
+      static_cast<f64>(hi.x), static_cast<f64>(hi.y), static_cast<f64>(hi.z), idx.size(),
       static_cast<unsigned long long>(position_bytes),
       static_cast<unsigned long long>(position_bytes), static_cast<unsigned long long>(index_bytes),
       static_cast<unsigned long long>(position_bytes + index_bytes));
