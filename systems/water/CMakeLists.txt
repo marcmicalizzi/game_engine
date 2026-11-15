@@ -26,6 +26,8 @@ engine_module_tests(NAME water
           tests/channel_tests.cpp tests/channel_scene_tests.cpp tests/reflect_scene_tests.cpp
           tests/wet_ground_scene_tests.cpp
           tests/refract_scene_tests.cpp
+          # S107: ground outside an outline is dry ground, whatever its height.
+          tests/dry_bank_scene_tests.cpp
           # R151: the resolve by pixel class on a basin, the ground by the module without water.
           tests/resolve_class_water_tests.cpp
   DEPS renderer gfx tunables)
