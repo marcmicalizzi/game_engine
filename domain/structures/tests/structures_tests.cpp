@@ -6,12 +6,17 @@
 // recipe's file, the container, and the bytes pinned.
 
 #include <core/hash/hash.h>
+#include <domain/geometry/cluster_lod.h>
 #include <domain/structures/structures.h>
 
 #include <doctest/doctest.h>
+#include <test_paths.h>
 
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
 
 using namespace engine;
@@ -100,11 +105,11 @@ Description two_storeys() {
   Description d = example_cot(600, 400, 50);
   const i32 b = 450;
   structure::Storey loft;
-  loft.elevation = 210;
+  loft.elevation = 240;
   loft.height = 120;
   loft.floor_thickness = 18;
   d.storeys.push_back(loft);
-  d.roofs[0].eaves = 330;
+  d.roofs[0].eaves = 360;
   d.chimneys[0].top += 120;
   for (u32 i = 0; i < 4; ++i) {
     structure::Wall w = d.walls[i];
@@ -143,7 +148,8 @@ Description two_storeys() {
   stair.width = 80;
   stair.risers = 12;
   stair.going = 22;
-  stair.well[0] = 120, stair.well[1] = 340, stair.well[2] = 400, stair.well[3] = 420;
+  // The well ends where the flight does: its last riser is the landing's edge (eleven goings).
+  stair.well[0] = 120, stair.well[1] = 340, stair.well[2] = 362, stair.well[3] = 420;
   stair.from_room = 0;
   stair.to_room = 2;
   d.stairs.push_back(stair);
@@ -241,7 +247,7 @@ TEST_CASE("structures: the walls meet at their corners and rise to the roof") {
   CHECK(hi_z == doctest::Approx(4.75).epsilon(1e-5));
   // The gable's peak is the roof's underside at the ridge: the eaves plus the pitch over half
   // the rectangle's depth.
-  CHECK(hi_y == doctest::Approx(2.10 + 1.192 * 2.50).epsilon(1e-5));
+  CHECK(hi_y == doctest::Approx(2.40 + 1.192 * 2.50).epsilon(1e-5));
   // A corner is closed: a segment through it from outside to inside, off its diagonal, crosses
   // one wall's outer face and the other's inner face.
   const D3 outside{-0.5, 1.0, -0.4}, inside{0.5, 1.0, 0.45};
@@ -259,7 +265,7 @@ TEST_CASE("structures: the walk records and the rooms' graph of the cot") {
   CHECK(walk.walls.size() == 4);
   CHECK(walk.walls[0].y0 == doctest::Approx(-0.60));
   // The front wall's centre line stands half a wall inside the eaves, under a fifty-degree roof.
-  CHECK(walk.walls[3].y1 == doctest::Approx(2.10 + 1.192 * 0.30));
+  CHECK(walk.walls[3].y1 == doctest::Approx(2.40 + 1.192 * 0.30));
   CHECK(walk.openings.size() == 3);
   CHECK(walk.openings[0].kind == structure::OpeningKind::door);
   CHECK(walk.openings[0].room_a == 0);
@@ -303,9 +309,15 @@ TEST_CASE("structures: the validator refuses by name and repairs nothing") {
   }
   {
     Description d = cot;
-    d.openings[0].head = 230;  // over the eaves
+    d.openings[0].head = 250;  // over the wall plate
     CHECK_FALSE(validate(d, why));
     CHECK(why.find("top") != std::string::npos);
+  }
+  {
+    Description d = cot;
+    d.roofs[0].overhang = 60;  // a fifty-degree eave 60 cm out hangs 72 cm under its wall plate
+    CHECK_FALSE(validate(d, why));
+    CHECK(why.find("eave") != std::string::npos);
   }
   {
     Description d = cot;
@@ -364,15 +376,15 @@ TEST_CASE("structures: two storeys, an inner wall, a doorway and a stair through
   // The flight's steps rise to the loft: one over the eighth tread is under the landing's level.
   f32 highest = 0;
   for (const Vec3 p : s.parts[static_cast<u32>(Surface::boards)].positions)
-    if (p.z > 3.39f && p.z < 4.21f && p.x < 4.0f && p.y < 2.09f) highest = std::max(highest, p.y);
-  CHECK(highest == doctest::Approx(2.10 * 11.0 / 12.0).epsilon(1e-4));
+    if (p.z > 3.39f && p.z < 4.21f && p.x < 4.0f && p.y < 2.39f) highest = std::max(highest, p.y);
+  CHECK(highest == doctest::Approx(2.40 * 11.0 / 12.0).epsilon(1e-4));
 
   Walk walk;
   std::string error;
   REQUIRE(walk_records(d, walk, error));
   REQUIRE(walk.flights.size() == 1);
-  CHECK(walk.flights[0].rise == doctest::Approx(0.175));
-  CHECK(walk.flights[0].top == doctest::Approx(2.10));
+  CHECK(walk.flights[0].rise == doctest::Approx(0.20));
+  CHECK(walk.flights[0].top == doctest::Approx(2.40));
   REQUIRE(walk.wells.size() == 1);
   CHECK(walk.wells[0].storey == 1);
   CHECK(rooms_reachable(d));
@@ -442,6 +454,110 @@ TEST_CASE("structures: the same description is the same bytes") {
               static_cast<unsigned long long>(mesh_hash(two)));
   // Pinned on MSVC (x86-64-v3); GCC and Clang reproduce them (structures.md, "Determinism"). A
   // mesher change that moves a triangle bumps `k_structure_version` and re-takes these.
-  CHECK(mesh_hash(a) == 0x6609bb89560dde21ull);
-  CHECK(mesh_hash(two) == 0x1c294bf2f1c79005ull);
+  CHECK(mesh_hash(a) == 0x2b883646101c556aull);
+  CHECK(mesh_hash(two) == 0x24f1154db8bc316eull);
+}
+
+TEST_CASE("structures: the corpus keeps its rooms and doors where its descriptions put them") {
+  // The mesher's conformance test (plan 14 §14.1; content/structures/README.md): every committed
+  // description meshes, every opening is clear where it is described and the wall beside it is
+  // solid, every storey's floor is at its height under a point of every room, and every room is
+  // reached from outside.
+  const std::string dir =
+      engine::test::data_path(ENGINE_SOURCE_DIR "/content/structures", "content/structures");
+  if (!engine::test::path_exists(dir)) {
+    MESSAGE("not in this bundle: " << dir);
+    return;
+  }
+  u32 files = 0;
+  for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+    const std::string name = entry.path().filename().string();
+    if (name.size() < 16 || name.substr(name.size() - 15) != ".structure.json") continue;
+    CAPTURE(name);
+    std::ifstream in(entry.path(), std::ios::binary);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    structure::Recipe recipe;
+    std::string error;
+    const bool read = read_file(text, recipe, error);
+    INFO(error);
+    REQUIRE(read);
+    const Description& d = recipe.description;
+    Solved s;
+    solved(d, MeshScope::whole, s);
+    ++files;
+    for (u32 i = 0; i < d.openings.size(); ++i) {
+      const structure::Opening& o = d.openings[i];
+      const f64 base = d.storeys[d.walls[o.wall].storey].elevation;
+      CAPTURE(i);
+      D3 a, b;
+      for (const f64 fs : {0.25, 0.75}) {
+        through(d, o.wall, o.at + (fs - 0.5) * o.width, base + o.sill + 0.3 * (o.head - o.sill), a,
+                b);
+        CHECK(crossings(s, a, b) == 0);
+      }
+      through(d, o.wall, o.at + 0.5 * o.width + 8.0, base + o.sill + 0.5 * (o.head - o.sill), a, b);
+      CHECK(crossings(s, a, b) == 2);
+    }
+    for (const structure::Room& room : d.rooms) {
+      if (room.outline.size() < 6) continue;
+      // A point just inside the room's first corner, clear of walls a metre thick.
+      f64 cx = 0, cz = 0;
+      const u32 corners = room.outline.size() / 2;
+      for (u32 k = 0; k < corners; ++k) {
+        cx += room.outline[2 * k];
+        cz += room.outline[2 * k + 1];
+      }
+      cx /= corners;
+      cz /= corners;
+      const f64 x = (0.7 * room.outline[0] + 0.3 * cx) * 0.01;
+      const f64 z = (0.7 * room.outline[1] + 0.3 * cz) * 0.01;
+      const f64 y = d.storeys[room.storey].elevation * 0.01;
+      CAPTURE(room.id);
+      // A plumb line from 2 cm over the floor to 30 cm over it meets nothing; one from 2 cm over
+      // it to a millimetre under its top meets the floor's top and nothing else.
+      CHECK(crossings(s, {x, y + 0.02, z}, {x, y + 0.30, z}) == 0);
+      CHECK(crossings(s, {x, y + 0.02, z}, {x, y - 0.001, z}) == 1);
+    }
+    CHECK(rooms_reachable(d));
+    if (name == "cot.structure.json") {
+      structure::Recipe example;
+      example.description = example_cot();
+      CHECK(canonical_json(recipe) == canonical_json(example));
+    }
+  }
+  CHECK(files >= 2);
+}
+
+TEST_CASE("structures: the DAG's cut of a cot coarsens with distance and ends at its root") {
+  // What the cluster LOD does to a house (structures.md, "Forms and the LOD policy"): the cut's
+  // triangles from the door, from 50 m, 200 m and a kilometre, at 2160 lines and a 60 degree
+  // field of view with a one-pixel threshold.
+  structure::Recipe recipe;
+  recipe.description = example_cot();
+  geometry::ClusterFileData container;
+  Report report;
+  std::string error;
+  const assets::MeshGeneratorInputs inputs;
+  const geometry::ClusterLodOptions lod;
+  REQUIRE(build_container(recipe, inputs, lod, 0, container, report, error));
+  u32 before = ~0u;
+  for (const f32 distance : {5.0f, 50.0f, 200.0f, 1000.0f}) {
+    geometry::LodView view;
+    view.camera = {3.3f, 1.7f, -distance};
+    view.proj_scale = 1.7320508f * 1080.0f;
+    view.threshold_px = 1.0f;
+    Vector<u32> cut;
+    geometry::select_lod(container.mesh, view, cut);
+    u32 drawn = 0;
+    for (const u32 c : cut)
+      drawn += container.mesh.mesh.clusters[c].triangle_count;
+    std::printf("structures: the cot's cut at %.0f m is %u clusters, %u triangles\n",
+                static_cast<f64>(distance), cut.size(), drawn);
+    CHECK(drawn > 0);
+    CHECK(drawn <= before);
+    before = drawn;
+  }
+  // A kilometre off it is under half its finest triangles, and never under its root.
+  CHECK(before * 2 <= report.triangles);
+  CHECK(before >= report.root_triangles);
 }

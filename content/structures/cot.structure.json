@@ -1,0 +1,26 @@
+{
+  "description": {
+    "name": "cot",
+    "style": "rural/cot",
+    "footprint": [0, 0, 0, 460, 660, 460, 660, 0],
+    "storeys": [{"elevation": 0, "height": 240, "floor_thickness": 15}],
+    "rooms": [{"id": 0, "storey": 0, "kind": "hall", "name": "hall", "outline": [0, 0, 0, 460, 660, 460, 660, 0]}],
+    "walls": [
+      {"from": [0, 0], "to": [0, 460], "thickness": 60, "a": 0, "b": -1},
+      {"from": [0, 460], "to": [660, 460], "thickness": 60, "a": 0, "b": -1},
+      {"from": [660, 460], "to": [660, 0], "thickness": 60, "a": 0, "b": -1},
+      {"from": [660, 0], "to": [0, 0], "thickness": 60, "a": 0, "b": -1}
+    ],
+    "openings": [
+      {"wall": 3, "kind": "door", "at": 250, "width": 90, "sill": 0, "head": 190},
+      {"wall": 3, "kind": "window", "at": 501, "width": 80, "sill": 95, "head": 180},
+      {"wall": 1, "kind": "window", "at": 330, "width": 90, "sill": 95, "head": 180}
+    ],
+    "roofs": [
+      {"form": "gable", "rect": [-30, -30, 690, 490], "ridge_along_x": true, "eaves": 240, "pitch": 1192, "overhang": 35, "verge": 25, "thickness": 30}
+    ],
+    "chimneys": [
+      {"rect": [-38, 165, 80, 295], "base": -60, "top": 684, "hearth_side": 0, "hearth_width": 100, "hearth_head": 125, "hearth_depth": 40}
+    ]
+  }
+}

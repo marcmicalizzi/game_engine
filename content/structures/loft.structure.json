@@ -1,0 +1,45 @@
+{
+  "description": {
+    "name": "loft",
+    "style": "rural/hall-and-parlour",
+    "footprint": [0, 0, 0, 450, 650, 450, 650, 0],
+    "storeys": [
+      {"elevation": 0, "height": 210, "floor_thickness": 15},
+      {"elevation": 210, "height": 120, "floor_thickness": 18}
+    ],
+    "rooms": [
+      {"id": 0, "storey": 0, "kind": "hall", "name": "hall", "outline": [0, 0, 0, 450, 420, 450, 420, 0]},
+      {"id": 1, "storey": 0, "kind": "parlour", "name": "parlour", "outline": [420, 0, 420, 450, 650, 450, 650, 0]},
+      {"id": 2, "storey": 1, "kind": "chamber", "name": "chamber", "outline": [0, 0, 0, 450, 650, 450, 650, 0]}
+    ],
+    "walls": [
+      {"storey": 0, "from": [0, 0], "to": [0, 450], "thickness": 50, "a": 0, "b": -1},
+      {"storey": 0, "from": [0, 450], "to": [650, 450], "thickness": 50, "a": 0, "b": -1},
+      {"storey": 0, "from": [650, 450], "to": [650, 0], "thickness": 50, "a": 1, "b": -1},
+      {"storey": 0, "from": [650, 0], "to": [0, 0], "thickness": 50, "a": 0, "b": -1},
+      {"storey": 1, "from": [0, 0], "to": [0, 450], "thickness": 50, "a": 2, "b": -1},
+      {"storey": 1, "from": [0, 450], "to": [650, 450], "thickness": 50, "a": 2, "b": -1},
+      {"storey": 1, "from": [650, 450], "to": [650, 0], "thickness": 50, "a": 2, "b": -1},
+      {"storey": 1, "from": [650, 0], "to": [0, 0], "thickness": 50, "a": 2, "b": -1},
+      {"storey": 0, "from": [420, 0], "to": [420, 450], "thickness": 12, "kind": "inner", "a": 1, "b": 0}
+    ],
+    "openings": [
+      {"wall": 3, "kind": "door", "at": 400, "width": 90, "sill": 0, "head": 190},
+      {"wall": 3, "kind": "window", "at": 110, "width": 80, "sill": 95, "head": 180},
+      {"wall": 3, "kind": "window", "at": 540, "width": 80, "sill": 95, "head": 180},
+      {"wall": 1, "kind": "window", "at": 325, "width": 90, "sill": 95, "head": 180},
+      {"wall": 8, "kind": "doorway", "at": 120, "width": 85, "sill": 0, "head": 190},
+      {"wall": 6, "kind": "window", "at": 225, "width": 60, "sill": 80, "head": 150}
+    ],
+    "stairs": [
+      {"kind": "straight", "storey": 0, "foot": [120, 380], "dir": 0, "width": 80, "risers": 12, "going": 22,
+       "well": [120, 340, 362, 420], "from_room": 0, "to_room": 2}
+    ],
+    "roofs": [
+      {"form": "gable", "rect": [-25, -25, 675, 475], "ridge_along_x": true, "eaves": 330, "pitch": 1192, "overhang": 45, "verge": 25, "thickness": 30}
+    ],
+    "chimneys": [
+      {"rect": [-33, 160, 75, 290], "base": -60, "top": 763, "hearth_side": 0, "hearth_width": 100, "hearth_head": 125, "hearth_depth": 40}
+    ]
+  }
+}

@@ -38,7 +38,7 @@ fetch reads.
 | Thatch, wanted pitch | 50° (`pitch` 1192 permille) | 50° to 55° | 1: "50 to 55 degrees of pitch is more desirable" |
 | Thatch, the coat's depth | 30 cm (`thickness`) | 22.5 to 37.5 cm | 1: "an overall thickness of anything between 9 and 15 inches (225/375mm)"; combed wheat reed at the low end |
 | A thatch course | (not modelled) | about 15 cm | 1: "courses of thatch are usually around 6 inches (150mm) thick" |
-| Eaves overhang over an earth wall | 45 cm (`overhang`) | 40 to 70 cm | 3 (summary): a cob wall wants a roof overhang of 400 to 700 mm; a thatching reference in the same search (summary) has straw eaves bundles overhang the wall by 300 to 375 mm, so a stone wall takes less |
+| Eaves overhang over an earth wall | 35 cm (`overhang`): **under the range**, traded for the door (below) | 40 to 70 cm | 3 (summary): a cob wall wants a roof overhang of 400 to 700 mm; a thatching reference in the same search (summary) has straw eaves bundles overhang the wall by 300 to 375 mm, so a stone wall takes less |
 | Verge overhang | 25 cm (`verge`) | | **no source**: a guess at about half the eaves' |
 | Slate, stone slate, pantile pitch | (no example yet) | | **no source read**; a row for the filler's grounding |
 
@@ -64,7 +64,7 @@ grounding should bring a distribution, and one bay of 4.5 m is the commoner size
 
 | Number | Value used | Range | Source |
 |---|---|---|---|
-| Floor to wall plate, one storey | 210 cm | | 7 (summary, one anecdote): upper ceilings "barely 2 metres". **No survey read** |
+| Floor to wall plate, one storey | 240 cm | | 7 (summary, one anecdote): upper ceilings of about 2 metres. **No survey read.** The number is set by the walker, not a source: an eave's edge hangs `pitch x overhang` under the plate (at fifty degrees, 54 cm for a 45 cm overhang), the first cot's plate at 210 cm put its eave at 1.56 m across a 1.9 m door, and the walker is 1.8 m. 240 cm with a 35 cm overhang puts the edge at 1.98 m. A real cot solves it otherwise (a lower door, an eave lifted over it, a deeper plinth), which the description can say and the example does not |
 | Door, clear | 90 by 190 cm | | **no source**: 5 gives only the planks ("generally 25-32mm thick", two to four planks a door). The width is the walker's: plan 14 §14.4 wants 80 cm clear with the leaf open. A historic cottage door is commonly lower than 190; the walker's capsule is 180 |
 | Window, clear | 80 to 90 wide, 85 tall, sill at 95 | | **no source**: small because early glass was (a council's casement guidance, in summary: the small panes then available kept casements modest) |
 | Frame sections | door 60 by 100 mm, window 50 by 70 mm, glazing bars 30 mm | | **no source**: joinery practice as remembered, not read |
