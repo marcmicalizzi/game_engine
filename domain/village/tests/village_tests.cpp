@@ -153,10 +153,11 @@ TEST_CASE("village: a house's placement turns its frame so its door is where the
     const Vec3 local{static_cast<f32>(h.door_x_mm) / 1000.0f, 0.0f,
                      static_cast<f32>(h.door_z_mm) / 1000.0f};
     const Vec3 turned = rotate(at.rotation, local);
-    CHECK(at.position.x + static_cast<f64>(turned.x) ==
-          doctest::Approx(static_cast<f64>(q.door_x_mm) / 1000.0).epsilon(1e-5));
-    CHECK(at.position.z + static_cast<f64>(turned.z) ==
-          doctest::Approx(static_cast<f64>(q.door_z_mm) / 1000.0).epsilon(1e-5));
+    // (Within 1.5 mm: the door is kept to the millimetre and the quaternion is float32.)
+    CHECK(std::fabs(at.position.x + static_cast<f64>(turned.x) -
+                    static_cast<f64>(q.door_x_mm) / 1000.0) < 0.0015);
+    CHECK(std::fabs(at.position.z + static_cast<f64>(turned.z) -
+                    static_cast<f64>(q.door_z_mm) / 1000.0) < 0.0015);
     // And `house_point` is the same turn in f64.
     const WorldPos door = house_point(q, h.door_x_mm, 0, h.door_z_mm);
     CHECK(std::fabs(door.x - static_cast<f64>(q.door_x_mm) / 1000.0) < 0.0011);
@@ -367,7 +368,7 @@ TEST_CASE("village: the plan is the same bytes on every toolchain") {
   MESSAGE("plan hash " << text << ": " << plan.plots.size() << " plots, " << plan.built
                        << " houses, " << plan.steep << " steep");
   // Taken on MSVC (x86-64-v3); GCC and Clang in the Linux containers reproduce it.
-  CHECK(hash == 0x0ull);
+  CHECK(hash == 0x850681822857221aull);
   // The same entry again, and the summary's hash, are the same.
   CHECK(plan_hash(planned(p, gentle)) == hash);
   CHECK(plan_json(p, plan).find("hash")->as_string() == std::string(text));

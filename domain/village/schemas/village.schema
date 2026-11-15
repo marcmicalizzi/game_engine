@@ -65,7 +65,7 @@ struct VillageLayer @version(1) {
   bank_slope: f32 = 1
   fill_slope: f32 = 0.5
   face_m: f32 = 1 @unit(m)
-  /// **The houses**: storeys of every house, 1 or 2, and a floor's height over its pad, metres, 0
-  /// to 1 (a plinth). What a house is beyond these is the house filler's, from the plot and a seed.
+  /// **The houses**: the storeys asked of every house, 1 or 2. What a house is beyond that is the
+  /// house filler's, from the plot and a seed (village.md, "The house seam").
   storeys: u32 = 2
 }

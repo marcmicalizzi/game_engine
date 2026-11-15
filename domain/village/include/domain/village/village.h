@@ -91,7 +91,8 @@ struct House {
   i64 door_x_mm = 0, door_z_mm = 0;
   i32 out_x = 0, out_z = -1;
   i64 door_width_mm = 900;
-  // The ground floor's top over the frame's origin: the pad's level is the origin's.
+  // How far the frame's origin stands over the pad (a description's origin is its ground floor's
+  // top: structures.md): the placement stands the frame this far above the pad's level.
   i64 floor_mm = 0;
   // The mesh: the bytes of a mesh generator's file and the path it would have
   // (`scene_gen::PlacementMesh`), and how far it reaches on the ground from its origin, metres.
@@ -150,8 +151,10 @@ struct Plot {
   i64 frontage_mm = 0, depth_mm = 0;
   i64 along_mm = 0;  // of the plot's middle along its lane, from the lane's first point
   u64 seed = 0;
-  // Where the house's frame stands (its origin, on the pad) and the pad's level.
+  // Where the house's frame stands, the pad's level, and how far the frame's origin (the ground
+  // floor's top, structures.md) stands over the pad: the entry's `floor_over_pad_m`.
   i64 house_x_mm = 0, house_z_mm = 0, pad_mm = 0;
+  i64 floor_mm = 0;
   // The door's threshold in the world, and where its path meets the tread's edge.
   i64 door_x_mm = 0, door_z_mm = 0;
   i64 path_x_mm = 0, path_z_mm = 0, path_top_mm = 0;

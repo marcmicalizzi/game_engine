@@ -10,13 +10,17 @@
 
 # The capability graph (docs/plan/08-toolchain.md section 8.5): a pad and a tread are ground edits
 # the tile set (`tileset`) writes into its heights, and the tests hold the edits the plan writes to
-# what the tile set makes of them, so with the tile set switched off this capability is off too.
+# what the tile set makes of them; and a house is a building description the structures capability
+# fills and meshes (`structures`, reached from src/houses.cpp alone). With either switched off this
+# capability is off too.
 engine_capability_requires(village tileset)
+engine_capability_requires(village structures)
 
 engine_schema_library(NAME village_schemas SCHEMAS schemas/village.schema CAPABILITY village)
 
 engine_module(NAME village LAYER domain OPTIONAL WHOLE_ARCHIVE GENERATOR placement:village
-  DEPS base containers math hash json schema schemas log io scene_gen tileset village_schemas
+  DEPS base containers math hash json schema schemas log io scene_gen tileset structures
+       structures_schemas village_schemas
   SOURCES src/village.cpp src/generator.cpp src/houses.cpp src/flight.cpp)
 
 engine_module_tests(NAME village

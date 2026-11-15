@@ -181,7 +181,7 @@ TEST_CASE("scene_collision: a walker enters a house by its door, crosses it and 
     f32 highest = 0.0f;
     const u32 reached = walk_along(walker, points, stuck, highest);
     INFO("stopped at (" << stuck.x << ", " << stuck.y << ", " << stuck.z << ") on the way to '"
-                        << points[std::min(reached, points.size() - 1)].what << "' at ("
+                        << std::string(points[std::min(reached, points.size() - 1)].what) << "' at ("
                         << points[std::min(reached, points.size() - 1)].feet.x << ", "
                         << points[std::min(reached, points.size() - 1)].feet.y << ", "
                         << points[std::min(reached, points.size() - 1)].feet.z << ")");
@@ -189,7 +189,9 @@ TEST_CASE("scene_collision: a walker enters a house by its door, crosses it and 
     // At the window: upstairs (a storey over the pad), standing, inside the footprint's box.
     const WorldPos end = walker.feet();
     const f64 pad = static_cast<f64>(plot->pad_mm) / 1000.0;
-    CHECK(end.y > pad + 2.0);
+    CHECK(std::fabs(end.y - points[points.size() - 1].feet.y) < 0.1);
+    CHECK(house.route.size() >= 2);
+    CHECK(end.y > pad + 2.0);  // the entry asks two storeys: the window is an upper one
     CHECK(walker.state().ground == physics::Ground::OnGround);
     const f64 rx = end.x - static_cast<f64>(plot->front_x_mm) / 1000.0;
     const f64 rz = end.z - static_cast<f64>(plot->front_z_mm) / 1000.0;

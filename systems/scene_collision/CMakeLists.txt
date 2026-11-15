@@ -49,6 +49,11 @@ if(TARGET engine::tileset)
   # And in a channel cut into it (W89): the collision reads the cut heights the set was built with.
   list(APPEND _collision_tests tests/channel_cut_tests.cpp)
 endif()
+if(TARGET engine::village AND TARGET engine::structures)
+  # A walker in a village's house (S89): the house reaches the collision as its tile's mesh, built
+  # from its recipe through the registry, so the test links the two capabilities as a host does.
+  list(APPEND _collision_tests tests/structure_walk_tests.cpp)
+endif()
 # WALL_CLOCK: scene_collision_tests.cpp holds one tile's activation and one prefetch wait under
 # 120 ms, so the suite runs alone in a CTest run with jobs (docs/ci/what-to-run.md, "Jobs").
 engine_module_tests(NAME scene_collision WALL_CLOCK SOURCES ${_collision_tests})
@@ -60,6 +65,9 @@ if(TARGET engine_scene_collision_tests)
   endif()
   if(TARGET engine::tileset)
     target_link_libraries(engine_scene_collision_tests PRIVATE engine::tileset)
+  endif()
+  if(TARGET engine::village AND TARGET engine::structures)
+    target_link_libraries(engine_scene_collision_tests PRIVATE engine::village engine::structures)
   endif()
   # The committed erg names a sky (ADR-0048), which the scene reader finds through the registry too.
   if(TARGET engine::sky)

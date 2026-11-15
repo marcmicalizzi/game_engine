@@ -66,13 +66,33 @@ each step is as it is.
 
 `HouseFn` is the only thing the plan knows of a house: asked with a plot (frontage, depth, the
 setback), a seed and a storey count, it answers a `House` — the footprint's box and the door's
-threshold in the house's own frame (whole millimetres, the origin on the pad), which way out of the
-door is, the ground floor's height over the pad, and the mesh as a recipe (the bytes of a mesh
-generator's file, [scene_gen](scene_gen.md#a-tiles-meshes)). The plan turns the house by quarter
-turns until its door faces the street, then by the row's own direction, and refuses it if it does
-not fit. `src/houses.cpp` is the one file that names the structures capability; `box_house` is the
-stand-in the plan's own tests use, a box with a door in its long side that turns gable-on where
-the frontage is too narrow for its length.
+threshold in the house's own frame (whole millimetres), which way out of the door is, how far the
+frame's origin stands over the pad, and the mesh as a recipe (the bytes of a mesh generator's
+file, [scene_gen](scene_gen.md#a-tiles-meshes)). The plan turns the house by quarter turns until
+its door faces the street, then by the row's own direction, and refuses it if it does not fit.
+`box_house` is the stand-in the plan's own tests use, a box with a door in its long side that turns
+gable-on where the frontage is too narrow for its length.
+
+**`src/houses.cpp` is the one file that names the structures capability**
+([structures](structures.md)). It asks for a building description, validates it, and reads only its
+**walk records** (`structures::walk_records`: floors, walls, openings, stair flights, solid
+members) — never the mesh:
+
+- the box is the outer faces of the ground storey's exterior walls; the entrance is the first
+  door between the outside and a ground-storey room, in a wall along an axis;
+- a description's origin is its ground floor's top, so the frame stands **12 cm over the pad**: a
+  14 cm step at the threshold, under the walker's 0.35 m, with the foundation's 60 cm below the
+  floor keeping the walls' feet in the ground;
+- **the walker's rules are held here** (plan 14 §14.4's, the least of S89's validators): the
+  entrance and every doorway on the way through at least 0.66 m clear (the capsule's 0.6 m and
+  3 cm each side, after the frame's 6 cm a side) and 1.85 m from sill to head, a flight's rise at
+  most 0.25 m and its going at least 0.20 m. A house that fails one is refused with the sentence
+  (the rule, the opening or stair, what was measured), and its plot counted `refused`;
+- the recipe is the description's canonical JSON, named by its own source hash, so two plots given
+  one description share one mesh in the cache and in the scene.
+
+Until the rural filler is linked, the description is `structures::example_cot`, sized to the plot
+by the seed (inside 5 to 8 m by 3.8 to 4.6 m, the grounding's peasant houses).
 
 So **a hand-authored building in a scene file needs nothing of this module** (it is a mesh
 placement whose recipe is its description), and **a game's own house filler** is another `HouseFn`.

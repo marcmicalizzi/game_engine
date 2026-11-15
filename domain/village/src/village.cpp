@@ -349,6 +349,7 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
       continue;
     }
     p.pad_mm = div_round(sum, 5);
+    p.floor_mm = h.floor_mm;
     const i64 px[4] = {x0 - margin, x1 + margin, x1 + margin, x0 - margin};
     const i64 pz[4] = {z0 - margin, z0 - margin, z1 + margin, z1 + margin};
     for (u32 c = 0; c < 4; ++c)
@@ -588,7 +589,8 @@ scene_gen::Placement house_placement(const Plot& plot) {
     half_c = s / (2.0 * half_s);
   }
   scene_gen::Placement out;
-  out.position = WorldPos{metres(plot.house_x_mm), metres(plot.pad_mm), metres(plot.house_z_mm)};
+  out.position = WorldPos{metres(plot.house_x_mm), metres(plot.pad_mm + plot.floor_mm),
+                          metres(plot.house_z_mm)};
   out.rotation = Quat{0.0f, static_cast<f32>(half_s), 0.0f, static_cast<f32>(half_c)};
   return out;
 }
@@ -597,7 +599,8 @@ WorldPos house_point(const Plot& plot, i64 x_mm, i64 y_mm, i64 z_mm) {
   f64 c = 1.0, s = 0.0;
   turn_of(plot, c, s);
   const f64 x = static_cast<f64>(x_mm), z = static_cast<f64>(z_mm);
-  return WorldPos{metres(plot.house_x_mm) + (x * c + z * s) / 1000.0, metres(plot.pad_mm + y_mm),
+  return WorldPos{metres(plot.house_x_mm) + (x * c + z * s) / 1000.0,
+                  metres(plot.pad_mm + plot.floor_mm + y_mm),
                   metres(plot.house_z_mm) + (-x * s + z * c) / 1000.0};
 }
 
