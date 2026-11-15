@@ -5236,8 +5236,9 @@ protocol today; roadmap R159 adds the block there with the registration point.
 Roadmap R154, from [the design](../experiments/temporal-sampling.md#part-2-what-the-renderer-must-provide).
 Every method that samples over time, the engine's own and any vendor's, reads the same things: a
 frame drawn at a sub-pixel offset, where each pixel's surface was in the last frame, the depth, and
-last frame's own state. This section is what the renderer makes of them. **Nothing reads them
-yet** (the accumulation is roadmap R158), and **all of it is behind one switch, off by default**:
+last frame's own state. This section is what the renderer makes of them. **One thing reads them**,
+the engine's own accumulation ([below](#sampling-over-time-the-accumulation), roadmap R158, which
+turns them on when it is on), and **all of it is behind one switch, off by default**:
 `renderer.reconstruction.inputs` (a tunable read at load; `ResolvedSettings::reconstruction_inputs`,
 never on the direct path). Off, the renderer holds a null pointer where the state would be: no
 buffer, no pipeline, no pass, no offset, and the frame is the frame it always was to the byte,
@@ -5364,3 +5365,197 @@ inputs out of the other slot's region, a skinned bar that bends further and step
 draw) and a young palm swaying in a wind, each against its deformer's CPU mirror (`anim::skin_positions`;
 `gfx::flora_bend` over the poses `flora_pose_instances` gives a tree laid out as `GpuScene` lays
 it out): 0.0032 px and 0.0024 px at worst under vectors of 4 px.
+
+## Sampling over time: the accumulation
+
+Roadmap R158, stage 2 of [the design](../experiments/temporal-sampling.md#part-4-the-plan-in-stages):
+**the engine's own accumulation at native resolution**. A frame drawn at a sub-pixel offset is one
+sample of every pixel; this pass blends it into what the frames before it accumulated, so a crown's
+edge is the average of its samples and not whichever one this frame drew. It is **off by default**
+(`renderer.reconstruction.accumulation`, `off`, `on` or `mean`, read at load;
+`ResolvedSettings::accumulation`), **nothing of it exists when it is off** (a null pointer: no
+image, no pipeline, no pass, and the frame is the frame it was to the byte), and **it is not a
+default of any interactive session**: that is the owner's to decide after walking it
+([ADR-0064](../adr/0064-every-measurement-is-native.md), decision 7). On, it turns
+[the inputs](#sampling-over-time-the-inputs) on, the renderer's `Reconstruction::provider` is
+`Engine`, and so every record of such a frame is a reconstructed one: its times are under
+`reconstructed.gpu_ms`, its `gpu_ms` is null and the budget tools refuse it
+([the measurement rule](#sampling-over-time-the-measurement-rule)).
+
+**Where it runs.** It is a [frame pass](#frame-passes) of the renderer's own
+(`src/accumulation_pass.h`, `shaders/accumulate.slang`), registered at a second stage,
+`FramePassStage::Reconstruction`, which `add_frame_pass` keeps after every pass that composites
+light whenever each was registered: a medium's light is in the picture before it is sampled over
+time. So an accumulated frame resolves into the linear image and ends on the one encode, like any
+frame with a pass. It writes **an image of its own**, which is both the frame's picture and the
+next frame's history: two half-float images swapped each frame, and the encode reads the one just
+written in the linear image's place (`FramePassReport::color`, which is also how a provider's
+output at another size will reach the encode, R159). The context a pass is handed gained what it
+needs and nothing of its own: the motion buffer's handle (`FramePassContext::motion`) and the
+display's curve (`display_knee`, `display_ceiling`). `record_frame` grew by those lines and no
+pass; the vertex tier runs it (it reads buffers and images, no rasterizer); nothing in it keys on
+a generator, and an imported static mesh gets all of it.
+
+**The frames are averaged as the display shows them.** Each sample goes through the display's
+curve (`display_tone1` and its ceiling, what `display_output` applies before the transfer) before
+it is blended, and the blend goes back through the curve's inverse into the image, so the encode
+shows exactly the blend. A mean of radiance lets one sample past the display's white own its
+pixel (measured on the test's heightfield: 11 codes brighter than the mean of the frames as drawn
+on a glint's pixels) and is not the supersampled picture, which is a mean of what is seen; it is
+also what Karis's weighting by luminance is for. With an SDR target and no sky the curve is a
+clamp at 1.
+
+**What a pixel's history is held to**, in the shader's order. The design's rule was "the same
+instance at that place, else a disocclusion"; the build departs from it in the second step, and
+says why.
+
+1. **The motion of the nearest surface in the 3 × 3** (the largest reversed-Z depth; an empty
+   pixel is the farthest). A thin feature's edge pixel takes the feature's motion, so the pixel a
+   leaf has just left looks up where the sky behind it was a frame ago, not where the leaf was.
+2. **Whether anything can have been uncovered there, and only then the names.** A history tap
+   whose surface **was moving last frame as this pixel's surface is moving now** (last frame's
+   motion buffer, which the accumulation has the inputs keep, within
+   `renderer.reconstruction.motion_match` pixels, a quarter by default) is the pixel's own
+   whatever it names: under a held camera, a turn of the camera, or a sway slower than the match,
+   nothing has been uncovered, and the sub-pixel offset alone changes what an edge pixel names
+   every frame. Past the match **the names decide, by membership and not by equality**: last
+   frame's visibility buffer (kept by the inputs) names the instance the tap showed, through the
+   scene's pair table, and the tap counts only if that instance, or the empty sky, **is among the
+   instances this frame's 3 × 3 holds**. Not "the same instance at the same pixel": a crown's
+   edge pixel names a leaf in one frame and the sky in the next, and a rule that strict would
+   restart every edge pixel every frame, which are the pixels that hold nine tenths of the
+   aliasing ([the measurement](../experiments/temporal-sampling.md#what-the-difference-holds)).
+   And not the names alone, which is what this pass did first: on leaf-cards' crowns at 121 m,
+   four trees against a sky, a still view after sixteen frames stood 12.6 codes from the
+   reference where the plain mean of the same sixteen frames stands 6.0, because a leaf seen
+   through a gap last frame is often not among the nine samples of this one. Membership
+   keeps an edge's history and still drops a disocclusion's: what an instance that moved away
+   leaves behind names an instance the neighbourhood no longer holds. **An instance the host
+   moves is never taken by the match** (`SceneRenderer::move_instances`: the motion pass's moved
+   table, searched only in a frame that has one): it may have stood still last frame and be
+   somewhere else in this one, which the first build with the match showed as a trail where a
+   moved instance had stood (16 codes left of 36, where the names leave 6). What the match lets
+   through is a trail no longer than the match over the weight, two and a half pixels at the
+   defaults. The grain is the instance,
+   not the pair: a pair changes with the LOD cut, and a history thrown away at every cut change is
+   a flash across a cluster. On a frame where the scene's tables changed (a streamed world's
+   tail) last frame's pairs cannot be read through this frame's table, so the test falls back to
+   covered against empty and the colours decide.
+3. **The colours.** What is left is clipped towards the 3 × 3's mean, to its mean ± γσ in YCoCg
+   (Salvi 2016), along the line to the mean so the hue holds, **only where the pixel's surface
+   moved further than the match**: γ is `renderer.reconstruction.clip_moving` (1.25) there, and
+   `clip_still` for the rest, which is 0, no clip. A pixel that hardly moved has a history that is
+   its own, and the nine samples of one frame are a poor witness against it: where all nine miss
+   a leaf the box has no width and the clip takes the leaf out of the picture, whatever γ. With
+   the clip on everywhere (γ 3 still, 1.25 moving) the crowns' held view stood 10.6 and 10.4 codes
+   from the reference, and 9.9 and 9.8 at γ 6; without it 6.2 and 7.3. What is given up: under a
+   surface that does not move, light that changes (a shadow sweeping a still ground) follows over
+   the blend's length and is not cut short; and inside one instance, a part that crosses another
+   slower than the match trails by up to the match over the weight.
+
+Then the blend: the new frame's share is one over the frames since the last reset while that is
+more than `renderer.reconstruction.weight` (so the frames after a reset weigh alike), and the
+weight after. A pixel with no usable history shows this frame's sample. A history value that is
+not a number is never kept. **A reset** (`FrameDesc::history_reset`, a resize, a frame this pass
+did not draw between two, such as a debug view) starts again: the frame after one holds nothing
+of the frame before, to the byte. The cycle is `renderer.reconstruction.phases` offsets of
+Halton(2, 3), sixteen by default (the inputs alone keep eight).
+
+**`mean` mode is the converged frame as a function of the scene.** The plain running mean of the
+frames since the last reset at the pixel's own place: no motion, no names, no clip. A
+`SceneRenderer::capture` in `mean` mode draws **one whole cycle from a reset** (it drives the
+phase itself: a capture is otherwise one frame), so its picture is the mean of the cycle's offset
+frames and a test holds it to a reference with a bound that is rounding and not noise
+(`accumulation_tests.cpp`: two codes, from the eight-bit frames and the half-float path). In `on`
+mode a capture is one frame and continues the history, which is how a pan or a wind is measured a
+frame at a time (`engine-view --capture-every 1`).
+
+**What it keeps on the device** (`SceneRenderer::accumulation_bytes`): 16 bytes a pixel in the two
+images and 104 bytes a view a frame slot, beside the inputs' 16 bytes a pixel (their 12 and last
+frame's motion buffer, 4, which only the accumulation asks them to keep: `motion_bytes` counts
+it) and the frame passes' linear image at 8: 133 MB, 133 MB and 66 MB at 3840 × 2160, 332 MB
+together, where the design reckoned about 300.
+
+**What it closes on, measured** (R154 leg 2, 2026-11-15, 01:46 to 02:28 local, `msvc-release`,
+RTX 5090; [the design's method](../experiments/temporal-sampling.md#how-it-was-measured) and its
+crops: 512 × 512 at the 4K target's pixel pitch, `--raster rt --shadows rt --no-lights --lod 1
+--dither off`, the bounce off, the trees swaying at 0.7; the reference is that page's 64 offsets
+drawn again by this build with everything off, and as drawn is one of them; others stood in the
+GPU's line and held 1 to 58 % of the CPU, and nothing in the table is a time). Display luma
+codes, rms over the crowns' rectangles; the accumulated picture is one frame a capture
+(`--capture-every 1`), with the clip off:
+
+| | as drawn | accumulated | the reference's | the bound |
+|---|---|---|---|---|
+| leaf-cards' crowns at 121 m, held, the 16th frame against the reference | 29.2 | **6.2** | | 8 |
+| the same at 411 m | 28.8 | **7.3** | | 8 |
+| a conifer (tree-species' spruce at 120 m) | 11.1 | **2.1** | | 8 |
+| a slow pan, 1/8 px a frame, frame-to-frame change: 121 m | 30.3 | **3.82** | 4.28 | 1.5 times: 0.89 |
+| 411 m | 35.5 | **3.51** | 3.11 | 1.13 |
+| the conifer | 11.7 | **1.50** | 1.94 | 0.77 |
+| a wind with the camera held, 90 frames, frame-to-frame change: 121 m | 12.3 | **2.94** | 3.50 | 0.84 |
+| 411 m | 11.8 | **3.07** | 3.40 | 0.90 |
+| the conifer | 5.26 | **0.92** | 1.17 | 0.79 |
+
+**Which build drew which row.** The table was flown with `clip_still=0,clip_moving=0` on the build
+that had the motion match and not yet the clip's gate or the moved instances' exception. The
+shipped rule differs from it only at a pixel whose surface moves more than a quarter pixel a
+frame, which none does in the held rows or the pan's (an eighth), so those six are the shipped
+pass's; in the wind's rows it lies between the table and the clip on everywhere, which was flown
+too (1.20, 1.34 and 0.95 times the reference's), and **was not flown as shipped**. The conifer is
+the species gallery's spruce, drawn by its own needle geometry: that scene has no needle image,
+and the forest's needle images were not used.
+
+**What sixteen frames can reach.** The renderer's own `mean` of the first sixteen offsets stands
+6.0, 7.0 and 2.1 codes from the reference on the three views, so the blend is at what its samples
+allow; the mean of 64 Halton offsets stands 2.8, 3.8 and 1.1 from the 64 the camera path turned
+through, which is how far the two ways of making a reference agree (a turn is a uniform shift only
+to 1.9 % at the crop's edge).
+
+**In motion the picture is steadier than the reference and less like it.** Against the reference
+slid with the pan the accumulated crowns stand 10.9 and 8.7 codes (the conifer 5.1), and against
+each step's reference in the wind 8.1 and 8.6 (2.7; as drawn 24.2, 26.9 and 8.2): the four-tap
+read softens what moves by fractions of a pixel, and the blend's length lags it. **Near leaves in
+a wind** (30 m, a leaf fifteen pixels long, the case the plain emulation left at 11.3 codes from
+16.2): 10.8 with the clip off and 10.3 with it on everywhere, the shipped rule between them, and a
+frame-to-frame change of 0.61 to 0.78 times the reference's. So it does not trail more than the
+plain blend did, and it does not yet follow a leaf that really moves: what is left there is lag
+inside one instance, which the names cannot see (every leaf of a tree is one instance) and which
+the sharper read and a clip that knows a thin feature are for.
+
+**What each guard is worth**, on the crowns' held view at 121 m and 411 m, the clip at γ 3 and
+1.25 in all three: the names alone 12.6 and 12.7; with the motion match 10.6 and 10.4; and the
+match with no clip 6.2 and 7.3. A weight of 1/16 or 0.08 for 0.1 moves the held view by under 0.4
+and the pan's change from 1.21 to 0.88 and 1.03 times the reference's at 121 m: a longer blend is
+steadier and lags more (the wind's error 10.9 for 10.2).
+
+**What it costs** (the grove at 3840 × 2160, `--raster rt --shadows rt`, the bounce on, its camera
+path, 240 warm-up frames, one lease, others holding 16 to 35 % of the CPU; the build with the
+match): off, 4.433 ms at the median and 5.062 at p99; on, 4.888 and 5.550, and again 4.892 and
+5.528. **0.46 ms more at the median, 0.49 at p99**: 0.32 the accumulation and the encode it
+brings (`reconstructed.gpu_ms.frame_passes`), 0.09 the motion pass and the pool's second write,
+and the rest the resolve into the linear image. The first lease, the names alone: 4.436 and 4.439
+off (5.050, 5.059), 4.883 and 4.894 on (5.531, 5.545), and the inputs alone 4.546 (5.207). The
+log's bytes at load: 132,712,064 the accumulation's, 66,355,200 the linear image, 141,022,744 the
+inputs' (the second motion buffer and 7.8 MB of pool in it): 340 MB. **Not measured**: the
+forest (free commit stood at 34 to 44 GB, at the floor a load needs, and no hillside was flown), a
+surround, any other machine, a scene with a medium registered, the shipped build's own flight.
+
+**Not built, and what follows from each.** A view that resamples a wider source (Panini) is drawn
+as it was (its `mean` is still its mean). A point that crosses a seam of a surround is a
+disocclusion (the taps outside a view's rectangle do not count). The history is read with four
+taps, bilinear, so a slow pan softens the picture over the blend's length; a sharper read
+(Catmull-Rom over sixteen) is the known answer and is not in. The cross-fade's hash does not take
+the phase, so the screen door is not blended (the design's third content fault). An instance of a
+world's tail that moves has the camera's motion only, so its history is looked up in the wrong
+place and the clip is all that bounds its ghost. Water's reactivity mask and a channel's flow are
+not written, so a water pixel's history is its surface's. No lock for a one-pixel feature. The
+shaders' hot reload does not rebuild this pass's pipeline. `engine_view.frame_loop` was not flown
+with it on; the pass makes its images at load and at a resize and nothing in a frame.
+
+**Held by** `tests/accumulation_tests.cpp`: off keeps nothing; a `mean` capture is the mean of the
+cycle's offset frames within two codes and a second one is the same bytes; in `on` mode a held
+view's error against that mean after sixteen frames is under half of one frame's, a replay from a
+reset draws the same bytes, and the frame after a reset is the frame a fresh renderer draws; and
+the pixels a moved instance leaves are, the frame after, within a quarter of what the mover's own
+colour was from what they settle to (a blend that kept the history would leave nine tenths).

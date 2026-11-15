@@ -356,6 +356,11 @@ struct RenderSettings {
 // motion pass and is otherwise the native frame. The sizes are the views' rasterized extent and
 // the target's.
 enum class ReconstructionProvider : u8 { Off, Engine };
+// What the engine's own accumulation does with the frames (`renderer.reconstruction.accumulation`;
+// renderer.md, "Sampling over time: the accumulation"): nothing; the blend a session would run;
+// or the plain mean of the frames since the last reset, the converged frame a test holds to a
+// reference.
+enum class Accumulation : u8 { Off, On, Mean };
 const char* reconstruction_provider_name(ReconstructionProvider provider) noexcept;
 struct Reconstruction {
   ReconstructionProvider provider = ReconstructionProvider::Off;
@@ -461,6 +466,18 @@ struct ResolvedSettings {
   // buffer, no pipeline, no pass, and the frame is the frame it always was to the byte. Never on
   // the direct path, which has no visibility buffer to read.
   bool reconstruction_inputs = false;
+  // **The engine's own accumulation** (`renderer.reconstruction.accumulation`, read at load; R158;
+  // renderer.md, "Sampling over time: the accumulation"): off by default, and then nothing of it
+  // exists. On or mean it turns the inputs on, and the frame is a reconstructed one
+  // (`Reconstruction::provider` is `Engine`). `reconstruction_phases` is the offsets a cycle holds
+  // (`k_sample_phases` without the accumulation); the weight and the two clip widths are the
+  // blend's (`renderer.reconstruction.weight`, `.clip_still`, `.clip_moving`).
+  Accumulation accumulation = Accumulation::Off;
+  u32 reconstruction_phases = 8;
+  f32 accumulation_weight = 0.1f;
+  f32 accumulation_clip_still = 0.0f;
+  f32 accumulation_clip_moving = 0.0f;
+  f32 accumulation_motion_match = 0.0f;  // `renderer.reconstruction.motion_match`, pixels
   bool gi_shell_clip = false;   // `renderer.gi.shell_clip`: the eye's rays stop at `gi_shell_m`
   bool gi_shell_first = false;  // `renderer.gi.shell_first`: the directions are the first threads
   u32 gi_preroll = 0;           // `renderer.gi.preroll`: steps before a cold frame's own (stage 5)

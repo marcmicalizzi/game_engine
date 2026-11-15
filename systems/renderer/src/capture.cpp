@@ -152,6 +152,45 @@ bool write_capture(std::string_view dir, std::string_view base, const CapturedFr
       return false;
     }
   }
+  if (!frame.motion.empty()) {
+    // The vectors twice: the numbers, two little-endian f32 a pixel (x then y, pixels, the point
+    // was at `pixel - motion` last frame), for whoever measures; and a picture to look at, red for
+    // x and green for y round a mid grey that is "did not move", scaled so the frame's longest
+    // component is full scale, with that scale in the header beside it.
+    out.motion = join(dir, stem + ".motion.bin");
+    io::Status status = io::write_file(
+        out.motion, std::string_view(reinterpret_cast<const char*>(frame.motion.data()),
+                                     frame.motion.size() * sizeof(f32)));
+    if (status != io::Status::Ok) {
+      error = "cannot write " + out.motion + ": " + io::status_name(status);
+      return false;
+    }
+    f32 longest = 0.0f;
+    for (const f32 v : frame.motion)
+      longest = (v < 0.0f ? -v : v) > longest ? (v < 0.0f ? -v : v) : longest;
+    const f32 scale = longest > 0.0f ? 127.0f / longest : 0.0f;
+    Vector<u8> rgb(frame.motion.size() / 2 * 3);
+    for (u32 i = 0; i < frame.motion.size() / 2; ++i) {
+      rgb[i * 3 + 0] = static_cast<u8>(128.0f + frame.motion[i * 2 + 0] * scale);
+      rgb[i * 3 + 1] = static_cast<u8>(128.0f + frame.motion[i * 2 + 1] * scale);
+      rgb[i * 3 + 2] = 128;
+    }
+    out.motion_picture = join(dir, stem + ".motion.png");
+    if (!write_png_file(out.motion_picture, frame.width, frame.height, 3,
+                        std::span<const u8>(rgb.data(), rgb.size()), error)) {
+      return false;
+    }
+    char header[160];
+    std::snprintf(header, sizeof(header),
+                  "{\"width\":%u,\"height\":%u,\"layout\":\"f32 x, f32 y per pixel, pixels\","
+                  "\"picture_full_scale_px\":%.6g}\n",
+                  frame.width, frame.height, static_cast<f64>(longest));
+    status = io::write_file(join(dir, stem + ".motion.json"), std::string_view(header));
+    if (status != io::Status::Ok) {
+      error = "cannot write " + out.motion + "'s header: " + io::status_name(status);
+      return false;
+    }
+  }
   if (!frame.light.empty()) {
     // The light as half floats, the format a GPU's half-float target is, so a scRGB or linear
     // picture's own halves are written back unchanged: every half is a float, and a float made from

@@ -24,6 +24,19 @@ registration point (R158), R160 internal resolution below the output's (R159), R
 provider (R160), R162 rays given back (as here), R163 the methods in the table's last row. The
 text below keeps the numbers it was written with.
 
+**Status, 2026-11-15 (roadmap R158).** Stage 2, the engine's own accumulation at native
+resolution, is built and measured by this page's method, off by default
+([renderer](../subsystems/renderer.md#sampling-over-time-the-accumulation)): after sixteen held
+frames the crowns at 121 m and 411 m stand 6.2 and 7.3 codes from the 64-offset reference (29.2
+and 28.8 as drawn) and a conifer 2.1, and the slow pan's and the wind's frame-to-frame change is
+0.77 to 1.13 times the reference's. Where it departs from Part 2: **a history is not held to "the
+same instance at that place"**, which the sub-pixel offset breaks at every edge every frame; a tap
+whose surface moved as the pixel's did is the pixel's own, and otherwise its instance has to be
+among those the pixel's 3 × 3 holds now. **The clip is applied only where a pixel moved**: on a
+still crown it cost four codes of the ten. **The frames are averaged as the display shows them**,
+through the display's curve. Not built: the cross-fade's hash taking the phase, a read sharper
+than four taps, the frame loop's flight, the forest's pair.
+
 **What was asked.** The owner, after two walks of the forest (2026-11-14): "just for figuring out
 visual artifacts from just so many leaves creating interference patterns (it's not a visual defect
 persey but it is noticeable), and for frame rates too, maybe it's time to start thinking about TAA,

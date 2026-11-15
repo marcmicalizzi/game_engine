@@ -772,8 +772,20 @@ plain summary line have a `reconstruction` block: `provider` ("off" until one is
 `--tunable renderer.reconstruction.inputs=true` turns the inputs on (the sub-pixel offset and the
 motion pass; [renderer](renderer.md#sampling-over-time-the-inputs)): still a native measurement,
 its block says `inputs: true`, and `gpu_ms.motion` is what the pass and the pool's second write
-cost. engine-view's `--capture-channels` does not take `motion` yet; the channel is read through
-`SceneRenderer::capture` (`CaptureChannels::motion`).
+cost. **`--capture-channels motion`** (with the inputs on; refused with a sentence without them)
+writes the vectors beside the picture: `<stem>.motion.bin`, two little-endian `f32` a pixel (x then
+y, pixels; the point was at `pixel - motion` in the last frame), `<stem>.motion.png` to look at
+(red is x and green y round a mid grey that did not move, the frame's longest component at full
+scale) and `<stem>.motion.json` with the size and that scale. A capture draws its own frame, so
+the vectors are from the frame before it: `--frames 40 --capture x.png --capture-channels motion`
+is the fortieth frame's.
+**`--tunable renderer.reconstruction.accumulation=on`** turns the engine's own accumulation on
+([renderer](renderer.md#sampling-over-time-the-accumulation), roadmap R158; off by default, and
+never a default of an interactive session until the owner says so): the inputs with it, and the
+block says `provider: "engine"`, so the run's times are under `reconstructed.gpu_ms` and the
+budget tools refuse it. `=mean` is the test mode: a `--capture` draws one whole cycle of offsets
+from a reset and writes their mean. `renderer.reconstruction.phases`, `.weight`, `.clip_still` and
+`.clip_moving` are the blend's settings, read at load.
 
 The benchmark corpus of [plan 09 §9.4](../plan/09-testing-profiling.md#94-benchmark-scene-corpus) measures a frame that streams, culls and occludes across a scene rather than one asset from one camera, and engine-view is the command line for it ([renderer](renderer.md#scenes-camera-paths-and-flythroughs) has the formats and the mechanism; [desert-overlook](../../content/test-scenes/desert-overlook/README.md) is the first scene and [its measurements](../experiments/flythrough-desert-overlook.md) the first numbers):
 

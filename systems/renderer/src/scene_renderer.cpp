@@ -19,6 +19,7 @@
 #include <systems/renderer/water_reflect.h>
 #include <systems/renderer/water_refract.h>
 
+#include <accumulation_pass.h>
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -603,7 +604,8 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
       // tables, sky-view, air and sums four more; the frame passes eight (frame_pass.h), the encode
       // after them one; the cluster cache's five passes and its build six; the chain's walk past
       // its capacity one (R130, "ranges drop").
-      // And with sampling over time's inputs the motion pass one and the pool's second write three.
+      // And with sampling over time's inputs the motion pass one and the pool's second write three
+      // (the accumulation's zone is one of the frame passes' eight).
       !timer_.create(device, desc.frames_in_flight,
                      63 + 16 * (views - 1) + (resolved.reconstruction_inputs ? 4 : 0), error)) {
     destroy();
@@ -1051,7 +1053,12 @@ bool SceneRenderer::add_frame_pass(FramePassStage stage, FramePassFn fn, void* u
       return false;
     }
   }
-  frame_passes_[frame_pass_count_++] = FramePassEntry{stage, fn, user, zone};
+  // Kept in the stages' order, and in the order registered within one: a pass that composites
+  // light registered after the reconstruction still runs before it.
+  u32 at = frame_pass_count_++;
+  for (; at > 0 && frame_passes_[at - 1].stage > stage; --at)
+    frame_passes_[at] = frame_passes_[at - 1];
+  frame_passes_[at] = FramePassEntry{stage, fn, user, zone};
   return true;
 }
 
@@ -1080,11 +1087,37 @@ bool SceneRenderer::create_motion(std::string* error) {
   ENGINE_LOG_INFO(log_renderer, "sampling over time's inputs",
                   log::field("device_bytes", motion_->device_bytes()),
                   log::field("pool_bytes", scene_->deform_pool.size));
+  // **The engine's own accumulation** (accumulation_pass.h; renderer.md, "Sampling over time: the
+  // accumulation"), only under `renderer.reconstruction.accumulation`: a frame pass of the
+  // renderer's own, after every pass that composites light.
+  if (resolved_.accumulation == Accumulation::Off) return true;
+  motion_->set_phases(resolved_.reconstruction_phases);
+  AccumulationPass::Options options;
+  options.mean = resolved_.accumulation == Accumulation::Mean;
+  options.weight = resolved_.accumulation_weight;
+  options.clip_still = resolved_.accumulation_clip_still;
+  options.clip_moving = resolved_.accumulation_clip_moving;
+  options.motion_match = resolved_.accumulation_motion_match;
+  accumulation_ = new AccumulationPass;
+  if (!motion_->keep_motion(*device_, views_, error) ||
+      !accumulation_->create(*device_, *scene_, *motion_, shaders_, width_, height_,
+                             desc_.frames_in_flight, options, error) ||
+      !add_frame_pass(FramePassStage::Reconstruction, &AccumulationPass::record_thunk,
+                      accumulation_, "accumulate", error)) {
+    return false;
+  }
+  ENGINE_LOG_INFO(log_renderer, "sampling over time's accumulation",
+                  log::field("mean", options.mean),
+                  log::field("phases", resolved_.reconstruction_phases),
+                  log::field("device_bytes", accumulation_->device_bytes()),
+                  log::field("linear_bytes", u64{width_} * height_ * 8),
+                  log::field("inputs_bytes", motion_->device_bytes()));
   return true;
 }
 
 Reconstruction SceneRenderer::reconstruction() const noexcept {
   Reconstruction state;
+  if (accumulation_ != nullptr) state.provider = ReconstructionProvider::Engine;
   state.inputs = motion_ != nullptr;
   // What the views are rasterized at and what the target holds: one size until a ratio (R160).
   state.internal_width = state.output_width = width_;
@@ -1098,6 +1131,10 @@ void SceneRenderer::reset_history() noexcept {
 
 u64 SceneRenderer::motion_bytes() const noexcept {
   return motion_ != nullptr ? motion_->device_bytes() : 0;
+}
+
+u64 SceneRenderer::accumulation_bytes() const noexcept {
+  return accumulation_ != nullptr ? accumulation_->device_bytes() : 0;
 }
 
 // The motion buffer of the frame last drawn, in the target's pixels as `read_visibility` reads the
@@ -1521,6 +1558,11 @@ void SceneRenderer::destroy() noexcept {
   // The chain's retired buffers: the worker's finished, the rest freed now (the device is idle).
   delete rt_freer_;
   rt_freer_ = nullptr;
+  if (accumulation_ != nullptr) {
+    accumulation_->destroy();
+    delete accumulation_;
+    accumulation_ = nullptr;
+  }
   if (motion_ != nullptr) {
     motion_->destroy(device);
     delete motion_;
@@ -1615,6 +1657,7 @@ bool SceneRenderer::resize(u32 width, u32 height, std::string* error) {
   fill_view_layout();
   if (!targets_.create(*device_, views_, error) || !create_color_target(error)) return false;
   if (motion_ != nullptr && !motion_->resize(*device_, views_, error)) return false;
+  if (accumulation_ != nullptr && !accumulation_->resize(width_, height_, error)) return false;
   // The frame passes' linear image and the overlay's UI layer are the target's size (frame_pass.h).
   if (ui_layer_.image.valid() && !create_ui_layer(error)) return false;
   return !linear_wanted() || create_linear_target(error);
@@ -4074,10 +4117,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // chain as it was before the cache, and the cache's tables and slots wait for an instance that
   // needs them.
   // A field instance past its rest distance is one too (R152), which only the frame's eye says.
-  const bool rt_cache =
-      rt_chain && scene.rt_cache() &&
-      (scene.rt_cache_instances() > 0 ||
-       (field_block != 0 && scene.flora_stats().field_instances > 0));
+  const bool rt_cache = rt_chain && scene.rt_cache() &&
+                        (scene.rt_cache_instances() > 0 ||
+                         (field_block != 0 && scene.flora_stats().field_instances > 0));
   rt_cache_recording_ = rt_cache;
   // **The drop order's scan, on the frames that may need it** (R106; clas_records.slang, "past
   // the capacity"): its three passes are recorded while a frame read back in the last
@@ -4239,8 +4281,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // encode samples it last, which this frame's clear has to wait for.
   gfx::RgImage rg_linear{};
   if (frame_passes_on) {
+    // (Under the accumulation its last reader was that pass's compute read, not the encode.)
     rg_linear = graph.import_image("frame pass color", linear_, gfx::ImageLayout::Undefined,
-                                   gfx::PipelineStage::FragmentShader,
+                                   accumulation_ != nullptr ? gfx::PipelineStage::FragmentShader |
+                                                                  gfx::PipelineStage::ComputeShader
+                                                            : gfx::PipelineStage::FragmentShader,
                                    gfx::MemoryAccess::ShaderSampledRead);
   }
   const gfx::RgBuffer rg_vis = graph.import_buffer("visibility", targets.vis);
@@ -6065,6 +6110,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     context.width = width_;
     context.height = height_;
     context.visibility = rg_vis;
+    context.motion = rg_motion;
     for (u32 v = 0; v < views; ++v) {
       const View& view = views_[v];
       FramePassView& out = pass_views[v];
@@ -6104,17 +6150,24 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     context.report = &pass_report;
     context.fires = frame_fires_.data();
     context.fire_count = static_cast<u32>(frame_fires_.size());
-    for (u32 p = 0; p < frame_pass_count_; ++p) {
-      const FramePassEntry& entry = frame_passes_[p];
-      if (entry.stage != FramePassStage::AfterResolve) continue;
-      if (!entry.fn(context, entry.user, error)) return false;
-    }
     const DisplayLevels levels = display_levels(settings);
+    const bool sdr = desc_.display == gfx::DisplayEncoding::Sdr;
+    const bool hdr = !sdr && desc_.display != gfx::DisplayEncoding::Linear;
+    context.display_ceiling = sdr   ? 1.0f
+                              : hdr ? std::max(levels.peak_nits / levels.paper_white_nits, 1.0f)
+                                    : 65504.0f;
+    context.display_knee = hdr || sdr ? frame_knee : context.display_ceiling;
+    // In the stages' order (`add_frame_pass` keeps them so): the reconstruction after the rest.
+    for (u32 p = 0; p < frame_pass_count_; ++p) {
+      if (!frame_passes_[p].fn(context, frame_passes_[p].user, error)) return false;
+    }
+    // A reconstruction's picture is an image of its own (`FramePassReport::color`).
+    if (pass_report.color.valid()) rg_linear = pass_report.color;
     for (u32 v = 0; v < views; ++v) {
       FrameEncodePush& push = encode_push[v];
       push.view_x = views_[v].rect.x;
       push.view_y = views_[v].rect.y;
-      push.texture = linear_sampled_slot_;
+      push.texture = pass_report.color.valid() ? pass_report.color_sampled : linear_sampled_slot_;
       push.encoding = static_cast<u32>(desc_.display);
       push.steps = settings.dither ? gfx::display_steps(desc_.color_format) : 0u;
       push.knee = frame_knee;
@@ -6388,6 +6441,19 @@ bool SceneRenderer::capture(const FrameDesc& frame, const CaptureChannels& chann
   first.final_layout = gfx::ImageLayout::TransferSrc;
   first.wait = {};
   first.signal = {};
+  // **The accumulation's `mean` mode: a capture is one whole cycle** (renderer.md, "Sampling over
+  // time: the accumulation"): the frame drawn at every offset of the cycle from a reset, so the
+  // picture is the mean of those frames, a function of the scene and the camera. Every other
+  // renderer's capture is the one frame it always was.
+  if (accumulation_ != nullptr && accumulation_->mean()) {
+    FrameDesc cycle = first;
+    cycle.history_reset = true;
+    for (u32 k = 1; k < motion_->phases(); ++k) {
+      if (!render_offscreen(cycle, error)) return false;
+      cycle.history_reset = false;
+    }
+    first.history_reset = motion_->phases() == 1;
+  }
   if (!render_offscreen(first, error)) return false;
   // `renderer.resolve.class_census` (R151, a measurement switch): what the frame's classify pass
   // gave each class, read back and logged.

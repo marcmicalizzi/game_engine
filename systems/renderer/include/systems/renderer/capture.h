@@ -90,6 +90,8 @@ struct CaptureFiles {
   std::string ids_header;  // the JSON that describes it
   std::string depth;
   std::string normals;
+  std::string motion;          // the vectors: two little-endian f32 a pixel, `<base>.motion.bin`
+  std::string motion_picture;  // the same to look at, `<base>.motion.png` (+ `<base>.motion.json`)
 };
 
 // Decodes a capture of the picture into `frame.light` and `frame.codes` (and sets `encoding`,

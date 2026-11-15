@@ -482,6 +482,7 @@ constexpr const char* k_usage =
     "  --capture-channels <list>  offscreen --capture and --marker-captures: also read back ids,\n"
     "                   depth and/or normals (e.g. ids,normals), written beside each PNG as\n"
     "                   <stem>.ids.bin + .ids.json, <stem>.depth.png and <stem>.normals.png;\n"
+    "                   motion (with renderer.reconstruction.inputs) as <stem>.motion.bin + .png;\n"
     "                   color and light (also in a window) are the picture as <stem>.png and as\n"
     "                   <stem>.exr + <stem>.codes.json, so --capture x.png --capture-channels light\n"
     "                   writes both of one frame\n"
@@ -2861,6 +2862,8 @@ bool parse_capture_channels(std::string_view text, renderer::CaptureChannels& ou
       out.normals = true;
     } else if (name == "light") {
       out.light = true;
+    } else if (name == "motion") {  // needs renderer.reconstruction.inputs; the capture says so
+      out.motion = true;
     } else if (name == "color") {
       out.color = true;
     } else {
@@ -2895,7 +2898,8 @@ bool write_shot(const std::string& path, renderer::CapturedFrame& shot, std::str
     error = "cannot write " + path + ": " + io::status_name(status);
     return false;
   }
-  if (shot.light.empty() && shot.ids.empty() && shot.depth.empty() && shot.normals.empty()) {
+  if (shot.light.empty() && shot.ids.empty() && shot.depth.empty() && shot.normals.empty() &&
+      shot.motion.empty()) {
     return true;
   }
   // The picture is written; the rest go through the renderer's writer without it.
@@ -4841,8 +4845,8 @@ int run_view(int argc, char** argv) {
       if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
       if (!parse_capture_channels(value, options.capture_channels)) {
         std::fprintf(stderr,
-                     "engine-view: --capture-channels expects a list of color, light, ids, depth "
-                     "and normals, e.g. ids,normals\n");
+                     "engine-view: --capture-channels expects a list of color, light, ids, depth, "
+                     "normals and motion, e.g. ids,normals\n");
         return k_exit_usage;
       }
       options.capture_channels_set = true;
