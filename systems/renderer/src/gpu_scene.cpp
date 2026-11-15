@@ -1691,8 +1691,9 @@ bool GpuScene::set_dynamic_instances(std::span<const SceneInstance> tail,
     const TileBlock* held = layout_.find(block.key);
     // **A block the caller says changed in these instances** (G202, `DynamicBlock::changed`) is
     // not compared, and its slots before the first of them are kept as they are.
-    const bool told = held != nullptr && held->instances == block.count && block.from_version != 0 &&
-                      held->version == block.from_version && block.changed_count != 0;
+    const bool told = held != nullptr && held->instances == block.count &&
+                      block.from_version != 0 && held->version == block.from_version &&
+                      block.changed_count != 0;
     if (told) request.keep = block.changed[0];
     if (held != nullptr && held->instances == block.count && !told) {
       bool same = block.version != 0 && held->version == block.version;
@@ -3330,6 +3331,16 @@ u32 GpuScene::block_stamp(const DynamicBlock& block) {
   if (!first_fill_) {
     stamp = static_cast<u32>(flora_frames_ + 1) & gfx::k_instance_stamp_mask;
     if (stamp == 0) stamp = 1;
+  }
+  // **A part of another block is as old as that block** (G205; `DynamicBlock::age_of`): a streamed
+  // tile's near placements are handed apart from the tile, cell by cell as the hand-off's band
+  // reaches them, and are the instances the tile held all along — so a cell that comes takes the
+  // stamp its tile's block holds, and its instances' load-in is the tile's: over already for a
+  // tile that has stood a while, running for one that came with it (its block is stamped first,
+  // being handed first). A block that names none, or one the scene does not hold, is new.
+  if (block.age_of != 0) {
+    const auto whole = block_stamps_.find(block.age_of);
+    if (whole != block_stamps_.end()) stamp = (*whole).second.stamp;
   }
   block_stamps_[block.key] = BlockStamp{block.version, stamp};
   return stamp;

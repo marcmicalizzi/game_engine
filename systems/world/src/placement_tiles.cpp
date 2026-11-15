@@ -1,6 +1,7 @@
 #include <core/log/log.h>
 #include <core/time/time.h>
 #include <foundation/tunables/tunables.h>
+#include <systems/renderer/flora_motion.h>
 #include <systems/world/placement_tiles.h>
 
 #include <algorithm>
@@ -35,6 +36,23 @@ tunables::Int placements_admit_hold_off{
     "Commits a tile the pair budget let go waits before it may be admitted past the drawn tiles "
     "again"};
 
+// **A hand-off placement is held by its band** (G205; world.md). The cell a tile's near-role
+// placements are kept and handed on by, how far past the band's end a cell comes in, how much
+// farther it goes, and how many updates of the eyes' motion it comes in ahead of them.
+tunables::Float placements_handoff_cell{
+    "world.placements.handoff_cell_m", 4.0, 0.0, 4096.0,
+    "Metres: the cell a tile's near hand-off placements are handed on by, only while the band can "
+    "reach it (0: with their tile, whole)"};
+tunables::Float placements_handoff_margin{
+    "world.placements.handoff_margin_m", 1.0, 0.0, 1024.0,
+    "Metres past the hand-off band's end at which a cell of near placements is handed on"};
+tunables::Float placements_handoff_hold{
+    "world.placements.handoff_hold_m", 2.0, 0.0, 1024.0,
+    "Metres past where it came in that a handed cell of near placements stays before it goes"};
+tunables::Int placements_handoff_lead{
+    "world.placements.handoff_lead_updates", 2, 0, 1024,
+    "Updates of the eyes' motion a cell of near placements is handed on ahead of the band"};
+
 // A tile that holds no placement at all, drawn or drawn as nothing in its ring (G202): what a build
 // lets go. One whose ring draws every placement as nothing is kept, so a move inward rewrites it.
 template <class Block>
@@ -48,6 +66,13 @@ void admission_tunables(PlacementTilesConfig& config) noexcept {
   config.admit_bias = static_cast<f32>(placements_admit_bias.get());
   config.admit_spare_pairs = static_cast<u32>(placements_admit_spare.get());
   config.admit_hold_off = static_cast<u32>(placements_admit_hold_off.get());
+  // The band's end is the renderer's, the one it gives every instance with a role
+  // (`gfx::pack_handoff_band`: centimetres, the end in the high half).
+  config.handoff_to_m = static_cast<f32>(renderer::sward_handoff_band_tunable() >> 16) * 0.01f;
+  config.handoff_cell_m = static_cast<f32>(placements_handoff_cell.get());
+  config.handoff_margin_m = static_cast<f32>(placements_handoff_margin.get());
+  config.handoff_hold_m = static_cast<f32>(placements_handoff_hold.get());
+  config.handoff_lead_updates = static_cast<u32>(placements_handoff_lead.get());
 }
 
 // **The job** (T131; world.md, "Builds off the frame's thread"): up to a budget of due tiles, each
@@ -356,11 +381,18 @@ void PlacementTiles::stage(TileBlock& block) {
   block.held_tags.swap(block.tags);
   block.held_tickets.swap(block.tickets);
   block.held_buildings = block.buildings;
+  // Its near placements' cells go with what it draws (G205); the build's are made when it is drawn.
+  std::swap(block.held_handoff, block.handoff);
+  block.handoff.clear();
 }
 
+// The pairs of the tile's own run: its last build's instances but the near placements its cells
+// hold (G205), which are counted cell by cell and only while a cell is handed on.
 u32 PlacementTiles::count_pairs(const TileBlock& block) const noexcept {
   u64 pairs = 0;
-  for (const renderer::SceneInstance& instance : block.instances) {
+  const u32 own = static_cast<u32>(block.instances.size()) - block.handoff.count;
+  for (u32 i = 0; i < own; ++i) {
+    const renderer::SceneInstance& instance = block.instances[i];
     if (instance.mesh < scene_->parts.size()) {
       pairs += scene_->parts[instance.mesh].cluster_count;
     } else {
@@ -380,6 +412,9 @@ void PlacementTiles::finalize(TileBlock& block) {
   block.held_buildings = 0;
   block.waiting = false;
   block.starved = false;
+  // Its near placements set apart by cell (G205), so the tile's own run and its pairs are the rest.
+  block.held_handoff.clear();
+  split_near(block);
   block.pairs = count_pairs(block);
   block.version = ++next_version_;
   // A build is a new block, not the one a form change was counted against (G202).
@@ -393,12 +428,13 @@ u64 PlacementTiles::room_bytes() const noexcept {
     // With what the tile's placements were picked from (G202): a source mesh a drawn instance,
     // and the whole of each its ring draws as nothing.
     const Forms& f = block.forms;
-    return u64{block.instances.capacity() + block.held_instances.capacity() +
-               f.unseen.capacity()} *
+    return u64{block.instances.capacity() + block.held_instances.capacity() + f.unseen.capacity()} *
                sizeof(renderer::SceneInstance) +
            u64{block.tags.capacity() + block.held_tags.capacity() + f.unseen_tags.capacity()} *
                sizeof(u8) +
-           u64{f.sources.capacity() + f.unseen_at.capacity()} * sizeof(u32);
+           u64{f.sources.capacity() + f.unseen_at.capacity()} * sizeof(u32) +
+           u64{block.handoff.cells.capacity() + block.held_handoff.cells.capacity()} *
+               sizeof(NearCell);
   };
   u64 bytes = 0;
   for (u32 i = 0; i < spare_tiles_.size(); ++i)
@@ -424,12 +460,24 @@ void PlacementTiles::tile_ranges(Vector<TileRange>& out) const {
     // What it draws: its last build, or what it held while that build waits for its meshes.
     const std::span<const renderer::SceneInstance> drawn = block.drawn();
     if (drawn.empty()) continue;  // a new tile whose first build still waits draws nothing
-    const u32 count = static_cast<u32>(drawn.size());
+    // Its own run and its hand-off cells that are handed on (G205): one range over both. With a
+    // cell handed they are not one array, so the range names no instances and no version.
+    const Handoff& set = block.waiting ? block.held_handoff : block.handoff;
+    const u32 own = static_cast<u32>(drawn.size()) - set.count;
+    const u32 count = own + set.in_instances;
+    if (count == 0) continue;
+    if (set.in_instances != 0) {
+      out.push_back(TileRange{tiles_.key_at(i), first, count, block.ring, nullptr, 0});
+      first += count;
+      continue;
+    }
     TileRange range{tiles_.key_at(i), first, count, block.ring, drawn.data(), block.version};
     if (block.reformed_from != 0) {  // its forms changed in place since the last hand-over (G202)
       range.from_version = block.reformed_from;
       range.changed = block.changed.data();
-      range.changed_count = static_cast<u32>(block.changed.size());
+      range.changed_count =
+          static_cast<u32>(std::lower_bound(block.changed.begin(), block.changed.end(), own) -
+                           block.changed.begin());
     }
     out.push_back(range);
     first += count;
@@ -444,10 +492,22 @@ void PlacementTiles::write_tail() const {
   for (u32 i = 0; i < tiles_.size(); ++i) {
     const TileBlock& block = tiles_.value_at(i);
     if (block.withheld) continue;
-    for (const renderer::SceneInstance& instance : block.drawn())
-      tail_.push_back(instance);
-    for (const u8 tag : block.waiting ? block.held_tags : block.tags)
-      tail_tags_.push_back(tag);
+    // The tile's own run, then its hand-off cells that are handed on (G205), as the runs go.
+    const std::span<const renderer::SceneInstance> drawn = block.drawn();
+    const Vector<u8>& tags = block.waiting ? block.held_tags : block.tags;
+    const Handoff& set = block.waiting ? block.held_handoff : block.handoff;
+    const u32 own = static_cast<u32>(drawn.size()) - set.count;
+    for (u32 k = 0; k < own; ++k) {
+      tail_.push_back(drawn[k]);
+      tail_tags_.push_back(tags[k]);
+    }
+    for (const NearCell& cell : set.cells) {
+      if (!cell.in) continue;
+      for (u32 k = own + cell.first; k < own + cell.first + cell.count; ++k) {
+        tail_.push_back(drawn[k]);
+        tail_tags_.push_back(tags[k]);
+      }
+    }
   }
   tail_stale_ = false;
 }
@@ -560,7 +620,10 @@ bool PlacementTiles::generate(TileCoord tile, u8 ring, u32 entries, bool for_que
       // a placement drawn as nothing still hands its footprint to the entries after it. Asked for a
       // resident mesh alone: a tile's own carries `k_handed | k` until `install`, and the load's
       // table has no row for it. A pure read of the table, so it answers alike on the job.
-      const u32 form = p.mesh < meshes.size()
+      // **A placement with a hand-off role keeps its mesh** (G205): the two forms hand over by
+      // distance inside one ring, thinned by part in the pool pass, which a ring's form does not
+      // run; a far ring's generator places the far form alone, with no role.
+      const u32 form = p.mesh < meshes.size() && p.handoff == 0
                            ? renderer::pick_ring_form(scene_->ring_forms, scene_mesh, ring, p.scale)
                            : scene_mesh;
       renderer::SceneInstance instance;
@@ -841,6 +904,9 @@ bool PlacementTiles::take(const TileEvent& event) {
   TileBlock* held = tiles_.find_value(key);
   // A tile no entry occupies is never built: its build would come out empty and be let go.
   if (held == nullptr && !occupied(event.tile)) return true;
+  // Nor a tile of the world's first column while the hand-off cells are on: its key is one a
+  // cell's run may be handed under (G205; world.md, "A hand-off placement is held by its band").
+  if (held == nullptr && cells_on() && cell_key_reserved(key)) return true;
   if (build_budget_ != 0) {
     // **Built at a commit, within its budget** (W82, `build_due`): a held tile keeps drawing what
     // it holds until then, and a new one is held empty and drawn as nothing.
@@ -919,6 +985,8 @@ void PlacementTiles::recycle(u64 key, TileBlock&& block) {
   block.instances.clear();
   block.tags.clear();
   block.forms.clear();
+  block.handoff.clear();
+  block.held_handoff.clear();
   block.handed = block.reformed_from = 0;
   block.changed.clear();
   block.reform_handed = false;
@@ -968,9 +1036,13 @@ void PlacementTiles::reform(TileBlock& block, u8 ring) {
   const u32 drawn = static_cast<u32>(block.instances.size());
   u32 moved_at = ~0u;  // the first index of the new list a placement came into or left from
   auto place = [&](const renderer::SceneInstance& from, u32 source, u8 tag, bool was_drawn) {
-    const u32 form = renderer::pick_ring_form(scene_->ring_forms, source, ring, from.transform.scale);
+    // A placement with a hand-off role keeps its mesh, as `generate` keeps it (G205).
+    const u32 form = from.handoff != 0 ? source
+                                       : renderer::pick_ring_form(scene_->ring_forms, source, ring,
+                                                                  from.transform.scale);
     const bool shown = form != renderer::k_no_ring_form;
-    if (shown != was_drawn && moved_at == ~0u) moved_at = static_cast<u32>(reform_instances_.size());
+    if (shown != was_drawn && moved_at == ~0u)
+      moved_at = static_cast<u32>(reform_instances_.size());
     if (!shown) {
       next.unseen_at.push_back(static_cast<u32>(reform_instances_.size()));
       next.unseen.push_back(from);
@@ -1161,14 +1233,16 @@ void PlacementTiles::admit() {
   for (u32 r = 0; r < ranks_.size(); ++r) {
     const Rank& rank = ranks_[r];
     TileBlock& block = tiles_.value_at(rank.index);
-    const u32 reserved = renderer::reserved_tile_pairs(block.pairs);
+    // Its own run and the run of each hand-off cell handed on (G205): each a block of the layout.
+    const Handoff& set = block.waiting ? block.held_handoff : block.handoff;
+    const u32 reserved = renderer::reserved_tile_pairs(block.pairs) + set.in_reserved;
     const bool grows = !block.admitted && (!any_drawn || r > last_drawn);
     const bool held_off =
         grows && block.released && commits_ - block.released_at < u64{config_.admit_hold_off};
     const u64 room = grows ? spare : 0u;
     if (!full && !held_off && pairs + reserved + room <= config_.max_pairs) {
       pairs += reserved;
-      live_pairs += block.pairs;
+      live_pairs += u64{block.pairs} + set.in_pairs;
       if (!block.admitted && block.released) ++stats_.returned;  // out and back in: a trade
       block.withheld = false;
       block.admitted = true;
@@ -1512,7 +1586,10 @@ u32 PlacementTiles::end_update() {
   const TileMeshStats& meshes = meshes_.stats();
   const bool meshes_due = stats_.mesh_waiting != 0 || meshes.building != 0 || meshes.waiting != 0 ||
                           meshes.lingering != 0;
-  if (committed_ || (stats_.pending == 0 && !meshes_due)) return 0;
+  // Or a hand-off cell the band reached or left (G205): the eyes moved, and no tile's event says
+  // so.
+  const bool cells = !committed_ && refresh_cells();
+  if (committed_ || (stats_.pending == 0 && !meshes_due && !cells)) return 0;
   const u64 before = stats_.tiles_built;
   commit(this);
   return static_cast<u32>(stats_.tiles_built - before);
@@ -1522,6 +1599,8 @@ void PlacementTiles::commit_tail() {
   PlacementTiles* self = this;
   // Every active tile's instances, in tile order: the map is sorted by key, so a scene streamed to
   // a set of tiles has one tail — one numbering of its pairs — whatever order the tiles came in.
+  // The hand-off cells the band reaches now (G205), before the budget is decided over them.
+  self->refresh_cells();
   const i64 admit_start = time::monotonic_ns();
   self->admit();
   const i64 tail_start = time::monotonic_ns();
@@ -1544,10 +1623,12 @@ void PlacementTiles::commit_tail() {
       continue;
     }
     // What it draws: its last build, or what it held while that build waits for its meshes.
-    const u32 drawn = static_cast<u32>(block.drawn().size());
+    // (Of its near placements, the cells handed on: G205.)
+    const Handoff& set = block.waiting ? block.held_handoff : block.handoff;
+    const u32 drawn = static_cast<u32>(block.drawn().size()) - set.count + set.in_instances;
     ++stats.ring_tiles[ring];
     stats.ring_instances[ring] += drawn;
-    stats.ring_pairs[ring] += block.pairs;
+    stats.ring_pairs[ring] += block.pairs + set.in_pairs;
     buildings += block.drawn_buildings();
     instances += drawn;
   }
@@ -1566,11 +1647,13 @@ void PlacementTiles::commit_tail() {
       block.changed.clear();
       block.reform_handed = false;
     }
-    self->tile_ranges(self->runs_);
+    self->make_runs(self->runs_);
     self->tail_stale_ = true;
     for (u32 i = 0; i < self->tiles_.size(); ++i) {
       TileBlock& block = self->tiles_.value_at(i);
-      const bool shown = !block.withheld && !block.drawn().empty();
+      // Its own run was handed: it draws something besides the near placements its cells hold.
+      const Handoff& set = block.waiting ? block.held_handoff : block.handoff;
+      const bool shown = !block.withheld && block.drawn().size() > set.count;
       block.handed = shown ? block.version : 0;
       block.reform_handed = shown && block.reformed_from != 0;
       if (!shown) {

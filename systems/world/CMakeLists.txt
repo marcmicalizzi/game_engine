@@ -37,7 +37,7 @@ set(_world_sources src/tile_ring.cpp src/world.cpp src/world_log.cpp src/tile_st
                    src/state_hash.cpp src/save_game.cpp src/input_observer.cpp
                    src/store_tiles.cpp src/document_tiles.cpp src/placement_tiles.cpp
                    src/ground_tiles.cpp src/scene_consumers.cpp src/drawn_tiles.cpp
-                   src/tile_meshes.cpp)
+                   src/tile_meshes.cpp src/handoff_cells.cpp)
 
 engine_module(NAME world LAYER systems OPTIONAL WHOLE_ARCHIVE
   DEPS ${_world_deps}
@@ -57,7 +57,10 @@ set(_world_tests tests/world_tests.cpp tests/tile_store_tests.cpp tests/consumer
                  tests/seat_tiles_tests.cpp
                  # G197: a placement's form by ring, the load's rule and the consumer's read of
                  # it, over a generator of the test's own.
-                 tests/ring_forms_tests.cpp)
+                 tests/ring_forms_tests.cpp
+                 # G205: a tile's near hand-off placements handed by the cells their band
+                 # reaches, over a generator of the test's own.
+                 tests/handoff_cells_tests.cpp)
 if(TARGET engine::ruins)
   # The placements consumer over a streamed ruins entry: the ruins reach it through the registry,
   # so the test links the capability as a host does.

@@ -146,10 +146,10 @@ bool ViewWorld::hand_over(void* context, std::span<const world::PlacementTiles::
   self->blocks_.clear();
   u32 total = 0;
   for (const world::PlacementTiles::TileRange& range : runs) {
-    self->blocks_.push_back(renderer::DynamicBlock{range.key, range.first, range.count, range.ring,
-                                                   range.instances, range.version,
-                                                   range.from_version, range.changed,
-                                                   range.changed_count});
+    // A hand-off cell's run names its tile (G205): the renderer ages it by the tile's block.
+    self->blocks_.push_back(renderer::DynamicBlock{
+        range.key, range.first, range.count, range.ring, range.instances, range.version,
+        range.from_version, range.changed, range.changed_count, range.part_of});
     total = range.first + range.count;
   }
   // The appended block (game_props.h): after the tiles, under its own key, from the props' own
@@ -443,6 +443,12 @@ world::TileWorldSummary ViewWorld::summary() const {
   summary.released = s.released;
   summary.returned = s.returned;
   summary.mesh_yielded = s.mesh_yielded;
+  summary.handoff_cells = s.handoff_cells;
+  summary.handoff_cells_in = s.handoff_cells_in;
+  summary.handoff_instances = s.handoff_instances;
+  summary.handoff_pairs_out = s.handoff_pairs_out;
+  summary.handoff_flips = s.handoff_flips;
+  summary.handoff_ms = static_cast<f64>(s.handoff_ns) / 1.0e6;
   const renderer::GpuScene& scene = renderer_->scene();
   summary.prefix_pairs = scene.static_pair_count();
   summary.slot_pairs = scene.ring_slot_pairs();
