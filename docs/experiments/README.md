@@ -206,3 +206,5 @@ Tree expansion: [species profiles](tree-species-expansion.md) and [season design
 
 [T130: the static-asset world](static-asset-world.md): a world of imported glTF and hand placement flown at every gate, and the audit of what such a world gets from each feature built for generated ones, what that costs it, and what would make it work.
 [R153: sampling over time](temporal-sampling.md) measures what one sample a pixel costs dense foliage against the same view supersampled (leaf-cards and the forest's staging), names the content faults no accumulation fixes, and designs the inputs, the engine's own accumulation, a reconstruction provider's registration point and the vendors' methods against ADR-0014, with a proposed decision that every measurement stays native.
+
+[G69: the plan of a village](village-plan-grounding.md) grounds the village filler's row plan: plan forms, the perch plots are laid out in, frontages and depths, the street's width, how many houses make a hamlet and a village, each with how far its source was read and which numbers are inferences or choices.

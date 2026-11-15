@@ -214,6 +214,10 @@ const char* k_usage =
     "                                          the footbridges where the scene's routes ford its\n"
     "                                          streams: a bridges entry, approaches (edits) and\n"
     "                                          footprints; present with the bridges capability\n"
+    "  village <scene.json> <out.json> [--ddc <dir>] [--material <layer>] [--house <i>]\n"
+    "          [--flight <camera-path.json>]   the scene's village as its plan and its treads'\n"
+    "                                          mask regions, and a camera path into house <i>;\n"
+    "                                          present with the village capability\n"
     "  cave-plan <network.json> <out dir> [--ground <valley>,<slope_x>[,<flank_m>]] [--cells]\n"
     "                                          a cave network's plan against a hillside: a plan\n"
     "                                          view, a long section, the holes its mouths ask\n"
@@ -1443,6 +1447,7 @@ int main(int argc, char** argv) {
   if (command == "matgen") return content::matgen_command(argc, argv);
   if (command == "routes") return content::routes_command(argc, argv);
   if (command == "bridges") return content::bridges_command(argc, argv);
+  if (command == "village") return content::village_command(argc, argv);
   if (command == "cave-plan") return content::caves_command(argc, argv);
   if (command == "vine") return content::vine_command(argc, argv);
   if (command == "cover") return content::cover_command(argc, argv);

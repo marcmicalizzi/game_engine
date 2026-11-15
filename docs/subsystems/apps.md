@@ -450,6 +450,16 @@ plan keys to paste ([routes](routes.md#in-a-scene); roadmap W96).
 placement entry of the crossings to paste, and its approaches and footprints to read: the entry
 hands them on ([bridges](bridges.md#in-a-scene)). Present with the bridges and routes capabilities.
 
+## engine-content village: a village's plan, its treads and a way into a house
+
+`engine-content village <scene.json> <out.json> [--ddc <dir>] [--material <layer>] [--house <i>]
+[--flight <camera-path.json>]` plans each `village` entry over the scene's ground before any edit,
+as the generator does, and writes the plan (every plot, its state, its house and its door), each
+lane's tread as a terrain mask region naming `--material` (`trail` by default) to paste into
+`terrain.masks.regions`, and with `--flight` a camera path from the lane in at house `<i>`'s door,
+through its rooms, up its stair and to a window ([village](village.md#in-a-scene)). Present with the
+village capability.
+
 ## engine-content cave-plan: a cave network as a survey
 
 `engine-content cave-plan <network.json> <out dir> [--ground <valley>,<slope_x>[,<flank_m>]]

@@ -85,6 +85,7 @@ One page per module, created in the same change that creates the module. Templat
 | matgen | domain | [matgen.md](matgen.md) |
 | routes | domain | [routes.md](routes.md) |
 | bridges | domain | [bridges.md](bridges.md) |
+| village | domain | [village.md](village.md) |
 | renderer | systems | [renderer.md](renderer.md) |
 | animation | systems | [animation.md](animation.md) |
 | audio_system (capability) | systems | [audio_system.md](audio_system.md) |

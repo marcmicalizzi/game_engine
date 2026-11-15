@@ -90,6 +90,10 @@ int routes_command(int argc, char** argv);
 // approaches as ground edits and the footprints (bridges_commands.cpp, docs/subsystems/bridges.md);
 // present when this build has the bridges and routes capabilities.
 int bridges_command(int argc, char** argv);
+// A scene's village as its plan, its treads' mask regions and a camera path into one of its houses
+// (village_commands.cpp, docs/subsystems/village.md); present when this build has the village
+// capability.
+int village_command(int argc, char** argv);
 // A cave network's plan against a hillside, as a plan view, a long section and the holes its
 // mouths ask of the terrain (caves_commands.cpp, docs/subsystems/caves.md); present when this
 // build has the caves capability.

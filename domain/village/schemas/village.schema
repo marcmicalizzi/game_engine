@@ -1,0 +1,71 @@
+// The village capability's types (ADR-0007, ADR-0027; docs/subsystems/village.md, roadmap G69): the
+// scene entry of the placement generator "village", a row-plan village laid out along lanes on the
+// scene's ground. ENGINE_WITH_VILLAGE=OFF takes them out of the build with everything else the
+// capability owns.
+namespace engine.village
+
+/// Which sides of a lane carry a row of plots. "Left" is the side of (-dz, dx) for a lane running
+/// (dx, dz), as a ground edit's is (`engine.scene.TerrainEdit`). An enumerator is never renumbered.
+enum Rows : u8 {
+  /// A two-row street: the rows face each other across the lane.
+  Both
+  Left
+  Right
+}
+
+/// One lane: the line its tread follows, and which sides carry plots (village.md, "The plan").
+struct Lane @version(1) {
+  name: string
+  /// Two or more waypoints, world metres; x and z are where the lane runs, y is not read (the
+  /// ground's). Whole millimetres.
+  waypoints: worldpos[]
+  rows: Rows = Both
+}
+
+/// **The scene generator `village`'s entry** (village.md; docs/experiments/village-plan-grounding.md
+/// for every default): a regular row-plan village. Plots of whole perches are laid along each lane
+/// from its first point, a house stands on each plot the ground allows, on a pad benched into the
+/// ground, facing the lane; the lanes' treads, the pads and the paths to the doors are ground edits
+/// the entry plans (`PlacementGeneratorDesc::plan_ground`) and shapes the entries after it keep off.
+struct VillageLayer @version(1) {
+  name: string
+  /// What every plot's choices are drawn from, with the plot's place in its row.
+  seed: u64 = 0
+  lanes: Lane[]
+  /// The most houses the village stands, 1 to 256, taken in order along the lanes, the two rows
+  /// alternating. Under 6 the plan calls itself a hamlet, from 6 a village.
+  houses: u32 = 8
+  /// The unit plots are laid out in, metres, 4.5 to 6.1: the statute perch of 16.5 ft by default
+  /// (a 15 ft, an 18 ft and a 20 ft perch are all attested).
+  perch_m: f32 = 5.03 @unit(m)
+  /// A plot's frontage on the street, whole perches, each drawn between the two by the seed,
+  /// 1 to 12.
+  frontage_min_perches: u32 = 2
+  frontage_max_perches: u32 = 4
+  /// A plot's depth back from the street, whole perches, 2 to 30.
+  depth_perches: u32 = 8
+  /// Between the fronts of two facing rows, metres, 2 to 40 (a green is a wide street), and the
+  /// worn tread along its middle that is benched into the ground and kept bare, 1 to the street's
+  /// width.
+  street_width_m: f32 = 6.1 @unit(m)
+  tread_width_m: f32 = 3 @unit(m)
+  /// How far a house's front stands back from its plot's front, metres, 0 to 20.
+  setback_m: f32 = 2 @unit(m)
+  /// The lane's stations, metres, 0.5 to 8: where its tread's top is read off the ground.
+  station_m: f32 = 2 @unit(m)
+  /// How far a house's pad reaches past its walls, metres, 0 to 4, and the most the ground may
+  /// differ under a house's footprint before its plot is left empty, metres, 0.1 to 10.
+  pad_margin_m: f32 = 0.6 @unit(m)
+  max_pad_step_m: f32 = 1.5 @unit(m)
+  /// The path from a house's door to the lane's tread: its width, metres, 0 (none) to 3.
+  path_width_m: f32 = 1.2 @unit(m)
+  /// The cut bank and the fill face of the pads, the treads and the paths, rise over run
+  /// (`TerrainEdit.bank_slope`, `fill_slope`), 0.1 to 8, and how far each runs before it meets the
+  /// ground (`face_m`, `fill_m`), metres, 0.1 to 10.
+  bank_slope: f32 = 1
+  fill_slope: f32 = 0.5
+  face_m: f32 = 1 @unit(m)
+  /// **The houses**: storeys of every house, 1 or 2, and a floor's height over its pad, metres, 0
+  /// to 1 (a plinth). What a house is beyond these is the house filler's, from the plot and a seed.
+  storeys: u32 = 2
+}

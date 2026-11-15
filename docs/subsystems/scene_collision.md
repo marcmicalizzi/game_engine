@@ -64,6 +64,32 @@ The tiles it holds (a heightfield body and shape, a compound body and shape, and
 **How it was found** (the owner's v35 walk, 2026-11-07; engine-needs item 9, marks 1 and 6). The walker stood held in open ground at mark 1, (90.35, 104.65), 1.55 m from birch-0's trunk, and at mark 6, (−1473.3, 1225.6), 3 m south of pine-0's. A probe of the v35 scene loaded through engine-view's loader (`read_scene_file`, `authored_rules` at 2160 lines, `load_scene`: 5,335 prefix instances, 21,009 meshes, 11 streamed entries, a far forest of 4,753 tiles merging 89,741 trees), the consumer round each mark and the capsule swept along the recorded push, named the body: at mark 1 tile (0, 1)'s compound, member mesh 18953 "far forest (1, 1)", prefix instance 3279 standing at the tile corner (64, 0, 64) and reaching 1.9 m over the edge into tile (0, 1), its triangle 3 met 2 cm from the capsule with a horizontal normal (−0.999, 0, 0.051), a proxy of 512 triangles whose bounds are the whole tile's 66 × 72 m; at mark 6 tile (−24, 18)'s compound, member mesh 16304 "far forest (−24, 19)", prefix instance 630, its triangle 189 met 9 cm north with the normal (−0.896, 0, −0.444) of a card at the pine. Pushed for two seconds the walker moved 6 mm at mark 1 (1.6 m at mark 6, sliding along the card). With the far meshes left out, the same sweeps meet nothing but the rising ground and the walker walks on 1.84 m into birch-0's trunk at mark 1 and 2.61 m into pine-0's at mark 6, stopped at their wood. None of the brief's suspects was it: the trees' proxies stood where their wood is (birch-0's 67 triangles within 0.76 m of its axis, pine-0's 102 within 0.52 m, against crowns of 3.6 and 5.2 m at the 5 cm cut), at their scale, at their instances. The game's actors and the player's body were left out of the probe (no `--game`, no `--player`): neither is static collision, and the hit is a prefix instance's.
 **Vines and cover never collide** (2026-10-21, roadmap G76, G78; [cover](cover.md#collision)). A climbing plant or organic cover is its host's companion mesh, and the cover capability emits it under the same motion contract: part 0 a root with no geometry, every stem, leaf, film, cushion, tuft, bracket and cap on a later part with no structural flag. So the rule above leaves every one of its triangles out of the proxy and the companion gets no body at all — a rock's moss does not trip a walker, a wall's ivy does not stop one — with no code here that names the capability.
 
+## Structures
+
+(2026-11-14, roadmap S89; plan [14 §14.4](../plan/14-structures.md#144-walkability-and-collision).)
+**A building is a placement, so it collides as every placement does, and nothing here names one.**
+A house the village filler stands ([village](village.md)) is a mesh its tile hands as a recipe —
+the building description — so its proxy is built from that recipe with no device
+([A tile's meshes](#a-tiles-meshes)): the house's own LOD DAG cut at 5 cm and welded. That is the
+shell's walls with their thickness, the inner walls, the floors and the stair's treads as the
+mesher made them, and a doorway is open because the proxy is the surface and never a hull
+([Why this shape](#why-this-shape)). A hand-authored description placed by a scene file, and an
+imported glTF house, get the same proxy by the same path. What a walker needs of the building is
+therefore the **mesher's** to give — a door at least 0.8 m wide and 2.0 m high, a riser under the
+walker's 0.35 m step, headroom over a stair — and plan 14's table is held by the description's
+validators, not here.
+
+`tests/structure_walk_tests.cpp` (where the village and the structures capabilities are linked;
+no device) holds it on a streamed scene of one village entry and no terrain: the walker starts on
+the lane, follows the house's own way through it ([village](village.md#the-way-through-a-house)) —
+the path, the doorway, each room's doorway, the stair — and must reach every point, ending on the
+upper floor at a window, standing; and a second walker set down on the pad beside the doorway and
+walked at the house is stopped at the wall's face, a capsule's radius short of it.
+
+**Not built of S89**: a no-collision flag per part (a thatch fringe or a rope's strands are walls
+where the proxy keeps them), kinematic bodies (a door's leaf), and the nav agent held to the
+walker's numbers ([Not yet](#not-yet)).
+
 ## Holes
 
 (2026-11-07, roadmap W87; [terrain](terrain.md#holes).) A terrain's `holes` take the ground away under them, as the drawn ground's meshes leave their cells out. On the collision lattice a sample is **no sample** — the backend's no-collision height, `physics::k_heightfield_hole`, Jolt's `cNoCollisionValue` — where all four cells round it are holes by the terrain's cell rule, so the triangles that use it have no collision and the opening the walker falls through lies inside the one drawn (at the drawn levels' finer spacing the same rule takes the rim cells closer to the outline). `ground_height` answers none over a cell any of whose corners is no sample. A walker that steps in falls to whatever stands below — a cave passage's floor, a body like any placement's (the passage is a mesh, and its proxy is cut from its DAG, [caves](caves.md)). Only a tile whose window a hole's bounds reach pays: one bounds test a hole a tile, and then a copy of its heights with the hole samples set (`SceneCollision::holes_reach`, `hole_sample`). `tests/terrain_hole_tests.cpp` holds it: a 6 m round hole over flat ground with a floor 4 m below — no ground at the centre or 1.9 m out, the ground 4.5 m out, a ray straight down meeting the floor through the hole and the ground beside it, and a walker 6 m west walking east falls in and stands on the floor at −4 m.
