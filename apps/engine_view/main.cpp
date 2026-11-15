@@ -2905,6 +2905,21 @@ bool write_shot(const std::string& path, renderer::CapturedFrame& shot, std::str
   return ok;
 }
 
+// `--capture-every n`: whether frame `f` is one of the n-th, and the file it is written to,
+// `<capture stem>-<frame>.png` (or .exr) — for a plain offscreen run and a replay alike (T140).
+bool capture_this_frame(const Options& options, u32 f) {
+  return options.capture_every > 0 && !options.capture.empty() &&
+         (f + 1) % options.capture_every == 0;
+}
+std::string every_frame_path(std::string stem, u32 f) {
+  const bool exr = ends_with_exr(stem);
+  if (exr || (stem.size() > 4 && stem.substr(stem.size() - 4) == ".png"))
+    stem.resize(stem.size() - 4);
+  char suffix[16];
+  std::snprintf(suffix, sizeof(suffix), "-%05u%s", f, exr ? ".exr" : ".png");
+  return stem + suffix;
+}
+
 // Waits up to `seconds` for a quiet machine, sampling every five, the way the bench harness's
 // `--wait-quiet` does (docs/subsystems/bench.md), and says on stderr which way it ended.
 bench::MachineState wait_for_quiet(u32 seconds) {
@@ -3532,6 +3547,19 @@ int run_offscreen(Options& options, Interactive& interactive) {
         previous_start = start;
         ++submissions;
         ++rendered;
+        // `--capture-every n` (T140): the n-th frame drawn again by the capture, at the ticks it
+        // was drawn at, which steps nothing; its submissions counted, so later records still match.
+        if (capture_this_frame(options, f)) {
+          const u64 drawn = view_renderer.stats().frames;
+          renderer::CapturedFrame shot;
+          if (!view_renderer.capture(frame, options.capture_channels, shot, &error) ||
+              !write_shot(every_frame_path(options.capture, f), shot, error)) {
+            error = "capture: " + error;
+            ok = false;
+            break;
+          }
+          submissions += view_renderer.stats().frames - drawn;
+        }
         // The game ended the run (end_run, or an export that failed): this frame was its last.
         if (game_over()) break;
       }
@@ -3737,20 +3765,13 @@ int run_offscreen(Options& options, Interactive& interactive) {
         animate_frame(frame, u64{f} + 1);
         // `--capture-every n`: every n-th frame is drawn by the capture itself, so the picture is
         // that frame's — its camera and, under `--time-rate`, the sand where it stood then.
-        if (options.capture_every > 0 && !options.capture.empty() &&
-            (f + 1) % options.capture_every == 0) {
+        if (capture_this_frame(options, f)) {
           renderer::CapturedFrame shot;
           if (!view_renderer.capture(frame, options.capture_channels, shot, &error)) {
             last = 0;
             break;
           }
-          std::string stem = options.capture;
-          const bool exr = ends_with_exr(stem);
-          if (exr || (stem.size() > 4 && stem.substr(stem.size() - 4) == ".png"))
-            stem.resize(stem.size() - 4);
-          char suffix[16];
-          std::snprintf(suffix, sizeof(suffix), "-%05u%s", f, exr ? ".exr" : ".png");
-          if (!write_shot(stem + suffix, shot, error)) {
+          if (!write_shot(every_frame_path(options.capture, f), shot, error)) {
             shot_failed = true;
             break;
           }

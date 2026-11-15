@@ -1,0 +1,12 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "T140",
+  "reason": "T140: --capture-every under a replay (the forest's need 99): the replay loop's capture, the two helpers it shares with the plain run, and apps.md's paragraph on it",
+  "date": "2026-11-14",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "engine_view.main_cpp.lines": 21,
+    "engine_view.run_offscreen.lines": 6,
+    "page:docs/subsystems/apps.md": 458
+  }
+}
