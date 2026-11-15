@@ -26,7 +26,7 @@
 
 namespace engine::dwellings {
 
-inline constexpr u32 k_rural_filler_version = 1;
+inline constexpr u32 k_rural_filler_version = 2;
 
 // The rectangle of a plot a house may stand in: its length along the lane and its depth away from
 // it, centimetres. The filler never looks at the ground: whoever places the house (a village

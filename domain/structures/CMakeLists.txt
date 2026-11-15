@@ -25,5 +25,12 @@ engine_module(NAME structures LAYER domain OPTIONAL WHOLE_ARCHIVE GENERATOR mesh
 engine_module_tests(NAME structures
   SOURCES tests/structures_tests.cpp tests/size_table.cpp)
 
+# The conformance corpus in content/structures/ (plan 14 §14.1): the test finds it through
+# test_paths.h, by this path or in a test bundle.
+if(TARGET engine_structures_tests)
+  target_compile_definitions(engine_structures_tests
+    PRIVATE ENGINE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+endif()
+
 engine_module_bench(NAME structures
   SOURCES bench/structures_bench.cpp)

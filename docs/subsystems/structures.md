@@ -88,7 +88,11 @@ corners that does not cross itself, every coordinate within ±15 m (so UVs in me
 (`bulge` 0), naming rooms that exist; openings 30 to 400 cm wide with a head at least 20 cm over
 the sill, **15 cm of wall kept between an opening and its wall's end (past the half thickness the
 join takes) and between two openings**, and the head 5 cm under the wall's top at both jambs on
-both faces; roofs over a non-empty rectangle with a pitch of 50 to 4000 permille; a straight stair
+both faces; **a door or a doorway to the outside not under an eave lower than its own head**
+(outside the wall over the opening's middle, the roof's underside stands at least as high as the
+head: a steep roof's overhang drops fast, and the first cot's 45 cm eave at fifty degrees hung at
+1.56 m over a 1.9 m door); roofs over a non-empty rectangle with a pitch of 50 to 4000 permille; a
+hearth that leaves its stack a back and two cheeks; a straight stair
 of 2 to 40 risers with a storey above it; a well only in an outline of axis-aligned edges.
 The walker's rules of plan 14 §14.4 (riser, going, headroom, a doorway's width) are **not** held
 here yet: they are S89's validators, over the walk records.
@@ -145,13 +149,39 @@ has no glass: there is no transmissive material to draw it with (a row this leav
 
 ### Roofs
 
-A roof is a slab over its rectangle and its overhangs, each slope its own planes: the covering on
-top, at the eaves (cut plumb) and at the verges, boards beneath. Its underside is the plane the
-walls rise to. The pitch is rise over run in permille, so no decision takes a trigonometric
-function; a slope's length and its normal take one square root. **A coat 15 cm deep or more is lit
-soft** — its normals turn over the ridge and round the eaves, across a band a quarter of a metre
-wide — and a thinner covering keeps its planes; the rule keys on the thickness the description
-states, not on a role's name.
+A roof is a slab over its rectangle and its overhangs: the covering on top, at the eaves and at
+the verges, and an underside that is the plane the walls rise to. The pitch is rise over run in
+permille, so no decision takes a trigonometric function; a slope's length and its normal take one
+square root.
+
+**A coat 15 cm deep or more is a soft one** (a thatch), and a thinner covering keeps its planes;
+the rule keys on the thickness the description states, not on a role's name. A soft coat's
+profile, from the eave's foot to the ridge, is the eave's face for the lower half of its depth,
+rounded over the top fifth, the slope, and on a gable a **ridge course** standing 6 to 8 cm proud
+over the last 45 cm (a thatch is laid thickest and capped at its ridge); its normals are the mean
+of the segments each corner joins, and straight up at the ridge. A thin covering's profile is the
+eave's plumb face and the plane. The verge is the profile's cut end. UVs run **u up the slope and
+v along the ridge**, so a thatch's stems, drawn along its set's u, lie up the roof.
+
+**The underside** is the covering's own role for a soft coat (a thatch shows its straw between
+its battens) and the `boards` role for a thin one.
+
+**The roof's timbers** are drawn where the top storey is open to them (no `ceiling`): a rafter 8
+by 10 cm about every 45 cm under each slope from the wall plate to the ridge, standing between
+the end walls (a rafter inside a gable wall would show through its face); under a soft coat a
+batten 5 by 2.5 cm every 30 cm up each slope; on a gable a collar across every third pair at
+three fifths of the rise. Each is a closed box sunk a centimetre into what it carries.
+
+### Chimneys
+
+A chimney is its stack as a box from `base` to under its cap, and the cap a course 4 cm wider.
+A hearth (`hearth_side` 0 to 3) opens the stack on that side over its storey's floor: there the
+stack is two cheeks and a back round a recess `hearth_depth` deep and `hearth_width` wide, up to
+`hearth_head`, on a hearth raised 3 cm (which keeps it out of the floor's plane), with a timber
+across the opening bearing on the cheeks. The validator holds a back of 10 cm and cheeks of 8.
+The stack is not cut out of the wall or the roof it passes through: it is a solid sunk through
+them, and what a description must do is stand it proud of a wall's face on the side its hearth
+opens, by at least the recess.
 
 ### The interiors' seam
 
@@ -200,8 +230,14 @@ that wants an interior resident only where a walker can reach it (plan 14 §14.7
 
 A surface takes its role's set from the host's pack ([materials](materials.md)), else the role
 behind it, else a flat colour, and the lookup says once which role is missing. UVs are metres of
-surface (a wall's u along it and v up, a floor's x and z, a roof's u along the ridge and v up the
-slope, a timber's u along its grain), so a set tiles at its own `tile_m`.
+surface (a wall's u along it and v up, a floor's x and z, a roof's u up the slope and v along the
+ridge, a timber's u along its grain), so a set tiles at its own `tile_m`.
+
+**The four roles no pack had are generated sets now** (`plaster/lime`, `stone/flag`,
+`stone/rubble`, `thatch/straw`: [matgen](matgen.md#a-buildings-surfaces)), each a recipe of a
+generator kind that stood already, built by `engine-content matgen` with the rest. They are the
+least that gives each surface a set of its own: a thatch's courses, a wall's coursing and a
+floor's bond are not in them, and that page says so.
 
 ## Walk records
 
@@ -230,8 +266,10 @@ mistake there (to be measured with the village).
 ## The example
 
 `example_cot(width, depth, wall)` is a one-room cot: a room 6 by 4 m inside walls 60 cm thick, one
-storey 2.1 m to the wall plate and open to a thatched gable roof at fifty degrees, a door and a
-window in the front wall, a window in the back, a stack on one gable. Its numbers and where they
+storey 2.4 m to the wall plate and open to a thatched gable roof at fifty degrees whose eaves
+overhang 35 cm (so the eave's edge stands 1.98 m over the floor, clear of the door's head), a door
+and a window in the front wall, a window in the back, a stack with a hearth on one gable. The
+same description is committed as `content/structures/cot.structure.json`. Its numbers and where they
 come from are on [the grounding page](../experiments/vernacular-shell.md).
 
 ## Forms and the LOD policy
@@ -262,6 +300,14 @@ Each is a case in `tests/structures_tests.cpp`:
 - The exterior and the interior are the whole between them.
 - The validator refuses by name.
 - A recipe's canonical form reads back to itself.
+- **The conformance corpus** (`content/structures/`, plan 14 §14.1): every committed description
+  meshes, every opening of it is clear where it is described with the wall solid beside it, every
+  room's floor is at its storey's height, every room is reached from outside, and the committed
+  cot is `example_cot()` to the byte of its canonical form. A mesher change may move triangles and
+  the mesh pins; it may not fail this.
+- The DAG's cut of the cot never grows with distance, and a kilometre off it is under half the
+  finest.
+- A way out is not under an eave lower than its head (the validator's refusal).
 
 **Public API.** `include/domain/structures/structures.h`.
 
@@ -273,8 +319,35 @@ Each is a case in `tests/structures_tests.cpp`:
 
 ## Budgets
 
-To be measured with the first pictures: the example cot's triangles by surface, its clusters, its
-DAG's root, and the mesher's time. The test holds the cot under 4,000 triangles.
+Measured on the example cot (`structures_tests.cpp` prints them; 2026-11-14, `msvc-debug`, so
+counts and no times):
+
+| What | Value |
+|---|---|
+| Triangles, finest | 1,192 (the test holds it under 4,000) |
+| Clusters, finest cut | 38; 60 with the DAG's coarser levels |
+| The DAG's cut from 5 m and 50 m (2160 lines, 60° field of view, 1 px) | 1,192 triangles in 38 clusters: the finest |
+| The cut from 200 m | 1,048 triangles in 33 clusters |
+| The cut from a kilometre | 472 triangles in 14 clusters |
+| The DAG's root | 194 triangles |
+| Materials (surfaces with triangles) | 7 |
+
+**Against plan 14 §14.7's estimate** (a timber-frame house's exterior at 30,000 triangles and its
+interior at 45,000): the cot is 1,192 because nothing in it is a kit part yet. Its thatch is a
+profile, not bundles; its boards are a face, not planks; its timbers are boxes. The budget a
+house is held to is the plan's until the kit (G64) lands and is measured: **30,000 triangles for
+an exterior, 2.5 times that with its interior**, and a house a few hundred triangles past a
+kilometre.
+
+**Why the cut barely coarsens inside 200 m.** The finest level is so coarse already that its
+first simplifications move a surface by about 10 cm (a frame's section, a reveal's depth),
+which is a pixel at 200 m. That is the right answer for a mesh this small, and it will stop
+being one when the kit multiplies the triangles: then the first levels should drop the parts
+nobody resolves (battens, glazing bars) long before the walls move, which wants per-part error
+or an authored mid form, as the walls capability has ([walls](walls.md)).
+
+The mesher's time is not measured in a release build yet (`structures.solve`,
+`structures.walk_records` in the bench).
 
 **What a scene with no structure pays.** Nothing: the generator is reached through the registry
 by a file's name, and a scene that names no `.structure.json` never calls it.
@@ -314,4 +387,6 @@ is listed there under `disabled_capabilities`. Everything else must still build 
 - A door's leaf as a mesh of its own, and the `Door` record with its state (S91).
 - Glass in a window.
 - The kit of solved parts beyond boxes: hewn beams, warped planks, thatch bundles, shingles (G64).
-- The record drawn from a document (D37's other half), and the conformance corpus.
+- The record drawn from a document (D37's other half).
+- A plinth that stands proud of the wall over it, a cob wall's batter and rounded corners, a
+  thatch's courses and cut eave: the shell is planes.

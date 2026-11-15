@@ -263,6 +263,37 @@ bool validate(const Description& d, std::string& why) {
           return false;
         }
       }
+    // A way out is not under an eave lower than its own head: outside the wall over the
+    // opening's middle, just clear of the face and at the eave's edge, the roof's underside
+    // stands at least as high (a steep roof's overhang drops fast: a 50 degree thatch 45 cm out
+    // hangs 54 cm under its wall plate).
+    const bool outside_left = w.a < 0, outside_right = w.b < 0;
+    if (o.kind != structure::OpeningKind::window && w.kind == structure::WallKind::exterior &&
+        (outside_left || outside_right)) {
+      for (const structure::Roof& r : d.roofs) {
+        for (const f64 out : {5.0, static_cast<f64>(r.overhang) - 1.0}) {
+          const f64 q = (outside_left ? 1.0 : -1.0) * (half + out);
+          const f64 x = static_cast<f64>(w.from[0]) + ux * static_cast<f64>(o.at) + uz * q;
+          const f64 z = static_cast<f64>(w.from[1]) + uz * static_cast<f64>(o.at) - ux * q;
+          const f64 along = r.ridge_along_x ? x : z, across = r.ridge_along_x ? z : x;
+          const f64 along_lo = static_cast<f64>(r.ridge_along_x ? r.rect[0] : r.rect[1]) - r.verge;
+          const f64 along_hi = static_cast<f64>(r.ridge_along_x ? r.rect[2] : r.rect[3]) + r.verge;
+          const f64 cross_lo =
+              static_cast<f64>(r.ridge_along_x ? r.rect[1] : r.rect[0]) - r.overhang;
+          const f64 cross_hi =
+              static_cast<f64>(r.ridge_along_x ? r.rect[3] : r.rect[2]) + r.overhang;
+          if (along < along_lo || along > along_hi || across < cross_lo || across > cross_hi)
+            continue;
+          const f64 under = detail::roof_underside(r, x, z);
+          if (under < head) {
+            why = name + ": the roof's eave hangs " +
+                  num(static_cast<i64>(under) - d.storeys[w.storey].elevation) +
+                  " cm over the floor outside it, under its head, " + num(o.head) + " cm";
+            return false;
+          }
+        }
+      }
+    }
   }
   bool wells = false;
   for (u32 i = 0; i < d.stairs.size(); ++i) {
@@ -297,6 +328,18 @@ bool validate(const Description& d, std::string& why) {
         (c.hearth_side > 3 && c.hearth_side != 255)) {
       why =
           "chimney " + num(i) + ": an empty rect, a top under its base, or a hearth_side not 0..3";
+      return false;
+    }
+    if (c.hearth_side > 3) continue;
+    // A hearth leaves the stack a back 10 cm thick and a cheek 8 cm wide each side, and its head
+    // stands under the stack's cap.
+    const i32 sx = c.rect[2] - c.rect[0], sz = c.rect[3] - c.rect[1];
+    const i32 deep = c.hearth_side % 2 == 0 ? sx : sz, wide = c.hearth_side % 2 == 0 ? sz : sx;
+    if (c.hearth_storey >= storeys || c.hearth_depth < 10 || c.hearth_depth > deep - 10 ||
+        c.hearth_width < 30 || c.hearth_width > wide - 16 || c.hearth_head < 40 ||
+        d.storeys[c.hearth_storey].elevation + c.hearth_head > c.top - 40) {
+      why = "chimney " + num(i) + ": its hearth does not fit its stack (a back of 10 cm, cheeks " +
+            "of 8 cm, a head 40 cm under the top), or its storey does not exist";
       return false;
     }
   }
@@ -452,7 +495,7 @@ structure::Description example_cot(i32 width, i32 depth, i32 wall) {
   }
   structure::Storey storey;
   storey.elevation = 0;
-  storey.height = 210;
+  storey.height = 240;  // with the overhang below, the eave's edge clears the door's head
   storey.floor_thickness = 15;
   d.storeys.push_back(storey);
   structure::Room room;
@@ -493,19 +536,20 @@ structure::Description example_cot(i32 width, i32 depth, i32 wall) {
   roof.ridge_along_x = true;
   roof.eaves = storey.height;
   roof.pitch = 1192;  // fifty degrees: a thatch's
-  roof.overhang = 45;
+  roof.overhang = 35;
   roof.verge = 25;
   roof.thickness = 30;
   d.roofs.push_back(roof);
   structure::Chimney chimney;
   chimney.rect[0] = -wall / 2 - 8, chimney.rect[1] = b / 2 - 65;
-  chimney.rect[2] = wall / 2 + 35, chimney.rect[3] = b / 2 + 65;
+  chimney.rect[2] = wall / 2 + 50, chimney.rect[3] = b / 2 + 65;
   chimney.base = -d.foundation;
   const i32 half = (roof.rect[3] - roof.rect[1]) / 2;
   chimney.top = roof.eaves + roof.pitch * half / 1000 + 2 * roof.thickness + 75;
   chimney.hearth_side = 0;
   chimney.hearth_width = 100;
   chimney.hearth_head = 125;
+  chimney.hearth_depth = 40;
   d.chimneys.push_back(chimney);
   return d;
 }

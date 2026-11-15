@@ -221,13 +221,24 @@ TEST_CASE("matgen: every default's colour and roughness means are in its materia
       {"sand/bar", 0.25, 0.42, 0.80, 0.95},      // dry quartz sand
       {"rock/scree", 0.12, 0.35, 0.80, 0.95},    // dry grey rock, its voids in shade
       {"rock/granite", 0.15, 0.35, 0.70, 0.95},  // weathered granite
-      {"rock/granite_wet", 0.06, 0.18, 0.30, 0.60}, {"rock/basalt", 0.03, 0.12, 0.75, 0.95},
-      {"rock/limestone", 0.20, 0.50, 0.75, 0.95},   {"rock/sandstone", 0.18, 0.45, 0.75, 0.95},
-      {"ground/soil", 0.03, 0.10, 0.85, 0.98},      {"ground/moss", 0.03, 0.10, 0.85, 0.98},
-      {"ground/thatch", 0.08, 0.20, 0.70, 0.90},    {"ground/turf", 0.05, 0.14, 0.50, 0.85},
-      {"wood/plank", 0.10, 0.30, 0.70, 0.90},       {"wood/log", 0.08, 0.28, 0.70, 0.92},
+      {"rock/granite_wet", 0.06, 0.18, 0.30, 0.60},
+      {"rock/basalt", 0.03, 0.12, 0.75, 0.95},
+      {"rock/limestone", 0.20, 0.50, 0.75, 0.95},
+      {"rock/sandstone", 0.18, 0.45, 0.75, 0.95},
+      {"ground/soil", 0.03, 0.10, 0.85, 0.98},
+      {"ground/moss", 0.03, 0.10, 0.85, 0.98},
+      {"ground/thatch", 0.08, 0.20, 0.70, 0.90},
+      {"ground/turf", 0.05, 0.14, 0.50, 0.85},
+      {"wood/plank", 0.10, 0.30, 0.70, 0.90},
+      {"wood/log", 0.08, 0.28, 0.70, 0.92},
+      // A building's surfaces (structures.md, "Materials by role"): aged limewash, a worn
+      // flagstone, rubble in mortar, weathered straw.
+      {"plaster/lime", 0.45, 0.75, 0.80, 0.98},
+      {"stone/flag", 0.10, 0.40, 0.60, 0.95},
+      {"stone/rubble", 0.12, 0.42, 0.75, 0.97},
+      {"thatch/straw", 0.08, 0.35, 0.60, 0.95},
   };
-  // Fourteen sets, and the variants of the three tiled granular ones.
+  // Eighteen sets, and the variants of the three tiled granular ones.
   CHECK(matgen::default_sets().size() == std::size(ranges) + 3 * matgen::k_tiled_variants);
   for (const Range& r : ranges) {
     CAPTURE(r.role);

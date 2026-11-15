@@ -101,6 +101,17 @@ void polygon_smooth(MeshPart& part, const Vec3* points, const Vec2* uvs, const V
 void box(MeshPart& part, const Frame2& frame, f64 s0, f64 s1, f64 y0, f64 y1, f64 q0, f64 q1,
          u32 grain);
 
+// A frame in space: an origin (x, y, z, centimetres) and three unit axes square to one another
+// (a rafter's: up its slope, square to the slope, along the ridge).
+struct Frame3 {
+  f64 o[3] = {0, 0, 0};
+  f64 axis[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+};
+// A closed box in `frame`: `a0..a1` along its first axis, `b0..b1` its second, `c0..c1` its
+// third, centimetres. UVs as `box`'s, `grain` naming the axis (0, 1 or 2; 3: none).
+void box3(MeshPart& part, const Frame3& frame, f64 a0, f64 a1, f64 b0, f64 b1, f64 c0, f64 c1,
+          u32 grain);
+
 // A simple polygon on the ground (x0 z0 x1 z1 ..., either winding, centimetres) as triangles:
 // three indices of its corners each, by ear clipping in exact integer arithmetic. False for a
 // polygon with fewer than three corners or one that crosses itself.

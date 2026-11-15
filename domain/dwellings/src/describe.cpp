@@ -18,8 +18,7 @@ u32 count_of(const Vector<T>& v) noexcept {
 constexpr i32 k_stack_proud_cm = 8;    // a wall stack stands this far out of its wall's outer face
 constexpr i32 k_over_roof_cm = 75;     // a stack's top over the roof where it comes through
 constexpr i32 k_ground_floor_cm = 20;  // the ground storey's slab
-constexpr i32 k_hearth_stone_cm = 45;  // the stone before a hearth, its depth
-constexpr i32 k_bressumer_cm = 18;     // the beam over a hearth's opening, its height
+constexpr i32 k_eave_clear_cm = 2;     // an eave's edge over the head of a door under it
 
 // The exterior walls of a storey, in the footprint's order: counter-clockwise seen from above.
 constexpr u32 k_wall_left = 0;
@@ -260,6 +259,19 @@ void describe(const InteriorPlan& plan, const RuralChoice& choice, std::string_v
   roof.rect[3] = b + off;
   roof.ridge_along_x = choice.ridge_along_front;
   roof.eaves = eaves;
+  // A way out stands under no eave lower than its own head (the mesher's validator refuses one):
+  // the eave's edge hangs pitch * overhang under the plate, so where an outer door stands in a wall
+  // the eave runs along, on the storey the roof sits on, the overhang is cut back until the edge
+  // clears the door's head by `k_eave_clear_cm`. A house of one storey is the case: at a 2.4 m
+  // plate under a fifty degree thatch a 2.0 m head leaves 32 cm of overhang.
+  for (const OuterOpening& o : plan.openings) {
+    if (!o.door() || o.storey() + 1 != p.storeys) continue;
+    const bool under_eave = (o.side == Side::Front || o.side == Side::Back) == roof.ridge_along_x;
+    if (!under_eave) continue;
+    const i32 drop = eaves - (top.elevation + i32{o.head_cm}) - k_eave_clear_cm;
+    const i32 most = drop > 0 ? drop * 1000 / roof.pitch + 1 : 0;
+    if (roof.overhang > most) roof.overhang = most;
+  }
   out.roofs.push_back(roof);
 
   // A chimney a hearth: a wall stack runs through its wall and stands proud of it outside; every
@@ -286,48 +298,9 @@ void describe(const InteriorPlan& plan, const RuralChoice& choice, std::string_v
     c.hearth_storey = h.storey;
     c.hearth_width = h.opening_cm;
     c.hearth_head = h.lintel_cm;
+    // The recess, the raised hearth and the timber over the opening are the mesher's, from these
+    // fields: its default recess of 40 cm is the depth a wall stack stands into its room.
     out.chimneys.push_back(c);
-
-    // The hearth stone before the opening and the bressumer over it, on the stack's face.
-    const i32 floor_top = out.storeys[h.storey].elevation;
-    const bool faces_x = h.faces == Side::Left || h.faces == Side::Right;
-    const i32 mid =
-        faces_x ? (h.stack.z0 + h.stack.z1) / 2 + off : (h.stack.x0 + h.stack.x1) / 2 + off;
-    const i32 half_open = h.opening_cm / 2;
-    const i32 half_stack = (faces_x ? h.stack.z1 - h.stack.z0 : h.stack.x1 - h.stack.x0) / 2;
-    i32 face = 0;  // the stack's face, and the way out of it
-    i32 outward = 1;
-    switch (h.faces) {
-      case Side::Right: face = h.stack.x1 + off; break;
-      case Side::Left:
-        face = h.stack.x0 + off;
-        outward = -1;
-        break;
-      case Side::Back: face = h.stack.z1 + off; break;
-      default:
-        face = h.stack.z0 + off;
-        outward = -1;
-        break;
-    }
-    auto member = [&](i32 depth, i32 half_width, i32 y0, i32 y1, structure::Surface surface) {
-      structure::Box box;
-      const i32 near_edge = outward > 0 ? face - 1 : face - depth;
-      const i32 far_edge = outward > 0 ? face + depth : face + 1;
-      box.min[0] = faces_x ? near_edge : mid - half_width;
-      box.max[0] = faces_x ? far_edge : mid + half_width;
-      box.min[1] = y0;
-      box.max[1] = y1;
-      box.min[2] = faces_x ? mid - half_width : near_edge;
-      box.max[2] = faces_x ? mid + half_width : far_edge;
-      box.surface = surface;
-      box.solid = false;
-      box.room = static_cast<i32>(h.room);
-      out.boxes.push_back(box);
-    };
-    member(k_hearth_stone_cm, half_open + 10, floor_top - 2, floor_top + 4,
-           structure::Surface::floor);
-    member(4, half_stack + 2, floor_top + h.lintel_cm, floor_top + h.lintel_cm + k_bressumer_cm,
-           structure::Surface::timber);
   }
 
   out.provenance.filler = "rural";

@@ -67,8 +67,12 @@ rooms, through both its sides at the foot landing, so the landing is the lobby b
 landing at least a metre. `Stair` carries the strip, the foot, the flight and the head as
 rectangles, the direction the flight rises, and the rise in millimetres; `tread(i)` and
 `tread_mm(i)` are the treads a mesher and a collision builder both read, so the two cannot differ.
-The upper floor has no slab over `well()`, the strip less the head landing: headroom over the
+The upper floor has no slab over `well()`, the flight's run across the strip: headroom over the
 flight is to the upper storey's ceiling, and `stair_headroom_cm` is the one function that says so.
+The well ends where the flight does, at both ends: the last riser is the head landing's edge (the
+mesher leaves a gap between the top tread and the floor under a longer well), and the foot landing
+keeps the upper floor over it, so a storey under 2.3 m floor to floor (2.1 m under a 20 cm floor)
+is refused where one of 2.25 m passed while the well ran over the foot.
 
 ## The rural filler
 
@@ -104,14 +108,14 @@ from (0, 0), the front wall along z = 0 and the lane on its -z side.
 
 | The plan's | becomes |
 |---|---|
-| the clear rectangle and the outer wall's thickness | the footprint; four exterior walls a storey (left, back, right, front, the footprint's order). A wall names one room: the one its door opens into, else the first that meets it |
+| the clear rectangle and the outer wall's thickness | the footprint; four exterior walls a storey (left, back, right, front, the footprint's order). A wall names one room: the one its door opens into, else the first that meets it. A wall a room (split at each partition, joined as a star) was weighed and left: the mesher keeps a pier of 15 cm and half the wall's thickness, 40 cm, between an opening and its wall's end, and the head landing's 60 cm window stands in a strip a metre wide |
 | storeys | `Storey` records: 2.4 m floor to floor under an upper storey and 2.5 m from the upper floor to its plate, 2.4 m to the plate for a house of one; a one-room house is open to its roof, divided rooms are ceiled. The upper storey is that high because a thatch's eave hangs 54 cm under the plate: at 2.2 m the first pictures showed every upper window's head behind it |
 | `Room` | `Room`, its id its index, its outline on the centre lines. An inner room is a `parlour`, a stair's compartment a `passage`; `name` keeps the plan's word |
 | `InnerWall`, `Doorway` | `Wall{inner}` from one exterior wall's centre line to the other's (a T at each end), `Opening{doorway}` |
 | `OuterOpening` | `Opening{door}` or `{window}` in its side's wall, `at` measured the way that wall runs |
 | `Stair` | `Stair{straight}`: the foot at the middle of the first riser, the direction, the risers, a going of 28 cm, the well. Its width is the strip's clear width and 2 cm, so the steps run a centimetre into each wall and no face of a step lies in a wall's face |
-| `Hearth` | `Chimney`: a wall stack runs through its wall and stands 8 cm proud outside, as the mesher's example does; every stack rises from the footing to 75 cm over the roof where it comes through. Before it, two `Box` members: the hearth stone and the bressumer over the opening |
-| the choice's ridge | one gable `Roof` over the outer faces, its pitch, overhang and covering the mesher's example's ([the shell's grounding](../experiments/vernacular-shell.md)) |
+| `Hearth` | `Chimney`: a wall stack runs through its wall and stands 8 cm proud outside, as the mesher's example does; every stack rises from the footing to 75 cm over the roof where it comes through. The recess, the raised hearth and the timber over the opening are the mesher's, from the chimney's `hearth_*` fields (the two `Box` members this row wrote before the mesher drew a hearth are gone) |
+| the choice's ridge | one gable `Roof` over the outer faces, its pitch, overhang and covering the mesher's example's ([the shell's grounding](../experiments/vernacular-shell.md)). **Where an outer door stands under the eave** on the storey the roof sits on (every house of one storey), the overhang is cut back until the eave's edge clears the door's head by 2 cm: 32 cm at a 2.4 m plate under a fifty degree roof and a 2.0 m head. The mesher's validator refuses a way out under a lower eave, and the walker needs 1.85 m clear under the frame, a head of 1.93 m or more |
 
 Every coordinate of a description lies within 15 m of its origin, the roof's outer faces and a
 stack's proud face among them, so a house's clear length is at most 14.1 m at the default wall
@@ -165,8 +169,10 @@ plan in a terminal.
 - Every plan type at its least and at a generous size, mirrored and not, over seeds, passes every
   validator; every room is reached from an outer door.
 - A stair's rise is at most 210 mm and at least 150 mm, twice the rise plus the going lies in
-  550–700 mm, its pitch is at most 42°, and every tread has 2.1 m of headroom, over storeys from
-  2.25 m to 3.0 m.
+  550–700 mm, its pitch is at most 42°, and every tread and both landings have 2.1 m of headroom,
+  over storeys from 2.3 m to 3.0 m; a storey of 2.25 m is refused for its foot landing.
+- A door under an eave keeps its head under the eave's edge, in every household's house, and
+  1.85 m clear under its frame (`tests/describe_tests.cpp`).
 - No window's span, with its pier, meets an inner wall's end, a stack or another opening.
 - The validators find a slab over the flight, a low upper storey, a window moved in front of a
   wall, a doorway removed, a doorway narrower than the walker, a stack in a doorway's approach, and

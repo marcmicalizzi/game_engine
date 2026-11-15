@@ -683,6 +683,108 @@ Set ground_turf() {
   return s;
 }
 
+// ---- a building's surfaces (structures.md, "Materials by role"; matgen.md, "A building's
+// surfaces"): four roles a solved building asks for and no pack had, each a recipe of a kind
+// that stood already, so the generator itself is unchanged.
+
+// Limewash over a lime render: one pale constituent worn here and there to the render under it,
+// no joint, the float's undulation of a few millimetres, the rain's streaks under the eaves, and
+// nothing growing on it (a wall limewashed again every few years).
+Set plaster_lime() {
+  Set s = base("plaster/lime", Kind::rock, 0x6c696d6577617368ull, 2000);
+  s.stochastic = true;
+  Rock& r = s.rock;
+  r.grain_um = 400;
+  r.minerals.push_back(part(900, 700, 670, 590, 50, 920));  // limewash, yellowed with age
+  r.minerals.push_back(part(100, 560, 520, 440, 60, 900));  // worn to the render
+  r.relief_um = 1200;
+  r.joint_sets = 0;
+  r.rind_permille = 0;
+  r.lichen_permille = 0;
+  r.pits_permille = 20;
+  r.form_um = 6000;
+  r.streak_permille = 200;
+  return s;
+}
+
+// A flagged floor: a fine sandstone worn by feet, its joints the flags' own, nothing growing on
+// it and no rain to streak it.
+Set stone_flag() {
+  Set s = base("stone/flag", Kind::rock, 0x666c6167ull, 2000);
+  s.stochastic = true;
+  Rock& r = s.rock;
+  r.grain_um = 300;
+  r.minerals.push_back(part(850, 330, 310, 280, 120, 800));  // the flag's stone
+  r.minerals.push_back(part(150, 250, 235, 215, 100, 750));  // its darker beds
+  r.relief_um = 1500;
+  r.joint_sets = 2;
+  r.joint_winding = 1;
+  r.joint_width_um = 8000;
+  r.rind_permille = 0;
+  r.lichen_permille = 0;
+  r.pits_permille = 30;
+  r.form_um = 4000;
+  r.streak_permille = 0;
+  return s;
+}
+
+// Rubble walling in lime mortar: angular stones a hand to a forearm long laid on their beds, the
+// mortar standing nearly flush between them and over their edges.
+Set stone_rubble() {
+  Set s = base("stone/rubble", Kind::granular, 0x727562626c65ull, 2000);
+  s.cavity_permille = 500;
+  Granular& g = s.granular;
+  g.d50_um = 150000;
+  g.sorting_milliphi = 600;
+  g.roundness_permille = 250;
+  g.ba_min_permille = 450;
+  g.ba_max_permille = 800;
+  g.cb_min_permille = 400;
+  g.cb_max_permille = 800;
+  g.cover_permille = 900;
+  g.imbrication_deg = 0;
+  g.scatter_deg = 8;
+  g.alignment_permille = 900;
+  g.openwork_permille = 0;
+  g.matrix_um = 800;
+  g.buried_permille = 250;
+  g.lithologies.push_back(part(600, 380, 360, 330, 180, 880, 60, 30));  // a grey gritstone
+  g.lithologies.push_back(part(400, 420, 370, 300, 160, 900, 40, 0));   // the same, iron-stained
+  return s;
+}
+
+// A straw thatch, as the kind `wood` draws it: a coat of combed stems is the finest of grains, so
+// its stems are the figure's bands, three and a half millimetres across and nearly straight, gold
+// where fresh and grey-brown where weathered, the gaps between bundles short dark checks, and no
+// knot. u runs along the stems: a roof's UVs run u up its slope.
+Set thatch_straw() {
+  Set s = base("thatch/straw", Kind::wood, 0x7374726177ull, 2000);
+  s.texels = 2048;
+  s.cavity_permille = 550;
+  Wood& w = s.wood;
+  w.form = WoodForm::sawn;
+  w.figure_um = 3500;
+  w.latewood_permille = 450;
+  w.wander_mm = 25;
+  w.relief_um = 2500;
+  w.fresh_r_permille = 560;
+  w.fresh_g_permille = 450;
+  w.fresh_b_permille = 250;
+  w.grey_r_permille = 260;
+  w.grey_g_permille = 235;
+  w.grey_b_permille = 190;
+  w.grey_permille = 750;
+  w.grey_patch_permille = 300;
+  w.stain_permille = 500;
+  w.checks_per_m2 = 400;
+  w.check_min_mm = 40;
+  w.check_max_mm = 300;
+  w.check_width_um = 4000;
+  w.check_depth_um = 5000;
+  w.knots_per_m2 = 0;
+  return s;
+}
+
 }  // namespace
 
 Set variant_of(const Set& set, u32 index) {
@@ -705,6 +807,7 @@ Vector<Set> default_sets() {
   sets.push_back(ground_soil());
   sets.push_back(ground_thatch());
   sets.push_back(ground_turf());
+  sets.push_back(plaster_lime());
   sets.push_back(rock_basalt());
   sets.push_back(rock_granite());
   sets.push_back(rock_granite_wet());
@@ -712,6 +815,9 @@ Vector<Set> default_sets() {
   sets.push_back(rock_sandstone());
   with_variants(rock_scree());
   with_variants(sand_bar());
+  sets.push_back(stone_flag());
+  sets.push_back(stone_rubble());
+  sets.push_back(thatch_straw());
   sets.push_back(wood_log());
   sets.push_back(wood_plank());
   return sets;

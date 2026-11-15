@@ -17,10 +17,12 @@ using namespace engine::dwellings;
 
 namespace {
 
-// Taken on MSVC 19.44 (msvc-debug) on 2026-11-14 at k_interior_version 1 and
-// k_rural_filler_version 1.
-constexpr u64 k_plans_pin = 0x2fd5eb8b995c3bfbull;
-constexpr u64 k_houses_pin = 0x8d2f548386dde551ull;
+// Taken on MSVC 19.44 (msvc-debug) on 2026-11-14 at k_interior_version 2 and
+// k_rural_filler_version 2. Version 1's were 0x2fd5eb8b995c3bfb and 0x8d2f548386dde551: they moved
+// because a plan's hash covers `k_interior_version`, which moved when a stair's well became the
+// flight's run (no record's field changed).
+constexpr u64 k_plans_pin = 0xc1e1e57f0ca96d27ull;
+constexpr u64 k_houses_pin = 0x1eabd65ddcdc87b0ull;
 
 }  // namespace
 

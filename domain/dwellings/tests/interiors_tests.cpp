@@ -178,7 +178,23 @@ TEST_CASE("interiors: the stair is one a person climbs") {
   CHECK(stair_risers(2310) == 11);
   CHECK(stair_risers(2311) == 12);
 
-  for (u16 storey_cm = 225; storey_cm <= 300; storey_cm = static_cast<u16>(storey_cm + 5)) {
+  // The foot landing stands under the upper floor (the well ends where the flight does), so a
+  // storey under 2.3 m, less its 20 cm floor, leaves the landing less than the walker's 2.1 m and
+  // is refused.
+  {
+    InteriorParams low;
+    low.type = PlanType::HallParlour;
+    low.storeys = 2;
+    low.storey_cm = 225;
+    const InteriorExtent least = interior_min_extent(low);
+    low.width_cm = least.min_width_cm + 40;
+    low.depth_cm = least.min_depth_cm;
+    InteriorPlan plan;
+    std::string error;
+    CHECK_FALSE(plan_interior(low, plan, &error));
+    CHECK(error.find("headroom") != std::string::npos);
+  }
+  for (u16 storey_cm = 230; storey_cm <= 300; storey_cm = static_cast<u16>(storey_cm + 5)) {
     InteriorParams p;
     p.type = PlanType::HallParlour;
     p.storeys = 2;
@@ -224,8 +240,15 @@ TEST_CASE("interiors: the validators find a plan broken by hand") {
   REQUIRE(validate_interior(plan, findings));
 
   SUBCASE("a slab over the flight leaves no headroom") {
-    // The head landing stretched over the whole strip: the well is gone.
-    plan.stairs[0].head = plan.stairs[0].strip;
+    // The flight's rectangle emptied onto its first riser's line: the well, which is the flight's
+    // run, is gone, and the upper floor lies over every tread.
+    Stair& stair = plan.stairs[0];
+    switch (stair.rises) {
+      case Side::Front: stair.flight.z0 = stair.flight.z1; break;
+      case Side::Back: stair.flight.z1 = stair.flight.z0; break;
+      case Side::Left: stair.flight.x0 = stair.flight.x1; break;
+      default: stair.flight.x1 = stair.flight.x0; break;
+    }
     CHECK_FALSE(validate_interior(plan, findings));
     CHECK(has_rule(findings, InteriorRule::StairHeadroom));
   }

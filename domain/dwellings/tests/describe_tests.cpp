@@ -18,9 +18,11 @@ using namespace engine::dwellings;
 
 namespace {
 
-// Taken on MSVC (msvc-debug) on 2026-11-14 at k_interior_version 1, k_rural_filler_version 1 and
-// k_structure_version 1.
-constexpr u64 k_descriptions_pin = 0xf109f353ed345becull;
+// Taken on MSVC (msvc-debug) on 2026-11-14 at k_interior_version 2, k_rural_filler_version 2 and
+// k_structure_version 2. Version 1's was 0xf109f353ed345bec: it moved because a stair's well ends
+// where its flight does, a hearth's stone and timber are the mesher's and no longer two boxes, and
+// a one-storey house's overhang is cut back to clear its door's head.
+constexpr u64 k_descriptions_pin = 0x722929a1172e24dfull;
 
 bool near_cm(f32 metres, i32 cm) {
   const f32 d = metres * 100.0f - static_cast<f32>(cm);
@@ -162,4 +164,38 @@ TEST_CASE("describe: fill_rural is the filler, and says why a plot holds nothing
 
   CHECK_FALSE(fill_rural(RuralPlot{400, 300}, Household{2, 0}, style, 7, "none", d, &error));
   CHECK(error.rfind("rural filler: ", 0) == 0);
+}
+
+TEST_CASE("describe: a door under an eave keeps its head clear of the eave's edge") {
+  // The mesher refuses a way out under an eave lower than its head. A house of one storey has its
+  // door on the storey the roof sits on: its overhang is cut back; a house of two keeps the
+  // mesher's example's.
+  const RuralStyle style;
+  const i32 example = structures::example_cot().roofs[0].overhang;
+  for (u8 persons = 1; persons <= 9; ++persons) {
+    for (u8 means = 0; means <= 2; ++means) {
+      structure::Description d;
+      std::string error;
+      INFO("persons " << int{persons} << " means " << int{means});
+      const bool filled =
+          fill_rural(RuralPlot{2400, 1500}, Household{persons, means}, style, 11, "h", d, &error);
+      INFO(error);
+      REQUIRE(filled);
+      REQUIRE(d.roofs.size() == 1);
+      const structure::Roof& roof = d.roofs[0];
+      if (d.storeys.size() == 2) {
+        CHECK(roof.overhang == example);
+        continue;
+      }
+      CHECK(roof.overhang > 20);
+      for (const structure::Opening& o : d.openings) {
+        if (o.kind != structure::OpeningKind::door) continue;
+        // The edge's height over the floor, a centimetre inside the edge as the validator samples.
+        const i32 edge = roof.eaves - roof.pitch * (roof.overhang - 1) / 1000;
+        CHECK(edge >= o.head);
+        // The walker's clear height under the frame's head (the village's rule: 185 cm).
+        CHECK(o.head - 8 >= 185);
+      }
+    }
+  }
 }
