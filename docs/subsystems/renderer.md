@@ -2618,7 +2618,9 @@ G = 0.5 for leaves of no preferred direction), averaged over the directions it c
   of it its own mask keeps** — the material's base colour alpha asked at the triangle's 16
   sub-triangle centroids on the CPU, as the coverage bake asks it (T146; it was a constant 0.7, a
   solver's blade, and cards over 0.05 m² were refused, which left every bought tree without a
-  crown) — is gathered into a grid over the mesh's bounds, at most 16 cells an axis and
+  crown; a host that released the mesh's UVs before the prior is built — `engine-view` today,
+  `release_uploaded_streams` — gets each image's mean instead, exact for a card that maps its
+  whole image) — is gathered into a grid over the mesh's bounds, at most 16 cells an axis and
   a quarter metre a cell, and from each cell's centre the grid is marched along twelve directions
   of the upper hemisphere and their mirror images. A cell keeps two bytes: the mean transmitted
   fraction from above and from below. A mesh whose leaves stand under 1.5 m has none (a sward's

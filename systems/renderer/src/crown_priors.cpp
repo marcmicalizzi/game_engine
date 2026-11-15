@@ -21,6 +21,9 @@ struct MaskImage {
   bool tried = false;
   bool ok = false;
   image::Image alpha;  // one channel
+  // The share of the whole image the test keeps: what a triangle counts when the mesh's UVs are
+  // gone (a host that released the uploaded streams before the prior was built, page_source.h).
+  f32 mean = 1.0f;
 };
 
 bool decode_mask(const SourceMesh& source, const assets::Material& material, MaskImage& out) {
@@ -44,8 +47,14 @@ bool decode_mask(const SourceMesh& source, const assets::Material& material, Mas
   out.alpha.height = rgba.height;
   out.alpha.channels = 1;
   out.alpha.pixels.resize(texels);
-  for (u32 t = 0; t < texels; ++t)
+  u32 kept = 0;
+  for (u32 t = 0; t < texels; ++t) {
     out.alpha.pixels[t] = rgba.pixels[t * 4 + 3];
+    if (material.base_color.w * static_cast<f32>(out.alpha.pixels[t]) / 255.0f >=
+        material.alpha_cutoff)
+      ++kept;
+  }
+  out.mean = texels == 0 ? 1.0f : static_cast<f32>(kept) / static_cast<f32>(texels);
   return true;
 }
 
@@ -106,6 +115,10 @@ void build_crown_priors(const SceneData& data, CrownPriorTable& out) {
   Vector<f32> fill;  // one a triangle of `corners`: the share its mask keeps
   Vector<MaskImage> masks;
   const bool has_uvs = mesh.attributes.size() == mesh.vertices.size();
+  if (!has_uvs && meshes > 0) {
+    ENGINE_LOG_INFO(log_renderer, "crown prior measured by image means",
+                    log::field("why", "the mesh's UVs were released before the prior was built"));
+  }
   // A distance form (`SceneData::form_source`) is a cut of its source's own clusters in its
   // source's mesh space: it reads its source's grid, made from the source's leaves, and none of
   // its own (a form's finest cards are merged ones).
@@ -176,8 +189,12 @@ void build_crown_priors(const SceneData& data, CrownPriorTable& out) {
           leaf_hi = p.y > leaf_hi ? p.y : leaf_hi;
           corners.push_back(p);
         }
-        fill.push_back(has_uvs ? triangle_fill(leaf, mask, uv[0], uv[1], uv[2])
-                               : (leaf.base_color.w >= leaf.alpha_cutoff ? 1.0f : 0.0f));
+        // With no UVs the triangle counts its image's mean: right for a card that maps its whole
+        // image, an estimate for an atlas (the T138 order builds the prior before they go).
+        const f32 factor_only = leaf.base_color.w >= leaf.alpha_cutoff ? 1.0f : 0.0f;
+        fill.push_back(has_uvs   ? triangle_fill(leaf, mask, uv[0], uv[1], uv[2])
+                       : mask.ok ? mask.mean
+                                 : factor_only);
       }
     }
     if (corners.empty() || leaf_hi - leaf_lo < gfx::k_crown_min_height_m) continue;

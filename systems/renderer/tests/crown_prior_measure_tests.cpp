@@ -134,7 +134,7 @@ bool write_cards(const std::string& dir, const char* name, u32 cards, f32 width,
 }
 
 // Loads the one mesh on the CPU and builds the scene's crown table from it.
-CrownPriorTable crowns_of(const test::TempDir& tmp, const char* name) {
+CrownPriorTable crowns_of(const test::TempDir& tmp, const char* name, bool release_uvs = false) {
   SceneDesc desc;
   desc.meshes.push_back(tmp.file(std::string(name) + ".gltf"));
   desc.cache = false;
@@ -143,6 +143,11 @@ CrownPriorTable crowns_of(const test::TempDir& tmp, const char* name) {
   SceneData data;
   std::string error;
   REQUIRE_MESSAGE(load_scene(desc, data, error), error);
+  // A host that released the uploaded streams first (`release_uploaded_streams`) has no UVs.
+  if (release_uvs) {
+    data.lod.mesh.attributes.clear();
+    data.lod.mesh.attributes.shrink_to_fit();
+  }
   CrownPriorTable table;
   build_crown_priors(data, table);
   return table;
@@ -169,6 +174,11 @@ TEST_CASE("crown prior: a bought tree's metre-wide branch cards count the leaf t
   CHECK(table.leaf_area_m2 <= card * (5.0 / 16.0 + 1.0 / 12.0));
   // Never the solver's constant: 0.7 of the card would be 10.1 m2.
   CHECK(table.leaf_area_m2 < card * 0.5);
+  // With the UVs released, each triangle counts its image's mean, which is the texels' 5/16
+  // exactly: these cards map the whole image.
+  const CrownPriorTable meaned = crowns_of(tmp, "branch", true);
+  REQUIRE(meaned.crowns == 1);
+  CHECK(meaned.leaf_area_m2 == doctest::Approx(card * 5.0 / 16.0).epsilon(1e-5));
 }
 
 TEST_CASE("crown prior: a solid mask counts the whole card and an empty one has no crown") {
