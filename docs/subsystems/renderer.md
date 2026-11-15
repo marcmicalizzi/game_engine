@@ -5500,9 +5500,14 @@ codes, rms over the crowns' rectangles; the accumulated picture is one frame a c
 **Which build drew which row.** The table was flown with `clip_still=0,clip_moving=0` on the build
 that had the motion match and not yet the clip's gate or the moved instances' exception. The
 shipped rule differs from it only at a pixel whose surface moves more than a quarter pixel a
-frame, which none does in the held rows or the pan's (an eighth), so those six are the shipped
-pass's; in the wind's rows it lies between the table and the clip on everywhere, which was flown
-too (1.20, 1.34 and 0.95 times the reference's), and **was not flown as shipped**. The conifer is
+frame, which none does in the held rows or the pan's (an eighth). **Flown again as shipped** on
+the final build (leg 2b, 2026-11-15, 03:25 to 03:38, the references drawn again by it), all nine
+rows came back to the table's figures to the hundredth: the wind at 121 m, 411 m and on the
+conifer moves no pixel more than a quarter pixel a frame either, so the clip never applies there
+(the same numbers with `clip_moving` 2 or 3, or the match at a half or a whole pixel). The clip on
+everywhere, flown before the gate, was 1.20, 1.34 and 0.95 times the reference's. Near leaves at
+30 m are where it acts: 10.54 codes from each step's reference and 0.65 times its change, as
+shipped, against 10.77 and 0.61 with no clip. The conifer is
 the species gallery's spruce, drawn by its own needle geometry: that scene has no needle image,
 and the forest's needle images were not used.
 
