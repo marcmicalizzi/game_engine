@@ -20,8 +20,11 @@
     build       Build the preset (configures first if needed). -Affected builds only what
                 `test -Affected` would run: the affected modules' libraries, tests and benches,
                 the apps that link them, and every app when the tools' own tests run, since
-                they start the apps (tools/lib/Affected.psm1, Get-AffectedTargets).
-    test        Run CTest for the preset. -Filter is a regex on test names. Tests take the
+                they start the apps (tools/lib/Affected.psm1, Get-AffectedTargets). A link that
+                fails with LNK1236 or LNK1107 (a corrupt object or library) is repaired once: the
+                files are moved to build/<preset>/lnk1236/, that target is rebuilt with
+                CCACHE_RECACHE=1 at a lower parallel level, and the build runs again (docs/ci/local-linux.md, "A corrupt object at the link").
+    test       Run CTest for the preset. -Filter is a regex on test names. Tests take the
                 machine-wide GPU lock themselves, per GPU device, so do not wrap this in
                 tools/gpu-lock.ps1 run: that still works, and holds the GPU for the whole
                 run again (docs/subsystems/gpu_lock.md). Exits 75 when a test gave up
@@ -189,9 +192,69 @@ function Invoke-Build {
       $buildArgs += @('--target') + $targets
     }
   }
+  $built = Invoke-CMakeBuild $buildArgs
+  if ($built.Code -eq 0) { return }
+  # A corrupt object at the link (LNK1236; docs/ci/local-linux.md, "A corrupt object at the link"):
+  # the object and its library are removed, that target is rebuilt once with the cache told to
+  # compile and store again, and the build runs once more. Anything else fails as it always did.
+  $ninja = Get-NinjaProgram
+  $query = { param($target) & $ninja -C $BuildDir -t query $target 2>$null }
+  $repairs = @(Get-CorruptObjectRepair -Lines $built.Lines -Query $query)
+  if ($repairs.Count -eq 0) { throw "build failed ($($built.Code))" }
+  foreach ($r in $repairs) {
+    if ($r.Remove.Count -eq 0) {
+      Write-Host "build: $($r.Code) in $($r.Named), which the build graph does not show; not retried" -ForegroundColor Yellow
+      throw "build failed ($($built.Code))"
+    }
+  }
+  # The bad files are moved aside, not deleted: the cause is not known, and they are the evidence.
+  # The lead is a short write under pressure (2026-11-14: a library LNK1107 twice while free commit
+  # fell from 53 to 29 GB, then linked at parallel level 4 with 38 GB free), so the line says the
+  # free commit and the rebuild runs at a quarter of the cores, at most 4.
+  $kept = Join-Path $BuildDir ("lnk1236/{0:yyyyMMdd-HHmmss}" -f (Get-Date))
+  $free = ''
+  if ($IsWin) {
+    try { $free = ", {0:N1} GB of commit free" -f ((Get-CimInstance Win32_OperatingSystem).FreeVirtualMemory / 1MB) } catch { }
+  }
+  $jobs = [Math]::Max(1, [Math]::Min(4, [int][Math]::Floor([Environment]::ProcessorCount / 4)))
+  foreach ($r in $repairs) {
+    foreach ($f in $r.Remove) {
+      $from = Join-Path $BuildDir $f
+      if (-not (Test-Path -LiteralPath $from)) { continue }
+      $to = Join-Path $kept $f
+      New-Item -ItemType Directory -Force -Path (Split-Path -Parent $to) | Out-Null
+      Move-Item -LiteralPath $from -Destination $to -Force
+    }
+    $sizes = ($r.Remove | ForEach-Object { $i = Get-Item -LiteralPath (Join-Path $kept $_) -ErrorAction Ignore; if ($i) { "$($i.Length) B" } }) -join ', '
+    Write-Host ("build: {0} (a corrupt object or library) in {1}: moved {2} ({3}) to {4}, rebuilding {5} once with CCACHE_RECACHE=1 at -j {6}{7}" -f
+                $r.Code, $r.Named, ($r.Remove -join ', '), $sizes, $kept, $r.Target, $jobs, $free) -ForegroundColor Yellow
+  }
+  $recache = $env:CCACHE_RECACHE
+  $env:CCACHE_RECACHE = '1'
+  try { $rebuilt = Invoke-CMakeBuild (@('--build', '--preset', $Preset, '--parallel', "$jobs", '--target') + @($repairs | ForEach-Object { $_.Target })) }
+  finally { $env:CCACHE_RECACHE = $recache }
+  if ($rebuilt.Code -ne 0) { throw "build failed ($($rebuilt.Code))" }
+  $built = Invoke-CMakeBuild $buildArgs
+  if ($built.Code -ne 0) { throw "build failed ($($built.Code))" }
+}
+
+# One `cmake --build`, its output shown as it comes and kept for the LNK1236 check above.
+function Invoke-CMakeBuild([string[]]$arguments) {
+  $lines = @()
   Push-Location $Root
-  try { & cmake @buildArgs; if ($LASTEXITCODE -ne 0) { throw "build failed ($LASTEXITCODE)" } }
+  try {
+    & cmake @arguments | Tee-Object -Variable lines | Out-Host
+    $code = $LASTEXITCODE
+  }
   finally { Pop-Location }
+  return [pscustomobject]@{ Code = $code; Lines = @($lines) }
+}
+
+function Get-NinjaProgram {
+  $ninja = Select-String -LiteralPath (Join-Path $BuildDir 'CMakeCache.txt') -Pattern '^CMAKE_MAKE_PROGRAM(:[A-Z]+)?=(.*)$' |
+    Select-Object -First 1 | ForEach-Object { $_.Matches[0].Groups[2].Value }
+  if (-not $ninja) { $ninja = 'ninja' }
+  return $ninja
 }
 
 # The targets of an affected set that this build tree has (tools/lib/Affected.psm1). The tree's own

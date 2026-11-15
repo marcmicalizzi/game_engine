@@ -105,7 +105,13 @@ and the checkout, and an expiry. An expired lock may be broken, an unexpired one
   leaves a ticket nobody refreshes: it stops counting when its 30 s lease runs out, so the build
   behind it starts **under 32 s** after the kill. A script from another worktree that predates the
   line takes no ticket and retries every 20 s as it did: it is outside the order, usually behind
-  it, and can neither stall nor corrupt it.
+  it, and can neither stall nor corrupt it. **Removing a ticket that is already gone is no error**:
+  every waiter that looks removes the dead tickets it sees, so two of them regularly reach the same
+  file, and on 2026-11-12 a queued build and a `gpu-lock.ps1 run` waiter died of it — PowerShell's
+  `Remove-Item` raises a file that vanishes between its resolution of the path and its delete as a
+  terminating error, which `-ErrorAction SilentlyContinue` does not silence. Every removal of a
+  ticket is `[IO.File]::Delete` now (`Remove-MachineLockTicketFile`), and `tools.machine_lock`
+  races six looks over one dead ticket a few hundred times to keep it so (T140).
 - **The lease is ten minutes, refreshed every two** from a background thread while the build runs,
   so a build whose script is killed outright holds the machine for ten minutes and not for as long
   as the build would have taken. Ctrl+C is not killed outright: the script removes the container it
@@ -457,6 +463,61 @@ do not share one path ([remote Linux](remote-linux.md#the-compiler-cache)).
 
 `build.cpu_baseline` reads `compile_commands.json`, which CMake writes without the launcher, and
 classifies each compile by its flags, which the launcher does not change; it is unaffected.
+
+#### A corrupt object at the link
+
+On 2026-11-14 MSVC's linker refused an object four times in one day with `fatal error LNK1236:
+corrupt or invalid COFF sections`: the gate's `msvc-release` build on
+`engine_schemas_impl.lib(protocol.cpp.obj)` (linking `engine_doc_tests.exe`), an agent's on a
+cached `domain/audio` `protocol.cpp.obj`, and two more on `collision_draw.cpp.obj` and another
+`protocol.cpp.obj`. **`tools/dev.ps1 build` now repairs it once**: it keeps the build's output,
+finds each LNK1236 line, finds the object in the build graph (`ninja -t query` on the library the
+line names, whose path it takes from the failed link's command line or CMake's phony alias),
+moves the object and the library aside to `build/<preset>/lnk1236/<time>/` (the evidence, kept
+because the cause is not known), rebuilds that library (or the object, when it was linked
+directly) with `CCACHE_RECACHE=1` — so a cache entry, if that is where the bad bytes were, is
+compiled and stored again rather than served again — at a quarter of the cores (at most 4), and
+runs the build once more, printing one line, `build: <code> (a corrupt object or library) in
+<file>: moved <paths> (<sizes>) to <dir>, rebuilding <target> once with CCACHE_RECACHE=1 at -j <n>,
+<free> GB of commit free`. **LNK1107** ("invalid or corrupt file: cannot read at 0x…") is repaired
+the same way: it names the library or object itself, and a library is archived again from its
+objects. The same night another row's flora library came out LNK1107 twice, past every object
+recompiled with `CCACHE_RECACHE=1`, while the machine's free commit fell from 53 GB to 29 GB, and a
+third build at parallel level 4 with 38 GB free linked: so the rebuild runs narrower, and the line
+says the sizes and the free commit, to see whether a short file and a short machine go together. A second failure, or an LNK1236 on an object the graph does not show,
+fails as before. The recognition is tested on the gate's own lines in `tools.linux_build`
+(`Find-CorruptObjectError`, `Get-CorruptObjectRepair` in `tools/lib/CompilerCache.psm1`). Keeping
+the output means `cmake --build` writes to a pipe, so Ninja prints each step on its own line
+instead of rewriting one status line.
+
+**What causes it is not known; what it is not** (T140, about forty minutes of looking):
+
+- **Not two writers of one object.** The lead was a generated source of one name compiled into
+  several targets, or one object written by two edges. Each of the four objects has exactly one
+  edge in `build.ninja` (`schemas\...\generated\schemas\src\protocol.cpp.obj` in
+  `engine_schemas_impl`, `domain\audio\...\src\protocol.cpp.obj` in `engine_audio_impl`, which is
+  a hand-written source of the same file name, `collision_draw.cpp.obj` in
+  `engine_scene_collision_impl`), and their object directories differ, so no two compiles share an
+  output path.
+- **Not bytes that stayed bad on disk, at least at the gate.** The gate's second attempt relinked
+  `engine_doc_tests.exe` (step 3 of 480) from the *same* `engine_schemas_impl.lib`, which Ninja did
+  not rebuild, and it linked. Whatever the linker read the first time was not what the file held a
+  minute later, so the fault there was in the reading or in a write still under way, not in a
+  stored object — and so not in a cache entry either, which ccache 4 also checksums on every read.
+- **Not a cache that lost track of its size.** `ccache -s -v` on the shared cache: 27.9 GB of the
+  30 GB its launchers pass, 4,073 cleanups so far; 139 errors in 874,717 calls, 132 of them "input
+  file modified during compilation" and 7 unreadable inputs; nothing about results or outputs.
+
+What is left, and now the stronger lead: a short or truncated write (or read) of an object or
+library while commit or the disk is under pressure or many writers run at once — the flora
+library's LNK1107 above, and the gate's, which logged 56.5 GB of commit to spare and 22.6 GB of
+physical memory free just after — or a writer outside Ninja's graph. The next one to look at:
+whether the kept file is shorter than its own header says (an archive member's size field, a COFF
+section's raw data past the end), and the build's parallel level and the free commit then.
+The next one `dev.ps1` meets leaves its library and object in `lnk1236/`; compare them with the
+rebuilt ones (`dumpbin /headers`, or the bytes) and note the time, `ccache -s -v` and what else was
+building. The gate's own retry (`gate.ps1`, outside this tree) reruns the build without moving
+anything, which is what showed the file was good a minute later.
 
 #### `build -Affected`
 

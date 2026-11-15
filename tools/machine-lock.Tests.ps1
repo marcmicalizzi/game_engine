@@ -21,6 +21,18 @@ $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'lib/MachineLock.psm1') -Force
 $cli = Join-Path $PSScriptRoot 'gpu-lock.ps1'
 
+# The caller's own lock settings are not this test's. Every agent runs with ENGINE_GPU_LOCK_OWNER
+# set (and a run under `gpu-lock.ps1 run` with ENGINE_GPU_LOCK_HOLDER), and the scripts this test
+# starts read them: a build's ticket would carry the agent's name where the cases expect the
+# default, and a holder variable would make every session a session inside one. So the test
+# clears everything the lock reads from the environment, sets per case what a case needs, and
+# puts the caller's values back at the end (roadmap T140).
+$callerLockEnvironment = @{}
+foreach ($name in 'ENGINE_GPU_LOCK', 'ENGINE_GPU_LOCK_OWNER', 'ENGINE_GPU_LOCK_HOLDER', 'ENGINE_LINUX_BUILD_LOCK') {
+  $callerLockEnvironment[$name] = [Environment]::GetEnvironmentVariable($name)
+  [Environment]::SetEnvironmentVariable($name, $null)
+}
+
 $failures = New-Object System.Collections.Generic.List[string]
 $checks = 0
 $scratch = Join-Path ([IO.Path]::GetTempPath()) "engine-machine-lock-$([guid]::NewGuid().ToString('N'))"
@@ -282,6 +294,38 @@ try {
   }
   Exit-MachineLock -Handle $r.Handle
 
+  # Every waiter that looks removes the dead tickets it sees, so several remove the same one at
+  # once; a removal that finds the file gone is no error (T140: a queued linux-build.ps1 died of a
+  # Remove-Item that lost this race). Six looks at once, each writing the same dead ticket back and
+  # removing it, a few hundred times: no look throws, and nothing is left.
+  $p = New-LockPath
+  $deadName = Split-Path -Leaf (Write-Ticket $p ((Get-NowMs) - 60000) 600 4321 -5 'dead, removed by everyone')
+  $deadBody = [IO.File]::ReadAllText((Join-Path "$p.line" $deadName))
+  $modulePath = Join-Path $PSScriptRoot 'lib/MachineLock.psm1'
+  $racers = 1..6 | ForEach-Object {
+    Start-ThreadJob -ArgumentList $modulePath, $p, (Join-Path "$p.line" $deadName), $deadBody -ScriptBlock {
+      param($module, $lock, $ticket, $body)
+      $ErrorActionPreference = 'Stop'
+      Import-Module $module -Force
+      $threw = 0; $what = ''
+      for ($i = 0; $i -lt 300; $i++) {
+        try { [IO.File]::WriteAllText($ticket, $body) } catch { }   # another racer has it open
+        try { Get-MachineLockLine -Path $lock -RemoveDead | Out-Null } catch { $threw++; $what = $_.Exception.Message }
+      }
+      [pscustomobject]@{ Threw = $threw; What = $what }
+    }
+  }
+  $raced = @($racers | Wait-Job -Timeout 120 | Receive-Job)
+  $racers | Remove-Job -Force
+  Get-MachineLockLine -Path $p -RemoveDead | Out-Null   # the last writer's copy, if a racer wrote last
+  Test-That ('six waiters removing the same dead ticket at once: no look throws ({0})' -f (($raced | ForEach-Object { if ($_.Threw) { "$($_.Threw): $($_.What)" } }) -join '; ')) {
+    $raced.Count -eq 6 -and @($raced | Where-Object { $_.Threw -gt 0 }).Count -eq 0 -and
+    @(Get-ChildItem -LiteralPath "$p.line" -Filter 't-*.json').Count -eq 0
+  }
+  Test-That 'and removing a ticket that is already gone, or whose line is gone, is no error' {
+    (Remove-MachineLockTicketFile (Join-Path "$p.line" $deadName)) -and (Remove-MachineLockTicketFile (Join-Path $scratch 'no-line.line/t-x.json'))
+  }
+
   $p = New-LockPath
   $fresh = Write-Ticket $p ((Get-NowMs) - 1000) 600 4321 30 'ten minutes, just now'
   $r = Enter-MachineLock -Path $p -Purpose 'x' -Owner 'claude-engine' -LeaseMinutes 2
@@ -489,6 +533,7 @@ Add-Content -LiteralPath '$order' -Value 'doomed'
   } finally {
     $env:ENGINE_LINUX_BUILD_LOCK = $buildLockBefore
   }} finally {
+  foreach ($name in $callerLockEnvironment.Keys) { [Environment]::SetEnvironmentVariable($name, $callerLockEnvironment[$name]) }
   if ($KeepTemp) { Write-Host "kept $scratch" } else { Remove-Item -Recurse -Force -LiteralPath $scratch -ErrorAction SilentlyContinue }
 }
 

@@ -319,6 +319,44 @@ TEST_CASE("engine-view: --game draws its HUD over the picture, top left, and now
   if (elsewhere != 0) tmp.keep();  // the two pictures, for a human to look at
 }
 
+TEST_CASE("engine-view: --capture-every writes every n-th frame of a --game replay") {
+  // The forest session's need 99 (T140): a replay drew its frames and only the final capture was
+  // written, so each close-up of an animal took a run of its own. 120 ticks are 30 frames; every
+  // tenth is written as <stem>-<frame>.png, drawn at that frame, and the walk moves the camera
+  // between them, so no two are the same picture.
+  const test::TempDir tmp("engine_view_game_capture_every");
+  const std::string scene = erg_window(tmp);
+  if (scene.empty()) return;
+  const std::string session = walk_session(tmp, scene, 120);
+  const std::string stem = tmp.file("walk");
+  const Run run =
+      run_view({"--replay-input", session, "--scene", scene, "--offscreen", "--game",
+                fixture(tmp, WALK_POC_PATH), "--capture", stem + ".png", "--capture-every", "10",
+                "--width", "160", "--height", "96", "--ddc", tmp.file("ddc")});
+  if (run.exit_code == 3 || refused_without_dunes(run)) return;
+  REQUIRE_MESSAGE(run.exit_code == 0, run.output);
+  JsonValue summary;
+  REQUIRE_MESSAGE(summary_of(run, summary), run.output);
+  CHECK(number_at(summary, {"frames"}) == 30.0);
+  CHECK(number_at(*game_of(summary), {"ticks"}) == 120.0);  // the captures stepped nothing
+  image::Image shots[3];
+  const char* names[3] = {"-00009.png", "-00019.png", "-00029.png"};
+  for (u32 i = 0; i < 3; ++i) {
+    const std::string shot = stem + names[i];
+    REQUIRE_MESSAGE(image::read_image(shot, shots[i]) == io::Status::Ok, shot
+                                                                             << " was not written\n"
+                                                                             << run.output);
+  }
+  CHECK_FALSE(test::path_exists(stem + "-00008.png"));
+  CHECK(test::path_exists(stem + ".png"));  // and the last frame, as --capture always wrote it
+  const auto same = [](const image::Image& a, const image::Image& b) {
+    return a.pixels.size() == b.pixels.size() &&
+           std::memcmp(a.pixels.data(), b.pixels.data(), a.pixels.size()) == 0;
+  };
+  CHECK_FALSE(same(shots[0], shots[1]));
+  CHECK_FALSE(same(shots[1], shots[2]));
+}
+
 TEST_CASE("engine-view: a --game run that drains the meter ends through end_run") {
   const test::TempDir tmp("engine_view_game_end");
   const std::string scene = erg_window(tmp);

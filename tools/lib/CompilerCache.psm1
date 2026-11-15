@@ -208,5 +208,114 @@ function Read-CachedLauncher([string]$BuildDir) {
   return ''
 }
 
+# --- a corrupt object at the link (LNK1236) ------------------------------------------------------
+#
+# MSVC's linker sometimes refuses an object this machine built a moment before: "fatal error
+# LNK1236: corrupt or invalid COFF sections", four times on 2026-11-14 (docs/ci/local-linux.md,
+# "A corrupt object at the link"). `tools/dev.ps1 build` recognises the line in the build's output,
+# removes the object and the library holding it, rebuilds that one target with CCACHE_RECACHE=1
+# (so a cache entry, if that is where the bad bytes were, is replaced rather than served again),
+# and runs the build once more. These are the pure parts, tested on canned logs in
+# tools/linux-build.Tests.ps1.
+
+# Every LNK1236 line of a build's output: Library (the archive as the linker named it, or $null),
+# Member (the object inside it), Object (an object linked directly, or $null) and Named (what the
+# line said). One per distinct object.
+function Find-CorruptObjectError([string[]]$Lines) {
+  $found = [ordered]@{}
+  foreach ($line in @($Lines)) {
+    if ("$line" -notmatch '^\s*(?<where>\S.*?)\s*:\s*fatal error (?<code>LNK1236|LNK1107)\b') { continue }
+    $where = $Matches['where'].Trim('"')
+    $code = $Matches['code']
+    if ($where -match '^LINK$' -or $found.Contains($where)) { continue }
+    if ($where -match '^(?<lib>.+?\.lib)\((?<member>[^()]+)\)$') {
+      $found[$where] = [pscustomobject]@{ Code = $code; Library = $Matches['lib']; Member = $Matches['member']; Object = $null; Named = $where }
+    } elseif ($where -match '\.lib$') {
+      # LNK1107 names the archive itself ("invalid or corrupt file: cannot read at 0x..."): the
+      # library is what is short, not one object in it.
+      $found[$where] = [pscustomobject]@{ Code = $code; Library = $where; Member = $null; Object = $null; Named = $where }
+    } else {
+      $found[$where] = [pscustomobject]@{ Code = $code; Library = $null; Member = $null; Object = $where; Named = $where }
+    }
+  }
+  return @($found.Values)
+}
+
+# The explicit inputs `ninja -t query <target>` lists for one target, in the order it lists them
+# (the `| implicit` and `|| order-only` ones left out: they are not what the archive holds).
+function ConvertFrom-NinjaQueryInput([string[]]$Lines) {
+  $inputs = New-Object System.Collections.Generic.List[string]
+  $in = $false
+  foreach ($line in @($Lines)) {
+    $l = "$line".TrimEnd()
+    if ($l -match '^  input: ') { $in = $true; continue }
+    if ($l -match '^  \S') { $in = $false; continue }
+    if (-not $in -or $l -notmatch '^    (\S.*)$') { continue }
+    $item = $Matches[1]
+    if ($item.StartsWith('|')) { continue }
+    $inputs.Add($item)
+  }
+  return $inputs.ToArray()
+}
+
+function Get-PathLeaf([string]$path) { return ($path -split '[\\/]')[-1] }
+
+# The build-tree path of a library the linker named by its file name alone: the token of a link
+# command in the same output that ends in that name (`/WHOLEARCHIVE:schemas\x.lib` included), or
+# the input of the top-level phony alias CMake writes for it, through -Query; $null if neither.
+function Resolve-LinkedLibrary([string[]]$Lines, [string]$Library, [scriptblock]$Query) {
+  if ($Library -match '[\\/]') { return $Library }
+  foreach ($line in @($Lines)) {
+    if ("$line" -notmatch [regex]::Escape($Library)) { continue }
+    foreach ($token in ("$line" -split '\s+')) {
+      $t = ($token.Trim('"') -replace '^[/-]WHOLEARCHIVE:', '').Trim('"')
+      if ($t -match '[\\/]' -and (Get-PathLeaf $t) -ieq $Library) { return $t }
+    }
+  }
+  if ($Query) {
+    $inputs = @(ConvertFrom-NinjaQueryInput @(& $Query $Library))
+    $alias = @($inputs | Where-Object { (Get-PathLeaf $_) -ieq $Library })
+    if ($alias.Count -gt 0) { return $alias[0] }
+  }
+  return $null
+}
+
+<#
+.SYNOPSIS
+  What `tools/dev.ps1 build` does about the LNK1236 lines of a failed build's output: one repair per
+  corrupt object, with Named (as the linker said it), Library (its build-tree path, or $null),
+  Objects (the build-tree paths to remove: every input of that library with the member's file name,
+  or the object itself) and Target (what to rebuild: the library, or the object). Remove is the
+  library and the objects. An object the build graph does not show comes back with no Objects and
+  is not repaired. -Query runs `ninja -t query` on a target and returns its lines.
+#>
+function Get-CorruptObjectRepair {
+  param([string[]]$Lines, [scriptblock]$Query)
+  $repairs = New-Object System.Collections.Generic.List[object]
+  foreach ($e in (Find-CorruptObjectError $Lines)) {
+    if ($e.Object) {
+      $repairs.Add([pscustomobject]@{ Code = $e.Code; Named = $e.Named; Library = $null; Objects = @($e.Object); Target = $e.Object; Remove = @($e.Object) })
+      continue
+    }
+    $lib = Resolve-LinkedLibrary $Lines $e.Library $Query
+    if (-not $e.Member) {   # the library itself (LNK1107): archived again from its objects
+      [string[]]$own = @()
+      if ($lib) { $own = @($lib) }
+      $repairs.Add([pscustomobject]@{ Code = $e.Code; Named = $e.Named; Library = $lib; Objects = @(); Target = $lib; Remove = $own })
+      continue
+    }
+    $objects = @()
+    if ($lib -and $Query) {
+      $leaf = Get-PathLeaf $e.Member
+      $objects = @(ConvertFrom-NinjaQueryInput @(& $Query $lib) | Where-Object { (Get-PathLeaf $_) -ieq $leaf })
+    }
+    [string[]]$remove = @()
+    if ($objects.Count -gt 0) { $remove = @($objects) + @($lib) }
+    $repairs.Add([pscustomobject]@{ Code = $e.Code; Named = $e.Named; Library = $lib; Objects = $objects; Target = $lib; Remove = $remove })
+  }
+  return $repairs.ToArray()
+}
+
 Export-ModuleMember -Function Get-CheckoutKind, ConvertFrom-CcacheVersion, Find-Ccache, Get-CcachePlan, Get-CcacheConfigureArgs,
-  Test-CcacheReconfigure, Read-CachedLauncher
+  Test-CcacheReconfigure, Read-CachedLauncher, Find-CorruptObjectError, ConvertFrom-NinjaQueryInput, Resolve-LinkedLibrary,
+  Get-CorruptObjectRepair

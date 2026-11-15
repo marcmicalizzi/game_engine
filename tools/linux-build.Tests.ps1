@@ -388,6 +388,90 @@ Test-That 'a tree reconfigures when its launcher is not the one wanted, and only
     (Test-CcacheReconfigure -Plan (Plan agent '' $exe ([version]'4.13') 'E:\cc') -CachedLauncher $on.Launcher)
 }
 
+# --- a corrupt object at the link: what `tools/dev.ps1 build` removes and rebuilds (LNK1236) -------------
+#
+# The lines as the gate's msvc-release build printed them on 2026-11-14 (shortened), and ninja's query
+# of the library as `ninja -t query` prints it.
+
+$gateLog = @(
+  '[429/946] Linking CXX executable domain\doc\engine_doc_tests.exe',
+  'FAILED: [code=4294967295] domain/doc/engine_doc_tests.exe ',
+  'LINK Pass 1: command "C:\PROGRA~1\link.exe /nologo domain\doc\CMakeFiles\engine_doc_tests.dir\tests\document_tests.cpp.obj /out:domain\doc\engine_doc_tests.exe domain\doc\engine_doc.lib  engine_test_main.lib  /WHOLEARCHIVE:schemas\engine_schemas_impl.lib  foundation\io\engine_io.lib" failed (exit code 1236) with the following output:',
+  'engine_schemas_impl.lib(protocol.cpp.obj) : fatal error LNK1236: corrupt or invalid COFF sections',
+  '',
+  '[430/946] Linking CXX executable domain\geometry\engine_geometry_bench.exe',
+  'FAILED: [code=4294967295] apps/x/x_tests.exe ',
+  'engine_schemas_impl.lib(protocol.cpp.obj) : fatal error LNK1236: corrupt or invalid COFF sections',
+  'systems\scene_collision\CMakeFiles\engine_scene_collision_impl.dir\src\collision_draw.cpp.obj : fatal error LNK1236: corrupt or invalid COFF sections',
+  'ninja: build stopped: subcommand failed.')
+$libQuery = @(
+  'schemas/engine_schemas_impl.lib:',
+  '  input: CXX_STATIC_LIBRARY_LINKER__engine_schemas_impl_Release',
+  '    schemas/CMakeFiles/engine_schemas_impl.dir/generated/schemas/src/doc.cpp.obj',
+  '    schemas/CMakeFiles/engine_schemas_impl.dir/generated/schemas/src/protocol.cpp.obj',
+  '    schemas/CMakeFiles/engine_schemas_impl.dir/generated/schemas/src/tissue.cpp.obj',
+  '    || cmake_object_order_depends_target_engine_schemas_impl',
+  '  outputs:',
+  '    domain/doc/engine_doc_tests.exe',
+  '    protocol.cpp.obj')
+$aliasQuery = @('engine_schemas_impl.lib:', '  input: phony', '    schemas/engine_schemas_impl.lib', '  outputs:', '    all')
+$asked = New-Object System.Collections.Generic.List[string]
+$fakeNinja = { param($t) $asked.Add($t); if ($t -match '[\\/]') { $libQuery } else { $aliasQuery } }
+
+Test-That 'LNK1236 lines are found, once per object: an archive member and an object linked directly' {
+  $e = Find-CorruptObjectError $gateLog
+  $e.Count -eq 2 -and $e[0].Library -eq 'engine_schemas_impl.lib' -and $e[0].Member -eq 'protocol.cpp.obj' -and $null -eq $e[0].Object -and
+    $e[1].Object -eq 'systems\scene_collision\CMakeFiles\engine_scene_collision_impl.dir\src\collision_draw.cpp.obj' -and $null -eq $e[1].Library
+}
+Test-That 'a build that failed for another reason has none, and is not retried' {
+  (Find-CorruptObjectError @('x.cpp(3): error C2065: ''y'': undeclared identifier', 'LINK : fatal error LNK1104: cannot open file ''a.exe''')).Count -eq 0 -and
+    (Get-CorruptObjectRepair -Lines @('ninja: build stopped: subcommand failed.') -Query $fakeNinja).Count -eq 0
+}
+Test-That 'ninja''s query gives the explicit inputs, without the order-only ones or the outputs' {
+  $i = ConvertFrom-NinjaQueryInput $libQuery
+  $i.Count -eq 3 -and $i[1] -eq 'schemas/CMakeFiles/engine_schemas_impl.dir/generated/schemas/src/protocol.cpp.obj'
+}
+Test-That 'the library named by file alone is found on the failed link''s command line, /WHOLEARCHIVE: and all' {
+  (Resolve-LinkedLibrary $gateLog 'engine_schemas_impl.lib' $null) -eq 'schemas\engine_schemas_impl.lib'
+}
+Test-That 'or through the phony alias CMake writes for it when no command line names it' {
+  (Resolve-LinkedLibrary @('engine_schemas_impl.lib(protocol.cpp.obj) : fatal error LNK1236: x') 'engine_schemas_impl.lib' $fakeNinja) -eq 'schemas/engine_schemas_impl.lib'
+}
+$asked.Clear()
+$repairs = Get-CorruptObjectRepair -Lines $gateLog -Query $fakeNinja
+Test-That 'the repair removes that one object and its library, and rebuilds the library' {
+  $r = $repairs[0]
+  $repairs.Count -eq 2 -and $r.Library -eq 'schemas\engine_schemas_impl.lib' -and $r.Target -eq 'schemas\engine_schemas_impl.lib' -and
+    ($r.Remove -join '|') -eq 'schemas/CMakeFiles/engine_schemas_impl.dir/generated/schemas/src/protocol.cpp.obj|schemas\engine_schemas_impl.lib' -and
+    ($asked -join '|') -eq 'schemas\engine_schemas_impl.lib'
+}
+Test-That 'and an object linked directly is removed and rebuilt itself' {
+  $r = $repairs[1]
+  $r.Target -eq $r.Objects[0] -and ($r.Remove -join '|') -eq $r.Objects[0] -and $r.Objects[0] -match 'collision_draw\.cpp\.obj$'
+}
+Test-That 'a member the build graph does not show is named and not repaired' {
+  $r = @(Get-CorruptObjectRepair -Lines @('engine_x.lib(gone.cpp.obj) : fatal error LNK1236: corrupt or invalid COFF sections') -Query { param($t) @() })
+  $r.Count -eq 1 -and $r[0].Remove.Count -eq 0 -and $r[0].Named -eq 'engine_x.lib(gone.cpp.obj)'
+}
+Test-That 'LNK1107 on a library (a short archive, 2026-11-14) re-archives that library alone' {
+  $r = @(Get-CorruptObjectRepair -Lines @(
+      'domain\flora\engine_flora.lib : fatal error LNK1107: invalid or corrupt file: cannot read at 0x8000009E',
+      'LINK : fatal error LNK1107: ignored, it names no file') -Query $fakeNinja)
+  $r.Count -eq 1 -and $r[0].Code -eq 'LNK1107' -and $r[0].Target -eq 'domain\flora\engine_flora.lib' -and
+    ($r[0].Remove -join '|') -eq 'domain\flora\engine_flora.lib' -and $r[0].Objects.Count -eq 0
+}
+Test-That 'and on an object, that object' {
+  $r = @(Get-CorruptObjectRepair -Lines @('apps\x\CMakeFiles\x.dir\main.cpp.obj : fatal error LNK1107: invalid or corrupt file: cannot read at 0x10') -Query $fakeNinja)
+  $r.Count -eq 1 -and $r[0].Code -eq 'LNK1107' -and $r[0].Target -eq 'apps\x\CMakeFiles\x.dir\main.cpp.obj'
+}
+Test-That 'tools/dev.ps1 build retries once, with CCACHE_RECACHE=1 for the rebuild only, and fails as before otherwise' {
+  $dev = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'dev.ps1')
+  $dev -match "'--parallel', `"\`$jobs`"" -and $dev -match 'FreeVirtualMemory' -and
+  $dev -match 'Get-CorruptObjectRepair -Lines \$built\.Lines' -and $dev -match "\`$env:CCACHE_RECACHE = '1'" -and
+    $dev -match 'finally \{ \$env:CCACHE_RECACHE = \$recache \}' -and
+    ([regex]::Matches($dev, 'throw "build failed')).Count -ge 4
+}
+
 # --- the GPU server's trees: remote-build.ps1 -Prune -Stale (tools/lib/RemoteTrees.psm1) ---------------
 #
 # Here for the reason the Windows compiler cache is: tools.linux_build is the CTest test these
