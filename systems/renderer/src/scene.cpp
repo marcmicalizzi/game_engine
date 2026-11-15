@@ -1968,8 +1968,7 @@ bool make_placement_forms(SceneDesc& resolved, Vector<SourceMesh>& sources,
     // The mesh's frame as a placement places it (its fit), and how far it reaches from there.
     FitParts fit;
     const MeshFit& mf = resolved.mesh_info[m].fit;
-    if (mf.active())
-      fit = fit_parts(mf, std::span<const Vec3>(mesh.vertices.data(), mesh.vertices.size()));
+    if (mf.active()) fit = fit_parts(mf, dags[m], 0, dags[m].mesh.clusters.size());
     f32 most = 0.0f;
     for (const geometry::ClusterDesc& c : mesh.clusters)
       most = std::max(most, length(c.center - fit.anchor) + c.radius);
