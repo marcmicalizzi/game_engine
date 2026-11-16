@@ -460,6 +460,24 @@ for the bench's 96 m street, 94,000 for its 3 km one), each candidate's street t
 station of every way within reach for up to six depths, and each pad's level against every built
 pad. Caching the ways, or a coarser grid for long ones, is still the next step.
 
+**The mends** (`k_village_version` 4, 2026-11-16, the same machine; other processes at 35 % of the
+CPU and another agent's `engine-view` on the GPU just before ours, so upper bounds): the ways
+joined, the crofts stopped on steep ground, and the test scene on a 512 m ground (README). One
+`engine-view` run over the six cameras of the G206 scratch's `fixed3.json`, the same flags as
+above, GPU medians over frames 30 to 117 of each camera's 120:
+
+| camera | version 3 | version 4 |
+|---|---|---|
+| the lane camera (93, 1.65, −30) | 5.53 ms | 5.42 ms (resolve 3.85) |
+| from above, wide (108, 135, 22) | 6.72 ms | 6.97 ms (resolve 5.09) |
+| the street camera (97.6, 1.65, −14) | 5.22 ms | 4.73 ms (resolve 3.30) |
+| on the green, along the east row (80, 1.65, −2) | — | 4.95 ms (resolve 3.55) |
+| coming in along the street from the north (84, 1.65, 98) | — | 6.42 ms (resolve 4.46) |
+
+The plan's time was not measured again: the croft's test adds at most one ground sample per 4 m of
+a candidate's depth per attempt, and the trimming one nearest-station search per point of a
+joined end. The village's tests' own time in `msvc-release`: 19 cases, the LOD case included.
+
 **The grown plan was three hundred times slower** than the row plan: the way's search
 over its corridor (a 16-neighbour search over 3,000 cells for the bench's 96 m street, 128,000 for
 its 3 km one), the pull straight, and each candidate's test against every station of every street
@@ -594,6 +612,18 @@ load dropped, withheld, buried and floated nothing.
 
 ## Not yet
 
+- **The walk case and the end-to-end case fail since version 3** (run on the GPU 2026-11-16 at
+  version 4; neither entry has two ways or sloping ground, so their plans are version 3's). The
+  walk (`scene_collision`, seed 7): the walker stops at the foot of house 0's stair, 0.43 m up,
+  11 of 15 points reached, and the wall check reads the entry's `setback_m` as the house's own,
+  which the uneven setbacks of version 3 made untrue (it stopped 1.03 m short of a wall it took to
+  be 2 m back). The end-to-end case (seed 7, a flat 64 m ground): one inside frame of six is
+  5.8 % empty where a twentieth is allowed. House 0 in both is now a narrow toft's deep house (the
+  subdivision), whose stair and windows the filler's other houses did not have; not mended here.
+- **The heightfield ends at the horizon.** The test scene's ground is 512 m, so no view of the
+  village shows the bare ground beyond it nearby, but an eye-level view across the open side sees
+  its edge as a pale band on the horizon: a far ground past a tile set's heightfield is the tile
+  set's to give.
 - **No document records.** Plan 14's village filler writes `engine.structure.Village` and
   `Building` records the author then owns (`structure.fill_village`); this one is a scene
   generator, and its plan is the function that writer will call. Until then a village is
