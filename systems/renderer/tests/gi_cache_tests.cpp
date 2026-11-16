@@ -881,6 +881,29 @@ Grain grain_of(const CapturedFrame& on, const CapturedFrame& off, u32 x0, u32 y0
   return out;
 }
 
+// The box's plain wall at its corner (R171): the indirect term over the mode-off picture, its mean
+// over the 20 columns nearest the -x wall (x 4 to 24) against its mean over the wall's middle (x
+// 200 to 312), rows 64 to 448. Below 1 the corner is darker, which is the light the corner's own
+// cells hold; a read that blurred it towards the coarser level would lift it towards 1.
+f64 corner_contrast(const CapturedFrame& on, const CapturedFrame& off) {
+  auto luma = [](const Vector<f32>& light, u32 i) {
+    return 0.2126 * static_cast<f64>(light[i * 3]) + 0.7152 * static_cast<f64>(light[i * 3 + 1]) +
+           0.0722 * static_cast<f64>(light[i * 3 + 2]);
+  };
+  auto mean = [&](u32 x0, u32 x1) {
+    f64 sum = 0.0;
+    u32 n = 0;
+    for (u32 y = 64; y < 448; ++y)
+      for (u32 x = x0; x < x1; ++x) {
+        const u32 i = y * on.width + x;
+        sum += luma(on.light, i) / std::max(luma(off.light, i), 1e-9);
+        ++n;
+      }
+    return sum / static_cast<f64>(n);
+  };
+  return mean(4, 24) / mean(200, 312);
+}
+
 f64 correlation(const std::vector<f64>& a, const std::vector<f64>& b) {
   f64 ma = 0.0;
   f64 mb = 0.0;
@@ -932,11 +955,16 @@ TEST_CASE("gi cache: the grain on a plain wall is its cells' sampling noise") {
     const char* name;
     const char* rays;
     const char* show;
+    const char* spread;
   };
   // The trickle at one pixel in nine, as at 3840x2160 (`gfx::gi_trickle_stride`), then four
-  // times the rays, then the level two up read whole.
-  const Run runs[3] = {
-      {"default", "58300", "-1"}, {"rays x4", "233200", "-1"}, {"level +2", "58300", "2"}};
+  // times the rays, then the level two up read whole: the samples' law, with the read as stage 8
+  // left it (`renderer.gi.spread` off). Then the read by the cells' measured spread, the default.
+  constexpr u32 k_runs = 4;
+  const Run runs[k_runs] = {{"stage 8's read", "58300", "-1", "false"},
+                            {"rays x4", "233200", "-1", "false"},
+                            {"level +2", "58300", "2", "false"},
+                            {"the measured spread", "58300", "-1", "true"}};
   CapturedFrame off;
   {
     const ScopedTunable mode("renderer.gi.mode", "off");
@@ -950,11 +978,13 @@ TEST_CASE("gi cache: the grain on a plain wall is its cells' sampling noise") {
     channels.light = true;
     REQUIRE_MESSAGE(rig.renderer.capture(frame, channels, off, &rig.error), rig.error);
   }
-  f64 spread[3] = {};
-  for (u32 r = 0; r < 3; ++r) {
+  f64 spread[k_runs] = {};
+  f64 corner[k_runs] = {};
+  for (u32 r = 0; r < k_runs; ++r) {
     const ScopedTunable mode("renderer.gi.mode", "bounce");
     const ScopedTunable rays("renderer.gi.rays_per_frame", runs[r].rays);
     const ScopedTunable show("renderer.gi.show_level", runs[r].show);
+    const ScopedTunable measured("renderer.gi.spread", runs[r].spread);
     Rig rig;
     rig.width = k_side;
     rig.height = k_side;
@@ -976,13 +1006,17 @@ TEST_CASE("gi cache: the grain on a plain wall is its cells' sampling noise") {
       REQUIRE(shot.light.size() == off.light.size());
       // The wall less a strip at the corner (x 0 to 40) and at the floor and ceiling's edges.
       shots.push_back(grain_of(shot, off, 64, 24, 500, 488));
+      // The corner's contrast: the indirect term over the mode-off picture in the 20 pixels
+      // nearest the -x wall against the wall's middle, the three captured frames' mean.
+      corner[r] += corner_contrast(shot, off) / 3.0;
     }
     spread[r] = shots[0].spread;
     MESSAGE("the box's plain wall, "
             << std::string(runs[r].name) << ": grain " << 100.0 * shots[0].spread
             << " % of the indirect term; correlation with the next frame "
             << correlation(shots[0].field, shots[1].field) << ", with the frame sixty on "
-            << correlation(shots[0].field, shots[2].field));
+            << correlation(shots[0].field, shots[2].field) << "; the corner at " << corner[r]
+            << " of the wall's middle");
   }
   CHECK(spread[0] > 0.0);
   // Four times the samples: half the noise.
@@ -993,8 +1027,96 @@ TEST_CASE("gi cache: the grain on a plain wall is its cells' sampling noise") {
   // of a pattern that wide out with the light's own slope, so it reads under a quarter (0.17 on
   // the RTX 5090, 2026-11-15).
   CHECK(spread[2] < spread[0] * 0.25 * 1.33);
-  WARN_MESSAGE(spread[0] < 0.01,
-               "R171: a plain wall's grain is " << 100.0 * spread[0] << " %, the target under 1 %");
+  // The measured spread: less grain than stage 8's read, which is what a James-Stein estimate
+  // pooled over several means guarantees (its risk never exceeds the unshrunk mean's). Here 0.73
+  // of it (1.29 % against 1.76 % on the RTX 5090, 2026-11-16), where the village's walls show
+  // half: the box is small, and its light changes across a last-level cell (40 cm, 100 pixels),
+  // which is detail the read keeps.
+  CHECK(spread[3] < spread[0]);
+  WARN_MESSAGE(spread[3] < 0.01,
+               "R171: a plain wall's grain is " << 100.0 * spread[3] << " %, the target under 1 %");
+  // A blur would lift the darker corner towards the wall's middle (level +2 read whole stands at
+  // 0.928 where stage 8's read stands at 0.907); the measured spread's read stands at 0.913, under
+  // a third of that lift, and four times the rays move it as far (0.913), so what it moves is the
+  // corner's noise. The bound: no more than half of the coarse level's lift.
+  CHECK(corner[3] - corner[0] < 0.5 * (corner[2] - corner[0]));
+}
+
+// **R171: a moved light settles no slower with the measured spread.** The same wall, the sun
+// moved two hours along its arc at frame 100 (its patch through the opening moves on the floor and
+// the floor's bounce onto the wall with it): the frames until the wall's light stays within a tenth
+// of the change of where it settles, with the read as stage 8 left it and with the measured
+// spread. The read leans on the last level, which remembers sixteen frames where the own cells
+// remember 256 samples (23 frames at the trickle's eleven), so it should settle no later; two
+// frames of slack are the threshold's crossing in a light that still carries the cells' noise.
+TEST_CASE("gi cache: a moved light settles no slower with the measured spread") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("gi cache unavailable here: " << gpu.why);
+    return;
+  }
+  const test::TempDir tmp("engine_gi_settle");
+  Fixture fixture = box_fixture(tmp.native());
+  fixture.camera.position = WorldPos{-1.0, 0.8, 0.0};
+  fixture.camera.target = WorldPos{-1.0, 0.8, -2.0};
+  constexpr u32 k_side = 512;
+  const ScopedTunable scale("renderer.gi.cell_scale", "0.025");
+  const ScopedTunable rays("renderer.gi.rays_per_frame", "58300");
+  const ScopedTunable mode("renderer.gi.mode", "bounce");
+  constexpr u32 k_moved = 100;
+  constexpr u32 k_frames = 260;
+  u32 settled_at[2] = {};
+  f64 change[2] = {};
+  for (u32 r = 0; r < 2; ++r) {
+    const ScopedTunable measured("renderer.gi.spread", r == 0 ? "false" : "true");
+    Rig rig;
+    rig.width = k_side;
+    rig.height = k_side;
+    REQUIRE_MESSAGE(rig.build(gpu.device, fixture.desc, false), rig.error);
+    FrameDesc frame;
+    frame.camera = fixture.camera;
+    CaptureChannels channels;
+    channels.light = true;
+    std::vector<f64> wall;
+    for (u32 i = 0; i < k_frames; ++i) {
+      frame.frame_index = i;
+      frame.sky_time_s = i < k_moved ? 0.0 : 7200.0;
+      if (i + 1 < k_moved) {
+        REQUIRE_MESSAGE(rig.renderer.render_offscreen(frame, &rig.error), rig.error);
+        continue;
+      }
+      CapturedFrame shot;
+      REQUIRE_MESSAGE(rig.renderer.capture(frame, channels, shot, &rig.error), rig.error);
+      f64 sum = 0.0;
+      for (u32 y = 64; y < 448; ++y)
+        for (u32 x = 64; x < 500; ++x) {
+          const u32 p = y * shot.width + x;
+          sum += 0.2126 * static_cast<f64>(shot.light[p * 3]) +
+                 0.7152 * static_cast<f64>(shot.light[p * 3 + 1]) +
+                 0.0722 * static_cast<f64>(shot.light[p * 3 + 2]);
+        }
+      wall.push_back(sum);
+    }
+    // wall[0] is the frame before the move; the last forty frames are where it settles.
+    f64 settled = 0.0;
+    for (usize i = wall.size() - 40; i < wall.size(); ++i)
+      settled += wall[i] / 40.0;
+    change[r] = (settled - wall[0]) / wall[0];
+    const f64 band = 0.1 * std::fabs(settled - wall[0]);
+    u32 at = static_cast<u32>(wall.size());
+    for (usize i = wall.size(); i-- > 1;) {
+      if (std::fabs(wall[i] - settled) > band) break;
+      at = static_cast<u32>(i);
+    }
+    settled_at[r] = at;
+    MESSAGE("the box's wall after the sun moved, "
+            << std::string(r == 0 ? "stage 8's read" : "the measured spread") << ": changes by "
+            << 100.0 * change[r] << " %, within a tenth of it from frame " << at
+            << " after the move");
+  }
+  // The move must change the wall's light by more than its noise for the count to mean anything.
+  CHECK(std::fabs(change[0]) > 0.05);
+  CHECK(settled_at[1] <= settled_at[0] + 2);
 }
 
 TEST_CASE("gi cache: a scene moved by whole cells draws the same bytes with the cache on") {

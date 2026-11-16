@@ -375,7 +375,10 @@ TEST_CASE("gi cache key: a level is taken early by what its difference shows, an
   // The lever off is stage 5's walk: `gi_blend_levels` without it is the count's rule alone.
   CHECK(k_gi_reveal == (1u << 23));
   CHECK((gi_flag_numbers(255, 127, 1.0f) & k_gi_reveal) == 0u);
-  CHECK((gi_flag_numbers(255, 255, 0.0f) >> k_gi_evict_shift & 0xffu) == 127u);
+  // R171 took the evict age's sixth bit for `k_gi_spread`: the age is six bits, at most 63.
+  CHECK(k_gi_spread == (1u << 22));
+  CHECK((gi_flag_numbers(255, 255, 1.0f) & (k_gi_reveal | k_gi_spread)) == 0u);
+  CHECK((gi_flag_numbers(255, 255, 0.0f) >> k_gi_evict_shift & 0xffu) == 63u);
 }
 
 TEST_CASE("gi cache key: a cell remembers 256 samples or sixteen frames of them") {
@@ -392,6 +395,188 @@ TEST_CASE("gi cache key: a cell remembers 256 samples or sixteen frames of them"
   CHECK(gi_history(16 * 711, 5) == 256);
   // The count is sixteen bits in the cell.
   CHECK(gi_history(60000, 60000) == 0xffffu);
+}
+
+namespace {
+
+// One cell folded frame after frame as the shader folds it (the mean in float, not a half): `n`
+// samples a frame drawn by `draw`, the mean's history and rate, and the spread (R171).
+struct FoldedCell {
+  u32 count = 0;
+  f32 mean = 0.0f;
+  f32 spread = 0.0f;
+};
+
+void fold_frame(FoldedCell& cell, u32 n, f32 frame_mean) {
+  const u32 previous = cell.count;
+  const u32 total = gi_history(previous, n);
+  const f32 rate = gi_history_rate(previous, n);
+  const f32 old = cell.mean;
+  cell.mean = previous == 0 ? frame_mean : old + (frame_mean - old) * rate;
+  cell.spread = gi_spread_fold(cell.spread, previous, n, total, old, frame_mean);
+  cell.count = total;
+}
+
+}  // namespace
+
+// R171 (renderer.md, "Indirect light", "R171: the grain on a plain wall"): what the fold keeps as a
+// cell's spread is, over its count, the variance of its mean — measured from the frames' means
+// alone, with no sum of squares in the cell. Two kinds of sample: the plain wall's indoors (one ray
+// in ten reaches the lit opening, 40 times the rest: a sample's variance 5.7 times its mean's
+// square) and a tame one (uniform: a third), at the trickle's eleven a frame and level +3's 711.
+// The bound: the run holds 1,500 to 1,700 of the mean's memories (twice its 23 or 16 frames), so
+// the measured variance of the mean is within about 4 % (sqrt(2 / 1,500)) of the truth at one
+// standard deviation, and the spread's own average closer; the fold's estimate is low by at most
+// the 3 % its correction at the cap leaves (it takes the history's variance as a sample's over its
+// count, not over 2 T - n). So 0.8 to 1.25 is four standard deviations either side and the bias.
+TEST_CASE("gi cache key: a cell's measured spread over its count is the variance of its mean") {
+  struct Case {
+    u32 n;
+    bool heavy;
+    u32 frames;
+  };
+  const Case cases[] = {{11, true, 40000}, {11, false, 40000}, {711, true, 26000}};
+  for (const Case& c : cases) {
+    u32 state = 777u + c.n;
+    auto draw = [&]() -> f32 {
+      const f32 u = static_cast<f32>(next(state) & 0xffffu) / 65536.0f;
+      if (!c.heavy) return 0.5f * u;  // uniform on [0, 0.5): mean 0.25, variance 0.25 / 12
+      return u < 0.1f ? 2.0f : 0.05f;
+    };
+    const f64 true_mean = c.heavy ? 0.1 * 2.0 + 0.9 * 0.05 : 0.25;
+    const f64 true_var = c.heavy ? 0.1 * 0.9 * (2.0 - 0.05) * (2.0 - 0.05) : 0.25 / 12.0;
+    FoldedCell cell;
+    f64 sum = 0.0;
+    f64 sum2 = 0.0;
+    f64 predicted = 0.0;
+    f64 sample_variance = 0.0;
+    u32 counted = 0;
+    for (u32 frame = 0; frame < c.frames; ++frame) {
+      f64 frame_sum = 0.0;
+      for (u32 i = 0; i < c.n; ++i)
+        frame_sum += static_cast<f64>(draw());
+      fold_frame(cell, c.n, static_cast<f32>(frame_sum / static_cast<f64>(c.n)));
+      if (frame < 400) continue;
+      sum += cell.mean;
+      sum2 += static_cast<f64>(cell.mean) * cell.mean;
+      predicted += static_cast<f64>(cell.spread) / static_cast<f64>(cell.count);
+      // A sample's variance back from the spread: the exponential average's 2 T - n over T.
+      const f64 t = static_cast<f64>(cell.count);
+      sample_variance += static_cast<f64>(cell.spread) * (2.0 * t - c.n) / t;
+      ++counted;
+    }
+    const f64 k = static_cast<f64>(counted);
+    const f64 mean = sum / k;
+    const f64 observed = sum2 / k - mean * mean;
+    const f64 ratio = (predicted / k) / observed;
+    MESSAGE("n " << c.n << std::string(c.heavy ? " heavy" : " tame") << ": the mean's variance "
+                 << observed << " measured, " << predicted / k << " from the spread (" << ratio
+                 << "); a sample's variance " << sample_variance / k << " against " << true_var);
+    CHECK(mean == doctest::Approx(true_mean).epsilon(0.02));
+    CHECK(ratio > 0.8);
+    CHECK(ratio < 1.25);
+    CHECK(sample_variance / k / true_var > 0.8);
+    CHECK(sample_variance / k / true_var < 1.25);
+  }
+  // A cell's first frame has no history to differ from; one with none this frame keeps its spread.
+  CHECK(gi_spread_fold(3.0f, 0, 11, 11, 0.0f, 1.0f) == 0.0f);
+  CHECK(gi_spread_fold(3.0f, 256, 0, 256, 0.5f, 1.0f) == 3.0f);
+  // The pressure's stamp never matches a bucket never stamped, and matches its frame's only.
+  CHECK(gi_pressure_stamp(0u) != 0u);
+  CHECK(gi_pressure_stamp(5u) == gi_pressure_stamp(5u + 32768u));
+  CHECK(gi_pressure_stamp(5u) != gi_pressure_stamp(6u));
+  CHECK(gi_pressure_stamp(0xffffffffu) <= 0xffffu);
+}
+
+// R171: the walk's answer against the ladder's last level, by the cells' measured spreads.
+TEST_CASE(
+    "gi cache key: the read leans on the last level only as far as the measured noise explains") {
+  // Nothing measured: the answer is kept whole, whatever the detail.
+  CHECK(gi_spread_keep(0.0f, 0.0f, 0.0f) == 1.0f);
+  CHECK(gi_spread_keep(0.04f, 0.0f, 0.0f) == 1.0f);
+  CHECK(gi_spread_keep(0.0f, 0.0f, 0.01f) == 1.0f);  // a quiet answer over a noisy level
+  u32 state = 4242u;
+  for (u32 trial = 0; trial < 4000; ++trial) {
+    const f32 u = 0.01f + static_cast<f32>(next(state) % 2000) / 1000.0f;
+    const f32 var_r = std::pow(static_cast<f32>(next(state) % 1000) / 10000.0f * u, 2.0f);
+    const f32 var_u = var_r / static_cast<f32>(1 + next(state) % 64);
+    const f32 detail = static_cast<f32>(next(state) % 2000) / 1000.0f * var_r * 4.0f;
+    const f32 keep = gi_spread_keep(detail, var_r, var_u);
+    CHECK(keep >= 0.0f);
+    CHECK(keep <= 1.0f);
+    // More of the answer for more detail.
+    CHECK(gi_spread_keep(2.0f * detail + 1e-6f, var_r, var_u) >= keep);
+    // The read's noise is never more than the answer's alone (the last level is the quieter).
+    const f32 noise = keep * keep * var_r + (1.0f - keep) * (1.0f - keep) * var_u;
+    CHECK(noise <= var_r * 1.0001f + 1e-12f);
+  }
+  // The detail pooled over a level's cells: four cells about `u` by their noise alone give none;
+  // four whose true light is 0.1 off it give that difference's square less nothing.
+  {
+    GiLevelRead own;
+    const f32 u = 0.5f;
+    const f32 var = 0.0004f;  // a cell's mean's variance: 0.02 of noise
+    const f32 offsets[4] = {0.02f, -0.02f, 0.02f, -0.02f};  // one noise either way
+    for (const f32 o : offsets) {
+      own.cells += 1.0f;
+      own.lum += u + o;
+      own.lum2 += (u + o) * (u + o);
+      own.cell_noise += var;
+    }
+    CHECK(gi_spread_detail(own, u, 0.0f) == doctest::Approx(0.0f).epsilon(1e-6));
+    GiLevelRead dark;
+    for (u32 i = 0; i < 4; ++i) {
+      dark.cells += 1.0f;
+      dark.lum += u - 0.1f;
+      dark.lum2 += (u - 0.1f) * (u - 0.1f);
+      dark.cell_noise += var;
+    }
+    CHECK(gi_spread_detail(dark, u, 0.0f) == doctest::Approx(0.01f - var).epsilon(1e-3));
+    CHECK(gi_spread_detail(GiLevelRead{}, u, 0.0f) < 0.0f);
+  }
+  // The walk with the spread: a converged own level whose cells' samples are wild (a variance of
+  // five times the mean's square over 256 samples: 14 % of it) and a last level of 64 times its
+  // samples that agrees within that noise is read as the last level, but for the share its own
+  // noise is; one that differs by six of the own level's noise keeps the own level nearly whole.
+  // With nothing measured (`noise` 0) the walk is the walk without the spread, to the bit.
+  LevelCells levels[k_gi_ladder];
+  for (LevelCells& level : levels) {
+    trilinear(0.0, 0.0, 0.0, level.weight);
+    for (u32 i = 0; i < 8; ++i) {
+      level.samples[i] = 0;
+      level.mean[i] = 0.0;
+    }
+  }
+  levels[0].samples[0] = k_gi_max_samples;
+  levels[0].mean[0] = 0.5;
+  levels[3].samples[0] = 16 * 711;
+  levels[3].mean[0] = 0.48;
+  GiLevelRead reads[k_gi_ladder];
+  for (u32 l = 0; l < k_gi_ladder; ++l)
+    reads[l] = level_read(levels[l], k_gi_confident);
+  f32 plain[3];
+  f32 measured[3];
+  const f32 taken = gi_blend_levels(reads, k_gi_ladder, plain, k_gi_confident, true, false);
+  CHECK(gi_blend_levels(reads, k_gi_ladder, measured, k_gi_confident, true, true) == taken);
+  CHECK(measured[0] == plain[0]);
+  CHECK(plain[0] == doctest::Approx(0.5f));
+  // One corner at share 1, so a level's `noise` is its mean's variance: the own cell's 0.07 of its
+  // 0.5, and the last level's a sixty-fourth of that.
+  const f32 own_var = 5.0f * 0.5f * 0.5f / 256.0f;
+  reads[0].noise = own_var;
+  reads[0].cells = 1.0f;
+  reads[0].lum = 0.5f;
+  reads[0].lum2 = 0.25f;
+  reads[0].cell_noise = own_var;
+  reads[3].noise = own_var / 64.0f;
+  gi_blend_levels(reads, k_gi_ladder, measured, k_gi_confident, true, true);
+  CHECK(measured[0] == doctest::Approx(0.48f + 0.02f * (1.0f / 65.0f)).epsilon(1e-3));
+  levels[3].mean[0] = 0.5 - 6.0 * std::sqrt(static_cast<f64>(own_var));
+  reads[3] = level_read(levels[3], k_gi_confident);
+  reads[3].noise = own_var / 64.0f;
+  gi_blend_levels(reads, k_gi_ladder, measured, k_gi_confident, true, true);
+  CHECK(measured[0] > 0.5f - 0.05f * 6.0f * std::sqrt(own_var));
+  CHECK(measured[0] < 0.5f);
 }
 
 TEST_CASE("gi cache key: a converged level decides alone and a young one hands the rest up") {

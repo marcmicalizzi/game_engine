@@ -1,10 +1,10 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "R171",
-  "reason": "R171's first leg: the bounce's grain indoors, its cause with the captures that isolate it, the measurement the tree keeps and the mend's plan belong in the cache's section of the renderer page",
-  "date": "2026-11-15",
+  "reason": "R171: the bounce's grain indoors, its cause with the captures that isolate it and the measurement the tree keeps (first leg), then the mend that was built, its measurements, what is left and what it costs (second leg), belong in the cache's section of the renderer page",
+  "date": "2026-11-16",
   "by": "Marc Micalizzi",
   "deltas": {
-    "page:docs/subsystems/renderer.md": 6596
+    "page:docs/subsystems/renderer.md": 15879
   }
 }

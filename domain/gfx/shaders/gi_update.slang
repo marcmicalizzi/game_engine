@@ -632,11 +632,13 @@ void gi_fold_main(uint3 id : SV_DispatchThreadID) {
       if (age > k_gi_max_age) {
         expired = true;
       } else if (gi_evict_age(params->gi_flags) != 0u && age > gi_evict_age(params->gi_flags) &&
-                 bucket[0] == gi_now(params)) {
+                 (bucket[0] >> 16) == gi_pressure_stamp(gi_now(params))) {
         evicted = true;
       }
       if (expired || evicted) {
         keys[cell] = 0u;
+        // The first word keeps the bucket's pressure (its high half) and loses the cell's spread.
+        words[0] &= 0xffff0000u;
         for (uint i = 1u; i < k_gi_cell_words; ++i) words[i] = 0u;
       } else {
         kept = true;
@@ -674,6 +676,23 @@ void gi_fold_main(uint3 id : SV_DispatchThreadID) {
       const float3 old_mean = float3(f16tof32(words[6] & 0xffffu), f16tof32(words[6] >> 16),
                                      f16tof32(words[7] & 0xffffu));
       const float3 mean = previous == 0u ? frame_mean : lerp(old_mean, frame_mean, rate);
+      // **R171: the cell's spread, measured between frames** (gfx::gi_spread_fold, the same
+      // arithmetic): `n (m_frame - m)^2` with the history's own variance taken out, averaged at
+      // `n / previous`, scaled at the cap to what the exponential average's variance is, in the
+      // first word's low half (its high half is the bucket's pressure, which only the sample pass
+      // writes). Nothing for a cell's first frame.
+      float spread = 0.0;
+      if (previous != 0u) {
+        const float d = gi_luminance(frame_mean) - gi_luminance(old_mean);
+        const float nf = float(n);
+        const float pf = float(previous);
+        const float tf = float(total);
+        const float at_cap = previous + n > total ? tf / (2.0 * tf - nf) : 1.0;
+        const float estimate = nf * d * d * (pf / (pf + nf)) * at_cap;
+        const float before = f16tof32(words[0] & 0xffffu);
+        spread = min(before + (estimate - before) * min(nf / pf, 1.0), 65504.0);
+      }
+      words[0] = (words[0] & 0xffff0000u) | (f32tof16(spread) & 0xffffu);
       words[2] = 0u;
       words[3] = 0u;
       words[4] = 0u;
