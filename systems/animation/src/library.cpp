@@ -659,8 +659,9 @@ void joint_influence_bounds(std::span<const Vec3> positions,
 }
 
 f32 clip_displacement_bound(const anim::Skeleton& skeleton, const anim::Clip& clip,
-                            const JointBounds& bounds, u32 samples) {
+                            const JointBounds& bounds, u32 samples, u32* evaluations) {
   f32 out = 0.0f;
+  if (evaluations != nullptr) *evaluations = 0;
   const u32 joint_count = skeleton.joint_count();
   if (joint_count == 0) return out;
 
@@ -690,6 +691,7 @@ f32 clip_displacement_bound(const anim::Skeleton& skeleton, const anim::Clip& cl
   std::sort(times.begin(), times.end());
   times.resize(
       static_cast<Vector<f32>::size_type>(std::unique(times.begin(), times.end()) - times.begin()));
+  if (evaluations != nullptr) *evaluations = static_cast<u32>(times.size());
 
   anim::Pose pose;
   Vector<Mat4> model(joint_count, Mat4::identity());

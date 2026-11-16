@@ -32,9 +32,16 @@ using namespace engine::animation;
 
 namespace {
 
+// What a walk evaluated: the poses (one a time in its list) and, of the reference's list, how many
+// of those times are distinct, which is what the new walk must evaluate.
+struct Walked {
+  u32 evaluations = 0;
+  u32 distinct = 0;
+};
+
 // The walk as it stood before A47, line for line: `clip.times` as it is, duplicates and all.
 f32 reference_bound(const anim::Skeleton& skeleton, const anim::Clip& clip,
-                    const JointBounds& bounds, u32 samples = 64) {
+                    const JointBounds& bounds, u32 samples = 64, Walked* walked = nullptr) {
   f32 out = 0.0f;
   const u32 joint_count = skeleton.joint_count();
   if (joint_count == 0) return out;
@@ -45,6 +52,13 @@ f32 reference_bound(const anim::Skeleton& skeleton, const anim::Clip& clip,
   }
   for (u32 i = 0; i < samples && clip.duration > 0.0f; ++i)
     times.push_back(clip.duration * static_cast<f32>(i) / static_cast<f32>(samples));
+  if (walked != nullptr) {
+    walked->evaluations = static_cast<u32>(times.size());
+    Vector<f32> sorted = times;
+    std::sort(sorted.begin(), sorted.end());
+    walked->distinct =
+        static_cast<u32>(std::unique(sorted.begin(), sorted.end()) - sorted.begin());
+  }
   anim::Pose pose;
   Vector<Mat4> model(joint_count, Mat4::identity());
   Vector<anim::JointMatrix> matrices(joint_count, anim::JointMatrix{});
@@ -193,9 +207,12 @@ TEST_CASE("animation: a clip's travel is the old walk's to the bit, on every sha
 
 TEST_CASE("animation: a baked clip's travel walks each distinct time once") {
   // The cost the forest met (A47): 37 joints, three tracks each, two seconds at 30 keys a second.
-  // The answer is the reference's; the time is what changed. A debug build's clock says little, so
-  // the case checks the ratio of the two walks on the same fixture, where the old one evaluates
-  // 111 x 61 + 65 times and the new one 61 + 65 (the grid's points between keys are distinct).
+  // The answer is the reference's; what changed is how many poses the walk evaluates, which is the
+  // claim and so what is asserted: the old walk evaluates its list whole, 1 + 111 x 61 + 64 = 6,836
+  // times, and the new one each distinct time of that list once (at most 61 keys + 65 grid points;
+  // the grid's points at 0, 0.5, 1 and 1.5 s fall on keys). The two walks' times are printed, and
+  // nothing is asserted of them: a unit test's clock on a shared machine is not a measurement
+  // (the review of A47, 2026-11-16; until then the case held the ratio of the times to 10).
   Library library;
   std::string error;
   REQUIRE_MESSAGE(build(library, 37, 61, Shape::baked, error), error);
@@ -203,18 +220,23 @@ TEST_CASE("animation: a baked clip's travel walks each distinct time once") {
   const anim::Clip& clip = library.clip_data(0);
   const JointBounds bounds = spheres(skeleton.joint_count());
   using clock = std::chrono::steady_clock;
+  Walked old_walk;
+  u32 new_evaluations = 0;
   const auto t0 = clock::now();
-  const f32 want = reference_bound(skeleton, clip, bounds);
+  const f32 want = reference_bound(skeleton, clip, bounds, 64, &old_walk);
   const auto t1 = clock::now();
-  const f32 got = clip_displacement_bound(skeleton, clip, bounds);
+  const f32 got = clip_displacement_bound(skeleton, clip, bounds, 64, &new_evaluations);
   const auto t2 = clock::now();
   CHECK(bits(got) == bits(want));
   const f64 old_ms = std::chrono::duration<f64, std::milli>(t1 - t0).count();
   const f64 new_ms = std::chrono::duration<f64, std::milli>(t2 - t1).count();
-  MESSAGE("37 joints, 111 tracks, 61 keys: old walk " << old_ms << " ms, new " << new_ms << " ms");
-  // 6,836 evaluations against 126: a factor of 54 in the count. Held to 10, which a machine under
-  // any load keeps, since both walks run back to back on the same core.
-  CHECK(old_ms > 10.0 * new_ms);
+  MESSAGE("37 joints, 111 tracks, 61 keys: old walk " << old_walk.evaluations << " poses in "
+                                                      << old_ms << " ms, new " << new_evaluations
+                                                      << " poses in " << new_ms << " ms");
+  CHECK(old_walk.evaluations == 1u + 111u * 61u + 64u);
+  CHECK(new_evaluations == old_walk.distinct);
+  CHECK(new_evaluations <= 61u + 65u);
+  CHECK(new_evaluations > 61u);  // every key time, and the grid's points between keys
 }
 
 TEST_CASE("animation: the Fox's three clips keep their travel to the bit") {

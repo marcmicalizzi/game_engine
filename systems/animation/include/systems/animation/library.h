@@ -200,8 +200,11 @@ void joint_influence_bounds(std::span<const Vec3> positions,
                             JointBounds& out);
 
 // The bound over one clip. `samples` is the uniform grid added to the clip's own keyframe times.
+// `evaluations`, when given, is set to the poses the walk evaluated (one per distinct time, A47),
+// which is the claim travel_tests.cpp holds it to rather than a clock.
 f32 clip_displacement_bound(const anim::Skeleton& skeleton, const anim::Clip& clip,
-                            const JointBounds& bounds, u32 samples = 64);
+                            const JointBounds& bounds, u32 samples = 64,
+                            u32* evaluations = nullptr);
 // The largest bound over every clip of `skeleton_index` in `library`, which is what an instance
 // that may play any of them has to be padded by, and never less than the rest pose's own: zero
 // where the inverse binds undo the rest (a character holding it never leaves its bind-space
