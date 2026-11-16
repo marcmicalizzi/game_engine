@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "W130",
+  "reason": "W130 leg 3: water.md's Shading takes the broken water on a steep bed, the shore fade's new bound and their measured cost",
+  "date": "2026-11-16",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/water.md": 2922
+  }
+}
