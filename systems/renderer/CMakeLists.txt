@@ -86,6 +86,8 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     # the protocol field that reaches it or the reason none does, by a structured
                     # binding that stops compiling when a field is added; no device.
                     tests/request_tests.cpp
+                    # The types the renderer mirrors on the GPU itself (ADR-0019); no device.
+                    tests/size_table.cpp
                     # The reader through the registry with generators of the test's own, in every
                     # configuration: with no capability linked, the minimal one included.
                     tests/scene_gen_scene_tests.cpp

@@ -1,4 +1,5 @@
 #include "archive.h"
+#include "records.h"
 
 #include <core/containers/hash_map.h>
 #include <core/hash/hash.h>
@@ -88,23 +89,8 @@ bool read_json_file(const std::string& path, std::string& bytes, JsonValue& out,
 
 // ---- the tile file ------------------------------------------------------------------------------
 
-// A tile's record in its level's archive (archive.h), byte for byte what its own file held before
-// the archive (k_tileset_version 1): this header, then (cells + 3)^2 little-endian i32 millimetres,
-// rows of x in order of z, from the point one before the tile's first to one after its last. The
-// engine's targets are x86-64, little-endian, so the integers are written as they lie. Its version
-// is the record's own, 1, and moves only when a record's layout does: the archive moved the set's
-// version and left every tile's bytes, and so every level's hash, as they were.
-inline constexpr u32 k_tile_record_version = 1;
-struct TileHeader {
-  char magic[4] = {'E', 'T', 'I', 'L'};
-  u32 version = k_tile_record_version;
-  u32 cells = 0;
-  u32 reserved = 0;
-  i64 spacing_mm = 0;
-  i32 tx = 0;
-  i32 tz = 0;
-};
-static_assert(sizeof(TileHeader) == 32);
+// A tile's record in its level's archive is `TileHeader` (records.h), then (cells + 3)^2
+// little-endian i32 millimetres.
 
 u64 tile_bytes(u32 cells) noexcept {
   const u64 a = u64{cells} + 3;

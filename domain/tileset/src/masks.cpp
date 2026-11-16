@@ -2,6 +2,7 @@
 // integers or f64 polynomials and square roots — no libm call — so a level is the same bytes from
 // every toolchain, as the heights are (determinism_tests.cpp pins it).
 #include "archive.h"
+#include "records.h"
 
 #include <core/hash/hash.h>
 #include <core/jobs/job_system.h>
@@ -386,20 +387,7 @@ void evaluate(const Field& f, i64 x_mm, i64 z_mm, i64 step_mm, const Stencil& gr
   }
 }
 
-// A tile's record in the level's archive (archive.h), byte for byte what its own `.mask` file held
-// before the archive (k_mask_version 1). Its version is the record's own, and moves only when a
-// record's layout does.
-inline constexpr u32 k_mask_record_version = 1;
-struct MaskHeader {
-  char magic[4] = {'E', 'M', 'S', 'K'};
-  u32 version = k_mask_record_version;
-  u32 cells = 0;
-  u32 words = 0;
-  i64 spacing_mm = 0;
-  i32 tx = 0;
-  i32 tz = 0;
-};
-static_assert(sizeof(MaskHeader) == 32);
+// A tile's record in the level's archive is `MaskHeader` (records.h), then the words.
 
 using archive::tile_key;
 
