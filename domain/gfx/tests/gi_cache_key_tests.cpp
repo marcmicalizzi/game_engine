@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <vector>
 
 using namespace engine;
 using namespace engine::gfx;
@@ -375,10 +376,12 @@ TEST_CASE("gi cache key: a level is taken early by what its difference shows, an
   // The lever off is stage 5's walk: `gi_blend_levels` without it is the count's rule alone.
   CHECK(k_gi_reveal == (1u << 23));
   CHECK((gi_flag_numbers(255, 127, 1.0f) & k_gi_reveal) == 0u);
-  // R171 took the evict age's sixth bit for `k_gi_spread`: the age is six bits, at most 63.
+  // R171 took the evict age's sixth bit for `k_gi_spread` and its third leg the fifth for
+  // `k_gi_memory`: the age is five bits, at most 31.
   CHECK(k_gi_spread == (1u << 22));
-  CHECK((gi_flag_numbers(255, 255, 1.0f) & (k_gi_reveal | k_gi_spread)) == 0u);
-  CHECK((gi_flag_numbers(255, 255, 0.0f) >> k_gi_evict_shift & 0xffu) == 63u);
+  CHECK(k_gi_memory == (1u << 21));
+  CHECK((gi_flag_numbers(255, 255, 1.0f) & (k_gi_reveal | k_gi_spread | k_gi_memory)) == 0u);
+  CHECK((gi_flag_numbers(255, 255, 0.0f) >> k_gi_evict_shift & 0xffu) == 31u);
 }
 
 TEST_CASE("gi cache key: a cell remembers 256 samples or sixteen frames of them") {
@@ -487,6 +490,150 @@ TEST_CASE("gi cache key: a cell's measured spread over its count is the variance
   CHECK(gi_pressure_stamp(5u) == gi_pressure_stamp(5u + 32768u));
   CHECK(gi_pressure_stamp(5u) != gi_pressure_stamp(6u));
   CHECK(gi_pressure_stamp(0xffffffffu) <= 0xffffu);
+}
+
+namespace {
+
+// R171's third leg: sixteen coarse cells of sixty-four own cells each (level +3 over level 0 on a
+// wall), the own cells at the trickle's eleven a frame of the plain wall's heavy samples, the
+// coarse ones taking all their children's (704 a frame), and each coarse cell's change handed to
+// its children the next frame, as the sample pass does. The light holds still for `k_still`
+// frames, then is scaled by `scale`.
+struct MemoryRun {
+  f64 still_variance = 0.0;  // the own cells' means about their average, frames 600 to the change
+  u32 still_drops = 0;       // own cells sent back while the light held still, frames 400 on
+  u32 count = 0;             // an own cell's count the frame before the change
+  u32 settled = 0;  // frames after the change until the own cells' average stays within a tenth
+  f64 change = 0.0;
+};
+
+MemoryRun memory_run(bool memory, f32 scale, u32 seed) {
+  constexpr u32 k_parents = 16;
+  constexpr u32 k_children = 64;
+  constexpr u32 k_n = 11;
+  constexpr u32 k_still = 900;
+  constexpr u32 k_after = 500;
+  std::vector<GiMemoryCell> children(k_parents * k_children);
+  std::vector<GiMemoryCell> parents(k_parents);
+  std::vector<u8> handed(k_parents, 0);
+  std::vector<f64> average;
+  u32 state = seed;
+  MemoryRun out;
+  u32 variance_frames = 0;
+  for (u32 frame = 0; frame < k_still + k_after; ++frame) {
+    const f32 s = frame < k_still ? 1.0f : scale;
+    f64 all_means = 0.0;
+    f64 all_squares = 0.0;
+    for (u32 p = 0; p < k_parents; ++p) {
+      f64 parent_sum = 0.0;
+      for (u32 c = 0; c < k_children; ++c) {
+        f64 sum = 0.0;
+        for (u32 i = 0; i < k_n; ++i) {
+          const f32 u = static_cast<f32>(next(state) & 0xffffu) / 65536.0f;
+          sum += static_cast<f64>((u < 0.1f ? 2.0f : 0.05f) * s);
+        }
+        parent_sum += sum;
+        GiMemoryCell& cell = children[p * k_children + c];
+        const u32 before = cell.count;
+        gi_memory_fold(cell, k_n, static_cast<f32>(sum / static_cast<f64>(k_n)), handed[p] != 0,
+                       memory);
+        if (frame >= 400 && frame < k_still && cell.count < before) ++out.still_drops;
+        all_means += static_cast<f64>(cell.mean);
+        all_squares += static_cast<f64>(cell.mean) * static_cast<f64>(cell.mean);
+      }
+      gi_memory_fold(parents[p], k_n * k_children,
+                     static_cast<f32>(parent_sum / static_cast<f64>(k_n * k_children)), false,
+                     memory);
+      handed[p] = parents[p].changed ? 1 : 0;
+    }
+    const f64 cells = static_cast<f64>(k_parents * k_children);
+    const f64 mean = all_means / cells;
+    average.push_back(mean);
+    if (frame >= 600 && frame < k_still) {
+      out.still_variance += all_squares / cells - mean * mean;
+      ++variance_frames;
+    }
+    if (frame + 1 == k_still) out.count = children[0].count;
+  }
+  out.still_variance /= static_cast<f64>(variance_frames);
+  f64 level = 0.0;
+  for (u32 i = k_still + k_after - 150; i < k_still + k_after; ++i)
+    level += average[i] / 150.0;
+  out.change = level - average[k_still - 1];
+  out.settled = k_after;
+  for (u32 i = k_still + k_after; i-- > k_still;) {
+    if (std::fabs(average[i] - level) > 0.1 * std::fabs(out.change)) break;
+    out.settled = i - k_still;
+  }
+  return out;
+}
+
+}  // namespace
+
+// **R171's third leg: a cell remembers longer while its light holds still, and lets go at a
+// change** (renderer.md, "Indirect light", "R171: a cell's memory by its own spread"). With the
+// light still, an own cell's count reaches sixteen times today's history (4,096 samples), and its
+// mean's variance falls with the exponential average's effective count, 2 T - n: 8,181 against
+// 501, a sixteenth (the bound is twice that, for the cells a false alarm sends back and the run's
+// own spread). Sent back while still: none, at four deviations (a coarse cell leaves its band by
+// chance about once in 90,000 frames; the run has 8,000 coarse-cell frames). A change of the
+// light — the moved sun's 13 % on the box's wall, a light switched to three times or to a fifth —
+// is seen by the coarse cells and handed down, and the own cells' average settles within a tenth of
+// it in no more frames than today's history takes. **The rule's limit is printed, not held**: a
+// change of 10 % holds the coarse cells' two means under four deviations apart (0.58 of a step at
+// most, against 6.5 % of the light), so it is never seen, and the own cells follow it at their
+// long memory's rate (renderer.md has the numbers).
+TEST_CASE("gi cache key: a cell remembers longer while its light holds still, and lets go") {
+  struct Change {
+    const char* name;
+    f32 scale;
+  };
+  const Change changes[] = {{"the sun moved", 0.87f}, {"a light switched on", 3.0f},
+                            {"a light switched off", 0.2f}};
+  for (const Change& c : changes) {
+    const MemoryRun today = memory_run(false, c.scale, 4242u);
+    const MemoryRun longer = memory_run(true, c.scale, 4242u);
+    MESSAGE(c.name << ": an own cell's count " << today.count << " today, " << longer.count
+                   << " with the memory; its mean's variance " << today.still_variance << " and "
+                   << longer.still_variance << " (" << longer.still_variance / today.still_variance
+                   << "); sent back while still " << longer.still_drops << "; the change "
+                   << 100.0 * today.change / 0.245 << " %, settled within a tenth in "
+                   << today.settled << " frames today, " << longer.settled << " with the memory");
+    CHECK(today.count == gi_history_cap(11));
+    CHECK(longer.count == gi_memory_cap(11));
+    CHECK(gi_memory_cap(11) == 4096u);
+    CHECK(longer.still_variance < 2.0 * today.still_variance * 501.0 / 8181.0);
+    // An own cell tests itself too: its long and short means are four of the short one's deviations
+    // apart by chance at 4 / 0.91 = 4.4 of their difference's, 1.1e-5 a frame, so the run's 512,000
+    // own-cell frames expect 5.6 sent back (3 here); 16 is that count's Poisson tail at 1e-4. They
+    // are the blobs renderer.md names.
+    CHECK(longer.still_drops <= 16u);
+    CHECK(today.still_drops == 0u);
+    CHECK(longer.settled <= today.settled);
+  }
+  {
+    const MemoryRun today = memory_run(false, 0.9f, 4242u);
+    const MemoryRun longer = memory_run(true, 0.9f, 4242u);
+    MESSAGE("the rule's limit, a change of 10 %: settled within a tenth in "
+            << today.settled << " frames today, " << longer.settled << " with the memory");
+  }
+  // The memory off is today's fold: the count and the mean as `gi_history` and its rate take them.
+  GiMemoryCell cell;
+  f32 mean = 0.0f;
+  u32 count = 0;
+  for (u32 frame = 0; frame < 100; ++frame) {
+    const f32 m = 0.1f + 0.01f * static_cast<f32>(frame % 7);
+    const f32 rate = gi_history_rate(count, 11);
+    mean = frame == 0 ? m : mean + (m - mean) * rate;
+    count = gi_history(count, 11);
+    gi_memory_fold(cell, 11, m, frame % 5 == 0, false);
+    CHECK(cell.count == count);
+    CHECK(cell.mean == mean);
+    CHECK(!cell.changed);
+  }
+  // A coarse cell's whole field and a foliage cell's are left as they were.
+  CHECK(gi_memory_cap(5000) == gi_history_cap(5000));
+  CHECK(gi_memory_cap(700) == k_gi_memory_count_max);
 }
 
 // R171: the walk's answer against the ladder's last level, by the cells' measured spreads.
@@ -897,8 +1044,13 @@ TEST_CASE("gi cache key: a crown's cell counts in sixteenths, and a full count i
 // full the rate is the plain mean's, whatever the memory.
 TEST_CASE("gi cache key: a foliage cell remembers sixty-four frames, and fills as fast as ever") {
   CHECK(k_gi_crown_history_frames == 4u * k_gi_history_frames);
-  // The stamp's flag is above any frame count the cache's clock reaches.
-  CHECK((k_gi_stamp_crown & 0x7fffffffu) == 0u);
+  // The stamp's flag is above the fifteen bits of the frame the stamp keeps (R171's third leg), and
+  // the age modulo 2^15 is exact past the fold's age, across the clock's wrap.
+  CHECK((k_gi_stamp_crown & k_gi_stamp_frames) == 0u);
+  CHECK(k_gi_stamp_crown + k_gi_stamp_frames == 0xffffu);
+  CHECK(gi_stamp_age(100u, 100u & k_gi_stamp_frames) == 0u);
+  CHECK(gi_stamp_age(32768u + 5u, (32768u - 235u) & k_gi_stamp_frames) == 240u);
+  CHECK(gi_stamp_age(7u, (0u - 9u) & k_gi_stamp_frames) == 16u);
   // The fill: the same counts and rates as a face's cell while the history is short of either cap.
   for (const u32 n : {16u, 160u, 2400u}) {
     u32 face = 0;

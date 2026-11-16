@@ -49,8 +49,10 @@ namespace engine::gfx {
 //       `gi_pressure_stamp` (the bucket's first cell only; the fold frees a stale cell of a bucket
 //       under pressure). The pressure took the whole word until R171; only a bucket's first cell
 //       used it, and fifteen bits of the frame are enough for a test against this frame.
-//   [1] stamp: the last frame a sample reached it
-//   [2] samples this frame
+//   [1] stamp: the last frame a sample reached it, fifteen bits and the foliage bit in the low 16
+//       (`k_gi_stamp_crown`); in the high 16 the short mean's luminance as a half, its sign bit
+//       `k_gi_cell_changed` (R171's third leg, `gi_memory_fold`)
+//   [2] samples this frame (31 bits; the top bit `k_gi_frame_drop`)
 //   [3..5] this frame's sums of the ratio, r g b, `k_gi_fraction_bits` of fraction
 //   [6] the mean ratio's r and g as two halves
 //   [7] the mean ratio's b as a half in the low 16 bits, the samples it averages in the high 16
@@ -97,8 +99,13 @@ inline constexpr u32 k_gi_history_frames = 16;
 // bounce off what stands round the tree (minutes): nothing a second's memory hides.
 inline constexpr u32 k_gi_crown_history_frames = 64;
 // The fold has a cell's words and not its key's tag, so a foliage sample sets its cell's stamp's
-// top bit (the cache's frame count is far under it: a year at sixty a second is 2^31).
-inline constexpr u32 k_gi_stamp_crown = 0x80000000u;
+// top bit. **The stamp is the low half of the cell's second word since R171's third leg**: fifteen
+// bits of the cache's frame (`k_gi_stamp_frames`) and this bit; the age is the frame less the stamp
+// modulo 2^15, which is exact because the fold frees every cell `k_gi_max_age` frames after its
+// last sample. The high half is the cell's short mean (`gi_memory_fold`).
+inline constexpr u32 k_gi_stamp_crown = 0x8000u;
+inline constexpr u32 k_gi_stamp_frames = 0x7fffu;
+constexpr u32 gi_stamp_age(u32 now, u32 word) noexcept { return (now - word) & k_gi_stamp_frames; }
 // The fold's history for a cell that averaged `previous` samples and takes `n` this frame (the
 // shader's rule): the new count, and `n` over it the rate the frame's mean enters at. `frames` is
 // the cell's memory: `k_gi_history_frames`, or a foliage cell's `k_gi_crown_history_frames`.
@@ -117,6 +124,45 @@ constexpr f32 gi_history_rate(u32 previous, u32 n, u32 frames = k_gi_history_fra
   return static_cast<f32>(n) /
          static_cast<f32>(previous >= 0xffffu ? full : gi_history(previous, n, frames));
 }
+// Today's history as a count: `k_gi_max_samples`, or `frames` frames of `n`, in the sixteen bits.
+constexpr u32 gi_history_cap(u32 n, u32 frames = k_gi_history_frames) noexcept {
+  const u32 held = n * frames < 0xffffu ? n * frames : 0xffffu;
+  return k_gi_max_samples > held ? k_gi_max_samples : held;
+}
+// **R171, third leg: a cell's memory by its own spread** (renderer.md, "Indirect light", "R171: a
+// cell's memory by its own spread"). A face's cell whose light holds still may remember up to
+// `k_gi_memory_times` its history (`gi_history_cap`): 4,096 samples for an own cell at the
+// trickle's eleven a frame (372 frames), 256 frames where it takes sixteen or more, and never past
+// `k_gi_memory_count_max`, under the field's full mark, which stands for a whole history. A cell
+// whose history already fills the field (4,096 a frame) remembers what it did.
+inline constexpr u32 k_gi_memory_times = 16;
+inline constexpr u32 k_gi_memory_count_max = 0xfff0u;
+constexpr u32 gi_memory_cap(u32 n) noexcept {
+  const u32 cap = gi_history_cap(n);
+  if (cap >= k_gi_memory_count_max) return cap;
+  return cap * k_gi_memory_times < k_gi_memory_count_max ? cap * k_gi_memory_times
+                                                         : k_gi_memory_count_max;
+}
+// The deviations between the long mean and the short one (today's history) at which a cell's light
+// is taken to have changed: the short mean's own noise, from the cell's measured spread, four
+// times over. A coarse cell's short mean averages eleven thousand samples, so its noise is near
+// normal, and the long mean's difference from it is 0.91 of the short mean's own deviation (the
+// two averages share their samples), so four of them are left by chance about once in 90,000
+// frames. Five were tried first: a coarse cell whose long mean remembers 93 frames and whose short
+// one 16 holds them at most 0.58 of a step apart, so five missed the moved sun's 13 % (a
+// simulation of sixteen coarse cells over 1,024 own ones: settled in 333 frames against today's
+// 50); four see it.
+inline constexpr f32 k_gi_change_sigmas = 4.0f;
+// A cell that lets go keeps this fraction of today's history (a quarter: 64 samples for an own
+// cell), so the part of a change its short mean had not yet followed is followed four times as
+// fast as today, and the detection's own frames are made up.
+inline constexpr u32 k_gi_memory_back = 4;
+// Word 2's top bit: a coarser cell of a ladder through this one saw its light change last frame
+// (the sample pass sets it; the count of the frame's samples is the other 31 bits).
+inline constexpr u32 k_gi_frame_drop = 0x80000000u;
+// Word 1's top bit: this cell saw its light change in the last fold (the sign of its short mean's
+// half, which is never negative).
+inline constexpr u32 k_gi_cell_changed = 0x80000000u;
 // Frames without a sample after which the fold frees a cell.
 inline constexpr u32 k_gi_max_age = 240;
 inline constexpr u32 k_gi_workgroup = 64;
@@ -316,6 +362,69 @@ inline f32 gi_spread_fold(f32 spread, u32 previous, u32 n, u32 total, f32 lum_ol
 inline constexpr u32 k_gi_pressure_shift = 16;
 constexpr u32 gi_pressure_stamp(u32 frame) noexcept { return (frame & 0x7fffu) | 0x8000u; }
 
+// **R171, third leg: the fold with a memory by the cell's own spread**, in luminance (the shader
+// folds the long mean in colour, the same arithmetic; `renderer.gi.memory`). A cell keeps two
+// means of its frames: the long one it is read by, which averages every frame since the light last
+// changed up to `gi_memory_cap`, and a short one at today's history (`gi_history_cap`), kept as a
+// half in its stamp word's high half. They hold the same light while it is still; the short one
+// follows a change within today's frames and the long one does not, so their difference is the
+// test, in the band the short mean's own noise makes: a sample's variance from the cell's measured
+// spread over the short mean's effective count, 2 T - n (the variance of an exponential average).
+// Out of it by `k_gi_change_sigmas`, the cell takes its long mean to the short one's level and its
+// count back to a quarter of today's history at once (`k_gi_memory_back`), and sets `changed`, which the sample pass hands to every
+// finer cell of a ladder through it the next frame (`drop`): a coarse cell pools sixty-four of its
+// own level's samples and sees a change a fine one's noise hides, and a single heavy sample moves
+// it by a sixty-fourth as much. That is A-SVGF's rule (Schied et al. 2018: a history cut back where
+// a temporal gradient beyond its noise is seen), with the gradient taken between two histories of
+// one cell instead of from a re-traced sample, and pooled up the ladder instead of over the screen.
+struct GiMemoryCell {
+  f32 mean = 0.0f;   // the long mean, the one the read shows
+  f32 short_mean = 0.0f;
+  f32 spread = 0.0f;  // `gi_spread_fold`'s
+  u32 count = 0;
+  bool changed = false;
+};
+inline void gi_memory_fold(GiMemoryCell& c, u32 n, f32 frame_mean, bool drop,
+                           bool memory) noexcept {
+  if (n == 0) return;
+  const u32 previous = c.count;
+  const u32 cap = gi_history_cap(n);
+  const u32 ceiling = memory ? gi_memory_cap(n) : cap;
+  const u32 total = previous + n < ceiling ? previous + n : ceiling;
+  const u32 full = k_gi_max_samples > n * k_gi_history_frames ? k_gi_max_samples
+                                                              : n * k_gi_history_frames;
+  const f32 nf = static_cast<f32>(n);
+  const f32 rate = nf / static_cast<f32>(previous >= 0xffffu ? full : total);
+  const u32 short_total = previous + n < cap ? previous + n : cap;
+  const f32 short_rate = nf / static_cast<f32>(previous >= 0xffffu ? full : short_total);
+  if (previous == 0) {
+    c = GiMemoryCell{frame_mean, frame_mean, 0.0f, total, false};
+    return;
+  }
+  const f32 spread = gi_spread_fold(c.spread, previous, n, total, c.mean, frame_mean);
+  const f32 s = c.short_mean + (frame_mean - c.short_mean) * short_rate;
+  f32 m = c.mean + (frame_mean - c.mean) * rate;
+  u32 count = total;
+  bool changed = false;
+  if (memory && spread > 0.0f) {
+    // A sample's variance: the spread is kept as the long count sees it (at its cap, scaled by
+    // T / (2 T - n)), the short mean's variance is that over 2 cap - n.
+    const f32 tf = static_cast<f32>(total);
+    const f32 sample = previous + n > total ? spread * (2.0f * tf - nf) / tf : spread;
+    const f32 var_short = sample / (2.0f * static_cast<f32>(cap) - nf);
+    changed = (m - s) * (m - s) > k_gi_change_sigmas * k_gi_change_sigmas * var_short;
+  }
+  const u32 back = cap / k_gi_memory_back;
+  if (memory && (drop || changed) && previous > back) {
+    // Back at once to a quarter of today's history, from the short mean's level: what the short
+    // mean has followed of the change is taken whole, and the rest four times as fast as today.
+    const f32 base = c.short_mean;
+    m = base + (frame_mean - base) * (nf / static_cast<f32>(back + n));
+    count = back + n;
+  }
+  c = GiMemoryCell{m, s, spread, count, changed};
+}
+
 // **R171: the read by its cells' measured spread.** The walk (below) shows a level whole once its
 // cells hold `confident` samples: a mean of 256, which indoors carries 4 to 5 % of noise at the
 // cell's own size. So once the walk has its answer (variance `var_r`, from the measured spreads of
@@ -467,6 +576,10 @@ inline constexpr u32 k_gi_reveal = 1u << 23;
 // (`gi_spread_keep`, `renderer.gi.spread`). The evict age's sixth bit until R171, which left it
 // six (a full bucket's stale cells are freed after at most 63 frames).
 inline constexpr u32 k_gi_spread = 1u << 22;
+// R171, third leg: a face's cell remembers up to `k_gi_memory_times` its history while its light
+// holds still (`gi_memory_fold`, `renderer.gi.memory`). The evict age's fifth bit until then, which
+// left it five (a full bucket's stale cells are freed after at most 31 frames).
+inline constexpr u32 k_gi_memory = 1u << 21;
 // Two of stage 2's numbers ride in the flags' upper bytes, so each lever can be judged against the
 // stage before it without a new row in the resolve block: the samples at which a cell is read
 // whole (`k_gi_confident` by default; 1 reads any cell with a sample whole, as stage 1 did) and
@@ -480,7 +593,7 @@ inline constexpr u32 k_gi_far_lift_shift = 24u;
 constexpr u32 gi_flag_numbers(u32 confident, u32 evict_age, f32 far_lift = 0.0f) noexcept {
   const f32 lift = far_lift < 0.0f ? 0.0f : (far_lift > 1.0f ? 1.0f : far_lift);
   return ((confident < 1 ? 1u : (confident > 255 ? 255u : confident)) << k_gi_confident_shift) |
-         ((evict_age > 63 ? 63u : evict_age) << k_gi_evict_shift) |
+         ((evict_age > 31 ? 31u : evict_age) << k_gi_evict_shift) |
          (static_cast<u32>(lift * 255.0f + 0.5f) << k_gi_far_lift_shift);
 }
 

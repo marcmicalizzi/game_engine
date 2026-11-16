@@ -32,7 +32,7 @@ inline u32 gi_frame_flags(const ResolvedSettings& s) noexcept {
   return gfx::k_gi_read | (s.gi_mode == GiMode::Bounce ? gfx::k_gi_bounce : 0u) |
          (s.gi_face_blend ? gfx::k_gi_faces : 0u) | (s.gi_young_rays ? gfx::k_gi_young_rays : 0u) |
          (s.gi_hit_fallback ? gfx::k_gi_hit_fallback : 0u) | (s.gi_reveal ? gfx::k_gi_reveal : 0u) |
-         (s.gi_spread ? gfx::k_gi_spread : 0u) |
+         (s.gi_spread ? gfx::k_gi_spread : 0u) | (s.gi_memory ? gfx::k_gi_memory : 0u) |
          (s.gi_show_level >= 0
               ? gfx::k_gi_show | (static_cast<u32>(s.gi_show_level) << gfx::k_gi_show_shift)
               : 0u) |

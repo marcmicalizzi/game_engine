@@ -25,9 +25,19 @@ static const uint k_gi_max_age = 240u;
 static const uint k_gi_history_frames = 16u;
 // gfx::k_gi_crown_history_frames, gfx::k_gi_stamp_crown (stage 8): a foliage cell remembers this
 // many frames, and its stamp's top bit says it is one (the fold has a cell's words and not its
-// key's tag).
+// key's tag). The stamp is the second word's low half since R171's third leg (gfx::gi_stamp_age);
+// the high half is the short mean (gfx::gi_memory_fold).
 static const uint k_gi_crown_history_frames = 64u;
-static const uint k_gi_stamp_crown = 0x80000000u;
+static const uint k_gi_stamp_crown = 0x8000u;
+static const uint k_gi_stamp_frames = 0x7fffu;
+// gfx::k_gi_memory_times, k_gi_memory_count_max, k_gi_change_sigmas, k_gi_frame_drop,
+// k_gi_cell_changed (R171's third leg).
+static const uint k_gi_memory_times = 16u;
+static const uint k_gi_memory_count_max = 0xfff0u;
+static const float k_gi_change_sigmas = 4.0;
+static const uint k_gi_memory_back = 4u;
+static const uint k_gi_frame_drop = 0x80000000u;
+static const uint k_gi_cell_changed = 0x80000000u;
 static const uint k_gi_no_slot = 0xffffffffu;
 // gfx::k_gi_dispatch_pitch: the groups a row of a pass's two-dimensional dispatch.
 static const uint k_gi_dispatch_pitch = 32768u;
@@ -46,9 +56,12 @@ static const uint k_gi_reveal = 1u << 23;
 // gfx::k_gi_spread (R171): the read's answer against the ladder's last level by the cells'
 // measured spreads (`gi_spread_keep`). The evict age's sixth bit until R171.
 static const uint k_gi_spread = 1u << 22;
-// gfx::gi_flag_numbers: the samples a cell is read whole at, and the evict age (six bits).
+// gfx::k_gi_memory (R171's third leg): a face's cell remembers longer while its light holds still.
+// The evict age's fifth bit until then.
+static const uint k_gi_memory = 1u << 21;
+// gfx::gi_flag_numbers: the samples a cell is read whole at, and the evict age (five bits).
 uint gi_confident(uint flags) { return max((flags >> 8) & 0xffu, 1u); }
-uint gi_evict_age(uint flags) { return (flags >> 16) & 0x3fu; }
+uint gi_evict_age(uint flags) { return (flags >> 16) & 0x1fu; }
 // gfx::gi_pressure_stamp: the high half of a bucket's first word, this frame's low fifteen bits
 // with the top bit set (a bucket never stamped never reads as under pressure). The low half is
 // the cell's spread (`gi_cell_spread`).

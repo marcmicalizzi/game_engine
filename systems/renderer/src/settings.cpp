@@ -445,7 +445,7 @@ tunables::Int gi_confident{
     "history's length: a mean of fewer arriving is what read as the light filling in) "
     "(renderer.md, Indirect light, Stage 5; read at load)"};
 tunables::Int gi_evict_age{
-    "renderer.gi.evict_age", 16, 0, 63,
+    "renderer.gi.evict_age", 16, 0, 31,
     "Frames without a sample after which a cache cell whose bucket turned an insert away is freed "
     "(0: only by the 240-frame age, as stage 1) (renderer.md, Indirect light: the world-space "
     "cache; read at load)"};
@@ -482,6 +482,14 @@ tunables::Bool gi_spread{
     "shows the coarser light wherever the two agree within that noise, so a plain wall lit through "
     "an opening is not grained by its cells' heavy samples (false: the walk's answer as stage 8 "
     "left it) (renderer.md, Indirect light, R171: the grain on a plain wall; read at load)"};
+// **R171's third leg** (renderer.md, "Indirect light", "R171: a cell's memory by its own spread").
+// Off: a change the coarse cells cannot see trails, and the cells that let go show as blobs.
+tunables::Bool gi_memory{
+    "renderer.gi.memory", false,
+    "A face's cache cell remembers up to sixteen times today's history while its light holds still, "
+    "and goes back to today's at once when its long mean leaves the band its measured spread "
+    "predicts, or a coarser cell of its ladder's does (false: today's history, as stage 8 left it) "
+    "(renderer.md, Indirect light, R171: a cell's memory by its own spread; read at load)"};
 // **Stage 7** (R69; renderer.md, "Indirect light", "Stage 7"): a crown's shade as a prior.
 tunables::Bool gi_crown_prior{
     "renderer.gi.crown_prior", true,
@@ -933,6 +941,7 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   out.gi_far_lift = static_cast<f32>(gi_far_lift.get());
   out.gi_reveal = gi_reveal.get();
   out.gi_spread = gi_spread.get();
+  out.gi_memory = gi_memory.get();
   out.gi_crown_prior = gi_crown_prior.get();
   out.gi_show_level = static_cast<i32>(gi_show_level.get());
   out.gi_shell_m = static_cast<f32>(gi_shell_m.get());
