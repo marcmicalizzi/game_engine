@@ -40,6 +40,10 @@ constexpr i64 k_church_frontage_mm = 42000, k_church_depth_mm = 24000;
 constexpr i64 k_back_half_tread_mm = 1000, k_back_offset_mm = 2500;
 // The well's disc, and the worn ground round it.
 constexpr i64 k_well_radius_mm = 1500, k_well_yard_mm = 3000;
+// A croft is laid on ground no steeper than 1 in 5 over any 4 m of its middle line (a labelled
+// choice: village-growth-grounding.md, "Plots").
+constexpr i64 k_croft_grade = 200;  // per mille
+constexpr i64 k_croft_step_mm = 4000;
 
 i64 mm_of(f64 metres) noexcept { return scene_gen::nearest_mm(metres); }
 // a / b to the nearest whole, halves away from zero; b positive.
@@ -712,6 +716,7 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
       wx.push_back(mm_of(w.x));
       wz.push_back(mm_of(w.z));
     }
+    i32 joined_to[2] = {-1, -1};
     for (u32 end = 0; end < 2; ++end) {
       const u32 at = end == 0 ? 0 : wx.size() - 1;
       f64 nearest = static_cast<f64>(k_join_mm) * static_cast<f64>(k_join_mm);
@@ -720,6 +725,7 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
         const u32 k = nearest_station(out.lanes[lj], wx[at], wz[at], &d2);
         if (d2 <= nearest) {
           nearest = d2;
+          joined_to[end] = static_cast<i32>(lj);
           wx[at] = out.lanes[lj].stations[k].x_mm;
           wz[at] = out.lanes[lj].stations[k].z_mm;
           if (!joined) {
@@ -750,6 +756,45 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
       pts.push_back(s.x_mm);
       pts.push_back(s.z_mm);
     }
+    // **A way runs into the way it meets** (village.md, "Where ways meet"): the least-cost path to
+    // a station of an earlier way often runs the last stretch along that way's own street (the
+    // tread there is the cheapest ground), which drew two treads side by side and a break where the
+    // later one ended. Every point at a joined end that stands within the earlier way's street is
+    // given up, and the way meets the earlier one at its station nearest the last point given up,
+    // so it leaves the street where its path did; the smoothing below rounds the fork.
+    for (u32 end = 0; end < 2; ++end) {
+      if (joined_to[end] < 0) continue;
+      const LaneLine& other = out.lanes[static_cast<u32>(joined_to[end])];
+      const u32 n = pts.size() / 2;
+      const auto point = [&](u32 i) { return end == 0 ? i : n - 1 - i; };
+      u32 inner = 0;
+      while (inner + 3 < n) {
+        f64 d2 = 0.0;
+        const u32 q = point(inner);
+        nearest_station(other, pts[2 * q], pts[2 * q + 1], &d2);
+        if (d2 >= static_cast<f64>(half_street) * static_cast<f64>(half_street)) break;
+        ++inner;
+      }
+      if (inner < 2) continue;  // the meeting point alone: nothing ran along the other street
+      const u32 last_in = point(inner - 1);
+      const LaneStation& meet =
+          other.stations[nearest_station(other, pts[2 * last_in], pts[2 * last_in + 1])];
+      Vector<i64> kept;
+      if (end == 0) {
+        kept.push_back(meet.x_mm);
+        kept.push_back(meet.z_mm);
+      }
+      for (u32 i = inner; i < n; ++i) {
+        const u32 q = end == 0 ? i : i - inner;
+        kept.push_back(pts[2 * q]);
+        kept.push_back(pts[2 * q + 1]);
+      }
+      if (end == 1) {
+        kept.push_back(meet.x_mm);
+        kept.push_back(meet.z_mm);
+      }
+      pts = std::move(kept);
+    }
     smooth(pts);
     LaneLine line;
     station(pts, station_mm, line);
@@ -758,6 +803,20 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
     if (!tops(ground, line))
       return refuse(
           error, "village: the ground under " + lane_name(layer, nullptr, li) + " is not finite");
+    // Its tread's top meets the other's at the meeting, eased over the last six stations, so the
+    // two benches carry through the junction with no step (each top is its own line's mean).
+    for (u32 end = 0; end < 2; ++end) {
+      if (joined_to[end] < 0) continue;
+      const LaneLine& other = out.lanes[static_cast<u32>(joined_to[end])];
+      const u32 n = line.stations.size();
+      const LaneStation& tip = line.stations[end == 0 ? 0 : n - 1];
+      const i64 gap =
+          other.stations[nearest_station(other, tip.x_mm, tip.z_mm)].top_mm - tip.top_mm;
+      const i64 ease = std::min<i64>(6, static_cast<i64>(n) - 1);
+      for (i64 i = 0; i < ease; ++i)
+        line.stations[end == 0 ? static_cast<u32>(i) : n - 1 - static_cast<u32>(i)].top_mm +=
+            gap * (ease - i) / ease;
+    }
     out.lanes.push_back(std::move(line));
   }
   Vector<Vector<i64>> arc;
@@ -1165,6 +1224,28 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
       frame(c, p, (attempt & 1u) != 0);
       p.depth_mm = c.chord ? c.depth_mm * chord_shares[attempt] / 1000
                            : c.depth_mm * shares[attempt / 2] / 1000;
+      // **A croft stops where the ground behind steepens** past what a croft was laid on: at the
+      // first 4 m of its middle line steeper than 1 in 5 (village.md, "The tofts"; a labelled
+      // choice, village-growth-grounding.md, "Plots"), no shallower than three tenths of its depth
+      // (ground steeper than that under the toft itself is the pad's to refuse, and is counted).
+      {
+        const i64 floor_mm = c.depth_mm * 300 / 1000;
+        i64 x = 0, z = 0;
+        plot_point(p, 0.0, 0.0, x, z);
+        f64 h0 = ground.surface_mm(x, z);
+        for (i64 v = k_croft_step_mm; v - k_croft_step_mm < p.depth_mm; v += k_croft_step_mm) {
+          const i64 at = std::min(v, p.depth_mm);
+          plot_point(p, 0.0, static_cast<f64>(at), x, z);
+          const f64 h = ground.surface_mm(x, z);
+          const f64 run = static_cast<f64>(at - (v - k_croft_step_mm));
+          if (!std::isfinite(h) || !std::isfinite(h0) ||
+              std::fabs(h - h0) * 1e6 > static_cast<f64>(k_croft_grade) * run) {  // metres, mm
+            p.depth_mm = std::max(std::min(p.depth_mm, v - k_croft_step_mm), floor_mm);
+            break;
+          }
+          h0 = h;
+        }
+      }
       if (in_a_street(p)) continue;
       r = rect_of(p, 10.0);
       // A croft ends where the ground does: a back corner off the heightfield shortens it.
@@ -1752,40 +1833,45 @@ JsonValue ground_regions_json(const VillageLayer& layer, const VillagePlan& plan
   const f64 yard = static_cast<f64>(mm_of(static_cast<f64>(layer.yard_m)));
   const f64 margin = static_cast<f64>(k_wear_margin_mm);
   const std::string prefix = layer.name.empty() ? std::string("village") : layer.name;
-  for (u32 k = 0; k < plan.lanes.size(); ++k) {
-    const LaneLine& line = plan.lanes[k];
-    const Vector<LaneStation>& st = line.stations;
-    if (st.size() < 2) continue;
-    const std::string lane = prefix + " " + lane_name(layer, &plan, k);
-    // The tread's half width at each station (it wanders, and widens where the ways meet), and the
-    // narrowest of it, which decides whether a middle is laid at all.
-    f64 half_tread = 1e300;
-    for (const LaneStation& s : st)
-      half_tread = std::min(half_tread, static_cast<f64>(s.tread_mm));
-    const auto tread_plus = [&](f64 v) {
-      return [&st, v](u32 q) { return static_cast<f64>(st[q].tread_mm) + v; };
-    };
-    // The verge is the street's whole width, front to front: it follows the street's own wander
-    // and opens into the green. A back lane has none: it is a worn track between two hedges.
-    f64 narrowest = 1e300;
-    for (const LaneStation& s : st)
-      narrowest = std::min(narrowest, static_cast<f64>(std::min(s.left_mm, s.right_mm)));
-    if (!names.verge.empty() && !line.back && narrowest > half_tread + margin)
-      list.push_back(region(lane + " verge",
-                            band_polygon(
-                                st, [&](u32 q) { return static_cast<f64>(st[q].left_mm); },
-                                [&](u32 q) { return static_cast<f64>(st[q].right_mm); }),
-                            names.verge,
-                            std::min(1.0, (narrowest - half_tread - margin) / 1000.0)));
-    if (!names.worn.empty())
-      list.push_back(region(lane + " wear",
-                            band_polygon(st, tread_plus(margin), tread_plus(margin)), names.worn,
-                            2.0 * margin / 1000.0));
-    if (!names.tread.empty() && !line.back && half_tread > 2.0 * margin)
-      list.push_back(region(lane + " tread",
-                            band_polygon(st, tread_plus(-margin), tread_plus(-margin)), names.tread,
-                            margin / 1000.0));
-  }
+  // Every way's verge first, then every way's wear, then every way's tread: a later region paints
+  // over an earlier one, so a way's verge laid after another's tread broke that tread where the
+  // two met and hid the street's tread across the green (village.md, "Where ways meet"). Laid in
+  // three layers, a tread runs through every junction and across the green to the way it meets.
+  for (u32 layer_pass = 0; layer_pass < 3; ++layer_pass)
+    for (u32 k = 0; k < plan.lanes.size(); ++k) {
+      const LaneLine& line = plan.lanes[k];
+      const Vector<LaneStation>& st = line.stations;
+      if (st.size() < 2) continue;
+      const std::string lane = prefix + " " + lane_name(layer, &plan, k);
+      // The tread's half width at each station (it wanders, and widens where the ways meet), and
+      // the narrowest of it, which decides whether a middle is laid at all.
+      f64 half_tread = 1e300;
+      for (const LaneStation& s : st)
+        half_tread = std::min(half_tread, static_cast<f64>(s.tread_mm));
+      const auto tread_plus = [&](f64 v) {
+        return [&st, v](u32 q) { return static_cast<f64>(st[q].tread_mm) + v; };
+      };
+      // The verge is the street's whole width, front to front: it follows the street's own wander
+      // and opens into the green. A back lane has none: it is a worn track between two hedges.
+      f64 narrowest = 1e300;
+      for (const LaneStation& s : st)
+        narrowest = std::min(narrowest, static_cast<f64>(std::min(s.left_mm, s.right_mm)));
+      if (layer_pass == 0 && !names.verge.empty() && !line.back && narrowest > half_tread + margin)
+        list.push_back(region(lane + " verge",
+                              band_polygon(
+                                  st, [&](u32 q) { return static_cast<f64>(st[q].left_mm); },
+                                  [&](u32 q) { return static_cast<f64>(st[q].right_mm); }),
+                              names.verge,
+                              std::min(1.0, (narrowest - half_tread - margin) / 1000.0)));
+      if (layer_pass == 1 && !names.worn.empty())
+        list.push_back(region(lane + " wear",
+                              band_polygon(st, tread_plus(margin), tread_plus(margin)), names.worn,
+                              2.0 * margin / 1000.0));
+      if (layer_pass == 2 && !names.tread.empty() && !line.back && half_tread > 2.0 * margin)
+        list.push_back(region(lane + " tread",
+                              band_polygon(st, tread_plus(-margin), tread_plus(-margin)),
+                              names.tread, margin / 1000.0));
+    }
   if (names.worn.empty()) return list;
   // The well's trodden ground, an octagon round it.
   if (plan.well) {

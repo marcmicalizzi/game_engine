@@ -9,9 +9,12 @@ goes in at a door, through the rooms, up the stair and to a window.
 
 ## What is in it
 
-- **The ground**: a 256 m heightfield at 25 cm (`engine-content terrain-synth --kind ridge`): a
+- **The ground**: a 512 m heightfield at 25 cm (`engine-content terrain-synth --kind ridge`): a
   40 m ridge along a diagonal and, east of it, ground rising 6 m from south to north, where the
-  village stands. A tile set (`provider: "tiles"`), because the village's pads, its treads and its
+  village stands. Its centre is 51 m west of the scene's origin, so the ridge's foot lies under
+  the village where the 256 m ground of the first two legs put it, and there are 78 m of ground
+  east of the last croft and over 100 m north and south of the ways' ends: no view of the village
+  shows the bare ground beyond the heightfield (2026-11-16; a quarter of the top-down picture had). A tile set (`provider: "tiles"`), because the village's pads, its treads and its
   paths are ground edits and a planned edit is written into a tile set's heights.
 - **The village** (`placements[0]`, generator `village`): two ways, an old road along the ridge's
   foot from south to north and a way from the west over the ridge's shoulder that meets it, each
@@ -43,7 +46,7 @@ The grid is binary and never committed (`.gitignore`):
 ```powershell
 build/msvc-release/bin/engine-content matgen     # once in a fresh checkout: the generated material sets
 build/msvc-release/bin/engine-content terrain-synth content/test-scenes/village/ground.json `
-  --kind ridge --size 1025 --spacing-mm 250 --origin-mm -128000,-128000
+  --kind ridge --size 2049 --spacing-mm 250 --origin-mm -307000,-256000
 build/msvc-release/bin/engine-content village content/test-scenes/village/scene.json `
   content/test-scenes/village/plan.json --flight content/test-scenes/village/camera-path.json
 build/msvc-release/bin/engine-view --scene content/test-scenes/village/scene.json `

@@ -70,7 +70,10 @@ namespace engine::village {
 // 3: a nucleated village (G206's second part): ways that go round what is no longer there and vary
 // in width, tofts side by side along the street sharing their sides and subdivided, houses at
 // uneven setbacks, the church at the village's end, the green kept clear of the cover.
-inline constexpr u32 k_village_version = 3;
+// 4: ways that meet run into each other (a joining way gives up the stretch along the other's
+// street and its tread top eases onto the other's), and a croft stops where its ground steepens
+// past 1 in 5.
+inline constexpr u32 k_village_version = 4;
 
 // ---- the house seam -----------------------------------------------------------------------------
 

@@ -516,6 +516,89 @@ TEST_CASE("village: no two plots overlap and none stands in a street, round a be
   }
 }
 
+TEST_CASE("village: a way runs into the way it meets, with no doubled tread and no step") {
+  // The second way's least-cost path to its meeting runs along the first way's street; it gives
+  // that stretch up and meets the first at one of its stations, at its top.
+  VillageLayer p = street(0, 0, 120, 0);
+  Lane second;
+  second.name = "joining";
+  second.waypoints.push_back(WorldPos{20.0, 0.0, 60.0});
+  second.waypoints.push_back(WorldPos{90.0, 0.0, 1.0});
+  p.lanes.push_back(second);
+  p.houses = 12;
+  for (const f32 irregularity : {0.0f, 1.0f}) {
+    p.irregularity = irregularity;
+    const VillagePlan plan = planned(p, gentle);
+    REQUIRE(plan.lanes.size() >= 2);
+    const LaneLine& first = plan.lanes[0];
+    const LaneLine& joining = plan.lanes[1];
+    const LaneStation& tip = joining.stations[joining.stations.size() - 1];
+    const LaneStation* meet = nullptr;
+    for (const LaneStation& s : first.stations)
+      if (s.x_mm == tip.x_mm && s.z_mm == tip.z_mm) meet = &s;
+    REQUIRE(meet != nullptr);  // it ends on a station of the way it meets
+    CHECK(tip.top_mm == meet->top_mm);
+    // Its stations within the first way's half street: the fork's own, a few metres, never a run
+    // alongside.
+    const f64 half_street = static_cast<f64>(p.street_width_m) * 500.0;
+    u32 alongside = 0;
+    for (const LaneStation& s : joining.stations) {
+      f64 nearest = 1e300;
+      for (const LaneStation& f : first.stations) {
+        const f64 dx = static_cast<f64>(s.x_mm - f.x_mm), dz = static_cast<f64>(s.z_mm - f.z_mm);
+        nearest = std::min(nearest, dx * dx + dz * dz);
+      }
+      if (nearest < half_street * half_street) ++alongside;
+    }
+    MESSAGE("irregularity " << irregularity << ": " << alongside << " of "
+                            << joining.stations.size() << " stations within the half street");
+    CHECK(static_cast<f64>(alongside) * static_cast<f64>(p.station_m) <=
+          3.0 * half_street / 1000.0);
+    // The mask regions: every way's verge, then every wear, then every tread, so no way's verge or
+    // wear lies over another's tread.
+    const JsonValue regions = ground_regions_json(p, plan);
+    u32 last_verge = 0, first_wear = ~0u, last_wear = 0, first_tread = ~0u;
+    for (u32 k = 0; k < regions.as_array().size(); ++k) {
+      const std::string name(regions[k].find("name")->as_string());
+      const auto ends = [&](const char* tail) {
+        const std::string t(tail);
+        return name.size() > t.size() && name.compare(name.size() - t.size(), t.size(), t) == 0;
+      };
+      if (ends(" verge")) last_verge = std::max(last_verge, k);
+      if (ends("street wear") || ends("joining wear")) {
+        first_wear = std::min(first_wear, k);
+        last_wear = std::max(last_wear, k);
+      }
+      if (ends(" tread")) first_tread = std::min(first_tread, k);
+    }
+    CHECK(last_verge < first_wear);
+    CHECK(last_wear < first_tread);
+  }
+}
+
+TEST_CASE("village: a croft stops where the ground behind it steepens") {
+  // Level for 18 m each side of the street, then a 1 in 2 bank: the tofts stand on the level and
+  // their crofts end at the bank's foot, a step of 4 m onto it at most, the houses all built.
+  VillageLayer p = regular(street(0, 0, 160, 0));
+  p.houses = 8;
+  const auto banks = [](const void*, i64, i64 z) noexcept {
+    const f64 zz = std::fabs(static_cast<f64>(z) / 1000.0);
+    return zz > 18.0 ? 0.5 * (zz - 18.0) : 0.0;
+  };
+  const VillagePlan plan = planned(p, banks);
+  CHECK(plan.built == 8);
+  u32 shortened = 0;
+  for (const Plot& q : plan.plots) {
+    if (q.state != PlotState::built) continue;
+    const f64 back =
+        std::fabs(static_cast<f64>(q.front_z_mm) + q.inward_z * static_cast<f64>(q.depth_mm)) /
+        1000.0;
+    CHECK(back <= 18.0 + 4.0 * 0.2 / 0.5 + 0.01);
+    if (q.depth_mm < static_cast<i64>(p.perch_m * 1000.0f) * p.depth_perches) ++shortened;
+  }
+  CHECK(shortened == plan.built);
+}
+
 TEST_CASE("village: a plot too steep for a pad or standing in water is left empty and counted") {
   VillageLayer p = regular(street(0, 0, 120, 0));
   p.houses = 6;
@@ -871,8 +954,10 @@ TEST_CASE("village: the plan is the same bytes on every toolchain") {
                        << " back lanes, " << plan.steep << " steep");
   // Taken on MSVC (x86-64-v3); GCC and Clang in the Linux containers reproduce it.
   // Re-pinned for k_village_version 3 (the nucleated plan: ways that go round what is gone, tofts
-  // side by side, uneven setbacks, the church at the end, the green's outline).
-  CHECK(hash == 0x45fba459113a95a7ull);
+  // side by side, uneven setbacks, the church at the end, the green's outline). Re-pinned for
+  // version 4: the joining way gives up its stretch along the first way's street and eases its
+  // top onto it, and the crofts stop where the ground steepens (the version is hashed too).
+  CHECK(hash == 0xbe81d225360d56f9ull);
   // The same entry again, and the summary's hash, are the same.
   CHECK(plan_hash(planned(p, gentle)) == hash);
   CHECK(plan_json(p, plan).find("hash")->as_string() == std::string(text));

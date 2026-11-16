@@ -59,6 +59,20 @@ step:
   so ways meet rather than stop short. **The focus** is the first such meeting; with one way, its
   middle. The green opens there, the
   well stands at it, and the plots are taken nearest it first.
+- **Where ways meet** (2026-11-16, from the top-down picture of the test scene, where the tread
+  broke and stepped at a junction and the street's tread stopped square at the green's edge). The
+  least-cost path to a station of an earlier way often runs its last stretch along that way's own
+  street, where the tread is the cheapest ground, and drew two treads side by side with a break
+  where the later one ended. So every point at a joined end that stands within the entry's half
+  street of the earlier way is given up, and the way meets the earlier one at its station nearest
+  the last point given up, before the smoothing rounds the fork; and its tread top is eased onto
+  the earlier way's at the meeting over its last six stations (each line's top is its own
+  five-point mean, so the two benches stood at different heights there). The mask regions are laid
+  **every way's verge, then every way's wear, then every way's tread** (`ground_regions_json`): a
+  later way's verge laid over an earlier way's tread had broken it at the junction and hidden the
+  street's tread across the green, so the way from the west ended blunt at the green's edge. Now a
+  tread runs through every junction, and the street's crosses the green to the way it meets, past
+  the well's trodden ground.
 - **The street's edges** (`LaneStation::left_mm`, `right_mm`): the entry's half width, each side
   wandering by up to a quarter of the street's width over a 16 m lattice along the way with
   `irregularity`, never nearer than 30 cm past the tread; and on every way within the green's half
@@ -90,8 +104,10 @@ step:
   across each station: the line, half and three quarters of each edge) stands inside it more than
   30 cm from its edges, if it overlaps a plot already taken, or if it stands within 2.5 m of the
   well; **a toft keeps its front and gives up depth**, its croft shortened by steps (85, 70, 55,
-  40, 30 %) where a bend brings the street or a neighbour into it or **a back corner is off the
-  ground there is**. The rest become plots: spare past the entry's house count, or asked for a
+  40, 30 %) where a bend brings the street or a neighbour into it, **a back corner is off the
+  ground there is**, or **the ground behind steepens past what a croft was laid on**: any 4 m of its
+  middle line steeper than 1 in 5 (`k_croft_grade`, a labelled choice in the grounding's table;
+  the test scene's crofts had run up the ridge's flank). The rest become plots: spare past the entry's house count, or asked for a
   house — a cottage asks one storey, a tenement the entry's `storeys` — at **its own setback**,
   0.15 to 1.85 times the entry's at `irregularity` 1 (one house on the street's edge, its
   neighbour behind a yard), and left empty and counted where the house does not fit, the ground
