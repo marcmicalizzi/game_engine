@@ -82,7 +82,10 @@ bool read_heightfield(const std::string& json_path, Heightfield& out, u64& sourc
 // The analytic shapes `engine-content terrain-synth` writes, for tests and for a person who wants a
 // terrain without a DEM. Polynomials and integer hashes only (no libm), so a seed is the same grid
 // on every toolchain.
-enum class SynthKind : u8 { ridge, basin, steps, flat, mountain };
+// `torrent` (W130; channels.md, "How whole a stream is drawn") is the one shape laid in metres
+// from the grid's centre rather than over its half-side: a steep valley whose floor carries steps
+// and the scour pits at their feet, the ground a step-pool reach is judged on.
+enum class SynthKind : u8 { ridge, basin, steps, flat, mountain, torrent };
 bool parse_synth_kind(std::string_view name, SynthKind& out) noexcept;
 // `size` points a side, `spacing_mm` apart, point (0, 0) at the origin given, metres (units of
 // 1000 mm). A non-zero `seed` adds a quarter-metre of seeded roughness.

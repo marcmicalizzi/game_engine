@@ -10,6 +10,7 @@
 #include <domain/geometry/cluster_file.h>
 #include <foundation/io/vfs.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -412,8 +413,22 @@ bool ensure_plan(const ChannelLayer& layer, const scene_gen::Context& context, s
     }
     if (out.key != key || out.layer_hash != layer_hash || out.seed != context.world_seed) {
       out = {};
+      // **Where a loss is named the water is part of the plan** (W129; channels.md, "Discharge"):
+      // a hollow's lake stands where its inflow meets its losses, so another runoff or another
+      // source moves a lake, its shoreline and the lines that end at it, and the plan is made
+      // again. Today's water over the same plan is `stage`, which no plan is keyed by.
+      const bool losses = layer.basin_evaporation_mm_y > 0 || layer.basin_seepage_mm_y > 0 ||
+                          std::any_of(layer.basins.begin(), layer.basins.end(),
+                                      [](const ChannelBasin& b) { return b.leak_m3s > 0; });
       error = "channels: the plan " + layer.plan +
-              " was made from another layer or another world seed than this entry's" + remake;
+              " was made from another layer or another world seed than this entry's";
+      if (losses)
+        error +=
+            ", or from another flow.runoff_l_s_km2 or flow.sources: the entry names a loss "
+            "(basin_evaporation_mm_y, basin_seepage_mm_y or a basin's leak_m3s), so its lakes "
+            "stand where those meet it and a change to them re-plans. More water over this plan "
+            "is flow.stage, which re-plans nothing";
+      error += remake;
       return false;
     }
     return true;

@@ -37,6 +37,7 @@
 #include <core/containers/vector.h>
 #include <core/math/math.h>
 #include <core/math/world.h>
+#include <domain/scene_gen/water_channel.h>
 #include <systems/water/water.h>
 
 #include <cmath>
@@ -208,11 +209,13 @@ bool stretch_jumps(const Channel& channel, u32 i) noexcept;  // a jump's head an
 // lower bank, and leaving it out is a bed with no water. So such a stretch is drawn when both
 // stations hold at least `k_channel_over_bank_depth_m` and the level does not rise along it by
 // more than `k_channel_over_bank_rise_m`. (Until S108 no stretch flagged at both ends was drawn.)
-inline constexpr f32 k_channel_over_bank_depth_m = 0.02f;
-inline constexpr f64 k_channel_over_bank_rise_m = 0.001;
+// The rule is `scene_gen::channel_stretch_drawn`, which the cook's count of runs reads too.
+inline constexpr f32 k_channel_over_bank_depth_m = scene_gen::k_channel_over_bank_depth_m;
+inline constexpr f64 k_channel_over_bank_rise_m = scene_gen::k_channel_over_bank_rise_m;
 inline bool over_bank_stretch_drawn(f32 depth_a, f32 depth_b, f64 level_a, f64 level_b) noexcept {
-  return depth_a >= k_channel_over_bank_depth_m && depth_b >= k_channel_over_bank_depth_m &&
-         level_b <= level_a + k_channel_over_bank_rise_m;
+  return scene_gen::channel_stretch_drawn(scene_gen::k_channel_over_bank,
+                                          scene_gen::k_channel_over_bank, depth_a, depth_b, level_a,
+                                          level_b);
 }
 bool stretch_drawn(const Channel& channel, u32 i) noexcept;
 

@@ -59,6 +59,20 @@ inline constexpr ChannelControl channel_control_kind(u16 flags) noexcept {
                                      k_channel_control_kind_shift);
 }
 
+// **Which stretch between two stations the draw lays a sheet on** (water.md; S108), here so the
+// draw and the cook's count of runs (`channels::measure_runs`, W130) read one rule. A stretch is
+// drawn unless both its stations stand over a bank and the water written there is a film or
+// climbs: both hold at least `k_channel_over_bank_depth_m`, and the level does not rise along it
+// by more than `k_channel_over_bank_rise_m`.
+inline constexpr f32 k_channel_over_bank_depth_m = 0.02f;
+inline constexpr f64 k_channel_over_bank_rise_m = 0.001;
+inline constexpr bool channel_stretch_drawn(u16 flags_a, u16 flags_b, f32 depth_a, f32 depth_b,
+                                            f64 level_a, f64 level_b) noexcept {
+  return (flags_a & flags_b & k_channel_over_bank) == 0 ||
+         (depth_a >= k_channel_over_bank_depth_m && depth_b >= k_channel_over_bank_depth_m &&
+          level_b <= level_a + k_channel_over_bank_rise_m);
+}
+
 // **`WaterChannel` 5 to 6** (the evolution rules of schemas/README.md ask, of a field removed, a
 // version bump and a registered `Migration` that rewrites the JSON). Version 6 removed `fit`,
 // version 3's record of

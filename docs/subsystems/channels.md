@@ -698,7 +698,17 @@ the film's depth, as an ephemeral gully. Its cut stays as the plan made it; dres
 tile pieces and is not done in this row.
 
 `flow` is **not part of what a plan is keyed by** (`plan_layer_hash` leaves the field out of the
-hashed text), so naming a spring or changing the stage re-plans and re-cuts nothing.
+hashed text), so naming a spring or changing the stage re-plans and re-cuts nothing — **unless
+the entry names a loss** (`basin_evaporation_mm_y`, `basin_seepage_mm_y` or a basin's `leak_m3s`;
+W122, "Hollows"): then whether a hollow fills, and where a lake with no outlet stands, is the
+runoff and the sources against the losses, a lake's shoreline is where its lines end, and
+`runoff_l_s_km2` and `sources` are part of the key. A named plan is then refused under another
+runoff or another source, and the refusal says so and what to run (W129, 2026-11-15: the forest
+names a seepage, and its session read the old sentence above as a promise). **`stage` is never
+in the key**: a lake stands at the year's mean balance, and today's water is today's, so more
+water over a plan, on any entry, is a higher `stage`. What a finer key would need: the plan
+holding the balance it was made from and each hollow's share of every source, so that a spring
+that reaches no losing hollow passes; it is not built.
 
 ### The profile
 
@@ -923,6 +933,29 @@ against the 1,780 points a kilometre the laid description wrote here. The level'
 what holds them: the wet reach's is. A bed two or three lattice cells wide is jagged at the
 lattice, so the water's edge moves by more than 5 cm from one node to the next and almost every
 node is a station. The lever, if the draw wants fewer, is `k_station_wet_m`.
+
+### How whole a stream is drawn
+
+(W130, 2026-11-15; the owner's walk: streams "incredibly disjointed on any slopes, with dry
+patches and wet patches"; the grounding is [steep-streams](../experiments/steep-streams.md).) The
+cook's line carries `runs_by_slope` (`runs.h`, `measure_runs`): every block it writes, classed by
+its mean slope (its level's fall over its length: under 2 %, 2 to 5, 5 to 15, 15 to 30 and over
+30 %, the forest session's own classes), and in each class the lines, the kilometres, and:
+
+| Field | What it counts |
+|---|---|
+| `film_share` | the share of the length whose two stations are both 5 mm deep or less: the cook's least written depth |
+| `undrawn_share` | the share the draw leaves out by its own rule (`scene_gen::channel_stretch_drawn`, the one copy the draw reads too): both stations over a bank and the water a film under 2 cm or climbing |
+| `pieces_per_100m` | maximal runs of drawn surface, cut at every lip-to-foot pair: the forest's "runs of water" |
+| `runs_per_100m` | the same joined across every fall the draw lays a nappe on (the foot lower and the stretch drawn): the water a walker sees as one |
+| `falls`, `falls_drawn` | lip-to-foot pairs, and those with a nappe |
+| `gaps` | maximal runs of undrawn stretches |
+
+**How it differs from the forest's count.** Theirs is a script of their own that the engine's
+agents may not read; from its notes it counts pieces of surface parted by every lip-to-foot pair
+and every film stretch, which is `pieces`. A nappe the draw lays (S108's fall, as wide as its lip)
+is drawn water, so `runs` is the count a picture should be held to, and the two differ by the
+falls that are drawn.
 
 ## The cut
 

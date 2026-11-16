@@ -1,0 +1,54 @@
+{
+  "format": "engine.scene.v1",
+  "name": "torrent",
+  "sky": {
+    "latitude_deg": 46.5,
+    "day_of_year": 200,
+    "turbidity": 2.5
+  },
+  "terrain": {
+    "size": 801,
+    "extent": 200,
+    "provider": "tiles",
+    "seed": 7,
+    "tiles": {
+      "heightfield": "ground.json",
+      "cells": 64
+    }
+  },
+  "placements": [
+    {
+      "generator": "channels",
+      "stream": false,
+      "params": {
+        "name": "torrent",
+        "seed": 3,
+        "region_min": [
+          -196,
+          -196
+        ],
+        "region_max": [
+          196,
+          196
+        ],
+        "width_at_km2_m": 6.0,
+        "depth_at_km2_m": 0.6,
+        "bed_material": "gravel",
+        "flow": {
+          "snap_m": 25,
+          "sources": [
+            {
+              "name": "head spring",
+              "at": [
+                -8,
+                0,
+                4
+              ],
+              "flow_m3s": 0.021
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

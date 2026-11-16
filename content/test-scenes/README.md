@@ -72,3 +72,7 @@ what a consumer who uses none of the solvers has, flown at every gate (roadmap T
 [`steep-dip/`](steep-dip/README.md) is a mountain cut by beds dipping 57 degrees (the forest proof
 of concept's formation), so its flanks take every attitude of the beds to the slope; the `ledges`
 and `cliffs` generators dress it (roadmap G200).
+
+[`torrent/`](torrent/README.md) is a valley falling 42 % with steps and scour pits in its floor
+and one spring of 21 l/s: a small flow on a steep bed, where `engine-content flow solve` counts
+how whole each line is drawn (roadmap W129, W130).

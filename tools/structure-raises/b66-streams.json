@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "b66-streams",
+  "reason": "W129 and W130: the count of how whole a stream is drawn, the key's dependence on a named loss, and torrent in the synth list",
+  "date": "2026-11-15",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/apps.md": 8,
+    "page:docs/subsystems/channels.md": 2585
+  }
+}
