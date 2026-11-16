@@ -698,7 +698,17 @@ the film's depth, as an ephemeral gully. Its cut stays as the plan made it; dres
 tile pieces and is not done in this row.
 
 `flow` is **not part of what a plan is keyed by** (`plan_layer_hash` leaves the field out of the
-hashed text), so naming a spring or changing the stage re-plans and re-cuts nothing.
+hashed text), so naming a spring or changing the stage re-plans and re-cuts nothing — **unless
+the entry names a loss** (`basin_evaporation_mm_y`, `basin_seepage_mm_y` or a basin's `leak_m3s`;
+W122, "Hollows"): then whether a hollow fills, and where a lake with no outlet stands, is the
+runoff and the sources against the losses, a lake's shoreline is where its lines end, and
+`runoff_l_s_km2` and `sources` are part of the key. A named plan is then refused under another
+runoff or another source, and the refusal says so and what to run (W129, 2026-11-15: the forest
+names a seepage, and its session read the old sentence above as a promise). **`stage` is never
+in the key**: a lake stands at the year's mean balance, and today's water is today's, so more
+water over a plan, on any entry, is a higher `stage`. What a finer key would need: the plan
+holding the balance it was made from and each hollow's share of every source, so that a spring
+that reaches no losing hollow passes; it is not built.
 
 ### The profile
 
@@ -746,15 +756,51 @@ through **the sections the ground has**, by the textbook's method
   lower crest the station is flagged, counted and reported, and written **at the crest** with
   the solved flow's speed. Once tranquil water has spilled it is written no higher downstream
   than where it spilled, until its solved level comes down under that (those stations are flagged
-  too), so the written level does not climb from one crest to the next. **A line that climbs** —
-  the planner routes over a lattice with its pits filled, and where the ground itself is not
-  filled a line runs down into a hollow and up to its spill point — is over its bank all the way
-  up: the water that would pass the sill is a pool standing at the sill's level, far outside any
-  bed. The cook writes a film at the bed there, flags every station of it, and reports the worst;
-  it does not draw the lake the ground is missing. A reader that draws flagged stations draws
-  that film going uphill. **The cut does not grow**: the solve runs on the composed ground after
+  too), so the written level does not climb from one crest to the next. **A pit on a line is a
+  pool** (W130.2, below): where a line runs down into a hollow of the ground and up to its sill,
+  the water stands at the sill and is written as the pool it is. **The cut does not grow**: the solve runs on the composed ground after
   the cut is in it, and the bankfull section is the plan's contract with the exclusion, the
   sediment and the flood bed. The count is the author's lever: a lower `stage`, or a wider law.
+
+**A pit on a line is a pool** (W130.2, 2026-11-16; the owner's walk of 2026-11-15, "dry patches and
+wet patches"; [steep-streams](../experiments/steep-streams.md)). The planner routes over its
+lattice with the pits filled or breached, and the ground the solve reads is finer than that
+lattice: a scour pit at a step's foot, a breached hollow under a metre deep, a dip between the
+planner's points. A line runs down into such a pit and up to its sill, and the tranquil profile
+taken up over the sill stands level through the pit at the sill's water — which, where the pit is
+wider than the section is read (one and a half widths and four lattices each side), stands over the
+section's crests. Until W130.2 those stations were written at the crest and then, as the bed climbed
+to the sill, as a 5 mm film going uphill that the draw leaves out: a gap in the water at every pit.
+Now **the sill of a node is the highest bed at or below it** (a running maximum from the line's
+end), and a tranquil station whose bed stands more than `k_pool_pit_m` (5 mm) under its sill and
+whose solved level stands at or over it is **written at its solved level, wet to where that level
+meets the ground**, walked out across the section past its crests and its sampled row, no further
+than `k_pool_reach_m` (25 m) each side. It carries the solved flow (the discharge through the
+section with a wall at each crest, as a station over its bank does), is not flagged, and is
+counted (`pools.stations` on the cook's line). Below the sill the profile is what it was: the water
+passes the sill as the profile solved it and falls away. **Where the line is between a pool and a
+lake**: a pit deeper than the plan's `breach_max_m` (1 m) and of `basin_min_area_m2` (200 m2) or more
+is the plan's — a body, a body below its spill, or dry ([hollows](#hollows)) — and no line
+crosses it; what the solve finds is shallower or smaller than that, or finer than the plan's
+lattice. A pit whose level meets no ground within 25 m either side (`pools.open`) is left over
+its bank as before: water that would stand wider than that is a lake the plan did not make, or
+leaves the line sideways, and neither is a pool of this line's. Nothing keys on a generator: any
+ground with a pit on a solved line gets its pool, and a line with no pit pays one running maximum.
+
+**No section is without a bed** (W129.1, 2026-11-16). A bank's crest is walked out from the
+thalweg; on ground exactly as level as the thalweg (a floor the plan filled flat, or ground no
+cut crosses that a tile set holds at one height) the walk never rose, the crest stood at the
+thalweg on both sides, and the section wet nothing at any level, so the line was refused with "a
+station has no water in its section" — the sentence that stopped the forest's whole solve on
+`region link 294` (dry at the year's mean by a tenth of a millimetre of sheet) at every stage over
+1, and the only way a section the profile reads can hold no water at a level over its thalweg
+(the case: `profile: water on ground with no bank across it is a sheet, never refused`). On the
+forest's v47 at stage 1.5 the first leg's build left 294 dry with that sentence and this one
+solves it whole (598 stations, 4.5 to 6.4 l/s, 12 of them a film over a bank). The walk now goes on
+over ground level with the thalweg, so such a section is the flat, and its water a sheet over it
+(written over its bank where the level passes the flat's edge, as any). A line whose profile is
+still refused is left dry and named on the cook's stderr and in `dry` ("unsolved: ..."), and every
+other line is solved.
 
 **Against the closed forms** (`profile_tests.cpp`, the fixture's ground through
 `flow_fixture_ground`, n = 0.04): the uniform reach stands at normal depth to the last bit; the
@@ -923,6 +969,79 @@ against the 1,780 points a kilometre the laid description wrote here. The level'
 what holds them: the wet reach's is. A bed two or three lattice cells wide is jagged at the
 lattice, so the water's edge moves by more than 5 cm from one node to the next and almost every
 node is a station. The lever, if the draw wants fewer, is `k_station_wet_m`.
+
+### How whole a stream is drawn
+
+(W130, 2026-11-15; the owner's walk: streams "incredibly disjointed on any slopes, with dry
+patches and wet patches"; the grounding is [steep-streams](../experiments/steep-streams.md).) The
+cook's line carries `runs_by_slope` (`runs.h`, `measure_runs`): every block it writes, classed by
+its mean slope (its level's fall over its length: under 2 %, 2 to 5, 5 to 15, 15 to 30 and over
+30 %, the forest session's own classes), and in each class the lines, the kilometres, and:
+
+| Field | What it counts |
+|---|---|
+| `film_share` | the share of the length whose two stations are both 5 mm deep or less: the cook's least written depth |
+| `undrawn_share` | the share the draw leaves out by its own rule (`scene_gen::channel_stretch_drawn`, the one copy the draw reads too): both stations over a bank and the water a film under 2 cm or climbing |
+| `pieces_per_100m` | maximal runs of drawn surface, cut at every lip-to-foot pair: the forest's "runs of water" |
+| `runs_per_100m` | the same joined across every fall the draw lays a nappe on (the foot lower and the stretch drawn): the water a walker sees as one |
+| `falls`, `falls_drawn` | lip-to-foot pairs, and those with a nappe |
+| `gaps` | maximal runs of undrawn stretches |
+| `thin_share`, `alternations_per_100m` | the forest's own count: stretches leaving a station 1.1 cm deep or less, and the runs of one kind (thin or not), both kinds counted |
+
+**How it differs from the forest's count.** Its session's script (`streams47b.py`, read on
+2026-11-16 once the proof of concept was opened) classes every station by its depth alone: 1.1 cm
+or less is "film", and its pieces are the runs of film and of water along the line, both counted.
+That takes in more than the 5 mm film: **a fall's foot is Rand's sheet**, under a centimetre at
+20 l/s below a metre's drop, and the shooting water below it stays that thin until its jump, so
+every free fall on a steep line adds two pieces to theirs whether or not anything is missing from
+the picture. The engine prints it beside its own (`thin_share`, `alternations_per_100m`, by
+horizontal length where theirs is by the points' 3D distance, 7 % longer on a 37 % line); `runs`,
+the water a walker sees as one, is the count a picture should be held to.
+
+**Measured on `content/test-scenes/torrent`** (2026-11-16, `msvc-debug` `engine-content flow
+solve`, one thread, the plan of 2026-11-15, CPU only, beside other agents' builds), the lines
+steeper than 30 % (7 of 8 wet lines, 0.23 km; 8 lines at stage 3):
+
+| Stage | Build | Film | Undrawn | Pieces / 100 m | Runs / 100 m | Falls (drawn) | Gaps | Over a bank | Pools |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | before W130.2 | 1.93 % | 2.36 % | 4.77 | 3.47 | 4 (4) | 1 | 15 | — |
+| 1 | W130.2 | 0 | 0 | 4.77 | 3.04 | 4 (4) | 0 | 5 | 3 |
+| 2 | before | 1.93 % | 2.36 % | 4.77 | 3.47 | 4 (4) | 1 | 20 | — |
+| 2 | W130.2 | 0 | 0 | 4.77 | 3.04 | 4 (4) | 0 | 10 | 3 |
+| 3 | before | 1.92 % | 2.35 % | 5.20 | 3.90 | 4 (4) | 1 | 22 | — |
+| 3 | W130.2 | 0 | 0 | 5.20 | 3.47 | 4 (4) | 0 | 12 | 3 |
+
+No station of the torrent is 1.1 cm deep or less at any stage (its feet land in plunge pools), so
+the forest's count there is the runs.
+
+**Measured on the world the owner walked** (the forest's `world\v47\base.json`, plan
+780a7a78621fb16f, its tile sets and route plan copied to a root of the row's own; the same build
+and machine as above, 131 to 154 s a solve, the largest 2.44 GB of commit). Over 30 %, by this
+count and by the forest's own script run on the same output (its `streams47b.py`, whose numbers on
+the stage-1 solve before W130.2 are the session's own, 7.4 % and 6.04, to the digit):
+
+| Stage | Build | Lines, km | Film | Undrawn | Runs / 100 m | Falls (drawn) | Gaps | Theirs: film, pieces / 100 m |
+|---|---|---|---|---|---|---|---|---|
+| 1 | before W130.2 | 93, 6.24 | 4.66 % | 5.77 % | 3.77 | 544 (522) | 173 | 7.4 %, 6.04 |
+| 1 | W130.2 | 93, 6.24 | 2.19 % | 2.81 % | 3.32 | 542 (527) | 136 | 4.9 %, 5.16 |
+| 1.5 | W130.2 | 206, 14.30 | 1.27 % | 1.54 % | 2.51 | 1,509 (1,477) | 208 | 3.3 %, 3.97 |
+| 2 | W130.2 | 294, 26.38 | 0.70 % | 0.89 % | 1.77 | 2,839 (2,799) | 242 | 1.9 %, 2.59 |
+| 3 | W130.2 | 394, 63.39 | 0.40 % | 0.43 % | 0.96 | 11,242 (11,150) | 343 | 1.2 %, 1.34 |
+
+Their pieces are this count's `alternations_per_100m` over the points' 3D length, which on these
+lines is 18 % over the horizontal (6.11 and 5.16 at stage 1). The whole world at stage 1: stations
+over a bank 3,174 before and 1,623 after, 407 stations written as pools and 695 in pits whose level
+meets no ground within 25 m; no head rises at any stage. **More water joins the lines, but mostly by
+adding lines**: the wet network grows from 26.6 km to 40.2, 55.9 and 98.6 km, and the new lines are
+steep and short. **The owner's line, `region link 515`** (417 m, 153.6 m of fall, 37 %), by the
+forest's `line47.py`: before W130.2, 34 runs of water over 299 m and 38.7 m of film over a bank in
+11 runs; after, 37 runs over 321 m and 18.4 m of film in 9; at stages 2 and 3 (49 to 51 and 77 to
+81 l/s) 40 and 45 runs and the same 18 m of film. Its gaps are its 30 lip-to-foot pairs (each drawn
+as a nappe) and nine short stretches of film over a bank that the pool did not take (a pit whose
+level meets no ground within 25 m, or a level over a bank where no pit is) — no stage mends those,
+and the forest should not expect one to: `flow.stage` 2 doubles 515's depth
+(6.5 to 9.4 cm) and leaves its pieces as they are. The stage changes little: the main stem is its spring's
+21 l/s, and the runoff the stage scales is a few litres a second on catchments of a few hectares.
 
 ## The cut
 

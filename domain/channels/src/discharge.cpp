@@ -79,7 +79,7 @@ bool network_flow(const ChannelLayer& layer, const ChannelNetwork& network, Netw
   // of a link past a lake), so the link it goes on into is the one that begins at its last
   // point's cell.
   const u32 hollows = network.basins.hollows.size();
-  Vector<u32> lake_of(count, ~0u);     // each outlet's lake, by index into the hollows
+  Vector<u32> lake_of(count, ~0u);      // each outlet's lake, by index into the hollows
   Vector<u32> outlet_of(hollows, ~0u);  // each lake's outlet nearest its spill
   {
     Vector<f64> outlet_d2(hollows, 1e300);
@@ -388,11 +388,10 @@ bool solve_network(const ChannelLayer& layer, const ChannelNetwork& network,
                          [&](u32 begin, u32 end) { solve(begin, end); });
     else
       solve(0, todo.size());
+    // **One gully never stops a world** (W129): a line the profile cannot solve is left dry and
+    // says why, and every other line is solved; the cook lists it with the sentence.
     for (const u32 k : todo)
-      if (!errors[k].empty()) {
-        error = errors[k];
-        return false;
-      }
+      if (!errors[k].empty()) out[k].refused = std::move(errors[k]);
   }
   return true;
 }

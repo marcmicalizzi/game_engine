@@ -882,6 +882,26 @@ TEST_CASE("water channel: a fall's sheet holds for Horeni's length") {
   CHECK(water::nappe_breakup_m(0.034) == doctest::Approx(2.0).epsilon(0.01));
 }
 
+TEST_CASE("water channel: a steep bed's water is broken white, a gentle reach's and a pool's not") {
+  // The reach types by slope (Montgomery and Buffington 1997): nothing below the step-pool onset,
+  // the most at a cascade's upper end; the torrent's 35 % reach at its 0.5 m/s and 6 cm is it.
+  CHECK(water::k_channel_steep_from == doctest::Approx(0.03));
+  CHECK(water::k_channel_steep_full == doctest::Approx(0.30));
+  CHECK(water::channel_broken_share(0.35, 0.5, 0.06) ==
+        doctest::Approx(water::k_channel_steep_white));
+  CHECK(water::channel_broken_share(0.02, 0.4, 0.3) == 0.0);    // a gentle reach
+  CHECK(water::channel_broken_share(0.0, 0.01, 1.6) == 0.0);    // a pool, level
+  CHECK(water::channel_broken_share(0.35, 0.5, 0.001) == 0.0);  // a film over the bank
+  // Rising between: a step-pool reach of 8 % is partly white, less than a cascade of 20 %.
+  const f64 step_pool = water::channel_broken_share(0.08, 0.5, 0.06);
+  const f64 cascade = water::channel_broken_share(0.20, 0.5, 0.06);
+  CHECK(step_pool > 0.0);
+  CHECK(step_pool < cascade);
+  CHECK(cascade < water::k_channel_steep_white);
+  // Still water on a slope has no energy to entrain air: g S V under 0.02 m^2/s^3.
+  CHECK(water::channel_broken_share(0.10, 0.015, 0.06) == 0.0);
+}
+
 TEST_CASE("water channel: plunge records pack into one entry, seven at most") {
   gfx::ResolveMaterial water;
   gfx::ResolveMaterial entry;

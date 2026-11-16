@@ -2281,10 +2281,35 @@ TEST_CASE("channels: one plan is read by the cut, the water, the exclusion and t
   bad.plan = named.plan;
   CHECK_FALSE(ensure_plan(bad, cut, plans_dir, refused, error));
   CHECK(error.find("another layer") != std::string::npos);
+  // W129: with no loss named the water is no part of the plan, so a named plan reads under another
+  // runoff, a spring or a stage; with one, another runoff re-plans and the refusal says so and
+  // names the stage, which re-plans nothing.
+  {
+    ChannelLayer wetter = named;
+    wetter.flow.runoff_l_s_km2 = 45;
+    wetter.flow.stage = 3;
+    ChannelSource spring;
+    spring.name = "spring";
+    wetter.flow.sources.push_back(spring);
+    ChannelPlan same;
+    CHECK_MESSAGE(ensure_plan(wetter, cut, plans_dir, same, error), error);
+    ChannelLayer losing = named;
+    losing.basin_seepage_mm_y = 500;
+    losing.plan.clear();
+    ChannelPlan lossy;
+    REQUIRE_MESSAGE(ensure_plan(losing, c, plans_dir, lossy, error), error);
+    losing.plan = plan_key_text(lossy.key);
+    losing.flow.stage = 3;
+    CHECK_MESSAGE(ensure_plan(losing, cut, plans_dir, same, error), error);
+    losing.flow.runoff_l_s_km2 = 45;
+    CHECK_FALSE(ensure_plan(losing, cut, plans_dir, refused, error));
+    CHECK(error.find("names a loss") != std::string::npos);
+    CHECK(error.find("flow.stage") != std::string::npos);
+  }
   other = cut;
   other.world_seed = 9;
   CHECK_FALSE(ensure_plan(named, other, plans_dir, refused, error));
-  CHECK(plans_made() == loads);
+  CHECK(plans_made() == loads + 1);  // the one with a loss above
   // A file cut short, or changed, is refused and never read as a plan.
   std::string bytes = plan_bytes(first);
   CHECK(read_plan(bytes, refused, error));

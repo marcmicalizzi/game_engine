@@ -32,6 +32,7 @@
 #include <domain/channels/channels.h>
 #include <domain/channels/discharge.h>
 #include <domain/channels/profile.h>
+#include <domain/channels/runs.h>
 #include <domain/scene_gen/scene_gen.h>
 #include <domain/scene_gen/water_channel.h>
 #include <foundation/io/vfs.h>
@@ -223,6 +224,7 @@ struct Totals {
   f64 over_bank_worst = 0;
   WorldPos over_bank_at{};
   std::string over_bank_line;
+  u32 pools = 0, pools_open = 0;  // W130.2: stations standing as a pool in a pit of their line
   u32 rises_jump = 0, rises_shooting = 0, rises_over_bank = 0, rises_other = 0;
   f64 rise_jump_worst = 0, rise_shooting_worst = 0, rise_other_worst = 0;
   WorldPos rise_shooting_at{}, rise_other_at{};
@@ -242,6 +244,8 @@ struct Totals {
     hung += s.tail_hung ? 1u : 0u;
     over_bank += s.over_bank;
     over_bank_lines += s.over_bank > 0 ? 1u : 0u;
+    pools += s.pools;
+    pools_open += s.pools_open;
     if (s.over_bank_worst_m > over_bank_worst) {
       over_bank_worst = s.over_bank_worst_m;
       over_bank_at = s.over_bank_at;
@@ -415,8 +419,10 @@ int flow_solve_command(int argc, char** argv) {
   JsonValue blocks = JsonValue::array();
   JsonValue dry = JsonValue::array();
   Totals totals;
+  channels::RunsBySlope by_slope;  // W130: how whole each line is drawn, by its slope
   u32 entries = 0, links = 0, wet = 0, dry_sheet = 0, dry_short = 0, sources = 0, authored = 0;
   u32 replaced = 0, kept = 0, laid = 0;
+  u32 unsolved = 0;  // W129: wet links whose profile was refused, left dry
   f64 wet_m = 0, dry_m = 0, largest = 0, smallest_wet = 0;
   u32 lake_outlets = 0;  // W122: outlets of the plan's lakes that lose water, and what they lose
   f64 lake_loss = 0;
@@ -512,14 +518,23 @@ int flow_solve_command(int argc, char** argv) {
         const std::string name = layer.name + " link " + std::to_string(l);
         if (solved[l].wet) {
           totals.add(name, solved[l].profile);
+          by_slope.add(channels::measure_runs(solved[l].block));
           blocks.push_back(schema::to_json(solved[l].block));
           continue;
         }
         JsonValue line = JsonValue::object();
         line["name"] = JsonValue(name);
-        line["reason"] = JsonValue(lf.reason == channels::DryReason::UnderSheet
-                                       ? "under a sheet: an ephemeral gully"
-                                       : "too short: fewer than two points kept and wet");
+        if (!solved[l].refused.empty()) {
+          // W129: wet, but its profile could not be solved; every other line was.
+          ++unsolved;
+          std::fprintf(stderr, "flow solve: %s: left dry: %s\n", where.c_str(),
+                       solved[l].refused.c_str());
+          line["reason"] = JsonValue("unsolved: " + solved[l].refused);
+        } else {
+          line["reason"] = JsonValue(lf.reason == channels::DryReason::UnderSheet
+                                         ? "under a sheet: an ephemeral gully"
+                                         : "too short: fewer than two points kept and wet");
+        }
         line["tail_l_s"] = JsonValue(std::round(lf.tail_m3s * 1e5) / 100.0);
         line["sheet_mm"] = JsonValue(std::round(lf.tail_sheet_m * 1e4) / 10.0);
         const channels::ChannelLink& link = plan.network.links[l];
@@ -622,6 +637,7 @@ int flow_solve_command(int argc, char** argv) {
       block.flood_left_m.clear();
       block.flood_right_m.clear();
       totals.add(block.name, profile);
+      by_slope.add(channels::measure_runs(block));
       blocks.push_back(schema::to_json(block));
       ++authored;
     }
@@ -812,6 +828,7 @@ int flow_solve_command(int argc, char** argv) {
   line["links_wet"] = JsonValue(wet);
   line["links_dry_under_sheet"] = JsonValue(dry_sheet);
   line["links_dry_too_short"] = JsonValue(dry_short);
+  line["links_unsolved"] = JsonValue(unsolved);
   line["wet_km"] = JsonValue(round3(wet_m / 1000.0));
   line["dry_km"] = JsonValue(round3(dry_m / 1000.0));
   line["sources"] = JsonValue(sources);
@@ -845,6 +862,10 @@ int flow_solve_command(int argc, char** argv) {
     over["line"] = JsonValue(totals.over_bank_line);
   }
   line["over_bank"] = std::move(over);
+  JsonValue pools = JsonValue::object();
+  pools["stations"] = JsonValue(totals.pools);
+  pools["open"] = JsonValue(totals.pools_open);
+  line["pools"] = std::move(pools);
   JsonValue rises = JsonValue::object();
   rises["jump"] = JsonValue(totals.rises_jump);
   rises["jump_worst_m"] = JsonValue(round3(totals.rise_jump_worst));
@@ -858,6 +879,7 @@ int flow_solve_command(int argc, char** argv) {
   rises["head"] = JsonValue(totals.head_rises);
   rises["head_worst_m"] = JsonValue(round3(totals.head_rise_worst));
   line["rises"] = std::move(rises);
+  line["runs_by_slope"] = channels::runs_json(by_slope);
   line["flow_seconds"] = JsonValue(round3(flow_seconds));
   line["solve_seconds"] = JsonValue(round3(solve_seconds));
   line["solve_seconds_per_km"] = JsonValue(km > 0 ? round3(solve_seconds / km) : 0.0);

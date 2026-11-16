@@ -1200,6 +1200,41 @@ static const float k_channel_veil_full_m = 0.010;
 // A channel's shore fades over this much depth, metres (S108; visibility_resolve.slang,
 // `water_channel_pixel`): the meniscus's centimetres, not a body's calm quarter metre.
 static const float k_channel_shore_depth = 0.03;
+// **Broken water on a steep bed** (W130; steep-streams.md, "What a small flow on a steep bed looks
+// like"; water::channel_broken_share mirrors it). A stream on a bed steeper than a few per cent is
+// a flight of steps and pools (Montgomery and Buffington 1997: step-pool from about 3 %, cascade
+// from about 8 % to about 30 %), and at a small flow its water is white wherever it tumbles over a
+// step or a clast; a reach-averaged solve gives such a reach a subcritical mean (the torrent's
+// Froude numbers 0.3 to 0.9 down a 35 % bed), so the Froude rule alone drew it as clear glass. The
+// share of the surface broken white rises with the sheet's own slope over [from, full] to `white`
+// (a choice: a cascade's surface at low flow is mostly white, with dark water between), needs the
+// energy to entrain air — g S V over [0.02, 0.2] m^2/s^3, the break between the bubble-free and the
+// bubbly regimes of Ulseth et al. (2019) at its lower end — and needs water: none in a film, whole
+// by a centimetre (the veil's two depths). Its cells are a clast's size, a choice: the steps' height
+// is set by the clasts (Chin 1999), a few decimetres in a steep small stream.
+static const float k_channel_steep_from = 0.03;
+static const float k_channel_steep_full = 0.30;
+static const float k_channel_steep_white = 0.6;
+static const float k_channel_dissipation_from = 0.02;
+static const float k_channel_dissipation_full = 0.2;
+static const float k_channel_clast_m = 0.25;
+// The section's Froude number over which the broken water comes in: none in a pool's 0.25, whole
+// by 0.6, where the torrent's steep reaches run (a choice, the pools' and the reaches' own numbers);
+// and the most a thread of white hides the water under it (a choice: aerated water a few
+// centimetres deep still shows the bed dimly).
+static const float k_channel_broken_froude_lo = 0.25;
+static const float k_channel_broken_froude_hi = 0.6;
+static const float k_channel_broken_opacity = 0.9;
+
+// The share of a channel's surface broken white by a steep bed (above): `slope` the sheet's own fall
+// along the flow (rise over run), `speed` the section's mean, `depth` the water under the pixel.
+float water_channel_broken_share(float slope, float speed, float depth) {
+  return k_channel_steep_white *
+         smoothstep(k_channel_steep_from, k_channel_steep_full, slope) *
+         smoothstep(k_channel_dissipation_from, k_channel_dissipation_full,
+                    k_water_g * slope * speed) *
+         smoothstep(k_channel_veil_from_m, k_channel_veil_full_m, depth);
+}
 // The long trains: cycles of the phase a period, a static spatial frequency (cycles a metre).
 static const float k_channel_train_cycles[2] = {17.0, 29.0};
 static const float2 k_channel_train_space[2] = {float2(0.23, -0.31), float2(-0.37, 0.19)};
@@ -1427,7 +1462,13 @@ WaterChannelSurface water_channel_surface(WaterChannelFlow f, float3 p, float3 g
                                           float hydraulic, float nappe, float roughness,
                                           uint seed) {
   WaterChannelSurface c;
-  const float calm = clamp(depth / k_water_calm_depth, 0.0, 1.0);
+  // The sheet's own fall along the flow: its level is the solve's, level across the line, so its
+  // plane's tilt is the water surface's slope (a pool's is level; a nappe's is its face's).
+  const float surface_slope = length(geometric.xz) / max(geometric.y, 0.05);
+  const float steep = smoothstep(k_channel_steep_from, k_channel_steep_full, surface_slope);
+  // A body's calm quarter metre stills a shallow channel's ripples and foam; on a steep bed the
+  // surface is broken by the clasts and steps, not by the depth over them, so it does not.
+  const float calm = max(clamp(depth / k_water_calm_depth, 0.0, 1.0), steep);
   if (nappe > 0.0) {
     // A fall: a glassy sheet from the lip (the brink's roll, bright by Fresnel on its steepening
     // face) turning white where it breaks up, streaked across the face and carried down it. Across
@@ -1550,6 +1591,58 @@ WaterChannelSurface water_channel_surface(WaterChannelFlow f, float3 p, float3 g
     // Far away the streaks average to their share: smoothstep of the mean, not a pattern.
     c.foam = rough * smoothstep(threshold, threshold + 0.6, n);
     c.foam_shade = 0.9 + 0.1 * clamp(n, -1.0, 1.0);
+  }
+  // **Broken water on a steep bed** (W130): white in the share the slope, the energy and the water
+  // give, and the section's Froude number (a pool's 0.2 to 0.4 stays clear water); densest in the
+  // thalweg (the vertical's share of the section's flow, so the margins are dark water), in threads
+  // drawn out along the flow as far as the water's speed carries them, on the clasts' scale and a
+  // third of it, carried at the surface's speed; between them the water is still water. Where both
+  // rules whiten a pixel the larger share wins. A level pool and a gentle reach have none.
+  const float thalweg = min(profile / k_channel_conveyance, 1.0);
+  const float broken = water_channel_broken_share(surface_slope, f.speed, depth) *
+                       smoothstep(k_channel_broken_froude_lo, k_channel_broken_froude_hi,
+                                  section_froude) *
+                       thalweg * sqrt(thalweg);
+  if (broken > 0.0) {
+    const float keep =
+        footprint > 0.0 ? clamp(k_channel_clast_m / (2.0 * footprint) - 1.0, 0.0, 1.0) : 1.0;
+    const float fine_keep =
+        footprint > 0.0
+            ? clamp(k_channel_clast_m / (6.0 * max(footprint, 1e-4)) - 1.0, 0.0, 1.0) : 1.0;
+    // The threads: noise of the clasts' cells (and a third of them) summed over five taps along the
+    // flow, so a thread is a cell across and a cell and a half plus the distance the surface
+    // travels in half a second along, at most six cells. The noise is never turned into the flow's
+    // frame: a body-local point is metres from the origin, and the phase's direction, constant on a
+    // triangle, would shift a turned pattern by that many metres times its angle at every edge;
+    // the taps are offsets of at most three cells, so an edge moves them by little.
+    const float drawn = clamp(1.5 + 0.5 * c.speed / k_channel_clast_m, 1.5, 6.0);
+    float n = 0.0;
+    for (uint k = 0; k < 2; ++k) {
+      float coarse = 0.0;
+      float fine = 0.0;
+      for (int j = -2; j <= 2; ++j) {
+        const float2 q = p.xz - ph.offset[k] + along * (0.25 * float(j) * drawn * k_channel_clast_m);
+        coarse += water_channel_noise(q / k_channel_clast_m, seed + 101u).x;
+        fine += water_channel_noise(q * (3.0 / k_channel_clast_m), seed + 151u).x;
+      }
+      n += ph.weight[k] * (0.7 * coarse + 0.45 * fine_keep * fine);
+    }
+    // Five taps apart sum to about sqrt(5) of one tap's rms.
+    n *= ph.norm * keep / (k_channel_noise_rms * 2.2360680);
+    // The threshold falls as the share rises, so the share is how much of the surface the threads
+    // cover; a soft edge, so the white thins into the water between rather than ending in a line,
+    // never quite opaque, and its brightness follows how dense it is there. Far away the threads
+    // average to the share.
+    const float threshold = lerp(1.4, -0.6, broken);
+    const float cover = smoothstep(threshold - 0.5, threshold + 0.9, n);
+    const float white = lerp(broken, k_channel_broken_opacity * cover, keep);
+    if (white > c.foam) {
+      c.foam = white;
+      c.foam_shade = lerp(0.85, 0.5 + 0.5 * cover, keep);
+    }
+    // The water between the white is broken too: rougher, glinting, but still water that mirrors
+    // the sky where it is open.
+    c.roughness = min(c.roughness + 0.2 * broken, 1.0);
   }
   return c;
 }

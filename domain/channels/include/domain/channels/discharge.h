@@ -81,6 +81,9 @@ struct SolvedLink {
   bool wet = false;
   Profile profile;
   scene::WaterChannel block;
+  // A wet link the profile refused (W129): the sentence, and the link is left dry. Empty for every
+  // other link.
+  std::string refused;
 };
 // What a link's block declares as its writer (`WaterChannel.derived_from`): the cook replaces
 // the blocks that carry it and solves the ones that carry none, and reads no name to tell which.

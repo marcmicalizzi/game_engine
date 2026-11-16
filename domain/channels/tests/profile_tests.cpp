@@ -574,3 +574,92 @@ TEST_CASE("profile: a fall's foot beside a shelf has no more head than its lip")
   CHECK(p.stats.head_rises == 0);
   check_head_falls(p);
 }
+
+namespace {
+// A ground with no bed across a line running +x (W129.1): a floor falling 1 % along x and level
+// across, to `flat_half` either side of z = 0; past it the ground falls away at one in ten (a level
+// spur), or, with a flat half past the section's reach, it is level from edge to edge (a lake's
+// floor filled flat, which no cut crosses).
+struct Level {
+  f64 flat_half = 1.0;
+};
+f64 level_height(const void* context, i64 x_mm, i64 z_mm) noexcept {
+  const Level& l = *static_cast<const Level*>(context);
+  const f64 x = static_cast<f64>(x_mm) / 1000.0, z = std::fabs(static_cast<f64>(z_mm) / 1000.0);
+  const f64 floor = 30.0 - 0.01 * x;
+  return z <= l.flat_half ? floor : floor - 0.1 * (z - l.flat_half);
+}
+}  // namespace
+
+TEST_CASE("profile: water on ground with no bank across it is a sheet, never refused") {
+  // The forest's `region link 294` at a stage over 1 (W129.1): a line the plan left dry, so no
+  // cut crossed the level floor it runs over, and every section was level at its thalweg. The
+  // crest walk stopped at the thalweg, the section wet nothing at any level, and the line was
+  // refused with "a station has no water in its section".
+  for (const f64 flat_half : {1.0, 100.0}) {
+    CAPTURE(flat_half);
+    Level l;
+    l.flat_half = flat_half;
+    scene_gen::Ground ground;
+    ground.surface_fn = &level_height;
+    ground.context = &l;
+    FlowLine line = fixture_line("level floor", 0, 40, 0, 0.0064);
+    line.width.assign(2, 1.0);
+    std::string error;
+    Profile p;
+    REQUIRE_MESSAGE(solve_profile(line, ground, ProfileOptions{}, p, error), error);
+    REQUIRE(p.stations.size() >= 2);
+    for (const ProfileStation& s : p.stations) {
+      CHECK(s.depth >= 0.005 - 1e-9);
+      // The water stands over the level ground to where it falls away (or the section's end).
+      CHECK(s.wet_left + s.wet_right >= 2.0 * std::min(flat_half, 1.0) - 1e-6);
+      CHECK(s.speed > 0.0);
+    }
+  }
+}
+
+namespace {
+// A bed falling 2 % along +x in a shallow vee (its sides rising 5 % across), and across it at
+// x = 25 a bowl 8 m in radius and 0.6 m deep (W130.2): a closed hollow of the ground on the line,
+// wider than the section's read, whose sill is its downstream rim near x = 33.
+f64 bowl_height(const void*, i64 x_mm, i64 z_mm) noexcept {
+  const f64 x = static_cast<f64>(x_mm) / 1000.0, z = static_cast<f64>(z_mm) / 1000.0;
+  const f64 r2 = (x - 25.0) * (x - 25.0) + z * z;
+  return 20.0 - 0.02 * x + 0.05 * std::fabs(z) - 0.6 * std::max(0.0, 1.0 - r2 / 64.0);
+}
+}  // namespace
+
+TEST_CASE("profile: a pit on a line stands as a pool at its sill and spills over it") {
+  // The forest's lines down the planner's breached pits and the hollows finer than its lattice
+  // (W130.2): the solved level stood over the section's crests, and the stations were written at
+  // the crest and then as a 5 mm film climbing to the sill.
+  scene_gen::Ground ground;
+  ground.surface_fn = &bowl_height;
+  FlowLine line = fixture_line("bowl", 0, 50, 0, 0.021);
+  line.width.assign(2, 1.0);
+  std::string error;
+  Profile p;
+  REQUIRE_MESSAGE(solve_profile(line, ground, ProfileOptions{}, p, error), error);
+  CHECK(p.stats.pools > 0);
+  CHECK(p.stats.pools_open == 0);
+  f64 sill = 1e9, low = 1e9, high = -1e9, widest = 0.0;
+  for (const ProfileStation& s : p.stations)
+    if (s.x > 30.0 && s.x < 36.0) sill = std::min(sill, s.level);
+  for (const ProfileStation& s : p.stations) {
+    const f64 r2 = (s.x - 25.0) * (s.x - 25.0);
+    if (r2 > 20.0) continue;  // the bowl's floor, 4.5 m either way of its centre
+    CAPTURE(s.x);
+    CHECK((s.flags & scene_gen::k_channel_over_bank) == 0);
+    CHECK(s.depth > 0.1);
+    low = std::min(low, s.level);
+    high = std::max(high, s.level);
+    widest = std::max(widest, s.wet_left + s.wet_right);
+  }
+  MESSAGE("the pool stands " << low << " to " << high << " m, " << widest << " m wide; the sill's "
+                             << "water at " << sill << " m");
+  CHECK(high - low < 0.01);  // level: a pool, not a film climbing
+  CHECK(low >= 19.34);       // at its sill (the rim's ground at x = 33), which it spills over
+  CHECK(sill < low);         // and spills: below the sill the water falls away
+  CHECK(widest > 6.0);       // as wide as the level meets the ground, past the section's read
+  check_head_falls(p);
+}

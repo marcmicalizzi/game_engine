@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "b66-streams",
+  "reason": "W129 and W130: the count of how whole a stream is drawn (with the forest's own beside it), the key's dependence on a named loss, torrent in the synth list; W129.1's section with no bank, W130.2's pit standing as a pool; the count on torrent and on the forest's v47",
+  "date": "2026-11-16",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/apps.md": 8,
+    "page:docs/subsystems/channels.md": 9812
+  }
+}

@@ -265,11 +265,51 @@ bool parse_synth_kind(std::string_view name, SynthKind& out) noexcept {
     out = SynthKind::flat;
   } else if (name == "mountain") {
     out = SynthKind::mountain;
+  } else if (name == "torrent") {
+    out = SynthKind::torrent;
   } else {
     return false;
   }
   return true;
 }
+
+namespace {
+// **A steep valley with steps and pools** (`SynthKind::torrent`; W130), in metres from the grid's
+// centre, x down the valley: a floor falling 42 % along a thalweg that swings 10 m either way every
+// 120 m, walls rising 30 % from it, and in a band 8 m either side of the thalweg a step every 15 m
+// whose drops cycle through eight heights from 0.3 to 3.5 m (1.35 m on the mean, so the treads
+// between fall 33 %), with a scour pit 3 m across at the foot of five of every eight, 0.4 to 1.5 m
+// deep (closed hollows of up to 1 m on the tread's fall). Polynomials and floors only.
+f64 torrent_height(u32 i, u32 j, f64 half, i64 spacing_mm) {
+  const f64 s = static_cast<f64>(spacing_mm) / 1000.0;
+  const f64 x = (static_cast<f64>(i) - half) * s;
+  const f64 z = (static_cast<f64>(j) - half) * s;
+  constexpr f64 k_step_m = 15.0;
+  constexpr f64 drops[8] = {0.4, 1.2, 0.3, 2.5, 0.8, 1.6, 0.5, 3.5};  // sum 10.8
+  constexpr f64 pits[8] = {0.4, 1.2, 0.0, 0.8, 0.0, 1.5, 0.3, 0.0};
+  const f64 w = 2.0 * (x / 120.0 - std::floor(x / 120.0)) - 1.0;
+  const f64 c = 26.0 * w * (1.0 - w * w);
+  const f64 g = std::fabs(z - c);
+  // The step at x_k = 15 k drops `drops[k mod 8]`; the cumulative drop over x_k < x.
+  const f64 kf = std::floor(x / k_step_m);
+  const i64 k = static_cast<i64>(kf);
+  const i64 cycles = k >= 0 ? k / 8 : -((-k + 7) / 8);
+  const i64 r = k - 8 * cycles;
+  f64 below = static_cast<f64>(cycles) * 10.8;
+  for (i64 q = 0; q <= r; ++q)
+    below += drops[q];
+  const f64 smooth = -0.42 * x;
+  const f64 stepped = -0.33 * x - below;
+  const f64 band = g < 8.0 ? 1.0 - (g / 8.0) * (g / 8.0) : 0.0;
+  f64 h = smooth + band * band * (stepped - smooth + (1.35 * 0.5)) + 0.30 * g;
+  // The pit at the foot of step k, 2.5 m below it on the thalweg.
+  const f64 px = kf * k_step_m + 2.5;
+  const f64 pz = c;
+  const f64 q = ((x - px) * (x - px) + (z - pz) * (z - pz)) / (1.5 * 1.5);
+  if (q < 1.0) h -= pits[r] * (1.0 - q) * (1.0 - q);
+  return h;
+}
+}  // namespace
 
 Heightfield synth_heightfield(SynthKind kind, u32 size, i64 spacing_mm, u64 seed, i64 origin_x_mm,
                               i64 origin_z_mm) {
@@ -328,6 +368,7 @@ Heightfield synth_heightfield(SynthKind kind, u32 size, i64 spacing_mm, u64 seed
           }
           break;
         }
+        case SynthKind::torrent: h = torrent_height(i, j, half, spacing_mm); break;
       }
       if (seed != 0) {
         const u64 r = mix64(hash_combine(seed, (u64{j} << 32) | i));

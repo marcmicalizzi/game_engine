@@ -3,7 +3,8 @@
 // when this build has the capability (ENGINE_CONTENT_TILESET); without it both are refused with a
 // sentence, as `terrain` is.
 //
-//   terrain-synth <out.json> --kind <ridge|basin|steps|flat|mountain> --size <n> --spacing-mm <s>
+//   terrain-synth <out.json> --kind <ridge|basin|steps|flat|mountain|torrent> --size <n>
+//   --spacing-mm <s>
 //                 [--seed <n>] [--origin-mm <x,z>]
 //   terrain-tiles <heightfield.json> [<out dir>] [--ddc <root>] [--cells <n>]
 //                 [--ring-spacing-mm <s>] [--far-ratio <r>] [--far-levels <n>]
@@ -73,7 +74,8 @@ constexpr int k_exit_error = 1;
 [[maybe_unused]] constexpr int k_exit_usage = 2;
 
 [[maybe_unused]] const char* k_synth_usage =
-    "usage: engine-content terrain-synth <out.json> --kind <ridge|basin|steps|flat|mountain> "
+    "usage: engine-content terrain-synth <out.json> --kind "
+    "<ridge|basin|steps|flat|mountain|torrent> "
     "--size <n>\n"
     "                                    --spacing-mm <s> [--seed <n>] [--origin-mm <x,z>]\n"
     "  writes an engine.terrain.heightfield/1 header and its float32 grid (<stem>.f32) beside\n"
