@@ -2816,6 +2816,85 @@ asks the chain for 800 clusters a frame more than main at that view where 48 m a
 9,300 — a little off a capacity the owner's 4K walk overran by 38,000 the same morning, not
 the mend of it.
 
+### R171: the grain on a plain wall
+
+Roadmap R171 (2026-11-15, batch 66; first leg: the cause and the measurement, not the mend).
+The owner, walking a furnished village under `bounce`: indoors the indirect light "ends up with a
+large patchy static-like texture on everything", seen before in a cave.
+
+**The cause: the read shows the own level's mean, and indoors a mean of 256 samples is not
+quiet.** Once a cell holds `renderer.gi.confident` (255) samples the walk takes it whole and stops
+(stage 5), so a surface shows its own cells' means, each an average of 256 samples or sixteen
+frames of them (`gi_history`), at the cells' own size. Such a mean carries a sample's spread over
+the square root of its effective count (about 2T − n for an exponential average of T samples
+taking n a frame: 511 for an own cell at the trickle's density). On open ground a sample's spread
+is about its mean (stage 6's `k_gi_sample_cv2` of 2); indoors it is not, because the light comes
+through an opening a cosine ray seldom finds — a share p of the hemisphere brings nearly all of
+it, and the spread squared over the mean squared is about 1/p. Under `sky`, where only the
+opening brings light, the village's walls show 15 to 28 % grain; under `bounce`, which lights
+every hit, 4 to 5 %, which is a spread squared of about five times the mean's square. Nothing
+else is needed to explain it, and each candidate the brief named was isolated by one capture
+(3840×2160, `--raster rt --shadows rt`, `bounce`, main's build b299cce2, held 180 to 320 frames;
+the grain is the spread of the indirect term over the harmonics' picture of the same frame,
+divided by its own falloff, at 1.5 to 32 pixels):
+
+| capture (village, house 0) | near wall | far wall | what it rules |
+|---|---|---|---|
+| the read as it is | 3.97 % | 5.17 % | the defect |
+| four times the rays | 2.28 | 3.56 | samples: the law of a mean says half |
+| level +1 read whole (`show_level` 1) | 1.91 | 3.46 | four times the samples a cell |
+| level +2 | 1.02 | 1.84 | sixteen times |
+| level +3 | 0.86 | 1.21 | sixty-four times |
+| `cell_scale` 0.002 or 0.008 | 3.97, 4.04 | 5.17, 3.30 | the footprint against the pixel |
+| `sky` (no bounce) | 15.0 | 27.7 | heavy samples through the opening |
+
+- **A cell's few heavy samples, and the level the read takes**: in. The grain falls with the
+  samples behind the level shown, as a mean's noise does, and only with them.
+- **The footprint against the pixel**: out, and why the forest's four times the cell scale bought
+  nothing. A wall within about 6 m of the eye is at level 0 whatever the scale (25 mm is the floor:
+  0.004 × 6 m = 24 mm), so a scale half or twice the default leaves the near wall's cells as they
+  were (the same bytes); only the far wall, 5.5 m off, crossed to level 1 at twice the scale.
+- **The hash or the jitter**: out. The pattern decorrelates as the cell's memory says: in the box
+  below, 0.93 between consecutive frames and −0.07 sixty frames on (an exponential average of
+  sixteen frames gives 0.94 and 0.02). Two runs draw the same pattern because the same binary
+  traces the same rays from the same frame counts (`rng_seed` of the pixel and the cache's frame):
+  a scale half the default, which changed no level near the wall, drew the default's numbers to
+  the second decimal. "The same pattern in two runs" is determinism, not a fixed bias.
+- **A bias in what a cell stores when most of its rays miss**: not seen as a fixed pattern. The
+  village's far wall keeps more of its pattern over time than its memory explains (0.57 at 140
+  frames), which is the bounce's feedback (each sample reads the hit's cells, whose errors last
+  their own memory) and is in the light's mean, not its grain; the cave's mean is still falling
+  at 320 frames (−27 % from 180), the room's light iterating through its walls.
+- **The cave** (one passage under a 4 m shaft, `engine.caves.passage`, noon): the term over
+  level +3's picture (the cave's limestone texture does not divide out of the harmonics' picture,
+  which reads the same material with another normal) is 6.8 to 8.7 %, 4.4 to 6.0 with four times
+  the rays and 2.6 to 3.4 at level +2: the same law, with a heavier tail (a shaft is a smaller
+  share of the sky than a window).
+
+**The measurement the tree keeps** (`gi cache: the grain on a plain wall is its cells' sampling
+noise`, `systems/renderer/tests/gi_cache_tests.cpp`): the box with one opening, a plain wall seen
+square from 2 m at 512 × 512 with its own cells 13 pixels wide and the trickle at one pixel in nine
+— a 4K cell's footprint and density. It measures the grain as above and holds the law that names
+the cause: four times the rays halve it (0.63 measured; the bound is the law with a third of
+slack) and the level two up quarters it or better (0.17). It prints the grain (1.76 % here; the
+box's wall sees its opening wider than a room's wall sees a window) and warns while it is over
+the owner's target of 1 %.
+
+**What the mend has to be, and what it may not be.** More rays are out (four times halve it and
+cost the bounce's sample pass four times); a longer memory is out (it trails a moved light); a
+blur is out (it loses the corners R167 asks for). The right shape is a read that takes the own
+level by **its cells' measured spread**, not their count: a level is shown where its difference
+from a coarser one is more than its noise explains, and the coarser one where it is not — stage
+6's `gi_reveal` (James and Stein's positive-part shrinkage) applied to a converged level too, with
+the sample's spread measured per cell rather than modelled, since indoors the model's 2 is
+a fifth of the truth. That needs a cell to carry its spread: the fold can estimate it without a
+per-sample accumulator, as n (m_frame − m)² averaged at the cell's own rate, and it fits in the
+bucket-pressure word, which only a bucket's first cell uses (the pressure would take its high
+half). Level +3 shows what the noise floor of such a read is indoors (0.9 to 1.2 % on the
+village's walls); the shrinkage's own noise, a corner's contrast against it and the read's cost
+(a second level's eight lookups on every faced pixel, 0.3 to 0.5 ms at 3840 × 2160 by stage 5's
+figures) are the second leg's to measure.
+
 ## The sun's day
 
 *A scene that names a sky takes its sun, its moon and its sky from it instead, on the world's clock ([The sky](#the-sky)); everything in this section is the stand-in's, which every other scene still draws, to the bit.*

@@ -799,6 +799,204 @@ TEST_CASE("gi cache: at one pose the change from frame to frame falls and does n
   CHECK(late <= middle * 1.25);
 }
 
+namespace {
+
+// **The grain of the indirect light on a plain wall** (R171; renderer.md, "Indirect light",
+// "R171: the grain on a plain wall"). The picture with the cache over the same frame with the mode
+// off — the harmonics' picture, whose ambient is smooth and whose direct light and albedo are the
+// same bytes — leaves the indirect term's own variation with the surface's texture divided out;
+// that over its own smooth falloff (a Gaussian of `k_grain_low` pixels) less one, smoothed over a
+// pixel and a half so that what is left is the cells' and not a pixel's, is the grain. Its spread,
+// over the rectangle less the falloff's margin, is the number: a share of the term's mean.
+constexpr f64 k_grain_low = 32.0;
+constexpr f64 k_grain_fine = 1.5;
+
+std::vector<f64> gaussian(const std::vector<f64>& in, u32 w, u32 h, f64 sigma) {
+  const i32 r = static_cast<i32>(3.0 * sigma + 1.0);
+  std::vector<f64> k(static_cast<usize>(2 * r + 1));
+  f64 sum = 0.0;
+  for (i32 i = -r; i <= r; ++i) {
+    k[static_cast<usize>(i + r)] = std::exp(-0.5 * static_cast<f64>(i * i) / (sigma * sigma));
+    sum += k[static_cast<usize>(i + r)];
+  }
+  for (f64& v : k)
+    v /= sum;
+  std::vector<f64> tmp(in.size());
+  std::vector<f64> out(in.size());
+  auto at = [](i32 v, u32 size) {
+    return static_cast<u32>(std::clamp(v, 0, static_cast<i32>(size) - 1));
+  };
+  for (u32 y = 0; y < h; ++y)
+    for (u32 x = 0; x < w; ++x) {
+      f64 acc = 0.0;
+      for (i32 i = -r; i <= r; ++i)
+        acc += k[static_cast<usize>(i + r)] * in[y * w + at(static_cast<i32>(x) + i, w)];
+      tmp[y * w + x] = acc;
+    }
+  for (u32 y = 0; y < h; ++y)
+    for (u32 x = 0; x < w; ++x) {
+      f64 acc = 0.0;
+      for (i32 i = -r; i <= r; ++i)
+        acc += k[static_cast<usize>(i + r)] * tmp[at(static_cast<i32>(y) + i, h) * w + x];
+      out[y * w + x] = acc;
+    }
+  return out;
+}
+
+struct Grain {
+  f64 spread = 0.0;        // the grain, a share of the indirect term's mean
+  std::vector<f64> field;  // the residual over the core, for correlations between frames
+};
+
+Grain grain_of(const CapturedFrame& on, const CapturedFrame& off, u32 x0, u32 y0, u32 x1, u32 y1) {
+  const u32 w = x1 - x0;
+  const u32 h = y1 - y0;
+  auto luma = [](const Vector<f32>& light, u32 i) {
+    return 0.2126 * static_cast<f64>(light[i * 3]) + 0.7152 * static_cast<f64>(light[i * 3 + 1]) +
+           0.0722 * static_cast<f64>(light[i * 3 + 2]);
+  };
+  std::vector<f64> ratio(static_cast<usize>(w) * h);
+  for (u32 y = 0; y < h; ++y)
+    for (u32 x = 0; x < w; ++x) {
+      const u32 i = (y0 + y) * on.width + x0 + x;
+      ratio[y * w + x] = luma(on.light, i) / std::max(luma(off.light, i), 1e-9);
+    }
+  const std::vector<f64> smooth = gaussian(ratio, w, h, k_grain_low);
+  for (usize i = 0; i < ratio.size(); ++i)
+    ratio[i] = ratio[i] / std::max(smooth[i], 1e-12) - 1.0;
+  const std::vector<f64> fine = gaussian(ratio, w, h, k_grain_fine);
+  const u32 m = static_cast<u32>(2.0 * k_grain_low);
+  Grain out;
+  f64 sum = 0.0;
+  f64 sq = 0.0;
+  for (u32 y = m; y + m < h; ++y)
+    for (u32 x = m; x + m < w; ++x) {
+      const f64 v = fine[y * w + x];
+      out.field.push_back(v);
+      sum += v;
+      sq += v * v;
+    }
+  const f64 count = static_cast<f64>(out.field.size());
+  out.spread = std::sqrt(std::max(sq / count - (sum / count) * (sum / count), 0.0));
+  return out;
+}
+
+f64 correlation(const std::vector<f64>& a, const std::vector<f64>& b) {
+  f64 ma = 0.0;
+  f64 mb = 0.0;
+  for (usize i = 0; i < a.size(); ++i) {
+    ma += a[i];
+    mb += b[i];
+  }
+  ma /= static_cast<f64>(a.size());
+  mb /= static_cast<f64>(b.size());
+  f64 ab = 0.0;
+  f64 aa = 0.0;
+  f64 bb = 0.0;
+  for (usize i = 0; i < a.size(); ++i) {
+    ab += (a[i] - ma) * (b[i] - mb);
+    aa += (a[i] - ma) * (a[i] - ma);
+    bb += (b[i] - mb) * (b[i] - mb);
+  }
+  return ab / std::sqrt(std::max(aa * bb, 1e-300));
+}
+
+}  // namespace
+
+// **R171: the grain on a plain wall is its cells' sampling noise** (renderer.md, "Indirect light",
+// "R171: the grain on a plain wall"). Inside the box with one opening, a wall's own cells drawn at
+// about thirteen pixels and sampled one pixel in nine, as a cell at 3840x2160 is: the wall's
+// indirect light, which is smooth, shows the cells' means' noise at their own size. What decides
+// it is the samples behind the level the read shows, by the law of a mean: four times the rays
+// halve it (a cell's history is sixteen frames of samples here, so it holds four times as many),
+// and the level two up, which takes sixteen times the samples, quarters it. The bounds are that law
+// with a third of slack for the measure's own spread (a few hundred independent cells). The owner's
+// target — under one percent — is not met by the read as it stands; the case warns with the number.
+TEST_CASE("gi cache: the grain on a plain wall is its cells' sampling noise") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("gi cache unavailable here: " << gpu.why);
+    return;
+  }
+  const test::TempDir tmp("engine_gi_grain");
+  Fixture fixture = box_fixture(tmp.native());
+  // The -z wall seen square from two metres, the -x wall's corner at the left edge, the opening
+  // (+x) behind the right shoulder and the sphere below the view.
+  fixture.camera.position = WorldPos{-1.0, 0.8, 0.0};
+  fixture.camera.target = WorldPos{-1.0, 0.8, -2.0};
+  constexpr u32 k_side = 512;
+  // A cell at two metres is 50 mm (level 1), 13 pixels at 512 and 55 degrees: a 4K cell's size.
+  const ScopedTunable scale("renderer.gi.cell_scale", "0.025");
+  constexpr u32 k_frames = 160;
+  struct Run {
+    const char* name;
+    const char* rays;
+    const char* show;
+  };
+  // The trickle at one pixel in nine, as at 3840x2160 (`gfx::gi_trickle_stride`), then four
+  // times the rays, then the level two up read whole.
+  const Run runs[3] = {
+      {"default", "58300", "-1"}, {"rays x4", "233200", "-1"}, {"level +2", "58300", "2"}};
+  CapturedFrame off;
+  {
+    const ScopedTunable mode("renderer.gi.mode", "off");
+    Rig rig;
+    rig.width = k_side;
+    rig.height = k_side;
+    REQUIRE_MESSAGE(rig.build(gpu.device, fixture.desc, false), rig.error);
+    FrameDesc frame;
+    frame.camera = fixture.camera;
+    CaptureChannels channels;
+    channels.light = true;
+    REQUIRE_MESSAGE(rig.renderer.capture(frame, channels, off, &rig.error), rig.error);
+  }
+  f64 spread[3] = {};
+  for (u32 r = 0; r < 3; ++r) {
+    const ScopedTunable mode("renderer.gi.mode", "bounce");
+    const ScopedTunable rays("renderer.gi.rays_per_frame", runs[r].rays);
+    const ScopedTunable show("renderer.gi.show_level", runs[r].show);
+    Rig rig;
+    rig.width = k_side;
+    rig.height = k_side;
+    REQUIRE_MESSAGE(rig.build(gpu.device, fixture.desc, false), rig.error);
+    FrameDesc frame;
+    frame.camera = fixture.camera;
+    CaptureChannels channels;
+    channels.light = true;
+    std::vector<Grain> shots;
+    for (u32 i = 0; i < k_frames; ++i) {
+      frame.frame_index = i;
+      const bool keep = i == 99 || i == 100 || i == 159;
+      if (!keep) {
+        REQUIRE_MESSAGE(rig.renderer.render_offscreen(frame, &rig.error), rig.error);
+        continue;
+      }
+      CapturedFrame shot;
+      REQUIRE_MESSAGE(rig.renderer.capture(frame, channels, shot, &rig.error), rig.error);
+      REQUIRE(shot.light.size() == off.light.size());
+      // The wall less a strip at the corner (x 0 to 40) and at the floor and ceiling's edges.
+      shots.push_back(grain_of(shot, off, 64, 24, 500, 488));
+    }
+    spread[r] = shots[0].spread;
+    MESSAGE("the box's plain wall, "
+            << std::string(runs[r].name) << ": grain " << 100.0 * shots[0].spread
+            << " % of the indirect term; correlation with the next frame "
+            << correlation(shots[0].field, shots[1].field) << ", with the frame sixty on "
+            << correlation(shots[0].field, shots[2].field));
+  }
+  CHECK(spread[0] > 0.0);
+  // Four times the samples: half the noise.
+  CHECK(spread[1] > spread[0] * 0.5 / 1.33);
+  CHECK(spread[1] < spread[0] * 0.5 * 1.33);
+  // Sixteen times the samples: a quarter at most. Only the upper side is the law's: the level two
+  // up is four times as wide (54 pixels), and the measure's falloff (a Gaussian of 32) takes part
+  // of a pattern that wide out with the light's own slope, so it reads under a quarter (0.17 on
+  // the RTX 5090, 2026-11-15).
+  CHECK(spread[2] < spread[0] * 0.25 * 1.33);
+  WARN_MESSAGE(spread[0] < 0.01,
+               "R171: a plain wall's grain is " << 100.0 * spread[0] << " %, the target under 1 %");
+}
+
 TEST_CASE("gi cache: a scene moved by whole cells draws the same bytes with the cache on") {
   Gpu gpu;
   if (!gpu.ok) {
