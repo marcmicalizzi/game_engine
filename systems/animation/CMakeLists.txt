@@ -25,13 +25,14 @@ engine_module(NAME animation LAYER systems OPTIONAL WHOLE_ARCHIVE
 
 engine_module_tests(NAME animation
   SOURCES tests/animation_tests.cpp tests/ancestor_tests.cpp tests/lod_tests.cpp tests/size_table.cpp
-          tests/gait_tests.cpp tests/visibility_tests.cpp)
+          tests/gait_tests.cpp tests/visibility_tests.cpp tests/travel_tests.cpp)
 # The gait's tests wear the Khronos RiggedFigure where tools/fetch-samples.ps1 has fetched it,
 # found through test_paths.h by this path or in a test bundle.
 if(TARGET engine_animation_tests)
   target_compile_definitions(engine_animation_tests PRIVATE ENGINE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 endif()
 
-# 10^4 instances of a 23-joint skeleton through the real tick, by tier mix (plan 11 §11.8).
+# 10^4 instances of a 23-joint skeleton through the real tick, by tier mix (plan 11 §11.8), and
+# what measuring one baked clip's travel costs (A47).
 engine_module_bench(NAME animation
   SOURCES bench/animation_bench.cpp)

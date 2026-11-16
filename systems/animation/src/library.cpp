@@ -677,6 +677,19 @@ f32 clip_displacement_bound(const anim::Skeleton& skeleton, const anim::Clip& cl
   for (u32 i = 0; i < samples && clip.duration > 0.0f; ++i) {
     times.push_back(clip.duration * static_cast<f32>(i) / static_cast<f32>(samples));
   }
+  // **Each distinct time once** (A47). `clip.times` is every track's keys back to back, and an
+  // exporter keys every track at the same times (Blender bakes each channel at every frame), so as
+  // it stands the list holds each time once per track: 111 times over for a 37-joint rig with a
+  // translation, a rotation and a scale track per joint. Each evaluation samples every track, and
+  // the sampler walks a track's keys from the front, so the walk was quadratic in the tracks and
+  // in the keys — 66 ms for a two-second clip of that rig, half a second for an eight-second one,
+  // on the frame's thread the first time a game played it. The answer is a maximum over the poses
+  // at these times, and a maximum over the same set is the same float whatever its order and
+  // however often a member repeats, so this changes the cost and not one bit of the bound
+  // (travel_tests.cpp holds it to the old walk). Every time here is finite and in [0, duration].
+  std::sort(times.begin(), times.end());
+  times.resize(
+      static_cast<Vector<f32>::size_type>(std::unique(times.begin(), times.end()) - times.begin()));
 
   anim::Pose pose;
   Vector<Mat4> model(joint_count, Mat4::identity());

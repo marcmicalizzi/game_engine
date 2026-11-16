@@ -166,8 +166,9 @@ u32 find_clip(const animation::Library& library, u32 skeleton, std::string_view 
 f32 clip_travel(AnimatedScene& scene, u32 mesh, u32 clip) {
   if (clip >= scene.clip_travel.size() || mesh >= scene.mesh_bounds.size()) return 0.0f;
   if (scene.clip_travel[clip] < 0.0f) {
-    // The first time a game plays a clip the actor was not attached with: measured once, against
-    // the same per-joint spheres the attach measured its own clip against.
+    // A clip the instance was not attached with: measured once, against the same per-joint spheres
+    // the attach measured its own clip against. `GameActors::bind` asks for every clip of every
+    // actor's skeleton at the load (A47), so a play only ever reads the cache.
     const animation::ClipAsset& asset = scene.library.clip(clip);
     scene.clip_travel[clip] = asset.skeleton == animation::Library::k_not_found
                                   ? 0.0f
@@ -1041,8 +1042,8 @@ struct GameActors::Impl {
   u64 biases = 0, seeks = 0;                     // ABI 11: calls answered Ok
 
   // The rule's travel for the actor's tier row (A44): clip `clip`'s displacement bound through the
-  // scene's scale and the actor's own factor. A clip the actor was not attached with is measured
-  // the first time it is played (`clip_travel`).
+  // scene's scale and the actor's own factor. Every clip of the actor's skeleton was measured at
+  // `bind` (`clip_travel`, A47), so this is a read of the cache, never a measurement.
   void set_travel(Actor& a, u32 clip) {
     if (a.row == ~0u || a.row >= scene->travel.size()) return;
     const f32 bound = clip == animation::Library::k_not_found
@@ -1223,6 +1224,29 @@ bool GameActors::bind(AnimatedScene& scene, const renderer::SceneDesc& desc,
     }
     a.path.reserve(k_path_samples);
     g.actors.push_back(std::move(a));
+  }
+  // **Every clip an actor can play is measured here, at the load, never at its first play** (A47).
+  // A clip's travel is the tier rule's and was measured the first time a game played the clip, on
+  // the frame's thread: the forest's first `actor_play` of each species' clips held frames of 0.3
+  // to 8 s. The measurement is the same call against the same mesh's spheres (`clip_travel`, the
+  // actor's own mesh, the first actor in declaration order where several share a skeleton), so a
+  // clip's travel is what its first play would have measured; the cache then answers every play.
+  {
+    const i64 start = time::monotonic_ns();
+    u32 measured = 0;
+    for (const Impl::Actor& a : g.actors) {
+      if (a.skeleton == animation::Library::k_not_found) continue;
+      for (u32 clip = 0; clip < scene.library.clip_count() && clip < scene.clip_travel.size();
+           ++clip) {
+        if (scene.library.clip(clip).skeleton != a.skeleton || scene.clip_travel[clip] >= 0.0f)
+          continue;
+        (void)clip_travel(scene, a.placement.mesh, clip);
+        ++measured;
+      }
+    }
+    const f64 ms = static_cast<f64>(time::monotonic_ns() - start) * 1.0e-6;
+    ENGINE_LOG_INFO(log_view_anim, "actor clips measured at load", log::field("clips", measured),
+                    log::field("ms", ms));
   }
   g.move_indices.reserve(g.actors.size());
   g.move_placements.reserve(g.actors.size());
