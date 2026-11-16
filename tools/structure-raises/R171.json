@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "R171",
+  "reason": "R171's third leg: the shrinkage off by default with its cost, and the cell's memory by its own spread (rule, sources, grain, lag, cost, why it is off) on renderer.md",
+  "date": "2026-11-16",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/renderer.md": 28629
+  }
+}

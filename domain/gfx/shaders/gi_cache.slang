@@ -25,9 +25,19 @@ static const uint k_gi_max_age = 240u;
 static const uint k_gi_history_frames = 16u;
 // gfx::k_gi_crown_history_frames, gfx::k_gi_stamp_crown (stage 8): a foliage cell remembers this
 // many frames, and its stamp's top bit says it is one (the fold has a cell's words and not its
-// key's tag).
+// key's tag). The stamp is the second word's low half since R171's third leg (gfx::gi_stamp_age);
+// the high half is the short mean (gfx::gi_memory_fold).
 static const uint k_gi_crown_history_frames = 64u;
-static const uint k_gi_stamp_crown = 0x80000000u;
+static const uint k_gi_stamp_crown = 0x8000u;
+static const uint k_gi_stamp_frames = 0x7fffu;
+// gfx::k_gi_memory_times, k_gi_memory_count_max, k_gi_change_sigmas, k_gi_frame_drop,
+// k_gi_cell_changed (R171's third leg).
+static const uint k_gi_memory_times = 16u;
+static const uint k_gi_memory_count_max = 0xfff0u;
+static const float k_gi_change_sigmas = 4.0;
+static const uint k_gi_memory_back = 4u;
+static const uint k_gi_frame_drop = 0x80000000u;
+static const uint k_gi_cell_changed = 0x80000000u;
 static const uint k_gi_no_slot = 0xffffffffu;
 // gfx::k_gi_dispatch_pitch: the groups a row of a pass's two-dimensional dispatch.
 static const uint k_gi_dispatch_pitch = 32768u;
@@ -43,9 +53,19 @@ static const uint k_gi_young_rays = 16u;
 static const uint k_gi_hit_fallback = 32u;
 // gfx::k_gi_reveal: a level is taken by what its difference from the next one up shows (stage 6).
 static const uint k_gi_reveal = 1u << 23;
-// gfx::gi_flag_numbers: the samples a cell is read whole at, and the evict age.
+// gfx::k_gi_spread (R171): the read's answer against the ladder's last level by the cells'
+// measured spreads (`gi_spread_keep`). The evict age's sixth bit until R171.
+static const uint k_gi_spread = 1u << 22;
+// gfx::k_gi_memory (R171's third leg): a face's cell remembers longer while its light holds still.
+// The evict age's fifth bit until then.
+static const uint k_gi_memory = 1u << 21;
+// gfx::gi_flag_numbers: the samples a cell is read whole at, and the evict age (five bits).
 uint gi_confident(uint flags) { return max((flags >> 8) & 0xffu, 1u); }
-uint gi_evict_age(uint flags) { return (flags >> 16) & 0x7fu; }
+uint gi_evict_age(uint flags) { return (flags >> 16) & 0x1fu; }
+// gfx::gi_pressure_stamp: the high half of a bucket's first word, this frame's low fifteen bits
+// with the top bit set (a bucket never stamped never reads as under pressure). The low half is
+// the cell's spread (`gi_cell_spread`).
+uint gi_pressure_stamp(uint frame) { return (frame & 0x7fffu) | 0x8000u; }
 float gi_far_lift(uint flags) { return float(flags >> 24) / 255.0; }
 
 float gi_luminance(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }
@@ -171,8 +191,12 @@ uint gi_insert(uint64_t cache, uint count, uint frame, uint64_t h) {
     const uint previous = keys[bucket + i].compareExchange(0u, key);
     if (previous == 0u || previous == key) return bucket + i;
   }
+  // The pressure is the high half of the bucket's first word; the low half is that cell's spread,
+  // which only the fold writes, so every writer here keeps the same low half and stores the same
+  // high one: the race between them writes one value.
   uint* words = (uint*)gi_cell_words(cache, count);
-  words[bucket * k_gi_cell_words] = frame;
+  const uint first = words[bucket * k_gi_cell_words];
+  words[bucket * k_gi_cell_words] = (gi_pressure_stamp(frame) << 16) | (first & 0xffffu);
   Atomic<uint>* header = (Atomic<uint>*)cache;
   header[k_gi_stat_dropped].add(1u);
   return k_gi_no_slot;
@@ -184,6 +208,13 @@ float3 gi_mean(uint64_t cache, uint count, uint slot, out uint samples) {
   const uint2 m = words[0];
   samples = m.y >> 16;
   return float3(f16tof32(m.x & 0xffffu), f16tof32(m.x >> 16), f16tof32(m.y & 0xffffu));
+}
+
+// A cell's measured spread (gfx::gi_spread_fold, R171): a sample's variance in luminance as the
+// cell's count sees it, the low half of its first word.
+float gi_cell_spread(uint64_t cache, uint count, uint slot) {
+  uint* words = (uint*)(gi_cell_words(cache, count) + uint64_t(slot) * 32u);
+  return f16tof32(words[0] & 0xffffu);
 }
 
 // The samples a cell averages, 0 for no cell.
@@ -222,6 +253,16 @@ float gi_reveal(float m, float n, float m_up, float n_up) {
   const float den = d2 + s2 / n;
   return den > 0.0 ? d2 / den : 0.0;
 }
+// **R171: the read by its cells' measured spread** (gfx::gi_spread_keep, the same arithmetic;
+// renderer.md, "Indirect light", "R171: the grain on a plain wall"): the share the walk's answer
+// (variance `var_r`, measured) keeps against the ladder's last level (`var_u`): the detail at the
+// own level's scale plus the last level's own noise, over that plus the answer's noise. All of it
+// where nothing is measured.
+float gi_spread_keep(float detail, float var_r, float var_u) {
+  const float prior = detail + var_u;
+  const float den = prior + var_r;
+  return den > 0.0 ? prior / den : 1.0;
+}
 // Below this much confidence in all the levels together the read leans on the caller's prior (the
 // harmonics for a pixel, the bounded fallback for a bounce's hit), in proportion
 // (gfx::k_gi_read_floor): a surface whose coarsest cell holds a handful of samples is not shown
@@ -250,16 +291,36 @@ struct GiLevelRead {
   float square;
   float spread;
   float weight;  // the trilinear weights of the cells that hold a sample (stage 6's cover)
+  float noise;   // R171: the shares squared times each cell's measured spread over its samples
+  // R171: the cells as a population, by their shares: the shares, and the shares times the
+  // luminances, their squares and the means' variances.
+  float cells;
+  float lum;
+  float lum2;
+  float cell_noise;
 };
 
+// gfx::gi_spread_detail: the detail at the own level's scale about the last level's mean `u`,
+// pooled over the own level's cells; negative where it has none.
+float gi_spread_detail(GiLevelRead own, float u, float var_u) {
+  if (!(own.cells > 0.0)) return -1.0;
+  const float about = (own.lum2 - 2.0 * u * own.lum + own.cells * u * u) / own.cells;
+  return max(about - own.cell_noise / own.cells - var_u, 0.0);
+}
+
 GiLevelRead gi_read_level(uint64_t cache, uint count, int64_t3 mm, uint l, uint face,
-                          uint confident) {
+                          uint confident, bool measured = false) {
   GiLevelRead out;
   out.sum = float3(0.0);
   out.confidence = 0.0;
   out.square = 0.0;
   out.spread = 0.0;
   out.weight = 0.0;
+  out.noise = 0.0;
+  out.cells = 0.0;
+  out.lum = 0.0;
+  out.lum2 = 0.0;
+  out.cell_noise = 0.0;
   const int64_t size = gi_cell_mm(l);
   const int64_t3 shifted = mm - int64_t3(size / 2);
   const int64_t3 base = int64_t3(terrain_floor_div(shifted.x, size),
@@ -282,6 +343,16 @@ GiLevelRead gi_read_level(uint64_t cache, uint count, int64_t3 mm, uint l, uint 
     out.square += c * c;
     out.spread += c * c / float(samples);
     out.weight += w;
+    // The spread is the cell's first word, in the 32-byte block its mean was read from.
+    if (measured) {
+      const float variance = gi_cell_spread(cache, count, slot) / float(samples);
+      const float y = gi_luminance(mean);
+      out.noise += c * c * variance;
+      out.cells += c;
+      out.lum += c * y;
+      out.lum2 += c * y * y;
+      out.cell_noise += c * variance;
+    }
   }
   return out;
 }
@@ -302,10 +373,17 @@ GiLevelRead gi_read_level(uint64_t cache, uint count, int64_t3 mm, uint l, uint 
 // gives it — by the weight of the cells that are there where they hold under an eighth of it, so a
 // far corner's mean is not shown as the point's. No level is read that the count's walk did not
 // read: a level that is not whole always sent the walk on to the next.
+//
+// **R171** (`measured`, `k_gi_spread`): the walk's answer, whatever levels it took, is compared
+// with the ladder's last level by the cells' measured spreads (`gi_spread_keep`) and leans on that
+// level wherever the two agree within their noise, by the last level's own count's share. The
+// last level is read here only if the walk stopped before it: a converged neighbourhood pays one
+// level's eight lookups more.
 float gi_read_face(uint64_t cache, uint count, int64_t3 mm, uint level, uint levels, uint face,
-                   uint confident, bool reveal, out float3 acc) {
+                   uint confident, bool reveal, out float3 acc, bool measured = false) {
   acc = float3(0.0);
   float remaining = 1.0;
+  float variance = 0.0;  // R171: the answer's variance times its share squared
   const uint last = min(level + levels, k_gi_levels);
   GiLevelRead held;
   held.sum = float3(0.0);
@@ -313,9 +391,22 @@ float gi_read_face(uint64_t cache, uint count, int64_t3 mm, uint level, uint lev
   held.square = 0.0;
   held.spread = 0.0;
   held.weight = 0.0;
+  held.noise = 0.0;
+  held.cells = 0.0;
+  held.lum = 0.0;
+  held.lum2 = 0.0;
+  held.cell_noise = 0.0;
   bool have = false;
+  GiLevelRead top = held;
+  GiLevelRead own = held;
+  bool top_read = false;
   for (uint l = level; l < last; ++l) {
-    const GiLevelRead r = gi_read_level(cache, count, mm, l, face, confident);
+    const GiLevelRead r = gi_read_level(cache, count, mm, l, face, confident, measured);
+    if (l == level) own = r;
+    if (l + 1u == last) {
+      top = r;
+      top_read = true;
+    }
     if (!(r.confidence > 1e-6)) continue;
     if (have) {
       // The level below, now that the one above it is known: its share by its count, or — where
@@ -327,7 +418,9 @@ float gi_read_face(uint64_t cache, uint count, int64_t3 mm, uint level, uint lev
       const float take = max(min(held.square / (held.spread * float(confident)), 1.0) *
                                  min(k_gi_read_cover * held.confidence, 1.0),
                              shown);
-      acc += (remaining * take / held.confidence) * held.sum;
+      const float share = remaining * take / held.confidence;
+      acc += share * held.sum;
+      variance += share * share * held.noise;
       remaining *= 1.0 - take;
       have = false;
       if (remaining <= k_gi_read_stop) break;
@@ -342,7 +435,9 @@ float gi_read_face(uint64_t cache, uint count, int64_t3 mm, uint level, uint lev
     // Nor does one after which the count's walk would stop: the reveal reads no level the count's
     // walk does not.
     if (!reveal || remaining * (1.0 - take) <= k_gi_read_stop) {
-      acc += (remaining * take / r.confidence) * r.sum;
+      const float share = remaining * take / r.confidence;
+      acc += share * r.sum;
+      variance += share * share * r.noise;
       remaining *= 1.0 - take;
       if (remaining <= k_gi_read_stop) break;
       continue;
@@ -353,10 +448,28 @@ float gi_read_face(uint64_t cache, uint count, int64_t3 mm, uint level, uint lev
   if (have) {
     const float take = min(held.square / (held.spread * float(confident)), 1.0) *
                        min(k_gi_read_cover * held.confidence, 1.0);
-    acc += (remaining * take / held.confidence) * held.sum;
+    const float share = remaining * take / held.confidence;
+    acc += share * held.sum;
+    variance += share * share * held.noise;
     remaining *= 1.0 - take;
   }
-  return 1.0 - remaining;
+  const float taken = 1.0 - remaining;
+  if (measured && last > level + 1u && taken > 0.0) {
+    if (!top_read) top = gi_read_level(cache, count, mm, last - 1u, face, confident, true);
+    if (top.confidence > 1e-6) {
+      const float u = gi_luminance(top.sum) / top.confidence;
+      const float var_u = top.noise / (top.confidence * top.confidence);
+      const float detail = gi_spread_detail(own, u, var_u);
+      const float keep =
+          detail < 0.0 ? 1.0 : gi_spread_keep(detail, variance / (taken * taken), var_u);
+      const float lean = (1.0 - keep) *
+                         min(top.square / (top.spread * float(confident)), 1.0) *
+                         min(k_gi_read_cover * top.confidence, 1.0);
+      // `acc` is the answer times `taken`: lean it towards the last level's mean at that scale.
+      acc += (top.sum * (taken / top.confidence) - acc) * lean;
+    }
+  }
+  return taken;
 }
 
 // The face blend's weight for the second face (gfx::gi_face_blend).
@@ -407,8 +520,9 @@ float gi_read(uint64_t cache, uint count, uint flags, FrameEye eye, float3 from_
     ratio = first / taken_crown;
     return taken_crown;
   }
-  const float taken_first =
-      gi_read_face(cache, count, mm, level, levels, gi_face(normal), confident, reveal, first);
+  const bool measured = (flags & k_gi_spread) != 0u;
+  const float taken_first = gi_read_face(cache, count, mm, level, levels, gi_face(normal),
+                                         confident, reveal, first, measured);
   float second_size;
   float largest;
   const uint second_face = gi_second_face(normal, second_size, largest);
@@ -416,8 +530,8 @@ float gi_read(uint64_t cache, uint count, uint flags, FrameEye eye, float3 from_
   float3 second = float3(0.0);
   float taken_second = 0.0;
   if (w > 0.0) {
-    taken_second =
-        gi_read_face(cache, count, mm, level, levels, second_face, confident, reveal, second);
+    taken_second = gi_read_face(cache, count, mm, level, levels, second_face, confident, reveal,
+                                second, measured);
   }
   // Each face's share by the blend's weight and by what its levels took, so a face with nothing
   // leaves the other whole and one that is young comes in as it fills.

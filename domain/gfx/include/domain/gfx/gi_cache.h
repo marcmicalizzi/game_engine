@@ -44,15 +44,20 @@ namespace engine::gfx {
 // the frame's statistics and cleared behind the fold.
 //
 // One cell, eight words:
-//   [0] the bucket's pressure: the last frame an insert found the bucket full (the bucket's first
-//       cell only; the fold frees a stale cell of a bucket under pressure)
-//   [1] stamp: the last frame a sample reached it
-//   [2] samples this frame
+//   [0] the cell's measured spread as a half in the low 16 bits (R171: `gi_spread_fold`), and in
+//       the high 16 the bucket's pressure: the last frame an insert found the bucket full, as
+//       `gi_pressure_stamp` (the bucket's first cell only; the fold frees a stale cell of a bucket
+//       under pressure). The pressure took the whole word until R171; only a bucket's first cell
+//       used it, and fifteen bits of the frame are enough for a test against this frame.
+//   [1] stamp: the last frame a sample reached it, fifteen bits and the foliage bit in the low 16
+//       (`k_gi_stamp_crown`); in the high 16 the short mean's luminance as a half, its sign bit
+//       `k_gi_cell_changed` (R171's third leg, `gi_memory_fold`)
+//   [2] samples this frame (31 bits; the top bit `k_gi_frame_drop`)
 //   [3..5] this frame's sums of the ratio, r g b, `k_gi_fraction_bits` of fraction
 //   [6] the mean ratio's r and g as two halves
 //   [7] the mean ratio's b as a half in the low 16 bits, the samples it averages in the high 16
 struct GiCell {
-  u32 pressure = 0;
+  u32 spread_pressure = 0;
   u32 stamp = 0;
   u32 frame_count = 0;
   u32 frame_sum[3] = {0, 0, 0};
@@ -94,8 +99,13 @@ inline constexpr u32 k_gi_history_frames = 16;
 // bounce off what stands round the tree (minutes): nothing a second's memory hides.
 inline constexpr u32 k_gi_crown_history_frames = 64;
 // The fold has a cell's words and not its key's tag, so a foliage sample sets its cell's stamp's
-// top bit (the cache's frame count is far under it: a year at sixty a second is 2^31).
-inline constexpr u32 k_gi_stamp_crown = 0x80000000u;
+// top bit. **The stamp is the low half of the cell's second word since R171's third leg**: fifteen
+// bits of the cache's frame (`k_gi_stamp_frames`) and this bit; the age is the frame less the stamp
+// modulo 2^15, which is exact because the fold frees every cell `k_gi_max_age` frames after its
+// last sample. The high half is the cell's short mean (`gi_memory_fold`).
+inline constexpr u32 k_gi_stamp_crown = 0x8000u;
+inline constexpr u32 k_gi_stamp_frames = 0x7fffu;
+constexpr u32 gi_stamp_age(u32 now, u32 word) noexcept { return (now - word) & k_gi_stamp_frames; }
 // The fold's history for a cell that averaged `previous` samples and takes `n` this frame (the
 // shader's rule): the new count, and `n` over it the rate the frame's mean enters at. `frames` is
 // the cell's memory: `k_gi_history_frames`, or a foliage cell's `k_gi_crown_history_frames`.
@@ -114,6 +124,45 @@ constexpr f32 gi_history_rate(u32 previous, u32 n, u32 frames = k_gi_history_fra
   return static_cast<f32>(n) /
          static_cast<f32>(previous >= 0xffffu ? full : gi_history(previous, n, frames));
 }
+// Today's history as a count: `k_gi_max_samples`, or `frames` frames of `n`, in the sixteen bits.
+constexpr u32 gi_history_cap(u32 n, u32 frames = k_gi_history_frames) noexcept {
+  const u32 held = n * frames < 0xffffu ? n * frames : 0xffffu;
+  return k_gi_max_samples > held ? k_gi_max_samples : held;
+}
+// **R171, third leg: a cell's memory by its own spread** (renderer.md, "Indirect light", "R171: a
+// cell's memory by its own spread"). A face's cell whose light holds still may remember up to
+// `k_gi_memory_times` its history (`gi_history_cap`): 4,096 samples for an own cell at the
+// trickle's eleven a frame (372 frames), 256 frames where it takes sixteen or more, and never past
+// `k_gi_memory_count_max`, under the field's full mark, which stands for a whole history. A cell
+// whose history already fills the field (4,096 a frame) remembers what it did.
+inline constexpr u32 k_gi_memory_times = 16;
+inline constexpr u32 k_gi_memory_count_max = 0xfff0u;
+constexpr u32 gi_memory_cap(u32 n) noexcept {
+  const u32 cap = gi_history_cap(n);
+  if (cap >= k_gi_memory_count_max) return cap;
+  return cap * k_gi_memory_times < k_gi_memory_count_max ? cap * k_gi_memory_times
+                                                         : k_gi_memory_count_max;
+}
+// The deviations between the long mean and the short one (today's history) at which a cell's light
+// is taken to have changed: the short mean's own noise, from the cell's measured spread, four
+// times over. A coarse cell's short mean averages eleven thousand samples, so its noise is near
+// normal, and the long mean's difference from it is 0.91 of the short mean's own deviation (the
+// two averages share their samples), so four of them are left by chance about once in 90,000
+// frames. Five were tried first: a coarse cell whose long mean remembers 93 frames and whose short
+// one 16 holds them at most 0.58 of a step apart, so five missed the moved sun's 13 % (a
+// simulation of sixteen coarse cells over 1,024 own ones: settled in 333 frames against today's
+// 50); four see it.
+inline constexpr f32 k_gi_change_sigmas = 4.0f;
+// A cell that lets go keeps this fraction of today's history (a quarter: 64 samples for an own
+// cell), so the part of a change its short mean had not yet followed is followed four times as
+// fast as today, and the detection's own frames are made up.
+inline constexpr u32 k_gi_memory_back = 4;
+// Word 2's top bit: a coarser cell of a ladder through this one saw its light change last frame
+// (the sample pass sets it; the count of the frame's samples is the other 31 bits).
+inline constexpr u32 k_gi_frame_drop = 0x80000000u;
+// Word 1's top bit: this cell saw its light change in the last fold (the sign of its short mean's
+// half, which is never negative).
+inline constexpr u32 k_gi_cell_changed = 0x80000000u;
 // Frames without a sample after which the fold frees a cell.
 inline constexpr u32 k_gi_max_age = 240;
 inline constexpr u32 k_gi_workgroup = 64;
@@ -222,6 +271,19 @@ struct GiLevelRead {
   f32 square = 0.0f;
   f32 spread = 0.0f;
   f32 weight = 0.0f;  // the trilinear weights of the cells that hold a sample (stage 6)
+  // R171: the shares squared times each cell's measured spread over its samples
+  // (`gi_spread_fold`), so `noise / confidence^2` is the variance of the level's mean in luminance
+  // as the cells measured it — where `spread / confidence^2` is that variance in units of one
+  // sample's, which the count's rule and stage 6's model must assume.
+  f32 noise = 0.0f;
+  // R171, the cells of the level as a population, by their shares (trilinear weight times
+  // confidence): the shares, and the shares times their means' luminances, the squares and their
+  // means' variances (the measured spread over the samples). What the read pools the detail
+  // between two levels over.
+  f32 cells = 0.0f;
+  f32 lum = 0.0f;
+  f32 lum2 = 0.0f;
+  f32 cell_noise = 0.0f;
 };
 //
 // **Stage 6: what a difference between two levels shows** (renderer.md, "Indirect light", "Stage
@@ -263,14 +325,154 @@ inline f32 gi_reveal(f32 m, f32 n, f32 m_up, f32 n_up) noexcept {
 inline f32 gi_level_luminance(const GiLevelRead& l) noexcept {
   return (0.2126f * l.sum[0] + 0.7152f * l.sum[1] + 0.0722f * l.sum[2]) / l.confidence;
 }
+
+// **R171: a cell's measured spread** (renderer.md, "Indirect light", "R171: the grain on a plain
+// wall"). Stage 6's model takes a sample's variance as twice its mean's square; indoors, where the
+// light comes through an opening a cosine ray seldom finds, it is about five times, and a mean of
+// 256 such samples is the grain the owner saw. The fold has a frame's sum and not its squares, so
+// it measures the spread between frames: a frame's mean of `n` samples differs from the history's
+// mean by a sample's variance over `n` plus the history's own, so `n (m_frame - m)^2` times
+// `previous / (previous + n)` estimates a sample's variance (the history's variance taken as a
+// sample's over `previous`, its count). The estimates are averaged at `n / previous`, which is
+// their plain mean while the count grows and the cell's own rate once it is at its cap.
+//
+// What is kept is that variance **as the cell's count sees it**: the read divides it by the
+// samples the cell averages, and that is the variance of its mean while the mean is a plain one
+// (`samples` of them); once the count is at its cap the mean is an exponential average, whose
+// variance is a sample's over `2 total - n`, so each estimate is scaled by `total / (2 total - n)`
+// there. The scale enters through the average, so it arrives at the cell's own rate, which is the
+// rate the mean's variance relaxes at. Luminance of the ratio, in a half: 0 for a cell's first
+// frame (no history to differ from) and for a cell the fold has just made.
+inline f32 gi_spread_fold(f32 spread, u32 previous, u32 n, u32 total, f32 lum_old,
+                          f32 lum_frame) noexcept {
+  if (previous == 0 || n == 0) return previous == 0 ? 0.0f : spread;
+  const f32 d = lum_frame - lum_old;
+  const f32 nf = static_cast<f32>(n);
+  const f32 pf = static_cast<f32>(previous);
+  const f32 tf = static_cast<f32>(total);
+  const f32 at_cap = previous + n > total ? tf / (2.0f * tf - nf) : 1.0f;
+  const f32 estimate = nf * d * d * (pf / (pf + nf)) * at_cap;
+  const f32 rate = std::fmin(nf / pf, 1.0f);
+  const f32 out = spread + (estimate - spread) * rate;
+  return std::fmin(out, 65504.0f);
+}
+// The pressure's half of a bucket's first word: the frame's low fifteen bits with the top bit set,
+// so a bucket never stamped (0) never reads as under pressure, and a stamp matches its frame
+// again only 32,768 frames on.
+inline constexpr u32 k_gi_pressure_shift = 16;
+constexpr u32 gi_pressure_stamp(u32 frame) noexcept { return (frame & 0x7fffu) | 0x8000u; }
+
+// **R171, third leg: the fold with a memory by the cell's own spread**, in luminance (the shader
+// folds the long mean in colour, the same arithmetic; `renderer.gi.memory`). A cell keeps two
+// means of its frames: the long one it is read by, which averages every frame since the light last
+// changed up to `gi_memory_cap`, and a short one at today's history (`gi_history_cap`), kept as a
+// half in its stamp word's high half. They hold the same light while it is still; the short one
+// follows a change within today's frames and the long one does not, so their difference is the
+// test, in the band the short mean's own noise makes: a sample's variance from the cell's measured
+// spread over the short mean's effective count, 2 T - n (the variance of an exponential average).
+// Out of it by `k_gi_change_sigmas`, the cell takes its long mean to the short one's level and its
+// count back to a quarter of today's history at once (`k_gi_memory_back`), and sets `changed`, which the sample pass hands to every
+// finer cell of a ladder through it the next frame (`drop`): a coarse cell pools sixty-four of its
+// own level's samples and sees a change a fine one's noise hides, and a single heavy sample moves
+// it by a sixty-fourth as much. That is A-SVGF's rule (Schied et al. 2018: a history cut back where
+// a temporal gradient beyond its noise is seen), with the gradient taken between two histories of
+// one cell instead of from a re-traced sample, and pooled up the ladder instead of over the screen.
+struct GiMemoryCell {
+  f32 mean = 0.0f;   // the long mean, the one the read shows
+  f32 short_mean = 0.0f;
+  f32 spread = 0.0f;  // `gi_spread_fold`'s
+  u32 count = 0;
+  bool changed = false;
+};
+inline void gi_memory_fold(GiMemoryCell& c, u32 n, f32 frame_mean, bool drop,
+                           bool memory) noexcept {
+  if (n == 0) return;
+  const u32 previous = c.count;
+  const u32 cap = gi_history_cap(n);
+  const u32 ceiling = memory ? gi_memory_cap(n) : cap;
+  const u32 total = previous + n < ceiling ? previous + n : ceiling;
+  const u32 full = k_gi_max_samples > n * k_gi_history_frames ? k_gi_max_samples
+                                                              : n * k_gi_history_frames;
+  const f32 nf = static_cast<f32>(n);
+  const f32 rate = nf / static_cast<f32>(previous >= 0xffffu ? full : total);
+  const u32 short_total = previous + n < cap ? previous + n : cap;
+  const f32 short_rate = nf / static_cast<f32>(previous >= 0xffffu ? full : short_total);
+  if (previous == 0) {
+    c = GiMemoryCell{frame_mean, frame_mean, 0.0f, total, false};
+    return;
+  }
+  const f32 spread = gi_spread_fold(c.spread, previous, n, total, c.mean, frame_mean);
+  const f32 s = c.short_mean + (frame_mean - c.short_mean) * short_rate;
+  f32 m = c.mean + (frame_mean - c.mean) * rate;
+  u32 count = total;
+  bool changed = false;
+  if (memory && spread > 0.0f) {
+    // A sample's variance: the spread is kept as the long count sees it (at its cap, scaled by
+    // T / (2 T - n)), the short mean's variance is that over 2 cap - n.
+    const f32 tf = static_cast<f32>(total);
+    const f32 sample = previous + n > total ? spread * (2.0f * tf - nf) / tf : spread;
+    const f32 var_short = sample / (2.0f * static_cast<f32>(cap) - nf);
+    changed = (m - s) * (m - s) > k_gi_change_sigmas * k_gi_change_sigmas * var_short;
+  }
+  const u32 back = cap / k_gi_memory_back;
+  if (memory && (drop || changed) && previous > back) {
+    // Back at once to a quarter of today's history, from the short mean's level: what the short
+    // mean has followed of the change is taken whole, and the rest four times as fast as today.
+    const f32 base = c.short_mean;
+    m = base + (frame_mean - base) * (nf / static_cast<f32>(back + n));
+    count = back + n;
+  }
+  c = GiMemoryCell{m, s, spread, count, changed};
+}
+
+// **R171: the read by its cells' measured spread.** The walk (below) shows a level whole once its
+// cells hold `confident` samples: a mean of 256, which indoors carries 4 to 5 % of noise at the
+// cell's own size. So once the walk has its answer (variance `var_r`, from the measured spreads of
+// the levels it took), it is shrunk towards the ladder's last level `u` (the surface's own plus
+// three: 64 times its samples, variance `var_u`) by James and Stein's rule: the answer keeps
+// (detail + var_u) / (detail + var_u + var_r), where `detail` is the spread of the true light about
+// the last level at the own level's scale. Where there is none the last level is shown, whose
+// noise is a sixty-fourth of the own level's; where the light has detail at that scale (a corner,
+// a contact, a patch of sun) the answer is kept, and the noise it brings is under the detail.
+//
+// **The detail is pooled over the own level's cells round the point** (`gi_spread_detail`): their
+// means' spread about `u`, less what their measured noise and the last level's explain, positive
+// part. Stage 6 estimates its difference from the one pair of means at the point, and that is
+// the weak form: a single difference cannot tell a cell's detail from its noise, so a cell two of
+// its noise off is kept three-quarters whole, and over a plain wall the read kept 0.6 of the
+// grain (measured on the village, 2026-11-16). Pooled over the cells round the point, by their
+// shares, it is a population's estimate between cells, as James and Stein's is, and one cell's at
+// a cell's centre. Counting each cell once pools more (1.9 to 2.2 % on the same walls) and was
+// built and taken out: the set of cells round a point changes at every half cell, so the detail
+// stepped there and the picture showed the cells' squares. By the shares it is continuous in
+// space and in every cell's count. All of the answer where nothing is measured, so a cell the
+// fold has no spread for reads as it did.
+inline f32 gi_spread_keep(f32 detail, f32 var_r, f32 var_u) noexcept {
+  const f32 prior = detail + var_u;
+  const f32 den = prior + var_r;
+  return den > 0.0f ? prior / den : 1.0f;
+}
+// The detail at the own level's scale about the last level's mean `u`: the cells' squared
+// differences from it, less their own measured noise and the last level's, positive part; a
+// negative number where the own level has no cell (the walk's answer is then kept).
+inline f32 gi_spread_detail(const GiLevelRead& own, f32 u, f32 var_u) noexcept {
+  if (!(own.cells > 0.0f)) return -1.0f;
+  const f32 spread_about = (own.lum2 - 2.0f * u * own.lum + own.cells * u * u) / own.cells;
+  return std::fmax(spread_about - own.cell_noise / own.cells - var_u, 0.0f);
+}
+
 inline f32 gi_blend_levels(const GiLevelRead* levels, u32 count, f32 out[3],
-                           u32 confident = k_gi_confident, bool reveal = false) noexcept {
+                           u32 confident = k_gi_confident, bool reveal = false,
+                           bool spread = false) noexcept {
   f32 acc[3] = {0.0f, 0.0f, 0.0f};
   f32 remaining = 1.0f;
+  f32 variance = 0.0f;                // the answer's variance, times its share squared (R171)
   const GiLevelRead* held = nullptr;  // a level whose share waits for the one above it
   auto take_level = [&](const GiLevelRead& l, f32 take) {
+    const f32 share = remaining * take / l.confidence;
     for (u32 c = 0; c < 3; ++c)
-      acc[c] += (remaining * take / l.confidence) * l.sum[c];
+      acc[c] += share * l.sum[c];
+    variance += share * share * l.noise;
     remaining *= 1.0f - take;
   };
   auto by_count = [&](const GiLevelRead& l) {
@@ -304,6 +506,20 @@ inline f32 gi_blend_levels(const GiLevelRead* levels, u32 count, f32 out[3],
   if (!(taken > 0.0f)) return 0.0f;
   for (u32 c = 0; c < 3; ++c)
     out[c] = acc[c] / taken;
+  // R171: the answer against the ladder's last level, by their measured spreads
+  // (`gi_spread_keep`); the last level stands in by its own count's share, so a young one is
+  // leaned on only as far as its samples allow.
+  const GiLevelRead& top = levels[count - 1];
+  if (spread && count > 1 && top.confidence > 1e-6f) {
+    const f32 var_r = variance / (taken * taken);
+    const f32 u = gi_level_luminance(top);
+    const f32 var_u = top.noise / (top.confidence * top.confidence);
+    const f32 detail = gi_spread_detail(levels[0], u, var_u);
+    const f32 keep = detail < 0.0f ? 1.0f : gi_spread_keep(detail, var_r, var_u);
+    const f32 lean = (1.0f - keep) * by_count(top) * cover(top);
+    for (u32 c = 0; c < 3; ++c)
+      out[c] += (top.sum[c] / top.confidence - out[c]) * lean;
+  }
   return taken;
 }
 // How much of a read's value stands against the caller's prior: all of it from `k_gi_read_floor`
@@ -356,6 +572,14 @@ inline constexpr u32 k_gi_show_shift = 6u;
 // Stage 6: a level is taken by what its difference from the next one up shows, where that is more
 // than its count gives it (`gi_reveal`). The evict age's top bit.
 inline constexpr u32 k_gi_reveal = 1u << 23;
+// R171: the read's answer is compared with the ladder's last level by the cells' measured spreads
+// (`gi_spread_keep`, `renderer.gi.spread`). The evict age's sixth bit until R171, which left it
+// six (a full bucket's stale cells are freed after at most 63 frames).
+inline constexpr u32 k_gi_spread = 1u << 22;
+// R171, third leg: a face's cell remembers up to `k_gi_memory_times` its history while its light
+// holds still (`gi_memory_fold`, `renderer.gi.memory`). The evict age's fifth bit until then, which
+// left it five (a full bucket's stale cells are freed after at most 31 frames).
+inline constexpr u32 k_gi_memory = 1u << 21;
 // Two of stage 2's numbers ride in the flags' upper bytes, so each lever can be judged against the
 // stage before it without a new row in the resolve block: the samples at which a cell is read
 // whole (`k_gi_confident` by default; 1 reads any cell with a sample whole, as stage 1 did) and
@@ -369,7 +593,7 @@ inline constexpr u32 k_gi_far_lift_shift = 24u;
 constexpr u32 gi_flag_numbers(u32 confident, u32 evict_age, f32 far_lift = 0.0f) noexcept {
   const f32 lift = far_lift < 0.0f ? 0.0f : (far_lift > 1.0f ? 1.0f : far_lift);
   return ((confident < 1 ? 1u : (confident > 255 ? 255u : confident)) << k_gi_confident_shift) |
-         ((evict_age > 127 ? 127u : evict_age) << k_gi_evict_shift) |
+         ((evict_age > 31 ? 31u : evict_age) << k_gi_evict_shift) |
          (static_cast<u32>(lift * 255.0f + 0.5f) << k_gi_far_lift_shift);
 }
 

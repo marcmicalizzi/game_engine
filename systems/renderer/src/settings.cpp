@@ -445,7 +445,7 @@ tunables::Int gi_confident{
     "history's length: a mean of fewer arriving is what read as the light filling in) "
     "(renderer.md, Indirect light, Stage 5; read at load)"};
 tunables::Int gi_evict_age{
-    "renderer.gi.evict_age", 16, 0, 127,
+    "renderer.gi.evict_age", 16, 0, 31,
     "Frames without a sample after which a cache cell whose bucket turned an insert away is freed "
     "(0: only by the 240-frame age, as stage 1) (renderer.md, Indirect light: the world-space "
     "cache; read at load)"};
@@ -473,6 +473,23 @@ tunables::Int gi_show_level{
     "A diagnostic: the resolve's read of the cache takes one level of the ladder whole, the "
     "surface's own plus this many, with the cache filled as ever (-1: the walk) (renderer.md, "
     "Indirect light, Stage 6; read at load)"};
+// **R171** (renderer.md, "Indirect light", "R171: the grain on a plain wall"): the read's
+// shrinkage by the cells' measured spreads. Off: it costs 0.5 ms indoors and 0.9 ms on an open lane
+// at 3840 x 2160 for six-tenths of the grain indoors. The fold measures the spread either way.
+tunables::Bool gi_spread{
+    "renderer.gi.spread", false,
+    "The cache's read is compared with the ladder's last level by the cells' measured spreads and "
+    "shows the coarser light wherever the two agree within that noise, so a plain wall lit through "
+    "an opening is not grained by its cells' heavy samples (false: the walk's answer as stage 8 "
+    "left it) (renderer.md, Indirect light, R171: the grain on a plain wall; read at load)"};
+// **R171's third leg** (renderer.md, "Indirect light", "R171: a cell's memory by its own spread").
+// Off: a change the coarse cells cannot see trails, and the cells that let go show as blobs.
+tunables::Bool gi_memory{
+    "renderer.gi.memory", false,
+    "A face's cache cell remembers up to sixteen times today's history while its light holds still, "
+    "and goes back to today's at once when its long mean leaves the band its measured spread "
+    "predicts, or a coarser cell of its ladder's does (false: today's history, as stage 8 left it) "
+    "(renderer.md, Indirect light, R171: a cell's memory by its own spread; read at load)"};
 // **Stage 7** (R69; renderer.md, "Indirect light", "Stage 7"): a crown's shade as a prior.
 tunables::Bool gi_crown_prior{
     "renderer.gi.crown_prior", true,
@@ -923,6 +940,8 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   out.gi_hit_fallback = gi_hit_fallback.get();
   out.gi_far_lift = static_cast<f32>(gi_far_lift.get());
   out.gi_reveal = gi_reveal.get();
+  out.gi_spread = gi_spread.get();
+  out.gi_memory = gi_memory.get();
   out.gi_crown_prior = gi_crown_prior.get();
   out.gi_show_level = static_cast<i32>(gi_show_level.get());
   out.gi_shell_m = static_cast<f32>(gi_shell_m.get());

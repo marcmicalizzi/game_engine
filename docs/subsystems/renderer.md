@@ -2124,8 +2124,9 @@ keys are one 32-byte block a lookup reads in two 16-byte loads — then the cell
 key in each cell's first word, which spread a bucket over 256 bytes and made a lookup eight
 dependent scattered loads.
 
-**A cell** (32 bytes) holds its bucket's pressure (the first cell of a bucket only: the last frame an
-insert found the bucket full), the frame's sample count and fixed-point sums (10 bits of fraction), the
+**A cell** (32 bytes) holds its measured spread and its bucket's pressure in one word (R171: the
+spread a half in the low 16 bits; the pressure, the first cell of a bucket only, the last frame an
+insert found the bucket full, in the high 16), the frame's sample count and fixed-point sums (10 bits of fraction), the
 running mean as three halves and the samples it averages, and the stamp of the last frame that
 reached it. What it averages is **a ratio to the sky's harmonics**: each sample is the radiance one
 ray brought back over the luminance of the nine-harmonic ambient at the sample's normal, and the
@@ -2829,6 +2830,351 @@ the floor, and the still forest changes between frames by 0.10 (main 0.13). The 
 asks the chain for 800 clusters a frame more than main at that view where 48 m asked for
 9,300 — a little off a capacity the owner's 4K walk overran by 38,000 the same morning, not
 the mend of it.
+
+### R171: the grain on a plain wall
+
+Roadmap R171 (2026-11-15, batch 66; first leg: the cause and the measurement, not the mend).
+The owner, walking a furnished village under `bounce`: indoors the indirect light "ends up with a
+large patchy static-like texture on everything", seen before in a cave.
+
+**The cause: the read shows the own level's mean, and indoors a mean of 256 samples is not
+quiet.** Once a cell holds `renderer.gi.confident` (255) samples the walk takes it whole and stops
+(stage 5), so a surface shows its own cells' means, each an average of 256 samples or sixteen
+frames of them (`gi_history`), at the cells' own size. Such a mean carries a sample's spread over
+the square root of its effective count (about 2T − n for an exponential average of T samples
+taking n a frame: 511 for an own cell at the trickle's density). On open ground a sample's spread
+is about its mean (stage 6's `k_gi_sample_cv2` of 2); indoors it is not, because the light comes
+through an opening a cosine ray seldom finds — a share p of the hemisphere brings nearly all of
+it, and the spread squared over the mean squared is about 1/p. Under `sky`, where only the
+opening brings light, the village's walls show 15 to 28 % grain; under `bounce`, which lights
+every hit, 4 to 5 %, which is a spread squared of about five times the mean's square. Nothing
+else is needed to explain it, and each candidate the brief named was isolated by one capture
+(3840×2160, `--raster rt --shadows rt`, `bounce`, main's build b299cce2, held 180 to 320 frames;
+the grain is the spread of the indirect term over the harmonics' picture of the same frame,
+divided by its own falloff, at 1.5 to 32 pixels):
+
+| capture (village, house 0) | near wall | far wall | what it rules |
+|---|---|---|---|
+| the read as it is | 3.97 % | 5.17 % | the defect |
+| four times the rays | 2.28 | 3.56 | samples: the law of a mean says half |
+| level +1 read whole (`show_level` 1) | 1.91 | 3.46 | four times the samples a cell |
+| level +2 | 1.02 | 1.84 | sixteen times |
+| level +3 | 0.86 | 1.21 | sixty-four times |
+| `cell_scale` 0.002 or 0.008 | 3.97, 4.04 | 5.17, 3.30 | the footprint against the pixel |
+| `sky` (no bounce) | 15.0 | 27.7 | heavy samples through the opening |
+
+- **A cell's few heavy samples, and the level the read takes**: in. The grain falls with the
+  samples behind the level shown, as a mean's noise does, and only with them.
+- **The footprint against the pixel**: out, and why the forest's four times the cell scale bought
+  nothing. A wall within about 6 m of the eye is at level 0 whatever the scale (25 mm is the floor:
+  0.004 × 6 m = 24 mm), so a scale half or twice the default leaves the near wall's cells as they
+  were (the same bytes); only the far wall, 5.5 m off, crossed to level 1 at twice the scale.
+- **The hash or the jitter**: out. The pattern decorrelates as the cell's memory says: in the box
+  below, 0.93 between consecutive frames and −0.07 sixty frames on (an exponential average of
+  sixteen frames gives 0.94 and 0.02). Two runs draw the same pattern because the same binary
+  traces the same rays from the same frame counts (`rng_seed` of the pixel and the cache's frame):
+  a scale half the default, which changed no level near the wall, drew the default's numbers to
+  the second decimal. "The same pattern in two runs" is determinism, not a fixed bias.
+- **A bias in what a cell stores when most of its rays miss**: not seen as a fixed pattern. The
+  village's far wall keeps more of its pattern over time than its memory explains (0.57 at 140
+  frames), which is the bounce's feedback (each sample reads the hit's cells, whose errors last
+  their own memory) and is in the light's mean, not its grain; the cave's mean is still falling
+  at 320 frames (−27 % from 180), the room's light iterating through its walls.
+- **The cave** (one passage under a 4 m shaft, `engine.caves.passage`, noon): the term over
+  level +3's picture (the cave's limestone texture does not divide out of the harmonics' picture,
+  which reads the same material with another normal) is 6.8 to 8.7 %, 4.4 to 6.0 with four times
+  the rays and 2.6 to 3.4 at level +2: the same law, with a heavier tail (a shaft is a smaller
+  share of the sky than a window).
+
+**The measurement the tree keeps** (`gi cache: the grain on a plain wall is its cells' sampling
+noise`, `systems/renderer/tests/gi_cache_tests.cpp`): the box with one opening, a plain wall seen
+square from 2 m at 512 × 512 with its own cells 13 pixels wide and the trickle at one pixel in nine
+— a 4K cell's footprint and density. It measures the grain as above and holds the law that names
+the cause: four times the rays halve it (0.63 measured; the bound is the law with a third of
+slack) and the level two up quarters it or better (0.17). It prints the grain (1.76 % here; the
+box's wall sees its opening wider than a room's wall sees a window) and warns while it is over
+the owner's target of 1 %.
+
+**What the mend has to be, and what it may not be.** More rays are out (four times halve it and
+cost the bounce's sample pass four times); a longer memory is out (it trails a moved light); a
+blur is out (it loses the corners R167 asks for). The right shape is a read that takes the own
+level by **its cells' measured spread**, not their count: a level is shown where its difference
+from a coarser one is more than its noise explains, and the coarser one where it is not — stage
+6's `gi_reveal` (James and Stein's positive-part shrinkage) applied to a converged level too, with
+the sample's spread measured per cell rather than modelled, since indoors the model's 2 is
+a fifth of the truth. That needs a cell to carry its spread: the fold can estimate it without a
+per-sample accumulator, as n (m_frame − m)² averaged at the cell's own rate, and it fits in the
+bucket-pressure word, which only a bucket's first cell uses (the pressure would take its high
+half). Level +3 shows what the noise floor of such a read is indoors (0.9 to 1.2 % on the
+village's walls). Simulated per pixel on the village's captures (the own read shrunk towards
+level +3's with the spread squared at c times the mean's square over 511 samples), the model's
+c = 2 leaves 2.1 and 2.6 % on the two walls and c = 5 — what the walls' grain says it is — 1.05
+and 1.6 %, near the floor: the measured spread is half the mend. The shrinkage's own noise in the
+read, a corner's contrast against it and the read's cost
+(a second level's eight lookups on every faced pixel, 0.3 to 0.5 ms at 3840 × 2160 by stage 5's
+figures) are the second leg's to measure.
+
+**The mend: the read by its cells' measured spread** (second leg, 2026-11-16; `renderer.gi.spread`,
+**off by default since the third leg**, below; `gfx::k_gi_spread`, `gi_spread_fold`, `gi_spread_detail`, `gi_spread_keep` in `gi_cache.h`,
+the same arithmetic in `gi_cache.slang` and the fold in `gi_update.slang`). Two parts:
+
+- **A cell measures its spread** in the fold, from the frames' means, with no sum of squares in
+  the cell: a frame's mean of n samples differs from the history's mean m by a sample's variance
+  over n plus the history's own, so n (m_frame − m)² · previous / (previous + n) estimates a
+  sample's variance; the estimates are averaged at n / previous (their plain mean while the count
+  grows, the cell's own rate at its cap), and at the cap each is scaled by T / (2T − n), so the
+  spread over the cell's count is the variance of an exponential average's mean, arriving at the
+  rate that variance relaxes at. It is a half in **the low 16 bits of the cell's first word**: the
+  bucket's pressure, which only a bucket's first cell used, keeps the high 16 as fifteen bits of
+  the frame with the top bit set (`gi_pressure_stamp`; a stamp matches its frame again 32,768
+  frames on, and a bucket never stamped never matches). **The cell is still 32 bytes**: the cost
+  is that the pressure's write in the sample pass keeps the low half (every writer stores the same
+  word, so the race is benign) and the fold's free clears only the low half. `gi cache key: a
+  cell's measured spread over its count is the variance of its mean` folds a heavy-tailed sample
+  (5.7 times its mean's square), a tame one and level +3's 711 a frame for 26,000 to 40,000 frames
+  and holds the spread's prediction to the measured variance of the mean within 0.8 to 1.25 (four
+  standard deviations of a run that long, and the 3 % the correction at the cap leaves).
+- **The read shrinks its answer towards the ladder's last level** (the own plus three, 64 times
+  its samples) by James and Stein's rule with the variances measured: the walk's answer keeps
+  (detail + var_u) / (detail + var_u + var_r), var_r its variance from the measured spreads of the
+  levels it took, var_u the last level's, and **detail** the spread of the light about the last
+  level at the own level's scale, **pooled over the own level's cells round the point** — each
+  cell's squared difference from the last level's mean less its own noise and the last level's,
+  averaged by the cells' shares (trilinear weight times confidence, as the mean is), positive
+  part. Two other forms were built and flown. Stage 6's, the one difference at the point, kept
+  0.6 of the grain on the village's walls (3.9 to 2.4 %): a single difference cannot tell a cell's
+  detail from its noise, so a cell two of its noise off is kept three-quarters whole. Counting
+  each cell round the point once pooled more (1.9 to 2.2 %) and **drew the cells' squares**: the
+  set of cells round a point changes at every half cell, so the detail stepped there. By the
+  shares the estimate is a population's between cells and one cell's at a cell's centre, and it is
+  continuous in space and in every count. Nothing measured (a cell's first frame) keeps the answer
+  whole; a level with no cell keeps it whole. It is applied to every face read and to a bounce's
+  hit (whose walk has the four levels), not to a crown's cells (stage 7's prior is their detail)
+  and not under `show_level`. The cost is the last level's eight lookups where the walk stopped
+  before it (a converged neighbourhood), and each lookup reads the cell's first word beside its
+  mean (one 32-byte block).
+
+**What it does** (3840×2160, `--raster rt --shadows rt`, `bounce`, the first leg's held views and
+metric at frames 180 to 320; the base build is this branch before the mend, which draws main's
+pictures; the RTX 5090 shared with other agents' builds, 7 to 31 % of the CPU busy):
+
+| grain, % of the indirect term | before | **the mend** | counted once (taken out) | counted once, 4× rays | before, 4× rays | level +3 read whole |
+|---|---|---|---|---|---|---|
+| village house 0, near wall | 3.94 – 4.14 | **2.45 – 2.57** | 1.92 – 2.19 | 1.44 – 1.50 | 2.39 – 2.49 | 0.92 – 0.94 |
+| village house 0, far wall | 4.02 – 4.07 | **2.49 – 2.58** | 2.20 – 2.25 | 1.63 – 1.72 | 3.52 – 3.59 | 1.15 – 1.16 |
+| the cave (over level +3's picture) | 9.85 – 9.95 | **5.43 – 5.58** | 4.43 – 4.59 | 3.33 – 3.49 | — | — |
+
+Six-tenths of the grain, not under 1 %. **What is left**, by the same captures: the last level's
+own floor (0.9 and 1.2 %, which it shows where it is taken) and the own level's noise the
+shrinkage keeps: the cells whose difference from the last level is large by chance, which the
+positive part keeps nearly whole (the crops show them as round blobs a cell or two wide on a flat
+field, where before the whole wall was mottled). A sharper estimate of the detail is the lever: a
+wider pool continuous in space (the sixteen cells round a point at the own level, eight lookups
+more), or the detail kept in the cell by the fold. Four times the rays take the counted-once
+read to 0.7 of itself where pure sampling noise would halve: the floor and the kept noise in
+quadrature fit both. And **a fact the metric shows that the cells' memory does not explain**: the
+grain's correlation with the next frame is 0.5 to 0.8 before and after the mend, where an own
+cell's history (rate 1/16 to 1/23 a frame) gives 0.94 to 0.96, and level +3 read whole gives 0.92
+to 0.95; so a large part of the fine levels' grain is drawn fresh each frame, which a cell's mean
+cannot be. Not isolated: cells freed and remade (a full bucket's eviction; `renderer.gi.log`'s
+counts would say), the young rays, or the bounce's hits reading a different cut each frame are
+the candidates, and the next step is that census.
+The box in the tree (`gi cache: the grain on a plain wall is its cells' sampling noise`, now with
+a fourth run, the mend) goes from 1.76 to 1.29 %, 0.73 of it, and the case holds it under the read
+before (what a James–Stein estimate pooled over several means guarantees); the box is small and
+its light changes across a last-level cell (40 cm, 100 pixels), detail the read keeps. The three
+runs that state the samples' law run with `renderer.gi.spread` off, since they describe the
+samples, which the mend does not change.
+
+**What it does not do**: blur a corner, trail a moved light or dull open ground.
+
+- **Corners** (the indirect term over the mode-off picture, near a meeting over 40 to 400 pixels
+  from it, frames 180, 240 and 320): the village's right wall under the ceiling 0.843 before and
+  0.851 after (level +3 read whole: 0.856), the back wall at the floor 0.996 and 0.995, at the side
+  wall 1.023 and 1.018; the box's corner in the tree 0.907 before, 0.913 after, where level +2 read
+  whole lifts it to 0.928 (the case holds the mend under half that lift; four times the rays
+  move it as far, 0.913, so what moves is the corner's noise). The village has no furniture in
+  this view: a contact at a foot is not measured.
+- **A moved light** (`gi cache: a moved light settles no slower with the measured spread`: the
+  box's sun moved two hours along its arc, the wall's light −13 %, frames until it stays within a
+  tenth of the change): 116 frames before, 110 after (the case holds it to two frames over). The
+  last level remembers sixteen frames where an own cell remembers 23; most of the hundred frames
+  is the bounce's feedback converging, which neither read changes.
+- **A turn** (`gi cache: a turn shows no fill`) is nearer its long-held picture on every count
+  than before — the furthest frame 1.01 of a luma step against 1.19, the change between frames in
+  the first seven 0.536 against 0.534, after them 0.176 against 0.230 — but **the case fails**:
+  its bounds are twice the still picture's own floor, and the mend lowered that floor more (0.47
+  against 0.61; the change's floor 0.089 against 0.179) than the turn's transient, which is coarse
+  cells' first frames. The bounds' derivation (a coarse cell read whole after one frame of samples
+  against an own cell's 256-sample average) assumed the floor is the own level's noise; it is not
+  re-derived here and the check is not widened: the coordinator's call.
+- **Open ground** (the village's lane, held, same settings): the picture's mean is the same to
+  0.1 %, the median pixel moves 0.57 % (p95 6 %, p99 12 %) and the map of the change is the grain
+  removed — noise everywhere, strongest under the eaves and in the walls' shade, no structure along
+  the dry-stone courses' shadows or the eaves' line.
+- **No bounce, no change**: with `renderer.gi.mode` off the village and the cave draw the bytes
+  main draws (the EXRs' hashes equal).
+
+**What it costs** (the same flights, alternated in one lease, medians of 331 frames; the GPU's
+timestamps, the GPU otherwise idle under the lock, 7 to 43 % of the CPU busy with other agents'
+builds and this branch's tests):
+
+| GPU ms | before | the mend | change |
+|---|---|---|---|
+| village house 0: resolve / sample pass / frame | 2.21 / 1.19 / 6.38 | 2.90 / 0.98 / 6.86 | **+0.70 / −0.21 / +0.48** |
+| the cave | 2.03 / 1.01 / 4.15 | 2.52 / 1.00 / 4.62 | **+0.48 / −0.01 / +0.47** |
+| the lane (outdoors) | 4.29 / 0.80 / 7.04 | 5.12 / 0.91 / 7.95 | **+0.84 / +0.11 / +0.91** |
+
+Above the first leg's 0.3 to 0.5 ms: the last level's eight lookups are paid on every faced pixel
+whose walk stopped at its own level — on the lane that is nearly every pixel, and on a face's edge
+twice (the second face). What would bring it down: reading the last level once for both faces
+(its cells are a sixteenth as many and the faces blend by weight), skipping the shrinkage where the
+own level's cells hold no measured spread above the model's (tame open ground, where the grain is
+under the surface's texture), or keeping the last level's mean in the own cell at the fold (one
+more half, which the cell does not have). The sample pass's change is the bounce's hits reading
+the last level too and the machine's noise (the before pair moved 0.18 ms between leases).
+
+**Off by default** (third leg, 2026-11-16). Performance comes first: a read that costs open ground
+nearly a millisecond for a mend that helps indoors only and reaches 2.5 % stays off until it costs
+nothing there. What stays on is the fold's measurement, which the resolve does not pay for and
+which leaves the cell at 32 bytes: with `renderer.gi.spread` off the read is stage 8's, arithmetic
+for arithmetic, and the fold's only change is where the bucket's pressure is kept (the high half of
+the first word, a test against the same frame), so the picture is main's. `gi cache: a turn shows
+no fill` passes again at the defaults, as on main (the furthest frame 1.18 of a luma step against
+its bound of 1.23 on the RTX 5090). Where a case runs the shrinkage, its bounds stay those of the
+features off (below). Off is not quite free: on the lane, held 690 frames in one lease, main's
+build drew 6.39 ms of GPU twice and this branch with both features off 6.46 (the resolve +0.04, the
+sample pass +0.03), the read's struct carrying the shrinkage's fields whether or not they are
+used; the picture's mean is main's to 0.01 % and the change against main (median 0.4 %, p95 5.7 %)
+is the size of main against itself under the bounce (p95 4.6 %), whose rays are not repeatable.
+
+### R171: a cell's memory by its own spread
+
+Third leg (2026-11-16; `renderer.gi.memory`, **off by default**, for the four failures under "Why
+it is off" below; `gfx::gi_memory_fold`, `gi_memory_cap`,
+`k_gi_memory`, `k_gi_change_sigmas`, `k_gi_memory_back` in `gi_cache.h`, the same arithmetic in
+`gi_update.slang`'s fold and its sample pass). The lever at the source: noise falls with the square
+root of a cell's memory, and the fold now measures each cell's spread, which is what an adaptive
+memory needs. A face's cell whose light holds still remembers up to sixteen times today's history
+(`gi_memory_cap`: 4,096 samples for an own cell at the trickle's eleven a frame, 372 frames; 256
+frames for one taking sixteen or more; never past 0xfff0, under the count's full mark), and lets
+go at once when its light changes. Foliage cells keep stage 8's rule.
+
+**The rule, and where it comes from.** A-SVGF (Schied, Peters and Dachsbacher 2018, "Gradient
+Estimation for Real-Time Adaptive Temporal Filtering", read in its preprint, §3 and §5) replaces
+SVGF's constant exponential factor α with α_i(p) = (1 − λ)·α + λ, where λ = min(1, |δ̂| / Δ̂) is a
+temporal gradient — one sample per 3×3 stratum re-shaded with last frame's random numbers, so that
+noise does not count as change — reconstructed over the screen and normalised by the brighter of
+the two frames; α is 0.1 for A-SVGF and 0.2 for SVGF in its evaluation. It blends continuously
+from the long history to none, and "must not drop history information solely due to changes in
+random numbers" (§3). SVGF (Schied et al. 2017) and DDGI (Majercik et al. 2019, whose probes lower
+their hysteresis on a change) could not be read tonight (both PDFs past the fetcher's size limit),
+so nothing here is taken from them. **The constants here are this page's, not the paper's**: the
+cache cannot re-shade last frame's sample, so its gradient is the difference between two histories
+of one cell, its noise is the cell's measured spread, and its pooling is up the ladder rather than
+over the screen; the cut is a step rather than A-SVGF's blend, because the cell has one bit to hand
+down.
+
+- **Two means of one cell.** The long mean is the one the read shows; it averages every frame since
+  the light last changed, plainly while the count grows and exponentially at the ceiling. A short
+  mean at today's history (`gi_history_cap`) is kept beside it as a half in the high 16 bits of the
+  cell's second word, whose low 16 keep the stamp: fifteen bits of the frame and the foliage bit
+  (the age is the frame less the stamp modulo 2^15, exact because the fold frees a cell 240 frames
+  after its last sample). **The cell is still 32 bytes.** While the light is still the two hold the
+  same light; after a change the short one follows within today's frames and the long one does not.
+- **The test** is their difference against the band the short mean's own noise makes: a sample's
+  variance from the measured spread (at the ceiling, the spread times (2T − n)/T) over the short
+  mean's effective count 2·cap − n. Out of it by four deviations (`k_gi_change_sigmas`) the cell
+  sets its changed bit (the half's sign, never otherwise set) and lets go.
+- **Tested on the cell and up its ladder.** A fine cell's short mean is a 16-frame average of eleven
+  samples a frame, 10 % of its light at one deviation indoors, so a 13 % change is far inside its own
+  band; a coarse cell three levels up pools sixty-four of them, 1.6 %, and sees it. So the sample
+  pass, which holds the slots of a sample's whole ladder, hands a coarser cell's changed bit to
+  every finer cell of that ladder the next frame (word 2's top bit, beside the frame's count), and
+  a cell told so lets go too. A single heavy sample moves a coarse cell a sixty-fourth as far.
+- **Letting go** takes the long mean to the short one's level (its colour scaled to the short
+  luminance) and the count to a quarter of today's history (`k_gi_memory_back`, 64 samples for an
+  own cell), so the part of a change the short mean had already followed is taken whole and the
+  rest is followed four times as fast as today, which makes up the frames the detection took.
+
+**Why four deviations and a quarter**, by a simulation of the fold (sixteen coarse cells over 1,024
+own cells, the plain wall's heavy samples, Python in the row's scratch; the CPU case below runs the
+same fold in the tree): at five deviations the moved sun's 13 % was never seen, because a coarse
+cell's long mean (93 frames at 704 samples a frame, the count's ceiling) and its short one (16)
+stand at most 0.58 of a step apart, under five deviations of 1.6 %, and the own cells took 333
+frames to settle against today's 50; at four it is seen, and they settle in 49. Letting go to
+today's history whole left the remaining part of the change to a count that grows again from 256,
+slower than today.
+
+**What it does** (3840×2160, `--raster rt --shadows rt`, `bounce`, the first leg's held views and
+metric, held 690 frames; main's copied-out build b299cce2 against this branch, one lease):
+
+| grain, % of the indirect term, frames 180 / 320 / 600 / 690 | main | memory off | **memory on** |
+|---|---|---|---|
+| village house 0, near wall | 4.19 / 3.98 / 4.03 / 4.12 | 4.29 / 4.00 / 4.04 / 4.05 | **1.34 / 1.36 / 1.64 / 1.45** |
+| village house 0, far wall | 4.03 / 3.98 / 3.94 / 3.94 | 3.99 / 4.09 / 4.06 / 4.03 | **1.40 / 1.45 / 1.70 / 1.56** |
+| the cave (over level +3's picture) | 9.88 / 9.83 / 9.83 / 10.03 | 9.96 / 9.91 / 9.84 / 9.92 | **4.14 / 4.11 / 4.22 / 4.19** |
+
+A third of the grain indoors and two-fifths in the cave, by frame 180 already, without the read's
+shrinkage and at no cost to the resolve; under the aim of 1.5 % on the walls at 180 and 320 frames,
+not under 1 %. The grain's correlation with the next frame
+rises from 0.56 to 0.78 to 0.94 to 0.96 on the walls (0.61 to 0.85 in the cave): what is left
+moves slowly, as a long memory's noise does. The crops (`th\near-*.png`, `far-*.png`,
+`cave-*.png` in the row's scratch) show the mottling gone to a fine even texture, with **a few
+round bright blobs a cell wide** that today's picture hides in its mottle: cells that let go (a
+false alarm or a coarse cell's change handed down) and show today's noise again for the frames their
+count takes to regrow.
+
+- **Corners** (as the second leg measured them, frames 180, 600, 690): the back wall at the floor
+  0.993 main, 0.995 with the memory; at the side wall 1.015 and 1.024; the right wall under the
+  ceiling 0.837 and 0.843. A longer memory averages a cell longer and moves no light between cells.
+- **The light's level moves a little**: the village's walls' mean +0.5 % and +0.7 % over the frame,
+  the cave's +1.8 %, the lane's +0.17 %, steady from frame 180 to 690 (main's own frames agree to
+  0.1 %). Not isolated; the candidates are the bounce's hits reading quieter cells (fewer samples at
+  the ratio's cap of 16) and a half's rounding of a long mean's small steps.
+- **Open ground** (the lane): the change against main is main's against itself (median 0.45 %,
+  p95 5.8 % against 4.6 % main to main), the mean +0.17 %.
+
+**What it costs** (the same flights; GPU timestamps, medians of 690 frames, the GPU otherwise idle
+under the lock, 8 to 34 % of the CPU busy with others): the fold 0.075 / 0.034 / 0.052 ms on lane,
+village and cave either way; the frame's GPU total with the memory against without it 6.39 / 6.46
+on the lane, 6.05 / 5.97 in the village, 3.96 / 3.95 in the cave: no measurable change.
+
+**In the tree** (`gi cache key: a cell remembers longer while its light holds still, and lets go`,
+the fold on the CPU; the box's GPU cases, RTX 5090, msvc-debug, 2026-11-16): the box's plain wall
+goes from 1.76 % to **0.84 %**, under the owner's 1 %, with its next-frame correlation 0.99; after
+the sun moves two hours the wall settles within a tenth of its change in 98 frames against stage
+8's 114, after it is switched off (twelve hours, −37 %) in 39 against 57, after one hour (−9 %) in
+104 against 117; `gi cache: a turn shows no fill` with the memory on stands at 1.05 of a luma step
+against the features-off bound of 1.22 (its own still floor is 0.15 against 0.61, a quarter). The
+CPU fold: an own cell's mean's variance 0.076 of today's, the moved sun settled in 42 frames
+against today's 81, a light switched on or off in 46 and 42 against 52.
+
+**Why it is off.** Every item the leg was held to holds but one, and two more were found:
+
+- **A change the coarse cells cannot see trails.** A coarse cell's two means stand at most 0.58 of
+  a step apart, so a change under about 11 % of its light never leaves four deviations of 1.6 %, and
+  the own cells follow it at their long memory's rate: on the CPU a 10 % step settles in 258 frames
+  against today's 84. On the GPU the frames-to-settle counts above look no slower because they
+  count to where each run itself settles, and the memory's runs had not got there: 160 frames after
+  the move the wall had moved −12.1 % against stage 8's −13.1 % for two hours and −7.3 % against
+  −9.3 % for one, a fifth of a small change still to come. A sun that moves through a day is a
+  stream of such changes. A longer memory that trails a changed light is the rule failing.
+- **Cells that let go by chance show as blobs.** An own cell tests itself too, and leaves its band
+  by chance about once in 90,000 frames: across a 4K view's fifty thousand own cells that is one
+  every two frames, each a bright or dark round blob a cell wide that regrows over a hundred
+  frames (the crops show them; the CPU case sends back 3 of 1,024 cells in 500 still frames, as
+  the model expects). A cell taking under 64 samples a frame should not test itself — its parents
+  see what it would — and that is the next step, not built.
+- **The box's corner** (`gi cache: the grain on a plain wall`) rises 0.013 towards the wall's middle
+  where the bound is 0.011 (half of level +2's lift), and **the indirect light's level** rises 0.2
+  to 1.8 %. Neither is isolated: a long mean's half-precision steps losing the small ones of a skewed
+  sample, or the bounce's hits reading quieter cells, would do both.
+
+What would bring it on: a cell's own test only at 64 samples a frame or more; a finer change test
+than two histories of one cell (A-SVGF's re-shaded sample is the published one; a coarse cell's
+short mean handed to its children as a scale each frame is the cache's own); and the level's rise
+found.
 
 ## The sun's day
 

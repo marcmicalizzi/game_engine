@@ -240,14 +240,18 @@ float3 gi_bounce(ResolveParams* params, float3 origin, float3 dir) {
 
 // A cell's stamp: the cache's frame, and — a foliage cell's — the bit the fold knows it by
 // (`k_gi_stamp_crown`, stage 8: its history is `k_gi_crown_history_frames`).
+// Fifteen bits of the frame, in the low half of the cell's second word (gfx::gi_stamp_age).
 uint gi_stamp(ResolveParams* params, bool crown) {
-  return gi_now(params) | (crown ? k_gi_stamp_crown : 0u);
+  return (gi_now(params) & k_gi_stamp_frames) | (crown ? k_gi_stamp_crown : 0u);
 }
+// The stamp into a cell's second word, keeping its high half (the short mean, which only the fold
+// writes): every writer of a frame stores the same word, so the race between them writes one value.
+void gi_stamp_cell(uint* word, uint stamp) { *word = (*word & 0xffff0000u) | stamp; }
 
 void gi_add(ResolveParams* params, uint slot, uint3 fixed, uint weight, bool crown) {
   Atomic<uint>* words =
       (Atomic<uint>*)gi_cell_words(params->gi_cells, params->gi_count) + slot * k_gi_cell_words;
-  words[1].store(gi_stamp(params, crown));
+  words[1].store((words[1].load() & 0xffff0000u) | gi_stamp(params, crown));
   words[2].add(weight);
   words[3].add(fixed.x);
   words[4].add(fixed.y);
@@ -357,6 +361,11 @@ uint gi_trace_and_add(ResolveParams* params, uint2 p, Surface s, InstanceDesc in
   const uint from = foliage ? min(level + max(first, k_gi_crown_first), k_gi_levels - 1u)
                             : level + first;
   const uint young = gi_young_level(level, foliage);
+  // R171's third leg (gfx::gi_memory_fold): a change a coarser cell of this ladder saw in its last
+  // fold is handed to every finer cell of it, which then goes back to today's history.
+  const bool memory = !foliage && (params->gi_flags & k_gi_memory) != 0u;
+  uint slots[k_gi_ladder];
+  uint taken = 0u;
   for (uint l = from; l < min(level + k_gi_ladder, k_gi_levels); ++l) {
     const uint slot = gi_insert(params->gi_cells, params->gi_count, gi_now(params),
                                 gi_cell_hash(params, s, l, foliage));
@@ -365,6 +374,18 @@ uint gi_trace_and_add(ResolveParams* params, uint2 p, Surface s, InstanceDesc in
             (foliage ? k_gi_crown_weight : 1u);
     }
     if (slot != k_gi_no_slot) gi_add(params, slot, fixed, weight, foliage);
+    slots[taken] = slot;
+    ++taken;
+  }
+  if (memory) {
+    Atomic<uint>* words = (Atomic<uint>*)gi_cell_words(params->gi_cells, params->gi_count);
+    bool changed = false;
+    for (uint i = taken; i > 0u; --i) {
+      const uint slot = slots[i - 1u];
+      if (slot == k_gi_no_slot) continue;
+      if (changed) words[slot * k_gi_cell_words + 2u].or(k_gi_frame_drop);
+      if ((words[slot * k_gi_cell_words + 1u].load() & k_gi_cell_changed) != 0u) changed = true;
+    }
   }
   return own;
 }
@@ -400,11 +421,12 @@ bool gi_shell_keep(ResolveParams* params, uint i, Surface s, uint first, float c
   if (gi_samples(params->gi_cells, params->gi_count, slot) < whole) return false;
   if (refresh != 0u && (gi_now(params) + gi_shell_hash(i)) % refresh == 0u) return false;
   uint* words = (uint*)gi_cell_words(params->gi_cells, params->gi_count);
-  words[slot * k_gi_cell_words + 1u] = gi_stamp(params, foliage);
+  gi_stamp_cell(&words[slot * k_gi_cell_words + 1u], gi_stamp(params, foliage));
   for (uint l = from + 1u; l < last; ++l) {
     const uint up =
         gi_find(params->gi_cells, params->gi_count, gi_cell_hash(params, s, l, foliage));
-    if (up != k_gi_no_slot) words[up * k_gi_cell_words + 1u] = gi_stamp(params, foliage);
+    if (up != k_gi_no_slot)
+      gi_stamp_cell(&words[up * k_gi_cell_words + 1u], gi_stamp(params, foliage));
   }
   return true;
 }
@@ -622,21 +644,26 @@ void gi_fold_main(uint3 id : SV_DispatchThreadID) {
   bool evicted = false;
   bool expired = false;
   if (keys[cell] != 0u) {
-    const uint n = words[2];
+    // The frame's samples; the top bit is a change a coarser cell saw (R171's third leg).
+    const uint n = words[2] & ~k_gi_frame_drop;
+    const bool drop = (words[2] & k_gi_frame_drop) != 0u;
     // Stage 8: a foliage cell is known by its stamp's top bit, and remembers longer (below).
     const bool crown_cell = (words[1] & k_gi_stamp_crown) != 0u;
     if (n == 0u) {
-      const uint age = gi_now(params) - (words[1] & ~k_gi_stamp_crown);
+      if (drop) words[2] = 0u;
+      const uint age = (gi_now(params) - words[1]) & k_gi_stamp_frames;
       uint* bucket = (uint*)gi_cell_words(params->gi_cells, params->gi_count) +
                            (cell & ~(k_gi_bucket - 1u)) * k_gi_cell_words;
       if (age > k_gi_max_age) {
         expired = true;
       } else if (gi_evict_age(params->gi_flags) != 0u && age > gi_evict_age(params->gi_flags) &&
-                 bucket[0] == gi_now(params)) {
+                 (bucket[0] >> 16) == gi_pressure_stamp(gi_now(params))) {
         evicted = true;
       }
       if (expired || evicted) {
         keys[cell] = 0u;
+        // The first word keeps the bucket's pressure (its high half) and loses the cell's spread.
+        words[0] &= 0xffff0000u;
         for (uint i = 1u; i < k_gi_cell_words; ++i) words[i] = 0u;
       } else {
         kept = true;
@@ -662,7 +689,15 @@ void gi_fold_main(uint3 id : SV_DispatchThreadID) {
       // bounce off what stands round the tree, which moves over minutes. So it has no use for a
       // short memory, and takes four times the faces'.
       const uint frames = crown_cell ? k_gi_crown_history_frames : k_gi_history_frames;
-      const uint total = min(previous + n, max(k_gi_max_samples, min(n * frames, 0xffffu)));
+      const uint cap = max(k_gi_max_samples, min(n * frames, 0xffffu));
+      // **R171's third leg: a face's cell remembers longer while its light holds still**
+      // (gfx::gi_memory_fold, the same arithmetic): up to sixteen times today's history, under the
+      // field's full mark; a foliage cell keeps its own rule.
+      const bool memory = !crown_cell && (params->gi_flags & k_gi_memory) != 0u;
+      const uint ceiling = memory && cap < k_gi_memory_count_max
+                               ? min(cap * k_gi_memory_times, k_gi_memory_count_max)
+                               : cap;
+      const uint total = min(previous + n, ceiling);
       // The count is sixteen bits, and a cell that takes over 4,095 a frame — a crown's coarse
       // cell, whose samples count in sixteenths (stage 7) — would fill it in under sixteen
       // frames and then remember only what fits (three frames at 24,000 a frame, and the still
@@ -673,15 +708,60 @@ void gi_fold_main(uint3 id : SV_DispatchThreadID) {
       const float rate = float(n) / float(previous >= 0xffffu ? full : total);
       const float3 old_mean = float3(f16tof32(words[6] & 0xffffu), f16tof32(words[6] >> 16),
                                      f16tof32(words[7] & 0xffffu));
-      const float3 mean = previous == 0u ? frame_mean : lerp(old_mean, frame_mean, rate);
+      float3 mean = previous == 0u ? frame_mean : lerp(old_mean, frame_mean, rate);
+      // The short mean, at today's history, in the second word's high half.
+      const float short_old = f16tof32((words[1] >> 16) & 0x7fffu);
+      const float short_rate = float(n) / float(previous >= 0xffffu ? full : min(previous + n, cap));
+      const float short_mean = previous == 0u ? gi_luminance(frame_mean)
+                                              : lerp(short_old, gi_luminance(frame_mean), short_rate);
+      // **R171: the cell's spread, measured between frames** (gfx::gi_spread_fold, the same
+      // arithmetic): `n (m_frame - m)^2` with the history's own variance taken out, averaged at
+      // `n / previous`, scaled at the cap to what the exponential average's variance is, in the
+      // first word's low half (its high half is the bucket's pressure, which only the sample pass
+      // writes). Nothing for a cell's first frame.
+      float spread = 0.0;
+      if (previous != 0u) {
+        const float d = gi_luminance(frame_mean) - gi_luminance(old_mean);
+        const float nf = float(n);
+        const float pf = float(previous);
+        const float tf = float(total);
+        const float at_cap = previous + n > total ? tf / (2.0 * tf - nf) : 1.0;
+        const float estimate = nf * d * d * (pf / (pf + nf)) * at_cap;
+        const float before = f16tof32(words[0] & 0xffffu);
+        spread = min(before + (estimate - before) * min(nf / pf, 1.0), 65504.0);
+      }
+      // The test: the long mean against the short one, in the band the short mean's own noise
+      // makes (a sample's variance from the measured spread, over 2 cap - n); out of it, or told
+      // by a coarser cell of a ladder through this one, back to today's history at once, from the
+      // short mean's level.
+      bool changed = false;
+      if (memory && previous != 0u && spread > 0.0) {
+        const float nf = float(n);
+        const float tf = float(total);
+        const float sample = previous + n > total ? spread * (2.0 * tf - nf) / tf : spread;
+        const float var_short = sample / (2.0 * float(cap) - nf);
+        const float apart = gi_luminance(mean) - short_mean;
+        changed = apart * apart > k_gi_change_sigmas * k_gi_change_sigmas * var_short;
+      }
+      uint count = total;
+      const uint back = cap / k_gi_memory_back;
+      if (memory && (drop || changed) && previous > back) {
+        const float lum_old = gi_luminance(old_mean);
+        const float3 base = lum_old > 0.0 ? old_mean * (short_old / lum_old) : float3(short_old);
+        mean = lerp(base, frame_mean, float(n) / float(back + n));
+        count = back + n;
+      }
+      words[1] = (words[1] & 0xffffu) | ((f32tof16(short_mean) & 0x7fffu) << 16) |
+                 (changed ? k_gi_cell_changed : 0u);
+      words[0] = (words[0] & 0xffff0000u) | (f32tof16(spread) & 0xffffu);
       words[2] = 0u;
       words[3] = 0u;
       words[4] = 0u;
       words[5] = 0u;
       words[6] = f32tof16(mean.r) | (f32tof16(mean.g) << 16);
-      words[7] = f32tof16(mean.b) | (min(total, 0xffffu) << 16);
+      words[7] = f32tof16(mean.b) | (min(count, 0xffffu) << 16);
       kept = true;
-      young = total < k_gi_young;
+      young = count < k_gi_young;
     }
   }
   // The young claims are a step's: cleared here for the next one of the frame (the header's
