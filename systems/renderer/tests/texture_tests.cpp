@@ -505,7 +505,18 @@ TEST_CASE("renderer: a mesh the tail places at twice the scale draws the uncappe
         h.renderer.set_dynamic_instances(std::span<const SceneInstance>(&doubled, 1), &error),
         error);
     (void)h.shot(k_far);  // a frame of culling after the change may differ; a pixel may not
-    return h.shot(k_far);
+    // The albedo view as `shot` draws it, with the ids, so `covered` counts the quad's pixels.
+    FrameDesc frame;
+    frame.camera.position = absolute(WorldPos::origin(), Vec3{0.0f, 0.0f, k_far});
+    frame.camera.target = absolute(WorldPos::origin(), Vec3{0.0f, 0.0f, 0.0f});
+    frame.camera.fov_y = k_fov;
+    frame.view_mode = k_albedo_view;
+    CaptureChannels channels;
+    channels.color = true;
+    channels.ids = true;
+    CapturedFrame out;
+    REQUIRE_MESSAGE(h.renderer.capture(frame, channels, out, &error), error);
+    return out;
   };
   CapturedFrame whole;
   {
