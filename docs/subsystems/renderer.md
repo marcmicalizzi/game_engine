@@ -2891,7 +2891,11 @@ a fifth of the truth. That needs a cell to carry its spread: the fold can estima
 per-sample accumulator, as n (m_frame − m)² averaged at the cell's own rate, and it fits in the
 bucket-pressure word, which only a bucket's first cell uses (the pressure would take its high
 half). Level +3 shows what the noise floor of such a read is indoors (0.9 to 1.2 % on the
-village's walls); the shrinkage's own noise, a corner's contrast against it and the read's cost
+village's walls). Simulated per pixel on the village's captures (the own read shrunk towards
+level +3's with the spread squared at c times the mean's square over 511 samples), the model's
+c = 2 leaves 2.1 and 2.6 % on the two walls and c = 5 — what the walls' grain says it is — 1.05
+and 1.6 %, near the floor: the measured spread is half the mend. The shrinkage's own noise in the
+read, a corner's contrast against it and the read's cost
 (a second level's eight lookups on every faced pixel, 0.3 to 0.5 ms at 3840 × 2160 by stage 5's
 figures) are the second leg's to measure.
 
