@@ -1043,9 +1043,9 @@ TEST_CASE("gi cache: the grain on a plain wall is its cells' sampling noise") {
   // under 0.7 of the grain; the bound is the unmended read, since what it buys grows with the
   // frames the light has held still (renderer.md has the curve).
   CHECK(spread[4] < spread[0]);
-  WARN_MESSAGE(std::min(spread[3], spread[4]) < 0.01,
-               "R171: a plain wall's grain is " << 100.0 * std::min(spread[3], spread[4])
-                                                << " %, the target under 1 %");
+  WARN_MESSAGE(std::min(spread[3], spread[4]) < 0.01, "R171: a plain wall's grain is "
+                                                          << 100.0 * std::min(spread[3], spread[4])
+                                                          << " %, the target under 1 %");
   // A blur would lift the darker corner towards the wall's middle (level +2 read whole stands at
   // 0.928 where stage 8's read stands at 0.907); the measured spread's read stands at 0.913, under
   // a third of that lift, and four times the rays move it as far (0.913), so what it moves is the
@@ -1053,8 +1053,8 @@ TEST_CASE("gi cache: the grain on a plain wall is its cells' sampling noise") {
   CHECK(corner[3] - corner[0] < 0.5 * (corner[2] - corner[0]));
   // A longer memory averages the same cell longer and moves no light between cells, so it was held
   // to the same bound; it lifts the corner 0.013 where the bound is 0.011 (0.920 against 0.907 on
-  // the RTX 5090, 2026-11-16), one of the reasons `renderer.gi.memory` is off (renderer.md, "R171: a
-  // cell's memory by its own spread"). Warned, not held, while it is off.
+  // the RTX 5090, 2026-11-16), one of the reasons `renderer.gi.memory` is off (renderer.md, "R171:
+  // a cell's memory by its own spread"). Warned, not held, while it is off.
   WARN_MESSAGE(corner[4] - corner[0] < 0.5 * (corner[2] - corner[0]),
                "R171: the memory by the spread lifts the corner by " << corner[4] - corner[0]);
 }
@@ -1144,10 +1144,9 @@ TEST_CASE("gi cache: a moved light settles no slower with the measured spread") 
       at = static_cast<u32>(i);
     }
     settled_at[r] = at;
-    MESSAGE("the box's wall after the sun moved, " << std::string(runs[r].name) << ": changes by "
-                                                   << 100.0 * change[r]
-                                                   << " %, within a tenth of it from frame " << at
-                                                   << " after the move");
+    MESSAGE("the box's wall after the sun moved, "
+            << std::string(runs[r].name) << ": changes by " << 100.0 * change[r]
+            << " %, within a tenth of it from frame " << at << " after the move");
   }
   // The move must change the wall's light by more than its noise for the count to mean anything.
   CHECK(std::fabs(change[0]) > 0.05);
@@ -1158,9 +1157,9 @@ TEST_CASE("gi cache: a moved light settles no slower with the measured spread") 
   CHECK(settled_at[5] <= settled_at[3] + 2);
   // The memory's limit (renderer.md, "R171: a cell's memory by its own spread"): a change too small
   // for the coarse cells to see is followed at the long memory's rate. Printed, not held.
-  MESSAGE("the sun moved one hour: settled within a tenth in " << settled_at[6]
-                                                              << " frames with stage 8's read, "
-                                                              << settled_at[7] << " with the memory");
+  MESSAGE("the sun moved one hour: settled within a tenth in "
+          << settled_at[6] << " frames with stage 8's read, " << settled_at[7]
+          << " with the memory");
 }
 
 TEST_CASE("gi cache: a scene moved by whole cells draws the same bytes with the cache on") {
@@ -1615,8 +1614,8 @@ TEST_CASE("gi cache: a turn shows no fill") {
           << worst << " against a bound of " << 2.0 * now.floor
           << "; the largest change in the first seven frames " << worst_early << " against "
           << 4.4 * now.floor_change << ", and after them " << worst_change << " against "
-          << 2.0 * now.floor_change << "; against the defaults' own floor: "
-          << worst / std::max(run.floor, 1e-9) << ", "
+          << 2.0 * now.floor_change
+          << "; against the defaults' own floor: " << worst / std::max(run.floor, 1e-9) << ", "
           << worst_early / std::max(run.floor_change, 1e-9) << " and "
           << worst_change / std::max(run.floor_change, 1e-9) << " floors");
   CHECK(worst <= 2.0 * now.floor);

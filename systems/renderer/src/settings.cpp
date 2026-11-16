@@ -486,7 +486,8 @@ tunables::Bool gi_spread{
 // Off: a change the coarse cells cannot see trails, and the cells that let go show as blobs.
 tunables::Bool gi_memory{
     "renderer.gi.memory", false,
-    "A face's cache cell remembers up to sixteen times today's history while its light holds still, "
+    "A face's cache cell remembers up to sixteen times today's history while its light holds "
+    "still, "
     "and goes back to today's at once when its long mean leaves the band its measured spread "
     "predicts, or a coarser cell of its ladder's does (false: today's history, as stage 8 left it) "
     "(renderer.md, Indirect light, R171: a cell's memory by its own spread; read at load)"};

@@ -588,8 +588,8 @@ TEST_CASE("gi cache key: a cell remembers longer while its light holds still, an
     const char* name;
     f32 scale;
   };
-  const Change changes[] = {{"the sun moved", 0.87f}, {"a light switched on", 3.0f},
-                            {"a light switched off", 0.2f}};
+  const Change changes[] = {
+      {"the sun moved", 0.87f}, {"a light switched on", 3.0f}, {"a light switched off", 0.2f}};
   for (const Change& c : changes) {
     const MemoryRun today = memory_run(false, c.scale, 4242u);
     const MemoryRun longer = memory_run(true, c.scale, 4242u);

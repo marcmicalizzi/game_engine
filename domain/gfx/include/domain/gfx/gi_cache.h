@@ -371,14 +371,15 @@ constexpr u32 gi_pressure_stamp(u32 frame) noexcept { return (frame & 0x7fffu) |
 // test, in the band the short mean's own noise makes: a sample's variance from the cell's measured
 // spread over the short mean's effective count, 2 T - n (the variance of an exponential average).
 // Out of it by `k_gi_change_sigmas`, the cell takes its long mean to the short one's level and its
-// count back to a quarter of today's history at once (`k_gi_memory_back`), and sets `changed`, which the sample pass hands to every
-// finer cell of a ladder through it the next frame (`drop`): a coarse cell pools sixty-four of its
-// own level's samples and sees a change a fine one's noise hides, and a single heavy sample moves
-// it by a sixty-fourth as much. That is A-SVGF's rule (Schied et al. 2018: a history cut back where
-// a temporal gradient beyond its noise is seen), with the gradient taken between two histories of
-// one cell instead of from a re-traced sample, and pooled up the ladder instead of over the screen.
+// count back to a quarter of today's history at once (`k_gi_memory_back`), and sets `changed`,
+// which the sample pass hands to every finer cell of a ladder through it the next frame (`drop`): a
+// coarse cell pools sixty-four of its own level's samples and sees a change a fine one's noise
+// hides, and a single heavy sample moves it by a sixty-fourth as much. That is A-SVGF's rule
+// (Schied et al. 2018: a history cut back where a temporal gradient beyond its noise is seen), with
+// the gradient taken between two histories of one cell instead of from a re-traced sample, and
+// pooled up the ladder instead of over the screen.
 struct GiMemoryCell {
-  f32 mean = 0.0f;   // the long mean, the one the read shows
+  f32 mean = 0.0f;  // the long mean, the one the read shows
   f32 short_mean = 0.0f;
   f32 spread = 0.0f;  // `gi_spread_fold`'s
   u32 count = 0;
@@ -391,8 +392,8 @@ inline void gi_memory_fold(GiMemoryCell& c, u32 n, f32 frame_mean, bool drop,
   const u32 cap = gi_history_cap(n);
   const u32 ceiling = memory ? gi_memory_cap(n) : cap;
   const u32 total = previous + n < ceiling ? previous + n : ceiling;
-  const u32 full = k_gi_max_samples > n * k_gi_history_frames ? k_gi_max_samples
-                                                              : n * k_gi_history_frames;
+  const u32 full =
+      k_gi_max_samples > n * k_gi_history_frames ? k_gi_max_samples : n * k_gi_history_frames;
   const f32 nf = static_cast<f32>(n);
   const f32 rate = nf / static_cast<f32>(previous >= 0xffffu ? full : total);
   const u32 short_total = previous + n < cap ? previous + n : cap;
