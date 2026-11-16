@@ -473,13 +473,16 @@ tunables::Int gi_show_level{
     "A diagnostic: the resolve's read of the cache takes one level of the ladder whole, the "
     "surface's own plus this many, with the cache filled as ever (-1: the walk) (renderer.md, "
     "Indirect light, Stage 6; read at load)"};
-// **Stage 7** (R69; renderer.md, "Indirect light", "Stage 7"): a crown's shade as a prior.
+// **R171** (renderer.md, "Indirect light", "R171: the grain on a plain wall"): the read's
+// shrinkage by the cells' measured spreads. Off: it costs 0.5 ms indoors and 0.9 ms on an open lane
+// at 3840 x 2160 for six-tenths of the grain indoors. The fold measures the spread either way.
 tunables::Bool gi_spread{
-    "renderer.gi.spread", true,
+    "renderer.gi.spread", false,
     "The cache's read is compared with the ladder's last level by the cells' measured spreads and "
     "shows the coarser light wherever the two agree within that noise, so a plain wall lit through "
     "an opening is not grained by its cells' heavy samples (false: the walk's answer as stage 8 "
     "left it) (renderer.md, Indirect light, R171: the grain on a plain wall; read at load)"};
+// **Stage 7** (R69; renderer.md, "Indirect light", "Stage 7"): a crown's shade as a prior.
 tunables::Bool gi_crown_prior{
     "renderer.gi.crown_prior", true,
     "Foliage on a mesh with a crown is lit through its tree's own shade as a prior: the cache "

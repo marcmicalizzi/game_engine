@@ -959,7 +959,8 @@ TEST_CASE("gi cache: the grain on a plain wall is its cells' sampling noise") {
   };
   // The trickle at one pixel in nine, as at 3840x2160 (`gfx::gi_trickle_stride`), then four
   // times the rays, then the level two up read whole: the samples' law, with the read as stage 8
-  // left it (`renderer.gi.spread` off). Then the read by the cells' measured spread, the default.
+  // left it (`renderer.gi.spread` off, the default). Then the read by the cells' measured spread,
+  // which is off by default for its cost (renderer.md, "R171: the grain on a plain wall").
   constexpr u32 k_runs = 4;
   const Run runs[k_runs] = {{"stage 8's read", "58300", "-1", "false"},
                             {"rays x4", "233200", "-1", "false"},

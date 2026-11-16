@@ -2901,7 +2901,7 @@ read, a corner's contrast against it and the read's cost
 figures) are the second leg's to measure.
 
 **The mend: the read by its cells' measured spread** (second leg, 2026-11-16; `renderer.gi.spread`,
-on; `gfx::k_gi_spread`, `gi_spread_fold`, `gi_spread_detail`, `gi_spread_keep` in `gi_cache.h`,
+**off by default since the third leg**, below; `gfx::k_gi_spread`, `gi_spread_fold`, `gi_spread_detail`, `gi_spread_keep` in `gi_cache.h`,
 the same arithmetic in `gi_cache.slang` and the fold in `gi_update.slang`). Two parts:
 
 - **A cell measures its spread** in the fold, from the frames' means, with no sum of squares in
@@ -3019,6 +3019,16 @@ own level's cells hold no measured spread above the model's (tame open ground, w
 under the surface's texture), or keeping the last level's mean in the own cell at the fold (one
 more half, which the cell does not have). The sample pass's change is the bounce's hits reading
 the last level too and the machine's noise (the before pair moved 0.18 ms between leases).
+
+**Off by default** (third leg, 2026-11-16). Performance comes first: a read that costs open ground
+nearly a millisecond for a mend that helps indoors only and reaches 2.5 % stays off until it costs
+nothing there. What stays on is the fold's measurement, which the resolve does not pay for and
+which leaves the cell at 32 bytes: with `renderer.gi.spread` off the read is stage 8's, arithmetic
+for arithmetic, and the fold's only change is where the bucket's pressure is kept (the high half of
+the first word, a test against the same frame), so the picture is main's. `gi cache: a turn shows
+no fill` passes again at the defaults, as on main (the furthest frame 1.18 of a luma step against
+its bound of 1.23 on the RTX 5090). Where a case runs the shrinkage, its bounds stay those of the
+features off (below).
 
 ## The sun's day
 
