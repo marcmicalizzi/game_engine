@@ -224,45 +224,119 @@ TEST_CASE("village: a way is found round a hill, not ruled over it") {
   CHECK(way.stations.back().x_mm == 60000);
 }
 
-TEST_CASE("village: a grown village has uneven plots, turns, gaps and cottages") {
+namespace {
+// The longest stretch of a way whose stations all stand within `off_mm` of the chord between its
+// two ends, metres: how long the way runs straight.
+f64 longest_straight(const LaneLine& way, f64 off_mm) {
+  f64 longest = 0.0;
+  const u32 n = way.stations.size();
+  u32 j = 0;
+  for (u32 i = 0; i < n; ++i) {
+    j = std::max(j, i + 1);
+    while (j + 1 < n) {
+      const LaneStation& a = way.stations[i];
+      const LaneStation& b = way.stations[j + 1];
+      const f64 ex = static_cast<f64>(b.x_mm - a.x_mm), ez = static_cast<f64>(b.z_mm - a.z_mm);
+      const f64 el = std::sqrt(ex * ex + ez * ez);
+      bool straight = el > 0.0;
+      for (u32 k = i + 1; k <= j && straight; ++k) {
+        const f64 d = (static_cast<f64>(way.stations[k].x_mm - a.x_mm) * ez -
+                       static_cast<f64>(way.stations[k].z_mm - a.z_mm) * ex) /
+                      el;
+        straight = std::fabs(d) <= off_mm;
+      }
+      if (!straight) break;
+      ++j;
+    }
+    if (j < n) {
+      const f64 dx = static_cast<f64>(way.stations[j].x_mm - way.stations[i].x_mm);
+      const f64 dz = static_cast<f64>(way.stations[j].z_mm - way.stations[i].z_mm);
+      longest = std::max(longest, std::sqrt(dx * dx + dz * dz) / 1000.0);
+    }
+  }
+  return longest;
+}
+}  // namespace
+
+TEST_CASE("village: a grown way goes round what it went round, and is never long straight") {
+  // Two places 300 m apart on level ground: a row plan's way is the line between them; a grown
+  // one goes round the holdings, the wet places and the copses that stood when it was first
+  // trodden (the cost's seeded discs), so it runs straight for no more than a few tens of metres,
+  // and its tread's width wanders.
+  VillageLayer p = street(0, 0, 300, 0);
+  p.houses = 2;
+  const VillagePlan ruled = planned(regular(p), flat);
+  CHECK(longest_straight(ruled.lanes[0], 250.0) == doctest::Approx(300.0));
+  p.irregularity = 1.0f;
+  const VillagePlan grown = planned(p, flat);
+  const LaneLine& way = grown.lanes[0];
+  const f64 straight = longest_straight(way, 500.0);
+  i64 lo = way.stations[0].tread_mm, hi = lo, off = 0;
+  for (const LaneStation& s : way.stations) {
+    lo = std::min(lo, s.tread_mm);
+    hi = std::max(hi, s.tread_mm);
+    off = std::max(off, s.z_mm < 0 ? -s.z_mm : s.z_mm);
+  }
+  MESSAGE("grown way: " << way.length_mm << " mm long (sinuosity "
+                        << static_cast<f64>(way.length_mm) / 300000.0 << "), " << off
+                        << " mm off the line at most, straight for " << straight
+                        << " m at most (50 cm), tread half width " << lo << " to " << hi);
+  CHECK(straight < 60.0);
+  CHECK(off > 4000);
+  CHECK(way.length_mm < 345000);  // sinuosity under 1.15
+  CHECK(hi - lo > 300);
+}
+
+TEST_CASE("village: a grown village is tofts side by side, uneven, subdivided, with cottages") {
   VillageLayer p = street(0, 0, 200, 30);
   p.houses = 16;
   p.irregularity = 1.0f;
   const VillagePlan plan = planned(p, gentle);
   CHECK(plan.built == 16);
-  u32 whole = 0, turned = 0, tenements = 0;
-  std::vector<i64> depths;
+  u32 whole = 0, tenements = 0, beside = 0;
+  std::vector<i64> depths, frontages;
+  // A plot's front corners, u = -half and +half.
+  const auto corner = [](const Plot& q, f64 u, i64& x, i64& z) {
+    x = q.front_x_mm + scene_gen::nearest_mm(q.along_x * u / 1000.0);
+    z = q.front_z_mm + scene_gen::nearest_mm(q.along_z * u / 1000.0);
+  };
   for (const Plot& q : plan.plots) {
     if (q.kind != PlotKind::tenement) continue;
     ++tenements;
     whole += q.frontage_mm % 5030 == 0 ? 1u : 0u;
     depths.push_back(q.depth_mm);
-    // Square to its way is |along . tangent| = 1, the tangent the way's own beside the plot (from
-    // two stations before the nearest to two after); turned is more than about 6 degrees off it.
-    const LaneLine& way = plan.lanes[q.lane];
-    u32 k = 0;
-    f64 best = 1e300;
-    for (u32 s = 0; s < way.stations.size(); ++s) {
-      const f64 dx = static_cast<f64>(way.stations[s].x_mm - q.front_x_mm),
-                dz = static_cast<f64>(way.stations[s].z_mm - q.front_z_mm);
-      if (dx * dx + dz * dz < best) {
-        best = dx * dx + dz * dz;
-        k = s;
-      }
+    frontages.push_back(q.frontage_mm);
+    // Side by side: a front corner of this toft is a front corner of another, to 2 cm.
+    bool shares = false;
+    for (const Plot& o : plan.plots) {
+      if (&o == &q) continue;
+      for (const f64 su : {-0.5, 0.5})
+        for (const f64 so : {-0.5, 0.5}) {
+          i64 ax = 0, az = 0, bx = 0, bz = 0;
+          corner(q, su * static_cast<f64>(q.frontage_mm), ax, az);
+          corner(o, so * static_cast<f64>(o.frontage_mm), bx, bz);
+          shares = shares || (std::abs(ax - bx) <= 20 && std::abs(az - bz) <= 20);
+        }
     }
-    const LaneStation& a = way.stations[k >= 2 ? k - 2 : 0];
-    const LaneStation& b = way.stations[std::min<u32>(k + 2, way.stations.size() - 1)];
-    const f64 tx = static_cast<f64>(b.x_mm - a.x_mm), tz = static_cast<f64>(b.z_mm - a.z_mm);
-    const f64 tl = std::sqrt(tx * tx + tz * tz);
-    if (std::fabs(q.along_x * tx + q.along_z * tz) / tl < 0.995) ++turned;
+    beside += shares ? 1u : 0u;
   }
   std::sort(depths.begin(), depths.end());
+  std::sort(frontages.begin(), frontages.end());
   MESSAGE("grown: " << plan.plots.size() << " plots, " << tenements << " tenements, "
-                    << plan.cottages << " cottages built, " << turned << " turned, " << whole
-                    << " of whole perches, depths " << depths.front() << " to " << depths.back());
+                    << plan.cottages << " cottages built, " << beside << " beside another, "
+                    << whole << " of whole perches, frontages " << frontages.front() << " to "
+                    << frontages.back() << ", depths " << depths.front() << " to "
+                    << depths.back());
   CHECK(whole * 4 < tenements);  // most frontages are no whole number of perches
   CHECK(depths.back() - depths.front() > 8000);
-  CHECK(turned * 4 > tenements);
+  // Gaps are the exception: one tenement in seven is followed by one at `irregularity` 1, and a
+  // toft the street crosses round a bend or the green's lens is not set out; two in three stand
+  // beside another.
+  CHECK(beside * 3 >= tenements * 2);
+  // Narrow on the street: the middle toft under 2.5 perches, subdivided ones down to 1.1 along
+  // the way (5.53 m; the chord of the street's edge on the inside of a bend is a little less).
+  CHECK(frontages[frontages.size() / 2] < 12575);
+  CHECK(frontages.front() >= 5000);
   CHECK(plan.cottages > 0);
   CHECK(overlaps(plan) == 0);
   CHECK(treads_in_plots(plan) == 0);
@@ -274,7 +348,8 @@ TEST_CASE("village: a grown village has uneven plots, turns, gaps and cottages")
 }
 
 TEST_CASE("village: plots are taken nearest the green first, and the church stands further out") {
-  VillageLayer p = street(0, 0, 160, 0);
+  // (The street runs on 160 m past the meeting, so the church has room at the village's end.)
+  VillageLayer p = street(0, 0, 240, 0);
   Lane second;
   second.name = "to the mill";
   second.waypoints.push_back(WorldPos{70.0, 0.0, -90.0});
@@ -283,10 +358,13 @@ TEST_CASE("village: plots are taken nearest the green first, and the church stan
   p.houses = 14;
   const VillagePlan plan = planned(p, gentle);
   CHECK(plan.built == 14);
-  // The second way's end meets the first: the focus is on the first way there, and the green and
-  // the well stand at it.
-  CHECK(std::fabs(static_cast<f64>(plan.focus_x_mm) - 80000.0) < 8000.0);
-  CHECK(std::fabs(static_cast<f64>(plan.focus_z_mm)) < 8000.0);
+  // The second way's end meets the first: the focus is a station of the first way (which goes round
+  // what it went round, so within 20 m of the line between its places), the second way ends on it,
+  // and the green and the well stand at it.
+  CHECK(std::fabs(static_cast<f64>(plan.focus_x_mm) - 80000.0) < 12000.0);
+  CHECK(std::fabs(static_cast<f64>(plan.focus_z_mm)) < 20000.0);
+  CHECK(plan.lanes[1].stations.back().x_mm == plan.focus_x_mm);
+  CHECK(plan.lanes[1].stations.back().z_mm == plan.focus_z_mm);
   CHECK(plan.well);
   u32 nearest = 0;
   for (u32 k = 0; k < plan.lanes[0].stations.size(); ++k)
@@ -317,17 +395,20 @@ TEST_CASE("village: plots are taken nearest the green first, and the church stan
   }
   CHECK(first < last);
   std::sort(built.begin(), built.end());
-  // The church's plot is reserved, 42 by 24 m, on no street and on no plot.
+  // The church's plot is reserved, 42 by 24 m, on no street and on no plot, at the village's end:
+  // set out after the last house, further from the focus than half the houses.
   CHECK(plan.church);
-  u32 churches = 0;
+  u32 churches = 0, last_house = 0;
+  for (const Plot& q : plan.plots)
+    if (q.state == PlotState::built) last_house = std::max(last_house, q.order);
   for (const Plot& q : plan.plots)
     if (q.kind == PlotKind::church) {
       ++churches;
       CHECK(q.state == PlotState::reserved);
       CHECK(q.frontage_mm == 42000);
       CHECK(q.depth_mm == 24000);
-      CHECK(q.order == 0);                             // set out before any house
-      CHECK(from_focus(q) > built[built.size() / 2]);  // in the village's outer half
+      CHECK(q.order > last_house);
+      CHECK(from_focus(q) > built[built.size() / 2]);
     }
   CHECK(churches == 1);
   CHECK(overlaps(plan) == 0);
@@ -391,12 +472,16 @@ TEST_CASE("village: a house's placement turns its frame so its door is where the
     CHECK(std::fabs(door.x - static_cast<f64>(q.door_x_mm) / 1000.0) < 0.0011);
     CHECK(std::fabs(door.z - static_cast<f64>(q.door_z_mm) / 1000.0) < 0.0011);
     CHECK(door.y == static_cast<f64>(q.pad_mm) / 1000.0);
-    // The pad is the mean of the ground under the footprint: on this plane, the ground at its
-    // middle, within the rounding of five heights.
+    // The pad is the mean of the ground under the footprint (on this plane, the ground at its
+    // middle, within the rounding of five heights) for the first house built, which has no
+    // neighbour; a later one's is held within a step of its neighbours' and never more than the
+    // entry's `max_pad_step_m` off the ground.
     const f64 mid_x = (static_cast<f64>(q.pad_x_mm[0] + q.pad_x_mm[2])) / 2.0;
     const f64 mid_z = (static_cast<f64>(q.pad_z_mm[0] + q.pad_z_mm[2])) / 2.0;
-    CHECK(std::fabs(gentle(nullptr, static_cast<i64>(mid_x), static_cast<i64>(mid_z)) * 1000.0 -
-                    static_cast<f64>(q.pad_mm)) < 3.0);
+    const f64 off =
+        std::fabs(gentle(nullptr, static_cast<i64>(mid_x), static_cast<i64>(mid_z)) * 1000.0 -
+                  static_cast<f64>(q.pad_mm));
+    CHECK(off < (q.house == 0 ? 3.0 : 1500.0));
   }
   // A 12 m house on the same plots turns on every plot under 13 m.
   box.length_mm = 12000;
@@ -703,38 +788,66 @@ TEST_CASE("village: a plot is bounded once, and its front has a gateway at its g
       }
     }
     CHECK(gateways == plan.built);
-    const auto near_mm = [](i64 a, i64 b) { return a - b <= 20 && b - a <= 20; };
+    // Every point of every built plot's four sides is on exactly one segment: sampled every half
+    // metre along each side (its corners left out), each within 2 cm of one segment and no more.
+    const auto on_segment = [](const Segment& s, f64 x, f64 z) {
+      const f64 ex = static_cast<f64>(s.bx - s.ax), ez = static_cast<f64>(s.bz - s.az);
+      const f64 ee = ex * ex + ez * ez;
+      if (!(ee > 0.0)) return false;
+      const f64 t = ((x - static_cast<f64>(s.ax)) * ex + (z - static_cast<f64>(s.az)) * ez) / ee;
+      if (t < 0.0 || t > 1.0) return false;
+      const f64 dx = static_cast<f64>(s.ax) + t * ex - x, dz = static_cast<f64>(s.az) + t * ez - z;
+      return dx * dx + dz * dz <= 400.0;
+    };
+    u32 points = 0, wrong = 0;
     for (const Plot& q : plan.plots) {
       if (q.state != PlotState::built) continue;
       const f64 half = static_cast<f64>(q.frontage_mm) * 0.5, depth = static_cast<f64>(q.depth_mm);
       const f64 cu[4] = {-half, half, half, -half}, cv[4] = {0.0, 0.0, depth, depth};
-      i64 cx[4], cz[4];
-      for (u32 c = 0; c < 4; ++c) {
-        cx[c] =
-            q.front_x_mm + scene_gen::nearest_mm((q.along_x * cu[c] + q.inward_x * cv[c]) / 1000.0);
-        cz[c] =
-            q.front_z_mm + scene_gen::nearest_mm((q.along_z * cu[c] + q.inward_z * cv[c]) / 1000.0);
-      }
       for (u32 c = 0; c < 4; ++c) {
         const u32 d = (c + 1) % 4;
-        u32 on = 0;
-        for (const Segment& s : segments) {
-          const bool forward = near_mm(s.ax, cx[c]) && near_mm(s.az, cz[c]) &&
-                               near_mm(s.bx, cx[d]) && near_mm(s.bz, cz[d]);
-          const bool back = near_mm(s.bx, cx[c]) && near_mm(s.bz, cz[c]) && near_mm(s.ax, cx[d]) &&
-                            near_mm(s.az, cz[d]);
-          on += forward || back ? 1u : 0u;
+        const f64 length =
+            std::sqrt((cu[d] - cu[c]) * (cu[d] - cu[c]) + (cv[d] - cv[c]) * (cv[d] - cv[c]));
+        // (Not within a metre of a corner: two tofts round the green's lens share a front corner
+        // and their sides leave it a few degrees apart, both walls, within 2 cm for the first
+        // few decimetres.)
+        for (f64 along = 1000.0; along < length - 1000.0; along += 500.0) {
+          const f64 u = cu[c] + (cu[d] - cu[c]) * along / length;
+          const f64 v = cv[c] + (cv[d] - cv[c]) * along / length;
+          const f64 x = static_cast<f64>(q.front_x_mm) + q.along_x * u + q.inward_x * v;
+          const f64 z = static_cast<f64>(q.front_z_mm) + q.along_z * u + q.inward_z * v;
+          // (A point within 3 cm of a segment's end, where a deeper croft's side carries on past
+          // its neighbour's back, is on both and is not counted.)
+          bool at_end = false;
+          for (const Segment& s : segments)
+            for (const auto& e : {std::pair<i64, i64>{s.ax, s.az}, std::pair<i64, i64>{s.bx, s.bz}})
+              at_end = at_end || std::hypot(static_cast<f64>(e.first) - x,
+                                            static_cast<f64>(e.second) - z) < 30.0;
+          if (at_end) continue;
+          u32 on = 0;
+          for (const Segment& s : segments)
+            on += on_segment(s, x, z) ? 1u : 0u;
+          ++points;
+          wrong += on == 1 ? 0u : 1u;
         }
-        CHECK(on == 1);
       }
     }
-    // Two built neighbours of a row plan share a side, so there are fewer segments than four a
-    // plot; a grown village's plots stand apart.
-    const u32 shared_sides = 4 * plan.built - segments.size();
-    if (irregularity == 0.0f) CHECK(shared_sides >= 1);
+    CHECK(points > 0);
+    CHECK(wrong == 0);
+    // Two built neighbours of a row plan share a side, so there is less boundary than four sides a
+    // plot. (A grown village's tofts share their corners, but round the green's lens their sides
+    // fan, so the five nearest it may share none: the corners are the grown case's to count.)
+    f64 drawn = 0.0, sides = 0.0;
+    for (const Segment& s : segments)
+      drawn += std::sqrt(
+          static_cast<f64>((s.bx - s.ax) * (s.bx - s.ax) + (s.bz - s.az) * (s.bz - s.az)));
+    for (const Plot& q : plan.plots)
+      if (q.state == PlotState::built) sides += 2.0 * static_cast<f64>(q.frontage_mm + q.depth_mm);
+    if (irregularity == 0.0f) CHECK(drawn < sides - 10000.0);
+    const f64 shared_sides = (sides - drawn) / 1000.0;
     MESSAGE("irregularity " << irregularity << ": " << lines.size() << " lines, " << segments.size()
-                            << " segments, " << shared_sides << " sides shared, for " << plan.built
-                            << " plots");
+                            << " segments, " << shared_sides << " m of side shared, for "
+                            << plan.built << " plots");
   }
 }
 
@@ -757,7 +870,9 @@ TEST_CASE("village: the plan is the same bytes on every toolchain") {
                        << " houses, " << plan.cottages << " cottages, " << plan.back_lanes
                        << " back lanes, " << plan.steep << " steep");
   // Taken on MSVC (x86-64-v3); GCC and Clang in the Linux containers reproduce it.
-  CHECK(hash == 0xb555e74c5fb9a87eull);
+  // Re-pinned for k_village_version 3 (the nucleated plan: ways that go round what is gone, tofts
+  // side by side, uneven setbacks, the church at the end, the green's outline).
+  CHECK(hash == 0x45fba459113a95a7ull);
   // The same entry again, and the summary's hash, are the same.
   CHECK(plan_hash(planned(p, gentle)) == hash);
   CHECK(plan_json(p, plan).find("hash")->as_string() == std::string(text));

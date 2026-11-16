@@ -165,6 +165,71 @@ i64 wander_at(u64 seed, i64 x_mm, i64 z_mm) noexcept {
   return v / l;
 }
 
+// **What a way went round** (village-growth-grounding.md, "What a way went round"): the holdings,
+// the wet places, the copses and the parks that stood when the way was first trodden and are gone
+// now, as the extra a step through them costs, 0 to 3000 per mille. One seeded disc in three cells
+// of four on a 40 m lattice, of a radius from 8 to 18 m, the whole of the extra inside seven
+// tenths of its radius and falling to none at its rim. A function of the place and the seed alone,
+// in whole numbers, so every way through one place goes round the same things. (A 32 m lattice of
+// 6 to 16 m discs bent the ways so tightly that the tofts on the inside of a bend stood in the
+// street further round it.)
+constexpr i64 k_obstacle_lattice_mm = 40000;
+constexpr i64 k_obstacle_extra = 3000;
+i64 obstacle_at(u64 seed, i64 x_mm, i64 z_mm) noexcept {
+  const i64 l = k_obstacle_lattice_mm;
+  const i64 ix = floor_div(x_mm, l), iz = floor_div(z_mm, l);
+  i64 most = 0;
+  for (i64 dj = -1; dj <= 1; ++dj)
+    for (i64 di = -1; di <= 1; ++di) {
+      const i64 a = ix + di, b = iz + dj;
+      const u64 h = mix64(hash_combine(hash_combine(seed ^ 0x0b57ac1eull, static_cast<u64>(a)),
+                                       static_cast<u64>(b)));
+      if (h % 1000u >= 750u) continue;
+      const i64 cx = a * l + static_cast<i64>((h >> 10) % static_cast<u64>(l));
+      const i64 cz = b * l + static_cast<i64>((h >> 30) % static_cast<u64>(l));
+      const i64 r = 8000 + static_cast<i64>((h >> 50) % 10001u);
+      const i64 dx = x_mm - cx, dz = z_mm - cz;
+      const i64 d2 = dx * dx + dz * dz, r2 = r * r, inner2 = r2 * 49 / 100;
+      if (d2 >= r2) continue;
+      const i64 v = d2 <= inner2 ? k_obstacle_extra : k_obstacle_extra * (r2 - d2) / (r2 - inner2);
+      most = std::max(most, v);
+    }
+  return most;
+}
+
+// **The lie of the land a way followed** at a scale no test scene's ground has: the grain of old
+// fields, a wetter hollow, the line a herd took, as a smooth field 0 to 1000 over a 48 m lattice
+// (the engine's hash at the corners, a smoothstep between them in whole numbers, so the valleys a
+// way follows have no corner at a lattice line). A way at `irregularity` 1 pays up to three times
+// its length again across its ridges, so it winds along its valleys with a wavelength of the
+// lattice's order and never runs straight for long.
+constexpr i64 k_meander_lattice_mm = 48000;
+i64 meander_at(u64 seed, i64 x_mm, i64 z_mm) noexcept {
+  const i64 l = k_meander_lattice_mm;
+  const i64 ix = floor_div(x_mm, l), iz = floor_div(z_mm, l);
+  const auto smooth = [](i64 w) { return w * w * (3000 - 2 * w) / 1000000; };  // 0..1000
+  const i64 sx = smooth((x_mm - ix * l) * 1000 / l), sz = smooth((z_mm - iz * l) * 1000 / l);
+  const auto node = [&](i64 a, i64 b) {
+    return static_cast<i64>(
+        mix64(hash_combine(hash_combine(seed ^ 0x3ea7d3ull, static_cast<u64>(a)),
+                           static_cast<u64>(b))) %
+        1001u);
+  };
+  const i64 top = node(ix, iz) * (1000 - sx) + node(ix + 1, iz) * sx;
+  const i64 bottom = node(ix, iz + 1) * (1000 - sx) + node(ix + 1, iz + 1) * sx;
+  return (top * (1000 - sz) + bottom * sz) / 1000000;
+}
+
+// A way's extra cost at a place, per mille: a quarter of the fine wander, what it went round and
+// the lie of the land it followed, all scaled by `irregularity` (per mille).
+i64 way_extra(u64 seed, i64 irregularity, i64 x_mm, i64 z_mm) noexcept {
+  if (irregularity == 0) return 0;
+  return irregularity *
+         (wander_at(seed, x_mm, z_mm) / 4 + obstacle_at(seed, x_mm, z_mm) +
+          meander_at(seed, x_mm, z_mm) * 3) /
+         1000;
+}
+
 // The same along a way, for its edges: 0 to 1000 at arc length `s_mm`, on a 16 m lattice.
 i64 edge_wander(u64 seed, i64 s_mm) noexcept {
   const i64 l = k_edge_lattice_mm;
@@ -197,12 +262,15 @@ bool find_way(const scene_gen::Ground& ground, i64 ax, i64 az, i64 bx, i64 bz, i
   const i64 nz = (std::max(az, bz) + margin - z0) / cell_mm + 1;
   const u32 cells = static_cast<u32>(nx * nz);
   constexpr i64 k_none = std::numeric_limits<i64>::min();
-  Vector<i64> height;
+  Vector<i64> height, extra;
   height.resize(cells);
+  extra.resize(cells);
   for (i64 j = 0; j < nz; ++j)
     for (i64 i = 0; i < nx; ++i) {
       const f64 h = ground.surface_mm(x0 + i * cell_mm, z0 + j * cell_mm);
       height[static_cast<u32>(j * nx + i)] = std::isfinite(h) ? mm_of(h) : k_none;
+      extra[static_cast<u32>(j * nx + i)] =
+          way_extra(seed, irregularity, x0 + i * cell_mm, z0 + j * cell_mm);
     }
   const auto cell_of = [&](i64 x, i64 z) {
     const i64 i = std::clamp<i64>(div_round(x - x0, cell_mm), 0, nx - 1);
@@ -254,7 +322,7 @@ bool find_way(const scene_gen::Ground& ground, i64 ax, i64 az, i64 bx, i64 bz, i
       const i64 grade = (rise < 0 ? -rise : rise) * 1000 / st.length;  // per mille
       i64 factor = 1000 + grade * grade * 1000 / (k_grade_knee * k_grade_knee);
       if (grade > k_grade_wall) factor *= 10;
-      factor += irregularity * wander_at(seed, x0 + ni * cell_mm, z0 + nj * cell_mm) / 4000;
+      factor += extra[next];
       const u64 cost = at.cost + static_cast<u64>(st.length * factor / 1000);
       if (cost < best[next]) {
         best[next] = cost;
@@ -292,11 +360,14 @@ bool find_way(const scene_gen::Ground& ground, i64 ax, i64 az, i64 bx, i64 bz, i
     const Dir d = direction(px[i], pz[i], px[j], pz[j]);
     const i64 n = std::max<i64>(1, static_cast<i64>(d.length_mm) / cell_mm + 1);
     u64 cost = 0;
+    // (The ground's own heights along the stretch, and the extra of the search's nearest cell, so
+    // the hash is not asked again.)
     i64 lx = px[i], lz = pz[i];
     f64 lh = ground.surface_mm(lx, lz);
     for (i64 q = 1; q <= n; ++q) {
       const i64 x = px[i] + div_round((px[j] - px[i]) * q, n);
       const i64 z = pz[i] + div_round((pz[j] - pz[i]) * q, n);
+      const u32 c = cell_of(x, z);
       const f64 h = ground.surface_mm(x, z);
       if (!std::isfinite(h) || !std::isfinite(lh)) return std::numeric_limits<u64>::max();
       const i64 length = std::max<i64>(1, static_cast<i64>(direction(lx, lz, x, z).length_mm));
@@ -304,7 +375,7 @@ bool find_way(const scene_gen::Ground& ground, i64 ax, i64 az, i64 bx, i64 bz, i
       const i64 grade = (rise < 0 ? -rise : rise) * 1000 / length;
       i64 factor = 1000 + grade * grade * 1000 / (k_grade_knee * k_grade_knee);
       if (grade > k_grade_wall) factor *= 10;
-      factor += irregularity * wander_at(seed, x, z) / 4000;
+      factor += extra[c];
       cost += static_cast<u64>(length * factor / 1000);
       lx = x;
       lz = z;
@@ -317,9 +388,16 @@ bool find_way(const scene_gen::Ground& ground, i64 ax, i64 az, i64 bx, i64 bz, i
   const u32 last = px.size() - 1;
   out.push_back(px[0]);
   out.push_back(pz[0]);
+  // A laid-out way (`irregularity` 0) is pulled as straight as its cost allows, the whole rest
+  // first (on level ground it is one stretch), then at most 64 cells ahead, so the pull costs the
+  // path's length and not its square. A grown way is pulled over no more than ten cells, 20 m at
+  // the default station: the grid's zigzag goes, the bends its cost asked for stay, and the
+  // smoothing after makes them curves.
+  const u32 window = irregularity > 0 ? 10u : 64u;
   while (i < last) {
     u32 reach = i + 1;
-    for (u32 j = i + 2; j <= last; ++j) {
+    if (irregularity == 0 && last > i + 64 && straight(i, last) <= pc[last] - pc[i]) reach = last;
+    for (u32 j = i + 2; j <= last && j <= i + window && reach < last; ++j) {
       if (straight(i, j) <= pc[j] - pc[i])
         reach = j;
       else if (j > reach + 8)
@@ -452,6 +530,11 @@ struct Candidate {
   i64 s_mm = 0;  // its front's middle, along the way
   i64 frontage_mm = 0, depth_mm = 0;
   i64 edge_mm = -1;  // the street's edge it stands at, or -1 for the way's own there
+  // A toft of a row: its front the chord of the street's edge between its corners, so it shares
+  // its corners with its neighbours. Otherwise (the church, a cottage on the green) its front is
+  // square to its way, at the furthest the edge stands along it, turned by the slope and the sun.
+  bool chord = false;
+  i64 push_mm = 0;  // a chord front moved this far into the plot (the church's, on a bend)
   u64 seed = 0;
   u64 key = 0;    // the order: the lower first
   u32 index = 0;  // its place in the list made, which settles a tie
@@ -498,6 +581,49 @@ bool inside_plot(const Plot& p, f64 x, f64 z, f64 margin_mm) noexcept {
   return u > -static_cast<f64>(p.frontage_mm) * 0.5 + margin_mm &&
          u < static_cast<f64>(p.frontage_mm) * 0.5 - margin_mm && v > margin_mm &&
          v < static_cast<f64>(p.depth_mm) - margin_mm;
+}
+
+// How far apart two plots' pads stand, millimetres: 0 where they overlap, else the least distance
+// from a corner of either to an edge of the other (two convex quadrilaterals).
+f64 pad_gap(const Plot& a, const Plot& b) noexcept {
+  const auto inside = [](const Plot& q, f64 x, f64 z) {
+    bool left = false, right = false;
+    for (u32 e = 0; e < 4; ++e) {
+      const u32 n = (e + 1) % 4;
+      const f64 ex = static_cast<f64>(q.pad_x_mm[n] - q.pad_x_mm[e]);
+      const f64 ez = static_cast<f64>(q.pad_z_mm[n] - q.pad_z_mm[e]);
+      const f64 c =
+          ex * (z - static_cast<f64>(q.pad_z_mm[e])) - ez * (x - static_cast<f64>(q.pad_x_mm[e]));
+      left = left || c > 0.0;
+      right = right || c < 0.0;
+    }
+    return !(left && right);
+  };
+  const auto to_edges = [](const Plot& q, f64 x, f64 z) {
+    f64 best = 1e300;
+    for (u32 e = 0; e < 4; ++e) {
+      const u32 n = (e + 1) % 4;
+      const f64 ax = static_cast<f64>(q.pad_x_mm[e]), az = static_cast<f64>(q.pad_z_mm[e]);
+      const f64 ex = static_cast<f64>(q.pad_x_mm[n]) - ax,
+                ez = static_cast<f64>(q.pad_z_mm[n]) - az;
+      const f64 ee = ex * ex + ez * ez;
+      const f64 t = ee > 0.0 ? std::clamp(((x - ax) * ex + (z - az) * ez) / ee, 0.0, 1.0) : 0.0;
+      const f64 dx = ax + t * ex - x, dz = az + t * ez - z;
+      best = std::min(best, dx * dx + dz * dz);
+    }
+    return best;
+  };
+  f64 best = 1e300;
+  const Plot* both[2] = {&a, &b};
+  for (u32 w = 0; w < 2; ++w)
+    for (u32 c = 0; c < 4; ++c) {
+      const f64 x = static_cast<f64>(both[w]->pad_x_mm[c]),
+                z = static_cast<f64>(both[w]->pad_z_mm[c]);
+      const Plot& other = *both[1 - w];
+      if (inside(other, x, z)) return 0.0;
+      best = std::min(best, to_edges(other, x, z));
+    }
+  return std::sqrt(best);
 }
 
 }  // namespace
@@ -578,6 +704,7 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
   // its nearest station, so ways meet rather than stop short; the first such meeting is the focus.
   constexpr i64 k_join_mm = 40000;
   bool joined = false;
+  u32 focus_lane = 0;
   for (u32 li = 0; li < ways; ++li) {
     const Lane& lane = layer.lanes[li];
     Vector<i64> wx, wz;
@@ -598,6 +725,7 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
           if (!joined) {
             out.focus_x_mm = wx[at];
             out.focus_z_mm = wz[at];
+            focus_lane = lj;
           }
         }
       }
@@ -657,7 +785,7 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
   // width with `irregularity`, and opening into the green — a lens three times as long as it is
   // wide, each side's edge a parabola — on every way that passes within the green's half width of
   // the focus.
-  const i64 green_half_length = green * 3 / 2;
+  const i64 green_half_length = green;
   for (u32 li = 0; li < ways; ++li) {
     LaneLine& line = out.lanes[li];
     f64 d2 = 0.0;
@@ -670,8 +798,13 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
       const i64 s = arc[li][k];
       i64 open = 0;
       if (greened && s > s_green - green_half_length && s < s_green + green_half_length) {
+        // Its funnel mouths (the grounding's "The green"): the street opens over the outer third
+        // at each end, a smoothstep, and runs at the green's breadth along its middle third, so
+        // the tofts along each side stand in a row facing across it rather than fanning round a
+        // curve.
         const i64 t = (s - s_green) * 1000 / green_half_length;  // -1000 to 1000
-        open = (green / 2 - half_street) * (1000000 - t * t) / 1000000;
+        const i64 u = std::min<i64>(1000, (1000 - (t < 0 ? -t : t)) * 3);
+        open = (green / 2 - half_street) * (u * u * (3000 - 2 * u) / 1000000) / 1000;
       }
       for (u32 side = 0; side < 2; ++side) {
         const i64 w = edge_wander(hash_combine(hash_combine(layer.seed, li), side + 0xed6eull), s);
@@ -679,6 +812,37 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
         (side == 0 ? line.stations[k].left_mm : line.stations[k].right_mm) =
             std::max(e, half_tread + 300);
       }
+      // The tread: its own wander, a quarter of its width each way at `irregularity` 1 over the
+      // edges' lattice, and up to half again as wide where the ways meet, where every cart turns.
+      const i64 wt = edge_wander(hash_combine(hash_combine(layer.seed, li), 0x7ead), s);
+      i64 tread = half_tread + irr * half_tread / 2 * (2 * wt - 1000) / 1000000;
+      if (open > 0 && green > 2 * half_street)
+        tread += half_tread / 2 * open / (green / 2 - half_street);
+      // (At most 1.9 m each side: a bench line wider than about 4.4 m is not level at its middle in
+      // the tile set, 41 mm low at 4.5 to 4.8 m, which the benches' case caught; tileset.md.)
+      const i64 room =
+          std::min({line.stations[k].left_mm - 300, line.stations[k].right_mm - 300, i64{1900}});
+      line.stations[k].tread_mm = std::clamp<i64>(tread, std::min<i64>(500, room), room);
+    }
+  }
+  // The green's outline: the way through the focus, its two edges where it opens.
+  if (green > 2 * half_street) {
+    const LaneLine& line = out.lanes[focus_lane];
+    const i64 s_green = arc[focus_lane][nearest_station(line, out.focus_x_mm, out.focus_z_mm)];
+    Vector<i64> rx, rz;
+    for (u32 k = 0; k < line.stations.size(); ++k) {
+      const i64 s = arc[focus_lane][k];
+      if (s <= s_green - green_half_length || s >= s_green + green_half_length) continue;
+      const LaneStation& st = line.stations[k];
+      const Dir t = tangent(line, k);
+      out.green.push_back(st.x_mm - mm_of(t.z * static_cast<f64>(st.left_mm) / 1000.0));
+      out.green.push_back(st.z_mm + mm_of(t.x * static_cast<f64>(st.left_mm) / 1000.0));
+      rx.push_back(st.x_mm + mm_of(t.z * static_cast<f64>(st.right_mm) / 1000.0));
+      rz.push_back(st.z_mm - mm_of(t.x * static_cast<f64>(st.right_mm) / 1000.0));
+    }
+    for (u32 k = rx.size(); k-- > 0;) {
+      out.green.push_back(rx[k]);
+      out.green.push_back(rz[k]);
     }
   }
 
@@ -710,23 +874,43 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
                                                      static_cast<u32>(mix64(seed) % spread));
           const i64 frontage =
               div_round(whole + div_round(whole * irr * (draw(seed, 1) - 500), 2000000), 10) * 10;
-          const i64 u = draw(seed, 2);
-          const i64 gap = 2 * perch * irr / 1000 * u / 1000 * u / 1000;
+          // A gap after it is the exception in a grown row (one tenement in seven at
+          // `irregularity` 1), one to two perches, where a cottage comes later; none at 0.
+          const i64 gap = draw(seed, 7) < irr * 15 / 100 ? perch + perch * draw(seed, 2) / 1000 : 0;
           const i64 deep = depth + div_round(depth * irr * 6 * (draw(seed, 3) - 500), 10000000);
-          const i64 mid = s0 + dir * (cursor + frontage / 2);
-          if (mid - frontage / 2 < 0 || mid + frontage / 2 > length) break;
-          Candidate c;
-          c.lane = li;
-          c.side = side;
-          c.s_mm = mid;
-          c.frontage_mm = frontage;
-          c.depth_mm = deep;
-          c.seed = seed;
-          add(c);
-          // A cottage between this tenement and the next, where the gap holds one.
+          const i64 lo = dir > 0 ? s0 + cursor : s0 - cursor - frontage;
+          if (lo < 0 || lo + frontage > length) break;
+          // **Subdivided** (village-growth-grounding.md, "Plots"): a tenement split between two
+          // households, lengthwise, unevenly (35 to 65 %), in six of ten at `irregularity` 1, each
+          // toft at least 1.1 perches on the street. The two keep the croft's depth.
+          const i64 least = perch * 11 / 10;
+          i64 parts[2] = {frontage, 0};
+          if (draw(seed, 8) < irr * 6 / 10 && frontage >= 2 * least) {
+            const i64 share = 350 + draw(seed, 9) * 3 / 10;  // per mille
+            parts[0] =
+                std::clamp<i64>(div_round(frontage * share, 10000) * 10, least, frontage - least);
+            parts[1] = frontage - parts[0];
+          }
+          i64 at = cursor;
+          for (u32 q = 0; q < 2 && parts[q] > 0; ++q) {
+            Candidate c;
+            c.lane = li;
+            c.side = side;
+            c.chord = true;
+            c.s_mm = dir > 0 ? s0 + at + parts[q] / 2 : s0 - at - parts[q] + parts[q] / 2;
+            c.frontage_mm = parts[q];
+            c.depth_mm = deep;
+            c.seed = parts[1] == 0 ? seed : hash_combine(seed, 0x5b1u + q);
+            add(c);
+            at += parts[q];
+          }
+          // A cottage in the gap after it, where the gap holds one.
           const i64 cottage = std::min(gap - 400, perch * 3 / 2);
-          if (cottage >= perch * 6 / 5) {
-            Candidate q = c;
+          if (gap > 0 && cottage >= perch * 6 / 5) {
+            Candidate q;
+            q.lane = li;
+            q.side = side;
+            q.chord = true;
             q.kind = PlotKind::cottage;
             q.s_mm = s0 + dir * (cursor + frontage + gap / 2);
             q.frontage_mm = cottage;
@@ -767,7 +951,67 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
 
   // The plot a candidate would be: its frame on its way, at its edge, turned (village.md, "A
   // plot's turn and place.").
+  // A point of a way's street edge, on a side, at arc length `s`, to the millimetre: the line there
+  // and the edge's distance from it both between the two stations about it, out along the normal
+  // of the tangent between theirs. The same `s` is the same point, so two tofts meeting at it
+  // share their corner.
+  const auto edge_point = [&](u32 li, i64 s, u8 side, i64& x, i64& z) {
+    const LaneLine& line = out.lanes[li];
+    const Vector<i64>& a = arc[li];
+    s = std::clamp<i64>(s, 0, a.back());
+    const u32 k = station_at(a, s);
+    const u32 k1 = std::min<u32>(k + 1, line.stations.size() - 1);
+    const LaneStation& st = line.stations[k];
+    const LaneStation& sn = line.stations[k1];
+    const i64 span = a[k1] - a[k], f = s - a[k];
+    const auto lerp = [&](i64 u, i64 v) {
+      return span > 0 && f > 0 ? u + div_round((v - u) * f, span) : u;
+    };
+    const i64 lx = lerp(st.x_mm, sn.x_mm), lz = lerp(st.z_mm, sn.z_mm);
+    const i64 e = side == 0 ? lerp(st.left_mm, sn.left_mm) : lerp(st.right_mm, sn.right_mm);
+    const Dir t0 = tangent(line, k);
+    f64 tx = t0.x, tz = t0.z;
+    if (span > 0 && f > 0) {
+      const Dir t1 = tangent(line, k1);
+      const f64 w1 = static_cast<f64>(f) / static_cast<f64>(span);
+      tx = t0.x * (1.0 - w1) + t1.x * w1;
+      tz = t0.z * (1.0 - w1) + t1.z * w1;
+      const f64 tl = std::sqrt(tx * tx + tz * tz);
+      tx /= tl;
+      tz /= tl;
+    }
+    const f64 nx = side == 0 ? -tz : tz, nz = side == 0 ? tx : -tx;
+    x = lx + mm_of(nx * static_cast<f64>(e) / 1000.0);
+    z = lz + mm_of(nz * static_cast<f64>(e) / 1000.0);
+  };
   const auto frame = [&](const Candidate& c, Plot& p, bool square = false) {
+    if (c.chord) {
+      // A toft of a row: its front the chord of the street's edge between its corners, the
+      // corner at u = -half first (the lower `s` on the left, the higher on the right).
+      const i64 lo = c.s_mm - c.frontage_mm / 2, hi = lo + c.frontage_mm;
+      i64 ax = 0, az = 0, bx = 0, bz = 0;
+      edge_point(c.lane, c.side == 0 ? lo : hi, c.side, ax, az);
+      edge_point(c.lane, c.side == 0 ? hi : lo, c.side, bx, bz);
+      const Dir d = direction(ax, az, bx, bz);
+      p = {};
+      p.lane = c.lane;
+      p.side = c.side;
+      p.kind = c.kind;
+      p.seed = c.seed;
+      // (The churchyard keeps its own 42 m; a toft is as wide as its chord.)
+      p.frontage_mm = c.kind == PlotKind::church ? c.frontage_mm : mm_of(d.length_mm / 1000.0);
+      p.depth_mm = c.depth_mm;
+      p.along_mm = c.s_mm;
+      p.along_x = d.x;
+      p.along_z = d.z;
+      p.inward_x = -d.z;
+      p.inward_z = d.x;
+      p.front_x_mm =
+          div_round(ax + bx, 2) + mm_of(p.inward_x * static_cast<f64>(c.push_mm) / 1000.0);
+      p.front_z_mm =
+          div_round(az + bz, 2) + mm_of(p.inward_z * static_cast<f64>(c.push_mm) / 1000.0);
+      return;
+    }
     const LaneLine& line = out.lanes[c.lane];
     const u32 k = station_at(arc[c.lane], c.s_mm);
     const LaneStation& st = line.stations[k];
@@ -854,16 +1098,19 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
   };
 
   // **The order**: a tenement's key is its front's distance from the focus, lengthened by up to
-  // half with `irregularity`; a cottage comes after three fifths of the houses' tenements, then by
-  // a quarter of its distance. The church takes, of the tenements in the outer half of the
-  // houses' order, the one on the highest ground.
+  // 15 % with `irregularity` (so the village stays nucleated: a toft further out is rarely taken
+  // before a nearer one); a cottage comes after three fifths of the houses' tenements, then by a
+  // quarter of its distance. The church takes, of the tenements just past the houses' count (the
+  // village's end, the grounding's "Where the church and the well stand"), the one on the highest
+  // ground.
   {
     Vector<u64> tenement_keys;
     for (Candidate& c : cands) {
       Plot p;
       frame(c, p);
       const f64 d = direction(p.front_x_mm, p.front_z_mm, out.focus_x_mm, out.focus_z_mm).length_mm;
-      c.key = static_cast<u64>(d * static_cast<f64>(1000 + irr * draw(c.seed, 6) / 2000) / 1000.0);
+      c.key =
+          static_cast<u64>(d * static_cast<f64>(1000 + irr * draw(c.seed, 6) * 3 / 20000) / 1000.0);
       if (c.kind == PlotKind::tenement) tenement_keys.push_back(c.key);
     }
     std::sort(tenement_keys.begin(), tenement_keys.end());
@@ -876,36 +1123,6 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
     std::sort(cands.begin(), cands.end(), [](const Candidate& a, const Candidate& b) {
       return a.key != b.key ? a.key < b.key : a.index < b.index;
     });
-    if (layer.church) {
-      u32 rank = 0, chosen = cands.size();
-      i64 highest = std::numeric_limits<i64>::min();
-      for (u32 k = 0; k < cands.size(); ++k) {
-        if (cands[k].kind != PlotKind::tenement) continue;
-        if (rank >= layer.houses / 2 && rank < layer.houses + layer.houses / 2) {
-          Plot p;
-          frame(cands[k], p);
-          i64 x = 0, z = 0;
-          plot_point(p, 0.0, static_cast<f64>(p.depth_mm) * 0.5, x, z);
-          const f64 h = ground.surface_mm(x, z);
-          if (std::isfinite(h) && mm_of(h) > highest) {
-            highest = mm_of(h);
-            chosen = k;
-          }
-        }
-        ++rank;
-      }
-      // Set out before any house, so the tenements nearer the green make room for it rather than
-      // it for them.
-      if (chosen < cands.size()) {
-        cands[chosen].kind = PlotKind::church;
-        cands[chosen].frontage_mm = k_church_frontage_mm;
-        cands[chosen].depth_mm = k_church_depth_mm;
-        cands[chosen].key = 0;
-        std::sort(cands.begin(), cands.end(), [](const Candidate& a, const Candidate& b) {
-          return a.key != b.key ? a.key < b.key : a.index < b.index;
-        });
-      }
-    }
   }
 
   // **Taken up in order**: a candidate that would stand in a street (any way's, its green
@@ -934,19 +1151,28 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
     return false;
   };
   const f64 well_clear = static_cast<f64>(k_well_radius_mm + 1000);
-  for (const Candidate& c : cands) {
-    Plot p;
-    // Where its whole depth would stand on a street, a plot or the well, the same toft square to
-    // its way, then shortened to three quarters and a little over a half, turned and square, as a
-    // later toft squeezed in is.
-    Rect r;
+  // Where a candidate stands, if anywhere: where its whole depth would stand on a street, a plot or
+  // the well, the same plot square to its way, then shortened to three quarters and a little over
+  // a half, turned and square, as a later plot squeezed in is. A toft of a row keeps its front and
+  // gives up depth: its croft shortened by steps to three tenths, as one on the inside of a bend is
+  // beside its neighbours'.
+  const auto fit = [&](const Candidate& c, Plot& p, Rect& r) {
     bool crowded = true;
-    for (u32 attempt = 0; attempt < 6 && crowded; ++attempt) {
+    const u32 attempts = 6u;
+    for (u32 attempt = 0; attempt < attempts && crowded; ++attempt) {
       const i64 shares[3] = {1000, 750, 550};
+      const i64 chord_shares[6] = {1000, 850, 700, 550, 400, 300};
       frame(c, p, (attempt & 1u) != 0);
-      p.depth_mm = c.depth_mm * shares[attempt / 2] / 1000;
+      p.depth_mm = c.chord ? c.depth_mm * chord_shares[attempt] / 1000
+                           : c.depth_mm * shares[attempt / 2] / 1000;
       if (in_a_street(p)) continue;
       r = rect_of(p, 10.0);
+      // A croft ends where the ground does: a back corner off the heightfield shortens it.
+      bool on_ground = true;
+      for (u32 q = 2; q < 4; ++q)
+        on_ground = on_ground && std::isfinite(ground.surface_mm(mm_of(r.x[q] / 1000.0),
+                                                                 mm_of(r.z[q] / 1000.0)));
+      if (!on_ground) continue;
       crowded = false;
       for (const Rect& o : rects)
         crowded = crowded || overlap(r, o);
@@ -960,33 +1186,95 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
                                          static_cast<f64>(out.focus_z_mm), 0.0);
       }
     }
-    if (crowded) continue;
+    return !crowded;
+  };
+  // **The church** (the grounding's "Where the church and the well stand": usually at the
+  // village's end): set out when the houses stand, just past an end of the built houses along a
+  // way, on either side (the first place out from each end where its 42 by 24 m stands on no
+  // street, plot or well and wholly on the ground), the one on the highest ground.
+  bool church_tried = !layer.church;
+  const auto set_out_church = [&](u32 from) {
+    church_tried = true;
+    Plot best;
+    Rect best_rect;
+    i64 highest = std::numeric_limits<i64>::min();
+    (void)from;
+    // Past each end of the houses along each way, on either side, a little further out step by
+    // step until it stands.
+    for (u32 li = 0; li < ways; ++li)
+      for (u8 side = 0; side < 2; ++side)
+        for (i32 dir = 1; dir >= -1; dir -= 2) {
+          i64 end = dir > 0 ? std::numeric_limits<i64>::min() : std::numeric_limits<i64>::max();
+          for (const Plot& q : out.plots)
+            if (q.lane == li && q.state == PlotState::built)
+              end = dir > 0 ? std::max(end, q.along_mm + q.frontage_mm / 2)
+                            : std::min(end, q.along_mm - q.frontage_mm / 2);
+          if (end == std::numeric_limits<i64>::min() || end == std::numeric_limits<i64>::max())
+            continue;
+          for (i64 step = 0; step < 36; ++step) {
+            // Out along the way by 5 m steps; at each, its front the chord of the street's edge,
+            // and moved back by 0 to 6 m where a bend brings the street into it.
+            Candidate cc;
+            cc.lane = li;
+            cc.side = side;
+            cc.kind = PlotKind::church;
+            cc.chord = true;
+            cc.push_mm = (step % 4) * 2000;
+            cc.s_mm = end + dir * (k_church_frontage_mm / 2 + 2000 + (step / 4) * 5000);
+            cc.frontage_mm = k_church_frontage_mm;
+            cc.depth_mm = k_church_depth_mm;
+            if (cc.s_mm - k_church_frontage_mm / 2 < 0 ||
+                cc.s_mm + k_church_frontage_mm / 2 > out.lanes[cc.lane].length_mm)
+              continue;
+            Plot p;
+            Rect r;
+            if (!fit(cc, p, r) || p.depth_mm != k_church_depth_mm) continue;
+            bool on = true;
+            for (u32 q = 0; q < 4; ++q)
+              on = on &&
+                   std::isfinite(ground.surface_mm(mm_of(r.x[q] / 1000.0), mm_of(r.z[q] / 1000.0)));
+            i64 x = 0, z = 0;
+            plot_point(p, 0.0, static_cast<f64>(p.depth_mm) * 0.5, x, z);
+            const f64 h = ground.surface_mm(x, z);
+            if (!on || !std::isfinite(h)) continue;
+            if (mm_of(h) > highest) {
+              highest = mm_of(h);
+              best = p;
+              best_rect = r;
+            }
+            break;
+          }
+        }
+    if (highest == std::numeric_limits<i64>::min()) return;
+    best.order = out.plots.size();
+    best.state = PlotState::reserved;
+    rects.push_back(best_rect);
+    out.church = true;
+    out.plots.push_back(best);
+  };
+  for (u32 ci = 0; ci < cands.size(); ++ci) {
+    const Candidate& c = cands[ci];
+    if (out.built >= layer.houses && !church_tried) set_out_church(ci);
+    Plot p;
+    Rect r;
+    if (!fit(c, p, r)) continue;
     p.order = out.plots.size();
     rects.push_back(r);
-    if (c.kind == PlotKind::church) {
-      // On the ground there is, or not at all.
-      bool on = true;
-      for (u32 q = 0; q < 4; ++q)
-        on = on && std::isfinite(ground.surface_mm(mm_of(r.x[q] / 1000.0), mm_of(r.z[q] / 1000.0)));
-      if (!on) {
-        rects.pop_back();
-        continue;
-      }
-      p.state = PlotState::reserved;
-      out.church = true;
-      out.plots.push_back(p);
-      continue;
-    }
     if (out.built >= layer.houses) {
       p.state = PlotState::spare;
       ++out.spare;
       out.plots.push_back(p);
       continue;
     }
+    // **The setback**, uneven (the grounding's "Plots"): the entry's at `irregularity` 0, and
+    // drawn from 0.15 to 1.85 times it at 1, so one house stands on the street's edge and its
+    // neighbour back behind a yard.
+    const i64 back_by =
+        setback + div_round(setback * irr * (draw(p.seed, 10) - 500) * 17, 10000000);
     HouseAsk ask;
     ask.frontage_mm = p.frontage_mm;
     ask.depth_mm = p.depth_mm;
-    ask.setback_mm = setback;
+    ask.setback_mm = back_by;
     ask.seed = p.seed;
     ask.storeys = c.kind == PlotKind::tenement ? layer.storeys : 1u;
     ask.index = p.order;
@@ -1018,7 +1306,7 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
     const i64 z0 = std::min(std::min(cz[0], cz[1]), std::min(cz[2], cz[3]));
     const i64 z1 = std::max(std::max(cz[0], cz[1]), std::max(cz[2], cz[3]));
     if (turns == 4 || x1 - x0 + 2 * k_side_gap_mm > p.frontage_mm ||
-        setback + (z1 - z0) > p.depth_mm) {
+        back_by + (z1 - z0) > p.depth_mm) {
       p.state = PlotState::no_fit;
       ++out.no_fit;
       if (out.first_refusal.empty()) {
@@ -1027,7 +1315,7 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
             text, sizeof(text),
             "a house %.2f m along the street by %.2f m deep does not fit a plot of %.2f m "
             "frontage (half a metre each side) and %.2f m behind its setback",
-            metres(x1 - x0), metres(z1 - z0), metres(p.frontage_mm), metres(p.depth_mm - setback));
+            metres(x1 - x0), metres(z1 - z0), metres(p.frontage_mm), metres(p.depth_mm - back_by));
         out.first_refusal = text;
       }
       out.plots.push_back(p);
@@ -1035,7 +1323,7 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
     }
     p.quarter_turns = turns;
     // The box's middle on the plot's middle, its front face `setback` behind the plot's front.
-    const i64 origin_u = -div_round(x0 + x1, 2), origin_v = setback - z0;
+    const i64 origin_u = -div_round(x0 + x1, 2), origin_v = back_by - z0;
     const auto to_world = [&](i64 hx, i64 hz, i64& x, i64& z) {
       plot_point(p, static_cast<f64>(origin_u + hx), static_cast<f64>(origin_v + hz), x, z);
     };
@@ -1073,30 +1361,59 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
       out.plots.push_back(p);
       continue;
     }
-    if (hi - lo > max_step) {
+    // The pad: `pad_margin_m` past the walls before and behind, and no more than half the side gap
+    // to each side, where a neighbour's stands close in a row.
+    // In front, no further than the plot's front.
+    const i64 side_margin = std::min(margin, k_side_gap_mm / 2);
+    const i64 front_margin = std::min(margin, back_by);
+    const i64 px[4] = {x0 - side_margin, x1 + side_margin, x1 + side_margin, x0 - side_margin};
+    const i64 pz[4] = {z0 - front_margin, z0 - front_margin, z1 + margin, z1 + margin};
+    for (u32 q = 0; q < 4; ++q)
+      to_world(px[q], pz[q], p.pad_x_mm[q], p.pad_z_mm[q]);
+    // **The pad's level** (village.md, "Pads in a row"): the mean of the ground under the
+    // footprint, unless a built pad near it holds it closer. A pad's bank rises from its edge at
+    // `bank_slope` and its fill falls at `fill_slope`, so a neighbour `g` apart whose level differs
+    // by more than the gentler of the two times `g` would cut into this footprint or fill it; the
+    // level is kept within that of every pad within 6 m, and where no level is, or the one there is
+    // asks more than `max_pad_step_m` of cut or fill under the walls, the plot is too steep.
+    i64 level = div_round(sum, 5);
+    {
+      const f64 slope =
+          std::min(static_cast<f64>(layer.bank_slope), static_cast<f64>(layer.fill_slope));
+      i64 lo_level = std::numeric_limits<i64>::min(), hi_level = std::numeric_limits<i64>::max();
+      for (const Plot& q : out.plots) {
+        if (q.state != PlotState::built) continue;
+        const f64 g = pad_gap(p, q);
+        if (g >= 6000.0) continue;
+        const i64 step = static_cast<i64>(slope * g);
+        lo_level = std::max(lo_level, q.pad_mm - step);
+        hi_level = std::min(hi_level, q.pad_mm + step);
+      }
+      if (lo_level > hi_level) hi = lo + max_step + 1;  // no level stands beside them all
+      level = std::clamp(level, std::min(lo_level, hi_level), hi_level);
+    }
+    if (hi - lo > max_step || hi - level > max_step || level - lo > max_step) {
       p.state = PlotState::steep;
       ++out.steep;
       out.plots.push_back(p);
       continue;
     }
-    p.pad_mm = div_round(sum, 5);
+    p.pad_mm = level;
     p.floor_mm = h.floor_mm;
-    const i64 px[4] = {x0 - margin, x1 + margin, x1 + margin, x0 - margin};
-    const i64 pz[4] = {z0 - margin, z0 - margin, z1 + margin, z1 + margin};
-    for (u32 q = 0; q < 4; ++q)
-      to_world(px[q], pz[q], p.pad_x_mm[q], p.pad_z_mm[q]);
     to_world(door_x, door_z, p.door_x_mm, p.door_z_mm);
     // The path: square out of the door to the gate in the plot's front, then to the nearest
     // point of its way's tread edge.
     plot_point(p, static_cast<f64>(origin_u + door_x), 0.0, p.gate_x_mm, p.gate_z_mm);
-    {
-      const f64 gh = ground.surface_mm(p.gate_x_mm, p.gate_z_mm);
-      p.gate_top_mm = std::isfinite(gh) ? mm_of(gh) : p.pad_mm;
-    }
+    // The gate stands at the threshold's level: the yard before the door is level with the pad, and
+    // the path falls or climbs to the tread from the gate. (A path sloping from the door would
+    // cross the pad's level at its front, where the smooth minimum of the two edits dips: with the
+    // uneven setbacks a house on the street's edge had its front cut by up to 5 cm.)
+    p.gate_top_mm = p.pad_mm;
     // The nearest point of the way's line to the gate, and from it the tread's edge toward the
     // gate.
     const LaneLine& line = out.lanes[p.lane];
     f64 best = 1e300;
+    i64 tread_here = line.half_tread_mm;
     for (u32 k = 0; k + 1 < line.stations.size(); ++k) {
       const LaneStation& a = line.stations[k];
       const LaneStation& b = line.stations[k + 1];
@@ -1111,11 +1428,12 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
         p.lane_x_mm = a.x_mm + mm_of(t * ex / 1000.0);
         p.lane_z_mm = a.z_mm + mm_of(t * ez / 1000.0);
         p.path_top_mm = t < 0.5 ? a.top_mm : b.top_mm;
+        tread_here = std::max(a.tread_mm, b.tread_mm);
       }
     }
     const Dir toward = direction(p.lane_x_mm, p.lane_z_mm, p.gate_x_mm, p.gate_z_mm);
-    p.path_x_mm = p.lane_x_mm + mm_of(toward.x * static_cast<f64>(line.half_tread_mm) / 1000.0);
-    p.path_z_mm = p.lane_z_mm + mm_of(toward.z * static_cast<f64>(line.half_tread_mm) / 1000.0);
+    p.path_x_mm = p.lane_x_mm + mm_of(toward.x * static_cast<f64>(tread_here) / 1000.0);
+    p.path_z_mm = p.lane_z_mm + mm_of(toward.z * static_cast<f64>(tread_here) / 1000.0);
     p.state = PlotState::built;
     p.house = out.houses.size();
     out.houses.push_back(std::move(h));
@@ -1178,10 +1496,22 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
               for (const Plot& p : out.plots)
                 clear = clear && !inside_plot(p, static_cast<f64>(st.x_mm),
                                               static_cast<f64>(st.z_mm), -500.0);
+            // Nor into a street or the green: a back lane runs behind the crofts, never across
+            // the way they front.
+            for (const LaneStation& st : line.stations)
+              for (u32 lj = 0; lj < ways && clear; ++lj) {
+                f64 d2 = 0.0;
+                const LaneStation& beside =
+                    out.lanes[lj].stations[nearest_station(out.lanes[lj], st.x_mm, st.z_mm, &d2)];
+                const f64 reach = static_cast<f64>(std::max(beside.left_mm, beside.right_mm) +
+                                                   k_back_half_tread_mm + 1000);
+                clear = d2 >= reach * reach;
+              }
             if (clear) {
               for (LaneStation& st : line.stations) {
                 st.left_mm = k_back_half_tread_mm + 500;
                 st.right_mm = k_back_half_tread_mm + 500;
+                st.tread_mm = k_back_half_tread_mm;
               }
               out.lanes.push_back(std::move(line));
               ++out.back_lanes;
@@ -1202,7 +1532,7 @@ u64 plan_hash(const VillagePlan& plan) {
                                   static_cast<u64>(lane.half_tread_mm)),
                      (lane.back ? 1u : 0u) + 2u * lane.from_lane);
     for (const LaneStation& s : lane.stations) {
-      const i64 words[] = {s.x_mm, s.z_mm, s.top_mm, s.left_mm, s.right_mm};
+      const i64 words[] = {s.x_mm, s.z_mm, s.top_mm, s.left_mm, s.right_mm, s.tread_mm};
       for (const i64 w : words)
         h = hash_combine(h, static_cast<u64>(w));
     }
@@ -1254,6 +1584,8 @@ u64 plan_hash(const VillagePlan& plan) {
   }
   h = hash_combine(hash_combine(h, static_cast<u64>(plan.focus_x_mm)),
                    static_cast<u64>(plan.focus_z_mm));
+  for (const i64 g : plan.green)
+    h = hash_combine(h, static_cast<u64>(g));
   return hash_combine(h, (plan.well ? 1u : 0u) + (plan.church ? 2u : 0u));
 }
 
@@ -1275,7 +1607,7 @@ void ground_edits(const VillageLayer& layer, const VillagePlan& plan,
     shaped(e);
     for (const LaneStation& s : lane.stations) {
       e.points.push_back(WorldPos{metres(s.x_mm), metres(s.top_mm), metres(s.z_mm)});
-      e.width_m.push_back(static_cast<f32>(metres(2 * lane.half_tread_mm)));
+      e.width_m.push_back(static_cast<f32>(metres(2 * s.tread_mm)));
     }
     out.push_back(std::move(e));
   }
@@ -1321,10 +1653,22 @@ void footprints(const VillageLayer& layer, const VillagePlan& plan, scene_gen::F
     for (u32 k = 0; k + 1 < lane.stations.size(); ++k) {
       const LaneStation& a = lane.stations[k];
       const LaneStation& b = lane.stations[k + 1];
-      const scene_gen::Footprint band =
-          scene_gen::Footprint::band(a.x_mm, a.z_mm, b.x_mm, b.z_mm, lane.half_tread_mm);
+      const scene_gen::Footprint band = scene_gen::Footprint::band(
+          a.x_mm, a.z_mm, b.x_mm, b.z_mm, std::max(a.tread_mm, b.tread_mm));
       if (wanted(band)) out.add(band);
     }
+  // **The green** (village-growth-grounding.md, "The green"): common grazing, kept short, so the
+  // cover after the village keeps off it. The street's outline over the stretch where it is
+  // opened, as one polygon a way that opens.
+  if (plan.green.size() >= 6) {
+    const u32 n = plan.green.size() / 2;
+    Vector<scene_gen::FootprintPoint> pts;
+    for (u32 k = 0; k < n; ++k)
+      pts.push_back(scene_gen::FootprintPoint{plan.green[2 * k], plan.green[2 * k + 1]});
+    const scene_gen::Footprint g = scene_gen::Footprint::polygon(
+        std::span<const scene_gen::FootprintPoint>(pts.data(), pts.size()));
+    if (wanted(g)) out.add(g);  // the list copies the points
+  }
   for (const Plot& p : plan.plots) {
     if (p.state != PlotState::built) continue;
     scene_gen::FootprintPoint corners[4];
@@ -1413,8 +1757,14 @@ JsonValue ground_regions_json(const VillageLayer& layer, const VillagePlan& plan
     const Vector<LaneStation>& st = line.stations;
     if (st.size() < 2) continue;
     const std::string lane = prefix + " " + lane_name(layer, &plan, k);
-    const f64 half_tread = static_cast<f64>(line.half_tread_mm);
-    const auto fixed = [](f64 v) { return [v](u32) { return v; }; };
+    // The tread's half width at each station (it wanders, and widens where the ways meet), and the
+    // narrowest of it, which decides whether a middle is laid at all.
+    f64 half_tread = 1e300;
+    for (const LaneStation& s : st)
+      half_tread = std::min(half_tread, static_cast<f64>(s.tread_mm));
+    const auto tread_plus = [&](f64 v) {
+      return [&st, v](u32 q) { return static_cast<f64>(st[q].tread_mm) + v; };
+    };
     // The verge is the street's whole width, front to front: it follows the street's own wander
     // and opens into the green. A back lane has none: it is a worn track between two hedges.
     f64 narrowest = 1e300;
@@ -1428,13 +1778,13 @@ JsonValue ground_regions_json(const VillageLayer& layer, const VillagePlan& plan
                             names.verge,
                             std::min(1.0, (narrowest - half_tread - margin) / 1000.0)));
     if (!names.worn.empty())
-      list.push_back(region(
-          lane + " wear", band_polygon(st, fixed(half_tread + margin), fixed(half_tread + margin)),
-          names.worn, 2.0 * margin / 1000.0));
+      list.push_back(region(lane + " wear",
+                            band_polygon(st, tread_plus(margin), tread_plus(margin)), names.worn,
+                            2.0 * margin / 1000.0));
     if (!names.tread.empty() && !line.back && half_tread > 2.0 * margin)
-      list.push_back(region(
-          lane + " tread", band_polygon(st, fixed(half_tread - margin), fixed(half_tread - margin)),
-          names.tread, margin / 1000.0));
+      list.push_back(region(lane + " tread",
+                            band_polygon(st, tread_plus(-margin), tread_plus(-margin)), names.tread,
+                            margin / 1000.0));
   }
   if (names.worn.empty()) return list;
   // The well's trodden ground, an octagon round it.
@@ -1493,22 +1843,31 @@ JsonValue ground_regions_json(const VillageLayer& layer, const VillagePlan& plan
 
 void plot_boundaries(const VillageLayer& layer, const VillagePlan& plan,
                      Vector<BoundaryLine>& out) {
+  // A side as it stood: from its front corner back, its direction and its length.
   struct Side {
-    i64 ax = 0, az = 0, bx = 0, bz = 0;
+    i64 fx = 0, fz = 0;
+    f64 dx = 0.0, dz = 0.0, length = 0.0;
   };
-  // Two plots of one row laid back to back round their shared corner each from its own front, so
-  // the two stand within a millimetre or two; two centimetres is far under any boundary's width.
+  // Two tofts of one row meet at a corner each computed from its own front, so the two stand
+  // within a millimetre or two; two centimetres is far under any boundary's width.
   const auto same = [](i64 ax, i64 az, i64 bx, i64 bz) {
     const i64 dx = ax - bx, dz = az - bz;
     return dx <= 20 && dx >= -20 && dz <= 20 && dz >= -20;
   };
   Vector<Side> stood;
-  const auto shared = [&](const Side& s) {
-    for (const Side& t : stood)
-      if ((same(s.ax, s.az, t.ax, t.az) && same(s.bx, s.bz, t.bx, t.bz)) ||
-          (same(s.ax, s.az, t.bx, t.bz) && same(s.bx, s.bz, t.ax, t.az)))
-        return true;
-    return false;
+  // How far back from its front corner a side is already a boundary: an earlier side from the
+  // same corner along the same line (to 2 cm over its length) stands for as much of it as it
+  // reaches, so a deeper croft beside a shallower one carries on alone past its neighbour's back.
+  const auto covered = [&](const Side& s) {
+    f64 most = 0.0;
+    for (const Side& t : stood) {
+      if (!same(s.fx, s.fz, t.fx, t.fz)) continue;
+      const f64 reach = std::min(s.length, t.length);
+      const f64 off = (s.dx * t.dz - s.dz * t.dx) * reach;
+      if (off > 20.0 || off < -20.0 || s.dx * t.dx + s.dz * t.dz < 0.0) continue;
+      most = std::max(most, reach);
+    }
+    return most;
   };
   const bool gated = layer.path_width_m > 0.0f;
   for (u32 k = 0; k < plan.plots.size(); ++k) {
@@ -1521,39 +1880,75 @@ void plot_boundaries(const VillageLayer& layer, const VillagePlan& plan,
     plot_point(p, half, 0.0, cx[1], cz[1]);
     plot_point(p, half, depth, cx[2], cz[2]);
     plot_point(p, -half, depth, cx[3], cz[3]);
-    const Side far_side{cx[1], cz[1], cx[2], cz[2]}, near_side{cx[3], cz[3], cx[0], cz[0]};
-    const bool has_far = !shared(far_side), has_near = !shared(near_side);
+    const Side far_side{cx[1], cz[1], p.inward_x, p.inward_z, depth};
+    const Side near_side{cx[0], cz[0], p.inward_x, p.inward_z, depth};
+    const f64 far_done = covered(far_side), near_done = covered(near_side);
     stood.push_back(far_side);
     stood.push_back(near_side);
+    // The four edges round the plot, each as much of it as no earlier plot's boundary stands on:
+    // the front (with the gateway), the far side from where its neighbour's ends, the back, the
+    // near side to where its neighbour's begins. A side within 2 cm of whole is none.
+    struct Edge {
+      i64 ax, az, bx, bz;
+      bool front;
+    };
+    Edge edges[4];
+    u32 count = 0;
+    edges[count++] = Edge{cx[0], cz[0], cx[1], cz[1], true};
+    if (far_done < depth - 20.0) {
+      i64 x = cx[1], z = cz[1];
+      if (far_done > 0.0) plot_point(p, half, far_done, x, z);
+      edges[count++] = Edge{x, z, cx[2], cz[2], false};
+    }
+    edges[count++] = Edge{cx[2], cz[2], cx[3], cz[3], false};
+    if (near_done < depth - 20.0) {
+      i64 x = cx[0], z = cz[0];
+      if (near_done > 0.0) plot_point(p, -half, near_done, x, z);
+      edges[count++] = Edge{cx[3], cz[3], x, z, false};
+    }
+    // Joined into lines where one edge ends where the next begins, starting after a break (or at
+    // the front, when the four close round).
+    u32 start = 0;
+    bool closed = true;
+    for (u32 e = 0; e < count; ++e) {
+      const Edge& prev = edges[(e + count - 1) % count];
+      if (prev.bx != edges[e].ax || prev.bz != edges[e].az) {
+        start = e;
+        closed = false;
+        break;
+      }
+    }
     // The gateway: where the path crosses the front, from corner 0.
     f64 du = 0.0, dv = 0.0;
     plot_frame(p, p.gate_x_mm, p.gate_z_mm, du, dv);
     const f64 gate = std::clamp(du + half, 0.0, 2.0 * half);
-    const auto line = [&](std::initializer_list<u32> corners, bool closed, f64 before_front) {
-      BoundaryLine b;
-      b.plot = k;
-      b.closed = closed;
-      for (const u32 c : corners) {
-        b.points_mm.push_back(cx[c]);
-        b.points_mm.push_back(cz[c]);
-      }
-      if (gated && before_front >= 0.0)
-        b.gateways_mm.push_back(mm_of((before_front + gate) / 1000.0));
-      out.push_back(std::move(b));
+    BoundaryLine b;
+    f64 run = 0.0;
+    const auto flush = [&]() {
+      if (b.points_mm.size() >= 4) out.push_back(std::move(b));
+      b = BoundaryLine{};
+      run = 0.0;
     };
-    if (has_far && has_near) {
-      line({0, 1, 2, 3}, true, 0.0);
-    } else if (has_far) {
-      line({0, 1, 2, 3}, false, 0.0);
-    } else if (has_near) {
-      // From the back's far corner round to the front's: the back and the near side come first.
-      const f64 before = direction(cx[2], cz[2], cx[3], cz[3]).length_mm +
-                         direction(cx[3], cz[3], cx[0], cz[0]).length_mm;
-      line({2, 3, 0, 1}, false, before);
-    } else {
-      line({0, 1}, false, 0.0);
-      line({2, 3}, false, -1.0);
+    for (u32 i = 0; i < count; ++i) {
+      const Edge& e = edges[(start + i) % count];
+      if (!b.points_mm.empty() && (b.points_mm[b.points_mm.size() - 2] != e.ax ||
+                                   b.points_mm[b.points_mm.size() - 1] != e.az))
+        flush();
+      if (b.points_mm.empty()) {
+        b.plot = k;
+        b.points_mm.push_back(e.ax);
+        b.points_mm.push_back(e.az);
+      }
+      if (e.front && gated) b.gateways_mm.push_back(mm_of((run + gate) / 1000.0));
+      run += direction(e.ax, e.az, e.bx, e.bz).length_mm;
+      if (closed && i + 1 == count) {
+        b.closed = true;  // the last edge ends at the first point
+      } else {
+        b.points_mm.push_back(e.bx);
+        b.points_mm.push_back(e.bz);
+      }
     }
+    flush();
   }
 }
 

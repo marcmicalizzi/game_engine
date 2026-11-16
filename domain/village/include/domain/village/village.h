@@ -67,7 +67,10 @@ namespace engine::village {
 
 // Bumped when a change makes the same entry plan another village. 2: the grown plan (G206): ways
 // found over the ground, a green where they meet, plots taken in an order, cottages, back lanes.
-inline constexpr u32 k_village_version = 2;
+// 3: a nucleated village (G206's second part): ways that go round what is no longer there and vary
+// in width, tofts side by side along the street sharing their sides and subdivided, houses at
+// uneven setbacks, the church at the village's end, the green kept clear of the cover.
+inline constexpr u32 k_village_version = 3;
 
 // ---- the house seam -----------------------------------------------------------------------------
 
@@ -118,15 +121,17 @@ using HouseFn = bool (*)(void* context, const HouseAsk& ask, House& out, std::st
 
 // ---- the plan -----------------------------------------------------------------------------------
 
-// A station of a way: where it is, the tread's top there, and how far the street's edge stands
-// from the line on its left and on its right (the street's own wander and the green), whole
-// millimetres. 40 bytes (tests/size_table.cpp).
+// A station of a way: where it is, the tread's top there, how far the street's edge stands from
+// the line on its left and on its right (the street's own wander and the green), and the tread's
+// half width there (it wanders too, and widens where the ways meet), whole millimetres. 48 bytes
+// (tests/size_table.cpp).
 struct LaneStation {
   i64 x_mm = 0;
   i64 z_mm = 0;
   i64 top_mm = 0;
   i64 left_mm = 0;
   i64 right_mm = 0;
+  i64 tread_mm = 0;
 };
 // A way as found over the ground (village.md, "The ways"): its stations, its length, its tread's
 // half width, and whether it is a back lane behind a row's plots (`back`, of the way `from_lane`).
@@ -171,8 +176,10 @@ struct Plot {
   u32 house = 0;    // into `VillagePlan::houses`, for a built plot
   u32 storeys = 0;  // asked of its house: the entry's for a tenement, one for a cottage
   // The middle of the plot's front, and the two unit directions of its frame: `along` its front
-  // (so that `inward`, the left normal of `along`, points into the plot). A plot's front is turned
-  // off square to its way by the slope, the sun and its seed, by up to 20 degrees.
+  // (so that `inward`, the left normal of `along`, points into the plot). A toft's front is the
+  // chord of the street's edge between its two corners, so the tofts of a row follow the street
+  // and share their corners; a cottage on the green is turned off square to its way by the slope,
+  // the sun and its seed, by up to 20 degrees.
   i64 front_x_mm = 0, front_z_mm = 0;
   f64 along_x = 1.0, along_z = 0.0;
   f64 inward_x = 0.0, inward_z = 1.0;
@@ -206,6 +213,10 @@ struct VillagePlan {
   // millimetres, the ground's top there.
   i64 focus_x_mm = 0, focus_z_mm = 0, focus_top_mm = 0;
   bool well = false;
+  // The green's outline, x and z pairs, whole millimetres: the street's two edges over the stretch
+  // of the way through the focus where it opens. Empty with no green. The cover keeps off it
+  // (`footprints`).
+  Vector<i64> green;
   // "hamlet" under six houses, "village" from six (the grounding's threshold).
   const char* size_class = "hamlet";
   // Why the first plot left empty by its house was: the filler's sentence for a refusal, the sizes

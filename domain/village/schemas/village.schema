@@ -79,14 +79,15 @@ struct VillageLayer @version(2) {
   /// house seam").
   storeys: u32 = 2
   /// How far the village grew rather than was laid out, 0 to 1 (village-growth-grounding.md): 0 a
-  /// regular row plan (no wander in the ways or the street's edge, whole perches back to back, the
-  /// entry's depth, plots square to their way, no cottages); 1 the most grown (ways that wander,
-  /// frontages and depths a quarter and 30 % uneven, gaps up to two perches with cottages in them,
-  /// plots turned up to 20 degrees to the slope and the sun).
+  /// regular row plan (straight ways, no wander in the street's edge or the tread, whole perches
+  /// back to back, the entry's depth and setback, no cottages); 1 the most grown (ways that go round
+  /// what is no longer there, a tread and a street's edge that wander, frontages and depths a
+  /// quarter and 30 % uneven, six tenements in ten split between two households, a gap in one in
+  /// seven with a cottage in it, setbacks from 0.15 to 1.85 times the entry's).
   irregularity: f32 = 0.8 @since(2)
   /// The green where the ways meet (or at the first way's middle with one way): how wide the
-  /// street opens there, metres, 0 (none) or the street's width to 80; it is a lens three times as
-  /// long, and the well stands at its middle.
+  /// street opens there, metres, 0 (none) or the street's width to 80; it is a lens twice as long,
+  /// the well stands at its middle, the tofts round it face onto it and the cover keeps off it.
   green_m: f32 = 24 @since(2) @unit(m)
   /// Whether a plot is reserved for the church: of the tenements taken in the outer half of the
   /// order, the one on the highest ground, 42 by 24 m.
