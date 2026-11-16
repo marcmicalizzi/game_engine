@@ -178,8 +178,8 @@ TEST_CASE("interiors: the stair is one a person climbs") {
   CHECK(stair_risers(2310) == 11);
   CHECK(stair_risers(2311) == 12);
 
-  // The foot landing stands under the upper floor (the well ends where the flight does), so a
-  // storey under 2.3 m, less its 20 cm floor, leaves the landing less than the walker's 2.1 m and
+  // The foot landing stands under the upper floor (the well ends a reach past the first riser), so
+  // a storey under 2.3 m, less its 20 cm floor, leaves the landing less than the walker's 2.1 m and
   // is refused.
   {
     InteriorParams low;

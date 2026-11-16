@@ -51,7 +51,9 @@ if(TARGET engine::tileset)
 endif()
 if(TARGET engine::village AND TARGET engine::structures)
   # A walker in a village's house (S89): the house reaches the collision as its tile's mesh, built
-  # from its recipe through the registry, so the test links the two capabilities as a host does.
+  # from its recipe through the registry, so the test links the two capabilities as a host does;
+  # and a walker on the stair of each house type the rural filler builds (dwellings, which the
+  # village requires).
   list(APPEND _collision_tests tests/structure_walk_tests.cpp)
 endif()
 # WALL_CLOCK: scene_collision_tests.cpp holds one tile's activation and one prefetch wait under
@@ -67,7 +69,8 @@ if(TARGET engine_scene_collision_tests)
     target_link_libraries(engine_scene_collision_tests PRIVATE engine::tileset)
   endif()
   if(TARGET engine::village AND TARGET engine::structures)
-    target_link_libraries(engine_scene_collision_tests PRIVATE engine::village engine::structures)
+    target_link_libraries(engine_scene_collision_tests PRIVATE engine::village engine::structures
+                                                               engine::dwellings)
   endif()
   # The committed erg names a sky (ADR-0048), which the scene reader finds through the registry too.
   if(TARGET engine::sky)

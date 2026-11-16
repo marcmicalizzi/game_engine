@@ -468,13 +468,16 @@ void InteriorPlan::clear() noexcept {
 }
 
 RectCm Stair::well() const noexcept {
-  // The flight's run, across the whole strip: the last riser is the head landing's edge, and the
-  // foot landing keeps the upper floor over it (the mesher leaves a gap between the top tread and
-  // the floor under a longer well).
+  // The flight's run, across the whole strip: the last riser is the head landing's edge (the
+  // mesher leaves a gap between the top tread and the floor under a longer well), and the first
+  // riser's line moved `k_stair_reach_cm` over the foot landing, which keeps the upper floor over
+  // the rest of it. The first tread is the one at the foot's end: `tread(0)`.
+  const i32 reach = k_stair_reach_cm;
   switch (rises) {
-    case Side::Front:
-    case Side::Back: return RectCm{strip.x0, flight.z0, strip.x1, flight.z1};
-    default: return RectCm{flight.x0, strip.z0, flight.x1, strip.z1};
+    case Side::Front: return RectCm{strip.x0, flight.z0, strip.x1, flight.z1 + reach};
+    case Side::Back: return RectCm{strip.x0, flight.z0 - reach, strip.x1, flight.z1};
+    case Side::Left: return RectCm{flight.x0, strip.z0, flight.x1 + reach, strip.z1};
+    default: return RectCm{flight.x0 - reach, strip.z0, flight.x1, strip.z1};
   }
 }
 
@@ -1017,9 +1020,20 @@ bool validate_interior(const InteriorPlan& plan, Vector<InteriorFinding>& findin
         stair_headroom_cm(plan, s, (s.foot.x0 + s.foot.x1) / 2, (s.foot.z0 + s.foot.z1) / 2, 0);
     for (u32 t = 0; t + 1 < s.risers; ++t) {
       const RectCm tread = s.tread(t);
-      const i32 h = stair_headroom_cm(plan, s, (tread.x0 + tread.x1) / 2, (tread.z0 + tread.z1) / 2,
-                                      s.tread_mm(t));
+      const i32 mx = (tread.x0 + tread.x1) / 2, mz = (tread.z0 + tread.z1) / 2;
+      const i32 h = stair_headroom_cm(plan, s, mx, mz, s.tread_mm(t));
       if (h < least) least = h;
+      // And over the person's reach behind the tread, toward the foot (`k_stair_reach_cm`): the
+      // last centimetre of it, where the floor's edge would be.
+      i32 bx = mx, bz = mz;
+      switch (s.rises) {
+        case Side::Front: bz = tread.z1 + k_stair_reach_cm - 1; break;
+        case Side::Back: bz = tread.z0 - k_stair_reach_cm; break;
+        case Side::Left: bx = tread.x1 + k_stair_reach_cm - 1; break;
+        default: bx = tread.x0 - k_stair_reach_cm; break;
+      }
+      const i32 behind = stair_headroom_cm(plan, s, bx, bz, s.tread_mm(t));
+      if (behind < least) least = behind;
     }
     const i32 over_head = stair_headroom_cm(plan, s, (s.head.x0 + s.head.x1) / 2,
                                             (s.head.z0 + s.head.z1) / 2, s.rise_mm);

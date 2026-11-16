@@ -69,10 +69,24 @@ rectangles, the direction the flight rises, and the rise in millimetres; `tread(
 `tread_mm(i)` are the treads a mesher and a collision builder both read, so the two cannot differ.
 The upper floor has no slab over `well()`, the flight's run across the strip: headroom over the
 flight is to the upper storey's ceiling, and `stair_headroom_cm` is the one function that says so.
-The well ends where the flight does, at both ends: the last riser is the head landing's edge (the
-mesher leaves a gap between the top tread and the floor under a longer well), and the foot landing
-keeps the upper floor over it, so a storey under 2.3 m floor to floor (2.1 m under a 20 cm floor)
-is refused where one of 2.25 m passed while the well ran over the foot.
+The well ends where the flight does at the head: the last riser is the head landing's edge (the
+mesher leaves a gap between the top tread and the floor under a longer well). At the foot it runs
+**a person's reach past the first riser**, `k_stair_reach_cm` (30 cm, the walker's capsule being
+0.6 m across), and the rest of the foot landing keeps the upper floor over it, so a storey under
+2.3 m floor to floor (2.1 m under a 20 cm floor) is refused where one of 2.25 m passed while the
+well ran over the whole foot.
+
+**Why the reach** (`k_interior_version` 3, 2026-11-16): a person on a tread is not a point on it.
+With the well ending on the first riser, a 2.4 m storey's 2.2 m under its upper floor put the
+crown of a walker standing on the second tread at the floor's underside, the floor's edge 24 cm
+behind its middle; lifting for the third riser (the character's step-up sweeps its capsule up by
+its 35 cm step first) it met that edge and stopped, 0.43 m up the stair of the village's walk. The
+headroom rule held at every tread's middle and missed it. `validate_interior` now holds the
+headroom over each tread's middle **and over the reach behind it**, toward the foot, and
+`scene_collision`'s stair case walks a capsule up the flight of every two-storey type the rural
+filler builds (the hall and parlour, the cross-passage with and without its inner room, the
+two-up two-down), three seeds each: 6 of those 12 flights stopped on the first treads before, 12
+climb now.
 
 ## The rural filler
 
