@@ -342,9 +342,12 @@ struct TileStats {
   f64 layout_ns = 0.0;
   f64 write_ns = 0.0;
   f64 after_ns = 0.0;
-  // Of those, the ones whose pool or ray tracing chain had to follow, with the device idle
-  // (`GpuScene::relayout`), and the wall time they took, the wait included.
+  // Of those, the ones whose pool, ray tracing chain or trees' tables had to follow
+  // (`GpuScene::relayout`), and the wall time they took; swapped in beside the frames in flight
+  // since T152, and of them the ones that waited for the device all the same, because it could not
+  // hold the chain's new half beside the old (`relayout_waits`).
   u64 relayouts = 0;
+  u64 relayout_waits = 0;
   f64 relayout_ns = 0.0;
   // The props' fires placed over the new tail, and the far forest's hand-off — every world tile's
   // far instance parked or stood — of which `GpuScene::place_instances` is `place_ns` (W82: the
@@ -1318,6 +1321,16 @@ class SceneRenderer {
   struct RtFreer* rt_freer_ = nullptr;
   void retire_rt_buffer(const gfx::BufferResource& buffer);
   void release_rt_retired(u32 slot);
+  // A relayout swapped in (T152): what it replaced, and the top-level structures it retired with
+  // their bindless slots, each freed once the frame submitted last before it has completed.
+  struct RetiredTlas {
+    gfx::AccelerationStructure tlas;
+    u32 slot = gfx::BindlessSet::k_invalid_slot;
+    u64 after = 0;  // the timeline value of the last frame that could read it
+  };
+  GpuScene::RelayoutRetired relayout_retired_;
+  Vector<RetiredTlas> retired_tlas_;
+  void free_retired_tlas(bool all) noexcept;
   bool rt_observed_ = false;  // a frame's demand has reached the capacity policy
   // The ray tracing chain's capacity policy (rt_capacity.h): fed every folded frame's demand, and
   // the reason `GpuScene::resize_ray_tracing` is ever called.

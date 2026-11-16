@@ -241,9 +241,9 @@ class GpuScene {
   // pool table entry), so the pool needs nothing per block; the chain's per-instance tables are
   // sized by the instance capacity, and a written slot's top-level record — the fields the load
   // writes, through `tlas_record` — is copied with the slot by the frame that flips its set
-  // (`TableUpdate::rt_copies`), a hole's inactive (mask 0). What still waits for the device is a
-  // change that grows the stride or the instance capacity of a scene with the pool or the chain:
-  // `relayout_pending()`, which the caller answers with an idle device and `relayout`.
+  // (`TableUpdate::rt_copies`), a hole's inactive (mask 0). A change that grows the stride or the
+  // instance capacity of a scene with the pool or the chain is `relayout_pending()`, which the
+  // caller answers with `relayout`, swapped in beside the frames in flight (T152).
   bool dynamic() const noexcept { return dynamic_; }
   // The most pairs the tail's layout may reach: the visibility id's 2^24, or with the ray tracing
   // chain the most the device's cluster geometry indices name over the views' runs (renderer.md,
@@ -257,11 +257,31 @@ class GpuScene {
   // and live shares come from the account, ring slots, tile layout and instance table as held.
   JsonValue pair_summary() const;
   // A change grew the stride or the instance capacity of a scene whose pool or ray tracing chain
-  // is laid out by them: `relayout` makes them again, and must be called with no frame in flight
-  // before the next frame is recorded (`SceneRenderer::set_dynamic_instances` waits for the device
-  // and calls it).
+  // is laid out by them, or the tail's trees passed their tables' room: `relayout` makes them again
+  // before the next frame is recorded. With no `retired` it must be called with no frame in flight
+  // and destroys what it replaces. **With `retired` it is swapped in** (T152; renderer.md, "A
+  // relayout is swapped in"): the new buffers are made beside the old, which the frames in flight
+  // still read and which go to `retired` — and the chain's per-instance half and top-level structure
+  // with them; the cluster set is kept — for the caller to free once those frames have completed
+  // (`SceneRenderer::set_dynamic_instances`). Nothing in it waits for the device or uploads. When
+  // the device cannot hold the chain's new half beside the old, it does nothing, sets `must_wait`
+  // and leaves the relayout pending: the caller waits for the device and calls it without.
+  struct RelayoutRetired {
+    Vector<gfx::BufferResource> buffers;
+    RtRetired chain;  // the chain's step: the bottom-level set and, when it grew, the scratch
+    gfx::AccelerationStructure tlas;
+    u32 tlas_slot = gfx::BindlessSet::k_invalid_slot;
+    bool must_wait = false;
+    void clear() noexcept {
+      buffers.clear();
+      chain.count = 0;
+      tlas = gfx::AccelerationStructure{};
+      tlas_slot = gfx::BindlessSet::k_invalid_slot;
+      must_wait = false;
+    }
+  };
   bool relayout_pending() const noexcept { return relayout_pending_; }
-  bool relayout(std::string* error = nullptr);
+  bool relayout(std::string* error = nullptr, RelayoutRetired* retired = nullptr);
   // The top-level record a slot's instance is traced by, as the load writes it and a tail's change
   // copies it: the instance's transform at the world's origin (the frame overwrites it from the
   // eye), the slot as the custom index, and a mask of 0xff for a live instance and 0 for a hole's
@@ -1640,7 +1660,8 @@ class GpuScene {
   FloraInstance flora_instance(u32 instance, u32 mesh, u32 first_part, u32 key) const noexcept;
   void release_tail_tree(u32 slot) noexcept;
   void acquire_tail_tree(u32 slot, const SceneInstance& source);
-  bool grow_flora_tail(std::string* error);
+  // `retired` as `relayout`'s: the old tables go there rather than being destroyed.
+  bool grow_flora_tail(std::string* error, Vector<gfx::BufferResource>* retired = nullptr);
   // One terrain level's device side (above).
   struct TerrainLevel {
     TerrainLattice lattice;
@@ -2026,8 +2047,12 @@ class GpuScene {
   // The chain's per-instance and per-pair half: the bucketing scratch, the per-instance counts and
   // bottom-level records, the top-level records and structure, the limits and the budget, and the
   // per-frame sets (`resize_ray_tracing`). Made at create and again by `relayout`.
-  bool lay_out_ray_tracing(std::string* error);
+  bool lay_out_ray_tracing(std::string* error, RelayoutRetired* retired = nullptr);
   void destroy_ray_tracing_layout() noexcept;
+  // The chain's layout no longer matches the instance capacity or the stride (T152): a growth of the
+  // tail's trees alone leaves it as it is. And whether the device holds its new half beside the old.
+  bool rt_layout_outgrown() const noexcept;
+  bool rt_relayout_fits() const noexcept;
   u64 compactions_ = 0;
   u32 material_count_ = 0;
   bool has_terrain_materials_ = false;     // a native ground root actually exists in the table

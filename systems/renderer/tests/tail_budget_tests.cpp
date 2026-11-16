@@ -6,6 +6,7 @@
 // commit with room admits; the tile the eye stands in is never the one withheld; and a single tile
 // past the whole budget is still refused, with a sentence, and the scene takes the next commit.
 #include <domain/gfx/device.h>
+#include <domain/gfx/resources.h>
 #include <systems/renderer/flora_motion.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/scene.h>
@@ -185,6 +186,71 @@ TEST_CASE("tail budget: a record given back and taken again in one commit is cou
   MESSAGE("the palm's run is " << (1u << rig.cls) << " parts; the first room holds " << rig.reserve
                                << " palms in " << room << " bytes, grown to "
                                << scene.flora_stats().tail_bytes);
+  scene.destroy();
+}
+
+// T152 (renderer.md, "A relayout is swapped in"): the trees' tables grow beside the old ones. A
+// commit past the first room leaves the relayout pending; swapped, it makes the deform table, its
+// copies and the pose table again without a device wait or an upload on this thread, hands the old
+// ones back for the frames in flight, and leaves the chain — which a growth of the trees alone does
+// not outgrow — as it was.
+TEST_CASE("tail budget: the trees' tables grow beside the old ones and wait for nothing") {
+  const test::TempDir tmp("renderer_tail_budget_swapped");
+  REQUIRE(tmp.ok());
+  Rig rig(tmp);
+  if (!rig.ok) {
+    MESSAGE("skipped: " << rig.why);
+    return;
+  }
+  std::string error;
+  GpuScene scene;
+  REQUIRE_MESSAGE(scene.create(rig.device, rig.data, rig.resolved, &error), error);
+  REQUIRE(scene.flora_tail());
+  GpuScene::TileChange change;
+  const Tile first[] = {{1, 0.0, rig.reserve / 2, 0}};
+  REQUIRE_MESSAGE(commit(scene, first, change, error), error);
+  const u64 table = scene.deform_table.size;
+  const u64 poses = scene.flora_stats().pose_table_bytes;
+  // Past the first room: the trees stay and `reserve` more arrive.
+  const Tile grown[] = {{1, 0.0, rig.reserve / 2, 0}, {2, 1000.0, rig.reserve, 0}};
+  Vector<SceneInstance> tail;
+  Vector<DynamicBlock> blocks;
+  for (const Tile& tile : grown) {
+    DynamicBlock block;
+    block.key = tile.key;
+    block.first = tail.size();
+    block.count = tile.count;
+    blocks.push_back(block);
+    palms(tail, tile.x, tile.count);
+  }
+  REQUIRE_MESSAGE(scene.set_dynamic_instances(
+                      std::span<const SceneInstance>(tail.data(), tail.size()),
+                      std::span<const DynamicBlock>(blocks.data(), blocks.size()), change, nullptr,
+                      &error),
+                  error);
+  REQUIRE(scene.relayout_pending());
+  const u64 waits = gfx::device_waits_on_thread();
+  GpuScene::RelayoutRetired retired;
+  REQUIRE_MESSAGE(scene.relayout(&error, &retired), error);
+  CHECK(gfx::device_waits_on_thread() == waits);
+  CHECK_FALSE(retired.must_wait);
+  CHECK_FALSE(scene.relayout_pending());
+  CHECK_FALSE(retired.tlas.handle.valid());
+  CHECK(retired.chain.count == 0);
+  CHECK(scene.flora_stats().tail_records == rig.reserve / 2 + rig.reserve);
+  CHECK(scene.deform_table.size > table);
+  CHECK(scene.flora_stats().pose_table_bytes >= poses);  // grown only when the parts passed it
+  // The old table at least, and every buffer handed back is one the scene no longer names.
+  CHECK(retired.buffers.size() >= 1);
+  for (const gfx::BufferResource& old : retired.buffers) {
+    CHECK(old.buffer.valid());
+    CHECK(old.address != scene.deform_table.address);
+  }
+  MESSAGE("grown beside: " << retired.buffers.size() << " buffers handed back; the table "
+                           << table << " to " << scene.deform_table.size << " bytes, the poses "
+                           << poses << " to " << scene.flora_stats().pose_table_bytes);
+  for (gfx::BufferResource& old : retired.buffers)
+    gfx::destroy_buffer(rig.device, old);
   scene.destroy();
 }
 

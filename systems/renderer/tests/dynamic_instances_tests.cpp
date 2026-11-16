@@ -1473,3 +1473,89 @@ TEST_CASE(
     CHECK(moving.scene.record_uploads() - uploads_before == u64{3} * (frames + 6));
   }
 }
+
+// T152 (renderer.md, "A relayout is swapped in"). The skinned bar's scene of the case above, its six
+// boxes handed over with two frames in flight and never waited for: the change grows the stride and
+// the instance capacity, so the pool's slot table, the mesh records that name it and, where the
+// device traces, the chain's per-instance half and top-level structure are made again. Until T152
+// that waited for the device; now they are made beside the ones the frames in flight read, the
+// change makes no device wait on this thread, and the frames after it draw the scene loaded whole —
+// ids, depth and colour — while the retired buffers are freed as their frames complete.
+TEST_CASE("dynamic instances: a relayout with frames in flight waits for nothing, draws the same") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE(gpu.why);
+    return;
+  }
+  Bar bar;
+  build_bar(bar);
+  Vector<anim::JointMatrix> matrices;
+  bend(bar, 40.0f, matrices);
+  const InstanceJoints runs[1] = {{0, 2}};  // the bar is instance 0
+  const auto posed = [&]() {
+    FrameDesc frame = frame_at(k_eye);
+    frame.joints = std::span<const anim::JointMatrix>(matrices.data(), matrices.size());
+    frame.instance_joints = std::span<const InstanceJoints>(runs, 1);
+    return frame;
+  };
+  const Vector<SceneInstance> head = renumbered(prefix());
+  const Vector<SceneInstance> a = renumbered(tile_a());
+  const Vector<SceneInstance> whole = join({&head, &a});
+  const bool traces =
+      gpu.device.features().cluster_acceleration_structure && gpu.device.features().ray_query;
+  for (const ShadowMode mode : {ShadowMode::Cascaded, ShadowMode::RayTraced}) {
+    if (mode == ShadowMode::RayTraced && !traces) continue;
+    CAPTURE(static_cast<u32>(mode));
+    RenderSettings settings;
+    settings.shadows = mode;
+    settings.occlusion = false;
+    SkinnedRig dynamic;
+    REQUIRE_MESSAGE(
+        dynamic.build(gpu.device, bar, std::span<const SceneInstance>(head.data(), head.size()),
+                      true, settings),
+        dynamic.error);
+    REQUIRE(dynamic.resolved.deform_pass);
+    SkinnedRig loaded_whole;
+    REQUIRE_MESSAGE(loaded_whole.build(gpu.device, bar,
+                                       std::span<const SceneInstance>(whole.data(), whole.size()),
+                                       false, settings),
+                    loaded_whole.error);
+    std::string error;
+    const auto in_flight = [&]() {
+      for (u32 f = 0; f < 2; ++f) {
+        dynamic.renderer.begin_frame();
+        REQUIRE_MESSAGE(dynamic.renderer.submit_frame(posed(), &error) != 0, error);
+      }
+    };
+    in_flight();
+    const u64 waits = gfx::device_waits_on_thread();
+    const u64 relayouts = dynamic.renderer.stats().tiles.relayouts;
+    const u32 stride = dynamic.scene.pair_stride();
+    REQUIRE_MESSAGE(dynamic.renderer.set_dynamic_instances(
+                        std::span<const SceneInstance>(a.data(), a.size()), &error),
+                    error);
+    const u64 change_waits = gfx::device_waits_on_thread() - waits;
+    const TileStats& tiles = dynamic.renderer.stats().tiles;
+    MESSAGE("stride " << stride << " to " << dynamic.scene.pair_stride() << ": "
+                      << tiles.relayouts - relayouts << " relayout of "
+                      << tiles.relayout_ns / 1.0e6 << " ms, " << tiles.relayout_waits
+                      << " waited, " << change_waits << " device waits in the change");
+    CHECK(dynamic.scene.pair_stride() > stride);
+    CHECK(tiles.relayouts == relayouts + 1);
+    CHECK(tiles.relayout_waits == 0);
+    CHECK(change_waits == 0);
+    // The frames after it, two of them in flight over the retired buffers' frames.
+    in_flight();
+    in_flight();
+    CapturedFrame shot;
+    CapturedFrame expected;
+    REQUIRE_MESSAGE(dynamic.renderer.capture(posed(), channels(), shot, &error), error);
+    REQUIRE_MESSAGE(loaded_whole.renderer.capture(posed(), channels(), expected, &error), error);
+    const Difference d = compare(shot, expected);
+    MESSAGE("after the relayout: " << d.ids << " id, " << d.depth << " depth and " << d.color
+                                   << " colour differences against the scene loaded whole");
+    CHECK(d.ids == 0);
+    CHECK(d.depth == 0);
+    CHECK(d.color == 0);
+  }
+}

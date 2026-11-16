@@ -1571,6 +1571,7 @@ void SceneRenderer::destroy() noexcept {
   // The chain's retired buffers: the worker's finished, the rest freed now (the device is idle).
   delete rt_freer_;
   rt_freer_ = nullptr;
+  free_retired_tlas(true);
   if (accumulation_ != nullptr) {
     accumulation_->destroy();
     delete accumulation_;
@@ -1770,14 +1771,33 @@ bool SceneRenderer::set_dynamic_instances(std::span<const SceneInstance> tail,
     }
   }
   stats_.tiles.far_ns += static_cast<f64>(time::monotonic_ns() - far_started);
-  // **The one wait**: a change that grew the stride or the instance capacity of a scene with the
-  // deformed-vertex pool or the ray tracing chain makes their per-entry and per-instance buffers
-  // again, which every frame in flight reads by address (renderer.md, "Instances that come and
-  // go"). Rare by construction — both grow half as much again — like the chain's own resize.
+  // A change that grew the stride or the instance capacity of a scene with the deformed-vertex pool
+  // or the ray tracing chain, or the trees' tables past their room, makes those buffers again,
+  // which every frame in flight reads by address (renderer.md, "Instances that come and go").
+  // **Swapped in, not waited for** (T152; renderer.md, "A relayout is swapped in"): made beside the
+  // old ones, which go to the slot of the frame submitted last and are freed when it comes round,
+  // as a resize of the chain is (R116). Until T152 this waited for the device and remade the whole
+  // chain: 71-97 ms on the engine's streamed forest, then a 52-75 ms slot wait two frames later.
+  // A device that cannot hold the chain's new half beside the old still waits.
   if (scene_->relayout_pending()) {
     const i64 waited = time::monotonic_ns();
-    frames_.wait_idle();
-    if (!scene_->relayout(error)) return false;
+    relayout_retired_.clear();
+    if (!scene_->relayout(error, &relayout_retired_)) return false;
+    if (relayout_retired_.must_wait) {
+      frames_.wait_idle();
+      ++stats_.tiles.relayout_waits;
+      if (!scene_->relayout(error)) return false;
+    } else {
+      for (const gfx::BufferResource& buffer : relayout_retired_.buffers)
+        frames_.defer_destroy(buffer);
+      for (u32 i = 0; i < relayout_retired_.chain.count; ++i)
+        retire_rt_buffer(relayout_retired_.chain.buffers[i]);
+      if (relayout_retired_.tlas.handle.valid()) {
+        retired_tlas_.push_back(
+            RetiredTlas{relayout_retired_.tlas, relayout_retired_.tlas_slot, frames_.frame_index()});
+      }
+      relayout_retired_.clear();
+    }
     // The chain's union grew with the stride, and with it the ceiling the capacity policy may grow
     // to (`rt_capacity_limit`, the budget or the union, whichever is less). Until 2026-10-18 the
     // policy kept the ceiling it was created with — the load's prefix's union — so a tail whose
@@ -2323,6 +2343,7 @@ void SceneRenderer::begin_frame() {
   // The slot's last frame has completed: the chain's buffers retired while it was recorded go to
   // the worker (R128), as the slot's deferred frees did in `begin_frame` above.
   release_rt_retired(frames_.slot());
+  free_retired_tlas(false);
   timer_.begin_frame(commands_, frames_.slot());
   // The frame that last used this slot has completed: its statistics are readable.
   if (submitted_ >= frames_.frames_in_flight()) {
@@ -2384,6 +2405,29 @@ void SceneRenderer::retire_rt_buffer(const gfx::BufferResource& buffer) {
   }
   if (rt_freer_ == nullptr) rt_freer_ = new RtFreer(*device_, frames_.frames_in_flight());
   rt_freer_->batches[frames_.slot()].pending.push_back(buffer);
+}
+
+// The top-level structures a swapped relayout retired (T152), each once the last frame submitted
+// before it has completed, and its bindless slot with it; `all` with the device idle.
+void SceneRenderer::free_retired_tlas(bool all) noexcept {
+  if (retired_tlas_.empty()) return;
+  const u64 completed = all ? ~u64{0} : frames_.completed();
+  u32 kept = 0;
+  bool released = false;
+  for (u32 i = 0; i < retired_tlas_.size(); ++i) {
+    RetiredTlas& retired = retired_tlas_[i];
+    if (retired.after > completed) {
+      retired_tlas_[kept++] = retired;
+      continue;
+    }
+    if (retired.slot != gfx::BindlessSet::k_invalid_slot && scene_ != nullptr && scene_->valid()) {
+      scene_->bindless().release_acceleration_structure(retired.slot, 0);
+      released = true;
+    }
+    gfx::destroy_acceleration_structure(*device_, retired.tlas);
+  }
+  retired_tlas_.resize(kept);
+  if (released) scene_->bindless().recycle(0);
 }
 
 void SceneRenderer::release_rt_retired(u32 slot) {

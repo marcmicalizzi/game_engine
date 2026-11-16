@@ -1111,41 +1111,6 @@ void GpuScene::mark_instance_written(u32 instance) {
   tables_changed_ = true;
 }
 
-bool GpuScene::relayout(std::string* error) {
-  if (!relayout_pending_) return true;
-  relayout_pending_ = false;
-  if (flora_grow_ && !grow_flora_tail(error)) return false;
-  // The pool's per-entry slots are laid out by the stride, and every mesh record names them.
-  // The allocator's tile scratch follows the same stride (R104).
-  if (deform_ && deform_blocks.size < deform_block_bytes()) {
-    gfx::destroy_buffer(*device_, deform_blocks);
-    if (!gfx::create_buffer(*device_, deform_block_bytes(), k_address, false, deform_blocks,
-                            error)) {
-      return false;
-    }
-  }
-  if (deform_ && deform_slots.size < u64{visible_entries()} * sizeof(u32)) {
-    gfx::destroy_buffer(*device_, deform_slots);
-    if (!gfx::create_buffer(*device_, u64{visible_entries()} * sizeof(u32), k_address, false,
-                            deform_slots, error)) {
-      return false;
-    }
-    for (gfx::MeshDesc& desc : mesh_descs_)
-      desc.deform_slots = deform_slots.address;
-    for (RingSlots& ring : ring_slots_) {
-      for (TerrainSlot& slot : ring.slots)
-        slot.desc.deform_slots = deform_slots.address;
-    }
-    gfx::destroy_buffer(*device_, meshes);
-    if (!gfx::upload_buffer(*device_, mesh_descs_.data(),
-                            mesh_descs_.size() * sizeof(gfx::MeshDesc), k_storage, meshes, error)) {
-      return false;
-    }
-  }
-  if (ray_tracing_ && !lay_out_ray_tracing(error)) return false;
-  return true;
-}
-
 gfx::InstanceDesc GpuScene::null_instance(u32 first_pair) const noexcept {
   gfx::InstanceDesc out{};
   out.mesh = null_mesh_;
@@ -1380,30 +1345,6 @@ void GpuScene::acquire_tail_tree(u32 slot, const SceneInstance& source) {
   flora_instances_.push_back(flora_instance(slot, mesh, tree.first_part, tail_motion_key(source)));
   tail_tree_of_slot_[slot] = t;
   flora_recut_ = true;
-}
-
-// Made again with the device idle (`relayout`): the deform table, its per-frame copies and the
-// pose table, half as much again as the records need, every record the CPU holds copied in.
-bool GpuScene::grow_flora_tail(std::string* error) {
-  flora_grow_ = false;
-  bool grew = false;
-  if (deform_descs_.size() > deform_capacity_) {
-    deform_capacity_ = deform_descs_.size() + deform_descs_.size() / 2;
-    grew = true;
-  }
-  if (flora_parts_ > flora_part_capacity_) {
-    flora_part_capacity_ = flora_parts_ + flora_parts_ / 2;
-    if (!make_flora_poses(error)) return false;
-  }
-  flora_state_.reserve(flora_part_capacity_);
-  deform_descs_.reserve(deform_capacity_);
-  deform_instance_.reserve(deform_capacity_);
-  deform_mesh_clusters_.reserve(deform_capacity_);
-  tail_trees_.reserve(deform_capacity_ - load_deforms_);
-  // The table is written whole again whether or not it grew: a record made past it was not.
-  if (!make_deform_tables(grew ? deform_frames.buffer.valid() : false, error)) return false;
-  flora_counts();
-  return true;
 }
 
 // The records the admitted demand makes (R137): per class of run size, a mesh's trees take its own
@@ -5955,11 +5896,24 @@ void GpuScene::destroy_ray_tracing_layout() noexcept {
 // top-level record from the start — a hole's inactive — and a tail's change copies its own slots'
 // records with their instances (`prepare_tables`), so the chain is rewritten only when the tail
 // outgrows the capacity or the stride (`relayout`).
-bool GpuScene::lay_out_ray_tracing(std::string* error) {
+bool GpuScene::lay_out_ray_tracing(std::string* error, RelayoutRetired* retired) {
   const gfx::Device& device = *device_;
   const u32 keep_capacity = rt_capacity_;
   const u32 keep_references = rt_reference_capacity_;
-  destroy_ray_tracing_layout();
+  if (retired == nullptr) {
+    destroy_ray_tracing_layout();
+  } else {
+    // **Swapped** (T152): the per-instance half and the top-level structure go to the caller, as
+    // the frames in flight read them; the frame's set — records, CLAS chunks — stays, and the step
+    // below makes only the bottom-level set again (`keep_frame_set`).
+    retired->tlas = tlas;
+    retired->tlas_slot = tlas_slot_;
+    tlas = gfx::AccelerationStructure{};
+    tlas_slot_ = gfx::BindlessSet::k_invalid_slot;
+    for (gfx::BufferResource* buffer :
+         {&rt_instances, &slots, &instance_counts, &blas_records, &blas_dense, &blas_slots})
+      retire(*buffer, &retired->buffers);
+  }
   rt_instance_slots_ = dynamic_ ? std::max(instance_capacity_, instance_count_) : instance_count_;
   rt_union_clusters_ = pair_stride_ * view_count_;
   gfx::ClusterSetLimits limits = rt_limits_;
@@ -5991,17 +5945,23 @@ bool GpuScene::lay_out_ray_tracing(std::string* error) {
   }
 
   constexpr gfx::BufferUsage k_record_usage = k_address | gfx::BufferUsage::AccelerationBuildInput;
+  constexpr gfx::BufferUsage k_tlas_usage =
+      gfx::k_build_input_usage | gfx::BufferUsage::TransferDst | k_storage;
   // The top-level instance records, once: the instance as the custom index, and a bottom-level
   // address of zero and a transform, both of which the frame's `tlas_references` dispatch
   // overwrites — the address from `blas_set.addresses`, the transform from the instance's cell and
   // the frame's eye (ADR-0053) — before every top-level build. An instance whose structure a frame
   // did not build keeps a zero address, which the top-level build treats as an inactive instance.
   // The transform written here is the one at the world's origin, which no frame reads.
+  // Swapped, nothing is uploaded (T152): a layout outgrown is a capacity or a stride grown, which
+  // made every table set again (`fit_tables`), so the frame that next flips to one copies every
+  // slot's record (`prepare_tables`) before its top-level build, which reads no record past them.
+  const u32 uploaded = retired == nullptr ? rt_instance_slots_ : 0u;
   Vector<gfx::TlasInstance> tlas_records;
-  tlas_records.reserve(rt_instance_slots_);
-  for (u32 i = 0; i < rt_instance_slots_; ++i)
+  tlas_records.reserve(uploaded);
+  for (u32 i = 0; i < uploaded; ++i)
     tlas_records.push_back(tlas_record(i));
-  Vector<u8> tlas_bytes(u64{rt_instance_slots_} * gfx::k_instance_record_bytes, u8{0});
+  Vector<u8> tlas_bytes(u64{uploaded} * gfx::k_instance_record_bytes, u8{0});
   gfx::write_instances(std::span<const gfx::TlasInstance>(tlas_records.data(), tlas_records.size()),
                        tlas_bytes.data());
   bool ok = gfx::create_buffer(device, u64{rt_union_clusters_} * sizeof(u32), k_address, false,
@@ -6029,9 +5989,12 @@ bool GpuScene::lay_out_ray_tracing(std::string* error) {
             gfx::create_buffer(device, sizeof(u32) * u64{rt_instance_slots_}, k_address, false,
                                blas_slots, error) &&
             gfx::create_tlas(device, rt_instance_slots_, gfx::k_build_fast_trace, tlas, error) &&
-            gfx::upload_buffer(device, tlas_bytes.data(), tlas_bytes.size(),
-                               gfx::k_build_input_usage | gfx::BufferUsage::TransferDst | k_storage,
-                               rt_instances, error);
+            (retired == nullptr
+                 ? gfx::upload_buffer(device, tlas_bytes.data(), tlas_bytes.size(), k_tlas_usage,
+                                      rt_instances, error)
+                 : gfx::create_buffer(device,
+                                      u64{rt_instance_slots_} * gfx::k_instance_record_bytes,
+                                      k_tlas_usage, false, rt_instances, error));
   if (ok) {
     tlas_slot_ = bindless_.add_acceleration_structure(tlas.handle);
     if (tlas_slot_ == gfx::BindlessSet::k_invalid_slot) {
@@ -6171,8 +6134,14 @@ bool GpuScene::lay_out_ray_tracing(std::string* error) {
     first_references = first_rt_capacity(rt_reference_limit_, rt_union_clusters_,
                                          rt_reference_estimate(), rt_initial_clusters_tunable());
   }
-  rt_reference_capacity_ = 0;
-  if (!resize_ray_tracing(first, error, false, first_references)) return false;
+  if (retired != nullptr) {
+    // Swapped (T152): the capacity is the one the scene holds, so the step keeps the frame's set and
+    // hands the bottom-level set it replaces to the caller with the rest.
+    if (!resize_ray_tracing(first, error, false, first_references, &retired->chain)) return false;
+  } else {
+    rt_reference_capacity_ = 0;
+    if (!resize_ray_tracing(first, error, false, first_references)) return false;
+  }
   ENGINE_LOG_INFO(
       log_renderer, "ray tracing ready", log::field("pairs", pair_count_),
       log::field("stride", pair_stride_), log::field("views", view_count_),
