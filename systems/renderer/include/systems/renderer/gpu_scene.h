@@ -268,7 +268,7 @@ class GpuScene {
   // and leaves the relayout pending: the caller waits for the device and calls it without.
   struct RelayoutRetired {
     Vector<gfx::BufferResource> buffers;
-    RtRetired chain;  // the chain's step: the bottom-level set and, when it grew, the scratch
+    renderer::RtRetired chain;  // the chain's step (qualified: the alias below comes later)
     gfx::AccelerationStructure tlas;
     u32 tlas_slot = gfx::BindlessSet::k_invalid_slot;
     bool must_wait = false;
