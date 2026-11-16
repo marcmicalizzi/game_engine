@@ -45,6 +45,10 @@ TEST_CASE("a line's pieces and runs: a fall laid as a nappe joins the water, a f
   CHECK(r.gaps == 1);    // 5-7
   CHECK(r.undrawn_m == doctest::Approx(2.0));
   CHECK(r.film_m == doctest::Approx(2.0));
+  // The forest's count: stations 5, 6 and 7 are thin, so water 0-4, film 5-7, water 8: three
+  // runs, and the stretches leaving 5, 6 and 7 thin (the last station leaves none).
+  CHECK(r.alternations == 3);
+  CHECK(r.thin_m == doctest::Approx(3.0));
 }
 
 TEST_CASE("a fall whose foot does not stand lower is no nappe, and the classes are the forest's") {

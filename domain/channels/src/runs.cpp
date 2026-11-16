@@ -24,11 +24,15 @@ LineRuns measure_runs(const scene::WaterChannel& block) {
   // the surface and every nappe the draw lays (water.md, "A fall": where the foot stands lower and
   // the stretch is drawn).
   bool surface = false, water = false, gap = false;
+  const auto thin = [&](u32 i) { return static_cast<f64>(block.depth_m[i]) <= k_run_thin_depth_m; };
+  out.alternations = 1;
   for (u32 i = 0; i + 1 < n; ++i) {
     const f64 dx = block.points[i + 1].x - block.points[i].x;
     const f64 dz = block.points[i + 1].z - block.points[i].z;
     const f64 len = std::sqrt(dx * dx + dz * dz);
     out.length_m += len;
+    if (thin(i)) out.thin_m += len;
+    if (thin(i + 1) != thin(i)) ++out.alternations;
     if (static_cast<f64>(block.depth_m[i]) <= k_run_film_depth_m &&
         static_cast<f64>(block.depth_m[i + 1]) <= k_run_film_depth_m)
       out.film_m += len;
@@ -71,6 +75,8 @@ void RunsBySlope::add(const LineRuns& line) noexcept {
   c.falls += line.falls;
   c.falls_drawn += line.falls_drawn;
   c.gaps += line.gaps;
+  c.thin_m += line.thin_m;
+  c.alternations += line.alternations;
 }
 
 JsonValue runs_json(const RunsBySlope& runs) {
@@ -92,6 +98,8 @@ JsonValue runs_json(const RunsBySlope& runs) {
     one["falls"] = JsonValue(c.falls);
     one["falls_drawn"] = JsonValue(c.falls_drawn);
     one["gaps"] = JsonValue(c.gaps);
+    one["thin_share"] = JsonValue(round(c.length_m > 0 ? c.thin_m / c.length_m : 0.0, 1e4));
+    one["alternations_per_100m"] = JsonValue(round(static_cast<f64>(c.alternations) * per, 1e2));
     out.push_back(std::move(one));
   }
   return out;

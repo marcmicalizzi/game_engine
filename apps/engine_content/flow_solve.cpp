@@ -224,6 +224,7 @@ struct Totals {
   f64 over_bank_worst = 0;
   WorldPos over_bank_at{};
   std::string over_bank_line;
+  u32 pools = 0, pools_open = 0;  // W130.2: stations standing as a pool in a pit of their line
   u32 rises_jump = 0, rises_shooting = 0, rises_over_bank = 0, rises_other = 0;
   f64 rise_jump_worst = 0, rise_shooting_worst = 0, rise_other_worst = 0;
   WorldPos rise_shooting_at{}, rise_other_at{};
@@ -243,6 +244,8 @@ struct Totals {
     hung += s.tail_hung ? 1u : 0u;
     over_bank += s.over_bank;
     over_bank_lines += s.over_bank > 0 ? 1u : 0u;
+    pools += s.pools;
+    pools_open += s.pools_open;
     if (s.over_bank_worst_m > over_bank_worst) {
       over_bank_worst = s.over_bank_worst_m;
       over_bank_at = s.over_bank_at;
@@ -859,6 +862,10 @@ int flow_solve_command(int argc, char** argv) {
     over["line"] = JsonValue(totals.over_bank_line);
   }
   line["over_bank"] = std::move(over);
+  JsonValue pools = JsonValue::object();
+  pools["stations"] = JsonValue(totals.pools);
+  pools["open"] = JsonValue(totals.pools_open);
+  line["pools"] = std::move(pools);
   JsonValue rises = JsonValue::object();
   rises["jump"] = JsonValue(totals.rises_jump);
   rises["jump_worst_m"] = JsonValue(round3(totals.rise_jump_worst));
@@ -872,7 +879,6 @@ int flow_solve_command(int argc, char** argv) {
   rises["head"] = JsonValue(totals.head_rises);
   rises["head_worst_m"] = JsonValue(round3(totals.head_rise_worst));
   line["rises"] = std::move(rises);
-  line["runs_by_slope"] = channels::runs_json(by_slope);
   line["runs_by_slope"] = channels::runs_json(by_slope);
   line["flow_seconds"] = JsonValue(round3(flow_seconds));
   line["solve_seconds"] = JsonValue(round3(solve_seconds));

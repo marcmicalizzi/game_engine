@@ -756,15 +756,36 @@ through **the sections the ground has**, by the textbook's method
   lower crest the station is flagged, counted and reported, and written **at the crest** with
   the solved flow's speed. Once tranquil water has spilled it is written no higher downstream
   than where it spilled, until its solved level comes down under that (those stations are flagged
-  too), so the written level does not climb from one crest to the next. **A line that climbs** —
-  the planner routes over a lattice with its pits filled, and where the ground itself is not
-  filled a line runs down into a hollow and up to its spill point — is over its bank all the way
-  up: the water that would pass the sill is a pool standing at the sill's level, far outside any
-  bed. The cook writes a film at the bed there, flags every station of it, and reports the worst;
-  it does not draw the lake the ground is missing. A reader that draws flagged stations draws
-  that film going uphill. **The cut does not grow**: the solve runs on the composed ground after
+  too), so the written level does not climb from one crest to the next. **A pit on a line is a
+  pool** (W130.2, below): where a line runs down into a hollow of the ground and up to its sill,
+  the water stands at the sill and is written as the pool it is. **The cut does not grow**: the solve runs on the composed ground after
   the cut is in it, and the bankfull section is the plan's contract with the exclusion, the
   sediment and the flood bed. The count is the author's lever: a lower `stage`, or a wider law.
+
+**A pit on a line is a pool** (W130.2, 2026-11-16; the owner's walk of 2026-11-15, "dry patches and
+wet patches"; [steep-streams](../experiments/steep-streams.md)). The planner routes over its
+lattice with the pits filled or breached, and the ground the solve reads is finer than that
+lattice: a scour pit at a step's foot, a breached hollow under a metre deep, a dip between the
+planner's points. A line runs down into such a pit and up to its sill, and the tranquil profile
+taken up over the sill stands level through the pit at the sill's water — which, where the pit is
+wider than the section is read (one and a half widths and four lattices each side), stands over the
+section's crests. Until W130.2 those stations were written at the crest and then, as the bed climbed
+to the sill, as a 5 mm film going uphill that the draw leaves out: a gap in the water at every pit.
+Now **the sill of a node is the highest bed at or below it** (a running maximum from the line's
+end), and a tranquil station whose bed stands more than `k_pool_pit_m` (5 mm) under its sill and
+whose solved level stands at or over it is **written at its solved level, wet to where that level
+meets the ground**, walked out across the section past its crests and its sampled row, no further
+than `k_pool_reach_m` (25 m) each side. It carries the solved flow (the discharge through the
+section with a wall at each crest, as a station over its bank does), is not flagged, and is
+counted (`pools.stations` on the cook's line). Below the sill the profile is what it was: the water
+passes the sill as the profile solved it and falls away. **Where the line is between a pool and a
+lake**: a pit deeper than the plan's `breach_max_m` (1 m) and of `basin_min_area_m2` (200 m2) or more
+is the plan's — a body, a body below its spill, or dry ([hollows](#hollows)) — and no line
+crosses it; what the solve finds is shallower or smaller than that, or finer than the plan's
+lattice. A pit whose level meets no ground within 25 m either side (`pools.open`) is left over
+its bank as before: water that would stand wider than that is a lake the plan did not make, or
+leaves the line sideways, and neither is a pool of this line's. Nothing keys on a generator: any
+ground with a pit on a solved line gets its pool, and a line with no pit pays one running maximum.
 
 **No section is without a bed** (W129.1, 2026-11-16). A bank's crest is walked out from the
 thalweg; on ground exactly as level as the thalweg (a floor the plan filled flat, or ground no
@@ -963,12 +984,17 @@ its mean slope (its level's fall over its length: under 2 %, 2 to 5, 5 to 15, 15
 | `runs_per_100m` | the same joined across every fall the draw lays a nappe on (the foot lower and the stretch drawn): the water a walker sees as one |
 | `falls`, `falls_drawn` | lip-to-foot pairs, and those with a nappe |
 | `gaps` | maximal runs of undrawn stretches |
+| `thin_share`, `alternations_per_100m` | the forest's own count: stretches leaving a station 1.1 cm deep or less, and the runs of one kind (thin or not), both kinds counted |
 
-**How it differs from the forest's count.** Theirs is a script of their own that the engine's
-agents may not read; from its notes it counts pieces of surface parted by every lip-to-foot pair
-and every film stretch, which is `pieces`. A nappe the draw lays (S108's fall, as wide as its lip)
-is drawn water, so `runs` is the count a picture should be held to, and the two differ by the
-falls that are drawn.
+**How it differs from the forest's count.** Its session's script (`streams47b.py`, read on
+2026-11-16 once the proof of concept was opened) classes every station by its depth alone: 1.1 cm
+or less is "film", and its pieces are the runs of film and of water along the line, both counted.
+That takes in more than the 5 mm film: **a fall's foot is Rand's sheet**, under a centimetre at
+20 l/s below a metre's drop, and the shooting water below it stays that thin until its jump, so
+every free fall on a steep line adds two pieces to theirs whether or not anything is missing from
+the picture. The engine prints it beside its own (`thin_share`, `alternations_per_100m`, by
+horizontal length where theirs is by the points' 3D distance, 7 % longer on a 37 % line); `runs`,
+the water a walker sees as one, is the count a picture should be held to.
 
 ## The cut
 

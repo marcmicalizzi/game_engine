@@ -60,6 +60,13 @@ inline constexpr f64 k_bank_crest_drop_m = 0.02;
 inline constexpr f64 k_bank_crest_drop_share = 0.25;
 // A level stands over a bank when it is this far over the crest.
 inline constexpr f64 k_over_bank_m = 0.001;
+// **A pit on a line is a pool** (W130.2; channels.md, "A pit on a line is a pool"): where the bed
+// stands this far under the highest bed downstream of it (the sill), and the solved level stands at
+// or over that sill, the station is written at the solved level, wet to where that level meets the
+// ground, looked for this far each side of the line. A pool whose level meets no ground within
+// the reach stands over its bank as before: the hollow is a lake's, which the plan makes.
+inline constexpr f64 k_pool_pit_m = 0.005;
+inline constexpr f64 k_pool_reach_m = 25.0;
 
 enum class Resistance : u8 { Jarrett = 0, Manning = 1 };
 
@@ -129,6 +136,10 @@ struct ProfileStats {
   u32 over_bank = 0;
   f64 over_bank_worst_m = 0;
   WorldPos over_bank_at{};
+  // Stations written as a pool standing in a pit of the line (`k_pool_pit_m`), and stations in a
+  // pit whose level met no ground within `k_pool_reach_m` (left over their bank).
+  u32 pools = 0;
+  u32 pools_open = 0;
   u32 rises_jump = 0;
   u32 rises_shooting = 0;
   u32 rises_over_bank = 0;
