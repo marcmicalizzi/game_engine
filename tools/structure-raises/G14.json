@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "G14",
+  "reason": "G14: renderer.md says how a scene sizes its built textures by the asset (texture_caps, the capped count), and apps.md says engine-content info now prints a container's cost",
+  "date": "2026-11-15",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/renderer.md": 806,
+    "page:docs/subsystems/apps.md": 129
+  }
+}
