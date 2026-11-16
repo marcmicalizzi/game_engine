@@ -3473,6 +3473,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     cull.meshes = scene.meshes.address;
     cull.instance_count = instance_count;
     cull.pair_count = pair_count;
+    // A pair's instance in one load, and a hole rejected without the search (W6).
+    cull.pairs = scene.pair_table.address;
     cull.terrain = terrain_table;
     // Geometry streaming: the drawing rule, and the feedback it writes. Null for a scene uploaded
     // whole, and the pass then runs exactly the instructions it always ran.
@@ -4007,6 +4009,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     cull.meshes = scene.meshes.address;
     cull.instance_count = instance_count;
     cull.pair_count = pair_count;
+    cull.pairs = scene.pair_table.address;  // W6, as the camera's runs
     cull.terrain = terrain_table;
     cull.streaming = stream_params;
     cull.page_count = scene.page_count();
@@ -4835,7 +4838,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.read(rg_hiz, gfx::Access::ComputeRead);  // last frame's, for the term (R118)
           }
           read_pool(b, gfx::Access::ComputeRead);
-          read_tables(b, gfx::Access::ComputeRead, false);
+          read_tables(b, gfx::Access::ComputeRead, true);  // the pair table too (W6)
           if (streaming) {  // the feedback: what the cut used, and what it could not refine into
             b.write(sb.used, gfx::Access::ComputeWrite);
             b.write(sb.requests, gfx::Access::ComputeWrite);
@@ -5172,7 +5175,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
         [&](gfx::PassBuilder& b) {
           b.write(rg_shadow_args, gfx::Access::ComputeReadWrite);
           b.write(rg_visible, gfx::Access::ComputeWrite);
-          read_tables(b, gfx::Access::ComputeRead, false);
+          read_tables(b, gfx::Access::ComputeRead, true);  // the pair table too (W6)
           if (fading) b.write(rg_fade, gfx::Access::ComputeWrite);
           if (vertex_indexed) {
             b.write(rg_vertex_headers, gfx::Access::ComputeReadWrite);

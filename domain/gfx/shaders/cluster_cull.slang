@@ -1,7 +1,7 @@
 // GPU cluster culling and LOD selection over a scene of instances (docs/plan/04-renderer.md
 // §4.2, §4.3): one thread per (instance, cluster) **pair**, every test done in the instance's
-// frame. The thread finds its instance by binary search over the instances' `first_pair` prefix
-// sum, reads the cluster of that instance's mesh, moves the bounding sphere, the normal cone,
+// frame. The thread finds its instance in the scene's pair table (or, given none, by binary search
+// over the instances' `first_pair` prefix sum), reads the cluster of that instance's mesh, moves the bounding sphere, the normal cone,
 // and the two LOD spheres into world space, and runs the same frustum, backface, DAG-cut, and
 // Hi-Z occlusion tests the single-mesh pass ran. Survivors append `{instance, cluster}` to a
 // visible list, and the same atomic is the group count of the indirect draw that follows, so no
@@ -42,7 +42,7 @@ struct StreamParams {
 static const uint k_caster_volume_planes = 13;
 static const uint k_max_caster_volumes = 5;
 
-// Read through a device address; mirrors gfx::CullParams (1760 bytes).
+// Read through a device address; mirrors gfx::CullParams (1776 bytes).
 struct CullParams {
   float4 planes[6];  // inward-facing, normalized: dot(n, p) + w >= 0 inside
   float4 camera;     // xyz this view's eye in the frame's space, w = znear
@@ -128,6 +128,10 @@ struct CullParams {
   // mesh faces the sky everywhere; such an instance takes the camera's cut in a cascade (cull_pair).
   uint sky_facing_count;
   uint64_t sky_facing;
+  // gfx::CullParams::pairs (W6): the scene's pair table, uint2 {instance, cluster} per pair, which
+  // gives a pair its instance in one load instead of the search over `first_pair`; 0 searches.
+  uint64_t pairs;
+  uint pad_pairs[2];
 };
 
 // gfx::CullParams::hiz_flags and the debug counters' layout (gfx::k_hidden_*).
@@ -536,7 +540,22 @@ void cull_pair(uint pair, bool vertex_draw) {
   }
 
   InstanceDesc* instances = (InstanceDesc*)params->instances;
-  const uint instance_index = instance_of_pair(instances, params->instance_count, pair);
+  // **The pair's instance from the pair table** (W6; renderer.md, "Instances that come and go"),
+  // where the caller has one: one coalesced load, where the search over `first_pair` is a chain of
+  // dependent loads, one a halving, that a hole paid in full before its instance said it held
+  // nothing. A live pair's entry is always its own: every instance's pairs are written whenever
+  // its slot is. A hole's entry is whatever it last held (pair_expand.slang never writes one) —
+  // an instance past the table, or one whose pairs are elsewhere — and both are rejected below
+  // without a cluster read: past the count here, and by `local` against the mesh's clusters after,
+  // which no instance can pass for a pair that is not its own. 0 (a caller with no table, every
+  // test of this module's own) searches, as the pass always did.
+  uint instance_index;
+  if (params->pairs != 0) {
+    instance_index = ((uint2*)params->pairs)[pair].x;
+    if (instance_index >= params->instance_count) return;
+  } else {
+    instance_index = instance_of_pair(instances, params->instance_count, pair);
+  }
   const InstanceDesc instance = instances[instance_index];
   // **The caster policy** (renderer.md, "The caster policy"; R95): an instance whose species casts
   // into the `n` nearest cascades alone (flags bits 2-4 hold n + 1; 0 is every cascade) is no
@@ -551,9 +570,10 @@ void cull_pair(uint pair, bool vertex_draw) {
   // A **hole** of a streamed world's pair space (docs/subsystems/renderer.md, "Instances that come
   // and go"): the slack a tile's block keeps past its instances' pairs, or a freed block, whose
   // instance slots are null instances of a mesh with no clusters. The search lands on the last
-  // instance at or below the pair, and the pair is past that instance's clusters, so it is
-  // rejected here, before anything about a cluster is read. A scene read whole has no holes and
-  // never takes this branch.
+  // instance at or below the pair, and the pair is past that instance's clusters; the pair table's
+  // stale entry names an instance whose pairs do not hold it (`local` past its clusters, or below
+  // its first and wrapped). Either way it is rejected here, before anything about a cluster is
+  // read. A scene read whole has no holes and never takes this branch.
   const uint local = pair - instance.first_pair;
   if (local >= mesh.cluster_count) return;
   const uint index = mesh.first_cluster + local;

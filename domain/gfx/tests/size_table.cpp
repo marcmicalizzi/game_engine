@@ -197,7 +197,10 @@ ENGINE_EXPECT_SIZE(32, 8, gfx::ClusterChunkParams);
 // cascade a block culls for, with three words of padding (R95); both landed on 2026-10-25 and the
 // merge keeps both, in that order, as cluster_cull.slang mirrors them. 1760, not 1744: the
 // hand-off's clock and its three words of padding (G136, renderer.md, "The hand-off by distance").
-ENGINE_EXPECT_SIZE(1760, 8, gfx::CullParams);
+// 1776, not 1760: the scene's pair table (W6, renderer.md, "Instances that come and go"), which
+// gives a pair its instance in one load and rejects a hole without the search, and two words of
+// padding to a whole float4 row; appended, so every field before it keeps its offset.
+ENGINE_EXPECT_SIZE(1776, 8, gfx::CullParams);
 ENGINE_EXPECT_SIZE(32, 8, gfx::MaskTables);
 // The mask test reads one word of a material by offset (scene.slang,
 // `k_resolve_material_flags_offset`).

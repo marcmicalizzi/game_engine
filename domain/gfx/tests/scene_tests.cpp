@@ -973,6 +973,90 @@ TEST_CASE("scene: the pair cull, the two rasterizers, ray tracing, and occlusion
                           << occl_coverage_mismatch << ", id mismatch " << occl_id_mismatch);
   }
 
+  // **The pair table** (W6; `CullParams::pairs`): the same single pass with the instance of each
+  // pair read from the table instead of searched for, over a dispatch with holes past the last
+  // instance's pairs, as a streamed world's freed blocks are. A hole's entry is stale — never
+  // written by anyone — so the table's holes name every kind of wrong instance in turn: past the
+  // table, the first, the last, every one in between, all ones. The survivors must be exactly the
+  // reference cut's: no hole drawn, no live pair lost.
+  {
+    // Not a whole number of workgroups, and fewer than the scene's pairs, so that even a pass that
+    // drew every hole stays inside the visible list's two runs and fails on the count instead.
+    constexpr u32 k_hole_pairs = 499;
+    REQUIRE(k_hole_pairs < pair_count);
+    const u32 dispatched = pair_count + k_hole_pairs;
+    Vector<u32> table(u64{dispatched} * 2u, 0u);
+    for (u32 i = 0; i < instance_count; ++i) {
+      const gfx::InstanceDesc& instance = scene.instances[i];
+      const geometry::ClusterMeshPart& part = scene.parts[instance.mesh];
+      for (u32 c = 0; c < part.cluster_count; ++c) {
+        table[u64{instance.first_pair + c} * 2u] = i;
+        table[u64{instance.first_pair + c} * 2u + 1u] = part.first_cluster + c;
+      }
+    }
+    for (u32 h = 0; h < k_hole_pairs; ++h) {
+      const u32 kind = h % (instance_count + 3u);
+      const u32 stale = kind == instance_count + 2u ? 0xFFFFFFFFu : kind;  // incl. count, count + 1
+      table[u64{pair_count + h} * 2u] = stale;
+      table[u64{pair_count + h} * 2u + 1u] = stale == 0xFFFFFFFFu ? stale : h % cluster_count;
+    }
+    gfx::BufferResource pair_table;
+    REQUIRE(gfx::upload_buffer(device, table.data(), table.size() * sizeof(u32), k_address,
+                               pair_table, &error));
+    gfx::CullParams by_table = single;
+    by_table.pairs = pair_table.address;
+    by_table.pair_count = dispatched;
+    blocks[0] = by_table;
+
+    graph.reset();
+    import_all();
+    add_reset(true, 2);
+    graph.add_pass(
+        "cull by table", gfx::PassKind::Compute,
+        [&](gfx::PassBuilder& b) {
+          b.write(rg_args[0], gfx::Access::ComputeReadWrite);
+          b.write(rg_visible, gfx::Access::ComputeWrite);
+        },
+        [&](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.bind_pipeline(gfx::BindPoint::Compute, cull_pipeline.pipeline);
+          cb.push_constants(cull_pipeline.layout, gfx::ShaderStage::Compute, 0, sizeof(u64),
+                            &block_address[0]);
+          cb.dispatch(gfx::cull_group_count(dispatched), 1, 1);
+        });
+    add_readback();
+    REQUIRE_MESSAGE(graph.compile(&error), error);
+    run_frame();
+
+    const u32 by_table_drawn = args_out[1];
+    const auto* table_list = reinterpret_cast<const u32*>(host_bytes + host_list_offset);
+    Vector<u32> table_got;
+    u32 holes_drawn = 0;
+    for (u32 i = 0; i < by_table_drawn && i < pair_count; ++i) {
+      const u32 instance_index = table_list[i * 2];
+      const u32 cluster = table_list[i * 2 + 1];
+      REQUIRE(instance_index < instance_count);
+      const gfx::InstanceDesc& instance = scene.instances[instance_index];
+      const geometry::ClusterMeshPart& part = scene.parts[instance.mesh];
+      if (cluster < part.first_cluster || cluster >= part.first_cluster + part.cluster_count) {
+        ++holes_drawn;
+        continue;
+      }
+      table_got.push_back(instance.first_pair + (cluster - part.first_cluster));
+    }
+    std::sort(table_got.begin(), table_got.end());
+    CHECK(by_table_drawn == expected.size());
+    CHECK(holes_drawn == 0);
+    CHECK(table_got.size() == expected.size());
+    u32 table_mismatched = 0;
+    for (u32 i = 0; i < table_got.size() && i < expected.size(); ++i)
+      table_mismatched += table_got[i] != expected[i];
+    CHECK(table_mismatched == 0);
+    MESSAGE("cull by the pair table: " << by_table_drawn << " of " << dispatched << " pairs ("
+                                       << k_hole_pairs << " holes), reference " << expected.size());
+    blocks[0] = single;
+    gfx::destroy_buffer(device, pair_table);
+  }
+
   graph.reset();
   if (mesh_pipeline.valid()) gfx::destroy_pipeline(device, mesh_pipeline);
   if (mesh_module.valid()) gfx::destroy_shader_module(device, mesh_module);
