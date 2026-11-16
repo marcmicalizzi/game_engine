@@ -133,9 +133,9 @@ struct AnimatedScene {
   // the clip it plays travel from rest, in world metres — the clip's displacement bound through the
   // instance's scale (`row_scale`, world metres a mesh unit, times a game actor's own factor) — and
   // the bias a scene block or a game gave it. `clip_travel` is that bound per library clip in mesh
-  // units, measured once (`k_travel_unknown` until a clip is first played), and `mesh_bounds` the
-  // per-joint influence spheres it is measured against, kept so a clip a game plays later is
-  // measured against the same mesh.
+  // units, measured once (`k_travel_unknown` until measured: at the attach for a clip an instance
+  // starts on, at `GameActors::bind` for every other clip of an actor's skeleton, A47), and
+  // `mesh_bounds` the per-joint influence spheres it is measured against.
   Vector<f32> travel;
   Vector<f32> bias;
   Vector<f32> row_scale;
@@ -243,7 +243,7 @@ u32 find_clip(const animation::Library& library, u32 skeleton, std::string_view 
 // clip_displacement_bound`), the number the cull pads the instance's spheres by and the rule's
 // travel (A44). Measured the first time a clip is asked for and kept
 // (`AnimatedScene::clip_travel`); 0 for a mesh with no skin data or a clip the library does not
-// hold.
+// hold. The load asks for every clip an actor can play, so no frame does (A47).
 inline constexpr f32 k_travel_unknown = -1.0f;
 f32 clip_travel(AnimatedScene& scene, u32 mesh, u32 clip);
 

@@ -201,3 +201,112 @@ ENGINE_BENCH_ARGS(animation_pool_churn, "animation.pool.churn", 256, 4096, 65536
   }
   state.set_items(slot_count);
 }
+
+// What measuring one clip's travel costs (`clip_displacement_bound`, A47): the number engine-view
+// computes for an actor's tier row and a skinned instance's cull padding, the first time a clip is
+// played (docs/subsystems/animation.md, "What a clip's first play costs"). The fixture is the size
+// of a game animal as an exporter writes it: a chain of `joints` joints with a translation, a
+// rotation and a scale track on every one, each **baked** at 30 keys a second over two seconds, the
+// shape Blender's glTF exporter gives every channel by default (the forest's bird rigs are 37
+// joints with seven such clips each). The spheres are a few centimetres round each joint, which
+// moves nothing in the cost: the walk is over times and tracks, not over vertices.
+namespace {
+
+struct TravelFixture {
+  Library library;
+  JointBounds bounds;
+};
+
+TravelFixture& travel_fixture(u32 joints, u32 keys) {
+  static std::vector<std::unique_ptr<TravelFixture>> cache;
+  static std::vector<u64> ids;
+  const u64 id = (u64{joints} << 32) | keys;
+  for (usize i = 0; i < ids.size(); ++i) {
+    if (ids[i] == id) return *cache[i];
+  }
+  auto out = std::make_unique<TravelFixture>();
+  assets::MeshData mesh;
+  mesh.nodes.resize(joints);
+  for (u32 j = 0; j < joints; ++j) {
+    mesh.nodes[j].name = "joint" + std::to_string(j);
+    mesh.nodes[j].parent = j == 0 ? -1 : static_cast<i32>(j - 1);
+    mesh.nodes[j].local.position = Vec3{0.0f, j == 0 ? 0.0f : 0.1f, 0.0f};
+  }
+  assets::Skin skin;
+  skin.name = "animal";
+  for (u32 j = 0; j < joints; ++j)
+    skin.joints.push_back(static_cast<i32>(j));
+  mesh.skins.push_back(skin);
+  assets::Animation animation;
+  animation.name = "baked";
+  const f32 rate = 30.0f;
+  animation.duration = static_cast<f32>(keys - 1) / rate;
+  for (u32 j = 0; j < joints; ++j) {
+    for (u32 path = 0; path < 3; ++path) {
+      assets::AnimationSampler sampler;
+      sampler.interpolation = assets::k_interp_linear;
+      sampler.components = static_cast<u8>(path == 1 ? 4 : 3);
+      for (u32 k = 0; k < keys; ++k) {
+        sampler.times.push_back(static_cast<f32>(k) / rate);
+        // A swing of a few tenths of a radian about z, a small bob, and unit scale: any values
+        // cost the same, so these only have to be a valid pose.
+        const f32 angle = 0.3f * static_cast<f32>((k + j) % 17) / 17.0f;
+        if (path == 0) {
+          sampler.values.push_back(0.0f);
+          sampler.values.push_back(j == 0 ? 0.0f : 0.1f + 0.002f * static_cast<f32>(k % 5));
+          sampler.values.push_back(0.0f);
+        } else if (path == 1) {
+          sampler.values.push_back(0.0f);
+          sampler.values.push_back(0.0f);
+          sampler.values.push_back(angle * 0.5f);
+          sampler.values.push_back(1.0f - angle * angle * 0.125f);
+        } else {
+          for (u32 c = 0; c < 3; ++c)
+            sampler.values.push_back(1.0f);
+        }
+      }
+      assets::AnimationChannel channel;
+      channel.node = static_cast<i32>(j);
+      channel.sampler = static_cast<u32>(animation.samplers.size());
+      channel.path = path == 0   ? assets::k_path_translation
+                     : path == 1 ? assets::k_path_rotation
+                                 : assets::k_path_scale;
+      animation.samplers.push_back(sampler);
+      animation.channels.push_back(channel);
+    }
+  }
+  mesh.animations.push_back(animation);
+  std::string error;
+  if (!out->library.add(mesh, "animal", nullptr, &error)) bench::keep(error);
+  out->bounds.sphere.resize(joints);
+  for (u32 j = 0; j < joints; ++j)
+    out->bounds.sphere[j] = Vec4{0.0f, 0.1f * static_cast<f32>(j), 0.0f, 0.05f};
+  cache.push_back(std::move(out));
+  ids.push_back(id);
+  return *cache.back();
+}
+
+void run_travel(bench::State& state, u32 joints, u32 keys) {
+  TravelFixture& f = travel_fixture(joints, keys);
+  const anim::Skeleton& skeleton = f.library.skeleton_data(0);
+  const anim::Clip& clip = f.library.clip_data(0);
+  while (state.keep_running())
+    bench::keep(clip_displacement_bound(skeleton, clip, f.bounds));
+  state.set_items(1);
+}
+
+}  // namespace
+
+// By the clip's length: 37 joints, 111 tracks, one, two, four and eight seconds of keys at 30 a
+// second (the smoke run takes the shortest).
+ENGINE_BENCH_ARGS(animation_travel_keys, "animation.travel.keys", 31, 61, 121, 241) {
+  const u32 keys = static_cast<u32>(state.arg());
+  run_travel(state, 37, bench::smoke_mode() ? 31u : keys);
+}
+
+// By the rig: two seconds at 30 keys a second, 23 joints (the humanoid core), 37 (a bird of the
+// forest's roster) and 74 (a rig with fingers and a face).
+ENGINE_BENCH_ARGS(animation_travel_joints, "animation.travel.joints", 23, 37, 74) {
+  const u32 joints = static_cast<u32>(state.arg());
+  run_travel(state, bench::smoke_mode() ? 23u : joints, 61);
+}
