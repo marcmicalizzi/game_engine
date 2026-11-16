@@ -216,8 +216,8 @@ TEST_CASE("village: a way is found round a hill, not ruled over it") {
   }
   MESSAGE("round the hill: " << way.length_mm << " mm, " << widest << " mm off the line at most, "
                              << highest << " mm up at most");
-  CHECK(widest > 8000);      // it went round
-  CHECK(highest < 4000);     // and stayed off the hill's shoulder
+  CHECK(widest > 8000);           // it went round
+  CHECK(highest < 4000);          // and stayed off the hill's shoulder
   CHECK(way.length_mm < 160000);  // without a long detour
   // Its ends are the two places.
   CHECK(way.stations[0].x_mm == -60000);
@@ -326,7 +326,7 @@ TEST_CASE("village: plots are taken nearest the green first, and the church stan
       CHECK(q.state == PlotState::reserved);
       CHECK(q.frontage_mm == 42000);
       CHECK(q.depth_mm == 24000);
-      CHECK(q.order == 0);  // set out before any house
+      CHECK(q.order == 0);                             // set out before any house
       CHECK(from_focus(q) > built[built.size() / 2]);  // in the village's outer half
     }
   CHECK(churches == 1);
@@ -334,7 +334,8 @@ TEST_CASE("village: plots are taken nearest the green first, and the church stan
   CHECK(treads_in_plots(plan) == 0);
   // No plot stands on the well.
   for (const Plot& q : plan.plots)
-    CHECK(!in_plot(q, static_cast<f64>(plan.focus_x_mm), static_cast<f64>(plan.focus_z_mm), -1500.0));
+    CHECK(
+        !in_plot(q, static_cast<f64>(plan.focus_x_mm), static_cast<f64>(plan.focus_z_mm), -1500.0));
   MESSAGE("two ways: " << plan.plots.size() << " plots, " << plan.cottages << " cottages, "
                        << plan.back_lanes << " back lanes, focus (" << plan.focus_x_mm << ", "
                        << plan.focus_z_mm << ")");
@@ -424,9 +425,9 @@ TEST_CASE("village: no two plots overlap and none stands in a street, round a be
     CHECK(plan.built >= 8);
     CHECK(overlaps(plan) == 0);
     CHECK(treads_in_plots(plan) == 0);
-    MESSAGE("irregularity " << irregularity << ": " << plan.plots.size() << " plots, "
-                            << plan.built << " houses, " << plan.cottages << " cottages, "
-                            << plan.back_lanes << " back lanes");
+    MESSAGE("irregularity " << irregularity << ": " << plan.plots.size() << " plots, " << plan.built
+                            << " houses, " << plan.cottages << " cottages, " << plan.back_lanes
+                            << " back lanes");
   }
 }
 
@@ -526,13 +527,13 @@ TEST_CASE("village: the shapes cover the treads, the pads, the paths and the wel
     CHECK(exclusion.excluded_mm(g, (q.door_x_mm + q.gate_x_mm) / 2,
                                 (q.door_z_mm + q.gate_z_mm) / 2));  // the path to the gate
     CHECK(exclusion.excluded_mm(g, (q.gate_x_mm + q.path_x_mm) / 2,
-                                (q.gate_z_mm + q.path_z_mm) / 2));  // and on to the tread
+                                (q.gate_z_mm + q.path_z_mm) / 2));    // and on to the tread
     const WorldPos garden = house_point(q, 0, 0, h.max_z_mm + 3000);  // behind the pad
     CHECK(!exclusion.excluded_mm(g, scene_gen::nearest_mm(garden.x),
                                  scene_gen::nearest_mm(garden.z)));
   }
   const LaneStation& mid = plan.lanes[0].stations[plan.lanes[0].stations.size() / 3];
-  CHECK(exclusion.excluded_mm(g, mid.x_mm, mid.z_mm));                   // the tread
+  CHECK(exclusion.excluded_mm(g, mid.x_mm, mid.z_mm));                       // the tread
   CHECK(exclusion.excluded_mm(g, plan.focus_x_mm + 1000, plan.focus_z_mm));  // the well
 
   // The tiles' shapes together are the whole read's: every shape is handed by the tile its disc
@@ -579,7 +580,8 @@ bool inside(const JsonValue& polygon, f64 x, f64 z) {
 const JsonValue* named(const JsonValue& regions, const std::string& ending) {
   for (const JsonValue& r : regions.as_array()) {
     const std::string n(r.find("name")->as_string());
-    if (n.size() >= ending.size() && n.compare(n.size() - ending.size(), ending.size(), ending) == 0)
+    if (n.size() >= ending.size() &&
+        n.compare(n.size() - ending.size(), ending.size(), ending) == 0)
       return &r;
   }
   return nullptr;
@@ -626,8 +628,7 @@ TEST_CASE("village: the wear is a verge, a worn margin and a tread a lane, and a
     CHECK(inside(y, dx - q.inward_x * 0.3, dz - q.inward_z * 0.3));
     CHECK(inside(y, dx - q.inward_x * 0.3 + q.along_x, dz - q.inward_z * 0.3 + q.along_z));
     CHECK(!inside(y, dx + q.inward_x * 12.0, dz + q.inward_z * 12.0));
-    CHECK(inside(*path->find("polygon"),
-                 static_cast<f64>(q.gate_x_mm + q.path_x_mm) / 2000.0,
+    CHECK(inside(*path->find("polygon"), static_cast<f64>(q.gate_x_mm + q.path_x_mm) / 2000.0,
                  static_cast<f64>(q.gate_z_mm + q.path_z_mm) / 2000.0));
   }
   // No layer named, no region; no yard and no path, the lanes' alone.
@@ -731,9 +732,9 @@ TEST_CASE("village: a plot is bounded once, and its front has a gateway at its g
     // plot; a grown village's plots stand apart.
     const u32 shared_sides = 4 * plan.built - segments.size();
     if (irregularity == 0.0f) CHECK(shared_sides >= 1);
-    MESSAGE("irregularity " << irregularity << ": " << lines.size() << " lines, "
-                            << segments.size() << " segments, " << shared_sides
-                            << " sides shared, for " << plan.built << " plots");
+    MESSAGE("irregularity " << irregularity << ": " << lines.size() << " lines, " << segments.size()
+                            << " segments, " << shared_sides << " sides shared, for " << plan.built
+                            << " plots");
   }
 }
 

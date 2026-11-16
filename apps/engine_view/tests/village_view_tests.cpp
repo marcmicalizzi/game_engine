@@ -119,14 +119,15 @@ TEST_CASE("engine-view: a village's flight goes in at a door and sees the house 
       run_app(content_exe(), {"terrain-synth", tmp.file("ground.json"), "--kind", "flat", "--size",
                               "129", "--spacing-mm", "500", "--origin-mm", "-32000,-32000"});
   REQUIRE_MESSAGE(synth.exit_code == 0, synth.output);
-  // One street of two rows, two houses of two storeys, plots two perches deep so both rows stand
-  // on the ground there is.
+  // One street of two rows, two houses of two storeys, plots three perches deep (a grown plot is up
+  // to 30 % shallower) and no green, so both rows stand on the ground there is and house 0 is a
+  // tenement deep enough for the filler's two-storey type.
   const std::string scene = tmp.file("scene.json");
   REQUIRE(io::write_file(scene, R"({"format": "engine.scene.v1", "name": "village-view",
   "terrain": {"size": 17, "extent": 32, "provider": "tiles",
               "tiles": {"heightfield": "ground.json", "cells": 32}},
   "placements": [{"generator": "village", "params": {
-    "name": "test", "seed": 7, "houses": 2, "storeys": 2, "depth_perches": 2,
+    "name": "test", "seed": 7, "houses": 2, "storeys": 2, "depth_perches": 3, "green_m": 0,
     "lanes": [{"name": "street", "waypoints": [[-28, 0, 0], [28, 0, 0]]}]}}]}
 )") == io::Status::Ok);
   const std::string flight = tmp.file("flight.json");

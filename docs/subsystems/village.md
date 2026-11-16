@@ -365,6 +365,32 @@ it.
 
 ## What was measured
 
+**The grown plan** (G206, 2026-11-15/16, `msvc-release`, an RTX 5090; other processes at 21 to
+73 % of the CPU through every run and several agents building, so every time is an upper bound;
+the before figures are this branch's own build of b95676a7, the after figures its tip).
+
+| | Before (the row plan) | After (the grown plan) |
+|---|---|---|
+| `village.plan`, 8 houses (`tools/dev.ps1 bench -Filter 'village.*'`, the box house) | 11.7 µs | **3.54 ms** |
+| 64 houses | 109 µs | 33.9 ms |
+| 256 houses | 1.08 ms | 144 ms |
+| the scene: ways, houses, plots | one 129 m street, 8 houses of 14 plots | three ways (245, 119 and 43 m), 14 houses of 30 plots (14 spare, 1 cottage refused by the filler), a church plot, a well |
+| the scene's flight, GPU median outside (the lane and the path) | 6.37 ms | 5.58 ms |
+| inside (the rooms, the stair, the window) | 4.95 ms | 4.93 ms |
+| resolve, outside / inside | 4.36 / 2.60 ms | 4.12 / 2.72 ms |
+
+(The flights: `engine-view --scene content/test-scenes/village/scene.json --camera-path
+camera-path.json --offscreen --terrain-tiles --shadows rt --tunable renderer.gi.mode=bounce --width
+3840 --height 2160 --frames 2061 --benchmark`, native resolution, no reconstruction, three repeats,
+split at the flight's `door` and first `inside` markers. The two flights are not the same camera:
+each is its plan's walk into its house 0, so the outside figure compares two different lanes.)
+
+**The plan is now three hundred times slower** and no longer microseconds a plot: the way's search
+over its corridor (a 16-neighbour search over 3,000 cells for the bench's 96 m street, 128,000 for
+its 3 km one), the pull straight, and each candidate's test against every station of every street
+dominate. It is still made at every open; at 144 ms for 256 houses it is no longer free, and a
+cache of the ways (or a coarser search grid for long ways) is the next step ([Not yet](#not-yet)).
+
 On `content/test-scenes/village/` (2026-11-14, `msvc-release`, an RTX 5090; the machine shared
 with other agents' builds and GPU suites, other processes at 88 to 99 % of the CPU through the
 flight, so every time is an upper bound).

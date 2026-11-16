@@ -21,9 +21,9 @@ namespace {
 // Half a metre each side between a house and its plot's side boundaries.
 constexpr i64 k_side_gap_mm = 500;
 // **The way's cost** (village-growth-grounding.md, "The ways"; choices): a step's length times
-// 1 + (grade / 8 %)^2, ten times that over a 25 % grade, plus the wander, up to a quarter of the length at
-// `irregularity` 1, over a lattice of 12 m. The search's corridor reaches past the two places by a
-// quarter of their distance, 20 to 40 m.
+// 1 + (grade / 8 %)^2, ten times that over a 25 % grade, plus the wander, up to a quarter of the
+// length at `irregularity` 1, over a lattice of 12 m. The search's corridor reaches past the two
+// places by a quarter of their distance, 20 to 40 m.
 constexpr i64 k_grade_knee = 80;   // per mille
 constexpr i64 k_grade_wall = 250;  // per mille
 constexpr i64 k_wander_lattice_mm = 12000;
@@ -157,9 +157,8 @@ i64 wander_at(u64 seed, i64 x_mm, i64 z_mm) noexcept {
   const i64 ix = floor_div(x_mm, l), iz = floor_div(z_mm, l);
   const i64 fx = x_mm - ix * l, fz = z_mm - iz * l;
   const auto node = [&](i64 a, i64 b) {
-    return static_cast<i64>(mix64(hash_combine(hash_combine(seed, static_cast<u64>(a)),
-                                               static_cast<u64>(b))) %
-                            1001u);
+    return static_cast<i64>(
+        mix64(hash_combine(hash_combine(seed, static_cast<u64>(a)), static_cast<u64>(b))) % 1001u);
   };
   const i64 v = node(ix, iz) * (l - fx) / l * (l - fz) + node(ix + 1, iz) * fx / l * (l - fz) +
                 node(ix, iz + 1) * (l - fx) / l * fz + node(ix + 1, iz + 1) * fx / l * fz;
@@ -216,12 +215,12 @@ bool find_way(const scene_gen::Ground& ground, i64 ax, i64 az, i64 bx, i64 bz, i
   };
   Step steps[16];
   {
-    const i64 offsets[16][2] = {{1, 0},  {-1, 0},  {0, 1},  {0, -1}, {1, 1},  {1, -1},
-                                {-1, 1}, {-1, -1}, {1, 2},  {2, 1},  {-1, 2}, {-2, 1},
+    const i64 offsets[16][2] = {{1, 0},  {-1, 0},  {0, 1},   {0, -1}, {1, 1},  {1, -1},
+                                {-1, 1}, {-1, -1}, {1, 2},   {2, 1},  {-1, 2}, {-2, 1},
                                 {1, -2}, {2, -1},  {-1, -2}, {-2, -1}};
     for (u32 k = 0; k < 16; ++k) {
-      const f64 d = std::sqrt(static_cast<f64>(offsets[k][0] * offsets[k][0] +
-                                               offsets[k][1] * offsets[k][1]));
+      const f64 d = std::sqrt(
+          static_cast<f64>(offsets[k][0] * offsets[k][0] + offsets[k][1] * offsets[k][1]));
       steps[k] = Step{offsets[k][0], offsets[k][1], mm_of(d * static_cast<f64>(cell_mm) / 1000.0)};
     }
   }
@@ -321,8 +320,10 @@ bool find_way(const scene_gen::Ground& ground, i64 ax, i64 az, i64 bx, i64 bz, i
   while (i < last) {
     u32 reach = i + 1;
     for (u32 j = i + 2; j <= last; ++j) {
-      if (straight(i, j) <= pc[j] - pc[i]) reach = j;
-      else if (j > reach + 8) break;  // a stretch this much past the last straight one is not
+      if (straight(i, j) <= pc[j] - pc[i])
+        reach = j;
+      else if (j > reach + 8)
+        break;  // a stretch this much past the last straight one is not
     }
     out.push_back(px[reach]);
     out.push_back(pz[reach]);
@@ -356,8 +357,8 @@ void station(const Vector<i64>& pts, i64 station_mm, LaneLine& line) {
   Vector<f64> arc;
   arc.push_back(0.0);
   for (u32 k = 1; k < n; ++k)
-    arc.push_back(arc[k - 1] + direction(pts[2 * k - 2], pts[2 * k - 1], pts[2 * k], pts[2 * k + 1])
-                                   .length_mm);
+    arc.push_back(arc[k - 1] +
+                  direction(pts[2 * k - 2], pts[2 * k - 1], pts[2 * k], pts[2 * k + 1]).length_mm);
   const f64 total = arc[n - 1];
   line.length_mm = mm_of(total / 1000.0);
   const i64 steps = std::max<i64>(1, (line.length_mm + station_mm - 1) / station_mm);
@@ -370,8 +371,8 @@ void station(const Vector<i64>& pts, i64 station_mm, LaneLine& line) {
     const f64 t = span > 0.0 ? std::clamp((at - arc[seg]) / span, 0.0, 1.0) : 0.0;
     LaneStation s;
     s.x_mm = pts[2 * seg] + mm_of(t * static_cast<f64>(pts[2 * seg + 2] - pts[2 * seg]) / 1000.0);
-    s.z_mm =
-        pts[2 * seg + 1] + mm_of(t * static_cast<f64>(pts[2 * seg + 3] - pts[2 * seg + 1]) / 1000.0);
+    s.z_mm = pts[2 * seg + 1] +
+             mm_of(t * static_cast<f64>(pts[2 * seg + 3] - pts[2 * seg + 1]) / 1000.0);
     line.stations.push_back(s);
   }
 }
@@ -448,12 +449,12 @@ struct Candidate {
   u32 lane = 0;
   u8 side = 0;
   PlotKind kind = PlotKind::tenement;
-  i64 s_mm = 0;           // its front's middle, along the way
+  i64 s_mm = 0;  // its front's middle, along the way
   i64 frontage_mm = 0, depth_mm = 0;
-  i64 edge_mm = -1;       // the street's edge it stands at, or -1 for the way's own there
+  i64 edge_mm = -1;  // the street's edge it stands at, or -1 for the way's own there
   u64 seed = 0;
-  u64 key = 0;            // the order: the lower first
-  u32 index = 0;          // its place in the list made, which settles a tie
+  u64 key = 0;    // the order: the lower first
+  u32 index = 0;  // its place in the list made, which settles a tie
 };
 
 // A plot's rectangle as four corners, for the overlap test.
@@ -627,8 +628,8 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
     line.half_tread_mm = half_tread;
     line.from_lane = li;
     if (!tops(ground, line))
-      return refuse(error, "village: the ground under " + lane_name(layer, nullptr, li) +
-                               " is not finite");
+      return refuse(
+          error, "village: the ground under " + lane_name(layer, nullptr, li) + " is not finite");
     out.lanes.push_back(std::move(line));
   }
   Vector<Vector<i64>> arc;
@@ -661,9 +662,9 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
     LaneLine& line = out.lanes[li];
     f64 d2 = 0.0;
     const u32 k_green = nearest_station(line, out.focus_x_mm, out.focus_z_mm, &d2);
-    const bool greened = green > 2 * half_street &&
-                         d2 <= static_cast<f64>(std::max<i64>(green / 2, 10000)) *
-                                   static_cast<f64>(std::max<i64>(green / 2, 10000));
+    const bool greened =
+        green > 2 * half_street && d2 <= static_cast<f64>(std::max<i64>(green / 2, 10000)) *
+                                             static_cast<f64>(std::max<i64>(green / 2, 10000));
     const i64 s_green = arc[li][k_green];
     for (u32 k = 0; k < line.stations.size(); ++k) {
       const i64 s = arc[li][k];
@@ -681,7 +682,7 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
     }
   }
 
-  // **The candidates** (village.md, "The order plots are taken in"): along each way and side, out
+  // **The candidates** (village.md, "The candidates."): along each way and side, out
   // from the station nearest the focus both ways, founding tenements of whole perches stretched by
   // `irregularity`, with a seeded gap after each; a cottage in each gap wide enough for one; and,
   // on a way through the green, cottages standing at the street's own edge on the green's.
@@ -701,9 +702,10 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
       for (i32 dir = 1; dir >= -1; dir -= 2) {
         i64 cursor = 0;
         for (u32 n = 0; n < 4096; ++n) {
-          const u64 seed = hash_combine(
-              hash_combine(hash_combine(hash_combine(layer.seed, li), side), static_cast<u64>(dir + 1)),
-              n);
+          const u64 seed =
+              hash_combine(hash_combine(hash_combine(hash_combine(layer.seed, li), side),
+                                        static_cast<u64>(dir + 1)),
+                           n);
           const i64 whole = perch * static_cast<i64>(layer.frontage_min_perches +
                                                      static_cast<u32>(mix64(seed) % spread));
           const i64 frontage =
@@ -764,7 +766,7 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
   }
 
   // The plot a candidate would be: its frame on its way, at its edge, turned (village.md, "A
-  // plot's turn").
+  // plot's turn and place.").
   const auto frame = [&](const Candidate& c, Plot& p, bool square = false) {
     const LaneLine& line = out.lanes[c.lane];
     const u32 k = station_at(arc[c.lane], c.s_mm);
@@ -821,7 +823,8 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
       // The seeded part wanders along the way (a 16 m lattice), so neighbours lean alike and a
       // row fans rather than crossing itself.
       const i64 lean_draw = edge_wander(
-          hash_combine(hash_combine(hash_combine(layer.seed, c.lane), c.side), 0x7a11ull), c.s_mm / 3);
+          hash_combine(hash_combine(hash_combine(layer.seed, c.lane), c.side), 0x7a11ull),
+          c.s_mm / 3);
       const f64 jitter = static_cast<f64>(lean_draw - 500) / 500.0 * 0.15;
       turn = weight_slope * std::clamp(want, -1.0, 1.0) +
              (1.0 - weight_slope) * 0.5 * std::clamp(sun, -1.0, 1.0) + jitter;
@@ -864,10 +867,10 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
       if (c.kind == PlotKind::tenement) tenement_keys.push_back(c.key);
     }
     std::sort(tenement_keys.begin(), tenement_keys.end());
-    const u64 later = tenement_keys.empty()
-                          ? 0
-                          : tenement_keys[std::min<u32>(tenement_keys.size() - 1,
-                                                        layer.houses * 3 / 5)];
+    const u64 later =
+        tenement_keys.empty()
+            ? 0
+            : tenement_keys[std::min<u32>(tenement_keys.size() - 1, layer.houses * 3 / 5)];
     for (Candidate& c : cands)
       if (c.kind == PlotKind::cottage) c.key = later + c.key / 4;
     std::sort(cands.begin(), cands.end(), [](const Candidate& a, const Candidate& b) {
@@ -919,13 +922,12 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
                   dz = static_cast<f64>(st.z_mm - p.front_z_mm);
         if (dx * dx + dz * dz > reach * reach) continue;
         const Dir t = tangent(line, k);
-        const f64 offsets[5] = {-static_cast<f64>(st.right_mm) * 0.75,
-                                -static_cast<f64>(st.right_mm) * 0.5, 0.0,
-                                static_cast<f64>(st.left_mm) * 0.5,
-                                static_cast<f64>(st.left_mm) * 0.75};
+        const f64 offsets[5] = {
+            -static_cast<f64>(st.right_mm) * 0.75, -static_cast<f64>(st.right_mm) * 0.5, 0.0,
+            static_cast<f64>(st.left_mm) * 0.5, static_cast<f64>(st.left_mm) * 0.75};
         for (const f64 o : offsets)
-          if (inside_plot(p, static_cast<f64>(st.x_mm) - t.z * o, static_cast<f64>(st.z_mm) + t.x * o,
-                          300.0))
+          if (inside_plot(p, static_cast<f64>(st.x_mm) - t.z * o,
+                          static_cast<f64>(st.z_mm) + t.x * o, 300.0))
             return true;
       }
     }
@@ -1099,7 +1101,8 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
       const LaneStation& a = line.stations[k];
       const LaneStation& b = line.stations[k + 1];
       const f64 ex = static_cast<f64>(b.x_mm - a.x_mm), ez = static_cast<f64>(b.z_mm - a.z_mm);
-      const f64 gx = static_cast<f64>(p.gate_x_mm - a.x_mm), gz = static_cast<f64>(p.gate_z_mm - a.z_mm);
+      const f64 gx = static_cast<f64>(p.gate_x_mm - a.x_mm),
+                gz = static_cast<f64>(p.gate_z_mm - a.z_mm);
       const f64 ee = ex * ex + ez * ez;
       const f64 t = ee > 0.0 ? std::clamp((gx * ex + gz * ez) / ee, 0.0, 1.0) : 0.0;
       const f64 dx = gx - t * ex, dz = gz - t * ez;
@@ -1135,9 +1138,8 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
               p.kind == PlotKind::tenement)
             row.push_back(k);
         }
-        std::sort(row.begin(), row.end(), [&](u32 a, u32 b) {
-          return out.plots[a].along_mm < out.plots[b].along_mm;
-        });
+        std::sort(row.begin(), row.end(),
+                  [&](u32 a, u32 b) { return out.plots[a].along_mm < out.plots[b].along_mm; });
         u32 first = 0;
         for (u32 k = 1; k <= row.size(); ++k) {
           const bool follows =
@@ -1341,8 +1343,7 @@ void footprints(const VillageLayer& layer, const VillagePlan& plan, scene_gen::F
     }
   }
   if (plan.well) {
-    const scene_gen::Footprint well(plan.focus_x_mm, plan.focus_z_mm,
-                                    metres(k_well_radius_mm));
+    const scene_gen::Footprint well(plan.focus_x_mm, plan.focus_z_mm, metres(k_well_radius_mm));
     if (wanted(well)) out.add(well);
   }
 }
@@ -1388,7 +1389,8 @@ JsonValue band_polygon(const Vector<LaneStation>& st, const Left& left, const Ri
     }
     const Dir d = direction(a.x_mm, a.z_mm, b.x_mm, b.z_mm);
     const f64 l = left(q), r = right(q);
-    outline.push_back(region_point(c.x_mm - mm_of(d.z * l / 1000.0), c.z_mm + mm_of(d.x * l / 1000.0)));
+    outline.push_back(
+        region_point(c.x_mm - mm_of(d.z * l / 1000.0), c.z_mm + mm_of(d.x * l / 1000.0)));
     rx.push_back(c.x_mm + mm_of(d.z * r / 1000.0));
     rz.push_back(c.z_mm - mm_of(d.x * r / 1000.0));
   }
@@ -1419,28 +1421,28 @@ JsonValue ground_regions_json(const VillageLayer& layer, const VillagePlan& plan
     for (const LaneStation& s : st)
       narrowest = std::min(narrowest, static_cast<f64>(std::min(s.left_mm, s.right_mm)));
     if (!names.verge.empty() && !line.back && narrowest > half_tread + margin)
-      list.push_back(region(
-          lane + " verge",
-          band_polygon(
-              st, [&](u32 q) { return static_cast<f64>(st[q].left_mm); },
-              [&](u32 q) { return static_cast<f64>(st[q].right_mm); }),
-          names.verge, std::min(1.0, (narrowest - half_tread - margin) / 1000.0)));
+      list.push_back(region(lane + " verge",
+                            band_polygon(
+                                st, [&](u32 q) { return static_cast<f64>(st[q].left_mm); },
+                                [&](u32 q) { return static_cast<f64>(st[q].right_mm); }),
+                            names.verge,
+                            std::min(1.0, (narrowest - half_tread - margin) / 1000.0)));
     if (!names.worn.empty())
-      list.push_back(region(lane + " wear",
-                            band_polygon(st, fixed(half_tread + margin), fixed(half_tread + margin)),
-                            names.worn, 2.0 * margin / 1000.0));
+      list.push_back(region(
+          lane + " wear", band_polygon(st, fixed(half_tread + margin), fixed(half_tread + margin)),
+          names.worn, 2.0 * margin / 1000.0));
     if (!names.tread.empty() && !line.back && half_tread > 2.0 * margin)
-      list.push_back(region(lane + " tread",
-                            band_polygon(st, fixed(half_tread - margin), fixed(half_tread - margin)),
-                            names.tread, margin / 1000.0));
+      list.push_back(region(
+          lane + " tread", band_polygon(st, fixed(half_tread - margin), fixed(half_tread - margin)),
+          names.tread, margin / 1000.0));
   }
   if (names.worn.empty()) return list;
   // The well's trodden ground, an octagon round it.
   if (plan.well) {
     JsonValue outline = JsonValue::array();
     const f64 r = static_cast<f64>(k_well_yard_mm);
-    const f64 c8[8][2] = {{1, 0},   {0.7071, 0.7071},   {0, 1},  {-0.7071, 0.7071},
-                          {-1, 0},  {-0.7071, -0.7071}, {0, -1}, {0.7071, -0.7071}};
+    const f64 c8[8][2] = {{1, 0},  {0.7071, 0.7071},   {0, 1},  {-0.7071, 0.7071},
+                          {-1, 0}, {-0.7071, -0.7071}, {0, -1}, {0.7071, -0.7071}};
     for (const auto& c : c8)
       outline.push_back(region_point(plan.focus_x_mm + mm_of(c[0] * r / 1000.0),
                                      plan.focus_z_mm + mm_of(c[1] * r / 1000.0)));
@@ -1475,7 +1477,8 @@ JsonValue ground_regions_json(const VillageLayer& layer, const VillagePlan& plan
       // The path's band past the tread's wear, from the gate.
       const Dir d = direction(p.gate_x_mm, p.gate_z_mm, p.path_x_mm, p.path_z_mm);
       const f64 on = margin;
-      const i64 ex = p.path_x_mm + mm_of(d.x * on / 1000.0), ez = p.path_z_mm + mm_of(d.z * on / 1000.0);
+      const i64 ex = p.path_x_mm + mm_of(d.x * on / 1000.0),
+                ez = p.path_z_mm + mm_of(d.z * on / 1000.0);
       const i64 ox = mm_of(-d.z * half_path / 1000.0), oz = mm_of(d.x * half_path / 1000.0);
       JsonValue outline = JsonValue::array();
       outline.push_back(region_point(p.gate_x_mm + ox, p.gate_z_mm + oz));
@@ -1569,7 +1572,8 @@ JsonValue plan_json(const VillageLayer& layer, const VillagePlan& plan) {
   o["outside"] = JsonValue(plan.outside);
   o["church"] = JsonValue(plan.church);
   o["back_lanes"] = JsonValue(plan.back_lanes);
-  o["focus"] = point_json(metres(plan.focus_x_mm), metres(plan.focus_top_mm), metres(plan.focus_z_mm));
+  o["focus"] =
+      point_json(metres(plan.focus_x_mm), metres(plan.focus_top_mm), metres(plan.focus_z_mm));
   o["well"] = JsonValue(plan.well);
   char hash[24];
   std::snprintf(hash, sizeof(hash), "%016llx", static_cast<unsigned long long>(plan_hash(plan)));
