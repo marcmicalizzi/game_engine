@@ -60,13 +60,16 @@ namespace engine::renderer {
 // Mirrors PairExpandParams in pair_expand.slang: the push constants of the pass that writes a
 // dynamic scene's changed pair-table entries from its instance table (docs/subsystems/renderer.md,
 // "Instances that come and go"). The dynamic instances test holds it to the shader's reflection.
+// The same block drives the two passes T154 added from the same module: `pair_shift_main` (`list`
+// the set's `PairShift` runs, `count` of them) and `pair_expand_runs_main` (`list` runs of slots
+// whose pairs to write with their slot prefix, `count` of them, `slots` in all).
 struct PairExpandParams {
   u64 instances = 0;  // gfx::InstanceDesc[]: the table set the frame reads, already uploaded
   u64 meshes = 0;     // gfx::MeshDesc[]
-  u64 list = 0;       // u32[count]: the instances whose pairs to write
+  u64 list = 0;       // u32[count]: the instances whose pairs to write; or the runs above
   u64 pairs = 0;      // u32x2[]: the same set's pair table
   u32 count = 0;
-  u32 pad = 0;
+  u32 slots = 0;  // the runs' slots, for `pair_expand_runs_main`
 };
 static_assert(sizeof(PairExpandParams) == 40);
 inline constexpr u32 k_pair_expand_workgroup = 64;  // numthreads in pair_expand.slang
@@ -285,9 +288,10 @@ class GpuScene {
     TileLayoutChange layout;
     bool grew = false;
     u32 slots_written = 0;
-    // Slots whose first pair alone moved, at the cap (`TileLayoutChange::tight`): not written,
-    // copied again by each table set.
+    // Slots whose first pair alone moved (`TileLayoutChange::tight`): not written and not staged,
+    // but numbered again on the GPU by each table set from the change's runs (T154).
     u32 slots_renumbered = 0;
+    u32 shift_runs = 0;  // those runs
     // Instances read to tell whether a block is the one its key holds: a block with no version, or
     // another one, is compared instance by instance; one with the version held, not at all (W81).
     u64 compared = 0;
@@ -423,6 +427,17 @@ class GpuScene {
     // pairs, which are a function of the slot alone and are written whole with the set.
     gfx::BufferResource pair_source;
     Vector<gfx::BufferCopy> pair_copies;
+    // **The slots numbered again since the set was last current** (T154; renderer.md, "The pairs
+    // are numbered again, and no slot moves"): `shift_runs` `PairShift`s at `shift_address`, which
+    // `pair_shift_main` applies to the set's instance table before the copies (a copied slot then
+    // takes its record whole), and `expand_runs` runs of the slots among them not copied, at
+    // `expand_runs_address`, `expand_run_slots` slots, whose pairs `pair_expand_runs_main` writes
+    // again after them. In the same staging, after the records.
+    u64 shift_address = 0;
+    u32 shift_runs = 0;
+    u64 expand_runs_address = 0;
+    u32 expand_runs = 0;
+    u32 expand_run_slots = 0;
   };
   bool prepare_tables(u32 slot, TableUpdate& out, std::string* error = nullptr);
   // The mesh of instance `index`, prefix or tail; ~0 past the end and for a hole's null instance
@@ -1551,16 +1566,27 @@ class GpuScene {
     gfx::BufferResource pairs;
     Vector<InstanceRange> pending;
     bool all = true;
-    // Slots whose `first_pair` alone changed since this set was last written (T137,
-    // `number_first_pairs`): their records are copied and their pairs expanded again, and their
-    // top-level records, which name no pair, are not.
-    InstanceRange renumbered;
+    // What the numberings since this set was last written did to its slots' `first_pair`s, as
+    // runs (T154, `number_first_pairs`): applied on the GPU before its copies, and the pairs of
+    // the live slots among them not copied expanded again. Their records and their top-level
+    // records are not staged at all. (T137 staged every such record again, 29 MB a set.)
+    Vector<PairShift> shift;
   };
-  Vector<InstanceRange> desc_runs_;  // `prepare_tables`' scratch: the pending runs and that one
-  // **The tail's first pairs, numbered again from the instances it holds** (T137; renderer.md,
-  // "At the cap the pairs are numbered again"): after a change whose layout is `tight`, an
-  // addition a slot. `renumbered` gets the slots whose number moved.
+  // **The tail's first pairs, numbered again where the slots stand** (T137, T154; renderer.md, "The
+  // pairs are numbered again, and no slot moves"): after a change whose layout is `tight`, its runs
+  // (`change_shifts_`, those it wrote taken out) go to every table set and to the CPU's own table,
+  // which takes them lazily (`cpu_shift_`). `renumbered` gets the slots they cover.
   void number_first_pairs(u32& renumbered);
+  // **The CPU's table catches up when it is read** (T154): the numberings it has not applied yet,
+  // as runs (a pass over 349,000 records of 96 bytes is 3.7 to 5.8 ms of the frame's thread). Slots
+  // a change writes are taken out; a run of slots a table set copies is settled first, and the
+  // whole table before a set is written whole; `table_first_pair` reads through what is pending.
+  Vector<PairShift> change_shifts_;
+  Vector<PairShift> cpu_shift_;
+  Vector<PairShift> shift_scratch_;
+  Vector<PairShift> expand_runs_;
+  void settle_first_pairs(u32 begin, u32 end);
+  u32 table_first_pair(u32 slot) const noexcept;
   // What a live tail slot was made from, to tell a block that came back unchanged.
   struct InstanceKey {
     u32 mesh = 0;

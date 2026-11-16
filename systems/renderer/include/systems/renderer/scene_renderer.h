@@ -1059,6 +1059,10 @@ class SceneRenderer {
     gfx::ComputePipeline gi_fold;
     // pair_expand.slang: a streamed world's changed pair-table entries, from its instance table.
     gfx::ComputePipeline pair_expand;
+    // The same module's numbering of a set's first pairs by runs, and the expansion of the runs'
+    // pairs (T154).
+    gfx::ComputePipeline pair_shift;
+    gfx::ComputePipeline pair_expand_runs;
     // A frame with a frame pass: the resolve into the linear colour image, and the output encode
     // out of it into the frame's target (frame_encode.slang). Made by the first `add_frame_pass`.
     gfx::PipelineHandle resolve_linear;

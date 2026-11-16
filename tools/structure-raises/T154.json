@@ -1,0 +1,14 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "T154",
+  "reason": "T154: the tail's holes numbered again where the slots stand under the cap too, applied on the GPU as runs of slots (the pair shift pass and the runs' expansion in record_frame, the per-set and CPU runs in gpu_scene), and renderer.md's account of the cause and the rule",
+  "date": "2026-11-15",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "renderer.record_frame.lines": 36,
+    "renderer.record_frame.add_pass": 1,
+    "renderer.gpu_scene_cpp.lines": 40,
+    "renderer.gpu_scene_h.lines": 26,
+    "page:docs/subsystems/renderer.md": 7252
+  }
+}

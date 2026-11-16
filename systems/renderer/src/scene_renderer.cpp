@@ -353,6 +353,8 @@ void SceneRenderer::Pipelines::destroy(const gfx::Device& device) noexcept {
   gfx::destroy_compute_pipeline(device, gi_sample);
   gfx::destroy_compute_pipeline(device, gi_fold);
   gfx::destroy_compute_pipeline(device, pair_expand);
+  gfx::destroy_compute_pipeline(device, pair_shift);
+  gfx::destroy_compute_pipeline(device, pair_expand_runs);
   direct = hardware = vertex = vertex_fallback = shadow = shadow_fallback = resolve = {};
   resolve_linear = encode = {};
 }
@@ -1313,7 +1315,12 @@ bool SceneRenderer::create_pipelines(std::string* error) {
     const gfx::Shader* pairs = shaders_.get("pair_expand", error);
     if (pairs == nullptr ||
         !gfx::create_compute_pipeline(device, pairs->module, "pair_expand_main", {},
-                                      sizeof(PairExpandParams), pipelines_.pair_expand, error)) {
+                                      sizeof(PairExpandParams), pipelines_.pair_expand, error) ||
+        !gfx::create_compute_pipeline(device, pairs->module, "pair_shift_main", {},
+                                      sizeof(PairExpandParams), pipelines_.pair_shift, error) ||
+        !gfx::create_compute_pipeline(device, pairs->module, "pair_expand_runs_main", {},
+                                      sizeof(PairExpandParams), pipelines_.pair_expand_runs,
+                                      error)) {
       return false;
     }
   }
@@ -2156,7 +2163,7 @@ void SceneRenderer::collect_slot(u32 slot) {
     last.gpu_shadow_cull = timer_.ms("shadow cull");
     last.gpu_shadow = last.gpu_shadow_cull + timer_.ms("shadow");
     last.gpu_pair_expand = timer_.ms("pair expand");
-    last.gpu_tables = timer_.ms("table copy") + last.gpu_pair_expand;
+    last.gpu_tables = timer_.ms("pair shift") + timer_.ms("table copy") + last.gpu_pair_expand;
     last.gpu_terrain_upload = timer_.ms("terrain upload");
     last.gpu_sky = timer_.ms("sky");
     last.gpu_half_sun = timer_.ms("half sun");
@@ -4761,6 +4768,26 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   const bool level_pairs = write_tables && !tables_.pair_copies.empty();
   gfx::RgBuffer rg_level_pairs{};
   if (level_pairs) rg_level_pairs = graph.import_buffer("level pairs", tables_.pair_source);
+  // The set's first pairs numbered again by runs before the copies, which then win (T154).
+  if (write_tables && tables_.shift_runs > 0) {
+    PairExpandParams shift = pair_expand;
+    shift.list = tables_.shift_address;
+    shift.count = tables_.shift_runs;
+    graph.add_pass(
+        "pair shift", gfx::PassKind::Compute,
+        [&](gfx::PassBuilder& b) {
+          b.read(rg_table_staging, gfx::Access::ComputeRead);
+          b.write(rg_instances, gfx::Access::ComputeWrite);
+        },
+        [&, shift](gfx::CommandList cb, gfx::RenderGraph&) {
+          timer.begin(cb, "pair shift");
+          cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.pair_shift.pipeline);
+          cb.push_constants(pipelines.pair_shift.layout, gfx::ShaderStage::Compute, 0,
+                            sizeof(PairExpandParams), &shift);
+          cb.dispatch(shift.count, 1, 1);
+          timer.end(cb);
+        });
+  }
   if (write_tables) {
     graph.add_pass(
         "table copy", gfx::PassKind::Transfer,
@@ -4775,9 +4802,12 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
         },
         [&, rt_records, level_pairs](gfx::CommandList cb, gfx::RenderGraph&) {
           timer.begin(cb, "table copy");
-          cb.copy_buffer(
-              tables_.staging.buffer, scene.instances.buffer,
-              std::span<const gfx::BufferCopy>(tables_.copies.data(), tables_.copies.size()));
+          // A frame that only numbers pairs again copies no record (T154).
+          if (!tables_.copies.empty()) {
+            cb.copy_buffer(
+                tables_.staging.buffer, scene.instances.buffer,
+                std::span<const gfx::BufferCopy>(tables_.copies.data(), tables_.copies.size()));
+          }
           if (rt_records) {
             cb.copy_buffer(tables_.staging.buffer, scene.rt_instances.buffer,
                            std::span<const gfx::BufferCopy>(tables_.rt_copies.data(),
@@ -4790,7 +4820,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           }
           timer.end(cb);
         });
-    if (tables_.expand > 0) {
+    if (tables_.expand > 0 || tables_.expand_runs > 0) {
       graph.add_pass(
           "pair expand", gfx::PassKind::Compute,
           [&](gfx::PassBuilder& b) {
@@ -4803,10 +4833,23 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           },
           [&](gfx::CommandList cb, gfx::RenderGraph&) {
             timer.begin(cb, "pair expand");
-            cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.pair_expand.pipeline);
-            cb.push_constants(pipelines.pair_expand.layout, gfx::ShaderStage::Compute, 0,
-                              sizeof(PairExpandParams), &pair_expand);
-            cb.dispatch(tables_.expand, 1, 1);
+            if (tables_.expand > 0) {
+              cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.pair_expand.pipeline);
+              cb.push_constants(pipelines.pair_expand.layout, gfx::ShaderStage::Compute, 0,
+                                sizeof(PairExpandParams), &pair_expand);
+              cb.dispatch(tables_.expand, 1, 1);
+            }
+            // The slots numbered again and not copied (T154): disjoint from the list's.
+            if (tables_.expand_runs > 0) {
+              PairExpandParams runs = pair_expand;
+              runs.list = tables_.expand_runs_address;
+              runs.count = tables_.expand_runs;
+              runs.slots = tables_.expand_run_slots;
+              cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.pair_expand_runs.pipeline);
+              cb.push_constants(pipelines.pair_expand_runs.layout, gfx::ShaderStage::Compute, 0,
+                                sizeof(PairExpandParams), &runs);
+              cb.dispatch(runs.slots, 1, 1);
+            }
             timer.end(cb);
           });
     }
