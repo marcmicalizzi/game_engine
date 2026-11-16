@@ -28,7 +28,9 @@ struct Fit @version(1) {
 }
 
 /// One mesh a scene draws.
-struct Mesh @version(1) {
+///
+/// Version 2: `texel_density` (roadmap G14; docs/subsystems/texture.md, "Sized by the asset").
+struct Mesh @version(2) {
   /// What the README, the overlay and a run's summary call it.
   name: string
   /// A glTF, GLB or .clusters file, relative to the scene file.
@@ -42,6 +44,13 @@ struct Mesh @version(1) {
   /// manifest's business, which is what keeps a paid-plan asset out of the repository.
   overlay: string
   fit: Fit?
+  /// Texels a metre the closest view of this mesh resolves on its surface. Its built textures
+  /// that hold more than this at its largest instance leave their top levels out, and draw the
+  /// same pixels wherever a sampler reads the levels kept. 0: the host's
+  /// (`renderer.textures.texel_density`, itself 0 by default: no cap). Negative: none of this
+  /// mesh's textures is capped. A prop a module places and a placement generator's mesh have no
+  /// instance the load can measure, and are not capped.
+  texel_density: f32 = 0 @since(2)
 }
 
 /// A skinned instance's clip, carried for the host and never read by the renderer.

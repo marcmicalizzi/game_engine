@@ -6,6 +6,7 @@
 #include <foundation/image/decode.h>
 #include <foundation/io/vfs.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -26,10 +27,21 @@ constexpr u32 k_pack_mips = 1u << 6;
 constexpr u32 k_pack_valid = 1u << 7;
 constexpr u32 k_pack_edge_x_shift = 8;
 constexpr u32 k_pack_edge_y_shift = 10;
+constexpr u32 k_pack_cap_shift = 12;
 constexpr u32 k_pack_cutoff_shift = 16;
 constexpr u32 k_pack_known = 0xfu | k_pack_srgb | k_pack_normal | k_pack_mips | k_pack_valid |
                              (3u << k_pack_edge_x_shift) | (3u << k_pack_edge_y_shift) |
-                             (0xffu << k_pack_cutoff_shift);
+                             (0xfu << k_pack_cap_shift) | (0xffu << k_pack_cutoff_shift);
+
+// `needed_side` as the four bits it packs to: 0 for none (or one past the largest side, which can
+// leave nothing out), else log2 of the next power of two up, plus one.
+u32 pack_needed_side(u32 needed_side) noexcept {
+  if (needed_side == 0 || needed_side > k_max_needed_side) return 0;
+  u32 log2 = 0;
+  while ((1u << log2) < needed_side)
+    ++log2;
+  return log2 + 1;
+}
 
 // The largest side the builder takes. Level 1's working set is a float image of half the source
 // and a horizontal pass of half its width at full height, about 12 bytes a source texel, and the
@@ -112,8 +124,29 @@ u32 pack_texture_options(const TextureBuildOptions& options) noexcept {
   if (options.mips) word |= k_pack_mips;
   word |= static_cast<u32>(options.edge_x) << k_pack_edge_x_shift;
   word |= static_cast<u32>(options.edge_y) << k_pack_edge_y_shift;
+  word |= pack_needed_side(options.needed_side) << k_pack_cap_shift;
   word |= static_cast<u32>(options.alpha_cutoff) << k_pack_cutoff_shift;
   return word | k_pack_valid;
+}
+
+u32 texture_levels_dropped(u32 width, u32 height, u32 needed_side) noexcept {
+  const u32 packed = pack_needed_side(needed_side);
+  if (packed == 0 || width == 0 || height == 0) return 0;
+  const u32 side = 1u << (packed - 1);  // what the options word keeps
+  u32 levels = 1;                       // the source's whole chain, to 1x1
+  for (u32 w = width, h = height; w > 1 || h > 1; ++levels) {
+    w = w > 1 ? w >> 1 : 1;
+    h = h > 1 ? h >> 1 : 1;
+  }
+  u32 dropped = 0;
+  while (dropped + 1 < levels) {
+    const u32 w = width >> (dropped + 1);
+    const u32 h = height >> (dropped + 1);
+    const u32 shorter = std::max(1u, std::min(w, h));
+    if (shorter < side) break;
+    ++dropped;
+  }
+  return dropped;
 }
 
 bool unpack_texture_options(u32 packed, TextureBuildOptions& out) noexcept {
@@ -131,6 +164,8 @@ bool unpack_texture_options(u32 packed, TextureBuildOptions& out) noexcept {
   out.edge_x = static_cast<EdgeMode>(edge_x);
   out.edge_y = static_cast<EdgeMode>(edge_y);
   out.alpha_cutoff = static_cast<u8>((packed >> k_pack_cutoff_shift) & 0xffu);
+  const u32 cap = (packed >> k_pack_cap_shift) & 0xfu;
+  out.needed_side = cap == 0 ? 0u : 1u << (cap - 1);
   return true;
 }
 
@@ -423,15 +458,27 @@ bool build_texture(std::span<const u8> rgba, u32 width, u32 height, u32 source_c
   }
 
   const i64 mip_start = time::monotonic_ns();
+  // **A cap** (`needed_side`, texture.md "Sized by the asset"): the chain is filtered from the
+  // source exactly as without one, and the levels above the first the asset can use are not
+  // stored, so every level kept is the uncapped texture's own, byte for byte. Without mips the
+  // chain is still filtered down to the kept level and that level alone is kept.
+  const u32 dropped = texture_levels_dropped(width, height, options.needed_side);
   Vector<MipLevel> chain;
-  build_mip_chain(source, width, height, mode, options.mips, chain, pool, options.edge_x,
-                  options.edge_y);
+  build_mip_chain(source, width, height, mode, options.mips || dropped != 0, chain, pool,
+                  options.edge_x, options.edge_y);
   // What a linear sampler draws of level 0 (the ray loops test it there, and a rasterizer does
-  // wherever the mask is magnified): the coverage every level below is held to.
+  // wherever the mask is magnified): the coverage every level below is held to — the source's
+  // level 0, capped or not, so the levels kept hold the share they hold uncapped.
   const f64 coverage = masked ? alpha_coverage_filtered(source, width, height, options.alpha_cutoff,
                                                         options.edge_x, options.edge_y)
                               : 0.0;
   if (masked) out.flags |= k_texture_alpha_coverage;
+  if (dropped != 0) {
+    chain.erase(chain.begin(), chain.begin() + dropped);
+    if (!options.mips) chain.erase(chain.begin() + 1, chain.end());
+    out.width = chain[0].width;
+    out.height = chain[0].height;
+  }
   r.mip_ms = ms_since(mip_start);
 
   // The level table first, so the payload is sized once and each level encodes into its own
@@ -540,6 +587,7 @@ bool build_texture(std::span<const u8> rgba, u32 width, u32 height, u32 source_c
     Vector<MipLevel> variance;
     build_normal_variance_chain(source, width, height, options.mips, variance, pool, options.edge_x,
                                 options.edge_y);
+    if (dropped != 0) variance.erase(variance.begin(), variance.begin() + dropped);
     u64 variance_bytes = 0;
     for (const MipLevel& level : variance)
       variance_bytes = (variance_bytes + 15u) / 16u * 16u +
@@ -561,14 +609,14 @@ bool build_texture(std::span<const u8> rgba, u32 width, u32 height, u32 source_c
 
   // How far level 0 moved: decoded back and compared with what the encoder was given.
   Vector<u8> decoded;
-  if (decode_level(format, out.level_bytes(0), width, height, decoded, nullptr)) {
+  if (decode_level(format, out.level_bytes(0), out.width, out.height, decoded, nullptr)) {
     const u32 mask = stored_channels(format);
     const u8* a = chain[0].rgba.data();
     const u8* b = decoded.data();
     f64 squared = 0.0;
     u64 samples = 0;
     u32 worst = 0;
-    for (usize i = 0; i < static_cast<usize>(width) * height; ++i) {
+    for (usize i = 0; i < static_cast<usize>(out.width) * out.height; ++i) {
       for (u32 c = 0; c < 4; ++c) {
         if ((mask & (1u << c)) == 0) continue;
         const i32 d = static_cast<i32>(a[i * 4 + c]) - static_cast<i32>(b[i * 4 + c]);

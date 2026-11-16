@@ -75,7 +75,27 @@ struct TextureBuildOptions {
   // chain, and a tree's far leaves thin to nothing. The cutoff is part of the options and so of the
   // cache key: one image tested at two cutoffs is two textures.
   u8 alpha_cutoff = 0;
+  // **The level 0 an asset's nearest view can use** (texture.md, "Sized by the asset"; roadmap
+  // G14): 0, the default, keeps the source's own level 0. Otherwise a power of two, 1 to 16,384:
+  // the texels along the image's **shorter** side that the asset's closest view still resolves
+  // (`needed_side`, texel_density.h), and the built texture's level 0 is the smallest level of the
+  // source's chain whose shorter side is at least this many. The levels kept are **the uncapped
+  // chain's own levels, byte for byte** — the chain is filtered from the source as always and the
+  // levels above are not stored — so wherever a sampler reads level `k` or coarser the picture is
+  // the uncapped texture's exactly. Part of the options and so of the key: a build that states no
+  // cap keeps the key it always had.
+  u32 needed_side = 0;
 };
+
+// The largest `needed_side` (2^14, the build's largest side).
+inline constexpr u32 k_max_needed_side = 16384;
+
+// How many of the source's levels a build with `needed_side` leaves out: the largest `k` whose
+// level, `max(1, width >> k)` by `max(1, height >> k)`, still has a shorter side of at least
+// `needed_side` (as the options word keeps it, a power of two), and never past the chain's last
+// level. 0 when `needed_side` is 0 or the source is no larger than it. An unmipped build (`mips`
+// false) keeps that one level alone.
+u32 texture_levels_dropped(u32 width, u32 height, u32 needed_side) noexcept;
 
 // How many rings of texels the colour under a mask is grown into (`alpha_cutoff`): enough that a
 // level-4 texel's 2x2 footprint, sixteen source texels on a side, still reads the leaf's colour at
@@ -119,9 +139,11 @@ bool parse_edge_mode(std::string_view name, EdgeMode& out) noexcept;
 // keeps per image (geometry::ClusterFileTexture::options): bits 0..3 the format choice, bit 4 sRGB,
 // bit 5 normal map, bit 6 mips, bit 7 always set so that no valid packing is zero — zero is the
 // record's "no texture wanted" — bits 8..9 `edge_x` and 10..11 `edge_y`, bits 16..23 the mask's
-// `alpha_cutoff`. Clamped edges and no cutoff pack to zero there, so every word written before
-// either existed means what it meant (and keys the same texture). `unpack` refuses
-// a word with unknown bits, an unknown format or an unknown edge mode.
+// `alpha_cutoff`, bits 12..15 the cap (`needed_side`: 0 for none, else log2 of it plus one; a
+// `needed_side` that is not a power of two packs as the next one up, and one past
+// `k_max_needed_side` as no cap). Clamped edges, no cutoff and no cap pack to zero there, so every
+// word written before any of them existed means what it meant (and keys the same texture).
+// `unpack` refuses a word with unknown bits, an unknown format or an unknown edge mode.
 u32 pack_texture_options(const TextureBuildOptions& options) noexcept;
 bool unpack_texture_options(u32 packed, TextureBuildOptions& out) noexcept;
 
