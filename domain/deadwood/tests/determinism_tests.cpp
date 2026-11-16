@@ -17,8 +17,11 @@ TEST_CASE("deadwood: complete container bytes agree across toolchains") {
   // of skirt between the origin and its collar ring; they were 0x89525862dfd8a785 and
   // 0xe1109ed169374c96. G201 stage 2: `k_deadwood_version` 3 (a standing remain keeps its skirt)
   // moves both by the source key alone, neither being a standing remain; they were
-  // 0x56c21256a950bc9b and 0x6ca6cd692992eaee.
-  const u64 goldens[] = {0x60060207b3a4241dull, 0x2d9e4afaa3af1347ull};
+  // 0x56c21256a950bc9b and 0x6ca6cd692992eaee. G203's third leg (2026-11-15, MSVC only so far):
+  // a dead conifer's key takes the conifers' card version (`flora::flora_needle_card_version`)
+  // and the needle cards it keeps are folded, so the fallen spruce moved (it was
+  // 0x2d9e4afaa3af1347; the key and the cards were not told apart) and the oak log did not.
+  const u64 goldens[] = {0x60060207b3a4241dull, 0x05ba38fe44097faaull};
   for (u32 i = 0; i < 2; ++i) {
     deadwood::DeadwoodFile p;
     p.tree.species = i == 0 ? "oak" : "spruce";

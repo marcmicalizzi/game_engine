@@ -84,7 +84,20 @@ inline constexpr u32 k_branch_taper_version = 2;
 //
 // 1: the conifers gain the chain — one three-plane card group a live branch and the whole-tree
 //    star — baked with the needles' coverage kept (`ImpostorSpec::coverage_dither`).
-inline constexpr u32 k_conifer_chain_version = 1;
+// 2: the conifers' sprays are folded, carry one branchlet a spacing and have the image's base at
+//    the shoot on both sides (`build_bough`, conifer.cpp; G203's third leg, 2026-11-15). The
+//    needle cards' positions and UVs moved, and with them the chain's bakes; the wood, the parts
+//    and every count are what they were. It is the conifers' own key, so it is bumped here though
+//    the change is to the sprays the chain is baked from: no other species' entry moves.
+inline constexpr u32 k_conifer_chain_version = 2;
+
+// The version of the needle cards a tree of this file is built with: `k_conifer_chain_version`
+// for a species the conifer solver builds, 0 for every other (and for a regeneration form, whose
+// needles are ribbons). For a builder that keeps a tree's needle cards and keys itself by
+// `flora_source_hash`, the tree's parameters, which a change to the cards does not move: the
+// deadwood mixes it into its key when it is not 0, so a dead conifer's entry rebuilds with the
+// cards it keeps and no dead broadleaf's moves.
+u32 flora_needle_card_version(const FloraFile& file);
 
 // **The seat** (G201 stage 2; flora.md, "The seat"): mixed into the container's source hash of
 // every species whose stem stands on the ground with a skirt (every tree; not a regeneration

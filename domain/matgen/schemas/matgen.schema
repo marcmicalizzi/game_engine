@@ -4,11 +4,16 @@
 // and the set's key is a hash over that text and the generator's version.
 namespace engine.matgen
 
-/// Which generator builds the set. `wood` is read from `Set` version 2, `masonry` from 3.
-enum Kind : u8 { granular = 0, rock = 1, ground = 2, wood = 3, masonry = 4 }
+/// Which generator builds the set. `wood` is read from `Set` version 2, `masonry` from 3, `spray`
+/// from 4.
+enum Kind : u8 { granular = 0, rock = 1, ground = 2, wood = 3, masonry = 4, spray = 5 }
 
 /// How a wood set's face was cut: a sawn board's face, or the outside of a log.
 enum WoodForm : u8 { sawn = 0, log = 1 }
+
+/// How a spray's shoots and needles sit: `spruce` has single needles on every shoot of a flat
+/// frond; `pine` has needles in pairs on shoots that leave their parent in whorls, all round it.
+enum SprayForm : u8 { spruce = 0, pine = 1 }
 
 /// One constituent of a mix: a lithology of a clast population, or a mineral of a rock. Colours
 /// are linear albedo in thousandths.
@@ -223,8 +228,63 @@ struct Masonry {
   joint_roughness_permille: u32 = 930
 }
 
+/// A foliated conifer spray, one an image, for a card that takes the image whole (matgen.md,
+/// "Spray sets"): a twig from the middle of the image's top row (the card's base) down the image,
+/// its side shoots, and their needles. The set's base colour carries the spray's outline as alpha;
+/// `tile_mm` is the card's length. Colours are linear albedo in thousandths.
+struct Spray {
+  form: SprayForm = spruce
+  /// The card the image lies on: its width along the branch it stands on, millimetres (0: as
+  /// wide as it is long, `tile_mm`), and its angle to that branch, degrees (0 or 90: square on).
+  /// The spray is laid out in millimetres on that parallelogram, so a twig is as wide on the tree
+  /// as the fields below say whatever the card's shape (matgen.md, "Spray sets").
+  card_width_mm: u32 = 0
+  card_angle_deg: u32 = 0
+  /// Side shoots leave the twig at nodes this far apart, millimetres, `per_node` at each; a
+  /// spruce's side shoots carry their own twigs at three tenths of it.
+  node_mm: u32 = 46
+  per_node: u32 = 1
+  /// Branching orders under the twig: 1 (side shoots only) to 3.
+  orders: u32 = 2
+  /// A side shoot's angle to its parent, degrees, and that angle's half range.
+  shoot_angle_deg: u32 = 48
+  shoot_spread_deg: u32 = 16
+  /// The longest side shoot as a share of the card's width across its own axis, and the share of
+  /// it lost by the twig's tip.
+  reach_permille: u32 = 480
+  taper_permille: u32 = 450
+  /// How far back from its tip a shoot carries needles, millimetres; 0: all of it.
+  needled_mm: u32 = 0
+  /// A needle's length range and its width, micrometres. A needle is drawn no narrower than four
+  /// texels, whatever the width says (matgen.md).
+  needle_min_um: u32 = 10000
+  needle_max_um: u32 = 17000
+  needle_width_um: u32 = 1200
+  /// Needles (a pine's pairs) drawn a centimetre of needled shoot.
+  needles_per_cm: u32 = 26
+  /// A needle's angle to its shoot, degrees, and that angle's half range.
+  needle_angle_deg: u32 = 55
+  needle_spread_deg: u32 = 14
+  /// The share of the needles lying in the spray's plane (a shade shoot is flat); the rest stand
+  /// all round their shoot and are drawn as the eye sees them, foreshortened.
+  flat_permille: u32 = 300
+  /// The twig's width at its base, micrometres.
+  twig_um: u32 = 3000
+  needle_r_permille: u32 = 50
+  needle_g_permille: u32 = 100
+  needle_b_permille: u32 = 40
+  /// How far a needle's tone strays from that, as a half range.
+  tone_permille: u32 = 250
+  needle_roughness_permille: u32 = 500
+  twig_r_permille: u32 = 130
+  twig_g_permille: u32 = 85
+  twig_b_permille: u32 = 50
+  /// The spray's depth as the height image carries it, micrometres.
+  relief_um: u32 = 600
+}
+
 /// One set: the role it stands for, the surface one repeat covers and the texels across it.
-struct Set @version(3) {
+struct Set @version(4) {
   /// `<word>/<word>`, as a material pack's role.
   role: string = ""
   kind: Kind = granular
@@ -246,4 +306,5 @@ struct Set @version(3) {
   ground: Ground
   wood: Wood @since(2)
   masonry: Masonry @since(3)
+  spray: Spray @since(4)
 }

@@ -135,6 +135,12 @@ to scene measurements, not a source-triangle assertion.
 
 `domain/deadwood/deadwood.h`: `read_file`, `in_range`, `canonical_json`, `source_hash`, `solve`,
 `build_container`, `Report`, `k_deadwood_version`. Schema comments carry field units/ranges.
+**The key** (`source_hash`) is the file's canonical JSON, `k_deadwood_version` and the source
+tree's parameters (`flora::flora_source_hash`), and for a dead conifer the conifers' needle-card
+version too (`flora::flora_needle_card_version`, G203's third leg, 2026-11-15): a dead conifer
+keeps a share of its needle cards, the tree's parameters do not say which cards those are, and
+when the cards were folded a dead spruce's entry would otherwise have answered with the old
+ones. Every dead conifer's entry rebuilds once for it; no other dead tree's key moved.
 `engine-content build asset.deadwood.json out.clusters` and scene mesh paths use the registry.
 
 - Same canonical recipe gives the same mesh/container across supported toolchains.

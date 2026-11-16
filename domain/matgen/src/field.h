@@ -79,14 +79,21 @@ struct Texel {
 struct Field {
   u32 n = 0;
   f64 texel_m = 0;
+  // A texel's step along the image's x where it is not `texel_m`: a spray's card is not a square
+  // (spray.cpp). 0 for every other kind, whose normals are computed exactly as they were.
+  f64 texel_u_m = 0;
   Window window;
   Vector<Texel> texels;
+  // A spray's outline, each texel's share under it; empty for every kind whose set is opaque.
+  Vector<f32> alpha;
 
   void reset(u32 size, f64 tile_m, Window w) {
     n = size;
     texel_m = tile_m / static_cast<f64>(size);
+    texel_u_m = 0;
     window = w;
     texels.assign(size * size, Texel{});
+    alpha.clear();
   }
   u32 index(u32 x, u32 y) const noexcept { return y * n + x; }
   u32 vx(u32 x) const noexcept { return x + window.x; }
@@ -276,8 +283,9 @@ struct Fragment {
 // Returns the cover it added to `cover`, summed over the texels (0 when `cover` is null).
 f64 lay_fragment(Field& field, const Fragment& f, Vector<f32>* cover);
 
-// The kinds (granular.cpp, rock.cpp, ground.cpp, wood.cpp): each fills `field` and its part of
-// `stats`, and says what depth of hollow counts as full shade (`cavity_m`) and how wide a hollow is
+// The kinds (granular.cpp, rock.cpp, ground.cpp, wood.cpp, spray.cpp): each fills `field` and its
+// part of `stats`, and says what depth of hollow counts as full shade (`cavity_m`) and how wide a
+// hollow is
 // (`cavity_px`).
 struct Shade {
   f64 cavity_m = 0.002;
@@ -288,5 +296,6 @@ void build_rock(const Set& set, Field& field, SetStats& stats, Shade& shade);
 void build_ground(const Set& set, Field& field, SetStats& stats, Shade& shade);
 void build_wood(const Set& set, Field& field, SetStats& stats, Shade& shade);
 void build_masonry(const Set& set, Field& field, SetStats& stats, Shade& shade);
+void build_spray(const Set& set, Field& field, SetStats& stats, Shade& shade);
 
 }  // namespace engine::matgen::detail

@@ -75,7 +75,9 @@ u64 images_hash(const matgen::SetImages& s) {
   u64 h = hash_bytes(s.base_color.data(), s.base_color.size());
   h = hash_combine(h, hash_bytes(s.normal.data(), s.normal.size()));
   h = hash_combine(h, hash_bytes(s.roughness.data(), s.roughness.size()));
-  return hash_combine(h, hash_bytes(s.height.data(), s.height.size()));
+  h = hash_combine(h, hash_bytes(s.height.data(), s.height.size()));
+  // A spray's outline; an opaque set has none, and its hash is what it was before sprays.
+  return s.alpha.empty() ? h : hash_combine(h, hash_bytes(s.alpha.data(), s.alpha.size()));
 }
 
 f64 luminance(const f64 c[3]) { return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]; }
@@ -86,14 +88,19 @@ TEST_CASE("matgen: a set is the same picture wherever the image starts") {
   // The set lives on the torus of its tile: built from a window half a tile and three texels
   // over, every image is the first build's bytes rotated, exactly. A noise that did not wrap its
   // lattice, a clast cut at the image's edge or a blur that stopped at it would each differ.
-  for (const char* role :
-       {"gravel/bed", "rock/scree", "sand/bar", "rock/granite", "rock/sandstone", "rock/basalt",
-        "rock/granite_wet", "ground/turf", "wood/plank", "wood/log"}) {
+  for (const char* role : {"gravel/bed", "rock/scree", "sand/bar", "rock/granite", "rock/sandstone",
+                           "rock/basalt", "rock/granite_wet", "ground/turf", "wood/plank",
+                           "wood/log", "spruce/needles", "pine/needles"}) {
     CAPTURE(role);
     const matgen::Set set = recipe(role, 128);
     const Built first = build(set);
     const u32 n = first.images.size, wx = n / 2, wy = n / 2 + 3;
     const Built moved = build(set, matgen::Window{wx, wy});
+    // A spray's outline moves with it (it never reaches the edge, and is placed on the torus all
+    // the same).
+    CHECK(first.images.alpha.size() == moved.images.alpha.size());
+    if (!first.images.alpha.empty())
+      CHECK(rotation_mismatches(first.images.alpha, moved.images.alpha, n, 1, wx, wy) == 0);
     CHECK(rotation_mismatches(first.images.base_color, moved.images.base_color, n, 3, wx, wy) == 0);
     CHECK(rotation_mismatches(first.images.normal, moved.images.normal, n, 3, wx, wy) == 0);
     CHECK(rotation_mismatches(first.images.roughness, moved.images.roughness, n, 1, wx, wy) == 0);
@@ -245,8 +252,12 @@ TEST_CASE("matgen: every default's colour and roughness means are in its materia
       {"plaster/lime_pink", 0.40, 0.68, 0.80, 0.98},
       {"thatch/straw_new", 0.20, 0.50, 0.60, 0.95},
       {"thatch/straw_old", 0.05, 0.22, 0.60, 0.95},
+      // Conifer needles: a dark green, a waxy cuticle (the twigs' bark raises the mean roughness).
+      {"conifer/needles", 0.03, 0.12, 0.40, 0.70},
+      {"pine/needles", 0.03, 0.12, 0.40, 0.70},
+      {"spruce/needles", 0.03, 0.12, 0.40, 0.70},
   };
-  // Twenty-four sets, and the variants of the three tiled granular ones.
+  // Twenty-seven sets, and the variants of the three tiled granular ones.
   CHECK(matgen::default_sets().size() == std::size(ranges) + 3 * matgen::k_tiled_variants);
   for (const Range& r : ranges) {
     CAPTURE(r.role);
@@ -435,6 +446,137 @@ TEST_CASE("matgen: a floor reads at standing height, over seeds") {
   }
 }
 
+TEST_CASE("matgen: a needle spray is boughs with open card between, its strands four texels") {
+  // G203 (matgen.md, "Spray sets"; conifer-crown-coverage.md, "Which measure a hull is"): a crown's
+  // cards carry the spray whole. The second leg held each default between 45 and 62 % opaque,
+  // from a crown that should cover 75 % of its outline; that figure was foliage transparency's
+  // complement, which is rated inside the foliated part of a crown, where the outline measured
+  // here (the hull through the branch tips, gaps between branches included) is what foresters
+  // rate as crown density, 45 to 58 % on conifers (the page has the sources). And a card filled
+  // to half reads as a plate. So the share is no longer the aim and is held only from below,
+  // where the measured table puts a crown: at 17 % the forest's pine covered 41 to 49 % of its
+  // hull (the floor here, 18 %). Its ceiling is the structure's: with 45 % of the spray's own box
+  // open, no image is over 55 % opaque. What is held is the structure: inside the spray's own box
+  // most of the card is open, the open card is gaps and not pinholes, and no strand is thin.
+  // What a card's cutout keeps is alpha at a half; the colour, the roughness and the normal under
+  // and beside the outline must not say where it is (a spray whose colour disagrees with its
+  // alpha reads as a decal, and a mip mixes what is beside the outline into it).
+  struct Measured {
+    f64 cover = 0;
+    u32 needles = 0;
+  };
+  Measured of_role[3];
+  u32 at = 0;
+  for (const char* role : {"spruce/needles", "pine/needles", "conifer/needles"}) {
+    CAPTURE(role);
+    for (const u64 seed : {u64{0}, u64{71}}) {
+      CAPTURE(seed);
+      const matgen::Set set = recipe(role, 1024, seed);
+      const Built b = build(set);
+      const u32 n = b.images.size;
+      REQUIRE(b.images.alpha.size() == n * n);
+      MESSAGE(std::string(role) << " seed " << seed << ": cover " << b.stats.spray_cover
+                                << " shoots " << b.stats.spray_shoots << " needles "
+                                << b.stats.spray_needles << " needle px "
+                                << b.stats.spray_needle_px);
+      CHECK(b.stats.spray_cover >= 0.18);
+      CHECK(b.stats.spray_needle_px >= 4.0);
+      {
+        // The spray's box, the open texels inside it, and how many of those lie in a run of 24
+        // or more along their row (5 mm of branch at the default card): open card between twigs.
+        u32 x0 = n, x1 = 0, y0 = n, y1 = 0;
+        for (u32 y = 0; y < n; ++y) {
+          for (u32 x = 0; x < n; ++x) {
+            if (b.images.alpha[y * n + x] < 128) continue;
+            x0 = std::min(x0, x);
+            x1 = std::max(x1, x);
+            y0 = std::min(y0, y);
+            y1 = std::max(y1, y);
+          }
+        }
+        REQUIRE(x1 > x0);
+        REQUIRE(y1 > y0);
+        u64 open = 0, in_gaps = 0, box = 0;
+        for (u32 y = y0; y <= y1; ++y) {
+          u32 run = 0;
+          for (u32 x = x0; x <= x1 + 1; ++x) {
+            const bool clear = x <= x1 && b.images.alpha[y * n + x] < 128;
+            if (x <= x1) ++box;
+            if (clear) {
+              ++run;
+              ++open;
+            } else {
+              if (run >= 24) in_gaps += run;
+              run = 0;
+            }
+          }
+        }
+        const f64 open_share = static_cast<f64>(open) / static_cast<f64>(box);
+        const f64 gap_share = static_cast<f64>(in_gaps) / static_cast<f64>(open);
+        MESSAGE("box " << x1 - x0 + 1 << " x " << y1 - y0 + 1 << ": open " << open_share
+                       << ", of it in gaps " << gap_share);
+        CHECK(open_share >= 0.45);  // a filled fan is under a third open inside its box
+        CHECK(gap_share >= 0.80);   // and its open texels are pinholes, not gaps
+      }
+      if (seed == 0) of_role[at] = {b.stats.spray_cover, b.stats.spray_needles};
+      // The statistic is the image's: texels at a half or more.
+      u64 covered = 0, edge = 0, thin = 0;
+      f64 in[3] = {0, 0, 0}, out[3] = {0, 0, 0};
+      u64 flat_out = 0, far_out = 0;
+      const auto opaque = [&](u32 x, u32 y) { return b.images.alpha[y * n + x] >= 128; };
+      for (u32 y = 0; y < n; ++y) {
+        for (u32 x = 0; x < n; ++x) {
+          const u32 i = y * n + x;
+          const bool on = opaque(x, y);
+          if (x == 0 || y == 0 || x == n - 1 || y == n - 1) edge += b.images.alpha[i] != 0;
+          for (u32 c = 0; c < 3; ++c)
+            (on ? in : out)[c] += b.images.base_color[i * 3 + c];
+          if (!on) continue;
+          ++covered;
+          // A covered texel in a run under three texels both along its row and down its column
+          // is a strand the first mip loses.
+          u32 row = 1, col = 1;
+          for (u32 k = x; k > 0 && opaque(k - 1, y); --k)
+            ++row;
+          for (u32 k = x; k + 1 < n && opaque(k + 1, y); ++k)
+            ++row;
+          for (u32 k = y; k > 0 && opaque(x, k - 1); --k)
+            ++col;
+          for (u32 k = y; k + 1 < n && opaque(x, k + 1); ++k)
+            ++col;
+          thin += row < 3 && col < 3;
+        }
+      }
+      // The image's corner is far from any stroke: its normal is the flat one.
+      for (const u32 corner : {0u, n - 1, (n - 1) * n, n * n - 1}) {
+        ++far_out;
+        flat_out += b.images.normal[corner * 3] == 128 && b.images.normal[corner * 3 + 1] == 128 &&
+                    b.images.normal[corner * 3 + 2] == 255;
+      }
+      CHECK(static_cast<f64>(covered) / (n * n) == doctest::Approx(b.stats.spray_cover));
+      CHECK(edge == 0);  // the spray keeps a margin: a card's sampler never wraps it across
+      CHECK(flat_out == far_out);
+      // No thin strands: under half a percent of the covered texels (a needle's tip tapers to
+      // half its width, and two tips can meet).
+      MESSAGE("thin share " << static_cast<f64>(thin) / static_cast<f64>(covered));
+      CHECK(static_cast<f64>(thin) < 0.005 * static_cast<f64>(covered));
+      // The colour beside the outline is the needles' own, within a fifth a channel (sRGB codes).
+      for (u32 c = 0; c < 3; ++c) {
+        const f64 inside = in[c] / static_cast<f64>(covered);
+        const f64 outside = out[c] / static_cast<f64>(n * n - covered);
+        CHECK(outside == doctest::Approx(inside).epsilon(0.2));
+      }
+    }
+    ++at;
+  }
+  // A pine's needles are twice a spruce's length and in tufts: the same cover from far fewer
+  // strokes' worth of shoot is not asked, but its needles are fewer than the spruce's for it.
+  CHECK(of_role[1].needles < of_role[0].needles);
+  // The generic conifer is the spruce's recipe from another seed: another spray, the same kind.
+  CHECK(of_role[2].cover != of_role[0].cover);
+  CHECK(of_role[2].cover == doctest::Approx(of_role[0].cover).epsilon(0.1));
+}
+
 TEST_CASE("matgen: a mip chain keeps the set's mean colour") {
   // The set's far form is its mean: every level of the texture build's chain (a repeating
   // sampler's) has the level-0 mean, in linear light, to a code or so.
@@ -543,6 +685,11 @@ TEST_CASE("matgen: the same bytes from every toolchain") {
       // Version 9: the masonry kind's two recipes, which no earlier pin held.
       {"stone/flag", 18260463309076001719ull},
       {"stone/rubble", 5299574791394706583ull},
+      // Version 11 (G203): the three sprays, branchlets drawn for their card, their outline in
+      // the hash; no pin above moved.
+      {"spruce/needles", 14414883212787622292ull},
+      {"pine/needles", 6090485165910512293ull},
+      {"conifer/needles", 9748249040416456687ull},
   };
   for (const Pin& pin : pins) {
     CAPTURE(pin.role);
