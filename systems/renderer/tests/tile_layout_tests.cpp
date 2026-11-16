@@ -389,7 +389,9 @@ TEST_CASE("pair shifts: composed, cut and found as a table of slots would take t
     }
     // A cut: those slots take none of it.
     const u32 cut = rng() % 200;
-    const u32 cut_end = std::min(cut + rng() % 30, 200u);
+    // `std::mt19937::result_type` is 64 bits on GCC's and Clang's library: the sum is narrowed
+    // first, so both arguments are `u32` on every toolchain.
+    const u32 cut_end = std::min(cut + static_cast<u32>(rng() % 30), 200u);
     Vector<PairShift> kept = composed;
     remove_shift_range(kept, cut, cut_end, scratch);
     for (u32 s = 1; s < composed.size(); ++s)
