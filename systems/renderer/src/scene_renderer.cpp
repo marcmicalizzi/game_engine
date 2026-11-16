@@ -2506,6 +2506,20 @@ bool SceneRenderer::start_rt_step(u32 capacity, u32 references) {
       inputs.references == scene_->rt_reference_capacity()) {
     return false;
   }
+  // **A step made past the device's budget is counted and said** (R133; renderer.md, "What a step
+  // made ahead holds"): the worker makes it beside the old set whether or not the device has the
+  // room, where a step on the frame's thread asks first and waits instead. Which is better on a
+  // full card was not measured, so the step is made as before and a recording says when it happens.
+  gfx::MemoryBudget budget;
+  const u64 step_bytes = scene_->rt_step_bytes(inputs.capacity, inputs.references);
+  if (device_->memory_budget(budget) && budget.valid &&
+      budget.used_bytes + step_bytes > budget.budget_bytes) {
+    ++stats_.rt.worker_steps_past_budget;
+    ENGINE_LOG_INFO(log_renderer, "the ray tracing chain's step is made past the device's budget",
+                    log::field("from", scene_->rt_capacity()), log::field("to", inputs.capacity),
+                    log::field("step_bytes", step_bytes), log::field("used", budget.used_bytes),
+                    log::field("budget", budget.budget_bytes));
+  }
   if (rt_freer_ == nullptr) rt_freer_ = new RtFreer(*device_, frames_.frames_in_flight());
   RtFreer::Step& s = rt_freer_->step;
   s.step.inputs = inputs;
