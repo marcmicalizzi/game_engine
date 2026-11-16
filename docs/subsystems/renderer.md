@@ -2926,11 +2926,14 @@ the same arithmetic in `gi_cache.slang` and the fold in `gi_update.slang`). Two 
   levels it took, var_u the last level's, and **detail** the spread of the light about the last
   level at the own level's scale, **pooled over the own level's cells round the point** — each
   cell's squared difference from the last level's mean less its own noise and the last level's,
-  averaged over the cells that are there (four to eight, each once), positive part. The first
-  build took stage 6's form, the one difference at the point, and kept 0.6 of the grain on the
-  village's walls (3.9 to 2.4 %): a single difference cannot tell a cell's detail from its noise,
-  so a cell two of its noise off is kept three-quarters whole. Pooled, it is a population's
-  estimate, as James and Stein's is. Nothing measured (a cell's first frame) keeps the answer
+  averaged by the cells' shares (trilinear weight times confidence, as the mean is), positive
+  part. Two other forms were built and flown. Stage 6's, the one difference at the point, kept
+  0.6 of the grain on the village's walls (3.9 to 2.4 %): a single difference cannot tell a cell's
+  detail from its noise, so a cell two of its noise off is kept three-quarters whole. Counting
+  each cell round the point once pooled more (1.9 to 2.2 %) and **drew the cells' squares**: the
+  set of cells round a point changes at every half cell, so the detail stepped there. By the
+  shares the estimate is a population's between cells and one cell's at a cell's centre, and it is
+  continuous in space and in every count. Nothing measured (a cell's first frame) keeps the answer
   whole; a level with no cell keeps it whole. It is applied to every face read and to a bounce's
   hit (whose walk has the four levels), not to a crown's cells (stage 7's prior is their detail)
   and not under `show_level`. The cost is the last level's eight lookups where the walk stopped
@@ -2941,22 +2944,27 @@ the same arithmetic in `gi_cache.slang` and the fold in `gi_update.slang`). Two 
 metric at frames 180 to 320; the base build is this branch before the mend, which draws main's
 pictures; the RTX 5090 shared with other agents' builds, 7 to 31 % of the CPU busy):
 
-| grain, % of the indirect term | before | the mend | before, 4× rays | the mend, 4× rays | level +3 read whole |
-|---|---|---|---|---|---|
-| village house 0, near wall | 3.92 – 4.10 | **1.92 – 2.19** | 2.39 – 2.49 | 1.44 – 1.50 | 0.92 – 0.94 |
-| village house 0, far wall | 3.96 – 4.08 | **2.20 – 2.25** | 3.52 – 3.59 | 1.63 – 1.72 | 1.15 – 1.16 |
-| the cave (over level +3's picture) | 9.74 – 9.99 | **4.43 – 4.59** | — | 3.33 – 3.49 | — |
+| grain, % of the indirect term | before | **the mend** | counted once (taken out) | counted once, 4× rays | before, 4× rays | level +3 read whole |
+|---|---|---|---|---|---|---|
+| village house 0, near wall | 3.94 – 4.14 | **2.45 – 2.57** | 1.92 – 2.19 | 1.44 – 1.50 | 2.39 – 2.49 | 0.92 – 0.94 |
+| village house 0, far wall | 4.02 – 4.07 | **2.49 – 2.58** | 2.20 – 2.25 | 1.63 – 1.72 | 3.52 – 3.59 | 1.15 – 1.16 |
+| the cave (over level +3's picture) | 9.85 – 9.95 | **5.43 – 5.58** | 4.43 – 4.59 | 3.33 – 3.49 | — | — |
 
-Half the grain, not under 1 %. **What is left**, by the same captures: the last level's own floor
-(0.9 and 1.2 %, which it shows where it is taken) and a sampling part the shrinkage keeps (the
-mend's grain falls to 0.7 of itself with four times the rays, where pure sampling noise would
-halve; the floor and a 1.8 % sampling part in quadrature fit both). And **a fact the metric shows
-that the cells' memory does not explain**: the grain's correlation with the next frame is 0.55 to
-0.6 before and after the mend, where an own cell's history (rate 1/16 to 1/23 a frame) gives 0.94
-to 0.96, and level +3 read whole gives 0.92 to 0.95; so about 40 % of the fine levels' grain is
-drawn fresh each frame, which a cell's mean cannot be. Not isolated: cells freed and remade
-(a full bucket's eviction, `renderer.gi.log`'s counts would say), the young rays, or the bounce's
-hits reading a different cut each frame are the candidates, and the next step is that census.
+Six-tenths of the grain, not under 1 %. **What is left**, by the same captures: the last level's
+own floor (0.9 and 1.2 %, which it shows where it is taken) and the own level's noise the
+shrinkage keeps: the cells whose difference from the last level is large by chance, which the
+positive part keeps nearly whole (the crops show them as round blobs a cell or two wide on a flat
+field, where before the whole wall was mottled). A sharper estimate of the detail is the lever: a
+wider pool continuous in space (the sixteen cells round a point at the own level, eight lookups
+more), or the detail kept in the cell by the fold. Four times the rays take the counted-once
+read to 0.7 of itself where pure sampling noise would halve: the floor and the kept noise in
+quadrature fit both. And **a fact the metric shows that the cells' memory does not explain**: the
+grain's correlation with the next frame is 0.5 to 0.8 before and after the mend, where an own
+cell's history (rate 1/16 to 1/23 a frame) gives 0.94 to 0.96, and level +3 read whole gives 0.92
+to 0.95; so a large part of the fine levels' grain is drawn fresh each frame, which a cell's mean
+cannot be. Not isolated: cells freed and remade (a full bucket's eviction; `renderer.gi.log`'s
+counts would say), the young rays, or the bounce's hits reading a different cut each frame are
+the candidates, and the next step is that census.
 The box in the tree (`gi cache: the grain on a plain wall is its cells' sampling noise`, now with
 a fourth run, the mend) goes from 1.76 to 1.29 %, 0.73 of it, and the case holds it under the read
 before (what a James–Stein estimate pooled over several means guarantees); the box is small and
@@ -2967,9 +2975,9 @@ samples, which the mend does not change.
 **What it does not do**: blur a corner, trail a moved light or dull open ground.
 
 - **Corners** (the indirect term over the mode-off picture, near a meeting over 40 to 400 pixels
-  from it, frames 180, 240 and 320): the village's right wall under the ceiling 0.845 before and
-  0.851 after (level +3 read whole: 0.856), the back wall at the floor 0.993 and 0.995, at the side
-  wall 1.023 and 1.015; the box's corner in the tree 0.907 before, 0.913 after, where level +2 read
+  from it, frames 180, 240 and 320): the village's right wall under the ceiling 0.843 before and
+  0.851 after (level +3 read whole: 0.856), the back wall at the floor 0.996 and 0.995, at the side
+  wall 1.023 and 1.018; the box's corner in the tree 0.907 before, 0.913 after, where level +2 read
   whole lifts it to 0.928 (the case holds the mend under half that lift; four times the rays
   move it as far, 0.913, so what moves is the corner's noise). The village has no furniture in
   this view: a contact at a foot is not measured.
@@ -2987,19 +2995,21 @@ samples, which the mend does not change.
   against an own cell's 256-sample average) assumed the floor is the own level's noise; it is not
   re-derived here and the check is not widened: the coordinator's call.
 - **Open ground** (the village's lane, held, same settings): the picture's mean is the same to
-  0.1 %, the median pixel moves 0.55 % (p95 6 %, p99 12 %) and the map of the change is the grain
+  0.1 %, the median pixel moves 0.57 % (p95 6 %, p99 12 %) and the map of the change is the grain
   removed — noise everywhere, strongest under the eaves and in the walls' shade, no structure along
   the dry-stone courses' shadows or the eaves' line.
 - **No bounce, no change**: with `renderer.gi.mode` off the village and the cave draw the bytes
   main draws (the EXRs' hashes equal).
 
-**What it costs** (the same flights, alternated in one lease, medians of 331 frames):
+**What it costs** (the same flights, alternated in one lease, medians of 331 frames; the GPU's
+timestamps, the GPU otherwise idle under the lock, 7 to 43 % of the CPU busy with other agents'
+builds and this branch's tests):
 
 | GPU ms | before | the mend | change |
 |---|---|---|---|
-| village house 0: resolve / sample pass / frame | 2.20 / 1.18 / 6.49 | 2.90 / 0.96 / 6.97 | **+0.70 / −0.22 / +0.48** |
-| the cave | 2.02 / 1.02 / 4.14 | 2.52 / 1.00 / 4.63 | **+0.50 / −0.02 / +0.49** |
-| the lane (outdoors) | 4.29 / 0.80 / 7.00 | 5.13 / 0.91 / 7.85 | **+0.84 / +0.11 / +0.85** |
+| village house 0: resolve / sample pass / frame | 2.21 / 1.19 / 6.38 | 2.90 / 0.98 / 6.86 | **+0.70 / −0.21 / +0.48** |
+| the cave | 2.03 / 1.01 / 4.15 | 2.52 / 1.00 / 4.62 | **+0.48 / −0.01 / +0.47** |
+| the lane (outdoors) | 4.29 / 0.80 / 7.04 | 5.12 / 0.91 / 7.95 | **+0.84 / +0.11 / +0.91** |
 
 Above the first leg's 0.3 to 0.5 ms: the last level's eight lookups are paid on every faced pixel
 whose walk stopped at its own level — on the lane that is nearly every pixel, and on a face's edge

@@ -279,7 +279,8 @@ struct GiLevelRead {
   float spread;
   float weight;  // the trilinear weights of the cells that hold a sample (stage 6's cover)
   float noise;   // R171: the shares squared times each cell's measured spread over its samples
-  // R171: the cells as a population, each once: their count, luminances, squares and noise.
+  // R171: the cells as a population, by their shares: the shares, and the shares times the
+  // luminances, their squares and the means' variances.
   float cells;
   float lum;
   float lum2;
@@ -334,10 +335,10 @@ GiLevelRead gi_read_level(uint64_t cache, uint count, int64_t3 mm, uint l, uint 
       const float variance = gi_cell_spread(cache, count, slot) / float(samples);
       const float y = gi_luminance(mean);
       out.noise += c * c * variance;
-      out.cells += 1.0;
-      out.lum += y;
-      out.lum2 += y * y;
-      out.cell_noise += variance;
+      out.cells += c;
+      out.lum += c * y;
+      out.lum2 += c * y * y;
+      out.cell_noise += c * variance;
     }
   }
   return out;

@@ -230,9 +230,10 @@ struct GiLevelRead {
   // as the cells measured it — where `spread / confidence^2` is that variance in units of one
   // sample's, which the count's rule and stage 6's model must assume.
   f32 noise = 0.0f;
-  // R171, the cells of the level as a population (each counted once, not by its share): how many
-  // hold a sample, their means' luminances and the squares, and their means' variances (the
-  // measured spread over the samples). What the read pools the detail between two levels over.
+  // R171, the cells of the level as a population, by their shares (trilinear weight times
+  // confidence): the shares, and the shares times their means' luminances, the squares and their
+  // means' variances (the measured spread over the samples). What the read pools the detail
+  // between two levels over.
   f32 cells = 0.0f;
   f32 lum = 0.0f;
   f32 lum2 = 0.0f;
@@ -330,10 +331,13 @@ constexpr u32 gi_pressure_stamp(u32 frame) noexcept { return (frame & 0x7fffu) |
 // part. Stage 6 estimates its difference from the one pair of means at the point, and that is
 // the weak form: a single difference cannot tell a cell's detail from its noise, so a cell two of
 // its noise off is kept three-quarters whole, and over a plain wall the read kept 0.6 of the
-// grain (measured on the village, 2026-11-16). Pooled over the four to eight cells round the point
-// — each counted once, since at a cell's centre the trilinear weights are one cell's alone — the
-// estimate is a population's, as James and Stein's is. All of the answer where nothing is
-// measured, so a cell the fold has no spread for reads as it did.
+// grain (measured on the village, 2026-11-16). Pooled over the cells round the point, by their
+// shares, it is a population's estimate between cells, as James and Stein's is, and one cell's at
+// a cell's centre. Counting each cell once pools more (1.9 to 2.2 % on the same walls) and was
+// built and taken out: the set of cells round a point changes at every half cell, so the detail
+// stepped there and the picture showed the cells' squares. By the shares it is continuous in
+// space and in every cell's count. All of the answer where nothing is measured, so a cell the
+// fold has no spread for reads as it did.
 inline f32 gi_spread_keep(f32 detail, f32 var_r, f32 var_u) noexcept {
   const f32 prior = detail + var_u;
   const f32 den = prior + var_r;
