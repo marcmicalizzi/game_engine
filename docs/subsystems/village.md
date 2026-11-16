@@ -612,9 +612,10 @@ load dropped, withheld, buried and floated nothing.
 
 ## Not yet
 
-- **The walk case and the end-to-end case fail since version 3** (run on the GPU 2026-11-16 at
-  version 4; neither entry has two ways or sloping ground, so their plans are version 3's). The
-  walk (`scene_collision`, seed 7): the walker stops at the foot of house 0's stair, 0.43 m up,
+- **The walk case and the end-to-end case fail since version 3** (run 2026-11-16 at version 4;
+  neither entry has two ways or sloping ground, so their plans are version 3's). The walk
+  (`scene_collision`, seed 7, a CPU case: the same numbers in `msvc-release`, `msvc-debug` and
+  GCC 13): the walker stops at the foot of house 0's stair, 0.43 m up,
   11 of 15 points reached, and the wall check reads the entry's `setback_m` as the house's own,
   which the uneven setbacks of version 3 made untrue (it stopped 1.03 m short of a wall it took to
   be 2 m back). The end-to-end case (seed 7, a flat 64 m ground): one inside frame of six is
