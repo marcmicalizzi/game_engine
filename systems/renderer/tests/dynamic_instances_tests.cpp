@@ -21,7 +21,10 @@
 #include <domain/anim/skeleton.h>
 #include <domain/geometry/cluster.h>
 #include <domain/geometry/cluster_lod.h>
+#include <domain/gfx/commands.h>
 #include <domain/gfx/device.h>
+#include <domain/gfx/dispatch.h>
+#include <domain/gfx/pipeline.h>
 #include <domain/gfx/resources.h>
 #include <domain/gfx/shader_library.h>
 #include <systems/renderer/capture.h>
@@ -34,6 +37,7 @@
 #include <doctest/doctest.h>
 
 #include <cmath>
+#include <cstring>
 #include <shaders/pair_expand.spv.h>
 #include <span>
 #include <string>
@@ -1474,9 +1478,9 @@ TEST_CASE(
   }
 }
 
-// T152 (renderer.md, "A relayout is swapped in"). The skinned bar's scene of the case above, its six
-// boxes handed over with two frames in flight and never waited for: the change grows the stride and
-// the instance capacity, so the pool's slot table, the mesh records that name it and, where the
+// T152 (renderer.md, "A relayout is swapped in"). The skinned bar's scene of the case above, its
+// six boxes handed over with two frames in flight and never waited for: the change grows the stride
+// and the instance capacity, so the pool's slot table, the mesh records that name it and, where the
 // device traces, the chain's per-instance half and top-level structure are made again. Until T152
 // that waited for the device; now they are made beside the ones the frames in flight read, the
 // change makes no device wait on this thread, and the frames after it draw the scene loaded whole —
@@ -1537,9 +1541,9 @@ TEST_CASE("dynamic instances: a relayout with frames in flight waits for nothing
     const u64 change_waits = gfx::device_waits_on_thread() - waits;
     const TileStats& tiles = dynamic.renderer.stats().tiles;
     MESSAGE("stride " << stride << " to " << dynamic.scene.pair_stride() << ": "
-                      << tiles.relayouts - relayouts << " relayout of "
-                      << tiles.relayout_ns / 1.0e6 << " ms, " << tiles.relayout_waits
-                      << " waited, " << change_waits << " device waits in the change");
+                      << tiles.relayouts - relayouts << " relayout of " << tiles.relayout_ns / 1.0e6
+                      << " ms, " << tiles.relayout_waits << " waited, " << change_waits
+                      << " device waits in the change");
     CHECK(dynamic.scene.pair_stride() > stride);
     CHECK(tiles.relayouts == relayouts + 1);
     CHECK(tiles.relayout_waits == 0);
@@ -1554,6 +1558,267 @@ TEST_CASE("dynamic instances: a relayout with frames in flight waits for nothing
     const Difference d = compare(shot, expected);
     MESSAGE("after the relayout: " << d.ids << " id, " << d.depth << " depth and " << d.color
                                    << " colour differences against the scene loaded whole");
+    CHECK(d.ids == 0);
+    CHECK(d.depth == 0);
+    CHECK(d.color == 0);
+  }
+}
+
+// ---- dispatches folded into rows (T160; gfx.md, "A dispatch that grows with the scene") --------
+//
+// Vulkan guarantees 65,535 workgroups a dimension. The pair expansion's three passes and the cull
+// are folded into rows of `gfx::k_dispatch_pitch` groups (`gfx::fold_dispatch`), so each is driven
+// here past 65,535 groups and held to what the same work writes otherwise: the CPU's answer slot
+// for slot and, where the device takes it (NVIDIA's x is 2^31 - 1), the same pass dispatched in
+// one dimension. The pitch is fixed, so the rows run on whatever GPU runs this.
+TEST_CASE("dynamic instances: the pair expansion's passes fold past 65,535 workgroups") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE(gpu.why);
+    return;
+  }
+  const gfx::Device& device = gpu.device;
+  std::string error;
+  const auto module = gfx::create_shader_module(device, shaders::k_pair_expand_spirv,
+                                                shaders::k_pair_expand_spirv_size, &error);
+  REQUIRE_MESSAGE(module.valid(), error);
+  gfx::ComputePipeline expand, shift, runs;
+  REQUIRE_MESSAGE(gfx::create_compute_pipeline(device, module, "pair_expand_main", {},
+                                               sizeof(PairExpandParams), expand, &error),
+                  error);
+  REQUIRE_MESSAGE(gfx::create_compute_pipeline(device, module, "pair_shift_main", {},
+                                               sizeof(PairExpandParams), shift, &error),
+                  error);
+  REQUIRE_MESSAGE(gfx::create_compute_pipeline(device, module, "pair_expand_runs_main", {},
+                                               sizeof(PairExpandParams), runs, &error),
+                  error);
+
+  // 100,000 instances, alternately of a one-cluster and a three-cluster mesh: 200,000 pairs.
+  constexpr u32 k_instances = 100000;
+  constexpr u32 k_run_count = 1000;  // the expansion's runs: 70 slots in every 100
+  constexpr u32 k_run_slots = 70;
+  constexpr u32 k_shift_runs = 70000;  // the numbering's runs: one slot each
+  gfx::MeshDesc meshes[2];
+  meshes[0].first_cluster = 10;
+  meshes[0].cluster_count = 1;
+  meshes[1].first_cluster = 20;
+  meshes[1].cluster_count = 3;
+  Vector<gfx::InstanceDesc> instances(k_instances);
+  u32 pairs_total = 0;
+  for (u32 i = 0; i < k_instances; ++i) {
+    instances[i].mesh = i % 2;
+    instances[i].first_pair = pairs_total;
+    pairs_total += meshes[i % 2].cluster_count;
+  }
+  const gfx::BufferUsage k_usage =
+      gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress;
+  gfx::BufferResource mesh_buffer, instance_buffer, list_buffer, pair_buffer;
+  REQUIRE_MESSAGE(gfx::create_buffer(device, sizeof(meshes), k_usage, true, mesh_buffer, &error),
+                  error);
+  REQUIRE_MESSAGE(gfx::create_buffer(device, u64{k_instances} * sizeof(gfx::InstanceDesc), k_usage,
+                                     true, instance_buffer, &error),
+                  error);
+  REQUIRE_MESSAGE(
+      gfx::create_buffer(device, u64{k_shift_runs} * 16, k_usage, true, list_buffer, &error),
+      error);
+  REQUIRE_MESSAGE(
+      gfx::create_buffer(device, u64{pairs_total} * 8, k_usage, true, pair_buffer, &error), error);
+  std::memcpy(mesh_buffer.mapped, meshes, sizeof(meshes));
+  auto* table = static_cast<gfx::InstanceDesc*>(instance_buffer.mapped);
+  auto* pairs = static_cast<u32*>(pair_buffer.mapped);
+  auto reset = [&]() {
+    std::memcpy(table, instances.data(), u64{k_instances} * sizeof(gfx::InstanceDesc));
+    std::memset(pairs, 0xff, u64{pairs_total} * 8);
+  };
+  PairExpandParams base{};
+  base.instances = instance_buffer.address;
+  base.meshes = mesh_buffer.address;
+  base.list = list_buffer.address;
+  base.pairs = pair_buffer.address;
+  const gfx::DeviceCaps& caps = device.caps();
+  // One pass of `groups` workgroups, folded or in one dimension.
+  auto run = [&](const gfx::ComputePipeline& pipeline, const PairExpandParams& params, u32 groups,
+                 bool folded) {
+    const gfx::DispatchGroups g =
+        folded ? gfx::fold_dispatch(groups, caps) : gfx::DispatchGroups{groups, 1};
+    if (folded) CHECK(g.y > 1);
+    return gfx::submit_immediate(
+        device,
+        [&](gfx::CommandList cb) {
+          cb.bind_pipeline(gfx::BindPoint::Compute, pipeline.pipeline);
+          cb.push_constants(pipeline.layout, gfx::ShaderStage::Compute, 0, sizeof(params), &params);
+          cb.dispatch(g.x, g.y, 1);
+        },
+        &error);
+  };
+  const bool flat_too = caps.max_compute_workgroup_count_x >= k_instances;
+  // The pair table as `expected` says: 0xff..ff where nothing was written.
+  auto pairs_differing = [&](const Vector<u32>& expected) {
+    u32 differ = 0;
+    for (u32 w = 0; w < pairs_total * 2; ++w)
+      differ += pairs[w] != expected[w] ? 1u : 0u;
+    return differ;
+  };
+  auto expand_into = [&](Vector<u32>& out, u32 i) {
+    const gfx::MeshDesc& mesh = meshes[instances[i].mesh];
+    for (u32 c = 0; c < mesh.cluster_count; ++c) {
+      out[(instances[i].first_pair + c) * 2] = i;
+      out[(instances[i].first_pair + c) * 2 + 1] = mesh.first_cluster + c;
+    }
+  };
+
+  // The list: every instance, last first, one workgroup each.
+  {
+    auto* list = static_cast<u32*>(list_buffer.mapped);
+    for (u32 k = 0; k < k_instances; ++k)
+      list[k] = k_instances - 1 - k;
+    Vector<u32> expected(pairs_total * 2, ~0u);
+    for (u32 i = 0; i < k_instances; ++i)
+      expand_into(expected, i);
+    PairExpandParams params = base;
+    params.count = k_instances;
+    for (const bool folded : {true, false}) {
+      if (!folded && !flat_too) continue;
+      reset();
+      REQUIRE_MESSAGE(run(expand, params, k_instances, folded), error);
+      const u32 differ = pairs_differing(expected);
+      MESSAGE("the list, " << std::string(folded ? "folded" : "in one dimension") << ": " << differ
+                           << " words differ of " << pairs_total * 2);
+      CHECK(differ == 0);
+    }
+  }
+  // The runs: 70 slots of every 100, a workgroup a slot.
+  {
+    auto* list = static_cast<u32*>(list_buffer.mapped);
+    Vector<u32> expected(pairs_total * 2, ~0u);
+    for (u32 r = 0; r < k_run_count; ++r) {
+      const u32 begin = r * 100;
+      const u32 run4[4] = {begin, begin + k_run_slots, r * k_run_slots, 0};
+      std::memcpy(list + r * 4, run4, sizeof(run4));
+      for (u32 i = begin; i < begin + k_run_slots; ++i)
+        expand_into(expected, i);
+    }
+    PairExpandParams params = base;
+    params.count = k_run_count;
+    params.slots = k_run_count * k_run_slots;
+    for (const bool folded : {true, false}) {
+      if (!folded && !flat_too) continue;
+      reset();
+      REQUIRE_MESSAGE(run(runs, params, params.slots, folded), error);
+      const u32 differ = pairs_differing(expected);
+      MESSAGE("the runs, " << std::string(folded ? "folded" : "in one dimension") << ": " << differ
+                           << " words differ of " << pairs_total * 2);
+      CHECK(differ == 0);
+    }
+  }
+  // The numbering's runs: one slot each, a value set on the odd ones and added on the even ones.
+  {
+    auto* list = static_cast<u32*>(list_buffer.mapped);
+    Vector<u32> expected(k_instances);
+    for (u32 i = 0; i < k_instances; ++i)
+      expected[i] = instances[i].first_pair;
+    for (u32 r = 0; r < k_shift_runs; ++r) {
+      const u32 set = r % 2;
+      const u32 run4[4] = {r, r + 1, set != 0 ? 1000000 + r : 7u, set};
+      std::memcpy(list + r * 4, run4, sizeof(run4));
+      expected[r] = set != 0 ? 1000000 + r : expected[r] + 7u;
+    }
+    PairExpandParams params = base;
+    params.count = k_shift_runs;
+    for (const bool folded : {true, false}) {
+      if (!folded && !flat_too) continue;
+      reset();
+      REQUIRE_MESSAGE(run(shift, params, k_shift_runs, folded), error);
+      u32 differ = 0;
+      for (u32 i = 0; i < k_instances; ++i)
+        differ += table[i].first_pair != expected[i] ? 1u : 0u;
+      MESSAGE("the numbering, " << std::string(folded ? "folded" : "in one dimension") << ": "
+                                << differ << " slots differ of " << k_instances);
+      CHECK(differ == 0);
+    }
+  }
+  if (!flat_too) MESSAGE("this device takes no one-dimensional dispatch past " << k_instances);
+  gfx::destroy_buffer(device, pair_buffer);
+  gfx::destroy_buffer(device, list_buffer);
+  gfx::destroy_buffer(device, instance_buffer);
+  gfx::destroy_buffer(device, mesh_buffer);
+  gfx::destroy_compute_pipeline(device, runs);
+  gfx::destroy_compute_pipeline(device, shift);
+  gfx::destroy_compute_pipeline(device, expand);
+  gfx::destroy_shader_module(device, module);
+}
+
+// The cull and the cluster records over a tail past 2,097,152 pairs, a row of the folded cull:
+// thousands of small boxes behind the camera, then tile a's six boxes last, so every pair the
+// picture draws is numbered past the first row. The picture is the loaded scene's, by id, depth
+// and colour; with the traced primaries the records' bucket and emit fold too.
+TEST_CASE("dynamic instances: a tail past a row of the folded cull draws the loaded scene") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE(gpu.why);
+    return;
+  }
+  const Vector<SceneInstance> head = prefix();
+  for (const RasterMode mode : {RasterMode::Hardware, RasterMode::RayTrace}) {
+    RenderSettings settings;
+    settings.raster = mode;
+    settings.shadows = ShadowMode::Off;
+    settings.occlusion = true;
+    Rig dynamic;
+    REQUIRE_MESSAGE(
+        dynamic.build(gpu.device, std::span<const SceneInstance>(head.data(), head.size()), true,
+                      settings),
+        dynamic.error);
+    if (mode == RasterMode::RayTrace && !dynamic.resolved.ray_path) {
+      MESSAGE("no traced primaries on this device");
+      continue;
+    }
+    const u32 box_pairs = dynamic.data.parts[0].cluster_count;
+    const u32 hidden = (gfx::k_dispatch_pitch * 64u) / box_pairs + 1000u;
+    Vector<SceneInstance> tail;
+    for (u32 i = 0; i < hidden; ++i) {
+      // A grid well behind the eye (at z = 16, looking at the origin).
+      const f32 x = -40.0f + 0.5f * static_cast<f32>(i % 160u);
+      const f32 z = 60.0f + 0.5f * static_cast<f32>(i / 160u);
+      tail.push_back(placed(0, Vec3{x, 0.0f, z}, 0.1f));
+    }
+    const Vector<SceneInstance> a = tile_a();
+    for (const SceneInstance& i : a)
+      tail.push_back(i);
+    std::string error;
+    REQUIRE_MESSAGE(dynamic.renderer.set_dynamic_instances(
+                        std::span<const SceneInstance>(tail.data(), tail.size()), &error),
+                    error);
+    const u32 first_drawn_pair = dynamic.scene.static_pair_count() + hidden * box_pairs;
+    CHECK(first_drawn_pair > gfx::k_dispatch_pitch * 64u);
+    for (u32 f = 0; f < 3; ++f) {
+      REQUIRE_MESSAGE(dynamic.renderer.render_offscreen(
+                          frame_at(k_eye + Vec3{static_cast<f32>(f) - 1.0f, 0.0f, 0.0f}), &error),
+                      error);
+    }
+    CHECK(dynamic.renderer.stats().last.pairs == dynamic.scene.pair_count());
+    CapturedFrame shot;
+    REQUIRE_MESSAGE(dynamic.renderer.capture(frame_at(k_eye), channels(), shot, &error), error);
+    const Vector<SceneInstance> whole = join({&head, &tail});
+    CapturedFrame expected;
+    REQUIRE_MESSAGE(
+        reference(gpu.device, std::span<const SceneInstance>(whole.data(), whole.size()), settings,
+                  expected, error),
+        error);
+    const Difference d = compare(shot, expected);
+    u32 last_row_pixels = 0;
+    const u32 drawn_from = head.size() + hidden;
+    for (u32 p = 0; p < shot.width * shot.height; ++p) {
+      const u32 instance = shot.ids[u64{p} * k_id_words];
+      last_row_pixels += instance != k_no_id && instance >= drawn_from ? 1u : 0u;
+    }
+    MESSAGE(std::string(raster_name(mode))
+            << ": " << dynamic.scene.pair_count() << " pairs, the drawn boxes' "
+            << "from pair " << first_drawn_pair << "; " << last_row_pixels << " of " << shot.covered
+            << " covered pixels are theirs; " << d.ids << " id, " << d.depth << " depth and "
+            << d.color << " colour differences");
+    CHECK(last_row_pixels > 200);
+    CHECK(shot.covered == expected.covered);
     CHECK(d.ids == 0);
     CHECK(d.depth == 0);
     CHECK(d.color == 0);

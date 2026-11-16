@@ -13,7 +13,12 @@
 // a freed block — are never listed and keep whatever they held: nothing reads the pair table but
 // the resolve, and only for a pair the frame drew, which a hole never is.
 
+#include "dispatch.slang"
 #include "scene.slang"
+
+// All three passes are folded dispatches (gfx::fold_dispatch, T160): a first upload lists every
+// instance and a numbering may move a few hundred thousand slots, past the 65,535 workgroups a
+// dimension Vulkan guarantees.
 
 // Mirrors renderer::PairExpandParams (40 bytes).
 struct PairExpandParams {
@@ -45,9 +50,10 @@ void expand_instance(uint index, uint lane) {
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void pair_expand_main(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID) {
-  if (group.x >= g_params.count) return;
+  const uint index = folded_group(group);
+  if (index >= g_params.count) return;
   uint* list = (uint*)g_params.list;
-  expand_instance(list[group.x], thread.x);
+  expand_instance(list[index], thread.x);
 }
 
 // ---- the pairs numbered again where the slots stand (T154; renderer.md, "The pairs are numbered
@@ -61,9 +67,10 @@ void pair_expand_main(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID)
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void pair_shift_main(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID) {
-  if (group.x >= g_params.count) return;
+  const uint index = folded_group(group);
+  if (index >= g_params.count) return;
   uint4* runs = (uint4*)g_params.list;
-  const uint4 run = runs[group.x];
+  const uint4 run = runs[index];
   InstanceDesc* instances = (InstanceDesc*)g_params.instances;
   for (uint slot = run.x + thread.x; slot < run.y; slot += k_pair_expand_workgroup) {
     instances[slot].first_pair = run.w != 0 ? run.z : instances[slot].first_pair + run.z;
@@ -76,18 +83,19 @@ void pair_shift_main(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID) 
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void pair_expand_runs_main(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID) {
-  if (group.x >= g_params.slots) return;
+  const uint index = folded_group(group);
+  if (index >= g_params.slots) return;
   uint4* runs = (uint4*)g_params.list;
   uint lo = 0;
   uint hi = g_params.count - 1;
   while (lo < hi) {
     const uint mid = (lo + hi + 1) / 2;
-    if (runs[mid].z <= group.x) {
+    if (runs[mid].z <= index) {
       lo = mid;
     } else {
       hi = mid - 1;
     }
   }
   const uint4 run = runs[lo];
-  expand_instance(run.x + (group.x - run.z), thread.x);
+  expand_instance(run.x + (index - run.z), thread.x);
 }

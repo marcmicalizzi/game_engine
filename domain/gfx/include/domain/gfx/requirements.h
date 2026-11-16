@@ -47,6 +47,12 @@ inline constexpr u32 k_workgroup_invocations = 256;
 inline constexpr u32 k_workgroup_size_x = 256;
 inline constexpr u32 k_workgroup_size_y = 16;
 
+// The workgroups of one dispatch in each dimension: Vulkan's guaranteed 65,535, so no conforming
+// device fails it. A dispatch that grows with the scene folds into rows of `k_dispatch_pitch`
+// groups (dispatch.h), which needs 32,768 on x and reaches 2^31 groups with this on y; the rows
+// are here so the report says what the device has and `fold_dispatch` can check against it.
+inline constexpr u32 k_workgroup_count = 65535;
+
 // `cluster_sw_raster.slang` holds 255 screen positions (float3) and 255 front-facing flags in
 // shared memory: 255 * 16 bytes rounded up to 4 KiB. Vulkan guarantees 16 KiB.
 inline constexpr u32 k_shared_memory_bytes = 4096;
@@ -151,6 +157,8 @@ struct DeviceCaps {
   u32 max_compute_workgroup_invocations = 0;
   u32 max_compute_workgroup_size_x = 0;
   u32 max_compute_workgroup_size_y = 0;
+  u32 max_compute_workgroup_count_x = 0;
+  u32 max_compute_workgroup_count_y = 0;
   u32 max_compute_shared_memory_size = 0;
   u32 max_memory_allocation_count = 0;
   u32 max_storage_buffer_range = 0;

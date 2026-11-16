@@ -68,6 +68,7 @@
 // traced-primary frame (`k_untraced_drawn` in `mode`); no light's ray meets it in either, by its
 // top-level record's mask (tlas_references.slang, `instance_ray_mask` in scene.slang).
 
+#include "dispatch.slang"
 #include "scene.slang"
 #include "field_rest.slang"
 
@@ -342,11 +343,14 @@ uint slice_length(InstanceDesc instance) {
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void records_main(uint3 thread_id : SV_DispatchThreadID) {
+  // A folded dispatch (gfx::fold_dispatch, T160): two runs of a forest's pairs are half a million
+  // workgroups.
+  const uint t = folded_thread(thread_id, 64);
   const uint run_entries = view_count() * g_params.pair_count;
   const uint runs = g_params.caster_count != 0 ? 2u : 1u;
-  if (thread_id.x >= runs * run_entries) return;
-  const bool caster = thread_id.x >= run_entries;
-  const uint within = caster ? thread_id.x - run_entries : thread_id.x;
+  if (t >= runs * run_entries) return;
+  const bool caster = t >= run_entries;
+  const uint within = caster ? t - run_entries : t;
   const uint view = within / g_params.pair_count;
   const uint local_index = within - view * g_params.pair_count;
   const uint64_t count_word = caster ? g_params.caster_count : g_params.visible_count;
@@ -1385,13 +1389,13 @@ void emit<let kCache : int>(uint slot) {
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void emit_main(uint3 thread_id : SV_DispatchThreadID) {
-  emit<0>(thread_id.x);
+  emit<0>(folded_thread(thread_id, 64));  // a folded dispatch (T160), as records_main's
 }
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void emit_cached_main(uint3 thread_id : SV_DispatchThreadID) {
-  emit<1>(thread_id.x);
+  emit<1>(folded_thread(thread_id, 64));
 }
 
 // ---- the resident cluster structure cache (renderer.md, "The resident cluster structure cache") --

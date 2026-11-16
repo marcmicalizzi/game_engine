@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "T160",
+  "reason": "T160: the cluster records' bucket and emit dispatched folded beside the ranges' plain dispatch in record_frame (two lines), and gfx.md's section on dispatches that grow with the scene and the rule for a new one",
+  "date": "2026-11-16",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "renderer.record_frame.lines": 2,
+    "page:docs/subsystems/gfx.md": 3361
+  }
+}

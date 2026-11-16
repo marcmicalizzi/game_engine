@@ -13,6 +13,7 @@
 // which becomes next frame's `prev_flags`; both arrays are indexed by pair. Pass 0 is a single
 // pass without occlusion.
 
+#include "dispatch.slang"
 #include "scene.slang"
 
 // Mirrors geometry::ClusterLodDesc (48 bytes).
@@ -895,10 +896,13 @@ void cull_pair(uint pair, bool vertex_draw) {
   }
 }
 
+// Both entry points are folded dispatches (gfx::fold_dispatch, T160): a forest at the pair cap is
+// 262,144 workgroups, four times the 65,535 a dimension Vulkan guarantees. `cull_pair` rejects the
+// last row's overhang with the pair count.
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void cull_main(uint3 thread_id : SV_DispatchThreadID) {
-  cull_pair(thread_id.x, false);
+  cull_pair(folded_thread(thread_id, 64), false);
 }
 
 // The vertex path's cull: the same pass, and every hardware survivor also gets its triangles in
@@ -906,5 +910,5 @@ void cull_main(uint3 thread_id : SV_DispatchThreadID) {
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void cull_vertex_main(uint3 thread_id : SV_DispatchThreadID) {
-  cull_pair(thread_id.x, true);
+  cull_pair(folded_thread(thread_id, 64), true);
 }

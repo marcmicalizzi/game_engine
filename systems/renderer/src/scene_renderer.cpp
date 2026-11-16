@@ -5,6 +5,7 @@
 #include <core/profiling/startup_trace.h>
 #include <core/time/time.h>
 #include <domain/gfx/capture.h>
+#include <domain/gfx/dispatch.h>
 #include <domain/gfx/display.h>
 #include <domain/gfx/gi_cache.h>
 #include <domain/gfx/pipeline_batch.h>
@@ -1793,8 +1794,8 @@ bool SceneRenderer::set_dynamic_instances(std::span<const SceneInstance> tail,
       for (u32 i = 0; i < relayout_retired_.chain.count; ++i)
         retire_rt_buffer(relayout_retired_.chain.buffers[i]);
       if (relayout_retired_.tlas.handle.valid()) {
-        retired_tlas_.push_back(
-            RetiredTlas{relayout_retired_.tlas, relayout_retired_.tlas_slot, frames_.frame_index()});
+        retired_tlas_.push_back(RetiredTlas{relayout_retired_.tlas, relayout_retired_.tlas_slot,
+                                            frames_.frame_index()});
       }
       relayout_retired_.clear();
     }
@@ -4828,7 +4829,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.pair_shift.pipeline);
           cb.push_constants(pipelines.pair_shift.layout, gfx::ShaderStage::Compute, 0,
                             sizeof(PairExpandParams), &shift);
-          cb.dispatch(shift.count, 1, 1);
+          gfx::dispatch_folded(cb, shift.count, device_->caps());
           timer.end(cb);
         });
   }
@@ -4881,7 +4882,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
               cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.pair_expand.pipeline);
               cb.push_constants(pipelines.pair_expand.layout, gfx::ShaderStage::Compute, 0,
                                 sizeof(PairExpandParams), &pair_expand);
-              cb.dispatch(tables_.expand, 1, 1);
+              gfx::dispatch_folded(cb, tables_.expand, device_->caps());
             }
             // The slots numbered again and not copied (T154): disjoint from the list's.
             if (tables_.expand_runs > 0) {
@@ -4892,7 +4893,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
               cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.pair_expand_runs.pipeline);
               cb.push_constants(pipelines.pair_expand_runs.layout, gfx::ShaderStage::Compute, 0,
                                 sizeof(PairExpandParams), &runs);
-              cb.dispatch(runs.slots, 1, 1);
+              gfx::dispatch_folded(cb, runs.slots, device_->caps());
             }
             timer.end(cb);
           });
@@ -4936,7 +4937,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             timer.begin(cb, k_zone_names[k_zone_cull][v]);
             cb.push_constants(pipelines.cull.layout, gfx::ShaderStage::Compute, 0, sizeof(u64),
                               &view_frames[v].block_address[block]);
-            cb.dispatch(gfx::cull_group_count(pair_count), 1, 1);
+            gfx::dispatch_folded(cb, gfx::cull_group_count(pair_count), device_->caps());
             timer.end(cb);
           }
         });
@@ -5280,7 +5281,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             const u64 block = params_[slot].address + sizeof(gfx::CullParams) * (views * 2 + c);
             cb.push_constants(pipelines.cull.layout, gfx::ShaderStage::Compute, 0, sizeof(u64),
                               &block);
-            cb.dispatch(gfx::cull_group_count(pair_count), 1, 1);
+            gfx::dispatch_folded(cb, gfx::cull_group_count(pair_count), device_->caps());
           }
           timer.end(cb);
         });
@@ -5593,6 +5594,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
                                 sizeof(record_params), &record_params);
               if (p >= 3 && p <= 5) {
                 cb.dispatch_indirect(scene.instance_counts.buffer, p == 3 ? drop_args : kept_args);
+              } else if (p == 0 || p == 6) {  // a thread an entry: folded (T160)
+                gfx::dispatch_folded(cb, record_groups[p], device_->caps());
               } else {
                 cb.dispatch(record_groups[p], 1, 1);
               }
