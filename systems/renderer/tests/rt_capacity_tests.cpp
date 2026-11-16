@@ -1534,10 +1534,11 @@ TEST_CASE("rt capacity: a chain in chunks stepped on the worker draws what a who
       const u32 worker_steps = moving.renderer.stats().rt.worker_steps;
       MESSAGE(std::string(raster_name(raster))
               << std::string(worker ? " on the worker" : " on the frame's thread") << ": "
-              << resizes << " resizes in flight, " << worker_steps << " of them the worker's, "
-              << most_chunks << " chunks at the most, " << waits << " stops for the device, "
-              << differ.colour << " colour bytes and " << differ.ids
-              << " id words differ from the whole chain");
+              << resizes << " resizes in flight, " << worker_steps << " of them the worker's ("
+              << moving.renderer.stats().rt.worker_steps_past_budget
+              << " asked past the device's budget), " << most_chunks << " chunks at the most, "
+              << waits << " stops for the device, " << differ.colour << " colour bytes and "
+              << differ.ids << " id words differ from the whole chain");
       CHECK(resizes > 0);
       CHECK(most_chunks > 1);  // the case: the set did stand in several buffers
       CHECK(differ.colour == 0);

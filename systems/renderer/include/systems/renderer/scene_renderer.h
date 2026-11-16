@@ -422,6 +422,9 @@ struct RtStats {
   u32 worker_steps = 0;
   f64 worker_step_ms = 0.0;
   f64 peak_worker_step_ms = 0.0;
+  // Of the steps asked of the worker, those asked when the device's memory budget had no room for
+  // what the step makes beside the old set (R133; renderer.md, "What a step made ahead holds").
+  u32 worker_steps_past_budget = 0;
   u32 chunks = 0;
   u64 overflow_frames = 0;
   u64 dropped_instances = 0;
