@@ -77,6 +77,20 @@ page that would not open.
   grade over 25 % costing ten times more, and a seeded wander term up to a quarter of the length at
   `irregularity` 1 so a way bends on flat ground too. **8 %, 25 % and the wander are choices**:
   8 % is about the grade a loaded cart takes without a second horse, from no source opened here.
+- **What a way went round** (added 2026-11-16 for `k_village_version` 3, after the first grown
+  plan's ways read as ruled from above): Rackham's distinction (RK, below) between the "Ancient
+  Countryside" of winding lanes, holloways and intricate paths, which grew up round earlier
+  settlement and land division, and the "Planned Countryside" of straight roads laid out at
+  enclosure; a loop in a road for no reason now visible can record something it had to avoid, a
+  former park for one (TH). So a grown way's bends are **caused** — by what stood when it was first
+  trodden and is gone — and on level ground it winds too. The planner puts that cause in the
+  search's cost rather than adding a wiggle after: seeded discs (8 to 18 m radius, in three cells
+  of four of a 40 m lattice) a step through which costs up to three times its length again, and a
+  smooth 48 m field of the lie of the land costing up to three times again across its ridges; a
+  grown way is pulled straight over no more than 20 m. **Every constant is a choice**: no opened
+  source gives a sinuosity for such lanes, and the result (1.04 on level ground, no straight run
+  over about 50 m) is stated as the planner's, not as a measured village's. A 32 m lattice of 6 to
+  16 m discs bent the ways so tightly that tofts on the inside of a bend stood in the street.
 - **Hollow ways** are 0.5 to 2.5 m deep and 4.5 to 9 m wide (MC 2 m deep, 4.5 m wide; WW 1 to 2 m
   deep over 160 m; Catesby to 2.5 m down a hillside, Kirby 9 m wide, snippets). The planner does not
   cut a way hollow (the tread is benched level across, as before); the street's default 6.1 m
@@ -113,14 +127,47 @@ page that would not open.
 | A house's setback inside its toft | the entry's `setback_m`, as before | ML: a yeoman's house set well back, gable to the road; WK: an Angerdorf's eaves to the road | no measure found: **a choice**. A house's distance from the way varies because the toft's front does (the street's wandering edge, the green), not the setback |
 | A back lane | behind three or more founding tenements of one row that are built, 2 m wide, a toft's margin of 1.5 m behind their backs | HE via WW: back lanes often ran behind the crofts; WK: a planned village's back lane at the far end of each plot | the run of three and the widths are choices |
 
+## A nucleated village: tofts side by side (added 2026-11-16)
+
+The first grown plan stood 14 houses apart on separate squarish lots over 200 m, which reads as a
+hamlet of farmsteads. What the sources say instead: Milburn's house plots each have **a narrow
+frontage to the green and a long yard behind** (HH); a planned row is a double row of tofts and
+crofts fronting the main road, Yarwell's (NH); toft and croft are the yard of the house and the
+enclosure attached to it, laid out as groups of long thin plots (BK, LT); at Wharram the tofts of
+one part are of more variable breadth than anywhere else in the village, which points to piecemeal
+rather than single planning (LT, quoting the excavators); families split plots to house the young
+(ML, above). So the planner lays tofts **side by side** along the street (a gap after one in seven
+at `irregularity` 1, a choice), each **the chord of the street's edge** so neighbours share their
+corners, **six in ten split lengthwise** between two households 35 to 65 % (a choice: no source
+counts subdivisions), keeps the croft's depth, and shortens a croft where a bend crowds it. A
+house's **setback** is drawn 0.15 to 1.85 times the entry's (a choice: no source measures it),
+and a narrow toft gets a narrow deep house, gable-on to the street. The order's random lengthening
+fell from a half to 15 % (a choice), so the houses stand together round the focus. No opened
+source gave a toft's measured frontage beyond the snippets above (LT and BK give none).
+
+**The green** keeps its lens, now with **funnel mouths** (WK's Angerdorf and the funnel-shaped
+entries of greens, a lead; no measure read): the street opens over the outer third of each end
+and runs level along the middle third, so its tofts face across it in rows. A green is common
+grazing, so the cover keeps off it.
+
+| # | Source | Read |
+|---|---|---|
+| RK | O. Rackham (1986), *The History of the Countryside*, as summarised by reviews (LRB, D. Allen; dannyreviews) | **summaries only** |
+| TH | *Times Higher Education*, "Now driven to destruction, our green and pleasant land" | snippet |
+| HH | Herefordshire Through Time, "Planned villages" | whole |
+| NH | Northamptonshire HER, Yarwell (MNN4877) | snippet |
+| BK | Buckinghamshire Heritage Portal, "Crofts and tofts" | whole (no numbers) |
+| LT | Leicestershire and Wharram reports via the Archaeology Data Service, search digests | **snippets only** |
+
 ## Where the church and the well stand
 
 - **The church**: "usually at the end of the village" with the manor (HE via WW); West Wykeham's
   stands in its corner on the highest ground, its churchyard 42 by 24 m and the church 15.1 by
   7.3 m (WW); Gainsthorpe's church about 180 m off (GA); a Rundling's almost always outside (WK).
-  The planner **reserves a plot named for it**: of the founding plots taken in the outer half of the
-  village's order, the one on the highest ground, made 42 by 24 m (WW's churchyard), left without a
-  house (no church structure exists yet).
+  The planner **reserves a plot named for it**: once the houses stand, just past an end of them
+  along a way (since version 3; it was a plot of the outer half of the order), the place on the
+  highest ground, made 42 by 24 m (WW's churchyard), left without a house (no church structure
+  exists yet).
 - **The well**: no opened source places one. It stands at the green's middle, where the ways meet,
   **a choice**; an Angerdorf's pond stands on its green (WK). A pond is not built (it would be a
   water body the scene authors).

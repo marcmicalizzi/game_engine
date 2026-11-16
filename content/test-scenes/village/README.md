@@ -16,9 +16,9 @@ goes in at a door, through the rooms, up the stair and to a window.
 - **The village** (`placements[0]`, generator `village`): two ways, an old road along the ridge's
   foot from south to north and a way from the west over the ridge's shoulder that meets it, each
   found over the ground between its places; a green where they meet with the well at its middle;
-  fourteen houses taken up nearest the green first, tenements of uneven frontage and depth turned
-  to the slope and the sun, cottages of one storey squeezed in between them and onto the green's
-  edge, a plot kept for the church on the highest ground of the outer half, and back lanes behind
+  fourteen houses taken up nearest the green first, tofts side by side round it (seed 12, a 36 m
+  green, crofts of six perches), subdivided and at uneven setbacks, cottages of one storey in the
+  gaps and on the green, a plot kept for the church past the houses' end, and back lanes behind
   the built rows. Each house is the rural filler's, on a pad, facing its way, with a path from its
   door through a gate to the tread. Plots a corner of which would stand off the heightfield, or on
   the ridge's slope, are left empty and counted.

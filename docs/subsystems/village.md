@@ -33,15 +33,28 @@ step:
   its ends, where people come from and go to. Between two, the way is the least-cost path over a
   grid of `station_m` cells in a corridor reaching a quarter of their distance (20 to 40 m) round them,
   each step to one of sixteen neighbours (the eight and the knight's moves), costing its length
-  times 1 + (grade / 8 %)², ten times more over a 25 % grade, plus a **wander** of up to a quarter of the
-  length at `irregularity` 1, a value field on a 12 m lattice drawn from the seed and the place
-  (so a way bends on level ground, and two ways over one place see one field). Integer costs,
-  ties to the lower cell: the same way on every toolchain. The pieces are joined, smoothed twice
-  by a five-point mean (the grid's steps become bends; the two ends stay), stationed at equal
+  times 1 + (grade / 8 %)², ten times more over a 25 % grade, plus, scaled by `irregularity`,
+  three fields of the seed and the place (`way_extra`; two ways over one place see one field):
+  a quarter of a fine **wander** on a 12 m lattice; **what the way went round** (`obstacle_at`:
+  a disc in three cells of four of a 40 m lattice, 8 to 18 m in radius, costing up to three times
+  the length again — the holdings, wet places, copses and parks that stood when the way was first
+  trodden and are gone, the grounding's "What a way went round"); and **the lie of the land it
+  followed** (`meander_at`: a smoothstep value field on a 48 m lattice costing up to three times
+  again across its ridges, so the way winds along its valleys). Integer costs, ties to the lower
+  cell: the same way on every toolchain. A laid-out way (`irregularity` 0) is then **pulled
+  straight** wherever a straight stretch costs no more than the grid's steps; a grown way only
+  over ten cells (20 m), so the grid's zigzag goes and the bends its cost asked for stay. The
+  pieces are joined, smoothed twice by a five-point mean (the two ends stay), stationed at equal
   steps no longer than `station_m`, and each station's tread top is the ground through a
-  five-point mean, as before. A way that cannot join two places is refused with the lane's name.
-  The cost's form is Galin et al.'s (2010); its constants are choices, since the paper's were not
-  read.
+  five-point mean. On level ground at `irregularity` 1 a 300 m way runs straight (within 50 cm)
+  for under 52 m and has a sinuosity of 1.04 (the case "a grown way goes round what it went
+  round"). A way that cannot join two places is refused with the lane's name. The cost's form is
+  Galin et al.'s (2010); its constants are choices, since the paper's were not read.
+- **The tread wanders too** (`LaneStation::tread_mm`): the entry's half width, a quarter more or
+  less over a 16 m lattice at `irregularity` 1, half again as wide where the ways meet, never
+  within 30 cm of the street's edge and **never over 1.9 m a side**: a `Bench` line wider than about
+  4.4 m is not level at its middle in the tile set (41 mm low at 4.5 to 4.8 m, which the benches'
+  case caught), a row for the tile set. The tread's bench, its shapes and its wear follow it.
 - **Ways join**: a later way's end within 40 m of an earlier way is moved onto its nearest station,
   so ways meet rather than stop short. **The focus** is the first such meeting; with one way, its
   middle. The green opens there, the
@@ -49,46 +62,67 @@ step:
 - **The street's edges** (`LaneStation::left_mm`, `right_mm`): the entry's half width, each side
   wandering by up to a quarter of the street's width over a 16 m lattice along the way with
   `irregularity`, never nearer than 30 cm past the tread; and on every way within the green's half
-  width of the focus, **the green**: the edges open by a parabola to `green_m` across over three
-  times its length, so the green is a lens of two thirds its width times its length (0.15 ha at
-  the default 24 m), and two ways that meet there both open, which gives the meeting its funnel.
-- **The candidates.** Along each way and side the entry allows, out from the station nearest the
-  focus both ways: **founding tenements** of the row plan's whole perches, stretched or shrunk by
-  up to a quarter and given a depth up to 30 % off the entry's at `irregularity` 1, each followed
-  by a seeded gap of up to two perches (drawn small more often than large); **a cottage** in each
-  gap wide enough for one (1.2 to 1.5 perches, half the depth); and, on a way through the green,
-  cottages at the street's own edge, standing on the green in front of its tenements (drawn with
-  a chance of half the irregularity), as cottages on a green's common did. Every draw is the
-  engine's hash of the seed and the candidate's place (way, side, direction, number).
-- **A plot's turn and place.** A candidate's frame is its way's direction at its middle, turned
-  toward the contour where the ground falls (a long house across the slope keeps its pad low), and
-  toward a long axis east and west where it does not (north is −z), with a seeded part: at most
-  20° at `irregularity` 1, scaled by it. The front stands at the furthest the street's edge
-  reaches along its frontage, its near corner on that edge, so a plot by the green's widening
-  stands behind its outline. Since the setback inside a toft is the entry's, **a house's distance
-  from its way varies** with the edge, the green and the turn — which is what the eye reads.
+  width of the focus, **the green**: the edges open to `green_m` across over twice its length,
+  with **funnel mouths** — a smoothstep over the outer third at each end — and a level breadth
+  along the middle third, so the tofts along each side stand in a row facing across it rather
+  than fanning round a curve; two ways that meet there both open. Its outline (`VillagePlan::green`)
+  is handed to the cover as a shape (`footprints`): common grazing, kept short. No worn path is
+  drawn across it (a path from a gate longer than 8 m has no mask region; it keeps its bench).
+- **The tofts** (village.md's answer to "a scatter of fenced lots"; the grounding's "Plots").
+  Along each way and side the entry allows, out from the station nearest the focus both ways, a
+  cursor lays **founding tenements** of the row plan's whole perches, stretched or shrunk by up to
+  a quarter and given a depth up to 30 % off the entry's at `irregularity` 1, **side by side**: a
+  gap of one to two perches follows only one tenement in seven at `irregularity` 1, and **six in
+  ten are split between two households**, lengthwise and unevenly (35 to 65 %, each at least 1.1
+  perches), keeping the croft's depth. A toft's front is **the chord of the street's edge**
+  between its two corners (`edge_point`: the line and the edge's distance between the stations
+  about the corner, out along the normal of the tangent between theirs), so the tofts of a row
+  follow the street, its wander and the green's outline, and **share their front corners**.
+  **A cottage** stands in a gap wide enough for one (1.2 to 1.5 perches, half the depth); and, on
+  a way through the green, cottages at the street's own edge on the green, square to the way and
+  turned toward the contour, a long axis east and west and a seeded part by up to 20°, as before.
+  Every draw is the engine's hash of the seed and the candidate's place.
 - **The order** (`Plot::order`). A tenement's key is its front's distance from the focus,
-  lengthened by up to half by the seed at `irregularity` 1; a cottage comes after three fifths of
-  the houses' tenements, then by a quarter of its distance. **The church** takes, of the
-  tenements ranked in the outer half of the houses' order, the one on the highest ground, made
-  42 by 24 m (West Wykeham's churchyard), reserved and left empty (`PlotState::reserved`), only
-  where all four of its corners stand on the ground.
+  lengthened by up to **15 %** by the seed at `irregularity` 1, so a toft further out is rarely
+  taken before a nearer one and the houses stand together; a cottage comes after three fifths of
+  the houses' tenements, then by a quarter of its distance.
 - **Taken up.** In that order, a candidate is never a plot if any point of any way's street (five
   across each station: the line, half and three quarters of each edge) stands inside it more than
   30 cm from its edges, if it overlaps a plot already taken, or if it stands within 2.5 m of the
-  well. The rest become plots: reserved, or spare past the entry's house count, or asked for a
-  house as before — a cottage asks one storey, a tenement the entry's `storeys` — and left empty
-  and counted where the house does not fit, the ground is steep, wet or **not there**
-  (`PlotState::outside`, a corner off the heightfield), or the filler refuses.
+  well; **a toft keeps its front and gives up depth**, its croft shortened by steps (85, 70, 55,
+  40, 30 %) where a bend brings the street or a neighbour into it or **a back corner is off the
+  ground there is**. The rest become plots: spare past the entry's house count, or asked for a
+  house — a cottage asks one storey, a tenement the entry's `storeys` — at **its own setback**,
+  0.15 to 1.85 times the entry's at `irregularity` 1 (one house on the street's edge, its
+  neighbour behind a yard), and left empty and counted where the house does not fit, the ground
+  is steep, wet or not there (`PlotState::outside`), or the filler refuses. A narrow toft gets a
+  narrow, deep house from the rural filler, whose ridge then runs back from the street: **the
+  gable-on houses come from the subdivision**, not from a switch.
+- **Pads in a row.** A pad reaches `pad_margin_m` past the walls behind, no further forward than
+  the plot's front and no more than half the side gap to each side; its level is the mean of the
+  ground under the footprint, held within what every built pad within 6 m allows — the gentler of
+  `bank_slope` and `fill_slope` times their gap — since a neighbour's bank or fill reaching into
+  this footprint would cut or fill it. Where no level suits them all, or the one there is asks
+  more than `max_pad_step_m` of cut or fill under the walls, the plot is too steep.
+- **The church** (`PlotKind::church`): set out once the houses stand, **past an end of the built
+  houses** along a way, on either side, the first place out from each end (5 m steps, its front
+  the chord of the street's edge moved back by up to 6 m on a bend) where its 42 by 24 m (West
+  Wykeham's churchyard) stands on no street, plot or well and wholly on the ground; of those, the
+  one on the highest ground. Reserved and left empty (`PlotState::reserved`).
 - **The path** runs square out of the door to **the gate** in the plot's front (`gate_x_mm`), then
-  to the nearest point of its way's tread edge (`path_x_mm`; `lane_x_mm` is the line beside it). A
-  path is a `Bench` line of three points: the pad's level at the door, the ground at the gate, the
-  tread's top at its end.
+  to the nearest point of its way's tread edge (`path_x_mm`). A path is a `Bench` line of three
+  points: the pad's level at the door **and at the gate** (the yard before a door is level with
+  it; a path sloping from the door crosses the pad's level at its front, where the smooth minimum
+  of the two benches dips — with the uneven setbacks a house on the street's edge had its front
+  cut by up to 5 cm), and the tread's top at its end.
 - **Back lanes** (`LaneLine::back`). Behind each run of three or more built tenements of one row
   whose fronts follow each other within two perches, a lane along their back corners 2.5 m out (a
   toft's margin of 1.5 m and its own half width), 2 m wide, smoothed and stationed like a way,
-  kept only where none of its stations stands within a metre of any plot. It is benched, handed
-  as shapes and worn like a way, with no verge.
+  kept only where none of its stations stands within a metre of any plot **or within a metre of
+  any way's street or the green**. It is benched, handed as shapes and worn like a way.
+- **The boundaries** of two tofts that share a front corner and run back along one line are one
+  wall, the earlier plot's; where one croft is deeper, its side carries on alone from its
+  neighbour's back ("The boundaries").
 
 **At `irregularity` 0** there is no wander in a way or an edge, no gap, no stretch, no turn and no
 cottage: whole perches back to back at the entry's depth, square to a way that on level ground is
@@ -385,7 +419,32 @@ camera-path.json --offscreen --terrain-tiles --shadows rt --tunable renderer.gi.
 split at the flight's `door` and first `inside` markers. The two flights are not the same camera:
 each is its plan's walk into its house 0, so the outside figure compares two different lanes.)
 
-**The plan is now three hundred times slower** and no longer microseconds a plot: the way's search
+**The nucleated plan** (G206's second part, `k_village_version` 3, 2026-11-16, the same machine; the
+CPU at 99 % load from other agents' builds when the bench ran, so an upper bound):
+
+| | The grown plan (version 2) | The nucleated plan (version 3) |
+|---|---|---|
+| `village.plan`, 8 houses | 3.54 ms | **2.08 ms** |
+| 64 houses | 33.9 ms | 16.6 ms |
+| 256 houses | 144 ms | 87.7 ms |
+| the scene (`seed` 12): houses, plots | 14 houses over about 200 m of three ways | 14 houses round a 36 m green within about 110 m, 3 cottages, a church plot past the houses, 1 plot refused by the filler |
+| a fixed lane camera (93, 1.65, −30) looking north, GPU median (frames 180 to 239) | 5.53 ms (resolve 3.87) | 5.47 ms (resolve 3.89) |
+| a room: the flight's eighth key, inside house 0, GPU median (frames 300 to 359) | 5.24 ms (resolve 2.49, GI trace 1.43) | 6.21 ms (resolve 4.82, GI trace 0.57) |
+
+(One `engine-view` run each, `--width 3840 --height 2160 --shadows rt --tunable
+renderer.gi.mode=bounce --terrain-tiles --offscreen`, native, no reconstruction, under the GPU
+lock, over the cameras in the G206 scratch's `fixed-before.json` and `fixed-after.json`. The lane
+camera is the same world camera on both plans; the room camera is the same key of each plan's
+flight into its own house 0, so the two rooms differ and the after room looks at a lit window wall:
+read the room row as two rooms, not as a cost of the plan.) The plan's time fell by the per-cell
+fields kept in the search grid and a pull straight that looks at most 64 cells ahead (20 m for a
+grown way) instead of to the way's end. **Where the rest goes** is counted, not profiled: the
+search's sixteen relaxations a cell and seventeen hashes a cell for its fields (about 3,200 cells
+for the bench's 96 m street, 94,000 for its 3 km one), each candidate's street test against every
+station of every way within reach for up to six depths, and each pad's level against every built
+pad. Caching the ways, or a coarser grid for long ones, is still the next step.
+
+**The grown plan was three hundred times slower** than the row plan: the way's search
 over its corridor (a 16-neighbour search over 3,000 cells for the bench's 96 m street, 128,000 for
 its 3 km one), the pull straight, and each candidate's test against every station of every street
 dominate. It is still made at every open; at 144 ms for 256 houses it is no longer free, and a

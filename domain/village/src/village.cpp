@@ -846,7 +846,7 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
     }
   }
 
-  // **The candidates** (village.md, "The candidates."): along each way and side, out
+  // **The candidates** (village.md, "The tofts"): along each way and side, out
   // from the station nearest the focus both ways, founding tenements of whole perches stretched by
   // `irregularity`, with a seeded gap after each; a cottage in each gap wide enough for one; and,
   // on a way through the green, cottages standing at the street's own edge on the green's.
@@ -949,8 +949,8 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
     }
   }
 
-  // The plot a candidate would be: its frame on its way, at its edge, turned (village.md, "A
-  // plot's turn and place.").
+  // The plot a candidate would be: its frame on its way, at its edge, turned (village.md, "The
+  // tofts").
   // A point of a way's street edge, on a side, at arc length `s`, to the millimetre: the line there
   // and the edge's distance from it both between the two stations about it, out along the normal
   // of the tangent between theirs. The same `s` is the same point, so two tofts meeting at it
@@ -1823,7 +1823,10 @@ JsonValue ground_regions_json(const VillageLayer& layer, const VillagePlan& plan
       at(y0, -half_path);
       list.push_back(region(prefix + number + " yard", std::move(outline), names.worn, 0.4));
     }
-    if (half_path > 0.0 && (p.gate_x_mm != p.path_x_mm || p.gate_z_mm != p.path_z_mm)) {
+    // (Not across the green: a path of more than 8 m from the gate is common grass walked over
+    // anywhere, not a worn strip; a test scene drew the green as stripes.)
+    const f64 path_length = direction(p.gate_x_mm, p.gate_z_mm, p.path_x_mm, p.path_z_mm).length_mm;
+    if (half_path > 0.0 && path_length > 0.0 && path_length <= 8000.0) {
       // The path's band past the tread's wear, from the gate.
       const Dir d = direction(p.gate_x_mm, p.gate_z_mm, p.path_x_mm, p.path_z_mm);
       const f64 on = margin;
