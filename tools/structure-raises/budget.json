@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "budget",
+  "reason": "Batch 66's failed frame budget: where W6's pair table costs more than the search (a card at idle clocks under a locked session), the measured table and why no per-run rule mends it",
+  "date": "2026-11-16",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/renderer.md": 2935
+  }
+}
