@@ -548,8 +548,9 @@ TEST_CASE(
       CHECK(darker > 20);
     }
   }
-  // The tail grew the stride past the prefix's, so the chain and the pool were laid out again
-  // with the device idle at least once (`GpuScene::relayout`), and drew the same after it.
+  // The tail grew the stride past the prefix's, so the chain and the pool were laid out again at
+  // least once (`GpuScene::relayout`, swapped in beside the frames in flight since T152), and drew
+  // the same after it.
   MESSAGE("relayouts: " << r.renderer.stats().tiles.relayouts << ", stride "
                         << r.scene.pair_stride() << ", limit " << r.scene.pair_limit());
   CHECK(r.renderer.stats().tiles.relayouts >= 1);

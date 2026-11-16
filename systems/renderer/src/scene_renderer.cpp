@@ -5,6 +5,7 @@
 #include <core/profiling/startup_trace.h>
 #include <core/time/time.h>
 #include <domain/gfx/capture.h>
+#include <domain/gfx/dispatch.h>
 #include <domain/gfx/display.h>
 #include <domain/gfx/gi_cache.h>
 #include <domain/gfx/pipeline_batch.h>
@@ -353,6 +354,8 @@ void SceneRenderer::Pipelines::destroy(const gfx::Device& device) noexcept {
   gfx::destroy_compute_pipeline(device, gi_sample);
   gfx::destroy_compute_pipeline(device, gi_fold);
   gfx::destroy_compute_pipeline(device, pair_expand);
+  gfx::destroy_compute_pipeline(device, pair_shift);
+  gfx::destroy_compute_pipeline(device, pair_expand_runs);
   direct = hardware = vertex = vertex_fallback = shadow = shadow_fallback = resolve = {};
   resolve_linear = encode = {};
 }
@@ -1313,7 +1316,12 @@ bool SceneRenderer::create_pipelines(std::string* error) {
     const gfx::Shader* pairs = shaders_.get("pair_expand", error);
     if (pairs == nullptr ||
         !gfx::create_compute_pipeline(device, pairs->module, "pair_expand_main", {},
-                                      sizeof(PairExpandParams), pipelines_.pair_expand, error)) {
+                                      sizeof(PairExpandParams), pipelines_.pair_expand, error) ||
+        !gfx::create_compute_pipeline(device, pairs->module, "pair_shift_main", {},
+                                      sizeof(PairExpandParams), pipelines_.pair_shift, error) ||
+        !gfx::create_compute_pipeline(device, pairs->module, "pair_expand_runs_main", {},
+                                      sizeof(PairExpandParams), pipelines_.pair_expand_runs,
+                                      error)) {
       return false;
     }
   }
@@ -1564,6 +1572,7 @@ void SceneRenderer::destroy() noexcept {
   // The chain's retired buffers: the worker's finished, the rest freed now (the device is idle).
   delete rt_freer_;
   rt_freer_ = nullptr;
+  free_retired_tlas(true);
   if (accumulation_ != nullptr) {
     accumulation_->destroy();
     delete accumulation_;
@@ -1763,14 +1772,33 @@ bool SceneRenderer::set_dynamic_instances(std::span<const SceneInstance> tail,
     }
   }
   stats_.tiles.far_ns += static_cast<f64>(time::monotonic_ns() - far_started);
-  // **The one wait**: a change that grew the stride or the instance capacity of a scene with the
-  // deformed-vertex pool or the ray tracing chain makes their per-entry and per-instance buffers
-  // again, which every frame in flight reads by address (renderer.md, "Instances that come and
-  // go"). Rare by construction — both grow half as much again — like the chain's own resize.
+  // A change that grew the stride or the instance capacity of a scene with the deformed-vertex pool
+  // or the ray tracing chain, or the trees' tables past their room, makes those buffers again,
+  // which every frame in flight reads by address (renderer.md, "Instances that come and go").
+  // **Swapped in, not waited for** (T152; renderer.md, "A relayout is swapped in"): made beside the
+  // old ones, which go to the slot of the frame submitted last and are freed when it comes round,
+  // as a resize of the chain is (R116). Until T152 this waited for the device and remade the whole
+  // chain: 71-97 ms on the engine's streamed forest, then a 52-75 ms slot wait two frames later.
+  // A device that cannot hold the chain's new half beside the old still waits.
   if (scene_->relayout_pending()) {
     const i64 waited = time::monotonic_ns();
-    frames_.wait_idle();
-    if (!scene_->relayout(error)) return false;
+    relayout_retired_.clear();
+    if (!scene_->relayout(error, &relayout_retired_)) return false;
+    if (relayout_retired_.must_wait) {
+      frames_.wait_idle();
+      ++stats_.tiles.relayout_waits;
+      if (!scene_->relayout(error)) return false;
+    } else {
+      for (const gfx::BufferResource& buffer : relayout_retired_.buffers)
+        frames_.defer_destroy(buffer);
+      for (u32 i = 0; i < relayout_retired_.chain.count; ++i)
+        retire_rt_buffer(relayout_retired_.chain.buffers[i]);
+      if (relayout_retired_.tlas.handle.valid()) {
+        retired_tlas_.push_back(RetiredTlas{relayout_retired_.tlas, relayout_retired_.tlas_slot,
+                                            frames_.frame_index()});
+      }
+      relayout_retired_.clear();
+    }
     // The chain's union grew with the stride, and with it the ceiling the capacity policy may grow
     // to (`rt_capacity_limit`, the budget or the union, whichever is less). Until 2026-10-18 the
     // policy kept the ceiling it was created with — the load's prefix's union — so a tail whose
@@ -2156,7 +2184,7 @@ void SceneRenderer::collect_slot(u32 slot) {
     last.gpu_shadow_cull = timer_.ms("shadow cull");
     last.gpu_shadow = last.gpu_shadow_cull + timer_.ms("shadow");
     last.gpu_pair_expand = timer_.ms("pair expand");
-    last.gpu_tables = timer_.ms("table copy") + last.gpu_pair_expand;
+    last.gpu_tables = timer_.ms("pair shift") + timer_.ms("table copy") + last.gpu_pair_expand;
     last.gpu_terrain_upload = timer_.ms("terrain upload");
     last.gpu_sky = timer_.ms("sky");
     last.gpu_half_sun = timer_.ms("half sun");
@@ -2282,6 +2310,7 @@ void SceneRenderer::begin_frame() {
   // The slot's last frame has completed: the chain's buffers retired while it was recorded go to
   // the worker (R128), as the slot's deferred frees did in `begin_frame` above.
   release_rt_retired(frames_.slot());
+  free_retired_tlas(false);
   timer_.begin_frame(commands_, frames_.slot());
   // The frame that last used this slot has completed: its statistics are readable.
   if (submitted_ >= frames_.frames_in_flight()) {
@@ -2343,6 +2372,29 @@ void SceneRenderer::retire_rt_buffer(const gfx::BufferResource& buffer) {
   }
   if (rt_freer_ == nullptr) rt_freer_ = new RtFreer(*device_, frames_.frames_in_flight());
   rt_freer_->batches[frames_.slot()].pending.push_back(buffer);
+}
+
+// The top-level structures a swapped relayout retired (T152), each once the last frame submitted
+// before it has completed, and its bindless slot with it; `all` with the device idle.
+void SceneRenderer::free_retired_tlas(bool all) noexcept {
+  if (retired_tlas_.empty()) return;
+  const u64 completed = all ? ~u64{0} : frames_.completed();
+  u32 kept = 0;
+  bool released = false;
+  for (u32 i = 0; i < retired_tlas_.size(); ++i) {
+    RetiredTlas& retired = retired_tlas_[i];
+    if (retired.after > completed) {
+      retired_tlas_[kept++] = retired;
+      continue;
+    }
+    if (retired.slot != gfx::BindlessSet::k_invalid_slot && scene_ != nullptr && scene_->valid()) {
+      scene_->bindless().release_acceleration_structure(retired.slot, 0);
+      released = true;
+    }
+    gfx::destroy_acceleration_structure(*device_, retired.tlas);
+  }
+  retired_tlas_.resize(kept);
+  if (released) scene_->bindless().recycle(0);
 }
 
 void SceneRenderer::release_rt_retired(u32 slot) {
@@ -4727,6 +4779,26 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   const bool level_pairs = write_tables && !tables_.pair_copies.empty();
   gfx::RgBuffer rg_level_pairs{};
   if (level_pairs) rg_level_pairs = graph.import_buffer("level pairs", tables_.pair_source);
+  // The set's first pairs numbered again by runs before the copies, which then win (T154).
+  if (write_tables && tables_.shift_runs > 0) {
+    PairExpandParams shift = pair_expand;
+    shift.list = tables_.shift_address;
+    shift.count = tables_.shift_runs;
+    graph.add_pass(
+        "pair shift", gfx::PassKind::Compute,
+        [&](gfx::PassBuilder& b) {
+          b.read(rg_table_staging, gfx::Access::ComputeRead);
+          b.write(rg_instances, gfx::Access::ComputeWrite);
+        },
+        [&, shift](gfx::CommandList cb, gfx::RenderGraph&) {
+          timer.begin(cb, "pair shift");
+          cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.pair_shift.pipeline);
+          cb.push_constants(pipelines.pair_shift.layout, gfx::ShaderStage::Compute, 0,
+                            sizeof(PairExpandParams), &shift);
+          gfx::dispatch_folded(cb, shift.count, device_->caps());
+          timer.end(cb);
+        });
+  }
   if (write_tables) {
     graph.add_pass(
         "table copy", gfx::PassKind::Transfer,
@@ -4741,9 +4813,12 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
         },
         [&, rt_records, level_pairs](gfx::CommandList cb, gfx::RenderGraph&) {
           timer.begin(cb, "table copy");
-          cb.copy_buffer(
-              tables_.staging.buffer, scene.instances.buffer,
-              std::span<const gfx::BufferCopy>(tables_.copies.data(), tables_.copies.size()));
+          // A frame that only numbers pairs again copies no record (T154).
+          if (!tables_.copies.empty()) {
+            cb.copy_buffer(
+                tables_.staging.buffer, scene.instances.buffer,
+                std::span<const gfx::BufferCopy>(tables_.copies.data(), tables_.copies.size()));
+          }
           if (rt_records) {
             cb.copy_buffer(tables_.staging.buffer, scene.rt_instances.buffer,
                            std::span<const gfx::BufferCopy>(tables_.rt_copies.data(),
@@ -4756,7 +4831,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           }
           timer.end(cb);
         });
-    if (tables_.expand > 0) {
+    if (tables_.expand > 0 || tables_.expand_runs > 0) {
       graph.add_pass(
           "pair expand", gfx::PassKind::Compute,
           [&](gfx::PassBuilder& b) {
@@ -4769,10 +4844,23 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           },
           [&](gfx::CommandList cb, gfx::RenderGraph&) {
             timer.begin(cb, "pair expand");
-            cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.pair_expand.pipeline);
-            cb.push_constants(pipelines.pair_expand.layout, gfx::ShaderStage::Compute, 0,
-                              sizeof(PairExpandParams), &pair_expand);
-            cb.dispatch(tables_.expand, 1, 1);
+            if (tables_.expand > 0) {
+              cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.pair_expand.pipeline);
+              cb.push_constants(pipelines.pair_expand.layout, gfx::ShaderStage::Compute, 0,
+                                sizeof(PairExpandParams), &pair_expand);
+              gfx::dispatch_folded(cb, tables_.expand, device_->caps());
+            }
+            // The slots numbered again and not copied (T154): disjoint from the list's.
+            if (tables_.expand_runs > 0) {
+              PairExpandParams runs = pair_expand;
+              runs.list = tables_.expand_runs_address;
+              runs.count = tables_.expand_runs;
+              runs.slots = tables_.expand_run_slots;
+              cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.pair_expand_runs.pipeline);
+              cb.push_constants(pipelines.pair_expand_runs.layout, gfx::ShaderStage::Compute, 0,
+                                sizeof(PairExpandParams), &runs);
+              gfx::dispatch_folded(cb, runs.slots, device_->caps());
+            }
             timer.end(cb);
           });
     }
@@ -4815,7 +4903,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             timer.begin(cb, k_zone_names[k_zone_cull][v]);
             cb.push_constants(pipelines.cull.layout, gfx::ShaderStage::Compute, 0, sizeof(u64),
                               &view_frames[v].block_address[block]);
-            cb.dispatch(gfx::cull_group_count(pair_count), 1, 1);
+            gfx::dispatch_folded(cb, gfx::cull_group_count(pair_count), device_->caps());
             timer.end(cb);
           }
         });
@@ -5159,7 +5247,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             const u64 block = params_[slot].address + sizeof(gfx::CullParams) * (views * 2 + c);
             cb.push_constants(pipelines.cull.layout, gfx::ShaderStage::Compute, 0, sizeof(u64),
                               &block);
-            cb.dispatch(gfx::cull_group_count(pair_count), 1, 1);
+            gfx::dispatch_folded(cb, gfx::cull_group_count(pair_count), device_->caps());
           }
           timer.end(cb);
         });
@@ -5472,6 +5560,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
                                 sizeof(record_params), &record_params);
               if (p >= 3 && p <= 5) {
                 cb.dispatch_indirect(scene.instance_counts.buffer, p == 3 ? drop_args : kept_args);
+              } else if (p == 0 || p == 6) {  // a thread an entry: folded (T160)
+                gfx::dispatch_folded(cb, record_groups[p], device_->caps());
               } else {
                 cb.dispatch(record_groups[p], 1, 1);
               }

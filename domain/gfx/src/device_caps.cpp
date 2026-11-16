@@ -214,6 +214,8 @@ void read_device_caps(VkPhysicalDevice physical, DeviceCaps& out) {
   out.max_compute_workgroup_invocations = limits.maxComputeWorkGroupInvocations;
   out.max_compute_workgroup_size_x = limits.maxComputeWorkGroupSize[0];
   out.max_compute_workgroup_size_y = limits.maxComputeWorkGroupSize[1];
+  out.max_compute_workgroup_count_x = limits.maxComputeWorkGroupCount[0];
+  out.max_compute_workgroup_count_y = limits.maxComputeWorkGroupCount[1];
   out.max_compute_shared_memory_size = limits.maxComputeSharedMemorySize;
   out.max_memory_allocation_count = limits.maxMemoryAllocationCount;
   out.max_storage_buffer_range = limits.maxStorageBufferRange;

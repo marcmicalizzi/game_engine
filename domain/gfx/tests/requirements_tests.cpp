@@ -48,6 +48,8 @@ gfx::DeviceCaps minimal_caps() {
   caps.max_compute_workgroup_invocations = gfx::k_workgroup_invocations;
   caps.max_compute_workgroup_size_x = gfx::k_workgroup_size_x;
   caps.max_compute_workgroup_size_y = gfx::k_workgroup_size_y;
+  caps.max_compute_workgroup_count_x = gfx::k_workgroup_count;
+  caps.max_compute_workgroup_count_y = gfx::k_workgroup_count;
   caps.max_compute_shared_memory_size = gfx::k_shared_memory_bytes;
   caps.max_memory_allocation_count = gfx::k_memory_allocations;
   caps.max_per_stage_uab_sampled_images = gfx::k_min_sampled_images;
@@ -73,6 +75,9 @@ gfx::DeviceCaps titan_xp_caps() {
   caps.max_compute_workgroup_invocations = 1536;
   caps.max_compute_workgroup_size_x = 1536;
   caps.max_compute_workgroup_size_y = 1024;
+  // Not in the card's first report (the rows came with T160); what NVIDIA's drivers report.
+  caps.max_compute_workgroup_count_x = 2147483647u;
+  caps.max_compute_workgroup_count_y = 65535;
   caps.max_compute_shared_memory_size = 49152;
   caps.max_memory_allocation_count = 4294967295u;
   caps.max_per_stage_uab_sampled_images = 1048576;

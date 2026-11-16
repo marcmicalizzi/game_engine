@@ -13,6 +13,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <random>
 #include <span>
 #include <string>
@@ -44,17 +45,20 @@ struct Slot {
   u32 pairs = 0;  // a live slot's own pairs, for `number_first_pairs`
 };
 
-// `GpuScene::number_first_pairs`: after a change whose layout is `tight`, every tail slot's first
-// pair again from the slots before it. Returns how many moved.
-u32 number_first_pairs(Vector<Slot>& table, u32 static_slots, u32 static_pairs, u32 end) {
-  u32 pair = static_pairs;
-  u32 moved = 0;
-  for (u32 s = static_slots; s < end; ++s) {
-    moved += table[s].first_pair != pair ? 1u : 0u;
-    table[s].first_pair = pair;
-    if (table[s].live) pair += table[s].pairs;
+// Runs of slots a numbering moved (T154), applied to a simulated table: what `pair_shift.slang`
+// does to a table set, and what the CPU's table takes when it is read.
+void apply_shifts(std::span<const PairShift> runs, Vector<Slot>& table) {
+  for (const PairShift& run : runs) {
+    for (u32 s = run.begin; s < run.end && s < table.size(); ++s)
+      table[s].first_pair = shifted(run, table[s].first_pair);
   }
-  return moved;
+}
+
+// `GpuScene::number_first_pairs`' first step: the runs over slots the change wrote are taken out.
+void drop_written(Vector<PairShift>& runs, std::span<const SlotWrite> writes) {
+  Vector<PairShift> scratch;
+  for (const SlotWrite& write : writes)
+    remove_shift_range(runs, write.inst_begin, write.inst_begin + write.inst_count, scratch);
 }
 
 // `GpuScene::write_slots`, with each live instance `pairs_per[instance]` pairs long.
@@ -243,21 +247,33 @@ TEST_CASE("tile layout: holes past the share compact, and the cap packs tight or
   CHECK_FALSE(change.compacted);
   CHECK(layout.hole_pairs() >= 9000);
   CHECK(layout.validate(&error));
-  // ...and at 25 percent the same change does: every tile again, in the order given, and every
-  // slot of the table written.
+  // ...and at 25 percent the same change numbers the pairs again where the slots stand (T154;
+  // until then it laid every tile out again and wrote every slot): the free runs hold no pairs,
+  // every tile keeps its class's, and not one slot is written. What moved is a run a block — each
+  // tile after the first hole by its distance — and a set run a free one.
+  Vector<PairShift> shifts;
+  const u32 slot_of_3 = layout.find(3)->inst_begin;
   REQUIRE(layout.apply(std::span<const Request>(half.data(), half.size()), 25, false, 1u << 24,
-                       writes, change, &error));
-  CHECK(change.compacted);
-  CHECK(layout.free_count() == 0);
+                       writes, change, &error, &shifts));
+  CHECK_FALSE(change.compacted);
+  CHECK(change.tight);
+  CHECK(writes.empty());
+  CHECK(layout.free_pairs() == 0);
   CHECK(layout.hole_pairs() == 10 * (block_capacity(1000, 16) - 1000));
   CHECK(layout.find(1)->pair_begin == 1000);
   CHECK(layout.find(3)->pair_begin == layout.find(1)->pair_end());
-  CHECK(writes.size() == 10);
+  CHECK(layout.find(3)->inst_begin == slot_of_3);
+  CHECK(shifts.size() <= layout.block_count() + layout.free_count());
+  CHECK(shifts.size() > 0);
   CHECK(layout.validate(&error));
-  // Asked for, it compacts whatever the holes.
+  // Asked for, it lays everything out again whatever the holes: every tile in the order given.
   REQUIRE(layout.apply(std::span<const Request>(half.data(), half.size()), 100, true, 1u << 24,
-                       writes, change, &error));
+                       writes, change, &error, &shifts));
   CHECK(change.compacted);
+  CHECK(layout.free_count() == 0);
+  CHECK(writes.size() == 10);
+  CHECK(shifts.empty());
+  CHECK(layout.validate(&error));
 
   // Past the cap with their classes' slack but not without it: packed tight, exactly the layout a
   // scene loaded with these tiles would have.
@@ -284,6 +300,115 @@ TEST_CASE("tile layout: holes past the share compact, and the cap packs tight or
                           writes, change, &error));
   CHECK(error.find("share the key") != std::string::npos);
   CHECK(tight.block_count() == 2);
+}
+
+// T154. The forest staging's tail at its size — 5,000 tiles of 70 slots and 2,870 pairs, 350,000
+// slots and 14.35 M pairs, under the 2^24 cap — with every fourth tile leaving: the holes pass a
+// quarter of the dispatch. Until T154 that change laid every tile out again and wrote all 262,500
+// slots that stayed (59 ms of the frame's thread on the walk, then 20 ms a table set to stage
+// them). Now it writes none, numbers the pairs again where the slots stand, and hands on a run a
+// block; what that costs the frame's thread is printed (release, beside the machine's load).
+TEST_CASE("tile layout: a forest-sized numbering writes no slot and hands on a run a block") {
+  constexpr u32 k_tiles = 5000;
+  TileLayout layout;
+  layout.reset(64, 100000);
+  Vector<Request> all;
+  for (u32 t = 0; t < k_tiles; ++t)
+    all.push_back(tile(t + 1, t * 70, 70, 2870));
+  Vector<SlotWrite> writes;
+  Vector<PairShift> shifts;
+  TileLayoutChange change;
+  std::string error;
+  REQUIRE(layout.apply(std::span<const Request>(all.data(), all.size()), 25, false, 1u << 24,
+                       writes, change, &error, &shifts));
+  REQUIRE(layout.instance_end() == 64 + k_tiles * 72);  // 70 slots a tile, a class of 72
+  Vector<Request> left;
+  for (u32 t = 0; t < k_tiles; ++t) {
+    if (t % 4 != 1) left.push_back(tile(t + 1, static_cast<u32>(left.size()) * 70, 70, 2870, true));
+  }
+  // They leave under a share of 90 percent, so nothing is numbered yet; the same tiles again at 25
+  // are the numbering alone, as a walk meets it: the holes passing the share on a small change.
+  REQUIRE(layout.apply(std::span<const Request>(left.data(), left.size()), 90, false, 1u << 24,
+                       writes, change, &error, &shifts));
+  REQUIRE_FALSE(change.tight);
+  const auto start = std::chrono::steady_clock::now();
+  REQUIRE(layout.apply(std::span<const Request>(left.data(), left.size()), 25, false, 1u << 24,
+                       writes, change, &error, &shifts));
+  const auto laid = std::chrono::steady_clock::now();
+  Vector<PairShift> pending;
+  Vector<PairShift> scratch;
+  compose_shifts(pending, std::span<const PairShift>(shifts.data(), shifts.size()), scratch);
+  compose_shifts(pending, std::span<const PairShift>(shifts.data(), shifts.size()), scratch);
+  const auto composed = std::chrono::steady_clock::now();
+  CHECK(change.tight);
+  CHECK_FALSE(change.compacted);
+  // Not one slot written.
+  u64 written = 0;
+  for (const SlotWrite& write : writes)
+    written += write.inst_count;
+  CHECK(written == 0);
+  CHECK(shifts.size() <= layout.block_count() + layout.free_count());
+  CHECK(layout.validate(&error));
+  MESSAGE("forest-sized numbering: "
+          << layout.instance_end() << " slots, " << layout.pair_end() << " pairs, " << written
+          << " slots written, " << shifts.size() << " runs covering "
+          << shift_slots(std::span<const PairShift>(shifts.data(), shifts.size()))
+          << " slots; layout " << std::chrono::duration<double, std::milli>(laid - start).count()
+          << " ms, two composes "
+          << std::chrono::duration<double, std::milli>(composed - laid).count() << " ms");
+}
+
+TEST_CASE("pair shifts: composed, cut and found as a table of slots would take them one by one") {
+  // Random lists of runs over 200 slots, against a plain array of first pairs (T154).
+  std::mt19937 rng(20261115);
+  const auto random_runs = [&rng]() {
+    Vector<PairShift> runs;
+    u32 at = rng() % 8;
+    while (at < 200) {
+      const u32 length = 1 + rng() % 20;
+      const u32 value = rng() % 3 == 0 ? rng() % 1000 : (rng() % 2 == 0 ? 7u : ~u32{4});
+      push_shift(runs, PairShift{at, std::min(at + length, 200u), value, rng() % 3 == 0 ? 1u : 0u});
+      at += length + rng() % 10;
+    }
+    return runs;
+  };
+  Vector<PairShift> scratch;
+  for (u32 trial = 0; trial < 200; ++trial) {
+    Vector<u32> slow(200);
+    for (u32 s = 0; s < 200; ++s)
+      slow[s] = s * 3;
+    Vector<u32> fast = slow;
+    Vector<PairShift> composed;
+    for (u32 k = 0; k < 4; ++k) {
+      const Vector<PairShift> runs = random_runs();
+      for (const PairShift& run : runs) {
+        for (u32 s = run.begin; s < run.end; ++s)
+          slow[s] = shifted(run, slow[s]);
+      }
+      compose_shifts(composed, std::span<const PairShift>(runs.data(), runs.size()), scratch);
+    }
+    // A cut: those slots take none of it.
+    const u32 cut = rng() % 200;
+    // `std::mt19937::result_type` is 64 bits on GCC's and Clang's library: the sum is narrowed
+    // first, so both arguments are `u32` on every toolchain.
+    const u32 cut_end = std::min(cut + static_cast<u32>(rng() % 30), 200u);
+    Vector<PairShift> kept = composed;
+    remove_shift_range(kept, cut, cut_end, scratch);
+    for (u32 s = 1; s < composed.size(); ++s)
+      REQUIRE(composed[s].begin >= composed[s - 1].end);
+    for (u32 s = 0; s < 200; ++s) {
+      const PairShift* run =
+          find_shift(std::span<const PairShift>(composed.data(), composed.size()), s);
+      const u32 once = run != nullptr ? shifted(*run, fast[s]) : fast[s];
+      REQUIRE(once == slow[s]);
+      const PairShift* left = find_shift(std::span<const PairShift>(kept.data(), kept.size()), s);
+      if (s >= cut && s < cut_end) {
+        REQUIRE(left == nullptr);
+      } else {
+        REQUIRE(((left == nullptr) == (run == nullptr)));
+      }
+    }
+  }
 }
 
 TEST_CASE("tile layout: a random world keeps the table sorted and every tile where it says") {
@@ -316,6 +441,16 @@ TEST_CASE("tile layout: a random world keeps the table sorted and every tile whe
   SUBCASE("at the cap") { cap = 12000; }
   u32 tights = 0;
   u32 peak_slots = 0;
+  // **A table set that lags** (T154): it is brought up to date every third change, as a set is
+  // when a frame next flips to it — the numberings since then composed into runs and applied first,
+  // then the slots written since copied whole — and must then be the table, slot for slot.
+  Vector<PairShift> shifts;
+  Vector<PairShift> lag_shift;
+  Vector<PairShift> scratch;
+  Vector<Slot> lagging = table;
+  Vector<u32> lag_written;  // slot ranges written since the set was last current, begin and end
+  u64 shift_runs = 0;
+  u64 slots_moved = 0;
   for (u32 step = 0; step < 400; ++step) {
     for (Tile& t : tiles) {
       const u32 roll = rng() % 16;
@@ -350,8 +485,11 @@ TEST_CASE("tile layout: a random world keeps the table sorted and every tile whe
       first += instances;
     }
     REQUIRE_MESSAGE(layout.apply(std::span<const Request>(requests.data(), requests.size()), 25,
-                                 false, cap, writes, change, &error),
+                                 false, cap, writes, change, &error, &shifts),
                     error);
+    REQUIRE((change.tight || shifts.empty()));
+    // What a numbering hands on is runs, never a record a slot: at most one a block or free run.
+    REQUIRE(shifts.size() <= layout.block_count() + layout.free_count());
     compactions += change.compacted ? 1u : 0u;
     tights += change.tight ? 1u : 0u;
     reused += change.reused;
@@ -377,7 +515,28 @@ TEST_CASE("tile layout: a random world keeps the table sorted and every tile whe
                  std::span<const Request>(requests.data(), requests.size()),
                  std::span<const Vector<u32>>(pairs_of.data(), pairs_of.size()),
                  layout.instance_end(), table);
-    if (change.tight) (void)number_first_pairs(table, 3, 500, layout.instance_end());
+    // The writes carry their new numbers; the runs move the rest (T154).
+    drop_written(shifts, std::span<const SlotWrite>(writes.data(), writes.size()));
+    apply_shifts(std::span<const PairShift>(shifts.data(), shifts.size()), table);
+    shift_runs += shifts.size();
+    slots_moved += shift_slots(std::span<const PairShift>(shifts.data(), shifts.size()));
+    compose_shifts(lag_shift, std::span<const PairShift>(shifts.data(), shifts.size()), scratch);
+    for (const SlotWrite& write : writes) {
+      lag_written.push_back(write.inst_begin);
+      lag_written.push_back(write.inst_begin + write.inst_count);
+    }
+    if (step % 3 == 2) {
+      lagging.resize(table.size());
+      apply_shifts(std::span<const PairShift>(lag_shift.data(), lag_shift.size()), lagging);
+      for (u32 w = 0; w < lag_written.size(); w += 2) {
+        for (u32 s = lag_written[w]; s < lag_written[w + 1] && s < table.size(); ++s)
+          lagging[s] = table[s];
+      }
+      lag_shift.clear();
+      lag_written.clear();
+      for (u32 s = 3; s < layout.instance_end(); ++s)
+        REQUIRE(lagging[s].first_pair == table[s].first_pair);
+    }
     peak_slots = std::max(peak_slots, layout.live_instances());
     // Sorted by first pair, which is all the binary search asks.
     for (u32 s = 1; s < layout.instance_end(); ++s)
@@ -423,19 +582,19 @@ TEST_CASE("tile layout: a random world keeps the table sorted and every tile whe
     }
   }
   MESSAGE("400 random changes, cap "
-          << cap << ": " << compactions << " compactions, " << tights << " numbered again, "
-          << reused << " blocks reused, last " << layout.block_count() << " blocks, "
-          << layout.hole_pairs() << " hole pairs of " << layout.pair_end() << ", "
-          << layout.instance_end() << " slots for at most " << peak_slots << " live");
+          << cap << ": " << compactions << " compactions, " << tights << " numbered again ("
+          << shift_runs << " runs moving " << slots_moved << " slots), " << reused
+          << " blocks reused, last " << layout.block_count() << " blocks, " << layout.hole_pairs()
+          << " hole pairs of " << layout.pair_end() << ", " << layout.instance_end()
+          << " slots for at most " << peak_slots << " live");
   CHECK(reused > 0);
-  if (cap < (1u << 24)) {
-    // The cap was met and answered by numbering (every one of these was a whole rewrite until
-    // T137; the loop held each to no slot moved and none written), and the table stays within the
-    // classes' slack and the free share of what was ever live. A compaction here is the holes' or
-    // the free slots', which the loop's `pair_end() <= cap` shows never left the layout past it.
-    CHECK(tights > 0);
-    CHECK(layout.instance_end() <= 3 + 2 * peak_slots + k_compact_min_free_slots);
-  } else {
-    CHECK(tights == 0);
-  }
+  // Under the cap as at it the holes are answered by numbering, not by laying out again (T154;
+  // under the cap T137's run laid everything out again 70 times, each a write of every slot): the
+  // loop held every numbering to no slot moved and none written, and the lagging set to the table.
+  // What can still lay everything out is free slots past the share, which these 40 tiles of 3 to 40
+  // instances never come near `k_compact_min_free_slots` of; the table stays within the classes'
+  // slack and the free share of what was ever live.
+  CHECK(tights > 0);
+  CHECK(compactions == 0);
+  CHECK(layout.instance_end() <= 3 + 2 * peak_slots + k_compact_min_free_slots);
 }

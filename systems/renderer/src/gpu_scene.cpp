@@ -1062,7 +1062,7 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
 bool GpuScene::create_table_set(TableSet& set, std::string* error) {
   set.pending.clear();
   set.all = true;
-  set.renumbered = InstanceRange{};
+  set.shift.clear();
   constexpr gfx::BufferUsage k_table =
       k_storage | gfx::BufferUsage::TransferDst | gfx::BufferUsage::ShaderDeviceAddress;
   return gfx::create_buffer(*device_, u64{instance_capacity_} * sizeof(gfx::InstanceDesc), k_table,
@@ -1109,41 +1109,6 @@ void GpuScene::mark_instance_written(u32 instance) {
     if (!set.all) set.pending.push_back(InstanceRange{instance, instance + 1});
   }
   tables_changed_ = true;
-}
-
-bool GpuScene::relayout(std::string* error) {
-  if (!relayout_pending_) return true;
-  relayout_pending_ = false;
-  if (flora_grow_ && !grow_flora_tail(error)) return false;
-  // The pool's per-entry slots are laid out by the stride, and every mesh record names them.
-  // The allocator's tile scratch follows the same stride (R104).
-  if (deform_ && deform_blocks.size < deform_block_bytes()) {
-    gfx::destroy_buffer(*device_, deform_blocks);
-    if (!gfx::create_buffer(*device_, deform_block_bytes(), k_address, false, deform_blocks,
-                            error)) {
-      return false;
-    }
-  }
-  if (deform_ && deform_slots.size < u64{visible_entries()} * sizeof(u32)) {
-    gfx::destroy_buffer(*device_, deform_slots);
-    if (!gfx::create_buffer(*device_, u64{visible_entries()} * sizeof(u32), k_address, false,
-                            deform_slots, error)) {
-      return false;
-    }
-    for (gfx::MeshDesc& desc : mesh_descs_)
-      desc.deform_slots = deform_slots.address;
-    for (RingSlots& ring : ring_slots_) {
-      for (TerrainSlot& slot : ring.slots)
-        slot.desc.deform_slots = deform_slots.address;
-    }
-    gfx::destroy_buffer(*device_, meshes);
-    if (!gfx::upload_buffer(*device_, mesh_descs_.data(),
-                            mesh_descs_.size() * sizeof(gfx::MeshDesc), k_storage, meshes, error)) {
-      return false;
-    }
-  }
-  if (ray_tracing_ && !lay_out_ray_tracing(error)) return false;
-  return true;
 }
 
 gfx::InstanceDesc GpuScene::null_instance(u32 first_pair) const noexcept {
@@ -1380,30 +1345,6 @@ void GpuScene::acquire_tail_tree(u32 slot, const SceneInstance& source) {
   flora_instances_.push_back(flora_instance(slot, mesh, tree.first_part, tail_motion_key(source)));
   tail_tree_of_slot_[slot] = t;
   flora_recut_ = true;
-}
-
-// Made again with the device idle (`relayout`): the deform table, its per-frame copies and the
-// pose table, half as much again as the records need, every record the CPU holds copied in.
-bool GpuScene::grow_flora_tail(std::string* error) {
-  flora_grow_ = false;
-  bool grew = false;
-  if (deform_descs_.size() > deform_capacity_) {
-    deform_capacity_ = deform_descs_.size() + deform_descs_.size() / 2;
-    grew = true;
-  }
-  if (flora_parts_ > flora_part_capacity_) {
-    flora_part_capacity_ = flora_parts_ + flora_parts_ / 2;
-    if (!make_flora_poses(error)) return false;
-  }
-  flora_state_.reserve(flora_part_capacity_);
-  deform_descs_.reserve(deform_capacity_);
-  deform_instance_.reserve(deform_capacity_);
-  deform_mesh_clusters_.reserve(deform_capacity_);
-  tail_trees_.reserve(deform_capacity_ - load_deforms_);
-  // The table is written whole again whether or not it grew: a record made past it was not.
-  if (!make_deform_tables(grew ? deform_frames.buffer.valid() : false, error)) return false;
-  flora_counts();
-  return true;
 }
 
 // The records the admitted demand makes (R137): per class of run size, a mesh's trees take its own
@@ -1769,7 +1710,8 @@ bool GpuScene::set_dynamic_instances(std::span<const SceneInstance> tail,
   }
   lap(change.compare_ns);
   if (!layout_.apply(std::span<const TileLayout::Request>(requests_.data(), requests_.size()),
-                     compact_pct_, compact, pair_limit_, writes_, change.layout, error)) {
+                     compact_pct_, compact, pair_limit_, writes_, change.layout, error,
+                     &change_shifts_)) {
     return false;
   }
   lap(change.layout_ns);
@@ -1779,8 +1721,11 @@ bool GpuScene::set_dynamic_instances(std::span<const SceneInstance> tail,
       !fit_tables(change, retired, error)) {
     return false;
   }
-  // At the cap the layout numbered the pairs again and moved no slot: the table follows.
-  if (change.layout.tight) number_first_pairs(change.slots_renumbered);
+  // The layout numbered the pairs again and moved no slot: the tables follow, as runs (T154).
+  if (change.layout.tight) {
+    number_first_pairs(change.slots_renumbered);
+    change.shift_runs = change_shifts_.size();
+  }
   lap(change.write_ns);
   if (change.layout.compacted) ++compactions_;
   if (change.slots_written > 0 || change.slots_renumbered > 0 || change.grew)
@@ -1837,12 +1782,17 @@ bool GpuScene::write_slots(std::span<const SceneInstance> tail,
   const u32 had = instance_table_.size();
   instance_table_.resize(end);
   tail_keys_.resize(end);
+  // A numbering the CPU's table has not taken yet no longer applies past the end (T154).
+  remove_shift_range(cpu_shift_, end, ~u32{0}, shift_scratch_);
   // The policy counts follow the table slot by slot (W81): a slot made here counts as what it holds
   // until it is written below, as `policy_counts` would count it.
   for (u32 slot = had; slot < end; ++slot)
     policy_count(instance_table_[slot], true);
   for (const SlotWrite& write : writes) {
     if (write.inst_count == 0) continue;
+    // Written with its number: nothing pending applies to it (T154).
+    remove_shift_range(cpu_shift_, write.inst_begin, write.inst_begin + write.inst_count,
+                       shift_scratch_);
     u32 first_pair = write.pair_begin;
     const DynamicBlock* block = write.source < blocks.size() ? &blocks[write.source] : nullptr;
     for (u32 k = 0; k < write.inst_count; ++k) {
@@ -1902,43 +1852,52 @@ bool GpuScene::write_slots(std::span<const SceneInstance> tail,
   return true;
 }
 
-// **The tail's first pairs from the instances it holds** (T137; renderer.md, "At the cap the pairs
-// are numbered again"). A slot's `first_pair` is the sum of the clusters of the live slots before
-// it, so with the slots where they stand it is one pass of additions: 300,000 slots in well under
-// a millisecond, where laying the tiles out again made every one of them from its source — the
-// matrix, the fit, a swaying tree's record given back and taken — for 52 to 86 ms. A null slot (a
-// block's slack, a free block) carries the pair the live ones before it end at, as `write_slots`
-// leaves it, so the slots stay sorted and a pair nothing holds lands on a null instance. The slots
-// whose number moved are marked for every table set as records to copy and pairs to expand again;
-// their top-level records name no pair and are left.
+// **The tail's first pairs, numbered again where the slots stand** (T137, T154; renderer.md, "The
+// pairs are numbered again, and no slot moves"). The layout said what moved as runs of slots — a
+// block's by its distance, a free run's set to its one number — and gave the slots this change
+// wrote their new numbers already; the runs over those are taken out, and the rest go to every
+// table set, to be applied on the GPU when a frame next flips to it, and to the CPU's own table,
+// which takes them when it is read (`settle_first_pairs`). Nothing here visits a slot: a few runs a
+// block, where T137 added up every slot's number (3.7 to 5.8 ms over the forest staging's 349,000
+// 96-byte records on this machine, the table larger than the cache) and each set staged every
+// moved record again (29 MB, 16 to 24 ms a set).
 void GpuScene::number_first_pairs(u32& renumbered) {
-  renumbered = 0;
-  const u32 begin = layout_.static_instances();
-  const u32 end = std::min<u32>(layout_.instance_end(), instance_table_.size());
-  u32 pair = layout_.static_pairs();
-  u32 first = end;
-  u32 last = begin;
-  for (u32 slot = begin; slot < end; ++slot) {
-    gfx::InstanceDesc& desc = instance_table_[slot];
-    if (desc.first_pair != pair) {
-      desc.first_pair = pair;
-      if (slot < first) first = slot;
-      last = slot + 1;
-      ++renumbered;
-    }
-    if (tail_mesh(desc.mesh)) pair += part_of(desc.mesh).cluster_count;
+  for (const SlotWrite& write : writes_) {
+    if (write.inst_count == 0) continue;
+    remove_shift_range(change_shifts_, write.inst_begin, write.inst_begin + write.inst_count,
+                       shift_scratch_);
   }
-  ENGINE_ASSERT(pair == layout_.pair_end(), "the table's pairs end where the layout's do");
-  if (first >= last) return;
+  renumbered = static_cast<u32>(
+      shift_slots(std::span<const PairShift>(change_shifts_.data(), change_shifts_.size())));
+  if (change_shifts_.empty()) return;
+  const std::span<const PairShift> runs(change_shifts_.data(), change_shifts_.size());
+  compose_shifts(cpu_shift_, runs, shift_scratch_);
   for (TableSet& set : sets_) {
-    if (set.all) continue;
-    if (set.renumbered.begin >= set.renumbered.end) {
-      set.renumbered = InstanceRange{first, last};
-    } else {
-      set.renumbered.begin = std::min(set.renumbered.begin, first);
-      set.renumbered.end = std::max(set.renumbered.end, last);
-    }
+    if (!set.all) compose_shifts(set.shift, runs, shift_scratch_);
   }
+}
+
+// Slots `[begin, end)` of the CPU's table take whatever numbering they have not taken yet (T154).
+void GpuScene::settle_first_pairs(u32 begin, u32 end) {
+  if (cpu_shift_.empty() || begin >= end) return;
+  bool any = false;
+  for (const PairShift& run : cpu_shift_) {
+    if (run.end <= begin) continue;
+    if (run.begin >= end) break;
+    const u32 from = std::max(run.begin, begin);
+    const u32 to = std::min({run.end, end, static_cast<u32>(instance_table_.size())});
+    for (u32 slot = from; slot < to; ++slot)
+      instance_table_[slot].first_pair = shifted(run, instance_table_[slot].first_pair);
+    any = true;
+  }
+  if (any) remove_shift_range(cpu_shift_, begin, end, shift_scratch_);
+}
+
+u32 GpuScene::table_first_pair(u32 slot) const noexcept {
+  const u32 held = instance_table_[slot].first_pair;
+  const PairShift* run =
+      find_shift(std::span<const PairShift>(cpu_shift_.data(), cpu_shift_.size()), slot);
+  return run != nullptr ? shifted(*run, held) : held;
 }
 
 // The buffers a change's layout needs. Past the stride, every per-pair buffer is laid out again,
@@ -2038,6 +1997,8 @@ bool GpuScene::prepare_tables(u32 slot, TableUpdate& out, std::string* error) {
   out.write = false;
   out.slots = out.expand = 0;
   out.pairs = 0;
+  out.shift_address = out.expand_runs_address = 0;
+  out.shift_runs = out.expand_runs = out.expand_run_slots = 0;
   out.copies.clear();
   out.rt_copies.clear();
   out.pair_copies.clear();
@@ -2055,7 +2016,7 @@ bool GpuScene::prepare_tables(u32 slot, TableUpdate& out, std::string* error) {
     runs.clear();
     runs.push_back(InstanceRange{0, instance_count_});
     set.all = false;
-    set.renumbered = InstanceRange{};
+    set.shift.clear();
     // The terrain levels' slots' pairs, written once into a set that is written whole.
     if (ring_pairs_.buffer.valid()) {
       out.pair_source = ring_pairs_;
@@ -2078,32 +2039,35 @@ bool GpuScene::prepare_tables(u32 slot, TableUpdate& out, std::string* error) {
     }
   }
   runs.resize(merged);
-  // **The records to copy are those runs and the slots numbered again** (T137): `runs` are the
-  // slots a change wrote, whose top-level records go with them; a slot whose first pair alone
-  // moved is copied and its pairs expanded again, and its top-level record, which names no pair,
-  // is left — 300,000 of them a change at the forest's cap, a matrix each.
-  Vector<InstanceRange>& descs = desc_runs_;
-  descs.clear();
-  InstanceRange again = set.renumbered;
-  set.renumbered = InstanceRange{};
-  if (again.end > instance_count_) again.end = instance_count_;
-  if (again.begin < again.end) {
-    bool placed = false;
-    for (const InstanceRange& run : runs) {
-      if (run.end < again.begin) {
-        descs.push_back(run);
-      } else if (run.begin > again.end) {
-        if (!placed) descs.push_back(again);
-        placed = true;
-        descs.push_back(run);
-      } else {
-        again.begin = std::min(again.begin, run.begin);
-        again.end = std::max(again.end, run.end);
+  // **The records to copy are those runs alone** (T154): the slots a change wrote, each with its
+  // top-level record. A slot whose first pair alone moved is numbered again on the GPU from the
+  // set's runs (`shift`) and its pairs expanded again from runs of slots (`expand_runs_`): nothing
+  // of it is staged, where T137 copied every such record again (29 MB a set at the forest's cap).
+  // The CPU's table takes its pending numbering over what is copied first.
+  const Vector<InstanceRange>& descs = runs;
+  for (const InstanceRange& run : descs)
+    settle_first_pairs(run.begin, run.end);
+  // The slots numbered again and not copied, whose pairs are written again: the adds' runs (a free
+  // run's slots, set, are null), less the copies, with their slot prefix for the shader's search.
+  expand_runs_.clear();
+  u32 expand_run_slots = 0;
+  {
+    u32 c = 0;
+    for (const PairShift& shift : set.shift) {
+      if (shift.set != 0) continue;
+      u32 at = shift.begin;
+      const u32 end = std::min(shift.end, instance_count_);
+      while (at < end) {
+        while (c < descs.size() && descs[c].end <= at)
+          ++c;
+        const u32 stop = c < descs.size() ? std::min(end, std::max(at, descs[c].begin)) : end;
+        if (stop > at) {
+          expand_runs_.push_back(PairShift{at, stop, expand_run_slots, 0});
+          expand_run_slots += stop - at;
+        }
+        at = c < descs.size() && descs[c].begin <= stop ? std::max(stop, descs[c].end) : stop;
       }
     }
-    if (!placed) descs.push_back(again);
-  } else {
-    descs.assign(runs.begin(), runs.end());
   }
   u32 slot_count = 0;
   u32 expand = 0;
@@ -2112,10 +2076,8 @@ bool GpuScene::prepare_tables(u32 slot, TableUpdate& out, std::string* error) {
     for (u32 i = run.begin; i < run.end; ++i)
       expand += tail_mesh(instance_table_[i].mesh) ? 1u : 0u;
   }
-  u32 record_slots = 0;
-  for (const InstanceRange& run : runs)
-    record_slots += run.end - run.begin;
-  if (slot_count == 0) {
+  const u32 record_slots = slot_count;
+  if (slot_count == 0 && set.shift.empty()) {
     runs.clear();
     return true;
   }
@@ -2126,7 +2088,10 @@ bool GpuScene::prepare_tables(u32 slot, TableUpdate& out, std::string* error) {
   const u64 record_bytes = ray_tracing_ && rt_instances.buffer.valid()
                                ? u64{record_slots} * gfx::k_instance_record_bytes
                                : 0;
-  const u64 bytes = records_at + record_bytes;
+  // Then the numbering's runs and the expansion's, 16 bytes each.
+  const u64 shifts_at = (records_at + record_bytes + 15) / 16 * 16;
+  const u64 expand_runs_at = shifts_at + u64{set.shift.size()} * sizeof(PairShift);
+  const u64 bytes = expand_runs_at + u64{expand_runs_.size()} * sizeof(PairShift);
   if (slot >= table_staging_.size()) table_staging_.resize(slot + 1);
   gfx::BufferResource& staging = table_staging_[slot];
   if (staging.size < bytes) {
@@ -2172,6 +2137,18 @@ bool GpuScene::prepare_tables(u32 slot, TableUpdate& out, std::string* error) {
       record_at += run_records;
     }
   }
+  // The numbering's runs and the expansion's (T154).
+  if (!set.shift.empty()) {
+    std::memcpy(base + shifts_at, set.shift.data(), set.shift.size() * sizeof(PairShift));
+    std::memcpy(base + expand_runs_at, expand_runs_.data(),
+                expand_runs_.size() * sizeof(PairShift));
+  }
+  out.shift_address = set.shift.empty() ? 0 : staging.address + shifts_at;
+  out.shift_runs = set.shift.size();
+  out.expand_runs_address = expand_runs_.empty() ? 0 : staging.address + expand_runs_at;
+  out.expand_runs = expand_runs_.size();
+  out.expand_run_slots = expand_run_slots;
+  set.shift.clear();
   runs.clear();
   out.write = true;
   out.staging = staging;
@@ -2307,8 +2284,9 @@ bool GpuScene::validate_tables(std::string* why) const {
     return false;
   };
   if (instance_table_.size() != instance_count_) return fail("the table is not the slot count");
+  // Read through the numbering the CPU's table has not taken yet (T154).
   for (u32 i = 1; i < instance_count_; ++i) {
-    if (instance_table_[i].first_pair < instance_table_[i - 1].first_pair) {
+    if (table_first_pair(i) < table_first_pair(i - 1)) {
       return fail("slot " + std::to_string(i) + "'s first pair is below the one before it");
     }
   }
@@ -2319,13 +2297,14 @@ bool GpuScene::validate_tables(std::string* why) const {
     u32 pair = block.pair_begin;
     for (u32 k = 0; k < block.inst_cap && block.inst_begin + k < instance_count_; ++k) {
       const gfx::InstanceDesc& desc = instance_table_[block.inst_begin + k];
+      const u32 first_pair = table_first_pair(block.inst_begin + k);
       if (k < block.instances) {
-        if (!tail_mesh(desc.mesh) || desc.first_pair != pair) {
+        if (!tail_mesh(desc.mesh) || first_pair != pair) {
           return fail("block " + std::to_string(block.key) + "'s slot " + std::to_string(k) +
                       " is not its instance");
         }
         pair += part_of(desc.mesh).cluster_count;
-      } else if (desc.mesh != null_mesh_ || desc.first_pair != block.pair_begin + block.pairs) {
+      } else if (desc.mesh != null_mesh_ || first_pair != block.pair_begin + block.pairs) {
         return fail("block " + std::to_string(block.key) + "'s slack is not null at its end");
       }
     }
@@ -5917,11 +5896,24 @@ void GpuScene::destroy_ray_tracing_layout() noexcept {
 // top-level record from the start — a hole's inactive — and a tail's change copies its own slots'
 // records with their instances (`prepare_tables`), so the chain is rewritten only when the tail
 // outgrows the capacity or the stride (`relayout`).
-bool GpuScene::lay_out_ray_tracing(std::string* error) {
+bool GpuScene::lay_out_ray_tracing(std::string* error, RelayoutRetired* retired) {
   const gfx::Device& device = *device_;
   const u32 keep_capacity = rt_capacity_;
   const u32 keep_references = rt_reference_capacity_;
-  destroy_ray_tracing_layout();
+  if (retired == nullptr) {
+    destroy_ray_tracing_layout();
+  } else {
+    // **Swapped** (T152): the per-instance half and the top-level structure go to the caller, as
+    // the frames in flight read them; the frame's set — records, CLAS chunks — stays, and the step
+    // below makes only the bottom-level set again (`keep_frame_set`).
+    retired->tlas = tlas;
+    retired->tlas_slot = tlas_slot_;
+    tlas = gfx::AccelerationStructure{};
+    tlas_slot_ = gfx::BindlessSet::k_invalid_slot;
+    for (gfx::BufferResource* buffer :
+         {&rt_instances, &slots, &instance_counts, &blas_records, &blas_dense, &blas_slots})
+      retire(*buffer, &retired->buffers);
+  }
   rt_instance_slots_ = dynamic_ ? std::max(instance_capacity_, instance_count_) : instance_count_;
   rt_union_clusters_ = pair_stride_ * view_count_;
   gfx::ClusterSetLimits limits = rt_limits_;
@@ -5953,17 +5945,23 @@ bool GpuScene::lay_out_ray_tracing(std::string* error) {
   }
 
   constexpr gfx::BufferUsage k_record_usage = k_address | gfx::BufferUsage::AccelerationBuildInput;
+  constexpr gfx::BufferUsage k_tlas_usage =
+      gfx::k_build_input_usage | gfx::BufferUsage::TransferDst | k_storage;
   // The top-level instance records, once: the instance as the custom index, and a bottom-level
   // address of zero and a transform, both of which the frame's `tlas_references` dispatch
   // overwrites — the address from `blas_set.addresses`, the transform from the instance's cell and
   // the frame's eye (ADR-0053) — before every top-level build. An instance whose structure a frame
   // did not build keeps a zero address, which the top-level build treats as an inactive instance.
   // The transform written here is the one at the world's origin, which no frame reads.
+  // Swapped, nothing is uploaded (T152): a layout outgrown is a capacity or a stride grown, which
+  // made every table set again (`fit_tables`), so the frame that next flips to one copies every
+  // slot's record (`prepare_tables`) before its top-level build, which reads no record past them.
+  const u32 uploaded = retired == nullptr ? rt_instance_slots_ : 0u;
   Vector<gfx::TlasInstance> tlas_records;
-  tlas_records.reserve(rt_instance_slots_);
-  for (u32 i = 0; i < rt_instance_slots_; ++i)
+  tlas_records.reserve(uploaded);
+  for (u32 i = 0; i < uploaded; ++i)
     tlas_records.push_back(tlas_record(i));
-  Vector<u8> tlas_bytes(u64{rt_instance_slots_} * gfx::k_instance_record_bytes, u8{0});
+  Vector<u8> tlas_bytes(u64{uploaded} * gfx::k_instance_record_bytes, u8{0});
   gfx::write_instances(std::span<const gfx::TlasInstance>(tlas_records.data(), tlas_records.size()),
                        tlas_bytes.data());
   bool ok = gfx::create_buffer(device, u64{rt_union_clusters_} * sizeof(u32), k_address, false,
@@ -5991,9 +5989,12 @@ bool GpuScene::lay_out_ray_tracing(std::string* error) {
             gfx::create_buffer(device, sizeof(u32) * u64{rt_instance_slots_}, k_address, false,
                                blas_slots, error) &&
             gfx::create_tlas(device, rt_instance_slots_, gfx::k_build_fast_trace, tlas, error) &&
-            gfx::upload_buffer(device, tlas_bytes.data(), tlas_bytes.size(),
-                               gfx::k_build_input_usage | gfx::BufferUsage::TransferDst | k_storage,
-                               rt_instances, error);
+            (retired == nullptr
+                 ? gfx::upload_buffer(device, tlas_bytes.data(), tlas_bytes.size(), k_tlas_usage,
+                                      rt_instances, error)
+                 : gfx::create_buffer(device,
+                                      u64{rt_instance_slots_} * gfx::k_instance_record_bytes,
+                                      k_tlas_usage, false, rt_instances, error));
   if (ok) {
     tlas_slot_ = bindless_.add_acceleration_structure(tlas.handle);
     if (tlas_slot_ == gfx::BindlessSet::k_invalid_slot) {
@@ -6133,8 +6134,14 @@ bool GpuScene::lay_out_ray_tracing(std::string* error) {
     first_references = first_rt_capacity(rt_reference_limit_, rt_union_clusters_,
                                          rt_reference_estimate(), rt_initial_clusters_tunable());
   }
-  rt_reference_capacity_ = 0;
-  if (!resize_ray_tracing(first, error, false, first_references)) return false;
+  if (retired != nullptr) {
+    // Swapped (T152): the capacity is the one the scene holds, so the step keeps the frame's set and
+    // hands the bottom-level set it replaces to the caller with the rest.
+    if (!resize_ray_tracing(first, error, false, first_references, &retired->chain)) return false;
+  } else {
+    rt_reference_capacity_ = 0;
+    if (!resize_ray_tracing(first, error, false, first_references)) return false;
+  }
   ENGINE_LOG_INFO(
       log_renderer, "ray tracing ready", log::field("pairs", pair_count_),
       log::field("stride", pair_stride_), log::field("views", view_count_),
@@ -6720,18 +6727,20 @@ bool GpuScene::pair_cluster(u32 pair, u32& instance, u32& cluster) const noexcep
   u32 hi = instance_count_ - 1;
   while (lo < hi) {
     const u32 mid = (lo + hi + 1) / 2;
-    if (instance_table_[mid].first_pair <= pair) {
+    // Through the numbering the CPU's table has not taken yet (T154).
+    if (table_first_pair(mid) <= pair) {
       lo = mid;
     } else {
       hi = mid - 1;
     }
   }
   const gfx::InstanceDesc& desc = instance_table_[lo];
+  const u32 first_pair = table_first_pair(lo);
   if (desc.mesh >= data_->parts.size() + slot_parts_.size()) return false;
   const geometry::ClusterMeshPart& part = part_of(desc.mesh);
-  if (pair - desc.first_pair >= part.cluster_count) return false;
+  if (pair - first_pair >= part.cluster_count) return false;
   instance = lo;
-  cluster = part.first_cluster + (pair - desc.first_pair);
+  cluster = part.first_cluster + (pair - first_pair);
   return true;
 }
 

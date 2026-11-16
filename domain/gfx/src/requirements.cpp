@@ -136,6 +136,16 @@ constexpr Requirement k_requirements[] = {
     {"maxComputeWorkGroupSize[1]", "limit", RequirementLevel::Required, Unit::Count,
      &DeviceCaps::max_compute_workgroup_size_y, k_workgroup_size_y, k_none,
      "hiz_build.slang folds a 32 x 32 tile with 16 x 16 threads."},
+    {"maxComputeWorkGroupCount[0]", "limit", RequirementLevel::Required, Unit::Count,
+     &DeviceCaps::max_compute_workgroup_count_x, k_workgroup_count, k_none,
+     "a dispatch that grows with the scene (the cull over pairs, the pair table's expansion, the "
+     "cluster records) is folded into rows of 32,768 workgroups (gfx::fold_dispatch), because "
+     "Vulkan guarantees only 65,535 a dimension. It is also that guarantee, so a conforming "
+     "device cannot fail it; NVIDIA reports 2^31 - 1."},
+    {"maxComputeWorkGroupCount[1]", "limit", RequirementLevel::Required, Unit::Count,
+     &DeviceCaps::max_compute_workgroup_count_y, k_workgroup_count, k_none,
+     "the rows of a folded dispatch: 65,535 of them is 2^31 workgroups, more than a pair index "
+     "can name."},
     {"maxComputeSharedMemorySize", "limit", RequirementLevel::Required, Unit::Count,
      &DeviceCaps::max_compute_shared_memory_size, k_shared_memory_bytes, k_none,
      "cluster_sw_raster.slang keeps 255 screen positions and 255 front-facing flags in shared "

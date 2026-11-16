@@ -1,0 +1,12 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "T152",
+  "reason": "T152: a tail's relayout swapped in beside the frames in flight - GpuScene::RelayoutRetired and the chain's layout-outgrown and room checks in gpu_scene.h, and renderer.md's account of the cause, the rule and the measured pair (A relayout is swapped in)",
+  "date": "2026-11-15",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "renderer.gpu_scene_cpp.lines": -31,
+    "renderer.gpu_scene_h.lines": 25,
+    "page:docs/subsystems/renderer.md": 6438
+  }
+}

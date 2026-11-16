@@ -20,12 +20,16 @@
 // cluster there), so a hole costs a search and nothing else. Freed blocks are reused by the
 // smallest free block both of whose runs hold the tile, split when what is left is worth keeping,
 // and merged with a free neighbour; a free block at the end is given back. When the holes pass a
-// declared share of the dispatch the next change **compacts**: every tile is laid out again in the
-// caller's order, as a first fill would lay it, and the whole table is written once.
+// declared share of the dispatch the pairs are **numbered again where the slots stand** (T154):
+// every block exactly its pairs, a free run none, no slot written, and what moved said as runs of
+// slots (`PairShift`). Until T154 that laid every tile out again and wrote the whole table — 59 ms
+// of the frame's thread at the forest's 349,000 slots, then 20 ms a table set to stage it. Only a
+// caller's request, and free slots past the share, still lay everything out again.
 
 #include <core/base/types.h>
 #include <core/containers/hash_map.h>
 #include <core/containers/vector.h>
+#include <systems/renderer/pair_shift.h>
 
 #include <span>
 #include <string>
@@ -125,13 +129,13 @@ struct TileLayoutChange {
   u32 appended = 0;   // placed at the end
   u32 freed = 0;      // let go: gone from the tail, or moved to a block it fits
   bool compacted = false;
-  // **The pairs were numbered again, and no slot moved** (T137; renderer.md, "At the cap the pairs
-  // are numbered again"): the classes' slack would have passed the cap, so every block now holds
-  // exactly its pairs, in slot order from the load's end, and a free run holds none. The writes'
-  // `pair_begin` are then superseded: whoever keeps the table numbers every slot's first pair
-  // again from the instances it holds (`GpuScene::number_first_pairs`), which costs an addition a
-  // slot. Until T137 this laid every tile out again and wrote every slot, 52 to 86 ms of the
-  // frame's thread at the forest's 300,000 slots.
+  // **The pairs were numbered again, and no slot moved** (T137 at the cap, T154 under it too;
+  // renderer.md, "The pairs are numbered again, and no slot moves"): every block now holds exactly
+  // its pairs, in slot order from the load's end, and a free run holds none — because the classes'
+  // slack would have passed the cap, a tile fitted no free run but by its slots, or the holes
+  // passed the share. The writes carry the new numbers, and the slots that moved and were not
+  // written are the runs `apply` returns. Until T137 at the cap and T154 under it this laid every
+  // tile out again and wrote every slot, 52 to 86 ms of the frame's thread at the forest's 300,000.
   bool tight = false;
 };
 
@@ -160,20 +164,24 @@ class TileLayout {
 
   // Lays out the change from what is live now to `requests`: a request whose block is `same` keeps
   // it, one whose instances still fit its block is rewritten there, and every other one is placed —
-  // in the smallest free block both of whose runs hold it, or at the end — after every live block
-  // no request keeps has been freed. Then, when the holes pass `compact_pct` percent of the pairs
-  // the cull dispatches (and `k_compact_min_holes`), or `force_compact`, everything is laid out
-  // again in the requests' order. `writes` are the slots to write, in order. False, with `error`
+  // in the smallest free block both of whose runs hold it; failing that the smallest that holds its
+  // slots, its pairs numbered in behind it; failing that at the end — after every live block no
+  // request keeps has been freed. `writes` are the slots to write, in order. False, with `error`
   // and nothing changed, when the layout would pass `max_pairs` even packed with no slack, or a key
   // repeats.
   //
-  // **At the cap** (the classes' slack would pass `max_pairs`) no slot moves: the pairs alone are
-  // numbered again (`TileLayoutChange::tight`), and from then on a block that fits no free run by
-  // its pairs takes the smallest one that holds its slots, its pairs numbered in behind it. Free
-  // slots past `compact_pct` percent of the table (and `k_compact_min_free_slots`) then lay
-  // everything out again, as the holes do under the cap.
+  // **No slot moves to close a hole** (T137 at the cap, T154 under it): when a block took a run by
+  // its slots, the classes' slack would pass `max_pairs`, or the holes pass `compact_pct` percent
+  // of the pairs the cull dispatches (and `k_compact_min_holes`), the pairs alone are numbered
+  // again (`TileLayoutChange::tight`), the writes carry the new numbers, and `shifts` (when given)
+  // gets the runs of slots whose first pair that moved — a block's by its distance, a free run's
+  // set to its one number — written or not; the caller drops the ones it writes. Only
+  // `force_compact`, or free slots past `compact_pct` percent of the table (and
+  // `k_compact_min_free_slots`) after a numbering, lay everything out again in the requests' order
+  // (`TileLayoutChange::compacted`, every slot written, `shifts` empty).
   bool apply(std::span<const Request> requests, u32 compact_pct, bool force_compact, u32 max_pairs,
-             Vector<SlotWrite>& writes, TileLayoutChange& change, std::string* error = nullptr);
+             Vector<SlotWrite>& writes, TileLayoutChange& change, std::string* error = nullptr,
+             Vector<PairShift>* shifts = nullptr);
 
   // The instance slots and pairs the layout covers, the load's included: what the binary search
   // runs over and what the cull dispatches.
@@ -221,7 +229,7 @@ class TileLayout {
   void free_block(const TileBlock& block, Vector<SlotWrite>& writes);
   bool place(const Request& request, u32 source, u32 max_pairs, TileBlock& out,
              Vector<SlotWrite>& writes, TileLayoutChange& change, bool& number_again);
-  void number_pairs_again();
+  void number_pairs_again(Vector<SlotWrite>& writes, Vector<PairShift>* shifts, u32 max_pairs);
   void trim() noexcept;
   void lay_out_again(std::span<const Request> requests, Vector<SlotWrite>& writes);
   void index() noexcept;
@@ -232,15 +240,25 @@ class TileLayout {
   u32 pair_end_ = 0;
   u32 live_instances_ = 0;
   u32 live_pairs_ = 0;
-  Vector<TileBlock> live_;    // in the order the last change's requests named them
-  Vector<FreeRun> free_;      // sorted by position
-  HashMap<u64, u32> by_key_;  // key -> index into live_
+  u32 compact_pct_ = k_default_compact_pct;  // the change's share, for `place`
+  Vector<TileBlock> live_;                   // in the order the last change's requests named them
+  Vector<FreeRun> free_;                     // sorted by position
+  HashMap<u64, u32> by_key_;                 // key -> index into live_
   // A change's scratch, kept so that a change allocates only when it outgrows the last one.
   Vector<u8> action_;
   Vector<u32> old_block_;
   Vector<u8> stays_;
   Vector<TileBlock> next_;
   Vector<u32> order_;  // the live blocks by slot, for `number_pairs_again`
+  // Every run of slots, by slot, with its first pair before and after a numbering.
+  struct Renumbered {
+    u32 inst_begin = 0;
+    u32 inst_end = 0;
+    u32 old_pair = 0;
+    u32 new_pair = 0;
+    bool block = false;
+  };
+  Vector<Renumbered> renumbered_;
   HashMap<u64, u32> seen_;
 };
 
