@@ -2318,8 +2318,8 @@ struct FrameRecord @version(20) {
   pairs: u32 = 0 @since(5)
   /// A streamed world: the instance slots this frame copied into the table set it flipped to, the
   /// pairs the GPU expanded for them (zero on a frame with no change behind it), and the pairs of
-  /// the dispatch no instance holds — tiles' slack and freed blocks, which the cull rejects after
-  /// its search (docs/subsystems/renderer.md, "Instances that come and go").
+  /// the dispatch no instance holds — tiles' slack and freed blocks, which the cull rejects from
+  /// the pair table without a search (docs/subsystems/renderer.md, "Instances that come and go").
   table_slots: u32 = 0 @since(6)
   table_pairs: u32 = 0 @since(6)
   hole_pairs: u32 = 0 @since(6)

@@ -163,7 +163,7 @@ struct MaskTables {
 };
 static_assert(sizeof(MaskTables) == 32);
 
-// Mirrors CullParams in cluster_cull.slang. 1760 bytes.
+// Mirrors CullParams in cluster_cull.slang. 1776 bytes.
 //
 // **Everything here is in the frame's space** (`eye`, above): the planes come from a
 // view-projection built with the frame's eye at the origin, `camera.xyz` is where this view's eye
@@ -331,9 +331,20 @@ struct CullParams {
   // took the last three pad words; the block is still 1,760 bytes.
   u32 sky_facing_count = 0;
   u64 sky_facing = 0;
+  // **The scene's pair table** (W6; renderer.md, "Instances that come and go"): u32x2
+  // {instance, cluster} per pair, `pair_count` of them, the inverse of `pair_of` that the resolve
+  // reads a pixel's pair through. With it a pair finds its instance in one load instead of the
+  // binary search over `first_pair`, and a hole of a streamed world's pair space — whose entry is
+  // stale, never written — is rejected without the search: by an instance index past
+  // `instance_count`, or by an instance whose clusters do not reach the pair. The table must hold
+  // every live pair's own entry; a hole's may hold anything. 0 searches. With its pad the block is
+  // 1,776 bytes, a whole number of the float4 rows the GPU reads it as.
+  u64 pairs = 0;
+  u32 pad_pairs[2] = {};
 };
-static_assert(sizeof(CullParams) == 1760);
+static_assert(sizeof(CullParams) == 1776);
 static_assert(offsetof(CullParams, sky_facing) == 1752);
+static_assert(offsetof(CullParams, pairs) == 1760);
 static_assert(offsetof(CullParams, hidden_counts) % 8 == 0);
 
 // CullParams::hiz_flags.

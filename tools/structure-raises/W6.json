@@ -1,0 +1,12 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "W6",
+  "reason": "W6: the cull reads the pair table (two CullParams lines in record_frame and the passes' declared read), its paragraph and measured pair on renderer.md and gfx.md; R61's measured closure paragraph on renderer.md",
+  "date": "2026-11-15",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "renderer.record_frame.lines": 3,
+    "page:docs/subsystems/renderer.md": 4643,
+    "page:docs/subsystems/gfx.md": 712
+  }
+}

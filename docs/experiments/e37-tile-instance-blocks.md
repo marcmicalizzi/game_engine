@@ -82,7 +82,7 @@ The boxes' three repeats drew the same visible pairs at every frame. The ashlar 
 ## What it does not decide
 
 - **A change that names only the tiles that changed.** The world hands the tail over whole; an interface that said which tiles moved would take the comparison off the CPU.
-- **A hole rejected before the search.** A per-pair live mark (or the pair table read first, as the resolve reads it) would make a hole nearly free and take the compaction share out of the cull's cost, and needs a `CullParams` field.
+- **A hole rejected before the search.** A per-pair live mark (or the pair table read first, as the resolve reads it) would make a hole nearly free and take the compaction share out of the cull's cost, and needs a `CullParams` field. *Built 2026-11-15 (roadmap W6)* as the pair table read first, `CullParams::pairs`: no pair searches any more, and the cull is a quarter cheaper on a streamed world and on a scene read whole alike ([renderer](../subsystems/renderer.md#instances-that-come-and-go)).
 - **A heavier world.** The ashlar kit under the default rings (16.7 million pairs at the visibility id's cap) was not run: at the cap the classes' slack packs tight and compacts more often, which the tests cover and this run does not measure.
 - **Ray tracing and deformation of a tail**, which E35 left out and this does too.
 
