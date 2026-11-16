@@ -77,6 +77,13 @@ spent on the chain's capacity, R130), over the flight's 9 (follow) or 12 (tight)
   machine and the world's tile hand-overs (up to 720 ms of `world` in one frame), the same on both
   sides.
 
+**The branch beside main** (the counter below, one memory-budget query per step asked of the
+worker): the follow policy, worker on, main's binary and this branch's release build alternating in
+one lease at 21:21 to 21:23 (other processes on 83 to 98% of the CPU): 9 steps a flight on both,
+`resize_ms` at the median 0.32 and 0.36 ms on main, 0.30 and 0.28 on the branch (most 1.11 and
+0.95), the wall median 4.40 and 4.37 against 4.43 and 4.49 ms, frames over 33 ms 5 and 1 against 3
+and 4 (none a step's), and no step asked past the device's budget.
+
 ## What a step made ahead holds, and on a smaller card
 
 The step is made beside the chain it replaces and stands there from the moment the worker makes it
