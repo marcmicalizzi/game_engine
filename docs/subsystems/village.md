@@ -261,7 +261,10 @@ and the door in front of that route and turns it into the world: one list of poi
 collision's case walks a capsule along ([scene_collision](scene_collision.md#structures)) and that
 `engine-content village --flight` writes as a camera path at eye height, a key and a marker a
 point. The route is the house filler's to give because only it knows the rooms; the plan adds
-nothing to a house that gives none.
+nothing to a house that gives none. A key looks five metres on along the way, toward the first
+later point at least a metre off (`k_look_on_m`): the route's points can lie a few centimetres
+apart where one stretch ends and the next begins (the stair's head and the way on from it), and a
+key aimed at such a neighbour looked half back into the landing's corner and out of its window.
 
 ## The wear
 
@@ -610,17 +613,19 @@ with clusters, that every frame the flight calls inside is one building from wit
 of its pixels one instance's, over three clusters or more, a twentieth or less empty) and that the
 load dropped, withheld, buried and floated nothing.
 
+**Both were red from version 3 to the night's fix leg** (2026-11-16), each for a cause of its own,
+and neither was mended by choosing another house, seed or number. The walk stopped 0.43 m up house
+0's stair, a hall and parlour: the upper floor's edge stood over the first riser, and a walker on
+the second tread could not lift its crown for the third — a fault of the house, mended in the
+filler ([dwellings](dwellings.md#the-stair), `k_interior_version` 3), with a case that climbs the
+stair of every two-storey type the filler builds; and its wall check read the entry's `setback_m`
+as the house's own, which uneven setbacks made untrue, so it reads the plot's own. The end-to-end
+case's frame at the stair's head was 5.8 % sky: the key looked at a point 8 cm on, half turned back
+into the landing's corner and out of its window — a fault of the flight, mended in `flight_json`
+([The way through a house](#the-way-through-a-house)).
+
 ## Not yet
 
-- **The walk case and the end-to-end case fail since version 3** (run 2026-11-16 at version 4;
-  neither entry has two ways or sloping ground, so their plans are version 3's). The walk
-  (`scene_collision`, seed 7, a CPU case: the same numbers in `msvc-release`, `msvc-debug` and
-  GCC 13): the walker stops at the foot of house 0's stair, 0.43 m up,
-  11 of 15 points reached, and the wall check reads the entry's `setback_m` as the house's own,
-  which the uneven setbacks of version 3 made untrue (it stopped 1.03 m short of a wall it took to
-  be 2 m back). The end-to-end case (seed 7, a flat 64 m ground): one inside frame of six is
-  5.8 % empty where a twentieth is allowed. House 0 in both is now a narrow toft's deep house (the
-  subdivision), whose stair and windows the filler's other houses did not have; not mended here.
 - **The heightfield ends at the horizon.** The test scene's ground is 512 m, so no view of the
   village shows the bare ground beyond it nearby, but an eye-level view across the open side sees
   its edge as a pale band on the horizon: a far ground past a tile set's heightfield is the tile

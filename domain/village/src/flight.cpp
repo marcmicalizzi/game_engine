@@ -11,6 +11,9 @@ namespace {
 
 f64 metres(i64 mm) noexcept { return static_cast<f64>(mm) / 1000.0; }
 
+// How far on a flight's key looks for the point it looks along the way toward.
+constexpr f64 k_look_on_m = 1.0;
+
 JsonValue point_json(WorldPos p) {
   // Whole millimetres: a path a person reads and a second run writes the same.
   const auto mm = [](f64 v) { return static_cast<f64>(scene_gen::nearest_mm(v)) / 1000.0; };
@@ -115,15 +118,27 @@ bool flight_json(const VillageLayer& layer, const VillagePlan& plan, u32 house, 
   for (u32 k = 0; k < walk.size(); ++k) {
     const WorldPos at = eye(walk[k]);
     if (k + 1 < walk.size()) {
-      // Looking five metres on along the way to the next point.
-      const WorldPos next = eye(walk[k + 1]);
+      // Looking five metres on along the way: toward the first later point at least a metre off,
+      // so a jog of a few centimetres between two of the route's points does not turn the camera
+      // aside. (At the stair's head of the end-to-end case's house the next point was 8 cm away,
+      // half turned back from where the way went on, and the key looked into the landing's corner
+      // and its window, sky over a twentieth of the frame; the way on went to the chamber's door.)
+      u32 toward = k + 1;
+      const auto apart = [&](u32 q) {
+        const WorldPos p = eye(walk[q]);
+        return std::sqrt((p.x - at.x) * (p.x - at.x) + (p.y - at.y) * (p.y - at.y) +
+                         (p.z - at.z) * (p.z - at.z));
+      };
+      while (toward + 1 < walk.size() && apart(toward) < k_look_on_m)
+        ++toward;
+      const WorldPos next = eye(walk[toward]);
       const f64 dx = next.x - at.x, dy = next.y - at.y, dz = next.z - at.z;
       const f64 len = std::sqrt(dx * dx + dy * dy + dz * dz);
       const WorldPos ahead =
           len > 1e-6 ? WorldPos{at.x + dx / len * 5.0, at.y + dy / len * 5.0, at.z + dz / len * 5.0}
                      : next;
       add_key(elapsed, at, ahead, walk[k].what);
-      elapsed += std::fmax(len / speed_m_s, 0.75);
+      elapsed += std::fmax(apart(k + 1) / speed_m_s, 0.75);
     } else {
       // At the window: looking out of it, and staying three seconds.
       add_key(elapsed, at, look, walk[k].what);
