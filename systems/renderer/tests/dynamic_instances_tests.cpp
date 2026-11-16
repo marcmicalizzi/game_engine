@@ -27,6 +27,7 @@
 #include <domain/gfx/pipeline.h>
 #include <domain/gfx/resources.h>
 #include <domain/gfx/shader_library.h>
+#include <foundation/tunables/tunables.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/scene.h>
@@ -620,6 +621,35 @@ TEST_CASE(
   settings.raster = RasterMode::Vertex;
   settings.shadows = ShadowMode::Off;
   run_tiles(gpu.device, settings, "vertex, occlusion", 2);
+}
+
+// W6 behind `renderer.cull.pair_table` (renderer.md, "Where the table costs more than the search:
+// a card at idle clocks"): off by default, the camera's and the cascades' culls search; on, they
+// read the pair table, whose holes' entries are stale. Both ways the tiled world with its holes
+// draws the loaded scene's ids, depth and colour at every step, so both cull the same set.
+TEST_CASE("dynamic instances: the cull draws the same with the pair table read and searched") {
+  CHECK_FALSE(cull_pair_table_tunable());
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE(gpu.why);
+    return;
+  }
+  struct Restore {
+    ~Restore() { (void)tunables::apply_overrides("renderer.cull.pair_table=false"); }
+  } restore;
+  RenderSettings settings;
+  settings.raster = RasterMode::Hardware;
+  settings.shadows = ShadowMode::Cascaded;
+  settings.occlusion = true;
+  for (const bool table : {false, true}) {
+    REQUIRE(tunables::apply_overrides(table ? "renderer.cull.pair_table=true"
+                                            : "renderer.cull.pair_table=false"));
+    REQUIRE(cull_pair_table_tunable() == table);
+    run_tiles(gpu.device, settings,
+              table ? "hw, occlusion, cascades, the pair table read"
+                    : "hw, occlusion, cascades, searched",
+              2);
+  }
 }
 
 // T137 (renderer.md, "At the cap the pairs are numbered again"). A world held at its pair cap: the

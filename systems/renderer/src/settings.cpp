@@ -274,6 +274,17 @@ bool lod_occluded_histogram_tunable() noexcept { return lod_occluded_histogram.g
 bool lod_occluded_foliage_only_tunable() noexcept { return lod_occluded_foliage_only.get(); }
 
 namespace {
+// **The cull's read of the pair table** (W6; renderer.md, "Where the table costs more than the
+// search: a card at idle clocks"): off until the table the cull reads is smaller, because its 8
+// bytes a pair cost more than the search on a card idling its memory clock and at the pair cap.
+tunables::Bool cull_pair_table{
+    "renderer.cull.pair_table", false,
+    "The cull and the cascades' cull read a pair's instance from the pair table instead of "
+    "searching first_pair (W6); false searches, as before W6"};
+}  // namespace
+bool cull_pair_table_tunable() noexcept { return cull_pair_table.get(); }
+
+namespace {
 tunables::Float display_paper_white{"renderer.display.paper_white_nits", 0.0, 0.0, 10000.0,
                                     "The luminance an HDR picture shows a diffuse white at, nits "
                                     "(0: Windows' SDR white level for the display, else 200)"};

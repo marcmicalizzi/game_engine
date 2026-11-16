@@ -9,9 +9,10 @@
 // lanes striding over the mesh's clusters, so a 5,863-cluster ashlar member is 92 coalesced
 // iterations and a one-cluster box one.
 //
-// Nothing here decides anything, but the table is read for every pair: since W6 the cull takes a
-// pair's instance from it for every pair it dispatches (`cluster_cull.slang`, `CullParams::pairs`),
-// so **every live pair's entry is its own in every frame**. What keeps it so: `pair_expand_main`
+// Nothing here decides anything, but the table may be read for every pair: where
+// `renderer.cull.pair_table` is on (W6; off by default), the cull takes a pair's instance from it
+// for every pair it dispatches (`cluster_cull.slang`, `CullParams::pairs`), so **every live pair's
+// entry is its own in every frame**. What keeps it so: `pair_expand_main`
 // writes the pairs of every slot a change writes (arriving, rewritten, moved), `pair_shift_main`
 // and `pair_expand_runs_main` those of the slots a numbering moved and the frame did not copy
 // (T154), the terrain levels' slots' pairs are copied in with their set (`pair_copies`), and a set
@@ -19,7 +20,8 @@
 // slack past its instances, a freed block — are never listed and keep whatever they held, which
 // the cull rejects by its two tests before reading a cluster: an instance past the table's count,
 // or a pair outside the named instance's own run (`pair - first_pair` past its mesh's clusters).
-// A change that skips an expansion of a live slot breaks the cull, not only the resolve.
+// A change that skips an expansion of a live slot breaks the cull with the table read, not only
+// the resolve.
 
 #include "dispatch.slang"
 #include "scene.slang"
