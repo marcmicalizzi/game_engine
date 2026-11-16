@@ -1,24 +1,104 @@
 # village (domain, capability)
 
-**Purpose.** A row-plan village laid out along lanes on the scene's ground (roadmap G69; plan
+**Purpose.** A village that grew along its ways on the scene's ground (roadmap G69, G206; plan
 [14 §14.3](../plan/14-structures.md#the-village-filler)): the scene generator `village`. From an
-entry that names one or more lanes, a house count and a seed it makes **one plan** — each lane
-stationed on the ground, plots of whole perches along each side, a house on every plot the ground
-allows, standing on a pad and facing the lane — and hands that plan over three ways: to the ground
-as edits (the treads, the pads and the paths to the doors, benched into the tile set's heights), to
-the entries after it as the shapes those occupy (so grass, shrubs and trees keep off them), and to
-the host as one placement a house whose mesh is a building description the structures capability
-meshes. Every number of the plan is grounded, or marked as a choice, in
-[the village plan's grounding](../experiments/village-plan-grounding.md).
+entry that names the places one or more ways pass, a house count, an irregularity and a seed it
+makes **one plan** — each way found over the ground between its places, a green where the ways
+meet, plots taken up along them nearest the green first, of uneven frontage and depth and turned
+to the slope and the sun, cottages squeezed in later, a house on every plot the ground allows,
+standing on a pad and facing its way, a back lane behind a built row, a plot kept for the church
+and a well on the green — and hands that plan over three ways: to the ground as edits (the
+treads, the pads and the paths to the doors, benched into the tile set's heights), to the entries
+after it as the shapes those occupy (so grass, shrubs and trees keep off them), and to the host as
+one placement a house whose mesh is a building description the structures capability meshes. At
+`irregularity` 0 the same rules lay out a regular row plan. Every number of the plan is grounded,
+or marked as a choice, in [a village that grew](../experiments/village-growth-grounding.md) and
+[the row plan's grounding](../experiments/village-plan-grounding.md).
 
 **What it deliberately does not do.** It makes no mesh and knows no building: a house is to the
-plan a box on the ground with a door ([The house seam](#the-house-seam)). It lays out row plans
-only. It writes no document records ([Not yet](#not-yet)).
+plan a box on the ground with a door ([The house seam](#the-house-seam)); the church is a plot with
+nothing on it, the well a place. It writes no document records ([Not yet](#not-yet)).
 
-## The plan
+## The grown plan
 
-`plan_village(layer, ground, context, house filler)` is the whole of it, and what follows is why
-each step is as it is.
+The owner's word on the row plan (2026-11-15): "very regular, and reminds me of more modern planned
+street, whereas a fantasy village is more medieval and more a natural evolution of where buildings
+end up, much less grid-like". What the sources say a grown village is — a nucleus, ways that follow
+the ground and older routes, a green where they meet, tenements of very different sizes, cottages
+of the poor squeezed in later, back lanes behind the crofts, the church at the end on high ground
+([the grounding](../experiments/village-growth-grounding.md)) — is what `plan_village` does, step by
+step:
+
+- **The ways are found, never ruled** (`find_way`). A lane's waypoints are the places it passes —
+  its ends, where people come from and go to. Between two, the way is the least-cost path over a
+  grid of `station_m` cells in a corridor reaching half their distance (30 to 60 m) round them,
+  each step to one of sixteen neighbours (the eight and the knight's moves), costing its length
+  times 1 + (grade / 8 %)², ten times more over a 25 % grade, plus a **wander** of up to half the
+  length at `irregularity` 1, a value field on a 12 m lattice drawn from the seed and the place
+  (so a way bends on level ground, and two ways over one place see one field). Integer costs,
+  ties to the lower cell: the same way on every toolchain. The pieces are joined, smoothed twice
+  by a five-point mean (the grid's steps become bends; the two ends stay), stationed at equal
+  steps no longer than `station_m`, and each station's tread top is the ground through a
+  five-point mean, as before. A way that cannot join two places is refused with the lane's name.
+  The cost's form is Galin et al.'s (2010); its constants are choices, since the paper's were not
+  read.
+- **The focus**: where a later way's end comes within the street's width and 15 m of an earlier
+  way, the nearest station of the earlier; with one way, its middle. The green opens there, the
+  well stands at it, and the plots are taken nearest it first.
+- **The street's edges** (`LaneStation::left_mm`, `right_mm`): the entry's half width, each side
+  wandering by up to a quarter of the street's width over a 16 m lattice along the way with
+  `irregularity`, never nearer than 30 cm past the tread; and on every way within the green's half
+  width of the focus, **the green**: the edges open by a parabola to `green_m` across over three
+  times its length, so the green is a lens of two thirds its width times its length (0.15 ha at
+  the default 24 m), and two ways that meet there both open, which gives the meeting its funnel.
+- **The candidates.** Along each way and side the entry allows, out from the station nearest the
+  focus both ways: **founding tenements** of the row plan's whole perches, stretched or shrunk by
+  up to a quarter and given a depth up to 30 % off the entry's at `irregularity` 1, each followed
+  by a seeded gap of up to two perches (drawn small more often than large); **a cottage** in each
+  gap wide enough for one (1.2 to 1.5 perches, half the depth); and, on a way through the green,
+  cottages at the street's own edge, standing on the green in front of its tenements (drawn with
+  a chance of half the irregularity), as cottages on a green's common did. Every draw is the
+  engine's hash of the seed and the candidate's place (way, side, direction, number).
+- **A plot's turn and place.** A candidate's frame is its way's direction at its middle, turned
+  toward the contour where the ground falls (a long house across the slope keeps its pad low), and
+  toward a long axis east and west where it does not (north is −z), with a seeded part: at most
+  20° at `irregularity` 1, scaled by it. The front stands at the furthest the street's edge
+  reaches along its frontage, its near corner on that edge, so a plot by the green's widening
+  stands behind its outline. Since the setback inside a toft is the entry's, **a house's distance
+  from its way varies** with the edge, the green and the turn — which is what the eye reads.
+- **The order** (`Plot::order`). A tenement's key is its front's distance from the focus,
+  lengthened by up to half by the seed at `irregularity` 1; a cottage comes after three fifths of
+  the houses' tenements, then by a quarter of its distance. **The church** takes, of the
+  tenements ranked in the outer half of the houses' order, the one on the highest ground, made
+  42 by 24 m (West Wykeham's churchyard), reserved and left empty (`PlotState::reserved`), only
+  where all four of its corners stand on the ground.
+- **Taken up.** In that order, a candidate is never a plot if any point of any way's street (five
+  across each station: the line, half and three quarters of each edge) stands inside it more than
+  30 cm from its edges, if it overlaps a plot already taken, or if it stands within 2.5 m of the
+  well. The rest become plots: reserved, or spare past the entry's house count, or asked for a
+  house as before — a cottage asks one storey, a tenement the entry's `storeys` — and left empty
+  and counted where the house does not fit, the ground is steep, wet or **not there**
+  (`PlotState::outside`, a corner off the heightfield), or the filler refuses.
+- **The path** runs square out of the door to **the gate** in the plot's front (`gate_x_mm`), then
+  to the nearest point of its way's tread edge (`path_x_mm`; `lane_x_mm` is the line beside it). A
+  path is a `Bench` line of three points: the pad's level at the door, the ground at the gate, the
+  tread's top at its end.
+- **Back lanes** (`LaneLine::back`). Behind each run of three or more built tenements of one row
+  whose fronts follow each other within two perches, a lane along their back corners 2.5 m out (a
+  toft's margin of 1.5 m and its own half width), 2 m wide, smoothed and stationed like a way,
+  kept only where none of its stations stands within a metre of any plot. It is benched, handed
+  as shapes and worn like a way, with no verge.
+
+**At `irregularity` 0** there is no wander in a way or an edge, no gap, no stretch, no turn and no
+cottage: whole perches back to back at the entry's depth, square to a way that on level ground is
+the straight line between its places — the row plan below, along a way found over the ground. The
+green, the church and the back lanes stay the entry's to ask (regular green villages are
+attested). There is no second code path for it.
+
+## The row plan
+
+What follows is the row plan as it was built first (G69), and what still holds of it in the grown
+plan.
 
 - **A placement generator with a ground plan, like the routes.** Plan 14 describes the village
   filler as a writer of document records (`structure.fill_village`). The records (D37) did not
@@ -33,18 +113,16 @@ each step is as it is.
   edited ground read the same heights and make the same plan. It is made again at every open and
   kept in no file: a plan is microseconds a plot ([Budgets](#budgets)), where the routes' search
   is seconds and earns its cache.
-- **Plots in whole perches from the lane's first point, in integer millimetres.** A regular row
-  plan is a surveyed thing: frontages in whole units of the perch, plots back to back along the
-  street. Each plot's frontage is drawn between the entry's least and most perches by the engine's
-  hash of (seed, lane, segment, side, place in the row), so a plot's width depends on where it is
-  in its row and on nothing else: inserting a house count, or changing another lane, moves no plot.
-- **A gap on the inside of a bend**, sized by the tangent of half the turn (from the two
-  directions' cross and dot products: no angle is taken), so two segments' plots never overlap. A
-  real row fills that corner with a wedge-shaped plot; this leaves it as a green. The outside of a
-  bend runs to the corner.
-- **Houses in order along the lane, the two rows alternating, until the entry's count stands.**
-  A village smaller than its street leaves the far plots spare, as a planned village that never
-  filled did, rather than scattering its houses along the whole length.
+- **Plots in whole perches, in integer millimetres.** A regular row plan is a surveyed thing:
+  frontages in whole units of the perch, plots back to back along the street. Each plot's frontage
+  is drawn between the entry's least and most perches by the engine's hash of (seed, way, side,
+  direction, place in the row), so a plot's width depends on where it is in its row and on nothing
+  else. (Until G206 the rows ran from the lane's first point and left a gap on the inside of a
+  bend; now they run out from the focus both ways, and a plot that would stand in a street or on
+  another plot round a bend is no plot.)
+- **Houses in order until the entry's count stands.** A village smaller than its ways leaves the
+  far plots spare, as a planned village that never filled did, rather than scattering its houses
+  along the whole length.
 - **A plot is left empty, and counted, rather than forced**: where the ground under the house's
   footprint differs by more than `max_pad_step_m` (a pad that tall is an earthwork, plan 14's rule
   for a lot too steep for its plinth), where a corner or the middle stands in water, a channel's
@@ -58,8 +136,7 @@ each step is as it is.
   outside it.
 - **A lane's tread is a `Bench` line** along its stations, its top the ground at each station
   smoothed by a five-point mean so a hummock under one station puts no step in it; **a path** runs
-  square to the street from each door to the tread's near edge, from the pad's level to the
-  tread's. All three are also the shapes handed to later entries, and nothing else is: a plot's
+  from each door through its gate to the tread's near edge (above). All three are also the shapes handed to later entries, and nothing else is: a plot's
   garden is ground like any other, for the scene's cover to grow on.
 
 ## The house seam
@@ -69,7 +146,8 @@ setback), a seed and a storey count, it answers a `House` — the footprint's bo
 threshold in the house's own frame (whole millimetres), which way out of the door is, how far the
 frame's origin stands over the pad, and the mesh as a recipe (the bytes of a mesh generator's
 file, [scene_gen](scene_gen.md#a-tiles-meshes)). The plan turns the house by quarter turns until
-its door faces the street, then by the row's own direction, and refuses it if it does not fit.
+its door faces the street, then by the plot's own turned frame, and refuses it if it does not
+fit.
 `box_house` is the stand-in the plan's own tests use, a box with a door in its long side that turns
 gable-on where the frontage is too narrow for its length.
 
@@ -145,10 +223,13 @@ at a door. `ground_regions_json(layer, plan, names)` writes that as mask regions
 
 | Region | Outline | Layer (default name) | Feather inward |
 |---|---|---|---|
-| a lane's **verge** | the street's whole width, front to front | `verge` | a metre, or as far as the wear if that is nearer |
-| a lane's **wear** | the tread and `k_wear_margin_mm` (45 cm) past each edge | `worn` | 90 cm, so the tread's surveyed edge is the middle of the fade |
-| a lane's **tread** | the tread less 45 cm each side | `lane` | 45 cm |
-| a built plot's **door yard** | a T: the path from inside the tread's wear to the plot's front, and from there to the wall the ground `yard_m` (1.6 m) each side of the door, kept 30 cm inside the plot's sides | `worn` | 40 cm |
+| a way's **verge** | the street's whole width, edge to edge at each station: its wander and the green | `verge` | a metre, or as far as the wear if that is nearer at the narrowest |
+| a way's **wear** | the tread and `k_wear_margin_mm` (45 cm) past each edge | `worn` | 90 cm, so the tread's surveyed edge is the middle of the fade |
+| a way's **tread** | the tread less 45 cm each side | `lane` | 45 cm |
+| a back lane | its wear alone: a worn track, no verge and no stony middle | `worn` | 90 cm |
+| the **well** | an octagon 3 m round it | `worn` | a metre |
+| a built plot's **door yard** | from the path's half width before the plot's front to the wall, the ground `yard_m` (1.6 m) each side of the door, kept 30 cm inside the plot's sides | `worn` | 40 cm |
+| a built plot's **path** | from the gate to 45 cm past the tread's edge, the path's width | `worn` | 40 cm |
 
 The fades are wide on purpose: the mask level blends by the materials' heights
 ([tileset](tileset.md#the-mask-level), `height_blend`), so across a feather the stones of one layer
@@ -185,8 +266,9 @@ commoner case this cannot yet stand.
 ```json
 "placements": [
   {"generator": "village", "params": {
-     "name": "ridge foot", "seed": 7, "houses": 8,
-     "lanes": [{"name": "street", "waypoints": [[96, 0, -60], [96, 0, 60]]}]}},
+     "name": "ridge foot", "seed": 7, "houses": 14, "irregularity": 0.8, "green_m": 24,
+     "lanes": [{"name": "street", "waypoints": [[96, 0, -110], [92, 0, 110]]},
+               {"name": "to the ridge", "waypoints": [[30, 0, 60], [92, 0, 4]]}]}},
   {"generator": "scatter", "params": { "...": "the cover, after the village so it keeps off it" }}
 ]
 ```
@@ -204,28 +286,43 @@ whole gets everything at once. Houses of one description share one mesh.
 
 ## Owned data
 
-The entry type (`engine.village.VillageLayer`, `Lane`, `Rows`), and while an entry is open its plan:
-the lanes' stations, the plots (224 bytes each) and each built plot's house with its recipe.
-Nothing is kept on disk.
+The entry type (`engine.village.VillageLayer` at version 2, `Lane`, `Rows`), and while an entry is
+open its plan: the ways' stations (40 bytes each), the plots (280 bytes each) and each built plot's
+house with its recipe. The way's search holds, while it runs, a height, a cost and a back-pointer
+a cell of its corridor (20 bytes a cell: 2,400 cells for 64 m of way at 2 m, 128,000 for the
+bench's 3 km street), freed when the way is found. Nothing is kept on disk.
 
 ## Invariants
 
 Each is held by a case of `tests/village_tests.cpp`.
 
-- Frontages are whole perches within the entry's range; a row's plots follow each other with no
-  gap and no overlap; no two plots of any rows overlap, round a bend included.
+- At `irregularity` 0 on level ground a way is the straight line between its places, frontages
+  are whole perches within the entry's range at the entry's depth, square to the way, and a row's
+  plots follow each other out from the middle with no gap and no overlap.
+- A way between two places either side of a hill goes round it, and its ends are the places.
+- At `irregularity` 1 most frontages are no whole number of perches, depths differ by metres, a
+  quarter of the plots or more are turned off the way, cottages stand, and a cottage asks one
+  storey and a tenement the entry's.
+- No two plots overlap and no way's tread stands in a plot, round a bend and at a meeting of ways,
+  at every irregularity.
+- The focus is where a second way's end meets the first; the street opens there into the green,
+  the well stands there and no plot stands on it; the first tenements taken stand nearer it than
+  the last; the church's plot is reserved, 42 by 24 m.
+- A back lane runs behind a built row of three or more, between its plots' backs and 3 m past
+  them, on no plot.
 - A built house's door is its nearest point to the lane, the setback behind the plot's front; the
   engine's own rotation of the house's frame by the placement's quaternion lands the door where
   the plan put it.
 - Under a built house's whole footprint the tile set's edited ground is the pad's level to a
   millimetre, and six metres behind the pad it is the ground as it was.
-- The shapes cover the treads, the pads and the paths and not a garden; the tiles' shapes
-  together are the whole read's.
-- A plot too steep or in water is empty and counted, and the houses stand further along.
-- A lane's wear is three bands, each inside the last; a yard holds the ground before its door, a
-  metre along the wall from it and the path's end at the tread, and not the plot's back.
-- Every side of every built plot is on exactly one boundary line, and a front's gateway is on the
-  front, square to the street from the path's end.
+- The shapes cover the treads, the pads, the paths and the well and not a garden; the tiles'
+  shapes together are the whole read's.
+- A plot too steep or in water is empty and counted, and the houses stand further out.
+- A lane's wear is three bands, each inside the last; a yard holds the ground before its door and
+  a metre along the wall from it, and not the plot's back; a path's band holds the way from the
+  gate to the tread; a grown village's verge opens into the green, and the well has its ground.
+- Every side of every built plot is on exactly one boundary line, and a front's gateway is at its
+  gate.
 - The plan is the same bytes on every toolchain (`plan_hash`, pinned on MSVC, reproduced by GCC
   and Clang in the containers).
 - An entry out of range is refused with a sentence naming the field.
@@ -233,7 +330,8 @@ Each is held by a case of `tests/village_tests.cpp`.
 ## Public API
 
 `include/domain/village/village.h`: `k_village_version`; the house seam (`HouseAsk`, `House`,
-`HouseFn`, `box_house`); the plan (`LaneStation`, `LaneLine`, `PlotState`, `Plot`, `VillagePlan`,
+`HouseFn`, `box_house`); the plan (`LaneStation`, `LaneLine`, `PlotState`, `PlotKind`, `Plot`,
+`VillagePlan`,
 `layer_in_range`, `plan_village`, `plan_hash`); what it is handed over as (`ground_edits`,
 `footprints`, `plan_json`, `house_placement`, `house_point`); the wear (`GroundLayers`,
 `k_wear_margin_mm`, `ground_regions_json`) and the boundaries (`BoundaryLine`, `plot_boundaries`).
@@ -399,8 +497,16 @@ load dropped, withheld, buried and floated nothing.
   generator, and its plan is the function that writer will call. Until then a village is
   regenerated from its entry at every load, which is what plan 14 says an authored village must
   not be.
-- **Row plans only**: no agglomeration, no radial or grid plan, no green with a pond, no back
-  lane, no church, well, woodpiles or carts. A bend's inside corner is left open.
+- **A grown plan along ways, not a cluster without them**: plots are taken along the ways and
+  their back lanes only, so there is no house standing off every way (a *Haufendorf*'s farms
+  reached by a yard), no plot behind another reached by a lane of its own, and no subdivision of
+  a taken toft; a way is not cut hollow; no second focus (a manor's beside the church's) draws
+  plots of its own, so a polyfocal village is not made. The church is an empty plot and the well a
+  worn place with nothing standing (no structure exists for either); no pond, smithy, woodpiles or
+  carts.
+- **The way's cost is a choice**: its form is Galin et al.'s, its 8 % and 25 % are not read from
+  any source ([the grounding](../experiments/village-growth-grounding.md#the-ways)), and a way
+  does not prefer an older way's line when it meets one.
 - **The wear and the boundaries are pasted, not planned** (`GroundPlan` has no mask list, and an
   entry cannot hand another generator's entry): a change to the plan means running the tool and
   pasting again, and the scene's README says so.

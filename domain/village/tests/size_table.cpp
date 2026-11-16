@@ -5,5 +5,5 @@
 
 using namespace engine;
 
-ENGINE_EXPECT_SIZE(24, 8, village::LaneStation);
-ENGINE_EXPECT_SIZE(232, 8, village::Plot);
+ENGINE_EXPECT_SIZE(40, 8, village::LaneStation);
+ENGINE_EXPECT_SIZE(280, 8, village::Plot);

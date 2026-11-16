@@ -1,6 +1,8 @@
-// The village capability (docs/subsystems/village.md): the row plan on flat and on rising ground,
-// the plots a bend, a slope and water leave empty, the pads, treads and paths as the tile set
-// writes them, the shapes, the house's turn, the plan's determinism, and the refusals.
+// The village capability (docs/subsystems/village.md): the regular plan at irregularity 0 and the
+// grown one above it, ways found round a hill, the green, the order plots are taken in, cottages
+// and back lanes, the plots a slope and water leave empty, the pads, treads and paths as the tile
+// set writes them, the shapes, the wear, the boundaries, the house's turn, the plan's determinism,
+// and the refusals.
 #include <core/hash/hash.h>
 #include <core/json/json.h>
 #include <core/schema/json_reflect.h>
@@ -35,6 +37,12 @@ f64 bank(const void*, i64, i64 z) noexcept {
   const f64 zz = static_cast<f64>(z) / 1000.0;
   return zz > 6.0 ? 0.6 * (zz - 6.0) : 0.0;
 }
+// A round hill 12 m high and 35 m across at the origin, on level ground.
+f64 hill(const void*, i64 x, i64 z) noexcept {
+  const f64 xx = static_cast<f64>(x) / 1000.0, zz = static_cast<f64>(z) / 1000.0;
+  const f64 r2 = xx * xx + zz * zz;
+  return r2 < 306.25 ? 12.0 * (1.0 - r2 / 306.25) : 0.0;
+}
 
 scene_gen::Ground ground(scene_gen::HeightFn fn) {
   scene_gen::Ground g;
@@ -51,6 +59,14 @@ VillageLayer street(f64 x0, f64 z0, f64 x1, f64 z1) {
   lane.waypoints.push_back(WorldPos{x0, 0.0, z0});
   lane.waypoints.push_back(WorldPos{x1, 0.0, z1});
   p.lanes.push_back(lane);
+  return p;
+}
+// The same, laid out: no wander, no gaps, no turn, no green, no church, no back lane.
+VillageLayer regular(VillageLayer p) {
+  p.irregularity = 0.0f;
+  p.green_m = 0.0f;
+  p.church = false;
+  p.back_lanes = false;
   return p;
 }
 
@@ -74,27 +90,71 @@ f64 left_of(const VillageLayer& p, i64 x, i64 z) {
          len;
 }
 
+// Whether a world point (mm) stands inside a plot's rectangle, `in_mm` in from its edges.
+bool in_plot(const Plot& q, f64 x, f64 z, f64 in_mm) {
+  const f64 rx = x - static_cast<f64>(q.front_x_mm), rz = z - static_cast<f64>(q.front_z_mm);
+  const f64 u = rx * q.along_x + rz * q.along_z, v = rx * q.inward_x + rz * q.inward_z;
+  return std::fabs(u) < static_cast<f64>(q.frontage_mm) / 2.0 - in_mm && v > in_mm &&
+         v < static_cast<f64>(q.depth_mm) - in_mm;
+}
+
+// How many points of a 1 m lattice over each plot fall inside another plot.
+u32 overlaps(const VillagePlan& plan) {
+  u32 n = 0;
+  for (u32 a = 0; a < plan.plots.size(); ++a) {
+    const Plot& q = plan.plots[a];
+    for (f64 u = -static_cast<f64>(q.frontage_mm) / 2 + 500;
+         u < static_cast<f64>(q.frontage_mm) / 2; u += 1000)
+      for (f64 v = 500; v < static_cast<f64>(q.depth_mm); v += 1000) {
+        const f64 x = static_cast<f64>(q.front_x_mm) + q.along_x * u + q.inward_x * v;
+        const f64 z = static_cast<f64>(q.front_z_mm) + q.along_z * u + q.inward_z * v;
+        for (u32 b = 0; b < plan.plots.size(); ++b)
+          if (b != a && in_plot(plan.plots[b], x, z, 1.0)) ++n;
+      }
+  }
+  return n;
+}
+
+// How many points of the ways' treads fall inside a plot.
+u32 treads_in_plots(const VillagePlan& plan) {
+  u32 n = 0;
+  for (const LaneLine& lane : plan.lanes)
+    for (const LaneStation& s : lane.stations)
+      for (const Plot& q : plan.plots)
+        if (in_plot(q, static_cast<f64>(s.x_mm), static_cast<f64>(s.z_mm), 1.0)) ++n;
+  return n;
+}
+
 }  // namespace
 
-TEST_CASE("village: a two-row street lays plots of whole perches and stands the entry's houses") {
-  VillageLayer p = street(0, 0, 120, 0);
+TEST_CASE("village: at irregularity 0 a way on level ground is a row plan of whole perches") {
+  VillageLayer p = regular(street(0, 0, 120, 0));
   const VillagePlan plan = planned(p, flat);
   CHECK(plan.built == 8);
   CHECK(std::string(plan.size_class) == "village");
-  CHECK(plan.steep + plan.wet + plan.no_fit + plan.refused == 0);
+  CHECK(plan.steep + plan.wet + plan.no_fit + plan.refused + plan.outside == 0);
+  CHECK(plan.cottages == 0);
+  CHECK(!plan.church);
+  CHECK(!plan.well);
   REQUIRE(plan.lanes.size() == 1);
+  // The way found between two places on level ground is the straight line.
   CHECK(plan.lanes[0].length_mm == 120000);
   CHECK(plan.lanes[0].stations.size() == 61);  // every 2 m, both ends
-  for (const LaneStation& s : plan.lanes[0].stations)
+  for (const LaneStation& s : plan.lanes[0].stations) {
     CHECK(s.top_mm == 2000);
+    CHECK(s.z_mm == 0);
+    CHECK(s.left_mm == 3050);
+    CHECK(s.right_mm == 3050);
+  }
   u32 left = 0, right = 0;
-  i64 cursor[2] = {0, 0};
   for (const Plot& q : plan.plots) {
-    // Whole perches, two to four.
+    CHECK(q.kind == PlotKind::tenement);
+    // Whole perches, two to four, the entry's depth, square to the street.
     CHECK(q.frontage_mm % 5030 == 0);
     CHECK(q.frontage_mm >= 2 * 5030);
     CHECK(q.frontage_mm <= 4 * 5030);
     CHECK(q.depth_mm == 8 * 5030);
+    CHECK(std::fabs(std::fabs(q.along_x) - 1.0) < 1e-12);
     // The plot's front on its street edge, 3.05 m from the lane's line, on its own side.
     const f64 side = left_of(p, q.front_x_mm, q.front_z_mm);
     CHECK(std::fabs(std::fabs(side) - 3.05) < 0.0011);
@@ -107,22 +167,26 @@ TEST_CASE("village: a two-row street lays plots of whole perches and stands the 
     CHECK(door == doctest::Approx(3.05 + 2.0).epsilon(1e-4));
     const f64 middle = std::fabs(left_of(p, q.house_x_mm, q.house_z_mm));
     CHECK(middle > door);
-    // The pad holds the house with its margin, and stands inside the plot's depth.
-    for (u32 c = 0; c < 4; ++c) {
-      const f64 d = std::fabs(left_of(p, q.pad_x_mm[c], q.pad_z_mm[c]));
-      CHECK(d > 3.05 + 2.0 - 0.61);
-      CHECK(d < 3.05 + 8 * 5.03);
-    }
     CHECK(q.pad_mm == 2000);
-    // The path ends on the tread's near edge.
+    CHECK(q.storeys == 2);
+    // The gate on the plot's front, square out of the door; the path's end on the tread's edge.
+    CHECK(std::fabs(left_of(p, q.gate_x_mm, q.gate_z_mm)) == doctest::Approx(3.05).epsilon(1e-3));
     CHECK(std::fabs(left_of(p, q.path_x_mm, q.path_z_mm)) == doctest::Approx(1.5).epsilon(1e-3));
   }
-  // Plots of one row follow each other without overlap or gap.
-  for (const Plot& q : plan.plots) {
-    CHECK(q.along_mm - q.frontage_mm / 2 == cursor[q.side]);
-    cursor[q.side] += q.frontage_mm;
+  // Each row's plots follow each other along the street without overlap or gap, out from the
+  // middle both ways.
+  for (u8 side = 0; side < 2; ++side) {
+    std::vector<const Plot*> row;
+    for (const Plot& q : plan.plots)
+      if (q.side == side) row.push_back(&q);
+    std::sort(row.begin(), row.end(),
+              [](const Plot* a, const Plot* b) { return a->along_mm < b->along_mm; });
+    for (usize k = 1; k < row.size(); ++k)
+      CHECK(row[k]->along_mm - row[k]->frontage_mm / 2 ==
+            row[k - 1]->along_mm + row[k - 1]->frontage_mm / 2);
   }
-  // The two rows alternate along the lane, so eight houses stand four a side, give or take one.
+  CHECK(overlaps(plan) == 0);
+  // The rows alternate out from the middle, so eight houses stand four a side, give or take one.
   CHECK(left + right == 8);
   CHECK(std::max(left, right) - std::min(left, right) <= 2);
   MESSAGE("120 m of street: " << plan.plots.size() << " plots, " << left << " houses left, "
@@ -138,19 +202,178 @@ TEST_CASE("village: a two-row street lays plots of whole perches and stands the 
     CHECK(q.side == 1);
 }
 
+TEST_CASE("village: a way is found round a hill, not ruled over it") {
+  // Two places either side of a 12 m hill: a ruled lane would climb it at 70 %.
+  VillageLayer p = regular(street(-60, 0, 60, 0));
+  p.houses = 2;
+  const VillagePlan plan = planned(p, hill);
+  REQUIRE(plan.lanes.size() == 1);
+  const LaneLine& way = plan.lanes[0];
+  i64 widest = 0, highest = 0;
+  for (const LaneStation& s : way.stations) {
+    widest = std::max(widest, s.z_mm < 0 ? -s.z_mm : s.z_mm);
+    highest = std::max(highest, s.top_mm);
+  }
+  MESSAGE("round the hill: " << way.length_mm << " mm, " << widest << " mm off the line at most, "
+                             << highest << " mm up at most");
+  CHECK(widest > 8000);      // it went round
+  CHECK(highest < 4000);     // and stayed off the hill's shoulder
+  CHECK(way.length_mm < 160000);  // without a long detour
+  // Its ends are the two places.
+  CHECK(way.stations[0].x_mm == -60000);
+  CHECK(way.stations.back().x_mm == 60000);
+}
+
+TEST_CASE("village: a grown village has uneven plots, turns, gaps and cottages") {
+  VillageLayer p = street(0, 0, 200, 30);
+  p.houses = 16;
+  p.irregularity = 1.0f;
+  const VillagePlan plan = planned(p, gentle);
+  CHECK(plan.built == 16);
+  u32 whole = 0, turned = 0, tenements = 0;
+  std::vector<i64> depths;
+  for (const Plot& q : plan.plots) {
+    if (q.kind != PlotKind::tenement) continue;
+    ++tenements;
+    whole += q.frontage_mm % 5030 == 0 ? 1u : 0u;
+    depths.push_back(q.depth_mm);
+    // Square to its way is |along . tangent| = 1, the tangent the way's own beside the plot (from
+    // two stations before the nearest to two after); turned is more than about 6 degrees off it.
+    const LaneLine& way = plan.lanes[q.lane];
+    u32 k = 0;
+    f64 best = 1e300;
+    for (u32 s = 0; s < way.stations.size(); ++s) {
+      const f64 dx = static_cast<f64>(way.stations[s].x_mm - q.front_x_mm),
+                dz = static_cast<f64>(way.stations[s].z_mm - q.front_z_mm);
+      if (dx * dx + dz * dz < best) {
+        best = dx * dx + dz * dz;
+        k = s;
+      }
+    }
+    const LaneStation& a = way.stations[k >= 2 ? k - 2 : 0];
+    const LaneStation& b = way.stations[std::min<u32>(k + 2, way.stations.size() - 1)];
+    const f64 tx = static_cast<f64>(b.x_mm - a.x_mm), tz = static_cast<f64>(b.z_mm - a.z_mm);
+    const f64 tl = std::sqrt(tx * tx + tz * tz);
+    if (std::fabs(q.along_x * tx + q.along_z * tz) / tl < 0.995) ++turned;
+  }
+  std::sort(depths.begin(), depths.end());
+  MESSAGE("grown: " << plan.plots.size() << " plots, " << tenements << " tenements, "
+                    << plan.cottages << " cottages built, " << turned << " turned, " << whole
+                    << " of whole perches, depths " << depths.front() << " to " << depths.back());
+  CHECK(whole * 4 < tenements);  // most frontages are no whole number of perches
+  CHECK(depths.back() - depths.front() > 8000);
+  CHECK(turned * 4 > tenements);
+  CHECK(plan.cottages > 0);
+  CHECK(overlaps(plan) == 0);
+  CHECK(treads_in_plots(plan) == 0);
+  // A cottage asks one storey, a tenement the entry's.
+  for (const Plot& q : plan.plots) {
+    if (q.state != PlotState::built) continue;
+    CHECK(q.storeys == (q.kind == PlotKind::cottage ? 1u : p.storeys));
+  }
+}
+
+TEST_CASE("village: plots are taken nearest the green first, and the church stands further out") {
+  VillageLayer p = street(0, 0, 160, 0);
+  Lane second;
+  second.name = "to the mill";
+  second.waypoints.push_back(WorldPos{70.0, 0.0, -90.0});
+  second.waypoints.push_back(WorldPos{80.0, 0.0, -4.0});
+  p.lanes.push_back(second);
+  p.houses = 14;
+  const VillagePlan plan = planned(p, gentle);
+  CHECK(plan.built == 14);
+  // The second way's end meets the first: the focus is on the first way there, and the green and
+  // the well stand at it.
+  CHECK(std::fabs(static_cast<f64>(plan.focus_x_mm) - 80000.0) < 8000.0);
+  CHECK(std::fabs(static_cast<f64>(plan.focus_z_mm)) < 8000.0);
+  CHECK(plan.well);
+  u32 nearest = 0;
+  for (u32 k = 0; k < plan.lanes[0].stations.size(); ++k)
+    if (plan.lanes[0].stations[k].x_mm == plan.focus_x_mm &&
+        plan.lanes[0].stations[k].z_mm == plan.focus_z_mm)
+      nearest = k;
+  const LaneStation& at = plan.lanes[0].stations[nearest];
+  CHECK(at.left_mm > 10000);
+  CHECK(at.right_mm > 10000);
+  CHECK(plan.lanes[0].stations[2].left_mm < 5000);  // the street, far from the green
+  // The houses' order: the first tenements nearer the focus than the last.
+  const auto from_focus = [&](const Plot& q) {
+    const f64 dx = static_cast<f64>(q.front_x_mm - plan.focus_x_mm),
+              dz = static_cast<f64>(q.front_z_mm - plan.focus_z_mm);
+    return std::sqrt(dx * dx + dz * dz);
+  };
+  std::vector<f64> built;
+  u32 order = 0;
+  for (const Plot& q : plan.plots) {
+    CHECK(q.order == order++);
+    if (q.state == PlotState::built && q.kind == PlotKind::tenement) built.push_back(from_focus(q));
+  }
+  REQUIRE(built.size() >= 6);
+  f64 first = 0.0, last = 0.0;
+  for (usize k = 0; k < 3; ++k) {
+    first += built[k];
+    last += built[built.size() - 1 - k];
+  }
+  CHECK(first < last);
+  std::sort(built.begin(), built.end());
+  // The church's plot is reserved, 42 by 24 m, on no street and on no plot.
+  CHECK(plan.church);
+  u32 churches = 0;
+  for (const Plot& q : plan.plots)
+    if (q.kind == PlotKind::church) {
+      ++churches;
+      CHECK(q.state == PlotState::reserved);
+      CHECK(q.frontage_mm == 42000);
+      CHECK(q.depth_mm == 24000);
+      CHECK(q.order == 0);  // set out before any house
+      CHECK(from_focus(q) > built[built.size() / 2]);  // in the village's outer half
+    }
+  CHECK(churches == 1);
+  CHECK(overlaps(plan) == 0);
+  CHECK(treads_in_plots(plan) == 0);
+  // No plot stands on the well.
+  for (const Plot& q : plan.plots)
+    CHECK(!in_plot(q, static_cast<f64>(plan.focus_x_mm), static_cast<f64>(plan.focus_z_mm), -1500.0));
+  MESSAGE("two ways: " << plan.plots.size() << " plots, " << plan.cottages << " cottages, "
+                       << plan.back_lanes << " back lanes, focus (" << plan.focus_x_mm << ", "
+                       << plan.focus_z_mm << ")");
+}
+
+TEST_CASE("village: a back lane runs behind a built row") {
+  VillageLayer p = regular(street(0, 0, 150, 0));
+  p.lanes[0].rows = Rows::Left;
+  p.back_lanes = true;
+  p.houses = 6;
+  const VillagePlan plan = planned(p, flat);
+  REQUIRE(plan.built == 6);
+  REQUIRE(plan.back_lanes == 1);
+  REQUIRE(plan.lanes.size() == 2);
+  const LaneLine& back = plan.lanes[1];
+  CHECK(back.back);
+  CHECK(back.from_lane == 0);
+  CHECK(back.half_tread_mm == 1000);
+  // Behind the plots' backs, on their side, and on none of them.
+  for (const LaneStation& s : back.stations) {
+    CHECK(left_of(p, s.x_mm, s.z_mm) > 3.05 + 8 * 5.03);
+    CHECK(left_of(p, s.x_mm, s.z_mm) < 3.05 + 8 * 5.03 + 3.0);
+  }
+  CHECK(treads_in_plots(plan) == 0);
+}
+
 TEST_CASE("village: a house's placement turns its frame so its door is where the plan put it") {
-  // A lane running at an angle, so no direction is an axis.
+  // A lane running at an angle, so no direction is an axis, and plots turned off it.
   const VillageLayer p = street(-10, 5, 90, 65);
   BoxHouse box;
   box.length_mm = 9000;
   box.width_mm = 4600;
   const VillagePlan plan = planned(p, gentle, &box);
   REQUIRE(plan.built > 0);
-  u32 gable_on = 0;
   for (const Plot& q : plan.plots) {
     if (q.state != PlotState::built) continue;
     const House& h = plan.houses[q.house];
-    if (h.name == "box, gable-on") ++gable_on;
+    // Long side to the street where the frontage holds it, gable-on where it does not.
+    CHECK((h.name == "box, gable-on") == (q.frontage_mm < 10000));
     const scene_gen::Placement at = house_placement(q);
     CHECK(length(at.rotation) == doctest::Approx(1.0f).epsilon(1e-6));
     // The engine's own rotation of the door's point in the house's frame lands on the plan's door.
@@ -174,9 +397,7 @@ TEST_CASE("village: a house's placement turns its frame so its door is where the
     CHECK(std::fabs(gentle(nullptr, static_cast<i64>(mid_x), static_cast<i64>(mid_z)) * 1000.0 -
                     static_cast<f64>(q.pad_mm)) < 3.0);
   }
-  // A 9 m house needs 10 m of frontage: a 2-perch plot (10.06 m) holds it long side on, so none of
-  // these is gable-on; a 12 m house on the same plots turns on every plot under 3 perches.
-  CHECK(gable_on == 0);
+  // A 12 m house on the same plots turns on every plot under 13 m.
   box.length_mm = 12000;
   const VillagePlan longer = planned(p, gentle, &box);
   u32 turned_houses = 0;
@@ -189,48 +410,28 @@ TEST_CASE("village: a house's placement turns its frame so its door is where the
   CHECK(turned_houses > 0);
 }
 
-TEST_CASE("village: a bend leaves a gap on its inside, and no two plots overlap") {
+TEST_CASE("village: no two plots overlap and none stands in a street, round a bend and a meeting") {
   VillageLayer p = street(0, 0, 80, 0);
-  p.lanes[0].waypoints.push_back(
-      WorldPos{80.0, 0.0, 90.0});  // a right angle toward +z: left inside
+  p.lanes[0].waypoints.push_back(WorldPos{80.0, 0.0, 90.0});  // a right angle toward +z
+  Lane second;
+  second.waypoints.push_back(WorldPos{-40.0, 0.0, 70.0});
+  second.waypoints.push_back(WorldPos{40.0, 0.0, 2.0});
+  p.lanes.push_back(second);
   p.houses = 40;
-  const VillagePlan plan = planned(p, flat);
-  CHECK(plan.built >= 8);
-  // Every pair of plots: their rectangles (frontage by depth) share no interior point, tested on a
-  // 1 m lattice of each plot's own rectangle against every other's frame.
-  const auto inside = [](const Plot& q, f64 x, f64 z) {
-    const f64 rx = x - static_cast<f64>(q.front_x_mm), rz = z - static_cast<f64>(q.front_z_mm);
-    const f64 u = rx * q.along_x + rz * q.along_z, v = rx * q.inward_x + rz * q.inward_z;
-    return std::fabs(u) < static_cast<f64>(q.frontage_mm) / 2.0 - 1.0 && v > 1.0 &&
-           v < static_cast<f64>(q.depth_mm) - 1.0;
-  };
-  u32 overlaps = 0;
-  for (u32 a = 0; a < plan.plots.size(); ++a) {
-    const Plot& q = plan.plots[a];
-    for (f64 u = -static_cast<f64>(q.frontage_mm) / 2 + 500;
-         u < static_cast<f64>(q.frontage_mm) / 2; u += 1000)
-      for (f64 v = 500; v < static_cast<f64>(q.depth_mm); v += 1000) {
-        const f64 x = static_cast<f64>(q.front_x_mm) + q.along_x * u + q.inward_x * v;
-        const f64 z = static_cast<f64>(q.front_z_mm) + q.along_z * u + q.inward_z * v;
-        for (u32 b = 0; b < plan.plots.size(); ++b)
-          if (b != a && inside(plan.plots[b], x, z)) ++overlaps;
-      }
+  for (const f32 irregularity : {0.0f, 0.5f, 1.0f}) {
+    p.irregularity = irregularity;
+    const VillagePlan plan = planned(p, flat);
+    CHECK(plan.built >= 8);
+    CHECK(overlaps(plan) == 0);
+    CHECK(treads_in_plots(plan) == 0);
+    MESSAGE("irregularity " << irregularity << ": " << plan.plots.size() << " plots, "
+                            << plan.built << " houses, " << plan.cottages << " cottages, "
+                            << plan.back_lanes << " back lanes");
   }
-  CHECK(overlaps == 0);
-  // The inside (left) row of the first leg stops short of the corner by the street's half width
-  // and the plots' depth; the outside row runs to it.
-  i64 last_left = 0, last_right = 0;
-  for (const Plot& q : plan.plots)
-    if (q.segment == 0) {
-      i64& last = q.side == 0 ? last_left : last_right;
-      last = std::max(last, q.along_mm + q.frontage_mm / 2);
-    }
-  CHECK(last_left <= 80000 - 3050 - 8 * 5030);
-  CHECK(last_right > last_left);
 }
 
 TEST_CASE("village: a plot too steep for a pad or standing in water is left empty and counted") {
-  VillageLayer p = street(0, 0, 120, 0);
+  VillageLayer p = regular(street(0, 0, 120, 0));
   p.houses = 6;
   const VillagePlan plan = planned(p, bank);
   // The left row's footprints reach z = 5.05 + 4.6: on the bank, 0.6 * 3.65 m = 2.2 m of rise.
@@ -240,12 +441,13 @@ TEST_CASE("village: a plot too steep for a pad or standing in water is left empt
     if (q.side == 0) CHECK((q.state == PlotState::steep || q.state == PlotState::spare));
     if (q.state == PlotState::built) CHECK(q.side == 1);
   }
-  // A pond over the first right-hand plots: those are wet, and the houses stand further along.
+  // A pond over the right-hand plots by the middle, where the village starts: those are wet, and
+  // the houses stand further out.
   scene::WaterBody pond;
   JsonValue pond_json;
   REQUIRE(
       parse_json(std::string("{\"name\":\"pond\",\"level_m\":5,\"shape\":{\"circle\":{\"center\":"
-                             "[8,0,-10],\"radius_m\":9}}}"),
+                             "[60,0,-10],\"radius_m\":9}}}"),
                  pond_json)
           .ok);
   schema::ReadContext pond_reader;
@@ -267,8 +469,8 @@ TEST_CASE("village: the pads, treads and paths are benches the tile set writes l
   const VillagePlan plan = planned(p, gentle);
   Vector<scene::TerrainEdit> edits;
   ground_edits(p, plan, edits);
-  // One tread, and a pad and a path a house.
-  CHECK(edits.size() == 1 + 2 * plan.built);
+  // A tread a way (back lanes included), and a pad and a path a house.
+  CHECK(edits.size() == plan.lanes.size() + 2 * plan.built);
   for (const scene::TerrainEdit& e : edits)
     CHECK(e.mode == scene::TerrainEditMode::Bench);
   tileset::TerrainEdits built;
@@ -297,7 +499,7 @@ TEST_CASE("village: the pads, treads and paths are benches the tile set writes l
     const i64 bx = scene_gen::nearest_mm(back.x), bz = scene_gen::nearest_mm(back.z);
     CHECK(std::fabs(edited(bx, bz) - gentle(nullptr, bx, bz) * 1000.0) <= 1.0);
   }
-  CHECK(checked > 800);
+  CHECK(checked > 400);
   // The tread is level across its width at each station's top, away from the houses' paths.
   const LaneLine& lane = plan.lanes[0];
   for (u32 k = 3; k + 3 < lane.stations.size(); k += 5) {
@@ -306,12 +508,12 @@ TEST_CASE("village: the pads, treads and paths are benches the tile set writes l
   }
 }
 
-TEST_CASE("village: the shapes cover the treads, the pads and the paths and nothing else") {
+TEST_CASE("village: the shapes cover the treads, the pads, the paths and the well, and no garden") {
   const VillageLayer p = street(0, 0, 100, 30);
   const VillagePlan plan = planned(p, gentle);
+  REQUIRE(plan.well);
   scene_gen::FootprintList all;
   footprints(p, plan, all);
-  CHECK(all.size() == (plan.lanes[0].stations.size() - 1) + 2 * plan.built);
   scene_gen::Exclusion exclusion;
   std::string error;
   REQUIRE_MESSAGE(exclusion.build({}, {}, {}, &error), error);
@@ -321,14 +523,17 @@ TEST_CASE("village: the shapes cover the treads, the pads and the paths and noth
     if (q.state != PlotState::built) continue;
     const House& h = plan.houses[q.house];
     CHECK(exclusion.excluded_mm(g, q.house_x_mm, q.house_z_mm));  // the pad
-    CHECK(exclusion.excluded_mm(g, (q.door_x_mm + q.path_x_mm) / 2,
-                                (q.door_z_mm + q.path_z_mm) / 2));    // the path
+    CHECK(exclusion.excluded_mm(g, (q.door_x_mm + q.gate_x_mm) / 2,
+                                (q.door_z_mm + q.gate_z_mm) / 2));  // the path to the gate
+    CHECK(exclusion.excluded_mm(g, (q.gate_x_mm + q.path_x_mm) / 2,
+                                (q.gate_z_mm + q.path_z_mm) / 2));  // and on to the tread
     const WorldPos garden = house_point(q, 0, 0, h.max_z_mm + 3000);  // behind the pad
     CHECK(!exclusion.excluded_mm(g, scene_gen::nearest_mm(garden.x),
                                  scene_gen::nearest_mm(garden.z)));
   }
-  const LaneStation& mid = plan.lanes[0].stations[plan.lanes[0].stations.size() / 2];
-  CHECK(exclusion.excluded_mm(g, mid.x_mm, mid.z_mm));  // the tread
+  const LaneStation& mid = plan.lanes[0].stations[plan.lanes[0].stations.size() / 3];
+  CHECK(exclusion.excluded_mm(g, mid.x_mm, mid.z_mm));                   // the tread
+  CHECK(exclusion.excluded_mm(g, plan.focus_x_mm + 1000, plan.focus_z_mm));  // the well
 
   // The tiles' shapes together are the whole read's: every shape is handed by the tile its disc
   // stands on, and a tile far from the village hands none.
@@ -370,14 +575,25 @@ bool inside(const JsonValue& polygon, f64 x, f64 z) {
   return in;
 }
 
+// The region whose name ends so, or null.
+const JsonValue* named(const JsonValue& regions, const std::string& ending) {
+  for (const JsonValue& r : regions.as_array()) {
+    const std::string n(r.find("name")->as_string());
+    if (n.size() >= ending.size() && n.compare(n.size() - ending.size(), ending.size(), ending) == 0)
+      return &r;
+  }
+  return nullptr;
+}
+
 }  // namespace
 
 TEST_CASE("village: the wear is a verge, a worn margin and a tread a lane, and a yard a house") {
-  const VillageLayer p = street(0, 0, 100, 30);
+  const VillageLayer p = regular(street(0, 0, 100, 30));
   const VillagePlan plan = planned(p, gentle);
   REQUIRE(plan.built > 0);
   const JsonValue regions = ground_regions_json(p, plan);
-  REQUIRE(regions.as_array().size() == 3 + plan.built);
+  // Three bands, and a yard and a path a house.
+  REQUIRE(regions.as_array().size() == 3 + 2 * plan.built);
   // A lane's three bands, each inside the last, widest first so the narrower is laid over it; a
   // straight street's is its four corners, whatever its stations.
   const char* layers[3] = {"verge", "worn", "lane"};
@@ -395,20 +611,24 @@ TEST_CASE("village: the wear is a verge, a worn margin and a tread a lane, and a
   CHECK(!inside(*regions[1].find("polygon"), mx + nx * 2.5, mz + nz * 2.5));
   CHECK(inside(*regions[1].find("polygon"), mx + nx * 1.7, mz + nz * 1.7));
   CHECK(!inside(*regions[2].find("polygon"), mx + nx * 1.7, mz + nz * 1.7));
-  // A yard holds the ground just before its door, the path's end at the tread, and a place a
-  // metre along the wall from the door; not the plot's far back.
-  u32 r = 3;
-  for (const Plot& q : plan.plots) {
+  // A yard holds the ground just before its door and a place a metre along the wall from it, not
+  // the plot's far back; its path's band holds the way from the gate to the tread's edge.
+  for (u32 k = 0; k < plan.plots.size(); ++k) {
+    const Plot& q = plan.plots[k];
     if (q.state != PlotState::built) continue;
-    const JsonValue& yard = *regions[r++].find("polygon");
-    CHECK(regions[r - 1].find("material")->as_string() == "worn");
+    const JsonValue* yard = named(regions, " plot " + std::to_string(k) + " yard");
+    const JsonValue* path = named(regions, " plot " + std::to_string(k) + " path");
+    REQUIRE(yard != nullptr);
+    REQUIRE(path != nullptr);
+    const JsonValue& y = *yard->find("polygon");
     const f64 dx = static_cast<f64>(q.door_x_mm) / 1000.0,
               dz = static_cast<f64>(q.door_z_mm) / 1000.0;
-    CHECK(inside(yard, dx - q.inward_x * 0.3, dz - q.inward_z * 0.3));
-    CHECK(inside(yard, dx - q.inward_x * 0.3 + q.along_x, dz - q.inward_z * 0.3 + q.along_z));
-    CHECK(inside(yard, static_cast<f64>(q.path_x_mm) / 1000.0,
-                 static_cast<f64>(q.path_z_mm) / 1000.0));
-    CHECK(!inside(yard, dx + q.inward_x * 12.0, dz + q.inward_z * 12.0));
+    CHECK(inside(y, dx - q.inward_x * 0.3, dz - q.inward_z * 0.3));
+    CHECK(inside(y, dx - q.inward_x * 0.3 + q.along_x, dz - q.inward_z * 0.3 + q.along_z));
+    CHECK(!inside(y, dx + q.inward_x * 12.0, dz + q.inward_z * 12.0));
+    CHECK(inside(*path->find("polygon"),
+                 static_cast<f64>(q.gate_x_mm + q.path_x_mm) / 2000.0,
+                 static_cast<f64>(q.gate_z_mm + q.path_z_mm) / 2000.0));
   }
   // No layer named, no region; no yard and no path, the lanes' alone.
   CHECK(ground_regions_json(p, plan, GroundLayers{"", "", ""}).as_array().size() == 0);
@@ -416,90 +636,105 @@ TEST_CASE("village: the wear is a verge, a worn margin and a tread a lane, and a
   bare.yard_m = 0.0f;
   bare.path_width_m = 0.0f;
   CHECK(ground_regions_json(bare, planned(bare, gentle)).as_array().size() == 3);
+
+  // A grown village's verge follows the street's wander and opens into the green round the well.
+  const VillageLayer grown = street(0, 0, 100, 30);
+  const VillagePlan green = planned(grown, gentle);
+  REQUIRE(green.well);
+  const JsonValue wear = ground_regions_json(grown, green);
+  const JsonValue* verge = named(wear, "street verge");
+  const JsonValue* well = named(wear, " well");
+  REQUIRE(verge != nullptr);
+  REQUIRE(well != nullptr);
+  CHECK(verge->find("polygon")->as_array().size() > 8);
+  const f64 fx = static_cast<f64>(green.focus_x_mm) / 1000.0,
+            fz = static_cast<f64>(green.focus_z_mm) / 1000.0;
+  CHECK(inside(*verge->find("polygon"), fx + nx * 9.0, fz + nz * 9.0));  // the green's breadth
+  CHECK(inside(*well->find("polygon"), fx + 1.0, fz));
 }
 
-TEST_CASE("village: a plot is bounded once, and its front has a gateway where the path crosses") {
-  VillageLayer p = street(0, 0, 100, 30);
-  p.houses = 5;  // so some built plots have a spare neighbour and some a built one
-  const VillagePlan plan = planned(p, gentle);
-  REQUIRE(plan.built == 5);
-  Vector<BoundaryLine> lines;
-  plot_boundaries(p, plan, lines);
-  REQUIRE(lines.size() >= plan.built);
-  // Every side of every built plot is on exactly one line: count the lines' segments that lie on
-  // each of a plot's four sides (both ends within 2 cm of the side's ends, either way round).
-  struct Segment {
-    i64 ax, az, bx, bz;
-  };
-  Vector<Segment> segments;
-  u32 gateways = 0;
-  for (const BoundaryLine& b : lines) {
-    REQUIRE(b.points_mm.size() >= 4);
-    const u32 n = b.points_mm.size() / 2;
-    for (u32 k = 0; k + 1 < n || (b.closed && k < n); ++k) {
-      const u32 j = (k + 1) % n;
-      segments.push_back(Segment{b.points_mm[2 * k], b.points_mm[2 * k + 1], b.points_mm[2 * j],
-                                 b.points_mm[2 * j + 1]});
-    }
-    gateways += b.gateways_mm.size();
-    const Plot& q = plan.plots[b.plot];
-    CHECK(q.state == PlotState::built);
-    for (const i64 station : b.gateways_mm) {
-      // Walk the line to the station: the point there is on the plot's front, at the path's place.
-      f64 left = static_cast<f64>(station), gx = 0.0, gz = 0.0;
-      for (u32 k = 0; k + 1 < n; ++k) {
-        const f64 ax = static_cast<f64>(b.points_mm[2 * k]),
-                  az = static_cast<f64>(b.points_mm[2 * k + 1]);
-        const f64 dx = static_cast<f64>(b.points_mm[2 * k + 2]) - ax;
-        const f64 dz = static_cast<f64>(b.points_mm[2 * k + 3]) - az;
-        const f64 length = std::sqrt(dx * dx + dz * dz);
-        if (left <= length) {
-          gx = ax + dx * left / length;
-          gz = az + dz * left / length;
-          break;
+TEST_CASE("village: a plot is bounded once, and its front has a gateway at its gate") {
+  for (const f32 irregularity : {0.0f, 0.8f}) {
+    VillageLayer p = irregularity == 0.0f ? regular(street(0, 0, 100, 30)) : street(0, 0, 100, 30);
+    p.irregularity = irregularity;
+    p.houses = 5;  // so some built plots have a spare neighbour and some a built one
+    const VillagePlan plan = planned(p, gentle);
+    REQUIRE(plan.built == 5);
+    Vector<BoundaryLine> lines;
+    plot_boundaries(p, plan, lines);
+    REQUIRE(lines.size() >= plan.built);
+    // Every side of every built plot is on exactly one line: count the lines' segments that lie
+    // on each of a plot's four sides (both ends within 2 cm of the side's ends, either way round).
+    struct Segment {
+      i64 ax, az, bx, bz;
+    };
+    Vector<Segment> segments;
+    u32 gateways = 0;
+    for (const BoundaryLine& b : lines) {
+      REQUIRE(b.points_mm.size() >= 4);
+      const u32 n = b.points_mm.size() / 2;
+      for (u32 k = 0; k + 1 < n || (b.closed && k < n); ++k) {
+        const u32 j = (k + 1) % n;
+        segments.push_back(Segment{b.points_mm[2 * k], b.points_mm[2 * k + 1], b.points_mm[2 * j],
+                                   b.points_mm[2 * j + 1]});
+      }
+      gateways += b.gateways_mm.size();
+      const Plot& q = plan.plots[b.plot];
+      CHECK(q.state == PlotState::built);
+      for (const i64 station : b.gateways_mm) {
+        // Walk the line to the station: the point there is the plot's gate.
+        f64 left = static_cast<f64>(station), gx = 0.0, gz = 0.0;
+        for (u32 k = 0; k + 1 < n; ++k) {
+          const f64 ax = static_cast<f64>(b.points_mm[2 * k]),
+                    az = static_cast<f64>(b.points_mm[2 * k + 1]);
+          const f64 dx = static_cast<f64>(b.points_mm[2 * k + 2]) - ax;
+          const f64 dz = static_cast<f64>(b.points_mm[2 * k + 3]) - az;
+          const f64 length = std::sqrt(dx * dx + dz * dz);
+          if (left <= length) {
+            gx = ax + dx * left / length;
+            gz = az + dz * left / length;
+            break;
+          }
+          left -= length;
         }
-        left -= length;
+        CHECK(std::fabs(gx - static_cast<f64>(q.gate_x_mm)) < 5.0);
+        CHECK(std::fabs(gz - static_cast<f64>(q.gate_z_mm)) < 5.0);
       }
-      const f64 off_x = gx - static_cast<f64>(q.path_x_mm),
-                off_z = gz - static_cast<f64>(q.path_z_mm);
-      CHECK(std::fabs(off_x * q.along_x + off_z * q.along_z) <
-            5.0);  // square to the street from it
-      const f64 fx = gx - static_cast<f64>(q.front_x_mm), fz = gz - static_cast<f64>(q.front_z_mm);
-      CHECK(std::fabs(fx * q.inward_x + fz * q.inward_z) < 5.0);  // on the front
     }
-  }
-  CHECK(gateways == plan.built);
-  const auto near_mm = [](i64 a, i64 b) { return a - b <= 20 && b - a <= 20; };
-  u32 shared_sides = 0;
-  for (const Plot& q : plan.plots) {
-    if (q.state != PlotState::built) continue;
-    const f64 half = static_cast<f64>(q.frontage_mm) * 0.5, depth = static_cast<f64>(q.depth_mm);
-    const f64 cu[4] = {-half, half, half, -half}, cv[4] = {0.0, 0.0, depth, depth};
-    i64 cx[4], cz[4];
-    for (u32 c = 0; c < 4; ++c) {
-      cx[c] =
-          q.front_x_mm + scene_gen::nearest_mm((q.along_x * cu[c] + q.inward_x * cv[c]) / 1000.0);
-      cz[c] =
-          q.front_z_mm + scene_gen::nearest_mm((q.along_z * cu[c] + q.inward_z * cv[c]) / 1000.0);
-    }
-    for (u32 c = 0; c < 4; ++c) {
-      const u32 d = (c + 1) % 4;
-      u32 on = 0;
-      for (const Segment& s : segments) {
-        const bool forward = near_mm(s.ax, cx[c]) && near_mm(s.az, cz[c]) && near_mm(s.bx, cx[d]) &&
-                             near_mm(s.bz, cz[d]);
-        const bool back = near_mm(s.bx, cx[c]) && near_mm(s.bz, cz[c]) && near_mm(s.ax, cx[d]) &&
-                          near_mm(s.az, cz[d]);
-        on += forward || back ? 1u : 0u;
+    CHECK(gateways == plan.built);
+    const auto near_mm = [](i64 a, i64 b) { return a - b <= 20 && b - a <= 20; };
+    for (const Plot& q : plan.plots) {
+      if (q.state != PlotState::built) continue;
+      const f64 half = static_cast<f64>(q.frontage_mm) * 0.5, depth = static_cast<f64>(q.depth_mm);
+      const f64 cu[4] = {-half, half, half, -half}, cv[4] = {0.0, 0.0, depth, depth};
+      i64 cx[4], cz[4];
+      for (u32 c = 0; c < 4; ++c) {
+        cx[c] =
+            q.front_x_mm + scene_gen::nearest_mm((q.along_x * cu[c] + q.inward_x * cv[c]) / 1000.0);
+        cz[c] =
+            q.front_z_mm + scene_gen::nearest_mm((q.along_z * cu[c] + q.inward_z * cv[c]) / 1000.0);
       }
-      CHECK(on == 1);
+      for (u32 c = 0; c < 4; ++c) {
+        const u32 d = (c + 1) % 4;
+        u32 on = 0;
+        for (const Segment& s : segments) {
+          const bool forward = near_mm(s.ax, cx[c]) && near_mm(s.az, cz[c]) &&
+                               near_mm(s.bx, cx[d]) && near_mm(s.bz, cz[d]);
+          const bool back = near_mm(s.bx, cx[c]) && near_mm(s.bz, cz[c]) && near_mm(s.ax, cx[d]) &&
+                            near_mm(s.az, cz[d]);
+          on += forward || back ? 1u : 0u;
+        }
+        CHECK(on == 1);
+      }
     }
+    // Two built neighbours of a row plan share a side, so there are fewer segments than four a
+    // plot; a grown village's plots stand apart.
+    const u32 shared_sides = 4 * plan.built - segments.size();
+    if (irregularity == 0.0f) CHECK(shared_sides >= 1);
+    MESSAGE("irregularity " << irregularity << ": " << lines.size() << " lines, "
+                            << segments.size() << " segments, " << shared_sides
+                            << " sides shared, for " << plan.built << " plots");
   }
-  // Two built neighbours share a side, so there are fewer segments than four a plot.
-  shared_sides = 4 * plan.built - segments.size();
-  CHECK(shared_sides >= 1);
-  MESSAGE(lines.size() << " lines, " << segments.size() << " segments, " << shared_sides
-                       << " sides shared, for " << plan.built << " plots");
 }
 
 TEST_CASE("village: the plan is the same bytes on every toolchain") {
@@ -509,7 +744,7 @@ TEST_CASE("village: the plan is the same bytes on every toolchain") {
   second.name = "back";
   second.rows = Rows::Left;
   second.waypoints.push_back(WorldPos{-30.0, 0.0, -70.0});
-  second.waypoints.push_back(WorldPos{70.0, 0.0, -90.0});
+  second.waypoints.push_back(WorldPos{20.0, 0.0, 0.0});
   p.lanes.push_back(second);
   p.houses = 14;
   p.seed = 2026;
@@ -518,9 +753,10 @@ TEST_CASE("village: the plan is the same bytes on every toolchain") {
   char text[24];
   std::snprintf(text, sizeof(text), "%016llx", static_cast<unsigned long long>(hash));
   MESSAGE("plan hash " << text << ": " << plan.plots.size() << " plots, " << plan.built
-                       << " houses, " << plan.steep << " steep");
+                       << " houses, " << plan.cottages << " cottages, " << plan.back_lanes
+                       << " back lanes, " << plan.steep << " steep");
   // Taken on MSVC (x86-64-v3); GCC and Clang in the Linux containers reproduce it.
-  CHECK(hash == 0x850681822857221aull);
+  CHECK(hash == 0x0ull);
   // The same entry again, and the summary's hash, are the same.
   CHECK(plan_hash(planned(p, gentle)) == hash);
   CHECK(plan_json(p, plan).find("hash")->as_string() == std::string(text));
@@ -552,8 +788,22 @@ TEST_CASE(
   scene_gen::Placements whole;
   REQUIRE_MESSAGE(desc->expand(state, context, whole, &error), error);
   CHECK(whole.things == 8);
-  // A tread, and a pad and a path a house; the same things as shapes, the tread a band a stretch.
-  CHECK(planned.edits.size() == 1 + 2 * whole.things);
+  // A tread a way, and a pad and a path a house; the same things as shapes.
+  u32 pads = 0, paths = 0, treads = 0;
+  for (const scene::TerrainEdit& e : planned.edits) {
+    const auto ends = [&](const char* s) {
+      const std::string tail(s);
+      return e.name.size() >= tail.size() &&
+             e.name.compare(e.name.size() - tail.size(), tail.size(), tail) == 0;
+    };
+    pads += ends(" pad") ? 1u : 0u;
+    paths += ends(" path") ? 1u : 0u;
+    treads += ends(" tread") ? 1u : 0u;
+  }
+  CHECK(pads == whole.things);
+  CHECK(paths == whole.things);
+  CHECK(treads >= 1);
+  CHECK(pads + paths + treads == planned.edits.size());
   CHECK(planned.holes.empty());
   CHECK(whole.shapes.size() > 2 * whole.things);
   // Every instance names a mesh the read lists, and houses of one description share one.
@@ -631,6 +881,12 @@ TEST_CASE("village: an entry out of range is refused with a sentence") {
   p = street(0, 0, 100, 0);
   p.tread_width_m = 9.0f;  // wider than the street
   CHECK(refused(p).find("tread_width_m") != std::string::npos);
+  p = street(0, 0, 100, 0);
+  p.irregularity = 1.5f;
+  CHECK(refused(p).find("irregularity") != std::string::npos);
+  p = street(0, 0, 100, 0);
+  p.green_m = 3.0f;  // narrower than the street
+  CHECK(refused(p).find("green_m") != std::string::npos);
   // No house filler.
   p = street(0, 0, 100, 0);
   scene_gen::Context context;

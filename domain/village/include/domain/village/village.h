@@ -1,18 +1,21 @@
 #pragma once
 
-// The village capability (ADR-0027; docs/subsystems/village.md, roadmap G69; plan 14 §14.3, "The
-// village filler"; docs/experiments/village-plan-grounding.md for every number): a row-plan village
-// laid out along lanes on the scene's ground.
+// The village capability (ADR-0027; docs/subsystems/village.md, roadmap G69, G206; plan 14 §14.3,
+// "The village filler"; docs/experiments/village-growth-grounding.md and village-plan-grounding.md
+// for every number): a village that grew along its ways on the scene's ground.
 //
 // **What it is.** One plan (`plan_village`), a function of the entry, its seed and the ground
-// before any edit: each lane's line stationed and its tread's top read off the ground; plots of
-// whole perches laid along each side of each lane from its first point, a gap left on the inside
-// of a bend; on each plot, in order along the lane with the two rows alternating, a house asked of
-// the **house filler** (`HouseFn`: from the plot and a seed, a footprint, a door and the recipe of
-// its mesh) and stood facing the lane, set back from the plot's front, on a pad level at the mean
-// of the ground under it — or the plot left empty and counted where the ground under the footprint
-// differs by more than a pad should take up, where water or a hole is, or where the house does not
-// fit its frontage.
+// before any edit: each way found over the ground between the places it passes (a least-cost path
+// for its slope, wandering by `irregularity`), stationed, its tread's top read off the ground and
+// its street's edges wandering and opening into a green where the ways meet; plots taken up along
+// the ways nearest the green first, tenements of uneven frontage and depth turned to the slope and
+// the sun, cottages squeezed into their gaps and onto the green later, a plot kept for the church;
+// on each plot a house asked of the **house filler** (`HouseFn`: from the plot and a seed, a
+// footprint, a door and the recipe of its mesh) and stood facing its way, set back from the plot's
+// front, on a pad level at the mean of the ground under it — or the plot left empty and counted
+// where the ground under the footprint differs by more than a pad should take up, where water or
+// a hole is, where the ground is not there, or where the house does not fit; back lanes behind
+// the built rows. At `irregularity` 0 the same rules lay out a regular row plan.
 //
 // **What it hands over.** To the ground, before the ground is made
 // (`PlacementGeneratorDesc::plan_ground`): each lane's tread as a `Bench` line, each pad as a
@@ -27,10 +30,11 @@
 // records did not exist when this was built; village.md, "Not yet"); the plan is the pure function
 // such a writer would call.
 //
-// **Determinism.** Every place is whole millimetres; a lane's direction is products, sums, one
-// division and one correctly rounded square root; a plot's choices are the engine's hash of the
-// seed and the plot's place in its row. No C library call decides anything, so the plan is the
-// same bytes on every toolchain (`plan_hash`, pinned by the tests).
+// **Determinism.** Every place is whole millimetres; a way's search is integer costs with ties to
+// the lower cell; a direction is products, sums, one division and one correctly rounded square
+// root; a plot's choices are the engine's hash of the seed and the plot's place. No C library call
+// decides anything, so the plan is the same bytes on every toolchain (`plan_hash`, pinned by the
+// tests).
 //
 // Checklist (ADR-0027 decision 2), and where each item is:
 //   [x] schema types      schemas/village.schema, engine_schema_library
@@ -61,8 +65,9 @@
 
 namespace engine::village {
 
-// Bumped when a change makes the same entry plan another village.
-inline constexpr u32 k_village_version = 1;
+// Bumped when a change makes the same entry plan another village. 2: the grown plan (G206): ways
+// found over the ground, a green where they meet, plots taken in an order, cottages, back lanes.
+inline constexpr u32 k_village_version = 2;
 
 // ---- the house seam -----------------------------------------------------------------------------
 
@@ -113,52 +118,77 @@ using HouseFn = bool (*)(void* context, const HouseAsk& ask, House& out, std::st
 
 // ---- the plan -----------------------------------------------------------------------------------
 
-// A station of a lane: where it is and the tread's top there, whole millimetres.
+// A station of a way: where it is, the tread's top there, and how far the street's edge stands
+// from the line on its left and on its right (the street's own wander and the green), whole
+// millimetres. 40 bytes (tests/size_table.cpp).
 struct LaneStation {
   i64 x_mm = 0;
   i64 z_mm = 0;
   i64 top_mm = 0;
+  i64 left_mm = 0;
+  i64 right_mm = 0;
 };
+// A way as found over the ground (village.md, "The ways"): its stations, its length, its tread's
+// half width, and whether it is a back lane behind a row's plots (`back`, of the way `from_lane`).
+// The entry's ways come first, in its order; the back lanes after them.
 struct LaneLine {
   Vector<LaneStation> stations;
   i64 length_mm = 0;
+  i64 half_tread_mm = 0;
+  bool back = false;
+  u32 from_lane = 0;
 };
 
 // Why a plot stands empty.
 enum class PlotState : u8 {
   built = 0,
-  spare = 1,    // past the entry's house count
-  steep = 2,    // the ground under the footprint differs by more than `max_pad_step_m`
-  wet = 3,      // a corner or the centre in water, a channel's corridor or a hole
-  no_fit = 4,   // the house is wider than the frontage, or deeper than the plot
-  refused = 5,  // the house filler had none
+  spare = 1,     // past the entry's house count
+  steep = 2,     // the ground under the footprint differs by more than `max_pad_step_m`
+  wet = 3,       // a corner or the centre in water, a channel's corridor or a hole
+  no_fit = 4,    // the house is wider than the frontage, or deeper than the plot
+  refused = 5,   // the house filler had none
+  reserved = 6,  // kept for a building nobody builds yet: the church
+  outside = 7,   // a corner or the middle off the ground there is (the heightfield's edge)
 };
 
-// A plot and, where one stands, its house. 224 bytes (tests/size_table.cpp).
+// Who took a plot up (village-growth-grounding.md, "Plots"): a founding tenement along a way, a
+// cottage squeezed into a gap between two or onto the green's edge later, or the church's.
+enum class PlotKind : u8 {
+  tenement = 0,
+  cottage = 1,
+  church = 2,
+};
+
+// A plot and, where one stands, its house. 280 bytes (tests/size_table.cpp).
 struct Plot {
   u32 lane = 0;
-  u32 segment = 0;  // of the lane's waypoints
-  u8 side = 0;      // 0 left, 1 right
+  u32 order = 0;  // the place in which it was taken up, 0 first
+  u8 side = 0;    // 0 left, 1 right
   PlotState state = PlotState::spare;
   u8 quarter_turns =
-      0;  // of the house's frame, before the row's turn, so its door faces the street
-  u8 pad = 0;
-  u32 house = 0;  // into `VillagePlan::houses`, for a built plot
-  // The middle of the plot's front on the street's edge, and the two unit directions of its frame:
-  // `along` the street (so that `inward`, the left normal of `along`, points into the plot).
+      0;  // of the house's frame, before the plot's turn, so its door faces the street
+  PlotKind kind = PlotKind::tenement;
+  u32 house = 0;    // into `VillagePlan::houses`, for a built plot
+  u32 storeys = 0;  // asked of its house: the entry's for a tenement, one for a cottage
+  // The middle of the plot's front, and the two unit directions of its frame: `along` its front
+  // (so that `inward`, the left normal of `along`, points into the plot). A plot's front is turned
+  // off square to its way by the slope, the sun and its seed, by up to 20 degrees.
   i64 front_x_mm = 0, front_z_mm = 0;
   f64 along_x = 1.0, along_z = 0.0;
   f64 inward_x = 0.0, inward_z = 1.0;
   i64 frontage_mm = 0, depth_mm = 0;
-  i64 along_mm = 0;  // of the plot's middle along its lane, from the lane's first point
+  i64 along_mm = 0;  // of the plot's middle along its way, from the way's first point
   u64 seed = 0;
   // Where the house's frame stands, the pad's level, and how far the frame's origin (the ground
-  // floor's top, structures.md) stands over the pad: the entry's `floor_over_pad_m`.
+  // floor's top, structures.md) stands over the pad.
   i64 house_x_mm = 0, house_z_mm = 0, pad_mm = 0;
   i64 floor_mm = 0;
-  // The door's threshold in the world, and where its path meets the tread's edge.
+  // The door's threshold in the world; the gate where its path crosses the plot's front, and the
+  // ground there; where the path meets the tread's edge, and the way's line beside it.
   i64 door_x_mm = 0, door_z_mm = 0;
+  i64 gate_x_mm = 0, gate_z_mm = 0, gate_top_mm = 0;
   i64 path_x_mm = 0, path_z_mm = 0, path_top_mm = 0;
+  i64 lane_x_mm = 0, lane_z_mm = 0;
   // The pad's corners in the world, in order round it.
   i64 pad_x_mm[4] = {0, 0, 0, 0};
   i64 pad_z_mm[4] = {0, 0, 0, 0};
@@ -166,9 +196,16 @@ struct Plot {
 
 struct VillagePlan {
   Vector<LaneLine> lanes;
-  Vector<Plot> plots;    // by lane, then along it, the left row before the right at one place
+  Vector<Plot> plots;    // in the order they were taken up
   Vector<House> houses;  // the built plots', in the plots' order
-  u32 built = 0, steep = 0, wet = 0, no_fit = 0, refused = 0, spare = 0;
+  u32 built = 0, steep = 0, wet = 0, no_fit = 0, refused = 0, spare = 0, outside = 0;
+  u32 cottages = 0;     // of the built
+  u32 back_lanes = 0;   // of `lanes`
+  bool church = false;  // a plot is reserved for it
+  // Where the ways meet (or the first way's middle): the green's middle and the well, whole
+  // millimetres, the ground's top there.
+  i64 focus_x_mm = 0, focus_z_mm = 0, focus_top_mm = 0;
+  bool well = false;
   // "hamlet" under six houses, "village" from six (the grounding's threshold).
   const char* size_class = "hamlet";
   // Why the first plot left empty by its house was: the filler's sentence for a refusal, the sizes
