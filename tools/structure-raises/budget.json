@@ -1,11 +1,11 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "budget",
-  "reason": "W6's cull read of the pair table put behind renderer.cull.pair_table (off by default): the tunable read in record_frame and the page's account of why and what turns it on",
+  "reason": "W6's cull read of the pair table behind renderer.cull.pair_table (off by default), and the dynamic-instances tests run as a weaker card: the tunable read in record_frame and the page's account",
   "date": "2026-11-16",
   "by": "Marc Micalizzi",
   "deltas": {
     "renderer.record_frame.lines": 1,
-    "page:docs/subsystems/renderer.md": 3847
+    "page:docs/subsystems/renderer.md": 4197
   }
 }

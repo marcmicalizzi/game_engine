@@ -17,6 +17,8 @@
 // with the loaded scene; the ids are compared once each instance slot is turned into its place in
 // the tail (`GpuScene::tail_indices`), which is the loaded scene's numbering. The layout's own
 // arithmetic is `tile_layout_tests.cpp`'s.
+#include "test_device.h"
+
 #include <core/math/math.h>
 #include <domain/anim/skeleton.h>
 #include <domain/geometry/cluster.h>
@@ -54,8 +56,13 @@ struct Gpu {
   bool ok = false;
   Gpu() {
     std::string error;
-    if (!device.create(gfx::DeviceOptions{}, &error)) {
+    // ENGINE_GFX_TEST_DEVICE runs the case as a weaker card (test_device.h, T153): a forced
+    // profile that yields no device fails the case rather than skipping it.
+    if (!device.create(renderer_test::device_options(), &error)) {
       why = "no Vulkan device: " + error;
+      if (!renderer_test::device_profile().empty()) {
+        FAIL_CHECK("ENGINE_GFX_TEST_DEVICE=" << renderer_test::device_profile() << ": " << why);
+      }
       return;
     }
     if (!device.features().buffer_int64_atomics) {
@@ -1789,7 +1796,15 @@ TEST_CASE("dynamic instances: a tail past a row of the folded cull draws the loa
     return;
   }
   const Vector<SceneInstance> head = prefix();
+  const bool traces =
+      gpu.device.features().cluster_acceleration_structure && gpu.device.features().ray_query;
   for (const RasterMode mode : {RasterMode::Hardware, RasterMode::RayTrace}) {
+    // Before the build: a rig asked for traced primaries on a card that cannot trace does not
+    // build at all (the TITAN Xp, the server leg of batch 66's gate).
+    if (mode == RasterMode::RayTrace && !traces) {
+      MESSAGE("ray-traced raster: skipped, the device traces no cluster acceleration structures");
+      continue;
+    }
     RenderSettings settings;
     settings.raster = mode;
     settings.shadows = ShadowMode::Off;
