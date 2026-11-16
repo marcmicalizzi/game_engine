@@ -457,8 +457,9 @@ TEST_CASE("gi cache key: a cell's measured spread over its count is the variance
         frame_sum += static_cast<f64>(draw());
       fold_frame(cell, c.n, static_cast<f32>(frame_sum / static_cast<f64>(c.n)));
       if (frame < 400) continue;
-      sum += cell.mean;
-      sum2 += static_cast<f64>(cell.mean) * cell.mean;
+      const f64 mean_now = static_cast<f64>(cell.mean);
+      sum += mean_now;
+      sum2 += mean_now * mean_now;
       predicted += static_cast<f64>(cell.spread) / static_cast<f64>(cell.count);
       // A sample's variance back from the spread: the exponential average's 2 T - n over T.
       const f64 t = static_cast<f64>(cell.count);
