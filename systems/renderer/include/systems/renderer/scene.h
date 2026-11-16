@@ -480,7 +480,9 @@ struct SceneDesc {
   // "Sized by the asset"): a mesh whose built textures hold more than that at its largest instance
   // is given textures whose top levels are left out, and draws the same pixels wherever a sampler
   // reads the levels kept. Negative: `renderer.textures.texel_density` (0 by default: no cap, and
-  // every texture keeps the key it has). A mesh's own `SceneMeshInfo::texel_density` wins.
+  // every texture keeps the key it has). A mesh's own `SceneMeshInfo::texel_density` wins. This
+  // density caps only a mesh whose every placement the load knows: not one `streamed`, `props` or
+  // `authored.keep` names, nor a procedural one, nor anything when `instances` is empty.
   f32 texel_density = -1.0f;
   // ---- what a scene file adds (schema `engine.scene.Scene`) ------------------------------------
   // Per mesh: a name, the hash its bytes must have, and a fit. Empty, or parallel to `meshes`.

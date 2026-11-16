@@ -48,8 +48,10 @@ struct Mesh @version(2) {
   /// that hold more than this at its largest instance leave their top levels out, and draw the
   /// same pixels wherever a sampler reads the levels kept. 0: the host's
   /// (`renderer.textures.texel_density`, itself 0 by default: no cap). Negative: none of this
-  /// mesh's textures is capped. A prop a module places and a placement generator's mesh have no
-  /// instance the load can measure, and are not capped.
+  /// mesh's textures is capped. The host's density caps only a mesh whose every placement the
+  /// load knows: not a prop, a streamed placement entry's mesh, an actor's or a procedural one,
+  /// and nothing in a scene with no instances. This one caps the mesh even then, read at its
+  /// largest instance's scale and never under 1.
   texel_density: f32 = 0 @since(2)
 }
 

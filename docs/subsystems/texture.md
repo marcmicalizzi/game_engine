@@ -416,7 +416,8 @@ One level out is three quarters of the texture's memory; two, fifteen sixteenths
 
 **The cap** (`TextureBuildOptions::needed_side`). A power of two: the texels along the image's
 shorter side that the stated density needs, `D · scale / uv_per_m` rounded up (`needed_side()`;
-`scale` is the mesh's largest instance's largest axis scale times its fit), and the build keeps the
+`scale` is the mesh's largest load-time instance's largest axis scale times its fit; which meshes
+are capped at all is under "Who states the density"), and the build keeps the
 smallest level of the source's chain whose shorter side is at least that (`texture_levels_dropped`).
 **The levels kept are the uncapped texture's own levels, byte for byte**: the chain is filtered from
 the source exactly as it always is, a mask's levels are held to the source's level-0 coverage as
@@ -438,8 +439,30 @@ distance a capped texture is blurrier than the source, which only the author can
 override the asset's. The load measures every mesh the scene's own instances place, takes its
 largest instance's scale, and gives the texture pass a need per image (`SourceMesh::texture_caps`);
 **an image several meshes share takes the largest need, and a mesh that states none needs it
-whole**. A prop a game module places and a placement generator's mesh have no instance the load can
-measure, and are not capped. The load's report counts `capped` references.
+whole**. The load's report counts `capped` references.
+
+**The scene's density caps only a mesh whose every placement the load knows** (`cap_scene_textures`,
+scene.cpp; mended 2026-11-16 after the review of G14, which found a mesh the streamed tail placed at
+twice its static instance's scale losing a level it read). A cap sized from the load-time instances
+is only safe when nothing after the load places the mesh larger, so a mesh is **open**, and the
+scene's density does not cap it, when the load is told that something else may place it:
+
+- a streamed placement entry's resident mesh (`SceneDesc::streamed`): the world's tiles place it
+  through the tail at whatever scale the generator picks;
+- a prop (`SceneDesc::props`): a game module's `prop_place` takes a scale;
+- an actor's mesh (`AuthoredStreaming::keep`, the scene's declared actors): `actor_scale` may grow
+  it up to four times;
+- a procedural mesh (an empty path), the terrain a world's ground tiles draw.
+
+A placement entry a whole read expands is not among them: its instances are the scene's, scales
+and all, before the cap runs. **A scene with no instances of its own caps nothing**: the load's
+default identity instance of every mesh (and a grid's copies) is the load's invention, not a
+placement anyone stated. **A mesh's own `Mesh.texel_density` is the author's word for that mesh**
+and caps it even when it is open, read at its largest load-time instance's scale and, for an open
+mesh, never under 1: the density is stated for the mesh at its fitted size, and an author who
+places it larger states it for that. `texture_tests.cpp` holds each case ("the scene's density caps
+only a mesh whose every placement the load knows") and draws the tail's placement at twice the
+scale against the uncapped scene, byte for byte ("a mesh the tail places at twice the scale").
 
 **What an asset costs** (`engine-content info`, its `cost` object): `geometry_bytes` (the
 container less the images it carries), `texture_bytes` (every sampled image's whole built chain in

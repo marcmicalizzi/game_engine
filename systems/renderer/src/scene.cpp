@@ -1489,8 +1489,20 @@ tunables::Float texture_texel_density{
 
 // Each mesh's caps (`SourceMesh::texture_caps`) from the density the scene or the mesh states,
 // the mesh's own measure (`texture::measure_cluster_density` over its level 0) and its largest
-// instance's largest axis scale times its fit. A mesh no instance of the scene places — a prop a
-// module places, a placement generator's — has no scale this can know, and is capped by nothing.
+// instance's largest axis scale times its fit (texture.md, "Who states the density").
+//
+// **The scene's density caps only a mesh whose every placement the load knows**: one the scene's
+// own instances place (its placement entries' expansions among them) and nothing after the load
+// can place too. What the load is told can: a streamed placement entry's resident meshes
+// (`SceneDesc::streamed`, placed by the world's tiles through the tail at whatever scale the
+// generator picks), a prop (`SceneDesc::props`, a game module's `prop_place` takes a scale), an
+// actor (`AuthoredStreaming::keep`, which `actor_scale` may grow up to four times), and a
+// procedural mesh (an empty path: the terrain a world's ground tiles draw). Such a mesh is
+// **open**: the scene's density does not cap it, since a placement at twice the scale would need a
+// level the cap left out (review of G14, 2026-11-16). A mesh's own `Mesh.texel_density` is the
+// author's word for that mesh and still caps it, read at its largest load-time instance's scale —
+// for an open mesh never under 1, the mesh at its fitted size. A scene with no instances of its own
+// (the load's default identity instances, or a grid) knows no placement at all and caps nothing.
 void cap_scene_textures(const SceneDesc& desc, std::span<const geometry::ClusterLodMesh> dags,
                         Vector<SourceMesh>& sources) {
   const f64 scene_density = desc.texel_density >= 0.0f ? static_cast<f64>(desc.texel_density)
@@ -1499,8 +1511,8 @@ void cap_scene_textures(const SceneDesc& desc, std::span<const geometry::Cluster
   bool any = scene_density > 0.0;
   for (u32 m = 0; described && m < desc.mesh_info.size(); ++m)
     any = any || desc.mesh_info[m].texel_density > 0.0f;
-  if (!any) return;
-  Vector<f64> scale(sources.size(), desc.instances.empty() ? 1.0 : 0.0);
+  if (!any || desc.instances.empty()) return;
+  Vector<f64> scale(sources.size(), 0.0);
   for (const SceneInstance& instance : desc.instances) {
     if (instance.mesh >= scale.size()) continue;
     const Vec3 s = instance.transform.scale;
@@ -1509,15 +1521,31 @@ void cap_scene_textures(const SceneDesc& desc, std::span<const geometry::Cluster
                  std::max(std::fabs(static_cast<f64>(s.y)), std::fabs(static_cast<f64>(s.z))));
     scale[instance.mesh] = std::max(scale[instance.mesh], largest);
   }
+  Vector<u8> open(sources.size(), u8{0});
+  const auto open_mesh = [&](u32 m) {
+    if (m < open.size()) open[m] = 1;
+  };
+  for (const StreamedPlacements& entry : desc.streamed)
+    for (const u32 m : entry.meshes)
+      open_mesh(m);
+  for (const SceneProp& prop : desc.props)
+    open_mesh(prop.mesh);
+  for (const u32 i : desc.authored.keep)
+    if (i < desc.instances.size()) open_mesh(desc.instances[i].mesh);
+  for (u32 m = 0; m < desc.meshes.size(); ++m)
+    if (desc.meshes[m].empty()) open_mesh(m);
   for (u32 m = 0; m < sources.size() && m < dags.size(); ++m) {
     SourceMesh& mesh = sources[m];
-    f64 density = scene_density;
-    if (described && desc.mesh_info[m].texel_density != 0.0f)
+    f64 density = open[m] != 0 ? 0.0 : scene_density;
+    f64 at_scale = scale[m];
+    if (described && desc.mesh_info[m].texel_density != 0.0f) {
       density = desc.mesh_info[m].texel_density > 0.0f
                     ? static_cast<f64>(desc.mesh_info[m].texel_density)
                     : 0.0;
+      if (open[m] != 0) at_scale = std::max(at_scale, 1.0);
+    }
     const geometry::ClusterLodMesh& dag = dags[m];
-    if (!(density > 0.0) || !(scale[m] > 0.0) || mesh.textures.empty() ||
+    if (!(density > 0.0) || !(at_scale > 0.0) || mesh.textures.empty() ||
         mesh.part_of_cluster.size() != dag.mesh.clusters.size()) {
       continue;
     }
@@ -1556,7 +1584,7 @@ void cap_scene_textures(const SceneDesc& desc, std::span<const geometry::Cluster
                                      static_cast<u32>(mesh.textures.size()), measured);
     mesh.texture_caps.assign(static_cast<u32>(mesh.textures.size()), 0u);
     for (u32 i = 0; i < measured.size(); ++i)
-      mesh.texture_caps[i] = texture::needed_side(measured[i].uv_per_m, scale[m] * fit, density);
+      mesh.texture_caps[i] = texture::needed_side(measured[i].uv_per_m, at_scale * fit, density);
   }
 }
 

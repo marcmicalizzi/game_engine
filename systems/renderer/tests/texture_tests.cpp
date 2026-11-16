@@ -164,6 +164,11 @@ struct Harness {
   GpuScene scene;
   SceneRenderer renderer;
   std::string skip;
+  // The scene's own instances (empty: the load's one identity instance), its props, and whether
+  // instances come and go (`SceneData::dynamic`, for a tail between frames).
+  Vector<SceneInstance> instances;
+  Vector<SceneProp> props;
+  bool dynamic = false;
 
   // `cache` true reads and fills the derived-data root in the test's scratch directory — which
   // builds the quad's texture there as `engine-content build --cache` would — and false draws the
@@ -181,7 +186,14 @@ struct Harness {
     desc.cache = cache;  // the records name the texture in this scratch root, and only there
     desc.ddc = ddc;
     desc.texel_density = texel_density;
+    desc.instances = instances;
+    desc.props = props;
     REQUIRE_MESSAGE(load_scene(desc, data, error), "scene: " << error);
+    if (dynamic) {
+      data.center = WorldPos::origin();
+      data.radius = 6.0f;
+      data.dynamic = true;
+    }
     RenderSettings settings;
     settings.shadows = ShadowMode::Off;
     settings.view_mode = k_albedo_view;
@@ -385,7 +397,10 @@ TEST_CASE("renderer: a texture capped by the scene's density draws the same pixe
   }
   // No density, the key it always had.
   CHECK(std::filesystem::exists(texture::texture_cache_path(ddc, expected.build_key)));
+  // One instance of the scene's own, at scale 1: a scene with none knows no placement and caps
+  // nothing (the review of G14; "a scene with no instances caps nothing", below).
   Harness h;
+  h.instances.push_back(SceneInstance{});
   REQUIRE(h.build(mesh, ddc, true, 32.0f));
   CHECK(h.data.load.capped == 1);
   CHECK(h.scene.textures_built() == 1);
@@ -411,6 +426,112 @@ TEST_CASE("renderer: a texture capped by the scene's density draws the same pixe
   u32 differing = 0;
   for (u32 i = 0; i < capped.color.size(); ++i)
     differing += capped.color[i] != whole.color[i] ? 1u : 0u;
+  CHECK(differing == 0);
+}
+
+// **Which meshes a scene's density caps** (the review of G14; texture.md, "Who states the
+// density"): only one whose every placement the load knows. The quad again (128 texels a metre,
+// so 32 caps it), loaded with no device — the cap is the load's — and counted by `capped`:
+//
+//   - a scene with no instances of its own knows no placement and caps nothing;
+//   - one instance at scale 1, and nothing else may place the mesh: capped (the case above draws it);
+//   - the same, with the mesh also a prop, a streamed entry's resident mesh, or an actor's: not
+//     capped by the scene's density, since a module, a tile or `actor_scale` may place it larger;
+//   - a prop that states its own `Mesh.texel_density`: capped by it, at its known scale.
+TEST_CASE("renderer: the scene's density caps only a mesh whose every placement the load knows") {
+  const test::TempDir tmp("renderer_texture_cap_open");
+  const std::filesystem::path dir = tmp.native();
+  REQUIRE(write_quad(dir));
+  Vector<u8> png;
+  REQUIRE(write_image(dir, k_size, checker_image(k_size), png));
+  const std::string mesh = (dir / "quad.gltf").string();
+  const std::string ddc = (dir / "ddc").string();
+  enum class Placer { none, prop, streamed, actor };
+  const auto capped = [&](bool instanced, Placer placer, f32 own_density) {
+    SceneDesc desc;
+    desc.meshes.push_back(mesh);
+    desc.ddc = ddc;
+    desc.texel_density = 32.0f;
+    if (instanced) desc.instances.push_back(SceneInstance{});
+    if (placer == Placer::prop) desc.props.push_back(SceneProp{"quad", 0});
+    if (placer == Placer::streamed) {
+      StreamedPlacements entry;
+      entry.generator = "test";
+      entry.meshes.push_back(0);
+      desc.streamed.push_back(std::move(entry));
+    }
+    if (placer == Placer::actor) desc.authored.keep.push_back(0);
+    if (own_density != 0.0f) {
+      SceneMeshInfo info;
+      info.texel_density = own_density;
+      desc.mesh_info.push_back(info);
+    }
+    SceneData data;
+    std::string error;
+    REQUIRE_MESSAGE(load_scene(desc, data, error), "scene: " << error);
+    return data.load.capped;
+  };
+  CHECK(capped(false, Placer::none, 0.0f) == 0);
+  CHECK(capped(true, Placer::none, 0.0f) == 1);
+  CHECK(capped(true, Placer::prop, 0.0f) == 0);
+  CHECK(capped(true, Placer::streamed, 0.0f) == 0);
+  CHECK(capped(true, Placer::actor, 0.0f) == 0);
+  CHECK(capped(true, Placer::prop, 32.0f) == 1);
+  CHECK(capped(false, Placer::prop, 32.0f) == 0);
+}
+
+// **The tail placing a mesh at twice the scale draws the uncapped pixels** (the review of G14). The
+// quad has one instance of the scene's own, at scale 1 and out of view, and is a prop too; the
+// tail then places it at scale 2 in front of the camera, 15 m away. Capped from its one instance
+// (64 texels a side, two levels left out) the 4 m quad would read a level the cap left out; the
+// load knows the prop may be placed by a module, so the scene's density does not cap it, and the
+// picture is the picture of the same scene loaded with no density at all, byte for byte.
+TEST_CASE("renderer: a mesh the tail places at twice the scale draws the uncapped pixels") {
+  const test::TempDir tmp("renderer_texture_cap_tail");
+  const std::filesystem::path dir = tmp.native();
+  REQUIRE(write_quad(dir));
+  Vector<u8> png;
+  REQUIRE(write_image(dir, k_size, checker_image(k_size), png));
+  const std::string mesh = (dir / "quad.gltf").string();
+  const std::string ddc = (dir / "ddc").string();
+  constexpr f32 k_far = 15.0f;
+  SceneInstance aside;  // the scene's own instance, out of the frame
+  aside.transform.position = Vec3{200.0f, 0.0f, 0.0f};
+  SceneInstance doubled;  // the tail's
+  doubled.transform.scale = Vec3{2.0f, 2.0f, 2.0f};
+  const auto tail_shot = [&](Harness& h) {
+    std::string error;
+    REQUIRE_MESSAGE(
+        h.renderer.set_dynamic_instances(std::span<const SceneInstance>(&doubled, 1), &error),
+        error);
+    (void)h.shot(k_far);  // a frame of culling after the change may differ; a pixel may not
+    return h.shot(k_far);
+  };
+  CapturedFrame whole;
+  {
+    Harness h;
+    h.instances.push_back(aside);
+    h.props.push_back(SceneProp{"quad", 0});
+    h.dynamic = true;
+    if (!h.build(mesh, ddc)) {
+      MESSAGE(h.skip);
+      return;
+    }
+    CHECK(h.data.load.capped == 0);
+    whole = tail_shot(h);
+  }
+  CHECK(whole.covered > 0);
+  Harness h;
+  h.instances.push_back(aside);
+  h.props.push_back(SceneProp{"quad", 0});
+  h.dynamic = true;
+  REQUIRE(h.build(mesh, ddc, true, 32.0f));
+  CHECK(h.data.load.capped == 0);
+  const CapturedFrame placed = tail_shot(h);
+  REQUIRE(placed.color.size() == whole.color.size());
+  u32 differing = 0;
+  for (u32 i = 0; i < placed.color.size(); ++i)
+    differing += placed.color[i] != whole.color[i] ? 1u : 0u;
   CHECK(differing == 0);
 }
 

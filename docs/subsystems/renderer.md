@@ -798,7 +798,11 @@ that cannot be built is a warning (`texture not built`) and its mesh draws throu
 density stated — a mesh's `Mesh.texel_density`, else `renderer.textures.texel_density`, 0 by
 default — the load measures each mesh the scene's instances place from its own level 0
 (`cap_scene_textures`, scene.cpp), takes its largest instance's scale and its fit, and asks each
-image for the level 0 that density can use (`SourceMesh::texture_caps`); the texture pass gives
+image for the level 0 that density can use (`SourceMesh::texture_caps`). The scene's density caps
+only a mesh whose every placement the load knows: not a streamed entry's, a prop's, an actor's or a
+procedural mesh, which the tail, a module or `actor_scale` may place larger, and nothing in a scene
+with no instances of its own ([texture](texture.md#sized-by-the-asset), "Who states the density");
+the texture pass gives
 every reference to one texture the largest need of the meshes that share it and builds it with
 its top levels left out, under a key of its own. The levels kept are the uncapped texture's, so a
 frame that reads them draws the same pixels; a scene that states nothing keeps every key it had.
