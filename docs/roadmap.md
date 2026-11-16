@@ -753,8 +753,8 @@ Build, CI, test and profiling infrastructure, and the machinery behind the stand
 | T25 | Container `-Rebuild` keeps the third-party objects (the compiler cache half became T68) | open | T26 | S | routine | [local Linux](ci/local-linux.md#follow-ups) |
 | T26 | Local Linux container gate | done (df922466) | T7 | M | routine | [local Linux](ci/local-linux.md) |
 | T27 | Remote build on the Titan Xp | done (f25ffe8e) | | M | routine | [remote Linux](ci/remote-linux.md#the-script) |
-| T28 | `remote-build.ps1 -Prune` for old trees | open | T27 | S | routine | [remote Linux](ci/remote-linux.md#the-script) |
-| T29 | Clear the Titan Xp's old remote trees (309 GB) | open | T28 | S | routine | [remote Linux](ci/remote-linux.md) |
+| T28 | `remote-build.ps1 -Prune` for old trees | done (06f2326c, 2026-10-20: `-Prune` and `-Prune -Stale [-KeepUnknown] [-WhatIf]`, the rule in `tools/lib/RemoteTrees.psm1`, tested in `tools.linux_build`; found closed by batch 67's sweep) | T27 | S | routine | [remote Linux](ci/remote-linux.md#the-script) |
+| T29 | Clear the Titan Xp's old remote trees (309 GB) | blocked (the owner's decision: the first `-Prune -Stale -WhatIf` sweep, 2026-10-20, listed 88 stale trees and 371.83 GB and removed nothing; the removal is `tools/remote-build.ps1 -Host titanxp -Prune -Stale`, after a fresh `-WhatIf`) | T28 | S | routine | [remote Linux](ci/remote-linux.md) |
 | T30 | Affected-tests runner | done (fe941437) | | M | design | [what to run](ci/what-to-run.md#what-affected-means) |
 | T31 | Test-link edges in modules.json | open | T30 | M | design | [what to run](ci/what-to-run.md#what-affected-means) |
 | T32 | Test bundle for machines with no toolchain | done (280bc5c3) | | M | routine | [runners](ci/self-hosted-runners.md#trying-the-engine-on-a-machine-with-no-toolchain) |
