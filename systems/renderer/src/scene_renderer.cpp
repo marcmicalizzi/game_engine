@@ -1799,7 +1799,8 @@ bool SceneRenderer::set_dynamic_instances(std::span<const SceneInstance> tail,
     }
     const bool must_wait = relayout_retired_.must_wait;
     relayout_retired_.clear();
-    if (!swapped && !scene_->relayout_pending()) return false;  // not resumable: the error stands
+    // Every swapped failure stays pending since T163; one that did not would be returned.
+    if (!swapped && !scene_->relayout_pending()) return false;
     if (!swapped) {
       const std::string why = error != nullptr ? *error : std::string();
       ENGINE_LOG_WARN(log_renderer, "a swapped relayout failed; waiting to lay it out whole",

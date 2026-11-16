@@ -52,8 +52,8 @@ bool GpuScene::relayout(std::string* error, RelayoutRetired* retired) {
   // make is empty, so the waited call makes it (its size test fails). A failure in the chain marks
   // it to be laid out whole: the swapped lay-out had already moved the instance slots and the union
   // to the new layout's, so `rt_layout_outgrown` alone would not see a chain half replaced. The
-  // trees' tables are the exception: their growth has already moved its capacities when a make
-  // fails, so it cannot be resumed, and a failure there is returned (the hosts stop on it).
+  // trees' tables' growth, swapped, puts everything back when a make fails (`grow_flora_tail`,
+  // T163), so it stays pending and is retried with the rest.
   const auto failed = [&](bool in_chain) {
     if (retired != nullptr) {
       relayout_pending_ = true;
@@ -62,7 +62,7 @@ bool GpuScene::relayout(std::string* error, RelayoutRetired* retired) {
     return false;
   };
   Vector<gfx::BufferResource>* old = retired != nullptr ? &retired->buffers : nullptr;
-  if (flora_grow_ && !grow_flora_tail(error, old)) return false;
+  if (flora_grow_ && !grow_flora_tail(error, old)) return failed(false);
   // The pool's per-entry slots are laid out by the stride, and every mesh record names them.
   // The allocator's tile scratch follows the same stride (R104). Both are written by every frame
   // before it reads them, so the new ones start empty, as they always did.
@@ -112,28 +112,68 @@ bool GpuScene::relayout(std::string* error, RelayoutRetired* retired) {
 // records need, every record the CPU holds copied in. With `retired` (T152) the old ones go there
 // and the copies are made again with the table whatever grew: the frames in flight read the ones
 // they have, and writing a new record into those would write under them.
+// **Swapped, it cannot fail part way** (T163): the old buffers are set aside rather than retired
+// until every new one is made, so a make that fails destroys what was made, puts the old buffers
+// and the capacities back, and leaves the growth pending — the scene exactly as before the call,
+// for the waited call `relayout` is retried with. Until T163 the capacities had moved and the old
+// buffers were retired by then, so a failure could not be resumed and stopped the host. Waited, the
+// old buffers go first, so the device never holds both sets (it may be waiting for want of room),
+// and a failure is returned as the waited chain's is.
 bool GpuScene::grow_flora_tail(std::string* error, Vector<gfx::BufferResource>* retired) {
-  flora_grow_ = false;
+  const u32 deform_capacity = deform_capacity_;
+  const u32 part_capacity = flora_part_capacity_;
+  const u64 pose_bytes = flora_stats_.pose_table_bytes;
   bool grew = false;
   if (deform_descs_.size() > deform_capacity_) {
     deform_capacity_ = deform_descs_.size() + deform_descs_.size() / 2;
     grew = true;
   }
-  if (flora_parts_ > flora_part_capacity_) {
-    flora_part_capacity_ = flora_parts_ + flora_parts_ / 2;
-    retire(flora_poses_, retired);
-    if (!make_flora_poses(error)) return false;
+  const bool poses = flora_parts_ > flora_part_capacity_;
+  if (poses) flora_part_capacity_ = flora_parts_ + flora_parts_ / 2;
+  // The table is written whole again whether or not it grew: a record made past it was not.
+  const bool frames = deform_frames.buffer.valid() && (grew || retired != nullptr);
+  gfx::BufferResource old_poses;
+  gfx::BufferResource old_table;
+  gfx::BufferResource old_frames;
+  const auto set_aside = [&](gfx::BufferResource& buffer, gfx::BufferResource& old) {
+    if (retired != nullptr) {
+      old = buffer;
+      buffer = gfx::BufferResource{};
+    } else {
+      retire(buffer, nullptr);
+    }
+  };
+  if (poses) set_aside(flora_poses_, old_poses);
+  set_aside(deform_table, old_table);
+  if (frames) set_aside(deform_frames, old_frames);
+  bool ok = !poses || make_flora_poses(error);
+  if (ok && take_fault(fail_flora_)) {
+    if (error != nullptr) *error = "the trees' tables' growth failed (a test's fault)";
+    ok = false;
   }
+  ok = ok && make_deform_tables(frames, error);
+  if (!ok) {
+    if (retired == nullptr) return false;
+    if (poses) gfx::destroy_buffer(*device_, flora_poses_);
+    gfx::destroy_buffer(*device_, deform_table);
+    if (frames) gfx::destroy_buffer(*device_, deform_frames);
+    if (poses) flora_poses_ = old_poses;
+    deform_table = old_table;
+    if (frames) deform_frames = old_frames;
+    deform_capacity_ = deform_capacity;
+    flora_part_capacity_ = part_capacity;
+    flora_stats_.pose_table_bytes = pose_bytes;
+    return false;  // `flora_grow_` stands
+  }
+  flora_grow_ = false;
+  retire(old_poses, retired);
+  retire(old_table, retired);
+  retire(old_frames, retired);
   flora_state_.reserve(flora_part_capacity_);
   deform_descs_.reserve(deform_capacity_);
   deform_instance_.reserve(deform_capacity_);
   deform_mesh_clusters_.reserve(deform_capacity_);
   tail_trees_.reserve(deform_capacity_ - load_deforms_);
-  // The table is written whole again whether or not it grew: a record made past it was not.
-  const bool frames = deform_frames.buffer.valid() && (grew || retired != nullptr);
-  retire(deform_table, retired);
-  if (frames) retire(deform_frames, retired);
-  if (!make_deform_tables(frames, error)) return false;
   flora_counts();
   return true;
 }

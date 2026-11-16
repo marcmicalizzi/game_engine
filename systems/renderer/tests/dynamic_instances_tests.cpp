@@ -1601,6 +1601,85 @@ TEST_CASE("dynamic instances: a relayout with frames in flight waits for nothing
   }
 }
 
+// T163 (renderer.md, "A relayout is swapped in"): the case above with the chain's step made to fail
+// in the swapped relayout (`GpuScene::fail_next`), after its per-instance half was already
+// replaced. What it replaced is released as on success, the relayout stays pending with the chain
+// marked to be laid out whole, and the renderer waits once, counted in `relayout_waits`, and lays
+// it out whole: the frames after it draw the scene loaded whole. Until T163 nothing could make the
+// step fail, so this path had no case.
+TEST_CASE("dynamic instances: a relayout whose chain fails part way is retried whole, the same") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE(gpu.why);
+    return;
+  }
+  if (!gpu.device.features().cluster_acceleration_structure || !gpu.device.features().ray_query) {
+    MESSAGE("skipped: " << gpu.device.adapter().name << " builds no cluster structures");
+    return;
+  }
+  Bar bar;
+  build_bar(bar);
+  Vector<anim::JointMatrix> matrices;
+  bend(bar, 40.0f, matrices);
+  const InstanceJoints runs[1] = {{0, 2}};
+  const auto posed = [&]() {
+    FrameDesc frame = frame_at(k_eye);
+    frame.joints = std::span<const anim::JointMatrix>(matrices.data(), matrices.size());
+    frame.instance_joints = std::span<const InstanceJoints>(runs, 1);
+    return frame;
+  };
+  const Vector<SceneInstance> head = renumbered(prefix());
+  const Vector<SceneInstance> a = renumbered(tile_a());
+  const Vector<SceneInstance> whole = join({&head, &a});
+  RenderSettings settings;
+  settings.shadows = ShadowMode::RayTraced;
+  settings.occlusion = false;
+  SkinnedRig dynamic;
+  REQUIRE_MESSAGE(
+      dynamic.build(gpu.device, bar, std::span<const SceneInstance>(head.data(), head.size()), true,
+                    settings),
+      dynamic.error);
+  SkinnedRig loaded_whole;
+  REQUIRE_MESSAGE(loaded_whole.build(gpu.device, bar,
+                                     std::span<const SceneInstance>(whole.data(), whole.size()),
+                                     false, settings),
+                  loaded_whole.error);
+  std::string error;
+  const auto in_flight = [&]() {
+    for (u32 f = 0; f < 2; ++f) {
+      dynamic.renderer.begin_frame();
+      REQUIRE_MESSAGE(dynamic.renderer.submit_frame(posed(), &error) != 0, error);
+    }
+  };
+  in_flight();
+  const u64 relayouts = dynamic.renderer.stats().tiles.relayouts;
+  const u32 stride = dynamic.scene.pair_stride();
+  dynamic.scene.fail_next(GpuScene::Fault::rt_step);
+  REQUIRE_MESSAGE(dynamic.renderer.set_dynamic_instances(
+                      std::span<const SceneInstance>(a.data(), a.size()), &error),
+                  error);
+  const TileStats& tiles = dynamic.renderer.stats().tiles;
+  MESSAGE("stride " << stride << " to " << dynamic.scene.pair_stride() << ": "
+                    << tiles.relayouts - relayouts << " relayout, " << tiles.relayout_waits
+                    << " waited after the step failed");
+  CHECK(dynamic.scene.pair_stride() > stride);
+  CHECK(tiles.relayouts == relayouts + 1);
+  CHECK(tiles.relayout_waits == 1);
+  CHECK_FALSE(dynamic.scene.relayout_pending());
+  in_flight();
+  in_flight();
+  CapturedFrame shot;
+  CapturedFrame expected;
+  REQUIRE_MESSAGE(dynamic.renderer.capture(posed(), channels(), shot, &error), error);
+  REQUIRE_MESSAGE(loaded_whole.renderer.capture(posed(), channels(), expected, &error), error);
+  const Difference d = compare(shot, expected);
+  MESSAGE("after the retried relayout: " << d.ids << " id, " << d.depth << " depth and " << d.color
+                                         << " colour differences against the scene loaded whole");
+  CHECK(d.ids == 0);
+  CHECK(d.depth == 0);
+  CHECK(d.color == 0);
+}
+
 // ---- dispatches folded into rows (T160; gfx.md, "A dispatch that grows with the scene") --------
 //
 // Vulkan guarantees 65,535 workgroups a dimension. The pair expansion's three passes and the cull
