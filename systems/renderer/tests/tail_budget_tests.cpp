@@ -210,6 +210,7 @@ TEST_CASE("tail budget: the trees' tables grow beside the old ones and wait for 
   const Tile first[] = {{1, 0.0, rig.reserve / 2, 0}};
   REQUIRE_MESSAGE(commit(scene, first, change, error), error);
   const u64 table = scene.deform_table.size;
+  const u64 table_address = scene.deform_table.address;
   const u64 poses = scene.flora_stats().pose_table_bytes;
   // Past the first room: the trees stay and `reserve` more arrive.
   const Tile grown[] = {{1, 0.0, rig.reserve / 2, 0}, {2, 1000.0, rig.reserve, 0}};
@@ -238,8 +239,10 @@ TEST_CASE("tail budget: the trees' tables grow beside the old ones and wait for 
   CHECK_FALSE(retired.tlas.handle.valid());
   CHECK(retired.chain.count == 0);
   CHECK(scene.flora_stats().tail_records == rig.reserve / 2 + rig.reserve);
-  CHECK(scene.deform_table.size > table);
-  CHECK(scene.flora_stats().pose_table_bytes >= poses);  // grown only when the parts passed it
+  // The first room is the smaller of the records' and the parts' reserves (`Rig::reserve`), so the
+  // one that bound it grew; the deform table is made again whichever did.
+  CHECK((scene.deform_table.size > table || scene.flora_stats().pose_table_bytes > poses));
+  CHECK(scene.deform_table.address != table_address);
   // The old table at least, and every buffer handed back is one the scene no longer names.
   CHECK(retired.buffers.size() >= 1);
   for (const gfx::BufferResource& old : retired.buffers) {
