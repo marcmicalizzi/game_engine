@@ -794,7 +794,9 @@ thalweg on both sides, and the section wet nothing at any level, so the line was
 station has no water in its section" — the sentence that stopped the forest's whole solve on
 `region link 294` (dry at the year's mean by a tenth of a millimetre of sheet) at every stage over
 1, and the only way a section the profile reads can hold no water at a level over its thalweg
-(the case: `profile: water on ground with no bank across it is a sheet, never refused`). The walk now goes on
+(the case: `profile: water on ground with no bank across it is a sheet, never refused`). On the
+forest's v47 at stage 1.5 the first leg's build left 294 dry with that sentence and this one
+solves it whole (598 stations, 4.5 to 6.4 l/s, 12 of them a film over a bank). The walk now goes on
 over ground level with the thalweg, so such a section is the flat, and its water a sheet over it
 (written over its bank where the level passes the flat's edge, as any). A line whose profile is
 still refused is left dry and named on the cook's stderr and in `dry` ("unsolved: ..."), and every
@@ -995,6 +997,51 @@ every free fall on a steep line adds two pieces to theirs whether or not anythin
 the picture. The engine prints it beside its own (`thin_share`, `alternations_per_100m`, by
 horizontal length where theirs is by the points' 3D distance, 7 % longer on a 37 % line); `runs`,
 the water a walker sees as one, is the count a picture should be held to.
+
+**Measured on `content/test-scenes/torrent`** (2026-11-16, `msvc-debug` `engine-content flow
+solve`, one thread, the plan of 2026-11-15, CPU only, beside other agents' builds), the lines
+steeper than 30 % (7 of 8 wet lines, 0.23 km; 8 lines at stage 3):
+
+| Stage | Build | Film | Undrawn | Pieces / 100 m | Runs / 100 m | Falls (drawn) | Gaps | Over a bank | Pools |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | before W130.2 | 1.93 % | 2.36 % | 4.77 | 3.47 | 4 (4) | 1 | 15 | — |
+| 1 | W130.2 | 0 | 0 | 4.77 | 3.04 | 4 (4) | 0 | 5 | 3 |
+| 2 | before | 1.93 % | 2.36 % | 4.77 | 3.47 | 4 (4) | 1 | 20 | — |
+| 2 | W130.2 | 0 | 0 | 4.77 | 3.04 | 4 (4) | 0 | 10 | 3 |
+| 3 | before | 1.92 % | 2.35 % | 5.20 | 3.90 | 4 (4) | 1 | 22 | — |
+| 3 | W130.2 | 0 | 0 | 5.20 | 3.47 | 4 (4) | 0 | 12 | 3 |
+
+No station of the torrent is 1.1 cm deep or less at any stage (its feet land in plunge pools), so
+the forest's count there is the runs.
+
+**Measured on the world the owner walked** (the forest's `world\v47\base.json`, plan
+780a7a78621fb16f, its tile sets and route plan copied to a root of the row's own; the same build
+and machine as above, 131 to 154 s a solve, the largest 2.44 GB of commit). Over 30 %, by this
+count and by the forest's own script run on the same output (its `streams47b.py`, whose numbers on
+the stage-1 solve before W130.2 are the session's own, 7.4 % and 6.04, to the digit):
+
+| Stage | Build | Lines, km | Film | Undrawn | Runs / 100 m | Falls (drawn) | Gaps | Theirs: film, pieces / 100 m |
+|---|---|---|---|---|---|---|---|---|
+| 1 | before W130.2 | 93, 6.24 | 4.66 % | 5.77 % | 3.77 | 544 (522) | 173 | 7.4 %, 6.04 |
+| 1 | W130.2 | 93, 6.24 | 2.19 % | 2.81 % | 3.32 | 542 (527) | 136 | 4.9 %, 5.16 |
+| 1.5 | W130.2 | 206, 14.30 | 1.27 % | 1.54 % | 2.51 | 1,509 (1,477) | 208 | 3.3 %, 3.97 |
+| 2 | W130.2 | 294, 26.38 | 0.70 % | 0.89 % | 1.77 | 2,839 (2,799) | 242 | 1.9 %, 2.59 |
+| 3 | W130.2 | 394, 63.39 | 0.40 % | 0.43 % | 0.96 | 11,242 (11,150) | 343 | 1.2 %, 1.34 |
+
+Their pieces are this count's `alternations_per_100m` over the points' 3D length, which on these
+lines is 18 % over the horizontal (6.11 and 5.16 at stage 1). The whole world at stage 1: stations
+over a bank 3,174 before and 1,623 after, 407 stations written as pools and 695 in pits whose level
+meets no ground within 25 m; no head rises at any stage. **More water joins the lines, but mostly by
+adding lines**: the wet network grows from 26.6 km to 40.2, 55.9 and 98.6 km, and the new lines are
+steep and short. **The owner's line, `region link 515`** (417 m, 153.6 m of fall, 37 %), by the
+forest's `line47.py`: before W130.2, 34 runs of water over 299 m and 38.7 m of film over a bank in
+11 runs; after, 37 runs over 321 m and 18.4 m of film in 9; at stages 2 and 3 (49 to 51 and 77 to
+81 l/s) 40 and 45 runs and the same 18 m of film. Its gaps are its 30 lip-to-foot pairs (each drawn
+as a nappe) and nine short stretches of film over a bank that the pool did not take (a pit whose
+level meets no ground within 25 m, or a level over a bank where no pit is) — no stage mends those,
+and the forest should not expect one to: `flow.stage` 2 doubles 515's depth
+(6.5 to 9.4 cm) and leaves its pieces as they are. The stage changes little: the main stem is its spring's
+21 l/s, and the runoff the stage scales is a few litres a second on catchments of a few hectares.
 
 ## The cut
 
