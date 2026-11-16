@@ -1780,24 +1780,35 @@ bool SceneRenderer::set_dynamic_instances(std::span<const SceneInstance> tail,
   // as a resize of the chain is (R116). Until T152 this waited for the device and remade the whole
   // chain: 71-97 ms on the engine's streamed forest, then a 52-75 ms slot wait two frames later.
   // A device that cannot hold the chain's new half beside the old still waits.
+  // **A swapped relayout that fails part way** (a step out of memory: `rt_relayout_fits` is an
+  // estimate) hands back what it had already replaced, which goes to the same release as on
+  // success, and stays pending with the chain marked to be laid out whole; the waited call then
+  // makes a whole layout, counted in `relayout_waits`, and only its failure is returned (the review
+  // of T154, 2026-11-16: until then the retired half leaked and the chain stood half replaced).
   if (scene_->relayout_pending()) {
     const i64 waited = time::monotonic_ns();
     relayout_retired_.clear();
-    if (!scene_->relayout(error, &relayout_retired_)) return false;
-    if (relayout_retired_.must_wait) {
+    const bool swapped = scene_->relayout(error, &relayout_retired_);
+    for (const gfx::BufferResource& buffer : relayout_retired_.buffers)
+      frames_.defer_destroy(buffer);
+    for (u32 i = 0; i < relayout_retired_.chain.count; ++i)
+      retire_rt_buffer(relayout_retired_.chain.buffers[i]);
+    if (relayout_retired_.tlas.handle.valid()) {
+      retired_tlas_.push_back(RetiredTlas{relayout_retired_.tlas, relayout_retired_.tlas_slot,
+                                          frames_.frame_index()});
+    }
+    const bool must_wait = relayout_retired_.must_wait;
+    relayout_retired_.clear();
+    if (!swapped && !scene_->relayout_pending()) return false;  // not resumable: the error stands
+    if (!swapped) {
+      ENGINE_LOG_WARN(log_renderer, "a swapped relayout failed; waiting to lay it out whole",
+                      log::field("error", error != nullptr ? *error : std::string()));
+      if (error != nullptr) error->clear();
+    }
+    if (must_wait || !swapped) {
       frames_.wait_idle();
       ++stats_.tiles.relayout_waits;
       if (!scene_->relayout(error)) return false;
-    } else {
-      for (const gfx::BufferResource& buffer : relayout_retired_.buffers)
-        frames_.defer_destroy(buffer);
-      for (u32 i = 0; i < relayout_retired_.chain.count; ++i)
-        retire_rt_buffer(relayout_retired_.chain.buffers[i]);
-      if (relayout_retired_.tlas.handle.valid()) {
-        retired_tlas_.push_back(RetiredTlas{relayout_retired_.tlas, relayout_retired_.tlas_slot,
-                                            frames_.frame_index()});
-      }
-      relayout_retired_.clear();
     }
     // The chain's union grew with the stride, and with it the ceiling the capacity policy may grow
     // to (`rt_capacity_limit`, the budget or the union, whichever is less). Until 2026-10-18 the

@@ -40,12 +40,27 @@ bool GpuScene::rt_relayout_fits() const noexcept {
 
 bool GpuScene::relayout(std::string* error, RelayoutRetired* retired) {
   if (!relayout_pending_) return true;
-  const bool chain = ray_tracing_ && rt_layout_outgrown();
+  const bool chain = ray_tracing_ && (rt_layout_outgrown() || rt_relayout_failed_);
   if (retired != nullptr) {
     retired->must_wait = chain && !rt_relayout_fits();
     if (retired->must_wait) return true;  // still pending: the caller waits, and asks without
   }
   relayout_pending_ = false;
+  // **A swapped call that fails part way stays pending** (the review of T154, 2026-11-16): what it
+  // replaced is in `retired` for the caller to free as on success, and the call the caller makes
+  // next, waited and without `retired`, finishes the work. A pool buffer the swapped call failed to
+  // make is empty, so the waited call makes it (its size test fails). A failure in the chain marks
+  // it to be laid out whole: the swapped lay-out had already moved the instance slots and the union
+  // to the new layout's, so `rt_layout_outgrown` alone would not see a chain half replaced. The
+  // trees' tables are the exception: their growth has already moved its capacities when a make
+  // fails, so it cannot be resumed, and a failure there is returned (the hosts stop on it).
+  const auto failed = [&](bool in_chain) {
+    if (retired != nullptr) {
+      relayout_pending_ = true;
+      rt_relayout_failed_ = rt_relayout_failed_ || in_chain;
+    }
+    return false;
+  };
   Vector<gfx::BufferResource>* old = retired != nullptr ? &retired->buffers : nullptr;
   if (flora_grow_ && !grow_flora_tail(error, old)) return false;
   // The pool's per-entry slots are laid out by the stride, and every mesh record names them.
@@ -55,14 +70,14 @@ bool GpuScene::relayout(std::string* error, RelayoutRetired* retired) {
     retire(deform_blocks, old);
     if (!gfx::create_buffer(*device_, deform_block_bytes(), k_address, false, deform_blocks,
                             error)) {
-      return false;
+      return failed(false);
     }
   }
   if (deform_ && deform_slots.size < u64{visible_entries()} * sizeof(u32)) {
     retire(deform_slots, old);
     if (!gfx::create_buffer(*device_, u64{visible_entries()} * sizeof(u32), k_address, false,
                             deform_slots, error)) {
-      return false;
+      return failed(false);
     }
     for (gfx::MeshDesc& desc : mesh_descs_)
       desc.deform_slots = deform_slots.address;
@@ -88,7 +103,8 @@ bool GpuScene::relayout(std::string* error, RelayoutRetired* retired) {
   // Until T152 the chain was laid out again on every relayout, a growth of the trees' tables alone
   // included — 70 to 83 ms of the frame's thread on the engine's streamed forest for buffers whose
   // sizes had not changed.
-  if (chain && !lay_out_ray_tracing(error, retired)) return false;
+  if (chain && !lay_out_ray_tracing(error, retired)) return failed(true);
+  if (chain) rt_relayout_failed_ = false;
   return true;
 }
 

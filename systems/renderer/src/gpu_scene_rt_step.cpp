@@ -308,7 +308,9 @@ bool GpuScene::resize_ray_tracing(u32 capacity, std::string* error, bool beyond_
   }
   RtStep step;
   if (!make_rt_step(device, inputs, step, error)) {
-    // Swapped, the old set is untouched and still the scene's: the caller waits and tries again.
+    // Swapped, the old set is untouched and still the scene's: the caller waits and tries again
+    // (`SceneRenderer::apply_rt_capacity`; a relayout's lay-out through `GpuScene::relayout`, which
+    // stays pending with the chain marked to be laid out whole, and `set_dynamic_instances`).
     if (swap) return false;
     write_rt_cache_tables();
     rt_bytes_ = rt_scene_bytes_;

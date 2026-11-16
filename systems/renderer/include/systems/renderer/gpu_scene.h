@@ -265,7 +265,12 @@ class GpuScene {
   // with them; the cluster set is kept — for the caller to free once those frames have completed
   // (`SceneRenderer::set_dynamic_instances`). Nothing in it waits for the device or uploads. When
   // the device cannot hold the chain's new half beside the old, it does nothing, sets `must_wait`
-  // and leaves the relayout pending: the caller waits for the device and calls it without.
+  // and leaves the relayout pending: the caller waits for the device and calls it without. **When
+  // a swapped call fails part way** (a step out of memory; `rt_relayout_fits` is an estimate) it
+  // returns false with what it had already replaced in `retired`, and leaves the relayout pending
+  // with the chain marked to be laid out whole: the caller frees `retired` as on success, waits,
+  // and calls it without, which makes a whole layout or returns the error. A failure growing the
+  // trees' tables is not resumable and leaves nothing pending: the caller returns it.
   struct RelayoutRetired {
     Vector<gfx::BufferResource> buffers;
     renderer::RtRetired chain;  // the chain's step (qualified: the alias below comes later)
@@ -2036,6 +2041,7 @@ class GpuScene {
   u32 compact_pct_ = k_default_compact_pct;    // `renderer.tiles.compact_pct`, read at create
   u32 pair_limit_ = k_max_pairs;               // what the tail's layout may reach (`pair_limit`)
   bool relayout_pending_ = false;              // a growth the pool or the chain has not followed
+  bool rt_relayout_failed_ = false;  // a swapped chain lay-out failed part way: redo it whole
   // A dynamic scene's terrain levels' slots' pairs, `{instance, cluster}` from `ring_pair_begin_`
   // to the prefix's end: device-local, written once, copied into a set written whole.
   gfx::BufferResource ring_pairs_;
