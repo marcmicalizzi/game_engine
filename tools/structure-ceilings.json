@@ -16,7 +16,7 @@
       "file": "systems/renderer/src/scene_renderer.cpp",
       "function": "SceneRenderer::record_frame",
       "why": "every pass and every feature flag of a frame",
-      "ceiling": 3593
+      "ceiling": 3635
     },
     {
       "id": "renderer.record_frame.add_pass",
@@ -25,21 +25,21 @@
       "function": "SceneRenderer::record_frame",
       "pattern": "\\badd_pass\\s*[(<]",
       "why": "the passes a frame adds inline rather than through a frame-pass seam",
-      "ceiling": 47
+      "ceiling": 48
     },
     {
       "id": "renderer.gpu_scene_cpp.lines",
       "measure": "file-lines",
       "file": "systems/renderer/src/gpu_scene.cpp",
       "why": "every feature's GPU state",
-      "ceiling": 6738
+      "ceiling": 6747
     },
     {
       "id": "renderer.gpu_scene_h.lines",
       "measure": "file-lines",
       "file": "systems/renderer/include/systems/renderer/gpu_scene.h",
       "why": "every feature's GPU state",
-      "ceiling": 2166
+      "ceiling": 2223
     },
     {
       "id": "engine_view.main_cpp.lines",
@@ -107,19 +107,19 @@
       "id": "page:docs/subsystems/renderer.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/renderer.md",
-      "ceiling": 1175707
+      "ceiling": 1234868
     },
     {
       "id": "page:docs/subsystems/apps.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/apps.md",
-      "ceiling": 698340
+      "ceiling": 698477
     },
     {
       "id": "page:docs/subsystems/gfx.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/gfx.md",
-      "ceiling": 327848
+      "ceiling": 332201
     },
     {
       "id": "page:docs/subsystems/geometry.md",
@@ -149,7 +149,7 @@
       "id": "page:docs/subsystems/water.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/water.md",
-      "ceiling": 248731
+      "ceiling": 251653
     },
     {
       "id": "page:docs/subsystems/protocol.md",
@@ -167,7 +167,7 @@
       "id": "page:docs/subsystems/terrain.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/terrain.md",
-      "ceiling": 107019
+      "ceiling": 107461
     },
     {
       "id": "page:docs/subsystems/world.md",
@@ -197,7 +197,7 @@
       "id": "page:docs/subsystems/channels.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/channels.md",
-      "ceiling": 204099
+      "ceiling": 213911
     },
     {
       "id": "page:docs/subsystems/landform.md",
@@ -1643,6 +1643,189 @@
           "id": "page:docs/subsystems/channels.md",
           "old": 121469,
           "new": 204099
+        }
+      ]
+    },
+    {
+      "date": "2026-11-16",
+      "by": "Marc Micalizzi",
+      "reason": "",
+      "commit": "4f03cd03",
+      "folded": [
+        {
+          "name": "b66-streams",
+          "reason": "W129 and W130: the count of how whole a stream is drawn (with the forest's own beside it), the key's dependence on a named loss, torrent in the synth list; W129.1's section with no bank, W130.2's pit standing as a pool; the count on torrent and on the forest's v47",
+          "date": "2026-11-16",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 8,
+            "page:docs/subsystems/channels.md": 9812
+          }
+        },
+        {
+          "name": "b66-sweep",
+          "reason": "T153, T85, F11, F12: what each row changed, said on renderer.md, gfx.md and terrain.md",
+          "date": "2026-11-15",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 2482,
+            "page:docs/subsystems/gfx.md": 280,
+            "page:docs/subsystems/terrain.md": 442
+          }
+        },
+        {
+          "name": "budget",
+          "reason": "W6's cull read of the pair table behind renderer.cull.pair_table (off by default) with the pair that measured it, and the dynamic-instances tests run as a weaker card",
+          "date": "2026-11-16",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.record_frame.lines": 1,
+            "page:docs/subsystems/renderer.md": 4452
+          }
+        },
+        {
+          "name": "fixes",
+          "reason": "the review's mends of batch 66: gpu_scene.h names the swapped relayout's failure path and the flag that lays the chain out whole after it (T154's finding); renderer.md says which meshes a scene's density caps, that the cull reads every pair's entry, and what a failed swapped relayout does",
+          "date": "2026-11-16",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.gpu_scene_h.lines": 6,
+            "page:docs/subsystems/renderer.md": 2531
+          }
+        },
+        {
+          "name": "G14",
+          "reason": "G14: renderer.md says how a scene sizes its built textures by the asset (texture_caps, the capped count), and apps.md says engine-content info now prints a container's cost",
+          "date": "2026-11-15",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 806,
+            "page:docs/subsystems/apps.md": 129
+          }
+        },
+        {
+          "name": "R133",
+          "reason": "R133: renderer.md's 'A step is made on the worker' gains what a step made ahead holds in bytes and frames, that the worker does not ask the device's room, the counter and log line that say when it happens, and the step measured again with the worker on and off",
+          "date": "2026-11-15",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 1928
+          }
+        },
+        {
+          "name": "R171",
+          "reason": "R171's third leg: the shrinkage off by default with its cost, and the cell's memory by its own spread (rule, sources, grain, lag, cost, why it is off) on renderer.md",
+          "date": "2026-11-16",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 28629
+          }
+        },
+        {
+          "name": "T152",
+          "reason": "T152: a tail's relayout swapped in beside the frames in flight - GpuScene::RelayoutRetired and the chain's layout-outgrown and room checks in gpu_scene.h, and renderer.md's account of the cause, the rule and the measured pair (A relayout is swapped in)",
+          "date": "2026-11-15",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.gpu_scene_cpp.lines": -31,
+            "renderer.gpu_scene_h.lines": 25,
+            "page:docs/subsystems/renderer.md": 6438
+          }
+        },
+        {
+          "name": "T154",
+          "reason": "T154: the tail's holes numbered again where the slots stand under the cap too, applied on the GPU as runs of slots (the pair shift pass and the runs' expansion in record_frame, the per-set and CPU runs in gpu_scene), and renderer.md's account of the cause and the rule",
+          "date": "2026-11-15",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.record_frame.lines": 36,
+            "renderer.record_frame.add_pass": 1,
+            "renderer.gpu_scene_cpp.lines": 40,
+            "renderer.gpu_scene_h.lines": 26,
+            "page:docs/subsystems/renderer.md": 7252
+          }
+        },
+        {
+          "name": "T160",
+          "reason": "T160: the cluster records' bucket and emit dispatched folded beside the ranges' plain dispatch in record_frame (two lines), and gfx.md's section on dispatches that grow with the scene and the rule for a new one",
+          "date": "2026-11-16",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.record_frame.lines": 2,
+            "page:docs/subsystems/gfx.md": 3361
+          }
+        },
+        {
+          "name": "W130",
+          "reason": "W130 leg 3: water.md's Shading takes the broken water on a steep bed, the shore fade's new bound and their measured cost",
+          "date": "2026-11-16",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/water.md": 2922
+          }
+        },
+        {
+          "name": "W6",
+          "reason": "W6: the cull reads the pair table (two CullParams lines in record_frame and the passes' declared read), its paragraph and measured pair on renderer.md and gfx.md; R61's measured closure paragraph on renderer.md",
+          "date": "2026-11-15",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.record_frame.lines": 3,
+            "page:docs/subsystems/renderer.md": 4643,
+            "page:docs/subsystems/gfx.md": 712
+          }
+        }
+      ],
+      "changes": [
+        {
+          "id": "renderer.record_frame.lines",
+          "old": 3593,
+          "new": 3635
+        },
+        {
+          "id": "renderer.record_frame.add_pass",
+          "old": 47,
+          "new": 48
+        },
+        {
+          "id": "renderer.gpu_scene_cpp.lines",
+          "old": 6738,
+          "new": 6747
+        },
+        {
+          "id": "renderer.gpu_scene_h.lines",
+          "old": 2166,
+          "new": 2223
+        },
+        {
+          "id": "page:docs/subsystems/renderer.md",
+          "old": 1175707,
+          "new": 1234868
+        },
+        {
+          "id": "page:docs/subsystems/apps.md",
+          "old": 698340,
+          "new": 698477
+        },
+        {
+          "id": "page:docs/subsystems/gfx.md",
+          "old": 327848,
+          "new": 332201
+        },
+        {
+          "id": "page:docs/subsystems/water.md",
+          "old": 248731,
+          "new": 251653
+        },
+        {
+          "id": "page:docs/subsystems/terrain.md",
+          "old": 107019,
+          "new": 107461
+        },
+        {
+          "id": "page:docs/subsystems/channels.md",
+          "old": 204099,
+          "new": 213911
         }
       ]
     }
