@@ -128,38 +128,11 @@ scene::FrameRecord frame_record(const FrameStats& stats, u32 repeat, u32 frame, 
   out.visible_pairs = stats.visible_pairs();
   out.shadow_casters = stats.shadow_casters;
   out.shadow_pairs = stats.shadow_pairs;
+  // Every bucket of the pass list (scene_renderer.h, T85) into the record's field of its name.
   scene::PassMs ms;
-  ms.cull = stats.gpu_cull;
-  ms.hw = stats.gpu_hw;
-  ms.sw = stats.gpu_sw;
-  ms.hiz = stats.gpu_hiz;
-  ms.resolve = stats.gpu_resolve;
-  ms.rt = stats.gpu_rt;
-  ms.clas = stats.gpu_clas;
-  ms.blas = stats.gpu_blas;
-  ms.deform = stats.gpu_deform;
-  ms.deform_alloc = stats.gpu_deform_alloc;
-  ms.trace = stats.gpu_trace;
-  ms.shadow = stats.gpu_shadow;
-  ms.shadow_cull = stats.gpu_shadow_cull;
-  ms.total = stats.gpu_total;
-  ms.tables = stats.gpu_tables;
-  ms.sky = stats.gpu_sky;
-  ms.frame_passes = stats.gpu_frame_passes;
-  ms.half_sun = stats.gpu_half_sun;
-  ms.gi_trace = stats.gpu_gi_trace;
-  ms.gi_fold = stats.gpu_gi_fold;
-  ms.resolve_classify = stats.gpu_resolve_classify;
-  ms.rt_records = stats.gpu_rt_records;
-  ms.rt_ranges = stats.gpu_rt_ranges;
-  ms.rt_drop = stats.gpu_rt_drop;
-  ms.rt_emit = stats.gpu_rt_emit;
-  ms.rt_cache = stats.gpu_rt_cache;
-  ms.clas_cache = stats.gpu_clas_cache;
-  ms.tlas = stats.gpu_tlas;
-  ms.terrain_upload = stats.gpu_terrain_upload;
-  ms.unbucketed = stats.gpu_unbucketed;
-  ms.motion = stats.gpu_motion;
+#define ENGINE_RENDERER_PASS_RECORD(name, top) ms.name = stats.gpu_##name;
+  ENGINE_RENDERER_PASS_BUCKETS(ENGINE_RENDERER_PASS_RECORD)
+#undef ENGINE_RENDERER_PASS_RECORD
   // **The measurement rule** (ADR-0064; renderer.md, "Sampling over time: the measurement rule"):
   // the frame's times are a cost only when nothing reconstructed it and it was drawn at the
   // output's size. Any other frame's go under `reconstructed`, and `gpu_ms` stays null, so a

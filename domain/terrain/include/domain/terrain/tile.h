@@ -135,16 +135,20 @@ class TileSampler {
   i64 height_um(i64 x_mm, i64 z_mm);
   f32 height(f32 x, f32 z) { return height_m(height_um(to_mm(x), to_mm(z))); }
   Vec3 normal(f32 x, f32 z);
+  // The tile under a point, as the tile grid names it. A point past the i32 tile range has none:
+  // that asserts in debug and names the last tile on its side in release. The sampler itself never
+  // narrows: it gathers by the i64 index, so a height or a normal anywhere is the field's (F11).
   TileCoord tile_at(i64 x_mm, i64 z_mm) const noexcept;
 
  private:
-  const Gather& gather_for(TileCoord tile);
+  const Gather& gather_for(i64 tx, i64 tz);
   const DuneField* field_;
   i64 time_us_;
   TileOptions options_;
   const LagField* lag_;
   Gather gather_;
-  TileCoord cached_;
+  i64 cached_x_ = 0;
+  i64 cached_z_ = 0;
   bool has_cache_ = false;
 };
 

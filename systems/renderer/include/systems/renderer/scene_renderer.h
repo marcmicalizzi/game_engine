@@ -152,6 +152,75 @@ struct GiStats {
   // Stage 8: of `shell_hits`, those whose cells were whole and took no bounce this frame.
   u32 shell_kept = 0;
 };
+
+// **The pass list** (T85; renderer.md, "The pass list"): every GPU bucket a frame's record carries,
+// once. Each entry is `X(name, top)`. `FrameStats::gpu_<name>` is one frame's milliseconds and
+// `Stats::gpu_<name>` the run's sum, both declared from this list; `collect_slot` folds the one
+// into the other and works out `unbucketed` by it; and `frame_record` (flythrough.h) writes each
+// into `scene::PassMs::<name>`, so a bucket here that the record's schema lacks does not compile,
+// and one the schema has that this list lacks fails `flythrough_tests.cpp`. `top` is true for the
+// disjoint top level whose sum `gpu_total` less is `gpu_unbucketed`, and false for a share of
+// another bucket, the total and the remainder. What each measures:
+//   cull, hw, sw, hiz, resolve, deform, trace  every view's zones of those names
+//   deform_alloc   the pool's suballocator: one dispatch over every view, so no view's
+//   rt             the ray tracing chain: records, ranges, drop, emit, CLAS, BLAS, TLAS, the cache
+//   shadow         the cascaded maps' passes, their cull included
+//   tables         a streamed world's table copy and pair expansion (`gpu_pair_expand` the latter)
+//   terrain_upload a moving terrain's field uploads
+//   sky            a sky's passes, every view's; what it adds to the resolve is in `resolve`
+//   frame_passes   the frame passes (frame_pass.h) and the encode they end on
+//   half_sun       the half-rate sun pass (R126), every view's
+//   gi_trace, gi_fold  the world-space cache's sample pass and fold (R69)
+//   resolve_classify   the resolve's classify pass (R151); the per-class draws are in `resolve`
+//   motion         the motion pass and the pool's second write (R154)
+//   clas, blas, clas_cache  shares of `rt`: the cluster structures, the bottom-level build, the
+//                  cluster cache's build of the frame's misses
+//   rt_records, rt_ranges, rt_drop, rt_emit, rt_cache, tlas  the rest of `rt`, zone by zone (R130):
+//                  the bucketing, the ranges' scan, the walk a frame past its capacity makes and
+//                  the kept instances' scan after it (zero on a frame that did not record them),
+//                  the emit pass, the cache's slot passes and the top-level build
+//   shadow_cull    the light-view cull's share of `shadow`
+//   total          what the timer measured
+//   unbucketed     `total` less every top-level bucket: zero when every zone is named (R124, R130)
+#define ENGINE_RENDERER_PASS_BUCKETS(X)                                                       \
+  X(cull, true)                                                                               \
+  X(hw, true)                                                                                 \
+  X(sw, true)                                                                                 \
+  X(hiz, true)                                                                                \
+  X(resolve, true)                                                                            \
+  X(deform, true)                                                                             \
+  X(deform_alloc, true)                                                                       \
+  X(trace, true)                                                                              \
+  X(rt, true)                                                                                 \
+  X(shadow, true)                                                                             \
+  X(tables, true)                                                                             \
+  X(terrain_upload, true)                                                                     \
+  X(sky, true)                                                                                \
+  X(frame_passes, true)                                                                       \
+  X(half_sun, true)                                                                           \
+  X(gi_trace, true)                                                                           \
+  X(gi_fold, true)                                                                            \
+  X(resolve_classify, true)                                                                   \
+  X(motion, true)                                                                             \
+  X(clas, false)                                                                              \
+  X(blas, false)                                                                              \
+  X(clas_cache, false)                                                                        \
+  X(rt_records, false)                                                                        \
+  X(rt_ranges, false)                                                                         \
+  X(rt_drop, false)                                                                           \
+  X(rt_emit, false)                                                                           \
+  X(rt_cache, false)                                                                          \
+  X(tlas, false)                                                                              \
+  X(shadow_cull, false)                                                                       \
+  X(total, false)                                                                             \
+  X(unbucketed, false)
+#define ENGINE_RENDERER_PASS_FIELD(name, top) f64 gpu_##name = 0.0;
+// How many entries the list has, for the test that holds it to `scene::PassMs`.
+#define ENGINE_RENDERER_PASS_COUNT_ONE(name, top) +1
+inline constexpr u32 k_pass_bucket_count =
+    0 ENGINE_RENDERER_PASS_BUCKETS(ENGINE_RENDERER_PASS_COUNT_ONE);
+#undef ENGINE_RENDERER_PASS_COUNT_ONE
+
 // One frame's numbers, as the renderer folds them in when that frame's slot comes around again
 // (`Stats::last`). The sums beside it answer "what does this scene cost on average"; a flythrough
 // asks "what did frame 1,412 cost", which a sum cannot answer and a CPU clock must not
@@ -177,37 +246,9 @@ struct FrameStats {
   // frame late like the rest.
   u32 horizon_casters = 0;    // Stats::shadow_casters: built into the structures, not drawn
   u32 shadow_pairs = 0;       // Stats::shadow_pairs: drawn into the cascaded maps
-  f64 gpu_shadow = 0.0;       // the cascaded maps' passes, cull included
-  f64 gpu_shadow_cull = 0.0;  // of which the light-view cull
-  f64 gpu_cull = 0.0;
-  f64 gpu_hw = 0.0;
-  f64 gpu_sw = 0.0;
-  f64 gpu_hiz = 0.0;
-  f64 gpu_resolve = 0.0;
-  f64 gpu_rt = 0.0;
-  f64 gpu_clas = 0.0;
-  f64 gpu_clas_cache = 0.0;  // the cluster cache's build of the frame's misses, inside the chain
-  f64 gpu_deform = 0.0;
-  f64 gpu_deform_alloc = 0.0;
-  f64 gpu_trace = 0.0;
-  f64 gpu_total = 0.0;
-  f64 gpu_blas = 0.0;  // the bottom-level build inside `gpu_rt`
-  // **The rest of `gpu_rt`, zone by zone** (R130): the bucketing ("records"), the ranges' scan
-  // ("ranges"), the walk a frame past its capacity makes and the kept instances' scan after it
-  // ("ranges drop", zero on a frame that did not record them; a frame past its capacity without
-  // them takes the one-thread rule inside "ranges"), the emit pass ("emit"), the cache's slot
-  // passes
-  // ("cache"), and the top-level build ("tlas"); `gpu_clas_cache` is the cache's build. With `clas`
-  // and `blas` they sum to `gpu_rt`.
-  f64 gpu_rt_records = 0.0;
-  f64 gpu_rt_ranges = 0.0;
-  f64 gpu_rt_drop = 0.0;
-  f64 gpu_rt_emit = 0.0;
-  f64 gpu_rt_cache = 0.0;
-  f64 gpu_tlas = 0.0;
-  // What the timer measured that no bucket of the record names: `gpu_total` less every bucket.
-  // Zero when every zone is named (R124's rule; R130).
-  f64 gpu_unbucketed = 0.0;
+  // Every pass bucket, `gpu_<name>`, from the pass list above (T85). A frame past its capacity
+  // without "ranges drop" takes the one-thread rule inside "ranges".
+  ENGINE_RENDERER_PASS_BUCKETS(ENGINE_RENDERER_PASS_FIELD)
   u32 uploads = 0;
   u64 upload_bytes = 0;
   u32 evictions = 0;
@@ -256,32 +297,12 @@ struct FrameStats {
   u32 table_slots = 0;
   u32 table_pairs = 0;
   u32 hole_pairs = 0;
-  f64 gpu_tables = 0.0;
   f64 gpu_pair_expand = 0.0;
   // A moving terrain's fields (docs/subsystems/renderer.md, "The dunes in time-lapse"): the bytes
-  // of evaluated heights this frame copied onto the device, and what the copy cost.
+  // of evaluated heights this frame copied onto the device; `gpu_terrain_upload` is the copy.
   u64 terrain_upload_bytes = 0;
-  f64 gpu_terrain_upload = 0.0;
-  // A sky's passes (renderer.md, "The sky"): its tables, the sky from the eye, the air, the sums.
-  f64 gpu_sky = 0.0;
-  // The half-rate sun pass (R126; renderer.md, "A shading rate by region"), every view's: zero in
-  // a frame at full rate.
-  f64 gpu_half_sun = 0.0;
-  // The resolve's classify pass (R151; renderer.md, "The resolve by pixel class"), every view's:
-  // each pixel's class written as depth. Zero in a frame the resolve draws whole; what the
-  // per-class draws cost is in `gpu_resolve`.
-  f64 gpu_resolve_classify = 0.0;
-  // The world-space cache's passes (R69; renderer.md, "Indirect light: the world-space cache"):
-  // the sample pass (every view's touches and rays) and the fold. Zero with `renderer.gi.mode=off`.
-  f64 gpu_gi_trace = 0.0;
-  f64 gpu_gi_fold = 0.0;
-  // The frame passes' zones (frame_pass.h) and the encode that follows them; zero in a frame with
-  // none. `visibility_m` is what they reported (`Stats::visibility_m`), negative for none.
-  f64 gpu_frame_passes = 0.0;
+  // What the frame passes reported (`Stats::visibility_m`), negative for none.
   f32 visibility_m = -1.0f;
-  // The motion pass and the pool's second write (R154; renderer.md, "Sampling over time: the
-  // inputs"), every view's: zero unless `renderer.reconstruction.inputs` is on.
-  f64 gpu_motion = 0.0;
   // What sampled this frame over time (ADR-0064; settings.h): what its record says, and whether
   // its times are a cost (`Reconstruction::native`).
   Reconstruction reconstruction;
@@ -523,42 +544,14 @@ struct Stats {
   u32 deform_overflow_entries = 0;   // entries the budget had no room for
   u32 deform_overflow_vertices = 0;  // the vertices they would have needed
   u32 deform_peak_vertices = 0;      // the largest `deform_vertices` of the run
-  f64 gpu_cull = 0.0;
-  f64 gpu_hw = 0.0;
-  f64 gpu_sw = 0.0;
-  f64 gpu_hiz = 0.0;
-  f64 gpu_resolve = 0.0;
-  f64 gpu_rt = 0.0;  // records + ranges + emit + CLAS + cluster BLAS + TLAS
-  f64 gpu_clas = 0.0;
-  f64 gpu_clas_cache = 0.0;  // the cluster cache's build of the frame's misses, inside the chain
-  f64 gpu_blas = 0.0;        // the one bottom-level build of every instance's structure
-  f64 gpu_deform = 0.0;
-  // The pool's suballocator, kept apart from the pool pass it feeds: one dispatch covers every
-  // view of a run, so it is the frame's cost and no view's, and E25's "9.4 µs plus 0.9 µs per
-  // 1,000 visible clusters" is a statement about the pool pass alone.
-  f64 gpu_deform_alloc = 0.0;
-  f64 gpu_trace = 0.0;
-  // Every pass of the cascaded shadow maps: the light-view culls, the pool and index passes of
-  // the cascades' cuts, and the depth raster. `gpu_shadow_cull` is the cull's share of it. The
-  // filtering is in `gpu_resolve`, where it runs.
-  f64 gpu_shadow = 0.0;
-  f64 gpu_shadow_cull = 0.0;
-  // A moving terrain's field uploads (`FrameStats::gpu_terrain_upload`), summed, and their bytes.
-  f64 gpu_terrain_upload = 0.0;
+  // Every pass bucket, `gpu_<name>`, from the pass list above (T85): the timed frames' sum of
+  // `FrameStats::gpu_<name>`. The pool's suballocator (`deform_alloc`) is kept apart from the pool
+  // pass it feeds, so E25's "9.4 µs plus 0.9 µs per 1,000 visible clusters" is about the pool pass
+  // alone; the cascaded maps' filtering is in `resolve`, where it runs.
+  ENGINE_RENDERER_PASS_BUCKETS(ENGINE_RENDERER_PASS_FIELD)
+  // A moving terrain's field uploads' bytes, summed (`gpu_terrain_upload` is their time).
   u64 terrain_upload_bytes = 0;
-  // A sky's passes (`FrameStats::gpu_sky`), summed: the frame's cost and no view's. What the sky
-  // adds to the resolve is in `gpu_resolve`.
-  f64 gpu_sky = 0.0;
   SkyStats sky;
-  // The half-rate sun pass (`FrameStats::gpu_half_sun`), summed; what it saves is in `gpu_resolve`.
-  f64 gpu_half_sun = 0.0;
-  // The motion pass and the pool's second write (`FrameStats::gpu_motion`; R154), summed.
-  f64 gpu_motion = 0.0;
-  // The resolve's classify pass (`FrameStats::gpu_resolve_classify`), summed.
-  f64 gpu_resolve_classify = 0.0;
-  // The world-space cache's passes (`FrameStats::gpu_gi_trace`, `gpu_gi_fold`), summed.
-  f64 gpu_gi_trace = 0.0;
-  f64 gpu_gi_fold = 0.0;
   // What the cache's passes counted in the latest frame folded (R69 stage 2; `gfx::k_gi_stat_*`),
   // read a frame or more late like the sky's sums and not summed: rays traced, stride pixels
   // sampled and those of them whose own cell was young (under `gfx::k_gi_young` samples:
@@ -566,9 +559,6 @@ struct Stats {
   // away, cells held after the fold and those of them young, and the cells the fold freed for a
   // full bucket and for their age. Zero with the cache off.
   GiStats gi;
-  // The frame passes' zones (frame_pass.h, renderer.md "Frame passes") and the encode they end on,
-  // summed: the frame's cost and no view's. Zero in every frame without a pass registered.
-  f64 gpu_frame_passes = 0.0;
   // **The medium's visibility**, the last recorded frame's: the distance at which the transmittance
   // of the participating medium a frame pass drew falls to 2%, from the field the pass computed on
   // the CPU (systems/volumetrics). Gameplay reads it here, never from the picture (plan 04).
@@ -578,7 +568,6 @@ struct Stats {
   // light of the array (`k_max_fire_lights` at most, nearest the eye).
   u32 fires = 0;
   u32 fire_lights = 0;
-  f64 gpu_total = 0.0;
   f64 cpu_ns = 0.0;  // wall time inside submit_frame, summed
   // Sampled by sample_gpu_memory(), not by a frame: it is a driver query and the frame path
   // stays free of them.

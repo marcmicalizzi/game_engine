@@ -401,6 +401,9 @@ bool SceneCollision::create(physics::World& physics, const renderer::SceneData& 
       const i64 x1 = floor_div(floor_mm(corner.x + static_cast<f64>(bounds.max.x)), tile_mm_);
       const i64 z0 = floor_div(floor_mm(corner.z + static_cast<f64>(bounds.min.z)), tile_mm_);
       const i64 z1 = floor_div(floor_mm(corner.z + static_cast<f64>(bounds.max.z)), tile_mm_);
+      // A piece reaching past the world's last tile is on no tile a key can name: its indices are
+      // never narrowed to i32 (F11), and no tile of the stream is there to bin it into.
+      if (!fits_i32(x0) || !fits_i32(x1) || !fits_i32(z0) || !fits_i32(z1)) continue;
       if ((x1 - x0 + 1) * (z1 - z0 + 1) > 4096)
         continue;  // a scene-sized mesh is ground, not a piece
       for (i64 z = z0; z <= z1; ++z) {
@@ -736,8 +739,14 @@ u32 SceneCollision::refresh(WorldPos at, f32 reach) {
                                                 config_.max_refreshes);
   const i64 xm = floor_mm(at.x);
   const i64 zm = floor_mm(at.z);
-  const u64 underfoot_key = world::tile_key(world::TileCoord{
-      static_cast<i32>(floor_div(xm, tile_mm_)), static_cast<i32>(floor_div(zm, tile_mm_))});
+  const i64 txm = floor_div(xm, tile_mm_);
+  const i64 tzm = floor_div(zm, tile_mm_);
+  // A walker past the world's last tile stands on none (F11): its index is not narrowed to i32,
+  // where it would name some other tile.
+  const bool on_tile = fits_i32(txm) && fits_i32(tzm);
+  const u64 underfoot_key =
+      on_tile ? world::tile_key(world::TileCoord{static_cast<i32>(txm), static_cast<i32>(tzm)})
+              : 0;
   u32 done = 0;
   bool rebuilt = false;
   for (u32 k = 0; k < count; ++k) {
@@ -753,7 +762,7 @@ u32 SceneCollision::refresh(WorldPos at, f32 reach) {
     // by, on the tile the walker stands on, is the error the walker was held at until now. A
     // tile further off may wait behind nearer ones for several updates, and nobody stands on it.
     const f64 stale = stale_of(*t);
-    const bool underfoot = order_[k] == underfoot_key;
+    const bool underfoot = on_tile && order_[k] == underfoot_key;
     if (stale > (k < under_count ? underfoot_limit : limit)) {
       if (underfoot) stats_.max_stale_m = stale > stats_.max_stale_m ? stale : stats_.max_stale_m;
       drop_ground_body(*t);

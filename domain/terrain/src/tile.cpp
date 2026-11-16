@@ -1,9 +1,11 @@
+#include <core/base/assert.h>
 #include <core/hash/hash.h>
 #include <core/jobs/job_system.h>
 #include <domain/terrain/fixed.h>
 #include <domain/terrain/overlay.h>
 #include <domain/terrain/tile.h>
 
+#include <algorithm>
 #include <bit>
 #include <cmath>
 #include <cstring>
@@ -269,32 +271,40 @@ TileSampler::TileSampler(const DuneField& field, i64 time_us, const TileOptions&
     : field_(&field), time_us_(time_us), options_(options), lag_(lag) {}
 
 TileCoord TileSampler::tile_at(i64 x, i64 z) const noexcept {
-  return TileCoord{static_cast<i32>(floor_div(x, options_.tile_mm)),
-                   static_cast<i32>(floor_div(z, options_.tile_mm))};
+  const i64 tx = floor_div(x, options_.tile_mm);
+  const i64 tz = floor_div(z, options_.tile_mm);
+  constexpr i64 lo = std::numeric_limits<i32>::min();
+  constexpr i64 hi = std::numeric_limits<i32>::max();
+  ENGINE_ASSERT(tx >= lo && tx <= hi && tz >= lo && tz <= hi, "a point past the last tile");
+  return TileCoord{static_cast<i32>(std::clamp(tx, lo, hi)),
+                   static_cast<i32>(std::clamp(tz, lo, hi))};
 }
 
-const Gather& TileSampler::gather_for(TileCoord tile) {
-  if (!has_cache_ || !(cached_ == tile)) {
+const Gather& TileSampler::gather_for(i64 tx, i64 tz) {
+  if (!has_cache_ || cached_x_ != tx || cached_z_ != tz) {
     const i64 s = options_.tile_mm / static_cast<i64>(options_.cells);
-    const i64 x0 = static_cast<i64>(tile.x) * options_.tile_mm;
-    const i64 z0 = static_cast<i64>(tile.z) * options_.tile_mm;
+    const i64 x0 = tx * options_.tile_mm;
+    const i64 z0 = tz * options_.tile_mm;
     field_->gather(x0 - s, z0 - s, x0 + options_.tile_mm + s, z0 + options_.tile_mm + s, time_us_,
                    lag_, gather_);
-    cached_ = tile;
+    cached_x_ = tx;
+    cached_z_ = tz;
     has_cache_ = true;
   }
   return gather_;
 }
 
 i64 TileSampler::height_um(i64 x, i64 z) {
-  return field_->height_um(gather_for(tile_at(x, z)), x, z, options_.detail);
+  return field_->height_um(
+      gather_for(floor_div(x, options_.tile_mm), floor_div(z, options_.tile_mm)), x, z,
+      options_.detail);
 }
 
 Vec3 TileSampler::normal(f32 xf, f32 zf) {
   const i64 x = to_mm(xf);
   const i64 z = to_mm(zf);
   const i64 s = options_.tile_mm / static_cast<i64>(options_.cells);
-  const Gather& g = gather_for(tile_at(x, z));
+  const Gather& g = gather_for(floor_div(x, options_.tile_mm), floor_div(z, options_.tile_mm));
   return grid_normal(field_->height_um(g, x - s, z, options_.detail),
                      field_->height_um(g, x + s, z, options_.detail),
                      field_->height_um(g, x, z - s, options_.detail),

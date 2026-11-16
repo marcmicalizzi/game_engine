@@ -880,6 +880,38 @@ TEST_CASE("flythrough: the summary carries a median, p95 and p99 for every pass 
   }
 }
 
+// **One pass list** (T85; renderer.md, "The pass list"): `FrameStats`, `Stats`, the fold and the
+// frame record all take their buckets from `ENGINE_RENDERER_PASS_BUCKETS`, so a bucket the list
+// has and the record's schema lacks does not compile. This holds the other direction: every field
+// of `scene::PassMs` is in the list, and `frame_record` carries each frame bucket into the field of
+// its name. Fails by name for a field added to the schema and not to the list (it stays zero).
+TEST_CASE("flythrough: every pass bucket of the record comes from the one pass list") {
+  const schema::TypeInfo& buckets = schema::type_of<scene::PassMs>();
+  CHECK(buckets.fields.size() == k_pass_bucket_count);
+  FrameStats stats;
+  stats.reconstruction.internal_width = stats.reconstruction.output_width = 640;
+  stats.reconstruction.internal_height = stats.reconstruction.output_height = 360;
+  f64 next = 1.0;
+#define ENGINE_RENDERER_PASS_SET(name, top) \
+  stats.gpu_##name = next;                  \
+  next += 1.0;
+  ENGINE_RENDERER_PASS_BUCKETS(ENGINE_RENDERER_PASS_SET)
+#undef ENGINE_RENDERER_PASS_SET
+  const scene::FrameRecord record = frame_record(stats, 0, 0, 0.0);
+  REQUIRE(record.gpu_ms.has_value());
+  Vector<f64> seen;
+  for (const schema::FieldInfo& field : buckets.fields) {
+    const std::string name = field.name;
+    REQUIRE(field.type.kind == schema::Kind::F64);
+    f64 value = 0.0;
+    std::memcpy(&value, reinterpret_cast<const u8*>(&*record.gpu_ms) + field.offset, sizeof(value));
+    CHECK_MESSAGE(value > 0.0, "gpu_ms." << name << " is in no entry of the pass list");
+    for (const f64 other : seen)
+      CHECK_MESSAGE(other != value, "gpu_ms." << name << " repeats another bucket's value");
+    seen.push_back(value);
+  }
+}
+
 // **The measurement rule** (ADR-0064; renderer.md, "Sampling over time: the measurement rule"): a
 // frame's times are a cost only when nothing reconstructed it and it was drawn at the output's
 // size. Held where the record and the summary are made, so both hosts' lines carry it: a native
