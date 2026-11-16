@@ -396,9 +396,15 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
       c.thalweg[k] = t;
       c.bed[k] = row[t];
       // Each bank's crest: the highest ground reached walking out, before it falls away.
+      // **Ground as level as the thalweg is bed** (W129.1): the crest walks on over it, so a
+      // section with no bank (a floor filled flat that no cut crosses, a level spur falling away
+      // each side) wets its flat and carries its water as a sheet over it. Held at the thalweg,
+      // such a section wet nothing at any level, and its line was refused.
       u32 crest = t;
+      bool level_bed = true;
       for (u32 j = t + 1; j < c.across; ++j) {
-        if (row[j] > row[crest]) {
+        level_bed = level_bed && row[j] == row[t];
+        if (row[j] > row[crest] || level_bed) {
           crest = j;
         } else if (row[j] < row[crest] - k_bank_crest_drop_m -
                                 k_bank_crest_drop_share * (row[crest] - row[t])) {
@@ -407,8 +413,10 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
       }
       c.left_end[k] = crest;
       crest = t;
+      level_bed = true;
       for (u32 j = t; j-- > 0;) {
-        if (row[j] > row[crest]) {
+        level_bed = level_bed && row[j] == row[t];
+        if (row[j] > row[crest] || level_bed) {
           crest = j;
         } else if (row[j] < row[crest] - k_bank_crest_drop_m -
                                 k_bank_crest_drop_share * (row[crest] - row[t])) {

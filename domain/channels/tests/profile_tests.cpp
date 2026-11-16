@@ -574,3 +574,46 @@ TEST_CASE("profile: a fall's foot beside a shelf has no more head than its lip")
   CHECK(p.stats.head_rises == 0);
   check_head_falls(p);
 }
+
+namespace {
+// A ground with no bed across a line running +x (W129.1): a floor falling 1 % along x and level
+// across, to `flat_half` either side of z = 0; past it the ground falls away at one in ten (a level
+// spur), or, with a flat half past the section's reach, it is level from edge to edge (a lake's
+// floor filled flat, which no cut crosses).
+struct Level {
+  f64 flat_half = 1.0;
+};
+f64 level_height(const void* context, i64 x_mm, i64 z_mm) noexcept {
+  const Level& l = *static_cast<const Level*>(context);
+  const f64 x = static_cast<f64>(x_mm) / 1000.0, z = std::fabs(static_cast<f64>(z_mm) / 1000.0);
+  const f64 floor = 30.0 - 0.01 * x;
+  return z <= l.flat_half ? floor : floor - 0.1 * (z - l.flat_half);
+}
+}  // namespace
+
+TEST_CASE("profile: water on ground with no bank across it is a sheet, never refused") {
+  // The forest's `region link 294` at a stage over 1 (W129.1): a line the plan left dry, so no
+  // cut crossed the level floor it runs over, and every section was level at its thalweg. The
+  // crest walk stopped at the thalweg, the section wet nothing at any level, and the line was
+  // refused with "a station has no water in its section".
+  for (const f64 flat_half : {1.0, 100.0}) {
+    CAPTURE(flat_half);
+    Level l;
+    l.flat_half = flat_half;
+    scene_gen::Ground ground;
+    ground.surface_fn = &level_height;
+    ground.context = &l;
+    FlowLine line = fixture_line("level floor", 0, 40, 0, 0.0064);
+    line.width.assign(2, 1.0);
+    std::string error;
+    Profile p;
+    REQUIRE_MESSAGE(solve_profile(line, ground, ProfileOptions{}, p, error), error);
+    REQUIRE(p.stations.size() >= 2);
+    for (const ProfileStation& s : p.stations) {
+      CHECK(s.depth >= 0.005 - 1e-9);
+      // The water stands over the level ground to where it falls away (or the section's end).
+      CHECK(s.wet_left + s.wet_right >= 2.0 * std::min(flat_half, 1.0) - 1e-6);
+      CHECK(s.speed > 0.0);
+    }
+  }
+}

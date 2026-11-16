@@ -766,6 +766,19 @@ through **the sections the ground has**, by the textbook's method
   the cut is in it, and the bankfull section is the plan's contract with the exclusion, the
   sediment and the flood bed. The count is the author's lever: a lower `stage`, or a wider law.
 
+**No section is without a bed** (W129.1, 2026-11-16). A bank's crest is walked out from the
+thalweg; on ground exactly as level as the thalweg (a floor the plan filled flat, or ground no
+cut crosses that a tile set holds at one height) the walk never rose, the crest stood at the
+thalweg on both sides, and the section wet nothing at any level, so the line was refused with "a
+station has no water in its section" — the sentence that stopped the forest's whole solve on
+`region link 294` (dry at the year's mean by a tenth of a millimetre of sheet) at every stage over
+1, and the only way a section the profile reads can hold no water at a level over its thalweg
+(the case: `profile: water on ground with no bank across it is a sheet, never refused`). The walk now goes on
+over ground level with the thalweg, so such a section is the flat, and its water a sheet over it
+(written over its bank where the level passes the flat's edge, as any). A line whose profile is
+still refused is left dry and named on the cook's stderr and in `dry` ("unsolved: ..."), and every
+other line is solved.
+
 **Against the closed forms** (`profile_tests.cpp`, the fixture's ground through
 `flow_fixture_ground`, n = 0.04): the uniform reach stands at normal depth to the last bit; the
 M1 backwater is within 0.43 mm of the direct step integral at every station, which is the
