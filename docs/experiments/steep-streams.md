@@ -108,8 +108,11 @@ have taken the sky off the whole of it, so it is mended too.
 `water_channel_broken_share`; [water](../subsystems/water.md#shading)): the share of the surface
 drawn white is `0.6 × s(0.03, 0.30, S) × s(0.02, 0.2, g S V) × s(1.5 mm, 1 cm, d)`, with s the
 smooth step, S the **sheet's own fall along the flow** (the solved levels' slope, which a pool does
-not have), V the solved section speed and d the water under the pixel; densest in the thalweg (times
-the vertical's share of the flow), in cells of a clast's size, 25 cm, carried at the surface's speed;
+not have), V the solved section speed and d the water under the pixel; in the draw, times the section's Froude number over
+[0.25, 0.6] so a pool stays clear, densest in the thalweg (times the vertical's share of the flow
+to the power 1.5, so the margins are dark water), in threads of a clast's size, 25 cm, and a third
+of it, drawn out along the flow by the distance the surface travels in half a second and carried at
+the surface's speed;
 the larger of it and the Froude rule's white wins. At the 22 stations of link 11 printed above (their
 levels falling 18 to 67 %) it gives 0.34 to 0.60 of the surface, 0.57 on the mean, where the Froude
 rule gave none. Every input is the station's own solved quantity,
