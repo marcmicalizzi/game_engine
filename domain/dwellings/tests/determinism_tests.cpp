@@ -20,9 +20,11 @@ namespace {
 // Taken on MSVC 19.44 (msvc-debug) on 2026-11-14 at k_interior_version 2 and
 // k_rural_filler_version 2. Version 1's were 0x2fd5eb8b995c3bfb and 0x8d2f548386dde551: they moved
 // because a plan's hash covers `k_interior_version`, which moved when a stair's well became the
-// flight's run (no record's field changed).
-constexpr u64 k_plans_pin = 0xc1e1e57f0ca96d27ull;
-constexpr u64 k_houses_pin = 0x1eabd65ddcdc87b0ull;
+// flight's run (no record's field changed). Re-taken on MSVC (msvc-release) on 2026-11-16 at
+// k_interior_version 3, when the well came to run a person's reach past the first riser (version
+// 2's were 0xc1e1e57f0ca96d27 and 0x1eabd65ddcdc87b0; again no record's field changed).
+constexpr u64 k_plans_pin = 0xe00d70061fa1f1f6ull;
+constexpr u64 k_houses_pin = 0x3b275677de2f881aull;
 
 }  // namespace
 

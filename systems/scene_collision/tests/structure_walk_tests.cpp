@@ -6,9 +6,11 @@
 
 #include <core/json/json.h>
 #include <core/schema/json_reflect.h>
+#include <domain/dwellings/describe.h>
 #include <domain/physics/character.h>
 #include <domain/physics/physics.h>
 #include <domain/scene_gen/scene_gen.h>
+#include <domain/structures/structures.h>
 #include <domain/village/flight.h>
 #include <domain/village/village.h>
 #include <systems/renderer/scene.h>
@@ -153,6 +155,13 @@ TEST_CASE("scene_collision: a walker enters a house by its door, crosses it and 
     if (p.state == village::PlotState::built && p.house == 0) plot = &p;
   REQUIRE(plot != nullptr);
   const village::House& house = v.plan.houses[0];
+  // **The plot's own setback**: a grown village sets each house back by its own draw from the
+  // entry's `setback_m` (village.md, "Plots"), so the house's front is where the plan put its door,
+  // behind the plot's front along `inward` (the door is on the front face).
+  const f64 setback = (static_cast<f64>(plot->door_x_mm - plot->front_x_mm) * plot->inward_x +
+                       static_cast<f64>(plot->door_z_mm - plot->front_z_mm) * plot->inward_z) /
+                      1000.0;
+  REQUIRE(setback > 0.0);
 
   physics::World physics;
   REQUIRE(physics.init(physics_options()) == physics::Status::Ok);
@@ -197,7 +206,7 @@ TEST_CASE("scene_collision: a walker enters a house by its door, crosses it and 
     const f64 rx = end.x - static_cast<f64>(plot->front_x_mm) / 1000.0;
     const f64 rz = end.z - static_cast<f64>(plot->front_z_mm) / 1000.0;
     const f64 behind_front = rx * plot->inward_x + rz * plot->inward_z;
-    CHECK(behind_front > static_cast<f64>(v.layer.setback_m));
+    CHECK(behind_front > setback);
     MESSAGE("walked " << points.size() << " points to the window at (" << end.x << ", " << end.y
                       << ", " << end.z << "), " << end.y - pad << " m over the pad");
 
@@ -210,7 +219,6 @@ TEST_CASE("scene_collision: a walker enters a house by its door, crosses it and 
     // Toward the middle of the front, so the walker faces wall and not the house's corner.
     const f64 aside =
         (door_u > 0.0 ? -1.0 : 1.0) * (static_cast<f64>(house.door_width_mm) / 2000.0 + 0.9);
-    const f64 setback = static_cast<f64>(v.layer.setback_m);
     const auto front_point = [&](f64 u, f64 back) {
       return WorldPos{
           static_cast<f64>(plot->front_x_mm) / 1000.0 + plot->along_x * u + plot->inward_x * back,
@@ -233,4 +241,178 @@ TEST_CASE("scene_collision: a walker enters a house by its door, crosses it and 
     CHECK(held_back > setback - 0.45);  // and it did reach the wall
   }
   CHECK(physics.built_shape_count() == 0);
+}
+
+namespace {
+
+// **One house on a tile** for the stair case below: a placement generator whose tile (0, 0) hands
+// the house in `g_stair_house` as its own mesh, its frame at (16, 0.03, 16) unturned (0.03 m: the
+// village's floor over its pad).
+scene_gen::PlacementMesh g_stair_house;
+constexpr f64 k_house_x = 16.0, k_house_y = 0.03, k_house_z = 16.0;
+
+void stair_house_place(const scene_gen::Context&, scene_gen::Placements& out) {
+  out.meshes.push_back(g_stair_house);
+  scene_gen::Placement p;
+  p.mesh = static_cast<u32>(out.meshes.size() - 1);
+  p.position = WorldPos{k_house_x, k_house_y, k_house_z};
+  p.id = 1;
+  out.instances.push_back(p);
+  out.things += 1;
+}
+bool stair_house_open(const JsonValue&, const scene_gen::Context&, void** state, std::string*) {
+  *state = nullptr;
+  return true;
+}
+void stair_house_close(void*) noexcept {}
+bool stair_house_expand(void*, const scene_gen::Context& context, scene_gen::Placements& out,
+                        std::string*) {
+  stair_house_place(context, out);
+  return true;
+}
+bool stair_house_meshes(void*, const scene_gen::Context&, Vector<scene_gen::PlacementMesh>&,
+                        std::string*) {
+  return true;  // nothing before a tile asks
+}
+bool stair_house_tile(void*, scene_gen::TileCoord t, const scene_gen::Context& context,
+                      scene_gen::Placements& out, std::string*) {
+  if (t.x == 0 && t.z == 0) stair_house_place(context, out);
+  return true;
+}
+bool stair_house_occupies(const void*, scene_gen::TileCoord t) noexcept {
+  return t.x == 0 && t.z == 0;
+}
+constexpr scene_gen::PlacementGeneratorDesc k_stair_house{.name = "test-stair-house",
+                                                          .open = &stair_house_open,
+                                                          .close = &stair_house_close,
+                                                          .expand = &stair_house_expand,
+                                                          .meshes = &stair_house_meshes,
+                                                          .tile = &stair_house_tile,
+                                                          .occupies = &stair_house_occupies,
+                                                          .tile_meshes = true};
+
+}  // namespace
+
+// **Every stair the rural filler builds is one a walker climbs** (dwellings.md, "The stair"): for
+// each plan type with an upper storey — the hall and parlour, the cross-passage with and without
+// its inner room, the two-up two-down a narrow toft gets — and three seeds each (the plan's mirror,
+// the house's dressing), the filler's own house stands alone on the floor and a walker set on its
+// foot landing, a step before the first riser, walks straight up the flight to a step past its top,
+// as the village's route does. This is the case that found the well's foot edge: the upper floor's
+// slab ended over the first riser, so a walker on the second tread had its crown under the slab's
+// edge behind it and could not lift for the third riser.
+TEST_CASE(
+    "scene_collision: a walker climbs the stair of every house type the rural filler builds") {
+  (void)scene_gen::GeneratorRegistry::global().add(k_stair_house);
+  struct Ask {
+    const char* what;
+    dwellings::PlanType type;
+    u8 persons, means;
+  };
+  const Ask asks[] = {
+      {"hall and parlour", dwellings::PlanType::HallParlour, 4, 2},
+      {"cross-passage with an inner room", dwellings::PlanType::CrossPassage, 7, 2},
+      {"cross-passage", dwellings::PlanType::CrossPassage, 8, 1},
+      {"two-up two-down", dwellings::PlanType::TwoUpTwoDown, 4, 2},
+  };
+  const dwellings::RuralStyle style;
+  u32 climbed = 0, flights = 0;
+  for (const Ask& ask : asks) {
+    dwellings::Household household;
+    household.persons = ask.persons;
+    household.means = ask.means;
+    for (u64 seed = 1; seed <= 3; ++seed) {
+      // The widest toft (from 20 m down, on the 10 cm module) that gives the household this type
+      // on two storeys: the two-up two-down is what a narrow one demotes a hall and parlour to.
+      dwellings::RuralPlot plot;
+      plot.depth_cm = 1200;
+      dwellings::RuralChoice choice;
+      bool found = false;
+      for (i32 frontage = 2000; frontage >= 400 && !found; frontage -= 10) {
+        plot.frontage_cm = frontage;
+        found = dwellings::choose_rural(plot, household, style, seed, choice, nullptr) &&
+                choice.interior.type == ask.type && choice.interior.storeys == 2 &&
+                (ask.type != dwellings::PlanType::CrossPassage ||
+                 choice.interior.inner_room == (ask.means != 1));
+      }
+      INFO(std::string(ask.what) << ", seed " << seed << ", a toft " << plot.frontage_cm
+                                 << " cm wide");
+      REQUIRE(found);
+      structure::Description d;
+      std::string error;
+      REQUIRE_MESSAGE(dwellings::fill_rural(plot, household, style, seed, "house", d, &error),
+                      error);
+      REQUIRE_MESSAGE(structures::validate(d, error), error);
+      structures::Walk walk;
+      REQUIRE_MESSAGE(structures::walk_records(d, walk, error), error);
+      structure::Recipe recipe;
+      recipe.description = d;
+      recipe.scope = structure::MeshScope::whole;
+      g_stair_house = scene_gen::PlacementMesh(
+          "stairs/house-" + std::to_string(structures::source_hash(recipe)) + ".structure.json",
+          ask.what, 0, structures::canonical_json(recipe), 15.0f);
+
+      renderer::SceneData scene;
+      renderer::StreamedPlacements entry;
+      entry.generator = "test-stair-house";
+      REQUIRE(parse_json("{}", entry.params).ok);
+      entry.where = "test.json: placements 0";
+      entry.tile_meshes = true;
+      scene.streamed.push_back(entry);
+      scene.tile_meshes = true;
+      scene.mesh_options.cache = false;
+      scene.terrain_mesh = ~0u;
+      scene.world.enabled = true;
+      scene.dynamic = true;
+
+      physics::World physics;
+      REQUIRE(physics.init(physics_options()) == physics::Status::Ok);
+      add_floor(physics);
+      {
+        SceneCollision collision;
+        REQUIRE_MESSAGE(collision.create(physics, scene, nullptr, Config{}, &error), error);
+        world::World world(ring());
+        world.add_consumer(collision.consumer());
+        world.update(at(k_house_x, k_house_z), 0, true);
+        REQUIRE(collision.stats().placements == 1);
+        u32 these = 0;
+        for (const structures::WalkFlight& f : walk.flights) {
+          if (f.stair >= d.stairs.size() || d.stairs[f.stair].storey != 0) continue;
+          ++these;
+          ++flights;
+          const f64 fx = k_house_x + static_cast<f64>(f.foot.x);
+          const f64 fz = k_house_z + static_cast<f64>(f.foot.z);
+          const f64 dx = static_cast<f64>(f.dir.x), dz = static_cast<f64>(f.dir.y);
+          // As the village's route: half a metre before the first riser, then up the flight's run
+          // to half a metre past its last riser, on the floor it lands on.
+          const f64 run = static_cast<f64>(f.risers - 1) * static_cast<f64>(f.going) + 0.5;
+          Vector<village::WalkPoint> points;
+          points.push_back(
+              village::WalkPoint{WorldPos{fx - dx * 0.5, k_house_y, fz - dz * 0.5}, "foot", true});
+          points.push_back(village::WalkPoint{
+              WorldPos{fx + dx * run, k_house_y + static_cast<f64>(f.top), fz + dz * run}, "head",
+              true});
+          physics::CharacterConfig c;
+          c.step_hz = 120;
+          physics::CharacterBody walker;
+          const WorldPos start{points[0].feet.x, points[0].feet.y + 0.05, points[0].feet.z};
+          REQUIRE(walker.create(physics, c, start) == physics::Status::Ok);
+          WorldPos stuck;
+          f32 highest = 0.0f;
+          const u32 reached = walk_along(walker, points, stuck, highest);
+          const f64 up = walker.feet().y - k_house_y;
+          INFO("stair " << f.stair << ": " << f.risers << " risers of " << f.rise << " m on "
+                        << f.going << " m; stopped " << up << " m up at (" << stuck.x - k_house_x
+                        << ", " << stuck.z - k_house_z << ") of the house's frame");
+          CHECK(reached == 2);
+          CHECK(std::fabs(up - static_cast<f64>(f.top)) < 0.1);
+          if (reached == 2) ++climbed;
+        }
+        CHECK(these == 1);  // one stair, from the ground storey
+      }
+      CHECK(physics.built_shape_count() == 0);
+    }
+  }
+  MESSAGE("climbed " << climbed << " of " << flights << " flights, four house types, three seeds");
+  CHECK(climbed == flights);
 }

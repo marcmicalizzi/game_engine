@@ -11,6 +11,9 @@ namespace {
 
 f64 metres(i64 mm) noexcept { return static_cast<f64>(mm) / 1000.0; }
 
+// How far on a flight's key looks for the point it looks along the way toward.
+constexpr f64 k_look_on_m = 1.0;
+
 JsonValue point_json(WorldPos p) {
   // Whole millimetres: a path a person reads and a second run writes the same.
   const auto mm = [](f64 v) { return static_cast<f64>(scene_gen::nearest_mm(v)) / 1000.0; };
@@ -23,7 +26,7 @@ JsonValue point_json(WorldPos p) {
 
 }  // namespace
 
-bool walk_points(const VillageLayer& layer, const VillagePlan& plan, u32 house,
+bool walk_points(const VillageLayer& /*layer*/, const VillagePlan& plan, u32 house,
                  Vector<WalkPoint>& out, WorldPos& look, std::string& error) {
   out.clear();
   const Plot* plot = nullptr;
@@ -40,15 +43,40 @@ bool walk_points(const VillageLayer& layer, const VillagePlan& plan, u32 house,
     return false;
   }
   const Plot& p = *plot;
-  const f64 half_tread = static_cast<f64>(layer.tread_width_m) * 0.5;
   const f64 top = metres(p.path_top_mm), pad = metres(p.pad_mm);
-  // On the tread's middle, opposite the door, and twelve metres back along the lane from there.
-  const WorldPos middle{metres(p.path_x_mm) - p.inward_x * half_tread, top,
-                        metres(p.path_z_mm) - p.inward_z * half_tread};
-  out.push_back(WalkPoint{WorldPos{middle.x - p.along_x * 12.0, top, middle.z - p.along_z * 12.0},
+  // On the way's line where the path meets it, and twelve metres back along the way from there
+  // (its stations, so a way that bends is followed and not left).
+  const LaneLine& lane = plan.lanes[p.lane];
+  u32 at = 0;
+  f64 nearest = 1e300;
+  for (u32 k = 0; k < lane.stations.size(); ++k) {
+    const f64 dx = metres(lane.stations[k].x_mm - p.lane_x_mm),
+              dz = metres(lane.stations[k].z_mm - p.lane_z_mm);
+    if (dx * dx + dz * dz < nearest) {
+      nearest = dx * dx + dz * dz;
+      at = k;
+    }
+  }
+  const i64 count = static_cast<i64>(lane.stations.size());
+  const i64 step = at > 0 ? -1 : 1;
+  i64 back = static_cast<i64>(at);
+  f64 walked = 0.0;
+  while (walked < 12.0 && back + step >= 0 && back + step < count) {
+    const LaneStation& a = lane.stations[static_cast<u32>(back)];
+    const LaneStation& b = lane.stations[static_cast<u32>(back + step)];
+    const f64 dx = metres(b.x_mm - a.x_mm), dz = metres(b.z_mm - a.z_mm);
+    walked += std::sqrt(dx * dx + dz * dz);
+    back += step;
+  }
+  const LaneStation& from = lane.stations[static_cast<u32>(back)];
+  out.push_back(WalkPoint{WorldPos{metres(from.x_mm), metres(from.top_mm), metres(from.z_mm)},
                           "lane", false});
-  out.push_back(WalkPoint{middle, "lane at the path", false});
+  out.push_back(WalkPoint{WorldPos{metres(p.lane_x_mm), top, metres(p.lane_z_mm)},
+                          "lane at the path", false});
   out.push_back(WalkPoint{WorldPos{metres(p.path_x_mm), top, metres(p.path_z_mm)}, "path", false});
+  // The gate in the plot's front, then square up to the door.
+  out.push_back(WalkPoint{WorldPos{metres(p.gate_x_mm), metres(p.gate_top_mm), metres(p.gate_z_mm)},
+                          "gate", false});
   // A step short of the threshold, on the pad, then the threshold on the house's floor.
   out.push_back(WalkPoint{
       WorldPos{metres(p.door_x_mm) - p.inward_x * 0.7, pad, metres(p.door_z_mm) - p.inward_z * 0.7},
@@ -90,15 +118,27 @@ bool flight_json(const VillageLayer& layer, const VillagePlan& plan, u32 house, 
   for (u32 k = 0; k < walk.size(); ++k) {
     const WorldPos at = eye(walk[k]);
     if (k + 1 < walk.size()) {
-      // Looking five metres on along the way to the next point.
-      const WorldPos next = eye(walk[k + 1]);
+      // Looking five metres on along the way: toward the first later point at least a metre off,
+      // so a jog of a few centimetres between two of the route's points does not turn the camera
+      // aside. (At the stair's head of the end-to-end case's house the next point was 8 cm away,
+      // half turned back from where the way went on, and the key looked into the landing's corner
+      // and its window, sky over a twentieth of the frame; the way on went to the chamber's door.)
+      u32 toward = k + 1;
+      const auto apart = [&](u32 q) {
+        const WorldPos p = eye(walk[q]);
+        return std::sqrt((p.x - at.x) * (p.x - at.x) + (p.y - at.y) * (p.y - at.y) +
+                         (p.z - at.z) * (p.z - at.z));
+      };
+      while (toward + 1 < walk.size() && apart(toward) < k_look_on_m)
+        ++toward;
+      const WorldPos next = eye(walk[toward]);
       const f64 dx = next.x - at.x, dy = next.y - at.y, dz = next.z - at.z;
       const f64 len = std::sqrt(dx * dx + dy * dy + dz * dz);
       const WorldPos ahead =
           len > 1e-6 ? WorldPos{at.x + dx / len * 5.0, at.y + dy / len * 5.0, at.z + dz / len * 5.0}
                      : next;
       add_key(elapsed, at, ahead, walk[k].what);
-      elapsed += std::fmax(len / speed_m_s, 0.75);
+      elapsed += std::fmax(apart(k + 1) / speed_m_s, 0.75);
     } else {
       // At the window: looking out of it, and staying three seconds.
       add_key(elapsed, at, look, walk[k].what);

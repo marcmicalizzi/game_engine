@@ -30,8 +30,10 @@ namespace {
 // And on 2026-11-15 (0xbee0164e0fc3342f before it), for the village's walk and its pictures: a
 // partition doorway made a door is 10 cm wider, its leaf never opens into a passage or a stair, a
 // back door's leaf stands shut, and a roof states no courses and no cut eave. MSVC's alone until a
-// container has run it.
-constexpr u64 k_descriptions_pin = 0x05eaa3436b76acbfull;
+// container has run it. And on 2026-11-16 (0x05eaa3436b76acbf before it), at k_interior_version
+// 3: a stair's well runs 30 cm past its first riser, so a walker on the first treads has its crown
+// clear of the upper floor's edge (MSVC msvc-release; GCC in the container).
+constexpr u64 k_descriptions_pin = 0x19bf9170cb041fd7ull;
 
 bool near_cm(f32 metres, i32 cm) {
   const f32 d = metres * 100.0f - static_cast<f32>(cm);

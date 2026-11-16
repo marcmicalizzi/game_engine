@@ -108,7 +108,13 @@ no device) holds it on a streamed scene of one village entry and no terrain: the
 the lane, follows the house's own way through it ([village](village.md#the-way-through-a-house)) —
 the path, the doorway, each room's doorway, the stair — and must reach every point, ending on the
 upper floor at a window, standing; and a second walker set down on the pad beside the doorway and
-walked at the house is stopped at the wall's face, a capsule's radius short of it.
+walked at the house is stopped at the wall's face, a capsule's radius short of it — the face being
+the plot's own setback behind its front, read from where the plan put the door, since a grown
+village sets each house back by its own draw. A second case stands each two-storey house type the
+rural filler builds alone on the floor (a test generator hands the filler's own description on
+one tile) and walks a capsule up its stair, from a step before the first riser to a step past the
+last, for three seeds a type; it is the case that found a stair whose upper floor ended over its
+first riser ([dwellings](dwellings.md#the-stair)).
 
 **Not built of S89**: a no-collision flag per part (a thatch fringe or a rope's strands are walls
 where the proxy keeps them), kinematic bodies (a door's leaf), and the nav agent held to the

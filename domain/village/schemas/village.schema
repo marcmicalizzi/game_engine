@@ -13,21 +13,26 @@ enum Rows : u8 {
   Right
 }
 
-/// One lane: the line its tread follows, and which sides carry plots (village.md, "The plan").
+/// One way: the places it passes, and which sides carry plots (village.md, "The ways").
 struct Lane @version(1) {
   name: string
-  /// Two or more waypoints, world metres; x and z are where the lane runs, y is not read (the
-  /// ground's). Whole millimetres.
+  /// Two or more places the way passes, in order, world metres: its ends (where it comes from and
+  /// goes to) and any ford or turn it must keep. Between two the way is **found over the ground**,
+  /// never ruled: the least-cost path for its slope, wandering by `irregularity`. x and z are read,
+  /// y is not (the ground's). Whole millimetres.
   waypoints: worldpos[]
   rows: Rows = Both
 }
 
 /// **The scene generator `village`'s entry** (village.md; docs/experiments/village-plan-grounding.md
-/// for every default): a regular row-plan village. Plots of whole perches are laid along each lane
-/// from its first point, a house stands on each plot the ground allows, on a pad benched into the
-/// ground, facing the lane; the lanes' treads, the pads and the paths to the doors are ground edits
-/// the entry plans (`PlacementGeneratorDesc::plan_ground`) and shapes the entries after it keep off.
-struct VillageLayer @version(1) {
+/// and village-growth-grounding.md for every default): a village that grew along its ways. The
+/// ways are found over the ground between the places they pass, open into a green where they meet,
+/// and plots are taken up along them nearest the green first, of uneven frontage and depth, turned
+/// to the slope and the sun, with cottages squeezed in later; a house stands on each plot the ground
+/// allows, on a pad benched into the ground, facing its way. At `irregularity` 0 the same rules lay
+/// out a regular row plan. The treads, the pads and the paths to the doors are ground edits the
+/// entry plans (`PlacementGeneratorDesc::plan_ground`) and shapes the entries after it keep off.
+struct VillageLayer @version(2) {
   name: string
   /// What every plot's choices are drawn from, with the plot's place in its row.
   seed: u64 = 0
@@ -69,7 +74,24 @@ struct VillageLayer @version(1) {
   bank_slope: f32 = 1
   fill_slope: f32 = 0.5
   face_m: f32 = 1 @unit(m)
-  /// **The houses**: the storeys asked of every house, 1 or 2. What a house is beyond that is the
-  /// house filler's, from the plot and a seed (village.md, "The house seam").
+  /// **The houses**: the storeys asked of a founding tenement's house, 1 or 2; a cottage's has one.
+  /// What a house is beyond that is the house filler's, from the plot and a seed (village.md, "The
+  /// house seam").
   storeys: u32 = 2
+  /// How far the village grew rather than was laid out, 0 to 1 (village-growth-grounding.md): 0 a
+  /// regular row plan (straight ways, no wander in the street's edge or the tread, whole perches
+  /// back to back, the entry's depth and setback, no cottages); 1 the most grown (ways that go round
+  /// what is no longer there, a tread and a street's edge that wander, frontages and depths a
+  /// quarter and 30 % uneven, six tenements in ten split between two households, a gap in one in
+  /// seven with a cottage in it, setbacks from 0.15 to 1.85 times the entry's).
+  irregularity: f32 = 0.8 @since(2)
+  /// The green where the ways meet (or at the first way's middle with one way): how wide the
+  /// street opens there, metres, 0 (none) or the street's width to 80; it is a lens twice as long,
+  /// the well stands at its middle, the tofts round it face onto it and the cover keeps off it.
+  green_m: f32 = 24 @since(2) @unit(m)
+  /// Whether a plot is reserved for the church: of the tenements taken in the outer half of the
+  /// order, the one on the highest ground, 42 by 24 m.
+  church: bool = true @since(2)
+  /// Whether a back lane runs behind three or more built tenements of one row.
+  back_lanes: bool = true @since(2)
 }
