@@ -1633,12 +1633,12 @@ WaterChannelSurface water_channel_surface(WaterChannelFlow f, float3 p, float3 g
     // cover; a soft edge, so the white thins into the water between rather than ending in a line,
     // never quite opaque, and its brightness follows how dense it is there. Far away the threads
     // average to the share.
-    const float threshold = lerp(1.2, -1.2, broken);
+    const float threshold = lerp(1.4, -0.6, broken);
     const float cover = smoothstep(threshold - 0.5, threshold + 0.9, n);
     const float white = lerp(broken, k_channel_broken_opacity * cover, keep);
     if (white > c.foam) {
       c.foam = white;
-      c.foam_shade = lerp(0.9, 0.55 + 0.45 * cover, keep);
+      c.foam_shade = lerp(0.85, 0.5 + 0.5 * cover, keep);
     }
     // The water between the white is broken too: rougher, glinting, but still water that mirrors
     // the sky where it is open.
