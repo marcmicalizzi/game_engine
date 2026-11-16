@@ -229,7 +229,7 @@ engine-content texture <in.png|jpg|tga|bmp> <out.tex> [--format auto|bc1|bc3|bc4
 engine-content texture <in.png|jpg|tga|bmp> --cache [--ddc <dir>] [the same options]
 engine-content build <in.wav|flac|mp3> <out.clip> [--log <spec>]
 engine-content build <in.wav|flac|mp3> --cache [--ddc <dir>] [--log <spec>]
-engine-content info <file.clusters|file.tex|file.clip>
+engine-content info <file.clusters|file.tex|file.clip>   # a container's `cost`: geometry bytes, each sampled image's built bytes and texels a metre (texture.md, "Sized by the asset")
 engine-content stats <file.clusters>
 engine-content folds <file.clusters>
 engine-content cuts <file.clusters>     # what it draws from 3 m to 1 km at the default thresholds, by material, with each level's errors; `build`'s summary has `loose_islands`, and `--generator-loose-islands` is a measurement no generator ships with (geometry.md, "Loose islands")

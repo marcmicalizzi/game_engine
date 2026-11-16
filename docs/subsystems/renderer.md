@@ -790,6 +790,16 @@ where that was seen. The `.tex` it leaves is byte for byte engine-content's (`te
 "a glTF on a cold cache"), because the step, the records and the keys are the same code. A texture
 that cannot be built is a warning (`texture not built`) and its mesh draws through the decode.
 
+**A scene may size them by the asset** (G14; [texture](texture.md#sized-by-the-asset)). With a
+density stated — a mesh's `Mesh.texel_density`, else `renderer.textures.texel_density`, 0 by
+default — the load measures each mesh the scene's instances place from its own level 0
+(`cap_scene_textures`, scene.cpp), takes its largest instance's scale and its fit, and asks each
+image for the level 0 that density can use (`SourceMesh::texture_caps`); the texture pass gives
+every reference to one texture the largest need of the meshes that share it and builds it with
+its top levels left out, under a key of its own. The levels kept are the uncapped texture's, so a
+frame that reads them draws the same pixels; a scene that states nothing keeps every key it had.
+The load's log counts `capped` references.
+
 The reference path tracer samples the same textures at level 0, as it always sampled everything: it
 is a compute pass with no derivatives, and a converged reference is not the place for a filter
 footprint. Its BC5 normal maps go through the same z reconstruction as the resolve's.

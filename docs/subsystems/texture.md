@@ -358,6 +358,101 @@ them and never hashes a source again. A file covered by nothing the load reads �
 PNG, a recipe's own set — is still hashed as it is now, once a load, which is what keeps a repainted
 one finding its new texture.
 
+## Sized by the asset
+
+**Why** (roadmap G14, 2026-11-15). A static prop's textures are paid whole: the forest's village
+furnished with 37 generated props cost +1,078 MiB of GPU memory in its small scene, three 2,048
+images a prop, a 20 cm salt box included, for +0.24 ms of frame. Whatever the prop's size, the
+renderer uploaded every level of every image it named, and the levels a view never samples are the
+largest: level 0 is three quarters of a chain. Any game made of bought or generated assets pays it,
+and the dev machine's 32 GB card hides it; a player's has 8 to 12.
+
+**The measure** (`texel_density.h`, `measure_cluster_density`). For each image a mesh's materials
+sample, over the mesh's own level-0 triangles: their surface area, their UV area (through the
+`KHR_texture_transform` scale the renderer draws the material with), and per triangle the
+**smaller singular value of the map from the triangle's plane to its UVs** — UV units a metre
+along the least stretched direction, which is the axis a 16x anisotropic sampler takes its level
+from ([samplers](#samplers-and-texture-transforms)). The density reported is the one all but 1% of
+the surface (by area) reaches, so one sliver an exporter squeezed in its atlas does not hold a whole
+prop's texture at full size; times the image's shorter side it is **texels a metre at level 0**.
+Nothing about the generator is read: any asset with UVs has the measure. `engine-content info`
+prints it per image (below).
+
+**What a frame can show.** A pixel at angle φ off the axis of a rectilinear camera spans `cos²φ / f`
+radians along the radial direction and `cos φ / f` across it, where `f` is the pixels a radian at the
+centre; on a surface facing the ray at distance `r`, its smaller footprint is `r cos²φ / f`. So a
+surface never holds more than `f / (r cos²φ_max)` pixels a metre, and a level whose texels are no
+denser than that is never read finer than the anisotropic sampler's minor axis. At 3840 x 2160 with
+engine-view's default 55° vertical field, `f = 1080 cot 27.5° = 2,074.7` pixels a radian, the
+frame's corner is φ = 46.7° (cos² = 0.470), and:
+
+| Nearest approach `r` | Centre, texels a metre (`f / r`) | Corner (`f / (0.470 r)`) |
+|---|---|---|
+| 0.3 m | 6,916 | 14,713 |
+| 0.5 m | 4,149 | 8,828 |
+| 1 m | 2,075 | 4,414 |
+| 2 m | 1,037 | 2,207 |
+
+At 1920 x 1080 every figure halves. A sampler reads level `k` and coarser wherever level 0 holds at
+least `2^k` texels a pixel, so with `D` the corner figure for a stated nearest distance, **the
+`floor(log2(d0 / D))` top levels of an image whose level 0 is `d0` texels a metre are never
+sampled at that distance or farther, and leaving them out changes no pixel** (trilinear filtering
+blends `floor(λ)` and the level after it, both kept).
+
+What that buys depends on how the asset spends its image, which is why it is measured and not
+assumed:
+
+| A 2,048 image on | `d0`, texels a metre | Levels left out, 4K, 0.5 m / 1 m / 2 m | At 1080p |
+|---|---|---|---|
+| one face of a 20 cm box, the whole image | 10,240 | 0 / 1 / 2 | 1 / 2 / 3 |
+| a 20 cm box, all six faces in one atlas at 70% use | 3,498 | 0 / 0 / 0 | 0 / 0 / 1 |
+| a 1 m chest in one atlas at 70% use | 699 | 0 / 0 / 0 | 0 / 0 / 0 |
+
+So a generated prop whose atlas covers it whole at 2,048 is **not** over-dense for a walker's 4K
+view at half a metre: the cap leaves nothing out of it, and says so. It pays on a mapping denser than
+its view — a face-mapped or tiled small prop, a 4,096 image on a hand-sized object, anything a scene
+only ever shows from a distance (a shelf, a yard, a roof) — and at the resolutions players run.
+One level out is three quarters of the texture's memory; two, fifteen sixteenths.
+
+**The cap** (`TextureBuildOptions::needed_side`). A power of two: the texels along the image's
+shorter side that the stated density needs, `D · scale / uv_per_m` rounded up (`needed_side()`;
+`scale` is the mesh's largest instance's largest axis scale times its fit), and the build keeps the
+smallest level of the source's chain whose shorter side is at least that (`texture_levels_dropped`).
+**The levels kept are the uncapped texture's own levels, byte for byte**: the chain is filtered from
+the source exactly as it always is, a mask's levels are held to the source's level-0 coverage as
+before, and the levels above are not stored, so wherever a sampler reads level `k` or coarser the
+picture is the uncapped one's exactly (the test builds both and compares the blocks). It packs into
+bits 12..15 of the options word, zero for none, so **a texture that states no cap keeps its key and
+nothing that does not ask is rebuilt**; one that does is a new key beside the old entry, which is
+not wrong and simply goes unread. `k_texture_cache_version` did not move.
+
+**Who states the density.** The renderer's load, from the scene: a mesh's own
+`Mesh.texel_density` (schema `engine.scene.Mesh` version 2; negative caps none of its textures), else
+the host's `renderer.textures.texel_density` (`SceneDesc::texel_density` for a caller that sets it).
+**The default is 0, no cap**, for three reasons: the right density is the viewer's (its resolution,
+its field and how near its camera comes), which a scene file cannot know and a host or a game's
+quality preset can; a non-zero default would put a new key on every over-dense texture of every
+cache on the machine and rebuild them on the next load, the forest's included; and below the stated
+distance a capped texture is blurrier than the source, which only the author can accept. The
+`Scene` root, at its ceiling of twenty fields, takes no new one: the density is the host's, the
+override the asset's. The load measures every mesh the scene's own instances place, takes its
+largest instance's scale, and gives the texture pass a need per image (`SourceMesh::texture_caps`);
+**an image several meshes share takes the largest need, and a mesh that states none needs it
+whole**. A prop a game module places and a placement generator's mesh have no instance the load can
+measure, and are not capped. The load's report counts `capped` references.
+
+**What an asset costs** (`engine-content info`, its `cost` object): `geometry_bytes` (the
+container less the images it carries), `texture_bytes` (every sampled image's whole built chain in
+the format its slots ask for, what a load uploads), and per image its size, format, `built_bytes`,
+`surface_m2`, `uv_area`, `uv_per_m`, `uv_per_m_mean`, and `texels_per_m` (and its mean) at level 0
+and scale 1. With the table above that is a budget read before any scene is loaded.
+
+**Triangles are not capped yet.** The cluster DAG already draws only what the pixel needs; what is
+paid whole is the finest level in memory. Measured on a 27,918-triangle, 20 cm sphere (the densest
+of the village's props is 28k): see [the measurement](#what-a-cap-saves-and-what-geometry-costs-beside-it-g14) below — its geometry is a
+small fraction of what its textures cost, so a floor by size (the finest level a stated nearest
+distance can show) is left on roadmap G14 until a scene shows geometry, not images, as the bulk.
+
 ## Textures that arrive after the load
 
 **Built** (R147, 2026-11-11; designed by R145 the night before). A mesh that arrives with its tile
@@ -754,6 +849,34 @@ it is the right direction), `thin-geometry` 0.0048 (0.0051; the Lantern's emissi
 pictures), `helmet-grid` 0.0052, `heightfield` 0.0348, `wide-frustum` 0.0014, `shredded-atlas`
 0.0575 unchanged.
 
+### What a cap saves, and what geometry costs beside it (G14)
+
+2026-11-15, `msvc-debug` at b95676a7 plus G14, RTX 5090, the machine shared with other agents' builds
+and GPU tests (no quiet wait; every figure below is from one binary, so the load is the same for
+both sides of a pair). The fixture is generated in a scratch directory, never committed: eight
+20 cm boxes, every face the whole of its box's own 2,048 base colour, and a 2,048 normal map the
+eight share — nine distinct textures at 10,240 texels a metre. Flown at 3840 x 2160, `--raster rt
+--shadows rt`, the bounce off so the pair can be exact, from 2 m (the nearest face 1.9 m away, whose
+corner figure above is 2,323 texels a metre: a cap of 512, two levels out), warm runs:
+
+| | `renderer.textures.texel_density` 0 (main's keys) | 2,323 |
+|---|---|---|
+| textures on the device (`place.textures_mib`) | 50.7 MiB | 3.2 MiB |
+| device-local usage | 446.4 MiB | 382.4 MiB |
+| device-local blocks committed / used | 265.3 / 220.1 MiB | 201.3 / 172.6 MiB |
+| process commit at exit (peak) | 622.7 MiB (691.1) | 560.6 MiB (629.1) |
+| pixels differing at 3840 x 2160 | — | **0 of 8,294,400** |
+
+The textures fall to a sixteenth, as two levels out should; the device's usage falls by the
+allocator's blocks it no longer needs. Every sampled texel lies on a level both builds share, so the
+picture is the same bytes.
+
+**Geometry beside it.** A 27,918-triangle, 20 cm sphere (the village's densest prop is 28k) builds
+to a 1.63 MB container: 639 clusters over ten DAG levels, 301 of them level 0, about 58 bytes a
+source triangle for every level and about half of that for level 0. The same prop with three 2,048
+images samples 16.8 MB of built textures, so its finest level is about 5% of what it costs and the
+whole DAG under 10%. A triangle floor by size would buy at most that fraction, and it is not built.
+
 ## Public API
 
 - `domain/texture/texture_file.h` — `TextureFormat`, `ColorSpace`, `k_texture_normal_map`,
@@ -766,7 +889,8 @@ pictures), `helmet-grid` 0.0052, `heightfield` 0.0348, `wide-frustum` 0.0014, `s
   `probe_texture_file` (the identity and the size from the header, by range: what a load trusts a
   built texture by), `texture_file_hash`, `is_texture_file`.
 - `domain/texture/texture_build.h` — `k_texture_cache_version`, `FormatChoice`,
-  `EdgeMode`, `TextureBuildOptions` (with `edge_x` and `edge_y`), `format_choice_name`,
+  `EdgeMode`, `TextureBuildOptions` (with `edge_x`, `edge_y` and `needed_side`),
+  `k_max_needed_side`, `texture_levels_dropped`, `format_choice_name`,
   `parse_format_choice`, `edge_mode_name`, `parse_edge_mode`, `pack_texture_options`,
   `unpack_texture_options`, `resolve_texture_format`, `texture_cache_key`, `texture_cache_path`,
   `TextureBuildReport`, `build_texture`, `build_texture_from_encoded`, `k_alpha_dilation_texels`,
@@ -776,11 +900,14 @@ pictures), `helmet-grid` 0.0052, `heightfield` 0.0348, `wide-frustum` 0.0014, `s
 - `domain/texture/material_textures.h` — `k_role_*`, `image_roles`, `options_for_roles`, `image_edges`,
   `alpha_cutoff_code`,
   `fill_cluster_texture_records`, `cluster_texture_records`.
+- `domain/texture/texel_density.h` — `k_density_surface_share`, `ImageDensity`,
+  `measure_image_density`, `measure_cluster_density`, `needed_side` ("Sized by the asset").
 
 ## Depends on
 
-`base`, `containers`, `hash`, `time`, `jobs`, `io`, `image` (the decode), `geometry` (the container
-record the glue fills); `bc7enc` (the vendored encoders, MIT or public domain).
+`base`, `containers`, `math`, `hash`, `time`, `jobs`, `io`, `image` (the decode), `geometry` (the
+container record the glue fills, and the levels the density is measured over); `bc7enc` (the
+vendored encoders, MIT or public domain).
 
 ## Testing
 

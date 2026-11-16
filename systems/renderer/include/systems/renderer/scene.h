@@ -245,6 +245,10 @@ struct SceneMeshInfo {
   // "scene", "overlay" (a manifest's replacement), "prop", "terrain", or "water"
   const char* origin = "scene";
   MeshFit fit;
+  // **The texels a metre this mesh's closest view resolves** (schema `Mesh.texel_density`; G14,
+  // texture.md "Sized by the asset"): 0 takes the scene's (`SceneDesc::texel_density`), a negative
+  // value caps none of its textures whatever the scene says.
+  f32 texel_density = 0.0f;
   // A water body's (`SceneWater`): set for a mesh the scene's `water` block made, and only then.
   std::optional<SceneWater> water{};
 };
@@ -472,6 +476,12 @@ struct SceneDesc {
   // one per performance CPU, as `engine-content --jobs 0`. The result does not depend on it — a
   // test loads a scene at 1 and at 0 and requires the same tables.
   u32 load_jobs = 0;
+  // **The texels a metre the closest view of this scene's meshes resolves** (G14; texture.md,
+  // "Sized by the asset"): a mesh whose built textures hold more than that at its largest instance
+  // is given textures whose top levels are left out, and draws the same pixels wherever a sampler
+  // reads the levels kept. Negative: `renderer.textures.texel_density` (0 by default: no cap, and
+  // every texture keeps the key it has). A mesh's own `SceneMeshInfo::texel_density` wins.
+  f32 texel_density = -1.0f;
   // ---- what a scene file adds (schema `engine.scene.Scene`) ------------------------------------
   // Per mesh: a name, the hash its bytes must have, and a fit. Empty, or parallel to `meshes`.
   Vector<SceneMeshInfo> mesh_info;
@@ -631,6 +641,11 @@ struct SourceMesh {
   // (renderer.md, "What the load reads"). Empty — every image decoded as
   // before — for a glTF loaded with no cache and for a container that records none.
   Vector<geometry::ClusterFileTexture> textures;
+  // **Each image's cap** (G14; texture.md, "Sized by the asset"): parallel to `textures`, the
+  // `texture::TextureBuildOptions::needed_side` the scene's density asks of it at this mesh's
+  // largest instance, 0 for none; or empty, and nothing is capped. The load's texture pass takes
+  // the largest need of every mesh that shares an image, a mesh asking none counting as the whole.
+  Vector<u32> texture_caps;
   // The derived-data root those textures are looked up under; empty when the load reads no cache
   // (`SceneDesc::cache` off), and then the built textures are not used either.
   std::string texture_ddc;
@@ -695,6 +710,9 @@ struct SceneLoadReport {
   u32 trusted = 0;
   u32 built = 0;
   u32 unbuilt = 0;
+  // Of `references`, those given a cap by the scene's density (G14; texture.md, "Sized by the
+  // asset"): built with their top levels left out. Zero for a scene that states no density.
+  u32 capped = 0;
   // Source images: answered by a material pack's index without a read, read and hashed (once
   // each), and every open of one this load made with the bytes it returned — zero for a scene
   // whose images are all embedded or a pack's and all built.

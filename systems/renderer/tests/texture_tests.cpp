@@ -168,7 +168,9 @@ struct Harness {
   // `cache` true reads and fills the derived-data root in the test's scratch directory — which
   // builds the quad's texture there as `engine-content build --cache` would — and false draws the
   // image decoded at one level, the path a load without a cache takes.
-  bool build(const std::string& mesh, const std::string& ddc, bool cache = true) {
+  // `texel_density`: the scene's (`SceneDesc::texel_density`, G14); 0 caps nothing.
+  bool build(const std::string& mesh, const std::string& ddc, bool cache = true,
+             f32 texel_density = 0.0f) {
     std::string error;
     if (!device.create(gfx::DeviceOptions{}, &error)) {
       skip = "device unavailable: " + error;
@@ -178,6 +180,7 @@ struct Harness {
     desc.meshes.push_back(mesh);
     desc.cache = cache;  // the records name the texture in this scratch root, and only there
     desc.ddc = ddc;
+    desc.texel_density = texel_density;
     REQUIRE_MESSAGE(load_scene(desc, data, error), "scene: " << error);
     RenderSettings settings;
     settings.shadows = ShadowMode::Off;
@@ -349,6 +352,66 @@ TEST_CASE("renderer: a glTF on a cold cache builds its textures and samples them
   CHECK(h.scene.textures_built() == 1);
   CHECK(h.scene.textures_decoded() == 0);
   CHECK(std::filesystem::last_write_time(path) == written_at);
+}
+
+// A texture sized by its asset (G14; texture.md, "Sized by the asset"): the quad is 2 m across with
+// its 256-texel image once over it, 128 texels a metre at level 0. A scene stating 32 texels a
+// metre needs 64 texels along the image's side, so the load builds the texture with its top two
+// levels left out — a new key beside the uncapped one, which stays — and seen from 15 m, where a
+// pixel covers about eight of the source's texels and the sampler reads level 3 and coarser, the
+// picture is the uncapped one's byte for byte, for a sixteenth of the level-0 memory.
+TEST_CASE("renderer: a texture capped by the scene's density draws the same pixels where read") {
+  const test::TempDir tmp("renderer_texture_cap");
+  const std::filesystem::path dir = tmp.native();
+  REQUIRE(write_quad(dir));
+  Vector<u8> png;
+  REQUIRE(write_image(dir, k_size, checker_image(k_size), png));
+  const std::string mesh = (dir / "quad.gltf").string();
+  const std::string ddc = (dir / "ddc").string();
+  constexpr f32 k_far = 15.0f;
+  CHECK(texels_per_pixel(k_far, k_size) > 6.0);
+  CapturedFrame whole;
+  u64 whole_bytes = 0;
+  const texture::TextureData expected = expected_texture(png);
+  {
+    Harness h;
+    if (!h.build(mesh, ddc)) {
+      MESSAGE(h.skip);
+      return;
+    }
+    whole = h.shot(k_far);
+    whole_bytes = h.scene.texture_bytes();
+    CHECK(h.data.load.capped == 0);
+  }
+  // No density, the key it always had.
+  CHECK(std::filesystem::exists(texture::texture_cache_path(ddc, expected.build_key)));
+  Harness h;
+  REQUIRE(h.build(mesh, ddc, true, 32.0f));
+  CHECK(h.data.load.capped == 1);
+  CHECK(h.scene.textures_built() == 1);
+  const CapturedFrame capped = h.shot(k_far);
+  MESSAGE("texture bytes: whole " << whole_bytes << ", capped " << h.scene.texture_bytes());
+  CHECK(h.scene.texture_bytes() < whole_bytes);
+  texture::TextureBuildOptions options;
+  options.format = texture::FormatChoice::bc7;
+  options.color_space = texture::ColorSpace::srgb;
+  options.edge_x = texture::EdgeMode::repeat;
+  options.edge_y = texture::EdgeMode::repeat;
+  options.needed_side = 64;
+  texture::TextureData built;
+  std::string error;
+  REQUIRE_MESSAGE(texture::read_texture_file(
+                      texture::texture_cache_path(
+                          ddc, texture::texture_cache_key(expected.source_hash, options)),
+                      built, &error),
+                  error);
+  CHECK(built.width == 64);
+  CHECK(built.levels.size() + 2 == expected.levels.size());
+  REQUIRE(capped.color.size() == whole.color.size());
+  u32 differing = 0;
+  for (u32 i = 0; i < capped.color.size(); ++i)
+    differing += capped.color[i] != whole.color[i] ? 1u : 0u;
+  CHECK(differing == 0);
 }
 
 TEST_CASE("renderer: a checkerboard far away resolves to its mean through the mips") {

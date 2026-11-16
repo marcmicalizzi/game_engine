@@ -176,11 +176,12 @@ TEST_CASE("material textures: the options word round-trips and refuses what it d
   clamped.format = FormatChoice::bc7;
   CHECK((pack_texture_options(clamped) & 0xf00u) == 0);
   TextureBuildOptions out;
-  CHECK_FALSE(unpack_texture_options(0, out));                // "no texture wanted"
-  CHECK_FALSE(unpack_texture_options(0x1u, out));             // no validity bit
-  CHECK_FALSE(unpack_texture_options(0x80u | 0xfu, out));     // a format past the last
-  CHECK_FALSE(unpack_texture_options(0x80u | 0x300u, out));   // an edge mode past the last
-  CHECK_FALSE(unpack_texture_options(0x80u | 0x1000u, out));  // a bit a newer build set
+  CHECK_FALSE(unpack_texture_options(0, out));               // "no texture wanted"
+  CHECK_FALSE(unpack_texture_options(0x1u, out));            // no validity bit
+  CHECK_FALSE(unpack_texture_options(0x80u | 0xfu, out));    // a format past the last
+  CHECK_FALSE(unpack_texture_options(0x80u | 0x300u, out));  // an edge mode past the last
+  // A bit a newer build set: bit 24, since bits 12..15 became the cap (G14).
+  CHECK_FALSE(unpack_texture_options(0x80u | 0x1000000u, out));
   EdgeMode parsed = EdgeMode::clamp;
   CHECK(parse_edge_mode("mirror", parsed));
   CHECK(parsed == EdgeMode::mirror);

@@ -266,6 +266,23 @@ TEST_CASE("engine-content: a mesh's images build into the derived-data cache, ke
   CHECK(text_of((*records)[1], "format") == "bc5");
   CHECK(number((*records)[2], "roles") == (4u | 8u));  // metallic-roughness and occlusion
   CHECK(number((*records)[3], "key") == number((*detail)[3], "key"));
+  // And what it costs (G14; texture.md, "Sized by the asset"): the geometry's bytes and, per
+  // sampled image, its size, its built chain's bytes and the texels a metre its level 0 puts on the
+  // mesh.
+  const JsonValue* cost = described.lines[0].find("cost");
+  REQUIRE(cost != nullptr);
+  CHECK(number(*cost, "geometry_bytes") > 0);
+  const JsonValue* images = cost->find("images");
+  REQUIRE(images != nullptr);
+  REQUIRE(images->size() == 4);
+  f64 sum = 0.0;
+  for (u32 i = 0; i < images->size(); ++i) {
+    CHECK(number((*images)[i], "width") > 0);
+    CHECK(number((*images)[i], "built_bytes") > 0);
+    CHECK(number((*images)[i], "texels_per_m") > 0);
+    sum += number((*images)[i], "built_bytes");
+  }
+  CHECK(number(*cost, "texture_bytes") == sum);
 
   // `info` on a texture is the texture's.
   const Run tex_info = content({"info", tex_paths[1]});

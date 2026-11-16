@@ -5,12 +5,12 @@
 # build writes textures with it; the renderer reads them. Not a capability: the renderer's
 # materials depend on it, and a foundation that can be switched off is one nobody can rely on.
 engine_module(NAME texture LAYER domain
-  DEPS base containers hash time jobs io image geometry
+  DEPS base containers math hash time jobs io image geometry
   EXTERNAL_DEPS bc7enc
   SOURCES src/texture_file.cpp src/texture_build.cpp src/mips.cpp src/blocks.cpp
-          src/material_textures.cpp)
+          src/material_textures.cpp src/texel_density.cpp)
 
 engine_module_tests(NAME texture
   SOURCES tests/texture_file_tests.cpp tests/mips_tests.cpp tests/blocks_tests.cpp
           tests/material_textures_tests.cpp tests/determinism_tests.cpp tests/alpha_mask_tests.cpp
-          tests/size_table.cpp)
+          tests/texel_density_tests.cpp tests/size_table.cpp)

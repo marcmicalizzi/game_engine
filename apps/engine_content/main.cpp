@@ -51,8 +51,10 @@
 #include <domain/geometry/cluster_file.h>
 #include <domain/materials/materials.h>
 #include <domain/texture/material_textures.h>
+#include <domain/texture/texel_density.h>
 #include <domain/texture/texture_build.h>
 #include <domain/texture/texture_file.h>
+#include <foundation/image/decode.h>
 #include <foundation/io/vfs.h>
 
 #include <algorithm>
@@ -1219,6 +1221,74 @@ JsonValue texture_records_json(const geometry::ClusterFileData& data) {
   return rows;
 }
 
+// **What a container costs before a scene loads it** (G14; texture.md, "Sized by the asset"): the
+// file's bytes less the images it carries (the geometry and everything else the renderer keeps of
+// it), and per image a material samples its size, the bytes its built texture's whole chain takes
+// in the format its slots ask for (what a load uploads; a normal map's variance chain not
+// counted), and the density its level 0 puts on the mesh: `texels_per_m` along the least stretched
+// direction with all but 1% of the surface at least that dense (`texture::ImageDensity`), times
+// the image's shorter side, at scale 1. An image whose file cannot be read reports no size.
+JsonValue cost_json(const geometry::ClusterFileData& data, u64 total_bytes, u64 image_bytes) {
+  JsonValue cost = JsonValue::object();
+  cost.set("geometry_bytes", JsonValue(total_bytes - std::min(total_bytes, image_bytes)));
+  Vector<texture::ImageDensity> density;
+  texture::measure_cluster_density(data.mesh,
+                                   {data.cluster_material.data(), data.cluster_material.size()},
+                                   {data.materials.data(), data.materials.size()},
+                                   {data.material_sampling.data(), data.material_sampling.size()},
+                                   static_cast<u32>(data.image_paths.size()), density);
+  const std::string_view dir = io::parent_path(data.source_path);
+  JsonValue rows = JsonValue::array();
+  u64 texture_bytes = 0;
+  for (u32 i = 0; i < data.textures.size() && i < density.size(); ++i) {
+    const geometry::ClusterFileTexture& record = data.textures[i];
+    texture::TextureBuildOptions options;
+    if (record.options == 0 || !texture::unpack_texture_options(record.options, options)) continue;
+    JsonValue row = JsonValue::object();
+    row.set("image", JsonValue(i));
+    row.set("triangles", JsonValue(density[i].triangles));
+    row.set("surface_m2", JsonValue(density[i].surface_m2));
+    row.set("uv_area", JsonValue(density[i].uv_area));
+    row.set("uv_per_m", JsonValue(density[i].uv_per_m));
+    row.set("uv_per_m_mean", JsonValue(density[i].uv_per_m_mean));
+    // The bytes: carried in the container, or the file beside the source.
+    std::string file;
+    std::span<const u8> bytes;
+    if (i < data.images.size() && !data.images[i].bytes.empty()) {
+      bytes = {data.images[i].bytes.data(), data.images[i].bytes.size()};
+    } else if (i < data.image_paths.size() && !data.image_paths[i].empty()) {
+      const std::string path = io::is_absolute_path(data.image_paths[i]) || dir.empty()
+                                   ? data.image_paths[i]
+                                   : io::join_path(dir, data.image_paths[i]);
+      if (io::read_file(path, file) == io::Status::Ok)
+        bytes = {reinterpret_cast<const u8*>(file.data()), file.size()};
+    }
+    image::ImageInfo probe;
+    texture::TextureFormat format = texture::TextureFormat::bc7;
+    if (!bytes.empty() && image::probe_image(bytes, probe) &&
+        texture::resolve_texture_format(options, probe.channels, format)) {
+      u64 chain = 0;
+      for (u32 w = probe.width, h = probe.height;;
+           w = std::max(1u, w >> 1), h = std::max(1u, h >> 1)) {
+        chain += texture::texture_level_bytes(format, w, h);
+        if ((w == 1 && h == 1) || !options.mips) break;
+      }
+      texture_bytes += chain;
+      const u32 shorter = std::min(probe.width, probe.height);
+      row.set("width", JsonValue(probe.width));
+      row.set("height", JsonValue(probe.height));
+      row.set("format", JsonValue(texture::texture_format_name(format)));
+      row.set("built_bytes", JsonValue(chain));
+      row.set("texels_per_m", JsonValue(density[i].uv_per_m * static_cast<f64>(shorter)));
+      row.set("texels_per_m_mean", JsonValue(density[i].uv_per_m_mean * static_cast<f64>(shorter)));
+    }
+    rows.push_back(std::move(row));
+  }
+  cost.set("texture_bytes", JsonValue(texture_bytes));
+  cost.set("images", std::move(rows));
+  return cost;
+}
+
 int info(const std::string& path) {
   // A clip, a texture or a container, told apart by the magic rather than by the file's name.
   int clip_code = k_exit_ok;
@@ -1278,6 +1348,7 @@ int info(const std::string& path) {
   summary.set("deduplicated_images", JsonValue(images.deduplicated));
   summary.set("image_bytes", JsonValue(images.bytes));
   summary.set("textures", texture_records_json(data));
+  summary.set("cost", cost_json(data, header.total_bytes, images.bytes));
   summary.set("morph_channels", JsonValue(lod.mesh.morph_channels.size()));
   summary.set("morph_deltas", JsonValue(lod.mesh.morph_delta_count));
   // A generated tree's impostor chain (section 38; flora.md, "The impostor chain"), only when it

@@ -25,6 +25,7 @@
 #include <domain/scene_gen/sky.h>
 #include <domain/scene_gen/water_channel.h>
 #include <domain/texture/material_textures.h>
+#include <domain/texture/texel_density.h>
 #include <domain/texture/texture_build.h>
 #include <domain/texture/texture_file.h>
 #include <foundation/image/png.h>
@@ -303,6 +304,44 @@ void prepare_scene_textures(const SceneDesc& desc, Vector<SourceMesh>& sources,
     ref.source_hash = file.hash;
     ref.key = texture::texture_cache_key(file.hash, options);
   }
+  // 1b. **The caps** (G14; texture.md, "Sized by the asset"): every reference to one texture — the
+  // same bytes at the same options, so the same key — takes the largest need of the meshes that
+  // name it, and a mesh that asks no cap needs the whole image. Nothing here runs for a scene that
+  // states no density, so its keys are the ones they always were.
+  bool any_cap = false;
+  for (const SourceMesh& mesh : sources)
+    any_cap = any_cap || !mesh.texture_caps.empty();
+  if (any_cap) {
+    HashMap<u64, u32> group_of;
+    Vector<u32> need;  // per group: the largest needed side, 0 for the whole image
+    Vector<u32> group_of_ref(refs.size(), ~0u);
+    for (u32 r = 0; r < refs.size(); ++r) {
+      const TextureRef& ref = refs[r];
+      if (ref.key == 0) continue;
+      const SourceMesh& mesh = sources[ref.mesh];
+      const u32 cap = ref.image < mesh.texture_caps.size() ? mesh.texture_caps[ref.image] : 0u;
+      const u32* found = group_of.find_value(ref.key);
+      if (found == nullptr) {
+        group_of.try_emplace(ref.key, need.size());
+        group_of_ref[r] = need.size();
+        need.push_back(cap);
+        continue;
+      }
+      group_of_ref[r] = *found;
+      u32& wanted = need[*found];
+      wanted = (wanted == 0 || cap == 0) ? 0u : std::max(wanted, cap);
+    }
+    for (u32 r = 0; r < refs.size(); ++r) {
+      if (group_of_ref[r] == ~0u || need[group_of_ref[r]] == 0) continue;
+      TextureRef& ref = refs[r];
+      texture::TextureBuildOptions options;
+      (void)texture::unpack_texture_options(ref.options, options);
+      options.needed_side = need[group_of_ref[r]];
+      ref.options = texture::pack_texture_options(options);
+      ref.key = texture::texture_cache_key(ref.source_hash, options);
+      ++report.capped;
+    }
+  }
   // 2. The distinct keys, each `.tex` trusted from its header.
   Vector<KeyWork> keys;
   HashMap<u64, u32> key_of;
@@ -421,6 +460,7 @@ void prepare_scene_textures(const SceneDesc& desc, Vector<SourceMesh>& sources,
     geometry::ClusterFileTexture& record = sources[ref.mesh].textures[ref.image];
     record.source_hash = ref.source_hash;
     record.key = ref.key;
+    record.options = ref.options;  // a cap's, when 1b gave one
   }
   identities.save();
   const content_build::ImageIdentities::Counts counts = identities.counts();
@@ -437,7 +477,7 @@ void prepare_scene_textures(const SceneDesc& desc, Vector<SourceMesh>& sources,
       log_renderer, "scene textures checked", log::field("references", report.references),
       log::field("textures", report.textures), log::field("trusted", report.trusted),
       log::field("built", report.built), log::field("unbuilt", report.unbuilt),
-      log::field("from_index", report.images_from_index),
+      log::field("capped", report.capped), log::field("from_index", report.images_from_index),
       log::field("hashed", report.images_hashed),
       log::field("source_reads", report.source_image_reads),
       log::field("source_bytes", report.source_image_bytes), log::field("ms", report.textures_ms));
@@ -1439,6 +1479,87 @@ FitParts fit_parts(const MeshFit& fit, const geometry::ClusterLodMesh& dag, u32 
   return out;
 }
 
+// ---- textures sized by the asset (G14; texture.md, "Sized by the asset") -----------------------
+
+tunables::Float texture_texel_density{
+    "renderer.textures.texel_density", 0.0, 0.0, 1'000'000.0,
+    "Texels a metre the closest view of a scene's meshes resolves: a mesh's built textures that "
+    "hold more than this at its largest instance leave their top levels out (0: no cap, every "
+    "texture keeps its key; texture.md, \"Sized by the asset\")"};
+
+// Each mesh's caps (`SourceMesh::texture_caps`) from the density the scene or the mesh states,
+// the mesh's own measure (`texture::measure_cluster_density` over its level 0) and its largest
+// instance's largest axis scale times its fit. A mesh no instance of the scene places — a prop a
+// module places, a placement generator's — has no scale this can know, and is capped by nothing.
+void cap_scene_textures(const SceneDesc& desc, std::span<const geometry::ClusterLodMesh> dags,
+                        Vector<SourceMesh>& sources) {
+  const f64 scene_density = desc.texel_density >= 0.0f ? static_cast<f64>(desc.texel_density)
+                                                       : texture_texel_density.get();
+  const bool described = desc.mesh_info.size() == desc.meshes.size();
+  bool any = scene_density > 0.0;
+  for (u32 m = 0; described && m < desc.mesh_info.size(); ++m)
+    any = any || desc.mesh_info[m].texel_density > 0.0f;
+  if (!any) return;
+  Vector<f64> scale(sources.size(), desc.instances.empty() ? 1.0 : 0.0);
+  for (const SceneInstance& instance : desc.instances) {
+    if (instance.mesh >= scale.size()) continue;
+    const Vec3 s = instance.transform.scale;
+    const f64 largest =
+        std::max(std::fabs(static_cast<f64>(s.x)),
+                 std::max(std::fabs(static_cast<f64>(s.y)), std::fabs(static_cast<f64>(s.z))));
+    scale[instance.mesh] = std::max(scale[instance.mesh], largest);
+  }
+  for (u32 m = 0; m < sources.size() && m < dags.size(); ++m) {
+    SourceMesh& mesh = sources[m];
+    f64 density = scene_density;
+    if (described && desc.mesh_info[m].texel_density != 0.0f)
+      density = desc.mesh_info[m].texel_density > 0.0f
+                    ? static_cast<f64>(desc.mesh_info[m].texel_density)
+                    : 0.0;
+    const geometry::ClusterLodMesh& dag = dags[m];
+    if (!(density > 0.0) || !(scale[m] > 0.0) || mesh.textures.empty() ||
+        mesh.part_of_cluster.size() != dag.mesh.clusters.size()) {
+      continue;
+    }
+    f64 fit = 1.0;
+    if (described && desc.mesh_info[m].fit.active()) {
+      fit = static_cast<f64>(
+          fit_parts(desc.mesh_info[m].fit, dag, 0, static_cast<u32>(dag.mesh.clusters.size()))
+              .scale);
+    }
+    Vector<geometry::ClusterFileMaterial> materials;
+    Vector<geometry::ClusterFileMaterialSampling> sampling;
+    materials.reserve(mesh.data.materials.size());
+    sampling.reserve(mesh.data.materials.size());
+    for (const assets::Material& source : mesh.data.materials) {
+      geometry::ClusterFileMaterial material;
+      material.base_color_image = source.base_color_image;
+      material.normal_image = source.normal_image;
+      material.metallic_roughness_image =
+          geometry::encode_optional_image(source.metallic_roughness_image);
+      material.occlusion_image = geometry::encode_optional_image(source.occlusion_image);
+      material.emissive_image = geometry::encode_optional_image(source.emissive_image);
+      materials.push_back(material);
+      sampling.push_back(
+          geometry::encode_material_sampling(source.sampling, source.occlusion_strength));
+    }
+    Vector<u32> cluster_material(static_cast<u32>(dag.mesh.clusters.size()), ~0u);
+    for (u32 c = 0; c < cluster_material.size(); ++c) {
+      const u32 part = mesh.part_of_cluster[c];
+      const i32 material = part < mesh.part_material.size() ? mesh.part_material[part] : -1;
+      if (material >= 0) cluster_material[c] = static_cast<u32>(material);
+    }
+    Vector<texture::ImageDensity> measured;
+    texture::measure_cluster_density(dag, {cluster_material.data(), cluster_material.size()},
+                                     {materials.data(), materials.size()},
+                                     {sampling.data(), sampling.size()},
+                                     static_cast<u32>(mesh.textures.size()), measured);
+    mesh.texture_caps.assign(static_cast<u32>(mesh.textures.size()), 0u);
+    for (u32 i = 0; i < measured.size(); ++i)
+      mesh.texture_caps[i] = texture::needed_side(measured[i].uv_per_m, scale[m] * fit, density);
+  }
+}
+
 // ---- a streamed world's own instances (renderer.md, "Authored instances per tile") -------------
 
 // The nearest an observer can be to an origin filed on a tile of ring `r` (r >= 1), metres: the
@@ -2393,6 +2514,7 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
       info.fit.extent = mesh.fit->extent;
       info.fit.ground = mesh.fit->ground;
     }
+    info.texel_density = mesh.texel_density;  // G14
     std::string resolved =
         io::is_absolute_path(mesh.path) || dir.empty() ? mesh.path : io::join_path(dir, mesh.path);
     if (!mesh.overlay.empty()) {
@@ -3001,7 +3123,9 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   out.load.meshes_ms = static_cast<f64>(time::monotonic_ns() - meshes_start_ns) / 1.0e6;
   // Every mesh's textures at once: one identity per distinct image, a built one trusted from its
   // header, the rest built on the same pool (`prepare_scene_textures`). Before the authored forms
-  // below copy the records, so a form carries its mesh's keys.
+  // below copy the records, so a form carries its mesh's keys. The caps a scene's density asks of
+  // them first (G14), while the meshes' own levels are still at hand to be measured.
+  cap_scene_textures(resolved, {dags.data(), dags.size()}, out.sources);
   prepare_scene_textures(resolved, out.sources, identities, &*pool, out.load);
   // Each mesh's path as the scene named it, for a sentence about it (a form copies its source's).
   for (u32 m = 0; m < out.sources.size() && m < resolved.meshes.size(); ++m)
