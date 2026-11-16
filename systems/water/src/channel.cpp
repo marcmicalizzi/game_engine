@@ -139,6 +139,21 @@ f64 nappe_breakup_m(f64 unit_discharge) noexcept {
   return unit_discharge > 0.0 ? 5.89 * std::pow(unit_discharge, 0.319) : 0.0;
 }
 
+namespace {
+// HLSL's smoothstep, as the shader computes it.
+f64 smooth_step(f64 lo, f64 hi, f64 x) noexcept {
+  const f64 t = std::clamp((x - lo) / (hi - lo), 0.0, 1.0);
+  return t * t * (3.0 - 2.0 * t);
+}
+}  // namespace
+
+f64 channel_broken_share(f64 slope, f64 speed, f64 depth_m) noexcept {
+  return k_channel_steep_white * smooth_step(k_channel_steep_from, k_channel_steep_full, slope) *
+         smooth_step(k_channel_dissipation_from, k_channel_dissipation_full,
+                     k_gravity * slope * speed) *
+         smooth_step(k_channel_veil_from_m, k_channel_veil_full_m, depth_m);
+}
+
 f32 station_hydraulic_depth(const Channel& c, u32 i) noexcept {
   const f64 fr = static_cast<f64>(c.froude[i]);
   const f64 v = static_cast<f64>(c.speed_mps[i]);

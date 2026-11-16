@@ -967,8 +967,12 @@ WaterChannelPixel water_channel_pixel(ResolveParams* params, SceneGeometry geo, 
   // fade hides the line where the sheet meets its bank; taken over `k_water_calm_depth` it took
   // the sky's reflection off every stream shallower than that, and a brook 10 cm deep was a film
   // over its bed with no surface (the owner's "pale film"): 2 cm of water mirrors the sky as a
-  // metre does. A nappe is thin everywhere and has no shore.
-  o.edge = nappe > 0.0 ? w.shore : w.shore * clamp(depth / k_channel_shore_depth, 0.0, 1.0);
+  // metre does. A nappe is thin everywhere and has no shore. **The fade belongs to the shore, not
+  // to shallow water** (W130): fast water on a steep bed is a few centimetres deep across its whole
+  // section, so the fade is taken over at most half the section's hydraulic depth, and the middle of
+  // a stream of any depth mirrors the sky; a stream deeper than 6 cm fades as it did.
+  const float shore_depth = min(k_channel_shore_depth, max(0.5 * hydraulic, k_channel_depth_min));
+  o.edge = nappe > 0.0 ? w.shore : w.shore * clamp(depth / shore_depth, 0.0, 1.0);
   // Under a nappe the ground seen through the sheet is the face it falls down: lit as that face
   // (the sheet's own plane), not as level ground, which drew a bright window of rock in the air.
   o.slope = nappe > 0.0 ? plane.xz / max(plane.y, 0.12) : float2(0.0, 0.0);

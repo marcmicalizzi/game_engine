@@ -147,6 +147,21 @@ f64 lateral_speed_share(f64 d, f64 hydraulic_depth) noexcept;
 // [k_channel_breakup_from, 1] of the length, from the height the sheet has fallen.
 f64 nappe_breakup_m(f64 unit_discharge) noexcept;
 inline constexpr f64 k_channel_breakup_from = 0.6;
+// **Broken water on a steep bed** (W130; water.slang's `water_channel_broken_share`, which this
+// mirrors; steep-streams.md). The share of a channel's surface drawn white where its sheet falls
+// `slope` (rise over run) at a section speed `speed` over `depth` of water: rising over the slope
+// from the step-pool reach's onset to the cascade's upper end (Montgomery and Buffington 1997), to
+// `k_channel_steep_white` (a choice), times the energy to entrain air (g S V over the lower end of
+// Ulseth et al. 2019's bubbly regime and ten times it) and times the water (a nappe's veil depths,
+// 1.5 mm to 1 cm). A level pool, a gentle reach and a film have none.
+inline constexpr f64 k_channel_steep_from = 0.03;
+inline constexpr f64 k_channel_steep_full = 0.30;
+inline constexpr f64 k_channel_steep_white = 0.6;
+inline constexpr f64 k_channel_dissipation_from = 0.02;
+inline constexpr f64 k_channel_dissipation_full = 0.2;
+inline constexpr f64 k_channel_veil_from_m = 0.0015;
+inline constexpr f64 k_channel_veil_full_m = 0.010;
+f64 channel_broken_share(f64 slope, f64 speed, f64 depth_m) noexcept;
 
 // One channel as this capability draws it: the solved description about its origin, bounded.
 struct Channel {
