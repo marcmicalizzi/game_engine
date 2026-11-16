@@ -21,13 +21,13 @@ namespace {
 // Half a metre each side between a house and its plot's side boundaries.
 constexpr i64 k_side_gap_mm = 500;
 // **The way's cost** (village-growth-grounding.md, "The ways"; choices): a step's length times
-// 1 + (grade / 8 %)^2, ten times that over a 25 % grade, plus the wander, up to half the length at
-// `irregularity` 1, over a lattice of 12 m. The search's corridor reaches past the two places by
-// half their distance, 30 to 60 m.
+// 1 + (grade / 8 %)^2, ten times that over a 25 % grade, plus the wander, up to a quarter of the length at
+// `irregularity` 1, over a lattice of 12 m. The search's corridor reaches past the two places by a
+// quarter of their distance, 20 to 40 m.
 constexpr i64 k_grade_knee = 80;   // per mille
 constexpr i64 k_grade_wall = 250;  // per mille
 constexpr i64 k_wander_lattice_mm = 12000;
-constexpr i64 k_corridor_min_mm = 30000, k_corridor_max_mm = 60000;
+constexpr i64 k_corridor_min_mm = 20000, k_corridor_max_mm = 40000;
 // The street's edge wanders over a lattice of 16 m along the way, by up to a quarter of its width.
 constexpr i64 k_edge_lattice_mm = 16000;
 // A plot turns off square to its way by up to tan 20 degrees.
@@ -192,7 +192,7 @@ bool heap_after(const HeapItem& a, const HeapItem& b) noexcept {
 bool find_way(const scene_gen::Ground& ground, i64 ax, i64 az, i64 bx, i64 bz, i64 cell_mm,
               i64 irregularity, u64 seed, Vector<i64>& out, std::string& error) {
   const i64 apart = static_cast<i64>(direction(ax, az, bx, bz).length_mm);
-  const i64 margin = std::clamp<i64>(apart / 2, k_corridor_min_mm, k_corridor_max_mm);
+  const i64 margin = std::clamp<i64>(apart / 4, k_corridor_min_mm, k_corridor_max_mm);
   const i64 x0 = std::min(ax, bx) - margin, z0 = std::min(az, bz) - margin;
   const i64 nx = (std::max(ax, bx) + margin - x0) / cell_mm + 1;
   const i64 nz = (std::max(az, bz) + margin - z0) / cell_mm + 1;
@@ -255,7 +255,7 @@ bool find_way(const scene_gen::Ground& ground, i64 ax, i64 az, i64 bx, i64 bz, i
       const i64 grade = (rise < 0 ? -rise : rise) * 1000 / st.length;  // per mille
       i64 factor = 1000 + grade * grade * 1000 / (k_grade_knee * k_grade_knee);
       if (grade > k_grade_wall) factor *= 10;
-      factor += irregularity * wander_at(seed, x0 + ni * cell_mm, z0 + nj * cell_mm) / 2000;
+      factor += irregularity * wander_at(seed, x0 + ni * cell_mm, z0 + nj * cell_mm) / 4000;
       const u64 cost = at.cost + static_cast<u64>(st.length * factor / 1000);
       if (cost < best[next]) {
         best[next] = cost;
@@ -305,7 +305,7 @@ bool find_way(const scene_gen::Ground& ground, i64 ax, i64 az, i64 bx, i64 bz, i
       const i64 grade = (rise < 0 ? -rise : rise) * 1000 / length;
       i64 factor = 1000 + grade * grade * 1000 / (k_grade_knee * k_grade_knee);
       if (grade > k_grade_wall) factor *= 10;
-      factor += irregularity * wander_at(seed, x, z) / 2000;
+      factor += irregularity * wander_at(seed, x, z) / 4000;
       cost += static_cast<u64>(length * factor / 1000);
       lx = x;
       lz = z;
@@ -1140,12 +1140,12 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
         });
         u32 first = 0;
         for (u32 k = 1; k <= row.size(); ++k) {
-          const bool joined =
+          const bool follows =
               k < row.size() &&
               out.plots[row[k]].along_mm - out.plots[row[k]].frontage_mm / 2 -
                       (out.plots[row[k - 1]].along_mm + out.plots[row[k - 1]].frontage_mm / 2) <=
                   2 * perch;
-          if (joined) continue;
+          if (follows) continue;
           if (k - first >= 3) {
             // Behind the deepest of the run, so the lane runs past every back and not into one.
             i64 deepest = 0;

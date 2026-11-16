@@ -31,9 +31,9 @@ step:
 
 - **The ways are found, never ruled** (`find_way`). A lane's waypoints are the places it passes —
   its ends, where people come from and go to. Between two, the way is the least-cost path over a
-  grid of `station_m` cells in a corridor reaching half their distance (30 to 60 m) round them,
+  grid of `station_m` cells in a corridor reaching a quarter of their distance (20 to 40 m) round them,
   each step to one of sixteen neighbours (the eight and the knight's moves), costing its length
-  times 1 + (grade / 8 %)², ten times more over a 25 % grade, plus a **wander** of up to half the
+  times 1 + (grade / 8 %)², ten times more over a 25 % grade, plus a **wander** of up to a quarter of the
   length at `irregularity` 1, a value field on a 12 m lattice drawn from the seed and the place
   (so a way bends on level ground, and two ways over one place see one field). Integer costs,
   ties to the lower cell: the same way on every toolchain. The pieces are joined, smoothed twice
@@ -42,8 +42,9 @@ step:
   five-point mean, as before. A way that cannot join two places is refused with the lane's name.
   The cost's form is Galin et al.'s (2010); its constants are choices, since the paper's were not
   read.
-- **The focus**: where a later way's end comes within the street's width and 15 m of an earlier
-  way, the nearest station of the earlier; with one way, its middle. The green opens there, the
+- **Ways join**: a later way's end within 40 m of an earlier way is moved onto its nearest station,
+  so ways meet rather than stop short. **The focus** is the first such meeting; with one way, its
+  middle. The green opens there, the
   well stands at it, and the plots are taken nearest it first.
 - **The street's edges** (`LaneStation::left_mm`, `right_mm`): the entry's half width, each side
   wandering by up to a quarter of the street's width over a 16 m lattice along the way with

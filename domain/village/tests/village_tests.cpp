@@ -756,7 +756,7 @@ TEST_CASE("village: the plan is the same bytes on every toolchain") {
                        << " houses, " << plan.cottages << " cottages, " << plan.back_lanes
                        << " back lanes, " << plan.steep << " steep");
   // Taken on MSVC (x86-64-v3); GCC and Clang in the Linux containers reproduce it.
-  CHECK(hash == 0x0ull);
+  CHECK(hash == 0xb555e74c5fb9a87eull);
   // The same entry again, and the summary's hash, are the same.
   CHECK(plan_hash(planned(p, gentle)) == hash);
   CHECK(plan_json(p, plan).find("hash")->as_string() == std::string(text));

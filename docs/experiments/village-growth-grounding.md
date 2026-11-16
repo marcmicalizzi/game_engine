@@ -74,7 +74,7 @@ page that would not open.
   slope, curvature and obstacles, on a discrete mask of neighbours (the 2010 abstract and digests;
   the cost's constants were not read). The planner's is the same form: a path over a grid of
   `station_m` cells on the ground, each step costing its length times (1 + (grade / 8 %)^2), a
-  grade over 25 % costing ten times more, and a seeded wander term up to half the length at
+  grade over 25 % costing ten times more, and a seeded wander term up to a quarter of the length at
   `irregularity` 1 so a way bends on flat ground too. **8 %, 25 % and the wander are choices**:
   8 % is about the grade a loaded cart takes without a second horse, from no source opened here.
 - **Hollow ways** are 0.5 to 2.5 m deep and 4.5 to 9 m wide (MC 2 m deep, 4.5 m wide; WW 1 to 2 m
