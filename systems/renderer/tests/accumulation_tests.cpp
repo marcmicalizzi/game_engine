@@ -15,6 +15,8 @@
 // against the mean is under half a single frame's), to a replay (the same frames from a reset draw
 // the same bytes), to a reset (the frame after one is the frame a fresh renderer draws) and to its
 // history test (the pixels a moved instance leaves show what is behind it, not a trail).
+#include "test_device.h"
+
 #include <core/math/math.h>
 #include <core/math/world.h>
 #include <domain/gfx/device.h>
@@ -44,8 +46,11 @@ struct Gpu {
   bool ok = false;
   Gpu() {
     std::string error;
-    if (!device.create(gfx::DeviceOptions{}, &error)) {
+    if (!device.create(renderer_test::device_options(), &error)) {
       why = "no Vulkan device: " + error;
+      if (!renderer_test::device_profile().empty()) {
+        FAIL_CHECK("ENGINE_GFX_TEST_DEVICE=" << renderer_test::device_profile() << ": " << why);
+      }
       return;
     }
     if (!device.features().buffer_int64_atomics) {
@@ -378,7 +383,9 @@ TEST_CASE("accumulation: the pixels a moved instance leaves hold no trail of it"
 // tier's visibility buffer is the mesh path's word for word (the vertex path tests), so the same
 // frames accumulate to the same bytes. `RasterMode::Vertex` takes the vertex tier on a card with
 // mesh shaders too. Fails if the pass is left out of the vertex tier's frame, or reads anything the
-// two paths write differently.
+// two paths write differently. A card with no mesh shaders has no mesh path to hold the tier to:
+// there the vertex tier's twelve frames still run with the pass on, and the comparison says it
+// skipped.
 TEST_CASE("accumulation: the vertex tier accumulates the mesh path's bytes") {
   Gpu gpu;
   if (!gpu.ok) {
@@ -389,7 +396,12 @@ TEST_CASE("accumulation: the vertex tier accumulates the mesh path's bytes") {
   ScopedTunable phases("renderer.reconstruction.phases", "8");
   CapturedFrame drawn[2];
   const RasterMode modes[2] = {RasterMode::Hardware, RasterMode::Vertex};
+  const bool mesh_shaders = gpu.device.features().mesh_shader;
   for (u32 m = 0; m < 2; ++m) {
+    if (modes[m] == RasterMode::Hardware && !mesh_shaders) {
+      MESSAGE("mesh skipped: no mesh shaders on this device");
+      continue;
+    }
     Rig rig;
     REQUIRE_MESSAGE(rig.build(gpu.device, ground_scene(), modes[m]), rig.error);
     REQUIRE(rig.resolved.vertex_path == (modes[m] == RasterMode::Vertex));
@@ -400,6 +412,7 @@ TEST_CASE("accumulation: the vertex tier accumulates the mesh path's bytes") {
       REQUIRE_MESSAGE(rig.shoot(frame, drawn[m]), rig.error);
     }
   }
+  if (!mesh_shaders) return;
   const Difference apart = difference(drawn[0].color, drawn[1].color);
   MESSAGE("mesh path against the vertex tier after twelve frames: worst " << apart.worst
                                                                           << " codes");

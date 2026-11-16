@@ -14,6 +14,8 @@
 // (`gfx::flora_bend` over the poses `flora_pose_instances` gives, `anim::skin_positions`), over
 // three frames with two in flight, so "last frame's inputs" is read from the other frame slot's
 // part poses and bone matrices both ways round.
+#include "test_device.h"
+
 #include <core/math/math.h>
 #include <core/math/world.h>
 #include <domain/anim/skeleton.h>
@@ -51,8 +53,11 @@ struct Gpu {
   bool ok = false;
   Gpu() {
     std::string error;
-    if (!device.create(gfx::DeviceOptions{}, &error)) {
+    if (!device.create(renderer_test::device_options(), &error)) {
       why = "no Vulkan device: " + error;
+      if (!renderer_test::device_profile().empty()) {
+        FAIL_CHECK("ENGINE_GFX_TEST_DEVICE=" << renderer_test::device_profile() << ": " << why);
+      }
       return;
     }
     if (!device.features().buffer_int64_atomics) {
@@ -795,7 +800,9 @@ void bar_matrices(const SkinnedBar& bar, f32 degrees, Vector<anim::JointMatrix>&
 // draws from slot 1's, and the third the other way round. Fails if the pool's second write reads
 // this frame's matrices (the bend's motion, up to pixels, is left as the error), and without the
 // moved table (the step's). Drawn by the mesh path and again by the vertex tier's indexed draw
-// (`RasterMode::Vertex`, which this card takes when asked), whose visibility buffers are the same.
+// (`RasterMode::Vertex`, which every card takes when asked), whose visibility buffers are the same.
+// A card with no mesh shaders resolves the mesh leg to the vertex tier, which the second leg flies
+// anyway, so that leg says it skipped and the vertex leg proves the rest there.
 static void walking_actor(const gfx::Device& device, RasterMode raster) {
   ScopedTunable inputs("renderer.reconstruction.inputs", "true");
   SkinnedBar bar;
@@ -806,6 +813,11 @@ static void walking_actor(const gfx::Device& device, RasterMode raster) {
   RenderSettings settings = plain_settings();
   settings.raster = raster;
   REQUIRE_MESSAGE(rig.finish(device, settings), rig.error);
+  if (raster == RasterMode::Hardware && !device.features().mesh_shader) {
+    REQUIRE(rig.resolved.vertex_path);
+    MESSAGE("mesh skipped: no mesh shaders on this device");
+    return;
+  }
   REQUIRE(rig.resolved.vertex_path == (raster == RasterMode::Vertex));
   REQUIRE(rig.resolved.deform_pass);
   REQUIRE(rig.renderer.frames_in_flight() == 2);
