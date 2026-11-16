@@ -55,7 +55,10 @@ void compose_shifts(Vector<PairShift>& runs, std::span<const PairShift> later,
     if (ra != nullptr && ra->end <= at) ++a;
     if (rb != nullptr && rb->end <= at) ++b;
   }
-  runs.swap(scratch);
+  // Copied back, not swapped: a swap would trade capacities between every list and the one scratch,
+  // and a list handed the smaller one would allocate again in a steady frame (engine_view's frame
+  // loop caught one, frame 68 of the streamed trees' second flight).
+  runs.assign(scratch.begin(), scratch.end());
 }
 
 void remove_shift_range(Vector<PairShift>& runs, u32 begin, u32 end, Vector<PairShift>& scratch) {
@@ -85,7 +88,7 @@ void remove_shift_range(Vector<PairShift>& runs, u32 begin, u32 end, Vector<Pair
     if (run.begin < begin) scratch.push_back(PairShift{run.begin, begin, run.value, run.set});
     if (run.end > end) scratch.push_back(PairShift{end, run.end, run.value, run.set});
   }
-  runs.swap(scratch);
+  runs.assign(scratch.begin(), scratch.end());  // copied back, as above
 }
 
 const PairShift* find_shift(std::span<const PairShift> runs, u32 slot) noexcept {
