@@ -2170,13 +2170,19 @@ void SceneRenderer::collect_slot(u32 slot) {
     last.gpu_total = timer_.total_ms();
     // What no bucket names (R130): the record's buckets are disjoint — `clas`, `blas` and the
     // chain's other zones inside `rt`, `shadow_cull` inside `shadow` — so the total less the
-    // top-level ones is what the timer measured and the record would otherwise fold into none.
-    const f64 named = last.gpu_cull + last.gpu_hw + last.gpu_sw + last.gpu_hiz + last.gpu_resolve +
-                      last.gpu_deform + last.gpu_deform_alloc + last.gpu_trace + last.gpu_rt +
-                      last.gpu_shadow + last.gpu_tables + last.gpu_terrain_upload + last.gpu_sky +
-                      last.gpu_frame_passes + last.gpu_half_sun + last.gpu_gi_trace +
-                      last.gpu_gi_fold + last.gpu_resolve_classify + last.gpu_motion;
+    // top-level ones (the pass list's `top`) is what the timer measured and the record would
+    // otherwise fold into none.
+    f64 named = 0.0;
+#define ENGINE_RENDERER_PASS_NAMED(name, top) \
+  if constexpr (top) named += last.gpu_##name;
+    ENGINE_RENDERER_PASS_BUCKETS(ENGINE_RENDERER_PASS_NAMED)
+#undef ENGINE_RENDERER_PASS_NAMED
     last.gpu_unbucketed = std::max(0.0, last.gpu_total - named);
+    // The run's sums, bucket by bucket from the same list (T85): each is the frame's own.
+#define ENGINE_RENDERER_PASS_FOLD(name, top) stats_.gpu_##name += last.gpu_##name;
+    ENGINE_RENDERER_PASS_BUCKETS(ENGINE_RENDERER_PASS_FOLD)
+#undef ENGINE_RENDERER_PASS_FOLD
+    ++stats_.timed_frames;
     stats_.tiles.gpu_tables += last.gpu_tables;
     stats_.tiles.gpu_pair_expand += last.gpu_pair_expand;
   }
@@ -2197,47 +2203,7 @@ void SceneRenderer::collect_slot(u32 slot) {
       view.gpu_resolve += timer_.ms(k_zone_names[k_zone_resolve][v]);
       view.gpu_deform += timer_.ms(k_zone_names[k_zone_deform][v]);
       view.gpu_trace += timer_.ms(k_zone_names[k_zone_trace][v]);
-      stats_.gpu_cull += timer_.ms(k_zone_names[k_zone_cull][v]);
-      stats_.gpu_hw += timer_.ms(k_zone_names[k_zone_hw][v]);
-      stats_.gpu_sw += timer_.ms(k_zone_names[k_zone_sw][v]);
-      stats_.gpu_hiz += timer_.ms(k_zone_names[k_zone_hiz][v]);
-      stats_.gpu_resolve += timer_.ms(k_zone_names[k_zone_resolve][v]);
-      stats_.gpu_deform += timer_.ms(k_zone_names[k_zone_deform][v]);
-      stats_.gpu_trace += timer_.ms(k_zone_names[k_zone_trace][v]);
     }
-    // The pool's allocator is one dispatch over every view of a run, so it is the frame's cost
-    // and no view's — and it is kept out of `gpu_deform`, which is the pool pass and the number
-    // E25's cost rule is about.
-    stats_.gpu_deform_alloc += timer_.ms("deform alloc");
-    // The acceleration structure chain is built once from the union of the views' cuts, so it is
-    // the frame's cost and no view's.
-    stats_.gpu_rt += timer_.ms("records") + timer_.ms("ranges") + timer_.ms("ranges drop") +
-                     timer_.ms("emit") + timer_.ms("clas") + timer_.ms("blas") + timer_.ms("tlas") +
-                     cache_ms(timer_);
-    stats_.gpu_clas += timer_.ms("clas");
-    stats_.gpu_clas_cache += timer_.ms("clas cache");
-    stats_.gpu_blas += timer_.ms("blas");
-    // The cascaded maps are drawn once for every view, so they are the frame's cost too.
-    stats_.gpu_shadow_cull += timer_.ms("shadow cull");
-    stats_.gpu_shadow += timer_.ms("shadow cull") + timer_.ms("shadow");
-    stats_.gpu_terrain_upload += timer_.ms("terrain upload");
-    // The sky's passes are drawn once for every view: the frame's cost.
-    stats_.gpu_sky += timer_.ms("sky");
-    // The half-rate sun pass, every view's under one name.
-    stats_.gpu_half_sun += timer_.ms("half sun");
-    // The motion pass and the pool's second write (R154), every view's under two names.
-    stats_.gpu_motion += timer_.ms("motion") + timer_.ms("motion pool");
-    // The resolve's classify pass (R151), every view's under one name.
-    stats_.gpu_resolve_classify += timer_.ms("resolve classify");
-    // The world-space cache's passes (R69), every view's sample pass under one name.
-    stats_.gpu_gi_trace += timer_.ms("gi sample");
-    stats_.gpu_gi_fold += timer_.ms("gi fold");
-    // The frame passes and their encode, the frame's too.
-    for (u32 p = 0; p < frame_pass_count_; ++p)
-      stats_.gpu_frame_passes += timer_.ms(frame_passes_[p].zone);
-    stats_.gpu_frame_passes += timer_.ms("frame encode");
-    stats_.gpu_total += timer_.total_ms();
-    ++stats_.timed_frames;
   }
   fold_sky(slot);
   // The cache's counts too (R69 stage 4): until then only `render_offscreen`'s collect folded
