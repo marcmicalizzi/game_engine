@@ -91,6 +91,12 @@ bool caster_volume_contains_sphere(const CasterVolume& volume, Vec3 center, f32 
 // far. False when `view_proj` has no near or side planes.
 bool closed_frustum(const Mat4& view_proj, const CasterBounds& bounds, Plane out[6]) noexcept;
 
+// Every plane of `volume` moved outwards by `margin` (world units, in the frame's space), so the
+// volume holds every point within `margin` of what it held. A cascade's volumes are widened by the
+// texels its filter and its normal offset read beside a receiver (R49; renderer.md, "Cascaded
+// shadow maps").
+void widen_caster_volume(CasterVolume& volume, f32 margin) noexcept;
+
 // Writes up to `gfx::k_max_caster_volumes` volumes into the cull block, skipping empty ones. None
 // leaves `caster_volume_count` at 0, and the pass then drops what its frustum test rejects, as it
 // always did.

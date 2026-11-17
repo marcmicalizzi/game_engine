@@ -737,6 +737,10 @@ f32 shadow_rest_texels_tunable() noexcept;
 // `renderer.shadow.hybrid_fit` (false): under the hybrid, the cascades begin at the ray distance
 // (`ShadowFit::begin_distance`; R103, renderer.md "Rays near, maps far").
 bool shadow_hybrid_fit_tunable() noexcept;
+// `renderer.shadow.cascade_volume` (true): a cascade's cull also drops a pair outside every view's
+// frustum swept towards the light, widened by the texels its filter reads (R49; renderer.md,
+// "Cascaded shadow maps"); false draws whatever the cascade's box holds, as before.
+bool shadow_cascade_volume_tunable() noexcept;
 // **The occlusion term of the LOD threshold** (R118; renderer.md, "Occlusion-aware LOD"): k, the
 // `renderer.lod.occluded_scale` default — a wholly hidden transition's thresholds are multiplied by
 // 1 + k — and the mip bias of the hidden share's footprint, `renderer.lod.occluded_bias`.

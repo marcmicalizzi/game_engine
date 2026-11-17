@@ -223,6 +223,24 @@ const char* resolve_module(bool shadows, bool water, bool terrain, bool stochast
   return k_modules[stochastic ? 1 : 0][terrain ? 1 : 0][water ? 1 : 0][shadows ? 1 : 0];
 }
 
+// **A cascade's caster volumes** (R49; renderer.md, "Cascaded shadow maps"): every view's frustum
+// swept towards the key light, widened by what the resolve reads beside a receiver — the 3x3
+// bilinear filter's 4x4 texels, two each side, and the normal offset — so a pair outside all of
+// them shadows no pixel any view draws. All or none: a view whose volume cannot be fit, or more
+// views than the cull block holds, leaves the cascade its whole box, since a view left out would
+// lose its casters.
+u32 cascade_caster_volumes(const ViewSet& views, Vec3 key_light, f32 distance,
+                           const CasterBounds& bounds, f32 margin,
+                           CasterVolume (&out)[gfx::k_max_caster_volumes]) noexcept {
+  if (views.size() > gfx::k_max_caster_volumes) return 0;
+  for (u32 v = 0; v < views.size(); ++v) {
+    if (!fit_directional_caster_volume(views[v].view_proj, key_light, distance, bounds, out[v]))
+      return 0;
+    widen_caster_volume(out[v], margin);
+  }
+  return views.size();
+}
+
 }  // namespace
 
 // The same table for the split's pipelines (R151; resolve_classes.cpp).
@@ -4042,6 +4060,16 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     cull.cone_cull = 0;
     cull.cascade =
         c + 1;  // the caster policy's nearest cascades (renderer.md, "The caster policy")
+    // Only what can shadow a pixel (R49): never with water, whose floor reads outside the frustum.
+    if (settings.shadow_frustum && !scene.has_water() && shadow_cascade_volume_tunable()) {
+      const f32 offset = settings.shadow_normal_offset >= 0.0f ? settings.shadow_normal_offset
+                                                               : k_shadow_normal_offset_texels;
+      CasterVolume volumes[gfx::k_max_caster_volumes];
+      const u32 count = cascade_caster_volumes(views_, key_light, settings.shadow_distance,
+                                               caster_bounds, (3.0f + offset) * cascade.texel_world,
+                                               volumes);
+      if (count > 0) set_caster_volumes(cull, std::span<const CasterVolume>(volumes, count));
+    }
     cull.clusters = scene.clusters.address;
     cull.lods = scene.lods.address;
     cull.visible = run_address;

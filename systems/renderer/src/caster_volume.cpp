@@ -209,6 +209,14 @@ bool caster_volume_contains_sphere(const CasterVolume& volume, Vec3 center, f32 
   return true;
 }
 
+void widen_caster_volume(CasterVolume& volume, f32 margin) noexcept {
+  // Inward planes, `dot(n, p) + d >= 0` inside, and `n` not necessarily of unit length (a
+  // silhouette plane's normal is a cross product): the offset grows by the margin times |n|.
+  for (u32 p = 0; p < volume.plane_count; ++p)
+    volume.planes[p].d += margin * length(volume.planes[p].normal);
+  if (volume.reach.w >= 0.0f) volume.reach.w += margin;
+}
+
 void set_caster_volumes(gfx::CullParams& params, std::span<const CasterVolume> volumes) noexcept {
   u32 count = 0;
   for (const CasterVolume& volume : volumes) {
