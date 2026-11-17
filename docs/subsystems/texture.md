@@ -836,7 +836,11 @@ open.
    `s` the instance's largest axis scale, `f` and `phi_max` the camera's pixels a radian and the
    frame's corner; per texture `floor(log2 texels a metre + that − margin)`, the finest over its
    meshes. **The lead** is `renderer.textures.lead_m` (2 m) plus the last frame's step times
-   `renderer.textures.lead_frames` (30). **The margin** (`renderer.textures.bound_margin`, 1.53125
+   `renderer.textures.lead_frames` (30). **A step longer than `renderer.textures.jump_m`** (1 m in
+   one frame) is a teleport the host did not call a cut — a camera path's repeat, a jump to a
+   marker — and is taken as one: the frame settles, and the step does not stretch the lead (the
+   first pair, 2026-11-17, took a path's repeat as a velocity, stretched the lead over the whole
+   scene and brought every level of the village and the oasis in). **The margin** (`renderer.textures.bound_margin`, 1.53125
    levels) is derived, not tuned: Vulkan lets an implementation take each `rho` from its components'
    maximum (as little as 1/sqrt 2 of the length: half a level) and round the anisotropic sample
    count up to a whole number (`rho_max / ceil(rho_max / rho_min)` is no less than `rho_min / 2`:
@@ -1160,7 +1164,19 @@ vendored encoders, MIT or public domain).
   the writer refusing a wrong extent, a wrong byte count, BC5 claiming sRGB and a chain longer than
   the image allows; and a truncated file, a wrong magic, a wrong version, a section past the end, a
   flipped byte, a required section renamed away and a format from the future each refused with a
-  sentence of its own.
+  sentence of its own. **The tail from a level** (R172): from every level of the colour chain and
+  of a normal map with its variance chain, `read_texture_file_levels` reads by range exactly what
+  `texture_levels_from` cuts from the whole read, block for block, and a level past the chain is
+  refused by both.
+- **The bound on a device** (`systems/renderer/tests/texture_tests.cpp`, through `test_device.h`;
+  R172 stage 1, 2026-11-17, RTX 5090, `msvc-debug`): the quad's 1,024-texel map at 1.5, 5.8, 11
+  and 30 m in a scene loaded whole and one the bound holds, ids, depth and colour **identical** at
+  each; the load holds 24,064 bytes (the floor) where the whole chain is 1,400,320, and after the
+  first frame's settle 1,400,320 at 1.5 and 5.8 m, 351,744 at 11 m, the floor alone at 30 m (settle
+  24.5, 18.9, 5.0 and 0 ms in `msvc-debug`); a fly-in of 48 frames from 40 m to 1.2 m identical frame
+  for frame to the whole scene's, its one promotion asked at frame 2 and needed from frame 32,
+  nothing late, the admission 0.44 ms. The feedback's own test passes with the bound on (the
+  records' serial counts promotions, so the feedback follows a texture to its new pair).
 - `mips_tests.cpp` — chain sides and counts at seven sizes; the sRGB tables within an ulp of the
   transfer function and every code round-tripping; a black-and-white checker averaging to sRGB 188
   (not 128) and to data 128; constant images constant at every level in every mode; normal maps

@@ -67,6 +67,10 @@ tunables::Float bound_lead_m{"renderer.textures.lead_m", 2.0, 0.0, 10'000.0,
 tunables::Int bound_lead_frames{
     "renderer.textures.lead_frames", 30, 0, 6'000,
     "Frames of the observer's last step the bound looks ahead beyond `lead_m`"};
+tunables::Float bound_jump_m{
+    "renderer.textures.jump_m", 1.0, 0.0, 1'000'000.0,
+    "Metres the eye moves in one frame past which the bound takes the frame for a cut: it brings "
+    "the levels it wants in before the frame draws, and the step does not stretch the lead"};
 tunables::Int bound_promote_kib{
     "renderer.textures.promote_kib", 4'096, 0, 1 << 20,
     "KiB of promoted texture levels one frame stages; one larger goes alone (0: no limit)"};
@@ -450,8 +454,13 @@ void GpuScene::texture_bound_frame(WorldPos eye, f32 fov_y, f32 znear, u32 width
   view.f = half_h / std::tan(0.5 * static_cast<f64>(fov_y));
   view.c2 = view.f * view.f / (view.f * view.f + half_w * half_w + half_h * half_h);
   view.near = std::min(0.01, static_cast<f64>(znear));
-  const bool settle = cut || !s.settled;
-  const f64 step = s.have_eye ? length(eye - s.last_eye) : 0.0;
+  // A step longer than `renderer.textures.jump_m` is a teleport the host did not call a cut (a
+  // camera path's repeat, a jump to a marker): taken as a velocity it would stretch the lead over
+  // the whole scene and bring every level in, so it is taken as the cut it is.
+  const f64 moved = s.have_eye ? length(eye - s.last_eye) : 0.0;
+  const bool jump = moved > bound_jump_m.get();
+  const bool settle = cut || !s.settled || jump;
+  const f64 step = jump ? 0.0 : moved;
   s.last_eye = eye;
   s.have_eye = true;
   const f64 lead = bound_lead_m.get() + step * static_cast<f64>(bound_lead_frames.get());

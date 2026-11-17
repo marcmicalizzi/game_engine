@@ -1161,8 +1161,8 @@ TEST_CASE("renderer: the texture bound changes no pixel at a held view and holds
   }
 }
 
-// **A promotion lands ahead of a walker** (R172 stage 1). The camera flies in from 40 m to 1.2 m
-// over 48 frames, a step of the same ratio a frame, in a scene loaded whole and in one the bound
+// **A promotion lands ahead of a walker** (R172 stage 1). The camera walks in from 12 m to 1.2 m
+// over 48 frames, 0.225 m a frame, in a scene loaded whole and in one the bound
 // holds; every frame's picture is the whole scene's byte for byte, the levels come in off the
 // frame (no frame after the first brings them in itself, none is late), and the first promotion is
 // asked for frames before the eye is near enough for a pixel to read below the floor.
@@ -1175,8 +1175,9 @@ TEST_CASE("renderer: the texture bound promotes ahead of a walker and changes no
   const std::string mesh = (dir / "quad.gltf").string();
   const std::string ddc = (dir / "ddc").string();
   constexpr u32 k_frames = 48;
+  // A walker's steps (0.225 m a frame), under `renderer.textures.jump_m`: a longer one is a cut.
   const auto distance_at = [](u32 k) {
-    return static_cast<f32>(40.0 * std::pow(1.2 / 40.0, static_cast<f64>(k) / (k_frames - 1)));
+    return static_cast<f32>(12.0 - 10.8 * static_cast<f64>(k) / (k_frames - 1));
   };
   std::vector<CapturedFrame> whole_frames;
   {
