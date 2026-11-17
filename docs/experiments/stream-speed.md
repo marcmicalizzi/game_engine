@@ -15,15 +15,21 @@ This page asks two questions and keeps them apart, because they have different a
 
 ## Sources
 
-Tonight's web access reached abstracts and search summaries, not papers: every full text tried
-(Durham's repository, Wiley, the authors' PDFs) was refused or came back as a PDF this machine could
-not turn into text. What each row rests on is said plainly.
+**What was read, and what was not.** Ferguson (2007) and Rickenmann and Recking (2011) themselves
+were **not read**: both are open on the publisher's site, and the publisher and Durham's repository
+refused every request (HTTP 403, twice, on 2026-11-16). Their constants are checked instead against
+a **full text that restates both equations**, Mendicino and Colosimo (2019, *Water Resources
+Research* 55, doi 10.1029/2019WR024819, its equations 13 and 14), so the VPE's 6.5 and 2.5 and
+Rickenmann and Recking's modified form are verified against a careful reading of the sources, not
+against the sources; **the ranges each of those two was fitted over remain unread.** Jarrett's law
+was read in Jarrett's own words: his USGS report of the next year (WRI 85-4004, 1985, pp. 34–35),
+which gives the same equation in feet with its limits. What each row rests on is said plainly.
 
 | Source | What is taken | How far read |
 |---|---|---|
-| Jarrett (1984), "Hydraulics of high-gradient streams", *J. Hydraulic Engineering* 110(11) | n = 0.32 S^0.38 R^-0.16 (metres), fitted on 75 measurements in 21 Colorado streams, **R 0.15 to 2.1 m**, S 0.002 to 0.09 (or 0.002 to 0.04 and R to 1.68 m, by the other quotation) | As on [stream-profile](stream-profile.md): the abstract and two secondary quotations. Not opened again tonight |
-| Ferguson (2007), "Flow resistance equations for gravel- and boulder-bed streams", *Water Resources Research* 43, W05427 | **The variable-power equation (VPE)**: V / u* = a1 a2 (R / D84) / sqrt(a1^2 + a2^2 (R / D84)^(5/3)), u* = sqrt(g R S), **a1 = 6.5, a2 = 2.5 with the roughness length D84**; asymptotic to a roughness-layer law, V / u* = a2 R / D84, in shallow flow and to a Manning–Strickler law, V / u* = a1 (R / D84)^(1/6), in deep flow | The record and the abstract by search; **the two constants are confirmed by a search summary of a text by the same author** ("suggested coefficient values a1 = 6.5 and a2 = 2.5 when k is equated with D84"), where [water-obstacles](water-obstacles.md) had them from memory. The paper's figures and its own data ranges were not read |
-| Rickenmann and Recking (2011), "Evaluation of flow resistance in gravel-bed rivers through a large field data set", *Water Resources Research* 47, W07538 | 2,890 field measurements; of the conventional equations **the best overall performance is Ferguson's**, the two power laws for deep and shallow flow joined; the speed in steep shallow flow goes with about the 0.6 power of the unit discharge | Abstract by search. Their own discharge-based equation's constants could not be confirmed against any page and are **not used** |
+| Jarrett (1984), "Hydraulics of high-gradient streams", *J. Hydraulic Engineering* 110(11); **Jarrett (1985), "Determination of roughness coefficients for streams in Colorado", USGS WRI 85-4004** | n = 0.39 S^0.38 R^-0.16 with R in feet (0.32 in metres: 0.39 x 0.3048^0.16 = 0.322), from current-meter measurements at **21 higher-gradient sites in Colorado**, standard error 28 %; "applicable within a range of slopes from 0.002 to 0.04 and for hydraulic radii from 0.5 to 7 ft" (**0.15 to 2.1 m**), with caution asked above 0.04 "because the applicability of the equations is questionable"; cobble and boulder beds | The 1984 paper not read; **the 1985 report read in its own text** (pubs.usgs.gov, pp. 34–35, the equation, its error and its four limitations). The engine's clamp of S to 0.09 is beyond the stated 0.04 |
+| Ferguson (2007), "Flow resistance equations for gravel- and boulder-bed streams", *Water Resources Research* 43, W05427 | **The variable-power equation (VPE)**: V / u* = a1 a2 (R / D84) / sqrt(a1^2 + a2^2 (R / D84)^(5/3)), u* = sqrt(g R S), **a1 = 6.5, a2 = 2.5 with the roughness length D84**; asymptotic to a roughness-layer law, V / u* = a2 R / D84, in shallow flow and to a Manning–Strickler law, V / u* = a1 (R / D84)^(1/6), in deep flow | The paper refused (above). **The form and the constants checked in the full text of Mendicino and Colosimo (2019)**, equation 13: the friction factor's sqrt(8/f) = b1 b2 (R / d84) / sqrt(b1^2 + b2^2 (R / d84)^(5/3)), "with b1 = 6.5 and b2 = 2.5 (Ferguson, 2007), which is suitable for all relative submergence values", d84 the roughness length — the same as the code's. Ferguson's own data ranges were not read |
+| Rickenmann and Recking (2011), "Evaluation of flow resistance in gravel-bed rivers through a large field data set", *Water Resources Research* 47, W07538 | 2,890 field measurements; of the conventional equations **the best overall performance is Ferguson's**, the two power laws for deep and shallow flow joined; the speed in steep shallow flow goes with about the 0.6 power of the unit discharge | The paper refused (above). **Their modified VPE read in Mendicino and Colosimo (2019)**, equation 14: V / u* = 4.416 (R / D84)^1.904 / (1 + (R / (1.283 D84))^1.618)^1.083. Computed here against Ferguson's at R / D84 of 0.15, 0.3, 0.5 and 1: 0.12, 0.40, 0.95, 2.54 against 0.37, 0.74, 1.22, 2.33 — **slower than Ferguson's by a third to two thirds over the forest's 0.15 to 0.5**, the same above 1. Not used (the speed it gives a steep shallow stream is lower still); it says the VPE is the faster of the two fits where the forest's streams are. Their discharge-based equation was not read |
 | Bathurst, Li and Simons (1981); Bathurst (1985) | The flow classes by relative submergence: large-scale roughness at d / D84 under about 1.2, intermediate 1.2 to 4, small-scale over 4 where the boundary-layer laws hold; below about 10 the friction factor rises above the logarithmic law's | A search summary quoting the classes. Not opened |
 | Aberle and Smart (2003), "The influence of roughness structure on flow resistance on steep slopes", *J. Hydraulic Research* 41 | At low submergence on steep slopes the bed's datum is hard to define, the resistance depends on the roughness's arrangement (the standard deviation of the bed's heights) more than on a grain size, and no standard equation exists | A search summary. Not opened. Nothing pinned |
 | Comiti, Mao, Wilcox, Wohl and Lenzi (2007), "Field-derived relationships for flow velocity and resistance in high-gradient streams", *J. Hydrology* 340 | Ten step-pool reaches of the Rio Cordon at slopes **0.08 to 0.21**, 3 to 80 % of bankfull, speeds by salt dilution: the dimensionless unit discharge predicts the speed best, then the slope, then the steps' steepness; at a station the speed rises with discharge to the power 0.48 to 0.6 | The abstract (the university's page, tonight). The measured speeds were not read |
@@ -42,7 +48,8 @@ page that took it, [steep-streams](steep-streams.md), did not read a value eithe
 Jarrett fitted his n on hydraulic radii of 0.15 m and more. The engine held R to that range **inside
 the power and nowhere else**: n = 0.32 S^0.38 max(R, 0.15)^-0.16, and S to at most 0.09. A forest
 stream of 5 to 50 l/s has R of 2 to 8 cm, so every one of its sections took the n of a 15 cm radius;
-and every bed over 9 % took the n of a 9 % bed. At S over 0.09 that is n = 0.32 x 0.400 x 1.355 = 0.174,
+and every bed over 9 % took the n of a 9 % bed — itself past the 4 % Jarrett's own report sets as
+the law's upper limit, for want of data on steeper streams. At S over 0.09 that is n = 0.32 x 0.400 x 1.355 = 0.174,
 the forest session's 0.17. Below that the slope's power still acts, so a 2 % bed took n = 0.098 at any
 depth under 15 cm — the roughness of a boulder bed, on a gravel brook. That is why the speeds were
 low on the gentle reaches, where the law's error is largest: Jarrett's n stands for the steep
@@ -191,8 +198,9 @@ cannot show a travel speed, and no capture sequence was taken; the travel is pin
 
 | Number | Value | Source |
 |---|---|---|
-| VPE a1 | 6.5 | Ferguson (2007), confirmed by a search summary of his own later text |
+| VPE a1 | 6.5 | Ferguson (2007), as restated in the full text of Mendicino and Colosimo (2019), eq. 13; Ferguson's text itself unread |
 | VPE a2 | 2.5 | the same |
+| Jarrett's range | S 0.002 to 0.04, R 0.15 to 2.1 m | Jarrett (1985), USGS WRI 85-4004, read; the engine's clamps (S 0.09, R 0.15) are what the old law used and are kept as they were |
 | VPE roughness length | D84 of the bed's surface | the same |
 | u* | sqrt(g R S_f), the friction slope in place of S in a varied profile | the textbook's reading of a resistance law in the standard step method ([stream-profile](stream-profile.md)) |
 | A line with no plan's bed | D84 from the plan's own sediment law at the section's own bank height and slope | `ChannelSediment`'s rules, [channels](../subsystems/channels.md#bed-sediment) |
