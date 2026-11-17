@@ -659,6 +659,7 @@ bool house_for(void* context, const HouseAsk& ask, House& out, std::string& why)
   }
   out.persons = drawn.household.persons;
   out.means = drawn.household.means;
+  out.storeys = interior.params.storeys;
   out.filler_seed = drawn.seed;
   out.type = dwellings::plan_type_name(interior.params.type);
   Walk walk;

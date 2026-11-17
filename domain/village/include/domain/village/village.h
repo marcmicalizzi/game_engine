@@ -125,8 +125,9 @@ struct House {
   // **What the filler says it built** (village.md, "A house as data"): the household it drew from
   // the plot's seed, the seed it planned the house with, and the plan type's name. Zero and empty
   // for a filler that says nothing (a box).
-  u8 persons = 0;
+  u8 persons = 0;  // fitted to the house (G208), so never more than it sleeps
   u8 means = 0;
+  u8 storeys = 0;  // what was built, by the household's means; the plot's are what was allowed
   u64 filler_seed = 0;
   std::string type;
   // The entry's kit pieces that stand in this house in the box furniture's place.

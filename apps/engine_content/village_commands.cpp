@@ -277,6 +277,9 @@ int village_command(int argc, char** argv) {
   // Houses asked against built (village.md, "Houses asked and built").
   line["asked"] = JsonValue(asked);
   line["refused"] = JsonValue(refused);
+  // A shortfall the plots did not refuse is ground the ways did not offer (the plan's counts:
+  // steep, wet, outside, or no candidate left).
+  if (houses < asked) line["short"] = JsonValue(asked - houses);
   if (houses < asked && !first_refusal.empty()) line["first_refusal"] = JsonValue(first_refusal);
   line["plots"] = JsonValue(plots);
   line["edits"] = JsonValue(edits);

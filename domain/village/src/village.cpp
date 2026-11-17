@@ -2119,6 +2119,7 @@ JsonValue plan_json(const VillageLayer& layer, const VillagePlan& plan) {
         q["type"] = JsonValue(h.type);
         q["persons"] = JsonValue(static_cast<u32>(h.persons));
         q["means"] = JsonValue(static_cast<u32>(h.means));
+        if (h.storeys != 0) q["house_storeys"] = JsonValue(static_cast<u32>(h.storeys));
         q["filler_seed"] = JsonValue(h.filler_seed);
       }
       q["at"] = point_json(metres(p.house_x_mm), metres(p.pad_mm), metres(p.house_z_mm));
