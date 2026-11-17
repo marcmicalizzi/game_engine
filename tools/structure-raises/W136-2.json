@@ -1,0 +1,12 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "W136-2",
+  "reason": "W136-2: the wind's GPU tests and the lift's bound that follows the sea (gfx.md 'The wind a scene names'); the developed sea corrected at its cause (the spectrum's shape by its development: water.md 'The spectrum')",
+  "date": "2026-11-16",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "renderer.gpu_scene_cpp.lines": -3,
+    "page:docs/subsystems/gfx.md": 1910,
+    "page:docs/subsystems/water.md": 591
+  }
+}

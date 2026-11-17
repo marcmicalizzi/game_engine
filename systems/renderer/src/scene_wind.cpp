@@ -1,5 +1,5 @@
-// The scene's wind as the renderer reads and draws it (scene_wind.h; docs/subsystems/gfx.md, "The wind a scene names";
-// roadmap W136).
+// The scene's wind as the renderer reads and draws it (scene_wind.h; docs/subsystems/gfx.md, "The
+// wind a scene names"; roadmap W136).
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/scene_wind.h>
@@ -176,6 +176,8 @@ void water_wind_frame(std::span<WaterWindBody> bodies, const gfx::WindDesc& wind
     }
     for (u32 i = 0; i < gfx::k_water_waves; ++i)
       surface.waves[i] = waves[i];
+    if (b.surface_offset != ~u64{0})
+      b.padding = water_lift_padding(surface, waves, static_cast<f32>(b.bank_max));
     if (b.entry_offset != ~u64{0}) {
       WaterWindUpload up;
       up.surface = false;
@@ -249,6 +251,11 @@ std::span<const WaterWindUpload> GpuScene::water_wind_frame(f64 sky_time_s) {
           continue;
         b.surface_offset = u64{at} * sizeof(gfx::WaterSurface);
         b.load_surface = water_surface_load_[at];
+        if (i < instance_table_.size() && (!dynamic_ || i < static_instances_)) {
+          b.instance = i;
+          b.load_padding = instance_table_[i].bounds_padding;
+          b.padding = b.load_padding;
+        }
         b.slope = static_cast<f64>(b.load_surface.slope);
         b.period_s = static_cast<f64>(b.load_surface.period_s);
         break;
@@ -259,6 +266,17 @@ std::span<const WaterWindUpload> GpuScene::water_wind_frame(f64 sky_time_s) {
   if (water_wind_.empty() || data_ == nullptr) return {};
   renderer::water_wind_frame(std::span<WaterWindBody>(water_wind_.data(), water_wind_.size()),
                              data_->wind, sky_time_s, water_wind_uploads_);
+  // The lift's bound: never under the load's (the largest sea a varying wind raises), raised for a
+  // higher sea than it — a hand gale on a body loaded calm — and back when that sea goes. The
+  // record rides this frame's record upload, which runs after this (scene_renderer.cpp), so the
+  // frame that draws the higher crests culls by the larger spheres.
+  for (const WaterWindBody& b : water_wind_) {
+    if (b.instance == ~0u || b.instance >= instance_table_.size()) continue;
+    const f32 want = std::max(b.load_padding, b.padding);
+    if (instance_table_[b.instance].bounds_padding == want) continue;
+    instance_table_[b.instance].bounds_padding = want;
+    mark_instance_written(b.instance);
+  }
   return {water_wind_uploads_.data(), water_wind_uploads_.size()};
 }
 

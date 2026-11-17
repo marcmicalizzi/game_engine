@@ -2545,11 +2545,8 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
         water_surface_of_[i] = surfaces.size();
         // The spheres take the lift's reach: the bank's highest ground (a parked vertex), the
         // waves, the bore and the tide.
-        f32 waves = surface.height_m * 2.0f + surface.run_up_m + surface.tide_m;
-        for (const gfx::WaterWave& wave : water.waves)
-          waves += wave.amplitude;
-        waves += surface.amplitude * 2.1f;
-        const f32 padding = water.depth.bank_max + waves + 0.5f;
+        const f32 padding = water_lift_padding(surface, {water.waves.data(), water.waves.size()},
+                                               water.depth.bank_max);
         if (padding > instance_table_[i].bounds_padding)
           instance_table_[i].bounds_padding = padding;
         surfaces.push_back(surface);

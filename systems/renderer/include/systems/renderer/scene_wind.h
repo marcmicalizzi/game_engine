@@ -1,11 +1,12 @@
 #pragma once
 
-// **The scene's wind, as the renderer reads and draws it** (docs/subsystems/gfx.md, "The wind a scene names"; roadmap W136;
-// the model is domain/gfx's wind.h). Three things live here: the scene file's `Sky.wind` read and
-// checked into a `gfx::WindDesc`; the hand wind a walker sets with the `renderer.wind.*` tunables;
-// and the per-frame redraw of a water body's wave table and surface as the sea state moves, which
-// the GPU scene keeps a record of per body (`WaterWindBody`) and copies into the material table and
-// the surfaces buffer with the frame's "water wind" transfer (scene_renderer.cpp).
+// **The scene's wind, as the renderer reads and draws it** (docs/subsystems/gfx.md, "The wind a
+// scene names"; roadmap W136; the model is domain/gfx's wind.h). Three things live here: the scene
+// file's `Sky.wind` read and checked into a `gfx::WindDesc`; the hand wind a walker sets with the
+// `renderer.wind.*` tunables; and the per-frame redraw of a water body's wave table and surface as
+// the sea state moves, which the GPU scene keeps a record of per body (`WaterWindBody`) and copies
+// into the material table and the surfaces buffer with the frame's "water wind" transfer
+// (scene_renderer.cpp).
 //
 // **What it costs**: nothing for a body whose wind holds still — the sea state's key is the one
 // already written and nothing is copied. A varying wind costs a sea state (144 steps of the
@@ -66,7 +67,28 @@ struct WaterWindBody {
   u32 key_kind = 0;
   f64 key_a = 0.0;
   f64 key_b = 0.0;
+  // **The lift's bound follows the sea drawn** (gfx.md, "What the scene's wind does not do"): the
+  // instance whose surface this is (~0: none), its `bounds_padding` as the load set it, and the
+  // padding the sea last written needs (`water_lift_padding`). The GPU scene holds the instance at
+  // the larger of the two, so a hand gale on a body loaded calm keeps every lifted crest in its
+  // cluster's sphere.
+  u32 instance = ~0u;
+  f32 load_padding = 0.0f;
+  f32 padding = 0.0f;
 };
+
+// How far a lifted body's vertices can leave its rest mesh (mesh space, metres): the bank's highest
+// ground (a parked vertex), twice the train's height, the run-up, the tide, every wave of the table
+// and the four sines' reach, and half a metre. What the load pads the instance by and what the
+// wind's redraw pads it by, one function.
+inline f32 water_lift_padding(const gfx::WaterSurface& surface,
+                              std::span<const gfx::WaterWave> waves, f32 bank_max) noexcept {
+  f32 reach = surface.height_m * 2.0f + surface.run_up_m + surface.tide_m;
+  for (const gfx::WaterWave& wave : waves)
+    reach += wave.amplitude;
+  reach += surface.amplitude * 2.1f;
+  return bank_max + reach + 0.5f;
+}
 
 // One copy the frame makes: into the material table (`surface` false) or the surfaces buffer.
 struct WaterWindUpload {
