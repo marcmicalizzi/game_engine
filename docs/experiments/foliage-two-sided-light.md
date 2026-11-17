@@ -177,9 +177,35 @@ paid 0.026 ms of resolve (1.8 %) for code it never runs.
   default rule) the resolve was 4.585 and 4.632 before, 4.575 and 4.639 after: the sprays' cards
   rarely fill a 2 x 2 block with one pair, so few blocks are taken. It stays, because it is the
   rule R126 states and costs nothing, not because it saves.
+- **The shares read where they are used, the front's ambient not held across `scene_ambient`.**
+  No change (rock-field 1.488 and 1.487).
 
-**What would give the rest back** (not done): the extra shadow rays are an underside's sun ray through
-masked cards, so a foliage pixel whose unshadowed sun term is under the resolve's light tolerance
-of the rest of its light could take its visibility from a neighbour, as the faint lights do
-(R115); the sprays' 0.41 is the resolve sampling three maps and a variance chain where the flat
-card sampled none, and a needle set whose roughness is one value could carry it as a factor.
+**Where the no-foliage scene's 0.026 goes** (2026-11-17 01:35 to 01:41, locked): a build of the
+same tip with `foliage` forced false in `fs_resolve`, so the compiler drops every foliage line,
+drew the rock field in 1.466 and 1.466 ms of resolve against main's 1.463 and 1.462 and the tip's
+1.488 and 1.487. The foliage code costs a scene that never runs it by being there: registers, the
+same mechanism the water and the stochastic materials met (renderer.md, "Stochastic mesh
+materials"), which those answered with a resolve module of their own chosen per scene.
+
+- **One GGX lobe for a foliage pixel** (`brdf_direct` for every pixel, foliage's diffuse added after
+  it, `brdf_foliage_diffuse_cos`; the ambient's two halves one after the other). Rock field 1.493
+  and 1.493 against main's 1.463 and 1.463; the grove +0.25 and +0.31 on G203 (02:08 to 02:11,
+  locked, the CPU at 1 to 7 %). No change. The shape is kept: it is the same model with one copy
+  of the lobe.
+
+**Where this lands**: the lighting costs the grove +0.25 ms at 3840 x 2160 (0.20 of it rays) and a
+scene with no foliage +0.026 to +0.030 ms. Nothing tried inside the kernel moved either.
+
+**What would give it back** (not done, each a row of its own):
+- *A scene with no foliage at main's cost*: a resolve module without the foliage lines, chosen per
+  scene as `_stochastic` is (`GpuScene` marks a material row with the foliage byte at upload,
+  `resolve_module` takes a fifth bit). The forced-off build above is that module's number. It
+  doubles the resolve's modules from 16 to 32, a build-time cost the coordinator weighs.
+- *The rays*: they are the light that is now there, and the shading's own cost is a twentieth.
+  Fewer of them changes the picture, so it is the owner's lever to state, as R126 stated the
+  sides': a foliage pixel lit through its card taking its 2 x 2 quad's answer at full-rate
+  columns, or the faint-light rule (R115) given a tolerance a backlit needle actually falls under
+  (the stated 2^-12 takes none of them). The half pass shows the one-pair block rule takes few
+  spray blocks; a rule by material rather than by pair would take more.
+- G203's sprays (0.41 ms over flat cards on its own pair, not part of this row's number): a
+  needle set whose roughness is one value could carry it as a factor.

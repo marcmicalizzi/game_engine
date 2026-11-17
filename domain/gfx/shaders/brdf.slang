@@ -204,11 +204,21 @@ bool brdf_foliage_lights(BrdfSurface s, float3 light_dir, float transmit, float 
 }
 
 // The BSDF times the cosine for one incident direction, foliage's: what `brdf_direct` is with a
-// radiance of one. The path tracer weighs a sampled direction by it.
+// radiance of one. The path tracer weighs a sampled direction by it. (Slang resolves a module's
+// functions in any order; `brdf_foliage_diffuse_cos` is below.)
 float3 brdf_foliage_eval_cos(BrdfSurface s, float3 light_dir, float transmit, float spread) {
   const float n_dot_l = dot(s.normal, light_dir);
   float3 sheet = float3(0.0);
   if (n_dot_l > 0.0) sheet = brdf_eval(s, light_dir) * n_dot_l;
+  return (1.0 - spread) * sheet + brdf_foliage_diffuse_cos(s, light_dir, transmit, spread);
+}
+
+// What foliage adds to (1 - spread) of the sheet's `brdf_eval` times the cosine: the diffuse
+// transmitted through the sheet's share and the sphere's share. The resolve takes the sheet's part
+// from `brdf_direct`, which every pixel evaluates, and adds this, so a foliage pixel runs one GGX
+// lobe and not a second copy of it (R164-2).
+float3 brdf_foliage_diffuse_cos(BrdfSurface s, float3 light_dir, float transmit, float spread) {
+  const float n_dot_l = dot(s.normal, light_dir);
   const float3 diffuse = (float3(1.0) - brdf_f0(s.albedo, s.metallic)) *
                          ((1.0 - s.metallic) / k_brdf_pi) * s.albedo;
   const float back = transmit * max(-n_dot_l, 0.0);
@@ -223,7 +233,7 @@ float3 brdf_foliage_eval_cos(BrdfSurface s, float3 light_dir, float transmit, fl
     sphere = (2.0 / (3.0 * k_brdf_pi)) *
              (max(sin_a + (k_brdf_pi - a) * c, 0.0) + transmit * max(sin_a - a * c, 0.0));
   }
-  return (1.0 - spread) * sheet + diffuse * ((1.0 - spread) * back + spread * sphere);
+  return diffuse * ((1.0 - spread) * back + spread * sphere);
 }
 
 float3 brdf_foliage_direct(BrdfSurface s, float3 light_dir, float3 radiance, float transmit,

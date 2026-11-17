@@ -729,9 +729,14 @@ bool foliage_lights(ResolveMaterial material, BrdfSurface s, float3 light_dir) {
   return brdf_foliage_lights(s, light_dir, material_foliage_transmit(material),
                              material_foliage_spread(material));
 }
-float3 foliage_direct(ResolveMaterial material, BrdfSurface s, float3 light_dir, float3 radiance) {
-  return brdf_foliage_direct(s, light_dir, radiance, material_foliage_transmit(material),
-                             material_foliage_spread(material));
+// `brdf_foliage_direct` from the sheet's `direct` (`brdf_direct` at the same radiance, which every
+// pixel has evaluated already) and foliage's diffuse beside it: one GGX lobe, not two.
+float3 foliage_direct(ResolveMaterial material, BrdfSurface s, float3 light_dir, float3 radiance,
+                      float3 direct) {
+  const float spread = material_foliage_spread(material);
+  return (1.0 - spread) * direct +
+         brdf_foliage_diffuse_cos(s, light_dir, material_foliage_transmit(material), spread) *
+             radiance;
 }
 
 void foliage_raw_ambient_pair(ResolveParams* params, SkyParams* sky, bool has_sky, float3 x,
@@ -1839,13 +1844,9 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
       if (v > 0.0) {
         float3 sun = float3(params->sun.w);
         if (has_sky) sun = sky_light_at(sky, s.position, params->sun.xyz, sky->sun_illuminance.rgb);
-        // A statement, not a conditional expression: each side is a BSDF, and a pixel evaluates
-        // only its own (R164-2).
-        if (foliage) {
-          color = foliage_direct(material, surface, params->sun.xyz, sun * v);
-        } else {
-          color = brdf_direct(surface, params->sun.xyz, sun * v);
-        }
+        // Every pixel's sheet lobe, and foliage's diffuse added after it (R164-2).
+        color = brdf_direct(surface, params->sun.xyz, sun * v);
+        if (foliage) color = foliage_direct(material, surface, params->sun.xyz, sun * v, color);
       }
     }
     if (g_count) return float4(0.0, 0.0, 64.0 / 255.0, 1.0);  // the sun was not asked
@@ -1896,14 +1897,20 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
       // `brdf_foliage_ambient`), each scaled by what the scene lets through, as the front's is.
       // The front's raw ambient is evaluated again here with the back's rather than kept across
       // `scene_ambient`, whose registers every pixel pays for (R164-2).
-      float3 front_raw, back_raw, towards_eye_raw, away_raw;
-      foliage_raw_ambient_pair(params, sky, has_sky, surface.normal, front_raw, back_raw);
-      foliage_raw_ambient_pair(params, sky, has_sky, surface.view, towards_eye_raw, away_raw);
-      const float3 gain = select(front_raw > float3(1e-9), ambient / max(front_raw, float3(1e-9)),
-                                 float3(1.0));
-      const float3 diffuse = brdf_foliage_ambient(
-          ambient, gain * back_raw, gain * towards_eye_raw, gain * away_raw,
-          material_foliage_transmit(material), material_foliage_spread(material));
+      // `brdf_foliage_ambient` is linear in its four directions, so it is taken in two halves,
+      // the sheet's and the sphere's, each from one evaluation, and no more than one pair of
+      // directions is held at a time (R164-2).
+      const float transmit = material_foliage_transmit(material);
+      const float spread = material_foliage_spread(material);
+      float3 along, against;
+      foliage_raw_ambient_pair(params, sky, has_sky, surface.normal, along, against);
+      const float3 gain =
+          select(along > float3(1e-9), ambient / max(along, float3(1e-9)), float3(1.0));
+      float3 diffuse =
+          brdf_foliage_ambient(ambient, gain * against, float3(0.0), float3(0.0), transmit, spread);
+      foliage_raw_ambient_pair(params, sky, has_sky, surface.view, along, against);
+      diffuse += brdf_foliage_ambient(float3(0.0), float3(0.0), gain * along, gain * against,
+                                      transmit, spread);
       indirect = diffuse * (albedo * (1.0 - surface.metallic)) +
                  ambient * brdf_env_specular(brdf_f0(albedo, surface.metallic), surface.roughness,
                                              n_dot_v);
@@ -1941,13 +1948,9 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
       if (has_sky && lights[i].direction_type.w >= 1.5) {
         radiance = sky_light_at(sky, s.position, light_dir, radiance);
       }
-      // Statements, not conditional expressions, wherever a side is a BSDF (R164-2).
-      float3 lit;
-      if (foliage) {
-        lit = foliage_direct(material, surface, light_dir, radiance);
-      } else {
-        lit = brdf_direct(surface, light_dir, radiance);
-      }
+      // Every pixel's sheet lobe, and foliage's diffuse added after it (R164-2).
+      float3 lit = brdf_direct(surface, light_dir, radiance);
+      if (foliage) lit = foliage_direct(material, surface, light_dir, radiance, lit);
       float v = 1.0;
       if ((foliage ? foliage_lights(material, surface, light_dir)
                    : dot(surface.normal, light_dir) > 0.0) &&
@@ -1965,10 +1968,10 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
       // multiplies nothing, so a picture drawn before the maps could follow a light is the same.
       if (v >= 1.0) {
         color += lit;
-      } else if (foliage) {
-        color += foliage_direct(material, surface, light_dir, radiance * v);
       } else {
-        color += brdf_direct(surface, light_dir, radiance * v);
+        float3 shaded = brdf_direct(surface, light_dir, radiance * v);
+        if (foliage) shaded = foliage_direct(material, surface, light_dir, radiance * v, shaded);
+        color += shaded;
       }
     }
     color += indirect;
