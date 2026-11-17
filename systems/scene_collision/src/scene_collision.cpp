@@ -775,8 +775,7 @@ u32 SceneCollision::refresh(WorldPos at, f32 reach) {
   // where it would name some other tile.
   const bool on_tile = fits_i32(txm) && fits_i32(tzm);
   const u64 underfoot_key =
-      on_tile ? world::tile_key(world::TileCoord{static_cast<i32>(txm), static_cast<i32>(tzm)})
-              : 0;
+      on_tile ? world::tile_key(world::TileCoord{static_cast<i32>(txm), static_cast<i32>(tzm)}) : 0;
   u32 done = 0;
   bool rebuilt = false;
   for (u32 k = 0; k < count; ++k) {
@@ -1711,8 +1710,15 @@ void SceneCollision::gather_placements(world::TileCoord coord, PlacementScratch&
         scene_gen::Context context = context_for(entry);
         context.earlier = earlier.span();
         if (has_shaped) context.exclusion = &shaped;
-        std::lock_guard<std::mutex> lock(generators_mutex_);
-        made = entry.generator->tile(entry.state, at, context, scratch.placed, &why);
+        // **Side by side where the generator says so** (T169; docs: "Ahead of a running walker"):
+        // a reentrant `tile` is asked on whichever thread builds the tile, beside the others; any
+        // other under the one lock, one thread at a time, as every one was before.
+        if (entry.generator->tile_reentrant) {
+          made = entry.generator->tile(entry.state, at, context, scratch.placed, &why);
+        } else {
+          std::lock_guard<std::mutex> lock(generators_mutex_);
+          made = entry.generator->tile(entry.state, at, context, scratch.placed, &why);
+        }
       }
       if (!made) {
         out.ok = false;

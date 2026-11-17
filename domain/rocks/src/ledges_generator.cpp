@@ -233,7 +233,9 @@ constexpr scene_gen::PlacementGeneratorDesc k_ledges{.name = k_ledges_generator,
                                                      .meshes = &meshes,
                                                      .tile = &tile,
                                                      .occupies = &occupies,
-                                                     .representation = &representation};
+                                                     .representation = &representation,
+                                                     // places the patches written at open
+                                                     .tile_reentrant = true};
 const scene_gen::Registrar k_registrar{k_ledges};
 }  // namespace
 }  // namespace engine::rocks

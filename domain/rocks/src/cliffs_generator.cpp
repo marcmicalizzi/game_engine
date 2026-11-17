@@ -1428,6 +1428,7 @@ constexpr scene_gen::PlacementGeneratorDesc k_cliffs{
     .tile = &tile,
     .occupies = &occupies,
     .representation = &representation,
+    .tile_reentrant = true,  // stands the faces planned at open, writes none
 };
 const scene_gen::Registrar k_cliffs_registrar{k_cliffs};
 

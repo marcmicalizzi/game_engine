@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "T169",
+  "reason": "T169: scene_gen.md gains 'A tile asked on several threads' (the tile_reentrant contract, what a call shares, every engine generator by cause, which stay serial and why) and a step in 'Adding a generator'; scene_collision.md says what T169 changed in 'Ahead of a running walker' (side by side, the lock's ring of nine 430 against 88 ms, the two new tests)",
+  "date": "2026-11-17",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/scene_collision.md": 190,
+    "page:docs/subsystems/scene_gen.md": 1741
+  }
+}

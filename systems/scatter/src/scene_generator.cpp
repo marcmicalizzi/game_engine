@@ -243,6 +243,7 @@ constexpr scene_gen::PlacementGeneratorDesc k_scatter{
     .tile = &tile,
     .occupies = &occupies,
     .representation = &representation,
+    .tile_reentrant = true,  // the placer is immutable once opened (`expand` runs it on jobs too)
 };
 const scene_gen::Registrar k_scatter_registrar{k_scatter};
 

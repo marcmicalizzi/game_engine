@@ -245,7 +245,9 @@ const sg::PlacementGeneratorDesc k_generator{.name = "wetland",
                                              .meshes = meshes,
                                              .tile = tile,
                                              .occupies = occupies,
-                                             .representation = representation};
+                                             .representation = representation,
+                                             // reads the patch; the masks guard their own reads
+                                             .tile_reentrant = true};
 const sg::Registrar k_registrar{k_generator};
 }  // namespace
 }  // namespace engine::wetland

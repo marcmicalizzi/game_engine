@@ -401,6 +401,15 @@ struct PlacementGeneratorDesc {
   // Null: the entry leaves the ground as it is, and is opened once, as it always was.
   bool (*plan_ground)(void* state, const Context& context, GroundPlan& out,
                       std::string* error) = nullptr;
+  // **Its `tile` may be asked on several threads at once, of one state** (T169; scene_gen.md,
+  // "A tile asked on several threads"): the call writes nothing another call reads — no member of
+  // the state, nothing static — or guards what it shares itself, and its answer is a function of
+  // the state, the tile and the context alone, so a tile built beside others is the tile built
+  // alone, to the bit. What lets a host build a ring's tiles side by side: the walker's collision
+  // asks every other generator's `tile` under one lock, one thread at a time. False keeps that,
+  // so a generator that says nothing is never asked twice at once. Last, so every descriptor
+  // written before it reads as it did.
+  bool tile_reentrant = false;
 };
 
 // ---- ground -------------------------------------------------------------------------------------

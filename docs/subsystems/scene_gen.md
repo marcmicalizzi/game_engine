@@ -282,6 +282,20 @@ G201 stage 2, 2026-11-12 (`seat.h`, `src/seat.cpp`; the hosts' side is [renderer
 
 **Ground first, then placements in the scene's order**, in the reader and in the ring — and before the ground, what the entries plan for it, in the same order ([What an entry plans for the ground](#what-an-entry-plans-for-the-ground)). Ground is what placements stand on, so the reader makes the terrain's provider before it opens the first placement entry and hands each its `view()`, and walks the entries in the file's order (the `ruins` entries, then `placements`); the ring registers its ground consumer before its placements consumer — one function, `world::add_scene_consumers`, so no host spells it — and the placements consumer asks the entries in the same order, so a tile's ground is built before anything on it and goes after it ([ADR-0040](../adr/0040-the-tile-ring.md)'s declared order; [world](world.md#the-consumers), "The order"). Both halves are held by tests that swap two entries and find the ground still first: the renderer's `scene_gen_scene_tests.cpp` for the reader and the world's `scene_order_tests.cpp` for the ring, each with generators of its own and no capability. **A generator sees the ground it is handed and nothing of any other** (`Context`: the world seed, the tile size, the scene's directory, the ground, a streamed world's block and ring, and a job pool made on first ask). A generator that wants another's output asks the ground, never the registry, which keeps each generator a function of (entry, seed, tile, ground) — the per-tile determinism the ruins and the city rest on.
 
+## A tile asked on several threads
+
+**`PlacementGeneratorDesc::tile_reentrant`** (T169, 2026-11-17). A generator that sets it says its `tile` may be asked of one state on several threads at once: the call writes nothing another call reads — no member of its state, nothing static — or guards what it shares itself, and its answer is a function of the state, the tile and the `Context` alone, so a tile built beside others is the tile built alone, to the bit. Why it exists: the walker's collision builds a ring's tiles on several workers ([scene_collision](scene_collision.md#ahead-of-a-running-walker)), and asks the `tile` of a generator that does not say so under one lock, one thread at a time — after T166, the forest's drop waited 339 ms there for seven tiles. The default is false, so a generator from outside the tree that says nothing keeps the lock. The world's placements consumer builds its tiles one after another in its one job and does not read the flag.
+
+What is shared with a call that is not the state's: the `Context`'s ground (a tile source's view, which the collision's workers already shared), the ground's masks (the reader holds its own lock), the ground before its cuts (made once, under its own lock), and the scene's exclusion, site and formation, which nothing writes after the load.
+
+The engine's own, by cause (`tile` read for each, 2026-11-17):
+
+- **Reentrant, reading only what `open` made**: `authored`, `scatter` (its placer is immutable once opened; `expand` already ran it on jobs), `wetland`, `walls`, `litter` (a call's mask tiles are its own `MaskTiles`), `city`, `bridges`, `caves`, `sward` (a call's mask words and forbs are its own), `routes`, `cliffs`, `ledges`, `deposits` (a far tile's recipe is made in memory; the plans' cache has its own lock).
+- **Reentrant by a change**: `ruins`, whose calls shared the entry's assemblers and their output (made for the first tile and reused). A call now borrows a scratch from the entry's spare list, under a lock held only to take or give one back, so tiles asked side by side each assemble in their own; a building was already a function of the kit, the seed, the tile and the ground, never of the scratch (`expand`'s jobs make their own). `ruins generator: one state's tiles asked on eight threads are the tiles asked alone` asks twelve tiles in blocks, sections and walls from eight threads at once, a dozen rounds, against one thread: the same placements to the bit.
+- **Serial for now**: `channels` and `village`. Both read only what `open` made and could say so in one line each, but on 2026-11-17 the two modules were another row's (the streams, the village's furnishing), so the line waits for them.
+
+`water` and `water_channel` have no `tile`.
+
 ## The registrar pattern
 
 ```cpp
@@ -301,6 +315,7 @@ The descriptor is constant-initialized; the `Registrar` adds it to `GeneratorReg
 3. Tag the module: `GENERATOR placement:<name>` on its `engine_module()` line, one `<kind>:<name>` for every registration its sources make. That is the whole of the hosts' side: engine-view, engine-host and engine-editor link every tagged module ([Which generators a host carries](#which-generators-a-host-carries)). Nothing in `renderer` or `world` changes: a scene names it in `placements` (`{"generator": "<name>", "params": {...}}`) or as its terrain's `provider`.
 4. Test the generator through the registry from the capability's own tests (a scene is not needed: make a `Context`, `open`, `expand`, `tile`), and that `tile` over every tile is `expand`.
 5. A generator that changes the ground adds `plan_ground`, stands its plan on `context.uncut()`, and hands what it occupies in `Placements::shapes` ([What an entry plans for the ground](#what-an-entry-plans-for-the-ground)); the routes' generator (`domain/routes/src/generator.cpp`) is the smallest that does.
+6. Set `tile_reentrant` when `tile` writes nothing shared, and keep a scratch per call rather than in the state ([A tile asked on several threads](#a-tile-asked-on-several-threads)).
 
 ## Which generators a host carries
 

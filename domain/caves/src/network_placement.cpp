@@ -206,7 +206,9 @@ constexpr scene_gen::PlacementGeneratorDesc k_generator{.name = "caves",
                                                         .meshes = meshes,
                                                         .tile = tile,
                                                         .occupies = occupies,
-                                                        .representation = representation};
+                                                        .representation = representation,
+                                                        // places the cells planned at open
+                                                        .tile_reentrant = true};
 const scene_gen::Registrar k_registrar{k_generator};
 
 }  // namespace

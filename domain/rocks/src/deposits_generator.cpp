@@ -640,7 +640,10 @@ constexpr scene_gen::PlacementGeneratorDesc k_deposits{.name = "deposits",
                                                        .tile = &tile,
                                                        .occupies = &occupies,
                                                        .representation = &representation,
-                                                       .tile_meshes = true};
+                                                       .tile_meshes = true,
+                                                       // hands the patches planned at open; a far
+                                                       // tile's recipe is made in memory
+                                                       .tile_reentrant = true};
 const scene_gen::Registrar k_registrar{k_deposits};
 }  // namespace
 

@@ -1008,7 +1008,9 @@ const scene_gen::PlacementGeneratorDesc k_generator{.name = "sward",
                                                     .meshes = &meshes,
                                                     .tile = &tile,
                                                     .occupies = &occupies,
-                                                    .representation = &representation};
+                                                    .representation = &representation,
+                                                    // a call's mask words and forbs are its own
+                                                    .tile_reentrant = true};
 const scene_gen::Registrar k_registrar{k_generator};
 }  // namespace
 }  // namespace engine::flora

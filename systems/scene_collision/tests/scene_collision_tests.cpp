@@ -6,6 +6,7 @@
 #include <core/containers/flat_map.h>
 #include <core/hash/hash.h>
 #include <core/jobs/job_system.h>
+#include <core/json/json.h>
 #include <core/json/json_value.h>
 #include <domain/geometry/cluster_lod.h>
 #include <domain/physics/character.h>
@@ -21,10 +22,12 @@
 
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <string>
 #include <thread>
+#include <tile_mesh_fixture.h>
 #include <utility>
 #include <vector>
 
@@ -2072,6 +2075,293 @@ TEST_CASE("scene_collision: a drop's ring is built on every worker at once") {
   // Nine tiles on five threads (four workers and the tick) take two or three tiles' time; one
   // after another take nine. Half is room for a shared machine.
   CHECK(parallel_ms < 0.5 * serial_ms);
+}
+
+namespace {
+
+// T169: a placement generator whose `tile` takes 40 ms, as a forest tile's did in its kit reads
+// and recipe hashing, and counts how many of its calls ran at once. Under two names: one that says
+// nothing, which the collision asks under its one lock, and one whose tile says it is reentrant.
+std::atomic<u32> g_slow_now{0};
+std::atomic<u32> g_slow_most{0};
+constexpr u32 k_slow_tile_ms = 40;
+bool slow_tile(void*, scene_gen::TileCoord tile, const scene_gen::Context& context,
+               scene_gen::Placements& out, std::string*) {
+  const u32 now = g_slow_now.fetch_add(1) + 1;
+  u32 most = g_slow_most.load();
+  while (now > most && !g_slow_most.compare_exchange_weak(most, now)) {
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(k_slow_tile_ms));
+  g_slow_now.fetch_sub(1);
+  const f64 size = static_cast<f64>(context.tile_size);
+  scene_gen::Placement p;
+  p.mesh = 0;
+  p.position = WorldPos{(static_cast<f64>(tile.x) + 0.5) * size, 0.0,
+                        (static_cast<f64>(tile.z) + 0.5) * size};
+  out.instances.push_back(p);
+  out.things = 1;
+  return true;
+}
+constexpr scene_gen::PlacementGeneratorDesc k_slow{.name = "collision_test_slow",
+                                                   .open = &posts_open,
+                                                   .close = &posts_close,
+                                                   .expand = &posts_expand,
+                                                   .meshes = &posts_meshes,
+                                                   .tile = &slow_tile};
+const scene_gen::Registrar k_slow_registrar{k_slow};
+constexpr scene_gen::PlacementGeneratorDesc k_slow_side{.name = "collision_test_slow_side",
+                                                        .open = &posts_open,
+                                                        .close = &posts_close,
+                                                        .expand = &posts_expand,
+                                                        .meshes = &posts_meshes,
+                                                        .tile = &slow_tile,
+                                                        .tile_reentrant = true};
+const scene_gen::Registrar k_slow_side_registrar{k_slow_side};
+
+// The many-piece generator under a name whose tile says it is reentrant, which it is: it reads
+// nothing but its arguments and counts its calls atomically.
+constexpr scene_gen::PlacementGeneratorDesc k_many_side{.name = "collision_test_many_side",
+                                                        .open = &many_open,
+                                                        .close = &many_close,
+                                                        .expand = &posts_expand,
+                                                        .meshes = &posts_meshes,
+                                                        .tile = &many_tile,
+                                                        .occupies = &many_occupies,
+                                                        .tile_reentrant = true};
+const scene_gen::Registrar k_many_side_registrar{k_many_side};
+
+// A streamed scene of one box and one entry of `generator`, which places on mesh 0.
+void one_entry_scene(const char* generator, renderer::SceneData& scene) {
+  const MeshSource meshes[] = {box_mesh(Vec3{0.5f, 0.5f, 0.5f})};
+  build_scene(meshes, {}, scene);
+  renderer::StreamedPlacements entry;
+  entry.generator = generator;
+  entry.params = JsonValue::object();
+  entry.where = "test.json: placements 0";
+  entry.meshes.push_back(0);
+  scene.streamed.push_back(entry);
+  scene.world.enabled = true;
+  scene.dynamic = true;
+}
+
+}  // namespace
+
+// **A ring's tiles are built side by side where their generator says so** (T169;
+// scene_collision.md, "Ahead of a running walker"). The drop above with the 40 ms in the
+// generator's `tile` instead of the ground's heights: four workers and the tick build the ring's
+// nine tiles, and a generator that says nothing is asked one call at a time under the collision's
+// one lock — the forest's 339 ms drop after T166 — while one whose tile is reentrant is asked on
+// all five threads at once.
+TEST_CASE("scene_collision: a drop's ring asks a reentrant generator side by side") {
+  const auto fill = [&](const char* generator, u32& most, Stats& out) {
+    renderer::SceneData scene;
+    one_entry_scene(generator, scene);
+    physics::World physics;
+    REQUIRE(physics.init(physics_options()) == physics::Status::Ok);
+    jobs::JobSystemConfig pool = one_worker();
+    pool.performance_workers = 4;
+    jobs::JobSystem workers(pool);
+    SceneCollision collision;
+    Config config;
+    config.prefetch_radius_tiles = 2.5f;
+    config.ring_radius_tiles = 1.5f;
+    config.prefetch_slots = 8;
+    std::string error;
+    REQUIRE_MESSAGE(collision.create(physics, scene, nullptr, config, &error, nullptr, &workers),
+                    error);
+    world::World world(ring(2));
+    world.add_consumer(collision.consumer());
+    g_slow_now = 0;
+    g_slow_most = 0;
+    const WorldPos there{4016.0, 0.0, -2000.0};
+    collision.prefetch(there);
+    const auto from = std::chrono::steady_clock::now();
+    world.update(observer_at(there), 0, true);
+    const f64 ms =
+        std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - from).count();
+    out = collision.stats();
+    most = g_slow_most.load();
+    return ms;
+  };
+  u32 locked_most = 0;
+  u32 side_most = 0;
+  Stats locked;
+  Stats side;
+  const f64 locked_ms = fill("collision_test_slow", locked_most, locked);
+  const f64 side_ms = fill("collision_test_slow_side", side_most, side);
+  MESSAGE("a fill of " << locked.activated << " tiles whose generator takes 40 ms, on four workers "
+                       << "and the tick: under the one lock " << locked_ms << " ms (at most "
+                       << locked_most << " call at once), side by side " << side_ms
+                       << " ms (at most " << side_most << " at once; " << side.prefetch_inline
+                       << " on the tick, " << side.prefetch_waits << " waited for)");
+  CHECK(locked.tiles == 9);
+  CHECK(side.tiles == 9);
+  CHECK(locked.placements == 9);
+  CHECK(side.placements == 9);
+  CHECK(locked_most == 1);
+  CHECK(side_most > 1);
+  // Nine calls of 40 ms one after another, against two or three rounds on five threads. Half is
+  // room for a shared machine.
+  CHECK(locked_ms > 7.0 * k_slow_tile_ms);
+  CHECK(side_ms < 0.5 * locked_ms);
+}
+
+namespace {
+
+// Everything a ring holds, word for word (T169): every held tile's coordinate and every piece of
+// it — the mesh, the entry, the instance, its place and turn to the bit, and its proxy's triangles,
+// vertices and parts — and a grid of rays straight down over the ring: each answer's height to the
+// bit, the compound's child it met and the normal there, or a miss.
+struct RingBytes {
+  Vector<u32> pieces;
+  Vector<u64> rays;
+  u32 hits = 0;
+  Stats stats;
+};
+
+void push_bits(Vector<u32>& out, f32 v) { out.push_back(std::bit_cast<u32>(v)); }
+
+void held_bytes(const SceneCollision& collision, const physics::World& physics, WorldPos centre,
+                RingBytes& out) {
+  for (u32 t = 0; t < collision.held_tiles(); ++t) {
+    HeldTile tile;
+    REQUIRE(collision.held_tile(t, tile));
+    out.pieces.push_back(static_cast<u32>(tile.coord.x));
+    out.pieces.push_back(static_cast<u32>(tile.coord.z));
+    out.pieces.push_back(tile.pieces);
+    for (u32 k = 0; k < tile.pieces; ++k) {
+      HeldPiece p;
+      REQUIRE(collision.held_piece(t, k, p));
+      out.pieces.push_back(p.mesh);
+      out.pieces.push_back(p.instance);
+      out.pieces.push_back(p.entry);
+      push_bits(out.pieces, p.offset.x);
+      push_bits(out.pieces, p.offset.y);
+      push_bits(out.pieces, p.offset.z);
+      push_bits(out.pieces, p.rotation.x);
+      push_bits(out.pieces, p.rotation.y);
+      push_bits(out.pieces, p.rotation.z);
+      push_bits(out.pieces, p.rotation.w);
+      out.pieces.push_back(static_cast<u32>(p.vertices.size()));
+      for (const Vec3& v : p.vertices) {
+        push_bits(out.pieces, v.x);
+        push_bits(out.pieces, v.y);
+        push_bits(out.pieces, v.z);
+      }
+      for (const u32 i : p.indices)
+        out.pieces.push_back(i);
+      for (const u32 part : p.parts)
+        out.pieces.push_back(part);
+    }
+  }
+  for (f64 z = centre.z - 76.0; z < centre.z + 76.0; z += 1.9) {
+    for (f64 x = centre.x - 76.0; x < centre.x + 76.0; x += 1.9) {
+      physics::RayHit hit;
+      if (!physics.cast_ray(WorldPos{x, 500.0, z}, Vec3{0.0f, -1000.0f, 0.0f}, hit)) {
+        out.rays.push_back(~u64{0});
+        continue;
+      }
+      ++out.hits;
+      out.rays.push_back(std::bit_cast<u64>(hit.position.y));
+      out.rays.push_back(hit.child);
+      out.rays.push_back((u64{std::bit_cast<u32>(hit.normal.x)} << 32) |
+                         u64{std::bit_cast<u32>(hit.normal.z)});
+    }
+  }
+}
+
+// The ring of radius 2.5 tiles at the origin and then two tiles east, over the many-piece slabs
+// (24 a tile at four scales, a scene mesh's proxies) and the fixture's rocks (a tile-handed mesh a
+// tile, at two scales): with no job system, every tile built on the tick one after another; with
+// `workers`, built ahead on that many workers, the ring's tiles all handed over at once and the
+// tick building or waiting for the rest — both generators' tiles side by side.
+RingBytes ring_bytes(u32 workers_n) {
+  renderer::SceneData scene;
+  many_scene(scene);
+  scene.streamed[0].generator = "collision_test_many_side";
+  test::register_tile_rocks();
+  renderer::StreamedPlacements rocks;
+  rocks.generator = "test-tile-rocks";
+  REQUIRE(parse_json("{\"reach\":5,\"n\":12,\"share\":1}", rocks.params).ok);
+  rocks.where = "test.json: placements 1";
+  rocks.tile_meshes = true;
+  scene.streamed.push_back(rocks);
+  scene.tile_meshes = true;
+  physics::World physics;
+  physics::WorldOptions options = physics_options();
+  options.max_bodies = 4096;
+  REQUIRE(physics.init(options) == physics::Status::Ok);
+  jobs::JobSystemConfig pool = one_worker();
+  pool.performance_workers = workers_n > 0 ? workers_n : 1;
+  jobs::JobSystem workers(pool);
+  SceneCollision collision;
+  Config config;
+  config.keep_shapes = true;
+  config.prefetch_radius_tiles = 3.5f;
+  config.ring_radius_tiles = 2.5f;
+  config.prefetch_slots = 2 * workers_n;
+  std::string error;
+  REQUIRE_MESSAGE(collision.create(physics, scene, nullptr, config, &error, nullptr,
+                                   workers_n > 0 ? &workers : nullptr),
+                  error);
+  world::RingParams params = ring();
+  params.radius[0] = 2.5f;
+  world::World world(params);
+  world.add_consumer(collision.consumer());
+  RingBytes out;
+  const WorldPos stops[] = {WorldPos{16.0, 0.0, 16.0}, WorldPos{80.0, 0.0, 16.0}};
+  for (u32 k = 0; k < 2; ++k) {
+    collision.prefetch(stops[k]);
+    world.update(observer_at(stops[k]), k, true);
+    held_bytes(collision, physics, stops[k], out);
+  }
+  out.stats = collision.stats();
+  return out;
+}
+
+u32 words_differ(const Vector<u32>& a, const Vector<u32>& b) {
+  u32 differ = a.size() > b.size() ? a.size() - b.size() : b.size() - a.size();
+  for (u32 k = 0; k < a.size() && k < b.size(); ++k)
+    differ += a[k] == b[k] ? 0u : 1u;
+  return differ;
+}
+u32 words_differ(const Vector<u64>& a, const Vector<u64>& b) {
+  u32 differ = a.size() > b.size() ? a.size() - b.size() : b.size() - a.size();
+  for (u32 k = 0; k < a.size() && k < b.size(); ++k)
+    differ += a[k] == b[k] ? 0u : 1u;
+  return differ;
+}
+
+}  // namespace
+
+// **A tile built beside others is the tile built alone, to the bit** (T169; scene_collision.md,
+// "Ahead of a running walker"): the content build's rule, for the collision. The same two rings
+// over slabs at four scales and tile-handed rocks at two, built on the tick one tile after another
+// and then twice on eight workers with every generator asked side by side: every held piece, every
+// proxy's triangles and every ray's answer the same, word for word.
+TEST_CASE("scene_collision: a ring built side by side on eight threads is the ring built alone") {
+  const RingBytes alone = ring_bytes(0);
+  const RingBytes side = ring_bytes(8);
+  const RingBytes again = ring_bytes(8);
+  MESSAGE("two rings of " << alone.stats.tiles << " tiles held, " << alone.pieces.size()
+                          << " words of pieces, " << alone.rays.size() << " words of rays ("
+                          << alone.hits << " hits); on eight workers: "
+                          << side.stats.prefetch_submitted << " built ahead, "
+                          << side.stats.prefetched << " ready, " << side.stats.prefetch_waits
+                          << " waited for, " << side.stats.prefetch_inline << " on the tick");
+  CHECK(alone.stats.prefetch_submitted == 0);
+  CHECK(side.stats.prefetch_submitted > 0);
+  CHECK(side.stats.placements_ahead > 0);
+  CHECK(alone.hits > 0);
+  CHECK(alone.stats.tile_proxies > 0);
+  CHECK(words_differ(alone.pieces, side.pieces) == 0);
+  CHECK(words_differ(alone.pieces, again.pieces) == 0);
+  CHECK(words_differ(alone.rays, side.rays) == 0);
+  CHECK(words_differ(alone.rays, again.rays) == 0);
+  // The proxies' counts are not compared: the builds ahead of tiles the ring has not taken hold
+  // proxies of their own (docs: "The leak rule"). What the held tiles' pieces name is in `pieces`.
+  CHECK(alone.stats.bodies_created == side.stats.bodies_created);
+  CHECK(alone.stats.activated == side.stats.activated);
 }
 
 namespace {

@@ -258,6 +258,7 @@ constexpr scene_gen::PlacementGeneratorDesc k_city{
     .tile = &tile,
     .occupies = &occupies,
     .representation = &representation,
+    .tile_reentrant = true,  // a tile's proxies are a function of the plan, which it only reads
 };
 const scene_gen::Registrar k_city_registrar{k_city};
 

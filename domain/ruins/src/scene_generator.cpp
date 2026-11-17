@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cmath>
 #include <memory>
+#include <mutex>
 #include <schemas/scene.h>
 #include <string>
 
@@ -26,9 +27,21 @@ namespace {
 
 ENGINE_LOG_CATEGORY_DEFINE(log_ruins_scene, "ruins.scene");
 
-// The entry, read once: its kits, its placement, the tiles that hold its buildings, and the
-// assemblers a tile at a time reuses (their scratch and their output), which is why a state is one
-// entry's and is used by one thread at a time.
+// What one tile's building is assembled in: the assemblers (their scratch) and their output, made
+// for the first tile that needs them and reused by the tiles after it.
+struct Scratch {
+  std::unique_ptr<Assembler> assembler;
+  std::unique_ptr<BlockAssembler> block_assembler;
+  Output out;
+  BlockOutput block_out;
+};
+
+// The entry, read once: its kits, its placement, the tiles that hold its buildings, and the scratch
+// a tile is assembled in. **Its `tile` is reentrant** (T169; scene_gen.md, "A tile asked on several
+// threads"): a call borrows a scratch from `spare` — one a call at a time, under its own lock held
+// only to take or give one back — so tiles asked side by side each assemble in their own, and a
+// building is a function of the kit, the seed, the tile and the ground, never of which scratch
+// assembled it (a tile at a time reused one before, and `expand`'s jobs make their own).
 struct Entry {
   scene::RuinScatter scatter;
   std::string where;
@@ -40,10 +53,34 @@ struct Entry {
   Placement placement;
   Vector<TileCoord> tiles;  // rank order, as `choose_tiles` gives them
   Vector<u64> keys;         // the same, sorted: what `occupies` searches
-  std::unique_ptr<Assembler> assembler;
-  std::unique_ptr<BlockAssembler> block_assembler;
-  Output out;
-  BlockOutput block_out;
+  std::mutex spare_mutex;
+  Vector<std::unique_ptr<Scratch>> spare;  // under `spare_mutex`: as many as were ever lent at once
+};
+
+// A scratch lent to one `tile` call: the entry's spare one, or a new one, given back at the end.
+class Lent {
+ public:
+  explicit Lent(Entry& entry) : entry_(entry) {
+    {
+      std::lock_guard<std::mutex> lock(entry.spare_mutex);
+      if (!entry.spare.empty()) {
+        scratch_ = std::move(entry.spare[entry.spare.size() - 1]);
+        entry.spare.pop_back();
+      }
+    }
+    if (scratch_ == nullptr) scratch_ = std::make_unique<Scratch>();
+  }
+  ~Lent() {
+    std::lock_guard<std::mutex> lock(entry_.spare_mutex);
+    entry_.spare.push_back(std::move(scratch_));
+  }
+  Lent(const Lent&) = delete;
+  Lent& operator=(const Lent&) = delete;
+  Scratch& operator*() noexcept { return *scratch_; }
+
+ private:
+  Entry& entry_;
+  std::unique_ptr<Scratch> scratch_;
 };
 
 u64 key_of(TileCoord t) noexcept {
@@ -254,17 +291,19 @@ bool tile(void* state, scene_gen::TileCoord at, const scene_gen::Context& contex
   Placement placement = entry.placement;
   placement.ground = ground_of(context);
   std::string why;
+  Lent lent(entry);
+  Scratch& scratch = *lent;
   if (want == k_drawn_blocks && entry.blocks) {
-    if (entry.block_assembler == nullptr)
-      entry.block_assembler = std::make_unique<BlockAssembler>(entry.kit, entry.block_kit);
-    entry.block_out.clear();
+    if (scratch.block_assembler == nullptr)
+      scratch.block_assembler = std::make_unique<BlockAssembler>(entry.kit, entry.block_kit);
+    scratch.block_out.clear();
     placement.detail = Detail::full;
-    if (!entry.block_assembler->assemble(placement, t, entry.block_out, &why)) {
+    if (!scratch.block_assembler->assemble(placement, t, scratch.block_out, &why)) {
       if (error != nullptr) *error = "a tile's building was not laid: " + why;
       return false;
     }
     const u32 first = entry.kit.meshes.size();
-    for (const Block& block : entry.block_out.blocks) {
+    for (const Block& block : scratch.block_out.blocks) {
       out.instances.push_back(yawed(first + entry.block_kit.blocks[block.block].mesh_index,
                                     block_translation(entry.block_kit, block),
                                     block_yaw_step(entry.block_kit, block),
@@ -272,14 +311,14 @@ bool tile(void* state, scene_gen::TileCoord at, const scene_gen::Context& contex
     }
     out.kind = k_drawn_blocks;
   } else {
-    if (entry.assembler == nullptr) entry.assembler = std::make_unique<Assembler>(entry.kit);
-    entry.out.clear();
+    if (scratch.assembler == nullptr) scratch.assembler = std::make_unique<Assembler>(entry.kit);
+    scratch.out.clear();
     placement.detail = want == k_drawn_walls ? Detail::walls : Detail::full;
-    if (!entry.assembler->assemble(placement, t, entry.out, &why)) {
+    if (!scratch.assembler->assemble(placement, t, scratch.out, &why)) {
       if (error != nullptr) *error = "a tile's building was not assembled: " + why;
       return false;
     }
-    for (const Instance& piece : entry.out.instances) {
+    for (const Instance& piece : scratch.out.instances) {
       out.instances.push_back(yawed(
           entry.kit.members[piece.member].mesh_index, instance_translation(entry.kit, piece),
           instance_yaw_step(entry.kit, piece), piece.kind == static_cast<u8>(PieceKind::debris)));
@@ -299,6 +338,7 @@ constexpr scene_gen::PlacementGeneratorDesc k_ruins{
     .tile = &tile,
     .occupies = &occupies,
     .representation = &representation,
+    .tile_reentrant = true,  // each call assembles in a scratch of its own (`Lent`)
 };
 const scene_gen::Registrar k_ruins_registrar{k_ruins};
 

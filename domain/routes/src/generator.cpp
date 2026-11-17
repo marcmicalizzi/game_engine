@@ -423,7 +423,9 @@ constexpr scene_gen::PlacementGeneratorDesc k_routes{.name = "routes",
                                                      .tile = &tile,
                                                      .occupies = &occupies,
                                                      .representation = &representation,
-                                                     .plan_ground = &plan_ground};
+                                                     .plan_ground = &plan_ground,
+                                                     // hands the bands filed at open
+                                                     .tile_reentrant = true};
 const scene_gen::Registrar k_registrar{k_routes};
 
 }  // namespace
