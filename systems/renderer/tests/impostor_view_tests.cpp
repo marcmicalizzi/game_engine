@@ -3,6 +3,8 @@
 // the masked variants and lit through its baked normals matches the full geometry's picture within
 // a stated error — the proof that the bake, the container, the texture step and the draw agree.
 
+#include "test_device.h"
+
 #include <domain/gfx/device.h>
 #include <systems/renderer/camera_path.h>
 #include <systems/renderer/capture.h>
@@ -14,8 +16,6 @@
 #include <doctest/doctest.h>
 #include <test_paths.h>
 #include <test_temp_dir.h>
-
-#include "test_device.h"
 
 #include <cmath>
 #include <fstream>
@@ -443,8 +443,7 @@ TEST_CASE("impostor view: the dither follows the placement, not the order the in
       FrameDesc frame;
       frame.frame_index = f;
       frame.camera = sample_camera_path(path, 0.0);
-      frame.lod_px =
-          0.8f * std::pow(1.5625f, static_cast<f32>(f) / static_cast<f32>(k_frames - 1));
+      frame.lod_px = 0.8f * std::pow(1.5625f, static_cast<f32>(f) / static_cast<f32>(k_frames - 1));
       CapturedFrame captured;
       REQUIRE_MESSAGE(renderer.render_offscreen(frame, &error), error);
       REQUIRE_MESSAGE(renderer.capture(frame, channels, captured, &error), error);
@@ -498,9 +497,8 @@ TEST_CASE("impostor view: the dither follows the placement, not the order the in
         }
       }
       const std::string label = std::string(p.name) + (fade > 0.0f ? ", faded" : ", at once");
-      MESSAGE(label << ": of " << covered
-                     << " covered pixels over " << k_frames << " frames, " << ids
-                     << " ids and " << colour << " colours differ between the two orders");
+      MESSAGE(label << ": of " << covered << " covered pixels over " << k_frames << " frames, "
+                    << ids << " ids and " << colour << " colours differ between the two orders");
       CHECK(covered > 10000u);
       CHECK(ids == 0u);
       CHECK(colour == 0u);
