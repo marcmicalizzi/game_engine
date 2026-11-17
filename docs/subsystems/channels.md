@@ -731,7 +731,7 @@ through **the sections the ground has**, by the textbook's method
   few clasts deep it is the roughness layer's V = 2.5 (R / D84) sqrt(g R S), in deep water
   Manning–Strickler's. The D84 is the plan's at each point (`ChannelSediment`, "Bed sediment",
   carried as `FlowLine::d84`); a line with no plan (an author's) takes what the plan's sediment law
-  gives a bed of its section's own bank height (held to 5 cm to 3 m) and its bed's slope over 10 m
+  gives a bed of its section's own bank height (held to 5 cm to 1 m: a crest read is often a trench's wall, not a bankfull stage) and its bed's slope over 10 m
   either way. Nothing is keyed on a scene: the relative submergence is the section's depth over its
   bed's clasts. Jarrett's (1984) n = 0.32 S^0.38 R^-0.16, held to his data's range, is
   `--resistance jarrett` (the default until W137: every small stream's R is under his 0.15 m, so the

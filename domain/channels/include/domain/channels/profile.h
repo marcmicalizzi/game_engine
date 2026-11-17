@@ -47,10 +47,13 @@ namespace engine::channels {
 // plan the clasts the plan's sediment law gives a bed of its section's bank height and slope.
 inline constexpr f64 k_vpe_a1 = 6.5;
 inline constexpr f64 k_vpe_a2 = 2.5;
-// A line with no plan's bed: the bank height its D84 is taken from is held to this range, metres
-// (a section read 12 m wide may take a valley's side for its crest).
+// A line with no plan's bed: the bank height its D84 is taken from is held to this range, metres.
+// The crest a section reads is often no bankfull stage — a trench's wall, or a valley's side read
+// 12 m out — and the sediment law's grain grows with the depth it is given (a 3 m bank gave a 1 %
+// bed a D84 of 0.7 m); a metre is a small stream's bankfull depth and more. Deep water reads its
+// D84 only to the 1/6 power, so the cap costs a large river little.
 inline constexpr f64 k_vpe_bank_min_m = 0.05;
-inline constexpr f64 k_vpe_bank_max_m = 3.0;
+inline constexpr f64 k_vpe_bank_max_m = 1.0;
 // D84 is never read under a millimetre (a sand bed's is under 4 mm).
 inline constexpr f64 k_vpe_d84_min_m = 0.001;
 // **Jarrett (1984), in metres**, `--resistance jarrett`: n = 0.32 S^0.38 R^-0.16, S the bed's fall
