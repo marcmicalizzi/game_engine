@@ -956,7 +956,7 @@ float water_whitecap_cover(float wind_m_s) {
 }
 
 // The densest a sheet's lace may be: past it the cells would close into a sheet.
-static const float k_beach_lace_max = 0.55;
+static const float k_beach_lace_max = 0.7;
 // The bore's band: its width over the wave's height, within these metres.
 static const float k_beach_band_per_h = 0.35;
 static const float k_beach_band_min_m = 0.06;
@@ -1112,7 +1112,9 @@ float water_bore_foam(WaterSurface* s, float2 p, WaterField f, float d, float t,
         0.9, k_water_broke_whole,
         ratio * water_swash_group(j) +
             second * cos(k_water_two_pi * frac(cross_phase + float(j) * cross_step)));
-    const float density = min(amount * broke, lace_max) * exp(-(u + float(back)) * s->period_s / decay);
+    // The bore's own white for the first fifth of a period behind its crest, then the lace.
+    const float cap = lerp(1.0, lace_max, smoothstep(0.0, 0.2, u + float(back)));
+    const float density = min(amount * broke, cap) * exp(-(u + float(back)) * s->period_s / decay);
     if (density > 0.02)
       foam = max(foam, water_foam_cover(water_foam_lace(p, cell, j), density, footprint, cell));
   }
@@ -1754,11 +1756,22 @@ WaterWhiteTop water_channel_white_top(float2 p, WaterChannelPhases ph, float2 al
   m *= ph.norm / k_channel_noise_rms;  // value about [-2, 2], gradient per metre
   const float threshold = lerp(1.6, -1.4, air);
   const float mass = smoothstep(threshold - 0.5, threshold + 0.5, m.x);
-  // The threads: the ridges of a pattern drawn out along the flow, the older the longer.
+  // The threads: the zero lines of a pattern smeared along the flow (two taps, the older the
+  // farther apart), kept where they run along it, so the white thins to streaks and dashes drawn
+  // out by the current and not to loops.
   const float stretch = 1.0 + 2.5 * clamp(age, 0.0, 1.0);
-  const float ridge = 1.0 - abs(water_channel_streaks(p, ph, along, 0.12, stretch, seed + 457u));
-  const float width = 0.08 + 0.3 * air;
-  const float lace = smoothstep(1.0 - width, 1.0 - 0.4 * width, ridge) * smoothstep(0.02, 0.3, air);
+  float3 r = float3(0.0);
+  for (uint k = 0; k < 2; ++k) {
+    const float2 xk = (p - ph.offset[k]) / 0.12;
+    r += ph.weight[k] * (water_channel_noise(xk, seed + 457u) +
+                         water_channel_noise(xk + along * stretch, seed + 457u));
+  }
+  r *= ph.norm / (2.0 * k_channel_noise_rms);
+  const float gr = length(r.yz);
+  const float runs = gr > 1e-4 ? 1.0 - abs(dot(r.yz / gr, along)) : 0.0;
+  const float width = 0.1 + 0.3 * air;
+  const float lace = smoothstep(1.0 - width, 1.0 - 0.4 * width, 1.0 - abs(r.x)) *
+                     smoothstep(0.5, 0.85, runs) * smoothstep(0.02, 0.3, air);
   const float pattern = max(mass, lace);
   // Far away the pattern averages to the air.
   const float cover = lerp(air, pattern * min(2.0 * air + 0.3, 1.0), keep);

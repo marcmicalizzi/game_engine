@@ -296,8 +296,10 @@ did about each:
   between, which is what a stone in a lip does to it. The bed's own clasts are not read: they are
   placed with the plan (`domain/channels`' `place_pieces`), which the water's generator does not
   read. What reads them is the white field below.
-- **It thins to threads**: the ridges of a pattern drawn out along the flow (longer the older the
-  white) are what is left as the mass's threshold rises, so a band ends in lace and single streaks.
+- **It thins to threads**: the zero lines of a pattern smeared along the flow (two taps, farther
+  apart the older the white), kept only where they run along the flow, are what is left as the
+  mass's threshold rises, so a band ends in lace and single streaks drawn out by the current. (The
+  third cut's threads were the ridges of the smeared pattern everywhere, and drew loops like wire.)
 - **The bands sit on a smooth plane**: the bed's steps are row W132's. **Where a band stands**: from
   the travel time, because the description carries no steps (`scene_gen/water_channel.h`'s flags
   name a fall's lip and foot and a jump's head and foot, nothing else). When W132 writes steps, the
@@ -331,12 +333,12 @@ covers every texel of the pattern. The top tier now (`water_uprush_foam_top`; th
 
 - **the bore's front is a band** `0.35 H` wide (6 to 70 cm), densest at the front and ragged along
   the shore at its own scale and four times it, opening behind into
-- **the lace, capped at a density of 0.55** (`k_beach_lace_max`), so its cells stay open whatever
+- **the lace, capped at a density of 0.7** (`k_beach_lace_max`), so its cells stay open whatever
   the sea: threads round dark cells, thinning as the sheet's bubbles burst;
 - **spots stranded on the sand** where the backwash has bared it: the peaks of a 5 cm pattern,
   fewer and smaller as they age, fading over 2.5 times the foam's decay (the reels
   `backwash-foam-spots`, `foam-spots-wet-sand`);
-- the bores' foam on the water capped the same way, the roller's front ragged along the crest.
+- the bores' foam on the water: the bore's own white for a fifth of a period behind its crest (a tumbling band), then the lace capped the same way; the roller's front ragged along the crest.
 
 Every height and period it reads comes through **`water_white_sea`** (water.slang), which reads the
 shore record (`WaterShore::height_m`, `period_s`) that `gpu_scene.cpp`'s `water_swash_numbers`
