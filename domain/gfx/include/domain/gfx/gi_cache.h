@@ -138,6 +138,16 @@ constexpr u32 gi_history_cap(u32 n, u32 frames = k_gi_history_frames) noexcept {
 // `k_gi_memory_count_max`, under the field's full mark, which stands for a whole history. A cell
 // whose history already fills the field (4,096 a frame) remembers what it did.
 inline constexpr u32 k_gi_memory_times = 16;
+// **R171, fourth leg: past today's history the count grows by half a frame's samples**, not the
+// whole. Leg 3's long mean was the plain mean of every frame since the cell was made, up to its
+// ceiling, so the frames a cut or a walk-in fills with light still converging (the bounce reaching
+// its walls through each other's cells) weighed in it as much as the settled ones, and an error
+// they left decayed as one over the frames since: the village's room stood 3 % over the memory
+// off six seconds after the door, the cave 4 %. Growing by half, a frame's weight falls as the
+// square of its age's share, and the same start is 0.4 % off at six seconds and 0.2 % at twelve (a
+// simulation of the fold, renderer.md has it), for 3 % more grain while the count grows (it reaches
+// the ceiling in 770 frames at the trickle's eleven a frame instead of 350).
+inline constexpr u32 k_gi_memory_ramp = 2;
 inline constexpr u32 k_gi_memory_count_max = 0xfff0u;
 constexpr u32 gi_memory_cap(u32 n) noexcept {
   const u32 cap = gi_history_cap(n);
@@ -428,7 +438,12 @@ inline void gi_memory_fold(GiMemoryCell& c, u32 n, f32 frame_mean, bool drop, bo
   const u32 previous = c.count;
   const u32 cap = gi_history_cap(n);
   const u32 ceiling = memory ? gi_memory_cap(n) : cap;
-  const u32 total = previous + n < ceiling ? previous + n : ceiling;
+  // Past today's history the count grows by `k_gi_memory_ramp`'s share of a frame (the fourth leg).
+  const u32 ramp = n / k_gi_memory_ramp > 1u ? n / k_gi_memory_ramp : 1u;
+  const u32 grow = memory && previous >= cap ? ramp : n;
+  const u32 grown = previous + grow < ceiling ? previous + grow : ceiling;
+  const u32 today = previous + n < cap ? previous + n : cap;
+  const u32 total = grown > today ? grown : today;
   const u32 full =
       k_gi_max_samples > n * k_gi_history_frames ? k_gi_max_samples : n * k_gi_history_frames;
   const f32 nf = static_cast<f32>(n);

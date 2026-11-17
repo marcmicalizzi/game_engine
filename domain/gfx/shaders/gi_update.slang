@@ -702,7 +702,10 @@ void gi_fold_main(uint3 id : SV_DispatchThreadID) {
       const uint ceiling = memory && cap < k_gi_memory_count_max
                                ? min(cap * k_gi_memory_times, k_gi_memory_count_max)
                                : cap;
-      const uint total = min(previous + n, ceiling);
+      // The fourth leg (gfx::k_gi_memory_ramp): past today's history the count grows by half a
+      // frame's samples, so a cut's or a walk-in's unsettled first frames are forgotten faster.
+      const uint grow = memory && previous >= cap ? max(n / k_gi_memory_ramp, 1u) : n;
+      const uint total = max(min(previous + grow, ceiling), min(previous + n, cap));
       // The count is sixteen bits, and a cell that takes over 4,095 a frame — a crown's coarse
       // cell, whose samples count in sixteenths (stage 7) — would fill it in under sixteen
       // frames and then remember only what fits (three frames at 24,000 a frame, and the still

@@ -33,6 +33,9 @@ static const uint k_gi_stamp_frames = 0x7fffu;
 // gfx::k_gi_memory_times, k_gi_memory_count_max, k_gi_change_sigmas, k_gi_frame_drop,
 // k_gi_cell_changed (R171's third leg).
 static const uint k_gi_memory_times = 16u;
+// gfx::k_gi_memory_ramp (R171's fourth leg): past today's history the count grows by this share of
+// a frame's samples.
+static const uint k_gi_memory_ramp = 2u;
 static const uint k_gi_memory_count_max = 0xfff0u;
 static const float k_gi_change_sigmas = 4.0;
 static const uint k_gi_memory_back = 4u;
