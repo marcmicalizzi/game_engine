@@ -2138,14 +2138,26 @@ bool GpuScene::prepare_tables(u32 slot, TableUpdate& out, std::string* error) {
   }
   // A swapped relayout of the chain made its top-level records empty (`lay_out_ray_tracing`): they
   // are written whole once, here, rather than by every set written whole as they were until T167.
-  const bool records_whole = rt_records_all_ && ray_tracing_ && rt_instances.buffer.valid();
+  // With the old records kept, they are carried over on the GPU instead, and this frame writes its
+  // own runs' records over them.
+  out.carry_records = gfx::BufferResource{};
+  out.carry_record_bytes = 0;
+  const bool records_new = rt_records_all_ && ray_tracing_ && rt_instances.buffer.valid();
+  if (records_new && rt_records_from_.buffer.valid()) {
+    out.carry_records = rt_records_from_;
+    out.carry_record_bytes = std::min(rt_records_from_.size, rt_instances.size);
+    out.retire.push_back(rt_records_from_);
+    rt_records_from_ = gfx::BufferResource{};
+    rt_records_all_ = false;
+  }
+  const bool records_whole = records_new && rt_records_all_;
   const InstanceRange whole_records{0, instance_count_};
   const std::span<const InstanceRange> record_runs =
       records_whole ? std::span<const InstanceRange>(&whole_records, 1)
                     : std::span<const InstanceRange>(runs.data(), runs.size());
   const u32 record_slots = records_whole ? instance_count_ : slot_count;
   if (slot_count == 0 && set.shift.empty() && !out.carry_instances.buffer.valid() &&
-      !records_whole) {
+      !out.carry_records.buffer.valid() && !records_whole) {
     runs.clear();
     return true;
   }
@@ -5977,6 +5989,9 @@ bool GpuScene::lay_out_ray_tracing(std::string* error, RelayoutRetired* retired)
   const u32 keep_references = rt_reference_capacity_;
   if (retired == nullptr) {
     destroy_ray_tracing_layout();
+    // Waited: the records are uploaded whole below, and nothing in flight reads the old ones.
+    gfx::destroy_buffer(device, rt_records_from_);
+    rt_records_all_ = false;
   } else {
     // **Swapped** (T152): the per-instance half and the top-level structure go to the caller, as
     // the frames in flight read them; the frame's set — records, CLAS chunks — stays, and the step
@@ -5985,8 +6000,18 @@ bool GpuScene::lay_out_ray_tracing(std::string* error, RelayoutRetired* retired)
     retired->tlas_slot = tlas_slot_;
     tlas = gfx::AccelerationStructure{};
     tlas_slot_ = gfx::BindlessSet::k_invalid_slot;
+    // The top-level records are kept, not retired: the next set written carries them over into the
+    // new ones on the GPU and frees them after that frame (T167). Records an earlier relayout kept
+    // that no frame has carried yet stay the ones to carry; the ones it made were never filled.
+    if (rt_records_all_ && rt_records_from_.buffer.valid()) {
+      retire(rt_instances, &retired->buffers);
+    } else {
+      retire(rt_records_from_, &retired->buffers);
+      rt_records_from_ = rt_instances;
+    }
+    rt_instances = gfx::BufferResource{};
     for (gfx::BufferResource* buffer :
-         {&rt_instances, &slots, &instance_counts, &blas_records, &blas_dense, &blas_slots})
+         {&slots, &instance_counts, &blas_records, &blas_dense, &blas_slots})
       retire(*buffer, &retired->buffers);
     rt_records_all_ = true;  // the new records start empty: the next set written fills them (T167)
   }
@@ -6488,6 +6513,7 @@ void GpuScene::destroy() noexcept {
   gfx::destroy_buffer(device, grown_from_.instances);  // a growth no frame carried over (T167)
   gfx::destroy_buffer(device, grown_from_.pairs);
   grown_from_ = TableCarry{};
+  gfx::destroy_buffer(device, rt_records_from_);
   for (gfx::BufferResource& staging : table_staging_)
     gfx::destroy_buffer(device, staging);
   table_staging_.clear();

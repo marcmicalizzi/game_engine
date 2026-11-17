@@ -478,6 +478,8 @@ class GpuScene {
     gfx::BufferResource carry_pairs;
     u64 carry_instance_bytes = 0;
     u64 carry_pair_bytes = 0;
+    gfx::BufferResource carry_records;  // the old top-level records -> `rt_instances`, first
+    u64 carry_record_bytes = 0;
     Vector<gfx::BufferResource> retire;
   };
   bool prepare_tables(u32 slot, TableUpdate& out, std::string* error = nullptr);
@@ -2066,7 +2068,10 @@ class GpuScene {
     bool valid = false;
   };
   TableCarry grown_from_;
-  bool rt_records_all_ = false;  // a swapped relayout made the top-level records empty (T167)
+  // A swapped relayout made the top-level records again (T167): the old ones, kept until the next
+  // set written carries them over on the GPU as it carries a table, else written whole.
+  bool rt_records_all_ = false;
+  gfx::BufferResource rt_records_from_;
   u32 compact_pct_ = k_default_compact_pct;    // `renderer.tiles.compact_pct`, read at create
   u32 pair_limit_ = k_max_pairs;               // what the tail's layout may reach (`pair_limit`)
   bool relayout_pending_ = false;              // a growth the pool or the chain has not followed

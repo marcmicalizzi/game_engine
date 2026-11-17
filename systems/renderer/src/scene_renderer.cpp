@@ -4841,9 +4841,27 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // **A set made again, carried over on the GPU first** (T167; GpuScene::prepare_tables): the set
   // it is copied from, before the numbering and the copies that bring it up to date. A growth's old
   // set is freed once this frame has completed.
-  if (write_tables && tables_.carry_instances.buffer.valid()) {
+  if (write_tables) {
     for (const gfx::BufferResource& old : tables_.retire)
       frames_.defer_destroy(old);
+  }
+  // The old top-level records, likewise, before this frame's runs are copied over them.
+  if (write_tables && rt_chain && tables_.carry_records.buffer.valid()) {
+    const gfx::RgBuffer carry_records =
+        graph.import_buffer("carried records", tables_.carry_records);
+    graph.add_pass(
+        "record carry", gfx::PassKind::Transfer,
+        [&, carry_records](gfx::PassBuilder& b) {
+          b.read(carry_records, gfx::Access::TransferRead);
+          b.write(rt.instances, gfx::Access::TransferWrite);
+        },
+        [&](gfx::CommandList cb, gfx::RenderGraph&) {
+          const gfx::BufferCopy records_copy{0, 0, tables_.carry_record_bytes};
+          cb.copy_buffer(tables_.carry_records.buffer, scene.rt_instances.buffer,
+                         std::span<const gfx::BufferCopy>(&records_copy, 1));
+        });
+  }
+  if (write_tables && tables_.carry_instances.buffer.valid()) {
     const gfx::RgBuffer carry_instances =
         graph.import_buffer("carried instances", tables_.carry_instances);
     const bool carry_pairs = tables_.carry_pair_bytes > 0;
