@@ -1988,9 +1988,14 @@ void SceneCollision::prefetch(WorldPos at, Vec3 velocity) {
     return within_of(x, z, fx, fz, radius) || within_of(x, z, lx, lz, radius);
   };
   // Builds the walker has left behind — past the radius and a tile of both its place and its
-  // lead — are let go.
+  // lead — are let go; one a worker has not started never will be (T166: a fast flight's builds
+  // were each built when their turn came, long after the flight had left them, in front of the
+  // ones it wanted).
   for (u32 k = 0; k < builds_.size();) {
     if (!within(builds_[k]->coord.x, builds_[k]->coord.z, r + 1.0)) {
+      u32 queued = Build::k_queued;
+      (void)builds_[k]->state.compare_exchange_strong(queued, Build::k_done,
+                                                      std::memory_order_acq_rel);
       std::unique_ptr<Build> gone = std::move(builds_[k]);
       builds_[k] = std::move(builds_[builds_.size() - 1]);
       builds_.pop_back();
