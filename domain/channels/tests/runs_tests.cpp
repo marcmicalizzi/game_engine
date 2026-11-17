@@ -76,9 +76,9 @@ TEST_CASE("a line's walls: a level climbing from a film over its bank is counted
   // a jump (its foot over its head, not counted).
   constexpr u16 k_head = scene_gen::k_channel_jump_head;
   constexpr u16 k_jfoot = scene_gen::k_channel_jump_foot;
-  const scene::WaterChannel c = line({10.0, 9.9, 10.7, 10.7, 10.76, 10.0, 10.6},
-                                     {0.05f, 0.005f, 0.6f, 0.6f, 0.6f, 0.02f, 0.3f},
-                                     {0, k_over, 0, 0, 0, k_head, k_jfoot});
+  const scene::WaterChannel c =
+      line({10.0, 9.9, 10.7, 10.7, 10.76, 10.0, 10.6},
+           {0.05f, 0.005f, 0.6f, 0.6f, 0.6f, 0.02f, 0.3f}, {0, k_over, 0, 0, 0, k_head, k_jfoot});
   const LineRuns r = measure_runs(c);
   CHECK(r.climbs == 2);
   CHECK(r.walls == 1);
@@ -91,7 +91,8 @@ TEST_CASE("a line's walls: a level climbing from a film over its bank is counted
   u32 walls = 0;
   f64 v = 0;
   for (u32 k = 0; k < k_run_classes; ++k)
-    if (const JsonValue* w = j[k].find("walls"); w != nullptr && w->get_f64(v)) walls += static_cast<u32>(v);
+    if (const JsonValue* w = j[k].find("walls"); w != nullptr && w->get_f64(v))
+      walls += static_cast<u32>(v);
   CHECK(walls == 1);
 }
 

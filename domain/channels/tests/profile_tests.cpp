@@ -707,9 +707,9 @@ TEST_CASE("profile: a pool stands no higher than the water above it spilled") {
   CAPTURE(worst);
   CHECK(worst < 0.05);  // the forest's least climb
   // Before W138 the pit's closed half was a pool over the spilled water, and the climb to it drawn
-  // (the draw's old rule left a stretch out only when both ends were over a bank). The draw's own rule now refuses such a stretch
-  // whatever the solve writes, so the solve is held here by what it writes: no pool stands over
-  // the spilled level.
+  // (the draw's old rule left a stretch out only when both ends were over a bank). The draw's own
+  // rule now refuses such a stretch whatever the solve writes, so the solve is held here by what it
+  // writes: no pool stands over the spilled level.
   for (const ProfileStation& s : p.stations)
     if (s.x > 25.0 && s.x < 31.0) {
       CAPTURE(s.x);

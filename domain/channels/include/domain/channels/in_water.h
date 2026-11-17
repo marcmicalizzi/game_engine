@@ -17,7 +17,6 @@
 #include <core/containers/vector.h>
 
 #include <schemas/scene.h>
-
 #include <span>
 
 namespace engine::channels {

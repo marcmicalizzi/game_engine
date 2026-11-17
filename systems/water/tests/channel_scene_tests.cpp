@@ -368,7 +368,8 @@ TEST_CASE("water channel: a fall's foot in a body is the body's plunge") {
       REQUIRE(at != std::string::npos);
       const std::string z = std::to_string(-6.0 + off);
       text.insert(at + 32, std::string(R"(, {"name": "spout2",
-    "points": [[-12, 4.4, )") + z + "], [0, 4.0, " + z + "], [3.13, 1.0, " + z + R"(]],
+    "points": [[-12, 4.4, )") + z +
+                               "], [0, 4.0, " + z + "], [3.13, 1.0, " + z + R"(]],
     "width_m": [2, 2, 2], "depth_m": [0.4, 0.4, 0.13], "slope": [0.033, 0.033, 0.033],
     "discharge_m3s": [1.973, 1.973, 1.973], "speed_mps": [2.466, 2.466, 7.59],
     "froude": [1.245, 1.245, 6.72], "wet_left_m": [1, 1, 1], "wet_right_m": [1, 1, 1],

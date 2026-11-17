@@ -412,10 +412,10 @@ void find_plunges(const scene::Scene& file, SceneDesc& out) {
     }
     list.resize(kept);
     if (list.size() > gfx::k_water_plunges) {
-      ENGINE_LOG_INFO(log_renderer, "a water body has more falls apart than it keeps; the lowest left",
-                      log::field("body", out.mesh_info[body.mesh].name),
-                      log::field("falls", found), log::field("apart", list.size()),
-                      log::field("kept", gfx::k_water_plunges));
+      ENGINE_LOG_INFO(log_renderer,
+                      "a water body has more falls apart than it keeps; the lowest left",
+                      log::field("body", out.mesh_info[body.mesh].name), log::field("falls", found),
+                      log::field("apart", list.size()), log::field("kept", gfx::k_water_plunges));
       list.resize(gfx::k_water_plunges);
     }
   }

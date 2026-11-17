@@ -38,9 +38,9 @@ ChannelWater::ChannelWater(std::span<const scene::WaterChannel> blocks) : blocks
     if (!readable(b)) continue;
     for (u32 i = 0; i + 1 < b.points.size(); ++i) {
       if (!drawn_water(b, i)) continue;
-      const f64 reach = static_cast<f64>(
-          std::max(std::max(b.wet_left_m[i], b.wet_right_m[i]),
-                   std::max(b.wet_left_m[i + 1], b.wet_right_m[i + 1])));
+      const f64 reach =
+          static_cast<f64>(std::max(std::max(b.wet_left_m[i], b.wet_right_m[i]),
+                                    std::max(b.wet_left_m[i + 1], b.wet_right_m[i + 1])));
       const WorldPos& a = b.points[i];
       const WorldPos& c = b.points[i + 1];
       const i64 x0 = cell_of(std::min(a.x, c.x) - reach), x1 = cell_of(std::max(a.x, c.x) + reach);

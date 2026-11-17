@@ -420,8 +420,8 @@ TEST_CASE("water channel: a sheet does not climb from or to a station over its b
   // The flag at the far end climbs the same way: the level written there is its bank's.
   CHECK_FALSE(scene_gen::channel_stretch_drawn(0, scene_gen::k_channel_over_bank, 0.5f, 0.5f, 10.0,
                                                10.0011));
-  CHECK(scene_gen::channel_stretch_drawn(0, scene_gen::k_channel_over_bank, 0.5f, 0.005f, 10.0,
-                                         9.9));
+  CHECK(
+      scene_gen::channel_stretch_drawn(0, scene_gen::k_channel_over_bank, 0.5f, 0.005f, 10.0, 9.9));
   CHECK(scene_gen::channel_stretch_drawn(0, 0, 0.005f, 0.005f, 10.0, 10.8));
 }
 
