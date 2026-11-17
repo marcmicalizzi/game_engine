@@ -3299,8 +3299,28 @@ that rate the room's light moved 0.055 codes over the last 320 frames with the m
 memory's lag (372 frames at most) puts it 0.06 codes, 0.3 %, behind: under a step, and the same
 over the whole room, so nothing trails across it. Walking into the cave the levels after the stop
 agree to 0.2 % (9.63 against 9.61 codes); through the village's door the memory stood 3.2 % over
-six seconds after the stop, which is the ramp above. The final rule's flights are in the next
-paragraph's table.
+six seconds after the stop, which is the ramp above.
+
+**The final rule** (the ramp in; the same flights, the session locked, which leaves the temporal
+measure as it is): the cave's held view steps a code on **0.007 %** of pixel-frames (p99.9 0.69)
+and house 0's on **0.023 %** (p99.9 0.75), the bar held in both. The level's lag after the load
+halves: the cave stands 1.9 % over the memory off at twelve seconds (leg 3's rule: 3.4 %), house 0
+0.7 % (1.5 %). **Through the door it does not**: six seconds after the stop the room stands 2.8 %
+over the memory off (3.2 % without the ramp), a uniform level settling at 0.005 codes a frame, two
+hundredths of the bar's step, with no edge for an eye to compare it across; it is what is left of
+the rule, and a walk-in's cells, made while the bounce is still finding the room's walls, are its
+cause. The next lever is the bounce's hits reading a cell's short mean, so the light converges
+through the walls at today's pace and only the picture keeps the long memory.
+
+**What it costs**: nothing measurable. Medians of the GPU's timestamps over held flights
+(3840×2160, rt/rt, the bounce, one lease, the session locked on both sides): the cave 3.97 ms
+(main) against 3.98 (the memory on), `gi_trace` 0.853 / 0.858, the fold 0.052 / 0.054; house 0
+5.67 / 5.69; the village's lane 5.29 / 5.38 (the resolve 3.34 / 3.43, the memory changes nothing the
+resolve does, so that is the run's spread). Batch 65's build on the cave, for the coordinator's
+question of `gi_trace` rising on the forest's walk with both flags off: 1.00 ms against batch 66's
+0.853 — on an engine scene the sample pass is no dearer since R171's legs, and the forest's rise
+is not shown to be the cache (batch 65's build cannot read the village's plan, so the lane was
+not flown).
 
 ## The sun's day
 
