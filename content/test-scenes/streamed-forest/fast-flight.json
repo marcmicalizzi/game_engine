@@ -1,0 +1,226 @@
+{
+  "format": "engine.camera-path.v1",
+  "name": "streamed-forest-fast-flight",
+  "description": "T168: the turnover a player's flight makes, over turnover.json. Six seconds walking on the tiles' ground, a climb, then about 13 km across the disc of 300,000 trees at 450 m/s, 400 to 700 m up, through ten points that cross it every way, and down to the ground to walk six more: the tail empties and fills, the tables grow, and the first walk's tiles come back. After T164's fast flight over the forest proof of concept's staging.",
+  "interpolation": "Linear",
+  "fps": 30,
+  "znear": 0.1,
+  "keys": [
+    {
+      "time": 0,
+      "position": [
+        0.0,
+        1.7,
+        0.0
+      ],
+      "ground": true,
+      "target": [
+        40.0,
+        1.2,
+        0.0
+      ],
+      "target_ground": true
+    },
+    {
+      "time": 6,
+      "position": [
+        27.0,
+        1.7,
+        0.0
+      ],
+      "ground": true,
+      "target": [
+        67.0,
+        1.2,
+        0.0
+      ],
+      "target_ground": true
+    },
+    {
+      "time": 8,
+      "position": [
+        120.0,
+        150.0,
+        40.0
+      ],
+      "target": [
+        400.0,
+        100.0,
+        200.0
+      ]
+    },
+    {
+      "time": 10,
+      "position": [
+        400.0,
+        450.0,
+        300.0
+      ],
+      "target": [
+        700.0,
+        300.0,
+        600.0
+      ]
+    },
+    {
+      "time": 12.61,
+      "position": [
+        1400.0,
+        600.0,
+        900.0
+      ],
+      "target": [
+        1500.0,
+        650.0,
+        -800.0
+      ]
+    },
+    {
+      "time": 16.4,
+      "position": [
+        1500.0,
+        650.0,
+        -800.0
+      ],
+      "target": [
+        -200.0,
+        500.0,
+        -1700.0
+      ]
+    },
+    {
+      "time": 20.69,
+      "position": [
+        -200.0,
+        500.0,
+        -1700.0
+      ],
+      "target": [
+        -1600.0,
+        700.0,
+        -600.0
+      ]
+    },
+    {
+      "time": 24.67,
+      "position": [
+        -1600.0,
+        700.0,
+        -600.0
+      ],
+      "target": [
+        -1300.0,
+        550.0,
+        1200.0
+      ]
+    },
+    {
+      "time": 28.74,
+      "position": [
+        -1300.0,
+        550.0,
+        1200.0
+      ],
+      "target": [
+        300.0,
+        450.0,
+        1700.0
+      ]
+    },
+    {
+      "time": 32.47,
+      "position": [
+        300.0,
+        450.0,
+        1700.0
+      ],
+      "target": [
+        1600.0,
+        600.0,
+        300.0
+      ]
+    },
+    {
+      "time": 36.73,
+      "position": [
+        1600.0,
+        600.0,
+        300.0
+      ],
+      "target": [
+        600.0,
+        500.0,
+        -1200.0
+      ]
+    },
+    {
+      "time": 40.74,
+      "position": [
+        600.0,
+        500.0,
+        -1200.0
+      ],
+      "target": [
+        -900.0,
+        650.0,
+        -300.0
+      ]
+    },
+    {
+      "time": 44.64,
+      "position": [
+        -900.0,
+        650.0,
+        -300.0
+      ],
+      "target": [
+        0.0,
+        400.0,
+        0.0
+      ]
+    },
+    {
+      "time": 46.82,
+      "position": [
+        0.0,
+        400.0,
+        0.0
+      ],
+      "target": [
+        40.0,
+        100.0,
+        0.0
+      ]
+    },
+    {
+      "time": 49.82,
+      "position": [
+        30.0,
+        1.7,
+        0.0
+      ],
+      "ground": true,
+      "target": [
+        70.0,
+        1.2,
+        0.0
+      ],
+      "target_ground": true
+    },
+    {
+      "time": 55.82,
+      "position": [
+        57.0,
+        1.7,
+        0.0
+      ],
+      "ground": true,
+      "target": [
+        97.0,
+        1.2,
+        0.0
+      ],
+      "target_ground": true
+    }
+  ]
+}
