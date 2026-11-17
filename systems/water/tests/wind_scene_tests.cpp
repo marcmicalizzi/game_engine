@@ -6,7 +6,9 @@
 // a light wind holds the instance's bound at the gale's sea, and gives it back when it is cleared.
 #include <core/math/math.h>
 #include <core/math/world.h>
+#include <domain/gfx/commands.h>
 #include <domain/gfx/device.h>
+#include <domain/gfx/resources.h>
 #include <domain/gfx/wind.h>
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/capture.h>
@@ -135,8 +137,15 @@ struct Shot {
   u32 water_instance = ~0u;
 };
 
+// How a case changes the loaded scene before the GPU takes it: a second instance of the water mesh
+// where the first stands (each gets a surface of its own), and a scene that takes a tail.
+struct LoadAs {
+  bool second_water = false;
+  bool dynamic = false;
+};
+
 void load(const gfx::Device& device, const test::TempDir& tmp, const std::string& name,
-          const std::string& text, Shot& out) {
+          const std::string& text, Shot& out, LoadAs as = {}) {
   const std::string path = tmp.file(name + ".json");
   {
     std::ofstream file(path, std::ios::binary);
@@ -147,6 +156,19 @@ void load(const gfx::Device& device, const test::TempDir& tmp, const std::string
   REQUIRE_MESSAGE(read_scene_file(path, desc, error), error);
   desc.ddc = tmp.file("ddc");
   REQUIRE_MESSAGE(load_scene(desc, out.data, error), error);
+  if (as.second_water) {
+    for (u32 i = 0; i < out.data.instances.size(); ++i) {
+      const u32 mesh = out.data.instances[i].mesh;
+      if (mesh >= out.data.mesh_info.size() || !out.data.mesh_info[mesh].water.has_value()) continue;
+      gfx::InstanceDesc copy = out.data.instances[i];
+      copy.first_pair = out.data.pair_count;
+      out.data.pair_count += out.data.parts[mesh].cluster_count;
+      out.data.instances.push_back(copy);
+      if (!out.data.instance_joints.empty()) out.data.instance_joints.push_back(0);
+      break;
+    }
+  }
+  out.data.dynamic = out.data.dynamic || as.dynamic;
   RenderSettings settings;
   ResolvedSettings resolved;
   resolve_settings(settings, device.features(), &out.data, resolved);
@@ -197,6 +219,40 @@ u32 water_pixels_changed(const CapturedFrame& a, const CapturedFrame& b, u32 wat
 }
 
 constexpr f64 k_noon = 12.0 * 3600.0;
+
+// Every water instance of the scene, in order.
+Vector<u32> water_instances(const SceneData& data) {
+  Vector<u32> out;
+  for (u32 i = 0; i < data.instances.size(); ++i) {
+    const u32 mesh = data.instances[i].mesh;
+    if (mesh < data.mesh_info.size() && data.mesh_info[mesh].water.has_value()) out.push_back(i);
+  }
+  return out;
+}
+
+// Instance `index`'s record in the table the last frame read, as the GPU holds it.
+gfx::InstanceDesc gpu_record(gfx::Device& device, const GpuScene& scene, u32 index) {
+  device.wait_idle();
+  gfx::InstanceDesc out{};
+  gfx::BufferResource host;
+  std::string error;
+  REQUIRE_MESSAGE(gfx::create_buffer(device, sizeof(gfx::InstanceDesc),
+                                     gfx::BufferUsage::TransferDst, true, host, &error),
+                  error);
+  const gfx::BufferResource from = scene.instances;
+  const bool ok = gfx::submit_immediate(
+      device,
+      [&](gfx::CommandList cb) {
+        const gfx::BufferCopy copy{u64{index} * sizeof(gfx::InstanceDesc), 0,
+                                   sizeof(gfx::InstanceDesc)};
+        cb.copy_buffer(from.buffer, host.buffer, std::span<const gfx::BufferCopy>(&copy, 1));
+      },
+      &error);
+  if (ok) std::memcpy(&out, host.mapped, sizeof(out));
+  gfx::destroy_buffer(device, host);
+  REQUIRE_MESSAGE(ok, error);
+  return out;
+}
 
 }  // namespace
 
@@ -295,6 +351,66 @@ TEST_CASE("water wind: a hand gale on a body loaded light holds its bound at the
     CHECK(back_padding == load_padding);
     CHECK(water_pixels_changed(calm, gale, shot.water_instance) > 100u);
     CHECK(same(calm, back));
+  }
+  device.destroy();
+}
+
+// **A bound the wind raises on the frame after the tables grow reaches the GPU's table** (review
+// A2 of batch 67): in a scene that takes a tail, a tail that grows the per-pair buffers makes every
+// table set again, and the next frame carries its set over from the old one (T167). The wind's
+// raise marks the water's slot before that frame's tables are prepared; until 2026-11-17 such a mark
+// reached no set, and the water kept its smaller cull spheres under the gale's higher crests. Each
+// set in turn is read back and must hold the CPU's bound.
+TEST_CASE("water wind: a hand gale on the frame after the tables grow reaches every table set") {
+  const test::TempDir tmp("water_wind_grown");
+  gfx::Device device;
+  if (!open_device(device)) return;
+  {
+    Shot shot;
+    LoadAs as;
+    as.dynamic = true;
+    load(
+        device, tmp, "grown",
+        wind_scene(R"("wind_m_s": 2, "fetch_km": 20)", R"("wind": {"speed_m_s": 3, "to_deg": 30})"),
+        shot, as);
+    REQUIRE(shot.scene.dynamic());
+    for (u32 f = 0; f < 3; ++f)
+      (void)draw(shot, k_noon);
+    // A tail of the ground's mesh, far under the basin, enough of it to outgrow the pair stride.
+    REQUIRE(shot.data.terrain_mesh < shot.data.parts.size());
+    const u32 clusters = shot.data.parts[shot.data.terrain_mesh].cluster_count;
+    REQUIRE(clusters > 0);
+    const u32 stride = shot.scene.pair_stride();
+    Vector<SceneInstance> tail;
+    for (u32 i = 0; i < stride / clusters + 2; ++i) {
+      SceneInstance ground;
+      ground.mesh = shot.data.terrain_mesh;
+      ground.transform.position = Vec3{static_cast<f32>(i) * 70.0f, -400.0f, 0.0f};
+      tail.push_back(ground);
+    }
+    std::string error;
+    REQUIRE_MESSAGE(
+        shot.renderer.set_dynamic_instances(std::span<const SceneInstance>(tail.data(), tail.size()),
+                                            &error),
+        error);
+    REQUIRE(shot.scene.pair_stride() != stride);
+    const f32 load_padding = shot.scene.instance_record(shot.water_instance)->bounds_padding;
+    REQUIRE(tunables::apply_overrides("renderer.wind.speed_m_s=20"));
+    u32 stale = 0;
+    f32 gale_padding = 0.0f;
+    for (u32 f = 0; f < 2 * shot.scene.table_sets(); ++f) {
+      (void)draw(shot, k_noon);
+      gale_padding = shot.scene.instance_record(shot.water_instance)->bounds_padding;
+      const gfx::InstanceDesc held = gpu_record(device, shot.scene, shot.water_instance);
+      stale += held.bounds_padding != gale_padding ? 1u : 0u;
+    }
+    REQUIRE(tunables::apply_overrides("renderer.wind.speed_m_s=-1"));
+    MESSAGE("bound after the tables grew: loaded " << load_padding << " m, the gale's "
+                                                   << gale_padding << " m; " << stale << " of "
+                                                   << 2 * shot.scene.table_sets()
+                                                   << " frames' sets held another");
+    CHECK(gale_padding > load_padding);
+    CHECK(stale == 0);
   }
   device.destroy();
 }

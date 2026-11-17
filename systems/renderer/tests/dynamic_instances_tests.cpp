@@ -630,6 +630,106 @@ TEST_CASE(
   run_tiles(gpu.device, settings, "vertex, occlusion", 2);
 }
 
+namespace {
+
+// Slot `index`'s record in the table set the last frame read, as the GPU holds it.
+gfx::InstanceDesc gpu_record(gfx::Device& device, const GpuScene& scene, u32 index) {
+  device.wait_idle();
+  gfx::InstanceDesc out{};
+  gfx::BufferResource host;
+  std::string error;
+  REQUIRE_MESSAGE(gfx::create_buffer(device, sizeof(gfx::InstanceDesc),
+                                     gfx::BufferUsage::TransferDst, true, host, &error),
+                  error);
+  const gfx::BufferResource from = scene.instances;
+  const bool ok = gfx::submit_immediate(
+      device,
+      [&](gfx::CommandList cb) {
+        const gfx::BufferCopy copy{u64{index} * sizeof(gfx::InstanceDesc), 0,
+                                   sizeof(gfx::InstanceDesc)};
+        cb.copy_buffer(from.buffer, host.buffer, std::span<const gfx::BufferCopy>(&copy, 1));
+      },
+      &error);
+  if (ok) std::memcpy(&out, host.mapped, sizeof(out));
+  gfx::destroy_buffer(device, host);
+  REQUIRE_MESSAGE(ok, error);
+  return out;
+}
+
+}  // namespace
+
+// **A slot marked written right after the tables grow reaches every table set** (review A1 of
+// batch 67). A growth makes every set again, and the next frame carries its set over on the GPU
+// from the one the last frame read, with that one's pending runs (T167). `mark_instance_written` —
+// what a loaded instance's move (the far forest's hand-off), a ring chunk turned on at its corner,
+// a morph's padding and the water wind's bound (W136; its own case is in systems/water's
+// wind_scene_tests.cpp) all go through — skipped every new set and did not reach the carried
+// runs either, so a slot it marked between the growth and that frame was in no set until something
+// wrote it again. Here a loaded box is moved on that frame: the set each frame after it reads holds
+// the CPU's record, and the picture is the scene loaded with the box where it was moved.
+TEST_CASE("dynamic instances: a loaded instance moved right after the tables grow is in every set") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE(gpu.why);
+    return;
+  }
+  RenderSettings settings;
+  settings.raster = RasterMode::Hardware;  // the vertex path where there are no mesh shaders
+  settings.shadows = ShadowMode::Off;
+  settings.occlusion = true;
+  const Vector<SceneInstance> head = prefix();
+  const Vector<SceneInstance> a = tile_a();
+  const Vector<SceneInstance> c = tile_c();
+  const Vector<SceneInstance> tail = join({&a, &c});
+  Vector<SceneInstance> moved = head;
+  moved[0] = placed(0, Vec3{1.5f, 0.4f, -0.5f}, 1.0f, 0.4f);
+  for (const u32 in_flight : {2u, 3u}) {
+    Rig dynamic;
+    REQUIRE_MESSAGE(dynamic.build(gpu.device, std::span<const SceneInstance>(head.data(), head.size()),
+                                  true, settings, in_flight),
+                    dynamic.error);
+    std::string error;
+    for (u32 f = 0; f < 3; ++f)
+      REQUIRE_MESSAGE(dynamic.renderer.render_offscreen(frame_at(k_eye), &error), error);
+    const u32 stride = dynamic.scene.pair_stride();
+    REQUIRE_MESSAGE(dynamic.renderer.set_dynamic_instances(
+                        std::span<const SceneInstance>(tail.data(), tail.size()), &error),
+                    error);
+    REQUIRE(dynamic.scene.pair_stride() != stride);  // the tables grew
+    const u32 index = 0;
+    REQUIRE_MESSAGE(dynamic.scene.place_instances(std::span<const u32>(&index, 1),
+                                                  std::span<const SceneInstance>(moved.data(), 1),
+                                                  &error),
+                    error);
+    const gfx::InstanceDesc want = *dynamic.scene.instance_record(0);
+    u32 stale = 0;
+    const u32 frames = 2 * dynamic.scene.table_sets();
+    for (u32 f = 0; f < frames; ++f) {
+      REQUIRE_MESSAGE(dynamic.renderer.render_offscreen(frame_at(k_eye), &error), error);
+      const gfx::InstanceDesc held = gpu_record(gpu.device, dynamic.scene, 0);
+      stale += std::memcmp(held.rows, want.rows, sizeof(want.rows)) != 0 ||
+                       std::memcmp(&held.cell, &want.cell, sizeof(want.cell)) != 0
+                   ? 1u
+                   : 0u;
+    }
+    CapturedFrame shot;
+    REQUIRE_MESSAGE(dynamic.renderer.capture(frame_at(k_eye), channels(), shot, &error), error);
+    const Vector<SceneInstance> whole = join({&moved, &tail});
+    CapturedFrame expected;
+    REQUIRE_MESSAGE(reference(gpu.device, std::span<const SceneInstance>(whole.data(), whole.size()),
+                              settings, expected, error),
+                    error);
+    const Difference d = compare(shot, expected);
+    MESSAGE(in_flight << " in flight: " << stale << " of " << frames
+                      << " frames' sets held the box where it was; " << d.ids << " id, " << d.depth
+                      << " depth and " << d.color << " colour differences");
+    CHECK(stale == 0);
+    CHECK(d.ids == 0);
+    CHECK(d.depth == 0);
+    CHECK(d.color == 0);
+  }
+}
+
 // W6 behind `renderer.cull.pair_table` (renderer.md, "Where the table costs more than the search:
 // a card at idle clocks"): off by default, the camera's and the cascades' culls search; on, they
 // read the pair table, whose holes' entries are stale. Both ways the tiled world with its holes

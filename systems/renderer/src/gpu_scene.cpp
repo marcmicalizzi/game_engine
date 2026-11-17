@@ -1114,6 +1114,10 @@ void GpuScene::mark_instance_written(u32 instance) {
   for (TableSet& set : sets_) {
     if (!set.all) set.pending.push_back(InstanceRange{instance, instance + 1});
   }
+  // And the set a growth carries over, as `write_slots` does: after a growth every set is new and
+  // skipped above, and the set the next frame carries from that one takes its pending runs and no
+  // others, so a slot marked between the growth and that frame reached no set at all (T167).
+  if (grown_from_.valid) grown_from_.pending.push_back(InstanceRange{instance, instance + 1});
   tables_changed_ = true;
 }
 
