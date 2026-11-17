@@ -14,7 +14,12 @@
 // *who sized memory nobody touches*.
 //
 // **Off — no flag — none of it runs**: the large-allocation log stays off, nothing is walked, and
-// the summary's block is null. On, the walk runs twice per process, off the frame's path.
+// the summary's block is null. On, the walk runs twice per process, outside the timed frames: the
+// first-frame snapshot is taken between two frames, at the top of the loop, and both loops move
+// their clocks on by what it took (`take`'s return), so no frame's interval, no tick and no path
+// time counts it (T168: until 2026-11-17 it ran inside a frame of the session loop, 4.5 s of the
+// owner's walk read as an engine stall, and the session's clock ran those seconds of ticks on the
+// next frame). The block says what each walk took (`taken_ms`).
 
 #include <core/base/types.h>
 #include <core/json/json_value.h>
@@ -37,7 +42,8 @@ class MemoryReport {
   // device may be null (no device yet, or none any more). With a scene, the snapshot carries
   // `place`: what that scene holds where the eye stands, by kind (`GpuScene::place_bytes`, T138),
   // and one more log line. Does nothing when off or when a snapshot of that name was already taken.
-  void take(const char* when, const gfx::Device* device, const renderer::GpuScene* scene = nullptr);
+  // Returns the nanoseconds it took (0 when it did nothing), for a loop to take out of its clocks.
+  i64 take(const char* when, const gfx::Device* device, const renderer::GpuScene* scene = nullptr);
   // `{ "first_frame": {...}, "exit": {...} }` as taken so far, or null when off.
   JsonValue block() const;
 
