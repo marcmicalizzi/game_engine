@@ -5,6 +5,8 @@
 // a low sun behind the camera threw the shadows of the dunes it stood among nowhere, while the
 // cascaded maps, culled from the light, always held them. This is the owner's picture: the sand
 // in view, a low sun behind, and the traced shadow on the sand the maps' within the filter's band.
+#include "test_device.h"
+
 #include <core/jobs/job_system.h>
 #include <core/math/math.h>
 #include <domain/gfx/device.h>
@@ -34,7 +36,7 @@ struct Gpu {
   bool ok = false;
   Gpu() {
     std::string error;
-    if (!device.create(gfx::DeviceOptions{}, &error)) {
+    if (!device.create(renderer_test::device_options(), &error)) {
       why = "no Vulkan device: " + error;
       return;
     }

@@ -372,6 +372,119 @@ TEST_CASE("renderer: the field's near form keeps every blade short of its band, 
   CHECK(pixels[4] == 0);
 }
 
+namespace {
+
+// **A part of a block is as old as the block** (G205; `DynamicBlock::age_of`, renderer.md, "The
+// hand-off by distance"). A streamed tail of two blocks: a patch with no role far out of the
+// picture, handed first and alone, and then the near form in view under a key of its own, naming
+// the first block or not. `pixels` are the ones the second block's arrival changed, in the second
+// frame after it came (the first that draws it).
+bool draw_part(const gfx::Device& device, const test::TempDir& tmp, bool part_of_first, u32& pixels,
+               std::string& error) {
+  SceneDesc desc;
+  desc.meshes.push_back(tmp.file("sward.flora.json"));
+  desc.ddc = tmp.file("ddc");
+  desc.cache = true;
+  desc.instances.push_back(anchor());
+  SceneData data;
+  if (!load_scene(desc, data, error)) return false;
+  data.dynamic = true;
+  RenderSettings settings;
+  settings.raster = RasterMode::Hardware;
+  settings.shadows = ShadowMode::Off;
+  settings.lights = false;
+  settings.lod_fade = 0.0f;  // no cross-fade of an arriving block: the load-in alone is measured
+  ResolvedSettings resolved;
+  resolve_settings(settings, device.features(), &data, resolved);
+  if (check_availability(resolved, device.features()) != RenderAvailability::Ok) {
+    error = "the hardware rasterizer is unavailable here";
+    return false;
+  }
+  if (!resolved.flora_motion) {
+    error = "the field is not posed here";
+    return false;
+  }
+  GpuScene scene;
+  if (!scene.create(device, data, resolved, &error)) return false;
+  SceneRenderer renderer;
+  SceneRenderer::Desc rd;
+  rd.width = k_field_width;
+  rd.height = k_field_height;
+  if (!renderer.create(device, scene, resolved, rd, &error)) return false;
+  SceneInstance tail[2] = {patch(0), patch(scene_gen::k_handoff_near)};
+  tail[0].origin.x += 4096.0;
+  DynamicBlock blocks[2];
+  blocks[0].key = 11;
+  blocks[0].first = 0;
+  blocks[0].count = 1;
+  blocks[0].version = 1;
+  blocks[1].key = 12;
+  blocks[1].first = 1;
+  blocks[1].count = 1;
+  blocks[1].version = 1;
+  blocks[1].age_of = part_of_first ? blocks[0].key : 0;
+  FrameDesc frame;
+  frame.camera.position = absolute(WorldPos::origin(), k_field_eye);
+  frame.camera.target = absolute(WorldPos::origin(), k_field_target);
+  CaptureChannels channels;
+  channels.ids = true;
+  channels.depth = true;
+  FieldShot before;
+  FieldShot after;
+  // The first block is the tail's first fill; two frames pass; then the second block comes.
+  bool ok = renderer.set_dynamic_instances(std::span<const SceneInstance>(tail, 1),
+                                           std::span<const DynamicBlock>(blocks, 1), &error) &&
+            renderer.capture(frame, channels, before.frame, &error) &&
+            renderer.capture(frame, channels, before.frame, &error) &&
+            renderer.set_dynamic_instances(std::span<const SceneInstance>(tail, 2),
+                                           std::span<const DynamicBlock>(blocks, 2), &error) &&
+            // Twice, as `draw_field` does: the frame a block comes in draws none of it yet.
+            renderer.capture(frame, channels, after.frame, &error) &&
+            renderer.capture(frame, channels, after.frame, &error);
+  pixels = 0;
+  if (ok) {
+    for (u32 px = 0; px < k_field_width * k_field_height; ++px) {
+      pixels +=
+          after.frame.ids[u64{px} * k_id_words] != before.frame.ids[u64{px} * k_id_words] ? 1u : 0u;
+    }
+  }
+  renderer.destroy();
+  scene.destroy();
+  return ok;
+}
+
+}  // namespace
+
+TEST_CASE("renderer: a block that names the block it is part of is as old as it") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("renderer unavailable here: " << gpu.why);
+    return;
+  }
+  const test::TempDir tmp("renderer_handoff_part");
+  REQUIRE(tmp.ok());
+  REQUIRE(write_text(tmp.file("sward.flora.json"), k_sward));
+  std::string error;
+  // The near form short of its band, where a settled one keeps every blade. Part of the block the
+  // tail was first filled with, it is settled the frame it comes: its tile held it all along. A
+  // block of its own age is new, and its blades are still to grow in over the load-in's frames.
+  u32 part = 0;
+  u32 alone = 0;
+  if (!draw_part(gpu.device, tmp, true, part, error)) {
+    MESSAGE("field not drawn here: " << error);
+    return;
+  }
+  REQUIRE_MESSAGE(draw_part(gpu.device, tmp, false, alone, error), error);
+  MESSAGE("the near form's pixels in the first frame that draws it: " << part
+                                                                      << " as a part of the first "
+                                                                         "block, "
+                                                                      << alone
+                                                                      << " as a block of "
+                                                                         "its own age");
+  CHECK(part > 500u);
+  CHECK(alone < part / 4u);
+}
+
 TEST_CASE("renderer: a patch with a role draws the same ids read whole and streamed") {
   Gpu gpu;
   if (!gpu.ok) {

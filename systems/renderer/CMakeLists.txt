@@ -31,7 +31,7 @@ set(_renderer_deps base containers hash math time jobs log platform io image geo
                    gfx json texture tunables content_build schema schemas scene_gen profiling)
 engine_module(NAME renderer LAYER systems
   DEPS ${_renderer_deps}
-  SOURCES src/settings.cpp src/view_set.cpp src/motion_pass.cpp src/accumulation_pass.cpp src/scene.cpp src/gpu_scene.cpp src/gpu_scene_meshes.cpp src/gpu_scene_place.cpp src/gpu_scene_textures.cpp src/gpu_scene_rt_step.cpp src/gpu_scene_relayout.cpp
+  SOURCES src/settings.cpp src/view_set.cpp src/motion_pass.cpp src/accumulation_pass.cpp src/scene.cpp src/gpu_scene.cpp src/gpu_scene_meshes.cpp src/gpu_scene_place.cpp src/gpu_scene_textures.cpp src/gpu_scene_texture_bound.cpp src/gpu_scene_rt_step.cpp src/gpu_scene_relayout.cpp
           src/lighting.cpp
           src/page_source.cpp src/streaming.cpp src/scene_renderer.cpp src/reference.cpp
           src/capture.cpp src/terrain.cpp src/terrain_materials.cpp src/camera_path.cpp src/flythrough.cpp
@@ -39,14 +39,16 @@ engine_module(NAME renderer LAYER systems
           src/pair_account.cpp src/ground_sample.cpp src/ring_forms.cpp
           src/terrain_time.cpp
           src/terrain_rings.cpp src/terrain_tiles.cpp src/sky.cpp src/request.cpp
-          src/overlay.cpp src/scene_water.cpp src/scene_flora.cpp src/flora_motion.cpp
+          src/overlay.cpp src/scene_water.cpp src/scene_wind.cpp src/scene_flora.cpp src/flora_motion.cpp
           src/flora_poser.cpp src/scene_fire.cpp src/far_forest.cpp src/far_tile.cpp src/far_offered.cpp src/water_reflect.cpp
           src/water_refract.cpp
           src/scene_ground_plan.cpp src/sway_forms.cpp
-          src/resolve_classes.cpp)
+          src/resolve_classes.cpp src/temporal_change.cpp src/texture_feedback.cpp)
 # The renderer's own shader: the output encode after the frame passes (frame_pass.h,
-# shaders/frame_encode.slang), which includes domain/gfx's display.slang by its path.
-engine_shaders(NAME renderer SOURCES shaders/frame_encode.slang shaders/accumulate.slang)
+# shaders/frame_encode.slang), which includes domain/gfx's display.slang by its path; the texture
+# feedback (R172), which includes material.slang the same way.
+engine_shaders(NAME renderer SOURCES shaders/frame_encode.slang shaders/accumulate.slang
+               shaders/texture_feedback.slang)
 if(TARGET engine_shaders_renderer)
   target_link_libraries(engine_renderer PRIVATE engine_shaders_renderer)
 endif()
@@ -126,6 +128,8 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     tests/tail_budget_tests.cpp tests/mesh_room_tests.cpp tests/mesh_texture_tests.cpp
                     # R69: indirect light from the world-space cache.
                     tests/gi_cache_tests.cpp
+                    # R171 leg 4: the change between displayed frames, by luma band, on the CPU.
+                    tests/temporal_change_tests.cpp
                     # T146: a crown's leaf measured from its cards' own masks, on the CPU.
                     tests/crown_prior_measure_tests.cpp
                     # R151: the resolve drawn once per pixel class is the one draw's bytes.
@@ -199,15 +203,11 @@ if(TARGET engine_renderer_tests)
 endif()
 # The generators reach the scene reader through the registry, so the tests that read a scene naming
 # one link its capability as a host does: its registrar is what makes the name one the reader knows.
-foreach(_gen authored ruins sky terrain)
-  if(TARGET engine_renderer_tests AND TARGET engine::${_gen})
-    target_link_libraries(engine_renderer_tests PRIVATE engine::${_gen})
-  endif()
-endforeach()
+engine_test_generators(engine_renderer_tests authored ruins sky terrain)
 # The flora capability the same way (docs/subsystems/flora.md, "In a scene"): linked for its mesh
 # generator's registrar, and the oasis scene's capture where the dunes it stands on are built too.
 if(TARGET engine_renderer_tests AND TARGET engine::flora)
-  target_link_libraries(engine_renderer_tests PRIVATE engine::flora)
+  engine_test_generators(engine_renderer_tests flora)
   target_compile_definitions(engine_renderer_tests PRIVATE ENGINE_RENDERER_TESTS_FLORA=1)
   if(TARGET engine::terrain)
     target_compile_definitions(engine_renderer_tests PRIVATE ENGINE_RENDERER_TESTS_FLORA_TERRAIN=1)
@@ -215,7 +215,7 @@ if(TARGET engine_renderer_tests AND TARGET engine::flora)
   # A tree seated on a tread's edge and a cutting's lip (G201 stage 2) stands on a tile set's
   # edited ground: the tile-set capability linked for its `tiles` provider, as a host links it.
   if(TARGET engine::tileset)
-    target_link_libraries(engine_renderer_tests PRIVATE engine::tileset)
+    engine_test_generators(engine_renderer_tests tileset)
     target_compile_definitions(engine_renderer_tests PRIVATE ENGINE_RENDERER_TESTS_TILESET=1)
   endif()
 endif()

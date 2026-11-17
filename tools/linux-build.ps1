@@ -48,8 +48,9 @@
     -Test         also run CTest for the preset after the build (build alone is the default).
     -Filter       a regex on test names, passed to `ctest -R`.
     -Jobs         parallel compile jobs; default 8. See "Why eight" in docs/ci/local-linux.md.
-    -Rebuild      delete build/<preset> inside the volume first. Downloaded dependencies live in
-                  a separate volume and survive, so this costs a compile, not a download.
+    -Rebuild      delete build/<preset> inside the volume first, all but ninja's .ninja_log and
+                  .ninja_deps. Downloaded dependencies live in a separate volume and survive, and
+                  with ninja's records kept their objects are not compiled again.
     -Shell        drop into an interactive bash in the container with the volumes mounted.
     -Docs         run tools/docs-gate.sh and tools/docs-check.sh in the container and nothing
                   else. The container has no git history, so the host's git produces the changed

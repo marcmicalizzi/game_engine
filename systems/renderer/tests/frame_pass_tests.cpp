@@ -3,6 +3,8 @@
 // resolve's picture to the half's rounding, its context says what the frame is, a debug view never
 // calls it, and removing the last pass gives the frame back to the byte.
 
+#include "test_device.h"
+
 #include <domain/gfx/device.h>
 #include <domain/gfx/display.h>
 #include <domain/gfx/visibility_resolve.h>
@@ -36,7 +38,7 @@ struct Gpu {
   bool ok = false;
   Gpu() {
     std::string error;
-    if (!device.create(gfx::DeviceOptions{}, &error)) {
+    if (!device.create(renderer_test::device_options(), &error)) {
       why = "no Vulkan device: " + error;
       return;
     }

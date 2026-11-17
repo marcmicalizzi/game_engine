@@ -540,9 +540,11 @@ TEST_CASE("water: a lake's wind sea has the growth law's height and period, and 
   // The band nearest the peak is the table's largest.
   const f64 peak_omega = static_cast<f64>(waves[peak_band].cycles) * 6.283185307179586 / 1024.0;
   CHECK(peak_omega == doctest::Approx(gfx::jonswap_peak(u10, fetch)).epsilon(0.15));
-  // A fully developed sea grows no further: 7 m/s past 110 km is the same table.
-  CHECK(gfx::jonswap_peak(u10, 600000.0) == gfx::jonswap_peak(u10, 2.2e4 * u10 * u10 / g));
-  CHECK(gfx::jonswap_peak(u10, 100000.0) > gfx::jonswap_peak(u10, 600000.0));
+  // A fully developed sea grows no further: 7 m/s past 98 km is the same table (W136-2: where the
+  // peak law meets Pierson and Moskowitz's 0.13, 110 km until then).
+  CHECK(gfx::jonswap_peak(u10, 600000.0) ==
+        gfx::jonswap_peak(u10, gfx::k_water_developed_fetch * u10 * u10 / g));
+  CHECK(gfx::jonswap_peak(u10, 90000.0) > gfx::jonswap_peak(u10, 600000.0));
 
   // The bands' sum over a 60 m patch at eight clocks: the variance of the sines.
   const auto sum_at = [&](f64 px, f64 pz, f64 t) {

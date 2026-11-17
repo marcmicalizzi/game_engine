@@ -1,6 +1,8 @@
 // The world formation drawn on the ground (W85; renderer.md, "Formation bands"): a scene without a
 // banded layer draws the bytes it drew, and a banded layer's bands are where the field's dipping
 // beds cut the ground — across the dip on a level floor, nowhere when the beds are as level as it.
+#include "test_device.h"
+
 #include <foundation/image/png.h>
 #include <foundation/io/vfs.h>
 #include <systems/renderer/capture.h>
@@ -152,7 +154,7 @@ TEST_CASE("renderer: the formation's bands cross the dip, and nothing else chang
   REQUIRE(image::write_png(grey, 1, 1, 4, pixel) == io::Status::Ok);
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
+  if (!device.create(renderer_test::device_options(), &error)) {
     MESSAGE("no device: " << error);
     return;
   }

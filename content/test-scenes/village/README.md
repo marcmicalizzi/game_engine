@@ -68,3 +68,10 @@ door of house 0 (the first tenement taken, on the green), through its rooms' doo
 and to an upper window, where it stays three seconds looking out. A marker at every key names what
 the point is (`lane`, `path`, `gate`, `door`, `inside`, `window`), so `--marker-captures <dir>`
 writes a picture at each.
+
+Two shorter paths are the interior the bounce's change between frames is measured in (roadmap
+R171; renderer.md, "The change between frames, as the eye sees it"): `interior-held.json` stands
+twelve seconds just inside house 0's door looking across its front room (the flight's key at
+28.464 s), and `interior-door.json` walks the flight's last metres to that point through the door
+and holds there six seconds. Both are written by hand from `camera-path.json`'s keys, so a change
+to the plan that moves the door moves them too: read the flight's diff and move them with it.

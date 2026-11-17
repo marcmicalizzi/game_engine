@@ -111,6 +111,9 @@ struct FieldSample {
   f32 along = 0.0f;        // where on the owning segment
   u8 cls = k_surface_rock;
   bool ground = false;  // the ground is the nearer surface here
+  // The ground is known here: the point is inside a mouth's window of columns. Outside one the
+  // field has no ground, so the window's edge is not a surface (the mesher's, network_cells.cpp).
+  bool known = false;
 };
 
 struct Field {

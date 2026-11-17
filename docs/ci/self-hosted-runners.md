@@ -154,8 +154,11 @@ in order:
    `-DefaultTimeoutSeconds`, 900), each with its own stdout and stderr kept under `logs/`, and with
    two tests that share a resource lock never overlapping. `-Jobs 1` is the default, because these
    machines are small; `-Jobs <n>` runs the lock-free tests `n` at a time and still keeps the
-   `e2e_apps` ones to themselves. `-Filter <regex>` runs a subset and `-ListOnly` prints the list
-   without running anything.
+   ones that can open a GPU device to themselves: `tools/package-tests.ps1` writes every test
+   holding a GPU chain's lock (`gpu_device.1`, `.2`; [what to run](what-to-run.md#two-gpu-chains))
+   as the one lock `gpu_device`, since the chains lean on the machine-wide GPU lock and a bundle's
+   machine has none, and every test that can open a window holds one too. `-Filter <regex>` runs a
+   subset and `-ListOnly` prints the list without running anything.
 
 `results.json` carries the machine, the bundle's identity, the adapter step, and every test's exit
 code, wall time, doctest counts and log path; `results.txt` is the same thing readable, with the

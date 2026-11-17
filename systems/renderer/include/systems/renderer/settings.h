@@ -455,7 +455,7 @@ struct ResolvedSettings {
   f32 gi_far_lift = 0.0f;        // `renderer.gi.far_lift`: a coarse cell lifted to the harmonics
   bool gi_reveal = false;        // `renderer.gi.reveal`: a level taken by what its difference shows
   bool gi_spread = false;        // `renderer.gi.spread`: the read by its cells' measured spreads
-  bool gi_memory = false;        // `renderer.gi.memory`: a cell's memory by its own spread
+  bool gi_memory = true;         // `renderer.gi.memory`: a cell's memory by its own spread
   i32 gi_show_level = -1;       // `renderer.gi.show_level`: the read takes one level whole (-1: no)
   bool gi_crown_prior = false;  // `renderer.gi.crown_prior`: foliage through its crown's shade
   f32 gi_shell_m = 0.0f;        // `renderer.gi.shell_m`: the casters round the eye (stage 4)
@@ -737,6 +737,10 @@ f32 shadow_rest_texels_tunable() noexcept;
 // `renderer.shadow.hybrid_fit` (false): under the hybrid, the cascades begin at the ray distance
 // (`ShadowFit::begin_distance`; R103, renderer.md "Rays near, maps far").
 bool shadow_hybrid_fit_tunable() noexcept;
+// `renderer.shadow.cascade_volume` (true): a cascade's cull also drops a pair outside every view's
+// frustum swept towards the light, widened by the texels its filter reads (R49; renderer.md,
+// "Cascaded shadow maps"); false draws whatever the cascade's box holds, as before.
+bool shadow_cascade_volume_tunable() noexcept;
 // **The occlusion term of the LOD threshold** (R118; renderer.md, "Occlusion-aware LOD"): k, the
 // `renderer.lod.occluded_scale` default — a wholly hidden transition's thresholds are multiplied by
 // 1 + k — and the mip bias of the hidden share's footprint, `renderer.lod.occluded_bias`.

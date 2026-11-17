@@ -509,4 +509,165 @@ bool read_texture_file_memory(std::span<const u8> bytes, TextureData& out, std::
   return true;
 }
 
+namespace {
+
+// Where level `first` of a normal-variance chain starts: the BC4 levels above it, each at an
+// aligned offset (`normal_variance_level_bytes`'s layout).
+u64 variance_offset(u32 width, u32 height, u32 first) noexcept {
+  u64 offset = 0;
+  for (u32 i = 0; i < first; ++i)
+    offset =
+        align_up(offset + texture_level_bytes(TextureFormat::bc4, texture_level_extent(width, i),
+                                              texture_level_extent(height, i)));
+  return offset;
+}
+
+// The description of the tail: level `first`'s extents, the levels from it re-based, the payload
+// and the variance from their own offsets. `data` and `variance` are the tail's bytes already.
+void rebase_tail(const TextureData& head, const Vector<TextureFileLevel>& levels, u32 first,
+                 TextureData& out) {
+  out.format = head.format;
+  out.color_space = head.color_space;
+  out.width = texture_level_extent(head.width, first);
+  out.height = texture_level_extent(head.height, first);
+  out.flags = head.flags;
+  out.source_channels = head.source_channels;
+  out.source_hash = head.source_hash;
+  out.build_key = head.build_key;
+  const u64 base = levels[first].offset;
+  out.levels.clear();
+  for (u32 l = first; l < levels.size(); ++l) {
+    TextureFileLevel level = levels[l];
+    level.offset -= base;
+    out.levels.push_back(level);
+  }
+}
+
+}  // namespace
+
+bool texture_levels_from(const TextureData& whole, u32 first, TextureData& out) {
+  out = TextureData{};
+  if (first >= whole.levels.size()) return false;
+  const u64 base = whole.levels[first].offset;
+  if (base > whole.data.size()) return false;
+  rebase_tail(whole, whole.levels, first, out);
+  out.data.resize(static_cast<u32>(whole.data.size() - base));
+  if (!out.data.empty())
+    std::memcpy(out.data.data(), whole.data.data() + base, static_cast<usize>(out.data.size()));
+  if (!whole.normal_variance.empty()) {
+    const u64 at = variance_offset(whole.width, whole.height, first);
+    if (at > whole.normal_variance.size()) return false;
+    out.normal_variance.resize(static_cast<u32>(whole.normal_variance.size() - at));
+    if (!out.normal_variance.empty())
+      std::memcpy(out.normal_variance.data(), whole.normal_variance.data() + at,
+                  static_cast<usize>(out.normal_variance.size()));
+  }
+  return validate_texture(out, nullptr);
+}
+
+bool read_texture_file_levels(std::string_view path, u32 first, TextureData& out,
+                              std::string* error) {
+  out = TextureData{};
+  io::FileHandle file;
+  if (const io::Status status = file.open(path); status != io::Status::Ok) {
+    return fail(error,
+                "cannot open texture file '" + std::string(path) + "': " + io::status_name(status));
+  }
+  TextureFileHeader header;
+  u64 got = 0;
+  if (file.read_at(0, &header, k_header_bytes, got) != io::Status::Ok || got != k_header_bytes)
+    return fail(error, "texture file is truncated: no whole header");
+  if (std::memcmp(header.magic, "TEXF", 4) != 0 || header.version != k_texture_file_version)
+    return fail(error, "not a texture file this build reads");
+  if (file.size() != header.total_bytes)
+    return fail(error, "texture file is not its header's size");
+  const u64 table_end = k_header_bytes + k_record_bytes * u64{header.section_count};
+  if (table_end > header.total_bytes)
+    return fail(error, "texture file's section table does not fit");
+  Vector<TextureFileSection> sections(header.section_count);
+  if (header.section_count > 0 &&
+      (file.read_at(k_header_bytes, sections.data(), k_record_bytes * header.section_count, got) !=
+           io::Status::Ok ||
+       got != k_record_bytes * header.section_count)) {
+    return fail(error, "texture file's section table cannot be read");
+  }
+  const TextureFileSection* found[k_texture_section_kinds] = {};
+  for (const TextureFileSection& section : sections) {
+    if (section.kind == 0 || section.kind >= k_texture_section_kinds) continue;
+    if (section.offset > header.total_bytes ||
+        section.element_count * u64{section.element_size} > header.total_bytes - section.offset)
+      return fail(error,
+                  "texture file section " + section_label(section.kind) + " runs past the end");
+    if (found[section.kind] == nullptr) found[section.kind] = &section;
+  }
+  const auto section_of = [&](TextureSection kind, u32 element_size) -> const TextureFileSection* {
+    const TextureFileSection* s = found[static_cast<u32>(kind)];
+    return s != nullptr && s->element_size == element_size ? s : nullptr;
+  };
+  const TextureFileSection* desc_section =
+      section_of(TextureSection::Desc, sizeof(TextureFileDesc));
+  const TextureFileSection* level_section =
+      section_of(TextureSection::Levels, sizeof(TextureFileLevel));
+  const TextureFileSection* payload = section_of(TextureSection::Data, 1);
+  if (desc_section == nullptr || desc_section->element_count != 1 || level_section == nullptr ||
+      payload == nullptr) {
+    return fail(error, "texture file lacks its description, its levels or its data");
+  }
+  TextureFileDesc desc;
+  if (file.read_at(desc_section->offset, &desc, sizeof(desc), got) != io::Status::Ok ||
+      got != sizeof(desc) || !texture_format_known(desc.format) ||
+      level_section->element_count != desc.level_count) {
+    return fail(error, "texture file's description cannot be read or does not match its levels");
+  }
+  Vector<TextureFileLevel> levels(static_cast<u32>(level_section->element_count));
+  const u64 level_bytes = u64{levels.size()} * sizeof(TextureFileLevel);
+  if (level_bytes != 0 &&
+      (file.read_at(level_section->offset, levels.data(), level_bytes, got) != io::Status::Ok ||
+       got != level_bytes)) {
+    return fail(error, "texture file's level table cannot be read");
+  }
+  if (first >= levels.size())
+    return fail(error, "texture file has no level " + std::to_string(first));
+  const u64 base = levels[first].offset;
+  if (base > payload->element_count) return fail(error, "texture file's level runs past its data");
+  TextureData head;
+  head.format = static_cast<TextureFormat>(desc.format);
+  head.color_space = static_cast<ColorSpace>(desc.color_space);
+  head.width = desc.width;
+  head.height = desc.height;
+  head.flags = desc.flags;
+  head.source_channels = desc.source_channels;
+  if (const TextureFileSection* identity = section_of(TextureSection::SourceHash, sizeof(u64));
+      identity != nullptr && identity->element_count >= 2) {
+    u64 words[2] = {0, 0};
+    if (file.read_at(identity->offset, words, sizeof(words), got) != io::Status::Ok ||
+        got != sizeof(words))
+      return fail(error, "texture file's identity cannot be read");
+    head.source_hash = words[0];
+    head.build_key = words[1];
+  }
+  TextureData result;
+  rebase_tail(head, levels, first, result);
+  result.data.resize(static_cast<u32>(payload->element_count - base));
+  if (!result.data.empty() && (file.read_at(payload->offset + base, result.data.data(),
+                                            result.data.size(), got) != io::Status::Ok ||
+                               got != result.data.size())) {
+    return fail(error, "texture file's levels cannot be read");
+  }
+  if (const TextureFileSection* variance = found[static_cast<u32>(TextureSection::NormalVariance)];
+      variance != nullptr && variance->element_size == 1 && variance->element_count != 0) {
+    const u64 at = variance_offset(desc.width, desc.height, first);
+    if (at > variance->element_count) return fail(error, "texture file's variance chain is short");
+    result.normal_variance.resize(static_cast<u32>(variance->element_count - at));
+    if (file.read_at(variance->offset + at, result.normal_variance.data(),
+                     result.normal_variance.size(), got) != io::Status::Ok ||
+        got != result.normal_variance.size()) {
+      return fail(error, "texture file's variance levels cannot be read");
+    }
+  }
+  if (!validate_texture(result, error)) return false;
+  out = std::move(result);
+  return true;
+}
+
 }  // namespace engine::texture

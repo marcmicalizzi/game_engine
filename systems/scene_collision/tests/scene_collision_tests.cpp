@@ -1713,7 +1713,10 @@ void many_scene(renderer::SceneData& scene) {
 // A walker's host, as engine-view's: the ring updated once a tick from the feet before the step,
 // a budget of two tiles, the collision `follow`ed — with the tiles built ahead or not, and with the
 // many-piece generator's slabs on them or none.
-WalkChain walk_east(bool ahead, bool pieces = false) {
+// `runner` (T166): engine-view's walker since T166 — four workers, the builds handed over twice
+// that many at a time by when the ring will want them, and a lead of 4 s along the walker's own
+// velocity.
+WalkChain walk_east(bool ahead, bool pieces = false, bool runner = false) {
   TestGround g;
   scene_gen::GroundProvider ground(&k_still_ops, &g);
   SlowSource slow;
@@ -1722,10 +1725,17 @@ WalkChain walk_east(bool ahead, bool pieces = false) {
   if (pieces) many_scene(scene);
   physics::World physics;
   REQUIRE(physics.init(physics_options()) == physics::Status::Ok);
-  jobs::JobSystem workers(one_worker());
+  jobs::JobSystemConfig pool = one_worker();
+  if (runner) pool.performance_workers = 4;
+  jobs::JobSystem workers(pool);
   SceneCollision collision;
   Config config;
   config.prefetch_radius_tiles = ahead ? 2.5f : 0.0f;
+  if (runner) {
+    config.ring_radius_tiles = 1.5f;
+    config.lead_s = 4.0f;
+    config.prefetch_slots = 8;
+  }
   std::string error;
   REQUIRE_MESSAGE(collision.create(physics, scene, &ground, config, &error, &source,
                                    ahead ? &workers : nullptr),
@@ -1748,8 +1758,12 @@ WalkChain walk_east(bool ahead, bool pieces = false) {
   physics::CharacterInput east;
   east.move = Vec3{1.0f, 0.0f, 0.3f};
   WalkChain out;
+  WorldPos last = body.feet();
   for (u64 tick = 1; tick <= 4800; ++tick) {
-    collision.prefetch(body.feet());
+    const DVec3 moved = body.feet() - last;
+    last = body.feet();
+    collision.prefetch(body.feet(), Vec3{static_cast<f32>(moved.x * 240.0), 0.0f,
+                                         static_cast<f32>(moved.z * 240.0)});
     observers.clear();
     observers.add(body.feet(), 1.0f);
     world.update(observers, tick, false);
@@ -1839,6 +1853,34 @@ TEST_CASE("scene_collision: the placements built ahead of the ring change no bod
   CHECK(bare.hashes.back() != plain.hashes.back());  // and the slabs were walked on
   // Without a build ahead the only built shapes are the cached proxies.
   CHECK(plain.built_alive == plain.stats.proxies);
+}
+
+// **Ahead of a running walker, the same walk** (T166; scene_collision.md, "Ahead of a running
+// walker"). Four workers, the builds handed over by when the ring will want them and along the
+// walker's velocity: only when and where a tile is built changes, so the walk over the slabs is
+// the one whose ticks build everything themselves, state for state.
+TEST_CASE("scene_collision: builds ahead of a runner, on four workers by need, change no body") {
+  const WalkChain plain = walk_east(false, true);
+  const WalkChain runner = walk_east(true, true, true);
+  REQUIRE(plain.hashes.size() == runner.hashes.size());
+  u32 differ = 0;
+  for (u32 k = 0; k < plain.hashes.size(); ++k)
+    differ += plain.hashes[k] == runner.hashes[k] ? 0u : 1u;
+  MESSAGE(plain.stats.activated << " tiles; on four workers by need: "
+                                << runner.stats.prefetch_submitted << " handed over, "
+                                << runner.stats.prefetched << " ready, "
+                                << runner.stats.prefetch_waits << " waited for, "
+                                << runner.stats.prefetch_inline << " on the tick, "
+                                << runner.stats.prefetch_dropped << " let go; " << differ
+                                << " states differ");
+  CHECK(differ == 0);
+  CHECK(plain.feet.back() == runner.feet.back());
+  CHECK(plain.stats.bodies_created == runner.stats.bodies_created);
+  CHECK(plain.stats.activated == runner.stats.activated);
+  CHECK(plain.stats.max_placements == runner.stats.max_placements);
+  CHECK(plain.stats.proxies == runner.stats.proxies);
+  CHECK(runner.stats.prefetched > 0);
+  CHECK(runner.stats.placements_ahead > 0);
 }
 
 // **A build the walker turned away from leaks no shape** (docs: "The placements built ahead"). A
@@ -1966,6 +2008,70 @@ TEST_CASE("scene_collision: a tile activated with its build pending waits for th
   REQUIRE(
       periodic_heights(nullptr, 0.0, 1000, 0, 4016, -2000, 1, 1, 0, 1, std::span<f32>(expect, 1)));
   CHECK(h == expect[0]);
+}
+
+// **A drop's ring is built on every worker at once** (T166; scene_collision.md, "Ahead of a
+// running walker"). The owner's walk of the forest filled a dropped walker's ring tile after tile
+// on the tick — seven tiles, 873 ms — while one worker sat behind a queue in tile order. With four
+// workers and slots, the ring's tiles are handed over first and together, the tick building one of
+// them itself, so a fill of nine tiles at 40 ms each takes a few tiles' time, not nine; and the
+// slots keep the tiles past the ring waiting their turn instead of queued in front of them.
+TEST_CASE("scene_collision: a drop's ring is built on every worker at once") {
+  constexpr u32 k_delay_ms = 40;
+  const auto fill = [&](u32 workers_n, u32 slots, u64& submitted, Stats& out) {
+    TestGround g;
+    scene_gen::GroundProvider ground(&k_still_ops, &g);
+    SlowSource slow;
+    slow.delay_ms = k_delay_ms;
+    const scene_gen::TileSource source{&k_slow_ops, &slow};
+    renderer::SceneData scene;
+    physics::World physics;
+    REQUIRE(physics.init(physics_options()) == physics::Status::Ok);
+    jobs::JobSystemConfig pool = one_worker();
+    pool.performance_workers = workers_n;
+    jobs::JobSystem workers(pool);
+    SceneCollision collision;
+    Config config;
+    config.prefetch_radius_tiles = 2.5f;
+    config.ring_radius_tiles = 1.5f;
+    config.prefetch_slots = slots;
+    std::string error;
+    REQUIRE_MESSAGE(collision.create(physics, scene, &ground, config, &error, &source, &workers),
+                    error);
+    world::World world(ring(2));
+    world.add_consumer(collision.consumer());
+    const WorldPos there{4016.0, 0.0, -2000.0};
+    collision.prefetch(there);
+    submitted = collision.stats().prefetch_submitted;
+    const auto from = std::chrono::steady_clock::now();
+    world.update(observer_at(there), 0, true);
+    const f64 ms =
+        std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - from).count();
+    out = collision.stats();
+    f32 h = 0.0f;
+    CHECK(collision.ground_height(there, h));
+    return ms;
+  };
+  u64 serial_submitted = 0;
+  u64 parallel_submitted = 0;
+  Stats serial;
+  Stats parallel;
+  const f64 serial_ms = fill(1, 0, serial_submitted, serial);
+  const f64 parallel_ms = fill(4, 8, parallel_submitted, parallel);
+  MESSAGE("a fill of " << serial.activated << " tiles at 40 ms: one worker, every build queued ("
+                       << serial_submitted << "): " << serial_ms << " ms, "
+                       << serial.prefetch_inline << " on the tick; four workers by need ("
+                       << parallel_submitted << " handed over): " << parallel_ms << " ms, "
+                       << parallel.prefetch_inline << " on the tick, " << parallel.prefetch_waits
+                       << " waited for");
+  CHECK(serial.tiles == 9);
+  CHECK(parallel.tiles == 9);
+  // The ring's tiles alone were handed over: the rest wait their turn behind them.
+  CHECK(parallel_submitted == parallel.activated);
+  CHECK(parallel_submitted < serial_submitted);
+  // Nine tiles on five threads (four workers and the tick) take two or three tiles' time; one
+  // after another take nine. Half is room for a shared machine.
+  CHECK(parallel_ms < 0.5 * serial_ms);
 }
 
 namespace {

@@ -9,6 +9,8 @@
 // same again when the rocks arrived in another order, through other slots, after a rock that came
 // and went; the room's refusal is a sentence that names its bound and changes nothing; and an
 // admitted rock is traced like the prefix (the ray path's ids against the rasterizer's).
+#include "test_device.h"
+
 #include <domain/gfx/device.h>
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/capture.h>
@@ -40,7 +42,7 @@ struct Gpu {
   Gpu() {
     test::register_tile_rocks();
     std::string error;
-    if (!device.create(gfx::DeviceOptions{}, &error)) {
+    if (!device.create(renderer_test::device_options(), &error)) {
       why = "no Vulkan device: " + error;
       return;
     }

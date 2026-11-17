@@ -21,6 +21,7 @@
 // The seams across the rings and their chunks are in ground_detail_rings_tests.cpp, which needs the
 // terrain capability's rings.
 #include "ground_detail_reference.h"
+#include "test_device.h"
 
 #include <core/math/math.h>
 #include <domain/gfx/device.h>
@@ -57,7 +58,7 @@ struct Gpu {
   bool ok = false;
   Gpu() {
     std::string error;
-    if (!device.create(gfx::DeviceOptions{}, &error)) {
+    if (!device.create(renderer_test::device_options(), &error)) {
       why = "no Vulkan device: " + error;
       return;
     }

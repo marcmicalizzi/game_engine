@@ -45,9 +45,11 @@
 #include <systems/renderer/rt_capacity.h>
 #include <systems/renderer/rt_step.h>
 #include <systems/renderer/scene.h>
+#include <systems/renderer/scene_wind.h>
 #include <systems/renderer/settings.h>
 #include <systems/renderer/terrain_levels.h>
 #include <systems/renderer/terrain_rings.h>
+#include <systems/renderer/texture_bound.h>
 #include <systems/renderer/tile_layout.h>
 
 #include <memory>
@@ -55,7 +57,13 @@
 #include <span>
 #include <string>
 
+namespace engine::texture {
+struct TextureData;
+}
+
 namespace engine::renderer {
+
+struct TextureBoundState;  // R172: src/texture_bound_state.h
 
 // Mirrors PairExpandParams in pair_expand.slang: the push constants of the pass that writes a
 // dynamic scene's changed pair-table entries from its instance table (docs/subsystems/renderer.md,
@@ -270,7 +278,7 @@ class GpuScene {
   // returns false with what it had already replaced in `retired`, and leaves the relayout pending
   // with the chain marked to be laid out whole: the caller frees `retired` as on success, waits,
   // and calls it without, which makes a whole layout or returns the error. A failure growing the
-  // trees' tables is not resumable and leaves nothing pending: the caller returns it.
+  // trees' tables puts them back as they were and stays pending the same way (T163).
   struct RelayoutRetired {
     Vector<gfx::BufferResource> buffers;
     renderer::RtRetired chain;  // the chain's step (qualified: the alias below comes later)
@@ -287,6 +295,13 @@ class GpuScene {
   };
   bool relayout_pending() const noexcept { return relayout_pending_; }
   bool relayout(std::string* error = nullptr, RelayoutRetired* retired = nullptr);
+  // **A test's seam** (T163): the next `count` makes of the chain's step (`resize_ray_tracing`,
+  // whoever calls it) or of the trees' tables' growth (`grow_flora_tail`) fail as a device out of
+  // memory would, so the paths that release and retry a failure have cases. Never set by a host.
+  enum class Fault : u8 { rt_step, flora_tables };
+  void fail_next(Fault where, u32 count = 1) noexcept {
+    (where == Fault::rt_step ? fail_rt_steps_ : fail_flora_) = count;
+  }
   // The top-level record a slot's instance is traced by, as the load writes it and a tail's change
   // copies it: the instance's transform at the world's origin (the frame overwrites it from the
   // eye), the slot as the custom index, and a mask of 0xff for a live instance and 0 for a hole's
@@ -463,6 +478,17 @@ class GpuScene {
     u64 expand_runs_address = 0;
     u32 expand_runs = 0;
     u32 expand_run_slots = 0;
+    // **A new set carried over on the GPU** (T167): `carry_instances` and `carry_pairs` copied into
+    // the set's two tables (`carry_*_bytes` each) before the numbering and the copies above, so a
+    // set made again by a growth costs the frame its pending runs, not the whole table; `retire`
+    // holds buffers the caller frees once this frame has completed (a growth's old set).
+    gfx::BufferResource carry_instances;
+    gfx::BufferResource carry_pairs;
+    u64 carry_instance_bytes = 0;
+    u64 carry_pair_bytes = 0;
+    gfx::BufferResource carry_records;  // the old top-level records -> `rt_instances`, first
+    u64 carry_record_bytes = 0;
+    Vector<gfx::BufferResource> retire;
   };
   bool prepare_tables(u32 slot, TableUpdate& out, std::string* error = nullptr);
   // The mesh of instance `index`, prefix or tail; ~0 past the end and for a hole's null instance
@@ -902,6 +928,11 @@ class GpuScene {
   std::span<const u32> water_deforms() const noexcept {
     return {water_deforms_.data(), water_deforms_.size()};
   }
+  // **The scene's wind on the water** (scene_wind.h; gfx.md, "The wind a scene names"; W136): the copies that bring every
+  // body that draws a wave table to the sea of sky time `sky_time_s`, made by the frame's "water
+  // wind" transfer into `materials` and `water_surfaces()`; empty when nothing moved.
+  std::span<const WaterWindUpload> water_wind_frame(f64 sky_time_s);
+  const gfx::BufferResource& water_surfaces() const noexcept { return water_surfaces_; }
   u32 max_joints() const noexcept { return max_joints_; }
   u32 skinned_instances() const noexcept { return skinned_instances_; }
   // Entries of the deform table: one per instance that reads the pool, which is every instance
@@ -1354,6 +1385,43 @@ class GpuScene {
   // Whether the table holds `key` now. **Any thread**: what a mesh's build asks before it reads a
   // `.tex` (`PlacementMeshOptions::texture_resident`). Advisory, as that says.
   bool texture_resident(u64 key) const;
+  // **Every sampled texture the scene holds now** (texture.md, "Levels resident by what the frame
+  // samples"; R172): the load's and the admitted ones, by bindless slot, with the image as the
+  // device holds it — the levels it has and the bytes the allocator gave it and its variance chain.
+  // `serial` moves whenever an admission or a release changes the list.
+  struct TextureRecord {
+    u32 slot = ~u32{0};
+    gfx::Format format = gfx::Format::Undefined;
+    u32 width = 0;
+    u32 height = 0;
+    u32 levels = 0;
+    u64 bytes = 0;
+    bool admitted = false;  // arrived with a tile's mesh, not the load's
+    u32 top = 0;            // the chain's level the image's level 0 is (held by level, R172)
+  };
+  void texture_records(Vector<TextureRecord>& out) const;
+  u64 texture_records_serial() const noexcept {  // a bound's promotion or a trim moves a slot
+    return texture_use_.uploaded + texture_use_.released + texture_bound_use().promotions +
+           texture_bound_use().demotions;
+  }
+  // **The bound** (R172 stage 1; texture_bound.h; gpu_scene_texture_bound.cpp): the load uploads a
+  // managed texture from its floor, and once a recorded frame, before `terrain_prepare`, this
+  // brings in off the frame the levels the observer at `eye` a lead ahead could read (`cut`: every
+  // one now, before the frame draws). `texture_bound_whole` holds every texture whole from the next
+  // frame on (the reference path tracer reads level 0).
+  // `dt_s` steps the residency's clock (1/60 s when 0).
+  void texture_bound_frame(WorldPos eye, f32 fov_y, f32 znear, u32 width, u32 height, bool cut,
+                           f64 dt_s);
+  void texture_bound_whole() noexcept;
+  bool texture_bound_active() const noexcept { return texture_bound_ != nullptr; }
+  const TextureBoundUse& texture_bound_use() const noexcept;
+  // **The residency** (R172 stage 2; texture.md, "Stage 2: the trim under a ceiling"): with a
+  // ceiling, the run of slots its feedback reads (false: none), that feedback's codes for a recorded
+  // frame of `texture_residency_frame`'s count, and its GPU time.
+  bool texture_residency_run(u32& first_slot, u32& count) const noexcept;
+  u64 texture_residency_frame() const noexcept;
+  void texture_residency_fold(const u32* codes, u32 count, u64 frame) noexcept;
+  void texture_residency_feedback_ms(f64 ms) noexcept;
 
   // ---- geometry streaming (04 §4.3 step 3, §4.9; docs/subsystems/renderer.md) -----------------
   //
@@ -1795,6 +1863,22 @@ class GpuScene {
   Vector<TileTexture> tile_textures_;        // the admitted ones held now, unordered
   Vector<TileTexture> leaving_textures_;     // let go, their images alive a few frames more
   HashMap<u64, TextureInfo> load_textures_;  // the load's built textures by key: pinned
+  Vector<TextureRecord> load_texture_records_;  // every texture the load uploaded (R172)
+  // The bound's state (R172 stage 1), null when it manages nothing; its load-time half.
+  struct TextureBoundDelete {  // the state is complete only in gpu_scene_texture_bound.cpp
+    void operator()(TextureBoundState* state) const noexcept;
+  };
+  std::unique_ptr<TextureBoundState, TextureBoundDelete> texture_bound_;
+  bool texture_bound_plan(std::string* error);
+  u32 texture_bound_first_level(u64 key, const texture::TextureData& t) const noexcept;
+  bool texture_bound_manages(u64 key) const noexcept;
+  u32 texture_bound_place(u64 key, const texture::TextureData& t, u32 first,
+                          const gfx::ImageResource& image, gfx::ImageViewHandle view);
+  u32 texture_bound_place_variance(u64 key, const gfx::ImageResource& image,
+                                   gfx::ImageViewHandle view);
+  void texture_bound_materials(const Vector<gfx::ResolveMaterial>& table,
+                               const Vector<u8>& is_material);
+  void destroy_texture_bound() noexcept;
   Vector<u32> free_texture_pairs_;
   gfx::ImageResource texture_placeholder_;
   gfx::ImageViewHandle texture_placeholder_view_;
@@ -2038,10 +2122,29 @@ class GpuScene {
   u32 current_set_ = 0;                   // the set the last frame read
   bool tables_changed_ = false;           // a change since the last frame flipped
   Vector<gfx::BufferResource> table_staging_;  // per frame slot: host visible, kept
+  // **A set made again is carried over on the GPU** (T167; renderer.md, "Instances that come and
+  // go"): what the frame that flips to a new set copies it from — the set the last frame read, or
+  // after a growth that set's old buffers, kept here (`owned`) until that frame retires them — with
+  // the runs and numberings it had not taken yet, which the new set then takes as its own.
+  struct TableCarry {
+    gfx::BufferResource instances;
+    gfx::BufferResource pairs;
+    Vector<InstanceRange> pending;
+    Vector<PairShift> shift;
+    bool valid = false;
+  };
+  TableCarry grown_from_;
+  // A swapped relayout made the top-level records again (T167): the old ones, kept until the next
+  // set written carries them over on the GPU as it carries a table, else written whole.
+  bool rt_records_all_ = false;
+  gfx::BufferResource rt_records_from_;
   u32 compact_pct_ = k_default_compact_pct;    // `renderer.tiles.compact_pct`, read at create
   u32 pair_limit_ = k_max_pairs;               // what the tail's layout may reach (`pair_limit`)
   bool relayout_pending_ = false;              // a growth the pool or the chain has not followed
   bool rt_relayout_failed_ = false;  // a swapped chain lay-out failed part way: redo it whole
+  u32 fail_rt_steps_ = 0;            // `fail_next`: the test's faults still to come
+  u32 fail_flora_ = 0;
+  static bool take_fault(u32& left) noexcept { return left != 0 && (--left, true); }
   // A dynamic scene's terrain levels' slots' pairs, `{instance, cluster}` from `ring_pair_begin_`
   // to the prefix's end: device-local, written once, copied into a set written whole.
   gfx::BufferResource ring_pairs_;
@@ -2076,6 +2179,17 @@ class GpuScene {
   Vector<gfx::BufferResource> water_fields_;
   Vector<u32> water_surface_of_;
   Vector<u32> water_deforms_;
+  // W136 (scene_wind.h): where each body's wave table sits in the material table (by mesh), the
+  // bodies the scene's wind or the hand wind redraws, and this frame's copies.
+  struct WaterWaveEntry {
+    u32 mesh = 0;
+    u32 entry = 0;
+  };
+  Vector<WaterWaveEntry> water_wave_entries_;
+  Vector<WaterWindBody> water_wind_;
+  bool water_wind_ready_ = false;
+  Vector<WaterWindUpload> water_wind_uploads_;
+  Vector<gfx::WaterSurface> water_surface_load_;  // the surfaces as the load uploaded them
   // The water reflection's candidate planes (R129; `water_reflect_level`): a level body each, its
   // instance, its square's centre (body-local x, z) and half diagonal, and whether it is the open
   // one.

@@ -1,0 +1,205 @@
+{
+  "format": "engine.scene.v1",
+  "name": "streamed-forest-turnover",
+  "camera_path": "fast-flight.json",
+  "description": "streamed-forest made for the walk's stalls (roadmap T168): the same trees ten times over, 30,000 on a disc of 2 km, a streamed layer of solved boulders and stones under them to the last ring (up to 120 a tile), and the ground drawn from the world's tiles, so the walker stands on a tile source and its collision builds tiles ahead (scene_collision.md). A flight at hundreds of metres a second turns the tail over by tens of thousands of instances a second as a player's flight over the forest proof of concept does: it empties and fills, its tables grow, and a walker dropped from it fills its ring at once. fast-flight.json flies it; run-drop.jsonl replays a sprint, a flight and a drop, twice; README.md, 'The turnover variant', says what each reproduces.",
+  "terrain": {
+    "size": 257,
+    "extent": 4096,
+    "seed": 7,
+    "dune_height": 4.0,
+    "dune_wavelength": 260,
+    "generator": "Waves"
+  },
+  "world": {
+    "ground": true,
+    "tile_size": 32,
+    "rings": [
+      {
+        "radius": 1.5,
+        "ground_cells": 64
+      },
+      {
+        "radius": 6,
+        "ground_cells": 32
+      },
+      {
+        "radius": 16,
+        "ground_cells": 16
+      },
+      {
+        "radius": 34,
+        "ground_cells": 8
+      }
+    ]
+  },
+  "meshes": [
+    {
+      "name": "oak",
+      "path": "../../flora/oak.flora.json"
+    },
+    {
+      "name": "birch",
+      "path": "../../flora/birch.flora.json"
+    },
+    {
+      "name": "spruce-tall",
+      "path": "../../flora/spruce-tall.flora.json"
+    },
+    {
+      "name": "spruce-young",
+      "path": "../../flora/spruce-young.flora.json"
+    },
+    {
+      "name": "ancient",
+      "path": "../../flora/ancient.flora.json"
+    }
+  ],
+  "instances": [
+    {
+      "mesh": 4,
+      "name": "the ancient",
+      "translation": [
+        120.0,
+        0.0,
+        -80.0
+      ],
+      "ground": true,
+      "yaw_deg": 30
+    }
+  ],
+  "scatters": [
+    {
+      "mesh": 0,
+      "name": "oaks, ten times",
+      "center": [
+        0,
+        0,
+        0
+      ],
+      "radius_min": 0,
+      "radius_max": 2000,
+      "count": 9000,
+      "seed": 101,
+      "scale_min": 0.8,
+      "scale_max": 1.2
+    },
+    {
+      "mesh": 1,
+      "name": "birches, ten times",
+      "center": [
+        0,
+        0,
+        0
+      ],
+      "radius_min": 0,
+      "radius_max": 2000,
+      "count": 8000,
+      "seed": 102,
+      "scale_min": 0.8,
+      "scale_max": 1.15
+    },
+    {
+      "mesh": 2,
+      "name": "tall spruces, ten times",
+      "center": [
+        0,
+        0,
+        0
+      ],
+      "radius_min": 0,
+      "radius_max": 2000,
+      "count": 7000,
+      "seed": 103,
+      "scale_min": 0.85,
+      "scale_max": 1.15
+    },
+    {
+      "mesh": 3,
+      "name": "young spruces, ten times",
+      "center": [
+        0,
+        0,
+        0
+      ],
+      "radius_min": 0,
+      "radius_max": 2000,
+      "count": 6000,
+      "seed": 104,
+      "scale_min": 0.8,
+      "scale_max": 1.3
+    }
+  ],
+  "placements": [
+    {
+      "generator": "scatter",
+      "stream": true,
+      "params": {
+        "name": "boulders-and-stones",
+        "seed": 31,
+        "tile_size": 32,
+        "region": {
+          "kind": "Scene"
+        },
+        "density": {
+          "kind": "Noise",
+          "per_m2": 0.08,
+          "octaves": 3,
+          "wavelength": 300,
+          "low": 0.5,
+          "high": 1.0
+        },
+        "kinds": [
+          {
+            "name": "rock",
+            "weight": 1,
+            "spacing": 2.5,
+            "slope_max_deg": 18,
+            "scale_min": 0.6,
+            "scale_max": 1.8,
+            "align": true,
+            "sink": 0.1,
+            "far": 1100,
+            "rock": {
+              "seed": 7,
+              "size_x": 1.1,
+              "size_y": 0.7,
+              "size_z": 0.9,
+              "roughness": 0.22,
+              "detail": 2,
+              "red": 0.36,
+              "green": 0.27,
+              "blue": 0.2,
+              "buried": 0.25
+            }
+          },
+          {
+            "name": "scrub",
+            "weight": 2,
+            "spacing": 1.5,
+            "clearance": 1.0,
+            "slope_max_deg": 24,
+            "scale_min": 0.7,
+            "scale_max": 1.3,
+            "far": 1100,
+            "rock": {
+              "seed": 19,
+              "size_x": 0.8,
+              "size_y": 0.4,
+              "size_z": 0.8,
+              "roughness": 0.45,
+              "detail": 2,
+              "red": 0.13,
+              "green": 0.12,
+              "blue": 0.06,
+              "buried": 0.1
+            }
+          }
+        ],
+        "budget": {
+          "per_tile": 120
+        }
+      }
+    }
+  ]
+}

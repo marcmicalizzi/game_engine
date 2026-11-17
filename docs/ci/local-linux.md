@@ -45,7 +45,7 @@ pwsh tools/linux-build.ps1 -Prune [-Stale [-KeepUnknown] [-Base <rev>]] [-WhatIf
 | `-Test` | run CTest after the build. Without it the run is a compile check. |
 | `-Filter` | a regex on test names, passed through to `ctest -R`. |
 | `-Jobs` | parallel compile jobs. Default 8; see [Why eight jobs](#why-eight-jobs--and-why-the-worry-was-wrong). |
-| `-Rebuild` | delete `build/<preset>` inside the volume first. The dependencies' sources are in another volume and survive, so this costs a compile and not a download. It is **the whole compile, third-party code included**: the objects under `/deps/<preset>` survive, but ninja's record of which headers each one read is in `build/<preset>` and goes with it, and ninja rebuilds an object it has no such record for. Measured on 2026-09-24: 1116 edges, all 635 third-party ones among them, the same as a cold build. |
+| `-Rebuild` | delete `build/<preset>` inside the volume first, **all but ninja's `.ninja_log` and `.ninja_deps`**. The dependencies' sources are in another volume and survive, so this costs a compile and not a download, and since 2026-11-16 (roadmap T25) it is **the engine's compile, not the third-party code's**: the objects under `/deps/<preset>` survive, and with ninja's two records kept (each edge's command hash, the headers each object read) the regenerated `build.ninja` names the same commands for them and ninja leaves them alone; CMake's cache, every generated file and the engine's own objects go as before. Until then the records went with the tree and every third-party object was compiled again: 1116 edges on 2026-09-24, all 635 third-party ones among them. Measured on 2026-11-16, `linux-clang-debug` on a fresh checkout's volumes: the full build planned 2,557 edges with 766 third-party compiles; the `-Rebuild` after it planned 1,729, and of its first 716 compiles none was a dependency's (the run was cut off by the machine's crash at edge 1,147, so there is no time for it). |
 | `-Shell` | an interactive `bash` in the container with the volumes mounted, for when a failure needs poking at. |
 | `-Docs` | run `tools/docs-gate.sh` and `tools/docs-check.sh` in the container and build nothing; `-Base` is what the gate diffs against (default `main`). See [Running the documentation gate here](#running-the-documentation-gate-here). |
 | `-Prune` | delete this checkout's two volumes and exit, one line per volume with its size. The machine-wide dependency cache and the images are left alone. **Run it from your worktree before you hand it back**, once you are done with containers; see [Volumes that outlive their checkout](#volumes-that-outlive-their-checkout). |
@@ -726,10 +726,10 @@ the only thing that wants the cores — **not** because memory is tight. Raise i
 the machine is yours alone. The two-second sampling interval can miss a spike inside one link
 step, so read these as the sustained figure rather than a guaranteed ceiling.
 
-The two `-Rebuild` rows were first labelled "engine code only", and that was wrong: a `-Rebuild`
-recompiles the third-party code too (see `-Rebuild` in [the flag table](#the-command)). The object
-files under `/deps/<preset>/<name>-build` survive, but ninja's record of which headers each one
-read does not, and without it ninja rebuilds the object. The memory figures are still what a
+The two `-Rebuild` rows were first labelled "engine code only", and that was wrong when they were
+taken: a `-Rebuild` then recompiled the third-party code too, because ninja's record of which
+headers each object read went with the tree. Since 2026-11-16 it keeps that record and is engine
+code only (see `-Rebuild` in [the flag table](#the-command)). The memory figures are still what a
 whole-preset compile at eight and twelve jobs uses.
 
 CTest runs **serially**, as it does on the hosted runner, so a failure here is a failure there.
@@ -949,14 +949,11 @@ never.
 
 - **Share the compiles too** — done on 2026-10-20: [the compiler cache](#the-compiler-cache) (roadmap
   T68), and [its measurements](#with-the-compiler-cache-2026-10-20).
-- **`-Rebuild` could leave the third-party objects alone**, which is what this page used to claim
-  it did. Deleting `build/<preset>` takes ninja's deps log with it, so every object under
-  `/deps/<preset>` is rebuilt as well: 635 of the 1116 edges of `linux-clang-debug`. Removing only
-  the engine's own object directories and keeping `.ninja_log` and `.ninja_deps` would fix it.
-  Since the compiler cache those rebuilt objects are hits, so what is left of this (roadmap T25) is
-  the links and the lookups.
-  That is a change to what `-Rebuild` means, so it wants its own measurement, and a cold compile of
-  this preset is a minute and a half.
+- **`-Rebuild` leaves the third-party objects alone** — done on 2026-11-16 (roadmap T25): it
+  removes everything under `build/<preset>` but `.ninja_log` and `.ninja_deps`, and the 766
+  third-party compiles of a full `linux-clang-debug` build are not in its plan (2,557 edges to
+  1,729; the flag table has the measurement). A `-Rebuild` is therefore no longer the way to
+  distrust ninja's own records; `-Prune` and a fresh run is.
 - **`tools/remote-build.ps1` keeps one dependency directory per checkout on the server** (see
   [remote Linux builds](remote-linux.md)); the same provider would share it there. The server is
   one machine per run and its first configure is two to three minutes, so it matters less.

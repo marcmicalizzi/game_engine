@@ -878,10 +878,13 @@ parent-first order is what makes that one pass), so the shader reads one pose pe
 depth. Because the part, the weight and the rest position are per-vertex data every copy of a
 surface point shares on every rung and every LOD level, a bent tree cannot crack.
 
-**The wind.** Where it blows to and its strength over its record's mean come from the scene's
+**The wind.** Where it blows to and its strength over its record's mean come from the frame
+(`FrameDesc::flora`) when it names one; else from **the scene's wind** (`Sky.wind`, or the hand
+wind `renderer.wind.speed_m_s`; W136, [gfx](gfx.md#the-wind-a-scene-names)) as its gust at the
+origin over 5 m/s, a land site's mean day; else from the scene's
 ground's wind record at the **sky's hour** (the hour's direction and strength: the weather follows the day; [renderer](renderer.md#one-world-clock-and-the-days-length)), from
 `renderer.flora.wind_deg` and `renderer.flora.wind_strength` (default 1, a mean day, towards +x)
-where the ground says none, or from the frame (`FrameDesc::flora`). A part's steady lean is
+where the ground says none. A part's steady lean is
 `compliance × s × (0.6 + 0.8 g)` and its flutter `compliance × s × (0.25 + 0.35 g) × sin(2π f t +
 φ)`: `s` the strength held to [0, 2], `g` the gust (two sines of 7.7 s and 3.2 s with phases from the
 instance's seed, in [0, 1]), `f` 0.9 Hz over the square root of the part's length — a longer part

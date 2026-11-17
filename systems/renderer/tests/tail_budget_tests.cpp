@@ -5,6 +5,8 @@
 // grow to; a commit past the budget admits its nearest tiles and withholds the rest, which a later
 // commit with room admits; the tile the eye stands in is never the one withheld; and a single tile
 // past the whole budget is still refused, with a sentence, and the scene takes the next commit.
+#include "test_device.h"
+
 #include <domain/gfx/device.h>
 #include <domain/gfx/resources.h>
 #include <systems/renderer/flora_motion.h>
@@ -16,6 +18,7 @@
 #include <test_temp_dir.h>
 
 #include <bit>
+#include <cstring>
 #include <fstream>
 #include <span>
 #include <string>
@@ -60,8 +63,11 @@ struct Rig {
 
   explicit Rig(const test::TempDir& tmp) {
     std::string error;
-    if (!device.create(gfx::DeviceOptions{}, &error)) {
+    if (!device.create(renderer_test::device_options(), &error)) {
       why = "no Vulkan device: " + error;
+      if (!renderer_test::device_profile().empty()) {
+        FAIL_CHECK("ENGINE_GFX_TEST_DEVICE=" << renderer_test::device_profile() << ": " << why);
+      }
       return;
     }
     if (!device.features().buffer_int64_atomics) {
@@ -255,6 +261,86 @@ TEST_CASE("tail budget: the trees' tables grow beside the old ones and wait for 
   for (gfx::BufferResource& old : retired.buffers)
     gfx::destroy_buffer(rig.device, old);
   scene.destroy();
+}
+
+// T163 (renderer.md, "A relayout is swapped in"): the trees' tables' growth cannot fail part way.
+// The seam fails it after the pose table is made and before the deform table: the swapped call
+// hands nothing back, names the same table at the same capacity, and stays pending; the waited call
+// the renderer makes next grows the tables to exactly what a growth that never failed makes.
+TEST_CASE("tail budget: a growth of the trees' tables that fails is put back and retried whole") {
+  const test::TempDir tmp("renderer_tail_budget_fault");
+  REQUIRE(tmp.ok());
+  Rig rig(tmp);
+  if (!rig.ok) {
+    MESSAGE("skipped: " << rig.why);
+    return;
+  }
+  const Tile first[] = {{1, 0.0, rig.reserve / 2, 0}};
+  const Tile grown[] = {{1, 0.0, rig.reserve / 2, 0}, {2, 1000.0, rig.reserve, 0}};
+  std::string error;
+  // The same growth straight through, waited (`commit`), for what the retry must come to.
+  GpuScene straight;
+  REQUIRE_MESSAGE(straight.create(rig.device, rig.data, rig.resolved, &error), error);
+  {
+    GpuScene::TileChange change;
+    REQUIRE_MESSAGE(commit(straight, first, change, error), error);
+    REQUIRE_MESSAGE(commit(straight, grown, change, error), error);
+  }
+  GpuScene scene;
+  REQUIRE_MESSAGE(scene.create(rig.device, rig.data, rig.resolved, &error), error);
+  GpuScene::TileChange change;
+  REQUIRE_MESSAGE(commit(scene, first, change, error), error);
+  const u64 table = scene.deform_table.size;
+  const u64 table_address = scene.deform_table.address;
+  const u64 poses = scene.flora_stats().pose_table_bytes;
+  const u64 tail_bytes = scene.flora_stats().tail_bytes;
+  Vector<SceneInstance> tail;
+  Vector<DynamicBlock> blocks;
+  for (const Tile& tile : grown) {
+    DynamicBlock block;
+    block.key = tile.key;
+    block.first = tail.size();
+    block.count = tile.count;
+    blocks.push_back(block);
+    palms(tail, tile.x, tile.count);
+  }
+  REQUIRE_MESSAGE(scene.set_dynamic_instances(
+                      std::span<const SceneInstance>(tail.data(), tail.size()),
+                      std::span<const DynamicBlock>(blocks.data(), blocks.size()), change, nullptr,
+                      &error),
+                  error);
+  REQUIRE(scene.relayout_pending());
+  scene.fail_next(GpuScene::Fault::flora_tables);
+  GpuScene::RelayoutRetired retired;
+  CHECK_FALSE(scene.relayout(&error, &retired));
+  MESSAGE("the swapped growth failed: " << error);
+  CHECK(scene.relayout_pending());
+  CHECK(retired.buffers.empty());
+  CHECK(retired.chain.count == 0);
+  CHECK_FALSE(retired.tlas.handle.valid());
+  CHECK(scene.deform_table.address == table_address);
+  CHECK(scene.deform_table.size == table);
+  CHECK(scene.flora_stats().pose_table_bytes == poses);
+  CHECK(scene.flora_stats().tail_bytes == tail_bytes);
+  // The waited call, as `SceneRenderer::set_dynamic_instances` makes it after waiting.
+  error.clear();
+  REQUIRE_MESSAGE(scene.relayout(&error), error);
+  CHECK_FALSE(scene.relayout_pending());
+  CHECK(scene.deform_table.size == straight.deform_table.size);
+  CHECK(scene.flora_stats().pose_table_bytes == straight.flora_stats().pose_table_bytes);
+  CHECK(scene.flora_stats().tail_bytes == straight.flora_stats().tail_bytes);
+  CHECK(scene.flora_stats().tail_records == straight.flora_stats().tail_records);
+  CHECK(scene.flora_stats().tail_records == rig.reserve / 2 + rig.reserve);
+  // Every record the CPU holds is in the new table, as many as the straight scene's.
+  REQUIRE(scene.deform_table.mapped != nullptr);
+  CHECK(scene.deform_count() == straight.deform_count());
+  const usize used = usize{scene.deform_count()} * sizeof(gfx::DeformDesc);
+  CHECK(std::memcmp(scene.deform_table.mapped, scene.deform_descs().data(), used) == 0);
+  MESSAGE("retried waited: the table " << table << " to " << scene.deform_table.size
+                                       << " bytes, the poses " << poses << " to "
+                                       << scene.flora_stats().pose_table_bytes);
+  scene.destroy();
+  straight.destroy();
 }
 
 TEST_CASE("tail budget: a commit past it admits the nearest tiles and withholds the farthest") {

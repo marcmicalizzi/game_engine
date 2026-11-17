@@ -494,9 +494,11 @@ tunables::Bool gi_spread{
     "an opening is not grained by its cells' heavy samples (false: the walk's answer as stage 8 "
     "left it) (renderer.md, Indirect light, R171: the grain on a plain wall; read at load)"};
 // **R171's third leg** (renderer.md, "Indirect light", "R171: a cell's memory by its own spread").
-// Off: a change the coarse cells cannot see trails, and the cells that let go show as blobs.
+// On since the fourth leg ("R171: the memory made right"): the half's rounding, the blobs and the
+// small change that trailed mended at their causes, and the change between displayed frames of a
+// held view under the display's own step.
 tunables::Bool gi_memory{
-    "renderer.gi.memory", false,
+    "renderer.gi.memory", true,
     "A face's cache cell remembers up to sixteen times today's history while its light holds "
     "still, "
     "and goes back to today's at once when its long mean leaves the band its measured spread "
@@ -630,6 +632,10 @@ tunables::Bool shadow_hybrid_fit{
     "renderer.shadow.hybrid_fit", false,
     "Under the hybrid, fit the cascades from the ray distance out rather than from the near plane "
     "(R103; renderer.md, Rays near, maps far)"};
+tunables::Bool shadow_cascade_volume{
+    "renderer.shadow.cascade_volume", true,
+    "A cascade draws only the casters inside some view's frustum swept towards the light, widened "
+    "by its filter's texels; false draws its whole box (R49; renderer.md, Cascaded shadow maps)"};
 
 // ---- R139: the sun's masks by region and by distance (renderer.md, "The sun's masks by region
 // and by distance"). Off by default: the sides return the milliseconds and move crown-sized
@@ -760,6 +766,7 @@ ShadowRayRule shadow_ray_rule(u64 frame_index, f32 opaque_coverage) noexcept {
 bool normal_filter_tunable() noexcept { return material_normal_filter.get(); }
 f32 shadow_rest_texels_tunable() noexcept { return static_cast<f32>(shadow_rest_texels.get()); }
 bool shadow_hybrid_fit_tunable() noexcept { return shadow_hybrid_fit.get(); }
+bool shadow_cascade_volume_tunable() noexcept { return shadow_cascade_volume.get(); }
 
 DisplayLevels display_levels(const RenderSettings& settings) {
   DisplayLevels out;
@@ -1089,7 +1096,7 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
       const auto& body = info.water->body;
       lifts_water = lifts_water || body.wind_m_s > 0.0f ||
                     (body.open && (info.water->wind_m_s > 0.0f || body.tide_m > 0.0f ||
-                                   (body.swell_height_m > 0.0f && body.swell_period_s > 0.0f)));
+                                   info.water->swell_train_m > 0.0f));  // W136-3: own or sky's
     }
   }
   out.deform_pass = s.deform || out.terrain_levels || out.flora_motion || lifts_water ||

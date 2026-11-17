@@ -103,12 +103,29 @@ climb now.
 hearths; nothing is drawn for them. A plot too small for what was asked gets the next plan down, in
 this order: the same rooms as a hall and parlour on two storeys, the two-up two-down (5.1 m of
 frontage where a hall and parlour wants 6.4 m), the hall and parlour on one floor, the cot;
-`RuralChoice::demoted` says it happened. The seed varies what one type's houses differ in along a
+`RuralChoice::demoted` says it happened. **Since G208 (`k_rural_filler_version` 3) a smaller
+plot never adds a storey**: a plan with more storeys than the household asked (its means bought
+none) or than the plot allows (`RuralPlot::storeys_max`, a cottage's one) is passed over, so a
+labourer's household on a narrow toft gets a cot and not a two-up two-down with a stair. The seed varies what one type's houses differ in along a
 lane: the clear length and depth on a 10 cm module inside the type's measured range, which end the
 hearth is at (the plan mirrored), where the hall ends, the passage's width, the door's place in a
 cot's front. The type fixes the rest. The ridge runs along the longer side.
 
 The filler never looks at the ground: whoever places the house cuts or fills its pad.
+
+**The least frontage** (`least_rural_frontage_cm(style)`, G208): the outer width of the smallest
+house the filler builds, a cot of one bay with its stack (4.5 m clear and its walls, 5.5 m at the
+default 50 cm). A plot whose house is given less is refused with "the plot holds no house, not
+even a cot"; the village cuts no toft narrower than this and its side gaps.
+
+## The household fitted to its house
+
+`persons_housed(params)` says how many a plan sleeps: a cot two, a hall and parlour four on one
+floor and six with chambers over, a two-up two-down six, a cross-passage house eight (the filler's
+own table read backwards; [houses that differ](../experiments/houses-that-differ.md#the-household-and-the-house)).
+A caller that draws a household before it knows the plot's house — the village — uses it after a
+demotion: the household is the one the smaller house sleeps, drawn again with that house, so an
+eight-person household is never put into a one-room cot (the forest session's need 134).
 
 ## The description a plan becomes
 
@@ -151,6 +168,7 @@ each, so a field added later moves no other.
 | `Wall.wave` on the exterior walls | 8, 12 or 16 mm, 12 twice as likely | a partition stays flat: waved, its faces cost a nine-room house two thousand triangles |
 | `Wall.top_thickness`, a batter | two one-storey houses of three: seven eighths of the foot's thickness at the plate (three quarters read as a tent in the mesher's pictures) | never on two storeys (the mesher carries a lean cleanly on one) |
 | `Roles.wall_outer`, the limewash | of sixteen houses six the aged base, five white, three cream, one ochre, one pink | the inside stays the base |
+| `Roles.wall_outer`, a stone face (G208) | two houses of sixteen, by a draw of their own, show their rubble: `stone/rubble`, the plinth's and the chimney's role ([houses that differ](../experiments/houses-that-differ.md#a-stone-face)) | every other house keeps its wash |
 | `Roof.role`, the thatch's age | of sixteen houses eight the base (some years old), six old, two new | |
 | `Roof.course`, `course_step_mm`, `eave_cut` | courses 26, 30 or 34 cm apart, their butts standing 10, 12 or 15 mm; the eave cut square on three houses of four, rolled on the fourth | the pitch, the coat and the verge are the mesher's example's |
 | `Description.arris` | 6 or 12 cm | 12 under a batter |
@@ -226,6 +244,58 @@ timber draws nothing.
 boxes, so a table's top, a bench's seat, a settle's seat, a mattress and a chest's body reach
 collision and a walker meets them; legs, rails and all the timber are seen and not walked into.
 `RuralStyle::furniture` and `RuralStyle::timber` leave either out (a bare house is the same plan).
+
+## The places a plan knows
+
+`house_places(plan, furnishing, out)` (`furnish.h`) names the surfaces and slots a plan and its
+furniture already decide, so whoever lays props into a house reads them rather than finding them
+again from a description's boxes in the pieces' order (which is how the forest session's furnishing
+script found a table's top, need 113 (d)). Each is a `NamedPlace`, a box in the plan's frame (x and
+z centimetres, y millimetres over its storey's floor): a **surface** is flat (what a thing stands
+on, or hangs from), a **face** is thin across the way it `faces`.
+
+| Kind | What, and where it is read from |
+|---|---|
+| `hearth-recess` | the fire's recess: as wide as the opening, `k_hearth_recess_cm` (40) into the stack from its face, from the raised hearth (`k_raised_hearth_mm`, 3 cm) to the lintel — the mesher's own numbers ([structures](structures.md), "Chimneys") |
+| `hearth-mouth`, `hearth-cheek` | the opening's line on the stack's face; the face either side of it, floor to lintel |
+| `stack-side` | the floor beside the stack along its sides, from its face to its back (how proud it stands), 60 cm out, inside the room's free floor: a bellows, a log basket, the wall a salt box hangs on |
+| `hearth-apron` | the floor before the opening the furniture keeps clear (1.1 m, 20 cm past each side) |
+| `table-top`, `bench-seat`, `settle-seat`, `chest-lid`, `mattress` | the top of the member `add_piece` built for it: a table set's top at 75 cm and its two benches' seats at 45, a settle's seat, a chest's lid, the mattress |
+| `joist-underside` | each joist's and the spine beam's underside, where a flitch or a bunch of herbs hangs |
+| `door-approach`, `doorway-approach` | the floor before an outer door (1 m, its leaf's swing) and each side of an inner doorway (90 cm), 20 cm past each jamb |
+| `window-light` | the floor before a window at its sill's height, 1 m deep and 10 cm past each side: where its light falls first and what a tall piece keeps out of |
+
+The order is fixed (the hearths', the furniture's in the pieces' order, then the floors kept
+clear) and the index each names (`of`) is the hearth, the piece or the opening it was read from.
+The village writes them in a house's description ([village](village.md#a-house-as-data)).
+
+## Kit pieces
+
+**A kit row stands in a box piece's place** (`KitRow`, `Kit`, `furnish_interior(plan, seed, out,
+kit)`; the forest session's need 113 (e) and (f)): a row says which kind it replaces (a table set,
+a settle, a bed, a chest) and the box its foot and height take, its back to a wall and its front
+into the room. In each room the furnisher draws one of the kind's rows that stands under the
+room's joists or ceiling (`room_clear_cm`, `k_kit_head_gap_cm` under it: 2.08 m under an upper
+floor, the plate's 2.5 m upstairs, 2.4 m in a house of one storey) and **searches for it exactly as
+for its own piece of that kind**: against a wall on the 10 cm module, clear of the tour's line by
+35 cm, of every doorway's and outer door's approach, the hearth's apron, the stacks and the led
+window (and every window, for a settle), 10 cm from the pieces before it, with the kind's own
+preference (a settle the nearest place to the stack within 3.2 m, a table under a window, a bed in
+the corner far from the way in, a chest by the bed). A found place is a `Piece` of that kind with
+`kit` set and **no members**, so `describe` states no box for it and the caller draws the row's
+mesh there; where the row finds none, the box piece is searched for as before. `validate_furnishing`
+holds a kit piece to every clearance a box piece keeps, to no members, and to its height under the
+room's joists or ceiling.
+
+**With no kit nothing moves**: no row is drawn for, no search is made, `Piece::kit` is 0 in a word
+of the hash that was zero (`hash_furnishing`), and the furnishing pins hold. The test
+(`tests/furnish_tests.cpp`, "a kit's pieces stand in the box pieces' place") furnishes every
+household's house on three plots and four seeds with a table set, a bed and a chest row and two
+that cannot stand anywhere, and holds that the validator passes every house, that each kit piece's
+footprint is its row's foot turned to its wall, clear of the tour by 35 cm, and that the two
+impossible rows are never placed. What a kit does not do yet: lay the pieces nothing replaces (a
+dresser, a crane, a flitch: room inventories by use and household, need 113 (c)), give a kit piece
+collision, or a piece that stands under another (a crane's arm over a pot).
 
 ## The filler as a tool
 
@@ -304,7 +374,8 @@ or placed.
 (`plan_interior`, `validate_interior`, `reachable_rooms`, `stair_headroom_cm`, `hash_interior`,
 `interior_min_extent`, `draw_interior`), `rural_filler.h` (`household_asks`, `choose_rural`,
 `plan_rural`), `furnish.h` (`add_piece`, `furnish_interior`, `timber_interior`,
-`validate_furnishing`, `hash_furnishing`), `tour.h` (`tour_interior`, `room_views`), `describe.h`
+`validate_furnishing`, `hash_furnishing`, `room_clear_cm`, `KitRow`, `Kit`, `NamedPlace`,
+`PlaceKind`, `house_places`), `tour.h` (`tour_interior`, `room_views`), `describe.h`
 (`describe`, `fill_rural`).
 
 **Depends on.** `base`, `containers`, `hash`, `math`, and the `structures` capability with its

@@ -56,4 +56,30 @@ inline void dispatch_folded(CommandList cb, u64 groups, const DeviceCaps& caps) 
   cb.dispatch(g.x, g.y, 1);
 }
 
+// ---- indirect dispatches (T165) ------------------------------------------------------------------
+//
+// A dispatch whose count the GPU writes is folded the same way, on the GPU: its arguments are
+// `{min(groups, pitch), rows, 1}`, written by the pass that knows the count. Three forms:
+// a pass that grows the count one workgroup at a time grows the two words (`folded_append` in
+// dispatch.slang: the vertex path's expansion, the CLAS cache's passes); one that stores a count it
+// knows whole stores them (`folded_args`: the cache's slot scan and eviction); and a count kept as
+// a survivor count `{n, 1, 1}` that other passes read as a count is folded into arguments of its
+// own by `fold_args.slang` (the deformed-vertex pool's runs, the software rasterizer). The reader
+// rebuilds its index with `folded_group`/`folded_thread` and rejects the last row's overhang
+// against the count. The arguments match `fold_dispatch(groups)` exactly, so under one row every
+// dispatch is the one it was.
+
+// Mirrors FoldParams in fold_args.slang: thread i folds the u32 count at `counts + i *
+// count_stride` into the DispatchIndirectArgs at `args + i * args_stride`.
+struct FoldArgsParams {
+  u64 counts = 0;
+  u64 args = 0;
+  u32 count_stride = 0;
+  u32 args_stride = 0;
+  u32 n = 0;
+  u32 pad = 0;
+};
+static_assert(sizeof(FoldArgsParams) == 32);
+inline constexpr u32 k_fold_args_workgroup = 32;  // numthreads of fold_args_main
+
 }  // namespace engine::gfx

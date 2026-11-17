@@ -2,6 +2,8 @@
 // from the world's tiles"; roadmap W87), with no device: a world tile and the scene's grid leave a
 // hole cell's two triangles out and lock its rim, a level whose cells are larger than the hole
 // closes it, and a terrain without holes — or a tile no hole reaches — keeps its key and its hash.
+#include "test_device.h"
+
 #include <domain/gfx/device.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/gpu_scene.h>
@@ -270,7 +272,7 @@ u32 off_edge(const Shot& a, const Shot& b, const Shot& plain_a, const Shot& plai
 TEST_CASE("terrain holes: the sky shows through a hole, the same on every path") {
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error) || !device.features().buffer_int64_atomics) {
+  if (!device.create(renderer_test::device_options(), &error) || !device.features().buffer_int64_atomics) {
     MESSAGE("skipped: no Vulkan device with 64-bit buffer atomics: " << error);
     return;
   }

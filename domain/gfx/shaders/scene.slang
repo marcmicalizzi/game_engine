@@ -83,12 +83,27 @@ static const uint k_instance_uv_from_corner = 2u;
 // origin, and an instance is then where it is stored, to the bit.
 struct FrameEye {
   int3 cell;
-  uint masks;  // 1: a CullParams eye with the scene's MaskTables right after it (below)
+  uint masks;  // flags: k_eye_mask_tables, k_eye_software_count (gfx::FrameEye::masks)
   float3 local;
   float pad1;
   float3 residual;
   float pad2;
 };
+
+// FrameEye::masks' bits (gfx::k_eye_mask_tables, gfx::k_eye_software_count).
+static const uint k_eye_mask_tables = 1u;     // the scene's MaskTables right after it (below)
+static const uint k_eye_software_count = 2u;  // a view's CullParams eye: its `sw_args` reachable
+// Where a CullParams eye sits in its block, and the software run's count block (T165).
+static const uint64_t k_cull_params_eye_offset = 480;      // gfx::k_cull_params_eye_offset
+static const uint64_t k_cull_params_sw_args_offset = 200;  // gfx::k_cull_params_sw_args_offset
+
+// The software run's survivor count a rasterizer's eye leads to, or ~0 when it leads to none
+// (T165: the software rasterizer's folded dispatch rejects its last row's overhang against it).
+uint software_count(uint64_t eye_address, FrameEye eye) {
+  if (eye_address == 0 || (eye.masks & k_eye_software_count) == 0) return 0xffffffffu;
+  const uint64_t block = eye_address - k_cull_params_eye_offset;
+  return *(uint*)(*(uint64_t*)(block + k_cull_params_sw_args_offset));
+}
 
 // **engine::relative_axis (core/math/world.h), operation for operation**: where a stored position
 // is from the frame's eye along one axis. The cells' difference times the pitch, which is exact (to
@@ -332,7 +347,7 @@ MaskTables no_mask_tables() {
 
 // The tables a rasterizer's eye carries, or none.
 MaskTables load_mask_tables(uint64_t eye_address, FrameEye eye) {
-  if (eye_address == 0 || eye.masks == 0) return no_mask_tables();
+  if (eye_address == 0 || (eye.masks & k_eye_mask_tables) == 0) return no_mask_tables();
   return ((MaskedEye*)eye_address)->masks;
 }
 
@@ -352,6 +367,31 @@ bool material_is_masked(MaskTables tables, uint material) {
 bool pair_masked(MaskTables tables, InstanceDesc instance, uint cluster) {
   if (tables.materials == 0) return false;
   return material_is_masked(tables, pair_material(tables, instance, cluster));
+}
+
+// The cross-fade's seed for an instance (the fade table's second word, which `fade_keeps` in
+// alpha_mask.slang hashes with the pixel), from its placement alone — the bits of its offset into
+// its cell and of its rotation and scale — and never from its index, which is its place in the
+// scene's layout and so the order the instances reached the renderer: a seed from the index made
+// the screen door of every masked pair inside a band follow that order (R170, 2026-11-16;
+// renderer.md, "The cross-fade"). Not the cell itself, so a scene moved by whole cells draws the
+// same bytes (gfx.md, "The frame's origin"). A whole read and a streamed one place an instance at
+// the same bits, so they hash alike; both sides of a transition are one instance, so their pixels
+// stay complementary.
+uint fade_mix(uint h) {  // lowbias32
+  h ^= h >> 16;
+  h *= 0x7feb352du;
+  h ^= h >> 15;
+  h *= 0x846ca68bu;
+  h ^= h >> 16;
+  return h;
+}
+uint fade_seed(InstanceDesc instance) {
+  uint h = fade_mix(asuint(instance.rows[0].w) ^ 0x9e3779b9u);
+  h = fade_mix(h ^ asuint(instance.rows[1].w));
+  h = fade_mix(h ^ asuint(instance.rows[2].w));
+  h = fade_mix(h ^ asuint(instance.rows[0].x));
+  return fade_mix(h ^ asuint(instance.rows[0].z));
 }
 
 // A vertex's UV, off the rest attribute stream (a deformed vertex keeps its UV).

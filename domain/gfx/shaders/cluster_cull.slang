@@ -515,7 +515,8 @@ void allocate_vertex_draw(uint64_t header_address, uint64_t records_address, uin
   const bool fits = first <= capacity && triangles <= capacity - first;
   uint4* records = (uint4*)records_address;
   records[slot] = uint4(instance, cluster, first, fits ? 0u : 1u);
-  words[k_vertex_draw_expand_groups].add(1u);
+  // The expansion's dispatch, workgroup `slot`, grown folded (T165; dispatch.slang).
+  folded_append(words + k_vertex_draw_expand_groups, slot);
   if (!fits) {
     words[k_vertex_draw_fit_end].min(first);
     words[k_vertex_draw_fallback_instances].max(slot + 1u);
@@ -653,6 +654,13 @@ void cull_pair(uint pair, bool vertex_draw) {
         return;
       }
       caster = true;
+    } else if (params->cascade != 0 && params->caster_volume_count != 0 &&
+               !in_caster_volume(params, center, radius)) {
+      // **A cascade's casters are only what can shadow the picture** (R49): inside the cascade's
+      // box but outside every view's frustum swept towards the light (widened by the filter's
+      // footprint), a pair shadows no pixel any view draws. A cascade run is never given volumes
+      // unless that holds (renderer::fit_cascade_caster_volumes).
+      return;
     }
   }
   // The cone is a promise about the **rest** triangles, moved by a transform that keeps angles, so
@@ -784,7 +792,7 @@ void cull_pair(uint pair, bool vertex_draw) {
          cascade_accepts(params, parent_texel_error, parent_cover_error * instance.scale_max));
     if (params->streaming == 0) {
       // The cross-fade, for a transition with a coverage error: both sides draw across the band and
-      // each keeps the pixels between its splits (alpha_mask.slang, ade_keeps).
+      // each keeps the pixels between its splits (alpha_mask.slang, `fade_keeps`).
       // A cascade cut by its texels switches at once: its cut is its own, and the cascades share one
       // fade table per pair (the renderer passes it no fade; this keeps the rule whole if one did).
       const bool fade = params->fade > 0.0 && params->cascade_error_m == 0.0;
@@ -845,10 +853,12 @@ void cull_pair(uint pair, bool vertex_draw) {
     used[page] = 1u;
   }
   // The cross-fade's table (alpha_mask.slang, `fade_keeps`): every pair this view draws or casts
-  // with, its two splits and its instance, read by the masked readers of this frame only.
+  // with, its two splits and its instance's seed, read by the masked readers of this frame only.
+  // The seed is the instance's placement (`fade_seed`, scene.slang), never `instance_index`, which
+  // follows the order the instances arrived in (R170).
   if (params->masks.fade != 0) {
     uint2* fade = (uint2*)params->masks.fade;
-    fade[pair] = uint2(pack_splits(split_own, split_parent), instance_index);
+    fade[pair] = uint2(pack_splits(split_own, split_parent), fade_seed(instance));
   }
   // A caster is in the frame's ray tracing geometry and nowhere else. It is not drawn, so it is
   // not in the drawn-this-frame flags either — and a frame with casters has no second occlusion

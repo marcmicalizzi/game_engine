@@ -1,0 +1,21 @@
+{
+  "format": "engine.camera-path.v1",
+  "name": "house 0 through the door",
+  "description": "Camera-path.json's last metres to house 0's door and in, at its own pace, then held six seconds where interior-held.json stands: how long the room's light takes to settle on cells the doorway brought into view, and whether it trails (R171's temporal measure).",
+  "fps": 60,
+  "interpolation": "Smooth",
+  "znear": 0.05,
+  "keys": [
+    {"time": 0, "fov_deg": 70, "position": [58.516, 4.824, 15.996], "target": [53.52, 4.924, 15.82]},
+    {"time": 0.75, "fov_deg": 70, "position": [57.712, 4.824, 15.968], "target": [52.716, 4.912, 15.789]},
+    {"time": 1.5, "fov_deg": 70, "position": [57.012, 4.854, 15.943], "target": [52.015, 4.854, 15.762]},
+    {"time": 2.333, "fov_deg": 70, "position": [56.012, 4.854, 15.907], "target": [51.047, 4.854, 15.324]},
+    {"time": 8.333, "fov_deg": 70, "position": [56.012, 4.854, 15.907], "target": [51.047, 4.854, 15.324]}
+  ],
+  "markers": [
+    {"frame": 0, "name": "before the door"},
+    {"frame": 90, "name": "door"},
+    {"frame": 140, "name": "stopped"},
+    {"frame": 499, "name": "held"}
+  ]
+}

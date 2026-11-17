@@ -1272,7 +1272,11 @@ void emit_cached(uint dense, uint cluster_id, MeshDesc mesh, InstanceDesc instan
   const uint pending = args[k_args_pending].add(1);
   uint* reference_keys = (uint*)tables->reference_keys;
   reference_keys[pending] = dense;
-  if (pending % k_cache_workgroup == 0) args[k_args_references].add(1);
+  // The dispatches grow folded (T165; dispatch.slang): a frame past 65,535 workgroups of them
+  // takes the next row, never more on x.
+  if (pending % k_cache_workgroup == 0) {
+    folded_append(args + k_args_references, pending / k_cache_workgroup);
+  }
   if (value == k_cache_claim) return;  // another entry of this frame claimed it
   if (keys[key].compareExchange(value, k_cache_claim) != value) return;
   Atomic<uint>* counts = (Atomic<uint>*)g_params.record_count;
@@ -1280,8 +1284,11 @@ void emit_cached(uint dense, uint cluster_id, MeshDesc mesh, InstanceDesc instan
   if (index == 0) {
     // The frame's first miss: the slot scan and the eviction walk the slots.
     const uint slot_groups = (tables->slot_count + k_cache_workgroup - 1) / k_cache_workgroup;
-    args[k_args_scan].store(slot_groups);
-    args[k_args_evict].store(slot_groups);
+    const uint3 folded = folded_args(slot_groups);
+    args[k_args_scan].store(folded.x);
+    args[k_args_scan + 1].store(folded.y);
+    args[k_args_evict].store(folded.x);
+    args[k_args_evict + 1].store(folded.y);
   }
   // Every miss is listed, past the slots too (R114): `cache_assign_main` gives the ones the cache
   // has no slot for a record in the frame's own set. A miss is a pending reference's key claimed
@@ -1290,7 +1297,7 @@ void emit_cached(uint dense, uint cluster_id, MeshDesc mesh, InstanceDesc instan
     keys[key].store(k_cache_overflow);  // counted by `cache_assign_main`, from word 6
     return;
   }
-  if (index % k_cache_workgroup == 0) args[k_args_assign].add(1);
+  if (index % k_cache_workgroup == 0) folded_append(args + k_args_assign, index / k_cache_workgroup);
   const bool opaque = !caster && !masked;
   const uint geometry = local | k_cache_geometry | (caster ? k_cache_caster : 0u);
   uint4* misses = (uint4*)tables->misses;
@@ -1414,7 +1421,7 @@ void emit_cached_main(uint3 thread_id : SV_DispatchThreadID) {
 [numthreads(64, 1, 1)]
 void cache_scan_main(uint3 thread_id : SV_DispatchThreadID) {
   CacheTables* tables = cache_tables();
-  const uint slot = thread_id.x;
+  const uint slot = folded_thread(thread_id, 64);  // grown folded by the emit pass (T165)
   if (slot == 0) {
     // The frame's own records as the ranges kept them, for `cache_assign_main` to append the misses
     // without a slot after (R114) while its thread 0 raises the count the build reads.
@@ -1479,7 +1486,7 @@ void cache_evict_main(uint3 thread_id : SV_DispatchThreadID,
   GroupMemoryBarrierWithGroupSync();
   const uint threshold = g_threshold;
   const uint quota = g_quota;
-  const uint slot = thread_id.x;
+  const uint slot = folded_thread(thread_id, 64);  // grown folded by the emit pass (T165)
   if (threshold >= k_cache_ages || slot == 0 || slot >= tables->slot_count) return;
   uint* owners = (uint*)tables->owners;
   const uint owner = owners[slot];
@@ -1552,7 +1559,7 @@ void cache_assign_main(uint3 thread_id : SV_DispatchThreadID) {
   // thread 0's to raise), and what its set holds past them.
   const uint built = scratch[k_scratch_built];
   const uint room = g_params.capacity > built ? g_params.capacity - built : 0u;
-  const uint i = thread_id.x;
+  const uint i = folded_thread(thread_id, 64);  // grown folded by the emit pass (T165)
   if (i == 0) {
     const uint occupied = tables->slot_count - 1 - free + assigned;
     record_count[k_count_miss_built] = assigned;
@@ -1601,7 +1608,7 @@ void cache_assign_main(uint3 thread_id : SV_DispatchThreadID) {
 void cache_references_main(uint3 thread_id : SV_DispatchThreadID) {
   CacheTables* tables = cache_tables();
   uint* args = (uint*)tables->args;
-  const uint p = thread_id.x;
+  const uint p = folded_thread(thread_id, 64);  // grown folded by the emit pass (T165)
   if (p >= args[k_args_pending]) return;
   uint* reference_keys = (uint*)tables->reference_keys;
   const uint dense = reference_keys[p];

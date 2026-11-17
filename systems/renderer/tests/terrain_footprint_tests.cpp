@@ -4,6 +4,8 @@
 // with every read made (terrain_full_reads.slang), both loaded through a shader manifest in the
 // test's scratch directory: under the footprint rules the near ground is the same bytes, every
 // picture is within the bound the rules were chosen under, and a frame is the frame again.
+#include "test_device.h"
+
 #include <foundation/image/metrics.h>
 #include <foundation/image/png.h>
 #include <foundation/io/vfs.h>
@@ -135,7 +137,7 @@ f32 flip_mean(const Vector<u8>& reference, const Vector<u8>& test) {
 TEST_CASE("renderer: the ground reads fewer tiles where a pixel cannot tell, within the bound") {
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
+  if (!device.create(renderer_test::device_options(), &error)) {
     MESSAGE("no device: " << error);
     return;
   }

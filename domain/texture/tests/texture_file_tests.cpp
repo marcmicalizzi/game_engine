@@ -427,3 +427,48 @@ TEST_CASE("texture file: a probe reads the identity and the size, and refuses a 
   TextureData full;
   CHECK_FALSE(read_texture_file(path, full, &error));
 }
+
+// **A chain's tail, read by range** (R172 stage 1; texture.md, "Levels resident by what the frame
+// samples"): from every level of a colour map and of a normal map with its variance chain, the
+// tail read from the file is the tail cut from the whole read, field by field and byte by byte,
+// its level 0 the chain's level `first` and its blocks that level's.
+TEST_CASE("texture file: the tail from a level reads by range what the whole read holds") {
+  const test::TempDir tmp("texture_tail");
+  Vector<u8> pixels;
+  test_fixtures::normal_image(37, 21, pixels);
+  TextureBuildOptions normal_options;
+  normal_options.normal_map = true;
+  TextureData normal;
+  std::string error;
+  REQUIRE(build_texture({pixels.data(), pixels.size()}, 37, 21, 4, normal_options, normal, nullptr,
+                        &error));
+  REQUIRE(!normal.normal_variance.empty());
+  for (const TextureData& whole : {make_fixture(), normal}) {
+    const auto path = tmp.file("tail.tex");
+    REQUIRE(write_texture_file(path, whole, &error));
+    for (u32 first = 0; first < whole.levels.size(); ++first) {
+      INFO("level " << first << " of " << whole.levels.size());
+      TextureData cut;
+      REQUIRE(texture_levels_from(whole, first, cut));
+      TextureData read;
+      REQUIRE_MESSAGE(read_texture_file_levels(path, first, read, &error), error);
+      check_equal(cut, read);
+      CHECK(read.width == texture_level_extent(whole.width, first));
+      CHECK(read.height == texture_level_extent(whole.height, first));
+      REQUIRE(read.levels.size() == whole.levels.size() - first);
+      for (u32 l = 0; l < read.levels.size(); ++l) {
+        const std::span<const u8> a = read.level_bytes(l);
+        const std::span<const u8> b = whole.level_bytes(first + l);
+        REQUIRE(a.size() == b.size());
+        CHECK(std::memcmp(a.data(), b.data(), a.size()) == 0);
+        const std::span<const u8> va = read.normal_variance_level_bytes(l);
+        const std::span<const u8> vb = whole.normal_variance_level_bytes(first + l);
+        REQUIRE(va.size() == vb.size());
+        if (!va.empty()) CHECK(std::memcmp(va.data(), vb.data(), va.size()) == 0);
+      }
+    }
+    TextureData past;
+    CHECK_FALSE(texture_levels_from(whole, whole.levels.size(), past));
+    CHECK_FALSE(read_texture_file_levels(path, whole.levels.size(), past, &error));
+  }
+}

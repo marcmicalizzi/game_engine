@@ -21,6 +21,8 @@
 // tests — no cluster acceleration structures, because the reference traces the structures the
 // frame builds and there are none without them.
 
+#include "test_device.h"
+
 #include <domain/gfx/device.h>
 #include <foundation/image/metrics.h>
 #include <foundation/image/png.h>
@@ -261,7 +263,7 @@ struct Gpu {
   bool ok = false;
   Gpu() {
     std::string error;
-    if (!device.create(gfx::DeviceOptions{}, &error)) {
+    if (!device.create(renderer_test::device_options(), &error)) {
       why = "no Vulkan device: " + error;
       return;
     }

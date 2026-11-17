@@ -76,6 +76,7 @@
 #include <systems/renderer/scene.h>
 #include <systems/renderer/scene_renderer.h>
 #include <systems/renderer/settings.h>
+#include <systems/renderer/temporal_change.h>
 #include <systems/renderer/terrain_tiles.h>
 // The participating medium (brief-volumetrics: systems/volumetrics, roadmap R47 and W45): linked
 // where the capability is configured, and without it a scene's `medium` block is carried and not
@@ -164,7 +165,7 @@ tunables::Int present_max_hz{"view.present.max_hz", 120, 0, 100000,
 // clang-format off
 constexpr const char* k_usage =
     "usage: engine-view [--width <px>] [--height <px>] [--frames <n>] [--capture <file.png>]\n"
-    "                   [--capture-every <n>]\n"
+    "                   [--capture-every <n>] [--temporal <file.json> [--temporal-from <n>]]\n"
     "                   [--no-vsync] [--adapter <index>] [--validation] [--grid <n>] [--log <spec>]\n"
     "                   [--shaders <manifest.json>] [--lod <px>] [--no-cull] [--no-occlusion] [--no-cone]\n"
     "                   [--raster direct|hw|vertex|sw|auto|rt] [--sw-px <px>] [--view <mode>] [--orbit <d>]\n"
@@ -214,6 +215,10 @@ constexpr const char* k_usage =
     "                   hdr10, scrgb or linear picture is captured as .exr only\n"
     "  --capture-every <n>  offscreen, with --capture: also write every n-th frame, drawn at that\n"
     "                   frame, as <capture>-<frame>.png (a time-lapse's sand as it stood then)\n"
+    "  --temporal <file>  plain offscreen run: the change between consecutive displayed frames\n"
+    "                   from --temporal-from <n> (default 0) on, median to p99.9 by luma band,\n"
+    "                   and each frame's mean level, as JSON (renderer.md, \"The change between\n"
+    "                   frames, as the eye sees it\")\n"
     "  --grid <n>       heightfield resolution, n x n vertices (default 257)\n"
     "  --procedural <n> which scene an absent --mesh builds: heightfield (default), or\n"
     "                   shredded-atlas, the UV-atlas LOD stress fixture (geometry.md)\n"
@@ -657,6 +662,10 @@ struct Options {
   // Offscreen: also capture every n-th frame of the run as <capture stem>-<frame>.png, drawn at
   // that frame (its camera, its time-lapse), not after the run. 0 captures the last frame only.
   u32 capture_every = 0;
+  // Offscreen: the change between consecutive displayed frames from `temporal_from` on, written
+  // as JSON (renderer::TemporalChange; R171 leg 4). Each such frame is drawn by a colour capture.
+  std::string temporal;
+  u32 temporal_from = 0;
   bool vsync = true;
   // The window's presentation (docs/subsystems/apps.md, "Pacing"): the present mode asked for by
   // name ("" is FIFO, or `--no-vsync`'s choice), the swapchain's images, the frames the loop keeps
@@ -3456,6 +3465,16 @@ int run_offscreen(Options& options, Interactive& interactive) {
       const i64 started = time::monotonic_ns();
       bool ok = true;
       for (u32 f = 0; f < frames; ++f) {
+        // `--memory-report`'s first snapshot, between frames and out of their clocks (T168).
+        if (view::memory_report().on() && !records.empty()) {
+          const i64 paused = view::memory_report().take("first_frame", &device, &scene);
+          previous_start += previous_start != 0 ? paused : 0;
+          PendingFrame& before = pending[(submissions + k_pending_frames - 1) % k_pending_frames];
+          if (paused != 0 && submissions > 0 && before.submission == submissions - 1) {
+            before.spans.start += paused;
+            before.spans.end += before.spans.end != 0 ? paused : 0;
+          }
+        }
         const i64 start = time::monotonic_ns();
         // The last frame's interval ends here (FrameRecord's `sections`, R130).
         if (submissions > 0) {
@@ -3490,8 +3509,6 @@ int run_offscreen(Options& options, Interactive& interactive) {
         const i64 begun = time::monotonic_ns();
         take_folded(view_renderer, folded, pending, records);
         startup.frame(readiness());
-        if (view::memory_report().on() && !records.empty())
-          view::memory_report().take("first_frame", &device, &scene);
         const i64 ready = time::monotonic_ns();
         const u64 before_tick = session.tick().value;
         const u64 to = before_tick + ticks_per_frame < end ? before_tick + ticks_per_frame : end;
@@ -3763,6 +3780,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
       view_renderer.reset_stats();
       u64 last = 0;
       bool shot_failed = false;
+      renderer::TemporalChange temporal;
       for (u32 f = 0; f < frames; ++f) {
         if (!world_before(camera_at(f), f == 0 ? WorldStep::restart : WorldStep::budgeted, 0, f,
                           true)) {
@@ -3774,6 +3792,19 @@ int run_offscreen(Options& options, Interactive& interactive) {
         frame.sky_time_s = sun_at(frame.frame_index);
         frame.world_time_s = clock.world_at(frame.frame_index);
         animate_frame(frame, u64{f} + 1);
+        // `--temporal` (R171 leg 4): from its first frame on every frame is drawn by a colour
+        // capture and compared with the one before, as displayed.
+        if (!options.temporal.empty() && f >= options.temporal_from) {
+          renderer::CapturedFrame shot;
+          if (!view_renderer.capture(frame, renderer::CaptureChannels{}, shot, &error)) {
+            last = 0;
+            break;
+          }
+          temporal.add(shot.color.data(), shot.width, shot.height);
+          last = 1;
+          ++rendered;
+          continue;
+        }
         // `--capture-every n`: every n-th frame is drawn by the capture itself, so the picture is
         // that frame's — its camera and, under `--time-rate`, the sand where it stood then.
         if (capture_this_frame(options, f)) {
@@ -3801,6 +3832,11 @@ int run_offscreen(Options& options, Interactive& interactive) {
       }
       if (last == 0) {
         exit_code = fail("frame", error);
+        break;
+      }
+      if (!options.temporal.empty() &&
+          io::write_file(options.temporal, temporal.json()) != io::Status::Ok) {
+        exit_code = fail("temporal", "cannot write " + options.temporal);
         break;
       }
       view_renderer.wait(last);
@@ -4408,7 +4444,7 @@ int run_view(int argc, char** argv) {
       return 0;
     } else if (a == "--width" || a == "--height" || a == "--frames" || a == "--adapter" ||
                a == "--grid" || a == "--grid-instances" || a == "--deform-pool-mib" ||
-               a == "--rt-budget-mib" || a == "--capture-every") {
+               a == "--rt-budget-mib" || a == "--capture-every" || a == "--temporal-from") {
       if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
       u32 n = 0;
       if (!parse_u32(value, n)) {
@@ -4420,6 +4456,7 @@ int run_view(int argc, char** argv) {
       if (a == "--height") options.height = n;
       if (a == "--frames") options.frames = n;
       if (a == "--capture-every") options.capture_every = n;
+      if (a == "--temporal-from") options.temporal_from = n;
       if (a == "--adapter") options.adapter = n;
       if (a == "--grid") options.grid = n;
       if (a == "--grid") options.procedural_given = true;
@@ -4868,6 +4905,8 @@ int run_view(int argc, char** argv) {
       if (!next_value(argc, argv, i, a, options.benchmark)) return k_exit_usage;
     } else if (a == "--marker-captures") {
       if (!next_value(argc, argv, i, a, options.marker_captures)) return k_exit_usage;
+    } else if (a == "--temporal") {
+      if (!next_value(argc, argv, i, a, options.temporal)) return k_exit_usage;
     } else if (a == "--capture-channels") {
       if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
       if (!parse_capture_channels(value, options.capture_channels)) {
@@ -5283,6 +5322,16 @@ int run_view(int argc, char** argv) {
       (!options.benchmark.empty() || !options.marker_captures.empty() ||
        options.verify_occlusion)) {
     options.offscreen = true;
+  }
+  // `--temporal` (R171 leg 4) is measured in the plain offscreen loop, the one that draws every
+  // frame of the path in order.
+  if (!options.temporal.empty() &&
+      (live || !options.offscreen || !options.benchmark.empty() ||
+       !options.marker_captures.empty() || options.verify_occlusion || options.capture_every != 0)) {
+    std::fprintf(stderr,
+                 "engine-view: --temporal measures a plain --offscreen run (no --benchmark, "
+                 "--marker-captures, --verify-occlusion, --capture-every or replay)\n");
+    return k_exit_usage;
   }
   // An interactive window steps the dunes' rate with `,` and `.` (TerrainMotion::set_rate), so a
   // dune terrain is drawn as terrain levels even at --time-rate 0: the motion has to exist to be
@@ -6553,6 +6602,7 @@ int run_view(int argc, char** argv) {
     }
     i64 last_frame_start_ns = 0;
     u64 ceiling_waits = 0;
+    bool memory_first_due = false;  // --memory-report's first snapshot, owed between two frames
 
     bool running = true;
     bool resize_pending = false;
@@ -6603,6 +6653,21 @@ int run_view(int argc, char** argv) {
       // before it. Yielding rather than sleeping, because the period is a few milliseconds and the
       // system's sleep is coarser than that. Ticks are the session's own and never the frames',
       // so a recording replays to the same trajectory with the ceiling and without.
+      // **`--memory-report`'s first snapshot, outside the timed frames** (T168; memory_report.h):
+      // every clock that measures a frame or runs the world moves on by what the walk took.
+      if (memory_first_due) {
+        memory_first_due = false;
+        const i64 paused = view::memory_report().take("first_frame", &device, &scene);
+        last_frame_start_ns += last_frame_start_ns != 0 ? paused : 0;
+        previous_frame_ns += previous_frame_ns != 0 ? paused : 0;
+        path_started_ns += path_started_ns != 0 ? paused : 0;
+        clock_ns += paused;
+        PendingFrame& before = pending[(submissions + k_pending_frames - 1) % k_pending_frames];
+        if (submissions > 0 && before.submission == submissions - 1) {
+          before.spans.start += paused;
+          before.spans.end += before.spans.end != 0 ? paused : 0;
+        }
+      }
       if (ceiling_period_ns > 0 && !pace_display && last_frame_start_ns != 0) {
         const i64 due = last_frame_start_ns + ceiling_period_ns;
         if (time::monotonic_ns() < due) {
@@ -7029,8 +7094,7 @@ int run_view(int argc, char** argv) {
         r.ground_settled = !ground_now.has_value() ||
                            (ground_now->chunks_built == 0 && ground_now->layout_lag_m == 0.0);
         startup.frame(r);
-        if (r.frame_done && view::memory_report().on())
-          view::memory_report().take("first_frame", &device, &scene);
+        memory_first_due = r.frame_done && view::memory_report().on();  // taken between frames
         if (load_controllable_ns == 0 && startup.reached("player_controllable"))
           load_controllable_ns = time::monotonic_ns();
         if (startup.reached(view::k_startup_milestones[load_ready_rung])) {

@@ -73,6 +73,7 @@ constexpr u64 k_draw_course_step = 310;
 constexpr u64 k_draw_eave = 311;
 constexpr u64 k_draw_limewash = 312;
 constexpr u64 k_draw_thatch = 313;
+constexpr u64 k_draw_face = 314;
 
 u64 draw(u64 seed, u64 purpose, u32 index = 0) noexcept {
   return mix64(hash_combine(hash_combine(hash_combine(k_hash_seed, seed), purpose), u64{index}));
@@ -128,6 +129,11 @@ Dress dress_of(u64 seed, i32 wall, u8 storeys) noexcept {
                 : wash < 14 ? "plaster/lime_cream"
                 : wash < 15 ? "plaster/lime_ochre"
                             : "plaster/lime_pink";
+  // **Stone-faced** (docs/experiments/houses-that-differ.md, "A stone face"): rubble walls were
+  // rendered and limewashed as the rule, and left bare on farm buildings and the poorer or the
+  // weathered house; two houses of sixteen show their rubble (a labelled share), drawn apart from
+  // the wash so every other house keeps its colour.
+  if (draw(seed, k_draw_face) % 16 < 2) d.wall_role = "stone/rubble";
   const u64 age = draw(seed, k_draw_thatch) % 16;
   d.roof_role = age < 8 ? "" : (age < 14 ? "thatch/straw_old" : "thatch/straw_new");
   return d;
@@ -150,7 +156,7 @@ i32 max_clear_cm(u16 outer_wall_cm) noexcept {
 }
 
 void describe(const InteriorPlan& plan, const RuralChoice& choice, std::string_view name, u64 seed,
-              structure::Description& out) {
+              structure::Description& out, const Kit& kit) {
   const InteriorParams& p = plan.params;
   out = structure::Description{};
   const i32 wall = i32{choice.outer_wall_cm};
@@ -470,7 +476,7 @@ void describe(const InteriorPlan& plan, const RuralChoice& choice, std::string_v
   // the furniture and a walker meets it.
   Furnishing furnishing;
   if (choice.timber) timber_interior(plan, choice.ridge_along_front, furnishing);
-  if (choice.furniture) furnish_interior(plan, seed, furnishing);
+  if (choice.furniture) furnish_interior(plan, seed, furnishing, kit);
   for (const Member& m : furnishing.members) {
     structure::Box box;
     const i32 floor_top = out.storeys[m.storey].elevation;

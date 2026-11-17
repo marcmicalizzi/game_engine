@@ -186,6 +186,9 @@ class TileRing {
   // The tile's score against the last update's observers — the ground distance from its centre to
   // the nearest, divided by that observer's weight — which is what its ring was banded from.
   f32 score_of(TileCoord tile) const noexcept;
+  // The last update's observers, on the ground plane: what the scores were taken against, and
+  // what the placements consumer measures a hand-off's band from (G205).
+  const sim::ObserverSet& observers() const noexcept { return ground_; }
   // The active tiles in tile order, and their rings.
   std::span<const u64> active_keys() const noexcept {
     return {active_keys_.data(), active_keys_.size()};

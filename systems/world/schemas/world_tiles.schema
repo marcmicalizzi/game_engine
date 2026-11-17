@@ -183,7 +183,10 @@ struct TileHandover @version(2) {
 }
 /// A world's run, the last line of engine-view's world log: what the ring did and what it cost.
 /// Version 4 (T131): the tiles' builds off the frame's thread and the trades at the pair cap.
-struct TileWorldSummary @version(4) {
+/// Version 5 (G205): the hand-off cells — the near placements the held tiles keep by cell, the
+/// cells handed on at the end, the pairs the cells not handed keep out of the tail, and the cells
+/// that came or went over the run with what keeping them took on the committing thread.
+struct TileWorldSummary @version(5) {
   format: string = "engine.world-log.v1"
   tile_size: f32 = 0
   radius: f32[]
@@ -249,4 +252,11 @@ struct TileWorldSummary @version(4) {
   returned: u64 = 0 @since(4)
   /// Tiles that gave their meshes up to a nearer one (`PlacementTilesStats::mesh_yielded`).
   mesh_yielded: u64 = 0 @since(4)
+  /// The hand-off cells (docs/subsystems/world.md, "A hand-off placement is held by its band").
+  handoff_cells: u32 = 0 @since(5)
+  handoff_cells_in: u32 = 0 @since(5)
+  handoff_instances: u32 = 0 @since(5)
+  handoff_pairs_out: u64 = 0 @since(5)
+  handoff_flips: u64 = 0 @since(5)
+  handoff_ms: f64 = 0 @since(5)
 }

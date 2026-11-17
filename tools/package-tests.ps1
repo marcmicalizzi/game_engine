@@ -212,8 +212,12 @@ foreach ($t in $catalogue.tests) {
     exe = 'bin/' + [System.IO.Path]::GetFileName($full)
     args = @($command | Select-Object -Skip 1)
     labels = @($labels)
-    # A list in CTest; one lock is all this tree uses, and the runner treats it as a name.
-    resource_lock = if ($lock) { @($lock)[0] } else { '' }
+    # A list in CTest, and one name for the runner. A GPU chain's lock (`gpu_device.<k>`,
+    # cmake/EngineTesting.cmake, roadmap T89) becomes the one `gpu_device`: the chains rely on the
+    # machine-wide GPU lock to order two tests' devices, and a bundle's machine has none, so there
+    # every test that can open a device runs alone among them — the desktop's tests included, which
+    # all can.
+    resource_lock = if (@($lock) | Where-Object { "$_" -like 'gpu_device*' }) { 'gpu_device' } elseif ($lock) { @($lock)[0] } else { '' }
     timeout_seconds = if ($timeout) { [int]$timeout } else { 0 }
   }
 }

@@ -26,9 +26,13 @@
 #include <core/base/types.h>
 #include <core/containers/vector.h>
 #include <core/math/math.h>
+#include <domain/anim/clip.h>
 #include <domain/anim/skeleton.h>
 #include <foundation/bench/bench.h>
 
+#include <cmath>
+#include <memory>
+#include <vector>
 using namespace engine;
 
 namespace {
@@ -218,4 +222,79 @@ ENGINE_BENCH(anim_skinning_crowd, "anim.skeleton.skinning.crowd") {
     bench::keep(c.matrices[usize{count} * k_joints - 1]);
   }
   state.set_items(u64{count} * k_joints);
+}
+
+// --- sampling a clip ---------------------------------------------------------------------------
+
+// What one sample of a playing clip costs, by the clip's length (A48). The rig is the size of a game
+// animal as an exporter writes it — 37 joints (a bird of the forest's roster) with a translation, a
+// rotation and a scale track on every one, 111 tracks, each **baked** at 30 keys a second, Blender's
+// default — and the clip is played forward at 60 samples a second and wrapped, so every sample lands
+// at a different key and the rows read what a playing actor's tick reads. Before A48, `locate` walked
+// each track's keys from the front, so the cost grew with the clip's length: four keys (a short
+// hand-keyed loop), and one, two and eight seconds baked.
+namespace {
+
+constexpr u32 k_clip_joints = 37;
+
+struct ClipFixture {
+  anim::Clip clip;
+  anim::Pose pose;
+};
+
+ClipFixture& clip_fixture(u32 keys) {
+  static std::vector<std::unique_ptr<ClipFixture>> cache;
+  static std::vector<u32> ids;
+  for (usize i = 0; i < ids.size(); ++i) {
+    if (ids[i] == keys) return *cache[i];
+  }
+  auto out = std::make_unique<ClipFixture>();
+  const f32 rate = 30.0f;
+  std::vector<f32> times(keys);
+  for (u32 k = 0; k < keys; ++k)
+    times[k] = static_cast<f32>(k) / rate;
+  std::vector<f32> values;
+  for (u32 j = 0; j < k_clip_joints; ++j) {
+    for (u8 channel = 0; channel < 3; ++channel) {
+      const u8 components = channel == anim::k_channel_rotation ? 4 : 3;
+      values.assign(usize{keys} * components, 0.0f);
+      for (u32 k = 0; k < keys; ++k) {
+        const f32 t = static_cast<f32>(k + j) * 0.13f;
+        f32* v = values.data() + usize{k} * components;
+        if (components == 4) {
+          const Quat q = normalize(Quat{0.1f * std::sin(t), 0.2f * std::cos(t), 0.05f, 1.0f});
+          v[0] = q.x;
+          v[1] = q.y;
+          v[2] = q.z;
+          v[3] = q.w;
+        } else {
+          v[0] = 0.01f * std::sin(t);
+          v[1] = channel == anim::k_channel_scale ? 1.0f : 0.1f;
+          v[2] = 0.01f * std::cos(t);
+        }
+      }
+      out->clip.add_track(j, channel, anim::k_interp_linear, components,
+                          std::span<const f32>(times.data(), times.size()),
+                          std::span<const f32>(values.data(), values.size()));
+    }
+  }
+  out->pose.resize(k_clip_joints);
+  ids.push_back(keys);
+  cache.push_back(std::move(out));
+  return *cache.back();
+}
+
+}  // namespace
+
+ENGINE_BENCH_ARGS(anim_clip_sample_keys, "anim.clip.sample.keys", 4, 31, 61, 241) {
+  const u32 keys = bench::smoke_mode() ? 31u : static_cast<u32>(state.arg());
+  ClipFixture& f = clip_fixture(keys);
+  f32 time = 0.0f;
+  while (state.keep_running()) {
+    f.clip.sample(time, f.pose);
+    bench::keep(f.pose.rotation[k_clip_joints - 1]);
+    time += 1.0f / 60.0f;
+    if (time > f.clip.duration) time -= f.clip.duration;
+  }
+  state.set_items(u64{k_clip_joints} * 3);
 }

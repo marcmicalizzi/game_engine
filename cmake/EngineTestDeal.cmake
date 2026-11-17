@@ -8,7 +8,9 @@
 # Reads cmake/test-costs.txt into the global properties ENGINE_TEST_COST:<test>:<basename>. One
 # line a file, `<test> <basename> <whole seconds>`; `#` starts a comment, so a row may end in one
 # (tools/test-costs.ps1 writes where the number came from there). A line of any other shape stops
-# the configure. A missing file is an empty table.
+# the configure. A missing file is an empty table. The basename `*` is a whole CTest test's seconds
+# (`engine_cli * 386`), which the GPU chains are dealt by (engine_deal_gpu_chains, below); a parted
+# test's parts are costed by their files instead.
 function(engine_read_test_costs file)
   if(NOT EXISTS "${file}")
     return()
@@ -20,7 +22,7 @@ function(engine_read_test_costs file)
     if(_line STREQUAL "")
       continue()
     endif()
-    if(NOT _line MATCHES "^([A-Za-z0-9_.]+)[ \t]+([A-Za-z0-9_.+-]+)[ \t]+([0-9]+)$")
+    if(NOT _line MATCHES "^([A-Za-z0-9_.]+)[ \t]+([A-Za-z0-9_.+-]+|\\*)[ \t]+([0-9]+)$")
       message(FATAL_ERROR "${file}: '${_line}' is not `<test> <basename> <whole seconds>`")
     endif()
     set_property(GLOBAL PROPERTY "ENGINE_TEST_COST:${CMAKE_MATCH_1}:${CMAKE_MATCH_2}" "${CMAKE_MATCH_3}")
@@ -103,5 +105,33 @@ function(engine_deal_test_files test parts names out)
   foreach(_k RANGE 0 ${_last})
     set(${out}_${_k} "${_part_${_k}}" PARENT_SCOPE)
     set(${out}_load_${_k} "${_load_${_k}}" PARENT_SCOPE)
+  endforeach()
+endfunction()
+
+#   engine_deal_gpu_chains(<chains> <items> <out>)
+# Deals the GPU chains (roadmap T89; docs/ci/what-to-run.md, "Two GPU chains"): <items> is a list of
+# `<name>=<seconds>` or a bare `<name>` for one whose seconds nobody measured, each item one CTest
+# test or a group of tests that must run one at a time anyway (they share another resource lock),
+# and <out>_<k> (from 0) is the names chain k runs, <out>_load_<k> their seconds. The deal is
+# engine_deal_test_files' own, the parts' deal — longest first, each to the chain with the least so
+# far, the lowest-numbered of equal ones, the unmeasured after them in name order round the chains —
+# with the items' seconds put where it reads a file's, under a test name no table can hold (it
+# starts with a dot), so a prediction in script mode and the configure deal the same way.
+function(engine_deal_gpu_chains chains items out)
+  set(_names "")
+  foreach(_item IN LISTS items)
+    if(_item MATCHES "^([^=]+)=([0-9]+)$")
+      list(APPEND _names "${CMAKE_MATCH_1}")
+      set_property(GLOBAL PROPERTY "ENGINE_TEST_COST:.gpu_chains:${CMAKE_MATCH_1}" "${CMAKE_MATCH_2}")
+    else()
+      list(APPEND _names "${_item}")
+      set_property(GLOBAL PROPERTY "ENGINE_TEST_COST:.gpu_chains:${_item}" "")
+    endif()
+  endforeach()
+  engine_deal_test_files(.gpu_chains ${chains} "${_names}" _deal)
+  math(EXPR _last "${chains} - 1")
+  foreach(_k RANGE 0 ${_last})
+    set(${out}_${_k} "${_deal_${_k}}" PARENT_SCOPE)
+    set(${out}_load_${_k} "${_deal_load_${_k}}" PARENT_SCOPE)
   endforeach()
 endfunction()

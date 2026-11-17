@@ -15,6 +15,8 @@
 // - The measurement sweep (R115 stage 2) steps the sun ray's rules eight frames at a time, and the
 //   proxy's table it bakes is never handed to a frame whose threshold is 0.
 
+#include "test_device.h"
+
 #include <core/math/math.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/visibility_resolve.h>
@@ -221,7 +223,7 @@ Shot shoot(const std::string& mesh, RenderSettings settings, ShotView view = Sho
   Shot out;
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
+  if (!device.create(renderer_test::device_options(), &error)) {
     out.skip = "device unavailable: " + error;
     return out;
   }
@@ -666,7 +668,7 @@ TEST_CASE("alpha mask: the reference path tracer sees through the holes the rast
   Fixture fx;
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
+  if (!device.create(renderer_test::device_options(), &error)) {
     MESSAGE("skipped: device unavailable: " << error);
     return;
   }
@@ -771,7 +773,7 @@ std::vector<CapturedFrame> shoot_half_rate(const std::string& mesh, u32 width, c
   std::vector<CapturedFrame> out;
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
+  if (!device.create(renderer_test::device_options(), &error)) {
     skip = "device unavailable: " + error;
     return out;
   }
@@ -990,7 +992,7 @@ MicromapShot shoot_micromaps(const std::string& mesh, RenderSettings settings, S
   MicromapShot out;
   gfx::Device device;
   std::string error;
-  gfx::DeviceOptions options;
+  gfx::DeviceOptions options = renderer_test::device_options();
   if (without_extension) options.overrides.absent.push_back("VK_EXT_opacity_micromap");
   if (!device.create(options, &error)) {
     out.skip = "device unavailable: " + error;
@@ -1430,7 +1432,7 @@ TEST_CASE(
   rays.shadows = ShadowMode::RayTraced;
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
+  if (!device.create(renderer_test::device_options(), &error)) {
     MESSAGE("skipped: device unavailable: " << error);
     return;
   }
@@ -1495,7 +1497,7 @@ TEST_CASE(
   // A device without the extension resolves to off, whatever the tunables say.
   {
     gfx::Device bare;
-    gfx::DeviceOptions options;
+    gfx::DeviceOptions options = renderer_test::device_options();
     options.overrides.absent.push_back("VK_EXT_opacity_micromap");
     REQUIRE_MESSAGE(bare.create(options, &error), error);
     ResolvedSettings off;

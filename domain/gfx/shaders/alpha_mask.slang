@@ -89,9 +89,10 @@ float2 hit_uv(MaskTables tables, uint64_t triangles, ClusterDesc cluster, uint p
 
 // ---- the cross-fade (renderer.md, "The cross-fade"; R91) ----------------------------------------
 //
-// A pixel's stable threshold: a hash of its integer position and a seed (the drawn pair's instance,
-// which both sides of a transition share, so their pixels are complementary — never the pair, which
-// differs across it), in 0 .. 65534. Nothing in it is the frame's, so a still view does not shimmer.
+// A pixel's stable threshold: a hash of its integer position and a seed (the drawn pair's instance's
+// `fade_seed` in scene.slang, which both sides of a transition share, so their pixels are complementary — never the
+// pair, which differs across it), in 0 .. 65534. Nothing in it is the frame's, so a still view does
+// not shimmer.
 uint fade_hash(uint2 pixel, uint seed) {
   uint h = pixel.x * 0x8da6b343u ^ pixel.y * 0xd8163841u ^ seed * 0xcb1ab31fu;
   h ^= h >> 16;

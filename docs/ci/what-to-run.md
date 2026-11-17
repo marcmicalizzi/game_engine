@@ -163,6 +163,15 @@ may run one run of it (`-Run <id>`) when a change is meant to move a number — 
 desktop has no nightly runner and the hosted ones have no GPU; a nightly with significance tests
 is T47's.
 
+**The session's state decides which budget a flight meets** (T161; [bench](../subsystems/bench.md#frame-budgets),
+"Which session a budget holds"). A locked Windows session idles the card, so every run holds a
+`locked` and an `unlocked` budget side by side and each flight is compared only with its own
+state's. A gate flown in a state a run has no budget for exits **6** on that run (compared with
+nothing) rather than passing or failing it: the gate's report says so per run. Read the gate's
+summary line, not only its exit code: 6 with every run `nobaseline` is a state with no baselines
+yet, and the first gate flown in it takes them (`-Rebaseline -Reason "..."`, quiet, session in that
+state), which writes that state's set and leaves the other alone.
+
 **What its first run found** (2026-10-07, `msvc-release`, the budgets seeded an hour earlier by the same script, `-Rebaseline`, from the same tree): every run within budget, five of five — totals at the median and p99 of 0.155 / 0.345 ms (overlook, 1080p), 0.729 / 1.344 (erg walk, 1080p), 3.484 / 3.964 (erg walk, surround), 1.610 / 2.602 (endless, 1080p, maps) and 4.362 / 5.498 (endless, surround, traced) against budgets of 0.155 / 0.358, 0.724 / 1.214, 3.482 / 4.010, 1.625 / 2.756 and 4.454 / 5.571; the erg walk's p99 at 1080p came closest to its limit (1.344 of 1.557). Four of the five ran on a machine the harness called busy — another agent's renderer tests and builds — which is the shared machine as it is; a pass is a pass on a busy one. **What seeding found**: the experiment pages the budgets were to come from agree with today's tree for the erg walk (total 0.724 against the page's 0.730 at 1080p; every surround median within 2%) and the endless desert's surround run (total 4.454 against 4.363, every pass within 8%), and **do not for the endless desert at 1080p with the maps**: [far ground](../experiments/far-ground-2026-10-03.md#the-cost) reads 2.980 / 5.103 ms, today's tree 1.625 / 2.756 on the same path, every pass lower (the cull 0.047 against 0.306). Seeded from the page, that budget would have passed a doubling, so every budget is the gate's own measurement and `sources` in the file says which page agreed. And the full-size endless flight's first pass makes 573 engine allocations on its frame thread, every one before frame 3,896 of 7,201 — lists reaching the high-water mark the 12 km path needs, the second half of the path none — which the gate reports in each summary's `frame_loop` and does not judge.
 
 ### Sanitizers
@@ -468,14 +477,19 @@ wins over the preset.
 What makes a parallel run safe, set in `cmake/EngineTesting.cmake`'s finalize by label and property,
 so a test registered anywhere — by a module, an app, a tool, or a file added since — is held to it:
 
-- **Two tests that can open a GPU device never run at once in one invocation.** Every test labelled
-  `gpu` (`engine_test_waits_for_gpu`: the test or a process it starts can open a device and so wait
-  for the machine-wide lock) gets `RESOURCE_LOCK gpu_device`. Without it the second would wait in
-  the GPU lock, inside the half-hour budget of its own deadline, and a wait that ran out is a skip,
-  which at the gate is a failure. With it the second waits in CTest, where nothing runs out.
-  `tools.game_sdk`, which starts `engine-view`, carries the label since T77.
-- **End-to-end tests keep `RESOURCE_LOCK e2e_apps`** (windows and input devices; `engine_app`),
-  parts included.
+- **No more than two tests that can open a GPU device run at once in one invocation** (one until
+  T89; [two GPU chains](#two-gpu-chains), below). Every test labelled `gpu`
+  (`engine_test_waits_for_gpu`: the test or a process it starts can open a device and so wait for
+  the machine-wide lock) gets one chain's `RESOURCE_LOCK`, `gpu_device.1` or `gpu_device.2`, dealt
+  by cost. Without a chain every such test would start at once and wait in the GPU lock, inside the
+  half-hour budget of its own deadline, and a wait that ran out is a skip, which at the gate is a
+  failure. With two, a test waits in the lock for at most the other chain's current hold, as two
+  suites side by side already did. `tools.game_sdk`, which starts `engine-view`, carries the label
+  since T77.
+- **End-to-end tests that can open a window keep `RESOURCE_LOCK e2e_apps`** (windows and input
+  devices; the label `desktop`, which `engine_app` gives a test whose app reaches `window`), parts
+  included. A headless app's end-to-end test (`engine_cli`, `engine_content`, `engine_host`,
+  `mcp_bridge`, `engine_image`, the `.generators` tests) runs beside them since T89.
 - **Tests that assert an upper bound on wall-clock time run alone**: a test registered
   `engine_module_tests(... WALL_CLOCK)` carries the label `wall_clock`, and the finalize gives every
   test with the label `RUN_SERIAL` (T87): `tileset` (one height lookup
@@ -639,6 +653,32 @@ it saves on gate b57's numbers: `msvc-no-ecs`'s renderer parts and `gfx`, 1,041 
 `msvc-debug`. The decision is reversible by dropping the switch from the gate's command line
 (review 2026-11-09, decision 5).
 
+### The renderer as a weaker card
+
+The GPU server leg (the TITAN Xp: no mesh shaders, no ray queries, no cluster acceleration
+structures) was red on batches 65 and 66, each time on a new renderer test that took the RTX 5090
+for granted, and it trails the merge, so a fault of that class reached `main` twice. Since T162
+every renderer test file opens its device through `systems/renderer/tests/test_device.h`, which
+honours `ENGINE_GFX_TEST_DEVICE` ([renderer](../subsystems/renderer.md), "Running a case as a
+weaker card"), so the Windows gate runs the renderer's suite once more as that card, beside the
+`msvc-debug` suite and in the same build:
+
+```powershell
+$env:ENGINE_GFX_TEST_DEVICE = 'titanxp'; $env:ENGINE_GPU_LOCK_LOG = '<gate log dir>\lock-titanxp.jsonl'
+pwsh -NoProfile -File tools/dev.ps1 test -Preset msvc-debug -Filter '^renderer\.' -Jobs 3
+Remove-Item Env:ENGINE_GFX_TEST_DEVICE
+```
+
+`titanxp` rather than `baseline`: it removes everything `baseline` removes (mesh shaders) and the
+ray-tracing rows besides, so it covers both of the faults the server leg found. A fault this leg
+reports is a test's, not the card's: the case skips before it builds what the device lacks
+(T153's pattern). **What it costs** (2026-11-16, `msvc-debug`, the RTX 5090, the session
+unlocked): the first part, `renderer.1`, ran 1,025 s of wall clock of which 696 s was waiting for
+the GPU lock behind other agents' work (60 device opens, 276 s holding the card), so about 330 s
+of its own; the whole suite's own time is in the T162 hand-back's log, measured the same way. The
+lock wait is the line's and not the leg's: on a gate that runs nothing else on the GPU at that
+moment it is near zero, and beside the three other Windows suites it is whatever they hold.
+
 ### Gate b58, measured
 
 The first gate run with everything above (2026-11-10, ten rows on `75fa25da`, beside the three
@@ -678,3 +718,80 @@ listener check and the budgets, which the failure had cut off, ran after it. **A
 check runs `tools/dev.ps1 test -Filter '^tools\.'`** beside the lint, the documentation check and
 the debug build (about six minutes, no GPU): rows that change the tools meet in the tools' own
 tests, and a gate is a slow place to learn it.
+
+## Two GPU chains
+
+**Where the chain's time went, gate b66** (2026-11-16, `msvc-debug` on d6534963 at three jobs,
+06:12 to 07:27, beside the other three Windows suites and the containers; its console log, its
+CTest log and its hold log, `ENGINE_GPU_LOCK_LOG`). The suite's wall was 4,496 s and its 34
+`gpu`-labelled tests summed 4,480 s, so the suite was still the one chain. A test's run, the
+holds' times laid over the CTest order (each hold is one process's device, from its `started` and
+`held_ms`, and is the test's whose executable it is, or for a child process the end-to-end test
+running at that moment):
+
+| Of the chain's 4,480 s | Seconds | What it is |
+|---|---|---|
+| A device held | 2,036 | the test's cases on the card, and the CPU work between them inside one device's life |
+| Waiting for the GPU lock | 348 | other suites' and other agents' holds |
+| No device open | 2,096 | scene loads and content builds in a debug build, a process starting, and the tests labelled `gpu` that opened no device that run: `rocks` 331, `engine_content` 279, `landform` 47, `world` 37, `caves` 30 and seven smaller |
+
+And inside the holds of the module tests (952 s; their own output is in the CTest log, where an
+end-to-end test's children's is not): 534 devices, whose instance and device creation took 225 s
+of which the processes printed 113 s as waits for the lock — about 0.2 s a device — and 21,131
+pipelines compiled in 24.6 s, the driver's own cache being warm. So creation and compilation are
+about a seventh of a hold, and the rest is the cases' work; sharing a device across a test's cases
+would have bought tens of seconds, at the price of holding the card across a test's CPU work, which
+is the opposite of what the lock is for. **The time the chain could give back was the 2,096 s with
+no device open**, which a second chain overlaps with the first's holds.
+
+**What the configure does.** Every test labelled `gpu` takes one of `ENGINE_TEST_GPU_CHAINS`
+resource locks, `gpu_device.1` to `gpu_device.<n>`, so `n` of them run at once in one `ctest` with
+jobs, and the machine-wide lock orders their devices' holds a hold at a time, as it does between
+two suites: a test waits for at most the other chain's current hold. `n` is 2 where the machine-wide
+lock's directory exists (the lock is in use, [gpu_lock](../subsystems/gpu_lock.md#elsewhere-and-the-limits))
+and 1 where it does not, since there nothing would stop two devices being open at once; a bundle
+(`tools/package-tests.ps1`) writes every chain's lock as one `gpu_device` for the same reason. The
+chains are dealt in `_engine_finalize_tests` (`cmake/EngineTesting.cmake`) by
+`engine_deal_gpu_chains` (`cmake/EngineTestDeal.cmake`), which is the parts' deal — longest first,
+each to the chain with the least so far, the unmeasured after them round the chains — over:
+
+- **a part's seconds**: the files the parts' deal gave it, by the table's file rows;
+- **any other test's seconds**: its whole-test row in `cmake/test-costs.txt`, `<test> * <seconds>`,
+  written by `tools/test-costs.ps1 -Whole -Log <msvc-debug LastTest.log> -Label <gate>-msvc-debug
+  -BuildDir build/msvc-debug` from the gate's `msvc-debug` suite — every test labelled `gpu` that
+  is not a part, its `Test time` less the lock waits its own process printed;
+- **tests that share another resource lock as one item**, their seconds summed: the desktop's
+  tests (below) run one at a time whatever chain holds them, so splitting them over two chains
+  would hold a chain idle behind the other.
+
+The configure prints the deal, `GPU chains: 2 over 34 gpu-labelled tests (gpu_device.1 17 tests
+2247 s, gpu_device.2 17 tests 2245 s by cmake/test-costs.txt; 0 unmeasured)` on d6534963.
+
+**The desktop's lock is the desktop's alone.** Until T89 every end-to-end test held `e2e_apps`,
+"windows, GPU devices and input devices, one of each". The GPU device is the machine-wide lock's
+to order, so what the lock still guards is a window — the editor's cases post clicks and keys and
+fail when another window takes the front (roadmap A40) — and an input device. `engine_app` labels
+a test `desktop` when its app reaches `window`, and only that label takes the lock; `engine_cli`
+(whose `engine-view` runs are all `--offscreen`), `engine_content`, `engine_host`, `mcp_bridge`,
+`engine_image` and the `.generators` tests run beside the desktop's. A headless app's test that
+starts an app with a window adds the label beside the line that names it, as `tools.game_sdk`
+does. It is what lets the release app tests, all end-to-end, run as two chains at all: on gate b66
+they were 2,384 s one after another, `engine_content` 504 s and `engine_cli` 353 s of it headless.
+
+**What it gives back, replayed.** A replay of gate b66's two Windows suites that have the chain
+(each test's measured seconds as its holds, one after another with its CPU work between them,
+CTest's scheduler taking the longest test whose locks are free, one card shared first come first
+served by the suite alone, so the 348 s and 560 s the suites waited for others are left out;
+`simulate.py` in T89's scratch, 2026-11-16) — a prediction from one gate's seconds, which the next
+gate measures:
+
+| Suite | One chain (replayed / measured less its waits) | Two chains | The card's floor |
+|---|---|---|---|
+| `msvc-debug`, three or four jobs | 4,132 / 4,132 s | **2,695 s** | 2,036 s held |
+| `msvc-release`'s app tests | 1,827 / 1,822 s | **1,017 s** | 524 s held |
+| `msvc-debug` with the renderer's four parts run again as a weaker card (T162) | 5,173 s | **3,368 s** | 2,751 s held |
+
+The one-chain replay reproduces the measured run to the second once its waits are taken off, which
+is the check that the model holds. Jobs do not bind: two chains and the 2,155 s of CPU tests
+finish in the same time at three jobs as at five, so the gate's three stand. With the chains the
+card is the next bound — held 75% of the replayed debug suite, 82% with T162's run in it.

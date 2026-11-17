@@ -1,3 +1,4 @@
+#include <core/base/assert.h>
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/tile_layout.h>
 
@@ -13,9 +14,16 @@ tunables::Int tile_compact_pct{
     "tiles' slack and freed blocks — may take before a change lays every "
     "tile out again"};
 
+tunables::Int tile_move_slots{
+    "renderer.tiles.move_slots", k_default_move_slots, 0, 1 << 24,
+    "Most instance slots one change of a streamed world moves from the end "
+    "of its table into free runs, once free slots pass half the compaction "
+    "share; 0 moves none and lays every tile out again past the share"};
+
 }  // namespace
 
 u32 tile_compact_pct_tunable() noexcept { return static_cast<u32>(tile_compact_pct.get()); }
+u32 tile_move_slots_tunable() noexcept { return static_cast<u32>(tile_move_slots.get()); }
 
 u32 block_capacity(u32 count, u32 granularity) noexcept {
   if (count == 0) return 0;
@@ -43,6 +51,7 @@ void TileLayout::reset(u32 static_instances, u32 static_pairs) noexcept {
   live_.clear();
   free_.clear();
   by_key_.clear();
+  move_slots_ = tile_move_slots_tunable();
 }
 
 const TileBlock* TileLayout::find(u64 key) const noexcept {
@@ -337,6 +346,85 @@ void TileLayout::lay_out_again(std::span<const Request> requests, Vector<SlotWri
   }
 }
 
+// **The blocks at the end move into free runs before them** (T164): while the free slots pass half
+// the share, the block that ends the table is given back (its slots written null) and placed by its
+// slots in the smallest free run before it that holds it — `place`'s rule for a block that fits no
+// run by its pairs — and what it left at the end goes back, so the table shrinks by its slots. Its
+// new slots are written whole from the change's request of its key (every live block has one: a
+// block no request names was freed before this), and its pairs are left for the numbering after,
+// which the caller runs (true: at least one block moved). It stops at `move_slots_` slots moved, at
+// a block no free run before it holds, and under half the share. Only slots move, so a numbering
+// needs no slot it did not write; a block keeps its key, so its age (`GpuScene::block_stamp`) and
+// its place in the requests' order stay its own.
+bool TileLayout::move_last_blocks(u32 compact_pct, Vector<SlotWrite>& writes,
+                                  TileLayoutChange& change) {
+  u32 moved = 0;
+  bool any = false;
+  u64 open = free_slots();
+  if (open < k_compact_min_free_slots || open * 200 <= u64{compact_pct} * inst_end_) return false;
+  // The live blocks by slot, once: the last is the one that ends the table (`trim` leaves no free
+  // run at the end), and each move takes the next from the back.
+  order_.clear();
+  for (u32 i = 0; i < live_.size(); ++i)
+    order_.push_back(i);
+  std::sort(order_.begin(), order_.end(),
+            [&](u32 a, u32 b) { return live_[a].inst_begin < live_[b].inst_begin; });
+  u32 next = order_.size();
+  for (; next > 0; --next) {
+    if (open < k_compact_min_free_slots || open * 200 <= u64{compact_pct} * inst_end_) break;
+    // A block moved earlier in this change may now end the table instead: then it stops.
+    TileBlock& block = live_[order_[next - 1]];
+    if (block.inst_end() != inst_end_) break;
+    if (u64{moved} + block.inst_cap > move_slots_) break;
+    const u32* source = seen_.find_value(block.key);
+    if (source == nullptr) break;
+    u32 best = ~u32{0};
+    for (u32 i = 0; i < free_.size(); ++i) {
+      const FreeRun& run = free_[i];
+      if (run.inst_begin >= block.inst_begin || run.inst_cap < block.instances) continue;
+      if (best == ~u32{0} || run.inst_cap < free_[best].inst_cap) best = i;
+    }
+    if (best == ~u32{0}) break;
+    // Given back first: its run merges with a free neighbour, which may be `best` itself (it is
+    // before the block, so its index stands).
+    const TileBlock old = block;
+    free_block(old, writes);
+    open += old.inst_cap;
+    FreeRun& run = free_[best];
+    const u32 want = block_capacity(old.instances, k_block_instance_granularity);
+    const u32 inst = want < run.inst_cap ? want : run.inst_cap;
+    const bool split = run.inst_cap - inst >= k_block_instance_granularity;
+    block.inst_begin = run.inst_begin;
+    block.pair_begin = run.pair_begin;
+    block.inst_cap = split ? inst : run.inst_cap;
+    block.pair_cap = block.pairs;
+    writes.push_back(
+        SlotWrite{block.inst_begin, block.inst_cap, block.pair_begin, *source, block.instances});
+    open -= block.inst_cap;
+    if (split) {
+      run.inst_begin += inst;
+      run.inst_cap -= inst;
+      run.pair_cap = 0;
+      writes.push_back(SlotWrite{run.inst_begin, run.inst_cap, run.pair_begin, ~u32{0}, 0});
+    } else {
+      free_.erase_at(best);
+    }
+    // What it left is at the end, by its slots: given back by them, with a free run it touches that
+    // a split earlier in the change left with no pairs and so did not merge (the numbering after
+    // sets every pair, `pair_end_` included).
+    while (!free_.empty() && free_.back().inst_begin + free_.back().inst_cap == inst_end_) {
+      inst_end_ = free_.back().inst_begin;
+      open -= free_.back().inst_cap;
+      free_.pop_back();
+    }
+    moved += block.inst_cap;
+    ++change.moved;
+    any = true;
+  }
+  ENGINE_ASSERT(open == free_slots(), "the free slots counted move by move are the recount's");
+  return any;
+}
+
 bool TileLayout::apply(std::span<const Request> requests, u32 compact_pct, bool force_compact,
                        u32 max_pairs, Vector<SlotWrite>& writes, TileLayoutChange& change,
                        std::string* error, Vector<PairShift>* shifts) {
@@ -443,6 +531,10 @@ bool TileLayout::apply(std::span<const Request> requests, u32 compact_pct, bool 
   live_instances_ = static_cast<u32>(live_instances);
   live_pairs_ = static_cast<u32>(live_pairs);
   trim();
+  // Free slots past half the share: the blocks at the end move into free runs before them, a few a
+  // change (T164), and the pairs are numbered behind them.
+  if (!force_compact && move_slots_ != 0 && move_last_blocks(compact_pct, writes, change))
+    number_again = true;
 
   // **The pairs numbered again where the slots stand, and not one slot moved or made again**
   // (T137, T154): every block exactly its pairs, in slot order — the pair space a scene loaded
@@ -462,12 +554,13 @@ bool TileLayout::apply(std::span<const Request> requests, u32 compact_pct, bool 
     number_pairs_again(writes, shifts, max_pairs);
     change.tight = true;
   }
-  // Asked, or free slots past the share once the pairs are numbered: everything again, in the
-  // caller's order — the one whole rewrite left. Free runs hold no pairs then, so it is their slots
+  // Asked, or free slots past the share once the pairs are numbered — twice the share while blocks
+  // may move, since the moves close what one change cannot (T164) — everything again, in the
+  // caller's order: the one whole rewrite left. Free runs hold no pairs then, so it is their slots
   // that are counted.
   const u64 open = change.tight ? u64{free_slots()} : 0;
-  if (force_compact ||
-      (open >= k_compact_min_free_slots && open * 100 > u64{compact_pct} * inst_end_)) {
+  const u64 bar = u64{compact_pct} * (move_slots_ != 0 ? 2u : 1u);
+  if (force_compact || (open >= k_compact_min_free_slots && open * 100 > bar * inst_end_)) {
     lay_out_again(requests, writes);
     if (shifts != nullptr) shifts->clear();
     change.compacted = true;

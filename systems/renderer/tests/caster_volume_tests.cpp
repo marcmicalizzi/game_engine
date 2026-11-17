@@ -425,3 +425,30 @@ TEST_CASE("caster volume: a point light's hull against a brute-force membership"
   CHECK(hull_points > 10000);
   CHECK(max_planes <= 11);
 }
+
+TEST_CASE("caster volume: a widened volume holds what lies within the margin of it") {
+  // The cap of the case above, 100 up over the frustum's far side, and the frustum's sloping
+  // floor below it (cos 30 degrees of a vertical step): widened by 3, each moves out by 3 and no
+  // more, whatever |n| a plane carries.
+  const f32 ty = std::tan(0.5236f);
+  const Mat4 vp = view_projection(Vec3{0, 0, -1}, -ty, ty, -ty, ty, 0.1f);
+  CasterBounds bounds;
+  bounds.scene_center = Vec3{0, 0, -50};
+  bounds.scene_radius = 100.0f;
+  const Vec3 up{0, 1, 0};
+  const Vec3 below_far{0, 0, -150};
+  const f32 lowest = 150.0f * ty;
+  CasterVolume volume;
+  REQUIRE(fit_directional_caster_volume(vp, up, 0.0f, bounds, volume));
+  CHECK(!caster_volume_contains_sphere(volume, below_far + up * 102.0f, 0.0f));
+  CHECK(!caster_volume_contains_sphere(volume, below_far - up * (lowest + 2.0f), 0.0f));
+  CasterVolume wide = volume;
+  widen_caster_volume(wide, 3.0f);
+  CHECK(wide.plane_count == volume.plane_count);
+  CHECK(caster_volume_contains_sphere(wide, below_far + up * 102.0f, 0.0f));
+  CHECK(!caster_volume_contains_sphere(wide, below_far + up * 103.5f, 0.0f));
+  CHECK(caster_volume_contains_sphere(wide, below_far - up * (lowest + 2.0f), 0.0f));  // 1.73 out
+  CHECK(!caster_volume_contains_sphere(wide, below_far - up * (lowest + 4.0f), 0.0f));  // 3.46
+  // Every point the volume held, it still holds, with room to spare.
+  CHECK(caster_volume_contains_sphere(wide, below_far + up * 99.0f, 2.9f));
+}

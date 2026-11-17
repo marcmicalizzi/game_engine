@@ -12,6 +12,8 @@
 // The scene is procedural, so this case needs no fixture file, no sample asset and no cache
 // entry; it skips with a message on a machine with no Vulkan device, exactly as engine-view
 // exits 3.
+#include "test_device.h"
+
 #include <domain/geometry/cluster_file.h>
 #include <domain/geometry/cluster_pages.h>
 #include <domain/geometry/stress_mesh.h>
@@ -59,7 +61,7 @@ struct Harness {
       desc.lod.skin_seams = geometry::SeamRule::none;
     }
     std::string error;
-    if (!device.create(gfx::DeviceOptions{}, &error)) {
+    if (!device.create(renderer_test::device_options(), &error)) {
       skip = "device unavailable: " + error;
       return false;
     }

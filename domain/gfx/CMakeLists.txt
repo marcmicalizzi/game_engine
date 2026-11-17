@@ -36,6 +36,8 @@ engine_shaders(NAME gfx SOURCES shaders/cluster_mesh.slang shaders/cluster_cull.
                              shaders/cluster_vertex_indexed.slang shaders/vertex_expand.slang
                              shaders/ray_visibility.slang shaders/clas_records.slang
                              shaders/deform.slang shaders/deform_alloc.slang
+                             # T165: folded arguments for the dispatches whose counts the GPU writes.
+                             shaders/fold_args.slang
                              shaders/path_trace.slang shaders/pair_expand.slang
                              shaders/sky_luts.slang shaders/tlas_references.slang
                              # R152: each chunk of the frame's cluster set's count.
@@ -93,6 +95,8 @@ engine_module_tests(NAME gfx PARTS 2 CONFIG_INVARIANT
           tests/half_rate_tests.cpp
           # The world-space cache's key, levels and stride (gi_cache.h, R69); no device.
           tests/gi_cache_key_tests.cpp
+          # The scene's wind and the sea state it raises (wind.h, W136); no device.
+          tests/wind_tests.cpp
           # Foliage optics' closed forms against a sphere of normals (brdf_reference.h, R164); no
           # device.
           tests/foliage_reference_tests.cpp)

@@ -26,7 +26,7 @@
 
 namespace engine::dwellings {
 
-inline constexpr u32 k_rural_filler_version = 2;
+inline constexpr u32 k_rural_filler_version = 3;
 
 // The rectangle of a plot a house may stand in: its length along the lane and its depth away from
 // it, centimetres. The filler never looks at the ground: whoever places the house (a village
@@ -34,6 +34,9 @@ inline constexpr u32 k_rural_filler_version = 2;
 struct RuralPlot {
   i32 frontage_cm = 0;
   i32 depth_cm = 0;
+  // The most storeys a house here may have (G208: a cottage's plot, an entry of one storey). The
+  // household's ask and every smaller plan above it are passed over; 2 is every plan.
+  u8 storeys_max = 2;
 };
 
 // Who lives there. `means` is 0 for a labourer's household, 1 for a husbandman's, 2 for a
@@ -90,6 +93,17 @@ void household_asks(const Household& household, InteriorParams& out) noexcept;
 // frontage and 4.3 m of depth at the default walls).
 bool choose_rural(const RuralPlot& plot, const Household& household, const RuralStyle& style,
                   u64 seed, RuralChoice& out, std::string* error);
+
+// **The least frontage a house takes** (dwellings.md, "The rural filler"): the outer width of the
+// smallest house the filler builds, a cot of one bay with its stack, at the style's walls. A plot
+// whose house is given less is refused; a village cuts no toft for a house narrower than this.
+i32 least_rural_frontage_cm(const RuralStyle& style) noexcept;
+
+// **How many a house sleeps** (dwellings.md, "The household fitted to its house"): a cot two, a
+// hall and parlour four on one floor and six with chambers over, a two-up-two-down six, a
+// cross-passage house eight. A household the plot's house cannot sleep is the household of the
+// house the plot holds.
+u8 persons_housed(const InteriorParams& params) noexcept;
 
 // The choice and its interior, in one call.
 bool plan_rural(const RuralPlot& plot, const Household& household, const RuralStyle& style,

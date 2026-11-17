@@ -490,6 +490,7 @@ FieldSample Field::sample(V3 p) const noexcept {
   out.phi = out.void_f;
   f64 h = 0.0;
   if (ground_at(p.x, p.z, h)) {
+    out.known = true;
     // The mesh's ground stands 3 cm over the terrain's at the rim and sinks 6 cm under it at the
     // apron's edge, so the lip covers the hole's teeth and its own edge is never seen.
     const f64 lift =

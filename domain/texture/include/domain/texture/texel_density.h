@@ -70,6 +70,21 @@ void measure_cluster_density(const geometry::ClusterLodMesh& lod,
                              std::span<const geometry::ClusterFileMaterialSampling> sampling,
                              u32 image_count, Vector<ImageDensity>& out);
 
+// **The least density, for a bound that must be exact** (R172 stage 1; texture.md, "Levels resident
+// by what the frame samples"). Per image, the smallest `uv_per_m` of any triangle that samples it,
+// over **every cluster of every level** of the DAG — a coarser level's simplified triangles are
+// drawn too and can stretch their UVs past any source triangle's — with no quantile: one triangle
+// whose UVs have no extent along some direction gives 0, and such an image is read at level 0 by
+// a magnified pixel however far it is. The quantile above is the cap's (an author's choice of how
+// much may blur); this is the floor under every pixel, which is what a residency that may not
+// change a pixel needs. 0 also for an image nothing samples. Same arguments as
+// `measure_cluster_density`.
+void least_cluster_density(const geometry::ClusterLodMesh& lod,
+                           std::span<const u32> cluster_material,
+                           std::span<const geometry::ClusterFileMaterial> materials,
+                           std::span<const geometry::ClusterFileMaterialSampling> sampling,
+                           u32 image_count, Vector<f64>& out);
+
 // The `needed_side` an image measured `uv_per_m` asks for when the mesh is drawn at `scale` (its
 // largest instance's largest axis scale, a fit included) and the closest view resolves
 // `texels_per_m` on its surface: the texels along the image's shorter side at which level 0 is

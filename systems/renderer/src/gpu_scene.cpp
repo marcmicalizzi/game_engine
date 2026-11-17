@@ -1,3 +1,5 @@
+#include "texture_bound_state.h"  // R172: the bound's state, which `texture_bound_` owns
+
 #include <core/base/assert.h>
 #include <core/containers/hash_map.h>
 #include <core/hash/hash.h>
@@ -568,7 +570,8 @@ WaterSwashNumbers water_swash_numbers(const SceneWater& water) {
   WaterSwashNumbers n;
   const scene::WaterBody& body = water.body;
   n.wind = static_cast<f64>(body.wind_m_s);
-  if (body.open && water.wind_m_s > 0.0f) n.wind = static_cast<f64>(water.wind_m_s);
+  if ((body.open || water.scene_wind) && water.wind_m_s > 0.0f)
+    n.wind = static_cast<f64>(water.wind_m_s);  // W136: a closed body under the scene's wind too
   // The fetch the scene's reader found (S100 stage B): an open body's `fetch_km`, a closed body's
   // own reach along its wind.
   n.fetch_m = static_cast<f64>(water.fetch_m);
@@ -578,8 +581,9 @@ WaterSwashNumbers water_swash_numbers(const SceneWater& water) {
   n.wave = gfx::swash_wave(n.wind, n.fetch_m);
   n.direction = water.shading.direction;
   // **A swell** (S102; water.md, "The swell") is the train that shoals, turns, breaks and runs up,
-  // from its own direction; the wind's wave keeps the surface offshore.
-  if (body.open && body.swell_height_m > 0.0f && body.swell_period_s > 0.0f) {
+  // from its own direction; the wind's wave keeps the surface offshore. W136-3: the body's own or
+  // the sky's at its largest, as the scene's reader set them (`SceneWater::swell_train_*`).
+  if (body.open && water.swell_train_m > 0.0f && water.swell_train_period_s > 0.0f) {
     if (n.wave.period_s > 0.0) {
       const f64 omega = 6.283185307179586 / gfx::swash_period(n.wave.period_s);
       n.wind_k0 = omega * omega / gfx::k_swash_g;
@@ -587,10 +591,9 @@ WaterSwashNumbers water_swash_numbers(const SceneWater& water) {
       n.wind_k0 = 1.0;  // no wind sea to calm: any positive number marks the swell
     }
     n.wind_wave = n.wave;
-    n.wave.height_m = static_cast<f64>(body.swell_height_m);
-    n.wave.period_s = std::min(static_cast<f64>(body.swell_period_s), 30.0);
-    const f32 a = radians(body.swell_direction_deg);
-    n.direction = Vec2{std::cos(a), std::sin(a)};
+    n.wave.height_m = static_cast<f64>(water.swell_train_m);
+    n.wave.period_s = std::min(static_cast<f64>(water.swell_train_period_s), 30.0);
+    n.direction = water.swell_train_to;
   }
   // Stockdon et al.'s, as it was, under the steep shore's ceiling (S102), which only a long low
   // wave on a steep shore reaches.
@@ -649,10 +652,13 @@ void water_surface_of(const SceneWater& water, const WaterSwashNumbers& n, gfx::
   out.reach_scale = static_cast<f32>(gfx::swash_reach_scale(n.wave.height_m, n.wave.period_s));
   out.reach_cap =
       static_cast<f32>(gfx::swash_reach_cap(n.wave.height_m, static_cast<f64>(map.bank_max)));
+  // W136-2: a varying wind's two trains span its seas (scene_wind.h, `water_cross_of_span`).
   const gfx::WaterCross cross =
       n.wind_k0 > 0.0
           ? gfx::water_cross_of_swell(n.wave.height_m, period, n.wind_wave.height_m,
                                       n.wind_wave.period_s, water.shading.direction)
+      : water.scene_wind && water.grid.valid()
+          ? water_cross_of_span(n.wave.height_m, period, n.direction)
           : gfx::water_cross_of_sea(n.wave.height_m, period, n.direction, water.shading.seed);
   gfx::WaterFieldDesc desc;
   desc.texels = map.texels.data();
@@ -1625,8 +1631,9 @@ bool GpuScene::set_dynamic_instances(std::span<const SceneInstance> tail,
     const TileBlock* held = layout_.find(block.key);
     // **A block the caller says changed in these instances** (G202, `DynamicBlock::changed`) is
     // not compared, and its slots before the first of them are kept as they are.
-    const bool told = held != nullptr && held->instances == block.count && block.from_version != 0 &&
-                      held->version == block.from_version && block.changed_count != 0;
+    const bool told = held != nullptr && held->instances == block.count &&
+                      block.from_version != 0 && held->version == block.from_version &&
+                      block.changed_count != 0;
     if (told) request.keep = block.changed[0];
     if (held != nullptr && held->instances == block.count && !told) {
       bool same = block.version != 0 && held->version == block.version;
@@ -1715,11 +1722,18 @@ bool GpuScene::set_dynamic_instances(std::span<const SceneInstance> tail,
     return false;
   }
   lap(change.layout_ns);
-  // Committed: the slots the layout wrote, then the buffers grown to hold them.
-  if (!write_slots(tail, blocks, std::span<const SlotWrite>(writes_.data(), writes_.size()),
-                   change.slots_written, error) ||
-      !fit_tables(change, retired, error)) {
-    return false;
+  // Committed: the slots the layout wrote, then the buffers grown to hold them. Each a stage of the
+  // startup trace, which a flight keeps to its end (T167: a growth's frames named by their work).
+  {
+    ENGINE_STARTUP_STAGE("tiles write slots");
+    if (!write_slots(tail, blocks, std::span<const SlotWrite>(writes_.data(), writes_.size()),
+                     change.slots_written, error)) {
+      return false;
+    }
+  }
+  {
+    ENGINE_STARTUP_STAGE("tiles fit tables");
+    if (!fit_tables(change, retired, error)) return false;
   }
   // The layout numbered the pairs again and moved no slot: the tables follow, as runs (T154).
   if (change.layout.tight) {
@@ -1814,9 +1828,14 @@ bool GpuScene::write_slots(std::span<const SceneInstance> tail,
         }
         // A patch's hand-off role carries the tick its tile's instances came at (G136; renderer.md,
         // "The hand-off by distance"), so a tile that arrives or moves inward fades its blades in.
+        // **Every block is stamped when it is written**, with a role among its instances or
+        // without (G205): a part of it handed later takes its age from it
+        // (`DynamicBlock::age_of`), and a tile whose own run holds no role is still the tile its
+        // near placements came with.
+        const u32 stamp = (k == 0 || source.handoff != 0) ? block_stamp(*block) : 0u;
         if (source.handoff != 0) {
           gfx::set_instance_handoff(desc, desc.flags & gfx::k_instance_handoff_mask, desc.band,
-                                    block_stamp(*block));
+                                    stamp);
         }
         if (source.mesh < mesh_policy_.size()) desc.flags |= mesh_policy_[source.mesh];
         desc.material_base =
@@ -1847,6 +1866,9 @@ bool GpuScene::write_slots(std::span<const SceneInstance> tail,
       if (!set.all)
         set.pending.push_back(InstanceRange{write.inst_begin, write.inst_begin + write.inst_count});
     }
+    if (grown_from_.valid)  // and the set a growth carries over, until a frame has (T167)
+      grown_from_.pending.push_back(
+          InstanceRange{write.inst_begin, write.inst_begin + write.inst_count});
     written += write.inst_count;
   }
   return true;
@@ -1875,6 +1897,7 @@ void GpuScene::number_first_pairs(u32& renumbered) {
   for (TableSet& set : sets_) {
     if (!set.all) compose_shifts(set.shift, runs, shift_scratch_);
   }
+  if (grown_from_.valid) compose_shifts(grown_from_.shift, runs, shift_scratch_);
 }
 
 // Slots `[begin, end)` of the CPU's table take whatever numbering they have not taken yet (T154).
@@ -1904,8 +1927,8 @@ u32 GpuScene::table_first_pair(u32 slot) const noexcept {
 // with room to grow — half as much again, in whole pages of 4,096 pairs, so a world that fills its
 // rings reallocates a handful of times and not on every tile — and past the instance capacity, in
 // pages of 1,024 slots, likewise. Either way the old buffers go to `retired`, because a frame in
-// flight may still be reading them, and every table set is made again and written whole by the
-// frame that next flips to it.
+// flight may still be reading them, and every table set is made again and carried over on the GPU
+// by the frame that next flips to it (T167).
 bool GpuScene::fit_tables(TileChange& change, Vector<gfx::BufferResource>* retired,
                           std::string* error) {
   const u32 pair_end = layout_.pair_end();
@@ -1956,10 +1979,25 @@ bool GpuScene::fit_tables(TileChange& change, Vector<gfx::BufferResource>* retir
   if (sets_again && (deform_ || ray_tracing_)) relayout_pending_ = true;
   if (sets_again) {
     // `instances` and `pair_table` still name the current set's old buffers, which the frames in
-    // flight read; the next frame flips to a new set.
-    for (TableSet& set : sets_) {
-      retire(set.instances, retired);
-      retire(set.pairs, retired);
+    // flight read; the next frame flips to a new set. **That set is carried over from them on the
+    // GPU** (T167), so they are kept, with the runs and numberings the current set had not taken,
+    // until the frame that copies them retires them: until T167 each of the sets was staged whole
+    // from the CPU in turn, 44 to 61 ms of a frame's thread apiece on the forest's 500,000 slots.
+    // A growth before that frame keeps the first one's (the sets since are new and hold nothing).
+    for (u32 s = 0; s < sets_.size(); ++s) {
+      TableSet& set = sets_[s];
+      if (s == current_set_ && !grown_from_.valid && !set.all && set.instances.buffer.valid()) {
+        grown_from_.instances = set.instances;
+        grown_from_.pairs = set.pairs;
+        grown_from_.pending.swap(set.pending);
+        grown_from_.shift.swap(set.shift);
+        grown_from_.valid = true;
+        set.instances = gfx::BufferResource{};
+        set.pairs = gfx::BufferResource{};
+      } else {
+        retire(set.instances, retired);
+        retire(set.pairs, retired);
+      }
       if (!create_table_set(set, error)) return false;
     }
     tables_changed_ = true;
@@ -2005,12 +2043,46 @@ bool GpuScene::prepare_tables(u32 slot, TableUpdate& out, std::string* error) {
   out.pair_source = gfx::BufferResource{};
   out.set = current_set_;
   if (!dynamic_ || !tables_changed_ || sets_.empty()) return true;
+  ENGINE_STARTUP_STAGE("table set");
   tables_changed_ = false;
+  out.carry_instances = out.carry_pairs = gfx::BufferResource{};
+  out.carry_instance_bytes = out.carry_pair_bytes = 0;
+  out.retire.clear();
+  const u32 last = current_set_;
   current_set_ = (current_set_ + 1) % sets_.size();
   TableSet& set = sets_[current_set_];
   instances = set.instances;
   pair_table = set.pairs;
   out.set = current_set_;
+  // **A set made again is carried over on the GPU** (T167): from the old buffers of the set the
+  // last frame read when a growth made every set again, else from that set itself, which holds
+  // every slot as of its own flip — and then takes the runs and numberings that set had not taken
+  // yet, as if it had been written then. Only a set with nothing to carry it from (the first frame
+  // of a scene) is staged whole.
+  if (set.all) {
+    const TableSet& from = sets_[last];
+    TableCarry* grown = grown_from_.valid ? &grown_from_ : nullptr;
+    const bool carried = grown != nullptr || (last != current_set_ && !from.all &&
+                                              from.instances.buffer.valid());
+    if (carried) {
+      out.carry_instances = grown != nullptr ? grown->instances : from.instances;
+      out.carry_pairs = grown != nullptr ? grown->pairs : from.pairs;
+      out.carry_instance_bytes = std::min(out.carry_instances.size, set.instances.size);
+      out.carry_pair_bytes = out.carry_pairs.buffer.valid() && set.pairs.buffer.valid()
+                                 ? std::min(out.carry_pairs.size, set.pairs.size)
+                                 : 0;
+      set.pending.assign((grown != nullptr ? grown->pending : from.pending).begin(),
+                         (grown != nullptr ? grown->pending : from.pending).end());
+      set.shift.assign((grown != nullptr ? grown->shift : from.shift).begin(),
+                       (grown != nullptr ? grown->shift : from.shift).end());
+      set.all = false;
+      if (grown != nullptr) {
+        out.retire.push_back(grown->instances);
+        out.retire.push_back(grown->pairs);
+        *grown = TableCarry{};
+      }
+    }
+  }
   Vector<InstanceRange>& runs = set.pending;
   if (set.all) {
     runs.clear();
@@ -2076,8 +2148,28 @@ bool GpuScene::prepare_tables(u32 slot, TableUpdate& out, std::string* error) {
     for (u32 i = run.begin; i < run.end; ++i)
       expand += tail_mesh(instance_table_[i].mesh) ? 1u : 0u;
   }
-  const u32 record_slots = slot_count;
-  if (slot_count == 0 && set.shift.empty()) {
+  // A swapped relayout of the chain made its top-level records empty (`lay_out_ray_tracing`): they
+  // are written whole once, here, rather than by every set written whole as they were until T167.
+  // With the old records kept, they are carried over on the GPU instead, and this frame writes its
+  // own runs' records over them.
+  out.carry_records = gfx::BufferResource{};
+  out.carry_record_bytes = 0;
+  const bool records_new = rt_records_all_ && ray_tracing_ && rt_instances.buffer.valid();
+  if (records_new && rt_records_from_.buffer.valid()) {
+    out.carry_records = rt_records_from_;
+    out.carry_record_bytes = std::min(rt_records_from_.size, rt_instances.size);
+    out.retire.push_back(rt_records_from_);
+    rt_records_from_ = gfx::BufferResource{};
+    rt_records_all_ = false;
+  }
+  const bool records_whole = records_new && rt_records_all_;
+  const InstanceRange whole_records{0, instance_count_};
+  const std::span<const InstanceRange> record_runs =
+      records_whole ? std::span<const InstanceRange>(&whole_records, 1)
+                    : std::span<const InstanceRange>(runs.data(), runs.size());
+  const u32 record_slots = records_whole ? instance_count_ : slot_count;
+  if (slot_count == 0 && set.shift.empty() && !out.carry_instances.buffer.valid() &&
+      !out.carry_records.buffer.valid() && !records_whole) {
     runs.clear();
     return true;
   }
@@ -2091,10 +2183,12 @@ bool GpuScene::prepare_tables(u32 slot, TableUpdate& out, std::string* error) {
   // Then the numbering's runs and the expansion's, 16 bytes each.
   const u64 shifts_at = (records_at + record_bytes + 15) / 16 * 16;
   const u64 expand_runs_at = shifts_at + u64{set.shift.size()} * sizeof(PairShift);
-  const u64 bytes = expand_runs_at + u64{expand_runs_.size()} * sizeof(PairShift);
+  // At least a line: a frame that only carries a set over still names the slot's staging.
+  const u64 bytes = std::max<u64>(64, expand_runs_at + u64{expand_runs_.size()} * sizeof(PairShift));
   if (slot >= table_staging_.size()) table_staging_.resize(slot + 1);
   gfx::BufferResource& staging = table_staging_[slot];
   if (staging.size < bytes) {
+    ENGINE_STARTUP_STAGE("table staging");
     // The slot's last frame is done, so its staging can go now.
     gfx::destroy_buffer(*device_, staging);
     const u64 size = (bytes + bytes / 2 + 65535) / 65536 * 65536;
@@ -2111,21 +2205,26 @@ bool GpuScene::prepare_tables(u32 slot, TableUpdate& out, std::string* error) {
   u64 record_at = records_at;
   u32 listed = 0;
   u64 pairs = 0;
-  for (const InstanceRange& run : descs) {
-    const u64 run_bytes = u64{run.end - run.begin} * sizeof(gfx::InstanceDesc);
-    std::memcpy(base + at, instance_table_.data() + run.begin, static_cast<usize>(run_bytes));
-    out.copies.push_back(
-        gfx::BufferCopy{at, u64{run.begin} * sizeof(gfx::InstanceDesc), run_bytes});
-    at += run_bytes;
-    for (u32 i = run.begin; i < run.end; ++i) {
-      const u32 mesh = instance_table_[i].mesh;
-      if (!tail_mesh(mesh)) continue;
-      list[listed++] = i;
-      pairs += part_of(mesh).cluster_count;
+  {
+    ENGINE_STARTUP_STAGE("table copies");
+    for (const InstanceRange& run : descs) {
+      const u64 run_bytes = u64{run.end - run.begin} * sizeof(gfx::InstanceDesc);
+      std::memcpy(base + at, instance_table_.data() + run.begin, static_cast<usize>(run_bytes));
+      out.copies.push_back(
+          gfx::BufferCopy{at, u64{run.begin} * sizeof(gfx::InstanceDesc), run_bytes});
+      at += run_bytes;
+      for (u32 i = run.begin; i < run.end; ++i) {
+        const u32 mesh = instance_table_[i].mesh;
+        if (!tail_mesh(mesh)) continue;
+        list[listed++] = i;
+        pairs += part_of(mesh).cluster_count;
+      }
     }
   }
-  for (const InstanceRange& run : runs) {
-    if (record_bytes > 0) {
+  if (record_bytes > 0) {
+    ENGINE_STARTUP_STAGE("table records");
+    rt_records_all_ = false;
+    for (const InstanceRange& run : record_runs) {
       const u64 run_records = u64{run.end - run.begin} * gfx::k_instance_record_bytes;
       for (u32 i = run.begin; i < run.end; ++i) {
         const gfx::TlasInstance record = tlas_record(i);
@@ -2544,11 +2643,8 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
         water_surface_of_[i] = surfaces.size();
         // The spheres take the lift's reach: the bank's highest ground (a parked vertex), the
         // waves, the bore and the tide.
-        f32 waves = surface.height_m * 2.0f + surface.run_up_m + surface.tide_m;
-        for (const gfx::WaterWave& wave : water.waves)
-          waves += wave.amplitude;
-        waves += surface.amplitude * 2.1f;
-        const f32 padding = water.depth.bank_max + waves + 0.5f;
+        const f32 padding = water_lift_padding(surface, {water.waves.data(), water.waves.size()},
+                                               water.depth.bank_max);
         if (padding > instance_table_[i].bounds_padding)
           instance_table_[i].bounds_padding = padding;
         surfaces.push_back(surface);
@@ -2558,6 +2654,7 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
             log::field("run_up_m", surface.run_up_m), log::field("field_texels", water.depth.size),
             log::field("padding_m", padding));
       }
+      water_surface_load_ = surfaces;  // W136: what the wind's redraw starts from
       if (!surfaces.empty() && !gfx::upload_buffer(device, surfaces.data(),
                                                    u64{surfaces.size()} * sizeof(gfx::WaterSurface),
                                                    k_address, water_surfaces_, error)) {
@@ -3303,6 +3400,16 @@ u32 GpuScene::block_stamp(const DynamicBlock& block) {
     stamp = static_cast<u32>(flora_frames_ + 1) & gfx::k_instance_stamp_mask;
     if (stamp == 0) stamp = 1;
   }
+  // **A part of another block is as old as that block** (G205; `DynamicBlock::age_of`): a streamed
+  // tile's near placements are handed apart from the tile, cell by cell as the hand-off's band
+  // reaches them, and are the instances the tile held all along — so a cell that comes takes the
+  // stamp its tile's block holds, and its instances' load-in is the tile's: over already for a
+  // tile that has stood a while, running for one that came with it (its block is stamped first,
+  // being handed first). A block that names none, or one the scene does not hold, is new.
+  if (block.age_of != 0) {
+    const auto whole = block_stamps_.find(block.age_of);
+    if (whole != block_stamps_.end()) stamp = (*whole).second.stamp;
+  }
   block_stamps_[block.key] = BlockStamp{block.version, stamp};
   return stamp;
 }
@@ -3328,6 +3435,8 @@ u64 GpuScene::flora_frame(u32 slot, const FrameFlora& frame, u64 frame_index, f6
   if (frame.wind_set) {
     to = frame.wind_to;
     strength = frame.wind_strength;
+  } else if (data_ != nullptr && scene_flora_wind(data_->wind, sky_time_s, to, strength)) {
+    source = "scene";  // W136: the scene's wind (or the hand wind), its gust over a mean day's
   } else {
     const TerrainSampler* ground = ground_ != nullptr ? ground_.get() : flora_ground_.get();
     f64 moved = 0.0;
@@ -4295,6 +4404,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
   // The materials' samplers are made as their slots ask (`material_sampler_slot`, with
   // `fill_material` in gpu_scene_textures.cpp, which an admitted mesh's materials go through too).
   load_textures_.clear();
+  load_texture_records_.clear();
   texture_bytes_ = 0;
   textures_built_ = 0;
   textures_decoded_ = 0;
@@ -4307,6 +4417,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
   share_textures_ = resolved.settings.share_textures;
   transform_conflicts_ = 0;
   Vector<gfx::ResolveMaterial> material_table;
+  water_wave_entries_.clear();  // W136: where each body's wave table is, for the scene's wind
   // Per entry of the table, 1 where it is a material a cluster can name and 0 where it is a record
   // that only its material reads — a water body's optics, spectrum and plunges, the terrain's
   // record — whose word at `flags`' offset is a float or a tile index, not flags (R141: a terrain
@@ -4426,6 +4537,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
     // each material reads is.
     SceneTextures scene_textures(share_textures_);
     TexturePrefetch prefetch(*data_);  // T73: the `.tex` reads ahead of the uploads, on a pool
+    if (!texture_bound_plan(error)) return false;  // R172: which keys the bound holds, their pairs
     for (u32 m = 0; m < data_->sources.size(); ++m) {
       const SourceMesh& source_mesh = data_->sources[m];
       const assets::MeshData& mesh_data = source_mesh.data;
@@ -4470,6 +4582,8 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
         bool ok = false;
         // The texture's content, and the scene's texture of that content if it has one yet.
         SceneTexture made;
+        u32 bound_first =
+            ~0u;  // R172: the level it is uploaded from, ~0u unless the bound holds it
         made.form = use_built ? k_form_built : static_cast<u32>(format);
         auto share = [&]() -> const SceneTexture* {
           const SceneTexture* held = scene_textures.find(made.content, made.form);
@@ -4486,16 +4600,20 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
           made.stored = built[index].stored;
           made.normal_variance = built[index].normal_variance;
           if (share() != nullptr) return image_slot[index];
-          // As stored: the blocks of every level, one staging copy, no decode.
+          // As stored: the blocks of every level, one staging copy, no decode — from the bound's
+          // floor for a texture it manages (R172), which the first frame promotes.
           const texture::TextureData& t = built[index].data;
+          bound_first = texture_bound_first_level(made.content, t);
+          const u32 from = bound_first == ~0u ? 0u : bound_first;
           Vector<gfx::ImageLevelData> levels;
           levels.reserve(t.levels.size());
-          for (u32 l = 0; l < t.levels.size(); ++l) {
+          for (u32 l = from; l < t.levels.size(); ++l) {
             const std::span<const u8> bytes = t.level_bytes(l);
             levels.push_back(gfx::ImageLevelData{bytes.data(), bytes.size()});
           }
           ok = gfx::upload_image_2d_levels(
-                   device, t.width, t.height, texture_gpu_format(t),
+                   device, texture::texture_level_extent(t.width, from),
+                   texture::texture_level_extent(t.height, from), texture_gpu_format(t),
                    std::span<const gfx::ImageLevelData>(levels.data(), levels.size()), uploaded,
                    &image_error) &&
                gfx::create_image_view(device, uploaded, view, &image_error);
@@ -4547,25 +4665,39 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
         }
         texture_bytes_ += uploaded.bytes;
         ++texture_references_;
-        textures_.push_back(uploaded);
-        texture_views_.push_back(view);
-        image_slot[index] = bindless_.add_sampled_image(view, gfx::ImageLayout::ShaderReadOnly);
+        const bool bounded = bound_first != ~0u;
+        if (bounded) {  // R172: in a pair of the bound's run, its image the bound's to swap
+          image_slot[index] =
+              texture_bound_place(made.content, built[index].data, bound_first, uploaded, view);
+        } else {
+          textures_.push_back(uploaded);
+          texture_views_.push_back(view);
+          image_slot[index] = bindless_.add_sampled_image(view, gfx::ImageLayout::ShaderReadOnly);
+        }
         made.slot = image_slot[index];
         made.bytes = uploaded.bytes;
+        // A bounded texture's record names its whole chain, which the feedback measures levels of.
+        load_texture_records_.push_back(TextureRecord{
+            made.slot, uploaded.format, bounded ? built[index].data.width : uploaded.width,
+            bounded ? built[index].data.height : uploaded.height,
+            bounded ? built[index].data.levels.size() : uploaded.levels, uploaded.bytes, false,
+            bounded ? bound_first : 0u});
         if (made.normal_variance) {
           // Scene creation never frees a descriptor. Publish the auxiliary image immediately
           // after its normal, and check that contract rather than silently sampling another map.
           const texture::TextureData& t = built[index].data;
+          const u32 from = bounded ? bound_first : 0u;
           Vector<gfx::ImageLevelData> levels;
           levels.reserve(t.levels.size());
-          for (u32 l = 0; l < t.levels.size(); ++l) {
+          for (u32 l = from; l < t.levels.size(); ++l) {
             const auto bytes = t.normal_variance_level_bytes(l);
             levels.push_back(gfx::ImageLevelData{bytes.data(), bytes.size()});
           }
           gfx::ImageResource variance;
           gfx::ImageViewHandle variance_view;
           if (!gfx::upload_image_2d_levels(
-                  device, t.width, t.height, gfx::Format::Bc4Unorm,
+                  device, texture::texture_level_extent(t.width, from),
+                  texture::texture_level_extent(t.height, from), gfx::Format::Bc4Unorm,
                   std::span<const gfx::ImageLevelData>(levels.data(), levels.size()), variance,
                   &image_error) ||
               !gfx::create_image_view(device, variance, variance_view, &image_error)) {
@@ -4574,14 +4706,19 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
             if (error != nullptr) *error = "normal variance upload: " + image_error;
             return gfx::k_no_texture;
           }
-          textures_.push_back(variance);
-          texture_views_.push_back(variance_view);
+          if (!bounded) {
+            textures_.push_back(variance);
+            texture_views_.push_back(variance_view);
+          }
           texture_bytes_ += variance.bytes;
           made.bytes += variance.bytes;
+          load_texture_records_.back().bytes += variance.bytes;
           ++normal_variance_textures_;
           normal_variance_bytes_ += variance.bytes;
           const u32 slot =
-              bindless_.add_sampled_image(variance_view, gfx::ImageLayout::ShaderReadOnly);
+              bounded
+                  ? texture_bound_place_variance(made.content, variance, variance_view)
+                  : bindless_.add_sampled_image(variance_view, gfx::ImageLayout::ShaderReadOnly);
           if (made.slot == gfx::k_no_texture || slot == gfx::k_no_texture ||
               slot != made.slot + 1u) {
             variance_upload_failed = true;
@@ -4783,6 +4920,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
           table_material.push_back(u8{0});
         }
         if (spectrum) {
+          water_wave_entries_.push_back(WaterWaveEntry{m, material_table.size()});
           for (const gfx::ResolveMaterial& entry : wave_entries) {
             material_table.push_back(entry);
             table_material.push_back(u8{0});
@@ -4817,7 +4955,8 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
     // textures are the scene's for its life.
     if (mesh_room_.slots != 0) {
       for (const SceneTexture& held : scene_textures.all()) {
-        if (held.form != k_form_built) continue;
+        // A texture the bound holds by level is not offered: a tile's mesh brings its own whole.
+        if (held.form != k_form_built || texture_bound_manages(held.content)) continue;
         TextureInfo info;
         info.slot = held.slot;
         info.normal_rg = held.stored == texture::TextureFormat::bc5;
@@ -5023,6 +5162,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
   }
   // A dynamic scene's instance table is a set per frame in flight, made by `create` once the mesh
   // table (and its null mesh) exists.
+  texture_bound_materials(material_table, table_material);  // R172: who names each bound texture
   has_coverage_ = !coverage_words.empty();
   if (has_coverage_ &&
       !gfx::upload_buffer(device, coverage_words.data(), u64{cluster_count_} * sizeof(u32),
@@ -5902,6 +6042,9 @@ bool GpuScene::lay_out_ray_tracing(std::string* error, RelayoutRetired* retired)
   const u32 keep_references = rt_reference_capacity_;
   if (retired == nullptr) {
     destroy_ray_tracing_layout();
+    // Waited: the records are uploaded whole below, and nothing in flight reads the old ones.
+    gfx::destroy_buffer(device, rt_records_from_);
+    rt_records_all_ = false;
   } else {
     // **Swapped** (T152): the per-instance half and the top-level structure go to the caller, as
     // the frames in flight read them; the frame's set — records, CLAS chunks — stays, and the step
@@ -5910,9 +6053,20 @@ bool GpuScene::lay_out_ray_tracing(std::string* error, RelayoutRetired* retired)
     retired->tlas_slot = tlas_slot_;
     tlas = gfx::AccelerationStructure{};
     tlas_slot_ = gfx::BindlessSet::k_invalid_slot;
+    // The top-level records are kept, not retired: the next set written carries them over into the
+    // new ones on the GPU and frees them after that frame (T167). Records an earlier relayout kept
+    // that no frame has carried yet stay the ones to carry; the ones it made were never filled.
+    if (rt_records_all_ && rt_records_from_.buffer.valid()) {
+      retire(rt_instances, &retired->buffers);
+    } else {
+      retire(rt_records_from_, &retired->buffers);
+      rt_records_from_ = rt_instances;
+    }
+    rt_instances = gfx::BufferResource{};
     for (gfx::BufferResource* buffer :
-         {&rt_instances, &slots, &instance_counts, &blas_records, &blas_dense, &blas_slots})
+         {&slots, &instance_counts, &blas_records, &blas_dense, &blas_slots})
       retire(*buffer, &retired->buffers);
+    rt_records_all_ = true;  // the new records start empty: the next set written fills them (T167)
   }
   rt_instance_slots_ = dynamic_ ? std::max(instance_capacity_, instance_count_) : instance_count_;
   rt_union_clusters_ = pair_stride_ * view_count_;
@@ -6137,6 +6291,7 @@ bool GpuScene::lay_out_ray_tracing(std::string* error, RelayoutRetired* retired)
   if (retired != nullptr) {
     // Swapped (T152): the capacity is the one the scene holds, so the step keeps the frame's set and
     // hands the bottom-level set it replaces to the caller with the rest.
+    ENGINE_STARTUP_STAGE("chain resize");
     if (!resize_ray_tracing(first, error, false, first_references, &retired->chain)) return false;
   } else {
     rt_reference_capacity_ = 0;
@@ -6397,6 +6552,8 @@ void GpuScene::destroy() noexcept {
   water_fields_.clear();
   water_surface_of_.clear();
   water_deforms_.clear();
+  water_wind_.clear();  // W136
+  water_wind_ready_ = false;
   micromap_list_.clear();
   micromap_triangles_.clear();
   if (!sets_.empty()) {
@@ -6408,6 +6565,10 @@ void GpuScene::destroy() noexcept {
     gfx::destroy_buffer(device, set.pairs);
   }
   sets_.clear();
+  gfx::destroy_buffer(device, grown_from_.instances);  // a growth no frame carried over (T167)
+  gfx::destroy_buffer(device, grown_from_.pairs);
+  grown_from_ = TableCarry{};
+  gfx::destroy_buffer(device, rt_records_from_);
   for (gfx::BufferResource& staging : table_staging_)
     gfx::destroy_buffer(device, staging);
   table_staging_.clear();
@@ -6586,6 +6747,7 @@ void GpuScene::destroy() noexcept {
   gfx::destroy_buffer(device, quantized);
   gfx::destroy_buffer(device, clusters);
   destroy_texture_room();
+  destroy_texture_bound();  // R172: the managed textures' images, which are not in `textures_`
   for (gfx::ImageViewHandle view : texture_views_)
     gfx::destroy_image_view(device, view);
   texture_views_.clear();

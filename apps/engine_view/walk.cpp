@@ -314,10 +314,32 @@ struct Walker::Impl {
     observers.clear();        // kept, so a tick allocates nothing
     observers.add(at, 1.0f);  // the walker's own f64 place (ADR-0053)
     consumer.set_ground_time(ground_time());
-    // The ground of the tiles about to come in, built ahead on the worker; the bodies are still
-    // made by the update below, in its order, so a replay makes the same ones.
-    consumer.prefetch(at);
+    // The ground of the tiles about to come in, built ahead on the workers, along the walker's own
+    // velocity (T166; a drop stands still); the bodies are still made by the update below, in its
+    // order, so a replay makes the same ones.
+    consumer.prefetch(at, unlimited ? still_ahead(at) : ahead_velocity(at));
     ring.update(observers, ring_tick++, unlimited);
+  }
+  // **The builds' lead** (T166; scene_collision.md, "Ahead of a running walker"): the walker's or
+  // the flying camera's velocity from its place a tick ago, once a tick. It decides only which
+  // tiles are built first, never a body.
+  WorldPos last_ahead{};
+  bool has_last_ahead = false;
+  Vec3 ahead_velocity(WorldPos at) {
+    Vec3 v{};
+    if (has_last_ahead) {
+      const DVec3 d = at - last_ahead;
+      const f64 hz = static_cast<f64>(tick_hz);
+      v = Vec3{static_cast<f32>(d.x * hz), static_cast<f32>(d.y * hz), static_cast<f32>(d.z * hz)};
+    }
+    last_ahead = at;
+    has_last_ahead = true;
+    return v;
+  }
+  Vec3 still_ahead(WorldPos at) {
+    last_ahead = at;
+    has_last_ahead = true;
+    return Vec3{};
   }
 #endif
 
@@ -468,10 +490,20 @@ bool Walker::start(const WalkParams& params, u32 tick_hz, const renderer::SceneD
   const f32 ahead = scene_collision::prefetch_tunable();
   config.prefetch_radius_tiles = ahead > 0.0f ? params.radius_tiles + ahead : 0.0f;
   if (ahead > 0.0f) {
+    // **Ahead of a running walker** (T166; scene_collision.md): several workers, so a drop's ring
+    // is built at once rather than a tile after another on the tick, the builds handed over by
+    // when the ring will want them, twice the workers at a time, along the walker's velocity, and
+    // tile-handed meshes' copies kept between builds. Unpinned: they share the machine with the
+    // renderer's and the terrain's.
+    const u32 count = scene_collision::prefetch_workers_tunable();
     jobs::JobSystemConfig workers;
-    workers.performance_workers = 1;
+    workers.performance_workers = count;
     workers.pin_threads = false;
     w.jobs = std::make_unique<jobs::JobSystem>(workers);
+    config.ring_radius_tiles = params.radius_tiles;
+    config.lead_s = scene_collision::lead_tunable();
+    config.prefetch_slots = 2 * count;
+    config.mesh_copy_bytes = scene_collision::mesh_copies_tunable();
   }
   world::RingParams ring;
   ring.tile_size = tile;
@@ -763,7 +795,7 @@ void Walker::look_ahead(WorldPos camera) {
   // The drawn ground's time first, as before the ring's update: under a time-lapse nothing is
   // built ahead, and the consumer must know.
   w.consumer.set_ground_time(w.ground_time());
-  w.consumer.prefetch(camera);
+  w.consumer.prefetch(camera, w.ahead_velocity(camera));
 #else
   (void)camera;
 #endif

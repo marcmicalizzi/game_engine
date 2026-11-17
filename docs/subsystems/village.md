@@ -208,8 +208,8 @@ filler ([dwellings](dwellings.md), `fill_rural`) writes a building description, 
 (`structures::walk_records`: floors, walls, openings, stair flights, solid members), which are all
 this module reads of a house — never its mesh:
 
-- **the household is drawn from the plot's seed**: three to eight persons, and the means that give
-  the storeys the entry asks (the filler's two-storey types are its `means` 2). The rectangle the
+- **the household is drawn from the plot's seed**: three to eight persons, and its means drawn per
+  plot, so the storeys follow from the household (below, "Houses that differ"). The rectangle the
   filler may fill is the frontage less half a metre each side by the depth behind the setback, so
   the filler sizes the house to the plot. Its own seed is the household's and the frontage's, not
   the plot's, so **two plots with one household and one frontage get one description and share
@@ -239,7 +239,11 @@ this module reads of a house — never its mesh:
   first walk through a house with doors stopped at each of these in turn (2026-11-15), and at
   three things that were the house's and were mended in the filler ([dwellings](dwellings.md),
   "What the village's walk and pictures changed");
-- the recipe is the description's canonical JSON, named by its own source hash.
+- the recipe is the description's canonical JSON, named by its own source hash;
+- **the plan's door is the threshold's middle on the wall's outer face** (since G206: 25 cm out
+  from the front wall's centre line at the filler's 50 cm wall), at the middle of what the open
+  leaf leaves clear, so 2.5 to 3 cm along the wall from the opening's own middle. The path, the
+  gateway and the walker all come to it.
 
 **The way through it is found, not assumed** (`route_through`): the rooms' doorways from the walk
 records give the chain of rooms from the entrance to the first stair's foot and from its head to a
@@ -251,6 +255,51 @@ The search's neighbour order is fixed, so the same house gives the same way.
 
 So **a hand-authored building in a scene file needs nothing of this module** (it is a mesh
 placement whose recipe is its description), and **a game's own house filler** is another `HouseFn`.
+
+## Houses that differ
+
+**Why** (the forest session's needs 110 and 134, 2026-11-15/16): one `storeys` for the entry made
+every tenement's household of means 2, so every tenement was two storeys and the village read as
+one house at 30 m; and a household was drawn before the house its plot held, so an eight-person
+household stood in a one-room cot. Since G208 (`k_village_version` 5; the grounding is
+[houses that differ](../experiments/houses-that-differ.md)):
+
+- **the means are drawn per plot**: where the entry allows two storeys, a quarter of the
+  tenements' households have none for a floor over or a second hearth, three eighths one hearth and
+  three eighths two, and the filler's table turns the household into its type and storeys; the
+  entry's `storeys` is now the most a tenement may have (a cottage and an entry of one storey draw
+  0 or 1, as before). The plan's summary names each plot's allowed `storeys` and its house's
+  built `house_storeys`. On the forest session's v48 village 4 of the 12 houses are of one storey
+  (1 before); on the test street of the case below, 3 of 17 tenements;
+- **the household is fitted to its house** (`fitted_house`): after the filler gives a plot a
+  smaller house than its household asked, the household is the one that house sleeps
+  ([dwellings](dwellings.md#the-household-fitted-to-its-house)), drawn again with it; a house's
+  description names both (`household.persons`, `household.drawn_persons`);
+- **two houses in sixteen are stone-faced** (the filler's dress; [dwellings](dwellings.md)).
+
+From the test village's green at eye level (2026-11-17, main against G208's tip, two views east and
+west): the houses now differ at 30 m by storeys, roof height and limewash, where on main every
+tenement was of two storeys and only the gap cottages stood lower; no stone face falls in either view. What a person would
+still object to: every house is the same rendered box under the same thatch pitch, the green is a
+bare mown lawn, and a croft's back wall climbs the ridge as a straight slab.
+
+## Houses asked and built
+
+**Why** (need 133): an entry asked 14 houses and 12 stood; one plot of 6.09 m was refused with "the
+plot holds no house, not even a cot", and nothing said so at the cook. Since G208 the plan **cuts
+no toft, and squeezes no cottage into a gap, narrower than the filler's least house with its side
+gaps** (`detail::least_house_frontage_mm`, 6.5 m, and 10 cm for the chord: 6.6 m along the way);
+a toft too narrow to halve into two of those stays whole, as a town's two halves were thrown
+together when one could not be built. A toft's frontage is the chord of the street's wandering
+edge, which can come out narrower than its cut, and such a plot is still refused and counted. The
+end-on house a town built on such a plot is not drawn yet ("Not yet").
+
+**Said at the cook**: the generator's open logs `fewer houses built than asked` (a warning, with
+`asked`, `built`, `plots`, `refused`, `no_fit`, `steep`, `wet`, `outside` and the first refusal) or
+`houses built as asked`, and `engine-content village`'s line carries `asked`, `refused` and, when
+fewer stand than were asked, `short` and the first refusal. On the forest session's v48 village:
+`asked` 14, `houses` 12, `refused` 0 (1 before), `short` 2 — the ways offer 12 plots, which is the
+plan's ground and not a house's.
 
 ## The way through a house
 
@@ -265,6 +314,88 @@ nothing to a house that gives none. A key looks five metres on along the way, to
 later point at least a metre off (`k_look_on_m`): the route's points can lie a few centimetres
 apart where one stretch ends and the next begins (the stair's head and the way on from it), and a
 key aimed at such a neighbour looked half back into the landing's corner and out of its window.
+
+## A house as data
+
+**Why** (the forest session's needs 113 and 132, 2026-11-15/16): a script that laid 487 props into
+a village's houses had to re-derive every house outside the engine — the household drawn from the
+plot's seed, the filler's own seed, the setback — and, once the grown plan drew each plot's seed
+from its candidate tenement and its setback per plot, it tried 454 candidate seeds a village to
+find which one gave the plan's house. Nothing the plan decides should have to be found again.
+
+`plan_json` (what `engine-content village` prints for each entry) names, for every plot, its
+`index` in the list, its own `seed`, the `setback_m` its house was asked for (`Plot::setback_mm`),
+and for a built plot its `house_index` (the house's place among the **built** houses, which is
+what `--house` counts: plot 12's house is house 11 when one plot before it stands empty), the
+filler's `type`, the household's `persons` and `means`, and the `filler_seed`.
+
+`describe_house(layer, plan, house, out, plan_text, error)` writes one built house as data, and
+`engine-content village <scene> <out> --describe <dir> [--house <i>]` writes every built house
+(or the one named) as `<dir>/house-<i>/house.json`, `house.structure.json` (the recipe the
+generator meshes, byte for byte) and `house.plan.txt` (each storey drawn as text). It plans the
+house again from the plot's own ask through the same filler and **refuses when the description it
+gets is not the one the plan holds**, so what it writes cannot drift from what is drawn.
+`house.json` (`engine.village.house.v1`) holds:
+
+| Field | What |
+|---|---|
+| `house`, `plot`, `order`, `lane`, `kind` | the house's index, its plot's index in `plot_list`, the order it was taken up in, its way, tenement or cottage |
+| `ask` | what the plan asked the filler: `frontage_m`, `depth_m`, `setback_m`, `storeys`, `seed` (the plot's) |
+| `household` | `persons` and `means` as drawn from the plot's seed, `persons` fitted to the house the plot holds and `drawn_persons` before it was (G208) |
+| `filler` | the filler's `seed`, `type`, `storeys`, `hearths`, `demoted`, `mirror`, the rectangle it was given (`plot_cm`), the clear and outer sizes, the outer wall's thickness, the ridge |
+| `frame` | **a point (x, y, z) of the house's frame, metres, is `origin + x * x_axis + y * up + z * z_axis` in the world**; `quarter_turns`, `pad_m`, `floor_m` (the frame's origin over the pad), `plan_offset_m` (the description's frame is the dwellings plan's moved by it on x and z) and `storey_floors_m` |
+| `door`, `footprint` | the door in the house's frame and the world, the way out, its width; the box over the outer walls |
+| `rooms`, `openings` | each room's id, use, storey, floor, outline in the house's frame and flags; each outer door and window by side, place, width, sill and head |
+| `pieces` | the timber and the furniture: kind, room, storey, the wall it backs to, its box, its members (0 and a `kit_row` for a kit piece) |
+| `places` | **the places the plan already knows** ([dwellings](dwellings.md#the-places-a-plan-knows)): kind, room, storey, `faces`, the record it is `of`, its box (`low`, `high`) |
+| `tour`, `views` | the plan's own walk through every room and a view a room, as `engine-content dwelling` writes them |
+| `route`, `look` | the walker's way through the house the plan stood it by, in the house's frame and the world |
+| `kit_rows`, `kit` | the entry's kit and the pieces of it that stand in this house (below) |
+
+A house planned by another filler (the tests' `box_house`) has no description to give and is
+refused with a sentence.
+
+**Checked against the forest's own derivation** (2026-11-16, `msvc-debug`): on the forest
+session's v48 village scene (`quality-v48/parts/village/scene/scene-plan-grown.json`), `--describe`
+wrote its 12 built houses in 10 s, and every one names the plot seed, setback (to the millimetre),
+household and filler seed that the forest's script had found by trying 454 candidate seeds and
+proving each house against the plan (`parts/furnish/out/houses.json`): 12 of 12.
+
+## A kit
+
+**A kit is a scene's own meshes in the box furniture's place** (the forest session's need 113 (b),
+(e), (f); `engine.village.KitPiece`, the entry's `kit`, `VillageLayer` version 3). A row names a
+static mesh relative to the scene's directory, a **uniform** scale (a kit piece is never
+stretched), its full bounds and its foot in the mesh's own units, the way its front looks
+(`front`), how it is placed (`placement`: wall, free, top, bed, hung, joist, hearth-in, hearth-by,
+yard), the heights its foot may stand at, and which of the furnisher's own pieces it `replaces`
+(a table set, a settle, a bed, a chest, or none). The village turns each replacing row into the
+furnisher's `KitRow` (its foot along and out from the wall and its height, whole centimetres
+rounded **up**, so the mesh fits the box kept clear for it), and the furnisher places it in its
+kind's place **at its own clearances** ([dwellings](dwellings.md#kit-pieces)); where no row of a
+kind fits, the box piece stands. A kit piece states no box of the description (its boxes are
+gone from the recipe), and its mesh is a placement of the generator's:
+
+- **its front looks into the room** from the wall its piece backs to, turned by quarters from the
+  way its mesh faces; **its foot's middle stands on the piece's footprint's middle** and **its
+  lowest point on its storey's floor** (`KitPlace`, whole millimetres in the house's frame), and
+  `kit_placement` composes that with the house's placement and the row's scale;
+- **the way through the house keeps off it** as it keeps off the furniture's solid members: its
+  foot is a box of the walk records the route is found over, so the walker's route stays 34 cm
+  clear of every kit piece (the kit case measures 30 cm, a capsule's radius);
+- **the furnisher's validator reads every kit piece back** (`validate_furnishing`) and the house is
+  refused with its sentence if one fails;
+- **the generator hands each piece with its house's tile**, one mesh a row (`kit/<name>`), so a
+  piece whose own position crosses into the next tile still comes and goes with its house;
+- the kit is in the plan's hash; a plan with no kit hashes, and draws, as it did.
+
+**What a scene with no kit costs: nothing** — no row, no draw, the same furnishing bytes (the
+dwellings pins hold it) and the same plan hash. **What a kit piece does not get yet**: collision (a
+static mesh placement carries none, and a description's `Box` has no undrawn form a walker could
+meet; the route keeps off it instead), the named places on its own top (a kit table's top is its
+mesh's, which the engine does not read), and pieces that replace nothing — the rows of every other
+class are listed in each house's `kit_rows` for whoever lays them, and placed by nobody here (room
+inventories by use and household are the next row).
 
 ## The wear
 
@@ -340,9 +471,10 @@ whole gets everything at once. Houses of one description share one mesh.
 
 ## Owned data
 
-The entry type (`engine.village.VillageLayer` at version 2, `Lane`, `Rows`), and while an entry is
-open its plan: the ways' stations (40 bytes each), the plots (280 bytes each) and each built plot's
-house with its recipe. The way's search holds, while it runs, a height, a cost and a back-pointer
+The entry type (`engine.village.VillageLayer` at version 3, `Lane`, `Rows`, `KitPiece` and its
+enums), and while an entry is open its plan: the ways' stations (48 bytes each), the plots (288
+bytes each, the setback asked of each plot's house among them since G207) and each built plot's
+house with its recipe and its kit pieces (40 bytes each). The way's search holds, while it runs, a height, a cost and a back-pointer
 a cell of its corridor (20 bytes a cell: 2,400 cells for 64 m of way at 2 m, 128,000 for the
 bench's 3 km street), freed when the way is found. Nothing is kept on disk.
 
@@ -380,6 +512,19 @@ Each is held by a case of `tests/village_tests.cpp`.
 - The plan is the same bytes on every toolchain (`plan_hash`, pinned on MSVC, reproduced by GCC
   and Clang in the containers).
 - An entry out of range is refused with a sentence naming the field.
+- A house as data is the plan's own house: every plot's summary names its seed and setback, and
+  every built house's description its plot's seed, setback and storeys, the household and the
+  filler's seed the plan's house was drawn with, and a frame that carries its door onto the
+  plan's door to the millimetre; a house index past the built ones and a plan made by another
+  filler are refused with a sentence.
+- Houses differ by household (G208): on a street of the rural filler's houses one-storey and
+  two-storey tenements stand together, no household is more than its house sleeps, and every house
+  asked is built where the street has plots for it.
+- A kit's pieces stand in the box furniture's place: the plots and the houses' boxes do not move,
+  a house with kit pieces has a shorter recipe, each piece's mesh stands on its storey's floor
+  over its footprint's middle, the walker's route keeps 30 cm off every kit foot, a row too tall
+  for every room or replacing nothing is never placed, the kit is in the plan's hash, and the
+  generator hands one placement a piece with its mesh resolved against the scene's directory.
 
 ## Public API
 
@@ -387,7 +532,8 @@ Each is held by a case of `tests/village_tests.cpp`.
 `HouseFn`, `box_house`); the plan (`LaneStation`, `LaneLine`, `PlotState`, `PlotKind`, `Plot`,
 `VillagePlan`,
 `layer_in_range`, `plan_village`, `plan_hash`); what it is handed over as (`ground_edits`,
-`footprints`, `plan_json`, `house_placement`, `house_point`); the wear (`GroundLayers`,
+`footprints`, `plan_json`, `house_placement`, `house_point`); a house as data and its kit
+(`describe_house`, `KitPlace`, `kit_placement`); the wear (`GroundLayers`,
 `k_wear_margin_mm`, `ground_regions_json`) and the boundaries (`BoundaryLine`, `plot_boundaries`).
 `include/domain/village/flight.h`: `WalkPoint`, `walk_points`, `flight_json`.
 
@@ -514,6 +660,11 @@ furnished house 0 and climbs its stair on proxies of 11,181 triangles and 296 KB
 The figures of the next table and the frame record below are the first night's plain shells;
 the frame was not measured again on the dressed houses.
 
+**Since G208** (2026-11-17, the finest triangles of each built house's container, `engine-content
+info`): the test village's 14 houses **3,164 to 9,278, median 5,843** (six of one storey, 3,164 to
+4,038), against main's 3,794 to 9,513, median 7,571 (three of one storey); the forest's v49
+village on main 3,690 to 10,266, median 8,185, and after G208 not measured (no forest load).
+
 **What the cluster LOD makes of a house** (`village_tests.cpp`, the last case: 2160 lines, a 60°
 field of view, a one-pixel threshold, the camera before the front):
 
@@ -630,6 +781,12 @@ into the landing's corner and out of its window — a fault of the flight, mende
   village shows the bare ground beyond it nearby, but an eye-level view across the open side sees
   its edge as a pale band on the horizon: a far ground past a tile set's heightfield is the tile
   set's to give.
+- **No end-on house, no outshut, no lean-to** (G208's leftovers): a plot whose chord is narrower
+  than the least house is refused rather than given a house turned with its gable to the street and
+  its door onto a side passage (the plan turns every door to the street, and the filler lays its
+  rooms along the front); an outshut or a lean-to is a band of rooms along the back, and the
+  interior's bands run along the house's length only
+  ([houses that differ](../experiments/houses-that-differ.md#forms-beyond-one-plan)).
 - **No document records.** Plan 14's village filler writes `engine.structure.Village` and
   `Building` records the author then owns (`structure.fill_village`); this one is a scene
   generator, and its plan is the function that writer will call. Until then a village is

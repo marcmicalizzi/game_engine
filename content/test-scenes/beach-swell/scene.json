@@ -1,0 +1,322 @@
+{
+  "format": "engine.scene.v1",
+  "name": "beach-wind",
+  "camera_path": "../beach/camera-path.json",
+  "description": "The beach bay under a wind that changes through the day: calm to 06:00, rising to a 20 m/s gale by noon, held to 18:00, falling calm by 23:00 (roadmap W136; docs/subsystems/gfx.md).",
+  "sky": {
+    "latitude_deg": 31.1,
+    "day_of_year": 100,
+    "turbidity": 2.2,
+    "ground_albedo": 0.38,
+    "wind": {
+      "speed_m_s": 2,
+      "to_deg": 205,
+      "roughness_m": 0.0002
+    },
+    "swell": {
+      "track": [
+        {
+          "hour": 0,
+          "height_m": 1.0,
+          "period_s": 17.0,
+          "to_deg": 195
+        },
+        {
+          "hour": 6,
+          "height_m": 2.5,
+          "period_s": 15.52,
+          "to_deg": 195
+        },
+        {
+          "hour": 12,
+          "height_m": 4.0,
+          "period_s": 14.27,
+          "to_deg": 195
+        },
+        {
+          "hour": 18,
+          "height_m": 4.0,
+          "period_s": 13.21,
+          "to_deg": 195
+        },
+        {
+          "hour": 24,
+          "height_m": 3.5,
+          "period_s": 12.3,
+          "to_deg": 195
+        },
+        {
+          "hour": 30,
+          "height_m": 3.0,
+          "period_s": 11.5,
+          "to_deg": 195
+        },
+        {
+          "hour": 36,
+          "height_m": 2.5,
+          "period_s": 10.81,
+          "to_deg": 195
+        },
+        {
+          "hour": 42,
+          "height_m": 2.0,
+          "period_s": 10.19,
+          "to_deg": 195
+        }
+      ],
+      "period_h": 48,
+      "distance_km": 3000
+    }
+  },
+  "terrain": {
+    "size": 1025,
+    "extent": 256,
+    "seed": 9,
+    "dune_height": 0.5,
+    "dune_wavelength": 60,
+    "ridges": [
+      {
+        "from": [
+          -45,
+          -108
+        ],
+        "to": [
+          46,
+          -118
+        ],
+        "height": 5.5,
+        "width": 16,
+        "roughness": 0.3
+      },
+      {
+        "from": [
+          63,
+          -121
+        ],
+        "to": [
+          65,
+          -121
+        ],
+        "height": 6.5,
+        "width": 7,
+        "roughness": 0.3
+      },
+      {
+        "from": [
+          -20,
+          -222
+        ],
+        "to": [
+          58,
+          -232
+        ],
+        "height": 5,
+        "width": 16,
+        "roughness": 0.3
+      }
+    ],
+    "basins": [
+      {
+        "center": [
+          300,
+          0
+        ],
+        "radius": 380,
+        "depth": 14
+      },
+      {
+        "center": [
+          52,
+          -168
+        ],
+        "radius": 46,
+        "depth": 4.5
+      }
+    ],
+    "generator": "Dunes",
+    "time": 94644000.0
+  },
+  "placements": [
+    {
+      "generator": "scatter",
+      "params": {
+        "name": "swash-boulders",
+        "seed": 5,
+        "tile_size": 32,
+        "region": {
+          "kind": "Polygon",
+          "polygon": [
+            [
+              -36,
+              4
+            ],
+            [
+              -12,
+              4
+            ],
+            [
+              -12,
+              46
+            ],
+            [
+              -36,
+              46
+            ]
+          ]
+        },
+        "density": {
+          "kind": "Constant",
+          "per_m2": 0.02
+        },
+        "kinds": [
+          {
+            "name": "boulder",
+            "spacing": 3,
+            "scale_min": 0.5,
+            "scale_max": 1.3,
+            "align": true,
+            "sink": 0.1,
+            "rock": {
+              "seed": 7,
+              "size_x": 1.1,
+              "size_y": 0.8,
+              "size_z": 0.9,
+              "roughness": 0.22,
+              "detail": 2,
+              "red": 0.3,
+              "green": 0.27,
+              "blue": 0.24,
+              "buried": 0.25
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "water": [
+    {
+      "name": "bay",
+      "level_m": -1.0,
+      "shape": {
+        "polygon": [
+          [
+            72.6,
+            0,
+            -235
+          ],
+          [
+            49.3,
+            0,
+            -210
+          ],
+          [
+            27.0,
+            0,
+            -180
+          ],
+          [
+            9.4,
+            0,
+            -150
+          ],
+          [
+            -4.2,
+            0,
+            -120
+          ],
+          [
+            -14.4,
+            0,
+            -90
+          ],
+          [
+            -21.4,
+            0,
+            -60
+          ],
+          [
+            -25.6,
+            0,
+            -30
+          ],
+          [
+            -27.0,
+            0,
+            0
+          ],
+          [
+            -25.6,
+            0,
+            30
+          ],
+          [
+            -21.4,
+            0,
+            60
+          ],
+          [
+            -14.4,
+            0,
+            90
+          ],
+          [
+            -4.2,
+            0,
+            120
+          ],
+          [
+            9.4,
+            0,
+            150
+          ],
+          [
+            27.0,
+            0,
+            180
+          ],
+          [
+            49.3,
+            0,
+            210
+          ],
+          [
+            72.6,
+            0,
+            235
+          ],
+          [
+            120,
+            0,
+            235
+          ],
+          [
+            120,
+            0,
+            -235
+          ]
+        ]
+      },
+      "shore_m": 2,
+      "depth_fade_m": 4,
+      "roughness": 0.06,
+      "seed": 11,
+      "open": true,
+      "wind_follow": true,
+      "direction_deg": 205,
+      "wind_m_s": 8,
+      "fetch_km": 60,
+      "absorption": [
+        0.45,
+        0.09,
+        0.05
+      ],
+      "scattering": [
+        0.035,
+        0.05,
+        0.06
+      ],
+      "transmission": 1,
+      "turbidity": 0.2
+    }
+  ]
+}
