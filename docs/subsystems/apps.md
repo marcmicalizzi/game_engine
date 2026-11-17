@@ -490,7 +490,9 @@ stair and to a window ([village](village.md#in-a-scene)). Present with the villa
 ## engine-content cave-plan: a cave network as a survey
 
 `engine-content cave-plan <network.json> <out dir> [--ground <valley>,<slope_x>[,<flank_m>]]
-[--doline <x>,<z>,<radius>,<depth>] [--tile <m>] [--name <stem>] [--cells] [--build]` plans an
+[--doline <x>,<z>,<radius>,<depth>] [--tile <m>] [--name <stem>] [--cells] [--build] [--write]`
+(`--write`, 2026-11-16: `--build` and every cell's container written beside the plan as
+`<stem>.cell<N>[.dress].clusters`, for `engine-view --mesh` to show one) plans an
 `engine.caves.Network` ([caves](caves.md#the-command); roadmap G146) against a hillside given by a
 few numbers and writes a plan view and a long section as SVG and the holes its mouths ask of the
 terrain as `engine.scene.TerrainHole` polygons; one JSON line of the plan's numbers, with every

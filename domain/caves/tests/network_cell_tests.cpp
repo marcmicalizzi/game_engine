@@ -264,6 +264,91 @@ TEST_CASE("caves: the network is one closed surface, and two cells meet at a por
                          << " of them between cells that do not touch");
 }
 
+// The forest's need 142 (2026-11-16): sheets standing in the open air at a mouth. A mouth's cells
+// are cut by the ground only inside the window of columns the plan sampled round it; where a cell's
+// lattice reached past that window over the ground, the air inside it (cut by the ground) met the
+// rock outside it (no ground known), and the mesher drew the window's edge as a wall from the
+// buried ground up to the cell's bounds: up to 4.7 m tall on these hills before the mend.
+//
+// Nothing a cave draws stands in the open air. Every vertex is under the ground but for the apron's
+// lip (3 cm over it) and how far a surface-nets vertex may stand from the ground under its own
+// column: it is the mean of crossings in its cube, each on the ground at its own column, so within
+// a cube's diagonal in plan of any of them, and the ground rises by its slope over that: the bound
+// is 3 cm plus the local gradient times sqrt(2) lattice steps, plus 2 cm for the window's bilinear
+// heights against the hill's curved flank. The hills are the ones a sweep of 45 (five slopes,
+// three flanks, three seeds) found the sheet on, and the test network's own hill, which has none.
+TEST_CASE("caves: nothing a mouth's cells draw stands in the open air over the ground") {
+  struct Config {
+    f64 slope, flank;
+    u64 seed;
+  };
+  const Config configs[5] = {{0.36, 400.0, 11},  // the other cases' hill: no sheet before either
+                             {0.7, 100.0, 11},
+                             {0.25, 40.0, 11},
+                             {0.36, 400.0, 12},
+                             {0.7, 100.0, 12}};
+  const f32 step = 0.5f;
+  u32 cells_seen = 0;
+  for (const Config& config : configs) {
+    caves::test::Hill hill;
+    hill.slope = config.slope;
+    hill.flank = config.flank;
+    Network n = caves::test::hill_network(config.seed);
+    n.reach_strike_m = 110.0f;
+    n.reach_dip_m = 45.0f;
+    const Plan plan = planned(n, hill, step);
+    f64 worst = -1e30;
+    u32 above = 0;
+    for (u32 cell = 0; cell < plan.cells.size(); ++cell) {
+      const PlanCell& c = plan.cells[cell];
+      if (c.flooded) continue;
+      // Only a cell some mouth's window reaches is cut by the ground.
+      bool windowed = false;
+      for (const PlanMouth& m : plan.mouths) {
+        const i64 i1 = m.patch_i + m.patch_nx - 1, j1 = m.patch_j + m.patch_nz - 1;
+        windowed = windowed ||
+                   !(i1 < c.lo[0] || m.patch_i > c.hi[0] || j1 < c.lo[2] || m.patch_j > c.hi[2]);
+      }
+      if (!windowed) continue;
+      ++cells_seen;
+      const Solved s = solved(plan, cell);
+      u32 here = 0;
+      for (const Vec3 p : s.mesh.positions) {
+        const i64 x_mm = s.report.origin[0] + std::llround(static_cast<f64>(p.x) * 1000.0);
+        const i64 z_mm = s.report.origin[2] + std::llround(static_cast<f64>(p.z) * 1000.0);
+        const f64 y = static_cast<f64>(s.report.origin[1]) / 1000.0 + static_cast<f64>(p.y);
+        const f64 h = caves::test::hill_height(&hill, x_mm, z_mm);
+        // The steepest the ground is within a cube's diagonal of the column (the valley floor's
+        // kink is flat on one side of it and the slope on the other).
+        const i64 reach = std::llround(std::sqrt(2.0) * step * 1000.0);
+        f64 steepest = 0.0;
+        for (i64 dx = -reach; dx <= reach; dx += reach) {
+          for (i64 dz = -reach; dz <= reach; dz += reach) {
+            const f64 gx = (caves::test::hill_height(&hill, x_mm + dx + 50, z_mm + dz) -
+                            caves::test::hill_height(&hill, x_mm + dx - 50, z_mm + dz)) / 0.1;
+            const f64 gz = (caves::test::hill_height(&hill, x_mm + dx, z_mm + dz + 50) -
+                            caves::test::hill_height(&hill, x_mm + dx, z_mm + dz - 50)) / 0.1;
+            steepest = std::max(steepest, std::sqrt(gx * gx + gz * gz));
+          }
+        }
+        const f64 bound = 0.05 + steepest * std::sqrt(2.0) * step;
+        worst = std::max(worst, y - h);
+        if (y - h > bound) ++here;
+      }
+      if (here > 0)
+        MESSAGE("slope " << config.slope << ", flank " << config.flank << ", seed " << config.seed
+                         << ", cell " << cell << ": " << here
+                         << " vertices stand in the open air over the ground");
+      above += here;
+    }
+    MESSAGE("slope " << config.slope << ", flank " << config.flank << ", seed " << config.seed
+                     << ": " << plan.mouths.size() << " mouths; the highest vertex " << worst
+                     << " m over the ground");
+    CHECK(above == 0);
+  }
+  CHECK(cells_seen > 0);
+}
+
 TEST_CASE("caves: a walker's capsule passes every edge the plan calls walkable") {
   const caves::test::Hill hill;
   const Network n = caves::test::hill_network();
