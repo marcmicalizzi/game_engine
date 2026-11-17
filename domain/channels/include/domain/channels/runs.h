@@ -18,6 +18,7 @@
 // or less (the cook's least written depth), drawn or not.
 
 #include <core/base/types.h>
+#include <core/containers/vector.h>
 #include <core/json/json_value.h>
 
 #include <schemas/scene.h>
@@ -51,6 +52,12 @@ struct LineRuns {
   u32 gaps = 0;          // maximal runs of stretches not drawn
   f64 thin_m = 0;        // stretches leaving a station `k_run_thin_depth_m` deep or less
   u32 alternations = 0;  // runs of one kind, thin or not (the forest's "pieces")
+  // **How fast it runs** (W137; channels.md, "How whole a stream is drawn"): for every drawn
+  // stretch, the mean of its two stations' speed and depth and its length, so a class's median
+  // is by length. A description written with no speeds (laid before W120) has none.
+  Vector<f64> speed_mps;
+  Vector<f64> depth_m;
+  Vector<f64> stretch_m;
 };
 LineRuns measure_runs(const scene::WaterChannel& block);
 
@@ -59,13 +66,18 @@ struct RunsBySlope {
     u32 lines = 0;
     f64 length_m = 0, film_m = 0, undrawn_m = 0, thin_m = 0;
     u32 pieces = 0, runs = 0, falls = 0, falls_drawn = 0, gaps = 0, alternations = 0;
+    Vector<f64> speed_mps, depth_m, stretch_m;  // the lines' drawn stretches (`LineRuns`)
   };
   Class classes[k_run_classes];
-  void add(const LineRuns& line) noexcept;
+  void add(const LineRuns& line);
 };
 u32 run_class(f64 slope) noexcept;
+// The value under which `share` of the total weight lies (the samples sorted by value; 0 for
+// none): the median by length is `weighted_quantile(speed, stretch, 0.5)`.
+f64 weighted_quantile(const Vector<f64>& value, const Vector<f64>& weight, f64 share);
 // One object a class: lines, km, film and undrawn shares of the length, pieces and runs every
-// 100 m, falls (and those drawn) and gaps.
+// 100 m, falls (and those drawn) and gaps; the drawn water's speed (median and the tenth and
+// ninetieth percentiles, by length) and its median depth.
 JsonValue runs_json(const RunsBySlope& runs);
 
 }  // namespace engine::channels

@@ -1235,6 +1235,18 @@ float water_channel_broken_share(float slope, float speed, float depth) {
                     k_water_g * slope * speed) *
          smoothstep(k_channel_veil_from_m, k_channel_veil_full_m, depth);
 }
+// **What the surface's pattern travels at** (W137; water::channel_travel_speed mirrors it;
+// stream-speed.md, "What the eye reads"): on a steep sheet the eye follows the jets over the
+// steps and the white they carry, which have fallen a step's height H, sqrt(v^2 + 2 g H); the
+// pattern is carried at sqrt(surface^2 + 2 g H w), w the step-pool's weight over the sheet's own
+// slope (the broken share's), H a choice on the clasts' scale. Nothing but the pattern's travel
+// reads it.
+static const float k_channel_jet_m = 0.25;  // water::k_channel_jet_m
+float water_channel_travel_speed(float surface_speed, float slope) {
+  const float v = max(surface_speed, 0.0);
+  return sqrt(v * v + 2.0 * k_water_g * k_channel_jet_m *
+                          smoothstep(k_channel_steep_from, k_channel_steep_full, slope));
+}
 // The long trains: cycles of the phase a period, a static spatial frequency (cycles a metre).
 static const float k_channel_train_cycles[2] = {17.0, 29.0};
 static const float2 k_channel_train_space[2] = {float2(0.23, -0.31), float2(-0.37, 0.19)};
@@ -1542,7 +1554,10 @@ WaterChannelSurface water_channel_surface(WaterChannelFlow f, float3 p, float3 g
   const float ustar = mean * k_channel_manning_n * sqrt(k_water_g) / pow(dl, 1.0 / 6.0);
   const float height = ustar * ustar / (2.0 * k_water_g) * calm;
   const float lambda0 = clamp(1.5 * dl, 0.2, 4.0);
-  const WaterChannelPhases ph = water_channel_phases(along * c.speed, time, seed);
+  // The pattern (the advected detail and the broken water's threads, which ride the same two
+  // copies) travels at the jets' speed where the sheet tumbles (W137), at the surface's elsewhere.
+  const WaterChannelPhases ph =
+      water_channel_phases(along * water_channel_travel_speed(c.speed, surface_slope), time, seed);
   const WaterChannelDetail detail =
       water_channel_detail(p.xz, ph, lambda0, height, footprint, seed);
   float2 slope = detail.slope;

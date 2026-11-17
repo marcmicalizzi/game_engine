@@ -340,7 +340,11 @@ bool solve_network(const ChannelLayer& layer, const ChannelNetwork& network,
                                             i < link.asym.size() ? wide(link.asym[i]) : 0.0,
                                             i < link.swell.size() ? wide(link.swell[i]) : 0.0)
                                    .width);
+          // The bed's D84 there (W137): the clasts the plan lays are the roughness the water reads.
+          if (link.sediment.size() == link.line.size())
+            line.d84.push_back(std::max(1e-3, wide(link.sediment[i].d84_m)));
         }
+        if (line.d84.size() != line.points.size()) line.d84.clear();
         if (link.mouth) {
           line.tail_level = true;
           line.level = round_to(link.mouth_level, 1e3);

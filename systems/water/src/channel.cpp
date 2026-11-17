@@ -154,6 +154,12 @@ f64 channel_broken_share(f64 slope, f64 speed, f64 depth_m) noexcept {
          smooth_step(k_channel_veil_from_m, k_channel_veil_full_m, depth_m);
 }
 
+f64 channel_travel_speed(f64 surface_speed, f64 slope) noexcept {
+  const f64 v = std::max(surface_speed, 0.0);
+  return std::sqrt(v * v + 2.0 * k_gravity * k_channel_jet_m *
+                               smooth_step(k_channel_steep_from, k_channel_steep_full, slope));
+}
+
 f32 station_hydraulic_depth(const Channel& c, u32 i) noexcept {
   const f64 fr = static_cast<f64>(c.froude[i]);
   const f64 v = static_cast<f64>(c.speed_mps[i]);

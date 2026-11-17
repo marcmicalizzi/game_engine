@@ -68,3 +68,33 @@ TEST_CASE("a fall whose foot does not stand lower is no nappe, and the classes a
   CHECK(by.classes[4].lines == 1);
   CHECK(by.classes[4].pieces == 2);
 }
+
+TEST_CASE("how fast a class's drawn water runs: the speed and the depth by length (W137)") {
+  // 0-1 and 1-2 drawn, 2-3 a fall (never counted), 3-4 drawn: three drawn stretches, their speeds
+  // the means of their stations' (0.15, 0.25, 0.9) and their depths (0.05, 0.05, 0.03).
+  scene::WaterChannel c =
+      line({10.0, 9.9, 9.8, 8.8, 8.7}, {0.05f, 0.05f, 0.05f, 0.03f, 0.03f}, {0, 0, k_lip, k_foot, 0});
+  for (const f32 v : {0.1f, 0.2f, 0.3f, 0.8f, 1.0f})
+    c.speed_mps.push_back(v);
+  const LineRuns r = measure_runs(c);
+  REQUIRE(r.speed_mps.size() == 3);
+  CHECK(r.speed_mps[0] == doctest::Approx(0.15));
+  CHECK(r.speed_mps[2] == doctest::Approx(0.9));
+  CHECK(r.depth_m[2] == doctest::Approx(0.03));
+  // By length, sorted by value: half the drawn length is under 0.25 m/s.
+  CHECK(weighted_quantile(r.speed_mps, r.stretch_m, 0.5) == doctest::Approx(0.25));
+  CHECK(weighted_quantile(r.speed_mps, r.stretch_m, 0.9) == doctest::Approx(0.9));
+  CHECK(weighted_quantile(r.speed_mps, r.stretch_m, 0.1) == doctest::Approx(0.15));
+  CHECK(weighted_quantile(Vector<f64>{}, Vector<f64>{}, 0.5) == 0.0);
+  RunsBySlope by;
+  by.add(r);
+  const JsonValue json = runs_json(by);
+  const JsonValue& cls = json[run_class(r.slope())];
+  f64 median = 0;
+  REQUIRE(cls.find("speed_median_mps") != nullptr);
+  CHECK(cls.find("speed_median_mps")->get_f64(median));
+  CHECK(median == doctest::Approx(0.25));
+  // A description with no speeds (laid before W120) counts none.
+  c.speed_mps.clear();
+  CHECK(measure_runs(c).speed_mps.empty());
+}
