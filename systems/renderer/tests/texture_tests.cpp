@@ -1232,6 +1232,9 @@ struct TunableScope {
   ~TunableScope() { tunable->reset(); }
 };
 
+// Where the quad's pixels read the 1,024-texel map at level 0.
+constexpr f32 k_near_m = 0.6f;
+
 // The chain's level the quad's one texture is resident from (`TextureRecord::top`).
 u32 resident_top(const GpuScene& scene) {
   Vector<GpuScene::TextureRecord> records;
@@ -1245,7 +1248,7 @@ u32 resident_top(const GpuScene& scene) {
 // **The trim releases nothing asked within the hold and nothing below the floor** (R172 stage 2;
 // texture.md, "Stage 2: the trim under a ceiling"). The quad's 1,024-texel map, loaded whole under
 // a ceiling it does not fit in (1,400,320 bytes against 1 MiB, then against 10 KiB, under the
-// floor's 24 KiB), the hold 0.5 s (30 frames of the frames' own clock). Ten frames at 1.5 m ask for
+// floor's 24 KiB), the hold 0.5 s (30 frames of the frames' own clock). Ten frames at 0.6 m ask for
 // level 0; then from 30 m the quad asks for nothing finer than the floor's level 3. No level goes
 // until the hold has passed since the last ask; then a 1 MiB ceiling releases level 0 alone (only
 // as far as the ceiling needs) and a 10 KiB one goes to the floor and no further.
@@ -1272,8 +1275,11 @@ TEST_CASE("renderer: the texture trim keeps what was asked within the hold and t
     REQUIRE(h.scene.texture_bound_active());
     const u64 whole_bytes = h.scene.texture_bytes();
     CHECK(resident_top(h.scene) == 0);  // the load is whole: nothing goes without pressure
+    // Near enough that the quad's pixels read level 0 (from 1.5 m they read level 1, and level 0,
+    // asked by nobody since the load, may go once the load is the hold's age: the first GPU run).
+    REQUIRE(std::log2(texels_per_pixel(k_near_m, k_bound_image)) < 0.75);
     for (u32 k = 0; k < k_near; ++k)
-      (void)h.shot(1.5f);
+      (void)h.shot(k_near_m);
     u32 first_trim = ~0u;
     u32 most_top = 0;
     for (u32 k = 0; k < k_far; ++k) {
@@ -1343,8 +1349,8 @@ TEST_CASE("renderer: the texture residency with no pressure changes no pixel and
 }
 
 // **A trim, then a return, ends on the picture the whole texture draws** (R172 stage 2). Under a
-// ceiling of 10 KiB with a hold of 0.25 s: the quad seen from 1.5 m, then 60 frames from 30 m (the
-// trim takes it to the floor), then back to 1.5 m. The return draws the floor's levels for the
+// ceiling of 10 KiB with a hold of 0.25 s: the quad seen from 0.6 m (level 0), then 60 frames from
+// 30 m (the trim takes it to the floor), then back to 0.6 m. The return draws the floor's levels for the
 // frames the feedback and the reader take — softer, never absent — and then the whole texture's
 // picture byte for byte, with the levels promoted off the frame.
 TEST_CASE("renderer: a texture trimmed then asked again ends on the whole picture") {
@@ -1362,13 +1368,13 @@ TEST_CASE("renderer: a texture trimmed then asked again ends on the whole pictur
       MESSAGE("skipped: " << whole.skip);
       return;
     }
-    whole_frame = whole.shot(1.5f, true);
+    whole_frame = whole.shot(k_near_m, true);
   }
   TunableScope hold("renderer.textures.hold_s", "0.25");
   TunableScope cap("renderer.textures.ceiling_mib", "0.01");
   Harness h;
   REQUIRE(h.build(mesh, ddc));
-  CHECK(differing_pixels(whole_frame, h.shot(1.5f, true)) == 0);  // loaded whole
+  CHECK(differing_pixels(whole_frame, h.shot(k_near_m, true)) == 0);  // loaded whole
   for (u32 k = 0; k < 60; ++k)
     (void)h.shot(30.0f);
   CHECK(resident_top(h.scene) == 3);
@@ -1376,7 +1382,7 @@ TEST_CASE("renderer: a texture trimmed then asked again ends on the whole pictur
   u32 softer_frames = 0;
   u32 identical_from = ~0u;
   for (u32 k = 0; k < k_back; ++k) {
-    const bool same = differing_pixels(whole_frame, h.shot(1.5f, true)) == 0;
+    const bool same = differing_pixels(whole_frame, h.shot(k_near_m, true)) == 0;
     if (!same) {
       ++softer_frames;
       identical_from = ~0u;
@@ -1385,7 +1391,7 @@ TEST_CASE("renderer: a texture trimmed then asked again ends on the whole pictur
     }
   }
   const TextureBoundUse& use = h.scene.texture_bound_use();
-  MESSAGE("back at 1.5 m: " << softer_frames << " frames softer, identical from frame "
+  MESSAGE("back at " << k_near_m << " m: " << softer_frames << " frames softer, identical from frame "
                             << identical_from << "; " << use.promotions << " promotions, "
                             << use.demotions << " demotions, worst admission "
                             << use.worst_admit_ms << " ms");
