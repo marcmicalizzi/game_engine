@@ -1551,6 +1551,89 @@ cliff, keeps its `may_fail` for one run of the eight, and that is the count's: a
 line stands half-way down the cliff's 25 cm ramp, the stretch into it falls at 44.5 degrees, and
 the fall is begun below it, half a metre short.
 
+### The section under the line
+
+(2026-11-16, roadmap W131; the forest session's needs 121a, 121d and 127, from its small scene of
+`region link 515`, bit-identical to the world's ground: on 37 % ground the solved levels stood 1.5
+to 3.9 m **under the drawn ground at the line**, the solve's lip-to-foot pairs dropped up to 4 m
+where the drawn bed drops under a metre, and the pools of W130.2 stood 6 to 8.6 m to one side of
+the line; worst where the line runs 30 degrees or more off the fall line.) **What it was.** The
+solve ([The profile](#the-profile)) reads each node's section across the line on the drawn ground
+and finds its thalweg as the lowest sample within the bed's half width — and then walked
+**downhill from there with no bound**, to a hollow's bottom. Across a bench whose downhill side
+falls away (a cut with no downhill bank: at a knickpoint no seat is read, and beside another cut's
+faces the bank is gone), the walk ran down the hillside to the end of the section's read (one and
+a half of the line's widest width and a metre: the forest's "6.25 m right, the cap") or into the
+line's own next leg below a switchback, and the station's bed, its level, its falls and its pools
+were that hollow's. The water the draw lays from them is inside the ground the walker sees, and
+the stretch over it is a gap.
+
+**The count.** `flow solve` prints `under_ground`: the stations whose written level stands more
+than `k_under_ground_m` (5 cm) under the ground at the line's own point, their share of every
+station, the lines that have one, the most and where; `--line-stats <file>` writes every solved
+line's own count (length, slope, runs, pieces, gaps, falls drawn, film and undrawn metres, the
+forest's thin metres and alternations, W138's walls and walls drawn, stations over a bank, pools
+and pools not written over spilled water, and under the ground) so one
+line, the owner's, can be read without a script.
+
+**The mend: the water is solved in the bed it has.** Of the two ways out the brief named — lay the
+line down the fall line again, or solve it along the bed it actually has — the solve takes the
+second, because the bed is what the walker sees and what real water runs in. A channel's water
+follows its channel and not the hillside's fall line for as long as its banks hold it (a stream
+across a slope in a gully, a ditch along a road, a leat along a contour are ordinary); the cut is
+already in the ground, its tile set cooked, and water solved anywhere else is water nobody sees.
+Where the plan's line itself is wrong for the ground — a line on a 67 % slope that zigzags across
+the fall line, which a real stream would not — that is the planner's to mend
+([A line across a slope](#a-line-across-a-slope)), and it costs a re-plan of the world, new cuts and
+a new tile set (on the forest, 54 GB cooked again); the solve alone cannot move the bed. So:
+
+- **The thalweg is the bed's.** Where the line names its bed's width, the walk from the lowest
+  sample within the half width down to a hollow's bottom goes no further than that half width.
+  Past it is the bank, and past the bank another hollow's ground.
+- **What is left: the face inside the cut's width.** The cut's width with its swell (2.6 to 3.4 m
+  on link 515) is wider than the floor a bench across a steep slope keeps, so the lowest sample
+  within it can stand half-way down the face beside the floor: after this mend 80 of 515's 107
+  stations still under the ground at the line had nothing as low within half a metre of it, the
+  water drawn on the face up to 1.5 m beside the line. Two further rules were built and measured
+  on v47 and **not kept**: taking such a walk again from the line's own point (the hollow it drains
+  to), and, where that too runs off the edge, the line's point itself, held at its brink. They cut
+  the stations under the ground from 1,776 to 550 but drew less: on lines over 30 % the undrawn
+  share went from 1.39 % back to 2.37 % and the gaps from 93 to 150 (the shallow hollows and the
+  line's point on a bench give small sections whose water is lowered to a low crest and written
+  as films the draw leaves out). Water beside the line on the cut's own face is seen; a film at
+  the line is not. The case in `profile_tests.cpp` holds a cut a metre wide; a 3 m cut on the same
+  bench puts its stations 0.45 m under the line, and that is the planner's to mend (a cut's width
+  is the bed's, and on a bench the floor's: [A line across a slope](#a-line-across-a-slope)).
+- **A side with no bank is an edge, not a bank to lower to.** A section whose ground falls away
+  from the thalweg on one side (a bench whose downhill bank is missing) had its lower crest at the
+  thalweg, so its level was written down to its own bed, a 5 mm film the draw leaves out. Water
+  held at such an edge stands over it by no more than its critical depth — the depth at the brink
+  of a free overfall is about 0.7 of it (Rouse 1936, the end-depth ratio of 0.715; from memory and
+  the textbooks that quote it, not re-read tonight) — so the station is written at its solved
+  level up to the edge plus its critical depth, flagged over its bank (the draw lays it with no
+  margin past its wet edge) and counted (`open_bank`). On a steep bed the flow is shooting, below
+  critical depth, and that bound never acts; in a pit on such a bench it does, and the pit's water
+  is the pool rule's ([The profile](#the-profile), "A pit on a line is a pool").
+
+**Measured** (2026-11-16, `msvc-debug` engine-content, one thread, the machine shared with other
+rows' builds; the forest's v47 world, `scene-cut.json` over the plan 780a7a78621fb16f, its own
+root; `flow solve --line-stats`; before is `main` with the count added):
+
+| v47 | before | after |
+|---|---:|---:|
+| stations under the ground at the line by over 5 cm, whole world | 2,144 (4.55 %) | 1,776 (3.78 %) |
+| over 30 %: undrawn share / film share | 2.81 % / 2.19 % | 1.39 % / 0.57 % |
+| over 30 %: gaps / runs per 100 m | 136 / 3.32 | 93 / 2.87 |
+| over 30 %: the forest's own count (thin share, pieces per 100 m) | 2.86 %, 6.11 | 1.00 %, 3.89 |
+| over 30 %: lip-to-foot pairs (drawn) | 542 (527) | 464 (463) |
+| `region link 515`: gaps, undrawn m, film m | 9, 11.9, 8.7 | 6, 5.9, 1.5 |
+| `region link 515`: stations under the ground (worst) | 123 (3.96 m) | 107 (1.50 m) |
+| `region link 515`: highest fall, pools | 4.00 m, 21 | 1.45 m, 5 |
+| stations held at an open edge (`over_bank.open`) | — | 1,426 |
+
+The 4 m pair at 515's station 712 is gone (its foot was the next leg's trench); every solve's
+head never rises and no line is left unsolved. A solve takes 150 to 300 s and 2.4 GB of commit.
+
 ## Seen: the section, the flood bed and the proof of concept's items 6, 7 and 8
 
 (2026-11-10, W93; `msvc-release`, 1920×1080, `--raster hw --shadows rt --terrain-tiles

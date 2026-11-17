@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "W138-W131",
+  "reason": "the merge of W138 and W131: channels.md's --line-stats sentence names W138's walls and spilled pools in each line's count",
+  "date": "2026-11-16",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/channels.md": 72
+  }
+}
