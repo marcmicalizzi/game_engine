@@ -24,6 +24,7 @@
 #include <domain/gfx/cluster_cull.h>
 #include <domain/gfx/visibility_resolve.h>
 #include <domain/gfx/water_spectrum.h>
+#include <domain/gfx/wind.h>
 #include <domain/scene_gen/seat.h>
 #include <domain/texture/texture_file.h>
 #include <systems/renderer/far_forest.h>
@@ -217,6 +218,26 @@ struct SceneWater {
   // load from the wind and the fetch: `gfx::k_water_waves` of them for every body with a wind, or
   // none, and then the material's four sines.
   Vector<gfx::WaterWave> waves;
+  // **The scene's wind** (gfx.md, "The water reads the wind"; W136): the body follows the scene's wind
+  // (`Sky.wind`; the body's `wind_follow`): its wind and direction are the scene's. A varying one's
+  // `waves` above are its largest sea drawn on `grid`, which spans every state that wind raises
+  // over `fetch_m` (invalid for a fixed wind); the GPU scene redraws the table on the same grid as
+  // the sea state moves (`renderer/scene_wind.h`). `wind_max_height_m` is that largest sea. False:
+  // the body's own wind, fixed at load.
+  bool scene_wind = false;
+  gfx::WaterWaveGrid grid{};
+  f32 wind_max_height_m = 0.0f;
+  // **The swell a scene names** (gfx.md, "A swell a scene names"; W136-3): an open body following
+  // the scene's wind with no swell of its own takes the sky's, and its shore's first train is that
+  // swell's largest state (height, period, direction: `swell_train_*`, which hold the body's own
+  // swell when it names one, S102). `sea` is the wind and swell the body draws — the
+  // scene's, or with no scene wind its own wind fixed beside the scene's swell — which the GPU
+  // scene's redraw asks; kind none for a body that follows neither.
+  bool scene_swell = false;
+  gfx::WindDesc sea{};
+  f32 swell_train_m = 0.0f;
+  f32 swell_train_period_s = 0.0f;
+  Vec2 swell_train_to{1.0f, 0.0f};
   // A channel of flowing water's (`engine.scene.WaterChannel`; water.md, "Channels"; S96): the
   // mesh's UV.x is the flow phase, and the GPU scene sets `gfx::k_material_water_channel` on its
   // material. `body` then holds the channel's name and optics under a body's names, and no shape.
@@ -528,6 +549,9 @@ struct SceneDesc {
   // provider found in the registry when the file was read. Empty: the stand-in sky and sun, exactly
   // as before the field existed.
   std::optional<scene::Sky> sky;
+  // The scene's wind (`Sky.wind`; gfx.md, "The wind a scene names"; W136), read and checked: kind none when the sky names
+  // none, and every reader draws what it drew.
+  gfx::WindDesc wind{};
   // The scene's participating medium (`engine.scene.Medium`, the volumetrics capability's type):
   // the block as the file gave it, read by nothing here. Null: no medium.
   JsonValue medium;
@@ -864,6 +888,8 @@ struct SceneData {
   Vector<u32> loaded_of_read;
   // Carried from the `SceneDesc`: the sky the renderer draws (sky.h), or the stand-in without one.
   std::optional<scene::Sky> sky;
+  // Carried from the `SceneDesc`: the scene's wind (gfx.md, "The wind a scene names"; W136), kind none without one.
+  gfx::WindDesc wind{};
   // Carried from the `SceneDesc`: the medium a frame pass draws (frame_pass.h;
   // systems/volumetrics), uninterpreted. Null: no medium.
   JsonValue medium;

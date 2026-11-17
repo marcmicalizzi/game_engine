@@ -570,7 +570,8 @@ WaterSwashNumbers water_swash_numbers(const SceneWater& water) {
   WaterSwashNumbers n;
   const scene::WaterBody& body = water.body;
   n.wind = static_cast<f64>(body.wind_m_s);
-  if (body.open && water.wind_m_s > 0.0f) n.wind = static_cast<f64>(water.wind_m_s);
+  if ((body.open || water.scene_wind) && water.wind_m_s > 0.0f)
+    n.wind = static_cast<f64>(water.wind_m_s);  // W136: a closed body under the scene's wind too
   // The fetch the scene's reader found (S100 stage B): an open body's `fetch_km`, a closed body's
   // own reach along its wind.
   n.fetch_m = static_cast<f64>(water.fetch_m);
@@ -580,8 +581,9 @@ WaterSwashNumbers water_swash_numbers(const SceneWater& water) {
   n.wave = gfx::swash_wave(n.wind, n.fetch_m);
   n.direction = water.shading.direction;
   // **A swell** (S102; water.md, "The swell") is the train that shoals, turns, breaks and runs up,
-  // from its own direction; the wind's wave keeps the surface offshore.
-  if (body.open && body.swell_height_m > 0.0f && body.swell_period_s > 0.0f) {
+  // from its own direction; the wind's wave keeps the surface offshore. W136-3: the body's own or
+  // the sky's at its largest, as the scene's reader set them (`SceneWater::swell_train_*`).
+  if (body.open && water.swell_train_m > 0.0f && water.swell_train_period_s > 0.0f) {
     if (n.wave.period_s > 0.0) {
       const f64 omega = 6.283185307179586 / gfx::swash_period(n.wave.period_s);
       n.wind_k0 = omega * omega / gfx::k_swash_g;
@@ -589,10 +591,9 @@ WaterSwashNumbers water_swash_numbers(const SceneWater& water) {
       n.wind_k0 = 1.0;  // no wind sea to calm: any positive number marks the swell
     }
     n.wind_wave = n.wave;
-    n.wave.height_m = static_cast<f64>(body.swell_height_m);
-    n.wave.period_s = std::min(static_cast<f64>(body.swell_period_s), 30.0);
-    const f32 a = radians(body.swell_direction_deg);
-    n.direction = Vec2{std::cos(a), std::sin(a)};
+    n.wave.height_m = static_cast<f64>(water.swell_train_m);
+    n.wave.period_s = std::min(static_cast<f64>(water.swell_train_period_s), 30.0);
+    n.direction = water.swell_train_to;
   }
   // Stockdon et al.'s, as it was, under the steep shore's ceiling (S102), which only a long low
   // wave on a steep shore reaches.
@@ -651,10 +652,13 @@ void water_surface_of(const SceneWater& water, const WaterSwashNumbers& n, gfx::
   out.reach_scale = static_cast<f32>(gfx::swash_reach_scale(n.wave.height_m, n.wave.period_s));
   out.reach_cap =
       static_cast<f32>(gfx::swash_reach_cap(n.wave.height_m, static_cast<f64>(map.bank_max)));
+  // W136-2: a varying wind's two trains span its seas (scene_wind.h, `water_cross_of_span`).
   const gfx::WaterCross cross =
       n.wind_k0 > 0.0
           ? gfx::water_cross_of_swell(n.wave.height_m, period, n.wind_wave.height_m,
                                       n.wind_wave.period_s, water.shading.direction)
+      : water.scene_wind && water.grid.valid()
+          ? water_cross_of_span(n.wave.height_m, period, n.direction)
           : gfx::water_cross_of_sea(n.wave.height_m, period, n.direction, water.shading.seed);
   gfx::WaterFieldDesc desc;
   desc.texels = map.texels.data();
@@ -2639,11 +2643,8 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
         water_surface_of_[i] = surfaces.size();
         // The spheres take the lift's reach: the bank's highest ground (a parked vertex), the
         // waves, the bore and the tide.
-        f32 waves = surface.height_m * 2.0f + surface.run_up_m + surface.tide_m;
-        for (const gfx::WaterWave& wave : water.waves)
-          waves += wave.amplitude;
-        waves += surface.amplitude * 2.1f;
-        const f32 padding = water.depth.bank_max + waves + 0.5f;
+        const f32 padding = water_lift_padding(surface, {water.waves.data(), water.waves.size()},
+                                               water.depth.bank_max);
         if (padding > instance_table_[i].bounds_padding)
           instance_table_[i].bounds_padding = padding;
         surfaces.push_back(surface);
@@ -2653,6 +2654,7 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
             log::field("run_up_m", surface.run_up_m), log::field("field_texels", water.depth.size),
             log::field("padding_m", padding));
       }
+      water_surface_load_ = surfaces;  // W136: what the wind's redraw starts from
       if (!surfaces.empty() && !gfx::upload_buffer(device, surfaces.data(),
                                                    u64{surfaces.size()} * sizeof(gfx::WaterSurface),
                                                    k_address, water_surfaces_, error)) {
@@ -3433,6 +3435,8 @@ u64 GpuScene::flora_frame(u32 slot, const FrameFlora& frame, u64 frame_index, f6
   if (frame.wind_set) {
     to = frame.wind_to;
     strength = frame.wind_strength;
+  } else if (data_ != nullptr && scene_flora_wind(data_->wind, sky_time_s, to, strength)) {
+    source = "scene";  // W136: the scene's wind (or the hand wind), its gust over a mean day's
   } else {
     const TerrainSampler* ground = ground_ != nullptr ? ground_.get() : flora_ground_.get();
     f64 moved = 0.0;
@@ -4413,6 +4417,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
   share_textures_ = resolved.settings.share_textures;
   transform_conflicts_ = 0;
   Vector<gfx::ResolveMaterial> material_table;
+  water_wave_entries_.clear();  // W136: where each body's wave table is, for the scene's wind
   // Per entry of the table, 1 where it is a material a cluster can name and 0 where it is a record
   // that only its material reads — a water body's optics, spectrum and plunges, the terrain's
   // record — whose word at `flags`' offset is a float or a tile index, not flags (R141: a terrain
@@ -4915,6 +4920,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
           table_material.push_back(u8{0});
         }
         if (spectrum) {
+          water_wave_entries_.push_back(WaterWaveEntry{m, material_table.size()});
           for (const gfx::ResolveMaterial& entry : wave_entries) {
             material_table.push_back(entry);
             table_material.push_back(u8{0});
@@ -6546,6 +6552,8 @@ void GpuScene::destroy() noexcept {
   water_fields_.clear();
   water_surface_of_.clear();
   water_deforms_.clear();
+  water_wind_.clear();  // W136
+  water_wind_ready_ = false;
   micromap_list_.clear();
   micromap_triangles_.clear();
   if (!sets_.empty()) {

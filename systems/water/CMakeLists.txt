@@ -30,12 +30,16 @@ engine_module_tests(NAME water
           tests/dry_bank_scene_tests.cpp
           # R151: the resolve by pixel class on a basin, the ground by the module without water.
           tests/resolve_class_water_tests.cpp
+          # W136: the "water wind" pass and the lift's bound, on a GPU.
+          tests/wind_scene_tests.cpp
   DEPS renderer gfx tunables)
 if(TARGET engine_water_tests)
   target_compile_definitions(engine_water_tests PRIVATE ENGINE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
   # refract_scene_tests.cpp holds the hit's sun under the water to gfx's double-precision water
-  # reference (S86), which lives with gfx's tests.
-  target_include_directories(engine_water_tests PRIVATE ${CMAKE_SOURCE_DIR}/domain/gfx/tests)
+  # reference (S86), which lives with gfx's tests; wind_scene_tests.cpp opens its device through
+  # the renderer's test profile (test_device.h).
+  target_include_directories(engine_water_tests PRIVATE ${CMAKE_SOURCE_DIR}/domain/gfx/tests
+                                                        ${CMAKE_SOURCE_DIR}/systems/renderer/tests)
 endif()
 # W67: the native authored source and water's ground view must describe the same bottom.
 if(TARGET engine_water_tests AND TARGET engine::tileset)

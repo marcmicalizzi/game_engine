@@ -2934,6 +2934,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
                            !resolved_.direct &&
                            frame_view_mode == static_cast<u32>(gfx::ResolveMode::Shaded);
   if (ui_layer_on && !ensure_ui_layer(error)) return false;
+  // The wind's moved wave tables (W136; gfx.md, "The water reads the wind"), before the records.
+  const std::span<const WaterWindUpload> water_wind =
+      scene.water_wind_frame(scene.epoch_s() + frame.sky_time_s);
   // A streamed world's tables, before anything reads their addresses: after a change the frame
   // flips `scene.instances` and `scene.pair_table` to the next table set, which no frame in flight
   // reads, and stages that set's changed slots in this slot's staging for the passes below to copy
@@ -4536,6 +4539,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     gfx::RgBuffer staging;    // this frame slot's record staging
     // An admitted mesh's material indices and materials (R142; "Meshes that come and go").
     gfx::RgBuffer cluster_materials, materials;
+    gfx::RgBuffer water_surfaces;  // W136: a body's surface the wind redrew
   } tg{};
   const auto import_read = [&](const char* name, const gfx::BufferResource& buffer) {
     return buffer.buffer.valid()
@@ -4561,6 +4565,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     }
   }
   if (mesh_records) tg.meshes = import_read("mesh records", scene.meshes);
+  if (!water_wind.empty()) {  // W136: the wave tables are in the materials, the surfaces beside
+    if (!tg.materials.valid()) tg.materials = import_read("mesh materials", scene.materials);
+    tg.water_surfaces = import_read("water surfaces", scene.water_surfaces());
+  }
   if (instance_records) tg.instances = import_read("instance records", scene.instances);
   if (instance_records || mesh_records) {
     tg.staging = graph.import_buffer("record staging", records_.staging, gfx::PipelineStage::Host,
@@ -4569,7 +4577,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   auto read_ring_geometry = [&](gfx::PassBuilder& b, gfx::Access access) {
     for (const gfx::RgBuffer handle :
          {tg.clusters, tg.lods, tg.quantized, tg.attributes, tg.triangles, tg.meshes, tg.vertices,
-          tg.indices8, tg.instances, tg.cluster_materials, tg.materials}) {
+          tg.indices8, tg.instances, tg.cluster_materials, tg.materials, tg.water_surfaces}) {
       if (handle.valid()) b.read(handle, access);
     }
   };
@@ -4884,6 +4892,25 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             cb.copy_buffer(
                 records_.staging.buffer, scene.meshes.buffer,
                 std::span<const gfx::BufferCopy>(records_.meshes.data(), records_.meshes.size()));
+          }
+        });
+  }
+
+  // **The water's wind** (W136; scene_wind.h): each moved body's wave table into its material
+  // entries and its surface into its record, written inline (half a kilobyte each). Like the
+  // record upload, the buffers were imported as last read everywhere, so the barrier waits for the
+  // frames in flight, and every reader of the geometry declares them.
+  if (!water_wind.empty()) {
+    graph.add_pass(
+        "water wind", gfx::PassKind::Transfer,
+        [&](gfx::PassBuilder& b) {
+          b.write(tg.materials, gfx::Access::TransferWrite);
+          if (tg.water_surfaces.valid()) b.write(tg.water_surfaces, gfx::Access::TransferWrite);
+        },
+        [&, water_wind](gfx::CommandList cb, gfx::RenderGraph&) {
+          for (const WaterWindUpload& up : water_wind) {
+            const gfx::BufferResource& to = up.surface ? scene.water_surfaces() : scene.materials;
+            if (to.buffer.valid()) cb.update_buffer(to.buffer, up.offset, up.bytes, up.data);
           }
         });
   }

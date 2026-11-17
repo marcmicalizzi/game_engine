@@ -687,26 +687,10 @@ inline void water_shore_slope_field(const f32* depth, u32 size, f64 texel_m, f32
 inline SwashWave swash_wave(f64 u10, f64 fetch_m) noexcept {
   SwashWave w;
   if (!(u10 > 0.0) || !(fetch_m > 0.0)) return w;
-  const f64 g = k_swash_g;
+  // The spectrum's own height, at the sea's shape (water_spectrum.h, `water_sea_height`: the one
+  // height the table, the sea state and the shore take; W136-2).
   const f64 peak = jonswap_peak(u10, fetch_m);
-  const f64 alpha = jonswap_alpha(u10, fetch_m);
-  // m0 by the midpoint rule over [0.3, 6] omega_p in 4,096 steps (the spectrum is smooth there and
-  // holds all but a few parts in a thousand of its variance in it).
-  const u32 steps = 4096;
-  const f64 lo = 0.3 * peak;
-  const f64 hi = 6.0 * peak;
-  const f64 dw = (hi - lo) / static_cast<f64>(steps);
-  f64 m0 = 0.0;
-  for (u32 i = 0; i < steps; ++i) {
-    const f64 omega = lo + (static_cast<f64>(i) + 0.5) * dw;
-    const f64 sigma = omega <= peak ? 0.07 : 0.09;
-    const f64 d = omega - peak;
-    const f64 r = std::exp(-d * d / (2.0 * sigma * sigma * peak * peak));
-    const f64 q = peak / omega;
-    m0 += alpha * g * g / (omega * omega * omega * omega * omega) *
-          std::exp(-1.25 * q * q * q * q) * std::pow(3.3, r) * dw;
-  }
-  w.height_m = 4.0 * std::sqrt(m0);
+  w.height_m = water_sea_height(u10, fetch_m);
   w.period_s = 2.0 * 3.14159265358979323846 / peak;
   return w;
 }

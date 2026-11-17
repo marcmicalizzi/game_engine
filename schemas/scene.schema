@@ -1240,6 +1240,98 @@ struct AuthoredSet @version(1) {
   forms: AuthoredForms[]
   instances: AuthoredInstance[]
 }
+/// One key of a wind's track (`Wind.track`): the wind at an hour of the track's period.
+struct WindKey @version(1) {
+  /// Hours from the start of the period (midnight of the world's epoch for a day), [0, period).
+  hour: f32 = 0 @unit(h)
+  /// The mean wind 10 m up, m/s, [0, 60].
+  speed_m_s: f32 = 0 @unit("m/s")
+  /// Where it blows **to**, degrees about +y from +x towards +z (as a water body's `direction_deg`).
+  to_deg: f32 = 0 @unit(deg)
+}
+
+/// A wind drawn from a climate (`Wind.climate`; docs/experiments/wind.md): the weather's mean wind
+/// as a smooth seeded process of the sky's clock, a Weibull distribution of speeds over days, a
+/// direction that wanders about a prevailing one, and the day's cycle on top.
+struct WindClimate @version(1) {
+  /// The record's mean wind 10 m up, m/s, (0, 30]: 3 to 5 is a sheltered inland site, 7 to 8 an
+  /// exposed coast or the open ocean.
+  mean_m_s: f32 = 6 @unit("m/s")
+  /// Weibull's shape k, [1, 4]: 2 (Rayleigh) is typical; a trade wind is steadier (3), a gusty
+  /// continental site less so (1.5).
+  weibull_k: f32 = 2
+  /// The prevailing wind: where it blows **to**, degrees about +y from +x towards +z.
+  to_deg: f32 = 0 @unit(deg)
+  /// How far the weather's direction wanders either side of the prevailing one, one standard
+  /// deviation, degrees, [0, 180].
+  veer_deg: f32 = 35 @unit(deg)
+  /// The weather's time scale, hours, [6, 480]: the knots of the process are this far apart (a
+  /// mid-latitude coast's fronts and highs pass every three to five days).
+  synoptic_h: f32 = 48 @unit(h)
+  /// The day's cycle: the strength's swing over the day as a share of the weather's, [0, 1]
+  /// (0 none; 0.3 a land site's afternoon maximum, more where a sea breeze sets in).
+  diurnal: f32 = 0.3
+  /// The hour the day's wind peaks, [0, 24): mid-afternoon, after the day's heat.
+  peak_hour: f32 = 15 @unit(h)
+  seed: u32 = 1
+}
+
+/// The scene's wind (`Sky.wind`; docs/subsystems/gfx.md, "The wind a scene names"): exactly one of a fixed wind (no `track`
+/// and no `climate`), a track through the period, or a climate drawn with a seed. Refused with a
+/// sentence: a speed out of [0, 60] m/s, a track key out of its period or out of order, a track and
+/// a climate both, a climate's numbers out of their ranges, a roughness out of (0, 2] m.
+struct Wind @version(1) {
+  /// A fixed wind: the mean wind 10 m up, m/s, [0, 60], blowing **to** `to_deg`.
+  speed_m_s: f32 = 0 @unit("m/s")
+  to_deg: f32 = 0 @unit(deg)
+  /// A track: keys in order of hour, the wind between two keys their linear blend (the direction
+  /// by the shorter way round), wrapping from the last key to the first over the period.
+  track: WindKey[]
+  /// The track's period, hours, (0, 8760]: 24 repeats the day.
+  period_h: f32 = 24 @unit(h)
+  /// A climate the wind is drawn from.
+  climate: WindClimate?
+  /// The ground's aerodynamic roughness length z0 round the scene, metres, (0, 2]: what sets the
+  /// gusts' strength (turbulence intensity 1 / ln(10 m / z0)): 0.0002 the open sea, 0.03 open
+  /// grassland, 0.5 to 1 a forest or a town.
+  roughness_m: f32 = 0.03 @unit(m)
+}
+
+/// One key of an arriving swell's track (`Swell.track`): the swell at an hour of the track's period.
+struct SwellKey @version(1) {
+  /// Hours from the start of the period, [0, period).
+  hour: f32 = 0 @unit(h)
+  /// Its significant height in deep water, metres, [0, 15].
+  height_m: f32 = 0 @unit(m)
+  /// Its peak period, seconds, [4, 25].
+  period_s: f32 = 12 @unit(s)
+  /// Where it travels **to**, degrees about +y from +x towards +z (as the wind's `to_deg`).
+  to_deg: f32 = 0 @unit(deg)
+}
+
+/// **A swell arriving from a distant storm** (`Sky.swell`; docs/subsystems/gfx.md, "A swell a scene
+/// names"; docs/experiments/wind.md, "Swell"; W136-3): waves raised by a wind somewhere else, long,
+/// narrow in period and in direction, there whatever the local wind does. Exactly one of a fixed
+/// swell (no `track`) or a track through the period. Refused with a sentence: a height out of
+/// [0, 15] m, a period out of [4, 25] s, a track key out of its period or out of order, a distance
+/// out of [0, 20000] km.
+struct Swell @version(1) {
+  /// A fixed swell: significant height in deep water, m, peak period, s, and where it travels to.
+  height_m: f32 = 0 @unit(m)
+  period_s: f32 = 12 @unit(s)
+  to_deg: f32 = 0 @unit(deg)
+  /// A track: keys in order of hour, blended linearly (the direction by the shorter way round),
+  /// wrapping over the period. A storm's swell arrives long first and shortens over a day or two
+  /// (dispersion): a track says it.
+  track: SwellKey[]
+  /// The track's period, hours, (0, 8760].
+  period_h: f32 = 24 @unit(h)
+  /// How far it has travelled from its storm, km, [0, 20000]: a swell from further is narrower in
+  /// period and in direction (Goda and Suzuki's spreading s_max 25 near, 75 far; the spectrum's
+  /// peak enhancement 3.3 near to 7 far). 0: 1,000 km, a typical arriving swell.
+  distance_km: f32 = 0 @unit(km)
+}
+
 /// How a sky's exposure is chosen (docs/subsystems/renderer.md, "Exposure").
 enum SkyExposure : u8 {
   /// Metered from the light at the eye by the renderer's declared rule (incident-light metering at
@@ -1256,7 +1348,7 @@ enum SkyExposure : u8 {
 /// **Absent, the scene draws exactly what it drew before**: the renderer's stand-in, a flat sky colour
 /// and a sun that is a direction. Append-only: a field added later has a default that draws what the
 /// block drew before it.
-struct Sky @version(2) {
+struct Sky @version(3) {
   /// The sky provider that draws it, by the name it registered under (docs/subsystems/scene_gen.md):
   /// "earth", the sky capability's. Empty: "earth". A name the executable does not carry is refused
   /// with a sentence naming it.
@@ -1294,6 +1386,16 @@ struct Sky @version(2) {
   /// scaled by the inverse square, so the sun's and the moon's illuminance stay what they were
   /// (docs/subsystems/renderer.md, "The sky").
   disc_scale: f32 = 1 @since(2)
+  /// **The wind** (docs/subsystems/gfx.md, "The wind a scene names"; roadmap W136): one wind the whole scene asks — the sea's
+  /// waves and its shore, a lake's, the trees' sway — 10 m above the ground, on the sky's clock.
+  /// Null, the default: no scene wind, and every reader draws exactly what it drew (a water body
+  /// its own `wind_m_s`, the trees their ground's record or the tunables').
+  wind: Wind? @since(3)
+  /// **A swell arriving from a distant storm** (docs/subsystems/gfx.md, "A swell a scene names";
+  /// W136-3), on the sky's clock beside the wind: every open body that follows the scene's wind
+  /// (`wind_follow`) and names no swell of its own draws it in its table and brings it ashore as its
+  /// train. Null, the default: no swell, and every reader draws what it drew.
+  swell: Swell? @since(3)
 }
 
 /// A fire's smoke (docs/subsystems/volumetrics.md, "Fire"): a plume leaving the flame's top, rising
@@ -1409,7 +1511,9 @@ struct WaterBody @version(6) {
   /// spread of ninety degrees either side: chop.
   chop: f32 = 0.5
   /// The waves travel along the ground's wind when the ground has one; otherwise, or when false,
-  /// along `direction_deg`.
+  /// along `direction_deg`. With the sky's `wind` (docs/subsystems/gfx.md, "The wind a scene names"; W136), true takes the
+  /// scene's wind — its speed and direction, and the sea it raises over time — in place of both and
+  /// of `wind_m_s`, open or closed.
   wind_follow: bool = true
   /// Degrees about +y from +x towards +z: the waves' direction without the wind.
   direction_deg: f32 = 0 @unit(deg)

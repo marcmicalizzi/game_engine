@@ -50,6 +50,7 @@
 #include <renderer_log.h>
 #include <scene_fire.h>
 #include <scene_water.h>
+#include <systems/renderer/scene_wind.h>
 #include <schemas/scene.h>
 #include <thread>
 #include <utility>
@@ -2542,6 +2543,13 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
       return false;
     }
     out.sky = *file.sky;
+    // The scene's wind (gfx.md, "The wind a scene names"; W136), checked here so a wind nobody can draw refuses the file.
+    if (file.sky->wind.has_value() && !read_scene_wind(*file.sky->wind, path, out.wind, error))
+      return false;
+    // The swell arriving beside it (gfx.md, "A swell a scene names"; W136-3).
+    if (file.sky->swell.has_value() &&
+        !read_scene_swell(*file.sky->swell, path, out.wind.swell, error))
+      return false;
   }
   // The participating medium (`engine.scene.Medium`): carried as the file gave it, read by the
   // capability that draws it (systems/volumetrics), as `world` is carried for the world's.
@@ -3468,6 +3476,7 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   // tiles, which are terrain levels in fixed slots, not instances of the tail).
   out.dynamic = resolved.world.enabled && !(resolved.world.ground && resolved.streamed.empty());
   out.sky = resolved.sky;
+  out.wind = resolved.wind;
   out.medium = resolved.medium;
   out.props = resolved.props;
   out.fires = resolved.fires;
