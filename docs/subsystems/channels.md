@@ -1565,13 +1565,20 @@ a new tile set (on the forest, 54 GB cooked again); the solve alone cannot move 
 - **The thalweg is the bed's.** Where the line names its bed's width, the walk from the lowest
   sample within the half width down to a hollow's bottom goes no further than that half width.
   Past it is the bank, and past the bank another hollow's ground.
-- **A walk that stops at the bed's edge with the ground still falling past it found a face, not a
-  hollow.** The cut's width with its swell (2.6 to 3.4 m on link 515) is wider than the floor a
-  bench across a steep slope keeps, so the lowest sample within it can be half-way down the face
-  beside the floor: after the first rule alone 80 of 515's 107 stations still under the ground had
-  nothing as low within half a metre of the line. Such a walk is taken again from the line's own
-  point (the hollow it drains to), and where that too runs off the edge the thalweg is the line's
-  point itself: the water stands at the line, held at its brink by the next rule.
+- **What is left: the face inside the cut's width.** The cut's width with its swell (2.6 to 3.4 m
+  on link 515) is wider than the floor a bench across a steep slope keeps, so the lowest sample
+  within it can stand half-way down the face beside the floor: after this mend 80 of 515's 107
+  stations still under the ground at the line had nothing as low within half a metre of it, the
+  water drawn on the face up to 1.5 m beside the line. Two further rules were built and measured
+  on v47 and **not kept**: taking such a walk again from the line's own point (the hollow it drains
+  to), and, where that too runs off the edge, the line's point itself, held at its brink. They cut
+  the stations under the ground from 1,776 to 550 but drew less: on lines over 30 % the undrawn
+  share went from 1.39 % back to 2.37 % and the gaps from 93 to 150 (the shallow hollows and the
+  line's point on a bench give small sections whose water is lowered to a low crest and written
+  as films the draw leaves out). Water beside the line on the cut's own face is seen; a film at
+  the line is not. The case in `profile_tests.cpp` holds a cut a metre wide; a 3 m cut on the same
+  bench puts its stations 0.45 m under the line, and that is the planner's to mend (a cut's width
+  is the bed's, and on a bench the floor's: [A line across a slope](#a-line-across-a-slope)).
 - **A side with no bank is an edge, not a bank to lower to.** A section whose ground falls away
   from the thalweg on one side (a bench whose downhill bank is missing) had its lower crest at the
   thalweg, so its level was written down to its own bed, a 5 mm film the draw leaves out. Water
@@ -1582,6 +1589,25 @@ a new tile set (on the forest, 54 GB cooked again); the solve alone cannot move 
   margin past its wet edge) and counted (`open_bank`). On a steep bed the flow is shooting, below
   critical depth, and that bound never acts; in a pit on such a bench it does, and the pit's water
   is the pool rule's ([The profile](#the-profile), "A pit on a line is a pool").
+
+**Measured** (2026-11-16, `msvc-debug` engine-content, one thread, the machine shared with other
+rows' builds; the forest's v47 world, `scene-cut.json` over the plan 780a7a78621fb16f, its own
+root; `flow solve --line-stats`; before is `main` with the count added):
+
+| v47 | before | after |
+|---|---:|---:|
+| stations under the ground at the line by over 5 cm, whole world | 2,144 (4.55 %) | 1,776 (3.78 %) |
+| over 30 %: undrawn share / film share | 2.81 % / 2.19 % | 1.39 % / 0.57 % |
+| over 30 %: gaps / runs per 100 m | 136 / 3.32 | 93 / 2.87 |
+| over 30 %: the forest's own count (thin share, pieces per 100 m) | 2.86 %, 6.11 | 1.00 %, 3.89 |
+| over 30 %: lip-to-foot pairs (drawn) | 542 (527) | 464 (463) |
+| `region link 515`: gaps, undrawn m, film m | 9, 11.9, 8.7 | 6, 5.9, 1.5 |
+| `region link 515`: stations under the ground (worst) | 123 (3.96 m) | 107 (1.50 m) |
+| `region link 515`: highest fall, pools | 4.00 m, 21 | 1.45 m, 5 |
+| stations held at an open edge (`over_bank.open`) | — | 1,426 |
+
+The 4 m pair at 515's station 712 is gone (its foot was the next leg's trench); every solve's
+head never rises and no line is left unsolved. A solve takes 150 to 300 s and 2.4 GB of commit.
 
 ## Seen: the section, the flood bed and the proof of concept's items 6, 7 and 8
 

@@ -439,34 +439,16 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
         if (row[c.centre + e] < row[t]) t = c.centre + e;
         if (row[c.centre - e] < row[t]) t = c.centre - e;
       }
-      const auto descend = [&](u32 from) {
-        for (;;) {
-          const bool up = from < hi && row[from + 1] < row[from];
-          const bool down = from > lo && row[from - 1] < row[from];
-          if (up && (!down || row[from + 1] <= row[from - 1]))
-            ++from;
-          else if (down)
-            --from;
-          else
-            break;
-        }
-        return from;
-      };
-      // A walk that stops at the bed's edge with the ground still falling past it found a face,
-      // not a hollow (a bench whose downhill side falls away inside the cut's width: the forest's
-      // link 515, stations 388 to 396). The bed is then the hollow the line's own point drains
-      // to, or, where that too runs off the edge, the line's point itself: the water stands at
-      // the line, held at its brink (`edge`, below), never down the face.
-      const auto open_at = [&](u32 at) {
-        return !line.width.empty() && ((at == lo && lo > 0 && row[lo - 1] < row[at]) ||
-                                       (at == hi && hi + 1 < c.across && row[hi + 1] < row[at]));
-      };
-      t = descend(t);
-      if (open_at(t)) t = descend(c.centre);
-      // (Not where the line's point is a ridge, lower ground either side: no level there wets
-      // anything, and the line would be refused; the face's foot stays the bed.)
-      if (open_at(t) && !(row[c.centre - 1] < row[c.centre] && row[c.centre + 1] < row[c.centre]))
-        t = c.centre;
+      for (;;) {
+        const bool up = t < hi && row[t + 1] < row[t];
+        const bool down = t > lo && row[t - 1] < row[t];
+        if (up && (!down || row[t + 1] <= row[t - 1]))
+          ++t;
+        else if (down)
+          --t;
+        else
+          break;
+      }
       c.thalweg[k] = t;
       c.bed[k] = row[t];
       // Each bank's crest: the highest ground reached walking out, before it falls away.
@@ -984,13 +966,10 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
     // else they are the flow's at the level before it is rounded to the description's
     // millimetre: half a millimetre is a tenth of a thin sheet's area, and where the area steps
     // (`bisect`) the rounded level may stand on the other side of the step.
-    // A station whose water stands over an edge with no bank (W131) is counted, and flagged over
-    // its bank only where its level was lowered to the brink: flagged, a shallow shooting sheet at
-    // the line is a film the draw leaves out (on v47 it took the gaps on lines over 30 % from 93 to
-    // 139).
+    // A station held at an edge with no bank (W131) stands over its bank too: the draw lays it
+    // with no margin past its wet edge, and leaves it out where it is a film.
     const bool lowered = held[index] != 0;
-    const bool over_bank = lowered;
-    if (opened[index] != 0) ++stats.open_bank;
+    const bool over_bank = lowered || opened[index] != 0;
     const f64 bed = between(o, c.bed);
     const Flow f = o.from != k_no_node
                        ? flow_of(o)
@@ -1035,7 +1014,9 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
     st.manning_n = f.n;
     st.flags = o.flags;
     if (over_bank) {
-      st.over_m = o.level - level;
+      // How far the solved level stood over its bank, or the written one over its edge.
+      st.over_m = lowered ? o.level - level : level - between(o, c.edge);
+      if (opened[index] != 0) ++stats.open_bank;
       st.flags |= scene_gen::k_channel_over_bank;
       ++stats.over_bank;
       if (st.over_m > stats.over_bank_worst_m) {

@@ -699,40 +699,37 @@ TEST_CASE(
   // across a bench with no downhill bank it ran down the hillside to the section's end or into the
   // trench below, and the station's level stood there, a metre or more under the ground at the
   // line, where nothing of it is seen.
-  // A cut a metre wide, and one 3 m wide whose half width reaches past the lip down the hillside.
-  for (const f64 width : {1.0, 3.0})
-    for (const bool lip : {false, true}) {
-      CAPTURE(width);
-      CAPTURE(lip);
-      Bench b;
-      b.lip = lip;
-      scene_gen::Ground ground;
-      ground.surface_fn = &bench_height;
-      ground.context = &b;
-      FlowLine line = fixture_line("bench", 0, 40, 0, 0.021);
-      line.width.assign(2, width);
-      std::string error;
-      Profile p;
-      REQUIRE_MESSAGE(solve_profile(line, ground, ProfileOptions{}, p, error), error);
-      REQUIRE(p.stations.size() >= 2);
-      CHECK(p.stats.under_ground == 0);
-      CHECK(p.stats.falls == 0);
-      for (u32 i = 0; i < p.stations.size(); ++i) {
-        const ProfileStation& s = p.stations[i];
-        CAPTURE(s.x);
-        const f64 at_line = 100.0 - 0.1 * s.x - 0.4;
-        // The bed is the floor's, within the bed's half width of the line, and the water on it.
-        CHECK(s.bed >= at_line - 0.03);
-        CHECK(s.level >= at_line - k_under_ground_m);
-        CHECK(s.depth >= 0.02);                           // a stream the draw lays, not a film
-        CHECK(s.wet_right <= (lip ? 0.75 : 0.5) + 1e-6);  // to the floor's edge, or up the lip
-        if (lip) CHECK((s.flags & scene_gen::k_channel_over_bank) == 0);
-        if (i + 1 < p.stations.size()) {
-          const ProfileStation& t = p.stations[i + 1];
-          CHECK(scene_gen::channel_stretch_drawn(s.flags, t.flags, static_cast<f32>(s.depth),
-                                                 static_cast<f32>(t.depth), s.level, t.level));
-        }
+  for (const bool lip : {false, true}) {
+    CAPTURE(lip);
+    Bench b;
+    b.lip = lip;
+    scene_gen::Ground ground;
+    ground.surface_fn = &bench_height;
+    ground.context = &b;
+    FlowLine line = fixture_line("bench", 0, 40, 0, 0.021);
+    line.width.assign(2, 1.0);
+    std::string error;
+    Profile p;
+    REQUIRE_MESSAGE(solve_profile(line, ground, ProfileOptions{}, p, error), error);
+    REQUIRE(p.stations.size() >= 2);
+    CHECK(p.stats.under_ground == 0);
+    CHECK(p.stats.falls == 0);
+    for (u32 i = 0; i < p.stations.size(); ++i) {
+      const ProfileStation& s = p.stations[i];
+      CAPTURE(s.x);
+      const f64 at_line = 100.0 - 0.1 * s.x - 0.4;
+      // The bed is the floor's, within the bed's half width of the line, and the water on it.
+      CHECK(s.bed >= at_line - 0.03);
+      CHECK(s.level >= at_line - k_under_ground_m);
+      CHECK(s.depth >= 0.02);                           // a stream the draw lays, not a film
+      CHECK(s.wet_right <= (lip ? 0.75 : 0.5) + 1e-6);  // to the floor's edge, or up the lip
+      if (lip) CHECK((s.flags & scene_gen::k_channel_over_bank) == 0);
+      if (i + 1 < p.stations.size()) {
+        const ProfileStation& t = p.stations[i + 1];
+        CHECK(scene_gen::channel_stretch_drawn(s.flags, t.flags, static_cast<f32>(s.depth),
+                                               static_cast<f32>(t.depth), s.level, t.level));
       }
-      check_head_falls(p);
     }
+    check_head_falls(p);
+  }
 }
