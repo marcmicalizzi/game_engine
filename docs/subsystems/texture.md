@@ -1219,9 +1219,10 @@ vendored encoders, MIT or public domain).
   and 30 m in a scene loaded whole and one the bound holds, ids, depth and colour **identical** at
   each; the load holds 24,064 bytes (the floor) where the whole chain is 1,400,320, and after the
   first frame's settle 1,400,320 at 1.5 and 5.8 m, 351,744 at 11 m, the floor alone at 30 m (settle
-  24.5, 18.9, 5.0 and 0 ms in `msvc-debug`); a fly-in of 48 frames from 40 m to 1.2 m identical frame
-  for frame to the whole scene's, its one promotion asked at frame 2 and needed from frame 32,
-  nothing late, the admission 0.44 ms. The feedback's own test passes with the bound on (the
+  24.5, 18.9, 5.0 and 0 ms in `msvc-debug`); a walk of 48 frames from 12 m to 1.2 m, 0.225 m a
+  frame, identical frame for frame to the whole scene's: the first frame's settle brings level 1,
+  the lead asks for level 0 off the frame long before frame 36, where a pixel first reads below the
+  floor, and it lands with nothing late (2 promotions, 5 evaluations, the admission 0.37 ms). The feedback's own test passes with the bound on (the
   records' serial counts promotions, so the feedback follows a texture to its new pair).
 - `mips_tests.cpp` — chain sides and counts at seven sizes; the sRGB tables within an ulp of the
   transfer function and every code round-tripping; a black-and-white checker averaging to sRGB 188
