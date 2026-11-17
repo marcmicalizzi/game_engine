@@ -648,6 +648,32 @@ it saves on gate b57's numbers: `msvc-no-ecs`'s renderer parts and `gfx`, 1,041 
 `msvc-debug`. The decision is reversible by dropping the switch from the gate's command line
 (review 2026-11-09, decision 5).
 
+### The renderer as a weaker card
+
+The GPU server leg (the TITAN Xp: no mesh shaders, no ray queries, no cluster acceleration
+structures) was red on batches 65 and 66, each time on a new renderer test that took the RTX 5090
+for granted, and it trails the merge, so a fault of that class reached `main` twice. Since T162
+every renderer test file opens its device through `systems/renderer/tests/test_device.h`, which
+honours `ENGINE_GFX_TEST_DEVICE` ([renderer](../subsystems/renderer.md), "Running a case as a
+weaker card"), so the Windows gate runs the renderer's suite once more as that card, beside the
+`msvc-debug` suite and in the same build:
+
+```powershell
+$env:ENGINE_GFX_TEST_DEVICE = 'titanxp'; $env:ENGINE_GPU_LOCK_LOG = '<gate log dir>\lock-titanxp.jsonl'
+pwsh -NoProfile -File tools/dev.ps1 test -Preset msvc-debug -Filter '^renderer\.' -Jobs 3
+Remove-Item Env:ENGINE_GFX_TEST_DEVICE
+```
+
+`titanxp` rather than `baseline`: it removes everything `baseline` removes (mesh shaders) and the
+ray-tracing rows besides, so it covers both of the faults the server leg found. A fault this leg
+reports is a test's, not the card's: the case skips before it builds what the device lacks
+(T153's pattern). **What it costs** (2026-11-16, `msvc-debug`, the RTX 5090, the session
+unlocked): the first part, `renderer.1`, ran 1,025 s of wall clock of which 696 s was waiting for
+the GPU lock behind other agents' work (60 device opens, 276 s holding the card), so about 330 s
+of its own; the whole suite's own time is in the T162 hand-back's log, measured the same way. The
+lock wait is the line's and not the leg's: on a gate that runs nothing else on the GPU at that
+moment it is near zero, and beside the three other Windows suites it is whatever they hold.
+
 ### Gate b58, measured
 
 The first gate run with everything above (2026-11-10, ten rows on `75fa25da`, beside the three
