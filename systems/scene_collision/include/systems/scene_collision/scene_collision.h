@@ -723,8 +723,9 @@ class SceneCollision {
   FlatMap<u64, std::unique_ptr<TileProxy>> tile_proxies_;
   ProxyStats proxy_stats_;
   std::mutex proxies_mutex_;
-  // A generator's state is its own and may be scratch it writes (the ruins' assemblers), so its
-  // `tile` is asked by one thread at a time.
+  // A generator's state is its own and may be scratch it writes, so the `tile` of one that does not
+  // say it is reentrant (`scene_gen::PlacementGeneratorDesc::tile_reentrant`, T169) is asked by one
+  // thread at a time, under this; a reentrant one is asked beside the others.
   std::mutex generators_mutex_;
   FlatMap<u64, Tile> tiles_;
   Stats stats_;

@@ -342,7 +342,9 @@ constexpr scene_gen::PlacementGeneratorDesc k_generator{.name = "bridges",
                                                         .representation = nullptr,
                                                         .tile_meshes = true,
                                                         .tile_meshes_masked = false,
-                                                        .plan_ground = plan_ground};
+                                                        .plan_ground = plan_ground,
+                                                        // hands the bridges planned at open
+                                                        .tile_reentrant = true};
 const scene_gen::Registrar k_registrar{k_generator};
 
 }  // namespace

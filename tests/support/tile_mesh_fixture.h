@@ -437,7 +437,8 @@ inline constexpr scene_gen::PlacementGeneratorDesc k_tile_rocks{.name = "test-ti
                                                                 .meshes = &tile_rocks_meshes,
                                                                 .tile = &tile_rocks_tile,
                                                                 .occupies = &tile_rocks_occupies,
-                                                                .tile_meshes = true};
+                                                                .tile_meshes = true,
+                                                                .tile_reentrant = true};
 
 // The same generator under a second name that says its tiles may hand an alpha-tested mesh
 // (`tile_meshes_masked`): what a scene whose rocks' look has `k_tile_rock_masked` names, so the
@@ -450,7 +451,8 @@ inline constexpr scene_gen::PlacementGeneratorDesc k_tile_leaves{.name = "test-t
                                                                  .tile = &tile_rocks_tile,
                                                                  .occupies = &tile_rocks_occupies,
                                                                  .tile_meshes = true,
-                                                                 .tile_meshes_masked = true};
+                                                                 .tile_meshes_masked = true,
+                                                                 .tile_reentrant = true};
 
 // The generators, in this executable's registries; any number of times.
 inline void register_tile_rocks() {

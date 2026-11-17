@@ -154,7 +154,9 @@ constexpr scene_gen::PlacementGeneratorDesc k_generator{.name = "walls",
                                                         .meshes = meshes,
                                                         .tile = tile,
                                                         .occupies = occupies,
-                                                        .representation = representation};
+                                                        .representation = representation,
+                                                        // stands the plan's slots, writes none
+                                                        .tile_reentrant = true};
 const scene_gen::Registrar k_registrar{k_generator};
 
 }  // namespace

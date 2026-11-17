@@ -182,6 +182,7 @@ constexpr scene_gen::PlacementGeneratorDesc k_authored{
     .tile = &tile,
     .occupies = &occupies,
     .representation = &representation,
+    .tile_reentrant = true,  // a tile reads the filed set and writes only its answer
 };
 const scene_gen::Registrar k_authored_registrar{k_authored};
 

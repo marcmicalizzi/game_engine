@@ -15,8 +15,12 @@
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
 
+#include <atomic>
+#include <bit>
 #include <schemas/scene.h>
 #include <string>
+#include <thread>
+#include <vector>
 
 using namespace engine;
 
@@ -128,6 +132,116 @@ TEST_CASE("ruins generator: a tile is the whole entry's building on it, in its r
     REQUIRE(generator->tile(tiles.state, scene_gen::TileCoord{40, 40}, streamed, none, &error));
     CHECK(none.instances.empty());
   }
+}
+
+// **A tile asked beside others is the tile asked alone** (T169; scene_gen.md, "A tile asked on
+// several threads"): the generator says its `tile` is reentrant, because each call assembles in a
+// scratch of its own. One entry's tiles — every chosen tile in sections, walls and blocks — asked
+// on one thread, and then all of them at once from eight threads on one state, a dozen rounds:
+// every placement the same to the bit, in every round. Before T169 the calls shared the entry's
+// one assembler and its output, which eight threads at once would have torn.
+TEST_CASE("ruins generator: one state's tiles asked on eight threads are the tiles asked alone") {
+  const test::TempDir tmp("ruins_scene_generator_threads");
+  std::string error;
+  REQUIRE_MESSAGE(ruins::write_synthetic_kit(tmp.file("kit"), ruins::SyntheticKitOptions{}, &error),
+                  error);
+  REQUIRE_MESSAGE(
+      ruins::write_synthetic_block_kit(tmp.file("blocks"), ruins::SyntheticBlockOptions{}, &error),
+      error);
+  const scene_gen::PlacementGeneratorDesc* generator =
+      scene_gen::GeneratorRegistry::global().find_placement(ruins::k_placement_generator);
+  REQUIRE(generator != nullptr);
+  CHECK(generator->tile_reentrant);
+  scene::WorldRings world;
+  world.tile_size = 24.0f;
+  for (const scene::RingRuins r :
+       {scene::RingRuins::Blocks, scene::RingRuins::Sections, scene::RingRuins::Walls}) {
+    scene::WorldRing ring;
+    ring.radius = 100.0f * static_cast<f32>(world.rings.size() + 1);
+    ring.ruins = r;
+    world.rings.push_back(ring);
+  }
+  scene_gen::Context context;
+  context.dir = tmp.path();
+  context.where = "test: ruins 0";
+  context.ground = scene_gen::Ground{&slope, nullptr, nullptr};
+  context.tile_size = 24.0f;
+  context.world = &world;
+  const JsonValue params = entry_json(
+      R"({"kit":"kit/kit.json","seed":11,"tile_size":24,"tile_min":[-3,-3],"tile_max":[2,2],)"
+      R"("count":12,"wind_deg":45,"representation":"Blocks","block_kit":"blocks/block-kit.json"})");
+  Opened opened{generator, nullptr};
+  REQUIRE_MESSAGE(generator->open(params, context, &opened.state, &error), error);
+  Vector<ruins::TileCoord> chosen;
+  ruins::choose_tiles(11, ruins::TileCoord{-3, -3}, ruins::TileCoord{2, 2}, 12, 0.05f, chosen);
+  REQUIRE(chosen.size() == 12);
+  // Every (tile, ring) pair: the tile's building in blocks, in sections and as walls.
+  struct Ask {
+    scene_gen::TileCoord tile;
+    u8 ring = 0;
+  };
+  Vector<Ask> asks;
+  for (const ruins::TileCoord& t : chosen)
+    for (u8 r = 0; r < 3; ++r)
+      asks.push_back(Ask{scene_gen::TileCoord{t.x, t.z}, r});
+  const auto words = [](const scene_gen::Placements& p) {
+    std::vector<u64> out;  // the placements' every field, to the bit
+    out.push_back(p.kind);
+    out.push_back(p.things);
+    for (const scene_gen::Placement& q : p.instances) {
+      out.push_back(q.mesh);
+      out.push_back(q.tag);
+      out.push_back(std::bit_cast<u64>(q.position.x));
+      out.push_back(std::bit_cast<u64>(q.position.y));
+      out.push_back(std::bit_cast<u64>(q.position.z));
+      for (const f32 f : {q.rotation.x, q.rotation.y, q.rotation.z, q.rotation.w, q.scale.x,
+                          q.scale.y, q.scale.z})
+        out.push_back(std::bit_cast<u32>(f));
+    }
+    return out;
+  };
+  const auto ask = [&](const Ask& a, std::vector<u64>& out, std::string& why) {
+    scene_gen::Context c = context;
+    c.ring = a.ring;
+    scene_gen::Placements placed;
+    if (!generator->tile(opened.state, a.tile, c, placed, &why)) return false;
+    out = words(placed);
+    return true;
+  };
+  std::vector<std::vector<u64>> alone(asks.size());
+  for (u32 k = 0; k < asks.size(); ++k) {
+    REQUIRE_MESSAGE(ask(asks[k], alone[k], error), error);
+    CHECK(alone[k].size() > 2);  // a building on every chosen tile, in every form
+  }
+  constexpr u32 k_threads = 8;
+  constexpr u32 k_rounds = 12;
+  std::atomic<u32> differ{0};
+  std::atomic<u32> failed{0};
+  for (u32 round = 0; round < k_rounds; ++round) {
+    std::vector<std::thread> threads;
+    std::atomic<u32> next{0};
+    for (u32 t = 0; t < k_threads; ++t) {
+      threads.emplace_back([&] {
+        std::string why;
+        std::vector<u64> got;
+        // Each thread takes the next ask, so the eight run through the list side by side and
+        // every tile is asked beside others of the same state.
+        for (u32 k = next.fetch_add(1); k < asks.size(); k = next.fetch_add(1)) {
+          if (!ask(asks[(k + round) % asks.size()], got, why)) {
+            failed.fetch_add(1);
+            continue;
+          }
+          if (got != alone[(k + round) % asks.size()]) differ.fetch_add(1);
+        }
+      });
+    }
+    for (std::thread& t : threads)
+      t.join();
+  }
+  MESSAGE(asks.size() << " tiles in three forms, asked on " << k_threads << " threads at once, "
+                      << k_rounds << " rounds: " << differ.load() << " differ");
+  CHECK(failed.load() == 0);
+  CHECK(differ.load() == 0);
 }
 
 TEST_CASE("ruins generator: an entry is refused with the reader's sentences") {

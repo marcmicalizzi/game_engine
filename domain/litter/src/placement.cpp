@@ -445,7 +445,9 @@ constexpr scene_gen::PlacementGeneratorDesc k_generator{.name = "litter",
                                                         .meshes = meshes,
                                                         .tile = tile,
                                                         .occupies = occupies,
-                                                        .representation = representation};
+                                                        .representation = representation,
+                                                        // a call's mask tiles are its own
+                                                        .tile_reentrant = true};
 const scene_gen::Registrar k_registrar{k_generator};
 }  // namespace
 }  // namespace engine::litter
