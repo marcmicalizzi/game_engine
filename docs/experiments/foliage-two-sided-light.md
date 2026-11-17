@@ -70,3 +70,53 @@ The four-bit codes put both at the nearest fifteenth (0.8 is 12, 0.2 is 3).
 **What it costs.** One byte of the material's flags word, no word of any hot record. A foliage
 pixel asks the sun in every direction but straight against it, so more of a crown traces its sun
 ray (an underside used to skip it); its ambient evaluates the sky three more times.
+
+## What it does to the engine's trees
+
+**How it was measured.** The grove with a sky (latitude 46.5, day 200, 15:30) and `tree-species`
+with the same sky, 1920 x 1080, `--raster rt --shadows rt`, bounce off, the eye at 1.7 m: views
+at 10, 30, 100 and 300 m and from under a crown, an oak from three sides and from under it, a
+beech. Before is the sprays' final build (98f62783, G203's fourth leg), after is this row's; each
+view drawn shaded, as albedo and as the shadow view, and read over the tree's foliage pixels
+(albedo green over 1.15 red) as G203's fourth leg read them: the picture's luminance, the
+albedo's, and the shadow view's shares of sunlit, blocked and turned away. 2026-11-16 23:00 to
+23:11, the session locked (both sides alike), other processes at 51 to 96 % of the CPU. These
+first pictures drew the flat card colours (no generated pack in the materials root); the sprays'
+pictures follow.
+
+| view | foliage | picture Y before | after | change | turned away before | after |
+|---|---|---|---|---|---|---|
+| grove a, 10 m | tall spruce | 0.077 | 0.094 | +21 % | 0.66 | 0.02 |
+| grove, under the spruce | tall spruce | 0.085 | 0.097 | +14 % | 0.73 | 0.00 |
+| tree-species, 10 m | spruce | 0.090 | 0.099 | +10 % | 0.51 | 0.00 |
+| tree-species, under | spruce | 0.089 | 0.097 | +9 % | 0.73 | 0.00 |
+| tree-species, 10 m | pine | 0.103 | 0.101 | -1 % | 0.79 | 0.00 |
+| tree-species, under | pine | 0.103 | 0.102 | 0 % | 0.84 | 0.00 |
+| grove, three sides | oak | 0.151 to 0.160 | 0.226 to 0.231 | +45 to +51 % | 0.73 to 0.97 | 0.00 |
+| grove, under | oak | 0.154 | 0.227 | +48 % | 0.91 | 0.00 |
+| tree-species, 10 m, under | oak | 0.149, 0.150 | 0.208, 0.205 | +40 %, +37 % | 0.88 | 0.00 |
+| tree-species, 10 m | beech | 0.150 | 0.224 | +49 % | 0.86 | 0.00 |
+
+- **No foliage pixel faces away from the sun any more** where it faced it 51 to 97 % of the time:
+  the sun is asked everywhere, and what answers it is the leaf through itself or the needles'
+  sphere.
+- **The broadleaves take the most**: a backlit leaf passes 0.8 of what a sunlit one reflects, and
+  from under a crown most leaves are lit from behind. They read as backlit leaves do, a
+  yellow-green glow against the light; the sunlit ones are unchanged.
+- **The conifers take less, and the pine none on the mean**: with 0.8 of a card a sphere of
+  normals, a card facing the sun gives up a third of its square-on light (the sphere returns two
+  thirds of a sheet at zero phase) and a card facing away gains the sphere's share. The pine's
+  mean is where it was; its needles are lit by where they are in the crown and the sun's
+  direction, no longer by which way each card's plane faces. A spruce from under its crown stays
+  dark against the light, which a shoot's backward scattering says it should be.
+- **The far forms had none of it** in the first build (a crown at 30 to 300 m still had 50 to 67 %
+  turned away): a tree's impostor and branch-card levels made a material of their own. They now
+  take their foliage's optics (`flora.cpp`).
+
+**The cost, flat cards** (the grove's own camera path, 3001 frames, 3840 x 2160, `--raster rt
+--shadows rt`, the bounce on, before and after alternating in one lease, 2026-11-16 23:08 to
+23:10, the session locked on both sides, other processes at 62 to 79 % of the CPU, free commit 27
+to 36 GB): GPU total 4.591 and 4.592 ms before, 4.880 and 4.941 after, **+0.29 to +0.35 ms**, all
+of it the resolve (2.290 and 2.299 against 2.583 and 2.571, +0.28): the sun ray an underside now
+traces, through masked cards, and three more evaluations of the sky's ambient. The primary rays,
+the bounce's trace and every other pass are unchanged to 0.01 ms.
