@@ -162,8 +162,8 @@ f64 channel_white_depth_gate(f64 hydraulic_m) noexcept {
 f32 pack_channel_hydraulic(f32 hydraulic_m, f32 froude) noexcept {
   if (!(hydraulic_m > 0.0f)) return hydraulic_m;
   constexpr u32 low = (1u << k_channel_froude_bits) - 1u;
-  const f64 share = std::clamp(static_cast<f64>(froude) / static_cast<f64>(k_channel_froude_max),
-                               0.0, 1.0);
+  const f64 share =
+      std::clamp(static_cast<f64>(froude) / static_cast<f64>(k_channel_froude_max), 0.0, 1.0);
   const u32 q = static_cast<u32>(std::floor(static_cast<f64>(low) * std::sqrt(share) + 0.5));
   // The depth rounded to the half's upper bits (a carry into the exponent is the next binade's
   // first value, still the nearest), then the number in the bits it gave up.

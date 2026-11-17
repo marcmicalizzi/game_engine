@@ -733,7 +733,10 @@ TEST_CASE("water channel: the files are the same bytes twice, pinned, and the ge
   // Re-pinned for S108 (2026-11-15, MSVC): the nappe is as wide as its lip and thins to its sides,
   // which moves the step's vertices on its fall and the map's texels under it
   // (4896157926021888350 and 17670608434784788963 until then).
-  CHECK(glb_hash == 12899224097281003011ull);
+  // Re-pinned for W139 (2026-11-16, MSVC): a reach vertex's UV.y carries the section's Froude
+  // number in its half's low bits (`pack_channel_hydraulic`), which moves every reach vertex's
+  // UV.y and the glb's bytes (12899224097281003011 until then); the depth map does not move.
+  CHECK(glb_hash == 13879814920060679251ull);
   CHECK(map_hash == 6676494692881848469ull);
   // The importer reads it as the renderer will: positions, normals and the phase and depth UVs.
   assets::MeshData data;
@@ -994,8 +997,10 @@ TEST_CASE("water channel: a slow pool bending past a station reads its own slow 
     if (speed / std::sqrt(water::k_gravity * depth) > 1.0 && speed > 0.8) ++old_white;
   }
   MESSAGE("bent pool: ", b.sheet.triangles, " triangles; the phase gradient's fastest ",
-          old_fastest, " m/s, ", old_white, " triangles white by the old reading; the carried "
-          "Froude number at most ", carried_most);
+          old_fastest, " m/s, ", old_white,
+          " triangles white by the old reading; the carried "
+          "Froude number at most ",
+          carried_most);
   CHECK(old_white > 0);  // the fault, as the draw read it until W139
   // The reading now: never past the stations' 0.05 by more than a step, so neither rule whitens it.
   // (water.slang's k_channel_broken_froude_lo, 0.25, and the Froude rule's 1, are far above.)
