@@ -439,16 +439,31 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
         if (row[c.centre + e] < row[t]) t = c.centre + e;
         if (row[c.centre - e] < row[t]) t = c.centre - e;
       }
-      for (;;) {
-        const bool up = t < hi && row[t + 1] < row[t];
-        const bool down = t > lo && row[t - 1] < row[t];
-        if (up && (!down || row[t + 1] <= row[t - 1]))
-          ++t;
-        else if (down)
-          --t;
-        else
-          break;
-      }
+      const auto descend = [&](u32 from) {
+        for (;;) {
+          const bool up = from < hi && row[from + 1] < row[from];
+          const bool down = from > lo && row[from - 1] < row[from];
+          if (up && (!down || row[from + 1] <= row[from - 1]))
+            ++from;
+          else if (down)
+            --from;
+          else
+            break;
+        }
+        return from;
+      };
+      // A walk that stops at the bed's edge with the ground still falling past it found a face,
+      // not a hollow (a bench whose downhill side falls away inside the cut's width: the forest's
+      // link 515, stations 388 to 396). The bed is then the hollow the line's own point drains
+      // to, or, where that too runs off the edge, the line's point itself: the water stands at
+      // the line, held at its brink (`edge`, below), never down the face.
+      const auto open_at = [&](u32 at) {
+        return !line.width.empty() && ((at == lo && lo > 0 && row[lo - 1] < row[at]) ||
+                                       (at == hi && hi + 1 < c.across && row[hi + 1] < row[at]));
+      };
+      t = descend(t);
+      if (open_at(t)) t = descend(c.centre);
+      if (open_at(t)) t = c.centre;
       c.thalweg[k] = t;
       c.bed[k] = row[t];
       // Each bank's crest: the highest ground reached walking out, before it falls away.
