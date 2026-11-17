@@ -168,27 +168,16 @@ renderer terrain_rings_tests.cpp 1  # b60-msvc-debug
 renderer tile_layout_tests.cpp 1  # b60-msvc-debug
 renderer vertex_id_tests.cpp 1  # b60-msvc-debug
 renderer visibility_tie_tests.cpp 1  # b60-msvc-debug
-audio * 4  # b66-msvc-debug
-audio_system * 2  # b66-msvc-debug
-caves * 30  # b66-msvc-debug
 doc_scene * 26  # b66-msvc-debug
-engine_cli * 386  # b66-msvc-debug
-engine_content * 279  # b66-msvc-debug
+engine_cli.gpu * 78  # b66-msvc-debug, its three files' cases (T170)
 engine_editor * 56  # b66-msvc-debug
 engine_host * 67  # b66-msvc-debug
-engine_input * 11  # b66-msvc-debug
 engine_view.frame_loop * 213  # b66-msvc-debug
-landform * 47  # b66-msvc-debug
 mcp_bridge * 17  # b66-msvc-debug
 mcp_bridge.mcp_check * 11  # b66-msvc-debug
 mcp_bridge.mcp_check_connect * 5  # b66-msvc-debug
-protocol * 6  # b66-msvc-debug
-rocks * 331  # b66-msvc-debug
 scatter * 10  # b66-msvc-debug
-scene_collision * 75  # b66-msvc-debug
-soil * 7  # b66-msvc-debug
+scene_collision.gpu * 2  # b66-msvc-debug, collision_draw_tests.cpp's cases (T170)
 tools.game_sdk * 68  # b66-msvc-debug
 volumetrics * 11  # b66-msvc-debug
 water * 119  # b66-msvc-debug
-window * 6  # b66-msvc-debug
-world * 37  # b66-msvc-debug

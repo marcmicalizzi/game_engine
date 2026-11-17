@@ -27,7 +27,8 @@ engine_module(NAME landform LAYER domain OPTIONAL
   DEPS base containers math hash json schema io jobs gfx schemas landform_schemas
   SOURCES src/landform.cpp src/coast.cpp src/files.cpp)
 
-engine_module_tests(NAME landform
+# NO_DEVICE: no case opens a GPU device (roadmap T170, what-to-run.md, "Tests that open no device").
+engine_module_tests(NAME landform NO_DEVICE
   SOURCES tests/landform_tests.cpp tests/rivers_tests.cpp tests/ice_tests.cpp
           tests/coast_tests.cpp tests/determinism_tests.cpp tests/size_table.cpp)
 

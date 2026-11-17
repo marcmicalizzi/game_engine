@@ -12,5 +12,8 @@ if(WIN32)
   target_link_libraries(engine_window PRIVATE comdlg32 wtsapi32)
 endif()
 
-engine_module_tests(NAME window
+# NO_DEVICE: no case opens a GPU device. A Vulkan window loads the loader and takes the hold it would
+# share with a device, and the one case that shows one holds a lock file in its own scratch
+# directory, never the machine's (roadmap T170, what-to-run.md, "Tests that open no device").
+engine_module_tests(NAME window NO_DEVICE
   SOURCES tests/window_tests.cpp tests/size_table.cpp)

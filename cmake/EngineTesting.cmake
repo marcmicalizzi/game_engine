@@ -157,7 +157,13 @@ endfunction()
 #     run one at a time whichever chain holds them;
 #   - `desktop` adds RESOURCE_LOCK `e2e_apps` (windows and input devices, one of each; engine_app):
 #     an app that can open a window. A headless app's end-to-end test has `e2e` and not this;
-#   - `wall_clock` (above) adds RUN_SERIAL.
+#   - `wall_clock` (above) adds RUN_SERIAL;
+#   - every test gets ENGINE_TEST_DEVICES in its environment, which it and every process it starts
+#     inherit (roadmap T170; docs/ci/what-to-run.md, "Tests that open no device"): `forbidden`
+#     without `gpu`, so a `gfx::Device::create` anywhere in its tree ends that process with a line
+#     and a failure instead of opening a device outside the chains, and `report` with it, which the
+#     test main turns into a marker file and reports, at the end of a run that passed, a test that
+#     never tried to open one (foundation/gpu_lock/device_hold.h, tests/support/test_main.cpp).
 # A RESOURCE_LOCK orders the tests of one `ctest` and nothing else: two invocations at once (the
 # gate's suites side by side) still share the card through the lock itself (ADR-0049), and so do
 # two chains of one invocation.
@@ -178,6 +184,9 @@ function(_engine_finalize_tests)
       if("gpu" IN_LIST _labels)
         list(APPEND _gpu_tests "${_test}")
         set_property(GLOBAL PROPERTY "_ENGINE_GPU_TEST_DIR:${_test}" "${_dir}")
+        set_property(TEST "${_test}" DIRECTORY "${_dir}" APPEND PROPERTY ENVIRONMENT "ENGINE_TEST_DEVICES=report")
+      else()
+        set_property(TEST "${_test}" DIRECTORY "${_dir}" APPEND PROPERTY ENVIRONMENT "ENGINE_TEST_DEVICES=forbidden")
       endif()
     endforeach()
   endforeach()

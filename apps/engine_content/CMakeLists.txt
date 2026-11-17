@@ -157,7 +157,11 @@ engine_app(NAME engine_content OUTPUT engine-content
           flow_commands.cpp flow_solve.cpp
           dwellings_commands.cpp village_commands.cpp
   DEPS ${_content_deps}
-  E2E_TESTS ${_content_tests} tests/soil_tests.cpp tests/morphs_tests.cpp tests/matgen_tests.cpp)
+  E2E_TESTS ${_content_tests} tests/soil_tests.cpp tests/morphs_tests.cpp tests/matgen_tests.cpp
+  # engine-content links the renderer for its scene reader and opens no GPU device, and its tests
+  # start nothing else: they run in the CPU pool, not a GPU chain (roadmap T170, what-to-run.md,
+  # "Tests that open no device"). A command that opens one takes this off.
+  E2E_NO_DEVICE)
 
 if(TARGET engine::tissue)
   target_compile_definitions(engine_engine_content PRIVATE ENGINE_CONTENT_TISSUE=1)

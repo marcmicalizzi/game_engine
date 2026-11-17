@@ -315,6 +315,9 @@ void Device::wait_idle() noexcept {
 
 bool Device::create(const DeviceOptions& options, std::string* error) {
   ENGINE_VERIFY(impl_ == nullptr, "Device::create: already created");
+  // A test's label against its devices, before anything can fail for want of a driver (roadmap
+  // T170, foundation/gpu_lock/device_hold.h): outside CTest it does nothing.
+  gpu_lock::note_device_open();
   caps_ = DeviceCaps{};
   requirements_.clear();
   verdict_ = DeviceVerdict{};

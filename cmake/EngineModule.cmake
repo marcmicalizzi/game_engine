@@ -470,6 +470,51 @@ function(_engine_defer_test_parts name target parts labels opens_devices timeout
     "cmake_language(DEFER CALL _engine_test_parts [[${name}]] [[${target}]] [[${parts}]] [[${labels}]] [[${opens_devices}]] [[${timeout}]])")
 endfunction()
 
+#   _engine_check_device_split(<name> <no_device> <device_files> <parts> <opens_devices>)
+# What NO_DEVICE and DEVICE_FILES (engine_module_tests, engine_app's E2E_ forms) may be given with:
+# not each other, and not parts (a part is dealt files by cost and a split by device; the two have
+# not been needed together). NO_DEVICE where the link graph would not give the label anyway (a
+# configuration whose capabilities leave gfx out) changes nothing.
+function(_engine_check_device_split name no_device device_files parts)
+  if(no_device AND device_files)
+    message(FATAL_ERROR "${name}: NO_DEVICE says no case opens a device and DEVICE_FILES that some do; give one")
+  endif()
+  if((no_device OR device_files) AND parts AND parts GREATER 1)
+    message(FATAL_ERROR "${name}: NO_DEVICE and DEVICE_FILES are not combined with PARTS")
+  endif()
+endfunction()
+
+#   _engine_device_split_tests(<name> <target> <labels> <device_files> <timeout>)
+# DEVICE_FILES (engine_module_tests above): <name> runs every case outside <device_files> with no
+# `gpu` label, <name>.gpu runs theirs with it (engine_test_waits_for_gpu). The filter is the parts'
+# — `*/<basename>` and `*\<basename>`, anchored at the separator, since MSVC's __FILE__ uses
+# backslashes — as an include for one test and an exclude for the other, so a case runs in exactly
+# one of the two. A name must be a file in the declaring directory's tests/ (a typo stops the
+# configure); it need not be compiled in every configuration — a capability's case may come and go
+# with it — and a device file a typo had left in the CPU half would fail there anyway.
+function(_engine_device_split_tests name target labels device_files timeout)
+  set(_filters "")
+  foreach(_base IN LISTS device_files)
+    if(NOT _base MATCHES "^[^/\\\\]+\\.(cpp|cc|c)$")
+      message(FATAL_ERROR "${name}: DEVICE_FILES names the basenames of compiled test sources, not '${_base}'")
+    endif()
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/${_base}")
+      message(FATAL_ERROR "${name}: DEVICE_FILES names ${_base}, which is not in ${CMAKE_CURRENT_SOURCE_DIR}/tests")
+    endif()
+    list(APPEND _filters "*/${_base}" "*\\${_base}")
+  endforeach()
+  string(JOIN "," _filter_arg ${_filters})
+  add_test(NAME ${name} COMMAND ${target} --duration=true "--source-file-exclude=${_filter_arg}")
+  add_test(NAME ${name}.gpu COMMAND ${target} --duration=true "--source-file=${_filter_arg}")
+  foreach(_test ${name} ${name}.gpu)
+    set_tests_properties(${_test} PROPERTIES LABELS "${labels}")
+    if(NOT "${timeout}" STREQUAL "")
+      set_tests_properties(${_test} PROPERTIES TIMEOUT ${timeout})
+    endif()
+  endforeach()
+  engine_test_waits_for_gpu(${name}.gpu)
+endfunction()
+
 #   _engine_check_config_invariant(<name>)
 # The proof behind CONFIG_INVARIANT (engine_module_tests, below): the module's library is the same
 # code in every configuration, so its GPU cases need to run in one configuration only, and the
@@ -555,10 +600,20 @@ endfunction()
 # not need it.
 # Every test runs with doctest's `--duration=true`, one line of seconds a case in the log, which is
 # what cmake/test-costs.txt is made from (tools/test-costs.ps1).
+#
+# NO_DEVICE and DEVICE_FILES say what the label `gpu` cannot know from the link graph alone (roadmap
+# T170; docs/ci/what-to-run.md, "Tests that open no device"): a module that reaches gfx or window
+# is labelled `gpu`, and so queues in a GPU chain, whether or not a case ever opens a device.
+# NO_DEVICE: no case, and no process a case starts, opens one; the test is not labelled `gpu` and
+# runs in the CPU pool. DEVICE_FILES <basename>...: only those files' cases can; the executable is
+# two CTest tests, <name> running every other file's cases (`--source-file-exclude`) with no `gpu`
+# label, and <name>.gpu running those files' (`--source-file`) with it — every case in exactly one.
+# Both are held to at run time: a test without the label that opens a device fails
+# (ENGINE_TEST_DEVICES, _engine_finalize_tests and foundation/gpu_lock/device_hold.h).
 function(engine_module_tests)
   set(_one NAME PARTS)
-  set(_multi SOURCES DEPS)
-  cmake_parse_arguments(ET "CONFIG_INVARIANT;WALL_CLOCK" "${_one}" "${_multi}" ${ARGN})
+  set(_multi SOURCES DEPS DEVICE_FILES)
+  cmake_parse_arguments(ET "CONFIG_INVARIANT;WALL_CLOCK;NO_DEVICE" "${_one}" "${_multi}" ${ARGN})
   if(NOT ENGINE_BUILD_TESTS)
     return()
   endif()
@@ -594,7 +649,13 @@ function(engine_module_tests)
   if(ET_WALL_CLOCK)
     list(APPEND _labels wall_clock)
   endif()
-  if(ET_PARTS AND ET_PARTS GREATER 1)
+  _engine_check_device_split(${ET_NAME} "${ET_NO_DEVICE}" "${ET_DEVICE_FILES}" "${ET_PARTS}")
+  if(ET_NO_DEVICE)
+    set(_opens_devices FALSE)
+  endif()
+  if(ET_DEVICE_FILES)
+    _engine_device_split_tests(${ET_NAME} ${_test_target} "${_labels}" "${ET_DEVICE_FILES}" "")
+  elseif(ET_PARTS AND ET_PARTS GREATER 1)
     _engine_defer_test_parts(${ET_NAME} ${_test_target} ${ET_PARTS} "${_labels}" "${_opens_devices}" "")
   else()
     add_test(NAME ${ET_NAME} COMMAND ${_test_target} --duration=true)
@@ -724,7 +785,7 @@ function(engine_finalize_modules)
 endfunction()
 
 #   engine_app(NAME <name> OUTPUT <exe> SOURCES <file>... [DEPS <module>...] [E2E_TESTS <file>...]
-#              [E2E_PARTS <n>])
+#              [E2E_PARTS <n>] [E2E_NO_DEVICE] [E2E_DEVICE_FILES <basename>...])
 #
 # An executable in the apps layer: engine_<name> built as <exe> into ${CMAKE_BINARY_DIR}/bin,
 # recorded in modules.json, linked against the named modules. E2E_TESTS builds
@@ -733,10 +794,13 @@ endfunction()
 # E2E_PARTS registers it as <n> tests, <name>.1 to <name>.<n>, dealt as engine_module_tests' PARTS
 # are (_engine_test_parts): engine_view's run was the longest single test on the machine, 1,536 s
 # in msvc-debug and 1,941 s in msvc-release on gate b57 (docs/ci/what-to-run.md).
+# E2E_NO_DEVICE and E2E_DEVICE_FILES are engine_module_tests' NO_DEVICE and DEVICE_FILES for the
+# end-to-end test (roadmap T170): an app that links gfx without opening a device (engine-content),
+# or a test of which only some files start a process that opens one (engine-cli's render cases).
 function(engine_app)
   set(_one NAME OUTPUT E2E_PARTS)
-  set(_multi SOURCES DEPS E2E_TESTS)
-  cmake_parse_arguments(EA "" "${_one}" "${_multi}" ${ARGN})
+  set(_multi SOURCES DEPS E2E_TESTS E2E_DEVICE_FILES)
+  cmake_parse_arguments(EA "E2E_NO_DEVICE" "${_one}" "${_multi}" ${ARGN})
   if(NOT EA_NAME OR NOT EA_SOURCES)
     message(FATAL_ERROR "engine_app: NAME and SOURCES are required")
   endif()
@@ -809,6 +873,15 @@ function(engine_app)
     set(_e2e_labels "unit;e2e;${EA_NAME}")
     if(_desktop)
       list(APPEND _e2e_labels desktop)
+    endif()
+    _engine_check_device_split(${EA_NAME} "${EA_E2E_NO_DEVICE}" "${EA_E2E_DEVICE_FILES}" "${EA_E2E_PARTS}")
+    if(EA_E2E_NO_DEVICE)
+      set(_opens_devices FALSE)
+    endif()
+    if(EA_E2E_DEVICE_FILES)
+      _engine_device_split_tests(${EA_NAME} ${_test_target} "${_e2e_labels}" "${EA_E2E_DEVICE_FILES}"
+                                 ${ENGINE_TEST_WORK_TIMEOUT_S})
+      return()
     endif()
     if(EA_E2E_PARTS AND EA_E2E_PARTS GREATER 1)
       # Every part carries what the one test did below: the labels, the timeout, and the lock,

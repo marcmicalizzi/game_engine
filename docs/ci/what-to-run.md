@@ -794,4 +794,98 @@ gate measures:
 The one-chain replay reproduces the measured run to the second once its waits are taken off, which
 is the check that the model holds. Jobs do not bind: two chains and the 2,155 s of CPU tests
 finish in the same time at three jobs as at five, so the gate's three stand. With the chains the
-card is the next bound — held 75% of the replayed debug suite, 82% with T162's run in it.
+card is the next bound — held 75% of the replayed debug suite, 82% with T162's run in it. (Once
+T170 took 1,170 s of tests that open no device out of the chains, three jobs do bind; below.)
+
+## Tests that open no device
+
+**The label `gpu` follows the link graph, not a device** (roadmap T170). `engine_module_tests` and
+`engine_app` give it to every test whose module, test dependency or app reaches `gfx` or `window`,
+because such a test *can* open a device and so wait for the machine-wide lock; and since T89 the
+label is also a seat in a GPU chain, behind every other GPU test of the run. On gate b66 about
+830 s of the `msvc-debug` chain was tests that never opened one (the hold log has none for them):
+`rocks` reaches `gfx` for its formation packing, `engine_content` links the renderer for its scene
+reader, `world` reads scenes with the renderer's CPU half. They waited in line for a card they
+never asked for.
+
+**Every `gpu`-labelled test of d6534963, and whether anything in its tree can open a device**, read
+from gate b66's hold log (`ENGINE_GPU_LOCK_LOG`), its CTest log's per-case seconds attributed to
+files, and every test file and app: the only places a device is made are `gfx::Device::create`'s
+callers, which outside `domain/gfx` are the renderer's and the systems' GPU test files,
+`engine-view`, `engine-editor` and `engine-host`'s `render.*` and `engine.budgets` (which opens the
+render session's device for its memory row):
+
+| Test | b66 s | Holds | Opens a device? | Now |
+|---|---|---|---|---|
+| `gfx.1`, `gfx.2`, `renderer.1`–`.4` | 82, 71, 405, 259, 392, 152 | 49, 45, 81, 50, 92, 133 | yes | `gpu`, parts |
+| `engine_view.1`–`.4`, `.frame_loop`, `engine_editor`, `tools.game_sdk` | 246, 368, 347, 333, 213, 56, 68 | many | yes (`engine-view`, the editor) | `gpu`, desktop |
+| `engine_host`, `mcp_bridge`, `mcp_bridge.mcp_check`, `.mcp_check_connect` | 67, 18, 11, 5 | 3, 1, 0, 0 | yes: `render.*` through `engine-host` (one file each; the checks' capture and benchmark) | `gpu` |
+| `water` | 119 | 47 | nine of its sixteen files; 22 s of cases do not | `gpu`, whole (below) |
+| `doc_scene`, `volumetrics`, `scatter` | 27, 11, 10 | 4, 6, 2 | one or two files each; 0.5, 0.2 and 5 s of cases do not | `gpu`, whole |
+| `engine_cli` | 386 | 12 | `render_tests.cpp`, `console_tests.cpp`'s captured frame, `ops_tests.cpp`'s `engine.budgets`: 77 s of cases | split: `engine_cli.gpu`; `engine_cli` (308 s, `npc_replay_tests.cpp` 285 of it) in the CPU pool |
+| `scene_collision` | 75 | 1 | `collision_draw_tests.cpp`: 0.8 s | split: `scene_collision.gpu`; `scene_collision` (72 s) in the CPU pool |
+| `rocks`, `landform`, `world`, `caves`, `soil`, `protocol`, `audio`, `audio_system` | 331, 47, 37, 30, 7, 6, 4, 2 | 0 | no (`protocol`'s `gpu.adapters` enumerates adapters, which opens no device) | `NO_DEVICE` |
+| `window` | 9 | 0 | no: its one Vulkan window holds a lock file in its own scratch directory | `NO_DEVICE` |
+| `engine_content`, `engine_input` | 279, 11 | 0 | no: `engine-content` opens none and starts nothing that does; `engine-input`'s one window is hidden and not Vulkan | `E2E_NO_DEVICE` |
+
+(`engine_input`'s two holds in the b66 timeline were another end-to-end test's children, attributed
+by the time they ran; `engine-input` makes no `gfx::Device`.)
+
+**Where it is said: the declaration.** `engine_module_tests(... NO_DEVICE)` and
+`engine_app(... E2E_NO_DEVICE)` keep the label off a test that reaches `gfx` without opening a
+device, so it runs in the CPU pool beside everything else. `DEVICE_FILES <basename>...` (and
+`E2E_DEVICE_FILES`) splits a mixed test by file rather than dropping or skipping a case: the one
+executable is two CTest tests, `<name>` with doctest's `--source-file-exclude` over those files and
+no label, and `<name>.gpu` with `--source-file` over them and the label, the parts' anchored filter
+both ways, so every case runs in exactly one. `water` was left whole: 22 s of its 116 s of cases
+open no device, and its test list is another row's tonight; `doc_scene`, `volumetrics` and
+`scatter` have under 5 s of such cases each, less than a split's second start-up is worth to read.
+Not with `PARTS`; a name that is not a file in the directory's `tests/` stops the configure.
+
+**Kept true both ways**, at run time, because a label is a claim about every process in a test's
+tree and only the run sees the tree. The finalize (`cmake/EngineTesting.cmake`) gives every test
+`ENGINE_TEST_DEVICES`, which its children inherit, and `gfx::Device::create` calls
+`gpu_lock::note_device_open()` first, before it looks for an adapter
+(`foundation/gpu_lock/device_hold.h`):
+
+- **A test without the label that opens a device fails.** `forbidden`: the process prints
+  `engine-test: <exe> opened a GPU device in a test that is not labelled gpu` and ends with 70. A
+  test main was the wrong place for this half — a child (`engine-host` under `engine_cli`) is not a
+  test executable — and a lint cannot see what a process started at run time does; the
+  environment reaches both. Because it is checked at the call and not at a device, it holds on a
+  machine with no driver too: the no-driver `test -Affected` of the branch ran every moved test
+  through it.
+- **A `gpu`-labelled test that never tried is reported.** `report`: the test main
+  (`tests/support/test_main.cpp`) turns it into a marker file in a scratch directory of its own,
+  `note_device_open` appends to it from any process of the tree, and a run that passed and left
+  no file prints `engine-test: labelled gpu and opened no device`. A report and not a failure: a
+  part may hold only CPU cases, a script test (`tools.game_sdk`, the MCP checks) has no test main
+  to make the file, and a case may skip on a weaker card before it asks. The line is in the CTest
+  log, where `Select-String 'opened no device'` finds the next candidate.
+
+**What it gives back, replayed** (`replay.py` in T170's scratch: T89's model unchanged over gate
+b66's seconds — each test's holds with its CPU work between them, CTest's scheduler, one card
+first come first served, the waits for other suites left out — the split tests' seconds taken from
+gate b66's per-case lines; 2026-11-17, nothing flown):
+
+| `msvc-debug` | Wall | `gpu_device.1` | `gpu_device.2` |
+|---|---|---|---|
+| One chain (before T89) | 4,132 s | 34 tests, ends 4,132 s | — |
+| Two chains (T89) | 2,695 s | 17 tests, 1,861 s, ends 2,059 s | 17 tests, 2,619 s, ends 2,695 s |
+| T170, three jobs | **2,405 s** | 7 tests, 1,630 s, ends 1,877 s | 16 tests, 1,707 s, ends 2,378 s |
+| T170, four to six jobs | **2,262 s** | ends 1,875 s | ends 2,262 s |
+
+The configure's deal is now `gpu_device.1 7 tests 2016 s, gpu_device.2 16 tests 1335 s`: the
+desktop's tests are one item and fill a chain alone. At three jobs the two chains hold two slots
+and the CPU pool, now 1,170 s larger, finishes last; at four the card's own floor (2,036 s held)
+and the second chain's queue for it bind. So the gate's `msvc-debug` suite should run at
+`-Jobs 4` once this merges, which the next gate measures.
+
+**On a machine with no GPU and in a bundle.** Nothing that moved opens a device, so taking its
+chain lock away can let no two devices meet, on a machine with the lock or without it; a split
+runs every case once wherever it runs. With no driver `note_device_open` still runs (it is the
+first line of `Device::create`), so `forbidden` fails a mislabelled test there as it would here,
+and `report` sees the try even though no device follows. A bundle (`tools/package-tests.ps1`)
+carries each test's arguments, so the split's filters travel, and not its environment: there
+`ENGINE_TEST_DEVICES` is unset and both checks do nothing, which is right for a machine whose run
+has no chains to protect. Outside CTest — an author running a test executable by hand — the same.

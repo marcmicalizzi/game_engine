@@ -22,7 +22,8 @@ engine_module(NAME audio_system LAYER systems OPTIONAL WHOLE_ARCHIVE
   DEPS base containers math log tunables ids sim ecs audio audio_schemas
   SOURCES src/audio_system.cpp)
 
-engine_module_tests(NAME audio_system
+# NO_DEVICE: no case opens a GPU device (roadmap T170, what-to-run.md, "Tests that open no device").
+engine_module_tests(NAME audio_system NO_DEVICE
   SOURCES tests/audio_system_tests.cpp tests/size_table.cpp)
 
 # The emitter tick at 10^3 and 10^4 emitters, still and moving (docs/subsystems/audio_system.md,

@@ -12,10 +12,15 @@
 
 #include <doctest/doctest.h>
 #include <test_environment.h>
+#include <test_temp_dir.h>
 
+#include <cstdio>
 #include <cstdlib>
 #include <ctime>
+#include <filesystem>
+#include <optional>
 #include <string>
+#include <system_error>
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -82,11 +87,44 @@ void take_part_in_the_gpu_lock() {
 // set, never inherited: a developer's shell does not decide what a test reads.
 void read_no_default_materials() { set_environment(engine::test::k_default_materials_env, "0"); }
 
+// A test's label against its devices (roadmap T170; foundation/gpu_lock/device_hold.h). The
+// configure gives a test labelled `gpu` ENGINE_TEST_DEVICES=report; here it becomes a file in a
+// scratch directory of this run's own, which `gfx::Device::create` in this process or any process
+// it starts writes a line to. A run that passed and left no file never tried to open a device, and
+// says so: a report, never a failure, since a part may hold only CPU cases and a weaker machine's
+// skips can end a case before it asks. `forbidden` (a test without the label) is device_hold's to
+// enforce and needs nothing here.
+struct DeviceReport {
+  std::optional<engine::test::TempDir> dir;
+  std::string marker;
+
+  void begin() {
+    if (environment("ENGINE_TEST_DEVICES") != "report") return;
+    dir.emplace("devices");
+    marker = dir->file("opened");
+    set_environment("ENGINE_TEST_DEVICES", marker);
+  }
+
+  void end(int code) const {
+    if (marker.empty() || code != 0) return;
+    std::error_code ec;
+    if (std::filesystem::exists(std::filesystem::path(marker), ec)) return;
+    std::fprintf(stderr,
+                 "engine-test: labelled gpu and opened no device: nothing in this test's tree "
+                 "called gfx::Device::create (docs/ci/what-to-run.md, \"Tests that open no "
+                 "device\")\n");
+  }
+};
+
 }  // namespace
 
 int main(int argc, char** argv) {
   engine::platform::require_cpu_baseline();
   take_part_in_the_gpu_lock();
   read_no_default_materials();
-  return doctest::Context(argc, argv).run();
+  DeviceReport devices;
+  devices.begin();
+  const int code = doctest::Context(argc, argv).run();
+  devices.end(code);
+  return code;
 }
