@@ -1375,8 +1375,8 @@ class GpuScene {
     bool admitted = false;  // arrived with a tile's mesh, not the load's
   };
   void texture_records(Vector<TextureRecord>& out) const;
-  u64 texture_records_serial() const noexcept {
-    return texture_use_.uploaded + texture_use_.released;
+  u64 texture_records_serial() const noexcept {  // a bound's promotion moves a record's slot
+    return texture_use_.uploaded + texture_use_.released + texture_bound_use().promotions;
   }
   // **The bound** (R172 stage 1; texture_bound.h; gpu_scene_texture_bound.cpp): the load uploads a
   // managed texture from its floor, and once a recorded frame, before `terrain_prepare`, this

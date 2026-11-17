@@ -218,15 +218,19 @@ struct Harness {
   }
 
   // The albedo view from `distance` in front of the quad, looking at its centre.
-  CapturedFrame shot(f32 distance) {
+  // `whole`: the ids and the depth too, for a comparison of everything a capture holds.
+  CapturedFrame shot(f32 distance, bool whole = false) {
     FrameDesc frame;
     frame.camera.position = absolute(WorldPos::origin(), Vec3{0.0f, 0.0f, distance});
     frame.camera.target = absolute(WorldPos::origin(), Vec3{0.0f, 0.0f, 0.0f});
     frame.camera.fov_y = k_fov;
     frame.view_mode = k_albedo_view;
+    CaptureChannels channels;
+    channels.ids = whole;
+    channels.depth = whole;
     CapturedFrame out;
     std::string error;
-    REQUIRE_MESSAGE(renderer.capture(frame, {}, out, &error), error);
+    REQUIRE_MESSAGE(renderer.capture(frame, channels, out, &error), error);
     return out;
   }
 
@@ -1131,7 +1135,7 @@ TEST_CASE("renderer: the texture bound changes no pixel at a held view and holds
         return;
       }
       CHECK(!whole.scene.texture_bound_active());
-      whole_frame = whole.shot(distance);
+      whole_frame = whole.shot(distance, true);
       whole_bytes = whole.scene.texture_bytes();
     }
     BoundSwitch on(true);
@@ -1139,7 +1143,7 @@ TEST_CASE("renderer: the texture bound changes no pixel at a held view and holds
     REQUIRE(held.build(mesh, ddc));
     REQUIRE(held.scene.texture_bound_active());
     const u64 floor_bytes = held.scene.texture_bytes();
-    const CapturedFrame frame = held.shot(distance);
+    const CapturedFrame frame = held.shot(distance, true);
     const TextureBoundUse& use = held.scene.texture_bound_use();
     MESSAGE(distance << " m: whole " << whole_bytes << " bytes, the floor " << floor_bytes
                      << ", after the first frame " << held.scene.texture_bytes() << "; "
@@ -1183,7 +1187,7 @@ TEST_CASE("renderer: the texture bound promotes ahead of a walker and changes no
       return;
     }
     for (u32 k = 0; k < k_frames; ++k)
-      whole_frames.push_back(whole.shot(distance_at(k)));
+      whole_frames.push_back(whole.shot(distance_at(k), true));
   }
   BoundSwitch on(true);
   Harness held;
@@ -1193,7 +1197,7 @@ TEST_CASE("renderer: the texture bound promotes ahead of a walker and changes no
   u32 first_below_floor = k_frames;
   for (u32 k = 0; k < k_frames; ++k) {
     const f32 d = distance_at(k);
-    const CapturedFrame frame = held.shot(d);
+    const CapturedFrame frame = held.shot(d, true);
     differing_frames += differing_pixels(whole_frames[k], frame) != 0 ? 1u : 0u;
     if (held.scene.texture_bound_use().promotions != 0 && first_promoted == k_frames)
       first_promoted = k;
