@@ -46,7 +46,7 @@ Plan Phases 1 and 2: [04](plan/04-renderer.md), [10 §10.2](plan/10-roadmap-risk
 | R14 | Baseline tier measured on the Maxwell machine | blocked (the Maxwell machine is down) | R13 | M | research | [04 §4.1](plan/04-renderer.md#41-goals-targets-non-goals) |
 | R15 | 32-bit visibility buffer | open | R11 | M | design | [gfx](subsystems/gfx.md#what-a-device-has-to-have) |
 | R16 | Per-instance culling BVH | open | R10 | M | design | [04 §4.3](plan/04-renderer.md#43-geometry) |
-| R17 | Cheaper Hi-Z pyramid | open | R10 | M | research | [E9](experiments/e9-multi-view.md#follow-ups-this-leaves) |
+| R17 | Cheaper Hi-Z pyramid | deferred (2026-11-16, measured on main's 86b931f7, session unlocked, the CPU 100 % others: under `--raster rt --shadows rt` no Hi-Z is built at the defaults, and under `--raster hw --shadows csm` at 3840×2160 the streamed forest's two pyramids are 0.089 ms (p99 0.104) of a 1.29 ms GPU frame, so E9's early-out on an empty pass 2 buys at most about 0.045 ms and only when the camera is still. Reopen from a baseline-tier measurement (the vertex path with the maps, where the pyramid is drawn every frame) that shows it above a few percent of the frame) | R10 | M | research | [E9](experiments/e9-multi-view.md#follow-ups-this-leaves) |
 | R18 | Occlusion culling chosen per frame | open | R17 | M | research | [04 §4.3](plan/04-renderer.md#43-geometry) |
 | R19 | Material resolve | done (fdd97447, 001ffc7b) | R11 | M | design | [renderer](subsystems/renderer.md#materials) |
 | R20 | Direct lighting, shared GGX BSDF | done (fe27bab5) | R19 | M | routine | [04 §4.2](plan/04-renderer.md#42-frame-architecture) |

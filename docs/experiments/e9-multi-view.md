@@ -259,7 +259,13 @@ The finding that provoked the work was that **Hi-Z is entirely fixed** and **the
   one recomputed. An early-out on the pass-2 count would roughly halve the Hi-Z, and it would do so
   only when the camera is still — a benchmark with a fixed camera would show a win a moving frame
   does not get, which is exactly why it was not taken without a moving-camera measurement to go
-  with it. The general form is rebuilding only the tiles pass 2 drew into.
+  with it. The general form is rebuilding only the tiles pass 2 drew into. *Deferred 2026-11-16
+  (roadmap R17), measured and not built*: under the owner's setting, traced primaries and shadows,
+  no Hi-Z is built at all (two-pass occlusion is off under traced shadows, and the end-of-frame
+  pyramid for the occlusion LOD term only while `renderer.lod.occluded_scale` is above its default
+  0); under `--raster hw --shadows csm` at 3840×2160 the streamed forest's two pyramids together
+  are 0.089 ms at the median (p99 0.104) of a 1.29 ms GPU frame on the RTX 5090, so the early-out
+  would buy at most about 0.045 ms, and only on still frames.
 - **The mask is 32×32 because the Hi-Z workgroup is.** A finer classification would skip more of a
   silhouette's neighbourhood; it would need its own pass or a smaller tile, and the smaller tile
   costs the Hi-Z its six-mip fold.
