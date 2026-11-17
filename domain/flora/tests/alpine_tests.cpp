@@ -231,7 +231,10 @@ TEST_CASE("alpine: containers, far cuts and deterministic section hashes") {
   // 15342167867693253831, 14353891800973444185 and 15090448681600777050 until G203 (2026-11-14,
   // b63cc940): a container records the key of the alpha-tested atlas it carries, and a mask's
   // texture key now mixes `texture::k_alpha_mask_version`; the texture records moved, nothing else.
-  constexpr u64 pins[] = {0xbaede4ce0d9c60fbull, 0x4a0a0c835ad7bedfull, 0x6d2cd59ee137f344ull};
+  // R164 (MSVC first): the leaves' foliage optics in the materials' alpha words, the far levels'
+  // too, and `k_flora_version` 13; they were 0xbaede4ce0d9c60fb, 0x4a0a0c835ad7bedf and
+  // 0x6d2cd59ee137f344.
+  constexpr u64 pins[] = {0xed9f4348ddf83c17ull, 0xa10a4ee0ce3c80cdull, 0x4581e7f9ef32326cull};
   u32 profile_index = 0;
   for (const auto& profile : flora::alpine_profiles()) {
     flora::FloraFile file;

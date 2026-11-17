@@ -19,10 +19,13 @@ Each row says whether its source was **read** this row, seen as a search **snipp
 | What | Source | What it says |
 |---|---|---|
 | A leaf's reflectance in the green | PROSPECT-D and PROSPECT-PRO as run by the WUR RTM suite's leaf-model tutorial (read: N 1.5, Cab 40, Car 8) | 0.134 at 550 nm |
-| A leaf's two spectra | Jacquemoud and Ustin, *Leaf optical properties* (recalled; the PDF reached had no text layer) | reflectance and transmittance have one shape in the visible, a green peak between chlorophyll's blue and red absorption; a green leaf's transmittance at 550 nm about 0.08 to 0.12 against a reflectance of 0.10 to 0.15 |
+| A leaf's two spectra | Jacquemoud and Ustin, *Leaf optical properties* (read in the second leg, a copy with a text layer: Boston University's course files) | chlorophyll's absorption covers the visible "with a minimum at 550 nm"; reflectance and transmittance plotted with one shape. No number in the text: the 550 nm values the first leg recalled (transmittance 0.08 to 0.12, reflectance 0.10 to 0.15) are replaced by the three rows below |
+| Leaves and needles over the visible, by plant type | Majasalmi and Bright 2019, *Geoscientific Model Development* 12:3923, §3.1.1 (read; integrating-sphere data compiled for land-surface models) | mean reflectance and transmittance over 400 to 700 nm: needleleaf evergreen temperate 0.08 and 0.04, boreal 0.09 and 0.05; broadleaf deciduous temperate 0.08 and 0.06, boreal 0.09 and 0.05; broadleaf evergreen 0.11 and 0.06. Transmittance over reflectance: needles 0.50 to 0.56, broadleaves 0.55 to 0.75 (band means, where blue and red, transmitting least, weigh as much as the green) |
+| A needle's two numbers at 560 nm | Hovi, Lukeš, Homolová, Juola and Rautiainen 2022, *Silva Fennica* 56(2) 10683, supplement S1, table S1.5 (read; Norway spruce, top of canopy, every campaign's mean) | current-year needles reflect 0.165 and transmit 0.085, one-year-old 0.139 and 0.059 (blue 0.069 and 0.025, red 0.063 and 0.027): transmittance 0.52 and 0.42 of reflectance in the green, 0.36 in the blue, 0.43 in the red |
+| A needle transmits less than it reflects; a birch leaf about as much | Lukeš, Stenberg, Rautiainen, Mõttus and Vanhatalo 2013, *Remote Sensing Letters* 4(7):667 (abstract read) | "the transmittance of pine and spruce needles is clearly lower than reflectance", while for birch "reflectance and transmittance were similar" |
+| A leaf's transmittance at 550 nm | Noda et al. 2013, *Plant, Cell and Environment* (snippet; the full text refused the fetch) | 0.06 to 0.09 at 550 nm in the rows the snippet shows, species not shown |
 | A leaf's angular response | Bousquet, Lachérade, Jacquemoud and Moya 2005, *Remote Sensing of Environment* 98 (snippet) | the BRDF is a specular part at the surface, wavelength independent and driven by the cuticle's roughness, plus a **Lambertian, wavelength-dependent diffuse part**, which dominates integrated over the hemisphere; canopy models take leaves as Lambertian in reflection and transmission |
 | How a thin surface transmits, in a shipped format | Khronos, `KHR_materials_diffuse_transmission` (read) | thin-walled; `base = mix(diffuse_brdf(baseColor), diffuse_btdf(diffuseTransmissionColor), diffuseTransmission)`, the factor default 0, the colour default white; the specular layer unchanged; a leaf is its example |
-| A needle transmits less than it reflects | Lukeš et al. 2013, Hovi et al. 2017 (read there) | pine and spruce needle transmittance "clearly lower than reflectance"; a spruce needle's visible transmittance near zero |
 | A shoot scatters backward | Rautiainen et al. 2018, *Remote Sensing* 10:207 (read there) | Scots pine shoots "scatter most strongly in the backward directions with very little forward scattering in blue and red" |
 | A spruce's needles stand all round the twig above, parted below | Gymnosperm Database, *Picea abies* (read there) | "above shoot directed forward, those below more or less pectinate" |
 | The Lambert sphere | Lambert's phase law (recalled; derived below) | a Lambertian sphere returns (sin a + (pi - a) cos a) / pi of its zero-phase light at phase angle a |
@@ -62,10 +65,16 @@ directions and scales them by what the scene's cache let through at the front.
 
 | | transmit | spread | why |
 |---|---|---|---|
-| broadleaf leaf, frond | 0.8 | 0 | a green leaf's transmittance near its reflectance at 550 nm (recalled 0.08 to 0.12 against 0.10 to 0.15), less in red and blue, which the albedo's colour already carries |
-| needle card | 0.2 | 0.8 | needles transmit a fraction of what they reflect; a spruce's twig holds them all round above and parted below, so most of a card, not all, is a sphere of normals |
+| broadleaf leaf, frond | 0.8 | 0 | between the visible band's means (0.55 to 0.75, Majasalmi and Bright) and a birch's "similar" in the green (Lukeš et al.); the green, which carries most of a leaf's luminance, is where transmittance is nearest reflectance, and the band means are pulled down by blue and red |
+| needle card | 0.47 | 0.8 | a spruce needle at 560 nm, 0.52 of its reflectance in its first year and 0.42 after (Hovi et al. 2022), the visible band's 0.50 to 0.56 (Majasalmi and Bright); a spruce's twig holds them all round above and parted below, so most of a card, not all, is a sphere of normals |
 
-The four-bit codes put both at the nearest fifteenth (0.8 is 12, 0.2 is 3).
+The four-bit codes put both at the nearest fifteenth (0.8 is 12, 0.47 is 7, 0.467). **What the
+second leg moved**: the needle's transmittance, 0.2 (code 3) to 0.47 (code 7). The first leg had
+it from a recalled "near zero"; the measured numbers are half the reflectance. The leaf's 0.8
+stands, now on read sources. One finding beside it, not this row's to act on: the spruce recipe's
+needle colour (green 0.100, linear, [conifer crowns](conifer-crown-coverage.md)) is under the
+measured needle reflectance at 560 nm (0.139 to 0.165), and that page's recalled 0.08 to 0.12 is
+too; a card's texels are needles only, so it is the needle's own number that applies.
 
 **What it costs.** One byte of the material's flags word, no word of any hot record. A foliage
 pixel asks the sun in every direction but straight against it, so more of a crown traces its sun

@@ -22,10 +22,13 @@ TEST_CASE("regeneration: every cooked section has a cross-compiler pin") {
   // 3543767975535335084, 17023047174142128883, 9673179043758828519, 12990953087382750004 and
   // 613653092068049302: a container records the key of the alpha-tested atlas it carries, and a
   // mask's texture key now mixes `texture::k_alpha_mask_version`; the texture records' section
-  // moved and no other.
-  constexpr u64 pins[] = {0x3cbb5d26c157a101ull, 0xb14926c57ee397bfull, 0xdd3501b2a804a158ull,
-                          0x64867543b19e98e2ull, 0x97deb502dca36d8bull, 0x06972c041b66f18full,
-                          0xea6a9bb339b3ab3cull};
+  // moved and no other. R164 (MSVC first): foliage optics in the leaves' and needles' alpha words,
+  // the far levels' too, and `k_flora_version` 13 (with the optics zeroed and the version 12 the
+  // pins below them come back): 0x3cbb5d26c157a101, 0xb14926c57ee397bf, 0xdd3501b2a804a158,
+  // 0x64867543b19e98e2, 0x97deb502dca36d8b, 0x06972c041b66f18f, 0xea6a9bb339b3ab3c.
+  constexpr u64 pins[] = {0xe5de1e989da378bcull, 0x0ef75fd46e6c0250ull, 0x239270ac40d4804dull,
+                          0x7b06a31baa6ccd75ull, 0x743d311b29307605ull, 0x81d5c0396f2ad081ull,
+                          0x935528d9519c4ed1ull};
   u32 n = 0;
   for (const auto& profile : flora::regeneration_profiles()) {
     flora::FloraFile recipe;
@@ -79,10 +82,12 @@ namespace {
 // G103's first committed MSVC container pins, ground-plants version 2. No accepted pin moves.
 // The uncommitted version-1 capture used generic decimation; version 2 preserves every pinna.
 // Raw geometry/motion pins remain unchanged (ground-plants.md, Regression evidence).
+// R164 (MSVC first): the leaves' foliage optics in the materials' alpha words move section 9 (the
+// materials) alone in both; it was 11155168886135922632 and 6521252549080255575.
 constexpr u64 k_sections[2][37] = {
     {11310923702420204082ull, 2374871155925766736ull,  6674441434776263015ull,
      5627886797980378692ull,  11679846499717473743ull, 15465540917729557462ull,
-     3378653961892416844ull,  11206847717578288037ull, 11155168886135922632ull,
+     3378653961892416844ull,  11206847717578288037ull, 307637493998705243ull,
      11286133854226296554ull, 11286133854226296554ull, 2042293585932550210ull,
      2835959889007852657ull,  3275646347912829173ull,  753080197162691681ull,
      10298470454730462158ull, 11391325010373076050ull, 2992554174751281139ull,
@@ -95,7 +100,7 @@ constexpr u64 k_sections[2][37] = {
      9143977360768788356ull},
     {11695310453101302807ull, 8948275318947549224ull,  11172662914119295462ull,
      13471198707307536154ull, 13269522004480330839ull, 5247603925858529505ull,
-     5030362213942153173ull,  8458975983816247766ull,  6521252549080255575ull,
+     5030362213942153173ull,  8458975983816247766ull,  1052077580160204689ull,
      11286133854226296554ull, 11286133854226296554ull, 8671652604495936604ull,
      17169040077552859611ull, 3275646347912829173ull,  1506228763664403473ull,
      2651759468463117830ull,  11286133854226296554ull, 2992554174751281139ull,

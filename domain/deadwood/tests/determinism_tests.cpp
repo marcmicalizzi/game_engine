@@ -21,7 +21,9 @@ TEST_CASE("deadwood: complete container bytes agree across toolchains") {
   // a dead conifer's key takes the conifers' card version (`flora::flora_needle_card_version`)
   // and the needle cards it keeps are folded, so the fallen spruce moved (it was
   // 0x2d9e4afaa3af1347; the key and the cards were not told apart) and the oak log did not.
-  const u64 goldens[] = {0x60060207b3a4241dull, 0x05ba38fe44097faaull};
+  // R164 (MSVC first): `k_flora_version` 13 in the source key moves both by that alone (with the
+  // optics zeroed and the version 12 both read 0x60060207b3a4241d and 0x05ba38fe44097faa again).
+  const u64 goldens[] = {0x2bc69b39495bdb36ull, 0xa11d29e8e8356046ull};
   for (u32 i = 0; i < 2; ++i) {
     deadwood::DeadwoodFile p;
     p.tree.species = i == 0 ? "oak" : "spruce";

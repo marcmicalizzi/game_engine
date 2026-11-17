@@ -1736,7 +1736,7 @@ so a card seen from its far side took no sun at all: 40 to 98 % of a conifer's n
 - **`transmit`**, the diffuse transmittance as a share of the diffuse reflectance. Light from the
   sheet's far side comes through as Lambertian transmission of the albedo's colour (a leaf's
   reflectance and transmittance spectra have one shape in the visible). A broadleaf is about 0.8; a
-  needle a fraction (its transmittance is "clearly lower than reflectance").
+  needle about half (a spruce needle's at 560 nm is 0.42 to 0.52 of its reflectance).
 - **`spread`**, the share of the surface whose normals are a sphere's rather than the sheet's. A
   card of needles is opaque cylinders all round a twig: what it shows the eye is the visible half
   of a cloud of normals, whatever way the card faces. That share answers a light by the Lambert
@@ -1748,7 +1748,7 @@ Where it comes from: the container's alpha word, bits 4..11 (`geometry::alpha_wo
 an imported glTF's `KHR_materials_diffuse_transmission` on a double-sided material (`t / (1 - t)`
 of its factor, at most 1; its colour is not read); a material pack role's `transmission` and
 `normal_spread` keys (`materials::MaterialSet`, nonzero values replacing the part's own); and
-flora's own parts (`k_leaf_transmission` 0.8 on every leaf and frond, `k_needle_transmission` 0.2
+flora's own parts (`k_leaf_transmission` 0.8 on every leaf and frond, `k_needle_transmission` 0.47
 and `k_needle_spread` 0.8 on every needle card; [flora](flora.md#foliage-optics)). **A material
 with none of it is drawn exactly as before**: every reader branches on the byte, and a scene with
 no foliage material runs the instructions it ran.

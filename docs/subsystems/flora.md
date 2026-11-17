@@ -2309,9 +2309,11 @@ times, the `.tex` sizes and what the captures showed — is in
 R164 (2026-11-16; [renderer](renderer.md#foliage-lit-from-both-sides),
 [the grounding](../experiments/foliage-two-sided-light.md)). Flora declares what its own thin
 parts do with light from their far side, on their two-sided materials (`kit.h`, `material`): every
-`leaf` and `frond` transmits 0.8 of what it reflects (`k_leaf_transmission`; a broadleaf's
-transmittance in the green is close to its reflectance), and every `needles` card transmits 0.2
-(`k_needle_transmission`; a needle's is "clearly lower than reflectance") with 0.8 of its normals a
+`leaf` and `frond` transmits 0.8 of what it reflects (`k_leaf_transmission`; a birch's
+transmittance is "similar" to its reflectance, broadleaves' over the visible 0.55 to 0.75 of it),
+and every `needles` card transmits 0.47 (`k_needle_transmission`; a Norway spruce needle at 560 nm
+transmits 0.52 of what it reflects in its first year and 0.42 after, Hovi et al. 2022; it was 0.2,
+recalled, until R164's second leg read the numbers) with 0.8 of its normals a
 sphere's (`k_needle_spread`: needles stand all round a spruce's twig above and part to the sides
 below, so most of a card, not all, is a cloud of normals). The container carries them in the
 alpha word (`geometry::alpha_word_with_foliage`), the far levels and the chain's masked leaves
