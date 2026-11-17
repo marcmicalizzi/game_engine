@@ -1135,6 +1135,12 @@ slower and deeper, and a deeper level stands over more banks. The flat lines' fi
 not written over spilled water, already there without W137. Over 30 % all three keep W138+W131's
 gain within 5 gaps (93 against 88).
 
+**The four rows assembled** (`b67-streams`, 2026-11-17): all three above with W139's white water
+(the section's Froude number packed into each reach vertex's UV.y, [water](water.md)). W138 and
+W139 had each moved `k_channel_mesh_version` from 3 to 4 for a different change, so the combined
+mesh is version 5. The white reads neither the solve nor the plan, so the solve's counts on this
+branch are all three's.
+
 ## The cut
 
 (2026-11-07, roadmap W89; the POC's v35 engine-needs, item 1, and the owner's walk, item 11.) A real

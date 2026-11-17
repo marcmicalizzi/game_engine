@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "streams",
+  "reason": "b67-streams assembles the four streams rows: water.md and channels.md say the combined mesh version (5, both rows had taken 4) and that the rows are assembled here",
+  "date": "2026-11-17",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/water.md": 406,
+    "page:docs/subsystems/channels.md": 412
+  }
+}

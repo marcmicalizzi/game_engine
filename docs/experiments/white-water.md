@@ -208,7 +208,13 @@ first thing a budget cuts and are not in this leg; noted under the rows left.
   `wind_m_s` for the whitecaps', the streaks' and the spindrift's speed, its `sea_height_m` for the
   breaker's type and the bore), and the GPU's whitecap pass reads the body's
   `water_wind_frame`; nothing else in the white reads a wind. Its test scene for the gale is
-  `content/test-scenes/beach-wind` (on that branch).
+  `content/test-scenes/beach-wind` (on that branch). **Since then** (the other coordinator,
+  2026-11-17; all on `b67-W136`, not merged on `b67-streams`): beside `gfx::sea_state` the wind row
+  offers `gfx::sea_breaking_probability(state)`, `gfx::surf_similarity` and `breaker_type`, a swell a
+  scene names under `Sky.swell`, and a scene `content/test-scenes/beach-swell`. Under a 4 m swell
+  there, the first thing objected to is the swash's and the breaker's flat white sheets: the
+  stacked leg's breaker by type and its lace are the first work on that scene, before the
+  whitecaps.
 
 ### Cost, against the frame
 
