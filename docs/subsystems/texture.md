@@ -914,8 +914,8 @@ first frame and its settles where textures are distinct and far — a city, a pr
 a road, a scene at 1080p with 4K sources — and on its own changes nothing a player of these scenes
 would see in their memory. Turned on, it changes no pixel (the tests above).
 
-**Not built yet**: the production feedback and the trim under a ceiling (stage 2); a demotion (the
-same swap the other way, which stage 2's trim needs anyway); a persistent staging for promotions,
+**Not built yet** (the production feedback, the trim and the demotion are stage 2's, below): a
+persistent staging for promotions,
 which would take the image's staging out of the frame that admits it; the bound for textures that
 arrive with a tile's mesh; and a measurement of each card's anisotropic level of detail, which could
 take a level off the margin where a card's rounding is shown to be the specification's.
@@ -1007,6 +1007,72 @@ same bytes, and in one frame in twenty at 4K keeps up to three textures a level 
 pixel would — which only matters under pressure, and then those pixels draw a level softer until the
 next ask, which the hold's minimum age makes rare. Over the whole walk it asks for exactly what
 every pixel does.
+
+**The failure picture, measured** (the same machine and session state; the measurement on, which
+counts every pixel whose finest asked level is finer than its texture's resident top, by how many
+levels). Under a ceiling of 24 MiB — below what the village's 8 s hold keeps at 4K (44 MiB), so
+every frame of the walk is under pressure — the interior walk at 3840 x 2160 made 261 demotions
+giving back 346 MiB and 147 promotions, ended at 95.3 MiB of the whole 168.2 (the most at once
+130.4 MiB), and drew **1.88 million pixel-frames one level softer than they asked, 0.0046 % of the
+walk's textured pixel-frames**: 262 frames in 48 episodes, the median episode 5 frames (83 ms) and
+the longest 11, the worst frame 2.2 % of its textured pixels; none two levels or more; no demotion
+was dropped for an ask inside the hold. The recording thread's worst frame of admissions was 1.54 ms
+(2K promotions with their staging made in the frame) and of demotions 0.66 ms. A turn round on the
+spot (`village` lane start, the same ceiling, flown three times over with identical counts each
+time):
+
+- **round and back within the hold** (4 s facing behind): **nothing** — not one pixel softer, since
+  every level the view asked for was asked 4 s before;
+- **back after a minute**: during the half-second turn, 13 frames softer, all but one pixel-frame in
+  a thousand by one level: 39 % of the textured pixels for 3 frames (the wall the turn reaches first,
+  whose top levels went after 8 s unasked), 11 % for 5, 2.7 % for 4, 0.07 % for 1; by the time the
+  view settles forward it is the whole picture;
+- **onto a view not seen for longer than the hold** (the first turn of each repeat): up to 56 % of
+  the textured pixels one or two levels softer for 6 frames, and three levels or more on at most
+  38,000 pixels for 7 frames.
+
+What a person sees: the worst frame of the return after a minute (path frame 4,395, captured with
+and without the ceiling) shows no difference I could find at full size — the softer pixels are the
+plaster and thatch of the house at the frame's edge some 20 m off, where one level of a 1,024-texel
+set is below what a 4K pixel resolves there — and within a tenth of a second it is the whole
+picture again; never a hole or a wait, and nothing at all for a glance back within the hold. Under
+no pressure (any ceiling the pool does not reach) there is nothing to see: the trim never runs.
+
+**What a smaller card keeps** (the same machine and state; ceilings from what the rest of the
+engine holds, `--memory-report`'s device-local usage at exit on main less the textures: the village
+3,749 MiB at 4K and 3,597 at 1080p, of which the ray-tracing structures are 2,099 and the tiles 600;
+the oasis 707 and 683; a card's room taken as 0.97 of it, the share this card's memory budget
+reports, less 512 MiB for the desktop). An 8 GB card leaves the village 3,685 MiB of texture at 4K
+and the oasis 6,727: no pressure, nothing trimmed. **A 4 GB card holds less than the rest of the
+village at either resolution**, so its ceiling is no room at all (1 MiB: everything under pressure,
+the textures trimmed to what the hold keeps); the oasis leaves 2,754 MiB and its textures (all
+alpha-tested cards and the terrain's, none managed) are untouched. Flown as pairs, `--raster rt
+--shadows rt`, the bounce on, session locked, other agents at 4 to 29 % of the processors:
+
+| Flight | main | before (stage 1) | 8 GB | 4 GB |
+|---|---|---|---|---|
+| village 4K: median / p99 / most, ms | 6.000 / 7.13 / 49.8 | 6.021 / 7.60 / 66.5 | 6.062 / 7.26 / 45.3 | 6.060 / 7.66 / 59.7 |
+| village 4K: texture bytes at the end | 168.2 MiB | 168.2 | 168.2 | 95.3 (261 demotions, 147 promotions) |
+| village 1080p: median / p99 / most, ms | 2.551 / 3.97 / 34.9 | 2.554 / 4.24 / 34.5 | 2.581 / 4.11 / 34.0 | 2.605 / 4.33 / 34.5 |
+| village 1080p: texture bytes at the end | 168.2 MiB | 168.2 | 168.2 | 94.0 (228, 198) |
+| oasis 4K: median / p99, ms | 2.909 / 3.42 | 2.951 / 3.51 | 2.974 / 3.55 | 2.910 / 3.42 |
+| oasis 1080p: median / p99, ms | 1.289 / 1.62 | 1.287 / 1.61 | 1.293 / 1.63 | 1.295 / 1.67 |
+
+The ceiling costs the feedback's 0.04 ms at 4K and 0.03 ms at 1080p and the trim nothing more that
+the medians show; the worst frames are the walk's own (its loads and turns, main's included). The
+recording thread's worst admission on the 4 GB walk was 2.51 ms at 4K (a 2K texture's image and
+staging made in the frame) and its worst demotion 0.47 ms. **What the trim does not yet do**: the
+driver's device-local usage at the end of the 4 GB flights is main's to the MiB (3,917 at 4K), since
+the trimmed images leave free space inside the allocator's blocks, which the engine's next
+allocations take but the driver does not get back; on a card short of memory the trim makes room
+for the rest of the engine, and does not yet shrink the process. And on these scenes the textures
+are a twentieth of what fills a 4 GB card at 4K; the structures are most of it.
+
+**Tested by** (`systems/renderer/tests/texture_tests.cpp`, through `test_device.h`): the trim keeps
+what was asked within the hold and the floor (a 1 MiB ceiling releases level 0 alone and no earlier
+than the hold; a 10 KiB one goes to the floor and no further); with no ceiling, or one the pool
+fits under, every capture and the texture bytes are the load's; a trim then a return ends on the
+whole picture byte for byte.
 
 **Where ADR-0063's budget plugs in.** The ceiling is texture bytes on the device, the pool's figure
 in ADR-0063's sense. Under *the budget's form* still open there, a governor sets this number from
