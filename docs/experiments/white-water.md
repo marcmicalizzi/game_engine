@@ -174,7 +174,7 @@ first thing a budget cuts and are not in this leg; noted under the rows left.
   lace and tears on the backwash, stretched along the downslope flow; spots where the film has
   drained stay put and fade over the drain time the record already carries (`drain_s`).
 - **Whitecaps** on open water at Monahan & O'Muircheartaigh's cover W(U₁₀) = 3.84 × 10⁻⁶ U₁₀^3.41
-  (2 % at 10 m/s, 0.2 % at 5), stage A on the crests the spectrum makes steepest (where the
+  (1 % at 10 m/s, 0.1 % at 5), stage A on the crests the spectrum makes steepest (where the
   surface's Jacobian falls lowest, as the ocean literature does since Tessendorf), stage B patches
   carried with the water and decaying with an e-folding time of a few seconds (recalled about
   3.5 s; Callaghan et al.'s events 0.2 to 10.4 s).
@@ -186,7 +186,7 @@ first thing a budget cuts and are not in this leg; noted under the rows left.
   breaking waves is **blown in streaks along the wind**; at force 8 (17 to 21 m/s) crests break
   into **spindrift** and the streaks are well marked; past it dense streaks and spray cut the
   visibility. So the top tier draws, from the wind speed U and the sea's height: whitecap cover
-  W(U) as above (3.84 × 10⁻⁶ U^3.41: 2 % at 10 m/s, 10 % at 16, 21 % at 20, capped where the
+  W(U) as above (3.84 × 10⁻⁶ U^3.41: 1 % at 10 m/s, 5 % at 16, 10 % at 20, capped where the
   literature's data end); **streaks along the wind** over about 10 m/s (stage B foam drawn out
   along the wind's direction, their share rising to dense bands by 20 m/s); **spindrift**, spray
   torn off the breaking crests and carried downwind over about 17 m/s; and on the shore, **a bore
