@@ -2203,7 +2203,8 @@ void SceneRenderer::collect_slot(u32 slot) {
     last.gpu_shadow_cull = timer_.ms("shadow cull");
     last.gpu_shadow = last.gpu_shadow_cull + timer_.ms("shadow");
     last.gpu_pair_expand = timer_.ms("pair expand");
-    last.gpu_tables = timer_.ms("pair shift") + timer_.ms("table copy") + last.gpu_pair_expand;
+    last.gpu_tables = timer_.ms("table carry") + timer_.ms("pair shift") + timer_.ms("table copy") +
+                      last.gpu_pair_expand;
     last.gpu_terrain_upload = timer_.ms("terrain upload");
     last.gpu_sky = timer_.ms("sky");
     last.gpu_half_sun = timer_.ms("half sun");
@@ -4837,6 +4838,40 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // writes: a hole's inactive), before the frame's `tlas_references` writes their transforms and
   // addresses; and a set written whole takes the terrain levels' slots' pairs, which no expansion
   // writes (GpuScene::prepare_tables).
+  // **A set made again, carried over on the GPU first** (T167; GpuScene::prepare_tables): the set
+  // it is copied from, before the numbering and the copies that bring it up to date. A growth's old
+  // set is freed once this frame has completed.
+  if (write_tables && tables_.carry_instances.buffer.valid()) {
+    for (const gfx::BufferResource& old : tables_.retire)
+      frames_.defer_destroy(old);
+    const gfx::RgBuffer carry_instances =
+        graph.import_buffer("carried instances", tables_.carry_instances);
+    const bool carry_pairs = tables_.carry_pair_bytes > 0;
+    const gfx::RgBuffer carried_pairs =
+        carry_pairs ? graph.import_buffer("carried pairs", tables_.carry_pairs) : gfx::RgBuffer{};
+    graph.add_pass(
+        "table carry", gfx::PassKind::Transfer,
+        [&, carry_instances, carried_pairs, carry_pairs](gfx::PassBuilder& b) {
+          b.read(carry_instances, gfx::Access::TransferRead);
+          b.write(rg_instances, gfx::Access::TransferWrite);
+          if (carry_pairs) {
+            b.read(carried_pairs, gfx::Access::TransferRead);
+            b.write(rg_pair_table, gfx::Access::TransferWrite);
+          }
+        },
+        [&, carry_pairs](gfx::CommandList cb, gfx::RenderGraph&) {
+          timer.begin(cb, "table carry");
+          const gfx::BufferCopy instances_copy{0, 0, tables_.carry_instance_bytes};
+          cb.copy_buffer(tables_.carry_instances.buffer, scene.instances.buffer,
+                         std::span<const gfx::BufferCopy>(&instances_copy, 1));
+          if (carry_pairs) {
+            const gfx::BufferCopy pairs_copy{0, 0, tables_.carry_pair_bytes};
+            cb.copy_buffer(tables_.carry_pairs.buffer, scene.pair_table.buffer,
+                           std::span<const gfx::BufferCopy>(&pairs_copy, 1));
+          }
+          timer.end(cb);
+        });
+  }
   const bool rt_records = write_tables && rt_chain && !tables_.rt_copies.empty();
   const bool level_pairs = write_tables && !tables_.pair_copies.empty();
   gfx::RgBuffer rg_level_pairs{};

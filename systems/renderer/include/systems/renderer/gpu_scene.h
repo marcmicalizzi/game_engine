@@ -470,6 +470,15 @@ class GpuScene {
     u64 expand_runs_address = 0;
     u32 expand_runs = 0;
     u32 expand_run_slots = 0;
+    // **A new set carried over on the GPU** (T167): `carry_instances` and `carry_pairs` copied into
+    // the set's two tables (`carry_*_bytes` each) before the numbering and the copies above, so a
+    // set made again by a growth costs the frame its pending runs, not the whole table; `retire`
+    // holds buffers the caller frees once this frame has completed (a growth's old set).
+    gfx::BufferResource carry_instances;
+    gfx::BufferResource carry_pairs;
+    u64 carry_instance_bytes = 0;
+    u64 carry_pair_bytes = 0;
+    Vector<gfx::BufferResource> retire;
   };
   bool prepare_tables(u32 slot, TableUpdate& out, std::string* error = nullptr);
   // The mesh of instance `index`, prefix or tail; ~0 past the end and for a hole's null instance
@@ -2045,6 +2054,19 @@ class GpuScene {
   u32 current_set_ = 0;                   // the set the last frame read
   bool tables_changed_ = false;           // a change since the last frame flipped
   Vector<gfx::BufferResource> table_staging_;  // per frame slot: host visible, kept
+  // **A set made again is carried over on the GPU** (T167; renderer.md, "Instances that come and
+  // go"): what the frame that flips to a new set copies it from — the set the last frame read, or
+  // after a growth that set's old buffers, kept here (`owned`) until that frame retires them — with
+  // the runs and numberings it had not taken yet, which the new set then takes as its own.
+  struct TableCarry {
+    gfx::BufferResource instances;
+    gfx::BufferResource pairs;
+    Vector<InstanceRange> pending;
+    Vector<PairShift> shift;
+    bool valid = false;
+  };
+  TableCarry grown_from_;
+  bool rt_records_all_ = false;  // a swapped relayout made the top-level records empty (T167)
   u32 compact_pct_ = k_default_compact_pct;    // `renderer.tiles.compact_pct`, read at create
   u32 pair_limit_ = k_max_pairs;               // what the tail's layout may reach (`pair_limit`)
   bool relayout_pending_ = false;              // a growth the pool or the chain has not followed

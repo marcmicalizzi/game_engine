@@ -4,6 +4,7 @@
 
 #include <systems/renderer/gpu_scene.h>
 
+#include <core/profiling/startup_trace.h>  // stages only: timing, never logic
 #include <domain/gfx/device.h>
 
 #include <algorithm>
@@ -40,6 +41,7 @@ bool GpuScene::rt_relayout_fits() const noexcept {
 
 bool GpuScene::relayout(std::string* error, RelayoutRetired* retired) {
   if (!relayout_pending_) return true;
+  ENGINE_STARTUP_STAGE("relayout");  // stages: a flight's growth frames named by their work (T167)
   const bool chain = ray_tracing_ && (rt_layout_outgrown() || rt_relayout_failed_);
   if (retired != nullptr) {
     retired->must_wait = chain && !rt_relayout_fits();
@@ -62,7 +64,10 @@ bool GpuScene::relayout(std::string* error, RelayoutRetired* retired) {
     return false;
   };
   Vector<gfx::BufferResource>* old = retired != nullptr ? &retired->buffers : nullptr;
-  if (flora_grow_ && !grow_flora_tail(error, old)) return failed(false);
+  if (flora_grow_) {
+    ENGINE_STARTUP_STAGE("relayout trees");
+    if (!grow_flora_tail(error, old)) return failed(false);
+  }
   // The pool's per-entry slots are laid out by the stride, and every mesh record names them.
   // The allocator's tile scratch follows the same stride (R104). Both are written by every frame
   // before it reads them, so the new ones start empty, as they always did.
@@ -103,8 +108,11 @@ bool GpuScene::relayout(std::string* error, RelayoutRetired* retired) {
   // Until T152 the chain was laid out again on every relayout, a growth of the trees' tables alone
   // included — 70 to 83 ms of the frame's thread on the engine's streamed forest for buffers whose
   // sizes had not changed.
-  if (chain && !lay_out_ray_tracing(error, retired)) return failed(true);
-  if (chain) rt_relayout_failed_ = false;
+  if (chain) {
+    ENGINE_STARTUP_STAGE("relayout chain");
+    if (!lay_out_ray_tracing(error, retired)) return failed(true);
+    rt_relayout_failed_ = false;
+  }
   return true;
 }
 

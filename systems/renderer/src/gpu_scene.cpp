@@ -1715,11 +1715,18 @@ bool GpuScene::set_dynamic_instances(std::span<const SceneInstance> tail,
     return false;
   }
   lap(change.layout_ns);
-  // Committed: the slots the layout wrote, then the buffers grown to hold them.
-  if (!write_slots(tail, blocks, std::span<const SlotWrite>(writes_.data(), writes_.size()),
-                   change.slots_written, error) ||
-      !fit_tables(change, retired, error)) {
-    return false;
+  // Committed: the slots the layout wrote, then the buffers grown to hold them. Each a stage of the
+  // startup trace, which a flight keeps to its end (T167: a growth's frames named by their work).
+  {
+    ENGINE_STARTUP_STAGE("tiles write slots");
+    if (!write_slots(tail, blocks, std::span<const SlotWrite>(writes_.data(), writes_.size()),
+                     change.slots_written, error)) {
+      return false;
+    }
+  }
+  {
+    ENGINE_STARTUP_STAGE("tiles fit tables");
+    if (!fit_tables(change, retired, error)) return false;
   }
   // The layout numbered the pairs again and moved no slot: the tables follow, as runs (T154).
   if (change.layout.tight) {
@@ -1847,6 +1854,9 @@ bool GpuScene::write_slots(std::span<const SceneInstance> tail,
       if (!set.all)
         set.pending.push_back(InstanceRange{write.inst_begin, write.inst_begin + write.inst_count});
     }
+    if (grown_from_.valid)  // and the set a growth carries over, until a frame has (T167)
+      grown_from_.pending.push_back(
+          InstanceRange{write.inst_begin, write.inst_begin + write.inst_count});
     written += write.inst_count;
   }
   return true;
@@ -1875,6 +1885,7 @@ void GpuScene::number_first_pairs(u32& renumbered) {
   for (TableSet& set : sets_) {
     if (!set.all) compose_shifts(set.shift, runs, shift_scratch_);
   }
+  if (grown_from_.valid) compose_shifts(grown_from_.shift, runs, shift_scratch_);
 }
 
 // Slots `[begin, end)` of the CPU's table take whatever numbering they have not taken yet (T154).
@@ -1904,8 +1915,8 @@ u32 GpuScene::table_first_pair(u32 slot) const noexcept {
 // with room to grow — half as much again, in whole pages of 4,096 pairs, so a world that fills its
 // rings reallocates a handful of times and not on every tile — and past the instance capacity, in
 // pages of 1,024 slots, likewise. Either way the old buffers go to `retired`, because a frame in
-// flight may still be reading them, and every table set is made again and written whole by the
-// frame that next flips to it.
+// flight may still be reading them, and every table set is made again and carried over on the GPU
+// by the frame that next flips to it (T167).
 bool GpuScene::fit_tables(TileChange& change, Vector<gfx::BufferResource>* retired,
                           std::string* error) {
   const u32 pair_end = layout_.pair_end();
@@ -1956,10 +1967,25 @@ bool GpuScene::fit_tables(TileChange& change, Vector<gfx::BufferResource>* retir
   if (sets_again && (deform_ || ray_tracing_)) relayout_pending_ = true;
   if (sets_again) {
     // `instances` and `pair_table` still name the current set's old buffers, which the frames in
-    // flight read; the next frame flips to a new set.
-    for (TableSet& set : sets_) {
-      retire(set.instances, retired);
-      retire(set.pairs, retired);
+    // flight read; the next frame flips to a new set. **That set is carried over from them on the
+    // GPU** (T167), so they are kept, with the runs and numberings the current set had not taken,
+    // until the frame that copies them retires them: until T167 each of the sets was staged whole
+    // from the CPU in turn, 44 to 61 ms of a frame's thread apiece on the forest's 500,000 slots.
+    // A growth before that frame keeps the first one's (the sets since are new and hold nothing).
+    for (u32 s = 0; s < sets_.size(); ++s) {
+      TableSet& set = sets_[s];
+      if (s == current_set_ && !grown_from_.valid && !set.all && set.instances.buffer.valid()) {
+        grown_from_.instances = set.instances;
+        grown_from_.pairs = set.pairs;
+        grown_from_.pending.swap(set.pending);
+        grown_from_.shift.swap(set.shift);
+        grown_from_.valid = true;
+        set.instances = gfx::BufferResource{};
+        set.pairs = gfx::BufferResource{};
+      } else {
+        retire(set.instances, retired);
+        retire(set.pairs, retired);
+      }
       if (!create_table_set(set, error)) return false;
     }
     tables_changed_ = true;
@@ -2005,12 +2031,46 @@ bool GpuScene::prepare_tables(u32 slot, TableUpdate& out, std::string* error) {
   out.pair_source = gfx::BufferResource{};
   out.set = current_set_;
   if (!dynamic_ || !tables_changed_ || sets_.empty()) return true;
+  ENGINE_STARTUP_STAGE("table set");
   tables_changed_ = false;
+  out.carry_instances = out.carry_pairs = gfx::BufferResource{};
+  out.carry_instance_bytes = out.carry_pair_bytes = 0;
+  out.retire.clear();
+  const u32 last = current_set_;
   current_set_ = (current_set_ + 1) % sets_.size();
   TableSet& set = sets_[current_set_];
   instances = set.instances;
   pair_table = set.pairs;
   out.set = current_set_;
+  // **A set made again is carried over on the GPU** (T167): from the old buffers of the set the
+  // last frame read when a growth made every set again, else from that set itself, which holds
+  // every slot as of its own flip — and then takes the runs and numberings that set had not taken
+  // yet, as if it had been written then. Only a set with nothing to carry it from (the first frame
+  // of a scene) is staged whole.
+  if (set.all) {
+    const TableSet& from = sets_[last];
+    TableCarry* grown = grown_from_.valid ? &grown_from_ : nullptr;
+    const bool carried = grown != nullptr || (last != current_set_ && !from.all &&
+                                              from.instances.buffer.valid());
+    if (carried) {
+      out.carry_instances = grown != nullptr ? grown->instances : from.instances;
+      out.carry_pairs = grown != nullptr ? grown->pairs : from.pairs;
+      out.carry_instance_bytes = std::min(out.carry_instances.size, set.instances.size);
+      out.carry_pair_bytes = out.carry_pairs.buffer.valid() && set.pairs.buffer.valid()
+                                 ? std::min(out.carry_pairs.size, set.pairs.size)
+                                 : 0;
+      set.pending.assign((grown != nullptr ? grown->pending : from.pending).begin(),
+                         (grown != nullptr ? grown->pending : from.pending).end());
+      set.shift.assign((grown != nullptr ? grown->shift : from.shift).begin(),
+                       (grown != nullptr ? grown->shift : from.shift).end());
+      set.all = false;
+      if (grown != nullptr) {
+        out.retire.push_back(grown->instances);
+        out.retire.push_back(grown->pairs);
+        *grown = TableCarry{};
+      }
+    }
+  }
   Vector<InstanceRange>& runs = set.pending;
   if (set.all) {
     runs.clear();
@@ -2076,8 +2136,16 @@ bool GpuScene::prepare_tables(u32 slot, TableUpdate& out, std::string* error) {
     for (u32 i = run.begin; i < run.end; ++i)
       expand += tail_mesh(instance_table_[i].mesh) ? 1u : 0u;
   }
-  const u32 record_slots = slot_count;
-  if (slot_count == 0 && set.shift.empty()) {
+  // A swapped relayout of the chain made its top-level records empty (`lay_out_ray_tracing`): they
+  // are written whole once, here, rather than by every set written whole as they were until T167.
+  const bool records_whole = rt_records_all_ && ray_tracing_ && rt_instances.buffer.valid();
+  const InstanceRange whole_records{0, instance_count_};
+  const std::span<const InstanceRange> record_runs =
+      records_whole ? std::span<const InstanceRange>(&whole_records, 1)
+                    : std::span<const InstanceRange>(runs.data(), runs.size());
+  const u32 record_slots = records_whole ? instance_count_ : slot_count;
+  if (slot_count == 0 && set.shift.empty() && !out.carry_instances.buffer.valid() &&
+      !records_whole) {
     runs.clear();
     return true;
   }
@@ -2091,10 +2159,12 @@ bool GpuScene::prepare_tables(u32 slot, TableUpdate& out, std::string* error) {
   // Then the numbering's runs and the expansion's, 16 bytes each.
   const u64 shifts_at = (records_at + record_bytes + 15) / 16 * 16;
   const u64 expand_runs_at = shifts_at + u64{set.shift.size()} * sizeof(PairShift);
-  const u64 bytes = expand_runs_at + u64{expand_runs_.size()} * sizeof(PairShift);
+  // At least a line: a frame that only carries a set over still names the slot's staging.
+  const u64 bytes = std::max<u64>(64, expand_runs_at + u64{expand_runs_.size()} * sizeof(PairShift));
   if (slot >= table_staging_.size()) table_staging_.resize(slot + 1);
   gfx::BufferResource& staging = table_staging_[slot];
   if (staging.size < bytes) {
+    ENGINE_STARTUP_STAGE("table staging");
     // The slot's last frame is done, so its staging can go now.
     gfx::destroy_buffer(*device_, staging);
     const u64 size = (bytes + bytes / 2 + 65535) / 65536 * 65536;
@@ -2111,21 +2181,26 @@ bool GpuScene::prepare_tables(u32 slot, TableUpdate& out, std::string* error) {
   u64 record_at = records_at;
   u32 listed = 0;
   u64 pairs = 0;
-  for (const InstanceRange& run : descs) {
-    const u64 run_bytes = u64{run.end - run.begin} * sizeof(gfx::InstanceDesc);
-    std::memcpy(base + at, instance_table_.data() + run.begin, static_cast<usize>(run_bytes));
-    out.copies.push_back(
-        gfx::BufferCopy{at, u64{run.begin} * sizeof(gfx::InstanceDesc), run_bytes});
-    at += run_bytes;
-    for (u32 i = run.begin; i < run.end; ++i) {
-      const u32 mesh = instance_table_[i].mesh;
-      if (!tail_mesh(mesh)) continue;
-      list[listed++] = i;
-      pairs += part_of(mesh).cluster_count;
+  {
+    ENGINE_STARTUP_STAGE("table copies");
+    for (const InstanceRange& run : descs) {
+      const u64 run_bytes = u64{run.end - run.begin} * sizeof(gfx::InstanceDesc);
+      std::memcpy(base + at, instance_table_.data() + run.begin, static_cast<usize>(run_bytes));
+      out.copies.push_back(
+          gfx::BufferCopy{at, u64{run.begin} * sizeof(gfx::InstanceDesc), run_bytes});
+      at += run_bytes;
+      for (u32 i = run.begin; i < run.end; ++i) {
+        const u32 mesh = instance_table_[i].mesh;
+        if (!tail_mesh(mesh)) continue;
+        list[listed++] = i;
+        pairs += part_of(mesh).cluster_count;
+      }
     }
   }
-  for (const InstanceRange& run : runs) {
-    if (record_bytes > 0) {
+  if (record_bytes > 0) {
+    ENGINE_STARTUP_STAGE("table records");
+    rt_records_all_ = false;
+    for (const InstanceRange& run : record_runs) {
       const u64 run_records = u64{run.end - run.begin} * gfx::k_instance_record_bytes;
       for (u32 i = run.begin; i < run.end; ++i) {
         const gfx::TlasInstance record = tlas_record(i);
@@ -5913,6 +5988,7 @@ bool GpuScene::lay_out_ray_tracing(std::string* error, RelayoutRetired* retired)
     for (gfx::BufferResource* buffer :
          {&rt_instances, &slots, &instance_counts, &blas_records, &blas_dense, &blas_slots})
       retire(*buffer, &retired->buffers);
+    rt_records_all_ = true;  // the new records start empty: the next set written fills them (T167)
   }
   rt_instance_slots_ = dynamic_ ? std::max(instance_capacity_, instance_count_) : instance_count_;
   rt_union_clusters_ = pair_stride_ * view_count_;
@@ -6137,6 +6213,7 @@ bool GpuScene::lay_out_ray_tracing(std::string* error, RelayoutRetired* retired)
   if (retired != nullptr) {
     // Swapped (T152): the capacity is the one the scene holds, so the step keeps the frame's set and
     // hands the bottom-level set it replaces to the caller with the rest.
+    ENGINE_STARTUP_STAGE("chain resize");
     if (!resize_ray_tracing(first, error, false, first_references, &retired->chain)) return false;
   } else {
     rt_reference_capacity_ = 0;
@@ -6408,6 +6485,9 @@ void GpuScene::destroy() noexcept {
     gfx::destroy_buffer(device, set.pairs);
   }
   sets_.clear();
+  gfx::destroy_buffer(device, grown_from_.instances);  // a growth no frame carried over (T167)
+  gfx::destroy_buffer(device, grown_from_.pairs);
+  grown_from_ = TableCarry{};
   for (gfx::BufferResource& staging : table_staging_)
     gfx::destroy_buffer(device, staging);
   table_staging_.clear();
