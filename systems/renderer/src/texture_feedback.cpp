@@ -57,6 +57,11 @@ i32 level_of(u32 code) noexcept {
   return lambda <= 0.0f ? 0 : static_cast<i32>(std::floor(lambda));
 }
 
+// The format is checked against its arguments where the compiler can (GCC and Clang refuse a
+// non-literal format otherwise: the first leg's Linux run, 2026-11-16).
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((format(printf, 2, 3)))
+#endif
 void append(std::string& out, const char* format, ...) noexcept {
   char line[512];
   va_list args;
