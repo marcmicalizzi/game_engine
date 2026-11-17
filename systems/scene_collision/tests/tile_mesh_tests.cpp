@@ -16,6 +16,7 @@
 #include <test_temp_dir.h>
 
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <string>
 #include <thread>
@@ -213,6 +214,75 @@ TEST_CASE("scene_collision: tiles handing one recipe share one proxy, read from 
   }
   CHECK(physics.built_shape_count() == 0);
   CHECK(physics.shape_count() == 0);
+}
+
+// **A kept copy cuts the proxy a fresh read gives** (T166; scene_collision.md, "Ahead of a running
+// walker"). The same walk east and back over tiles whose rocks are handed at two scales, once
+// reading each tile's meshes for every gather (as before T166) and once from the copies kept
+// between gathers: the same proxies, triangle for triangle and byte for byte, and the same rays'
+// answers to the bit over a grid of the held tiles — with fewer reads.
+TEST_CASE("scene_collision: a tile's mesh cut from a kept copy is the proxy a fresh read gives") {
+  test::TempDir scratch("collision-mesh-copies");
+  const std::string ddc = scratch.file("ddc");
+  struct Run {
+    Vector<u32> hits;  // the bits of each ray's height, or ~0 for a miss
+    u32 tile_proxies = 0;
+    u32 triangles = 0;
+    u64 bytes = 0;
+    u64 copy_hits = 0;
+    u64 copy_reads = 0;
+  };
+  const auto walk = [&](u64 copy_bytes) {
+    renderer::SceneData scene;
+    rocks_scene(3, 1, ddc, scene);
+    physics::World physics;
+    REQUIRE(physics.init(physics_options()) == physics::Status::Ok);
+    Run out;
+    SceneCollision collision;
+    Config config;
+    config.mesh_copy_bytes = copy_bytes;
+    std::string error;
+    REQUIRE_MESSAGE(collision.create(physics, scene, nullptr, config, &error), error);
+    world::World world(ring());
+    world.add_consumer(collision.consumer());
+    const f64 xs[] = {16.0, 48.0, 80.0, 48.0, 16.0};
+    for (u32 k = 0; k < 5; ++k) {
+      world.update(at(xs[k], 16.0), k, true);
+      for (f32 z = -12.0f; z < 44.0f; z += 1.75f)
+        for (f32 x = static_cast<f32>(xs[k]) - 28.0f; x < static_cast<f32>(xs[k]) + 28.0f;
+             x += 1.75f) {
+          f32 y = 0.0f;
+          out.hits.push_back(hit_below(physics, x, z, y) ? std::bit_cast<u32>(y) : ~0u);
+        }
+    }
+    const Stats& s = collision.stats();
+    out.tile_proxies = s.tile_proxies;
+    out.triangles = s.proxy_triangles;
+    out.bytes = s.proxy_bytes;
+    out.copy_hits = s.mesh_copy_hits;
+    out.copy_reads = s.mesh_copy_reads;
+    return out;
+  };
+  const Run read = walk(0);
+  const Run kept = walk(u64{64} << 20);
+  MESSAGE("read each time: " << read.tile_proxies << " proxies of " << read.triangles
+                             << " triangles, " << read.bytes
+                             << " bytes; kept copies: " << kept.copy_reads << " reads, "
+                             << kept.copy_hits << " cut from a copy");
+  REQUIRE(read.hits.size() == kept.hits.size());
+  u32 differ = 0;
+  u32 hit = 0;
+  for (u32 k = 0; k < read.hits.size(); ++k) {
+    differ += read.hits[k] == kept.hits[k] ? 0u : 1u;
+    hit += read.hits[k] != ~0u && read.hits[k] != std::bit_cast<u32>(0.0f) ? 1u : 0u;
+  }
+  CHECK(hit > 0);  // the grid met rocks, not only the floor
+  CHECK(differ == 0);
+  CHECK(read.tile_proxies == kept.tile_proxies);
+  CHECK(read.triangles == kept.triangles);
+  CHECK(read.bytes == kept.bytes);
+  CHECK(read.copy_reads == 0);
+  CHECK(kept.copy_hits > 0);
 }
 
 TEST_CASE("scene_collision: a tile's mesh built ahead and never activated leaks no proxy") {
