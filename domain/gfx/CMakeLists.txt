@@ -92,7 +92,10 @@ engine_module_tests(NAME gfx PARTS 2 CONFIG_INVARIANT
           # A shading rate by region's sides and windows (visibility_resolve.h, R126); no device.
           tests/half_rate_tests.cpp
           # The world-space cache's key, levels and stride (gi_cache.h, R69); no device.
-          tests/gi_cache_key_tests.cpp)
+          tests/gi_cache_key_tests.cpp
+          # Foliage optics' closed forms against a sphere of normals (brdf_reference.h, R164); no
+          # device.
+          tests/foliage_reference_tests.cpp)
 
 # Shaders used by the RHI's own tests: the first .slang through the toolchain.
 engine_shaders(NAME gfx_tests

@@ -44,6 +44,11 @@ static const uint k_material_ground_detail = 8u;
 // numbers gfx::set_water_material packed into slots an untextured material never reads.
 static const uint k_material_water = 16u;
 static const uint k_material_normal_variance = 8192u;
+// **Foliage optics** (gfx::set_foliage_optics, R164; brdf.slang, "foliage"): the flags word's top
+// byte, bits 24..27 the diffuse transmittance over the reflectance in fifteenths, bits 28..31 the
+// share of the surface whose normals are a sphere's. Zero is a sheet that transmits nothing: every
+// material without it is shaded as it always was.
+static const uint k_material_foliage_shift = 24u;
 // Stochastic (hex-tiled) sampling of the material's own UV plane (gfx::k_material_stochastic, R131;
 // "Stochastic mesh materials" below) is compiled only into a module that defines
 // MATERIAL_STOCHASTIC (the `*_stochastic` resolve variants and the path tracer), which the renderer
@@ -88,6 +93,23 @@ struct ResolveMaterial {
 uint slot_sampler(ResolveMaterial material, uint word, uint shift) {
   const uint slot = (word >> shift) & 0xffffu;
   return slot == k_same_sampler ? material.sampler : slot;
+}
+
+// The foliage optics' two numbers (k_material_foliage_shift, above).
+bool material_is_foliage(ResolveMaterial material) {
+  return (material.flags >> k_material_foliage_shift) != 0u;
+}
+float material_foliage_transmit(ResolveMaterial material) {
+  return float((material.flags >> 24u) & 15u) / 15.0;
+}
+float material_foliage_spread(ResolveMaterial material) {
+  return float(material.flags >> 28u) / 15.0;
+}
+// The side of a surface's plane a ray towards `direction` leaves from: the geometric normal, which
+// faces the eye, turned to the light's side when the light is behind the plane — a foliage sheet
+// lit from behind is lit through itself, and a ray from its front would stop on its own card.
+float3 ray_side(float3 geometric, float3 direction) {
+  return dot(geometric, direction) < 0.0 ? -geometric : geometric;
 }
 
 // The material's UV transform (KHR_texture_transform) on a UV, and its linear part on a UV

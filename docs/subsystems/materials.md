@@ -131,6 +131,14 @@ writes `sampling` from a role's `material.json` when it names one, and **otherwi
 every `rock/*` role** and `tiled` for the rest: a rock set is laid over cliffs many times its repeat.
 The pack in `content/materials/` today predates the key and stays tiled until it is repacked.
 
+**Foliage optics** (R164; [renderer](renderer.md#foliage-lit-from-both-sides)). A role may say what
+its two-sided surface does with light from its far side: `transmission`, the diffuse transmittance
+as a share of the reflectance, and `normal_spread`, the share of its normals that are a sphere's
+(a card of needles), each 0 to 1 and 0 when absent. `apply_set` writes them into the alpha word of
+a double-sided material, **replacing the part's own only where nonzero** (flora's leaves and
+needles declare theirs: [flora](flora.md#foliage-optics)); a set that names neither leaves the
+container's bytes as they were. A card set's alpha-test re-encode keeps the part's optics.
+
 **A pack is in the build key, not the source hash.** `assets::generated_mesh_build_key` combines
 `pack_key` — a hash over `pack.json`'s text and the pack's directory — into the generated mesh's
 cache key when the pack has roles, so a palm built with a pack's defaults and one built flat are two

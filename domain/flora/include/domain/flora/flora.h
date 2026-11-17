@@ -70,7 +70,10 @@ namespace engine::flora {
 // 12: every tree's stem carried on below its collar as a skirt, so no tree on ground of up to 45
 //    degrees shows a gap under its trunk (G201; flora.md, "The trunk's skirt"): every tree's mesh
 //    grows by four triangles a side of its trunk and its box reaches down, so its grid moves.
-inline constexpr u32 k_flora_version = 12;
+// 13: foliage optics on every leaf and needle material (R164; flora.md, "Foliage optics"): a
+//    leaf transmits, a needle card's normals are a sphere's; the container's alpha word carries
+//    them, so an entry built at 12 draws its foliage as a sheet lit from the eye's side alone.
+inline constexpr u32 k_flora_version = 13;
 // G129: broadleaf/birch shape and baked-LOD invalidation, without rebuilding other architectures.
 inline constexpr u32 k_branch_taper_version = 2;
 

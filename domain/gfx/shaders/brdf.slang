@@ -166,6 +166,76 @@ float3 brdf_direct(BrdfSurface s, float3 light_dir, float3 radiance) {
   return brdf_eval(s, light_dir) * max(dot(s.normal, light_dir), 0.0) * radiance;
 }
 
+// ---- foliage: a two-sided material lit from both sides (R164) ----------------------------------
+//
+// docs/experiments/foliage-two-sided-light.md has the sources and the derivation. A material that
+// declares foliage optics (gfx::set_foliage_optics; the flags word's top byte) is shaded by
+// `brdf_foliage_direct` in place of `brdf_direct`, with two numbers:
+//
+// - `transmit`, the diffuse transmittance as a share of the diffuse reflectance (a leaf's two
+//   spectra have one shape in the visible, so one colour, the albedo, serves both): light arriving
+//   on the far side of the sheet comes through as Lambertian transmission (the bi-Lambertian leaf
+//   of canopy radiative transfer, Ross 1981).
+// - `spread`, the share of the surface whose normals are a sphere's rather than the sheet's: a
+//   card of needles is opaque cylinders all round a twig, so what it shows the eye is the visible
+//   half of a cloud of normals, whatever way the card's plane faces. That share answers the light
+//   by the Lambert sphere's law: averaged over the normals the eye sees (weighted by n.v), the
+//   cosine to the light is (2/3) phi(alpha), alpha the angle between the light and the eye and
+//   phi(a) = (sin a + (pi - a) cos a) / pi, Lambert's phase law; the transmitted half takes
+//   phi(pi - alpha). Backward scattering, as a shoot's is (Rautiainen et al. 2018).
+//
+// The sheet's share keeps `brdf_eval` whole (its specular lobe included); the sphere's is diffuse
+// alone, through (1 - F0). With both numbers zero the result is `brdf_direct`'s, to the bit.
+
+// Lambert's phase law, normalized to one at zero phase: the light a Lambertian sphere returns
+// towards an eye at `cos_phase` (the cosine of the angle between the light and the eye) over what
+// it returns at zero phase.
+float brdf_lambert_phase(float cos_phase) {
+  const float c = clamp(cos_phase, -1.0, 1.0);
+  const float a = acos(c);
+  return max((sqrt(max(1.0 - c * c, 0.0)) + (k_brdf_pi - a) * c) / k_brdf_pi, 0.0);
+}
+
+// Whether a light from `light_dir` can reach a foliage surface's response at all: the sheet's
+// front, its back through `transmit`, or the sphere's share from anywhere but straight behind.
+bool brdf_foliage_lights(BrdfSurface s, float3 light_dir, float transmit, float spread) {
+  const float n_dot_l = dot(s.normal, light_dir);
+  return n_dot_l > 0.0 || (transmit > 0.0 && n_dot_l < 0.0) || spread > 0.0;
+}
+
+// The BSDF times the cosine for one incident direction, foliage's: what `brdf_direct` is with a
+// radiance of one. The path tracer weighs a sampled direction by it.
+float3 brdf_foliage_eval_cos(BrdfSurface s, float3 light_dir, float transmit, float spread) {
+  const float n_dot_l = dot(s.normal, light_dir);
+  float3 sheet = float3(0.0);
+  if (n_dot_l > 0.0) sheet = brdf_eval(s, light_dir) * n_dot_l;
+  const float3 diffuse = (float3(1.0) - brdf_f0(s.albedo, s.metallic)) *
+                         ((1.0 - s.metallic) / k_brdf_pi) * s.albedo;
+  const float back = transmit * max(-n_dot_l, 0.0);
+  const float c = dot(light_dir, s.view);
+  const float sphere =
+      (2.0 / 3.0) * (brdf_lambert_phase(c) + transmit * brdf_lambert_phase(-c));
+  return (1.0 - spread) * sheet + diffuse * ((1.0 - spread) * back + spread * sphere);
+}
+
+float3 brdf_foliage_direct(BrdfSurface s, float3 light_dir, float3 radiance, float transmit,
+                           float spread) {
+  return brdf_foliage_eval_cos(s, light_dir, transmit, spread) * radiance;
+}
+
+// The hemisphere ambient's diffuse weights for foliage: what multiplies the albedo, given the
+// ambient the sheet's normal sees (`front`), the one its back sees (`back`), and the ones along the
+// view and against it (`towards_eye`, `away_from_eye`). For an ambient linear in the normal (the
+// sky's first two orders of harmonics, the stand-in's two halves), the n.v-weighted mean over the
+// visible half of a sphere of normals is (5/6) A(v) + (1/6) A(-v), and its back's the reverse.
+float3 brdf_foliage_ambient(float3 front, float3 back, float3 towards_eye, float3 away_from_eye,
+                            float transmit, float spread) {
+  const float3 sheet = front + transmit * back;
+  const float3 sphere = (5.0 / 6.0 + transmit / 6.0) * towards_eye +
+                        (1.0 / 6.0 + transmit * (5.0 / 6.0)) * away_from_eye;
+  return (1.0 - spread) * sheet + spread * sphere;
+}
+
 // Inverse square with Karis' window: the falloff reaches zero at the radius of influence with a
 // zero derivative, so a light leaves no edge where its volume ends and culling it is exact.
 float brdf_distance_attenuation(float distance_sq, float radius) {

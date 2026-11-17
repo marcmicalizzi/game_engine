@@ -52,6 +52,10 @@ struct Surface {
   Dvec3 albedo;  // linear, after the albedo texture
   double roughness = 1.0;
   double metallic = 0.0;
+  // Foliage optics (gfx::set_foliage_optics, R164): the diffuse transmittance over the
+  // reflectance, and the share of normals that are a sphere's. Both zero: the sheet it always was.
+  double transmit = 0.0;
+  double spread = 0.0;
 };
 
 // Mirrors gfx::ResolveLight, plus what the resolve's shadow ray decides about it: `shadowed`
@@ -156,9 +160,49 @@ inline Dvec3 eval(const Surface& s, Dvec3 light_dir) {
   return diffuse + specular;
 }
 
-inline Dvec3 direct(const Surface& s, Dvec3 light_dir, Dvec3 radiance) {
+inline Dvec3 sheet_direct(const Surface& s, Dvec3 light_dir, Dvec3 radiance) {
   const double n_dot_l = dot(s.normal, light_dir);
   return eval(s, light_dir) * radiance * (n_dot_l > 0.0 ? n_dot_l : 0.0);
+}
+
+// ---- foliage (brdf.slang, "foliage"; R164) -----------------------------------------------------
+
+// Lambert's phase law normalized to one at zero phase (brdf.slang, `brdf_lambert_phase`).
+inline double lambert_phase(double cos_phase) {
+  const double c = cos_phase < -1.0 ? -1.0 : (cos_phase > 1.0 ? 1.0 : cos_phase);
+  const double a = std::acos(c);
+  const double v = (std::sqrt(1.0 - c * c > 0.0 ? 1.0 - c * c : 0.0) + (k_pi - a) * c) / k_pi;
+  return v > 0.0 ? v : 0.0;
+}
+
+inline bool is_foliage(const Surface& s) { return s.transmit != 0.0 || s.spread != 0.0; }
+
+// `brdf_foliage_eval_cos`: the sheet's share as `sheet_direct` with a radiance of one, its back's
+// Lambertian transmission, and the sphere's share by the Lambert sphere's law.
+inline Dvec3 foliage_eval_cos(const Surface& s, Dvec3 light_dir) {
+  const double n_dot_l = dot(s.normal, light_dir);
+  const Dvec3 sheet = sheet_direct(s, light_dir, splat(1.0));
+  const Dvec3 diffuse =
+      (splat(1.0) - f0_of(s.albedo, s.metallic)) * s.albedo * ((1.0 - s.metallic) / k_pi);
+  const double back = s.transmit * (n_dot_l < 0.0 ? -n_dot_l : 0.0);
+  const double c = dot(light_dir, s.view);
+  const double sphere = (2.0 / 3.0) * (lambert_phase(c) + s.transmit * lambert_phase(-c));
+  return sheet * (1.0 - s.spread) + diffuse * ((1.0 - s.spread) * back + s.spread * sphere);
+}
+
+// What the resolve calls for a light: `brdf_direct`, or `brdf_foliage_direct` for foliage.
+inline Dvec3 direct(const Surface& s, Dvec3 light_dir, Dvec3 radiance) {
+  if (!is_foliage(s)) return sheet_direct(s, light_dir, radiance);
+  return foliage_eval_cos(s, light_dir) * radiance;
+}
+
+// `brdf_foliage_ambient`: the diffuse weights of the hemisphere for foliage.
+inline Dvec3 foliage_ambient(Dvec3 front, Dvec3 back, Dvec3 towards_eye, Dvec3 away_from_eye,
+                             double transmit, double spread) {
+  const Dvec3 sheet = front + back * transmit;
+  const Dvec3 sphere = towards_eye * (5.0 / 6.0 + transmit / 6.0) +
+                       away_from_eye * (1.0 / 6.0 + transmit * (5.0 / 6.0));
+  return sheet * (1.0 - spread) + sphere * spread;
 }
 
 inline double distance_attenuation(double distance_sq, double radius) {
@@ -289,6 +333,13 @@ inline Dvec3 shade(const Surface& s, Dvec3 sun_dir, double sun_intensity, Dvec3 
   const Dvec3 ambient = hemisphere_ambient(sky_radiance(sky), lit_ground, s.normal.y);
   const double n_dot_v = dot(s.normal, s.view);
   const Dvec3 specular = env_specular(f0_of(s.albedo, s.metallic), s.roughness, n_dot_v);
+  if (is_foliage(s)) {
+    const auto at = [&](Dvec3 n) { return hemisphere_ambient(sky_radiance(sky), lit_ground, n.y); };
+    const Dvec3 diffuse =
+        foliage_ambient(ambient, at(-s.normal), at(s.view), at(-s.view), s.transmit, s.spread);
+    return color + (diffuse * s.albedo * (1.0 - s.metallic) + ambient * specular) * occlusion +
+           emissive;
+  }
   color = color + ambient * (s.albedo * (1.0 - s.metallic) + specular) * occlusion + emissive;
   return color;
 }

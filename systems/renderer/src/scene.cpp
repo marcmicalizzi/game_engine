@@ -529,8 +529,10 @@ bool write_cluster_cache(const std::string& path, const std::string& source,
     material.emissive_image = geometry::encode_optional_image(source_material.emissive_image);
     material.emissive = source_material.emissive;
     material.normal_scale = source_material.normal_scale;
-    material.alpha = geometry::encode_alpha_word(
-        source_material.alpha_mode, source_material.double_sided, source_material.alpha_cutoff);
+    material.alpha = geometry::alpha_word_with_foliage(
+        geometry::encode_alpha_word(source_material.alpha_mode, source_material.double_sided,
+                                    source_material.alpha_cutoff),
+        source_material.transmission, source_material.normal_spread);
     data.materials.push_back(material);
     data.material_sampling.push_back(geometry::encode_material_sampling(
         source_material.sampling, source_material.occlusion_strength));
@@ -640,6 +642,8 @@ void adopt_container(geometry::ClusterFileData& container_data, const std::strin
     material.alpha_mode = geometry::alpha_word_mode(source.alpha);
     material.double_sided = geometry::alpha_word_double_sided(source.alpha);
     material.alpha_cutoff = geometry::alpha_word_cutoff(source.alpha);
+    material.transmission = geometry::alpha_word_transmit(source.alpha);  // R164, foliage optics
+    material.normal_spread = geometry::alpha_word_spread(source.alpha);
     out.data.materials.push_back(std::move(material));
     out.part_material.push_back(static_cast<i32>(out.part_material.size()));
     // How it places its texels (R131): stochastic or plain, which the upload reads.

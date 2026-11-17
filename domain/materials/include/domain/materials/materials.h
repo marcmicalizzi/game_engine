@@ -60,6 +60,14 @@ struct MaterialSet {
   // shows (renderer.md, "Stochastic mesh materials"). A pack role's `sampling` key, a rock
   // recipe's `material.sampling`.
   bool stochastic = false;
+  // **Foliage optics** (R164; renderer.md, "Foliage lit from both sides"): what a two-sided
+  // surface does with light from its far side. `transmission` is the diffuse transmittance as a
+  // share of the reflectance (0 to 1: a broadleaf's about 0.8 in the green, a needle's a fraction);
+  // `normal_spread` the share of the surface whose normals are a sphere's rather than the card's (0
+  // a leaf's sheet, 1 a tuft of needles all round a twig). A pack role's `transmission` and
+  // `normal_spread` keys; both 0, every set before them, is a sheet that transmits nothing.
+  f32 transmission = 0.0f;
+  f32 normal_spread = 0.0f;
 };
 
 // True when the set names any image — the test of whether a recipe's block for a part replaces the

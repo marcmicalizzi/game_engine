@@ -2304,6 +2304,20 @@ if a closer look ever needs one.
 times, the `.tex` sizes and what the captures showed — is in
 [materials](materials.md#the-first-pack-2026-10-19).
 
+## Foliage optics
+
+R164 (2026-11-16; [renderer](renderer.md#foliage-lit-from-both-sides),
+[the grounding](../experiments/foliage-two-sided-light.md)). Flora declares what its own thin
+parts do with light from their far side, on their two-sided materials (`kit.h`, `material`): every
+`leaf` and `frond` transmits 0.8 of what it reflects (`k_leaf_transmission`; a broadleaf's
+transmittance in the green is close to its reflectance), and every `needles` card transmits 0.2
+(`k_needle_transmission`; a needle's is "clearly lower than reflectance") with 0.8 of its normals a
+sphere's (`k_needle_spread`: needles stand all round a spruce's twig above and part to the sides
+below, so most of a card, not all, is a cloud of normals). The container carries them in the
+alpha word (`geometry::alpha_word_with_foliage`), the far levels and the chain's masked leaves
+keep them, and a pack role that declares its own nonzero `transmission` or `normal_spread`
+replaces them. `k_flora_version` 13 re-keys every tree.
+
 ## The build
 
 A palm is derived data, built once per parameter set. `flora::build_flora_container` solves the

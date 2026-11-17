@@ -188,17 +188,23 @@ float3 shade_hit(ResolveParams* params, RayDesc ray, SceneHit hit, float footpri
   const bool has_sky = params->sky_params != 0;
   float3 light = emissive;
   const float3 sun_dir = params->sun.xyz;
-  if (dot(n, sun_dir) > 0.0) {
+  // Foliage optics (R164; brdf.slang, "foliage"): the sun from behind the sheet too, its ray from
+  // the light's side of the plane, as the resolve takes it.
+  const bool foliage = material_is_foliage(material);
+  const float transmit = foliage ? material_foliage_transmit(material) : 0.0;
+  const float spread = foliage ? material_foliage_spread(material) : 0.0;
+  if (foliage ? brdf_foliage_lights(surface, sun_dir, transmit, spread) : dot(n, sun_dir) > 0.0) {
     bool blocked = false;
     if (shadow) {
       const float bias = ray_offset(geo, instance, params->shadow_bias, params->shadow_bias_steps);
-      blocked = shadow_ray_blocked(params, k_shadow_sun, surf.position + surf.geometric * bias,
-                                   sun_dir, 1e30);
+      const float3 side = foliage ? ray_side(surf.geometric, sun_dir) : surf.geometric;
+      blocked = shadow_ray_blocked(params, k_shadow_sun, surf.position + side * bias, sun_dir, 1e30);
     }
     if (!blocked) {
       float3 sun = float3(params->sun.w);
       if (has_sky) sun = sky_light_at(sky, surf.position, sun_dir, sky->sun_illuminance.rgb);
-      light += brdf_direct(surface, sun_dir, sun);
+      light += foliage ? brdf_foliage_direct(surface, sun_dir, sun, transmit, spread)
+                       : brdf_direct(surface, sun_dir, sun);
     }
   }
   // The ambient the resolve would give this surface: the sky's harmonics (or the stand-in's

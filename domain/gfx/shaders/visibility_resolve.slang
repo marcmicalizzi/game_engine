@@ -714,6 +714,15 @@ float shadow_visibility(ResolveParams* params, uint bit, uint owner, float3 posi
   return lerp(ray, map_visibility(params, owner, position, geometric), maps_share);
 }
 
+// The hemisphere ambient a normal `n` sees before the scene's cache scales it: the sky's harmonics,
+// or the stand-in's two halves, as `fs_resolve` takes it for the shading normal. Foliage (R164)
+// asks it along its back and along the view too (brdf.slang, `brdf_foliage_ambient`).
+float3 foliage_raw_ambient(ResolveParams* params, SkyParams* sky, bool has_sky, float3 n) {
+  if (has_sky) return sky_ambient((SkyFrame*)sky->frame, n);
+  const float3 ground = ground_radiance(params->sky.rgb, params->ground.rgb, params->sun);
+  return ambient_radiance(params->sky.rgb, ground, n);
+}
+
 // **A water pixel** (water.slang; docs/subsystems/water.md, "Shading"): the waves' normal at the
 // body-local point — the surface point less the instance's own place in the frame, so the waves
 // belong to the body and not to the eye or the world (ADR-0053) — faded by this pixel's footprint
@@ -1689,6 +1698,13 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   surface.view = normalize(-from_eye);
   surface.roughness = roughness;
   surface.metallic = sampled.metallic;
+  // **Foliage optics** (R164; brdf.slang, "foliage"; renderer.md, "Foliage lit from both sides"):
+  // a material that declares them takes a light from behind its sheet (transmitted) and, for the
+  // share of it whose normals are a sphere's, from any side; its shadow ray leaves from the side of
+  // the plane the light is on (`ray_side`). Every other material reads the lines it always read.
+  const bool foliage = material_is_foliage(material);
+  const float foliage_transmit = foliage ? material_foliage_transmit(material) : 0.0;
+  const float foliage_spread = foliage ? material_foliage_spread(material) : 0.0;
 
   // Shadows are `shadow_visibility`'s: a ray leaves the surface offset along the geometric normal
   // by `ray_offset` (so that the quantized position the resolve reconstructs cannot start it
@@ -1705,12 +1721,20 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   // a pixel that is black here is a pixel the sun term is missing from there. A ray answers 0 or 1;
   // the cascaded maps answer the filtered fraction, so their penumbra is grey between the two.
   if (params->mode == 6) {
-    if (dot(surface.normal, params->sun.xyz) <= 0.0) return float4(0.5, 0.5, 0.5, 1.0);
+    if (foliage ? !brdf_foliage_lights(surface, params->sun.xyz, foliage_transmit, foliage_spread)
+                : dot(surface.normal, params->sun.xyz) <= 0.0) {
+      return float4(0.5, 0.5, 0.5, 1.0);
+    }
 #ifdef RESOLVE_RAY_SHADOWS
-    g_sun_block = half_sun_answer(params, pixel, pair);
+    // The half pass asked from the eye's side of the plane: not the question for a sheet lit
+    // through itself.
+    if (!foliage || dot(s.geometric, params->sun.xyz) >= 0.0) {
+      g_sun_block = half_sun_answer(params, pixel, pair);
+    }
 #endif
-    const float v = shadow_visibility(params, k_shadow_sun, 0u, s.position, s.geometric, ray_bias,
-                                      params->sun.xyz, 1e30);
+    const float v = shadow_visibility(params, k_shadow_sun, 0u, s.position,
+                                      foliage ? ray_side(s.geometric, params->sun.xyz) : s.geometric,
+                                      ray_bias, params->sun.xyz, 1e30);
     return float4(v, v, v, 1.0);
   }
 
@@ -1758,15 +1782,21 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     // What the pixel's own sun query found, for a light too faint to test (below): 1 where the sun
     // was not asked.
     float sun_visibility = 1.0;
-    if (dot(surface.normal, params->sun.xyz) > 0.0) {
+    if (foliage ? brdf_foliage_lights(surface, params->sun.xyz, foliage_transmit, foliage_spread)
+                : dot(surface.normal, params->sun.xyz) > 0.0) {
       g_count_sun = g_count;
 #ifdef RESOLVE_RAY_SHADOWS
-      // The half pass's answer where this pixel's block was taken for its pair (R126).
-      g_sun_block = half_sun_answer(params, pixel, pair);
+      // The half pass's answer where this pixel's block was taken for its pair (R126); a foliage
+      // sheet lit through itself asks its own ray from the light's side (the mode-6 view's note).
+      if (!foliage || dot(s.geometric, params->sun.xyz) >= 0.0) {
+        g_sun_block = half_sun_answer(params, pixel, pair);
+      }
 #endif
       const float v = stop_skips(k_stop_sun_shadow)
                           ? 1.0
-                          : shadow_visibility(params, k_shadow_sun, 0u, s.position, s.geometric,
+                          : shadow_visibility(params, k_shadow_sun, 0u, s.position,
+                                              foliage ? ray_side(s.geometric, params->sun.xyz)
+                                                      : s.geometric,
                                               ray_bias, params->sun.xyz, 1e30);
       g_count_sun = false;
 #ifdef RESOLVE_RAY_SHADOWS
@@ -1781,7 +1811,9 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
       if (v > 0.0) {
         float3 sun = float3(params->sun.w);
         if (has_sky) sun = sky_light_at(sky, s.position, params->sun.xyz, sky->sun_illuminance.rgb);
-        color = brdf_direct(surface, params->sun.xyz, sun * v);
+        color = foliage ? brdf_foliage_direct(surface, params->sun.xyz, sun * v, foliage_transmit,
+                                              foliage_spread)
+                        : brdf_direct(surface, params->sun.xyz, sun * v);
       }
     }
     if (g_count) return float4(0.0, 0.0, 64.0 / 255.0, 1.0);  // the sun was not asked
@@ -1821,6 +1853,7 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
       crown = gi_crown_prior(params->gi_crowns, params->gi_crown_count, instance, params->eye,
                              s.position, s.normal);
     }
+    const float3 sky_front = ambient;  // foliage's other directions are scaled as this one is
     ambient = scene_ambient(params->gi_cells, params->gi_flags, params->gi_count,
                             params->gi_cell_scale, params->eye, s.position,
                             length(s.position - params->camera.xyz), s.normal, ambient, crown);
@@ -1828,6 +1861,21 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     float3 indirect =
         ambient * (albedo * (1.0 - surface.metallic) +
                    brdf_env_specular(brdf_f0(albedo, surface.metallic), surface.roughness, n_dot_v));
+    if (foliage) {
+      // Foliage's diffuse takes the hemisphere its sheet's back sees, through `transmit`, and its
+      // sphere's share the n.v-weighted mean over a sphere's visible normals (brdf.slang,
+      // `brdf_foliage_ambient`), each scaled by what the scene lets through, as the front's is.
+      const float3 gain = select(sky_front > float3(1e-9), ambient / max(sky_front, float3(1e-9)),
+                                 float3(1.0));
+      const float3 diffuse = brdf_foliage_ambient(
+          ambient, gain * foliage_raw_ambient(params, sky, has_sky, -surface.normal),
+          gain * foliage_raw_ambient(params, sky, has_sky, surface.view),
+          gain * foliage_raw_ambient(params, sky, has_sky, -surface.view), foliage_transmit,
+          foliage_spread);
+      indirect = diffuse * (albedo * (1.0 - surface.metallic)) +
+                 ambient * brdf_env_specular(brdf_f0(albedo, surface.metallic), surface.roughness,
+                                             n_dot_v);
+    }
     if (material.occlusion_texture != k_no_texture) {
       indirect *= sample_occlusion(material, uv, duv_dx, duv_dy);
     }
@@ -1857,20 +1905,28 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
       if (has_sky && lights[i].direction_type.w >= 1.5) {
         radiance = sky_light_at(sky, s.position, light_dir, radiance);
       }
-      const float3 lit = brdf_direct(surface, light_dir, radiance);
+      const float3 lit = foliage ? brdf_foliage_direct(surface, light_dir, radiance,
+                                                       foliage_transmit, foliage_spread)
+                                 : brdf_direct(surface, light_dir, radiance);
       float v = 1.0;
-      if (dot(surface.normal, light_dir) > 0.0 && !stop_skips(k_stop_light_shadows)) {
+      if ((foliage ? brdf_foliage_lights(surface, light_dir, foliage_transmit, foliage_spread)
+                   : dot(surface.normal, light_dir) > 0.0) &&
+          !stop_skips(k_stop_light_shadows)) {
         if (weigh && max(lit.r, max(lit.g, lit.b)) <= rest) {
           v = sun_visibility;
         } else {
-          v = shadow_visibility(params, k_shadow_lights, i + 1u, s.position, s.geometric,
+          v = shadow_visibility(params, k_shadow_lights, i + 1u, s.position,
+                                foliage ? ray_side(s.geometric, light_dir) : s.geometric,
                                 ray_bias, light_dir, light_distance - ray_bias);
         }
         if (v <= 0.0) continue;
       }
       // A filtered map answers a fraction; a ray, or no shadow at all, answers 1 or 0, and a 1
       // multiplies nothing, so a picture drawn before the maps could follow a light is the same.
-      color += v < 1.0 ? brdf_direct(surface, light_dir, radiance * v) : lit;
+      color += v < 1.0 ? (foliage ? brdf_foliage_direct(surface, light_dir, radiance * v,
+                                                        foliage_transmit, foliage_spread)
+                                  : brdf_direct(surface, light_dir, radiance * v))
+                       : lit;
     }
     color += indirect;
     // Emission — the factor times the emissive texture — is radiance the surface gives off, added

@@ -32,6 +32,14 @@ bool set_in_range(const MaterialSet& set, std::string_view field, std::string& e
     error = std::string(field) + ".normal_scale is out of range (0 to 4)";
     return false;
   }
+  if (!(set.transmission >= 0.0f && set.transmission <= 1.0f)) {
+    error = std::string(field) + ".transmission is out of range (0 to 1)";
+    return false;
+  }
+  if (!(set.normal_spread >= 0.0f && set.normal_spread <= 1.0f)) {
+    error = std::string(field) + ".normal_spread is out of range (0 to 1)";
+    return false;
+  }
   return true;
 }
 
@@ -76,8 +84,10 @@ void apply_set(const MaterialSet& set, UvLayout layout, geometry::ClusterFileDat
     // set is alpha-tested at glTF's default cutoff. An image without alpha passes everywhere and
     // draws what an opaque card drew.
     if (layout == UvLayout::card) {
-      m.alpha = geometry::encode_alpha_word(
-          k_alpha_mask_mode, geometry::alpha_word_double_sided(m.alpha), k_card_cutoff);
+      m.alpha = geometry::alpha_word_with_foliage(  // the part's own foliage optics kept (R164)
+          geometry::encode_alpha_word(k_alpha_mask_mode, geometry::alpha_word_double_sided(m.alpha),
+                                      k_card_cutoff),
+          geometry::alpha_word_transmit(m.alpha), geometry::alpha_word_spread(m.alpha));
     }
   }
   if (!set.roughness.empty()) {
@@ -96,6 +106,12 @@ void apply_set(const MaterialSet& set, UvLayout layout, geometry::ClusterFileDat
   // Stochastic placement (R131): one bit in the record's flags word, zero for a tiled set, so a
   // tiled set's container is the bytes it always was.
   if (set.stochastic) sampling.flags |= geometry::k_material_sampling_stochastic;
+  // Foliage optics (R164) on a two-sided surface: two codes in the alpha word, zero for a set that
+  // declares none, so its container is the bytes it always was.
+  if ((set.transmission > 0.0f || set.normal_spread > 0.0f) &&
+      geometry::alpha_word_double_sided(m.alpha)) {
+    m.alpha = geometry::alpha_word_with_foliage(m.alpha, set.transmission, set.normal_spread);
+  }
 }
 
 // ---- packs
@@ -180,6 +196,19 @@ bool parse_pack(std::string_view text, std::string_view dir, Pack& out, std::str
         return false;
       }
       held.set.stochastic = word == "stochastic";
+    }
+    // Foliage optics (R164): 0 when absent, as every pack before the keys.
+    for (const auto& [key, target] :
+         {std::pair<const char*, f32*>{"transmission", &held.set.transmission},
+          std::pair<const char*, f32*>{"normal_spread", &held.set.normal_spread}}) {
+      if (const JsonValue* value = entry.find(key); value != nullptr) {
+        f64 number = 0.0;
+        if (!number_of(value, number)) {
+          error = where + "." + key + " is not a number";
+          return false;
+        }
+        *target = static_cast<f32>(number);
+      }
     }
     std::string convention;
     if (!string_of(entry.find("normal_convention"), convention) || convention != "opengl") {

@@ -291,6 +291,15 @@ u32 encode_alpha_word(u8 alpha_mode, bool double_sided, f32 alpha_cutoff) noexce
 u8 alpha_word_mode(u32 word) noexcept;
 bool alpha_word_double_sided(u32 word) noexcept;
 f32 alpha_word_cutoff(u32 word) noexcept;
+// **Foliage optics** (R164; renderer.md, "Foliage lit from both sides") in the word's bits 4..7 and
+// 8..11: a two-sided material's diffuse transmittance as a share of its reflectance, and the share
+// of its surface whose normals are a sphere's rather than the sheet's (a card of needles), each in
+// fifteenths, the codes `gfx::set_foliage_optics` packs. Zero, which every older file holds, is a
+// sheet that transmits nothing. `alpha_word_with_foliage` replaces the two codes and keeps the
+// rest.
+u32 alpha_word_with_foliage(u32 word, f32 transmit, f32 spread) noexcept;
+f32 alpha_word_transmit(u32 word) noexcept;
+f32 alpha_word_spread(u32 word) noexcept;
 
 // The image slots that live in the record's padding are **one-based** — 0 is "no image", and
 // slot n names image n - 1 — because a file written before they existed has zeros there and

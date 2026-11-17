@@ -618,7 +618,11 @@ bool bake_chain(const assets::MeshData& mesh, const TreeLevels& chain,
     material.emissive_image = geometry::encode_optional_image(-1);
     material.emissive = m.emissive;
     material.normal_scale = 1.0f;
-    material.alpha = geometry::encode_alpha_word(m.alpha_mode, m.double_sided, m.alpha_cutoff);
+    // A far level keeps its part's foliage optics (R164), so a crown does not change how it takes
+    // light behind it where its form changes.
+    material.alpha = geometry::alpha_word_with_foliage(
+        geometry::encode_alpha_word(m.alpha_mode, m.double_sided, m.alpha_cutoff), m.transmission,
+        m.normal_spread);
     out.materials.push_back(material);
     out.material_sampling.push_back(
         geometry::encode_material_sampling(m.sampling, m.occlusion_strength));
@@ -851,7 +855,9 @@ bool build_flora_container(const FloraFile& file, const geometry::ClusterLodOpti
     material.emissive_image = geometry::encode_optional_image(m.emissive_image);
     material.emissive = m.emissive;
     material.normal_scale = m.normal_scale;
-    material.alpha = geometry::encode_alpha_word(m.alpha_mode, m.double_sided, m.alpha_cutoff);
+    material.alpha = geometry::alpha_word_with_foliage(  // R164: the part's foliage optics
+        geometry::encode_alpha_word(m.alpha_mode, m.double_sided, m.alpha_cutoff), m.transmission,
+        m.normal_spread);
     out.materials.push_back(material);
     out.material_sampling.push_back(
         geometry::encode_material_sampling(m.sampling, m.occlusion_strength));
@@ -891,8 +897,11 @@ bool build_flora_container(const FloraFile& file, const geometry::ClusterLodOpti
   // opaque side could only switch whole.
   if (has_chain && out.materials.size() > 1 &&
       geometry::alpha_word_mode(out.materials[1].alpha) == assets::k_alpha_opaque) {
-    out.materials[1].alpha = geometry::encode_alpha_word(
-        assets::k_alpha_mask, geometry::alpha_word_double_sided(out.materials[1].alpha), 0.5f);
+    const u32 was = out.materials[1].alpha;
+    out.materials[1].alpha = geometry::alpha_word_with_foliage(
+        geometry::encode_alpha_word(assets::k_alpha_mask, geometry::alpha_word_double_sided(was),
+                                    0.5f),
+        geometry::alpha_word_transmit(was), geometry::alpha_word_spread(was));
   }
   if (file.species == "sward") {
     out.materials[0].alpha = geometry::encode_alpha_word(assets::k_alpha_mask, true, .5f);

@@ -65,8 +65,15 @@ namespace {
 constexpr f32 k_roughness[4] = {0.05f, 0.3f, 0.7f, 1.0f};
 constexpr u32 k_materials = 8;  // k_roughness x {dielectric, conductor}
 constexpr u32 k_white = 8;      // the reflectance-sanity material
-constexpr u32 k_blocks = 15;    // one ResolveParams, one render target, per block
-constexpr u32 k_below = 12;     // the first block that sees the quad from below
+// Foliage optics (R164): three materials, each seen from below with the sun and the light above
+// it — a broadleaf sheet that transmits, a card of needles whose normals are a sphere's, and one
+// between — in blocks k_foliage_block and the two after it.
+constexpr u32 k_foliage = 9;
+constexpr u32 k_foliage_count = 3;
+constexpr f32 k_foliage_optics[k_foliage_count][2] = {{0.8f, 0.0f}, {0.2f, 1.0f}, {0.4f, 0.6f}};
+constexpr u32 k_blocks = 18;  // one ResolveParams, one render target, per block
+constexpr u32 k_below = 12;   // the first block that sees the quad from below
+constexpr u32 k_foliage_block = 15;
 constexpr u32 k_size = 128;
 
 // A horizontal rectangle, the shadow test's occluder: y = plane, x in [x0, x1], z in [z0, z1].
@@ -113,17 +120,24 @@ TEST_CASE("material resolve: shading matches a CPU reference over roughness and 
   gfx::BufferResource cluster_materials;
   gfx::BufferResource lights;
   const Vec4 base_color{0.8f, 0.4f, 0.2f, 0.0f};
-  gfx::ResolveMaterial material_table[k_materials + 1];
+  gfx::ResolveMaterial material_table[k_foliage + k_foliage_count];
   for (u32 i = 0; i < k_materials; ++i) {
     material_table[i].albedo = Vec4{base_color.xyz(), k_roughness[i % 4]};
     material_table[i].emissive = Vec4{0.0f, 0.0f, 0.0f, i < 4 ? 0.0f : 1.0f};
   }
   material_table[k_white].albedo = Vec4{1.0f, 1.0f, 1.0f, 1.0f};  // white, fully rough
   material_table[k_white].emissive = Vec4{};                      // dielectric
+  // A leaf's green (PROSPECT's 0.13 at 550 nm in the green, less in red and blue), rough.
+  for (u32 i = 0; i < k_foliage_count; ++i) {
+    material_table[k_foliage + i].albedo = Vec4{0.06f, 0.13f, 0.04f, 0.6f};
+    material_table[k_foliage + i].emissive = Vec4{};
+    gfx::set_foliage_optics(material_table[k_foliage + i], k_foliage_optics[i][0],
+                            k_foliage_optics[i][1]);
+  }
   // One material index per block, so a block selects its material by pointing the resolve at its
   // own word of this array; the quad is a single cluster.
-  u32 material_index[k_materials + 1];
-  for (u32 i = 0; i <= k_materials; ++i)
+  u32 material_index[k_foliage + k_foliage_count];
+  for (u32 i = 0; i < k_foliage + k_foliage_count; ++i)
     material_index[i] = i;
   REQUIRE(gfx::upload_buffer(device, mesh.clusters.data(), sizeof(geometry::ClusterDesc), k_storage,
                              clusters, &error));
@@ -259,6 +273,10 @@ TEST_CASE("material resolve: shading matches a CPU reference over roughness and 
   }
   blocks[k_below + 1].ground = sand;
   blocks[k_below + 2].ground = Vec4{};
+  for (u32 i = 0; i < k_foliage_count; ++i) {
+    blocks[k_foliage_block + i].cluster_materials =
+        cluster_materials.address + (k_foliage + i) * sizeof(u32);
+  }
   u64 block_address[k_blocks];
   for (u32 i = 0; i < k_blocks; ++i)
     block_address[i] = params.address + i * sizeof(gfx::ResolveParams);
@@ -531,6 +549,54 @@ TEST_CASE("material resolve: shading matches a CPU reference over roughness and 
                                 << int{sand_ground[0]} << "," << int{sand_ground[1]} << ","
                                 << int{sand_ground[2]} << ", worst " << below_worst
                                 << " of 255; lit with no ground: " << lit_without_ground);
+  // **Foliage lit from both sides** (R164; brdf.slang, "foliage"). The same view from below, the
+  // sun and the light above the quad: a sheet takes neither (the blocks above), a foliage material
+  // takes them through its back and, for its sphere's share, by the Lambert sphere's law. Every
+  // covered pixel against the reference with the material's optics as the table packed them.
+  int foliage_worst = 0;
+  for (u32 i = 0; i < k_foliage_count; ++i) {
+    const gfx::ResolveMaterial& m = material_table[k_foliage + i];
+    for (u32 y = 0; y < k_size; ++y) {
+      for (u32 x = 0; x < k_size; ++x) {
+        if (is_sky(pixel(k_below, x, y))) continue;
+        ref::Surface s = below_at(x, y);
+        s.albedo = ref::dvec3(m.albedo);
+        s.roughness = static_cast<double>(m.albedo.w);
+        s.metallic = 0.0;
+        s.transmit = static_cast<double>(gfx::foliage_transmit(m));
+        s.spread = static_cast<double>(gfx::foliage_spread(m));
+        const ref::Dvec3 linear =
+            ref::shade(s, sun_ref, 1.0, sky_ref, ground_ref, &near_light, 1, ref::Dvec3{});
+        const u8* got = pixel(k_foliage_block + i, x, y);
+        int here = 0;
+        for (u32 c = 0; c < 3; ++c) {
+          const u8 expect = ref::display(c == 0 ? linear.x : (c == 1 ? linear.y : linear.z));
+          here = std::max(here, std::abs(int{got[c]} - int{expect}));
+        }
+        foliage_worst = std::max(foliage_worst, here);
+        if (here > 2) {
+          CHECK_MESSAGE(here <= 2, "foliage " << i << " at " << x << "," << y << ": gpu "
+                                              << int{got[0]} << "," << int{got[1]} << ","
+                                              << int{got[2]});
+        }
+      }
+    }
+    // Lit through itself: brighter than the sheet of the same colour would be, which the sun and
+    // the light above it never reach.
+    ref::Surface sheet = below_at(cx, cy);
+    sheet.albedo = ref::dvec3(m.albedo);
+    sheet.roughness = static_cast<double>(m.albedo.w);
+    sheet.metallic = 0.0;
+    const ref::Dvec3 unlit =
+        ref::shade(sheet, sun_ref, 1.0, sky_ref, ground_ref, &near_light, 1, ref::Dvec3{});
+    CHECK(int{pixel(k_foliage_block + i, cx, cy)[1]} > int{ref::display(unlit.y)} + 4);
+    MESSAGE("foliage transmit " << gfx::foliage_transmit(m) << " spread " << gfx::foliage_spread(m)
+                                << " from below: gpu green "
+                                << int{pixel(k_foliage_block + i, cx, cy)[1]} << ", a sheet's "
+                                << int{ref::display(unlit.y)});
+  }
+  worst = std::max(worst, foliage_worst);
+  MESSAGE("foliage from below: worst " << foliage_worst << " of 255");
   // The one number to quote for a device: every pixel this case holds to the reference.
   MESSAGE("worst reference-vs-GPU difference over every compared pixel, "
           << std::string(raster.name()) << " path on " << std::string(device.adapter().name) << ": "

@@ -1722,6 +1722,58 @@ as dipping bands on the granite summit while the beds have averaged out under th
 one-pixel box a far hill kept a two-pixel period alternating row by row; the two-pixel box removed
 most of it, and a faint row-to-row residue is left where the beds' period is near two pixels.
 
+## Foliage lit from both sides
+
+Roadmap R164 (2026-11-16); the sources, the derivation and the measurements are
+[foliage, lit from both sides](../experiments/foliage-two-sided-light.md). Until it, the resolve
+turned a two-sided card's shading normal to the eye's side of its plane and lit it by `n.l` alone,
+so a card seen from its far side took no sun at all: 40 to 98 % of a conifer's needles seen from
+1.7 m faced away from the sun ([conifer crowns](../experiments/conifer-crown-coverage.md#where-the-light-went-the-fourth-leg)).
+
+**A property any asset can declare, never a generator's output.** A two-sided material carries
+*foliage optics*, two shares in the flags word's top byte (`gfx::set_foliage_optics`, fifteenths):
+
+- **`transmit`**, the diffuse transmittance as a share of the diffuse reflectance. Light from the
+  sheet's far side comes through as Lambertian transmission of the albedo's colour (a leaf's
+  reflectance and transmittance spectra have one shape in the visible). A broadleaf is about 0.8; a
+  needle a fraction (its transmittance is "clearly lower than reflectance").
+- **`spread`**, the share of the surface whose normals are a sphere's rather than the sheet's. A
+  card of needles is opaque cylinders all round a twig: what it shows the eye is the visible half
+  of a cloud of normals, whatever way the card faces. That share answers a light by the Lambert
+  sphere's law, (2/3) phi(alpha) of a facet lit square on, alpha the angle between the light and
+  the eye and phi Lambert's phase law: brightest with the sun behind the eye, dark against it, as a
+  shoot is (backward scattering).
+
+Where it comes from: the container's alpha word, bits 4..11 (`geometry::alpha_word_with_foliage`);
+an imported glTF's `KHR_materials_diffuse_transmission` on a double-sided material (`t / (1 - t)`
+of its factor, at most 1; its colour is not read); a material pack role's `transmission` and
+`normal_spread` keys (`materials::MaterialSet`, nonzero values replacing the part's own); and
+flora's own parts (`k_leaf_transmission` 0.8 on every leaf and frond, `k_needle_transmission` 0.2
+and `k_needle_spread` 0.8 on every needle card; [flora](flora.md#foliage-optics)). **A material
+with none of it is drawn exactly as before**: every reader branches on the byte, and a scene with
+no foliage material runs the instructions it ran.
+
+**What each reader does with it.** One model, in `brdf.slang` (`brdf_foliage_eval_cos`,
+`brdf_foliage_direct`, `brdf_foliage_ambient`), mirrored in double in `brdf_reference.h`:
+
+- the sheet's share is `brdf_eval` whole (its specular lobe included) on the eye-side normal, plus
+  `transmit` times the Lambertian diffuse from behind it; the sphere's share is diffuse alone,
+  `(1 - F0)` of the albedo over pi times (2/3)(phi(alpha) + transmit phi(pi - alpha));
+- the resolve's sun, its analytic lights, and its hemisphere: the ambient its back sees through
+  `transmit`, and for the sphere's share the n.v-weighted mean of a sphere's visible normals,
+  (5/6) A(v) + (1/6) A(-v), each scaled by what the scene's cache let through the front;
+- the traced hit shading (`hit_shade.slang`) the sun term, and the reference path tracer the
+  lights and the next direction, which samples the sheet's back half the time.
+
+**The shadow stays right.** A light behind the sheet is shadowed by a ray that leaves from the
+light's side of the plane (`ray_side` in `material.slang`), not the eye's, or every ray would stop
+on its own card; the half-rate sun pass (R126) asked from the eye's side, so a foliage pixel lit
+through itself asks its own ray. The cascaded maps read the same flipped normal for their lift.
+
+**Not done.** The world-space cache's update (`gi_update.slang`) still lights a foliage hit as a
+sheet, and water's flag-class mirror in `water.slang` does not name the byte (it checks only that
+the classes stay apart, which they do).
+
 ## Alpha-tested geometry
 
 Roadmap R65 (plan 04 §4.3). A material whose glTF `alphaMode` is `MASK` draws nothing where its base
