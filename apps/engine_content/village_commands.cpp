@@ -224,15 +224,16 @@ int village_command(int argc, char** argv) {
           std::string plan_text;
           if (!village::describe_house(layer, plan, i, described_house, plan_text, error))
             return fail(scene_path + ": placements " + std::to_string(k) + ": " + error);
-          const std::string dir = io::join_path(describe_dir, "house-" + std::to_string(i));
-          if (io::make_directories(dir) != io::Status::Ok) return fail("cannot create " + dir);
-          if (io::write_file_atomic(io::join_path(dir, "house.json"),
+          const std::string house_dir = io::join_path(describe_dir, "house-" + std::to_string(i));
+          if (io::make_directories(house_dir) != io::Status::Ok)
+            return fail("cannot create " + house_dir);
+          if (io::write_file_atomic(io::join_path(house_dir, "house.json"),
                                     write_json(described_house)) != io::Status::Ok ||
-              io::write_file_atomic(io::join_path(dir, "house.structure.json"),
+              io::write_file_atomic(io::join_path(house_dir, "house.structure.json"),
                                     plan.houses[i].recipe) != io::Status::Ok ||
-              io::write_file_atomic(io::join_path(dir, "house.plan.txt"), plan_text) !=
+              io::write_file_atomic(io::join_path(house_dir, "house.plan.txt"), plan_text) !=
                   io::Status::Ok)
-            return fail("cannot write the house's files under " + dir);
+            return fail("cannot write the house's files under " + house_dir);
           ++described;
         }
       }

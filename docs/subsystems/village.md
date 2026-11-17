@@ -310,6 +310,12 @@ gets is not the one the plan holds**, so what it writes cannot drift from what i
 A house planned by another filler (the tests' `box_house`) has no description to give and is
 refused with a sentence.
 
+**Checked against the forest's own derivation** (2026-11-16, `msvc-debug`): on the forest
+session's v48 village scene (`quality-v48/parts/village/scene/scene-plan-grown.json`), `--describe`
+wrote its 12 built houses in 10 s, and every one names the plot seed, setback (to the millimetre),
+household and filler seed that the forest's script had found by trying 454 candidate seeds and
+proving each house against the plan (`parts/furnish/out/houses.json`): 12 of 12.
+
 ## A kit
 
 **A kit is a scene's own meshes in the box furniture's place** (the forest session's need 113 (b),
