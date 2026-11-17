@@ -126,6 +126,17 @@ float ggx_vndf_pdf(float3 v, float3 l, float alpha) {
   return ggx_g1(v.z, alpha) * brdf_d_ggx(h.z, alpha) / max(4.0 * v.z, 1e-9);
 }
 
+// The same density for a reflection that went **below** the surface (l.z < 0): a VNDF half vector
+// far enough from the normal reflects a grazing view under the plane. A sheet ends the path there;
+// foliage keeps the direction (its back lobe), so its mixture density must count the GGX
+// sampler's share of it as well as the back lobe's (R164-3, review B5). Zero above the surface.
+float ggx_vndf_pdf_below(float3 v, float3 l, float alpha) {
+  if (v.z <= 0.0 || l.z >= 0.0) return 0.0;
+  const float3 h = normalize(v + l);
+  if (dot(v, h) <= 0.0 || h.z <= 0.0) return 0.0;
+  return ggx_g1(v.z, alpha) * brdf_d_ggx(h.z, alpha) / max(4.0 * v.z, 1e-9);
+}
+
 // ---- the lobe pick --------------------------------------------------------------------------
 
 // How often the specular lobe is sampled: the Fresnel term at the view angle against what the

@@ -836,12 +836,21 @@ bool collect_materials(const cgltf_data& data, MeshData& out, std::string* error
       entry.alpha_cutoff = 0.5f;
     }
     entry.double_sided = source.double_sided != 0;
-    // KHR_materials_diffuse_transmission on a two-sided material (R164): glTF moves t of the
-    // diffuse into transmission; the engine keeps the reflectance and states the transmittance as
-    // its share of it, t / (1 - t), at most 1. Its colour factor and textures are not read.
+    // KHR_materials_diffuse_transmission on a two-sided material (R164; R164-3, review B4): glTF
+    // moves t of the diffuse into transmission, so the base colour reflects 1 - t of itself and
+    // t goes through. The base colour factor takes the 1 - t (glTF's texture multiplies it, so a
+    // textured leaf splits the same way) and the transmittance is stated as its share of what is
+    // left, t / (1 - t), at most 1: above t = 1/2 the engine transmits what it reflects, less
+    // than glTF's t, and never more than one in all. Its colour factor and textures are not read:
+    // one colour, the base colour's, serves both sides (renderer.md, "Foliage lit from both sides").
     if (entry.double_sided && source.has_diffuse_transmission != 0) {
       const f32 t = source.diffuse_transmission.diffuse_transmission_factor;
-      if (t > 0.0f) entry.transmission = t >= 0.5f ? 1.0f : t / (1.0f - t);
+      if (t > 0.0f) {
+        const f32 kept = t < 1.0f ? 1.0f - t : 0.0f;
+        entry.base_color = Vec4(entry.base_color.x * kept, entry.base_color.y * kept,
+                                entry.base_color.z * kept, entry.base_color.w);
+        entry.transmission = t >= 0.5f ? 1.0f : t / (1.0f - t);
+      }
     }
     out.materials.push_back(std::move(entry));
   }

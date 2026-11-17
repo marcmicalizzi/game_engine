@@ -177,6 +177,17 @@ inline double lambert_phase(double cos_phase) {
 
 inline bool is_foliage(const Surface& s) { return s.transmit != 0.0 || s.spread != 0.0; }
 
+// `brdf_foliage_share`: the transmittance's share of the albedo, `transmit` or less where
+// transmit * albedo would pass 1 - albedo (R164-3: reflected plus transmitted never passes one).
+inline double foliage_share(double albedo, double transmit) {
+  const double room = (albedo < 1.0 ? 1.0 - albedo : 0.0) / (albedo > 1e-6 ? albedo : 1e-6);
+  return transmit < room ? transmit : room;
+}
+inline Dvec3 foliage_share(Dvec3 albedo, double transmit) {
+  return {foliage_share(albedo.x, transmit), foliage_share(albedo.y, transmit),
+          foliage_share(albedo.z, transmit)};
+}
+
 // `brdf_foliage_eval_cos`: the sheet's share as `sheet_direct` with a radiance of one, its back's
 // Lambertian transmission, and the sphere's share by the Lambert sphere's law.
 inline Dvec3 foliage_eval_cos(const Surface& s, Dvec3 light_dir) {
@@ -184,10 +195,11 @@ inline Dvec3 foliage_eval_cos(const Surface& s, Dvec3 light_dir) {
   const Dvec3 sheet = sheet_direct(s, light_dir, splat(1.0));
   const Dvec3 diffuse =
       (splat(1.0) - f0_of(s.albedo, s.metallic)) * s.albedo * ((1.0 - s.metallic) / k_pi);
-  const double back = s.transmit * (n_dot_l < 0.0 ? -n_dot_l : 0.0);
+  const Dvec3 share = foliage_share(s.albedo, s.transmit);
+  const Dvec3 back = share * (n_dot_l < 0.0 ? -n_dot_l : 0.0);
   const double c = dot(light_dir, s.view);
-  const double sphere = (2.0 / 3.0) * (lambert_phase(c) + s.transmit * lambert_phase(-c));
-  return sheet * (1.0 - s.spread) + diffuse * ((1.0 - s.spread) * back + s.spread * sphere);
+  const Dvec3 sphere = (splat(lambert_phase(c)) + share * lambert_phase(-c)) * (2.0 / 3.0);
+  return sheet * (1.0 - s.spread) + diffuse * (back * (1.0 - s.spread) + sphere * s.spread);
 }
 
 // What the resolve calls for a light: `brdf_direct`, or `brdf_foliage_direct` for foliage.
@@ -196,12 +208,13 @@ inline Dvec3 direct(const Surface& s, Dvec3 light_dir, Dvec3 radiance) {
   return foliage_eval_cos(s, light_dir) * radiance;
 }
 
-// `brdf_foliage_ambient`: the diffuse weights of the hemisphere for foliage.
+// `brdf_foliage_ambient`: the diffuse weights of the hemisphere for foliage; `transmit` is the
+// share per channel (`foliage_share` of the albedo the weights multiply).
 inline Dvec3 foliage_ambient(Dvec3 front, Dvec3 back, Dvec3 towards_eye, Dvec3 away_from_eye,
-                             double transmit, double spread) {
+                             Dvec3 transmit, double spread) {
   const Dvec3 sheet = front + back * transmit;
-  const Dvec3 sphere = towards_eye * (5.0 / 6.0 + transmit / 6.0) +
-                       away_from_eye * (1.0 / 6.0 + transmit * (5.0 / 6.0));
+  const Dvec3 sphere = towards_eye * (splat(5.0 / 6.0) + transmit * (1.0 / 6.0)) +
+                       away_from_eye * (splat(1.0 / 6.0) + transmit * (5.0 / 6.0));
   return sheet * (1.0 - spread) + sphere * spread;
 }
 
@@ -336,7 +349,8 @@ inline Dvec3 shade(const Surface& s, Dvec3 sun_dir, double sun_intensity, Dvec3 
   if (is_foliage(s)) {
     const auto at = [&](Dvec3 n) { return hemisphere_ambient(sky_radiance(sky), lit_ground, n.y); };
     const Dvec3 diffuse =
-        foliage_ambient(ambient, at(-s.normal), at(s.view), at(-s.view), s.transmit, s.spread);
+        foliage_ambient(ambient, at(-s.normal), at(s.view), at(-s.view),
+                        foliage_share(s.albedo, s.transmit), s.spread);
     return color + (diffuse * s.albedo * (1.0 - s.metallic) + ambient * specular) * occlusion +
            emissive;
   }
@@ -475,6 +489,17 @@ inline double bsdf_pdf(Dvec3 v, Dvec3 l, double alpha, double p_specular) {
   return p_specular * ggx_vndf_pdf(v, l, alpha) + (1.0 - p_specular) * cosine_hemisphere_pdf(l.z);
 }
 
+// sampling.slang's `ggx_vndf_pdf_below`: the VNDF reflection's density for a direction under the
+// surface, which foliage keeps (R164-3).
+inline double ggx_vndf_pdf_below(Dvec3 v, Dvec3 l, double alpha) {
+  if (v.z <= 0.0 || l.z >= 0.0) return 0.0;
+  const Dvec3 h = normalize(v + l);
+  if (dot(v, h) <= 0.0 || h.z <= 0.0) return 0.0;
+  const double denom = 4.0 * v.z;
+  return ggx_g1(v.z, alpha) * d_ggx(h.z, alpha) / (denom < 1e-9 ? 1e-9 : denom);
+}
+
+
 inline double mis_power_heuristic(double pdf_a, double pdf_b) {
   const double a = pdf_a * pdf_a;
   const double b = pdf_b * pdf_b;
@@ -515,6 +540,41 @@ inline bool sample_bsdf(const Surface& s, Dvec3 v_local, double u_lobe, double u
   local.normal = Dvec3{0.0, 0.0, 1.0};
   local.view = v_local;
   out.weight = eval(local, l_local) * (l_local.z / out.pdf);
+  return true;
+}
+
+// path_trace.slang's foliage draw: half the time the cosine lobe about the sheet's back, half the
+// time the front's two-lobe mixture, and every direction weighed by the whole mixture's density —
+// below the sheet the back lobe's cosine **and** the GGX reflection of a grazing view (R164-3,
+// review B5). `u` is four uniforms. Returns false where the shader ends the path.
+inline bool sample_foliage_bsdf(const Surface& s, Dvec3 v_local, const double u[4],
+                                BsdfSample& out) {
+  const double n_dot_v = v_local.z;
+  if (n_dot_v <= 0.0) return false;
+  const double alpha = alpha_of(s.roughness);
+  const Dvec3 fresnel = f_schlick(f0_of(s.albedo, s.metallic), n_dot_v);
+  const double p_specular = specular_probability(s.albedo, s.metallic, n_dot_v, fresnel);
+  Dvec3 l_local;
+  if (u[0] < 0.5) {
+    l_local = sample_cosine_hemisphere(u[2], u[3]);
+    l_local.z = -l_local.z;
+  } else if (u[1] < p_specular) {
+    const Dvec3 h = sample_ggx_vndf(v_local, alpha, u[2], u[3]);
+    l_local = h * (2.0 * dot(v_local, h)) - v_local;
+  } else {
+    l_local = sample_cosine_hemisphere(u[2], u[3]);
+  }
+  if (l_local.z == 0.0) return false;
+  out.pdf = l_local.z > 0.0
+                ? 0.5 * bsdf_pdf(v_local, l_local, alpha, p_specular)
+                : 0.5 * (-l_local.z / k_pi) +
+                      0.5 * p_specular * ggx_vndf_pdf_below(v_local, l_local, alpha);
+  if (!(out.pdf > 0.0)) return false;
+  out.direction = l_local;
+  Surface local = s;
+  local.normal = Dvec3{0.0, 0.0, 1.0};
+  local.view = v_local;
+  out.weight = foliage_eval_cos(local, l_local) * (1.0 / out.pdf);
   return true;
 }
 

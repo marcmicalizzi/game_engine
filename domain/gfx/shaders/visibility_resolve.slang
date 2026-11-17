@@ -1900,7 +1900,7 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
       // `brdf_foliage_ambient` is linear in its four directions, so it is taken in two halves,
       // the sheet's and the sphere's, each from one evaluation, and no more than one pair of
       // directions is held at a time (R164-2).
-      const float transmit = material_foliage_transmit(material);
+      const float3 transmit = brdf_foliage_share(albedo, material_foliage_transmit(material));
       const float spread = material_foliage_spread(material);
       float3 along, against;
       foliage_raw_ambient_pair(params, sky, has_sky, surface.normal, along, against);

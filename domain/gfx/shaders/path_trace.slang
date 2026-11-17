@@ -423,8 +423,12 @@ float3 trace_path(PathTraceParams* params, float3 origin, float3 direction, inou
     if (l_local.z == 0.0) break;
     float pdf;
     if (foliage) {
+      // Below the sheet both samplers can have drawn the direction: the back lobe's cosine and
+      // the front's GGX reflection of a grazing view (R164-3, review B5: the GGX share was missing,
+      // which over-weighted those samples).
       pdf = l_local.z > 0.0 ? 0.5 * bsdf_pdf(v_local, l_local, alpha, p_specular)
-                            : 0.5 * (-l_local.z / k_brdf_pi);
+                            : 0.5 * (-l_local.z / k_brdf_pi) +
+                                  0.5 * p_specular * ggx_vndf_pdf_below(v_local, l_local, alpha);
     } else {
       pdf = bsdf_pdf(v_local, l_local, alpha, p_specular);
     }

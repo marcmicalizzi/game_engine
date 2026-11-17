@@ -186,6 +186,18 @@ float3 brdf_direct(BrdfSurface s, float3 light_dir, float3 radiance) {
 //
 // The sheet's share keeps `brdf_eval` whole (its specular lobe included); the sphere's is diffuse
 // alone, through (1 - F0). With both numbers zero the result is `brdf_direct`'s, to the bit.
+//
+// **Reflected plus transmitted never passes one** (R164-3): the transmittance is `transmit` times
+// the albedo but at most what the albedo leaves, 1 - albedo, channel by channel
+// (`brdf_foliage_share`). A declared share is a property of the material and the albedo a texel's,
+// so no import or pack can hold the pair under one for every texel; the response holds it here,
+// and a leaf whose two sum to less (every flora leaf, every glTF the importer splits) is untouched.
+
+// The transmittance's share of the albedo a foliage material takes, per channel: `transmit`, or
+// less where transmit * albedo would pass 1 - albedo.
+float3 brdf_foliage_share(float3 albedo, float transmit) {
+  return min(float3(transmit), max(float3(1.0) - albedo, float3(0.0)) / max(albedo, float3(1e-6)));
+}
 
 // Lambert's phase law, normalized to one at zero phase: the light a Lambertian sphere returns
 // towards an eye at `cos_phase` (the cosine of the angle between the light and the eye) over what
@@ -221,17 +233,18 @@ float3 brdf_foliage_diffuse_cos(BrdfSurface s, float3 light_dir, float transmit,
   const float n_dot_l = dot(s.normal, light_dir);
   const float3 diffuse = (float3(1.0) - brdf_f0(s.albedo, s.metallic)) *
                          ((1.0 - s.metallic) / k_brdf_pi) * s.albedo;
-  const float back = transmit * max(-n_dot_l, 0.0);
-  // phi(a) + transmit phi(pi - a) with one acos and one root (R164-2): sin(pi - a) = sin a and
+  const float3 share = brdf_foliage_share(s.albedo, transmit);  // R164-3: never past 1 - albedo
+  const float3 back = share * max(-n_dot_l, 0.0);
+  // phi(a) + share phi(pi - a) with one acos and one root (R164-2): sin(pi - a) = sin a and
   // cos(pi - a) = -cos a, so phi(pi - a) = (sin a - a cos a) / pi; `brdf_lambert_phase` is the
   // same law, one direction at a time.
-  float sphere = 0.0;
+  float3 sphere = float3(0.0);
   if (spread > 0.0) {
     const float c = clamp(dot(light_dir, s.view), -1.0, 1.0);
     const float a = acos(c);
     const float sin_a = sqrt(max(1.0 - c * c, 0.0));
     sphere = (2.0 / (3.0 * k_brdf_pi)) *
-             (max(sin_a + (k_brdf_pi - a) * c, 0.0) + transmit * max(sin_a - a * c, 0.0));
+             (max(sin_a + (k_brdf_pi - a) * c, 0.0) + share * max(sin_a - a * c, 0.0));
   }
   return diffuse * ((1.0 - spread) * back + spread * sphere);
 }
@@ -246,8 +259,9 @@ float3 brdf_foliage_direct(BrdfSurface s, float3 light_dir, float3 radiance, flo
 // view and against it (`towards_eye`, `away_from_eye`). For an ambient linear in the normal (the
 // sky's first two orders of harmonics, the stand-in's two halves), the n.v-weighted mean over the
 // visible half of a sphere of normals is (5/6) A(v) + (1/6) A(-v), and its back's the reverse.
+// `transmit` is the share per channel, `brdf_foliage_share` of the albedo the weights multiply.
 float3 brdf_foliage_ambient(float3 front, float3 back, float3 towards_eye, float3 away_from_eye,
-                            float transmit, float spread) {
+                            float3 transmit, float spread) {
   const float3 sheet = front + transmit * back;
   const float3 sphere = (5.0 / 6.0 + transmit / 6.0) * towards_eye +
                         (1.0 / 6.0 + transmit * (5.0 / 6.0)) * away_from_eye;

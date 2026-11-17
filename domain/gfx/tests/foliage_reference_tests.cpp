@@ -102,6 +102,118 @@ TEST_CASE("foliage optics: none is the sheet, and the response is reciprocal") {
   CHECK(ref::foliage_eval_cos(s, l).y == doctest::Approx(ref::foliage_eval_cos(swapped, s.view).y));
 }
 
+// R164-3 (review B4): what a foliage surface returns of a uniform light from every direction, both
+// hemispheres, is the albedo it reflects plus the one it transmits, through what the Fresnel term
+// leaves. Its diffuse part (the response less the sheet's specular lobe, which is the albedo-free
+// part: the response at albedo zero) never passes 1 - F0 for the extremes a pack and the importer
+// can state: a texel of albedo 1 or 0.8 under a declared share of 1 (a pack's albedo is an image,
+// so no parse can hold the pair under one; the response's `foliage_share` does), the pair that sums
+// to exactly one, and glTF's base colour of 1 split by `KHR_materials_diffuse_transmission` as the
+// extension defines it, 1 - t reflected and t transmitted (the importer's split; gltf_tests.cpp
+// holds it to that). The specular lobe is the sheet's own and is not foliage's to bound: the sheet
+// alone, at albedo 1 and a grazing eye, already returns more than one (R164-3's log).
+TEST_CASE("foliage optics: reflected plus transmitted never passes one") {
+  constexpr u32 k_count = 20000;  // the lattice; its error on a known integral is checked below
+  const double k_f0 = 0.04;
+  struct Case {
+    double albedo;
+    double transmit;
+    double spread;
+  };
+  const Case cases[] = {
+      // A pack's extremes: a white texel, a light one, and the pair that sums to one.
+      {1.0, 1.0, 0.0},  {1.0, 1.0, 1.0},   {0.8, 1.0, 0.0},  {0.8, 1.0, 0.5},
+      {0.5, 1.0, 0.0},  {0.5, 1.0, 1.0},
+      // The importer's: base colour 1 at t = 0.25, 0.5 and 0.75, reflectance 1 - t and the share
+      // t / (1 - t) at most 1, which the extension's colour factor of white does not change.
+      {0.75, 1.0 / 3.0, 0.0}, {0.5, 1.0, 0.0}, {0.25, 1.0, 0.0},
+  };
+  for (const double view_deg : {0.0, 60.0, 89.0}) {
+    const double a = view_deg * ref::k_pi / 180.0;
+    for (const Case& c : cases) {
+      CAPTURE(view_deg);
+      CAPTURE(c.albedo);
+      CAPTURE(c.transmit);
+      CAPTURE(c.spread);
+      ref::Surface s;
+      s.normal = ref::Dvec3{0.0, 1.0, 0.0};
+      s.view = ref::Dvec3{std::sin(a), std::cos(a), 0.0};
+      s.roughness = 0.5;
+      s.transmit = c.transmit;
+      s.spread = c.spread;
+      ref::Surface bare = s;  // albedo zero: the sheet's specular share alone
+      s.albedo = ref::splat(c.albedo);
+      bare.albedo = ref::splat(0.0);
+      double diffuse = 0.0;
+      double known = 0.0;  // the transmitted cosine's integral, exactly 1
+      for (u32 i = 0; i < k_count; ++i) {
+        const ref::Dvec3 l = fibonacci(i, k_count);
+        diffuse += ref::foliage_eval_cos(s, l).y - ref::foliage_eval_cos(bare, l).y;
+        const double n_dot_l = ref::dot(s.normal, l);
+        known += n_dot_l < 0.0 ? -n_dot_l / ref::k_pi : 0.0;
+      }
+      const double solid = 4.0 * ref::k_pi / static_cast<double>(k_count);
+      diffuse *= solid;
+      known *= solid;
+      // The lattice's own error on a clipped cosine, the integrand's worst feature.
+      CHECK(std::abs(known - 1.0) < 1e-4);
+      CHECK(diffuse <= (1.0 - k_f0) + 1e-4);
+    }
+  }
+  // The share the response takes: the declared one where the pair sums under one, and what the
+  // albedo leaves where it would not.
+  CHECK(ref::foliage_share(0.36, 0.8) == doctest::Approx(0.8));
+  CHECK(ref::foliage_share(0.8, 1.0) == doctest::Approx(0.25));
+  CHECK(ref::foliage_share(1.0, 1.0) == 0.0);
+}
+
+// R164-3 (review B5): the reference path tracer's foliage draw (brdf_reference.h,
+// `sample_foliage_bsdf`, path_trace.slang's mirror) is unbiased: under a uniform light of one from
+// every direction, the mean of its weights is the response's integral over the sphere. Before the
+// mend a grazing view's GGX reflections below the sheet were weighed by the back lobe's density
+// alone; measured from 60 to 85 degrees, that read a sheet's mean 0.4 to 1.4 % high and, with the
+// sphere's share at 0.8, 121 % high (R164-3's log, pt_bias), each many standard errors past this
+// case's four.
+TEST_CASE("foliage optics: the path tracer's draw is unbiased") {
+  const double a = 80.0 * ref::k_pi / 180.0;
+  for (const double spread : {0.0, 0.8}) {
+    CAPTURE(spread);
+    ref::Surface s;
+    s.normal = ref::Dvec3{0.0, 0.0, 1.0};
+    s.view = ref::Dvec3{std::sin(a), 0.0, std::cos(a)};
+    s.albedo = ref::Dvec3{0.06, 0.13, 0.04};
+    s.roughness = 0.6;
+    s.transmit = 0.8;
+    s.spread = spread;
+    constexpr u32 k_lattice = 100000;
+    double integral = 0.0;
+    for (u32 i = 0; i < k_lattice; ++i)
+      integral += ref::foliage_eval_cos(s, fibonacci(i, k_lattice)).y;
+    integral *= 4.0 * ref::k_pi / static_cast<double>(k_lattice);
+    // A fixed 64-bit LCG (Knuth's MMIX constants), so the case is the same run every time.
+    u64 state = 0x9e3779b97f4a7c15ull;
+    const auto uniform = [&state]() {
+      state = state * 6364136223846793005ull + 1442695040888963407ull;
+      return static_cast<double>(state >> 11) * (1.0 / 9007199254740992.0);
+    };
+    constexpr u32 k_samples = 400000;
+    double sum = 0.0;
+    double sum_sq = 0.0;
+    for (u32 i = 0; i < k_samples; ++i) {
+      const double u[4] = {uniform(), uniform(), uniform(), uniform()};
+      ref::BsdfSample sample;
+      if (!ref::sample_foliage_bsdf(s, s.view, u, sample)) continue;
+      sum += sample.weight.y;
+      sum_sq += sample.weight.y * sample.weight.y;
+    }
+    const double mean = sum / k_samples;
+    const double error = std::sqrt((sum_sq / k_samples - mean * mean) / k_samples);
+    MESSAGE("spread " << spread << ": integral " << integral << ", the draw's mean " << mean
+                      << " +- " << error);
+    CHECK(std::abs(mean - integral) < 4.0 * error + 1e-4 * integral);
+  }
+}
+
 TEST_CASE("foliage optics: the codes the material packs") {
   gfx::ResolveMaterial m;
   CHECK((m.flags & gfx::k_material_foliage_mask) == 0u);
