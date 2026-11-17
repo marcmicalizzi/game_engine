@@ -320,7 +320,7 @@ StepRun run_steps(f64 cross, u64 seed, bool move) {
   const u32 m = trunk->line.size();
   for (u32 k = 0; k < 4; ++k) {
     // The cliff's fall ends at its last knickpoint within 3 m of it; what lies below is its foot,
-    // which W131.2 seats by its own read of the hillside across the line. The foot is read over
+    // which W150 seats by its own read of the hillside across the line. The foot is read over
     // the three points after it, inside the reach the seat left unread until then (a metre and
     // two of the line's steps from a knickpoint).
     u32 last = m;
@@ -447,7 +447,7 @@ TEST_CASE("falls: no seat is read across a cliff, so each is one fall with no pi
   }
 }
 
-// **A fall's foot has its downhill bank** (W131.2; channels.md, "A line across a slope"). Since
+// **A fall's foot has its downhill bank** (W150; channels.md, "A line across a slope"). Since
 // W122 no point within a metre and two steps of a knickpoint was seated, the foot's too, so a
 // fall on a hillside landed on a bench with no downhill bank and its water ran down the slope
 // beside the line (the forest's `region link 515`, stations 713 to 724, 1.5 to 3.9 m under the

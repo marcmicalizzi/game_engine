@@ -238,7 +238,7 @@ void build_line(const ChannelLayer& p, const ChannelNetwork& n, const scene_gen:
       f64 k = 1;
       for (u32 tries = 0; tries < 4 && k > 0; ++tries) {
         const f64 g = ground_at(ground, rx[i] + k * (fx[i] - rx[i]), rz[i] + k * (fz[i] - rz[i]));
-        // **And on steep ground, not under it either** (W131.2; channels.md, "A line across a
+        // **And on steep ground, not under it either** (W150; channels.md, "A line across a
         // slope"): where the meander has faded out the low-pass cuts a bend's corner across the
         // hillside, and a point standing more than the same half depth *under* the trough has
         // left it down the slope: the line runs off the fall line there on a bench the cut
@@ -1064,7 +1064,7 @@ void seat_section(const ChannelLayer& p, const scene_gen::Ground& ground, Channe
         at_step[j] = 1;
     }
   }
-  // **But a fall's foot is seated by its own read** (W131.2; channels.md, "A line across a
+  // **But a fall's foot is seated by its own read** (W150; channels.md, "A line across a
   // slope"): read from below a step, the step's top stands *over* the foot and lowers no bank, so
   // what a foot reads is the hillside's fall across the line, as a reach's does. Left at 0 a foot
   // on a cross-slope had no downhill bank, and its water ran down the hillside beside the line
