@@ -1,12 +1,12 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "W138",
-  "reason": "W138 documents the pool's reach-back and spill rule (channels.md), the draw's no-climb rule and the plunges' merge (water.md), steep faces textured in their own plane (terrain.md), and what stands in a line's water",
+  "reason": "W138 documents the pool's reach-back, on-line stop and spill rule (channels.md), the draw's no-climb rule and the plunges' merge (water.md), steep faces textured in their own plane (terrain.md), and what stands in a line's water",
   "date": "2026-11-16",
   "by": "Marc Micalizzi",
   "deltas": {
     "page:docs/subsystems/water.md": 883,
     "page:docs/subsystems/terrain.md": 1435,
-    "page:docs/subsystems/channels.md": 2709
+    "page:docs/subsystems/channels.md": 3128
   }
 }
