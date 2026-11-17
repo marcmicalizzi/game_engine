@@ -1,4 +1,5 @@
 #include <core/log/log.h>
+#include <core/profiling/startup_trace.h>
 #include <core/time/time.h>
 #include <foundation/tunables/tunables.h>
 #include <systems/world/placement_tiles.h>
@@ -931,11 +932,16 @@ void PlacementTiles::recycle(u64 key, TileBlock&& block) {
   }
 }
 
+// Each of the consumer's calls is a stage of the startup trace (T167): a world update's frame was
+// one call of this consumer's for up to 148 ms on the forest's fast flight, with no zone to say
+// which call or why.
 bool PlacementTiles::activate(void* context, const TileEvent& event) {
+  ENGINE_STARTUP_STAGE("placements activate");
   return static_cast<PlacementTiles*>(context)->take(event);
 }
 
 bool PlacementTiles::change_ring(void* context, const TileEvent& event) {
+  ENGINE_STARTUP_STAGE("placements ring change");
   auto* self = static_cast<PlacementTiles*>(context);
   // Built again only when some entry on the tile draws the two rings as different representations
   // (the ruins: sections with debris to walls only is a change, and so is anything to or from
@@ -1052,6 +1058,7 @@ void PlacementTiles::reform(TileBlock& block, u8 ring) {
 }
 
 void PlacementTiles::deactivate(void* context, const TileEvent& event) {
+  ENGINE_STARTUP_STAGE("placements deactivate");
   auto* self = static_cast<PlacementTiles*>(context);
   const u64 key = tile_key(event.tile);
   TileBlock* held = self->tiles_.find_value(key);
@@ -1498,6 +1505,7 @@ void PlacementTiles::start_job() {
 }
 
 void PlacementTiles::commit(void* context) {
+  ENGINE_STARTUP_STAGE("placements commit");
   auto* self = static_cast<PlacementTiles*>(context);
   self->committed_ = true;
   self->build_due();
