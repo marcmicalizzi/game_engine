@@ -1281,6 +1281,19 @@ float water_open_march(ResolveParams* params, ResolveMaterial material, uint ind
   float t1 = ray.y < 0.0 ? (bottom - eye.y) / ray.y : (ray.y > 0.0 ? (top - eye.y) / ray.y : 1e9);
   t1 = min(t1, k_water_open_far * relief / angle);
   if (has_surface) t1 = min(t1, surface_distance);
+  // From an eye over the map the march starts where the ray leaves the map's square: everything
+  // nearer is the mesh's, so a ray that ends before it (the sand, the sky above the crests' angle,
+  // the mesh's own surroundings) pays nothing more, and all eight samples fall past the mesh.
+  if (has_map) {
+    const float2 o = map.uv_origin + (eye.xz - centre.xz) * map.uv_per_m;
+    if (all(o >= float2(0.0, 0.0)) && all(o <= float2(1.0, 1.0))) {
+      const float2 d = ray.xz * map.uv_per_m;
+      float exit = 1e30;
+      if (abs(d.x) > 1e-12) exit = min(exit, ((d.x > 0.0 ? 1.0 : 0.0) - o.x) / d.x);
+      if (abs(d.y) > 1e-12) exit = min(exit, ((d.y > 0.0 ? 1.0 : 0.0) - o.y) / d.y);
+      t0 = max(t0, exit);
+    }
+  }
   if (!(t1 > t0)) return t_plane;
   // Samples spaced geometrically (a pixel's footprint grows with the distance), then the crossing
   // refined by two secant steps between the last sample above and the first below.
