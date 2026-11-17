@@ -812,8 +812,8 @@ side, or sparse residency measuring well on the three test cards.
 
 **What it does** (R172's second leg, 2026-11-17; `systems/renderer/src/gpu_scene_texture_bound.cpp`,
 `texture_bound_state.h`, `include/systems/renderer/texture_bound.h`; `renderer.textures.bound`,
-on by default). It changes no pixel, so it needs no ceiling and decides nothing ADR-0063 leaves
-open.
+**off by default**, for the reason "What it measured" gives). It changes no pixel, so it needs no
+ceiling and decides nothing ADR-0063 leaves open.
 
 1. **At load** (`bound_scene_textures`, scene.cpp) every mesh with built textures that nothing
    after the load may place — the cap's own rule (`open_scene_meshes`: not a streamed entry's
@@ -871,8 +871,48 @@ the others, a mean of what it read before; the reference path tracer settles eve
 first. **With the bounce off the picture is the whole scene's to the byte**; with it on, the bounce
 is not repeatable frame to frame anyway.
 
-**Not built yet**: the production feedback and the trim under a ceiling (stage 2); a demotion; the
-bound for textures that arrive with a tile's mesh.
+**What it measured** (2026-11-17, `msvc-release` copied out of the tree, against main's
+`b66\bin-main` flown the same way, RTX 5090, `--raster rt --shadows rt`, the bounce on,
+`--offscreen`; **the Windows session was locked for every flight on both sides**, and other agents
+held 48 to 81 % of the processors, so frame times are upper bounds and only the pair's difference is
+read):
+
+| Flight | Texture bytes at the end, main / bound | Frame median, main / bound | First frame (the settle) | Worst recording-thread frame of the bound's |
+|---|---|---|---|---|
+| village interior walk, 3840 x 2160 | 168.2 / 168.2 MiB | 6.02 / 6.01 ms | 328 ms of 406 | 60.4 ms (a settle at the path's jump), else 8.1 ms |
+| village interior walk, 1920 x 1080 | 168.2 / 168.2 MiB | 2.60 / 2.59 ms | 163 ms of 167 | 3.5 ms |
+| oasis-palms flythrough, 3840 x 2160 | 28.2 / 28.2 MiB | 2.92 / 2.92 ms | — | 0.07 ms |
+| oasis-palms flythrough, 1920 x 1080 | 28.2 / 28.2 MiB | 1.30 / 1.30 ms | — | 0.00 ms |
+
+**The bound alone keeps every level of these scenes by the end of their walks**, at both
+resolutions. Not a fault of the bound: the village's generated plaster, timber, stone and thatch
+sets are **shared by every house** and tiled at about a thousand texels a metre, so a texture is as
+fine as its nearest instance wants, and at 3840 x 2160 the nearest house wants level 0 from about
+30 m (the margin, the frame's corner and the sphere's nearest point together keep the bound about
+2.5 levels finer than a pixel at the centre reads); the interiors the first leg's feedback found
+never sampled are behind walls a few metres off, which a bound by distance cannot see. The oasis's
+palm cards are alpha-tested and its sand is the terrain's, neither held by level. What the bound
+does save is **the load**: the village uploads 24 KB a texture where a whole 2K chain is 5.3 MB, and
+its first frame then brings in what the start can read (the settle above, which a cut pays too).
+Promotions cost the recording thread little (0.44 ms for a 1K texture in `msvc-debug`, the test's
+walk), but a whole 2K level in one frame, image and staging made then, was up to 8 ms here, and a
+settle at a jump the host did not declare 60 ms. Allocations after the first 60 frames: 46 on both
+sides (the village's own), none added; `engine_view.frame_loop` passes (0 allocations and 0 device
+buffers in every second flight).
+
+**What a card with 8 GB keeps.** With the bound alone, on these scenes: everything, 168 MiB for the
+village at either resolution, the same as without it. The memory is in what no frame looks at, not
+in what no frame could resolve, so it is stage 2's: the first leg's 8 s hold measured a median of
+44 MiB at 4K and 11 MiB at 1080p for the same walk. **Hence off by default**: the bound earns its
+first frame and its settles where textures are distinct and far — a city, a prop library seen from
+a road, a scene at 1080p with 4K sources — and on its own changes nothing a player of these scenes
+would see in their memory. Turned on, it changes no pixel (the tests above).
+
+**Not built yet**: the production feedback and the trim under a ceiling (stage 2); a demotion (the
+same swap the other way, which stage 2's trim needs anyway); a persistent staging for promotions,
+which would take the image's staging out of the frame that admits it; the bound for textures that
+arrive with a tile's mesh; and a measurement of each card's anisotropic level of detail, which could
+take a level off the margin where a card's rounding is shown to be the specification's.
 
 ## Samplers and texture transforms
 

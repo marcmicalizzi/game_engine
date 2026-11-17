@@ -50,7 +50,12 @@ namespace engine::renderer {
 
 namespace {
 
-tunables::Bool bound_on{"renderer.textures.bound", true,
+// Off by default: on the engine's own scenes the bound keeps every level by the end of a walk (their
+// sets are shared by every house and tiled at about a thousand texels a metre, so the nearest
+// instance wants level 0 from 30 m at 4K) and costs a first frame of 0.17 to 0.33 s and a settle at
+// an undeclared jump; it saves nothing until a demotion and stage 2's trim (texture.md, "Stage 1:
+// the bound, built").
+tunables::Bool bound_on{"renderer.textures.bound", false,
                         "Hold the load's built textures by level: upload from the floor, and bring "
                         "in off the frame the levels an observer a lead ahead could read, which "
                         "changes no pixel (texture.md, \"Levels resident by what the frame "

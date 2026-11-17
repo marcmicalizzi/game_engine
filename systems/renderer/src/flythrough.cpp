@@ -265,6 +265,14 @@ void summarize_textures(const GpuScene& scene, scene::FlythroughTextures& out) {
   out.sharing = scene.share_textures();
   out.normal_variance = scene.normal_variance_textures();
   out.normal_variance_bytes = scene.normal_variance_bytes();
+  const TextureBoundUse& bound = scene.texture_bound_use();  // R172 stage 1
+  out.bound_textures = bound.managed;
+  out.bound_resident_bytes = bound.resident_bytes;
+  out.bound_peak_bytes = bound.peak_bytes;
+  out.bound_promotions = bound.promotions;
+  out.bound_late = bound.late;
+  out.bound_worst_admit_ms = bound.worst_admit_ms;
+  out.bound_worst_settle_ms = bound.worst_settle_ms;
 }
 
 bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const FlightOptions& options,
