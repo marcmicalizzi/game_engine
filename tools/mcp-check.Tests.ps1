@@ -110,6 +110,13 @@ if (Test-Path -LiteralPath $Mcp) {
   $report = Join-Path $root 'live.json'
   $r = Invoke-Check @('-Mcp', $Mcp, '-Scratch', (Join-Path $root 'live'), '-Report', $report)
   Write-Host $r.Out
+  if ($r.Code -eq 75) {
+    # Its engine-host gave up waiting for the GPU lock (mcp-check.ps1 takes it per device): the
+    # loop did not run, which CTest reads as skipped.
+    if (-not $KeepTemp) { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue }
+    Write-Host 'mcp-check.Tests: the real bridge gave up waiting for the GPU lock (exit 75)'
+    exit 75
+  }
   Expect ($r.Code -eq 0) "the loop passes against $Mcp (exit $($r.Code))"
   if (Test-Path -LiteralPath $report) {
     $rep = Get-Content -LiteralPath $report -Raw | ConvertFrom-Json

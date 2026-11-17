@@ -80,6 +80,13 @@ Set-StrictMode -Version Latest
 # (CTest's mcp_bridge.mcp_check and mcp_check_connect), and a test's main is not what starts them
 # here (docs/subsystems/materials.md, "Where the hosts find it").
 $env:ENGINE_DEFAULT_MATERIALS = '0'
+# **The engine-host it starts takes the machine-wide GPU lock for as long as it has a device open**
+# (ADR-0049; docs/subsystems/gpu_lock.md), as a process a test main starts does: this script is not
+# a test main, and since T89 two GPU tests of one CTest run go side by side, ordered by that lock
+# alone (review B3 of batch 67). A caller's own setting stands (`0` turns it off). A host whose wait
+# ran out exits 75, and so does its bridge and then this check: a skip, not a failure.
+if (-not $env:ENGINE_GPU_LOCK_ON_DEVICE) { $env:ENGINE_GPU_LOCK_ON_DEVICE = '1' }
+$script:gaveUp = $false
 
 $repo = Split-Path -Parent $PSScriptRoot
 if (-not $Mcp) {
@@ -144,6 +151,7 @@ function Stop-Mcp($server) {
   # A bridge whose input ends stops its host and exits; it is given a while to do so.
   [void]$p.WaitForExit(60000)
   $code = if ($p.HasExited) { $p.ExitCode } else { $null }
+  if ($code -eq 75) { $script:gaveUp = $true }
   $log = if ($server.Err.Wait(5000)) { $server.Err.Result } else { '' }
   [IO.File]::WriteAllText((Join-Path $Scratch "$($server.Label).stderr.log"), $log, $utf8)
   return $code
@@ -728,6 +736,7 @@ try {
     # Our own child: its input closed ends it, as it ends every engine-host.
     try { $hostProcess.StandardInput.Close() } catch { }
     if (-not $hostProcess.WaitForExit(60000)) { $hostProcess.Kill($true) }
+    elseif ($hostProcess.ExitCode -eq 75) { $script:gaveUp = $true }
     $log = if ($hostErr.Wait(5000)) { $hostErr.Result } else { '' }
     [IO.File]::WriteAllText((Join-Path $Scratch 'host.stderr.log'), $log, $utf8)
   }
@@ -781,5 +790,9 @@ if ($ownScratch -and -not $KeepScratch -and $exit -eq 0) {
   Remove-Item -LiteralPath $Scratch -Recurse -Force -ErrorAction SilentlyContinue
 } elseif ($ownScratch) {
   Write-Host "mcp-check: kept $Scratch"
+}
+if ($script:gaveUp) {
+  Write-Host 'mcp-check: an engine process gave up waiting for the GPU lock (exit 75): skipped, not passed'
+  exit 75
 }
 exit $exit

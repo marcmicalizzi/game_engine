@@ -20,7 +20,8 @@
   tens of megabytes, unless it fails or -KeepTemp says to keep it. It skips, with a sentence and
   exit 0, when the build has no game_modules/build_config.cmake (no hotload capability: the
   minimal preset builds no module and exports no command) and off Windows (an exported SDK does
-  not cover Linux yet). engine-view takes the machine-wide GPU lock itself; when it gave up
+  not cover Linux yet). engine-view takes the machine-wide GPU lock itself (the switch is set
+  below); when it gave up
   waiting (exit 75) this script exits 75 too, which CTest reads as skipped, and when the machine
   has no usable device (exit 3) it says so and passes, as the C++ end-to-end cases do.
 
@@ -37,8 +38,14 @@ $PSNativeCommandUseErrorActionPreference = $false
 # The engine-view this starts reads no machine's material pack, as no test does (the test main's
 # switch, which a script is not run under; docs/subsystems/materials.md, "Where the hosts find it").
 $env:ENGINE_DEFAULT_MATERIALS = '0'
+# **Its engine-view takes the machine-wide GPU lock for as long as it has a device open** (ADR-0049),
+# as a process a test main starts does; this script is not a test main, so it sets the switch that
+# main would have, unless the caller set it (`0` turns it off). Until 2026-11-17 nothing set it here,
+# and since T89 put two GPU tests of one CTest run side by side, this one's device went beside the
+# other chain's (review B3 of batch 67).
+if (-not $env:ENGINE_GPU_LOCK_ON_DEVICE) { $env:ENGINE_GPU_LOCK_ON_DEVICE = '1' }
 
-$Root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$Root =(Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $BuildDir = [System.IO.Path]::GetFullPath($BuildDir)
 $IsWin = $IsWindows -or ($env:OS -eq 'Windows_NT')
 
