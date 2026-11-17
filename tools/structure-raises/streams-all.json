@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "streams-all",
+  "reason": "b67-streams-all: channels.md holds the five-column table of W131, W137 and W138 measured together on v47 and the two lines the merge's judgement rests on",
+  "date": "2026-11-17",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/channels.md": 2536
+  }
+}

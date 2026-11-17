@@ -1104,6 +1104,37 @@ and the forest should not expect one to: `flow.stage` 2 doubles 515's depth
 (6.5 to 9.4 cm) and leaves its pieces as they are. The stage changes little: the main stem is its spring's
 21 l/s, and the runoff the stage scales is a few litres a second on catchments of a few hectares.
 
+### The three streams rows measured together (W131, W137, W138)
+
+v47 at stage 1, the same root and command as above, each build's own draw rule (`main` and W131
+the old one, the rest W138's, `k_channel_mesh_version` 4); W138+W131 is that merge with the rule
+that writes the stream running into a pool at its level ([the profile](#the-profile)), all three
+is that and W137's resistance law. Speeds and depths are the drawn stretches' medians by length.
+
+| | main | W131 alone | W138 alone | W138+W131 | all three |
+|---|---|---|---|---|---|
+| walls / climbs drawn | 42 / 94 | 4 / 53 | 0 / 0 | 0 / 0 | 0 / 0 |
+| pools written (open; spilled; reached back) | 407 (695) | 305 (494) | 332 (693; 111; 18) | 292 (401; 37; 24) | 331 (1,003; 149; 57) |
+| stations over a bank (lines) | 1,623 (121) | 2,283 (136) | 1,751 (114) | 2,283 (131) | 4,121 (159) |
+| stations under the ground at the line | 2,144 | 1,776 | not counted | 1,742 | 1,645 |
+| over 30 %: film / undrawn | 2.19 / 2.81 % | 0.57 / 1.39 % | 2.43 / 3.34 % | 0.59 / 1.34 % | 0.60 / 1.42 % |
+| over 30 %: runs / 100 m, gaps | 3.32, 136 | 2.87, 93 | 3.77, 166 | 2.76, 88 | 2.83, 93 |
+| over 30 %: forest's thin, alternations / 100 m | 2.86 %, 6.11 | 1.00 %, 3.89 | 3.09 %, 6.03 | 0.95 %, 3.56 | 0.99 %, 3.60 |
+| under 2 %: film / undrawn, gaps | 0.85 / 0.90 %, 7 | 0.98 / 1.53 %, 8 | 1.51 / 1.58 %, not counted | 1.35 / 1.90 %, 10 | 1.35 / 1.91 %, 10 |
+| 15-30 %: gaps | 22 | 11 | 26 | 11 | 11 |
+| speed over 30 % / all (m/s) | 0.382 / 0.267 | 0.388 / 0.269 | 0.382 / 0.267 | 0.388 / 0.270 | 0.267 / 0.205 |
+| depth over 30 % / all (m) | 0.065 / 0.076 | 0.066 / 0.076 | 0.065 / 0.075 | 0.066 / 0.076 | 0.084 / 0.091 |
+| link 515: runs, gaps, undrawn m, film m | 10, 9, 11.86, 8.70 | 7, 6, 5.88, 1.48 | 10, 9, 12.85, 8.70 | 6, 5, 3.65, 0 | 6, 5, 3.65, 0 |
+
+**W138+W131 is better than either alone on every steep line**: walls and climbs drawn, the stations
+under the ground, and over 30 % the film, the undrawn share, the runs, the gaps and link 515. **All
+three are not better than `main` on every line**: stations over a bank 4,121 against 1,623, open
+pools 1,003 against 695, and the lines under 2 % a film of 1.35 against 0.85 % with 10 gaps against
+7. The banks and the open pools are W137's law (W138+W131 has 2,283 and 401): it makes the sheets
+slower and deeper, and a deeper level stands over more banks. The flat lines' film is W138's pools
+not written over spilled water, already there without W137. Over 30 % all three keep W138+W131's
+gain within 5 gaps (93 against 88).
+
 ## The cut
 
 (2026-11-07, roadmap W89; the POC's v35 engine-needs, item 1, and the owner's walk, item 11.) A real
