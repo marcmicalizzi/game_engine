@@ -36,7 +36,18 @@ The shader pays nothing for the choice: skinning a position is three dot product
 
 All three glTF sampler modes are here, because a clip is imported and not authored ([assets](assets.md)): `k_interp_linear` (lerp, and **slerp on the short arc** for a rotation — the two keys of a quarter turn are 45° apart in the middle either way, but a component lerp gets there at the wrong speed), `k_interp_step`, and `k_interp_cubic`, which is glTF's CUBICSPLINE with the in- and out-tangents the exporter wrote, evaluated on the Hermite basis with the tangents scaled by the key interval exactly as the specification's pseudo-code does. A time before the first key or after the last **takes that key's value rather than extrapolating**: every DCC tool does the same, and extrapolating a quaternion past its last key is how a blend flies apart at a clip boundary.
 
-Key lookup is a linear walk from the front, not a binary search. A track has a handful of keys, they are walked in memory order, and the predictable compare wins until key counts nothing here will see. A cursor per track, which is what a playing clip really wants, belongs with the playback state the system layer will own, not with the clip.
+**Key lookup is a binary search on a track of more than eight keys and a walk from the front on a shorter one** (A48, 2026-11-16). The walk alone was written for hand-keyed tracks of a handful of keys, but an exporter bakes every channel at 30 keys a second (Blender's glTF default), so an eight-second clip's track holds 241 keys and the walk was up to 240 compares a track a sample, for every animated actor at its nearest tier, every tick (found by A47). Both forms find the same key — the last of the track's keys but its final one at or before the time, past a run of equal times as the walk went — so the fraction and every pose are the same to the bit: `anim_tests.cpp` ("a long track's key is found by search") holds the sampler against the old walk at 43,428 times over tracks of 2 to 241 keys, baked and uneven, with repeated keys. Below about eight keys the walk's predictable compares are cheaper than the search's branches, so the cut is there. A per-track cursor kept by a playing clip was the other answer; it needs state the clip does not own (the clip is shared by every actor that plays it) and a search already takes the cost off the clip's length, so it was not built.
+
+`anim.clip.sample.keys/<keys>` (`bench/anim_bench.cpp`) samples a 37-joint rig's 111 baked tracks (a bird of the forest's roster) at 60 samples a second through the clip, so each sample lands at another key. `msvc-release`, medians of 7, the machine busy with other agents' builds (others at 100 % of the CPU, session unlocked: upper bounds, both columns the same state):
+
+| Keys a track | Walk (before) | Search (after) |
+|---|---|---|
+| 4 (hand-keyed) | 3.41 us | 3.39 us |
+| 31 (1 s) | 5.09 us | 4.54 us |
+| 61 (2 s) | 6.62 us | 4.77 us |
+| 241 (8 s) | 16.57 us | **5.57 us** |
+
+A sample now costs about the same whatever the clip's length: 0.05 us a track against the walk's 0.15 us at eight seconds. A thousand LOD0 actors on eight-second clips spend about 5.6 ms of CPU a tick in sampling where they spent 16.6.
 
 ### Morph weight tracks
 
