@@ -4572,7 +4572,8 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
         load_texture_records_.push_back(TextureRecord{
             made.slot, uploaded.format, bounded ? built[index].data.width : uploaded.width,
             bounded ? built[index].data.height : uploaded.height,
-            bounded ? built[index].data.levels.size() : uploaded.levels, uploaded.bytes, false});
+            bounded ? built[index].data.levels.size() : uploaded.levels, uploaded.bytes, false,
+            bounded ? bound_first : 0u});
         if (made.normal_variance) {
           // Scene creation never frees a descriptor. Publish the auxiliary image immediately
           // after its normal, and check that contract rather than silently sampling another map.

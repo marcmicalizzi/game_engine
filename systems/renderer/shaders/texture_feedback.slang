@@ -21,7 +21,19 @@
 
 #include "../../../domain/gfx/shaders/material.slang"
 
-// Mirrors renderer::TextureFeedbackParams (texture_feedback.cpp; 208 bytes).
+// **One pixel in `stride` x `stride`** (R172 stage 2): the residency's own feedback reads the pixel
+// at `phase` of every `stride`-square tile, the phase stepping through the tile's pixels frame by
+// frame, so a sixteenth of the threads run and every pixel is read once in sixteen frames; the
+// measurement reads every pixel (stride 1) and, beside it, the same sparse pattern into a second
+// table, to say what the sparse one misses.
+//
+// **A slot holds a texture from a resident top `r`** (a level the residency released): its image's
+// level 0 is the chain's level `r`, so `GetDimensions` gives the resident image and the lambda here
+// is the resident image's; the chain's is `lambda + r`, which the CPU adds from the slot's top.
+// With `tops` set (the measurement), a pixel whose finest level asked of the whole chain is finer
+// than the slot's top is counted as drawn softer than it asked, by how many levels.
+//
+// Mirrors renderer::TextureFeedbackParams (texture_feedback.cpp; 240 bytes).
 struct TextureFeedbackParams {
   column_major float4x4 view_proj;
   uint64_t visibility;  // this view's region: uint64_t[width * height]
@@ -33,10 +45,16 @@ struct TextureFeedbackParams {
   uint64_t materials;
   uint64_t cluster_materials;
   uint64_t pairs;  // uint2[pair_count]: the scene's {instance, cluster} per pair
-  uint64_t out;    // uint[slot_count]: the smallest code per bindless sampled-image slot
+  uint64_t out;    // uint[slot_count]: the smallest code per sampled-image slot from `slot_base`
+  uint64_t tops;   // uint[slot_count]: each slot's resident top level, or 0: count nothing softer
+  uint64_t softer;  // uint[4]: pixels drawn 1, 2, 3+ levels softer than asked; pixels counted
   uint width;
   uint height;
   uint slot_count;
+  uint slot_base;
+  uint stride;  // 1: every pixel; 4: one in sixteen
+  uint phase_x;
+  uint phase_y;
   uint pad;
   FrameEye eye;
 };
@@ -55,7 +73,8 @@ static const float k_feedback_steps = 256.0;
 // the layered ground samples its layers' textures at their own scales, not the material's slots.
 static const uint k_feedback_terrain_layers = 512u;
 
-uint feedback_code(float2 duv_dx, float2 duv_dy, uint slot) {
+// The resident image's lambda at a slot (its own level 0, which is the chain's resident top).
+float feedback_lambda(float2 duv_dx, float2 duv_dy, uint slot) {
   uint w;
   uint h;
   uint levels;
@@ -66,7 +85,10 @@ uint feedback_code(float2 duv_dx, float2 duv_dy, uint slot) {
   const float rmax = max(rx, ry);
   const float rmin = min(rx, ry);
   const float rho = max(rmax * (1.0 / 16.0), rmin);
-  const float lambda = rho > 0.0 ? log2(rho) : -k_feedback_offset;
+  return rho > 0.0 ? log2(rho) : -k_feedback_offset;
+}
+
+uint feedback_code(float lambda) {
   const float code = clamp((lambda + k_feedback_offset) * k_feedback_steps, 0.0,
                            2.0 * k_feedback_offset * k_feedback_steps - 1.0);
   return uint(code);
@@ -74,20 +96,23 @@ uint feedback_code(float2 duv_dx, float2 duv_dy, uint slot) {
 
 // One slot's code into the table: once per wave where every active lane names the same slot.
 void feedback_note(TextureFeedbackParams* params, uint slot, uint code) {
-  if (slot == k_no_texture || slot >= params->slot_count) return;
+  if (slot == k_no_texture || slot < params->slot_base || slot - params->slot_base >= params->slot_count)
+    return;
   uint* out = (uint*)params->out;
-  if (WaveActiveAllEqual(slot)) {
+  const uint at = slot - params->slot_base;
+  if (WaveActiveAllEqual(at)) {
     const uint least = WaveActiveMin(code);
-    if (WaveIsFirstLane()) InterlockedMin(out[slot], least);
+    if (WaveIsFirstLane()) InterlockedMin(out[at], least);
   } else {
-    InterlockedMin(out[slot], code);
+    InterlockedMin(out[at], code);
   }
 }
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void texture_feedback_main(uint3 id : SV_DispatchThreadID) {
+void texture_feedback_main(uint3 thread : SV_DispatchThreadID) {
   TextureFeedbackParams* params = (TextureFeedbackParams*)g_feedback.params;
+  const uint2 id = thread.xy * params->stride + uint2(params->phase_x, params->phase_y);
   if (id.x >= params->width || id.y >= params->height) return;
   const uint64_t value = ((uint64_t*)params->visibility)[id.y * params->width + id.x];
   if (value == 0) return;
@@ -127,9 +152,28 @@ void texture_feedback_main(uint3 id : SV_DispatchThreadID) {
   const uint slots[5] = {material.albedo_texture, material.metallic_roughness_texture,
                          material.normal_texture, material.occlusion_texture,
                          material.emissive_texture};
+  uint softer_by = 0;  // the most levels any of the pixel's samples read softer than it asked
   for (uint s = 0; s < 5; ++s) {
     const uint slot = slots[s];
     if (slot == k_no_texture) continue;
-    feedback_note(params, slot, feedback_code(duv_dx, duv_dy, slot));
+    const float lambda = feedback_lambda(duv_dx, duv_dy, slot);
+    feedback_note(params, slot, feedback_code(lambda));
+    if (params->tops != 0 && slot >= params->slot_base &&
+        slot - params->slot_base < params->slot_count) {
+      const int top = int(((uint*)params->tops)[slot - params->slot_base]);
+      const int asked = max(0, int(floor(lambda)) + top);  // the whole chain's finest level read
+      softer_by = max(softer_by, uint(max(top - asked, 0)));
+    }
+  }
+  if (params->softer != 0) {
+    // Per wave: one add a bucket, and the pixels counted (every textured pixel reaching here).
+    uint* counts = (uint*)params->softer;
+    const uint bucket = min(softer_by, 3u);
+    for (uint b = 1; b <= 3; ++b) {
+      const uint n = WaveActiveCountBits(bucket == b);
+      if (WaveIsFirstLane() && n != 0) InterlockedAdd(counts[b - 1], n);
+    }
+    const uint all = WaveActiveCountBits(true);
+    if (WaveIsFirstLane()) InterlockedAdd(counts[3], all);
   }
 }

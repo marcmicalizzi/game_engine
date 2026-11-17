@@ -920,6 +920,100 @@ which would take the image's staging out of the frame that admits it; the bound 
 arrive with a tile's mesh; and a measurement of each card's anisotropic level of detail, which could
 take a level off the margin where a card's rounding is shown to be the specification's.
 
+### Stage 2: the trim under a ceiling
+
+**What it does** (R172's third leg, 2026-11-17; `gpu_scene_texture_bound.cpp`, the residency half
+of `texture_feedback.cpp`; ADR-0065 decision 3 and its settlement). Off unless the scene's textures
+have a ceiling, **`renderer.textures.ceiling_mib`** (MiB of texture the scene may hold, 0 by
+default: no ceiling, nothing trimmed, the load's textures and the load's picture to the byte). The
+ceiling is this row's own tunable so that ADR-0063's three open decisions stay open: whichever form
+that ADR's budget takes, this pool's share of it is the number to put here (below, "Where ADR-0063's
+budget plugs in"). With a ceiling and the bound off, the load uploads every managed texture whole
+into a pair of the run, exactly as stage 1 would with no level left out; with both, the load uploads
+from the floor and the bound brings in what an observer can read, as before.
+
+1. **The feedback, always on under a ceiling.** The measurement pass in its production form: one
+   pixel in sixteen of every view's visibility buffer — the pixel at a phase of each 4x4 tile that
+   steps through the tile's sixteen in an ordered-dither order, so consecutive frames read pixels far
+   apart and sixteen frames read every pixel once — over the run of slots the residency manages
+   only (a table of `2 x pairs` words, cleared, written by an atomic minimum, copied back), recorded
+   by `record_frame` after the resolve in any view mode and **not** as a frame pass, so it draws
+   nothing through the linear image. It runs at every frame under a ceiling, not only over it,
+   because a trim needs the history before the pressure comes. Its fold, one frame slot later, maps
+   each pair to the texture it held when that frame was recorded (a pair keeps its texture while it
+   leaves, and one given out after the folded frame is not read), adds the pair's resident top to
+   the resident image's lambda (`GetDimensions` reads the resident image: the chain's level is
+   `floor(lambda) + top`), and stamps the residency's clock on that level and every coarser one. So
+   **the history is the texture's, not the slot's**, and survives every promotion and demotion (the
+   measurement's own list now keeps a load's record by its place, which a swap never moves, where it
+   used to key it by slot and lost it at the first promotion).
+2. **The clock** is the frames' own, `FrameDesc::dt_s` or 1/60 s where the host steps none (a
+   flythrough's fixed frames), so a hold in seconds means the same in a test, a flight and a game.
+   A level's age is the time since the feedback last asked for it or a coarser-first ask reached it,
+   **or since it was brought in**, whichever is later; the load brings every level in at 0.
+3. **The trim** (`texture_bound_frame`, after the promotions are asked): only when the scene's texture
+   bytes are over the ceiling (less what demotions already in flight will give back). Candidates are
+   each managed texture's levels from its resident top down to the floor, while each is at least
+   `renderer.textures.hold_s` old (8 s; a minimum age, not a clock); since an ask of a level is an ask
+   of every coarser one, a texture's levels are oldest at the top, so the candidates sorted by last
+   ask (then texture, then level) take each texture's levels from the top down, least recently asked
+   first, and the walk stops as soon as the levels taken cover the excess: **only as far as the
+   ceiling needs**. Each texture the plan touched is demoted once, to its planned top, by the same
+   path a promotion takes the other way: its levels from the new top read by range on the reader
+   thread, a new smaller image in a free pair, the material records rewritten in the frame's upload
+   pass, the old image gone `k_joint_slots + 1` frames later. **A demotion is dropped on arrival if
+   any level it would release was asked or brought in within the hold since it was planned**
+   (`TextureBoundUse::refused_in_hold`), so what goes is never younger than the hold. Never below the
+   floor (`renderer.textures.floor`, 128 texels a side).
+4. **The return.** Under a ceiling a texture wants what the feedback asked: where a fold asked for a
+   level finer than the resident top (`asked_late`, counted per texture and frame), a promotion to it
+   is asked off the frame, **a level further ahead where the asks are getting finer** (the trend
+   between the last two asked frames: a walker closing on a wall), and, with the bound on, **the
+   bound's lead where the pool has room for it** under the ceiling — never finer than the bound. The
+   level arrives through stage 1's promotion path inside `renderer.textures.promote_kib` a frame;
+   until it does the texture draws its resident levels, softer, never absent and never a wait. A
+   promotion is as young as an ask, so the hold keeps what just came back.
+5. **No allocation in the steady frame loop.** The plan's candidate list and per-texture plan are
+   reserved at the load; the feedback's buffers are made at the renderer's creation; a settled view
+   demotes and promotes nothing. A demotion allocates its image and its staging in the frame that
+   admits it, as a promotion does.
+
+**What the feedback costs, and what one pixel in sixteen misses** (2026-11-17, `msvc-release`
+copied out of the tree, RTX 5090, the village's interior walk, `--raster rt --shadows rt`, the
+bounce on, `--offscreen`; **the Windows session was locked** for every flight, other agents held 31
+to 41 % of the processors). The residency's own pass, timed by its zone over every frame of the
+walk under a ceiling the pool never reached (100,000 MiB): **0.044 ms a frame at 3840 x 2160 (the
+most 0.089 ms) and 0.019 ms at 1920 x 1080 (the most 0.21 ms, a frame beside other agents' GPU
+work)**, under the 0.1 ms ADR-0065 set as the line past which the feedback would have to ride on the
+resolve's own derivatives. The frame medians, against the same code with no ceiling: 6.009 against
+6.052 ms at 4K, 2.556 against 2.585 ms at 1080p, the feedback's own time and nothing else. So it
+runs at every frame under a ceiling, not only under pressure. Against every pixel, over the same
+walk (the measurement runs both patterns in one frame; 8,829 measured frames at 4K, 10,186 at
+1080p, repeats included):
+
+| | 3840 x 2160 | 1920 x 1080 |
+|---|---|---|
+| textures asked in a frame (median) | 25 | 25 |
+| textures every pixel asked and the sparse pattern missed, a frame (median / p99 / most) | 0 / 3 / 3 | 0 / 3 / 7 |
+| frames with any such miss | 1,183 (13 %) | 438 (4 %) |
+| textures the sparse pattern saw coarser, a frame (median / p99 / most) | 0 / 3 / 6 | 0 / 3 / 6 |
+| an 8 s hold's bytes, every pixel / sparse (median) | 44.4 / 44.4 MiB | 3.9 / 3.9 MiB |
+| frames where the sparse 8 s hold keeps a texture coarser than every pixel's | 443 (5.0 %, at most 3 textures) | 156 (1.5 %, at most 6) |
+| bytes any frame asked for, every pixel / sparse | 74.2 / 74.2 MiB | 71.1 / 71.1 MiB |
+
+What the sparse pattern misses in a frame is a texture a handful of pixels show (a sliver at the
+frame's edge, a far window), and an 8 s hold hides almost all of it: the hold driven by it keeps the
+same bytes, and in one frame in twenty at 4K keeps up to three textures a level coarser than every
+pixel would — which only matters under pressure, and then those pixels draw a level softer until the
+next ask, which the hold's minimum age makes rare. Over the whole walk it asks for exactly what
+every pixel does.
+
+**Where ADR-0063's budget plugs in.** The ceiling is texture bytes on the device, the pool's figure
+in ADR-0063's sense. Under *the budget's form* still open there, a governor sets this number from
+whatever budget is chosen (a device budget less what the other pools hold, or a share), at the load
+and again whenever it moves; a card's figure below ("What a smaller card keeps") is derived the
+first way, from what the rest of the engine holds in `--memory-report`. Nothing here presumes which.
+
 ## Samplers and texture transforms
 
 **Why.** Until 2026-09-24 every material sampled through one clamped sampler and the UVs as the mesh

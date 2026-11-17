@@ -50,11 +50,11 @@ namespace engine::renderer {
 
 namespace {
 
-// Off by default: on the engine's own scenes the bound keeps every level by the end of a walk (their
-// sets are shared by every house and tiled at about a thousand texels a metre, so the nearest
-// instance wants level 0 from 30 m at 4K) and costs a first frame of 0.17 to 0.33 s and a settle at
-// an undeclared jump; it saves nothing until a demotion and stage 2's trim (texture.md, "Stage 1:
-// the bound, built").
+// Off by default: on the engine's own scenes the bound keeps every level by the end of a walk
+// (their sets are shared by every house and tiled at about a thousand texels a metre, so the
+// nearest instance wants level 0 from 30 m at 4K) and costs a first frame of 0.17 to 0.33 s and a
+// settle at an undeclared jump; it saves nothing until a demotion and stage 2's trim (texture.md,
+// "Stage 1: the bound, built").
 tunables::Bool bound_on{"renderer.textures.bound", false,
                         "Hold the load's built textures by level: upload from the floor, and bring "
                         "in off the frame the levels an observer a lead ahead could read, which "
@@ -82,6 +82,18 @@ tunables::Int bound_promote_kib{
 tunables::Bool bound_wait{"renderer.textures.bound_wait", false,
                           "A frame whose observer can read a level the bound has not brought in "
                           "yet brings it in before drawing, on the recording thread (tests)"};
+// Stage 2 (texture.md, "Stage 2: the trim under a ceiling"). The ceiling is this row's own, so that
+// ADR-0063's open decisions stay open: whichever budget that ADR settles on sets it.
+tunables::Float residency_ceiling_mib{
+    "renderer.textures.ceiling_mib", 0.0, 0.0, 16'777'216.0,
+    "MiB of texture the scene may hold before the residency trims: under pressure the levels no "
+    "frame asked for within `hold_s` go, least recently asked first and only as far as the ceiling "
+    "needs, never below the floor (0, the default: no ceiling, nothing is trimmed and the textures "
+    "are the load's). Read once per load"};
+tunables::Float residency_hold_s{
+    "renderer.textures.hold_s", 8.0, 0.0, 3'600.0,
+    "Seconds of the frames' own clock a level stays after the feedback last asked for it or it was "
+    "brought in: under a ceiling, nothing younger is trimmed (a minimum age, not a clock)"};
 
 constexpr u32 k_spare_pairs = 64;  // pairs a promotion takes while its old one waits out the frames
 constexpr u64 aligned16(u64 v) noexcept { return (v + 15) & ~u64{15}; }
@@ -120,7 +132,30 @@ const u32* find_held(const TextureBoundState& s, u64 key) noexcept {
 }
 }  // namespace
 
-bool texture_bound_enabled() { return bound_on.get(); }
+bool texture_bound_enabled() { return bound_on.get() || residency_ceiling_mib.get() > 0.0; }
+
+namespace {
+// Bytes a 4x4 block takes in a texture's format (BC1 and BC4 eight, the rest sixteen).
+u64 block_bytes(gfx::Format format) noexcept {
+  return format == gfx::Format::Bc1RgbUnorm || format == gfx::Format::Bc1RgbSrgb ||
+                 format == gfx::Format::Bc4Unorm
+             ? 8u
+             : 16u;
+}
+// A level's bytes as the blocks count them, its variance chain's (BC4) beside it: what a trim plans
+// to release and a promotion to add, before the allocator rounds.
+u64 level_bytes_of(const TextureBoundState::Texture& tex, u32 level) noexcept {
+  const u64 blocks = u64{(texture::texture_level_extent(tex.width, level) + 3) / 4} *
+                     ((texture::texture_level_extent(tex.height, level) + 3) / 4);
+  return blocks * (block_bytes(tex.format) + (tex.variance ? 8u : 0u));
+}
+u64 chain_bytes_from(const TextureBoundState::Texture& tex, u32 top) noexcept {
+  u64 bytes = 0;
+  for (u32 l = top; l < tex.levels; ++l)
+    bytes += level_bytes_of(tex, l);
+  return bytes;
+}
+}  // namespace
 
 void GpuScene::TextureBoundDelete::operator()(TextureBoundState* state) const noexcept {
   delete state;
@@ -141,7 +176,7 @@ bool GpuScene::texture_bound_manages(u64 key) const noexcept {
 
 bool GpuScene::texture_bound_plan(std::string* error) {
   destroy_texture_bound();
-  if (!bound_on.get() || device_ == nullptr || !device_->features().texture_compression_bc)
+  if (!texture_bound_enabled() || device_ == nullptr || !device_->features().texture_compression_bc)
     return true;
   const SceneData& d = *data_;
   const u32 mesh_count = d.sources.size();
@@ -263,6 +298,16 @@ bool GpuScene::texture_bound_plan(std::string* error) {
   s->free_pairs.reserve(wanted);
   for (u32 p = wanted; p-- > 0;)
     s->free_pairs.push_back(p);
+  // Stage 2: what the residency reads once per load, and everything its frames touch, made now.
+  s->bound = bound_on.get();
+  s->ceiling = static_cast<u64>(residency_ceiling_mib.get() * 1'048'576.0);
+  s->hold_s = residency_hold_s.get();
+  s->use.ceiling = s->ceiling;
+  s->pair_texture.assign(wanted, ~0u);
+  s->pair_top.assign(wanted, 0u);
+  s->pair_since.assign(wanted, u64{0});
+  s->candidates.reserve(s->textures.size() * 16u);
+  s->plan_top.assign(s->textures.size(), 0u);
   s->frames_leaving = k_joint_slots + 1;
   s->leaving.reserve(wanted);
   s->mesh_q.assign(mesh_count, k_never);
@@ -282,7 +327,10 @@ u32 GpuScene::texture_bound_first_level(u64 key, const texture::TextureData& t) 
   if (at == nullptr || texture_bound_->free_pairs.size() <= k_spare_pairs) return ~0u;
   const u32 floor =
       floor_top_of(t.width, t.height, t.levels.size(), static_cast<u32>(bound_floor.get()));
-  return floor == 0 ? ~0u : floor;  // a texture at its floor already has nothing to leave out
+  // A texture at its floor already has nothing to leave out. Without the bound (a ceiling alone)
+  // the load uploads it whole: nothing is released without pressure.
+  if (floor == 0) return ~0u;
+  return texture_bound_->bound ? floor : 0u;
 }
 
 u32 GpuScene::texture_bound_place(u64 key, const texture::TextureData& t, u32 first,
@@ -293,13 +341,17 @@ u32 GpuScene::texture_bound_place(u64 key, const texture::TextureData& t, u32 fi
   tex.height = t.height;
   tex.levels = t.levels.size();
   tex.format = image.format;
-  tex.floor_top = first;
+  tex.floor_top =
+      floor_top_of(t.width, t.height, t.levels.size(), static_cast<u32>(bound_floor.get()));
   tex.resident_top = first;
   tex.wanted_top = tex.now_top = first;
   tex.image = image;
   tex.view = view;
   tex.pair = s.free_pairs.back();
   s.free_pairs.pop_back();
+  s.pair_texture[tex.pair] = *find_held(s, key);
+  s.pair_top[tex.pair] = first;
+  s.pair_since[tex.pair] = 0;
   tex.record = load_texture_records_.size();  // the caller's next record
   tex.placed = true;
   const u32 slot = s.first_slot + 2 * tex.pair;
@@ -365,6 +417,48 @@ void GpuScene::texture_bound_whole() noexcept {
   texture_bound_->settled = false;  // the next frame brings every level in before it draws
 }
 
+// ---- stage 2: the residency's feedback --------------------------------------------------------
+
+bool GpuScene::texture_residency_run(u32& first_slot, u32& count) const noexcept {
+  if (texture_bound_ == nullptr || texture_bound_->ceiling == 0 || texture_bound_->use.managed == 0)
+    return false;
+  first_slot = texture_bound_->first_slot;
+  count = 2 * texture_bound_->pairs;
+  return true;
+}
+
+u64 GpuScene::texture_residency_frame() const noexcept {
+  return texture_bound_ != nullptr ? texture_bound_->frames : 0u;
+}
+
+void GpuScene::texture_residency_fold(const u32* codes, u32 count, u64 frame) noexcept {
+  if (texture_bound_ == nullptr) return;
+  TextureBoundState& s = *texture_bound_;
+  // texture_feedback.slang's code: (lambda + 32) * 256 of the resident image, never 0xffffffff
+  // where a pixel asked; the chain's level is its floor plus the pair's top.
+  for (u32 p = 0; p < s.pairs && 2 * p < count; ++p) {
+    const u32 code = codes[2 * p];
+    const u32 t = s.pair_texture[p];
+    if (code == 0xffffffffu || t == ~0u || s.pair_since[p] > frame) continue;
+    TextureBoundState::Texture& tex = s.textures[t];
+    const f64 lambda = static_cast<f64>(code) / 256.0 - 32.0;
+    const i64 level =
+        std::max<i64>(0, static_cast<i64>(std::floor(lambda)) + static_cast<i64>(s.pair_top[p]));
+    const u32 asked = static_cast<u32>(std::min<i64>(level, i64{tex.levels} - 1));
+    tex.asked_level = std::min(tex.asked_level, asked);
+    for (u32 l = asked; l < 16; ++l)
+      tex.asked_at[l] = s.now;
+  }
+}
+
+void GpuScene::texture_residency_feedback_ms(f64 ms) noexcept {
+  if (texture_bound_ == nullptr) return;
+  TextureBoundUse& use = texture_bound_->use;
+  ++use.feedback_frames;
+  use.feedback_ms_total += ms;
+  use.feedback_ms_max = std::max(use.feedback_ms_max, ms);
+}
+
 void GpuScene::destroy_texture_bound() noexcept {
   if (texture_bound_ == nullptr) return;
   TextureBoundState& s = *texture_bound_;
@@ -378,7 +472,13 @@ void GpuScene::destroy_texture_bound() noexcept {
         log::field("late", s.use.late), log::field("evaluations", s.use.evaluations),
         log::field("worst_admit_ms", s.use.worst_admit_ms),
         log::field("worst_settle_ms", s.use.worst_settle_ms),
-        log::field("last_evaluate_ms", s.use.last_evaluate_ms));
+        log::field("last_evaluate_ms", s.use.last_evaluate_ms), log::field("ceiling", s.ceiling),
+        log::field("demotions", s.use.demotions),
+        log::field("released_bytes", s.use.released_bytes),
+        log::field("pressure_frames", s.use.pressure_frames),
+        log::field("refused_in_hold", s.use.refused_in_hold),
+        log::field("asked_late", s.use.asked_late),
+        log::field("worst_demote_ms", s.use.worst_demote_ms));
   }
   if (s.worker.joinable()) {
     {
@@ -424,10 +524,11 @@ struct BoundView {
 }  // namespace
 
 void GpuScene::texture_bound_frame(WorldPos eye, f32 fov_y, f32 znear, u32 width, u32 height,
-                                   bool cut) {
+                                   bool cut, f64 dt_s) {
   if (texture_bound_ == nullptr) return;
   TextureBoundState& s = *texture_bound_;
   ++s.frames;
+  s.now += dt_s > 0.0 ? dt_s : 1.0 / 60.0;
   // The images let go `frames_leaving` recorded frames ago: no frame that could sample them is
   // left.
   for (u32 i = 0; i < s.leaving.size();) {
@@ -446,6 +547,7 @@ void GpuScene::texture_bound_frame(WorldPos eye, f32 fov_y, f32 znear, u32 width
       gfx::destroy_image(*device_, gone.variance_image);
     }
     s.free_pairs.push_back(gone.pair);
+    s.pair_texture[gone.pair] = ~0u;
     s.leaving[i] = s.leaving.back();
     s.leaving.pop_back();
   }
@@ -469,9 +571,11 @@ void GpuScene::texture_bound_frame(WorldPos eye, f32 fov_y, f32 znear, u32 width
   s.last_eye = eye;
   s.have_eye = true;
   const f64 lead = bound_lead_m.get() + step * static_cast<f64>(bound_lead_frames.get());
-  const bool evaluate = settle || view.f != s.eval_f || view.c2 != s.eval_c2 ||
-                        lead > s.eval_lead || length(eye - s.eval_eye) > 0.5 * s.eval_lead ||
-                        s.frames - s.eval_frame >= 60;
+  // A ceiling without the bound (stage 2 alone) evaluates nothing: its levels come from the load
+  // whole and leave only by the trim.
+  const bool evaluate =
+      s.bound && (settle || view.f != s.eval_f || view.c2 != s.eval_c2 || lead > s.eval_lead ||
+                  length(eye - s.eval_eye) > 0.5 * s.eval_lead || s.frames - s.eval_frame >= 60);
   bool late_now = false;
   if (evaluate) {
     const i64 started = time::monotonic_ns();
@@ -622,6 +726,9 @@ void GpuScene::texture_bound_frame(WorldPos eye, f32 fov_y, f32 znear, u32 width
     // rewritten in the same pass that copies the levels.
     const u32 pair = s.free_pairs.back();
     s.free_pairs.pop_back();
+    s.pair_texture[pair] = t;
+    s.pair_top[pair] = first;
+    s.pair_since[pair] = s.frames;
     const u32 old_slot = s.first_slot + 2 * tex.pair;
     const u32 slot = s.first_slot + 2 * pair;
     bindless_.update_sampled_image(slot, view_handle, gfx::ImageLayout::ShaderReadOnly);
@@ -651,6 +758,7 @@ void GpuScene::texture_bound_frame(WorldPos eye, f32 fov_y, f32 znear, u32 width
     tex.view = view_handle;
     tex.variance_image = variance;
     tex.variance_view = variance_view;
+    const bool demote = first > tex.resident_top;
     tex.pair = pair;
     tex.resident_top = first;
     if (tex.asked_top != ~0u && tex.asked_top >= first) tex.asked_top = ~0u;
@@ -658,18 +766,27 @@ void GpuScene::texture_bound_frame(WorldPos eye, f32 fov_y, f32 znear, u32 width
     if (tex.record < load_texture_records_.size()) {
       load_texture_records_[tex.record].slot = slot;
       load_texture_records_[tex.record].bytes = new_bytes;
+      load_texture_records_[tex.record].top = first;
     }
     s.use.resident_bytes = s.use.resident_bytes - old_bytes + new_bytes;
     u64 leaving_bytes = 0;
     for (const TextureBoundState::Leaving& gone : s.leaving)
       leaving_bytes += gone.image.bytes + gone.variance_image.bytes;
     s.use.peak_bytes = std::max(s.use.peak_bytes, s.use.resident_bytes + leaving_bytes);
-    ++s.use.promotions;
-    s.use.promoted_bytes += new_bytes;
+    if (demote) {  // a trim's (stage 2)
+      ++s.use.demotions;
+      s.use.released_bytes += old_bytes > new_bytes ? old_bytes - new_bytes : 0u;
+    } else {
+      ++s.use.promotions;
+      s.use.promoted_bytes += new_bytes;
+      // Brought in now: as young as an ask, so the hold keeps it as long as one.
+      for (u32 l = first; l < 16; ++l)
+        tex.asked_at[l] = std::max(tex.asked_at[l], s.now);
+    }
     return true;
   };
 
-  const bool now = settle || (late_now && bound_wait.get());
+  const bool now = s.bound && (settle || (late_now && bound_wait.get()));
   if (now) {
     // Every wanted level before the frame draws: a cut, the first frame, or a test's wait.
     const i64 started = time::monotonic_ns();
@@ -693,16 +810,85 @@ void GpuScene::texture_bound_frame(WorldPos eye, f32 fov_y, f32 znear, u32 width
         std::max(s.use.worst_settle_ms, static_cast<f64>(time::monotonic_ns() - started) / 1.0e6);
   }
   // Off the frame: ask the reader for each texture that wants more than it has or has asked for,
-  // and admit what it brought within the frame's allowance, finest need first.
+  // and admit what it brought within the frame's allowance, finest need first. Without a ceiling
+  // what a texture wants is the bound's; under one (stage 2) it is what the feedback asked —
+  // a level ahead where its asks are getting finer, the bound's lead where the pool has room for
+  // it, never finer than the bound.
   bool asked = false;
   for (u32 t = 0; t < s.textures.size(); ++t) {
     TextureBoundState::Texture& tex = s.textures[t];
-    if (!tex.placed || tex.wanted_top >= tex.resident_top) continue;
-    if (tex.asked_top != ~0u && tex.asked_top <= tex.wanted_top) continue;
-    tex.asked_top = tex.wanted_top;
+    if (!tex.placed) continue;
+    u32 target = tex.wanted_top;
+    if (s.ceiling != 0) {
+      const u32 asked_level = tex.asked_level;
+      target = tex.resident_top;
+      if (asked_level < tex.resident_top) {
+        ++s.use.asked_late;
+        const bool nearing = tex.last_asked != ~0u && asked_level < tex.last_asked;
+        target = nearing && asked_level > 0 ? asked_level - 1 : asked_level;
+      }
+      if (asked_level != ~0u) tex.last_asked = asked_level;
+      tex.asked_level = ~0u;
+      if (s.bound && tex.wanted_top < target &&
+          texture_bytes_ + chain_bytes_from(tex, tex.wanted_top) <=
+              s.ceiling + chain_bytes_from(tex, tex.resident_top)) {
+        target = tex.wanted_top;
+      }
+      if (s.bound) target = std::max(target, tex.wanted_top);
+    }
+    if (target >= tex.resident_top || tex.demote_top != ~0u) continue;
+    if (tex.asked_top != ~0u && tex.asked_top <= target) continue;
+    tex.asked_top = target;
     std::lock_guard<std::mutex> lock(s.mutex);
-    s.queue.push_back(TextureBoundState::Read{t, tex.wanted_top, tex.path, {}, false});
+    s.queue.push_back(TextureBoundState::Read{t, target, tex.path, {}, false, false, 0});
     asked = true;
+  }
+  // **The trim** (stage 2; ADR-0065 decision 3 and its 2026-11-17 settlement): only over the
+  // ceiling, only levels no frame asked for and nothing brought in within the hold, least recently
+  // asked first, only as far as the ceiling needs, never below the floor. A texture's levels are
+  // asked finest-oldest (an ask of level l is an ask of every coarser one), so the candidates in
+  // order of their last ask take each texture's levels from its top down.
+  if (s.ceiling != 0 && texture_bytes_ > s.ceiling) {
+    ++s.use.pressure_frames;
+    const u64 over = texture_bytes_ - s.ceiling;
+    if (over > s.releasing) {
+      const u64 need = over - s.releasing;
+      s.candidates.clear();
+      for (u32 t = 0; t < s.textures.size(); ++t) {
+        const TextureBoundState::Texture& tex = s.textures[t];
+        s.plan_top[t] = tex.resident_top;
+        if (!tex.placed || tex.asked_top != ~0u || tex.demote_top != ~0u) continue;
+        for (u32 l = tex.resident_top; l < tex.floor_top && l < 16; ++l) {
+          if (s.now - tex.asked_at[l] < s.hold_s) break;
+          s.candidates.push_back(TextureBoundState::Candidate{tex.asked_at[l], t, l});
+        }
+      }
+      std::sort(s.candidates.begin(), s.candidates.end(),
+                [](const TextureBoundState::Candidate& a, const TextureBoundState::Candidate& b) {
+                  if (a.asked_at != b.asked_at) return a.asked_at < b.asked_at;
+                  if (a.texture != b.texture) return a.texture < b.texture;
+                  return a.level < b.level;
+                });
+      u64 freed = 0;
+      for (const TextureBoundState::Candidate& c : s.candidates) {
+        if (freed >= need) break;
+        if (s.plan_top[c.texture] != c.level) continue;
+        s.plan_top[c.texture] = c.level + 1;
+        freed += level_bytes_of(s.textures[c.texture], c.level);
+      }
+      for (u32 t = 0; t < s.textures.size(); ++t) {
+        TextureBoundState::Texture& tex = s.textures[t];
+        if (s.plan_top[t] <= tex.resident_top) continue;
+        const u64 frees =
+            chain_bytes_from(tex, tex.resident_top) - chain_bytes_from(tex, s.plan_top[t]);
+        tex.demote_top = s.plan_top[t];
+        s.releasing += frees;
+        std::lock_guard<std::mutex> lock(s.mutex);
+        s.queue.push_back(
+            TextureBoundState::Read{t, s.plan_top[t], tex.path, {}, false, true, frees});
+        asked = true;
+      }
+    }
   }
   if (asked) {
     if (!s.worker.joinable()) s.worker = std::thread(reader, &s);
@@ -713,17 +899,33 @@ void GpuScene::texture_bound_frame(WorldPos eye, f32 fov_y, f32 znear, u32 width
     const u64 allowance = static_cast<u64>(bound_promote_kib.get()) * 1024;
     u64 spent = 0;
     u32 kept = 0;
+    bool demoted = false;
     for (u32 r = 0; r < s.taken.size(); ++r) {
       TextureBoundState::Read& read = s.taken[r];
       TextureBoundState::Texture& tex = s.textures[read.texture];
-      const bool stale = !read.ok || read.first >= tex.resident_top ||
-                         read.data.levels.size() != tex.levels - read.first;
+      // A demotion is dropped where a level it would release was asked (or brought in) within the
+      // hold since it was planned: what the trim releases is never younger than the hold.
+      const bool in_hold = read.demote && read.first > 0 && read.first <= 16 &&
+                           s.now - tex.asked_at[read.first - 1] < s.hold_s;
+      const bool stale =
+          !read.ok || read.data.levels.size() != tex.levels - read.first ||
+          (read.demote ? tex.demote_top != read.first || read.first <= tex.resident_top || in_hold
+                       : read.first >= tex.resident_top);
+      const auto settle_read = [&] {
+        if (read.demote) {
+          if (tex.demote_top == read.first) tex.demote_top = ~0u;
+          s.releasing -= std::min(s.releasing, read.frees);
+        } else if (tex.asked_top == read.first) {
+          tex.asked_top = ~0u;
+        }
+      };
       if (stale) {
         if (!read.ok) {
           ENGINE_LOG_WARN(log_renderer, "texture bound: a promotion's levels did not read",
                           log::field("path", read.path));
         }
-        if (tex.asked_top == read.first) tex.asked_top = ~0u;
+        if (in_hold) ++s.use.refused_in_hold;
+        settle_read();
         continue;
       }
       const u64 bytes = read.data.data.size() + read.data.normal_variance.size();
@@ -733,7 +935,15 @@ void GpuScene::texture_bound_frame(WorldPos eye, f32 fov_y, f32 znear, u32 width
         ++kept;
         continue;
       }
+      if (read.demote) {
+        settle_read();
+        demoted = true;
+      }
       spent += bytes;
+    }
+    if (demoted) {
+      s.use.worst_demote_ms =
+          std::max(s.use.worst_demote_ms, static_cast<f64>(time::monotonic_ns() - started) / 1.0e6);
     }
     s.taken.resize(kept);
     if (spent != 0) {

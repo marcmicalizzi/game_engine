@@ -135,7 +135,7 @@ void GpuScene::texture_records(Vector<TextureRecord>& out) const {
     out.push_back(r);
   for (const TileTexture& held : tile_textures_) {
     out.push_back(TextureRecord{held.info.slot, held.image.format, held.image.width,
-                                held.image.height, held.image.levels, held.bytes, true});
+                                held.image.height, held.image.levels, held.bytes, true, 0u});
   }
 }
 

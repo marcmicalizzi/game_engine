@@ -21,7 +21,8 @@
 
 namespace engine::renderer {
 
-// `renderer.textures.bound`, read once per load.
+// Whether a load makes the state: `renderer.textures.bound`, or a residency ceiling
+// (`renderer.textures.ceiling_mib`, R172 stage 2), read once per load.
 bool texture_bound_enabled();
 
 struct TextureBoundState {
@@ -47,6 +48,14 @@ struct TextureBoundState {
     Vector<u32> materials;  // indices into `materials` below: the records that name it
     bool placed = false;    // the load uploaded it (a key no mesh's built set reached is not)
     bool late = false;      // counted late at the current `now_top`
+    // Stage 2, the residency (R172; texture.md, "Stage 2: the trim under a ceiling"). On the
+    // residency's clock (`now`): the last time level `l` or a finer one was asked by the feedback
+    // or made resident, so the levels' times never fall towards the coarse end, and a level is
+    // as young as the latest of the two; the load counts as making every level resident at 0.
+    f64 asked_at[16] = {};
+    u32 asked_level = ~0u;  // the finest level the feedback's folds asked since the last frame
+    u32 last_asked = ~0u;   // the frame before's, for the trend
+    u32 demote_top = ~0u;   // a demotion's read in flight brings this top (~0u: none)
   };
   // A mesh's managed textures: which, and log2 of its least density times the image's shorter
   // side (texels a metre at scale 1 along the least stretched direction of any triangle).
@@ -72,6 +81,14 @@ struct TextureBoundState {
     std::string path;
     texture::TextureData data;
     bool ok = false;
+    bool demote = false;  // a trim's: the levels from a coarser top
+    u64 frees = 0;        // the device bytes a demotion was planned to release
+  };
+  // A level the trim may release: its texture, the level, and when it was last asked.
+  struct Candidate {
+    f64 asked_at = 0.0;
+    u32 texture = 0;
+    u32 level = 0;
   };
 
   Vector<Texture> textures;
@@ -101,6 +118,22 @@ struct TextureBoundState {
   Vector<f64> mesh_q;      // per mesh: log2 of the least footprint over scale, at the lead
   Vector<f64> mesh_q_now;  // the same at the observer's own place
   Vector<u32> order;       // the textures wanting a promotion, this evaluation
+
+  // Stage 2, the residency: the bound evaluated (`renderer.textures.bound`), the ceiling in bytes
+  // (`renderer.textures.ceiling_mib`, 0: none), the hold, the clock, and per pair the texture it
+  // holds, the top it holds it from and the recorded frame it was given, which the feedback's fold
+  // reads (a pair keeps its texture while it leaves, so a fold of a frame that sampled it still
+  // finds whose it was; one given after the folded frame is not read).
+  bool bound = false;
+  u64 ceiling = 0;
+  f64 hold_s = 8.0;
+  f64 now = 0.0;
+  Vector<u32> pair_texture;
+  Vector<u32> pair_top;
+  Vector<u64> pair_since;
+  Vector<Candidate> candidates;  // the trim's, reserved at the plan
+  Vector<u32> plan_top;          // per texture: the top the trim's plan takes it to
+  u64 releasing = 0;             // the bytes demotions in flight were planned to release
 
   // The reader: one thread, a queue in and a list out.
   std::thread worker;

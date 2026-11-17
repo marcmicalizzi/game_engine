@@ -1373,20 +1373,31 @@ class GpuScene {
     u32 levels = 0;
     u64 bytes = 0;
     bool admitted = false;  // arrived with a tile's mesh, not the load's
+    u32 top = 0;            // the chain's level the image's level 0 is (held by level, R172)
   };
   void texture_records(Vector<TextureRecord>& out) const;
-  u64 texture_records_serial() const noexcept {  // a bound's promotion moves a record's slot
-    return texture_use_.uploaded + texture_use_.released + texture_bound_use().promotions;
+  u64 texture_records_serial() const noexcept {  // a bound's promotion or a trim moves a slot
+    return texture_use_.uploaded + texture_use_.released + texture_bound_use().promotions +
+           texture_bound_use().demotions;
   }
   // **The bound** (R172 stage 1; texture_bound.h; gpu_scene_texture_bound.cpp): the load uploads a
   // managed texture from its floor, and once a recorded frame, before `terrain_prepare`, this
   // brings in off the frame the levels the observer at `eye` a lead ahead could read (`cut`: every
   // one now, before the frame draws). `texture_bound_whole` holds every texture whole from the next
   // frame on (the reference path tracer reads level 0).
-  void texture_bound_frame(WorldPos eye, f32 fov_y, f32 znear, u32 width, u32 height, bool cut);
+  // `dt_s` steps the residency's clock (1/60 s when 0).
+  void texture_bound_frame(WorldPos eye, f32 fov_y, f32 znear, u32 width, u32 height, bool cut,
+                           f64 dt_s);
   void texture_bound_whole() noexcept;
   bool texture_bound_active() const noexcept { return texture_bound_ != nullptr; }
   const TextureBoundUse& texture_bound_use() const noexcept;
+  // **The residency** (R172 stage 2; texture.md, "Stage 2: the trim under a ceiling"): with a
+  // ceiling, the run of slots its feedback reads (false: none), that feedback's codes for a recorded
+  // frame of `texture_residency_frame`'s count, and its GPU time.
+  bool texture_residency_run(u32& first_slot, u32& count) const noexcept;
+  u64 texture_residency_frame() const noexcept;
+  void texture_residency_fold(const u32* codes, u32 count, u64 frame) noexcept;
+  void texture_residency_feedback_ms(f64 ms) noexcept;
 
   // ---- geometry streaming (04 §4.3 step 3, §4.9; docs/subsystems/renderer.md) -----------------
   //

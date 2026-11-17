@@ -25,6 +25,18 @@ struct TextureBoundUse {
   f64 worst_admit_ms = 0.0;    // the most one frame's admissions took on the recording thread
   f64 worst_settle_ms = 0.0;   // the most one settle took (reads included)
   f64 last_evaluate_ms = 0.0;  // the last evaluation's cost
+  // Stage 2, the residency's trim under a ceiling (texture.md, "Stage 2: the trim under a
+  // ceiling"); all zero with no ceiling.
+  u64 ceiling = 0;              // `renderer.textures.ceiling_mib` in bytes, 0: none
+  u64 demotions = 0;            // images swapped in for a coarser top level (a trim)
+  u64 released_bytes = 0;       // the device bytes those demotions gave back
+  u64 pressure_frames = 0;      // frames whose texture bytes were over the ceiling
+  u64 refused_in_hold = 0;      // demotions dropped on arrival: a level was asked within the hold
+  u64 asked_late = 0;           // texture-frames the feedback asked finer than was resident
+  u64 feedback_frames = 0;      // frames the residency's feedback was timed in
+  f64 feedback_ms_total = 0.0;  // its GPU time, summed
+  f64 feedback_ms_max = 0.0;
+  f64 worst_demote_ms = 0.0;  // the most one frame's demotions took on the recording thread
 };
 
 }  // namespace engine::renderer

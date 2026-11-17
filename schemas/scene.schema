@@ -2635,7 +2635,7 @@ struct FlythroughRt @version(6) {
 /// own copy; the device bytes of what was uploaded, and of what sharing did not upload again
 /// (docs/subsystems/renderer.md, "One upload per distinct image"). `sharing` is
 /// `RenderSettings::share_textures`: false is every mesh its own copy, to measure against.
-struct FlythroughTextures @version(3) {
+struct FlythroughTextures @version(4) {
   built: u32 = 0
   decoded: u32 = 0
   shared: u32 = 0
@@ -2657,6 +2657,21 @@ struct FlythroughTextures @version(3) {
   bound_late: u64 = 0 @since(3)
   bound_worst_admit_ms: f64 = 0 @since(3)
   bound_worst_settle_ms: f64 = 0 @since(3)
+  /// The residency's trim under a ceiling (R172 stage 2; `renderer.textures.ceiling_mib`;
+  /// texture.md, "Stage 2: the trim under a ceiling"): the ceiling in bytes, the demotions it made
+  /// and the bytes they gave back, the frames over the ceiling, the demotions dropped because a
+  /// level was asked within the hold, the texture-frames the feedback asked finer than was
+  /// resident, the feedback's GPU milliseconds (mean and most over the frames it was timed in) and
+  /// the most one frame's demotions took on the recording thread. All zero with no ceiling.
+  residency_ceiling: u64 = 0 @since(4)
+  residency_demotions: u64 = 0 @since(4)
+  residency_released_bytes: u64 = 0 @since(4)
+  residency_pressure_frames: u64 = 0 @since(4)
+  residency_refused_in_hold: u64 = 0 @since(4)
+  residency_asked_late: u64 = 0 @since(4)
+  residency_feedback_ms: f64 = 0 @since(4)
+  residency_feedback_ms_max: f64 = 0 @since(4)
+  residency_worst_demote_ms: f64 = 0 @since(4)
 }
 
 /// How a windowed run presented (`engine-view --interactive --benchmark`, and a replay flown in

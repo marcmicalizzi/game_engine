@@ -1218,3 +1218,180 @@ TEST_CASE("renderer: the texture bound promotes ahead of a walker and changes no
   CHECK(first_below_floor < k_frames);
   CHECK(first_promoted < first_below_floor);
 }
+
+namespace {
+
+// A tunable set for one scope, back to its default after.
+struct TunableScope {
+  tunables::Tunable* tunable = nullptr;
+  TunableScope(const char* name, const char* value) : tunable(tunables::find(name)) {
+    REQUIRE(tunable != nullptr);
+    std::string error;
+    REQUIRE_MESSAGE(tunable->set_from_text(value, &error), error);
+  }
+  ~TunableScope() { tunable->reset(); }
+};
+
+// The chain's level the quad's one texture is resident from (`TextureRecord::top`).
+u32 resident_top(const GpuScene& scene) {
+  Vector<GpuScene::TextureRecord> records;
+  scene.texture_records(records);
+  REQUIRE(records.size() == 1);
+  return records[0].top;
+}
+
+}  // namespace
+
+// **The trim releases nothing asked within the hold and nothing below the floor** (R172 stage 2;
+// texture.md, "Stage 2: the trim under a ceiling"). The quad's 1,024-texel map, loaded whole under
+// a ceiling it does not fit in (1,400,320 bytes against 1 MiB, then against 10 KiB, under the
+// floor's 24 KiB), the hold 0.5 s (30 frames of the frames' own clock). Ten frames at 1.5 m ask for
+// level 0; then from 30 m the quad asks for nothing finer than the floor's level 3. No level goes
+// until the hold has passed since the last ask; then a 1 MiB ceiling releases level 0 alone (only
+// as far as the ceiling needs) and a 10 KiB one goes to the floor and no further.
+TEST_CASE("renderer: the texture trim keeps what was asked within the hold and the floor") {
+  const test::TempDir tmp("renderer_texture_trim_hold");
+  const std::filesystem::path dir = tmp.native();
+  REQUIRE(write_quad(dir));
+  Vector<u8> png;
+  REQUIRE(write_image(dir, k_bound_image, smooth_image(k_bound_image), png));
+  const std::string mesh = (dir / "quad.gltf").string();
+  const std::string ddc = (dir / "ddc").string();
+  constexpr u32 k_near = 10;
+  constexpr u32 k_hold_frames = 30;
+  constexpr u32 k_far = 90;
+  for (const char* ceiling : {"1.0", "0.01"}) {
+    INFO("ceiling " << ceiling << " MiB");
+    TunableScope hold("renderer.textures.hold_s", "0.5");
+    TunableScope cap("renderer.textures.ceiling_mib", ceiling);
+    Harness h;
+    if (!h.build(mesh, ddc)) {
+      MESSAGE("skipped: " << h.skip);
+      return;
+    }
+    REQUIRE(h.scene.texture_bound_active());
+    const u64 whole_bytes = h.scene.texture_bytes();
+    CHECK(resident_top(h.scene) == 0);  // the load is whole: nothing goes without pressure
+    for (u32 k = 0; k < k_near; ++k)
+      (void)h.shot(1.5f);
+    u32 first_trim = ~0u;
+    u32 most_top = 0;
+    for (u32 k = 0; k < k_far; ++k) {
+      (void)h.shot(30.0f);
+      const u32 top = resident_top(h.scene);
+      most_top = std::max(most_top, top);
+      if (top != 0 && first_trim == ~0u) first_trim = k;
+    }
+    const TextureBoundUse& use = h.scene.texture_bound_use();
+    MESSAGE("ceiling " << ceiling << " MiB: whole " << whole_bytes << " bytes, now "
+                       << h.scene.texture_bytes() << " at top " << resident_top(h.scene)
+                       << "; first trim " << first_trim << " frames after the last near frame, "
+                       << use.demotions << " demotions, " << use.refused_in_hold
+                       << " refused in the hold, worst " << use.worst_demote_ms << " ms");
+    REQUIRE(first_trim != ~0u);
+    CHECK(first_trim >= k_hold_frames);  // nothing asked within the hold went
+    CHECK(most_top <= 3);                // never below the floor (128 texels: level 3)
+    CHECK(use.demotions >= 1);
+    if (std::string(ceiling) == "1.0") {
+      CHECK(resident_top(h.scene) == 1);  // level 0 alone covers what the ceiling needs
+      CHECK(h.scene.texture_bytes() <= u64{1} << 20);
+    } else {
+      CHECK(resident_top(h.scene) == 3);
+    }
+  }
+}
+
+// **With no ceiling, or one the pool fits under, the picture and the bytes are the load's**
+// (R172 stage 2). The residency's feedback runs at every frame under a ceiling, pressure or none;
+// a ceiling of 64 MiB the quad's 1.4 MB never reaches trims nothing, and every capture — ids, depth
+// and colour — is the scene with no ceiling's, byte for byte, at the same texture bytes.
+TEST_CASE("renderer: the texture residency with no pressure changes no pixel and no byte") {
+  const test::TempDir tmp("renderer_texture_residency_none");
+  const std::filesystem::path dir = tmp.native();
+  REQUIRE(write_quad(dir));
+  Vector<u8> png;
+  REQUIRE(write_image(dir, k_bound_image, smooth_image(k_bound_image), png));
+  const std::string mesh = (dir / "quad.gltf").string();
+  const std::string ddc = (dir / "ddc").string();
+  const f32 distances[] = {1.5f, 5.8f, 11.0f, 30.0f, 5.8f};
+  std::vector<CapturedFrame> plain;
+  u64 plain_bytes = 0;
+  {
+    Harness none;
+    if (!none.build(mesh, ddc)) {
+      MESSAGE("skipped: " << none.skip);
+      return;
+    }
+    CHECK(!none.scene.texture_bound_active());
+    for (const f32 d : distances)
+      plain.push_back(none.shot(d, true));
+    plain_bytes = none.scene.texture_bytes();
+  }
+  TunableScope cap("renderer.textures.ceiling_mib", "64");
+  Harness held;
+  REQUIRE(held.build(mesh, ddc));
+  REQUIRE(held.scene.texture_bound_active());
+  u32 differing = 0;
+  for (u32 k = 0; k < std::size(distances); ++k)
+    differing += differing_pixels(plain[k], held.shot(distances[k], true)) != 0 ? 1u : 0u;
+  const TextureBoundUse& use = held.scene.texture_bound_use();
+  CHECK(differing == 0);
+  CHECK(held.scene.texture_bytes() == plain_bytes);
+  CHECK(use.demotions == 0);
+  CHECK(use.pressure_frames == 0);
+  CHECK(use.feedback_frames > 0);
+}
+
+// **A trim, then a return, ends on the picture the whole texture draws** (R172 stage 2). Under a
+// ceiling of 10 KiB with a hold of 0.25 s: the quad seen from 1.5 m, then 60 frames from 30 m (the
+// trim takes it to the floor), then back to 1.5 m. The return draws the floor's levels for the
+// frames the feedback and the reader take — softer, never absent — and then the whole texture's
+// picture byte for byte, with the levels promoted off the frame.
+TEST_CASE("renderer: a texture trimmed then asked again ends on the whole picture") {
+  const test::TempDir tmp("renderer_texture_trim_return");
+  const std::filesystem::path dir = tmp.native();
+  REQUIRE(write_quad(dir));
+  Vector<u8> png;
+  REQUIRE(write_image(dir, k_bound_image, smooth_image(k_bound_image), png));
+  const std::string mesh = (dir / "quad.gltf").string();
+  const std::string ddc = (dir / "ddc").string();
+  CapturedFrame whole_frame;
+  {
+    Harness whole;
+    if (!whole.build(mesh, ddc)) {
+      MESSAGE("skipped: " << whole.skip);
+      return;
+    }
+    whole_frame = whole.shot(1.5f, true);
+  }
+  TunableScope hold("renderer.textures.hold_s", "0.25");
+  TunableScope cap("renderer.textures.ceiling_mib", "0.01");
+  Harness h;
+  REQUIRE(h.build(mesh, ddc));
+  CHECK(differing_pixels(whole_frame, h.shot(1.5f, true)) == 0);  // loaded whole
+  for (u32 k = 0; k < 60; ++k)
+    (void)h.shot(30.0f);
+  CHECK(resident_top(h.scene) == 3);
+  constexpr u32 k_back = 40;
+  u32 softer_frames = 0;
+  u32 identical_from = ~0u;
+  for (u32 k = 0; k < k_back; ++k) {
+    const bool same = differing_pixels(whole_frame, h.shot(1.5f, true)) == 0;
+    if (!same) {
+      ++softer_frames;
+      identical_from = ~0u;
+    } else if (identical_from == ~0u) {
+      identical_from = k;
+    }
+  }
+  const TextureBoundUse& use = h.scene.texture_bound_use();
+  MESSAGE("back at 1.5 m: " << softer_frames << " frames softer, identical from frame "
+                            << identical_from << "; " << use.promotions << " promotions, "
+                            << use.demotions << " demotions, worst admission "
+                            << use.worst_admit_ms << " ms");
+  CHECK(softer_frames >= 1);  // the trim did take the levels
+  REQUIRE(identical_from != ~0u);
+  CHECK(identical_from < k_back / 2);
+  CHECK(resident_top(h.scene) == 0);
+  CHECK(use.promotions >= 1);
+}
