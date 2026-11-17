@@ -156,12 +156,39 @@ Every line's mean n went from Jarrett's clamped 0.17 to an equivalent 0.21 to 0.
 clasts on a 40 % torrent bed stand as high as its water is deep. Falls, pools and runs per 100 m
 are unchanged (4 falls, 3 pools, 3.04 runs at stage 1).
 
-**The forest's world (v47).** The whole world could not be solved tonight: `flow solve` of main at
-d6534963 (this row's base, and the neighbouring row's untouched binary alike) grew past 31 GB of
-commit on v47's tile sets in `msvc-debug`, where last night's build peaked at 2.44 GB, and both
-runs were stopped before they took the machine down (the solve itself is not where it goes: the
-same plan solved on the small scene below peaks at 0.35 GB). In its place, the forest session's own
-small scene of `region link 515` (`reports/quality-v47/parts/stream-scene`, the world's ground
+**The forest's world (v47), whole, at stage 1.** On main a root's first solve of v47 cooks the cut's
+tile set once (78c0c9419087090a, about 37 GB of commit at its peak, the neighbouring row W131 found);
+a root that already holds it solves in 166 to 256 s at 2.44 GB, as last night's did. Solved so,
+the same binary (1012756b) with each law:
+
+| Class | km | Law | Speed p10 / median / p90 m/s | Depth median m | Film share | Runs / 100 m | Pieces / 100 m | Falls (drawn) | Gaps |
+|---|---|---|---|---|---|---|---|---|---|
+| under 2 % | 4.3 | Jarrett | 0.06 / 0.12 / 0.26 | 0.19 | 0.01 | 1.11 | 1.11 | 0 | 7 |
+| under 2 % | 4.3 | **Ferguson** | 0.03 / **0.13** / 0.23 | 0.19 | 0.01 | 1.20 | 1.20 | 0 | 8 |
+| 2 to 5 % | 2.4 | Jarrett | 0.07 / 0.14 / 0.32 | 0.12 | 0.00 | 0.89 | 0.89 | 1 (1) | 3 |
+| 2 to 5 % | 2.4 | **Ferguson** | 0.09 / **0.14** / 0.28 | 0.12 | 0.00 | 0.66 | 0.66 | 0 | 2 |
+| 5 to 15 % | 5.1 | Jarrett | 0.13 / 0.25 / 0.37 | 0.07 | 0.00 | 0.72 | 0.86 | 7 (7) | 4 |
+| 5 to 15 % | 5.2 | **Ferguson** | 0.11 / **0.19** / 0.28 | 0.09 | 0.00 | 0.74 | 0.82 | 6 (6) | 6 |
+| 15 to 30 % | 8.3 | Jarrett | 0.10 / 0.29 / 0.40 | 0.07 | 0.00 | 0.98 | 1.41 | 43 (41) | 22 |
+| 15 to 30 % | 8.5 | **Ferguson** | 0.10 / **0.22** / 0.29 | 0.08 | 0.00 | 1.12 | 1.60 | 54 (51) | 32 |
+| over 30 % | 6.2 | Jarrett | 0.17 / 0.38 / 0.60 | 0.06 | 0.02 | 3.32 | 10.66 | 542 (527) | 136 |
+| over 30 % | 6.1 | **Ferguson** | 0.07 / **0.26** / 0.39 | 0.08 | 0.02 | 3.52 | 9.86 | 459 (448) | 147 |
+
+Over the whole world: 263 of 766 links wet and 26.6 km solved under both; falls 593 to 519, jumps
+56 to 66; **stations over a bank 1,623 on 121 lines to 3,448 on 158 lines** (the worst 6.5 m to
+8.1 m); pools 407 to 492 stations, open pools 695 to 1,202.
+
+What the deeper, slower sheets do to the breaks: the film share does not move (2 % over 30 %, the
+films are W130's buried and thin stations, which a centimetre more does not lift), the runs a 100 m
+are within a tenth either way, and over 30 % there are fewer pieces and fewer falls (83 fewer; the likely reading,
+not traced station by station, is that a deeper sheet behind a lip drowns a small drop). The cost is
+elsewhere: the 15 to 30 % class gains ten gaps and eleven falls, and **twice as many stations stand
+over a bank** — a deeper sheet in the same cut reaches the cut's lip twice as often. Those are the
+stations row W138 (the water walls and raised slabs) and W131 (the section under the line) work on;
+a law that makes the water deeper makes their faults commoner until they are mended, and the
+hand-back says so.
+
+Before the whole world was solved, the forest session's own small scene of `region link 515` (`reports/quality-v47/parts/stream-scene`, the world's ground
 there bit for bit, the plan 780a7a78621fb16f), solved in a copy whose tile root is this row's; only
 the nine lines wholly on its ground are counted (0.53 km over 30 %, 0.23 km at 2 to 5 %):
 
