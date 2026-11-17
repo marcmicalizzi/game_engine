@@ -750,7 +750,7 @@ Build, CI, test and profiling infrastructure, and the machinery behind the stand
 | T22 | Retire the v2 presets | deferred (ADR-0031) | T21 | S | routine | [ADR-0031](adr/0031-minimum-cpu-x86-64-v3.md) |
 | T23 | Host tools build for the build machine | done (ADR-0034) | T21 | S | design | [ADR-0034](adr/0034-host-tools-build-for-the-build-machine.md) |
 | T24 | Capability scaffold, capability-graph presets | done (ADR-0027, c24677d7) | | M | design | [02 §2.8](plan/02-architecture.md#28-adding-a-capability) |
-| T25 | Container `-Rebuild` keeps the third-party objects (the compiler cache half became T68) | open | T26 | S | routine | [local Linux](ci/local-linux.md#follow-ups) |
+| T25 | Container `-Rebuild` keeps the third-party objects (the compiler cache half became T68) | done (2026-11-16, batch 67's sweep: `Get-PresetScript` keeps `.ninja_log` and `.ninja_deps`; `linux-clang-debug` planned 1,729 edges against a full build's 2,557, none of them the 766 third-party compiles. Not measured: its time, cut off by the machine's crash) | T26 | S | routine | [local Linux](ci/local-linux.md#follow-ups) |
 | T26 | Local Linux container gate | done (df922466) | T7 | M | routine | [local Linux](ci/local-linux.md) |
 | T27 | Remote build on the Titan Xp | done (f25ffe8e) | | M | routine | [remote Linux](ci/remote-linux.md#the-script) |
 | T28 | `remote-build.ps1 -Prune` for old trees | done (06f2326c, 2026-10-20: `-Prune` and `-Prune -Stale [-KeepUnknown] [-WhatIf]`, the rule in `tools/lib/RemoteTrees.psm1`, tested in `tools.linux_build`; found closed by batch 67's sweep) | T27 | S | routine | [remote Linux](ci/remote-linux.md#the-script) |

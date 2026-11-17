@@ -306,9 +306,14 @@ Test-That 'a failed build still ends the run with its status, after the statisti
 Test-That 'the statistics are a difference of counters, never a zeroing of the machine''s' {
   $presetScript -match 'ccache --print-stats' -and $presetScript -notmatch 'ccache (-z|--zero-stats)' -and $presetScript -match "grep -m1 'Cache size'"
 }
-Test-That '-Rebuild removes the preset''s tree first, and without -Test there is no ctest' {
+Test-That '-Rebuild removes the preset''s tree but ninja''s two records first, and without -Test there is no ctest' {
   $s = Get-PresetScript -Name 'linux-gcc-release' -Rebuild -FetchCacheArgs 'x'
-  $s -match "(?m)^rm -rf /src/build/linux-gcc-release$" -and $s -notmatch 'ctest'
+  $s -match "(?m)^if \[ -d /src/build/linux-gcc-release \]; then find /src/build/linux-gcc-release -mindepth 1 -maxdepth 1 ! -name \.ninja_log ! -name \.ninja_deps -exec rm -rf \{\} \+; fi$" -and
+    $s -notmatch 'rm -rf /src/build/linux-gcc-release\b' -and $s -notmatch 'ctest'
+}
+Test-That 'without -Rebuild nothing is removed' {
+  $s = Get-PresetScript -Name 'linux-gcc-release' -FetchCacheArgs 'x'
+  $s -notmatch 'find /src/build' -and $s -notmatch 'rm -rf'
 }
 
 # --- the compiler cache: the Windows half (tools/lib/CompilerCache.psm1, `tools/dev.ps1 configure`) -----
