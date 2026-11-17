@@ -1767,8 +1767,10 @@ no foliage material runs the instructions it ran.
 
 **The shadow stays right.** A light behind the sheet is shadowed by a ray that leaves from the
 light's side of the plane (`ray_side` in `material.slang`), not the eye's, or every ray would stop
-on its own card; the half-rate sun pass (R126) asked from the eye's side, so a foliage pixel lit
-through itself asks its own ray. The cascaded maps read the same flipped normal for their lift.
+on its own card. The half-rate sun pass (R126) asks a foliage block's ray from the light's side
+too and takes it whichever side the sun is on (`resolve_half_sun.slang`; R164's second leg: the
+first asked a lit-through pixel's own ray, so a surround's sides traced every such pixel at full
+rate). The cascaded maps read the same flipped normal for their lift.
 
 **Not done.** The world-space cache's update (`gi_update.slang`) still lights a foliage hit as a
 sheet, and water's flag-class mirror in `water.slang` does not name the byte (it checks only that

@@ -212,9 +212,17 @@ float3 brdf_foliage_eval_cos(BrdfSurface s, float3 light_dir, float transmit, fl
   const float3 diffuse = (float3(1.0) - brdf_f0(s.albedo, s.metallic)) *
                          ((1.0 - s.metallic) / k_brdf_pi) * s.albedo;
   const float back = transmit * max(-n_dot_l, 0.0);
-  const float c = dot(light_dir, s.view);
-  const float sphere =
-      (2.0 / 3.0) * (brdf_lambert_phase(c) + transmit * brdf_lambert_phase(-c));
+  // phi(a) + transmit phi(pi - a) with one acos and one root (R164-2): sin(pi - a) = sin a and
+  // cos(pi - a) = -cos a, so phi(pi - a) = (sin a - a cos a) / pi; `brdf_lambert_phase` is the
+  // same law, one direction at a time.
+  float sphere = 0.0;
+  if (spread > 0.0) {
+    const float c = clamp(dot(light_dir, s.view), -1.0, 1.0);
+    const float a = acos(c);
+    const float sin_a = sqrt(max(1.0 - c * c, 0.0));
+    sphere = (2.0 / (3.0 * k_brdf_pi)) *
+             (max(sin_a + (k_brdf_pi - a) * c, 0.0) + transmit * max(sin_a - a * c, 0.0));
+  }
   return (1.0 - spread) * sheet + diffuse * ((1.0 - spread) * back + spread * sphere);
 }
 

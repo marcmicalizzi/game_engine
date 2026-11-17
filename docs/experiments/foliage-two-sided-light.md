@@ -141,7 +141,44 @@ pair: GPU total 4.990 and 5.024 ms before, 5.257 and 5.193 after, **+0.17 to +0.
 and has a p99 of 115 ms, so this half is an upper bound. The sprays cost 0.41 ms over main's flat
 cards on G203's pair; this row adds about half that again.
 
-**What would give some back** (not done): the extra shadow rays are an underside's sun ray through
+## Where the cost is, and what the second leg took back
+
+**The split** (R164's second leg, 2026-11-17 00:14 to 00:58, the session locked on every flight,
+other processes at 10 to 74 % of the CPU, free commit 49 to 69 GB; the grove's own path, 3001
+frames, 3840 x 2160, `--raster rt --shadows rt`, the bounce on, the generated sprays pack; G is
+G203's fourth leg (98f62783), B the first leg's tip, M main's build at 86b931f7; means of GPU
+milliseconds, each side flown two or three times in one lease):
+
+| | G203 (G) | first leg (B) | change |
+|---|---:|---:|---:|
+| grove, total | 4.858, 4.873, 4.857, 4.861 | 5.113, 5.109, 5.114, 5.128 | +0.25 |
+| grove, resolve | 2.506, 2.517, 2.503, 2.508 | 2.762, 2.757, 2.762, 2.775 | +0.255 |
+| grove, resolve without its rays (`renderer.resolve.stop_after=lighting`) | 1.722 | 1.772, 1.773 | +0.05 |
+| rock-field (no foliage material), resolve, M / G / B | 1.462 to 1.464 / 1.463 | 1.488 to 1.489 | +0.026 |
+
+So four fifths of the lighting's cost (0.20 of 0.25) is the sun rays a foliage pixel now asks
+from the light's side of its card, which before it never asked: on a crown's shaded side, through
+the rest of the crown. A twentieth is the shading itself; and a scene with no foliage material
+paid 0.026 ms of resolve (1.8 %) for code it never runs.
+
+**What was tried, each measured as a pair in the same lease:**
+
+- **The sky's ambient in two evaluations instead of three** (`foliage_raw_ambient_pair`: the
+  harmonics' even part is the same along `x` and `-x` and the odd part changes sign, so one
+  evaluation answers both; the same values but for the order of the sums). No change past the
+  noise (resolve 2.761 against 2.762).
+- **Both of Lambert's phases from one `acos`** (`brdf_foliage_eval_cos`; phi(pi - a) is
+  (sin a - a cos a) / pi), and none of it at a spread of zero. No change past the noise.
+- **Statements for the BSDF choice**, where a conditional expression held a BSDF on each side. No
+  change: the compiler had not evaluated both.
+- **The half-rate sun pass for foliage** (`resolve_half_sun.slang`): it now asks a foliage block
+  from the light's side and takes it whichever side the sun is on, where the first leg left every
+  lit-through pixel to its own ray. At 11520 x 2160 on the grove (its sides at half rate by the
+  default rule) the resolve was 4.585 and 4.632 before, 4.575 and 4.639 after: the sprays' cards
+  rarely fill a 2 x 2 block with one pair, so few blocks are taken. It stays, because it is the
+  rule R126 states and costs nothing, not because it saves.
+
+**What would give the rest back** (not done): the extra shadow rays are an underside's sun ray through
 masked cards, so a foliage pixel whose unshadowed sun term is under the resolve's light tolerance
 of the rest of its light could take its visibility from a neighbour, as the faint lights do
 (R115); the sprays' 0.41 is the resolve sampling three maps and a variance chain where the flat
