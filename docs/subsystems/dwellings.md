@@ -103,7 +103,10 @@ climb now.
 hearths; nothing is drawn for them. A plot too small for what was asked gets the next plan down, in
 this order: the same rooms as a hall and parlour on two storeys, the two-up two-down (5.1 m of
 frontage where a hall and parlour wants 6.4 m), the hall and parlour on one floor, the cot;
-`RuralChoice::demoted` says it happened. The seed varies what one type's houses differ in along a
+`RuralChoice::demoted` says it happened. **Since G208 (`k_rural_filler_version` 3) a smaller
+plot never adds a storey**: a plan with more storeys than the household asked (its means bought
+none) or than the plot allows (`RuralPlot::storeys_max`, a cottage's one) is passed over, so a
+labourer's household on a narrow toft gets a cot and not a two-up two-down with a stair. The seed varies what one type's houses differ in along a
 lane: the clear length and depth on a 10 cm module inside the type's measured range, which end the
 hearth is at (the plan mirrored), where the hall ends, the passage's width, the door's place in a
 cot's front. The type fixes the rest. The ridge runs along the longer side.
