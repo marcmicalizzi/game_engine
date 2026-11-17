@@ -3180,6 +3180,47 @@ than two histories of one cell (A-SVGF's re-shaded sample is the published one; 
 short mean handed to its children as a scale each frame is the cache's own); and the level's rise
 found.
 
+### The change between frames, as the eye sees it
+
+Roadmap R171, fourth leg (2026-11-16). The owner, on the bounce indoors, in the cave and "anywhere
+with lower light too": "it changes every single frame, and that's noticeable more than the pattern
+itself". The three legs before measured the grain — the spread of the indirect term across a wall
+in one frame — and a change from frame to frame is another quantity: a cell whose mean moves a
+sixteenth of the way to each frame's samples shows a still pattern's grain and a pattern that
+crawls. So the row's judge is measured where the eye takes it: **on the displayed picture**, after
+the exposure, the curve, the dither and the 8-bit store, between consecutive frames of a held view.
+
+**The measure** (`renderer::TemporalChange`, `temporal_change.h`; `engine-view --temporal <file>
+--temporal-from <n>`, [apps](apps.md)): every pixel of every consecutive pair from frame n on,
+its change of displayed luma in code steps (Y′ = 0.2126 R′ + 0.7152 G′ + 0.0722 B′ of the codes)
+and of its light relative to its level (each channel through the encode's 2.2 power, Rec. 709's
+weights, |L₁ − L₀| over their mean; a pixel black in both frames has none), as histograms over all
+pixels and by the pixel's displayed luma in six bands (0–7, 8–15, 16–31, 32–63, 64–127, 128–255
+codes), with each frame's mean level over the picture and its centre for a moving case. The
+display's dither is a function of the pixel's place and nothing else, so a picture that does not
+change does not change a code: with the bounce off, a held view of the cave or the village moves
+no pixel at all (below), and every step the measure counts under the bounce is the cache's.
+
+**What an eye sees, and the threshold.** Temporal sensitivity follows Weber's law in bright light —
+a threshold that is a fixed fraction of the level — and the DeVries–Rose law in dim light, where
+sensitivity grows only as the square root of the light, so the threshold fraction rises as the
+light falls (Cai, Bozorgian, Ashraf, Wanat and Mantiuk, "elaTCSF: A Temporal Contrast Sensitivity
+Function for Flicker Detection and Modeling Variable Refresh Rate Flicker", SIGGRAPH Asia 2024,
+§4.1, read tonight; its transient channel is fitted to de Lange's and Kelly's classic flicker
+data). A change between frames at sixty a second is a temporal frequency up to 30 Hz, on the
+falling side of the curve's peak at 10 to 20 Hz, and the pattern the cache draws is the size of a
+cell (13 px at 4K), a small area, which raises the threshold again. **No threshold is pinned from
+those papers' numbers here** (the figures sit in plots this session could not read); the
+threshold is the display's own quantum instead, which is stricter than any of them where it
+matters: a whole step of an 8-bit code is 0.4 to 1.7 % of the light from the top band to the
+middle ones (2.2 / V of it at code V), near the Weber threshold at the curve's peak, and 9 to 30 %
+in the two darkest bands, where even the DeVries–Rose regime's raised threshold is passed. A
+change under a step moves no code but by the dither's fixed noise, so it shows at most as a pixel
+that flips one step now and then. **The bounce is held to this: at a held view, the share of
+pixel-frames whose displayed luma moves a whole step is under 0.1 % in every band, and the 99.9th
+percentile of the change under one step** — the picture changing no more than its own quantum does
+by chance, in the band where a step is most visible (the dark ones) as in the rest.
+
 ## The sun's day
 
 *A scene that names a sky takes its sun, its moon and its sky from it instead, on the world's clock ([The sky](#the-sky)); everything in this section is the stand-in's, which every other scene still draws, to the bit.*
