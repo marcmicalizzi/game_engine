@@ -1047,14 +1047,15 @@ float water_uprush_foam_top(WaterShore s, WaterSwashPlace w, float2 p, float hh,
 // face.
 float water_bore_foam(WaterSurface* s, float2 p, WaterField f, float d, float t, float footprint,
                       uint tier) {
-  if (!(s->height_m > 0.0) || !(s->period_s > 0.0) || !(d > 0.0)) return 0.0;
+  const WaterWhiteSea sea = water_white_sea_of(s);  // the one read of the sea's state (W133)
+  if (!(sea.height_m > 0.0) || !(sea.period_s > 0.0) || !(d > 0.0)) return 0.0;
   // The height the place's wave has: the lee's, and what refraction brought here (S102, second
   // pass: the energy-flux field's `incident`; a point gathers surf, its lee is quiet).
   const float shelter = water_shelter(f) * f.incident;
-  const float h = s->height_m * shelter;
+  const float h = sea.height_m * shelter;
   // By the slope of the place's own stretch of shore (S102): a wave that surges up a steep rock
   // whole leaves no foam there while the same train spills on the beach beside it.
-  const float strength = water_foam_strength(h, s->period_s, water_place_slope(s, f));
+  const float strength = water_foam_strength(h, sea.period_s, water_place_slope(s, f));
   if (!(strength > 0.0)) return 0.0;
   // **Foam is born where the flux is being lost** (second pass; water.md, "The surf"): a wave of
   // the group has broken here where the height the flux left it — `kept` of the unbroken one, so a
@@ -1063,7 +1064,7 @@ float water_bore_foam(WaterSurface* s, float2 p, WaterField f, float d, float t,
   // under this wave's crest, at the phase the two arrivals and the wave's number give, is added,
   // so the break starts on a stretch of the crest and runs along it.
   const float limit = k_water_breaking_gamma * d;
-  const float first = s->train_m > 0.0 ? s->train_m : s->height_m;
+  const float first = s->train_m > 0.0 ? s->train_m : sea.height_m;
   const float ratio =
       first * shelter * f.kept * water_shoaling(water_wavenumber(s->k0, d), d) / limit;
   float second = 0.0;
@@ -1073,7 +1074,7 @@ float water_bore_foam(WaterSurface* s, float2 p, WaterField f, float d, float t,
     second = s->cross_m * shelter * f.kept *
              water_shoaling(water_wavenumber(s->cross_k0, d), d) / limit;
     cross_phase = frac((f.arrival - f.arrival2) / s->cross_period_s);
-    cross_step = s->period_s / s->cross_period_s;
+    cross_step = sea.period_s / s->cross_period_s;
   }
   if (!(ratio + second > 0.9)) return 0.0;  // the group's largest wave has not broken here
   // At the top tier (W139) the bore's front is ragged along the crest at the lace's scale and the
@@ -1114,7 +1115,7 @@ float water_bore_foam(WaterSurface* s, float2 p, WaterField f, float d, float t,
             second * cos(k_water_two_pi * frac(cross_phase + float(j) * cross_step)));
     // The bore's own white for the first fifth of a period behind its crest, then the lace.
     const float cap = lerp(1.0, lace_max, smoothstep(0.0, 0.2, u + float(back)));
-    const float density = min(amount * broke, cap) * exp(-(u + float(back)) * s->period_s / decay);
+    const float density = min(amount * broke, cap) * exp(-(u + float(back)) * sea.period_s / decay);
     if (density > 0.02)
       foam = max(foam, water_foam_cover(water_foam_lace(p, cell, j), density, footprint, cell));
   }
@@ -1130,8 +1131,9 @@ float water_uprush_foam(WaterShore s, WaterSwashPlace w, float2 p, float hh, flo
                         float footprint, uint tier) {
   if (!water_swash_on(s)) return 0.0;
   if (tier != 0u) return water_uprush_foam_top(s, w, p, hh, t, footprint);
-  const float h = s.height_m * min(w.jitter, 1.0);
-  const float strength = water_foam_strength(h, s.period_s, w.slope);
+  const WaterWhiteSea sea = water_white_sea(s);  // the one read of the sea's state (W133)
+  const float h = sea.height_m * min(w.jitter, 1.0);
+  const float strength = water_foam_strength(h, sea.period_s, w.slope);
   if (!(strength > 0.0)) return 0.0;
   const float z_lo = -k_swash_rundown * w.run_up;
   const float c = t / w.period + w.phase;
