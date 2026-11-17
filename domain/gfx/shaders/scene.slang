@@ -355,12 +355,14 @@ bool pair_masked(MaskTables tables, InstanceDesc instance, uint cluster) {
 }
 
 // The cross-fade's seed for an instance (the fade table's second word, which `fade_keeps` in
-// alpha_mask.slang hashes with the pixel), from where it stands alone — its cell and the bits of its
-// offset into it — and never from its index, which is its place in the scene's layout and so the
-// order the instances reached the renderer: a seed from the index made the screen door of every
-// masked pair inside a band follow that order (R170, 2026-11-16; renderer.md, "The cross-fade"). A
-// whole read and a streamed one place an instance at the same bits, so they hash alike; both sides
-// of a transition are one instance, so their pixels stay complementary.
+// alpha_mask.slang hashes with the pixel), from its placement alone — the bits of its offset into
+// its cell and of its rotation and scale — and never from its index, which is its place in the
+// scene's layout and so the order the instances reached the renderer: a seed from the index made
+// the screen door of every masked pair inside a band follow that order (R170, 2026-11-16;
+// renderer.md, "The cross-fade"). Not the cell itself, so a scene moved by whole cells draws the
+// same bytes (gfx.md, "The frame's origin"). A whole read and a streamed one place an instance at
+// the same bits, so they hash alike; both sides of a transition are one instance, so their pixels
+// stay complementary.
 uint fade_mix(uint h) {  // lowbias32
   h ^= h >> 16;
   h *= 0x7feb352du;
@@ -370,9 +372,11 @@ uint fade_mix(uint h) {  // lowbias32
   return h;
 }
 uint fade_seed(InstanceDesc instance) {
-  uint h = fade_mix((uint(instance.cell.x) * 0x9e3779b9u) ^ asuint(instance.rows[0].w));
-  h = fade_mix(h ^ (uint(instance.cell.y) * 0x85ebca6bu) ^ asuint(instance.rows[1].w));
-  return fade_mix(h ^ (uint(instance.cell.z) * 0xc2b2ae35u) ^ asuint(instance.rows[2].w));
+  uint h = fade_mix(asuint(instance.rows[0].w) ^ 0x9e3779b9u);
+  h = fade_mix(h ^ asuint(instance.rows[1].w));
+  h = fade_mix(h ^ asuint(instance.rows[2].w));
+  h = fade_mix(h ^ asuint(instance.rows[0].x));
+  return fade_mix(h ^ asuint(instance.rows[0].z));
 }
 
 // A vertex's UV, off the rest attribute stream (a deformed vertex keeps its UV).

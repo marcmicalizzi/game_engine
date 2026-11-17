@@ -846,7 +846,7 @@ void cull_pair(uint pair, bool vertex_draw) {
   }
   // The cross-fade's table (alpha_mask.slang, `fade_keeps`): every pair this view draws or casts
   // with, its two splits and its instance's seed, read by the masked readers of this frame only.
-  // The seed is where the instance stands (`fade_seed`, scene.slang), never `instance_index`, which
+  // The seed is the instance's placement (`fade_seed`, scene.slang), never `instance_index`, which
   // follows the order the instances arrived in (R170).
   if (params->masks.fade != 0) {
     uint2* fade = (uint2*)params->masks.fade;
