@@ -1948,3 +1948,138 @@ TEST_CASE("dynamic instances: a tail past a row of the folded cull draws the loa
     CHECK(d.color == 0);
   }
 }
+
+// ---- indirect dispatches folded (T165; gfx.md, "A dispatch that grows with the scene") ---------
+//
+// The dispatches whose counts the GPU writes — the software rasterizer's and the deformed-vertex
+// pool's (one workgroup a visible cluster of the run), the vertex path's expansion (one a hardware
+// survivor) — on a device that reports Vulkan's guaranteed 65,535 workgroups on x, with more
+// survivors than that: the arguments each was dispatched with are read back and must ask for no
+// more than the device allows, in rows of `gfx::k_dispatch_pitch`, and the picture is the one the
+// mesh path draws of the same scene. Before T165 each asked for its whole count on x.
+
+namespace {
+
+Vector<u32> read_words(const gfx::Device& device, const gfx::BufferResource& from, u64 offset,
+                       u32 words, std::string& error) {
+  Vector<u32> out;
+  gfx::BufferResource host;
+  if (!gfx::create_buffer(device, u64{words} * sizeof(u32), gfx::BufferUsage::TransferDst, true,
+                          host, &error)) {
+    return out;
+  }
+  const bool ok = gfx::submit_immediate(
+      device,
+      [&](gfx::CommandList cb) {
+        cb.copy_buffer(from.buffer, host.buffer,
+                       gfx::BufferCopy{offset, 0, u64{words} * sizeof(u32)});
+      },
+      &error);
+  if (ok) {
+    out.resize(words);
+    std::memcpy(out.data(), host.mapped, u64{words} * sizeof(u32));
+  }
+  gfx::destroy_buffer(device, host);
+  return out;
+}
+
+// Arguments `{x, y, 1}` at `args[first]` of `count` workgroups, folded and inside `limit` on x.
+void check_folded(const Vector<u32>& args, u32 first, u32 count, u32 limit, const char* what) {
+  CAPTURE(what);
+  REQUIRE(args.size() >= first + 3);
+  const u32 rows = (count + gfx::k_dispatch_pitch - 1) / gfx::k_dispatch_pitch;
+  MESSAGE(what << ": " << count << " workgroups dispatched as {" << args[first] << ", "
+               << args[first + 1] << ", " << args[first + 2] << "}");
+  CHECK(args[first] <= limit);
+  CHECK(args[first] == std::min(count, gfx::k_dispatch_pitch));
+  CHECK(args[first + 1] == rows);
+  CHECK(args[first + 2] == 1);
+}
+
+}  // namespace
+
+TEST_CASE("dynamic instances: indirect dispatches fold past 65,535 workgroups, the same picture") {
+  // The RTX 5090 takes 2^31 - 1 on x, so the device here reports the guarantee instead.
+  gfx::DeviceOptions options = renderer_test::device_options();
+  options.overrides.limits.push_back(
+      gfx::LimitOverride{"maxComputeWorkGroupCount[0]", gfx::k_workgroup_count});
+  gfx::Device device;
+  std::string error;
+  if (!device.create(options, &error)) {
+    if (!renderer_test::device_profile().empty()) {
+      FAIL_CHECK("ENGINE_GFX_TEST_DEVICE=" << renderer_test::device_profile() << ": " << error);
+    }
+    MESSAGE("no Vulkan device: " << error);
+    return;
+  }
+  if (!device.features().buffer_int64_atomics) {
+    MESSAGE("skipped: " << device.adapter().name << " has no 64-bit buffer atomics");
+    return;
+  }
+  const u32 limit = device.caps().max_compute_workgroup_count_x;
+  REQUIRE(limit == gfx::k_workgroup_count);
+  // 32,400 small boxes and nothing else (the software rasterizer leaves a triangle wider than 64
+  // pixels to the hardware path, so the ground would not be the same picture), three or four
+  // clusters of each facing the eye.
+  constexpr u32 k_side = 180;
+  Vector<SceneInstance> boxes;
+  for (u32 i = 0; i < k_side * k_side; ++i) {
+    const f32 x = -6.0f + 12.0f * (static_cast<f32>(i % k_side) + 0.5f) / k_side;
+    const f32 z = -6.0f + 12.0f * (static_cast<f32>(i / k_side) + 0.5f) / k_side;
+    boxes.push_back(placed(0, Vec3{x, 0.1f, z}, 0.02f));
+  }
+  const std::span<const SceneInstance> all(boxes.data(), boxes.size());
+  for (const RasterMode raster : {RasterMode::Software, RasterMode::Vertex}) {
+    const bool software = raster == RasterMode::Software;
+    CAPTURE(software);
+    RenderSettings settings;
+    settings.raster = raster;
+    settings.shadows = ShadowMode::Off;
+    settings.occlusion = false;
+    settings.deform = software;  // the pool's passes over the same run
+    Rig rig;
+    REQUIRE_MESSAGE(rig.build(device, all, false, settings), rig.error);
+    if (!software && !rig.resolved.vertex_indexed) {
+      MESSAGE("vertex path: skipped, the device draws no indexed cut");
+      continue;
+    }
+    CapturedFrame shot;
+    REQUIRE_MESSAGE(rig.renderer.capture(frame_at(k_eye), channels(), shot, &error), error);
+    const FrameStats& last = rig.renderer.stats().last;
+    MESSAGE((software ? "software" : "vertex")
+            << ": " << rig.scene.pair_count() << " pairs, " << last.visible_sw << " drawn by "
+            << "software and " << last.visible_hw << " by hardware");
+    if (software) {
+      REQUIRE(last.visible_sw > limit);
+      const Vector<u32> sw =
+          read_words(device, rig.scene.sw_args, rig.scene.args_offset(0), 4, error);
+      REQUIRE_MESSAGE(sw.size() == 4, error);
+      CHECK(sw[0] == last.visible_sw);  // the count, where its readers read it
+      check_folded(sw, 1, last.visible_sw, limit, "software rasterizer");
+      if (rig.resolved.deform_pass) {
+        const Vector<u32> pool =
+            read_words(device, rig.scene.deform_args, rig.scene.deform_args_offset(0, 2), 3, error);
+        check_folded(pool, 0, last.visible_sw, limit, "deformed-vertex pool");
+      }
+    } else {
+      REQUIRE(last.visible_hw > limit);
+      const Vector<u32> expand =
+          read_words(device, rig.scene.vertex_headers,
+                     rig.scene.vertex_header_offset(0, 0) + gfx::k_vertex_draw_expand_offset, 3,
+                     error);
+      check_folded(expand, 0, last.visible_hw, limit, "vertex expansion");
+    }
+    RenderSettings mesh = settings;
+    mesh.raster = RasterMode::Hardware;
+    CapturedFrame expected;
+    REQUIRE_MESSAGE(reference(device, all, mesh, expected, error), error);
+    const Difference d = compare(shot, expected);
+    MESSAGE((software ? "software" : "vertex")
+            << ": " << shot.covered << " pixels covered; " << d.ids << " id, " << d.depth
+            << " depth and " << d.color << " colour differences against the hardware path");
+    CHECK(shot.covered == expected.covered);
+    CHECK(d.ids == 0);
+    CHECK(d.depth == 0);
+    CHECK(d.color == 0);
+  }
+}

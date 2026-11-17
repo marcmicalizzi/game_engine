@@ -10,6 +10,7 @@
 // triangle with a vertex behind the camera is skipped, and clusters that close go through the
 // hardware path anyway.
 
+#include "dispatch.slang"
 #include "scene.slang"
 
 // Same layout as MeshParams in cluster_mesh.slang (128 bytes).
@@ -37,7 +38,10 @@ groupshared bool s_in_front[k_max_vertices];
 [shader("compute")]
 [numthreads(128, 1, 1)]
 void sw_raster_main(uint3 group_thread : SV_GroupThreadID, uint3 group : SV_GroupID) {
-  const uint local = group.x;
+  // Dispatched folded (T165; gfx.md, "A dispatch that grows with the scene"): the last row's
+  // overhang names no survivor, and is rejected against the run's count the eye leads to.
+  const uint local = folded_group(group);
+  if (local >= software_count(g_params.eye, load_eye(g_params.eye))) return;
   const uint visible_index = g_params.visible_offset + local;
   const uint2 entry = visible_entry(g_params.visible, local);
   InstanceDesc* instances = (InstanceDesc*)g_params.instances;

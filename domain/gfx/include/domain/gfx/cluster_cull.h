@@ -71,9 +71,11 @@ inline constexpr u32 k_hiz_max_mips = 16;  // enough for 32768 x 32768
 // tests near the origin build with, and what a null `ClusterDrawParams::eye` means.
 struct FrameEye {
   Vec3i cell;
-  // 1 when this eye is a `CullParams::eye` whose block carries the scene's mask tables right after
-  // it (`CullParams::masks`): what a rasterizer reads through `ClusterDrawParams::eye` to know the
-  // frame has alpha-tested clusters (renderer.md, "Alpha-tested geometry"). 0 everywhere else.
+  // Flags, 0 everywhere but a `CullParams::eye`. `k_eye_mask_tables`: the block carries the
+  // scene's mask tables right after it (`CullParams::masks`), what a rasterizer reads through
+  // `ClusterDrawParams::eye` to know the frame has alpha-tested clusters (renderer.md, "Alpha-tested
+  // geometry"). `k_eye_software_count`: the block is a view's, whose `sw_args` the software
+  // rasterizer reads its run's count through to bound its folded dispatch (T165).
   u32 masks = 0;
   Vec3 local;
   f32 pad1 = 0.0f;
@@ -373,6 +375,13 @@ inline constexpr u32 k_hidden_frame = 31;
 static_assert(k_hidden_reach + 4 == k_hidden_frame);
 inline constexpr u32 k_hidden_words = 32;
 inline constexpr u64 k_cull_params_eye_offset = 480;  // offsetof(CullParams, eye)
+// offsetof(CullParams, sw_args): how the software rasterizer, dispatched folded (T165), reaches its
+// run's count from `ClusterDrawParams::eye` when that eye says `k_eye_software_count` — its push
+// constants are at Vulkan's guaranteed 128 bytes, with no room for the count's address.
+inline constexpr u64 k_cull_params_sw_args_offset = 200;
+// `FrameEye::masks`' bits, read by a rasterizer through `ClusterDrawParams::eye` (scene.slang).
+inline constexpr u32 k_eye_mask_tables = 1;     // the mask tables follow the eye (`CullParams::masks`)
+inline constexpr u32 k_eye_software_count = 2;  // a view's CullParams eye, whose `sw_args` it names
 static_assert(sizeof(CullParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 
 inline constexpr f32 k_raster_hardware = 0.0f;  // CullParams::raster.y
@@ -452,15 +461,21 @@ inline VertexDrawHeader vertex_draw_reset(u32 index_capacity, u32 triangles_per_
 }
 
 // Mirrors ExpandParams in vertex_expand.slang: the push constants of `expand_main`, dispatched
-// indirectly from the header's own `expand_groups`, so workgroup g expands slot g. 40 bytes.
+// indirectly from the header's own `expand_groups`, so workgroup g expands slot g. 48 bytes.
+// **The dispatch is folded** (T165; gfx.md, "A dispatch that grows with the scene"): the cull pass
+// grows `expand_groups` and `expand_y` as rows of `k_dispatch_pitch` workgroups, so a run past
+// 65,535 survivors stays inside Vulkan's guarantee, and the last row's overhang is rejected against
+// `count`, the run's survivor count (the cull pass's count word). 0 means no overhang to reject:
+// a dispatch of exactly the survivors, as a test that writes its own arguments makes.
 struct VertexExpandParams {
   u64 header = 0;     // VertexDrawHeader of the run
   u64 records = 0;    // VertexDrawRecord[pair_count]
   u64 indices = 0;    // u32[3 * index_capacity], the index buffer
   u64 clusters = 0;   // geometry::ClusterDesc[]
   u64 triangles = 0;  // the packed triangles: three local indices in a u32
+  u64 count = 0;      // u32: the run's survivors, or 0
 };
-static_assert(sizeof(VertexExpandParams) == 40);
+static_assert(sizeof(VertexExpandParams) == 48);
 
 inline constexpr u32 k_expand_workgroup_size = 64;  // numthreads of expand_main
 
@@ -1238,6 +1253,7 @@ inline constexpr u32 k_hiz_tile = 32;             // source texels one workgroup
 inline constexpr u32 k_hiz_levels_per_dispatch = 5;
 
 static_assert(offsetof(CullParams, eye) == k_cull_params_eye_offset);
+static_assert(offsetof(CullParams, sw_args) == k_cull_params_sw_args_offset);
 
 inline void set_frustum(CullParams& params, const Frustum& frustum) noexcept {
   params.plane_count = frustum.plane_count;

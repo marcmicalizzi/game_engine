@@ -63,6 +63,7 @@
 //            crack-free: every copy of a surface point has the same position on every level, so
 //            every copy moves the same way. A real cage transfer has to keep that property.
 
+#include "dispatch.slang"
 #include "scene.slang"
 #include "field_rest.slang"
 #include "water_waves.slang"
@@ -728,7 +729,9 @@ void field_vertex(MeshDesc mesh, InstanceDesc instance, DeformDesc deform, uint 
 void deform_main(uint3 group : SV_GroupID, uint3 group_thread : SV_GroupThreadID) {
   uint* count_word = (uint*)g_params.visible_count;
   const uint count = min(*count_word, g_params.max_entries);
-  const uint entry = group.x;
+  // Dispatched folded from the run's count (T165; the renderer's "deform args" pass): the bound
+  // rejects the last row's overhang as it rejected the entries past the pool's.
+  const uint entry = folded_group(group);
   if (entry >= count) return;
 
   uint2* visible = (uint2*)g_params.visible;

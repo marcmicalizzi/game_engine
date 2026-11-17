@@ -36,6 +36,8 @@ engine_shaders(NAME gfx SOURCES shaders/cluster_mesh.slang shaders/cluster_cull.
                              shaders/cluster_vertex_indexed.slang shaders/vertex_expand.slang
                              shaders/ray_visibility.slang shaders/clas_records.slang
                              shaders/deform.slang shaders/deform_alloc.slang
+                             # T165: folded arguments for the dispatches whose counts the GPU writes.
+                             shaders/fold_args.slang
                              shaders/path_trace.slang shaders/pair_expand.slang
                              shaders/sky_luts.slang shaders/tlas_references.slang
                              # R152: each chunk of the frame's cluster set's count.
