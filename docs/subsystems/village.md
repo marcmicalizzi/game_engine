@@ -208,8 +208,8 @@ filler ([dwellings](dwellings.md), `fill_rural`) writes a building description, 
 (`structures::walk_records`: floors, walls, openings, stair flights, solid members), which are all
 this module reads of a house — never its mesh:
 
-- **the household is drawn from the plot's seed**: three to eight persons, and the means that give
-  the storeys the entry asks (the filler's two-storey types are its `means` 2). The rectangle the
+- **the household is drawn from the plot's seed**: three to eight persons, and its means drawn per
+  plot, so the storeys follow from the household (below, "Houses that differ"). The rectangle the
   filler may fill is the frontage less half a metre each side by the depth behind the setback, so
   the filler sizes the house to the plot. Its own seed is the household's and the frontage's, not
   the plot's, so **two plots with one household and one frontage get one description and share
@@ -256,6 +256,45 @@ The search's neighbour order is fixed, so the same house gives the same way.
 So **a hand-authored building in a scene file needs nothing of this module** (it is a mesh
 placement whose recipe is its description), and **a game's own house filler** is another `HouseFn`.
 
+## Houses that differ
+
+**Why** (the forest session's needs 110 and 134, 2026-11-15/16): one `storeys` for the entry made
+every tenement's household of means 2, so every tenement was two storeys and the village read as
+one house at 30 m; and a household was drawn before the house its plot held, so an eight-person
+household stood in a one-room cot. Since G208 (`k_village_version` 5; the grounding is
+[houses that differ](../experiments/houses-that-differ.md)):
+
+- **the means are drawn per plot**: where the entry allows two storeys, a quarter of the
+  tenements' households have none for a floor over or a second hearth, three eighths one hearth and
+  three eighths two, and the filler's table turns the household into its type and storeys; the
+  entry's `storeys` is now the most a tenement may have (a cottage and an entry of one storey draw
+  0 or 1, as before). The plan's summary names each plot's allowed `storeys` and its house's
+  built `house_storeys`. On the forest session's v48 village 4 of the 12 houses are of one storey
+  (1 before); on the test street of the case below, 3 of 17 tenements;
+- **the household is fitted to its house** (`fitted_house`): after the filler gives a plot a
+  smaller house than its household asked, the household is the one that house sleeps
+  ([dwellings](dwellings.md#the-household-fitted-to-its-house)), drawn again with it; a house's
+  description names both (`household.persons`, `household.drawn_persons`);
+- **two houses in sixteen are stone-faced** (the filler's dress; [dwellings](dwellings.md)).
+
+## Houses asked and built
+
+**Why** (need 133): an entry asked 14 houses and 12 stood; one plot of 6.09 m was refused with "the
+plot holds no house, not even a cot", and nothing said so at the cook. Since G208 the plan **cuts
+no toft, and squeezes no cottage into a gap, narrower than the filler's least house with its side
+gaps** (`detail::least_house_frontage_mm`, 6.5 m, and 10 cm for the chord: 6.6 m along the way);
+a toft too narrow to halve into two of those stays whole, as a town's two halves were thrown
+together when one could not be built. A toft's frontage is the chord of the street's wandering
+edge, which can come out narrower than its cut, and such a plot is still refused and counted. The
+end-on house a town built on such a plot is not drawn yet ("Not yet").
+
+**Said at the cook**: the generator's open logs `fewer houses built than asked` (a warning, with
+`asked`, `built`, `plots`, `refused`, `no_fit`, `steep`, `wet`, `outside` and the first refusal) or
+`houses built as asked`, and `engine-content village`'s line carries `asked`, `refused` and, when
+fewer stand than were asked, `short` and the first refusal. On the forest session's v48 village:
+`asked` 14, `houses` 12, `refused` 0 (1 before), `short` 2 — the ways offer 12 plots, which is the
+plan's ground and not a house's.
+
 ## The way through a house
 
 A house may say the way through it (`House::route`): feet on its floors, in its own frame, from
@@ -296,7 +335,7 @@ gets is not the one the plan holds**, so what it writes cannot drift from what i
 |---|---|
 | `house`, `plot`, `order`, `lane`, `kind` | the house's index, its plot's index in `plot_list`, the order it was taken up in, its way, tenement or cottage |
 | `ask` | what the plan asked the filler: `frontage_m`, `depth_m`, `setback_m`, `storeys`, `seed` (the plot's) |
-| `household` | `persons` and `means` as drawn from the plot's seed |
+| `household` | `persons` and `means` as drawn from the plot's seed, `persons` fitted to the house the plot holds and `drawn_persons` before it was (G208) |
 | `filler` | the filler's `seed`, `type`, `storeys`, `hearths`, `demoted`, `mirror`, the rectangle it was given (`plot_cm`), the clear and outer sizes, the outer wall's thickness, the ridge |
 | `frame` | **a point (x, y, z) of the house's frame, metres, is `origin + x * x_axis + y * up + z * z_axis` in the world**; `quarter_turns`, `pad_m`, `floor_m` (the frame's origin over the pad), `plan_offset_m` (the description's frame is the dwellings plan's moved by it on x and z) and `storey_floors_m` |
 | `door`, `footprint` | the door in the house's frame and the world, the way out, its width; the box over the outer walls |
@@ -472,6 +511,9 @@ Each is held by a case of `tests/village_tests.cpp`.
   filler's seed the plan's house was drawn with, and a frame that carries its door onto the
   plan's door to the millimetre; a house index past the built ones and a plan made by another
   filler are refused with a sentence.
+- Houses differ by household (G208): on a street of the rural filler's houses one-storey and
+  two-storey tenements stand together, no household is more than its house sleeps, and every house
+  asked is built where the street has plots for it.
 - A kit's pieces stand in the box furniture's place: the plots and the houses' boxes do not move,
   a house with kit pieces has a shorter recipe, each piece's mesh stands on its storey's floor
   over its footprint's middle, the walker's route keeps 30 cm off every kit foot, a row too tall
@@ -728,6 +770,12 @@ into the landing's corner and out of its window — a fault of the flight, mende
   village shows the bare ground beyond it nearby, but an eye-level view across the open side sees
   its edge as a pale band on the horizon: a far ground past a tile set's heightfield is the tile
   set's to give.
+- **No end-on house, no outshut, no lean-to** (G208's leftovers): a plot whose chord is narrower
+  than the least house is refused rather than given a house turned with its gable to the street and
+  its door onto a side passage (the plan turns every door to the street, and the filler lays its
+  rooms along the front); an outshut or a lean-to is a band of rooms along the back, and the
+  interior's bands run along the house's length only
+  ([houses that differ](../experiments/houses-that-differ.md#forms-beyond-one-plan)).
 - **No document records.** Plan 14's village filler writes `engine.structure.Village` and
   `Building` records the author then owns (`structure.fill_village`); this one is a scene
   generator, and its plan is the function that writer will call. Until then a village is

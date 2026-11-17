@@ -110,6 +110,20 @@ cot's front. The type fixes the rest. The ridge runs along the longer side.
 
 The filler never looks at the ground: whoever places the house cuts or fills its pad.
 
+**The least frontage** (`least_rural_frontage_cm(style)`, G208): the outer width of the smallest
+house the filler builds, a cot of one bay with its stack (4.5 m clear and its walls, 5.5 m at the
+default 50 cm). A plot whose house is given less is refused with "the plot holds no house, not
+even a cot"; the village cuts no toft narrower than this and its side gaps.
+
+## The household fitted to its house
+
+`persons_housed(params)` says how many a plan sleeps: a cot two, a hall and parlour four on one
+floor and six with chambers over, a two-up two-down six, a cross-passage house eight (the filler's
+own table read backwards; [houses that differ](../experiments/houses-that-differ.md#the-household-and-the-house)).
+A caller that draws a household before it knows the plot's house — the village — uses it after a
+demotion: the household is the one the smaller house sleeps, drawn again with that house, so an
+eight-person household is never put into a one-room cot (the forest session's need 134).
+
 ## The description a plan becomes
 
 `describe(plan, choice, name, seed, out)` (`describe.h`) writes the plan and the shell it stands in
@@ -151,6 +165,7 @@ each, so a field added later moves no other.
 | `Wall.wave` on the exterior walls | 8, 12 or 16 mm, 12 twice as likely | a partition stays flat: waved, its faces cost a nine-room house two thousand triangles |
 | `Wall.top_thickness`, a batter | two one-storey houses of three: seven eighths of the foot's thickness at the plate (three quarters read as a tent in the mesher's pictures) | never on two storeys (the mesher carries a lean cleanly on one) |
 | `Roles.wall_outer`, the limewash | of sixteen houses six the aged base, five white, three cream, one ochre, one pink | the inside stays the base |
+| `Roles.wall_outer`, a stone face (G208) | two houses of sixteen, by a draw of their own, show their rubble: `stone/rubble`, the plinth's and the chimney's role ([houses that differ](../experiments/houses-that-differ.md#a-stone-face)) | every other house keeps its wash |
 | `Roof.role`, the thatch's age | of sixteen houses eight the base (some years old), six old, two new | |
 | `Roof.course`, `course_step_mm`, `eave_cut` | courses 26, 30 or 34 cm apart, their butts standing 10, 12 or 15 mm; the eave cut square on three houses of four, rolled on the fourth | the pitch, the coat and the verge are the mesher's example's |
 | `Description.arris` | 6 or 12 cm | 12 under a batter |
