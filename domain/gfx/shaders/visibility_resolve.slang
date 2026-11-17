@@ -872,22 +872,25 @@ float3 water_pixel_low(ResolveParams* params, Surface s, float3 n, float3 view, 
   return water_foam_over(radiance, foam, sun, params->sun.xyz, ambient);
 }
 
+// How far past its terminator the top tier's white is lit (W139; a wrap of the cosine, a choice).
+static const float k_water_white_wrap = 0.35;
+
 // **White water** (S96's foam, S98's plunge): an albedo of 0.8 (a choice: docs/experiments/
 // flowing-water.md) times `shade`, lit as a diffuse surface of the plane `plane` (unit, facing out
 // of the water) by the sun through the shadow query and by the sky's light.
 float3 water_white_water(ResolveParams* params, Surface s, float3 plane, float ray_bias,
-                         float shade) {
+                         float shade, float wrap) {
   SkyParams* sky = (SkyParams*)params->sky_params;
   const bool has_sky = params->sky_params != 0;
   float3 sun = float3(0.0);
   const float n_dot_l = dot(plane, params->sun.xyz);
-  if (n_dot_l > 0.0) {
+  if (n_dot_l > -wrap) {
     const float lit = shadow_visibility(params, k_shadow_sun, 0u, s.position, s.geometric,
                                         ray_bias, params->sun.xyz, 1e30);
     if (lit > 0.0) {
       sun = float3(params->sun.w);
       if (has_sky) sun = sky_light_at(sky, s.position, params->sun.xyz, sky->sun_illuminance.rgb);
-      sun *= lit * n_dot_l;
+      sun *= lit * ((n_dot_l + wrap) / (1.0 + wrap));
     }
   }
   float3 ambient;
@@ -922,6 +925,8 @@ struct WaterChannelPixel {
   float2 slope;      // the bottom's slope under the pixel where there is no map (a nappe: its face's)
   float white;       // the white water's share, and its brightness
   float white_shade;
+  // The white's own normal (W139: the top tier's relief over the plane; the plane below it).
+  float3 white_normal;
 };
 
 WaterChannelPixel water_channel_pixel(ResolveParams* params, SceneGeometry geo, TriangleFetch tri,
@@ -1012,6 +1017,9 @@ WaterChannelPixel water_channel_pixel(ResolveParams* params, SceneGeometry geo, 
   o.slope = nappe > 0.0 ? plane.xz / max(plane.y, 0.12) : float2(0.0, 0.0);
   o.white = c.foam;
   o.white_shade = c.foam_shade;
+  o.white_normal = any(c.foam_slope != float2(0.0, 0.0))
+                       ? normalize(plane - float3(c.foam_slope.x, 0.0, c.foam_slope.y))
+                       : plane;
   return o;
 }
 
@@ -1049,6 +1057,7 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
   float2 slope = float2(0.0, 0.0);
   float white = 0.0;
   float white_shade = 1.0;
+  float white_wrap = 0.0;
   float3 white_plane = dot(s.geometric, s.normal) < 0.0 ? -s.geometric : s.geometric;
   if ((material.flags & k_material_water_channel) != 0 && geo.attributes != 0) {
     const WaterChannelPixel c =
@@ -1061,7 +1070,10 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
     slope = c.slope;
     white = c.white;
     white_shade = c.white_shade;
-    white_plane = c.plane;
+    white_plane = c.white_normal;
+    // **The top tier's white is a layer of bubbly water** (W139): multiple scattering carries the
+    // sun past the terminator of its lumps, so it is lit with a wrap and its far sides are not black.
+    if (params->water_white_tier != 0u) white_wrap = k_water_white_wrap;
   } else {
   // The body's record of a wind or a tide (S94; water.md, "The shore"), found by its material, and
   // with it the body's surface (S100): a body whose mesh the pool lifted is shaded with the height
@@ -1160,9 +1172,9 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
       if (hh < 0.0 && swash.surface != 0) {
         WaterSurface* surface = (WaterSurface*)swash.surface;
         foam = water_bore_foam(surface, local.xz, water_field_at(surface, local.xz), -hh, t,
-                               footprint);
+                               footprint, params->water_white_tier);
       } else {
-        foam = water_uprush_foam(swash, place, local.xz, hh, t, footprint);
+        foam = water_uprush_foam(swash, place, local.xz, hh, t, footprint, params->water_white_tier);
       }
       if (!(depth > 0.0)) {
         float film;
@@ -1209,7 +1221,8 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
     }
   }
   if (white > 0.0)
-    color = lerp(color, water_white_water(params, s, white_plane, ray_bias, white_shade), white);
+    color = lerp(color, water_white_water(params, s, white_plane, ray_bias, white_shade, white_wrap),
+                 white);
   // The low tier draws the bottom as the body's shallow tint, so a bared pixel is that tint's
   // Lekner and Dorf darkening (S99: no longer a fixed sand's 0.35).
   if ((material.flags & k_material_water_volume) == 0 && bared_wet >= 0.0)
@@ -1383,7 +1396,8 @@ WaterWetGround water_ground_wetness_of(ResolveParams* params, ResolveMaterial ma
       footprint = max(length(dp_dx), length(dp_dy));
     }
     const WaterWetGround here = water_swash_saturation(
-        shore, local.xz, local.y, params->water_time_s, params->water_tide_phase, footprint);
+        shore, local.xz, local.y, params->water_time_s, params->water_tide_phase, footprint,
+        params->water_white_tier);
     g.s = max(g.s, here.s);
     g.film = max(g.film, here.film);
     g.foam = max(g.foam, here.foam);
