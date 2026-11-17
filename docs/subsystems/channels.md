@@ -1138,8 +1138,8 @@ gain within 5 gaps (93 against 88).
 **The four rows assembled** (`b67-streams`, 2026-11-17): all three above with W139's white water
 (the section's Froude number packed into each reach vertex's UV.y, [water](water.md)). W138 and
 W139 had each moved `k_channel_mesh_version` from 3 to 4 for a different change, so the combined
-mesh is version 5. The white reads neither the solve nor the plan, so the solve's counts on this
-branch are all three's.
+mesh is version 5. The white reads neither the solve nor the plan: v47's solve on this branch
+writes the same flow file, byte for byte, as all three's above.
 
 ## The cut
 
