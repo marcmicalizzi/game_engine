@@ -3,7 +3,8 @@
 **Purpose.** Tiled PBR sets by role, **generated**: a recipe of whole numbers builds the four
 images a material pack's set holds — base colour, normal, roughness, height — for the roles the
 engine's solvers ask a pack for and no pack has: a gravel bed, a sand bar, scree, rock faces,
-ground floors. A photographed or diffusion-made pack is the owner's to make
+ground floors, weathered wood, and the conifers' needle sprays (the one kind that is a card's
+image and not a tile, with a fifth image: its outline). A photographed or diffusion-made pack is the owner's to make
 ([materials](materials.md), [content generation](../content-generation.md#material-packs)); a
 deterministic, research-grounded one is the engine's, and with it a checkout that has fetched
 nothing still draws gravel as gravel instead of a flat colour (roadmap G148; the sources and each
@@ -282,6 +283,125 @@ takes u from a world axis (the bridges' box mapping in `domain/bridges/src/mesh.
 row's base) runs the grain across a member that lies along the other axis; that is the
 consumer's to turn.
 
+## Spray sets
+
+`conifer/needles`, `spruce/needles` and `pine/needles` (G203; the sources, the measurements and the
+pictures: [conifer crown coverage](../experiments/conifer-crown-coverage.md#the-engines-own-sprays)):
+**one branchlet an image**, for the conifers' whole-shoot cards
+([flora](flora.md#the-conifer)), which take the image whole with the spray's axis along v from the
+card's base. It is the one kind that is not a tile and the one with an outline: `SetImages::alpha`
+holds each texel's share under the spray, the command writes it as the base colour's alpha, and a
+card's material tests it at a half ([materials](materials.md), `UvLayout::card`). `tile_mm` is the
+card's length, 450 mm.
+
+**Why the engine has one.** A crown's cards are most of its silhouette, and a checkout with no
+pack drew every card as a solid parallelogram. The forest's images were threads (17 to 26 %
+opaque in strands three texels wide: the owner's "too thin"); the second leg's first sprays
+filled the card to 53 to 57 % and measured dense, and in the engine every card read as a flat
+dark plate. **A spray has structure, not mass** (the third leg, 2026-11-15; the sources are on
+[conifer crown coverage](../experiments/conifer-crown-coverage.md#structure-not-mass-the-third-leg)):
+a spruce's needles stand all round each twig, so a twig with its needles is a bottle brush three
+to four centimetres across, the twigs leave their branchlet one after another and the card
+between them is open; a pine carries tufts of paired needles at the ends of bare shoots. The
+defaults are 25 % (spruce, conifer) and 33 % (pine) opaque, and what is asked of any image is the
+structure: brushes several needles thick with gaps a brush wide between them.
+
+- **The card under the image.** A conifer's card is not a square: it is as wide as the cards
+  stand apart along their branch (`card_width_mm`, 200: the default conifer's needled reach of
+  1.2 m over six cards), `tile_mm` long (450), and leans forward from the branch by
+  `card_angle_deg` (55), a parallelogram. The spray is laid out in millimetres on that card and
+  written through the card's map to texels, so a twig is as wide on the tree as its recipe says
+  and a needle's angle to its twig is that angle in the world; the image itself looks stretched
+  across and sheared. With no width the card is the square the tile is. *Traded:* a lateral's
+  card is 0.8 as long and leans 50 degrees, a wider budget rung's card carries the image twice
+  across ([flora](flora.md#the-conifer)), and each draws this one image: a twentieth off in
+  length there, right in count.
+- **The skeleton.** A twig from the middle of the top row down the image; side shoots at nodes
+  `node_mm` apart, `per_node` a node, at `shoot_angle_deg` ± `shoot_spread_deg` to their parent,
+  the longest `reach_permille` of the card's width across and shorter by `taper_permille` toward
+  the twig's tip; their own side shoots the same way to `orders` deep, each as long as 0.45 of
+  its parent allows. A shoot that would carry its brush out of the image is shortened to stay in
+  it. *Spruce* (`form: spruce`): **several small boughs, not one comb**. The twig's side shoots
+  stand 46 mm apart, to one side and then the other (not evenly: one in seven keeps its side),
+  with open card between them, and each carries its own short twigs three times as close, so a
+  side shoot with its twigs is a little frond a few centimetres wide. A first cut with side
+  shoots every 20 to 30 mm and no twigs of their own read at 10 m as a fern's frond: a comb of
+  thin parallel teeth. *Pine* (`form: pine`): whorls 95 mm apart, a node's three laterals evenly
+  spaced round their parent from a drawn azimuth, each drawn as the eye sees it (the cosine of its
+  azimuth across the view, the shorter for what points at the eye), needled on their last
+  110 mm, so each is a tuft and the wood between the whorls is bare. The skeleton has a stream of
+  its own, so a needle's numbers move no shoot.
+- **The needles are drawn as a shoot is seen, not as a comb.** Each needle has an azimuth round
+  its shoot (`flat_permille` of them lie in the spray's plane, as a shade shoot's do) and an angle
+  to it (`needle_angle_deg` ± `needle_spread_deg`), and is drawn as that projection: one that
+  points across the view shows its whole length (`needle_min_um` to `needle_max_um`), one that
+  points at the eye a stub over the twig. The ones behind their shoot are drawn first, then the
+  wood, then the ones in front; the last needles of a shoot close forward over its bud. **Its
+  colour is a needle's own, and the light says how dark a crown is**: the recipe's colour is a
+  needle's reflectance (spruce 0.050, 0.100, 0.040 linear; pine 0.052, 0.092, 0.056, a
+  grey-green; the sources and what of them was read are on the grounding page), 0.8 of it behind
+  a shoot to 1.05 in front, each needle 1.2 times paler at its tip, the last fifth of a shoot
+  (the year's growth, whose needles reflect more green) 1.15 times lighter, and ± `tone_permille`
+  a needle. The second leg's sprays ran from half the colour to 1.1 of it by depth with a deeper
+  hollow shade, to pass a ceiling on the mean, and a stand of them read near black. A pine's are
+  pairs from one sheath, the second 5 to 11 degrees off the first, on the last `needled_mm` of
+  each shoot, the wood behind bare. Inside a brush the needles touch (a spruce shoot shows 0.10
+  to 0.21 of its needle area as silhouette, about half its envelope and more on a shade shoot)
+  and its edge is ragged; between brushes the card is open. A fishbone of separate strands,
+  which is what the first forest's image was, is neither, and its periodic gaps are what a mip
+  chain cannot keep.
+- **Nothing is narrower than four texels**, measured along whichever image axis shows the
+  stroke's width best. A spruce needle is about a millimetre wide; the card's texels are 0.2 mm
+  along the branch and 0.44 mm along the card, so a needle that runs along the card is drawn at
+  its recipe's 1.2 mm and one that runs across it at 1.76 mm, which the encoder and the first
+  mips leave standing ([texture](texture.md#alpha-tested-masks)); each tapers to half over its
+  last three tenths and stands for the needles beside it that the image has no texels for:
+  `needles_per_cm` is of needles **as drawn** (spruce 26, where a shoot carries 9 to 33; pine 14
+  pairs). *Traded:* at arm's length the needles are stout; a recipe at 2,048 texels draws a
+  spruce's at their true width and costs four times the bytes, for a view the card is rarely
+  seen at (a 0.45 m card is 84 pixels long at 10 m on the 4K target).
+- **The colour, the roughness and the normal agree with the outline, and the height is each
+  needle's own round section and nothing else.** Under the outline's outside the colour is the
+  needles' own (0.9 of their mean) and the roughness theirs, so no mip and no block of the encoder
+  mixes a background into the spray's edge. The height under a needle is the crown of its section
+  (0.3 of `relief_um` over its line, a twig's 0.2), whatever is drawn in front winning. **No brush
+  has a round back and no needle is lifted over the ones behind it** (G203's fourth leg,
+  2026-11-16, `k_matgen_version` 11). The third leg gave every brush a solid cylinder's height,
+  its normal leaning 45 degrees at the edge, and stood each needle over its shoot by how far in
+  front of it it was; measured in the engine under a sky, the same image with its normal map left
+  out returned 15 to 26 % more light per unit of albedo at 10 to 100 m and 10 % more at 300 m,
+  28 to 44 % more on the sunlit needles, and that was the sprays' darkening
+  ([the measurement](../experiments/conifer-crown-coverage.md#where-the-light-went-the-fourth-leg)).
+  Both were wrong for what a brush is: it is porous, its silhouette about half its envelope, so
+  the sun reaches its far flank's needles through the gaps where a solid's far flank is unlit,
+  and the crown's lean on flora's card normals already says which way a bough faces; and a
+  needle over another is separated from it by air, where a height step makes a wall facing
+  sideways along every needle's edge. The normal's step along the image's x is the card's own
+  texel, not the tile's (`Field::texel_u_m`). The hollows' shade (above) darkens a texel between
+  needles a little. The spray keeps a margin of 1.5 % of the image,
+  so a card's sampler never wraps it across an edge. **A set has no translucency map** (a pack's
+  role names five maps and none is one), and the resolve has no term that would read one: what
+  light a bough takes on its far side is the renderer's, and is not built
+  ([the grounding page](../experiments/conifer-crown-coverage.md#structure-not-mass-the-third-leg)
+  says what the literature gives it).
+- **On the torus all the same.** A spray never reaches the image's edge, and is still placed
+  from window-free coordinates and wrapped, so the rotation test holds it as it holds a tile.
+- **What an imported asset gets, and what a consumer regenerates.** An imported conifer or any
+  other card gets nothing new: the renderer, flora and the texture build do not read a spray's
+  kind. A pack's own needle roles win over these, so a scene whose pack names them draws what it
+  drew; dropping them draws the engine's. After `k_matgen_version` 11 a generated pack built
+  before it is stale (`engine-content matgen --out <dir>` builds it again) and every generated
+  mesh keyed against it, every conifer and every dead conifer recooks
+  ([the fourth leg](../experiments/conifer-crown-coverage.md#where-the-light-went-the-fourth-leg)).
+
+`SetStats`: `spray_cover` (the share of texels at a half or more: what a card keeps at level 0,
+before the texture build), `spray_shoots`, `spray_needles`, `spray_needle_px`.
+
+**Not the juvenile ribbons, and not fir, hemlock, cedar or juniper.** A juvenile conifer's
+`<species>/juvenile_needle` is one needle a ribbon, which with no image is an opaque ribbon and
+not sparse; the other evergreen profiles ask for `<species>/needles` and still draw opaque cards
+with no pack (a flat fir spray and a scale-leaved cedar's are other pictures).
+
 ## The defaults
 
 `default_sets()`, sorted by role; `engine-content matgen` builds them all.
@@ -309,6 +429,9 @@ consumer's to turn.
 | `thatch/straw` | wood | 2 m | a straw coat: the figure's bands as stems 3.5 mm across, nearly straight, gold weathering to grey-brown, short dark checks between bundles, no knot | a building's roof |
 | `plaster/lime_white`, `_cream`, `_ochre`, `_pink` | rock | 2 m | `plaster/lime`'s recipe with the wash's colour changed: this year's white, a little yellow ochre, a yellow ochre wash, red ochre | one village's houses ([structures](structures.md#variety-a-description-states)) |
 | `thatch/straw_new`, `thatch/straw_old` | wood | 2 m | `thatch/straw`'s recipe a year old (gold, hardly stained) and long past silvering (charcoal, stained, its gaps opened) | the same |
+| `spruce/needles` | spray | 0.45 m, one card | a Norway spruce branchlet drawn for a card 0.2 m wide leaning 55°: side shoots 46 mm apart with their own twigs, needles 10 to 17 mm all round, 25 % opaque | the spruce's whole-shoot cards ([flora](flora.md#the-conifer)) |
+| `conifer/needles` | spray | 0.45 m, one card | the same recipe from its own seed (the bare `conifer` is the spruce's solver) | the bare conifer's cards |
+| `pine/needles` | spray | 0.45 m, one card | Scots pine: whorls 95 mm apart, each lateral a tuft of pairs 40 to 60 mm long on its last 110 mm, bare wood between, 33 % opaque | the pine's cards |
 
 ### A building's surfaces
 
@@ -321,7 +444,13 @@ and are stated as that, not as a model of the material:
   roof's UVs run u up its slope. What it lacks is what makes a thatch a thatch close to: the
   stems' cut ends at the eave, the ridge's pattern, netting (the courses' steps are the
   structures' mesh now, [structures](structures.md#roofs)).
-- **`plaster/lime` is the kind `rock`** with nothing growing on it.
+- **`plaster/lime` is the kind `rock`** with nothing growing on it and **no rock's stain**
+  (`Rock::stain_permille` 0, since `k_matgen_version` 11). The kind tones a rind and even a fresh
+  break by a broad stain field, patches about 15 cm across swinging the colour 0.92 to 1.08 and
+  more under a rind; on a limewash those were the dark blots of the forest's need 143 (about 3 %
+  on an inside wall, the same with the bounce's cache off). A wash renewed every few years carries
+  no rind's iron stain; what wears on it is the render showing through and the rain's streaks,
+  which the recipe keeps. Every rock keeps its stain at the default 1000, to the byte.
 - **`stone/flag` and `stone/rubble` are the kind `masonry`** (below) since version 9. The first
   pictures of a house said why: a jointed rock face reads as cracked rock, not laid flags, and a
   bed of clasts in a matrix reads as cobbles, not a wall somebody coursed.
@@ -398,7 +527,8 @@ a ceiling where these are floors.
 builds every default (or the roles and recipe files named) into a pack directory: a role's
 directory holds `base_color.png`, `normal.png`, `roughness.png`, `height.png`, a 4 by 4
 `metallic.png` of zeros (a pack role names five maps) and `set.json`, which records the key the
-images were built for, the recipe and what the build measured. **A set whose `set.json` records
+images were built for, the recipe and what the build measured. A spray's `base_color.png` is RGBA,
+its outline the alpha (where a card's cutout reads it); every other set's is RGB. **A set whose `set.json` records
 the recipe's key and whose five files exist is not rebuilt**; the sidecar is written last, so a
 run that died leaves no key. `pack.json` beside them is a pack's manifest, each role with its
 key under `provenance`, so the pack's hash — and every generated mesh's build key — moves when a
@@ -528,7 +658,9 @@ The pack directory `engine-content matgen` writes is derived data.
 
 **Invariants.**
 
-- A set built from any window is the first window's bytes rotated.
+- A set built from any window is the first window's bytes rotated, a spray and its outline too.
+- A default spray is 45 to 62 % opaque at its own size, no strand of it under four texels wide,
+  its edge texels clear, and its colour outside the outline within a fifth of the colour inside.
 - The grid count over a bed reads the recipe's D50 and sorting; a rock's fresh share and a
   floor's covers are the recipe's (a floor's litter and leaves to within a fragment's area).
 - A ground set's contrast at 5 cm and 25 cm and its relief stand over the floors "A floor at
@@ -557,7 +689,9 @@ where asked and absent where not (G152); a bed part buried and a talus layers de
 set's grain along u (the colour's step along a row under 0.7 of its step down a column), its
 latewood share, checks, knots and bark where asked and none where not, over three seeds (G188,
 5.5 s); each ground role's standing-height measures over their floors and its landmark under its
-ceiling, over three seeds (G187, 7.7 s: twelve floors at 256 texels on 2 m tiles); a mip
+ceiling, over three seeds (G187, 7.7 s: twelve floors at 256 texels on 2 m tiles); each needle
+spray's opaque share, strand width, margin, flat corners and colour either side of the outline,
+at 1,024 texels over two seeds (G203); a mip
 chain's mean; a recipe read, refused and keyed; the pins, nine roles (about 48 s in `msvc-debug`
 on a loaded machine, 2026-11-11 20:34; the longest case the grid count's 8.3 s: it builds each
 seed's bed twice, buried and not). `materials`' tests hold
@@ -676,6 +810,11 @@ bar is a photograph, and none of these is one:
 
 ## Not yet
 
+- **A spray is one layer of one branch end.** The cards of a crown all carry the same picture
+  (flora turns and scales them); variants by seed exist only as recipes. Its needles are flat
+  strokes with a normal map: seen edge-on a card is still a plane, which is why a conifer's lower
+  branches read as plates up close (flora's geometry, not the image). No spray for fir, hemlock,
+  cedar or juniper, and none for the juvenile ribbons.
 - **Built on demand.** A scene read that finds a role missing could call `build_set` through a
   registration point and the derived-data cache, as a tile's mesh is built; it needs the hosts'
   lookup (`systems/renderer/src/scene.cpp`, `domain/content_build`), which this row did not edit.

@@ -1388,6 +1388,32 @@ numbers are [conifer shoots](../experiments/conifer-shoots.md)):
   budget's trade. Every card lifts out of its spray's plane by 10° at the crown's foot and 35° at its
   top — flat shade shoots, bushy sun shoots — so no crown is all edge-on to an eye at its height. The
   leader carries a tuft.
+- **A spray is folded, and its normals lean to the crown's outside** (G203's third leg,
+  2026-11-15; `build_bough`, conifer.cpp; the grounding and the pictures are
+  [conifer crown coverage](../experiments/conifer-crown-coverage.md#structure-not-mass-the-third-leg)).
+  A spray is `build_spray`'s strip (the same stations, vertices and triangles: **the fold costs no
+  triangle**, and every budget figure on this page stands), with four differences. *Folded*: every
+  tip stands above or below the spray's plane, alternately, by 0.19 to 0.35 of the cards' spacing
+  (a hash of the spray and the station), so two neighbouring cards meet at a ridge or a valley
+  and each is a facet rolled about 20 to 35 degrees about its own length; filled with an image
+  of a branchlet, a flat strip reads as a plate. *One branchlet a spacing*: u runs in the
+  full-detail spacing, so a card a budget rung made twice as wide carries two branchlets side by
+  side and not one stretched, and a merged card as long as a lateral carries a branchlet after a
+  branchlet along it. *The image's base at the shoot on both sides*: v is 0 on the shoot and
+  positive at both tips (`build_spray` gives one side −1, which a repeating sampler reads tip
+  first; a filled fan did not show it, a branchlet pointing at its own branch does).
+  *Normals*: a card stands for a volume of needles that stand all round their twigs, and such a
+  bough takes the sun by where it is on the crown, not by which way one plane through it faces;
+  with the cards' own normals every card seen face on with the sun to its side is unlit. So each
+  needle vertex's normal is its card's plus the crown's outward direction there (0.8 out from the
+  trunk, 0.6 up, unit) on whichever side of the card faces out: 45 degrees where the two are
+  square. The blend is chosen, not published (SpeedTree's leaf normals are the same idea with a
+  slider). The card's own normal has to stay in it, because the resolve turns a two-sided card's
+  normal to the eye's side of its plane: a normal in the plane would be turned by the sign of
+  noise. *Not done, and what the budget would pay*: a card bent along its length (a second row of
+  vertices: twice the needle triangles, 16,700 more on the default), two crossed cards a shoot
+  (the same), and a card's far side taking the sun through its gaps, which is the renderer's.
+  Every other species' sprays are `build_spray`'s as they were.
 - **The seed leaves branches out**, on streams of their own: `missing_branches` (0.05) of the branch
   slots are empty, half of those leaving a broken stub a twelfth of the branch long;
   `sparse_whorls` (0.08) of the whorls lose each branch with even odds; and the lowest `dead_share`
@@ -1401,17 +1427,26 @@ Parts: the trunk (which owns the tuft) and every branch, dead or alive, the bran
 its sprays one part, a lateral's vertices weighted by their arc from the branch's base — 179 on the
 default.
 
-**What a pack's needle image should be**: one foliated spray per image, its axis along *v*, drawn
-as a mass — a twig with its side shoots filling most of the card, needles touching — **45 to 60 %
-opaque** and irregular, every needle four texels or more at 1024 (two at 512). The 25–35 % this
-page gave until G203 was a single narrow shoot in a square card, and the card is most of the
-crown's area: measured on the forest's trees, cards 16.6 % opaque leave a pine covering 41 to
-49 % of its outline and cards 25.6 % a spruce 63 to 71 %, where the same trees with every card
-opaque cover 77 to 87 % and a healthy conifer's crown 75 to 90; a spray 45 % opaque gives 71 to
-79 % ([conifer crown coverage](../experiments/conifer-crown-coverage.md) has the table, the
-sources and `engine-content texture --alpha-cutoff`, which prints an image's coverage). A
-periodic image defeats the build's coverage-preserving mips, which is half of why the first
-forest's spruces read as bare branches.
+**What a pack's needle image should be**: one branchlet per image, its base at the middle of
+the top row and its axis along *v*, **drawn for the card it lies on and with structure, not
+mass**. The card is a parallelogram: as wide as the cards stand apart along their branch (0.2 m
+on the default), `needle_length_m` long (0.45 m), leaning 55 degrees forward from the branch, so
+the image is squeezed across by more than two and sheared; draw the branchlet as it should stand
+on the tree and map it. On it: brushes several needles thick (a spruce twig with its needles is
+three to four centimetres across; a pine's tuft seven to ten), the needles inside a brush
+touching, **open card a brush wide between the brushes**, a ragged outline, every needle four
+texels or more, irregular. The opaque share follows from that and is about a quarter (spruce) to
+a third (pine). This page asked for 25 to 35 % until G203 and for 45 to 60 % after its first
+leg, which measured how much of its hull a crown covers by the image's share
+([conifer crown coverage](../experiments/conifer-crown-coverage.md) has the table, and
+`engine-content texture --alpha-cutoff`, which prints an image's coverage); a card filled to
+half measured dense and read as a flat dark plate, and the 75 % of a crown's hull it aimed at
+was the wrong forester's measure (the same page, "Which measure a hull is"). The forest's images
+were about the right share and the wrong structure: threads three texels wide. A periodic image
+defeats the build's coverage-preserving mips, which is half of why the first forest's spruces
+read as bare branches. **The engine has such images of its own**: `engine-content matgen`
+builds `spruce/needles`, `pine/needles` and `conifer/needles` ([matgen](matgen.md#spray-sets)),
+read behind a fetched pack's roles; a recipe that names a `materials.leaf` image keeps its own.
 
 **The budget** (default 40,000; 8,000 to 2,000,000). The default is 23,742 triangles at full detail
 — bark 7,058, needles 16,684 — where before G80 it was 12,882 (5,510 and 7,372); the forest's three

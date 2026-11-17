@@ -96,6 +96,23 @@ TEST_CASE("engine-content matgen builds a pack every host reads, and builds a se
   CHECK(granite->stochastic);  // a rock set is laid over faces many times its repeat (R131)
   CHECK(materials::pack_key(read) != 0u);
 
+  // A needle spray (G203) is a set with an outline: its base colour is written with the outline
+  // as alpha — colour type 6 in the PNG's header, where an opaque set's is 2 — because a card's
+  // cutout reads the outline there; its tile is the card's length.
+  const Output spray =
+      run_matgen({"matgen", "--out", out, "--texels", "64", "--role", "pine/needles"});
+  REQUIRE_MESSAGE(spray.code == 0, spray.text);
+  CHECK(spray.text.find("\"spray_cover\"") != std::string::npos);
+  const auto colour_type = [&](const char* role) {
+    std::string png;
+    REQUIRE(io::read_file(io::join_path(io::join_path(out, role), "base_color.png"), png) ==
+            io::Status::Ok);
+    REQUIRE(png.size() > 25);
+    return static_cast<int>(static_cast<unsigned char>(png[25]));
+  };
+  CHECK(colour_type("pine/needles") == 6);
+  CHECK(colour_type("gravel/bed") == 2);
+
   // Refusals: a role with no default, a recipe file that is not one, a bad flag.
   const Output unknown = run_matgen({"matgen", "--out", out, "--role", "rock/unobtainium"});
   CHECK(unknown.code == 1);

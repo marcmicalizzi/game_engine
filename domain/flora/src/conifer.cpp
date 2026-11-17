@@ -51,7 +51,93 @@ struct Structure {
   Vector<Branch> branches;
   u32 max_cards = 1;      // the most cards a side any spray has at full detail
   f64 max_lateral = 0.0;  // the longest lateral
+  f64 step = 0.0;         // how far apart a spray's cards stand at full detail, metres
 };
+
+// How deep a spray's cards fold out of its plane, as a share of the cards' spacing: the tip
+// between two cards stands this far above or below the spray's plane (0.55 to 1 of it, by a hash
+// of the spray and the station), so a card's far edge is rolled about 35 degrees from its
+// neighbour's and a spray is never one plane.
+constexpr f64 k_card_fold = 0.35;
+
+// How far a needle card's normal leans from its own plane's towards the crown's outward direction:
+// the weight of that direction against the card's unit normal (1: halfway, 45 degrees where the
+// two are square to each other).
+constexpr f64 k_crown_lean = 1.0;
+
+// A hash of a spray, a station and a side to [0, 1): splitmix64's finalizer, integers and one
+// exact multiplication, the same on every toolchain.
+f64 fold_share(u32 spray, u32 station, u32 side) {
+  u64 z = ((static_cast<u64>(spray) << 24) ^ (static_cast<u64>(station) << 1) ^
+           static_cast<u64>(side)) +
+          1u;
+  z *= 0x9e3779b97f4a7c15ull;
+  z ^= z >> 30;
+  z *= 0xbf58476d1ce4e5b9ull;
+  z ^= z >> 27;
+  z *= 0x94d049bb133111ebull;
+  z ^= z >> 31;
+  return static_cast<f64>(z >> 11) * (1.0 / 9007199254740992.0);
+}
+
+// A conifer's spray (flora.md, "The conifer"; conifer-crown-coverage.md, "Structure, not mass:
+// the third leg"): `build_spray`'s strip — the same stations, vertices and triangles, one connected
+// surface either side of the shoot — with three differences that an image of a branchlet needs.
+// **Folded**: every tip stands above or below the spray's plane, alternately, so two neighbouring
+// cards meet at a ridge or a valley and each is a facet rolled about its own length; filled with
+// a spray, a flat strip reads as a plate, and the fold costs no triangle. **One branchlet a
+// spacing**: u runs in the full-detail spacing (`step`), so a card a budget rung made twice as
+// wide carries two branchlets side by side, not one stretched, and v runs to `repeats`, so a card
+// a rung made as long as a lateral carries a branchlet after a branchlet. **The image's base at
+// the shoot on both sides**: v is 0 on the shoot and positive at both tips (`build_spray` gives
+// one side -1, which a repeating sampler reads tip first).
+void build_bough(const Axis& axis, f64 from, u32 cards, f64 card_length, f64 angle, f64 lift,
+                 f64 droop, D3 side, f64 step, f64 repeats, u32 spray, Emitter& out) {
+  const f64 span = axis.length - from;
+  const f64 spacing = span / static_cast<f64>(cards);
+  // Whole branchlets a card, across and along.
+  const f64 across =
+      spacing > 1.5 * step ? static_cast<f64>(static_cast<u32>(spacing / step + 0.5)) : 1.0;
+  const f64 fold_room = spacing < 0.5 * card_length ? spacing : 0.5 * card_length;
+  Vector<D3> centre(cards + 1);
+  Vector<D3> tangent(cards + 1);
+  Vector<u32> mid(cards + 1);
+  Vector<u32> tips[2] = {Vector<u32>(cards + 1), Vector<u32>(cards + 1)};
+  const f64 ca = det::cos(angle);
+  const f64 sa = det::sin(angle);
+  const f64 cl = det::cos(lift);
+  const f64 sl = det::sin(lift);
+  Vector<D3> lateral(cards + 1);
+  Vector<D3> upper(cards + 1);
+  for (u32 k = 0; k <= cards; ++k) {
+    const f64 s = from + span * static_cast<f64>(k) / static_cast<f64>(cards);
+    centre[k] = axis_point(axis, s);
+    tangent[k] = axis_tangent(axis, s);
+    lateral[k] = perpendicular(tangent[k], side);
+    upper[k] = normalized(cross(lateral[k], tangent[k]));
+    out.weight = s / axis.length;
+    mid[k] = out.vertex(centre[k], upper[k], static_cast<f64>(k) * across, 0.0);
+  }
+  for (u32 k = 0; k <= cards; ++k) {
+    const f64 s = from + span * static_cast<f64>(k) / static_cast<f64>(cards);
+    out.weight = s / axis.length;
+    for (u32 j = 0; j < 2; ++j) {
+      const f64 sigma = j == 0 ? 1.0 : -1.0;
+      const D3 out_dir = lateral[k] * (sigma * cl) + upper[k] * sl;
+      const D3 d = normalized(tangent[k] * ca + out_dir * sa);
+      const f64 sign = ((k + j) & 1u) == 0u ? 1.0 : -1.0;
+      const f64 fold = sign * k_card_fold * fold_room * (0.55 + 0.45 * fold_share(spray, k, j));
+      const D3 tip = centre[k] + d * card_length - k_up * (droop * card_length) + upper[k] * fold;
+      tips[j][k] = out.vertex(tip, upper[k], static_cast<f64>(k) * across, repeats);
+    }
+  }
+  for (u32 k = 0; k < cards; ++k) {
+    for (u32 j = 0; j < 2; ++j) {
+      out.face(mid[k], mid[k + 1], tips[j][k + 1], upper[k]);
+      out.face(mid[k], tips[j][k + 1], tips[j][k], upper[k]);
+    }
+  }
+}
 
 // The whorl's share of the crown, 0 at the lowest and 1 at the top, and how many branches it has:
 // fewer up the crown by `thinning`.
@@ -149,6 +235,7 @@ Structure grow(const Conifer& p, const GrowthRules& rules) {
   // One card spacing for every spray: the longest branch's needled part over `needle_cards`.
   const f64 longest_needled = needled < reach ? needled : reach;
   const f64 step = longest_needled / static_cast<f64>(p.needle_cards);
+  s.step = step;
   const f64 missing = static_cast<f64>(p.missing_branches);
   const f64 sparse_chance = static_cast<f64>(p.sparse_whorls);
   const f64 dead_share = static_cast<f64>(p.dead_share);
@@ -475,6 +562,9 @@ bool detail::solve_conifer_rules(const Conifer& p, const GrowthRules& rules, ass
   const f64 needle = static_cast<f64>(p.needle_length_m);
   const f64 lateral_card = k_lateral_card * needle;
   const f64 merged_card = s.max_lateral > needle ? s.max_lateral : needle;
+  // A merged card is as long as a lateral: it carries a branchlet after a branchlet, not one
+  // stretched to its length.
+  const f64 merged_repeats = static_cast<f64>(static_cast<u32>(merged_card / needle + 0.5));
   const f64 pendulous = static_cast<f64>(p.pendulous);
   u32 sprays = 1;
   u32 cards_built = 0;
@@ -515,8 +605,9 @@ bool detail::solve_conifer_rules(const Conifer& p, const GrowthRules& rules, ass
         levels != nullptr ? add_shoot(trunk_node, k_crown_part, part_of[i], 0.0) : 0u;
     u32 first_vertex = out.positions.size();
     u32 first_index = out.indices.size();
-    build_spray(b.axis, from, own, plan.merge_laterals ? merged_card : needle, 55.0 * k_degree,
-                b.lift, 0.1, normalized(side), emit);
+    build_bough(b.axis, from, own, plan.merge_laterals ? merged_card : needle, 55.0 * k_degree,
+                b.lift, 0.1, normalized(side), s.step, plan.merge_laterals ? merged_repeats : 1.0,
+                sprays, emit);
     if (levels != nullptr) record(branch_node, first_vertex, first_index);
     ++sprays;
     cards_built += 2 * own;
@@ -525,8 +616,8 @@ bool detail::solve_conifer_rules(const Conifer& p, const GrowthRules& rules, ass
       const u32 first = out.positions.size();
       first_index = out.indices.size();
       const u32 cards = cards_of(l.cards, plan);
-      build_spray(l.axis, 0.0, cards, lateral_card, 50.0 * k_degree, b.lift, 0.15 + 0.2 * pendulous,
-                  l.side, emit);
+      build_bough(l.axis, 0.0, cards, lateral_card, 50.0 * k_degree, b.lift, 0.15 + 0.2 * pendulous,
+                  l.side, s.step, 1.0, sprays, emit);
       for (u32 v = first; v < out.positions.size(); ++v) {
         const f64 along = static_cast<f64>(parts.vertex_weight[v]) * l.axis.length;
         parts.vertex_weight[v] = static_cast<f32>(clamp01((l.attach + along) / b.axis.length));
@@ -542,8 +633,8 @@ bool detail::solve_conifer_rules(const Conifer& p, const GrowthRules& rules, ass
   const u32 tuft = cards_of(p.needle_cards, plan);
   const u32 tuft_vertex = out.positions.size();
   const u32 tuft_index = out.indices.size();
-  build_spray(s.trunk, 0.9 * s.trunk.length, tuft, 0.6 * needle, 30.0 * k_degree, 0.0, 0.0,
-              D3{1.0, 0.0, 0.0}, emit);
+  build_bough(s.trunk, 0.9 * s.trunk.length, tuft, 0.6 * needle, 30.0 * k_degree, 0.0, 0.0,
+              D3{1.0, 0.0, 0.0}, s.step, 1.0, 0u, emit);
   if (levels != nullptr) record(trunk_node, tuft_vertex, tuft_index);
   cards_built += 2 * tuft;
   assets::Primitive needles;
@@ -558,8 +649,29 @@ bool detail::solve_conifer_rules(const Conifer& p, const GrowthRules& rules, ass
     Vector<Vec3> normals;
     const std::span<const u32> range(out.indices.data() + leaf_first, needles.index_count);
     geometry::compute_vertex_normals(out.positions, range, normals);
-    for (u32 v = leaf_vertex; v < out.positions.size(); ++v)
-      out.normals[v] = normals[v];
+    // A card stands for a volume of needles that stand all round their twigs, and such a bough
+    // takes the sun by where it is on the crown, not by which way one plane through it happens to
+    // face: with the cards' own normals every card seen face on with the sun to its side is
+    // unlit, and a crown is dark on its sunny side wherever its sprays hang. So each needle
+    // vertex's normal leans from its card's towards the crown's own outward direction there (out
+    // from the trunk and up), by as much again as the card's (`k_crown_lean`), on whichever side
+    // of the card faces out: the published practice for foliage cards, with the blend chosen
+    // here. The resolve turns a two-sided card's normal to the eye's side of its plane
+    // (visibility_resolve.slang), so the card's own normal has to stay in it: a normal in the
+    // card's plane would be turned by the sign of noise.
+    const D3 foot = s.trunk.point[0];
+    const D3 top = s.trunk.point[s.trunk.point.size() - 1];
+    const f64 rise = top.y - foot.y;
+    for (u32 v = leaf_vertex; v < out.positions.size(); ++v) {
+      const D3 at = from_f32(out.positions[v]);
+      const D3 axis = foot + (top - foot) * (rise > 1e-6 ? clamp01((at.y - foot.y) / rise) : 0.0);
+      const D3 radial{at.x - axis.x, 0.0, at.z - axis.z};
+      const f64 reach = length_of(radial);
+      const D3 outward = reach > 1e-6 ? normalized(radial * (0.8 / reach) + k_up * 0.6) : k_up;
+      const D3 own = from_f32(normals[v]);
+      const f64 facing = dot(own, outward) >= 0.0 ? 1.0 : -1.0;
+      out.normals[v] = to_f32(normalized(own + outward * (facing * k_crown_lean)));
+    }
   }
   if (report != nullptr) {
     *report = TreeReport{};

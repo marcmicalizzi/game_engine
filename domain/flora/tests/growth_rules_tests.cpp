@@ -214,9 +214,13 @@ TEST_CASE("flora: named species share growth and preserve their skeleton across 
   // architecture profiles (maple, oak, elm, walnut, beech, ash, aspen, alder); the six conifers
   // hash as they did at 86d76acd. G201: every profile's trunk skirt (20 or 24 triangles) moves all
   // fourteen; less their skirts they are the trees they were, 12739116931385525735.
-  CHECK_MESSAGE(combined == 8135640812456067009ull, "named profile geometry hash: " << combined);
+  // G203's third leg (2026-11-15): the six conifer profiles' needle cards are folded and their
+  // normals lean outward (`build_bough`, conifer.cpp); the aggregates were 8135640812456067009
+  // and 12739116931385525735. The eight broadleaf-architecture profiles are not solved by that
+  // file (not compared one by one here: the aggregate is one number).
+  CHECK_MESSAGE(combined == 8558886803645841474ull, "named profile geometry hash: " << combined);
   const u64 before = hash_bytes(unskirted.data(), unskirted.size() * sizeof(u64));
-  CHECK_MESSAGE(before == 12739116931385525735ull, "less their skirts: " << before);
+  CHECK_MESSAGE(before == 9778399418425015419ull, "less their skirts: " << before);
 }
 
 TEST_CASE("flora: named species reject invalid input and keep distinct material roles") {

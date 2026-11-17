@@ -365,8 +365,13 @@ std::string canonical_json(const DeadwoodFile& file) {
 }
 u64 source_hash(const DeadwoodFile& file) {
   const std::string json = canonical_json(file);
-  return hash_combine(hash_combine(hash_bytes(json.data(), json.size()), k_deadwood_version),
-                      flora::flora_source_hash(file.tree));
+  u64 h = hash_combine(hash_combine(hash_bytes(json.data(), json.size()), k_deadwood_version),
+                       flora::flora_source_hash(file.tree));
+  // A dead conifer keeps a share of its needle cards, and the tree's parameters do not say which
+  // cards those are: the conifers' own version does (G203's third leg folded them). Mixed only
+  // for a conifer, so every other dead tree keeps its key.
+  const u32 cards = flora::flora_needle_card_version(file.tree);
+  return cards != 0u ? hash_combine(h, cards) : h;
 }
 
 bool solve(const DeadwoodFile& p, assets::MeshData& mesh, flora::Motion& motion, Report& report,

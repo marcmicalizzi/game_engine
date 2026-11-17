@@ -908,9 +908,12 @@ TEST_CASE("impostor chain: a conifer's bake is the same bytes every time and on 
   // "Determinism"). The mask is integers from the texel's place and the fit is the coverage bake's
   // own numbers, so the coverage-kept bake adds nothing a toolchain could move. G201: the trunk's
   // skirt takes the star's box down to its bottom, so the star's pair moves (it was
-  // 0xcbb185d12f629b3c, 0xb90598dda6dbe5cf) and the cards' pair does not.
-  constexpr u64 k_golden[4] = {0x618d2ec59d250c70ull, 0xd2cad8a88487eb1aull, 0xea83f89d59e7f64aull,
-                               0x952c227072ca6701ull};
+  // 0xcbb185d12f629b3c, 0xb90598dda6dbe5cf) and the cards' pair does not. G203's third leg
+  // (2026-11-15, MSVC only so far): the sprays the bake draws are folded with leaning normals
+  // (`build_bough`), so all four moved; they were 0x618d2ec59d250c70, 0xd2cad8a88487eb1a,
+  // 0xea83f89d59e7f64a, 0x952c227072ca6701.
+  constexpr u64 k_golden[4] = {0xb8d183bb935618eeull, 0x6c1c94dfab66cfebull, 0x61a69c87fbfe24e9ull,
+                               0xba3f618364888268ull};
   for (u32 k = 0; k < 4; ++k)
     CHECK(hashes[k] == k_golden[k]);
 }

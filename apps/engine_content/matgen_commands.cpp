@@ -180,7 +180,22 @@ int matgen_command(int argc, char** argv) {
       Vector<u8> none;
       none.assign(16, static_cast<u8>(0));
       const i64 wrote = time::monotonic_ns();
-      if (!write_image(io::join_path(dir, files[0]), images.size, 3, images.base_color, bytes) ||
+      // A set with an outline (a spray) carries it as its base colour's alpha, which is where a
+      // card's cutout reads it (materials.h, `apply_set`); an opaque set's base colour is RGB.
+      const bool outlined = !images.alpha.empty();
+      Vector<u8> rgba;
+      if (outlined) {
+        const u32 count = images.size * images.size;
+        rgba.resize(count * 4);
+        for (u32 t = 0; t < count; ++t) {
+          rgba[t * 4 + 0] = images.base_color[t * 3 + 0];
+          rgba[t * 4 + 1] = images.base_color[t * 3 + 1];
+          rgba[t * 4 + 2] = images.base_color[t * 3 + 2];
+          rgba[t * 4 + 3] = images.alpha[t];
+        }
+      }
+      if (!write_image(io::join_path(dir, files[0]), images.size, outlined ? 4 : 3,
+                       outlined ? rgba : images.base_color, bytes) ||
           !write_image(io::join_path(dir, files[1]), images.size, 3, images.normal, bytes) ||
           !write_image(io::join_path(dir, files[2]), images.size, 1, images.roughness, bytes) ||
           !write_image(io::join_path(dir, files[3]), images.size, 1, images.height, bytes) ||
@@ -222,6 +237,10 @@ int matgen_command(int argc, char** argv) {
       measured.set("check_share", JsonValue(stats.check_share));
       measured.set("bark_share", JsonValue(stats.bark_share));
       measured.set("knots", JsonValue(stats.knots));
+      measured.set("spray_cover", JsonValue(stats.spray_cover));
+      measured.set("spray_shoots", JsonValue(stats.spray_shoots));
+      measured.set("spray_needles", JsonValue(stats.spray_needles));
+      measured.set("spray_needle_px", JsonValue(stats.spray_needle_px));
       record.set("measured", measured);
       if (io::write_file_atomic(sidecar, write_json(record)) != io::Status::Ok)
         return fail("'" + sidecar + "' could not be written");

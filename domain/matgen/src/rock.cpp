@@ -83,6 +83,7 @@ void build_rock(const Set& set, Field& field, SetStats& stats, Shade& shade) {
   const u32 streak_y_k = std::clamp(static_cast<u32>(tile / 0.6 + 0.5), 1u, eighth);
   const f64 fresh_share = 1.0 - clamp01(permille(p.rind_permille));
   const f64 streak_strength = clamp01(permille(p.streak_permille));
+  const f64 stain_strength = clamp01(permille(p.stain_permille));
   const f64 moss_share = clamp01(permille(p.moss_permille));
 
   // The rock's mean colour: what the rind pulls each crystal toward.
@@ -231,9 +232,13 @@ void build_rock(const Set& set, Field& field, SetStats& stats, Shade& shade) {
       // too (it is not new, only newer), and sits a flake's depth lower behind a sharp edge.
       const f64 fresh = smooth01((static_cast<f64>(patch[i]) - fresh_at) / 0.006 + 0.5);
       const f64 stain = fractal_noise(set.seed ^ 0x737461696eull, vx, vy, n, stain_k, 3);
+      // `stain_permille` scales the stain's swing about its middle; a rock's (1000) takes the field
+      // as it is, so its bytes are the ones they were. A limewash takes none: the stain's patches
+      // were the generated plaster's dark blots (the forest's need 143).
+      const f64 toned = p.stain_permille == 1000 ? stain : 0.5 + stain_strength * (stain - 0.5);
       for (u32 k = 0; k < 3; ++k) {
-        const f64 rind = mix(mean[k], colour[k], 0.8) * tint[k] * (0.8 + 0.4 * stain);
-        const f64 newer = mix(rind, colour[k], 0.7) * (0.92 + 0.16 * stain);
+        const f64 rind = mix(mean[k], colour[k], 0.8) * tint[k] * (0.8 + 0.4 * toned);
+        const f64 newer = mix(rind, colour[k], 0.7) * (0.92 + 0.16 * toned);
         colour[k] = mix(rind, newer, fresh);
       }
       rough = mix(0.88, rough, fresh);

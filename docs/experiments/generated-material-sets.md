@@ -269,6 +269,24 @@ grain along the image's u. Same research pass, same caveat: **read (secondary)**
 | Knots in graded timber are limited by knot-area ratios; diameters and frequency per metre are in EN 1309 / DIN 4074 tables | not read | 2 knots a square metre of board, 12 to 40 mm across, a third encased with a dark rim; a log's 1 a square metre, 25 to 70 mm (chosen) |
 | Norway spruce bark is 9 to 32 mm thick (double) from 12.5 to 92.5 cm diameter | a Bosnian 393-tree study; read (secondary). Plate sizes and fissure depths **not found** | a log keeps bark on 15 % of its surface, plates 45 mm long up the stem, 6 mm proud (chosen) |
 
+## Needle sprays (G203, 2026-11-14)
+
+Three sets for the conifers' whole-shoot cards (`spruce/needles`, `conifer/needles`,
+`pine/needles`). The sources, what was read and what is recalled, the crown measurements the
+opaque share is chosen by and the pictures are on
+[conifer crown coverage](conifer-crown-coverage.md#the-engines-own-sprays); the generator's
+numbers against them:
+
+| What | Source and how it was read | The generator's number |
+|---|---|---|
+| Norway spruce needles 15 to 25 mm (10 to 25), four-sided, about a millimetre across; a measured sample of shoots 5.6 to 20.8 mm long, 0.57 to 1.9 mm wide | Wikipedia, *Picea abies*, read; Palmroth et al. 2002 (*Tree Physiology* 22:1185), Table 3, **read** in the author's copy | `needle_min_um` 15,000, `needle_max_um` 25,000, `needle_width_um` 1,000, drawn at four texels (1.76 mm at 1,024 on 0.45 m) |
+| 9 to 33 needles a centimetre of spruce twig, all round the shoot | Palmroth et al. 2002, Table 3, **read** | 14 needles a centimetre **as drawn**, each 1.76 times a needle's width, at any azimuth round the shoot (`flat_permille` 300 lie in the spray's plane: a shade shoot is flat, Stenberg et al. 1999's abstract) |
+| A spruce shoot's silhouette is 0.10 to 0.21 of its needle area, about half its envelope | the same table; the arithmetic is on the coverage page | no number: the reason a shoot is drawn as a mass, the needles behind the shoot under the ones in front |
+| Scots pine needles 25 to 50 mm by 1 to 2 mm, in pairs, kept two to four years; one shoot's STAR 0.141 | Wikipedia, *Scots pine*, read; the pine shoot's paper, **read** in the author's copy | 32,000 to 50,000 µm, 1,500 µm wide (drawn at four texels), pairs 5 to 11 degrees apart, on the last 300 mm of each shoot (**chosen**: two to four years of a branch end's growth; no shoot length a year was read) |
+| A pine's laterals leave their parent in whorls | general botany, not read in a source | nodes 80 mm apart, six laterals a node evenly round the parent (**chosen**; a real whorl's year is longer and its laterals fewer: the card stands for a branch end several shoots deep, as flora's cards fold the laterals it does not build into the ones it does) |
+| Needle angles to the shoot, a frond's branching angles, the needles' colour | **not found**; needle reflectance in the visible (Lukeš et al. 2013, *Remote Sensing Letters* 4:667, located, its numbers not read) is *recalled* as about 0.10 green, 0.05 red, 0.04 blue | needles at 50 ± 12 degrees (pine 48 ± 16), side shoots at 55 ± 10 (pine ± 12); linear albedo (0.052, 0.096, 0.036) for spruce and (0.058, 0.102, 0.046) for pine, ± 30 % a needle, 0.5 to 1.1 of it by a needle's depth round its shoot and 1.35 at its tip, so the sets' means are (0.057, 0.106, 0.040) and (0.069, 0.121, 0.055), about the recalled reflectance; roughness 0.5 (all **chosen**) |
+| The opaque share | this repository's own measurement: a crown's coverage against its cards' opaque share (the coverage page's tables) | 53 % (spruce, conifer) and 57 % (pine), inside the 45 to 60 % the measurement asks; the test holds 45 to 62 % over seeds |
+
 ## The ranges the defaults are held to
 
 `matgen_tests.cpp` holds each default's mean albedo (luminance of the mean linear colour, after
@@ -290,6 +308,7 @@ material's range above times what the generator states it does to it:
 | `ground/turf` | 0.05 to 0.14 | live leaves over thatch |
 | `wood/plank` | 0.10 to 0.30 | weathered grey softwood, its checks, knots and stains below the grey (chosen about the grey's 0.20) |
 | `wood/log` | 0.08 to 0.28 | the same with bark patches and deeper checks |
+| `conifer/needles`, `spruce/needles`, `pine/needles` | 0.03 to 0.12 | chosen about a needle's recalled visible reflectance (0.04 to 0.10), under the spray's own shade; roughness 0.40 to 0.70 (a waxy cuticle, chosen) |
 
 ## Not verified
 

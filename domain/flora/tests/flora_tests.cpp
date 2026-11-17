@@ -916,8 +916,12 @@ TEST_CASE("flora: the conifer grows whorls of needled branches thinning upward, 
   // Parts: the trunk and every branch; the whorls thin upward, so the top has fewer.
   // 0xd849a6672e26415a until the laterals, the interwhorl branches and the branches' fates (G80).
   // G201: the trunk's skirt appended, nothing else (the second number, the tree less it).
-  check_species("conifer", p, flora::solve_conifer, report.parts, 0xb8522fc3f0ea6c2full,
-                0x404c4126ccb215f2ull);
+  // G203's third leg (2026-11-15): the sprays are folded, carry the image's base at the shoot on
+  // both sides and their normals lean to the crown's outside (`build_bough`), so the needle
+  // cards' positions, UVs and normals moved; the wood, the parts and every count did not. The
+  // pair was 0xb8522fc3f0ea6c2f, 0x404c4126ccb215f2.
+  check_species("conifer", p, flora::solve_conifer, report.parts, 0x45198a8c7a7a2a01ull,
+                0x313c1bdbc2933a75ull);
   CHECK(report.parts < 1 + p.whorls * p.branches_per_whorl + (p.whorls - 1) * p.interwhorl);
   CHECK(report.parts > 1 + p.whorls * 2);
   // A cone: the lowest branches reach furthest, the highest least.

@@ -530,7 +530,10 @@ constexpr u64 k_ancient_container_golden = 0x222a6d4a9af0e6e6ull;
 // G120 (2026-11-01, MSVC 14.51): a pine, the conifer solver's chain — one three-plane card group a
 // live branch and the star, coverage-kept and fitted to the needles' coverage — at small tiles so
 // a debug run builds it in seconds. Its section 15 carries `k_conifer_chain_version`.
-constexpr u64 k_pine_container_golden = 0xcb41f869870c00cdull;
+// G203 (2026-11-16): the conifers' sprays are folded with leaning normals and
+// `k_conifer_chain_version` is 2, so the pine's container moved (it was 0xcb41f869870c00cd); the
+// broadleaf's and the ancient tree's did not.
+constexpr u64 k_pine_container_golden = 0xac0cb951cd8d4dc8ull;
 
 TEST_CASE("engine-content: the allometric crowns build the committed bytes on every toolchain") {
   const test::TempDir tmp("engine_content_flora_determinism");

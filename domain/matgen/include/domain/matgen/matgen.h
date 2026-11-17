@@ -13,7 +13,7 @@
 // an image: `engine-content matgen` writes a pack directory of them under the git-ignored
 // `content/materials/generated/`, which `materials::pack_at` reads behind the fetched pack.
 //
-// Four kinds:
+// Five kinds (the first four tile; a spray is one card's image, with an outline):
 //   granular  a bed of clasts on a periodic domain (a gravel bed, a sand bar, scree): sizes from
 //             the surface's grid-count distribution, shape and roundness by transport, placed
 //             largest first, imbricated against the flow, a matrix or voids between
@@ -21,6 +21,8 @@
 //             breaks, crustose lichen by a cover parameter, pits, laminae
 //   ground    a floor: moss and soil under dead leaf fragments under live leaves
 //   wood      a softwood face, its grain along u: a sawn board's or a log's outside, weathered
+//   spray     a foliated conifer spray, one an image: a twig from the card's base, its side shoots
+//             and their needles as the eye sees them round a shoot, the outline in `alpha`
 //
 // **A set tiles by construction**: every clast, crystal, joint and fragment lives on the torus of
 // the tile, never in the image, so the image is the same picture whichever texel it starts at
@@ -70,7 +72,18 @@ namespace engine::matgen {
 /// 9: the masonry kind (2026-11-15): laid work in courses; `stone/flag` and `stone/rubble` are
 ///    its recipes now (a jointed rock face read as cracked rock, a clast bed as cobbles). No
 ///    other kind's images moved; every set's key did, because the recipe's type gained a field.
-inline constexpr u32 k_matgen_version = 9;
+/// 10: not used on main. A held branch of batch 65 (G203's second and third legs) built its
+///    sprays under 9 and 10 on top of version 8, so caches warmed from it hold entries keyed 10;
+///    main skips the number so that none of them is ever read as main's.
+/// 11: the spray kind (G203, 2026-11-16): `conifer/needles`, `spruce/needles` and
+///    `pine/needles`, the first sets with an outline (`SetImages::alpha`). A spray is a branchlet
+///    drawn in millimetres for the card it lies on (`Spray::card_width_mm`, `card_angle_deg`): a
+///    brush a twig with open gaps between twigs; its height is each needle's own round section
+///    and nothing else (the held branch's round back under each brush and lift of a needle over
+///    those behind it darkened every spray by a fifth under a sky: matgen.md, "Spray sets").
+///    No other kind's bytes moved; every set's key did, since a recipe's text now carries the
+///    spray's fields.
+inline constexpr u32 k_matgen_version = 11;
 
 /// Variants of a tiled role (G153): `default_sets` writes `<role>.1` .. `<role>.<n>` beside each
 /// tiled granular role, the same recipe from other seeds, so a consumer that picks one by place
@@ -100,6 +113,9 @@ struct SetImages {
   Vector<u8> normal;      // RGB, tangent space, OpenGL (+Y up the image)
   Vector<u8> roughness;   // one channel
   Vector<u8> height;      // one channel, the set's own range (SetStats::height_*)
+  // A spray's outline, one channel: each texel's share under the spray, which a pack's base colour
+  // carries as its alpha and a card tests at a half. Empty for every other kind: the set is opaque.
+  Vector<u8> alpha;
 };
 
 /// What a build measured of its own result.
@@ -144,6 +160,13 @@ struct SetStats {
   f64 check_share = 0;
   f64 bark_share = 0;
   u32 knots = 0;
+  // spray: the share of the image under the outline (alpha at a half or more: what a card's test
+  // keeps at level 0, before the texture build), the shoots and needles drawn, and a needle's
+  // width as drawn, in texels (four at the least).
+  f64 spray_cover = 0;
+  u32 spray_shoots = 0;
+  u32 spray_needles = 0;
+  f64 spray_needle_px = 0;
   // What a standing eye reads (G187; matgen.md, "What a standing eye reads"), every kind: the
   // RMS Weber contrast of the albedo's luminance over blocks of the power-of-two side nearest 5 cm
   // and 25 cm (0 where the tile holds fewer than two a side), and the height's RMS about its mean.
@@ -170,8 +193,9 @@ bool build_set(const Set& set, SetImages& out, SetStats* stats, std::string& err
 /// `rock/basalt`, `rock/limestone`, `rock/sandstone`, `ground/soil`, `ground/moss`,
 /// `ground/thatch`, `ground/turf`, `wood/plank`, `wood/log`, a building's surfaces
 /// (`plaster/lime`, `stone/flag`, `stone/rubble`, `thatch/straw`; matgen.md, "A building's
-/// surfaces"), and `k_tiled_variants` variants of each tiled granular role (`gravel/bed.1`, ...).
-/// Sorted by role.
+/// surfaces"), the three needle sprays (`conifer/needles`, `pine/needles`, `spruce/needles`),
+/// and `k_tiled_variants` variants of each tiled granular role (`gravel/bed.1`, ...). Sorted by
+/// role.
 Vector<Set> default_sets();
 /// Variant `index` (1..) of a recipe: the same numbers from another seed, its role
 /// `<role>.<index>`.

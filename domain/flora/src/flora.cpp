@@ -271,6 +271,10 @@ u64 container_hash(const FloraFile& file) {
 }
 }  // namespace
 
+u32 flora_needle_card_version(const FloraFile& file) {
+  return !file.regeneration && builds_conifer(file.species) ? k_conifer_chain_version : 0u;
+}
+
 bool flora_source_hash_with(const FloraFile& file, const assets::MeshGeneratorInputs& inputs,
                             u64& out, std::string& error) {
   out = container_hash(file);

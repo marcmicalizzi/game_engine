@@ -92,8 +92,9 @@ bool validate_set(const Set& set, std::string& error) {
           r.rind_r_permille > 1500 || r.rind_g_permille > 1500 || r.rind_b_permille > 1500)
         return fail(error, "a rock share or tint is out of range");
       if (r.laminae > 64) return fail(error, "rock.laminae is over 64");
-      if (r.form_um > 200000 || r.streak_permille > 1000 || r.moss_permille > 1000)
-        return fail(error, "rock form, streak or moss is out of range");
+      if (r.form_um > 200000 || r.streak_permille > 1000 || r.moss_permille > 1000 ||
+          r.stain_permille > 1000)
+        return fail(error, "rock form, streak, moss or stain is out of range");
       if (r.lichen_max_mm < 4 || r.lichen_max_mm > 300)
         return fail(error, "rock.lichen_max_mm is out of range (4 to 300)");
       break;
@@ -162,7 +163,35 @@ bool validate_set(const Set& set, std::string& error) {
         return fail(error, "a masonry joint colour or roughness is over 1000");
       break;
     }
-    default: return fail(error, "kind is not granular, rock, ground, wood or masonry");
+    case Kind::spray: {
+      const Spray& p = set.spray;
+      if (p.form != SprayForm::spruce && p.form != SprayForm::pine)
+        return fail(error, "spray.form is not spruce or pine");
+      if (p.node_mm < 2 || p.node_mm > 500 || p.per_node < 1 || p.per_node > 8 || p.orders < 1 ||
+          p.orders > 3)
+        return fail(error, "spray nodes or orders are out of range");
+      if (p.shoot_angle_deg < 10 || p.shoot_angle_deg > 85 || p.shoot_spread_deg > 30 ||
+          p.reach_permille < 50 || p.reach_permille > 500 || p.taper_permille > 950)
+        return fail(error, "spray shoot angle, reach or taper is out of range");
+      if (p.needled_mm > 2000 || p.needle_min_um < 2000 || p.needle_min_um > p.needle_max_um ||
+          p.needle_max_um > 150000 || p.needle_width_um < 200 || p.needle_width_um > 10000)
+        return fail(error, "spray needle sizes are out of range");
+      if (p.needles_per_cm < 1 || p.needles_per_cm > 60 || p.needle_angle_deg < 5 ||
+          p.needle_angle_deg > 85 || p.needle_spread_deg > 40 || p.flat_permille > 1000)
+        return fail(error, "spray needle count, angle or flat share is out of range");
+      if (p.twig_um < 200 || p.twig_um > 50000 || p.relief_um > 5000)
+        return fail(error, "spray twig or relief is out of range");
+      if (p.needle_r_permille > 1000 || p.needle_g_permille > 1000 || p.needle_b_permille > 1000 ||
+          p.twig_r_permille > 1000 || p.twig_g_permille > 1000 || p.twig_b_permille > 1000 ||
+          p.tone_permille > 900 || p.needle_roughness_permille > 1000)
+        return fail(error, "a spray colour, tone or roughness is out of range");
+      if (p.card_width_mm != 0 && (p.card_width_mm < 20 || p.card_width_mm > 20000))
+        return fail(error, "spray.card_width_mm is not 0 or 20 to 20000");
+      if (p.card_angle_deg != 0 && (p.card_angle_deg < 20 || p.card_angle_deg > 90))
+        return fail(error, "spray.card_angle_deg is not 0 or 20 to 90");
+      break;
+    }
+    default: return fail(error, "kind is not granular, rock, ground, wood, masonry or spray");
   }
   return true;
 }
@@ -235,6 +264,7 @@ bool build_set(const Set& set, SetImages& out, SetStats* stats_out, std::string&
     case Kind::rock: detail::build_rock(set, field, stats, shade); break;
     case Kind::wood: detail::build_wood(set, field, stats, shade); break;
     case Kind::masonry: detail::build_masonry(set, field, stats, shade); break;
+    case Kind::spray: detail::build_spray(set, field, stats, shade); break;
     default: detail::build_ground(set, field, stats, shade); break;
   }
   const u32 count = n * n;
@@ -380,13 +410,20 @@ bool build_set(const Set& set, SetImages& out, SetStats* stats_out, std::string&
       const f64 right = static_cast<f64>(field.texels[y * n + (x + 1) % n].height);
       const f64 above = static_cast<f64>(field.texels[up * n + x].height);
       const f64 below = static_cast<f64>(field.texels[down * n + x].height);
-      const f64 nx = -(right - left) / (2.0 * texel);
+      const f64 nx = -(right - left) / (2.0 * (field.texel_u_m > 0.0 ? field.texel_u_m : texel));
       const f64 ny = (below - above) / (2.0 * texel);
       const f64 inv = 1.0 / std::sqrt(nx * nx + ny * ny + 1.0);
       out.normal[i * 3 + 0] = to_byte(0.5 + 0.5 * nx * inv);
       out.normal[i * 3 + 1] = to_byte(0.5 + 0.5 * ny * inv);
       out.normal[i * 3 + 2] = to_byte(0.5 + 0.5 * inv);
     }
+  }
+  // A spray's outline; every other kind's set is opaque and has none.
+  out.alpha.clear();
+  if (!field.alpha.empty()) {
+    out.alpha.resize(count);
+    for (u32 i = 0; i < count; ++i)
+      out.alpha[i] = to_byte(static_cast<f64>(field.alpha[i]));
   }
   if (stats_out != nullptr) *stats_out = stats;
   return true;
@@ -711,7 +748,10 @@ Set ground_turf() {
 
 // Limewash over a lime render: one pale constituent worn here and there to the render under it,
 // no joint, the float's undulation of a few millimetres, the rain's streaks under the eaves, and
-// nothing growing on it (a wall limewashed again every few years).
+// nothing growing on it (a wall limewashed again every few years). No rock's stain: the kind tones
+// even a fresh break by a broad stain field (about 15 cm patches, a swing of 0.92 to 1.08 and more
+// under a rind), and on a limewash those were dark blots of 3 % in a room, the same with the
+// bounce's cache off (the forest's need 143; matgen.md, "A building's surfaces").
 Set plaster_lime() {
   Set s = base("plaster/lime", Kind::rock, 0x6c696d6577617368ull, 2000);
   s.stochastic = true;
@@ -726,6 +766,7 @@ Set plaster_lime() {
   r.pits_permille = 20;
   r.form_um = 6000;
   r.streak_permille = 200;
+  r.stain_permille = 0;
   return s;
 }
 
@@ -859,6 +900,57 @@ Set thatch_old() {
   return s;
 }
 
+// The needle sprays (G203; matgen.md, "Spray sets"; conifer-crown-coverage.md): one branchlet an
+// image for the conifers' whole-shoot cards, drawn for the card flora lays it on: 0.45 m long
+// (the card on a branch's own axis), 0.2 m of the branch wide (the default conifer's cards stand
+// that far apart: a needled reach of 1.2 m over six) and leaning 55 degrees forward from it, at
+// 1,024 texels. The schema's defaults are the Norway spruce's: needles 10 to 18 mm all round
+// twigs that leave their branchlet to one side and then the other, 30 mm apart.
+Set spray_of(const char* role, u64 seed) {
+  Set s = base(role, Kind::spray, seed, 450);
+  s.cavity_permille = 200;
+  s.spray.card_width_mm = 200;
+  s.spray.card_angle_deg = 55;
+  return s;
+}
+
+Set spruce_needles() { return spray_of("spruce/needles", 0x737072756365ull); }
+
+// The bare `conifer` is the spruce's solver under another name: the same recipe from its own seed.
+Set conifer_needles() { return spray_of("conifer/needles", 0x636f6e69666572ull); }
+
+// Scots pine: needles 40 to 60 mm by 1.5 to 2 mm, in pairs (Gymnosperm Database, *Pinus
+// sylvestris*: (2.5-)4-6(-9) cm by 1.5-2 mm, glaucous blue-green or grey-green), a tuft on the
+// last growth of each shoot; the shoots leave their parent in whorls and the wood behind is bare.
+Set pine_needles() {
+  Set s = spray_of("pine/needles", 0x70696e65ull);
+  Spray& p = s.spray;
+  p.form = SprayForm::pine;
+  p.node_mm = 95;
+  p.per_node = 3;
+  p.orders = 1;
+  p.shoot_angle_deg = 50;
+  p.shoot_spread_deg = 12;
+  p.reach_permille = 420;
+  p.taper_permille = 300;
+  p.needled_mm = 110;
+  p.needle_min_um = 40000;
+  p.needle_max_um = 60000;
+  p.needle_width_um = 1700;
+  p.needles_per_cm = 14;
+  p.needle_angle_deg = 40;
+  p.needle_spread_deg = 14;
+  p.flat_permille = 0;
+  p.twig_um = 6000;
+  p.needle_r_permille = 52;
+  p.needle_g_permille = 92;
+  p.needle_b_permille = 56;
+  p.twig_r_permille = 120;
+  p.twig_g_permille = 82;
+  p.twig_b_permille = 52;
+  return s;
+}
+
 }  // namespace
 
 Set variant_of(const Set& set, u32 index) {
@@ -876,11 +968,13 @@ Vector<Set> default_sets() {
     for (u32 k = 1; k <= k_tiled_variants; ++k)
       sets.push_back(variant_of(s, k));
   };
+  sets.push_back(conifer_needles());
   with_variants(gravel_bed());
   sets.push_back(ground_moss());
   sets.push_back(ground_soil());
   sets.push_back(ground_thatch());
   sets.push_back(ground_turf());
+  sets.push_back(pine_needles());
   sets.push_back(plaster_lime());
   sets.push_back(plaster_tint("plaster/lime_cream", 0x637265616dull, 760, 700, 560));
   sets.push_back(plaster_tint("plaster/lime_ochre", 0x6f63687265ull, 700, 590, 390));
@@ -893,6 +987,7 @@ Vector<Set> default_sets() {
   sets.push_back(rock_sandstone());
   with_variants(rock_scree());
   with_variants(sand_bar());
+  sets.push_back(spruce_needles());
   sets.push_back(stone_flag());
   sets.push_back(stone_rubble());
   sets.push_back(thatch_straw());
