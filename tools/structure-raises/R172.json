@@ -1,11 +1,12 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "R172",
-  "reason": "R172: GpuScene lists its sampled textures by slot (texture_records, TextureRecord, the load's records), which the texture feedback measurement reads",
+  "reason": "R172: GpuScene lists its sampled textures by slot (texture_records), which the feedback reads; and stage 1, the bound: gpu_scene.h the bound's four public calls, its state's owner and the load-time half's private calls; gpu_scene.cpp the load's upload from the floor into the bound's pairs, the plan, the material references and the destroy; record_frame the bound's call before terrain_prepare and the materials import for its record copies",
   "date": "2026-11-16",
   "by": "Marc Micalizzi",
   "deltas": {
-    "renderer.gpu_scene_cpp.lines": 5,
-    "renderer.gpu_scene_h.lines": 16
+    "renderer.record_frame.lines": 4,
+    "renderer.gpu_scene_cpp.lines": 31,
+    "renderer.gpu_scene_h.lines": 49
   }
 }

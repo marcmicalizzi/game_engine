@@ -21,6 +21,7 @@
 #include <systems/renderer/water_refract.h>
 
 #include <accumulation_pass.h>
+#include <texture_feedback.h>
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -1810,8 +1811,8 @@ bool SceneRenderer::set_dynamic_instances(std::span<const SceneInstance> tail,
     for (u32 i = 0; i < relayout_retired_.chain.count; ++i)
       retire_rt_buffer(relayout_retired_.chain.buffers[i]);
     if (relayout_retired_.tlas.handle.valid()) {
-      retired_tlas_.push_back(
-          RetiredTlas{relayout_retired_.tlas, relayout_retired_.tlas_slot, frames_.frame_index()});
+      retired_tlas_.push_back(RetiredTlas{relayout_retired_.tlas, relayout_retired_.tlas_slot,
+                                          frames_.frame_index()});
     }
     const bool must_wait = relayout_retired_.must_wait;
     relayout_retired_.clear();
