@@ -743,7 +743,20 @@ starts an app with a window adds the label beside the line that names it, as `to
 does. It is what lets the release app tests, all end-to-end, run as two chains at all: on gate b66
 they were 2,384 s one after another, `engine_content` 504 s and `engine_cli` 353 s of it headless.
 
-**Jobs.** Two chains and the CPU tests share the run's jobs: gate b66's `msvc-debug` was 4,480 s
-of chain and 2,155 s of everything else, 6,635 s of work, which three jobs cannot finish in under
-2,212 s whatever the chains do. The gate's `msvc-debug` suite takes **`-Jobs 4`**; the other
-suites' chains are shorter than their jobs' share.
+**What it gives back, replayed.** A replay of gate b66's two Windows suites that have the chain
+(each test's measured seconds as its holds, one after another with its CPU work between them,
+CTest's scheduler taking the longest test whose locks are free, one card shared first come first
+served by the suite alone, so the 348 s and 560 s the suites waited for others are left out;
+`simulate.py` in T89's scratch, 2026-11-16) — a prediction from one gate's seconds, which the next
+gate measures:
+
+| Suite | One chain (replayed / measured less its waits) | Two chains | The card's floor |
+|---|---|---|---|
+| `msvc-debug`, three or four jobs | 4,132 / 4,132 s | **2,695 s** | 2,036 s held |
+| `msvc-release`'s app tests | 1,827 / 1,822 s | **1,017 s** | 524 s held |
+| `msvc-debug` with the renderer's four parts run again as a weaker card (T162) | 5,173 s | **3,368 s** | 2,751 s held |
+
+The one-chain replay reproduces the measured run to the second once its waits are taken off, which
+is the check that the model holds. Jobs do not bind: two chains and the 2,155 s of CPU tests
+finish in the same time at three jobs as at five, so the gate's three stand. With the chains the
+card is the next bound — held 75% of the replayed debug suite, 82% with T162's run in it.
