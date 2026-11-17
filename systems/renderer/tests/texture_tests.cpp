@@ -22,6 +22,7 @@
 #include <domain/texture/texture_build.h>
 #include <domain/texture/texture_file.h>
 #include <foundation/image/png.h>
+#include <foundation/tunables/tunables.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/scene.h>
@@ -34,6 +35,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -1022,4 +1024,64 @@ TEST_CASE("renderer: kit members that sample one image upload it once and draw t
     CHECK(differing_pixels(streamed.shot(), shared_frame) == 0);
   }
   device.destroy();
+}
+
+// **The texture feedback asks for the level the sampler reads** (texture.md, "Levels resident by
+// what the frame samples"; R172): the quad faces the camera, so every pixel's footprint is the
+// same `texels_per_pixel` along both axes and a trilinear sample reads level
+// `floor(log2(texels_per_pixel))` first (level 0 where it magnifies). The measurement, written when
+// the renderer is destroyed, has to name that level for the quad's one texture at three distances.
+TEST_CASE("renderer: the texture feedback names the level the quad's samples read first") {
+  const test::TempDir tmp("renderer_texture_feedback");
+  const std::filesystem::path dir = tmp.native();
+  REQUIRE(write_quad(dir));
+  Vector<u8> png;
+  REQUIRE(write_image(dir, k_size, smooth_image(k_size), png));
+  const std::string mesh = (dir / "quad.gltf").string();
+  const std::string ddc = (dir / "ddc").string();
+  tunables::Tunable* feedback = tunables::find("renderer.textures.feedback");
+  REQUIRE(feedback != nullptr);
+  struct Reset {
+    tunables::Tunable* t;
+    ~Reset() { t->reset(); }
+  } reset{feedback};
+  for (const f32 distance : {1.5f, 5.8f, 11.0f}) {
+    const f64 lambda = std::log2(texels_per_pixel(distance, k_size));
+    // Clear of a level's edge, so the GPU's rounding cannot put the answer on the other side.
+    REQUIRE(std::abs(lambda - std::round(lambda)) > 0.15);
+    const i32 expected = lambda <= 0.0 ? 0 : static_cast<i32>(std::floor(lambda));
+    const std::string out = (dir / ("feedback-" + std::to_string(expected) + ".jsonl")).string();
+    std::string error;
+    REQUIRE_MESSAGE(feedback->set_from_text(out, &error), error);
+    {
+      Harness h;
+      if (!h.build(mesh, ddc)) {
+        MESSAGE("skipped: " << h.skip);
+        return;
+      }
+      for (u32 f = 0; f < 4; ++f) {  // past the frames in flight, so a fold has happened
+        FrameDesc frame;
+        frame.camera.position = absolute(WorldPos::origin(), Vec3{0.0f, 0.0f, distance});
+        frame.camera.target = absolute(WorldPos::origin(), Vec3{0.0f, 0.0f, 0.0f});
+        frame.camera.fov_y = k_fov;
+        frame.view_mode = static_cast<u32>(gfx::ResolveMode::Shaded);
+        CapturedFrame shot;
+        REQUIRE_MESSAGE(h.renderer.capture(frame, {}, shot, &error), error);
+      }
+    }  // the renderer's destroy writes the file
+    std::ifstream in(out);
+    REQUIRE(in.good());
+    std::string line;
+    i32 finest = -2;
+    u32 textures = 0;
+    while (std::getline(in, line)) {
+      const usize at = line.find("\"finest_ever\":");
+      if (line.rfind("{\"texture\":", 0) != 0 || at == std::string::npos) continue;
+      ++textures;
+      finest = std::atoi(line.c_str() + at + 14);
+    }
+    INFO("distance " << distance << " m, lambda " << lambda);
+    CHECK(textures == 1);
+    CHECK(finest == expected);
+  }
 }
