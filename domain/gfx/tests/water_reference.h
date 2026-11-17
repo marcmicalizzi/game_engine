@@ -158,8 +158,9 @@ inline void wave_add(const gfx::WaterWave& wave, double x, double z, double t, d
   if (!(wave.amplitude > 0.0f)) return;
   const double k = static_cast<double>(wave.k);
   // The direction's length is the band's crest length over `k_water_group_across` (W136-3).
-  const double crest = std::sqrt(static_cast<double>(wave.direction.x) * wave.direction.x +
-                                 static_cast<double>(wave.direction.y) * wave.direction.y);
+  const double crest_x = static_cast<double>(wave.direction.x);
+  const double crest_y = static_cast<double>(wave.direction.y);
+  const double crest = std::sqrt(crest_x * crest_x + crest_y * crest_y);
   const double dx = static_cast<double>(wave.direction.x) / crest;
   const double dz = static_cast<double>(wave.direction.y) / crest;
   const double lambda = k_two_pi / k;
