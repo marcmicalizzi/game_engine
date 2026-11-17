@@ -1,0 +1,16 @@
+{
+  "format": "engine.camera-path.v1",
+  "name": "cave held",
+  "description": "Twelve seconds held in the passage 9 m from the shaft, looking down its wall: nothing moves, so every change between frames is the picture's own (R171's temporal measure).",
+  "fps": 60,
+  "interpolation": "Smooth",
+  "znear": 0.05,
+  "keys": [
+    {"time": 0, "fov_deg": 70, "position": [9, -5.6, 0.5], "target": [9.5, -6.0, -3]},
+    {"time": 12, "fov_deg": 70, "position": [9, -5.6, 0.5], "target": [9.5, -6.0, -3]}
+  ],
+  "markers": [
+    {"frame": 180, "name": "warm"},
+    {"frame": 600, "name": "held"}
+  ]
+}

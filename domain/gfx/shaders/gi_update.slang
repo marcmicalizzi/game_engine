@@ -377,14 +377,18 @@ uint gi_trace_and_add(ResolveParams* params, uint2 p, Surface s, InstanceDesc in
     slots[taken] = slot;
     ++taken;
   }
+  // The fourth leg: a light a coarser cell sees moving (k_gi_cell_following) is handed down the same
+  // way, and the finer cells fold that frame at today's rate.
   if (memory) {
     Atomic<uint>* words = (Atomic<uint>*)gi_cell_words(params->gi_cells, params->gi_count);
-    bool changed = false;
+    uint flags = 0u;
     for (uint i = taken; i > 0u; --i) {
       const uint slot = slots[i - 1u];
       if (slot == k_gi_no_slot) continue;
-      if (changed) words[slot * k_gi_cell_words + 2u].or(k_gi_frame_drop);
-      if ((words[slot * k_gi_cell_words + 1u].load() & k_gi_cell_changed) != 0u) changed = true;
+      if (flags != 0u) words[slot * k_gi_cell_words + 2u].or(flags);
+      const uint seen = words[slot * k_gi_cell_words + 1u].load();
+      if ((seen & k_gi_cell_changed) != 0u) flags |= k_gi_frame_drop;
+      if ((seen & k_gi_cell_following) != 0u) flags |= k_gi_frame_follow;
     }
   }
   return own;
@@ -645,12 +649,13 @@ void gi_fold_main(uint3 id : SV_DispatchThreadID) {
   bool expired = false;
   if (keys[cell] != 0u) {
     // The frame's samples; the top bit is a change a coarser cell saw (R171's third leg).
-    const uint n = words[2] & ~k_gi_frame_drop;
+    const uint n = words[2] & ~k_gi_frame_flags;
     const bool drop = (words[2] & k_gi_frame_drop) != 0u;
+    const bool follow = (words[2] & k_gi_frame_follow) != 0u;
     // Stage 8: a foliage cell is known by its stamp's top bit, and remembers longer (below).
     const bool crown_cell = (words[1] & k_gi_stamp_crown) != 0u;
     if (n == 0u) {
-      if (drop) words[2] = 0u;
+      if (drop || follow) words[2] = 0u;
       const uint age = (gi_now(params) - words[1]) & k_gi_stamp_frames;
       uint* bucket = (uint*)gi_cell_words(params->gi_cells, params->gi_count) +
                            (cell & ~(k_gi_bucket - 1u)) * k_gi_cell_words;
@@ -705,13 +710,16 @@ void gi_fold_main(uint3 id : SV_DispatchThreadID) {
       // stands for the whole history: the rate is then a frame's share of sixteen
       // (gfx::gi_history_rate).
       const uint full = max(k_gi_max_samples, n * frames);
-      const float rate = float(n) / float(previous >= 0xffffu ? full : total);
+      const float short_rate = float(n) / float(previous >= 0xffffu ? full : min(previous + n, cap));
+      // The fourth leg: told that a coarser cell sees its light moving, this frame at today's rate.
+      const float long_rate = float(n) / float(previous >= 0xffffu ? full : total);
+      const float rate = memory && follow ? max(long_rate, short_rate) : long_rate;
       const float3 old_mean = float3(f16tof32(words[6] & 0xffffu), f16tof32(words[6] >> 16),
                                      f16tof32(words[7] & 0xffffu));
       float3 mean = previous == 0u ? frame_mean : lerp(old_mean, frame_mean, rate);
-      // The short mean, at today's history, in the second word's high half.
-      const float short_old = f16tof32((words[1] >> 16) & 0x7fffu);
-      const float short_rate = float(n) / float(previous >= 0xffffu ? full : min(previous + n, cap));
+      // The short mean, at today's history, in the second word's high half (its lowest bit the
+      // fourth leg's flag).
+      const float short_old = f16tof32((words[1] >> 16) & 0x7ffeu);
       const float short_mean = previous == 0u ? gi_luminance(frame_mean)
                                               : lerp(short_old, gi_luminance(frame_mean), short_rate);
       // **R171: the cell's spread, measured between frames** (gfx::gi_spread_fold, the same
@@ -734,14 +742,19 @@ void gi_fold_main(uint3 id : SV_DispatchThreadID) {
       // makes (a sample's variance from the measured spread, over 2 cap - n); out of it, or told
       // by a coarser cell of a ladder through this one, back to today's history at once, from the
       // short mean's level.
+      // The fourth leg: only a cell taking k_gi_test_samples a frame tests itself (an own cell's
+      // chance let-go was a blob a cell wide), and one between k_gi_follow_sigmas and the four
+      // that let it go says its light is moving, for the finer cells of its ladders.
       bool changed = false;
-      if (memory && previous != 0u && spread > 0.0) {
+      bool following = false;
+      if (memory && previous != 0u && n >= k_gi_test_samples && spread > 0.0) {
         const float nf = float(n);
         const float tf = float(total);
         const float sample = previous + n > total ? spread * (2.0 * tf - nf) / tf : spread;
         const float var_short = sample / (2.0 * float(cap) - nf);
         const float apart = gi_luminance(mean) - short_mean;
         changed = apart * apart > k_gi_change_sigmas * k_gi_change_sigmas * var_short;
+        following = apart * apart > k_gi_follow_sigmas * k_gi_follow_sigmas * var_short;
       }
       uint count = total;
       const uint back = cap / k_gi_memory_back;
@@ -751,15 +764,28 @@ void gi_fold_main(uint3 id : SV_DispatchThreadID) {
         mean = lerp(base, frame_mean, float(n) / float(back + n));
         count = back + n;
       }
-      words[1] = (words[1] & 0xffffu) | ((f32tof16(short_mean) & 0x7fffu) << 16) |
-                 (changed ? k_gi_cell_changed : 0u);
+      words[1] = (words[1] & 0xffffu) | ((f32tof16(short_mean) & 0x7ffeu) << 16) |
+                 (changed ? k_gi_cell_changed : 0u) | (following ? k_gi_cell_following : 0u);
       words[0] = (words[0] & 0xffff0000u) | (f32tof16(spread) & 0xffffu);
+      // The fourth leg (gfx::gi_half_unbiased): under the memory the long mean is rounded to its
+      // halves without a bias, by a chance drawn from the cell's own words, so its small steps are
+      // kept in expectation; rounded to nearest they were lost downwards and kept upwards on skewed
+      // samples, and the indirect light's level rose (+9 % simulated, 0.2 to 1.8 % on the GPU).
+      uint mean_rg = f32tof16(mean.r) | (f32tof16(mean.g) << 16);
+      uint mean_b = f32tof16(mean.b) & 0xffffu;
+      if (memory) {
+        const uint h = gi_round_hash(words[3], words[4], words[5] ^ (n << 8), words[6] ^ words[7]);
+        const float k = 1.0 / 1024.0;
+        mean_rg = gi_half_unbiased(mean.r, float(h & 0x3ffu) * k) |
+                  (gi_half_unbiased(mean.g, float((h >> 10) & 0x3ffu) * k) << 16);
+        mean_b = gi_half_unbiased(mean.b, float((h >> 20) & 0x3ffu) * k);
+      }
       words[2] = 0u;
       words[3] = 0u;
       words[4] = 0u;
       words[5] = 0u;
-      words[6] = f32tof16(mean.r) | (f32tof16(mean.g) << 16);
-      words[7] = f32tof16(mean.b) | (min(count, 0xffffu) << 16);
+      words[6] = mean_rg;
+      words[7] = mean_b | (min(count, 0xffffu) << 16);
       kept = true;
       young = count < k_gi_young;
     }

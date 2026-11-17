@@ -535,8 +535,8 @@ MemoryRun memory_run(bool memory, f32 scale, u32 seed) {
         parent_sum += sum;
         GiMemoryCell& cell = children[p * k_children + c];
         const u32 before = cell.count;
-        gi_memory_fold(cell, k_n, static_cast<f32>(sum / static_cast<f64>(k_n)), handed[p] != 0,
-                       memory);
+        gi_memory_fold(cell, k_n, static_cast<f32>(sum / static_cast<f64>(k_n)),
+                       (handed[p] & 1u) != 0, memory, (handed[p] & 2u) != 0);
         if (frame >= 400 && frame < k_still && cell.count < before) ++out.still_drops;
         all_means += static_cast<f64>(cell.mean);
         all_squares += static_cast<f64>(cell.mean) * static_cast<f64>(cell.mean);
@@ -544,7 +544,7 @@ MemoryRun memory_run(bool memory, f32 scale, u32 seed) {
       gi_memory_fold(parents[p], k_n * k_children,
                      static_cast<f32>(parent_sum / static_cast<f64>(k_n * k_children)), false,
                      memory);
-      handed[p] = parents[p].changed ? 1 : 0;
+      handed[p] = static_cast<u8>((parents[p].changed ? 1u : 0u) | (parents[p].following ? 2u : 0u));
     }
     const f64 cells = static_cast<f64>(k_parents * k_children);
     const f64 mean = all_means / cells;
@@ -602,20 +602,30 @@ TEST_CASE("gi cache key: a cell remembers longer while its light holds still, an
     CHECK(today.count == gi_history_cap(11));
     CHECK(longer.count == gi_memory_cap(11));
     CHECK(gi_memory_cap(11) == 4096u);
+    // The fourth leg's following frames take their share of the still variance too: 13 % more in
+    // the simulation behind k_gi_follow_sigmas, inside the factor of two.
     CHECK(longer.still_variance < 2.0 * today.still_variance * 501.0 / 8181.0);
-    // An own cell tests itself too: its long and short means are four of the short one's deviations
-    // apart by chance at 4 / 0.91 = 4.4 of their difference's, 1.1e-5 a frame, so the run's 512,000
-    // own-cell frames expect 5.6 sent back (3 here); 16 is that count's Poisson tail at 1e-4. They
-    // are the blobs renderer.md names.
-    CHECK(longer.still_drops <= 16u);
+    // Since the fourth leg an own cell (eleven a frame, under k_gi_test_samples) does not test
+    // itself, so none is sent back by its own chance (leg 3's run sent back 3, the blobs). A coarse
+    // cell's chance let-go would send its 64 children together: four of its short mean's deviations,
+    // 1.1e-5 a frame (k_gi_change_sigmas), 0.09 expected in the run's 8,000 coarse-cell frames.
+    CHECK(longer.still_drops <= 64u);
     CHECK(today.still_drops == 0u);
     CHECK(longer.settled <= today.settled);
   }
   {
+    // **The change too small to let go for** (leg 3's limit, the fourth leg's mend): a 10 % step
+    // stays under four deviations at the coarse cells but crosses k_gi_follow_sigmas within frames,
+    // and the own cells follow it at today's rate while it does. Leg 3's rule settled in 258 frames
+    // (500 in this run's measure, which allows the coarse average's own noise) against today's 84
+    // (50 here); the simulation behind k_gi_follow_sigmas settles in 122 against today's 50, and
+    // the bound is three times today's: the following frames are taken only while a coarse cell
+    // still sees the step, so the tail is the long memory's past that point.
     const MemoryRun today = memory_run(false, 0.9f, 4242u);
     const MemoryRun longer = memory_run(true, 0.9f, 4242u);
-    MESSAGE("the rule's limit, a change of 10 %: settled within a tenth in "
-            << today.settled << " frames today, " << longer.settled << " with the memory");
+    MESSAGE("a change of 10 %: settled within a tenth in " << today.settled << " frames today, "
+                                                             << longer.settled << " with the memory");
+    CHECK(longer.settled <= 3u * today.settled);
   }
   // The memory off is today's fold: the count and the mean as `gi_history` and its rate take them.
   GiMemoryCell cell;
@@ -634,6 +644,81 @@ TEST_CASE("gi cache key: a cell remembers longer while its light holds still, an
   // A coarse cell's whole field and a foliage cell's are left as they were.
   CHECK(gi_memory_cap(5000) == gi_history_cap(5000));
   CHECK(gi_memory_cap(700) == k_gi_memory_count_max);
+}
+
+// **R171's fourth leg: a long mean kept in halves holds its level when it is rounded without a
+// bias** (renderer.md, "R171: the memory made right"). One own cell of the plain wall's heavy
+// samples (eleven a frame, a tenth of them 2.0 and the rest 0.05: mean 0.245, a sample's spread
+// 5.7 times its mean's square), folded at the memory's 4,096 samples with the mean stored as a half
+// each frame, as the shader stores it: rounded to nearest the frequent small steps down are lost
+// and the rare large ones up kept, and the level climbs (+9 % in the simulation that found it);
+// rounded up or down by the chance its distance says (`gi_half_unbiased`), it stays with the fold
+// in float, within the run's own noise (the float fold's level over 40 cells and 2,000 frames
+// moves about 0.3 % between seeds: the bound is 1 %).
+TEST_CASE("gi cache key: a long mean in halves holds its level when rounded without a bias") {
+  // The halves themselves: exact values pass through, a value between two halves goes to one of
+  // them, and over many draws the expectation is the value.
+  CHECK(gi_half_value(gi_half_bits(0.25f)) == 0.25f);
+  CHECK(gi_half_value(gi_half_bits(1.0f)) == 1.0f);
+  CHECK(gi_half_unbiased(0.25f, 0.9f) == gi_half_bits(0.25f));
+  CHECK(gi_half_unbiased(0.0f, 0.5f) == 0u);
+  {
+    const f32 x = 0.2457f;
+    const f32 lo = gi_half_value(gi_half_bits(x) - (gi_half_value(gi_half_bits(x)) > x ? 1u : 0u));
+    f64 sum = 0.0;
+    for (u32 i = 0; i < 1024; ++i) {
+      const u32 h = gi_half_unbiased(x, static_cast<f32>(i) / 1024.0f);
+      const f32 v = gi_half_value(h);
+      CHECK(v >= lo);
+      CHECK(v - lo < 0.0003f);
+      sum += static_cast<f64>(v);
+    }
+    CHECK(sum / 1024.0 == doctest::Approx(static_cast<f64>(x)).epsilon(1e-5));
+  }
+  constexpr u32 k_cells = 40;
+  constexpr u32 k_frames = 2000;
+  constexpr u32 k_n = 11;
+  f64 level[3] = {0.0, 0.0, 0.0};  // float, nearest, unbiased
+  u32 state = 977u;
+  for (u32 c = 0; c < k_cells; ++c) {
+    f32 m[3] = {0.0f, 0.0f, 0.0f};
+    u32 count = 0;
+    for (u32 frame = 0; frame < k_frames; ++frame) {
+      u32 sum_fixed = 0;
+      f32 sum = 0.0f;
+      for (u32 i = 0; i < k_n; ++i) {
+        const f32 u = static_cast<f32>(next(state) & 0xffffu) / 65536.0f;
+        const f32 x = u < 0.1f ? 2.0f : 0.05f;
+        sum += x;
+        sum_fixed += static_cast<u32>(x * 1024.0f + 0.5f);
+      }
+      const f32 fm = sum / static_cast<f32>(k_n);
+      const u32 total = count + k_n < gi_memory_cap(k_n) ? count + k_n : gi_memory_cap(k_n);
+      const f32 rate = static_cast<f32>(k_n) / static_cast<f32>(total);
+      for (u32 k = 0; k < 3; ++k) {
+        const f32 next_mean = count == 0 ? fm : m[k] + (fm - m[k]) * rate;
+        if (k == 0) m[k] = next_mean;
+        if (k == 1) m[k] = gi_half_value(gi_half_bits(next_mean));
+        if (k == 2) {
+          const u32 h = gi_round_hash(sum_fixed, frame, c, gi_half_bits(m[k]));
+          m[k] = gi_half_value(gi_half_unbiased(next_mean, static_cast<f32>(h & 0x3ffu) / 1024.0f));
+        }
+      }
+      count = total;
+      if (frame >= k_frames / 2)
+        for (u32 k = 0; k < 3; ++k) level[k] += static_cast<f64>(m[k]);
+    }
+  }
+  const f64 frames = static_cast<f64>(k_cells * (k_frames / 2));
+  const f64 floating = level[0] / frames;
+  const f64 nearest = level[1] / frames;
+  const f64 unbiased = level[2] / frames;
+  MESSAGE("the long mean's level: in float " << floating << ", halves to nearest " << nearest << " ("
+                                             << 100.0 * (nearest / floating - 1.0)
+                                             << " %), halves without a bias " << unbiased << " ("
+                                             << 100.0 * (unbiased / floating - 1.0) << " %)");
+  CHECK(nearest > floating * 1.03);  // the defect the rounding removes, seen
+  CHECK(std::fabs(unbiased / floating - 1.0) < 0.01);
 }
 
 // R171: the walk's answer against the ladder's last level, by the cells' measured spreads.

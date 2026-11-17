@@ -1,0 +1,4 @@
+{"format":"engine.caves.passage","version":1,"seed":7,"entrance_radius_m":1.5,"shaft_m":4,
+ "points":[[3,-5.5,0],[9,-6,0],[15,-6.5,1.5]],
+ "segments":[{"profile":0,"width_m":5,"height_m":3}],
+ "roughness":0.04,"ring_vertices":32,"ring_spacing_m":0.4}
