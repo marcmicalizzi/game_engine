@@ -231,7 +231,7 @@ TEST_CASE("furnish: a kit's pieces stand in the box pieces' place at the furnish
                           KitRow{1, PieceKind::Bed, 145, 205, 105},
                           KitRow{2, PieceKind::Chest, 95, 50, 55},
                           KitRow{3, PieceKind::Settle, 160, 60, 300},  // under no ceiling
-                          KitRow{4, PieceKind::Chest, 400, 50, 55}};   // along no wall
+                          KitRow{4, PieceKind::Chest, 1500, 50, 55}};  // longer than any wall
   const Kit kit{rows, 5};
   const RuralPlot plots[3] = {RuralPlot{2400, 1500}, RuralPlot{760, 1500}, RuralPlot{1200, 520}};
   u32 houses = 0, kit_pieces = 0, by_row[5] = {0, 0, 0, 0, 0};

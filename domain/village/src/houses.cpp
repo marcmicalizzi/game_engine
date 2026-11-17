@@ -608,17 +608,17 @@ bool house_for(void* context, const HouseAsk& ask, House& out, std::string& why)
   const auto* hk = static_cast<const detail::HouseKit*>(context);
   const dwellings::Kit kit = kit_of(hk);
   structure::Description d;
-  const Draw w = house_draw(ask);
+  const Draw drawn = house_draw(ask);
   dwellings::RuralChoice choice;
   dwellings::InteriorPlan interior;
-  if (!house_plan(w, kit, choice, interior, d, why)) return false;
+  if (!house_plan(drawn, kit, choice, interior, d, why)) return false;
   if (!structures::validate(d, why)) {
     why = "rural filler: the mesher refuses the description: " + why;
     return false;
   }
-  out.persons = w.household.persons;
-  out.means = w.household.means;
-  out.filler_seed = w.seed;
+  out.persons = drawn.household.persons;
+  out.means = drawn.household.means;
+  out.filler_seed = drawn.seed;
   out.type = dwellings::plan_type_name(interior.params.type);
   Walk walk;
   if (!structures::walk_records(d, walk, why)) return false;
@@ -627,7 +627,7 @@ bool house_for(void* context, const HouseAsk& ask, House& out, std::string& why)
   // piece states no box of the description.
   if (kit.count > 0 && hk != nullptr && hk->layer != nullptr) {
     dwellings::Furnishing f;
-    house_furnishing(w, kit, choice, interior, f);
+    house_furnishing(drawn, kit, choice, interior, f);
     // Read back by the furnisher's own validator, which repairs nothing.
     if (!dwellings::validate_furnishing(interior, f, &why)) {
       why = "the kit's furnishing: " + why;
