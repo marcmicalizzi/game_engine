@@ -913,7 +913,8 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
     sill[i] = std::max(c.bed[i], sill[i + 1]);
   Vector<Wet> pool(outs.size());
   // 0 not a pool, 1 a pool, 2 a pit open past the reach, 3 a pool the water above it spilled
-  // lower than (not written), 4 a station above a pool its still water reaches back to.
+  // lower than (not written), 4 a station above a pool its still water reaches back to, 5 a
+  // station above a pool's edge written at the pool's level.
   Vector<u8> pooled(outs.size(), 0);
   Vector<u8> held_low(outs.size(), 0);
   Vector<u8> opened(outs.size(), 0);
@@ -945,6 +946,7 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
         if (pooled[k] == 1 && cap < o.level - k_over_bank_m) {
           u32 j = k;
           bool holds = true;
+          bool ends = false;  // the line's own ground rises out of the pool at j - 1
           while (j > 0 && held_low[j - 1] != 0 && put[j - 1] < o.level - k_over_bank_m) {
             const Out& up = outs[j - 1];
             // Where the ground on the line itself stands at the pool's level, the pool ends
@@ -952,7 +954,10 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
             // in (its section may have been read beside the line, on ground lower than the bed).
             const f64 on_line = ground.surface_mm(scene_gen::nearest_mm(c.x[up.node]),
                                                   scene_gen::nearest_mm(c.z[up.node]));
-            if (!(on_line < o.level)) break;
+            if (!(on_line < o.level)) {
+              ends = true;
+              break;
+            }
             const Wet w = pool_at(c, ground, up.node, o.level);
             if (w.over || !(o.level > c.bed[up.node])) {
               holds = false;
@@ -967,6 +972,27 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
               put[i] = o.level;
               held[i] = 0;
               opened[i] = 0;
+            }
+            // **Where the bed rises out of the pool** (W138, with W131's section) the stream that
+            // runs in was written lower than the pool, at a bank read beside the line or at a pit's
+            // edge, under the line's own ground, and the sheet climbed from it to the pool (24 of
+            // the 119 gaps on v47's lines over 30 % with both rows). Its water stands at least at
+            // the pool's level where it meets the pool, so each such station above in the pool's
+            // backwater (its own solved level at the pool's or higher) is written at the pool's
+            // level while the line's own ground there stands at that level or higher, which hides
+            // what is written under it; it keeps the wet width it had.
+            if (ends) {
+              for (u32 i = j; i-- > 0;) {
+                if (held_low[i] == 0 || !(put[i] < o.level - k_over_bank_m)) break;
+                if (outs[i].level < o.level - k_over_bank_m) break;  // above the pool's backwater
+                const f64 at_line = ground.surface_mm(scene_gen::nearest_mm(c.x[outs[i].node]),
+                                                      scene_gen::nearest_mm(c.z[outs[i].node]));
+                if (!(at_line >= o.level)) break;
+                pool[i] = wet_of(outs[i], put[i]);
+                pooled[i] = 5;
+                put[i] = o.level;
+                held[i] = o.level < outs[i].level - k_over_bank_m ? 1 : 0;
+              }
             }
           } else {
             pooled[k] = 3;
@@ -985,7 +1011,7 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
   for (u32 k = 0; k < outs.size(); ++k) {
     const Out& o = outs[k];
     const bool still = pooled[k] == 1 || pooled[k] == 4;
-    const Wet w = still ? pool[k] : wet_of(o, put[k]);
+    const Wet w = still || pooled[k] == 5 ? pool[k] : wet_of(o, put[k]);
     StationNode s;
     s.s = o.s;
     s.level = put[k];
@@ -1019,7 +1045,7 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
                                            : o.met ? o.arrived
                                                    : std::max(put[index], bed + k_depth_min_m));
     const bool still = pooled[index] == 1 || pooled[index] == 4;
-    const Wet w = still ? pool[index] : wet_of(o, put[index]);
+    const Wet w = still || pooled[index] == 5 ? pool[index] : wet_of(o, put[index]);
     if (!f.ok) return refuse(error, line.name, "a station has no water in its section");
     if (still) ++stats.pools;
     if (pooled[index] == 2) ++stats.pools_open;

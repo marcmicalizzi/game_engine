@@ -811,6 +811,20 @@ no higher than the water above it spilled` (a bowl open on one side over its ups
 W138 its closed half was a pool 0.39 to 0.51 m deep over the spilled film; now no station there is
 deeper than 0.2 m).
 
+**The stream that runs into a pool meets it at its level** (W138 with W131, 2026-11-16). Where
+the walk back stops at the line's own ground, the stations above it in the pool's backwater
+(their own solved level at the pool's or higher) that were written lower than the pool, at a bank
+or a pit's edge read beside the line, are written at the pool's level while the line's own ground
+at each stands at that level or higher, so what is written under the drawn bed stays hidden and
+the pool's surface reaches its edge; each keeps the wet width it had. Measured with W131's section
+on v47 at stage 1, the sheet climbing from such a station to its pool, which the draw refuses,
+was 24 of the 119 gaps on lines over 30 %; with this rule they are 88 (W131 alone 93, `main` 136)
+and `region link 515`'s 5. The case: `profile: the stream that runs into a pool is written at the
+pool's level` (a scarp beside the line above the bowl: before, 1 stretch from it to the pool not
+drawn; now none). Open: in that fixture the station on the bowl's rim, written at the pool's
+level 1.5 cm over its bed, carries the line's discharge through the sliver at Froude 20, so its
+energy head rises; it does so with or without this rule.
+
 **No section is without a bed** (W129.1, 2026-11-16). A bank's crest is walked out from the
 thalweg; on ground exactly as level as the thalweg (a floor the plan filled flat, or ground no
 cut crosses that a tile set holds at one height) the walk never rose, the crest stood at the

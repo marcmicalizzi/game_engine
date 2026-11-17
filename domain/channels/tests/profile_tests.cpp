@@ -723,6 +723,61 @@ TEST_CASE("profile: a pool stands no higher than the water above it spilled") {
 }
 
 namespace {
+// The bowl, with a scarp beside the line above it (W138 with W131; the forest's 24 gaps): from
+// x = 13 to 18.5, where the line's own ground still stands over the level the bowl holds, the
+// ground on its -z side past 0.2 m of the line falls to 19.1 m and stays there 30 m out, so the
+// section there is read on a bed under the line's ground, open on that side.
+f64 scarped_bowl_height(const void*, i64 x_mm, i64 z_mm) noexcept {
+  const f64 h = bowl_height(nullptr, x_mm, z_mm);
+  const f64 x = static_cast<f64>(x_mm) / 1000.0, z = static_cast<f64>(z_mm) / 1000.0;
+  return x >= 13.0 && x <= 18.5 && z < -0.2 ? std::min(h, 19.1) : h;
+}
+}  // namespace
+
+TEST_CASE("profile: the stream that runs into a pool is written at the pool's level") {
+  // The stations above the bowl were written at their open edge, 0.2 m under the pool's level and
+  // under the line's own ground, and the pool's surface stood over them: the sheet climbed from the
+  // one to the other, which the draw lays nothing on (a gap). The water that meets the pool
+  // stands at its level; written there it is still under the line's ground, and the sheet is laid.
+  scene_gen::Ground ground;
+  ground.surface_fn = &scarped_bowl_height;
+  FlowLine line = fixture_line("scarped bowl", 0, 50, 0, 0.021);
+  line.width.assign(2, 1.0);
+  std::string error;
+  Profile p;
+  REQUIRE_MESSAGE(solve_profile(line, ground, ProfileOptions{}, p, error), error);
+  REQUIRE(p.stats.pools > 0);
+  f64 pool = 1e9;
+  for (const ProfileStation& s : p.stations)
+    if (std::fabs(s.x - 25.0) < 3.0) pool = std::min(pool, s.level);
+  u32 undrawn = 0, raised = 0;
+  for (u32 k = 0; k + 1 < p.stations.size(); ++k) {
+    const ProfileStation& a = p.stations[k];
+    const ProfileStation& b = p.stations[k + 1];
+    if (a.x < 12.0 || b.x > 25.0) continue;
+    CAPTURE(a.x);
+    if ((a.flags & scene_gen::k_channel_fall_lip) != 0 &&
+        (b.flags & scene_gen::k_channel_fall_foot) != 0)
+      continue;
+    if (!scene_gen::channel_stretch_drawn(a.flags, b.flags, static_cast<f32>(a.depth),
+                                          static_cast<f32>(b.depth), a.level, b.level))
+      ++undrawn;
+    if (a.x >= 13.0 && a.x <= 18.5 && a.level >= pool - 1e-3) {
+      ++raised;
+      // Written no higher than the line's own ground there: hidden, never a sheet in the air.
+      CHECK(a.level <= scarped_bowl_height(nullptr, scene_gen::nearest_mm(a.x), 0) + 1e-3);
+    }
+  }
+  MESSAGE("the pool at " << pool << " m; " << raised << " stations above it at its level, "
+                         << undrawn << " stretches from x = 12 to the pool not drawn");
+  CHECK(raised > 0);
+  CHECK(undrawn == 0);
+  // Not check_head_falls: the station on the bowl's rim at x = 18.75, written at the pool's level
+  // 1.5 cm over its bed, takes the line's discharge through that sliver at Froude 20 with or
+  // without this rule (a pool's rim station's flow; HANDOFF, W138).
+}
+
+namespace {
 // **A bench cut across a hillside** (W131; the forest's `region link 515`, stations 374 to 407 and
 // 712 to 724): the hillside rises 0.65 across a line running +x (to its left, +z) and falls 0.1
 // along it. The cut is a floor a metre wide at the line, 0.4 m under the hillside, falling 4 %
