@@ -1956,7 +1956,8 @@ TEST_CASE("dynamic instances: a tail past a row of the folded cull draws the loa
 // survivor) — on a device that reports Vulkan's guaranteed 65,535 workgroups on x, with more
 // survivors than that: the arguments each was dispatched with are read back and must ask for no
 // more than the device allows, in rows of `gfx::k_dispatch_pitch`, and the picture is the one the
-// mesh path draws of the same scene. Before T165 each asked for its whole count on x.
+// mesh path draws of the same scene: the vertex path's to the bit, the software rasterizer's to
+// the contract the visibility test holds it to. Before T165 each asked for its whole count on x.
 
 namespace {
 
@@ -1988,7 +1989,7 @@ void check_folded(const Vector<u32>& args, u32 first, u32 count, u32 limit, cons
   CAPTURE(what);
   REQUIRE(args.size() >= first + 3);
   const u32 rows = (count + gfx::k_dispatch_pitch - 1) / gfx::k_dispatch_pitch;
-  MESSAGE(what << ": " << count << " workgroups dispatched as {" << args[first] << ", "
+  MESSAGE(std::string(what) << ": " << count << " workgroups dispatched as {" << args[first] << ", "
                << args[first + 1] << ", " << args[first + 2] << "}");
   CHECK(args[first] <= limit);
   CHECK(args[first] == std::min(count, gfx::k_dispatch_pitch));
@@ -2079,9 +2080,40 @@ TEST_CASE("dynamic instances: indirect dispatches fold past 65,535 workgroups, t
     const Difference d = compare(shot, expected);
     MESSAGE(name << ": " << shot.covered << " pixels covered; " << d.ids << " id, " << d.depth
             << " depth and " << d.color << " colour differences against the hardware path");
-    CHECK(shot.covered == expected.covered);
-    CHECK(d.ids == 0);
-    CHECK(d.depth == 0);
-    CHECK(d.color == 0);
+    if (!software) {
+      CHECK(shot.covered == expected.covered);
+      CHECK(d.ids == 0);
+      CHECK(d.depth == 0);
+      CHECK(d.color == 0);
+      continue;
+    }
+    // **The software rasterizer is not the hardware's to the bit**, and never was: it is held to
+    // the contract `domain/gfx/tests/visibility_tests.cpp` sets the two (edge rules along shared
+    // edges and silhouettes, its own depth interpolation) — coverage under 1 % apart, 90 % of the
+    // pixels both cover naming the same triangle, depth within a thousandth on average. Here the
+    // triangles are a pixel or less across, where those differences are largest; a row the fold
+    // lost or doubled would be thousands of boxes, far past all three.
+    u32 mismatch = 0;
+    u32 both = 0;
+    u32 same = 0;
+    f64 delta = 0.0;
+    for (u32 p = 0; p < shot.width * shot.height; ++p) {
+      const bool a = shot.ids[u64{p} * k_id_words] != k_no_id;
+      const bool b = expected.ids[u64{p} * k_id_words] != k_no_id;
+      if (a != b) ++mismatch;
+      if (!a || !b) continue;
+      ++both;
+      bool id = true;
+      for (u32 w = 0; w < k_id_words; ++w)
+        id = id && shot.ids[u64{p} * k_id_words + w] == expected.ids[u64{p} * k_id_words + w];
+      same += id ? 1u : 0u;
+      delta += std::fabs(static_cast<f64>(shot.depth[p]) - static_cast<f64>(expected.depth[p]));
+    }
+    MESSAGE("software against hardware: " << mismatch << " pixels differ in coverage, " << same
+                                          << " of " << both << " name the same triangle, mean "
+                                          << "depth difference " << delta / std::max(both, 1u));
+    CHECK(mismatch * 100 < expected.covered);
+    CHECK(u64{same} * 100 >= u64{both} * 90);
+    CHECK(delta / static_cast<f64>(std::max(both, 1u)) < 1.0e-3);
   }
 }
