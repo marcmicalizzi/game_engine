@@ -775,7 +775,7 @@ Build, CI, test and profiling infrastructure, and the machinery behind the stand
 | T47 | Nightly performance regression with significance tests | open | T35, T46 | M | design | [09 §9.1](plan/09-testing-profiling.md#91-test-taxonomy) |
 | T48 | Allocation counter as a frame-loop CI metric | done (2026-10-07, engine_view.frame_loop) | | S | routine | [renderer](subsystems/renderer.md#the-frame-loop-allocates-nothing) |
 | T49 | A "nothing enabled" benchmark frame | open | R30 | M | design | [11 §11.10](plan/11-performance-principles.md#1110-absent-capabilities-are-free) |
-| T50 | Per-kernel instantiation and code-size report | open | | S | routine | [11 §11.4](plan/11-performance-principles.md#114-branch-free-hot-paths-and-constexpr-dispatch) |
+| T50 | Per-kernel instantiation and code-size report (batch 67's sweep, 2026-11-16: nothing to count yet — no `make_dispatch_table` or kernel table of §11.4 exists in the tree, so the report waits on the first one, E3's) | open | T51 | S | routine | [11 §11.4](plan/11-performance-principles.md#114-branch-free-hot-paths-and-constexpr-dispatch) |
 | T51 | E3: runtime-selected kernel variants | open | T5 | M | research | [10 §10.5](plan/10-roadmap-risks.md#105-experiments-to-run-before-committing) |
 | T52 | Calibration runner, stage 3 | deferred (ADR-0011) | T51 | L | design | [ADR-0011](adr/0011-tunables-before-calibration.md) |
 | T53 | Divergence bisector and replay methods | open | S17 | M | design | [09 §9.2](plan/09-testing-profiling.md#92-determinism-infrastructure) |
