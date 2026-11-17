@@ -383,8 +383,8 @@ TEST_CASE("gltf: diffuse transmission splits the base colour, never adding to it
     std::string json = cube_json("cube.bin");
     const std::string ext = std::string(", \"extensions\": {\"KHR_materials_diffuse_transmission\":") +
                             " {\"diffuseTransmissionFactor\": " + std::to_string(t) + "}}";
-    for (const std::string anchor : {std::string("\"doubleSided\": true"),
-                                     std::string("\"alphaMode\": \"BLEND\"")}) {
+    for (const std::string_view anchor : {std::string_view("\"doubleSided\": true"),
+                                          std::string_view("\"alphaMode\": \"BLEND\"")}) {
       const std::size_t at = json.find(anchor);
       REQUIRE(at != std::string::npos);
       json.insert(at + anchor.size(), ext);
