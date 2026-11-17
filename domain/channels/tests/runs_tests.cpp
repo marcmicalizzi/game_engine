@@ -72,8 +72,8 @@ TEST_CASE("a fall whose foot does not stand lower is no nappe, and the classes a
 TEST_CASE("how fast a class's drawn water runs: the speed and the depth by length (W137)") {
   // 0-1 and 1-2 drawn, 2-3 a fall (never counted), 3-4 drawn: three drawn stretches, their speeds
   // the means of their stations' (0.15, 0.25, 0.9) and their depths (0.05, 0.05, 0.03).
-  scene::WaterChannel c =
-      line({10.0, 9.9, 9.8, 8.8, 8.7}, {0.05f, 0.05f, 0.05f, 0.03f, 0.03f}, {0, 0, k_lip, k_foot, 0});
+  scene::WaterChannel c = line({10.0, 9.9, 9.8, 8.8, 8.7}, {0.05f, 0.05f, 0.05f, 0.03f, 0.03f},
+                               {0, 0, k_lip, k_foot, 0});
   for (const f32 v : {0.1f, 0.2f, 0.3f, 0.8f, 1.0f})
     c.speed_mps.push_back(v);
   const LineRuns r = measure_runs(c);

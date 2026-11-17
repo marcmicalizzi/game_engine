@@ -189,9 +189,8 @@ struct Solver {
       // V / u* = F(R / D84), so S_f = V^2 / (g R F^2); the n that gives the same friction slope
       // in Manning's form is R^(1/6) / (sqrt(g) F).
       const f64 x = f.radius / c.d84[node];
-      const f64 ratio =
-          k_vpe_a1 * k_vpe_a2 * x /
-          std::sqrt(k_vpe_a1 * k_vpe_a1 + k_vpe_a2 * k_vpe_a2 * powd(x, 5.0 / 3.0));
+      const f64 ratio = k_vpe_a1 * k_vpe_a2 * x /
+                        std::sqrt(k_vpe_a1 * k_vpe_a1 + k_vpe_a2 * k_vpe_a2 * powd(x, 5.0 / 3.0));
       f.friction = f.speed * f.speed / (k_gravity * f.radius * ratio * ratio);
       f.n = powd(f.radius, 1.0 / 6.0) / (std::sqrt(k_gravity) * ratio);
     } else {
@@ -504,8 +503,8 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
           ++seg;
         const f64 span = along[seg + 1] - along[seg];
         const f64 u = span > 0.0 ? std::clamp((s - along[seg]) / span, 0.0, 1.0) : 0.0;
-        c.d84[k] = std::max(k_vpe_d84_min_m,
-                            line.d84[seg] + u * (line.d84[seg + 1] - line.d84[seg]));
+        c.d84[k] =
+            std::max(k_vpe_d84_min_m, line.d84[seg] + u * (line.d84[seg + 1] - line.d84[seg]));
       }
     } else {
       const ChannelLayer bed_defaults;

@@ -83,9 +83,8 @@ f64 weighted_quantile(const Vector<f64>& value, const Vector<f64>& weight, f64 s
     total += weight[i];
   }
   // By value, then by index: the same order on every toolchain.
-  std::sort(order.begin(), order.end(), [&](u32 a, u32 b) {
-    return value[a] < value[b] || (value[a] == value[b] && a < b);
-  });
+  std::sort(order.begin(), order.end(),
+            [&](u32 a, u32 b) { return value[a] < value[b] || (value[a] == value[b] && a < b); });
   const f64 want = std::clamp(share, 0.0, 1.0) * total;
   f64 sum = 0.0;
   for (u32 k = 0; k < n; ++k) {
@@ -136,7 +135,8 @@ JsonValue runs_json(const RunsBySlope& runs) {
     one["gaps"] = JsonValue(c.gaps);
     one["thin_share"] = JsonValue(round(c.length_m > 0 ? c.thin_m / c.length_m : 0.0, 1e4));
     one["alternations_per_100m"] = JsonValue(round(static_cast<f64>(c.alternations) * per, 1e2));
-    one["speed_median_mps"] = JsonValue(round(weighted_quantile(c.speed_mps, c.stretch_m, .5), 1e3));
+    one["speed_median_mps"] =
+        JsonValue(round(weighted_quantile(c.speed_mps, c.stretch_m, .5), 1e3));
     one["speed_p10_mps"] = JsonValue(round(weighted_quantile(c.speed_mps, c.stretch_m, .1), 1e3));
     one["speed_p90_mps"] = JsonValue(round(weighted_quantile(c.speed_mps, c.stretch_m, .9), 1e3));
     one["depth_median_m"] = JsonValue(round(weighted_quantile(c.depth_m, c.stretch_m, .5), 1e4));

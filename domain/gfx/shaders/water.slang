@@ -1236,7 +1236,7 @@ float water_channel_broken_share(float slope, float speed, float depth) {
          smoothstep(k_channel_veil_from_m, k_channel_veil_full_m, depth);
 }
 // **What the surface's pattern travels at** (W137; water::channel_travel_speed mirrors it;
-// stream-speed.md, "What the eye reads"): on a steep sheet the eye follows the jets over the
+// stream-speed.md, "What the eye reads: the threads, not the mean"): on a steep sheet the eye follows the jets over the
 // steps and the white they carry, which have fallen a step's height H, sqrt(v^2 + 2 g H); the
 // pattern is carried at sqrt(surface^2 + 2 g H w), w the step-pool's weight over the sheet's own
 // slope (the broken share's), H a choice on the clasts' scale. Nothing but the pattern's travel

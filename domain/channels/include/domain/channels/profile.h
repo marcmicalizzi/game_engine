@@ -15,12 +15,12 @@
 // perimeter, top width and first moment against a level come from the heights alone, counting only
 // ground connected to the thalweg under the level and stopping at each bank's crest. From them:
 // critical depth (Q^2 T = g A^3); a resistance (Ferguson 2007 by the bed's own D84, Jarrett 1984
-// by its slope, or one Manning's n); the standard step method upstream from every control in tranquil flow and
-// downstream in shooting flow; the regime where both stand by specific force, as a jump placed
-// where the shooting flow's sequent level is the level the tranquil profile holds a jump's length
-// on; and, where the bed drops three critical depths or more (S104's fall test at the solved
-// critical depth), a fall: critical at the lip, Rand's (1955) drop at the foot, and no surface
-// between. The description keeps the fewest nodes that hold the pins (stations.h).
+// by its slope, or one Manning's n); the standard step method upstream from every control in
+// tranquil flow and downstream in shooting flow; the regime where both stand by specific force, as
+// a jump placed where the shooting flow's sequent level is the level the tranquil profile holds a
+// jump's length on; and, where the bed drops three critical depths or more (S104's fall test at the
+// solved critical depth), a fall: critical at the lip, Rand's (1955) drop at the foot, and no
+// surface between. The description keeps the fewest nodes that hold the pins (stations.h).
 //
 // **Determinism.** + - x /, the square root, the falls' cube root and `core/math/deterministic.h`'s
 // exp and log for the two powers; bisections run until their bracket is one float wide; a line is
@@ -41,8 +41,8 @@ namespace engine::channels {
 // Ferguson's (2007) variable-power equation on the bed's own D84,
 //   V / u* = a1 a2 (R / D84) / sqrt(a1^2 + a2^2 (R / D84)^(5/3)),   u* = sqrt(g R S_f),
 // the roughness layer's V / u* = a2 R / D84 in water a few clasts deep and Manning–Strickler's
-// a1 (R / D84)^(1/6) in deep water (Rickenmann and Recking 2011's best of the conventional laws over
-// 2,890 field measurements). Its variable, the relative submergence, is the section's own: the
+// a1 (R / D84)^(1/6) in deep water (Rickenmann and Recking 2011's best of the conventional laws
+// over 2,890 field measurements). Its variable, the relative submergence, is the section's own: the
 // depth in hand over the clasts the plan lays (`ChannelSediment::d84_m`), or for a line with no
 // plan the clasts the plan's sediment law gives a bed of its section's bank height and slope.
 inline constexpr f64 k_vpe_a1 = 6.5;
@@ -57,7 +57,8 @@ inline constexpr f64 k_vpe_d84_min_m = 0.001;
 // over the reach about the node and R the hydraulic radius at the depth in hand, each held to the
 // range of his measurements (above a slope of 0.04 one of the two quotations of that range has
 // none: an extrapolation, stream-profile.md). **No longer the default** (W137): every small
-// stream's R is under his 0.15 m, so the clamp gave each its n at 15 cm, a boulder bed's on a brook.
+// stream's R is under his 0.15 m, so the clamp gave each its n at 15 cm, a boulder bed's on a
+// brook.
 inline constexpr f64 k_jarrett_n = 0.32;
 inline constexpr f64 k_jarrett_slope_exponent = 0.38;
 inline constexpr f64 k_jarrett_radius_exponent = -0.16;
@@ -134,7 +135,7 @@ struct ProfileStation {
   f64 width = 0;      // the line's width there, else the section's from crest to crest
   f64 manning_n = 0;  // the n the station was solved with (Ferguson's: R^(1/6) / (sqrt(g) V/u*))
   f64 d84 = 0;        // the bed's D84 the station's resistance read (0: the law reads none)
-  f64 over_m = 0;    // how far the solved level stood over the lower bank (0: it did not)
+  f64 over_m = 0;     // how far the solved level stood over the lower bank (0: it did not)
   u16 flags = 0;
 };
 
