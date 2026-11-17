@@ -52,8 +52,11 @@ namespace engine::water {
 inline constexpr std::string_view k_channel_generator = "water_channel";
 // The channel mesh builder's version: part of every channel file's bytes. 2: the sheet from the
 // solved description (S106). 3: the sheets cut where they meet, a pool over its bank drawn, a
-// nappe as wide as its lip and thinning to its sides (S108).
-inline constexpr u32 k_channel_mesh_version = 3;
+// nappe as wide as its lip and thinning to its sides (S108). 4 was taken twice, on two branches: a
+// reach vertex's UV.y carries the section's Froude number in its low bits (W139,
+// `pack_channel_hydraulic`), and no sheet climbs from or to a station over its bank (W138). 5:
+// both, assembled on one branch (b67-streams).
+inline constexpr u32 k_channel_mesh_version = 5;
 // The flow phase's period, seconds (water.slang's `k_channel_period_s`): UV.x lies in
 // [0, period + one triangle's travel time).
 inline constexpr f32 k_channel_phase_period_s = 8.0f;
@@ -162,6 +165,43 @@ inline constexpr f64 k_channel_dissipation_full = 0.2;
 inline constexpr f64 k_channel_veil_from_m = 0.0015;
 inline constexpr f64 k_channel_veil_full_m = 0.010;
 f64 channel_broken_share(f64 slope, f64 speed, f64 depth_m) noexcept;
+// **White needs a section of water, not a film** (W139; need 140): a sheet of millimetres over
+// gravel runs as threads between the clasts and has no water to entrain air into, however steep or
+// fast it is, so neither rule whitens a section whose hydraulic depth is under the first, and both
+// are whole by the second (a choice: the clasts of a small steep bed stand a few centimetres
+// proud; steep-streams.md, "The white's inputs per vertex"). W120's films are 5 mm, which until
+// W139 drew white blobs on the dry-looking gravel beside a pool (the forest's v48 mark 14).
+inline constexpr f64 k_channel_white_depth_from_m = 0.01;
+inline constexpr f64 k_channel_white_depth_full_m = 0.03;
+f64 channel_white_depth_gate(f64 hydraulic_m) noexcept;
+
+// **The section's Froude number rides on each vertex** (W139; needs 128, 139). The draw used to
+// take a triangle's speed from its phase gradient, one speed a triangle: the white was faceted
+// along every edge (128), and on the outer side of a bend, where every lattice node abeam the
+// station has the station's own phase, a triangle with a corner just past that wedge read a speed
+// of the cell over a phase difference near nothing — tens of metres a second in a pool of 0.1, a
+// Froude number past every bound, one pure white triangle (139). So a reach vertex carries the
+// section's Froude number in the lowest `k_channel_froude_bits` of its UV.y's half float (the
+// hydraulic depth, rounded to the half's other bits: within 1.6 %), the resolve decodes each corner
+// and interpolates both, and the speed is Fr sqrt(g D) at the pixel: one smooth field, and never
+// past the station's. The number is stored as q = round(31 sqrt(Fr / k_channel_froude_max)), so a
+// pool's 0.02 to 0.22 keeps its steps of under 0.02 and a torrent's 3 of 0.2. A nappe's vertex
+// (UV.y negative, its thickness) carries nothing. water.slang's `water_channel_unpack` is the
+// inverse; a value that is not a reach's (negative, or zero) packs as itself.
+inline constexpr u32 k_channel_froude_bits = 5;
+f32 pack_channel_hydraulic(f32 hydraulic_m, f32 froude) noexcept;
+void unpack_channel_hydraulic(f32 packed, f32& hydraulic_m, f32& froude) noexcept;
+// **What the surface's pattern travels at** (W137; water.slang's `water_channel_travel_speed`,
+// which this mirrors; docs/experiments/stream-speed.md, "What the eye reads: the threads, not the
+// mean"). A steep stream's solved speed is a mean over its steps and pools; what an eye follows on
+// it is the jets over each step and the white they carry, which have fallen a step's height:
+// sqrt(v^2 + 2 g H). The pattern on a sheet falling `slope` is carried at sqrt(surface^2 + 2 g H
+// w), H `k_channel_jet_m` (a choice, the clasts' scale the broken water is drawn on) and w the
+// step-pool's weight the broken share rises over; a level pool and a reach under 3 % travel at
+// their surface's speed. Only the pattern's travel reads it: the depth, the Froude number and every
+// rule on them keep the solve's own speed.
+inline constexpr f64 k_channel_jet_m = 0.25;
+f64 channel_travel_speed(f64 surface_speed, f64 slope) noexcept;
 
 // One channel as this capability draws it: the solved description about its origin, bounded.
 struct Channel {
@@ -224,6 +264,9 @@ bool stretch_jumps(const Channel& channel, u32 i) noexcept;  // a jump's head an
 // lower bank, and leaving it out is a bed with no water. So such a stretch is drawn when both
 // stations hold at least `k_channel_over_bank_depth_m` and the level does not rise along it by
 // more than `k_channel_over_bank_rise_m`. (Until S108 no stretch flagged at both ends was drawn.)
+// **Nor is a stretch with one end over a bank whose level rises** (W138): the level written at
+// that end is the bank's top, so a sheet climbing from it to a pool's level (0.5 to 3.1 m over a
+// quarter metre on the forest) is a face of water with nothing under it.
 // The rule is `scene_gen::channel_stretch_drawn`, which the cook's count of runs reads too.
 inline constexpr f32 k_channel_over_bank_depth_m = scene_gen::k_channel_over_bank_depth_m;
 inline constexpr f64 k_channel_over_bank_rise_m = scene_gen::k_channel_over_bank_rise_m;

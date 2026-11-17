@@ -45,6 +45,9 @@ of stations a jump's length apart.
 the reach about the station and R the section's hydraulic radius at the depth in hand, each held to
 the range of Jarrett's data (S 0.002 to 0.09, R 0.15 to 2.1 m; above a slope of 0.04 one of the two
 quotations of his range has no measurements, so that end is an extrapolation and the page says so).
+(W137, 2026-11-16: Jarrett's own report, USGS WRI 85-4004, read since, sets the law's range at S
+0.002 to 0.04 and R 0.5 to 7 ft: the 0.09 is past it. The engine's default is now Ferguson's law,
+[stream-speed](stream-speed.md); this one stays as `--resistance jarrett`.)
 In uniform flow this is his equation exactly, and it gives V = 3.1 R^0.83 S^0.12: on a steep bed the
 speed barely rises with the slope, where n = 0.04 would have it rise with the square root. The slope
 in n is the **bed's** and not the surface's, because the roughness is the bed's: a backwater does

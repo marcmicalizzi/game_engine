@@ -203,7 +203,7 @@ const char* k_usage =
     "                                          cooked beside each entry's plan; present with the\n"
     "                                          channels capability\n"
     "  flow solve <scene.json> <out.json> [--ddc <dir>] [--entry <i>] [--lattice <m>]\n"
-    "             [--resistance jarrett|manning] [--scene-out <scene.json>]\n"
+    "             [--resistance ferguson|jarrett|manning] [--scene-out <scene.json>]\n"
     "                                          the scene's streams solved in their own beds on\n"
     "                                          the ground it draws: the solved WaterChannel\n"
     "                                          blocks, and every dry link with its reason\n"

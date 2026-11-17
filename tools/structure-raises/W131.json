@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "W131",
+  "reason": "W131: channels.md says why the solve read the hillside beside the line, the count and the mend, the rules measured and not kept, the v47 numbers, and the forest's small scene, torrent and the pictures that checked it; apps.md names flow solve's --line-stats and under_ground",
+  "date": "2026-11-16",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/apps.md": 256,
+    "page:docs/subsystems/channels.md": 8078
+  }
+}

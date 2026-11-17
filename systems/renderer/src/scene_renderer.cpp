@@ -3943,6 +3943,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // A light too faint to test (R115; renderer.md): read by the resolve only while the lights'
     // shadows are traced, and 0 traces every light.
     resolve.light_tolerance = shadow_light_tolerance_tunable();
+    resolve.water_white_tier = water_white_tier_tunable();  // W139
     if (resolved_.hybrid) {
       // **Rays near, maps far** (R102): every light is traced as above within the ray distance of
       // this view's eye, and past it plus the band the maps answer for the light they follow and

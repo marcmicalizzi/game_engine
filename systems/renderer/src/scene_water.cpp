@@ -449,7 +449,12 @@ void find_plunges(const scene::Scene& file, SceneDesc& out) {
       }
     }
   }
-  // The highest falls first, and no more than a table entry holds.
+  // The highest falls first. **A plunge whose centre lies in a higher one's disc is that one's
+  // white water** (W138): the falls of one cascade, or of two lines, landing within a few metres
+  // are one churned patch, and drawing two discs over it draws nothing more. Until W138 each was a
+  // record of its own, and at twice the forest's flow three bodies held more than a table entry
+  // keeps and the load warned of each. Then no more than a table entry holds: what is left past it
+  // is the lowest of falls that stand apart, said once at information level.
   for (const BodyAt& body : bodies) {
     Vector<gfx::WaterPlunge>& list = out.mesh_info[body.mesh].water->plunges;
     if (list.empty()) continue;
@@ -457,11 +462,22 @@ void find_plunges(const scene::Scene& file, SceneDesc& out) {
                      [](const gfx::WaterPlunge& a, const gfx::WaterPlunge& b) {
                        return a.radius_m > b.radius_m;
                      });
+    const u32 found = list.size();
+    u32 kept = 0;
+    for (u32 k = 0; k < list.size(); ++k) {
+      bool inside = false;
+      for (u32 j = 0; j < kept && !inside; ++j) {
+        const f32 dx = list[k].at.x - list[j].at.x, dz = list[k].at.y - list[j].at.y;
+        inside = dx * dx + dz * dz < list[j].radius_m * list[j].radius_m;
+      }
+      if (!inside) list[kept++] = list[k];
+    }
+    list.resize(kept);
     if (list.size() > gfx::k_water_plunges) {
-      ENGINE_LOG_WARN(log_renderer,
-                      "a water body has more plunges than it keeps; the lowest dropped",
-                      log::field("body", out.mesh_info[body.mesh].name),
-                      log::field("plunges", list.size()), log::field("kept", gfx::k_water_plunges));
+      ENGINE_LOG_INFO(log_renderer,
+                      "a water body has more falls apart than it keeps; the lowest left",
+                      log::field("body", out.mesh_info[body.mesh].name), log::field("falls", found),
+                      log::field("apart", list.size()), log::field("kept", gfx::k_water_plunges));
       list.resize(gfx::k_water_plunges);
     }
   }

@@ -258,7 +258,7 @@ engine-content terrain-tiles <heightfield.json> [<out dir>] [--ddc <root>] [--ce
 engine-content terrain-masks <scene.json> [<out dir>] [--ddc <root>] [--force] [--jobs <n>] [--write-priors <dir>]
 engine-content masks check <scene.json> [--ddc <root>]
 engine-content ground sample <scene.json> (--point <x,z[,radius]> ... | --points <file.jsonl>) [--skirt <m>] [--uncut] [--placements] [--ddc <root>]
-engine-content flow solve <scene.json> <out.json> [--ddc <dir>] [--entry <i>] [--lattice <m>] [--resistance jarrett|manning] [--manning-n <n>] [--reach <m>] [--jobs <n>] [--scene-out <scene.json>] [--under-water <list.json>]
+engine-content flow solve <scene.json> <out.json> [--ddc <dir>] [--entry <i>] [--lattice <m>] [--resistance jarrett|manning] [--manning-n <n>] [--reach <m>] [--jobs <n>] [--scene-out <scene.json>] [--under-water <list.json>] [--line-stats <lines.json>]
 engine-content flow fixture <dir>
 engine-content terrain-read <manifest.json | dir> [--pattern level|windows|points|pool|queue|files] [--level <n>] [--depth <n>] [--run-kib <n>] [--window <n>] [--cache-mib <n>] [--pool-workers <n>] [--unbuffered] [--masks]
 engine-content city params <params.json>
@@ -434,7 +434,7 @@ for usage. It requires the channels capability; see [channels](channels.md#the-w
 
 `engine-content flow solve <scene.json> <out.json> [--ddc <dir>] [--entry <i>] [--lattice <m>]
 [--resistance jarrett|manning] [--manning-n <n>] [--reach <m>] [--jobs <n>] [--scene-out <scene.json>]
-[--under-water <list.json>]` (W120; W122's `--under-water`: the scene's own `instances` that
+[--under-water <list.json>] [--line-stats <lines.json>]` (W120; W131's `--line-stats`: every solved line's own count, and `under_ground` on the line, the stations whose level stands under the ground at the line, [channels](channels.md#the-section-under-the-line); W122's `--under-water`: the scene's own `instances` that
 stand in a water body's water, counted on the line as `under_water` and listed in the file, a
 body at a time, [channels](channels.md#what-stands-in-the-water)) writes the scene's `water_channels`: every wet link of its `channels` entries and every
 line an author wrote (`points` and a `discharge_m3s`), solved as steady one-dimensional flow

@@ -133,6 +133,38 @@ plane at the reach's mean fall, and the steps and pools the literature says carr
 in its geometry ("The step-pool form, solved or drawn", below). Nor is the white lit as the aerated
 volume it is: it is the channel's foam, a diffuse surface of albedo 0.8.
 
+## The white's inputs per vertex
+
+(W139, 2026-11-16; needs 128, 139 and 140 of the forest's walk of v48.) Three faults of the white
+above, each a fault of where its inputs were read, not of the rule:
+
+- **Faceted close up** (128): the sheet's fall S came from the triangle's plane and the speed V
+  from the triangle's phase gradient, one value each a triangle, so the share stepped at every edge.
+- **Single white triangles on still water** (139; Froude 0.02 to 0.22, where the share must be
+  zero): on the outer side of a bend every lattice node abeam the station is nearest the station
+  itself and takes its phase, so the phase is constant over that wedge; a triangle with two corners
+  in it and one just past its edge has a phase difference of the distance past the edge over the
+  speed, and a cell over that is a speed of V h / δ — at δ of a few millimetres, tens of metres a
+  second. The Froude rule read a Froude number past 4 and whitened the triangle whole. Wide pools
+  have the widest wedges, and at twice the flow more lines bend through pools, which is the
+  forest's v49 row of shards along a pool's edge (need 144).
+- **White on dry gravel** (140): W120 writes a 5 mm film where a station stands over its bank. The
+  broken rule's depth term let 5 mm through at a third, the Froude rule reads a film's high Froude
+  number, and a film over gravel looks like gravel: white blobs on what reads as dry ground. (The
+  cause is inferred from the rules and the solve's films; the forest's mark was not re-flown.)
+
+**What was done.** The section's Froude number at each vertex rides in the low five bits of its UV.y
+half (the hydraulic depth keeps the other bits, to 1.6 %; the number is stored as its square root
+in 31 steps, so a pool's 0.05 is 0.04 and a torrent's 3.19 is 3.26), the resolve interpolates the
+depth and the number by the pixel's barycentrics and the slope from the vertex normals the mesh
+already writes (the solve's level slope), and the speed is Fr √(g D). Every input is then one smooth
+field over the sheet and never past what a station says. And neither rule whitens a section whose
+hydraulic depth is under 1 cm, both whole by 3 cm (a choice: entrainment at a clast or a step needs
+water to plunge, and a steep small stream's clasts stand centimetres proud; the torrent's thalweg
+is 4 to 9 cm). Why the UV and not a new vertex stream: the vertex record every mesh shares is
+8 bytes (`geometry::VertexAttributes`, a normal and a UV), and widening it for one material would
+cost every scene 4 bytes a vertex; a nappe's vertex (UV.y negative) carries nothing.
+
 ## The step-pool form, solved or drawn
 
 (The next row's start; written by W130's third leg, 2026-11-16, and not built.) A steep reach's form

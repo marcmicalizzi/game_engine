@@ -26,6 +26,8 @@ constexpr f64 k_head_rise_m = 0.001;
 // A change of regime with no solved jump (a choke) is drawn as a jump when the level steps up by
 // more than the stations' pin.
 constexpr f64 k_choke_jump_m = k_station_level_m;
+// A node's bank, or its edge, where it has none (W131).
+constexpr f64 k_no_bank = 1e30;
 
 // The root of a function rising through zero between lo and hi, bisected until the bracket is one
 // float wide: the same bits wherever it runs. **The answer is the bracket's upper end**, where the
@@ -56,7 +58,7 @@ struct Sections {
   f64 run = 0;   // between nodes along, metres
   Vector<f64> h;
   Vector<u32> thalweg, left_end, right_end;
-  Vector<f64> x, z, q, width, bed, bank, critical, slope0, slope_power;
+  Vector<f64> x, z, q, width, bed, bank, edge, critical, slope0, slope_power, d84;
   Vector<f64> nx, nz;  // each node's section's direction, toward the left
   const f64* row(u32 node) const noexcept { return h.data() + node * across; }
   f64 offset(u32 k) const noexcept {
@@ -185,12 +187,22 @@ struct Solver {
     f.radius = w.area / w.perimeter;
     f.speed = q / w.area;
     f.head = level + f.speed * f.speed / (2.0 * k_gravity);
-    f.n = o.resistance == Resistance::Manning
-              ? o.manning_n
-              : k_jarrett_n * c.slope_power[node] *
-                    powd(std::clamp(f.radius, k_jarrett_radius_min_m, k_jarrett_radius_max_m),
-                         k_jarrett_radius_exponent);
-    f.friction = f.n * f.n * f.speed * f.speed / (f.radius * fall_cube_root(f.radius));
+    if (o.resistance == Resistance::Ferguson) {
+      // V / u* = F(R / D84), so S_f = V^2 / (g R F^2); the n that gives the same friction slope
+      // in Manning's form is R^(1/6) / (sqrt(g) F).
+      const f64 x = f.radius / c.d84[node];
+      const f64 ratio = k_vpe_a1 * k_vpe_a2 * x /
+                        std::sqrt(k_vpe_a1 * k_vpe_a1 + k_vpe_a2 * k_vpe_a2 * powd(x, 5.0 / 3.0));
+      f.friction = f.speed * f.speed / (k_gravity * f.radius * ratio * ratio);
+      f.n = powd(f.radius, 1.0 / 6.0) / (std::sqrt(k_gravity) * ratio);
+    } else {
+      f.n = o.resistance == Resistance::Manning
+                ? o.manning_n
+                : k_jarrett_n * c.slope_power[node] *
+                      powd(std::clamp(f.radius, k_jarrett_radius_min_m, k_jarrett_radius_max_m),
+                           k_jarrett_radius_exponent);
+      f.friction = f.n * f.n * f.speed * f.speed / (f.radius * fall_cube_root(f.radius));
+    }
     f.froude = f.speed / std::sqrt(k_gravity * w.area / w.top);
     f.force = q * q / (k_gravity * w.area) + w.moment;
     return f;
@@ -324,6 +336,11 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
   for (const f64 w : line.width)
     if (!(w > 0.0) || !std::isfinite(w))
       return refuse(error, line.name, "its width must be positive");
+  if (!line.d84.empty() && line.d84.size() != count)
+    return refuse(error, line.name, "its bed's D84 is absent or one a point");
+  for (const f64 d : line.d84)
+    if (!(d > 0.0) || !std::isfinite(d))
+      return refuse(error, line.name, "its bed's D84 must be positive");
   if (line.tail_level && !std::isfinite(line.level))
     return refuse(error, line.name, "the level it ends at is not a number");
   Vector<f64> along;
@@ -385,6 +402,7 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
   c.right_end.resize(n);
   c.bed.resize(n);
   c.bank.resize(n);
+  c.edge.resize(n);
   c.nx.resize(n);
   c.nz.resize(n);
   {
@@ -421,17 +439,24 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
       }
       // The thalweg: the lowest sample within the bed's half width of the line (the nearest to
       // the line where several are as low), then downhill from there to a hollow's bottom.
+      // **No further than the bed** (W131; channels.md, "The section under the line"): where the
+      // line names its bed's width the walk stays inside that half width. Unbounded, across a
+      // bench whose downhill bank is missing it ran down the hillside to the section's end or into
+      // the line's own next leg below a switchback, and the station stood there, metres under the
+      // ground at the line. A line that names no width keeps the nearest hollow.
       const u32 reach = line.width.empty()
                             ? 0u
                             : std::min<u32>(c.centre, static_cast<u32>(0.5 * c.width[k] / c.step));
+      const u32 lo = line.width.empty() ? 0u : c.centre - reach;
+      const u32 hi = line.width.empty() ? c.across - 1 : c.centre + reach;
       u32 t = c.centre;
       for (u32 e = 1; e <= reach; ++e) {
         if (row[c.centre + e] < row[t]) t = c.centre + e;
         if (row[c.centre - e] < row[t]) t = c.centre - e;
       }
       for (;;) {
-        const bool up = t + 1 < c.across && row[t + 1] < row[t];
-        const bool down = t > 0 && row[t - 1] < row[t];
+        const bool up = t < hi && row[t + 1] < row[t];
+        const bool down = t > lo && row[t - 1] < row[t];
         if (up && (!down || row[t + 1] <= row[t - 1]))
           ++t;
         else if (down)
@@ -470,7 +495,48 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
         }
       }
       c.right_end[k] = crest;
-      c.bank[k] = std::min(row[c.left_end[k]], row[c.right_end[k]]);
+      // **A side with no bank is an edge** (W131): a crest no higher than the thalweg holds no
+      // water, so it is not a bank the level is lowered to (that wrote a bench's water down to its
+      // own bed, a 5 mm film); the level is held to the edge plus the section's critical depth
+      // instead (below, `brink`). `k_no_bank` where a node has no such side.
+      const f64 hl = row[c.left_end[k]], hr = row[c.right_end[k]];
+      const bool open_left = !(hl > row[t] + k_over_bank_m);
+      const bool open_right = !(hr > row[t] + k_over_bank_m);
+      c.bank[k] = std::min(open_left ? k_no_bank : hl, open_right ? k_no_bank : hr);
+      c.edge[k] = std::min(open_left ? hl : k_no_bank, open_right ? hr : k_no_bank);
+    }
+  }
+  // **The bed's D84 at each node** (W137; channels.md, "The profile"): the plan's where the line
+  // carries it, interpolated as its width is; else what the plan's sediment law gives a bed of the
+  // section's own bank height (held to `k_vpe_bank_min_m`..`k_vpe_bank_max_m`) and the bed's slope
+  // over `k_reach_slope_m` each way, falls included (the grain a reach carries follows its whole
+  // drop).
+  c.d84.assign(n, 0.0);
+  if (options.resistance == Resistance::Ferguson) {
+    if (!line.d84.empty()) {
+      u32 seg = 0;
+      for (u32 k = 0; k < n; ++k) {
+        const f64 s = k + 1 == n ? total : c.run * static_cast<f64>(k);
+        while (seg + 2 < count && along[seg + 1] < s)
+          ++seg;
+        const f64 span = along[seg + 1] - along[seg];
+        const f64 u = span > 0.0 ? std::clamp((s - along[seg]) / span, 0.0, 1.0) : 0.0;
+        c.d84[k] =
+            std::max(k_vpe_d84_min_m, line.d84[seg] + u * (line.d84[seg + 1] - line.d84[seg]));
+      }
+    } else {
+      const ChannelLayer bed_defaults;
+      const u32 reach = std::max<u32>(1, static_cast<u32>(std::ceil(k_reach_slope_m / c.run)));
+      for (u32 k = 0; k < n; ++k) {
+        const u32 i0 = k > reach ? k - reach : 0u;
+        const u32 i1 = std::min(k + reach, n - 1);
+        const f64 slope = std::max(
+            i1 > i0 ? (c.bed[i0] - c.bed[i1]) / (c.run * static_cast<f64>(i1 - i0)) : 0.0, 1e-4);
+        const f64 bank = std::clamp(c.bank[k] - c.bed[k], k_vpe_bank_min_m, k_vpe_bank_max_m);
+        const ChannelSediment grains = detail::sediment_of(
+            bed_defaults, reach_of(bed_defaults, slope, false), bank, slope, 0.0);
+        c.d84[k] = std::max(k_vpe_d84_min_m, static_cast<f64>(grains.d84_m));
+      }
     }
   }
   c.slope0.assign(n, 1e-5);
@@ -894,7 +960,12 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
   for (u32 i = n - 1; i-- > 0;)
     sill[i] = std::max(c.bed[i], sill[i + 1]);
   Vector<Wet> pool(outs.size());
+  // 0 not a pool, 1 a pool, 2 a pit open past the reach, 3 a pool the water above it spilled
+  // lower than (not written), 4 a station above a pool its still water reaches back to, 5 a
+  // station above a pool's edge written at the pool's level.
   Vector<u8> pooled(outs.size(), 0);
+  Vector<u8> held_low(outs.size(), 0);
+  Vector<u8> opened(outs.size(), 0);
   {
     f64 cap = 1e300;
     for (u32 k = 0; k < outs.size(); ++k) {
@@ -903,22 +974,92 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
       const bool tranquil = o.from == k_no_node && o.level >= c.critical[o.node] - 1e-9;
       if (!tranquil || (k > 0 && outs[k - 1].pair)) cap = 1e300;
       f64 level = o.level > bank + k_over_bank_m ? bank : o.level;
+      // **Water held at an edge with no bank** (W131) stands over it by no more than its critical
+      // depth, the depth at the brink of a free overfall (Rouse 1936: about 0.7 of it).
+      const f64 edge = between(o, c.edge);
+      const f64 brink = edge + (between(o, c.critical) - between(o, c.bed));
+      if (level > brink) level = brink;
       if (tranquil && level > cap) level = cap;
       if (tranquil && level < o.level && sill[o.node] - c.bed[o.node] > k_pool_pit_m &&
           o.level >= sill[o.node]) {
         pool[k] = pool_at(c, ground, o.node, o.level);
         pooled[k] = pool[k].over ? 2 : 1;
+        // **A pool continues the water above it** (W138): where the tranquil reach above has
+        // spilled over a bank and been written lower than this pool would stand, the pool's still
+        // water reaches back over those stations if the ground holds its level there too (each
+        // one's own walk past its crests, `pool_at`); else the water left the bed above at the
+        // lower level, cannot stand higher here, and the pool is not written. Until W138 the
+        // pool was written regardless and the sheet climbed 0.5 to 3.1 m over a quarter metre
+        // from the spilled film to it (42 such walls on v47).
+        if (pooled[k] == 1 && cap < o.level - k_over_bank_m) {
+          u32 j = k;
+          bool holds = true;
+          bool ends = false;  // the line's own ground rises out of the pool at j - 1
+          while (j > 0 && held_low[j - 1] != 0 && put[j - 1] < o.level - k_over_bank_m) {
+            const Out& up = outs[j - 1];
+            // Where the ground on the line itself stands at the pool's level, the pool ends
+            // there: the bed rises out of it, and what is written above is the stream that runs
+            // in (its section may have been read beside the line, on ground lower than the bed).
+            const f64 on_line = ground.surface_mm(scene_gen::nearest_mm(c.x[up.node]),
+                                                  scene_gen::nearest_mm(c.z[up.node]));
+            if (!(on_line < o.level)) {
+              ends = true;
+              break;
+            }
+            const Wet w = pool_at(c, ground, up.node, o.level);
+            if (w.over || !(o.level > c.bed[up.node])) {
+              holds = false;
+              break;
+            }
+            --j;
+          }
+          if (holds) {
+            for (u32 i = j; i < k; ++i) {
+              pool[i] = pool_at(c, ground, outs[i].node, o.level);
+              pooled[i] = 4;
+              put[i] = o.level;
+              held[i] = 0;
+              opened[i] = 0;
+            }
+            // **Where the bed rises out of the pool** (W138, with W131's section) the stream that
+            // runs in was written lower than the pool, at a bank read beside the line or at a pit's
+            // edge, under the line's own ground, and the sheet climbed from it to the pool (24 of
+            // the 119 gaps on v47's lines over 30 % with both rows). Its water stands at least at
+            // the pool's level where it meets the pool, so each such station above in the pool's
+            // backwater (its own solved level at the pool's or higher) is written at the pool's
+            // level while the line's own ground there stands at that level or higher, which hides
+            // what is written under it; it keeps the wet width it had.
+            if (ends) {
+              for (u32 i = j; i-- > 0;) {
+                if (held_low[i] == 0 || !(put[i] < o.level - k_over_bank_m)) break;
+                if (outs[i].level < o.level - k_over_bank_m) break;  // above the pool's backwater
+                const f64 at_line = ground.surface_mm(scene_gen::nearest_mm(c.x[outs[i].node]),
+                                                      scene_gen::nearest_mm(c.z[outs[i].node]));
+                if (!(at_line >= o.level)) break;
+                pool[i] = wet_of(outs[i], put[i]);
+                pooled[i] = 5;
+                put[i] = o.level;
+                held[i] = o.level < outs[i].level - k_over_bank_m ? 1 : 0;
+              }
+            }
+          } else {
+            pooled[k] = 3;
+          }
+        }
         if (pooled[k] == 1) level = o.level;
       }
       held[k] = level < o.level - k_over_bank_m ? 1 : 0;
-      cap = level < o.level && tranquil ? level : 1e300;  // while it is lowered at all
+      held_low[k] = level < o.level && tranquil ? 1 : 0;
+      cap = held_low[k] != 0 ? level : 1e300;  // while it is lowered at all
       put[k] = std::max(level, between(o, c.bed) + k_station_depth_min_m);
+      opened[k] = pooled[k] != 1 && put[k] > edge + k_over_bank_m ? 1 : 0;
     }
   }
   Vector<StationNode> nodes;
   for (u32 k = 0; k < outs.size(); ++k) {
     const Out& o = outs[k];
-    const Wet w = pooled[k] == 1 ? pool[k] : wet_of(o, put[k]);
+    const bool still = pooled[k] == 1 || pooled[k] == 4;
+    const Wet w = still || pooled[k] == 5 ? pool[k] : wet_of(o, put[k]);
     StationNode s;
     s.s = o.s;
     s.level = put[k];
@@ -941,17 +1082,23 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
     // else they are the flow's at the level before it is rounded to the description's
     // millimetre: half a millimetre is a tenth of a thin sheet's area, and where the area steps
     // (`bisect`) the rounded level may stand on the other side of the step.
-    const bool over_bank = held[index] != 0;
+    // A station held at an edge with no bank (W131) stands over its bank too: the draw lays it
+    // with no margin past its wet edge, and leaves it out where it is a film.
+    const bool lowered = held[index] != 0;
+    const bool over_bank = lowered || opened[index] != 0;
     const f64 bed = between(o, c.bed);
     const Flow f = o.from != k_no_node
                        ? flow_of(o)
-                       : solver.at(o.node, over_bank ? o.level
-                                           : o.met   ? o.arrived
-                                                     : std::max(put[index], bed + k_depth_min_m));
-    const Wet w = pooled[index] == 1 ? pool[index] : wet_of(o, put[index]);
+                       : solver.at(o.node, lowered ? o.level
+                                           : o.met ? o.arrived
+                                                   : std::max(put[index], bed + k_depth_min_m));
+    const bool still = pooled[index] == 1 || pooled[index] == 4;
+    const Wet w = still || pooled[index] == 5 ? pool[index] : wet_of(o, put[index]);
     if (!f.ok) return refuse(error, line.name, "a station has no water in its section");
-    if (pooled[index] == 1) ++stats.pools;
+    if (still) ++stats.pools;
     if (pooled[index] == 2) ++stats.pools_open;
+    if (pooled[index] == 3) ++stats.pools_spilled;
+    if (pooled[index] == 4) ++stats.pools_reached;
     ProfileStation st;
     st.s = o.s;
     const f64 at_node = std::clamp(o.s / c.run, 0.0, static_cast<f64>(n - 1));
@@ -961,6 +1108,16 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
     st.x = round_to(c.x[i0] + u * (c.x[i1] - c.x[i0]), 1e3);
     st.z = round_to(c.z[i0] + u * (c.z[i1] - c.z[i0]), 1e3);
     st.level = level;
+    // The ground at the line's own point, between its two nodes as the station's place is: water
+    // written under it is inside the ground the walker sees (W131).
+    const f64 at_line = c.row(i0)[c.centre] + u * (c.row(i1)[c.centre] - c.row(i0)[c.centre]);
+    if (level < at_line - k_under_ground_m) {
+      ++stats.under_ground;
+      if (at_line - level > stats.under_ground_worst_m) {
+        stats.under_ground_worst_m = at_line - level;
+        stats.under_ground_at = WorldPos{st.x, level, st.z};
+      }
+    }
     st.bed = bed;
     st.depth = level - st.bed;
     st.friction = f.friction;
@@ -974,9 +1131,12 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
             ? c.width[o.node]
             : std::max(c.step, c.step * static_cast<f64>(c.left_end[o.node] - c.right_end[o.node]));
     st.manning_n = f.n;
+    st.d84 = c.d84[o.node];
     st.flags = o.flags;
     if (over_bank) {
-      st.over_m = o.level - level;
+      // How far the solved level stood over its bank, or the written one over its edge.
+      st.over_m = lowered ? o.level - level : level - between(o, c.edge);
+      if (opened[index] != 0) ++stats.open_bank;
       st.flags |= scene_gen::k_channel_over_bank;
       ++stats.over_bank;
       if (st.over_m > stats.over_bank_worst_m) {

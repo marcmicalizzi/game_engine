@@ -684,6 +684,9 @@ bool half_rate_centre_tunable() noexcept;
 // pixel's other light below which a traced light is not tested for its shadow (R115; renderer.md,
 // "A light too faint to test"). 0 traces every light.
 f32 shadow_light_tolerance_tunable() noexcept;
+// `renderer.water.white_tier` (1): `gfx::ResolveParams::water_white_tier`, the white water's tier
+// (W139; water.md, "Shading"): 0 the low tier's white, 1 the top tier's.
+u32 water_white_tier_tunable() noexcept;
 // **The sun ray's rule for alpha-tested casters this frame** (R115 stage 2): the opaque proxy's
 // threshold, whether every caster is forced solid, and the stop word's counting bit. From the
 // tunables — `renderer.shadow.opaque_rays` and the resolved threshold — unless

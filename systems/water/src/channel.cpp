@@ -4,6 +4,7 @@
 // and the ground, in a fixed order (the lattice's nodes sorted by their index, the cells in that
 // order), so both files are the same bytes from every toolchain and at any job count.
 #include <core/schema/json_reflect.h>
+#include <domain/geometry/cluster.h>
 #include <domain/scene_gen/water_channel.h>
 #include <systems/water/channel.h>
 
@@ -154,6 +155,42 @@ f64 channel_broken_share(f64 slope, f64 speed, f64 depth_m) noexcept {
          smooth_step(k_channel_veil_from_m, k_channel_veil_full_m, depth_m);
 }
 
+f64 channel_white_depth_gate(f64 hydraulic_m) noexcept {
+  return smooth_step(k_channel_white_depth_from_m, k_channel_white_depth_full_m, hydraulic_m);
+}
+
+f32 pack_channel_hydraulic(f32 hydraulic_m, f32 froude) noexcept {
+  if (!(hydraulic_m > 0.0f)) return hydraulic_m;
+  constexpr u32 low = (1u << k_channel_froude_bits) - 1u;
+  const f64 share =
+      std::clamp(static_cast<f64>(froude) / static_cast<f64>(k_channel_froude_max), 0.0, 1.0);
+  const u32 q = static_cast<u32>(std::floor(static_cast<f64>(low) * std::sqrt(share) + 0.5));
+  // The depth rounded to the half's upper bits (a carry into the exponent is the next binade's
+  // first value, still the nearest), then the number in the bits it gave up.
+  const u32 h = geometry::f32_to_f16(hydraulic_m);
+  const u32 rounded = ((h + (1u << (k_channel_froude_bits - 1))) & ~low) & 0x7fffu;
+  return geometry::f16_to_f32(static_cast<u16>(rounded | q));
+}
+
+void unpack_channel_hydraulic(f32 packed, f32& hydraulic_m, f32& froude) noexcept {
+  if (!(packed > 0.0f)) {
+    hydraulic_m = packed;
+    froude = 0.0f;
+    return;
+  }
+  constexpr u32 low = (1u << k_channel_froude_bits) - 1u;
+  const u32 h = geometry::f32_to_f16(packed);
+  const f32 q = static_cast<f32>(h & low) / static_cast<f32>(low);
+  hydraulic_m = geometry::f16_to_f32(static_cast<u16>(h & ~low));
+  froude = k_channel_froude_max * q * q;
+}
+
+f64 channel_travel_speed(f64 surface_speed, f64 slope) noexcept {
+  const f64 v = std::max(surface_speed, 0.0);
+  return std::sqrt(v * v + 2.0 * k_gravity * k_channel_jet_m *
+                               smooth_step(k_channel_steep_from, k_channel_steep_full, slope));
+}
+
 f32 station_hydraulic_depth(const Channel& c, u32 i) noexcept {
   const f64 fr = static_cast<f64>(c.froude[i]);
   const f64 v = static_cast<f64>(c.speed_mps[i]);
@@ -173,9 +210,9 @@ bool stretch_jumps(const Channel& c, u32 i) noexcept {
 
 bool stretch_drawn(const Channel& c, u32 i) noexcept {
   if (i + 1 >= c.points.size()) return false;
-  if ((c.flags[i] & c.flags[i + 1] & scene_gen::k_channel_over_bank) == 0) return true;
-  return over_bank_stretch_drawn(c.depth_m[i], c.depth_m[i + 1], static_cast<f64>(c.points[i].y),
-                                 static_cast<f64>(c.points[i + 1].y));
+  return scene_gen::channel_stretch_drawn(c.flags[i], c.flags[i + 1], c.depth_m[i],
+                                          c.depth_m[i + 1], static_cast<f64>(c.points[i].y),
+                                          static_cast<f64>(c.points[i + 1].y));
 }
 
 ChannelLine channel_line(const Channel& c) {
@@ -608,6 +645,7 @@ bool build_sheet(const Channel& c, const ChannelLine& line, f32 h, const Channel
     f64 tau;
     f32 hydraulic;
     f32 depth;
+    f32 froude;  // W139: the section's at the place, which the UV.y carries (channel.h)
   };
   Vector<Raw> raw;
   Vector<u32> node_vertex(count);
@@ -622,6 +660,12 @@ bool build_sheet(const Channel& c, const ChannelLine& line, f32 h, const Channel
     r.tau = at.tau;
     r.hydraulic = at.hydraulic;
     r.depth = at.depth_m;
+    // The place's speed over its hydraulic depth's wave speed: a station's own number at a
+    // station, and the phase's speed read back at every place between.
+    r.froude = at.hydraulic > 0.0f
+                   ? static_cast<f32>(static_cast<f64>(at.speed) /
+                                      std::sqrt(k_gravity * static_cast<f64>(at.hydraulic)))
+                   : 0.0f;
     raw.push_back(r);
     return static_cast<u32>(raw.size() - 1);
   };
@@ -641,7 +685,8 @@ bool build_sheet(const Channel& c, const ChannelLine& line, f32 h, const Channel
     const Raw& v = raw[r];
     m.positions.push_back(v.p);
     m.normals.push_back(v.normal);
-    m.uvs.push_back(Vec2{static_cast<f32>(v.tau - static_cast<f64>(wrap) * period), v.hydraulic});
+    m.uvs.push_back(Vec2{static_cast<f32>(v.tau - static_cast<f64>(wrap) * period),
+                         pack_channel_hydraulic(v.hydraulic, v.froude)});
     m.max_depth = std::max(m.max_depth, v.depth);
     const u32 index = m.positions.size() - 1;
     for (u32 k = 0; k < 2; ++k) {
