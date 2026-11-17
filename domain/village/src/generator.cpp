@@ -5,6 +5,7 @@
 #include "detail.h"
 
 #include <core/schema/json_reflect.h>
+#include <foundation/io/vfs.h>
 
 #include <algorithm>
 #include <memory>
@@ -29,6 +30,9 @@ struct TileKey {
 struct Entry {
   VillageLayer layer;
   VillagePlan plan;
+  detail::HouseKit kit;
+  // Each kit row's mesh, resolved against the scene's directory.
+  Vector<std::string> kit_paths;
   i64 tile_mm = 32000;
   // The tiles a shape or a house reaches, sorted and unique: what `occupies` answers from.
   Vector<TileKey> tiles;
@@ -83,8 +87,20 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
   // **The plan stands on the ground before any edit** (scene_gen.md, "What an entry plans for the
   // ground"): the open that hands the pads over and the open on the padded ground read the same
   // heights and make one plan.
+  // **The kit** (village.md, "A kit"): its rows as the furnisher reads them, and their meshes as
+  // the host resolves a scene's (relative to the scene file's directory).
+  for (u32 r = 0; r < e->layer.kit.size(); ++r) {
+    const std::string& mesh = e->layer.kit[r].mesh;
+    if (mesh.empty()) return refused(error, "kit row " + std::to_string(r) + " names no mesh");
+    if (!(e->layer.kit[r].scale > 0.0f))
+      return refused(error, "kit row " + std::to_string(r) + ": scale must be above 0");
+    const bool absolute = mesh[0] == '/' || mesh[0] == '\\' || (mesh.size() > 1 && mesh[1] == ':');
+    e->kit_paths.push_back(absolute || context.dir.empty() ? mesh
+                                                           : io::join_path(context.dir, mesh));
+  }
+  detail::house_kit(e->layer, e->kit);
   void* house_context = nullptr;
-  const HouseFn house = detail::house_filler(house_context);
+  const HouseFn house = detail::house_filler(e->kit, house_context);
   std::string why;
   if (!plan_village(e->layer, context.uncut(), context, house, house_context, e->plan, why))
     return refused(error, why);
@@ -106,8 +122,11 @@ bool plan_ground(void* state, const scene_gen::Context& c, scene_gen::GroundPlan
 
 // The houses of the plan whose origin `wanted` takes, as placements over `out.meshes`: one mesh a
 // distinct recipe (two houses of one description share it), named by the recipe's own path.
+// A house's kit pieces follow it (village.md, "A kit"): one mesh a kit row the tile names, each
+// piece a placement composed with its house's.
 template <class Wanted>
-void place_houses(const Entry& e, scene_gen::Placements& out, const Wanted& wanted) {
+u32 place_houses(const Entry& e, scene_gen::Placements& out, const Wanted& wanted) {
+  u32 placed = 0;
   for (const Plot& p : e.plan.plots) {
     if (p.state != PlotState::built) continue;
     const House& h = e.plan.houses[p.house];
@@ -122,7 +141,24 @@ void place_houses(const Entry& e, scene_gen::Placements& out, const Wanted& want
     placement.mesh = mesh;
     placement.id = p.house + 1;
     out.instances.push_back(placement);
+    ++placed;
+    for (u32 j = 0; j < h.kit.size(); ++j) {
+      const KitPlace& k = h.kit[j];
+      if (k.row >= e.kit_paths.size()) continue;
+      const std::string& path = e.kit_paths[k.row];
+      u32 kit_mesh = out.meshes.size();
+      for (u32 m = 0; m < out.meshes.size(); ++m)
+        if (out.meshes[m].recipe.empty() && out.meshes[m].path == path) kit_mesh = m;
+      if (kit_mesh == out.meshes.size())
+        out.meshes.push_back(scene_gen::PlacementMesh(path, "kit/" + e.layer.kit[k.row].name));
+      scene_gen::Placement piece = kit_placement(e.layer, p, k);
+      piece.mesh = kit_mesh;
+      // After every house's id: the house's and the piece's place in it.
+      piece.id = 0x01000000u + p.house * 256u + j;
+      out.instances.push_back(piece);
+    }
   }
+  return placed;
 }
 
 bool expand(void* state, const scene_gen::Context& c, scene_gen::Placements& out,
@@ -141,9 +177,8 @@ bool tile(void* state, scene_gen::TileCoord at, const scene_gen::Context& c,
   if (c.stand.present()) return refused(error, k_moving);
   const Entry& e = *static_cast<const Entry*>(state);
   const TileKey key{at.z, at.x};
-  place_houses(e, out,
-               [&](const Plot& p) { return tile_of(e, p.house_x_mm, p.house_z_mm) == key; });
-  out.things = out.instances.size();
+  out.things = place_houses(
+      e, out, [&](const Plot& p) { return tile_of(e, p.house_x_mm, p.house_z_mm) == key; });
   footprints(e.layer, e.plan, out.shapes, e.tile_mm, at.x, at.z, k_shape_reach_mm);
   return true;
 }

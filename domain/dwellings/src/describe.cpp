@@ -150,7 +150,7 @@ i32 max_clear_cm(u16 outer_wall_cm) noexcept {
 }
 
 void describe(const InteriorPlan& plan, const RuralChoice& choice, std::string_view name, u64 seed,
-              structure::Description& out) {
+              structure::Description& out, const Kit& kit) {
   const InteriorParams& p = plan.params;
   out = structure::Description{};
   const i32 wall = i32{choice.outer_wall_cm};
@@ -470,7 +470,7 @@ void describe(const InteriorPlan& plan, const RuralChoice& choice, std::string_v
   // the furniture and a walker meets it.
   Furnishing furnishing;
   if (choice.timber) timber_interior(plan, choice.ridge_along_front, furnishing);
-  if (choice.furniture) furnish_interior(plan, seed, furnishing);
+  if (choice.furniture) furnish_interior(plan, seed, furnishing, kit);
   for (const Member& m : furnishing.members) {
     structure::Box box;
     const i32 floor_top = out.storeys[m.storey].elevation;

@@ -92,6 +92,17 @@ struct RoutePoint {
   i64 x_mm = 0, y_mm = 0, z_mm = 0;
 };
 
+// **A kit piece in a house** (village.md, "A kit"): the entry's kit row `row` standing in for the
+// house's furnishing piece `piece` (`describe_house`'s `pieces`), its mesh's origin at (x, y, z) of
+// the house's frame, whole millimetres, turned `quarter_turns` about +y in that frame, at the
+// row's scale. 40 bytes.
+struct KitPlace {
+  u32 row = 0;
+  u32 piece = 0;
+  i64 x_mm = 0, y_mm = 0, z_mm = 0;
+  u8 quarter_turns = 0;
+};
+
 // A house as the plan sees it: a box on the ground with a door, in the house's own frame (x and z
 // whole millimetres, y up, its origin on the pad), and what its mesh is made from.
 struct House {
@@ -111,6 +122,15 @@ struct House {
   std::string path;
   std::string name;
   f32 reach = 0.0f;
+  // **What the filler says it built** (village.md, "A house as data"): the household it drew from
+  // the plot's seed, the seed it planned the house with, and the plan type's name. Zero and empty
+  // for a filler that says nothing (a box).
+  u8 persons = 0;
+  u8 means = 0;
+  u64 filler_seed = 0;
+  std::string type;
+  // The entry's kit pieces that stand in this house in the box furniture's place.
+  Vector<KitPlace> kit;
   // **The way through it** (village.md, "The way through a house"): feet on the floor, in the
   // house's frame, from just inside the door through its rooms' doorways, up its stair and to a
   // window, in walking order; and the point outside that window a person there looks at. Empty
@@ -167,7 +187,7 @@ enum class PlotKind : u8 {
   church = 2,
 };
 
-// A plot and, where one stands, its house. 280 bytes (tests/size_table.cpp).
+// A plot and, where one stands, its house. 288 bytes (tests/size_table.cpp).
 struct Plot {
   u32 lane = 0;
   u32 order = 0;  // the place in which it was taken up, 0 first
@@ -188,6 +208,9 @@ struct Plot {
   f64 inward_x = 0.0, inward_z = 1.0;
   i64 frontage_mm = 0, depth_mm = 0;
   i64 along_mm = 0;  // of the plot's middle along its way, from the way's first point
+  // The setback the plot's house was asked for (`HouseAsk::setback_mm`): its own draw from the
+  // entry's `setback_m`. 0 for a plot no house was asked of.
+  i64 setback_mm = 0;
   u64 seed = 0;
   // Where the house's frame stands, the pad's level, and how far the frame's origin (the ground
   // floor's top, structures.md) stands over the pad.
@@ -296,8 +319,24 @@ void plot_boundaries(const VillageLayer& layer, const VillagePlan& plan, Vector<
 // counts and the size class.
 JsonValue plan_json(const VillageLayer& layer, const VillagePlan& plan);
 
+// **A house as data** (village.md, "A house as data"; the forest session's need 113): built house
+// `house` (its index in `VillagePlan::houses`, the `house_index` of its plot in `plan_json`) as
+// the filler made it — the ask its plot made (frontage, depth, setback, storeys, seed), the
+// household drawn from it, the filler's own seed and choice, the frame that carries the house's
+// points into the world, its door, its rooms, its timber and furniture, the named places its plan
+// already knows (furnish.h, `house_places`), the tour and views through it and the walker's route
+// — so a consumer never re-derives a draw. It plans the house again from the plot's ask with the
+// generator's own filler and refuses with a sentence when the description it gets is not the one
+// the plan holds. `plan_text` is each storey drawn as text (`draw_interior`). False for a house
+// index out of range or a plan made by another filler.
+bool describe_house(const VillageLayer& layer, const VillagePlan& plan, u32 house, JsonValue& out,
+                    std::string& plan_text, std::string& error);
+
 // Where a built plot's house stands: the placement a host draws (the mesh index is the caller's).
 scene_gen::Placement house_placement(const Plot& plot);
+// Where one of its kit pieces stands: the house's placement composed with the piece's place and
+// turn in the house's frame, at the row's scale (the mesh index is the caller's).
+scene_gen::Placement kit_placement(const VillageLayer& layer, const Plot& plot, const KitPlace& k);
 // A point of the house's own frame (whole millimetres, y over the pad) in the world.
 WorldPos house_point(const Plot& plot, i64 x_mm, i64 y_mm, i64 z_mm);
 

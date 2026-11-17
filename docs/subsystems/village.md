@@ -239,7 +239,11 @@ this module reads of a house — never its mesh:
   first walk through a house with doors stopped at each of these in turn (2026-11-15), and at
   three things that were the house's and were mended in the filler ([dwellings](dwellings.md),
   "What the village's walk and pictures changed");
-- the recipe is the description's canonical JSON, named by its own source hash.
+- the recipe is the description's canonical JSON, named by its own source hash;
+- **the plan's door is the threshold's middle on the wall's outer face** (since G206: 25 cm out
+  from the front wall's centre line at the filler's 50 cm wall), at the middle of what the open
+  leaf leaves clear, so 2.5 to 3 cm along the wall from the opening's own middle. The path, the
+  gateway and the walker all come to it.
 
 **The way through it is found, not assumed** (`route_through`): the rooms' doorways from the walk
 records give the chain of rooms from the entrance to the first stair's foot and from its head to a
@@ -265,6 +269,82 @@ nothing to a house that gives none. A key looks five metres on along the way, to
 later point at least a metre off (`k_look_on_m`): the route's points can lie a few centimetres
 apart where one stretch ends and the next begins (the stair's head and the way on from it), and a
 key aimed at such a neighbour looked half back into the landing's corner and out of its window.
+
+## A house as data
+
+**Why** (the forest session's needs 113 and 132, 2026-11-15/16): a script that laid 487 props into
+a village's houses had to re-derive every house outside the engine — the household drawn from the
+plot's seed, the filler's own seed, the setback — and, once the grown plan drew each plot's seed
+from its candidate tenement and its setback per plot, it tried 454 candidate seeds a village to
+find which one gave the plan's house. Nothing the plan decides should have to be found again.
+
+`plan_json` (what `engine-content village` prints for each entry) names, for every plot, its
+`index` in the list, its own `seed`, the `setback_m` its house was asked for (`Plot::setback_mm`),
+and for a built plot its `house_index` (the house's place among the **built** houses, which is
+what `--house` counts: plot 12's house is house 11 when one plot before it stands empty), the
+filler's `type`, the household's `persons` and `means`, and the `filler_seed`.
+
+`describe_house(layer, plan, house, out, plan_text, error)` writes one built house as data, and
+`engine-content village <scene> <out> --describe <dir> [--house <i>]` writes every built house
+(or the one named) as `<dir>/house-<i>/house.json`, `house.structure.json` (the recipe the
+generator meshes, byte for byte) and `house.plan.txt` (each storey drawn as text). It plans the
+house again from the plot's own ask through the same filler and **refuses when the description it
+gets is not the one the plan holds**, so what it writes cannot drift from what is drawn.
+`house.json` (`engine.village.house.v1`) holds:
+
+| Field | What |
+|---|---|
+| `house`, `plot`, `order`, `lane`, `kind` | the house's index, its plot's index in `plot_list`, the order it was taken up in, its way, tenement or cottage |
+| `ask` | what the plan asked the filler: `frontage_m`, `depth_m`, `setback_m`, `storeys`, `seed` (the plot's) |
+| `household` | `persons` and `means` as drawn from the plot's seed |
+| `filler` | the filler's `seed`, `type`, `storeys`, `hearths`, `demoted`, `mirror`, the rectangle it was given (`plot_cm`), the clear and outer sizes, the outer wall's thickness, the ridge |
+| `frame` | **a point (x, y, z) of the house's frame, metres, is `origin + x * x_axis + y * up + z * z_axis` in the world**; `quarter_turns`, `pad_m`, `floor_m` (the frame's origin over the pad), `plan_offset_m` (the description's frame is the dwellings plan's moved by it on x and z) and `storey_floors_m` |
+| `door`, `footprint` | the door in the house's frame and the world, the way out, its width; the box over the outer walls |
+| `rooms`, `openings` | each room's id, use, storey, floor, outline in the house's frame and flags; each outer door and window by side, place, width, sill and head |
+| `pieces` | the timber and the furniture: kind, room, storey, the wall it backs to, its box, its members (0 and a `kit_row` for a kit piece) |
+| `places` | **the places the plan already knows** ([dwellings](dwellings.md#the-places-a-plan-knows)): kind, room, storey, `faces`, the record it is `of`, its box (`low`, `high`) |
+| `tour`, `views` | the plan's own walk through every room and a view a room, as `engine-content dwelling` writes them |
+| `route`, `look` | the walker's way through the house the plan stood it by, in the house's frame and the world |
+| `kit_rows`, `kit` | the entry's kit and the pieces of it that stand in this house (below) |
+
+A house planned by another filler (the tests' `box_house`) has no description to give and is
+refused with a sentence.
+
+## A kit
+
+**A kit is a scene's own meshes in the box furniture's place** (the forest session's need 113 (b),
+(e), (f); `engine.village.KitPiece`, the entry's `kit`, `VillageLayer` version 3). A row names a
+static mesh relative to the scene's directory, a **uniform** scale (a kit piece is never
+stretched), its full bounds and its foot in the mesh's own units, the way its front looks
+(`front`), how it is placed (`placement`: wall, free, top, bed, hung, joist, hearth-in, hearth-by,
+yard), the heights its foot may stand at, and which of the furnisher's own pieces it `replaces`
+(a table set, a settle, a bed, a chest, or none). The village turns each replacing row into the
+furnisher's `KitRow` (its foot along and out from the wall and its height, whole centimetres
+rounded **up**, so the mesh fits the box kept clear for it), and the furnisher places it in its
+kind's place **at its own clearances** ([dwellings](dwellings.md#kit-pieces)); where no row of a
+kind fits, the box piece stands. A kit piece states no box of the description (its boxes are
+gone from the recipe), and its mesh is a placement of the generator's:
+
+- **its front looks into the room** from the wall its piece backs to, turned by quarters from the
+  way its mesh faces; **its foot's middle stands on the piece's footprint's middle** and **its
+  lowest point on its storey's floor** (`KitPlace`, whole millimetres in the house's frame), and
+  `kit_placement` composes that with the house's placement and the row's scale;
+- **the way through the house keeps off it** as it keeps off the furniture's solid members: its
+  foot is a box of the walk records the route is found over, so the walker's route stays 34 cm
+  clear of every kit piece (the kit case measures 30 cm, a capsule's radius);
+- **the furnisher's validator reads every kit piece back** (`validate_furnishing`) and the house is
+  refused with its sentence if one fails;
+- **the generator hands each piece with its house's tile**, one mesh a row (`kit/<name>`), so a
+  piece whose own position crosses into the next tile still comes and goes with its house;
+- the kit is in the plan's hash; a plan with no kit hashes, and draws, as it did.
+
+**What a scene with no kit costs: nothing** — no row, no draw, the same furnishing bytes (the
+dwellings pins hold it) and the same plan hash. **What a kit piece does not get yet**: collision (a
+static mesh placement carries none, and a description's `Box` has no undrawn form a walker could
+meet; the route keeps off it instead), the named places on its own top (a kit table's top is its
+mesh's, which the engine does not read), and pieces that replace nothing — the rows of every other
+class are listed in each house's `kit_rows` for whoever lays them, and placed by nobody here (room
+inventories by use and household are the next row).
 
 ## The wear
 
@@ -340,9 +420,10 @@ whole gets everything at once. Houses of one description share one mesh.
 
 ## Owned data
 
-The entry type (`engine.village.VillageLayer` at version 2, `Lane`, `Rows`), and while an entry is
-open its plan: the ways' stations (40 bytes each), the plots (280 bytes each) and each built plot's
-house with its recipe. The way's search holds, while it runs, a height, a cost and a back-pointer
+The entry type (`engine.village.VillageLayer` at version 3, `Lane`, `Rows`, `KitPiece` and its
+enums), and while an entry is open its plan: the ways' stations (48 bytes each), the plots (288
+bytes each, the setback asked of each plot's house among them since G207) and each built plot's
+house with its recipe and its kit pieces (40 bytes each). The way's search holds, while it runs, a height, a cost and a back-pointer
 a cell of its corridor (20 bytes a cell: 2,400 cells for 64 m of way at 2 m, 128,000 for the
 bench's 3 km street), freed when the way is found. Nothing is kept on disk.
 
@@ -380,6 +461,16 @@ Each is held by a case of `tests/village_tests.cpp`.
 - The plan is the same bytes on every toolchain (`plan_hash`, pinned on MSVC, reproduced by GCC
   and Clang in the containers).
 - An entry out of range is refused with a sentence naming the field.
+- A house as data is the plan's own house: every plot's summary names its seed and setback, and
+  every built house's description its plot's seed, setback and storeys, the household and the
+  filler's seed the plan's house was drawn with, and a frame that carries its door onto the
+  plan's door to the millimetre; a house index past the built ones and a plan made by another
+  filler are refused with a sentence.
+- A kit's pieces stand in the box furniture's place: the plots and the houses' boxes do not move,
+  a house with kit pieces has a shorter recipe, each piece's mesh stands on its storey's floor
+  over its footprint's middle, the walker's route keeps 30 cm off every kit foot, a row too tall
+  for every room or replacing nothing is never placed, the kit is in the plan's hash, and the
+  generator hands one placement a piece with its mesh resolved against the scene's directory.
 
 ## Public API
 
@@ -387,7 +478,8 @@ Each is held by a case of `tests/village_tests.cpp`.
 `HouseFn`, `box_house`); the plan (`LaneStation`, `LaneLine`, `PlotState`, `PlotKind`, `Plot`,
 `VillagePlan`,
 `layer_in_range`, `plan_village`, `plan_hash`); what it is handed over as (`ground_edits`,
-`footprints`, `plan_json`, `house_placement`, `house_point`); the wear (`GroundLayers`,
+`footprints`, `plan_json`, `house_placement`, `house_point`); a house as data and its kit
+(`describe_house`, `KitPlace`, `kit_placement`); the wear (`GroundLayers`,
 `k_wear_margin_mm`, `ground_regions_json`) and the boundaries (`BoundaryLine`, `plot_boundaries`).
 `include/domain/village/flight.h`: `WalkPoint`, `walk_points`, `flight_json`.
 

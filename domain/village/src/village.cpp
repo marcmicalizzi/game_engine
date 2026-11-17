@@ -1360,6 +1360,7 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
     ask.storeys = c.kind == PlotKind::tenement ? layer.storeys : 1u;
     ask.index = p.order;
     p.storeys = ask.storeys;
+    p.setback_mm = back_by;
     House h;
     std::string why;
     if (!house_fn(house_context, ask, h, why)) {
@@ -1662,6 +1663,13 @@ u64 plan_hash(const VillagePlan& plan) {
     for (const i64 w : words)
       h = hash_combine(h, static_cast<u64>(w));
     h = hash_combine(h, hash_bytes(house.recipe.data(), house.recipe.size()));
+    // Its kit pieces (none without a kit, so a plan with no kit hashes as it did).
+    for (const KitPlace& k : house.kit) {
+      h = hash_combine(h, u64{k.row} | u64{k.piece} << 32);
+      h = hash_combine(
+          hash_combine(hash_combine(h, static_cast<u64>(k.x_mm)), static_cast<u64>(k.y_mm)),
+          static_cast<u64>(k.z_mm) ^ (u64{k.quarter_turns} << 60));
+    }
   }
   h = hash_combine(hash_combine(h, static_cast<u64>(plan.focus_x_mm)),
                    static_cast<u64>(plan.focus_z_mm));
@@ -2073,8 +2081,14 @@ JsonValue plan_json(const VillageLayer& layer, const VillagePlan& plan) {
   }
   o["lanes"] = std::move(lanes);
   JsonValue plots = JsonValue::array();
-  for (const Plot& p : plan.plots) {
+  for (u32 k = 0; k < plan.plots.size(); ++k) {
+    const Plot& p = plan.plots[k];
     JsonValue q = JsonValue::object();
+    // **What a consumer must not re-derive** (village.md, "A house as data"): the plot's place in
+    // this list, its own seed (every choice of the plot and its house is drawn from it), and the
+    // setback its house was asked for.
+    q["index"] = JsonValue(k);
+    q["seed"] = JsonValue(p.seed);
     q["lane"] = JsonValue(p.lane);
     q["order"] = JsonValue(p.order);
     q["kind"] = JsonValue(kind_name(p.kind));
@@ -2083,10 +2097,21 @@ JsonValue plan_json(const VillageLayer& layer, const VillagePlan& plan) {
     q["frontage_m"] = JsonValue(metres(p.frontage_mm));
     q["depth_m"] = JsonValue(metres(p.depth_mm));
     q["front"] = point_json(metres(p.front_x_mm), 0.0, metres(p.front_z_mm));
+    if (p.setback_mm > 0 || p.state == PlotState::built)
+      q["setback_m"] = JsonValue(metres(p.setback_mm));
     if (p.state == PlotState::built) {
       const House& h = plan.houses[p.house];
       q["house"] = JsonValue(h.name);
+      // The house's index among the built (what `engine-content village --house` and
+      // `describe_house` take: plot 12's house is house 11 when one plot before it stands empty).
+      q["house_index"] = JsonValue(p.house);
       q["storeys"] = JsonValue(p.storeys);
+      if (!h.type.empty()) {
+        q["type"] = JsonValue(h.type);
+        q["persons"] = JsonValue(static_cast<u32>(h.persons));
+        q["means"] = JsonValue(static_cast<u32>(h.means));
+        q["filler_seed"] = JsonValue(h.filler_seed);
+      }
       q["at"] = point_json(metres(p.house_x_mm), metres(p.pad_mm), metres(p.house_z_mm));
       q["door"] =
           point_json(metres(p.door_x_mm), metres(p.pad_mm + h.floor_mm), metres(p.door_z_mm));

@@ -480,12 +480,17 @@ hands them on ([bridges](bridges.md#in-a-scene)). Present with the bridges and r
 ## engine-content village: a village's plan, its treads and a way into a house
 
 `engine-content village <scene.json> <out.json> [--ddc <dir>] [--house <i>]
-[--flight <camera-path.json>]` plans each `village` entry over the scene's ground before any edit,
-as the generator does, and writes the plan (every plot, its state, its house and its door), the
+[--flight <camera-path.json>] [--describe <dir>]` plans each `village` entry over the scene's ground
+before any edit, as the generator does, and writes the plan (every plot, its index, seed, state,
+setback, its house's index among the built and its household, and its door), the
 wear as `mask_regions` naming the layers `verge`, `worn` and `lane` to paste into
 `terrain.masks.regions`, the plots' boundaries as `walls`, an entry to paste into `placements`, and
 with `--flight` a camera path from the lane in at house `<i>`'s door, through its rooms, up its
-stair and to a window ([village](village.md#in-a-scene)). Present with the village capability.
+stair and to a window ([village](village.md#in-a-scene)). **`--house` counts built houses, not
+plots.** `--describe <dir>` writes every built house of the first entry (or the one `--house`
+names) as data, `<dir>/house-<i>/house.json`, `house.structure.json` and `house.plan.txt`
+([village](village.md#a-house-as-data)), and the printed line counts them (`described`). Present
+with the village capability.
 
 ## engine-content cave-plan: a cave network as a survey
 

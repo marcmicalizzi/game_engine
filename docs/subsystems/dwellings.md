@@ -227,6 +227,58 @@ boxes, so a table's top, a bench's seat, a settle's seat, a mattress and a chest
 collision and a walker meets them; legs, rails and all the timber are seen and not walked into.
 `RuralStyle::furniture` and `RuralStyle::timber` leave either out (a bare house is the same plan).
 
+## The places a plan knows
+
+`house_places(plan, furnishing, out)` (`furnish.h`) names the surfaces and slots a plan and its
+furniture already decide, so whoever lays props into a house reads them rather than finding them
+again from a description's boxes in the pieces' order (which is how the forest session's furnishing
+script found a table's top, need 113 (d)). Each is a `NamedPlace`, a box in the plan's frame (x and
+z centimetres, y millimetres over its storey's floor): a **surface** is flat (what a thing stands
+on, or hangs from), a **face** is thin across the way it `faces`.
+
+| Kind | What, and where it is read from |
+|---|---|
+| `hearth-recess` | the fire's recess: as wide as the opening, `k_hearth_recess_cm` (40) into the stack from its face, from the raised hearth (`k_raised_hearth_mm`, 3 cm) to the lintel — the mesher's own numbers ([structures](structures.md), "Chimneys") |
+| `hearth-mouth`, `hearth-cheek` | the opening's line on the stack's face; the face either side of it, floor to lintel |
+| `stack-side` | the floor beside the stack along its sides, from its face to its back (how proud it stands), 60 cm out, inside the room's free floor: a bellows, a log basket, the wall a salt box hangs on |
+| `hearth-apron` | the floor before the opening the furniture keeps clear (1.1 m, 20 cm past each side) |
+| `table-top`, `bench-seat`, `settle-seat`, `chest-lid`, `mattress` | the top of the member `add_piece` built for it: a table set's top at 75 cm and its two benches' seats at 45, a settle's seat, a chest's lid, the mattress |
+| `joist-underside` | each joist's and the spine beam's underside, where a flitch or a bunch of herbs hangs |
+| `door-approach`, `doorway-approach` | the floor before an outer door (1 m, its leaf's swing) and each side of an inner doorway (90 cm), 20 cm past each jamb |
+| `window-light` | the floor before a window at its sill's height, 1 m deep and 10 cm past each side: where its light falls first and what a tall piece keeps out of |
+
+The order is fixed (the hearths', the furniture's in the pieces' order, then the floors kept
+clear) and the index each names (`of`) is the hearth, the piece or the opening it was read from.
+The village writes them in a house's description ([village](village.md#a-house-as-data)).
+
+## Kit pieces
+
+**A kit row stands in a box piece's place** (`KitRow`, `Kit`, `furnish_interior(plan, seed, out,
+kit)`; the forest session's need 113 (e) and (f)): a row says which kind it replaces (a table set,
+a settle, a bed, a chest) and the box its foot and height take, its back to a wall and its front
+into the room. In each room the furnisher draws one of the kind's rows that stands under the
+room's joists or ceiling (`room_clear_cm`, `k_kit_head_gap_cm` under it: 2.08 m under an upper
+floor, the plate's 2.5 m upstairs, 2.4 m in a house of one storey) and **searches for it exactly as
+for its own piece of that kind**: against a wall on the 10 cm module, clear of the tour's line by
+35 cm, of every doorway's and outer door's approach, the hearth's apron, the stacks and the led
+window (and every window, for a settle), 10 cm from the pieces before it, with the kind's own
+preference (a settle the nearest place to the stack within 3.2 m, a table under a window, a bed in
+the corner far from the way in, a chest by the bed). A found place is a `Piece` of that kind with
+`kit` set and **no members**, so `describe` states no box for it and the caller draws the row's
+mesh there; where the row finds none, the box piece is searched for as before. `validate_furnishing`
+holds a kit piece to every clearance a box piece keeps, to no members, and to its height under the
+room's joists or ceiling.
+
+**With no kit nothing moves**: no row is drawn for, no search is made, `Piece::kit` is 0 in a word
+of the hash that was zero (`hash_furnishing`), and the furnishing pins hold. The test
+(`tests/furnish_tests.cpp`, "a kit's pieces stand in the box pieces' place") furnishes every
+household's house on three plots and four seeds with a table set, a bed and a chest row and two
+that cannot stand anywhere, and holds that the validator passes every house, that each kit piece's
+footprint is its row's foot turned to its wall, clear of the tour by 35 cm, and that the two
+impossible rows are never placed. What a kit does not do yet: lay the pieces nothing replaces (a
+dresser, a crane, a flitch: room inventories by use and household, need 113 (c)), give a kit piece
+collision, or a piece that stands under another (a crane's arm over a pot).
+
 ## The filler as a tool
 
 `engine-content dwelling <out-dir> [--name <n>] [--persons <n>] [--means <0|1|2>] [--frontage <cm>]
@@ -304,7 +356,8 @@ or placed.
 (`plan_interior`, `validate_interior`, `reachable_rooms`, `stair_headroom_cm`, `hash_interior`,
 `interior_min_extent`, `draw_interior`), `rural_filler.h` (`household_asks`, `choose_rural`,
 `plan_rural`), `furnish.h` (`add_piece`, `furnish_interior`, `timber_interior`,
-`validate_furnishing`, `hash_furnishing`), `tour.h` (`tour_interior`, `room_views`), `describe.h`
+`validate_furnishing`, `hash_furnishing`, `room_clear_cm`, `KitRow`, `Kit`, `NamedPlace`,
+`PlaceKind`, `house_places`), `tour.h` (`tour_interior`, `room_views`), `describe.h`
 (`describe`, `fill_rural`).
 
 **Depends on.** `base`, `containers`, `hash`, `math`, and the `structures` capability with its

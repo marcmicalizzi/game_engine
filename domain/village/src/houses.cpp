@@ -8,6 +8,8 @@
 
 #include <core/hash/hash.h>
 #include <domain/dwellings/describe.h>
+#include <domain/dwellings/furnish.h>
+#include <domain/dwellings/tour.h>
 #include <domain/structures/structures.h>
 
 #include <algorithm>
@@ -496,36 +498,167 @@ bool route_through(const structure::Description& d, const Walk& walk, const Walk
 // ---- the description a plot gets
 // ------------------------------------------------------------------
 
-// **The house filler** (the structures capability's rural filler when it is linked; until then the
-// one-room cot of `structures::example_cot`, sized to the plot by the seed).
-bool describe(const HouseAsk& ask, structure::Description& d, std::string& why) {
-  // **The rural filler** (dwellings.md): a house for the rectangle the plot leaves it — the
-  // frontage less half a metre each side, the depth behind the setback — and a household drawn
-  // from the plot's seed: three to eight persons, and the means that give the storeys asked (the
-  // filler's two-storey types are its `means` 2; one storey draws 0 or 1). A plot the household's
-  // house does not fit gets the filler's smaller type, which is the filler's rule.
+// **What the filler is asked for a plot** (dwellings.md, "The rural filler"): the rectangle the
+// plot leaves a house — the frontage less half a metre each side, the depth behind the setback —
+// and a household drawn from the plot's seed: three to eight persons, and the means that give the
+// storeys asked (the filler's two-storey types are its `means` 2; one storey draws 0 or 1). A plot
+// the household's house does not fit gets the filler's smaller type, which is the filler's rule.
+// One function, so the plan and `describe_house` cannot draw two households.
+struct Draw {
   dwellings::RuralPlot plot;
-  plot.frontage_cm = static_cast<i32>((ask.frontage_mm - 1000) / 10);
-  plot.depth_cm = static_cast<i32>((ask.depth_mm - ask.setback_mm) / 10);
   dwellings::Household household;
-  household.persons = static_cast<u8>(3 + mix64(ask.seed) % 6);
-  household.means =
+  u64 seed = 0;
+};
+Draw house_draw(const HouseAsk& ask) noexcept {
+  Draw w;
+  w.plot.frontage_cm = static_cast<i32>((ask.frontage_mm - 1000) / 10);
+  w.plot.depth_cm = static_cast<i32>((ask.depth_mm - ask.setback_mm) / 10);
+  w.household.persons = static_cast<u8>(3 + mix64(ask.seed) % 6);
+  w.household.means =
       ask.storeys >= 2 ? u8{2} : static_cast<u8>(mix64(ask.seed ^ 0x9E3779B97F4A7C15ull) % 2);
-  const dwellings::RuralStyle style;
   // The name carries no plot: two plots given one household and one frontage are one description,
   // so they share one mesh, when the filler's own seed is the household's and not the plot's.
-  const u64 seed = hash_combine(hash_combine(household.persons, household.means),
-                                static_cast<u64>(plot.frontage_cm));
-  return dwellings::fill_rural(plot, household, style, seed, "house", d, &why);
+  w.seed = hash_combine(hash_combine(w.household.persons, w.household.means),
+                        static_cast<u64>(w.plot.frontage_cm));
+  return w;
 }
 
-bool house_for(void*, const HouseAsk& ask, House& out, std::string& why) {
+// **The house filler**: the rural filler's choice and plan for the plot's ask, and the description
+// it becomes (what `dwellings::fill_rural` does, with the choice and the plan kept).
+dwellings::Kit kit_of(const detail::HouseKit* hk) noexcept {
+  if (hk == nullptr || hk->rows.empty()) return {};
+  return dwellings::Kit{hk->rows.data(), static_cast<u32>(hk->rows.size())};
+}
+
+bool house_plan(const Draw& w, const dwellings::Kit& kit, dwellings::RuralChoice& choice,
+                dwellings::InteriorPlan& plan, structure::Description& d, std::string& why) {
+  const dwellings::RuralStyle style;
+  if (!dwellings::plan_rural(w.plot, w.household, style, w.seed, choice, plan, &why)) return false;
+  dwellings::describe(plan, choice, "house", w.seed, d, kit);
+  return true;
+}
+
+// The furnishing `describe` wrote (the same call, so the same pieces and kit pieces).
+void house_furnishing(const Draw& w, const dwellings::Kit& kit,
+                      const dwellings::RuralChoice& choice, const dwellings::InteriorPlan& plan,
+                      dwellings::Furnishing& f) {
+  if (choice.timber) dwellings::timber_interior(plan, choice.ridge_along_front, f);
+  if (choice.furniture) dwellings::furnish_interior(plan, w.seed, f, kit);
+}
+
+// **Where a kit piece's mesh stands** (village.md, "A kit"): its front turned by quarters from the
+// way its mesh faces to the way into the room from the wall its piece backs to, its foot's middle
+// on the piece's footprint's middle, its lowest point on its storey's floor. House frame, mm.
+bool kit_place(const VillageLayer& layer, const dwellings::Piece& piece, u32 index, i64 off_mm,
+               i64 floor_mm, KitPlace& out) {
+  const u32 row = static_cast<u32>(piece.kit) - 1;
+  if (row >= layer.kit.size()) return false;
+  const KitPiece& k = layer.kit[row];
+  i64 fx = 0, fz = 0;  // the mesh's front, a unit axis
+  switch (k.front) {
+    case KitFront::PosX: fx = 1; break;
+    case KitFront::NegX: fx = -1; break;
+    case KitFront::PosZ: fz = 1; break;
+    default: fz = -1; break;
+  }
+  i64 tx = 0, tz = 0;  // into the room from the wall behind the piece
+  switch (piece.against) {
+    case dwellings::Side::Front: tz = 1; break;
+    case dwellings::Side::Back: tz = -1; break;
+    case dwellings::Side::Left: tx = 1; break;
+    default: tx = -1; break;
+  }
+  const f64 sc = static_cast<f64>(k.scale);
+  const bool no_foot =
+      k.foot[0] == 0.0f && k.foot[1] == 0.0f && k.foot[2] == 0.0f && k.foot[3] == 0.0f;
+  f64 cx = 0.5 *
+           (static_cast<f64>(no_foot ? k.bounds_min[0] : k.foot[0]) +
+            static_cast<f64>(no_foot ? k.bounds_max[0] : k.foot[2])) *
+           sc;
+  f64 cz = 0.5 *
+           (static_cast<f64>(no_foot ? k.bounds_min[2] : k.foot[1]) +
+            static_cast<f64>(no_foot ? k.bounds_max[2] : k.foot[3])) *
+           sc;
+  u8 turns = 0;
+  while (!(fx == tx && fz == tz) && turns < 4) {
+    // A quarter turn about y by the engine's rotation (x' = z, z' = -x for a quarter).
+    const i64 nx = fz, nz = -fx;
+    fx = nx;
+    fz = nz;
+    const f64 ncx = cz, ncz = -cx;
+    cx = ncx;
+    cz = ncz;
+    ++turns;
+  }
+  if (turns == 4) return false;
+  const dwellings::RectCm& r = piece.footprint;
+  const f64 mid_x = static_cast<f64>(static_cast<i64>(r.x0 + r.x1) * 5 + off_mm) / 1000.0;
+  const f64 mid_z = static_cast<f64>(static_cast<i64>(r.z0 + r.z1) * 5 + off_mm) / 1000.0;
+  out.row = row;
+  out.piece = index;
+  out.x_mm = scene_gen::nearest_mm(mid_x - cx);
+  out.z_mm = scene_gen::nearest_mm(mid_z - cz);
+  out.y_mm = floor_mm - scene_gen::nearest_mm(static_cast<f64>(k.bounds_min[1]) * sc);
+  out.quarter_turns = turns;
+  return true;
+}
+
+bool house_for(void* context, const HouseAsk& ask, House& out, std::string& why) {
   out = {};
+  const auto* hk = static_cast<const detail::HouseKit*>(context);
+  const dwellings::Kit kit = kit_of(hk);
   structure::Description d;
-  if (!describe(ask, d, why)) return false;
-  if (!structures::validate(d, why)) return false;
+  const Draw w = house_draw(ask);
+  dwellings::RuralChoice choice;
+  dwellings::InteriorPlan interior;
+  if (!house_plan(w, kit, choice, interior, d, why)) return false;
+  if (!structures::validate(d, why)) {
+    why = "rural filler: the mesher refuses the description: " + why;
+    return false;
+  }
+  out.persons = w.household.persons;
+  out.means = w.household.means;
+  out.filler_seed = w.seed;
+  out.type = dwellings::plan_type_name(interior.params.type);
   Walk walk;
   if (!structures::walk_records(d, walk, why)) return false;
+  // **The kit pieces** (village.md, "A kit"): where each mesh stands, and its foot as a box the
+  // way through the house keeps off as it keeps off the furniture's solid members, since a kit
+  // piece states no box of the description.
+  if (kit.count > 0 && hk != nullptr && hk->layer != nullptr) {
+    dwellings::Furnishing f;
+    house_furnishing(w, kit, choice, interior, f);
+    // Read back by the furnisher's own validator, which repairs nothing.
+    if (!dwellings::validate_furnishing(interior, f, &why)) {
+      why = "the kit's furnishing: " + why;
+      return false;
+    }
+    const i64 off_mm = static_cast<i64>(dwellings::description_offset_cm(choice)) * 10;
+    for (u32 k = 0; k < f.pieces.size(); ++k) {
+      const dwellings::Piece& piece = f.pieces[k];
+      if (piece.kit == 0) continue;
+      const i64 floor_mm = piece.storey < d.storeys.size()
+                               ? static_cast<i64>(d.storeys[piece.storey].elevation) * 10
+                               : 0;
+      KitPlace place;
+      if (!kit_place(*hk->layer, piece, k, off_mm, floor_mm, place)) {
+        why = "kit row " + std::to_string(piece.kit - 1) + " faces no way the engine turns a piece";
+        return false;
+      }
+      out.kit.push_back(place);
+      structures::WalkBox b;
+      b.box = ~0u;
+      const dwellings::RectCm& r = piece.footprint;
+      b.min = Vec3{static_cast<f32>(static_cast<f64>(i64{r.x0} * 10 + off_mm) / 1000.0),
+                   static_cast<f32>(static_cast<f64>(floor_mm) / 1000.0),
+                   static_cast<f32>(static_cast<f64>(i64{r.z0} * 10 + off_mm) / 1000.0)};
+      b.max =
+          Vec3{static_cast<f32>(static_cast<f64>(i64{r.x1} * 10 + off_mm) / 1000.0),
+               static_cast<f32>(static_cast<f64>(floor_mm + i64{piece.height_cm} * 10) / 1000.0),
+               static_cast<f32>(static_cast<f64>(i64{r.z1} * 10 + off_mm) / 1000.0)};
+      walk.boxes.push_back(b);
+    }
+  }
   // The box: the outer faces of the ground storey's walls.
   f64 lo_x = 1e30, lo_z = 1e30, hi_x = -1e30, hi_z = -1e30;
   for (const structures::WalkWall& w : walk.walls) {
@@ -625,8 +758,50 @@ bool house_for(void*, const HouseAsk& ask, House& out, std::string& why) {
 
 namespace detail {
 
-HouseFn house_filler(void*& context) noexcept {
-  context = nullptr;
+namespace {
+// Up from a positive length: a kit piece's foot is never rounded smaller than its mesh.
+i32 ceil_cm(f64 cm) noexcept {
+  if (!(cm > 0.0)) return 0;
+  if (cm > 100000.0) return 100000;
+  const i32 whole = static_cast<i32>(cm);
+  return static_cast<f64>(whole) < cm ? whole + 1 : whole;
+}
+}  // namespace
+
+void house_kit(const VillageLayer& layer, HouseKit& out) {
+  out.layer = &layer;
+  out.rows.clear();
+  for (u32 r = 0; r < layer.kit.size(); ++r) {
+    const KitPiece& k = layer.kit[r];
+    dwellings::KitRow row;
+    row.id = r;
+    switch (k.replaces) {
+      case KitReplaces::TableSet: row.replaces = dwellings::PieceKind::TableSet; break;
+      case KitReplaces::Settle: row.replaces = dwellings::PieceKind::Settle; break;
+      case KitReplaces::Bed: row.replaces = dwellings::PieceKind::Bed; break;
+      case KitReplaces::Chest: row.replaces = dwellings::PieceKind::Chest; break;
+      default: continue;
+    }
+    const bool no_foot =
+        k.foot[0] == 0.0f && k.foot[1] == 0.0f && k.foot[2] == 0.0f && k.foot[3] == 0.0f;
+    const f64 sc = static_cast<f64>(k.scale) * 100.0;
+    const f64 ex = (static_cast<f64>(no_foot ? k.bounds_max[0] : k.foot[2]) -
+                    static_cast<f64>(no_foot ? k.bounds_min[0] : k.foot[0])) *
+                   sc;
+    const f64 ez = (static_cast<f64>(no_foot ? k.bounds_max[2] : k.foot[3]) -
+                    static_cast<f64>(no_foot ? k.bounds_min[2] : k.foot[1])) *
+                   sc;
+    const bool front_x = k.front == KitFront::PosX || k.front == KitFront::NegX;
+    row.along_cm = ceil_cm(front_x ? ez : ex);
+    row.out_cm = ceil_cm(front_x ? ex : ez);
+    row.height_cm =
+        ceil_cm((static_cast<f64>(k.bounds_max[1]) - static_cast<f64>(k.bounds_min[1])) * sc);
+    out.rows.push_back(row);
+  }
+}
+
+HouseFn house_filler(const HouseKit& kit, void*& context) noexcept {
+  context = const_cast<HouseKit*>(&kit);
   return &house_for;
 }
 
@@ -634,9 +809,354 @@ HouseFn house_filler(void*& context) noexcept {
 
 bool plan_scene_village(const VillageLayer& layer, const scene_gen::Context& context,
                         VillagePlan& out, std::string& error) {
+  detail::HouseKit kit;
+  detail::house_kit(layer, kit);
   void* house_context = nullptr;
-  const HouseFn house = detail::house_filler(house_context);
+  const HouseFn house = detail::house_filler(kit, house_context);
   return plan_village(layer, context.uncut(), context, house, house_context, out, error);
+}
+
+scene_gen::Placement kit_placement(const VillageLayer& layer, const Plot& plot, const KitPlace& k) {
+  scene_gen::Placement out = house_placement(plot);
+  out.position = house_point(plot, k.x_mm, k.y_mm, k.z_mm);
+  // A quarter turn about +y, by halves of the angle: 0, 90, 180 and 270 degrees.
+  constexpr f32 h = 0.70710678118654752f;
+  const Quat turn[4] = {Quat{0.0f, 0.0f, 0.0f, 1.0f}, Quat{0.0f, h, 0.0f, h},
+                        Quat{0.0f, 1.0f, 0.0f, 0.0f}, Quat{0.0f, h, 0.0f, -h}};
+  out.rotation = out.rotation * turn[k.quarter_turns & 3u];
+  const f32 s = k.row < layer.kit.size() ? layer.kit[k.row].scale : 1.0f;
+  out.scale = Vec3{s, s, s};
+  return out;
+}
+
+namespace {
+
+// Whole millimetres as metres, and three of them as a JSON point.
+JsonValue point_mm(i64 x_mm, i64 y_mm, i64 z_mm) {
+  JsonValue a = JsonValue::array();
+  a.push_back(JsonValue(static_cast<f64>(x_mm) / 1000.0));
+  a.push_back(JsonValue(static_cast<f64>(y_mm) / 1000.0));
+  a.push_back(JsonValue(static_cast<f64>(z_mm) / 1000.0));
+  return a;
+}
+JsonValue pair_mm(i64 x_mm, i64 z_mm) {
+  JsonValue a = JsonValue::array();
+  a.push_back(JsonValue(static_cast<f64>(x_mm) / 1000.0));
+  a.push_back(JsonValue(static_cast<f64>(z_mm) / 1000.0));
+  return a;
+}
+const char* side_name(dwellings::Side s) noexcept {
+  switch (s) {
+    case dwellings::Side::Front: return "front";
+    case dwellings::Side::Right: return "right";
+    case dwellings::Side::Back: return "back";
+    default: return "left";
+  }
+}
+
+}  // namespace
+
+bool describe_house(const VillageLayer& layer, const VillagePlan& plan, u32 house, JsonValue& out,
+                    std::string& plan_text, std::string& error) {
+  (void)layer;
+  out = JsonValue::object();
+  plan_text.clear();
+  if (house >= plan.houses.size()) {
+    error = "house " + std::to_string(house) + " is not built: the plan has " +
+            std::to_string(plan.houses.size()) + " houses (`--house` counts built houses)";
+    return false;
+  }
+  const Plot* plot = nullptr;
+  u32 plot_index = 0;
+  for (u32 k = 0; k < plan.plots.size(); ++k)
+    if (plan.plots[k].state == PlotState::built && plan.plots[k].house == house) {
+      plot = &plan.plots[k];
+      plot_index = k;
+    }
+  if (plot == nullptr) {
+    error = "house " + std::to_string(house) + " has no built plot";
+    return false;
+  }
+  const House& h = plan.houses[house];
+  // **The plot's own ask, again** (village.md, "A house as data"): the same numbers the plan asked
+  // its filler, so the house planned here is the house the plan holds, byte for byte, or nothing.
+  HouseAsk ask;
+  ask.frontage_mm = plot->frontage_mm;
+  ask.depth_mm = plot->depth_mm;
+  ask.setback_mm = plot->setback_mm;
+  ask.seed = plot->seed;
+  ask.storeys = plot->storeys;
+  ask.index = plot->order;
+  const Draw w = house_draw(ask);
+  detail::HouseKit hk;
+  detail::house_kit(layer, hk);
+  const dwellings::Kit kit = kit_of(&hk);
+  dwellings::RuralChoice choice;
+  dwellings::InteriorPlan interior;
+  structure::Description d;
+  std::string why;
+  if (!house_plan(w, kit, choice, interior, d, why)) {
+    error = "house " + std::to_string(house) + ": " + why;
+    return false;
+  }
+  structure::Recipe recipe;
+  recipe.description = d;
+  recipe.scope = structure::MeshScope::whole;
+  if (structures::canonical_json(recipe) != h.recipe) {
+    error = "house " + std::to_string(house) +
+            ": the rural filler's house for its plot's ask is not the one the plan holds (a plan "
+            "made with another house filler has no description to give)";
+    return false;
+  }
+  const i64 off_mm = static_cast<i64>(dwellings::description_offset_cm(choice)) * 10;
+  const auto elevation_mm = [&](u8 storey) -> i64 {
+    return storey < d.storeys.size() ? static_cast<i64>(d.storeys[storey].elevation) * 10 : 0;
+  };
+  // A plan point (centimetres, between the outer walls' inner faces) in the house's frame, mm.
+  const auto plan_x = [&](i32 x_cm) { return static_cast<i64>(x_cm) * 10 + off_mm; };
+  const auto world = [&](i64 x_mm, i64 y_mm, i64 z_mm) {
+    const WorldPos p = house_point(*plot, x_mm, y_mm, z_mm);
+    return point_mm(scene_gen::nearest_mm(p.x), scene_gen::nearest_mm(p.y),
+                    scene_gen::nearest_mm(p.z));
+  };
+
+  out["format"] = JsonValue("engine.village.house.v1");
+  out["house"] = JsonValue(house);
+  out["plot"] = JsonValue(plot_index);
+  out["order"] = JsonValue(plot->order);
+  out["lane"] = JsonValue(plot->lane);
+  out["kind"] = JsonValue(plot->kind == PlotKind::cottage ? "cottage" : "tenement");
+  JsonValue a = JsonValue::object();
+  a["frontage_m"] = JsonValue(static_cast<f64>(ask.frontage_mm) / 1000.0);
+  a["depth_m"] = JsonValue(static_cast<f64>(ask.depth_mm) / 1000.0);
+  a["setback_m"] = JsonValue(static_cast<f64>(ask.setback_mm) / 1000.0);
+  a["storeys"] = JsonValue(ask.storeys);
+  a["seed"] = JsonValue(ask.seed);
+  out["ask"] = std::move(a);
+  JsonValue hh = JsonValue::object();
+  hh["persons"] = JsonValue(static_cast<u32>(w.household.persons));
+  hh["means"] = JsonValue(static_cast<u32>(w.household.means));
+  out["household"] = std::move(hh);
+  JsonValue f = JsonValue::object();
+  f["seed"] = JsonValue(w.seed);
+  f["type"] = JsonValue(dwellings::plan_type_name(interior.params.type));
+  f["storeys"] = JsonValue(static_cast<u32>(interior.params.storeys));
+  f["hearths"] = JsonValue(static_cast<u32>(interior.hearths.size()));
+  f["demoted"] = JsonValue(choice.demoted);
+  f["mirror"] = JsonValue(interior.params.mirror);
+  f["plot_cm"] =
+      pair_mm(static_cast<i64>(w.plot.frontage_cm) * 10, static_cast<i64>(w.plot.depth_cm) * 10);
+  f["clear_m"] = pair_mm(static_cast<i64>(interior.params.width_cm) * 10,
+                         static_cast<i64>(interior.params.depth_cm) * 10);
+  f["outer_m"] = pair_mm(static_cast<i64>(choice.outer_width_cm) * 10,
+                         static_cast<i64>(choice.outer_depth_cm) * 10);
+  f["outer_wall_m"] = JsonValue(static_cast<f64>(choice.outer_wall_cm) / 100.0);
+  f["ridge_along_front"] = JsonValue(choice.ridge_along_front);
+  out["filler"] = std::move(f);
+
+  // **The frame**: a point (x, y, z) of the house's frame, metres, is `origin + x * x_axis + y * up
+  // + z * z_axis` in the world. The house's frame is its description's: the plan's frame (every
+  // `plan_*` number of the dwellings capability) moved by `plan_offset_m` on x and z, y up from the
+  // ground floor's top, which stands `floor_m` over the pad.
+  f64 c = plot->along_x, s = -plot->along_z;
+  for (u8 q = 0; q < plot->quarter_turns; ++q) {
+    const f64 nc = -s, ns = c;
+    c = nc;
+    s = ns;
+  }
+  JsonValue frame = JsonValue::object();
+  frame["origin"] = world(0, 0, 0);
+  JsonValue xa = JsonValue::array(), za = JsonValue::array();
+  xa.push_back(JsonValue(c));
+  xa.push_back(JsonValue(0.0));
+  xa.push_back(JsonValue(-s));
+  za.push_back(JsonValue(s));
+  za.push_back(JsonValue(0.0));
+  za.push_back(JsonValue(c));
+  frame["x_axis"] = std::move(xa);
+  frame["z_axis"] = std::move(za);
+  frame["quarter_turns"] = JsonValue(static_cast<u32>(plot->quarter_turns));
+  frame["pad_m"] = JsonValue(static_cast<f64>(plot->pad_mm) / 1000.0);
+  frame["floor_m"] = JsonValue(static_cast<f64>(plot->floor_mm) / 1000.0);
+  frame["plan_offset_m"] = JsonValue(static_cast<f64>(off_mm) / 1000.0);
+  JsonValue floors = JsonValue::array();
+  for (u8 st = 0; st < d.storeys.size(); ++st)
+    floors.push_back(JsonValue(static_cast<f64>(elevation_mm(st)) / 1000.0));
+  frame["storey_floors_m"] = std::move(floors);
+  out["frame"] = std::move(frame);
+
+  // The door the plan knows: the threshold's middle on the wall's outer face, beside the open leaf.
+  JsonValue door = JsonValue::object();
+  door["house"] = point_mm(h.door_x_mm, 0, h.door_z_mm);
+  door["world"] = world(h.door_x_mm, 0, h.door_z_mm);
+  JsonValue out_dir = JsonValue::array();
+  out_dir.push_back(JsonValue(static_cast<i64>(h.out_x)));
+  out_dir.push_back(JsonValue(static_cast<i64>(h.out_z)));
+  door["out"] = std::move(out_dir);
+  door["width_m"] = JsonValue(static_cast<f64>(h.door_width_mm) / 1000.0);
+  out["door"] = std::move(door);
+  JsonValue box = JsonValue::object();
+  box["low"] = pair_mm(h.min_x_mm, h.min_z_mm);
+  box["high"] = pair_mm(h.max_x_mm, h.max_z_mm);
+  out["footprint"] = std::move(box);
+
+  JsonValue rooms = JsonValue::array();
+  for (u32 r = 0; r < interior.rooms.size(); ++r) {
+    const dwellings::Room& room = interior.rooms[r];
+    JsonValue o = JsonValue::object();
+    o["id"] = JsonValue(r);
+    o["kind"] = JsonValue(dwellings::room_kind_name(room.kind));
+    o["storey"] = JsonValue(static_cast<u32>(room.storey));
+    o["floor_m"] = JsonValue(static_cast<f64>(elevation_mm(room.storey)) / 1000.0);
+    o["low"] = pair_mm(plan_x(room.rect.x0), plan_x(room.rect.z0));
+    o["high"] = pair_mm(plan_x(room.rect.x1), plan_x(room.rect.z1));
+    o["habitable"] = JsonValue((room.flags & dwellings::k_room_habitable) != 0);
+    o["heated"] = JsonValue((room.flags & dwellings::k_room_heated) != 0);
+    o["entrance"] = JsonValue((room.flags & dwellings::k_room_entrance) != 0);
+    rooms.push_back(std::move(o));
+  }
+  out["rooms"] = std::move(rooms);
+
+  JsonValue openings = JsonValue::array();
+  for (const dwellings::OuterOpening& o : interior.openings) {
+    JsonValue q = JsonValue::object();
+    q["kind"] = JsonValue(o.door() ? "door" : "window");
+    q["room"] = JsonValue(o.room);
+    q["storey"] = JsonValue(static_cast<u32>(o.storey()));
+    q["side"] = JsonValue(side_name(o.side));
+    q["at_m"] = JsonValue(static_cast<f64>(o.at_cm) / 100.0);
+    q["width_m"] = JsonValue(static_cast<f64>(o.width_cm) / 100.0);
+    q["sill_m"] = JsonValue(static_cast<f64>(o.sill_cm) / 100.0);
+    q["head_m"] = JsonValue(static_cast<f64>(o.head_cm) / 100.0);
+    openings.push_back(std::move(q));
+  }
+  out["openings"] = std::move(openings);
+
+  // The timber and the furniture as `describe` wrote them: a piece's footprint and height.
+  dwellings::Furnishing furnishing;
+  house_furnishing(w, kit, choice, interior, furnishing);
+  JsonValue pieces = JsonValue::array();
+  for (u32 k = 0; k < furnishing.pieces.size(); ++k) {
+    const dwellings::Piece& p = furnishing.pieces[k];
+    JsonValue q = JsonValue::object();
+    q["index"] = JsonValue(k);
+    q["kind"] = JsonValue(dwellings::piece_kind_name(p.kind));
+    q["room"] = JsonValue(p.room);
+    q["storey"] = JsonValue(static_cast<u32>(p.storey));
+    q["against"] = JsonValue(side_name(p.against));
+    q["low"] = point_mm(plan_x(p.footprint.x0), elevation_mm(p.storey), plan_x(p.footprint.z0));
+    q["high"] = point_mm(plan_x(p.footprint.x1), elevation_mm(p.storey) + i64{p.height_cm} * 10,
+                         plan_x(p.footprint.z1));
+    q["members"] = JsonValue(p.member_count);
+    if (p.kit != 0) q["kit_row"] = JsonValue(static_cast<u32>(p.kit - 1));
+    pieces.push_back(std::move(q));
+  }
+  out["pieces"] = std::move(pieces);
+
+  // **The kit**: every row of the entry's, and the pieces of this house that stand in the box
+  // furniture's place, where their meshes stand (`kit_placement` composes the same numbers).
+  JsonValue kit_rows = JsonValue::array();
+  for (u32 r = 0; r < layer.kit.size(); ++r) {
+    JsonValue q = JsonValue::object();
+    q["row"] = JsonValue(r);
+    q["name"] = JsonValue(layer.kit[r].name);
+    q["mesh"] = JsonValue(layer.kit[r].mesh);
+    bool used = false;
+    for (const dwellings::KitRow& k : hk.rows)
+      if (k.id == r) {
+        q["foot_cm"] =
+            pair_mm(static_cast<i64>(k.along_cm) * 1000, static_cast<i64>(k.out_cm) * 1000);
+        q["height_cm"] = JsonValue(static_cast<i64>(k.height_cm));
+        used = true;
+      }
+    q["replaces"] = JsonValue(used);
+    kit_rows.push_back(std::move(q));
+  }
+  out["kit_rows"] = std::move(kit_rows);
+  JsonValue kit_json = JsonValue::array();
+  for (const KitPlace& k : h.kit) {
+    JsonValue q = JsonValue::object();
+    q["row"] = JsonValue(k.row);
+    q["piece"] = JsonValue(k.piece);
+    q["house"] = point_mm(k.x_mm, k.y_mm, k.z_mm);
+    q["world"] = world(k.x_mm, k.y_mm, k.z_mm);
+    q["quarter_turns"] = JsonValue(static_cast<u32>(k.quarter_turns));
+    const scene_gen::Placement placed = kit_placement(layer, *plot, k);
+    JsonValue rot = JsonValue::array();
+    rot.push_back(JsonValue(placed.rotation.x));
+    rot.push_back(JsonValue(placed.rotation.y));
+    rot.push_back(JsonValue(placed.rotation.z));
+    rot.push_back(JsonValue(placed.rotation.w));
+    q["rotation"] = std::move(rot);
+    q["scale"] = JsonValue(placed.scale.x);
+    kit_json.push_back(std::move(q));
+  }
+  out["kit"] = std::move(kit_json);
+
+  // **The places the plan already knows** (furnish.h, `house_places`): the hearth's recess, mouth,
+  // cheeks and the floor beside its stack, the furniture's tops, seats, lid and mattress, the
+  // joists' undersides, the doors' and doorways' approaches and the windows' light, each a box in
+  // the house's frame (a surface where `low` and `high` share their height).
+  Vector<dwellings::NamedPlace> named;
+  dwellings::house_places(interior, furnishing, named);
+  JsonValue places = JsonValue::array();
+  for (const dwellings::NamedPlace& n : named) {
+    JsonValue q = JsonValue::object();
+    q["kind"] = JsonValue(dwellings::place_kind_name(n.kind));
+    q["room"] = JsonValue(n.room);
+    q["storey"] = JsonValue(static_cast<u32>(n.storey));
+    q["faces"] = JsonValue(side_name(n.faces));
+    q["of"] = JsonValue(n.index);
+    q["low"] = point_mm(plan_x(n.rect.x0), elevation_mm(n.storey) + n.y0_mm, plan_x(n.rect.z0));
+    q["high"] = point_mm(plan_x(n.rect.x1), elevation_mm(n.storey) + n.y1_mm, plan_x(n.rect.z1));
+    places.push_back(std::move(q));
+  }
+  out["places"] = std::move(places);
+
+  // The plan's own walk (the tour through every room and a view a room, as `engine-content
+  // dwelling` writes them) and the walker's route the plan stands the house by.
+  Vector<dwellings::TourPoint> tour;
+  dwellings::tour_interior(interior, i32{choice.outer_wall_cm} + 150, tour);
+  JsonValue tour_json = JsonValue::array();
+  for (const dwellings::TourPoint& t : tour) {
+    JsonValue q = JsonValue::object();
+    q["house"] = point_mm(plan_x(t.x_cm), t.y_mm, plan_x(t.z_cm));
+    q["room"] =
+        t.room == dwellings::k_no_room ? JsonValue(static_cast<i64>(-1)) : JsonValue(t.room);
+    tour_json.push_back(std::move(q));
+  }
+  out["tour"] = std::move(tour_json);
+  Vector<dwellings::RoomView> views;
+  dwellings::room_views(interior, 1650, views);
+  JsonValue views_json = JsonValue::array();
+  for (const dwellings::RoomView& v : views) {
+    JsonValue q = JsonValue::object();
+    q["room"] = JsonValue(v.room);
+    q["eye"] = point_mm(plan_x(v.eye_x_cm), v.eye_y_mm, plan_x(v.eye_z_cm));
+    q["at"] = point_mm(plan_x(v.at_x_cm), v.at_y_mm, plan_x(v.at_z_cm));
+    views_json.push_back(std::move(q));
+  }
+  out["views"] = std::move(views_json);
+  JsonValue route = JsonValue::array();
+  for (const RoutePoint& p : h.route) {
+    JsonValue q = JsonValue::object();
+    q["house"] = point_mm(p.x_mm, p.y_mm, p.z_mm);
+    q["world"] = world(p.x_mm, p.y_mm, p.z_mm);
+    route.push_back(std::move(q));
+  }
+  out["route"] = std::move(route);
+  JsonValue look = JsonValue::object();
+  look["house"] = point_mm(h.look.x_mm, h.look.y_mm, h.look.z_mm);
+  look["world"] = world(h.look.x_mm, h.look.y_mm, h.look.z_mm);
+  out["look"] = std::move(look);
+
+  for (u8 storey = 0; storey < interior.params.storeys; ++storey) {
+    plan_text += std::string(dwellings::plan_type_name(interior.params.type)) + ", storey " +
+                 std::to_string(storey) + ", 20 cm a character\n";
+    plan_text += dwellings::draw_interior(interior, storey, 20);
+    plan_text += "\n";
+  }
+  return true;
 }
 
 }  // namespace engine::village

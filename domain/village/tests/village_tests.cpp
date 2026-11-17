@@ -966,6 +966,229 @@ TEST_CASE("village: the plan is the same bytes on every toolchain") {
   CHECK(plan_hash(planned(p, gentle)) != hash);
 }
 
+// **A house as data** (village.md, "A house as data"; the forest session's need 113 and 132): what
+// `describe_house` writes is the plan's own house — the plot's seed and setback, the household the
+// filler drew, a frame that carries the house's door onto the plan's door — so a consumer never
+// re-derives a draw.
+TEST_CASE(
+    "village: a house as data is the plan's own house, its plot's seed, setback and household") {
+  VillageLayer p = street(0, 0, 130, 0);
+  p.seed = 7;
+  p.houses = 6;
+  scene_gen::Context context;
+  context.ground = ground(gentle);
+  VillagePlan plan;
+  std::string error;
+  REQUIRE_MESSAGE(plan_scene_village(p, context, plan, error), error);
+  REQUIRE(plan.built >= 3);
+  const JsonValue summary = plan_json(p, plan);
+  const JsonValue& listed = *summary.find("plot_list");
+  REQUIRE(listed.as_array().size() == plan.plots.size());
+  u32 checked = 0;
+  for (u32 k = 0; k < plan.plots.size(); ++k) {
+    const Plot& q = plan.plots[k];
+    const JsonValue& row = listed[k];
+    CHECK(row.find("index")->as_uint() == k);
+    CHECK(row.find("seed")->as_uint() == q.seed);
+    if (q.state != PlotState::built) continue;
+    REQUIRE(row.find("house_index") != nullptr);
+    CHECK(row.find("house_index")->as_uint() == q.house);
+    CHECK(std::fabs(row.find("setback_m")->as_float() - static_cast<f64>(q.setback_mm) / 1000.0) <
+          1e-9);
+    CHECK(q.setback_mm > 0);
+    const House& h = plan.houses[q.house];
+    CHECK(h.persons >= 3);
+    CHECK(h.persons <= 8);
+    CHECK(!h.type.empty());
+
+    JsonValue d;
+    std::string text;
+    REQUIRE_MESSAGE(describe_house(p, plan, q.house, d, text, error), error);
+    CHECK(d.find("format")->as_string() == std::string("engine.village.house.v1"));
+    CHECK(d.find("plot")->as_uint() == k);
+    const JsonValue& ask = *d.find("ask");
+    CHECK(ask.find("seed")->as_uint() == q.seed);
+    CHECK(std::fabs(ask.find("setback_m")->as_float() - static_cast<f64>(q.setback_mm) / 1000.0) <
+          1e-9);
+    CHECK(ask.find("storeys")->as_uint() == q.storeys);
+    CHECK(d.find("household")->find("persons")->as_uint() == h.persons);
+    CHECK(d.find("filler")->find("seed")->as_uint() == h.filler_seed);
+    CHECK(d.find("filler")->find("type")->as_string() == h.type);
+    CHECK(d.find("rooms")->as_array().size() > 0);
+    CHECK(d.find("pieces")->as_array().size() > 0);
+    CHECK(d.find("route")->as_array().size() == h.route.size());
+    CHECK(text.find("storey 0") != std::string::npos);
+    // The frame carries the house's door onto the plan's door, to the millimetre.
+    const JsonValue& frame = *d.find("frame");
+    const JsonValue& origin = *frame.find("origin");
+    const JsonValue& xa = *frame.find("x_axis");
+    const JsonValue& za = *frame.find("z_axis");
+    const JsonValue& door = *d.find("door")->find("house");
+    const f64 dx = door[0].as_float(), dz = door[2].as_float();
+    const f64 wx = origin[0].as_float() + dx * xa[0].as_float() + dz * za[0].as_float();
+    const f64 wz = origin[2].as_float() + dx * xa[2].as_float() + dz * za[2].as_float();
+    CHECK(std::fabs(wx - static_cast<f64>(q.door_x_mm) / 1000.0) < 0.0015);
+    CHECK(std::fabs(wz - static_cast<f64>(q.door_z_mm) / 1000.0) < 0.0015);
+    CHECK(std::fabs(origin[1].as_float() - static_cast<f64>(q.pad_mm + q.floor_mm) / 1000.0) <
+          0.0015);
+    ++checked;
+  }
+  CHECK(checked == plan.built);
+  JsonValue none;
+  std::string text;
+  CHECK(!describe_house(p, plan, plan.built, none, text, error));
+  CHECK(error.find("built houses") != std::string::npos);
+  // A plan made by another filler has no description to give.
+  VillagePlan boxes;
+  REQUIRE_MESSAGE(plan_village(p, context.ground, context, &box_house, nullptr, boxes, error),
+                  error);
+  REQUIRE(boxes.built > 0);
+  CHECK(!describe_house(p, boxes, 0, none, text, error));
+}
+
+namespace {
+
+KitPiece kit_row(const char* name, KitReplaces replaces, KitFront front, f32 x, f32 y, f32 z) {
+  KitPiece k;
+  k.name = name;
+  k.mesh = std::string("kit/") + name + ".glb";
+  k.scale =
+      0.5f;  // the meshes are modelled at twice their size: a row is read off them as they are
+  k.bounds_min[0] = -x;
+  k.bounds_min[1] = 0.1f;  // its lowest point a little over its origin
+  k.bounds_min[2] = -z;
+  k.bounds_max[0] = x;
+  k.bounds_max[1] = 0.1f + y;
+  k.bounds_max[2] = z;
+  k.front = front;
+  k.replaces = replaces;
+  return k;
+}
+
+// How near a segment from a to b comes to a rectangle (x0, z0, x1, z1), metres.
+f64 segment_to_rect(f64 ax, f64 az, f64 bx, f64 bz, f64 x0, f64 z0, f64 x1, f64 z1) {
+  f64 least = 1e30;
+  for (u32 s = 0; s <= 100; ++s) {
+    const f64 t = static_cast<f64>(s) / 100.0;
+    const f64 px = ax + (bx - ax) * t, pz = az + (bz - az) * t;
+    const f64 dx = px < x0 ? x0 - px : (px > x1 ? px - x1 : 0.0);
+    const f64 dz = pz < z0 ? z0 - pz : (pz > z1 ? pz - z1 : 0.0);
+    least = std::min(least, std::sqrt(dx * dx + dz * dz));
+  }
+  return least;
+}
+
+}  // namespace
+
+// **A kit in the box furniture's place** (village.md, "A kit"; dwellings.md, "Kit pieces"): a
+// scene's own meshes stand where the furnisher's table sets, beds and chests would, turned to face
+// into the room, at the furnisher's clearances (its validator reads them back), the boxes they
+// replace gone from the description, the way through the house kept off them as it is off the
+// furniture, and the generator hands each piece's mesh with its house. A row too tall for any room
+// is never placed, and a row that replaces nothing is listed and not placed.
+TEST_CASE(
+    "village: a kit's pieces stand in the box furniture's place, and the way keeps off them") {
+  VillageLayer p = street(0, 0, 130, 0);
+  p.seed = 7;
+  p.houses = 6;
+  scene_gen::Context context;
+  context.ground = ground(gentle);
+  VillagePlan boxes;
+  std::string error;
+  REQUIRE_MESSAGE(plan_scene_village(p, context, boxes, error), error);
+  // Model units at scale 0.5: a table set 1.6 by 1.1 m and 0.8 m high facing -z, a bed 1.4 by
+  // 2.0 m facing +x (its foot), a chest, a settle 2.6 m tall, and a dresser that replaces nothing.
+  p.kit.push_back(kit_row("table", KitReplaces::TableSet, KitFront::NegZ, 1.6f, 1.6f, 1.1f));
+  p.kit.push_back(kit_row("bed", KitReplaces::Bed, KitFront::PosX, 2.0f, 2.0f, 1.4f));
+  p.kit.push_back(kit_row("chest", KitReplaces::Chest, KitFront::PosZ, 0.9f, 1.0f, 0.44f));
+  p.kit.push_back(kit_row("tall-settle", KitReplaces::Settle, KitFront::NegZ, 1.6f, 5.2f, 0.6f));
+  p.kit.push_back(kit_row("dresser", KitReplaces::None, KitFront::NegZ, 1.2f, 3.4f, 0.9f));
+  VillagePlan plan;
+  REQUIRE_MESSAGE(plan_scene_village(p, context, plan, error), error);
+  // The kit moves no plot and no house's box.
+  REQUIRE(plan.built == boxes.built);
+  CHECK(plan.plots.size() == boxes.plots.size());
+  u32 placed = 0, rows_seen[5] = {0, 0, 0, 0, 0};
+  for (u32 i = 0; i < plan.houses.size(); ++i) {
+    const House& h = plan.houses[i];
+    CHECK(h.min_x_mm == boxes.houses[i].min_x_mm);
+    CHECK(h.max_z_mm == boxes.houses[i].max_z_mm);
+    if (!h.kit.empty()) CHECK(h.recipe.size() < boxes.houses[i].recipe.size());
+    JsonValue d;
+    std::string text;
+    REQUIRE_MESSAGE(describe_house(p, plan, i, d, text, error), error);
+    CHECK(d.find("kit")->as_array().size() == h.kit.size());
+    CHECK(d.find("kit_rows")->as_array().size() == p.kit.size());
+    const JsonValue& pieces = *d.find("pieces");
+    const JsonValue& route = *d.find("route");
+    for (const KitPlace& k : h.kit) {
+      ++placed;
+      REQUIRE(k.row < 5);
+      ++rows_seen[k.row];
+      const JsonValue& piece = pieces[k.piece];
+      REQUIRE(piece.find("kit_row") != nullptr);
+      CHECK(piece.find("kit_row")->as_uint() == k.row);
+      CHECK(piece.find("members")->as_uint() == 0);
+      const f64 x0 = piece.find("low")->operator[](0).as_float();
+      const f64 y0 = piece.find("low")->operator[](1).as_float();
+      const f64 z0 = piece.find("low")->operator[](2).as_float();
+      const f64 x1 = piece.find("high")->operator[](0).as_float();
+      const f64 z1 = piece.find("high")->operator[](2).as_float();
+      // The mesh's lowest point on the floor: its origin 0.05 m under it (0.1 at scale 0.5).
+      CHECK(std::fabs(static_cast<f64>(k.y_mm) / 1000.0 - (y0 - 0.05)) < 0.0015);
+      // Its origin over its foot's middle (the meshes are centred on their origins).
+      CHECK(std::fabs(static_cast<f64>(k.x_mm) / 1000.0 - 0.5 * (x0 + x1)) < 0.0015);
+      CHECK(std::fabs(static_cast<f64>(k.z_mm) / 1000.0 - 0.5 * (z0 + z1)) < 0.0015);
+      // The way through the house keeps a capsule's radius off its foot.
+      for (u32 r = 0; r + 1 < route.as_array().size(); ++r) {
+        const JsonValue& a = *route[r].find("house");
+        const JsonValue& b = *route[r + 1].find("house");
+        if (std::fabs(a[1].as_float() - y0) > 0.3 || std::fabs(b[1].as_float() - y0) > 0.3)
+          continue;
+        CHECK(segment_to_rect(a[0].as_float(), a[2].as_float(), b[0].as_float(), b[2].as_float(),
+                              x0, z0, x1, z1) >= 0.3);
+      }
+    }
+  }
+  MESSAGE(placed << " kit pieces in " << plan.built << " houses: " << rows_seen[0] << " tables, "
+                 << rows_seen[1] << " beds, " << rows_seen[2] << " chests");
+  CHECK(rows_seen[0] > 0);
+  CHECK(rows_seen[1] > 0);
+  CHECK(rows_seen[2] > 0);
+  CHECK(rows_seen[3] == 0);  // 2.6 m stands under no joists and no plate
+  CHECK(rows_seen[4] == 0);  // replaces nothing
+  // The kit changes the plan's hash; the same kit gives the same plan.
+  CHECK(plan_hash(plan) != plan_hash(boxes));
+  VillagePlan again;
+  REQUIRE_MESSAGE(plan_scene_village(p, context, again, error), error);
+  CHECK(plan_hash(again) == plan_hash(plan));
+
+  // The generator hands each piece's mesh with its house, resolved against the scene's directory.
+  const scene_gen::PlacementGeneratorDesc* desc =
+      scene_gen::GeneratorRegistry::global().find_placement("village");
+  REQUIRE(desc != nullptr);
+  JsonValue params = schema::to_json(p);
+  scene_gen::Context scene = context;
+  scene.dir = "scenes";
+  void* state = nullptr;
+  REQUIRE_MESSAGE(desc->open(params, scene, &state, &error), error);
+  scene_gen::Placements whole;
+  REQUIRE_MESSAGE(desc->expand(state, scene, whole, &error), error);
+  CHECK(whole.instances.size() == plan.built + placed);
+  u32 kit_instances = 0;
+  for (const scene_gen::Placement& q : whole.instances) {
+    REQUIRE(q.mesh < whole.meshes.size());
+    const scene_gen::PlacementMesh& m = whole.meshes[q.mesh];
+    if (!m.recipe.empty()) continue;
+    ++kit_instances;
+    CHECK(m.path.find("kit") != std::string::npos);
+    CHECK(m.path.rfind("scenes", 0) == 0);
+    CHECK(std::fabs(q.scale.x - 0.5f) < 1e-6f);
+  }
+  CHECK(kit_instances == placed);
+  desc->close(state);
+}
+
 TEST_CASE(
     "village: the generator's tiles hand what its whole read hands, and it plans the ground") {
   const scene_gen::PlacementGeneratorDesc* desc =

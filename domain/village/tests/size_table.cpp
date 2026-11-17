@@ -6,4 +6,6 @@
 using namespace engine;
 
 ENGINE_EXPECT_SIZE(48, 8, village::LaneStation);
-ENGINE_EXPECT_SIZE(280, 8, village::Plot);
+// 288: G207 keeps the setback each plot's house was asked for (`setback_mm`), so the plan says it
+// and no consumer re-derives the draw.
+ENGINE_EXPECT_SIZE(288, 8, village::Plot);

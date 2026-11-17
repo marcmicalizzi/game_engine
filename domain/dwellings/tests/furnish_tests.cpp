@@ -219,3 +219,143 @@ TEST_CASE("furnish: the timber is under an upper floor and on the stair") {
   timber_interior(plan, choice.ridge_along_front, f);
   CHECK(f.pieces.empty());
 }
+
+// **Kit pieces** (dwellings.md, "Kit pieces"): over every household's house on three plots and
+// four seeds, a kit's rows stand in the box pieces' place wherever they fit, with no members, at
+// the furnisher's own clearances (the validator reads every one back, and the tour's line is
+// measured again here), never into the joists; where a row fits nowhere the box stands; and with
+// no kit the furnishing is the same bytes.
+TEST_CASE("furnish: a kit's pieces stand in the box pieces' place at the furnisher's clearances") {
+  const RuralStyle style;
+  const KitRow rows[5] = {KitRow{0, PieceKind::TableSet, 170, 110, 80},
+                          KitRow{1, PieceKind::Bed, 145, 205, 105},
+                          KitRow{2, PieceKind::Chest, 95, 50, 55},
+                          KitRow{3, PieceKind::Settle, 160, 60, 300},  // under no ceiling
+                          KitRow{4, PieceKind::Chest, 400, 50, 55}};   // along no wall
+  const Kit kit{rows, 5};
+  const RuralPlot plots[3] = {RuralPlot{2400, 1500}, RuralPlot{760, 1500}, RuralPlot{1200, 520}};
+  u32 houses = 0, kit_pieces = 0, by_row[5] = {0, 0, 0, 0, 0};
+  for (const RuralPlot& plot : plots)
+    for (u8 persons = 1; persons <= 9; ++persons)
+      for (u8 means = 0; means <= 2; ++means)
+        for (u64 seed = 1; seed <= 4; ++seed) {
+          RuralChoice choice;
+          InteriorPlan plan;
+          std::string error;
+          if (!plan_rural(plot, Household{persons, means}, style, seed, choice, plan, &error))
+            continue;
+          ++houses;
+          Furnishing plain, with;
+          furnish_interior(plan, seed, plain);
+          Furnishing plain_again;
+          furnish_interior(plan, seed, plain_again, Kit{});
+          CHECK(hash_furnishing(plain) == hash_furnishing(plain_again));
+          furnish_interior(plan, seed, with, kit);
+          std::string why;
+          CHECK_MESSAGE(validate_furnishing(plan, with, &why), why);
+          Vector<TourPoint> tour;
+          tour_interior(plan, 150, tour);
+          for (const Piece& p : with.pieces) {
+            if (p.kit == 0) continue;
+            ++kit_pieces;
+            REQUIRE(p.kit <= 5);
+            ++by_row[p.kit - 1];
+            const KitRow& row = rows[p.kit - 1];
+            CHECK(p.kind == row.replaces);
+            CHECK(p.member_count == 0);
+            CHECK(i32{p.height_cm} + k_kit_head_gap_cm <= room_clear_cm(plan, plan.rooms[p.room]));
+            const bool along_x = p.against == Side::Front || p.against == Side::Back;
+            CHECK((along_x ? p.footprint.x1 - p.footprint.x0 : p.footprint.z1 - p.footprint.z0) ==
+                  row.along_cm);
+            CHECK((along_x ? p.footprint.z1 - p.footprint.z0 : p.footprint.x1 - p.footprint.x0) ==
+                  row.out_cm);
+            for (const TourPoint& t : tour) {
+              if (t.room != p.room) continue;  // a room is on one storey
+              CHECK(clear_of(p.footprint, t.x_cm, t.z_cm) >= k_tour_clear_cm);
+            }
+          }
+        }
+  MESSAGE(houses << " houses, " << kit_pieces << " kit pieces: " << by_row[0] << " tables, "
+                 << by_row[1] << " beds, " << by_row[2] << " chests");
+  CHECK(by_row[0] > houses / 3);
+  CHECK(by_row[1] > houses / 3);
+  CHECK(by_row[2] > 0);
+  CHECK(by_row[3] == 0);
+  CHECK(by_row[4] == 0);
+}
+
+// **The places a plan knows** (dwellings.md, "The places a plan knows"): over every household's
+// house on a generous plot and four seeds, each hearth has its recess inside its stack and its
+// mouth on the stack's face, every table set its top at 75 cm and two bench seats, every bed a
+// mattress, every chest a lid, every joist an underside, and every door, doorway and window its
+// floor.
+TEST_CASE("furnish: the places a plan knows are named, one a thing the plan holds") {
+  const RuralStyle style;
+  u32 houses = 0, places = 0;
+  for (u8 persons = 1; persons <= 9; ++persons)
+    for (u8 means = 0; means <= 2; ++means)
+      for (u64 seed = 1; seed <= 4; ++seed) {
+        RuralChoice choice;
+        InteriorPlan plan;
+        std::string error;
+        REQUIRE_MESSAGE(plan_rural(RuralPlot{2400, 1500}, Household{persons, means}, style, seed,
+                                   choice, plan, &error),
+                        error);
+        Furnishing f;
+        timber_interior(plan, choice.ridge_along_front, f);
+        furnish_interior(plan, seed, f);
+        Vector<NamedPlace> named;
+        house_places(plan, f, named);
+        ++houses;
+        places += named.size();
+        u32 count[14] = {};
+        for (const NamedPlace& n : named) {
+          ++count[static_cast<u32>(n.kind)];
+          CHECK(n.rect.x0 <= n.rect.x1);
+          CHECK(n.rect.z0 <= n.rect.z1);
+          CHECK(n.y0_mm <= n.y1_mm);
+          if (n.kind == PlaceKind::HearthRecess) {
+            const RectCm& st = plan.hearths[n.index].stack;
+            CHECK(n.rect.x0 >= st.x0);
+            CHECK(n.rect.x1 <= st.x1);
+            CHECK(n.rect.z0 >= st.z0);
+            CHECK(n.rect.z1 <= st.z1);
+            CHECK(n.y0_mm == k_raised_hearth_mm);
+            CHECK(n.y1_mm == i32{plan.hearths[n.index].lintel_cm} * 10);
+          }
+          if (n.kind == PlaceKind::TableTop) CHECK(n.y0_mm == 750);
+          if (n.kind == PlaceKind::BenchSeat) CHECK(n.y0_mm == 450);
+          if (n.kind == PlaceKind::Mattress || n.kind == PlaceKind::ChestLid ||
+              n.kind == PlaceKind::TableTop) {
+            const RectCm& fp = f.pieces[n.index].footprint;
+            CHECK(n.rect.x0 >= fp.x0);
+            CHECK(n.rect.x1 <= fp.x1);
+            CHECK(n.rect.z0 >= fp.z0);
+            CHECK(n.rect.z1 <= fp.z1);
+          }
+        }
+        u32 tables = 0, beds = 0, chests = 0, settles = 0, joists = 0, doors = 0, windows = 0;
+        for (const Piece& p : f.pieces) {
+          tables += p.kind == PieceKind::TableSet ? 1u : 0u;
+          beds += p.kind == PieceKind::Bed ? 1u : 0u;
+          chests += p.kind == PieceKind::Chest ? 1u : 0u;
+          settles += p.kind == PieceKind::Settle ? 1u : 0u;
+          joists += p.kind == PieceKind::Joists || p.kind == PieceKind::Beam ? p.member_count : 0u;
+        }
+        for (const OuterOpening& o : plan.openings)
+          (o.door() ? doors : windows) += 1;
+        CHECK(count[static_cast<u32>(PlaceKind::HearthRecess)] == plan.hearths.size());
+        CHECK(count[static_cast<u32>(PlaceKind::HearthMouth)] == plan.hearths.size());
+        CHECK(count[static_cast<u32>(PlaceKind::HearthApron)] == plan.hearths.size());
+        CHECK(count[static_cast<u32>(PlaceKind::TableTop)] == tables);
+        CHECK(count[static_cast<u32>(PlaceKind::BenchSeat)] == 2 * tables);
+        CHECK(count[static_cast<u32>(PlaceKind::SettleSeat)] == settles);
+        CHECK(count[static_cast<u32>(PlaceKind::Mattress)] == beds);
+        CHECK(count[static_cast<u32>(PlaceKind::ChestLid)] == chests);
+        CHECK(count[static_cast<u32>(PlaceKind::JoistUnderside)] == joists);
+        CHECK(count[static_cast<u32>(PlaceKind::DoorApproach)] == doors);
+        CHECK(count[static_cast<u32>(PlaceKind::WindowLight)] == windows);
+        CHECK(count[static_cast<u32>(PlaceKind::DoorwayApproach)] == plan.doorways.size());
+      }
+  MESSAGE(houses << " houses, " << places << " named places");
+}
