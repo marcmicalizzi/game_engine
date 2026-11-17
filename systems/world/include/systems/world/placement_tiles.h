@@ -88,10 +88,26 @@ struct PlacementTilesConfig {
   f32 admit_bias = 1.0f;
   u32 admit_spare_pairs = 0;
   u32 admit_hold_off = 120;
+  // **A hand-off placement is held by its band** (G205; world.md). A placement with the near
+  // hand-off role (`renderer::SceneInstance::handoff`) is drawn only short of `handoff_to_m` from
+  // the eye — the end of the band the renderer gives every such instance — so a tile's near
+  // placements are kept by cells of `handoff_cell_m` and a cell is handed on (and holds pairs)
+  // only while an eye is within the band's end, `handoff_margin_m` and `handoff_lead_updates`
+  // times what the eyes moved in the last update of it, and until it is `handoff_hold_m` farther.
+  // Zero for the band's end (a host that draws no band) or for the cell hands a tile's near
+  // placements with the tile, whole. The defaults but the band's end are the tunables'
+  // (`admission_tunables`, which reads the band from the renderer's).
+  f32 handoff_to_m = 0.0f;
+  f32 handoff_cell_m = 4.0f;
+  f32 handoff_margin_m = 1.0f;
+  f32 handoff_hold_m = 2.0f;
+  u32 handoff_lead_updates = 2;
 };
 
-// The tunables' values (`world.placements.admit_bias`, `admit_spare_pairs`, `admit_hold_off`),
-// written into a host's config.
+// The tunables' values (`world.placements.admit_bias`, `admit_spare_pairs`, `admit_hold_off`, and
+// the hand-off cells': `handoff_cell_m`, `handoff_margin_m`, `handoff_hold_m`,
+// `handoff_lead_updates`, with the band's end from `renderer.flora.sward_near_m` and
+// `sward_fade_m`), written into a host's config.
 void admission_tunables(PlacementTilesConfig& config) noexcept;
 
 // Where the tail goes once an update. False with `error` is logged and counted, and the tail is
@@ -153,6 +169,18 @@ struct PlacementTilesStats {
   u64 reformed = 0;
   u64 reformed_instances = 0;
   i64 reform_ns = 0;
+  // **The hand-off cells** (G205; world.md, "A hand-off placement is held by its band"). Now: the
+  // cells the held tiles keep their near placements in, the ones handed on, the near placements
+  // held, and the pairs of the cells not handed — what the tail does not hold. Over the run: the
+  // cells that came or went, the builds whose near placements were set apart, and the wall time
+  // of both on the committing thread.
+  u32 handoff_cells = 0;
+  u32 handoff_cells_in = 0;
+  u32 handoff_instances = 0;
+  u64 handoff_pairs_out = 0;
+  u64 handoff_flips = 0;
+  u64 handoff_splits = 0;
+  i64 handoff_ns = 0;
   // Tiles generated for queries (`query_tile`: cache misses), and their wall time.
   u64 queried = 0;
   i64 query_ns = 0;
@@ -269,8 +297,23 @@ class PlacementTiles {
     u64 from_version = 0;
     const u32* changed = nullptr;
     u32 changed_count = 0;
+    // **A hand-off cell's run** (G205): the key of the tile whose near placements these are, for a
+    // run handed under a cell's key (`cell_key_reserved`); 0 for a tile's own run. What the
+    // renderer ages the run by (`renderer::DynamicBlock::age_of`), so a cell that comes into reach
+    // is as old as its tile and its instances' load-in is the tile's.
+    u64 part_of = 0;
   };
+  // One range a drawn tile, in tile order, covering everything it hands: its own run and its
+  // hand-off cells' after it. A tile with a cell handed names no instances and no version (they
+  // are not one array): a caller reads them from the tail.
   void tile_ranges(Vector<TileRange>& out) const;
+  // Whether `key` is one a hand-off cell's run is handed under: the first column of tiles
+  // (x = -2^31), which the consumer holds no tile of while the cells are on.
+  static bool cell_key_reserved(u64 key) noexcept;
+  // **Where the hand-off's band is measured from** (G205): the eyes, in place of the ring's
+  // observers — for a host whose camera is not an observer, and for one with no ring. With
+  // neither, every cell is handed.
+  void set_handoff_eyes(std::span<const WorldPos> eyes);
   // **The hand-over that costs the change** (W81; world.md, "The consumers"): with a run sink set,
   // a commit hands it the drawn tiles' runs — key, place, count, ring, own instances and version —
   // and writes no tail; the instance sink above is not called. The runs of the last commit stay
@@ -315,6 +358,7 @@ class PlacementTiles {
   void begin_update(u32 budget) noexcept {
     build_budget_ = budget;
     committed_ = false;
+    cells_refreshed_ = false;
   }
   u32 end_update();
   u32 build_budget() const noexcept { return build_budget_; }
@@ -363,6 +407,38 @@ class PlacementTiles {
       unseen_at.assign(from.unseen_at.begin(), from.unseen_at.end());
     }
   };
+  // **A tile's near placements, by cell** (G205; world.md, "A hand-off placement is held by its
+  // band"): the last `count` of the block's instances, grouped by the cell each stands in. A cell
+  // is a run of them, its pairs, the box of its placements' origins grown by each one's reach, and
+  // while it is handed on (`in`) the key it is handed under.
+  struct NearCell {
+    u32 first = 0;  // among the block's near instances
+    u32 count = 0;
+    u32 pairs = 0;
+    u32 reserved = 0;  // `renderer::reserved_tile_pairs(pairs)`: what its run takes of the budget
+    f64 lo_x = 0.0;
+    f64 hi_x = 0.0;
+    f64 lo_z = 0.0;
+    f64 hi_z = 0.0;
+    u64 key = 0;
+    bool in = false;
+  };
+  struct Handoff {
+    u32 count = 0;
+    u64 version = 0;  // of the build that made the cells: every cell's run's
+    Vector<NearCell> cells;
+    // Of the cells handed on: how many, their instances, their pairs and what they reserve.
+    u32 in_cells = 0;
+    u32 in_instances = 0;
+    u32 in_pairs = 0;
+    u32 in_reserved = 0;
+    void clear() noexcept {
+      count = 0;
+      version = 0;
+      cells.clear();
+      in_cells = in_instances = in_pairs = in_reserved = 0;
+    }
+  };
   struct TileBlock {
     u8 ring = k_inactive;
     bool withheld = false;  // held, and left out of the tail by the pair budget
@@ -384,11 +460,17 @@ class PlacementTiles {
     u64 released_at = 0;
     // Changed whenever it is made due, so a job's result for an older ask is known and let go.
     u64 serial = 0;
-    u32 pairs = 0;                              // of what it draws
-    u32 buildings = 0;                          // of its last build
-    Vector<renderer::SceneInstance> instances;  // its last build
-    Vector<u8> tags;                            // parallel to `instances`
-    Forms forms;                                // what `instances` were picked from (G202)
+    u32 pairs = 0;      // of what it draws, but the near placements its cells hold (G205)
+    u32 buildings = 0;  // of its last build
+    // Its last build: the tile's placements in its order and then, once the build is what it
+    // draws, the near ones `handoff` holds by cell (G205).
+    Vector<renderer::SceneInstance> instances;
+    Vector<u8> tags;  // parallel to `instances`
+    Forms forms;      // what `instances` were picked from (G202)
+    // The near placements of what it draws, by cell: of `instances`, or of `held_instances` while
+    // the build waits (`held_handoff`).
+    Handoff handoff;
+    Handoff held_handoff;
     // The version a run sink was last handed of this tile, 0 when it was not drawn then; and a
     // form change since, for the next hand-over (`TileRange::from_version`, `changed`), which
     // `reform_handed` marks handed once a commit has.
@@ -499,6 +581,30 @@ class PlacementTiles {
   // The surface a job in flight stands its tiles on, kept until the job is collected when
   // `restand` moves on (`stand_` is the newest).
   std::unique_ptr<renderer::TerrainSampler> job_stand_;
+  // ---- the hand-off cells (G205; handoff_cells.cpp) ---------------------------------------------
+  bool cells_on() const noexcept {
+    return config_.handoff_cell_m > 0.0f && config_.handoff_to_m > 0.0f;
+  }
+  f32 cull_reach(u32 mesh);           // how far from its origin the cull can find the mesh, scale 1
+  void split_near(TileBlock& block);  // a build's near placements, apart and by cell
+  bool refresh_cells();               // which cells the band reaches now; true when one changed
+  u64 next_cell_key();
+  void make_runs(Vector<TileRange>& out) const;  // what a commit hands a run sink
+  Vector<f32> cull_reach_;                       // per scene mesh; below zero until asked
+  Vector<WorldPos> eyes_;                        // `set_handoff_eyes`'
+  bool eyes_set_ = false;
+  Vector<WorldPos> last_eyes_;  // the last look's, for the lead
+  bool cells_stepped_ = false;
+  bool cells_refreshed_ = false;  // this update's look was taken
+  f64 cell_lead_ = 0.0;
+  u32 cell_serial_ = 0;
+  // `split_near`'s scratch.
+  Vector<renderer::SceneInstance> split_instances_;
+  Vector<u8> split_tags_;
+  Vector<u32> split_sources_;
+  Vector<u32> split_cell_;
+  Vector<u32> split_before_;
+  Vector<u32> split_counts_;
   bool take(const TileEvent& event);
   void recycle(u64 key, TileBlock&& block);
   void build_due();

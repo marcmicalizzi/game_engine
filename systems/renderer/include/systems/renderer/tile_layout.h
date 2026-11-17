@@ -67,6 +67,11 @@ struct DynamicBlock {
   u64 from_version = 0;
   const u32* changed = nullptr;
   u32 changed_count = 0;
+  // **The block these instances are a part of** (G205): the key of a block handed before this one
+  // whose age this one shares — a streamed tile's, for a run of its near placements handed apart
+  // from it — so the hand-off's load-in (`GpuScene::block_stamp`) counts from when the tile's
+  // instances came and not from when the part did. 0: a block of its own age.
+  u64 age_of = 0;
 };
 
 // The granularities a block's reserved runs are rounded to: sixteen pairs, four instance slots.

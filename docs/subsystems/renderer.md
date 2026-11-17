@@ -5202,6 +5202,14 @@ fade in.**
   moves into the inner ring fades its blades in over the cards it already drew. A card alone (the
   next ring) has no role and no stamp: it arrives at the ring's outer edge, 150 m or more out, as before. The pool pass reads the clock from the field block's
   `push.w`.
+- **A part of a tile is as old as the tile** (G205, 2026-11-15; `DynamicBlock::age_of`,
+  `GpuScene::block_stamp`). The world's placements consumer hands a tile's near forms apart from
+  the tile, by cells, and only the cells the band can reach
+  ([world](world.md#a-hand-off-placement-is-held-by-its-band)), so a near form past the band holds
+  no pair. A cell's block names its tile's, and a block that names another takes the stamp that
+  one holds: a cell that comes into reach as the walker moves is not faded in (its tile's load-in
+  is long over, and its blades are past the band's end, where their share is nothing), and one
+  that comes with its tile fades in with it, since the tile's block is handed, and stamped, first.
 
 **What it does not do.** The pool pass is what thins: an entry the deformed-vertex pool's budget
 had no block for, or a frame with the flora motion off, draws both forms whole across the band (8 m
@@ -5484,9 +5492,10 @@ the load.
 **What the rule does not reach.** Ring 0, whose floor is the eye: the sward's near forms there are
 drawn only inside the hand-off's band (29 m) but are placed, and counted as pairs, over the whole
 of the ring's tiles; a still form cannot help what is under the walker's feet, and the count is a
-row of its own (below). A placement that carries a hand-off role must keep the mesh itself: its
-thinning is the pool pass's, which a still form does not run; the engine's one user of the roles
-(the sward) names them in ring 0 alone, where every placement is the mesh.
+row of its own (G205: [the world's placements hand a tile's near forms by the cells the band
+reaches](world.md#a-hand-off-placement-is-held-by-its-band)). A placement that carries a hand-off
+role must keep the mesh itself: its thinning is the pool pass's, which a still form does not run;
+since G205 the consumer passes such a placement by when it picks a ring's form.
 
 **Measured** (2026-11-14, `msvc-release`, main ae9efac5 against this, one tree; the machine shared
 with a dozen agents' builds and GPU work at 85 to 100% of the CPU, so the times are upper bounds
