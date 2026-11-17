@@ -1587,6 +1587,20 @@ not built tonight. **No fixture fails first for the foot's seat**: the cliffs' s
 line at the toe of a bench whose edge is the feet's bank (they read 0 to 2.6 cm); its case holds
 that a foot never reads the step's height. The forest's count is the measure.
 
+**Verified** (2026-11-17, at the branch's tip): `test -Affected -Base d6534963` in `msvc-debug` with
+no driver 70 of 70; the `linux-gcc-release` container over `channels|water|scene_gen|engine_content`
+7 of 7, so GCC reproduces the three pins version 16 re-took (the two plan-byte hashes in
+`hollow_tests.cpp`, the clasts' recipe hash in `channels_tests.cpp`); on the GPU
+`engine_water_tests -tc=*channel*` 26 of 26 and `engine_view.frame_loop` passed (each on its second
+run: the first waited out the machine's GPU lock). **The pictures** are the forest session's small
+scene of `region link 515` with v47's re-plan pasted in by name (its 38 cuts, 17 bed regions, the
+tarn and the plan key; the crop alone cannot be planned, since its tarn's outlet leaves it), solved,
+and drawn with the water and the ground only, at the forest's poses: at *A-nappe4m-along* the ribbon
+that clung to the trench's wall now runs down the trench's floor, in the bed the walker sees; at
+*owner-b* the line is laid in a new trench and the water follows it, but stands there as stepped
+plates with vertical faces (W138's walls), and a raised plate still sits at the lip above the drop.
+The crop's over-30 % gaps went 20 to 15. The cook of the crop's tile set peaked at 38.3 GB of commit.
+
 ### The section under the line
 
 (2026-11-16, roadmap W131; the forest session's needs 121a, 121d and 127, from its small scene of
