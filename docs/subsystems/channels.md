@@ -1671,6 +1671,23 @@ root; `flow solve --line-stats`; before is `main` with the count added):
 The 4 m pair at 515's station 712 is gone (its foot was the next leg's trench); every solve's
 head never rises and no line is left unsolved. A solve takes 150 to 300 s and 2.4 GB of commit.
 
+**On the forest session's small scene of 515** (`reports/quality-v47/parts/stream-scene`, the
+world's ground and cuts bit for bit over a 640 by 960 m crop; a solve there takes 70 s and 0.5 GB)
+the line's own count is the world's to the station: 123 to 107 under the ground, worst 3.96 to
+1.50 m, gaps 9 to 6, undrawn 11.9 to 5.9 m. A solve over a crop solves every wet link of the
+entry, and those outside the crop stand on no ground: there one line (`region link 21`) was
+written with a jump's head and foot at one place, which `engine-view` refuses; the world's solves
+have none, and a scene that crops the world keeps only the blocks inside it. **On `torrent`** (230 m
+of wet line) the stations under the ground stay 8, the worst 1.01 to 0.29 m, and what is drawn
+does not move. **Seen** (`msvc-debug` `engine-view`, 1920×1080, `--raster hw --shadows rt`, the
+sky's light, the small scene without its trees, the forest's own poses): at the 4 m pair (pose
+A-along) the water before stopped at the pair and the bed below was dry for six metres with a
+scrap of ribbon in it; after, it runs on down the foot of the cut's stepped face, in the bed the
+walker sees. At the owner's pose b both draw a faceted sheet in the hollow; the white on it is
+the white water's (W139's). A line laid off the fall line on `torrent` was not built: a line has a
+bed only where the plan cut it, so such a case is a plan of its own, which is the planner's
+half ([A line across a slope](#a-line-across-a-slope)).
+
 ## Seen: the section, the flood bed and the proof of concept's items 6, 7 and 8
 
 (2026-11-10, W93; `msvc-release`, 1920×1080, `--raster hw --shadows rt --terrain-tiles
