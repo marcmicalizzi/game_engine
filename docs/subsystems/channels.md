@@ -724,9 +724,23 @@ through **the sections the ground has**, by the textbook's method
   connected to the thalweg under it, and no further than the crests: a hollow beyond a bank is
   not wet, and water is never written outside its bed. Area, wetted perimeter, top width and first
   moment are sums over the wet samples' trapezoids; there is no described shape.
-- **Critical depth** where Q^2 T = g A^3. **Resistance** is Jarrett's (1984) n = 0.32 S^0.38
-  R^-0.16 by the bed's own slope over 10 m either way and the section's hydraulic radius, each
-  held to his data's range; one Manning's n instead with `--resistance manning`.
+- **Critical depth** where Q^2 T = g A^3. **Resistance** (W137, [stream-speed](../experiments/stream-speed.md))
+  is Ferguson's (2007) variable-power law on **the bed's own D84**: V / u* = 6.5 x 2.5 (R / D84) /
+  sqrt(6.5^2 + 2.5^2 (R / D84)^(5/3)), u* = sqrt(g R S_f), so the friction slope is V^2 / (g R F^2)
+  and the station's reported n is the Manning's n that gives it, R^(1/6) / (sqrt(g) F). In water a
+  few clasts deep it is the roughness layer's V = 2.5 (R / D84) sqrt(g R S), in deep water
+  Manning–Strickler's. The D84 is the plan's at each point (`ChannelSediment`, "Bed sediment",
+  carried as `FlowLine::d84`); a line with no plan (an author's) takes what the plan's sediment law
+  gives a bed of its section's own bank height (held to 5 cm to 1 m: a crest read is often a trench's wall, not a bankfull stage) and its bed's slope over 10 m
+  either way. Nothing is keyed on a scene: the relative submergence is the section's depth over its
+  bed's clasts. Jarrett's (1984) n = 0.32 S^0.38 R^-0.16, held to his data's range, is
+  `--resistance jarrett` (the default until W137: every small stream's R is under his 0.15 m, so the
+  clamp gave each section the n of a 15 cm radius, 0.17 on any bed over 9 %); one Manning's n is
+  `--resistance manning`. **What it does to the speeds**: a small stream's mean speed comes out
+  nearly the same at every slope, 0.2 to 0.75 m/s from 5 to 200 l/s, because a steeper bed's
+  larger clasts take back what its slope gives — faster than Jarrett's on gentle beds, slower and
+  deeper on steep ones; the jets a person sees over a steep bed's steps are the draw's (water.md,
+  "Shading"; the table by slope class is under "How whole a stream is drawn").
 - **The standard step method both ways**: tranquil water upstream from every control, shooting
   water downstream from every node the tranquil profile passes critical depth at and from every
   fall's foot.
@@ -786,6 +800,44 @@ lattice. A pit whose level meets no ground within 25 m either side (`pools.open`
 its bank as before: water that would stand wider than that is a lake the plan did not make, or
 leaves the line sideways, and neither is a pool of this line's. Nothing keys on a generator: any
 ground with a pit on a solved line gets its pool, and a line with no pit pays one running maximum.
+
+**A pool stands no higher than the water above it spilled** (W138, 2026-11-16; the forest's need
+126, "water walls", and the owner's raised slab at marks 12 and 13, need 138). Tranquil water that
+has spilled over a bank is written no higher downstream than where it spilled, until its solved
+level comes down under that (the cap, above); W130.2's pool overrode the cap, and where a pit's
+upstream stations were over their banks — an open pit (`pools.open`), or a section read on the
+hillside beside the line (row W131's) — the pool stood at the sill's level straight after them:
+42 drawn sheets on 14 lines of v47 climbed 0.5 to 3.1 m over a quarter metre, and on the flat by
+`region basin 15` `region link 696` held a pool at 62.43 m, 28 m wide, after films at 62.00. Now a
+pool whose level stands over the cap **reaches back** over the stations above it written lower
+than it, where the ground holds its level at each of them too (`pool_at`, past their crests): they
+are the pool's (`pools.reached_back`). The walk back stops, the pool standing, at the first of
+them where **the ground on the line itself** stands at or over the pool's level: there the bed
+rises out of the pool, and what is written above is the stream running into it (on the forest
+that is mostly a section read on the hillside beside the line, 0.8 to 3.3 m under the drawn bed,
+which is W131's to mend; the sheet's climb from it is the draw's to refuse). Where any of them
+cannot hold it, the water left the bed
+there at the lower level and cannot stand higher here: **the pool is not written**
+(`pools.spilled`) and the cap carries on, as before W130.2. Water is never written standing over
+ground beside it that holds nothing, and the draw refuses a sheet climbing from a station over its
+bank whatever a description says ([water](water.md#the-surface-from-the-solve)). The case: `profile: a pool stands
+no higher than the water above it spilled` (a bowl open on one side over its upstream half: before
+W138 its closed half was a pool 0.39 to 0.51 m deep over the spilled film; now no station there is
+deeper than 0.2 m).
+
+**The stream that runs into a pool meets it at its level** (W138 with W131, 2026-11-16). Where
+the walk back stops at the line's own ground, the stations above it in the pool's backwater
+(their own solved level at the pool's or higher) that were written lower than the pool, at a bank
+or a pit's edge read beside the line, are written at the pool's level while the line's own ground
+at each stands at that level or higher, so what is written under the drawn bed stays hidden and
+the pool's surface reaches its edge; each keeps the wet width it had. Measured with W131's section
+on v47 at stage 1, the sheet climbing from such a station to its pool, which the draw refuses,
+was 24 of the 119 gaps on lines over 30 %; with this rule they are 88 (W131 alone 93, `main` 136)
+and `region link 515`'s 5. The case: `profile: the stream that runs into a pool is written at the
+pool's level` (a scarp beside the line above the bowl: before, 1 stretch from it to the pool not
+drawn; now none). Open: in that fixture the station on the bowl's rim, written at the pool's
+level 1.5 cm over its bed, carries the line's discharge through the sliver at Froude 20, so its
+energy head rises; it does so with or without this rule.
 
 **No section is without a bed** (W129.1, 2026-11-16). A bank's crest is walked out from the
 thalweg; on ground exactly as level as the thalweg (a floor the plan filled flat, or ground no
@@ -894,7 +946,7 @@ scene's body, a shallower pit breached by the cut — is not built.
 ### The cook
 
 `engine-content flow solve <scene.json> <out.json> [--ddc <dir>] [--entry <i>] [--lattice <m>]
-[--resistance jarrett|manning] [--manning-n <n>] [--reach <m>] [--jobs <n>] [--scene-out <scene>]`
+[--resistance ferguson|jarrett|manning] [--manning-n <n>] [--reach <m>] [--jobs <n>] [--scene-out <scene>]`
 opens **the composed ground the scene draws** (`renderer::SceneGround`, handed to this module as a
 `scene_gen::Ground`: a function pointer and a context) and solves on it every wet link of every
 `channels` entry, and every `water_channels` block that is not one of those links' — an author's
@@ -931,7 +983,8 @@ and the solve's seconds a kilometre. `--jobs` is 1 by default: until the tile se
 gives up its lock (T128), readers on a pool are slower than one thread.
 
 **An author's line** is a `water_channels` block whose name is not a planner's link: its `points`
-and a `discharge_m3s`. It is solved with Jarrett's law unless `--resistance manning` holds its own
+and a `discharge_m3s`. It is solved with Ferguson's law on its section's own bed ("The profile")
+unless `--resistance manning` holds its own
 `manning_n`; a line that runs into a body — a lattice past its last point stands inside a body's
 circle or polygon — ends at the body's level as a mouth, and any other ends at normal depth. The
 block keeps its optics, its seed and its banks, and takes the solve's stations. The end-to-end
@@ -987,6 +1040,7 @@ its mean slope (its level's fall over its length: under 2 %, 2 to 5, 5 to 15, 15
 | `falls`, `falls_drawn` | lip-to-foot pairs, and those with a nappe |
 | `gaps` | maximal runs of undrawn stretches |
 | `thin_share`, `alternations_per_100m` | the forest's own count: stretches leaving a station 1.1 cm deep or less, and the runs of one kind (thin or not), both kinds counted |
+| `speed_median_mps`, `speed_p10_mps`, `speed_p90_mps`, `depth_median_m` | (W137) the drawn stretches' speed (the mean of their two stations') by length — its median and its tenth and ninetieth percentiles — and their median depth; falls and undrawn stretches are not counted |
 
 **How it differs from the forest's count.** Its session's script (`streams47b.py`, read on
 2026-11-16 once the proof of concept was opened) classes every station by its depth alone: 1.1 cm
@@ -1013,6 +1067,13 @@ steeper than 30 % (7 of 8 wet lines, 0.23 km; 8 lines at stage 3):
 
 No station of the torrent is 1.1 cm deep or less at any stage (its feet land in plunge pools), so
 the forest's count there is the runs.
+
+**How fast, W137** (2026-11-16, the same command at 1012756b; [stream-speed](../experiments/stream-speed.md#measured-the-old-law-against-the-new)):
+over 30 % the torrent's median drawn speed went from 0.46 to 0.35 m/s at stage 1 and 0.57 to 0.50
+at stage 2 under Ferguson's law, its median depth from 9 to 10 cm and 12 to 13 cm; the falls,
+pools and runs are unchanged and the stations over a bank went from 5 to 9 at stage 1. On the
+forest's small scene of `region link 515` the line runs at a mean of 0.28 m/s, 15 cm deep, where
+Jarrett's clamp had 0.46 m/s and 8 cm.
 
 **Measured on the world the owner walked** (the forest's `world\v47\base.json`, plan
 780a7a78621fb16f, its tile sets and route plan copied to a root of the row's own; the same build
@@ -1042,6 +1103,37 @@ level meets no ground within 25 m, or a level over a bank where no pit is) — n
 and the forest should not expect one to: `flow.stage` 2 doubles 515's depth
 (6.5 to 9.4 cm) and leaves its pieces as they are. The stage changes little: the main stem is its spring's
 21 l/s, and the runoff the stage scales is a few litres a second on catchments of a few hectares.
+
+### The three streams rows measured together (W131, W137, W138)
+
+v47 at stage 1, the same root and command as above, each build's own draw rule (`main` and W131
+the old one, the rest W138's, `k_channel_mesh_version` 4); W138+W131 is that merge with the rule
+that writes the stream running into a pool at its level ([the profile](#the-profile)), all three
+is that and W137's resistance law. Speeds and depths are the drawn stretches' medians by length.
+
+| | main | W131 alone | W138 alone | W138+W131 | all three |
+|---|---|---|---|---|---|
+| walls / climbs drawn | 42 / 94 | 4 / 53 | 0 / 0 | 0 / 0 | 0 / 0 |
+| pools written (open; spilled; reached back) | 407 (695) | 305 (494) | 332 (693; 111; 18) | 292 (401; 37; 24) | 331 (1,003; 149; 57) |
+| stations over a bank (lines) | 1,623 (121) | 2,283 (136) | 1,751 (114) | 2,283 (131) | 4,121 (159) |
+| stations under the ground at the line | 2,144 | 1,776 | not counted | 1,742 | 1,645 |
+| over 30 %: film / undrawn | 2.19 / 2.81 % | 0.57 / 1.39 % | 2.43 / 3.34 % | 0.59 / 1.34 % | 0.60 / 1.42 % |
+| over 30 %: runs / 100 m, gaps | 3.32, 136 | 2.87, 93 | 3.77, 166 | 2.76, 88 | 2.83, 93 |
+| over 30 %: forest's thin, alternations / 100 m | 2.86 %, 6.11 | 1.00 %, 3.89 | 3.09 %, 6.03 | 0.95 %, 3.56 | 0.99 %, 3.60 |
+| under 2 %: film / undrawn, gaps | 0.85 / 0.90 %, 7 | 0.98 / 1.53 %, 8 | 1.51 / 1.58 %, not counted | 1.35 / 1.90 %, 10 | 1.35 / 1.91 %, 10 |
+| 15-30 %: gaps | 22 | 11 | 26 | 11 | 11 |
+| speed over 30 % / all (m/s) | 0.382 / 0.267 | 0.388 / 0.269 | 0.382 / 0.267 | 0.388 / 0.270 | 0.267 / 0.205 |
+| depth over 30 % / all (m) | 0.065 / 0.076 | 0.066 / 0.076 | 0.065 / 0.075 | 0.066 / 0.076 | 0.084 / 0.091 |
+| link 515: runs, gaps, undrawn m, film m | 10, 9, 11.86, 8.70 | 7, 6, 5.88, 1.48 | 10, 9, 12.85, 8.70 | 6, 5, 3.65, 0 | 6, 5, 3.65, 0 |
+
+**W138+W131 is better than either alone on every steep line**: walls and climbs drawn, the stations
+under the ground, and over 30 % the film, the undrawn share, the runs, the gaps and link 515. **All
+three are not better than `main` on every line**: stations over a bank 4,121 against 1,623, open
+pools 1,003 against 695, and the lines under 2 % a film of 1.35 against 0.85 % with 10 gaps against
+7. The banks and the open pools are W137's law (W138+W131 has 2,283 and 401): it makes the sheets
+slower and deeper, and a deeper level stands over more banks. The flat lines' film is W138's pools
+not written over spilled water, already there without W137. Over 30 % all three keep W138+W131's
+gain within 5 gaps (93 against 88).
 
 ## The cut
 
@@ -1526,6 +1618,106 @@ one fall with no pit at its foot`. The older case, which asks each drop within 0
 cliff, keeps its `may_fail` for one run of the eight, and that is the count's: a point of the
 line stands half-way down the cliff's 25 cm ramp, the stretch into it falls at 44.5 degrees, and
 the fall is begun below it, half a metre short.
+
+### The section under the line
+
+(2026-11-16, roadmap W131; the forest session's needs 121a, 121d and 127, from its small scene of
+`region link 515`, bit-identical to the world's ground: on 37 % ground the solved levels stood 1.5
+to 3.9 m **under the drawn ground at the line**, the solve's lip-to-foot pairs dropped up to 4 m
+where the drawn bed drops under a metre, and the pools of W130.2 stood 6 to 8.6 m to one side of
+the line; worst where the line runs 30 degrees or more off the fall line.) **What it was.** The
+solve ([The profile](#the-profile)) reads each node's section across the line on the drawn ground
+and finds its thalweg as the lowest sample within the bed's half width — and then walked
+**downhill from there with no bound**, to a hollow's bottom. Across a bench whose downhill side
+falls away (a cut with no downhill bank: at a knickpoint no seat is read, and beside another cut's
+faces the bank is gone), the walk ran down the hillside to the end of the section's read (one and
+a half of the line's widest width and a metre: the forest's "6.25 m right, the cap") or into the
+line's own next leg below a switchback, and the station's bed, its level, its falls and its pools
+were that hollow's. The water the draw lays from them is inside the ground the walker sees, and
+the stretch over it is a gap.
+
+**The count.** `flow solve` prints `under_ground`: the stations whose written level stands more
+than `k_under_ground_m` (5 cm) under the ground at the line's own point, their share of every
+station, the lines that have one, the most and where; `--line-stats <file>` writes every solved
+line's own count (length, slope, runs, pieces, gaps, falls drawn, film and undrawn metres, the
+forest's thin metres and alternations, W138's walls and walls drawn, stations over a bank, pools
+and pools not written over spilled water, and under the ground) so one
+line, the owner's, can be read without a script.
+
+**The mend: the water is solved in the bed it has.** Of the two ways out the brief named — lay the
+line down the fall line again, or solve it along the bed it actually has — the solve takes the
+second, because the bed is what the walker sees and what real water runs in. A channel's water
+follows its channel and not the hillside's fall line for as long as its banks hold it (a stream
+across a slope in a gully, a ditch along a road, a leat along a contour are ordinary); the cut is
+already in the ground, its tile set cooked, and water solved anywhere else is water nobody sees.
+Where the plan's line itself is wrong for the ground — a line on a 67 % slope that zigzags across
+the fall line, which a real stream would not — that is the planner's to mend
+([A line across a slope](#a-line-across-a-slope)), and it costs a re-plan of the world, new cuts and
+a new tile set (on the forest, 54 GB cooked again); the solve alone cannot move the bed. So:
+
+- **The thalweg is the bed's.** Where the line names its bed's width, the walk from the lowest
+  sample within the half width down to a hollow's bottom goes no further than that half width.
+  Past it is the bank, and past the bank another hollow's ground.
+- **What is left: the face inside the cut's width.** The cut's width with its swell (2.6 to 3.4 m
+  on link 515) is wider than the floor a bench across a steep slope keeps, so the lowest sample
+  within it can stand half-way down the face beside the floor: after this mend 80 of 515's 107
+  stations still under the ground at the line had nothing as low within half a metre of it, the
+  water drawn on the face up to 1.5 m beside the line. Two further rules were built and measured
+  on v47 and **not kept**: taking such a walk again from the line's own point (the hollow it drains
+  to), and, where that too runs off the edge, the line's point itself, held at its brink. They cut
+  the stations under the ground from 1,776 to 550 but drew less: on lines over 30 % the undrawn
+  share went from 1.39 % back to 2.37 % and the gaps from 93 to 150 (the shallow hollows and the
+  line's point on a bench give small sections whose water is lowered to a low crest and written
+  as films the draw leaves out). Water beside the line on the cut's own face is seen; a film at
+  the line is not. The case in `profile_tests.cpp` holds a cut a metre wide; a 3 m cut on the same
+  bench puts its stations 0.45 m under the line, and that is the planner's to mend (a cut's width
+  is the bed's, and on a bench the floor's: [A line across a slope](#a-line-across-a-slope)).
+- **A side with no bank is an edge, not a bank to lower to.** A section whose ground falls away
+  from the thalweg on one side (a bench whose downhill bank is missing) had its lower crest at the
+  thalweg, so its level was written down to its own bed, a 5 mm film the draw leaves out. Water
+  held at such an edge stands over it by no more than its critical depth — the depth at the brink
+  of a free overfall is about 0.7 of it (Rouse 1936, the end-depth ratio of 0.715; from memory and
+  the textbooks that quote it, not re-read tonight) — so the station is written at its solved
+  level up to the edge plus its critical depth, flagged over its bank (the draw lays it with no
+  margin past its wet edge) and counted (`open_bank`). On a steep bed the flow is shooting, below
+  critical depth, and that bound never acts; in a pit on such a bench it does, and the pit's water
+  is the pool rule's ([The profile](#the-profile), "A pit on a line is a pool").
+
+**Measured** (2026-11-16, `msvc-debug` engine-content, one thread, the machine shared with other
+rows' builds; the forest's v47 world, `scene-cut.json` over the plan 780a7a78621fb16f, its own
+root; `flow solve --line-stats`; before is `main` with the count added):
+
+| v47 | before | after |
+|---|---:|---:|
+| stations under the ground at the line by over 5 cm, whole world | 2,144 (4.55 %) | 1,776 (3.78 %) |
+| over 30 %: undrawn share / film share | 2.81 % / 2.19 % | 1.39 % / 0.57 % |
+| over 30 %: gaps / runs per 100 m | 136 / 3.32 | 93 / 2.87 |
+| over 30 %: the forest's own count (thin share, pieces per 100 m) | 2.86 %, 6.11 | 1.00 %, 3.89 |
+| over 30 %: lip-to-foot pairs (drawn) | 542 (527) | 464 (463) |
+| `region link 515`: gaps, undrawn m, film m | 9, 11.9, 8.7 | 6, 5.9, 1.5 |
+| `region link 515`: stations under the ground (worst) | 123 (3.96 m) | 107 (1.50 m) |
+| `region link 515`: highest fall, pools | 4.00 m, 21 | 1.45 m, 5 |
+| stations held at an open edge (`over_bank.open`) | — | 1,426 |
+
+The 4 m pair at 515's station 712 is gone (its foot was the next leg's trench); every solve's
+head never rises and no line is left unsolved. A solve takes 150 to 300 s and 2.4 GB of commit.
+
+**On the forest session's small scene of 515** (`reports/quality-v47/parts/stream-scene`, the
+world's ground and cuts bit for bit over a 640 by 960 m crop; a solve there takes 70 s and 0.5 GB)
+the line's own count is the world's to the station: 123 to 107 under the ground, worst 3.96 to
+1.50 m, gaps 9 to 6, undrawn 11.9 to 5.9 m. A solve over a crop solves every wet link of the
+entry, and those outside the crop stand on no ground: there one line (`region link 21`) was
+written with a jump's head and foot at one place, which `engine-view` refuses; the world's solves
+have none, and a scene that crops the world keeps only the blocks inside it. **On `torrent`** (230 m
+of wet line) the stations under the ground stay 8, the worst 1.01 to 0.29 m, and what is drawn
+does not move. **Seen** (`msvc-debug` `engine-view`, 1920×1080, `--raster hw --shadows rt`, the
+sky's light, the small scene without its trees, the forest's own poses): at the 4 m pair (pose
+A-along) the water before stopped at the pair and the bed below was dry for six metres with a
+scrap of ribbon in it; after, it runs on down the foot of the cut's stepped face, in the bed the
+walker sees. At the owner's pose b both draw a faceted sheet in the hollow; the white on it is
+the white water's (W139's). A line laid off the fall line on `torrent` was not built: a line has a
+bed only where the plan cut it, so such a case is a plan of its own, which is the planner's
+half ([A line across a slope](#a-line-across-a-slope)).
 
 ## Seen: the section, the flood bed and the proof of concept's items 6, 7 and 8
 
@@ -2301,6 +2493,18 @@ on stderr, and with `--under-water <list.json>` writes every one: its place in t
 `instances`, its mesh, where it stands and how deep the ground under it is, a body at a time.
 That file is what a consumer's own placement reads to move or drop them. An authored body is
 counted as the plan's are; a scene with no body or no instance pays one look.
+
+**And in a line's water** (W138, 2026-11-16; the forest's need 130: after W130.2's pools 26 of its
+instances newly stood in channel water, 22 on one line whose pools reach 49 m wide, and the list
+did not name one). An instance no body covers is asked of the solved lines too
+(`channels::ChannelWater`, `in_water.h`): it stands in a line's water where it lies within the wet
+reach of a stretch the draw lays a sheet on — each side by its own `wet_left_m` or `wet_right_m`,
+the level and the reach interpolated along the stretch as the draw does, a fall's stretch left out
+(a nappe is in the air) — and the ground there stands under that level. The line prints
+`in_lines` and `by_line` beside `under` and `by_body`, a sentence on stderr, and the list file a
+`lines` array as its `bodies` (each line's name, count, deepest and instances). The lines are found
+through a grid of 16 m squares holding the stretches whose reach touches each, so an instance costs
+the few stretches near it; a scene with no wet line pays nothing.
 
 **A generator's placements keep off a body of the plan as off any body**: the plan's block is
 an ordinary `WaterBody` in the scene's `water`, which is what the exclusion every placement

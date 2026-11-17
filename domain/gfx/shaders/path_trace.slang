@@ -318,7 +318,7 @@ float3 trace_path(PathTraceParams* params, float3 origin, float3 direction, inou
       sampled = sample_terrain_material(geo, material, surface_uv, float2(0), float2(0),
                                         s.position, s.normal, float3(0), float3(0),
                                         length(s.position - params->camera.xyz), false,
-                                        shading_normal);
+                                        shading_normal, true, 0.0, 0.0, s.geometric);
     }
 #else
     const MaterialSample sampled = sample_material(material, uv);

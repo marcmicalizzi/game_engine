@@ -295,11 +295,13 @@ TEST_CASE("profile: a line with no width on a ground it knows nothing of, by Jar
   // The fixture's uniform trench, as an author would name it: two points and a discharge.
   FlowLine line = fixture_line("authored", 8, 48, -20, 0.8);
   ProfileOptions o;
+  o.resistance = Resistance::Jarrett;  // W137: no longer the default
   o.reach_m = 6.0;
   Profile p;
   REQUIRE_MESSAGE(solve_profile(line, fixture_ground(), o, p, error), error);
   REQUIRE(p.stations.size() >= 2);
   for (const ProfileStation& s : p.stations) {
+    CHECK(s.d84 == 0.0);  // Jarrett's law reads no grain
     // Uniform flow under Jarrett's n: V = (1 / n) R^(2/3) S^(1/2) with n = 0.32 S^0.38 R^-0.16.
     const f64 y = s.depth;
     const f64 radius = k_t.area(y) / k_t.perimeter(y);
@@ -324,6 +326,76 @@ TEST_CASE("profile: a line with no width on a ground it knows nothing of, by Jar
   bad.points.resize(1);
   CHECK_FALSE(solve_profile(bad, fixture_ground(), o, p, error));
   CHECK_FALSE(solve_profile(line, scene_gen::Ground{}, o, p, error));
+}
+
+// W137 (docs/experiments/stream-speed.md): uniform flow under Ferguson's variable-power law, the
+// default, on the D84 a line names and on the one its section gives it; Jarrett's clamp gave every
+// section under R = 0.15 m the n of 0.15 m, so a thin sheet and a deep one took one roughness.
+namespace {
+f64 vpe_speed(f64 radius, f64 slope, f64 d84) {
+  const f64 x = radius / d84;
+  const f64 ratio = 6.5 * 2.5 * x / std::sqrt(6.5 * 6.5 + 2.5 * 2.5 * std::pow(x, 5.0 / 3.0));
+  return std::sqrt(9.81 * radius * slope) * ratio;
+}
+}  // namespace
+
+TEST_CASE("profile: a bed's resistance by Ferguson's law on its own D84") {
+  FlowFixture f;
+  std::string error;
+  REQUIRE_MESSAGE(make_flow_fixture(f, error), error);
+  ProfileOptions o;
+  CHECK(o.resistance == Resistance::Ferguson);
+  o.reach_m = 6.0;
+  // The fixture's uniform trench at S = 0.01, a cobble bed of D84 = 0.15 m named a point, at
+  // two discharges: a deep flow (R / D84 about 2.5) and a sheet a clast deep (about 0.3).
+  for (const f64 q : {0.8, 0.05}) {
+    CAPTURE(q);
+    FlowLine line = fixture_line("cobbles", 8, 48, -20, q);
+    line.d84 = {0.15, 0.15};
+    Profile p;
+    REQUIRE_MESSAGE(solve_profile(line, fixture_ground(), o, p, error), error);
+    REQUIRE(p.stations.size() >= 2);
+    for (const ProfileStation& s : p.stations) {
+      CHECK(s.d84 == 0.15);
+      const f64 radius = k_t.area(s.depth) / k_t.perimeter(s.depth);
+      // The level is written to the millimetre: the speed is held to the depth's share of that.
+      CHECK(s.speed == doctest::Approx(vpe_speed(radius, 0.01, 0.15)).epsilon(0.02));
+      // The n reported is the one Manning's form would need for the same friction slope.
+      CHECK(s.manning_n ==
+            doctest::Approx(std::pow(radius, 1.0 / 6.0) /
+                            (std::sqrt(9.81) * s.speed / std::sqrt(9.81 * radius * 0.01)))
+                .epsilon(0.03));
+    }
+    CHECK(p.stats.rises_other == 0);
+  }
+  // A larger grain is a rougher bed: the same water runs deeper and slower over boulders.
+  FlowLine gravel = fixture_line("gravel", 8, 48, -20, 0.3);
+  gravel.d84 = {0.04, 0.04};
+  FlowLine boulders = gravel;
+  boulders.d84 = {0.4, 0.4};
+  Profile pg, pb;
+  REQUIRE_MESSAGE(solve_profile(gravel, fixture_ground(), o, pg, error), error);
+  REQUIRE_MESSAGE(solve_profile(boulders, fixture_ground(), o, pb, error), error);
+  CHECK(pb.stations[1].depth > pg.stations[1].depth);
+  CHECK(pb.stations[1].speed < 0.8 * pg.stations[1].speed);
+  // A line that names no D84 takes the plan's sediment law's at its section's bank height and its
+  // bed's slope: a gravel or cobble bed on the fixture's 1 % trench, the same law in uniform flow.
+  FlowLine bare = fixture_line("bare", 8, 48, -20, 0.8);
+  Profile pn;
+  REQUIRE_MESSAGE(solve_profile(bare, fixture_ground(), o, pn, error), error);
+  for (const ProfileStation& s : pn.stations) {
+    CHECK(s.d84 > 0.004);
+    CHECK(s.d84 < 0.5);
+    const f64 radius = k_t.area(s.depth) / k_t.perimeter(s.depth);
+    CHECK(s.speed == doctest::Approx(vpe_speed(radius, 0.01, s.d84)).epsilon(0.02));
+  }
+  // A D84 that is not one a point, or not positive, is refused with the line's name.
+  FlowLine bad = gravel;
+  bad.d84 = {0.04};
+  CHECK_FALSE(solve_profile(bad, fixture_ground(), o, pg, error));
+  CHECK(error.find("\"gravel\": its bed's D84 is absent or one a point") != std::string::npos);
+  bad.d84 = {0.04, 0.0};
+  CHECK_FALSE(solve_profile(bad, fixture_ground(), o, pg, error));
 }
 
 TEST_CASE("profile: a bed too small for its water is flagged, and no water is written outside it") {
@@ -662,4 +734,187 @@ TEST_CASE("profile: a pit on a line stands as a pool at its sill and spills over
   CHECK(sill < low);         // and spills: below the sill the water falls away
   CHECK(widest > 6.0);       // as wide as the level meets the ground, past the section's read
   check_head_falls(p);
+}
+
+namespace {
+// The bowl, with its upstream half open on its -z side (W138): past z = -3 and short of x = 25
+// the ground stands no higher than 19.0 m, under the level the bowl would hold, so water at that
+// level leaves the bowl there.
+f64 notched_bowl_height(const void*, i64 x_mm, i64 z_mm) noexcept {
+  const f64 h = bowl_height(nullptr, x_mm, z_mm);
+  const f64 x = static_cast<f64>(x_mm) / 1000.0, z = static_cast<f64>(z_mm) / 1000.0;
+  return x < 25.0 && z < -3.0 ? std::min(h, 19.0) : h;
+}
+}  // namespace
+
+TEST_CASE("profile: a pool stands no higher than the water above it spilled") {
+  // The forest's walls (W138; 42 on v47 at stage 1): a pit's upstream stations open past the pool's
+  // reach were written at their bank's top, its downstream ones as a pool at the sill's level, and
+  // the sheet climbed from the one to the other. Water that leaves the bed at the lower level does
+  // not stand higher below it: no written level climbs, and the pit's closed half is not written as
+  // a pool over the spilled water.
+  scene_gen::Ground ground;
+  ground.surface_fn = &notched_bowl_height;
+  FlowLine line = fixture_line("notched bowl", 0, 50, 0, 0.021);
+  line.width.assign(2, 1.0);
+  std::string error;
+  Profile p;
+  REQUIRE_MESSAGE(solve_profile(line, ground, ProfileOptions{}, p, error), error);
+  MESSAGE("pools " << p.stats.pools << ", open " << p.stats.pools_open << ", spilled "
+                   << p.stats.pools_spilled << ", reached back " << p.stats.pools_reached);
+  CHECK(p.stats.pools_open > 0);
+  CHECK(p.stats.pools_spilled > 0);
+  f64 worst = 0.0;
+  for (u32 k = 0; k + 1 < p.stations.size(); ++k) {
+    const ProfileStation& a = p.stations[k];
+    const ProfileStation& b = p.stations[k + 1];
+    if ((a.flags & scene_gen::k_channel_jump_head) != 0) continue;
+    // What the solve writes and the draw lays a sheet on: the 5 mm film over its bank climbing
+    // the bowl's rim (W120's, left out by the draw) is not a face of water.
+    if (!scene_gen::channel_stretch_drawn(a.flags, b.flags, static_cast<f32>(a.depth),
+                                          static_cast<f32>(b.depth), a.level, b.level))
+      continue;
+    worst = std::max(worst, b.level - a.level);
+  }
+  CAPTURE(worst);
+  CHECK(worst < 0.05);  // the forest's least climb
+  // Before W138 the pit's closed half was a pool over the spilled water, and the climb to it drawn
+  // (the draw's old rule left a stretch out only when both ends were over a bank). The draw's own
+  // rule now refuses such a stretch whatever the solve writes, so the solve is held here by what it
+  // writes: no pool stands over the spilled level.
+  for (const ProfileStation& s : p.stations)
+    if (s.x > 25.0 && s.x < 31.0) {
+      CAPTURE(s.x);
+      CHECK(s.depth < 0.2);
+    }
+  // The closed bowl (stand-alone, the test above) is still a pool.
+  ground.surface_fn = &bowl_height;
+  REQUIRE_MESSAGE(solve_profile(line, ground, ProfileOptions{}, p, error), error);
+  CHECK(p.stats.pools > 0);
+  CHECK(p.stats.pools_spilled == 0);
+}
+
+namespace {
+// The bowl, with a scarp beside the line above it (W138 with W131; the forest's 24 gaps): from
+// x = 13 to 18.5, where the line's own ground still stands over the level the bowl holds, the
+// ground on its -z side past 0.2 m of the line falls to 19.1 m and stays there 30 m out, so the
+// section there is read on a bed under the line's ground, open on that side.
+f64 scarped_bowl_height(const void*, i64 x_mm, i64 z_mm) noexcept {
+  const f64 h = bowl_height(nullptr, x_mm, z_mm);
+  const f64 x = static_cast<f64>(x_mm) / 1000.0, z = static_cast<f64>(z_mm) / 1000.0;
+  return x >= 13.0 && x <= 18.5 && z < -0.2 ? std::min(h, 19.1) : h;
+}
+}  // namespace
+
+TEST_CASE("profile: the stream that runs into a pool is written at the pool's level") {
+  // The stations above the bowl were written at their open edge, 0.2 m under the pool's level and
+  // under the line's own ground, and the pool's surface stood over them: the sheet climbed from the
+  // one to the other, which the draw lays nothing on (a gap). The water that meets the pool
+  // stands at its level; written there it is still under the line's ground, and the sheet is laid.
+  scene_gen::Ground ground;
+  ground.surface_fn = &scarped_bowl_height;
+  FlowLine line = fixture_line("scarped bowl", 0, 50, 0, 0.021);
+  line.width.assign(2, 1.0);
+  std::string error;
+  Profile p;
+  REQUIRE_MESSAGE(solve_profile(line, ground, ProfileOptions{}, p, error), error);
+  REQUIRE(p.stats.pools > 0);
+  f64 pool = 1e9;
+  for (const ProfileStation& s : p.stations)
+    if (std::fabs(s.x - 25.0) < 3.0) pool = std::min(pool, s.level);
+  u32 undrawn = 0, raised = 0;
+  for (u32 k = 0; k + 1 < p.stations.size(); ++k) {
+    const ProfileStation& a = p.stations[k];
+    const ProfileStation& b = p.stations[k + 1];
+    if (a.x < 12.0 || b.x > 25.0) continue;
+    CAPTURE(a.x);
+    if ((a.flags & scene_gen::k_channel_fall_lip) != 0 &&
+        (b.flags & scene_gen::k_channel_fall_foot) != 0)
+      continue;
+    if (!scene_gen::channel_stretch_drawn(a.flags, b.flags, static_cast<f32>(a.depth),
+                                          static_cast<f32>(b.depth), a.level, b.level))
+      ++undrawn;
+    if (a.x >= 13.0 && a.x <= 18.5 && a.level >= pool - 1e-3) {
+      ++raised;
+      // Written no higher than the line's own ground there: hidden, never a sheet in the air.
+      CHECK(a.level <= scarped_bowl_height(nullptr, scene_gen::nearest_mm(a.x), 0) + 1e-3);
+    }
+  }
+  MESSAGE("the pool at " << pool << " m; " << raised << " stations above it at its level, "
+                         << undrawn << " stretches from x = 12 to the pool not drawn");
+  CHECK(raised > 0);
+  CHECK(undrawn == 0);
+  // Not check_head_falls: the station on the bowl's rim at x = 18.75, written at the pool's level
+  // 1.5 cm over its bed, takes the line's discharge through that sliver at Froude 20 with or
+  // without this rule (a pool's rim station's flow; HANDOFF, W138).
+}
+
+namespace {
+// **A bench cut across a hillside** (W131; the forest's `region link 515`, stations 374 to 407 and
+// 712 to 724): the hillside rises 0.65 across a line running +x (to its left, +z) and falls 0.1
+// along it. The cut is a floor a metre wide at the line, 0.4 m under the hillside, falling 4 %
+// toward the downhill side, with an uphill face at 1:1 out to the hillside. On the downhill side
+// either the ground falls away from the floor's edge at the hillside's own slope (no bank: where
+// the seat was not read, at a knickpoint or beside another cut's face), or a lip 0.2 m high holds
+// it first. Two metres downhill lies another trench a metre deep (the line's own next leg below a
+// switchback).
+struct Bench {
+  bool lip = false;
+};
+f64 bench_height(const void* context, i64 x_mm, i64 z_mm) noexcept {
+  const Bench& b = *static_cast<const Bench*>(context);
+  const f64 x = static_cast<f64>(x_mm) / 1000.0, z = static_cast<f64>(z_mm) / 1000.0;
+  const f64 hill0 = 100.0 - 0.1 * x;  // the hillside at the line
+  const auto floor_at = [&](f64 zz) { return hill0 - 0.4 + 0.04 * zz; };
+  if (z >= -0.5 && z <= 0.5) return floor_at(z);
+  if (z > 0.5) return std::min(floor_at(0.5) + (z - 0.5), hill0 + 0.65 * z);
+  f64 g = 0.0;
+  if (b.lip) {
+    g = z >= -0.75 ? floor_at(-0.5) + 0.8 * (-0.5 - z) : floor_at(-0.5) + 0.2 + 0.65 * (z + 0.75);
+  } else {
+    g = floor_at(-0.5) + 0.65 * (z + 0.5);
+  }
+  return g - std::max(0.0, 1.0 - 2.0 * std::fabs(z + 2.0));
+}
+}  // namespace
+
+TEST_CASE(
+    "profile: the section is read in the bed under the line, never on the hillside beside it") {
+  // Before W131 the thalweg, found within the bed's half width, was walked downhill with no bound:
+  // across a bench with no downhill bank it ran down the hillside to the section's end or into the
+  // trench below, and the station's level stood there, a metre or more under the ground at the
+  // line, where nothing of it is seen.
+  for (const bool lip : {false, true}) {
+    CAPTURE(lip);
+    Bench b;
+    b.lip = lip;
+    scene_gen::Ground ground;
+    ground.surface_fn = &bench_height;
+    ground.context = &b;
+    FlowLine line = fixture_line("bench", 0, 40, 0, 0.021);
+    line.width.assign(2, 1.0);
+    std::string error;
+    Profile p;
+    REQUIRE_MESSAGE(solve_profile(line, ground, ProfileOptions{}, p, error), error);
+    REQUIRE(p.stations.size() >= 2);
+    CHECK(p.stats.under_ground == 0);
+    CHECK(p.stats.falls == 0);
+    for (u32 i = 0; i < p.stations.size(); ++i) {
+      const ProfileStation& s = p.stations[i];
+      CAPTURE(s.x);
+      const f64 at_line = 100.0 - 0.1 * s.x - 0.4;
+      // The bed is the floor's, within the bed's half width of the line, and the water on it.
+      CHECK(s.bed >= at_line - 0.03);
+      CHECK(s.level >= at_line - k_under_ground_m);
+      CHECK(s.depth >= 0.02);                           // a stream the draw lays, not a film
+      CHECK(s.wet_right <= (lip ? 0.75 : 0.5) + 1e-6);  // to the floor's edge, or up the lip
+      if (lip) CHECK((s.flags & scene_gen::k_channel_over_bank) == 0);
+      if (i + 1 < p.stations.size()) {
+        const ProfileStation& t = p.stations[i + 1];
+        CHECK(scene_gen::channel_stretch_drawn(s.flags, t.flags, static_cast<f32>(s.depth),
+                                               static_cast<f32>(t.depth), s.level, t.level));
+      }
+    }
+    check_head_falls(p);
+  }
 }

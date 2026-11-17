@@ -185,6 +185,12 @@ void unpack_channel_hydraulic(f32 packed, f32& hydraulic_m, f32& froude) noexcep
   froude = k_channel_froude_max * q * q;
 }
 
+f64 channel_travel_speed(f64 surface_speed, f64 slope) noexcept {
+  const f64 v = std::max(surface_speed, 0.0);
+  return std::sqrt(v * v + 2.0 * k_gravity * k_channel_jet_m *
+                               smooth_step(k_channel_steep_from, k_channel_steep_full, slope));
+}
+
 f32 station_hydraulic_depth(const Channel& c, u32 i) noexcept {
   const f64 fr = static_cast<f64>(c.froude[i]);
   const f64 v = static_cast<f64>(c.speed_mps[i]);
@@ -204,9 +210,9 @@ bool stretch_jumps(const Channel& c, u32 i) noexcept {
 
 bool stretch_drawn(const Channel& c, u32 i) noexcept {
   if (i + 1 >= c.points.size()) return false;
-  if ((c.flags[i] & c.flags[i + 1] & scene_gen::k_channel_over_bank) == 0) return true;
-  return over_bank_stretch_drawn(c.depth_m[i], c.depth_m[i + 1], static_cast<f64>(c.points[i].y),
-                                 static_cast<f64>(c.points[i + 1].y));
+  return scene_gen::channel_stretch_drawn(c.flags[i], c.flags[i + 1], c.depth_m[i],
+                                          c.depth_m[i + 1], static_cast<f64>(c.points[i].y),
+                                          static_cast<f64>(c.points[i + 1].y));
 }
 
 ChannelLine channel_line(const Channel& c) {

@@ -849,14 +849,34 @@ MaterialSample terrain_wet(MaterialSample sampled, float s, float film, float po
   return sampled;
 }
 
+// **A steep face takes the projections of its own plane** (W138; terrain.md, "A steep face is
+// textured in its own plane"). The projections' shares come from the shading normal, which on the
+// ground's lattice is a central difference over two cells: on a cut's face one cell wide it leans
+// half as far as the face, and on a 1 m lattice a 1.5 m bank (a face at 56 degrees)
+// took three quarters of its texture from the plan's projection, stretched down the face in
+// streaks and plank-like strips. Where the triangle itself is steeper than 37 degrees the shares
+// follow its plane, wholly from 60 degrees, banded between; a gentler triangle, and every caller
+// that names no plane (the zero default), reads the shading normal's shares to the bit.
+static const float k_terrain_plane_from_y = 0.8;  // the face's normal's y: 37 degrees
+static const float k_terrain_plane_at_y = 0.5;    // and 60
+float3 terrain_projection_normal(float3 n, float3 geometric) {
+  if (dot(geometric, geometric) == 0.0) return n * n;
+  const float3 g = dot(geometric, n) < 0.0 ? -geometric : geometric;
+  const float t = 1.0 - smoothstep(k_terrain_plane_at_y, k_terrain_plane_from_y, abs(g.y));
+  if (t <= 0.0) return n * n;
+  const float3 p = normalize(lerp(n, g, t));
+  return p * p;
+}
+
 // `shore_s` and `shore_film` (S99): the saturation the water stage found at the point (0 and 0, the
 // default, everywhere else and for every other caller), applied by `terrain_wet` over the blend's
-// porosity last.
+// porosity last. `geometric`: the triangle's own normal, for the projections' shares (above).
 MaterialSample sample_terrain_material(SceneGeometry geo, ResolveMaterial root, float2 map_uv,
                                       float2 map_dx, float2 map_dy, float3 point, float3 n,
                                       float3 dp_dx, float3 dp_dy, float distance_m, bool filtered,
                                       out float3 shading_normal, bool variance_enabled = true,
-                                      float shore_s = 0.0, float shore_film = 0.0) {
+                                      float shore_s = 0.0, float shore_film = 0.0,
+                                      float3 geometric = float3(0.0)) {
   // The substrate's porosity under the pixel, by the layers' blend (0.5, the schema's default,
   // where no layer says).
   float shore_porosity = 0.5;
@@ -885,7 +905,7 @@ MaterialSample sample_terrain_material(SceneGeometry geo, ResolveMaterial root, 
   MaterialSample result = filtered ? sample_material_grad(root, map_uv, map_dx, map_dy)
                                    : sample_material(root, map_uv);
   float3 slope = float3(0.0);
-  float3 axes = n * n;
+  float3 axes = terrain_projection_normal(n, geometric);
   axes *= axes;
   axes /= max(axes.x + axes.y + axes.z, 1e-12);
   const float fade = 1.0 - smoothstep(rec.detail_near_m, rec.detail_far_m, distance_m);
