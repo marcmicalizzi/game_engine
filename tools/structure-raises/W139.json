@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "W139",
+  "reason": "W139: the white water's tier reaches the resolve (one line in record_frame beside light_tolerance), and water.md gains the white's per-vertex inputs and the two tiers of white",
+  "date": "2026-11-16",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "renderer.record_frame.lines": 1,
+    "page:docs/subsystems/water.md": 4114
+  }
+}
