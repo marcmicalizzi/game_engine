@@ -455,7 +455,7 @@ struct ResolvedSettings {
   f32 gi_far_lift = 0.0f;        // `renderer.gi.far_lift`: a coarse cell lifted to the harmonics
   bool gi_reveal = false;        // `renderer.gi.reveal`: a level taken by what its difference shows
   bool gi_spread = false;        // `renderer.gi.spread`: the read by its cells' measured spreads
-  bool gi_memory = true;         // `renderer.gi.memory`: a cell's memory by its own spread
+  bool gi_memory = false;        // `renderer.gi.memory`: a cell's memory by its own spread
   i32 gi_show_level = -1;       // `renderer.gi.show_level`: the read takes one level whole (-1: no)
   bool gi_crown_prior = false;  // `renderer.gi.crown_prior`: foliage through its crown's shade
   f32 gi_shell_m = 0.0f;        // `renderer.gi.shell_m`: the casters round the eye (stage 4)

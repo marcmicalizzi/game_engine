@@ -3245,7 +3245,8 @@ how to fly them.
 
 ### R171: the memory made right
 
-Fourth leg (2026-11-16; `renderer.gi.memory` **on by default**). Leg 3's four reasons, each found
+Fourth leg (2026-11-16; `renderer.gi.memory` **on by default**, and off again since batch 67's
+fixes: "Off again: the pre-roll's promise", below). Leg 3's four reasons, each found
 at its cause and mended there, with the bar above as the judge:
 
 - **The level's rise was the half's rounding.** The long mean is three halves, eleven bits of
@@ -3338,6 +3339,27 @@ question of `gi_trace` rising on the forest's walk with both flags off: 1.00 ms 
 0.853 — on an engine scene the sample pass is no dearer since R171's legs, and the forest's rise
 is not shown to be the cache (batch 65's build cannot read the village's plan, so the lane was
 not flown).
+
+### Off again: the pre-roll's promise
+
+Batch 67's fixes (2026-11-17) set `renderer.gi.memory` back to **off by default**, and leave the
+fourth leg's rules in place behind it, for the owner to decide. On, it breaks the pre-roll's
+promise (stage 5, `gi cache: the pre-roll runs on the first frame and on a cut`): every frame after
+a cut within twice the still picture's floor, and every frame from the twenty-fourth after a load
+— on the RTX 5090 the cut's worst frame stood 0.577 from the long-held picture against a bound of
+0.397, and the load's 0.551 against 0.391, on the fourth leg's branch alone as on the stack. The
+cause, read in `gi_fold_main`: **the pre-roll seeds the long mean.** The pre-roll's sixteen steps
+and the first frames after them are the bounce's first rounds, short of the light its later rounds
+bring (in the case's white box those still arrive past the thirty-second frame); with the memory
+off they leave the cell's plain mean once today's history has passed, but with it on the count
+grows past today's history (by half a frame's samples a frame, the ramp) towards sixteen times it,
+so the long mean keeps those unsettled samples in its average and lags the still picture for a
+second and more. The `following` hand-down does not catch it here; read, not measured, a
+converging cell's long and short means part by a drift under the 2.5 deviations it tests for, and
+only a cell taking 64 samples a frame tests at all. The ways
+open: hold a cell's count at today's history until its light has settled (its short mean steady
+over its own history), or let a cut's or a load's cells start the memory only after the pre-roll's
+window; either moves every picture the fourth leg measured, so it is a leg of its own, not a fix.
 
 ## The sun's day
 

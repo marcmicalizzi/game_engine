@@ -494,11 +494,13 @@ tunables::Bool gi_spread{
     "an opening is not grained by its cells' heavy samples (false: the walk's answer as stage 8 "
     "left it) (renderer.md, Indirect light, R171: the grain on a plain wall; read at load)"};
 // **R171's third leg** (renderer.md, "Indirect light", "R171: a cell's memory by its own spread").
-// On since the fourth leg ("R171: the memory made right"): the half's rounding, the blobs and the
-// small change that trailed mended at their causes, and the change between displayed frames of a
-// held view under the display's own step.
+// The fourth leg ("R171: the memory made right") mended the half's rounding, the blobs and the
+// small change that trailed at their causes and turned it on; **off again since batch 67's fixes**
+// ("Off again: the pre-roll's promise"): the long mean keeps the pre-roll's and the first frames'
+// unsettled samples, so a load or a cut stands past twice the floor for a second and more, which
+// `gi cache: the pre-roll runs on the first frame and on a cut` refuses. The owner decides.
 tunables::Bool gi_memory{
-    "renderer.gi.memory", true,
+    "renderer.gi.memory", false,
     "A face's cache cell remembers up to sixteen times today's history while its light holds "
     "still, "
     "and goes back to today's at once when its long mean leaves the band its measured spread "
