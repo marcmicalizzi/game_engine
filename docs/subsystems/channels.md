@@ -1527,9 +1527,9 @@ cliff, keeps its `may_fail` for one run of the eight, and that is the count's: a
 line stands half-way down the cliff's 25 cm ramp, the stretch into it falls at 44.5 degrees, and
 the fall is begun below it, half a metre short.
 
-### The line held down its trough, and a fall's foot seated (W150)
+### The line held down its trough, and a fall's foot seated (W140)
 
-(2026-11-16, roadmap W150, the planner's half of W131: on `region link 515` 80 of the 107
+(2026-11-16, roadmap W140, the planner's half of W131: on `region link 515` 80 of the 107
 stations still under the ground at the line after W131 had nothing as low within half a metre of
 it, the line ran 30 to 90 degrees off the fall line on 15 % of its length, and the seat was not
 read at a knickpoint's points.) What real water does decides both: a stream on a steep hillside
@@ -1557,7 +1557,7 @@ world plans again and its cuts' tile set cooks again.
 builds; the forest's world, re-planned into this row's own root and solved over the new cut;
 "W131" is the solve of the row before this one over the old plan):
 
-| v47 | W131 | W150 |
+| v47 | W131 | W140 |
 |---|---:|---:|
 | plan: line 30 to 90 degrees off the fall line (of 43.7 km measured) | 8,066 m | 7,968 m |
 | plan: less than half a bank / no bank | 2,152 / 351 m | 2,094 / 339 m |
