@@ -728,7 +728,7 @@ Build, CI, test and profiling infrastructure, and the machinery behind the stand
 |---|---|---|---|---|---|---|
 | T1 | Phase 0 core modules | done (22c31122, 3141af59, 0d3a1ebe, 1895e4e2) | | L | routine | [10 §10.2](plan/10-roadmap-risks.md#102-phases) |
 | T2 | Topology-aware pinned job pools | done (3141af59, ADR-0011) | | M | design | [08 §8.7](plan/08-toolchain.md#87-hardware-characterization-scaled-to-fit) |
-| T3 | Linux topology detection verified on hardware | open | T2 | S | routine | [platform](subsystems/platform.md) |
+| T3 | Linux topology detection verified on hardware | done (2026-11-16, batch 67's sweep: the GPU server's Xeon E5-2670 detected as `lscpu` describes it, 16 CPUs, 8 SMT cores, one package, NUMA node and 20 MB L3 domain. Not exercised: several packages, NUMA nodes or L3 domains, a hybrid CPU's efficiency class, which no Linux machine here has) | T2 | S | routine | [platform](subsystems/platform.md) |
 | T4 | Telemetry: queryable events and budget violations | open | | M | design | [09 §9.3](plan/09-testing-profiling.md#93-profiling-infrastructure-before-optimizing-anything) |
 | T5 | I/O, tunables registry and bench harness | done (7436f951, ac9ecdb1) | | M | routine | [bench](subsystems/bench.md) |
 | T6 | Tracy client, loopback only | done (152ea353, 3f8e0c46) | | S | routine | [profiling](subsystems/profiling.md) |
