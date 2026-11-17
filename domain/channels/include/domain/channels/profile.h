@@ -139,6 +139,9 @@ struct ProfileStats {
   // stem): the last station is the line's own and not that level.
   bool tail_hung = false;
   u32 over_bank = 0;
+  // Of them, stations held at an edge with no bank (W131: a side whose ground falls away from the
+  // thalweg), written at their solved level up to the edge plus their critical depth.
+  u32 open_bank = 0;
   f64 over_bank_worst_m = 0;
   WorldPos over_bank_at{};
   // Stations written as a pool standing in a pit of the line (`k_pool_pit_m`), and stations in a

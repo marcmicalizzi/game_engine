@@ -223,7 +223,7 @@ struct Totals {
   u64 nodes = 0, stations = 0;
   f64 metres = 0;
   u32 crests = 0, falls = 0, jumps = 0, drowned = 0, hung = 0;
-  u32 over_bank = 0, over_bank_lines = 0;
+  u32 over_bank = 0, over_bank_lines = 0, open_bank = 0;
   f64 over_bank_worst = 0;
   WorldPos over_bank_at{};
   std::string over_bank_line;
@@ -251,6 +251,7 @@ struct Totals {
     drowned += s.drowned_feet;
     hung += s.tail_hung ? 1u : 0u;
     over_bank += s.over_bank;
+    open_bank += s.open_bank;
     over_bank_lines += s.over_bank > 0 ? 1u : 0u;
     pools += s.pools;
     pools_open += s.pools_open;
@@ -307,6 +308,7 @@ JsonValue line_stats(const std::string& name, const channels::Profile& p,
   one["thin_m"] = JsonValue(round3(r.thin_m));
   one["alternations"] = JsonValue(r.alternations);
   one["over_bank"] = JsonValue(p.stats.over_bank);
+  one["open_bank"] = JsonValue(p.stats.open_bank);
   one["pools"] = JsonValue(p.stats.pools);
   one["under_ground"] = JsonValue(p.stats.under_ground);
   one["under_ground_worst_m"] = JsonValue(round3(p.stats.under_ground_worst_m));
@@ -905,6 +907,7 @@ int flow_solve_command(int argc, char** argv) {
   JsonValue over = JsonValue::object();
   over["stations"] = JsonValue(totals.over_bank);
   over["lines"] = JsonValue(totals.over_bank_lines);
+  over["open"] = JsonValue(totals.open_bank);  // W131: held at an edge with no bank
   over["worst_m"] = JsonValue(round3(totals.over_bank_worst));
   if (totals.over_bank > 0) {
     over["at"] = place(totals.over_bank_at);

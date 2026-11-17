@@ -721,8 +721,8 @@ TEST_CASE(
       // The bed is the floor's, within the bed's half width of the line, and the water on it.
       CHECK(s.bed >= at_line - 0.03);
       CHECK(s.level >= at_line - k_under_ground_m);
-      CHECK(s.depth >= 0.02);  // a stream the draw lays, not a film
-      CHECK(s.wet_right <= 0.5 + 1e-6);
+      CHECK(s.depth >= 0.02);                           // a stream the draw lays, not a film
+      CHECK(s.wet_right <= (lip ? 0.75 : 0.5) + 1e-6);  // to the floor's edge, or up the lip
       if (lip) CHECK((s.flags & scene_gen::k_channel_over_bank) == 0);
       if (i + 1 < p.stations.size()) {
         const ProfileStation& t = p.stations[i + 1];
