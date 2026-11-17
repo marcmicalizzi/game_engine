@@ -25,18 +25,27 @@
   -FromSummaries <dir> compares the `<id>.jsonl` files a previous run left in <dir> instead of
   flying anything: re-reading a run against a changed budget, or a tolerance, costs no GPU.
 
-  -Rebaseline replaces each run's budget with what this run measured and records who (-By, default
-  the git user), when, why (-Reason, required), the commit, the adapter and the machine's state in
-  its `baseline`; the old numbers stay in git's history of the file. It refuses a run measured on a
+  A run holds a budget per Windows session state, `budgets.locked` and `budgets.unlocked` (T161):
+  a locked session idles the card's clocks, so a flight is compared only with the set of the state
+  its summary's `machine_state` recorded, and with nothing when the run holds no set for that state
+  or the state is unknown or changed during the flight (bench.md, "Frame budgets").
+
+  -Rebaseline replaces each run's budget for the session state it was flown in with what this run
+  measured and records who (-By, default the git user), when, why (-Reason, required), the commit,
+  the adapter, the session state and the machine's state in its `baseline`; the other state's set is
+  left alone, and the old numbers stay in git's history of the file. It refuses a run measured on a
   busy machine unless -AllowBusy, because a busy number is an upper bound and would loosen the
-  budget. Commit the file with the change that moved the numbers, and say why in the message.
+  budget, and a run whose session state is unknown or changed. Commit the file with the change
+  that moved the numbers, and say why in the message.
 
   Exit codes: 0 every run within budget (or re-baselined); 1 a run over budget on a quiet machine,
   a run that failed, or a summary missing a budgeted pass; 3 not the budget's machine; 4 the only
   runs over budget ran on a busy machine (inconclusive: run again when it is quiet); 5 a summary
   that is not a native measurement (ADR-0064: its `reconstruction` block names a provider or an
   internal size below the output's, or its `gpu_ms` is null and its times are under
-  `reconstructed`): refused before any number of it is read, never compared and never a baseline.
+  `reconstructed`): refused before any number of it is read, never compared and never a baseline;
+  6 a run compared with nothing because it holds no budget for its session state, or the state was
+  unknown or changed during the flight (inconclusive: fly it in a state it holds, or take one).
 
   Where it runs and what it costs: docs/ci/what-to-run.md, "Frame budgets".
 #>
@@ -162,9 +171,16 @@ foreach ($r in $runs) {
     Write-Host "   $($r.id): refused: $($result.MachineState)" -ForegroundColor Red
     continue
   }
+  if ($result.Verdict -in @('nobaseline', 'session', 'device')) {
+    # Compared with nothing (T161): the measured total is said, and no limit beside it.
+    Write-Host ('   {0}: {1}; total {2:N3} / {3:N3} ms (median / p99); {4}' -f $r.id, $result.Verdict,
+      (Get-Measured $summary 'median'), (Get-Measured $summary 'p99'), $result.MachineState) -ForegroundColor Yellow
+    continue
+  }
+  $set = Get-SessionBudget $r $result.Session
   $overRows = @($result.Rows | Where-Object { $_.Over })
-  $line = '   {0}: {1}; total {2:N3} / {3:N3} ms (median / p99) against {4:N3} / {5:N3}; {6}' -f $r.id, $result.Verdict,
-    (Get-Measured $summary 'median'), (Get-Measured $summary 'p99'), [double]$r.gpu_ms.total.median, [double]$r.gpu_ms.total.p99, $result.MachineState
+  $line = '   {0}: {1}; total {2:N3} / {3:N3} ms (median / p99) against {4:N3} / {5:N3}, {6}; {7}' -f $r.id, $result.Verdict,
+    (Get-Measured $summary 'median'), (Get-Measured $summary 'p99'), [double]$set.gpu_ms.total.median, [double]$set.gpu_ms.total.p99, $result.Compared, $result.MachineState
   Write-Host $line -ForegroundColor $(if ($result.Verdict -eq 'pass') { 'Green' } elseif ($result.Verdict -eq 'busy') { 'Yellow' } else { 'Red' })
   foreach ($row in $overRows) {
     Write-Host ('     over: {0} {1} {2:N3} ms, budget {3:N3}, limit {4:N3}' -f $row.Line, $row.Stat, $row.Measured, $row.Budget, $row.Limit) -ForegroundColor Red
@@ -187,15 +203,17 @@ if ($Rebaseline) {
   $changed = 0
   foreach ($r in $runs) {
     $res = $results | Where-Object { $_.Id -eq $r.id } | Select-Object -First 1
-    if (-not $summaries.ContainsKey($r.id) -or $res.Verdict -in @('failed', 'device', 'malformed', 'reconstructed')) {
-      Write-Warning "frame-budget: $($r.id) not re-baselined: $($res.Verdict)"
+    if (-not $summaries.ContainsKey($r.id) -or $res.Verdict -in @('failed', 'device', 'malformed', 'reconstructed', 'session')) {
+      Write-Warning "frame-budget: $($r.id) not re-baselined: $($res.Verdict)$(if ($res.Verdict -eq 'session') { " ($($res.MachineState))" })"
       continue
     }
     if (-not $res.Quiet -and -not $AllowBusy) {
       Write-Warning "frame-budget: $($r.id) not re-baselined: the machine was busy ($($res.MachineState)); -AllowBusy takes it anyway"
       continue
     }
+    # The flight's own session state's set, and only that one: the other state's stays as it was.
     Set-FrameBudgetBaseline -Run $r -Summary $summaries[$r.id] -By $By -Reason $Reason -Commit $commit | Out-Null
+    Write-Host "   $($r.id): the $($res.Session) baseline taken; the run now holds $(Format-RunSessions $r)" -ForegroundColor Cyan
     $changed++
   }
   $plan | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $Budget -Encoding utf8NoBOM
@@ -206,7 +224,8 @@ if ($Rebaseline) {
 
 $code = Get-FrameBudgetExitCode -Results $results
 $word = @{ 0 = 'within budget'; 1 = 'OVER BUDGET or failed'; 3 = 'not the budget''s machine: skipped'; 4 = 'over budget on a busy machine: inconclusive, run again when it is quiet'
-           5 = 'REFUSED: a summary is not a native measurement (ADR-0064); a budget is measured with reconstruction off at the output''s size' }[$code]
+           5 = 'REFUSED: a summary is not a native measurement (ADR-0064); a budget is measured with reconstruction off at the output''s size'
+           6 = 'INCONCLUSIVE: a run was compared with nothing, because it holds no budget for the session state it was flown in, or its state was unknown or changed during the flight (T161); fly it in a state it holds, or take that state''s baseline' }[$code]
 Write-Host "frame-budget: $word ($(@($results | Where-Object { $_.Verdict -eq 'pass' }).Count) of $($results.Count) runs pass)"
 Write-Host "results: $Out"
 exit $code

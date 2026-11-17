@@ -16,12 +16,20 @@
   and is inconclusive — its numbers are upper bounds (bench.md, "Measuring on a shared machine") —
   and a run within budget passes whatever the machine was doing, since an upper bound under the
   limit is under it.
+
+  **A run holds a budget per session state** (roadmap T161; bench.md, "Frame budgets"): with the
+  Windows session locked the card idles its clocks and a light scene reads two to nine times slower,
+  so a locked flight and an unlocked one are two different cards. `budgets.locked` and
+  `budgets.unlocked` sit side by side under each run, a summary is compared only with the set of
+  the state its `machine_state` recorded, and a state with no set is a verdict of its own
+  ('nobaseline') rather than a comparison with the other state's numbers.
 #>
 
 Set-StrictMode -Version Latest
 
-$script:Format = 'engine.frame-budgets.v1'
+$script:Format = 'engine.frame-budgets.v2'
 $script:Stats = @('median', 'p99')
+$script:Sessions = @('locked', 'unlocked')
 
 # The budget file, checked for the shape the rest of this module reads. Throws naming the problem.
 function Read-FrameBudget {
@@ -53,28 +61,82 @@ function Assert-FrameBudget($budget) {
     foreach ($field in @('scene', 'path', 'width', 'height')) {
       if ($null -eq $run.$field) { throw "frame-budget: run '$($run.id)' has no $field" }
     }
-    if ($null -eq $run.gpu_ms -or $null -eq $run.gpu_ms.total) { throw "frame-budget: run '$($run.id)' budgets no gpu_ms.total" }
-    foreach ($line in (Get-BudgetLines $run)) {
-      foreach ($s in $script:Stats) {
-        if ($null -eq $line.Value.$s) { throw "frame-budget: run '$($run.id)' $($line.Name) has no $s" }
-      }
+    if ($null -ne $run.PSObject.Properties['gpu_ms'] -or $null -ne $run.PSObject.Properties['baseline']) {
+      throw "frame-budget: run '$($run.id)' has gpu_ms or baseline outside budgets.<session>: a budget belongs to the session state it was flown in (budgets.locked, budgets.unlocked)"
     }
-    if ($null -eq $run.baseline -or -not $run.baseline.by -or -not $run.baseline.reason -or -not $run.baseline.date) {
-      throw "frame-budget: run '$($run.id)' does not say who set its budget, when and why (baseline.by, .date, .reason)"
+    if ($null -eq $run.budgets) { throw "frame-budget: run '$($run.id)' has no budgets (budgets.locked or budgets.unlocked)" }
+    $names = @($run.budgets.PSObject.Properties | ForEach-Object { $_.Name })
+    if ($names.Count -eq 0) { throw "frame-budget: run '$($run.id)' has no budgets (budgets.locked or budgets.unlocked)" }
+    foreach ($name in $names) {
+      if ($name -notin $script:Sessions) { throw "frame-budget: run '$($run.id)' budgets.$name is not a session state ($($script:Sessions -join ', '))" }
+      $set = $run.budgets.$name
+      $where = "run '$($run.id)' budgets.$name"
+      if ($null -eq $set.gpu_ms -or $null -eq $set.gpu_ms.total) { throw "frame-budget: $where budgets no gpu_ms.total" }
+      foreach ($line in (Get-BudgetLines $set)) {
+        foreach ($s in $script:Stats) {
+          if ($null -eq $line.Value.$s) { throw "frame-budget: $where $($line.Name) has no $s" }
+        }
+      }
+      if ($null -eq $set.baseline -or -not $set.baseline.by -or -not $set.baseline.reason -or -not $set.baseline.date) {
+        throw "frame-budget: $where does not say who set its budget, when and why (baseline.by, .date, .reason)"
+      }
     }
   }
 }
 
-# The budgeted lines of a run: every pass under gpu_ms, and cpu_ms when it has one.
-function Get-BudgetLines($run) {
+# The budgeted lines of one session's set: every pass under gpu_ms, and cpu_ms when it has one.
+function Get-BudgetLines($set) {
   $lines = @()
-  foreach ($p in $run.gpu_ms.PSObject.Properties) {
+  foreach ($p in $set.gpu_ms.PSObject.Properties) {
     $lines += [pscustomobject]@{ Kind = 'gpu'; Name = "gpu_ms.$($p.Name)"; Pass = $p.Name; Value = $p.Value }
   }
-  if ($null -ne $run.PSObject.Properties['cpu_ms'] -and $null -ne $run.cpu_ms) {
-    $lines += [pscustomobject]@{ Kind = 'cpu'; Name = 'cpu_ms'; Pass = ''; Value = $run.cpu_ms }
+  if ($null -ne $set.PSObject.Properties['cpu_ms'] -and $null -ne $set.cpu_ms) {
+    $lines += [pscustomobject]@{ Kind = 'cpu'; Name = 'cpu_ms'; Pass = ''; Value = $set.cpu_ms }
   }
   return $lines
+}
+
+<#
+  The session state a summary was flown in, from its `machine_state` (bench.md, "Measuring on a
+  shared machine": `session_locked` at the start and at the end, null where it is unknown):
+    'locked'    locked at both ends, or at one with the other unknown
+    'unlocked'  unlocked at both ends, or at one with the other unknown
+    'changed'   locked at one end and unlocked at the other: the flight measured two cards
+    'unknown'   neither end says (a machine with no session to read, or no machine_state)
+#>
+function Get-SessionState {
+  [CmdletBinding()]
+  param([Parameter(Mandatory)] $Summary)
+  if (-not $Summary.PSObject.Properties['machine_state'] -or $null -eq $Summary.machine_state) { return 'unknown' }
+  $ends = @()
+  foreach ($end in @('start', 'end')) {
+    $s = if ($Summary.machine_state.PSObject.Properties[$end]) { $Summary.machine_state.$end } else { $null }
+    if ($null -eq $s -or -not $s.PSObject.Properties['session_locked'] -or $null -eq $s.session_locked) { continue }
+    $ends += $(if ([bool]$s.session_locked) { 'locked' } else { 'unlocked' })
+  }
+  $distinct = @($ends | Select-Object -Unique)
+  if ($distinct.Count -eq 0) { return 'unknown' }
+  if ($distinct.Count -gt 1) { return 'changed' }
+  return $distinct[0]
+}
+
+# A run's budget set for one session state, or $null when the run holds none for it.
+function Get-SessionBudget($Run, [string]$Session) {
+  if ($null -eq $Run.PSObject.Properties['budgets'] -or $null -eq $Run.budgets) { return $null }
+  $p = $Run.budgets.PSObject.Properties[$Session]
+  if ($null -eq $p) { return $null }
+  return $p.Value
+}
+
+# The session states a run holds budgets for, with each one's date: "locked (2026-10-12)".
+function Format-RunSessions($Run) {
+  $held = @()
+  foreach ($name in $script:Sessions) {
+    $set = Get-SessionBudget $Run $name
+    if ($null -ne $set) { $held += "$name ($($set.baseline.date))" }
+  }
+  if ($held.Count -eq 0) { return 'none' }
+  return ($held -join ', ')
 }
 
 # engine-view's arguments for a run, after the executable: the run's scene and path from the
@@ -120,21 +182,50 @@ function Get-MeasuredValue($summary, $line, [string]$stat) {
              'malformed'  the summary lacks a budgeted line: the gate fails
              'reconstructed'  the summary is not a native measurement (ADR-0064): refused before
                           any number of it is read, whatever it measured and on whatever adapter
+             'nobaseline' the summary's session state is known and the run holds no budget for
+                          it: compared with nothing, never with the other state's numbers (T161)
+             'session'    the summary's session state is unknown, or changed during the flight:
+                          compared with nothing
+  `Session` is the summary's state (Get-SessionState) and `Compared` the baseline it was held to.
 #>
 function Test-FrameBudgetRun {
   [CmdletBinding()]
   param([Parameter(Mandatory)] $Budget, [Parameter(Mandatory)] $Run, [Parameter(Mandatory)] $Summary)
+  $device = if ($Summary.PSObject.Properties['device']) { "$($Summary.device)" } else { '' }
+  $session = Get-SessionState -Summary $Summary
   $refusal = Get-ReconstructionRefusal -Summary $Summary
   if ($refusal) {
     return [pscustomobject]@{
-      Id = $Run.id; Verdict = 'reconstructed'; Device = $(if ($Summary.PSObject.Properties['device']) { "$($Summary.device)" } else { '' })
+      Id = $Run.id; Verdict = 'reconstructed'; Device = $device; Session = $session; Compared = ''
       Quiet = $false; Rows = @(); Missing = @(); MachineState = $refusal
+    }
+  }
+  $quiet = [bool]($Summary.PSObject.Properties['quiet'] -and $Summary.quiet)
+  $state = Format-MachineState $Summary
+  if ($device -ne $Budget.machine.device) {
+    return [pscustomobject]@{ Id = $Run.id; Verdict = 'device'; Device = $device; Session = $session; Compared = ''; Quiet = $quiet; Rows = @(); Missing = @(); MachineState = $state }
+  }
+  # The session state before any number: a locked card and an unlocked one are two cards, so a
+  # summary is held to its own state's set or to nothing (T161; bench.md, "Frame budgets").
+  if ($session -in @('unknown', 'changed')) {
+    $why = if ($session -eq 'changed') { 'the session was locked at one end of the flight and unlocked at the other, so it measured two cards' }
+           else { 'the summary does not record whether the session was locked (machine_state.*.session_locked)' }
+    return [pscustomobject]@{
+      Id = $Run.id; Verdict = 'session'; Device = $device; Session = $session; Compared = ''; Quiet = $quiet; Rows = @(); Missing = @()
+      MachineState = "$state; compared with nothing: $why; fly it again in one state"
+    }
+  }
+  $set = Get-SessionBudget $Run $session
+  if ($null -eq $set) {
+    return [pscustomobject]@{
+      Id = $Run.id; Verdict = 'nobaseline'; Device = $device; Session = $session; Compared = ''; Quiet = $quiet; Rows = @(); Missing = @()
+      MachineState = "$state; compared with nothing: flown with the session $session and the run has no $session baseline (it holds: $(Format-RunSessions $Run)); fly it in a state it holds, or take a $session baseline with -Rebaseline -Reason ""<why>"" in this state"
     }
   }
   $rows = @()
   $over = $false
   $missing = @()
-  foreach ($line in (Get-BudgetLines $Run)) {
+  foreach ($line in (Get-BudgetLines $set)) {
     foreach ($s in $script:Stats) {
       $t = $Budget.tolerance.($line.Kind).$s
       $b = [double]$line.Value.$s
@@ -146,29 +237,31 @@ function Test-FrameBudgetRun {
       $rows += [pscustomobject]@{ Line = $line.Name; Stat = $s; Budget = $b; Measured = $m; Limit = $limit; Over = $isOver }
     }
   }
-  $device = if ($Summary.PSObject.Properties['device']) { "$($Summary.device)" } else { '' }
-  $quiet = [bool]($Summary.PSObject.Properties['quiet'] -and $Summary.quiet)
-  $verdict = if ($device -ne $Budget.machine.device) { 'device' }
-             elseif ($missing.Count -gt 0) { 'malformed' }
+  $verdict = if ($missing.Count -gt 0) { 'malformed' }
              elseif (-not $over) { 'pass' }
              elseif ($quiet) { 'over' }
              else { 'busy' }
   return [pscustomobject]@{
-    Id = $Run.id; Verdict = $verdict; Device = $device; Quiet = $quiet; Rows = $rows; Missing = $missing
-    MachineState = (Format-MachineState $Summary)
+    Id = $Run.id; Verdict = $verdict; Device = $device; Session = $session
+    Compared = "the $session baseline of $($set.baseline.date)"; Quiet = $quiet; Rows = $rows; Missing = $missing
+    MachineState = $state
   }
 }
 
 # The gate's exit code over every run's result: 5 when any run was not a native measurement
 # (ADR-0064: nothing of such a gate is a verdict, so it wins over every other code); 1 when any run
-# is over on a quiet machine, failed or is malformed; 4 when the only overs were on a busy machine
-# (measure again later); 3 when no run was drawn on the budget's machine at all; 0 otherwise.
+# is over on a quiet machine, failed or is malformed; 6 when a run was compared with nothing because
+# the run holds no budget for the session state it was flown in, or its state is unknown or changed
+# during the flight (T161: fly it in a state the run holds, or take that state's baseline); 4 when
+# the only overs were on a busy machine (measure again later); 3 when no run was drawn on the
+# budget's machine at all; 0 otherwise.
 function Get-FrameBudgetExitCode {
   [CmdletBinding()]
   param([Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Results)
   $verdicts = @($Results | ForEach-Object { $_.Verdict })
   if ($verdicts | Where-Object { $_ -eq 'reconstructed' }) { return 5 }
   if ($verdicts | Where-Object { $_ -in @('over', 'malformed', 'failed') }) { return 1 }
+  if ($verdicts | Where-Object { $_ -in @('nobaseline', 'session') }) { return 6 }
   if ($verdicts | Where-Object { $_ -eq 'busy' }) { return 4 }
   if ($verdicts.Count -gt 0 -and -not ($verdicts | Where-Object { $_ -ne 'device' })) { return 3 }
   return 0
@@ -186,7 +279,7 @@ function Format-MachineState($summary) {
     "$cpu, $gpu"
   }
   $quiet = if ($summary.quiet) { 'quiet' } else { 'busy' }
-  return '{0} (start {1}; end {2})' -f $quiet, (& $part $ms.start), (& $part $ms.end)
+  return '{0}, session {1} (start {2}; end {3})' -f $quiet, (Get-SessionState -Summary $summary), (& $part $ms.start), (& $part $ms.end)
 }
 
 function Format-FrameBudgetReport {
@@ -197,6 +290,7 @@ function Format-FrameBudgetReport {
     $out += "## $($r.Id): $($r.Verdict)"
     $out += ''
     $out += "Device: $($r.Device). Machine: $($r.MachineState)."
+    if ($r.PSObject.Properties['Compared'] -and $r.Compared) { $out += "Compared with $($r.Compared)." }
     if ($r.Missing.Count -gt 0) { $out += "Missing from the summary: $($r.Missing -join ', ')." }
     if ($r.Rows.Count -gt 0) {
       $out += ''
@@ -213,10 +307,13 @@ function Format-FrameBudgetReport {
 }
 
 <#
-  A run's budget set from a summary: every GPU pass the summary timed (a median or a p99 of at
-  least 0.001 ms) and the total, and the frame thread's cpu_ms, rounded to the microsecond; and the
-  baseline record — who, when, why, from which commit, on which device, and the machine's state.
-  The old numbers are in git's history of the file; the record says why they moved.
+  A run's budget set from a summary, for the session state the summary was flown in: every GPU
+  pass the summary timed (a median or a p99 of at least 0.001 ms) and the total, and the frame
+  thread's cpu_ms, rounded to the microsecond; and the baseline record — who, when, why, from which
+  commit, on which device, the session state and the machine's state. The other state's set is left
+  as it was. It refuses a summary whose session state is unknown or changed during the flight: a
+  number that belongs to neither card is a baseline for neither. The old numbers are in git's
+  history of the file; the record says why they moved.
 #>
 function Set-FrameBudgetBaseline {
   [CmdletBinding()]
@@ -225,6 +322,10 @@ function Set-FrameBudgetBaseline {
   if (-not $Reason.Trim()) { throw 'frame-budget: a re-baseline says why (-Reason)' }
   $refusal = Get-ReconstructionRefusal -Summary $Summary
   if ($refusal) { throw "frame-budget: a budget is never set from a summary that is $refusal" }
+  $session = Get-SessionState -Summary $Summary
+  if ($session -notin $script:Sessions) {
+    throw "frame-budget: a budget is never set from a flight whose session state is $($session): it is a baseline for neither the locked card nor the unlocked one"
+  }
   $gpu = [ordered]@{}
   foreach ($p in $Summary.gpu_ms.PSObject.Properties) {
     $median = [double]$p.Value.median
@@ -233,15 +334,17 @@ function Set-FrameBudgetBaseline {
       $gpu[$p.Name] = [ordered]@{ median = [math]::Round($median, 3); p99 = [math]::Round($p99, 3) }
     }
   }
-  $Run.gpu_ms = [pscustomobject]$gpu
   $cpu = [pscustomobject][ordered]@{ median = [math]::Round([double]$Summary.cpu_ms.median, 3); p99 = [math]::Round([double]$Summary.cpu_ms.p99, 3) }
-  if ($Run.PSObject.Properties['cpu_ms']) { $Run.cpu_ms = $cpu } else { $Run | Add-Member -NotePropertyName cpu_ms -NotePropertyValue $cpu }
   $baseline = [pscustomobject][ordered]@{
     date = $Date; by = $By; reason = $Reason; commit = $Commit; device = "$($Summary.device)"
-    quiet = [bool]$Summary.quiet; machine_state = (Format-MachineState $Summary)
+    session = $session; quiet = [bool]$Summary.quiet; machine_state = (Format-MachineState $Summary)
     identity = "$($Summary.identity)"; frames = $Summary.frames; repeats = $Summary.repeats
   }
-  if ($Run.PSObject.Properties['baseline']) { $Run.baseline = $baseline } else { $Run | Add-Member -NotePropertyName baseline -NotePropertyValue $baseline }
+  $set = [pscustomobject][ordered]@{ gpu_ms = [pscustomobject]$gpu; cpu_ms = $cpu; baseline = $baseline }
+  if ($null -eq $Run.PSObject.Properties['budgets'] -or $null -eq $Run.budgets) {
+    if ($Run.PSObject.Properties['budgets']) { $Run.budgets = [pscustomobject]@{} } else { $Run | Add-Member -NotePropertyName budgets -NotePropertyValue ([pscustomobject]@{}) }
+  }
+  if ($Run.budgets.PSObject.Properties[$session]) { $Run.budgets.$session = $set } else { $Run.budgets | Add-Member -NotePropertyName $session -NotePropertyValue $set }
   return $Run
 }
 
@@ -278,4 +381,4 @@ function Get-ReconstructionRefusal {
 
 Export-ModuleMember -Function Read-FrameBudget, Assert-FrameBudget, Get-FrameBudgetArgs, Get-FrameBudgetLimit,
   Test-FrameBudgetRun, Get-FrameBudgetExitCode, Format-FrameBudgetReport, Set-FrameBudgetBaseline, Format-MachineState,
-  Get-ReconstructionRefusal
+  Get-ReconstructionRefusal, Get-SessionState, Get-SessionBudget, Format-RunSessions

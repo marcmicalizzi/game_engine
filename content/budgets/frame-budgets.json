@@ -1,6 +1,6 @@
 {
-  "format": "engine.frame-budgets.v1",
-  "description": "Frame budgets (ADR-0018): per path scene and resolution, the GPU milliseconds per pass at the median and the p99 of the path's frames, and the frame thread's cpu_ms, that a merge may not push a run past (beyond the tolerance). tools/frame-budget.ps1 is the gate; docs/subsystems/bench.md \"Frame budgets\" is the format and how to re-baseline.",
+  "format": "engine.frame-budgets.v2",
+  "description": "Frame budgets (ADR-0018): per path scene and resolution, and per Windows session state (budgets.locked, budgets.unlocked: a locked session idles the card, roadmap T161), the GPU milliseconds per pass at the median and the p99 of the path's frames, and the frame thread's cpu_ms, that a merge may not push a run past (beyond the tolerance). tools/frame-budget.ps1 is the gate; docs/subsystems/bench.md \"Frame budgets\" is the format and how to re-baseline.",
   "machine": {
     "device": "NVIDIA GeForce RTX 5090",
     "name": "the desktop: RTX 5090, Windows 11",
@@ -42,45 +42,51 @@
         "--shadows",
         "off"
       ],
-      "gpu_ms": {
-        "cull": {
-          "median": 0.03,
-          "p99": 0.037
-        },
-        "hiz": {
-          "median": 0.021,
-          "p99": 0.022
-        },
-        "hw": {
-          "median": 0.023,
-          "p99": 0.045
-        },
-        "resolve": {
-          "median": 0.079,
-          "p99": 0.099
-        },
-        "total": {
-          "median": 0.155,
-          "p99": 0.358
+      "budgets": {
+        "locked": {
+          "gpu_ms": {
+            "cull": {
+              "median": 0.03,
+              "p99": 0.037
+            },
+            "hiz": {
+              "median": 0.021,
+              "p99": 0.022
+            },
+            "hw": {
+              "median": 0.023,
+              "p99": 0.045
+            },
+            "resolve": {
+              "median": 0.079,
+              "p99": 0.099
+            },
+            "total": {
+              "median": 0.155,
+              "p99": 0.358
+            }
+          },
+          "cpu_ms": {
+            "median": 0.07,
+            "p99": 0.242
+          },
+          "baseline": {
+            "date": "2026-10-07",
+            "by": "Claude (agent, roadmap T46), for the owner",
+            "reason": "The first budgets: the tree as it measured on 2026-10-07, flown by the gate itself.",
+            "commit": "8cb66941, with this branch's uncommitted T46/T48 changes (the GpuTimer read-back no longer allocates)",
+            "device": "NVIDIA GeForce RTX 5090",
+            "session": "locked",
+            "session_note": "Assigned to the locked state by T161 (2026-11-16) without a new flight: this baseline recorded no session state, every gate run of the budgets from 2026-11-14 to 2026-11-16 was flown with the session locked and held to these numbers, and an unlocked card reads every zone of a light run two to nine times faster (bench.md, \"A locked session is a slower card\"), so these are a locked card's numbers.",
+            "quiet": true,
+            "machine_state": "quiet (start 5.0% others, GPU 5%; end 8.3% others, GPU 5%)",
+            "identity": "b27e8b311de6fad1",
+            "frames": 2401,
+            "repeats": 1
+          },
+          "sources": "Every number measured 2026-10-07 (this baseline). None of the three experiment pages measures the overlook: its scene names the Khronos samples, which the worktrees that took them had not fetched."
         }
-      },
-      "baseline": {
-        "date": "2026-10-07",
-        "by": "Claude (agent, roadmap T46), for the owner",
-        "reason": "The first budgets: the tree as it measured on 2026-10-07, flown by the gate itself.",
-        "commit": "8cb66941, with this branch's uncommitted T46/T48 changes (the GpuTimer read-back no longer allocates)",
-        "device": "NVIDIA GeForce RTX 5090",
-        "quiet": true,
-        "machine_state": "quiet (start 5.0% others, GPU 5%; end 8.3% others, GPU 5%)",
-        "identity": "b27e8b311de6fad1",
-        "frames": 2401,
-        "repeats": 1
-      },
-      "cpu_ms": {
-        "median": 0.07,
-        "p99": 0.242
-      },
-      "sources": "Every number measured 2026-10-07 (this baseline). None of the three experiment pages measures the overlook: its scene names the Khronos samples, which the worktrees that took them had not fetched."
+      }
     },
     {
       "id": "erg-walk-1080p-rt",
@@ -96,61 +102,67 @@
         "--shadows",
         "rt"
       ],
-      "gpu_ms": {
-        "blas": {
-          "median": 0.076,
-          "p99": 0.467
-        },
-        "clas": {
-          "median": 0.174,
-          "p99": 0.528
-        },
-        "cull": {
-          "median": 0.025,
-          "p99": 0.224
-        },
-        "deform": {
-          "median": 0.014,
-          "p99": 0.02
-        },
-        "hw": {
-          "median": 0.024,
-          "p99": 0.028
-        },
-        "resolve": {
-          "median": 0.2,
-          "p99": 0.24
-        },
-        "rt": {
-          "median": 0.368,
-          "p99": 0.805
-        },
-        "sky": {
-          "median": 0.081,
-          "p99": 0.416
-        },
-        "total": {
-          "median": 0.724,
-          "p99": 1.214
+      "budgets": {
+        "locked": {
+          "gpu_ms": {
+            "blas": {
+              "median": 0.076,
+              "p99": 0.467
+            },
+            "clas": {
+              "median": 0.174,
+              "p99": 0.528
+            },
+            "cull": {
+              "median": 0.025,
+              "p99": 0.224
+            },
+            "deform": {
+              "median": 0.014,
+              "p99": 0.02
+            },
+            "hw": {
+              "median": 0.024,
+              "p99": 0.028
+            },
+            "resolve": {
+              "median": 0.2,
+              "p99": 0.24
+            },
+            "rt": {
+              "median": 0.368,
+              "p99": 0.805
+            },
+            "sky": {
+              "median": 0.081,
+              "p99": 0.416
+            },
+            "total": {
+              "median": 0.724,
+              "p99": 1.214
+            }
+          },
+          "cpu_ms": {
+            "median": 0.13,
+            "p99": 0.373
+          },
+          "baseline": {
+            "date": "2026-10-07",
+            "by": "Claude (agent, roadmap T46), for the owner",
+            "reason": "The first budgets: the tree as it measured on 2026-10-07, flown by the gate itself.",
+            "commit": "8cb66941, with this branch's uncommitted T46/T48 changes (the GpuTimer read-back no longer allocates)",
+            "device": "NVIDIA GeForce RTX 5090",
+            "session": "locked",
+            "session_note": "Assigned to the locked state by T161 (2026-11-16) without a new flight: this baseline recorded no session state, every gate run of the budgets from 2026-11-14 to 2026-11-16 was flown with the session locked and held to these numbers, and an unlocked card reads every zone of a light run two to nine times faster (bench.md, \"A locked session is a slower card\"), so these are a locked card's numbers.",
+            "quiet": false,
+            "machine_state": "busy (start 5.6% others, GPU 5%; end 8.5% others, GPU 97%)",
+            "identity": "33d911d95096f28e",
+            "frames": 1201,
+            "repeats": 1
+          },
+          "sources": "Every number measured 2026-10-07 (this baseline). Its total agrees with docs/experiments/world-positions-renderer-2026-10-05.md (stage 3, rt after: 0.730 / 1.453 ms median / p99; the A/B runs 0.723-0.727 / 1.516-1.634); that page has no per-pass numbers at 1080p."
         }
-      },
-      "baseline": {
-        "date": "2026-10-07",
-        "by": "Claude (agent, roadmap T46), for the owner",
-        "reason": "The first budgets: the tree as it measured on 2026-10-07, flown by the gate itself.",
-        "commit": "8cb66941, with this branch's uncommitted T46/T48 changes (the GpuTimer read-back no longer allocates)",
-        "device": "NVIDIA GeForce RTX 5090",
-        "quiet": false,
-        "machine_state": "busy (start 5.6% others, GPU 5%; end 8.5% others, GPU 97%)",
-        "identity": "33d911d95096f28e",
-        "frames": 1201,
-        "repeats": 1
-      },
-      "cpu_ms": {
-        "median": 0.13,
-        "p99": 0.373
-      },
-      "sources": "Every number measured 2026-10-07 (this baseline). Its total agrees with docs/experiments/world-positions-renderer-2026-10-05.md (stage 3, rt after: 0.730 / 1.453 ms median / p99; the A/B runs 0.723-0.727 / 1.516-1.634); that page has no per-pass numbers at 1080p."
+      }
     },
     {
       "id": "erg-walk-surround3-rt",
@@ -166,61 +178,67 @@
         "--shadows",
         "rt"
       ],
-      "gpu_ms": {
-        "blas": {
-          "median": 0.184,
-          "p99": 0.227
-        },
-        "clas": {
-          "median": 0.23,
-          "p99": 0.234
-        },
-        "cull": {
-          "median": 0.113,
-          "p99": 0.131
-        },
-        "deform": {
-          "median": 0.022,
-          "p99": 0.024
-        },
-        "hw": {
-          "median": 0.285,
-          "p99": 0.351
-        },
-        "resolve": {
-          "median": 2.53,
-          "p99": 2.839
-        },
-        "rt": {
-          "median": 0.621,
-          "p99": 1.126
-        },
-        "sky": {
-          "median": 0.054,
-          "p99": 0.055
-        },
-        "total": {
-          "median": 3.771,
-          "p99": 4.127
+      "budgets": {
+        "locked": {
+          "gpu_ms": {
+            "blas": {
+              "median": 0.184,
+              "p99": 0.227
+            },
+            "clas": {
+              "median": 0.23,
+              "p99": 0.234
+            },
+            "cull": {
+              "median": 0.113,
+              "p99": 0.131
+            },
+            "deform": {
+              "median": 0.022,
+              "p99": 0.024
+            },
+            "hw": {
+              "median": 0.285,
+              "p99": 0.351
+            },
+            "resolve": {
+              "median": 2.53,
+              "p99": 2.839
+            },
+            "rt": {
+              "median": 0.621,
+              "p99": 1.126
+            },
+            "sky": {
+              "median": 0.054,
+              "p99": 0.055
+            },
+            "total": {
+              "median": 3.771,
+              "p99": 4.127
+            }
+          },
+          "cpu_ms": {
+            "median": 0.256,
+            "p99": 0.853
+          },
+          "baseline": {
+            "date": "2026-11-08",
+            "by": "Claude Fable 5.1 (batch 56 gate)",
+            "reason": "Re-pinned at the level main itself reads when built in a checkout against the ddc: the batch 56 gate (2026-11-08) read the total at 3.782 against the 3.760 limit, and paired runs the same day put main 86b543cb's source at resolve 2.540 / total 3.75 and the batch's tree 19f9d15d at 2.531-2.551, the same within noise, so the climb since the 2026-10-13 pin (about +0.22 ms resolve) is main's and unattributed (R138 measured no step on the sister run); a binary installed outside a checkout reads 0.09 ms less on the resolve because it finds no ddc and samples decoded RGBA8 textures instead of the built BC ones, so it is not a baseline for pairing; the blas, clas and total p99s are kept at the previous baseline's values because this one flight's tail inflated them (0.404 / 0.493 / 4.455 against 0.227 / 0.242 / 4.25-4.37 in five other flights the same day) and the run's own are within their limits.",
+            "commit": "19f9d15d",
+            "device": "NVIDIA GeForce RTX 5090",
+            "session": "locked",
+            "session_note": "Assigned to the locked state by T161 (2026-11-16) without a new flight: this baseline recorded no session state, every gate run of the budgets from 2026-11-14 to 2026-11-16 was flown with the session locked and held to these numbers, and an unlocked card reads every zone of a light run two to nine times faster (bench.md, \"A locked session is a slower card\"), so these are a locked card's numbers.",
+            "quiet": true,
+            "machine_state": "quiet (start 9.5% others, GPU 4%; end 6.5% others, GPU 4%)",
+            "identity": "33d911d95096f28e",
+            "frames": 1201,
+            "repeats": 1
+          },
+          "sources": "The GPU medians, the other p99s and the cpu lines re-measured 2026-11-08 on 19f9d15d, the batch 56 gate's tree at main's own level (the reason); the blas, clas and total p99s kept from the 2026-11-07 baseline (the reason says why). Before that: every number re-measured 2026-11-07 on main 8be9c6d4, hw kept from 2026-10-12. The 2026-10-07 seed: its medians agreed with docs/experiments/world-positions-renderer-2026-10-05.md (stage 1 cost, erg rt after: cull 0.096, hw 0.286, rt 0.605, resolve 2.328, total 3.458 ms) to within 2%; that page has no p99s."
         }
-      },
-      "baseline": {
-        "date": "2026-11-08",
-        "by": "Claude Fable 5.1 (batch 56 gate)",
-        "reason": "Re-pinned at the level main itself reads when built in a checkout against the ddc: the batch 56 gate (2026-11-08) read the total at 3.782 against the 3.760 limit, and paired runs the same day put main 86b543cb's source at resolve 2.540 / total 3.75 and the batch's tree 19f9d15d at 2.531-2.551, the same within noise, so the climb since the 2026-10-13 pin (about +0.22 ms resolve) is main's and unattributed (R138 measured no step on the sister run); a binary installed outside a checkout reads 0.09 ms less on the resolve because it finds no ddc and samples decoded RGBA8 textures instead of the built BC ones, so it is not a baseline for pairing; the blas, clas and total p99s are kept at the previous baseline's values because this one flight's tail inflated them (0.404 / 0.493 / 4.455 against 0.227 / 0.242 / 4.25-4.37 in five other flights the same day) and the run's own are within their limits.",
-        "commit": "19f9d15d",
-        "device": "NVIDIA GeForce RTX 5090",
-        "quiet": true,
-        "machine_state": "quiet (start 9.5% others, GPU 4%; end 6.5% others, GPU 4%)",
-        "identity": "33d911d95096f28e",
-        "frames": 1201,
-        "repeats": 1
-      },
-      "cpu_ms": {
-        "median": 0.256,
-        "p99": 0.853
-      },
-      "sources": "The GPU medians, the other p99s and the cpu lines re-measured 2026-11-08 on 19f9d15d, the batch 56 gate's tree at main's own level (the reason); the blas, clas and total p99s kept from the 2026-11-07 baseline (the reason says why). Before that: every number re-measured 2026-11-07 on main 8be9c6d4, hw kept from 2026-10-12. The 2026-10-07 seed: its medians agreed with docs/experiments/world-positions-renderer-2026-10-05.md (stage 1 cost, erg rt after: cull 0.096, hw 0.286, rt 0.605, resolve 2.328, total 3.458 ms) to within 2%; that page has no p99s."
+      }
     },
     {
       "id": "endless-1080p-csm",
@@ -235,57 +253,63 @@
         "--shadows",
         "csm"
       ],
-      "gpu_ms": {
-        "cull": {
-          "median": 0.296,
-          "p99": 0.425
-        },
-        "deform": {
-          "median": 0.107,
-          "p99": 0.136
-        },
-        "hiz": {
-          "median": 0.033,
-          "p99": 0.044
-        },
-        "hw": {
-          "median": 0.048,
-          "p99": 0.063
-        },
-        "resolve": {
-          "median": 0.491,
-          "p99": 0.837
-        },
-        "shadow": {
-          "median": 0.811,
-          "p99": 2.318
-        },
-        "sky": {
-          "median": 0.197,
-          "p99": 0.345
-        },
-        "total": {
-          "median": 3.161,
-          "p99": 5.545
+      "budgets": {
+        "locked": {
+          "gpu_ms": {
+            "cull": {
+              "median": 0.296,
+              "p99": 0.425
+            },
+            "deform": {
+              "median": 0.107,
+              "p99": 0.136
+            },
+            "hiz": {
+              "median": 0.033,
+              "p99": 0.044
+            },
+            "hw": {
+              "median": 0.048,
+              "p99": 0.063
+            },
+            "resolve": {
+              "median": 0.491,
+              "p99": 0.837
+            },
+            "shadow": {
+              "median": 0.811,
+              "p99": 2.318
+            },
+            "sky": {
+              "median": 0.197,
+              "p99": 0.345
+            },
+            "total": {
+              "median": 3.161,
+              "p99": 5.545
+            }
+          },
+          "cpu_ms": {
+            "median": 0.335,
+            "p99": 0.883
+          },
+          "baseline": {
+            "date": "2026-10-12",
+            "by": "Marc Micalizzi",
+            "reason": "Measured drift, not a change under test: on 2026-10-12 main's own installed binary (f8ed3892) and the batch 16 tree measure the same, endless-surround3-rt hw median 0.43 ms against 0.323 on 2026-10-11 19:30 and cull 0.085 against 0.068 (three flights each, no rebuilds), and endless-1080p-csm total median 3.08-3.2 against the 2026-10-07 seed 2.916 after the HDR encode, F18 and the fold guard each landed within tolerance; the 1080p cull/sky/resolve p99 tails spike about 2x on main too (one of three quiet flights), so the p99 absolute slack goes from 0.1 to 0.4 ms in the same change",
+            "commit": "9b17dafb (with uncommitted changes)",
+            "device": "NVIDIA GeForce RTX 5090",
+            "session": "locked",
+            "session_note": "Assigned to the locked state by T161 (2026-11-16) without a new flight: this baseline recorded no session state, every gate run of the budgets from 2026-11-14 to 2026-11-16 was flown with the session locked and held to these numbers, and an unlocked card reads every zone of a light run two to nine times faster (bench.md, \"A locked session is a slower card\"), so these are a locked card's numbers.",
+            "quiet": true,
+            "machine_state": "quiet (start 1.6% others, GPU 0%; end 4.4% others, GPU 14%)",
+            "identity": "a73c20e15926dafa",
+            "frames": 7201,
+            "repeats": 1
+          },
+          "sources": "Every number measured 2026-10-07 (this baseline). docs/experiments/far-ground-2026-10-03.md (1080p, six far levels, csm) reads 2.980 / 5.103 ms total median / p99, cull 0.306, shadow 0.831, resolve 0.488 at the median: today's tree measures about half that on the same path (1.6 ms), so those numbers were not taken — as a budget they would pass a doubling."
         }
-      },
-      "baseline": {
-        "date": "2026-10-12",
-        "by": "Marc Micalizzi",
-        "reason": "Measured drift, not a change under test: on 2026-10-12 main's own installed binary (f8ed3892) and the batch 16 tree measure the same, endless-surround3-rt hw median 0.43 ms against 0.323 on 2026-10-11 19:30 and cull 0.085 against 0.068 (three flights each, no rebuilds), and endless-1080p-csm total median 3.08-3.2 against the 2026-10-07 seed 2.916 after the HDR encode, F18 and the fold guard each landed within tolerance; the 1080p cull/sky/resolve p99 tails spike about 2x on main too (one of three quiet flights), so the p99 absolute slack goes from 0.1 to 0.4 ms in the same change",
-        "commit": "9b17dafb (with uncommitted changes)",
-        "device": "NVIDIA GeForce RTX 5090",
-        "quiet": true,
-        "machine_state": "quiet (start 1.6% others, GPU 0%; end 4.4% others, GPU 14%)",
-        "identity": "a73c20e15926dafa",
-        "frames": 7201,
-        "repeats": 1
-      },
-      "cpu_ms": {
-        "median": 0.335,
-        "p99": 0.883
-      },
-      "sources": "Every number measured 2026-10-07 (this baseline). docs/experiments/far-ground-2026-10-03.md (1080p, six far levels, csm) reads 2.980 / 5.103 ms total median / p99, cull 0.306, shadow 0.831, resolve 0.488 at the median: today's tree measures about half that on the same path (1.6 ms), so those numbers were not taken — as a budget they would pass a doubling."
+      }
     },
     {
       "id": "endless-surround3-rt",
@@ -300,61 +324,67 @@
         "--shadows",
         "rt"
       ],
-      "gpu_ms": {
-        "blas": {
-          "median": 0.266,
-          "p99": 0.27
-        },
-        "clas": {
-          "median": 0.319,
-          "p99": 0.351
-        },
-        "cull": {
-          "median": 0.077,
-          "p99": 0.095
-        },
-        "deform": {
-          "median": 0.027,
-          "p99": 0.06
-        },
-        "hw": {
-          "median": 0.427,
-          "p99": 0.503
-        },
-        "resolve": {
-          "median": 2.1,
-          "p99": 2.483
-        },
-        "rt": {
-          "median": 0.865,
-          "p99": 0.917
-        },
-        "sky": {
-          "median": 0.054,
-          "p99": 0.055
-        },
-        "total": {
-          "median": 4.392,
-          "p99": 5.287
+      "budgets": {
+        "locked": {
+          "gpu_ms": {
+            "blas": {
+              "median": 0.266,
+              "p99": 0.27
+            },
+            "clas": {
+              "median": 0.319,
+              "p99": 0.351
+            },
+            "cull": {
+              "median": 0.077,
+              "p99": 0.095
+            },
+            "deform": {
+              "median": 0.027,
+              "p99": 0.06
+            },
+            "hw": {
+              "median": 0.427,
+              "p99": 0.503
+            },
+            "resolve": {
+              "median": 2.1,
+              "p99": 2.483
+            },
+            "rt": {
+              "median": 0.865,
+              "p99": 0.917
+            },
+            "sky": {
+              "median": 0.054,
+              "p99": 0.055
+            },
+            "total": {
+              "median": 4.392,
+              "p99": 5.287
+            }
+          },
+          "cpu_ms": {
+            "median": 0.52,
+            "p99": 1.024
+          },
+          "baseline": {
+            "date": "2026-11-07",
+            "by": "Claude Fable 5.1",
+            "reason": "Measured drift on main, not a change under test: on 2026-11-07 main's own 8be9c6d4 flies this run at a resolve median of 2.100 ms (quiet) against the 1.885 pinned on 2026-10-12, a climb the gate's own results date to 1.81-1.90 (10-12 to 10-16), 1.87-1.96 (to 10-27), 1.98-2.00 (to 10-31) and 2.10-2.12 (11-01 to 11-06), its largest step over batch 47's merges of 10-31 (R115 stage 1 split the resolve by stage; unconfirmed); the batch 54 tree adds about 0.08 ms on top (2.166-2.186 in three runs; R136's terrain sampling the likeliest, not bisected) and stays visible under this budget; the numbers are main's run read from its summary (-FromSummaries), except hw, kept at the 2026-10-12 0.427/0.503 by hand because main flips between 0.31 and 0.43 from run to run (0.433 on 11-01, 0.312 on 11-02) and a 0.310 budget would fail the gate on the next 0.43; roadmap R138 finds the climb",
+            "commit": "b8dae574",
+            "device": "NVIDIA GeForce RTX 5090",
+            "session": "locked",
+            "session_note": "Assigned to the locked state by T161 (2026-11-16) without a new flight: this baseline recorded no session state, every gate run of the budgets from 2026-11-14 to 2026-11-16 was flown with the session locked and held to these numbers, and an unlocked card reads every zone of a light run two to nine times faster (bench.md, \"A locked session is a slower card\"), so these are a locked card's numbers.",
+            "quiet": true,
+            "machine_state": "quiet (start 4.7% others, GPU 0%; end 6.4% others, GPU 0%)",
+            "identity": "a73c20e15926dafa",
+            "frames": 7201,
+            "repeats": 1
+          },
+          "sources": "Every number re-measured 2026-11-07 on main 8be9c6d4 (this baseline; the reason has the climb), hw kept from 2026-10-12. The 2026-10-07 seed: its medians agreed with docs/experiments/world-positions-renderer-2026-10-05.md (stage 2 cost, rt after: cull 0.065, deform 0.039, hw 0.312, rt 0.944, resolve 1.861, total 4.363 ms) to within 8% pass by pass and 2% in total (4.454 today). Its cpu_ms median agrees with docs/experiments/frame-thread-spikes-2026-10-04.md (0.43 ms, traced shadows after) at 0.455; its p99 is 1.305 against that page's 0.71, on a machine this run called busy."
         }
-      },
-      "baseline": {
-        "date": "2026-11-07",
-        "by": "Claude Fable 5.1",
-        "reason": "Measured drift on main, not a change under test: on 2026-11-07 main's own 8be9c6d4 flies this run at a resolve median of 2.100 ms (quiet) against the 1.885 pinned on 2026-10-12, a climb the gate's own results date to 1.81-1.90 (10-12 to 10-16), 1.87-1.96 (to 10-27), 1.98-2.00 (to 10-31) and 2.10-2.12 (11-01 to 11-06), its largest step over batch 47's merges of 10-31 (R115 stage 1 split the resolve by stage; unconfirmed); the batch 54 tree adds about 0.08 ms on top (2.166-2.186 in three runs; R136's terrain sampling the likeliest, not bisected) and stays visible under this budget; the numbers are main's run read from its summary (-FromSummaries), except hw, kept at the 2026-10-12 0.427/0.503 by hand because main flips between 0.31 and 0.43 from run to run (0.433 on 11-01, 0.312 on 11-02) and a 0.310 budget would fail the gate on the next 0.43; roadmap R138 finds the climb",
-        "commit": "b8dae574",
-        "device": "NVIDIA GeForce RTX 5090",
-        "quiet": true,
-        "machine_state": "quiet (start 4.7% others, GPU 0%; end 6.4% others, GPU 0%)",
-        "identity": "a73c20e15926dafa",
-        "frames": 7201,
-        "repeats": 1
-      },
-      "cpu_ms": {
-        "median": 0.52,
-        "p99": 1.024
-      },
-      "sources": "Every number re-measured 2026-11-07 on main 8be9c6d4 (this baseline; the reason has the climb), hw kept from 2026-10-12. The 2026-10-07 seed: its medians agreed with docs/experiments/world-positions-renderer-2026-10-05.md (stage 2 cost, rt after: cull 0.065, deform 0.039, hw 0.312, rt 0.944, resolve 1.861, total 4.363 ms) to within 8% pass by pass and 2% in total (4.454 today). Its cpu_ms median agrees with docs/experiments/frame-thread-spikes-2026-10-04.md (0.43 ms, traced shadows after) at 0.455; its p99 is 1.305 against that page's 0.71, on a machine this run called busy."
+      }
     },
     {
       "id": "static-1080p-rt",
@@ -376,81 +406,87 @@
         "--shadows",
         "rt"
       ],
-      "gpu_ms": {
-        "blas": {
-          "median": 0.051,
-          "p99": 0.058
-        },
-        "clas": {
-          "median": 0.006,
-          "p99": 0.006
-        },
-        "clas_cache": {
-          "median": 0.007,
-          "p99": 0.064
-        },
-        "cull": {
-          "median": 0.017,
-          "p99": 0.019
-        },
-        "resolve": {
-          "median": 0.171,
-          "p99": 0.217
-        },
-        "rt": {
-          "median": 0.159,
-          "p99": 0.23
-        },
-        "rt_cache": {
-          "median": 0.002,
-          "p99": 0.019
-        },
-        "rt_drop": {
-          "median": 0.005,
-          "p99": 0.01
-        },
-        "rt_emit": {
-          "median": 0.005,
-          "p99": 0.005
-        },
-        "rt_ranges": {
-          "median": 0.008,
-          "p99": 0.009
-        },
-        "rt_records": {
-          "median": 0.002,
-          "p99": 0.002
-        },
-        "tlas": {
-          "median": 0.067,
-          "p99": 0.071
-        },
-        "total": {
-          "median": 0.521,
-          "p99": 0.658
-        },
-        "trace": {
-          "median": 0.166,
-          "p99": 0.237
+      "budgets": {
+        "locked": {
+          "gpu_ms": {
+            "blas": {
+              "median": 0.051,
+              "p99": 0.058
+            },
+            "clas": {
+              "median": 0.006,
+              "p99": 0.006
+            },
+            "clas_cache": {
+              "median": 0.007,
+              "p99": 0.064
+            },
+            "cull": {
+              "median": 0.017,
+              "p99": 0.019
+            },
+            "resolve": {
+              "median": 0.171,
+              "p99": 0.217
+            },
+            "rt": {
+              "median": 0.159,
+              "p99": 0.23
+            },
+            "rt_cache": {
+              "median": 0.002,
+              "p99": 0.019
+            },
+            "rt_drop": {
+              "median": 0.005,
+              "p99": 0.01
+            },
+            "rt_emit": {
+              "median": 0.005,
+              "p99": 0.005
+            },
+            "rt_ranges": {
+              "median": 0.008,
+              "p99": 0.009
+            },
+            "rt_records": {
+              "median": 0.002,
+              "p99": 0.002
+            },
+            "tlas": {
+              "median": 0.067,
+              "p99": 0.071
+            },
+            "total": {
+              "median": 0.521,
+              "p99": 0.658
+            },
+            "trace": {
+              "median": 0.166,
+              "p99": 0.237
+            }
+          },
+          "cpu_ms": {
+            "median": 0.228,
+            "p99": 0.854
+          },
+          "baseline": {
+            "date": "2026-11-14",
+            "by": "Claude Opus 5.5 (agent, roadmap T130)",
+            "reason": "The first budget for the static world (T130): the branch's own flight with the run's flags (it also passed --log info), on a machine others kept 83 to 89% busy, so an upper bound; the coordinator re-baselines it at the merge.",
+            "commit": "420aa4d7 (with uncommitted changes)",
+            "device": "NVIDIA GeForce RTX 5090",
+            "session": "locked",
+            "session_note": "Assigned to the locked state by T161 (2026-11-16) without a new flight: this baseline recorded no session state, every gate run of the budgets from 2026-11-14 to 2026-11-16 was flown with the session locked and held to these numbers, and an unlocked card reads every zone of a light run two to nine times faster (bench.md, \"A locked session is a slower card\"), so these are a locked card's numbers.",
+            "quiet": false,
+            "machine_state": "busy (start 76.4% others, GPU 29%; end 80.0% others, GPU 0%)",
+            "identity": "8b9aac137c27a896",
+            "frames": 1441,
+            "repeats": 1
+          },
+          "sources": "Measured by its author on the branch (roadmap T130, docs/experiments/static-asset-world.md) from an engine-view flight with the run's flags; the coordinator re-baselines it at the merge."
         }
-      },
-      "baseline": {
-        "date": "2026-11-14",
-        "by": "Claude Opus 5.5 (agent, roadmap T130)",
-        "reason": "The first budget for the static world (T130): the branch's own flight with the run's flags (it also passed --log info), on a machine others kept 83 to 89% busy, so an upper bound; the coordinator re-baselines it at the merge.",
-        "commit": "420aa4d7 (with uncommitted changes)",
-        "device": "NVIDIA GeForce RTX 5090",
-        "quiet": false,
-        "machine_state": "busy (start 76.4% others, GPU 29%; end 80.0% others, GPU 0%)",
-        "identity": "8b9aac137c27a896",
-        "frames": 1441,
-        "repeats": 1
-      },
-      "cpu_ms": {
-        "median": 0.228,
-        "p99": 0.854
-      },
-      "sources": "Measured by its author on the branch (roadmap T130, docs/experiments/static-asset-world.md) from an engine-view flight with the run's flags; the coordinator re-baselines it at the merge."
+      }
     }
   ]
 }

@@ -163,6 +163,15 @@ may run one run of it (`-Run <id>`) when a change is meant to move a number — 
 desktop has no nightly runner and the hosted ones have no GPU; a nightly with significance tests
 is T47's.
 
+**The session's state decides which budget a flight meets** (T161; [bench](../subsystems/bench.md#frame-budgets),
+"Which session a budget holds"). A locked Windows session idles the card, so every run holds a
+`locked` and an `unlocked` budget side by side and each flight is compared only with its own
+state's. A gate flown in a state a run has no budget for exits **6** on that run (compared with
+nothing) rather than passing or failing it: the gate's report says so per run. Read the gate's
+summary line, not only its exit code: 6 with every run `nobaseline` is a state with no baselines
+yet, and the first gate flown in it takes them (`-Rebaseline -Reason "..."`, quiet, session in that
+state), which writes that state's set and leaves the other alone.
+
 **What its first run found** (2026-10-07, `msvc-release`, the budgets seeded an hour earlier by the same script, `-Rebaseline`, from the same tree): every run within budget, five of five — totals at the median and p99 of 0.155 / 0.345 ms (overlook, 1080p), 0.729 / 1.344 (erg walk, 1080p), 3.484 / 3.964 (erg walk, surround), 1.610 / 2.602 (endless, 1080p, maps) and 4.362 / 5.498 (endless, surround, traced) against budgets of 0.155 / 0.358, 0.724 / 1.214, 3.482 / 4.010, 1.625 / 2.756 and 4.454 / 5.571; the erg walk's p99 at 1080p came closest to its limit (1.344 of 1.557). Four of the five ran on a machine the harness called busy — another agent's renderer tests and builds — which is the shared machine as it is; a pass is a pass on a busy one. **What seeding found**: the experiment pages the budgets were to come from agree with today's tree for the erg walk (total 0.724 against the page's 0.730 at 1080p; every surround median within 2%) and the endless desert's surround run (total 4.454 against 4.363, every pass within 8%), and **do not for the endless desert at 1080p with the maps**: [far ground](../experiments/far-ground-2026-10-03.md#the-cost) reads 2.980 / 5.103 ms, today's tree 1.625 / 2.756 on the same path, every pass lower (the cull 0.047 against 0.306). Seeded from the page, that budget would have passed a doubling, so every budget is the gate's own measurement and `sources` in the file says which page agreed. And the full-size endless flight's first pass makes 573 engine allocations on its frame thread, every one before frame 3,896 of 7,201 — lists reaching the high-water mark the 12 km path needs, the second half of the path none — which the gate reports in each summary's `frame_loop` and does not judge.
 
 ### Sanitizers

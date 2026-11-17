@@ -289,6 +289,40 @@ TEST_CASE("bench: the JSON header carries both samples and every result its wors
   CHECK(smoke_header["machine_state"].is_null());
 }
 
+// The session's state, injected (roadmap T161): a run that starts locked and ends unlocked says so
+// at each end, which is what tools/frame-budget.ps1 reads to choose the budget a flight meets
+// (docs/subsystems/bench.md, "Frame budgets"). A locked session is a slower card, not a busy
+// machine, so it never makes a run "not quiet": the two are separate questions.
+TEST_CASE("bench: the header records the session's state at both ends") {
+  test::TempDir dir("bench_session_state");
+  const std::string path = dir.file("session.jsonl");
+
+  bench::MachineState locked = quiet_state();
+  locked.session_locked = bench::Tristate::Yes;
+  CHECK(bench::is_quiet(locked, bench::QuietThresholds{}));
+  CHECK(bench::describe(locked).find("session locked") != std::string::npos);
+
+  FakeSampler sampler({locked, quiet_state()});
+  bench::Options o = quick("test.bench.noop", &sampler);
+  o.json_path = path;
+  o.require_quiet = true;  // a locked session does not refuse the run
+  REQUIRE(bench::run(o, nullptr) == 0);
+
+  std::ifstream in(path);
+  std::string first_line;
+  REQUIRE(std::getline(in, first_line));
+  in.close();
+  JsonValue header;
+  REQUIRE(parse_json(first_line, header).ok);
+  CHECK(header["machine_state"]["start"]["session_locked"] == JsonValue(true));
+  CHECK(header["machine_state"]["end"]["session_locked"] == JsonValue(false));
+
+  // worst_of keeps a lock seen at either end, so a one-line summary of the run cannot call it
+  // unlocked; and an unknown end does not hide the other's answer.
+  CHECK(bench::worst_of(quiet_state(), locked).session_locked == bench::Tristate::Yes);
+  CHECK(bench::worst_of(bench::MachineState{}, quiet_state()).session_locked == bench::Tristate::No);
+}
+
 TEST_CASE("bench: run_main parses the hygiene flags") {
   const char* bad_wait[] = {"bench", "--wait-quiet=soon"};
   CHECK(bench::run_main(2, const_cast<char**>(bad_wait)) == 2);
