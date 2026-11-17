@@ -775,7 +775,8 @@ u32 SceneCollision::refresh(WorldPos at, f32 reach) {
   // where it would name some other tile.
   const bool on_tile = fits_i32(txm) && fits_i32(tzm);
   const u64 underfoot_key =
-      on_tile ? world::tile_key(world::TileCoord{static_cast<i32>(txm), static_cast<i32>(tzm)}) : 0;
+      on_tile ? world::tile_key(world::TileCoord{static_cast<i32>(txm), static_cast<i32>(tzm)})
+              : 0;
   u32 done = 0;
   bool rebuilt = false;
   for (u32 k = 0; k < count; ++k) {
