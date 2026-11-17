@@ -1226,7 +1226,11 @@ struct ResolveParams {
   // row: the block grew from 576 to 592 bytes.
   u64 gi_crowns = 0;
   u32 gi_crown_count = 0;
-  u32 gi_crown_pad = 0;
+  // **The white water's tier** (W139; water.md, "Shading"; docs/experiments/white-water.md):
+  // `renderer.water.white_tier`, 0 the low tier's white (the Froude rule and W130's broken rule), 1
+  // the top tier's (white where the air goes in, lit as a layer of bubbly water). Read only by the
+  // resolve's water modules. It took the row's pad word, so the block's size is unchanged.
+  u32 water_white_tier = 0;
 };
 // `ResolveParams::water_open_instance` when the scene has no open water.
 inline constexpr u32 k_no_water_open = 0xffffffffu;

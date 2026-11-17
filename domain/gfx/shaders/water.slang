@@ -1460,6 +1460,107 @@ float2 water_channel_standing(float3 gradient, float speed, float tau, float fro
   return slope * window;
 }
 
+// **The top tier's white** (W139; docs/experiments/white-water.md, "Streams first";
+// `ResolveParams::water_white_tier` 1, `renderer.water.white_tier`). White where the air goes in and
+// gone where it comes out, lit as a layer of bubbly water and not as paint. The low tier (0) is the
+// Froude rule and W130's broken rule below, as they were.
+//
+// - **Steps**: on a bed past the step-pool onset the white stands in bands across the flow, one
+//   every `k_white_step_s` of the surface's travel, each a source that clears as its bubbles rise
+//   (a plume as deep as the water under the pixel, at `k_white_rise_mps`: e^(-t u_r / d)). A band is
+//   a function of the phase alone, so it stands still in the channel's frame as a step's white
+//   does, and a whole number of bands a period keeps the phase's wrap seamless. Its strength and its
+//   place in its cycle are drawn from the band's number; its front is broken across the flow by a
+//   stationary noise. The bands' strength is W130's broken share, so a pool and a gentle reach have
+//   none.
+// - **Stones**: in fast water shallower than a stone is tall, a wake behind each stone the bed
+//   would have (sparse blobs of stationary noise on the clasts' scale), summed over taps upstream
+//   along the flow with the same clearing: a supercritical reach is white behind its stones and dark
+//   between them (need 147), never one white sheet.
+// - **The texture** is carried through the standing field by the flow map at two scales, its
+//   threshold falling as the air rises, so a dense source is a mass with holes and its tail threads.
+// - **The light**: the layer's optical thickness tau = sigma A h (sigma = 3 alpha / 2 r for a
+//   quarter of air, Valle and Pasternack's mean in natural jumps, in millimetre bubbles; h the water
+//   under the pixel, at most the plume's), and its reflectance the two-stream slab's
+//   tau (1 - g) / (2 + tau (1 - g)) with bubbles' g = 0.85, which the white's 0.8 albedo scales; what
+//   it does not reflect is the water under it, so thin white is a veil over the bed.
+static const float k_white_step_s = 2.0;     // a band every 2 s of travel: 4 a period
+static const uint k_white_step_bands = 4u;   // k_channel_period_s / k_white_step_s
+static const float k_white_rise_mps = 0.25;  // Clift, Grace and Weber: mm bubbles (recalled)
+static const float k_white_plume_min_m = 0.03;
+static const float k_white_plume_max_m = 0.40;
+static const float k_white_sigma = 375.0;  // 3 x 0.25 / (2 x 1 mm), per metre
+static const float k_white_g = 0.85;
+static const float k_white_stone_m = 0.35;
+static const uint k_white_stone_taps = 6u;
+
+// The top tier's white at a reach's pixel: float2(the share of the pixel the white hides, its
+// shade). `p` body-local (x z), `ph` the flow map's copies, `along` the flow (x z, unit), `tau` the
+// phase, `slope` the solved fall along the flow, `speed` the surface's at the pixel,
+// `section_speed` and `section_froude` the section's, `depth` the water under the pixel, `dc` the
+// hydraulic depth, `thalweg` the vertical's share of the section's flow (at most 1).
+float2 water_channel_white_top(float2 p, WaterChannelPhases ph, float2 along, float tau,
+                               float slope, float speed, float section_speed,
+                               float section_froude, float depth, float dc, float thalweg,
+                               float footprint, uint seed) {
+  const float water_for_white =
+      smoothstep(k_channel_white_depth_from, k_channel_white_depth_full, dc);
+  if (!(water_for_white > 0.0) || !(depth > 0.0)) return float2(0.0, 1.0);
+  const float h = min(depth, k_white_plume_max_m);
+  const float clear_s = max(h, k_white_plume_min_m) / k_white_rise_mps;
+  float air = 0.0;
+  // Steps: bands standing in the channel's frame.
+  const float steep = water_channel_broken_share(slope, section_speed, depth) /
+                      k_channel_steep_white *
+                      smoothstep(k_channel_broken_froude_lo, k_channel_broken_froude_hi,
+                                 section_froude);
+  if (steep > 0.0) {
+    const float bands = float(k_white_step_bands) * frac(tau / k_channel_period_s);
+    const float cell = floor(bands);
+    const uint hb = water_hash2(int2(int(cell), int(seed & 0xffffu) + 7919));
+    const float strength = 0.55 + 0.45 * float(hb & 0xffu) / 255.0;
+    const float place = 0.35 * float((hb >> 8) & 0xffu) / 255.0;
+    const float front = 0.35 * water_channel_noise(p / 0.6, seed + 211u).x / k_channel_noise_rms;
+    float since = (bands - cell - place) * k_white_step_s + front;
+    since -= k_white_step_s * floor(since / k_white_step_s);
+    air = max(air, steep * strength * exp(-since / clear_s));
+  }
+  // Stones: wakes where the water is fast enough to plunge round a stone and shallower than it.
+  const float fast =
+      smoothstep(0.8 * k_channel_aeration_speed, 1.2 * k_channel_aeration_speed, speed);
+  const float shallow = 1.0 - smoothstep(0.5 * k_white_stone_m, 1.5 * k_white_stone_m, depth);
+  if (fast * shallow > 0.0) {
+    const float reach = max(speed, 0.1) * clear_s;  // metres a wake stays white
+    const float step = reach / float(k_white_stone_taps);
+    float wake = 0.0;
+    for (uint j = 0; j < k_white_stone_taps; ++j) {
+      const float back = float(j) * step;
+      const float stone = smoothstep(
+          0.45, 0.8,
+          water_channel_noise((p - along * back) / k_white_stone_m, seed + 307u).x /
+              (2.0 * k_channel_noise_rms));
+      wake = max(wake, stone * exp(-back / reach));
+    }
+    air = max(air, fast * shallow * wake);
+  }
+  air *= water_for_white * min(1.5 * thalweg, 1.0);
+  if (!(air > 1e-3)) return float2(0.0, 1.0);
+  // The texture carried through the standing field; far away it averages to the air.
+  const float keep = footprint > 0.0 ? clamp(0.08 / (2.0 * footprint) - 1.0, 0.0, 1.0) : 1.0;
+  float n = 0.0;
+  for (uint k = 0; k < 2; ++k) {
+    const float2 x = p - ph.offset[k];
+    n += ph.weight[k] * (0.65 * water_channel_noise(x / 0.25, seed + 401u).x +
+                         0.35 * keep * water_channel_noise(x / 0.08, seed + 433u).x);
+  }
+  n *= ph.norm / k_channel_noise_rms;
+  const float threshold = lerp(1.2, -1.2, air);
+  const float cover = air * lerp(smoothstep(threshold - 0.6, threshold + 0.6, n), 1.0, air * air);
+  // The layer as a slab of bubbly water.
+  const float t = k_white_sigma * cover * max(h, 0.01) * (1.0 - k_white_g);
+  return float2(t / (2.0 + t), 0.9 + 0.1 * clamp(n, -1.0, 1.0));
+}
+
 struct WaterChannelSurface {
   float3 normal;
   float roughness;
@@ -1477,11 +1578,13 @@ struct WaterChannelSurface {
 // `section_froude` the section's Froude number and `solved_slope` the solved level's fall along
 // the flow, both interpolated from the vertices, so the white's every input is one smooth field
 // and no triangle's edge shows in it; the section's speed is Fr sqrt(g D), and the phase's gradient
-// gives the flow its direction alone.
+// gives the flow its direction alone. `tier`: the white's (`ResolveParams::water_white_tier`), 0 the
+// low tier's two rules, 1 the top tier's `water_channel_white_top`.
 WaterChannelSurface water_channel_surface(WaterChannelFlow f, float3 p, float3 geometric,
                                           float tau, float time, float footprint, float depth,
                                           float hydraulic, float nappe, float roughness,
-                                          float section_froude, float solved_slope, uint seed) {
+                                          float section_froude, float solved_slope, uint tier,
+                                          uint seed) {
   WaterChannelSurface c;
   // The sheet's own fall along the flow: a nappe's is its face's; a reach's is the solve's, which
   // its vertices' normals carry (until W139 the triangle's plane, one slope a triangle).
@@ -1597,6 +1700,18 @@ WaterChannelSurface water_channel_surface(WaterChannelFlow f, float3 p, float3 g
   c.normal = normalize(geometric - float3(slope.x, 0.0, slope.y));
   // The faded detail as roughness (its slope's rms), and the rapids' roughness.
   c.roughness = min(roughness + sqrt(lost) + 0.25 * calm * clamp(c.froude / 2.0, 0.0, 1.0), 1.0);
+  // **The top tier** (W139): white where the air goes in, a layer lit as bubbly water, in place of
+  // both rules below (which are the low tier's).
+  if (tier != 0u) {
+    const float2 top = water_channel_white_top(
+        p.xz, ph, along, tau, surface_slope, c.speed, section_speed, section_froude, depth, dc,
+        min(profile / k_channel_conveyance, 1.0), footprint, seed);
+    c.foam = top.x;
+    c.foam_shade = top.y;
+    // The water over and between the white is broken: rougher, still glinting.
+    c.roughness = min(c.roughness + 0.3 * top.x, 1.0);
+    return c;
+  }
   // Aeration: from the critical flow at a metre a second, most of the surface by Froude 2, in
   // streaks along the flow as long as the turbulence's turnover carries them (v d / u*, cells
   // of half a depth stretched up to six times).

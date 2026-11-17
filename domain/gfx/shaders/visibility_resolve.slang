@@ -208,7 +208,9 @@ struct ResolveParams {
   // records, one a mesh, with their grids behind it, and how many meshes it covers; 0 for none.
   uint64_t gi_crowns;
   uint gi_crown_count;
-  uint gi_crown_pad;
+  // The white water's tier (gfx::ResolveParams::water_white_tier; W139): 0 the low tier's, 1 the
+  // top tier's (water.slang, `water_channel_white_top`).
+  uint water_white_tier;
 };
 
 // **The resolve's split** (gfx::ResolveStop; renderer.md, "Where the resolve's time goes"; R115).
@@ -987,7 +989,8 @@ WaterChannelPixel water_channel_pixel(ResolveParams* params, SceneGeometry geo, 
   if (nappe > 0.0) plane = normalize(s.normal);
   const WaterChannelSurface c =
       water_channel_surface(f, local, plane, s.uv.x, params->water_time_s, footprint, depth,
-                            hydraulic, nappe, w.roughness, section_froude, solved_slope, w.seed);
+                            hydraulic, nappe, w.roughness, section_froude, solved_slope,
+                            params->water_white_tier, w.seed);
   WaterChannelPixel o;
   o.normal = c.normal;
   o.plane = plane;

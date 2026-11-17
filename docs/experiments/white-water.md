@@ -210,4 +210,15 @@ tier; a scene with no water pays nothing.
 - **The three faults of last night's white** ([steep-streams](steep-streams.md#the-whites-inputs-per-vertex)):
   the section's Froude number per vertex (no white triangle on still water, no facet at a
   triangle's edge), the slope from the vertex normals, and no white on a film.
-- The rest is listed in the roadmap's row W139 as it lands.
+- **The streams' top tier, first cut** (`water_channel_white_top`; [water](../subsystems/water.md#shading),
+  "Two tiers of white"): the steps' bands standing in the channel's frame and clearing at the
+  bubbles' rise, the stones' wakes in fast shallow water, a carried texture, and the two-stream
+  slab's reflectance over the water under it; the tier switch `renderer.water.white_tier`. What it
+  stands in for, and where it falls short of the design: the steps are placed by the phase (one
+  every 2 s of travel, so their spacing in metres is the speed's, a metre at 0.5 m/s and four at
+  2 m/s) and not by the solve, which writes no steps yet (steep-streams.md, "The step-pool form,
+  solved or drawn"); a fall's foot has no source of its own (the nappe's strands end at it); the
+  stones are noise, not the bed's clasts; the field is computed per pixel from the vertices' numbers,
+  not built beside the depth map.
+- **Not built**: the white field beside the depth map (it needs `gpu_scene.cpp`, closed tonight),
+  beaches (the breaker's type, the swash's lace, spots left on the sand), whitecaps, spray and mist.

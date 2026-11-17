@@ -358,6 +358,12 @@ tunables::Float shadow_light_tolerance{
     "A traced light whose unshadowed contribution is at most this fraction of the pixel's light "
     "from the sun, the ambient and the emission takes the sun ray's answer instead of a ray of its "
     "own; 0 traces every light (renderer.md, A light too faint to test)"};
+// W139: the white water's tier (water.md, "Shading"; docs/experiments/white-water.md). The low
+// tier is the white W130 drew, kept whole for low graphics settings; the top tier is the default.
+tunables::Int water_white_tier{
+    "renderer.water.white_tier", 1, 0, 1,
+    "The white water's tier: 0 the low tier's (the Froude rule and the steep bed's broken share), "
+    "1 the top tier's (white where the air goes in, lit as a layer of bubbly water)"};
 // R97: a normal map's variance chain widens the GGX roughness (renderer.md, "Normal filtering").
 tunables::Bool material_normal_filter{
     "renderer.material.normal_filter", true,
@@ -701,6 +707,7 @@ bool shadow_opaque_rays_tunable() noexcept { return shadow_opaque_rays.get(); }
 f32 shadow_light_tolerance_tunable() noexcept {
   return static_cast<f32>(shadow_light_tolerance.get());
 }
+u32 water_white_tier_tunable() noexcept { return static_cast<u32>(water_white_tier.get()); }
 f32 half_rate_sides_tunable(u64 frame_index) noexcept {
   const f32 as_set = static_cast<f32>(resolve_half_rate_sides.get());
   if (!resolve_half_rate_sweep.get()) return as_set;
