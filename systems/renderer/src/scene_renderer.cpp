@@ -4476,8 +4476,14 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   gfx::RgBuffer rg_table_staging{};
   PairExpandParams pair_expand{};
   if (write_tables) {
-    rg_instances = graph.import_buffer("instances", scene.instances);
-    rg_pair_table = graph.import_buffer("pair table", scene.pair_table);
+    // A set an earlier frame's carry read (T167): this frame's first write waits for that read,
+    // since the frame may still be in flight (GpuScene::prepare_tables, `after_carry_read`).
+    const gfx::PipelineStage last_stage =
+        tables_.after_carry_read ? gfx::PipelineStage::AllTransfer : gfx::PipelineStage::None;
+    const gfx::MemoryAccess last_access =
+        tables_.after_carry_read ? gfx::MemoryAccess::TransferRead : gfx::MemoryAccess::None;
+    rg_instances = graph.import_buffer("instances", scene.instances, last_stage, last_access);
+    rg_pair_table = graph.import_buffer("pair table", scene.pair_table, last_stage, last_access);
     rg_table_staging = graph.import_buffer("table staging", tables_.staging);
     pair_expand.instances = scene.instances.address;
     pair_expand.meshes = scene.meshes.address;

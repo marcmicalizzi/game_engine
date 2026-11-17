@@ -489,6 +489,9 @@ class GpuScene {
     gfx::BufferResource carry_records;  // the old top-level records -> `rt_instances`, first
     u64 carry_record_bytes = 0;
     Vector<gfx::BufferResource> retire;
+    // The set was a carry's source on an earlier frame, which may still be in flight: its tables
+    // are imported as last read by a transfer, so this frame's first write waits for that read.
+    bool after_carry_read = false;
   };
   bool prepare_tables(u32 slot, TableUpdate& out, std::string* error = nullptr);
   // The mesh of instance `index`, prefix or tail; ~0 past the end and for a hole's null instance
@@ -1659,6 +1662,7 @@ class GpuScene {
     gfx::BufferResource pairs;
     Vector<InstanceRange> pending;
     bool all = true;
+    bool carry_read = false;  // a frame's carry read it since its last write (T167, `prepare_tables`)
     // What the numberings since this set was last written did to its slots' `first_pair`s, as
     // runs (T154, `number_first_pairs`): applied on the GPU before its copies, and the pairs of
     // the live slots among them not copied expanded again. Their records and their top-level

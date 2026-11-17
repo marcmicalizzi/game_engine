@@ -1069,8 +1069,11 @@ bool GpuScene::create_table_set(TableSet& set, std::string* error) {
   set.pending.clear();
   set.all = true;
   set.shift.clear();
-  constexpr gfx::BufferUsage k_table =
-      k_storage | gfx::BufferUsage::TransferDst | gfx::BufferUsage::ShaderDeviceAddress;
+  // A transfer's source too: a set made again is carried over from the one before it by a copy
+  // (T167, `prepare_tables`), which Vulkan allows only from a buffer made for it.
+  constexpr gfx::BufferUsage k_table = k_storage | gfx::BufferUsage::TransferDst |
+                                       gfx::BufferUsage::TransferSrc |
+                                       gfx::BufferUsage::ShaderDeviceAddress;
   return gfx::create_buffer(*device_, u64{instance_capacity_} * sizeof(gfx::InstanceDesc), k_table,
                             false, set.instances, error) &&
          (pair_stride_ == 0 || gfx::create_buffer(*device_, u64{pair_stride_} * 2u * sizeof(u32),
@@ -2037,6 +2040,7 @@ bool GpuScene::reserve_table_sets(u32 frames_in_flight, std::string* error) {
 // slot's staging, and then the pairs of the live instances among them, which the GPU expands.
 bool GpuScene::prepare_tables(u32 slot, TableUpdate& out, std::string* error) {
   out.write = false;
+  out.after_carry_read = false;
   out.slots = out.expand = 0;
   out.pairs = 0;
   out.shift_address = out.expand_runs_address = 0;
@@ -2084,6 +2088,12 @@ bool GpuScene::prepare_tables(u32 slot, TableUpdate& out, std::string* error) {
         out.retire.push_back(grown->instances);
         out.retire.push_back(grown->pairs);
         *grown = TableCarry{};
+      } else {
+        // **This frame reads `from`, which a later frame writes while this one may still be in
+        // flight** — the one place a set is read by a frame that is not its own current one — so
+        // that write is ordered after this read (`after_carry_read`, scene_renderer.cpp's tables'
+        // import). A growth's old set is retired, never written, and needs nothing.
+        sets_[last].carry_read = true;
       }
     }
   }
@@ -2254,6 +2264,8 @@ bool GpuScene::prepare_tables(u32 slot, TableUpdate& out, std::string* error) {
   set.shift.clear();
   runs.clear();
   out.write = true;
+  out.after_carry_read = set.carry_read;
+  set.carry_read = false;
   out.staging = staging;
   out.list_address = staging.address + instance_bytes;
   out.slots = slot_count;
