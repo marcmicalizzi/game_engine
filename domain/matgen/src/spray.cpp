@@ -342,7 +342,14 @@ void build_spray(const Set& set, Field& field, SetStats& stats, Shade& shade) {
       const u32 count = pine ? 2u : 1u;
       for (u32 k = 0; k < count; ++k) {
         // A pine's pair leaves one sheath: the second needle a few degrees off the first.
-        const f64 turn = k == 0 ? 0.0 : draw.range(0.08, 0.2) * (draw.unit() < 0.5 ? -1.0 : 1.0);
+        // Two draws, in two statements: the operands of one product are evaluated in an order the
+        // language leaves to the compiler, and GCC and MSVC took them in opposite orders (the
+        // fourth leg's container run: the pine's pin differed by toolchain).
+        f64 turn = 0.0;
+        if (k != 0) {
+          const f64 by = draw.range(0.08, 0.2);
+          turn = draw.unit() < 0.5 ? -by : by;
+        }
         const f64 ct = det::cos(turn), st = det::sin(turn);
         const f64 ux = (shoot.dx * along - shoot.dy * across) / shown;
         const f64 uy = (shoot.dy * along + shoot.dx * across) / shown;
