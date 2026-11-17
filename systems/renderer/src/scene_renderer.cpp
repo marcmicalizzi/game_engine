@@ -3038,7 +3038,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   const f64 sky_time_s = scene.epoch_s() + frame.sky_time_s;
   const u64 flora_table = scene.flora_frame(slot, frame.flora, frame.frame_index,
                                             frame.world_time_s, sky_time_s, frame_origin);
-  // **The sea the wind raises** (wind.md, "The water reads it"; W136): the bodies whose wave table
+  // **The sea the wind raises** (gfx.md, "The water reads the wind"; W136): the bodies whose wave table
   // the scene's wind or the hand wind moved since the last frame, copied in by "water wind" below.
   const std::span<const WaterWindUpload> water_wind = scene.water_wind_frame(sky_time_s);
   // **The far field at rest** (renderer.md, "The far field at rest"; R152): the frame's field

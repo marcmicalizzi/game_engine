@@ -206,7 +206,7 @@ bool read_scene_water(const scene::Scene& file, const std::string& path, const s
     // its `fetch_km`; a closed body's is its own `wind_m_s` (a pool under trees does not feel the
     // region's wind unless its block says so) over its own reach along it. No wind: the four sines.
     if (wind <= 0.0f || !file.water[k].open) wind = file.water[k].wind_m_s;
-    // **The scene's wind** (wind.md, "The water reads it"; W136): a body that follows the wind
+    // **The scene's wind** (gfx.md, "The water reads the wind"; W136): a body that follows the wind
     // takes the scene's, open or closed — its speed and its direction — in place of the ground's
     // and its own. A fixed one is the body's own wind said once for the scene; a varying one draws
     // the largest sea it raises at load (the bounds and the shore's train are sized by it) on the

@@ -1276,7 +1276,7 @@ struct WindClimate @version(1) {
   seed: u32 = 1
 }
 
-/// The scene's wind (`Sky.wind`; docs/subsystems/wind.md): exactly one of a fixed wind (no `track`
+/// The scene's wind (`Sky.wind`; docs/subsystems/gfx.md, "The wind a scene names"): exactly one of a fixed wind (no `track`
 /// and no `climate`), a track through the period, or a climate drawn with a seed. Refused with a
 /// sentence: a speed out of [0, 60] m/s, a track key out of its period or out of order, a track and
 /// a climate both, a climate's numbers out of their ranges, a roughness out of (0, 2] m.
@@ -1351,7 +1351,7 @@ struct Sky @version(3) {
   /// scaled by the inverse square, so the sun's and the moon's illuminance stay what they were
   /// (docs/subsystems/renderer.md, "The sky").
   disc_scale: f32 = 1 @since(2)
-  /// **The wind** (docs/subsystems/wind.md; roadmap W136): one wind the whole scene asks — the sea's
+  /// **The wind** (docs/subsystems/gfx.md, "The wind a scene names"; roadmap W136): one wind the whole scene asks — the sea's
   /// waves and its shore, a lake's, the trees' sway — 10 m above the ground, on the sky's clock.
   /// Null, the default: no scene wind, and every reader draws exactly what it drew (a water body
   /// its own `wind_m_s`, the trees their ground's record or the tunables').
@@ -1471,7 +1471,7 @@ struct WaterBody @version(6) {
   /// spread of ninety degrees either side: chop.
   chop: f32 = 0.5
   /// The waves travel along the ground's wind when the ground has one; otherwise, or when false,
-  /// along `direction_deg`. With the sky's `wind` (docs/subsystems/wind.md; W136), true takes the
+  /// along `direction_deg`. With the sky's `wind` (docs/subsystems/gfx.md, "The wind a scene names"; W136), true takes the
   /// scene's wind — its speed and direction, and the sea it raises over time — in place of both and
   /// of `wind_m_s`, open or closed.
   wind_follow: bool = true

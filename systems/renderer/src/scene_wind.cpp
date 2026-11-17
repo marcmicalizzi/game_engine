@@ -1,4 +1,4 @@
-// The scene's wind as the renderer reads and draws it (scene_wind.h; docs/subsystems/wind.md;
+// The scene's wind as the renderer reads and draws it (scene_wind.h; docs/subsystems/gfx.md, "The wind a scene names";
 // roadmap W136).
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/gpu_scene.h>

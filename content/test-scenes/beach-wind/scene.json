@@ -2,7 +2,7 @@
   "format": "engine.scene.v1",
   "name": "beach-wind",
   "camera_path": "../beach/camera-path.json",
-  "description": "The beach bay under a wind that changes through the day: calm to 06:00, rising to a 20 m/s gale by noon, held to 18:00, falling calm by 23:00 (roadmap W136; docs/subsystems/wind.md).",
+  "description": "The beach bay under a wind that changes through the day: calm to 06:00, rising to a 20 m/s gale by noon, held to 18:00, falling calm by 23:00 (roadmap W136; docs/subsystems/gfx.md).",
   "sky": {
     "latitude_deg": 31.1,
     "day_of_year": 100,

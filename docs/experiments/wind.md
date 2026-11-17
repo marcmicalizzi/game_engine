@@ -1,6 +1,6 @@
 # The wind near the ground, and the sea it raises (W136)
 
-Roadmap W136 (2026-11-16). The owner: "I'd also like to add in variable wind if we didn't already, because then we can exercise some of the larger waves, as well as extra calm water too." This page holds the published models the scene's wind rests on, the numbers chosen from them, and where each one is read; [wind](../subsystems/wind.md) says what was built and what it guarantees.
+Roadmap W136 (2026-11-16). The owner: "I'd also like to add in variable wind if we didn't already, because then we can exercise some of the larger waves, as well as extra calm water too." This page holds the published models the scene's wind rests on, the numbers chosen from them, and where each one is read; [gfx](../subsystems/gfx.md#the-wind-a-scene-names) says what was built and what it guarantees.
 
 ## What the tree had before (2026-11-16)
 

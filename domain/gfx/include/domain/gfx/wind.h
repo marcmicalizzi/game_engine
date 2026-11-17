@@ -1,6 +1,6 @@
 #pragma once
 
-// **One wind, and the sea it raises** (docs/subsystems/wind.md; the grounding and every number's
+// **One wind, and the sea it raises** (docs/subsystems/gfx.md, "The wind a scene names"; the grounding and every number's
 // source, docs/experiments/wind.md; roadmap W136). A scene's wind (`engine.scene.Wind`, under its
 // `Sky`) is asked at a place and a time of the sky's clock (renderer/clocks.h: the weather follows
 // the day), and every reader takes the same answer: the sea's and a lake's waves through the sea

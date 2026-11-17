@@ -903,7 +903,7 @@ class GpuScene {
   std::span<const u32> water_deforms() const noexcept {
     return {water_deforms_.data(), water_deforms_.size()};
   }
-  // **The scene's wind on the water** (scene_wind.h; wind.md; W136): the copies that bring every
+  // **The scene's wind on the water** (scene_wind.h; gfx.md, "The wind a scene names"; W136): the copies that bring every
   // body that draws a wave table to the sea of sky time `sky_time_s`, made by the frame's "water
   // wind" transfer into `materials` and `water_surfaces()`; empty when nothing moved.
   std::span<const WaterWindUpload> water_wind_frame(f64 sky_time_s);

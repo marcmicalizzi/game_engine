@@ -1,6 +1,6 @@
 # beach-wind
 
-[The beach](../beach/README.md) under a wind that changes through the day (roadmap W136; the model is [wind](../../../docs/subsystems/wind.md), its grounding [the wind page](../../../docs/experiments/wind.md)): the same bay, ground, boulders and cameras, the sea's own fixed 8 m/s replaced by the sky's `wind`, a track of the day:
+[The beach](../beach/README.md) under a wind that changes through the day (roadmap W136; the model is [gfx](../../../docs/subsystems/gfx.md#the-wind-a-scene-names), its grounding [the wind page](../../../docs/experiments/wind.md)): the same bay, ground, boulders and cameras, the sea's own fixed 8 m/s replaced by the sky's `wind`, a track of the day:
 
 | Hour | Wind 10 m up | The sea it raises over the bay's 60 km (`gfx::sea_state`) |
 |---|---|---|

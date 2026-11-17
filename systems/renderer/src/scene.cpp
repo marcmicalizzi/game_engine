@@ -2476,7 +2476,7 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
       return false;
     }
     out.sky = *file.sky;
-    // The scene's wind (wind.md; W136), checked here so a wind nobody can draw refuses the file.
+    // The scene's wind (gfx.md, "The wind a scene names"; W136), checked here so a wind nobody can draw refuses the file.
     if (file.sky->wind.has_value() && !read_scene_wind(*file.sky->wind, path, out.wind, error))
       return false;
   }

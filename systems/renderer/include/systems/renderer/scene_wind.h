@@ -1,6 +1,6 @@
 #pragma once
 
-// **The scene's wind, as the renderer reads and draws it** (docs/subsystems/wind.md; roadmap W136;
+// **The scene's wind, as the renderer reads and draws it** (docs/subsystems/gfx.md, "The wind a scene names"; roadmap W136;
 // the model is domain/gfx's wind.h). Three things live here: the scene file's `Sky.wind` read and
 // checked into a `gfx::WindDesc`; the hand wind a walker sets with the `renderer.wind.*` tunables;
 // and the per-frame redraw of a water body's wave table and surface as the sea state moves, which

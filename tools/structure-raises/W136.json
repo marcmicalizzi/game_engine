@@ -1,7 +1,7 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "W136",
-  "reason": "W136: the scene's wind redraws a water body's wave table and surface as the sea moves: one 'water wind' transfer pass in record_frame (imports, the pass, the readers' declaration), GpuScene's per-body record and its frame call, and water.md's pointer to the wind page",
+  "reason": "W136: the scene's wind redraws a water body's wave table and surface as the sea moves: one 'water wind' transfer pass in record_frame, GpuScene's per-body record and its frame call; water.md's pointer and gfx.md's section on the wind a scene names (wind.h is gfx's header)",
   "date": "2026-11-16",
   "by": "Marc Micalizzi",
   "deltas": {
@@ -9,6 +9,7 @@
     "renderer.record_frame.add_pass": 1,
     "renderer.gpu_scene_cpp.lines": 8,
     "renderer.gpu_scene_h.lines": 17,
-    "page:docs/subsystems/water.md": 942
+    "page:docs/subsystems/gfx.md": 8996,
+    "page:docs/subsystems/water.md": 984
   }
 }

@@ -1,4 +1,4 @@
-// The scene's wind and the sea it raises (wind.h; docs/subsystems/wind.md; the grounding,
+// The scene's wind and the sea it raises (wind.h; docs/subsystems/gfx.md, "The wind a scene names"; the grounding,
 // docs/experiments/wind.md; roadmap W136): no device. The numbers checked here are the page's.
 
 #include <domain/gfx/water_spectrum.h>

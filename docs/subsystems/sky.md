@@ -19,7 +19,7 @@
 
 `earth_atmosphere(turbidity)` (`include/domain/sky/earth.h`): Bruneton's and Hillaire's Earth — Rayleigh coefficients for 680, 550 and 440 nm (5.802, 13.558, 33.1 × 10⁻³ km⁻¹) over an 8 km scale height, the ozone layer's absorption in a tent 15 km either side of 25 km, a 6,360 km planet under 100 km of air — and an **aerosol a turbidity makes**: its vertical optical depth at 550 nm is (T − 1) times the clean air's own (0.108), so T is how many clean atmospheres of extinction the air carries, which is what a Linke turbidity factor means, never less than Hillaire's own faint aerosol at T = 1; a 1.2 km scale height; an Ångström exponent of 0.8 across the three wavelengths; nine tenths of what it takes out scattered; an asymmetry of 0.76, a dust haze's forward lobe. T of 2 is very clear, 3 clear, 5 hazy; a desert is usually 2.5–4. The night's own glow — airglow, zodiacal light, the stars too faint to list — is a uniform 1.4–1.9 × 10⁻⁹ sun units per steradian above the horizon, about 2 × 10⁻⁴ cd/m², so a moonless night is not black.
 
-**The wind** (`Sky.wind`, version 3; W136) is carried in the sky's entry because it is the air's, and this capability does not read it: the renderer reads and checks it ([wind](wind.md)), so a sky provider never sees it and a scene without one draws exactly as before.
+**The wind** (`Sky.wind`, version 3; W136) is carried in the sky's entry because it is the air's, and this capability does not read it: the renderer reads and checks it ([gfx](gfx.md#the-wind-a-scene-names)), so a sky provider never sees it and a scene without one draws exactly as before.
 
 ## The stars
 
