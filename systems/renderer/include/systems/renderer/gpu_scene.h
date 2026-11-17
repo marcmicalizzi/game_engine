@@ -48,6 +48,7 @@
 #include <systems/renderer/settings.h>
 #include <systems/renderer/terrain_levels.h>
 #include <systems/renderer/terrain_rings.h>
+#include <systems/renderer/scene_wind.h>
 #include <systems/renderer/tile_layout.h>
 
 #include <memory>
@@ -902,6 +903,11 @@ class GpuScene {
   std::span<const u32> water_deforms() const noexcept {
     return {water_deforms_.data(), water_deforms_.size()};
   }
+  // **The scene's wind on the water** (scene_wind.h; wind.md; W136): the copies that bring every
+  // body that draws a wave table to the sea of sky time `sky_time_s`, made by the frame's "water
+  // wind" transfer into `materials` and `water_surfaces()`; empty when nothing moved.
+  std::span<const WaterWindUpload> water_wind_frame(f64 sky_time_s);
+  const gfx::BufferResource& water_surfaces() const noexcept { return water_surfaces_; }
   u32 max_joints() const noexcept { return max_joints_; }
   u32 skinned_instances() const noexcept { return skinned_instances_; }
   // Entries of the deform table: one per instance that reads the pool, which is every instance
@@ -2076,6 +2082,17 @@ class GpuScene {
   Vector<gfx::BufferResource> water_fields_;
   Vector<u32> water_surface_of_;
   Vector<u32> water_deforms_;
+  // W136 (scene_wind.h): where each body's wave table sits in the material table (by mesh), the
+  // bodies the scene's wind or the hand wind redraws, and this frame's copies.
+  struct WaterWaveEntry {
+    u32 mesh = 0;
+    u32 entry = 0;
+  };
+  Vector<WaterWaveEntry> water_wave_entries_;
+  Vector<WaterWindBody> water_wind_;
+  bool water_wind_ready_ = false;
+  Vector<WaterWindUpload> water_wind_uploads_;
+  Vector<gfx::WaterSurface> water_surface_load_;  // the surfaces as the load uploaded them
   // The water reflection's candidate planes (R129; `water_reflect_level`): a level body each, its
   // instance, its square's centre (body-local x, z) and half diagonal, and whether it is the open
   // one.

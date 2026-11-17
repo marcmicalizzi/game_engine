@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -360,6 +361,65 @@ void shoot(const gfx::Device& device, const std::string& path, const std::string
 }
 
 }  // namespace
+
+// **The scene's wind** (wind.md, "The water reads it"; W136): a sky's fixed wind gives a body that
+// follows it exactly the table, direction and fetch its own `wind_m_s` at that direction did; a
+// track makes it follow a varying wind on one grid; a track out of order refuses the file.
+TEST_CASE("water: a body follows the sky's wind, and a fixed one draws what its own wind drew") {
+  const test::TempDir tmp("water_scene_wind");
+  const auto read = [&](const char* name, const std::string& sky, const std::string& body,
+                        SceneDesc& desc, std::string& error) {
+    const std::string path = tmp.file(name);
+    std::string text = scene_text(body);
+    if (!sky.empty()) text.insert(text.rfind('}'), ",\n  \"sky\": " + sky);
+    REQUIRE(write_text(path, text));
+    return read_scene_file(path, desc, error);
+  };
+  const std::string open = R"([{"name": "sea", "level_m": 0.2, "open": true, "fetch_km": 40,
+    "shape": {"circle": {"center": [3, 0, -2], "radius_m": 6}}, )";
+  std::string error;
+  SceneDesc own;
+  REQUIRE_MESSAGE(read("own.json", "",
+                       open + R"("wind_follow": false, "wind_m_s": 7, "direction_deg": 30}])", own,
+                       error),
+                  error);
+  SceneDesc fixed;
+  REQUIRE_MESSAGE(read("fixed.json", R"({"wind": {"speed_m_s": 7, "to_deg": 30}})",
+                       open + R"("wind_m_s": 2}])", fixed, error),
+                  error);
+  const SceneWater& a = *own.mesh_info[0].water;
+  const SceneWater& b = *fixed.mesh_info[0].water;
+  CHECK(fixed.wind.kind == gfx::WindKind::fixed);
+  CHECK(b.scene_wind);
+  CHECK_FALSE(b.grid.valid());
+  CHECK(b.wind_m_s == a.wind_m_s);
+  CHECK(b.fetch_m == a.fetch_m);
+  CHECK(b.shading.direction == a.shading.direction);
+  REQUIRE(a.waves.size() == gfx::k_water_waves);
+  REQUIRE(b.waves.size() == a.waves.size());
+  CHECK(std::memcmp(a.waves.data(), b.waves.data(), sizeof(gfx::WaterWave) * a.waves.size()) == 0);
+
+  SceneDesc track;
+  REQUIRE_MESSAGE(read("track.json",
+                       R"({"wind": {"track": [{"hour": 0, "speed_m_s": 0, "to_deg": 30},
+                         {"hour": 6, "speed_m_s": 18, "to_deg": 30}]}})",
+                       open + R"("wind_m_s": 2}])", track, error),
+                  error);
+  const SceneWater& c = *track.mesh_info[0].water;
+  CHECK(track.wind.kind == gfx::WindKind::track);
+  CHECK(c.scene_wind);
+  CHECK(c.grid.valid());
+  CHECK(c.wind_m_s == doctest::Approx(18.0f).epsilon(0.02));  // the strongest wind sampled
+  CHECK(c.wind_max_height_m > 0.5f);
+  CHECK(c.waves.size() == gfx::k_water_waves);
+
+  SceneDesc refused;
+  CHECK_FALSE(read("refused.json",
+                   R"({"wind": {"track": [{"hour": 6, "speed_m_s": 5}, {"hour": 3, "speed_m_s": 5}]}})",
+                   open + R"("wind_m_s": 2}])", refused, error));
+  MESSAGE(error);
+  CHECK(error.find("sky.wind.track[1].hour") != std::string::npos);
+}
 
 TEST_CASE("water: the oasis pool stands in a hollow, its level below the ground round it") {
   const test::TempDir tmp("water_oasis_ground");

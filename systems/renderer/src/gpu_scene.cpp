@@ -568,7 +568,8 @@ WaterSwashNumbers water_swash_numbers(const SceneWater& water) {
   WaterSwashNumbers n;
   const scene::WaterBody& body = water.body;
   n.wind = static_cast<f64>(body.wind_m_s);
-  if (body.open && water.wind_m_s > 0.0f) n.wind = static_cast<f64>(water.wind_m_s);
+  if ((body.open || water.scene_wind) && water.wind_m_s > 0.0f)
+    n.wind = static_cast<f64>(water.wind_m_s);  // W136: a closed body under the scene's wind too
   // The fetch the scene's reader found (S100 stage B): an open body's `fetch_km`, a closed body's
   // own reach along its wind.
   n.fetch_m = static_cast<f64>(water.fetch_m);
@@ -2558,6 +2559,7 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
             log::field("run_up_m", surface.run_up_m), log::field("field_texels", water.depth.size),
             log::field("padding_m", padding));
       }
+      water_surface_load_ = surfaces;  // W136: what the wind's redraw starts from
       if (!surfaces.empty() && !gfx::upload_buffer(device, surfaces.data(),
                                                    u64{surfaces.size()} * sizeof(gfx::WaterSurface),
                                                    k_address, water_surfaces_, error)) {
@@ -3328,6 +3330,8 @@ u64 GpuScene::flora_frame(u32 slot, const FrameFlora& frame, u64 frame_index, f6
   if (frame.wind_set) {
     to = frame.wind_to;
     strength = frame.wind_strength;
+  } else if (data_ != nullptr && scene_flora_wind(data_->wind, sky_time_s, to, strength)) {
+    source = "scene";  // W136: the scene's wind (or the hand wind), its gust over a mean day's
   } else {
     const TerrainSampler* ground = ground_ != nullptr ? ground_.get() : flora_ground_.get();
     f64 moved = 0.0;
@@ -4307,6 +4311,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
   share_textures_ = resolved.settings.share_textures;
   transform_conflicts_ = 0;
   Vector<gfx::ResolveMaterial> material_table;
+  water_wave_entries_.clear();  // W136: where each body's wave table is, for the scene's wind
   // Per entry of the table, 1 where it is a material a cluster can name and 0 where it is a record
   // that only its material reads — a water body's optics, spectrum and plunges, the terrain's
   // record — whose word at `flags`' offset is a float or a tile index, not flags (R141: a terrain
@@ -4783,6 +4788,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
           table_material.push_back(u8{0});
         }
         if (spectrum) {
+          water_wave_entries_.push_back(WaterWaveEntry{m, material_table.size()});
           for (const gfx::ResolveMaterial& entry : wave_entries) {
             material_table.push_back(entry);
             table_material.push_back(u8{0});
@@ -6397,6 +6403,8 @@ void GpuScene::destroy() noexcept {
   water_fields_.clear();
   water_surface_of_.clear();
   water_deforms_.clear();
+  water_wind_.clear();  // W136
+  water_wind_ready_ = false;
   micromap_list_.clear();
   micromap_triangles_.clear();
   if (!sets_.empty()) {

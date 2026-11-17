@@ -101,5 +101,6 @@ One page per module, created in the same change that creates the module. Templat
 | muscle_sim | systems | [muscle_sim.md](muscle_sim.md) |
 | volumetrics | systems | [volumetrics.md](volumetrics.md) |
 | water | systems | [water.md](water.md) |
+| wind (the scene's wind: `domain/gfx`'s `wind.h`, the renderer's `scene_wind`; no module of its own) | domain, systems | [wind.md](wind.md) |
 | engine_host, engine_cli, engine_view, engine_editor, engine_content, engine_input, engine_image, mcp_bridge (engine-mcp) | apps | [apps.md](apps.md) |
 | engine_shell (static files served by engine-host --listen) | apps | [engine_shell.md](engine_shell.md) |
