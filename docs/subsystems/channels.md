@@ -1569,6 +1569,12 @@ builds; the forest's world, re-planned into this row's own root and solved over 
 | `region link 515`: stations under the ground (worst) | 107 (1.50 m) | 92 (1.17 m) |
 | `region link 515`: highest fall, pools | 1.45 m, 5 | 1.79 m, 7 |
 
+**On `torrent`** (re-planned and solved under both versions, 340 m of line measured) it is no
+better: the line 30 to 90 degrees off the fall line 49 to 60 m, the stations under the ground 8 to
+10 (worst 0.29 to 0.45 m), the over-30 % class drawn the same (no gap, 3.0 runs per 100 m). On a
+valley's floor the fall line over a width is the valley side's (the caution above), and the
+torrent's line is a valley's.
+
 **What it costs.** The re-plan (`engine-content channels --cut` over v47) took 224 s and 1.8 GB of
 commit; the first solve over the new cuts cooks their tile set and took 528 s at **37.0 GB of
 commit** (5.4 GB on disk). A forest that takes this plan pastes its cuts, its bodies, its bed regions and its two plan keys
