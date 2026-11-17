@@ -452,22 +452,31 @@ std::span<const WaterWindUpload> GpuScene::water_wind_frame(f64 sky_time_s) {
       }
       for (u32 i = 0; i < gfx::k_water_waves; ++i)
         b.load_waves[i] = water.waves[i];
+      // **Every instance of the mesh**, each with the surface record and the cull padding of its
+      // own (`upload_geometry` gives each one): the first writes the wave table they share, and
+      // the rest their surfaces alone. Until 2026-11-17 only the first was found, so a second
+      // instance kept the load's height and run-up under the redrawn table, and its crests were
+      // culled under a hand gale (review A3 of batch 67).
+      bool found = false;
       for (u32 i = 0; i < water_surface_of_.size() && i < data_->instances.size(); ++i) {
         const u32 at = water_surface_of_[i];
         if (data_->instances[i].mesh != e.mesh || at == ~0u || at >= water_surface_load_.size())
           continue;
-        b.surface_offset = u64{at} * sizeof(gfx::WaterSurface);
-        b.load_surface = water_surface_load_[at];
+        WaterWindBody each = b;
+        if (found) each.entry_offset = ~u64{0};
+        each.surface_offset = u64{at} * sizeof(gfx::WaterSurface);
+        each.load_surface = water_surface_load_[at];
         if (i < instance_table_.size() && (!dynamic_ || i < static_instances_)) {
-          b.instance = i;
-          b.load_padding = instance_table_[i].bounds_padding;
-          b.padding = b.load_padding;
+          each.instance = i;
+          each.load_padding = instance_table_[i].bounds_padding;
+          each.padding = each.load_padding;
         }
-        b.slope = static_cast<f64>(b.load_surface.slope);
-        b.period_s = static_cast<f64>(b.load_surface.period_s);
-        break;
+        each.slope = static_cast<f64>(each.load_surface.slope);
+        each.period_s = static_cast<f64>(each.load_surface.period_s);
+        water_wind_.push_back(each);
+        found = true;
       }
-      water_wind_.push_back(b);
+      if (!found) water_wind_.push_back(b);
     }
   }
   if (water_wind_.empty() || data_ == nullptr) return {};

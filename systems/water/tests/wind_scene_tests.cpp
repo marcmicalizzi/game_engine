@@ -355,6 +355,48 @@ TEST_CASE("water wind: a hand gale on a body loaded light holds its bound at the
   device.destroy();
 }
 
+// **Every instance of a water mesh follows the wind** (review A3 of batch 67): each has a surface
+// record and a cull padding of its own, so under a hand gale the second instance's bound rises with
+// the first's. Until 2026-11-17 the redraw found the first instance alone, and the second kept the
+// load's surface and bound under the redrawn wave table.
+TEST_CASE("water wind: a hand gale raises the bound of every instance of a water mesh") {
+  const test::TempDir tmp("water_wind_two");
+  gfx::Device device;
+  if (!open_device(device)) return;
+  {
+    Shot shot;
+    LoadAs as;
+    as.second_water = true;
+    load(
+        device, tmp, "two",
+        wind_scene(R"("wind_m_s": 2, "fetch_km": 20)", R"("wind": {"speed_m_s": 3, "to_deg": 30})"),
+        shot, as);
+    const Vector<u32> water = water_instances(shot.data);
+    REQUIRE(water.size() == 2);
+    const f32 load_padding[2] = {shot.scene.instance_record(water[0])->bounds_padding,
+                                 shot.scene.instance_record(water[1])->bounds_padding};
+    (void)draw(shot, k_noon);
+    REQUIRE(tunables::apply_overrides("renderer.wind.speed_m_s=20"));
+    (void)draw(shot, k_noon);
+    const f32 gale_padding[2] = {shot.scene.instance_record(water[0])->bounds_padding,
+                                 shot.scene.instance_record(water[1])->bounds_padding};
+    REQUIRE(tunables::apply_overrides("renderer.wind.speed_m_s=-1"));
+    (void)draw(shot, k_noon);
+    const f32 back_padding = shot.scene.instance_record(water[1])->bounds_padding;
+    const f64 fetch = 20000.0;
+    const f64 rise = 2.0 * (gfx::sea_height(20.0, fetch) - gfx::sea_height(3.0, fetch));
+    MESSAGE("two instances of one body: loaded " << load_padding[0] << " and " << load_padding[1]
+                                                 << " m, under a hand gale " << gale_padding[0]
+                                                 << " and " << gale_padding[1] << " m, the second "
+                                                 << back_padding << " m cleared");
+    CHECK(load_padding[1] == load_padding[0]);
+    CHECK(static_cast<f64>(gale_padding[1]) >= static_cast<f64>(load_padding[1]) + rise - 1e-3);
+    CHECK(gale_padding[1] == gale_padding[0]);
+    CHECK(back_padding == load_padding[1]);
+  }
+  device.destroy();
+}
+
 // **A bound the wind raises on the frame after the tables grow reaches the GPU's table** (review
 // A2 of batch 67): in a scene that takes a tail, a tail that grows the per-pair buffers makes every
 // table set again, and the next frame carries its set over from the old one (T167). The wind's
