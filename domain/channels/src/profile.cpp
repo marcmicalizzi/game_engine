@@ -923,6 +923,12 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
           bool holds = true;
           while (j > 0 && lowered[j - 1] != 0 && put[j - 1] < o.level - k_over_bank_m) {
             const Out& up = outs[j - 1];
+            // Where the ground on the line itself stands at the pool's level, the pool ends
+            // there: the bed rises out of it, and what is written above is the stream that runs
+            // in (its section may have been read beside the line, on ground lower than the bed).
+            const f64 on_line = ground.surface_mm(scene_gen::nearest_mm(c.x[up.node]),
+                                                  scene_gen::nearest_mm(c.z[up.node]));
+            if (!(on_line < o.level)) break;
             const Wet w = pool_at(c, ground, up.node, o.level);
             if (w.over || !(o.level > c.bed[up.node])) {
               holds = false;

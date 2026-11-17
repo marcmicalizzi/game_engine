@@ -797,7 +797,12 @@ hillside beside the line (row W131's) — the pool stood at the sill's level str
 `region basin 15` `region link 696` held a pool at 62.43 m, 28 m wide, after films at 62.00. Now a
 pool whose level stands over the cap **reaches back** over the stations above it written lower
 than it, where the ground holds its level at each of them too (`pool_at`, past their crests): they
-are the pool's (`pools.reached_back`). Where any of them cannot hold it, the water left the bed
+are the pool's (`pools.reached_back`). The walk back stops, the pool standing, at the first of
+them where **the ground on the line itself** stands at or over the pool's level: there the bed
+rises out of the pool, and what is written above is the stream running into it (on the forest
+that is mostly a section read on the hillside beside the line, 0.8 to 3.3 m under the drawn bed,
+which is W131's to mend; the sheet's climb from it is the draw's to refuse). Where any of them
+cannot hold it, the water left the bed
 there at the lower level and cannot stand higher here: **the pool is not written**
 (`pools.spilled`) and the cap carries on, as before W130.2. Water is never written standing over
 ground beside it that holds nothing, and the draw refuses a sheet climbing from a station over its
