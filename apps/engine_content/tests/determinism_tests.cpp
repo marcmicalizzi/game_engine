@@ -529,8 +529,10 @@ TEST_CASE("engine-content: city makes the committed plan, fragment and yield on 
 // in the materials' alpha words, the far levels' too, and `k_flora_version` 13 in section 15; with
 // the optics zeroed and the version 12 the three folds come back to 0xce11985a0f441baf (broadleaf),
 // 0x222a6d4a9af0e6e6 (ancient) and 0xac0cb951cd8d4dc8 (pine), so these are the same bytes re-keyed.
-constexpr u64 k_broadleaf_container_golden = 0x1e8c99414891bf84ull;
-constexpr u64 k_ancient_container_golden = 0x483b28ec33fa1f12ull;
+// R164-3 (MSVC first): the optics folded into every flora key move section 15 again; R164's folds
+// were 0x1e8c99414891bf84, 0x483b28ec33fa1f12 and 0x7a1d3d945d56c024.
+constexpr u64 k_broadleaf_container_golden = 0xcf85a7f05a6fe432ull;
+constexpr u64 k_ancient_container_golden = 0x5b688161bda21d84ull;
 // G120 (2026-11-01, MSVC 14.51): a pine, the conifer solver's chain — one three-plane card group a
 // live branch and the star, coverage-kept and fitted to the needles' coverage — at small tiles so
 // a debug run builds it in seconds. Its section 15 carries `k_conifer_chain_version`.
@@ -538,7 +540,7 @@ constexpr u64 k_ancient_container_golden = 0x483b28ec33fa1f12ull;
 // `k_conifer_chain_version` is 2, so the pine's container moved (it was 0xcb41f869870c00cd); the
 // broadleaf's and the ancient tree's did not. R164: the needles' optics and `k_flora_version` 13, as
 // above; it was 0xac0cb951cd8d4dc8.
-constexpr u64 k_pine_container_golden = 0x7a1d3d945d56c024ull;
+constexpr u64 k_pine_container_golden = 0x390a578bb83b9091ull;
 
 TEST_CASE("engine-content: the allometric crowns build the committed bytes on every toolchain") {
   const test::TempDir tmp("engine_content_flora_determinism");

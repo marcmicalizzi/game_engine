@@ -233,8 +233,10 @@ TEST_CASE("alpine: containers, far cuts and deterministic section hashes") {
   // texture key now mixes `texture::k_alpha_mask_version`; the texture records moved, nothing else.
   // R164 (MSVC first): the leaves' foliage optics in the materials' alpha words, the far levels'
   // too, and `k_flora_version` 13; they were 0xbaede4ce0d9c60fb, 0x4a0a0c835ad7bedf and
-  // 0x6d2cd59ee137f344.
-  constexpr u64 pins[] = {0xed9f4348ddf83c17ull, 0xa10a4ee0ce3c80cdull, 0x4581e7f9ef32326cull};
+  // 0x6d2cd59ee137f344. R164-3 (MSVC first): the optics folded into every flora key
+  // (`fold_foliage_optics`) move the identity alone; they were 0xed9f4348ddf83c17,
+  // 0xa10a4ee0ce3c80cd and 0x4581e7f9ef32326c.
+  constexpr u64 pins[] = {0x87c54da1bc95e1dfull, 0xa46012fe18acdb2bull, 0xf476b3c8fa844bbeull};
   u32 profile_index = 0;
   for (const auto& profile : flora::alpine_profiles()) {
     flora::FloraFile file;

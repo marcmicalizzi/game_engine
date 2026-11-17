@@ -161,8 +161,12 @@ std::string canonical_flora_json(const FloraFile& file);
 // The tree's parameters as a hash: the canonical parameters' bytes, the species, and
 // `k_flora_version` — what a flora container's source hash starts from (`flora_source_hash_with`
 // adds the conifers' `k_conifer_chain_version` and the bake's images) and what the deadwood keys
-// the tree it kills by.
+// the tree it kills by. Every species' starts with the foliage optics folded in after the species
+// (`fold_foliage_optics`; flora.md, "Foliage optics": R164-3, review B2).
 u64 flora_source_hash(const FloraFile& file);
+// `h` with the foliage optics flora declares for its parts (kit.h's three numbers) folded in, so a
+// change of any of them moves every flora key.
+u64 fold_foliage_optics(u64 h) noexcept;
 
 // Includes the bytes of base-colour images consumed by the LOD bake. Pure without a host;
 // a host that supplies images must successfully read every referenced bake input.

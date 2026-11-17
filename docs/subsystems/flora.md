@@ -2323,6 +2323,14 @@ alpha word (`geometry::alpha_word_with_foliage`), the far levels and the chain's
 keep them, and a pack role that declares its own nonzero `transmission` or `normal_spread`
 replaces them. `k_flora_version` 13 re-keys every tree.
 
+**Every species' key carries the optics themselves** (R164-3, review B2). The ground plants
+(`k_ground_plants_version`), the meadow, the alpine plants, shrub growth and regeneration key on
+versions of their own, not `k_flora_version`, so R164 changed their containers' materials under
+unchanged keys: an entry built before it was reused and drew its leaves as sheets lit from the
+eye's side alone. `flora_source_hash` now folds the three numbers above into every species' key,
+rather than five versions being bumped once, so the next change of them moves every key without
+anyone having to know which families carry leaves; it moved every flora pin's section 15 once.
+
 ## The build
 
 A palm is derived data, built once per parameter set. `flora::build_flora_container` solves the

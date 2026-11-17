@@ -1238,6 +1238,19 @@ bool source_mesh_hash(std::string_view path, u64& out, std::string* error) {
       break;
     }
   }
+  // The same for a two-sided material that states `KHR_materials_diffuse_transmission` (R164-3,
+  // review B2): since R164 its foliage optics are in the container and since R164-3 its base colour
+  // is split by the factor, so an entry built before either would draw the leaf as a sheet lit from
+  // the eye's side alone. The tag names the reading; a new reading of it takes a new tag. A bump of
+  // `k_cluster_cache_version` would have moved every generated container's key in the tree.
+  for (cgltf_size i = 0; i < document.data->materials_count; ++i) {
+    const cgltf_material& material = document.data->materials[i];
+    if (material.double_sided != 0 && material.has_diffuse_transmission != 0 &&
+        material.diffuse_transmission.diffuse_transmission_factor > 0.0f) {
+      hash = hash_combine(hash, u64{0x4b48524454523031ull});  // "KHRDTR01"
+      break;
+    }
+  }
   out = hash;
   return true;
 }
