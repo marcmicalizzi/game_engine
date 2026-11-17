@@ -697,10 +697,24 @@ TEST_CASE("profile: a pool stands no higher than the water above it spilled") {
     const ProfileStation& a = p.stations[k];
     const ProfileStation& b = p.stations[k + 1];
     if ((a.flags & scene_gen::k_channel_jump_head) != 0) continue;
+    // What the solve writes and the draw lays a sheet on: the 5 mm film over its bank climbing
+    // the bowl's rim (W120's, left out by the draw) is not a face of water.
+    if (!scene_gen::channel_stretch_drawn(a.flags, b.flags, static_cast<f32>(a.depth),
+                                          static_cast<f32>(b.depth), a.level, b.level))
+      continue;
     worst = std::max(worst, b.level - a.level);
   }
   CAPTURE(worst);
   CHECK(worst < 0.05);  // the forest's least climb
+  // Before W138 the pit's closed half was a pool over the spilled water, and the climb to it drawn
+  // (the draw's old rule left a stretch out only when both ends were over a bank). The draw's own rule now refuses such a stretch
+  // whatever the solve writes, so the solve is held here by what it writes: no pool stands over
+  // the spilled level.
+  for (const ProfileStation& s : p.stations)
+    if (s.x > 25.0 && s.x < 31.0) {
+      CAPTURE(s.x);
+      CHECK(s.depth < 0.2);
+    }
   // The closed bowl (stand-alone, the test above) is still a pool.
   ground.surface_fn = &bowl_height;
   REQUIRE_MESSAGE(solve_profile(line, ground, ProfileOptions{}, p, error), error);

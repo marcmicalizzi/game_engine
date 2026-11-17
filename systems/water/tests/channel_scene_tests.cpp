@@ -355,6 +355,35 @@ TEST_CASE("water channel: a fall's foot in a body is the body's plunge") {
   SceneDesc low;
   REQUIRE_MESSAGE(read_scene_file(low_path, low, error), error);
   CHECK(low.mesh_info[0].water->plunges.empty());
+  // **A second fall landing in the first's disc is its white water** (W138): a 3 m spout whose
+  // foot stands 0.6 m from the first's (inside its 1.25 m) makes no record of its own; one 3 m
+  // further off (outside it) does.
+  for (const f64 off : {0.6, 3.0}) {
+    CAPTURE(off);
+    const std::string two_path = tmp.file("two.json");
+    {
+      std::ifstream in(path, std::ios::binary);
+      std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+      const usize at = text.find("\"flags\": [0, 32, 67], \"seed\": 5}");
+      REQUIRE(at != std::string::npos);
+      const std::string z = std::to_string(-6.0 + off);
+      text.insert(at + 32, std::string(R"(, {"name": "spout2",
+    "points": [[-12, 4.4, )") + z + "], [0, 4.0, " + z + "], [3.13, 1.0, " + z + R"(]],
+    "width_m": [2, 2, 2], "depth_m": [0.4, 0.4, 0.13], "slope": [0.033, 0.033, 0.033],
+    "discharge_m3s": [1.973, 1.973, 1.973], "speed_mps": [2.466, 2.466, 7.59],
+    "froude": [1.245, 1.245, 6.72], "wet_left_m": [1, 1, 1], "wet_right_m": [1, 1, 1],
+    "flags": [0, 32, 67], "seed": 6})");
+      std::ofstream out(two_path, std::ios::binary);
+      out << text;
+    }
+    SceneDesc two;
+    REQUIRE_MESSAGE(read_scene_file(two_path, two, error), error);
+    REQUIRE(two.mesh_info[0].water.has_value());
+    const auto& plunges = two.mesh_info[0].water->plunges;
+    CHECK(plunges.size() == (off < 1.0 ? 1u : 2u));
+    REQUIRE(!plunges.empty());
+    CHECK(plunges[0].radius_m == doctest::Approx(1.25f));  // the higher fall's
+  }
 }
 
 // **Whiter than the pool under the same light** (S106's second leg, 2026-11-14). S98 wrote the

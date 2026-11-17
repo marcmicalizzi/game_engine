@@ -787,6 +787,25 @@ its bank as before: water that would stand wider than that is a lake the plan di
 leaves the line sideways, and neither is a pool of this line's. Nothing keys on a generator: any
 ground with a pit on a solved line gets its pool, and a line with no pit pays one running maximum.
 
+**A pool stands no higher than the water above it spilled** (W138, 2026-11-16; the forest's need
+126, "water walls", and the owner's raised slab at marks 12 and 13, need 138). Tranquil water that
+has spilled over a bank is written no higher downstream than where it spilled, until its solved
+level comes down under that (the cap, above); W130.2's pool overrode the cap, and where a pit's
+upstream stations were over their banks — an open pit (`pools.open`), or a section read on the
+hillside beside the line (row W131's) — the pool stood at the sill's level straight after them:
+42 drawn sheets on 14 lines of v47 climbed 0.5 to 3.1 m over a quarter metre, and on the flat by
+`region basin 15` `region link 696` held a pool at 62.43 m, 28 m wide, after films at 62.00. Now a
+pool whose level stands over the cap **reaches back** over the stations above it written lower
+than it, where the ground holds its level at each of them too (`pool_at`, past their crests): they
+are the pool's (`pools.reached_back`). Where any of them cannot hold it, the water left the bed
+there at the lower level and cannot stand higher here: **the pool is not written**
+(`pools.spilled`) and the cap carries on, as before W130.2. Water is never written standing over
+ground beside it that holds nothing, and the draw refuses a sheet climbing from a station over its
+bank whatever a description says ([water](water.md#the-surface-from-the-solve)). The case: `profile: a pool stands
+no higher than the water above it spilled` (a bowl open on one side over its upstream half: before
+W138 its closed half was a pool 0.39 to 0.51 m deep over the spilled film; now no station there is
+deeper than 0.2 m).
+
 **No section is without a bed** (W129.1, 2026-11-16). A bank's crest is walked out from the
 thalweg; on ground exactly as level as the thalweg (a floor the plan filled flat, or ground no
 cut crosses that a tile set holds at one height) the walk never rose, the crest stood at the
