@@ -21,7 +21,8 @@ engine_module(NAME caves LAYER domain OPTIONAL WHOLE_ARCHIVE
   SOURCES src/caves.cpp src/passage.cpp src/field.cpp src/network_plan.cpp src/network_cells.cpp
           src/network_svg.cpp src/network_placement.cpp)
 
-engine_module_tests(NAME caves
+# NO_DEVICE: no case opens a GPU device (roadmap T170, what-to-run.md, "Tests that open no device").
+engine_module_tests(NAME caves NO_DEVICE
   SOURCES tests/caves_tests.cpp tests/network_plan_tests.cpp tests/network_cell_tests.cpp
           tests/size_table.cpp)
 

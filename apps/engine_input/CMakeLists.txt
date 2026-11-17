@@ -5,4 +5,7 @@
 engine_app(NAME engine_input OUTPUT engine-input
   SOURCES main.cpp
   DEPS base containers log platform window input json io
-  E2E_TESTS tests/input_app_tests.cpp)
+  E2E_TESTS tests/input_app_tests.cpp
+  # Its one window is hidden and not Vulkan (main.cpp), so it opens no GPU device and takes no
+  # hold: not a GPU chain's (roadmap T170, what-to-run.md, "Tests that open no device").
+  E2E_NO_DEVICE)

@@ -43,7 +43,8 @@ if(WIN32)
   target_link_libraries(engine_audio_impl PRIVATE ole32)
 endif()
 
-engine_module_tests(NAME audio
+# NO_DEVICE: no case opens a GPU device (roadmap T170, what-to-run.md, "Tests that open no device").
+engine_module_tests(NAME audio NO_DEVICE
   SOURCES tests/audio_tests.cpp tests/queue_tests.cpp tests/mixer_tests.cpp tests/clip_tests.cpp
           tests/limiter_tests.cpp tests/determinism_tests.cpp tests/realtime_tests.cpp
           tests/stream_tests.cpp tests/eviction_tests.cpp tests/clip_file_tests.cpp

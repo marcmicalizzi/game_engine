@@ -28,7 +28,9 @@ engine_module(NAME rocks LAYER domain OPTIONAL WHOLE_ARCHIVE
           src/exposure.cpp src/ledges.cpp src/ledges_generator.cpp
           src/cliff_benches.cpp)
 
-engine_module_tests(NAME rocks
+# NO_DEVICE: the cases reach gfx for its formation packing and the renderer's scene types, and open
+# no device; they run in the CPU pool, not a GPU chain (roadmap T170, what-to-run.md).
+engine_module_tests(NAME rocks NO_DEVICE
   SOURCES tests/rocks_tests.cpp tests/cliff_tests.cpp tests/cliffs_generator_tests.cpp
           tests/size_table.cpp tests/geology_tests.cpp tests/surface_bake_tests.cpp tests/deposits_tests.cpp
           tests/formation_tests.cpp tests/deposits_exclusion_tests.cpp

@@ -424,6 +424,32 @@ TEST_CASE("device hold: a child finds its parent's hold and neither waits nor re
   CHECK_FALSE(exists(path));
 }
 
+// A test's label against its devices (roadmap T170; docs/ci/what-to-run.md, "Tests that open no
+// device"): what gfx::Device::create does first, in a probe, since one answer ends the process.
+TEST_CASE("device hold: a device opened outside the gpu label fails, inside it is noted") {
+  if (!have_probe()) return;
+  test::TempDir dir("gpu_note_device");
+  const std::string marker = dir.file("opened");
+  {
+    // This suite is not labelled gpu, so the run around it set `forbidden`; each case says its own.
+    const test::ScopedEnv devices(gpu_lock::k_env_test_devices, "forbidden");
+    const Run run = probe({"note"});
+    CHECK(run.exit_code == gpu_lock::k_exit_device_unlabelled);
+    CHECK(run.output.find("not labelled gpu") != std::string::npos);
+  }
+  {
+    const test::ScopedEnv devices(gpu_lock::k_env_test_devices, marker);
+    const Run run = probe({"note"});
+    CHECK_MESSAGE(run.exit_code == 0, run.output);
+    CHECK(exists(marker));
+  }
+  for (const char* inert : {"", "report"}) {
+    const test::ScopedEnv devices(gpu_lock::k_env_test_devices, inert);
+    const Run run = probe({"note"});
+    CHECK_MESSAGE(run.exit_code == 0, run.output);
+  }
+}
+
 TEST_CASE("device hold: a wait that runs out ends the process with 75, and its parent with it") {
   if (!have_probe()) return;
   const Isolated isolated;

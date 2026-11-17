@@ -175,6 +175,12 @@ int main(int argc, char** argv) {
     p.close_stdin();
   };
 
+  if (command == "note") {
+    // What gfx::Device::create does first (roadmap T170): exits 70 under
+    // ENGINE_TEST_DEVICES=forbidden, appends to the file it names, and otherwise returns.
+    gpu_lock::note_device_open();
+    return 0;
+  }
   if (command == "cycles") {
     // What a hold costs a device: n takes and releases of a free lock, timed. Not a test; how
     // docs/subsystems/gpu_lock.md's performance note was measured.

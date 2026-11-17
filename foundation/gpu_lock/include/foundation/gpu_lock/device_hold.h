@@ -136,4 +136,24 @@ struct HoldStatus {
 };
 HoldStatus hold_status();
 
+// **A test's label against its devices** (roadmap T170; docs/ci/what-to-run.md, "Tests that open
+// no device"). CTest's label `gpu` puts a test in a GPU chain, behind every other GPU test of the
+// run; a test that never opens a device should not wait there, and one that opens a device must.
+// The configure gives every test ENGINE_TEST_DEVICES (cmake/EngineTesting.cmake's finalize), and
+// every process the test starts inherits it:
+//   - `forbidden` (no `gpu` label): `note_device_open` prints one line naming the executable and
+//     ends the process with k_exit_device_unlabelled, so the test fails where it would otherwise
+//     have opened a device outside the chains;
+//   - a file path (a `gpu`-labelled test whose test main made one, tests/support/test_main.cpp):
+//     `note_device_open` appends the executable's name to it, which is how the test main knows at
+//     its end whether anything in its tree tried;
+//   - unset, `report`, or anything else (outside CTest, a script test with no test main): nothing.
+// `gfx::Device::create` calls it first, before it looks for an adapter, so the check holds on a
+// machine with no GPU driver as on one with a card: a test is held to whether it *tries* to open a
+// device, which is what its label is about, not to what the machine could give it.
+inline constexpr const char* k_env_test_devices = "ENGINE_TEST_DEVICES";
+// sysexits' EX_SOFTWARE: not 75 (a skip), and no other exit of this tree uses it.
+inline constexpr i32 k_exit_device_unlabelled = 70;
+void note_device_open();
+
 }  // namespace engine::gpu_lock

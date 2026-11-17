@@ -82,7 +82,9 @@ if(TARGET engine::rocks)
   # G198: a dense tile of deposits as its near meshes and as its far tile, built as a host builds them.
   list(APPEND _world_tests tests/far_tile_deposits_tests.cpp)
 endif()
-engine_module_tests(NAME world SOURCES ${_world_tests})
+# NO_DEVICE: the cases read scenes and lay tiles out with the renderer's CPU half and open no
+# device (roadmap T170, what-to-run.md, "Tests that open no device").
+engine_module_tests(NAME world NO_DEVICE SOURCES ${_world_tests})
 foreach(_gen authored city rocks ruins sky terrain)
   if(TARGET engine_world_tests AND TARGET engine::${_gen})
     target_link_libraries(engine_world_tests PRIVATE engine::${_gen})

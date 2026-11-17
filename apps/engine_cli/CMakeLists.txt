@@ -8,13 +8,17 @@ engine_app(NAME engine_cli OUTPUT engine-cli
   DEPS base containers json platform
   E2E_TESTS tests/cli_tests.cpp tests/render_tests.cpp tests/ops_tests.cpp tests/policy_tests.cpp
             tests/save_tests.cpp tests/npc_replay_tests.cpp tests/console_tests.cpp
-            tests/content_build_parity_tests.cpp)
+            tests/content_build_parity_tests.cpp
+  # The engine-host these tests start opens a GPU device for render.* (render_tests.cpp, and
+  # console_tests.cpp's captured frame) and for engine.budgets' device memory (ops_tests.cpp), and
+  # so can wait for the machine-wide GPU lock (ADR-0049): those three files are `engine_cli.gpu`, in
+  # a GPU chain. The rest — npc_replay_tests.cpp's 285 s of gate b66's 386 among them — start hosts
+  # that open none, and are `engine_cli`, in the CPU pool (roadmap T170, what-to-run.md, "Tests
+  # that open no device").
+  E2E_DEVICE_FILES render_tests.cpp ops_tests.cpp console_tests.cpp)
 if(TARGET engine_engine_cli_tests)
   target_compile_definitions(engine_engine_cli_tests PRIVATE ENGINE_HOST_PATH="$<TARGET_FILE:engine_engine_host>")
   add_dependencies(engine_engine_cli_tests engine_engine_host)
-  # The engine-host these tests start opens a GPU device for render.*, and so can wait for the
-  # machine-wide GPU lock (ADR-0049).
-  engine_test_waits_for_gpu(engine_cli)
   # render_tests.cpp holds `render.capture` to engine-view's capture with the same flags, byte for
   # byte (docs/subsystems/renderer.md, "One request, two hosts"), so it runs engine-view too — after
   # the host it started has exited, since each takes the GPU lock for as long as it has a device. It

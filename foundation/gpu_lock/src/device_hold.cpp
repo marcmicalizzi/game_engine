@@ -457,6 +457,24 @@ void DeviceHold::release() noexcept {
   end_hold(h, guard);
 }
 
+void note_device_open() {
+  const std::string value = detail::environment(k_env_test_devices);
+  if (value.empty() || value == "report") return;
+  const std::string exe = file_name(detail::executable_path());
+  if (value == "forbidden") {
+    std::fprintf(stderr,
+                 "engine-test: %s opened a GPU device in a test that is not labelled gpu; declare "
+                 "the test's device (DEVICE_FILES) or drop NO_DEVICE (docs/ci/what-to-run.md, "
+                 "\"Tests that open no device\")\n",
+                 exe.empty() ? "a process" : exe.c_str());
+    std::fflush(stderr);
+    std::_Exit(k_exit_device_unlabelled);
+  }
+  // One line a process is enough: the test main asks only whether the file exists.
+  static std::once_flag noted;
+  std::call_once(noted, [&] { detail::append_line(value, exe.empty() ? "?" : exe); });
+}
+
 HoldStatus hold_status() {
   ProcessHold& h = process_hold();
   std::lock_guard<std::mutex> guard(h.mutex);

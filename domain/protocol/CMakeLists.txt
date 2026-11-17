@@ -16,7 +16,9 @@ engine_schema_library(NAME protocol_test_types
 
 # `bench` is for E12 alone (tests/e12_tests.cpp): it records the machine's state around the run
 # the experiment page quotes, with the sampler every measurement here uses.
-engine_module_tests(NAME protocol
+# NO_DEVICE: the dispatcher's `gpu.adapters` enumerates adapters and opens no device, and the render
+# methods are engine-host's (roadmap T170, what-to-run.md, "Tests that open no device").
+engine_module_tests(NAME protocol NO_DEVICE
   SOURCES tests/protocol_tests.cpp tests/policy_tests.cpp tests/e12_tests.cpp tests/listener_tests.cpp
   DEPS protocol_test_types bench)
 if(TARGET engine_protocol_tests)
