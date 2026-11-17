@@ -307,7 +307,9 @@ bool GpuScene::resize_ray_tracing(u32 capacity, std::string* error, bool beyond_
     free_ns = time::monotonic_ns() - started;
   }
   RtStep step;
-  if (!make_rt_step(device, inputs, step, error)) {
+  const bool fault = take_fault(fail_rt_steps_);  // a test's (T163): as a make out of memory
+  if (fault && error != nullptr) *error = "the chain's step failed (a test's fault)";
+  if (fault || !make_rt_step(device, inputs, step, error)) {
     // Swapped, the old set is untouched and still the scene's: the caller waits and tries again
     // (`SceneRenderer::apply_rt_capacity`; a relayout's lay-out through `GpuScene::relayout`, which
     // stays pending with the chain marked to be laid out whole, and `set_dynamic_instances`).

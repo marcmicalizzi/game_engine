@@ -270,7 +270,7 @@ class GpuScene {
   // returns false with what it had already replaced in `retired`, and leaves the relayout pending
   // with the chain marked to be laid out whole: the caller frees `retired` as on success, waits,
   // and calls it without, which makes a whole layout or returns the error. A failure growing the
-  // trees' tables is not resumable and leaves nothing pending: the caller returns it.
+  // trees' tables puts them back as they were and stays pending the same way (T163).
   struct RelayoutRetired {
     Vector<gfx::BufferResource> buffers;
     renderer::RtRetired chain;  // the chain's step (qualified: the alias below comes later)
@@ -287,6 +287,13 @@ class GpuScene {
   };
   bool relayout_pending() const noexcept { return relayout_pending_; }
   bool relayout(std::string* error = nullptr, RelayoutRetired* retired = nullptr);
+  // **A test's seam** (T163): the next `count` makes of the chain's step (`resize_ray_tracing`,
+  // whoever calls it) or of the trees' tables' growth (`grow_flora_tail`) fail as a device out of
+  // memory would, so the paths that release and retry a failure have cases. Never set by a host.
+  enum class Fault : u8 { rt_step, flora_tables };
+  void fail_next(Fault where, u32 count = 1) noexcept {
+    (where == Fault::rt_step ? fail_rt_steps_ : fail_flora_) = count;
+  }
   // The top-level record a slot's instance is traced by, as the load writes it and a tail's change
   // copies it: the instance's transform at the world's origin (the frame overwrites it from the
   // eye), the slot as the custom index, and a mask of 0xff for a live instance and 0 for a hole's
@@ -2042,6 +2049,9 @@ class GpuScene {
   u32 pair_limit_ = k_max_pairs;               // what the tail's layout may reach (`pair_limit`)
   bool relayout_pending_ = false;              // a growth the pool or the chain has not followed
   bool rt_relayout_failed_ = false;  // a swapped chain lay-out failed part way: redo it whole
+  u32 fail_rt_steps_ = 0;            // `fail_next`: the test's faults still to come
+  u32 fail_flora_ = 0;
+  static bool take_fault(u32& left) noexcept { return left != 0 && (--left, true); }
   // A dynamic scene's terrain levels' slots' pairs, `{instance, cluster}` from `ring_pair_begin_`
   // to the prefix's end: device-local, written once, copied into a set written whole.
   gfx::BufferResource ring_pairs_;

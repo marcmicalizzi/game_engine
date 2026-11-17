@@ -1012,6 +1012,7 @@ class SceneRenderer {
     gfx::PipelineHandle shadow_fallback_masked;
     gfx::PipelineHandle resolve;
     gfx::ComputePipeline software;
+    gfx::ComputePipeline fold;  // fold_args.slang: folded arguments from GPU counts (T165)
     gfx::ComputePipeline cull;
     gfx::ComputePipeline expand;  // vertex_expand.slang: the indexed draw's indices
     gfx::ComputePipeline deform;

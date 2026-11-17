@@ -7,6 +7,7 @@
 #include <domain/gfx/cluster_cull.h>
 #include <domain/gfx/commands.h>
 #include <domain/gfx/crown_prior.h>
+#include <domain/gfx/dispatch.h>
 #include <domain/gfx/flora_motion.h>
 #include <domain/gfx/formation.h>
 #include <domain/gfx/ground_detail.h>
@@ -211,7 +212,8 @@ static_assert(offsetof(gfx::ResolveMaterial, flags) == 44);
 // instead of the visible list; the expansion's push block is five addresses.
 ENGINE_EXPECT_SIZE(64, 4, gfx::VertexDrawHeader);
 ENGINE_EXPECT_SIZE(16, 4, gfx::VertexDrawRecord);
-ENGINE_EXPECT_SIZE(40, 8, gfx::VertexExpandParams);
+ENGINE_EXPECT_SIZE(48, 8, gfx::VertexExpandParams);
+ENGINE_EXPECT_SIZE(32, 8, gfx::FoldArgsParams);  // T165: fold_args.slang's push constants
 
 // 64: eight addresses, no counts — the page table and the per-cluster tables the drawing rule
 // reads, and the three feedback arrays it writes. It is read through a device address rather than

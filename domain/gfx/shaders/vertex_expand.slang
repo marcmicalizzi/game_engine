@@ -15,15 +15,17 @@
 // that fit, which is the cursor unless a survivor overflowed, and then the start of the first one
 // that did (the cull pass's `fit_end`).
 
+#include "dispatch.slang"
 #include "scene.slang"
 
-// Mirrors gfx::VertexExpandParams (40 bytes).
+// Mirrors gfx::VertexExpandParams (48 bytes).
 struct ExpandParams {
   uint64_t header;     // gfx::VertexDrawHeader of the run, as sixteen words
   uint64_t records;    // uint4 per slot: {instance, cluster, first triangle, overflowed}
   uint64_t indices;    // uint[3 * capacity]: the run's index buffer
   uint64_t clusters;   // ClusterDesc[]
   uint64_t triangles;  // three local indices packed in a uint
+  uint64_t count;      // uint: the run's survivors, which bound the folded dispatch; or 0 (T165)
 };
 
 [[vk::push_constant]] ConstantBuffer<ExpandParams> g_params;
@@ -33,7 +35,9 @@ static const uint k_expand_workgroup = 64;
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void expand_main(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID) {
-  const uint slot = group.x;
+  // Folded by the cull pass (T165): the last row's overhang names no survivor.
+  const uint slot = folded_group(group);
+  if (g_params.count != 0 && slot >= *(uint*)g_params.count) return;
   uint* header = (uint*)g_params.header;
   if (slot == 0 && thread.x == 0) {
     header[k_vertex_draw_index_count] =

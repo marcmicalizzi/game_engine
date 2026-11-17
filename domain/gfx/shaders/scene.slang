@@ -83,12 +83,27 @@ static const uint k_instance_uv_from_corner = 2u;
 // origin, and an instance is then where it is stored, to the bit.
 struct FrameEye {
   int3 cell;
-  uint masks;  // 1: a CullParams eye with the scene's MaskTables right after it (below)
+  uint masks;  // flags: k_eye_mask_tables, k_eye_software_count (gfx::FrameEye::masks)
   float3 local;
   float pad1;
   float3 residual;
   float pad2;
 };
+
+// FrameEye::masks' bits (gfx::k_eye_mask_tables, gfx::k_eye_software_count).
+static const uint k_eye_mask_tables = 1u;     // the scene's MaskTables right after it (below)
+static const uint k_eye_software_count = 2u;  // a view's CullParams eye: its `sw_args` reachable
+// Where a CullParams eye sits in its block, and the software run's count block (T165).
+static const uint64_t k_cull_params_eye_offset = 480;      // gfx::k_cull_params_eye_offset
+static const uint64_t k_cull_params_sw_args_offset = 200;  // gfx::k_cull_params_sw_args_offset
+
+// The software run's survivor count a rasterizer's eye leads to, or ~0 when it leads to none
+// (T165: the software rasterizer's folded dispatch rejects its last row's overhang against it).
+uint software_count(uint64_t eye_address, FrameEye eye) {
+  if (eye_address == 0 || (eye.masks & k_eye_software_count) == 0) return 0xffffffffu;
+  const uint64_t block = eye_address - k_cull_params_eye_offset;
+  return *(uint*)(*(uint64_t*)(block + k_cull_params_sw_args_offset));
+}
 
 // **engine::relative_axis (core/math/world.h), operation for operation**: where a stored position
 // is from the frame's eye along one axis. The cells' difference times the pitch, which is exact (to
@@ -332,7 +347,7 @@ MaskTables no_mask_tables() {
 
 // The tables a rasterizer's eye carries, or none.
 MaskTables load_mask_tables(uint64_t eye_address, FrameEye eye) {
-  if (eye_address == 0 || eye.masks == 0) return no_mask_tables();
+  if (eye_address == 0 || (eye.masks & k_eye_mask_tables) == 0) return no_mask_tables();
   return ((MaskedEye*)eye_address)->masks;
 }
 
