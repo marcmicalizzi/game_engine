@@ -632,6 +632,10 @@ tunables::Bool shadow_hybrid_fit{
     "renderer.shadow.hybrid_fit", false,
     "Under the hybrid, fit the cascades from the ray distance out rather than from the near plane "
     "(R103; renderer.md, Rays near, maps far)"};
+tunables::Bool shadow_cascade_volume{
+    "renderer.shadow.cascade_volume", true,
+    "A cascade draws only the casters inside some view's frustum swept towards the light, widened "
+    "by its filter's texels; false draws its whole box (R49; renderer.md, Cascaded shadow maps)"};
 
 // ---- R139: the sun's masks by region and by distance (renderer.md, "The sun's masks by region
 // and by distance"). Off by default: the sides return the milliseconds and move crown-sized
@@ -762,6 +766,7 @@ ShadowRayRule shadow_ray_rule(u64 frame_index, f32 opaque_coverage) noexcept {
 bool normal_filter_tunable() noexcept { return material_normal_filter.get(); }
 f32 shadow_rest_texels_tunable() noexcept { return static_cast<f32>(shadow_rest_texels.get()); }
 bool shadow_hybrid_fit_tunable() noexcept { return shadow_hybrid_fit.get(); }
+bool shadow_cascade_volume_tunable() noexcept { return shadow_cascade_volume.get(); }
 
 DisplayLevels display_levels(const RenderSettings& settings) {
   DisplayLevels out;

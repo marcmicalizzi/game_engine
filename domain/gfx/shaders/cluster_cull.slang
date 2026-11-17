@@ -654,6 +654,13 @@ void cull_pair(uint pair, bool vertex_draw) {
         return;
       }
       caster = true;
+    } else if (params->cascade != 0 && params->caster_volume_count != 0 &&
+               !in_caster_volume(params, center, radius)) {
+      // **A cascade's casters are only what can shadow the picture** (R49): inside the cascade's
+      // box but outside every view's frustum swept towards the light (widened by the filter's
+      // footprint), a pair shadows no pixel any view draws. A cascade run is never given volumes
+      // unless that holds (renderer::fit_cascade_caster_volumes).
+      return;
     }
   }
   // The cone is a promise about the **rest** triangles, moved by a transform that keeps angles, so

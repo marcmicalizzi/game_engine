@@ -1552,7 +1552,9 @@ TEST_CASE("renderer: the cascades' light-view cull never changes the shadow") {
   }
 
   // The heightfield from close in, where the near cascades hold a small part of it, and the same
-  // deformed, so the cascades' own pool blocks are exercised too.
+  // deformed, so the cascades' own pool blocks are exercised too. Three cuts of the same frame:
+  // each cascade's box and the views' swept frusta (R49, the default), the box alone
+  // (`renderer.shadow.cascade_volume=false`), and no light-view cull at all.
   for (const bool deform : {false, true}) {
     SceneDesc desc;
     desc.meshes.push_back("");  // the procedural heightfield
@@ -1561,12 +1563,14 @@ TEST_CASE("renderer: the cascades' light-view cull never changes the shadow") {
     SceneData data;
     std::string error;
     REQUIRE_MESSAGE(load_scene(desc, data, error), error);
-    CapturedFrame shots[2];
-    u32 pairs[2] = {};
-    for (u32 k = 0; k < 2; ++k) {
+    CapturedFrame shots[3];
+    u32 pairs[3] = {};
+    for (u32 k = 0; k < 3; ++k) {
+      REQUIRE(tunables::apply_overrides(k == 1 ? "renderer.shadow.cascade_volume=false"
+                                               : "renderer.shadow.cascade_volume=true"));
       RenderSettings settings;
       settings.shadows = ShadowMode::Cascaded;
-      settings.shadow_frustum = k == 0;
+      settings.shadow_frustum = k < 2;
       settings.deform = deform;
       settings.deform_kind = gfx::k_deform_wave;
       ResolvedSettings resolved;
@@ -1589,18 +1593,23 @@ TEST_CASE("renderer: the cascades' light-view cull never changes the shadow") {
       pairs[k] = renderer.stats().shadow_pairs;
       CHECK(renderer.stats().deform_overflow_entries == 0);
     }
-    u32 differ = 0;
-    for (u32 i = 0; i < shots[0].color.size(); ++i)
-      differ += shots[0].color[i] != shots[1].color[i] ? 1u : 0u;
-    u32 id_differ = 0;
-    for (u32 i = 0; i < shots[0].ids.size(); ++i)
-      id_differ += shots[0].ids[i] != shots[1].ids[i] ? 1u : 0u;
-    MESSAGE("heightfield" << std::string(deform ? " under --deform wave" : "") << ": " << pairs[0]
-                          << " pairs in the maps culled, " << pairs[1] << " unculled; " << differ
-                          << " colour bytes and " << id_differ << " id words differ");
-    CHECK(pairs[0] < pairs[1]);  // the witness: the boxes did cull
-    CHECK(differ == 0);
-    CHECK(id_differ == 0);
+    REQUIRE(tunables::apply_overrides("renderer.shadow.cascade_volume=true"));
+    for (u32 k = 1; k < 3; ++k) {
+      u32 differ = 0;
+      for (u32 i = 0; i < shots[0].color.size(); ++i)
+        differ += shots[0].color[i] != shots[k].color[i] ? 1u : 0u;
+      u32 id_differ = 0;
+      for (u32 i = 0; i < shots[0].ids.size(); ++i)
+        id_differ += shots[0].ids[i] != shots[k].ids[i] ? 1u : 0u;
+      MESSAGE("heightfield" << std::string(deform ? " under --deform wave" : "") << ": "
+                            << pairs[0] << " pairs in the maps by box and swept frusta, "
+                            << pairs[k] << (k == 1 ? " by box alone" : " unculled") << "; "
+                            << differ << " colour bytes and " << id_differ << " id words differ");
+      CHECK(differ == 0);
+      CHECK(id_differ == 0);
+    }
+    CHECK(pairs[0] < pairs[1]);  // the witnesses: the swept frusta culled past the boxes,
+    CHECK(pairs[1] < pairs[2]);  // and the boxes culled
   }
 }
 

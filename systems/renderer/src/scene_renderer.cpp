@@ -225,6 +225,32 @@ const char* resolve_module(bool shadows, bool water, bool terrain, bool stochast
   return k_modules[stochastic ? 1 : 0][terrain ? 1 : 0][water ? 1 : 0][shadows ? 1 : 0];
 }
 
+// **A cascade's caster volumes** (R49; renderer.md, "Cascaded shadow maps"): every view's frustum
+// swept towards the key light, widened by what the resolve reads beside a receiver — the 3x3
+// bilinear filter's 4x4 texels, two each side, and the normal offset — so a pair outside all of
+// them shadows no pixel any view draws. All or none: a view whose volume cannot be fit, or more
+// views than the cull block holds, leaves the cascade its whole box, since a view left out would
+// lose its casters. Never with water: its refracted floor and the sun's exit through the surface
+// read the maps at points off the frustum. Nor without the light-view cull, whose switch is the
+// test that culling never changes the shadow.
+void set_cascade_caster_volumes(const ViewSet& views, const RenderSettings& settings, bool water,
+                                Vec3 key_light, const CasterBounds& bounds, f32 texel_world,
+                                gfx::CullParams& cull) noexcept {
+  if (!settings.shadow_frustum || water || !shadow_cascade_volume_tunable()) return;
+  if (views.size() > gfx::k_max_caster_volumes) return;
+  const f32 offset = settings.shadow_normal_offset >= 0.0f ? settings.shadow_normal_offset
+                                                           : k_shadow_normal_offset_texels;
+  const f32 margin = (3.0f + offset) * texel_world;
+  CasterVolume volumes[gfx::k_max_caster_volumes];
+  for (u32 v = 0; v < views.size(); ++v) {
+    if (!fit_directional_caster_volume(views[v].view_proj, key_light, settings.shadow_distance,
+                                       bounds, volumes[v]))
+      return;
+    widen_caster_volume(volumes[v], margin);
+  }
+  set_caster_volumes(cull, std::span<const CasterVolume>(volumes, views.size()));
+}
+
 }  // namespace
 
 // The same table for the split's pipelines (R151; resolve_classes.cpp).
@@ -4134,6 +4160,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     cull.cone_cull = 0;
     cull.cascade =
         c + 1;  // the caster policy's nearest cascades (renderer.md, "The caster policy")
+    set_cascade_caster_volumes(views_, settings, scene.has_water(), key_light, caster_bounds,
+                               cascade.texel_world, cull);  // only what can shadow a pixel (R49)
     cull.clusters = scene.clusters.address;
     cull.lods = scene.lods.address;
     cull.visible = run_address;
