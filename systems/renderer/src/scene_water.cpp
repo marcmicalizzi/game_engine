@@ -224,13 +224,44 @@ bool read_scene_water(const scene::Scene& file, const std::string& path, const s
     if (!file.water[k].open && (wind > 0.0f || scene_wind))
       water.fetch_m = static_cast<f32>(
           closed_fetch_m(water.depth, water.shading.direction, static_cast<f64>(water.fetch_m)));
-    if (scene_wind && out.wind.varies() && water.fetch_m > 0.0f) {
+    // **The swell a scene names** (gfx.md, "A swell a scene names"; W136-3): an open body that
+    // follows the scene's wind and names no swell of its own takes the sky's, beside the scene's
+    // wind or, with none, its own: the table draws both on a grid that holds both, and the swell is
+    // the train that comes ashore (gpu_scene.cpp, `water_swash_numbers`).
+    const scene::WaterBody& block = file.water[k];
+    const bool own_swell = block.open && block.swell_height_m > 0.0f && block.swell_period_s > 0.0f;
+    const bool scene_swell = block.wind_follow && block.open && !own_swell &&
+                             out.wind.swell.kind != gfx::SwellKind::none;
+    water.scene_swell = scene_swell;
+    if (own_swell) {  // the body's own swell is its first train (S102), the sky's below
+      water.swell_train_m = block.swell_height_m;
+      water.swell_train_period_s = block.swell_period_s;
+      const f32 a = radians(block.swell_direction_deg);
+      water.swell_train_to = Vec2{std::cos(a), std::sin(a)};
+    }
+    if (scene_wind || scene_swell) {
+      water.sea = out.wind;
+      if (!scene_swell) water.sea.swell = gfx::SwellDesc{};
+      if (!scene_wind) {
+        water.sea.kind = gfx::WindKind::fixed;
+        water.sea.speed_m_s = static_cast<f64>(wind);
+        water.sea.to_deg = std::atan2(static_cast<f64>(water.shading.direction.y),
+                                      static_cast<f64>(water.shading.direction.x)) *
+                           (180.0 / gfx::k_wind_pi);
+      }
+    }
+    if ((scene_swell || (scene_wind && out.wind.varies())) && water.fetch_m > 0.0f) {
       const gfx::WaterWindRange range =
-          gfx::water_wind_range(out.wind, static_cast<f64>(water.fetch_m));
+          gfx::water_wind_range(water.sea, static_cast<f64>(water.fetch_m));
       if (range.grid.valid()) {
         water.grid = range.grid;
         water.wind_max_height_m = static_cast<f32>(range.max_height_m);
         water.wind_m_s = static_cast<f32>(range.max_wind_m_s);
+        if (scene_swell) {
+          water.swell_train_m = static_cast<f32>(range.max_groundswell_m);
+          water.swell_train_period_s = static_cast<f32>(range.groundswell_period_s);
+          water.swell_train_to = range.groundswell_to;
+        }
         gfx::WaterWave waves[gfx::k_water_waves];
         gfx::water_spectrum_on_grid(range.max_state, range.grid, file.water[k].seed, waves);
         for (const gfx::WaterWave& wave : waves)
@@ -239,7 +270,9 @@ bool read_scene_water(const scene::Scene& file, const std::string& path, const s
             log_renderer, "water follows the scene's wind", log::field("body", file.water[k].name),
             log::field("fetch_m", water.fetch_m), log::field("grid_lo", range.grid.lo),
             log::field("grid_hi", range.grid.hi), log::field("max_height_m", range.max_height_m),
-            log::field("max_wind_m_s", range.max_wind_m_s));
+            log::field("max_wind_m_s", range.max_wind_m_s),
+            log::field("swell_m", range.max_groundswell_m),
+            log::field("swell_period_s", range.groundswell_period_s));
       }
     } else if (wind > 0.0f && water.fetch_m > 0.0f) {
       gfx::WaterWave waves[gfx::k_water_waves];

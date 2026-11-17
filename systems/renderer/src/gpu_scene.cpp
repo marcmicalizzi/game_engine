@@ -579,8 +579,9 @@ WaterSwashNumbers water_swash_numbers(const SceneWater& water) {
   n.wave = gfx::swash_wave(n.wind, n.fetch_m);
   n.direction = water.shading.direction;
   // **A swell** (S102; water.md, "The swell") is the train that shoals, turns, breaks and runs up,
-  // from its own direction; the wind's wave keeps the surface offshore.
-  if (body.open && body.swell_height_m > 0.0f && body.swell_period_s > 0.0f) {
+  // from its own direction; the wind's wave keeps the surface offshore. W136-3: the body's own or
+  // the sky's at its largest, as the scene's reader set them (`SceneWater::swell_train_*`).
+  if (body.open && water.swell_train_m > 0.0f && water.swell_train_period_s > 0.0f) {
     if (n.wave.period_s > 0.0) {
       const f64 omega = 6.283185307179586 / gfx::swash_period(n.wave.period_s);
       n.wind_k0 = omega * omega / gfx::k_swash_g;
@@ -588,10 +589,9 @@ WaterSwashNumbers water_swash_numbers(const SceneWater& water) {
       n.wind_k0 = 1.0;  // no wind sea to calm: any positive number marks the swell
     }
     n.wind_wave = n.wave;
-    n.wave.height_m = static_cast<f64>(body.swell_height_m);
-    n.wave.period_s = std::min(static_cast<f64>(body.swell_period_s), 30.0);
-    const f32 a = radians(body.swell_direction_deg);
-    n.direction = Vec2{std::cos(a), std::sin(a)};
+    n.wave.height_m = static_cast<f64>(water.swell_train_m);
+    n.wave.period_s = std::min(static_cast<f64>(water.swell_train_period_s), 30.0);
+    n.direction = water.swell_train_to;
   }
   // Stockdon et al.'s, as it was, under the steep shore's ceiling (S102), which only a long low
   // wave on a steep shore reaches.

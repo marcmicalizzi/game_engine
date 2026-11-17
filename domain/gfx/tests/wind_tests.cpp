@@ -261,3 +261,108 @@ TEST_CASE("wind: a varying wind's table is on one grid, and its waves follow the
   MESSAGE("gale table Hs " << hs << " against " << sea_height(20.0, fetch));
   CHECK(hs == doctest::Approx(sea_height(20.0, fetch)).epsilon(0.2));
 }
+
+// ---- the swell a scene names (W136-3; gfx.md, "A swell a scene names") ------------------------
+
+namespace {
+// The beach's 8 m/s over 60 km beside a 4 m, 14 s swell from 1,000 km travelling to 200 degrees.
+WindDesc swell_day(f64 wind_m_s) {
+  WindDesc w = fixed_wind(wind_m_s, 205.0);
+  if (wind_m_s <= 0.0) w.kind = WindKind::fixed;
+  w.swell.kind = SwellKind::fixed;
+  w.swell.height_m = 4.0;
+  w.swell.period_s = 14.0;
+  w.swell.to_deg = 200.0;
+  w.swell.distance_km = 1000.0;
+  return w;
+}
+f64 table_hs(const WaterWave (&t)[k_water_waves]) {
+  f64 m0 = 0.0;
+  for (const WaterWave& w : t)
+    m0 += 0.5 * static_cast<f64>(w.amplitude) * static_cast<f64>(w.amplitude);
+  return 4.0 * std::sqrt(m0);
+}
+}  // namespace
+
+TEST_CASE("wind: a named swell is in the sea state and the table, at its own period") {
+  const f64 fetch = 60000.0;
+  for (const f64 wind : {0.0, 8.0, 20.0}) {
+    const WindDesc w = swell_day(wind);
+    const SeaState s = sea_state(w, 3600.0 * 15.0, fetch);
+    CHECK(s.groundswell_height_m == 4.0);
+    CHECK(s.groundswell_period_s == 14.0);
+    CHECK(s.groundswell_s == doctest::Approx(25.0 + 50.0 * std::log10(2.0)));
+    const f64 want = std::sqrt(16.0 + s.sea_height_m * s.sea_height_m);
+    CHECK(s.height_m() == doctest::Approx(want));
+    const WaterWindRange range = water_wind_range(w, fetch);
+    REQUIRE(range.grid.valid());
+    CHECK(range.max_groundswell_m == 4.0);
+    CHECK(range.grid.hi / range.grid.lo <= k_water_grid_max_ratio * (1.0 + 1e-9));
+    WaterWave t[k_water_waves];
+    water_spectrum_on_grid(s, range.grid, 11u, t);
+    // The bands hold the two seas' variance (the swell integrated over each band) within 5 %.
+    const f64 hs = table_hs(t);
+    MESSAGE(wind << " m/s beside 4 m at 14 s: table Hs " << hs << " against " << want << ", grid "
+                 << range.grid.lo << " to " << range.grid.hi);
+    CHECK(hs == doctest::Approx(want).epsilon(0.05));
+    // The swell's band stands at its period exactly (the grid slid onto it), along its direction.
+    u32 top = 0;
+    for (u32 i = 1; i < k_water_waves; ++i)
+      if (t[i].amplitude > t[top].amplitude) top = i;
+    const f64 step = std::log(range.grid.hi / range.grid.lo) / k_water_waves;
+    const f64 centre = range.grid.lo * std::exp(step * (top + 0.5));
+    CHECK(centre == doctest::Approx(2.0 * k_wind_pi / 14.0).epsilon(1e-9));
+    const Vec2 to = wind_unit(200.0);
+    // Within three of its spread's standard deviations (16 degrees at 1,000 km's s of 40).
+    const f32 len = std::sqrt(t[top].direction.x * t[top].direction.x +
+                              t[top].direction.y * t[top].direction.y);
+    CHECK((t[top].direction.x * to.x + t[top].direction.y * to.y) / len > 0.75f);
+  }
+  // No swell named: the table is the wind's, to the bit (the case above this one's first).
+  WindDesc none = fixed_wind(8.0, 205.0);
+  WaterWave a[k_water_waves];
+  water_spectrum_on_grid(sea_state(none, 0.0, fetch), water_wind_range(none, fetch).grid, 11u, a);
+  WaterWave b[k_water_waves];
+  water_spectrum(8.0, fetch, wind_unit(205.0), 11u, b);
+  CHECK(std::memcmp(a, b, sizeof(a)) == 0);
+}
+
+TEST_CASE("wind: a swell's track disperses, and its spread narrows with distance") {
+  // A storm 3,000 km away: the period arriving t hours after its first waves is 4 pi D / (g t),
+  // keyed every six hours from 17 s down; the blend is linear in frequency, which is the dispersion's
+  // own law (f = g t / 4 pi D), so between two keys the period is the formula's.
+  SwellDesc s;
+  s.kind = SwellKind::track;
+  s.period_h = 48.0;
+  const f64 d = 3.0e6;
+  const f64 t0 = 4.0 * k_wind_pi * d / (9.81 * 17.0);
+  for (u32 k = 0; k < 8; ++k) {
+    const f64 t = t0 + 6.0 * 3600.0 * k;
+    s.track.push_back(SwellKey{6.0 * k, 3.0, 4.0 * k_wind_pi * d / (9.81 * t), 180.0});
+  }
+  for (const f64 h : {3.0, 9.0, 27.0}) {
+    const SwellSample at = swell_at(s, h * 3600.0);
+    const f64 want = 4.0 * k_wind_pi * d / (9.81 * (t0 + h * 3600.0));
+    MESSAGE(h << " h: " << at.period_s << " s against the dispersion's " << want);
+    CHECK(at.period_s == doctest::Approx(want).epsilon(1e-9));
+  }
+  CHECK(swell_spread_s(100.0) == doctest::Approx(25.0));
+  CHECK(swell_spread_s(5000.0) == doctest::Approx(75.0));
+  CHECK(swell_spread_s(0.0) == doctest::Approx(swell_spread_s(k_swell_default_km)));
+  // sech²'s standard deviation π / (β √12) against cos^(2s)(θ/2)'s √(2 / s).
+  for (const f64 sp : {25.0, 75.0}) {
+    const f64 beta = spread_beta_of_s(sp);
+    CHECK(k_wind_pi / (beta * std::sqrt(12.0)) == doctest::Approx(std::sqrt(2.0 / sp)));
+  }
+}
+
+TEST_CASE("wind: the breaker a swell makes is the surf similarity's") {
+  // Battjes 1974: 4 m at 14 s spills on a 1:30 beach and plunges on a 1:5 shingle bank.
+  const f64 gentle = surf_similarity(1.0 / 30.0, 4.0, 14.0);
+  const f64 steep = surf_similarity(0.2, 4.0, 14.0);
+  MESSAGE("xi 1:30 " << gentle << ", 1:5 " << steep);
+  CHECK(gentle == doctest::Approx(0.292).epsilon(0.01));
+  CHECK(breaker_type(gentle) == BreakerType::spilling);
+  CHECK(breaker_type(steep) == BreakerType::plunging);
+  CHECK(breaker_type(surf_similarity(0.5, 0.5, 14.0)) == BreakerType::surging);
+}

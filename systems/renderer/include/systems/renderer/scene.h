@@ -227,6 +227,17 @@ struct SceneWater {
   bool scene_wind = false;
   gfx::WaterWaveGrid grid{};
   f32 wind_max_height_m = 0.0f;
+  // **The swell a scene names** (gfx.md, "A swell a scene names"; W136-3): an open body following
+  // the scene's wind with no swell of its own takes the sky's, and its shore's first train is that
+  // swell's largest state (height, period, direction: `swell_train_*`, which hold the body's own
+  // swell when it names one, S102). `sea` is the wind and swell the body draws — the
+  // scene's, or with no scene wind its own wind fixed beside the scene's swell — which the GPU
+  // scene's redraw asks; kind none for a body that follows neither.
+  bool scene_swell = false;
+  gfx::WindDesc sea{};
+  f32 swell_train_m = 0.0f;
+  f32 swell_train_period_s = 0.0f;
+  Vec2 swell_train_to{1.0f, 0.0f};
   // A channel of flowing water's (`engine.scene.WaterChannel`; water.md, "Channels"; S96): the
   // mesh's UV.x is the flow phase, and the GPU scene sets `gfx::k_material_water_channel` on its
   // material. `body` then holds the channel's name and optics under a body's names, and no shape.

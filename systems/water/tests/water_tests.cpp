@@ -1380,15 +1380,19 @@ TEST_CASE("water: an open sea's waves are JONSWAP's at the wind, spread about it
   for (const gfx::WaterWave& w : waves) {
     const f64 a = static_cast<f64>(w.amplitude);
     variance += 0.5 * a * a;
-    const f64 c = static_cast<f64>(w.direction.x * wind.x + w.direction.y * wind.y);
+    // The direction's length is the band's crest length over 2.5 wavelengths (W136-3:
+    // `gfx::water_crest_scale`, one to eight wavelengths).
+    const f64 crest =
+        std::sqrt(static_cast<f64>(w.direction.x * w.direction.x + w.direction.y * w.direction.y));
+    const f64 c = static_cast<f64>(w.direction.x * wind.x + w.direction.y * wind.y) / crest;
     mean_cos += 0.5 * a * a * c;
     steepness += static_cast<f64>(w.steepness);
     CHECK(w.cycles == std::floor(w.cycles));
     CHECK(w.cycles >= 1.0f);
     CHECK(w.phase >= 0.0f);
     CHECK(w.phase < 1.0f);
-    CHECK(std::fabs(std::sqrt(w.direction.x * w.direction.x + w.direction.y * w.direction.y) -
-                    1.0f) < 1e-5f);
+    CHECK(crest >= gfx::k_water_across_min / gfx::k_water_group_across - 1e-6);
+    CHECK(crest <= gfx::k_water_across_max / gfx::k_water_group_across + 1e-6);
     // Deep water: omega^2 = g k, and the frequency the cycles round it to.
     const f64 omega = static_cast<f64>(w.cycles) * 6.283185307179586 / 1024.0;
     CHECK(omega * omega / 9.81 == doctest::Approx(static_cast<f64>(w.k)).epsilon(0.02));

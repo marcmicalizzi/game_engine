@@ -69,8 +69,32 @@ struct WindClimate {
   f64 peak_hour = 15.0;
   u32 seed = 1;
 };
+// **A swell arriving from a distant storm** (`engine.scene.Swell`, the sky's `swell`; gfx.md, "A
+// swell a scene names"; docs/experiments/wind.md, "Swell"; W136-3): its significant height in deep
+// water, its peak period and where it travels to, fixed or keyed through a period, and how far it
+// has come, which sets how narrow its directions are (Goda and Suzuki 1975).
+enum class SwellKind : u8 { none = 0, fixed = 1, track = 2 };
+struct SwellKey {
+  f64 hour = 0.0;
+  f64 height_m = 0.0;
+  f64 period_s = 12.0;
+  f64 to_deg = 0.0;
+};
+// The distance a swell names when it says none: a typical arriving swell's.
+inline constexpr f64 k_swell_default_km = 1000.0;
+struct SwellDesc {
+  SwellKind kind = SwellKind::none;
+  f64 height_m = 0.0;
+  f64 period_s = 12.0;
+  f64 to_deg = 0.0;
+  Vector<SwellKey> track{};
+  f64 period_h = 24.0;
+  f64 distance_km = k_swell_default_km;
+  bool varies() const noexcept { return kind == SwellKind::track; }
+};
+
 // A scene's wind as the renderer read it from `engine.scene.Wind` (the same numbers, plain, since
-// gfx does not read scenes).
+// gfx does not read scenes), and the swell beside it (`Sky.swell`).
 struct WindDesc {
   WindKind kind = WindKind::none;
   f64 speed_m_s = 0.0;
@@ -79,7 +103,11 @@ struct WindDesc {
   f64 period_h = 24.0;
   WindClimate climate{};
   f64 roughness_m = 0.03;
+  SwellDesc swell{};
+  // The **wind** varies (the sea state steps its history).
   bool varies() const noexcept { return kind == WindKind::track || kind == WindKind::climate; }
+  // The **sea** varies: the wind, or the arriving swell's track.
+  bool sea_varies() const noexcept { return varies() || swell.varies(); }
 };
 
 // The wind at a time: the ten-minute mean 10 m up and where it blows to (unit, over x and z).
@@ -172,6 +200,74 @@ inline WindSample wind_at(const WindDesc& w, f64 time_s) noexcept {
     case WindKind::none: break;
   }
   return WindSample{0.0, Vec2{1.0f, 0.0f}};
+}
+
+// The arriving swell at sky time `time_s`: a fixed one, or a track's keys blended linearly (the
+// direction the shorter way round, the period by its frequency so a dispersing swell's track
+// shortens smoothly), wrapping over the period. Height 0 with none.
+struct SwellSample {
+  f64 height_m = 0.0;
+  f64 period_s = 0.0;
+  Vec2 to{1.0f, 0.0f};
+};
+inline SwellSample swell_at(const SwellDesc& s, f64 time_s) noexcept {
+  if (s.kind == SwellKind::fixed) return SwellSample{s.height_m, s.period_s, wind_unit(s.to_deg)};
+  if (s.kind != SwellKind::track || s.track.empty()) return SwellSample{};
+  if (s.track.size() == 1)
+    return SwellSample{s.track[0].height_m, s.track[0].period_s, wind_unit(s.track[0].to_deg)};
+  const f64 period = std::max(s.period_h, 1e-6);
+  const f64 h = std::fmod(std::fmod(time_s / k_wind_hour_s, period) + period, period);
+  u32 next = 0;
+  while (next < s.track.size() && s.track[next].hour <= h)
+    ++next;
+  const SwellKey& a = s.track[next == 0 ? s.track.size() - 1 : next - 1];
+  const SwellKey& b = s.track[next == s.track.size() ? 0 : next];
+  f64 span = b.hour - a.hour;
+  f64 into = h - a.hour;
+  if (span <= 0.0) span += period;
+  if (into < 0.0) into += period;
+  const f64 t = span > 0.0 ? std::clamp(into / span, 0.0, 1.0) : 0.0;
+  const f64 fa = 1.0 / std::max(a.period_s, 1e-3);
+  const f64 fb = 1.0 / std::max(b.period_s, 1e-3);
+  return SwellSample{a.height_m + (b.height_m - a.height_m) * t, 1.0 / (fa + (fb - fa) * t),
+                     wind_unit(a.to_deg + wind_detail::turn_deg(a.to_deg, b.to_deg) * t)};
+}
+
+// **How narrow a swell's directions are** (Goda and Suzuki 1975, the spreading parameter of
+// Mitsuyasu's cos^(2s)(θ/2) at the peak: s_max 10 for a wind sea, 25 for a swell with a short decay
+// distance, 75 for one with a long; a buoy off New Zealand measured 65 for a swell from across the
+// southern Indian Ocean): 25 at 500 km and nearer, 75 at 5,000 km and further, log-linear between.
+inline f64 swell_spread_s(f64 distance_km) noexcept {
+  const f64 d = std::clamp(distance_km > 0.0 ? distance_km : k_swell_default_km, 500.0, 5000.0);
+  return 25.0 + 50.0 * std::log10(d / 500.0);
+}
+// Mitsuyasu's s at r = ω / ω_p about a peak of `s_max` (Goda's form: s_max r^5 below the peak,
+// s_max r^-2.5 above).
+inline f64 goda_spread_s(f64 r, f64 s_max) noexcept {
+  return r < 1.0 ? s_max * std::pow(r, 5.0) : s_max * std::pow(r, -2.5);
+}
+// The sech²(βθ) whose variance is cos^(2s)(θ/2)'s: for large s the latter is exp(-s θ² / 4), of
+// variance 2 / s, and sech²(βθ)'s is π² / (12 β²), so β = π / √12 √(s / 2). (s 25: β 3.2, a
+// standard deviation of 16 degrees; 75: β 5.6, 9 degrees; Donelan and Banner's peak, β 2.3 to 2.6,
+// is s 13 to 16.)
+inline f64 spread_beta_of_s(f64 s) noexcept {
+  return 0.9068996821171089 * std::sqrt(std::max(s, 0.05) / 2.0);
+}
+
+// **The breaker a wave makes on a beach** (Battjes 1974, "Surf similarity", Proc. 14th ICCE): the
+// surf similarity (Iribarren) number ξ₀ = tan β / √(H₀ / L₀), the beach's slope over the deep-water
+// wave's steepness; spilling under 0.5, plunging from 0.5 to 3.3, surging or collapsing over 3.3.
+// For the foam's row (W139) to read: a 4 m 14 s swell on a 1:30 beach spills (ξ₀ 0.29), on a 1:5
+// shingle bank plunges (1.75).
+enum class BreakerType : u8 { none = 0, spilling = 1, plunging = 2, surging = 3 };
+inline f64 surf_similarity(f64 slope, f64 height_m, f64 period_s) noexcept {
+  if (!(height_m > 0.0) || !(period_s > 0.0)) return 0.0;
+  const f64 l0 = 9.81 * period_s * period_s / (2.0 * k_wind_pi);
+  return slope / std::sqrt(height_m / l0);
+}
+inline BreakerType breaker_type(f64 xi) noexcept {
+  if (!(xi > 0.0)) return BreakerType::none;
+  return xi < 0.5 ? BreakerType::spilling : xi <= 3.3 ? BreakerType::plunging : BreakerType::surging;
 }
 
 // The turbulence intensity over ground of roughness `z0` at 10 m: 1 / ln(z / z0) (the log law's
@@ -271,13 +367,34 @@ struct SeaState {
   Vec2 sea_to{1.0f, 0.0f};
   f64 sea_height_m = 0.0;  // its significant height (Hm0)
   f64 sea_period_s = 0.0;  // its peak period
-  f64 swell_height_m = 0.0;
+  f64 swell_height_m = 0.0;  // the swell the wind's own sea left behind
   f64 swell_period_s = 0.0;
   Vec2 swell_to{1.0f, 0.0f};
+  // **The swell a scene names** (W136-3): a storm's, arriving from far away; its directions as
+  // narrow as its distance says (`swell_spread_s`).
+  f64 groundswell_height_m = 0.0;
+  f64 groundswell_period_s = 0.0;
+  Vec2 groundswell_to{1.0f, 0.0f};
+  f64 groundswell_s = 25.0;
   f64 height_m() const noexcept {
-    return std::sqrt(sea_height_m * sea_height_m + swell_height_m * swell_height_m);
+    return std::sqrt(sea_height_m * sea_height_m + swell_height_m * swell_height_m +
+                     groundswell_height_m * groundswell_height_m);
+  }
+  bool has_groundswell() const noexcept {
+    return groundswell_height_m > 0.0 && groundswell_period_s > 0.0;
   }
 };
+
+// The arriving swell of `w` at `time_s` into `s` (none: left as it was).
+inline void sea_add_groundswell(SeaState& s, const WindDesc& w, f64 time_s) noexcept {
+  if (w.swell.kind == SwellKind::none) return;
+  const SwellSample g = swell_at(w.swell, time_s);
+  if (!(g.height_m > 0.0) || !(g.period_s > 0.0)) return;
+  s.groundswell_height_m = g.height_m;
+  s.groundswell_period_s = g.period_s;
+  s.groundswell_to = g.to;
+  s.groundswell_s = swell_spread_s(w.swell.distance_km);
+}
 
 namespace wind_detail {
 inline void to_swell(SeaState& s, f64 height, f64 period, Vec2 to) noexcept {
@@ -341,6 +458,7 @@ inline void sea_step(SeaState& s, const WindSample& w, f64 dt, f64 fetch_m) noex
 // is its fetch-limited sea, without stepping.
 inline SeaState sea_state(const WindDesc& w, f64 time_s, f64 fetch_m) noexcept {
   SeaState s;
+  sea_add_groundswell(s, w, time_s);
   if (w.kind == WindKind::none) return s;
   if (!w.varies()) {
     const WindSample now = wind_at(w, time_s);
@@ -392,7 +510,45 @@ inline f64 sea_density(const SeaState& s, f64 omega) noexcept {
                  s.swell_height_m * s.swell_height_m / 16.0 * (p * p * p * p) / sea_jonswap_unit(),
                  p);
   }
+  if (s.has_groundswell()) {
+    const f64 p = 2.0 * k_wind_pi / s.groundswell_period_s;
+    d += jonswap(omega,
+                 s.groundswell_height_m * s.groundswell_height_m / 16.0 * (p * p * p * p) /
+                     sea_jonswap_unit(),
+                 p);
+  }
   return d;
+}
+
+// **The share of the wind sea's waves breaking** (W136-3; for the whitecaps of the foam's row,
+// W139): Banner, Gemmrich and Farmer's probability (`water_breaking_probability`) at the sea's
+// spectral density, the largest over 1 to 2.5 of the wind sea's peak, where their threshold holds.
+// 0 with no wind sea (a swell alone does not break offshore).
+inline f64 sea_breaking_probability(const SeaState& s) noexcept {
+  if (!(s.sea_height_m > 0.0 && s.sea_fetch_m > 0.0 && s.wind_m_s > 0.0)) return 0.0;
+  const f64 peak = jonswap_peak(s.wind_m_s, s.sea_fetch_m);
+  f64 p = 0.0;
+  for (u32 i = 0; i <= 8; ++i) {
+    const f64 omega = peak * std::pow(2.5, static_cast<f64>(i) / 8.0);
+    p = std::max(p, water_breaking_probability(omega, sea_density(s, omega)));
+  }
+  return p;
+}
+
+// The arriving swell's variance over [a0, a1] rad/s (m²), its JONSWAP mean shape scaled to H² / 16
+// integrated by the midpoint rule in 32 steps: the swell is narrow, so a band's sample at its
+// centre would miss or double its peak by as much as the band is wide.
+inline f64 groundswell_band_variance(const SeaState& s, f64 a0, f64 a1) noexcept {
+  if (!s.has_groundswell()) return 0.0;
+  const f64 p = 2.0 * k_wind_pi / s.groundswell_period_s;
+  const f64 alpha = s.groundswell_height_m * s.groundswell_height_m / 16.0 * (p * p * p * p) /
+                    sea_jonswap_unit();
+  const u32 steps = 32;
+  const f64 dw = (a1 - a0) / static_cast<f64>(steps);
+  f64 m0 = 0.0;
+  for (u32 i = 0; i < steps; ++i)
+    m0 += jonswap(a0 + (static_cast<f64>(i) + 0.5) * dw, alpha, p) * dw;
+  return m0;
 }
 
 // ---- the sea as the water's table ---------------------------------------------------------------
@@ -417,6 +573,8 @@ inline void water_spectrum_on_grid(const SeaState& s, WaterWaveGrid grid, u32 se
   if (!grid.valid()) return;
   const bool sea = s.sea_height_m > 0.0 && s.sea_fetch_m > 0.0 && s.wind_m_s > 0.0;
   const bool swell = s.swell_height_m > 0.0 && s.swell_period_s > 0.0;
+  const bool ground = s.has_groundswell();
+  const f64 ground_peak = ground ? 2.0 * k_wind_pi / s.groundswell_period_s : 0.0;
   const f64 peak = sea ? jonswap_peak(s.wind_m_s, s.sea_fetch_m) : 0.0;
   const JonswapShape shape = sea ? jonswap_shape(s.wind_m_s, s.sea_fetch_m) : JonswapShape{};
   const f64 swell_peak = swell ? 2.0 * k_wind_pi / s.swell_period_s : 0.0;
@@ -428,8 +586,9 @@ inline void water_spectrum_on_grid(const SeaState& s, WaterWaveGrid grid, u32 se
   const f64 lo = std::log(grid.lo);
   const f64 step = (std::log(grid.hi) - lo) / static_cast<f64>(k_water_waves);
   const f64 two_pi = 6.283185307179586;
-  f64 steepness = 0.0;
+  const f64 nu = sea ? jonswap_nu(s.wind_m_s, s.sea_fetch_m) : 0.0;
   f64 ka[k_water_waves];
+  f64 breaking[k_water_waves];
   for (u32 i = 0; i < k_water_waves; ++i) {
     const f64 a0 = std::exp(lo + step * static_cast<f64>(i));
     const f64 a1 = std::exp(lo + step * static_cast<f64>(i + 1));
@@ -438,15 +597,22 @@ inline void water_spectrum_on_grid(const SeaState& s, WaterWaveGrid grid, u32 se
     const f64 s_swell = swell ? jonswap(omega, swell_alpha, swell_peak) : 0.0;
     f64 density = s_sea;
     if (swell) density += s_swell;
-    const f64 amplitude = std::sqrt(2.0 * density * (a1 - a0));
+    // The arriving swell's variance in the band, integrated (W136-3): narrow, so not sampled.
+    const f64 v_ground = ground ? groundswell_band_variance(s, a0, a1) : 0.0;
+    const f64 amplitude = std::sqrt(2.0 * (density * (a1 - a0) + v_ground));
     const f64 k = omega * omega / k_water_spectrum_g;
     // The band's direction and spread: the wind sea's where it holds the band, the swell's where
-    // the swell does (Donelan-Banner about each one's own peak).
-    const bool swell_band = swell && (!sea || s_swell > s_sea);
-    const Vec2 about = swell_band ? s.swell_to : s.sea_to;
-    const f64 beta = donelan_banner_beta(omega / (swell_band   ? swell_peak
-                                                  : peak > 0.0 ? peak
-                                                               : omega));
+    // the swell does (Donelan-Banner about each one's own peak), the arriving swell's where it does
+    // (Goda's spreading at its distance's s_max).
+    const bool ground_band = ground && v_ground > density * (a1 - a0);
+    const bool swell_band = !ground_band && swell && (!sea || s_swell > s_sea);
+    const Vec2 about = ground_band ? s.groundswell_to : swell_band ? s.swell_to : s.sea_to;
+    // W136-3: the wind sea's spread opens above its peak as its age says (`wind_sea_beta`).
+    const f64 beta =
+        ground_band  ? spread_beta_of_s(goda_spread_s(omega / ground_peak, s.groundswell_s))
+        : swell_band ? donelan_banner_beta(omega / swell_peak)
+        : peak > 0.0 ? wind_sea_beta(omega / peak, nu)
+                     : donelan_banner_beta(1.0);
     const f64 u = water_wave_uniform(seed, i, 1);
     const f64 theta = std::atanh(std::tanh(beta * 3.141592653589793) * (2.0 * u - 1.0)) / beta;
     const f64 wx = static_cast<f64>(about.x);
@@ -455,9 +621,12 @@ inline void water_spectrum_on_grid(const SeaState& s, WaterWaveGrid grid, u32 se
     const f64 sn = std::sin(theta);
     const f64 dx = wx * c - wz * sn;
     const f64 dz = wx * sn + wz * c;
-    const f64 len = std::sqrt(dx * dx + dz * dz);
+    // The band's crest length, as the direction's length (`water_crest_scale`).
+    const f64 len = std::sqrt(dx * dx + dz * dz) / water_crest_scale(beta);
     WaterWave& w = out[i];
     w.direction = Vec2{static_cast<f32>(dx / len), static_cast<f32>(dz / len)};
+    breaking[i] =
+        water_breaking_probability(omega, ground ? density + v_ground / (a1 - a0) : density);
     w.k = static_cast<f32>(k);
     w.amplitude = static_cast<f32>(amplitude);
     w.cycles = static_cast<f32>(std::max(1.0, std::floor(omega * k_water_period_s / two_pi + 0.5)));
@@ -467,11 +636,8 @@ inline void water_spectrum_on_grid(const SeaState& s, WaterWaveGrid grid, u32 se
       w.grow = static_cast<f32>(0.625 * q * q * q * q);
     }
     ka[i] = k * amplitude;
-    steepness += ka[i];
   }
-  const f64 scale = steepness > k_water_max_steepness ? k_water_max_steepness / steepness : 1.0;
-  for (u32 i = 0; i < k_water_waves; ++i)
-    out[i].steepness = static_cast<f32>(ka[i] * scale);
+  water_band_steepness(ka, breaking, out);
 }
 
 // What a varying wind raises over `fetch_m`, sampled over its period (a track) or sixty days (a
@@ -484,7 +650,21 @@ struct WaterWindRange {
   f64 max_period_s = 0.0;  // the period of the state with the largest height
   SeaState max_state{};    // that state
   f64 max_wind_m_s = 0.0;  // the strongest wind sampled
+  // The largest arriving swell sampled, its period and direction (the shore's train is its).
+  f64 max_groundswell_m = 0.0;
+  f64 groundswell_period_s = 0.0;
+  Vec2 groundswell_to{1.0f, 0.0f};
 };
+// `grid` slid by under half a band so a band's centre is at `omega` (when it is inside the grid).
+inline WaterWaveGrid water_grid_on(WaterWaveGrid grid, f64 omega) noexcept {
+  if (!grid.valid() || !(omega > grid.lo) || !(omega < grid.hi)) return grid;
+  const f64 step = std::log(grid.hi / grid.lo) / static_cast<f64>(k_water_waves);
+  const f64 x = std::log(omega / grid.lo) / step;
+  const f64 shift = (x - (std::floor(x) + 0.5)) * step;
+  grid.lo *= std::exp(shift);
+  grid.hi *= std::exp(shift);
+  return grid;
+}
 inline WaterWindRange water_wind_range(const WindDesc& w, f64 fetch_m) noexcept {
   WaterWindRange r;
   f64 lo = 0.0;
@@ -500,6 +680,16 @@ inline WaterWindRange water_wind_range(const WindDesc& w, f64 fetch_m) noexcept 
       lo = lo > 0.0 ? std::min(lo, p) : p;
       hi = std::max(hi, p);
     }
+    if (s.groundswell_height_m > 0.01 && s.groundswell_period_s > 0.0) {
+      const f64 p = 2.0 * k_wind_pi / s.groundswell_period_s;
+      lo = lo > 0.0 ? std::min(lo, p) : p;
+      hi = std::max(hi, p);
+      if (s.groundswell_height_m > r.max_groundswell_m) {
+        r.max_groundswell_m = s.groundswell_height_m;
+        r.groundswell_period_s = s.groundswell_period_s;
+        r.groundswell_to = s.groundswell_to;
+      }
+    }
     r.max_wind_m_s = std::max(r.max_wind_m_s, s.wind_m_s);
     if (s.height_m() > r.max_height_m) {
       r.max_state = s;
@@ -507,11 +697,13 @@ inline WaterWindRange water_wind_range(const WindDesc& w, f64 fetch_m) noexcept 
       r.max_period_s = s.sea_height_m >= s.swell_height_m ? s.sea_period_s : s.swell_period_s;
     }
   };
-  if (!w.varies()) {
+  if (!w.sea_varies()) {
     take(sea_state(w, 0.0, fetch_m));
   } else {
-    const f64 span =
-        w.kind == WindKind::track ? std::max(w.period_h, 1.0) * k_wind_hour_s : 60.0 * k_wind_day_s;
+    f64 span = 0.0;
+    if (w.kind == WindKind::track) span = std::max(w.period_h, 1.0) * k_wind_hour_s;
+    if (w.kind == WindKind::climate) span = 60.0 * k_wind_day_s;
+    if (w.swell.varies()) span = std::max(span, std::max(w.swell.period_h, 1.0) * k_wind_hour_s);
     const u32 samples = 240;
     for (u32 i = 0; i < samples; ++i)
       take(sea_state(w, span * (static_cast<f64>(i) + 0.5) / samples, fetch_m));
@@ -520,6 +712,10 @@ inline WaterWindRange water_wind_range(const WindDesc& w, f64 fetch_m) noexcept 
     r.grid.lo = k_water_band_low * lo;
     r.grid.hi = std::min(k_water_band_high * hi, k_water_grid_max_ratio * r.grid.lo);
     if (!(r.grid.hi > r.grid.lo)) r.grid.hi = k_water_band_high * lo;
+    // A fixed swell stands on a band's centre (W136-3): the grid slides by under half a band so
+    // the swell's period is drawn as it is, not the nearest centre's (up to 11 % off on a wide grid).
+    if (w.swell.kind == SwellKind::fixed && r.max_groundswell_m > 0.0)
+      r.grid = water_grid_on(r.grid, 2.0 * k_wind_pi / r.groundswell_period_s);
   }
   return r;
 }

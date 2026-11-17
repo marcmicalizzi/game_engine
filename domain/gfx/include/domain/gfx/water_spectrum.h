@@ -280,6 +280,81 @@ inline f64 donelan_banner_beta(f64 r) noexcept {
   return std::pow(10.0, -0.4 + 0.8393 * std::exp(-0.567 * std::log(r * r)));
 }
 
+// **A young sea is broader above its peak** (W136-3; docs/experiments/wind.md, "A wind sea's
+// spread"): Hasselmann et al. (1980, "Directional wave spectra observed during JONSWAP 1973",
+// J. Phys. Oceanogr. 10) fit Mitsuyasu's cos^(2s)(θ/2) to the JONSWAP data with s = 9.77 (f /
+// f_p)^μ above the peak, μ = −2.33 − 1.45 (U / c_p − 1.17): the younger the sea (the larger the
+// wind over the peak's speed, U / c_p = 2π ν), the faster the spread opens above the peak. At full
+// development (ν 0.13, U / c_p 0.82) μ is −1.82, which is Donelan and Banner's own fall above the
+// peak, so their β is kept there and a younger sea's opens by Hasselmann's difference, β ∝ √s:
+// β = β_DB(r) r^(Δμ / 2), Δμ = −1.45 (2π ν − 2π 0.13). At the peak and below it the two fits agree
+// that the spread does not depend on the sea's age (Donelan, Hamilton and Hui 1985 found none over
+// 0.83 < U / c_p < 5); Mitsuyasu et al. 1975's s_p = 11.5 (U / c_p)^−2.5, much broader at a young
+// peak, is the third fit and was not taken.
+inline f64 wind_sea_beta(f64 r, f64 nu) noexcept {
+  const f64 beta = donelan_banner_beta(r);
+  if (!(r > 1.0)) return beta;
+  const f64 two_pi = 2.0 * 3.141592653589793;
+  const f64 dmu = -1.45 * two_pi * (std::max(nu, k_water_developed_nu) - k_water_developed_nu);
+  return beta * std::pow(r, 0.5 * dmu);
+}
+
+// **A band's crests are as long as its directions are narrow** (W136-3): a band whose directions
+// spread by σ_θ decorrelates across its crest over about λ / (2π σ_θ), so its envelope's width
+// along the crest (`k_water_group_across` wavelengths at Donelan and Banner's peak, β 2.28) scales
+// with β: a young sea's short waves crest for a wavelength, a far swell's for five. The width is
+// carried as the length of the wave's `direction` (the shader and the reference divide it out),
+// kept to [1, 8] wavelengths.
+inline constexpr f64 k_water_peak_beta = 2.28;
+inline constexpr f64 k_water_across_min = 1.0;
+inline constexpr f64 k_water_across_max = 8.0;
+inline f64 water_crest_scale(f64 beta) noexcept {
+  return std::clamp(k_water_group_across * beta / k_water_peak_beta, k_water_across_min,
+                    k_water_across_max) /
+         k_water_group_across;
+}
+
+// **The share of a band's waves breaking** (W136-3; wind.md, "How steep a band stands"): Banner,
+// Gemmrich and Farmer (2002, "Multiscale measurements of ocean wave breaking probability", J. Phys.
+// Oceanogr. 32) found a band's breaking probability set by its saturation σ = (2π)⁴ f⁵ F(f) / 2g²
+// = ω⁵ S(ω) / 2g² normalized by the directional spread at the peak, with a threshold common to
+// 1 < f / f_p < 2.5; Banner and Morison (2010, Ocean Modelling 33) wrote it P = 33 (σ̃ − 0.0045)
+// over the threshold. A Pierson–Moskowitz tail (σ = α / 2 = 0.004 over a peak spread of 0.40 rad)
+// stands at σ̃ = 0.010, P = 0.18: the short waves of any wind sea break; a young gale's peak, 0.24.
+inline constexpr f64 k_breaking_threshold = 0.0045;
+inline constexpr f64 k_breaking_slope = 33.0;
+inline f64 water_breaking_probability(f64 omega, f64 density) noexcept {
+  const f64 w2 = omega * omega;
+  const f64 saturation = w2 * w2 * omega * density / (2.0 * k_water_spectrum_g * k_water_spectrum_g);
+  const f64 theta = 0.9068996821171089 / k_water_peak_beta;  // sech²'s σ at the peak, radians
+  return std::clamp(k_breaking_slope * (saturation / theta - k_breaking_threshold), 0.0, 1.0);
+}
+
+// **Each band its own steepness** (W136-3): a band's Gerstner sharpening is its own k a. Where the
+// table's sum passes `k_water_max_steepness` (no crest may loop), the bands that are not breaking
+// give way first and the breaking ones keep their sharp crests; only if those alone pass it are all
+// scaled alike, as before. (Measured: the sum is 0.48 for any fully developed sea and 0.66 for the
+// beach's young gale, so the old shared scale bound only the young seas, and by under a tenth.)
+inline void water_band_steepness(const f64 (&ka)[k_water_waves], const f64 (&breaking)[k_water_waves],
+                                 WaterWave (&out)[k_water_waves]) noexcept {
+  f64 hard = 0.0;
+  f64 soft = 0.0;
+  for (u32 i = 0; i < k_water_waves; ++i)
+    (breaking[i] > 0.0 ? hard : soft) += ka[i];
+  f64 scale_hard = 1.0;
+  f64 scale_soft = 1.0;
+  if (hard + soft > k_water_max_steepness) {
+    if (hard >= k_water_max_steepness) {
+      scale_hard = k_water_max_steepness / hard;
+      scale_soft = 0.0;
+    } else {
+      scale_soft = (k_water_max_steepness - hard) / soft;
+    }
+  }
+  for (u32 i = 0; i < k_water_waves; ++i)
+    out[i].steepness = static_cast<f32>(ka[i] * (breaking[i] > 0.0 ? scale_hard : scale_soft));
+}
+
 // An integer hash of the seed, the wave and what it is drawn for, in (0, 1): never 0 or 1, so the
 // spreading's inverse never meets atanh(±1).
 inline f64 water_wave_uniform(u32 seed, u32 wave, u32 salt) noexcept {
@@ -306,24 +381,27 @@ inline void water_spectrum(f64 u10, f64 fetch_m, Vec2 wind, u32 seed,
   const f64 two_pi = 6.283185307179586;
   const f64 wx = static_cast<f64>(wind.x);
   const f64 wz = static_cast<f64>(wind.y);
-  f64 steepness = 0.0;
+  const f64 nu = jonswap_nu(u10, fetch_m);
   f64 ka[k_water_waves];
+  f64 breaking[k_water_waves];
   for (u32 i = 0; i < k_water_waves; ++i) {
     const f64 a0 = std::exp(lo + step * static_cast<f64>(i));
     const f64 a1 = std::exp(lo + step * static_cast<f64>(i + 1));
     const f64 omega = std::sqrt(a0 * a1);  // the band's geometric centre
-    const f64 amplitude = std::sqrt(2.0 * jonswap(omega, shape, peak) * (a1 - a0));
+    const f64 density = jonswap(omega, shape, peak);
+    const f64 amplitude = std::sqrt(2.0 * density * (a1 - a0));
     const f64 k = omega * omega / k_water_spectrum_g;
-    const f64 beta = donelan_banner_beta(omega / peak);
+    const f64 beta = wind_sea_beta(omega / peak, nu);
     const f64 u = water_wave_uniform(seed, i, 1);
     const f64 theta = std::atanh(std::tanh(beta * 3.141592653589793) * (2.0 * u - 1.0)) / beta;
     const f64 c = std::cos(theta);
     const f64 s = std::sin(theta);
     const f64 dx = wx * c - wz * s;
     const f64 dz = wx * s + wz * c;
-    const f64 len = std::sqrt(dx * dx + dz * dz);
+    const f64 len = std::sqrt(dx * dx + dz * dz) / water_crest_scale(beta);
     WaterWave& w = out[i];
     w.direction = Vec2{static_cast<f32>(dx / len), static_cast<f32>(dz / len)};
+    breaking[i] = water_breaking_probability(omega, density);
     w.k = static_cast<f32>(k);
     w.amplitude = static_cast<f32>(amplitude);
     w.cycles = static_cast<f32>(std::max(1.0, std::floor(omega * k_water_period_s / two_pi + 0.5)));
@@ -331,11 +409,8 @@ inline void water_spectrum(f64 u10, f64 fetch_m, Vec2 wind, u32 seed,
     const f64 q = peak / omega;
     w.grow = static_cast<f32>(0.625 * q * q * q * q);
     ka[i] = k * amplitude;
-    steepness += ka[i];
   }
-  const f64 scale = steepness > k_water_max_steepness ? k_water_max_steepness / steepness : 1.0;
-  for (u32 i = 0; i < k_water_waves; ++i)
-    out[i].steepness = static_cast<f32>(ka[i] * scale);
+  water_band_steepness(ka, breaking, out);
 }
 
 // The table into the `k_water_wave_entries` entries that follow the water material's next one

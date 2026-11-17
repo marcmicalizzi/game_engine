@@ -164,22 +164,26 @@ void water_wave_add(WaterWave wave, float2 p, float t, float footprint, float sh
   const float weight = grown * keep;
   if (!(weight > 0.0)) return;
   const float clock = t / k_water_period_s;
-  const float along = dot(wave.direction, p) / lambda;
+  // The direction's length is the band's crest length over `k_water_group_across` (W136-3:
+  // gfx::water_crest_scale; a narrow band's crests are long, a broad one's short).
+  const float crest = length(wave.direction);
+  const float2 dir = wave.direction / crest;
+  const float along = dot(dir, p) / lambda;
   const float cyc = frac(frac(along) - frac(wave.cycles * clock) + wave.phase);
   const float angle = k_water_two_pi * cyc;
   const float sn = sin(angle);
   const float cs = cos(angle);
   const float cells = max(1.0, floor(wave.cycles / (2.0 * k_water_group_along) + 0.5));
-  const float2 across = float2(-wave.direction.y, wave.direction.x);
+  const float2 across = float2(-dir.y, dir.x);
   const float inv_u = 1.0 / (lambda * k_water_group_along);
-  const float inv_v = 1.0 / (lambda * k_water_group_across);
+  const float inv_v = 1.0 / (lambda * k_water_group_across * crest);
   const WaterEnvelope env = water_envelope(along / k_water_group_along - cells * clock,
                                            dot(across, p) * inv_v, cells, asuint(wave.phase));
   const float carrier = env.e.x * sn + env.e.y * cs;
   const float a = wave.amplitude * weight;
   r.height += a * carrier;
-  r.grad += wave.direction * (a * wave.k * (env.e.x * cs - env.e.y * sn)) +
-            (wave.direction * ((env.du.x * sn + env.du.y * cs) * inv_u) +
+  r.grad += dir * (a * wave.k * (env.e.x * cs - env.e.y * sn)) +
+            (dir * ((env.du.x * sn + env.du.y * cs) * inv_u) +
              across * ((env.dv.x * sn + env.dv.y * cs) * inv_v)) *
                 a;
   r.lift += wave.steepness * weight * carrier;

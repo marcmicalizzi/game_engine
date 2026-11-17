@@ -157,8 +157,11 @@ inline void wave_add(const gfx::WaterWave& wave, double x, double z, double t, d
                      double share, double young, Sum& r) {
   if (!(wave.amplitude > 0.0f)) return;
   const double k = static_cast<double>(wave.k);
-  const double dx = static_cast<double>(wave.direction.x);
-  const double dz = static_cast<double>(wave.direction.y);
+  // The direction's length is the band's crest length over `k_water_group_across` (W136-3).
+  const double crest = std::sqrt(static_cast<double>(wave.direction.x) * wave.direction.x +
+                                 static_cast<double>(wave.direction.y) * wave.direction.y);
+  const double dx = static_cast<double>(wave.direction.x) / crest;
+  const double dz = static_cast<double>(wave.direction.y) / crest;
   const double lambda = k_two_pi / k;
   const double keep = footprint > 0.0 ? brdf_ref::clamp01(lambda / (2.0 * footprint) - 1.0) : 1.0;
   const double grown =
@@ -176,7 +179,7 @@ inline void wave_add(const gfx::WaterWave& wave, double x, double z, double t, d
   const double cs = std::cos(angle);
   const double cells = gfx::water_envelope_cells(static_cast<double>(wave.cycles));
   const double inv_u = 1.0 / (lambda * gfx::k_water_group_along);
-  const double inv_v = 1.0 / (lambda * gfx::k_water_group_across);
+  const double inv_v = 1.0 / (lambda * gfx::k_water_group_across * crest);
   u32 salt = 0;
   std::memcpy(&salt, &wave.phase, sizeof(salt));
   const Envelope env = envelope(along / gfx::k_water_group_along - cells * clock,

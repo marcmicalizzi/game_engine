@@ -1089,7 +1089,7 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
       const auto& body = info.water->body;
       lifts_water = lifts_water || body.wind_m_s > 0.0f ||
                     (body.open && (info.water->wind_m_s > 0.0f || body.tide_m > 0.0f ||
-                                   (body.swell_height_m > 0.0f && body.swell_period_s > 0.0f)));
+                                   info.water->swell_train_m > 0.0f));  // W136-3: own or sky's
     }
   }
   out.deform_pass = s.deform || out.terrain_levels || out.flora_motion || lifts_water ||

@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "W136-3",
+  "reason": "W136-3: the swell a scene names and a wind sea's spread by its age (gfx.md 'A swell a scene names')",
+  "date": "2026-11-17",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/gfx.md": 5620
+  }
+}

@@ -43,6 +43,23 @@ struct WindHand {
 };
 WindHand wind_hand_tunable() noexcept;
 
+// `Sky.swell` checked into `out`; false with a sentence naming the file and the field (W136-3).
+bool read_scene_swell(const scene::Swell& swell, const std::string& path, gfx::SwellDesc& out,
+                      std::string& error);
+
+// **The hand swell** (`renderer.swell.height_m`, `renderer.swell.period_s`, `renderer.swell.to_deg`;
+// W136-3): a height of 0 or more holds every open body that draws a wave table at that arriving
+// swell, at once, at `period_s` (12 s by default), travelling to `to_deg` when that is 0 or more and
+// otherwise as the body's shore train does. Below 0, the default, the scene's swell (or none).
+struct SwellHand {
+  bool set = false;
+  f64 height_m = 0.0;
+  f64 period_s = 12.0;
+  bool turned = false;
+  f64 to_deg = 0.0;
+};
+SwellHand swell_hand_tunable() noexcept;
+
 // The mean wind the trees' sway calls 1 (`FloraWind::strength`; flora_motion.h), m/s: a scene's
 // wind reaches the trees as its gust over this. 5 m/s, a land site's typical mean at 10 m
 // (docs/experiments/wind.md, "How strong").
@@ -59,6 +76,17 @@ struct WaterWindBody {
   u32 seed = 1;
   Vec2 direction{1.0f, 0.0f};  // the load's wind direction
   bool swell = false;          // its own swell is the train that comes ashore: its height holds
+  // W136-3: an open body (a hand swell reaches it); the wind and swell it draws
+  // (`SceneWater::sea`; kind none: its own wind, `load_wind_m_s`); whether its first train is the
+  // sky's swell (`SceneWater::scene_swell`); where its first train travels to (a hand swell's
+  // default direction); and the hand state its grid was last drawn for.
+  bool open = false;
+  gfx::WindDesc sea{};
+  bool sky_swell = false;
+  f64 load_wind_m_s = 0.0;
+  Vec2 train_to{1.0f, 0.0f};
+  f64 hand_key[5]{-2.0, -2.0, -2.0, -2.0, -2.0};
+  gfx::WaterWaveGrid hand_grid{};
   f64 slope = 0.0;             // the foreshore's mean slope, for the run-up
   f64 bank_max = 0.0;
   f64 period_s = 0.0;  // the train's period at load (the arrival field's), unrounded
@@ -68,6 +96,9 @@ struct WaterWindBody {
   u32 key_kind = 0;
   f64 key_a = 0.0;
   f64 key_b = 0.0;
+  f64 key_c = 0.0;  // W136-3: the hand swell's height, period and direction
+  f64 key_d = 0.0;
+  f64 key_e = 0.0;
   // **The lift's bound follows the sea drawn** (gfx.md, "What the scene's wind does not do"): the
   // instance whose surface this is (~0: none), its `bounds_padding` as the load set it, and the
   // padding the sea last written needs (`water_lift_padding`). The GPU scene holds the instance at
@@ -119,7 +150,8 @@ inline constexpr f64 k_water_wind_quantum_s = 10.0;
 
 // For sky time `sky_time_s`, the copies that bring each body to the table and surface it draws now
 // (appended to `uploads`, which is cleared first); a body already there adds none.
-void water_wind_frame(std::span<WaterWindBody> bodies, const gfx::WindDesc& wind, f64 sky_time_s,
+// Each body draws its own `sea` (the scene's wind and swell as it takes them; W136-3).
+void water_wind_frame(std::span<WaterWindBody> bodies, f64 sky_time_s,
                       Vector<WaterWindUpload>& uploads);
 
 // The trees' wind from the scene's (`GpuScene::flora_frame`): where it blows to and its gust at
