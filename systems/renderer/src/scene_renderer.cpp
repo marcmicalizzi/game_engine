@@ -21,6 +21,7 @@
 #include <systems/renderer/water_refract.h>
 
 #include <accumulation_pass.h>
+#include <texture_feedback.h>
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -1090,7 +1091,47 @@ void SceneRenderer::remove_frame_pass(FramePassFn fn, void* user) noexcept {
 // **Sampling over time's inputs** (motion_pass.h; renderer.md, "Sampling over time: the inputs"):
 // made only under `renderer.reconstruction.inputs`, so a renderer without it holds a null pointer
 // and nothing else of this.
+// The texture residency's feedback (R172 stage 2; texture_feedback.h): one pixel in sixteen of every
+// view's visibility buffer, recorded after the resolve and never through the linear image, so a
+// frame that registers no frame pass still draws straight into its target.
+bool SceneRenderer::record_texture_residency(gfx::RenderGraph& graph, u32 slot, u64 frame_index,
+                                             gfx::RgBuffer visibility, u32 view_count,
+                                             const FramePassView* views,
+                                             const gfx::FrameEye& eye, std::string* error) {
+  FramePassContext sparse;
+  sparse.graph = &graph;
+  sparse.timer = &timer_;
+  sparse.bindless = &scene_->bindless();
+  sparse.slot = slot;
+  sparse.frame_index = frame_index;
+  sparse.visibility = visibility;
+  sparse.view_count = view_count;
+  sparse.views = views;
+  sparse.gpu_eye = eye;
+  return texture_residency_->record(sparse, error);
+}
+
 bool SceneRenderer::create_motion(std::string* error) {
+  // The texture feedback (texture_feedback.h; texture.md, "Levels resident by what the frame
+  // samples"): a measurement, a frame pass of its own, only when the tunable names a file.
+  if (const std::string feedback = TextureFeedback::path_wanted(); !feedback.empty()) {
+    texture_feedback_ = new TextureFeedback;
+    if (!texture_feedback_->create(*device_, *scene_, shaders_, desc_.frames_in_flight, feedback,
+                                   error) ||
+        !add_frame_pass(FramePassStage::AfterResolve, &TextureFeedback::record_thunk,
+                        texture_feedback_, "texture feedback", error)) {
+      return false;
+    }
+  }
+  // The residency's own (R172 stage 2): whenever the scene's textures have a ceiling, at every
+  // frame and not only over it, so the history is there when the pressure comes.
+  if (u32 first = 0, count = 0; scene_->texture_residency_run(first, count)) {
+    texture_residency_ = new TextureFeedback;
+    if (!texture_residency_->create_residency(*device_, *scene_, shaders_, desc_.frames_in_flight,
+                                              error)) {
+      return false;
+    }
+  }
   if (!resolved_.reconstruction_inputs) return true;
   motion_ = new MotionPass;
   if (!motion_->create(*device_, *scene_, views_, desc_.frames_in_flight, error)) return false;
@@ -1583,6 +1624,16 @@ void SceneRenderer::destroy() noexcept {
     accumulation_->destroy();
     delete accumulation_;
     accumulation_ = nullptr;
+  }
+  if (texture_feedback_ != nullptr) {
+    texture_feedback_->destroy();
+    delete texture_feedback_;
+    texture_feedback_ = nullptr;
+  }
+  if (texture_residency_ != nullptr) {
+    texture_residency_->destroy();
+    delete texture_residency_;
+    texture_residency_ = nullptr;
   }
   if (motion_ != nullptr) {
     motion_->destroy(device);
@@ -2215,6 +2266,9 @@ void SceneRenderer::collect_slot(u32 slot) {
     for (u32 p = 0; p < frame_pass_count_; ++p)
       last.gpu_frame_passes += timer_.ms(frame_passes_[p].zone);
     last.gpu_frame_passes += timer_.ms("frame encode");
+    // The texture residency's feedback (R172 stage 2) is no bucket's: its own account has it.
+    if (texture_residency_ != nullptr)
+      scene_->texture_residency_feedback_ms(timer_.ms("texture residency"));
     last.gpu_total = timer_.total_ms();
     // What no bucket names (R130): the record's buckets are disjoint — `clas`, `blas` and the
     // chain's other zones inside `rt`, `shadow_cull` inside `shadow` — so the total less the
@@ -2891,7 +2945,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // A moving terrain's levels (docs/subsystems/renderer.md, "The dunes in time-lapse"): this frame
   // slot's table of what each level draws, which the cull pass and the pool pass read, and the
   // fields the host handed over since the last frame, which this frame copies onto the device
-  // before either pass runs. Nothing for a scene whose terrain does not move.
+  // before either pass runs. Nothing for a scene whose terrain does not move. First the levels the
+  // texture bound brings in (R172), which hand over with the rest.
+  scene.texture_bound_frame(frame.camera.position, frame.camera.fov_y, frame.camera.znear, width_,
+                            height_, frame.history_reset, frame.dt_s);
   scene.terrain_prepare(slot, terrain_frame_);
   // The instance records moved since the last frame (`move_instances` in a scene read whole) and
   // the ring slots' records, staged in this slot's own staging for the "record upload" pass below,
@@ -4496,8 +4553,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       tg.vertices = import_read("ring vertices", scene.vertices);
       tg.indices8 = import_read("ring indices8", scene.indices8);
     }
-    // A scene with a mesh room copies an admitted mesh's material indices and materials too.
-    if (scene.mesh_room().slots != 0) {
+    // A scene with a mesh room copies an admitted mesh's material indices and materials too, and
+    // the texture bound the records of a promoted texture's materials (R172).
+    if (scene.mesh_room().slots != 0 || scene.texture_bound_active()) {
       tg.cluster_materials = import_read("mesh cluster materials", scene.cluster_materials);
       tg.materials = import_read("mesh materials", scene.materials);
     }
@@ -6283,6 +6341,27 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   };
   static_assert(sizeof(FrameEncodePush) == 36, "frame_encode.slang's FrameEncodePush");
   FrameEncodePush encode_push[k_max_views];
+  for (u32 v = 0; v < views && (frame_passes_on || texture_residency_ != nullptr); ++v) {
+    const View& view = views_[v];
+    FramePassView& out = pass_views[v];
+    out.x = view.rect.x;
+    out.y = view.rect.y;
+    out.width = view.rect.width;
+    out.height = view.rect.height;
+    out.source_width = view_frames[v].width;
+    out.source_height = view_frames[v].height;
+    out.visibility = view_frames[v].vis_address;
+    out.view_proj = view.view_proj;
+    out.clip_to_eye = inverse(view.view_proj);
+    out.clip_to_ray = view.clip_to_ray;
+    out.panini = views_.resample();
+  }
+  // The texture residency's feedback (R172 stage 2; texture_feedback.h), in any view mode.
+  if (texture_residency_ != nullptr && !direct &&
+      !record_texture_residency(graph, slot, frame.frame_index, rg_vis, views, pass_views, gpu_eye,
+                                error)) {
+    return false;
+  }
   if (frame_passes_on) {
     FramePassContext context;
     context.graph = &graph;
@@ -6301,21 +6380,6 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     context.height = height_;
     context.visibility = rg_vis;
     context.motion = rg_motion;
-    for (u32 v = 0; v < views; ++v) {
-      const View& view = views_[v];
-      FramePassView& out = pass_views[v];
-      out.x = view.rect.x;
-      out.y = view.rect.y;
-      out.width = view.rect.width;
-      out.height = view.rect.height;
-      out.source_width = view_frames[v].width;
-      out.source_height = view_frames[v].height;
-      out.visibility = view_frames[v].vis_address;
-      out.view_proj = view.view_proj;
-      out.clip_to_eye = inverse(view.view_proj);
-      out.clip_to_ray = view.clip_to_ray;
-      out.panini = views_.resample();
-    }
     context.view_count = views;
     context.views = pass_views;
     context.camera = &frame.camera;

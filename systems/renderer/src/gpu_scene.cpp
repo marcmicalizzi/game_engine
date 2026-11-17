@@ -1,3 +1,5 @@
+#include "texture_bound_state.h"  // R172: the bound's state, which `texture_bound_` owns
+
 #include <core/base/assert.h>
 #include <core/containers/hash_map.h>
 #include <core/hash/hash.h>
@@ -4398,6 +4400,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
   // The materials' samplers are made as their slots ask (`material_sampler_slot`, with
   // `fill_material` in gpu_scene_textures.cpp, which an admitted mesh's materials go through too).
   load_textures_.clear();
+  load_texture_records_.clear();
   texture_bytes_ = 0;
   textures_built_ = 0;
   textures_decoded_ = 0;
@@ -4529,6 +4532,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
     // each material reads is.
     SceneTextures scene_textures(share_textures_);
     TexturePrefetch prefetch(*data_);  // T73: the `.tex` reads ahead of the uploads, on a pool
+    if (!texture_bound_plan(error)) return false;  // R172: which keys the bound holds, their pairs
     for (u32 m = 0; m < data_->sources.size(); ++m) {
       const SourceMesh& source_mesh = data_->sources[m];
       const assets::MeshData& mesh_data = source_mesh.data;
@@ -4573,6 +4577,8 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
         bool ok = false;
         // The texture's content, and the scene's texture of that content if it has one yet.
         SceneTexture made;
+        u32 bound_first =
+            ~0u;  // R172: the level it is uploaded from, ~0u unless the bound holds it
         made.form = use_built ? k_form_built : static_cast<u32>(format);
         auto share = [&]() -> const SceneTexture* {
           const SceneTexture* held = scene_textures.find(made.content, made.form);
@@ -4589,16 +4595,20 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
           made.stored = built[index].stored;
           made.normal_variance = built[index].normal_variance;
           if (share() != nullptr) return image_slot[index];
-          // As stored: the blocks of every level, one staging copy, no decode.
+          // As stored: the blocks of every level, one staging copy, no decode — from the bound's
+          // floor for a texture it manages (R172), which the first frame promotes.
           const texture::TextureData& t = built[index].data;
+          bound_first = texture_bound_first_level(made.content, t);
+          const u32 from = bound_first == ~0u ? 0u : bound_first;
           Vector<gfx::ImageLevelData> levels;
           levels.reserve(t.levels.size());
-          for (u32 l = 0; l < t.levels.size(); ++l) {
+          for (u32 l = from; l < t.levels.size(); ++l) {
             const std::span<const u8> bytes = t.level_bytes(l);
             levels.push_back(gfx::ImageLevelData{bytes.data(), bytes.size()});
           }
           ok = gfx::upload_image_2d_levels(
-                   device, t.width, t.height, texture_gpu_format(t),
+                   device, texture::texture_level_extent(t.width, from),
+                   texture::texture_level_extent(t.height, from), texture_gpu_format(t),
                    std::span<const gfx::ImageLevelData>(levels.data(), levels.size()), uploaded,
                    &image_error) &&
                gfx::create_image_view(device, uploaded, view, &image_error);
@@ -4650,25 +4660,39 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
         }
         texture_bytes_ += uploaded.bytes;
         ++texture_references_;
-        textures_.push_back(uploaded);
-        texture_views_.push_back(view);
-        image_slot[index] = bindless_.add_sampled_image(view, gfx::ImageLayout::ShaderReadOnly);
+        const bool bounded = bound_first != ~0u;
+        if (bounded) {  // R172: in a pair of the bound's run, its image the bound's to swap
+          image_slot[index] =
+              texture_bound_place(made.content, built[index].data, bound_first, uploaded, view);
+        } else {
+          textures_.push_back(uploaded);
+          texture_views_.push_back(view);
+          image_slot[index] = bindless_.add_sampled_image(view, gfx::ImageLayout::ShaderReadOnly);
+        }
         made.slot = image_slot[index];
         made.bytes = uploaded.bytes;
+        // A bounded texture's record names its whole chain, which the feedback measures levels of.
+        load_texture_records_.push_back(TextureRecord{
+            made.slot, uploaded.format, bounded ? built[index].data.width : uploaded.width,
+            bounded ? built[index].data.height : uploaded.height,
+            bounded ? built[index].data.levels.size() : uploaded.levels, uploaded.bytes, false,
+            bounded ? bound_first : 0u});
         if (made.normal_variance) {
           // Scene creation never frees a descriptor. Publish the auxiliary image immediately
           // after its normal, and check that contract rather than silently sampling another map.
           const texture::TextureData& t = built[index].data;
+          const u32 from = bounded ? bound_first : 0u;
           Vector<gfx::ImageLevelData> levels;
           levels.reserve(t.levels.size());
-          for (u32 l = 0; l < t.levels.size(); ++l) {
+          for (u32 l = from; l < t.levels.size(); ++l) {
             const auto bytes = t.normal_variance_level_bytes(l);
             levels.push_back(gfx::ImageLevelData{bytes.data(), bytes.size()});
           }
           gfx::ImageResource variance;
           gfx::ImageViewHandle variance_view;
           if (!gfx::upload_image_2d_levels(
-                  device, t.width, t.height, gfx::Format::Bc4Unorm,
+                  device, texture::texture_level_extent(t.width, from),
+                  texture::texture_level_extent(t.height, from), gfx::Format::Bc4Unorm,
                   std::span<const gfx::ImageLevelData>(levels.data(), levels.size()), variance,
                   &image_error) ||
               !gfx::create_image_view(device, variance, variance_view, &image_error)) {
@@ -4677,14 +4701,19 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
             if (error != nullptr) *error = "normal variance upload: " + image_error;
             return gfx::k_no_texture;
           }
-          textures_.push_back(variance);
-          texture_views_.push_back(variance_view);
+          if (!bounded) {
+            textures_.push_back(variance);
+            texture_views_.push_back(variance_view);
+          }
           texture_bytes_ += variance.bytes;
           made.bytes += variance.bytes;
+          load_texture_records_.back().bytes += variance.bytes;
           ++normal_variance_textures_;
           normal_variance_bytes_ += variance.bytes;
           const u32 slot =
-              bindless_.add_sampled_image(variance_view, gfx::ImageLayout::ShaderReadOnly);
+              bounded
+                  ? texture_bound_place_variance(made.content, variance, variance_view)
+                  : bindless_.add_sampled_image(variance_view, gfx::ImageLayout::ShaderReadOnly);
           if (made.slot == gfx::k_no_texture || slot == gfx::k_no_texture ||
               slot != made.slot + 1u) {
             variance_upload_failed = true;
@@ -4920,7 +4949,8 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
     // textures are the scene's for its life.
     if (mesh_room_.slots != 0) {
       for (const SceneTexture& held : scene_textures.all()) {
-        if (held.form != k_form_built) continue;
+        // A texture the bound holds by level is not offered: a tile's mesh brings its own whole.
+        if (held.form != k_form_built || texture_bound_manages(held.content)) continue;
         TextureInfo info;
         info.slot = held.slot;
         info.normal_rg = held.stored == texture::TextureFormat::bc5;
@@ -5126,6 +5156,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
   }
   // A dynamic scene's instance table is a set per frame in flight, made by `create` once the mesh
   // table (and its null mesh) exists.
+  texture_bound_materials(material_table, table_material);  // R172: who names each bound texture
   has_coverage_ = !coverage_words.empty();
   if (has_coverage_ &&
       !gfx::upload_buffer(device, coverage_words.data(), u64{cluster_count_} * sizeof(u32),
@@ -6708,6 +6739,7 @@ void GpuScene::destroy() noexcept {
   gfx::destroy_buffer(device, quantized);
   gfx::destroy_buffer(device, clusters);
   destroy_texture_room();
+  destroy_texture_bound();  // R172: the managed textures' images, which are not in `textures_`
   for (gfx::ImageViewHandle view : texture_views_)
     gfx::destroy_image_view(device, view);
   texture_views_.clear();

@@ -1132,6 +1132,16 @@ class SceneRenderer {
   // The engine's own accumulation (src/accumulation_pass.h): null unless
   // `renderer.reconstruction.accumulation` is on or mean.
   class AccumulationPass* accumulation_ = nullptr;
+  // Which level of each texture the frames asked for (src/texture_feedback.h; R172): null unless
+  // `renderer.textures.feedback` names a file.
+  class TextureFeedback* texture_feedback_ = nullptr;
+  // The texture residency's own feedback (R172 stage 2), one pixel in sixteen, recorded by
+  // `record_frame` after the resolve: null unless the scene's textures have a ceiling.
+  class TextureFeedback* texture_residency_ = nullptr;
+  bool record_texture_residency(gfx::RenderGraph& graph, u32 slot, u64 frame_index,
+                                gfx::RgBuffer visibility, u32 view_count,
+                                const FramePassView* views, const gfx::FrameEye& eye,
+                                std::string* error);
   u32 view_count() const noexcept { return views_.size(); }
 
   const gfx::Device* device_ = nullptr;

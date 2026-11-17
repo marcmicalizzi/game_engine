@@ -2635,7 +2635,7 @@ struct FlythroughRt @version(6) {
 /// own copy; the device bytes of what was uploaded, and of what sharing did not upload again
 /// (docs/subsystems/renderer.md, "One upload per distinct image"). `sharing` is
 /// `RenderSettings::share_textures`: false is every mesh its own copy, to measure against.
-struct FlythroughTextures @version(2) {
+struct FlythroughTextures @version(4) {
   built: u32 = 0
   decoded: u32 = 0
   shared: u32 = 0
@@ -2646,6 +2646,32 @@ struct FlythroughTextures @version(2) {
   /// renderer.md, "Normal filtering"), and those chains' device bytes, which `bytes` includes.
   normal_variance: u32 = 0 @since(2)
   normal_variance_bytes: u64 = 0 @since(2)
+  /// The texture bound (R172 stage 1; `renderer.textures.bound`; docs/subsystems/texture.md,
+  /// "Stage 1: the bound, built"): the load's textures it held by level, their bytes now and at
+  /// the most, the promotions it made, the frames it found late, and the most one frame's
+  /// admissions and one settle took on the recording thread. All zero with the bound off.
+  bound_textures: u32 = 0 @since(3)
+  bound_resident_bytes: u64 = 0 @since(3)
+  bound_peak_bytes: u64 = 0 @since(3)
+  bound_promotions: u64 = 0 @since(3)
+  bound_late: u64 = 0 @since(3)
+  bound_worst_admit_ms: f64 = 0 @since(3)
+  bound_worst_settle_ms: f64 = 0 @since(3)
+  /// The residency's trim under a ceiling (R172 stage 2; `renderer.textures.ceiling_mib`;
+  /// texture.md, "Stage 2: the trim under a ceiling"): the ceiling in bytes, the demotions it made
+  /// and the bytes they gave back, the frames over the ceiling, the demotions dropped because a
+  /// level was asked within the hold, the texture-frames the feedback asked finer than was
+  /// resident, the feedback's GPU milliseconds (mean and most over the frames it was timed in) and
+  /// the most one frame's demotions took on the recording thread. All zero with no ceiling.
+  residency_ceiling: u64 = 0 @since(4)
+  residency_demotions: u64 = 0 @since(4)
+  residency_released_bytes: u64 = 0 @since(4)
+  residency_pressure_frames: u64 = 0 @since(4)
+  residency_refused_in_hold: u64 = 0 @since(4)
+  residency_asked_late: u64 = 0 @since(4)
+  residency_feedback_ms: f64 = 0 @since(4)
+  residency_feedback_ms_max: f64 = 0 @since(4)
+  residency_worst_demote_ms: f64 = 0 @since(4)
 }
 
 /// How a windowed run presented (`engine-view --interactive --benchmark`, and a replay flown in

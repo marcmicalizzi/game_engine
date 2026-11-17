@@ -648,6 +648,14 @@ struct SourceMesh {
   // largest instance, 0 for none; or empty, and nothing is capped. The load's texture pass takes
   // the largest need of every mesh that shares an image, a mesh asking none counting as the whole.
   Vector<u32> texture_caps;
+  // **Each image's least density** (R172 stage 1; texture.md, "Levels resident by what the frame
+  // samples"): parallel to `textures`, `texture::least_cluster_density` over every cluster of every
+  // level, UV units a metre; empty when the bound does not manage this mesh's textures (it is open
+  // as the cap's rule has it, or `renderer.textures.bound` is off). `texture_sphere` is the
+  // mesh-space sphere round its vertices (xyz centre, w radius) the bound measures an observer's
+  // nearest approach to.
+  Vector<f64> texture_least_density;
+  Vec4 texture_sphere{};
   // The derived-data root those textures are looked up under; empty when the load reads no cache
   // (`SceneDesc::cache` off), and then the built textures are not used either.
   std::string texture_ddc;

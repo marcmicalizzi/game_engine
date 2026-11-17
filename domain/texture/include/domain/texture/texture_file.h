@@ -202,6 +202,22 @@ bool read_texture_file_identity(std::string_view path, u64& source_hash, u64& bu
 bool probe_texture_file(std::string_view path, u64& source_hash, u64& build_key, u64& bytes,
                         std::string* error = nullptr);
 
+// **A chain's tail as a texture of its own** (R172 stage 1; texture.md, "Levels resident by what
+// the frame samples"): levels `first` and coarser of `whole`, re-based so that its level 0 is the
+// chain's level `first` — the image a texture resident from level `first` is — with the
+// normal-variance chain cut at the same level. A sampler on it reads level `max(lambda - first, 0)`
+// of it, which is level `max(lambda, first)` of the whole, so wherever no pixel asks for a level
+// finer than `first` it samples the same texels. False when `first` is past the chain.
+bool texture_levels_from(const TextureData& whole, u32 first, TextureData& out);
+
+// The same tail **read by range** from a file written by `write_texture_file`: the header, the
+// section table, the description, the level table and the identity, and of the payload only levels
+// `first` and coarser and their variance levels, so a promotion reads what it brings and what it
+// keeps and never the levels above. Everything a full read checks is checked but the content hash,
+// which covers bytes this does not read (the load read the file whole and checked it).
+bool read_texture_file_levels(std::string_view path, u32 first, TextureData& out,
+                              std::string* error = nullptr);
+
 // The content hash the writer stores in the header, computed without writing anything.
 u64 texture_file_hash(const TextureData& data);
 

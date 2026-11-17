@@ -654,6 +654,432 @@ p99 of a walk over activating tiles; the bakes for an admitted alpha-tested mesh
 stochastic declaration; and textures for **authored** meshes by the same residency, which is where
 the forest's count is.
 
+## Levels resident by what the frame samples
+
+**Why** (roadmap R172, 2026-11-16; [ADR-0065](../adr/0065-texture-levels-resident-by-bound-and-feedback.md),
+proposed). Every level of every built texture is uploaded at load and held for the scene's life
+("In the renderer"), and G14 showed that capping the chain at the cook does not take the memory back
+for assets whose atlases are not over-dense ("Sized by the asset"). What does is not holding a
+level no pixel reads. A player's card has 8 to 12 GB where the development card has 32, so this is
+memory first.
+
+**The measurement** (`renderer.textures.feedback=<file>`, off by default;
+`systems/renderer/src/texture_feedback.h`, `shaders/texture_feedback.slang`). A frame pass of the
+renderer's own takes every pixel of every view the way the resolve does (`reconstruct_screen_kept`,
+then `screen_uv_gradients_at` through the material's scale and transform) and works out, for each
+textured slot of the pixel's material, the level a 16x anisotropic trilinear sample reads first:
+with `rho` the UV's change per pixel in the texture's own texels along x and y, `lambda =
+log2(max(rho_max / 16, rho_min))`, Vulkan's anisotropic level of detail, and the finest level read
+is `max(0, floor(lambda))`. It keeps the smallest per bindless slot (an atomic minimum of a
+fixed-point code, once per wave where the wave's lanes name one slot, as the D3D12 sampler feedback
+specification advises coalescing), copies the table into a host-visible buffer and folds it one
+frame slot later into a JSON line a frame: the bytes resident, the bytes of the levels this frame
+asked for, and what a residency that holds what was asked within the last 0.5, 2 and 8 s would hold
+and would have had to bring in that frame; and at the end a line per texture with the finest level
+any frame asked for. The layered ground's and the water's own lookups are not the material's five
+slots at its UV and are left out (those materials are skipped), a deformed instance is measured at
+its rest pose, and the rays' explicit level-0 reads are not counted (below). Being a frame pass, it
+draws the frame through the frame passes' linear image and the encode (renderer.md, "Frame
+passes"), so a frame time taken with it on is not the frame's cost. A frame's lines are kept in a
+16 MiB reserve and written once when the renderer is destroyed.
+
+**What it measured** (2026-11-16, `msvc-release`, RTX 5090, `--raster rt --shadows rt`, the
+bounce on, `--offscreen`, the session unlocked, the machine shared with other agents' builds and
+GPU tests; the numbers are counts and bytes, which the machine's load does not move; the
+flythrough's path flown at 60 frames a second of its own clock, repeats included):
+
+| Scene, resolution | Textures, resident | Never asked by any frame | One frame asks (median / most) | Held by an 8 s hold (median / most) | Brought in under it (mean, most in a frame) |
+|---|---|---|---|---|---|
+| village interior walk, 3840 x 2160 | 48, 168.2 MiB | 55.9 % | 12.0 / 60.7 MiB | 44.4 / 66.0 MiB | 1.60 MiB/s, 14.0 MiB |
+| village interior walk, 1920 x 1080 | 48, 168.2 MiB | 57.7 % | 1.9 / 46.7 MiB | 11.1 / 65.6 MiB | 1.36 MiB/s, 14.0 MiB |
+| oasis-palms flythrough, 3840 x 2160 | 11, 28.2 MiB | 0 % | 1.9 / 28.2 MiB | 28.2 / 28.2 MiB | 0.51 MiB/s, 14.0 MiB |
+| oasis-palms flythrough, 1920 x 1080 | 11, 28.2 MiB | 0 % | 0.3 / 23.6 MiB | 10.7 / 28.2 MiB | 0.75 MiB/s, 17.5 MiB |
+| static-world, 3840 x 2160 | 5, 0.7 MiB | 0 % | 0.3 / 0.7 MiB | 0.6 / 0.7 MiB | 0.01 MiB/s |
+| static-world, 1920 x 1080 | 5, 0.7 MiB | 0 % | 0.2 / 0.7 MiB | 0.2 / 0.7 MiB | 0.01 MiB/s |
+
+The flythrough passes close to everything it shows, so over its whole path every one of its eleven
+textures (the palm pack's bark, frond and skirt at 2,048 and 1,024 and the sand) is read at level 0
+somewhere — but a median frame asks for 6.8 % of the bytes at 4K and 1.2 % at 1080p: what is needed
+*now* is small even where nothing is unneeded *ever*, which is the bound's case (below), not the
+feedback's. **The pass's cost**: the frame passes' zone (this pass plus the encode the linear image
+needs) was a median 0.35 ms of the village's 6.5 ms frame at 4K (p99 0.56) and 0.30 ms of the
+oasis's 3.3 ms, 0.09 to 0.12 ms at 1080p, beside other agents' GPU work, so upper bounds.
+
+Of the village's 48 textures (21 at 2,048, 24 at 1,024: the generated plaster, timber, stone and
+thatch sets and their normal maps), 14 were never sampled anywhere on the walk (the sets of the
+houses the walk never saw from inside), 12 were asked no finer than level 2 at 4K (level 3 at
+1080p), and 19 reached level 0. The finest level asked moves slowly: in the median frame no
+texture's changes, at the 99th percentile three do, and the most in one frame was 34 (turning
+through a door). static-world, without the two downloaded samples (`tools/fetch-samples.ps1` was
+not run: nothing is downloaded by an agent), holds only its kit's four 256-texel textures and one
+512, every one read at level 0: a scene of small textures has nothing to give, and says so.
+
+**The design** ([ADR-0065](../adr/0065-texture-levels-resident-by-bound-and-feedback.md) has the
+alternatives). The published shapes are four: **virtual texturing**, a page table over the world's
+texels, a feedback buffer drawn at a fraction of the screen and a fixed pool of pages (Barrett,
+"Sparse Virtual Textures", GDC 2008; van Waveren, "id Tech 5 Challenges", SIGGRAPH 2009; Chen,
+"Adaptive Virtual Texture Rendering in Far Cry 4", GDC 2015; cited as known, not re-read);
+**sampler feedback streaming**, D3D12's MinMip feedback map, which records with an atomic minimum
+the most detailed mip each region of a tiled texture was asked for, is read back and reset as often
+as each frame, loads on a lower value and unloads "after a period without use" (Microsoft, "Sampler
+Feedback" specification, read 2026-11-16); **mip streaming of whole textures**, Unreal Engine's,
+which works out each texture's wanted resolution from its primitives' world bounds and texel world
+sizes against the view, and when the pool cannot hold them lowers textures "one mip at a time",
+non-visible and least recently seen first (Epic Games, "Texture Streaming Overview", read
+2026-11-16); and **sparse residency**, Vulkan's sparse images bound tile by tile with a mip tail the
+driver chooses. This engine takes the third's shape with the second's signal, because:
+
+- the resolve already has each pixel's exact UV derivatives from its own triangle ("Mip selection
+  without quads"), so a feedback is one more pass over what it reads, with no extra raster;
+- a material names a bindless slot, so a texture resident from level `r` is an image whose level 0
+  is the chain's level `r`, sampled through the same `SampleGrad` with no shader change (a sampler
+  on the smaller image reads its level `max(lambda - r, 0)`, which is level `max(lambda, r)` of the
+  whole); a page table's indirection would be paid by every sample of the resolve at 3840 x 2160 for
+  unique texels the engine does not have ("Textures that arrive after the load");
+- a `.tex` stores each level at its own offset ("The container"), so a promotion reads by range
+  only the levels it adds.
+
+**Which levels stay.**
+
+1. **The bound releases what no pixel can read, exactly.** Per texture, the finest level a pixel
+   can read: from each mesh's measured density at its **least** over every triangle of every
+   level ("Sized by the asset"'s measure; the 1 % figure is the cap's, an author's choice, not an
+   automatic one; the least texels a metre is where a pixel magnifies most), at
+   each live instance's scale, against the nearest any observer comes to the instance within the
+   lead — the frame-corner formula of "Sized by the asset", `floor(log2(d0 / D))` levels out. It is
+   evaluated over the instances that exist now, so a mesh a world's tail places larger raises it
+   when it arrives, and G14's "open" meshes need no rule of their own. An imported asset gets it
+   from its own triangles, with nothing stated.
+2. **The feedback trims only under pressure.** Between the bound and the floor lie the levels the
+   bound allows and no frame read: in the village, more than half the bytes. They are trimmed only
+   when the pool is over its ceiling, a texture at a time to the finest level asked within the
+   hold, least recently asked first. The production form samples one pixel in sixteen a frame,
+   rotating (the D3D12 specification reports that discarding over 99 % of the writes still gave
+   reliable data), and is not turned on until its cost over a flythrough at 3840 x 2160 is measured.
+3. **The floor**: every texture keeps its levels of 128 texels a side and smaller, 0.4 % of a 2K
+   chain, so a far lookup and a ray's level-0 read never find nothing; ADR-0063's floor names
+   these ("the coarsest texture levels the far tier samples").
+
+**Ahead of need, and the failure picture.** The bound is taken at the observer's place a lead
+ahead (ADR-0063 decision 3's segment), the lead being the measured time from wanted to drawn: a
+range read of the added levels on a worker, then admission inside R147's commit allowance (4 MiB a
+frame by default: one 2K level 0 a frame). Under the 8 s hold the village asked 1.4 to 1.6 MiB/s on
+average and 14 MiB in its worst frame — four frames of the allowance, 67 ms at 60 Hz — during
+which the textures concerned draw their resident levels: softer for a few frames, never a wait.
+The bound brings most of that in before the frame that needs it, since a walker's lead reaches a
+surface before the eye's distance does. A settled view promotes nothing, so the steady frame loop
+allocates nothing; a promotion allocates an image, as a tile's admitted texture does.
+
+**What a card with 8 GB keeps.** The bound alone (no pressure): what the observers can resolve,
+which for the village at 4K is the 74 MiB the walk's frames asked for between them plus the levels
+the walk's closest approaches allow and no frame read; at 1080p every bound falls by a level, a quarter of the bytes.
+Under a ceiling: the floor for every texture (0.4 %), and above it what the frames asked within the
+hold, least recently asked trimmed first: the village's 8 s hold is 11 MiB at 1080p. **An imported
+asset** with no statement of its own gets all three: its own measured density for the bound, the
+feedback, the floor.
+
+**The readers that name level 0.** The rays' mask tests (`mask_keeps_level0`, alpha_mask.slang),
+the opacity micromap bake, the bounce's hit colour (`gi_update.slang`) and the reference path tracer
+read level 0 explicitly; on a smaller image that is its resident top. So an alpha-tested material's
+base colour is held whole until the rays take a level from a ray cone; the bounce reads the resident
+top, a mean of the texels it read before (and the bounce is not repeatable frame to frame anyway);
+the reference path tracer loads whole.
+
+**How a promotion swaps in.** A bindless descriptor a frame in flight reads may not be rewritten
+(Vulkan's `UPDATE_UNUSED_WHILE_PENDING` rule), so a managed texture holds two slot pairs: a
+promotion writes the new image's descriptors into the idle pair, rewrites the material entries that
+name the texture through the frame's "terrain upload" pass (the material table is imported as last
+read everywhere, so its barrier waits for the frames in flight), and the old image goes
+`k_joint_slots + 1` recorded frames later, as a leaving tile texture's does.
+
+**ADR-0063's open decisions, and where each plugs in.** None is presumed. *The budget's form*
+gives this pool its ceiling, whichever number it is; the bound needs no ceiling at all. *Being
+outrun*: a promotion backlog whose drain time passes the lead is the texture form of flight, and
+the wanted levels fall back to the bound at the observer's place now. *Fast travel*: covered, the
+pool releases to the floor and promotes at the destination with the whole machine; shown, a preload
+observer's bound counts as any observer's.
+
+**Decided** (2026-11-17, the coordinator's judgement under the owner's delegation; ADR-0065,
+accepted): the shape above; **the floor is `renderer.textures.floor`, 128 texels a side by
+default** at the top tier (about 22 KB a BC7 texture; the failure picture after a cut, and the
+smallest that does not read as a blur on a near prop at 4K; a lower tier may take 64, which stage 2
+sets by measurement under an 8 GB budget); **the hold is a minimum age, not a clock** (under no
+pressure nothing is trimmed; under pressure least recently asked first and only as far as the
+ceiling needs, nothing younger than the hold). Revisit for a single unique texture past about 8K a
+side, or sparse residency measuring well on the three test cards.
+
+### Stage 1: the bound, built
+
+**What it does** (R172's second leg, 2026-11-17; `systems/renderer/src/gpu_scene_texture_bound.cpp`,
+`texture_bound_state.h`, `include/systems/renderer/texture_bound.h`; `renderer.textures.bound`,
+**off by default**, for the reason "What it measured" gives). It changes no pixel, so it needs no
+ceiling and decides nothing ADR-0063 leaves open.
+
+1. **At load** (`bound_scene_textures`, scene.cpp) every mesh with built textures that nothing
+   after the load may place — the cap's own rule (`open_scene_meshes`: not a streamed entry's
+   resident mesh, a prop, an actor or a procedural mesh) — gets each image's **least density over
+   every triangle of every level** of its cluster DAG (`texture::least_cluster_density`: a
+   simplified level's triangles are drawn too and may stretch further than any source triangle) and
+   the sphere round its vertices. The upload (`texture_bound_plan`, gpu_scene_texture_bound.cpp)
+   holds a key by level only if **every** use of it can be: not an alpha-tested material's base
+   colour (the rays' mask tests and the micromap bake read level 0 at any distance), not a mesh an
+   instance deforms (the density is the rest pose's), not the terrain's (its layers sample by their
+   own rule) nor a water body's. Such a texture is uploaded **from its floor** — its levels of 128
+   texels a side and smaller, 1/64 of a 1K chain's blocks — into a pair of a reserved run of
+   bindless slots (one pair a texture and 64 spare, never more than a quarter of the set's free
+   slots: past that, keys are uploaded whole). A tile's mesh that names such a key is not offered
+   the load's copy (`load_textures_` leaves it out) and brings its own whole one.
+2. **Each recorded frame** (`GpuScene::texture_bound_frame`, called by `record_frame` before
+   `terrain_prepare`): when the eye has moved half the last lead, the view changed, or 60 frames
+   passed, the bound is worked out — per mesh the least `log2(r cos^2 phi_max / (f s))` over its
+   instances, `r` the eye's distance to the instance's sphere less the lead (never under 1 cm),
+   `s` the instance's largest axis scale, `f` and `phi_max` the camera's pixels a radian and the
+   frame's corner; per texture `floor(log2 texels a metre + that − margin)`, the finest over its
+   meshes. **The lead** is `renderer.textures.lead_m` (2 m) plus the last frame's step times
+   `renderer.textures.lead_frames` (30). **A step longer than `renderer.textures.jump_m`** (1 m in
+   one frame) is a teleport the host did not call a cut — a camera path's repeat, a jump to a
+   marker — and is taken as one: the frame settles, and the step does not stretch the lead (the
+   first pair, 2026-11-17, took a path's repeat as a velocity, stretched the lead over the whole
+   scene and brought every level of the village and the oasis in). **The margin** (`renderer.textures.bound_margin`, 1.53125
+   levels) is derived, not tuned: Vulkan lets an implementation take each `rho` from its components'
+   maximum (as little as 1/sqrt 2 of the length: half a level) and round the anisotropic sample
+   count up to a whole number (`rho_max / ceil(rho_max / rho_min)` is no less than `rho_min / 2`:
+   one level), and the measure reads the float vertices where the rasterizers read the 16-bit grid
+   (1/32). The evaluation walks the instance table once; it allocates nothing.
+3. **A promotion** reads the texture's levels from the new top down by range on the bound's one
+   reader thread (`texture::read_texture_file_levels`: the header, the tables and only those
+   levels' blocks and variance; the load read the file whole and checked its content hash), then on
+   the recording thread, inside `renderer.textures.promote_kib` a frame (4,096; one larger goes
+   alone): a new image in a free pair, its levels staged into the frame's "terrain upload" pass, and
+   the material records that name the texture rewritten to the new pair by copies in the same pass
+   (the material table is imported as last read everywhere, so the copy waits for the frames in
+   flight, which still read the old record and the old image). The old image and pair go
+   `k_joint_slots + 1` recorded frames later. **A settle** — the first frame, a frame with
+   `FrameDesc::history_reset`, and the frame after `texture_bound_whole` (the reference path tracer
+   reads level 0 and asks for it) — reads and admits every wanted level on the recording thread
+   before the frame draws: a cut's frame is a load's. With `renderer.textures.bound_wait` (tests) a
+   frame whose eye can read a level not yet in brings it in itself; otherwise the frame draws the
+   resident levels and counts itself **late** (`TextureBoundUse::late`).
+4. **What it does not do**: release a level when the eye walks away (the levels a walk brought in
+   stay until the scene goes: a demotion is the same swap the other way, and belongs with stage 2's
+   trim, which decides when a release pays), and hold textures that arrive with a tile's mesh
+   (they are uploaded whole, as before).
+
+**The readers that name level 0**, as above: the alpha-tested base colours are not held by level
+at all; the bounce's hit colour (`gi_update.slang`'s `sample_material`) reads the resident top of
+the others, a mean of what it read before; the reference path tracer settles every texture whole
+first. **With the bounce off the picture is the whole scene's to the byte**; with it on, the bounce
+is not repeatable frame to frame anyway.
+
+**What it measured** (2026-11-17, `msvc-release` copied out of the tree, against main's
+`b66\bin-main` flown the same way, RTX 5090, `--raster rt --shadows rt`, the bounce on,
+`--offscreen`; **the Windows session was locked for every flight on both sides**, and other agents
+held 48 to 81 % of the processors, so frame times are upper bounds and only the pair's difference is
+read):
+
+| Flight | Texture bytes at the end, main / bound | Frame median, main / bound | Held by the bound | The settle (first frame) |
+|---|---|---|---|---|
+| village interior walk, 3840 x 2160 | 168.2 / 168.2 MiB | 6.02 / 6.01 ms | 33 of 48, all 33 at level 0 from the first frame | 168 ms (328 ms in a second flight) |
+| village interior walk, 1920 x 1080 | 168.2 / 168.2 MiB | 2.60 / 2.59 ms | the same | 195 ms (163 ms) |
+| oasis-palms flythrough, 3840 x 2160 | 28.2 / 28.2 MiB | 2.92 / 2.92 ms | — | — |
+| oasis-palms flythrough, 1920 x 1080 | 28.2 / 28.2 MiB | 1.30 / 1.30 ms | — | — |
+
+(The village's figures are from `FlythroughTextures` version 3, the oasis's from the bytes; the
+village's 33 held textures were all promoted by the settle, none after it and none late, so the
+bound made **no admission off the frame** on either walk, and the recording thread's longest
+`terrain` stage on the bound's side, 60 ms, is the terrain tiles' own: main's reaches 42 ms on the
+same walk.)
+
+**The bound alone keeps every level of these scenes by the end of their walks**, at both
+resolutions. Not a fault of the bound: the village's generated plaster, timber, stone and thatch
+sets are **shared by every house** and tiled at about a thousand texels a metre, so a texture is as
+fine as its nearest instance wants, and at 3840 x 2160 the nearest house wants level 0 from about
+30 m (the margin, the frame's corner and the sphere's nearest point together keep the bound about
+2.5 levels finer than a pixel at the centre reads); the interiors the first leg's feedback found
+never sampled are behind walls a few metres off, which a bound by distance cannot see. The oasis's
+palm cards are alpha-tested and its sand is the terrain's, neither held by level. What the bound
+does save is **the load**: the village uploads 24 KB a texture where a whole 2K chain is 5.3 MB, and
+its first frame then brings in what the start can read (the settle above, which a cut pays too).
+A promotion off the frame costs the recording thread 0.44 ms for a 1K texture in `msvc-debug` (the
+test's walk); the walks above made none, so a 2K texture's admission, with its image and its
+staging made in that frame, is not measured at 4K yet. Allocations after the first 60 frames: 46 on both
+sides (the village's own), none added; `engine_view.frame_loop` passes (0 allocations and 0 device
+buffers in every second flight).
+
+**What a card with 8 GB keeps.** With the bound alone, on these scenes: everything, 168 MiB for the
+village at either resolution, the same as without it. The memory is in what no frame looks at, not
+in what no frame could resolve, so it is stage 2's: the first leg's 8 s hold measured a median of
+44 MiB at 4K and 11 MiB at 1080p for the same walk. **Hence off by default**: the bound earns its
+first frame and its settles where textures are distinct and far — a city, a prop library seen from
+a road, a scene at 1080p with 4K sources — and on its own changes nothing a player of these scenes
+would see in their memory. Turned on, it changes no pixel (the tests above).
+
+**Not built yet** (the production feedback, the trim and the demotion are stage 2's, below): a
+persistent staging for promotions,
+which would take the image's staging out of the frame that admits it; the bound for textures that
+arrive with a tile's mesh; and a measurement of each card's anisotropic level of detail, which could
+take a level off the margin where a card's rounding is shown to be the specification's.
+
+### Stage 2: the trim under a ceiling
+
+**What it does** (R172's third leg, 2026-11-17; `gpu_scene_texture_bound.cpp`, the residency half
+of `texture_feedback.cpp`; ADR-0065 decision 3 and its settlement). Off unless the scene's textures
+have a ceiling, **`renderer.textures.ceiling_mib`** (MiB of texture the scene may hold, 0 by
+default: no ceiling, nothing trimmed, the load's textures and the load's picture to the byte). The
+ceiling is this row's own tunable so that ADR-0063's three open decisions stay open: whichever form
+that ADR's budget takes, this pool's share of it is the number to put here (below, "Where ADR-0063's
+budget plugs in"). With a ceiling and the bound off, the load uploads every managed texture whole
+into a pair of the run, exactly as stage 1 would with no level left out; with both, the load uploads
+from the floor and the bound brings in what an observer can read, as before.
+
+1. **The feedback, always on under a ceiling.** The measurement pass in its production form: one
+   pixel in sixteen of every view's visibility buffer — the pixel at a phase of each 4x4 tile that
+   steps through the tile's sixteen in an ordered-dither order, so consecutive frames read pixels far
+   apart and sixteen frames read every pixel once — over the run of slots the residency manages
+   only (a table of `2 x pairs` words, cleared, written by an atomic minimum, copied back), recorded
+   by `record_frame` after the resolve in any view mode and **not** as a frame pass, so it draws
+   nothing through the linear image. It runs at every frame under a ceiling, not only over it,
+   because a trim needs the history before the pressure comes. Its fold, one frame slot later, maps
+   each pair to the texture it held when that frame was recorded (a pair keeps its texture while it
+   leaves, and one given out after the folded frame is not read), adds the pair's resident top to
+   the resident image's lambda (`GetDimensions` reads the resident image: the chain's level is
+   `floor(lambda) + top`), and stamps the residency's clock on that level and every coarser one. So
+   **the history is the texture's, not the slot's**, and survives every promotion and demotion (the
+   measurement's own list now keeps a load's record by its place, which a swap never moves, where it
+   used to key it by slot and lost it at the first promotion).
+2. **The clock** is the frames' own, `FrameDesc::dt_s` or 1/60 s where the host steps none (a
+   flythrough's fixed frames), so a hold in seconds means the same in a test, a flight and a game.
+   A level's age is the time since the feedback last asked for it or a coarser-first ask reached it,
+   **or since it was brought in**, whichever is later; the load brings every level in at 0.
+3. **The trim** (`texture_bound_frame`, after the promotions are asked): only when the scene's texture
+   bytes are over the ceiling (less what demotions already in flight will give back). Candidates are
+   each managed texture's levels from its resident top down to the floor, while each is at least
+   `renderer.textures.hold_s` old (8 s; a minimum age, not a clock); since an ask of a level is an ask
+   of every coarser one, a texture's levels are oldest at the top, so the candidates sorted by last
+   ask (then texture, then level) take each texture's levels from the top down, least recently asked
+   first, and the walk stops as soon as the levels taken cover the excess: **only as far as the
+   ceiling needs**. Each texture the plan touched is demoted once, to its planned top, by the same
+   path a promotion takes the other way: its levels from the new top read by range on the reader
+   thread, a new smaller image in a free pair, the material records rewritten in the frame's upload
+   pass, the old image gone `k_joint_slots + 1` frames later. **A demotion is dropped on arrival if
+   any level it would release was asked or brought in within the hold since it was planned**
+   (`TextureBoundUse::refused_in_hold`), so what goes is never younger than the hold. Never below the
+   floor (`renderer.textures.floor`, 128 texels a side).
+4. **The return.** Under a ceiling a texture wants what the feedback asked: where a fold asked for a
+   level finer than the resident top (`asked_late`, counted per texture and frame), a promotion to it
+   is asked off the frame, **a level further ahead where the asks are getting finer** (the trend
+   between the last two asked frames: a walker closing on a wall), and, with the bound on, **the
+   bound's lead where the pool has room for it** under the ceiling — never finer than the bound. The
+   level arrives through stage 1's promotion path inside `renderer.textures.promote_kib` a frame;
+   until it does the texture draws its resident levels, softer, never absent and never a wait. A
+   promotion is as young as an ask, so the hold keeps what just came back.
+5. **No allocation in the steady frame loop.** The plan's candidate list and per-texture plan are
+   reserved at the load; the feedback's buffers are made at the renderer's creation; a settled view
+   demotes and promotes nothing. A demotion allocates its image and its staging in the frame that
+   admits it, as a promotion does.
+
+**What the feedback costs, and what one pixel in sixteen misses** (2026-11-17, `msvc-release`
+copied out of the tree, RTX 5090, the village's interior walk, `--raster rt --shadows rt`, the
+bounce on, `--offscreen`; **the Windows session was locked** for every flight, other agents held 31
+to 41 % of the processors). The residency's own pass, timed by its zone over every frame of the
+walk under a ceiling the pool never reached (100,000 MiB): **0.044 ms a frame at 3840 x 2160 (the
+most 0.089 ms) and 0.019 ms at 1920 x 1080 (the most 0.21 ms, a frame beside other agents' GPU
+work)**, under the 0.1 ms ADR-0065 set as the line past which the feedback would have to ride on the
+resolve's own derivatives. The frame medians, against the same code with no ceiling: 6.009 against
+6.052 ms at 4K, 2.556 against 2.585 ms at 1080p, the feedback's own time and nothing else. So it
+runs at every frame under a ceiling, not only under pressure. Against every pixel, over the same
+walk (the measurement runs both patterns in one frame; 8,829 measured frames at 4K, 10,186 at
+1080p, repeats included):
+
+| | 3840 x 2160 | 1920 x 1080 |
+|---|---|---|
+| textures asked in a frame (median) | 25 | 25 |
+| textures every pixel asked and the sparse pattern missed, a frame (median / p99 / most) | 0 / 3 / 3 | 0 / 3 / 7 |
+| frames with any such miss | 1,183 (13 %) | 438 (4 %) |
+| textures the sparse pattern saw coarser, a frame (median / p99 / most) | 0 / 3 / 6 | 0 / 3 / 6 |
+| an 8 s hold's bytes, every pixel / sparse (median) | 44.4 / 44.4 MiB | 3.9 / 3.9 MiB |
+| frames where the sparse 8 s hold keeps a texture coarser than every pixel's | 443 (5.0 %, at most 3 textures) | 156 (1.5 %, at most 6) |
+| bytes any frame asked for, every pixel / sparse | 74.2 / 74.2 MiB | 71.1 / 71.1 MiB |
+
+What the sparse pattern misses in a frame is a texture a handful of pixels show (a sliver at the
+frame's edge, a far window), and an 8 s hold hides almost all of it: the hold driven by it keeps the
+same bytes, and in one frame in twenty at 4K keeps up to three textures a level coarser than every
+pixel would — which only matters under pressure, and then those pixels draw a level softer until the
+next ask, which the hold's minimum age makes rare. Over the whole walk it asks for exactly what
+every pixel does.
+
+**The failure picture, measured** (the same machine and session state; the measurement on, which
+counts every pixel whose finest asked level is finer than its texture's resident top, by how many
+levels). Under a ceiling of 24 MiB — below what the village's 8 s hold keeps at 4K (44 MiB), so
+every frame of the walk is under pressure — the interior walk at 3840 x 2160 made 261 demotions
+giving back 346 MiB and 147 promotions, ended at 95.3 MiB of the whole 168.2 (the most at once
+130.4 MiB), and drew **1.88 million pixel-frames one level softer than they asked, 0.0046 % of the
+walk's textured pixel-frames**: 262 frames in 48 episodes, the median episode 5 frames (83 ms) and
+the longest 11, the worst frame 2.2 % of its textured pixels; none two levels or more; no demotion
+was dropped for an ask inside the hold. The recording thread's worst frame of admissions was 1.54 ms
+(2K promotions with their staging made in the frame) and of demotions 0.66 ms. A turn round on the
+spot (`village` lane start, the same ceiling, flown three times over with identical counts each
+time):
+
+- **round and back within the hold** (4 s facing behind): **nothing** — not one pixel softer, since
+  every level the view asked for was asked 4 s before;
+- **back after a minute**: during the half-second turn, 13 frames softer, all but one pixel-frame in
+  a thousand by one level: 39 % of the textured pixels for 3 frames (the wall the turn reaches first,
+  whose top levels went after 8 s unasked), 11 % for 5, 2.7 % for 4, 0.07 % for 1; by the time the
+  view settles forward it is the whole picture;
+- **onto a view not seen for longer than the hold** (the first turn of each repeat): up to 56 % of
+  the textured pixels one or two levels softer for 6 frames, and three levels or more on at most
+  38,000 pixels for 7 frames.
+
+What a person sees: the worst frame of the return after a minute (path frame 4,395, captured with
+and without the ceiling) shows no difference I could find at full size — the softer pixels are the
+plaster and thatch of the house at the frame's edge some 20 m off, where one level of a 1,024-texel
+set is below what a 4K pixel resolves there — and within a tenth of a second it is the whole
+picture again; never a hole or a wait, and nothing at all for a glance back within the hold. Under
+no pressure (any ceiling the pool does not reach) there is nothing to see: the trim never runs.
+
+**What a smaller card keeps** (the same machine and state; ceilings from what the rest of the
+engine holds, `--memory-report`'s device-local usage at exit on main less the textures: the village
+3,749 MiB at 4K and 3,597 at 1080p, of which the ray-tracing structures are 2,099 and the tiles 600;
+the oasis 707 and 683; a card's room taken as 0.97 of it, the share this card's memory budget
+reports, less 512 MiB for the desktop). An 8 GB card leaves the village 3,685 MiB of texture at 4K
+and the oasis 6,727: no pressure, nothing trimmed. **A 4 GB card holds less than the rest of the
+village at either resolution**, so its ceiling is no room at all (1 MiB: everything under pressure,
+the textures trimmed to what the hold keeps); the oasis leaves 2,754 MiB and its textures (all
+alpha-tested cards and the terrain's, none managed) are untouched. Flown as pairs, `--raster rt
+--shadows rt`, the bounce on, session locked, other agents at 4 to 29 % of the processors:
+
+| Flight | main | before (stage 1) | 8 GB | 4 GB |
+|---|---|---|---|---|
+| village 4K: median / p99 / most, ms | 6.000 / 7.13 / 49.8 | 6.021 / 7.60 / 66.5 | 6.062 / 7.26 / 45.3 | 6.060 / 7.66 / 59.7 |
+| village 4K: texture bytes at the end | 168.2 MiB | 168.2 | 168.2 | 95.3 (261 demotions, 147 promotions) |
+| village 1080p: median / p99 / most, ms | 2.551 / 3.97 / 34.9 | 2.554 / 4.24 / 34.5 | 2.581 / 4.11 / 34.0 | 2.605 / 4.33 / 34.5 |
+| village 1080p: texture bytes at the end | 168.2 MiB | 168.2 | 168.2 | 94.0 (228, 198) |
+| oasis 4K: median / p99, ms | 2.909 / 3.42 | 2.951 / 3.51 | 2.974 / 3.55 | 2.910 / 3.42 |
+| oasis 1080p: median / p99, ms | 1.289 / 1.62 | 1.287 / 1.61 | 1.293 / 1.63 | 1.295 / 1.67 |
+
+The ceiling costs the feedback's 0.04 ms at 4K and 0.03 ms at 1080p and the trim nothing more that
+the medians show; the worst frames are the walk's own (its loads and turns, main's included). The
+recording thread's worst admission on the 4 GB walk was 2.51 ms at 4K (a 2K texture's image and
+staging made in the frame) and its worst demotion 0.47 ms. **What the trim does not yet do**: the
+driver's device-local usage at the end of the 4 GB flights is main's to the MiB (3,917 at 4K), since
+the trimmed images leave free space inside the allocator's blocks, which the engine's next
+allocations take but the driver does not get back; on a card short of memory the trim makes room
+for the rest of the engine, and does not yet shrink the process. And on these scenes the textures
+are a twentieth of what fills a 4 GB card at 4K; the structures are most of it.
+
+**Tested by** (`systems/renderer/tests/texture_tests.cpp`, through `test_device.h`): the trim keeps
+what was asked within the hold and the floor (a 1 MiB ceiling releases level 0 alone and no earlier
+than the hold; a 10 KiB one goes to the floor and no further); with no ceiling, or one the pool
+fits under, every capture and the texture bytes are the load's; a trim then a return ends on the
+whole picture byte for byte.
+
+**Where ADR-0063's budget plugs in.** The ceiling is texture bytes on the device, the pool's figure
+in ADR-0063's sense. Under *the budget's form* still open there, a governor sets this number from
+whatever budget is chosen (a device budget less what the other pools hold, or a share), at the load
+and again whenever it moves; a card's figure below ("What a smaller card keeps") is derived the
+first way, from what the rest of the engine holds in `--memory-report`. Nothing here presumes which.
+
 ## Samplers and texture transforms
 
 **Why.** Until 2026-09-24 every material sampled through one clamped sampler and the UVs as the mesh
@@ -944,7 +1370,20 @@ vendored encoders, MIT or public domain).
   the writer refusing a wrong extent, a wrong byte count, BC5 claiming sRGB and a chain longer than
   the image allows; and a truncated file, a wrong magic, a wrong version, a section past the end, a
   flipped byte, a required section renamed away and a format from the future each refused with a
-  sentence of its own.
+  sentence of its own. **The tail from a level** (R172): from every level of the colour chain and
+  of a normal map with its variance chain, `read_texture_file_levels` reads by range exactly what
+  `texture_levels_from` cuts from the whole read, block for block, and a level past the chain is
+  refused by both.
+- **The bound on a device** (`systems/renderer/tests/texture_tests.cpp`, through `test_device.h`;
+  R172 stage 1, 2026-11-17, RTX 5090, `msvc-debug`): the quad's 1,024-texel map at 1.5, 5.8, 11
+  and 30 m in a scene loaded whole and one the bound holds, ids, depth and colour **identical** at
+  each; the load holds 24,064 bytes (the floor) where the whole chain is 1,400,320, and after the
+  first frame's settle 1,400,320 at 1.5 and 5.8 m, 351,744 at 11 m, the floor alone at 30 m (settle
+  24.5, 18.9, 5.0 and 0 ms in `msvc-debug`); a walk of 48 frames from 12 m to 1.2 m, 0.225 m a
+  frame, identical frame for frame to the whole scene's: the first frame's settle brings level 1,
+  the lead asks for level 0 off the frame long before frame 36, where a pixel first reads below the
+  floor, and it lands with nothing late (2 promotions, 5 evaluations, the admission 0.37 ms). The feedback's own test passes with the bound on (the
+  records' serial counts promotions, so the feedback follows a texture to its new pair).
 - `mips_tests.cpp` — chain sides and counts at seven sizes; the sRGB tables within an ulp of the
   transfer function and every code round-tripping; a black-and-white checker averaging to sRGB 188
   (not 128) and to data 128; constant images constant at every level in every mode; normal maps
@@ -992,7 +1431,8 @@ occlusion slots and the transform's rotation are held to the CPU reference in
   magnification; "Alpha-tested masks" says why coverage scaling came first.
 - **Streaming.** Textures are uploaded whole, all levels, at load; the chain is laid out so a
   streamer can fetch the small levels first, but no residency manager asks. Residency by reference
-  for a tile's meshes is designed and not built ("Textures that arrive after the load").
+  for a tile's meshes is built ("Textures that arrive after the load"); residency by level is
+  measured and designed, not built ("Levels resident by what the frame samples").
 - **A UV transform per slot on the GPU.** The container keeps one per slot and the material table
   one per material ("Samplers and texture transforms"); a material whose slots disagree draws with
   the base colour's and is counted.

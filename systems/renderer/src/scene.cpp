@@ -2,6 +2,7 @@
 #include "scene_far.h"
 #include "scene_flora.h"
 #include "scene_ground_plan.h"
+#include "texture_bound_state.h"
 
 #include <core/containers/hash_map.h>
 #include <core/hash/hash.h>
@@ -1487,6 +1488,55 @@ tunables::Float texture_texel_density{
     "hold more than this at its largest instance leave their top levels out (0: no cap, every "
     "texture keeps its key; texture.md, \"Sized by the asset\")"};
 
+// What the density measures read of a mesh: its materials as the container records them (with
+// each slot's sampling, the transform among it) and every cluster's material, ~0 for none.
+void density_inputs(const SourceMesh& mesh, const geometry::ClusterLodMesh& dag,
+                    Vector<geometry::ClusterFileMaterial>& materials,
+                    Vector<geometry::ClusterFileMaterialSampling>& sampling,
+                    Vector<u32>& cluster_material) {
+  materials.clear();
+  sampling.clear();
+  materials.reserve(mesh.data.materials.size());
+  sampling.reserve(mesh.data.materials.size());
+  for (const assets::Material& source : mesh.data.materials) {
+    geometry::ClusterFileMaterial material;
+    material.base_color_image = source.base_color_image;
+    material.normal_image = source.normal_image;
+    material.metallic_roughness_image =
+        geometry::encode_optional_image(source.metallic_roughness_image);
+    material.occlusion_image = geometry::encode_optional_image(source.occlusion_image);
+    material.emissive_image = geometry::encode_optional_image(source.emissive_image);
+    materials.push_back(material);
+    sampling.push_back(
+        geometry::encode_material_sampling(source.sampling, source.occlusion_strength));
+  }
+  cluster_material.assign(static_cast<u32>(dag.mesh.clusters.size()), ~0u);
+  for (u32 c = 0; c < cluster_material.size(); ++c) {
+    const u32 part = mesh.part_of_cluster[c];
+    const i32 material = part < mesh.part_material.size() ? mesh.part_material[part] : -1;
+    if (material >= 0) cluster_material[c] = static_cast<u32>(material);
+  }
+}
+
+// The meshes something after the load may place (`cap_scene_textures`, below, says which and why):
+// 1 in `open` for each, so neither the cap nor the bound (R172) sizes their textures from the
+// load's instances.
+void open_scene_meshes(const SceneDesc& desc, u32 count, Vector<u8>& open) {
+  open.assign(count, u8{0});
+  const auto open_mesh = [&](u32 m) {
+    if (m < open.size()) open[m] = 1;
+  };
+  for (const StreamedPlacements& entry : desc.streamed)
+    for (const u32 m : entry.meshes)
+      open_mesh(m);
+  for (const SceneProp& prop : desc.props)
+    open_mesh(prop.mesh);
+  for (const u32 i : desc.authored.keep)
+    if (i < desc.instances.size()) open_mesh(desc.instances[i].mesh);
+  for (u32 m = 0; m < desc.meshes.size(); ++m)
+    if (desc.meshes[m].empty()) open_mesh(m);
+}
+
 // Each mesh's caps (`SourceMesh::texture_caps`) from the density the scene or the mesh states,
 // the mesh's own measure (`texture::measure_cluster_density` over its level 0) and its largest
 // instance's largest axis scale times its fit (texture.md, "Who states the density").
@@ -1521,19 +1571,8 @@ void cap_scene_textures(const SceneDesc& desc, std::span<const geometry::Cluster
                  std::max(std::fabs(static_cast<f64>(s.y)), std::fabs(static_cast<f64>(s.z))));
     scale[instance.mesh] = std::max(scale[instance.mesh], largest);
   }
-  Vector<u8> open(sources.size(), u8{0});
-  const auto open_mesh = [&](u32 m) {
-    if (m < open.size()) open[m] = 1;
-  };
-  for (const StreamedPlacements& entry : desc.streamed)
-    for (const u32 m : entry.meshes)
-      open_mesh(m);
-  for (const SceneProp& prop : desc.props)
-    open_mesh(prop.mesh);
-  for (const u32 i : desc.authored.keep)
-    if (i < desc.instances.size()) open_mesh(desc.instances[i].mesh);
-  for (u32 m = 0; m < desc.meshes.size(); ++m)
-    if (desc.meshes[m].empty()) open_mesh(m);
+  Vector<u8> open;
+  open_scene_meshes(desc, sources.size(), open);
   for (u32 m = 0; m < sources.size() && m < dags.size(); ++m) {
     SourceMesh& mesh = sources[m];
     f64 density = open[m] != 0 ? 0.0 : scene_density;
@@ -1557,26 +1596,8 @@ void cap_scene_textures(const SceneDesc& desc, std::span<const geometry::Cluster
     }
     Vector<geometry::ClusterFileMaterial> materials;
     Vector<geometry::ClusterFileMaterialSampling> sampling;
-    materials.reserve(mesh.data.materials.size());
-    sampling.reserve(mesh.data.materials.size());
-    for (const assets::Material& source : mesh.data.materials) {
-      geometry::ClusterFileMaterial material;
-      material.base_color_image = source.base_color_image;
-      material.normal_image = source.normal_image;
-      material.metallic_roughness_image =
-          geometry::encode_optional_image(source.metallic_roughness_image);
-      material.occlusion_image = geometry::encode_optional_image(source.occlusion_image);
-      material.emissive_image = geometry::encode_optional_image(source.emissive_image);
-      materials.push_back(material);
-      sampling.push_back(
-          geometry::encode_material_sampling(source.sampling, source.occlusion_strength));
-    }
-    Vector<u32> cluster_material(static_cast<u32>(dag.mesh.clusters.size()), ~0u);
-    for (u32 c = 0; c < cluster_material.size(); ++c) {
-      const u32 part = mesh.part_of_cluster[c];
-      const i32 material = part < mesh.part_material.size() ? mesh.part_material[part] : -1;
-      if (material >= 0) cluster_material[c] = static_cast<u32>(material);
-    }
+    Vector<u32> cluster_material;
+    density_inputs(mesh, dag, materials, sampling, cluster_material);
     Vector<texture::ImageDensity> measured;
     texture::measure_cluster_density(dag, {cluster_material.data(), cluster_material.size()},
                                      {materials.data(), materials.size()},
@@ -1585,6 +1606,52 @@ void cap_scene_textures(const SceneDesc& desc, std::span<const geometry::Cluster
     mesh.texture_caps.assign(static_cast<u32>(mesh.textures.size()), 0u);
     for (u32 i = 0; i < measured.size(); ++i)
       mesh.texture_caps[i] = texture::needed_side(measured[i].uv_per_m, at_scale * fit, density);
+  }
+}
+
+// **What the bound needs of each mesh** (R172 stage 1; texture.md, "Levels resident by what the
+// frame samples"): its images' least densities over every cluster (`least_cluster_density`) and the
+// sphere round its vertices. Only for a mesh with built textures that nothing after the load may
+// place larger (`open_scene_meshes`): the bound is evaluated over the instances the scene holds,
+// and a placement that arrives near an observer would want a level before a promotion could bring
+// it. Such a mesh's textures, and any texture an open mesh shares, are uploaded whole.
+void bound_scene_textures(const SceneDesc& desc, std::span<const geometry::ClusterLodMesh> dags,
+                          Vector<SourceMesh>& sources) {
+  if (!texture_bound_enabled()) return;
+  Vector<u8> open;
+  open_scene_meshes(desc, sources.size(), open);
+  Vector<geometry::ClusterFileMaterial> materials;
+  Vector<geometry::ClusterFileMaterialSampling> sampling;
+  Vector<u32> cluster_material;
+  for (u32 m = 0; m < sources.size() && m < dags.size(); ++m) {
+    SourceMesh& mesh = sources[m];
+    const geometry::ClusterLodMesh& dag = dags[m];
+    if (open[m] != 0 || mesh.textures.empty() || mesh.texture_ddc.empty() ||
+        mesh.part_of_cluster.size() != dag.mesh.clusters.size() || dag.mesh.vertices.empty()) {
+      continue;
+    }
+    density_inputs(mesh, dag, materials, sampling, cluster_material);
+    texture::least_cluster_density(
+        dag, {cluster_material.data(), cluster_material.size()},
+        {materials.data(), materials.size()}, {sampling.data(), sampling.size()},
+        static_cast<u32>(mesh.textures.size()), mesh.texture_least_density);
+    Vec3 lo = dag.mesh.vertices[0];
+    Vec3 hi = lo;
+    for (const Vec3& v : dag.mesh.vertices) {
+      lo = Vec3{std::min(lo.x, v.x), std::min(lo.y, v.y), std::min(lo.z, v.z)};
+      hi = Vec3{std::max(hi.x, v.x), std::max(hi.y, v.y), std::max(hi.z, v.z)};
+    }
+    const Vec3 centre{0.5f * (lo.x + hi.x), 0.5f * (lo.y + hi.y), 0.5f * (lo.z + hi.z)};
+    f64 radius_sq = 0.0;
+    for (const Vec3& v : dag.mesh.vertices) {
+      const f64 dx = static_cast<f64>(v.x) - static_cast<f64>(centre.x);
+      const f64 dy = static_cast<f64>(v.y) - static_cast<f64>(centre.y);
+      const f64 dz = static_cast<f64>(v.z) - static_cast<f64>(centre.z);
+      radius_sq = std::max(radius_sq, dx * dx + dy * dy + dz * dz);
+    }
+    // Rounded up by a part in a thousand: the sphere has to hold every vertex after f32 rounding.
+    mesh.texture_sphere =
+        Vec4{centre.x, centre.y, centre.z, static_cast<f32>(std::sqrt(radius_sq) * 1.001 + 1e-4)};
   }
 }
 
@@ -3154,6 +3221,7 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   // below copy the records, so a form carries its mesh's keys. The caps a scene's density asks of
   // them first (G14), while the meshes' own levels are still at hand to be measured.
   cap_scene_textures(resolved, {dags.data(), dags.size()}, out.sources);
+  bound_scene_textures(resolved, {dags.data(), dags.size()}, out.sources);  // R172
   prepare_scene_textures(resolved, out.sources, identities, &*pool, out.load);
   // Each mesh's path as the scene named it, for a sentence about it (a form copies its source's).
   for (u32 m = 0; m < out.sources.size() && m < resolved.meshes.size(); ++m)
