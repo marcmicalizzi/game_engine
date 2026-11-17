@@ -306,6 +306,24 @@ did about each:
   white takes each step's place and height from its station and the travel-time bands are what a
   reach with none keeps.
 
+### What still fails against a photograph
+
+Judged on the torrent (cameras `a-up` and `e-close`, 14:00, traced shadows; the row's scratch
+`captures\before-day`, `v4-high`, `v2-low`) and on main's beach from eye level and from 30 m with
+its 8 m/s wind and at 20 m/s (`beach-v4`, `gale-v4` against `beach-before`, `gale-low`), against
+the reels' shapes:
+
+- **Streams**: the white is now patches of lumpy foam across the flow at each band with clear water
+  between and threads drawn out behind, which is the reels' order; but it still reads as foam lying
+  on the water rather than water churning white: no boil lifts the surface, the relief is a normal
+  and not a height (its silhouette against the light is flat), and nothing of the white is above
+  the sheet where a step's jet strikes. The bands still stand on a smooth plane (W132), and no stone
+  stands in them (the clasts are not read).
+- **Beaches**: the bores are a white band at the crest opening into lace and the swash a thin bright
+  front with lace and spots behind, never a sheet, at 1.1 m and at the gale's height; but the foam
+  is flat-lit grey (no relief, no translucency to the water under it, as the streams' now have), the
+  crest's band is a straight line along the crest where a photograph's breaks along it in sections,
+  and a 20 m/s sea has no whitecaps or streaks offshore (the wind row's).
 ### The white field: the depth map's two spare channels
 
 The design's field "beside the depth map" needs no new image: the depth map is uploaded as RGBA8
