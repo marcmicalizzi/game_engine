@@ -212,6 +212,21 @@ The band's own disc holds 2,680 of those patches, so cells of 4 m hand a fifth m
 
 **What R170 mended here** (2026-11-16, `b67-R170`; [renderer](renderer.md#the-cross-fade)). The blades a pixel aside were not a tie: they were one instance choosing between two of its own clusters in the LOD cross-fade's screen door, whose seed the cull pass wrote as the instance's index in the layout, so the dither followed the order the cells came in. The seed is now the placement's own bits (its offset in its cell, its rotation and scale; not the cell, so a scene moved by whole cells draws the same bytes), and with it the cells are the whole hand-over's picture: on this branch's tip with R170 merged in, cells of 4 m against `handoff_cell_m=0`, the same debug binary, rasterized primaries and the cascades, **colour and depth are the same bytes and no covered pixel names another cluster or triangle** at all three held views — at 1920 × 1080 and at 3840 × 2160, where the eye-down view had differed in 31,695 pixels (0 of 8,294,400 covered; the hillside 0 of 3,862,503, the crest 0 of 4,325,801). Cells of 64 m against whole are the same bytes too at 1080p. The traced primaries' difference at the chain's budget is not this: it is the chain's drop order (roadmap R174).
 
+**On the forest** (2026-11-17, `msvc-release` of `b67-G205` with R170, one binary, the forest's v49 world as its launcher loads it, its own `trail-walk` path — 20 s over 2.5 km, flown three times, 3,603 frames — at 3840 × 2160 native with reconstruction off, traced primaries and shadows, the bounce, micromaps, `--rt-budget-mib 0`, `--terrain-async`; each load its own GPU lease, the machine at 5 to 60% of its CPU to others):
+
+| | whole (`handoff_cell_m=0`) | cells of 4 m |
+|---|---:|---:|
+| the pairs' peak over the walk, of 16,777,216 | 16,759,026 (99.9%) | 8,045,778 (48.0%) |
+| the pairs' median over the walk | 12.73 M | 4.97 M |
+| frames with placements withheld by the pair budget | 513 (339 warnings, nearest ring 3) | 0 |
+| placements refused | 616 | 0 |
+| at the walk's end: rings 0 to 3 | 927,157 · 309,317 · 390,494 · 8,747,812 | 339,509 · 260,170 · 438,636 · 953,383 |
+| at the walk's end: the tail | 10,374,780 | 1,991,698 |
+| the frame, median / p99 (each frame's record) | 13.93 / 20.92 ms | 13.76 / 22.49 ms |
+| the GPU, median / p99 | 13.79 / 18.69 ms | 13.64 / 17.92 ms |
+
+The cells hold 2,611 cells, 56 in at the end, 39,372 near instances and 8.0 M pairs not held; 36,052 cells came or went over the walk at this speed (about 120 m/s, a flight more than a walk). Most of what the cells take out is in ring 3, whose tiles carry near-role placements too: a ring's tile hands its near forms by the band whatever its ring. The frame's p99 is the one number that rose, in a run whose machine went from 5 to 59% of its CPU to others; the GPU's p99 fell. Nothing was cooked by the cells: the first load wrote only the driver's pipeline cache into the row's own derived-data root. The owner's walk (`pairs=16661178` of the budget with 534 withheld, roadmap G205's origin) was a live walk with the player and the animals and is not replayed here.
+
 **Test**: on a GPU, `systems/renderer/tests/handoff_tests.cpp`, "a block that names the block it is part of is as old as it": the near form handed as a part of the tail's first block draws 653 pixels in the first frame that draws it, and 67 handed as a block of its own age (the load-in, two frames in). It found that a block with no role among its instances was never stamped, so nothing could take its age: every block is stamped when it is written now. On the CPU, `tests/handoff_cells_tests.cpp`, over a generator of the test's own that places every metre as a near and a far form: nine tiles handed by cells and handed whole — every far form, every near form the cull could draw and no more than the band, the margin, the hold and a cell past it, the pairs counted to the placement, the runs' keys, order and tags; a walk from rest at 0.5 m an update, a stop and the way back — no near form the band reaches ever missing, no generator asked, no tile's own run handed again, a commit only when a cell came or went; and with no eye, every cell handed, with no band, none made.
 
 ## The hosts
