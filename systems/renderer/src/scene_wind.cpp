@@ -1,9 +1,8 @@
 // The scene's wind as the renderer reads and draws it (scene_wind.h; docs/subsystems/wind.md;
 // roadmap W136).
-#include <systems/renderer/scene_wind.h>
-
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/gpu_scene.h>
+#include <systems/renderer/scene_wind.h>
 
 #include <algorithm>
 #include <cmath>
@@ -22,16 +21,16 @@ tunables::Float wind_to{
     "Where the hand wind blows to: degrees in the ground plane from +x towards +z; below 0 each "
     "body's own direction"};
 
-std::string field(const std::string& path, const char* what) {
-  return path + ": sky.wind" + what;
-}
+std::string field(const std::string& path, const char* what) { return path + ": sky.wind" + what; }
 
 }  // namespace
 
 bool read_scene_wind(const scene::Wind& wind, const std::string& path, gfx::WindDesc& out,
                      std::string& error) {
   out = gfx::WindDesc{};
-  const auto speed_ok = [](f32 v) { return v >= 0.0f && v <= static_cast<f32>(gfx::k_wind_max_m_s); };
+  const auto speed_ok = [](f32 v) {
+    return v >= 0.0f && v <= static_cast<f32>(gfx::k_wind_max_m_s);
+  };
   if (!speed_ok(wind.speed_m_s)) {
     error = field(path, ".speed_m_s") + " is outside [0, 60] m/s";
     return false;
@@ -74,19 +73,21 @@ bool read_scene_wind(const scene::Wind& wind, const std::string& path, gfx::Wind
   }
   if (wind.climate.has_value()) {
     const scene::WindClimate& c = *wind.climate;
-    if (!(c.mean_m_s > 0.0f && c.mean_m_s <= 30.0f) || !(c.weibull_k >= 1.0f && c.weibull_k <= 4.0f) ||
+    if (!(c.mean_m_s > 0.0f && c.mean_m_s <= 30.0f) ||
+        !(c.weibull_k >= 1.0f && c.weibull_k <= 4.0f) ||
         !(c.veer_deg >= 0.0f && c.veer_deg <= 180.0f) ||
         !(c.synoptic_h >= 6.0f && c.synoptic_h <= 480.0f) ||
-        !(c.diurnal >= 0.0f && c.diurnal <= 1.0f) || !(c.peak_hour >= 0.0f && c.peak_hour < 24.0f)) {
+        !(c.diurnal >= 0.0f && c.diurnal <= 1.0f) ||
+        !(c.peak_hour >= 0.0f && c.peak_hour < 24.0f)) {
       error = field(path, ".climate") +
               " has a number out of its range (mean (0, 30] m/s, weibull_k [1, 4], veer_deg "
               "[0, 180], synoptic_h [6, 480], diurnal [0, 1], peak_hour [0, 24))";
       return false;
     }
-    out.climate = gfx::WindClimate{static_cast<f64>(c.mean_m_s), static_cast<f64>(c.weibull_k),
-                                   static_cast<f64>(c.to_deg),   static_cast<f64>(c.veer_deg),
+    out.climate = gfx::WindClimate{static_cast<f64>(c.mean_m_s),   static_cast<f64>(c.weibull_k),
+                                   static_cast<f64>(c.to_deg),     static_cast<f64>(c.veer_deg),
                                    static_cast<f64>(c.synoptic_h), static_cast<f64>(c.diurnal),
-                                   static_cast<f64>(c.peak_hour), c.seed};
+                                   static_cast<f64>(c.peak_hour),  c.seed};
     out.kind = gfx::WindKind::climate;
     return true;
   }
@@ -144,8 +145,8 @@ void water_wind_frame(std::span<WaterWindBody> bodies, const gfx::WindDesc& wind
     if (kind == 0) {
       std::memcpy(waves, b.load_waves, sizeof(waves));
     } else {
-      const gfx::SeaState state =
-          kind == 1 ? gfx::sea_state(held, quantum, b.fetch_m) : gfx::sea_state(wind, quantum, b.fetch_m);
+      const gfx::SeaState state = kind == 1 ? gfx::sea_state(held, quantum, b.fetch_m)
+                                            : gfx::sea_state(wind, quantum, b.fetch_m);
       gfx::WaterWaveGrid grid = b.grid;
       if (kind == 1) {
         const gfx::WaterWindRange range = gfx::water_wind_range(held, b.fetch_m);
@@ -167,8 +168,8 @@ void water_wind_frame(std::span<WaterWindBody> bodies, const gfx::WindDesc& wind
       if (!b.swell && b.surface_offset != ~u64{0}) {
         const f64 h = state.height_m();
         surface.height_m = static_cast<f32>(h);
-        surface.run_up_m = static_cast<f32>(std::min(gfx::stockdon_r2(h, b.period_s, b.slope),
-                                                     gfx::k_swash_steep_cap * h));
+        surface.run_up_m = static_cast<f32>(
+            std::min(gfx::stockdon_r2(h, b.period_s, b.slope), gfx::k_swash_steep_cap * h));
         surface.reach_scale = static_cast<f32>(gfx::swash_reach_scale(h, b.period_s));
         surface.reach_cap = static_cast<f32>(gfx::swash_reach_cap(h, b.bank_max));
       }
@@ -237,7 +238,8 @@ std::span<const WaterWindUpload> GpuScene::water_wind_frame(f64 sky_time_s) {
       b.fetch_m = static_cast<f64>(water.fetch_m);
       b.seed = water.shading.seed;
       b.direction = water.shading.direction;
-      b.swell = water.body.open && water.body.swell_height_m > 0.0f && water.body.swell_period_s > 0.0f;
+      b.swell =
+          water.body.open && water.body.swell_height_m > 0.0f && water.body.swell_period_s > 0.0f;
       b.bank_max = static_cast<f64>(water.depth.bank_max);
       for (u32 i = 0; i < gfx::k_water_waves; ++i)
         b.load_waves[i] = water.waves[i];

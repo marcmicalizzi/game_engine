@@ -379,10 +379,10 @@ TEST_CASE("water: a body follows the sky's wind, and a fixed one draws what its 
     "shape": {"circle": {"center": [3, 0, -2], "radius_m": 6}}, )";
   std::string error;
   SceneDesc own;
-  REQUIRE_MESSAGE(read("own.json", "",
-                       open + R"("wind_follow": false, "wind_m_s": 7, "direction_deg": 30}])", own,
-                       error),
-                  error);
+  REQUIRE_MESSAGE(
+      read("own.json", "", open + R"("wind_follow": false, "wind_m_s": 7, "direction_deg": 30}])",
+           own, error),
+      error);
   SceneDesc fixed;
   REQUIRE_MESSAGE(read("fixed.json", R"({"wind": {"speed_m_s": 7, "to_deg": 30}})",
                        open + R"("wind_m_s": 2}])", fixed, error),
@@ -414,9 +414,10 @@ TEST_CASE("water: a body follows the sky's wind, and a fixed one draws what its 
   CHECK(c.waves.size() == gfx::k_water_waves);
 
   SceneDesc refused;
-  CHECK_FALSE(read("refused.json",
-                   R"({"wind": {"track": [{"hour": 6, "speed_m_s": 5}, {"hour": 3, "speed_m_s": 5}]}})",
-                   open + R"("wind_m_s": 2}])", refused, error));
+  CHECK_FALSE(
+      read("refused.json",
+           R"({"wind": {"track": [{"hour": 6, "speed_m_s": 5}, {"hour": 3, "speed_m_s": 5}]}})",
+           open + R"("wind_m_s": 2}])", refused, error));
   MESSAGE(error);
   CHECK(error.find("sky.wind.track[1].hour") != std::string::npos);
 }

@@ -18,7 +18,8 @@
 // **The gust** (`wind_gust`): the instantaneous wind at a place, the mean plus turbulence with
 // Kaimal's spectrum (IEC 61400-1's form and length scale) at the intensity the ground's roughness
 // gives, I = 1 / ln(z / z0), as a sum of sines on a fixed grid of frequencies whose phases travel
-// down the wind (Taylor's frozen turbulence), so a gust crosses a scene as it does a field of grass.
+// down the wind (Taylor's frozen turbulence), so a gust crosses a scene as it does a field of
+// grass.
 //
 // **The sea** (`sea_state`): the sea does not follow the wind at once. A wind sea grows with fetch
 // and with duration by the JONSWAP laws the water's spectrum already draws (water_spectrum.h), and
@@ -111,7 +112,8 @@ inline f64 process(u32 seed, u32 salt, f64 hours, f64 spacing_h) noexcept {
   const i64 i = static_cast<i64>(f);
   const f64 w1 = 0.5 - 0.5 * std::cos(k_wind_pi * frac);
   const f64 w0 = 1.0 - w1;
-  return (w0 * normal(seed, i, salt) + w1 * normal(seed, i + 1, salt)) / std::sqrt(w0 * w0 + w1 * w1);
+  return (w0 * normal(seed, i, salt) + w1 * normal(seed, i + 1, salt)) /
+         std::sqrt(w0 * w0 + w1 * w1);
 }
 // The shorter way from degrees `a` to degrees `b`, in (-180, 180].
 inline f64 turn_deg(f64 a, f64 b) noexcept {
@@ -134,7 +136,8 @@ inline WindSample climate_wind_at(const WindClimate& c, f64 time_s) noexcept {
   f64 speed = lambda * std::pow(-std::log(1.0 - u), 1.0 / k);
   // The day: a cosine about the weather's own strength, peaking at `peak_hour`.
   const f64 day_h = std::fmod(std::fmod(hours, 24.0) + 24.0, 24.0);
-  speed *= 1.0 + std::clamp(c.diurnal, 0.0, 1.0) * std::cos(2.0 * k_wind_pi * (day_h - c.peak_hour) / 24.0);
+  speed *= 1.0 + std::clamp(c.diurnal, 0.0, 1.0) *
+                     std::cos(2.0 * k_wind_pi * (day_h - c.peak_hour) / 24.0);
   const f64 dir = c.to_deg + c.veer_deg * wind_detail::process(c.seed, 2u, hours, spacing);
   return WindSample{std::clamp(speed, 0.0, k_wind_max_m_s), wind_unit(dir)};
 }
@@ -199,10 +202,12 @@ inline f64 wind_gust(const WindDesc& w, const WindSample& mean, Vec2 place, f64 
   f64 sum = 0.0;
   for (u32 j = 0; j < k_wind_gust_sines; ++j) {
     const f64 f0 = k_wind_gust_f_low * std::exp(ratio * static_cast<f64>(j) / k_wind_gust_sines);
-    const f64 f1 = k_wind_gust_f_low * std::exp(ratio * static_cast<f64>(j + 1) / k_wind_gust_sines);
+    const f64 f1 =
+        k_wind_gust_f_low * std::exp(ratio * static_cast<f64>(j + 1) / k_wind_gust_sines);
     const f64 f = std::sqrt(f0 * f1);
     const f64 n = f * k_wind_kaimal_length_m / u;
-    const f64 s = 4.0 * sigma * sigma * k_wind_kaimal_length_m / u / std::pow(1.0 + 6.0 * n, 5.0 / 3.0);
+    const f64 s =
+        4.0 * sigma * sigma * k_wind_kaimal_length_m / u / std::pow(1.0 + 6.0 * n, 5.0 / 3.0);
     const f64 a = std::sqrt(2.0 * s * (f1 - f0));
     const f64 phase = water_wave_uniform(seed ^ 0x2545f491u, j, 7u);
     sum += a * std::sin(2.0 * k_wind_pi * (f * tau + phase));
@@ -341,8 +346,8 @@ inline void sea_step(SeaState& s, const WindSample& w, f64 dt, f64 fetch_m) noex
 }
 
 // **The sea state at sky time `time_s`** over water of fetch `fetch_m`: the steps of the history
-// on the clock's fixed grid, the last one partial, each at the wind of its middle. A fixed wind's is
-// its fetch-limited sea, without stepping.
+// on the clock's fixed grid, the last one partial, each at the wind of its middle. A fixed wind's
+// is its fetch-limited sea, without stepping.
 inline SeaState sea_state(const WindDesc& w, f64 time_s, f64 fetch_m) noexcept {
   SeaState s;
   if (w.kind == WindKind::none) return s;
@@ -397,10 +402,10 @@ inline void water_spectrum_on_grid(const SeaState& s, WaterWaveGrid grid, u32 se
   const f64 alpha = sea ? jonswap_alpha(s.wind_m_s, s.sea_fetch_m) : 0.0;
   const f64 swell_peak = swell ? 2.0 * k_wind_pi / s.swell_period_s : 0.0;
   // The swell's spectrum: JONSWAP's shape at its own peak, scaled to its variance H^2 / 16.
-  const f64 swell_alpha =
-      swell ? s.swell_height_m * s.swell_height_m / 16.0 *
-                  (swell_peak * swell_peak * swell_peak * swell_peak) / sea_jonswap_unit()
-            : 0.0;
+  const f64 swell_alpha = swell ? s.swell_height_m * s.swell_height_m / 16.0 *
+                                      (swell_peak * swell_peak * swell_peak * swell_peak) /
+                                      sea_jonswap_unit()
+                                : 0.0;
   const f64 lo = std::log(grid.lo);
   const f64 step = (std::log(grid.hi) - lo) / static_cast<f64>(k_water_waves);
   const f64 two_pi = 6.283185307179586;
@@ -420,7 +425,9 @@ inline void water_spectrum_on_grid(const SeaState& s, WaterWaveGrid grid, u32 se
     // the swell does (Donelan-Banner about each one's own peak).
     const bool swell_band = swell && (!sea || s_swell > s_sea);
     const Vec2 about = swell_band ? s.swell_to : s.sea_to;
-    const f64 beta = donelan_banner_beta(omega / (swell_band ? swell_peak : peak > 0.0 ? peak : omega));
+    const f64 beta = donelan_banner_beta(omega / (swell_band   ? swell_peak
+                                                  : peak > 0.0 ? peak
+                                                               : omega));
     const f64 u = water_wave_uniform(seed, i, 1);
     const f64 theta = std::atanh(std::tanh(beta * 3.141592653589793) * (2.0 * u - 1.0)) / beta;
     const f64 wx = static_cast<f64>(about.x);
@@ -484,8 +491,8 @@ inline WaterWindRange water_wind_range(const WindDesc& w, f64 fetch_m) noexcept 
   if (!w.varies()) {
     take(sea_state(w, 0.0, fetch_m));
   } else {
-    const f64 span = w.kind == WindKind::track ? std::max(w.period_h, 1.0) * k_wind_hour_s
-                                               : 60.0 * k_wind_day_s;
+    const f64 span =
+        w.kind == WindKind::track ? std::max(w.period_h, 1.0) * k_wind_hour_s : 60.0 * k_wind_day_s;
     const u32 samples = 240;
     for (u32 i = 0; i < samples; ++i)
       take(sea_state(w, span * (static_cast<f64>(i) + 0.5) / samples, fetch_m));

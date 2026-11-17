@@ -129,8 +129,8 @@ TEST_CASE("wind: the sea grows with duration to the fetch's sea, and not past it
   const f64 fetch = 60000.0;
   const WindDesc w = rising_wind();
   const auto at = [&](f64 hours) { return sea_state(w, hours * 3600.0, fetch); };
-  // Calm: glass.
-  CHECK(at(5.0).height_m() == 0.0);
+  // Calm: no wind sea (the evening's swell is still there: below).
+  CHECK(at(5.0).sea_height_m == 0.0);
   // Rising: younger and lower than the fetch-limited sea of the same wind.
   const SeaState rising = at(10.0);
   const f64 fetch_limited = sea_height(rising.wind_m_s, fetch);
@@ -143,11 +143,12 @@ TEST_CASE("wind: the sea grows with duration to the fetch's sea, and not past it
   const SeaState held = at(18.0);
   CHECK(held.sea_height_m == doctest::Approx(sea_height(20.0, fetch)).epsilon(1e-6));
   MESSAGE("18:00 Hs " << held.sea_height_m << " Tp " << held.sea_period_s);
-  // Never past the fetch-limited sea, at any hour.
+  // Never past the fetch-limited sea of the wind it grew under (the last step's is the wind of
+  // its middle, up to half a step before the time asked, so a falling wind's sea is that one's).
   for (f64 h = 0.0; h < 48.0; h += 0.25) {
     const SeaState s = at(h);
-    if (s.wind_m_s >= k_sea_min_wind_m_s)
-      CHECK(s.sea_height_m <= sea_height(s.wind_m_s, fetch) * (1.0 + 1e-9));
+    const f64 u = std::max(s.wind_m_s, wind_at(w, h * 3600.0 - k_sea_step_s).speed_m_s);
+    if (s.sea_height_m > 0.0) CHECK(s.sea_height_m <= sea_height(u, fetch) * (1.0 + 1e-9));
   }
 }
 
@@ -167,8 +168,19 @@ TEST_CASE("wind: the sea outlives its wind as swell, which drains away") {
   CHECK(dawn.sea_height_m == 0.0);
   CHECK(dawn.swell_height_m < 0.55 * after.swell_height_m);
   CHECK(dawn.swell_height_m > 0.25 * after.swell_height_m);
-  // A lake (fetch 900 m) loses its swell in minutes.
-  CHECK(sea_state(w, 23.5 * 3600.0, 900.0).height_m() < 1e-3);
+  // A lake (fetch 900 m) loses its swell in minutes: from the calm's first step (23:00) its height
+  // falls by exp(-dt / 2 tau) a step, tau = 900 m over the group speed of the swell's own period
+  // (about a second: the falling wind's last seas), so three steps on it is that to the third.
+  const SeaState calm_lake = sea_state(w, 23.0 * 3600.0, 900.0);
+  const f64 tau = 900.0 / sea_group_speed(calm_lake.swell_period_s);
+  const f64 lake_after = sea_state(w, 24.5 * 3600.0, 900.0).height_m();
+  const f64 expected = calm_lake.height_m() * std::exp(-0.5 * 3.0 * k_sea_step_s / tau);
+  MESSAGE("lake: 23:00 " << calm_lake.height_m() << " m at " << calm_lake.swell_period_s
+                         << " s (tau " << tau << " s), 00:30 " << lake_after << " m");
+  // (Within a tenth: the first calm step merges the last wind sea, 1 m/s's, into the swell, which
+  // moves its period and so its tau a little.)
+  CHECK(lake_after == doctest::Approx(expected).epsilon(0.1));
+  CHECK(lake_after < 0.05 * sea_state(w, 18.0 * 3600.0, 900.0).sea_height_m);
 }
 
 TEST_CASE("wind: the sea state is a function of the time, continuous across the steps") {
@@ -194,7 +206,7 @@ TEST_CASE("wind: a varying wind's table is on one grid, and its waves follow the
   CHECK(range.grid.hi / range.grid.lo <= k_water_grid_max_ratio * (1.0 + 1e-12));
   WaterWave calm[k_water_waves];
   WaterWave gale[k_water_waves];
-  water_spectrum_on_grid(sea_state(w, 5.0 * 3600.0, fetch), range.grid, 11u, calm);
+  water_spectrum_on_grid(SeaState{}, range.grid, 11u, calm);  // glass: no sea, no swell
   water_spectrum_on_grid(sea_state(w, 18.0 * 3600.0, fetch), range.grid, 11u, gale);
   f64 m0 = 0.0;
   for (u32 i = 0; i < k_water_waves; ++i) {

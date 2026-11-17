@@ -235,12 +235,11 @@ bool read_scene_water(const scene::Scene& file, const std::string& path, const s
         gfx::water_spectrum_on_grid(range.max_state, range.grid, file.water[k].seed, waves);
         for (const gfx::WaterWave& wave : waves)
           water.waves.push_back(wave);
-        ENGINE_LOG_INFO(log_renderer, "water follows the scene's wind",
-                        log::field("body", file.water[k].name),
-                        log::field("fetch_m", water.fetch_m),
-                        log::field("grid_lo", range.grid.lo), log::field("grid_hi", range.grid.hi),
-                        log::field("max_height_m", range.max_height_m),
-                        log::field("max_wind_m_s", range.max_wind_m_s));
+        ENGINE_LOG_INFO(
+            log_renderer, "water follows the scene's wind", log::field("body", file.water[k].name),
+            log::field("fetch_m", water.fetch_m), log::field("grid_lo", range.grid.lo),
+            log::field("grid_hi", range.grid.hi), log::field("max_height_m", range.max_height_m),
+            log::field("max_wind_m_s", range.max_wind_m_s));
       }
     } else if (wind > 0.0f && water.fetch_m > 0.0f) {
       gfx::WaterWave waves[gfx::k_water_waves];
