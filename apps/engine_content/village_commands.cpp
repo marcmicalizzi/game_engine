@@ -139,6 +139,8 @@ int village_command(int argc, char** argv) {
   JsonValue villages = JsonValue::array(), regions = JsonValue::array();
   JsonValue boundaries = JsonValue::array(), wall_lines = JsonValue::array();
   u32 entries = 0, houses = 0, plots = 0, edits = 0, shapes = 0, described = 0;
+  u32 asked = 0, refused = 0;  // houses asked of the entries; plots whose house was refused
+  std::string first_refusal;
   bool flown = false, describe_done = false;
   const JsonValue* placements = json.find("placements");
   if (placements != nullptr && placements->is_array()) {
@@ -198,6 +200,9 @@ int village_command(int argc, char** argv) {
       village::footprints(layer, plan, occupied);
       ++entries;
       houses += plan.built;
+      asked += layer.houses;
+      refused += plan.refused + plan.no_fit;
+      if (first_refusal.empty()) first_refusal = plan.first_refusal;
       plots += plan.plots.size();
       edits += planned.size();
       shapes += occupied.size();
@@ -269,6 +274,10 @@ int village_command(int argc, char** argv) {
   line["out"] = JsonValue(out_path);
   line["entries"] = JsonValue(entries);
   line["houses"] = JsonValue(houses);
+  // Houses asked against built (village.md, "Houses asked and built").
+  line["asked"] = JsonValue(asked);
+  line["refused"] = JsonValue(refused);
+  if (houses < asked && !first_refusal.empty()) line["first_refusal"] = JsonValue(first_refusal);
   line["plots"] = JsonValue(plots);
   line["edits"] = JsonValue(edits);
   line["shapes"] = JsonValue(shapes);

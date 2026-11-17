@@ -91,6 +91,17 @@ void household_asks(const Household& household, InteriorParams& out) noexcept;
 bool choose_rural(const RuralPlot& plot, const Household& household, const RuralStyle& style,
                   u64 seed, RuralChoice& out, std::string* error);
 
+// **The least frontage a house takes** (dwellings.md, "The rural filler"): the outer width of the
+// smallest house the filler builds, a cot of one bay with its stack, at the style's walls. A plot
+// whose house is given less is refused; a village cuts no toft for a house narrower than this.
+i32 least_rural_frontage_cm(const RuralStyle& style) noexcept;
+
+// **How many a house sleeps** (dwellings.md, "The household fitted to its house"): a cot two, a
+// hall and parlour four on one floor and six with chambers over, a two-up-two-down six, a
+// cross-passage house eight. A household the plot's house cannot sleep is the household of the
+// house the plot holds.
+u8 persons_housed(const InteriorParams& params) noexcept;
+
 // The choice and its interior, in one call.
 bool plan_rural(const RuralPlot& plot, const Household& household, const RuralStyle& style,
                 u64 seed, RuralChoice& choice, InteriorPlan& plan, std::string* error);

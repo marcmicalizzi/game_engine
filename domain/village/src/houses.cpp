@@ -500,26 +500,37 @@ bool route_through(const structure::Description& d, const Walk& walk, const Walk
 
 // **What the filler is asked for a plot** (dwellings.md, "The rural filler"): the rectangle the
 // plot leaves a house — the frontage less half a metre each side, the depth behind the setback —
-// and a household drawn from the plot's seed: three to eight persons, and the means that give the
-// storeys asked (the filler's two-storey types are its `means` 2; one storey draws 0 or 1). A plot
-// the household's house does not fit gets the filler's smaller type, which is the filler's rule.
-// One function, so the plan and `describe_house` cannot draw two households.
+// and a household drawn from the plot's seed: three to eight persons, and its means **drawn per
+// plot** (G208; docs/experiments/houses-that-differ.md, "Means"): where the entry allows two
+// storeys, a quarter of the households have no means for a second hearth or a floor over (0),
+// three eighths one hearth (1) and three eighths two (2), and the storeys follow from the
+// household as the filler asks them; where it allows one, 0 or 1 as before. A plot the household's
+// house does not fit gets the filler's smaller type, which is the filler's rule, and then **the
+// household is the one that house sleeps** (`fitted_house`). One function, so the plan and
+// `describe_house` cannot draw two households.
 struct Draw {
   dwellings::RuralPlot plot;
   dwellings::Household household;
+  u8 drawn_persons = 0;  // before the household was fitted to its house
   u64 seed = 0;
 };
+// The name carries no plot: two plots given one household and one frontage are one description,
+// so they share one mesh, when the filler's own seed is the household's and not the plot's.
+u64 filler_seed(const Draw& w) noexcept {
+  return hash_combine(hash_combine(w.household.persons, w.household.means),
+                      static_cast<u64>(w.plot.frontage_cm));
+}
 Draw house_draw(const HouseAsk& ask) noexcept {
   Draw w;
   w.plot.frontage_cm = static_cast<i32>((ask.frontage_mm - 1000) / 10);
   w.plot.depth_cm = static_cast<i32>((ask.depth_mm - ask.setback_mm) / 10);
   w.household.persons = static_cast<u8>(3 + mix64(ask.seed) % 6);
-  w.household.means =
-      ask.storeys >= 2 ? u8{2} : static_cast<u8>(mix64(ask.seed ^ 0x9E3779B97F4A7C15ull) % 2);
-  // The name carries no plot: two plots given one household and one frontage are one description,
-  // so they share one mesh, when the filler's own seed is the household's and not the plot's.
-  w.seed = hash_combine(hash_combine(w.household.persons, w.household.means),
-                        static_cast<u64>(w.plot.frontage_cm));
+  w.drawn_persons = w.household.persons;
+  // Sixteenths, so a one-storey ask (r % 2) keeps the draw it had.
+  const u64 r = mix64(ask.seed ^ 0x9E3779B97F4A7C15ull) % 16;
+  w.household.means = ask.storeys >= 2 ? (r < 4 ? u8{0} : (r < 10 ? u8{1} : u8{2}))
+                                       : static_cast<u8>(r % 2);
+  w.seed = filler_seed(w);
   return w;
 }
 
@@ -537,6 +548,36 @@ bool house_plan(const Draw& w, const dwellings::Kit& kit, dwellings::RuralChoice
   dwellings::describe(plan, choice, "house", w.seed, d, kit);
   return true;
 }
+
+// **The household fitted to its house** (need 134: an eight-person household drawn into a
+// one-room cot): when the plot holds only a smaller house than the household asked, the household
+// is the one that house sleeps (`dwellings::persons_housed`), drawn again with it, so its seed and
+// its house are the fitted household's. The fitted household asks the house it gets or a larger
+// one the plot still does not hold, so one more plan settles it.
+bool fitted_house(const HouseAsk& ask, const dwellings::Kit& kit, Draw& w,
+                  dwellings::RuralChoice& choice, dwellings::InteriorPlan& plan,
+                  structure::Description& d, std::string& why) {
+  w = house_draw(ask);
+  if (!house_plan(w, kit, choice, plan, d, why)) return false;
+  if (!choice.demoted) return true;
+  const u8 room = dwellings::persons_housed(choice.interior);
+  if (w.household.persons <= room) return true;
+  w.household.persons = room;
+  w.seed = filler_seed(w);
+  return house_plan(w, kit, choice, plan, d, why);
+}
+
+}  // namespace
+
+namespace detail {
+i64 least_house_frontage_mm() noexcept {
+  const dwellings::RuralStyle style;
+  // The filler's rectangle is the frontage less half a metre each side (`house_draw`).
+  return i64{dwellings::least_rural_frontage_cm(style)} * 10 + 1000;
+}
+}  // namespace detail
+
+namespace {
 
 // The furnishing `describe` wrote (the same call, so the same pieces and kit pieces).
 void house_furnishing(const Draw& w, const dwellings::Kit& kit,
@@ -608,10 +649,10 @@ bool house_for(void* context, const HouseAsk& ask, House& out, std::string& why)
   const auto* hk = static_cast<const detail::HouseKit*>(context);
   const dwellings::Kit kit = kit_of(hk);
   structure::Description d;
-  const Draw drawn = house_draw(ask);
+  Draw drawn;
   dwellings::RuralChoice choice;
   dwellings::InteriorPlan interior;
-  if (!house_plan(drawn, kit, choice, interior, d, why)) return false;
+  if (!fitted_house(ask, kit, drawn, choice, interior, d, why)) return false;
   if (!structures::validate(d, why)) {
     why = "rural filler: the mesher refuses the description: " + why;
     return false;
@@ -887,15 +928,15 @@ bool describe_house(const VillageLayer& layer, const VillagePlan& plan, u32 hous
   ask.seed = plot->seed;
   ask.storeys = plot->storeys;
   ask.index = plot->order;
-  const Draw w = house_draw(ask);
   detail::HouseKit hk;
   detail::house_kit(layer, hk);
   const dwellings::Kit kit = kit_of(&hk);
+  Draw w;
   dwellings::RuralChoice choice;
   dwellings::InteriorPlan interior;
   structure::Description d;
   std::string why;
-  if (!house_plan(w, kit, choice, interior, d, why)) {
+  if (!fitted_house(ask, kit, w, choice, interior, d, why)) {
     error = "house " + std::to_string(house) + ": " + why;
     return false;
   }
@@ -936,6 +977,8 @@ bool describe_house(const VillageLayer& layer, const VillagePlan& plan, u32 hous
   JsonValue hh = JsonValue::object();
   hh["persons"] = JsonValue(static_cast<u32>(w.household.persons));
   hh["means"] = JsonValue(static_cast<u32>(w.household.means));
+  // The household as drawn, before it was fitted to the house its plot holds.
+  hh["drawn_persons"] = JsonValue(static_cast<u32>(w.drawn_persons));
   out["household"] = std::move(hh);
   JsonValue f = JsonValue::object();
   f["seed"] = JsonValue(w.seed);

@@ -4,6 +4,7 @@
 // a built plot as a placement whose mesh is a recipe the tile hands.
 #include "detail.h"
 
+#include <core/log/log.h>
 #include <core/schema/json_reflect.h>
 #include <foundation/io/vfs.h>
 
@@ -13,6 +14,8 @@
 #include <utility>
 
 namespace engine::village {
+
+ENGINE_LOG_CATEGORY_DEFINE(log_village, "village");
 
 namespace {
 
@@ -104,6 +107,24 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
   std::string why;
   if (!plan_village(e->layer, context.uncut(), context, house, house_context, e->plan, why))
     return refused(error, why);
+  // **Houses asked against houses built** (village.md, "Houses asked and built"; need 133), said
+  // at the cook: a warning when fewer stand than the entry asked, with what took the rest.
+  const VillagePlan& vp = e->plan;
+  if (vp.built < e->layer.houses) {
+    ENGINE_LOG_WARN(log_village, "fewer houses built than asked",
+                    log::field("entry", e->layer.name.c_str()),
+                    log::field("asked", e->layer.houses), log::field("built", vp.built),
+                    log::field("plots", static_cast<u32>(vp.plots.size())),
+                    log::field("refused", vp.refused), log::field("no_fit", vp.no_fit),
+                    log::field("steep", vp.steep), log::field("wet", vp.wet),
+                    log::field("outside", vp.outside),
+                    log::field("first_refusal", vp.first_refusal.c_str()));
+  } else {
+    ENGINE_LOG_INFO(log_village, "houses built as asked",
+                    log::field("entry", e->layer.name.c_str()),
+                    log::field("asked", e->layer.houses), log::field("built", vp.built),
+                    log::field("cottages", vp.cottages));
+  }
   e->tile_mm = static_cast<i64>(static_cast<f64>(context.tile_size) * 1000.0 + 0.5);
   if (e->tile_mm < 1) e->tile_mm = 1;
   file_tiles(*e);

@@ -171,6 +171,24 @@ bool choose_rural(const RuralPlot& plot, const Household& household, const Rural
   return true;
 }
 
+i32 least_rural_frontage_cm(const RuralStyle& style) noexcept {
+  InteriorParams cot;
+  apply(style, cot);
+  cot.type = PlanType::Cot;
+  cot.storeys = 1;
+  cot.storey_cm = style.single_storey_cm;
+  return least_of(cot).min_width_cm + 2 * i32{style.outer_wall_cm};
+}
+
+u8 persons_housed(const InteriorParams& params) noexcept {
+  switch (params.type) {
+    case PlanType::Cot: return 2;
+    case PlanType::HallParlour: return params.storeys >= 2 ? u8{6} : u8{4};
+    case PlanType::CrossPassage: return 8;
+    default: return 6;
+  }
+}
+
 bool plan_rural(const RuralPlot& plot, const Household& household, const RuralStyle& style,
                 u64 seed, RuralChoice& choice, InteriorPlan& plan, std::string* error) {
   if (!choose_rural(plot, household, style, seed, choice, error)) {

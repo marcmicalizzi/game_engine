@@ -21,4 +21,9 @@ void house_kit(const VillageLayer& layer, HouseKit& out);
 // `context` is what the function is called with: `kit`, which must outlive the plan's making.
 HouseFn house_filler(const HouseKit& kit, void*& context) noexcept;
 
+// **The least frontage a plot must have for that filler's smallest house** (village.md, "Houses
+// asked and built"): the house's least outer width and half a metre each side. The plan cuts no
+// toft and squeezes no cottage narrower, so a plot it offers is one a house stands on.
+i64 least_house_frontage_mm() noexcept;
+
 }  // namespace engine::village::detail

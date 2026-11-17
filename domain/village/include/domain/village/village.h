@@ -73,7 +73,7 @@ namespace engine::village {
 // 4: ways that meet run into each other (a joining way gives up the stretch along the other's
 // street and its tread top eases onto the other's), and a croft stops where its ground steepens
 // past 1 in 5.
-inline constexpr u32 k_village_version = 4;
+inline constexpr u32 k_village_version = 5;
 
 // ---- the house seam -----------------------------------------------------------------------------
 

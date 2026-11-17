@@ -6,6 +6,8 @@
 #include <core/hash/hash.h>
 #include <domain/village/village.h>
 
+#include "detail.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -690,6 +692,9 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
   if (!layer_in_range(layer, error)) return false;
   if (house_fn == nullptr) return refuse(error, "village: no house filler was handed to the plan");
   const i64 perch = mm_of(static_cast<f64>(layer.perch_m));
+  // The least frontage a plot is cut at (village.md, "Houses asked and built"): the filler's least
+  // house with its side gaps, and 10 cm for the chord a curving edge takes off the cut.
+  const i64 least_house = detail::least_house_frontage_mm() + 100;
   const i64 depth = perch * static_cast<i64>(layer.depth_perches);
   const i64 half_street = mm_of(static_cast<f64>(layer.street_width_m) * 0.5);
   const i64 half_tread = mm_of(static_cast<f64>(layer.tread_width_m) * 0.5);
@@ -941,8 +946,10 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
           if (lo < 0 || lo + frontage > length) break;
           // **Subdivided** (village-growth-grounding.md, "Plots"): a tenement split between two
           // households, lengthwise, unevenly (35 to 65 %), in six of ten at `irregularity` 1, each
-          // toft at least 1.1 perches on the street. The two keep the croft's depth.
-          const i64 least = perch * 11 / 10;
+          // toft at least 1.1 perches on the street and never narrower than the filler's least
+          // house takes (G208, need 133: a 6.09 m toft held no house), so a toft too narrow to
+          // halve stays whole. The two keep the croft's depth.
+          const i64 least = std::max(perch * 11 / 10, least_house);
           i64 parts[2] = {frontage, 0};
           if (draw(seed, 8) < irr * 6 / 10 && frontage >= 2 * least) {
             const i64 share = 350 + draw(seed, 9) * 3 / 10;  // per mille
@@ -965,7 +972,7 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
           }
           // A cottage in the gap after it, where the gap holds one.
           const i64 cottage = std::min(gap - 400, perch * 3 / 2);
-          if (gap > 0 && cottage >= perch * 6 / 5) {
+          if (gap > 0 && cottage >= std::max(perch * 6 / 5, least_house)) {
             Candidate q;
             q.lane = li;
             q.side = side;

@@ -271,8 +271,8 @@ TEST_CASE("describe: eight houses of one household are not one wall, one window 
 
 TEST_CASE("describe: a village's limewash and thatch are not one colour and one age") {
   const RuralStyle style;
-  u32 washes = 0, base_wash = 0, aged = 0, cut = 0;
-  std::string seen_wash[5];
+  u32 washes = 0, base_wash = 0, aged = 0, cut = 0, stone = 0;
+  std::string seen_wash[6];
   for (u64 seed = 0; seed < 24; ++seed) {
     structure::Description d;
     std::string error;
@@ -281,7 +281,10 @@ TEST_CASE("describe: a village's limewash and thatch are not one colour and one 
     const structure::Roof& roof = d.roofs[0];
     // A role's variant falls back to its base where a pack lacks it, so any name is safe; these
     // are the names the generated sets answer.
-    CHECK(d.roles.wall_outer.rfind("plaster/lime", 0) == 0);
+    // A stone-faced house shows its rubble; every other is limewashed.
+    const bool rubble = d.roles.wall_outer == "stone/rubble";
+    stone += rubble ? 1u : 0u;
+    CHECK((rubble || d.roles.wall_outer.rfind("plaster/lime", 0) == 0));
     CHECK((roof.role.empty() || roof.role.rfind("thatch/straw_", 0) == 0));
     // A smooth coat and a rolled eave: no courses and no cut eave are stated (describe.cpp, where
     // the roof is written: stepped courses read as slate over a whole street).
@@ -290,15 +293,18 @@ TEST_CASE("describe: a village's limewash and thatch are not one colour and one 
     bool fresh = true;
     for (u32 i = 0; i < washes; ++i)
       fresh = fresh && seen_wash[i] != d.roles.wall_outer;
-    if (fresh && washes < 5) seen_wash[washes++] = d.roles.wall_outer;
+    if (fresh && washes < 6) seen_wash[washes++] = d.roles.wall_outer;
     base_wash += d.roles.wall_outer == "plaster/lime" ? 1u : 0u;
     aged += roof.role.empty() ? 0u : 1u;
     cut += roof.eave_cut ? 1u : 0u;
   }
   std::printf(
       "dwellings limewash over 24 houses: %u washes, %u the base; %u thatches not the "
-      "base's age; %u eaves cut square\n",
-      washes, base_wash, aged, cut);
+      "base's age; %u eaves cut square; %u stone-faced\n",
+      washes, base_wash, aged, cut, stone);
+  // Two in sixteen, so a few of 24 and never most.
+  CHECK(stone >= 1);
+  CHECK(stone <= 8);
   CHECK(washes >= 3);
   CHECK(base_wash < 24);
   CHECK(aged >= 1);
