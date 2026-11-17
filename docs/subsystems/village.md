@@ -277,6 +277,12 @@ household stood in a one-room cot. Since G208 (`k_village_version` 5; the ground
   description names both (`household.persons`, `household.drawn_persons`);
 - **two houses in sixteen are stone-faced** (the filler's dress; [dwellings](dwellings.md)).
 
+From the test village's green at eye level (2026-11-17, main against G208's tip, two views east and
+west): the houses now differ at 30 m by storeys, roof height and limewash, where on main every
+tenement was of two storeys and only the gap cottages stood lower; no stone face falls in either view. What a person would
+still object to: every house is the same rendered box under the same thatch pitch, the green is a
+bare mown lawn, and a croft's back wall climbs the ridge as a straight slab.
+
 ## Houses asked and built
 
 **Why** (need 133): an entry asked 14 houses and 12 stood; one plot of 6.09 m was refused with "the
@@ -653,6 +659,11 @@ to 529; the scene 2,789 instances, 9,593 clusters and 144,431 pairs. The walker'
 furnished house 0 and climbs its stair on proxies of 11,181 triangles and 296 KB for two houses.
 The figures of the next table and the frame record below are the first night's plain shells;
 the frame was not measured again on the dressed houses.
+
+**Since G208** (2026-11-17, the finest triangles of each built house's container, `engine-content
+info`): the test village's 14 houses **3,164 to 9,278, median 5,843** (six of one storey, 3,164 to
+4,038), against main's 3,794 to 9,513, median 7,571 (three of one storey); the forest's v49
+village on main 3,690 to 10,266, median 8,185, and after G208 not measured (no forest load).
 
 **What the cluster LOD makes of a house** (`village_tests.cpp`, the last case: 2160 lines, a 60°
 field of view, a one-pixel threshold, the camera before the front):
