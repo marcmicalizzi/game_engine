@@ -1,5 +1,6 @@
-// The scene's wind and the sea it raises (wind.h; docs/subsystems/gfx.md, "The wind a scene names"; the grounding,
-// docs/experiments/wind.md; roadmap W136): no device. The numbers checked here are the page's.
+// The scene's wind and the sea it raises (wind.h; docs/subsystems/gfx.md, "The wind a scene names";
+// the grounding, docs/experiments/wind.md; roadmap W136): no device. The numbers checked here are
+// the page's.
 
 #include <domain/gfx/water_spectrum.h>
 #include <domain/gfx/water_swash.h>
@@ -55,6 +56,42 @@ TEST_CASE("wind: a fixed wind's sea is the table the body's own wind drew, to th
     const SwashWave shore = swash_wave(c[0], c[1]);
     CHECK(std::abs(s.sea_height_m - shore.height_m) < 1e-9 * shore.height_m + 1e-12);
   }
+}
+
+// **The fully developed sea is Pierson and Moskowitz's** (W136-2; wind.md, "Full development"):
+// past the developed fetch the spectrum is theirs — the peak at f_p U / g = 0.13 and the shape
+// Lewis and Allos's refit gives there (γ 1.02, α 0.0081) — so the height is their integral,
+// 4 sqrt(α / 5) / (2π 0.13)² U² / g = 0.2413 U² / g, within the band's few parts in a thousand and
+// γ's 1.6 %; until W136-2 it was 0.329. A young sea's height is JONSWAP's measured energy law,
+// g H / U² = 1.6e-3 (g F / U²)^0.5, within the two fits' disagreement (the table: 4 % at most from
+// χ = 10 to 1,000). The table's inverse is its own.
+TEST_CASE("wind: the fully developed sea is Pierson and Moskowitz's, and a young one JONSWAP's") {
+  const f64 g = k_water_spectrum_g;
+  const f64 pm = 4.0 * std::sqrt(0.0081 / 5.0) / std::pow(2.0 * k_wind_pi * 0.13, 2.0);
+  for (const f64 u : {5.0, 10.0, 20.0, 30.0}) {
+    const f64 developed = sea_height(u, 1e9) * g / (u * u);
+    MESSAGE(u << " m/s, fully developed: g H / U^2 = " << developed << " (Pierson-Moskowitz " << pm
+              << ")");
+    CHECK(developed == doctest::Approx(pm).epsilon(0.01));
+    CHECK(jonswap_nu(u, 1e9) == doctest::Approx(k_water_developed_nu).epsilon(1e-9));
+    const JonswapShape shape = jonswap_shape(u, 1e9);
+    CHECK(shape.alpha == doctest::Approx(0.0081).epsilon(0.01));
+    CHECK(shape.gamma == doctest::Approx(1.0).epsilon(0.02));
+  }
+  for (const f64 chi : {10.0, 100.0, 1000.0}) {
+    const f64 u = 10.0;
+    const f64 fetch = chi * u * u / g;
+    const f64 h = sea_height(u, fetch) * g / (u * u);
+    const f64 law = 1.6e-3 * std::sqrt(chi);
+    MESSAGE("chi " << chi << ": g H / U^2 = " << h << " against JONSWAP's energy law " << law);
+    CHECK(h == doctest::Approx(law).epsilon(0.05));
+    // The table read against the integral it was made from.
+    CHECK(h == doctest::Approx(jonswap_height_of_chi(chi)).epsilon(1e-5));
+    // Its inverse.
+    CHECK(sea_fetch_for(u, sea_height(u, fetch)) == doctest::Approx(fetch).epsilon(1e-9));
+  }
+  // A sea higher than the wind holds fully developed answers past its developed fetch.
+  CHECK(sea_fetch_for(10.0, 4.0) > k_water_developed_fetch * 100.0 / g);
 }
 
 TEST_CASE("wind: a track blends its keys and wraps over its period") {

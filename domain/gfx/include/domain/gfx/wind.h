@@ -1,10 +1,10 @@
 #pragma once
 
-// **One wind, and the sea it raises** (docs/subsystems/gfx.md, "The wind a scene names"; the grounding and every number's
-// source, docs/experiments/wind.md; roadmap W136). A scene's wind (`engine.scene.Wind`, under its
-// `Sky`) is asked at a place and a time of the sky's clock (renderer/clocks.h: the weather follows
-// the day), and every reader takes the same answer: the sea's and a lake's waves through the sea
-// state below, the trees' sway through the gust.
+// **One wind, and the sea it raises** (docs/subsystems/gfx.md, "The wind a scene names"; the
+// grounding and every number's source, docs/experiments/wind.md; roadmap W136). A scene's wind
+// (`engine.scene.Wind`, under its `Sky`) is asked at a place and a time of the sky's clock
+// (renderer/clocks.h: the weather follows the day), and every reader takes the same answer: the
+// sea's and a lake's waves through the sea state below, the trees' sway through the gust.
 //
 // **The wind** (`wind_at`): the mean wind 10 m up — the ten-minute mean a station reports, which
 // is what the wave-growth laws are written in — and where it blows to. A fixed wind is one number;
@@ -238,9 +238,9 @@ inline f64 sea_fetch_of_duration(f64 u10, f64 duration_s) noexcept {
   return std::pow(duration_s * std::pow(u10, 0.34) * std::pow(k_water_spectrum_g, 0.33) / 77.23,
                   1.0 / 0.67);
 }
-// JONSWAP integrated at unit Phillips constant and unit peak, over [0.3, 6] of the peak by the
-// midpoint rule in 4,096 steps — the integral `swash_wave` takes, so a sea's height here is the
-// shore's. A sea's variance is alpha * this / peak^4.
+// JONSWAP's mean shape (γ 3.3) integrated at unit Phillips constant and unit peak, over [0.3, 6]
+// of the peak by the midpoint rule in 4,096 steps: a swell's variance is alpha * this / peak^4 (a
+// wind sea's height is its own shape's, `water_sea_height`).
 inline f64 sea_jonswap_unit() noexcept {
   static const f64 unit = [] {
     const u32 steps = 4096;
@@ -252,22 +252,13 @@ inline f64 sea_jonswap_unit() noexcept {
   }();
   return unit;
 }
-// The significant height of the wind sea of `u10` over `fetch_m` (capped at full development).
-inline f64 sea_height(f64 u10, f64 fetch_m) noexcept {
-  if (!(u10 > 0.0) || !(fetch_m > 0.0)) return 0.0;
-  const f64 p = jonswap_peak(u10, fetch_m);
-  return 4.0 * std::sqrt(jonswap_alpha(u10, fetch_m) * sea_jonswap_unit() / (p * p * p * p));
-}
-// The fetch over which `u10` raises a sea of height `height_m`, by the uncapped laws (the height
-// goes as the fetch to the power 2/3 - 0.11).
+// The significant height of the wind sea of `u10` over `fetch_m` (capped at full development):
+// the spectrum's own, at its shape (`water_sea_height`), which the table and the shore take too.
+inline f64 sea_height(f64 u10, f64 fetch_m) noexcept { return water_sea_height(u10, fetch_m); }
+// The fetch over which `u10` raises a sea of height `height_m`: its inverse; a height past the
+// fully developed sea's answers past the developed fetch, so the caller sees the excess.
 inline f64 sea_fetch_for(f64 u10, f64 height_m) noexcept {
-  if (!(u10 > 0.0) || !(height_m > 0.0)) return 0.0;
-  const f64 g = k_water_spectrum_g;
-  const f64 f1 = 1000.0;
-  const f64 alpha = 0.076 * std::pow(u10 * u10 / (f1 * g), 0.22);
-  const f64 p = 22.0 * std::cbrt(g * g / (u10 * f1));
-  const f64 h1 = 4.0 * std::sqrt(alpha * sea_jonswap_unit() / (p * p * p * p));
-  return f1 * std::pow(height_m / h1, 1.0 / (2.0 / 3.0 - 0.11));
+  return water_fetch_for_height(u10, height_m);
 }
 inline f64 sea_group_speed(f64 period_s) noexcept {
   return k_water_spectrum_g * period_s / (4.0 * k_wind_pi);
@@ -399,7 +390,7 @@ inline void water_spectrum_on_grid(const SeaState& s, WaterWaveGrid grid, u32 se
   const bool sea = s.sea_height_m > 0.0 && s.sea_fetch_m > 0.0 && s.wind_m_s > 0.0;
   const bool swell = s.swell_height_m > 0.0 && s.swell_period_s > 0.0;
   const f64 peak = sea ? jonswap_peak(s.wind_m_s, s.sea_fetch_m) : 0.0;
-  const f64 alpha = sea ? jonswap_alpha(s.wind_m_s, s.sea_fetch_m) : 0.0;
+  const JonswapShape shape = sea ? jonswap_shape(s.wind_m_s, s.sea_fetch_m) : JonswapShape{};
   const f64 swell_peak = swell ? 2.0 * k_wind_pi / s.swell_period_s : 0.0;
   // The swell's spectrum: JONSWAP's shape at its own peak, scaled to its variance H^2 / 16.
   const f64 swell_alpha = swell ? s.swell_height_m * s.swell_height_m / 16.0 *
@@ -415,7 +406,7 @@ inline void water_spectrum_on_grid(const SeaState& s, WaterWaveGrid grid, u32 se
     const f64 a0 = std::exp(lo + step * static_cast<f64>(i));
     const f64 a1 = std::exp(lo + step * static_cast<f64>(i + 1));
     const f64 omega = std::sqrt(a0 * a1);
-    const f64 s_sea = sea ? jonswap(omega, alpha, peak) : 0.0;
+    const f64 s_sea = sea ? jonswap(omega, shape, peak) : 0.0;
     const f64 s_swell = swell ? jonswap(omega, swell_alpha, swell_peak) : 0.0;
     f64 density = s_sea;
     if (swell) density += s_swell;

@@ -1362,13 +1362,17 @@ TEST_CASE("water: an open sea's waves are JONSWAP's at the wind, spread about it
   gfx::water_spectrum(u10, fetch, wind, 7, waves);
   // The fetch laws (ocean-surface.md): at 10 m/s over 100 km, omega_p = 22 (g^2 / (U F))^(1/3).
   const f64 peak = gfx::jonswap_peak(u10, fetch);
-  const f64 alpha = gfx::jonswap_alpha(u10, fetch);
+  const gfx::JonswapShape shape = gfx::jonswap_shape(u10, fetch);
+  const f64 alpha = shape.alpha;
   CHECK(peak == doctest::Approx(22.0 * std::cbrt(9.81 * 9.81 / (u10 * fetch))));
-  CHECK(alpha == doctest::Approx(0.076 * std::pow(u10 * u10 / (fetch * 9.81), 0.22)));
+  // The shape is the sea's development's (W136-2: Lewis and Allos 1990, at nu = f_p U / g).
+  const f64 nu = peak * u10 / (2.0 * 3.141592653589793 * 9.81);
+  CHECK(alpha == doctest::Approx(0.0317 * std::pow(nu, 0.67)));
+  CHECK(shape.gamma == doctest::Approx(5.87 * std::pow(nu, 0.86)));
   // gamma = 1 is Pierson-Moskowitz's shape: the enhancement at the peak is gamma itself.
-  CHECK(gfx::jonswap(peak, alpha, peak) /
+  CHECK(gfx::jonswap(peak, shape, peak) /
             (alpha * 9.81 * 9.81 / std::pow(peak, 5.0) * std::exp(-1.25)) ==
-        doctest::Approx(3.3));
+        doctest::Approx(shape.gamma));
   // The variance: the sixteen sines' a^2 / 2 against JONSWAP integrated over the band.
   f64 variance = 0.0;
   f64 mean_cos = 0.0;
@@ -1396,7 +1400,7 @@ TEST_CASE("water: an open sea's waves are JONSWAP's at the wind, spread about it
   constexpr u32 k_steps = 20000;
   for (u32 i = 0; i < k_steps; ++i) {
     const f64 omega = lo + (hi - lo) * (static_cast<f64>(i) + 0.5) / k_steps;
-    integral += gfx::jonswap(omega, alpha, peak) * (hi - lo) / k_steps;
+    integral += gfx::jonswap(omega, shape, peak) * (hi - lo) / k_steps;
   }
   MESSAGE("10 m/s over 100 km: peak "
           << peak << " rad/s (" << 2.0 * 3.14159265 * 9.81 / (peak * peak) << " m), alpha " << alpha

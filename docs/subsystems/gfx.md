@@ -622,8 +622,10 @@ The mean is uniform over the scene (the weather is larger than one); the gusts a
 
 | At | Over 60 km (the beach) | Over 900 m (the forest's lake) |
 |---|---|---|
-| 8 m/s, grown | 1.32 m at 4.9 s | 0.13 m at 1.2 s |
-| 20 m/s, grown | 2.97 m at 6.6 s, in 5.8 h | 0.29 m at 1.6 s, in 21 min |
+| 8 m/s, grown | 1.06 m at 4.9 s | 0.13 m at 1.2 s |
+| 20 m/s, grown | 2.54 m at 6.6 s, in 5.8 h | 0.33 m at 1.6 s, in 21 min |
+
+(Since W136-2 the sea's shape is its development's and a fully developed sea Pierson and Moskowitz's, 0.241 U² / g: the first leg's 1.32 and 2.97 m over the beach were its one shape's, a third too high at full development; [the grounding page](../experiments/wind.md#how-the-sea-answers) has the cause.)
 | 20 m/s dropping to calm | swell at 6.6 s, its energy e-folding in 3.2 h | swell gone in minutes |
 
 ### The water reads the wind

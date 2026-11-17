@@ -6,7 +6,7 @@
   "by": "Marc Micalizzi",
   "deltas": {
     "renderer.gpu_scene_cpp.lines": -3,
-    "page:docs/subsystems/gfx.md": 1910,
+    "page:docs/subsystems/gfx.md": 2216,
     "page:docs/subsystems/water.md": 591
   }
 }
