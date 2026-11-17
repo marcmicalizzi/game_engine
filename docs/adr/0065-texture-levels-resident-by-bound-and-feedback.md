@@ -1,7 +1,7 @@
 # ADR-0065: A texture's levels are resident by an exact bound, trimmed by what the frames sampled
 
-- **Status:** Accepted (2026-11-17)
-- **Date:** 2026-11-16
+- **Status:** Accepted
+- **Date:** 2026-11-16 (accepted 2026-11-17)
 - **Plan references:** docs/plan/04-renderer.md §4.9 (streaming and residency), [ADR-0063](0063-memory-is-held-under-one-budget-and-by-travel.md) (one budget, a governor over pools, the envelope by travel), [ADR-0036](0036-built-textures-in-the-engines-own-container.md) (the `.tex` container)
 - **Docs touched:** [texture](../subsystems/texture.md) ("Levels resident by what the frame samples"), `docs/roadmap.md` (R172)
 
