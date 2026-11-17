@@ -16,7 +16,7 @@
       "file": "systems/renderer/src/scene_renderer.cpp",
       "function": "SceneRenderer::record_frame",
       "why": "every pass and every feature flag of a frame",
-      "ceiling": 3635
+      "ceiling": 3749
     },
     {
       "id": "renderer.record_frame.add_pass",
@@ -25,28 +25,28 @@
       "function": "SceneRenderer::record_frame",
       "pattern": "\\badd_pass\\s*[(<]",
       "why": "the passes a frame adds inline rather than through a frame-pass seam",
-      "ceiling": 48
+      "ceiling": 52
     },
     {
       "id": "renderer.gpu_scene_cpp.lines",
       "measure": "file-lines",
       "file": "systems/renderer/src/gpu_scene.cpp",
       "why": "every feature's GPU state",
-      "ceiling": 6747
+      "ceiling": 6925
     },
     {
       "id": "renderer.gpu_scene_h.lines",
       "measure": "file-lines",
       "file": "systems/renderer/include/systems/renderer/gpu_scene.h",
       "why": "every feature's GPU state",
-      "ceiling": 2223
+      "ceiling": 2341
     },
     {
       "id": "engine_view.main_cpp.lines",
       "measure": "file-lines",
       "file": "apps/engine_view/main.cpp",
       "why": "every play feature and every flag",
-      "ceiling": 7577
+      "ceiling": 7641
     },
     {
       "id": "engine_view.run_view.lines",
@@ -54,7 +54,7 @@
       "file": "apps/engine_view/main.cpp",
       "function": "run_view",
       "why": "the windowed loop",
-      "ceiling": 3181
+      "ceiling": 3209
     },
     {
       "id": "engine_view.run_offscreen.lines",
@@ -62,7 +62,7 @@
       "file": "apps/engine_view/main.cpp",
       "function": "run_offscreen",
       "why": "the offscreen loop",
-      "ceiling": 1175
+      "ceiling": 1202
     },
     {
       "id": "gfx.resolve_modules",
@@ -107,31 +107,31 @@
       "id": "page:docs/subsystems/renderer.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/renderer.md",
-      "ceiling": 1234868
+      "ceiling": 1268816
     },
     {
       "id": "page:docs/subsystems/apps.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/apps.md",
-      "ceiling": 698477
+      "ceiling": 701492
     },
     {
       "id": "page:docs/subsystems/gfx.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/gfx.md",
-      "ceiling": 332201
+      "ceiling": 362229
     },
     {
       "id": "page:docs/subsystems/geometry.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/geometry.md",
-      "ceiling": 307605
+      "ceiling": 307926
     },
     {
       "id": "page:docs/subsystems/flora.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/flora.md",
-      "ceiling": 253886
+      "ceiling": 259252
     },
     {
       "id": "page:docs/plan/05-simulation.md",
@@ -149,7 +149,7 @@
       "id": "page:docs/subsystems/water.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/water.md",
-      "ceiling": 251653
+      "ceiling": 261809
     },
     {
       "id": "page:docs/subsystems/protocol.md",
@@ -167,13 +167,13 @@
       "id": "page:docs/subsystems/terrain.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/terrain.md",
-      "ceiling": 107461
+      "ceiling": 108896
     },
     {
       "id": "page:docs/subsystems/world.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/world.md",
-      "ceiling": 130061
+      "ceiling": 147494
     },
     {
       "id": "page:AGENTS.md",
@@ -197,13 +197,31 @@
       "id": "page:docs/subsystems/channels.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/channels.md",
-      "ceiling": 213911
+      "ceiling": 231731
     },
     {
       "id": "page:docs/subsystems/landform.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/landform.md",
       "ceiling": 112217
+    },
+    {
+      "id": "page:docs/subsystems/scene_collision.md",
+      "measure": "page-bytes",
+      "file": "docs/subsystems/scene_collision.md",
+      "ceiling": 100190
+    },
+    {
+      "id": "page:docs/subsystems/scene_gen.md",
+      "measure": "page-bytes",
+      "file": "docs/subsystems/scene_gen.md",
+      "ceiling": 102326
+    },
+    {
+      "id": "page:docs/subsystems/texture.md",
+      "measure": "page-bytes",
+      "file": "docs/subsystems/texture.md",
+      "ceiling": 116242
     }
   ],
   "rebaselines": [
@@ -1826,6 +1844,404 @@
           "id": "page:docs/subsystems/channels.md",
           "old": 204099,
           "new": 213911
+        }
+      ]
+    },
+    {
+      "date": "2026-11-17",
+      "by": "Marc Micalizzi",
+      "reason": "",
+      "commit": "a1eae86f",
+      "folded": [
+        {
+          "name": "b67-fixes",
+          "reason": "batch 67 fixes: the carry's two rules (A1, A4), the water wind per instance (A3), the memory off again (R171) and their pages",
+          "date": "2026-11-17",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.record_frame.lines": 6,
+            "renderer.gpu_scene_cpp.lines": 16,
+            "renderer.gpu_scene_h.lines": 4,
+            "page:docs/subsystems/renderer.md": 3391,
+            "page:docs/subsystems/apps.md": -102,
+            "page:docs/subsystems/gfx.md": 533
+          }
+        },
+        {
+          "name": "b67-prep",
+          "reason": "the merge of R164 into the stack: R164-3 (which merged 2942c235) and b67-fixes each recorded the same 102-byte drop of apps.md, so the merged raises count it twice; this gives one back",
+          "date": "2026-11-17",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 102
+          }
+        },
+        {
+          "name": "b67-stack-T169",
+          "reason": "the stack's merge of T169: scene_gen.md takes T169's section beside the stack's rows' growth",
+          "date": "2026-11-17",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/scene_gen.md": 585
+          }
+        },
+        {
+          "name": "b67-sweep-C",
+          "reason": "apps.md: cave-plan's usage line names the new --write flag (10 bytes); the rest of its page moved to caves.md",
+          "date": "2026-11-16",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 10
+          }
+        },
+        {
+          "name": "b67-sweep-R",
+          "reason": "R49: record_frame gains one call giving each cascade's cull the views' swept frusta (the logic is in set_cascade_caster_volumes outside it); renderer.md gains what that culls, why never with water, and its measured pair; W65's sentence was rewritten in place",
+          "date": "2026-11-16",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.record_frame.lines": 2,
+            "page:docs/subsystems/renderer.md": 1614
+          }
+        },
+        {
+          "name": "G203",
+          "reason": "G203 legs 2 to 4: flora.md says what a needle image should be (a branchlet with structure, drawn for its card) and how a conifer's sprays are folded and their normals lean to the crown's outside",
+          "date": "2026-11-16",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/flora.md": 3306
+          }
+        },
+        {
+          "name": "G205",
+          "reason": "world.md: a hand-off placement is held by its band (the finding, the three options weighed, the rule, what a cell is to the renderer, the measurements and the picture compared), and (2026-11-17) what R170 mended for the hand-off cells and the forest's figure, cells off against on; renderer.md: a part of a tile is as old as the tile",
+          "date": "2026-11-17",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.gpu_scene_cpp.lines": 16,
+            "page:docs/subsystems/renderer.md": 833,
+            "page:docs/subsystems/world.md": 17433
+          }
+        },
+        {
+          "name": "R164-2",
+          "reason": "R164 second leg: the needle's measured transmittance and the half-rate sun pass's foliage rule, said where the renderer and flora describe them",
+          "date": "2026-11-17",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 176,
+            "page:docs/subsystems/flora.md": 174
+          }
+        },
+        {
+          "name": "R164-3",
+          "reason": "R164-3 mends four review findings on foliage (the energy cap, the tracer's density, the traced hit's ambient, the keys) and the scene bounds' order; each lands its why on the page that holds the feature",
+          "date": "2026-11-17",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 2410,
+            "page:docs/subsystems/apps.md": -102,
+            "page:docs/subsystems/flora.md": 669
+          }
+        },
+        {
+          "name": "R164",
+          "reason": "R164: foliage optics documented where the renderer, the container's alpha word and flora's leaves and needles describe them",
+          "date": "2026-11-16",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 3883,
+            "page:docs/subsystems/geometry.md": 321,
+            "page:docs/subsystems/flora.md": 1003
+          }
+        },
+        {
+          "name": "R170",
+          "reason": "R170: the cross-fade's seed by placement (renderer.md, The cross-fade) and the tie rule's word on instances that coincide (gfx.md), with the measured case",
+          "date": "2026-11-16",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 1522,
+            "page:docs/subsystems/gfx.md": 834
+          }
+        },
+        {
+          "name": "R171-4",
+          "reason": "R171 leg 4: engine-view --temporal (its option, help, refusal and the plain offscreen loop's capture and write); renderer.md gains the change between frames as the eye sees it and the memory made right with its final flights and cost; apps.md the flag",
+          "date": "2026-11-16",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "engine_view.main_cpp.lines": 41,
+            "engine_view.run_view.lines": 13,
+            "engine_view.run_offscreen.lines": 19,
+            "page:docs/subsystems/renderer.md": 11503,
+            "page:docs/subsystems/apps.md": 1159
+          }
+        },
+        {
+          "name": "R172",
+          "reason": "R172: GpuScene lists its sampled textures by slot (texture_records), which the feedback reads, and their serial counts the bound's promotions; stage 1, the bound: gpu_scene.h the bound's four public calls, its state's owner and the load-time half's private calls; gpu_scene.cpp the load's upload from the floor into the bound's pairs, the plan, the material references and the destroy; record_frame the bound's call before terrain_prepare and the materials import for its record copies; apps.md the summary's bound fields (FlythroughTextures version 3). Stage 2, the trim under a ceiling: gpu_scene.h a record's resident top, the serial's demotions, the frame's step and the residency's four calls (its run, its frame count, the feedback's fold and its time); gpu_scene.cpp the record's top; record_frame the residency feedback's call after the resolve, and the frame-pass views made for it too; texture.md stage 2's section and its measurements; apps.md the summary's residency fields (version 4)",
+          "date": "2026-11-17",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.record_frame.lines": 10,
+            "renderer.gpu_scene_cpp.lines": 32,
+            "renderer.gpu_scene_h.lines": 60,
+            "page:docs/subsystems/apps.md": 895,
+            "page:docs/subsystems/texture.md": 16242
+          }
+        },
+        {
+          "name": "streams-all",
+          "reason": "b67-streams-all: channels.md holds the five-column table of W131, W137 and W138 measured together on v47 and the two lines the merge's judgement rests on",
+          "date": "2026-11-17",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/channels.md": 2536
+          }
+        },
+        {
+          "name": "streams",
+          "reason": "b67-streams assembles the four streams rows: water.md and channels.md say the combined mesh version (5, both rows had taken 4), that the rows are assembled here and that v47's solve is all three's to the byte",
+          "date": "2026-11-17",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/water.md": 406,
+            "page:docs/subsystems/channels.md": 449
+          }
+        },
+        {
+          "name": "T162",
+          "reason": "T162: the weaker-card paragraph says every renderer test file opens its device through test_device.h, how a new GPU test does, and where the gate's line is (610 bytes)",
+          "date": "2026-11-16",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 610
+          }
+        },
+        {
+          "name": "T163",
+          "reason": "T163: GpuScene::fail_next, the test seam a relayout's failure paths are tested through, and its counters (gpu_scene.h); T165: the indirect dispatches folded - record_frame's deform-args and shadow-deform-args passes became fold dispatches and a 'software args' pass folds the software rasterizer's arguments (one add_pass), the expansion's bound; gfx.md's and renderer.md's sections say how",
+          "date": "2026-11-16",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.record_frame.lines": 16,
+            "renderer.record_frame.add_pass": 1,
+            "renderer.gpu_scene_h.lines": 10,
+            "page:docs/subsystems/renderer.md": 970,
+            "page:docs/subsystems/gfx.md": 2808
+          }
+        },
+        {
+          "name": "T164",
+          "reason": "T164: renderer.md gains 'Free slots close at the end, a few blocks a change' (the cause on the owner's walk, the rule, what it changes, what holds it, the fast flight's pair) and the moved case in the tail's lay-out list. T164-3: T167's carry of a table set made again and of the top-level records (gpu_scene.h TableCarry, rt_records_from_ and TableUpdate's carry fields; gpu_scene.cpp's fit_tables, prepare_tables and lay_out_ray_tracing; record_frame's 'table carry' and 'record carry' passes; renderer.md 'A set made again is carried over on the GPU'), T168's memory snapshot between frames (engine_view main.cpp's two loops; apps.md), and T165's gfx.md growth carried in by the merge of b67-T163",
+          "date": "2026-11-17",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.record_frame.lines": 52,
+            "renderer.record_frame.add_pass": 2,
+            "renderer.gpu_scene_cpp.lines": 106,
+            "renderer.gpu_scene_h.lines": 27,
+            "engine_view.main_cpp.lines": 23,
+            "engine_view.run_view.lines": 15,
+            "engine_view.run_offscreen.lines": 8,
+            "page:docs/subsystems/renderer.md": 7036,
+            "page:docs/subsystems/apps.md": 797,
+            "page:docs/subsystems/gfx.md": 341
+          }
+        },
+        {
+          "name": "T169",
+          "reason": "T169: scene_gen.md gains 'A tile asked on several threads' (the tile_reentrant contract, what a call shares, every engine generator by cause, which stay serial and why) and a step in 'Adding a generator'; scene_collision.md says what T169 changed in 'Ahead of a running walker' (side by side, the lock's ring of nine 430 against 88 ms, the two new tests)",
+          "date": "2026-11-17",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/scene_collision.md": 190,
+            "page:docs/subsystems/scene_gen.md": 1741
+          }
+        },
+        {
+          "name": "W131",
+          "reason": "W131: channels.md says why the solve read the hillside beside the line, the count and the mend, the rules measured and not kept, the v47 numbers, and the forest's small scene, torrent and the pictures that checked it; apps.md names flow solve's --line-stats and under_ground",
+          "date": "2026-11-16",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 256,
+            "page:docs/subsystems/channels.md": 8078
+          }
+        },
+        {
+          "name": "W136-2",
+          "reason": "W136-2: the wind's GPU tests and the lift's bound that follows the sea (gfx.md 'The wind a scene names'); the developed sea corrected at its cause (water.md 'The spectrum'); the shore's two trains follow the sea (gfx.md 'The shore's train follows the sea'); the sea past the mesh (water.md 'To the horizon'); the leg's pair and pictures",
+          "date": "2026-11-17",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/gfx.md": 6379,
+            "page:docs/subsystems/water.md": 1176
+          }
+        },
+        {
+          "name": "W136-3",
+          "reason": "W136-3: the swell a scene names and a wind sea's spread by its age (gfx.md 'A swell a scene names'); the open plane's march built and taken out; the leg's pair, pictures and GPU case",
+          "date": "2026-11-17",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/gfx.md": 8177,
+            "page:docs/subsystems/water.md": 136
+          }
+        },
+        {
+          "name": "W136",
+          "reason": "W136: the scene's wind redraws a water body's wave table and surface as the sea moves: one 'water wind' transfer pass in record_frame, GpuScene's per-body record and its frame call; water.md's pointer and gfx.md's section on the wind a scene names (wind.h is gfx's header) with its measured pair and what the gale and the calm show",
+          "date": "2026-11-16",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.record_frame.lines": 27,
+            "renderer.record_frame.add_pass": 1,
+            "renderer.gpu_scene_cpp.lines": 8,
+            "renderer.gpu_scene_h.lines": 17,
+            "page:docs/subsystems/gfx.md": 10956,
+            "page:docs/subsystems/flora.md": 214,
+            "page:docs/subsystems/water.md": 984
+          }
+        },
+        {
+          "name": "W137",
+          "reason": "W137: the resistance law on D84 (channels.md, The profile), the speed fields and their measure (How whole a stream is drawn), and the pattern's travel at the jets' speed (water.md, Shading)",
+          "date": "2026-11-16",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/water.md": 1089,
+            "page:docs/subsystems/channels.md": 2344
+          }
+        },
+        {
+          "name": "W138-W131",
+          "reason": "the merge of W138 and W131: channels.md's --line-stats sentence names W138's walls and spilled pools; the stream that runs into a pool meets it at its level (the merged rule and its v47 count)",
+          "date": "2026-11-16",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/channels.md": 1285
+          }
+        },
+        {
+          "name": "W138",
+          "reason": "W138 documents the pool's reach-back, on-line stop and spill rule (channels.md), the draw's no-climb rule and the plunges' merge (water.md), steep faces textured in their own plane (terrain.md), and what stands in a line's water",
+          "date": "2026-11-16",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/water.md": 883,
+            "page:docs/subsystems/terrain.md": 1435,
+            "page:docs/subsystems/channels.md": 3128
+          }
+        },
+        {
+          "name": "W139",
+          "reason": "W139: the white water's tier reaches the resolve (one line in record_frame), and water.md gains the white's per-vertex inputs, the two tiers of white, the top tier's second leg and the beach's top tier (W133), each a sentence with its detail on white-water.md",
+          "date": "2026-11-17",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.record_frame.lines": 1,
+            "page:docs/subsystems/water.md": 5482
+          }
+        }
+      ],
+      "changes": [
+        {
+          "id": "renderer.record_frame.lines",
+          "old": 3635,
+          "new": 3749
+        },
+        {
+          "id": "renderer.record_frame.add_pass",
+          "old": 48,
+          "new": 52
+        },
+        {
+          "id": "renderer.gpu_scene_cpp.lines",
+          "old": 6747,
+          "new": 6925
+        },
+        {
+          "id": "renderer.gpu_scene_h.lines",
+          "old": 2223,
+          "new": 2341
+        },
+        {
+          "id": "engine_view.main_cpp.lines",
+          "old": 7577,
+          "new": 7641
+        },
+        {
+          "id": "engine_view.run_view.lines",
+          "old": 3181,
+          "new": 3209
+        },
+        {
+          "id": "engine_view.run_offscreen.lines",
+          "old": 1175,
+          "new": 1202
+        },
+        {
+          "id": "page:docs/subsystems/renderer.md",
+          "old": 1234868,
+          "new": 1268816
+        },
+        {
+          "id": "page:docs/subsystems/apps.md",
+          "old": 698477,
+          "new": 701492
+        },
+        {
+          "id": "page:docs/subsystems/gfx.md",
+          "old": 332201,
+          "new": 362229
+        },
+        {
+          "id": "page:docs/subsystems/geometry.md",
+          "old": 307605,
+          "new": 307926
+        },
+        {
+          "id": "page:docs/subsystems/flora.md",
+          "old": 253886,
+          "new": 259252
+        },
+        {
+          "id": "page:docs/subsystems/water.md",
+          "old": 251653,
+          "new": 261809
+        },
+        {
+          "id": "page:docs/subsystems/terrain.md",
+          "old": 107461,
+          "new": 108896
+        },
+        {
+          "id": "page:docs/subsystems/world.md",
+          "old": 130061,
+          "new": 147494
+        },
+        {
+          "id": "page:docs/subsystems/channels.md",
+          "old": 213911,
+          "new": 231731
+        },
+        {
+          "id": "page:docs/subsystems/scene_collision.md",
+          "old": 100000,
+          "new": 100190
+        },
+        {
+          "id": "page:docs/subsystems/scene_gen.md",
+          "old": 100000,
+          "new": 102326
+        },
+        {
+          "id": "page:docs/subsystems/texture.md",
+          "old": 100000,
+          "new": 116242
         }
       ]
     }
