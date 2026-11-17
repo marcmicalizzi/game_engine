@@ -246,3 +246,122 @@ tier; a scene with no water pays nothing.
   not built beside the depth map.
 - **Not built**: the white field beside the depth map (it needs `gpu_scene.cpp`, closed tonight),
   beaches (the breaker's type, the swash's lace, spots left on the sand), whitecaps, spray and mist.
+
+## The second leg (2026-11-16 night)
+
+### The cost
+
+The resolve at 3840 × 2160 native, traced shadows, reconstruction off, on the torrent judging scene
+(`engine-view --benchmark`, a held camera, 240 warm-up frames and three repeats of 60, the tier by
+`--tunable renderer.water.white_tier`), runs alternated. **The machine was not quiet**: other
+agents' builds held the CPU at 54 to 98 %, and other rows' renderer tests held the GPU lock around
+every run (the harness's `machine_state`, in each run's summary line).
+
+| Camera, build | tier 0 | tier 1 | tier 0 | tier 1 |
+|---|---|---|---|---|
+| a-up (the stream ~8 % of the frame), first cut d274eb9e | 4.789 | 7.466 (the GPU at 100 % from another process by its end) | 4.725 | 4.678 |
+| e-close (the stream about a quarter of the frame), second cut 96eeb549 | 5.255 | 7.626 (the GPU at 99 to 100 % from another process throughout) | 5.256 | 5.534 |
+
+Milliseconds of the resolve, medians over the path's frames (`cost.ps1` in the row's scratch; the
+runs' summaries beside it). The two tier-1 runs that met another process on the GPU are outliers
+of the machine, not of the shader: their p95 (8.2 and 9.9 ms) is twice their neighbours'. **The top
+tier costs about 0.28 ms of resolve at 3840 × 2160 native on a frame a quarter stream** (5.534 against
+5.255 and 5.256, whose spread is 0.001 ms), against the design's 0.5 ms; on the far camera, where
+the stream is 8 % of the frame, nothing measurable. Where it goes: about seventeen gradient-noise
+evaluations at a white pixel (the front's three octaves, the reach's variation, a lip's noise for
+each band that reaches the pixel, the mass's four and the threads' six), and nothing at a pixel
+whose bands and stones give no air, which returns before the texture. The second cut's constants
+(96eeb549 to its successor) change no evaluation.
+
+### The streams' white to the photograph
+
+What the coordinator saw against a photograph of a small cascade, worst first, and what this leg
+did about each:
+
+- **Every band had the same scalloped, hard-edged front at an even spacing.** Two causes. The band
+  was drawn per cell of the phase, so where the cell changed the band's place and strength jumped:
+  a line across the flow at every cell's edge. And the front was one octave of noise at 0.6 m with
+  the white starting whole at it. Now each pixel sums the three bands whose white can reach it
+  (none ends at a line); a band's place in its cell (0 to 0.8 of it), strength (0.2 to 1) and
+  drop (0.5 to 1.5 of the reach's) are drawn per band, so the spacing runs from a fifth of the
+  mean to nearly twice it; the place a band strikes is moved along the flow by noise at 2.5 m (the
+  lip is not straight), 30 cm (the boils) and 7 cm (the bubbles' clusters), and the white rises
+  over 5 cm of travel; a slow variation over 7 m breaks the phase's 8 s repeat.
+- **The white was flat**: the mass now stands up to 3 cm proud where it is thick, by the normal
+  (the white's own, so its lumps are lit and shaded, with a wrap of 0.35 past the terminator for
+  the light the bubbles scatter round, and the surface's, so the lumps glint), and its hollows are
+  shaded down to 0.78.
+- **No stone stands in it or parts it.** A lip's strength now varies along it, read where the
+  pixel's water crossed the lip, so the white comes off a step as tongues with glassy water
+  between, which is what a stone in a lip does to it. The bed's own clasts are not read: they are
+  placed with the plan (`domain/channels`' `place_pieces`), which the water's generator does not
+  read. What reads them is the white field below.
+- **It thins to threads**: the ridges of a pattern drawn out along the flow (longer the older the
+  white) are what is left as the mass's threshold rises, so a band ends in lace and single streaks.
+- **The bands sit on a smooth plane**: the bed's steps are row W132's. **Where a band stands**: from
+  the travel time, because the description carries no steps (`scene_gen/water_channel.h`'s flags
+  name a fall's lip and foot and a jump's head and foot, nothing else). When W132 writes steps, the
+  white takes each step's place and height from its station and the travel-time bands are what a
+  reach with none keeps.
+
+### The white field: the depth map's two spare channels
+
+The design's field "beside the depth map" needs no new image: the depth map is uploaded as RGBA8
+with red and green the 16-bit depth and **blue and alpha unused** (`gpu_scene.cpp`'s
+`upload_water_depth`, which writes 0 and 255 there). So the field is two bytes a texel of the map
+that already exists: blue the aeration A (the sum of the sources upstream with their clearing,
+e^(−t u_r / d)), alpha the plume's thickness. The CPU side is `build_channel_depth_map`
+(`systems/water/src/channel.cpp`), which already visits every texel at the place on the line it
+stands for (`channel_at`): the sources are the description's fall feet and jump heads (flags) and,
+once W132 writes them, its steps; the stones are the bed's clasts, which the generator would read
+from the plan's pieces (`place_pieces`' log, `domain/channels`) — the one part that needs the
+generator to read more than the channel's description. The map's file format (`DepthMap`,
+`k_depth_map_version`) takes a byte plane; the upload is two lines in that lambda; the shader reads
+`t.b` and `t.a` in the one fetch it already makes. Not built tonight: `gpu_scene.cpp` was closed to
+other rows, and it is the next leg's first step (roadmap W139's "Not done").
+
+### Beaches: the first piece
+
+On main's beach (1.1 m at 4.7 s, a 1:30 shore) from above, the bores' foam lay as flat grey slabs
+with straight edges along the crest lines, and the swash's foam as flat bands; on the wind row's
+gale (3 m) the swash flooded the beach as one white sheet. One cause: the lace's density is
+`water_foam_amount` = H / 0.5 m, whole from half a metre, and at a density of 1 the threshold
+covers every texel of the pattern. The top tier now (`water_uprush_foam_top`; the bore's foam in
+`water_bore_foam` with the tier):
+
+- **the bore's front is a band** `0.35 H` wide (6 to 70 cm), densest at the front and ragged along
+  the shore at its own scale and four times it, opening behind into
+- **the lace, capped at a density of 0.55** (`k_beach_lace_max`), so its cells stay open whatever
+  the sea: threads round dark cells, thinning as the sheet's bubbles burst;
+- **spots stranded on the sand** where the backwash has bared it: the peaks of a 5 cm pattern,
+  fewer and smaller as they age, fading over 2.5 times the foam's decay (the reels
+  `backwash-foam-spots`, `foam-spots-wet-sand`);
+- the bores' foam on the water capped the same way, the roller's front ragged along the crest.
+
+Every height and period it reads comes through **`water_white_sea`** (water.slang), which reads the
+shore record (`WaterShore::height_m`, `period_s`) that `gpu_scene.cpp`'s `water_swash_numbers`
+fills from the body's wind and fetch. Not built: the breaker's type by the surf similarity as a
+picture of its own (today's `water_foam_strength` already turns a surging wave's foam off), the
+lace's cells stretched by the sheet's spreading, and several sheets' fronts overlapping as separate
+scallops.
+
+### Whitecaps, streaks and spindrift: what the stacked leg fills in
+
+They read the wind, which is the wind row's (`b67-W136`): nothing of them is built here. On the
+stack:
+
+1. **The one read of the sea** is `water_white_sea` (water.slang): it gains `wind_m_s` (and the
+   wind's direction) from the body's record the wind row writes (`GpuScene::water_wind_frame`), and
+   its height and period come from `sea_state(...)` through `water_swash_numbers`, which on the
+   stack becomes a read of `sea_state` for the body. No other function of the white reads a wind
+   or a height.
+2. **`water_whitecap_cover(wind_m_s)`**: Monahan and O'Muircheartaigh's 3.84 × 10⁻⁶ U^3.41,
+   capped at the data's end (written beside `water_white_sea`, unused until the stack).
+3. **`water_whitecaps(surface, p, t, sea, footprint)`** (to write): stage A on the crests the
+   spectrum makes steepest, the threshold on the surface's Jacobian set so the area above it is the
+   cover; stage B the lace of `water_foam_lace` carried with the water and decaying by
+   `water_foam_decay`; called beside `water_bore_foam` for an open body's pixels offshore of the
+   break.
+4. **`water_wind_streaks`** (to write): stage B drawn out along the wind's direction over 10 m/s,
+   dense bands by 20 m/s (Beaufort 7 and 8).
+5. **Spindrift** is spray, particles: a row of its own, measured on its own.

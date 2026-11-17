@@ -946,6 +946,15 @@ WaterWhiteSea water_white_sea_of(WaterSurface* s) {
   return o;
 }
 
+// **Whitecap cover by the wind** (Monahan and O'Muircheartaigh 1980, as Andreas and Monahan 2000
+// give it): W = 3.84e-6 U^3.41, U the wind at 10 m in m/s, a fraction of the sea's surface, held
+// at the cover of 25 m/s where the fit's data end. Unused until the wind row's `sea_state` is
+// stacked under this one: `water_white_sea` then gains the wind, and the whitecaps read it here
+// (white-water.md, "Whitecaps, streaks and spindrift: what the stacked leg fills in").
+float water_whitecap_cover(float wind_m_s) {
+  return 3.84e-6 * pow(clamp(wind_m_s, 0.0, 25.0), 3.41);
+}
+
 // The densest a sheet's lace may be: past it the cells would close into a sheet.
 static const float k_beach_lace_max = 0.55;
 // The bore's band: its width over the wave's height, within these metres.
@@ -1675,7 +1684,7 @@ WaterWhiteTop water_channel_white_top(float2 p, WaterChannelPhases ph, float2 al
     const float cell = floor(x);
     // The reach's own slow variation, metres: no two periods of the phase alike.
     const float reach_var =
-        0.55 + 0.45 * clamp(water_channel_noise(p / 7.0, seed + 229u).x / k_channel_noise_rms,
+        0.75 + 0.25 * clamp(water_channel_noise(p / 7.0, seed + 229u).x / k_channel_noise_rms,
                             -1.0, 1.0);
     for (uint j = 0; j < 3; ++j) {
       const int b = int(cell) - int(j);
@@ -1685,7 +1694,7 @@ WaterWhiteTop water_channel_white_top(float2 p, WaterChannelPhases ph, float2 al
       const float place = 0.8 * float(hb & 0xffu) / 255.0;
       const float since = (x - (float(b) + place)) * k_white_step_s;
       if (!(since > 0.0)) continue;
-      const float strength = 0.2 + 0.8 * sqrt(float((hb >> 8) & 0xffu) / 255.0);
+      const float strength = 0.35 + 0.65 * sqrt(float((hb >> 8) & 0xffu) / 255.0);
       const float drop = 0.5 + float((hb >> 16) & 0xffu) / 255.0;
       // The step under this band is the reach's fall over the bands' spacing, its plume as deep as
       // the step is high (a jet plunges about its drop): on the torrent's 35 % at 0.5 m/s, 35 cm,
@@ -1697,10 +1706,11 @@ WaterWhiteTop water_channel_white_top(float2 p, WaterChannelPhases ph, float2 al
       // Where this water crossed the lip, and how hard the lip broke it there.
       const float2 at_lip = p - along * (since * v);
       const float lip = smoothstep(
-          -0.8, 0.5,
+          -1.2, 0.3,
           water_channel_noise(at_lip / 0.45, seed + 241u + 13u * uint(bw)).x / k_channel_noise_rms);
       const float onset = smoothstep(0.0, k_white_onset_m / v, since);
-      const float a = steep * strength * lip * onset * exp(-since / clear_s);
+      // At the strike the white is whole wherever the lip breaks it hard (the reels' opaque band).
+      const float a = min(1.6 * steep * strength * lip, 1.0) * onset * exp(-since / clear_s);
       if (a > air) age = since / clear_s;
       air = 1.0 - (1.0 - air) * (1.0 - a);
     }
