@@ -925,10 +925,10 @@ float water_foam_decay(float h) { return k_water_foam_decay_s * clamp(sqrt(max(h
 // under them, fading over seconds. Every height it reads is `water_white_sea`'s.
 //
 // **The sea's numbers, read in one place** (the seam with the wind row, white-water.md, "The wind,
-// read in one place"): the wave's height and period that make the beach's white are the shore
-// record's, which `gpu_scene.cpp`'s `water_swash_numbers` fills from the body's wind and fetch
-// (`read_scene_water`'s wind). When the wind row's `sea_state` lands, that function is where it
-// plugs in, and every top-tier white below reads it through this one call.
+// read in one place"): the shore record's height and period are `water_swash_numbers`' at the
+// load (gpu_scene.cpp; the scene's wind and swell train, W136); a body's surface's are rewritten
+// from the wind's `sea_state` as it moves, by `water_wind_frame` (scene_wind.cpp, W136-2), so the
+// white on a surface follows the sea now. Every top-tier white below reads it through this call.
 struct WaterWhiteSea {
   float height_m;  // the significant wave height the beach breaks
   float period_s;
@@ -948,8 +948,8 @@ WaterWhiteSea water_white_sea_of(WaterSurface* s) {
 
 // **Whitecap cover by the wind** (Monahan and O'Muircheartaigh 1980, as Andreas and Monahan 2000
 // give it): W = 3.84e-6 U^3.41, U the wind at 10 m in m/s, a fraction of the sea's surface, held
-// at the cover of 25 m/s where the fit's data end. Unused until the wind row's `sea_state` is
-// stacked under this one: `water_white_sea` then gains the wind, and the whitecaps read it here
+// at the cover of 25 m/s where the fit's data end. Unused yet: the wind row's `sea_state` is in
+// the tree (gfx/wind.h), and the whitecaps' read of its `wind_m_s` here is a later row's
 // (white-water.md, "Whitecaps, streaks and spindrift: what the stacked leg fills in").
 float water_whitecap_cover(float wind_m_s) {
   return 3.84e-6 * pow(clamp(wind_m_s, 0.0, 25.0), 3.41);

@@ -214,7 +214,12 @@ first thing a budget cuts and are not in this leg; noted under the rows left.
   scene names under `Sky.swell`, and a scene `content/test-scenes/beach-swell`. Under a 4 m swell
   there, the first thing objected to is the swash's and the breaker's flat white sheets: the
   stacked leg's breaker by type and its lace are the first work on that scene, before the
-  whitecaps.
+  whitecaps. **As merged for batch 67's gate** (both rows on one tip): the shore record's height
+  and period still come from `water_swash_numbers` at the load, which reads the scene's wind and
+  swell train (W136); a body's surface is rewritten from `sea_state` as the sea moves by
+  `water_wind_frame` (`scene_wind.cpp`), so `water_white_sea_of` already follows the wind's sea.
+  The whitecaps', streaks' and spindrift's read of `sea_state`'s `wind_m_s` is not built: a later
+  row's.
 
 ### Cost, against the frame
 
