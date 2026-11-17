@@ -199,15 +199,11 @@ if(TARGET engine_renderer_tests)
 endif()
 # The generators reach the scene reader through the registry, so the tests that read a scene naming
 # one link its capability as a host does: its registrar is what makes the name one the reader knows.
-foreach(_gen authored ruins sky terrain)
-  if(TARGET engine_renderer_tests AND TARGET engine::${_gen})
-    target_link_libraries(engine_renderer_tests PRIVATE engine::${_gen})
-  endif()
-endforeach()
+engine_test_generators(engine_renderer_tests authored ruins sky terrain)
 # The flora capability the same way (docs/subsystems/flora.md, "In a scene"): linked for its mesh
 # generator's registrar, and the oasis scene's capture where the dunes it stands on are built too.
 if(TARGET engine_renderer_tests AND TARGET engine::flora)
-  target_link_libraries(engine_renderer_tests PRIVATE engine::flora)
+  engine_test_generators(engine_renderer_tests flora)
   target_compile_definitions(engine_renderer_tests PRIVATE ENGINE_RENDERER_TESTS_FLORA=1)
   if(TARGET engine::terrain)
     target_compile_definitions(engine_renderer_tests PRIVATE ENGINE_RENDERER_TESTS_FLORA_TERRAIN=1)
@@ -215,7 +211,7 @@ if(TARGET engine_renderer_tests AND TARGET engine::flora)
   # A tree seated on a tread's edge and a cutting's lip (G201 stage 2) stands on a tile set's
   # edited ground: the tile-set capability linked for its `tiles` provider, as a host links it.
   if(TARGET engine::tileset)
-    target_link_libraries(engine_renderer_tests PRIVATE engine::tileset)
+    engine_test_generators(engine_renderer_tests tileset)
     target_compile_definitions(engine_renderer_tests PRIVATE ENGINE_RENDERER_TESTS_TILESET=1)
   endif()
 endif()

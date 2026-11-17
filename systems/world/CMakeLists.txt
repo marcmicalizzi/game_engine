@@ -83,11 +83,7 @@ if(TARGET engine::rocks)
   list(APPEND _world_tests tests/far_tile_deposits_tests.cpp)
 endif()
 engine_module_tests(NAME world SOURCES ${_world_tests})
-foreach(_gen authored city rocks ruins sky terrain)
-  if(TARGET engine_world_tests AND TARGET engine::${_gen})
-    target_link_libraries(engine_world_tests PRIVATE engine::${_gen})
-  endif()
-endforeach()
+engine_test_generators(engine_world_tests authored city rocks ruins sky terrain)
 
 # The ring's update over a moving observer at the default rings, a first fill, and one tile's round
 # trip through the store; the ruins consumer's activation is measured where it runs, in E35's

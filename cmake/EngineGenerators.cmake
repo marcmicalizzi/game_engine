@@ -3,6 +3,7 @@
 #
 #   engine_module(NAME caves LAYER domain OPTIONAL WHOLE_ARCHIVE GENERATOR mesh:cave ...)
 #   engine_host_generators(<app> <deps_var> [EXCLUDE <module> "<reason>"]...)
+#   engine_test_generators(<test target> <module>...)   # a test's own few (T83)
 #
 # A generator is a capability that registers itself — into the scene-generator registry
 # (`scene_gen::Registrar`: a ground, a placement generator or a sky; ADR-0046) or into the mesh
@@ -39,10 +40,14 @@ set(ENGINE_GENERATOR_HOSTS engine_view engine_host engine_editor engine_content)
 set_property(GLOBAL PROPERTY ENGINE_GENERATOR_MODULES "")
 set_property(GLOBAL PROPERTY ENGINE_GENERATOR_DECLARED "")
 set_property(GLOBAL PROPERTY ENGINE_GENERATOR_HOSTS_LINKED "")
+# `<mesh name>:<module>:<SWITCH>` for every mesh tag declared, on or off (roadmap T83).
+set_property(GLOBAL PROPERTY ENGINE_GENERATOR_MESH_CAPABILITIES "")
 
 # Called by engine_module() for a module whose line carries GENERATOR, before its capability switch
-# is consulted, so a malformed tag is refused in the minimal build too.
-function(_engine_generator_validate name tags missing_values is_optional whole_archive)
+# is consulted, so a malformed tag is refused in the minimal build too. `capability` is the switch's
+# name (the module's own, or its CAPABILITY): each mesh tag is recorded with it whether or not the
+# switch is on, because the sentence that refuses a mesh whose generator is off has to name it.
+function(_engine_generator_validate name tags missing_values is_optional whole_archive capability)
   if(missing_values OR NOT tags)
     message(FATAL_ERROR
       "engine_module(${name}): GENERATOR names every registration the module's sources make, as "
@@ -71,6 +76,11 @@ function(_engine_generator_validate name tags missing_values is_optional whole_a
       message(FATAL_ERROR
         "engine_module(${name}): GENERATOR '${_tag}': '${CMAKE_MATCH_1}' is not a kind of "
         "generator; the kinds are ${ENGINE_GENERATOR_KINDS}.")
+    endif()
+    if(CMAKE_MATCH_1 STREQUAL "mesh")
+      string(TOUPPER "${capability}" _upper)
+      set_property(GLOBAL APPEND PROPERTY ENGINE_GENERATOR_MESH_CAPABILITIES
+        "${CMAKE_MATCH_2}:${name}:${_upper}")
     endif()
   endforeach()
   set_property(GLOBAL APPEND PROPERTY ENGINE_GENERATOR_DECLARED "${name}")
@@ -152,6 +162,29 @@ function(engine_host_generators app deps_var)
   endforeach()
 endfunction()
 
+#   engine_test_generators(<test target> <module>...)
+#
+# A module's test executable that reads scenes naming a few generators links those, as a host
+# links all of them: the registrar is what makes the name one the reader knows. Each <module> must
+# be one an engine_module() declared GENERATOR (lower layers first, as dependencies are), switched
+# on or off; a name that is not stops the configure, where the loop this replaced (`if(TARGET
+# engine::<name>)`, roadmap T83) linked nothing for a typo or a renamed module and the cases that
+# needed it skipped as though the capability were off. One switched off is left out, as the hosts
+# leave it out. A test target that does not exist in this configuration is skipped.
+function(engine_test_generators target)
+  get_property(_declared GLOBAL PROPERTY ENGINE_GENERATOR_DECLARED)
+  foreach(_m IN LISTS ARGN)
+    if(NOT _m IN_LIST _declared)
+      message(FATAL_ERROR
+        "engine_test_generators(${target}): '${_m}' is not a module any engine_module() before "
+        "this one tags GENERATOR (the generators: ${_declared}).")
+    endif()
+    if(TARGET ${target} AND TARGET engine::${_m})
+      target_link_libraries(${target} PRIVATE engine::${_m})
+    endif()
+  endforeach()
+endfunction()
+
 # Every registration the generators `modules` make, as one comma-separated string (the form a
 # compile definition carries; the tags hold no comma).
 function(_engine_generator_names out)
@@ -168,6 +201,17 @@ endfunction()
 # each host on ENGINE_GENERATOR_HOSTS links the build's generators less its written exclusions,
 # every difference named; then each host's test executable gets the run-time check.
 function(_engine_check_generator_hosts)
+  # The mesh generators' registry names the switch a missing generator comes with, which only the
+  # tag knows: `cave` is the caves capability's (ENGINE_WITH_CAVES), not ENGINE_WITH_CAVE (roadmap
+  # T83). One source of domain/assets gets the declared tags, on or off, as a definition.
+  if(TARGET engine_assets)
+    get_property(_mesh_caps GLOBAL PROPERTY ENGINE_GENERATOR_MESH_CAPABILITIES)
+    list(SORT _mesh_caps)
+    list(JOIN _mesh_caps "," _mesh_caps)
+    set_property(SOURCE "${CMAKE_SOURCE_DIR}/domain/assets/src/mesh_generator.cpp"
+      TARGET_DIRECTORY engine_assets APPEND PROPERTY COMPILE_DEFINITIONS
+      ENGINE_MESH_GENERATOR_CAPABILITIES="${_mesh_caps}")
+  endif()
   get_property(_generators GLOBAL PROPERTY ENGINE_GENERATOR_MODULES)
   list(SORT _generators)
   get_property(_called GLOBAL PROPERTY ENGINE_GENERATOR_HOSTS_LINKED)

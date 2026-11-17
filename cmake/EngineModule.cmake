@@ -205,8 +205,13 @@ function(engine_module)
     if(EM_OPTIONAL OR EM_CAPABILITY)
       set(_generator_optional TRUE)
     endif()
+    set(_generator_capability "${EM_CAPABILITY}")
+    if(NOT _generator_capability)
+      set(_generator_capability "${EM_NAME}")
+    endif()
     _engine_generator_validate("${EM_NAME}" "${EM_GENERATOR}" ${_generator_missing}
-                               ${_generator_optional} "${EM_WHOLE_ARCHIVE}")
+                               ${_generator_optional} "${EM_WHOLE_ARCHIVE}"
+                               "${_generator_capability}")
   endif()
 
   _engine_layer_index("${EM_LAYER}" _layer_idx)

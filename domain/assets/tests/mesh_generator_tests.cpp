@@ -60,6 +60,17 @@ TEST_CASE("assets: the registry finds a generator by name, refuses a second, and
   CHECK(sentence.find("palm.flora.json") != std::string::npos);
   CHECK(sentence.find("ENGINE_WITH_FLORA") != std::string::npos);
   CHECK(sentence.find("alpha, beta") != std::string::npos);
+  // The switch is the tagging module's, not the generator's name upper-cased (T83): `cave` and
+  // `cavecell` come with caves, `rock` with rocks, `vine` with cover, whether or not they are on.
+  const std::string cave = registry.unknown("a.cave.json", "cave");
+  CHECK(cave.find("the caves capability (ENGINE_WITH_CAVES)") != std::string::npos);
+  CHECK(registry.unknown("a.cavecell.json", "cavecell").find("ENGINE_WITH_CAVES)") !=
+        std::string::npos);
+  CHECK(registry.unknown("a.rock.json", "rock").find("ENGINE_WITH_ROCKS)") != std::string::npos);
+  CHECK(registry.unknown("a.vine.json", "vine").find("the cover capability (ENGINE_WITH_COVER)") !=
+        std::string::npos);
+  // A name no tag declares keeps the old guess.
+  CHECK(registry.unknown("a.gamma.json", "gamma").find("ENGINE_WITH_GAMMA)") != std::string::npos);
 }
 
 TEST_CASE("assets: a generated mesh's key is the cache key, and a pack with roles moves it") {

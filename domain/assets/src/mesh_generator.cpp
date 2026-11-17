@@ -116,13 +116,45 @@ Vector<std::string_view> MeshGeneratorRegistry::names() const {
   return out;
 }
 
-std::string MeshGeneratorRegistry::unknown(std::string_view path, std::string_view name) const {
+// Every mesh tag the build declares, on or off, as `<name>:<module>:<SWITCH>` joined by commas
+// (cmake/EngineGenerators.cmake hands it to this source alone; roadmap T83). A generator no tag
+// names (a game's own, or a build of this file outside the tree) falls back to its own name.
+#ifndef ENGINE_MESH_GENERATOR_CAPABILITIES
+#define ENGINE_MESH_GENERATOR_CAPABILITIES ""
+#endif
+
+namespace {
+
+struct MeshCapability {
+  std::string module;
+  std::string capability;  // upper case, as the switch spells it
+};
+
+MeshCapability mesh_capability_of(std::string_view name) {
+  std::string_view table = ENGINE_MESH_GENERATOR_CAPABILITIES;
+  while (!table.empty()) {
+    const usize comma = table.find(',');
+    const std::string_view entry = table.substr(0, comma);
+    table = comma == std::string_view::npos ? std::string_view{} : table.substr(comma + 1);
+    const usize first = entry.find(':');
+    const usize second = first == std::string_view::npos ? first : entry.find(':', first + 1);
+    if (second == std::string_view::npos || entry.substr(0, first) != name) continue;
+    return {std::string(entry.substr(first + 1, second - first - 1)),
+            std::string(entry.substr(second + 1))};
+  }
   std::string upper(name);
   for (char& c : upper)
     c = (c >= 'a' && c <= 'z') ? static_cast<char>(c - 'a' + 'A') : c;
+  return {std::string(name), upper};
+}
+
+}  // namespace
+
+std::string MeshGeneratorRegistry::unknown(std::string_view path, std::string_view name) const {
+  const MeshCapability capability = mesh_capability_of(name);
   std::string text = std::string(path) + " is a mesh made by the generator \"" + std::string(name) +
-                     "\", which this build does not carry: it comes with the " + std::string(name) +
-                     " capability (ENGINE_WITH_" + upper +
+                     "\", which this build does not carry: it comes with the " +
+                     capability.module + " capability (ENGINE_WITH_" + capability.capability +
                      "), switched off here or not linked into this program; the generators "
                      "it has: ";
   const Vector<std::string_view> have = names();
