@@ -587,6 +587,72 @@ The agent's reading of its own captures; the owner's eye is the judge.
 6. **A fold is two planes.** A card bent along its length, two crossed cards a shoot and smaller
    cards on more twigs each double the needle triangles or more and were not built.
 
+## Where the light went: the fourth leg
+
+The fourth leg (2026-11-16, `k_matgen_version` 11, rebased onto main d6534963) was asked why the
+third leg's sprays read darker than main's crowns, and to find it by where the energy goes at
+near, mid and far forms, never by a brightness term.
+
+**How it was measured.** The engine's own scenes, `tree-species` (its pine and spruce) and
+`grove` (its tall spruce, tree 7), and the grove with a sky added (latitude 46.5, day 200,
+15:30) in the row's scratch, at 1920 x 1080, `--raster rt --shadows rt`, bounce off. Each view
+three times from one binary and one pack: shaded, `--view albedo` and `--view shadow`, with the
+ids. Over the tree's needle pixels (albedo green over 1.15 red): the picture's linear
+luminance, the albedo's, their ratio (the light an albedo of one returns), and the shadow view's
+shares of sunlit, blocked, and turned away from the sun. Variants: main's binary with main's pack
+(flat cards, the flat needle colour 0.05, 0.14, 0.06), main's binary with the sprays, the
+branch's folded cards with the flat colour, the branch's cards with the sprays, and the last with
+the sprays' normal map set to nothing (`normal_scale` 0 in a copy of the pack). The machine was
+loaded (CPU 73 to 100 %, free commit 0.3 to 33 GB, the session unlocked).
+
+**What it found.**
+
+| | near (10 m) | mid (30 m, 100 m) | far (300 m) |
+|---|---|---|---|
+| needle albedo, main's flat card | 0.114 | 0.114 to 0.116 | 0.116 |
+| needle albedo, sprays | 0.088 to 0.092 | 0.085 to 0.089 | 0.090 |
+| light per albedo, the branch's sprays over main's flat cards, no sky (grove) | +17 % | +20 %, +23 % | +21 % |
+| light per albedo, sprays' map left out over sprays, under the sky | +17 to +24 % | +15 to +26 % | +10 % |
+| the same on the sunlit needles alone | +41 % | +44 %, +28 % | +15 % |
+
+- **The albedo is the image's own and does not fall with distance**: the sprays' needles are
+  0.085 to 0.092 at every distance, against the recipe's needle reflectance (0.083) and the
+  flat card's 0.114; no mip and no far form loses any. The image's maps say the same (0.093 over
+  its opaque texels at every level of a coverage-keeping chain).
+- **The folded cards and their leaning normals return more light per unit of albedo, not less**
+  (the flat colour on the branch's cards against main's: +1 to +7 % on `tree-species`).
+- **The sprays' normal map took the light**: the same cards and image without it returned 15 to
+  26 % more under the sky, the most on the sunlit needles, 10 to 15 % at 300 m where the far form
+  bakes the map's normals averaged. The map came from the third leg's height: a solid cylinder's
+  round back under every brush, its normal 45 degrees at the brush's edge (the mean cosine of a
+  cylinder's lit half to a light square on is pi/4 of a flat face's), and every needle lifted
+  over those behind it, a wall along each needle's edge. Over the image's opaque texels the map
+  gave a light square to the card 0.899 of a flat card's cosine (0.459 of 0.5 at 60 degrees).
+- **The resolve's turn of a two-sided card's normal to the eye's side** sets 40 to 98 % of the
+  needles seen from 1.7 m away from the sun in every variant, main's included; it is the renderer
+  row of foliage lit from both sides, not this one's.
+
+**The mend** is in the image (matgen.md, "Spray sets"): a brush is porous, its silhouette about
+half its envelope (above), so the sun reaches its far flank through the gaps, where a solid
+cylinder's far flank is dark, and the crown's lean on flora's card normals already says which
+way a bough faces; a needle over another is separated from it by air. The height is now each
+needle's own round section and nothing else. Over the opaque texels the map's cosine to a light
+square to the card is 0.979 (spruce) and 0.982 (pine) of a flat card's, 0.489 of 0.5 at 60
+degrees; the albedo, the outline and the coverage are unchanged.
+
+**What an imported asset gets, and what a pack's author does.** Nothing changes for an imported
+conifer or any other card: the renderer, flora and the texture build are untouched. A pack whose
+own `conifer/needles`, `spruce/needles` or `pine/needles` wins over the engine's is drawn as
+before; one that drops them gets the engine's sprays. A pack author's needle normal map should
+hold a needle's own roundness and no shoot-sized relief.
+
+**What recooks.** `k_matgen_version` 11 moves every generated set's key, so a materials root
+built by `engine-content matgen` before it is stale and is built again (`engine-content matgen
+--out <dir>`); every generated mesh keyed against a pack with a `generated` folder re-keys with
+it, and every conifer container (`k_conifer_chain_version` 2) and every dead conifer recook. A
+forest session regenerates its generated pack and lets its trees and deadwood recook (a cold
+load), and should drop its own needle roles from its pack to see the engine's sprays.
+
 ## Not done
 
 - **The third leg's**: no Linux container (the pins of all three legs are MSVC's), no GPU

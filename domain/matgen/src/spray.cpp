@@ -88,8 +88,8 @@ struct Stroke {
   bool twig = false;
   f32 colour[3] = {0, 0, 0};
   f32 rough = 0.5f;
-  f64 tip = 1.0;      // the tone at its tip over the tone at its base
-  f64 crown_m = 0;    // the height of its round section over its line
+  f64 tip = 1.0;    // the tone at its tip over the tone at its base
+  f64 crown_m = 0;  // the height of its round section over its line
 };
 
 // Every texel a capsule of `reach` millimetres round the stroke's line touches, with its distance
@@ -127,8 +127,8 @@ void walk_stroke(const Field& field, const Card& card, const Stroke& s, f64 reac
 // 2026-11-16). The third leg laid a round back under every brush (a solid cylinder's height, its
 // normal leaning 45 degrees at the brush's edge) and lifted each needle over the ones behind it by
 // how far in front of its shoot it stood. Measured in the engine under a sky at 15:30, the same
-// cards and the same image with the normal map left out returned 16 to 24 % more light per unit
-// of albedo at 10 to 100 m and 10 % more at 300 m, on the sunlit needles 22 to 30 %
+// cards and the same image with the normal map left out returned 15 to 26 % more light per unit
+// of albedo at 10 to 100 m and 10 % more at 300 m, on the sunlit needles 28 to 44 %
 // (conifer-crown-coverage.md, "Where the light went: the fourth leg"): that was the darkening.
 // Both were wrong for what a brush is. A brush is porous: a shoot's silhouette is about half of
 // its envelope (Palmroth et al. 2002's STAR and needle counts; the grounding page, "What a shoot's

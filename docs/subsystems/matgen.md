@@ -369,8 +369,8 @@ structure: brushes several needles thick with gaps a brush wide between them.
   2026-11-16, `k_matgen_version` 11). The third leg gave every brush a solid cylinder's height,
   its normal leaning 45 degrees at the edge, and stood each needle over its shoot by how far in
   front of it it was; measured in the engine under a sky, the same image with its normal map left
-  out returned 16 to 24 % more light per unit of albedo at 10 to 100 m and 10 % more at 300 m, a
-  quarter more on the sunlit needles, and that was the sprays' darkening
+  out returned 15 to 26 % more light per unit of albedo at 10 to 100 m and 10 % more at 300 m,
+  28 to 44 % more on the sunlit needles, and that was the sprays' darkening
   ([the measurement](../experiments/conifer-crown-coverage.md#where-the-light-went-the-fourth-leg)).
   Both were wrong for what a brush is: it is porous, its silhouette about half its envelope, so
   the sun reaches its far flank's needles through the gaps where a solid's far flank is unlit,
@@ -386,6 +386,13 @@ structure: brushes several needles thick with gaps a brush wide between them.
   says what the literature gives it).
 - **On the torus all the same.** A spray never reaches the image's edge, and is still placed
   from window-free coordinates and wrapped, so the rotation test holds it as it holds a tile.
+- **What an imported asset gets, and what a consumer regenerates.** An imported conifer or any
+  other card gets nothing new: the renderer, flora and the texture build do not read a spray's
+  kind. A pack's own needle roles win over these, so a scene whose pack names them draws what it
+  drew; dropping them draws the engine's. After `k_matgen_version` 11 a generated pack built
+  before it is stale (`engine-content matgen --out <dir>` builds it again) and every generated
+  mesh keyed against it, every conifer and every dead conifer recooks
+  ([the fourth leg](../experiments/conifer-crown-coverage.md#where-the-light-went-the-fourth-leg)).
 
 `SetStats`: `spray_cover` (the share of texels at a half or more: what a card keeps at level 0,
 before the texture build), `spray_shoots`, `spray_needles`, `spray_needle_px`.
