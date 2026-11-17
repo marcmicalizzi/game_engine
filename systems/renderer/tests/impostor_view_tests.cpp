@@ -15,6 +15,8 @@
 #include <test_paths.h>
 #include <test_temp_dir.h>
 
+#include "test_device.h"
+
 #include <cmath>
 #include <fstream>
 #include <string>
@@ -356,5 +358,155 @@ TEST_CASE("impostor view: across a switch the levels mix by the dither, the path
                                    << " pixels' ids differ from the mesh path's");
     CHECK(mismatched * 1000u <= compared);
   }
+}
+
+// R170: the picture is a function of the scene, never of the order its instances reached the
+// renderer. The same two oaks handed over in two orders, with the threshold swept across the
+// cards' band: every path draws the same picture and the same ids (the instance word read through
+// the permutation), faded and switched at once. Until 2026-11-16 the fade table's seed was the
+// instance's index in the scene's layout, so the screen door of every masked pair inside a band
+// followed the order — the dotted blades within 2 m of the eye that the near hand-off cells found
+// (renderer.md, "The cross-fade").
+TEST_CASE("impostor view: the dither follows the placement, not the order the instances came in") {
+  const gfx::DeviceOptions options = renderer_test::device_options();
+  gfx::Device device;
+  {
+    std::string why;
+    if (!device.create(options, &why) || !device.features().buffer_int64_atomics) {
+      MESSAGE("skipped: no Vulkan device with 64-bit buffer atomics " << why);
+      return;
+    }
+  }
+  const test::TempDir tmp("renderer_impostor_order");
+  REQUIRE(tmp.ok());
+  const std::string oak = tmp.file("oak.flora.json");
+  {
+    std::ofstream f(oak, std::ios::binary);
+    f << k_small_oak;
+  }
+  // Two placements, each with a sway key of its own so nothing else follows the order: the oak the
+  // fade case above looks at, 15 m from the camera where the sweep below crosses the cards' band,
+  // and one far off to the side, out of view, whose only part is to come first in one order.
+  constexpr u32 k_placements = 2;
+  const f64 xs[k_placements] = {0.0, 400.0};
+  const f64 zs[k_placements] = {0.0, 0.0};
+  // The second order is the first rotated, so every placement changes its index.
+  const auto load = [&](bool rotated, SceneData& data) {
+    SceneDesc desc;
+    desc.meshes.push_back(oak);
+    desc.ddc = tmp.file("ddc");
+    desc.cache = false;  // level-0 masks, as the fade case above
+    for (u32 i = 0; i < k_placements; ++i) {
+      const u32 k = rotated ? (i + 1) % k_placements : i;
+      SceneInstance instance;
+      instance.origin = WorldPos{xs[k], 0.0, zs[k]};
+      instance.motion_key = 1000u + k;
+      desc.instances.push_back(instance);
+    }
+    std::string error;
+    REQUIRE_MESSAGE(load_scene(desc, data, error), error);
+    REQUIRE(data.instances.size() == k_placements);
+  };
+  SceneData forward, rotated;
+  load(false, forward);
+  load(true, rotated);
+
+  CameraPath path;
+  CameraPathKey key;
+  key.position = WorldPos{0.0, 4.0, 15.0};
+  key.target = WorldPos{0.0, 4.0, 0.0};
+  key.fov_y = radians(60.0f);
+  path.keys.push_back(key);
+  key.time = 1.0;
+  path.keys.push_back(key);
+  constexpr u32 k_frames = 10;
+  const auto fly = [&](const SceneData& data, RasterMode raster, f32 fade,
+                       Vector<CapturedFrame>& frames) {
+    RenderSettings settings;
+    settings.raster = raster;
+    settings.shadows = ShadowMode::Off;
+    settings.lod_fade = fade;
+    ResolvedSettings resolved;
+    resolve_settings(settings, device.features(), &data, resolved);
+    if (check_availability(resolved, device.features()) != RenderAvailability::Ok) return false;
+    std::string error;
+    GpuScene scene;
+    REQUIRE_MESSAGE(scene.create(device, data, resolved, &error), error);
+    SceneRenderer renderer;
+    SceneRenderer::Desc rd;
+    rd.width = 480;
+    rd.height = 480;
+    REQUIRE_MESSAGE(renderer.create(device, scene, resolved, rd, &error), error);
+    CaptureChannels channels;
+    channels.ids = true;
+    for (u32 f = 0; f < k_frames; ++f) {
+      FrameDesc frame;
+      frame.frame_index = f;
+      frame.camera = sample_camera_path(path, 0.0);
+      frame.lod_px =
+          0.8f * std::pow(1.5625f, static_cast<f32>(f) / static_cast<f32>(k_frames - 1));
+      CapturedFrame captured;
+      REQUIRE_MESSAGE(renderer.render_offscreen(frame, &error), error);
+      REQUIRE_MESSAGE(renderer.capture(frame, channels, captured, &error), error);
+      frames.push_back(std::move(captured));
+    }
+    return true;
+  };
+  const struct {
+    RasterMode raster;
+    const char* name;
+  } paths[] = {{RasterMode::Hardware, "mesh path"},
+               {RasterMode::Vertex, "vertex path"},
+               {RasterMode::RayTrace, "ray path"}};
+  u32 compared_paths = 0;
+  for (const auto& p : paths) {
+    Vector<CapturedFrame> faded;  // this path's forward run with the fade, against at once
+    for (const f32 fade : {0.1f, 0.0f}) {
+      Vector<CapturedFrame> a, b;
+      if (!fly(forward, p.raster, fade, a)) continue;
+      REQUIRE(fly(rotated, p.raster, fade, b));
+      if (fade > 0.0f) {
+        faded = a;
+      } else if (!faded.empty()) {
+        // The case is only a case if the band holds pixels: the screen door changes some.
+        u64 dithered = 0;
+        for (u32 f = 0; f < k_frames; ++f)
+          for (u32 q = 0; q < a[f].width * a[f].height; ++q)
+            dithered += a[f].ids[q * k_id_words + 1] != faded[f].ids[q * k_id_words + 1] ? 1u : 0u;
+        MESSAGE(std::string(p.name) << ": the fade changes " << dithered << " pixels' clusters");
+        CHECK(dithered > 1000u);
+      }
+      u64 colour = 0, ids = 0, covered = 0;
+      for (u32 f = 0; f < k_frames; ++f) {
+        const CapturedFrame& x = a[f];
+        const CapturedFrame& y = b[f];
+        REQUIRE(x.width == y.width);
+        for (u32 q = 0; q < x.width * x.height; ++q) {
+          const u32 ix = x.ids[q * k_id_words];
+          const u32 iy = y.ids[q * k_id_words];
+          // Instance i of the rotated order is placement (i + 1) % k_placements.
+          const u32 my = iy < k_placements ? (iy + 1) % k_placements : iy;
+          covered += ix < k_placements ? 1u : 0u;
+          if (ix != my || x.ids[q * k_id_words + 1] != y.ids[q * k_id_words + 1] ||
+              x.ids[q * k_id_words + 2] != y.ids[q * k_id_words + 2])
+            ++ids;
+          for (u32 c = 0; c < 3; ++c)
+            if (x.color[q * 4 + c] != y.color[q * 4 + c]) {
+              ++colour;
+              break;
+            }
+        }
+      }
+      const std::string label = std::string(p.name) + (fade > 0.0f ? ", faded" : ", at once");
+      MESSAGE(label << ": of " << covered
+                     << " covered pixels over " << k_frames << " frames, " << ids
+                     << " ids and " << colour << " colours differ between the two orders");
+      CHECK(covered > 10000u);
+      CHECK(ids == 0u);
+      CHECK(colour == 0u);
+      ++compared_paths;
+    }
+  }
+  CHECK(compared_paths >= 2u);
 }
 #endif  // ENGINE_RENDERER_TESTS_FLORA
