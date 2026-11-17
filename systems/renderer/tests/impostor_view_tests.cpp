@@ -18,6 +18,7 @@
 #include <test_temp_dir.h>
 
 #include <cmath>
+#include <cstring>
 #include <fstream>
 #include <string>
 
@@ -410,6 +411,11 @@ TEST_CASE("impostor view: the dither follows the placement, not the order the in
   SceneData forward, rotated;
   load(false, forward);
   load(true, rotated);
+  // The scene's centre and radius place the stand-in lights; they were measured from the first
+  // instance's cell, so the rotated order lit the oak from a few micrometres away and two leaves lit
+  // through from behind (R164) drew a code apart (R164-3). They are bit for bit the same now.
+  CHECK(std::memcmp(&forward.center, &rotated.center, sizeof(forward.center)) == 0);
+  CHECK(std::memcmp(&forward.radius, &rotated.radius, sizeof(forward.radius)) == 0);
 
   CameraPath path;
   CameraPathKey key;
