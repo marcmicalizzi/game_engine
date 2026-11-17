@@ -894,7 +894,10 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
   for (u32 i = n - 1; i-- > 0;)
     sill[i] = std::max(c.bed[i], sill[i + 1]);
   Vector<Wet> pool(outs.size());
+  // 0 not a pool, 1 a pool, 2 a pit open past the reach, 3 a pool the water above it spilled
+  // lower than (not written), 4 a station above a pool its still water reaches back to.
   Vector<u8> pooled(outs.size(), 0);
+  Vector<u8> lowered(outs.size(), 0);
   {
     f64 cap = 1e300;
     for (u32 k = 0; k < outs.size(); ++k) {
@@ -908,17 +911,49 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
           o.level >= sill[o.node]) {
         pool[k] = pool_at(c, ground, o.node, o.level);
         pooled[k] = pool[k].over ? 2 : 1;
+        // **A pool continues the water above it** (W138): where the tranquil reach above has
+        // spilled over a bank and been written lower than this pool would stand, the pool's still
+        // water reaches back over those stations if the ground holds its level there too (each
+        // one's own walk past its crests, `pool_at`); else the water left the bed above at the
+        // lower level, cannot stand higher here, and the pool is not written. Until W138 the
+        // pool was written regardless and the sheet climbed 0.5 to 3.1 m over a quarter metre
+        // from the spilled film to it (42 such walls on v47).
+        if (pooled[k] == 1 && cap < o.level - k_over_bank_m) {
+          u32 j = k;
+          bool holds = true;
+          while (j > 0 && lowered[j - 1] != 0 && put[j - 1] < o.level - k_over_bank_m) {
+            const Out& up = outs[j - 1];
+            const Wet w = pool_at(c, ground, up.node, o.level);
+            if (w.over || !(o.level > c.bed[up.node])) {
+              holds = false;
+              break;
+            }
+            --j;
+          }
+          if (holds) {
+            for (u32 i = j; i < k; ++i) {
+              pool[i] = pool_at(c, ground, outs[i].node, o.level);
+              pooled[i] = 4;
+              put[i] = o.level;
+              held[i] = 0;
+            }
+          } else {
+            pooled[k] = 3;
+          }
+        }
         if (pooled[k] == 1) level = o.level;
       }
       held[k] = level < o.level - k_over_bank_m ? 1 : 0;
-      cap = level < o.level && tranquil ? level : 1e300;  // while it is lowered at all
+      lowered[k] = level < o.level && tranquil ? 1 : 0;
+      cap = lowered[k] != 0 ? level : 1e300;  // while it is lowered at all
       put[k] = std::max(level, between(o, c.bed) + k_station_depth_min_m);
     }
   }
   Vector<StationNode> nodes;
   for (u32 k = 0; k < outs.size(); ++k) {
     const Out& o = outs[k];
-    const Wet w = pooled[k] == 1 ? pool[k] : wet_of(o, put[k]);
+    const bool still = pooled[k] == 1 || pooled[k] == 4;
+    const Wet w = still ? pool[k] : wet_of(o, put[k]);
     StationNode s;
     s.s = o.s;
     s.level = put[k];
@@ -948,10 +983,13 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
                        : solver.at(o.node, over_bank ? o.level
                                            : o.met   ? o.arrived
                                                      : std::max(put[index], bed + k_depth_min_m));
-    const Wet w = pooled[index] == 1 ? pool[index] : wet_of(o, put[index]);
+    const bool still = pooled[index] == 1 || pooled[index] == 4;
+    const Wet w = still ? pool[index] : wet_of(o, put[index]);
     if (!f.ok) return refuse(error, line.name, "a station has no water in its section");
-    if (pooled[index] == 1) ++stats.pools;
+    if (still) ++stats.pools;
     if (pooled[index] == 2) ++stats.pools_open;
+    if (pooled[index] == 3) ++stats.pools_spilled;
+    if (pooled[index] == 4) ++stats.pools_reached;
     ProfileStation st;
     st.s = o.s;
     const f64 at_node = std::clamp(o.s / c.run, 0.0, static_cast<f64>(n - 1));

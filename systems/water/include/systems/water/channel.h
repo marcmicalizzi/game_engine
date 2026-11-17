@@ -52,8 +52,9 @@ namespace engine::water {
 inline constexpr std::string_view k_channel_generator = "water_channel";
 // The channel mesh builder's version: part of every channel file's bytes. 2: the sheet from the
 // solved description (S106). 3: the sheets cut where they meet, a pool over its bank drawn, a
-// nappe as wide as its lip and thinning to its sides (S108).
-inline constexpr u32 k_channel_mesh_version = 3;
+// nappe as wide as its lip and thinning to its sides (S108). 4: no sheet climbs from or to a
+// station over its bank (W138).
+inline constexpr u32 k_channel_mesh_version = 4;
 // The flow phase's period, seconds (water.slang's `k_channel_period_s`): UV.x lies in
 // [0, period + one triangle's travel time).
 inline constexpr f32 k_channel_phase_period_s = 8.0f;
@@ -224,6 +225,9 @@ bool stretch_jumps(const Channel& channel, u32 i) noexcept;  // a jump's head an
 // lower bank, and leaving it out is a bed with no water. So such a stretch is drawn when both
 // stations hold at least `k_channel_over_bank_depth_m` and the level does not rise along it by
 // more than `k_channel_over_bank_rise_m`. (Until S108 no stretch flagged at both ends was drawn.)
+// **Nor is a stretch with one end over a bank whose level rises** (W138): the level written at
+// that end is the bank's top, so a sheet climbing from it to a pool's level (0.5 to 3.1 m over a
+// quarter metre on the forest) is a face of water with nothing under it.
 // The rule is `scene_gen::channel_stretch_drawn`, which the cook's count of runs reads too.
 inline constexpr f32 k_channel_over_bank_depth_m = scene_gen::k_channel_over_bank_depth_m;
 inline constexpr f64 k_channel_over_bank_rise_m = scene_gen::k_channel_over_bank_rise_m;

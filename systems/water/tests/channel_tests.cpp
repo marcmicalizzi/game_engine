@@ -390,6 +390,41 @@ TEST_CASE("water channel: the step's fall is a parabola and its jump a ramp at t
         doctest::Approx(0.5 * 8.0 * (1.0 / 1.2837 + 1.0 / 1.2905)).epsilon(1e-6));
 }
 
+// **A sheet never climbs from a bank's top** (W138; the forest's "walls"): an over-bank film at
+// station 4, written at its bank's crest 5 mm over the bed, then station 5 a pool 0.8 m higher, as
+// the W130.2 solve wrote 42 of on v47. The stretch between is a face of water over a quarter metre
+// with nothing under it, and is not drawn; the pool's own stretches are, and so is the same rise
+// between two stations neither of which is over a bank (that is the solve's to answer for, and
+// the description says the water is there).
+TEST_CASE("water channel: a sheet does not climb from or to a station over its bank") {
+  scene::WaterChannel wall = channel_fixture::mouth();
+  wall.flags[4] = static_cast<u16>(wall.flags[4] | scene_gen::k_channel_over_bank);
+  wall.depth_m[4] = 0.005f;
+  wall.points[5].y = wall.points[4].y + 0.8;
+  wall.points[6].y = wall.points[5].y - 0.001;
+  const Built b = build(wall);
+  CHECK(water::stretch_drawn(b.channel, 3));
+  CHECK_FALSE(water::stretch_drawn(b.channel, 4));
+  CHECK(water::stretch_drawn(b.channel, 5));
+  // The mesh: no triangle stands on the rise (x 40 to 48; the old rule drew it, sloping up 0.8 m).
+  const water::Mesh& m = b.sheet.mesh;
+  u32 faces = 0;
+  for (u32 t = 0; t < m.indices.size(); t += 3) {
+    f64 x = 0.0;
+    for (u32 k = 0; k < 3; ++k)
+      x += (b.channel.origin.x + static_cast<f64>(m.positions[m.indices[t + k]].x)) / 3.0;
+    faces += x > 40.5 && x < 47.5 ? 1u : 0u;
+  }
+  CHECK(m.indices.size() > 0);
+  CHECK(faces == 0);
+  // The flag at the far end climbs the same way: the level written there is its bank's.
+  CHECK_FALSE(scene_gen::channel_stretch_drawn(0, scene_gen::k_channel_over_bank, 0.5f, 0.5f, 10.0,
+                                               10.0011));
+  CHECK(scene_gen::channel_stretch_drawn(0, scene_gen::k_channel_over_bank, 0.5f, 0.005f, 10.0,
+                                         9.9));
+  CHECK(scene_gen::channel_stretch_drawn(0, 0, 0.005f, 0.005f, 10.0, 10.8));
+}
+
 // W120's film along a line that climbs out of a hollow: the stations over their banks, each with
 // the 5 mm of water the cook writes there.
 static scene::WaterChannel filmed(scene::WaterChannel block, std::initializer_list<u32> stations) {

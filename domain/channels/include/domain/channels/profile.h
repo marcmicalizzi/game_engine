@@ -140,6 +140,11 @@ struct ProfileStats {
   // pit whose level met no ground within `k_pool_reach_m` (left over their bank).
   u32 pools = 0;
   u32 pools_open = 0;
+  // W138: pits whose pool the tranquil water above had spilled lower than (not written, the
+  // spilled level carried on), and stations above a pool its still water reaches back over (in
+  // `pools` too).
+  u32 pools_spilled = 0;
+  u32 pools_reached = 0;
   u32 rises_jump = 0;
   u32 rises_shooting = 0;
   u32 rises_over_bank = 0;

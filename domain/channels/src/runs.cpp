@@ -1,6 +1,7 @@
 #include <domain/channels/runs.h>
 #include <domain/scene_gen/water_channel.h>
 
+#include <algorithm>
 #include <cmath>
 
 namespace engine::channels {
@@ -47,6 +48,15 @@ LineRuns measure_runs(const scene::WaterChannel& block) {
       if (seen) ++out.falls_drawn;
     }
     if (k == 2) out.undrawn_m += len;
+    const f64 rise = block.points[i + 1].y - block.points[i].y;
+    const bool jump = (block.flags[i] & scene_gen::k_channel_jump_head) != 0 &&
+                      (block.flags[i + 1] & scene_gen::k_channel_jump_foot) != 0;
+    if (k != 1 && !jump && rise > k_run_climb_m) {
+      ++out.climbs;
+      if (rise > k_run_wall_m) ++out.walls;
+      if (rise > k_run_wall_m && k == 0) ++out.walls_drawn;
+      out.climb_worst_m = std::max(out.climb_worst_m, rise);
+    }
     if (k == 0 && !surface) ++out.pieces;
     if (seen && !water) ++out.runs;
     if (k == 2 && !gap) ++out.gaps;
@@ -77,6 +87,11 @@ void RunsBySlope::add(const LineRuns& line) noexcept {
   c.gaps += line.gaps;
   c.thin_m += line.thin_m;
   c.alternations += line.alternations;
+  c.climbs += line.climbs;
+  c.walls += line.walls;
+  c.walls_drawn += line.walls_drawn;
+  if (line.walls > 0) ++c.wall_lines;
+  c.climb_worst_m = std::max(c.climb_worst_m, line.climb_worst_m);
 }
 
 JsonValue runs_json(const RunsBySlope& runs) {
@@ -100,6 +115,11 @@ JsonValue runs_json(const RunsBySlope& runs) {
     one["gaps"] = JsonValue(c.gaps);
     one["thin_share"] = JsonValue(round(c.length_m > 0 ? c.thin_m / c.length_m : 0.0, 1e4));
     one["alternations_per_100m"] = JsonValue(round(static_cast<f64>(c.alternations) * per, 1e2));
+    one["climbs"] = JsonValue(c.climbs);
+    one["walls"] = JsonValue(c.walls);
+    one["walls_drawn"] = JsonValue(c.walls_drawn);
+    one["wall_lines"] = JsonValue(c.wall_lines);
+    one["climb_worst_m"] = JsonValue(round(c.climb_worst_m, 1e3));
     out.push_back(std::move(one));
   }
   return out;

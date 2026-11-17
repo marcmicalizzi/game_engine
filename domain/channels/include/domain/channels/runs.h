@@ -37,6 +37,15 @@ inline constexpr f64 k_run_film_depth_m = 0.0055;
 // both. `thin_m` and `alternations` are that count, by horizontal length where theirs is by the
 // points' 3D distance (7 % longer on a 37 % line).
 inline constexpr f64 k_run_thin_depth_m = 0.011;
+// **A climb** is a stretch that is not a fall whose written level rises along the flow by more
+// than `k_run_climb_m`, and **a wall** one that rises by more than `k_run_wall_m`: over the
+// lattice's quarter metre either, drawn, is a face of water standing in the air (W138; the
+// forest's count of 2026-11-16, `17_walls.py`, whose thresholds these are: 42 drawn walls on 14
+// lines of v47 at stage 1). They are counted in the description whether drawn or not (what the
+// solve wrote), and `walls_drawn` is the forest's count (what the draw lays a sheet on). A jump's
+// head to its foot climbs by the sequent depth, which is physical, and is not counted.
+inline constexpr f64 k_run_climb_m = 0.05;
+inline constexpr f64 k_run_wall_m = 0.5;
 
 struct LineRuns {
   f64 length_m = 0;  // along the line, horizontal
@@ -51,6 +60,10 @@ struct LineRuns {
   u32 gaps = 0;          // maximal runs of stretches not drawn
   f64 thin_m = 0;        // stretches leaving a station `k_run_thin_depth_m` deep or less
   u32 alternations = 0;  // runs of one kind, thin or not (the forest's "pieces")
+  u32 climbs = 0;        // stretches, not a fall or a jump, rising over `k_run_climb_m`
+  u32 walls = 0;         // ... over `k_run_wall_m`
+  u32 walls_drawn = 0;   // walls the draw lays a sheet on
+  f64 climb_worst_m = 0;
 };
 LineRuns measure_runs(const scene::WaterChannel& block);
 
@@ -59,13 +72,16 @@ struct RunsBySlope {
     u32 lines = 0;
     f64 length_m = 0, film_m = 0, undrawn_m = 0, thin_m = 0;
     u32 pieces = 0, runs = 0, falls = 0, falls_drawn = 0, gaps = 0, alternations = 0;
+    u32 climbs = 0, walls = 0, walls_drawn = 0, wall_lines = 0;
+    f64 climb_worst_m = 0;
   };
   Class classes[k_run_classes];
   void add(const LineRuns& line) noexcept;
 };
 u32 run_class(f64 slope) noexcept;
 // One object a class: lines, km, film and undrawn shares of the length, pieces and runs every
-// 100 m, falls (and those drawn) and gaps.
+// 100 m, falls (and those drawn), gaps, and climbs and walls (with the lines holding a wall and
+// the highest climb).
 JsonValue runs_json(const RunsBySlope& runs);
 
 }  // namespace engine::channels

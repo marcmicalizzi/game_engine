@@ -173,9 +173,9 @@ bool stretch_jumps(const Channel& c, u32 i) noexcept {
 
 bool stretch_drawn(const Channel& c, u32 i) noexcept {
   if (i + 1 >= c.points.size()) return false;
-  if ((c.flags[i] & c.flags[i + 1] & scene_gen::k_channel_over_bank) == 0) return true;
-  return over_bank_stretch_drawn(c.depth_m[i], c.depth_m[i + 1], static_cast<f64>(c.points[i].y),
-                                 static_cast<f64>(c.points[i + 1].y));
+  return scene_gen::channel_stretch_drawn(c.flags[i], c.flags[i + 1], c.depth_m[i],
+                                          c.depth_m[i + 1], static_cast<f64>(c.points[i].y),
+                                          static_cast<f64>(c.points[i + 1].y));
 }
 
 ChannelLine channel_line(const Channel& c) {

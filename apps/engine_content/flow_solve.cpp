@@ -225,6 +225,7 @@ struct Totals {
   WorldPos over_bank_at{};
   std::string over_bank_line;
   u32 pools = 0, pools_open = 0;  // W130.2: stations standing as a pool in a pit of their line
+  u32 pools_spilled = 0, pools_reached = 0;  // W138
   u32 rises_jump = 0, rises_shooting = 0, rises_over_bank = 0, rises_other = 0;
   f64 rise_jump_worst = 0, rise_shooting_worst = 0, rise_other_worst = 0;
   WorldPos rise_shooting_at{}, rise_other_at{};
@@ -246,6 +247,8 @@ struct Totals {
     over_bank_lines += s.over_bank > 0 ? 1u : 0u;
     pools += s.pools;
     pools_open += s.pools_open;
+    pools_spilled += s.pools_spilled;
+    pools_reached += s.pools_reached;
     if (s.over_bank_worst_m > over_bank_worst) {
       over_bank_worst = s.over_bank_worst_m;
       over_bank_at = s.over_bank_at;
@@ -865,6 +868,8 @@ int flow_solve_command(int argc, char** argv) {
   JsonValue pools = JsonValue::object();
   pools["stations"] = JsonValue(totals.pools);
   pools["open"] = JsonValue(totals.pools_open);
+  pools["spilled"] = JsonValue(totals.pools_spilled);
+  pools["reached_back"] = JsonValue(totals.pools_reached);
   line["pools"] = std::move(pools);
   JsonValue rises = JsonValue::object();
   rises["jump"] = JsonValue(totals.rises_jump);

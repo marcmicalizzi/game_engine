@@ -663,3 +663,47 @@ TEST_CASE("profile: a pit on a line stands as a pool at its sill and spills over
   CHECK(widest > 6.0);       // as wide as the level meets the ground, past the section's read
   check_head_falls(p);
 }
+
+namespace {
+// The bowl, with its upstream half open on its -z side (W138): past z = -3 and short of x = 25
+// the ground stands no higher than 19.0 m, under the level the bowl would hold, so water at that
+// level leaves the bowl there.
+f64 notched_bowl_height(const void*, i64 x_mm, i64 z_mm) noexcept {
+  const f64 h = bowl_height(nullptr, x_mm, z_mm);
+  const f64 x = static_cast<f64>(x_mm) / 1000.0, z = static_cast<f64>(z_mm) / 1000.0;
+  return x < 25.0 && z < -3.0 ? std::min(h, 19.0) : h;
+}
+}  // namespace
+
+TEST_CASE("profile: a pool stands no higher than the water above it spilled") {
+  // The forest's walls (W138; 42 on v47 at stage 1): a pit's upstream stations open past the pool's
+  // reach were written at their bank's top, its downstream ones as a pool at the sill's level, and
+  // the sheet climbed from the one to the other. Water that leaves the bed at the lower level does
+  // not stand higher below it: no written level climbs, and the pit's closed half is not written as
+  // a pool over the spilled water.
+  scene_gen::Ground ground;
+  ground.surface_fn = &notched_bowl_height;
+  FlowLine line = fixture_line("notched bowl", 0, 50, 0, 0.021);
+  line.width.assign(2, 1.0);
+  std::string error;
+  Profile p;
+  REQUIRE_MESSAGE(solve_profile(line, ground, ProfileOptions{}, p, error), error);
+  MESSAGE("pools " << p.stats.pools << ", open " << p.stats.pools_open << ", spilled "
+                   << p.stats.pools_spilled << ", reached back " << p.stats.pools_reached);
+  CHECK(p.stats.pools_open > 0);
+  CHECK(p.stats.pools_spilled > 0);
+  f64 worst = 0.0;
+  for (u32 k = 0; k + 1 < p.stations.size(); ++k) {
+    const ProfileStation& a = p.stations[k];
+    const ProfileStation& b = p.stations[k + 1];
+    if ((a.flags & scene_gen::k_channel_jump_head) != 0) continue;
+    worst = std::max(worst, b.level - a.level);
+  }
+  CAPTURE(worst);
+  CHECK(worst < 0.05);  // the forest's least climb
+  // The closed bowl (stand-alone, the test above) is still a pool.
+  ground.surface_fn = &bowl_height;
+  REQUIRE_MESSAGE(solve_profile(line, ground, ProfileOptions{}, p, error), error);
+  CHECK(p.stats.pools > 0);
+  CHECK(p.stats.pools_spilled == 0);
+}
