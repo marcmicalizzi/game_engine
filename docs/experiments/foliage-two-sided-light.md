@@ -120,3 +120,20 @@ to 36 GB): GPU total 4.591 and 4.592 ms before, 4.880 and 4.941 after, **+0.29 t
 of it the resolve (2.290 and 2.299 against 2.583 and 2.571, +0.28): the sun ray an underside now
 traces, through masked cards, and three more evaluations of the sky's ambient. The primary rays,
 the bounce's trace and every other pass are unchanged to 0.01 ms.
+
+**With the generated sprays** (the same views and pair, the materials root a pack this row's
+`engine-content matgen` wrote, the far forms with their optics; 2026-11-16 23:2x to 23:35, locked,
+other processes at 41 to 100 % of the CPU): the tall spruce at 10 m 0.083 to 0.093 (+11 %),
+under it 0.086 to 0.094 (+9 %), the species' spruce +4 % at 10 m and +8 % under it, the pine
+unchanged (0.094, 0.095), the oaks +37 to +51 % as on flat cards, and the oak at 300 m, now a far
+form with its optics, 0.121 to 0.213 (+76 %); turned away 0.56 to 0.97 before, none after. The
+pair: GPU total 4.990 and 5.024 ms before, 5.257 and 5.193 after, **+0.17 to +0.27 ms** (resolve
+2.546 and 2.610 against 2.857 and 2.752); the second flight of the branch ran with the CPU at 100 %
+and has a p99 of 115 ms, so this half is an upper bound. The sprays cost 0.41 ms over main's flat
+cards on G203's pair; this row adds about half that again.
+
+**What would give some back** (not done): the extra shadow rays are an underside's sun ray through
+masked cards, so a foliage pixel whose unshadowed sun term is under the resolve's light tolerance
+of the rest of its light could take its visibility from a neighbour, as the faint lights do
+(R115); the sprays' 0.41 is the resolve sampling three maps and a variance chain where the flat
+card sampled none, and a needle set whose roughness is one value could carry it as a factor.
