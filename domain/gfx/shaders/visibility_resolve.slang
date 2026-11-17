@@ -1607,7 +1607,7 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     screen_position_gradients_at(tri, at, dp_dx, dp_dy);
     sampled = sample_terrain_material(geo, material, surface_uv, duv_dx, duv_dy, s.position,
                                       s.normal, dp_dx, dp_dy, length(from_eye), true, terrain_normal,
-                                      params->mode != 12, wet_s, wet_film);
+                                      params->mode != 12, wet_s, wet_film, s.geometric);
   } else {
     sampled = sample_material_grad(material, uv, duv_dx, duv_dy);
   }

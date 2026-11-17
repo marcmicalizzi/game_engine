@@ -31,6 +31,7 @@
 #include <core/schema/json_reflect.h>
 #include <domain/channels/channels.h>
 #include <domain/channels/discharge.h>
+#include <domain/channels/in_water.h>
 #include <domain/channels/profile.h>
 #include <domain/channels/runs.h>
 #include <domain/scene_gen/scene_gen.h>
@@ -420,6 +421,7 @@ int flow_solve_command(int argc, char** argv) {
   }
 
   JsonValue blocks = JsonValue::array();
+  Vector<scene::WaterChannel> wet_blocks;  // the solved lines, for what stands in their water
   JsonValue dry = JsonValue::array();
   Totals totals;
   channels::RunsBySlope by_slope;  // W130: how whole each line is drawn, by its slope
@@ -523,6 +525,7 @@ int flow_solve_command(int argc, char** argv) {
           totals.add(name, solved[l].profile);
           by_slope.add(channels::measure_runs(solved[l].block));
           blocks.push_back(schema::to_json(solved[l].block));
+          wet_blocks.push_back(solved[l].block);
           continue;
         }
         JsonValue line = JsonValue::object();
@@ -642,6 +645,7 @@ int flow_solve_command(int argc, char** argv) {
       totals.add(block.name, profile);
       by_slope.add(channels::measure_runs(block));
       blocks.push_back(schema::to_json(block));
+      wet_blocks.push_back(block);
       ++authored;
     }
   }
@@ -738,13 +742,41 @@ int flow_solve_command(int argc, char** argv) {
     for (JsonValue& l : lists)
       l = JsonValue::array();
     u64 total = 0;
-    for (u32 k = 0; k < instance_count && !filling_bodies.empty(); ++k) {
+    // W138: and in a solved line's water, its pools' included, where no body's covers the place.
+    const channels::ChannelWater line_water(
+        std::span<const scene::WaterChannel>(wet_blocks.data(), wet_blocks.size()));
+    Vector<u64> line_counts(wet_blocks.size(), u64{0});
+    Vector<f64> line_deepest(wet_blocks.size(), 0.0);
+    Vector<JsonValue> line_lists(wet_blocks.size());
+    for (JsonValue& l : line_lists)
+      l = JsonValue::array();
+    u64 in_lines = 0;
+    const auto listed = [&](const JsonValue& instance, u32 k, f64 x, f64 y, f64 z, f64 depth) {
+      JsonValue one = JsonValue::object();
+      one["index"] = JsonValue(k);
+      f64 mesh = 0;
+      if (const JsonValue* m = instance.find("mesh"); m != nullptr && m->get_f64(mesh))
+        one["mesh"] = JsonValue(static_cast<u32>(mesh));
+      if (const JsonValue* name = instance.find("name");
+          name != nullptr && name->is_string() && !name->as_string().empty())
+        one["name"] = JsonValue(std::string(name->as_string()));
+      JsonValue at = JsonValue::array();
+      at.push_back(JsonValue(round3(x)));
+      at.push_back(JsonValue(round3(y)));
+      at.push_back(JsonValue(round3(z)));
+      one["at"] = std::move(at);
+      one["depth_m"] = JsonValue(round3(depth));
+      return one;
+    };
+    for (u32 k = 0; k < instance_count && (!filling_bodies.empty() || line_water.stretches() > 0);
+         ++k) {
       const JsonValue& instance = (*instances)[k];
       const JsonValue* t = instance.find("translation");
       f64 x = 0, y = 0, z = 0;
       if (t == nullptr || !t->is_array() || t->size() != 3 || !(*t)[0].get_f64(x) ||
           !(*t)[1].get_f64(y) || !(*t)[2].get_f64(z))
         continue;
+      bool in_body = false;
       for (u32 b = 0; b < filling_bodies.size(); ++b) {
         const scene::WaterBody& body = filling_bodies[b];
         const bool in = body.shape.fill.has_value() ? floods[b].wets(*body.shape.fill, x, z)
@@ -756,25 +788,19 @@ int flow_solve_command(int argc, char** argv) {
         ++counts[b];
         ++total;
         deepest[b] = std::max(deepest[b], depth);
-        if (listing) {
-          JsonValue one = JsonValue::object();
-          one["index"] = JsonValue(k);
-          f64 mesh = 0;
-          if (const JsonValue* m = instance.find("mesh"); m != nullptr && m->get_f64(mesh))
-            one["mesh"] = JsonValue(static_cast<u32>(mesh));
-          if (const JsonValue* name = instance.find("name");
-              name != nullptr && name->is_string() && !name->as_string().empty())
-            one["name"] = JsonValue(std::string(name->as_string()));
-          JsonValue at = JsonValue::array();
-          at.push_back(JsonValue(round3(x)));
-          at.push_back(JsonValue(round3(y)));
-          at.push_back(JsonValue(round3(z)));
-          one["at"] = std::move(at);
-          one["depth_m"] = JsonValue(round3(depth));
-          lists[b].push_back(std::move(one));
-        }
+        if (listing) lists[b].push_back(listed(instance, k, x, y, z, depth));
+        in_body = true;
         break;
       }
+      u32 line_index = 0;
+      f64 line_level = 0.0;
+      if (in_body || !line_water.level_at(x, z, line_index, line_level)) continue;
+      const f64 depth = line_level - ground.surface(WorldPos{x, line_level, z});
+      if (!(depth > 0.0)) continue;
+      ++line_counts[line_index];
+      ++in_lines;
+      line_deepest[line_index] = std::max(line_deepest[line_index], depth);
+      if (listing) line_lists[line_index].push_back(listed(instance, k, x, y, z, depth));
     }
     JsonValue by_body = JsonValue::object();
     JsonValue file_bodies = JsonValue::array();
@@ -793,15 +819,43 @@ int flow_solve_command(int argc, char** argv) {
         file_bodies.push_back(std::move(one));
       }
     }
+    JsonValue by_line = JsonValue::object();
+    JsonValue file_lines = JsonValue::array();
+    u32 most_line = 0;
+    for (u32 b = 0; b < wet_blocks.size(); ++b) {
+      if (line_counts[b] == 0) continue;
+      if (line_counts[b] > line_counts[most_line]) most_line = b;
+      by_line[wet_blocks[b].name] = JsonValue(line_counts[b]);
+      if (listing) {
+        JsonValue one = JsonValue::object();
+        one["name"] = JsonValue(wet_blocks[b].name);
+        one["count"] = JsonValue(line_counts[b]);
+        one["deepest_m"] = JsonValue(round3(line_deepest[b]));
+        one["instances"] = std::move(line_lists[b]);
+        file_lines.push_back(std::move(one));
+      }
+    }
     under["instances"] = JsonValue(instance_count);
     under["under"] = JsonValue(total);
     under["by_body"] = std::move(by_body);
+    under["in_lines"] = JsonValue(in_lines);
+    under["by_line"] = std::move(by_line);
+    if (in_lines > 0)
+      std::fprintf(stderr,
+                   "flow solve: %llu of the scene's %u instances stand in a line's water (the most "
+                   "in \"%s\": %llu)%s\n",
+                   static_cast<unsigned long long>(in_lines), instance_count,
+                   wet_blocks[most_line].name.c_str(),
+                   static_cast<unsigned long long>(line_counts[most_line]),
+                   listing ? "" : "; --under-water <file> lists them");
     if (listing) {
       JsonValue file = JsonValue::object();
       file["scene"] = JsonValue(scene_path);
       file["instances"] = JsonValue(instance_count);
       file["under"] = JsonValue(total);
       file["bodies"] = std::move(file_bodies);
+      file["in_lines"] = JsonValue(in_lines);
+      file["lines"] = std::move(file_lines);
       JsonWriteOptions compact;
       compact.pretty = false;
       if (io::write_file_atomic(under_path, write_json(file, compact) + "\n") != io::Status::Ok)

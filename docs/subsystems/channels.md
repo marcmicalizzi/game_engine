@@ -2302,6 +2302,18 @@ on stderr, and with `--under-water <list.json>` writes every one: its place in t
 That file is what a consumer's own placement reads to move or drop them. An authored body is
 counted as the plan's are; a scene with no body or no instance pays one look.
 
+**And in a line's water** (W138, 2026-11-16; the forest's need 130: after W130.2's pools 26 of its
+instances newly stood in channel water, 22 on one line whose pools reach 49 m wide, and the list
+did not name one). An instance no body covers is asked of the solved lines too
+(`channels::ChannelWater`, `in_water.h`): it stands in a line's water where it lies within the wet
+reach of a stretch the draw lays a sheet on — each side by its own `wet_left_m` or `wet_right_m`,
+the level and the reach interpolated along the stretch as the draw does, a fall's stretch left out
+(a nappe is in the air) — and the ground there stands under that level. The line prints
+`in_lines` and `by_line` beside `under` and `by_body`, a sentence on stderr, and the list file a
+`lines` array as its `bodies` (each line's name, count, deepest and instances). The lines are found
+through a grid of 16 m squares holding the stretches whose reach touches each, so an instance costs
+the few stretches near it; a scene with no wet line pays nothing.
+
 **A generator's placements keep off a body of the plan as off any body**: the plan's block is
 an ordinary `WaterBody` in the scene's `water`, which is what the exclusion every placement
 generator asks is built from. The case

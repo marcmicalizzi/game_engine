@@ -1,4 +1,5 @@
 // The count of how whole a stream is drawn (channels.md, "How whole a stream is drawn"; W130).
+#include <domain/channels/in_water.h>
 #include <domain/channels/runs.h>
 #include <domain/scene_gen/water_channel.h>
 
@@ -67,4 +68,59 @@ TEST_CASE("a fall whose foot does not stand lower is no nappe, and the classes a
   by.add(r);  // 2 m over 3 m: over 30 %
   CHECK(by.classes[4].lines == 1);
   CHECK(by.classes[4].pieces == 2);
+}
+
+TEST_CASE("a line's walls: a level climbing from a film over its bank is counted, not drawn") {
+  // W138: 0-1 surface, 1 a film over its bank, 2 a pool 0.8 m over it (the forest's wall), 2-3
+  // the pool, 3-4 a 6 cm climb between two plain stations (drawn: the description says so), 4-5
+  // a jump (its foot over its head, not counted).
+  constexpr u16 k_head = scene_gen::k_channel_jump_head;
+  constexpr u16 k_jfoot = scene_gen::k_channel_jump_foot;
+  const scene::WaterChannel c = line({10.0, 9.9, 10.7, 10.7, 10.76, 10.0, 10.6},
+                                     {0.05f, 0.005f, 0.6f, 0.6f, 0.6f, 0.02f, 0.3f},
+                                     {0, k_over, 0, 0, 0, k_head, k_jfoot});
+  const LineRuns r = measure_runs(c);
+  CHECK(r.climbs == 2);
+  CHECK(r.walls == 1);
+  CHECK(r.walls_drawn == 0);
+  CHECK(r.climb_worst_m == doctest::Approx(0.8));
+  CHECK(r.undrawn_m == doctest::Approx(1.0));
+  RunsBySlope by;
+  by.add(r);
+  const JsonValue j = runs_json(by);
+  u32 walls = 0;
+  f64 v = 0;
+  for (u32 k = 0; k < k_run_classes; ++k)
+    if (const JsonValue* w = j[k].find("walls"); w != nullptr && w->get_f64(v)) walls += static_cast<u32>(v);
+  CHECK(walls == 1);
+}
+
+TEST_CASE("what stands in a line's water: within its wet reach, each side by its own") {
+  // W138: a line down +x, 2 m wet to its left (+z, the draw's left for a line down +x is the
+  // side where heading.x * z > 0) and 0.5 m to its right, level 10 falling to 9.
+  scene::WaterChannel c = line({10.0, 9.5, 9.0}, {0.3f, 0.3f, 0.3f}, {0, 0, 0});
+  c.points[1].x = 10.0;
+  c.points[2].x = 20.0;
+  c.wet_left_m.assign(3, 2.0f);
+  c.wet_right_m.assign(3, 0.5f);
+  const scene::WaterChannel blocks[1] = {c};
+  const ChannelWater water(blocks);
+  u32 block = 99;
+  f64 level = 0;
+  REQUIRE(water.level_at(5.0, 1.5, block, level));
+  CHECK(block == 0);
+  CHECK(level == doctest::Approx(9.75));
+  CHECK_FALSE(water.level_at(5.0, -1.0, block, level));  // past the right's half metre
+  CHECK(water.level_at(5.0, -0.4, block, level));
+  CHECK_FALSE(water.level_at(5.0, 2.5, block, level));
+  CHECK_FALSE(water.level_at(30.0, 0.0, block, level));
+  // A stretch the draw leaves out holds no water: a film over its bank climbing.
+  scene::WaterChannel film = c;
+  film.flags[0] = scene_gen::k_channel_over_bank;
+  film.flags[1] = scene_gen::k_channel_over_bank;
+  film.points[1].y = 10.2;
+  const scene::WaterChannel films[1] = {film};
+  const ChannelWater none(films);
+  CHECK_FALSE(none.level_at(5.0, 0.0, block, level));
+  CHECK(none.level_at(15.0, 0.0, block, level));
 }
