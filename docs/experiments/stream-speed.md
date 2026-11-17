@@ -129,6 +129,64 @@ the Froude rule's foam, the broken share's gates) keep reading the solve's own s
 pattern is carried at changes, so the stream "keeps its solved depth and looks as fast as it is
 where the eye follows it" (need 146 b).
 
+## Measured: the old law against the new
+
+`engine-content flow solve` at 1012756b (`msvc-debug`, one thread, CPU only; the machine shared with
+other rows' builds and a test run), the same binary with `--resistance jarrett` (the old default,
+unchanged) and with the new default. The speeds are `runs_by_slope`'s: drawn stretches by length.
+
+**`content/test-scenes/torrent`** (the plan of 2026-11-15; 8 wet lines, 0.23 km over 30 %, one short
+line of 15 to 30 %):
+
+| Stage | Class | Law | Speed p10 / median / p90 m/s | Depth median m | Over a bank (stations, all lines) |
+|---|---|---|---|---|---|
+| 1 | over 30 % | Jarrett | 0.31 / 0.46 / 0.52 | 0.09 | 5 |
+| 1 | over 30 % | **Ferguson** | 0.24 / **0.35** / 0.40 | 0.10 | 9 |
+| 2 | over 30 % | Jarrett | 0.39 / 0.57 / 0.65 | 0.12 | 10 |
+| 2 | over 30 % | **Ferguson** | 0.36 / **0.50** / 0.57 | 0.13 | 11 |
+
+Every line's mean n went from Jarrett's clamped 0.17 to an equivalent 0.21 to 0.28: the plan's
+clasts on a 40 % torrent bed stand as high as its water is deep. Falls, pools and runs per 100 m
+are unchanged (4 falls, 3 pools, 3.04 runs at stage 1).
+
+**The forest's world (v47).** The whole world could not be solved tonight: `flow solve` of main at
+d6534963 (this row's base, and the neighbouring row's untouched binary alike) grew past 31 GB of
+commit on v47's tile sets in `msvc-debug`, where last night's build peaked at 2.44 GB, and both
+runs were stopped before they took the machine down (the solve itself is not where it goes: the
+same plan solved on the small scene below peaks at 0.35 GB). In its place, the forest session's own
+small scene of `region link 515` (`reports/quality-v47/parts/stream-scene`, the world's ground
+there bit for bit, the plan 780a7a78621fb16f), solved in a copy whose tile root is this row's; only
+the nine lines wholly on its ground are counted (0.53 km over 30 %, 0.23 km at 2 to 5 %):
+
+| Line | Slope | Q l/s | Jarrett n, mean speed, mean depth | Ferguson n, mean speed, mean depth |
+|---|---|---|---|---|
+| region link 515 | 0.45 | 20.8 | 0.161, 0.46 m/s, 8.1 cm | 0.261, **0.28 m/s**, 14.9 cm |
+| region link 483 | 0.44 | 22.0 | 0.148, 0.44, 9.4 cm | 0.210, 0.22, 18.6 cm |
+| region link 480 | 0.56 | 24.6 | 0.167, 0.50, 8.0 cm | 0.262, 0.31, 14.1 cm |
+| region link 543 | 0.029 | 4.3 | 0.065, 0.13, 9.8 cm | 0.059, 0.13, 8.7 cm |
+
+| Class | Law | Speed p10 / median / p90 m/s | Depth median m |
+|---|---|---|---|
+| over 30 % | Jarrett | 0.11 / 0.42 / 0.61 | 0.069 |
+| over 30 % | **Ferguson** | 0.02 / **0.25** / 0.37 | 0.092 |
+| 2 to 5 % | Jarrett | 0.06 / 0.08 / 0.20 | 0.115 |
+| 2 to 5 % | **Ferguson** | 0.08 / **0.10** / 0.18 | 0.100 |
+
+(Counted by `inside.ps1` in the row's scratch from the solved blocks, the drawn rule approximated:
+not a lip-to-foot pair and not both stations a 5 mm film.) The gentle reaches here are a pool's and
+a mouth's, held by the level they meet, so the law moves them little.
+
+**What this says about the owner's complaint.** The resistance law is a small part of the answer and
+on the steep lines it points the other way: by the only law with data at these depths, 21 l/s on a
+45 % bed of the plan's clasts runs at a mean of about 0.3 m/s, 15 cm deep, slower and deeper than
+Jarrett's clamp had it. The forest session's 0.10 to 0.40 m/s medians are about what a small mountain
+stream's reach-mean is. What makes a steep stream look fast is the water an eye follows over its
+steps, and that is the draw's: the pattern travels at 1 to 2.2 m/s on a 10 to 30 % sheet (above),
+whatever the mean. Deeper water helps the W130 count (a thicker sheet is less often a 5 mm film) and
+costs the torrent four more stations over a bank at stage 1. **Motion is unjudged**: a still frame
+cannot show a travel speed, and no capture sequence was taken; the travel is pinned by
+`systems/water`'s test of its CPU mirror.
+
 ## Numbers pinned, each against its source
 
 | Number | Value | Source |

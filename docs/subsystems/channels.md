@@ -1030,6 +1030,13 @@ steeper than 30 % (7 of 8 wet lines, 0.23 km; 8 lines at stage 3):
 No station of the torrent is 1.1 cm deep or less at any stage (its feet land in plunge pools), so
 the forest's count there is the runs.
 
+**How fast, W137** (2026-11-16, the same command at 1012756b; [stream-speed](../experiments/stream-speed.md#measured-the-old-law-against-the-new)):
+over 30 % the torrent's median drawn speed went from 0.46 to 0.35 m/s at stage 1 and 0.57 to 0.50
+at stage 2 under Ferguson's law, its median depth from 9 to 10 cm and 12 to 13 cm; the falls,
+pools and runs are unchanged and the stations over a bank went from 5 to 9 at stage 1. On the
+forest's small scene of `region link 515` the line runs at a mean of 0.28 m/s, 15 cm deep, where
+Jarrett's clamp had 0.46 m/s and 8 cm.
+
 **Measured on the world the owner walked** (the forest's `world\v47\base.json`, plan
 780a7a78621fb16f, its tile sets and route plan copied to a root of the row's own; the same build
 and machine as above, 131 to 154 s a solve, the largest 2.44 GB of commit). Over 30 %, by this
