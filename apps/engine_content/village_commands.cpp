@@ -34,14 +34,19 @@ int village_command(int argc, char** argv) {
 #else
   const char* usage =
       "usage: engine-content village <scene.json> <out.json> [--ddc <dir>]\n"
-      "                              [--house <index>] [--flight <camera-path.json>]\n";
+      "                              [--house <index>] [--flight <camera-path.json>]\n"
+      "                              [--describe <dir>]\n"
+      "  --house counts BUILT houses (a plot's `house_index` in the plan), not plots;\n"
+      "  --describe writes each built house (or the one --house names) as\n"
+      "  <dir>/house-<index>/{house.json, house.structure.json, house.plan.txt}\n";
   if (argc < 4) {
     std::fputs(usage, stderr);
     return 2;
   }
   const std::string scene_path = argv[2], out_path = argv[3];
-  std::string ddc, flight_path;
+  std::string ddc, flight_path, describe_dir;
   i64 house = 0;
+  bool house_named = false;
   for (int i = 4; i < argc; ++i) {
     const std::string_view flag = argv[i];
     if (i + 1 >= argc) {
@@ -54,9 +59,12 @@ int village_command(int argc, char** argv) {
       ddc = std::string(value);
     } else if (flag == "--flight") {
       flight_path = std::string(value);
+    } else if (flag == "--describe") {
+      describe_dir = std::string(value);
     } else if (flag == "--house") {
       const auto r = std::from_chars(value.data(), value.data() + value.size(), house);
       ok = r.ec == std::errc{} && r.ptr == value.data() + value.size() && house >= 0;
+      house_named = true;
     } else {
       ok = false;
     }
@@ -130,8 +138,10 @@ int village_command(int argc, char** argv) {
 
   JsonValue villages = JsonValue::array(), regions = JsonValue::array();
   JsonValue boundaries = JsonValue::array(), wall_lines = JsonValue::array();
-  u32 entries = 0, houses = 0, plots = 0, edits = 0, shapes = 0;
-  bool flown = false;
+  u32 entries = 0, houses = 0, plots = 0, edits = 0, shapes = 0, described = 0;
+  u32 asked = 0, refused = 0;  // houses asked of the entries; plots whose house was refused
+  std::string first_refusal;
+  bool flown = false, describe_done = false;
   const JsonValue* placements = json.find("placements");
   if (placements != nullptr && placements->is_array()) {
     for (u32 k = 0; k < placements->as_array().size(); ++k) {
@@ -190,6 +200,9 @@ int village_command(int argc, char** argv) {
       village::footprints(layer, plan, occupied);
       ++entries;
       houses += plan.built;
+      asked += layer.houses;
+      refused += plan.refused + plan.no_fit;
+      if (first_refusal.empty()) first_refusal = plan.first_refusal;
       plots += plan.plots.size();
       edits += planned.size();
       shapes += occupied.size();
@@ -201,6 +214,33 @@ int village_command(int argc, char** argv) {
         if (io::write_file_atomic(flight_path, write_json(path)) != io::Status::Ok)
           return fail("cannot write " + flight_path);
         flown = true;
+      }
+      // **The houses as data** (village.md, "A house as data"): the first village entry's.
+      if (!describe_dir.empty() && !describe_done) {
+        describe_done = true;
+        const u32 first = house_named ? static_cast<u32>(house) : 0u;
+        const u32 last = house_named ? first + 1 : plan.built;
+        if (house_named && first >= plan.built)
+          return fail(scene_path + ": placements " + std::to_string(k) + ": house " +
+                      std::to_string(first) + " is not built (the plan built " +
+                      std::to_string(plan.built) + "; --house counts built houses)");
+        for (u32 i = first; i < last; ++i) {
+          JsonValue described_house;
+          std::string plan_text;
+          if (!village::describe_house(layer, plan, i, described_house, plan_text, error))
+            return fail(scene_path + ": placements " + std::to_string(k) + ": " + error);
+          const std::string house_dir = io::join_path(describe_dir, "house-" + std::to_string(i));
+          if (io::make_directories(house_dir) != io::Status::Ok)
+            return fail("cannot create " + house_dir);
+          if (io::write_file_atomic(io::join_path(house_dir, "house.json"),
+                                    write_json(described_house)) != io::Status::Ok ||
+              io::write_file_atomic(io::join_path(house_dir, "house.structure.json"),
+                                    plan.houses[i].recipe) != io::Status::Ok ||
+              io::write_file_atomic(io::join_path(house_dir, "house.plan.txt"), plan_text) !=
+                  io::Status::Ok)
+            return fail("cannot write the house's files under " + house_dir);
+          ++described;
+        }
       }
     }
   }
@@ -234,12 +274,23 @@ int village_command(int argc, char** argv) {
   line["out"] = JsonValue(out_path);
   line["entries"] = JsonValue(entries);
   line["houses"] = JsonValue(houses);
+  // Houses asked against built (village.md, "Houses asked and built").
+  line["asked"] = JsonValue(asked);
+  line["refused"] = JsonValue(refused);
+  // A shortfall the plots did not refuse is ground the ways did not offer (the plan's counts:
+  // steep, wet, outside, or no candidate left).
+  if (houses < asked) line["short"] = JsonValue(asked - houses);
+  if (houses < asked && !first_refusal.empty()) line["first_refusal"] = JsonValue(first_refusal);
   line["plots"] = JsonValue(plots);
   line["edits"] = JsonValue(edits);
   line["shapes"] = JsonValue(shapes);
   line["mask_regions"] = JsonValue(region_count);
   line["boundaries"] = JsonValue(boundary_count);
   if (flown) line["flight"] = JsonValue(flight_path);
+  if (describe_done) {
+    line["described"] = JsonValue(described);
+    line["describe"] = JsonValue(describe_dir);
+  }
   JsonWriteOptions compact;
   compact.pretty = false;
   std::printf("%s\n", write_json(line, compact).c_str());

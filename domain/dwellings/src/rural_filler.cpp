@@ -134,8 +134,16 @@ bool choose_rural(const RuralPlot& plot, const Household& household, const Rural
   if (asked.type == PlanType::CrossPassage || two_storey_pair) add(PlanType::HallParlour, 1);
   if (asked.type != PlanType::Cot) add(PlanType::Cot, 1);
 
+  // A plot of one storey (a cottage's) passes over every plan with a floor over, and so does a
+  // household whose means bought none (G208): a smaller plot never gives it a stair it asked for
+  // nobody to climb (a labourer's household on a narrow toft got a two-up two-down before).
+  const auto storeys_of = [](const InteriorParams& c) -> u8 {
+    return c.type == PlanType::TwoUpTwoDown ? u8{2} : c.storeys;
+  };
+  const u8 most = plot.storeys_max < asked.storeys ? plot.storeys_max : asked.storeys;
   u32 chosen = count;
   for (u32 i = 0; i < count; ++i) {
+    if (storeys_of(candidates[i]) > most) continue;
     if (fits(candidates[i], clear_width, clear_depth)) {
       chosen = i;
       break;
@@ -169,6 +177,24 @@ bool choose_rural(const RuralPlot& plot, const Household& household, const Rural
   out.furniture = style.furniture;
   out.dressed = style.dressed;
   return true;
+}
+
+i32 least_rural_frontage_cm(const RuralStyle& style) noexcept {
+  InteriorParams cot;
+  apply(style, cot);
+  cot.type = PlanType::Cot;
+  cot.storeys = 1;
+  cot.storey_cm = style.single_storey_cm;
+  return least_of(cot).min_width_cm + 2 * i32{style.outer_wall_cm};
+}
+
+u8 persons_housed(const InteriorParams& params) noexcept {
+  switch (params.type) {
+    case PlanType::Cot: return 2;
+    case PlanType::HallParlour: return params.storeys >= 2 ? u8{6} : u8{4};
+    case PlanType::CrossPassage: return 8;
+    default: return 6;
+  }
 }
 
 bool plan_rural(const RuralPlot& plot, const Household& household, const RuralStyle& style,

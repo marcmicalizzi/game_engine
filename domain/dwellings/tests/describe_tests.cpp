@@ -32,8 +32,12 @@ namespace {
 // back door's leaf stands shut, and a roof states no courses and no cut eave. MSVC's alone until a
 // container has run it. And on 2026-11-16 (0x05eaa3436b76acbf before it), at k_interior_version
 // 3: a stair's well runs 30 cm past its first riser, so a walker on the first treads has its crown
-// clear of the upper floor's edge (MSVC msvc-release; GCC in the container).
-constexpr u64 k_descriptions_pin = 0x19bf9170cb041fd7ull;
+// clear of the upper floor's edge (MSVC msvc-release; GCC in the container). And on 2026-11-16
+// (0x19bf9170cb041fd7 before it), G208: two houses of sixteen are stone-faced, their outer walls'
+// role `stone/rubble` in place of the limewash, by a draw of their own; and at
+// k_rural_filler_version 3 a smaller plot never gives a household more storeys than it asked or
+// than the plot allows (MSVC msvc-debug).
+constexpr u64 k_descriptions_pin = 0x1dbed3833524ec80ull;
 
 bool near_cm(f32 metres, i32 cm) {
   const f32 d = metres * 100.0f - static_cast<f32>(cm);
@@ -271,8 +275,8 @@ TEST_CASE("describe: eight houses of one household are not one wall, one window 
 
 TEST_CASE("describe: a village's limewash and thatch are not one colour and one age") {
   const RuralStyle style;
-  u32 washes = 0, base_wash = 0, aged = 0, cut = 0;
-  std::string seen_wash[5];
+  u32 washes = 0, base_wash = 0, aged = 0, cut = 0, stone = 0;
+  std::string seen_wash[6];
   for (u64 seed = 0; seed < 24; ++seed) {
     structure::Description d;
     std::string error;
@@ -281,7 +285,10 @@ TEST_CASE("describe: a village's limewash and thatch are not one colour and one 
     const structure::Roof& roof = d.roofs[0];
     // A role's variant falls back to its base where a pack lacks it, so any name is safe; these
     // are the names the generated sets answer.
-    CHECK(d.roles.wall_outer.rfind("plaster/lime", 0) == 0);
+    // A stone-faced house shows its rubble; every other is limewashed.
+    const bool rubble = d.roles.wall_outer == "stone/rubble";
+    stone += rubble ? 1u : 0u;
+    CHECK((rubble || d.roles.wall_outer.rfind("plaster/lime", 0) == 0));
     CHECK((roof.role.empty() || roof.role.rfind("thatch/straw_", 0) == 0));
     // A smooth coat and a rolled eave: no courses and no cut eave are stated (describe.cpp, where
     // the roof is written: stepped courses read as slate over a whole street).
@@ -290,15 +297,18 @@ TEST_CASE("describe: a village's limewash and thatch are not one colour and one 
     bool fresh = true;
     for (u32 i = 0; i < washes; ++i)
       fresh = fresh && seen_wash[i] != d.roles.wall_outer;
-    if (fresh && washes < 5) seen_wash[washes++] = d.roles.wall_outer;
+    if (fresh && washes < 6) seen_wash[washes++] = d.roles.wall_outer;
     base_wash += d.roles.wall_outer == "plaster/lime" ? 1u : 0u;
     aged += roof.role.empty() ? 0u : 1u;
     cut += roof.eave_cut ? 1u : 0u;
   }
   std::printf(
       "dwellings limewash over 24 houses: %u washes, %u the base; %u thatches not the "
-      "base's age; %u eaves cut square\n",
-      washes, base_wash, aged, cut);
+      "base's age; %u eaves cut square; %u stone-faced\n",
+      washes, base_wash, aged, cut, stone);
+  // Two in sixteen, so a few of 24 and never most.
+  CHECK(stone >= 1);
+  CHECK(stone <= 8);
   CHECK(washes >= 3);
   CHECK(base_wash < 24);
   CHECK(aged >= 1);

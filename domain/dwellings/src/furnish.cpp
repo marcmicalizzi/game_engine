@@ -398,9 +398,51 @@ const Hearth* hearth_of(const InteriorPlan& plan, u32 room) noexcept {
   return nullptr;
 }
 
+constexpr u64 k_draw_kit = 207;
+
+// A kit piece in a found place: a piece of the row's kind with no members.
+void add_kit_piece(Furnishing& out, const KitRow& row, const RectCm& footprint, Side against,
+                   u8 storey, u32 room) {
+  Piece piece;
+  piece.footprint = footprint;
+  piece.room = room;
+  piece.first_member = count_of(out.members);
+  piece.member_count = 0;
+  piece.height_cm = static_cast<u16>(row.height_cm);
+  piece.kind = row.replaces;
+  piece.against = against;
+  piece.storey = storey;
+  piece.kit = static_cast<u16>(row.id + 1);
+  out.pieces.push_back(piece);
+}
+
 void furnish_room(const InteriorPlan& plan, const Vector<KeepOut>& keep, u64 seed, u32 room_index,
-                  Furnishing& out) {
+                  const Kit& kit, Furnishing& out) {
   const Room& room = plan.rooms[room_index];
+  // **The kit's row for a kind in this room** (furnish.h, "Kit pieces"): one of those that stand
+  // under the room's joists or ceiling, by a draw on the seed, the kind and the room; none when the
+  // kit has no row for the kind.
+  const i32 clear = room_clear_cm(plan, room);
+  const auto kit_row = [&](PieceKind kind) -> const KitRow* {
+    u32 n = 0;
+    for (u32 k = 0; k < kit.count; ++k)
+      n += kit.rows[k].replaces == kind && kit.rows[k].height_cm + k_kit_head_gap_cm <= clear &&
+                   kit.rows[k].along_cm > 0 && kit.rows[k].out_cm > 0
+               ? 1u
+               : 0u;
+    if (n == 0) return nullptr;
+    u32 pick = static_cast<u32>(
+        draw(seed, k_draw_kit + u64{static_cast<u8>(kind)} * 16, room_index) % u64{n});
+    for (u32 k = 0; k < kit.count; ++k) {
+      const KitRow& r = kit.rows[k];
+      if (r.replaces != kind || r.height_cm + k_kit_head_gap_cm > clear || r.along_cm <= 0 ||
+          r.out_cm <= 0)
+        continue;
+      if (pick == 0) return &r;
+      --pick;
+    }
+    return nullptr;
+  };
   const bool cot = plan.params.type == PlanType::Cot;
   // A parlour is the best bedroom where the house has no chamber over it and a sitting room where
   // it has (the two-up two-down's front room); a cot's one room is lived and slept in.
@@ -422,7 +464,21 @@ void furnish_room(const InteriorPlan& plan, const Vector<KeepOut>& keep, u64 see
   const auto live_in = [&]() {
     // A settle by the hearth: the nearest place to the stack, along any wall.
     const Hearth* hearth = hearth_of(plan, room_index);
+    bool kit_settle = false;
     if (hearth != nullptr) {
+      const u64 drawn = draw(seed, k_draw_settle, room_index);
+      if (const KitRow* row = kit_row(PieceKind::Settle); row != nullptr) {
+        found.clear();
+        candidates(place, PieceKind::Settle, row->along_cm, row->out_cm, found);
+        for (Candidate& c : found)
+          c.score = -apart(c.r, hearth->stack);
+        if (choose(found, drawn, best) && -best.score <= k_settle_far_cm) {
+          add_kit_piece(out, *row, best.r, best.against, room.storey, room_index);
+          kit_settle = true;
+        }
+      }
+    }
+    if (hearth != nullptr && !kit_settle) {
       const u64 drawn = draw(seed, k_draw_settle, room_index);
       for (const i32 along : {180, 150, 120}) {
         found.clear();
@@ -437,9 +493,7 @@ void furnish_room(const InteriorPlan& plan, const Vector<KeepOut>& keep, u64 see
     }
     // The table between its benches: under a window where one is free, else along any wall.
     const u64 drawn = draw(seed, k_draw_table, room_index);
-    for (const i32 along : {180, 150, 120}) {
-      found.clear();
-      candidates(place, PieceKind::TableSet, along, k_table_set_out_cm, found);
+    const auto under_window = [&]() {
       for (Candidate& c : found) {
         for (const OuterOpening& o : plan.openings) {
           if (o.door() || o.storey() != room.storey || o.side != c.against) continue;
@@ -449,6 +503,20 @@ void furnish_room(const InteriorPlan& plan, const Vector<KeepOut>& keep, u64 see
           if (o.at_cm >= lo + 30 && o.at_cm <= hi - 30) c.score = 1;
         }
       }
+    };
+    if (const KitRow* row = kit_row(PieceKind::TableSet); row != nullptr) {
+      found.clear();
+      candidates(place, PieceKind::TableSet, row->along_cm, row->out_cm, found);
+      under_window();
+      if (choose(found, drawn, best)) {
+        add_kit_piece(out, *row, best.r, best.against, room.storey, room_index);
+        return;
+      }
+    }
+    for (const i32 along : {180, 150, 120}) {
+      found.clear();
+      candidates(place, PieceKind::TableSet, along, k_table_set_out_cm, found);
+      under_window();
       if (choose(found, drawn, best)) {
         add_piece(out, PieceKind::TableSet, best.r, best.against, room.storey, room_index);
         break;
@@ -475,7 +543,24 @@ void furnish_room(const InteriorPlan& plan, const Vector<KeepOut>& keep, u64 see
     bool bedded = false;
     RectCm bed_at;
     const RectCm& f = place.open_floor;
+    // A kit bed: its foot board is its front, so its head is to the wall it backs to.
+    if (const KitRow* row = kit_row(PieceKind::Bed); row != nullptr) {
+      found.clear();
+      candidates(place, PieceKind::Bed, row->along_cm, row->out_cm, found);
+      for (Candidate& c : found) {
+        const bool along_x = c.against == Side::Front || c.against == Side::Back;
+        const bool at_low = along_x ? c.r.x0 == f.x0 : c.r.z0 == f.z0;
+        const bool at_high = along_x ? c.r.x1 == f.x1 : c.r.z1 == f.z1;
+        c.score = apart(c.r, way_in) + ((at_low || at_high) ? 100000 : 0);
+      }
+      if (choose(found, bed_drawn, best)) {
+        add_kit_piece(out, *row, best.r, best.against, room.storey, room_index);
+        bed_at = best.r;
+        bedded = true;
+      }
+    }
     for (const i32 width : {first, second, 101}) {
+      if (bedded) break;
       // Its head to a wall, or its side along one with its head toward the nearer end; a corner
       // before the middle of a wall.
       found.clear();
@@ -504,6 +589,16 @@ void furnish_room(const InteriorPlan& plan, const Vector<KeepOut>& keep, u64 see
     const u64 length_drawn = draw(seed, k_draw_chest_length, room_index);
     const u64 chest_drawn = draw(seed, k_draw_chest, room_index);
     const i32 longest = 90 + 10 * static_cast<i32>(length_drawn % 4);  // 90 to 120
+    if (const KitRow* row = kit_row(PieceKind::Chest); row != nullptr) {
+      found.clear();
+      candidates(place, PieceKind::Chest, row->along_cm, row->out_cm, found);
+      for (Candidate& c : found)
+        c.score = bedded ? -apart(c.r, bed_at) : 0;
+      if (choose(found, chest_drawn, best)) {
+        add_kit_piece(out, *row, best.r, best.against, room.storey, room_index);
+        return;
+      }
+    }
     for (i32 along = longest; along >= 70; along -= 10) {
       found.clear();
       candidates(place, PieceKind::Chest, along, k_chest_out_cm, found);
@@ -595,11 +690,17 @@ bool add_piece(Furnishing& out, PieceKind kind, const RectCm& footprint, Side ag
   return true;
 }
 
-void furnish_interior(const InteriorPlan& plan, u64 seed, Furnishing& out) {
+void furnish_interior(const InteriorPlan& plan, u64 seed, Furnishing& out, const Kit& kit) {
   Vector<KeepOut> keep;
   keep_outs(plan, keep);
   for (u32 r = 0; r < count_of(plan.rooms); ++r)
-    furnish_room(plan, keep, seed, r, out);
+    furnish_room(plan, keep, seed, r, kit, out);
+}
+
+i32 room_clear_cm(const InteriorPlan& plan, const Room& room) noexcept {
+  const InteriorParams& p = plan.params;
+  if (room.storey + 1 < p.storeys) return i32{p.storey_cm} - i32{p.floor_cm} - k_joist_depth_cm;
+  return p.storeys > 1 ? i32{p.upper_clear_cm} : i32{p.storey_cm};
 }
 
 void timber_interior(const InteriorPlan& plan, bool ridge_along_x, Furnishing& out) {
@@ -704,8 +805,12 @@ bool validate_furnishing(const InteriorPlan& plan, const Furnishing& furnishing,
   for (u32 i = 0; i < count_of(furnishing.pieces); ++i) {
     const Piece& piece = furnishing.pieces[i];
     const char* name = piece_kind_name(piece.kind);
-    if (piece.first_member + piece.member_count > count_of(furnishing.members) ||
-        piece.member_count == 0) {
+    const bool kit = piece.kit != 0;
+    if (kit && (!is_furniture(piece.kind) || piece.member_count != 0)) {
+      return fail(i, name, "a kit piece stands in a furniture piece's place and has no members");
+    }
+    if (!kit && (piece.first_member + piece.member_count > count_of(furnishing.members) ||
+                 piece.member_count == 0)) {
       return fail(i, name, "its members are not in the list");
     }
     u32 solids = 0;
@@ -720,10 +825,13 @@ bool validate_furnishing(const InteriorPlan& plan, const Furnishing& furnishing,
       if (solids != 0) return fail(i, name, "timber is not walked into");
       continue;
     }
-    if (solids == 0) return fail(i, name, "no member of it is solid");
+    if (!kit && solids == 0) return fail(i, name, "no member of it is solid");
     if (piece.room >= count_of(plan.rooms)) return fail(i, name, "its room does not exist");
     const Room& room = plan.rooms[piece.room];
     if (room.storey != piece.storey) return fail(i, name, "its room is on another storey");
+    if (kit && i32{piece.height_cm} + k_kit_head_gap_cm > room_clear_cm(plan, room)) {
+      return fail(i, name, "a kit piece stands into its room's joists or ceiling");
+    }
     if (!inside(piece.footprint, free_floor(plan, room))) {
       return fail(i, name, "it does not stand on its room's free floor");
     }
@@ -751,6 +859,163 @@ bool validate_furnishing(const InteriorPlan& plan, const Furnishing& furnishing,
   return true;
 }
 
+const char* place_kind_name(PlaceKind kind) noexcept {
+  switch (kind) {
+    case PlaceKind::HearthRecess: return "hearth-recess";
+    case PlaceKind::HearthMouth: return "hearth-mouth";
+    case PlaceKind::HearthCheek: return "hearth-cheek";
+    case PlaceKind::StackSide: return "stack-side";
+    case PlaceKind::HearthApron: return "hearth-apron";
+    case PlaceKind::TableTop: return "table-top";
+    case PlaceKind::BenchSeat: return "bench-seat";
+    case PlaceKind::SettleSeat: return "settle-seat";
+    case PlaceKind::ChestLid: return "chest-lid";
+    case PlaceKind::Mattress: return "mattress";
+    case PlaceKind::JoistUnderside: return "joist-underside";
+    case PlaceKind::DoorApproach: return "door-approach";
+    case PlaceKind::DoorwayApproach: return "doorway-approach";
+    default: return "window-light";
+  }
+}
+
+void house_places(const InteriorPlan& plan, const Furnishing& furnishing, Vector<NamedPlace>& out) {
+  const auto add = [&out](PlaceKind kind, const RectCm& r, i32 y0_mm, i32 y1_mm, u32 room,
+                          u8 storey, Side faces, u32 index) {
+    NamedPlace n;
+    n.rect = r;
+    n.y0_mm = y0_mm;
+    n.y1_mm = y1_mm;
+    n.room = room;
+    n.index = index;
+    n.kind = kind;
+    n.faces = faces;
+    n.storey = storey;
+    out.push_back(n);
+  };
+  // **The hearths**, in the frame of the way each faces: `along` across its opening, `into` the
+  // stack from its face. The recess and the cheeks are the mesher's (structures.md, "Chimneys"):
+  // a recess `k_hearth_recess_cm` deep and as wide as the opening, on a hearth raised 3 cm, and the
+  // cheeks the face either side of it.
+  for (u32 hi = 0; hi < count_of(plan.hearths); ++hi) {
+    const Hearth& h = plan.hearths[hi];
+    const RectCm& st = h.stack;
+    const bool across_x = h.faces == Side::Front || h.faces == Side::Back;
+    const i32 lo = across_x ? st.x0 : st.z0, hi_edge = across_x ? st.x1 : st.z1;
+    const i32 mid = (lo + hi_edge) / 2, half = i32{h.opening_cm} / 2;
+    // The face's line and the sense from it into the stack.
+    i32 face = 0, sense = 0;
+    switch (h.faces) {
+      case Side::Front: face = st.z0, sense = 1; break;
+      case Side::Back: face = st.z1, sense = -1; break;
+      case Side::Left: face = st.x0, sense = 1; break;
+      default: face = st.x1, sense = -1; break;
+    }
+    const auto box = [&](i32 a0, i32 a1, i32 b0, i32 b1) {
+      const i32 v0 = b0 < b1 ? b0 : b1, v1 = b0 < b1 ? b1 : b0;
+      return across_x ? RectCm{a0, v0, a1, v1} : RectCm{v0, a0, v1, a1};
+    };
+    const i32 lintel_mm = i32{h.lintel_cm} * 10;
+    add(PlaceKind::HearthRecess,
+        box(mid - half, mid + half, face, face + sense * k_hearth_recess_cm), k_raised_hearth_mm,
+        lintel_mm, h.room, h.storey, h.faces, hi);
+    add(PlaceKind::HearthMouth, box(mid - half, mid + half, face, face), k_raised_hearth_mm,
+        lintel_mm, h.room, h.storey, h.faces, hi);
+    if (mid - half > lo)
+      add(PlaceKind::HearthCheek, box(lo, mid - half, face, face), 0, lintel_mm, h.room, h.storey,
+          h.faces, hi);
+    if (mid + half < hi_edge)
+      add(PlaceKind::HearthCheek, box(mid + half, hi_edge, face, face), 0, lintel_mm, h.room,
+          h.storey, h.faces, hi);
+    // Beside the stack: the floor along its two sides, from its face back to its wall, 60 cm out,
+    // inside the room's free floor (a bellows, a log basket, the wall a salt box hangs on).
+    const RectCm room_floor =
+        h.room < count_of(plan.rooms) ? free_floor(plan, plan.rooms[h.room]) : st;
+    const i32 back = face + sense * (across_x ? st.z1 - st.z0 : st.x1 - st.x0);
+    for (const i32 side : {-1, 1}) {
+      const i32 a0 = side < 0 ? lo - 60 : hi_edge, a1 = side < 0 ? lo : hi_edge + 60;
+      RectCm r = box(a0, a1, face, back);
+      r.x0 = r.x0 < room_floor.x0 ? room_floor.x0 : r.x0;
+      r.z0 = r.z0 < room_floor.z0 ? room_floor.z0 : r.z0;
+      r.x1 = r.x1 > room_floor.x1 ? room_floor.x1 : r.x1;
+      r.z1 = r.z1 > room_floor.z1 ? room_floor.z1 : r.z1;
+      if (r.x1 - r.x0 >= 10 && r.z1 - r.z0 >= 10)
+        add(PlaceKind::StackSide, r, 0, 0, h.room, h.storey, h.faces, hi);
+    }
+    add(PlaceKind::HearthApron,
+        box(lo - k_hearth_side_cm, hi_edge + k_hearth_side_cm, face,
+            face - sense * k_hearth_reach_cm),
+        0, 0, h.room, h.storey, h.faces, hi);
+  }
+  // **The furniture's surfaces**, read from the members `add_piece` built (furnish.h): a table
+  // set's top and its benches' seats, a settle's seat, the mattress, the chest's lid.
+  for (u32 pi = 0; pi < count_of(furnishing.pieces); ++pi) {
+    const Piece& piece = furnishing.pieces[pi];
+    const u32 end = piece.first_member + piece.member_count;
+    if (end > count_of(furnishing.members)) continue;
+    if (piece.kind == PieceKind::Joists || piece.kind == PieceKind::Beam) {
+      for (u32 m = piece.first_member; m < end; ++m) {
+        const Member& mm = furnishing.members[m];
+        add(PlaceKind::JoistUnderside, RectCm{mm.x0, mm.z0, mm.x1, mm.z1}, mm.y0 * 10, mm.y0 * 10,
+            piece.room, piece.storey, piece.against, pi);
+      }
+      continue;
+    }
+    if (!is_furniture(piece.kind)) continue;
+    i32 lid = -1;  // a chest's topmost member
+    for (u32 m = piece.first_member; m < end; ++m) {
+      const Member& mm = furnishing.members[m];
+      const RectCm r{mm.x0, mm.z0, mm.x1, mm.z1};
+      if (piece.kind == PieceKind::Chest) {
+        if (lid < 0 || mm.y1 > furnishing.members[static_cast<u32>(lid)].y1)
+          lid = static_cast<i32>(m);
+        continue;
+      }
+      if (!mm.solid) continue;
+      PlaceKind kind = PlaceKind::Mattress;
+      if (piece.kind == PieceKind::TableSet)
+        kind = mm.y1 > 60 ? PlaceKind::TableTop : PlaceKind::BenchSeat;
+      else if (piece.kind == PieceKind::Settle)
+        kind = PlaceKind::SettleSeat;
+      add(kind, r, mm.y1 * 10, mm.y1 * 10, piece.room, piece.storey, piece.against, pi);
+    }
+    if (lid >= 0) {
+      const Member& mm = furnishing.members[static_cast<u32>(lid)];
+      add(PlaceKind::ChestLid, RectCm{mm.x0, mm.z0, mm.x1, mm.z1}, mm.y1 * 10, mm.y1 * 10,
+          piece.room, piece.storey, piece.against, pi);
+    }
+  }
+  // **The floors kept clear**: the furniture's own keep-outs, named.
+  Vector<KeepOut> keep;
+  keep_outs(plan, keep);
+  u32 door = 0, window = 0, doorway = 0;
+  for (const KeepOut& k : keep) {
+    if (k.kind == Keep::Door) {
+      // The doorways' come first in `keep_outs`, then the outer openings'.
+      if (doorway < count_of(plan.doorways)) {
+        const InnerWall& w = plan.walls[plan.doorways[doorway].wall];
+        add(PlaceKind::DoorwayApproach, k.r, 0, 0, w.a, k.storey, Side::Front, doorway);
+        ++doorway;
+        continue;
+      }
+    }
+    if (k.kind != Keep::Door && k.kind != Keep::Window && k.kind != Keep::Led) continue;
+    // An outer opening's: find it in order.
+    while (door + window < count_of(plan.openings)) {
+      const OuterOpening& o = plan.openings[door + window];
+      const u32 index = door + window;
+      if (o.door()) {
+        ++door;
+        add(PlaceKind::DoorApproach, k.r, 0, 0, o.room, k.storey, o.side, index);
+      } else {
+        ++window;
+        add(PlaceKind::WindowLight, k.r, i32{o.sill_cm} * 10, i32{o.sill_cm} * 10, o.room, k.storey,
+            o.side, index);
+      }
+      break;
+    }
+  }
+}
+
 u64 hash_furnishing(const Furnishing& furnishing) noexcept {
   u64 h = hash_combine(k_hash_seed, u64{k_furnish_version});
   const auto pair = [&h](i32 a, i32 b) {
@@ -761,8 +1026,9 @@ u64 hash_furnishing(const Furnishing& furnishing) noexcept {
     pair(p.footprint.x1, p.footprint.z1);
     pair(static_cast<i32>(p.room), static_cast<i32>(p.first_member));
     pair(static_cast<i32>(p.member_count), i32{p.height_cm});
-    h = hash_combine(h, u64{static_cast<u8>(p.kind)} << 16 | u64{static_cast<u8>(p.against)} << 8 |
-                            u64{p.storey});
+    // A kit piece's row in the word's high bits, so a furnishing with no kit hashes as it did.
+    h = hash_combine(h, u64{p.kit} << 24 | u64{static_cast<u8>(p.kind)} << 16 |
+                            u64{static_cast<u8>(p.against)} << 8 | u64{p.storey});
   }
   for (const Member& m : furnishing.members) {
     pair(m.x0, m.y0);

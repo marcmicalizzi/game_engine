@@ -11,6 +11,7 @@
 // centre lines from (0, 0), the front wall along z = 0 and the lane on its -z side.
 
 #include <core/base/types.h>
+#include <domain/dwellings/furnish.h>
 #include <domain/dwellings/rural_filler.h>
 
 #include <schemas/structures.h>
@@ -32,9 +33,11 @@ i32 max_clear_cm(u16 outer_wall_cm) noexcept;
 // The description of a plan in the shell the filler chose: the footprint, the storeys, four
 // exterior walls a storey, the inner walls, every door, window and doorway, the rooms, the stair,
 // a chimney a hearth with its hearth stone and bressumer, one gable roof with its ridge along the
-// longer side, and the filler's provenance. `out` is replaced.
+// longer side, and the filler's provenance. `out` is replaced. A kit (furnish.h, "Kit pieces")
+// takes a box piece's place wherever one of its rows fits, and a kit piece states no box: the
+// caller places its mesh (`Piece::kit`).
 void describe(const InteriorPlan& plan, const RuralChoice& choice, std::string_view name, u64 seed,
-              structure::Description& out);
+              structure::Description& out, const Kit& kit = {});
 
 // The rural filler: a plot, a household and a seed to a description that passes the mesher's
 // validator. False with a sentence when the plot holds no house.

@@ -24,6 +24,64 @@ struct Lane @version(1) {
   rows: Rows = Both
 }
 
+/// Which way a kit piece's front looks in its mesh's own frame (y up): the side a person uses it
+/// from, a cupboard's doors, a chair's seat, a bed's foot. An enumerator is never renumbered.
+enum KitFront : u8 {
+  PosX
+  NegX
+  PosZ
+  NegZ
+}
+
+/// How a kit piece is placed (village.md, "A kit"): against a wall, free on the floor, on a top
+/// (a table's, a chest's lid), on a bed, hung on a wall, hung from a joist, in a hearth's recess,
+/// beside a hearth, in a yard. The furnisher places the pieces that stand in for its own (`replaces`)
+/// and states the class of every row for whoever lays the others.
+enum KitClass : u8 {
+  Wall
+  Free
+  Top
+  Bed
+  Hung
+  Joist
+  HearthIn
+  HearthBy
+  Yard
+}
+
+/// Which of the furnisher's own pieces a kit piece stands in for (dwellings.md, "Kit pieces"):
+/// none, a table between its benches, a settle, a bedstead with its bedding, a chest.
+enum KitReplaces : u8 {
+  None
+  TableSet
+  Settle
+  Bed
+  Chest
+}
+
+/// **One row of a kit** (village.md, "A kit"; the forest session's need 113 (b)): a static mesh of
+/// the scene's, how it is scaled, the boxes it takes, the way it faces and how it is placed. Every
+/// length is in the mesh's own units before `scale`, so a row is read off the mesh as it is.
+struct KitPiece @version(1) {
+  name: string
+  /// The mesh (glTF, GLB or `.clusters`), relative to the scene file's directory.
+  mesh: string
+  /// Uniform: the mesh's units to metres. A kit piece is never stretched.
+  scale: f32 = 1
+  /// The mesh's full bounds, x y z, and its foot (what stands on the floor or the wall's line,
+  /// x0 z0 x1 z1: a crane's tripod and not its arm); a foot of zeros is the bounds' x and z.
+  bounds_min: f32[3]
+  bounds_max: f32[3]
+  foot: f32[4]
+  front: KitFront = NegZ
+  placement: KitClass = Wall
+  /// The heights its foot may stand at over its floor, metres (a hung piece's rail): 0 and 0 on
+  /// the floor.
+  height_min_m: f32 = 0 @unit(m)
+  height_max_m: f32 = 0 @unit(m)
+  replaces: KitReplaces = None
+}
+
 /// **The scene generator `village`'s entry** (village.md; docs/experiments/village-plan-grounding.md
 /// and village-growth-grounding.md for every default): a village that grew along its ways. The
 /// ways are found over the ground between the places they pass, open into a green where they meet,
@@ -32,7 +90,7 @@ struct Lane @version(1) {
 /// allows, on a pad benched into the ground, facing its way. At `irregularity` 0 the same rules lay
 /// out a regular row plan. The treads, the pads and the paths to the doors are ground edits the
 /// entry plans (`PlacementGeneratorDesc::plan_ground`) and shapes the entries after it keep off.
-struct VillageLayer @version(2) {
+struct VillageLayer @version(3) {
   name: string
   /// What every plot's choices are drawn from, with the plot's place in its row.
   seed: u64 = 0
@@ -94,4 +152,9 @@ struct VillageLayer @version(2) {
   church: bool = true @since(2)
   /// Whether a back lane runs behind three or more built tenements of one row.
   back_lanes: bool = true @since(2)
+  /// **A kit** (village.md, "A kit"): the scene's own meshes, a row a piece. A row that `replaces`
+  /// one of the furnisher's pieces stands in its place in every house where it fits, at the
+  /// furnisher's clearances, and that box piece is not drawn; no kit, the boxes. Every row is listed
+  /// in each house's description (`engine-content village --describe`).
+  kit: KitPiece[] @since(3)
 }

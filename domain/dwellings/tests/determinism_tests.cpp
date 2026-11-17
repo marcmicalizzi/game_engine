@@ -24,7 +24,10 @@ namespace {
 // k_interior_version 3, when the well came to run a person's reach past the first riser (version
 // 2's were 0xc1e1e57f0ca96d27 and 0x1eabd65ddcdc87b0; again no record's field changed).
 constexpr u64 k_plans_pin = 0xe00d70061fa1f1f6ull;
-constexpr u64 k_houses_pin = 0x3b275677de2f881aull;
+// And at k_rural_filler_version 3 (G208, 2026-11-16; 0x3b275677de2f881a before): a demotion
+// passes over every plan with more storeys than the household asked or the plot allows, so a
+// household of no means on a narrow plot gets a cot and not a two-up two-down; plans unchanged.
+constexpr u64 k_houses_pin = 0xc148887e3eb95cf9ull;
 
 }  // namespace
 

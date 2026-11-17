@@ -14,3 +14,4 @@ ENGINE_EXPECT_SIZE(28, 4, dwellings::Hearth);
 ENGINE_EXPECT_SIZE(80, 4, dwellings::Stair);
 ENGINE_EXPECT_SIZE(32, 4, dwellings::Member);
 ENGINE_EXPECT_SIZE(36, 4, dwellings::Piece);
+ENGINE_EXPECT_SIZE(36, 4, dwellings::NamedPlace);
