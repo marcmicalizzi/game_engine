@@ -217,9 +217,59 @@ Jarrett's clamp had it. The forest session's 0.10 to 0.40 m/s medians are about 
 stream's reach-mean is. What makes a steep stream look fast is the water an eye follows over its
 steps, and that is the draw's: the pattern travels at 1 to 2.2 m/s on a 10 to 30 % sheet (above),
 whatever the mean. Deeper water helps the W130 count (a thicker sheet is less often a 5 mm film) and
-costs the torrent four more stations over a bank at stage 1. **Motion is unjudged**: a still frame
-cannot show a travel speed, and no capture sequence was taken; the travel is pinned by
-`systems/water`'s test of its CPU mirror.
+costs the torrent four more stations over a bank at stage 1 (and the forest twice the stations over
+a bank, above). The motion was measured and looked at next.
+
+## Measured: the motion
+
+**How.** `engine-view` at 1012756b (`msvc-debug`, `--shadows rt`, 1920x1080, `--time-of-day 13`,
+offscreen, so each frame is a sixtieth of a second of the world clock), 120 frames with
+`--capture-every 2`: 60 frames over 2 s. The torrent as the last batch textured it (b66's judging
+variant) with each solve's channels: **before**, the Jarrett solve drawn by this binary given
+d6534963's `water.slang` compiled into a manifest of its own (`--shaders`; nothing else in the
+shaders differs between the two commits), so the pattern travels at the surface's speed as on main;
+**after**, the Ferguson solve and this branch's shader. The camera stands 3.5 m beside `torrent link
+11` at its station 15 (a 30 % sheet; the solve's mean there 0.40 to 0.62 m/s by Jarrett, 0.34 to
+0.42 by Ferguson, about 10 cm deep), 1.7 m over the ground, looking across the flow (45 degrees of
+field; the flow 0.99 perpendicular to the line of sight), 4.3 m from the water: 3.3 mm a pixel.
+The tracker (the row's scratch, `motion\track.ps1`) removes what does not move (the mean of the 60
+frames: the bed seen through the water, the banks) and correlates a 400 x 120 window of each frame
+with the next over shifts of 40 pixels, summing the 59 surfaces.
+
+| | Shift a frame pair (1/30 s) | **Apparent speed** | Solve's mean there | Correlation at the peak / at zero |
+|---|---|---|---|---|
+| Before (main's draw, Jarrett) | (5, 2) px, every pair within a pixel | **0.54 m/s** (0.49 to 0.59 at a pixel's error) | 0.40 to 0.62 m/s | 0.72 / 0.56 |
+| After (the travel, Ferguson) | (21, 8) px | **2.25 m/s** (2.20 to 2.30) | 0.34 to 0.42 m/s | 0.53 / 0.15 |
+
+The after figure is the formula's to within the measurement: sqrt(0.4^2 + 2 x 9.81 x 0.25 x 1) =
+2.25 m/s on a sheet whose own slope gives the full weight. A second window, lower on the reach,
+gives (4, 1) and (17, 5) px (0.42 and 1.77 m/s at the centre's scale, which is not quite its own):
+the same fourfold step.
+
+**Looked at** (six frames of each, the first three consecutive, the middle and the last two; the
+frames and the contact sheets are in the row's scratch, `motion\`): **it reads as fast water now**,
+where before it read as a slow glide: between two frames a thirtieth of a second apart the white
+moves a blob's width downstream, and the bed under it stays put, so the eye separates the water from
+the stones at once. What a person would still object to, in the order they would see it:
+
+1. **The whole sheet slides as one.** Every part of the section, edge and middle, carries its
+   pattern at the same 2.25 m/s; the white is the same soft round blobs, rigid, sliding like a
+   texture on a belt. A real torrent's fast water is threads and tongues (the jets over the steps),
+   streaked along the flow, beside slower water at the edges and in the lee of stones; the travel
+   here has the jets' speed but not their shape or their place. The weight w is the sheet's slope's,
+   not a step's, so on a uniformly steep reach there is no slow water at all.
+2. **The white is faceted**: hard-edged triangles, one share a triangle (row W139's first fault,
+   not this row's); the Ferguson solve, slower and deeper, draws less of it than Jarrett's did.
+3. **No relief.** The surface is a flat film over the pebbles; nothing stands over a stone and
+   nothing tumbles at a step. The pattern's speed is the only cue that the water is fast, and on a
+   real stream it is the least of them.
+4. **The speed is a lie of continuity**: 10 cm of water at a mean of 0.35 m/s cannot have its whole
+   surface moving at 2.25 m/s. Over a step's jet it can; across the sheet it cannot, and a person who
+   watches a pool-less reach for long enough may read it as a film sliding over water.
+
+So the draw now answers "not fast enough" for the eye at a glance, and the next step for realism is
+the jets' place and shape (threads that start at a step or stone and fade in its pool, the step-pool
+form of W132), not a faster mean.
 
 ## Numbers pinned, each against its source
 
