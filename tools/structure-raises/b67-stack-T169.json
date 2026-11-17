@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "b67-stack-T169",
+  "reason": "the stack's merge of T169: scene_gen.md takes T169's section beside the stack's rows' growth",
+  "date": "2026-11-17",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/scene_gen.md": 585
+  }
+}
