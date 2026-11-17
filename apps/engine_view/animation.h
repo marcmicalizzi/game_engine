@@ -141,6 +141,9 @@ struct AnimatedScene {
   Vector<f32> row_scale;
   Vector<f32> clip_travel;
   Vector<animation::JointBounds> mesh_bounds;
+  // What `GameActors::bind` measured at the load, for the summary's animation block.
+  u32 clips_measured = 0;
+  f64 clips_measured_ms = 0.0;
   // **The budget** (`animation::cap_tiers`): the ceilings read at attach, each step's scores and
   // ranking scratch (sized at attach, so a step allocates nothing), and what the ceiling held back:
   // the last step's and the most in any step of the run.
