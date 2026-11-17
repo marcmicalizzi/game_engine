@@ -279,7 +279,9 @@ struct Spray {
   twig_r_permille: u32 = 130
   twig_g_permille: u32 = 85
   twig_b_permille: u32 = 50
-  /// The spray's depth as the height image carries it, micrometres.
+  /// The scale of the height image, micrometres: a needle's round section stands 0.3 of it over
+  /// its line and a twig's 0.2; no brush is given a back and no needle a lift over another
+  /// (matgen.md, "Spray sets").
   relief_um: u32 = 600
 }
 

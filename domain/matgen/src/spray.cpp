@@ -88,9 +88,8 @@ struct Stroke {
   bool twig = false;
   f32 colour[3] = {0, 0, 0};
   f32 rough = 0.5f;
-  f64 tip = 1.0;  // the tone at its tip over the tone at its base
-  f64 lift_m = 0;
-  f64 crown_m = 0;
+  f64 tip = 1.0;      // the tone at its tip over the tone at its base
+  f64 crown_m = 0;    // the height of its round section over its line
 };
 
 // Every texel a capsule of `reach` millimetres round the stroke's line touches, with its distance
@@ -124,19 +123,22 @@ void walk_stroke(const Field& field, const Card& card, const Stroke& s, f64 reac
   }
 }
 
-// A shoot's round back: a brush is a round thing, so the height under its needles rises from its
-// edge to its axis, and the normal map shades the brush as a cylinder and not as a strip of card.
-void lay_back(const Field& field, const Card& card, const Stroke& s, f64 radius, f64 height_m,
-              Vector<f32>& back) {
-  walk_stroke(field, card, s, radius, [&](u32 i, f64 d, f64) {
-    if (d >= radius) return;
-    const f64 across = d / radius;
-    const f32 h = static_cast<f32>(height_m * (1.0 - across * across));
-    if (back[i] < h) back[i] = h;
-  });
-}
-
-void lay_stroke(Field& field, const Card& card, const Stroke& s, const Vector<f32>& back) {
+// **The height is each needle's own round section and nothing else** (G203's fourth leg,
+// 2026-11-16). The third leg laid a round back under every brush (a solid cylinder's height, its
+// normal leaning 45 degrees at the brush's edge) and lifted each needle over the ones behind it by
+// how far in front of its shoot it stood. Measured in the engine under a sky at 15:30, the same
+// cards and the same image with the normal map left out returned 16 to 24 % more light per unit
+// of albedo at 10 to 100 m and 10 % more at 300 m, on the sunlit needles 22 to 30 %
+// (conifer-crown-coverage.md, "Where the light went: the fourth leg"): that was the darkening.
+// Both were wrong for what a brush is. A brush is porous: a shoot's silhouette is about half of
+// its envelope (Palmroth et al. 2002's STAR and needle counts; the grounding page, "What a shoot's
+// silhouette is"), so the sun reaches the needles of its far flank through the gaps about half the
+// time, where a solid cylinder's far flank is unlit; and the crown's lean on the card's vertex
+// normal (flora's conifer) already says which way a bough faces. And a needle over another is
+// separated from it by air: a height step there makes a wall facing sideways along every needle's
+// edge, which no needle has. What stays is a needle's own roundness, the crown of its section,
+// which is a solid's and is real.
+void lay_stroke(Field& field, const Card& card, const Stroke& s) {
   const f64 soft = card.pitch();
   walk_stroke(field, card, s, std::max(s.r0, s.r1) + soft, [&](u32 i, f64 d, f64 t) {
     const f64 r = t <= s.hold ? s.r0 : mix(s.r0, s.r1, (t - s.hold) / (1.0 - s.hold));
@@ -154,10 +156,9 @@ void lay_stroke(Field& field, const Card& card, const Stroke& s, const Vector<f3
     texel.rough =
         static_cast<f32>(mix(static_cast<f64>(texel.rough), static_cast<f64>(s.rough), cover));
     if (cover >= 0.5) {
-      // Over its shoot's back, a rounded back of its own: the crown along the stroke's line.
+      // The stroke's own round section: the crown along its line, what is drawn in front wins.
       const f64 across = r > 0.0 ? clamp01(d / r) : 1.0;
-      texel.height = static_cast<f32>(static_cast<f64>(back[i]) + s.lift_m +
-                                      s.crown_m * (1.0 - across * across));
+      texel.height = static_cast<f32>(s.crown_m * (1.0 - across * across));
     }
     if (static_cast<f64>(field.alpha[i]) < cover) field.alpha[i] = static_cast<f32>(cover);
   });
@@ -287,7 +288,6 @@ void build_spray(const Set& set, Field& field, SetStats& stats, Shade& shade) {
   // ---- the strokes: every shoot's wood, and its needles as the eye sees them.
   Rng draw(set.seed ^ 0x6e6565646c6573ull);
   Vector<Stroke> strokes;
-  Vector<Stroke> backs;
   const f64 tone = permille(sp.tone_permille);
   const f64 needle_rgb[3] = {permille(sp.needle_r_permille), permille(sp.needle_g_permille),
                              permille(sp.needle_b_permille)};
@@ -309,19 +309,12 @@ void build_spray(const Set& set, Field& field, SetStats& stats, Shade& shade) {
     wood.colour[1] = static_cast<f32>(permille(sp.twig_g_permille));
     wood.colour[2] = static_cast<f32>(permille(sp.twig_b_permille));
     wood.rough = 0.85f;
-    wood.lift_m = 0.4 * relief_m;
     wood.crown_m = 0.2 * relief_m;
     strokes.push_back(wood);
 
     const f64 needled =
         sp.needled_mm == 0 ? shoot.length : std::min(shoot.length, static_cast<f64>(sp.needled_mm));
-    // The brush's back, over the needled part and a needle's reach past the tip.
-    Stroke back = wood;
     const f64 from = shoot.length - needled;
-    back.bx = to_sub(shoot.x + card.x_of(shoot.dx * from));
-    back.by = to_sub(shoot.y + card.y_of(shoot.dx * from, shoot.dy * from));
-    back.length = needled;
-    backs.push_back(back);
 
     f64 s = from + step * draw.unit();
     while (s <= shoot.length) {
@@ -374,7 +367,6 @@ void build_spray(const Set& set, Field& field, SetStats& stats, Shade& shade) {
           needle.colour[c] = static_cast<f32>(clamp01(needle_rgb[c] * own * shade_of_depth));
         needle.tip = 1.2;
         needle.rough = static_cast<f32>(permille(sp.needle_roughness_permille));
-        needle.lift_m = relief_m * (0.5 + 0.5 * front) * 0.7;
         needle.crown_m = 0.3 * relief_m;
         // Its width in texels, as `radius_of` chose it (the floor is exact: four).
         thinnest = std::min(
@@ -412,19 +404,10 @@ void build_spray(const Set& set, Field& field, SetStats& stats, Shade& shade) {
   ground.height = 0.0f;
   field.texels.assign(n * n, ground);
   field.alpha.assign(n * n, 0.0f);
-  // Every brush's round back first: half as high as the brush is wide across, so its normal leans
-  // 45 degrees at the brush's edge.
-  Vector<f32> back;
-  back.assign(n * n, 0.0f);
-  for (const Stroke& b : backs)
-    lay_back(field, card, b, brush_mm, 0.5 * brush_mm * 0.001, back);
-  // The back is the height between the needles too: a needle stands a relief above it, not a
-  // brush's whole depth above a floor at zero, which would be a cliff at every needle's edge and
-  // a normal on its side there (the first cut of this leg: every sunlit spray went dark).
-  for (u32 i = 0; i < n * n; ++i)
-    field.texels[i].height = back[i];
+  // No brush's round back and no needle lifted over another (`lay_stroke` says why): the height
+  // is the round section of whatever is drawn in front.
   for (const u32 i : order)
-    lay_stroke(field, card, strokes[i], back);
+    lay_stroke(field, card, strokes[i]);
 
   u64 covered = 0;
   for (const f32 a : field.alpha)

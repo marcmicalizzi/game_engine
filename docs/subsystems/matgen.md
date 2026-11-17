@@ -360,18 +360,25 @@ structure: brushes several needles thick with gaps a brush wide between them.
   pairs). *Traded:* at arm's length the needles are stout; a recipe at 2,048 texels draws a
   spruce's at their true width and costs four times the bytes, for a view the card is rarely
   seen at (a 0.45 m card is 84 pixels long at 10 m on the 4K target).
-- **The colour, the roughness and the normal agree with the outline, and a brush is round.**
-  Under the outline's outside the colour is the needles' own (0.9 of their mean) and the
-  roughness theirs, so no mip and no block of the encoder mixes a background into the spray's
-  edge. Under each needled shoot the height carries **a round back**: zero at the brush's edge
-  (a needle's reach from the twig) to half the brush's radius over the twig, so the normal map
-  leans 45 degrees at a brush's edge and shades it as a cylinder, lit on one flank and dark on
-  the other, where a card's own normal shades a brush as a strip. A needle stands a lift of
-  `relief_um` over that by how far in front of its shoot it is. (The first cut left the height
-  between needles at zero: a cliff of the brush's whole depth at every needle's edge, a normal on
-  its side there, and every sunlit spray went dark.) The normal's step along the image's x is the
-  card's own texel, not the tile's (`Field::texel_u_m`). The hollows' shade (above) darkens a
-  needle under its neighbours, a fifth at most. The spray keeps a margin of 1.5 % of the image,
+- **The colour, the roughness and the normal agree with the outline, and the height is each
+  needle's own round section and nothing else.** Under the outline's outside the colour is the
+  needles' own (0.9 of their mean) and the roughness theirs, so no mip and no block of the encoder
+  mixes a background into the spray's edge. The height under a needle is the crown of its section
+  (0.3 of `relief_um` over its line, a twig's 0.2), whatever is drawn in front winning. **No brush
+  has a round back and no needle is lifted over the ones behind it** (G203's fourth leg,
+  2026-11-16, `k_matgen_version` 11). The third leg gave every brush a solid cylinder's height,
+  its normal leaning 45 degrees at the edge, and stood each needle over its shoot by how far in
+  front of it it was; measured in the engine under a sky, the same image with its normal map left
+  out returned 16 to 24 % more light per unit of albedo at 10 to 100 m and 10 % more at 300 m, a
+  quarter more on the sunlit needles, and that was the sprays' darkening
+  ([the measurement](../experiments/conifer-crown-coverage.md#where-the-light-went-the-fourth-leg)).
+  Both were wrong for what a brush is: it is porous, its silhouette about half its envelope, so
+  the sun reaches its far flank's needles through the gaps where a solid's far flank is unlit,
+  and the crown's lean on flora's card normals already says which way a bough faces; and a
+  needle over another is separated from it by air, where a height step makes a wall facing
+  sideways along every needle's edge. The normal's step along the image's x is the card's own
+  texel, not the tile's (`Field::texel_u_m`). The hollows' shade (above) darkens a texel between
+  needles a little. The spray keeps a margin of 1.5 % of the image,
   so a card's sampler never wraps it across an edge. **A set has no translucency map** (a pack's
   role names five maps and none is one), and the resolve has no term that would read one: what
   light a bough takes on its far side is the renderer's, and is not built

@@ -78,7 +78,9 @@ namespace engine::matgen {
 /// 11: the spray kind (G203, 2026-11-16): `conifer/needles`, `spruce/needles` and
 ///    `pine/needles`, the first sets with an outline (`SetImages::alpha`). A spray is a branchlet
 ///    drawn in millimetres for the card it lies on (`Spray::card_width_mm`, `card_angle_deg`): a
-///    brush a twig with open gaps between twigs, a round back under each brush in the height.
+///    brush a twig with open gaps between twigs; its height is each needle's own round section
+///    and nothing else (the held branch's round back under each brush and lift of a needle over
+///    those behind it darkened every spray by a fifth under a sky: matgen.md, "Spray sets").
 ///    No other kind's bytes moved; every set's key did, since a recipe's text now carries the
 ///    spray's fields.
 inline constexpr u32 k_matgen_version = 11;
