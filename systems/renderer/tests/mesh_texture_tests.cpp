@@ -10,6 +10,8 @@
 // before then comes back without an upload; the room's refusal names its bound and the mesh draws
 // its constants; an alpha-tested rock draws its holes, as the whole read does, only in a scene
 // told to expect one; and on the ray path the textured rocks are the whole read's.
+#include "test_device.h"
+
 #include <core/memory/memory.h>
 #include <core/time/time.h>
 #include <domain/gfx/device.h>
@@ -45,7 +47,7 @@ struct Gpu {
   Gpu() {
     test::register_tile_rocks();
     std::string error;
-    if (!device.create(gfx::DeviceOptions{}, &error)) {
+    if (!device.create(renderer_test::device_options(), &error)) {
       why = "no Vulkan device: " + error;
       return;
     }

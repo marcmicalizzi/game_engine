@@ -24,6 +24,8 @@
 //               always gave to pass 2 and a single pass gave to the other copy.
 //   two-sided   a curved sheet and its reverse in one mesh, cones off: the palm fronds' case,
 //               coincident back-to-back faces in different clusters of one mesh.
+#include "test_device.h"
+
 #include <core/math/math.h>
 #include <domain/geometry/cluster.h>
 #include <domain/geometry/cluster_lod.h>
@@ -51,7 +53,7 @@ struct Gpu {
   gfx::Device device;
   std::string why;
   bool ok = false;
-  explicit Gpu(const gfx::DeviceOptions& options = gfx::DeviceOptions{}) {
+  explicit Gpu(const gfx::DeviceOptions& options = renderer_test::device_options()) {
     std::string error;
     if (!device.create(options, &error)) {
       why = "no Vulkan device: " + error;
@@ -366,7 +368,7 @@ TEST_CASE(
     // The capacity draw is the vertex path on a device without geometryShader. One live device at
     // a time (docs/subsystems/gfx.md, "One live device per process"), so it gets a scope of its
     // own.
-    gfx::DeviceOptions options;
+    gfx::DeviceOptions options = renderer_test::device_options();
     options.overrides.absent.push_back("VK_EXT_mesh_shader");
     options.overrides.absent.push_back("geometryShader");
     Gpu gpu(options);

@@ -19,6 +19,8 @@
 // The frames are lit by the sun alone (shoot): the rule is the sun's, and the stand-in's point
 // lights cast their own shadows through the mask.
 
+#include "test_device.h"
+
 #include <core/math/math.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/visibility_resolve.h>
@@ -186,7 +188,7 @@ Shot shoot(const std::string& mesh, u32 width) {
   Shot out;
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
+  if (!device.create(renderer_test::device_options(), &error)) {
     out.skip = "device unavailable: " + error;
     return out;
   }

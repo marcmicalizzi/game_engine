@@ -14,6 +14,8 @@
 #error "systems/renderer must not depend on foundation/window: engine-host renders without one"
 #endif
 
+#include "test_device.h"
+
 #include <core/math/math.h>
 #include <domain/anim/skeleton.h>
 #include <domain/geometry/cluster_lod.h>
@@ -188,7 +190,7 @@ struct Gpu {
   bool ok = false;
   Gpu() {
     std::string error;
-    if (!device.create(gfx::DeviceOptions{}, &error)) {
+    if (!device.create(renderer_test::device_options(), &error)) {
       why = "no Vulkan device: " + error;
       return;
     }
@@ -755,7 +757,7 @@ TEST_CASE("renderer: a TITAN-Xp-like device draws the default request through th
     full_raster = full.resolved.settings.raster;
   }
 
-  gfx::DeviceOptions options;
+  gfx::DeviceOptions options = renderer_test::device_options();
   for (const char* row :
        {"VK_EXT_mesh_shader", "VK_KHR_ray_query", "VK_NV_cluster_acceleration_structure",
         "VK_EXT_memory_decompression", "VK_KHR_fragment_shading_rate"}) {
@@ -904,7 +906,7 @@ TEST_CASE("renderer: without geometryShader the vertex path capacity-draws the s
   FrameDesc frame;
   bool have_camera = false;
   auto draw_with = [&](bool geometry_shader, Drawn& out) {
-    gfx::DeviceOptions options;
+    gfx::DeviceOptions options = renderer_test::device_options();
     options.overrides.absent.push_back("VK_EXT_mesh_shader");
     if (!geometry_shader) options.overrides.absent.push_back("geometryShader");
     gfx::Device device;

@@ -163,6 +163,15 @@ may run one run of it (`-Run <id>`) when a change is meant to move a number — 
 desktop has no nightly runner and the hosted ones have no GPU; a nightly with significance tests
 is T47's.
 
+**The session's state decides which budget a flight meets** (T161; [bench](../subsystems/bench.md#frame-budgets),
+"Which session a budget holds"). A locked Windows session idles the card, so every run holds a
+`locked` and an `unlocked` budget side by side and each flight is compared only with its own
+state's. A gate flown in a state a run has no budget for exits **6** on that run (compared with
+nothing) rather than passing or failing it: the gate's report says so per run. Read the gate's
+summary line, not only its exit code: 6 with every run `nobaseline` is a state with no baselines
+yet, and the first gate flown in it takes them (`-Rebaseline -Reason "..."`, quiet, session in that
+state), which writes that state's set and leaves the other alone.
+
 **What its first run found** (2026-10-07, `msvc-release`, the budgets seeded an hour earlier by the same script, `-Rebaseline`, from the same tree): every run within budget, five of five — totals at the median and p99 of 0.155 / 0.345 ms (overlook, 1080p), 0.729 / 1.344 (erg walk, 1080p), 3.484 / 3.964 (erg walk, surround), 1.610 / 2.602 (endless, 1080p, maps) and 4.362 / 5.498 (endless, surround, traced) against budgets of 0.155 / 0.358, 0.724 / 1.214, 3.482 / 4.010, 1.625 / 2.756 and 4.454 / 5.571; the erg walk's p99 at 1080p came closest to its limit (1.344 of 1.557). Four of the five ran on a machine the harness called busy — another agent's renderer tests and builds — which is the shared machine as it is; a pass is a pass on a busy one. **What seeding found**: the experiment pages the budgets were to come from agree with today's tree for the erg walk (total 0.724 against the page's 0.730 at 1080p; every surround median within 2%) and the endless desert's surround run (total 4.454 against 4.363, every pass within 8%), and **do not for the endless desert at 1080p with the maps**: [far ground](../experiments/far-ground-2026-10-03.md#the-cost) reads 2.980 / 5.103 ms, today's tree 1.625 / 2.756 on the same path, every pass lower (the cull 0.047 against 0.306). Seeded from the page, that budget would have passed a doubling, so every budget is the gate's own measurement and `sources` in the file says which page agreed. And the full-size endless flight's first pass makes 573 engine allocations on its frame thread, every one before frame 3,896 of 7,201 — lists reaching the high-water mark the 12 km path needs, the second half of the path none — which the gate reports in each summary's `frame_loop` and does not judge.
 
 ### Sanitizers
@@ -643,6 +652,32 @@ it saves on gate b57's numbers: `msvc-no-ecs`'s renderer parts and `gfx`, 1,041 
 `msvc-minimal`'s, 1,013 s — and with them the two pairs that waited longest on the lock against
 `msvc-debug`. The decision is reversible by dropping the switch from the gate's command line
 (review 2026-11-09, decision 5).
+
+### The renderer as a weaker card
+
+The GPU server leg (the TITAN Xp: no mesh shaders, no ray queries, no cluster acceleration
+structures) was red on batches 65 and 66, each time on a new renderer test that took the RTX 5090
+for granted, and it trails the merge, so a fault of that class reached `main` twice. Since T162
+every renderer test file opens its device through `systems/renderer/tests/test_device.h`, which
+honours `ENGINE_GFX_TEST_DEVICE` ([renderer](../subsystems/renderer.md), "Running a case as a
+weaker card"), so the Windows gate runs the renderer's suite once more as that card, beside the
+`msvc-debug` suite and in the same build:
+
+```powershell
+$env:ENGINE_GFX_TEST_DEVICE = 'titanxp'; $env:ENGINE_GPU_LOCK_LOG = '<gate log dir>\lock-titanxp.jsonl'
+pwsh -NoProfile -File tools/dev.ps1 test -Preset msvc-debug -Filter '^renderer\.' -Jobs 3
+Remove-Item Env:ENGINE_GFX_TEST_DEVICE
+```
+
+`titanxp` rather than `baseline`: it removes everything `baseline` removes (mesh shaders) and the
+ray-tracing rows besides, so it covers both of the faults the server leg found. A fault this leg
+reports is a test's, not the card's: the case skips before it builds what the device lacks
+(T153's pattern). **What it costs** (2026-11-16, `msvc-debug`, the RTX 5090, the session
+unlocked): the first part, `renderer.1`, ran 1,025 s of wall clock of which 696 s was waiting for
+the GPU lock behind other agents' work (60 device opens, 276 s holding the card), so about 330 s
+of its own; the whole suite's own time is in the T162 hand-back's log, measured the same way. The
+lock wait is the line's and not the leg's: on a gate that runs nothing else on the GPU at that
+moment it is near zero, and beside the three other Windows suites it is whatever they hold.
 
 ### Gate b58, measured
 

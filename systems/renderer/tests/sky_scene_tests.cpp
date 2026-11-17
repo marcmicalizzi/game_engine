@@ -15,6 +15,7 @@
 // Compiled where the sky capability is (its "earth" provider); each GPU case skips with a message
 // where there is no device, and the reference's half where the device cannot trace.
 #include "sky_reference.h"
+#include "test_device.h"
 
 #include <domain/gfx/device.h>
 #include <domain/gfx/sky.h>
@@ -77,7 +78,7 @@ struct Gpu {
   bool trace = false;  // the reference can run: cluster acceleration structures and ray queries
   Gpu() {
     std::string error;
-    if (!device.create(gfx::DeviceOptions{}, &error)) {
+    if (!device.create(renderer_test::device_options(), &error)) {
       why = "no Vulkan device: " + error;
       return;
     }

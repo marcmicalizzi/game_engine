@@ -21,6 +21,8 @@
 // face, with no cone to test — and the case would not exist at any threshold. Real content has
 // curvature, and its leaves have cones; the samples' numbers are in geometry.md.
 
+#include "test_device.h"
+
 #include <core/math/math.h>
 #include <domain/geometry/cluster.h>
 #include <domain/geometry/cluster_lod.h>
@@ -49,7 +51,7 @@ struct Gpu {
   gfx::Device device;
   std::string why;
   bool ok = false;
-  explicit Gpu(const gfx::DeviceOptions& options = {}) {
+  explicit Gpu(const gfx::DeviceOptions& options = renderer_test::device_options()) {
     std::string error;
     if (!device.create(options, &error)) {
       why = "no Vulkan device: " + error;

@@ -5,6 +5,8 @@
 // grow to; a commit past the budget admits its nearest tiles and withholds the rest, which a later
 // commit with room admits; the tile the eye stands in is never the one withheld; and a single tile
 // past the whole budget is still refused, with a sentence, and the scene takes the next commit.
+#include "test_device.h"
+
 #include <domain/gfx/device.h>
 #include <domain/gfx/resources.h>
 #include <systems/renderer/flora_motion.h>
@@ -60,7 +62,7 @@ struct Rig {
 
   explicit Rig(const test::TempDir& tmp) {
     std::string error;
-    if (!device.create(gfx::DeviceOptions{}, &error)) {
+    if (!device.create(renderer_test::device_options(), &error)) {
       why = "no Vulkan device: " + error;
       return;
     }

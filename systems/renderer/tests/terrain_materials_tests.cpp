@@ -1,3 +1,5 @@
+#include "test_device.h"
+
 #include <domain/scene_gen/scene_gen.h>
 #include <foundation/image/decode.h>
 #include <foundation/image/metrics.h>
@@ -168,7 +170,7 @@ TEST_CASE(
   write_pixel(tmp.file("zero.png"), 0, 0, 0);
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
+  if (!device.create(renderer_test::device_options(), &error)) {
     MESSAGE("no device: " << error);
     return;
   }
@@ -440,7 +442,7 @@ TEST_CASE("renderer: mask upload reads present tiles once and checks budget befo
 TEST_CASE("renderer: ground masks shade their layers, wet them, and agree with the path tracer") {
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
+  if (!device.create(renderer_test::device_options(), &error)) {
     MESSAGE("no device: " << error);
     return;
   }
@@ -629,7 +631,7 @@ TEST_CASE(
   // pictures stays within the reference tests' bound for a diffuse plane under the sun.
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
+  if (!device.create(renderer_test::device_options(), &error)) {
     MESSAGE("no device: " << error);
     return;
   }
@@ -795,7 +797,7 @@ TEST_CASE(
   // The roughness is 0.7 so that no glint clips and the pictures' light can be compared.
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
+  if (!device.create(renderer_test::device_options(), &error)) {
     MESSAGE("no device: " << error);
     return;
   }
@@ -1040,7 +1042,7 @@ TEST_CASE(
     "renderer: a snow layer whitens by its grain, a beach darkens wet, a default is its bytes") {
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
+  if (!device.create(renderer_test::device_options(), &error)) {
     MESSAGE("no device: " << error);
     return;
   }

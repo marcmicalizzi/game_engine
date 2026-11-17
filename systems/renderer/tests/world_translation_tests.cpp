@@ -21,6 +21,8 @@
 // the cubes carry a hand-off role (G136), and the first test sets a band across the scene (the
 // second keeps the default, 21 to 29 m, which drops every far form), so the cull pass's distance
 // band, measured from the eye like every other test, is held to the same bytes.
+#include "test_device.h"
+
 #include <core/math/math.h>
 #include <core/math/world.h>
 #include <domain/gfx/device.h>
@@ -245,7 +247,7 @@ struct Picture {
 // Every frame of `eyes` for a scene placed at `at`, on one path, on its own device.
 bool draw(const Path& path, const std::string& mesh, const std::string& ddc, WorldPos at,
           const std::vector<Camera>& cameras, std::vector<CapturedFrame>& out, std::string& why) {
-  gfx::DeviceOptions options;
+  gfx::DeviceOptions options = renderer_test::device_options();
   if (path.capacity) {
     options.overrides.absent.push_back("VK_EXT_mesh_shader");
     options.overrides.absent.push_back("geometryShader");
@@ -394,7 +396,7 @@ TEST_CASE("world translation: a scene and its camera moved by whole cells draw t
   {
     gfx::Device probe;
     std::string why;
-    if (!probe.create(gfx::DeviceOptions{}, &why)) {
+    if (!probe.create(renderer_test::device_options(), &why)) {
       MESSAGE("renderer unavailable here: " << why);
       return;
     }
@@ -492,7 +494,7 @@ TEST_CASE(
   {
     gfx::Device probe;
     std::string why;
-    if (!probe.create(gfx::DeviceOptions{}, &why)) {
+    if (!probe.create(renderer_test::device_options(), &why)) {
       MESSAGE("renderer unavailable here: " << why);
       return;
     }

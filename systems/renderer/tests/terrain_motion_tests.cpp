@@ -15,6 +15,8 @@
 // far its worker ran ahead (a case of its own holds that).
 // Compiled only where the terrain capability is; each GPU case skips with a message where there is
 // no device.
+#include "test_device.h"
+
 #include <core/jobs/job_system.h>
 #include <core/math/math.h>
 #include <domain/gfx/device.h>
@@ -54,7 +56,7 @@ struct Gpu {
   bool ok = false;
   Gpu() {
     std::string error;
-    if (!device.create(gfx::DeviceOptions{}, &error)) {
+    if (!device.create(renderer_test::device_options(), &error)) {
       why = "no Vulkan device: " + error;
       return;
     }

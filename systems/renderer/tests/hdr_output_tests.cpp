@@ -14,6 +14,7 @@
 // Each case skips with a message where there is no device. The sky's case is compiled where the
 // sky capability is (ENGINE_HDR_TESTS_SKY).
 #include "display_reference.h"
+#include "test_device.h"
 
 #include <domain/gfx/capture.h>
 #include <domain/gfx/device.h>
@@ -56,7 +57,7 @@ struct Gpu {
   bool ok = false;
   Gpu() {
     std::string error;
-    if (!device.create(gfx::DeviceOptions{}, &error)) {
+    if (!device.create(renderer_test::device_options(), &error)) {
       why = "no Vulkan device: " + error;
       return;
     }
