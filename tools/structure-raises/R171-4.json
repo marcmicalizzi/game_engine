@@ -1,0 +1,14 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "R171-4",
+  "reason": "R171 leg 4: engine-view --temporal (its option, help, refusal and the plain offscreen loop's capture and write); renderer.md gains the change between frames as the eye sees it and the memory made right; apps.md the flag",
+  "date": "2026-11-16",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "engine_view.main_cpp.lines": 41,
+    "engine_view.run_view.lines": 13,
+    "engine_view.run_offscreen.lines": 19,
+    "page:docs/subsystems/renderer.md": 9825,
+    "page:docs/subsystems/apps.md": 1159
+  }
+}
