@@ -525,15 +525,20 @@ TEST_CASE("engine-content: city makes the committed plan, fragment and yield on 
 // 0x4a8e33064c1a9eb8 (pine), G203 alone 0x7a35ee118d2ee70d and 0xa8fafcd968ddbe28. The two below
 // are the stacked tree's own run, in which every other pin of this file and of flora, geometry,
 // texture, matgen, wetland and deadwood held; the two were not separated by section again.
-constexpr u64 k_broadleaf_container_golden = 0xce11985a0f441bafull;
-constexpr u64 k_ancient_container_golden = 0x222a6d4a9af0e6e6ull;
+// R164 (2026-11-17; MSVC 14.51, Clang 18 and GCC 13 agree): the leaves' and needles' foliage optics
+// in the materials' alpha words, the far levels' too, and `k_flora_version` 13 in section 15; with
+// the optics zeroed and the version 12 the three folds come back to 0xce11985a0f441baf (broadleaf),
+// 0x222a6d4a9af0e6e6 (ancient) and 0xac0cb951cd8d4dc8 (pine), so these are the same bytes re-keyed.
+constexpr u64 k_broadleaf_container_golden = 0x1e8c99414891bf84ull;
+constexpr u64 k_ancient_container_golden = 0x483b28ec33fa1f12ull;
 // G120 (2026-11-01, MSVC 14.51): a pine, the conifer solver's chain — one three-plane card group a
 // live branch and the star, coverage-kept and fitted to the needles' coverage — at small tiles so
 // a debug run builds it in seconds. Its section 15 carries `k_conifer_chain_version`.
 // G203 (2026-11-16): the conifers' sprays are folded with leaning normals and
 // `k_conifer_chain_version` is 2, so the pine's container moved (it was 0xcb41f869870c00cd); the
-// broadleaf's and the ancient tree's did not.
-constexpr u64 k_pine_container_golden = 0xac0cb951cd8d4dc8ull;
+// broadleaf's and the ancient tree's did not. R164: the needles' optics and `k_flora_version` 13, as
+// above; it was 0xac0cb951cd8d4dc8.
+constexpr u64 k_pine_container_golden = 0x7a1d3d945d56c024ull;
 
 TEST_CASE("engine-content: the allometric crowns build the committed bytes on every toolchain") {
   const test::TempDir tmp("engine_content_flora_determinism");
