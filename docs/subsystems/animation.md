@@ -436,7 +436,7 @@ This is a capability: it was added without editing `core/`, `foundation/`, the r
 ## Not yet
 
 - **Blend trees and state machines as data** ([05 §5.11](../plan/05-simulation.md#511-integration-notes)). One player per entity is what this samples; `AnimationPlayer::weight` is already the number a blend-tree node would carry, which is why it is persisted now rather than added later with a migration.
-- **A track cursor.** `anim::Clip::sample` walks each track's keys from the front, which [anim](anim.md) says is right for a clip and notes belongs with the playback state a system layer owns — that is this module, and it does not do it yet. It is the first thing to try if the sampler shows up in a profile.
+- ~~**A track cursor.**~~ **Answered another way, 2026-11-16 (A48)**: `anim::Clip::sample` searches a track of more than eight keys instead of walking it from the front, which takes the clip's length off a sample's cost (16.6 to 5.6 us for a 37-joint rig's eight-second baked clip; [anim](anim.md#sampling)) with no state per player. A cursor would still save the search's few compares; nothing measured asks for it.
 - **Additive layers.** `anim::blend_additive` and `make_additive` exist and nothing here calls them.
 - **IK, foot locking, a contact channel, retarget-driven playback.** `Library::build_retarget` exposes the retarget; no system applies one.
 - **Protocol methods.** `animation.play`, `animation.attach` and a query over the library would be a small `register_methods()` — and would now have the `Id128` overloads to call, which is what the host-facing surface above was shaped for.
