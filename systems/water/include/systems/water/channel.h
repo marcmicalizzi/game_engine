@@ -163,6 +163,17 @@ inline constexpr f64 k_channel_dissipation_full = 0.2;
 inline constexpr f64 k_channel_veil_from_m = 0.0015;
 inline constexpr f64 k_channel_veil_full_m = 0.010;
 f64 channel_broken_share(f64 slope, f64 speed, f64 depth_m) noexcept;
+// **What the surface's pattern travels at** (W137; water.slang's `water_channel_travel_speed`,
+// which this mirrors; docs/experiments/stream-speed.md, "What the eye reads: the threads, not the
+// mean"). A steep stream's solved speed is a mean over its steps and pools; what an eye follows on
+// it is the jets over each step and the white they carry, which have fallen a step's height:
+// sqrt(v^2 + 2 g H). The pattern on a sheet falling `slope` is carried at sqrt(surface^2 + 2 g H
+// w), H `k_channel_jet_m` (a choice, the clasts' scale the broken water is drawn on) and w the
+// step-pool's weight the broken share rises over; a level pool and a reach under 3 % travel at
+// their surface's speed. Only the pattern's travel reads it: the depth, the Froude number and every
+// rule on them keep the solve's own speed.
+inline constexpr f64 k_channel_jet_m = 0.25;
+f64 channel_travel_speed(f64 surface_speed, f64 slope) noexcept;
 
 // One channel as this capability draws it: the solved description about its origin, bounded.
 struct Channel {

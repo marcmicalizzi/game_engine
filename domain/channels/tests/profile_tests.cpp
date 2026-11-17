@@ -295,11 +295,13 @@ TEST_CASE("profile: a line with no width on a ground it knows nothing of, by Jar
   // The fixture's uniform trench, as an author would name it: two points and a discharge.
   FlowLine line = fixture_line("authored", 8, 48, -20, 0.8);
   ProfileOptions o;
+  o.resistance = Resistance::Jarrett;  // W137: no longer the default
   o.reach_m = 6.0;
   Profile p;
   REQUIRE_MESSAGE(solve_profile(line, fixture_ground(), o, p, error), error);
   REQUIRE(p.stations.size() >= 2);
   for (const ProfileStation& s : p.stations) {
+    CHECK(s.d84 == 0.0);  // Jarrett's law reads no grain
     // Uniform flow under Jarrett's n: V = (1 / n) R^(2/3) S^(1/2) with n = 0.32 S^0.38 R^-0.16.
     const f64 y = s.depth;
     const f64 radius = k_t.area(y) / k_t.perimeter(y);
@@ -324,6 +326,76 @@ TEST_CASE("profile: a line with no width on a ground it knows nothing of, by Jar
   bad.points.resize(1);
   CHECK_FALSE(solve_profile(bad, fixture_ground(), o, p, error));
   CHECK_FALSE(solve_profile(line, scene_gen::Ground{}, o, p, error));
+}
+
+// W137 (docs/experiments/stream-speed.md): uniform flow under Ferguson's variable-power law, the
+// default, on the D84 a line names and on the one its section gives it; Jarrett's clamp gave every
+// section under R = 0.15 m the n of 0.15 m, so a thin sheet and a deep one took one roughness.
+namespace {
+f64 vpe_speed(f64 radius, f64 slope, f64 d84) {
+  const f64 x = radius / d84;
+  const f64 ratio = 6.5 * 2.5 * x / std::sqrt(6.5 * 6.5 + 2.5 * 2.5 * std::pow(x, 5.0 / 3.0));
+  return std::sqrt(9.81 * radius * slope) * ratio;
+}
+}  // namespace
+
+TEST_CASE("profile: a bed's resistance by Ferguson's law on its own D84") {
+  FlowFixture f;
+  std::string error;
+  REQUIRE_MESSAGE(make_flow_fixture(f, error), error);
+  ProfileOptions o;
+  CHECK(o.resistance == Resistance::Ferguson);
+  o.reach_m = 6.0;
+  // The fixture's uniform trench at S = 0.01, a cobble bed of D84 = 0.15 m named a point, at
+  // two discharges: a deep flow (R / D84 about 2.5) and a sheet a clast deep (about 0.3).
+  for (const f64 q : {0.8, 0.05}) {
+    CAPTURE(q);
+    FlowLine line = fixture_line("cobbles", 8, 48, -20, q);
+    line.d84 = {0.15, 0.15};
+    Profile p;
+    REQUIRE_MESSAGE(solve_profile(line, fixture_ground(), o, p, error), error);
+    REQUIRE(p.stations.size() >= 2);
+    for (const ProfileStation& s : p.stations) {
+      CHECK(s.d84 == 0.15);
+      const f64 radius = k_t.area(s.depth) / k_t.perimeter(s.depth);
+      // The level is written to the millimetre: the speed is held to the depth's share of that.
+      CHECK(s.speed == doctest::Approx(vpe_speed(radius, 0.01, 0.15)).epsilon(0.02));
+      // The n reported is the one Manning's form would need for the same friction slope.
+      CHECK(s.manning_n ==
+            doctest::Approx(std::pow(radius, 1.0 / 6.0) /
+                            (std::sqrt(9.81) * s.speed / std::sqrt(9.81 * radius * 0.01)))
+                .epsilon(0.03));
+    }
+    CHECK(p.stats.rises_other == 0);
+  }
+  // A larger grain is a rougher bed: the same water runs deeper and slower over boulders.
+  FlowLine gravel = fixture_line("gravel", 8, 48, -20, 0.3);
+  gravel.d84 = {0.04, 0.04};
+  FlowLine boulders = gravel;
+  boulders.d84 = {0.4, 0.4};
+  Profile pg, pb;
+  REQUIRE_MESSAGE(solve_profile(gravel, fixture_ground(), o, pg, error), error);
+  REQUIRE_MESSAGE(solve_profile(boulders, fixture_ground(), o, pb, error), error);
+  CHECK(pb.stations[1].depth > pg.stations[1].depth);
+  CHECK(pb.stations[1].speed < 0.8 * pg.stations[1].speed);
+  // A line that names no D84 takes the plan's sediment law's at its section's bank height and its
+  // bed's slope: a gravel or cobble bed on the fixture's 1 % trench, the same law in uniform flow.
+  FlowLine bare = fixture_line("bare", 8, 48, -20, 0.8);
+  Profile pn;
+  REQUIRE_MESSAGE(solve_profile(bare, fixture_ground(), o, pn, error), error);
+  for (const ProfileStation& s : pn.stations) {
+    CHECK(s.d84 > 0.004);
+    CHECK(s.d84 < 0.5);
+    const f64 radius = k_t.area(s.depth) / k_t.perimeter(s.depth);
+    CHECK(s.speed == doctest::Approx(vpe_speed(radius, 0.01, s.d84)).epsilon(0.02));
+  }
+  // A D84 that is not one a point, or not positive, is refused with the line's name.
+  FlowLine bad = gravel;
+  bad.d84 = {0.04};
+  CHECK_FALSE(solve_profile(bad, fixture_ground(), o, pg, error));
+  CHECK(error.find("\"gravel\": its bed's D84 is absent or one a point") != std::string::npos);
+  bad.d84 = {0.04, 0.0};
+  CHECK_FALSE(solve_profile(bad, fixture_ground(), o, pg, error));
 }
 
 TEST_CASE("profile: a bed too small for its water is flagged, and no water is written outside it") {

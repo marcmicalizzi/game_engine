@@ -58,7 +58,7 @@ struct Sections {
   f64 run = 0;   // between nodes along, metres
   Vector<f64> h;
   Vector<u32> thalweg, left_end, right_end;
-  Vector<f64> x, z, q, width, bed, bank, edge, critical, slope0, slope_power;
+  Vector<f64> x, z, q, width, bed, bank, edge, critical, slope0, slope_power, d84;
   Vector<f64> nx, nz;  // each node's section's direction, toward the left
   const f64* row(u32 node) const noexcept { return h.data() + node * across; }
   f64 offset(u32 k) const noexcept {
@@ -187,12 +187,22 @@ struct Solver {
     f.radius = w.area / w.perimeter;
     f.speed = q / w.area;
     f.head = level + f.speed * f.speed / (2.0 * k_gravity);
-    f.n = o.resistance == Resistance::Manning
-              ? o.manning_n
-              : k_jarrett_n * c.slope_power[node] *
-                    powd(std::clamp(f.radius, k_jarrett_radius_min_m, k_jarrett_radius_max_m),
-                         k_jarrett_radius_exponent);
-    f.friction = f.n * f.n * f.speed * f.speed / (f.radius * fall_cube_root(f.radius));
+    if (o.resistance == Resistance::Ferguson) {
+      // V / u* = F(R / D84), so S_f = V^2 / (g R F^2); the n that gives the same friction slope
+      // in Manning's form is R^(1/6) / (sqrt(g) F).
+      const f64 x = f.radius / c.d84[node];
+      const f64 ratio = k_vpe_a1 * k_vpe_a2 * x /
+                        std::sqrt(k_vpe_a1 * k_vpe_a1 + k_vpe_a2 * k_vpe_a2 * powd(x, 5.0 / 3.0));
+      f.friction = f.speed * f.speed / (k_gravity * f.radius * ratio * ratio);
+      f.n = powd(f.radius, 1.0 / 6.0) / (std::sqrt(k_gravity) * ratio);
+    } else {
+      f.n = o.resistance == Resistance::Manning
+                ? o.manning_n
+                : k_jarrett_n * c.slope_power[node] *
+                      powd(std::clamp(f.radius, k_jarrett_radius_min_m, k_jarrett_radius_max_m),
+                           k_jarrett_radius_exponent);
+      f.friction = f.n * f.n * f.speed * f.speed / (f.radius * fall_cube_root(f.radius));
+    }
     f.froude = f.speed / std::sqrt(k_gravity * w.area / w.top);
     f.force = q * q / (k_gravity * w.area) + w.moment;
     return f;
@@ -326,6 +336,11 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
   for (const f64 w : line.width)
     if (!(w > 0.0) || !std::isfinite(w))
       return refuse(error, line.name, "its width must be positive");
+  if (!line.d84.empty() && line.d84.size() != count)
+    return refuse(error, line.name, "its bed's D84 is absent or one a point");
+  for (const f64 d : line.d84)
+    if (!(d > 0.0) || !std::isfinite(d))
+      return refuse(error, line.name, "its bed's D84 must be positive");
   if (line.tail_level && !std::isfinite(line.level))
     return refuse(error, line.name, "the level it ends at is not a number");
   Vector<f64> along;
@@ -489,6 +504,39 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
       const bool open_right = !(hr > row[t] + k_over_bank_m);
       c.bank[k] = std::min(open_left ? k_no_bank : hl, open_right ? k_no_bank : hr);
       c.edge[k] = std::min(open_left ? hl : k_no_bank, open_right ? hr : k_no_bank);
+    }
+  }
+  // **The bed's D84 at each node** (W137; channels.md, "The profile"): the plan's where the line
+  // carries it, interpolated as its width is; else what the plan's sediment law gives a bed of the
+  // section's own bank height (held to `k_vpe_bank_min_m`..`k_vpe_bank_max_m`) and the bed's slope
+  // over `k_reach_slope_m` each way, falls included (the grain a reach carries follows its whole
+  // drop).
+  c.d84.assign(n, 0.0);
+  if (options.resistance == Resistance::Ferguson) {
+    if (!line.d84.empty()) {
+      u32 seg = 0;
+      for (u32 k = 0; k < n; ++k) {
+        const f64 s = k + 1 == n ? total : c.run * static_cast<f64>(k);
+        while (seg + 2 < count && along[seg + 1] < s)
+          ++seg;
+        const f64 span = along[seg + 1] - along[seg];
+        const f64 u = span > 0.0 ? std::clamp((s - along[seg]) / span, 0.0, 1.0) : 0.0;
+        c.d84[k] =
+            std::max(k_vpe_d84_min_m, line.d84[seg] + u * (line.d84[seg + 1] - line.d84[seg]));
+      }
+    } else {
+      const ChannelLayer bed_defaults;
+      const u32 reach = std::max<u32>(1, static_cast<u32>(std::ceil(k_reach_slope_m / c.run)));
+      for (u32 k = 0; k < n; ++k) {
+        const u32 i0 = k > reach ? k - reach : 0u;
+        const u32 i1 = std::min(k + reach, n - 1);
+        const f64 slope = std::max(
+            i1 > i0 ? (c.bed[i0] - c.bed[i1]) / (c.run * static_cast<f64>(i1 - i0)) : 0.0, 1e-4);
+        const f64 bank = std::clamp(c.bank[k] - c.bed[k], k_vpe_bank_min_m, k_vpe_bank_max_m);
+        const ChannelSediment grains = detail::sediment_of(
+            bed_defaults, reach_of(bed_defaults, slope, false), bank, slope, 0.0);
+        c.d84[k] = std::max(k_vpe_d84_min_m, static_cast<f64>(grains.d84_m));
+      }
     }
   }
   c.slope0.assign(n, 1e-5);
@@ -1083,6 +1131,7 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
             ? c.width[o.node]
             : std::max(c.step, c.step * static_cast<f64>(c.left_end[o.node] - c.right_end[o.node]));
     st.manning_n = f.n;
+    st.d84 = c.d84[o.node];
     st.flags = o.flags;
     if (over_bank) {
       // How far the solved level stood over its bank, or the written one over its edge.

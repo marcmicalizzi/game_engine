@@ -14,13 +14,13 @@
 // sampled across the line, and the section is whatever those heights are: its area, wetted
 // perimeter, top width and first moment against a level come from the heights alone, counting only
 // ground connected to the thalweg under the level and stopping at each bank's crest. From them:
-// critical depth (Q^2 T = g A^3); a resistance (Jarrett 1984 by the bed's own slope, or one
-// Manning's n); the standard step method upstream from every control in tranquil flow and
-// downstream in shooting flow; the regime where both stand by specific force, as a jump placed
-// where the shooting flow's sequent level is the level the tranquil profile holds a jump's length
-// on; and, where the bed drops three critical depths or more (S104's fall test at the solved
-// critical depth), a fall: critical at the lip, Rand's (1955) drop at the foot, and no surface
-// between. The description keeps the fewest nodes that hold the pins (stations.h).
+// critical depth (Q^2 T = g A^3); a resistance (Ferguson 2007 by the bed's own D84, Jarrett 1984
+// by its slope, or one Manning's n); the standard step method upstream from every control in
+// tranquil flow and downstream in shooting flow; the regime where both stand by specific force, as
+// a jump placed where the shooting flow's sequent level is the level the tranquil profile holds a
+// jump's length on; and, where the bed drops three critical depths or more (S104's fall test at the
+// solved critical depth), a fall: critical at the lip, Rand's (1955) drop at the foot, and no
+// surface between. The description keeps the fewest nodes that hold the pins (stations.h).
 //
 // **Determinism.** + - x /, the square root, the falls' cube root and `core/math/deterministic.h`'s
 // exp and log for the two powers; bisections run until their bracket is one float wide; a line is
@@ -37,10 +37,31 @@
 
 namespace engine::channels {
 
-// **The resistance of a steep bed** (Jarrett 1984, in metres): n = 0.32 S^0.38 R^-0.16, S the
-// bed's fall over the reach about the node and R the hydraulic radius at the depth in hand, each
-// held to the range of his measurements (above a slope of 0.04 one of the two quotations of that
-// range has none: an extrapolation, stream-profile.md).
+// **The resistance of a bed** (W137; channels.md, "The profile"; docs/experiments/stream-speed.md):
+// Ferguson's (2007) variable-power equation on the bed's own D84,
+//   V / u* = a1 a2 (R / D84) / sqrt(a1^2 + a2^2 (R / D84)^(5/3)),   u* = sqrt(g R S_f),
+// the roughness layer's V / u* = a2 R / D84 in water a few clasts deep and Manning–Strickler's
+// a1 (R / D84)^(1/6) in deep water (Rickenmann and Recking 2011's best of the conventional laws
+// over 2,890 field measurements). Its variable, the relative submergence, is the section's own: the
+// depth in hand over the clasts the plan lays (`ChannelSediment::d84_m`), or for a line with no
+// plan the clasts the plan's sediment law gives a bed of its section's bank height and slope.
+inline constexpr f64 k_vpe_a1 = 6.5;
+inline constexpr f64 k_vpe_a2 = 2.5;
+// A line with no plan's bed: the bank height its D84 is taken from is held to this range, metres.
+// The crest a section reads is often no bankfull stage — a trench's wall, or a valley's side read
+// 12 m out — and the sediment law's grain grows with the depth it is given (a 3 m bank gave a 1 %
+// bed a D84 of 0.7 m); a metre is a small stream's bankfull depth and more. Deep water reads its
+// D84 only to the 1/6 power, so the cap costs a large river little.
+inline constexpr f64 k_vpe_bank_min_m = 0.05;
+inline constexpr f64 k_vpe_bank_max_m = 1.0;
+// D84 is never read under a millimetre (a sand bed's is under 4 mm).
+inline constexpr f64 k_vpe_d84_min_m = 0.001;
+// **Jarrett (1984), in metres**, `--resistance jarrett`: n = 0.32 S^0.38 R^-0.16, S the bed's fall
+// over the reach about the node and R the hydraulic radius at the depth in hand, each held to the
+// range of his measurements (above a slope of 0.04 one of the two quotations of that range has
+// none: an extrapolation, stream-profile.md). **No longer the default** (W137): every small
+// stream's R is under his 0.15 m, so the clamp gave each its n at 15 cm, a boulder bed's on a
+// brook.
 inline constexpr f64 k_jarrett_n = 0.32;
 inline constexpr f64 k_jarrett_slope_exponent = 0.38;
 inline constexpr f64 k_jarrett_radius_exponent = -0.16;
@@ -73,13 +94,13 @@ inline constexpr f64 k_pool_reach_m = 25.0;
 // walker sees; on the forest it was the section reading a hollow beside the line.
 inline constexpr f64 k_under_ground_m = 0.05;
 
-enum class Resistance : u8 { Jarrett = 0, Manning = 1 };
+enum class Resistance : u8 { Jarrett = 0, Manning = 1, Ferguson = 2 };
 
 struct ProfileOptions {
   // The ground's lattice, metres: the nodes' spacing along the line (never less; a line's length
   // is divided into whole steps at least this long) and the samples' spacing across it.
   f64 lattice_m = 0.25;
-  Resistance resistance = Resistance::Jarrett;
+  Resistance resistance = Resistance::Ferguson;
   f64 manning_n = 0.04;  // with `Resistance::Manning`
   // How far across the line a section is read each side where the line names no width, metres.
   f64 reach_m = 12.0;
@@ -94,6 +115,9 @@ struct FlowLine {
   Vector<WorldPos> points;
   Vector<f64> discharge;
   Vector<f64> width;
+  // Optionally the bed's D84 at each point, metres (the plan's sediment; empty: what the plan's
+  // sediment law gives the section's bank height and slope). Read by `Resistance::Ferguson` alone.
+  Vector<f64> d84;
   // What the line ends in: a level it meets (a body's at a mouth, the main stem's at a
   // confluence), or nothing (the region's edge: normal depth).
   bool tail_level = false;
@@ -117,7 +141,8 @@ struct ProfileStation {
   f64 froude = 0;
   f64 wet_left = 0, wet_right = 0;
   f64 width = 0;      // the line's width there, else the section's from crest to crest
-  f64 manning_n = 0;  // the n the station was solved with
+  f64 manning_n = 0;  // the n the station was solved with (Ferguson's: R^(1/6) / (sqrt(g) V/u*))
+  f64 d84 = 0;        // the bed's D84 the station's resistance read (0: the law reads none)
   f64 over_m = 0;     // how far the solved level stood over the lower bank (0: it did not)
   u16 flags = 0;
 };

@@ -2,7 +2,7 @@
 // streams solved in their own beds.
 //
 //   flow solve <scene.json> <out.json> [--ddc <dir>] [--entry <i>] [--lattice <m>]
-//              [--resistance jarrett|manning] [--manning-n <n>] [--reach <m>] [--jobs <n>]
+//              [--resistance ferguson|jarrett|manning] [--manning-n <n>] [--reach <m>] [--jobs <n>]
 //              [--scene-out <scene.json>] [--under-water <list.json>]
 //
 // Opens **the composed ground the scene draws** (`renderer::SceneGround`: the terrain with the
@@ -56,7 +56,7 @@ namespace {
 
 const char* k_solve_usage =
     "usage: engine-content flow solve <scene.json> <out.json> [--ddc <dir>] [--entry <i>]\n"
-    "                                  [--lattice <m>] [--resistance jarrett|manning]\n"
+    "                                  [--lattice <m>] [--resistance ferguson|jarrett|manning]\n"
     "                                  [--manning-n <n>] [--reach <m>] [--jobs <n>]\n"
     "                                  [--scene-out <scene.json>] [--under-water <list.json>]\n"
     "                                  [--line-stats <lines.json>]\n"
@@ -374,9 +374,10 @@ int flow_solve_command(int argc, char** argv) {
       ok = number && v >= 0.01 && v <= 100;
       lattice = v;
     } else if (flag == "--resistance") {
-      ok = value == "jarrett" || value == "manning";
-      options.resistance =
-          value == "manning" ? channels::Resistance::Manning : channels::Resistance::Jarrett;
+      ok = value == "ferguson" || value == "jarrett" || value == "manning";
+      options.resistance = value == "manning"   ? channels::Resistance::Manning
+                           : value == "jarrett" ? channels::Resistance::Jarrett
+                                                : channels::Resistance::Ferguson;
     } else if (flag == "--manning-n") {
       ok = number && v >= 0.005 && v <= 1;
       options.manning_n = v;
@@ -933,7 +934,9 @@ int flow_solve_command(int argc, char** argv) {
   line["out"] = JsonValue(out_path);
   line["lattice_m"] = JsonValue(lattice);
   line["resistance"] =
-      JsonValue(options.resistance == channels::Resistance::Manning ? "manning" : "jarrett");
+      JsonValue(options.resistance == channels::Resistance::Manning   ? "manning"
+                : options.resistance == channels::Resistance::Jarrett ? "jarrett"
+                                                                      : "ferguson");
   line["entries"] = JsonValue(entries);
   line["links"] = JsonValue(links);
   line["links_wet"] = JsonValue(wet);

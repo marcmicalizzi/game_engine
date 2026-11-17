@@ -937,6 +937,21 @@ TEST_CASE("water channel: a steep bed's water is broken white, a gentle reach's 
   CHECK(water::channel_broken_share(0.10, 0.015, 0.06) == 0.0);
 }
 
+TEST_CASE("water channel: the pattern travels at the jets' speed on a steep sheet (W137)") {
+  // Free fall over a step of the clasts' height: sqrt(v^2 + 2 g H), H = 0.25 m, at a cascade.
+  CHECK(water::channel_travel_speed(0.35, 0.35) ==
+        doctest::Approx(std::sqrt(0.35 * 0.35 + 2.0 * 9.81 * 0.25)).epsilon(1e-3));
+  CHECK(water::channel_travel_speed(0.35, 0.35) > 2.2);
+  // A gentle reach and a level pool travel at their surface's own speed.
+  CHECK(water::channel_travel_speed(0.4, 0.02) == doctest::Approx(0.4));
+  CHECK(water::channel_travel_speed(0.05, 0.0) == doctest::Approx(0.05));
+  // Rising between, with the broken share's weight: a 10 % step-pool sheet near a metre a second.
+  const f64 step_pool = water::channel_travel_speed(0.3, 0.10);
+  CHECK(step_pool > 0.8);
+  CHECK(step_pool < 1.1);
+  CHECK(water::channel_travel_speed(-1.0, 0.0) == 0.0);
+}
+
 TEST_CASE("water channel: plunge records pack into one entry, seven at most") {
   gfx::ResolveMaterial water;
   gfx::ResolveMaterial entry;

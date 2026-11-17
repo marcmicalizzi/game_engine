@@ -724,9 +724,23 @@ through **the sections the ground has**, by the textbook's method
   connected to the thalweg under it, and no further than the crests: a hollow beyond a bank is
   not wet, and water is never written outside its bed. Area, wetted perimeter, top width and first
   moment are sums over the wet samples' trapezoids; there is no described shape.
-- **Critical depth** where Q^2 T = g A^3. **Resistance** is Jarrett's (1984) n = 0.32 S^0.38
-  R^-0.16 by the bed's own slope over 10 m either way and the section's hydraulic radius, each
-  held to his data's range; one Manning's n instead with `--resistance manning`.
+- **Critical depth** where Q^2 T = g A^3. **Resistance** (W137, [stream-speed](../experiments/stream-speed.md))
+  is Ferguson's (2007) variable-power law on **the bed's own D84**: V / u* = 6.5 x 2.5 (R / D84) /
+  sqrt(6.5^2 + 2.5^2 (R / D84)^(5/3)), u* = sqrt(g R S_f), so the friction slope is V^2 / (g R F^2)
+  and the station's reported n is the Manning's n that gives it, R^(1/6) / (sqrt(g) F). In water a
+  few clasts deep it is the roughness layer's V = 2.5 (R / D84) sqrt(g R S), in deep water
+  Manning–Strickler's. The D84 is the plan's at each point (`ChannelSediment`, "Bed sediment",
+  carried as `FlowLine::d84`); a line with no plan (an author's) takes what the plan's sediment law
+  gives a bed of its section's own bank height (held to 5 cm to 1 m: a crest read is often a trench's wall, not a bankfull stage) and its bed's slope over 10 m
+  either way. Nothing is keyed on a scene: the relative submergence is the section's depth over its
+  bed's clasts. Jarrett's (1984) n = 0.32 S^0.38 R^-0.16, held to his data's range, is
+  `--resistance jarrett` (the default until W137: every small stream's R is under his 0.15 m, so the
+  clamp gave each section the n of a 15 cm radius, 0.17 on any bed over 9 %); one Manning's n is
+  `--resistance manning`. **What it does to the speeds**: a small stream's mean speed comes out
+  nearly the same at every slope, 0.2 to 0.75 m/s from 5 to 200 l/s, because a steeper bed's
+  larger clasts take back what its slope gives — faster than Jarrett's on gentle beds, slower and
+  deeper on steep ones; the jets a person sees over a steep bed's steps are the draw's (water.md,
+  "Shading"; the table by slope class is under "How whole a stream is drawn").
 - **The standard step method both ways**: tranquil water upstream from every control, shooting
   water downstream from every node the tranquil profile passes critical depth at and from every
   fall's foot.
@@ -932,7 +946,7 @@ scene's body, a shallower pit breached by the cut — is not built.
 ### The cook
 
 `engine-content flow solve <scene.json> <out.json> [--ddc <dir>] [--entry <i>] [--lattice <m>]
-[--resistance jarrett|manning] [--manning-n <n>] [--reach <m>] [--jobs <n>] [--scene-out <scene>]`
+[--resistance ferguson|jarrett|manning] [--manning-n <n>] [--reach <m>] [--jobs <n>] [--scene-out <scene>]`
 opens **the composed ground the scene draws** (`renderer::SceneGround`, handed to this module as a
 `scene_gen::Ground`: a function pointer and a context) and solves on it every wet link of every
 `channels` entry, and every `water_channels` block that is not one of those links' — an author's
@@ -969,7 +983,8 @@ and the solve's seconds a kilometre. `--jobs` is 1 by default: until the tile se
 gives up its lock (T128), readers on a pool are slower than one thread.
 
 **An author's line** is a `water_channels` block whose name is not a planner's link: its `points`
-and a `discharge_m3s`. It is solved with Jarrett's law unless `--resistance manning` holds its own
+and a `discharge_m3s`. It is solved with Ferguson's law on its section's own bed ("The profile")
+unless `--resistance manning` holds its own
 `manning_n`; a line that runs into a body — a lattice past its last point stands inside a body's
 circle or polygon — ends at the body's level as a mouth, and any other ends at normal depth. The
 block keeps its optics, its seed and its banks, and takes the solve's stations. The end-to-end
@@ -1025,6 +1040,7 @@ its mean slope (its level's fall over its length: under 2 %, 2 to 5, 5 to 15, 15
 | `falls`, `falls_drawn` | lip-to-foot pairs, and those with a nappe |
 | `gaps` | maximal runs of undrawn stretches |
 | `thin_share`, `alternations_per_100m` | the forest's own count: stretches leaving a station 1.1 cm deep or less, and the runs of one kind (thin or not), both kinds counted |
+| `speed_median_mps`, `speed_p10_mps`, `speed_p90_mps`, `depth_median_m` | (W137) the drawn stretches' speed (the mean of their two stations') by length — its median and its tenth and ninetieth percentiles — and their median depth; falls and undrawn stretches are not counted |
 
 **How it differs from the forest's count.** Its session's script (`streams47b.py`, read on
 2026-11-16 once the proof of concept was opened) classes every station by its depth alone: 1.1 cm
@@ -1051,6 +1067,13 @@ steeper than 30 % (7 of 8 wet lines, 0.23 km; 8 lines at stage 3):
 
 No station of the torrent is 1.1 cm deep or less at any stage (its feet land in plunge pools), so
 the forest's count there is the runs.
+
+**How fast, W137** (2026-11-16, the same command at 1012756b; [stream-speed](../experiments/stream-speed.md#measured-the-old-law-against-the-new)):
+over 30 % the torrent's median drawn speed went from 0.46 to 0.35 m/s at stage 1 and 0.57 to 0.50
+at stage 2 under Ferguson's law, its median depth from 9 to 10 cm and 12 to 13 cm; the falls,
+pools and runs are unchanged and the stations over a bank went from 5 to 9 at stage 1. On the
+forest's small scene of `region link 515` the line runs at a mean of 0.28 m/s, 15 cm deep, where
+Jarrett's clamp had 0.46 m/s and 8 cm.
 
 **Measured on the world the owner walked** (the forest's `world\v47\base.json`, plan
 780a7a78621fb16f, its tile sets and route plan copied to a root of the row's own; the same build
