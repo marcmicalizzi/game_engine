@@ -103,6 +103,14 @@ bool trace_scene_hit(ResolveParams* params, RayDesc ray, out SceneHit hit) {
   return true;
 }
 
+// The hemisphere ambient a normal `x` receives before the scene's cache scales it: the sky's
+// harmonics, or the stand-in's two halves, as `fs_resolve` takes it.
+float3 hit_raw_ambient(ResolveParams* params, SkyParams* sky, bool has_sky, float3 x) {
+  if (has_sky) return sky_ambient((SkyFrame*)sky->frame, x);
+  const float3 ground = ground_radiance(params->sky.rgb, params->ground.rgb, params->sun);
+  return ambient_radiance(params->sky.rgb, ground, x);
+}
+
 // The hit's radiance towards the ray's origin (above). `footprint_m` is the ray's width at the hit,
 // metres, which picks the base colour's mip; `shadow` asks one shadow ray towards the sun from the
 // hit, and without it the sun reaches the hit unshadowed (the caller's half rate).
@@ -209,13 +217,8 @@ float3 shade_hit(ResolveParams* params, RayDesc ray, SceneHit hit, float footpri
   }
   // The ambient the resolve would give this surface: the sky's harmonics (or the stand-in's
   // hemisphere), through the world-space cache where the frame reads one.
-  float3 ambient;
-  if (has_sky) {
-    ambient = sky_ambient((SkyFrame*)sky->frame, n);
-  } else {
-    const float3 ground = ground_radiance(params->sky.rgb, params->ground.rgb, params->sun);
-    ambient = ambient_radiance(params->sky.rgb, ground, n);
-  }
+  float3 ambient = hit_raw_ambient(params, sky, has_sky, n);
+  const float3 raw_front = ambient;
   // Foliage reads its tree's own shade as a prior, as the resolve does (R69 stage 7).
   float crown = -1.0;
   if ((material.flags & k_material_masked) != 0u) {
@@ -226,7 +229,22 @@ float3 shade_hit(ResolveParams* params, RayDesc ray, SceneHit hit, float footpri
                           params->gi_cell_scale, params->eye, surf.position,
                           length(surf.position - params->camera.xyz), n, ambient, crown);
   const float n_dot_v = max(dot(n, surface.view), 0.0);
-  light += ambient * (albedo * (1.0 - metallic) +
-                      brdf_env_specular(brdf_f0(albedo, metallic), roughness, n_dot_v));
+  const float3 specular = brdf_env_specular(brdf_f0(albedo, metallic), roughness, n_dot_v);
+  if (foliage) {
+    // Foliage's ambient as the resolve takes it (R164-3, review B7; brdf.slang,
+    // `brdf_foliage_ambient`): the hemisphere the sheet's back sees through the transmittance and
+    // the sphere's share over the view's two directions, each scaled by what the scene let through
+    // of the front's, so a leaf in the water's reflection is the leaf on the screen.
+    const float3 gain =
+        select(raw_front > float3(1e-9), ambient / max(raw_front, float3(1e-9)), float3(1.0));
+    const float3 diffuse = brdf_foliage_ambient(
+        ambient, gain * hit_raw_ambient(params, sky, has_sky, -n),
+        gain * hit_raw_ambient(params, sky, has_sky, surface.view),
+        gain * hit_raw_ambient(params, sky, has_sky, -surface.view),
+        brdf_foliage_share(albedo, transmit), spread);
+    light += diffuse * (albedo * (1.0 - metallic)) + ambient * specular;
+    return light;
+  }
+  light += ambient * (albedo * (1.0 - metallic) + specular);
   return light;
 }
