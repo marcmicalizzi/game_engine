@@ -1,5 +1,6 @@
 #include <domain/anim/clip.h>
 
+#include <algorithm>
 #include <cmath>
 
 namespace engine::anim {
@@ -16,13 +17,21 @@ bool fail(std::string* error, std::string message) {
 // holds its ends rather than extrapolating — every DCC tool does the same, and extrapolating a
 // quaternion past its last key is how a blend flies apart at a clip boundary.
 //
-// Linear from the front rather than a binary search: a track has a handful of keys, they are
-// walked in memory order, and the branchless compare is faster than the unpredictable one until
-// counts nothing here will see.
+// **A binary search, not a walk from the front** (A48, 2026-11-16). The walk was written for a
+// track of a handful of keys, but an exporter bakes every channel at 30 keys a second, so an
+// eight-second clip's track is 241 keys and the walk was up to 240 compares a track a sample, for
+// every actor at its nearest tier, every tick: 16.6 us a sample of a 37-joint rig's 111 tracks
+// against 3.4 us at four keys (`anim.clip.sample.keys`, docs/subsystems/anim.md). The search finds
+// the same key — the last of `times[0 .. count-2]` at or before `time`, past any run of equal
+// times as the walk went — so the fraction and the pose are the same to the bit (anim_tests.cpp
+// holds it against the walk). Short tracks keep the walk, which is cheaper than a search's
+// unpredictable branches below about eight keys.
 struct KeyPair {
   u32 key = 0;
   f32 fraction = 0.0f;
 };
+
+inline constexpr u32 k_walk_keys = 8;
 
 KeyPair locate(std::span<const f32> times, f32 time) noexcept {
   KeyPair out;
@@ -33,8 +42,14 @@ KeyPair locate(std::span<const f32> times, f32 time) noexcept {
     return out;
   }
   u32 key = 0;
-  while (key + 2 < count && times[key + 1] <= time)
-    ++key;
+  if (count <= k_walk_keys) {
+    while (key + 2 < count && times[key + 1] <= time)
+      ++key;
+  } else {
+    // The first of times[1 .. count-2] after `time`; the key is the one before it.
+    const f32* first = times.data() + 1;
+    key = static_cast<u32>(std::upper_bound(first, first + (count - 2), time) - first);
+  }
   const f32 span = times[key + 1] - times[key];
   out.key = key;
   out.fraction = span > 0.0f ? (time - times[key]) / span : 0.0f;

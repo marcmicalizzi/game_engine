@@ -8,7 +8,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <string>
+#include <vector>
 
 using namespace engine;
 using namespace engine::anim;
@@ -339,6 +341,96 @@ TEST_CASE("anim clip: each sampler mode against values worked out by hand") {
   // which is why a caller fills the pose with `rest_pose` first.
   CHECK(pose.rotation[0].w == doctest::Approx(1.0f));
   CHECK(near(pose.scale[0], Vec3::one()));
+}
+
+// A48: `locate` searches a long track instead of walking it from the front. The pose must be the
+// same to the bit, so this holds the sampler against the walk it replaced, written out here with
+// the same arithmetic the sampler does for a linear translation and a step scale: tracks of 2 to
+// 241 keys (both sides of the walk's cutover at eight), a baked one at 30 a second, one with
+// uneven gaps and runs of equal times (an exporter's duplicated key), sampled at every key time,
+// halfway between keys, and 3,000 points of a sweep that crosses both ends.
+TEST_CASE("anim clip: a long track's key is found by search, the same pose as the walk") {
+  const auto walk = [](const std::vector<f32>& times, f32 time, u32& key, f32& fraction) {
+    const u32 count = static_cast<u32>(times.size());
+    key = 0;
+    fraction = 0.0f;
+    if (count <= 1 || time <= times[0]) return;
+    if (time >= times[count - 1]) {
+      key = count - 1;
+      return;
+    }
+    while (key + 2 < count && times[key + 1] <= time)
+      ++key;
+    const f32 span = times[key + 1] - times[key];
+    fraction = span > 0.0f ? (time - times[key]) / span : 0.0f;
+  };
+  const auto bits = [](f32 v) {
+    u32 out = 0;
+    std::memcpy(&out, &v, sizeof(out));
+    return out;
+  };
+  const u32 counts[] = {2, 5, 8, 9, 31, 61, 241};
+  u32 checked = 0, mismatched = 0;
+  for (const u32 count : counts) {
+    for (u32 shape = 0; shape < 2; ++shape) {
+      std::vector<f32> times(count);
+      for (u32 k = 0; k < count; ++k) {
+        // Baked at 30 a second, or uneven gaps with every fifth key repeated.
+        times[k] = shape == 0 ? static_cast<f32>(k) / 30.0f
+                              : static_cast<f32>(k - (k % 5 == 4 ? 1 : 0)) * 0.037f +
+                                    0.004f * static_cast<f32>((k * 7) % 3);
+      }
+      for (u32 k = 1; k < count; ++k)
+        times[k] = std::max(times[k], times[k - 1]);
+      std::vector<f32> translation(count * 3), scale(count * 3);
+      for (u32 k = 0; k < count * 3; ++k) {
+        translation[k] = std::sin(0.37f * static_cast<f32>(k)) * 2.0f;
+        scale[k] = 1.0f + 0.1f * std::cos(0.21f * static_cast<f32>(k));
+      }
+      Clip clip;
+      REQUIRE(clip.add_track(0, k_channel_translation, k_interp_linear, 3,
+                             std::span<const f32>(times.data(), times.size()),
+                             std::span<const f32>(translation.data(), translation.size())));
+      REQUIRE(clip.add_track(0, k_channel_scale, k_interp_step, 3,
+                             std::span<const f32>(times.data(), times.size()),
+                             std::span<const f32>(scale.data(), scale.size())));
+      std::vector<f32> at;
+      for (u32 k = 0; k < count; ++k) {
+        at.push_back(times[k]);
+        if (k + 1 < count) at.push_back(0.5f * (times[k] + times[k + 1]));
+      }
+      for (u32 s = 0; s <= 3000; ++s)
+        at.push_back(-0.1f + (clip.duration + 0.2f) * static_cast<f32>(s) / 3000.0f);
+      Pose pose;
+      pose.resize(1);
+      for (const f32 t : at) {
+        clip.sample(t, pose, false);
+        u32 key = 0;
+        f32 fraction = 0.0f;
+        walk(times, clip.clip_time(t, false), key, fraction);
+        Vec3 want;
+        if (fraction <= 0.0f || key + 1 >= count) {
+          want = Vec3{translation[key * 3], translation[key * 3 + 1], translation[key * 3 + 2]};
+        } else {
+          const Vec3 a{translation[key * 3], translation[key * 3 + 1], translation[key * 3 + 2]};
+          const Vec3 b{translation[key * 3 + 3], translation[key * 3 + 4],
+                       translation[key * 3 + 5]};
+          want = a + (b - a) * fraction;
+        }
+        const Vec3 want_scale{scale[key * 3], scale[key * 3 + 1], scale[key * 3 + 2]};
+        const Vec3 got = pose.translation[0], got_scale = pose.scale[0];
+        ++checked;
+        if (bits(got.x) != bits(want.x) || bits(got.y) != bits(want.y) ||
+            bits(got.z) != bits(want.z) || bits(got_scale.x) != bits(want_scale.x)) {
+          if (mismatched < 4)
+            MESSAGE(count << " keys, shape " << shape << ", t " << t << ": key " << key);
+          ++mismatched;
+        }
+      }
+    }
+  }
+  MESSAGE(checked << " samples against the walk");
+  CHECK(mismatched == 0);
 }
 
 TEST_CASE("anim clip: a track that does not add up is refused") {

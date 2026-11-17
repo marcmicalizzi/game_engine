@@ -859,6 +859,8 @@ scene::FlythroughAnimation animation_summary(const AnimatedScene& scene, u64 fra
   out.skinned_max = scene.budget.skinned;
   out.fell_back_full = scene.fell_back_full_max;
   out.fell_back_skinned = scene.fell_back_skinned_max;
+  out.clips_measured = scene.clips_measured;
+  out.clips_measured_ms = scene.clips_measured_ms;
   const f64 divisor = frames > 0 ? static_cast<f64>(frames) : 1.0;
   JsonValue ms = JsonValue::object();
   ms.set("tick", scene.tick_ns / 1.0e6 / divisor);
@@ -1245,6 +1247,10 @@ bool GameActors::bind(AnimatedScene& scene, const renderer::SceneDesc& desc,
       }
     }
     const f64 ms = static_cast<f64>(time::monotonic_ns() - start) * 1.0e-6;
+    // An info line, so engine-view's stderr (warnings and up) shows it only under `--log
+    // view.anim=info`; the summary's animation block carries the same two numbers every run.
+    scene.clips_measured += measured;
+    scene.clips_measured_ms += ms;
     ENGINE_LOG_INFO(log_view_anim, "actor clips measured at load", log::field("clips", measured),
                     log::field("ms", ms));
   }

@@ -75,9 +75,11 @@ int caves_command(int argc, char** argv) {
       "usage: engine-content cave-plan <network.json> <out dir> [--name <stem>]\n"
       "                                 [--ground <valley>,<slope_x>[,<flank_m>]]\n"
       "                                 [--doline <x>,<z>,<radius>,<depth>] [--tile <m>]\n"
-      "                                 [--cells] [--build]\n"
+      "                                 [--cells] [--build] [--write]\n"
       "  writes <stem>.plan.svg, <stem>.section.svg, <stem>.holes.json (the holes its mouths\n"
-      "  ask of the terrain) and <stem>.survey.json (where things are); the ground is\n"
+      "  ask of the terrain) and <stem>.survey.json (where things are); --write (with --build)\n"
+      "  also writes every cell's container, <stem>.cell<N>[.dress].clusters, a mesh in its\n"
+      "  lattice corner's frame for engine-view --mesh to look at; the ground is\n"
       "  y = max(valley, slope_x * x - max(0, z)^2 / flank), level at 0 with no --ground\n";
   if (argc < 4) {
     std::fputs(usage, stderr);
@@ -87,11 +89,15 @@ int caves_command(int argc, char** argv) {
   std::string name;
   Hill hill;
   f64 tile_m = 32.0;
-  bool cells = false, build = false;
+  bool cells = false, build = false, write = false;
   for (int i = 4; i < argc; ++i) {
     const std::string_view flag = argv[i];
     if (flag == "--cells") {
       cells = true;
+      continue;
+    }
+    if (flag == "--write") {
+      cells = build = write = true;
       continue;
     }
     if (flag == "--build") {
@@ -240,6 +246,12 @@ int caves_command(int argc, char** argv) {
             return fail(error);
           build_ms += static_cast<f64>(time::monotonic_ns() - t1) * 1.0e-6;
           clusters += data.mesh.mesh.clusters.size();
+          if (write) {
+            const std::string path = io::join_path(
+                out_dir, name + ".cell" + std::to_string(cell) + (part == 0 ? "" : ".dress") +
+                             ".clusters");
+            if (!geometry::write_cluster_file(path, data, &error)) return fail(error);
+          }
           for (const geometry::ClusterLodDesc& d : data.mesh.lod)
             if (d.parent_error >= geometry::k_lod_terminal_error) ++roots;
         }

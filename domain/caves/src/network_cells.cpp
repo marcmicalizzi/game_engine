@@ -291,7 +291,8 @@ bool mesh_rock(const CellRecipe& rc, assets::MeshData& out, CellReport* report,
         const u32 n = at(i, j, k);
         phi[n] = static_cast<f32>(std::max(-8.0, std::min(8.0, s.phi)));
         owner[n] = s.cell;
-        info[n] = static_cast<u8>(s.cls | (s.ground ? 8u : 0u) | (s.raw < field.apron ? 16u : 0u));
+        info[n] = static_cast<u8>(s.cls | (s.ground ? 8u : 0u) | (s.raw < field.apron ? 16u : 0u) |
+                                  (s.known ? 32u : 0u));
       }
     }
   }
@@ -367,6 +368,17 @@ bool mesh_rock(const CellRecipe& rc, assets::MeshData& out, CellReport* report,
           const u32 air = air_a ? pa : pb, rock = air_a ? pb : pa;
           if (owner[air] != rc.cell) {
             ++others;
+            continue;
+          }
+          // **The edge of what the ground is known over is not a surface** (the forest's need
+          // 142, 2026-11-16). The ground cuts the field only inside the mouths' windows of
+          // columns; outside them the air over the ground is rock to the field, so where a cell's
+          // lattice reaches past a window over the ground, the air the ground made inside met
+          // that rock outside and the window's edge was drawn as a sheet from the buried ground
+          // up to the cell's bounds, standing in the open air. A crossing whose air is the
+          // ground's and whose rock is past the window is that edge: nothing.
+          if ((info[air] & 8u) != 0 && (info[rock] & 32u) == 0) {
+            ++grounds;
             continue;
           }
           u8 cls = static_cast<u8>(info[rock] & 7u);
