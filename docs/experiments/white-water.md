@@ -358,7 +358,7 @@ covers every texel of the pattern. The top tier now (`water_uprush_foam_top`; th
   `backwash-foam-spots`, `foam-spots-wet-sand`);
 - the bores' foam on the water: the bore's own white for a fifth of a period behind its crest (a tumbling band), then the lace capped the same way; the roller's front ragged along the crest.
 
-Every height and period it reads comes through **`water_white_sea`** (water.slang), which reads the
+Every height and period the beach's white reads, at both tiers, comes through **`water_white_sea`** (water.slang; `water_white_sea_of` for the bores' foam, which has the body's surface record in hand), which reads the
 shore record (`WaterShore::height_m`, `period_s`) that `gpu_scene.cpp`'s `water_swash_numbers`
 fills from the body's wind and fetch. Not built: the breaker's type by the surf similarity as a
 picture of its own (today's `water_foam_strength` already turns a surging wave's foam off), the
