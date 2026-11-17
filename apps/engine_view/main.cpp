@@ -3456,6 +3456,16 @@ int run_offscreen(Options& options, Interactive& interactive) {
       const i64 started = time::monotonic_ns();
       bool ok = true;
       for (u32 f = 0; f < frames; ++f) {
+        // `--memory-report`'s first snapshot, between frames and out of their clocks (T168).
+        if (view::memory_report().on() && !records.empty()) {
+          const i64 paused = view::memory_report().take("first_frame", &device, &scene);
+          previous_start += previous_start != 0 ? paused : 0;
+          PendingFrame& before = pending[(submissions + k_pending_frames - 1) % k_pending_frames];
+          if (paused != 0 && submissions > 0 && before.submission == submissions - 1) {
+            before.spans.start += paused;
+            before.spans.end += before.spans.end != 0 ? paused : 0;
+          }
+        }
         const i64 start = time::monotonic_ns();
         // The last frame's interval ends here (FrameRecord's `sections`, R130).
         if (submissions > 0) {
@@ -3490,8 +3500,6 @@ int run_offscreen(Options& options, Interactive& interactive) {
         const i64 begun = time::monotonic_ns();
         take_folded(view_renderer, folded, pending, records);
         startup.frame(readiness());
-        if (view::memory_report().on() && !records.empty())
-          view::memory_report().take("first_frame", &device, &scene);
         const i64 ready = time::monotonic_ns();
         const u64 before_tick = session.tick().value;
         const u64 to = before_tick + ticks_per_frame < end ? before_tick + ticks_per_frame : end;
@@ -6553,6 +6561,7 @@ int run_view(int argc, char** argv) {
     }
     i64 last_frame_start_ns = 0;
     u64 ceiling_waits = 0;
+    bool memory_first_due = false;  // --memory-report's first snapshot, owed between two frames
 
     bool running = true;
     bool resize_pending = false;
@@ -6603,6 +6612,21 @@ int run_view(int argc, char** argv) {
       // before it. Yielding rather than sleeping, because the period is a few milliseconds and the
       // system's sleep is coarser than that. Ticks are the session's own and never the frames',
       // so a recording replays to the same trajectory with the ceiling and without.
+      // **`--memory-report`'s first snapshot, outside the timed frames** (T168; memory_report.h):
+      // every clock that measures a frame or runs the world moves on by what the walk took.
+      if (memory_first_due) {
+        memory_first_due = false;
+        const i64 paused = view::memory_report().take("first_frame", &device, &scene);
+        last_frame_start_ns += last_frame_start_ns != 0 ? paused : 0;
+        previous_frame_ns += previous_frame_ns != 0 ? paused : 0;
+        path_started_ns += path_started_ns != 0 ? paused : 0;
+        clock_ns += paused;
+        PendingFrame& before = pending[(submissions + k_pending_frames - 1) % k_pending_frames];
+        if (submissions > 0 && before.submission == submissions - 1) {
+          before.spans.start += paused;
+          before.spans.end += before.spans.end != 0 ? paused : 0;
+        }
+      }
       if (ceiling_period_ns > 0 && !pace_display && last_frame_start_ns != 0) {
         const i64 due = last_frame_start_ns + ceiling_period_ns;
         if (time::monotonic_ns() < due) {
@@ -7029,8 +7053,7 @@ int run_view(int argc, char** argv) {
         r.ground_settled = !ground_now.has_value() ||
                            (ground_now->chunks_built == 0 && ground_now->layout_lag_m == 0.0);
         startup.frame(r);
-        if (r.frame_done && view::memory_report().on())
-          view::memory_report().take("first_frame", &device, &scene);
+        memory_first_due = r.frame_done && view::memory_report().on();  // taken between frames
         if (load_controllable_ns == 0 && startup.reached("player_controllable"))
           load_controllable_ns = time::monotonic_ns();
         if (startup.reached(view::k_startup_milestones[load_ready_rung])) {

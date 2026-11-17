@@ -58,6 +58,7 @@
 #include <core/containers/flat_map.h>
 #include <core/containers/vector.h>
 #include <core/math/math.h>
+#include <domain/geometry/cluster_file.h>
 #include <domain/physics/physics.h>
 #include <domain/scene_gen/scene_gen.h>
 #include <systems/scene_collision/proxy_source.h>
@@ -111,6 +112,16 @@ u32 max_refreshes_tunable() noexcept;
 // How far past the collision ring a tile's ground is built ahead on the job system, in tiles: 1
 // (docs: "The ground built ahead of the ring"). 0 builds nothing ahead.
 f32 prefetch_tunable() noexcept;
+// **Built ahead of a running walker** (T166; docs: "Ahead of a running walker"): the workers a host
+// gives the builds ahead (4), how many seconds of the walker's own velocity the builds look ahead
+// along (4 s, at most `k_lead_max_tiles`), and the bytes of tile-handed meshes' copies kept between
+// builds (64 MiB; 0 reads a tile's meshes for every build, as before T166). None changes a body.
+u32 prefetch_workers_tunable() noexcept;
+f32 lead_tunable() noexcept;
+u64 mesh_copies_tunable() noexcept;
+// The farthest the lead reaches along the walker's velocity, in tiles: past it the builds of a
+// fast flight are let go before any worker reaches them (docs: "Ahead of a running walker").
+inline constexpr f32 k_lead_max_tiles = 4.0f;
 
 // How far the ground under the walker may stand off the drawn ground under a time-lapse before its
 // tile is rebuilt, metres (docs: "The ground moves"). A millimetre: the step a standing walker's
@@ -131,6 +142,23 @@ struct Config {
   // activates them; 0 (or no job system) builds nothing ahead. A host sets it to its ring's radius
   // plus `prefetch_tunable()`. Changes no body: the heights are the same call's either way.
   f32 prefetch_radius_tiles = 0.0f;
+  // **Ahead of a running walker** (T166; docs): the ring's own radius in tiles, which says when the
+  // ring will want a tile (0: `prefetch_radius_tiles` less one); the seconds of the walker's
+  // velocity (`prefetch`'s) the builds also look along; and how many builds are handed to the job
+  // system at once — the most urgent first, by when the ring will want each — beyond the tiles the
+  // ring wants now, which are always handed over (0: every build as it is found, the rule before
+  // T166, in tile order). A host sets the slots to a small multiple of its workers. None changes a
+  // body: they say only when a build is made and on which thread.
+  f32 ring_radius_tiles = 0.0f;
+  f32 lead_s = 0.0f;
+  u32 prefetch_slots = 0;
+  // **The copies of tile-handed meshes kept between builds** (T166; docs): a build ahead reads a
+  // tile's meshes through `renderer::load_placement_mesh` and keeps of each only what a proxy is
+  // cut from (proxy_source.h), at a floor `k_copy_scale_headroom` finer than the scale it was
+  // asked at, so the next tile's placement of the same recipe at a scale up to that much larger is
+  // cut from the copy, word for word the cut a fresh read gives. At most this many bytes, the least
+  // recently used let go first; 0 keeps none.
+  u64 mesh_copy_bytes = 0;
   // **Keep what is held for a debug draw** (collision_draw.h; docs: "Seeing the collision"): every
   // proxy's triangles (with each triangle's flora part) and every held tile's pieces stay on the
   // CPU beside the backend's shapes, for `held_tile` and `held_piece`. Off, nothing is kept and
@@ -224,6 +252,12 @@ struct Stats {
   i64 max_prefetch_wait_ns = 0;
   u64 prefetch_inline = 0;
   u64 prefetch_dropped = 0;
+  // T166: `prefetch_submitted` counts the builds handed to the job system (with slots, a build
+  // waits its turn first, and one the tick takes before its turn was never handed over); the
+  // tile-handed meshes cut from a kept copy, against those read for want of one.
+  u64 mesh_copy_hits = 0;
+  u64 mesh_copy_reads = 0;
+  u64 mesh_copy_bytes = 0;  // held now
   // What the worker spent on the builds ahead (docs: "The placements built ahead"), off every
   // tick: the ground's heights, and the placements — generators' tiles, proxies cut and built, the
   // compound built. An activation that took a finished build spends none of it.
@@ -382,7 +416,14 @@ class SceneCollision {
   // ground is still and read through a tile source, or there is none; under a time-lapse nothing
   // is built ahead. Builds left behind by the walker are let go, and every shape a build made that
   // no tile took is released with it. Call before the ring's update, once a tick.
-  void prefetch(WorldPos at);
+  //
+  // **`velocity`** (metres a second, T166; docs: "Ahead of a running walker"): with
+  // `Config::lead_s`, the tiles round the point that far along it (at most `k_lead_max_tiles`) are
+  // built ahead too, and with `Config::prefetch_slots` the builds are handed to the job system in
+  // the order the ring will want them — the time until the walker, going on as it goes, comes
+  // within the ring's radius of each — so the tile a runner reaches next is never queued behind one
+  // beside it. Changes no body.
+  void prefetch(WorldPos at, Vec3 velocity = Vec3{});
 
   // The collision ground's height under `at` (its y is not read), from the heights the tile holding
   // it was built with, interpolated across the cell as the backend's heightfield triangulates it.
@@ -547,8 +588,41 @@ class SceneCollision {
   };
   // The supports a proxy carries, from its source mesh at its scale, and its bounds from the
   // triangles in `scratch` (`proxy_for`, `tile_proxy_for`).
-  static void fill_supports(const renderer::SourceMesh* source, Vec3 scale,
+  // What `fill_supports` reads of a source mesh: its perches, its species, its structural table
+  // and its motion parts — a view, so a kept copy (`MeshCopy`) holds those and not the mesh.
+  struct SupportSource {
+    std::span<const geometry::ClusterFilePerch> perches;
+    std::span<const geometry::ClusterFileStructuralPart> structural_parts;
+    std::span<const geometry::ClusterFileMotionPart> motion_parts;
+    const std::string* species = nullptr;
+    bool has_motion = false;
+  };
+  static SupportSource support_source(const renderer::SourceMesh& source) noexcept;
+  static void fill_supports(const SupportSource* source, Vec3 scale,
                             const PlacementScratch& scratch, Proxy& proxy);
+  // **A tile-handed mesh's kept copy** (T166; `Config::mesh_copy_bytes`): what its proxies are cut
+  // from (`copy`, mesh `index`, cut exactly at every threshold at or above `floor`) and what its
+  // supports are read from, by the mesh's identity. `users` counts the cuts reading it now, under
+  // `copies_mutex_`: a copy is let go only when none is.
+  struct MeshCopy {
+    ProxySource copy;
+    u32 index = 0;
+    f32 floor = 0.0f;
+    bool ok = false;
+    Vector<geometry::ClusterFilePerch> perches;
+    Vector<geometry::ClusterFileStructuralPart> structural_parts;
+    Vector<geometry::ClusterFileMotionPart> motion_parts;
+    std::string species;
+    bool has_motion = false;
+    u64 bytes = 0;
+    u64 used = 0;
+    u32 users = 0;
+  };
+  // The copy of `mesh` that cuts `threshold` exactly, read and kept when there is none; null when
+  // copies are off. `release_copy` gives it back. Thread-safe.
+  MeshCopy* acquire_copy(const scene_gen::PlacementMesh& mesh, u64 identity, f32 threshold,
+                         PlacementScratch& scratch);
+  void release_copy(MeshCopy* copy) noexcept;
   // One piece's supports into the answer (`supports_near`).
   void piece_supports(const Tile& tile, u32 piece, WorldPos at, f32 radius, f32 min_size,
                       std::span<Support> out, SupportAnswer& answer) const noexcept;
@@ -663,6 +737,19 @@ class SceneCollision {
   Vector<std::unique_ptr<Build>> retired_;
   WorldPos prefetched_at_{};
   bool prefetched_once_ = false;
+  // The builds not yet handed to the job system, handed over most urgent first up to the slots
+  // (`Config::prefetch_slots`; T166): every tick, from where the walker is and how it moves.
+  void submit_builds(WorldPos at, Vec3 velocity);
+  // The kept copies of tile-handed meshes, by identity (T166), and the order they were last used.
+  FlatMap<u64, std::unique_ptr<MeshCopy>> mesh_copies_;
+  Vector<std::unique_ptr<MeshCopy>> copies_orphans_;  // replaced while a cut still read them
+  std::mutex copies_mutex_;
+  u64 copies_clock_ = 0;
+  // Under the lock; the tick folds them into `stats_` (`submit_builds`), since a worker never
+  // touches `Stats`.
+  u64 copies_hits_ = 0;
+  u64 copies_reads_ = 0;
+  u64 copies_bytes_ = 0;
 };
 
 }  // namespace engine::scene_collision

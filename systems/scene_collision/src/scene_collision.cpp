@@ -54,6 +54,16 @@ tunables::Int collision_max_refreshes{"walk.collision.max_refreshes", 2, 1, 1 <<
 tunables::Float collision_prefetch{"walk.collision.prefetch_tiles", 1.0, 0.0, 8.0,
                                    "How far past the collision ring, in tiles, a tile's ground "
                                    "is built ahead on the job system; 0 builds nothing ahead"};
+tunables::Int collision_workers{"walk.collision.prefetch_workers", 4, 1, 32,
+                                "Workers the collision's builds ahead run on (T166): a drop's "
+                                "ring is built on them at once, not one tile after another"};
+tunables::Float collision_lead{"walk.collision.lead_s", 4.0, 0.0, 30.0,
+                               "Seconds of the walker's velocity the collision's builds ahead look "
+                               "along, at most four tiles (T166); 0 builds round the walker alone"};
+tunables::Int collision_mesh_copies{
+    "walk.collision.mesh_copies_mib", 64, 0, 4096,
+    "MiB of tile-handed meshes' proxy copies kept between the "
+    "collision's builds (T166); 0 reads a tile's meshes every build"};
 
 i64 floor_div(i64 a, i64 b) noexcept {
   i64 q = a / b;
@@ -148,6 +158,11 @@ f32 mesh_error_tunable() noexcept { return static_cast<f32>(collision_mesh_error
 f32 ground_error_tunable() noexcept { return static_cast<f32>(collision_ground_error.get()); }
 u32 max_refreshes_tunable() noexcept { return static_cast<u32>(collision_max_refreshes.get()); }
 f32 prefetch_tunable() noexcept { return static_cast<f32>(collision_prefetch.get()); }
+u32 prefetch_workers_tunable() noexcept { return static_cast<u32>(collision_workers.get()); }
+f32 lead_tunable() noexcept { return static_cast<f32>(collision_lead.get()); }
+u64 mesh_copies_tunable() noexcept {
+  return static_cast<u64>(collision_mesh_copies.get()) * 1024u * 1024u;
+}
 
 Config config_from_tunables(f32 tile_size) noexcept {
   Config c;
@@ -210,6 +225,11 @@ struct SceneCollision::Build {
   // Where its time went, on whichever thread ran it.
   i64 ground_ns = 0;
   i64 placement_ns = 0;
+  // Handed to the job system yet (T166: with slots a build waits its turn; `ran` counts a job only
+  // once it has one), and when the ring will want it, seconds (`submit_builds`).
+  bool submitted = false;
+  f64 need_s = 0.0;
+  f64 distance = 0.0;
   static constexpr u32 k_queued = 0, k_running = 1, k_done = 2;
   std::atomic<u32> state{k_queued};
   jobs::Counter ran;
@@ -220,6 +240,9 @@ struct SceneCollision::Build {
   }
 
   void compute() noexcept {
+    // The startup trace's word for a tile built, on whichever thread built it (T166): the tick's
+    // own are inside its "collision tile", a worker's stand alone.
+    profiling::TraceStage stage("collision build");
     const i64 start = time::monotonic_ns();
     if (ground) {
       heights_ok = source.heights(time_s, spacing_mm, static_cast<i32>(i0), static_cast<i32>(j0), n,
@@ -450,6 +473,13 @@ void SceneCollision::commit(void* context) {
 
 void SceneCollision::note_bodies() noexcept {
   stats_.tiles = tiles_.size();
+  if (config_.mesh_copy_bytes > 0) {
+    // The kept copies' counts (T166), which a worker keeps under the copies' lock.
+    std::lock_guard<std::mutex> lock(copies_mutex_);
+    stats_.mesh_copy_hits = copies_hits_;
+    stats_.mesh_copy_reads = copies_reads_;
+    stats_.mesh_copy_bytes = copies_bytes_;
+  }
   u32 bodies = 0;
   u32 pieces = 0;
   u64 samples = 0;
@@ -893,7 +923,21 @@ u64 support_placement(u32 instance, u32 entry, u32 id, i32 tile_x, i32 tile_z, u
 // scale, as its triangles are: the bounds of those triangles, and the perches the mesh declares,
 // else the parts of its structural table. A limb's radius is scaled by the smallest of the scale's
 // axes, the size a foot can trust.
-void SceneCollision::fill_supports(const renderer::SourceMesh* source, Vec3 scale,
+SceneCollision::SupportSource SceneCollision::support_source(
+    const renderer::SourceMesh& source) noexcept {
+  SupportSource out;
+  out.perches =
+      std::span<const geometry::ClusterFilePerch>(source.perches.data(), source.perches.size());
+  out.structural_parts = std::span<const geometry::ClusterFileStructuralPart>(
+      source.structural_parts.data(), source.structural_parts.size());
+  out.motion_parts = std::span<const geometry::ClusterFileMotionPart>(source.motion_parts.data(),
+                                                                      source.motion_parts.size());
+  out.species = &source.species;
+  out.has_motion = source.has_motion();
+  return out;
+}
+
+void SceneCollision::fill_supports(const SupportSource* source, Vec3 scale,
                                    const PlacementScratch& scratch, Proxy& proxy) {
   proxy.supports.clear();
   proxy.bare_tree = false;
@@ -931,11 +975,12 @@ void SceneCollision::fill_supports(const renderer::SourceMesh* source, Vec3 scal
     }
     return;
   }
-  const geometry::FloraSpeciesInfo* species = geometry::flora_species_info(source->species);
+  if (source->species == nullptr) return;
+  const geometry::FloraSpeciesInfo* species = geometry::flora_species_info(*source->species);
   if (species == nullptr || species->motion != geometry::FloraMotionKind::parts) return;
   // A tree with neither (an imported tree, a solver that writes no table): its top alone, and a
   // line the first time a module asks near it (`piece_supports`).
-  proxy.bare_tree = source->structural_parts.empty() && source->has_motion();
+  proxy.bare_tree = source->structural_parts.empty() && source->has_motion;
   // Every part the table gives a radius, load-bearing or not: a bird perches on a branch no walker
   // could stand on. The size a caller asks for (`min_size`) is what leaves the twigs out.
   for (const geometry::ClusterFileStructuralPart& record : source->structural_parts) {
@@ -1281,19 +1326,24 @@ u32 SceneCollision::cut_proxy(const ProxySource& source, u32 mesh, Vec3 scale,
 // threshold in metres rather than pixels) — the coarsest level that stays that close to the
 // surface — welded by source vertex so the backend sees shared edges, scaled into the instance's
 // size. One shape per (mesh, scale), shared by every instance. **Thread-safe**: a build ahead on a
-// worker and the tick may both ask, so the cache is looked in and a proxy built under its lock —
-// one proxy is built at a time, whoever asks, and every asker of a key gets the one shape. The
-// scene's DAG is read only, and the cut is made in the asker's scratch.
+// worker and the tick may both ask, so the cache is looked in under its lock and every asker of a
+// key gets the one shape the cache keeps. **The cut and the shape are built outside the lock**
+// (T166), as a tile-handed mesh's are: with several workers building a drop's ring at once, a
+// forest's trees — each at its own scale, so each its own proxy — were built one at a time behind
+// it. Two threads may then build one key at once; the second finds the first's and drops its own,
+// and nothing in a shape depends on the thread that built it. The scene's DAG is read only, and
+// the cut is made in the asker's scratch.
 const SceneCollision::Proxy* SceneCollision::proxy_for(u32 mesh, Vec3 scale,
                                                        PlacementScratch& scratch) {
   const u64 key = proxy_key(mesh, scale);
-  std::lock_guard<std::mutex> lock(proxies_mutex_);
-  if (const std::unique_ptr<Proxy>* proxy = proxies_.find_value(key))
-    return (*proxy)->shape ? proxy->get() : nullptr;
+  {
+    std::lock_guard<std::mutex> lock(proxies_mutex_);
+    if (const std::unique_ptr<Proxy>* proxy = proxies_.find_value(key))
+      return (*proxy)->shape ? proxy->get() : nullptr;
+  }
   const i64 start = time::monotonic_ns();
   bool coarsened = false;
-  proxy_stats_.flora_left_out += cut_proxy(*proxy_source_, mesh, scale, scratch, coarsened);
-  proxy_stats_.coarsened += coarsened ? 1u : 0u;
+  const u32 left_out = cut_proxy(*proxy_source_, mesh, scale, scratch, coarsened);
   const Vector<Vec3>& vertices = scratch.vertices;
   const Vector<u32>& indices = scratch.indices;
   auto proxy = std::make_unique<Proxy>();
@@ -1302,21 +1352,28 @@ const SceneCollision::Proxy* SceneCollision::proxy_for(u32 mesh, Vec3 scale,
     proxy->indices = indices;
     proxy->parts = scratch.parts;
   }
-  fill_supports(mesh < scene_->sources.size() ? &scene_->sources[mesh] : nullptr, scale, scratch,
-                *proxy);
+  SupportSource supports;
+  if (mesh < scene_->sources.size()) supports = support_source(scene_->sources[mesh]);
+  fill_supports(mesh < scene_->sources.size() ? &supports : nullptr, scale, scratch, *proxy);
+  u64 bytes = 0;
   if (!indices.empty() &&
       physics_->build_mesh(std::span<const Vec3>(vertices.data(), vertices.size()),
                            std::span<const u32>(indices.data(), indices.size()),
                            proxy->shape) == physics::Status::Ok) {
     proxy->triangles = indices.size() / 3;
-    proxy_stats_.triangles += proxy->triangles;
-    u64 bytes = 0;
     u32 triangles = 0;
-    if (physics_->built_memory(proxy->shape, false, bytes, triangles)) proxy_stats_.bytes += bytes;
+    if (!physics_->built_memory(proxy->shape, false, bytes, triangles)) bytes = 0;
   }
+  std::lock_guard<std::mutex> lock(proxies_mutex_);
+  proxy_stats_.ns += time::monotonic_ns() - start;
+  if (const std::unique_ptr<Proxy>* found = proxies_.find_value(key))
+    return (*found)->shape ? found->get() : nullptr;  // another thread's: this one goes
+  proxy_stats_.flora_left_out += left_out;
+  proxy_stats_.coarsened += coarsened ? 1u : 0u;
+  proxy_stats_.triangles += proxy->triangles;
+  proxy_stats_.bytes += bytes;
   const Proxy* out = proxy->shape ? proxy.get() : nullptr;
   proxies_.try_emplace(key, std::move(proxy));
-  proxy_stats_.ns += time::monotonic_ns() - start;
   return out;
 }
 
@@ -1350,6 +1407,53 @@ const SceneCollision::Proxy* SceneCollision::tile_proxy_for(const scene_gen::Pla
       return take(**found);
   }
   const i64 start = time::monotonic_ns();
+  // **From a kept copy** (T166; docs: "Ahead of a running walker"): the cut a fresh read gives,
+  // word for word, without reading the mesh's container again for every tile that places it.
+  if (MeshCopy* copy =
+          acquire_copy(mesh, identity, proxy_threshold(config_.mesh_error_m, scale), scratch)) {
+    auto made = std::make_unique<TileProxy>();
+    u32 left_out = 0;
+    if (copy->ok) {
+      bool coarsened = false;
+      left_out = cut_proxy(copy->copy, copy->index, scale, scratch, coarsened);
+      if (config_.keep_shapes) {
+        made->proxy.vertices = scratch.vertices;
+        made->proxy.indices = scratch.indices;
+        made->proxy.parts = scratch.parts;
+      }
+      SupportSource supports;
+      supports.perches =
+          std::span<const geometry::ClusterFilePerch>(copy->perches.data(), copy->perches.size());
+      supports.structural_parts = std::span<const geometry::ClusterFileStructuralPart>(
+          copy->structural_parts.data(), copy->structural_parts.size());
+      supports.motion_parts = std::span<const geometry::ClusterFileMotionPart>(
+          copy->motion_parts.data(), copy->motion_parts.size());
+      supports.species = &copy->species;
+      supports.has_motion = copy->has_motion;
+      fill_supports(&supports, scale, scratch, made->proxy);
+    }
+    const bool cut = copy->ok;
+    release_copy(copy);
+    if (cut && !scratch.indices.empty() &&
+        physics_->build_mesh(
+            std::span<const Vec3>(scratch.vertices.data(), scratch.vertices.size()),
+            std::span<const u32>(scratch.indices.data(), scratch.indices.size()),
+            made->proxy.shape) == physics::Status::Ok) {
+      made->proxy.triangles = scratch.indices.size() / 3;
+      u32 triangles = 0;
+      (void)physics_->built_memory(made->proxy.shape, false, made->bytes, triangles);
+    }
+    std::lock_guard<std::mutex> lock(proxies_mutex_);
+    proxy_stats_.ns += time::monotonic_ns() - start;
+    if (const std::unique_ptr<TileProxy>* found = tile_proxies_.find_value(key))
+      return take(**found);  // another thread's, made meanwhile: this one goes with `made`
+    proxy_stats_.triangles += made->proxy.triangles;
+    proxy_stats_.bytes += made->bytes;
+    proxy_stats_.flora_left_out += left_out;
+    TileProxy& kept = *made;
+    tile_proxies_.try_emplace(key, std::move(made));
+    return take(kept);
+  }
   if (scratch.tile_mesh == nullptr || scratch.tile_mesh_identity != identity) {
     if (scratch.tile_mesh == nullptr)
       scratch.tile_mesh = std::make_unique<renderer::PlacementMeshData>();
@@ -1378,7 +1482,8 @@ const SceneCollision::Proxy* SceneCollision::tile_proxy_for(const scene_gen::Pla
       made->proxy.indices = scratch.indices;
       made->proxy.parts = scratch.parts;
     }
-    fill_supports(&data.source, scale, scratch, made->proxy);
+    const SupportSource supports = support_source(data.source);
+    fill_supports(&supports, scale, scratch, made->proxy);
     if (!scratch.indices.empty() &&
         physics_->build_mesh(
             std::span<const Vec3>(scratch.vertices.data(), scratch.vertices.size()),
@@ -1413,6 +1518,101 @@ void SceneCollision::release_tile_proxies(Vector<u64>& held) noexcept {
     tile_proxies_.erase(key);
   }
   held.clear();
+}
+
+// **A tile-handed mesh's kept copy** (T166; docs: "Ahead of a running walker"). Until T166 every
+// build read each tile-handed mesh's whole container again (its scratch kept the last one alone):
+// on the forest's staging about 100 MB and 34 to 135 ms of a tile's 170 to 500 ms. A copy keeps
+// what a proxy is cut from (proxy_source.h) at a floor `k_copy_scale_headroom` finer than the scale
+// first asked, so a placement up to that much larger is cut from it exactly; a larger one reads the
+// mesh again and replaces the copy. The read is outside the lock, as `tile_proxy_for`'s is: two
+// threads may read one mesh at once, and the second's copy replaces the first's (or is used once).
+SceneCollision::MeshCopy* SceneCollision::acquire_copy(const scene_gen::PlacementMesh& mesh,
+                                                       u64 identity, f32 threshold,
+                                                       PlacementScratch& scratch) {
+  if (config_.mesh_copy_bytes == 0) return nullptr;
+  {
+    std::lock_guard<std::mutex> lock(copies_mutex_);
+    if (const std::unique_ptr<MeshCopy>* found = mesh_copies_.find_value(identity)) {
+      MeshCopy& copy = **found;
+      if (!copy.ok || threshold >= copy.floor) {
+        ++copy.users;
+        copy.used = ++copies_clock_;
+        ++copies_hits_;
+        return &copy;
+      }
+    }
+  }
+  auto made = std::make_unique<MeshCopy>();
+  if (scratch.tile_mesh == nullptr)
+    scratch.tile_mesh = std::make_unique<renderer::PlacementMeshData>();
+  std::string why;
+  scratch.tile_mesh_identity = identity;
+  scratch.tile_mesh_ok =
+      renderer::load_placement_mesh(mesh, scene_->mesh_options, *scratch.tile_mesh, why);
+  if (!scratch.tile_mesh_ok) {
+    ENGINE_LOG_WARN(log_collision, "a tile's mesh has no collision: it was not built",
+                    log::field("mesh", mesh.path), log::field("error", why));
+  } else {
+    const renderer::PlacementMeshData& data = *scratch.tile_mesh;
+    made->ok = true;
+    made->floor = threshold / k_copy_scale_headroom;
+    made->index = made->copy.add(data.lod, data.part,
+                                 data.source.has_motion() ? &data.source : nullptr, made->floor);
+    for (const geometry::ClusterFilePerch& p : data.source.perches)
+      made->perches.push_back(p);
+    for (const geometry::ClusterFileStructuralPart& p : data.source.structural_parts)
+      made->structural_parts.push_back(p);
+    for (const geometry::ClusterFileMotionPart& p : data.source.motion_parts)
+      made->motion_parts.push_back(p);
+    made->species = data.source.species;
+    made->has_motion = data.source.has_motion();
+  }
+  made->bytes = sizeof(MeshCopy) + made->copy.bytes() +
+                made->perches.capacity() * sizeof(geometry::ClusterFilePerch) +
+                made->structural_parts.capacity() * sizeof(geometry::ClusterFileStructuralPart) +
+                made->motion_parts.capacity() * sizeof(geometry::ClusterFileMotionPart) +
+                made->species.capacity();
+  std::lock_guard<std::mutex> lock(copies_mutex_);
+  ++copies_reads_;
+  made->users = 1;
+  made->used = ++copies_clock_;
+  MeshCopy* out = made.get();
+  if (std::unique_ptr<MeshCopy>* found = mesh_copies_.find_value(identity)) {
+    copies_bytes_ -= (*found)->bytes;
+    // One in use now goes when its last cut gives it back (`release_copy`).
+    if ((*found)->users != 0) copies_orphans_.push_back(std::move(*found));
+    *found = std::move(made);
+  } else {
+    mesh_copies_.try_emplace(identity, std::move(made));
+  }
+  copies_bytes_ += out->bytes;
+  // Over the budget: the least recently used copies nobody is reading go, oldest first.
+  while (copies_bytes_ > config_.mesh_copy_bytes) {
+    u32 oldest = mesh_copies_.size();
+    for (u32 i = 0; i < mesh_copies_.size(); ++i) {
+      const MeshCopy& c = *mesh_copies_.value_at(i);
+      if (c.users == 0 &&
+          (oldest == mesh_copies_.size() || c.used < mesh_copies_.value_at(oldest)->used))
+        oldest = i;
+    }
+    if (oldest == mesh_copies_.size()) break;
+    copies_bytes_ -= mesh_copies_.value_at(oldest)->bytes;
+    const u64 gone = mesh_copies_.key_at(oldest);
+    mesh_copies_.erase(gone);
+  }
+  return out;
+}
+
+void SceneCollision::release_copy(MeshCopy* copy) noexcept {
+  std::lock_guard<std::mutex> lock(copies_mutex_);
+  if (--copy->users != 0) return;
+  for (u32 k = 0; k < copies_orphans_.size(); ++k) {
+    if (copies_orphans_[k].get() != copy) continue;
+    copies_orphans_[k] = std::move(copies_orphans_[copies_orphans_.size() - 1]);
+    copies_orphans_.pop_back();
+    return;
+  }
 }
 
 bool SceneCollision::add_tile_piece(const scene_gen::PlacementMesh& mesh, const Mat4& linear,
@@ -1730,7 +1930,7 @@ std::unique_ptr<SceneCollision::Build> SceneCollision::take_build(world::TileCoo
   return nullptr;
 }
 
-void SceneCollision::prefetch(WorldPos at) {
+void SceneCollision::prefetch(WorldPos at, Vec3 velocity) {
   // Builds let go whose jobs have returned are freed, and with them any shape they built.
   for (u32 k = 0; k < retired_.size();) {
     if (retired_[k]->ran.done()) {
@@ -1741,6 +1941,13 @@ void SceneCollision::prefetch(WorldPos at) {
     }
   }
   if (!can_prefetch()) return;
+  // Every tick, the waiting builds' turn (T166): the walker has moved, and a worker may be free.
+  struct Submit {
+    SceneCollision* self;
+    WorldPos at;
+    Vec3 velocity;
+    ~Submit() { self->submit_builds(at, velocity); }
+  } submit{this, at, velocity};
   // Once a metre walked, not every tick: a tile's centre is 16 m from its edge.
   if (prefetched_once_) {
     const DVec3 moved = at - prefetched_at_;
@@ -1752,17 +1959,44 @@ void SceneCollision::prefetch(WorldPos at) {
   const f64 r = static_cast<f64>(config_.prefetch_radius_tiles);
   const f64 fx = at.x / tile_m;
   const f64 fz = at.z / tile_m;
-  const i64 cx = static_cast<i64>(std::floor(fx));
-  const i64 cz = static_cast<i64>(std::floor(fz));
+  // **The lead** (T166; docs: "Ahead of a running walker"): the point `lead_s` of the walker's own
+  // velocity on, at most `k_lead_max_tiles` away, whose tiles are built ahead too — so a runner's
+  // next tiles are on their way before the radius round its feet reaches them.
+  f64 lx = fx;
+  f64 lz = fz;
+  if (config_.lead_s > 0.0f) {
+    const f64 vx = static_cast<f64>(velocity.x) / tile_m;
+    const f64 vz = static_cast<f64>(velocity.z) / tile_m;
+    const f64 speed = std::sqrt(vx * vx + vz * vz);
+    if (speed > 0.0) {
+      const f64 reach_tiles =
+          std::min(speed * static_cast<f64>(config_.lead_s), static_cast<f64>(k_lead_max_tiles));
+      lx = fx + vx / speed * reach_tiles;
+      lz = fz + vz / speed * reach_tiles;
+    }
+  }
+  const i64 cx = static_cast<i64>(std::floor(std::min(fx, lx)));
+  const i64 cz = static_cast<i64>(std::floor(std::min(fz, lz)));
+  const i64 cx1 = static_cast<i64>(std::floor(std::max(fx, lx)));
+  const i64 cz1 = static_cast<i64>(std::floor(std::max(fz, lz)));
   const i64 reach = static_cast<i64>(std::ceil(r)) + 1;
-  auto within = [&](i64 x, i64 z, f64 radius) {
-    const f64 dx = static_cast<f64>(x) + 0.5 - fx;
-    const f64 dz = static_cast<f64>(z) + 0.5 - fz;
+  auto within_of = [](i64 x, i64 z, f64 px, f64 pz, f64 radius) {
+    const f64 dx = static_cast<f64>(x) + 0.5 - px;
+    const f64 dz = static_cast<f64>(z) + 0.5 - pz;
     return dx * dx + dz * dz <= radius * radius;
   };
-  // Builds the walker has left behind — past the radius and a tile — are let go.
+  auto within = [&](i64 x, i64 z, f64 radius) {
+    return within_of(x, z, fx, fz, radius) || within_of(x, z, lx, lz, radius);
+  };
+  // Builds the walker has left behind — past the radius and a tile of both its place and its
+  // lead — are let go; one a worker has not started never will be (T166: a fast flight's builds
+  // were each built when their turn came, long after the flight had left them, in front of the
+  // ones it wanted).
   for (u32 k = 0; k < builds_.size();) {
     if (!within(builds_[k]->coord.x, builds_[k]->coord.z, r + 1.0)) {
+      u32 queued = Build::k_queued;
+      (void)builds_[k]->state.compare_exchange_strong(queued, Build::k_done,
+                                                      std::memory_order_acq_rel);
       std::unique_ptr<Build> gone = std::move(builds_[k]);
       builds_[k] = std::move(builds_[builds_.size() - 1]);
       builds_.pop_back();
@@ -1776,8 +2010,8 @@ void SceneCollision::prefetch(WorldPos at) {
   // placements wherever a tile can hold some.
   const bool ground = ground_ != nullptr;
   const bool placements = has_placements();
-  for (i64 z = cz - reach; z <= cz + reach; ++z) {
-    for (i64 x = cx - reach; x <= cx + reach; ++x) {
+  for (i64 z = cz - reach; z <= cz1 + reach; ++z) {
+    for (i64 x = cx - reach; x <= cx1 + reach; ++x) {
       if (!within(x, z, r) || !fits_i32(x) || !fits_i32(z)) continue;
       const world::TileCoord coord{static_cast<i32>(x), static_cast<i32>(z)};
       if (tiles_.find_value(world::tile_key(coord)) != nullptr) continue;
@@ -1797,12 +2031,85 @@ void SceneCollision::prefetch(WorldPos at) {
         build->heights.resize(build->n * build->n);
       }
       build->placements = placements;
-      build->ran.add(1);
-      Build* raw = build.get();
       builds_.push_back(std::move(build));
-      jobs_->schedule(jobs::Pool::Performance, jobs::Job{&Build::run, raw, &raw->ran});
-      ++stats_.prefetch_submitted;
     }
+  }
+}
+
+// **The builds handed over by need** (T166; docs: "Ahead of a running walker"). Without slots every
+// waiting build is handed to the job system as found, in tile order — the rule before T166, which
+// after a drop queued twenty tiles of a forest behind each other on one worker, so the one a runner
+// reached next was still waiting seconds later. With slots, each build's need is the time until the
+// walker, going on at `velocity`, comes within the ring's radius of its tile's centre (zero for one
+// the ring wants now; a tile off the walker's line by its distance at the walker's pace), and the
+// waiting builds are handed over most urgent first while fewer than the slots are waiting in the
+// job system or running there — and every one the ring wants now at once, so a drop's ring is built
+// on every worker together, the tick building one of them itself (`take_build`).
+void SceneCollision::submit_builds(WorldPos at, Vec3 velocity) {
+  if (jobs_ == nullptr) return;
+  auto hand_over = [&](Build& build) {
+    build.submitted = true;
+    build.ran.add(1);
+    jobs_->schedule(jobs::Pool::Performance, jobs::Job{&Build::run, &build, &build.ran});
+    ++stats_.prefetch_submitted;
+  };
+  if (config_.prefetch_slots == 0) {
+    for (const std::unique_ptr<Build>& build : builds_)
+      if (!build->submitted) hand_over(*build);
+    return;
+  }
+  const f64 tile_m = static_cast<f64>(tile_mm_) / 1000.0;
+  const f64 ring_m =
+      tile_m * static_cast<f64>(config_.ring_radius_tiles > 0.0f
+                                    ? config_.ring_radius_tiles
+                                    : std::max(config_.prefetch_radius_tiles - 1.0f, 0.5f));
+  const f64 vx = static_cast<f64>(velocity.x);
+  const f64 vz = static_cast<f64>(velocity.z);
+  const f64 vv = vx * vx + vz * vz;
+  // A walker standing still is given a walker's pace, so the tiles round it still go nearest first.
+  const f64 pace = std::max(std::sqrt(vv), 1.0);
+  u32 busy = 0;
+  u32 waiting = 0;
+  for (const std::unique_ptr<Build>& b : builds_) {
+    Build& build = *b;
+    if (build.submitted) {
+      if (!build.ran.done()) ++busy;
+      continue;
+    }
+    ++waiting;
+    const WorldPos centre = tile_corner(build.coord) + DVec3{0.5 * tile_m, 0.0, 0.5 * tile_m};
+    const f64 dx = centre.x - at.x;
+    const f64 dz = centre.z - at.z;
+    build.distance = std::sqrt(dx * dx + dz * dz);
+    if (build.distance <= ring_m) {
+      build.need_s = 0.0;
+      continue;
+    }
+    // When |at + v t - c| first reaches the ring's radius, for t >= 0: the smaller root of
+    // vv t^2 - 2 (d.v) t + (|d|^2 - R^2) = 0, where the walker's line passes that close at all.
+    build.need_s = (build.distance - ring_m) / pace;
+    if (vv > 0.0) {
+      const f64 dv = dx * vx + dz * vz;
+      const f64 disc = dv * dv - vv * (build.distance * build.distance - ring_m * ring_m);
+      if (dv > 0.0 && disc >= 0.0)
+        build.need_s = std::min(build.need_s, (dv - std::sqrt(disc)) / vv);
+    }
+  }
+  if (waiting == 0) return;
+  // Most urgent first, then nearest, then in tile order: the same order from the same walk.
+  std::sort(builds_.begin(), builds_.end(),
+            [](const std::unique_ptr<Build>& a, const std::unique_ptr<Build>& b) {
+              if (a->submitted != b->submitted) return a->submitted;
+              if (a->need_s != b->need_s) return a->need_s < b->need_s;
+              if (a->distance != b->distance) return a->distance < b->distance;
+              return world::tile_key(a->coord) < world::tile_key(b->coord);
+            });
+  for (const std::unique_ptr<Build>& b : builds_) {
+    Build& build = *b;
+    if (build.submitted) continue;
+    if (build.need_s > 0.0 && busy >= config_.prefetch_slots) break;
+    hand_over(build);
+    ++busy;
   }
 }
 

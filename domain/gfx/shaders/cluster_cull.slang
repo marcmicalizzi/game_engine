@@ -515,7 +515,8 @@ void allocate_vertex_draw(uint64_t header_address, uint64_t records_address, uin
   const bool fits = first <= capacity && triangles <= capacity - first;
   uint4* records = (uint4*)records_address;
   records[slot] = uint4(instance, cluster, first, fits ? 0u : 1u);
-  words[k_vertex_draw_expand_groups].add(1u);
+  // The expansion's dispatch, workgroup `slot`, grown folded (T165; dispatch.slang).
+  folded_append(words + k_vertex_draw_expand_groups, slot);
   if (!fits) {
     words[k_vertex_draw_fit_end].min(first);
     words[k_vertex_draw_fallback_instances].max(slot + 1u);

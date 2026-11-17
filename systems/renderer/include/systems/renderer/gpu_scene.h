@@ -270,7 +270,7 @@ class GpuScene {
   // returns false with what it had already replaced in `retired`, and leaves the relayout pending
   // with the chain marked to be laid out whole: the caller frees `retired` as on success, waits,
   // and calls it without, which makes a whole layout or returns the error. A failure growing the
-  // trees' tables is not resumable and leaves nothing pending: the caller returns it.
+  // trees' tables puts them back as they were and stays pending the same way (T163).
   struct RelayoutRetired {
     Vector<gfx::BufferResource> buffers;
     renderer::RtRetired chain;  // the chain's step (qualified: the alias below comes later)
@@ -287,6 +287,13 @@ class GpuScene {
   };
   bool relayout_pending() const noexcept { return relayout_pending_; }
   bool relayout(std::string* error = nullptr, RelayoutRetired* retired = nullptr);
+  // **A test's seam** (T163): the next `count` makes of the chain's step (`resize_ray_tracing`,
+  // whoever calls it) or of the trees' tables' growth (`grow_flora_tail`) fail as a device out of
+  // memory would, so the paths that release and retry a failure have cases. Never set by a host.
+  enum class Fault : u8 { rt_step, flora_tables };
+  void fail_next(Fault where, u32 count = 1) noexcept {
+    (where == Fault::rt_step ? fail_rt_steps_ : fail_flora_) = count;
+  }
   // The top-level record a slot's instance is traced by, as the load writes it and a tail's change
   // copies it: the instance's transform at the world's origin (the frame overwrites it from the
   // eye), the slot as the custom index, and a mask of 0xff for a live instance and 0 for a hole's
@@ -463,6 +470,17 @@ class GpuScene {
     u64 expand_runs_address = 0;
     u32 expand_runs = 0;
     u32 expand_run_slots = 0;
+    // **A new set carried over on the GPU** (T167): `carry_instances` and `carry_pairs` copied into
+    // the set's two tables (`carry_*_bytes` each) before the numbering and the copies above, so a
+    // set made again by a growth costs the frame its pending runs, not the whole table; `retire`
+    // holds buffers the caller frees once this frame has completed (a growth's old set).
+    gfx::BufferResource carry_instances;
+    gfx::BufferResource carry_pairs;
+    u64 carry_instance_bytes = 0;
+    u64 carry_pair_bytes = 0;
+    gfx::BufferResource carry_records;  // the old top-level records -> `rt_instances`, first
+    u64 carry_record_bytes = 0;
+    Vector<gfx::BufferResource> retire;
   };
   bool prepare_tables(u32 slot, TableUpdate& out, std::string* error = nullptr);
   // The mesh of instance `index`, prefix or tail; ~0 past the end and for a hole's null instance
@@ -2038,10 +2056,29 @@ class GpuScene {
   u32 current_set_ = 0;                   // the set the last frame read
   bool tables_changed_ = false;           // a change since the last frame flipped
   Vector<gfx::BufferResource> table_staging_;  // per frame slot: host visible, kept
+  // **A set made again is carried over on the GPU** (T167; renderer.md, "Instances that come and
+  // go"): what the frame that flips to a new set copies it from — the set the last frame read, or
+  // after a growth that set's old buffers, kept here (`owned`) until that frame retires them — with
+  // the runs and numberings it had not taken yet, which the new set then takes as its own.
+  struct TableCarry {
+    gfx::BufferResource instances;
+    gfx::BufferResource pairs;
+    Vector<InstanceRange> pending;
+    Vector<PairShift> shift;
+    bool valid = false;
+  };
+  TableCarry grown_from_;
+  // A swapped relayout made the top-level records again (T167): the old ones, kept until the next
+  // set written carries them over on the GPU as it carries a table, else written whole.
+  bool rt_records_all_ = false;
+  gfx::BufferResource rt_records_from_;
   u32 compact_pct_ = k_default_compact_pct;    // `renderer.tiles.compact_pct`, read at create
   u32 pair_limit_ = k_max_pairs;               // what the tail's layout may reach (`pair_limit`)
   bool relayout_pending_ = false;              // a growth the pool or the chain has not followed
   bool rt_relayout_failed_ = false;  // a swapped chain lay-out failed part way: redo it whole
+  u32 fail_rt_steps_ = 0;            // `fail_next`: the test's faults still to come
+  u32 fail_flora_ = 0;
+  static bool take_fault(u32& left) noexcept { return left != 0 && (--left, true); }
   // A dynamic scene's terrain levels' slots' pairs, `{instance, cluster}` from `ring_pair_begin_`
   // to the prefix's end: device-local, written once, copied into a set written whole.
   gfx::BufferResource ring_pairs_;

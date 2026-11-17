@@ -39,6 +39,7 @@
 #include <shaders/cluster_vertex_indexed.spv.h>
 #include <shaders/deform.spv.h>
 #include <shaders/deform_alloc.spv.h>
+#include <shaders/fold_args.spv.h>
 #include <shaders/frame_encode.spv.h>
 #include <shaders/gi_update.spv.h>
 #include <shaders/gi_update_terrain.spv.h>
@@ -326,6 +327,7 @@ void SceneRenderer::Pipelines::destroy(const gfx::Device& device) noexcept {
   }
   classify = {};
   gfx::destroy_compute_pipeline(device, software);
+  gfx::destroy_compute_pipeline(device, fold);
   gfx::destroy_compute_pipeline(device, cull);
   gfx::destroy_compute_pipeline(device, expand);
   gfx::destroy_compute_pipeline(device, deform);
@@ -685,6 +687,7 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
                         shaders::k_cluster_vertex_indexed_spirv_size);
   shaders_.add_embedded("vertex_expand", shaders::k_vertex_expand_spirv,
                         shaders::k_vertex_expand_spirv_size);
+  shaders_.add_embedded("fold_args", shaders::k_fold_args_spirv, shaders::k_fold_args_spirv_size);
   shaders_.add_embedded("visibility_resolve", shaders::k_visibility_resolve_spirv,
                         shaders::k_visibility_resolve_spirv_size);
   // The same resolve with the shadow rays in; only a device with acceleration structures may
@@ -1216,7 +1219,8 @@ bool SceneRenderer::create_pipelines(std::string* error) {
   }
   const gfx::Shader* cull = shaders_.get("cluster_cull", error);
   const gfx::Shader* sw = cull != nullptr ? shaders_.get("cluster_sw_raster", error) : nullptr;
-  const gfx::Shader* hiz = sw != nullptr ? shaders_.get("hiz_build", error) : nullptr;
+  const gfx::Shader* fold = sw != nullptr ? shaders_.get("fold_args", error) : nullptr;
+  const gfx::Shader* hiz = fold != nullptr ? shaders_.get("hiz_build", error) : nullptr;
   const gfx::Shader* vertex = hiz != nullptr ? shaders_.get("cluster_vertex", error) : nullptr;
   const gfx::Shader* resolve =
       hiz != nullptr ? shaders_.get(resolve_module(resolved_.shadows, scene_->has_water(),
@@ -1529,6 +1533,8 @@ bool SceneRenderer::create_pipelines(std::string* error) {
   return gfx::create_graphics_pipeline(device, vertex_desc, pipelines_.vertex, error) &&
          gfx::create_compute_pipeline(device, sw->module, "sw_raster_main", {},
                                       sizeof(gfx::ClusterDrawParams), pipelines_.software, error) &&
+         gfx::create_compute_pipeline(device, fold->module, "fold_args_main", {},
+                                      sizeof(gfx::FoldArgsParams), pipelines_.fold, error) &&
          gfx::create_compute_pipeline(device, cull->module,
                                       resolved_.vertex_indexed ? "cull_vertex_main" : "cull_main",
                                       {}, sizeof(u64), pipelines_.cull, error) &&
@@ -1799,7 +1805,8 @@ bool SceneRenderer::set_dynamic_instances(std::span<const SceneInstance> tail,
     }
     const bool must_wait = relayout_retired_.must_wait;
     relayout_retired_.clear();
-    if (!swapped && !scene_->relayout_pending()) return false;  // not resumable: the error stands
+    // Every swapped failure stays pending since T163; one that did not would be returned.
+    if (!swapped && !scene_->relayout_pending()) return false;
     if (!swapped) {
       const std::string why = error != nullptr ? *error : std::string();
       ENGINE_LOG_WARN(log_renderer, "a swapped relayout failed; waiting to lay it out whole",
@@ -2196,7 +2203,8 @@ void SceneRenderer::collect_slot(u32 slot) {
     last.gpu_shadow_cull = timer_.ms("shadow cull");
     last.gpu_shadow = last.gpu_shadow_cull + timer_.ms("shadow");
     last.gpu_pair_expand = timer_.ms("pair expand");
-    last.gpu_tables = timer_.ms("pair shift") + timer_.ms("table copy") + last.gpu_pair_expand;
+    last.gpu_tables = timer_.ms("table carry") + timer_.ms("pair shift") + timer_.ms("table copy") +
+                      last.gpu_pair_expand;
     last.gpu_terrain_upload = timer_.ms("terrain upload");
     last.gpu_sky = timer_.ms("sky");
     last.gpu_half_sun = timer_.ms("half sun");
@@ -2816,6 +2824,27 @@ bool SceneRenderer::render_offscreen(const FrameDesc& frame, std::string* error)
   rt_hold_ = false;
   return ok;
 }
+
+namespace {
+
+// **Folded arguments from counts the GPU wrote** (T165; gfx.md, "A dispatch that grows with the
+// scene"): `n` u32 counts `count_stride` bytes apart into `DispatchIndirectArgs` `args_stride`
+// apart, for a dispatch whose count is a survivor count other passes read as `{n, 1, 1}`. One
+// dispatch of `fold_args.slang` where a transfer copied the counts before.
+void record_fold_args(gfx::CommandList cb, const gfx::ComputePipeline& fold, u64 counts,
+                      u32 count_stride, u64 args, u32 args_stride, u32 n) {
+  gfx::FoldArgsParams params;
+  params.counts = counts;
+  params.args = args;
+  params.count_stride = count_stride;
+  params.args_stride = args_stride;
+  params.n = n;
+  cb.bind_pipeline(gfx::BindPoint::Compute, fold.pipeline);
+  cb.push_constants(fold.layout, gfx::ShaderStage::Compute, 0, sizeof(params), &params);
+  cb.dispatch((n + gfx::k_fold_args_workgroup - 1) / gfx::k_fold_args_workgroup, 1, 1);
+}
+
+}  // namespace
 
 // One frame, from the cull pass to the resolve, for every view of the set. Every parameter block
 // here is referenced by a pass body and therefore has to outlive the execute() at the bottom,
@@ -3474,9 +3503,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     cull.camera = Vec4{eye, znear};
     cull.eye = gpu_eye;
     cull.handoff_tick = scene.handoff_tick();  // the hand-off's clock (G136)
+    // A view's block: the software rasterizer reads its run's count through the eye (T165).
+    cull.eye.masks = gfx::k_eye_software_count;
     // The mask tables right after the eye, which the rasterizers read through it.
     if (scene.has_masked()) {
-      cull.eye.masks = 1;
+      cull.eye.masks |= gfx::k_eye_mask_tables;
       cull.masks = mask_tables;
       if (frame_fade > 0.0f) cull.masks.fade = scene.fade_address(v);
     }
@@ -3537,6 +3568,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
         e.indices = scene.vertex_indices.address + scene.vertex_indices_offset(v, run);
         e.clusters = scene.clusters.address;
         e.triangles = scene.triangles.address;
+        e.count = scene.draw_args[run].address + vf.args_offset + u64{count_index} * sizeof(u32);
       }
     }
     // What the cone test rejects, kept for the shadows: this view's caster run, counted in this
@@ -4069,6 +4101,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       e.indices = scene.vertex_indices.address + scene.shadow_vertex_indices_offset(c);
       e.clusters = scene.clusters.address;
       e.triangles = scene.triangles.address;
+      e.count = cull.draw_args + u64{count_index} * sizeof(u32);
     }
     cull_blocks[views * 2 + c] = cull;
 
@@ -4805,6 +4838,58 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // writes: a hole's inactive), before the frame's `tlas_references` writes their transforms and
   // addresses; and a set written whole takes the terrain levels' slots' pairs, which no expansion
   // writes (GpuScene::prepare_tables).
+  // **A set made again, carried over on the GPU first** (T167; GpuScene::prepare_tables): the set
+  // it is copied from, before the numbering and the copies that bring it up to date. A growth's old
+  // set is freed once this frame has completed.
+  if (write_tables) {
+    for (const gfx::BufferResource& old : tables_.retire)
+      frames_.defer_destroy(old);
+  }
+  // The old top-level records, likewise, before this frame's runs are copied over them.
+  if (write_tables && rt_chain && tables_.carry_records.buffer.valid()) {
+    const gfx::RgBuffer carry_records =
+        graph.import_buffer("carried records", tables_.carry_records);
+    graph.add_pass(
+        "record carry", gfx::PassKind::Transfer,
+        [&, carry_records](gfx::PassBuilder& b) {
+          b.read(carry_records, gfx::Access::TransferRead);
+          b.write(rt.instances, gfx::Access::TransferWrite);
+        },
+        [&](gfx::CommandList cb, gfx::RenderGraph&) {
+          const gfx::BufferCopy records_copy{0, 0, tables_.carry_record_bytes};
+          cb.copy_buffer(tables_.carry_records.buffer, scene.rt_instances.buffer,
+                         std::span<const gfx::BufferCopy>(&records_copy, 1));
+        });
+  }
+  if (write_tables && tables_.carry_instances.buffer.valid()) {
+    const gfx::RgBuffer carry_instances =
+        graph.import_buffer("carried instances", tables_.carry_instances);
+    const bool carry_pairs = tables_.carry_pair_bytes > 0;
+    const gfx::RgBuffer carried_pairs =
+        carry_pairs ? graph.import_buffer("carried pairs", tables_.carry_pairs) : gfx::RgBuffer{};
+    graph.add_pass(
+        "table carry", gfx::PassKind::Transfer,
+        [&, carry_instances, carried_pairs, carry_pairs](gfx::PassBuilder& b) {
+          b.read(carry_instances, gfx::Access::TransferRead);
+          b.write(rg_instances, gfx::Access::TransferWrite);
+          if (carry_pairs) {
+            b.read(carried_pairs, gfx::Access::TransferRead);
+            b.write(rg_pair_table, gfx::Access::TransferWrite);
+          }
+        },
+        [&, carry_pairs](gfx::CommandList cb, gfx::RenderGraph&) {
+          timer.begin(cb, "table carry");
+          const gfx::BufferCopy instances_copy{0, 0, tables_.carry_instance_bytes};
+          cb.copy_buffer(tables_.carry_instances.buffer, scene.instances.buffer,
+                         std::span<const gfx::BufferCopy>(&instances_copy, 1));
+          if (carry_pairs) {
+            const gfx::BufferCopy pairs_copy{0, 0, tables_.carry_pair_bytes};
+            cb.copy_buffer(tables_.carry_pairs.buffer, scene.pair_table.buffer,
+                           std::span<const gfx::BufferCopy>(&pairs_copy, 1));
+          }
+          timer.end(cb);
+        });
+  }
   const bool rt_records = write_tables && rt_chain && !tables_.rt_copies.empty();
   const bool level_pairs = write_tables && !tables_.pair_copies.empty();
   gfx::RgBuffer rg_level_pairs{};
@@ -5036,20 +5121,19 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // the passes cover every view of the run, so charging them to view 0 would put the whole set's
     // allocation on one monitor's row.
     add_alloc("deform alloc", rg_source, &alloc_params[run]);
+    // Each view's count folded into the pool pass's arguments (T165), where a copy of it was.
     graph.add_pass(
-        "deform args", gfx::PassKind::Transfer,
+        "deform args", gfx::PassKind::Compute,
         [&, rg_source](gfx::PassBuilder& b) {
-          b.read(rg_source, gfx::Access::TransferRead);
-          b.write(rg_deform_args, gfx::Access::TransferWrite);
+          b.read(rg_source, gfx::Access::ComputeRead);
+          b.write(rg_deform_args, gfx::Access::ComputeWrite);
         },
         [&, run, source_offset](gfx::CommandList cb, gfx::RenderGraph&) {
-          const gfx::BufferHandle source =
-              run == 2 ? scene.sw_args.buffer : scene.draw_args[run].buffer;
-          for (u32 v = 0; v < views; ++v) {
-            const gfx::BufferCopy copy{view_frames[v].args_offset + source_offset,
-                                       scene.deform_args_offset(v, run), sizeof(u32)};
-            cb.copy_buffer(source, scene.deform_args.buffer, copy);
-          }
+          const u64 source = run == 2 ? scene.sw_args.address : scene.draw_args[run].address;
+          record_fold_args(cb, pipelines.fold, source + view_frames[0].args_offset + source_offset,
+                           gfx::k_draw_args_bytes,
+                           scene.deform_args.address + scene.deform_args_offset(0, run),
+                           k_visible_runs * gfx::k_draw_args_bytes, views);
         });
     graph.add_pass(
         "deform", gfx::PassKind::Compute,
@@ -5091,12 +5175,13 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   auto add_expand = [&](u32 run) {
     graph.add_pass(
         "expand", gfx::PassKind::Compute,
-        [&](gfx::PassBuilder& b) {
+        [&, run](gfx::PassBuilder& b) {
           // Its own dispatch, then the index count it finishes. The order is load-bearing: the
           // render graph leaves a buffer in the state of the pass's *last* use of it, and it has to
           // be the write, or the draw's read of the count gets no barrier and sees the reset's
           // zero.
           b.read(rg_vertex_headers, gfx::Access::IndirectRead);
+          b.read(rg_args[run], gfx::Access::ComputeRead);  // the survivors: the folded bound
           b.write(rg_vertex_headers, gfx::Access::ComputeReadWrite);
           b.read(rg_vertex_records, gfx::Access::ComputeRead);
           b.write(rg_vertex_indices, gfx::Access::ComputeWrite);
@@ -5286,18 +5371,19 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       // the camera's and deformed by the same pass, so a moving character casts its pose.
       add_alloc("shadow", rg_shadow_args, &shadow_alloc);
       graph.add_pass(
-          "shadow deform args", gfx::PassKind::Transfer,
+          "shadow deform args", gfx::PassKind::Compute,  // folded (T165)
           [&](gfx::PassBuilder& b) {
-            b.read(rg_shadow_args, gfx::Access::TransferRead);
-            b.write(rg_deform_args, gfx::Access::TransferWrite);
+            b.read(rg_shadow_args, gfx::Access::ComputeRead);
+            b.write(rg_deform_args, gfx::Access::ComputeWrite);
           },
           [&, count](gfx::CommandList cb, gfx::RenderGraph&) {
-            for (u32 c = 0; c < count; ++c) {
-              const gfx::BufferCopy copy{
-                  scene.shadow_args_offset(c) + u64{count_index} * sizeof(u32),
-                  scene.shadow_deform_args_offset(c), sizeof(u32)};
-              cb.copy_buffer(scene.shadow_args.buffer, scene.deform_args.buffer, copy);
-            }
+            record_fold_args(
+                cb, pipelines.fold,
+                scene.shadow_args.address + scene.shadow_args_offset(0) +
+                    u64{count_index} * sizeof(u32),
+                gfx::k_draw_args_bytes,
+                scene.deform_args.address + scene.shadow_deform_args_offset(0),
+                gfx::k_draw_args_bytes, count);
           });
       graph.add_pass(
           "shadow deform", gfx::PassKind::Compute,
@@ -5328,6 +5414,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             // The dispatch's arguments, then the count it finishes: the write is declared last so
             // the draw's read of the count gets its barrier (see add_expand).
             b.read(rg_vertex_headers, gfx::Access::IndirectRead);
+            b.read(rg_shadow_args, gfx::Access::ComputeRead);  // the folded bound (T165)
             b.write(rg_vertex_headers, gfx::Access::ComputeReadWrite);
             b.read(rg_vertex_records, gfx::Access::ComputeRead);
             b.write(rg_vertex_indices, gfx::Access::ComputeWrite);
@@ -5471,6 +5558,16 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     }
     if (use_sw) {
       if (deform_on) add_deform(2);
+      // Each view's block `{count, 1, 1, -}` becomes `{count, folded args}` (T165): the dispatch
+      // reads its arguments one word on, and every reader of the count reads it where it was.
+      graph.add_pass(
+          "software args", gfx::PassKind::Compute,
+          [&](gfx::PassBuilder& b) { b.write(rg_sw_args, gfx::Access::ComputeReadWrite); },
+          [&](gfx::CommandList cb, gfx::RenderGraph&) {
+            const u64 at = scene.sw_args.address + view_frames[0].args_offset;
+            record_fold_args(cb, pipelines.fold, at, gfx::k_draw_args_bytes, at + sizeof(u32),
+                             gfx::k_draw_args_bytes, views);
+          });
       graph.add_pass(
           "software", gfx::PassKind::Compute,
           [&](gfx::PassBuilder& b) {
@@ -5490,7 +5587,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
               timer.begin(cb, k_zone_names[k_zone_sw][v]);
               cb.push_constants(pipelines.software.layout, gfx::ShaderStage::Compute, 0,
                                 sizeof(gfx::ClusterDrawParams), &draws[v][2]);
-              cb.dispatch_indirect(scene.sw_args.buffer, view_frames[v].args_offset);
+              cb.dispatch_indirect(scene.sw_args.buffer, view_frames[v].args_offset + sizeof(u32));
               timer.end(cb);
             }
           });

@@ -421,14 +421,19 @@ static JsonValue place_block(const char* when, const renderer::GpuScene& scene) 
   return out;
 }
 
-void MemoryReport::take(const char* when, const gfx::Device* device,
-                        const renderer::GpuScene* scene) {
-  if (!on_) return;
+i64 MemoryReport::take(const char* when, const gfx::Device* device,
+                       const renderer::GpuScene* scene) {
+  if (!on_) return 0;
   const bool first = std::strcmp(when, "first_frame") == 0;
   JsonValue& slot = first ? first_frame_ : exit_;
-  if (!slot.is_null()) return;
+  if (!slot.is_null()) return 0;
+  const i64 started = time::monotonic_ns();
   slot = snapshot(when, device);
   if (scene != nullptr) slot.set("place", place_block(when, *scene));
+  const i64 spent = time::monotonic_ns() - started;
+  // What the walk cost, in the block, so a reader can see the frames were not charged for it.
+  slot.set("taken_ms", static_cast<f64>(spent) / 1.0e6);
+  return spent;
 }
 
 JsonValue MemoryReport::block() const {

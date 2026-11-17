@@ -1601,6 +1601,85 @@ TEST_CASE("dynamic instances: a relayout with frames in flight waits for nothing
   }
 }
 
+// T163 (renderer.md, "A relayout is swapped in"): the case above with the chain's step made to fail
+// in the swapped relayout (`GpuScene::fail_next`), after its per-instance half was already
+// replaced. What it replaced is released as on success, the relayout stays pending with the chain
+// marked to be laid out whole, and the renderer waits once, counted in `relayout_waits`, and lays
+// it out whole: the frames after it draw the scene loaded whole. Until T163 nothing could make the
+// step fail, so this path had no case.
+TEST_CASE("dynamic instances: a relayout whose chain fails part way is retried whole, the same") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE(gpu.why);
+    return;
+  }
+  if (!gpu.device.features().cluster_acceleration_structure || !gpu.device.features().ray_query) {
+    MESSAGE("skipped: " << gpu.device.adapter().name << " builds no cluster structures");
+    return;
+  }
+  Bar bar;
+  build_bar(bar);
+  Vector<anim::JointMatrix> matrices;
+  bend(bar, 40.0f, matrices);
+  const InstanceJoints runs[1] = {{0, 2}};
+  const auto posed = [&]() {
+    FrameDesc frame = frame_at(k_eye);
+    frame.joints = std::span<const anim::JointMatrix>(matrices.data(), matrices.size());
+    frame.instance_joints = std::span<const InstanceJoints>(runs, 1);
+    return frame;
+  };
+  const Vector<SceneInstance> head = renumbered(prefix());
+  const Vector<SceneInstance> a = renumbered(tile_a());
+  const Vector<SceneInstance> whole = join({&head, &a});
+  RenderSettings settings;
+  settings.shadows = ShadowMode::RayTraced;
+  settings.occlusion = false;
+  SkinnedRig dynamic;
+  REQUIRE_MESSAGE(
+      dynamic.build(gpu.device, bar, std::span<const SceneInstance>(head.data(), head.size()), true,
+                    settings),
+      dynamic.error);
+  SkinnedRig loaded_whole;
+  REQUIRE_MESSAGE(loaded_whole.build(gpu.device, bar,
+                                     std::span<const SceneInstance>(whole.data(), whole.size()),
+                                     false, settings),
+                  loaded_whole.error);
+  std::string error;
+  const auto in_flight = [&]() {
+    for (u32 f = 0; f < 2; ++f) {
+      dynamic.renderer.begin_frame();
+      REQUIRE_MESSAGE(dynamic.renderer.submit_frame(posed(), &error) != 0, error);
+    }
+  };
+  in_flight();
+  const u64 relayouts = dynamic.renderer.stats().tiles.relayouts;
+  const u32 stride = dynamic.scene.pair_stride();
+  dynamic.scene.fail_next(GpuScene::Fault::rt_step);
+  REQUIRE_MESSAGE(dynamic.renderer.set_dynamic_instances(
+                      std::span<const SceneInstance>(a.data(), a.size()), &error),
+                  error);
+  const TileStats& tiles = dynamic.renderer.stats().tiles;
+  MESSAGE("stride " << stride << " to " << dynamic.scene.pair_stride() << ": "
+                    << tiles.relayouts - relayouts << " relayout, " << tiles.relayout_waits
+                    << " waited after the step failed");
+  CHECK(dynamic.scene.pair_stride() > stride);
+  CHECK(tiles.relayouts == relayouts + 1);
+  CHECK(tiles.relayout_waits == 1);
+  CHECK_FALSE(dynamic.scene.relayout_pending());
+  in_flight();
+  in_flight();
+  CapturedFrame shot;
+  CapturedFrame expected;
+  REQUIRE_MESSAGE(dynamic.renderer.capture(posed(), channels(), shot, &error), error);
+  REQUIRE_MESSAGE(loaded_whole.renderer.capture(posed(), channels(), expected, &error), error);
+  const Difference d = compare(shot, expected);
+  MESSAGE("after the retried relayout: " << d.ids << " id, " << d.depth << " depth and " << d.color
+                                         << " colour differences against the scene loaded whole");
+  CHECK(d.ids == 0);
+  CHECK(d.depth == 0);
+  CHECK(d.color == 0);
+}
+
 // ---- dispatches folded into rows (T160; gfx.md, "A dispatch that grows with the scene") --------
 //
 // Vulkan guarantees 65,535 workgroups a dimension. The pair expansion's three passes and the cull
@@ -1867,5 +1946,174 @@ TEST_CASE("dynamic instances: a tail past a row of the folded cull draws the loa
     CHECK(d.ids == 0);
     CHECK(d.depth == 0);
     CHECK(d.color == 0);
+  }
+}
+
+// ---- indirect dispatches folded (T165; gfx.md, "A dispatch that grows with the scene") ---------
+//
+// The dispatches whose counts the GPU writes — the software rasterizer's and the deformed-vertex
+// pool's (one workgroup a visible cluster of the run), the vertex path's expansion (one a hardware
+// survivor) — on a device that reports Vulkan's guaranteed 65,535 workgroups on x, with more
+// survivors than that: the arguments each was dispatched with are read back and must ask for no
+// more than the device allows, in rows of `gfx::k_dispatch_pitch`, and the picture is the one the
+// mesh path draws of the same scene: the vertex path's to the bit, the software rasterizer's to
+// the contract the visibility test holds it to. Before T165 each asked for its whole count on x.
+
+namespace {
+
+Vector<u32> read_words(const gfx::Device& device, const gfx::BufferResource& from, u64 offset,
+                       u32 words, std::string& error) {
+  Vector<u32> out;
+  gfx::BufferResource host;
+  if (!gfx::create_buffer(device, u64{words} * sizeof(u32), gfx::BufferUsage::TransferDst, true,
+                          host, &error)) {
+    return out;
+  }
+  const bool ok = gfx::submit_immediate(
+      device,
+      [&](gfx::CommandList cb) {
+        cb.copy_buffer(from.buffer, host.buffer,
+                       gfx::BufferCopy{offset, 0, u64{words} * sizeof(u32)});
+      },
+      &error);
+  if (ok) {
+    out.resize(words);
+    std::memcpy(out.data(), host.mapped, u64{words} * sizeof(u32));
+  }
+  gfx::destroy_buffer(device, host);
+  return out;
+}
+
+// Arguments `{x, y, 1}` at `args[first]` of `count` workgroups, folded and inside `limit` on x.
+void check_folded(const Vector<u32>& args, u32 first, u32 count, u32 limit, const char* what) {
+  CAPTURE(what);
+  REQUIRE(args.size() >= first + 3);
+  const u32 rows = (count + gfx::k_dispatch_pitch - 1) / gfx::k_dispatch_pitch;
+  MESSAGE(std::string(what) << ": " << count << " workgroups dispatched as {" << args[first] << ", "
+               << args[first + 1] << ", " << args[first + 2] << "}");
+  CHECK(args[first] <= limit);
+  CHECK(args[first] == std::min(count, gfx::k_dispatch_pitch));
+  CHECK(args[first + 1] == rows);
+  CHECK(args[first + 2] == 1);
+}
+
+}  // namespace
+
+TEST_CASE("dynamic instances: indirect dispatches fold past 65,535 workgroups, the same picture") {
+  // The RTX 5090 takes 2^31 - 1 on x, so the device here reports the guarantee instead.
+  gfx::DeviceOptions options = renderer_test::device_options();
+  options.overrides.limits.push_back(
+      gfx::LimitOverride{"maxComputeWorkGroupCount[0]", gfx::k_workgroup_count});
+  gfx::Device device;
+  std::string error;
+  if (!device.create(options, &error)) {
+    if (!renderer_test::device_profile().empty()) {
+      FAIL_CHECK("ENGINE_GFX_TEST_DEVICE=" << renderer_test::device_profile() << ": " << error);
+    }
+    MESSAGE("no Vulkan device: " << error);
+    return;
+  }
+  if (!device.features().buffer_int64_atomics) {
+    MESSAGE("skipped: " << device.adapter().name << " has no 64-bit buffer atomics");
+    return;
+  }
+  const u32 limit = device.caps().max_compute_workgroup_count_x;
+  REQUIRE(limit == gfx::k_workgroup_count);
+  // 32,400 small boxes and nothing else (the software rasterizer leaves a triangle wider than 64
+  // pixels to the hardware path, so the ground would not be the same picture), three or four
+  // clusters of each facing the eye.
+  constexpr u32 k_side = 180;
+  Vector<SceneInstance> boxes;
+  for (u32 i = 0; i < k_side * k_side; ++i) {
+    const f32 x = -6.0f + 12.0f * (static_cast<f32>(i % k_side) + 0.5f) / k_side;
+    const f32 z = -6.0f + 12.0f * (static_cast<f32>(i / k_side) + 0.5f) / k_side;
+    boxes.push_back(placed(0, Vec3{x, 0.1f, z}, 0.02f));
+  }
+  const std::span<const SceneInstance> all(boxes.data(), boxes.size());
+  for (const RasterMode raster : {RasterMode::Software, RasterMode::Vertex}) {
+    const bool software = raster == RasterMode::Software;
+    CAPTURE(software);
+    RenderSettings settings;
+    settings.raster = raster;
+    settings.shadows = ShadowMode::Off;
+    settings.occlusion = false;
+    settings.deform = software;  // the pool's passes over the same run
+    Rig rig;
+    REQUIRE_MESSAGE(rig.build(device, all, false, settings), rig.error);
+    if (!software && !rig.resolved.vertex_indexed) {
+      MESSAGE("vertex path: skipped, the device draws no indexed cut");
+      continue;
+    }
+    // The counts are read back a frame or two behind: the same view three times first.
+    for (u32 f = 0; f < 3; ++f)
+      REQUIRE_MESSAGE(rig.renderer.render_offscreen(frame_at(k_eye), &error), error);
+    CapturedFrame shot;
+    REQUIRE_MESSAGE(rig.renderer.capture(frame_at(k_eye), channels(), shot, &error), error);
+    const FrameStats& last = rig.renderer.stats().last;
+    const std::string name = software ? "software" : "vertex";
+    MESSAGE(name << ": " << rig.scene.pair_count() << " pairs, " << last.visible_sw
+                 << " drawn by software and " << last.visible_hw << " by hardware");
+    if (software) {
+      REQUIRE(last.visible_sw > limit);
+      const Vector<u32> sw =
+          read_words(device, rig.scene.sw_args, rig.scene.args_offset(0), 4, error);
+      REQUIRE_MESSAGE(sw.size() == 4, error);
+      CHECK(sw[0] == last.visible_sw);  // the count, where its readers read it
+      check_folded(sw, 1, last.visible_sw, limit, "software rasterizer");
+      if (rig.resolved.deform_pass) {
+        const Vector<u32> pool =
+            read_words(device, rig.scene.deform_args, rig.scene.deform_args_offset(0, 2), 3, error);
+        check_folded(pool, 0, last.visible_sw, limit, "deformed-vertex pool");
+      }
+    } else {
+      REQUIRE(last.visible_hw > limit);
+      const Vector<u32> expand =
+          read_words(device, rig.scene.vertex_headers,
+                     rig.scene.vertex_header_offset(0, 0) + gfx::k_vertex_draw_expand_offset, 3,
+                     error);
+      check_folded(expand, 0, last.visible_hw, limit, "vertex expansion");
+    }
+    RenderSettings mesh = settings;
+    mesh.raster = RasterMode::Hardware;
+    CapturedFrame expected;
+    REQUIRE_MESSAGE(reference(device, all, mesh, expected, error), error);
+    const Difference d = compare(shot, expected);
+    MESSAGE(name << ": " << shot.covered << " pixels covered; " << d.ids << " id, " << d.depth
+            << " depth and " << d.color << " colour differences against the hardware path");
+    if (!software) {
+      CHECK(shot.covered == expected.covered);
+      CHECK(d.ids == 0);
+      CHECK(d.depth == 0);
+      CHECK(d.color == 0);
+      continue;
+    }
+    // **The software rasterizer is not the hardware's to the bit**, and never was: it is held to
+    // the contract `domain/gfx/tests/visibility_tests.cpp` sets the two (edge rules along shared
+    // edges and silhouettes, its own depth interpolation) — coverage under 1 % apart, 90 % of the
+    // pixels both cover naming the same triangle, depth within a thousandth on average. Here the
+    // triangles are a pixel or less across, where those differences are largest; a row the fold
+    // lost or doubled would be thousands of boxes, far past all three.
+    u32 mismatch = 0;
+    u32 both = 0;
+    u32 same = 0;
+    f64 delta = 0.0;
+    for (u32 p = 0; p < shot.width * shot.height; ++p) {
+      const bool a = shot.ids[u64{p} * k_id_words] != k_no_id;
+      const bool b = expected.ids[u64{p} * k_id_words] != k_no_id;
+      if (a != b) ++mismatch;
+      if (!a || !b) continue;
+      ++both;
+      bool id = true;
+      for (u32 w = 0; w < k_id_words; ++w)
+        id = id && shot.ids[u64{p} * k_id_words + w] == expected.ids[u64{p} * k_id_words + w];
+      same += id ? 1u : 0u;
+      delta += std::fabs(static_cast<f64>(shot.depth[p]) - static_cast<f64>(expected.depth[p]));
+    }
+    MESSAGE("software against hardware: " << mismatch << " pixels differ in coverage, " << same
+                                          << " of " << both << " name the same triangle, mean "
+                                          << "depth difference " << delta / std::max(both, 1u));
+    CHECK(mismatch * 100 < expected.covered);
+    CHECK(u64{same} * 100 >= u64{both} * 90);
+    CHECK(delta / static_cast<f64>(std::max(both, 1u)) < 1.0e-3);
   }
 }

@@ -1,0 +1,14 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "T163",
+  "reason": "T163: GpuScene::fail_next, the test seam a relayout's failure paths are tested through, and its counters (gpu_scene.h); T165: the indirect dispatches folded - record_frame's deform-args and shadow-deform-args passes became fold dispatches and a 'software args' pass folds the software rasterizer's arguments (one add_pass), the expansion's bound; gfx.md's and renderer.md's sections say how",
+  "date": "2026-11-16",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "renderer.record_frame.lines": 16,
+    "renderer.record_frame.add_pass": 1,
+    "renderer.gpu_scene_h.lines": 10,
+    "page:docs/subsystems/renderer.md": 970,
+    "page:docs/subsystems/gfx.md": 2808
+  }
+}
