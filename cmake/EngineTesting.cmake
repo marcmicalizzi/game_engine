@@ -102,36 +102,150 @@ endfunction()
 # (docs/ci/what-to-run.md, "Jobs"). Both say WALL_CLOCK where they are registered; nothing is
 # labelled from here.
 
+# How many GPU chains a CTest run with jobs has (roadmap T89; docs/ci/what-to-run.md, "Two GPU
+# chains"): the tests labelled `gpu` are dealt over this many resource locks, `gpu_device.1` to
+# `gpu_device.<n>`, so that many of them run at once in one invocation, and the machine-wide GPU
+# lock orders their devices' holds as it orders two suites' (ADR-0049). Gate b66's `msvc-debug`
+# chain was 4,480 s of its 4,496 s, and 2,096 s of that no test had a device open. Two by default
+# where the machine-wide lock can order them — the lock's directory exists, so the protocol is in
+# use (gpu_lock.md, "Elsewhere, and the limits") — and one where it cannot, since there nothing
+# would stop two tests' devices being open at once. 1 is the single chain every run had before.
+set(_engine_gpu_lock_dir "")
+if(DEFINED ENV{ENGINE_GPU_LOCK} AND NOT "$ENV{ENGINE_GPU_LOCK}" STREQUAL "")
+  get_filename_component(_engine_gpu_lock_dir "$ENV{ENGINE_GPU_LOCK}" DIRECTORY)
+elseif(WIN32)
+  set(_engine_gpu_lock_dir "D:/workspace")
+else()
+  set(_engine_gpu_lock_dir "/tmp")
+endif()
+if(IS_DIRECTORY "${_engine_gpu_lock_dir}")
+  set(_engine_gpu_chains_default 2)
+else()
+  set(_engine_gpu_chains_default 1)
+endif()
+set(ENGINE_TEST_GPU_CHAINS ${_engine_gpu_chains_default} CACHE STRING
+  "GPU-labelled tests a CTest run with jobs runs at once (resource locks gpu_device.1..n), ordered by the machine-wide GPU lock")
+if(NOT ENGINE_TEST_GPU_CHAINS MATCHES "^[1-9][0-9]*$")
+  message(FATAL_ERROR "ENGINE_TEST_GPU_CHAINS is '${ENGINE_TEST_GPU_CHAINS}', not a whole number of chains")
+endif()
+
+#   _engine_test_seconds(<test> <out>)
+# A test's seconds as the cost table gives them (cmake/test-costs.txt): a part's, the files the
+# deal gave it (_engine_test_parts); any other test's, its whole-test row (`<test> * <seconds>`).
+# Empty when nobody measured it.
+function(_engine_test_seconds test out)
+  get_property(_part GLOBAL PROPERTY "ENGINE_TEST_PART_COST:${test}")
+  get_property(_whole GLOBAL PROPERTY "ENGINE_TEST_COST:${test}:*")
+  if(NOT "${_part}" STREQUAL "" AND _part GREATER 0)
+    set(${out} "${_part}" PARENT_SCOPE)
+  elseif(NOT "${_whole}" STREQUAL "")
+    set(${out} "${_whole}" PARENT_SCOPE)
+  else()
+    set(${out} "" PARENT_SCOPE)
+  endif()
+endfunction()
+
 #   _engine_finalize_tests()
 # Deferred to the end of the top-level CMakeLists.txt, when every test of every directory exists.
 # What a parallel CTest run needs, set by label and property so that a test registered anywhere —
 # a module's, an app's, a tool's, one this file has never seen — is held to it:
 #   - `gpu` (engine_test_waits_for_gpu: the test or a process it starts can open a device and so
-#     wait for the machine-wide GPU lock) adds RESOURCE_LOCK `gpu_device`, so two such tests of one
-#     invocation never run at once and never queue against each other in the lock's half-hour wait,
-#     where a skip (exit 75) is a failure at the gate;
-#   - `e2e` adds RESOURCE_LOCK `e2e_apps` (windows and input devices, one of each; engine_app);
+#     wait for the machine-wide GPU lock) adds one GPU chain's RESOURCE_LOCK, `gpu_device.<k>`, so
+#     no more than ENGINE_TEST_GPU_CHAINS such tests of one invocation run at once (above). The
+#     chains are dealt by the cost table's seconds (engine_deal_gpu_chains, EngineTestDeal.cmake),
+#     and tests that share another resource lock — the desktop's — are dealt as one, since they
+#     run one at a time whichever chain holds them;
+#   - `desktop` adds RESOURCE_LOCK `e2e_apps` (windows and input devices, one of each; engine_app):
+#     an app that can open a window. A headless app's end-to-end test has `e2e` and not this;
 #   - `wall_clock` (above) adds RUN_SERIAL.
 # A RESOURCE_LOCK orders the tests of one `ctest` and nothing else: two invocations at once (the
-# gate's suites side by side) still share the card through the lock itself (ADR-0049).
+# gate's suites side by side) still share the card through the lock itself (ADR-0049), and so do
+# two chains of one invocation.
 function(_engine_finalize_tests)
   _engine_test_directories("${CMAKE_SOURCE_DIR}" _dirs)
+  set(_gpu_tests "")
   foreach(_dir IN LISTS _dirs)
     get_property(_tests DIRECTORY "${_dir}" PROPERTY TESTS)
     foreach(_test IN LISTS _tests)
       get_property(_labels TEST "${_test}" DIRECTORY "${_dir}" PROPERTY LABELS)
       get_property(_locks TEST "${_test}" DIRECTORY "${_dir}" PROPERTY RESOURCE_LOCK)
-      if("gpu" IN_LIST _labels AND NOT "gpu_device" IN_LIST _locks)
-        set_property(TEST "${_test}" DIRECTORY "${_dir}" APPEND PROPERTY RESOURCE_LOCK gpu_device)
-      endif()
-      if("e2e" IN_LIST _labels AND NOT "e2e_apps" IN_LIST _locks)
+      if("desktop" IN_LIST _labels AND NOT "e2e_apps" IN_LIST _locks)
         set_property(TEST "${_test}" DIRECTORY "${_dir}" APPEND PROPERTY RESOURCE_LOCK e2e_apps)
       endif()
       if("wall_clock" IN_LIST _labels)
         set_property(TEST "${_test}" DIRECTORY "${_dir}" PROPERTY RUN_SERIAL TRUE)
       endif()
+      if("gpu" IN_LIST _labels)
+        list(APPEND _gpu_tests "${_test}")
+        set_property(GLOBAL PROPERTY "_ENGINE_GPU_TEST_DIR:${_test}" "${_dir}")
+      endif()
     endforeach()
   endforeach()
+
+  # One item a test, or a group of the tests that share a resource lock other than a chain's; its
+  # seconds the sum of what was measured, and none when nothing of it was.
+  set(_items "")
+  foreach(_test IN LISTS _gpu_tests)
+    get_property(_dir GLOBAL PROPERTY "_ENGINE_GPU_TEST_DIR:${_test}")
+    get_property(_locks TEST "${_test}" DIRECTORY "${_dir}" PROPERTY RESOURCE_LOCK)
+    list(FILTER _locks EXCLUDE REGEX "^gpu_device")
+    if(_locks)
+      list(SORT _locks)
+      list(GET _locks 0 _group)
+      set(_item "@${_group}")
+    else()
+      set(_item "${_test}")
+    endif()
+    get_property(_members GLOBAL PROPERTY "_ENGINE_GPU_ITEM:${_item}")
+    if("${_members}" STREQUAL "")
+      list(APPEND _items "${_item}")
+      set_property(GLOBAL PROPERTY "_ENGINE_GPU_ITEM_SECONDS:${_item}" "")
+    endif()
+    set_property(GLOBAL APPEND PROPERTY "_ENGINE_GPU_ITEM:${_item}" "${_test}")
+    _engine_test_seconds("${_test}" _s)
+    if(NOT "${_s}" STREQUAL "")
+      get_property(_sum GLOBAL PROPERTY "_ENGINE_GPU_ITEM_SECONDS:${_item}")
+      if("${_sum}" STREQUAL "")
+        set(_sum 0)
+      endif()
+      math(EXPR _sum "${_sum} + ${_s}")
+      set_property(GLOBAL PROPERTY "_ENGINE_GPU_ITEM_SECONDS:${_item}" "${_sum}")
+    endif()
+  endforeach()
+  if(NOT _items)
+    return()
+  endif()
+  set(_deal_items "")
+  set(_unmeasured 0)
+  foreach(_item IN LISTS _items)
+    get_property(_sum GLOBAL PROPERTY "_ENGINE_GPU_ITEM_SECONDS:${_item}")
+    if("${_sum}" STREQUAL "")
+      list(APPEND _deal_items "${_item}")
+      math(EXPR _unmeasured "${_unmeasured} + 1")
+    else()
+      list(APPEND _deal_items "${_item}=${_sum}")
+    endif()
+  endforeach()
+  engine_deal_gpu_chains(${ENGINE_TEST_GPU_CHAINS} "${_deal_items}" _chain)   # EngineTestDeal.cmake
+
+  math(EXPR _last "${ENGINE_TEST_GPU_CHAINS} - 1")
+  set(_summary "")
+  foreach(_k RANGE 0 ${_last})
+    math(EXPR _n "${_k} + 1")
+    set(_count 0)
+    foreach(_item IN LISTS _chain_${_k})
+      get_property(_members GLOBAL PROPERTY "_ENGINE_GPU_ITEM:${_item}")
+      foreach(_test IN LISTS _members)
+        get_property(_dir GLOBAL PROPERTY "_ENGINE_GPU_TEST_DIR:${_test}")
+        set_property(TEST "${_test}" DIRECTORY "${_dir}" APPEND PROPERTY RESOURCE_LOCK "gpu_device.${_n}")
+        math(EXPR _count "${_count} + 1")
+      endforeach()
+    endforeach()
+    list(APPEND _summary "gpu_device.${_n} ${_count} tests ${_chain_load_${_k}} s")
+  endforeach()
+  string(JOIN ", " _summary ${_summary})
+  list(LENGTH _gpu_tests _total)
+  message(STATUS "GPU chains: ${ENGINE_TEST_GPU_CHAINS} over ${_total} gpu-labelled tests (${_summary} by cmake/test-costs.txt; ${_unmeasured} unmeasured)")
 endfunction()
 cmake_language(DEFER CALL _engine_finalize_tests)
 
@@ -293,9 +407,10 @@ if(ENGINE_PWSH)
     COMMAND "${ENGINE_PWSH}" -NoProfile -ExecutionPolicy Bypass
             -File "${CMAKE_SOURCE_DIR}/tools/export-game-sdk.Tests.ps1" -BuildDir "${CMAKE_BINARY_DIR}"
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
-  # `gpu` too, since its engine-view takes the lock: the finalize below gives it the GPU's
-  # resource lock with that, and `ctest -L gpu` lists it with the other tests that can wait.
-  set_tests_properties(tools.game_sdk PROPERTIES LABELS "tools;e2e;gpu" RESOURCE_LOCK "e2e_apps"
+  # `gpu` too, since its engine-view takes the lock: the finalize below gives it a GPU chain's
+  # resource lock with that, and `ctest -L gpu` lists it with the other tests that can wait; and
+  # `desktop`, since that engine-view is engine-view, which gives it the desktop's (engine_app).
+  set_tests_properties(tools.game_sdk PROPERTIES LABELS "tools;e2e;gpu;desktop"
     TIMEOUT ${_game_sdk_timeout} SKIP_RETURN_CODE 75)
 
   # The cost table's writer (tools/test-costs.ps1, cmake/test-costs.txt) over CTest logs and a

@@ -10,6 +10,8 @@
                        [-Out <cmake/test-costs.txt>]
   tools/test-costs.ps1 -Predict -BuildDir <build/<preset>> [-Table <file>] [-Tests <name>,...]
                        [-Cmake <cmake>]
+  tools/test-costs.ps1 -Whole -Log <LastTest.log>[,...] [-Tests <name>,... | -BuildDir <dir>]
+                       [-Label <name>,...] [-Out <cmake/test-costs.txt>]
 
   Every module and end-to-end test runs with doctest's `--duration=true` (roadmap T77), so a CTest
   log holds one line of seconds a test case, `0.123456 s: <case name>`, under the test that ran it.
@@ -45,6 +47,13 @@
   file the table does not name counts 0, and the line says how many there are. It is a prediction
   from one run's seconds, not a measurement.
 
+  -Whole writes a whole CTest test's seconds, `<test> * <whole seconds>  # <label>`, which the
+  configure deals the GPU chains by (roadmap T89; engine_deal_gpu_chains, cmake/EngineTestDeal.cmake;
+  docs/ci/what-to-run.md, "Two GPU chains"): the log's `Test time` less the waits the test's own
+  process printed, the slowest log's where several are given. The tests are -Tests by their CTest
+  names, or with -BuildDir every test that build labels `gpu` and that is not a part (a part is
+  costed by its files). Those tests' `*` rows are replaced and every other row kept.
+
   Exit 0 written or predicted, 1 refused, 2 usage.
 #>
 [CmdletBinding()]
@@ -56,6 +65,7 @@ param(
   [string]$CaseFiles,
   [string]$Out,
   [switch]$Predict,
+  [switch]$Whole,
   [string]$Table,
   [string]$Cmake
 )
@@ -147,6 +157,88 @@ if ($Predict) {
   exit 0
 }
 
+# A log's label: the name less `LastTest-` and `.log`, or a plain LastTest.log's build directory.
+function Get-LogLabel([string]$path) {
+  $name = [IO.Path]::GetFileNameWithoutExtension($path)
+  if ($name -match '^LastTest-(.+)$') { return $Matches[1] }
+  $dir = Split-Path -Parent (Resolve-Path -LiteralPath $path).Path
+  $parts = @(($dir -replace '\\', '/').Split('/') | Where-Object { $_ })
+  if ($parts.Count -ge 3 -and $parts[-1] -eq 'Temporary' -and $parts[-2] -eq 'Testing') { return $parts[-3] }
+  return $name
+}
+
+# ---- -Whole: a whole test's seconds, which the GPU chains are dealt by -----------------------------
+
+if ($Whole) {
+  if ($Log.Count -eq 0 -or ($Tests.Count -eq 0 -and -not $BuildDir)) {
+    Write-Host 'usage: tools/test-costs.ps1 -Whole -Log <LastTest.log>[,...] [-Tests <name>,... | -BuildDir <dir>] [-Label <name>,...] [-Out <file>]'
+    exit 2
+  }
+  if ($Label.Count -gt 0 -and $Label.Count -ne $Log.Count) { Write-Host "test-costs: $($Label.Count) label(s) for $($Log.Count) log(s)"; exit 2 }
+  if (-not $Out) { $Out = Join-Path $repo 'cmake/test-costs.txt' }
+  foreach ($l in $Log) { if (-not (Test-Path -LiteralPath $l)) { Write-Host "test-costs: no log at $l"; exit 1 } }
+  # Which tests: -Tests by their CTest names, or every test the build labels `gpu` that is not a
+  # part (a part is costed by its files, which move between parts; `--source-file=` marks one),
+  # read from its CTestTestfile.cmake files as -Predict reads them.
+  $names = @($Tests)
+  if ($names.Count -eq 0) {
+    if (-not (Test-Path -LiteralPath $BuildDir)) { Write-Host "test-costs: no build directory at $BuildDir"; exit 1 }
+    $parts = @{}
+    $gpu = @{}
+    foreach ($tf in @(Get-ChildItem -LiteralPath $BuildDir -Recurse -File -Filter 'CTestTestfile.cmake' | Where-Object { $_.FullName -notmatch '[\\/]_deps[\\/]' })) {
+      foreach ($line in [IO.File]::ReadLines($tf.FullName)) {
+        if ($line -match '^\s*add_test\(\s*\[=\[([^\]]+)\]=\]') {
+          $name = $Matches[1]
+          if ($line.Contains('--source-file=')) { $parts[$name] = $true }
+        }
+        if ($line -match '^\s*set_tests_properties\(\s*\[=\[([^\]]+)\]=\].*\bLABELS\s+"([^"]*)"') {
+          $name = $Matches[1]
+          if (($Matches[2] -split ';') -contains 'gpu') { $gpu[$name] = $true }
+        }
+      }
+    }
+    $names = Sort-Ordinal @($gpu.Keys | Where-Object { -not $parts.ContainsKey($_) })
+    if ($names.Count -eq 0) { Write-Host "test-costs: $BuildDir labels no unparted test gpu"; exit 1 }
+  }
+  # Per log: each named test's `Test time`, less the waits for the GPU lock its process printed
+  # (an end-to-end test's children wait out of sight, so its seconds can carry a wait). A test
+  # rerun in one log (after a skip) keeps its longest run.
+  $best = @{}
+  for ($i = 0; $i -lt $Log.Count; $i++) {
+    $lbl = if ($Label.Count) { $Label[$i] } else { Get-LogLabel $Log[$i] }
+    $cur = $null; $wait = 0.0
+    foreach ($line in [IO.File]::ReadLines($Log[$i])) {
+      if ($line -match '^\d+/\d+ Test: (\S+)$') { $cur = if ($Matches[1] -in $names) { $Matches[1] } else { $null }; $wait = 0.0; continue }
+      if (-not $cur) { continue }
+      if ($line -match 'gpu-lock: taken after (\d+(\.\d+)?) s') { $wait += [double]$Matches[1]; continue }
+      if ($line -match '^Test time =\s+(\d+(\.\d+)?) sec') {
+        $s = [math]::Max(1, [int][math]::Round([double]$Matches[1] - $wait))
+        if (-not $best.ContainsKey($cur) -or $s -gt $best[$cur].Seconds -or
+            ($s -eq $best[$cur].Seconds -and [string]::CompareOrdinal($lbl, $best[$cur].Label) -lt 0)) {
+          $best[$cur] = [pscustomobject]@{ Seconds = $s; Label = $lbl }
+        }
+        $cur = $null
+      }
+    }
+  }
+  if ($best.Count -eq 0) { Write-Host "test-costs: $($Log -join ', ') ran none of $($names -join ', ')"; exit 1 }
+  $header = @(); $keep = @()
+  if (Test-Path -LiteralPath $Out) {
+    $inHeader = $true
+    foreach ($line in [IO.File]::ReadAllLines($Out)) {
+      if ($inHeader -and ($line -match '^\s*#' -or $line -match '^\s*$')) { $header += $line; continue }
+      $inHeader = $false
+      if ($line -match '^\s*([A-Za-z0-9_.]+)\s+\*\s+\d+\s*(#.*)?$' -and $best.ContainsKey($Matches[1])) { continue }
+      if ($line -match '\S') { $keep += $line }
+    }
+  }
+  $rows = @((Sort-Ordinal @($best.Keys)) | ForEach-Object { "$_ * $($best[$_].Seconds)  # $($best[$_].Label)" })
+  [IO.File]::WriteAllText($Out, (((@($header) + @($keep) + $rows) -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding $false))
+  $missing = @($names | Where-Object { -not $best.ContainsKey($_) })
+  Write-Host ("test-costs: {0} whole test(s) from {1}; {2} not in any log{3}; wrote {4}" -f $rows.Count, (($Log | ForEach-Object { Split-Path -Leaf $_ }) -join ', '), $missing.Count, $(if ($missing.Count) { " ($($missing -join ', '))" } else { '' }), $Out)
+  exit 0
+}
+
 # ---- writing the table ---------------------------------------------------------------------------
 
 if ($Log.Count -eq 0 -or $Tests.Count -eq 0) {
@@ -157,15 +249,6 @@ if ($Log.Count -eq 0 -or $Tests.Count -eq 0) {
 if ($Label.Count -gt 0 -and $Label.Count -ne $Log.Count) { Write-Host "test-costs: $($Label.Count) label(s) for $($Log.Count) log(s)"; exit 2 }
 if (-not $Out) { $Out = Join-Path $repo 'cmake/test-costs.txt' }
 foreach ($l in $Log) { if (-not (Test-Path -LiteralPath $l)) { Write-Host "test-costs: no log at $l"; exit 1 } }
-
-function Get-LogLabel([string]$path) {
-  $name = [IO.Path]::GetFileNameWithoutExtension($path)
-  if ($name -match '^LastTest-(.+)$') { return $Matches[1] }
-  $dir = Split-Path -Parent (Resolve-Path -LiteralPath $path).Path
-  $parts = @(($dir -replace '\\', '/').Split('/') | Where-Object { $_ })
-  if ($parts.Count -ge 3 -and $parts[-1] -eq 'Temporary' -and $parts[-2] -eq 'Testing') { return $parts[-3] }
-  return $name
-}
 
 # One log: per CTest test, the executable it ran and the seconds of each case.
 function Read-Log([string]$path) {
