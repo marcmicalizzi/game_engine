@@ -600,6 +600,12 @@ bool bake_chain(const assets::MeshData& mesh, const TreeLevels& chain,
     m.double_sided = true;
     m.alpha_mode = assets::k_alpha_mask;
     m.alpha_cutoff = level.alpha_cutoff;
+    // The foliage's optics (R164; flora.md, "Foliage optics"), so a crown takes the light behind
+    // its cards the same way on either side of the change of form.
+    if (const u32 foliage = sward ? 0u : 1u; mesh.materials.size() > foliage) {
+      m.transmission = mesh.materials[foliage].transmission;
+      m.normal_spread = mesh.materials[foliage].normal_spread;
+    }
     geometry::ClusterFileMaterial material;
     material.base_color = m.base_color;
     material.metallic = m.metallic;
