@@ -1842,13 +1842,23 @@ A foliage switch is hidden by a dithered cross-fade across a band of projected e
 the threshold by default (`RenderSettings::lod_fade` half band, tunable `renderer.lod.fade` 0.1,
 `engine-view --lod-fade`; 0 switches at once), about 10 % of the distance. Across it both levels are
 drawn and **each pixel keeps one**: the cull pass computes each drawn pair's two splits
-(`geometry::lod_fade_split`) and writes them and the pair's instance to the view's fade table
+(`geometry::lod_fade_split`) and writes them and the pair's instance's seed to the view's fade table
 (`MaskTables::fade`; gfx.md), and every masked reader keeps the pixel where its stable hash of the
-pixel and the instance lies between them (`fade_keeps`, `alpha_mask.slang`) — screen-door transparency
+pixel and the seed lies between them (`fade_keeps`, `alpha_mask.slang`) — screen-door transparency
 through the masked variants' discard, so the visibility buffer keeps one id a pixel and the tie rule
-stands. Both sides of a transition hash the same pixels with the same seed (the instance, never the
-pair), so they are complementary: no holes, no doubles. The hash has nothing of the frame in it, so a
-still view does not shimmer. The ray path's loops hash the dispatch's pixel, the resolve's shadow rays
+stands. Both sides of a transition hash the same pixels with the same seed (the instance's, never the
+pair's), so they are complementary: no holes, no doubles. The hash has nothing of the frame in it, so a
+still view does not shimmer. **The seed is where the instance stands, never its index**
+(`fade_seed` in `scene.slang`: its cell and the bits of its offset into it, hashed). Until R170
+(2026-11-16) it was the instance's index, which is its place in the scene's layout and so the order
+the instances reached the renderer: the same placements handed over in another order — the near
+hand-off cells of `b65-G205`, or a tile's run arriving before its neighbour's — drew a different
+screen door on every masked pair inside a band, which on the engine meadow's eye-down view was 0.03 to
+0.38 % of a 4K frame, dotted lines along the blades within 2 m of the eye, each one instance changing
+which of its own two levels kept a pixel (the capture's ids: one instance, its clusters 641 and 673
+swapping pixel by pixel). A whole read and a streamed one place an instance at the same bits, so they
+draw one dither; `impostor_view_tests.cpp` ("the dither follows the placement") hands three oaks over
+in two orders across a band and holds every path's picture and ids equal. The ray path's loops hash the dispatch's pixel, the resolve's shadow rays
 the resolved pixel, and the cascades the shadow map's texel against a table of their own (their LOD
 can be scaled), so every path sees one of the two levels per sample. With the chain the finest leaves
 are alpha-tested even with no pack's image (flora.md), because an opaque side cannot dither: an
