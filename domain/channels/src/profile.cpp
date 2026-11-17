@@ -463,7 +463,10 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
       };
       t = descend(t);
       if (open_at(t)) t = descend(c.centre);
-      if (open_at(t)) t = c.centre;
+      // (Not where the line's point is a ridge, lower ground either side: no level there wets
+      // anything, and the line would be refused; the face's foot stays the bed.)
+      if (open_at(t) && !(row[c.centre - 1] < row[c.centre] && row[c.centre + 1] < row[c.centre]))
+        t = c.centre;
       c.thalweg[k] = t;
       c.bed[k] = row[t];
       // Each bank's crest: the highest ground reached walking out, before it falls away.
@@ -981,10 +984,13 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
     // else they are the flow's at the level before it is rounded to the description's
     // millimetre: half a millimetre is a tenth of a thin sheet's area, and where the area steps
     // (`bisect`) the rounded level may stand on the other side of the step.
-    // A station held at an edge with no bank (W131) stands over its bank too: the draw lays it
-    // with no margin past its wet edge, and leaves it out where it is a film.
+    // A station whose water stands over an edge with no bank (W131) is counted, and flagged over
+    // its bank only where its level was lowered to the brink: flagged, a shallow shooting sheet at
+    // the line is a film the draw leaves out (on v47 it took the gaps on lines over 30 % from 93 to
+    // 139).
     const bool lowered = held[index] != 0;
-    const bool over_bank = lowered || opened[index] != 0;
+    const bool over_bank = lowered;
+    if (opened[index] != 0) ++stats.open_bank;
     const f64 bed = between(o, c.bed);
     const Flow f = o.from != k_no_node
                        ? flow_of(o)
@@ -1029,9 +1035,7 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
     st.manning_n = f.n;
     st.flags = o.flags;
     if (over_bank) {
-      // How far the solved level stood over its bank, or the written one over its edge.
-      st.over_m = lowered ? o.level - level : level - between(o, c.edge);
-      if (opened[index] != 0) ++stats.open_bank;
+      st.over_m = o.level - level;
       st.flags |= scene_gen::k_channel_over_bank;
       ++stats.over_bank;
       if (st.over_m > stats.over_bank_worst_m) {

@@ -1565,6 +1565,13 @@ a new tile set (on the forest, 54 GB cooked again); the solve alone cannot move 
 - **The thalweg is the bed's.** Where the line names its bed's width, the walk from the lowest
   sample within the half width down to a hollow's bottom goes no further than that half width.
   Past it is the bank, and past the bank another hollow's ground.
+- **A walk that stops at the bed's edge with the ground still falling past it found a face, not a
+  hollow.** The cut's width with its swell (2.6 to 3.4 m on link 515) is wider than the floor a
+  bench across a steep slope keeps, so the lowest sample within it can be half-way down the face
+  beside the floor: after the first rule alone 80 of 515's 107 stations still under the ground had
+  nothing as low within half a metre of the line. Such a walk is taken again from the line's own
+  point (the hollow it drains to), and where that too runs off the edge the thalweg is the line's
+  point itself: the water stands at the line, held at its brink by the next rule.
 - **A side with no bank is an edge, not a bank to lower to.** A section whose ground falls away
   from the thalweg on one side (a bench whose downhill bank is missing) had its lower crest at the
   thalweg, so its level was written down to its own bed, a 5 mm film the draw leaves out. Water
