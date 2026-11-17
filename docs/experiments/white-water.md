@@ -178,13 +178,37 @@ first thing a budget cuts and are not in this leg; noted under the rows left.
   surface's Jacobian falls lowest, as the ocean literature does since Tessendorf), stage B patches
   carried with the water and decaying with an e-folding time of a few seconds (recalled about
   3.5 s; Callaghan et al.'s events 0.2 to 10.4 s).
+- **A gale must read as a gale** (the wind row's pictures at 20 m/s, about 3 m of sea at 6.6 s,
+  2026-11-16: no crest breaks, no whitecaps, no streaks, no spindrift, so a gale reads as a moderate
+  breeze, and the swash floods the beach as one flat white sheet). What the sea looks like by wind
+  is the Beaufort scale's own description (WMO): whitecaps begin at force 3 to 4 (about 4 to 7 m/s),
+  are everywhere at force 6 (11 to 14 m/s) with some spray; at force 7 (14 to 17 m/s) foam from
+  breaking waves is **blown in streaks along the wind**; at force 8 (17 to 21 m/s) crests break
+  into **spindrift** and the streaks are well marked; past it dense streaks and spray cut the
+  visibility. So the top tier draws, from the wind speed U and the sea's height: whitecap cover
+  W(U) as above (3.84 × 10⁻⁶ U^3.41: 2 % at 10 m/s, 10 % at 16, 21 % at 20, capped where the
+  literature's data end); **streaks along the wind** over about 10 m/s (stage B foam drawn out
+  along the wind's direction, their share rising to dense bands by 20 m/s); **spindrift**, spray
+  torn off the breaking crests and carried downwind over about 17 m/s; and on the shore, **a bore
+  with a lace of foam behind it at any wave height**: the breaker's white is a band at the bore's
+  front, opening behind it into the lace above, so a 3 m sea is a taller, faster, wider bore and
+  more lace, **never a flat white sheet**.
 - **The wind, read in one place.** Today's wind for a body is resolved once, at the scene's load, in
   `systems/renderer/src/scene_water.cpp` (`read_scene_water`'s `water.wind_m_s`: an open body
   takes the scene's wind, a closed one its own `wind_m_s`). The top tier's whitecap cover and spray
   read that value and nothing else; when the wind provider the other coordinator is building
   (`wind(place, time)`) lands, that one line is where it plugs in. (`gpu_scene.cpp`'s
   `swash_numbers` re-derives the same value for the swash; the next leg makes it read the same
-  field.)
+  field.) **Where the two branches meet** (the wind row, `b67-W136`, handed back 2026-11-16 at
+  f8dedacc): its `gfx::sea_state(desc, t, fetch)` (domain/gfx/wind.h) gives `wind_m_s`,
+  `sea_height_m` and the swell, `gfx::wind_gust` the gusts, the scene's wind is
+  `SceneData::wind` (a scene names it under `Sky.wind`; by hand `renderer.wind.speed_m_s` and
+  `renderer.wind.to_deg`) and a body's on the GPU side `GpuScene::water_wind_frame`. When this
+  row is stacked on it, the one line above becomes a read of `sea_state(...)` for the body (its
+  `wind_m_s` for the whitecaps', the streaks' and the spindrift's speed, its `sea_height_m` for the
+  breaker's type and the bore), and the GPU's whitecap pass reads the body's
+  `water_wind_frame`; nothing else in the white reads a wind. Its test scene for the gale is
+  `content/test-scenes/beach-wind` (on that branch).
 
 ### Cost, against the frame
 
