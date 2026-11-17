@@ -2043,12 +2043,15 @@ TEST_CASE("dynamic instances: indirect dispatches fold past 65,535 workgroups, t
       MESSAGE("vertex path: skipped, the device draws no indexed cut");
       continue;
     }
+    // The counts are read back a frame or two behind: the same view three times first.
+    for (u32 f = 0; f < 3; ++f)
+      REQUIRE_MESSAGE(rig.renderer.render_offscreen(frame_at(k_eye), &error), error);
     CapturedFrame shot;
     REQUIRE_MESSAGE(rig.renderer.capture(frame_at(k_eye), channels(), shot, &error), error);
     const FrameStats& last = rig.renderer.stats().last;
-    MESSAGE((software ? "software" : "vertex")
-            << ": " << rig.scene.pair_count() << " pairs, " << last.visible_sw << " drawn by "
-            << "software and " << last.visible_hw << " by hardware");
+    const std::string name = software ? "software" : "vertex";
+    MESSAGE(name << ": " << rig.scene.pair_count() << " pairs, " << last.visible_sw
+                 << " drawn by software and " << last.visible_hw << " by hardware");
     if (software) {
       REQUIRE(last.visible_sw > limit);
       const Vector<u32> sw =
@@ -2074,8 +2077,7 @@ TEST_CASE("dynamic instances: indirect dispatches fold past 65,535 workgroups, t
     CapturedFrame expected;
     REQUIRE_MESSAGE(reference(device, all, mesh, expected, error), error);
     const Difference d = compare(shot, expected);
-    MESSAGE((software ? "software" : "vertex")
-            << ": " << shot.covered << " pixels covered; " << d.ids << " id, " << d.depth
+    MESSAGE(name << ": " << shot.covered << " pixels covered; " << d.ids << " id, " << d.depth
             << " depth and " << d.color << " colour differences against the hardware path");
     CHECK(shot.covered == expected.covered);
     CHECK(d.ids == 0);
