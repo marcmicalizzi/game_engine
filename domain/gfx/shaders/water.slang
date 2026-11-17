@@ -1507,7 +1507,12 @@ float2 water_channel_white_top(float2 p, WaterChannelPhases ph, float2 along, fl
       smoothstep(k_channel_white_depth_from, k_channel_white_depth_full, dc);
   if (!(water_for_white > 0.0) || !(depth > 0.0)) return float2(0.0, 1.0);
   const float h = min(depth, k_white_plume_max_m);
-  const float clear_s = max(h, k_white_plume_min_m) / k_white_rise_mps;
+  // The plume under a step goes as deep as the step is high (a jet plunges about its drop), and a
+  // band stands for a step of the reach's fall over the bands' spacing, S V k_white_step_s: on the
+  // torrent's 35 % at 0.5 m/s, 35 cm, which clears in 1.4 s, 0.7 m behind the step.
+  const float plume = clamp(max(h, slope * section_speed * k_white_step_s), k_white_plume_min_m,
+                            k_white_plume_max_m);
+  const float clear_s = plume / k_white_rise_mps;
   float air = 0.0;
   // Steps: bands standing in the channel's frame.
   const float steep = water_channel_broken_share(slope, section_speed, depth) /
