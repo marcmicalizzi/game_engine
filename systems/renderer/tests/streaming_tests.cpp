@@ -10,6 +10,8 @@
 // clause; residency stays ancestor-closed and never drops a pinned page, which is what makes the
 // fallback crack-free; and a request is eventually served under an upload budget small enough that
 // it cannot be served at once.
+#include "test_device.h"
+
 #include <core/jobs/job_system.h>
 #include <core/math/math.h>
 #include <domain/geometry/cluster_file.h>
@@ -220,7 +222,7 @@ struct Harness {
   bool build(const SceneDesc& desc, const RenderSettings& settings, jobs::JobSystem* jobs = nullptr,
              SlowPageSource* slow = nullptr, u32 latency = 0, bool release = false) {
     std::string error;
-    if (!device.create(gfx::DeviceOptions{}, &error)) {
+    if (!device.create(renderer_test::device_options(), &error)) {
       skip = "device unavailable: " + error;
       return false;
     }

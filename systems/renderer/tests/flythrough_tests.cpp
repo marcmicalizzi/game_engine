@@ -6,6 +6,8 @@
 // here (a terrain with a ridge, cubes hidden behind it, a path that rises over it) and holds the
 // two properties the corpus leans on: the same path gives the same visible pairs frame by frame,
 // and occlusion culling changes no pixel anywhere on it while it does cull the hidden cubes.
+#include "test_device.h"
+
 #include <core/json/json_value.h>
 #include <core/math/math.h>
 #include <core/memory/memory.h>
@@ -304,7 +306,7 @@ struct Gpu {
   bool ok = false;
   Gpu() {
     std::string error;
-    if (!device.create(gfx::DeviceOptions{}, &error)) {
+    if (!device.create(renderer_test::device_options(), &error)) {
       why = "no Vulkan device: " + error;
       return;
     }

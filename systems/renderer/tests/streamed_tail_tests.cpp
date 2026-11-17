@@ -8,6 +8,8 @@
 // through the pool is the picture it was, with the layer and without it, and with the scene loaded
 // to take a tail or not; the ray path's visibility is the rasterizer's word for word over the tail
 // with shadow casters on; the boxes cast traced shadows; and a block that leaves traces nothing.
+#include "test_device.h"
+
 #include <core/jobs/job_system.h>
 #include <core/math/math.h>
 #include <domain/gfx/device.h>
@@ -43,7 +45,7 @@ struct Gpu {
   bool ok = false;
   Gpu() {
     std::string error;
-    if (!device.create(gfx::DeviceOptions{}, &error)) {
+    if (!device.create(renderer_test::device_options(), &error)) {
       why = "no Vulkan device: " + error;
       return;
     }

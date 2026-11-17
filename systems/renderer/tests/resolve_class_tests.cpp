@@ -5,6 +5,8 @@
 // exactly one class; every class a pixel holds is drawn (a class left out leaves its pixels the
 // clear, and the picture says so); and a renderer made with the split off builds none of it.
 
+#include "test_device.h"
+
 #include <core/math/math.h>
 #include <core/math/world.h>
 #include <domain/gfx/device.h>
@@ -36,7 +38,7 @@ struct Gpu {
   bool ok = false;
   Gpu() {
     std::string error;
-    if (!device.create(gfx::DeviceOptions{}, &error)) {
+    if (!device.create(renderer_test::device_options(), &error)) {
       why = "no Vulkan device: " + error;
       return;
     }

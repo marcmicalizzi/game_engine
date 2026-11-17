@@ -4,6 +4,8 @@
 // generated palm drawn through the pool's flora stage: in no wind it is the rigid palm to the bit,
 // in a wind it sways, and the same frames with the same walker draw the same bytes.
 #if ENGINE_RENDERER_TESTS_FLORA
+#include "test_device.h"
+
 #include <domain/flora/flora.h>
 #endif
 #include <domain/geometry/flora_species.h>
@@ -361,7 +363,7 @@ struct Gpu {
   bool ok = false;
   Gpu() {
     std::string error;
-    if (!device.create(gfx::DeviceOptions{}, &error)) {
+    if (!device.create(renderer_test::device_options(), &error)) {
       why = "no Vulkan device: " + error;
       return;
     }

@@ -5,6 +5,8 @@
 //
 // Compiled in every configuration: with the flora capability it links it, as a host does, so its
 // registrar is what makes the name one the reader knows; without it, the refusal is what is tested.
+#include "test_device.h"
+
 #include <domain/gfx/device.h>
 #include <foundation/image/png.h>
 #include <systems/renderer/camera_path.h>
@@ -191,7 +193,7 @@ struct Gpu {
   bool ok = false;
   Gpu() {
     std::string error;
-    if (!device.create(gfx::DeviceOptions{}, &error)) {
+    if (!device.create(renderer_test::device_options(), &error)) {
       why = "no Vulkan device: " + error;
       return;
     }

@@ -22,6 +22,8 @@
 //
 // Compiled where the sky capability is (its "earth" provider); each GPU case skips with a message
 // where there is no device.
+#include "test_device.h"
+
 #include <domain/gfx/capture.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/display.h>
@@ -71,7 +73,7 @@ struct Gpu {
   bool ok = false;
   Gpu() {
     std::string error;
-    if (!device.create(gfx::DeviceOptions{}, &error)) {
+    if (!device.create(renderer_test::device_options(), &error)) {
       why = "no Vulkan device: " + error;
       return;
     }

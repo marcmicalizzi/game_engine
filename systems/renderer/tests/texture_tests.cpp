@@ -16,6 +16,8 @@
 // `.tex` the container's records name, as `engine-content build --cache` would — or with no cache
 // at all, which is the decoded path. Skipped with a message on a machine with no Vulkan device, as
 // every renderer test is.
+#include "test_device.h"
+
 #include <core/hash/hash.h>
 #include <core/math/math.h>
 #include <domain/gfx/device.h>
@@ -177,7 +179,7 @@ struct Harness {
   bool build(const std::string& mesh, const std::string& ddc, bool cache = true,
              f32 texel_density = 0.0f) {
     std::string error;
-    if (!device.create(gfx::DeviceOptions{}, &error)) {
+    if (!device.create(renderer_test::device_options(), &error)) {
       skip = "device unavailable: " + error;
       return false;
     }
@@ -961,7 +963,7 @@ TEST_CASE("renderer: kit members that sample one image upload it once and draw t
 
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
+  if (!device.create(renderer_test::device_options(), &error)) {
     MESSAGE("device unavailable: " << error);
     return;
   }

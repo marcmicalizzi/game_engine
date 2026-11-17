@@ -16,6 +16,8 @@
 //   And a frame at clock value T is the same bytes reached frame by frame or by a jump.
 // - The instrument's long series (a capture a game second for a game minute) is a measurement, run
 //   by name, skipped by default.
+#include "test_device.h"
+
 #include <core/math/math.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/ground_detail.h>
@@ -227,7 +229,7 @@ struct Gpu {
   bool ok = false;
   Gpu() {
     std::string error;
-    if (!device.create(gfx::DeviceOptions{}, &error)) {
+    if (!device.create(renderer_test::device_options(), &error)) {
       why = "no Vulkan device: " + error;
       return;
     }

@@ -19,6 +19,7 @@
 // Compiled only where the terrain capability is; each case skips with a message where there is no
 // device.
 #include "terrain_hex_reference.h"
+#include "test_device.h"
 
 #include <core/hash/hash.h>
 #include <core/jobs/job_system.h>
@@ -64,7 +65,7 @@ struct Gpu {
   bool ok = false;
   Gpu() {
     std::string error;
-    if (!device.create(gfx::DeviceOptions{}, &error)) {
+    if (!device.create(renderer_test::device_options(), &error)) {
       why = "no Vulkan device: " + error;
       return;
     }
@@ -1648,7 +1649,7 @@ TEST_CASE(
   channels.depth = true;
   channels.normals = true;
   for (const Path& path : paths) {
-    gfx::DeviceOptions options;
+    gfx::DeviceOptions options = renderer_test::device_options();
     if (path.capacity) {
       options.overrides.absent.push_back("VK_EXT_mesh_shader");
       options.overrides.absent.push_back("geometryShader");

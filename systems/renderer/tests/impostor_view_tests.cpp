@@ -3,6 +3,8 @@
 // the masked variants and lit through its baked normals matches the full geometry's picture within
 // a stated error — the proof that the bake, the container, the texture step and the draw agree.
 
+#include "test_device.h"
+
 #include <domain/gfx/device.h>
 #include <systems/renderer/camera_path.h>
 #include <systems/renderer/capture.h>
@@ -32,7 +34,7 @@ struct Gpu {
   bool ok = false;
   Gpu() {
     std::string error;
-    if (!device.create(gfx::DeviceOptions{}, &error)) {
+    if (!device.create(renderer_test::device_options(), &error)) {
       why = "no Vulkan device: " + error;
       return;
     }

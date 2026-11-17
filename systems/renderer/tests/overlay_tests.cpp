@@ -17,6 +17,8 @@
 // - **A debug view on HDR10** (no linear path) draws the overlay too, encoded by its own shader:
 //   the white is paper white there as well.
 
+#include "test_device.h"
+
 #include <domain/gfx/device.h>
 #include <domain/gfx/display.h>
 #include <domain/gfx/visibility_resolve.h>
@@ -49,7 +51,7 @@ struct Gpu {
   bool ok = false;
   Gpu() {
     std::string error;
-    if (!device.create(gfx::DeviceOptions{}, &error)) {
+    if (!device.create(renderer_test::device_options(), &error)) {
       why = "no Vulkan device: " + error;
       return;
     }

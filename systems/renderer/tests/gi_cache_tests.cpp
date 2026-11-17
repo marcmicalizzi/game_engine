@@ -23,6 +23,8 @@
 //
 // Every case skips where the machine cannot trace (the cache traces the shadow rays' query).
 
+#include "test_device.h"
+
 #include <core/math/math.h>
 #include <core/math/world.h>
 #include <core/memory/memory.h>
@@ -274,7 +276,7 @@ struct Gpu {
   bool ok = false;
   Gpu() {
     std::string error;
-    if (!device.create(gfx::DeviceOptions{}, &error)) {
+    if (!device.create(renderer_test::device_options(), &error)) {
       why = "no Vulkan device: " + error;
       return;
     }

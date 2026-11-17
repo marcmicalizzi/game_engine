@@ -19,6 +19,8 @@
 //
 // The scene is the procedural heightfield as a grid of instances, so it needs no content. The GPU
 // cases skip on a device without cluster acceleration structures and ray queries.
+#include "test_device.h"
+
 #include <core/log/log.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/resources.h>
@@ -161,7 +163,7 @@ TEST_CASE("rt index space: compact casters share the drawn bound without refusin
 TEST_CASE("rt reporting: final scene settings and typed creation differences under a tiny budget") {
   gfx::Device device;
   std::string error;
-  if (!device.create({}, &error) || !traces(device)) {
+  if (!device.create(renderer_test::device_options(), &error) || !traces(device)) {
     MESSAGE("cluster ray tracing unavailable: " << error);
     return;
   }
@@ -447,7 +449,7 @@ TEST_CASE("rt capacity: the floor holds half the last minute's peak, and halves 
 TEST_CASE("rt capacity: removing the last untraced tile restores the frame estimate") {
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error) || !traces(device)) {
+  if (!device.create(renderer_test::device_options(), &error) || !traces(device)) {
     MESSAGE("tracing unavailable: " << error);
     return;
   }
@@ -618,7 +620,7 @@ TEST_CASE("rt capacity: the cache's ceiling is a sixty-fourth of the device, 256
 TEST_CASE("rt capacity: a scene with no budget named takes the device's, and says so") {
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error) || !traces(device)) {
+  if (!device.create(renderer_test::device_options(), &error) || !traces(device)) {
     MESSAGE("cluster ray tracing unavailable: " << error);
     return;
   }
@@ -717,7 +719,7 @@ TEST_CASE("rt capacity: the drop order is the prefix, then the rings inside out 
 TEST_CASE("rt capacity: a chain sized by the frame draws what a chain sized by the scene draws") {
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
+  if (!device.create(renderer_test::device_options(), &error)) {
     MESSAGE("device unavailable: " << error);
     return;
   }
@@ -819,7 +821,7 @@ TEST_CASE("rt capacity: a chain sized by the frame draws what a chain sized by t
 TEST_CASE("rt capacity: past the budget a frame drops whole instances and costs only shadows") {
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
+  if (!device.create(renderer_test::device_options(), &error)) {
     MESSAGE("device unavailable: " << error);
     return;
   }
@@ -942,7 +944,7 @@ TEST_CASE("rt cache: rigid structures built once trace the per-frame build's byt
   ScopedTunable on("renderer.rt.cache", "true");  // whatever the default (true since R106)
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error) || !traces(device)) {
+  if (!device.create(renderer_test::device_options(), &error) || !traces(device)) {
     MESSAGE("tracing unavailable: " << error);
     return;
   }
@@ -1034,7 +1036,7 @@ TEST_CASE("rt chain: thousands of small rigid instances build what the frame dra
   ScopedTunable on("renderer.rt.cache", "true");
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error) || !traces(device)) {
+  if (!device.create(renderer_test::device_options(), &error) || !traces(device)) {
     MESSAGE("tracing unavailable: " << error);
     return;
   }
@@ -1128,7 +1130,7 @@ TEST_CASE("rt cache: a full cache evicts the least recently drawn and the pictur
   ScopedTunable on("renderer.rt.cache", "true");  // whatever the default (true since R106)
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error) || !traces(device)) {
+  if (!device.create(renderer_test::device_options(), &error) || !traces(device)) {
     MESSAGE("tracing unavailable: " << error);
     return;
   }
@@ -1225,7 +1227,7 @@ TEST_CASE("rt cache: a frame wanting more than the cache holds builds the rest i
   ScopedTunable on("renderer.rt.cache", "true");  // whatever the default (true since R106)
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error) || !traces(device)) {
+  if (!device.create(renderer_test::device_options(), &error) || !traces(device)) {
     MESSAGE("tracing unavailable: " << error);
     return;
   }
@@ -1308,7 +1310,7 @@ TEST_CASE(
     "rt capacity: a resize swapped in while frames are in flight draws what a whole chain draws") {
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error) || !traces(device)) {
+  if (!device.create(renderer_test::device_options(), &error) || !traces(device)) {
     MESSAGE("tracing unavailable: " << error);
     return;
   }
@@ -1468,7 +1470,7 @@ TEST_CASE("rt capacity: a two-minute window holds the chain between a walk's vie
 TEST_CASE("rt capacity: a chain in chunks stepped on the worker draws what a whole chain draws") {
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error) || !traces(device)) {
+  if (!device.create(renderer_test::device_options(), &error) || !traces(device)) {
     MESSAGE("tracing unavailable: " << error);
     return;
   }
@@ -1562,7 +1564,7 @@ TEST_CASE("rt capacity: a chain in chunks stepped on the worker draws what a who
 TEST_CASE("rt capacity: a step of the cache's references swapped in flight draws the same") {
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error) || !traces(device)) {
+  if (!device.create(renderer_test::device_options(), &error) || !traces(device)) {
     MESSAGE("tracing unavailable: " << error);
     return;
   }
@@ -1719,7 +1721,7 @@ TEST_CASE("rt capacity: a rising demand is met without a short frame") {
 TEST_CASE("rt capacity: a frame's record names the capacity it was built against") {
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error) || !traces(device)) {
+  if (!device.create(renderer_test::device_options(), &error) || !traces(device)) {
     MESSAGE("tracing unavailable: " << error);
     return;
   }
@@ -1852,7 +1854,7 @@ ChainBytes chain_bytes(const gfx::Device& device, const GpuScene& scene) {
 TEST_CASE("rt capacity: the drop order's scan on every frame writes the one-thread rule's bytes") {
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error) || !traces(device)) {
+  if (!device.create(renderer_test::device_options(), &error) || !traces(device)) {
     MESSAGE("tracing unavailable: " << error);
     return;
   }
@@ -1919,7 +1921,7 @@ TEST_CASE(
     "rt capacity: a first build at a new capacity costs what a build at an unchanged one does") {
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error) || !traces(device)) {
+  if (!device.create(renderer_test::device_options(), &error) || !traces(device)) {
     MESSAGE("tracing unavailable: " << error);
     return;
   }
