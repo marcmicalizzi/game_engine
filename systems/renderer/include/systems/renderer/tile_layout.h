@@ -23,8 +23,14 @@
 // declared share of the dispatch the pairs are **numbered again where the slots stand** (T154):
 // every block exactly its pairs, a free run none, no slot written, and what moved said as runs of
 // slots (`PairShift`). Until T154 that laid every tile out again and wrote the whole table — 59 ms
-// of the frame's thread at the forest's 349,000 slots, then 20 ms a table set to stage it. Only a
-// caller's request, and free slots past the share, still lay everything out again.
+// of the frame's thread at the forest's 349,000 slots, then 20 ms a table set to stage it. **Free
+// slots past half the share close a few blocks a change** (T164): the block that ends the table
+// moves into the smallest free run before it that holds it, as long as the change has moved fewer
+// than `move_slots` slots, and the pairs are numbered again behind it — so a change writes the
+// slots it moved and no others. Until T164 free slots past the share laid every tile out again (the
+// owner's walk of the forest: ten such changes of 14,000 to 253,000 slots, 5 to 60 ms of the
+// frame's thread each and 1 to 18 ms a table set). Only a caller's request, and free slots past
+// twice the share that the moves have not closed, still lay everything out again.
 
 #include <core/base/types.h>
 #include <core/containers/hash_map.h>
@@ -83,6 +89,12 @@ inline constexpr u32 k_compact_min_holes = 4096;
 inline constexpr u32 k_compact_min_free_slots = 4096;
 // `renderer.tiles.compact_pct`: the share above, read once when a dynamic scene is created.
 u32 tile_compact_pct_tunable() noexcept;
+// The most slots one change moves to close free slots at the end (T164): about 4 ms of the frame's
+// thread to write and 1 ms a table set to stage at the forest's cost a slot, so a change that moves
+// stays under a frame. 0 moves none, and free slots then lay everything out again past the share,
+// as before T164. `renderer.tiles.move_slots`, read by `TileLayout::reset`.
+inline constexpr u32 k_default_move_slots = 16384;
+u32 tile_move_slots_tunable() noexcept;
 
 // The run a block of `count` is given: `granularity` times the smallest of 1..8 at or above it, and
 // past eight granules the smallest of eight steps an octave (9, 10, ..., 16, 18, 20, ..., 32, 36,
@@ -137,6 +149,9 @@ struct TileLayoutChange {
   // written are the runs `apply` returns. Until T137 at the cap and T154 under it this laid every
   // tile out again and wrote every slot, 52 to 86 ms of the frame's thread at the forest's 300,000.
   bool tight = false;
+  // Blocks moved from the end of the table into a free run before them, to close free slots past
+  // half the share (T164): each one's old slots written null and its new ones written whole.
+  u32 moved = 0;
 };
 
 class TileLayout {
@@ -156,8 +171,11 @@ class TileLayout {
     u32 keep_pairs = 0;
   };
 
-  // Empty, behind the load's own instances and pairs, which never move.
+  // Empty, behind the load's own instances and pairs, which never move; the most slots a change
+  // moves read from `renderer.tiles.move_slots`.
   void reset(u32 static_instances, u32 static_pairs) noexcept;
+  // The most slots a change moves to close free slots at the end (T164); 0 moves none.
+  void set_move_slots(u32 slots) noexcept { move_slots_ = slots; }
 
   // The live block of `key`, or null.
   const TileBlock* find(u64 key) const noexcept;
@@ -175,10 +193,13 @@ class TileLayout {
   // of the pairs the cull dispatches (and `k_compact_min_holes`), the pairs alone are numbered
   // again (`TileLayoutChange::tight`), the writes carry the new numbers, and `shifts` (when given)
   // gets the runs of slots whose first pair that moved — a block's by its distance, a free run's
-  // set to its one number — written or not; the caller drops the ones it writes. Only
-  // `force_compact`, or free slots past `compact_pct` percent of the table (and
-  // `k_compact_min_free_slots`) after a numbering, lay everything out again in the requests' order
-  // (`TileLayoutChange::compacted`, every slot written, `shifts` empty).
+  // set to its one number — written or not; the caller drops the ones it writes. Free slots past
+  // half of `compact_pct` percent of the table (and `k_compact_min_free_slots`) move the blocks at
+  // its end into free runs before them, up to `move_slots` slots a change (T164,
+  // `TileLayoutChange::moved`), and the pairs are numbered again. Only `force_compact`, or free
+  // slots past `compact_pct` percent of the table after a numbering — twice that while blocks may
+  // move — lay everything out again in the requests' order (`TileLayoutChange::compacted`, every
+  // slot written, `shifts` empty).
   bool apply(std::span<const Request> requests, u32 compact_pct, bool force_compact, u32 max_pairs,
              Vector<SlotWrite>& writes, TileLayoutChange& change, std::string* error = nullptr,
              Vector<PairShift>* shifts = nullptr);
@@ -230,6 +251,7 @@ class TileLayout {
   bool place(const Request& request, u32 source, u32 max_pairs, TileBlock& out,
              Vector<SlotWrite>& writes, TileLayoutChange& change, bool& number_again);
   void number_pairs_again(Vector<SlotWrite>& writes, Vector<PairShift>* shifts, u32 max_pairs);
+  bool move_last_blocks(u32 compact_pct, Vector<SlotWrite>& writes, TileLayoutChange& change);
   void trim() noexcept;
   void lay_out_again(std::span<const Request> requests, Vector<SlotWrite>& writes);
   void index() noexcept;
@@ -241,6 +263,7 @@ class TileLayout {
   u32 live_instances_ = 0;
   u32 live_pairs_ = 0;
   u32 compact_pct_ = k_default_compact_pct;  // the change's share, for `place`
+  u32 move_slots_ = k_default_move_slots;    // the most slots a change moves (T164)
   Vector<TileBlock> live_;                   // in the order the last change's requests named them
   Vector<FreeRun> free_;                     // sorted by position
   HashMap<u64, u32> by_key_;                 // key -> index into live_

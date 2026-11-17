@@ -312,6 +312,9 @@ TEST_CASE("tile layout: a forest-sized numbering writes no slot and hands on a r
   constexpr u32 k_tiles = 5000;
   TileLayout layout;
   layout.reset(64, 100000);
+  // The numbering alone: a quarter of the slots free is past half the share too, which since T164
+  // also moves blocks from the end (the next case's subject, which writes the slots it moves).
+  layout.set_move_slots(0);
   Vector<Request> all;
   for (u32 t = 0; t < k_tiles; ++t)
     all.push_back(tile(t + 1, t * 70, 70, 2870));
@@ -356,6 +359,242 @@ TEST_CASE("tile layout: a forest-sized numbering writes no slot and hands on a r
           << " slots; layout " << std::chrono::duration<double, std::milli>(laid - start).count()
           << " ms, two composes "
           << std::chrono::duration<double, std::milli>(composed - laid).count() << " ms");
+}
+
+namespace {
+
+// Every live block's instances where it says, in its order, on its pairs (`per_instance(key)`
+// each), nothing live outside a block, and the table sorted by first pair: what the cull's search
+// needs. One answer for the whole table, so a forest-sized table costs no assertion a slot.
+template <typename PerInstance>
+bool table_matches(const TileLayout& layout, const Vector<Slot>& table, u32 static_instances,
+                   PerInstance per_instance, std::string& why) {
+  for (u32 s = 1; s < layout.instance_end(); ++s) {
+    if (table[s].first_pair < table[s - 1].first_pair) {
+      why = "the table is not sorted at slot " + std::to_string(s);
+      return false;
+    }
+  }
+  u64 live = 0;
+  for (const TileBlock& block : layout.blocks()) {
+    u32 pair = block.pair_begin;
+    for (u32 k = 0; k < block.instances; ++k) {
+      const Slot& slot = table[block.inst_begin + k];
+      if (!slot.live || slot.key != block.key || slot.index != k || slot.first_pair != pair) {
+        why = "block " + std::to_string(block.key) + " instance " + std::to_string(k) +
+              " is not where its block says";
+        return false;
+      }
+      pair += per_instance(block.key);
+    }
+    live += block.instances;
+  }
+  u64 named = 0;
+  for (u32 s = static_instances; s < layout.instance_end(); ++s)
+    named += table[s].live ? 1u : 0u;
+  if (named != live) {
+    why = "slots outside a block hold instances";
+    return false;
+  }
+  return true;
+}
+
+// The slots a change wrote with a block's instances (null runs not counted).
+u64 live_written(std::span<const SlotWrite> writes) {
+  u64 written = 0;
+  for (const SlotWrite& write : writes)
+    written += write.source != ~u32{0} ? write.inst_count : 0u;
+  return written;
+}
+
+}  // namespace
+
+// T164. The free slots a walk's tiles leave behind close a few blocks a change: the forest
+// staging's tail at its size, every third tile leaving, so a third of the table's slots are free —
+// past the share once the pairs are numbered. Until T164 that laid every tile out again (the
+// owner's walk of the forest after batch 66: ten such changes of 14,000 to 253,000 slots, up to 60
+// ms of the frame's thread and 18 ms a table set). Now each change moves the blocks at the end into
+// the holes before them, at most `k_default_move_slots` slots, and numbers the pairs behind them;
+// repeated, the table closes, nothing is laid out again, and the table is right after every change.
+TEST_CASE("tile layout: free slots close by moving the blocks at the end, a budget a change") {
+  constexpr u32 k_tiles = 5000;
+  constexpr u32 k_static = 64;
+  TileLayout layout;
+  layout.reset(k_static, 100000);
+  layout.set_move_slots(k_default_move_slots);
+  Vector<Request> all;
+  Vector<Vector<u32>> pairs_all;
+  for (u32 t = 0; t < k_tiles; ++t) {
+    all.push_back(tile(t + 1, t * 70, 70, 2870));
+    pairs_all.push_back(Vector<u32>(70, 41u));
+  }
+  Vector<SlotWrite> writes;
+  Vector<PairShift> shifts;
+  TileLayoutChange change;
+  std::string error;
+  Vector<Slot> table(k_static);
+  for (u32 s = 0; s < k_static; ++s) {
+    table[s].first_pair = s * 1000;
+    table[s].live = true;
+  }
+  const auto take = [&](std::span<const Request> requests, std::span<const Vector<u32>> pairs_of) {
+    apply_writes(std::span<const SlotWrite>(writes.data(), writes.size()), requests, pairs_of,
+                 layout.instance_end(), table);
+    drop_written(shifts, std::span<const SlotWrite>(writes.data(), writes.size()));
+    apply_shifts(std::span<const PairShift>(shifts.data(), shifts.size()), table);
+  };
+  REQUIRE(layout.apply(std::span<const Request>(all.data(), all.size()), 25, false, 1u << 24,
+                       writes, change, &error, &shifts));
+  take(std::span<const Request>(all.data(), all.size()),
+       std::span<const Vector<u32>>(pairs_all.data(), pairs_all.size()));
+  const u32 full_end = layout.instance_end();
+  Vector<Request> left;
+  Vector<Vector<u32>> pairs_left;
+  for (u32 t = 0; t < k_tiles; ++t) {
+    if (t % 3 == 1) continue;
+    left.push_back(tile(t + 1, static_cast<u32>(left.size()) * 70, 70, 2870, true));
+    pairs_left.push_back(Vector<u32>(70, 41u));
+  }
+  const std::span<const Request> requests(left.data(), left.size());
+  const std::span<const Vector<u32>> pairs_of(pairs_left.data(), pairs_left.size());
+  u32 changes = 0;
+  u32 moved = 0;
+  u64 most_written = 0;
+  double first_ms = 0.0;  // the change the tiles leave in: 1,667 blocks freed, then the moves
+  double worst_ms = 0.0;  // the changes after it, which only move
+  for (; changes < 64; ++changes) {
+    const auto start = std::chrono::steady_clock::now();
+    REQUIRE(layout.apply(requests, 25, false, 1u << 24, writes, change, &error, &shifts));
+    const double ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    if (changes == 0) {
+      first_ms = ms;
+    } else {
+      worst_ms = std::max(worst_ms, ms);
+    }
+    CHECK_FALSE(change.compacted);
+    take(requests, pairs_of);
+    REQUIRE_MESSAGE(layout.validate(&error), error);
+    REQUIRE_MESSAGE(table_matches(layout, table, k_static, [](u64) { return 41u; }, error), error);
+    // A change writes the blocks it moved and nothing else: every tile came back the same.
+    const u64 written = live_written(std::span<const SlotWrite>(writes.data(), writes.size()));
+    REQUIRE(written <= k_default_move_slots);
+    REQUIRE(written == u64{change.moved} * 72u);
+    most_written = std::max(most_written, written);
+    moved += change.moved;
+    if (change.moved == 0) break;
+    // The tiles that did not move kept their slots: a move is a block given back and placed.
+    CHECK(change.tight);
+  }
+  // Closed: under half the share of free slots, the table shorter by the slots that left, and no
+  // change past the budget on the way.
+  CHECK(changes > 1);
+  CHECK(moved > 0);
+  CHECK(u64{layout.free_slots()} * 200 <= 25u * u64{layout.instance_end()});
+  CHECK(layout.instance_end() < full_end);
+  MESSAGE("forest-sized close: " << changes << " changes moved " << moved << " blocks, at most "
+                                 << most_written << " slots written a change (was every one of "
+                                 << left.size() * 70 << "), " << layout.free_slots()
+                                 << " slots free of " << layout.instance_end()
+                                 << "; layout of the leaving change " << first_ms
+                                 << " ms, of a change that only moves at most " << worst_ms
+                                 << " ms");
+  // Off, the same holes lay everything out again, as before T164.
+  TileLayout off;
+  off.reset(k_static, 100000);
+  off.set_move_slots(0);
+  REQUIRE(off.apply(std::span<const Request>(all.data(), all.size()), 25, false, 1u << 24, writes,
+                    change, &error));
+  REQUIRE(off.apply(requests, 25, false, 1u << 24, writes, change, &error));
+  CHECK(change.compacted);
+  CHECK(change.moved == 0);
+}
+
+// T164's moves under a random world of tiles large enough to pass `k_compact_min_free_slots`: the
+// table right after every change, a tile that came back the same keeps its slots unless the change
+// moved it, and free slots never left past twice the share.
+TEST_CASE("tile layout: a random world of large tiles moves blocks and keeps every tile right") {
+  std::mt19937 rng(20261116);
+  constexpr u32 k_static = 3;
+  TileLayout layout;
+  layout.reset(k_static, 500);
+  layout.set_move_slots(2048);  // small beside the tiles, so a close takes several changes
+  constexpr u32 k_tiles = 40;
+  struct Tile {
+    bool present = false;
+    u32 kind = 0;
+  };
+  Tile tiles[k_tiles];
+  const u32 kinds[4][2] = {{300, 1}, {1200, 2}, {2000, 1}, {700, 7}};  // instances, pairs each
+  Vector<Slot> table(k_static);
+  for (u32 s = 0; s < k_static; ++s) {
+    table[s].first_pair = s * 100;
+    table[s].live = true;
+  }
+  Vector<SlotWrite> writes;
+  Vector<PairShift> shifts;
+  TileLayoutChange change;
+  std::string error;
+  u32 moved = 0;
+  u32 compactions = 0;
+  for (u32 step = 0; step < 200; ++step) {
+    for (Tile& t : tiles) {
+      const u32 roll = rng() % 16;
+      if (roll == 0) t.present = !t.present;
+      if (roll == 1) t.kind = rng() % 4;
+    }
+    u32 slot_before[k_tiles];
+    for (u32 k = 0; k < k_tiles; ++k) {
+      const TileBlock* held = layout.find(k + 1);
+      slot_before[k] = held != nullptr ? held->inst_begin : ~u32{0};
+    }
+    Vector<Request> requests;
+    Vector<Vector<u32>> pairs_of;
+    u32 first = 0;
+    for (u32 k = 0; k < k_tiles; ++k) {
+      if (!tiles[k].present) continue;
+      const u32 instances = kinds[tiles[k].kind][0];
+      const TileBlock* held = layout.find(k + 1);
+      const bool same = held != nullptr && held->instances == instances &&
+                        held->pairs == instances * kinds[tiles[k].kind][1];
+      requests.push_back(tile(k + 1, first, instances, instances * kinds[tiles[k].kind][1], same));
+      pairs_of.push_back(Vector<u32>(instances, kinds[tiles[k].kind][1]));
+      first += instances;
+    }
+    REQUIRE_MESSAGE(layout.apply(std::span<const Request>(requests.data(), requests.size()), 25,
+                                 false, 1u << 24, writes, change, &error, &shifts),
+                    error);
+    compactions += change.compacted ? 1u : 0u;
+    moved += change.moved;
+    REQUIRE_MESSAGE(layout.validate(&error), error);
+    // A tile that came back the same keeps its slots, or the change moved it.
+    u32 kept_moved = 0;
+    for (const Request& request : requests) {
+      if (!request.same || change.compacted) continue;
+      const TileBlock* held = layout.find(request.key);
+      REQUIRE(held != nullptr);
+      if (held->inst_begin != slot_before[request.key - 1]) ++kept_moved;
+    }
+    REQUIRE(kept_moved <= change.moved);
+    apply_writes(std::span<const SlotWrite>(writes.data(), writes.size()),
+                 std::span<const Request>(requests.data(), requests.size()),
+                 std::span<const Vector<u32>>(pairs_of.data(), pairs_of.size()),
+                 layout.instance_end(), table);
+    drop_written(shifts, std::span<const SlotWrite>(writes.data(), writes.size()));
+    apply_shifts(std::span<const PairShift>(shifts.data(), shifts.size()), table);
+    REQUIRE_MESSAGE(table_matches(
+                        layout, table, k_static,
+                        [&tiles, &kinds](u64 key) { return kinds[tiles[key - 1].kind][1]; }, error),
+                    error);
+    // Never left past twice the share once the pairs are numbered: past it everything is laid out
+    // again.
+    if (change.tight && layout.free_slots() >= k_compact_min_free_slots)
+      REQUIRE(u64{layout.free_slots()} * 100 <= 50u * u64{layout.instance_end()});
+  }
+  MESSAGE("200 random changes of large tiles: " << moved << " blocks moved, " << compactions
+                                                << " laid out again, last " << layout.free_slots()
+                                                << " slots free of " << layout.instance_end());
+  CHECK(moved > 0);
 }
 
 TEST_CASE("pair shifts: composed, cut and found as a table of slots would take them one by one") {
