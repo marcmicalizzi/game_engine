@@ -291,6 +291,7 @@ struct StepRun {
   Counted c;
   FallStats stats;
   f64 seat[4] = {};
+  f64 foot_seat[4] = {};
   f64 pit[4] = {};
   u32 knickpoints = 0;
   bool ok = false;
@@ -317,14 +318,27 @@ StepRun run_steps(f64 cross, u64 seed, bool move) {
   r.stats = set.stats;
   r.knickpoints = trunk->knickpoints;
   const u32 m = trunk->line.size();
-  for (u32 k = 0; k < 4; ++k)
+  for (u32 k = 0; k < 4; ++k) {
+    // The cliff's fall ends at its last knickpoint within 3 m of it; what lies below is its foot,
+    // which W131.2 seats by its own read of the hillside across the line. The foot is read over
+    // the three points after it, inside the reach the seat left unread until then (a metre and
+    // two of the line's steps from a knickpoint).
+    u32 last = m;
+    for (u32 i = 0; i < m && i < trunk->knick.size(); ++i) {
+      const f64 x = trunk->line[i].at.x;
+      if (x >= k_step_x[k] - 3 && x <= k_step_x[k] + 3 && trunk->knick[i]) last = i;
+    }
     for (u32 i = 0; i < m && i < trunk->seat.size(); ++i) {
       const f64 x = trunk->line[i].at.x;
       if (x < k_step_x[k] - 3 || x > k_step_x[k] + 3) continue;
-      r.seat[k] = std::max(r.seat[k], static_cast<f64>(trunk->seat[i]));
+      if (last == m || i <= last)
+        r.seat[k] = std::max(r.seat[k], static_cast<f64>(trunk->seat[i]));
+      else if (i <= last + 3)
+        r.foot_seat[k] = std::max(r.foot_seat[k], static_cast<f64>(trunk->seat[i]));
       for (u32 j = i + 1; j < m && trunk->line[j].at.x < k_step_x[k] + 3; ++j)
         r.pit[k] = std::max(r.pit[k], trunk->bed[j] - trunk->bed[i]);
     }
+  }
   for (const Fall& f : set.falls)
     if (f.link == index && static_cast<FallKind>(f.kind) >= FallKind::Plunge &&
         (f.critical_um < 10000 || f.knick != 1))
@@ -430,6 +444,32 @@ TEST_CASE("falls: no seat is read across a cliff, so each is one fall with no pi
       CHECK(r.c.drop[k] >= k_step_h[k] - .75);
     }
     CHECK(r.stats.tiered == 0);
+  }
+}
+
+// **A fall's foot has its downhill bank** (W131.2; channels.md, "A line across a slope"). Since
+// W122 no point within a metre and two steps of a knickpoint was seated, the foot's too, so a
+// fall on a hillside landed on a bench with no downhill bank and its water ran down the slope
+// beside the line (the forest's `region link 515`, stations 713 to 724, 1.5 to 3.9 m under the
+// ground at the line). On 6333e0c3 every foot's seat is 0. This scene does not fail first: its
+// line runs at the toe of a bench a metre wide whose edge is the feet's downhill bank, so they
+// read a seat of 0 to 2.6 cm. Held, so the foot's read cannot become the step's again: on the
+// fall line no seat at the foot, across a hillside never more than its fall over a metre, and
+// the lip and the face above stay unseated (the case above). The forest's count is the measure
+// (channels.md, "A line across a slope").
+TEST_CASE("falls: a fall's foot reads its own bank, never the step's height") {
+  for (const StepCase& sc : k_step_cases) {
+    const StepRun r = run_steps(sc.cross, sc.seed, sc.move);
+    REQUIRE(r.ok);
+    for (u32 k = 1; k < 4; ++k) {
+      CAPTURE(sc.cross);
+      CAPTURE(sc.seed);
+      CAPTURE(k);
+      MESSAGE("cross " << sc.cross << ", seed " << sc.seed << ", the " << k_step_h[k]
+                       << " m cliff: the foot's seat " << r.foot_seat[k] << " m, above it "
+                       << r.seat[k] << " m");
+      CHECK(r.foot_seat[k] <= sc.cross + .05);
+    }
   }
 }
 
