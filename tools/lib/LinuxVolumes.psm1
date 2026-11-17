@@ -446,7 +446,15 @@ function Get-PresetScript {
   # exit status 0: a -Test run printed "ok" over a compile error (2026-09-23, docs/ci/local-linux.md).
   $lines += 'set -eo pipefail'
   $lines += $script:CcacheReport
-  if ($Rebuild) { $lines += "rm -rf /src/build/$Name" }
+  # -Rebuild removes the preset's tree but ninja's two records, `.ninja_log` (each edge's command
+  # hash) and `.ninja_deps` (the headers each object read). The third-party objects live under
+  # /deps/<preset>, outside the tree, and survive either way; with the records gone ninja knew
+  # nothing of them and rebuilt all 635 (roadmap T25). Kept, the regenerated build.ninja names the
+  # same commands for them and ninja leaves them alone, while the engine's own objects, CMake's
+  # cache and every generated file go as before.
+  if ($Rebuild) {
+    $lines += "if [ -d /src/build/$Name ]; then find /src/build/$Name -mindepth 1 -maxdepth 1 ! -name .ninja_log ! -name .ninja_deps -exec rm -rf {} +; fi"
+  }
   # FETCHCONTENT_UPDATES_DISCONNECTED stops a git-based dependency re-running `git fetch` on a
   # reconfigure should one ever be populated the ordinary way (a configure without the cache).
   #
