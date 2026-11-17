@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "T164",
+  "reason": "T164: renderer.md gains 'Free slots close at the end, a few blocks a change' (the cause on the owner's walk, the rule, what it changes, what holds it) and the moved case in the tail's lay-out list",
+  "date": "2026-11-16",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/renderer.md": 4012
+  }
+}
