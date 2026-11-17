@@ -78,7 +78,7 @@ struct Granular @version(2) {
 }
 
 /// A rock face: crystals, joints, a weathering rind against fresh breaks, lichen.
-struct Rock @version(2) {
+struct Rock @version(3) {
   /// The crystal (or sand grain) size, micrometres.
   grain_um: u32 = 3500
   minerals: Constituent[] = []
@@ -110,6 +110,10 @@ struct Rock @version(2) {
   moss_permille: u32 = 0 @since(2)
   /// The largest lichen thallus' diameter, millimetres (thalli run from 2 mm up to it).
   lichen_max_mm: u32 = 60 @since(2)
+  /// How strongly the weathering stain's broad patches (about 15 cm across) tone the rind and
+  /// the fresh breaks, thousandths of a rock's: 1000 a rock's, 0 none (a limewash, renewed,
+  /// carries no rind's stain; matgen.md, "A building's surfaces").
+  stain_permille: u32 = 1000 @since(3)
 }
 
 /// A ground floor: moss and soil under litter under live leaves, with the structure a standing eye

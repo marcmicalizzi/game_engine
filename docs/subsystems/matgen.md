@@ -437,7 +437,13 @@ and are stated as that, not as a model of the material:
   roof's UVs run u up its slope. What it lacks is what makes a thatch a thatch close to: the
   stems' cut ends at the eave, the ridge's pattern, netting (the courses' steps are the
   structures' mesh now, [structures](structures.md#roofs)).
-- **`plaster/lime` is the kind `rock`** with nothing growing on it.
+- **`plaster/lime` is the kind `rock`** with nothing growing on it and **no rock's stain**
+  (`Rock::stain_permille` 0, since `k_matgen_version` 11). The kind tones a rind and even a fresh
+  break by a broad stain field, patches about 15 cm across swinging the colour 0.92 to 1.08 and
+  more under a rind; on a limewash those were the dark blots of the forest's need 143 (about 3 %
+  on an inside wall, the same with the bounce's cache off). A wash renewed every few years carries
+  no rind's iron stain; what wears on it is the render showing through and the rain's streaks,
+  which the recipe keeps. Every rock keeps its stain at the default 1000, to the byte.
 - **`stone/flag` and `stone/rubble` are the kind `masonry`** (below) since version 9. The first
   pictures of a house said why: a jointed rock face reads as cracked rock, not laid flags, and a
   bed of clasts in a matrix reads as cobbles, not a wall somebody coursed.

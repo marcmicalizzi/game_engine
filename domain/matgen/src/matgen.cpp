@@ -92,8 +92,9 @@ bool validate_set(const Set& set, std::string& error) {
           r.rind_r_permille > 1500 || r.rind_g_permille > 1500 || r.rind_b_permille > 1500)
         return fail(error, "a rock share or tint is out of range");
       if (r.laminae > 64) return fail(error, "rock.laminae is over 64");
-      if (r.form_um > 200000 || r.streak_permille > 1000 || r.moss_permille > 1000)
-        return fail(error, "rock form, streak or moss is out of range");
+      if (r.form_um > 200000 || r.streak_permille > 1000 || r.moss_permille > 1000 ||
+          r.stain_permille > 1000)
+        return fail(error, "rock form, streak, moss or stain is out of range");
       if (r.lichen_max_mm < 4 || r.lichen_max_mm > 300)
         return fail(error, "rock.lichen_max_mm is out of range (4 to 300)");
       break;
@@ -747,7 +748,10 @@ Set ground_turf() {
 
 // Limewash over a lime render: one pale constituent worn here and there to the render under it,
 // no joint, the float's undulation of a few millimetres, the rain's streaks under the eaves, and
-// nothing growing on it (a wall limewashed again every few years).
+// nothing growing on it (a wall limewashed again every few years). No rock's stain: the kind tones
+// even a fresh break by a broad stain field (about 15 cm patches, a swing of 0.92 to 1.08 and more
+// under a rind), and on a limewash those were dark blots of 3 % in a room, the same with the
+// bounce's cache off (the forest's need 143; matgen.md, "A building's surfaces").
 Set plaster_lime() {
   Set s = base("plaster/lime", Kind::rock, 0x6c696d6577617368ull, 2000);
   s.stochastic = true;
@@ -762,6 +766,7 @@ Set plaster_lime() {
   r.pits_permille = 20;
   r.form_um = 6000;
   r.streak_permille = 200;
+  r.stain_permille = 0;
   return s;
 }
 
