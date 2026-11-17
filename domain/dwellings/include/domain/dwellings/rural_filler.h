@@ -26,7 +26,7 @@
 
 namespace engine::dwellings {
 
-inline constexpr u32 k_rural_filler_version = 2;
+inline constexpr u32 k_rural_filler_version = 3;
 
 // The rectangle of a plot a house may stand in: its length along the lane and its depth away from
 // it, centimetres. The filler never looks at the ground: whoever places the house (a village
@@ -34,6 +34,9 @@ inline constexpr u32 k_rural_filler_version = 2;
 struct RuralPlot {
   i32 frontage_cm = 0;
   i32 depth_cm = 0;
+  // The most storeys a house here may have (G208: a cottage's plot, an entry of one storey). The
+  // household's ask and every smaller plan above it are passed over; 2 is every plan.
+  u8 storeys_max = 2;
 };
 
 // Who lives there. `means` is 0 for a labourer's household, 1 for a husbandman's, 2 for a

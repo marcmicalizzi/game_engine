@@ -34,8 +34,10 @@ namespace {
 // 3: a stair's well runs 30 cm past its first riser, so a walker on the first treads has its crown
 // clear of the upper floor's edge (MSVC msvc-release; GCC in the container). And on 2026-11-16
 // (0x19bf9170cb041fd7 before it), G208: two houses of sixteen are stone-faced, their outer walls'
-// role `stone/rubble` in place of the limewash, by a draw of their own (MSVC msvc-debug).
-constexpr u64 k_descriptions_pin = 0x969c1e91469a7cf8ull;
+// role `stone/rubble` in place of the limewash, by a draw of their own; and at
+// k_rural_filler_version 3 a smaller plot never gives a household more storeys than it asked or
+// than the plot allows (MSVC msvc-debug).
+constexpr u64 k_descriptions_pin = 0x1dbed3833524ec80ull;
 
 bool near_cm(f32 metres, i32 cm) {
   const f32 d = metres * 100.0f - static_cast<f32>(cm);

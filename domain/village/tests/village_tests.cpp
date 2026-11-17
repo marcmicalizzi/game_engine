@@ -993,13 +993,19 @@ TEST_CASE("village: houses differ by household, each household fits its house, a
   CHECK(plan.refused == 0);
   u32 one = 0, two = 0, fitted = 0;
   for (const Plot& q : plan.plots) {
-    if (q.state != PlotState::built || q.kind != PlotKind::tenement) continue;
+    if (q.state != PlotState::built) continue;
     JsonValue d;
     std::string text;
     REQUIRE_MESSAGE(describe_house(p, plan, q.house, d, text, error), error);
     const JsonValue& f = *d.find("filler");
     const JsonValue& hh = *d.find("household");
     const u64 storeys = f.find("storeys")->as_uint();
+    // A cottage is of one storey: the storeys a plot is allowed are the most its house has.
+    if (q.kind == PlotKind::cottage) {
+      CHECK(storeys == 1);
+      CHECK(f.find("type")->as_string() != std::string_view("two-up-two-down"));
+      continue;
+    }
     const std::string type{f.find("type")->as_string()};
     const u64 persons = hh.find("persons")->as_uint();
     one += storeys == 1 ? 1u : 0u;

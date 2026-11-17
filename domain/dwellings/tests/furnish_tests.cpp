@@ -21,7 +21,9 @@ namespace {
 
 // Taken on MSVC 19.44 (msvc-debug) on 2026-11-15 at k_furnish_version 1, k_interior_version 2 and
 // k_rural_filler_version 2.
-constexpr u64 k_furnishing_pin = 0x1aa941cf067715ceull;
+// And at k_rural_filler_version 3 (G208; 0x1aa941cf067715ce before): the same furnisher over the
+// filler's houses, fewer of which are two-up two-downs.
+constexpr u64 k_furnishing_pin = 0x0da968d6a8cc2b6eull;
 
 u32 count_kind(const Furnishing& f, PieceKind kind, u32 room) {
   u32 n = 0;

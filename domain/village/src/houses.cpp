@@ -524,6 +524,8 @@ Draw house_draw(const HouseAsk& ask) noexcept {
   Draw w;
   w.plot.frontage_cm = static_cast<i32>((ask.frontage_mm - 1000) / 10);
   w.plot.depth_cm = static_cast<i32>((ask.depth_mm - ask.setback_mm) / 10);
+  // The storeys asked are the most the house may have (a cottage's one), never a count it must.
+  w.plot.storeys_max = ask.storeys >= 2 ? u8{2} : u8{1};
   w.household.persons = static_cast<u8>(3 + mix64(ask.seed) % 6);
   w.drawn_persons = w.household.persons;
   // Sixteenths, so a one-storey ask (r % 2) keeps the draw it had.
