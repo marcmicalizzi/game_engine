@@ -320,7 +320,7 @@ TEST_CASE("caves: nothing a mouth's cells draw stands in the open air over the g
         const f64 h = caves::test::hill_height(&hill, x_mm, z_mm);
         // The steepest the ground is within a cube's diagonal of the column (the valley floor's
         // kink is flat on one side of it and the slope on the other).
-        const i64 reach = std::llround(std::sqrt(2.0) * step * 1000.0);
+        const i64 reach = std::llround(std::sqrt(2.0) * static_cast<f64>(step) * 1000.0);
         f64 steepest = 0.0;
         for (i64 dx = -reach; dx <= reach; dx += reach) {
           for (i64 dz = -reach; dz <= reach; dz += reach) {
@@ -331,7 +331,7 @@ TEST_CASE("caves: nothing a mouth's cells draw stands in the open air over the g
             steepest = std::max(steepest, std::sqrt(gx * gx + gz * gz));
           }
         }
-        const f64 bound = 0.05 + steepest * std::sqrt(2.0) * step;
+        const f64 bound = 0.05 + steepest * std::sqrt(2.0) * static_cast<f64>(step);
         worst = std::max(worst, y - h);
         if (y - h > bound) ++here;
       }
