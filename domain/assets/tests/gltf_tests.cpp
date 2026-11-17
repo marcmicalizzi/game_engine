@@ -1,3 +1,4 @@
+#include <core/hash/hash.h>
 #include <domain/assets/gltf.h>
 #include <domain/geometry/cluster.h>
 #include <foundation/io/vfs.h>
@@ -368,6 +369,46 @@ TEST_CASE("gltf: a BLEND material with a base colour image is read as MASK") {
   CHECK(std::fabs(mesh.materials[0].alpha_cutoff - 0.25f) < 1e-6f);
 }
 
+// R164-3 (review B4): `KHR_materials_diffuse_transmission` splits the base colour, 1 - t reflected
+// and t transmitted, so the two never sum past it; the import keeps that split (the base colour
+// factor times 1 - t, the transmittance as its share t / (1 - t), at most 1), and reads nothing on
+// a one-sided material.
+TEST_CASE("gltf: diffuse transmission splits the base colour, never adding to it") {
+  const TempDir tmp("engine_assets_gltf_transmission");
+  const Cube cube = make_cube();
+  REQUIRE(io::write_file(io::join_path(tmp.path(), "cube.bin"), view_of(cube_buffer(cube))) ==
+          io::Status::Ok);
+  for (const f32 t : {0.3f, 0.75f}) {
+    CAPTURE(t);
+    std::string json = cube_json("cube.bin");
+    const std::string ext = std::string(", \"extensions\": {\"KHR_materials_diffuse_transmission\":") +
+                            " {\"diffuseTransmissionFactor\": " + std::to_string(t) + "}}";
+    for (const std::string_view anchor : {std::string_view("\"doubleSided\": true"),
+                                          std::string_view("\"alphaMode\": \"BLEND\"")}) {
+      const std::size_t at = json.find(anchor);
+      REQUIRE(at != std::string::npos);
+      json.insert(at + anchor.size(), ext);
+    }
+    const std::string path = io::join_path(tmp.path(), "leaf.gltf");
+    REQUIRE(io::write_file(path, json) == io::Status::Ok);
+    MeshData mesh;
+    std::string error;
+    REQUIRE_MESSAGE(load_gltf(path, mesh, &error), error);
+    REQUIRE(mesh.materials.size() == 2u);
+    const Material& leaf = mesh.materials[0];
+    const f32 kept = 1.0f - t;
+    CHECK(length(leaf.base_color - Vec4(0.25f * kept, 0.5f * kept, 0.75f * kept, 1.0f)) < 1e-6f);
+    const f32 share = t >= 0.5f ? 1.0f : t / (1.0f - t);
+    CHECK(std::fabs(leaf.transmission - share) < 1e-6f);
+    // Reflected plus transmitted, channel by channel, is the base colour or less.
+    const f32 blue = leaf.base_color.z * (1.0f + leaf.transmission);
+    CHECK(blue <= 0.75f + 1e-6f);
+    // The one-sided material beside it reads none of it.
+    CHECK(mesh.materials[1].transmission == 0.0f);
+    CHECK(length(mesh.materials[1].base_color - Vec4(1.0f, 0.5f, 0.25f, 1.0f)) < 1e-6f);
+  }
+}
+
 TEST_CASE("gltf: the source hash answers to the glTF and to the buffers it names") {
   const TempDir tmp("engine_assets_gltf_hash");
   const Cube cube = make_cube();
@@ -424,6 +465,36 @@ TEST_CASE("gltf: the source hash answers to the glTF and to the buffers it names
   REQUIRE(io::write_file(junk, "not a glTF document") == io::Status::Ok);
   CHECK_FALSE(source_mesh_hash(junk, ignored, &error));
   CHECK(ignored == 0);
+}
+
+// R164-3 (review B2): a file that states `KHR_materials_diffuse_transmission` on a two-sided
+// material is read differently since R164, so its key moves: an entry built before (the bytes and
+// the buffer alone, as every other file's key still is) is never read for it again.
+TEST_CASE("gltf: a file stating diffuse transmission takes a key of its own") {
+  const TempDir tmp("engine_assets_gltf_transmission_key");
+  const Cube cube = make_cube();
+  const std::vector<std::uint8_t> binary = cube_buffer(cube);
+  REQUIRE(io::write_file(io::join_path(tmp.path(), "cube.bin"), view_of(binary)) ==
+          io::Status::Ok);
+  const std::string anchor = "\"doubleSided\": true";
+  for (const bool stated : {false, true}) {
+    CAPTURE(stated);
+    std::string json = cube_json("cube.bin");
+    if (stated) {
+      const std::size_t at = json.find(anchor);
+      REQUIRE(at != std::string::npos);
+      json.insert(at + anchor.size(), ", \"extensions\": {\"KHR_materials_diffuse_transmission\":"
+                                      " {\"diffuseTransmissionFactor\": 0.3}}");
+    }
+    const std::string path = io::join_path(tmp.path(), "leaf.gltf");
+    REQUIRE(io::write_file(path, json) == io::Status::Ok);
+    u64 key = 0;
+    std::string error;
+    REQUIRE_MESSAGE(source_mesh_hash(path, key, &error), error);
+    const u64 bytes_alone = hash_combine(hash_bytes(json.data(), json.size()),
+                                         hash_bytes(binary.data(), binary.size()));
+    CHECK((key != bytes_alone) == stated);
+  }
 }
 
 TEST_CASE("gltf: a .glb built in memory loads like the .gltf") {

@@ -1,0 +1,12 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "R164-3",
+  "reason": "R164-3 mends four review findings on foliage (the energy cap, the tracer's density, the traced hit's ambient, the keys) and the scene bounds' order; each lands its why on the page that holds the feature",
+  "date": "2026-11-17",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/renderer.md": 2410,
+    "page:docs/subsystems/apps.md": -102,
+    "page:docs/subsystems/flora.md": 669
+  }
+}

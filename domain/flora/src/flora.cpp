@@ -1,5 +1,6 @@
 // The flora file, its key, and the container the solver's mesh is built into (flora.h).
 #include "fern_lod.h"
+#include "kit.h"
 #include "maturity.h"
 #include "species.h"
 
@@ -375,10 +376,24 @@ std::string canonical_flora_json(const FloraFile& file) {
   return write_json(canonical, compact);
 }
 
+u64 fold_foliage_optics(u64 h) noexcept {
+  for (const f32 optic : {detail::k_leaf_transmission, detail::k_needle_transmission,
+                          detail::k_needle_spread})
+    h = hash_combine(h, hash_bytes(&optic, sizeof(optic)));
+  return h;
+}
+
 u64 flora_source_hash(const FloraFile& file) {
   const std::string canonical = canonical_flora_json(file);
   u64 h = hash_bytes(canonical.data(), canonical.size());
   h = hash_combine(h, hash_bytes(file.species.data(), file.species.size()));
+  // The foliage optics every part here declares (kit.h, R164), folded into **every** species' key
+  // (R164-3, review B2): a leaf's or a needle's optics are in its container's bytes, and five of
+  // the species families key on a version of their own rather than `k_flora_version`, so R164's
+  // optics left their entries in place to draw as sheets. Folding the numbers themselves, not
+  // bumping five versions, moves every key the next time they change without anyone remembering
+  // which families carry leaves.
+  h = fold_foliage_optics(h);
   if (file.regeneration) return hash_combine(h, k_regeneration_version);
   if (alpine_profile(file.species) != nullptr) return hash_combine(h, k_alpine_version);
   if (shrub_profile(file.species) != nullptr) return hash_combine(h, k_shrub_growth_version);
@@ -600,6 +615,12 @@ bool bake_chain(const assets::MeshData& mesh, const TreeLevels& chain,
     m.double_sided = true;
     m.alpha_mode = assets::k_alpha_mask;
     m.alpha_cutoff = level.alpha_cutoff;
+    // The foliage's optics (R164; flora.md, "Foliage optics"), so a crown takes the light behind
+    // its cards the same way on either side of the change of form.
+    if (const u32 foliage = sward ? 0u : 1u; mesh.materials.size() > foliage) {
+      m.transmission = mesh.materials[foliage].transmission;
+      m.normal_spread = mesh.materials[foliage].normal_spread;
+    }
     geometry::ClusterFileMaterial material;
     material.base_color = m.base_color;
     material.metallic = m.metallic;
@@ -618,7 +639,11 @@ bool bake_chain(const assets::MeshData& mesh, const TreeLevels& chain,
     material.emissive_image = geometry::encode_optional_image(-1);
     material.emissive = m.emissive;
     material.normal_scale = 1.0f;
-    material.alpha = geometry::encode_alpha_word(m.alpha_mode, m.double_sided, m.alpha_cutoff);
+    // A far level keeps its part's foliage optics (R164), so a crown does not change how it takes
+    // light behind it where its form changes.
+    material.alpha = geometry::alpha_word_with_foliage(
+        geometry::encode_alpha_word(m.alpha_mode, m.double_sided, m.alpha_cutoff), m.transmission,
+        m.normal_spread);
     out.materials.push_back(material);
     out.material_sampling.push_back(
         geometry::encode_material_sampling(m.sampling, m.occlusion_strength));
@@ -851,7 +876,9 @@ bool build_flora_container(const FloraFile& file, const geometry::ClusterLodOpti
     material.emissive_image = geometry::encode_optional_image(m.emissive_image);
     material.emissive = m.emissive;
     material.normal_scale = m.normal_scale;
-    material.alpha = geometry::encode_alpha_word(m.alpha_mode, m.double_sided, m.alpha_cutoff);
+    material.alpha = geometry::alpha_word_with_foliage(  // R164: the part's foliage optics
+        geometry::encode_alpha_word(m.alpha_mode, m.double_sided, m.alpha_cutoff), m.transmission,
+        m.normal_spread);
     out.materials.push_back(material);
     out.material_sampling.push_back(
         geometry::encode_material_sampling(m.sampling, m.occlusion_strength));
@@ -891,8 +918,11 @@ bool build_flora_container(const FloraFile& file, const geometry::ClusterLodOpti
   // opaque side could only switch whole.
   if (has_chain && out.materials.size() > 1 &&
       geometry::alpha_word_mode(out.materials[1].alpha) == assets::k_alpha_opaque) {
-    out.materials[1].alpha = geometry::encode_alpha_word(
-        assets::k_alpha_mask, geometry::alpha_word_double_sided(out.materials[1].alpha), 0.5f);
+    const u32 was = out.materials[1].alpha;
+    out.materials[1].alpha = geometry::alpha_word_with_foliage(
+        geometry::encode_alpha_word(assets::k_alpha_mask, geometry::alpha_word_double_sided(was),
+                                    0.5f),
+        geometry::alpha_word_transmit(was), geometry::alpha_word_spread(was));
   }
   if (file.species == "sward") {
     out.materials[0].alpha = geometry::encode_alpha_word(assets::k_alpha_mask, true, .5f);

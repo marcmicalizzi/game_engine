@@ -836,6 +836,22 @@ bool collect_materials(const cgltf_data& data, MeshData& out, std::string* error
       entry.alpha_cutoff = 0.5f;
     }
     entry.double_sided = source.double_sided != 0;
+    // KHR_materials_diffuse_transmission on a two-sided material (R164; R164-3, review B4): glTF
+    // moves t of the diffuse into transmission, so the base colour reflects 1 - t of itself and
+    // t goes through. The base colour factor takes the 1 - t (glTF's texture multiplies it, so a
+    // textured leaf splits the same way) and the transmittance is stated as its share of what is
+    // left, t / (1 - t), at most 1: above t = 1/2 the engine transmits what it reflects, less
+    // than glTF's t, and never more than one in all. Its colour factor and textures are not read:
+    // one colour, the base colour's, serves both sides (renderer.md, "Foliage lit from both sides").
+    if (entry.double_sided && source.has_diffuse_transmission != 0) {
+      const f32 t = source.diffuse_transmission.diffuse_transmission_factor;
+      if (t > 0.0f) {
+        const f32 kept = t < 1.0f ? 1.0f - t : 0.0f;
+        entry.base_color = Vec4(entry.base_color.x * kept, entry.base_color.y * kept,
+                                entry.base_color.z * kept, entry.base_color.w);
+        entry.transmission = t >= 0.5f ? 1.0f : t / (1.0f - t);
+      }
+    }
     out.materials.push_back(std::move(entry));
   }
   return true;
@@ -1228,6 +1244,19 @@ bool source_mesh_hash(std::string_view path, u64& out, std::string* error) {
   for (cgltf_size i = 0; i < document.data->materials_count; ++i) {
     if (blend_read_as_mask(document.data->materials[i])) {
       hash = hash_combine(hash, u64{0x424c454e444d534bull});  // "BLENDMSK"
+      break;
+    }
+  }
+  // The same for a two-sided material that states `KHR_materials_diffuse_transmission` (R164-3,
+  // review B2): since R164 its foliage optics are in the container and since R164-3 its base colour
+  // is split by the factor, so an entry built before either would draw the leaf as a sheet lit from
+  // the eye's side alone. The tag names the reading; a new reading of it takes a new tag. A bump of
+  // `k_cluster_cache_version` would have moved every generated container's key in the tree.
+  for (cgltf_size i = 0; i < document.data->materials_count; ++i) {
+    const cgltf_material& material = document.data->materials[i];
+    if (material.double_sided != 0 && material.has_diffuse_transmission != 0 &&
+        material.diffuse_transmission.diffuse_transmission_factor > 0.0f) {
+      hash = hash_combine(hash, u64{0x4b48524454523031ull});  // "KHRDTR01"
       break;
     }
   }

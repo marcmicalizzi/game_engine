@@ -74,7 +74,7 @@ The camera is a plain struct, and `orbit_camera(center, radius, distance, frame)
 
 ## The frame's origin
 
-**The camera is a world position, and the frame's origin** ([ADR-0053](../adr/0053-world-positions-are-f64-and-the-gpu-sees-none.md), 2026-10-05; gfx.md, ["The frame's origin"](gfx.md#the-frames-origin)). `Camera::position` and `target` are `WorldPos` (f64), and a frame's one origin is the eye: `frame_eye(camera)` is the `WorldEye` every pass is given (`CullParams::eye`, `ResolveParams::eye`, the path tracer's, the top-level records' dispatch; the rasterizers read the view's cull block through `ClusterDrawParams::eye`). `ViewSet::update` builds every view's matrices with the eye at the origin, from the camera's direction (`camera_forward`: the f64 difference of its two points, normalized in f64, rounded once), so `View::view_proj` maps the frame's space to clip space and every pass's `camera` is zero. A scene's instances carry `WorldPos` translations on the CPU (`SceneInstance::origin` plus the float `transform`, added in f64 with the mesh's fit, `instance_translation`; a placement generator's placement sets `origin` to its `WorldPos` and the transform to its rotation and scale alone, in the scene reader's `expand_placements` and the world's placements consumer, so a prop stands within the local's rounding, 1.9 µm, of where its generator put it anywhere — [scene_gen](scene_gen.md#placements-far-from-the-origin), 2026-10-06) and `WorldCell`s on the GPU (`gfx::InstanceDesc`), and `SceneData::center` is a `WorldPos`, framed by `update_scene_bounds` in a float frame at the first instance's cell's corner and placed in f64.
+**The camera is a world position, and the frame's origin** ([ADR-0053](../adr/0053-world-positions-are-f64-and-the-gpu-sees-none.md), 2026-10-05; gfx.md, ["The frame's origin"](gfx.md#the-frames-origin)). `Camera::position` and `target` are `WorldPos` (f64), and a frame's one origin is the eye: `frame_eye(camera)` is the `WorldEye` every pass is given (`CullParams::eye`, `ResolveParams::eye`, the path tracer's, the top-level records' dispatch; the rasterizers read the view's cull block through `ClusterDrawParams::eye`). `ViewSet::update` builds every view's matrices with the eye at the origin, from the camera's direction (`camera_forward`: the f64 difference of its two points, normalized in f64, rounded once), so `View::view_proj` maps the frame's space to clip space and every pass's `camera` is zero. A scene's instances carry `WorldPos` translations on the CPU (`SceneInstance::origin` plus the float `transform`, added in f64 with the mesh's fit, `instance_translation`; a placement generator's placement sets `origin` to its `WorldPos` and the transform to its rotation and scale alone, in the scene reader's `expand_placements` and the world's placements consumer, so a prop stands within the local's rounding, 1.9 µm, of where its generator put it anywhere — [scene_gen](scene_gen.md#placements-far-from-the-origin), 2026-10-06) and `WorldCell`s on the GPU (`gfx::InstanceDesc`), and `SceneData::center` is a `WorldPos`, framed by `update_scene_bounds` in a float frame at the corner of the lowest cell the instances hold (x, then y, then z) and placed in f64. It was the first instance's cell until R164-3: the frame's rounding is in the centre and the radius, which place the stand-in lights, so the same placements in another order were lit from a few micrometres away, and once foliage took light through its back (R164) two leaves of `impostor view: the dither follows the placement` drew a blue code apart; the box and the sphere are a min and a max, and the corner is now chosen by one too, so no order of the instances moves them.
 
 **What the CPU rewrites each frame, and what it does not.** Nothing about an instance: the GPU measures each from the eye, the top-level records' transforms included, which `tlas_references.slang` writes in the dispatch that writes their bottom-level addresses. The lights are rebased on the CPU (`frame_lighting(..., eye)`: two stand-in point lights at the scene's centre plus an orbit, measured from the eye in f64, and the four fires nearest it, `add_fire_lights`), at most `k_frame_lights` (six) a frame, which costs nothing; each light's `WorldCell` on the GPU, as instances have, waits for a scene with many (roadmap W65, deferred). The rays' float offset (`FrameLighting::shadow_bias`) is sized by the scene's reach **from the eye**, `|center - eye| + radius`, since that is what a frame-space position's rounding scales with; it was `|center| + radius`, from the world's origin, which made it a metre 420 km out. The cascades are fit in f64 relative to the eye and snapped to whole texels in the world's light space, in f64, so a texel is fixed in the world (["Cascaded shadow maps"](#cascaded-shadow-maps)). The ground's detail frame is `gfx::ground_detail_frame(d, eye, eye)`: its lattices at the eye in double, its corner measured from the frame's origin. The sky is given the eye's height alone.
 
@@ -1723,6 +1723,80 @@ bed to relief: the band is colour and roughness only, where a real resistant bed
 as dipping bands on the granite summit while the beds have averaged out under the pixel. With a
 one-pixel box a far hill kept a two-pixel period alternating row by row; the two-pixel box removed
 most of it, and a faint row-to-row residue is left where the beds' period is near two pixels.
+
+## Foliage lit from both sides
+
+Roadmap R164 (2026-11-16); the sources, the derivation and the measurements are
+[foliage, lit from both sides](../experiments/foliage-two-sided-light.md). Until it, the resolve
+turned a two-sided card's shading normal to the eye's side of its plane and lit it by `n.l` alone,
+so a card seen from its far side took no sun at all: 40 to 98 % of a conifer's needles seen from
+1.7 m faced away from the sun ([conifer crowns](../experiments/conifer-crown-coverage.md#where-the-light-went-the-fourth-leg)).
+
+**A property any asset can declare, never a generator's output.** A two-sided material carries
+*foliage optics*, two shares in the flags word's top byte (`gfx::set_foliage_optics`, fifteenths):
+
+- **`transmit`**, the diffuse transmittance as a share of the diffuse reflectance. Light from the
+  sheet's far side comes through as Lambertian transmission of the albedo's colour (a leaf's
+  reflectance and transmittance spectra have one shape in the visible). A broadleaf is about 0.8; a
+  needle about half (a spruce needle's at 560 nm is 0.42 to 0.52 of its reflectance).
+- **`spread`**, the share of the surface whose normals are a sphere's rather than the sheet's. A
+  card of needles is opaque cylinders all round a twig: what it shows the eye is the visible half
+  of a cloud of normals, whatever way the card faces. That share answers a light by the Lambert
+  sphere's law, (2/3) phi(alpha) of a facet lit square on, alpha the angle between the light and
+  the eye and phi Lambert's phase law: brightest with the sun behind the eye, dark against it, as a
+  shoot is (backward scattering).
+
+Where it comes from: the container's alpha word, bits 4..11 (`geometry::alpha_word_with_foliage`);
+an imported glTF's `KHR_materials_diffuse_transmission` on a double-sided material (the extension
+moves t of the diffuse into transmission, so the base colour factor takes `1 - t` and the share is
+`t / (1 - t)`, at most 1: above t = 1/2 the leaf transmits what it reflects, less than glTF's t; its
+transmission colour is not read, the base colour serves both sides; R164-3); a material pack role's `transmission` and
+`normal_spread` keys (`materials::MaterialSet`, nonzero values replacing the part's own); and
+flora's own parts (`k_leaf_transmission` 0.8 on every leaf and frond, `k_needle_transmission` 0.47
+and `k_needle_spread` 0.8 on every needle card; [flora](flora.md#foliage-optics)). **A material
+with none of it is drawn exactly as before**: every reader branches on the byte, and a scene with
+no foliage material runs the instructions it ran.
+
+**What each reader does with it.** One model, in `brdf.slang` (`brdf_foliage_eval_cos`,
+`brdf_foliage_direct`, `brdf_foliage_ambient`), mirrored in double in `brdf_reference.h`:
+
+- the sheet's share is `brdf_eval` whole (its specular lobe included) on the eye-side normal, plus
+  `transmit` times the Lambertian diffuse from behind it; the sphere's share is diffuse alone,
+  `(1 - F0)` of the albedo over pi times (2/3)(phi(alpha) + transmit phi(pi - alpha));
+- the resolve's sun, its analytic lights, and its hemisphere: the ambient its back sees through
+  `transmit`, and for the sphere's share the n.v-weighted mean of a sphere's visible normals,
+  (5/6) A(v) + (1/6) A(-v), each scaled by what the scene's cache let through the front;
+- the traced hit shading (`hit_shade.slang`, the water's reflections) the sun term and the same
+  hemisphere as the resolve (R164-3, review B7: it kept the sheet's ambient, so a leaf in a
+  reflection was lit differently from the leaf beside it), and the reference path tracer the
+  lights and the next direction, which samples the sheet's back half the time. Below the sheet
+  either half can have drawn a direction (a grazing view's GGX reflection goes under the plane),
+  so its density counts both (`ggx_vndf_pdf_below`; R164-3, review B5: the back lobe's alone read
+  the mean of a uniform light 0.4 to 1.4 % high on a sheet and 121 % with the sphere's share at
+  0.8, from 60 to 85 degrees; `foliage optics: the path tracer's draw is unbiased`).
+
+**Reflected plus transmitted never passes one** (R164-3, review B4). The transmittance is
+`transmit` times the albedo, but never more than what the albedo leaves, `1 - albedo`, channel by
+channel (`brdf_foliage_share`). A share is the material's and the albedo a texel's, so no import
+and no pack can hold the pair under one for every texel (a pack's albedo is an image); the response
+holds it. Flora's leaves (albedo at most 0.36 under 0.8) and every glTF the importer splits sum to
+less and are untouched. What it bounds is the diffuse: integrated over both hemispheres, the
+response less the sheet's specular lobe stays under `1 - F0` for a white texel under a share of 1,
+the pair that sums to one and the importer's split of a white base colour (`foliage optics:
+reflected plus transmitted never passes one`). The specular lobe is the sheet's own, and the sheet
+alone already returns more than one at a grazing eye (1.24 at 89 degrees and roughness 0.3, albedo
+1: the single-scattering GGX with a Lambert under `1 - F`), which is not foliage's to mend.
+
+**The shadow stays right.** A light behind the sheet is shadowed by a ray that leaves from the
+light's side of the plane (`ray_side` in `material.slang`), not the eye's, or every ray would stop
+on its own card. The half-rate sun pass (R126) asks a foliage block's ray from the light's side
+too and takes it whichever side the sun is on (`resolve_half_sun.slang`; R164's second leg: the
+first asked a lit-through pixel's own ray, so a surround's sides traced every such pixel at full
+rate). The cascaded maps read the same flipped normal for their lift.
+
+**Not done.** The world-space cache's update (`gi_update.slang`, which does not call `shade_hit`)
+still lights a foliage hit as a sheet, and water's flag-class mirror in `water.slang` does not name the byte (it checks only that
+the classes stay apart, which they do).
 
 ## Alpha-tested geometry
 

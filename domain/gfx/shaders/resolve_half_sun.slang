@@ -79,13 +79,18 @@ uint half_sun_block(ResolveParams* params, uint2 block) {
                                        params->view_proj, params->camera.xyz, params->width,
                                        params->height, from_eye);
   const float3 sun = params->sun.xyz;
-  if (dot(s.normal, sun) <= 0.0 && dot(s.geometric, sun) <= 0.0) return k_half_sun_not_taken;
+  // A foliage material (R164) takes the sun from either side of its plane, and its ray leaves from
+  // the light's side (`ray_side`), as fs_resolve asks it; every other block is decided as before.
+  const bool foliage = material_is_foliage(material_of(geo, instance, entry.y));
+  if (!foliage && dot(s.normal, sun) <= 0.0 && dot(s.geometric, sun) <= 0.0) {
+    return k_half_sun_not_taken;
+  }
   if ((params->shadow_flags & k_shadow_hybrid) != 0 && hybrid_weight(params, s.position) >= 1.0) {
     return k_half_sun_not_taken;
   }
   const float ray_bias = ray_offset(geo, instance, params->shadow_bias, params->shadow_bias_steps);
   g_fade_pixel = p;
-  const float3 origin = s.position + s.geometric * ray_bias;
+  const float3 origin = s.position + (foliage ? ray_side(s.geometric, sun) : s.geometric) * ray_bias;
   const bool blocked = shadow_ray_blocked(params, k_shadow_sun, origin, sun, 1e30);
   return (pair << 1) | (blocked ? 1u : 0u);
 }

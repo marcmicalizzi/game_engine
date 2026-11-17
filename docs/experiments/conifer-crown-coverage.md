@@ -566,7 +566,8 @@ The agent's reading of its own captures; the owner's eye is the judge.
    material's flag that its normals are a volume's, which the resolve, the bounce's hit shading
    and the reference path tracer then do not turn (the alpha word has bits free), designed with
    the published back-face terms above and the needle's small transmittance; a row of its own in
-   the renderer, not started.
+   the renderer, R164, which landed it as foliage optics
+   ([foliage, lit from both sides](foliage-two-sided-light.md)).
 4. **The forest's own thin images on the folded cards read as they did, a little fuller.** That
    is what a walk of the forest shows until its pack changes, since a fetched role wins, and the
    fold, the corrected v on one side, the tiled u and v on wider and longer cards and the leaning

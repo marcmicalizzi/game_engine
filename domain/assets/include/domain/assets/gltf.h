@@ -107,6 +107,14 @@ struct Material {
   geometry::TextureSlotSampling sampling[geometry::k_material_slots];
   u8 alpha_mode = k_alpha_opaque;
   bool double_sided = false;
+  // **Foliage optics** (R164; renderer.md, "Foliage lit from both sides"), read on a double-sided
+  // material only: the diffuse transmittance as a share of the reflectance, from
+  // `KHR_materials_diffuse_transmission` (its factor t moves t of the diffuse into transmission:
+  // the base colour factor is multiplied by 1 - t and the share is t / (1 - t), at most 1, so the
+  // two never sum past the base colour; its colour factor and textures are not read), and the
+  // share of normals that are a sphere's (no glTF field; an engine material set's `normal_spread`).
+  f32 transmission = 0.0f;
+  f32 normal_spread = 0.0f;
 };
 
 // An image referenced by a material, undecoded. `bytes` holds the encoded file for images that

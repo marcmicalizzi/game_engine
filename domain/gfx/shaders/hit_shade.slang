@@ -103,6 +103,14 @@ bool trace_scene_hit(ResolveParams* params, RayDesc ray, out SceneHit hit) {
   return true;
 }
 
+// The hemisphere ambient a normal `x` receives before the scene's cache scales it: the sky's
+// harmonics, or the stand-in's two halves, as `fs_resolve` takes it.
+float3 hit_raw_ambient(ResolveParams* params, SkyParams* sky, bool has_sky, float3 x) {
+  if (has_sky) return sky_ambient((SkyFrame*)sky->frame, x);
+  const float3 ground = ground_radiance(params->sky.rgb, params->ground.rgb, params->sun);
+  return ambient_radiance(params->sky.rgb, ground, x);
+}
+
 // The hit's radiance towards the ray's origin (above). `footprint_m` is the ray's width at the hit,
 // metres, which picks the base colour's mip; `shadow` asks one shadow ray towards the sun from the
 // hit, and without it the sun reaches the hit unshadowed (the caller's half rate).
@@ -188,28 +196,29 @@ float3 shade_hit(ResolveParams* params, RayDesc ray, SceneHit hit, float footpri
   const bool has_sky = params->sky_params != 0;
   float3 light = emissive;
   const float3 sun_dir = params->sun.xyz;
-  if (dot(n, sun_dir) > 0.0) {
+  // Foliage optics (R164; brdf.slang, "foliage"): the sun from behind the sheet too, its ray from
+  // the light's side of the plane, as the resolve takes it.
+  const bool foliage = material_is_foliage(material);
+  const float transmit = foliage ? material_foliage_transmit(material) : 0.0;
+  const float spread = foliage ? material_foliage_spread(material) : 0.0;
+  if (foliage ? brdf_foliage_lights(surface, sun_dir, transmit, spread) : dot(n, sun_dir) > 0.0) {
     bool blocked = false;
     if (shadow) {
       const float bias = ray_offset(geo, instance, params->shadow_bias, params->shadow_bias_steps);
-      blocked = shadow_ray_blocked(params, k_shadow_sun, surf.position + surf.geometric * bias,
-                                   sun_dir, 1e30);
+      const float3 side = foliage ? ray_side(surf.geometric, sun_dir) : surf.geometric;
+      blocked = shadow_ray_blocked(params, k_shadow_sun, surf.position + side * bias, sun_dir, 1e30);
     }
     if (!blocked) {
       float3 sun = float3(params->sun.w);
       if (has_sky) sun = sky_light_at(sky, surf.position, sun_dir, sky->sun_illuminance.rgb);
-      light += brdf_direct(surface, sun_dir, sun);
+      light += foliage ? brdf_foliage_direct(surface, sun_dir, sun, transmit, spread)
+                       : brdf_direct(surface, sun_dir, sun);
     }
   }
   // The ambient the resolve would give this surface: the sky's harmonics (or the stand-in's
   // hemisphere), through the world-space cache where the frame reads one.
-  float3 ambient;
-  if (has_sky) {
-    ambient = sky_ambient((SkyFrame*)sky->frame, n);
-  } else {
-    const float3 ground = ground_radiance(params->sky.rgb, params->ground.rgb, params->sun);
-    ambient = ambient_radiance(params->sky.rgb, ground, n);
-  }
+  float3 ambient = hit_raw_ambient(params, sky, has_sky, n);
+  const float3 raw_front = ambient;
   // Foliage reads its tree's own shade as a prior, as the resolve does (R69 stage 7).
   float crown = -1.0;
   if ((material.flags & k_material_masked) != 0u) {
@@ -220,7 +229,22 @@ float3 shade_hit(ResolveParams* params, RayDesc ray, SceneHit hit, float footpri
                           params->gi_cell_scale, params->eye, surf.position,
                           length(surf.position - params->camera.xyz), n, ambient, crown);
   const float n_dot_v = max(dot(n, surface.view), 0.0);
-  light += ambient * (albedo * (1.0 - metallic) +
-                      brdf_env_specular(brdf_f0(albedo, metallic), roughness, n_dot_v));
+  const float3 specular = brdf_env_specular(brdf_f0(albedo, metallic), roughness, n_dot_v);
+  if (foliage) {
+    // Foliage's ambient as the resolve takes it (R164-3, review B7; brdf.slang,
+    // `brdf_foliage_ambient`): the hemisphere the sheet's back sees through the transmittance and
+    // the sphere's share over the view's two directions, each scaled by what the scene let through
+    // of the front's, so a leaf in the water's reflection is the leaf on the screen.
+    const float3 gain =
+        select(raw_front > float3(1e-9), ambient / max(raw_front, float3(1e-9)), float3(1.0));
+    const float3 diffuse = brdf_foliage_ambient(
+        ambient, gain * hit_raw_ambient(params, sky, has_sky, -n),
+        gain * hit_raw_ambient(params, sky, has_sky, surface.view),
+        gain * hit_raw_ambient(params, sky, has_sky, -surface.view),
+        brdf_foliage_share(albedo, transmit), spread);
+    light += diffuse * (albedo * (1.0 - metallic)) + ambient * specular;
+    return light;
+  }
+  light += ambient * (albedo * (1.0 - metallic) + specular);
   return light;
 }

@@ -207,16 +207,24 @@ bool occluded(PathTraceParams* params, float3 origin, float3 direction, float t_
 // Next-event estimation: the sun and every analytic light, each with one shadow ray, each
 // weighted by the same `brdf_direct` the resolve calls. Delta lights, so no MIS weight. `bias` is
 // how far `shadow_origin` sits off the surface (`ray_offset`), which a light's ray stops short by.
-float3 next_event(PathTraceParams* params, BrdfSurface surface, float3 position,
-                  float3 shadow_origin, float bias) {
+// Foliage optics (R164; brdf.slang, "foliage") take a light from behind the sheet too, and its ray
+// leaves from the side of the plane the light is on, as the resolve's does (`ray_side`); `front` is
+// the geometric normal on the ray's side. Every other material reads what it always read.
+float3 next_event(PathTraceParams* params, BrdfSurface surface, float3 position, float3 front,
+                  float bias, bool foliage, float transmit, float spread) {
   float3 direct = float3(0.0);
   SkyParams* sky = (SkyParams*)params->sky_params;
   const bool has_sky = params->sky_params != 0;
-  if (params->sun.w > 0.0 && dot(surface.normal, params->sun.xyz) > 0.0 &&
-      !occluded(params, shadow_origin, params->sun.xyz, 1e30)) {
+  const float3 shadow_origin = position + front * bias;
+  if (params->sun.w > 0.0 &&
+      (foliage ? brdf_foliage_lights(surface, params->sun.xyz, transmit, spread)
+               : dot(surface.normal, params->sun.xyz) > 0.0) &&
+      !occluded(params, foliage ? position + ray_side(front, params->sun.xyz) * bias : shadow_origin,
+                params->sun.xyz, 1e30)) {
     float3 sun = float3(params->sun.w);
     if (has_sky) sun = sky_light_at(sky, position, params->sun.xyz, sky->sun_illuminance.rgb);
-    direct += brdf_direct(surface, params->sun.xyz, sun);
+    direct += foliage ? brdf_foliage_direct(surface, params->sun.xyz, sun, transmit, spread)
+                      : brdf_direct(surface, params->sun.xyz, sun);
   }
   ResolveLight* lights = (ResolveLight*)params->lights;
   for (uint i = 0; i < params->light_count; ++i) {
@@ -224,12 +232,19 @@ float3 next_event(PathTraceParams* params, BrdfSurface surface, float3 position,
     float3 radiance;
     float light_distance;
     if (!light_sample(lights[i], position, light_dir, radiance, light_distance)) continue;
-    if (dot(surface.normal, light_dir) <= 0.0) continue;
-    if (occluded(params, shadow_origin, light_dir, light_distance - bias)) continue;
+    if (foliage ? !brdf_foliage_lights(surface, light_dir, transmit, spread)
+                : dot(surface.normal, light_dir) <= 0.0) {
+      continue;
+    }
+    if (occluded(params, foliage ? position + ray_side(front, light_dir) * bias : shadow_origin,
+                 light_dir, light_distance - bias)) {
+      continue;
+    }
     if (has_sky && lights[i].direction_type.w >= 1.5) {
       radiance = sky_light_at(sky, position, light_dir, radiance);
     }
-    direct += brdf_direct(surface, light_dir, radiance);
+    direct += foliage ? brdf_foliage_direct(surface, light_dir, radiance, transmit, spread)
+                      : brdf_direct(surface, light_dir, radiance);
   }
   return direct;
 }
@@ -370,8 +385,11 @@ float3 trace_path(PathTraceParams* params, float3 origin, float3 direction, inou
     // start their shadow rays alike or a comparison measures the offset.
     const float bias = ray_offset(geo, instance, params->ray_bias, params->ray_bias_steps);
     const float3 front = dot(s.geometric, surface.view) >= 0.0 ? s.geometric : -s.geometric;
-    const float3 shadow_origin = s.position + front * bias;
-    radiance += throughput * next_event(params, surface, s.position, shadow_origin, bias);
+    const bool foliage = material_is_foliage(material);
+    const float transmit = foliage ? material_foliage_transmit(material) : 0.0;
+    const float spread = foliage ? material_foliage_spread(material) : 0.0;
+    radiance += throughput *
+                next_event(params, surface, s.position, front, bias, foliage, transmit, spread);
 
     if (bounce >= params->max_bounces) break;
 
@@ -386,18 +404,39 @@ float3 trace_path(PathTraceParams* params, float3 origin, float3 direction, inou
     const float3 fresnel = brdf_f_schlick(brdf_f0(surface.albedo, surface.metallic), n_dot_v);
     const float p_specular =
         specular_probability(surface.albedo, surface.metallic, n_dot_v, fresnel);
+    // Foliage samples the back hemisphere half the time (cosine about the sheet's back), and
+    // weighs every direction by the mixture's density and `brdf_foliage_eval_cos`; the front half
+    // is the lobe sampling below, unchanged.
+    bool behind = false;  // drawn only for foliage, so every other path keeps its stream
+    if (foliage) behind = rng_next(rng) < 0.5;
     float3 l_local;
-    if (rng_next(rng) < p_specular) {
+    if (behind) {
+      l_local = sample_cosine_hemisphere(rng_next2(rng));
+      l_local.z = -l_local.z;
+    } else if (rng_next(rng) < p_specular) {
       const float3 h = sample_ggx_vndf(v_local, alpha, rng_next2(rng));
       l_local = reflect(-v_local, h);
     } else {
       l_local = sample_cosine_hemisphere(rng_next2(rng));
     }
-    if (l_local.z <= 0.0) break;
-    const float pdf = bsdf_pdf(v_local, l_local, alpha, p_specular);
+    if (!foliage && l_local.z <= 0.0) break;
+    if (l_local.z == 0.0) break;
+    float pdf;
+    if (foliage) {
+      // Below the sheet both samplers can have drawn the direction: the back lobe's cosine and
+      // the front's GGX reflection of a grazing view (R164-3, review B5: the GGX share was missing,
+      // which over-weighted those samples).
+      pdf = l_local.z > 0.0 ? 0.5 * bsdf_pdf(v_local, l_local, alpha, p_specular)
+                            : 0.5 * (-l_local.z / k_brdf_pi) +
+                                  0.5 * p_specular * ggx_vndf_pdf_below(v_local, l_local, alpha);
+    } else {
+      pdf = bsdf_pdf(v_local, l_local, alpha, p_specular);
+    }
     if (!(pdf > 0.0)) break;
     const float3 next = to_world(l_local, tangent, bitangent, surface.normal);
-    const float3 weight = brdf_eval(surface, next) * (l_local.z / pdf);
+    const float3 weight =
+        foliage ? brdf_foliage_eval_cos(surface, next, transmit, spread) / pdf
+                : brdf_eval(surface, next) * (l_local.z / pdf);
     throughput *= weight;
     if (all(throughput <= 0.0)) break;
 

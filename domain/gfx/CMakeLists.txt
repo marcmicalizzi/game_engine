@@ -96,7 +96,10 @@ engine_module_tests(NAME gfx PARTS 2 CONFIG_INVARIANT
           # The world-space cache's key, levels and stride (gi_cache.h, R69); no device.
           tests/gi_cache_key_tests.cpp
           # The scene's wind and the sea state it raises (wind.h, W136); no device.
-          tests/wind_tests.cpp)
+          tests/wind_tests.cpp
+          # Foliage optics' closed forms against a sphere of normals (brdf_reference.h, R164); no
+          # device.
+          tests/foliage_reference_tests.cpp)
 
 # Shaders used by the RHI's own tests: the first .slang through the toolchain.
 engine_shaders(NAME gfx_tests

@@ -531,8 +531,10 @@ bool write_cluster_cache(const std::string& path, const std::string& source,
     material.emissive_image = geometry::encode_optional_image(source_material.emissive_image);
     material.emissive = source_material.emissive;
     material.normal_scale = source_material.normal_scale;
-    material.alpha = geometry::encode_alpha_word(
-        source_material.alpha_mode, source_material.double_sided, source_material.alpha_cutoff);
+    material.alpha = geometry::alpha_word_with_foliage(
+        geometry::encode_alpha_word(source_material.alpha_mode, source_material.double_sided,
+                                    source_material.alpha_cutoff),
+        source_material.transmission, source_material.normal_spread);
     data.materials.push_back(material);
     data.material_sampling.push_back(geometry::encode_material_sampling(
         source_material.sampling, source_material.occlusion_strength));
@@ -642,6 +644,8 @@ void adopt_container(geometry::ClusterFileData& container_data, const std::strin
     material.alpha_mode = geometry::alpha_word_mode(source.alpha);
     material.double_sided = geometry::alpha_word_double_sided(source.alpha);
     material.alpha_cutoff = geometry::alpha_word_cutoff(source.alpha);
+    material.transmission = geometry::alpha_word_transmit(source.alpha);  // R164, foliage optics
+    material.normal_spread = geometry::alpha_word_spread(source.alpha);
     out.data.materials.push_back(std::move(material));
     out.part_material.push_back(static_cast<i32>(out.part_material.size()));
     // How it places its texels (R131): stochastic or plain, which the upload reads.
@@ -3596,9 +3600,20 @@ void update_scene_bounds(SceneData& out) {
     // **In a local frame, then placed in f64** (ADR-0053): the instances' centres measured from
     // the corner of the first instance's cell, so the box and the sphere are float32 numbers the
     // size of the scene wherever in the world it is, and a scene moved by whole cells gets the
-    // same radius and a centre moved by exactly as much. A scene whose first instance is in the
-    // cell at the origin is measured from the origin, as it always was.
-    const WorldCell corner{out.instances.empty() ? Vec3i{} : out.instances[0].cell, Vec3{}};
+    // same radius and a centre moved by exactly as much. **The cell is the lowest the instances
+    // hold**, x then y then z, not the first instance's (R164-3): the frame's rounding is in the
+    // centre and the radius, which place the stand-in lights, so a scene whose instances came in
+    // another order was lit from a few micrometres away and two leaves lit through from behind
+    // drew a code apart (impostor_view_tests.cpp, "the dither follows the placement"). The box and
+    // the sphere are a min and a max, which no order changes; the corner now is too.
+    Vec3i lowest = out.instances.empty() ? Vec3i{} : out.instances[0].cell;
+    for (const gfx::InstanceDesc& instance : out.instances) {
+      const Vec3i c = instance.cell;
+      if (c.x < lowest.x || (c.x == lowest.x && (c.y < lowest.y ||
+                                                 (c.y == lowest.y && c.z < lowest.z))))
+        lowest = c;
+    }
+    const WorldCell corner{lowest, Vec3{}};
     const WorldEye frame = to_eye(to_world(corner));
     Vec3 lo{1e30f, 1e30f, 1e30f};
     Vec3 hi{-1e30f, -1e30f, -1e30f};

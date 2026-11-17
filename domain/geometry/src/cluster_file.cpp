@@ -19,6 +19,21 @@ u8 alpha_word_mode(u32 word) noexcept { return static_cast<u8>(word & 3u); }
 
 bool alpha_word_double_sided(u32 word) noexcept { return (word & 4u) != 0u; }
 
+namespace {
+u32 foliage_code(f32 share) noexcept {
+  const f32 clamped = share > 0.0f ? (share < 1.0f ? share : 1.0f) : 0.0f;  // a NaN reads 0
+  return static_cast<u32>(clamped * 15.0f + 0.5f);
+}
+}  // namespace
+
+u32 alpha_word_with_foliage(u32 word, f32 transmit, f32 spread) noexcept {
+  return (word & ~0xFF0u) | (foliage_code(transmit) << 4u) | (foliage_code(spread) << 8u);
+}
+
+f32 alpha_word_transmit(u32 word) noexcept { return static_cast<f32>((word >> 4u) & 15u) / 15.0f; }
+
+f32 alpha_word_spread(u32 word) noexcept { return static_cast<f32>((word >> 8u) & 15u) / 15.0f; }
+
 f32 alpha_word_cutoff(u32 word) noexcept { return static_cast<f32>(word >> 16) / 65535.0f; }
 
 namespace {

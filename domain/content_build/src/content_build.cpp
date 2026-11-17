@@ -722,8 +722,9 @@ bool build_one(const std::string& input, const std::string& output, const MeshOp
     material.emissive_image = geometry::encode_optional_image(source.emissive_image);
     material.emissive = source.emissive;
     material.normal_scale = source.normal_scale;
-    material.alpha =
-        geometry::encode_alpha_word(source.alpha_mode, source.double_sided, source.alpha_cutoff);
+    material.alpha = geometry::alpha_word_with_foliage(
+        geometry::encode_alpha_word(source.alpha_mode, source.double_sided, source.alpha_cutoff),
+        source.transmission, source.normal_spread);  // R164: zero for every material but foliage
     data.materials.push_back(material);
     // How its slots sample their images (section 33), which the texture records below read too.
     data.material_sampling.push_back(

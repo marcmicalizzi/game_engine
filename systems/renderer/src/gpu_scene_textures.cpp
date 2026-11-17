@@ -455,6 +455,10 @@ bool GpuScene::fill_material(const assets::Material& source, bool built, const T
   // clears the two words the cutoff and the factor's alpha go in.
   if (source.alpha_mode == assets::k_alpha_mask)
     gfx::set_alpha_mask(material, source.alpha_cutoff, source.base_color.w);
+  // Foliage optics (renderer.md, "Foliage lit from both sides"; R164): a two-sided material that
+  // declares them is lit from behind its sheet too. Nothing else sets the flags word's top byte.
+  if (source.double_sided && (source.transmission > 0.0f || source.normal_spread > 0.0f))
+    gfx::set_foliage_optics(material, source.transmission, source.normal_spread);
   out = material;
   return true;
 }

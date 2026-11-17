@@ -70,7 +70,10 @@ namespace engine::flora {
 // 12: every tree's stem carried on below its collar as a skirt, so no tree on ground of up to 45
 //    degrees shows a gap under its trunk (G201; flora.md, "The trunk's skirt"): every tree's mesh
 //    grows by four triangles a side of its trunk and its box reaches down, so its grid moves.
-inline constexpr u32 k_flora_version = 12;
+// 13: foliage optics on every leaf and needle material (R164; flora.md, "Foliage optics"): a
+//    leaf transmits, a needle card's normals are a sphere's; the container's alpha word carries
+//    them, so an entry built at 12 draws its foliage as a sheet lit from the eye's side alone.
+inline constexpr u32 k_flora_version = 13;
 // G129: broadleaf/birch shape and baked-LOD invalidation, without rebuilding other architectures.
 inline constexpr u32 k_branch_taper_version = 2;
 
@@ -158,8 +161,12 @@ std::string canonical_flora_json(const FloraFile& file);
 // The tree's parameters as a hash: the canonical parameters' bytes, the species, and
 // `k_flora_version` — what a flora container's source hash starts from (`flora_source_hash_with`
 // adds the conifers' `k_conifer_chain_version` and the bake's images) and what the deadwood keys
-// the tree it kills by.
+// the tree it kills by. Every species' starts with the foliage optics folded in after the species
+// (`fold_foliage_optics`; flora.md, "Foliage optics": R164-3, review B2).
 u64 flora_source_hash(const FloraFile& file);
+// `h` with the foliage optics flora declares for its parts (kit.h's three numbers) folded in, so a
+// change of any of them moves every flora key.
+u64 fold_foliage_optics(u64 h) noexcept;
 
 // Includes the bytes of base-colour images consumed by the LOD bake. Pure without a host;
 // a host that supplies images must successfully read every referenced bake input.

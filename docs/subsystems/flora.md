@@ -2307,6 +2307,30 @@ if a closer look ever needs one.
 times, the `.tex` sizes and what the captures showed — is in
 [materials](materials.md#the-first-pack-2026-10-19).
 
+## Foliage optics
+
+R164 (2026-11-16; [renderer](renderer.md#foliage-lit-from-both-sides),
+[the grounding](../experiments/foliage-two-sided-light.md)). Flora declares what its own thin
+parts do with light from their far side, on their two-sided materials (`kit.h`, `material`): every
+`leaf` and `frond` transmits 0.8 of what it reflects (`k_leaf_transmission`; a birch's
+transmittance is "similar" to its reflectance, broadleaves' over the visible 0.55 to 0.75 of it),
+and every `needles` card transmits 0.47 (`k_needle_transmission`; a Norway spruce needle at 560 nm
+transmits 0.52 of what it reflects in its first year and 0.42 after, Hovi et al. 2022; it was 0.2,
+recalled, until R164's second leg read the numbers) with 0.8 of its normals a
+sphere's (`k_needle_spread`: needles stand all round a spruce's twig above and part to the sides
+below, so most of a card, not all, is a cloud of normals). The container carries them in the
+alpha word (`geometry::alpha_word_with_foliage`), the far levels and the chain's masked leaves
+keep them, and a pack role that declares its own nonzero `transmission` or `normal_spread`
+replaces them. `k_flora_version` 13 re-keys every tree.
+
+**Every species' key carries the optics themselves** (R164-3, review B2). The ground plants
+(`k_ground_plants_version`), the meadow, the alpine plants, shrub growth and regeneration key on
+versions of their own, not `k_flora_version`, so R164 changed their containers' materials under
+unchanged keys: an entry built before it was reused and drew its leaves as sheets lit from the
+eye's side alone. `flora_source_hash` now folds the three numbers above into every species' key,
+rather than five versions being bumped once, so the next change of them moves every key without
+anyone having to know which families carry leaves; it moved every flora pin's section 15 once.
+
 ## The build
 
 A palm is derived data, built once per parameter set. `flora::build_flora_container` solves the

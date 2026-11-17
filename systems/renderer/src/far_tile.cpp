@@ -203,7 +203,9 @@ void write_far_tile(const std::string& path, const scene_gen::PlacementMesh& mes
     material.emissive_image = geometry::encode_optional_image(m.emissive_image);
     material.emissive = m.emissive;
     material.normal_scale = m.normal_scale;
-    material.alpha = geometry::encode_alpha_word(m.alpha_mode, m.double_sided, m.alpha_cutoff);
+    material.alpha = geometry::alpha_word_with_foliage(
+        geometry::encode_alpha_word(m.alpha_mode, m.double_sided, m.alpha_cutoff), m.transmission,
+        m.normal_spread);  // R164: a far form keeps its foliage optics
     data.materials.push_back(material);
     data.material_sampling.push_back(
         geometry::encode_material_sampling(m.sampling, m.occlusion_strength));

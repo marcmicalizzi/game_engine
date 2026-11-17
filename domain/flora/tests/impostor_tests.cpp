@@ -787,9 +787,11 @@ TEST_CASE("impostor chain: the conifer profiles and the matured conifer build it
     // The key: the container's is the tree's with the conifers' chain version after the solver's,
     // which no other species takes; the tree's own (the deadwood's) is the one it was.
     const std::string canonical = flora::canonical_flora_json(file);
-    const u64 h = hash_combine(hash_combine(hash_bytes(canonical.data(), canonical.size()),
-                                            hash_bytes(file.species.data(), file.species.size())),
-                               flora::k_flora_version);
+    const u64 h = hash_combine(
+        flora::fold_foliage_optics(  // R164-3: the optics, in every flora key
+            hash_combine(hash_bytes(canonical.data(), canonical.size()),
+                         hash_bytes(file.species.data(), file.species.size()))),
+        flora::k_flora_version);
     CHECK(flora::flora_source_hash(file) == h);
     u64 container = 0;
     REQUIRE(flora::flora_source_hash_with(file, {}, container, error));
@@ -804,10 +806,11 @@ TEST_CASE("impostor chain: the conifer profiles and the matured conifer build it
   flora::FloraFile oak;
   REQUIRE(flora::read_flora_file(R"({"species":"oak"})", oak, error));
   const std::string canonical = flora::canonical_flora_json(oak);
-  const u64 old_oak_hash =
-      hash_combine(hash_combine(hash_bytes(canonical.data(), canonical.size()),
-                                hash_bytes(oak.species.data(), oak.species.size())),
-                   flora::k_flora_version);
+  const u64 old_oak_hash = hash_combine(
+      flora::fold_foliage_optics(  // R164-3: the optics, in every flora key
+          hash_combine(hash_bytes(canonical.data(), canonical.size()),
+                       hash_bytes(oak.species.data(), oak.species.size()))),
+      flora::k_flora_version);
   const u64 oak_hash = hash_combine(old_oak_hash, flora::k_branch_taper_version);
   CHECK(flora::flora_source_hash(oak) == oak_hash);
   u64 oak_container = 0;

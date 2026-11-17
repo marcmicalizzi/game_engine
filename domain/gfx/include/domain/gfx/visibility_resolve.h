@@ -490,6 +490,31 @@ inline constexpr u32 k_material_alpha_mask = 32u;
 // `k_material_stochastic` (R131): see `set_stochastic` below.
 inline constexpr u32 k_material_stochastic = 131072u;
 
+// **Foliage optics** (R164; renderer.md, "Foliage lit from both sides"; brdf.slang, "foliage"): the
+// flags word's top byte. Bits 24..27 are the diffuse transmittance as a share of the diffuse
+// reflectance, in fifteenths; bits 28..31 the share of the surface whose normals are a sphere's
+// rather than the sheet's (a card of needles), in fifteenths. A material with the byte zero — every
+// material that declares nothing — is shaded exactly as before; one with it takes light from behind
+// its sheet, and its shadow rays leave from the side of its plane the light is on.
+inline constexpr u32 k_material_foliage_shift = 24u;
+inline constexpr u32 k_material_foliage_mask = 0xFF000000u;
+// A share (0..1) as the four-bit code the byte holds: the nearest fifteenth; a NaN reads 0.
+inline u32 foliage_code(f32 share) noexcept {
+  const f32 clamped = share > 0.0f ? (share < 1.0f ? share : 1.0f) : 0.0f;
+  return static_cast<u32>(clamped * 15.0f + 0.5f);
+}
+inline void set_foliage_optics(ResolveMaterial& material, f32 transmit, f32 spread) noexcept {
+  material.flags = (material.flags & ~k_material_foliage_mask) |
+                   (foliage_code(transmit) << k_material_foliage_shift) |
+                   (foliage_code(spread) << (k_material_foliage_shift + 4u));
+}
+inline f32 foliage_transmit(const ResolveMaterial& material) noexcept {
+  return static_cast<f32>((material.flags >> 24u) & 15u) / 15.0f;
+}
+inline f32 foliage_spread(const ResolveMaterial& material) noexcept {
+  return static_cast<f32>(material.flags >> 28u) / 15.0f;
+}
+
 // Marks `material` alpha-tested at `cutoff` (0..1), with the base colour factor's alpha
 // `factor_alpha`, which multiplies the texture's as glTF says.
 inline void set_alpha_mask(ResolveMaterial& material, f32 cutoff, f32 factor_alpha) noexcept {
@@ -751,10 +776,10 @@ inline void set_water_shore(ResolveMaterial& water, ResolveMaterial& entry, f32 
 // (both 32) until 2026-11-09, unseen, since no reader of the mask asks the class.
 //
 //   common   0-5 (mipped, normal_rg, uv_transform, ground_detail, water, alpha_mask), 9 (terrain
-//            root), 13 (normal_variance), 17 (stochastic)
+//            root), 13 (normal_variance), 17 (stochastic), 24-31 (foliage optics, two codes)
 //   terrain  10-12, 14-16, 18 (a layer's projection, height, stochastic tiles, response, formation)
 //   water    6-8 (depth map, open, spectrum), 20-23 (shore, channel, plunge, volume)
-//   free     19, 24-31
+//   free     19
 //
 // A new bit takes a free one and joins exactly one of the three masks below; the static_asserts
 // refuse a class bit that is also common and two names for one bit within a class (the popcounts),
@@ -763,7 +788,7 @@ inline void set_water_shore(ResolveMaterial& water, ResolveMaterial& entry, f32 
 inline constexpr u32 k_material_common_flags =
     k_material_mipped | k_material_normal_rg | k_material_uv_transform | k_material_ground_detail |
     k_material_water | k_material_alpha_mask | k_material_terrain_layers |
-    k_material_normal_variance | k_material_stochastic;
+    k_material_normal_variance | k_material_stochastic | k_material_foliage_mask;
 inline constexpr u32 k_material_terrain_flags =
     k_material_terrain_map | k_material_terrain_height | k_material_terrain_stochastic |
     k_material_terrain_snow | k_material_terrain_sand | k_material_terrain_beach |
@@ -773,7 +798,7 @@ inline constexpr u32 k_material_water_flags = k_material_water_depth_map | k_mat
                                               k_material_water_spectrum_bit |
                                               k_material_water_shore | k_material_water_channel |
                                               k_material_water_plunge | k_material_water_volume;
-static_assert(std::popcount(k_material_common_flags) == 9, "two common flags share a bit");
+static_assert(std::popcount(k_material_common_flags) == 17, "two common flags share a bit");
 static_assert(std::popcount(k_material_terrain_flags) == 7, "two terrain flags share a bit");
 static_assert(std::popcount(k_material_water_flags) == 7, "two water flags share a bit");
 static_assert((k_material_terrain_flags & k_material_common_flags) == 0,

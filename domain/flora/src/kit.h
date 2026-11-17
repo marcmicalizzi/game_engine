@@ -17,6 +17,7 @@
 #include <domain/flora/trees.h>
 
 #include <cmath>
+#include <string_view>
 
 namespace engine::flora::detail {
 
@@ -200,6 +201,18 @@ struct Emitter {
   }
 };
 
+// **Foliage optics** (R164; flora.md, "Foliage optics";
+// docs/experiments/foliage-two-sided-light.md): what this generator declares for its own thin
+// parts. A broadleaf's leaf (and a fern's or a palm's frond) is a sheet that transmits about 0.8 of
+// what it reflects in the green (a birch's two are "similar", Lukeš et al. 2013; broadleaf means
+// over the visible 0.55 to 0.75, Majasalmi and Bright 2019); a conifer's needle card is needles all
+// round its twigs, whose normals are a sphere's for most of the card, each passing about half what
+// it reflects: a Norway spruce needle at 560 nm reflects 0.165 and transmits 0.085 in its first
+// year, 0.139 and 0.059 after (Hovi et al. 2022, supplement table S1.5), 0.52 and 0.42 of it.
+inline constexpr f32 k_leaf_transmission = 0.8f;
+inline constexpr f32 k_needle_transmission = 0.47f;
+inline constexpr f32 k_needle_spread = 0.8f;
+
 inline assets::Material material(const char* name, Vec4 colour, f32 roughness, bool two_sided) {
   assets::Material m;
   m.name = name;
@@ -207,6 +220,14 @@ inline assets::Material material(const char* name, Vec4 colour, f32 roughness, b
   m.metallic = 0.0f;
   m.roughness = roughness;
   m.double_sided = two_sided;
+  if (two_sided) {
+    const std::string_view part = name;
+    if (part == "leaf" || part == "frond") m.transmission = k_leaf_transmission;
+    if (part == "needles") {
+      m.transmission = k_needle_transmission;
+      m.normal_spread = k_needle_spread;
+    }
+  }
   return m;
 }
 
