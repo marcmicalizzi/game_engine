@@ -692,7 +692,18 @@ flythrough's path flown at 60 frames a second of its own clock, repeats included
 |---|---|---|---|---|---|
 | village interior walk, 3840 x 2160 | 48, 168.2 MiB | 55.9 % | 12.0 / 60.7 MiB | 44.4 / 66.0 MiB | 1.60 MiB/s, 14.0 MiB |
 | village interior walk, 1920 x 1080 | 48, 168.2 MiB | 57.7 % | 1.9 / 46.7 MiB | 11.1 / 65.6 MiB | 1.36 MiB/s, 14.0 MiB |
+| oasis-palms flythrough, 3840 x 2160 | 11, 28.2 MiB | 0 % | 1.9 / 28.2 MiB | 28.2 / 28.2 MiB | 0.51 MiB/s, 14.0 MiB |
+| oasis-palms flythrough, 1920 x 1080 | 11, 28.2 MiB | 0 % | 0.3 / 23.6 MiB | 10.7 / 28.2 MiB | 0.75 MiB/s, 17.5 MiB |
 | static-world, 3840 x 2160 | 5, 0.7 MiB | 0 % | 0.3 / 0.7 MiB | 0.6 / 0.7 MiB | 0.01 MiB/s |
+| static-world, 1920 x 1080 | 5, 0.7 MiB | 0 % | 0.2 / 0.7 MiB | 0.2 / 0.7 MiB | 0.01 MiB/s |
+
+The flythrough passes close to everything it shows, so over its whole path every one of its eleven
+textures (the palm pack's bark, frond and skirt at 2,048 and 1,024 and the sand) is read at level 0
+somewhere — but a median frame asks for 6.8 % of the bytes at 4K and 1.2 % at 1080p: what is needed
+*now* is small even where nothing is unneeded *ever*, which is the bound's case (below), not the
+feedback's. **The pass's cost**: the frame passes' zone (this pass plus the encode the linear image
+needs) was a median 0.35 ms of the village's 6.5 ms frame at 4K (p99 0.56) and 0.30 ms of the
+oasis's 3.3 ms, 0.09 to 0.12 ms at 1080p, beside other agents' GPU work, so upper bounds.
 
 Of the village's 48 textures (21 at 2,048, 24 at 1,024: the generated plaster, timber, stone and
 thatch sets and their normal maps), 14 were never sampled anywhere on the walk (the sets of the
