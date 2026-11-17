@@ -16,6 +16,8 @@
 // `.tex` the container's records name, as `engine-content build --cache` would — or with no cache
 // at all, which is the decoded path. Skipped with a message on a machine with no Vulkan device, as
 // every renderer test is.
+#include "test_device.h"
+
 #include <core/hash/hash.h>
 #include <core/math/math.h>
 #include <domain/gfx/device.h>
@@ -179,7 +181,8 @@ struct Harness {
   bool build(const std::string& mesh, const std::string& ddc, bool cache = true,
              f32 texel_density = 0.0f) {
     std::string error;
-    if (!device.create(gfx::DeviceOptions{}, &error)) {
+    // Through `test_device.h`, so `ENGINE_GFX_TEST_DEVICE` runs these cases as a weaker card.
+    if (!device.create(renderer_test::device_options(), &error)) {
       skip = "device unavailable: " + error;
       return false;
     }
@@ -1084,4 +1087,129 @@ TEST_CASE("renderer: the texture feedback names the level the quad's samples rea
     CHECK(textures == 1);
     CHECK(finest == expected);
   }
+}
+
+namespace {
+
+constexpr u32 k_bound_image = 1024;  // the floor (128) is level 3 of its chain
+
+// `renderer.textures.bound` for one scope, back to its default after.
+struct BoundSwitch {
+  tunables::Tunable* bound = tunables::find("renderer.textures.bound");
+  explicit BoundSwitch(bool on) {
+    REQUIRE(bound != nullptr);
+    std::string error;
+    REQUIRE_MESSAGE(bound->set_from_text(on ? "true" : "false", &error), error);
+  }
+  ~BoundSwitch() { bound->reset(); }
+};
+
+}  // namespace
+
+// **The bound changes no pixel at a held view, and holds less** (R172 stage 1; texture.md, "Levels
+// resident by what the frame samples"). The quad's 1,024-texel map from four distances, each in a
+// scene loaded whole and in one the bound holds by level: the load uploads the floor, the first
+// frame brings in what the eye can read before it draws, and the picture — ids, depth and colour —
+// is the whole scene's byte for byte. From far off the bound holds the floor alone.
+TEST_CASE("renderer: the texture bound changes no pixel at a held view and holds less") {
+  const test::TempDir tmp("renderer_texture_bound_held");
+  const std::filesystem::path dir = tmp.native();
+  REQUIRE(write_quad(dir));
+  Vector<u8> png;
+  REQUIRE(write_image(dir, k_bound_image, smooth_image(k_bound_image), png));
+  const std::string mesh = (dir / "quad.gltf").string();
+  const std::string ddc = (dir / "ddc").string();
+  for (const f32 distance : {1.5f, 5.8f, 11.0f, 30.0f}) {
+    INFO("distance " << distance << " m");
+    CapturedFrame whole_frame;
+    u64 whole_bytes = 0;
+    {
+      BoundSwitch off(false);
+      Harness whole;
+      if (!whole.build(mesh, ddc)) {
+        MESSAGE("skipped: " << whole.skip);
+        return;
+      }
+      CHECK(!whole.scene.texture_bound_active());
+      whole_frame = whole.shot(distance);
+      whole_bytes = whole.scene.texture_bytes();
+    }
+    BoundSwitch on(true);
+    Harness held;
+    REQUIRE(held.build(mesh, ddc));
+    REQUIRE(held.scene.texture_bound_active());
+    const u64 floor_bytes = held.scene.texture_bytes();
+    const CapturedFrame frame = held.shot(distance);
+    const TextureBoundUse& use = held.scene.texture_bound_use();
+    MESSAGE(distance << " m: whole " << whole_bytes << " bytes, the floor " << floor_bytes
+                     << ", after the first frame " << held.scene.texture_bytes() << "; "
+                     << use.promotions << " promotions, settle " << use.worst_settle_ms << " ms");
+    CHECK(use.managed == 1);
+    CHECK(use.settles == 1);
+    CHECK(use.late == 0);
+    CHECK(floor_bytes < whole_bytes / 4);  // 1/64 of the blocks; the allocator rounds up
+    CHECK(differing_pixels(whole_frame, frame) == 0);
+    if (distance >= 30.0f) {
+      CHECK(use.promotions == 0);
+      CHECK(held.scene.texture_bytes() == floor_bytes);
+    }
+    if (distance <= 1.5f) CHECK(held.scene.texture_bytes() >= whole_bytes);
+  }
+}
+
+// **A promotion lands ahead of a walker** (R172 stage 1). The camera flies in from 40 m to 1.2 m
+// over 48 frames, a step of the same ratio a frame, in a scene loaded whole and in one the bound
+// holds; every frame's picture is the whole scene's byte for byte, the levels come in off the
+// frame (no frame after the first brings them in itself, none is late), and the first promotion is
+// asked for frames before the eye is near enough for a pixel to read below the floor.
+TEST_CASE("renderer: the texture bound promotes ahead of a walker and changes no frame") {
+  const test::TempDir tmp("renderer_texture_bound_walk");
+  const std::filesystem::path dir = tmp.native();
+  REQUIRE(write_quad(dir));
+  Vector<u8> png;
+  REQUIRE(write_image(dir, k_bound_image, smooth_image(k_bound_image), png));
+  const std::string mesh = (dir / "quad.gltf").string();
+  const std::string ddc = (dir / "ddc").string();
+  constexpr u32 k_frames = 48;
+  const auto distance_at = [](u32 k) {
+    return static_cast<f32>(40.0 * std::pow(1.2 / 40.0, static_cast<f64>(k) / (k_frames - 1)));
+  };
+  std::vector<CapturedFrame> whole_frames;
+  {
+    BoundSwitch off(false);
+    Harness whole;
+    if (!whole.build(mesh, ddc)) {
+      MESSAGE("skipped: " << whole.skip);
+      return;
+    }
+    for (u32 k = 0; k < k_frames; ++k)
+      whole_frames.push_back(whole.shot(distance_at(k)));
+  }
+  BoundSwitch on(true);
+  Harness held;
+  REQUIRE(held.build(mesh, ddc));
+  u32 differing_frames = 0;
+  u32 first_promoted = k_frames;
+  u32 first_below_floor = k_frames;
+  for (u32 k = 0; k < k_frames; ++k) {
+    const f32 d = distance_at(k);
+    const CapturedFrame frame = held.shot(d);
+    differing_frames += differing_pixels(whole_frames[k], frame) != 0 ? 1u : 0u;
+    if (held.scene.texture_bound_use().promotions != 0 && first_promoted == k_frames)
+      first_promoted = k;
+    // The level a pixel of the quad reads at the centre: below the floor's level 3 from here on.
+    if (std::log2(texels_per_pixel(d, k_bound_image)) < 3.0 && first_below_floor == k_frames)
+      first_below_floor = k;
+  }
+  const TextureBoundUse& use = held.scene.texture_bound_use();
+  MESSAGE("first promotion at frame " << first_promoted << ", a pixel below the floor from frame "
+                                      << first_below_floor << "; " << use.promotions
+                                      << " promotions, " << use.evaluations << " evaluations, "
+                                      << "worst admission " << use.worst_admit_ms << " ms");
+  CHECK(differing_frames == 0);
+  CHECK(use.settles == 1);
+  CHECK(use.late == 0);
+  CHECK(use.promotions >= 1);
+  CHECK(first_below_floor < k_frames);
+  CHECK(first_promoted < first_below_floor);
 }

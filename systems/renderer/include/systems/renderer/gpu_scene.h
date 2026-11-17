@@ -48,6 +48,7 @@
 #include <systems/renderer/settings.h>
 #include <systems/renderer/terrain_levels.h>
 #include <systems/renderer/terrain_rings.h>
+#include <systems/renderer/texture_bound.h>
 #include <systems/renderer/tile_layout.h>
 
 #include <memory>
@@ -55,7 +56,13 @@
 #include <span>
 #include <string>
 
+namespace engine::texture {
+struct TextureData;
+}
+
 namespace engine::renderer {
+
+struct TextureBoundState;  // R172: src/texture_bound_state.h
 
 // Mirrors PairExpandParams in pair_expand.slang: the push constants of the pass that writes a
 // dynamic scene's changed pair-table entries from its instance table (docs/subsystems/renderer.md,
@@ -1368,7 +1375,18 @@ class GpuScene {
     bool admitted = false;  // arrived with a tile's mesh, not the load's
   };
   void texture_records(Vector<TextureRecord>& out) const;
-  u64 texture_records_serial() const noexcept { return texture_use_.uploaded + texture_use_.released; }
+  u64 texture_records_serial() const noexcept {
+    return texture_use_.uploaded + texture_use_.released;
+  }
+  // **The bound** (R172 stage 1; texture_bound.h; gpu_scene_texture_bound.cpp): the load uploads a
+  // managed texture from its floor, and once a recorded frame, before `terrain_prepare`, this
+  // brings in off the frame the levels the observer at `eye` a lead ahead could read (`cut`: every
+  // one now, before the frame draws). `texture_bound_whole` holds every texture whole from the next
+  // frame on (the reference path tracer reads level 0).
+  void texture_bound_frame(WorldPos eye, f32 fov_y, f32 znear, u32 width, u32 height, bool cut);
+  void texture_bound_whole() noexcept;
+  bool texture_bound_active() const noexcept { return texture_bound_ != nullptr; }
+  const TextureBoundUse& texture_bound_use() const noexcept;
 
   // ---- geometry streaming (04 §4.3 step 3, §4.9; docs/subsystems/renderer.md) -----------------
   //
@@ -1811,6 +1829,21 @@ class GpuScene {
   Vector<TileTexture> leaving_textures_;     // let go, their images alive a few frames more
   HashMap<u64, TextureInfo> load_textures_;  // the load's built textures by key: pinned
   Vector<TextureRecord> load_texture_records_;  // every texture the load uploaded (R172)
+  // The bound's state (R172 stage 1), null when it manages nothing; its load-time half.
+  struct TextureBoundDelete {  // the state is complete only in gpu_scene_texture_bound.cpp
+    void operator()(TextureBoundState* state) const noexcept;
+  };
+  std::unique_ptr<TextureBoundState, TextureBoundDelete> texture_bound_;
+  bool texture_bound_plan(std::string* error);
+  u32 texture_bound_first_level(u64 key, const texture::TextureData& t) const noexcept;
+  bool texture_bound_manages(u64 key) const noexcept;
+  u32 texture_bound_place(u64 key, const texture::TextureData& t, u32 first,
+                          const gfx::ImageResource& image, gfx::ImageViewHandle view);
+  u32 texture_bound_place_variance(u64 key, const gfx::ImageResource& image,
+                                   gfx::ImageViewHandle view);
+  void texture_bound_materials(const Vector<gfx::ResolveMaterial>& table,
+                               const Vector<u8>& is_material);
+  void destroy_texture_bound() noexcept;
   Vector<u32> free_texture_pairs_;
   gfx::ImageResource texture_placeholder_;
   gfx::ImageViewHandle texture_placeholder_view_;

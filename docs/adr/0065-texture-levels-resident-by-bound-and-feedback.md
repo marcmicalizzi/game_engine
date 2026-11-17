@@ -1,6 +1,6 @@
 # ADR-0065: A texture's levels are resident by an exact bound, trimmed by what the frames sampled
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-11-17)
 - **Date:** 2026-11-16
 - **Plan references:** docs/plan/04-renderer.md §4.9 (streaming and residency), [ADR-0063](0063-memory-is-held-under-one-budget-and-by-travel.md) (one budget, a governor over pools, the envelope by travel), [ADR-0036](0036-built-textures-in-the-engines-own-container.md) (the `.tex` container)
 - **Docs touched:** [texture](../subsystems/texture.md) ("Levels resident by what the frame samples"), `docs/roadmap.md` (R172)
@@ -40,8 +40,10 @@ it one mip at a time dropped, non-visible and least recently seen first); and **
    resolve at 3840 x 2160 with no upscaler is the cost the page has refused since R145, for unique
    texels over a world this engine does not have.
 2. **The bound decides what is released without changing a pixel.** Per texture, the finest
-   level any pixel can read: from each mesh's measured density (G14's measure over its own level-0
-   triangles, taken at its **maximum** over the surface rather than the 1 % figure a cap uses), at
+   level any pixel can read: from each mesh's measured density (G14's measure, taken at its **least** over every
+   triangle of every level of the mesh's cluster DAG rather than the 1 % figure a cap uses: the
+   least texels a metre is the most a pixel can magnify; the first leg's draft said "maximum"
+   for the resolution it asks, and stage 1 found the wording read the other way), at
    each live instance's scale, and the nearest any observer comes to the instance within the lead
    (ADR-0063 decision 3's segment). Levels finer than it are released at once and never change the
    picture; an imported asset gets it from its own triangles, with no statement. The bound is
@@ -68,6 +70,30 @@ it one mip at a time dropped, non-visible and least recently seen first); and **
    their level from a ray cone; the bounce's hit colour reads the resident top, a mean of what it
    read before; the reference path tracer loads whole.
 
+## Accepted, and the two open questions settled (2026-11-17)
+
+The owner handed the first leg's two questions to the coordinator ("Use your judgement on those,
+based on what fits best for the objectives of the engine"), and these are the coordinator's
+judgement under that delegation:
+
+1. **The shape is accepted** as decided above: whole textures by level, the bound first, the
+   feedback's trim only under pressure, promotion off the frame through a second slot pair. It costs
+   a scene with no pressure nothing, an imported asset gets it with no statement of its own, and no
+   sample pays an indirection; virtual texturing buys its page tables only for very large unique
+   textures, which this engine's tiled sets and prop atlases are not.
+2. **The floor is a tunable, `renderer.textures.floor`, 128 texels a side by default** at the top
+   tier (about 22 KB a BC7 texture, 65 KB a material of three): the floor is the failure picture
+   after a cut, and 128 is the smallest that does not read as a blur on a near prop at 4K. A lower
+   tier may take 64; stage 2 sets that by measurement under an 8 GB budget.
+3. **The hold is a minimum age, not a clock** (8 s, a tunable when stage 2 builds it): under no
+   pressure nothing is trimmed; under pressure levels go least recently asked first and only as far
+   as the ceiling needs, and nothing younger than the hold goes, so a look round and back never
+   reads again. ADR-0063's open decisions stay unpresumed: the ceiling is whatever that ADR's budget
+   gives.
+
+Stage 1, the bound, is built (R172's second leg; texture.md has what it does and what it measured).
+Stage 2, the feedback's trim, is not.
+
 ## Consequences
 
 - A texture is a pool in ADR-0063's sense: bytes held, bytes releasable now without changing a
@@ -87,6 +113,9 @@ it one mip at a time dropped, non-visible and least recently seen first); and **
   frame that waits for a level; a level released below the floor.
 
 ## Revisit when
+
+- A single unique texture passes about 8K a side (a terrain's own image): its pages would pay for
+  their indirection.
 
 - The production feedback's cost is measured over a flythrough at 3840 x 2160: if it passes 0.1 ms,
   the trim rides on the resolve's own derivatives instead of a pass of its own.

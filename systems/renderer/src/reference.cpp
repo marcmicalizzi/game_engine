@@ -223,6 +223,10 @@ bool ReferenceRenderer::render(const Camera& camera, const ReferenceSettings& se
   // caller's tick produced without this file knowing what a clip is.
   frame.joints = settings.joints;
   frame.instance_joints = settings.instance_joints;
+  // Its rays read every material at level 0 (`sample_material`): the texture bound holds the
+  // scene's textures whole from this frame on (R172; texture.md, "Levels resident by what the
+  // frame samples").
+  scene_->texture_bound_whole();
   if (!renderer_->render_offscreen(frame, error)) return false;
   out.visible_pairs = renderer_->stats().visible_pairs();
 

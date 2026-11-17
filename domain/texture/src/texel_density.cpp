@@ -229,6 +229,47 @@ void measure_cluster_density(const geometry::ClusterLodMesh& lod,
   finish(acc, out);
 }
 
+void least_cluster_density(const geometry::ClusterLodMesh& lod,
+                           std::span<const u32> cluster_material,
+                           std::span<const geometry::ClusterFileMaterial> materials,
+                           std::span<const geometry::ClusterFileMaterialSampling> sampling,
+                           u32 image_count, Vector<f64>& out) {
+  // The triangles go through the quantile's own accumulator, one triangle at a time, so the
+  // singular value is the measure's to the bit; only the reduction differs (a minimum, every
+  // level).
+  Accumulator acc;
+  begin(acc, materials, sampling, image_count);
+  const geometry::ClusterMesh& mesh = lod.mesh;
+  const bool have_uvs = mesh.attributes.size() == mesh.vertices.size();
+  for (u32 c = 0; c < mesh.clusters.size(); ++c) {
+    const geometry::ClusterDesc& cluster = mesh.clusters[c];
+    const u32 material = c < cluster_material.size() ? cluster_material[c] : 0u;
+    for (u32 t = 0; t < cluster.triangle_count; ++t) {
+      const u32 packed = mesh.triangles[cluster.triangle_offset + t];
+      u32 v[3];
+      bool inside = have_uvs;
+      for (u32 k = 0; k < 3; ++k) {
+        v[k] = cluster.vertex_offset + geometry::ClusterMesh::unpack(packed, k);
+        inside = inside && v[k] < mesh.vertices.size();
+      }
+      if (!inside) continue;
+      add_triangle(acc, mesh.vertices[v[0]], mesh.vertices[v[1]], mesh.vertices[v[2]],
+                   geometry::decode_half2(mesh.attributes[v[0]].uv_half2),
+                   geometry::decode_half2(mesh.attributes[v[1]].uv_half2),
+                   geometry::decode_half2(mesh.attributes[v[2]].uv_half2), material);
+    }
+  }
+  out.assign(image_count, 0.0);
+  for (u32 i = 0; i < image_count; ++i) {
+    const Vector<Sample>& samples = acc.samples[i];
+    if (samples.empty()) continue;
+    f64 least = samples[0].sigma;
+    for (const Sample& s : samples)
+      least = s.sigma < least ? s.sigma : least;
+    out[i] = least;
+  }
+}
+
 u32 needed_side(f64 uv_per_m, f64 scale, f64 texels_per_m) noexcept {
   if (!(uv_per_m > 0.0) || !(scale > 0.0) || !(texels_per_m > 0.0)) return 0;
   const f64 side = texels_per_m * scale / uv_per_m;

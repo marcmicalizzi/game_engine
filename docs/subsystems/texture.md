@@ -742,8 +742,9 @@ driver chooses. This engine takes the third's shape with the second's signal, be
 **Which levels stay.**
 
 1. **The bound releases what no pixel can read, exactly.** Per texture, the finest level a pixel
-   can read: from each mesh's measured density at its **maximum** over the surface ("Sized by the
-   asset"'s measure; the 1 % figure is the cap's, an author's choice, not an automatic one), at
+   can read: from each mesh's measured density at its **least** over every triangle of every
+   level ("Sized by the asset"'s measure; the 1 % figure is the cap's, an author's choice, not an
+   automatic one; the least texels a metre is where a pixel magnifies most), at
    each live instance's scale, against the nearest any observer comes to the instance within the
    lead — the frame-corner formula of "Sized by the asset", `floor(log2(d0 / D))` levels out. It is
    evaluated over the instances that exist now, so a mesh a world's tail places larger raises it
@@ -798,8 +799,76 @@ the wanted levels fall back to the bound at the observer's place now. *Fast trav
 pool releases to the floor and promotes at the destination with the whole machine; shown, a preload
 observer's bound counts as any observer's.
 
-**Not built yet** (R172 stage 1 and on): the bound at load and per frame, the range read, the two
-pairs and the swap; then the production feedback and the trim under a ceiling.
+**Decided** (2026-11-17, the coordinator's judgement under the owner's delegation; ADR-0065,
+accepted): the shape above; **the floor is `renderer.textures.floor`, 128 texels a side by
+default** at the top tier (about 22 KB a BC7 texture; the failure picture after a cut, and the
+smallest that does not read as a blur on a near prop at 4K; a lower tier may take 64, which stage 2
+sets by measurement under an 8 GB budget); **the hold is a minimum age, not a clock** (under no
+pressure nothing is trimmed; under pressure least recently asked first and only as far as the
+ceiling needs, nothing younger than the hold). Revisit for a single unique texture past about 8K a
+side, or sparse residency measuring well on the three test cards.
+
+### Stage 1: the bound, built
+
+**What it does** (R172's second leg, 2026-11-17; `systems/renderer/src/gpu_scene_texture_bound.cpp`,
+`texture_bound_state.h`, `include/systems/renderer/texture_bound.h`; `renderer.textures.bound`,
+on by default). It changes no pixel, so it needs no ceiling and decides nothing ADR-0063 leaves
+open.
+
+1. **At load** (`bound_scene_textures`, scene.cpp) every mesh with built textures that nothing
+   after the load may place — the cap's own rule (`open_scene_meshes`: not a streamed entry's
+   resident mesh, a prop, an actor or a procedural mesh) — gets each image's **least density over
+   every triangle of every level** of its cluster DAG (`texture::least_cluster_density`: a
+   simplified level's triangles are drawn too and may stretch further than any source triangle) and
+   the sphere round its vertices. The upload (`texture_bound_plan`, gpu_scene_texture_bound.cpp)
+   holds a key by level only if **every** use of it can be: not an alpha-tested material's base
+   colour (the rays' mask tests and the micromap bake read level 0 at any distance), not a mesh an
+   instance deforms (the density is the rest pose's), not the terrain's (its layers sample by their
+   own rule) nor a water body's. Such a texture is uploaded **from its floor** — its levels of 128
+   texels a side and smaller, 1/64 of a 1K chain's blocks — into a pair of a reserved run of
+   bindless slots (one pair a texture and 64 spare, never more than a quarter of the set's free
+   slots: past that, keys are uploaded whole). A tile's mesh that names such a key is not offered
+   the load's copy (`load_textures_` leaves it out) and brings its own whole one.
+2. **Each recorded frame** (`GpuScene::texture_bound_frame`, called by `record_frame` before
+   `terrain_prepare`): when the eye has moved half the last lead, the view changed, or 60 frames
+   passed, the bound is worked out — per mesh the least `log2(r cos^2 phi_max / (f s))` over its
+   instances, `r` the eye's distance to the instance's sphere less the lead (never under 1 cm),
+   `s` the instance's largest axis scale, `f` and `phi_max` the camera's pixels a radian and the
+   frame's corner; per texture `floor(log2 texels a metre + that − margin)`, the finest over its
+   meshes. **The lead** is `renderer.textures.lead_m` (2 m) plus the last frame's step times
+   `renderer.textures.lead_frames` (30). **The margin** (`renderer.textures.bound_margin`, 1.53125
+   levels) is derived, not tuned: Vulkan lets an implementation take each `rho` from its components'
+   maximum (as little as 1/sqrt 2 of the length: half a level) and round the anisotropic sample
+   count up to a whole number (`rho_max / ceil(rho_max / rho_min)` is no less than `rho_min / 2`:
+   one level), and the measure reads the float vertices where the rasterizers read the 16-bit grid
+   (1/32). The evaluation walks the instance table once; it allocates nothing.
+3. **A promotion** reads the texture's levels from the new top down by range on the bound's one
+   reader thread (`texture::read_texture_file_levels`: the header, the tables and only those
+   levels' blocks and variance; the load read the file whole and checked its content hash), then on
+   the recording thread, inside `renderer.textures.promote_kib` a frame (4,096; one larger goes
+   alone): a new image in a free pair, its levels staged into the frame's "terrain upload" pass, and
+   the material records that name the texture rewritten to the new pair by copies in the same pass
+   (the material table is imported as last read everywhere, so the copy waits for the frames in
+   flight, which still read the old record and the old image). The old image and pair go
+   `k_joint_slots + 1` recorded frames later. **A settle** — the first frame, a frame with
+   `FrameDesc::history_reset`, and the frame after `texture_bound_whole` (the reference path tracer
+   reads level 0 and asks for it) — reads and admits every wanted level on the recording thread
+   before the frame draws: a cut's frame is a load's. With `renderer.textures.bound_wait` (tests) a
+   frame whose eye can read a level not yet in brings it in itself; otherwise the frame draws the
+   resident levels and counts itself **late** (`TextureBoundUse::late`).
+4. **What it does not do**: release a level when the eye walks away (the levels a walk brought in
+   stay until the scene goes: a demotion is the same swap the other way, and belongs with stage 2's
+   trim, which decides when a release pays), and hold textures that arrive with a tile's mesh
+   (they are uploaded whole, as before).
+
+**The readers that name level 0**, as above: the alpha-tested base colours are not held by level
+at all; the bounce's hit colour (`gi_update.slang`'s `sample_material`) reads the resident top of
+the others, a mean of what it read before; the reference path tracer settles every texture whole
+first. **With the bounce off the picture is the whole scene's to the byte**; with it on, the bounce
+is not repeatable frame to frame anyway.
+
+**Not built yet**: the production feedback and the trim under a ceiling (stage 2); a demotion; the
+bound for textures that arrive with a tile's mesh.
 
 ## Samplers and texture transforms
 

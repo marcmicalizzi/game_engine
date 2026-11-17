@@ -21,7 +21,6 @@
 #include <systems/renderer/water_refract.h>
 
 #include <accumulation_pass.h>
-#include <texture_feedback.h>
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -1811,8 +1810,8 @@ bool SceneRenderer::set_dynamic_instances(std::span<const SceneInstance> tail,
     for (u32 i = 0; i < relayout_retired_.chain.count; ++i)
       retire_rt_buffer(relayout_retired_.chain.buffers[i]);
     if (relayout_retired_.tlas.handle.valid()) {
-      retired_tlas_.push_back(RetiredTlas{relayout_retired_.tlas, relayout_retired_.tlas_slot,
-                                          frames_.frame_index()});
+      retired_tlas_.push_back(
+          RetiredTlas{relayout_retired_.tlas, relayout_retired_.tlas_slot, frames_.frame_index()});
     }
     const bool must_wait = relayout_retired_.must_wait;
     relayout_retired_.clear();
@@ -2879,7 +2878,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // A moving terrain's levels (docs/subsystems/renderer.md, "The dunes in time-lapse"): this frame
   // slot's table of what each level draws, which the cull pass and the pool pass read, and the
   // fields the host handed over since the last frame, which this frame copies onto the device
-  // before either pass runs. Nothing for a scene whose terrain does not move.
+  // before either pass runs. Nothing for a scene whose terrain does not move. First the levels the
+  // texture bound brings in (R172), which hand over with the rest.
+  scene.texture_bound_frame(frame.camera.position, frame.camera.fov_y, frame.camera.znear, width_,
+                            height_, frame.history_reset);
   scene.terrain_prepare(slot, terrain_frame_);
   // The instance records moved since the last frame (`move_instances` in a scene read whole) and
   // the ring slots' records, staged in this slot's own staging for the "record upload" pass below,
@@ -4480,8 +4482,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       tg.vertices = import_read("ring vertices", scene.vertices);
       tg.indices8 = import_read("ring indices8", scene.indices8);
     }
-    // A scene with a mesh room copies an admitted mesh's material indices and materials too.
-    if (scene.mesh_room().slots != 0) {
+    // A scene with a mesh room copies an admitted mesh's material indices and materials too, and
+    // the texture bound the records of a promoted texture's materials (R172).
+    if (scene.mesh_room().slots != 0 || scene.texture_bound_active()) {
       tg.cluster_materials = import_read("mesh cluster materials", scene.cluster_materials);
       tg.materials = import_read("mesh materials", scene.materials);
     }

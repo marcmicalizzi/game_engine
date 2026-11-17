@@ -1,0 +1,732 @@
+// **A texture's levels resident by an exact bound** (R172 stage 1; ADR-0065; docs/subsystems/
+// texture.md, "Levels resident by what the frame samples").
+//
+// The load uploads a texture the bound manages from its floor (the levels of `renderer.textures.
+// floor` texels a side and smaller), into a pair of a reserved run of bindless slots. Once a
+// recorded frame, before anything is staged, the bound is worked out where the observer is: per
+// mesh, the nearest any instance of it comes to the eye a lead ahead, against its least texel
+// density over every cluster (`texture::least_cluster_density`) at the instance's largest axis
+// scale, gives the finest level a pixel of that mesh can read; per texture, the finest over the
+// meshes that sample it. A texture that wants a finer top than it holds is **promoted**: its levels
+// from the new top are read from the `.tex` by range on the reader thread, made into a new image in
+// a free pair, staged into the frame's "terrain upload" pass, and the material records that name it
+// are rewritten to the new pair in the same pass, behind the barrier that waits for the frames in
+// flight; the old image and pair go `k_joint_slots + 1` recorded frames later. A cut (the first
+// frame, `FrameDesc::history_reset`, `texture_bound_whole`) brings every wanted level in before the
+// frame draws, on the recording thread.
+//
+// **Why a level the bound leaves out changes no pixel.** A pixel at angle phi off the axis of a
+// rectilinear camera with `f` pixels a radian spans at least `cos^2 phi / f` radians along any
+// screen axis, so on a surface at distance `r` at least `r cos^2 phi / f` metres; through a
+// triangle whose least stretched direction carries `sigma` UV a metre, at instance scale `s`, on an
+// image of shorter side `n`, that is at least `n sigma r cos^2 phi / (f s)` texels a pixel step
+// along x and along y. Vulkan's anisotropic level of detail is log2 of max(rho_max / N, rho_min) >=
+// log2 rho_min with the exact rho; an implementation may take each rho from its components' maximum
+// (down to 1/sqrt 2 of the length: half a level) and round the anisotropy N up to a whole sample
+// count (rho_max / ceil(rho_max / rho_min) >= rho_min / 2: one level), and the measure is taken
+// over the float vertices where the rasterizers read the 16-bit grid. So the finest level a pixel
+// reads is at least floor(log2(that) - margin), the margin
+// `renderer.textures.bound_margin`, 1.53125 levels by default (1.5 for the two implementation
+// freedoms, 1/32 for the grid and the LOD's fixed point).
+
+#include "texture_bound_state.h"
+
+#include <core/log/log.h>
+#include <core/time/time.h>
+#include <domain/geometry/material_sampling.h>
+#include <domain/gfx/bindless.h>
+#include <domain/texture/texture_build.h>
+#include <domain/texture/texture_file.h>
+#include <foundation/tunables/tunables.h>
+#include <systems/renderer/gpu_scene.h>
+
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+#include <renderer_log.h>
+#include <utility>
+
+namespace engine::renderer {
+
+namespace {
+
+tunables::Bool bound_on{"renderer.textures.bound", true,
+                        "Hold the load's built textures by level: upload from the floor, and bring "
+                        "in off the frame the levels an observer a lead ahead could read, which "
+                        "changes no pixel (texture.md, \"Levels resident by what the frame "
+                        "samples\"). Read once per load"};
+tunables::Int bound_floor{"renderer.textures.floor", 128, 1, 16'384,
+                          "Texels a side: every texture the bound holds keeps its levels this "
+                          "size and smaller whatever an observer can read (the floor)"};
+tunables::Float bound_margin{
+    "renderer.textures.bound_margin", 1.53125, 0.0, 8.0,
+    "Levels the bound keeps above the finest it computes a pixel can read: an implementation's "
+    "freedom in the anisotropic level of detail (1.5) and the grid's rounding (1/32)"};
+tunables::Float bound_lead_m{"renderer.textures.lead_m", 2.0, 0.0, 10'000.0,
+                             "Metres the bound looks ahead of the observer at the least"};
+tunables::Int bound_lead_frames{
+    "renderer.textures.lead_frames", 30, 0, 6'000,
+    "Frames of the observer's last step the bound looks ahead beyond `lead_m`"};
+tunables::Int bound_promote_kib{
+    "renderer.textures.promote_kib", 4'096, 0, 1 << 20,
+    "KiB of promoted texture levels one frame stages; one larger goes alone (0: no limit)"};
+tunables::Bool bound_wait{"renderer.textures.bound_wait", false,
+                          "A frame whose observer can read a level the bound has not brought in "
+                          "yet brings it in before drawing, on the recording thread (tests)"};
+
+constexpr u32 k_spare_pairs = 64;  // pairs a promotion takes while its old one waits out the frames
+constexpr u64 aligned16(u64 v) noexcept { return (v + 15) & ~u64{15}; }
+constexpr f64 k_never = 1.0e30;  // a mesh no instance places: it asks nothing
+
+u32 floor_top_of(u32 width, u32 height, u32 levels, u32 floor) noexcept {
+  u32 k = 0;
+  while (k + 1 < levels && std::max(texture::texture_level_extent(width, k),
+                                    texture::texture_level_extent(height, k)) > floor) {
+    ++k;
+  }
+  return k;
+}
+
+void reader(TextureBoundState* s) {
+  std::unique_lock<std::mutex> lock(s->mutex);
+  for (;;) {
+    s->wake.wait(lock, [s] { return s->stop || !s->queue.empty(); });
+    if (s->stop) return;
+    TextureBoundState::Read read = std::move(s->queue.back());
+    s->queue.pop_back();
+    lock.unlock();
+    read.ok = texture::read_texture_file_levels(read.path, read.first, read.data, nullptr);
+    lock.lock();
+    s->done.push_back(std::move(read));
+  }
+}
+
+}  // namespace
+
+namespace {
+// The texture a key names, or null: one the bound does not hold, or dropped past the run's room.
+const u32* find_held(const TextureBoundState& s, u64 key) noexcept {
+  const u32* at = s.by_key.find_value(key);
+  return at != nullptr && *at < s.textures.size() ? at : nullptr;
+}
+}  // namespace
+
+bool texture_bound_enabled() { return bound_on.get(); }
+
+void GpuScene::TextureBoundDelete::operator()(TextureBoundState* state) const noexcept {
+  delete state;
+}
+
+const TextureBoundUse& GpuScene::texture_bound_use() const noexcept {
+  static const TextureBoundUse none{};
+  return texture_bound_ != nullptr ? texture_bound_->use : none;
+}
+
+bool GpuScene::texture_bound_manages(u64 key) const noexcept {
+  if (texture_bound_ == nullptr) return false;
+  const u32* at = find_held(*texture_bound_, key);
+  return at != nullptr && texture_bound_->textures[*at].placed;
+}
+
+// ---- the load's half ------------------------------------------------------------------------
+
+bool GpuScene::texture_bound_plan(std::string* error) {
+  destroy_texture_bound();
+  if (!bound_on.get() || device_ == nullptr || !device_->features().texture_compression_bc)
+    return true;
+  const SceneData& d = *data_;
+  const u32 mesh_count = d.sources.size();
+  // A mesh none of whose textures the bound holds: one an instance deforms (the density is the rest
+  // pose's), the terrain (its layers are sampled by their own rule) and a water body (its own).
+  Vector<u8> excluded(mesh_count, u8{0});
+  for (const gfx::InstanceDesc& instance : instance_table_)
+    if (instance.mesh < mesh_count && instance.deform != gfx::k_invalid_deform)
+      excluded[instance.mesh] = 1;
+  if (d.terrain_mesh < mesh_count) excluded[d.terrain_mesh] = 1;
+  for (u32 m = 0; m < mesh_count && m < d.mesh_info.size(); ++m)
+    if (d.mesh_info[m].water.has_value()) excluded[m] = 1;
+  // A key one of its users cannot have bounded is uploaded whole for all: an alpha-tested
+  // material's base colour (the rays' mask tests and the micromap bake read level 0 at any
+  // distance), any texture of an excluded or open mesh.
+  HashMap<u64, u8> refused;
+  for (u32 m = 0; m < mesh_count; ++m) {
+    const SourceMesh& mesh = d.sources[m];
+    const bool can = excluded[m] == 0 && !mesh.texture_ddc.empty() &&
+                     mesh.texture_least_density.size() == mesh.textures.size() &&
+                     mesh.textures.size() == mesh.data.images.size();
+    for (const assets::Material& material : mesh.data.materials) {
+      const i32 images[geometry::k_material_slots] = {
+          material.base_color_image, material.metallic_roughness_image, material.normal_image,
+          material.occlusion_image, material.emissive_image};
+      for (u32 slot = 0; slot < geometry::k_material_slots; ++slot) {
+        const i32 image = images[slot];
+        if (image < 0 || static_cast<u32>(image) >= mesh.textures.size()) continue;
+        const u64 key = mesh.textures[static_cast<u32>(image)].key;
+        if (key == 0) continue;
+        const bool masked =
+            slot == geometry::k_slot_base_color && material.alpha_mode == assets::k_alpha_mask;
+        if (!can || masked) refused.try_emplace(key, u8{1});
+      }
+    }
+  }
+  auto s = std::make_unique<TextureBoundState>();
+  s->mesh_users.resize(mesh_count);
+  s->mesh_sphere.assign(mesh_count, Vec4{});
+  for (u32 m = 0; m < mesh_count; ++m) {
+    const SourceMesh& mesh = d.sources[m];
+    if (mesh.texture_least_density.size() != mesh.textures.size() || excluded[m] != 0) continue;
+    s->mesh_sphere[m] = mesh.texture_sphere;
+    for (u32 i = 0; i < mesh.textures.size(); ++i) {
+      const u64 key = mesh.textures[i].key;
+      if (key == 0 || refused.find_value(key) != nullptr) continue;
+      bool sampled = false;
+      for (const assets::Material& material : mesh.data.materials) {
+        for (const i32 image :
+             {material.base_color_image, material.metallic_roughness_image, material.normal_image,
+              material.occlusion_image, material.emissive_image}) {
+          sampled = sampled || image == static_cast<i32>(i);
+        }
+      }
+      if (!sampled) continue;
+      u32 t = 0;
+      if (const u32* at = s->by_key.find_value(key)) {
+        t = *at;
+      } else {
+        t = s->textures.size();
+        s->by_key.insert(key, t);
+        TextureBoundState::Texture texture;
+        texture.key = key;
+        texture.path = texture::texture_cache_path(mesh.texture_ddc, key);
+        s->textures.push_back(std::move(texture));
+      }
+      const f64 sigma = mesh.texture_least_density[i];
+      const f64 log2_sigma = sigma > 0.0 ? std::log2(sigma) : -k_never;
+      bool merged = false;
+      for (TextureBoundState::User& user : s->mesh_users[m]) {
+        if (user.texture != t) continue;
+        user.log2_texels_per_m = std::min(user.log2_texels_per_m, log2_sigma);
+        merged = true;
+      }
+      if (!merged) s->mesh_users[m].push_back(TextureBoundState::User{t, log2_sigma});
+    }
+  }
+  if (s->textures.empty()) return true;
+  // The run: a pair a texture and a few spare, while the set has freed nothing and its next slots
+  // are consecutive. Never more than half of what is left, so the textures the bound does not
+  // hold, the variance chains and a tile texture room still find theirs; past it, keys are dropped
+  // from the end and uploaded whole.
+  const u32 capacity = gfx::BindlessConfig{}.sampled_images;
+  const u32 live = bindless_.live_sampled_images();
+  const u32 room = capacity > live ? (capacity - live) / 4 : 0u;
+  u32 wanted = s->textures.size() + k_spare_pairs;
+  if (wanted > room) {
+    const u32 keep = room > k_spare_pairs ? room - k_spare_pairs : 0u;
+    ENGINE_LOG_WARN(log_renderer, "texture bound: fewer bindless pairs than textures",
+                    log::field("textures", s->textures.size()), log::field("held", keep));
+    if (keep == 0) return true;
+    s->textures.resize(keep);  // a key whose index is past it is not held (`find_held`)
+    for (Vector<TextureBoundState::User>& users : s->mesh_users) {
+      u32 kept = 0;
+      for (u32 u = 0; u < users.size(); ++u)
+        if (users[u].texture < keep) users[kept++] = users[u];
+      users.resize(kept);
+    }
+    wanted = keep + k_spare_pairs;
+  }
+  const u8 white[4] = {255, 255, 255, 255};
+  if (!gfx::upload_image_2d(*device_, 1, 1, gfx::Format::R8G8B8A8Unorm, white, sizeof(white),
+                            s->placeholder, error) ||
+      !gfx::create_image_view(*device_, s->placeholder, s->placeholder_view, error)) {
+    return false;
+  }
+  for (u32 k = 0; k < 2 * wanted; ++k) {
+    const u32 slot =
+        bindless_.add_sampled_image(s->placeholder_view, gfx::ImageLayout::ShaderReadOnly);
+    if (k == 0) s->first_slot = slot;
+    if (slot == gfx::BindlessSet::k_invalid_slot || slot != s->first_slot + k) {
+      if (error != nullptr) *error = "the texture bound's bindless slots are not consecutive";
+      gfx::destroy_image_view(*device_, s->placeholder_view);
+      gfx::destroy_image(*device_, s->placeholder);
+      return false;
+    }
+  }
+  s->pairs = wanted;
+  s->free_pairs.reserve(wanted);
+  for (u32 p = wanted; p-- > 0;)
+    s->free_pairs.push_back(p);
+  s->frames_leaving = k_joint_slots + 1;
+  s->leaving.reserve(wanted);
+  s->mesh_q.assign(mesh_count, k_never);
+  s->mesh_q_now.assign(mesh_count, k_never);
+  s->order.reserve(s->textures.size());
+  s->queue.reserve(s->textures.size());
+  s->done.reserve(s->textures.size());
+  s->taken.reserve(s->textures.size());
+  pending_images_.reserve(pending_images_.size() + 16);
+  texture_bound_.reset(s.release());
+  return true;
+}
+
+u32 GpuScene::texture_bound_first_level(u64 key, const texture::TextureData& t) const noexcept {
+  if (texture_bound_ == nullptr) return ~0u;
+  const u32* at = find_held(*texture_bound_, key);
+  if (at == nullptr || texture_bound_->free_pairs.size() <= k_spare_pairs) return ~0u;
+  const u32 floor =
+      floor_top_of(t.width, t.height, t.levels.size(), static_cast<u32>(bound_floor.get()));
+  return floor == 0 ? ~0u : floor;  // a texture at its floor already has nothing to leave out
+}
+
+u32 GpuScene::texture_bound_place(u64 key, const texture::TextureData& t, u32 first,
+                                  const gfx::ImageResource& image, gfx::ImageViewHandle view) {
+  TextureBoundState& s = *texture_bound_;
+  TextureBoundState::Texture& tex = s.textures[*find_held(s, key)];
+  tex.width = t.width;
+  tex.height = t.height;
+  tex.levels = t.levels.size();
+  tex.format = image.format;
+  tex.floor_top = first;
+  tex.resident_top = first;
+  tex.wanted_top = tex.now_top = first;
+  tex.image = image;
+  tex.view = view;
+  tex.pair = s.free_pairs.back();
+  s.free_pairs.pop_back();
+  tex.record = load_texture_records_.size();  // the caller's next record
+  tex.placed = true;
+  const u32 slot = s.first_slot + 2 * tex.pair;
+  bindless_.update_sampled_image(slot, view, gfx::ImageLayout::ShaderReadOnly);
+  ++s.use.managed;
+  s.use.whole_bytes += t.data.size() + t.normal_variance.size();
+  s.use.resident_bytes += image.bytes;
+  s.use.peak_bytes = std::max(s.use.peak_bytes, s.use.resident_bytes);
+  return slot;
+}
+
+u32 GpuScene::texture_bound_place_variance(u64 key, const gfx::ImageResource& image,
+                                           gfx::ImageViewHandle view) {
+  TextureBoundState& s = *texture_bound_;
+  TextureBoundState::Texture& tex = s.textures[*find_held(s, key)];
+  tex.variance = true;
+  tex.variance_image = image;
+  tex.variance_view = view;
+  const u32 slot = s.first_slot + 2 * tex.pair + 1;
+  bindless_.update_sampled_image(slot, view, gfx::ImageLayout::ShaderReadOnly);
+  s.use.resident_bytes += image.bytes;
+  s.use.peak_bytes = std::max(s.use.peak_bytes, s.use.resident_bytes);
+  return slot;
+}
+
+void GpuScene::texture_bound_materials(const Vector<gfx::ResolveMaterial>& table,
+                                       const Vector<u8>& is_material) {
+  if (texture_bound_ == nullptr) return;
+  TextureBoundState& s = *texture_bound_;
+  Vector<u32> pair_texture(s.pairs, ~0u);
+  for (u32 t = 0; t < s.textures.size(); ++t)
+    if (s.textures[t].placed) pair_texture[s.textures[t].pair] = t;
+  for (u32 e = 0; e < table.size(); ++e) {
+    if (e < is_material.size() && is_material[e] == 0) continue;
+    const gfx::ResolveMaterial& record = table[e];
+    const u32 named_slots[geometry::k_material_slots] = {
+        record.albedo_texture, record.metallic_roughness_texture, record.normal_texture,
+        record.occlusion_texture, record.emissive_texture};
+    u32 copy = ~0u;
+    for (const u32 slot : named_slots) {
+      if (slot < s.first_slot || slot >= s.first_slot + 2 * s.pairs) continue;
+      if (((slot - s.first_slot) & 1u) != 0) continue;  // a variance slot is named by its normal's
+      const u32 t = pair_texture[(slot - s.first_slot) / 2];
+      if (t == ~0u) continue;
+      if (copy == ~0u) {
+        copy = s.materials.size();
+        s.materials.push_back(TextureBoundState::MaterialCopy{e, record});
+      }
+      Vector<u32>& named = s.textures[t].materials;
+      if (std::find(named.begin(), named.end(), copy) == named.end()) named.push_back(copy);
+    }
+  }
+  // Nothing placed (every user's mesh drew decoded): the run stays, holding nothing.
+  ENGINE_LOG_INFO(log_renderer, "texture bound", log::field("textures", s.use.managed),
+                  log::field("pairs", s.pairs), log::field("materials", s.materials.size()),
+                  log::field("whole_bytes", s.use.whole_bytes),
+                  log::field("floor_bytes", s.use.resident_bytes));
+}
+
+void GpuScene::texture_bound_whole() noexcept {
+  if (texture_bound_ == nullptr) return;
+  texture_bound_->whole = true;
+  texture_bound_->settled = false;  // the next frame brings every level in before it draws
+}
+
+void GpuScene::destroy_texture_bound() noexcept {
+  if (texture_bound_ == nullptr) return;
+  TextureBoundState& s = *texture_bound_;
+  if (s.use.managed != 0) {  // what the run held and cost, once, for a measurement to read
+    ENGINE_LOG_INFO(
+        log_renderer, "texture bound use", log::field("textures", s.use.managed),
+        log::field("whole_bytes", s.use.whole_bytes),
+        log::field("resident_bytes", s.use.resident_bytes),
+        log::field("peak_bytes", s.use.peak_bytes), log::field("promotions", s.use.promotions),
+        log::field("promoted_bytes", s.use.promoted_bytes), log::field("settles", s.use.settles),
+        log::field("late", s.use.late), log::field("evaluations", s.use.evaluations),
+        log::field("worst_admit_ms", s.use.worst_admit_ms),
+        log::field("worst_settle_ms", s.use.worst_settle_ms),
+        log::field("last_evaluate_ms", s.use.last_evaluate_ms));
+  }
+  if (s.worker.joinable()) {
+    {
+      std::lock_guard<std::mutex> lock(s.mutex);
+      s.stop = true;
+    }
+    s.wake.notify_all();
+    s.worker.join();
+  }
+  if (device_ != nullptr) {
+    const auto destroy = [&](gfx::ImageResource& image, gfx::ImageViewHandle& view) {
+      if (view.valid()) gfx::destroy_image_view(*device_, view);
+      if (image.image.valid()) gfx::destroy_image(*device_, image);
+      view = {};
+      image = {};
+    };
+    for (TextureBoundState::Texture& tex : s.textures) {
+      destroy(tex.image, tex.view);
+      destroy(tex.variance_image, tex.variance_view);
+    }
+    for (TextureBoundState::Leaving& gone : s.leaving) {
+      destroy(gone.image, gone.view);
+      destroy(gone.variance_image, gone.variance_view);
+    }
+    destroy(s.placeholder, s.placeholder_view);
+  }
+  texture_bound_.reset();
+}
+
+// ---- the frame's half ---------------------------------------------------------------------------
+
+namespace {
+
+// Log2 of the least footprint a pixel can have on an instance's surface over its scale: the term
+// the bound adds to a mesh's log2 texels a metre to get log2 texels a pixel.
+struct BoundView {
+  WorldPos eye{};
+  f64 f = 1.0;
+  f64 c2 = 1.0;
+  f64 near = 0.01;
+};
+
+}  // namespace
+
+void GpuScene::texture_bound_frame(WorldPos eye, f32 fov_y, f32 znear, u32 width, u32 height,
+                                   bool cut) {
+  if (texture_bound_ == nullptr) return;
+  TextureBoundState& s = *texture_bound_;
+  ++s.frames;
+  // The images let go `frames_leaving` recorded frames ago: no frame that could sample them is
+  // left.
+  for (u32 i = 0; i < s.leaving.size();) {
+    TextureBoundState::Leaving& gone = s.leaving[i];
+    if (--gone.frames != 0) {
+      ++i;
+      continue;
+    }
+    const u32 slot = s.first_slot + 2 * gone.pair;
+    bindless_.update_sampled_image(slot, s.placeholder_view, gfx::ImageLayout::ShaderReadOnly);
+    bindless_.update_sampled_image(slot + 1, s.placeholder_view, gfx::ImageLayout::ShaderReadOnly);
+    gfx::destroy_image_view(*device_, gone.view);
+    gfx::destroy_image(*device_, gone.image);
+    if (gone.variance_image.image.valid()) {
+      gfx::destroy_image_view(*device_, gone.variance_view);
+      gfx::destroy_image(*device_, gone.variance_image);
+    }
+    s.free_pairs.push_back(gone.pair);
+    s.leaving[i] = s.leaving.back();
+    s.leaving.pop_back();
+  }
+  if (s.use.managed == 0) return;
+
+  // The view: pixels a radian at the centre, and cos^2 of the angle to the frame's corner.
+  BoundView view;
+  view.eye = eye;
+  const f64 half_h = 0.5 * static_cast<f64>(height);
+  const f64 half_w = 0.5 * static_cast<f64>(width);
+  view.f = half_h / std::tan(0.5 * static_cast<f64>(fov_y));
+  view.c2 = view.f * view.f / (view.f * view.f + half_w * half_w + half_h * half_h);
+  view.near = std::min(0.01, static_cast<f64>(znear));
+  const bool settle = cut || !s.settled;
+  const f64 step = s.have_eye ? length(eye - s.last_eye) : 0.0;
+  s.last_eye = eye;
+  s.have_eye = true;
+  const f64 lead = bound_lead_m.get() + step * static_cast<f64>(bound_lead_frames.get());
+  const bool evaluate = settle || view.f != s.eval_f || view.c2 != s.eval_c2 ||
+                        lead > s.eval_lead || length(eye - s.eval_eye) > 0.5 * s.eval_lead ||
+                        s.frames - s.eval_frame >= 60;
+  bool late_now = false;
+  if (evaluate) {
+    const i64 started = time::monotonic_ns();
+    s.eval_eye = eye;
+    s.eval_f = view.f;
+    s.eval_c2 = view.c2;
+    s.eval_lead = lead;
+    s.eval_frame = s.frames;
+    ++s.use.evaluations;
+    std::fill(s.mesh_q.begin(), s.mesh_q.end(), k_never);
+    std::fill(s.mesh_q_now.begin(), s.mesh_q_now.end(), k_never);
+    const f64 log2_c2_over_f = std::log2(view.c2 / view.f);
+    const u32 count = std::min<u32>(instance_count_, instance_table_.size());
+    for (u32 i = 0; i < count; ++i) {
+      const gfx::InstanceDesc& instance = instance_table_[i];
+      const u32 m = instance.mesh;
+      if (m >= s.mesh_users.size() || s.mesh_users[m].empty()) continue;
+      const Vec4 sphere = s.mesh_sphere[m];
+      const auto w = [](f32 v) { return static_cast<f64>(v); };
+      f64 scale = 0.0;  // the largest axis scale: the length of the 3x4's largest column
+      for (u32 c = 0; c < 3; ++c) {
+        const Vec4* r = instance.rows;
+        const f64 x = w(c == 0 ? r[0].x : c == 1 ? r[0].y : r[0].z);
+        const f64 y = w(c == 0 ? r[1].x : c == 1 ? r[1].y : r[1].z);
+        const f64 z = w(c == 0 ? r[2].x : c == 1 ? r[2].y : r[2].z);
+        scale = std::max(scale, std::sqrt(x * x + y * y + z * z));
+      }
+      if (!(scale > 0.0)) continue;
+      const auto row = [&](const Vec4& r, i32 cell) {
+        return static_cast<f64>(cell) * k_world_cell_m + w(r.w) + w(r.x) * w(sphere.x) +
+               w(r.y) * w(sphere.y) + w(r.z) * w(sphere.z);
+      };
+      const WorldPos centre{row(instance.rows[0], instance.cell.x),
+                            row(instance.rows[1], instance.cell.y),
+                            row(instance.rows[2], instance.cell.z)};
+      const f64 gap = length(centre - eye) - static_cast<f64>(sphere.w) * scale;
+      const f64 r_lead = std::max(gap - lead, view.near);
+      const f64 r_now = std::max(gap, view.near);
+      const f64 log2_scale = std::log2(scale);
+      s.mesh_q[m] = std::min(s.mesh_q[m], std::log2(r_lead) + log2_c2_over_f - log2_scale);
+      s.mesh_q_now[m] = std::min(s.mesh_q_now[m], std::log2(r_now) + log2_c2_over_f - log2_scale);
+    }
+    for (TextureBoundState::Texture& tex : s.textures) {
+      tex.wanted_top = s.whole ? 0u : tex.floor_top;
+      tex.now_top = tex.wanted_top;
+    }
+    const f64 margin = bound_margin.get();
+    for (u32 m = 0; m < s.mesh_users.size(); ++m) {
+      if (s.mesh_users[m].empty() || s.mesh_q[m] >= k_never) continue;
+      for (const TextureBoundState::User& user : s.mesh_users[m]) {
+        TextureBoundState::Texture& tex = s.textures[user.texture];
+        if (!tex.placed) continue;
+        const f64 log2_side =
+            std::log2(static_cast<f64>(std::max(1u, std::min(tex.width, tex.height))));
+        const auto level = [&](f64 q) {
+          const f64 lambda = user.log2_texels_per_m + log2_side + q - margin;
+          return lambda <= 0.0 ? 0u : static_cast<u32>(std::min(std::floor(lambda), 31.0));
+        };
+        tex.wanted_top = std::min(tex.wanted_top, level(s.mesh_q[m]));
+        tex.now_top = std::min(tex.now_top, level(s.mesh_q_now[m]));
+      }
+    }
+    for (TextureBoundState::Texture& tex : s.textures) {
+      if (!tex.placed) continue;
+      if (tex.now_top < tex.resident_top && !settle) {
+        late_now = true;
+        if (!tex.late) ++s.use.late;
+        tex.late = true;
+      } else if (tex.now_top >= tex.resident_top) {
+        tex.late = false;
+      }
+    }
+    s.use.last_evaluate_ms = static_cast<f64>(time::monotonic_ns() - started) / 1.0e6;
+  }
+
+  // The reads that arrived since the last frame.
+  {
+    std::lock_guard<std::mutex> lock(s.mutex);
+    for (TextureBoundState::Read& read : s.done)
+      s.taken.push_back(std::move(read));
+    s.done.clear();
+  }
+  const auto admit = [&](u32 t, texture::TextureData& tail, u32 first) {
+    TextureBoundState::Texture& tex = s.textures[t];
+    if (s.free_pairs.empty()) return false;
+    const u32 levels = tail.levels.size();
+    gfx::ImageResource image;
+    gfx::ImageViewHandle view_handle;
+    gfx::ImageResource variance;
+    gfx::ImageViewHandle variance_view;
+    std::string error;
+    const auto undo = [&] {
+      if (view_handle.valid()) gfx::destroy_image_view(*device_, view_handle);
+      if (image.image.valid()) gfx::destroy_image(*device_, image);
+      if (variance_view.valid()) gfx::destroy_image_view(*device_, variance_view);
+      if (variance.image.valid()) gfx::destroy_image(*device_, variance);
+    };
+    const bool with_variance = tex.variance && !tail.normal_variance.empty();
+    if (levels == 0 || levels > gfx::k_max_image_levels ||
+        !gfx::create_sampled_image_levels(*device_, tail.width, tail.height, tex.format, levels,
+                                          image, &error) ||
+        !gfx::create_image_view(*device_, image, view_handle, &error) ||
+        (with_variance &&
+         (!gfx::create_sampled_image_levels(*device_, tail.width, tail.height,
+                                            gfx::Format::Bc4Unorm, levels, variance, &error) ||
+          !gfx::create_image_view(*device_, variance, variance_view, &error)))) {
+      undo();
+      ENGINE_LOG_WARN(log_renderer, "texture bound: no image for a promotion",
+                      log::field("key", tex.key), log::field("error", error));
+      return false;
+    }
+    u64 staged = 0;
+    for (u32 l = 0; l < levels; ++l) {
+      staged += aligned16(tail.level_bytes(l).size());
+      if (with_variance) staged += aligned16(tail.normal_variance_level_bytes(l).size());
+    }
+    const u64 records_at = staged;
+    staged += u64{tex.materials.size()} * sizeof(gfx::ResolveMaterial);
+    gfx::BufferResource staging;
+    u64 at = 0;
+    if (!stage_bytes(staged, staging, at, &error)) {
+      undo();
+      return false;
+    }
+    u8* base = static_cast<u8*>(staging.mapped);
+    u64 offset = at;
+    TerrainUpdate::ImageUpload upload;
+    upload.image = image;
+    upload.staging = staging.buffer;
+    for (u32 l = 0; l < levels; ++l) {
+      const std::span<const u8> bytes = tail.level_bytes(l);
+      upload.offsets[l] = offset;
+      std::memcpy(base + offset, bytes.data(), bytes.size());
+      offset += aligned16(bytes.size());
+    }
+    pending_images_.push_back(upload);
+    if (with_variance) {
+      upload.image = variance;
+      for (u32 l = 0; l < levels; ++l) {
+        const std::span<const u8> bytes = tail.normal_variance_level_bytes(l);
+        upload.offsets[l] = offset;
+        std::memcpy(base + offset, bytes.data(), bytes.size());
+        offset += aligned16(bytes.size());
+      }
+      pending_images_.push_back(upload);
+    }
+    // The new pair, written before any material names it; the records that name the old one
+    // rewritten in the same pass that copies the levels.
+    const u32 pair = s.free_pairs.back();
+    s.free_pairs.pop_back();
+    const u32 old_slot = s.first_slot + 2 * tex.pair;
+    const u32 slot = s.first_slot + 2 * pair;
+    bindless_.update_sampled_image(slot, view_handle, gfx::ImageLayout::ShaderReadOnly);
+    if (with_variance)
+      bindless_.update_sampled_image(slot + 1, variance_view, gfx::ImageLayout::ShaderReadOnly);
+    u64 record_at = at + records_at;
+    for (const u32 c : tex.materials) {
+      gfx::ResolveMaterial& record = s.materials[c].record;
+      for (u32* field :
+           {&record.albedo_texture, &record.metallic_roughness_texture, &record.normal_texture,
+            &record.occlusion_texture, &record.emissive_texture}) {
+        if (*field == old_slot) *field = slot;
+      }
+      std::memcpy(base + record_at, &record, sizeof(record));
+      pending_geometry_.push_back(TerrainUpdate::GeometryCopy{
+          staging.buffer, materials.buffer,
+          gfx::BufferCopy{record_at, u64{s.materials[c].index} * sizeof(gfx::ResolveMaterial),
+                          sizeof(gfx::ResolveMaterial)}});
+      record_at += sizeof(gfx::ResolveMaterial);
+    }
+    pending_geometry_bytes_ += staged;
+    const u64 old_bytes = tex.image.bytes + tex.variance_image.bytes;
+    const u64 new_bytes = image.bytes + variance.bytes;
+    s.leaving.push_back(TextureBoundState::Leaving{tex.image, tex.view, tex.variance_image,
+                                                   tex.variance_view, tex.pair, s.frames_leaving});
+    tex.image = image;
+    tex.view = view_handle;
+    tex.variance_image = variance;
+    tex.variance_view = variance_view;
+    tex.pair = pair;
+    tex.resident_top = first;
+    if (tex.asked_top != ~0u && tex.asked_top >= first) tex.asked_top = ~0u;
+    texture_bytes_ = texture_bytes_ - old_bytes + new_bytes;
+    if (tex.record < load_texture_records_.size()) {
+      load_texture_records_[tex.record].slot = slot;
+      load_texture_records_[tex.record].bytes = new_bytes;
+    }
+    s.use.resident_bytes = s.use.resident_bytes - old_bytes + new_bytes;
+    u64 leaving_bytes = 0;
+    for (const TextureBoundState::Leaving& gone : s.leaving)
+      leaving_bytes += gone.image.bytes + gone.variance_image.bytes;
+    s.use.peak_bytes = std::max(s.use.peak_bytes, s.use.resident_bytes + leaving_bytes);
+    ++s.use.promotions;
+    s.use.promoted_bytes += new_bytes;
+    return true;
+  };
+
+  const bool now = settle || (late_now && bound_wait.get());
+  if (now) {
+    // Every wanted level before the frame draws: a cut, the first frame, or a test's wait.
+    const i64 started = time::monotonic_ns();
+    for (u32 t = 0; t < s.textures.size(); ++t) {
+      TextureBoundState::Texture& tex = s.textures[t];
+      const u32 want = settle ? tex.wanted_top : tex.now_top;
+      if (!tex.placed || want >= tex.resident_top) continue;
+      texture::TextureData tail;
+      std::string error;
+      if (!texture::read_texture_file_levels(tex.path, want, tail, &error) ||
+          tail.levels.size() != tex.levels - want) {
+        ENGINE_LOG_WARN(log_renderer, "texture bound: a promotion's levels did not read",
+                        log::field("path", tex.path), log::field("error", error));
+        continue;
+      }
+      admit(t, tail, want);
+    }
+    s.settled = true;
+    if (settle) ++s.use.settles;
+    s.use.worst_settle_ms =
+        std::max(s.use.worst_settle_ms, static_cast<f64>(time::monotonic_ns() - started) / 1.0e6);
+  }
+  // Off the frame: ask the reader for each texture that wants more than it has or has asked for,
+  // and admit what it brought within the frame's allowance, finest need first.
+  bool asked = false;
+  for (u32 t = 0; t < s.textures.size(); ++t) {
+    TextureBoundState::Texture& tex = s.textures[t];
+    if (!tex.placed || tex.wanted_top >= tex.resident_top) continue;
+    if (tex.asked_top != ~0u && tex.asked_top <= tex.wanted_top) continue;
+    tex.asked_top = tex.wanted_top;
+    std::lock_guard<std::mutex> lock(s.mutex);
+    s.queue.push_back(TextureBoundState::Read{t, tex.wanted_top, tex.path, {}, false});
+    asked = true;
+  }
+  if (asked) {
+    if (!s.worker.joinable()) s.worker = std::thread(reader, &s);
+    s.wake.notify_one();
+  }
+  if (!s.taken.empty()) {
+    const i64 started = time::monotonic_ns();
+    const u64 allowance = static_cast<u64>(bound_promote_kib.get()) * 1024;
+    u64 spent = 0;
+    u32 kept = 0;
+    for (u32 r = 0; r < s.taken.size(); ++r) {
+      TextureBoundState::Read& read = s.taken[r];
+      TextureBoundState::Texture& tex = s.textures[read.texture];
+      const bool stale = !read.ok || read.first >= tex.resident_top ||
+                         read.data.levels.size() != tex.levels - read.first;
+      if (stale) {
+        if (!read.ok) {
+          ENGINE_LOG_WARN(log_renderer, "texture bound: a promotion's levels did not read",
+                          log::field("path", read.path));
+        }
+        if (tex.asked_top == read.first) tex.asked_top = ~0u;
+        continue;
+      }
+      const u64 bytes = read.data.data.size() + read.data.normal_variance.size();
+      if ((allowance != 0 && spent != 0 && spent + bytes > allowance) ||
+          !admit(read.texture, read.data, read.first)) {
+        if (kept != r) s.taken[kept] = std::move(read);
+        ++kept;
+        continue;
+      }
+      spent += bytes;
+    }
+    s.taken.resize(kept);
+    if (spent != 0) {
+      s.use.worst_admit_ms =
+          std::max(s.use.worst_admit_ms, static_cast<f64>(time::monotonic_ns() - started) / 1.0e6);
+    }
+  }
+}
+
+}  // namespace engine::renderer
