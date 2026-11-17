@@ -1226,6 +1226,23 @@ static const float k_channel_broken_froude_lo = 0.25;
 static const float k_channel_broken_froude_hi = 0.6;
 static const float k_channel_broken_opacity = 0.9;
 
+// **White needs a section of water, not a film** (W139; water::channel_white_depth_gate): none
+// where the section's hydraulic depth is under the first, metres, whole by the second.
+static const float k_channel_white_depth_from = 0.01;
+static const float k_channel_white_depth_full = 0.03;
+// **The section's Froude number rides on each vertex** (W139; water::pack_channel_hydraulic): a
+// reach vertex's UV.y is a half whose lowest five bits hold q = round(31 sqrt(Fr / 4)) and whose
+// others the hydraulic depth. From one corner's half (its bits): float2(the hydraulic depth, the
+// Froude number); a nappe's corner (negative) is itself and 0.
+static const uint k_channel_froude_low = 31u;
+static const float k_channel_froude_max = 4.0;  // water::k_channel_froude_max
+float2 water_channel_unpack(uint half_bits) {
+  const uint h = half_bits & 0xffffu;
+  if ((h & 0x8000u) != 0u || h == 0u) return float2(f16tof32(h), 0.0);
+  const float q = float(h & k_channel_froude_low) / float(k_channel_froude_low);
+  return float2(f16tof32(h & ~k_channel_froude_low), k_channel_froude_max * q * q);
+}
+
 // The share of a channel's surface broken white by a steep bed (above): `slope` the sheet's own fall
 // along the flow (rise over run), `speed` the section's mean, `depth` the water under the pixel.
 float water_channel_broken_share(float slope, float speed, float depth) {
@@ -1456,15 +1473,20 @@ struct WaterChannelSurface {
 // the clock `time`, the pixel's `footprint` (metres), the `depth` under it (the depth map's; the
 // hydraulic depth where there is no map), the section's `hydraulic` depth (UV.y), the triangle's
 // geometric normal `geometric` (unit, facing out of the water) and its flow `f`. `nappe` > 0: the
-// triangle is a fall's, and that is the sheet's thickness, metres.
+// triangle is a fall's, and that is the sheet's thickness, metres. Off a nappe (W139):
+// `section_froude` the section's Froude number and `solved_slope` the solved level's fall along
+// the flow, both interpolated from the vertices, so the white's every input is one smooth field
+// and no triangle's edge shows in it; the section's speed is Fr sqrt(g D), and the phase's gradient
+// gives the flow its direction alone.
 WaterChannelSurface water_channel_surface(WaterChannelFlow f, float3 p, float3 geometric,
                                           float tau, float time, float footprint, float depth,
                                           float hydraulic, float nappe, float roughness,
-                                          uint seed) {
+                                          float section_froude, float solved_slope, uint seed) {
   WaterChannelSurface c;
-  // The sheet's own fall along the flow: its level is the solve's, level across the line, so its
-  // plane's tilt is the water surface's slope (a pool's is level; a nappe's is its face's).
-  const float surface_slope = length(geometric.xz) / max(geometric.y, 0.05);
+  // The sheet's own fall along the flow: a nappe's is its face's; a reach's is the solve's, which
+  // its vertices' normals carry (until W139 the triangle's plane, one slope a triangle).
+  const float surface_slope =
+      nappe > 0.0 ? length(geometric.xz) / max(geometric.y, 0.05) : solved_slope;
   const float steep = smoothstep(k_channel_steep_from, k_channel_steep_full, surface_slope);
   // A body's calm quarter metre stills a shallow channel's ripples and foam; on a steep bed the
   // surface is broken by the clasts and steps, not by the depth over them, so it does not.
@@ -1533,10 +1555,14 @@ WaterChannelSurface water_channel_surface(WaterChannelFlow f, float3 p, float3 g
   const float dl = max(depth, k_channel_depth_min);
   const float profile = depth > 0.0
       ? min(k_channel_conveyance * pow(dl / dc, 2.0 / 3.0), k_channel_profile_max) : 0.0;
-  const float mean = f.speed * profile;
+  // The section's speed from its Froude number and hydraulic depth (W139), not the triangle's phase.
+  const float section_speed = section_froude * sqrt(k_water_g * dc);
+  const float mean = section_speed * profile;
   c.speed = mean * k_channel_surface_factor;
-  const float section_froude = f.speed / sqrt(k_water_g * dc);
   c.froude = section_froude * profile;
+  // Neither rule whitens a film (W139, need 140).
+  const float water_for_white =
+      smoothstep(k_channel_white_depth_from, k_channel_white_depth_full, dc);
   // Brocchini and Peregrine's surface: height q^2 / 2g with q the shear velocity at the pixel,
   // u* = v n sqrt(g) / d^(1/6) (Manning's), the largest eddies 1.5 depths across.
   const float ustar = mean * k_channel_manning_n * sqrt(k_water_g) / pow(dl, 1.0 / 6.0);
@@ -1566,7 +1592,7 @@ WaterChannelSurface water_channel_surface(WaterChannelFlow f, float3 p, float3 g
     lost += gone * gone;
   }
   // The standing waves of a near-critical reach, strongest in the thalweg.
-  slope += water_channel_standing(f.gradient, f.speed, tau, section_froude, dc, footprint, seed) *
+  slope += water_channel_standing(f.gradient, section_speed, tau, section_froude, dc, footprint, seed) *
            (calm * min(profile, 1.0));
   c.normal = normalize(geometric - float3(slope.x, 0.0, slope.y));
   // The faded detail as roughness (its slope's rms), and the rapids' roughness.
@@ -1579,7 +1605,7 @@ WaterChannelSurface water_channel_surface(WaterChannelFlow f, float3 p, float3 g
                             0.0, 1.0) *
                       smoothstep(0.8 * k_channel_aeration_speed, 1.2 * k_channel_aeration_speed,
                                  c.speed) *
-                      calm;
+                      calm * water_for_white;
   c.foam = 0.0;
   c.foam_shade = 1.0;
   if (rough > 0.0) {
@@ -1599,10 +1625,10 @@ WaterChannelSurface water_channel_surface(WaterChannelFlow f, float3 p, float3 g
   // third of it, carried at the surface's speed; between them the water is still water. Where both
   // rules whiten a pixel the larger share wins. A level pool and a gentle reach have none.
   const float thalweg = min(profile / k_channel_conveyance, 1.0);
-  const float broken = water_channel_broken_share(surface_slope, f.speed, depth) *
+  const float broken = water_channel_broken_share(surface_slope, section_speed, depth) *
                        smoothstep(k_channel_broken_froude_lo, k_channel_broken_froude_hi,
                                   section_froude) *
-                       thalweg * sqrt(thalweg);
+                       thalweg * sqrt(thalweg) * water_for_white;
   if (broken > 0.0) {
     const float keep =
         footprint > 0.0 ? clamp(k_channel_clast_m / (2.0 * footprint) - 1.0, 0.0, 1.0) : 1.0;

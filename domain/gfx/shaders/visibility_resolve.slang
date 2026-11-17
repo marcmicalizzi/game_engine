@@ -942,7 +942,38 @@ WaterChannelPixel water_channel_pixel(ResolveParams* params, SceneGeometry geo, 
   const float fallen = float(uv0.y < 0.0) + float(uv1.y < 0.0) + float(uv2.y < 0.0);
   const float nappe = fallen > 2.5 ? max(-s.uv.y, 1e-4)
                                    : (fallen > 0.0 ? (falls.x + falls.y + falls.z) / fallen : 0.0);
-  const float hydraulic = max(s.uv.y, 0.0);
+  // **Off a nappe, the hydraulic depth and the section's Froude number from each corner** (W139;
+  // water.slang, `water_channel_unpack`), interpolated by the pixel's own barycentrics, and the
+  // solved level's fall along the flow from the vertices' normals (the sheet's tilt as the solve
+  // wrote it at each vertex): one smooth field over the sheet, where the triangle's plane and its
+  // phase gradient were one value a triangle (needs 128 and 139).
+  float hydraulic = max(s.uv.y, 0.0);
+  float section_froude = 0.0;
+  float solved_slope = 0.0;
+  if (fallen == 0.0) {
+    const float3 e0 = tri.p[1] - tri.p[0];
+    const float3 e1 = tri.p[2] - tri.p[0];
+    const float3 e2 = s.position - tri.p[0];
+    const float d00 = dot(e0, e0);
+    const float d01 = dot(e0, e1);
+    const float d11 = dot(e1, e1);
+    const float d20 = dot(e2, e0);
+    const float d21 = dot(e2, e1);
+    const float den = d00 * d11 - d01 * d01;
+    float3 b = float3(1.0 / 3.0);
+    if (abs(den) > 1e-12) {
+      b.y = clamp((d11 * d20 - d01 * d21) / den, 0.0, 1.0);
+      b.z = clamp((d00 * d21 - d01 * d20) / den, 0.0, 1.0 - b.y);
+      b.x = 1.0 - b.y - b.z;
+    }
+    const float2 c0 = water_channel_unpack(attributes[tri.local[0]].uv_half2 >> 16);
+    const float2 c1 = water_channel_unpack(attributes[tri.local[1]].uv_half2 >> 16);
+    const float2 c2 = water_channel_unpack(attributes[tri.local[2]].uv_half2 >> 16);
+    hydraulic = max(b.x * c0.x + b.y * c1.x + b.z * c2.x, 0.0);
+    section_froude = b.x * c0.y + b.y * c1.y + b.z * c2.y;
+    const float3 up = s.normal.y < 0.0 ? -s.normal : s.normal;
+    solved_slope = length(up.xz) / max(up.y, 0.05);
+  }
   if (nappe > 0.0) {
     depth = nappe;
     has_map = false;
@@ -956,7 +987,7 @@ WaterChannelPixel water_channel_pixel(ResolveParams* params, SceneGeometry geo, 
   if (nappe > 0.0) plane = normalize(s.normal);
   const WaterChannelSurface c =
       water_channel_surface(f, local, plane, s.uv.x, params->water_time_s, footprint, depth,
-                            hydraulic, nappe, w.roughness, w.seed);
+                            hydraulic, nappe, w.roughness, section_froude, solved_slope, w.seed);
   WaterChannelPixel o;
   o.normal = c.normal;
   o.plane = plane;

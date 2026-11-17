@@ -52,8 +52,9 @@ namespace engine::water {
 inline constexpr std::string_view k_channel_generator = "water_channel";
 // The channel mesh builder's version: part of every channel file's bytes. 2: the sheet from the
 // solved description (S106). 3: the sheets cut where they meet, a pool over its bank drawn, a
-// nappe as wide as its lip and thinning to its sides (S108).
-inline constexpr u32 k_channel_mesh_version = 3;
+// nappe as wide as its lip and thinning to its sides (S108). 4: a reach vertex's UV.y carries the
+// section's Froude number in its low bits (W139, `pack_channel_hydraulic`).
+inline constexpr u32 k_channel_mesh_version = 4;
 // The flow phase's period, seconds (water.slang's `k_channel_period_s`): UV.x lies in
 // [0, period + one triangle's travel time).
 inline constexpr f32 k_channel_phase_period_s = 8.0f;
@@ -162,6 +163,32 @@ inline constexpr f64 k_channel_dissipation_full = 0.2;
 inline constexpr f64 k_channel_veil_from_m = 0.0015;
 inline constexpr f64 k_channel_veil_full_m = 0.010;
 f64 channel_broken_share(f64 slope, f64 speed, f64 depth_m) noexcept;
+// **White needs a section of water, not a film** (W139; need 140): a sheet of millimetres over
+// gravel runs as threads between the clasts and has no water to entrain air into, however steep or
+// fast it is, so neither rule whitens a section whose hydraulic depth is under the first, and both
+// are whole by the second (a choice: the clasts of a small steep bed stand a few centimetres
+// proud; steep-streams.md, "The white's inputs per vertex"). W120's films are 5 mm, which until
+// W139 drew white blobs on the dry-looking gravel beside a pool (the forest's v48 mark 14).
+inline constexpr f64 k_channel_white_depth_from_m = 0.01;
+inline constexpr f64 k_channel_white_depth_full_m = 0.03;
+f64 channel_white_depth_gate(f64 hydraulic_m) noexcept;
+
+// **The section's Froude number rides on each vertex** (W139; needs 128, 139). The draw used to
+// take a triangle's speed from its phase gradient, one speed a triangle: the white was faceted
+// along every edge (128), and on the outer side of a bend, where every lattice node abeam the
+// station has the station's own phase, a triangle with a corner just past that wedge read a speed
+// of the cell over a phase difference near nothing — tens of metres a second in a pool of 0.1, a
+// Froude number past every bound, one pure white triangle (139). So a reach vertex carries the
+// section's Froude number in the lowest `k_channel_froude_bits` of its UV.y's half float (the
+// hydraulic depth, rounded to the half's other bits: within 1.6 %), the resolve decodes each corner
+// and interpolates both, and the speed is Fr sqrt(g D) at the pixel: one smooth field, and never
+// past the station's. The number is stored as q = round(31 sqrt(Fr / k_channel_froude_max)), so a
+// pool's 0.02 to 0.22 keeps its steps of under 0.02 and a torrent's 3 of 0.2. A nappe's vertex
+// (UV.y negative, its thickness) carries nothing. water.slang's `water_channel_unpack` is the
+// inverse; a value that is not a reach's (negative, or zero) packs as itself.
+inline constexpr u32 k_channel_froude_bits = 5;
+f32 pack_channel_hydraulic(f32 hydraulic_m, f32 froude) noexcept;
+void unpack_channel_hydraulic(f32 packed, f32& hydraulic_m, f32& froude) noexcept;
 
 // One channel as this capability draws it: the solved description about its origin, bounded.
 struct Channel {

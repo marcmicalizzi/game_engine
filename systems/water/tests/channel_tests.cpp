@@ -263,8 +263,12 @@ TEST_CASE("water channel: the uniform reach's sheet is level across, between its
     CHECK(std::abs(wraps - std::round(wraps)) < 1e-4);
     CHECK(m.uvs[k].x >= -1e-4f);
     CHECK(m.uvs[k].x < water::k_channel_phase_period_s + 1.0f / 1.2794f + 1e-3f);
-    // The hydraulic depth: the solved A / T.
-    CHECK(static_cast<f64>(m.uvs[k].y) == doctest::Approx(hydraulic).epsilon(1e-5));
+    // The hydraulic depth: the solved A / T, rounded to the half's upper bits, with the section's
+    // Froude number in the lower (W139; channel.h, `pack_channel_hydraulic`).
+    f32 carried_depth = 0.0f, carried_froude = 0.0f;
+    water::unpack_channel_hydraulic(m.uvs[k].y, carried_depth, carried_froude);
+    CHECK(static_cast<f64>(carried_depth) == doctest::Approx(hydraulic).epsilon(0.016));
+    CHECK(static_cast<f64>(carried_froude) == doctest::Approx(0.6328).epsilon(0.06));
     CHECK(m.normals[k].y > 0.9999f);
   }
   // 31 s of travel pass three periods: vertices on a wrap are written once a side.
@@ -333,7 +337,10 @@ TEST_CASE("water channel: the step's fall is a parabola and its jump a ramp at t
       ++on_jump;
       const f64 t = (x - 41.246) / (44.201 - 41.246);
       CHECK(y == doctest::Approx(9.88 + (10.372 - 9.88) * t).epsilon(1e-5));
-      CHECK(static_cast<f64>(m.uvs[k].y) == doctest::Approx(head_depth).epsilon(1e-4));
+      f32 carried_depth = 0.0f, carried_froude = 0.0f;
+      water::unpack_channel_hydraulic(m.uvs[k].y, carried_depth, carried_froude);
+      CHECK(static_cast<f64>(carried_depth) == doctest::Approx(head_depth).epsilon(0.016));
+      CHECK(static_cast<f64>(carried_froude) == doctest::Approx(3.1902).epsilon(0.07));
     } else if (x > 40.0 + 1e-3 && x < 41.246 - 1e-3) {
       // **The level rises along shooting water**, as the solve has it: drawn as solved.
       ++rising;
@@ -900,6 +907,99 @@ TEST_CASE("water channel: a steep bed's water is broken white, a gentle reach's 
   CHECK(cascade < water::k_channel_steep_white);
   // Still water on a slope has no energy to entrain air: g S V under 0.02 m^2/s^3.
   CHECK(water::channel_broken_share(0.10, 0.015, 0.06) == 0.0);
+}
+
+TEST_CASE("water channel: the section's Froude number rides on the vertex's hydraulic depth") {
+  // W139 (channel.h, `pack_channel_hydraulic`): the depth to within 1.6 %, the Froude number to
+  // its step of 31 sqrt(Fr / 4), a nappe's negative thickness and a zero untouched.
+  for (const f32 depth : {0.0011f, 0.005f, 0.05f, 0.41f, 3.0f}) {
+    for (const f32 fr : {0.0f, 0.02f, 0.22f, 0.6f, 1.0f, 3.19f, 4.0f}) {
+      f32 d = 0.0f, f = 0.0f;
+      water::unpack_channel_hydraulic(water::pack_channel_hydraulic(depth, fr), d, f);
+      CHECK(static_cast<f64>(d) == doctest::Approx(static_cast<f64>(depth)).epsilon(0.016));
+      // One step of the root's 31 either side is the most the number moves.
+      const f64 q = 31.0 * std::sqrt(static_cast<f64>(fr) / 4.0);
+      CHECK(std::abs(31.0 * std::sqrt(static_cast<f64>(f) / 4.0) - q) <= 0.5 + 1e-6);
+    }
+  }
+  f32 d = 1.0f, f = 1.0f;
+  water::unpack_channel_hydraulic(water::pack_channel_hydraulic(-0.02f, 2.0f), d, f);
+  CHECK(d == -0.02f);
+  CHECK(f == 0.0f);
+  // A film has no white; a section of a few centimetres has all of it (need 140).
+  CHECK(water::channel_white_depth_gate(0.005) == 0.0);
+  CHECK(water::channel_white_depth_gate(0.03) == 1.0);
+  CHECK(water::channel_white_depth_gate(0.02) > 0.0);
+}
+
+TEST_CASE("water channel: a slow pool bending past a station reads its own slow speed everywhere") {
+  // Need 139: single white triangles on still water. A pool 12 m wide at 0.1 m/s (Froude 0.05)
+  // bends 50 degrees at its middle station. Until W139 the draw took a triangle's speed from its
+  // phase gradient: abeam the bend's outer side every node has the station's phase, and a triangle
+  // with a corner just past that wedge read the cell over a phase difference near nothing. This
+  // case finds such triangles in the old reading (the fault, reproduced) and holds the reading the
+  // draw now makes — the section's Froude number from the vertices — to the stations' own.
+  scene::WaterChannel block;
+  block.name = "bent pool";
+  const f64 turn = 50.0 * 3.14159265358979323846 / 180.0;
+  const WorldPos at[4] = {WorldPos{0.0, 10.0, 0.0}, WorldPos{12.0, 9.9995, 0.0},
+                          WorldPos{12.0 + 12.0 * std::cos(turn), 9.999, 12.0 * std::sin(turn)},
+                          WorldPos{12.0 + 24.0 * std::cos(turn), 9.9985, 24.0 * std::sin(turn)}};
+  for (const WorldPos& p : at) {
+    block.points.push_back(p);
+    block.width_m.push_back(12.0f);
+    block.depth_m.push_back(0.6f);
+    block.slope.push_back(0.0001f);
+    block.discharge_m3s.push_back(0.5f);
+    block.speed_mps.push_back(0.1f);
+    block.froude.push_back(0.05f);
+    block.wet_left_m.push_back(6.0f);
+    block.wet_right_m.push_back(6.0f);
+    block.flags.push_back(0);
+  }
+  const Built b = build(block);
+  const water::Mesh& m = b.sheet.mesh;
+  REQUIRE(b.sheet.triangles > 0);
+  u32 old_white = 0;
+  f64 old_fastest = 0.0, carried_most = 0.0;
+  for (u32 t = 0; t < m.indices.size(); t += 3) {
+    const u32 v[3] = {m.indices[t], m.indices[t + 1], m.indices[t + 2]};
+    // The old reading (water.slang's `water_channel_flow`): g . (p1 - p0) = t1 - t0, g . (p2 - p0)
+    // = t2 - t0 in the triangle's plane, the speed 1 / |g|.
+    const Vec3 e1 = m.positions[v[1]] - m.positions[v[0]];
+    const Vec3 e2 = m.positions[v[2]] - m.positions[v[0]];
+    const f64 d1 = static_cast<f64>(m.uvs[v[1]].x - m.uvs[v[0]].x);
+    const f64 d2 = static_cast<f64>(m.uvs[v[2]].x - m.uvs[v[0]].x);
+    const f64 a11 = static_cast<f64>(dot(e1, e1)), a12 = static_cast<f64>(dot(e1, e2)),
+              a22 = static_cast<f64>(dot(e2, e2));
+    const f64 det = a11 * a22 - a12 * a12;
+    f64 speed = 0.0;
+    if (std::abs(det) > 1e-12) {
+      const f64 ga = (d1 * a22 - d2 * a12) / det, gb = (d2 * a11 - d1 * a12) / det;
+      const f64 gx = static_cast<f64>(e1.x) * ga + static_cast<f64>(e2.x) * gb;
+      const f64 gy = static_cast<f64>(e1.y) * ga + static_cast<f64>(e2.y) * gb;
+      const f64 gz = static_cast<f64>(e1.z) * ga + static_cast<f64>(e2.z) * gb;
+      const f64 g = std::sqrt(gx * gx + gy * gy + gz * gz);
+      speed = g > 1e-6 ? 1.0 / g : 0.0;
+    }
+    f64 depth = 0.0;
+    for (const u32 k : v) {
+      f32 dk = 0.0f, fk = 0.0f;
+      water::unpack_channel_hydraulic(m.uvs[k].y, dk, fk);
+      depth += static_cast<f64>(dk) / 3.0;
+      carried_most = std::max(carried_most, static_cast<f64>(fk));
+    }
+    old_fastest = std::max(old_fastest, speed);
+    // The old Froude rule's foam: the section's Froude number past 1 at a metre a second.
+    if (speed / std::sqrt(water::k_gravity * depth) > 1.0 && speed > 0.8) ++old_white;
+  }
+  MESSAGE("bent pool: ", b.sheet.triangles, " triangles; the phase gradient's fastest ",
+          old_fastest, " m/s, ", old_white, " triangles white by the old reading; the carried "
+          "Froude number at most ", carried_most);
+  CHECK(old_white > 0);  // the fault, as the draw read it until W139
+  // The reading now: never past the stations' 0.05 by more than a step, so neither rule whitens it.
+  // (water.slang's k_channel_broken_froude_lo, 0.25, and the Froude rule's 1, are far above.)
+  CHECK(carried_most < 0.06);
 }
 
 TEST_CASE("water channel: plunge records pack into one entry, seven at most") {
