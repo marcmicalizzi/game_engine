@@ -299,4 +299,98 @@ TEST_CASE("water wind: a hand gale on a body loaded light holds its bound at the
   device.destroy();
 }
 
+TEST_CASE("water wind: a sky's swell comes ashore and is drawn, a function of the time") {
+  // W136-3 (gfx.md, "A swell a scene names"): an open basin under a light air, with and without
+  // the sky's swell; then the swell's track drawn at a time reached two ways; then a hand swell on
+  // the swell-less body, and cleared.
+  const test::TempDir tmp("water_wind_swell");
+  gfx::Device device;
+  if (!open_device(device)) return;
+  {
+    Shot none;
+    Shot swell;
+    load(device, tmp, "none",
+         wind_scene(R"("wind_m_s": 2, "fetch_km": 20)", R"("wind": {"speed_m_s": 3, "to_deg": 30})"),
+         none);
+    load(device, tmp, "swell",
+         wind_scene(R"("wind_m_s": 2, "fetch_km": 20)",
+                    R"("wind": {"speed_m_s": 3, "to_deg": 30}, "swell": {"period_h": 24, "track": [)"
+                    R"({"hour": 0, "height_m": 0.4, "period_s": 12, "to_deg": 45},)"
+                    R"({"hour": 12, "height_m": 1.2, "period_s": 10, "to_deg": 45}]})"),
+         swell);
+    const SceneWater& water = *swell.data.mesh_info[swell.data.instances[swell.water_instance].mesh].water;
+    // The body's first train is the swell at its largest, and the body draws the sky's swell.
+    CHECK(water.scene_swell);
+    CHECK(water.swell_train_m == doctest::Approx(1.2f).epsilon(0.02));
+    CHECK(water.swell_train_period_s == doctest::Approx(10.0f).epsilon(0.05));
+    const CapturedFrame plain = draw(none, k_noon);
+    const CapturedFrame noon = draw(swell, k_noon);
+    const u32 changed = water_pixels_changed(plain, noon, swell.water_instance);
+    // A time reached two ways: noon first, then 03:00, then noon again.
+    const CapturedFrame early = draw(swell, 3.0 * 3600.0);
+    const CapturedFrame again = draw(swell, k_noon);
+    MESSAGE("the swell changes " << changed << " water pixels; 03:00 against noon "
+                                 << water_pixels_changed(early, noon, swell.water_instance));
+    CHECK(changed > 100u);
+    CHECK(water_pixels_changed(early, noon, swell.water_instance) > 100u);
+    CHECK(same(noon, again));
+    // A hand swell on the body that has none, and back.
+    REQUIRE(tunables::apply_overrides("renderer.swell.height_m=1.5"));
+    const CapturedFrame hand = draw(none, k_noon);
+    REQUIRE(tunables::apply_overrides("renderer.swell.height_m=-1"));
+    const CapturedFrame back = draw(none, k_noon);
+    CHECK(water_pixels_changed(plain, hand, none.water_instance) > 100u);
+    CHECK(same(plain, back));
+  }
+  device.destroy();
+}
+
+TEST_CASE("water wind: an open sea's crests stand above the horizon past its mesh") {
+  // W136-3 (wind.md, "The sea past the mesh"): a small open pool over low dunes under its own
+  // gale, seen level from 1 m over the sea. Calm (the hand wind at 0: a table with no relief), the
+  // plane is the level and nothing above the eye's horizontal is sea; under the gale the march
+  // lifts the far sea's crests over it, so rows above the horizon change, and the same frame twice
+  // is the same bytes.
+  const test::TempDir tmp("water_wind_horizon");
+  gfx::Device device;
+  if (!open_device(device)) return;
+  {
+    Shot shot;
+    load(device, tmp, "gale", R"({"format": "engine.scene.v1", "name": "horizon-test",
+  "terrain": {"size": 65, "extent": 32, "seed": 4, "dune_height": 0.6, "dune_wavelength": 12},
+  "water": [{"name": "sea", "level_m": 0.2, "shore_m": 0, "open": true, "wind_follow": false,
+             "shape": {"circle": {"center": [3, 0, -2], "radius_m": 6}},
+             "wind_m_s": 20, "fetch_km": 50, "direction_deg": 90}]})",
+         shot);
+    const auto level_view = [&](f64 t) {
+      FrameDesc frame;
+      frame.camera.position = WorldPos{-14.0, 1.2, -2.0};
+      frame.camera.target = WorldPos{100.0, 1.2, -2.0};
+      frame.sky_time_s = t;
+      frame.world_time_s = 12.5;
+      CaptureChannels channels;
+      channels.ids = true;
+      CapturedFrame out;
+      std::string error;
+      REQUIRE_MESSAGE(shot.renderer.capture(frame, channels, out, &error), error);
+      return out;
+    };
+    const CapturedFrame gale = level_view(k_noon);
+    const CapturedFrame twice = level_view(k_noon);
+    REQUIRE(tunables::apply_overrides("renderer.wind.speed_m_s=0"));
+    const CapturedFrame calm = level_view(k_noon);
+    REQUIRE(tunables::apply_overrides("renderer.wind.speed_m_s=-1"));
+    u32 above = 0;
+    for (u32 y = 0; y + 1 < gale.height / 2; ++y)
+      for (u32 x = 0; x < gale.width; ++x) {
+        const u32 p = y * gale.width + x;
+        if (std::memcmp(&gale.color[p * 4], &calm.color[p * 4], 3) != 0) ++above;
+      }
+    MESSAGE(above << " pixels above the horizon are the gale's crests");
+    CHECK(above > gale.width / 4);
+    CHECK(same(gale, twice));
+  }
+  device.destroy();
+}
+
 #endif

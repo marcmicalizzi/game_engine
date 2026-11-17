@@ -1218,6 +1218,111 @@ float open_water_distance(ResolveParams* params, float2 source, float3 eye, floa
   return (level - eye.y) / ray.y;
 }
 
+// **The sea past the mesh has height** (W136-3; docs/experiments/wind.md, "The sea past the mesh";
+// water.md, "To the horizon"): where the open body draws a wave table, the ray is marched against
+// the table's height (every band a pixel across can hold at that distance, as the normal takes
+// them) through the band of the crests, `water_open_relief` metres either side of the level, out to
+// where a crest that high stands under a pixel. The first crossing is the sea's point, so a rough
+// sea's crests stand against the sky at its horizon and hide the sea behind them; a sample inside
+// the body's depth map is the mesh's water and is skipped (the mesh draws it, and a pixel of the
+// mesh never asks). A calm table has no relief and the plane is drawn as it was.
+static const uint k_water_open_steps = 8u;
+static const float k_water_open_far = 2.0;  // the march's end: crests of the bound at this many pixels
+
+// The height of the table at body-local `p`, the bands a footprint of `footprint` keeps.
+float water_open_height(WaterWave* waves, float2 p, float time, float footprint) {
+  WaterSum sum = (WaterSum)0;
+  for (uint i = 0; i < k_water_waves; ++i)
+    water_wave_add(waves[i], p, time, footprint, 1.0, 0.0, sum);
+  return sum.height;
+}
+
+// The crests' reach: the table's amplitudes under the envelope's gain, the height a sum of narrow
+// bands stands to in all but its rarest groups.
+float water_open_relief(WaterWave* waves) {
+  float a = 0.0;
+  for (uint i = 0; i < k_water_waves; ++i)
+    a += waves[i].amplitude;
+  return a * k_water_envelope_gain;
+}
+
+// The ray's height over the sea at t: positive above it. `inside` where the point is in the map.
+float water_open_gap(WaterWave* waves, float3 eye, float3 ray, float t, float3 centre, float level,
+                     float time, float angle, bool has_map, WaterDepthMap map, out bool inside) {
+  const float2 local = eye.xz + t * ray.xz - centre.xz;
+  inside = false;
+  if (has_map) {
+    const float2 uv = map.uv_origin + local * map.uv_per_m;
+    inside = all(uv >= float2(0.0, 0.0)) && all(uv <= float2(1.0, 1.0));
+  }
+  return eye.y + t * ray.y - level - water_open_height(waves, local, time, angle * t);
+}
+
+// The march: the distance to the sea's first crossing along `ray`, or a negative number where the
+// ray passes over it. `t_plane` is the level's own crossing (negative where the ray looks up).
+float water_open_march(ResolveParams* params, ResolveMaterial material, uint index, float3 eye,
+                       float3 ray, float3 centre, float angle, bool has_surface,
+                       float surface_distance, float t_plane) {
+  const SceneGeometry geo = geometry_of(params);
+  WaterWave* waves = water_waves(geo.materials, index);
+  const float relief = water_open_relief(waves);
+  if (!(relief > 0.02) || !(angle > 0.0)) return t_plane;
+  const bool has_map = (material.flags & k_material_water_depth_map) != 0;
+  WaterDepthMap map = {};
+  if (has_map) map = water_depth_map_of(((ResolveMaterial*)geo.materials)[index + 1]);
+  const float top = centre.y + relief;
+  const float bottom = centre.y - relief;
+  // Into the crests' band and out of it, then no further than a crest of the bound stays visible.
+  float t0 = 0.0;
+  if (eye.y > top) {
+    if (!(ray.y < 0.0)) return -1.0;
+    t0 = (top - eye.y) / ray.y;
+  }
+  float t1 = ray.y < 0.0 ? (bottom - eye.y) / ray.y : (ray.y > 0.0 ? (top - eye.y) / ray.y : 1e9);
+  t1 = min(t1, k_water_open_far * relief / angle);
+  if (has_surface) t1 = min(t1, surface_distance);
+  if (!(t1 > t0)) return t_plane;
+  // Samples spaced geometrically (a pixel's footprint grows with the distance), then the crossing
+  // refined by two secant steps between the last sample above and the first below.
+  const float ratio = max(t1, 1.0) / max(t0, 1.0);
+  float prev_t = t0;
+  bool inside = false;
+  float prev_g = water_open_gap(waves, eye, ray, t0, centre, centre.y, params->water_time_s, angle,
+                                has_map, map, inside);
+  if (inside) prev_g = max(prev_g, 1e-3);
+  for (uint i = 1; i <= k_water_open_steps; ++i) {
+    const float t = max(t0, 1.0) * pow(ratio, float(i) / float(k_water_open_steps)) +
+                    (t0 < 1.0 ? (1.0 - float(i) / float(k_water_open_steps)) * (t0 - 1.0) : 0.0);
+    const float g = water_open_gap(waves, eye, ray, t, centre, centre.y, params->water_time_s,
+                                   angle, has_map, map, inside);
+    if (!inside && g <= 0.0 && prev_g > 0.0) {
+      float a = prev_t;
+      float b = t;
+      float ga = prev_g;
+      float gb = g;
+      for (uint k = 0; k < 2u; ++k) {
+        const float m = a + (b - a) * ga / max(ga - gb, 1e-6);
+        bool in_m = false;
+        const float gm = water_open_gap(waves, eye, ray, m, centre, centre.y, params->water_time_s,
+                                        angle, has_map, map, in_m);
+        if (gm > 0.0) {
+          a = m;
+          ga = gm;
+        } else {
+          b = m;
+          gb = gm;
+        }
+      }
+      return b;
+    }
+    prev_t = t;
+    prev_g = inside ? max(g, 1e-3) : g;
+  }
+  // No crossing outside the map within the march: the level, as the plane always drew it (inside
+  // the map's square past the mesh, and past the march's far end).
+  return t_plane;
+}
+
 // The open sea at this pixel, or false. `has_surface` with `surface_distance` and `surface` (the
 // point the buffer holds, in the frame's space) where the pixel holds a surface that is not water.
 bool open_water_pixel(ResolveParams* params, float2 source, uint2 noise_pixel, bool has_surface,
@@ -1230,9 +1335,20 @@ bool open_water_pixel(ResolveParams* params, float2 source, uint2 noise_pixel, b
   const float3 eye = params->camera.xyz;
   if (!(eye.y > centre.y)) return false;
   float3 ray;
-  const float t = open_water_distance(params, source, eye, centre.y, ray);
+  float t = open_water_distance(params, source, eye, centre.y, ray);
+  float surface_y = centre.y;
+  {
+    // W136-3: a table's sea is marched for its height; the plane's own test stands without one.
+    const ResolveMaterial sea = ((ResolveMaterial*)geo.materials)[params->water_open_material];
+    if ((sea.flags & k_material_water_spectrum) != 0) {
+      const float angle = length(open_water_ray(params, source + float2(1.0, 0.0)) - ray);
+      t = water_open_march(params, sea, params->water_open_material, eye, ray, centre, angle,
+                           has_surface, surface_distance, t);
+      if (t > 0.0) surface_y = eye.y + t * ray.y;
+    }
+  }
   if (!(t > 0.0) || (has_surface && !(t < surface_distance))) return false;
-  const float3 position = float3(eye.x + t * ray.x, centre.y, eye.z + t * ray.z);
+  const float3 position = float3(eye.x + t * ray.x, surface_y, eye.z + t * ray.z);
   // The footprint: the plane's points through the next pixel across and down, as the mesh's
   // reconstruction takes its own; a neighbour that looks above the plane is a footprint as wide as
   // the distance, which calms every wave there.
