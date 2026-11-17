@@ -1053,12 +1053,14 @@ TEST_CASE("gi cache: the grain on a plain wall is its cells' sampling noise") {
   // a third of that lift, and four times the rays move it as far (0.913), so what it moves is the
   // corner's noise. The bound: no more than half of the coarse level's lift.
   CHECK(corner[3] - corner[0] < 0.5 * (corner[2] - corner[0]));
-  // A longer memory averages the same cell longer and moves no light between cells, so it was held
-  // to the same bound; it lifts the corner 0.013 where the bound is 0.011 (0.920 against 0.907 on
-  // the RTX 5090, 2026-11-16), one of the reasons `renderer.gi.memory` is off (renderer.md, "R171:
-  // a cell's memory by its own spread"). Warned, not held, while it is off.
-  WARN_MESSAGE(corner[4] - corner[0] < 0.5 * (corner[2] - corner[0]),
-               "R171: the memory by the spread lifts the corner by " << corner[4] - corner[0]);
+  // A longer memory averages the same cell longer and moves no light between cells, so it is held
+  // to the same bound. Leg 3's lifted the corner 0.013 where the bound is 0.011 (0.920 against
+  // 0.907 on the RTX 5090, 2026-11-16), one of the reasons it was off; the fourth leg found the
+  // cause in the long mean's halves rounded to nearest, which kept a skewed sample's large steps up
+  // and lost its small ones down, and more where the light is darker (renderer.md, "R171: the
+  // memory made right"). Held since the memory is on by default.
+  MESSAGE("the memory by the spread moves the corner by " << corner[4] - corner[0]);
+  CHECK(corner[4] - corner[0] < 0.5 * (corner[2] - corner[0]));
 }
 
 // **R171: a moved light settles no slower with the measured spread.** The same wall, the sun
@@ -1161,7 +1163,9 @@ TEST_CASE("gi cache: a moved light settles no slower with the measured spread") 
   // for the coarse cells to see is followed at the long memory's rate. Printed, not held.
   MESSAGE("the sun moved one hour: settled within a tenth in "
           << settled_at[6] << " frames with stage 8's read, " << settled_at[7]
-          << " with the memory");
+          << " with the memory; the wall moved " << 100.0 * change[6] << " % and "
+          << 100.0 * change[7] << " % by frame " << k_frames - k_moved
+          << " (leg 3's rule: -9.3 and -7.3 %)");
 }
 
 TEST_CASE("gi cache: a scene moved by whole cells draws the same bytes with the cache on") {

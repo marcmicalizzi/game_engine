@@ -33,11 +33,42 @@ static const uint k_gi_stamp_frames = 0x7fffu;
 // gfx::k_gi_memory_times, k_gi_memory_count_max, k_gi_change_sigmas, k_gi_frame_drop,
 // k_gi_cell_changed (R171's third leg).
 static const uint k_gi_memory_times = 16u;
+// gfx::k_gi_memory_ramp (R171's fourth leg): past today's history the count grows by this share of
+// a frame's samples.
+static const uint k_gi_memory_ramp = 2u;
 static const uint k_gi_memory_count_max = 0xfff0u;
 static const float k_gi_change_sigmas = 4.0;
 static const uint k_gi_memory_back = 4u;
 static const uint k_gi_frame_drop = 0x80000000u;
 static const uint k_gi_cell_changed = 0x80000000u;
+// gfx::k_gi_follow_sigmas, k_gi_test_samples, k_gi_frame_follow, k_gi_frame_flags,
+// k_gi_cell_following (R171's fourth leg).
+static const float k_gi_follow_sigmas = 2.5;
+static const uint k_gi_test_samples = 64u;
+static const uint k_gi_frame_follow = 0x40000000u;
+static const uint k_gi_frame_flags = 0xc0000000u;
+static const uint k_gi_cell_following = 0x00010000u;
+// gfx::gi_round_hash and gfx::gi_half_unbiased (R171's fourth leg): a long mean rounded to the
+// half below or above it with the chance its distance from each says, so a long memory's small
+// steps are not lost one way and kept the other.
+uint gi_round_hash(uint a, uint b, uint c, uint d) {
+  uint h = a * 0x9e3779b1u ^ (b + 0x7f4a7c15u);
+  h = (h ^ (h >> 16)) * 0x85ebca6bu;
+  h ^= c * 0xc2b2ae35u;
+  h = (h ^ (h >> 13)) * 0x27d4eb2fu;
+  h ^= d * 0x165667b1u;
+  return h ^ (h >> 16);
+}
+uint gi_half_unbiased(float x, float u) {
+  if (!(x > 0.0)) return 0u;
+  const uint h = f32tof16(min(x, 65504.0)) & 0xffffu;
+  const float taken = f16tof32(h);
+  if (taken == x || h >= 0x7bffu) return h;
+  const uint other = taken > x ? h - 1u : h + 1u;
+  const float beyond = f16tof32(other);
+  const float t = (x - taken) / (beyond - taken);
+  return u < t ? other : h;
+}
 static const uint k_gi_no_slot = 0xffffffffu;
 // gfx::k_gi_dispatch_pitch: the groups a row of a pass's two-dimensional dispatch.
 static const uint k_gi_dispatch_pitch = 32768u;

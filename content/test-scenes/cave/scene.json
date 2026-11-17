@@ -1,0 +1,8 @@
+{
+  "format": "engine.scene.v1",
+  "name": "cave: one passage under a shaft at noon",
+  "description": "One engine.caves.passage under a 4 m shaft 3 m wide, at noon in midsummer at 40 degrees north: the world-space cache's darkest case, light from one small opening (roadmap G213, R171).",
+  "meshes": [{"path": "passage.cave.json"}],
+  "instances": [{"mesh": 0, "translation": [0, 0, 0]}],
+  "sky": {"latitude_deg": 40, "day_of_year": 172, "turbidity": 2.5}
+}

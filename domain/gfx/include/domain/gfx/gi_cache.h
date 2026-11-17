@@ -31,6 +31,7 @@
 #include <core/base/types.h>
 
 #include <cmath>
+#include <cstring>
 
 namespace engine::gfx {
 
@@ -51,8 +52,9 @@ namespace engine::gfx {
 //       used it, and fifteen bits of the frame are enough for a test against this frame.
 //   [1] stamp: the last frame a sample reached it, fifteen bits and the foliage bit in the low 16
 //       (`k_gi_stamp_crown`); in the high 16 the short mean's luminance as a half, its sign bit
-//       `k_gi_cell_changed` (R171's third leg, `gi_memory_fold`)
-//   [2] samples this frame (31 bits; the top bit `k_gi_frame_drop`)
+//       `k_gi_cell_changed` (R171's third leg, `gi_memory_fold`) and its lowest bit
+//       `k_gi_cell_following` (the fourth leg)
+//   [2] samples this frame (30 bits; the top bit `k_gi_frame_drop`, the next `k_gi_frame_follow`)
 //   [3..5] this frame's sums of the ratio, r g b, `k_gi_fraction_bits` of fraction
 //   [6] the mean ratio's r and g as two halves
 //   [7] the mean ratio's b as a half in the low 16 bits, the samples it averages in the high 16
@@ -136,6 +138,16 @@ constexpr u32 gi_history_cap(u32 n, u32 frames = k_gi_history_frames) noexcept {
 // `k_gi_memory_count_max`, under the field's full mark, which stands for a whole history. A cell
 // whose history already fills the field (4,096 a frame) remembers what it did.
 inline constexpr u32 k_gi_memory_times = 16;
+// **R171, fourth leg: past today's history the count grows by half a frame's samples**, not the
+// whole. Leg 3's long mean was the plain mean of every frame since the cell was made, up to its
+// ceiling, so the frames a cut or a walk-in fills with light still converging (the bounce reaching
+// its walls through each other's cells) weighed in it as much as the settled ones, and an error
+// they left decayed as one over the frames since: the village's room stood 3 % over the memory
+// off six seconds after the door, the cave 4 %. Growing by half, a frame's weight falls as the
+// square of its age's share, and the same start is 0.4 % off at six seconds and 0.2 % at twelve (a
+// simulation of the fold, renderer.md has it), for 3 % more grain while the count grows (it reaches
+// the ceiling in 770 frames at the trickle's eleven a frame instead of 350).
+inline constexpr u32 k_gi_memory_ramp = 2;
 inline constexpr u32 k_gi_memory_count_max = 0xfff0u;
 constexpr u32 gi_memory_cap(u32 n) noexcept {
   const u32 cap = gi_history_cap(n);
@@ -153,16 +165,44 @@ constexpr u32 gi_memory_cap(u32 n) noexcept {
 // simulation of sixteen coarse cells over 1,024 own ones: settled in 333 frames against today's
 // 50); four see it.
 inline constexpr f32 k_gi_change_sigmas = 4.0f;
+// **R171, fourth leg: the deviations at which a tested cell says its light is moving**, under the
+// four that let it go: it lets go of nothing itself, and every finer cell of a ladder through it
+// folds its next frame at today's rate instead of its long one (`k_gi_frame_follow`). A change too
+// small to be told from the noise at four deviations (under about 11 % of a coarse cell's light)
+// still crosses two and a half within a few frames and is followed at today's pace while it lasts,
+// where leg 3's rule left it to the long memory (a 10 % step settled in 258 frames against today's
+// 84). Chosen by a simulation of the fold (sixteen coarse cells over 1,024 own ones, the plain wall's
+// heavy samples; renderer.md has the table): at 2.5 a 10 % step settles in 122 frames, at 3 in 303,
+// and the still wall's variance rises 13 % at 2.5 (the frames a parent's chance excursion lets its
+// children step at today's rate), its 99th percentile change between frames by 0.2 %.
+inline constexpr f32 k_gi_follow_sigmas = 2.5f;
+// **R171, fourth leg: only a cell that takes this many samples a frame tests itself.** An own cell
+// taking the trickle's eleven tests a short mean of 10 % noise, and across a 4K view's fifty
+// thousand own cells one leaves four deviations by chance every frame or two: each let go and
+// showed today's noise again as a round blob a cell wide (leg 3's crops). Its coarser cells pool 4,
+// 16 and 64 times its samples and hand down what they see, so the own cell loses nothing it could
+// have seen; the threshold is the third level of the ladder at the trickle (16 x 11 = 176) and the
+// second at a near pixel's denser rays, not the first.
+inline constexpr u32 k_gi_test_samples = 64;
 // A cell that lets go keeps this fraction of today's history (a quarter: 64 samples for an own
 // cell), so the part of a change its short mean had not yet followed is followed four times as
 // fast as today, and the detection's own frames are made up.
 inline constexpr u32 k_gi_memory_back = 4;
 // Word 2's top bit: a coarser cell of a ladder through this one saw its light change last frame
-// (the sample pass sets it; the count of the frame's samples is the other 31 bits).
+// (the sample pass sets it; the count of the frame's samples is the other 30 bits).
 inline constexpr u32 k_gi_frame_drop = 0x80000000u;
+// Word 2's next bit: a coarser cell of a ladder through this one saw its light moving
+// (`k_gi_follow_sigmas`), so this frame folds at today's rate (R171's fourth leg).
+inline constexpr u32 k_gi_frame_follow = 0x40000000u;
+inline constexpr u32 k_gi_frame_flags = k_gi_frame_drop | k_gi_frame_follow;
 // Word 1's top bit: this cell saw its light change in the last fold (the sign of its short mean's
 // half, which is never negative).
 inline constexpr u32 k_gi_cell_changed = 0x80000000u;
+// Word 1's bit 16: this cell saw its light moving in the last fold (`k_gi_follow_sigmas`): the
+// short mean's half gives up its lowest bit for it (2^-10 of the short mean, which only the test
+// reads). Not in the low half, which every sample rewrites with the stamp before the ladder's
+// flags are read.
+inline constexpr u32 k_gi_cell_following = 0x00010000u;
 // Frames without a sample after which the fold frees a cell.
 inline constexpr u32 k_gi_max_age = 240;
 inline constexpr u32 k_gi_workgroup = 64;
@@ -378,28 +418,42 @@ constexpr u32 gi_pressure_stamp(u32 frame) noexcept { return (frame & 0x7fffu) |
 // (Schied et al. 2018: a history cut back where a temporal gradient beyond its noise is seen), with
 // the gradient taken between two histories of one cell instead of from a re-traced sample, and
 // pooled up the ladder instead of over the screen.
+//
+// **The fourth leg** (renderer.md, "R171: the memory made right"): only a cell taking
+// `k_gi_test_samples` or more a frame tests itself (an own cell's chance let-go was a blob), and a
+// tested cell between `k_gi_follow_sigmas` and `k_gi_change_sigmas` sets `following`, which the
+// sample pass hands down as `follow`: that frame the cell folds at today's rate, so a change too
+// small to let go for is followed at today's pace while a coarser cell still sees it move.
 struct GiMemoryCell {
   f32 mean = 0.0f;  // the long mean, the one the read shows
   f32 short_mean = 0.0f;
   f32 spread = 0.0f;  // `gi_spread_fold`'s
   u32 count = 0;
   bool changed = false;
+  bool following = false;  // set with `changed` too
 };
-inline void gi_memory_fold(GiMemoryCell& c, u32 n, f32 frame_mean, bool drop,
-                           bool memory) noexcept {
+inline void gi_memory_fold(GiMemoryCell& c, u32 n, f32 frame_mean, bool drop, bool memory,
+                           bool follow = false) noexcept {
   if (n == 0) return;
   const u32 previous = c.count;
   const u32 cap = gi_history_cap(n);
   const u32 ceiling = memory ? gi_memory_cap(n) : cap;
-  const u32 total = previous + n < ceiling ? previous + n : ceiling;
+  // Past today's history the count grows by `k_gi_memory_ramp`'s share of a frame (the fourth leg).
+  const u32 ramp = n / k_gi_memory_ramp > 1u ? n / k_gi_memory_ramp : 1u;
+  const u32 grow = memory && previous >= cap ? ramp : n;
+  const u32 grown = previous + grow < ceiling ? previous + grow : ceiling;
+  const u32 today = previous + n < cap ? previous + n : cap;
+  const u32 total = grown > today ? grown : today;
   const u32 full =
       k_gi_max_samples > n * k_gi_history_frames ? k_gi_max_samples : n * k_gi_history_frames;
   const f32 nf = static_cast<f32>(n);
-  const f32 rate = nf / static_cast<f32>(previous >= 0xffffu ? full : total);
   const u32 short_total = previous + n < cap ? previous + n : cap;
   const f32 short_rate = nf / static_cast<f32>(previous >= 0xffffu ? full : short_total);
+  const f32 long_rate = nf / static_cast<f32>(previous >= 0xffffu ? full : total);
+  // Told that a coarser cell sees its light moving, the cell folds this frame at today's rate.
+  const f32 rate = memory && follow && short_rate > long_rate ? short_rate : long_rate;
   if (previous == 0) {
-    c = GiMemoryCell{frame_mean, frame_mean, 0.0f, total, false};
+    c = GiMemoryCell{frame_mean, frame_mean, 0.0f, total, false, false};
     return;
   }
   const f32 spread = gi_spread_fold(c.spread, previous, n, total, c.mean, frame_mean);
@@ -407,13 +461,16 @@ inline void gi_memory_fold(GiMemoryCell& c, u32 n, f32 frame_mean, bool drop,
   f32 m = c.mean + (frame_mean - c.mean) * rate;
   u32 count = total;
   bool changed = false;
-  if (memory && spread > 0.0f) {
+  bool following = false;
+  if (memory && n >= k_gi_test_samples && spread > 0.0f) {
     // A sample's variance: the spread is kept as the long count sees it (at its cap, scaled by
     // T / (2 T - n)), the short mean's variance is that over 2 cap - n.
     const f32 tf = static_cast<f32>(total);
     const f32 sample = previous + n > total ? spread * (2.0f * tf - nf) / tf : spread;
     const f32 var_short = sample / (2.0f * static_cast<f32>(cap) - nf);
-    changed = (m - s) * (m - s) > k_gi_change_sigmas * k_gi_change_sigmas * var_short;
+    const f32 apart2 = (m - s) * (m - s);
+    changed = apart2 > k_gi_change_sigmas * k_gi_change_sigmas * var_short;
+    following = apart2 > k_gi_follow_sigmas * k_gi_follow_sigmas * var_short;
   }
   const u32 back = cap / k_gi_memory_back;
   if (memory && (drop || changed) && previous > back) {
@@ -423,7 +480,71 @@ inline void gi_memory_fold(GiMemoryCell& c, u32 n, f32 frame_mean, bool drop,
     m = base + (frame_mean - base) * (nf / static_cast<f32>(back + n));
     count = back + n;
   }
-  c = GiMemoryCell{m, s, spread, count, changed};
+  c = GiMemoryCell{m, s, spread, count, changed, following};
+}
+
+// **R171, fourth leg: the long mean is rounded to its half without a bias** (renderer.md, "R171:
+// the memory made right"). The mean is kept as three halves, eleven bits of mantissa, and a long
+// memory moves it by a small share of each frame's difference: at 4,096 samples an own cell's step
+// is a 372nd of a frame mean that indoors is mostly a little under the light and now and then far
+// over it (a few heavy samples). Rounded to nearest, the frequent small steps down are lost under
+// half a unit of the half and the rare large ones up are kept, so the mean climbs: +9 % in a
+// simulation of the plain wall's samples (+0.2 % with the mean in float), which is the level's rise
+// leg 3 measured (0.2 to 1.8 %) and could not place. Rounded up or down with the chance its distance
+// from each says, a half is the float in expectation. The chance is drawn from a hash of the cell's
+// own words (its frame's sums and its count and old mean), which the same samples make the same
+// wherever the scene stands, so the bytes still follow the scene and not the slot.
+inline u32 gi_round_hash(u32 a, u32 b, u32 c, u32 d) noexcept {
+  u32 h = a * 0x9e3779b1u ^ (b + 0x7f4a7c15u);
+  h = (h ^ (h >> 16)) * 0x85ebca6bu;
+  h ^= c * 0xc2b2ae35u;
+  h = (h ^ (h >> 13)) * 0x27d4eb2fu;
+  h ^= d * 0x165667b1u;
+  return h ^ (h >> 16);
+}
+// A finite non-negative float as a half's bits, rounded to nearest even (the shader's f32tof16 on
+// the devices measured), and back.
+inline u32 gi_half_bits(f32 x) noexcept {
+  u32 f = 0;
+  std::memcpy(&f, &x, 4);
+  const u32 sign = (f >> 16) & 0x8000u;
+  const i32 exp = static_cast<i32>((f >> 23) & 0xffu) - 127 + 15;
+  u32 mant = f & 0x7fffffu;
+  if (exp >= 31) return sign | 0x7bffu;  // clamped to the largest finite half
+  if (exp <= 0) {
+    if (exp < -10) return sign;
+    mant |= 0x800000u;
+    const u32 shift = static_cast<u32>(14 - exp);
+    u32 h = mant >> shift;
+    const u32 rem = mant & ((1u << shift) - 1u);
+    const u32 halfway = 1u << (shift - 1u);
+    if (rem > halfway || (rem == halfway && (h & 1u) != 0u)) ++h;
+    return sign | h;
+  }
+  u32 h = (static_cast<u32>(exp) << 10) | (mant >> 13);
+  const u32 rem = mant & 0x1fffu;
+  if (rem > 0x1000u || (rem == 0x1000u && (h & 1u) != 0u)) ++h;
+  return sign | (h > 0x7bffu ? 0x7bffu : h);
+}
+inline f32 gi_half_value(u32 h) noexcept {
+  const u32 exp = (h >> 10) & 0x1fu;
+  const u32 mant = h & 0x3ffu;
+  const f32 sign = (h & 0x8000u) != 0u ? -1.0f : 1.0f;
+  if (exp == 0) return sign * std::ldexp(static_cast<f32>(mant), -24);
+  return sign * std::ldexp(static_cast<f32>(mant | 0x400u), static_cast<i32>(exp) - 25);
+}
+// `x` (finite, not negative) as the half below or above it, the upper with the chance `u` (in
+// [0, 1)) falls under x's distance from the lower over the gap between them: the half in
+// expectation is `x`. The shader's `gi_half_unbiased` is the same arithmetic.
+inline u32 gi_half_unbiased(f32 x, f32 u) noexcept {
+  if (!(x > 0.0f)) return 0u;
+  const u32 h = gi_half_bits(x);
+  const f32 taken = gi_half_value(h);
+  if (taken == x || h >= 0x7bffu) return h;
+  const u32 other = taken > x ? h - 1u : h + 1u;
+  const f32 beyond = gi_half_value(other);
+  const f32 t = (x - taken) / (beyond - taken);  // in (0, 0.5]: rounding took the nearer
+  return u < t ? other : h;
 }
 
 // **R171: the read by its cells' measured spread.** The walk (below) shows a level whole once its

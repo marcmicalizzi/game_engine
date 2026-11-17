@@ -3069,8 +3069,8 @@ is the size of main against itself under the bounce (p95 4.6 %), whose rays are 
 
 ### R171: a cell's memory by its own spread
 
-Third leg (2026-11-16; `renderer.gi.memory`, **off by default**, for the four failures under "Why
-it is off" below; `gfx::gi_memory_fold`, `gi_memory_cap`,
+Third leg (2026-11-16; `renderer.gi.memory`, off by default for the four failures under "Why
+it is off" below, **on since the fourth leg mended them**, [below](#r171-the-memory-made-right); `gfx::gi_memory_fold`, `gi_memory_cap`,
 `k_gi_memory`, `k_gi_change_sigmas`, `k_gi_memory_back` in `gi_cache.h`, the same arithmetic in
 `gi_update.slang`'s fold and its sample pass). The lever at the source: noise falls with the square
 root of a cell's memory, and the fold now measures each cell's spread, which is what an adaptive
@@ -3194,6 +3194,148 @@ What would bring it on: a cell's own test only at 64 samples a frame or more; a 
 than two histories of one cell (A-SVGF's re-shaded sample is the published one; a coarse cell's
 short mean handed to its children as a scale each frame is the cache's own); and the level's rise
 found.
+
+### The change between frames, as the eye sees it
+
+Roadmap R171, fourth leg (2026-11-16). The owner, on the bounce indoors, in the cave and "anywhere
+with lower light too": "it changes every single frame, and that's noticeable more than the pattern
+itself". The three legs before measured the grain — the spread of the indirect term across a wall
+in one frame — and a change from frame to frame is another quantity: a cell whose mean moves a
+sixteenth of the way to each frame's samples shows a still pattern's grain and a pattern that
+crawls. So the row's judge is measured where the eye takes it: **on the displayed picture**, after
+the exposure, the curve, the dither and the 8-bit store, between consecutive frames of a held view.
+
+**The measure** (`renderer::TemporalChange`, `temporal_change.h`; `engine-view --temporal <file>
+--temporal-from <n>`, [apps](apps.md)): every pixel of every consecutive pair from frame n on,
+its change of displayed luma in code steps (Y′ = 0.2126 R′ + 0.7152 G′ + 0.0722 B′ of the codes)
+and of its light relative to its level (each channel through the encode's 2.2 power, Rec. 709's
+weights, |L₁ − L₀| over their mean; a pixel black in both frames has none), as histograms over all
+pixels and by the pixel's displayed luma in six bands (0–7, 8–15, 16–31, 32–63, 64–127, 128–255
+codes), with each frame's mean level over the picture and its centre for a moving case. The
+display's dither is a function of the pixel's place and nothing else, so a picture that does not
+change does not change a code: with the bounce off, a held view of the cave or the village moves
+no pixel at all (below), and every step the measure counts under the bounce is the cache's.
+
+**What an eye sees, and the threshold.** Temporal sensitivity follows Weber's law in bright light —
+a threshold that is a fixed fraction of the level — and the DeVries–Rose law in dim light, where
+sensitivity grows only as the square root of the light, so the threshold fraction rises as the
+light falls (Cai, Bozorgian, Ashraf, Wanat and Mantiuk, "elaTCSF: A Temporal Contrast Sensitivity
+Function for Flicker Detection and Modeling Variable Refresh Rate Flicker", SIGGRAPH Asia 2024,
+§4.1, read tonight; its transient channel is fitted to de Lange's and Kelly's classic flicker
+data). A change between frames at sixty a second is a temporal frequency up to 30 Hz, on the
+falling side of the curve's peak at 10 to 20 Hz, and the pattern the cache draws is the size of a
+cell (13 px at 4K), a small area, which raises the threshold again. **No threshold is pinned from
+those papers' numbers here** (the figures sit in plots this session could not read); the
+threshold is the display's own quantum instead, which is stricter than any of them where it
+matters: a whole step of an 8-bit code is 0.4 to 1.7 % of the light from the top band to the
+middle ones (2.2 / V of it at code V), near the Weber threshold at the curve's peak, and 9 to 30 %
+in the two darkest bands, where even the DeVries–Rose regime's raised threshold is passed. A
+change under a step moves no code but by the dither's fixed noise, so it shows at most as a pixel
+that flips one step now and then. **The bounce is held to this: at a held view, the share of
+pixel-frames whose displayed luma moves a whole step is under 0.1 % in every band, and the 99.9th
+percentile of the change under one step** — the picture changing no more than its own quantum does
+by chance, in the band where a step is most visible (the dark ones) as in the rest.
+
+**The scenes**: `content/test-scenes/cave/` (G213: one passage under a 4 m shaft at noon, a held
+view and a walk in from under the shaft) and the village's house 0 (`interior-held.json`, and
+`interior-door.json`, the flight's last metres through the door and held there); both READMEs say
+how to fly them.
+
+### R171: the memory made right
+
+Fourth leg (2026-11-16; `renderer.gi.memory` **on by default**). Leg 3's four reasons, each found
+at its cause and mended there, with the bar above as the judge:
+
+- **The level's rise was the half's rounding.** The long mean is three halves, eleven bits of
+  mantissa, and at 4,096 samples an own cell moves it a 372nd of the way to each frame's mean: a
+  step of one to two units of the half. Indoors a frame's mean is mostly a little under the light
+  and now and then far over it (a few heavy samples), so rounded to nearest the many small steps
+  down are lost and the rare large ones up kept: +8.9 % in the CPU case
+  (`gi cache key: a long mean in halves holds its level when rounded without a bias`, the plain
+  wall's samples), +0.02 % with the mean in float. The fold now rounds the long mean to the half
+  below or above with the chance its distance from each says (`gfx::gi_half_unbiased`), so the half
+  is the float in expectation (−0.02 % in the same case); the chance is drawn from a hash of the
+  cell's own words (`gi_round_hash` of its frame's sums, count and old mean), which the same samples
+  make the same wherever the scene stands. It is rounding noise of a unit of the half a frame, a
+  twentieth of a display step, and only under the memory. The box's corner, which leg 3's memory
+  lifted 0.013 against a bound of 0.011, is held to that bound again by its case.
+- **The blobs were own cells testing themselves.** An own cell's short mean averages eleven samples
+  a frame and carries 10 % noise; across fifty thousand of them one left four deviations every
+  frame or two and showed today's noise again for a hundred frames. Only a cell taking
+  `k_gi_test_samples` (64) a frame tests itself now — the third level of a ladder at the trickle —
+  and the own cells hear of a change from their coarser cells, which pool 16 and 64 times their
+  samples. The CPU case sends no cell back while still (leg 3's: 3 of 1,024).
+- **The small change that trailed now follows at today's pace.** A tested cell whose two means
+  stand between 2.5 (`k_gi_follow_sigmas`) and four of the short mean's deviations apart lets go of
+  nothing, but sets a second flag (the short mean half's lowest bit, `k_gi_cell_following`), which
+  the sample pass hands down its ladders like the change (`k_gi_frame_follow`, word 2's next bit),
+  and the finer cells fold that frame at today's rate. A 10 % step, which leg 3's rule never saw,
+  is crossed within a few frames: in the CPU case it settles within a tenth in 120 frames against
+  today's 84 (leg 3's: past the run's 500). From a simulation of the fold (sixteen coarse cells over
+  1,024 own ones, the plain wall's samples, Python in the row's scratch):
+
+  | rule | still variance | change a frame, mean / p99 | 10 % step settles | 13 % | 30 % |
+  |---|---|---|---|---|---|
+  | today (memory off) | 6.7e-4 | 2.44 / 9.07 % | 50 | 50 | 51 |
+  | leg 3 | 5.0e-5 | 0.149 / 0.564 % | over 600 | 60 | 47 |
+  | following at 3 | 5.0e-5 | 0.149 / 0.564 % | 303 | 50 | 47 |
+  | **following at 2.5** | 5.7e-5 | 0.151 / 0.565 % | 122 | 47 | 47 |
+  | following only, no let-go handed down | 5.7e-5 | 0.151 % | 413 | — | 600 (the children never catch up) |
+
+- **The settle after a cut was the plain mean's ramp.** Leg 3's long mean was the plain mean of
+  every frame since its cell was made, up to its ceiling, so a cut's or a walk-in's first frames —
+  the bounce still converging, each wall reaching the others through their cells — weighed in it as
+  much as the settled ones, and their error decayed as one over the frames since: six seconds
+  after the village's door the room stood 3.2 % over the memory off, and the cave's held view 4.5 %
+  at six seconds and still falling. Past today's history the count now grows by half a frame's
+  samples (`k_gi_memory_ramp`), so a frame's weight falls as the square of its age's share. In a
+  simulation of a light starting 10 % high and settling with a 60-frame time constant, the gap at
+  3, 6 and 12 s is 0.9, −0.1, −0.6 % with the memory off, 3.8, 1.8, 0.7 % with leg 3's, **2.4, 0.4,
+  0.2 %** growing by half (the grain while the count grows 2.81 % against 2.73 %) and 1.5, −0.1, 0.0
+  % growing by a quarter (3.87 %, the count growing four times slower). The ceiling is reached
+  in 770 frames at the trickle's eleven a frame, against 350.
+
+**What it does on the screen** (3840×2160, `--raster rt --shadows rt`, `bounce`, the RTX 5090,
+`engine-view --temporal` from frame 360 of the held views, 361 frames each; the memory without the
+ramp, the build before it):
+
+| held view | share of pixel-frames a step or more | p99 / p99.9 of the step, codes | light p99 | level, luma codes |
+|---|---|---|---|---|
+| cave, the bounce off | 0 | 0 / 0 | 0 | 77.6 (the harmonics light it as open sky) |
+| cave, memory off (main) | 1.015 % | 1.0 / 1.0 | 21 % | 9.74 |
+| cave, memory on | **0.004 %** | 0.19 / 0.69 | 4.3 % | 10.18, falling |
+| house 0, the bounce off | 0 | 0 / 0 | 0 | 127.9 |
+| house 0, memory off (main) | 1.86 % (16–31: 2.15 %) | 1.0 / 1.88 | 11.8 % | 20.27 |
+| house 0, memory on | **0.018 %** (every band ≤ 0.03 %) | 0.69 / 0.69 | 5.6 % | 20.58, falling |
+| house 0, the sun at a 24-minute day, memory on | 0.065 % | 0.69 / 0.88 | 7.1 % | — |
+
+The bar holds in every band of both rooms, and with the sun moving at sixty times real time. At
+that rate the room's light moved 0.055 codes over the last 320 frames with the memory off, so the
+memory's lag (372 frames at most) puts it 0.06 codes, 0.3 %, behind: under a step, and the same
+over the whole room, so nothing trails across it. Walking into the cave the levels after the stop
+agree to 0.2 % (9.63 against 9.61 codes); through the village's door the memory stood 3.2 % over
+six seconds after the stop, which is the ramp above.
+
+**The final rule** (the ramp in; the same flights, the session locked, which leaves the temporal
+measure as it is): the cave's held view steps a code on **0.007 %** of pixel-frames (p99.9 0.69)
+and house 0's on **0.023 %** (p99.9 0.75), the bar held in both. The level's lag after the load
+halves: the cave stands 1.9 % over the memory off at twelve seconds (leg 3's rule: 3.4 %), house 0
+0.7 % (1.5 %). **Through the door it does not**: six seconds after the stop the room stands 2.8 %
+over the memory off (3.2 % without the ramp), a uniform level settling at 0.005 codes a frame, two
+hundredths of the bar's step, with no edge for an eye to compare it across; it is what is left of
+the rule, and a walk-in's cells, made while the bounce is still finding the room's walls, are its
+cause. The next lever is the bounce's hits reading a cell's short mean, so the light converges
+through the walls at today's pace and only the picture keeps the long memory.
+
+**What it costs**: nothing measurable. Medians of the GPU's timestamps over held flights
+(3840×2160, rt/rt, the bounce, one lease, the session locked on both sides): the cave 3.97 ms
+(main) against 3.98 (the memory on), `gi_trace` 0.853 / 0.858, the fold 0.052 / 0.054; house 0
+5.67 / 5.69; the village's lane 5.29 / 5.38 (the resolve 3.34 / 3.43, the memory changes nothing the
+resolve does, so that is the run's spread). Batch 65's build on the cave, for the coordinator's
+question of `gi_trace` rising on the forest's walk with both flags off: 1.00 ms against batch 66's
+0.853 — on an engine scene the sample pass is no dearer since R171's legs, and the forest's rise
+is not shown to be the cache (batch 65's build cannot read the village's plan, so the lane was
+not flown).
 
 ## The sun's day
 
