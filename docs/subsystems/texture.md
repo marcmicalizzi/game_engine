@@ -877,12 +877,18 @@ is not repeatable frame to frame anyway.
 held 48 to 81 % of the processors, so frame times are upper bounds and only the pair's difference is
 read):
 
-| Flight | Texture bytes at the end, main / bound | Frame median, main / bound | First frame (the settle) | Worst recording-thread frame of the bound's |
+| Flight | Texture bytes at the end, main / bound | Frame median, main / bound | Held by the bound | The settle (first frame) |
 |---|---|---|---|---|
-| village interior walk, 3840 x 2160 | 168.2 / 168.2 MiB | 6.02 / 6.01 ms | 328 ms of 406 | 60.4 ms (a settle at the path's jump), else 8.1 ms |
-| village interior walk, 1920 x 1080 | 168.2 / 168.2 MiB | 2.60 / 2.59 ms | 163 ms of 167 | 3.5 ms |
-| oasis-palms flythrough, 3840 x 2160 | 28.2 / 28.2 MiB | 2.92 / 2.92 ms | — | 0.07 ms |
-| oasis-palms flythrough, 1920 x 1080 | 28.2 / 28.2 MiB | 1.30 / 1.30 ms | — | 0.00 ms |
+| village interior walk, 3840 x 2160 | 168.2 / 168.2 MiB | 6.02 / 6.01 ms | 33 of 48, all 33 at level 0 from the first frame | 168 ms (328 ms in a second flight) |
+| village interior walk, 1920 x 1080 | 168.2 / 168.2 MiB | 2.60 / 2.59 ms | the same | 195 ms (163 ms) |
+| oasis-palms flythrough, 3840 x 2160 | 28.2 / 28.2 MiB | 2.92 / 2.92 ms | — | — |
+| oasis-palms flythrough, 1920 x 1080 | 28.2 / 28.2 MiB | 1.30 / 1.30 ms | — | — |
+
+(The village's figures are from `FlythroughTextures` version 3, the oasis's from the bytes; the
+village's 33 held textures were all promoted by the settle, none after it and none late, so the
+bound made **no admission off the frame** on either walk, and the recording thread's longest
+`terrain` stage on the bound's side, 60 ms, is the terrain tiles' own: main's reaches 42 ms on the
+same walk.)
 
 **The bound alone keeps every level of these scenes by the end of their walks**, at both
 resolutions. Not a fault of the bound: the village's generated plaster, timber, stone and thatch
@@ -894,9 +900,9 @@ never sampled are behind walls a few metres off, which a bound by distance canno
 palm cards are alpha-tested and its sand is the terrain's, neither held by level. What the bound
 does save is **the load**: the village uploads 24 KB a texture where a whole 2K chain is 5.3 MB, and
 its first frame then brings in what the start can read (the settle above, which a cut pays too).
-Promotions cost the recording thread little (0.44 ms for a 1K texture in `msvc-debug`, the test's
-walk), but a whole 2K level in one frame, image and staging made then, was up to 8 ms here, and a
-settle at a jump the host did not declare 60 ms. Allocations after the first 60 frames: 46 on both
+A promotion off the frame costs the recording thread 0.44 ms for a 1K texture in `msvc-debug` (the
+test's walk); the walks above made none, so a 2K texture's admission, with its image and its
+staging made in that frame, is not measured at 4K yet. Allocations after the first 60 frames: 46 on both
 sides (the village's own), none added; `engine_view.frame_loop` passes (0 allocations and 0 device
 buffers in every second flight).
 
