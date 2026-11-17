@@ -227,6 +227,8 @@ TEST_CASE("wind: the sea state is a function of the time, continuous across the 
     const SeaState a = sea_state(w, t - 0.5, fetch);
     const SeaState b = sea_state(w, t + 0.5, fetch);
     CHECK(std::abs(a.height_m() - b.height_m()) < 2e-3 * std::max(a.height_m(), 0.01));
+    // And its peak (W136-2: the equivalent fetch is the wind now's, not the last step's).
+    CHECK(std::abs(a.sea_period_s - b.sea_period_s) < 2e-3 * std::max(a.sea_period_s, 0.1));
   }
   const SeaState x = sea_state(w, 40000.0, fetch);
   const SeaState y = sea_state(w, 40000.0, fetch);

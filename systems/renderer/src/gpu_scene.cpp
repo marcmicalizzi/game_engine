@@ -650,10 +650,13 @@ void water_surface_of(const SceneWater& water, const WaterSwashNumbers& n, gfx::
   out.reach_scale = static_cast<f32>(gfx::swash_reach_scale(n.wave.height_m, n.wave.period_s));
   out.reach_cap =
       static_cast<f32>(gfx::swash_reach_cap(n.wave.height_m, static_cast<f64>(map.bank_max)));
+  // W136-2: a varying wind's two trains span its seas (scene_wind.h, `water_cross_of_span`).
   const gfx::WaterCross cross =
       n.wind_k0 > 0.0
           ? gfx::water_cross_of_swell(n.wave.height_m, period, n.wind_wave.height_m,
                                       n.wind_wave.period_s, water.shading.direction)
+      : water.scene_wind && water.grid.valid()
+          ? water_cross_of_span(n.wave.height_m, period, n.direction)
           : gfx::water_cross_of_sea(n.wave.height_m, period, n.direction, water.shading.seed);
   gfx::WaterFieldDesc desc;
   desc.texels = map.texels.data();

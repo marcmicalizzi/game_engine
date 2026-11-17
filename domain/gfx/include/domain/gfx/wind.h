@@ -364,7 +364,35 @@ inline SeaState sea_state(const WindDesc& w, f64 time_s, f64 fetch_m) noexcept {
   const WindSample now = wind_at(w, time_s);
   s.wind_m_s = now.speed_m_s;
   s.wind_to = now.to;
+  // The wind sea re-expressed under the wind now (W136-2): its equivalent fetch was the last
+  // step's wind's, and every reader takes the sea's peak and shape from (`wind_m_s`, `sea_fetch_m`)
+  // together, so a pair from two winds put the peak off by the step's change in wind and moved it
+  // at once at every step's end — the table's bands and the shore's two trains jumped every half
+  // hour. Under the wind now the same height has its own fetch, continuous in the time.
+  if (s.sea_height_m > 0.0 && now.speed_m_s >= k_sea_min_wind_m_s) {
+    const f64 cap = water_grown_fetch(now.speed_m_s, fetch_m);
+    s.sea_fetch_m = std::min(sea_fetch_for(now.speed_m_s, s.sea_height_m), cap);
+    s.sea_period_s = 2.0 * k_wind_pi / jonswap_peak(now.speed_m_s, s.sea_fetch_m);
+  }
   return s;
+}
+
+// The sea state's spectral density at `omega` (m² s): the wind sea's at its own shape and the
+// swell's at JONSWAP's mean shape scaled to its variance H² / 16 — what the table draws its bands
+// from, and what shares the sea between the shore's two trains (W136-2; gfx.md, "The shore's train
+// follows the sea").
+inline f64 sea_density(const SeaState& s, f64 omega) noexcept {
+  f64 d = 0.0;
+  if (s.sea_height_m > 0.0 && s.sea_fetch_m > 0.0 && s.wind_m_s > 0.0)
+    d += jonswap(omega, jonswap_shape(s.wind_m_s, s.sea_fetch_m),
+                 jonswap_peak(s.wind_m_s, s.sea_fetch_m));
+  if (s.swell_height_m > 0.0 && s.swell_period_s > 0.0) {
+    const f64 p = 2.0 * k_wind_pi / s.swell_period_s;
+    d += jonswap(omega,
+                 s.swell_height_m * s.swell_height_m / 16.0 * (p * p * p * p) / sea_jonswap_unit(),
+                 p);
+  }
+  return d;
 }
 
 // ---- the sea as the water's table ---------------------------------------------------------------

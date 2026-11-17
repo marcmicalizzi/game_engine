@@ -16,6 +16,7 @@
 #include <core/base/types.h>
 #include <core/containers/vector.h>
 #include <core/math/math.h>
+#include <domain/gfx/water_flux.h>
 #include <domain/gfx/water_spectrum.h>
 #include <domain/gfx/water_swash.h>
 #include <domain/gfx/wind.h>
@@ -89,6 +90,20 @@ inline f32 water_lift_padding(const gfx::WaterSurface& surface,
   reach += surface.amplitude * 2.1f;
   return bank_max + reach + 0.5f;
 }
+
+// **The shore's two trains span a varying wind's seas** (W136-2; gfx.md, "The shore's train follows
+// the sea"): the first at the period of the largest sea the wind raises (the load's), the second an
+// octave above it on the group's lattice (fourteen waves in the first's seven) along the same
+// direction, each with its own arrival field, so as the sea grows its energy moves from the second
+// to the first and the surf's period follows it with no phase that jumps. `height_m` is the load's
+// sea; the split is the mean shape's at the two frequencies, which the first frame redraws.
+gfx::WaterCross water_cross_of_span(f64 height_m, f64 period_s, Vec2 direction) noexcept;
+
+// The heights of the shore's two trains (deep water) for a sea state: its energy shared by its
+// spectral density per log frequency at the two trains' frequencies, so H1² + H2² = H², and the
+// period those weights give (for the run-up and the reach). False when the state holds neither.
+bool water_train_heights(const gfx::SeaState& state, f64 period_1, f64 period_2, f64& h1, f64& h2,
+                         f64& period) noexcept;
 
 // One copy the frame makes: into the material table (`surface` false) or the surfaces buffer.
 struct WaterWindUpload {

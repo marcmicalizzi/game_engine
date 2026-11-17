@@ -19,6 +19,8 @@
 #include <test_device.h>
 #include <test_temp_dir.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -27,6 +29,63 @@
 
 using namespace engine;
 using namespace engine::renderer;
+
+// **The shore's trains follow the sea** (gfx.md, "The shore's train follows the sea"; W136-2), no
+// device: a wind over 60 km that falls to calm at midnight from the day before's gale, rises to a
+// gale by 06:00 and holds. The two trains span its seas (the largest's peak and an octave above, on
+// the group's lattice). At every quantum their heights hold the sea's energy, H1^2 + H2^2 = H^2.
+// While the new sea is young its energy is the short train's (the weighted period within a tenth of
+// the short train's) and by noon the long one's (past nine tenths of it). And nothing jumps: in no
+// quantum does a train's height move by more than 1 % of the largest sea's, a centimetre and a
+// half on a 2.5 m sea, which is under the height a 4K pixel spans on a crest a hundred metres off.
+TEST_CASE("water wind: the shore's two trains take the sea's energy as it grows") {
+  gfx::WindDesc w;
+  w.kind = gfx::WindKind::track;
+  w.period_h = 48.0;
+  w.track.push_back(gfx::WindKey{0.0, 0.0, 30.0});
+  w.track.push_back(gfx::WindKey{6.0, 18.0, 30.0});
+  w.track.push_back(gfx::WindKey{20.0, 18.0, 30.0});
+  w.track.push_back(gfx::WindKey{26.0, 2.0, 30.0});
+  const f64 fetch = 60000.0;
+  const gfx::WaterWindRange range = gfx::water_wind_range(w, fetch);
+  const f64 t1 = gfx::swash_period(range.max_state.sea_period_s);
+  const gfx::WaterCross cross = water_cross_of_span(range.max_height_m, t1, Vec2{1.0f, 0.0f});
+  REQUIRE(cross.period_s > 0.0);
+  CHECK(cross.period_s == doctest::Approx(0.5 * t1));
+  CHECK(cross.train_m * cross.train_m + cross.cross_m * cross.cross_m ==
+        doctest::Approx(range.max_height_m * range.max_height_m));
+  f64 least_period = 1e9;
+  f64 last_period = 0.0;
+  f64 worst_step = 0.0;  // metres: the largest move of either train's height in one quantum
+  f64 worst_at = 0.0;
+  f64 worst_sea = 0.0;  // the sea's own move then
+  std::string periods;
+  for (f64 t = 3600.0; t <= 12.0 * 3600.0; t += k_water_wind_quantum_s) {
+    const gfx::SeaState s = gfx::sea_state(w, t, fetch);
+    f64 h1 = 0.0, h2 = 0.0, period = 0.0;
+    REQUIRE(water_train_heights(s, t1, cross.period_s, h1, h2, period));
+    CHECK(h1 * h1 + h2 * h2 == doctest::Approx(s.height_m() * s.height_m()));
+    least_period = std::min(least_period, period);
+    last_period = period;
+    if (std::fmod(t, 3600.0) == 0.0) periods += " " + std::to_string(period);
+    const gfx::SeaState n = gfx::sea_state(w, t + k_water_wind_quantum_s, fetch);
+    f64 n1 = 0.0, n2 = 0.0, np = 0.0;
+    REQUIRE(water_train_heights(n, t1, cross.period_s, n1, n2, np));
+    const f64 step = std::max(std::abs(n1 - h1), std::abs(n2 - h2));
+    if (step > worst_step) {
+      worst_step = step;
+      worst_at = t;
+      worst_sea = std::abs(n.height_m() - s.height_m());
+    }
+  }
+  MESSAGE("trains at " << t1 << " s and " << cross.period_s << " s; the weighted period on the hour"
+                       << periods << "; the largest move in a quantum " << worst_step << " m at "
+                       << worst_at << " s (the sea's own " << worst_sea << " m), the largest sea "
+                       << range.max_height_m << " m");
+  CHECK(least_period < 1.1 * cross.period_s);
+  CHECK(last_period > 0.9 * t1);
+  CHECK(worst_step < 0.01 * range.max_height_m);
+}
 
 #if ENGINE_WATER_TESTS_DUNES
 

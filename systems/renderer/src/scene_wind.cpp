@@ -110,6 +110,31 @@ WindHand wind_hand_tunable() noexcept {
   return hand;
 }
 
+gfx::WaterCross water_cross_of_span(f64 height_m, f64 period_s, Vec2 direction) noexcept {
+  if (!(height_m > 0.0) || !(period_s > 0.0)) return gfx::WaterCross{};
+  // The mean shape's density per log frequency an octave above the peak, against the peak's.
+  const f64 p = 2.0 * gfx::k_wind_pi / period_s;
+  const f64 share = 2.0 * gfx::jonswap(2.0 * p, 1.0, p) / gfx::jonswap(p, 1.0, p);
+  const f64 h1 = height_m / std::sqrt(1.0 + share);
+  const f64 h2 = height_m * std::sqrt(share / (1.0 + share));
+  return gfx::water_cross_of_swell(h1, period_s, h2, 0.5 * period_s, direction);
+}
+
+bool water_train_heights(const gfx::SeaState& state, f64 period_1, f64 period_2, f64& h1, f64& h2,
+                         f64& period) noexcept {
+  if (!(period_1 > 0.0) || !(period_2 > 0.0)) return false;
+  const f64 o1 = 2.0 * gfx::k_wind_pi / period_1;
+  const f64 o2 = 2.0 * gfx::k_wind_pi / period_2;
+  const f64 w1 = gfx::sea_density(state, o1) * o1;
+  const f64 w2 = gfx::sea_density(state, o2) * o2;
+  if (!(w1 + w2 > 0.0)) return false;
+  const f64 h = state.height_m();
+  h1 = h * std::sqrt(w1 / (w1 + w2));
+  h2 = h * std::sqrt(w2 / (w1 + w2));
+  period = (w1 * period_1 + w2 * period_2) / (w1 + w2);
+  return true;
+}
+
 void water_wind_frame(std::span<WaterWindBody> bodies, const gfx::WindDesc& wind, f64 sky_time_s,
                       Vector<WaterWindUpload>& uploads) {
   uploads.clear();
@@ -163,14 +188,34 @@ void water_wind_frame(std::span<WaterWindBody> bodies, const gfx::WindDesc& wind
           w.steepness = 0.0f;
         }
       }
-      // The shore's train: the sea's height now, on the load's period (the arrival field is built
-      // for it), unless the body's own swell is the train.
+      // **The shore's trains follow the sea** (W136-2; gfx.md, "The shore's train follows the
+      // sea"), unless the body's own swell is the train. Each train keeps the period and the
+      // arrival field it was built with, so no crest jumps: a varying wind's two span its seas and
+      // take the state's energy by its density at their frequencies, so the surf's period moves
+      // from the second's to the first's as the sea grows; any other body's two keep the load's
+      // split, scaled to the sea now. The run-up and the reach take the period the weights give.
       if (!b.swell && b.surface_offset != ~u64{0}) {
+        const gfx::WaterSurface& load = b.load_surface;
         const f64 h = state.height_m();
+        f64 h1 = h;
+        f64 h2 = 0.0;
+        f64 period = b.period_s;
+        const bool two = load.cross_m > 0.0f && load.cross_period_s > 0.0f;
+        if (!(two && b.scene_wind && kind == 2 &&
+              water_train_heights(state, static_cast<f64>(load.period_s),
+                                  static_cast<f64>(load.cross_period_s), h1, h2, period))) {
+          const f64 load_h = static_cast<f64>(load.height_m);
+          const f64 scale = load_h > 0.0 ? h / load_h : 0.0;
+          h1 = static_cast<f64>(load.train_m > 0.0f ? load.train_m : load.height_m) * scale;
+          h2 = static_cast<f64>(load.cross_m) * scale;
+          period = b.period_s;
+        }
         surface.height_m = static_cast<f32>(h);
+        if (load.train_m > 0.0f) surface.train_m = static_cast<f32>(h1);
+        if (two) surface.cross_m = static_cast<f32>(h2);
         surface.run_up_m = static_cast<f32>(
-            std::min(gfx::stockdon_r2(h, b.period_s, b.slope), gfx::k_swash_steep_cap * h));
-        surface.reach_scale = static_cast<f32>(gfx::swash_reach_scale(h, b.period_s));
+            std::min(gfx::stockdon_r2(h, period, b.slope), gfx::k_swash_steep_cap * h));
+        surface.reach_scale = static_cast<f32>(gfx::swash_reach_scale(h, period));
         surface.reach_cap = static_cast<f32>(gfx::swash_reach_cap(h, b.bank_max));
       }
     }
