@@ -447,6 +447,9 @@ function(_engine_test_parts name target parts labels opens_devices timeout)
     set(_test ${name}.${_part})
     string(JOIN "," _filter_arg ${_filters})
     add_test(NAME ${_test} COMMAND ${target} --duration=true "--source-file=${_filter_arg}")
+    # The part's seconds by the table, which the GPU chains are dealt by (EngineTesting.cmake's
+    # finalize): a part's files, not a whole-test row, since the files move between parts.
+    set_property(GLOBAL PROPERTY "ENGINE_TEST_PART_COST:${_test}" "${_deal_load_${_k}}")
     set_tests_properties(${_test} PROPERTIES LABELS "${labels}")
     if(NOT "${timeout}" STREQUAL "")
       set_tests_properties(${_test} PROPERTIES TIMEOUT ${timeout})
@@ -793,22 +796,34 @@ function(engine_app)
     add_dependencies(${_test_target} ${_target})
     engine_apply_warnings(${_test_target})
     _engine_can_wait_for_gpu(_opens_devices ${EA_DEPS})
+    # End-to-end apps that reach `window` can open windows and input devices, and a machine has
+    # one desktop: the label `desktop` gives their tests RESOURCE_LOCK e2e_apps
+    # (EngineTesting.cmake's finalize), which keeps two of them from running at the same time — a
+    # window that takes the front from the editor's posted clicks fails its cases (roadmap A40). An
+    # app that reaches neither (engine-cli, engine-host, engine-content, engine-mcp,
+    # engine-image) opens no window, and its test runs beside them (roadmap T89); a GPU device is
+    # the machine-wide lock's to order, not this one's. **A headless app's test that starts an app
+    # with a window says so**: it adds the `desktop` label beside the line that names that app, as
+    # tools.game_sdk does for engine-view (engine_cli's engine-view runs are all `--offscreen`).
+    _engine_modules_reach(_desktop window ${EA_DEPS})
+    set(_e2e_labels "unit;e2e;${EA_NAME}")
+    if(_desktop)
+      list(APPEND _e2e_labels desktop)
+    endif()
     if(EA_E2E_PARTS AND EA_E2E_PARTS GREATER 1)
-      # Every part carries what the one test did below: the labels, the lock, the timeout. The
-      # lock is a property set after the deal (_engine_test_parts sets labels and timeout), so it
-      # rides on the e2e label in EngineTesting.cmake's finalize, as the GPU one rides on `gpu`.
-      _engine_defer_test_parts(${EA_NAME} ${_test_target} ${EA_E2E_PARTS} "unit;e2e;${EA_NAME}"
+      # Every part carries what the one test did below: the labels, the timeout, and the lock,
+      # which rides on the desktop label in EngineTesting.cmake's finalize, as the GPU one rides on
+      # `gpu`.
+      _engine_defer_test_parts(${EA_NAME} ${_test_target} ${EA_E2E_PARTS} "${_e2e_labels}"
                                "${_opens_devices}" ${ENGINE_TEST_WORK_TIMEOUT_S})
       return()
     endif()
     add_test(NAME ${EA_NAME} COMMAND ${_test_target} --duration=true)
-    # End-to-end apps open windows, GPU devices, and input devices, and a machine has one of
-    # each: RESOURCE_LOCK keeps two of these tests from running at the same time. What it does
-    # *not* do is order this ctest invocation against another one — a second build tree, a
-    # release build beside a debug one, another agent's worktree, CI on the developer's box —
-    # so it is no defence at all against two runs sharing a file. That is what the unique
-    # scratch directories of tests/support/test_temp_dir.h are for, and why no end-to-end test
-    # may name a fixed path under the system temp directory.
+    # The desktop's RESOURCE_LOCK does *not* order this ctest invocation against another one — a
+    # second build tree, a release build beside a debug one, another agent's worktree, CI on the
+    # developer's box — so it is no defence at all against two runs sharing a file. That is what
+    # the unique scratch directories of tests/support/test_temp_dir.h are for, and why no
+    # end-to-end test may name a fixed path under the system temp directory.
     #
     # TIMEOUT is explicit rather than left at CTest's 1500 s default so that the number carries
     # its reason. Ten minutes is roughly sixteen times the worst end-to-end run measured on a
@@ -819,8 +834,8 @@ function(engine_app)
     # none of these has ever come within an order of magnitude of this bound. An app that opens
     # a GPU device can also wait for the machine-wide GPU lock, and its test gets the queue on
     # top of the ten minutes (engine_test_waits_for_gpu above).
-    set_tests_properties(${EA_NAME} PROPERTIES LABELS "unit;e2e;${EA_NAME}"
-      RESOURCE_LOCK "e2e_apps" TIMEOUT ${ENGINE_TEST_WORK_TIMEOUT_S})
+    set_tests_properties(${EA_NAME} PROPERTIES LABELS "${_e2e_labels}"
+      TIMEOUT ${ENGINE_TEST_WORK_TIMEOUT_S})
     if(_opens_devices)
       engine_test_waits_for_gpu(${EA_NAME})
     endif()

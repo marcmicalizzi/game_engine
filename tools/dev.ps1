@@ -39,10 +39,12 @@
                 It builds what those tests need and nothing else, as `build -Affected` does.
                 -Jobs <n> runs <n> tests at once (`ctest -j`); without it a Windows preset runs
                 one at a time, as it always has, and a Linux preset as its test preset says.
-                Two tests that can open a GPU device never run at once in one invocation (the
-                `gpu_device` resource lock on every test labelled `gpu`), so the second waits in
-                CTest and never in the GPU lock's half-hour budget; the wall-clock tests run
-                alone (cmake/EngineTesting.cmake, docs/ci/what-to-run.md "Jobs").
+                The tests that can open a GPU device run as two chains (the resource locks
+                `gpu_device.1` and `.2`, dealt by cost over the tests labelled `gpu`; one chain
+                where the machine-wide GPU lock is not in use, ENGINE_TEST_GPU_CHAINS), so two of
+                them run at once and the machine-wide lock orders their devices; the tests that
+                can open a window run one at a time (`e2e_apps`); the wall-clock tests run alone
+                (cmake/EngineTesting.cmake, docs/ci/what-to-run.md "Jobs", "Two GPU chains").
                 -SkipInvariantGpu, in an off-configuration (modules.json says minimal or names a
                 disabled capability), runs the tests labelled `config_invariant` (renderer, gfx:
                 libraries that are the same code in every configuration) with the Vulkan

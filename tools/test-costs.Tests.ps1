@@ -25,6 +25,11 @@
   malformed row refused. And `-Predict` over a hand-written CTestTestfile.cmake: each part's
   seconds as the build deals them and as the table would.
 
+  The GPU chains (roadmap T89): engine_deal_gpu_chains in script mode over items with seconds, one
+  without and a group named for its lock, over two chains and one; and `-Whole`, a whole test's
+  `Test time` less its printed lock waits as a `<test> * <seconds>` row, the other rows kept, a test
+  no log ran named, the tests a build labels `gpu` that are not parts, and its usage refusal.
+
   Every case writes into its own directory under the system temp directory, named by a GUID, so
   two copies of this script never share one.
 #>
@@ -293,7 +298,59 @@ try {
     Test-That '-Predict reads only parted tests' { -not ($r.Out -match '(?m)^flora') }
     $r = Invoke-Tool @('-Predict', '-BuildDir', (Join-Path $scratch 'nowhere'), '-Table', $fixture, '-Cmake', $Cmake)
     Test-That '-Predict with no build directory is refused with 1' { $r.Code -eq 1 }
+
+    # ---- the GPU chains' deal (engine_deal_gpu_chains, roadmap T89): items with seconds and one
+    # without, a group named for its lock among them
+    $chains = {
+      param([int]$n, [string[]]$items)
+      $probe = Join-Path $scratch "chains-$([guid]::NewGuid().ToString('N')).cmake"
+      Write-Text $probe (@(
+          "include(`"$(($repo -replace '\\', '/'))/cmake/EngineTestDeal.cmake`")",
+          "engine_deal_gpu_chains($n `"$($items -join ';')`" c)",
+          "foreach(k RANGE 0 $($n - 1))",
+          '  string(JOIN "," f ${c_${k}})',
+          '  message(STATUS "chain|${k}|${c_load_${k}}|${f}")',
+          'endforeach()'
+        ) -join "`n")
+      $out = @(& $Cmake -P $probe 2>&1 | ForEach-Object { "$_" })
+      [pscustomobject]@{ Code = $LASTEXITCODE; Chains = @($out | Where-Object { $_ -like '-- chain|*' } | ForEach-Object { $_.Substring(3) }) }
+    }
+    $items = @('rocks=330', '@e2e_apps=1600', 'water=120', 'new_test', 'renderer.1=400', 'renderer.3=390')
+    $c = & $chains 2 $items
+    Test-That 'two chains: longest first, each to the chain with the least so far, the unmeasured after them round the chains' {
+      $c.Code -eq 0 -and ($c.Chains -join ' / ') -eq 'chain|0|1600|@e2e_apps,new_test / chain|1|1240|renderer.1,renderer.3,rocks,water'
+    }
+    $c = & $chains 1 $items
+    Test-That 'one chain holds every item, as the single gpu_device lock did' {
+      $c.Code -eq 0 -and ($c.Chains -join ' / ') -eq 'chain|0|2840|@e2e_apps,renderer.1,renderer.3,rocks,water,new_test'
+    }
   }
+
+  # ---- -Whole: a whole test's seconds (roadmap T89)
+  Write-Text $table $seed
+  $r = Invoke-Tool @('-Whole', '-Log', $serverLog, '-Tests', 'flora,renderer.2,water', '-Out', $table)
+  $rows = @([IO.File]::ReadAllLines($table))
+  Test-That "-Whole writes '<test> * <seconds>' from Test time, labelled, and keeps the other rows" {
+    $r.Code -eq 0 -and $rows -contains 'flora * 99  # linux-server' -and $rows -contains 'gfx raster_tests.cpp 30  # linux-server' -and $rows[0] -eq "# the table's comment"
+  }
+  Test-That "-Whole takes the process's printed lock wait off, and never writes less than 1" { $rows -contains 'renderer.2 * 1  # linux-server' }
+  Test-That '-Whole names a test no log ran' { $r.Out.Contains('1 not in any log (water)') }
+  $again = Join-Path $scratch 'whole-build'
+  New-Item -ItemType Directory -Force -Path $again | Out-Null
+  Write-Text (Join-Path $again 'CTestTestfile.cmake') (@(
+      'add_test([=[renderer.2]=] "x" "--duration=true" [=[--source-file=*/b_tests.cpp,*\b_tests.cpp]=])',
+      'set_tests_properties([=[renderer.2]=] PROPERTIES  LABELS "unit;gpu" TIMEOUT "2400")',
+      'add_test([=[flora]=] "y" "--duration=true")',
+      'set_tests_properties([=[flora]=] PROPERTIES  LABELS "unit;gpu" TIMEOUT "2400")',
+      'add_test([=[lint]=] "z")',
+      'set_tests_properties([=[lint]=] PROPERTIES  LABELS "lint")'
+    ) -join "`n")
+  Write-Text $table $seed
+  $r = Invoke-Tool @('-Whole', '-Log', $serverLog, '-BuildDir', $again, '-Out', $table)
+  $rows = @([IO.File]::ReadAllLines($table) | Where-Object { $_ -match ' \* ' })
+  Test-That "-Whole with -BuildDir: every test labelled gpu that is not a part, and nothing else" { $r.Code -eq 0 -and ($rows -join '|') -eq 'flora * 99  # linux-server' }
+  $r = Invoke-Tool @('-Whole', '-Log', $serverLog, '-Out', $table)
+  Test-That '-Whole with neither -Tests nor -BuildDir is usage, 2' { $r.Code -eq 2 }
 } finally {
   if ($KeepTemp) { Write-Host "kept $scratch" } else { Remove-Item -Recurse -Force -LiteralPath $scratch -ErrorAction SilentlyContinue }
 }

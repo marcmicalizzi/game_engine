@@ -203,8 +203,9 @@ if(TARGET engine_engine_view_tests)
   # are marked skip, which the `engine_view` run honours; this one runs them alone.
   add_test(NAME engine_view.frame_loop
     COMMAND engine_engine_view_tests --duration=true --no-skip "--test-case=frame loop*")
-  set_tests_properties(engine_view.frame_loop PROPERTIES LABELS "unit;e2e;engine_view;frame_loop"
-    RESOURCE_LOCK "e2e_apps" TIMEOUT ${ENGINE_TEST_WORK_TIMEOUT_S})
+  # `desktop`: engine-view's, so the desktop's resource lock (cmake/EngineModule.cmake, engine_app).
+  set_tests_properties(engine_view.frame_loop PROPERTIES
+    LABELS "unit;e2e;engine_view;frame_loop;desktop" TIMEOUT ${ENGINE_TEST_WORK_TIMEOUT_S})
   engine_test_waits_for_gpu(engine_view.frame_loop)
   # The session fixture, its trajectory and the default map live under content/, found relative to
   # the source tree (or the test bundle's copy of it: tests/support/test_paths.h).
