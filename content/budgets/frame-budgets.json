@@ -85,6 +85,47 @@
             "repeats": 1
           },
           "sources": "Every number measured 2026-10-07 (this baseline). None of the three experiment pages measures the overlook: its scene names the Khronos samples, which the worktrees that took them had not fetched."
+        },
+        "unlocked": {
+          "gpu_ms": {
+            "cull": {
+              "median": 0.033,
+              "p99": 0.036
+            },
+            "hiz": {
+              "median": 0.019,
+              "p99": 0.02
+            },
+            "hw": {
+              "median": 0.023,
+              "p99": 0.046
+            },
+            "resolve": {
+              "median": 0.09,
+              "p99": 0.113
+            },
+            "total": {
+              "median": 0.168,
+              "p99": 0.212
+            }
+          },
+          "cpu_ms": {
+            "median": 0.091,
+            "p99": 0.341
+          },
+          "baseline": {
+            "date": "2026-11-17",
+            "by": "batch 67 coordinator",
+            "reason": "T161: the unlocked baselines, the state a player's machine is in (batch 67, a quiet machine the owner left idle)",
+            "commit": "f552094f",
+            "device": "NVIDIA GeForce RTX 5090",
+            "session": "unlocked",
+            "quiet": true,
+            "machine_state": "quiet, session unlocked (start 4.5% others, GPU 0%; end 0.9% others, GPU 0%)",
+            "identity": "894d5741f47a0839",
+            "frames": 2401,
+            "repeats": 1
+          }
         }
       }
     },
@@ -161,6 +202,87 @@
             "repeats": 1
           },
           "sources": "Every number measured 2026-10-07 (this baseline). Its total agrees with docs/experiments/world-positions-renderer-2026-10-05.md (stage 3, rt after: 0.730 / 1.453 ms median / p99; the A/B runs 0.723-0.727 / 1.516-1.634); that page has no per-pass numbers at 1080p."
+        },
+        "unlocked": {
+          "gpu_ms": {
+            "blas": {
+              "median": 0.069,
+              "p99": 0.113
+            },
+            "clas": {
+              "median": 0.198,
+              "p99": 0.203
+            },
+            "cull": {
+              "median": 0.038,
+              "p99": 0.043
+            },
+            "deform": {
+              "median": 0.013,
+              "p99": 0.015
+            },
+            "deform_alloc": {
+              "median": 0.014,
+              "p99": 0.014
+            },
+            "hw": {
+              "median": 0.024,
+              "p99": 0.028
+            },
+            "resolve": {
+              "median": 0.227,
+              "p99": 0.276
+            },
+            "rt": {
+              "median": 0.382,
+              "p99": 0.473
+            },
+            "rt_drop": {
+              "median": 0.007,
+              "p99": 0.008
+            },
+            "rt_emit": {
+              "median": 0.013,
+              "p99": 0.024
+            },
+            "rt_ranges": {
+              "median": 0.007,
+              "p99": 0.007
+            },
+            "rt_records": {
+              "median": 0.01,
+              "p99": 0.065
+            },
+            "sky": {
+              "median": 0.056,
+              "p99": 0.073
+            },
+            "tlas": {
+              "median": 0.077,
+              "p99": 0.083
+            },
+            "total": {
+              "median": 0.765,
+              "p99": 0.858
+            }
+          },
+          "cpu_ms": {
+            "median": 0.201,
+            "p99": 0.744
+          },
+          "baseline": {
+            "date": "2026-11-17",
+            "by": "batch 67 coordinator",
+            "reason": "T161: the unlocked baselines, the state a player's machine is in (batch 67, a quiet machine the owner left idle)",
+            "commit": "f552094f (with uncommitted changes)",
+            "device": "NVIDIA GeForce RTX 5090",
+            "session": "unlocked",
+            "quiet": true,
+            "machine_state": "quiet, session unlocked (start 2.1% others, GPU 0%; end 0.9% others, GPU 0%)",
+            "identity": "33d911d95096f28e",
+            "frames": 1201,
+            "repeats": 1
+          }
         }
       }
     },
@@ -237,6 +359,91 @@
             "repeats": 1
           },
           "sources": "The GPU medians, the other p99s and the cpu lines re-measured 2026-11-08 on 19f9d15d, the batch 56 gate's tree at main's own level (the reason); the blas, clas and total p99s kept from the 2026-11-07 baseline (the reason says why). Before that: every number re-measured 2026-11-07 on main 8be9c6d4, hw kept from 2026-10-12. The 2026-10-07 seed: its medians agreed with docs/experiments/world-positions-renderer-2026-10-05.md (stage 1 cost, erg rt after: cull 0.096, hw 0.286, rt 0.605, resolve 2.328, total 3.458 ms) to within 2%; that page has no p99s."
+        },
+        "unlocked": {
+          "gpu_ms": {
+            "blas": {
+              "median": 0.184,
+              "p99": 0.223
+            },
+            "clas": {
+              "median": 0.252,
+              "p99": 0.259
+            },
+            "cull": {
+              "median": 0.115,
+              "p99": 0.139
+            },
+            "deform": {
+              "median": 0.022,
+              "p99": 0.023
+            },
+            "deform_alloc": {
+              "median": 0.015,
+              "p99": 0.016
+            },
+            "half_sun": {
+              "median": 0.12,
+              "p99": 0.596
+            },
+            "hw": {
+              "median": 0.281,
+              "p99": 0.345
+            },
+            "resolve": {
+              "median": 2.656,
+              "p99": 2.991
+            },
+            "rt": {
+              "median": 0.631,
+              "p99": 1.251
+            },
+            "rt_drop": {
+              "median": 0.007,
+              "p99": 0.009
+            },
+            "rt_emit": {
+              "median": 0.056,
+              "p99": 0.057
+            },
+            "rt_ranges": {
+              "median": 0.007,
+              "p99": 0.007
+            },
+            "rt_records": {
+              "median": 0.081,
+              "p99": 0.632
+            },
+            "sky": {
+              "median": 0.054,
+              "p99": 0.055
+            },
+            "tlas": {
+              "median": 0.079,
+              "p99": 0.087
+            },
+            "total": {
+              "median": 3.886,
+              "p99": 4.556
+            }
+          },
+          "cpu_ms": {
+            "median": 0.266,
+            "p99": 0.833
+          },
+          "baseline": {
+            "date": "2026-11-17",
+            "by": "batch 67 coordinator",
+            "reason": "T161: the unlocked baselines, the state a player's machine is in (batch 67, a quiet machine the owner left idle)",
+            "commit": "f552094f",
+            "device": "NVIDIA GeForce RTX 5090",
+            "session": "unlocked",
+            "quiet": true,
+            "machine_state": "quiet, session unlocked (start 0.5% others, GPU 0%; end 0.2% others, GPU 0%)",
+            "identity": "33d911d95096f28e",
+            "frames": 1201,
+            "repeats": 1
+          }
         }
       }
     },
@@ -308,6 +515,71 @@
             "repeats": 1
           },
           "sources": "Every number measured 2026-10-07 (this baseline). docs/experiments/far-ground-2026-10-03.md (1080p, six far levels, csm) reads 2.980 / 5.103 ms total median / p99, cull 0.306, shadow 0.831, resolve 0.488 at the median: today's tree measures about half that on the same path (1.6 ms), so those numbers were not taken — as a budget they would pass a doubling."
+        },
+        "unlocked": {
+          "gpu_ms": {
+            "cull": {
+              "median": 0.327,
+              "p99": 0.776
+            },
+            "deform": {
+              "median": 0.084,
+              "p99": 0.229
+            },
+            "deform_alloc": {
+              "median": 0.03,
+              "p99": 0.069
+            },
+            "hiz": {
+              "median": 0.032,
+              "p99": 0.067
+            },
+            "hw": {
+              "median": 0.052,
+              "p99": 0.11
+            },
+            "resolve": {
+              "median": 0.52,
+              "p99": 1.135
+            },
+            "shadow": {
+              "median": 0.371,
+              "p99": 1.121
+            },
+            "shadow_cull": {
+              "median": 0.103,
+              "p99": 0.167
+            },
+            "sky": {
+              "median": 0.166,
+              "p99": 0.331
+            },
+            "terrain_upload": {
+              "median": 0.664,
+              "p99": 1.876
+            },
+            "total": {
+              "median": 2.272,
+              "p99": 5.257
+            }
+          },
+          "cpu_ms": {
+            "median": 0.399,
+            "p99": 1.057
+          },
+          "baseline": {
+            "date": "2026-11-17",
+            "by": "batch 67 coordinator",
+            "reason": "T161: the unlocked baselines, the state a player's machine is in (batch 67, a quiet machine the owner left idle)",
+            "commit": "f552094f",
+            "device": "NVIDIA GeForce RTX 5090",
+            "session": "unlocked",
+            "quiet": true,
+            "machine_state": "quiet, session unlocked (start 1.6% others, GPU 0%; end 7.9% others, GPU 0%)",
+            "identity": "a73c20e15926dafa",
+            "frames": 7201,
+            "repeats": 1
+          }
         }
       }
     },
@@ -383,6 +655,95 @@
             "repeats": 1
           },
           "sources": "Every number re-measured 2026-11-07 on main 8be9c6d4 (this baseline; the reason has the climb), hw kept from 2026-10-12. The 2026-10-07 seed: its medians agreed with docs/experiments/world-positions-renderer-2026-10-05.md (stage 2 cost, rt after: cull 0.065, deform 0.039, hw 0.312, rt 0.944, resolve 1.861, total 4.363 ms) to within 8% pass by pass and 2% in total (4.454 today). Its cpu_ms median agrees with docs/experiments/frame-thread-spikes-2026-10-04.md (0.43 ms, traced shadows after) at 0.455; its p99 is 1.305 against that page's 0.71, on a machine this run called busy."
+        },
+        "unlocked": {
+          "gpu_ms": {
+            "blas": {
+              "median": 0.07,
+              "p99": 0.073
+            },
+            "clas": {
+              "median": 0.336,
+              "p99": 0.366
+            },
+            "cull": {
+              "median": 0.091,
+              "p99": 0.099
+            },
+            "deform": {
+              "median": 0.036,
+              "p99": 0.065
+            },
+            "deform_alloc": {
+              "median": 0.015,
+              "p99": 0.015
+            },
+            "half_sun": {
+              "median": 0.232,
+              "p99": 0.252
+            },
+            "hw": {
+              "median": 0.365,
+              "p99": 0.499
+            },
+            "resolve": {
+              "median": 2.228,
+              "p99": 2.626
+            },
+            "rt": {
+              "median": 0.688,
+              "p99": 0.728
+            },
+            "rt_drop": {
+              "median": 0.009,
+              "p99": 0.016
+            },
+            "rt_emit": {
+              "median": 0.045,
+              "p99": 0.047
+            },
+            "rt_ranges": {
+              "median": 0.008,
+              "p99": 0.008
+            },
+            "rt_records": {
+              "median": 0.033,
+              "p99": 0.034
+            },
+            "sky": {
+              "median": 0.054,
+              "p99": 0.055
+            },
+            "terrain_upload": {
+              "median": 0.714,
+              "p99": 1.484
+            },
+            "tlas": {
+              "median": 0.192,
+              "p99": 0.211
+            },
+            "total": {
+              "median": 4.429,
+              "p99": 5.353
+            }
+          },
+          "cpu_ms": {
+            "median": 0.547,
+            "p99": 1.311
+          },
+          "baseline": {
+            "date": "2026-11-17",
+            "by": "batch 67 coordinator",
+            "reason": "T161: the unlocked baselines, the state a player's machine is in (batch 67, a quiet machine the owner left idle)",
+            "commit": "f552094f",
+            "device": "NVIDIA GeForce RTX 5090",
+            "session": "unlocked",
+            "quiet": true,
+            "machine_state": "quiet, session unlocked (start 1.6% others, GPU 0%; end 1.0% others, GPU 19%)",
+            "identity": "a73c20e15926dafa",
+            "frames": 7201,
+            "repeats": 1
+          }
         }
       }
     },
@@ -485,6 +846,83 @@
             "repeats": 1
           },
           "sources": "Measured by its author on the branch (roadmap T130, docs/experiments/static-asset-world.md) from an engine-view flight with the run's flags; the coordinator re-baselines it at the merge."
+        },
+        "unlocked": {
+          "gpu_ms": {
+            "blas": {
+              "median": 0.05,
+              "p99": 0.058
+            },
+            "clas": {
+              "median": 0.004,
+              "p99": 0.006
+            },
+            "clas_cache": {
+              "median": 0.007,
+              "p99": 0.063
+            },
+            "cull": {
+              "median": 0.018,
+              "p99": 0.02
+            },
+            "resolve": {
+              "median": 0.173,
+              "p99": 0.22
+            },
+            "rt": {
+              "median": 0.158,
+              "p99": 0.229
+            },
+            "rt_cache": {
+              "median": 0.002,
+              "p99": 0.022
+            },
+            "rt_drop": {
+              "median": 0.005,
+              "p99": 0.01
+            },
+            "rt_emit": {
+              "median": 0.004,
+              "p99": 0.005
+            },
+            "rt_ranges": {
+              "median": 0.008,
+              "p99": 0.009
+            },
+            "rt_records": {
+              "median": 0.002,
+              "p99": 0.002
+            },
+            "tlas": {
+              "median": 0.067,
+              "p99": 0.071
+            },
+            "total": {
+              "median": 0.518,
+              "p99": 0.66
+            },
+            "trace": {
+              "median": 0.163,
+              "p99": 0.234
+            }
+          },
+          "cpu_ms": {
+            "median": 0.172,
+            "p99": 0.78
+          },
+          "baseline": {
+            "date": "2026-11-17",
+            "by": "batch 67 coordinator",
+            "reason": "T161: the unlocked baselines, the state a player's machine is in (batch 67, a quiet machine the owner left idle)",
+            "commit": "f552094f",
+            "device": "NVIDIA GeForce RTX 5090",
+            "session": "unlocked",
+            "quiet": true,
+            "machine_state": "quiet, session unlocked (start 3.7% others, GPU 20%; end 4.3% others, GPU 0%)",
+            "identity": "8474b35f5039405e",
+            "frames": 1441,
+            "repeats": 1
+          }
         }
       }
     }
