@@ -961,6 +961,16 @@ bool solve_profile(const FlowLine& line, const scene_gen::Ground& ground,
     st.x = round_to(c.x[i0] + u * (c.x[i1] - c.x[i0]), 1e3);
     st.z = round_to(c.z[i0] + u * (c.z[i1] - c.z[i0]), 1e3);
     st.level = level;
+    // The ground at the line's own point, between its two nodes as the station's place is: water
+    // written under it is inside the ground the walker sees (W131).
+    const f64 at_line = c.row(i0)[c.centre] + u * (c.row(i1)[c.centre] - c.row(i0)[c.centre]);
+    if (level < at_line - k_under_ground_m) {
+      ++stats.under_ground;
+      if (at_line - level > stats.under_ground_worst_m) {
+        stats.under_ground_worst_m = at_line - level;
+        stats.under_ground_at = WorldPos{st.x, level, st.z};
+      }
+    }
     st.bed = bed;
     st.depth = level - st.bed;
     st.friction = f.friction;

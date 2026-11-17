@@ -663,3 +663,73 @@ TEST_CASE("profile: a pit on a line stands as a pool at its sill and spills over
   CHECK(widest > 6.0);       // as wide as the level meets the ground, past the section's read
   check_head_falls(p);
 }
+
+namespace {
+// **A bench cut across a hillside** (W131; the forest's `region link 515`, stations 374 to 407 and
+// 712 to 724): the hillside rises 0.65 across a line running +x (to its left, +z) and falls 0.1
+// along it. The cut is a floor a metre wide at the line, 0.4 m under the hillside, falling 4 %
+// toward the downhill side, with an uphill face at 1:1 out to the hillside. On the downhill side
+// either the ground falls away from the floor's edge at the hillside's own slope (no bank: where
+// the seat was not read, at a knickpoint or beside another cut's face), or a lip 0.2 m high holds
+// it first. Two metres downhill lies another trench a metre deep (the line's own next leg below a
+// switchback).
+struct Bench {
+  bool lip = false;
+};
+f64 bench_height(const void* context, i64 x_mm, i64 z_mm) noexcept {
+  const Bench& b = *static_cast<const Bench*>(context);
+  const f64 x = static_cast<f64>(x_mm) / 1000.0, z = static_cast<f64>(z_mm) / 1000.0;
+  const f64 hill0 = 100.0 - 0.1 * x;  // the hillside at the line
+  const auto floor_at = [&](f64 zz) { return hill0 - 0.4 + 0.04 * zz; };
+  if (z >= -0.5 && z <= 0.5) return floor_at(z);
+  if (z > 0.5) return std::min(floor_at(0.5) + (z - 0.5), hill0 + 0.65 * z);
+  f64 g = 0.0;
+  if (b.lip) {
+    g = z >= -0.75 ? floor_at(-0.5) + 0.8 * (-0.5 - z) : floor_at(-0.5) + 0.2 + 0.65 * (z + 0.75);
+  } else {
+    g = floor_at(-0.5) + 0.65 * (z + 0.5);
+  }
+  return g - std::max(0.0, 1.0 - 2.0 * std::fabs(z + 2.0));
+}
+}  // namespace
+
+TEST_CASE(
+    "profile: the section is read in the bed under the line, never on the hillside beside it") {
+  // Before W131 the thalweg, found within the bed's half width, was walked downhill with no bound:
+  // across a bench with no downhill bank it ran down the hillside to the section's end or into the
+  // trench below, and the station's level stood there, a metre or more under the ground at the
+  // line, where nothing of it is seen.
+  for (const bool lip : {false, true}) {
+    CAPTURE(lip);
+    Bench b;
+    b.lip = lip;
+    scene_gen::Ground ground;
+    ground.surface_fn = &bench_height;
+    ground.context = &b;
+    FlowLine line = fixture_line("bench", 0, 40, 0, 0.021);
+    line.width.assign(2, 1.0);
+    std::string error;
+    Profile p;
+    REQUIRE_MESSAGE(solve_profile(line, ground, ProfileOptions{}, p, error), error);
+    REQUIRE(p.stations.size() >= 2);
+    CHECK(p.stats.under_ground == 0);
+    CHECK(p.stats.falls == 0);
+    for (u32 i = 0; i < p.stations.size(); ++i) {
+      const ProfileStation& s = p.stations[i];
+      CAPTURE(s.x);
+      const f64 at_line = 100.0 - 0.1 * s.x - 0.4;
+      // The bed is the floor's, within the bed's half width of the line, and the water on it.
+      CHECK(s.bed >= at_line - 0.03);
+      CHECK(s.level >= at_line - k_under_ground_m);
+      CHECK(s.depth >= 0.02);  // a stream the draw lays, not a film
+      CHECK(s.wet_right <= 0.5 + 1e-6);
+      if (lip) CHECK((s.flags & scene_gen::k_channel_over_bank) == 0);
+      if (i + 1 < p.stations.size()) {
+        const ProfileStation& t = p.stations[i + 1];
+        CHECK(scene_gen::channel_stretch_drawn(s.flags, t.flags, static_cast<f32>(s.depth),
+                                               static_cast<f32>(t.depth), s.level, t.level));
+      }
+    }
+    check_head_falls(p);
+  }
+}

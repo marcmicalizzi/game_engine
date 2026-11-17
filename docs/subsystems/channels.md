@@ -1527,6 +1527,55 @@ cliff, keeps its `may_fail` for one run of the eight, and that is the count's: a
 line stands half-way down the cliff's 25 cm ramp, the stretch into it falls at 44.5 degrees, and
 the fall is begun below it, half a metre short.
 
+### The section under the line
+
+(2026-11-16, roadmap W131; the forest session's needs 121a, 121d and 127, from its small scene of
+`region link 515`, bit-identical to the world's ground: on 37 % ground the solved levels stood 1.5
+to 3.9 m **under the drawn ground at the line**, the solve's lip-to-foot pairs dropped up to 4 m
+where the drawn bed drops under a metre, and the pools of W130.2 stood 6 to 8.6 m to one side of
+the line; worst where the line runs 30 degrees or more off the fall line.) **What it was.** The
+solve ([The profile](#the-profile)) reads each node's section across the line on the drawn ground
+and finds its thalweg as the lowest sample within the bed's half width — and then walked
+**downhill from there with no bound**, to a hollow's bottom. Across a bench whose downhill side
+falls away (a cut with no downhill bank: at a knickpoint no seat is read, and beside another cut's
+faces the bank is gone), the walk ran down the hillside to the end of the section's read (one and
+a half of the line's widest width and a metre: the forest's "6.25 m right, the cap") or into the
+line's own next leg below a switchback, and the station's bed, its level, its falls and its pools
+were that hollow's. The water the draw lays from them is inside the ground the walker sees, and
+the stretch over it is a gap.
+
+**The count.** `flow solve` prints `under_ground`: the stations whose written level stands more
+than `k_under_ground_m` (5 cm) under the ground at the line's own point, their share of every
+station, the lines that have one, the most and where; `--line-stats <file>` writes every solved
+line's own count (length, slope, runs, pieces, gaps, falls drawn, film and undrawn metres, the
+forest's thin metres and alternations, stations over a bank, pools and under the ground) so one
+line, the owner's, can be read without a script.
+
+**The mend: the water is solved in the bed it has.** Of the two ways out the brief named — lay the
+line down the fall line again, or solve it along the bed it actually has — the solve takes the
+second, because the bed is what the walker sees and what real water runs in. A channel's water
+follows its channel and not the hillside's fall line for as long as its banks hold it (a stream
+across a slope in a gully, a ditch along a road, a leat along a contour are ordinary); the cut is
+already in the ground, its tile set cooked, and water solved anywhere else is water nobody sees.
+Where the plan's line itself is wrong for the ground — a line on a 67 % slope that zigzags across
+the fall line, which a real stream would not — that is the planner's to mend
+([A line across a slope](#a-line-across-a-slope)), and it costs a re-plan of the world, new cuts and
+a new tile set (on the forest, 54 GB cooked again); the solve alone cannot move the bed. So:
+
+- **The thalweg is the bed's.** Where the line names its bed's width, the walk from the lowest
+  sample within the half width down to a hollow's bottom goes no further than that half width.
+  Past it is the bank, and past the bank another hollow's ground.
+- **A side with no bank is an edge, not a bank to lower to.** A section whose ground falls away
+  from the thalweg on one side (a bench whose downhill bank is missing) had its lower crest at the
+  thalweg, so its level was written down to its own bed, a 5 mm film the draw leaves out. Water
+  held at such an edge stands over it by no more than its critical depth — the depth at the brink
+  of a free overfall is about 0.7 of it (Rouse 1936, the end-depth ratio of 0.715; from memory and
+  the textbooks that quote it, not re-read tonight) — so the station is written at its solved
+  level up to the edge plus its critical depth, flagged over its bank (the draw lays it with no
+  margin past its wet edge) and counted (`open_bank`). On a steep bed the flow is shooting, below
+  critical depth, and that bound never acts; in a pit on such a bench it does, and the pit's water
+  is the pool rule's ([The profile](#the-profile), "A pit on a line is a pool").
+
 ## Seen: the section, the flood bed and the proof of concept's items 6, 7 and 8
 
 (2026-11-10, W93; `msvc-release`, 1920×1080, `--raster hw --shadows rt --terrain-tiles

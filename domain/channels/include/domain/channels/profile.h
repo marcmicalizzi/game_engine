@@ -67,6 +67,11 @@ inline constexpr f64 k_over_bank_m = 0.001;
 // the reach stands over its bank as before: the hollow is a lake's, which the plan makes.
 inline constexpr f64 k_pool_pit_m = 0.005;
 inline constexpr f64 k_pool_reach_m = 25.0;
+// **A level under the ground at the line** (W131; channels.md, "The section under the line"): a
+// station whose written level stands more than this under the ground at the line's own point is
+// counted (`ProfileStats::under_ground`). Water the draw lays there is inside the ground the
+// walker sees; on the forest it was the section reading a hollow beside the line.
+inline constexpr f64 k_under_ground_m = 0.05;
 
 enum class Resistance : u8 { Jarrett = 0, Manning = 1 };
 
@@ -140,6 +145,11 @@ struct ProfileStats {
   // pit whose level met no ground within `k_pool_reach_m` (left over their bank).
   u32 pools = 0;
   u32 pools_open = 0;
+  // Stations whose level stands under the ground at the line by more than `k_under_ground_m`,
+  // the most and where (W131).
+  u32 under_ground = 0;
+  f64 under_ground_worst_m = 0;
+  WorldPos under_ground_at{};
   u32 rises_jump = 0;
   u32 rises_shooting = 0;
   u32 rises_over_bank = 0;
