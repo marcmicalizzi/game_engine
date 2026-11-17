@@ -43,10 +43,12 @@ engine_module(NAME renderer LAYER systems
           src/flora_poser.cpp src/scene_fire.cpp src/far_forest.cpp src/far_tile.cpp src/far_offered.cpp src/water_reflect.cpp
           src/water_refract.cpp
           src/scene_ground_plan.cpp src/sway_forms.cpp
-          src/resolve_classes.cpp)
+          src/resolve_classes.cpp src/texture_feedback.cpp)
 # The renderer's own shader: the output encode after the frame passes (frame_pass.h,
-# shaders/frame_encode.slang), which includes domain/gfx's display.slang by its path.
-engine_shaders(NAME renderer SOURCES shaders/frame_encode.slang shaders/accumulate.slang)
+# shaders/frame_encode.slang), which includes domain/gfx's display.slang by its path; the texture
+# feedback (R172), which includes material.slang the same way.
+engine_shaders(NAME renderer SOURCES shaders/frame_encode.slang shaders/accumulate.slang
+               shaders/texture_feedback.slang)
 if(TARGET engine_shaders_renderer)
   target_link_libraries(engine_renderer PRIVATE engine_shaders_renderer)
 endif()

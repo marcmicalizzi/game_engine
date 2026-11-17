@@ -128,6 +128,17 @@ bool GpuScene::texture_resident(u64 key) const {
   return std::binary_search(texture_keys_.begin(), texture_keys_.end(), key);
 }
 
+void GpuScene::texture_records(Vector<TextureRecord>& out) const {
+  out.clear();
+  out.reserve(load_texture_records_.size() + tile_textures_.size());
+  for (const TextureRecord& r : load_texture_records_)
+    out.push_back(r);
+  for (const TileTexture& held : tile_textures_) {
+    out.push_back(TextureRecord{held.info.slot, held.image.format, held.image.width,
+                                held.image.height, held.image.levels, held.bytes, true});
+  }
+}
+
 bool GpuScene::find_texture(u64 key, TextureInfo& out) const noexcept {
   if (const TextureInfo* pinned = load_textures_.find_value(key)) {
     out = *pinned;

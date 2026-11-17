@@ -1354,6 +1354,21 @@ class GpuScene {
   // Whether the table holds `key` now. **Any thread**: what a mesh's build asks before it reads a
   // `.tex` (`PlacementMeshOptions::texture_resident`). Advisory, as that says.
   bool texture_resident(u64 key) const;
+  // **Every sampled texture the scene holds now** (texture.md, "Levels resident by what the frame
+  // samples"; R172): the load's and the admitted ones, by bindless slot, with the image as the
+  // device holds it — the levels it has and the bytes the allocator gave it and its variance chain.
+  // `serial` moves whenever an admission or a release changes the list.
+  struct TextureRecord {
+    u32 slot = ~u32{0};
+    gfx::Format format = gfx::Format::Undefined;
+    u32 width = 0;
+    u32 height = 0;
+    u32 levels = 0;
+    u64 bytes = 0;
+    bool admitted = false;  // arrived with a tile's mesh, not the load's
+  };
+  void texture_records(Vector<TextureRecord>& out) const;
+  u64 texture_records_serial() const noexcept { return texture_use_.uploaded + texture_use_.released; }
 
   // ---- geometry streaming (04 §4.3 step 3, §4.9; docs/subsystems/renderer.md) -----------------
   //
@@ -1795,6 +1810,7 @@ class GpuScene {
   Vector<TileTexture> tile_textures_;        // the admitted ones held now, unordered
   Vector<TileTexture> leaving_textures_;     // let go, their images alive a few frames more
   HashMap<u64, TextureInfo> load_textures_;  // the load's built textures by key: pinned
+  Vector<TextureRecord> load_texture_records_;  // every texture the load uploaded (R172)
   Vector<u32> free_texture_pairs_;
   gfx::ImageResource texture_placeholder_;
   gfx::ImageViewHandle texture_placeholder_view_;

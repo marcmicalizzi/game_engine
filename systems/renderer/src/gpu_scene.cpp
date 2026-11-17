@@ -4295,6 +4295,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
   // The materials' samplers are made as their slots ask (`material_sampler_slot`, with
   // `fill_material` in gpu_scene_textures.cpp, which an admitted mesh's materials go through too).
   load_textures_.clear();
+  load_texture_records_.clear();
   texture_bytes_ = 0;
   textures_built_ = 0;
   textures_decoded_ = 0;
@@ -4552,6 +4553,9 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
         image_slot[index] = bindless_.add_sampled_image(view, gfx::ImageLayout::ShaderReadOnly);
         made.slot = image_slot[index];
         made.bytes = uploaded.bytes;
+        load_texture_records_.push_back(TextureRecord{made.slot, uploaded.format, uploaded.width,
+                                                      uploaded.height, uploaded.levels,
+                                                      uploaded.bytes, false});
         if (made.normal_variance) {
           // Scene creation never frees a descriptor. Publish the auxiliary image immediately
           // after its normal, and check that contract rather than silently sampling another map.
@@ -4578,6 +4582,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
           texture_views_.push_back(variance_view);
           texture_bytes_ += variance.bytes;
           made.bytes += variance.bytes;
+          load_texture_records_.back().bytes += variance.bytes;
           ++normal_variance_textures_;
           normal_variance_bytes_ += variance.bytes;
           const u32 slot =

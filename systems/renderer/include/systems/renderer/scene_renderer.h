@@ -1131,6 +1131,9 @@ class SceneRenderer {
   // The engine's own accumulation (src/accumulation_pass.h): null unless
   // `renderer.reconstruction.accumulation` is on or mean.
   class AccumulationPass* accumulation_ = nullptr;
+  // Which level of each texture the frames asked for (src/texture_feedback.h; R172): null unless
+  // `renderer.textures.feedback` names a file.
+  class TextureFeedback* texture_feedback_ = nullptr;
   u32 view_count() const noexcept { return views_.size(); }
 
   const gfx::Device* device_ = nullptr;

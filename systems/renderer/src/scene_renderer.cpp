@@ -21,6 +21,7 @@
 #include <systems/renderer/water_refract.h>
 
 #include <accumulation_pass.h>
+#include <texture_feedback.h>
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -1088,6 +1089,17 @@ void SceneRenderer::remove_frame_pass(FramePassFn fn, void* user) noexcept {
 // made only under `renderer.reconstruction.inputs`, so a renderer without it holds a null pointer
 // and nothing else of this.
 bool SceneRenderer::create_motion(std::string* error) {
+  // The texture feedback (texture_feedback.h; texture.md, "Levels resident by what the frame
+  // samples"): a measurement, a frame pass of its own, only when the tunable names a file.
+  if (const std::string feedback = TextureFeedback::path_wanted(); !feedback.empty()) {
+    texture_feedback_ = new TextureFeedback;
+    if (!texture_feedback_->create(*device_, *scene_, shaders_, desc_.frames_in_flight, feedback,
+                                   error) ||
+        !add_frame_pass(FramePassStage::AfterResolve, &TextureFeedback::record_thunk,
+                        texture_feedback_, "texture feedback", error)) {
+      return false;
+    }
+  }
   if (!resolved_.reconstruction_inputs) return true;
   motion_ = new MotionPass;
   if (!motion_->create(*device_, *scene_, views_, desc_.frames_in_flight, error)) return false;
@@ -1577,6 +1589,11 @@ void SceneRenderer::destroy() noexcept {
     accumulation_->destroy();
     delete accumulation_;
     accumulation_ = nullptr;
+  }
+  if (texture_feedback_ != nullptr) {
+    texture_feedback_->destroy();
+    delete texture_feedback_;
+    texture_feedback_ = nullptr;
   }
   if (motion_ != nullptr) {
     motion_->destroy(device);
