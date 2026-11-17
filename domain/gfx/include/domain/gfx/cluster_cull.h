@@ -156,8 +156,9 @@ struct MaskTables {
   u64 cluster_materials = 0;  // u32 per cluster of the scene
   u64 attributes = 0;         // geometry::VertexAttributes[] parallel to the vertices
   // **The cross-fade's table** (renderer.md, "The cross-fade"; R91): this block's, one `u32x2` per
-  // pair — the drawn pair's two splits as unorm16 (own low, parent high) and its instance, the
-  // hash's seed — written by the cull pass for every pair it draws or keeps as a caster, and read
+  // pair — the drawn pair's two splits as unorm16 (own low, parent high) and the hash's seed, its
+  // instance's `fade_seed` (scene.slang: its placement within its cell, never its index, R170) —
+  // written by the cull pass for every pair it draws or keeps as a caster, and read
   // by every masked reader (the rasterizers' masked variants, the cascades' masked depth, the ray
   // loops) to keep a pixel only where its hash falls between the splits (`fade_keeps`,
   // alpha_mask.slang). 0 in a frame with no fade, and then nothing reads it.

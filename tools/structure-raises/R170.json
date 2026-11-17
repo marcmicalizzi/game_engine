@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "R170",
+  "reason": "R170: the cross-fade's seed by placement (renderer.md, The cross-fade) and the tie rule's word on instances that coincide (gfx.md), with the measured case",
+  "date": "2026-11-16",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/renderer.md": 1522,
+    "page:docs/subsystems/gfx.md": 834
+  }
+}

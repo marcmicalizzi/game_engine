@@ -1842,13 +1842,28 @@ A foliage switch is hidden by a dithered cross-fade across a band of projected e
 the threshold by default (`RenderSettings::lod_fade` half band, tunable `renderer.lod.fade` 0.1,
 `engine-view --lod-fade`; 0 switches at once), about 10 % of the distance. Across it both levels are
 drawn and **each pixel keeps one**: the cull pass computes each drawn pair's two splits
-(`geometry::lod_fade_split`) and writes them and the pair's instance to the view's fade table
+(`geometry::lod_fade_split`) and writes them and the pair's instance's seed to the view's fade table
 (`MaskTables::fade`; gfx.md), and every masked reader keeps the pixel where its stable hash of the
-pixel and the instance lies between them (`fade_keeps`, `alpha_mask.slang`) — screen-door transparency
+pixel and the seed lies between them (`fade_keeps`, `alpha_mask.slang`) — screen-door transparency
 through the masked variants' discard, so the visibility buffer keeps one id a pixel and the tie rule
-stands. Both sides of a transition hash the same pixels with the same seed (the instance, never the
-pair), so they are complementary: no holes, no doubles. The hash has nothing of the frame in it, so a
-still view does not shimmer. The ray path's loops hash the dispatch's pixel, the resolve's shadow rays
+stands. Both sides of a transition hash the same pixels with the same seed (the instance's, never the
+pair's), so they are complementary: no holes, no doubles. The hash has nothing of the frame in it, so a
+still view does not shimmer. **The seed is the instance's placement, never its index**
+(`fade_seed` in `scene.slang`: the bits of its offset into its cell and of its rotation and scale,
+hashed; not the cell, so a scene moved by whole cells draws the same bytes). Until R170
+(2026-11-16) it was the instance's index, which is its place in the scene's layout and so the order
+the instances reached the renderer: the same placements handed over in another order — the near
+hand-off cells of `b65-G205`, or a tile's run arriving before its neighbour's — drew a different
+screen door on every masked pair inside a band, which on the engine meadow's eye-down view was 0.03 to
+0.38 % of a 4K frame, dotted lines along the blades within 2 m of the eye, each one instance changing
+which of its own two levels kept a pixel (the capture's ids: one instance, its clusters 641 and 673
+swapping pixel by pixel). A whole read and a streamed one place an instance at the same bits, so they
+draw one dither. Two placements at the same offset in different cells, with the same rotation, share
+a screen door; they are a cell apart, which is the price of the rule above. `impostor_view_tests.cpp`
+("the dither follows the placement") hands the fade case's oak and a second one out of view over in
+both orders across the band, ten frames at 480 × 480: with the index for a seed 55,694 of 379,695
+covered pixels differed in id and colour on the mesh path, the vertex path and the ray path alike
+(none switched at once), and with the placement none on any path. The ray path's loops hash the dispatch's pixel, the resolve's shadow rays
 the resolved pixel, and the cascades the shadow map's texel against a table of their own (their LOD
 can be scaled), so every path sees one of the two levels per sample. With the chain the finest leaves
 are alpha-tested even with no pack's image (flora.md), because an opaque side cannot dither: an
@@ -5191,6 +5206,14 @@ fade in.**
   moves into the inner ring fades its blades in over the cards it already drew. A card alone (the
   next ring) has no role and no stamp: it arrives at the ring's outer edge, 150 m or more out, as before. The pool pass reads the clock from the field block's
   `push.w`.
+- **A part of a tile is as old as the tile** (G205, 2026-11-15; `DynamicBlock::age_of`,
+  `GpuScene::block_stamp`). The world's placements consumer hands a tile's near forms apart from
+  the tile, by cells, and only the cells the band can reach
+  ([world](world.md#a-hand-off-placement-is-held-by-its-band)), so a near form past the band holds
+  no pair. A cell's block names its tile's, and a block that names another takes the stamp that
+  one holds: a cell that comes into reach as the walker moves is not faded in (its tile's load-in
+  is long over, and its blades are past the band's end, where their share is nothing), and one
+  that comes with its tile fades in with it, since the tile's block is handed, and stamped, first.
 
 **What it does not do.** The pool pass is what thins: an entry the deformed-vertex pool's budget
 had no block for, or a frame with the flora motion off, draws both forms whole across the band (8 m
@@ -5473,9 +5496,10 @@ the load.
 **What the rule does not reach.** Ring 0, whose floor is the eye: the sward's near forms there are
 drawn only inside the hand-off's band (29 m) but are placed, and counted as pairs, over the whole
 of the ring's tiles; a still form cannot help what is under the walker's feet, and the count is a
-row of its own (below). A placement that carries a hand-off role must keep the mesh itself: its
-thinning is the pool pass's, which a still form does not run; the engine's one user of the roles
-(the sward) names them in ring 0 alone, where every placement is the mesh.
+row of its own (G205: [the world's placements hand a tile's near forms by the cells the band
+reaches](world.md#a-hand-off-placement-is-held-by-its-band)). A placement that carries a hand-off
+role must keep the mesh itself: its thinning is the pool pass's, which a still form does not run;
+since G205 the consumer passes such a placement by when it picks a ring's form.
 
 **Measured** (2026-11-14, `msvc-release`, main ae9efac5 against this, one tree; the machine shared
 with a dozen agents' builds and GPU work at 85 to 100% of the CPU, so the times are upper bounds
