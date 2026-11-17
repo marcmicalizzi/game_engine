@@ -330,11 +330,15 @@ TEST_CASE("village: a grown village is tofts side by side, uneven, subdivided, w
   CHECK(whole * 4 < tenements);  // most frontages are no whole number of perches
   CHECK(depths.back() - depths.front() > 8000);
   // Gaps are the exception: one tenement in seven is followed by one at `irregularity` 1, and a
-  // toft the street crosses round a bend or the green's lens is not set out; two in three stand
-  // beside another.
-  CHECK(beside * 3 >= tenements * 2);
-  // Narrow on the street: the middle toft under 2.5 perches, subdivided ones down to 1.1 along
-  // the way (5.53 m; the chord of the street's edge on the inside of a bend is a little less).
+  // toft the street crosses round a bend or the green's lens is not set out; three in five stand
+  // beside another (two in three before G208, when a toft too narrow to halve into two houses'
+  // widths was halved anyway and its halves stood beside each other).
+  CHECK(beside * 5 >= tenements * 3);
+  // Narrow on the street: the middle toft under 2.5 perches, subdivided ones down to what the
+  // filler's least house takes with its side gaps (6.6 m along the way since G208; 1.1 perches,
+  // 5.53 m, before). A toft's frontage is the chord of the street's wandering edge, which on the
+  // inside of a bend or a wander is less: 6.05 m here, where the filler's least house is refused
+  // and counted (village.md, "Houses asked and built").
   CHECK(frontages[frontages.size() / 2] < 12575);
   CHECK(frontages.front() >= 5000);
   CHECK(plan.cottages > 0);
@@ -957,13 +961,60 @@ TEST_CASE("village: the plan is the same bytes on every toolchain") {
   // side by side, uneven setbacks, the church at the end, the green's outline). Re-pinned for
   // version 4: the joining way gives up its stretch along the first way's street and eases its
   // top onto it, and the crofts stop where the ground steepens (the version is hashed too).
-  CHECK(hash == 0xbe81d225360d56f9ull);
+  // Re-pinned for version 5 (G208): no toft is cut, and no cottage squeezed, narrower than the
+  // filler's least house with its side gaps (0xbe81d225360d56f9 before).
+  CHECK(hash == 0xb6c67236aba86a53ull);
   // The same entry again, and the summary's hash, are the same.
   CHECK(plan_hash(planned(p, gentle)) == hash);
   CHECK(plan_json(p, plan).find("hash")->as_string() == std::string(text));
   // Another seed is another village.
   p.seed = 2027;
   CHECK(plan_hash(planned(p, gentle)) != hash);
+}
+
+// **Houses that differ** (village.md, "Houses that differ"; G208, the forest session's needs 110,
+// 133 and 134): on a street of the rural filler's houses the storeys follow each household's
+// means, so one-storey and two-storey houses stand in one row; no household is larger than its
+// house sleeps; and every house asked stands where the street has room for it, since no toft is
+// cut narrower than the least house.
+TEST_CASE("village: houses differ by household, each household fits its house, asked is built") {
+  VillageLayer p = street(0, 0, 300, 0);
+  p.seed = 31;
+  p.houses = 18;
+  p.irregularity = 1.0f;
+  scene_gen::Context context;
+  context.ground = ground(gentle);
+  VillagePlan plan;
+  std::string error;
+  REQUIRE_MESSAGE(plan_scene_village(p, context, plan, error), error);
+  MESSAGE("houses that differ: " << plan.built << " of " << p.houses << " built, " << plan.refused
+                                 << " refused, " << plan.no_fit << " no fit: " << plan.first_refusal);
+  CHECK(plan.built == p.houses);
+  CHECK(plan.refused == 0);
+  u32 one = 0, two = 0, fitted = 0;
+  for (const Plot& q : plan.plots) {
+    if (q.state != PlotState::built || q.kind != PlotKind::tenement) continue;
+    JsonValue d;
+    std::string text;
+    REQUIRE_MESSAGE(describe_house(p, plan, q.house, d, text, error), error);
+    const JsonValue& f = *d.find("filler");
+    const JsonValue& hh = *d.find("household");
+    const u64 storeys = f.find("storeys")->as_uint();
+    const std::string type{f.find("type")->as_string()};
+    const u64 persons = hh.find("persons")->as_uint();
+    one += storeys == 1 ? 1u : 0u;
+    two += storeys == 2 ? 1u : 0u;
+    fitted += hh.find("drawn_persons")->as_uint() != persons ? 1u : 0u;
+    const u64 sleeps = type == "cot"              ? 2u
+                       : type == "hall-parlour"   ? (storeys >= 2 ? 6u : 4u)
+                       : type == "cross-passage" ? 8u
+                                                  : 6u;
+    CHECK_MESSAGE(persons <= sleeps, "house " << q.house << ": " << persons << " in a " << type);
+  }
+  MESSAGE("tenements of one storey " << one << ", of two " << two << ", households fitted "
+                                     << fitted);
+  CHECK(one >= 1);
+  CHECK(two >= 1);
 }
 
 // **A house as data** (village.md, "A house as data"; the forest session's need 113 and 132): what
@@ -997,7 +1048,7 @@ TEST_CASE(
           1e-9);
     CHECK(q.setback_mm > 0);
     const House& h = plan.houses[q.house];
-    CHECK(h.persons >= 3);
+    CHECK(h.persons >= 1);  // a cot's household is two at most since G208
     CHECK(h.persons <= 8);
     CHECK(!h.type.empty());
 

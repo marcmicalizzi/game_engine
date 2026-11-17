@@ -936,8 +936,10 @@ bool plan_village(const VillageLayer& layer, const scene_gen::Ground& ground,
                            n);
           const i64 whole = perch * static_cast<i64>(layer.frontage_min_perches +
                                                      static_cast<u32>(mix64(seed) % spread));
-          const i64 frontage =
-              div_round(whole + div_round(whole * irr * (draw(seed, 1) - 500), 2000000), 10) * 10;
+          // Never narrower than the filler's least house (G208): a toft is set out to be built on.
+          const i64 frontage = std::max(
+              div_round(whole + div_round(whole * irr * (draw(seed, 1) - 500), 2000000), 10) * 10,
+              div_round(least_house, 10) * 10);
           // A gap after it is the exception in a grown row (one tenement in seven at
           // `irregularity` 1), one to two perches, where a cottage comes later; none at 0.
           const i64 gap = draw(seed, 7) < irr * 15 / 100 ? perch + perch * draw(seed, 2) / 1000 : 0;
