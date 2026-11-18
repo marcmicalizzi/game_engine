@@ -136,9 +136,23 @@ TEST_CASE("water swash: the wet band runs up and back with the clock, and the wa
   shoot(device, tmp, "dry", 0.0f, 0.0f, true, dry);       // no record: the plain ground
   shoot(device, tmp, "wind", 6.0f, 0.3f, true, wind);     // the swash
   shoot(device, tmp, "still", 0.0f, 0.3f, false, still);  // version 4's static band
+  // **The windy body again, another scene loaded between** (W147; gfx.md, "A dispatch that grows
+  // with the scene"): a load's picture is a function of the scene, not of what the process did.
+  Sequence again;
+  shoot(device, tmp, "again", 6.0f, 0.3f, true, again);
   device.destroy();
   const u32 pixels = dry.frame[0].width * dry.frame[0].height;
   REQUIRE(wind.water_instance != ~0u);
+  // The lifted body is drawn at every time, by whichever rasterizer its clusters went to: until
+  // W147 a hardware run's pool blocks were never written and the body was in no pixel's id.
+  for (u32 s = 0; s < k_times; ++s) {
+    u32 water = 0;
+    for (u32 p = 0; p < pixels; ++p)
+      water += wind.frame[s].ids[p * k_id_words] == wind.water_instance ? 1u : 0u;
+    CHECK(water > pixels / 10);
+    CHECK(again.frame[s].color == wind.frame[s].color);
+    CHECK(again.frame[s].ids == wind.frame[s].ids);
+  }
   // A body with no wind and no tide takes no deform record: it is the rigid instance it was, S97's
   // bytes by construction. The windy one is lifted by the pool.
   CHECK(wind.lifted);

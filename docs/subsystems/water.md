@@ -567,6 +567,8 @@ the picture is not the one draw's, by no more pixels than the class held); and `
 draw's bytes. A shore record's heights are read in two places that must agree: `water_ground_wetness`
 in the resolve and `classify_wet` in `resolve_class.slang`; change the one and the other.
 
+**A load's sea is a function of the scene and the tunables alone** (W147, 2026-11-18): the surface record, the arrival and flux fields, the wave table and the shore's record are built on the CPU from the scene file, its depth maps and the `renderer.wind.*`, `renderer.swell.*` and `renderer.water.*` tunables, and the wind's redraw from the sky's clock (`water_wind_frame`); nothing in them reads a clock, a thread's order or memory left from another load, which W147 checked by reading the uploaded surface back on two loads of one process with another scene between (the same bytes) and by filling every fresh device buffer with three patterns (no change). The one load that drew a calm bay under a 4 m swell was the lifted mesh missing from the hardware rasterizer, not the sea: the pool's arguments ([gfx](gfx.md#a-dispatch-that-grows-with-the-scene)). `swash_scene_tests.cpp` holds the windy body drawn at every time, and a second load of it to the same bytes.
+
 ## Capability contract (ADR-0027)
 
 This is a capability: it was added without editing `core/`, `foundation/`, the render graph, the scheduler, or another capability, and it can be removed from the build the same way.
