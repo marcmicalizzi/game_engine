@@ -18,11 +18,14 @@
 #include <systems/renderer/terrain.h>
 
 #include <doctest/doctest.h>
+#include <test_paths.h>
 #include <test_temp_dir.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <span>
 #include <string>
@@ -343,6 +346,182 @@ TEST_CASE(
   REQUIRE(write_text(bad, scene_with(R"({"generator":"scene-gen-test-row","params":{}})")));
   CHECK_FALSE(read_scene_file(bad, desc, error));
   CHECK(error.find("placements 0: a row needs a name and a count") != std::string::npos);
+}
+
+// ---- a placement's footprint, measured from its mesh (G210) -------------------------------------
+
+namespace {
+
+void put_le(std::string& out, u32 v) {
+  for (u32 i = 0; i < 4; ++i)
+    out.push_back(static_cast<char>((v >> (8 * i)) & 0xffu));
+}
+
+// A flat square 4 m a side about its origin as a GLB: four corners with an up normal, two
+// triangles, no material. Its ground radius is the corner's, 2.83 m.
+bool write_square_glb(const std::string& path) {
+  std::string bin;
+  const f32 corners[4][2] = {{-2.0f, -2.0f}, {2.0f, -2.0f}, {2.0f, 2.0f}, {-2.0f, 2.0f}};
+  for (const auto& c : corners) {
+    const f32 xyz[3] = {c[0], 0.0f, c[1]};
+    for (const f32 v : xyz) {
+      u32 bits = 0;
+      std::memcpy(&bits, &v, 4);
+      put_le(bin, bits);
+    }
+  }
+  for (u32 i = 0; i < 4; ++i) {
+    const f32 up[3] = {0.0f, 1.0f, 0.0f};
+    for (const f32 v : up) {
+      u32 bits = 0;
+      std::memcpy(&bits, &v, 4);
+      put_le(bin, bits);
+    }
+  }
+  // Counter-clockwise seen from above (+y).
+  const u16 tris[6] = {0, 2, 1, 0, 3, 2};
+  for (const u16 t : tris) {
+    bin.push_back(static_cast<char>(t & 0xffu));
+    bin.push_back(static_cast<char>(t >> 8));
+  }
+  while (bin.size() % 4 != 0)
+    bin.push_back('\0');
+  std::string json =
+      R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],)"
+      R"("meshes":[{"primitives":[{"attributes":{"POSITION":0,"NORMAL":1},"indices":2}]}],)"
+      R"("accessors":[{"bufferView":0,"componentType":5126,"count":4,"type":"VEC3",)"
+      R"("min":[-2,0,-2],"max":[2,0,2]},)"
+      R"({"bufferView":1,"componentType":5126,"count":4,"type":"VEC3"},)"
+      R"({"bufferView":2,"componentType":5123,"count":6,"type":"SCALAR"}],)"
+      R"("bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":48},)"
+      R"({"buffer":0,"byteOffset":48,"byteLength":48},{"buffer":0,"byteOffset":96,"byteLength":12}],)"
+      R"("buffers":[{"byteLength":)" +
+      std::to_string(bin.size()) + "}]}";
+  while (json.size() % 4 != 0)
+    json += ' ';
+  std::string glb;
+  put_le(glb, 0x46546c67u);
+  put_le(glb, 2u);
+  put_le(glb, static_cast<u32>(12 + 8 + json.size() + 8 + bin.size()));
+  put_le(glb, static_cast<u32>(json.size()));
+  put_le(glb, 0x4e4f534au);
+  glb += json;
+  put_le(glb, static_cast<u32>(bin.size()));
+  put_le(glb, 0x004e4942u);
+  glb += bin;
+  return write_text(path, glb);
+}
+
+// A generator that names its mesh as a scene file's generator does (scatter's `resolve`): against
+// the scene's directory, `context.dir`, which is relative when the scene's path is.
+bool relative_expand(void*, const scene_gen::Context& context, scene_gen::Placements& out,
+                     std::string*) {
+  const std::string dir(context.dir);
+  const std::string mesh = dir.empty() ? "rel/square.glb" : dir + "/rel/square.glb";
+  out.meshes.push_back(scene_gen::PlacementMesh{mesh, "rel/square", 0, {}, 0.0f});
+  scene_gen::Placement p;
+  p.mesh = 0;
+  p.position = WorldPos{3.0, context.ground.floor(WorldPos{3.0, 0.0, 0.0}), 0.0};
+  out.instances.push_back(p);
+  out.things = 1;
+  return true;
+}
+bool nothing_open(const JsonValue&, const scene_gen::Context&, void** state, std::string*) {
+  *state = nullptr;
+  return true;
+}
+void nothing_close(void*) noexcept {}
+constexpr scene_gen::PlacementGeneratorDesc k_relative{.name = "scene-gen-test-relative",
+                                                       .open = &nothing_open,
+                                                       .close = &nothing_close,
+                                                       .expand = &relative_expand};
+const scene_gen::Registrar k_relative_registrar{k_relative};
+
+// A generator that places nothing and keeps the largest footprint it was handed.
+f64 g_earlier_radius = -1.0;
+bool earlier_expand(void*, const scene_gen::Context& context, scene_gen::Placements&,
+                    std::string*) {
+  g_earlier_radius = -1.0;
+  for (const scene_gen::Footprint& f : context.earlier)
+    g_earlier_radius = std::max(g_earlier_radius, f.radius);
+  return true;
+}
+constexpr scene_gen::PlacementGeneratorDesc k_earlier{.name = "scene-gen-test-earlier",
+                                                      .open = &nothing_open,
+                                                      .close = &nothing_close,
+                                                      .expand = &earlier_expand};
+const scene_gen::Registrar k_earlier_registrar{k_earlier};
+
+// The working directory for one scope: the scene reader resolves a relative scene path against it.
+struct WorkingDirectory {
+  std::filesystem::path was;
+  explicit WorkingDirectory(const std::string& to) : was(std::filesystem::current_path()) {
+    std::filesystem::current_path(to);
+  }
+  ~WorkingDirectory() {
+    std::error_code ec;
+    std::filesystem::current_path(was, ec);
+  }
+};
+
+}  // namespace
+
+// **A placement's mesh is measured at the path the load holds** (G210; renderer.md, "Scenes,
+// camera paths and flythroughs"): a generator names its mesh against the scene's directory, so a
+// scene read by a relative path hands `sub/rel/square.glb`, and the footprint measure joined the
+// directory again and read `sub/sub/rel/square.glb` — every placement of the village test scene's
+// cover went unmeasured that way, and the entries after it were handed points. Read by an absolute
+// path the two agreed, which is why only a scene named from the checkout's root showed it.
+TEST_CASE("renderer: a placement's footprint is measured from the mesh its generator named") {
+  const test::TempDir tmp("renderer_scene_gen_footprint");
+  REQUIRE(tmp.ok());
+  std::error_code ec;
+  std::filesystem::create_directories(tmp.file("sub/rel"), ec);
+  REQUIRE(write_square_glb(tmp.file("sub/rel/square.glb")));
+  REQUIRE(write_text(tmp.file("sub/scene.json"),
+                     scene_with(R"({"generator":"scene-gen-test-relative","params":{}},)"
+                                R"({"generator":"scene-gen-test-earlier","params":{}})")));
+  std::string error;
+  {
+    const WorkingDirectory here(tmp.path());
+    SceneDesc desc;
+    desc.cache = false;  // the measure builds the square in memory and writes nothing
+    g_earlier_radius = -1.0;
+    REQUIRE_MESSAGE(read_scene_file("sub/scene.json", desc, error), error);
+    CHECK(desc.meshes[1] == "sub/rel/square.glb");
+    CHECK(g_earlier_radius == doctest::Approx(2.0 * std::sqrt(2.0)).epsilon(0.02));
+  }
+  // And by its absolute path, the same.
+  SceneDesc desc;
+  desc.cache = false;
+  g_earlier_radius = -1.0;
+  REQUIRE_MESSAGE(read_scene_file(tmp.file("sub/scene.json"), desc, error), error);
+  CHECK(g_earlier_radius == doctest::Approx(2.0 * std::sqrt(2.0)).epsilon(0.02));
+}
+
+// The grove test scene's trees are the file's own meshes, resolved once as the file is read: twelve
+// instances of four recipes, each a file that exists (the cover the load is handed; whether a GPU
+// draws them is the renderer's flora cases').
+TEST_CASE("renderer: the grove scene's trees resolve to its four recipes") {
+  const std::string path =
+      test::data_path(ENGINE_SOURCE_DIR "/content/test-scenes/grove/scene.json",
+                      "content/test-scenes/grove/scene.json");
+  SceneDesc desc;
+  std::string error;
+  REQUIRE_MESSAGE(read_scene_file(path, desc, error), error);
+  REQUIRE(desc.meshes.size() >= 4);
+  u32 trees[4] = {};
+  for (const SceneInstance& instance : desc.instances) {
+    if (instance.mesh < 4) ++trees[instance.mesh];
+  }
+  CHECK(trees[0] == 4);
+  CHECK(trees[1] == 4);
+  CHECK(trees[2] == 3);
+  CHECK(trees[3] == 1);
+  for (u32 m = 0; m < 4; ++m) {
+    INFO(desc.meshes[m]);
+    CHECK(std::filesystem::exists(desc.meshes[m]));
+  }
 }
 
 // ---- far from the origin (ADR-0053; scene_gen.md, "Far from the origin") ------------------------
