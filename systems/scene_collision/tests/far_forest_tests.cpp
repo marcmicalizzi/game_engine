@@ -1191,6 +1191,40 @@ TEST_CASE("scene_collision: a door holds its angle where its leaf would enter th
   CHECK(now.angle_mdeg == 0);
 }
 
+TEST_CASE("scene_collision: a fast door is held along its arc, never swung through the walker") {
+  // Until 2026-11-18 the hold tested only the end of a tick's swing, so a door a game gave a
+  // quarter turn a tick went from shut to open through a walker standing in its arc. The walker
+  // here stands north of the wall, 0.6 m from the hinge at 45 degrees into the swing: clear of the
+  // leaf shut (0.42 m off it) and open (0.42 m), in its path between.
+  DoorRig rig;
+  DoorBody d = doorway();
+  d.speed_mdeg = 90000;
+  rig.collision.set_doors({&d, 1});
+  (void)rig.collision.step_doors(nullptr);
+  REQUIRE(rig.walker.teleport(place(Vec3{-0.45f + 0.4243f, 0.02f, 19.975f + 0.4243f})) ==
+          physics::Status::Ok);
+  REQUIRE(rig.collision.toggle_door(d.key));
+  (void)rig.collision.step_doors(&rig.walker);
+  DoorBody now;
+  REQUIRE(rig.collision.door(d.key, now));
+  MESSAGE("a quarter turn a tick, the walker in the arc: the leaf at " << now.angle_mdeg
+                                                                       << " mdeg");
+  // The leaf comes within the radius and the margin (0.35 m) of the walker 6 to 7 degrees in: it
+  // goes the whole degrees short of that and holds there.
+  CHECK(now.angle_mdeg < 0);
+  CHECK(now.angle_mdeg > -10000);
+  CHECK(rig.collision.door_stats().holds == 1);
+  const i32 held = now.angle_mdeg;
+  for (u32 k = 0; k < 10; ++k)
+    (void)rig.collision.step_doors(&rig.walker);
+  REQUIRE(rig.collision.door(d.key, now));
+  CHECK(now.angle_mdeg == held);
+  // With nobody in the arc it opens in a tick.
+  (void)rig.collision.step_doors(nullptr);
+  REQUIRE(rig.collision.door(d.key, now));
+  CHECK(now.angle_mdeg == d.open_mdeg);
+}
+
 TEST_CASE("scene_collision: a door's body goes with its tile, and its swing replays") {
   // The same toggles at the same ticks reach the same angles; the tile let go takes the body, and
   // the door's state stays (it is the world's).

@@ -2705,6 +2705,10 @@ namespace {
 // leaf that stops beside it never presses it, which the character would answer by stepping aside
 // and the door by creeping after it.
 constexpr f32 k_door_hold_margin_m = 0.05f;
+// How finely a tick's swing is tested against the walker: a degree, through which a leaf's edge
+// at 17 m from its hinge moves the 0.3 m of the walker's radius, so no leaf a building hangs can
+// step over the capsule between two tests.
+constexpr i32 k_door_sweep_mdeg = 1000;
 // The leaf's turn about +y at `mdeg` millidegrees from its closed heading's zero.
 Quat door_turn(i32 mdeg) noexcept { return door_rotation(mdeg); }
 i32 door_target(const DoorBody& d) noexcept { return d.open ? d.open_mdeg : 0; }
@@ -2836,12 +2840,27 @@ u32 SceneCollision::step_doors(const physics::CharacterBody* walker) {
     const i32 target = door_target(d);
     if (d.angle_mdeg == target) continue;
     const i32 step = d.speed_mdeg > 0 ? d.speed_mdeg : k_door_speed_mdeg;
-    const i32 next = target > d.angle_mdeg ? std::min(target, d.angle_mdeg + step)
-                                           : std::max(target, d.angle_mdeg - step);
-    if (c != nullptr && leaf_meets(d, next, feet, c->radius + k_door_hold_margin_m, c->height)) {
-      ++door_stats_.holds;
-      continue;
+    const i32 dir = target > d.angle_mdeg ? 1 : -1;
+    const i32 travel = std::min(step, dir > 0 ? target - d.angle_mdeg : d.angle_mdeg - target);
+    // **The arc, not only its end**: the leaf is tested every `k_door_sweep_mdeg` along this tick's
+    // travel and goes as far as the last angle clear of the walker, so a fast door (a game's speed,
+    // up to half a turn a tick) never passes through it in one tick. At the default speed the
+    // travel is one test, at its end, as it always was.
+    i32 reached = travel;
+    if (c != nullptr) {
+      reached = 0;
+      for (i32 s = std::min(travel, k_door_sweep_mdeg);;
+           s = std::min(travel, s + k_door_sweep_mdeg)) {
+        if (leaf_meets(d, d.angle_mdeg + dir * s, feet, c->radius + k_door_hold_margin_m,
+                       c->height))
+          break;
+        reached = s;
+        if (s == travel) break;
+      }
     }
+    if (reached < travel) ++door_stats_.holds;
+    if (reached == 0) continue;
+    const i32 next = d.angle_mdeg + dir * reached;
     d.angle_mdeg = next;
     ++door_stats_.moves;
     ++moved;

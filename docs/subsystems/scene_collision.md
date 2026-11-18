@@ -368,7 +368,16 @@ angles compared, not a yes or no. **A door that
 would enter the walker holds its angle**: the leaf at the next angle is tested against the capsule
 — both upright, so the test is exact in the leaf's frame — and a door that would come within
 `k_door_hold_margin_m` (5 cm, past the character's contact padding, so a leaf never presses the
-walker into stepping aside for it to creep after) stays where it was that tick and counts a hold (`DoorStats::holds`). The walker collides as `Moving`, so
+walker into stepping aside for it to creep after) stays where it was that tick and counts a hold (`DoorStats::holds`). **The
+arc is tested, not only its end**: a tick's travel is tried every degree (`k_door_sweep_mdeg`;
+through a degree a leaf's edge 17 m from its hinge moves the walker's 0.3 m radius) and the leaf
+goes as far as the last angle clear of the walker, so a door a game gives a quarter turn a tick is
+held in the walker's path instead of passing through it, which until 2026-11-18 it did; at the
+default speed the travel is one test at its end, as before (`scene_collision: a fast door is held
+along its arc, never swung through the walker`). **Only the walker holds a door**: the walker's
+world is never stepped, so two leaves, or a leaf and a prop, pass through each other, and a walker
+squeezed between a held leaf and a wall is never pushed, so it can always walk out the way it
+came; a leaf that stops at a prop or at another leaf is not built. The walker collides as `Moving`, so
 its sweep meets the kinematic layer: a closed door is a wall, an open one a wall at its angle. A
 cast that meets a leaf is `HitKind::door`, its `instance` the door's key. **What it costs**: a
 scene with no doors pays an empty check a tick; a door costs a transform write on the ticks it
