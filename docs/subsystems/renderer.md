@@ -3541,6 +3541,48 @@ up a long history this frame), `.followed` (those folded at today's rate because
 saw its light moving) and `.guided` (samples drawn with a trained guide), in `renderer.gi.log`'s
 line.
 
+**What it does on the screen** (3840×2160, `--raster rt --shadows rt`, `bounce`, the RTX 5090, the
+session unlocked; `engine-view --temporal --temporal-from 150 --frames 186`: the forest session's
+protocol, the 36 frames from 2.5 s after the view is first held, which is the first seconds a
+person walking in sees and before a long memory has filled; the light's change is the measure's
+`light.mean`, each pixel's change relative to its level):
+
+| held view, frames 150 to 186 | the light's change a frame | pixel-frames stepping a whole code | the same in the 16–31 band |
+|---|---|---|---|
+| house 0 (level 20.9 codes), cosine rays, today's history | 1.46 % | 2.06 % | 2.41 % |
+| house 0, the memory alone | 0.38 % | 0.098 % | 0.108 % |
+| house 0, the guide alone | 0.86 % | 0.51 % | 0.60 % |
+| house 0, **the guide and the memory** | **0.24 %** | **0.019 %** | **0.020 %** |
+| cave (level 10.1), cosine rays, today's history | 1.60 % | 1.01 % | — |
+| cave, the memory alone | 0.29 % | 0.020 % | — |
+| cave, the guide alone | 0.55 % | 0.047 % | — |
+| cave, **the guide and the memory** | **0.15 %** | **0.003 %** | — |
+
+The guide alone takes the whole-code steps to a quarter in the house and a twentieth in the cave,
+whose light comes down one shaft; under the memory the two leave a fifth of what the memory alone
+leaves at 2.5 s, and the fourth leg's bar (under 0.1 % in every band) holds in every band of both
+by then (the house's 32–63 band, 1 % of its pixels, stands at 0.089 %; the memory alone had it at
+0.35 %). 99.99 % of the samples have a trained guide behind them by frame 150. The flora's motion
+and a wind of 0.7, the forest's flags, change no number of the house's (0.238 % and 0.019 % with
+them): nothing outside its door moves its light.
+
+**What this does not show, said plainly.** The forest's two dark rooms change 5.9 and 4.8 % a
+frame with cosine rays, three to four times the engine's house at a *brighter* level, so their
+light is carried by rarer and heavier samples than any room the engine's own scenes have; and
+there the memory bought a fifth where the ramp's arithmetic and the house both say a factor of
+3.8 at 2.5 s (1.46 to 0.38 %). The engine's scenes do not reproduce that: in the house the memory's
+cells follow at today's rate on 190 cells a frame of 146,000 and let none go, in the cave on 660
+and five. The reading left, **not verified**, is that those rooms' light really moves — the sun
+through swaying crowns onto the ground outside their openings — so their coarse cells see it move
+and their fine cells follow at today's pace, as the fourth leg built them to; the counters above
+say so in one flight of the forest (`renderer.gi.log`, `--log info`). If that is it, the guide is
+the half of the mend that applies there (a followed cell shows today's change, which the guide
+halves or better where the light comes through an opening), and the other half is a fine cell
+following its coarse cell's change as a ratio instead of re-averaging its own few samples, which
+is not built. **A person in such a room would still see the walls' grain crawl, at about half its
+amplitude or less; in a room whose light holds still they would see it settle under a display
+step within three seconds of walking in.**
+
 ## The sun's day
 
 *A scene that names a sky takes its sun, its moon and its sky from it instead, on the world's clock ([The sky](#the-sky)); everything in this section is the stand-in's, which every other scene still draws, to the bit.*
