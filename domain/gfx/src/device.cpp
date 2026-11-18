@@ -891,7 +891,7 @@ bool create_buffer(const Device& device, u64 size, BufferUsage usage, bool host_
   out.allocation = vk::wrap(allocation);
   out.size = size;
   out.mapped = result_info.pMappedData;
-  if (size >= k_large_buffer_bytes && detail::large_buffer_log_on())  // device_memory.h
+  if (size >= k_large_buffer_min_bytes && detail::large_buffer_logged(size))  // device_memory.h
     detail::note_large_buffer(reinterpret_cast<u64>(allocation), size, host_visible);
   out.address = 0;
   if (any(usage & BufferUsage::ShaderDeviceAddress)) {
@@ -905,7 +905,7 @@ bool create_buffer(const Device& device, u64 size, BufferUsage usage, bool host_
 
 void destroy_buffer(const Device& device, BufferResource& buffer) noexcept {
   if (!buffer.buffer) return;
-  if (buffer.size >= k_large_buffer_bytes && detail::large_buffer_log_on())
+  if (buffer.size >= k_large_buffer_min_bytes && detail::large_buffer_logged(buffer.size))
     detail::forget_large_buffer(reinterpret_cast<u64>(vk::native(buffer.allocation)));
   vmaDestroyBuffer(device.handles().allocator, vk::native(buffer.buffer),
                    vk::native(buffer.allocation));
