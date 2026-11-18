@@ -76,8 +76,16 @@ class Policy {
   // The role a call runs in: `named` when it is not blank, then `identity.role`, then the file's
   // `default_role`. Sets `out` to null when nothing restricts the call (no file, or no name at
   // all); false with 1008 Forbidden when the name is not a role of the file, since a call that
-  // claims a role nobody configured must not fall through to no restriction at all.
+  // claims a role nobody configured must not fall through to no restriction at all. **A role
+  // marked human is never resolved here** (1008, `data.reason` "human review"): this is how a call
+  // with no credential is placed, and a call's attribution, a connection's hello and a host's start
+  // line are all claims anyone can type (ADR-0072). Only `resolve_caller` confers one, from a
+  // credential bound to it.
   bool resolve_role(std::string_view named, const Role*& out, RpcError& error) const;
+
+  // Whether `name` is a role of the loaded file marked human: what a host's or engine-cli's start
+  // line is refused for (`--role`, exit 2) before anything starts.
+  bool is_human_role(std::string_view name) const noexcept;
 
   // The dispatcher's gate: a method that is not read-only must match one of the role's `methods`.
   // `named_role` is the role the call's params name (`attribution.role`), possibly empty.
@@ -93,10 +101,23 @@ class Policy {
 // the host's defaults filled in, the role it runs in (null: nothing restricts it), and the client
 // connection it came on (0: stdio or in process), which a lease it takes and the events its
 // changes publish carry.
+//
+// **How a caller is known to be a person is one field, read in one place.** `human_via` is the
+// name of the credential that confers a role marked human (ADR-0072), empty for everyone else, and
+// `human_role` that role's name; both are set only by `resolve_caller`, and `Role::human` is read
+// only in policy.cpp (`policy_tests.cpp` fails when another source reads it), so a check written
+// by copying a person's check reads these and never the working role's flag. `via` is how the
+// caller came to be who it says, recorded beside every ledger write: "credential:<name>" for a
+// connection bound to an issued credential, "operator" for a connection on the printed token or
+// the shell's cookie (whose actor is its own claim), "stdio" for stdin, engine-cli, a console
+// script and the host's own in-process calls.
 struct Caller {
   doc::Attribution who;
   const Role* role = nullptr;
   u64 connection = 0;
+  std::string via;
+  std::string human_via;
+  std::string human_role;
 };
 
 // `given` null means the call carried no attribution. Blank actor, role and task come from the

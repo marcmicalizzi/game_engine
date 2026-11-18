@@ -126,6 +126,13 @@ bool Policy::load_roles(std::string_view path, std::string_view text, std::strin
     roles_ = RolesFile{};
     return false;
   }
+  // Every call with no credential would run in it, and no such call is a person's.
+  if (const Role* d = find_role(roles_.default_role); d != nullptr && d->human) {
+    error = std::string(path) + ": default_role '" + roles_.default_role +
+            "' is marked human, and a person's role is conferred only by a credential (ADR-0072)";
+    roles_ = RolesFile{};
+    return false;
+  }
   path_ = std::string(path);
   loaded_ = true;
   return true;
@@ -161,11 +168,26 @@ bool Policy::resolve_role(std::string_view named, const Role*& out, RpcError& er
   if (blank(name)) name = roles_.default_role;
   if (blank(name)) return true;
   out = find_role(name);
+  if (out != nullptr && out->human) {
+    out = nullptr;
+    error = forbidden("role '" + std::string(name) +
+                          "' is marked human, and a call is a person's only by a credential the "
+                          "host's operator issued for that role, presented on its connection: "
+                          "naming the role (in an attribution, a hello or a start line) does not "
+                          "make a call a person's (ADR-0072)",
+                      "human review", name);
+    return false;
+  }
   if (out != nullptr) return true;
   error = forbidden("no role named '" + std::string(name) + "' in the host's roles file (" + path_ +
                         "): a call must name a configured role",
                     "unknown role", name);
   return false;
+}
+
+bool Policy::is_human_role(std::string_view name) const noexcept {
+  const Role* role = loaded_ ? find_role(name) : nullptr;
+  return role != nullptr && role->human;
 }
 
 namespace {
@@ -284,6 +306,9 @@ bool resolve_caller(const Context& ctx, const doc::Attribution* given, Caller& o
   out.who = given != nullptr ? *given : doc::Attribution{};
   out.role = nullptr;
   out.connection = ctx.connection;
+  out.human_via.clear();
+  out.human_role.clear();
+  out.via = ctx.connection == 0 ? "stdio" : "operator";
   // A connection bound to a credential is its credential and nothing else (ADR-0069): the host's
   // own identity never fills it, and its role is the credential's as the roles file defines it, or
   // the role that may write nothing when the host cannot enforce one. The dispatcher's identity
@@ -296,6 +321,13 @@ bool resolve_caller(const Context& ctx, const doc::Attribution* given, Caller& o
     if (blank(out.who.role)) out.who.role = bound->who.role;
     if (blank(out.who.task)) out.who.task = bound->who.task;
     out.role = &bound_role(ctx.policy, bound->who.role);
+    out.via = "credential:" + bound->credential;
+    // The one place a person is conferred: the operator issued this credential for a role the
+    // roles file marks human, and the connection presented it.
+    if (out.role->human) {
+      out.human_via = bound->credential;
+      out.human_role = out.role->name;
+    }
     return true;
   }
   // The connection's identity first: several clients share one host, and each is who it said it

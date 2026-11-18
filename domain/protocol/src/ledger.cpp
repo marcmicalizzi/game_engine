@@ -380,7 +380,18 @@ bool task_claim(Context& ctx, const TaskClaimParams& params, TasksResult& out, R
                              std::move(data));
               return false;
             }
-            if (!t->owner_role.empty() && t->owner_role != role) {
+            // A task for a role marked human is a person's: claimed by the role `human_via`
+            // confers, never by a working role that bears the same name.
+            const bool for_person =
+                ctx.policy != nullptr && ctx.policy->is_human_role(t->owner_role);
+            if (for_person && (caller.human_via.empty() || caller.human_role != t->owner_role)) {
+              e = forbidden("task " + std::to_string(t->id) + " is for the " + t->owner_role +
+                                " role, which is a person's: it is claimed on a connection that "
+                                "presented a credential issued for that role",
+                            "human review", role);
+              return false;
+            }
+            if (!for_person && !t->owner_role.empty() && t->owner_role != role) {
               e = forbidden("task " + std::to_string(t->id) + " is for the " + t->owner_role +
                                 " role, and this call runs as " +
                                 (role.empty() ? std::string("no role") : role),
@@ -643,11 +654,13 @@ bool review_close(Context& ctx, const ReviewCloseParams& params, ReviewsResult& 
               // A person's to close, and nobody else's: not its raiser's to take back, and not an
               // agent's whatever methods its role names (AGENTS.md: a check that needs a higher
               // view policy becomes a human review item, never a configuration edit).
-              if (params.resolution == ReviewResolution::Withdrawn || caller.role == nullptr ||
-                  !caller.role->human) {
+              // A person is known by `human_via` alone (policy.h): a credential the operator
+              // issued for a role marked human, never a role the call names.
+              if (params.resolution == ReviewResolution::Withdrawn || caller.human_via.empty()) {
                 e = forbidden("review item " + id +
-                                  " is for a person: only a call in a role the host's roles file "
-                                  "marks human closes it, and nobody withdraws it",
+                                  " is for a person: it is closed only on a connection that "
+                                  "presented a credential the host's operator issued for a role "
+                                  "the roles file marks human, and nobody withdraws it",
                               "human review", role);
                 return false;
               }
@@ -726,8 +739,9 @@ void add_ledger_methods(Dispatcher& d) {
       "exactly what is to be reviewed, for an agent or, with audience Human, for a person."));
   d.add(method<ReviewCloseParams, ReviewsResult, &review_close>(
       "review.close",
-      "Accept, reject or withdraw a review item. One raised for a person is closed only by a "
-      "role the roles file marks human (1008 otherwise), and never withdrawn."));
+      "Accept, reject or withdraw a review item. One raised for a person is closed only on a "
+      "connection bound to a credential issued for a role the roles file marks human (1008 "
+      "otherwise), and never withdrawn."));
   d.add(read_only(method<ReviewListParams, ReviewsResult, &review_list>(
       "review.list",
       "The document's review items, by id, state, audience, kind or task, visible to everyone.")));

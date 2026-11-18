@@ -297,7 +297,8 @@ TEST_CASE("policy: a roles file is checked when it is read") {
     CHECK_MESSAGE(shipped.find_role(name) != nullptr, name);
   // A person's role is the reviewer alone: no role an agent runs in closes a human review item.
   for (const Role& role : shipped.roles().roles)
-    CHECK_MESSAGE(role.human == (role.name == "reviewer"), role.name);
+    const bool human = role.human;  // engine-lint: allow-human-flag the shipped file's own flags
+    CHECK_MESSAGE(human == (role.name == "reviewer"), role.name);
   CHECK(shipped.roles().default_role == "qa");
   CHECK(shipped.find_role("qa")->methods.empty());
   CHECK(shipped.find_role("designer")->review_required);

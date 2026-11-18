@@ -133,6 +133,32 @@ std::string apply(const std::string& command, const char* actor, const char* lay
 
 }  // namespace
 
+// ADR-0072: a role marked human is conferred only by a credential presented on a connection.
+// engine-cli forwards `--role` to the host it starts, so before the mend `engine-cli --role reviewer
+// review.close` closed a person's item. Both refuse the start line now, engine-cli before any host
+// starts (its document directory is never made), and issuing a credential for the role still works.
+TEST_CASE("host and engine-cli: no start line runs in a role marked human") {
+  test::TempDir tmp("engine_cli_roles");
+  const std::string roles = tmp.file("roles.json");
+  write_file(roles, R"({"roles":[{"name":"reviewer","methods":["review.*"],"human":true},
+                                 {"name":"designer","methods":["doc.apply"]}]})");
+  const std::string request = R"({"jsonrpc":"2.0","id":1,"method":"engine.roles"})";
+  CHECK(run({host_exe(), "--roles", roles, "--role", "reviewer", "--request", request}).exit_code ==
+        2);
+  CHECK(run({host_exe(), "--roles", roles, "--role", "reviewer", "--stdio"}).exit_code == 2);
+  const std::string doc = tmp.file("doc");
+  const Run cli = run({cli_exe(), "--host", host_exe(), "--roles", roles, "--role", "reviewer",
+                       "--doc", doc, "--create", "review.list", "{}"});
+  CHECK(cli.exit_code == 2);
+  CHECK(!test::path_exists(doc));
+  CHECK(run({host_exe(), "--roles", roles, "--role", "designer", "--request", request}).exit_code ==
+        0);
+  const Run issued = run({host_exe(), "--roles", roles, "--issue-credential",
+                          tmp.file("credentials.json"), "--name", "person", "--actor", "person-a",
+                          "--role", "reviewer"});
+  CHECK(issued.exit_code == 0);
+}
+
 TEST_CASE("host: a roles file it cannot use is a usage error") {
   test::TempDir tmp("engine_cli_roles");
   const std::string good = tmp.file("roles.json");

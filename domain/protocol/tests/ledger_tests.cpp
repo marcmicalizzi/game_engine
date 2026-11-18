@@ -3,6 +3,7 @@
 // host; who may claim, update and close what; a review item for a person that no agent can close;
 // and two hosts writing one directory's ledger at once without losing a write.
 #include <core/json/json.h>
+#include <domain/protocol/clients.h>
 #include <domain/protocol/events.h>
 #include <domain/protocol/policy.h>
 #include <domain/protocol/rpc.h>
@@ -116,6 +117,21 @@ struct Host {
     std::string error;
     REQUIRE_MESSAGE(policy.load_roles("roles.json", text, error), error);
   }
+  // The calls that follow come on socket connection `connection`, bound to the credential `name`
+  // the operator issued for `actor` in `role`, as the listener binds one that presented its token
+  // (clients.h); connection 0 is stdio again.
+  Clients clients;
+  void bind(u64 connection, const char* name, const char* actor, const char* role) {
+    Client& c = clients.touch(connection, 0);
+    c.credential = name;
+    c.who.actor = actor;
+    c.who.role = role;
+    c.identified = true;
+    c.bound = true;
+    dispatcher.context().clients = &clients;
+    dispatcher.context().connection = connection;
+  }
+  void stdio() { dispatcher.context().connection = 0; }
   // The one task or item a write answers.
   JsonValue task(std::string_view method, JsonValue params) {
     return at(ok(method, std::move(params)), "tasks")[0];
@@ -135,7 +151,7 @@ const char* k_roles = R"({
     {"name": "director", "methods": ["*"], "layers": ["*"], "object_types": ["*"]},
     {"name": "environment", "methods": ["task.*", "review.*"]},
     {"name": "designer", "methods": ["task.*", "review.*"]},
-    {"name": "reviewer", "methods": ["review.*"], "human": true},
+    {"name": "reviewer", "methods": ["review.*", "task.claim"], "human": true},
     {"name": "qa", "methods": ["review.raise"]}
   ]
 })";
@@ -340,17 +356,46 @@ TEST_CASE("ledger: roles, and a review item for a person that no agent closes") 
                      {"attribution", who("q", "environment")}}),
                 &error) == codes::k_forbidden);
   CHECK(reason_of(error) == "human review");
+  // Naming the human role does not make a call a person's (ADR-0072): before the mend this closed
+  // the item, from stdio, engine-cli or any agent that typed the role's name.
+  CHECK(h.fails("review.close",
+                obj({{"review", JsonValue(1)},
+                     {"resolution", JsonValue("Accepted")},
+                     {"attribution", who("person", "reviewer")}}),
+                &error) == codes::k_forbidden);
+  CHECK(reason_of(error) == "human review");
+  CHECK(at(h.review("review.list", obj({{"review", JsonValue(1)}})), "state").as_string() ==
+        "Open");
+  // A credential the operator issued for the role, presented on a connection, does.
+  h.bind(5, "person-at-desk", "person", "reviewer");
   r = h.review("review.close", obj({{"review", JsonValue(1)},
                                     {"resolution", JsonValue("Accepted")},
                                     {"note", JsonValue("looked at full policy; fine")},
-                                    {"attribution", who("person", "reviewer")}}));
+                                    {"attribution", who("person")}}));
   CHECK(at(r, "state").as_string() == "Closed");
   CHECK(at(r, "resolution").as_string() == "Accepted");
   CHECK(at(at(r, "closed_by"), "actor").as_string() == "person");
   CHECK(h.fails("review.close", obj({{"review", JsonValue(1)},
                                      {"resolution", JsonValue("Rejected")},
-                                     {"attribution", who("person", "reviewer")}})) ==
+                                     {"attribution", who("person")}})) ==
         codes::k_invalid_argument);
+  h.stdio();
+
+  // A task for the person's role is claimed by the person, not by a working role of that name.
+  const JsonValue person_task = h.task("task.create", obj({{"title", JsonValue("look at it")},
+                                                           {"owner_role", JsonValue("reviewer")},
+                                                           {"attribution", who("d", "director")}}));
+  for (const char* role : {"director", "reviewer"}) {
+    CAPTURE(role);
+    CHECK(h.fails("task.claim",
+                  obj({{"task", at(person_task, "id")}, {"attribution", who("p", role)}}),
+                  &error) == codes::k_forbidden);
+    CHECK(reason_of(error) == "human review");
+  }
+  h.bind(5, "person-at-desk", "person", "reviewer");
+  CHECK(at(h.task("task.claim", obj({{"task", at(person_task, "id")}})), "claimant").as_string() ==
+        "person");
+  h.stdio();
 
   // An item for an agent: its raiser withdraws it, nobody else does, a reviewing agent closes one.
   for (int i = 0; i < 2; ++i)

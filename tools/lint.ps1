@@ -146,7 +146,17 @@ $rules = @(
        if ($dirs.Count -eq 0) { '(?!)' } else { '^(' + (($dirs | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')/' }
      }
      Pattern = '^\s*#\s*(if|ifdef|ifndef|elif|elifdef|elifndef)\b.*\b(ENGINE_WITH_\w+|ENGINE_MINIMAL)\b'
-     Message = 'a CONFIG_INVARIANT module is the same code in every configuration, so its GPU cases run in the all-on suite only; a conditional on a capability switch here makes the off-configurations skip code they build differently. Drop CONFIG_INVARIANT from its engine_module_tests() or remove the conditional, see docs/ci/what-to-run.md "The off-configurations'' GPU cases"' }
+     Message = 'a CONFIG_INVARIANT module is the same code in every configuration, so its GPU cases run in the all-on suite only; a conditional on a capability switch here makes the off-configurations skip code they build differently. Drop CONFIG_INVARIANT from its engine_module_tests() or remove the conditional, see docs/ci/what-to-run.md "The off-configurations'' GPU cases"' },
+  # ADR-0072 and docs/subsystems/protocol.md, "The task ledger and review items". A person's review
+  # item was first closed by any call whose working role had `Role::human` set, and a call names
+  # its own role: an agent typed `--role reviewer` and was a person. How a caller is known to be a
+  # person is now one field, `Caller::human_via`, set in one place (`resolve_caller`), and the flag
+  # it is set from is read in policy.cpp and nowhere else, so the next check written by copying
+  # this one cannot read the working role's flag. Comments are not read.
+  @{ Name = 'human-flag'; Marker = 'allow-human-flag'; Scope = 'all'; CodeOnly = $true
+     Pattern = '(->|\.)human\b'
+     AllowedPaths = @('domain/protocol/src/policy.cpp')
+     Message = 'Role::human is read only in domain/protocol/src/policy.cpp; a check that a caller is a person reads Caller::human_via (domain/protocol/policy.h), never the role''s flag, see docs/subsystems/protocol.md "The task ledger and review items"' }
 )
 
 $violations = New-Object System.Collections.Generic.List[string]

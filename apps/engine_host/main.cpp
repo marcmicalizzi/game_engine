@@ -470,6 +470,17 @@ int main(int argc, char** argv) {
     }
     return 0;
   }
+  // A role marked human is a person's, and a start line is something any process types (ADR-0072):
+  // no host runs in one, in any mode. Issuing a credential for it, above, is how the operator
+  // confers it, on the connection that presents the credential.
+  if (policy.is_human_role(policy.identity.role)) {
+    std::fprintf(stderr,
+                 "engine-host: --role '%s' is marked human in %s, and no host runs in a person's "
+                 "role: issue a credential for it (--issue-credential --role %s) and present it "
+                 "on a connection to a host started --listen --credentials\n",
+                 policy.identity.role.c_str(), roles_file.c_str(), policy.identity.role.c_str());
+    return 2;
+  }
   protocol::Credentials credentials;
   if (!credentials_file.empty()) {
     std::string text;

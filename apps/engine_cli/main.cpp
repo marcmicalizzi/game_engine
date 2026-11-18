@@ -298,6 +298,49 @@ int main(int argc, char** argv) {
     std::fputs(k_usage, stderr);
     return 2;
   }
+  // A role marked human is a person's, conferred only by a credential presented on a connection
+  // (ADR-0072): engine-cli is the cheapest command an agent has, so it refuses one before any host
+  // starts, rather than leave it to the host it would start. The roles file is read here only for
+  // that flag; an unreadable one is the host's to report.
+  {
+    std::string roles_file, role;
+    for (u32 i = 0; i + 1 < forwarded.size(); i += 2) {
+      if (forwarded[i] == "--roles") roles_file = forwarded[i + 1];
+      if (forwarded[i] == "--role") role = forwarded[i + 1];
+    }
+    std::string text;
+    if (!roles_file.empty() && !role.empty()) {
+      std::FILE* f = nullptr;
+#if defined(_MSC_VER)
+      if (fopen_s(&f, roles_file.c_str(), "rb") != 0) f = nullptr;
+#else
+      f = std::fopen(roles_file.c_str(), "rb");
+#endif
+      if (f != nullptr) {
+        char buffer[4096];
+        for (usize n; (n = std::fread(buffer, 1, sizeof(buffer), f)) > 0;)
+          text.append(buffer, n);
+        std::fclose(f);
+      }
+    }
+    JsonValue roles_json;
+    const JsonValue* roles = nullptr;
+    if (!text.empty() && parse_json(text, roles_json).ok && roles_json.is_object())
+      roles = roles_json.find("roles");
+    for (u32 i = 0; roles != nullptr && roles->is_array() && i < roles->size(); ++i) {
+      const JsonValue& r = (*roles)[i];
+      const JsonValue* name = r.is_object() ? r.find("name") : nullptr;
+      const JsonValue* human = r.is_object() ? r.find("human") : nullptr;
+      if (name == nullptr || !name->is_string() || name->as_string() != role) continue;
+      if (human == nullptr || !human->is_bool() || !human->as_bool()) continue;
+      std::fprintf(stderr,
+                   "engine-cli: --role '%s' is marked human in %s, and no call engine-cli makes "
+                   "is a person's: a person's role is conferred only by a credential the operator "
+                   "issued for it, presented on a connection to engine-host --listen\n",
+                   role.c_str(), roles_file.c_str());
+      return 2;
+    }
+  }
 
   JsonValue params;
   if (!params_text.empty()) {
