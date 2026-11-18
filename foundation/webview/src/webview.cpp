@@ -33,6 +33,7 @@ namespace {
 
 #if defined(_WIN32)
 constexpr const wchar_t* k_profile_variable = L"WEBVIEW2_USER_DATA_FOLDER";
+constexpr const wchar_t* k_arguments_variable = L"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS";
 #endif
 
 #if defined(_WIN32)
@@ -113,6 +114,24 @@ bool Webview::create(void* parent, const WebviewOptions& options, std::string* e
     (void)CreateDirectoryW(profile.c_str(), nullptr);  // the runtime makes what is below it
     SetEnvironmentVariableW(k_profile_variable, profile.c_str());
   }
+  // The browser's arguments the same way, after any the environment already gives it.
+  std::wstring previous_arguments;
+  bool had_arguments = false;
+  if (!options.browser_arguments.empty()) {
+    const int n =
+        MultiByteToWideChar(CP_UTF8, 0, options.browser_arguments.c_str(), -1, nullptr, 0);
+    std::wstring arguments(n > 0 ? static_cast<usize>(n) : 0, L'\0');
+    if (n > 0)
+      MultiByteToWideChar(CP_UTF8, 0, options.browser_arguments.c_str(), -1, arguments.data(), n);
+    while (!arguments.empty() && arguments.back() == L'\0')
+      arguments.pop_back();
+    wchar_t old[4096];
+    const DWORD got = GetEnvironmentVariableW(k_arguments_variable, old, 4096);
+    had_arguments = got > 0 && got < 4096;
+    if (had_arguments) previous_arguments.assign(old, got);
+    const std::wstring all = had_arguments ? previous_arguments + L" " + arguments : arguments;
+    SetEnvironmentVariableW(k_arguments_variable, all.c_str());
+  }
 #endif
   // The library takes the parent's HWND itself (or a pointer to one) and makes its own child
   // widget inside it, hidden until it is given a size.
@@ -120,6 +139,9 @@ bool Webview::create(void* parent, const WebviewOptions& options, std::string* e
 #if defined(_WIN32)
   if (!options.profile_dir.empty())
     SetEnvironmentVariableW(k_profile_variable, had_previous ? previous.c_str() : nullptr);
+  if (!options.browser_arguments.empty())
+    SetEnvironmentVariableW(k_arguments_variable,
+                            had_arguments ? previous_arguments.c_str() : nullptr);
 #endif
   if (handle_ == nullptr) {
     if (error != nullptr)

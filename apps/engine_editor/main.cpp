@@ -55,10 +55,12 @@
 #endif
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <engine_build_stamp.h>
+#include <filesystem>
 #include <initializer_list>
 #include <mutex>
 #include <string>
@@ -140,7 +142,11 @@ constexpr const char* k_usage =
     "  loads the page\n"
     "  with its test hook (?test=1) and waits for its checks; --test-drop-socket-at N shuts every\n"
     "  connection, and --test-relayout-at N sends editor.relayout, from frame N once the page's\n"
-    "  checks are in.\n"
+    "  checks are in. --test-page runs only on a document under the tests' scratch root\n"
+    "  (<system temp>/engine-tests/, where a test's TempDir lies): its hook clicks the page.\n"
+    "  --no-viewport (with --embedded --test-page) the page test with no viewport: the web view\n"
+    "  and the listener, no GPU device, no GPU lock, the browser's own GPU off; its frames are\n"
+    "  the window's ticks, from the page's start\n"
     "  --version    the commit this binary was built from, as one JSON line\n"
     "  --test-drop-file <path>  a file dropped on the viewport through SDL's queue at frame 10\n"
     "In the viewport: left click picks; T is the move gizmo (drag a handle to move the selection\n"
@@ -184,10 +190,11 @@ struct Options {
   f64 resize_to[2] = {0.0, 0.0};
   bool test_keys = false;
   bool test_page = false;
-  u32 drop_at = 0;          // 0: never
-  u32 relayout_at = 0;      // 0: never
-  std::string trace_input;  // --trace-input: one JSON line per pointer event and per frame
-  bool look_os = false;     // --test-look-os
+  bool no_viewport = false;  // --no-viewport: the page test with no device (run_page)
+  u32 drop_at = 0;           // 0: never
+  u32 relayout_at = 0;       // 0: never
+  std::string trace_input;   // --trace-input: one JSON line per pointer event and per frame
+  bool look_os = false;      // --test-look-os
   f64 look_os_by[2] = {0.0, 0.0};
   bool rotate = false;  // --rotate AXIS,DEGREES
   u32 rotate_axis = 1;
@@ -385,6 +392,8 @@ struct Summary {
   u32 width = 0;  // the picture's pixels: the swapchain's, or the offscreen target's
   u32 height = 0;
   bool embedded = false;          // the web shell was beside the viewport
+  bool device = false;            // a GPU device was opened (never with --no-viewport)
+  std::string browser_arguments;  // what the web view's browser was started with
   u16 listen = 0;                 // the listener's port, 0 when there was none
   u32 layouts = 0;                // editor.layout notifications received
   editor::ViewportRect viewport;  // where the last layout put the viewport, in window coordinates
@@ -472,7 +481,9 @@ JsonValue desktop_json(const window::DesktopState& d) {
 void print_summary(const Summary& s, const Options& o) {
   JsonValue out = JsonValue::object();
   out["tool"] = JsonValue("engine-editor");
-  out["mode"] = JsonValue(o.offscreen ? "offscreen" : "window");
+  out["mode"] = JsonValue(o.offscreen ? "offscreen" : o.no_viewport ? "page" : "window");
+  out["device"] = JsonValue(s.device);
+  out["browser_arguments"] = JsonValue(s.browser_arguments);
   out["frames"] = JsonValue(s.frames);
   out["records"] = JsonValue(s.records);
   out["instances"] = JsonValue(s.instances);
@@ -784,6 +795,7 @@ int run_offscreen(const Options& options, editor::EditorDocument& document) {
     }
     editor::EditorInput input;
     Summary summary;
+    summary.device = true;
     Vector<window::Event> scripted;
     // No window: the scripted coordinates are the picture's own pixels.
     const editor::PointerScale scale;
@@ -1075,6 +1087,7 @@ int run_window(const Options& options, editor::EditorDocument& document) {
     Camera camera;
     Summary summary;
     summary.embedded = embedded;
+    summary.device = true;  // made above, before anything else in the window's path
     summary.listen = listening ? host.listener.port() : u16{0};
     InputTrace trace;
     if (!trace.open(options.trace_input)) {
@@ -1697,6 +1710,176 @@ int run_window(const Options& options, editor::EditorDocument& document) {
   return code;
 }
 
+// `--test-page` clicks the page's buttons through its hook (engine_shell.md, "The test hook"), so
+// it runs only on a document a test made: one strictly under `<system temp>/engine-tests/`, the
+// root every `engine::test::TempDir` lies under. Both sides are made canonical first, so a link
+// or a `..` cannot carry a real document under the name.
+bool under_test_scratch(const std::string& doc) {
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  const fs::path temp = fs::temp_directory_path(ec);
+  if (ec) return false;
+  const fs::path root = fs::weakly_canonical(temp / "engine-tests", ec);
+  if (ec) return false;
+  const fs::path absolute = fs::absolute(fs::path(doc), ec);
+  if (ec) return false;
+  const fs::path path = fs::weakly_canonical(absolute, ec);
+  if (ec) return false;
+  const fs::path inside = path.lexically_relative(root);
+  return !inside.empty() && *inside.begin() != ".." && inside != ".";
+}
+
+// `--no-viewport` (roadmap A51; engine_shell.md, "Testing"): the page test with no viewport. The
+// web view and the listener in a window that carries no surface, and no `gfx::Device`, so no GPU
+// lock is taken (the lock is taken where a device or a Vulkan window is made, and neither is), and
+// the Vulkan instance extensions are never asked for; the web view's browser runs with its own
+// GPU off (`--disable-gpu`), so it makes no device either. The page's cell stays dark, its own
+// backing. What `--test-page` does in the window — wait for the page's checks, send
+// editor.relayout, shut the page's sockets and wait for it to come back — happens here on the
+// window's ticks, about sixty a second, counted from the page's start.
+int run_page(const Options& options, editor::EditorDocument& document) {
+  std::string error;
+  if (!window::init(&error)) return unavailable("no display", error);
+#if !defined(ENGINE_EDITOR_WEBVIEW)
+  (void)options;
+  (void)document;
+  window::shutdown();
+  return unavailable("no web view for the page test",
+                     "this build has no web view (ENGINE_WITH_WEBVIEW is off)");
+#else
+  std::string no_webview;
+  if (!webview::runtime_available(&no_webview)) {
+    window::shutdown();
+    return unavailable("no web view for the page test", no_webview);
+  }
+  Host host(document);
+  editor::add_editor_test_methods(host.dispatcher);
+  std::string shell_dir = options.shell_dir;
+  if (shell_dir.empty()) shell_dir = platform::executable_directory() + "/../shell";
+  if (!host.set_roots(options.root_specs, shell_dir, error)) {
+    window::shutdown();
+    std::fprintf(stderr, "engine-editor: %s\n", error.c_str());
+    return 2;
+  }
+  if (!host.listener.start(options.listen_port, shell_dir, document.session().id(), error)) {
+    window::shutdown();
+    std::fprintf(stderr, "engine-editor: --listen: %s\n", error.c_str());
+    return 1;
+  }
+  const std::string line = host.listener.announcement();
+  std::fwrite(line.data(), 1, line.size(), stdout);
+  std::fputc('\n', stdout);
+  std::fflush(stdout);
+  window::WindowDesc wd;
+  wd.title = "engine-editor";
+  wd.width = options.width;
+  wd.height = options.height;
+  wd.vulkan = false;
+  window::Window window;
+  if (!window.create(wd, &error)) {
+    host.listener.stop();
+    window::shutdown();
+    return unavailable("cannot create a window", error);
+  }
+  Summary summary;
+  summary.embedded = true;
+  summary.listen = host.listener.port();
+  summary.browser_arguments = "--disable-gpu";
+  int code = 0;
+  {
+    webview::Webview web;
+    webview::WebviewOptions wo;
+    wo.profile_dir = webview_profile(options, document);
+    wo.browser_arguments = summary.browser_arguments;
+    u32 logical_w = 0;
+    u32 logical_h = 0;
+    if (!window.logical_size(logical_w, logical_h)) logical_w = logical_h = 0;
+    if (!web.create(window.os_handle(), wo, &error)) {
+      code = unavailable("no web view", error);
+    } else {
+      web.set_rect(0, 0, logical_w, logical_h);
+      if (!web.navigate(host.listener.shell_url() + "&embedded=1&test=1")) {
+        error = "the web view refused the shell's address";
+        code = 1;
+      }
+    }
+    {
+      std::lock_guard<std::mutex> lock(host.lock);
+      host.state.dialogs = false;
+    }
+    bool dropped = false;
+    bool relayout_sent = false;
+    const i64 started_ns = time::monotonic_ns();
+    bool running = code == 0;
+    while (running) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(16));
+      window::Event event;
+      while (window.poll(event)) {
+        if ((event.kind == window::EventKind::Quit ||
+             event.kind == window::EventKind::CloseRequested) &&
+            !event.child)
+          running = false;
+      }
+      std::lock_guard<std::mutex> lock(host.lock);
+      ++summary.frames;
+      const u64 f = summary.frames;
+      bool page_done = false;
+      for (const editor::EditorState::Report& report : host.state.reports)
+        page_done = page_done || report.name == "done";
+      // The relayout and the drop wait for the page's own checks, as in the window.
+      if (options.relayout_at > 0 && !relayout_sent && f >= options.relayout_at && page_done) {
+        relayout_sent = true;
+        summary.layouts_at_relayout = host.state.layouts;
+        summary.relayout_reached =
+            host.listener.notify_all(editor::relayout_notification("asked by --test-relayout-at"));
+        ++summary.relayouts;
+      }
+      const bool relayout_answered =
+          options.relayout_at == 0 ||
+          (relayout_sent && host.state.layouts > summary.layouts_at_relayout);
+      if (options.drop_at > 0 && !dropped && f >= options.drop_at && page_done &&
+          relayout_answered) {
+        dropped = true;
+        summary.drops = host.listener.drop_connections();
+        summary.frames_at_drop = static_cast<i64>(f);
+      }
+      if (summary.frames_at_reconnect < 0 && dropped) {
+        for (const editor::EditorState::Report& r : host.state.reports)
+          if (r.name == "reconnect") summary.frames_at_reconnect = static_cast<i64>(f);
+      }
+      const bool done = page_done && relayout_answered &&
+                        (options.drop_at == 0 || summary.frames_at_reconnect >= 0) &&
+                        f >= options.frames;
+      if (done) running = false;
+      if (!done && time::monotonic_ns() - started_ns > k_page_checks_timeout_ns) {
+        error = "--test-page: the page's checks did not finish within two minutes";
+        code = 1;
+        running = false;
+      }
+    }
+    {
+      std::lock_guard<std::mutex> closing(host.lock);
+      host.state.closing = true;
+    }
+    host.state.pick_done.notify_all();
+    host.listener.stop();
+    if (code == 0) {
+      summary.transactions = static_cast<u32>(document.document().journal().size());
+      summary.undo_position = document.session().undo_position();
+      summary.layouts = host.state.layouts;
+      summary.reports = host.state.reports;
+      print_summary(summary, options);
+    } else if (!error.empty()) {
+      std::fprintf(stderr, "engine-editor: %s\n", error.c_str());
+    }
+    web.destroy();
+  }
+  window.destroy();
+  window::shutdown();
+  return code;
+#endif
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1810,6 +1993,8 @@ int main(int argc, char** argv) {
       options.test_keys = true;
     } else if (a == "--test-page") {
       options.test_page = true;
+    } else if (a == "--no-viewport") {
+      options.no_viewport = true;
     } else if (a == "--test-drop-socket-at" || a == "--test-relayout-at") {
       u32 n = 0;
       if (!value(v) || !parse_u32(v, n) || n < 3) return usage("a frame number of 3 or more");
@@ -1852,6 +2037,26 @@ int main(int argc, char** argv) {
     return usage("--resize-to, --test-keys and the --test-* flags are the embedded window's");
   if ((options.drop_at > 0 || options.relayout_at > 0) && !options.test_page)
     return usage("--test-drop-socket-at and --test-relayout-at need --test-page to see the page");
+  // A page with no viewport is the page test's alone: a person who wants the panels without the
+  // native viewport opens engine-host --listen's shell address in a browser, so a second way to
+  // serve them would have no user, and kept a test's it stays under the test page's rules.
+  if (options.no_viewport && !options.test_page)
+    return usage(
+        "--no-viewport is the page test's (--embedded --test-page); the panels without "
+        "a viewport are engine-host --listen's shell address in a browser");
+  if (options.no_viewport &&
+      (options.pick || options.move || options.drag || options.look || options.look_os ||
+       options.rotate || options.test_keys || options.resize || !options.drop_file.empty() ||
+       !options.ddc.empty() || !options.trace_input.empty() || !options.listen.empty() ||
+       !options.credentials.empty()))
+    return usage(
+        "--no-viewport has no viewport to pick, drag, look, rotate, key, resize, drop "
+        "on, draw from a cache or trace, and runs on the default loopback listener alone");
+  if (options.test_page && !under_test_scratch(options.doc))
+    return usage(
+        "--test-page clicks the page, so it runs only on a document under the tests' "
+        "scratch root (<system temp>/engine-tests/, where engine::test::TempDir makes "
+        "every test's directory)");
 
   editor::EditorDocument document;
   std::string error;
@@ -1859,5 +2064,6 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "engine-editor: %s\n", error.c_str());
     return 1;
   }
-  return options.offscreen ? run_offscreen(options, document) : run_window(options, document);
+  if (options.offscreen) return run_offscreen(options, document);
+  return options.no_viewport ? run_page(options, document) : run_window(options, document);
 }

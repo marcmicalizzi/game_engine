@@ -40,6 +40,11 @@ struct WebviewOptions {
   // and put back after, because webview/webview has no option for it and the runtime honours the
   // variable over the folder the library passes (docs/subsystems/webview.md, "The profile").
   std::string profile_dir;
+  // Arguments for the browser process the view starts, such as `--disable-gpu` (engine-editor's
+  // page test: the view then makes no device of its own). Empty passes none. On Windows they go
+  // after whatever `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` already holds, through that documented
+  // variable, set while the view is made and put back after, as `profile_dir` is.
+  std::string browser_arguments;
 };
 
 class Webview {

@@ -30,6 +30,7 @@
 
 #include <doctest/doctest.h>
 #include <test_desktop.h>
+#include <test_environment.h>
 #include <test_paths.h>
 #include <test_temp_dir.h>
 
@@ -1607,16 +1608,26 @@ TEST_CASE("engine-editor: the look gesture through the platform's queue turns th
   }
 }
 
-TEST_CASE("engine-editor: the embedded page keeps its popups off the viewport, and reconnects") {
+TEST_CASE(
+    "engine-editor: the page with no viewport keeps its popups off the cell, and reconnects") {
   const test::TempDir tmp("engine_editor_page");
   const std::string doc_dir = embedded_fixture(tmp, true);
   const std::string exe = test::app_path(ENGINE_APP_PATH);
-  const std::string ddc = tmp.file("ddc");
   // The page's test hook (?test=1, only with --test-page) opens the command line's completions
   // and the properties panel's enum list by DOM events and reports whether each stays in its panel
   // and off the cell; then the editor sends editor.relayout (the page answers with a layout) and
-  // shuts every connection under the page, which must show its pill, reconnect and say so, while
-  // the viewport goes on drawing.
+  // shuts every connection under the page, which must show its pill, reconnect and say so. With
+  // --no-viewport (A51) all of it runs with no GPU device and no GPU lock: the lock's own log, on
+  // for the child as for every test's, is the witness that no hold was taken, beside what the
+  // editor says of itself. The viewport drawing on through a drop is the window's, and the
+  // embedded case above holds it.
+  // Only a hold a process takes itself is logged (at its release); a child told that its parent
+  // holds the lock for it (ENGINE_GPU_LOCK_HOLDER) takes none and logs none, so the variable is
+  // cleared for the child, which would then take, and log, a hold of its own for any device.
+  const std::string holds = tmp.file("gpu-lock-holds.jsonl");
+  const test::ScopedEnv on_device("ENGINE_GPU_LOCK_ON_DEVICE", "1");
+  const test::ScopedEnv hold_log("ENGINE_GPU_LOCK_LOG", holds);
+  const test::ScopedEnv no_holder("ENGINE_GPU_LOCK_HOLDER", "");
   const std::vector<std::string_view> argv = {exe,
                                               "--doc",
                                               doc_dir,
@@ -1624,19 +1635,23 @@ TEST_CASE("engine-editor: the embedded page keeps its popups off the viewport, a
                                               "900",
                                               "--height",
                                               "560",
-                                              "--frames",
-                                              "40",
-                                              "--ddc",
-                                              ddc,
                                               "--test-page",
                                               "--test-relayout-at",
                                               "10",
                                               "--test-drop-socket-at",
                                               "20",
+                                              "--no-viewport",
                                               "--embedded"};
   JsonValue summary;
   std::string output;
   if (!run_editor(argv, summary, output)) return;
+  CHECK_MESSAGE(std::string(summary.find("mode")->as_string()) == "page", output);
+  CHECK_MESSAGE(write_json(*summary.find("device")) == "false", output);
+  CHECK_MESSAGE(std::string(summary.find("browser_arguments")->as_string()) == "--disable-gpu",
+                output);
+  std::string held;
+  const io::Status read = io::read_file(holds, held);
+  CHECK_MESSAGE((read != io::Status::Ok || held.empty()), "the GPU lock was held: " << held);
   CHECK_MESSAGE(report_ok(page_report(summary, "completions")), output);
   CHECK_MESSAGE(report_ok(page_report(summary, "enum")), output);
   CHECK_MESSAGE(report_ok(page_report(summary, "done")), output);
@@ -1652,7 +1667,54 @@ TEST_CASE("engine-editor: the embedded page keeps its popups off the viewport, a
   const f64 back_at = number(summary.find("frames_at_reconnect"));
   CHECK_MESSAGE(dropped_at > 0.0, output);
   CHECK_MESSAGE(back_at > dropped_at, output);
-  CHECK_MESSAGE(number(summary.find("frames")) > back_at, output);
+  CHECK_MESSAGE(number(summary.find("frames")) >= back_at, output);
+}
+
+namespace {
+
+// engine-editor's exit code and its output, for a start that is refused before any window.
+i32 run_refused(const std::vector<std::string_view>& argv, std::string& output) {
+  platform::Process p;
+  std::string error;
+  REQUIRE_MESSAGE(p.spawn(std::span<const std::string_view>(argv.data(), argv.size()), &error,
+                          /*merge_stderr=*/true),
+                  error);
+  p.close_stdin();
+  p.read_all(output);
+  return p.wait();
+}
+
+}  // namespace
+
+TEST_CASE(
+    "engine-editor: --test-page runs only under the tests' scratch root; --no-viewport is its") {
+  const test::TempDir tmp("engine_editor_page_refusals");
+  const std::string exe = test::app_path(ENGINE_APP_PATH);
+  // The hook clicks the page's buttons, so it must never run against a real document: a document
+  // outside `<system temp>/engine-tests/` is refused before anything is opened or made, including
+  // one named through `..` from inside it. Nothing is created at the refused path.
+  const std::string outside = tmp.path() + "/../../engine-editor-not-a-test-doc";
+  std::string output;
+  CHECK(run_refused({exe, "--doc", outside, "--create", "--embedded", "--test-page"}, output) == 2);
+  CHECK_MESSAGE(
+      output.find("runs only on a document under the tests' scratch root") != std::string::npos,
+      output);
+  std::error_code ec;
+  CHECK_FALSE(std::filesystem::exists(std::filesystem::path(outside), ec));
+  output.clear();
+  CHECK(
+      run_refused({exe, "--doc", outside, "--create", "--embedded", "--test-page", "--no-viewport"},
+                  output) == 2);
+  // A page with no viewport is the page test's alone, and has nothing to pick or draw from.
+  output.clear();
+  CHECK(run_refused({exe, "--doc", tmp.file("doc"), "--create", "--embedded", "--no-viewport"},
+                    output) == 2);
+  CHECK_MESSAGE(output.find("--no-viewport is the page test's") != std::string::npos, output);
+  output.clear();
+  CHECK(run_refused({exe, "--doc", tmp.file("doc"), "--create", "--embedded", "--test-page",
+                     "--no-viewport", "--pick", "center"},
+                    output) == 2);
+  CHECK_MESSAGE(output.find("--no-viewport has no viewport") != std::string::npos, output);
 }
 
 namespace {
