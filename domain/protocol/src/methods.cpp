@@ -94,9 +94,17 @@ bool session_open(Context& ctx, const SessionOpenParams& params, SessionInfo& ou
   }
   SessionOpenParams opened = params;
   opened.path = dir.native;
+  // Read is not write: a document opened from a read-only root is never saved in place
+  // (Session::writable). Asked of the roots before the session protects the directory, and
+  // without a log line, since nothing is refused yet; a document already open is shared as it is.
+  io::Admitted write_probe;
+  io::Refusal write_why = io::Refusal::outside;
+  const bool may_write = ctx.roots->admit(params.path, client_base(ctx, {}),
+                                          io::Access::make_directory, write_probe, write_why);
   // Held by the connection that asked (0: stdio and in-process callers), so a client that
   // vanishes lets go of what it opened and a close lets go of the caller's hold alone.
-  Session* s = ctx.sessions->open(opened, ctx.connection, error);
+  Session* s = ctx.sessions->open(opened, ctx.connection, error,
+                                  may_write ? std::string_view{} : std::string_view(params.path));
   if (s == nullptr) {
     // "no document at <path>" named the host's path; say only what the client sent.
     if (error.code == codes::k_not_found)

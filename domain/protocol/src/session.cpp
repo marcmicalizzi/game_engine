@@ -4,6 +4,7 @@
 #include <core/time/time.h>
 #include <domain/doc/merge.h>
 #include <domain/doc/partition.h>
+#include <domain/protocol/paths.h>
 #include <domain/protocol/session.h>
 
 namespace engine::protocol {
@@ -344,7 +345,14 @@ bool Session::load(RpcError& error) {
   return load_side_files(error);
 }
 
+bool Session::check_writable(RpcError& error) const {
+  if (read_only_as_.empty()) return true;
+  error = path_not_found("path", read_only_as_, io::Access::write);
+  return false;
+}
+
 bool Session::persist(RpcError& error) {
+  if (!check_writable(error)) return false;
   std::string message;
   if (test_fail_save_) {
     test_fail_save_ = false;
@@ -398,17 +406,20 @@ bool Session::load_side_files(RpcError& error) {
   for (const LeaseInfo& l : leases.leases)
     orphans = orphans || orphan(l);
   leases_.assign(std::move(leases));
-  if (orphans && !update_leases(
-                     [&](bool& write) {
-                       const LeaseFile& file = leases_.file();
-                       for (u32 i = file.leases.size(); i > 0; --i) {
-                         if (!orphan(file.leases[i - 1])) continue;
-                         leases_.remove(file.leases[i - 1].id);
-                         write = true;
-                       }
-                       return true;
-                     },
-                     error))
+  // A session that may not be written leaves them in the file, where they refuse nothing it could
+  // do anyway.
+  if (orphans && writable() &&
+      !update_leases(
+          [&](bool& write) {
+            const LeaseFile& file = leases_.file();
+            for (u32 i = file.leases.size(); i > 0; --i) {
+              if (!orphan(file.leases[i - 1])) continue;
+              leases_.remove(file.leases[i - 1].id);
+              write = true;
+            }
+            return true;
+          },
+          error))
     return false;
 
   ProposalsFile proposals;
@@ -479,6 +490,7 @@ bool Session::refresh_leases(RpcError& error) {
 // still holds in memory and saves whole: that is not made safe here (two hosts changing layers at
 // once is unsupported), only the table.
 bool Session::save_proposals(std::string_view layer, RpcError& error) {
+  if (!check_writable(error)) return false;
   if (!may_write_side_files(error)) return false;
   const ProposalTable::Entry* mine = proposals_.find(layer);
   if (mine == nullptr) return true;
@@ -547,6 +559,8 @@ bool Session::commit_commands(std::span<const doc::Command> commands, doc::Attri
                               bool atomic, bool strict, u32 layer, const Caller* caller,
                               ApplyResult& result, RpcError& error, const Staging* staging,
                               u64 transaction) {
+  // Refused before the document changes in memory, not at the save (Session::writable).
+  if (!check_writable(error)) return false;
   if (attribution.timestamp_unix_ms == 0) attribution.timestamp_unix_ms = time::wall_unix_ms();
   Guard guard(*this, caller, attribution.timestamp_unix_ms);
   if (!guard.begin(layer, false, error)) return false;
@@ -849,6 +863,7 @@ bool Session::redo(u32 steps, const Caller* caller, StepResult& result, RpcError
 
 bool Session::step(bool backwards, u32 steps, const Caller* caller, StepResult& result,
                    RpcError& error) {
+  if (!check_writable(error)) return false;
   u32 done = 0;
   const i64 now = time::wall_unix_ms();
   // The patches stepped, in order, for their events once the step is saved.
@@ -1643,7 +1658,8 @@ bool Session::reject(const RejectParams& params, const Caller& caller, RpcError&
 
 // ---- SessionManager --------------------------------------------------------------------------
 
-Session* SessionManager::open(const SessionOpenParams& params, u64 holder, RpcError& error) {
+Session* SessionManager::open(const SessionOpenParams& params, u64 holder, RpcError& error,
+                              std::string_view read_only_as) {
   if (params.path.empty()) {
     error = make_error(codes::k_invalid_argument, "path is required");
     return nullptr;
@@ -1654,11 +1670,13 @@ Session* SessionManager::open(const SessionOpenParams& params, u64 holder, RpcEr
   for (const auto& s : sessions_) {
     if (s->dir() == path) {
       // One document, however many clients: the second opener shares the first's session.
+      if (read_only_as.empty()) s->set_read_only({});
       s->hold(holder);
       return s.get();
     }
   }
   auto session = std::make_unique<Session>(*vfs_, "s" + std::to_string(next_id_), path);
+  session->set_read_only(std::string(read_only_as));
   if (DocumentStore::exists(*vfs_, path)) {
     if (!session->load(error)) return nullptr;
   } else if (params.create) {

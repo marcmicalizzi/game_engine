@@ -882,3 +882,54 @@ TEST_CASE("roots: a refused path leaves nothing of the disk in log.tail") {
   CHECK(folded(describe_host_roots(narrow, "engine-host")).find(folded(tmp.file("work"))) !=
         std::string::npos);
 }
+
+// session.open needs only read, so before this a document under a root the operator named
+// read-only was opened and then saved in place by doc.save (every role), and rewritten with new
+// content by a writing role's doc.apply: the host wrote inside a root it was told not to.
+TEST_CASE("roots: a document under a read-only root opens and does not save") {
+  TempDir tmp("protocol_roots_readonly");
+  const Id128 a = Id128::from_parts(0x71, 1);
+  Host h;
+  const std::string world = tmp.file("lib") + "/world";
+  JsonValue made =
+      h.ok("session.open", obj({{"path", JsonValue(world)}, {"create", JsonValue(true)}}));
+  h.ok("session.close", obj({{"session", *made.find("session")}}));
+  std::string manifest_before;
+  REQUIRE(io::read_file(world + "/manifest.json", manifest_before) == io::Status::Ok);
+
+  io::Roots read_only;
+  REQUIRE(read_only.add("lib", tmp.file("lib"), false) == io::Status::Ok);
+  h.dispatcher.context().roots = &read_only;
+  const JsonValue opened = h.ok("session.open", obj({{"path", JsonValue("lib://world")}}));
+  const JsonValue session = at(opened, "session");
+  // Read as before.
+  CHECK(at(h.ok("session.info", obj({{"session", session}})), "path") == JsonValue("lib://world"));
+  // Every write to its directory is the refusal a path outside the roots gets.
+  const auto refused = [&](std::string_view method, JsonValue params) {
+    const JsonValue resp = h.call(method, std::move(params));
+    const JsonValue* error = resp.find("error");
+    REQUIRE(error != nullptr);
+    CHECK(error->find("code")->as_int() == codes::k_not_found);
+    CHECK(error->find("message")->as_string() ==
+          "path: no place this host may write at 'lib://world'");
+  };
+  refused("doc.save", obj({{"session", session}}));
+  JsonValue commands = JsonValue::array();
+  commands.push_back(create_command(a, "engine.content.AssetProvenance"));
+  refused("doc.apply",
+          obj({{"session", session}, {"commands", commands}, {"attribution", attribution()}}));
+  refused("doc.undo", obj({{"session", session}}));
+  std::string manifest_after;
+  REQUIRE(io::read_file(world + "/manifest.json", manifest_after) == io::Status::Ok);
+  CHECK(manifest_after == manifest_before);
+  h.ok("session.close", obj({{"session", session}}));
+
+  // The same document under a root the operator made writable saves.
+  io::Roots writable;
+  REQUIRE(writable.add("lib", tmp.file("lib"), true) == io::Status::Ok);
+  h.dispatcher.context().roots = &writable;
+  const JsonValue again = h.ok("session.open", obj({{"path", JsonValue("lib://world")}}));
+  h.ok("doc.save", obj({{"session", at(again, "session")}}));
+  h.ok("session.close", obj({{"session", at(again, "session")}}));
+  h.dispatcher.context().roots = &h.roots;
+}

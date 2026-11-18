@@ -53,6 +53,7 @@ bool Session::blobs_held(const doc::Command& command, ApplyResult& result) const
 
 bool Session::put_blob(std::string_view bytes, std::string_view media, BlobResult& out,
                        RpcError& error) {
+  if (!check_writable(error)) return false;
   std::string message;
   if (!BlobStore::put(*vfs_, dir_, bytes, media, out.ref, &out.created, &message)) {
     error = make_error(codes::k_io_error, std::move(message));
@@ -64,6 +65,7 @@ bool Session::put_blob(std::string_view bytes, std::string_view media, BlobResul
 
 bool Session::collect_blobs(const CollectBlobsParams& params, CollectBlobsResult& out,
                             RpcError& error) {
+  if (!check_writable(error)) return false;
   if (!(params.min_age_s >= 0)) {
     error = make_error(codes::k_invalid_argument, "min_age_s must be zero or more");
     return false;
@@ -110,6 +112,7 @@ bool Session::collect_blobs(const CollectBlobsParams& params, CollectBlobsResult
 
 bool Session::checkpoint(std::string_view label, const Caller& caller, doc::CheckpointInfo& out,
                          RpcError& error) {
+  if (!check_writable(error)) return false;
   // The label is a client's text that becomes the commit's subject: refused, not altered.
   std::string message;
   if (!Checkpoints::check_label(label, &message)) {
@@ -131,6 +134,7 @@ bool Session::checkpoint(std::string_view label, const Caller& caller, doc::Chec
 
 bool Session::rollback_to(const RollbackParams& params, const Caller& caller, RollbackResult& out,
                           RpcError& error) {
+  if (!check_writable(error)) return false;
   std::string message;
   doc::CheckpointInfo info;
   if (!Checkpoints::find(*vfs_, dir_, params.checkpoint, info, &message)) {

@@ -41,6 +41,17 @@ class Session {
   bool load(RpcError& error);
   bool save(RpcError& error);
 
+  // Whether the session's directory may be written (protocol.md, "The host's file roots"): yes for
+  // the host's own document, one made or opened under a writable root and a loaded save's copy; no
+  // for a document a client opened from a read-only root. On such a session every write to its
+  // directory (a save, a commit, an undo, a lease, a transaction, a proposal) is refused before
+  // anything changes, with the answer a path outside the roots gets for the path it was opened by.
+  bool writable() const noexcept { return read_only_as_.empty(); }
+  // Set before the document is loaded (SessionManager::open); empty makes it writable again.
+  void set_read_only(std::string client_path) { read_only_as_ = std::move(client_path); }
+  // True when the session may be written; otherwise false with that refusal in `error`.
+  bool check_writable(RpcError& error) const;
+
   // One transaction: applies every command, commits (dropping any redo tail first), journals,
   // and saves. Command failures are reported in `result.diagnostics`, not as an RPC error;
   // with `atomic` the transaction rolls back when any command fails.
@@ -319,6 +330,7 @@ class Session {
   io::Vfs* vfs_;
   std::string id_;
   std::string dir_;
+  std::string read_only_as_;  // the client's path, when the session may not be written
   doc::Document doc_;
   doc::DocumentManifest manifest_;
   LeaseTable leases_;
@@ -341,6 +353,7 @@ class Session {
 
 template <class Change>
 bool Session::update_transactions(Change&& change, RpcError& error) {
+  if (!check_writable(error)) return false;
   if (!may_write_side_files(error)) return false;
   return update_side_file(
       *vfs_, transactions_path(), transactions_,
@@ -360,6 +373,7 @@ bool Session::update_transactions(Change&& change, RpcError& error) {
 
 template <class Change>
 bool Session::update_leases(Change&& change, RpcError& error) {
+  if (!check_writable(error)) return false;
   if (!may_write_side_files(error)) return false;
   LeaseFile file;
   return update_side_file(
@@ -382,7 +396,11 @@ class SessionManager {
   // connection, or 0 for the host's own stdio and in-process callers). A session already open on
   // the same path is returned instead of a second one, and `holder` joins its holders: several
   // clients of one host share one document.
-  Session* open(const SessionOpenParams& params, u64 holder, RpcError& error);
+  // `read_only_as` non-empty: the document was admitted for reading only (a read-only root), so
+  // the session may not be written (`Session::writable`) and its refusals name that path. An
+  // already open session is shared as it is, and made writable when this opener may write.
+  Session* open(const SessionOpenParams& params, u64 holder, RpcError& error,
+                std::string_view read_only_as = {});
   Session* find(std::string_view id) noexcept;
   // Looks up the session named in params; sets SessionNotFound otherwise.
   Session* require(std::string_view id, RpcError& error) noexcept;
