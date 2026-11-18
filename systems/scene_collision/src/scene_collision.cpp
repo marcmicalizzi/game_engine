@@ -280,7 +280,8 @@ SceneCollision::~SceneCollision() {
       if (tile.placements) physics_->destroy_body(tile.placements);
       if (tile.placements_shape) physics_->destroy_shape(tile.placements_shape);
     }
-    for (HeldProp& held : props_) drop_prop_body(held);  // P45
+    for (HeldProp& held : props_)
+      drop_prop_body(held);  // P45
   }
   tiles_.clear();
   tick_scratch_.children.clear();
@@ -2187,7 +2188,8 @@ bool same_prop(const PropBody& a, const PropBody& b) noexcept {
          a.origin.y == b.origin.y && a.origin.z == b.origin.z && a.rotation.x == b.rotation.x &&
          a.rotation.y == b.rotation.y && a.rotation.z == b.rotation.z &&
          a.rotation.w == b.rotation.w && a.scale == b.scale &&
-         a.collider.shape == b.collider.shape && a.collider.half_extents == b.collider.half_extents &&
+         a.collider.shape == b.collider.shape &&
+         a.collider.half_extents == b.collider.half_extents &&
          a.collider.center == b.collider.center;
 }
 }  // namespace
@@ -2266,7 +2268,8 @@ u32 SceneCollision::update_props() {
     // here, in key order; one held unchanged keeps it.
     u32 n = 0;
     for (HeldProp& old : props_) {
-      while (n < props_next_.size() && props_next_[n].prop.key < old.prop.key) ++n;
+      while (n < props_next_.size() && props_next_[n].prop.key < old.prop.key)
+        ++n;
       const bool kept = n < props_next_.size() && same_prop(props_next_[n].prop, old.prop);
       if (kept) {
         props_next_[n].body = old.body;
@@ -2294,7 +2297,8 @@ u32 SceneCollision::update_props() {
   }
   stats_.props = props_.size();
   stats_.prop_bodies = 0;
-  for (const HeldProp& held : props_) stats_.prop_bodies += held.body ? 1u : 0u;
+  for (const HeldProp& held : props_)
+    stats_.prop_bodies += held.body ? 1u : 0u;
   // The trees give back a removed body's node only when rebuilt (docs: "Why this shape"), and a
   // module may move a prop every tick: rebuilt once an update that changed a prop's body.
   if (worked > 0) physics_->optimize_broad_phase();

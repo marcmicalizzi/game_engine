@@ -120,6 +120,46 @@ first riser ([dwellings](dwellings.md#the-stair)).
 where the proxy keeps them), kinematic bodies (a door's leaf), and the nav agent held to the
 walker's numbers ([Not yet](#not-yet)).
 
+## Props
+
+(2026-11-17, roadmap P45; [apps](apps.md#props-the-objects-a-game-places).) **A prop a game
+places is a static body the walker stops at, while the tile it stands in is held.** A host hands
+its props with `SceneCollision::set_props` — each a `PropBody`: a key (a game prop's id), a scene
+mesh, the origin as a `WorldPos`, a turn, a uniform scale and the body the scene declared
+(`renderer::PropCollider`, from `engine.scene.Prop.collision`) — on the tick they changed, and
+`update_props` runs on every tick after the ring's update and before the step. Three bodies:
+
+- **The mesh** (the default, `collision` absent): the prop's own LOD DAG cut at
+  `walk.collision.mesh_error_m` and welded — the proxy every placement gets, at the prop's scale,
+  through the same cache (`proxy_for`), so two crates share one shape — placed where the renderer
+  stands the instance: the mesh's fit through the turn and scale, its offset added to the origin in
+  f64. The collision's own copy keeps every prop mesh that collides by its mesh, at the streamed
+  entries' headroom over its fit, since no load placed it and a module may scale it
+  ([The collision's own copy](#the-collisions-own-copy)).
+- **A box** (`"collision":{"shape":"Box","half_extents":[x,y,z],"center":[x,y,z]}`): metres in the
+  prop's frame at scale 1, scaled by the module's scale — for a prop whose mesh is thin, open or
+  heavy, where a box is what a walker should meet.
+- **None** (`"shape":"None"`): a marker, a curtain.
+
+**A body a prop, not a piece of its tile's compound.** A module moves one prop at a tick, and a
+compound would be built again whole for it, with every other piece of the tile; a prop's body is
+made and let go alone. **Made with its tile, let go with it**: `update_props` gives a body to every
+prop whose tile is held (`covers` its origin) and has none, and takes it from one whose tile went,
+or which a later `set_props` moved, changed or left out — all let go first, then made, each in key
+order — so the bodies, their ids and a walk that touches one are the same in a replay (the ring's
+rule, [Why this shape](#why-this-shape)). A prop handed again unchanged keeps its body. The
+broadphase is rebuilt once an update that changed a prop's body, for the reason the tiles' is.
+**What it costs**: a scene with no props, or a tick on which nothing changed and no tile came or
+went, is one comparison; a change is a walk over the props (at most `view::k_max_props`, 1,024)
+and the bodies it makes. A cast that meets a prop is `HitKind::prop`, its `instance` the prop's key.
+
+`tests/prop_tests.cpp` (no device) holds it: a crate a metre on a side declared as a prop and
+placed by nothing stops a walker going north at its face less the capsule's radius; handed again
+unchanged nothing is made; moved 5 m the old body goes and the new one stops it there; at twice
+the scale the face is a metre out; a declared box 0.25 m deep stops it at the box's face; `None`
+and a removal let it through; the ring moved a kilometre away lets the body go with the tile, and
+back it is made again; a cast names the prop by its key.
+
 ## Holes
 
 (2026-11-07, roadmap W87; [terrain](terrain.md#holes).) A terrain's `holes` take the ground away under them, as the drawn ground's meshes leave their cells out. On the collision lattice a sample is **no sample** — the backend's no-collision height, `physics::k_heightfield_hole`, Jolt's `cNoCollisionValue` — where all four cells round it are holes by the terrain's cell rule, so the triangles that use it have no collision and the opening the walker falls through lies inside the one drawn (at the drawn levels' finer spacing the same rule takes the rim cells closer to the outline). `ground_height` answers none over a cell any of whose corners is no sample. A walker that steps in falls to whatever stands below — a cave passage's floor, a body like any placement's (the passage is a mesh, and its proxy is cut from its DAG, [caves](caves.md)). Only a tile whose window a hole's bounds reach pays: one bounds test a hole a tile, and then a copy of its heights with the hole samples set (`SceneCollision::holes_reach`, `hole_sample`). `tests/terrain_hole_tests.cpp` holds it: a 6 m round hole over flat ground with a floor 4 m below — no ground at the centre or 1.9 m out, the ground 4.5 m out, a ray straight down meeting the floor through the hole and the ground beside it, and a walker 6 m west walking east falls in and stands on the floor at −4 m.

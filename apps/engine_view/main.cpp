@@ -5328,9 +5328,9 @@ int run_view(int argc, char** argv) {
   }
   // `--temporal` (R171 leg 4) is measured in the plain offscreen loop, the one that draws every
   // frame of the path in order.
-  if (!options.temporal.empty() &&
-      (live || !options.offscreen || !options.benchmark.empty() ||
-       !options.marker_captures.empty() || options.verify_occlusion || options.capture_every != 0)) {
+  if (!options.temporal.empty() && (live || !options.offscreen || !options.benchmark.empty() ||
+                                    !options.marker_captures.empty() || options.verify_occlusion ||
+                                    options.capture_every != 0)) {
     std::fprintf(stderr,
                  "engine-view: --temporal measures a plain --offscreen run (no --benchmark, "
                  "--marker-captures, --verify-occlusion, --capture-every or replay)\n");

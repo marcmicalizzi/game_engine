@@ -335,8 +335,8 @@ struct Walker::Impl {
         (void)props_fn(props_context, &props_scratch);
         prop_bodies.clear();
         for (const WalkProp& p : props_scratch)
-          prop_bodies.push_back(scene_collision::PropBody{p.key, p.mesh, p.origin, p.rotation,
-                                                          p.scale, p.collider});
+          prop_bodies.push_back(
+              scene_collision::PropBody{p.key, p.mesh, p.origin, p.rotation, p.scale, p.collider});
         consumer.set_props({prop_bodies.data(), prop_bodies.size()});
       }
     }

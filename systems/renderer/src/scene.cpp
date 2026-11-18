@@ -35,6 +35,7 @@
 #include <systems/renderer/far_tile.h>
 #include <systems/renderer/flora_motion.h>
 #include <systems/renderer/scene.h>
+#include <systems/renderer/scene_wind.h>
 #include <systems/renderer/sway_forms.h>
 #include <systems/renderer/terrain.h>
 #include <systems/renderer/terrain_materials.h>
@@ -50,7 +51,6 @@
 #include <renderer_log.h>
 #include <scene_fire.h>
 #include <scene_water.h>
-#include <systems/renderer/scene_wind.h>
 #include <schemas/scene.h>
 #include <thread>
 #include <utility>
@@ -82,8 +82,8 @@ u32 hold_lifted(std::span<const scene_gen::Footprint> shapes, Vector<Lifted>& li
   u32 left = 0;
   for (Lifted& l : lifted) {
     for (u32 s = 0; s < shapes.size() && !l.held; ++s)
-      l.held = shapes[s].shape != scene_gen::FootprintShape::band &&
-               shapes[s].covers_mm(l.x_mm, l.z_mm);
+      l.held =
+          shapes[s].shape != scene_gen::FootprintShape::band && shapes[s].covers_mm(l.x_mm, l.z_mm);
     left += l.held ? 0u : 1u;
   }
   return left;
@@ -1414,7 +1414,8 @@ bool expand_placements(const scene::Scene& file, const std::string& path, const 
             static_cast<i32>(scene_gen::mask_floor_div(lifted[k].x_mm, tile_mm)),
             static_cast<i32>(scene_gen::mask_floor_div(lifted[k].z_mm, tile_mm))};
         bool seen_tile = false;
-        for (const scene_gen::TileCoord& a : asked) seen_tile = seen_tile || (a.x == at.x && a.z == at.z);
+        for (const scene_gen::TileCoord& a : asked)
+          seen_tile = seen_tile || (a.x == at.x && a.z == at.z);
         if (seen_tile) continue;
         asked.push_back(at);
         if (generator->occupies != nullptr && !generator->occupies(state, at)) continue;
@@ -2594,7 +2595,8 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
       return false;
     }
     out.sky = *file.sky;
-    // The scene's wind (gfx.md, "The wind a scene names"; W136), checked here so a wind nobody can draw refuses the file.
+    // The scene's wind (gfx.md, "The wind a scene names"; W136), checked here so a wind nobody can
+    // draw refuses the file.
     if (file.sky->wind.has_value() && !read_scene_wind(*file.sky->wind, path, out.wind, error))
       return false;
     // The swell arriving beside it (gfx.md, "A swell a scene names"; W136-3).
@@ -2748,7 +2750,8 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
           !(h.x > 0.0f && h.y > 0.0f && h.z > 0.0f && std::isfinite(h.x) && std::isfinite(h.y) &&
             std::isfinite(h.z) && std::isfinite(c.center.x) && std::isfinite(c.center.y) &&
             std::isfinite(c.center.z))) {
-        error = where + " (\"" + prop.name + "\"): collision: a box's half_extents must each be "
+        error = where + " (\"" + prop.name +
+                "\"): collision: a box's half_extents must each be "
                 "above zero, and the box finite";
         return false;
       }
@@ -3688,8 +3691,8 @@ void update_scene_bounds(SceneData& out) {
     Vec3i lowest = out.instances.empty() ? Vec3i{} : out.instances[0].cell;
     for (const gfx::InstanceDesc& instance : out.instances) {
       const Vec3i c = instance.cell;
-      if (c.x < lowest.x || (c.x == lowest.x && (c.y < lowest.y ||
-                                                 (c.y == lowest.y && c.z < lowest.z))))
+      if (c.x < lowest.x ||
+          (c.x == lowest.x && (c.y < lowest.y || (c.y == lowest.y && c.z < lowest.z))))
         lowest = c;
     }
     const WorldCell corner{lowest, Vec3{}};

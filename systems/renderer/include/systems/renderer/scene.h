@@ -218,7 +218,8 @@ struct SceneWater {
   // load from the wind and the fetch: `gfx::k_water_waves` of them for every body with a wind, or
   // none, and then the material's four sines.
   Vector<gfx::WaterWave> waves;
-  // **The scene's wind** (gfx.md, "The water reads the wind"; W136): the body follows the scene's wind
+  // **The scene's wind** (gfx.md, "The water reads the wind"; W136): the body follows the scene's
+  // wind
   // (`Sky.wind`; the body's `wind_follow`): its wind and direction are the scene's. A varying one's
   // `waves` above are its largest sea drawn on `grid`, which spans every state that wind raises
   // over `fetch_m` (invalid for a fixed wind); the GPU scene redraws the table on the same grid as
@@ -566,8 +567,8 @@ struct SceneDesc {
   // provider found in the registry when the file was read. Empty: the stand-in sky and sun, exactly
   // as before the field existed.
   std::optional<scene::Sky> sky;
-  // The scene's wind (`Sky.wind`; gfx.md, "The wind a scene names"; W136), read and checked: kind none when the sky names
-  // none, and every reader draws what it drew.
+  // The scene's wind (`Sky.wind`; gfx.md, "The wind a scene names"; W136), read and checked: kind
+  // none when the sky names none, and every reader draws what it drew.
   gfx::WindDesc wind{};
   // The scene's participating medium (`engine.scene.Medium`, the volumetrics capability's type):
   // the block as the file gave it, read by nothing here. Null: no medium.
@@ -907,7 +908,8 @@ struct SceneData {
   Vector<u32> loaded_of_read;
   // Carried from the `SceneDesc`: the sky the renderer draws (sky.h), or the stand-in without one.
   std::optional<scene::Sky> sky;
-  // Carried from the `SceneDesc`: the scene's wind (gfx.md, "The wind a scene names"; W136), kind none without one.
+  // Carried from the `SceneDesc`: the scene's wind (gfx.md, "The wind a scene names"; W136), kind
+  // none without one.
   gfx::WindDesc wind{};
   // Carried from the `SceneDesc`: the medium a frame pass draws (frame_pass.h;
   // systems/volumetrics), uninterpreted. Null: no medium.
