@@ -16,9 +16,14 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <atomic>
+#include <bit>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace engine;
@@ -1332,6 +1337,135 @@ TEST_CASE(
   moving.stand = ground(flat);
   CHECK(!desc->open(params, moving, &state, &error));
   CHECK(error.find("static ground") != std::string::npos);
+}
+
+// **A tile asked beside others is the tile asked alone** (T173; scene_gen.md, "A tile asked on
+// several threads"): the generator says its `tile` is reentrant, because a call reads only the
+// plan, the kit and the tiles `open` made and writes only the `Placements` it is handed. Every tile
+// of an eight-house village, asked on one thread, and then all of them at once from eight threads
+// on one state, a dozen rounds: every house, kit piece, mesh and shape the same to the bit.
+TEST_CASE("village: one state's tiles asked on eight threads are the tiles asked alone") {
+  const scene_gen::PlacementGeneratorDesc* desc =
+      scene_gen::GeneratorRegistry::global().find_placement("village");
+  REQUIRE(desc != nullptr);
+  CHECK(desc->tile_reentrant);
+  JsonValue params;
+  REQUIRE(parse_json(std::string("{\"name\":\"gen\",\"seed\":7,\"houses\":8,\"lanes\":[{\"name\":"
+                                 "\"street\",\"waypoints\":[[-20,0,10],[40,0,25],[110,0,20]]}]}"),
+                     params)
+              .ok);
+  scene_gen::Context context;
+  context.ground = ground(gentle);
+  context.where = "test: placements 0";
+  void* state = nullptr;
+  std::string error;
+  REQUIRE_MESSAGE(desc->open(params, context, &state, &error), error);
+  std::vector<scene_gen::TileCoord> asks;
+  for (i32 tz = -3; tz <= 4; ++tz)
+    for (i32 tx = -3; tx <= 5; ++tx)
+      asks.push_back(scene_gen::TileCoord{tx, tz});
+  const auto words = [](const scene_gen::Placements& p) {
+    std::vector<u64> out;  // every field the call hands, to the bit
+    out.push_back(p.things);
+    out.push_back(p.kind);
+    for (const scene_gen::Placement& q : p.instances) {
+      out.push_back(static_cast<u64>(q.mesh) << 32 | static_cast<u64>(q.id));
+      out.push_back(static_cast<u64>(q.tag) << 8 | q.handoff);
+      out.push_back(std::bit_cast<u64>(q.position.x));
+      out.push_back(std::bit_cast<u64>(q.position.y));
+      out.push_back(std::bit_cast<u64>(q.position.z));
+      for (const f32 f : {q.rotation.x, q.rotation.y, q.rotation.z, q.rotation.w, q.scale.x,
+                          q.scale.y, q.scale.z})
+        out.push_back(std::bit_cast<u32>(f));
+    }
+    for (const scene_gen::PlacementMesh& m : p.meshes) {
+      out.push_back(hash_bytes(m.path.data(), m.path.size()));
+      out.push_back(hash_bytes(m.name.data(), m.name.size()));
+      out.push_back(hash_bytes(m.recipe.data(), m.recipe.size()));
+      out.push_back(m.hash);
+      out.push_back(std::bit_cast<u32>(m.reach));
+    }
+    for (u32 k = 0; k < p.shapes.size(); ++k) {
+      const scene_gen::Footprint& f = p.shapes[k];
+      for (const i64 v : {f.x_mm, f.z_mm, f.ax_mm, f.az_mm, f.bx_mm, f.bz_mm, f.half_mm})
+        out.push_back(static_cast<u64>(v));
+      out.push_back(std::bit_cast<u64>(f.radius));
+      out.push_back(static_cast<u64>(f.shape) << 32 | f.point_count);
+      for (u32 n = 0; n < f.point_count; ++n) {
+        out.push_back(static_cast<u64>(f.points[n].x_mm));
+        out.push_back(static_cast<u64>(f.points[n].z_mm));
+      }
+    }
+    return out;
+  };
+  std::vector<std::vector<u64>> alone(asks.size());
+  u32 houses = 0, shapes = 0;
+  for (u32 k = 0; k < asks.size(); ++k) {
+    scene_gen::Placements placed;
+    REQUIRE_MESSAGE(desc->tile(state, asks[k], context, placed, &error), error);
+    houses += placed.things;
+    shapes += placed.shapes.size();
+    alone[k] = words(placed);
+  }
+  CHECK(houses == 8);
+  CHECK(shapes > 0);
+  constexpr u32 k_threads = 8;
+  constexpr u32 k_rounds = 12;
+  std::atomic<u32> differ{0}, failed{0};
+  for (u32 round = 0; round < k_rounds; ++round) {
+    std::vector<std::thread> threads;
+    std::atomic<u32> next{0};
+    for (u32 t = 0; t < k_threads; ++t) {
+      threads.emplace_back([&] {
+        std::string why;
+        for (u32 k = next.fetch_add(1); k < asks.size(); k = next.fetch_add(1)) {
+          const u32 at = (k + round) % asks.size();
+          scene_gen::Placements placed;
+          if (!desc->tile(state, asks[at], context, placed, &why)) {
+            failed.fetch_add(1);
+            continue;
+          }
+          if (words(placed) != alone[at]) differ.fetch_add(1);
+        }
+      });
+    }
+    for (std::thread& t : threads)
+      t.join();
+  }
+  // What the lock cost a fill of these tiles (T169's question): every tile asked on eight threads
+  // under one lock, as the collision asks a generator that does not say it is reentrant, and side
+  // by side, as it asks one that does.
+  const auto fill_ms = [&](bool locked) {
+    std::mutex lock;
+    std::atomic<u32> next{0};
+    const auto start = std::chrono::steady_clock::now();
+    std::vector<std::thread> threads;
+    for (u32 t = 0; t < k_threads; ++t) {
+      threads.emplace_back([&] {
+        std::string why;
+        for (u32 k = next.fetch_add(1); k < asks.size(); k = next.fetch_add(1)) {
+          scene_gen::Placements placed;
+          if (locked) {
+            const std::lock_guard<std::mutex> hold(lock);
+            (void)desc->tile(state, asks[k], context, placed, &why);
+          } else {
+            (void)desc->tile(state, asks[k], context, placed, &why);
+          }
+        }
+      });
+    }
+    for (std::thread& t : threads)
+      t.join();
+    return std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - start).count();
+  };
+  const f64 locked_ms = fill_ms(true), side_ms = fill_ms(false);
+  MESSAGE(asks.size() << " tiles (" << houses << " houses, " << shapes << " shapes), asked on "
+                      << k_threads << " threads at once, " << k_rounds << " rounds: "
+                      << differ.load() << " differ; a fill on eight threads " << locked_ms
+                      << " ms under one lock, " << side_ms << " ms side by side");
+  CHECK(failed.load() == 0);
+  CHECK(differ.load() == 0);
+  desc->close(state);
 }
 
 TEST_CASE("village: an entry out of range is refused with a sentence") {
