@@ -12,8 +12,8 @@ What the five say, in short:
 
 | Role | May call (writes; reads are never restricted) | Layers | Review |
 |---|---|---|---|
-| director | everything | every layer | no: it promotes and rejects |
-| designer | `doc.apply`, undo and redo, `doc.propose_layer`, `doc.reject`, `lease.*` | every layer, through proposals | yes |
+| director | everything, `doc.checkpoint`, `doc.rollback_to` and `doc.collect_blobs` among it | every layer | no: it promotes and rejects |
+| designer | `doc.apply`, undo and redo, `doc.propose_layer`, `doc.reject`, `lease.*`, `doc.put_blob` | every layer, through proposals | yes |
 | environment | the same | every layer, through proposals, and only records that stand in a tile | yes |
 | qa | nothing | none | — |
 | performance | `content.build`, `tunables.set` | none | — |
@@ -22,6 +22,13 @@ What the five say, in short:
 one that leaves `attribution.role` blank on a host started without `--role` — runs as QA and so
 changes nothing. That is the least a host told to restrict anything should grant a caller who did
 not say who it is. A host started without a roles file restricts nothing at all.
+
+**Checkpoints, rollbacks and blob collection are the director's.** A rollback rewrites every
+accepted layer it differs in, so a role that works through proposals could not make one anyway (it
+is refused whole, like any direct write); a checkpoint changes no document but is the history every
+other agent rolls back to, and a collection deletes bytes. The designer and the environment may put
+blobs, since painting a mask or a heightfield into a proposal names one
+([protocol](../../docs/subsystems/protocol.md#blobs-and-checkpoints)).
 
 **It is an example, meant to be copied and edited per game.** The layer patterns are `*` because
 this repository has no game's layer names yet; a game would narrow the environment role to its

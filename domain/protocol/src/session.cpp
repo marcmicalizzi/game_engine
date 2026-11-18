@@ -425,8 +425,15 @@ bool Session::commit_commands(std::span<const doc::Command> commands, doc::Attri
   doc_.set_edit_layer(layer);
   doc::Transaction tx = doc_.begin(std::move(attribution));
   u32 applied = 0;
+  bool unheld = false;
   for (const doc::Command& command : commands) {
     guard.before(command.id);
+    // A client's command may name only blobs the store holds (D13, session_history.cpp): a
+    // reference to bytes that are not there would be a damaged document from its first save.
+    if (strict && !blobs_held(command, result)) {
+      unheld = true;
+      continue;
+    }
     if (tx.apply(command, strict)) ++applied;
   }
   for (const auto& d : tx.diagnostics()) {
@@ -436,7 +443,7 @@ bool Session::commit_commands(std::span<const doc::Command> commands, doc::Attri
     result.diagnostics.push_back(std::move(diagnostic));
   }
   result.applied = applied;
-  if (applied == 0 || (atomic && !tx.ok())) {
+  if (applied == 0 || (atomic && (!tx.ok() || unheld))) {
     tx.rollback();
     doc_.set_edit_layer(edit_layer);
     result.committed = false;
@@ -472,6 +479,32 @@ bool Session::commit_commands(std::span<const doc::Command> commands, doc::Attri
   if (!persist(error)) return false;
   publish_journal("commit", static_cast<u32>(doc_.journal().size() - 1));
   return note_proposal_touches(doc_.journal().back(), error);
+}
+
+// The Guard's checks of commit_commands without the commit, for a write of several patches that has
+// to be refused before any of them lands (doc.rollback_to, session_history.cpp). The transaction is
+// rolled back, so nothing is journaled or saved; its ids are stamped in the change feed twice over,
+// which a reader finds unchanged.
+bool Session::check_commands(std::span<const doc::Command> commands,
+                             const doc::Attribution& attribution, u32 layer, const Caller* caller,
+                             RpcError& error) {
+  if (caller == nullptr || commands.empty()) return true;
+  const i64 now =
+      attribution.timestamp_unix_ms != 0 ? attribution.timestamp_unix_ms : time::wall_unix_ms();
+  Guard guard(*this, caller, now);
+  if (!guard.begin(layer, false, error)) return false;
+  guard.reserve(static_cast<u32>(commands.size()));
+  const u32 edit_layer = doc_.edit_layer();
+  doc_.set_edit_layer(layer);
+  doc::Transaction tx = doc_.begin(attribution);
+  for (const doc::Command& command : commands) {
+    guard.before(command.id);
+    (void)tx.apply(command, false);
+  }
+  const bool ok = guard.finish(error);
+  tx.rollback();
+  doc_.set_edit_layer(edit_layer);
+  return ok;
 }
 
 void Session::publish_journal(std::string_view action, u32 index) const {

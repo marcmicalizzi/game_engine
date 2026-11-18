@@ -6,7 +6,8 @@ engine_module(NAME protocol LAYER domain
   DEPS base containers ids json schema log time platform profiling tunables io schemas doc gfx
        hash net
   SOURCES src/rpc.cpp src/session.cpp src/methods.cpp src/policy.cpp src/leases.cpp
-          src/proposals.cpp src/policy_methods.cpp src/listener.cpp src/events.cpp)
+          src/proposals.cpp src/policy_methods.cpp src/listener.cpp src/events.cpp
+          src/session_history.cpp src/history_methods.cpp)
 target_compile_definitions(engine_protocol PRIVATE ENGINE_VERSION="${PROJECT_VERSION}")
 
 # Types the roles, leases and proposals tests and experiment E12 place in a world: a prop that
@@ -20,6 +21,7 @@ engine_schema_library(NAME protocol_test_types
 # methods are engine-host's (roadmap T170, what-to-run.md, "Tests that open no device").
 engine_module_tests(NAME protocol NO_DEVICE
   SOURCES tests/protocol_tests.cpp tests/policy_tests.cpp tests/e12_tests.cpp tests/listener_tests.cpp
+          tests/history_tests.cpp
   DEPS protocol_test_types bench)
 if(TARGET engine_protocol_tests)
   # The shipped roles file (content/roles/roles.json), which one case loads.

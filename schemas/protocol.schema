@@ -2349,6 +2349,127 @@ struct RejectParams @version(1) {
   attribution: engine.doc.Attribution
 }
 
+// ---- blobs and checkpoints (roadmap D13, D14; docs/subsystems/protocol.md, "Blobs and
+// checkpoints") ------------------------------------------------------------------------------------
+
+/// Parameters of `doc.put_blob`: bytes into the document's blob store, from a file on the host's
+/// machine (`path`) or inline (`data_base64`, for a few megabytes at most), never both.
+struct PutBlobParams @version(1) {
+  session: string
+  /// A file the host reads; relative paths are the host's working directory's.
+  path: string
+  /// The bytes, base64 (RFC 4648), when there is no file.
+  data_base64: string
+  /// What the bytes are, carried in the reference ("engine.terrain.grid/1", "image/png").
+  media: string
+  attribution: engine.doc.Attribution?
+}
+
+/// What `doc.put_blob` and `doc.blob` answer.
+struct BlobResult @version(1) {
+  /// The reference to set as (part of) a property's value.
+  ref: engine.doc.BlobRef
+  /// The put stored new bytes; false when the store already held them.
+  created: bool = false
+  /// Where the bytes are, under the document's directory (a Vfs path).
+  path: string
+  /// `doc.blob` with `data`: the bytes, base64.
+  data_base64: string
+}
+
+/// Parameters of `doc.blob`: a blob's bytes checked against its name.
+struct BlobParams @version(1) {
+  session: string
+  /// The name: 64 lowercase hexadecimal characters.
+  blob: string
+  /// Return the bytes inline (base64) as well as the path.
+  data: bool = false
+}
+
+/// Parameters of `doc.collect_blobs`.
+struct CollectBlobsParams @version(1) {
+  session: string
+  /// A blob nothing references is kept while it is younger than this, in seconds: the time
+  /// between a put and the commit that names it.
+  min_age_s: f64 = 3600
+  /// Report what would go and remove nothing.
+  dry_run: bool = false
+  attribution: engine.doc.Attribution?
+}
+
+struct CollectBlobsResult @version(1) {
+  stored: u32 = 0
+  stored_bytes: u64 = 0
+  /// Distinct names the layers, the journal (undo history and redo tail) and the open proposals'
+  /// merge bases reference.
+  referenced: u32 = 0
+  kept_young: u32 = 0
+  removed: string[]
+  removed_bytes: u64 = 0
+  /// Referenced names the store does not hold: a damaged document, which `doc.validate` reports.
+  missing: string[]
+}
+
+/// Parameters of `doc.checkpoint`: a commit of the document's directory in its own repository.
+struct CheckpointParams @version(1) {
+  session: string
+  /// The commit's subject; "checkpoint" when empty.
+  label: string
+  attribution: engine.doc.Attribution?
+}
+
+/// Parameters of `doc.checkpoints`.
+struct CheckpointsParams @version(1) {
+  session: string
+  /// At most this many, newest first; every one when zero.
+  limit: u32 = 50
+}
+
+struct CheckpointsResult @version(1) {
+  checkpoints: engine.doc.CheckpointInfo[]
+  /// The git that ran (`git --version`), or why none could.
+  git: string
+  available: bool = false
+}
+
+/// Parameters of `doc.rollback_to`: make the document's accepted layers what a checkpoint held.
+struct RollbackParams @version(1) {
+  session: string
+  /// The checkpoint's id: its commit name, whole or at least four characters of it.
+  checkpoint: string
+  /// Check everything and report what would change, committing nothing.
+  dry_run: bool = false
+  attribution: engine.doc.Attribution?
+}
+
+/// One layer's part of a rollback.
+struct RollbackLayer @version(1) {
+  layer: string
+  /// "restored" (its records made the checkpoint's), "added" (the checkpoint had it and the stack
+  /// did not: appended, then restored), "emptied" (not in the checkpoint: its records removed, the
+  /// layer kept), "kept" (a proposal layer: its owner's work in progress, untouched).
+  action: string
+  /// Records the layer's patch rewrote.
+  records: u32 = 0
+  /// Its patch's index in the journal; absent when nothing changed (or a dry run).
+  patch_index: u32?
+  /// Its storage form changed to the checkpoint's.
+  repartitioned: bool = false
+}
+
+struct RollbackResult @version(1) {
+  checkpoint: engine.doc.CheckpointInfo
+  committed: bool = false
+  dry_run: bool = false
+  layers: RollbackLayer[]
+  /// The patches the rollback committed, in order: `doc.undo` with their count takes it back.
+  patches: u32 = 0
+  /// Blobs the checkpoint's layers name that the store had collected, written back from it.
+  blobs_restored: u32 = 0
+  /// The edit layer after the rollback: the checkpoint's, when the stack still has it.
+  edit_layer: string
+}
+
 // ---- engine-editor's own methods (roadmap A37) ------------------------------------------------
 // The web shell embedded beside the editor's native viewport tells the editor where its viewport
 // cell is (`editor.layout`), what its outliner chose (`editor.select`), and reads what the viewport

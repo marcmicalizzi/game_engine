@@ -1,6 +1,6 @@
 # hash (core)
 
-**Purpose.** Hashing primitives for container keys and small-key identity: a 64-bit finalizer (`mix64`), `hash_combine`, `hash_bytes`, and `Hash<T>` specializations; and **SHA-1 and base64** (`sha1.h`, `base64.h`) for the one protocol that names them, the WebSocket opening handshake, and for engine-host's session token ([net](net.md)). Header-only.
+**Purpose.** Hashing primitives for container keys and small-key identity: a 64-bit finalizer (`mix64`), `hash_combine`, `hash_bytes`, and `Hash<T>` specializations; and **SHA-1 and base64** (`sha1.h`, `base64.h`) for the one protocol that names them, the WebSocket opening handshake, and for engine-host's session token ([net](net.md)); and **SHA-256** (`sha256.h`) for content addressing, the name of a document's blob ([doc](doc.md#blobs)). Header-only.
 
 **Owned data.** None.
 
@@ -10,12 +10,14 @@
 - `Hash<float>` and `Hash<double>` hash `-0.0` and `+0.0` identically because they compare equal.
 - There is no fallback for unspecialized types: using `Hash<T>` for a type without a specialization is a compile error, not a weak hash.
 
-**Public API.** `core/hash/hash.h`: `k_hash_seed`, `mix64`, `hash_combine`, `hash_bytes(data, len, seed)`, `Hash<T>` for integers, enums, pointers, floats, string-like types, and pairs; `StringHash`. `core/hash/sha1.h`: `Sha1` (`update`, `finish`) and `sha1(text)`, a `Sha1Digest` of 20 bytes. `core/hash/base64.h`: `base64_encode(bytes, alphabet, pad)` with the standard or URL alphabet, `base64_decode` that takes either.
+**Public API.** `core/hash/hash.h`: `k_hash_seed`, `mix64`, `hash_combine`, `hash_bytes(data, len, seed)`, `Hash<T>` for integers, enums, pointers, floats, string-like types, and pairs; `StringHash`. `core/hash/sha1.h`: `Sha1` (`update`, `finish`) and `sha1(text)`, a `Sha1Digest` of 20 bytes. `core/hash/base64.h`: `base64_encode(bytes, alphabet, pad)` with the standard or URL alphabet, `base64_decode` that takes either. `core/hash/sha256.h`: `Sha256` (`update`, `finish`), `sha256(bytes)`, a `Sha256Digest` of 32 bytes, and `sha256_hex` (64 lowercase hex digits, a blob's name).
+
+**SHA-256 names content.** A blob's name is its whole identity, so two contents must never share one; `hash_bytes` is a table hash, and SHA-256 has no known collision. Whole 64-byte blocks are compressed straight from the caller's bytes, so hashing a large grid costs the compression and no copy.
 
 **SHA-1 is not for security.** It has had practical collisions since 2017. It is here because RFC 6455 computes `Sec-WebSocket-Accept` as base64(SHA-1(key + GUID)), and a pure function of bytes with standard test vectors belongs beside the other hashes rather than inside the network module, where a second user would otherwise grow a second copy. Nothing may use it to decide whether bytes can be trusted.
 
 **Depends on.** `base`.
 
-**Testing.** `tools/dev.ps1 test -Filter hash`. Covers determinism, length and content sensitivity across the word boundary, representation independence for strings, float zero handling, and top-bit distribution for sequential integers. `sha1_base64_tests.cpp` holds SHA-1 to the FIPS 180 and RFC 3174 vectors (the million a's fed in uneven pieces, and padding at 55, 56 and 64 bytes, checked against .NET's SHA1), base64 to RFC 4648 §10's vectors both ways and the URL alphabet, and the two together to RFC 6455 §1.3's worked handshake.
+**Testing.** `tools/dev.ps1 test -Filter hash`. Covers determinism, length and content sensitivity across the word boundary, representation independence for strings, float zero handling, and top-bit distribution for sequential integers. `sha1_base64_tests.cpp` holds SHA-1 to the FIPS 180 and RFC 3174 vectors (the million a's fed in uneven pieces, and padding at 55, 56 and 64 bytes, checked against .NET's SHA1), base64 to RFC 4648 §10's vectors both ways and the URL alphabet, and the two together to RFC 6455 §1.3's worked handshake. `sha256_tests.cpp` holds SHA-256 to FIPS 180's vectors (one block, two blocks, a million a's whole and in pieces of 1, 7, 63, 64, 65 and 997 bytes) and every length from 0 to 199 fed whole and byte by byte.
 
-**Performance notes.** `hash_bytes` is a word-at-a-time multiplicative hash with the MurmurHash3 finalizer: adequate for hash tables, deterministic across platforms, not cryptographic, and not the content-addressing hash (BLAKE3 or xxHash3 arrive with the derived-data cache). It is a candidate for replacement by a benchmarked fast hash once the tunables harness exists.
+**Performance notes.** `hash_bytes` is a word-at-a-time multiplicative hash with the MurmurHash3 finalizer: adequate for hash tables, deterministic across platforms, not cryptographic, and not the content-addressing hash (a document's blobs are named by SHA-256, above). It is a candidate for replacement by a benchmarked fast hash once the tunables harness exists.

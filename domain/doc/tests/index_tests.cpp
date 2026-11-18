@@ -431,11 +431,43 @@ TEST_CASE("doc index: the tile index through five thousand random commands") {
   Vector<Patch> undone;
   u32 mismatch_at = k_commands;
   std::string first_failure;
+  // The rollback a checkpoint makes (protocol's doc.rollback_to, roadmap D14): every layer made what
+  // a snapshot of the stack held — emptied when the snapshot lacks it — by one non-strict
+  // transaction of diff_layers' commands per layer, as the session does; the index and the tile
+  // index checked after it like after any command.
+  Vector<Layer> snapshot;
+  u32 rollbacks = 0;
   for (u32 step = 0; step < k_commands && mismatch_at == k_commands; ++step) {
     const u32 pick = rng.next(100);
     const ObjectId id = id_of(rng.next(k_objects));
     const ObjectId other = id_of(rng.next(k_objects));
     d.set_edit_layer(rng.next(d.layer_count()));
+
+    const u32 history = rng.next(60);
+    if (history == 0) {
+      snapshot.clear();
+      const Document& read = d;
+      for (u32 l = 0; l < read.layer_count(); ++l)
+        snapshot.push_back(read.layer(l));
+    } else if (history == 1 && !snapshot.empty()) {
+      const Document& read = d;
+      for (u32 l = 0; l < read.layer_count(); ++l) {
+        const Layer* held = nullptr;
+        for (const Layer& s : snapshot)
+          if (s.name() == read.layer(l).name()) held = &s;
+        const Layer target =
+            held != nullptr ? *held : Layer(read.layer(l).name(), read.layer(l).role());
+        const Vector<Command> commands = diff_layers(read.layer(l), target);
+        if (commands.empty()) continue;
+        d.set_edit_layer(l);
+        Transaction tx = d.begin(who());
+        for (const Command& c : commands)
+          tx.apply(c, false);
+        tx.commit();
+        CHECK(read.layer(l) == target);
+      }
+      ++rollbacks;
+    }
 
     if (pick < 22) {
       Transaction tx = d.begin(who());
@@ -517,4 +549,6 @@ TEST_CASE("doc index: the tile index through five thousand random commands") {
   CHECK(mismatch_at == k_commands);
   CHECK(d.occupied_tiles() > 0);
   CHECK_FALSE(d.untiled().empty());
+  MESSAGE("rollbacks to a snapshot: " << rollbacks);
+  CHECK(rollbacks > 20);
 }

@@ -552,6 +552,8 @@ bool schema_describe(Context&, const SchemaDescribeParams& params, SchemaDescrib
 
 // policy_methods.cpp.
 void add_policy_methods(Dispatcher& d);
+// history_methods.cpp.
+void add_history_methods(Dispatcher& d);
 
 // Read-only methods are marked `read_only` and no role restricts them (plan 06 §6.5: read access
 // is unrestricted); every other one is a write a role must name. A method is read-only when it
@@ -652,6 +654,9 @@ void add_builtin_methods(Dispatcher& d) {
 
   // lease.*, doc.propose_layer, doc.promote, doc.reject and engine.roles (policy_methods.cpp).
   add_policy_methods(d);
+  // Blobs and checkpoints: doc.put_blob, doc.blob, doc.collect_blobs, doc.checkpoint,
+  // doc.checkpoints and doc.rollback_to (history_methods.cpp).
+  add_history_methods(d);
 }
 
 }  // namespace engine::protocol

@@ -145,7 +145,8 @@ Process::~Process() {
 
 #if ENGINE_PLATFORM_WINDOWS
 
-bool Process::spawn(std::span<const std::string_view> argv, std::string* error, bool merge_stderr) {
+bool Process::spawn(std::span<const std::string_view> argv, std::string* error, bool merge_stderr,
+                    bool no_window) {
   if (spawned_) {
     set_error(error, "Process::spawn", "already spawned");
     return false;
@@ -183,8 +184,9 @@ bool Process::spawn(std::span<const std::string_view> argv, std::string* error, 
   si.hStdOutput = out_write;
   si.hStdError = merge_stderr ? out_write : ::GetStdHandle(STD_ERROR_HANDLE);
   PROCESS_INFORMATION pi{};
-  const BOOL ok = ::CreateProcessW(nullptr, command.data(), nullptr, nullptr, TRUE, 0, nullptr,
-                                   nullptr, &si, &pi);
+  const BOOL ok =
+      ::CreateProcessW(nullptr, command.data(), nullptr, nullptr, TRUE,
+                       no_window ? CREATE_NO_WINDOW : 0, nullptr, nullptr, &si, &pi);
   ::CloseHandle(in_read);
   ::CloseHandle(out_write);
   if (!ok) {
@@ -278,7 +280,9 @@ std::string executable_directory() {
 
 #else
 
-bool Process::spawn(std::span<const std::string_view> argv, std::string* error, bool merge_stderr) {
+// `no_window` is Windows' alone: a POSIX child has no console window to suppress.
+bool Process::spawn(std::span<const std::string_view> argv, std::string* error, bool merge_stderr,
+                    bool /*no_window*/) {
   if (spawned_) {
     set_error(error, "Process::spawn", "already spawned");
     return false;
