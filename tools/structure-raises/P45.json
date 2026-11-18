@@ -1,0 +1,13 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "P45",
+  "reason": "P45: a game's prop collides (walker set_props in attach_game, the load summary's instances_in_structures), scene_collision.md's Props section, renderer.md's instances over a building, apps.md's props paragraph",
+  "date": "2026-11-17",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "engine_view.main_cpp.lines": 3,
+    "page:docs/subsystems/renderer.md": 1597,
+    "page:docs/subsystems/apps.md": 852,
+    "page:docs/subsystems/scene_collision.md": 3116
+  }
+}
