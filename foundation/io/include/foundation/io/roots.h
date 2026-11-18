@@ -128,6 +128,14 @@ class Roots {
   // an `InvalidPath`, for the operator's message.
   Status add(std::string_view name, std::string_view dir, bool writable, bool make = true,
              Refusal* refused = nullptr);
+  // A writable root made by its first write at `child`, one plain name directly inside the root
+  // `parent` — a document's `out/` — added only when nothing is there or a plain directory is: not
+  // a link, a junction or another reparse point, not a file, and canonically `<parent>/<child>`
+  // itself. The operator named the document; where a link its author planted leads is not theirs.
+  // `NotDirectory` when something else is there (the caller goes without the root, and a path
+  // that names it is `unknown_root`); `InvalidArgument` for a `parent` this set lacks or a
+  // `child` that is not one plain name; `add`'s answers otherwise.
+  Status add_inside(std::string_view name, std::string_view parent, std::string_view child);
   const Root* find(std::string_view name) const noexcept;
   // A directory the host serves to a browser: never written, whatever the roots say. Refused
   // (`InvalidArgument`) when a writable root holds it or lies under it.

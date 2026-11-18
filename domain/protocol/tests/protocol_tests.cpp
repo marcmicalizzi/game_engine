@@ -815,6 +815,31 @@ TEST_CASE("roots: a root on a network share is refused at start with a message")
   CHECK(error.find("network share") != std::string::npos);
 }
 
+// A document's out/ was added wherever it resolved: a file named out became a writable "root",
+// and a link at out made its target the host's writable root (io's roots_tests has the link).
+// Now it is the document's own plain directory or no root at all, and the host still starts.
+TEST_CASE("roots: a document whose out is not its own directory opens with no out root") {
+  TempDir tmp("protocol_roots_out_file");
+  const std::string doc = tmp.file("doc");
+  REQUIRE(io::make_directories(doc) == io::Status::Ok);
+  REQUIRE(io::write_file(doc + "/out", "a file, not a directory") == io::Status::Ok);
+  io::Roots roots;
+  HostRootsConfig config;
+  config.doc_dir = doc;
+  std::string error;
+  REQUIRE(configure_host_roots(roots, config, error));
+  CHECK(roots.find("doc") != nullptr);
+  CHECK(roots.find("out") == nullptr);
+  // A plain one is the root, as before.
+  TempDir plain("protocol_roots_out_plain");
+  io::Roots ok;
+  HostRootsConfig plain_config;
+  plain_config.doc_dir = plain.file("doc");
+  REQUIRE(io::make_directories(plain_config.doc_dir) == io::Status::Ok);
+  REQUIRE(configure_host_roots(ok, plain_config, error));
+  CHECK(ok.find("out") != nullptr);
+}
+
 // No roots, no paths: a dispatcher made without them refuses every client path.
 TEST_CASE("roots: a context with no roots refuses every path") {
   TempDir tmp("protocol_roots_none");

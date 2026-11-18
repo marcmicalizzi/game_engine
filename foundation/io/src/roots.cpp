@@ -532,6 +532,34 @@ Status Roots::add(std::string_view name, std::string_view dir, bool writable, bo
   return Status::Ok;
 }
 
+Status Roots::add_inside(std::string_view name, std::string_view parent, std::string_view child) {
+  const Root* p = find(parent);
+  if (p == nullptr || child.empty() || child == "." || child == ".." ||
+      child.find_first_of("/\\") != std::string_view::npos ||
+      check_path_text(child) != Refusal::none)
+    return Status::InvalidArgument;
+  // A copy: `add` grows the set, which moves the root `p` points at.
+  const std::string parent_dir = p->canonical;
+  std::string at = parent_dir;
+  if (at.back() != '/') at += '/';
+  at += child;
+  bool reparse = false;
+  bool directory = false;
+  // A link (live or dangling), a junction, any reparse point, or a file: not the document's own.
+  if (exists_unfollowed(at, reparse, directory) && (reparse || !directory))
+    return Status::NotDirectory;
+  if (const Status s = add(name, at, true, false); s != Status::Ok) return s;
+  // What the system says it is must be the child itself, under the parent: a link made between
+  // the look above and the resolve in `add` lands here.
+  const Root& made = roots_.back();
+  if (made.linked || !path_is_under(made.canonical, parent_dir) ||
+      made.canonical.size() <= parent_dir.size()) {
+    roots_.pop_back();
+    return Status::NotDirectory;
+  }
+  return Status::Ok;
+}
+
 Status Roots::serve(std::string_view dir) {
   std::string canonical;
   if (canonical_path(dir, current_directory(), canonical) != Refusal::none)

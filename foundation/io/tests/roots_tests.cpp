@@ -271,6 +271,78 @@ TEST_CASE("roots: a root on a network share is refused at start, and no UNC path
   CHECK(f.refuse("\\\\engine-tests.invalid\\share", Access::make_directory) == Refusal::unc);
 }
 
+// A document's out/ is the one root the host derives rather than the operator spelling it, so
+// following a link there handed the choice of the host's writable root to whoever made the
+// document: add() follows a root that is a link, which is the rule for the operator's own.
+TEST_CASE("roots: a document's out that is a link, a file or a dangling link is not a root") {
+  Fixture f;
+  const std::string doc = f.tmp.path() + "/doc";
+  make_dir(doc);
+  REQUIRE(f.roots.add("doc", doc, false) == Status::Ok);
+  // Nothing there yet: a root made by its first write, canonically the document's own out/.
+  {
+    Roots r;
+    REQUIRE(r.add("doc", doc, false) == Status::Ok);
+    REQUIRE(r.add_inside("out", "doc", "out") == Status::Ok);
+    REQUIRE(r.find("out") != nullptr);
+    CHECK(r.find("out")->canonical == canon(doc) + "/out");
+    CHECK(r.find("out")->made_on_write);
+  }
+  // A plain directory.
+  make_dir(doc + "/out");
+  {
+    Roots r;
+    REQUIRE(r.add("doc", doc, false) == Status::Ok);
+    CHECK(r.add_inside("out", "doc", "out") == Status::Ok);
+  }
+  REQUIRE(remove_directory_recursive(doc + "/out") == Status::Ok);
+  // A file.
+  put(doc + "/out", "not a directory");
+  {
+    Roots r;
+    REQUIRE(r.add("doc", doc, false) == Status::Ok);
+    CHECK(r.add_inside("out", "doc", "out") == Status::NotDirectory);
+    CHECK(r.find("out") == nullptr);
+  }
+  REQUIRE(remove_file(doc + "/out") == Status::Ok);
+  // A link to a directory outside the document: never the root, and out:// names nothing.
+  if (!make_dir_link(f.outside, doc + "/out")) {
+    MESSAGE("this process may not make a directory link; the link half is skipped");
+    return;
+  }
+  {
+    Roots r;
+    REQUIRE(r.add("doc", doc, false) == Status::Ok);
+    CHECK(r.add_inside("out", "doc", "out") == Status::NotDirectory);
+    CHECK(r.find("out") == nullptr);
+    Admitted a;
+    Refusal why = Refusal::none;
+    CHECK_FALSE(r.admit("out://x.png", {}, Access::write, a, why));
+    CHECK(why == Refusal::unknown_root);
+  }
+  // The same link with its target gone: before, add() refused it and the host did not start.
+  const std::string target = f.tmp.path() + "/target";
+  make_dir(target);
+  {
+    // The link alone, never what it leads to: a junction is an empty directory to remove().
+    std::error_code ec;
+    REQUIRE(std::filesystem::remove(fs_path(doc + "/out"), ec));
+  }
+  REQUIRE(make_dir_link(target, doc + "/out"));
+  REQUIRE(remove_directory_recursive(target) == Status::Ok);
+  {
+    Roots r;
+    REQUIRE(r.add("doc", doc, false) == Status::Ok);
+    CHECK(r.add_inside("out", "doc", "out") == Status::NotDirectory);
+  }
+  // Not one plain name, or no such parent.
+  Roots r;
+  REQUIRE(r.add("doc", doc, false) == Status::Ok);
+  CHECK(r.add_inside("out", "doc", "a/b") == Status::InvalidArgument);
+  CHECK(r.add_inside("out", "doc", "..") == Status::InvalidArgument);
+  CHECK(r.add_inside("out", "nope", "out") == Status::InvalidArgument);
+}
+
 TEST_CASE("roots: device names are refused in any component, case and suffix") {
   Fixture f;
   for (const char* p :

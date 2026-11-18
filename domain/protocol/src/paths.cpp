@@ -201,9 +201,21 @@ bool configure_host_roots(io::Roots& roots, const HostRootsConfig& config, std::
   if (!config.doc_dir.empty()) {
     if (!add_root(roots, "doc", config.doc_dir, false, false, error)) return false;
     // Made by the first write under it, not at start: a host that writes nothing leaves the
-    // document as it found it.
-    if (!add_root(roots, "out", io::join_path(config.doc_dir, "out"), true, false, error))
+    // document as it found it. Only when it is the document's own: nothing there, or a plain
+    // directory inside it. A link or a junction at `out` (a document from a checkout or an
+    // archive) would make whatever its author pointed it at the host's writable root, so the host
+    // goes without one, and a path naming `out://` is told the root is not present.
+    const io::Status out = roots.add_inside("out", "doc", "out");
+    if (out == io::Status::NotDirectory) {
+      ENGINE_LOG_WARN(log_paths,
+                      "the document's out is not a plain directory inside it: no out root");
+    } else if (out != io::Status::Ok) {
+      error = "root out (the document's out/): " + std::string(status_text(out, true));
       return false;
+    } else {
+      ENGINE_LOG_INFO(log_paths, "a file root", log::field("name", "out"),
+                      log::field("writable", true), log::field("linked", false));
+    }
   }
   if (config.mounts != nullptr) {
     for (const io::Mount& m : config.mounts->mounts()) {
