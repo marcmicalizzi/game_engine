@@ -375,11 +375,43 @@ HizFootprint hiz_footprint(CullParams* params, float3 center, float radius, uint
   return f;
 }
 
-// True when every pixel the sphere's screen rectangle touches holds a surface nearer than the
-// sphere's nearest point. Conservative: anything touching the near plane counts as visible.
+// **The depth of a sphere's nearest point as the Hi-Z stores it** (R173's fix, review finding A1;
+// renderer.md, "The cull culls instances first"). `HizFootprint::depth` is the depth of the point
+// nearest the eye in distance, `c - r c/|c|` with the eye at the origin, and that is not the
+// nearest in depth: its view depth is `(|c| - r) cos θ`, θ the angle between `c` and the view's
+// axis, while the sphere reaches `|c| cos θ - r`, nearer by `r (1 - cos θ)` — 0.29 r at 45
+// degrees, more at a surround's edges. A small sphere inside a large one off the axis can then read
+// nearer than the large one, and a surface between the two depths hidden with it. Here instead:
+// a perspective `view_proj` makes clip w the distance along the view's axis, `w(p) = A.p + w0`
+// with `A` its row's xyz (each component the w of a basis direction through `mul`), and its clip z
+// a function of w alone (z's row a multiple of w's plus a constant), so the depth is monotone in w
+// and — reversed Z — largest where w is least. Over the sphere w is least, `w(c) - r |A|`, at
+// `c - r A/|A|`: that point's depth is the largest the sphere holds, exactly, wherever it is on
+// the screen, and a sphere inside another reads no nearer than it. False when nothing is known:
+// that point behind the eye or past the near plane, or no perspective (|A| zero).
+bool sphere_nearest_depth(CullParams* params, float3 center, float radius, out float depth) {
+  depth = 0.0;
+  const float3 axis = float3(mul(params->view_proj, float4(1.0, 0.0, 0.0, 0.0)).w,
+                             mul(params->view_proj, float4(0.0, 1.0, 0.0, 0.0)).w,
+                             mul(params->view_proj, float4(0.0, 0.0, 1.0, 0.0)).w);
+  const float scale = length(axis);
+  if (!(scale > 0.0)) return false;
+  const float4 nearest = mul(params->view_proj, float4(center - axis * (radius / scale), 1.0));
+  if (nearest.w <= 1e-5) return false;
+  depth = nearest.z / nearest.w;
+  return depth < 1.0;
+}
+
+// True when every pixel the sphere's screen rectangle touches holds a surface nearer than every
+// point of the sphere. Conservative: anything touching the near plane counts as visible. The
+// rectangle bounds the eight corners of the sphere's cube, all in front of the eye, so it holds
+// the cube's projection and the sphere's (an ellipse off the axis, wider than the circle on it);
+// the depth is the sphere's least, `sphere_nearest_depth`, not the footprint's.
 bool occluded(CullParams* params, float3 center, float radius) {
   const HizFootprint f = hiz_footprint(params, center, radius, 0);
   if (!f.valid) return false;
+  float depth;
+  if (!sphere_nearest_depth(params, center, radius, depth)) return false;
   float* hiz = (float*)params->hiz;
   float farthest = 1e30;
   for (uint ty = f.ty0; ty <= f.ty1; ++ty) {
@@ -387,7 +419,7 @@ bool occluded(CullParams* params, float3 center, float radius) {
       farthest = min(farthest, hiz[f.base + ty * f.mip_w + tx]);
     }
   }
-  return f.depth < farthest;
+  return depth < farthest;
 }
 
 // **The hidden share of a sphere** (renderer.md, "Occlusion-aware LOD"; R118): the share of the
@@ -991,9 +1023,17 @@ void cull_vertex_main(uint3 thread_id : SV_DispatchThreadID) {
 // round every cluster of its mesh (`mesh_bounds_main`, below) — against the tests that reject a
 // pair with no side effect, and gives the pair pass only the survivors' pairs, a workgroup a run
 // of `k_cull_item_pairs`. Every test here is the pair's own on a sphere that holds the pair's, and
-// each is monotone in the sphere — the frustum's and a volume's planes, the Hi-Z's farthest depth
-// over a footprint that covers the pair's — so an instance rejected here has no pair the pair pass
-// would have kept: the cut, the casters, the flags and the picture are the pass over pairs' own.
+// each is monotone in the sphere — a sphere inside another passes whatever the outer one passes —
+// so an instance rejected here has no pair the pair pass would have kept: the cut, the casters,
+// the flags and the picture are the pass over pairs' own. The planes are (a plane's distance to a
+// point of the inner sphere is at least the outer one's least). The Hi-Z test is because both
+// halves are: the footprint of the inner sphere's cube lies inside the outer one's, read at a mip
+// no finer, whose texels hold the farthest of their children, so the outer footprint's farthest
+// depth is no nearer than the inner one's; and the depth compared is the sphere's least
+// (`sphere_nearest_depth`), which the inner sphere's cannot be nearer than. Until R173's fix it
+// was the depth of the point nearest the eye in distance, which off the view's axis lies deeper
+// than a small sphere's inside it, and the pass could drop a pair the pair pass drew (review
+// finding A1; renderer.md, "The cull culls instances first").
 
 // Mirrors gfx::k_cull_item_pairs.
 static const uint k_cull_item_pairs = 32u;

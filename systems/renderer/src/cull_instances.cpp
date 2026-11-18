@@ -35,8 +35,13 @@ void record_cull_fold(gfx::CommandList cb, const gfx::ComputePipeline& fold, u64
 }
 
 bool CullInstances::prepare(const gfx::Device& device, gfx::FrameContext& frames, bool want,
-                            u32 run_count, u32 instance_count, u32 pair_count, u32 meshes_now,
+                            u32 run_count, u32 instance_count, u32 pair_count, u64 table_bytes,
                             u64 meshes, bool meshes_written, std::string* error) {
+  // Every entry of the table: until R173's fix this was the null mesh's index plus one, which a
+  // scene read whole does not have (`null_mesh()` is 0 there), so only mesh 0's sphere was ever
+  // measured and every other mesh's instances were tested by whatever the buffer held — a point at
+  // the instance's origin — and dropped when that point was off the screen or behind a surface.
+  const u32 meshes_now = static_cast<u32>(table_bytes / sizeof(gfx::MeshDesc));
   // The bounds pass is a workgroup a mesh in one row of a folded dispatch; a scene with more
   // meshes than that culls by pairs (none flown has a hundredth of it).
   active = want && run_count > 0 && instance_count > 0 && meshes_now > 0 &&
