@@ -3018,7 +3018,8 @@ struct BlobResult @version(1) {
   ref: engine.doc.BlobRef
   /// The put stored new bytes; false when the store already held them.
   created: bool = false
-  /// Where the bytes are, under the document's directory (a Vfs path).
+  /// Where the bytes are, under the document's directory: for `doc.blob` the portable form,
+  /// `<root>://<relative>` (empty when no root of the host holds the document; ask with `data`).
   path: string
   /// `doc.blob` with `data`: the bytes, base64.
   data_base64: string

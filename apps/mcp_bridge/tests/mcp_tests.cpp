@@ -1001,9 +1001,10 @@ TEST_CASE("mcp: a blob reaches the workspace as a file, and a checkpoint is roll
   CHECK(str(at(first, "ref"), "blob") == name);
   CHECK(num(at(first, "ref"), "size") == 10);
   CHECK(text_of(mcp.tool("put_blob", put)).find("already held") != std::string::npos);
-  // Read back as a file under the workspace, named relative to it, with the bytes it was put with.
+  // Read back as a file under the workspace, named in the portable form the host's paths take, with
+  // the bytes it was put with; the host answered where they are as `<root>://<relative>` too.
   const JsonValue read = ok(mcp.tool("read_blob", "{" + s + ",\"blob\":\"" + name + "\"}"));
-  CHECK(str(read, "file") == "blobs/" + name);
+  CHECK(str(read, "file") == "workspace://blobs/" + name);
   {
     std::ifstream file(std::filesystem::path(tmp.file("ws")) / "blobs" / name, std::ios::binary);
     REQUIRE(file.good());
@@ -1012,7 +1013,7 @@ TEST_CASE("mcp: a blob reaches the workspace as a file, and a checkpoint is roll
     CHECK(bytes == "hello blob");
     // A copy a reader holds open is the answer already: a second read leaves it and says where.
     CHECK(str(ok(mcp.tool("read_blob", "{" + s + ",\"blob\":\"" + name + "\"}")), "file") ==
-          "blobs/" + name);
+          "workspace://blobs/" + name);
   }
   // The bytes never come inline: `data` is not an argument the tool takes.
   CHECK(is_error(mcp.tool("read_blob", "{" + s + ",\"blob\":\"" + name + "\",\"data\":true}")));

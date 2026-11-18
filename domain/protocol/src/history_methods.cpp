@@ -8,6 +8,7 @@
 #include <domain/doc/blob_store.h>
 #include <domain/doc/checkpoint.h>
 #include <domain/doc/document_store.h>
+#include <domain/protocol/paths.h>
 #include <domain/protocol/policy.h>
 #include <domain/protocol/rpc.h>
 #include <domain/protocol/session.h>
@@ -107,7 +108,9 @@ bool doc_blob(Context& ctx, const BlobParams& params, BlobResult& out, RpcError&
   }
   out.ref.blob = params.blob;
   out.ref.size = bytes.size();
-  out.path = doc::BlobStore::path_of(s->dir(), params.blob);
+  // The portable form, as every path a host answers (protocol.md, "The host's file roots"):
+  // empty when no root holds the document, and then a client asks for the bytes inline.
+  out.path = portable_path(ctx, doc::BlobStore::path_of(s->dir(), params.blob));
   if (params.data) out.data_base64 = base64_encode(std::string_view(bytes));
   return true;
 }

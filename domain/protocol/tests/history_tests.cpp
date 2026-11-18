@@ -269,6 +269,14 @@ TEST_CASE("blobs: put, read back checked, referenced, refused when unheld, colle
   std::string bytes;
   REQUIRE(base64_decode(back.find("data_base64")->as_string(), bytes));
   CHECK(bytes == grid);
+  // Where the bytes are, in the portable form every path a host answers takes: a root's name and a
+  // path under it, never the document's directory on this machine (it answered that before).
+  {
+    const std::string at(back.find("path")->as_string());
+    CHECK_MESSAGE(at.find("://") != std::string::npos, at);
+    CHECK_MESSAGE(at.find(h.dir) == std::string::npos, at);
+    CHECK_MESSAGE(at.find(name.substr(2)) != std::string::npos, at);  // blobs/<2>/<62>
+  }
   CHECK(h.fails("doc.blob", obj({{"blob", JsonValue("xyz")}})) == codes::k_invalid_argument);
   CHECK(h.fails("doc.blob", obj({{"blob", JsonValue(std::string(64, '0'))}})) ==
         codes::k_not_found);

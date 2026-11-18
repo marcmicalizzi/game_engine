@@ -604,8 +604,8 @@ try {
     $r = Invoke-Tool $bridge 'read_blob' @{ session = $s; blob = $name }
     Assert-Ok $r 'read_blob'
     $file = [string](Get-Prop $r.Data 'file')
-    Assert ($file -eq "blobs/$name") "read_blob named '$file', not blobs/<name> under the workspace"
-    $copy = Join-Path (Join-Path $Scratch 'workspace') $file
+    Assert ($file -eq "workspace://blobs/$name") "read_blob named '$file', not workspace://blobs/<name>"
+    $copy = Join-Path (Join-Path $Scratch 'workspace') ($file -replace '^workspace://', '')
     Assert (Test-Path -LiteralPath $copy) "read_blob names $file, which is not in the workspace"
     $back = [IO.File]::ReadAllBytes($copy)
     Assert ([Convert]::ToBase64String($back) -eq [Convert]::ToBase64String($bytes)) 'the copy is not the bytes put'

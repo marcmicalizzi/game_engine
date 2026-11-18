@@ -8,9 +8,11 @@
 // their file:// URIs with a short summary.
 #include "bridge.h"
 
+#include <core/hash/base64.h>
 #include <core/hash/sha256.h>
 #include <core/ids/id128.h>
 #include <core/json/json.h>
+#include <foundation/io/roots.h>
 
 #include <charconv>
 #include <cstdio>
@@ -2653,6 +2655,57 @@ bool copy_checked(const std::string& from, const std::string& to, std::string_vi
   return true;
 }
 
+// The roots of the host this bridge started, as it started it (`BridgeOptions::roots`): the
+// workspace, always "workspace" and writable, and each forwarded `--root <name>=<dir>[:rw]`. A path
+// the host answers is `<root>://<relative>`, and this is how the bridge finds the file it names,
+// through the same checks the host made (protocol.md, "The host's file roots"). False for a spec
+// the bridge cannot read back, and the caller then asks the host for the bytes instead.
+bool spawned_host_roots(const BridgeOptions& options, io::Roots& roots) {
+  if (roots.add("workspace", options.workspace, true, false) != io::Status::Ok) return false;
+  for (const std::string& spec : options.roots) {
+    const usize eq = spec.find('=');
+    if (eq == std::string::npos) return false;
+    std::string_view dir = std::string_view(spec).substr(eq + 1);
+    const bool writable = dir.size() > 3 && dir.substr(dir.size() - 3) == ":rw";
+    if (writable) dir.remove_suffix(3);
+    if (roots.add(std::string_view(spec).substr(0, eq), dir, writable, false) != io::Status::Ok)
+      return false;
+  }
+  return true;
+}
+
+// Writes `bytes` to `to` through a sibling file renamed into place, when they are the blob: its
+// SHA-256 `name` and its length `size`. A `to` that is the blob already is left as it is.
+bool write_checked(const std::string& bytes, const std::string& to, std::string_view name, u64 size,
+                   std::string& error) {
+  if (is_blob_file(to, name, size)) return true;
+  if (bytes.size() != size || sha256_hex(sha256(bytes)) != name) {
+    error = "the host's bytes do not hash to the name";
+    return false;
+  }
+  char unique[33] = {};
+  Id128::generate().to_hex(unique);
+  const std::string part = to + "." + std::string(unique, 32) + ".part";
+  std::error_code ec;
+  {
+    std::ofstream file(native(part), std::ios::binary | std::ios::trunc);
+    file.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    file.close();
+    if (!file.good()) {
+      error = "cannot write the copy";
+      std::filesystem::remove(native(part), ec);
+      return false;
+    }
+  }
+  std::filesystem::rename(native(part), native(to), ec);
+  if (ec) {
+    error = "cannot move the copy into place: " + ec.message();
+    std::filesystem::remove(native(part), ec);
+    return false;
+  }
+  return true;
+}
+
 void run_read_blob(Bridge& b, const JsonValue& args, ToolOutcome& out) {
   JsonValue r;
   if (!b.call("doc.blob", without(args, {"data"}), r, out)) return;
@@ -2664,35 +2717,54 @@ void run_read_blob(Bridge& b, const JsonValue& args, ToolOutcome& out) {
   bool plain = name.size() == 64;
   for (const char c : name)
     plain = plain && ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'));
-  if (!plain || source.empty()) {
-    fail(out, "the host answered no blob name and path",
-         "Rebuild engine-mcp and engine-host together.");
+  if (!plain) {
+    fail(out, "the host answered no blob name", "Rebuild engine-mcp and engine-host together.");
     return;
   }
-  if (source.find("://") != std::string::npos) {
-    fail(out,
-         "the document is under one of the host's mounts (" + source.substr(0, source.find("://")) +
-             "://), whose files the bridge does not reach",
-         "Open the document by its directory's path to read its blobs through the bridge.");
-    return;
+  // The host answers the blob's place as `<root>://<relative>`. The bridge reads it through the
+  // roots of a host it started; an attached host's roots are its operator's, and a path no root
+  // of the bridge's holds is not opened at all: the bytes then come inline, checked the same way.
+  std::string from;
+  if (b.options().connect_port == 0 && !source.empty()) {
+    io::Roots roots;
+    io::Admitted at;
+    io::Refusal refused = io::Refusal::none;
+    if (spawned_host_roots(b.options(), roots) &&
+        roots.admit(source, {}, io::Access::read, at, refused))
+      from = at.native;
   }
   std::string dir;
   if (!workspace_dir(b, "blobs", dir, out)) return;
   std::string why;
-  if (!copy_checked(source, dir + "/" + name, name, size, why)) {
+  bool copied = false;
+  if (!from.empty()) {
+    copied = copy_checked(from, dir + "/" + name, name, size, why);
+  } else {
+    JsonValue inline_params = without(args, {"data"});
+    inline_params.set("data", JsonValue(true));
+    JsonValue with_bytes;
+    if (!b.call("doc.blob", inline_params, with_bytes, out)) return;
+    std::string bytes;
+    if (!base64_decode(text_of(with_bytes, "data_base64"), bytes)) {
+      why = "the host's bytes were not base64";
+    } else {
+      copied = write_checked(bytes, dir + "/" + name, name, size, why);
+    }
+  }
+  if (!copied) {
     fail(out, "blob " + name + " was not copied into the workspace: " + why,
          "Read it again; if it keeps failing, validate the document and check the disk.");
     return;
   }
-  // Named relative to the workspace (host_info names its directory), never by a path of the
-  // machine.
-  const std::string file = "blobs/" + name;
+  // In the portable form, as the host names a path (host_info names the workspace's directory),
+  // never by a path of the machine.
+  const std::string file = "workspace://blobs/" + name;
   out.data = JsonValue::object();
   if (ref != nullptr) out.data.set("ref", *ref);
   out.data.set("file", JsonValue(file));
   out.summary = blob_text(ref != nullptr ? *ref : JsonValue()) +
                 ", its bytes checked against its name, is at " + file +
-                " under the workspace (host_info names the workspace's directory). Read it with "
+                " (blobs/ under the workspace, whose directory host_info names). Read it with "
                 "your own tools; the name is the bytes' SHA-256, so the same blob is always the "
                 "same file.";
 }
