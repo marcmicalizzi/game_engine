@@ -36,7 +36,7 @@ $env:ENGINE_SAVE_CORPUS_NPC_OUT = "content/migration-corpus/saves/v4-residents"
 build/msvc-debug/apps/engine_cli/engine_engine_cli_tests.exe -tc="save corpus: write the resident*"
 ```
 
-It was meant to be `v2-residents` when the capability was built (in an environment that could not build engine-host or the store); by the time a machine that could wrote it, the format was `v4`'s, so it is named for that. It has no player, so it continues one second on its own. A build without the npc capability refuses it naming `engine.npc.Resident` (`CorpusSave::needs` in the test), as one without kinematics refuses the others naming `engine.kinematics.Mover`.
+It was meant to be `v2-residents` when the capability was built (in an environment that could not build engine-host or the store); by the time a machine that could wrote it, the format was `v4`'s, so it is named for that. It has no player, so it continues one second on its own. A build without the npc capability refuses it naming the first of its types the build does not have, which is `engine.npc.Place` and not `engine.npc.Resident` (measured in `msvc-no-ecs`, 2026-11-18), so the test lists both of the capability's types (`CorpusSave::needs`) and asks for one of them, as one without kinematics refuses the others naming `engine.kinematics.Mover`.
 
 | Save | Written by | Formats it names | Loaded tick | Hash in its manifest | Hash once loaded | Migrations | Hash after one more second |
 |---|---|---|---|---|---|---|---|

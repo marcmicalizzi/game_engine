@@ -526,14 +526,16 @@ struct CorpusSave {
   const char* loaded;
   std::vector<std::string> migrations;
   const char* continued;
-  // The record type whose capability the save's world needs, which a build without it names when
-  // it refuses the save: the carts' for the replay test's world, the residents' for theirs.
-  const char* needs = "engine.kinematics.Mover";
+  // The record types of the capability the save's world needs, the first naming the capability: a
+  // build without it refuses the save naming the first of the save's types it does not have, which
+  // is one of these but not always the first (a residents' save meets `engine.npc.Place` before
+  // `engine.npc.Resident`): the carts' for the replay test's world, the residents' for theirs.
+  std::vector<std::string> needs = {"engine.kinematics.Mover"};
 };
 
 // Whether this build has the capability a save's world needs (`CorpusSave::needs`).
 bool can_load(const CorpusSave& save) {
-  const std::string needs = save.needs;
+  const std::string needs = save.needs.front();
 #if defined(ENGINE_CLI_TESTS_NPC)
   if (needs == "engine.npc.Resident") return true;
 #endif
@@ -591,7 +593,7 @@ const std::vector<CorpusSave>& corpus() {
        "30fe42fed65a7a18",
        {},
        "31278070c16babc9",
-       "engine.npc.Resident"},
+       {"engine.npc.Resident", "engine.npc.Place"}},
   };
   return saves;
 }
@@ -650,7 +652,8 @@ TEST_CASE("save corpus: every save loads, migrates, and runs on as it was measur
   Host host;
   REQUIRE(host.ok);
   for (const CorpusSave& save : corpus()) {
-    CAPTURE(save.name);
+    const std::string name = save.name;  // a string, so a failure prints the name, not a pointer
+    CAPTURE(name);
     const std::string path = root + "/" + save.name;
     const JsonValue loaded =
         host.call("session.load_game", "{\"path\":" + json_string(path) +
@@ -675,9 +678,14 @@ TEST_CASE("save corpus: every save loads, migrates, and runs on as it was measur
     } else {
       // Its carts (or residents) are a capability's this build does not have: the load is refused
       // before it touches anything, naming the type, rather than loading a world whose records
-      // would not move.
+      // would not move. It names the first of the save's types the build lacks, which is one of
+      // the capability's (`CorpusSave::needs`).
       CHECK(error_code(loaded) == k_validation_failed);
-      CHECK(error_message(loaded).find(save.needs) != std::string::npos);
+      const std::string message = error_message(loaded);
+      CAPTURE(message);
+      CHECK(std::any_of(save.needs.begin(), save.needs.end(), [&](const std::string& type) {
+        return message.find(type) != std::string::npos;
+      }));
     }
   }
 }
@@ -720,7 +728,8 @@ TEST_CASE("document corpus: every save's document opens and saves to what this v
   REQUIRE(host.ok);
   std::map<std::string, std::map<std::string, std::string>> saved;
   for (const CorpusSave& save : corpus()) {
-    CAPTURE(save.name);
+    const std::string name = save.name;
+    CAPTURE(name);
     const std::string copy = tmp.file(save.name);
     std::filesystem::copy(root + "/" + save.name + "/document", copy,
                           std::filesystem::copy_options::recursive);
