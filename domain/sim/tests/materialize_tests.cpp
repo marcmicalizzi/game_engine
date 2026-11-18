@@ -430,11 +430,11 @@ TEST_CASE("sim: the live scope brings a live tile's edits and deletions in at on
   doc::LayerPartition partition;
   partition.tile_size = 10.0;
   d.set_layer_partition(0, partition);
-  create(d, 50, k_shelf, 0, props({{"position", vec3(5, 0, 5)}}));    // tile (0, 0)
-  create(d, 12, k_crate, 50, props({{"position", vec3(4, 0, 4)}}));   // tile (0, 0), child of 50
-  create(d, 13, k_crate, 0, props({{"position", vec3(3, 0, 3)}}));    // tile (0, 0)
-  create(d, 11, k_crate, 0, props({{"position", vec3(12, 0, 1)}}));   // tile (1, 0)
-  create(d, 5, k_crate, 0, props({{"speed", JsonValue(72.0)}}));      // in no tile
+  create(d, 50, k_shelf, 0, props({{"position", vec3(5, 0, 5)}}));   // tile (0, 0)
+  create(d, 12, k_crate, 50, props({{"position", vec3(4, 0, 4)}}));  // tile (0, 0), child of 50
+  create(d, 13, k_crate, 0, props({{"position", vec3(3, 0, 3)}}));   // tile (0, 0)
+  create(d, 11, k_crate, 0, props({{"position", vec3(12, 0, 1)}}));  // tile (1, 0)
+  create(d, 5, k_crate, 0, props({{"speed", JsonValue(72.0)}}));     // in no tile
 
   Rig rig;
   // The first live pass is a full one: the untiled crate, and no tile is live yet.

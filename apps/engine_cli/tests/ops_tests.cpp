@@ -925,10 +925,10 @@ TEST_CASE("ops: run_headless streams a partitioned document tile by tile round i
   // the origin's tile, and the near place renamed, then the new place deleted again.
   const char* k_new = "00000000000000300000000000000004";
   auto apply = [&](const std::string& commands) {
-    return at(result_of(host.call("doc.apply",
-                                  s + ",\"commands\":" + commands +
-                                      ",\"attribution\":{\"actor\":\"ops-test\",\"role\":"
-                                      "\"environment\",\"task\":\"t\"}}")),
+    return at(result_of(
+                  host.call("doc.apply", s + ",\"commands\":" + commands +
+                                             ",\"attribution\":{\"actor\":\"ops-test\",\"role\":"
+                                             "\"environment\",\"task\":\"t\"}}")),
               "committed") == JsonValue(true);
   };
   REQUIRE(apply("[" + node(k_new, 10, 10) + ",{\"kind\":\"SetProperty\",\"id\":\"" + k_near +
