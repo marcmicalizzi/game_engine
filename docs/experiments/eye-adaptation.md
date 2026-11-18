@@ -88,4 +88,42 @@ shaded pixel may.
 
 ## Measurements
 
-(Filled by the row's runs below.)
+All on 2026-11-18 between 00:20 and 01:30, RTX 5090, `msvc-release`, offscreen, **the Windows
+session locked** (the card idles its clocks: both sides of every pair were flown locked, never one
+against an unlocked one) and other agents' builds using 82 to 98% of the CPU, so every time is an
+upper bound and only the pairs are comparable. Main is the copied-out build of a1eae86f; the branch
+flies the same scenes with `--tunable renderer.exposure.adapt=true`.
+
+### What it costs
+
+Two flights each side, alternated in one lease, 3840 × 2160, `--raster rt --shadows rt`,
+`renderer.gi.mode=bounce`, no reconstruction; medians of the GPU's timestamps over 2,884 frames a
+side (`--benchmark`, `--repeat 2`):
+
+| Held path | Main: total | Adapted: total | p95 main / adapted | Frame passes (the exposure and the encode) |
+|---|---|---|---|---|
+| the cave, `held.json` (the passage wall, 26.9 cd/m²) | 3.940 ms | 3.970 ms | 4.001 / 4.039 | 0 / 0.043 ms |
+| the village, `interior-held.json` (house 0's front room, 6.8 cd/m²) | 5.837 ms | 5.843 ms | 5.911 / 5.897 | 0 / 0.043 ms |
+
+**0.006 to 0.030 ms a frame at 4K**: the histogram over a quarter of the pixels, the one-workgroup
+step and the encode's read of the half-float picture together are 0.043 ms, and the resolve writing
+into the half-float image instead of the 8-bit target costs nothing measurable (2.097 against 2.066
+ms in the cave, 2.099 against 2.095 in the village; the differences are the noise of a loaded
+machine). The 66 MB half-float image is the one memory cost; on a 3-screen 11520 × 2160 target it is
+199 MB. On a smaller card the histogram scales with the metered view's pixels and the step does not.
+
+### What it looks like
+
+Captured at 1280 × 720 with the same flags along a walk (`--marker-captures`; each marker is drawn
+after eight frames at its own camera, so the exposure there is one step of the time since the last
+marker from the last marker's, the first marker its own target), the mean luma of each picture out
+of 255:
+
+| The cave (`walk.json`, noon) | Main (EV100 15.43, the rule) | Adapted |
+|---|---|---|
+| under the shaft (frame 30) | 17.6 | 187.2 |
+| in the passage (240) | 10.2 | 132.7 |
+| stopped (360) | 10.0 | 145.0 |
+| stopped 1 s (420) | 10.0 | 147.6 |
+| stopped 3 s (540) | 9.9 | 150.2 |
+| held (719): 26.9 cd/m², EV100 6.78 | 9.9 | 151.3 |
