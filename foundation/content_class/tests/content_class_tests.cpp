@@ -73,7 +73,7 @@ TEST_CASE(
   CHECK(p.caps[k_violence] == 1);
   for (u32 i = k_engine_categories; i < k_max_categories; ++i)
     CHECK(p.caps[i] == 0);
-  // The substitution waits on the owner (ADR-0074, question 2); until then, omit everywhere.
+  // The substitution waits on the owner (ADR-0073, question 2); until then, omit everywhere.
   CHECK(k_agent_default_substitution == Substitution::omit);
   for (u32 i = 0; i < k_max_categories; ++i)
     CHECK(p.substitutions[i] == Substitution::omit);

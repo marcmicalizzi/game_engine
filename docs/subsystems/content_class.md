@@ -1,6 +1,6 @@
 # content_class
 
-**Layer:** foundation. **Not a capability**: no `ENGINE_WITH_` switch and in every configuration, `ENGINE_MINIMAL` included, because a build switch is what [ADR-0033](../adr/0033-content-classes-and-view-policies.md) forbids as the mechanism of a view policy ([ADR-0074](../adr/0074-classes-travel-with-derived-data-and-policies-are-the-operators.md) decision 9). Its dependencies are `base`, `containers`, `json`, `schema` and `schemas`, none of them a capability. Roadmap C61; the design and the rows that build on it are [content classes](../content-classes.md).
+**Layer:** foundation. **Not a capability**: no `ENGINE_WITH_` switch and in every configuration, `ENGINE_MINIMAL` included, because a build switch is what [ADR-0033](../adr/0033-content-classes-and-view-policies.md) forbids as the mechanism of a view policy ([ADR-0073](../adr/0073-classes-travel-with-derived-data-and-policies-are-the-operators.md) decision 9). Its dependencies are `base`, `containers`, `json`, `schema` and `schemas`, none of them a capability. Roadmap C61; the design and the rows that build on it are [content classes](../content-classes.md).
 
 ## Purpose
 
@@ -31,7 +31,7 @@ The file shapes are schema types in `schemas/provenance.schema` (`ContentClasses
 
 ## `agent-default`, and what waits on the owner
 
-Its caps are ADR-0033 decision 7's: `nudity: none`, `sexual: none`, `violence: mild`, every game category `none`. **What it puts in place of content above a cap is not decided** (ADR-0074, question 2: the design recommends `proxy` for `nudity` and `sexual` and `omit` for `violence`). Until the owner answers, `k_agent_default_substitution` is `Substitution::omit` for every category, the stricter of the two answers, and the test "agent-default is ADR-0033 decision 7's caps, and omit until the owner says" pins both the constant and the policy. The owner's answer changes that constant (or, for the recommended mix, the policy's two substitutions) and the test in the same commit.
+Its caps are ADR-0033 decision 7's: `nudity: none`, `sexual: none`, `violence: mild`, every game category `none`. **What it puts in place of content above a cap is not decided** (ADR-0073, question 2: the design recommends `proxy` for `nudity` and `sexual` and `omit` for `violence`). Until the owner answers, `k_agent_default_substitution` is `Substitution::omit` for every category, the stricter of the two answers, and the test "agent-default is ADR-0033 decision 7's caps, and omit until the owner says" pins both the constant and the policy. The owner's answer changes that constant (or, for the recommended mix, the policy's two substitutions) and the test in the same commit.
 
 ## What its next leg mends
 

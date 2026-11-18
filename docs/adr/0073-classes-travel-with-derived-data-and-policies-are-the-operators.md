@@ -1,4 +1,4 @@
-# ADR-0074: Classes travel with derived data, and a view policy is the operator's file, decided at load
+# ADR-0073: Classes travel with derived data, and a view policy is the operator's file, decided at load
 
 - **Status:** Proposed
 - **Date:** 2026-11-18 (revised the same day after a review of the first pass and of its first module)

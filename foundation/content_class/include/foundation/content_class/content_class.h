@@ -1,5 +1,5 @@
 // Content classes and view policies: the vocabulary, and the one decision every output calls
-// (ADR-0033, ADR-0074; docs/content-classes.md, docs/subsystems/content_class.md).
+// (ADR-0033, ADR-0073; docs/content-classes.md, docs/subsystems/content_class.md).
 //
 // A class is a level per category on content; a policy is a cap and a substitution per category
 // on an output. Both are dense arrays indexed by category, so a join, a narrowing and a decision
@@ -60,7 +60,7 @@ ContentClasses join(const ContentClasses& a, const ContentClasses& b);
 
 // What stands in for content above a cap. Only the two the engine builds; `cover` and
 // `obscure at capture` are names a policies file is refused for until the character work builds
-// them (ADR-0074 decision 5). `omit` is zero so that a policy's untouched category is `omit`.
+// them (ADR-0073 decision 5). `omit` is zero so that a policy's untouched category is `omit`.
 enum class Substitution : u8 { omit = 0, proxy = 1 };
 
 // A cap and a substitution per category. Zero-initialized it is the narrowest policy there is:
@@ -103,7 +103,7 @@ Decision decide(const ContentClasses& classes, const ViewPolicy& policy);
 // `sexual: none`, `violence: mild`, every game category `none`.
 inline constexpr std::string_view k_agent_default_name = "agent-default";
 // What `agent-default` puts in place of content above a cap. The owner has not decided this
-// (ADR-0074, question 2: the design recommends `proxy` for nudity and sexual, `omit` for
+// (ADR-0073, question 2: the design recommends `proxy` for nudity and sexual, `omit` for
 // violence); until they do, the stricter answer, `omit`, for every category.
 inline constexpr Substitution k_agent_default_substitution = Substitution::omit;
 ViewPolicy agent_default();

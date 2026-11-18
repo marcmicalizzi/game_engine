@@ -41,7 +41,7 @@ struct AssetProvenance @version(1) @kind(record) {
   derived_from: id128[]
 }
 
-// Content classes and view policies (ADR-0033, ADR-0074; docs/content-classes.md). These are
+// Content classes and view policies (ADR-0033, ADR-0073; docs/content-classes.md). These are
 // the shapes the files are written in; `foundation/content_class` reads them into the compact
 // values a decision is made on, and refuses a file that is wrong, whole, with the reason.
 
