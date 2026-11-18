@@ -40,7 +40,7 @@ if(TARGET engine::scene_collision)
   # configured, and without them the walker follows the ground, which the minimal build proves.
   list(APPEND _view_deps physics scene_collision world sim)
 endif()
-# A test's device profile, honoured only under a test's main (test_device.h, roadmap T174): the
+# A test's device profile, honoured only under a test's main (test_device.h, roadmap T181): the
 # decision is checked with no GPU in tests/test_device_tests.cpp.
 set(_view_tests tests/test_device_tests.cpp test_device.cpp
                 tests/view_tests.cpp tests/mesh_view_tests.cpp tests/fly_tests.cpp

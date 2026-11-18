@@ -867,7 +867,7 @@ pwsh -NoProfile -File tools/dev.ps1 test -Preset msvc-debug -Filter '^renderer\.
 Remove-Item Env:ENGINE_GFX_TEST_DEVICE
 ```
 
-Since T174 (2026-11-17) `engine-view` takes the same profile under a test's main
+Since T181 (2026-11-17) `engine-view` takes the same profile under a test's main
 ([apps](../subsystems/apps.md#running-as-a-weaker-card)), so the leg can reach the app's end-to-end
 tests too, `-Filter '^(renderer|engine_view)\.'`; whether the gate widens its filter is the
 coordinator's to decide, and no gate has run it yet.

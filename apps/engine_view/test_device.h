@@ -1,6 +1,6 @@
 #pragma once
 
-// A test's device profile in `engine-view` (roadmap T174; docs/subsystems/apps.md, "Running as a
+// A test's device profile in `engine-view` (roadmap T181; docs/subsystems/apps.md, "Running as a
 // weaker card"). The renderer's cases open their device as a weaker card under
 // `ENGINE_GFX_TEST_DEVICE` (systems/renderer/tests/test_device.h, T153 and T162); the apps'
 // end-to-end tests start `engine-view`, which opened the card as it is, so they could not. This is
