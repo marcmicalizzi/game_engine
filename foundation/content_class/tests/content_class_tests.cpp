@@ -714,6 +714,97 @@ TEST_CASE(
         Outcome::omit);
 }
 
+TEST_CASE("content_class: the limits, exactly at them and one past") {
+  std::string error;
+  // Exactly sixteen categories in all is accepted; a second add repeating the first is refused.
+  std::string thirteen = R"({"categories":[)";
+  for (u32 i = 0; i < k_max_categories - k_engine_categories; ++i)
+    thirteen += std::string(i ? "," : "") + R"({"name":"fixture_)" + std::to_string(i) +
+                R"(","levels":["none","on"]})";
+  thirteen += "]}";
+  Categories full;
+  REQUIRE(full.add_json(thirteen, error));
+  CHECK(full.size() == k_max_categories);
+  CHECK_FALSE(full.add_json(thirteen, error));
+  CHECK(full.size() == k_max_categories);
+  Categories once;
+  REQUIRE(once.add_json(k_glow_file, error));
+  CHECK_FALSE(once.add_json(k_glow_file, error));
+  CHECK(error.find("already a category") != std::string::npos);
+  CHECK(once.size() == k_engine_categories + 1);
+
+  // A ladder of k_max_levels levels is accepted, one more is refused.
+  const auto ladder_file = [](u32 levels) {
+    std::string json = R"({"categories":[{"name":"fixture_steps","levels":["none")";
+    for (u32 l = 1; l < levels; ++l)
+      json += R"(,"s)" + std::to_string(l) + "\"";
+    return json + "]}]}";
+  };
+  Categories longest;
+  REQUIRE(longest.add_json(ladder_file(k_max_levels), error));
+  CHECK(longest.top(k_engine_categories) == k_max_levels - 1);
+  Categories too_long;
+  CHECK_FALSE(too_long.add_json(ladder_file(k_max_levels + 1), error));
+  CHECK(error.find(std::to_string(k_max_levels)) != std::string::npos);
+  CHECK(too_long.size() == k_engine_categories);
+
+  // A number where a level's name belongs, in a categories file and in a sidecar's either form.
+  Categories typed;
+  CHECK_FALSE(typed.add_json(R"({"categories":[{"name":"fixture_glow","levels":["none",2]}]})",
+                             error));
+  CHECK(typed.size() == k_engine_categories);
+  const Categories categories = with_glow();
+  ContentClasses out;
+  CHECK_FALSE(
+      read_sidecar_classes(categories, R"({"content_classes":{"levels":{"fixture_glow":2}}})", out,
+                           error));
+  CHECK(out == unreadable(categories));
+  CHECK_FALSE(read_sidecar_classes(
+      categories, R"({"content_classes":{"materials":{"m0":{"levels":{"fixture_glow":{}}}}}})", out,
+      error));
+  CHECK(out == unreadable(categories));
+}
+
+TEST_CASE("content_class: decide admits exactly what within holds, levels up to 255 (property)") {
+  std::mt19937 rng(0xADA1u);
+  for (u32 trial = 0; trial < 4000; ++trial) {
+    ContentClasses c;
+    ViewPolicy p;
+    for (u32 i = 0; i < k_max_categories; ++i) {
+      // Mostly none, so the classes a scene meets are the common case; any byte otherwise.
+      c.levels[i] = rng() % 4 == 0 ? static_cast<u8>(rng() % 256) : k_none;
+      p.caps[i] = static_cast<u8>(rng() % 256);
+      p.substitutions[i] = static_cast<Substitution>(rng() % 2);
+    }
+    const Decision d = decide(c, p);
+    CHECK((d.outcome == Outcome::admit) == within(c, p));
+    if (d.outcome != Outcome::admit) {
+      // It names a category above its cap whose substitution is the outcome.
+      CHECK(d.level == c.levels[d.category]);
+      CHECK(d.cap == p.caps[d.category]);
+      CHECK(d.level > d.cap);
+      CHECK((d.outcome == Outcome::omit) == (p.substitutions[d.category] == Substitution::omit));
+    }
+  }
+}
+
+TEST_CASE("content_class: narrowing a policy with every category at its top") {
+  ViewPolicy top;
+  for (u32 i = 0; i < k_max_categories; ++i) {
+    top.caps[i] = 255;
+    top.substitutions[i] = Substitution::proxy;
+  }
+  CHECK(narrow(top, top) == top);
+  CHECK(narrow(top, agent_default()) == agent_default());
+  CHECK(narrow(top, ViewPolicy{}) == ViewPolicy{});
+  ContentClasses everything;
+  for (u32 i = 0; i < k_max_categories; ++i)
+    everything.levels[i] = 255;
+  CHECK(decide(everything, top).outcome == Outcome::admit);
+  CHECK(decide(everything, narrow(top, agent_default())).outcome == Outcome::omit);
+  CHECK(wider_than(top, agent_default()));
+}
+
 TEST_CASE("content_class: the decision table, and same_decisions outcome for outcome") {
   const u8 g = glow();
   const ViewPolicy scene = agent_default();  // nudity a box, violence mild, a game's none
