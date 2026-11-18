@@ -239,8 +239,8 @@ inline constexpr u32 k_max_walk_supports = 256;
 
 // **A game's prop as the walker meets it** (roadmap P45; apps.md, "Props: the objects a game
 // places"; scene_collision.h `PropBody`): the prop's id, its scene mesh, where it stands, its turn
-// and scale, and the body its scene declared. A static body while the walker's collision holds the
-// tile it stands in, so the walker stops at a cart a game set down.
+// and scale, and the body its scene declared. A body while the walker's collision holds the tile
+// it stands in, moved when the prop moves, so the walker stops at a cart a game set down.
 struct WalkProp {
   u32 key = 0;
   u32 mesh = 0;
