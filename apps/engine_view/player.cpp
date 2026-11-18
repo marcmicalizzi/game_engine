@@ -971,9 +971,9 @@ JsonValue PlayerBody::summary_json(const GameActors* actors) const {
   // the body, the deepest knee, and the last tick's pose.
   JsonValue crouch = JsonValue::object();
   crouch.set("layer", crouch_);
-  crouch.set("trunk_deg", static_cast<f64>(rig_.crouch.trunk) * k_to_deg);
+  crouch.set("trunk_deg", static_cast<f64>(rig_.crouch.trunk) * 57.29577951308232);
   crouch.set("ticks", crouch_ticks_);
-  crouch.set("max_knee_deg", static_cast<f64>(max_knee_rad_) * k_to_deg);
+  crouch.set("max_knee_deg", static_cast<f64>(max_knee_rad_) * 57.29577951308232);
   crouch.set("pelvis_drop_m", static_cast<f64>(crouch_pose_.pelvis_drop_m));
   crouch.set("eye_drop_m", static_cast<f64>(crouch_pose_.eye_drop_m));
   out.set("crouch", crouch);

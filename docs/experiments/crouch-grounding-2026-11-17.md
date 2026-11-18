@@ -23,10 +23,10 @@ The walker's crouch ([apps](../subsystems/apps.md#crouching)) and the body's cro
 | `view.walk.crouch_eye_height` | 1.1 m | the standing eye's 0.15 m under the crown, kept: the crouch bends the body and the head stays the head (Friedrich: the neck extends to keep the head up as the trunk flexes) |
 | `view.walk.crouch_speed` | 1.0 m/s | 3.5 km/h (0.97 m/s) held under the 70% restriction; Grasso et al.'s efficiency falling past 1 m/s says faster costs more than it is worth; well above crawling's 0.5–0.87 m/s, as the reviews say stoop-walking is |
 | `view.walk.crouch_time_s` | 0.25 s | **no source**: the eye's travel between the heights is a knob of feel; a stand-to-crouch transition time was not found |
-| `view.player.crouch_trunk_deg` | 30° | **a choice inside Friedrich's trend**, not a measured value: the trunk leans more as the room drops, and 30° at 70% of stature leaves the legs a knee flexion of about 120° on a body with its hips at 0.95 m |
+| `view.player.crouch_trunk_deg` | 30° | **a choice inside Friedrich's trend**, not a measured value: the trunk leans more as the room drops, and 30° at 70% of stature leaves the legs a knee flexion of 111° on the test body, its hips at 0.95 m and its eye at 1.65 m (the hips drop 0.43 m) |
 
 ## What the layer simplifies
 
-- **The legs are two bones in the sagittal plane** (the knee forward, the sole level); the hip's abduction, a knee's valgus and the ankle's own dorsiflexion limit are not modelled. On the test body a full crouch bends the knee about 120°, deep for a walk; a rig whose eye sits lower or whose trunk leans further bends it less.
+- **The legs are two bones in the sagittal plane** (the knee forward, the sole level); the hip's abduction, a knee's valgus and the ankle's own dorsiflexion limit are not modelled. On the test body a full crouch bends the knee 111°, deep for a walk; a rig whose eye sits lower or whose trunk leans further bends it less.
 - **The head is not counter-extended**: Friedrich's workers extended the neck as the trunk flexed; here the look layer (P58) decides where the head points, from the camera's pitch.
 - **The gait is not changed**: the walk clip plays on the bent legs at its own stride. A crouched gait (shorter steps, a longer stance) is the next layer, roadmap P56's stride matching.
