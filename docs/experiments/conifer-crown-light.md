@@ -155,6 +155,23 @@ The agent's reading of its own pictures: the crowns are lighter and more olive t
 grey-green, as a needle's measured colour is under a sky's blue ambient, and **as even as they
 were**: the colour was wrong and is right, and the evenness is the light's.
 
+## What it costs
+
+Nothing a frame can measure: the three images keep their size, format and mask (the spruce's
+opaque share is 0.2533 before and after). The `tree-species` scene's own held views at 3840 x
+2160, `--raster rt --shadows rt`, the bounce on, main's build and pack against the branch's,
+alternating in one lease (2026-11-18 00:10, the session locked, other processes at 100 % of the
+CPU, so these are upper bounds): GPU total 4.477 and 4.478 ms on main, 4.478 and 4.493 on the
+branch; the resolve 1.81 and 1.84 against 1.84 and 1.85. Where the conifers' 0.66 ms could be given
+back is the renderer's: the R164 page's foliage-free resolve module and the sun rays a shaded
+foliage pixel asks.
+
+**A grove that draws no trees.** The engine's own `grove` scene, and the same scene with a sky,
+drew almost none of its twelve trees on main's build (a1eae86f) in these runs, a fresh derived-data
+root as much as a warmed one: views at 10 to 300 m show sand and sky, and from under the spruce a
+few branches stand in the air. Its frame at 4K was 2.2 ms against R164's 4.9 on the same path. So
+the grove is not a measure of a conifer's cost on this main, and its cause was not looked for here.
+
 ## What an imported asset gets, and a scene with none
 
 A spray is the engine's own image for a role a pack may leave to it, so an imported conifer and a
