@@ -1,0 +1,9 @@
+# Inputs of the parse_json target known to fail, each with the roadmap row that will mend it.
+# One a line: <input id> <roadmap id> <what fails>, where the id is `<seed file>#<iteration>` or
+# `regress/<file>`. The case leaves these out and says how many; it also replays each alone in a
+# child process and fails while one of them no longer fails, so a mended input's line has to go in
+# the commit that mends it (docs/ci/fuzzing.md, "Known failures").
+#
+# None listed. The design's two JSON faults break none of this target's oracles: raw bytes not
+# checked as UTF-8 pass through the writer and read back the same, and the descending-key insert is
+# slow, not wrong (stage 1 pins both as regressions of the front door).

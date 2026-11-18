@@ -1,0 +1,3 @@
+# One line for every input in this directory: <file> <roadmap id>: what it found. The case replays
+# every input here before any mutation, and refuses an input with no line or a line with no input
+# (docs/ci/fuzzing.md, "Regressions").

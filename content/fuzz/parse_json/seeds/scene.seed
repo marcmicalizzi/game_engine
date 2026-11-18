@@ -1,0 +1,15 @@
+{
+  "format": "engine.scene",
+  "version": 3,
+  "meshes": [
+    {"path": "content/samples/Box/glTF/Box.gltf"},
+    {"generator": "mesh:cave", "params": {"seed": 4294967295, "radius_m": 12.5}}
+  ],
+  "instances": [
+    {"mesh": 0, "position": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [1.0, 1.0, 1.0]},
+    {"mesh": 1, "position": [64.0, -3.5, 1e3], "scale": 2.0}
+  ],
+  "scatter": [{"mesh": 0, "count": 100, "area": [[-50, -50], [50, 50]]}],
+  "camera": {"position": [0.0, 1.7, -5.0], "target": [0.0, 1.0, 0.0], "fov_deg": 60.0},
+  "sky": {"provider": "earth", "latitude_deg": 31.5, "epoch": "2026-06-21T12:00:00Z"}
+}
