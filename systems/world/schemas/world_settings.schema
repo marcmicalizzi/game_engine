@@ -1,0 +1,21 @@
+// The world's own settings in a document (docs/subsystems/world.md, "The world seed"; roadmap
+// W11): what a document says about the world it describes rather than about one thing in it. A
+// record and not a field of the document's manifest, so that it is authored like any other — one
+// `doc.apply`, journaled, undone, attributed, merged per property, and refused to a role that may
+// not write it — where the manifest is the stack's layout and no command reaches it. In the
+// capability's own file because the world capability is what reads it: ENGINE_WITH_WORLD=OFF takes
+// it out, as it takes out the store the seed is for.
+namespace engine.world
+
+/// At most one a document, at the id `776f726c642e73657474696e67730001` ("world.settings" and a
+/// one, in hexadecimal; `world::k_world_settings`): a fixed id, so the world finds it with one
+/// lookup rather than a walk of the document, and a second can never be made beside it. A record
+/// of another type at that id is not read. It has no position, so a partitioned layer keeps it
+/// with its untiled records.
+struct WorldSettings @version(1) @kind(record) {
+  /// The world seed: every tile's seed is this hashed with the tile (`WorldStore::tile_seed`), and
+  /// the residents' variations are drawn from it. A document with no settings record is seed 1,
+  /// the seed every world had before a document could name one. A run reads it once, when its
+  /// store is bound; a save carries the run's in its manifest (`SaveManifest.world_seed`).
+  seed: u64 = 1
+}
