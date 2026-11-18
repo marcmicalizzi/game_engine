@@ -59,6 +59,15 @@ TEST_CASE("gfx: a Slang compute shader fills a buffer") {
   REQUIRE_MESSAGE(gfx::create_compute_pipeline(device, module, "fill", layouts, sizeof(FillParams),
                                                pipeline, &error),
                   error);
+  // The same module with its specialization constant set (gfx::Specialization, R177): `fill`'s
+  // `k_fill_bias` (id 7) is 1000 in this pipeline and its default, 0, in the other; an id the
+  // module does not declare (99) changes nothing.
+  gfx::ComputePipeline biased;
+  gfx::Specialization spec;
+  spec.set(7, 1000u).set(99, 5u);
+  REQUIRE_MESSAGE(gfx::create_compute_pipeline(device, module, "fill", layouts, sizeof(FillParams),
+                                               spec, biased, &error),
+                  error);
 
   constexpr u32 k_count = 1000;  // not a multiple of the 64-wide group: the tail must be masked
   const u64 bytes = u64{k_count} * sizeof(u32);
@@ -97,62 +106,68 @@ TEST_CASE("gfx: a Slang compute shader fills a buffer") {
   vkUpdateDescriptorSets(h.device, 1, &write, 0, nullptr);
 
   const FillParams params{k_count, 3, 1};
-  REQUIRE_MESSAGE(gfx::submit_immediate(
-                      device,
-                      [&](gfx::CommandList commands) {
-                        // Zero the whole buffer first so untouched tail words are visible.
-                        commands.fill_buffer(storage.buffer, 0, bytes + 64, 0);
-                        VkMemoryBarrier2 to_compute{};
-                        to_compute.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
-                        to_compute.srcStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
-                        to_compute.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-                        to_compute.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-                        to_compute.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
-                        VkDependencyInfo dep{};
-                        dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-                        dep.memoryBarrierCount = 1;
-                        dep.pMemoryBarriers = &to_compute;
-                        vkCmdPipelineBarrier2(gfx::vk::native(commands), &dep);
+  for (u32 pass = 0; pass < 2; ++pass) {
+    const gfx::ComputePipeline& run = pass == 0 ? pipeline : biased;
+    const u32 bias = pass == 0 ? 0u : 1000u;
+    CAPTURE(bias);
+    REQUIRE_MESSAGE(gfx::submit_immediate(
+                        device,
+                        [&](gfx::CommandList commands) {
+                          // Zero the whole buffer first so untouched tail words are visible.
+                          commands.fill_buffer(storage.buffer, 0, bytes + 64, 0);
+                          VkMemoryBarrier2 to_compute{};
+                          to_compute.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+                          to_compute.srcStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
+                          to_compute.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+                          to_compute.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+                          to_compute.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+                          VkDependencyInfo dep{};
+                          dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+                          dep.memoryBarrierCount = 1;
+                          dep.pMemoryBarriers = &to_compute;
+                          vkCmdPipelineBarrier2(gfx::vk::native(commands), &dep);
 
-                        commands.bind_pipeline(gfx::BindPoint::Compute, pipeline.pipeline);
-                        vkCmdBindDescriptorSets(
-                            gfx::vk::native(commands), VK_PIPELINE_BIND_POINT_COMPUTE,
-                            gfx::vk::native(pipeline.layout), 0, 1, &set, 0, nullptr);
-                        commands.push_constants(pipeline.layout, gfx::ShaderStage::Compute, 0,
-                                                sizeof(FillParams), &params);
-                        commands.dispatch((k_count + 63) / 64, 1, 1);
+                          commands.bind_pipeline(gfx::BindPoint::Compute, run.pipeline);
+                          vkCmdBindDescriptorSets(
+                              gfx::vk::native(commands), VK_PIPELINE_BIND_POINT_COMPUTE,
+                              gfx::vk::native(run.layout), 0, 1, &set, 0, nullptr);
+                          commands.push_constants(run.layout, gfx::ShaderStage::Compute, 0,
+                                                  sizeof(FillParams), &params);
+                          commands.dispatch((k_count + 63) / 64, 1, 1);
 
-                        VkMemoryBarrier2 to_copy{};
-                        to_copy.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
-                        to_copy.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-                        to_copy.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
-                        to_copy.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-                        to_copy.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
-                        dep.pMemoryBarriers = &to_copy;
-                        vkCmdPipelineBarrier2(gfx::vk::native(commands), &dep);
-                        gfx::BufferCopy copy{0, 0, bytes + 64};
-                        commands.copy_buffer(storage.buffer, readback.buffer, copy);
-                      },
-                      &error),
-                  error);
+                          VkMemoryBarrier2 to_copy{};
+                          to_copy.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+                          to_copy.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+                          to_copy.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+                          to_copy.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+                          to_copy.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+                          dep.pMemoryBarriers = &to_copy;
+                          vkCmdPipelineBarrier2(gfx::vk::native(commands), &dep);
+                          gfx::BufferCopy copy{0, 0, bytes + 64};
+                          commands.copy_buffer(storage.buffer, readback.buffer, copy);
+                        },
+                        &error),
+                    error);
 
-  const auto* words = static_cast<const u32*>(readback.mapped);
-  u32 wrong = 0;
-  for (u32 i = 0; i < k_count; ++i) {
-    if (words[i] != i * 3 + 1) ++wrong;
+    const auto* words = static_cast<const u32*>(readback.mapped);
+    u32 wrong = 0;
+    for (u32 i = 0; i < k_count; ++i) {
+      if (words[i] != i * 3 + 1 + bias) ++wrong;
+    }
+    CHECK(wrong == 0);
+    CHECK(words[0] == 1 + bias);
+    CHECK(words[k_count - 1] == (k_count - 1) * 3 + 1 + bias);
+    // The 64-word tail past `count` was zeroed by the fill and never written by the shader.
+    u32 tail_touched = 0;
+    for (u32 i = k_count; i < k_count + 16; ++i) {
+      if (words[i] != 0) ++tail_touched;
+    }
+    CHECK(tail_touched == 0);
   }
-  CHECK(wrong == 0);
-  CHECK(words[0] == 1);
-  CHECK(words[k_count - 1] == (k_count - 1) * 3 + 1);
-  // The 64-word tail past `count` was zeroed by the fill and never written by the shader.
-  u32 tail_touched = 0;
-  for (u32 i = k_count; i < k_count + 16; ++i) {
-    if (words[i] != 0) ++tail_touched;
-  }
-  CHECK(tail_touched == 0);
 
   vkDestroyDescriptorPool(h.device, pool, nullptr);
   vkDestroyDescriptorSetLayout(h.device, set_layout, nullptr);
+  gfx::destroy_compute_pipeline(device, biased);
   gfx::destroy_compute_pipeline(device, pipeline);
   gfx::destroy_shader_module(device, module);
   gfx::destroy_buffer(device, readback);

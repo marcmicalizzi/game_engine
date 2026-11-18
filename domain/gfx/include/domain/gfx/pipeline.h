@@ -4,6 +4,7 @@
 // shaders"). SPIR-V comes from the build (`engine_shaders()`) or the shader library; a pipeline
 // is created once and bound in a pass body with `CommandList::bind_pipeline`.
 
+#include <core/base/assert.h>
 #include <core/base/types.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/rhi.h>
@@ -29,12 +30,44 @@ struct ComputePipeline {
   PipelineLayoutHandle layout;
 };
 
+// **Specialization constants** (gfx.md, "Specialization constants"; R177): a few 32-bit values a
+// pipeline gives the module's `[vk::constant_id(id)]` constants, folded by the driver's compiler
+// before it allocates registers, so a branch a constant turns off costs the pipeline nothing — the
+// same picture and the same price as a module compiled without it, from one SPIR-V and no second
+// build. A constant the module does not declare changes nothing (Vulkan's rule); one the pipeline
+// does not set keeps the module's default. Every stage of the pipeline is given the same values.
+inline constexpr u32 k_max_specialization = 4;
+struct Specialization {
+  u32 ids[k_max_specialization] = {};
+  u32 values[k_max_specialization] = {};
+  u32 count = 0;
+  // Sets `id` to `value`, replacing an earlier value of the same id.
+  Specialization& set(u32 id, u32 value) noexcept {
+    for (u32 i = 0; i < count; ++i) {
+      if (ids[i] == id) {
+        values[i] = value;
+        return *this;
+      }
+    }
+    ENGINE_VERIFY(count < k_max_specialization, "Specialization: at most k_max_specialization");
+    ids[count] = id;
+    values[count] = value;
+    ++count;
+    return *this;
+  }
+};
+
 // One compute entry point over the given descriptor set layouts and a push-constant block of
 // `push_constant_bytes` (0 for none).
 bool create_compute_pipeline(const Device& device, ShaderModuleHandle module, const char* entry,
                              std::span<const DescriptorSetLayoutHandle> set_layouts,
                              u32 push_constant_bytes, ComputePipeline& out,
                              std::string* error = nullptr);
+// The same with the module's specialization constants set (above).
+bool create_compute_pipeline(const Device& device, ShaderModuleHandle module, const char* entry,
+                             std::span<const DescriptorSetLayoutHandle> set_layouts,
+                             u32 push_constant_bytes, const Specialization& specialization,
+                             ComputePipeline& out, std::string* error = nullptr);
 void destroy_compute_pipeline(const Device& device, ComputePipeline& pipeline) noexcept;
 
 // A graphics pipeline for dynamic rendering: no vertex input (geometry is pulled through device
@@ -56,6 +89,7 @@ struct GraphicsPipelineDesc {
   // Reversed-Z: greater-or-equal passes (core/math projections produce near = 1).
   CompareOp depth_compare = CompareOp::GreaterOrEqual;
   BlendMode blend = BlendMode::None;
+  Specialization specialization;  // none by default: the modules' own constants
 };
 bool create_graphics_pipeline(const Device& device, const GraphicsPipelineDesc& desc,
                               PipelineHandle& out, std::string* error = nullptr);

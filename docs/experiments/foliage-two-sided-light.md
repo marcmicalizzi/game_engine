@@ -209,3 +209,85 @@ scene with no foliage +0.026 to +0.030 ms. Nothing tried inside the kernel moved
   spray blocks; a rule by material rather than by pair would take more.
 - G203's sprays (0.41 ms over flat cards on its own pair, not part of this row's number): a
   needle set whose roughness is one value could carry it as a factor.
+
+## A scene with none pays nothing (R177)
+
+R177, 2026-11-17. The first item above, by a cheaper road than a module of its own: a
+**specialization constant** (`material.slang`'s `k_scene_foliage`, `gfx::Specialization`; [gfx](../subsystems/gfx.md#specialization-constants))
+ANDed into `material_is_foliage`, which the resolve's family of pipelines sets false where no
+material row of the scene has the foliage byte. The driver folds it before register allocation,
+so such a pipeline is the forced-off build above from the same SPIR-V; the resolve's sixteen
+modules stay sixteen and no build time is added.
+
+**The pair** (the scenes' own paths, 3840 x 2160, `--raster rt --shadows rt`, the bounce on, the
+generated pack this row's `engine-content matgen` wrote; main is the copied-out build of a1eae86f,
+main's code, and R177 this row's first commit; each side flown in turn in one lease; 2026-11-17
+21:42 to 21:48 and 22:41 to 23:01, **the session locked on every flight**, other processes holding
+the CPU at 100 % and free commit 14 to 68 GB, so a frame's wall clock ran 110 to 180 ms at its p99
+and the GPU means carry the stalls: the medians are the figure). GPU milliseconds of resolve,
+median over the path:
+
+| scene | main | R177 | change |
+|---|---|---|---:|
+| rock field (no foliage material) | 1.522, 1.499, 1.528 | 1.453, 1.470, 1.463 | -0.054 |
+| desert erg (no foliage material) | 1.394, 1.428 | 1.377, 1.357 | -0.044 |
+| rock field, frame total | 2.911, 2.893, 2.924 | 2.842, 2.864, 2.853 | -0.056 |
+| desert erg, frame total | 2.715, 2.763 | 2.685, 2.679 | -0.057 |
+
+So a scene with no foliage material gets back what R164 cost it, and on this night's tree a little
+more than the 0.026 R164's second leg measured (that was the same scene on an unlocked card at 10
+to 74 % of the CPU; the register count the foliage lines cost has grown with the resolve since).
+Nothing else is in the difference: main's build and this row's are the same code but these
+commits.
+
+## The backlit sun's tier (R177)
+
+**What shipped foliage does with its back light.** Crysis's vegetation (Sousa, *GPU Gems 3* ch.
+16, read: Example 16-4 and the per-light listing) computes the leaf's back term from a wrapped
+`dot(-N, L)` and an `E.L` power, scales it by an artist's subsurface map, and multiplies it by the
+shadow factor the front's lighting loop already accumulated (`fOccShadowAcc`, averaged over the
+lights): no shadow test of its own. A shadow map's answer at a point is the same whichever side of
+the sheet asks, so that reuse is exact there. A traced shadow is not: a ray from the eye's side of
+a backlit card stops on the card, which is why R164 traces from the light's side, and why that
+ray is a second one a turned-away pixel never asked before.
+
+**The low tier** (`renderer.foliage.backlit_tier=0`) takes the nearest free answer this renderer
+has: the world-space cache's measure of what the scene lets through at the point, the same ratio
+that scales the foliage pixel's ambient (`scene_ambient` over the raw hemisphere at the sheet's
+normal, its luminance, clamped to one). It is a measured visibility of the sky over a cell, not of
+the sun along one line, so it keeps the mean of a crown's shade and loses where in the crown the
+sun gets through. The top tier is the default; the low tier applies only where the frame reads the
+cache, and a front-lit sheet traces in both.
+
+**What it gives back** (the grove's own path, 3001 frames, 3840 x 2160, `--raster rt --shadows rt`,
+the bounce on, the generated pack, the trees held still (`renderer.flora.motion=false`); main's
+copied-out build (M), this row's at the top tier (T1) and at the low (T0), flown in turn in one
+lease, 2026-11-18 00:20 to 00:27, the session locked, other processes at 83 to 100 % of the CPU;
+GPU milliseconds, medians over the path):
+
+| | M | T1 | T0 |
+|---|---|---|---|
+| resolve | 2.875, 2.867 | 2.903, 2.963 | 2.800, 2.882 |
+| the cache's sample pass (`gi_trace`, mean) | 0.662, 0.660 | 0.723, 0.722 | 0.723, 0.723 |
+| frame total | 4.893, 4.892 | 4.989, 5.096 | 4.875, 4.960 |
+
+- **The low tier gives back about 0.09 ms of resolve** against the top (2.84 against 2.93 on the
+  pairs' means), not the 0.20 R164's second leg attributed to the backlit rays: on this flight the
+  rays the low tier skips are fewer than a stop at `lighting` counted then, and the estimate's own
+  work (the held sun, the gain's luminance) is in its number. It is a lever of a tenth of a
+  millisecond on a grove, more under a forest's canopy where most foliage pixels are backlit.
+- **The top tier costs more than main** by 0.03 to 0.10 ms of resolve: the held sun the low tier
+  reads (`backlit_sun`, a float3 kept across `scene_ambient`) is a register every foliage
+  pixel's pipeline carries whatever the tier. Not taken back on this leg (see the roadmap's R177).
+- **The cache's sample pass costs 0.06 ms more** (`gi_trace`, 0.66 to 0.72): the bounce's foliage
+  hits now trace their sun from the light's side of the card and evaluate the back's and the
+  sphere's ambient, which is what lights a canopy's bounce green (`gi_bounce`, above).
+
+**What a person loses** (`grove-r177` path: under the tall spruce looking up in four directions,
+under the oak, at 10 m, 1920 x 1080, 15:30, the bounce on, top tier over low,
+`pictures/sheet-tiers-still.png` in the row's scratch): at this sun and these crowns the two are
+not told apart at a glance. The low tier's backlit leaves glow at their cell's mean, so where a
+branch shades a lit-through leaf from the sun the leaf still glows at the crown's mean; the
+difference is in the dappling of a backlit crown, which these held views, with an open sky round
+small crowns, show little of. A dense canopy against a low sun is where it would read, and is not
+in the engine's own scenes.

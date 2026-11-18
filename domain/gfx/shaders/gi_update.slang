@@ -186,16 +186,25 @@ float3 gi_bounce(ResolveParams* params, float3 origin, float3 dir) {
   surface.metallic = sampled.metallic;
   float3 light = sampled.emissive;
   const float3 sun_dir = params->sun.xyz;
-  if (dot(n, sun_dir) > 0.0) {
+  // **A foliage hit is lit as the resolve lights it** (R177; renderer.md, "Foliage lit from both
+  // sides"; brdf.slang, "foliage"): the sun from behind its sheet through `transmit` and, for its
+  // sphere's share, from any side, the shadow ray from the light's side of its plane — so the light
+  // a bounce brings back from under a canopy is the leaves' lit-through green, not a sheet's dark
+  // back. `optics` is the material's byte (the crown's `foliage` below is the cache's own rule).
+  const bool optics = material_is_foliage(material);
+  const float transmit = optics ? material_foliage_transmit(material) : 0.0;
+  const float spread = optics ? material_foliage_spread(material) : 0.0;
+  if (optics ? brdf_foliage_lights(surface, sun_dir, transmit, spread) : dot(n, sun_dir) > 0.0) {
     const float bias = ray_offset(geo, instance, params->shadow_bias, params->shadow_bias_steps);
-    if (!shadow_ray_blocked(params, k_shadow_sun, hit.position + hit.geometric * bias, sun_dir,
-                            1e30)) {
+    const float3 side = optics ? ray_side(hit.geometric, sun_dir) : hit.geometric;
+    if (!shadow_ray_blocked(params, k_shadow_sun, hit.position + side * bias, sun_dir, 1e30)) {
       float3 sun = float3(params->sun.w);
       if (params->sky_params != 0) {
         SkyParams* sky = (SkyParams*)params->sky_params;
         sun = sky_light_at(sky, hit.position, sun_dir, sky->sun_illuminance.rgb);
       }
-      light += brdf_direct(surface, sun_dir, sun);
+      light += optics ? brdf_foliage_direct(surface, sun_dir, sun, transmit, spread)
+                      : brdf_direct(surface, sun_dir, sun);
     }
   }
   // The cache at the hit, and **nothing** where its cells are empty: only the picture's pixels
@@ -234,6 +243,19 @@ float3 gi_bounce(ResolveParams* params, float3 origin, float3 dir) {
               foliage);
   if (taken > 0.0) {
     ambient = lerp(ambient, ratio * gi_luminance(harmonics), gi_confidence_weight(taken));
+  }
+  if (optics) {
+    // Foliage's ambient as the resolve and the reflection take it (R177; brdf.slang,
+    // `brdf_foliage_ambient`): the hemisphere the sheet's back sees through the transmittance and
+    // the sphere's share over the view's two directions, each scaled by what the cache let
+    // through of the front's raw hemisphere.
+    const float3 raw = gi_harmonics(params, n);
+    const float3 gain = select(raw > float3(1e-9), ambient / max(raw, float3(1e-9)), float3(1.0));
+    const float3 diffuse = brdf_foliage_ambient(
+        ambient, gain * gi_harmonics(params, -n), gain * gi_harmonics(params, surface.view),
+        gain * gi_harmonics(params, -surface.view),
+        brdf_foliage_share(sampled.albedo, transmit), spread);
+    return light + diffuse * sampled.albedo * (1.0 - sampled.metallic);
   }
   return light + ambient * sampled.albedo * (1.0 - sampled.metallic);
 }

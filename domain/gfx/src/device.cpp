@@ -1079,6 +1079,32 @@ const VkSpecializationInfo* micromap_key(const Device& device) noexcept {
   return device.features().opacity_micromap ? &k_info : nullptr;
 }
 
+// A pipeline's specialization constants (pipeline.h, `Specialization`; R177) and the micromap key
+// beside them, in storage the caller keeps until its `vkCreate*Pipelines` returns. Null when the
+// pipeline sets none and the device has no micromaps: the bytes every pipeline had before.
+struct SpecializationStorage {
+  VkSpecializationMapEntry entries[k_max_specialization + 1]{};
+  u32 data[k_max_specialization + 1]{};
+  VkSpecializationInfo info{};
+};
+const VkSpecializationInfo* specialization_info(const Device& device, const Specialization& spec,
+                                                SpecializationStorage& storage) noexcept {
+  if (spec.count == 0) return micromap_key(device);
+  u32 n = 0;
+  for (; n < spec.count && n < k_max_specialization; ++n) {
+    storage.entries[n] = VkSpecializationMapEntry{spec.ids[n], n * u32{sizeof(u32)}, sizeof(u32)};
+    storage.data[n] = spec.values[n];
+  }
+  if (device.features().opacity_micromap) {
+    storage.entries[n] =
+        VkSpecializationMapEntry{k_micromap_key_id, n * u32{sizeof(u32)}, sizeof(u32)};
+    storage.data[n] = k_micromap_key_value;
+    ++n;
+  }
+  storage.info = VkSpecializationInfo{n, storage.entries, n * sizeof(u32), storage.data};
+  return &storage.info;
+}
+
 // Every create call ends here (pipeline_batch.h): recorded when the calling thread holds the
 // device's open batch, made and timed now otherwise. Defined after the mesh pipelines.
 bool create_or_record(const Device& device, detail::PipelineRequest& request, std::string* error);
@@ -1088,6 +1114,14 @@ bool create_or_record(const Device& device, detail::PipelineRequest& request, st
 bool create_compute_pipeline(const Device& device, ShaderModuleHandle module, const char* entry,
                              std::span<const DescriptorSetLayoutHandle> set_layouts,
                              u32 push_constant_bytes, ComputePipeline& out, std::string* error) {
+  return create_compute_pipeline(device, module, entry, set_layouts, push_constant_bytes,
+                                 Specialization{}, out, error);
+}
+
+bool create_compute_pipeline(const Device& device, ShaderModuleHandle module, const char* entry,
+                             std::span<const DescriptorSetLayoutHandle> set_layouts,
+                             u32 push_constant_bytes, const Specialization& specialization,
+                             ComputePipeline& out, std::string* error) {
   const Handles& h = device.handles();
   // The handles carry the set layouts' own bits; a pipeline takes a handful at most.
   VkDescriptorSetLayout layouts[8]{};
@@ -1116,6 +1150,7 @@ bool create_compute_pipeline(const Device& device, ShaderModuleHandle module, co
   request.module = module;
   request.layout = out.layout;
   request.entries[0] = entry;
+  request.specialization = specialization;
   request.compute_out = &out;
   return create_or_record(device, request, error);
 }
@@ -1157,8 +1192,9 @@ VkResult make_graphics_pipeline(const Device& device, const GraphicsPipelineDesc
   stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
   stages[1].module = vk::native(desc.fragment);
   stages[1].pName = desc.fragment_entry;
-  stages[0].pSpecializationInfo = micromap_key(device);
-  stages[1].pSpecializationInfo = micromap_key(device);
+  SpecializationStorage specialization;
+  stages[0].pSpecializationInfo = specialization_info(device, desc.specialization, specialization);
+  stages[1].pSpecializationInfo = stages[0].pSpecializationInfo;
   // No fragment module is a depth-only pipeline: rasterization writes depth, nothing is shaded.
   const u32 stage_count = desc.fragment ? 2u : 1u;
   const VkFormat color_format = vk::native(desc.color_format);
@@ -1343,14 +1379,16 @@ VkResult make_mesh_pipeline(const Device& device, const MeshPipelineDesc& desc,
 }
 
 VkResult make_compute_pipeline(const Device& device, ShaderModuleHandle module, const char* entry,
-                               PipelineLayoutHandle layout, VkPipeline& pipeline) {
+                               PipelineLayoutHandle layout, const Specialization& spec,
+                               VkPipeline& pipeline) {
   VkComputePipelineCreateInfo info{};
   info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
   info.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
   info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
   info.stage.module = vk::native(module);
   info.stage.pName = entry;
-  info.stage.pSpecializationInfo = micromap_key(device);
+  SpecializationStorage specialization;
+  info.stage.pSpecializationInfo = specialization_info(device, spec, specialization);
   info.layout = vk::native(layout);
   return vkCreateComputePipelines(device.handles().device, device.handles().pipeline_cache, 1,
                                   &info, nullptr, &pipeline);
@@ -1377,7 +1415,7 @@ VkResult detail::make_pipeline(const Device& device, PipelineRequest& request) {
   switch (request.kind) {
     case PipelineKind::Compute:
       return make_compute_pipeline(device, request.module, request.entries[0].c_str(),
-                                   request.layout, request.pipeline);
+                                   request.layout, request.specialization, request.pipeline);
     case PipelineKind::Graphics: {
       GraphicsPipelineDesc desc = request.graphics;
       desc.vertex_entry = request.entries[0].c_str();

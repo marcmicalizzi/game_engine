@@ -330,6 +330,9 @@ static const uint k_shadow_micromap_2state = 32u;
 // _sides; R139).
 static const uint k_shadow_sun_solid_far = 512u;
 static const uint k_shadow_sun_solid_sides = 1024u;
+// A backlit foliage sheet's sun from the cache's measure, no ray (gfx::k_shadow_foliage_backlit_
+// estimate, R177).
+static const uint k_shadow_foliage_backlit_estimate = 1u << 22;
 // RAY_FLAG_FORCE_OMM_2_STATE, SPIR-V's ForceOpacityMicromap2StateEXT.
 static const uint k_ray_flag_force_omm_2_state = 0x400u;
 
@@ -1865,8 +1868,19 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     // What the pixel's own sun query found, for a light too faint to test (below): 1 where the sun
     // was not asked.
     float sun_visibility = 1.0;
-    if (foliage ? foliage_lights(material, surface, params->sun.xyz)
-                : dot(surface.normal, params->sun.xyz) > 0.0) {
+    // **The backlit sun's tier** (R177; gfx::k_shadow_foliage_backlit_estimate; renderer.md,
+    // "Foliage lit from both sides"): below the top tier a sheet whose sun is behind it asks no ray
+    // here; its sun is held unshadowed and added once the cache's measure of the point is known.
+    float3 backlit_sun = float3(0.0);
+    if (foliage && (params->shadow_flags & k_shadow_foliage_backlit_estimate) != 0u &&
+        dot(surface.normal, params->sun.xyz) <= 0.0 && !g_count &&
+        foliage_lights(material, surface, params->sun.xyz)) {
+      float3 sun = float3(params->sun.w);
+      if (has_sky) sun = sky_light_at(sky, s.position, params->sun.xyz, sky->sun_illuminance.rgb);
+      backlit_sun = foliage_direct(material, surface, params->sun.xyz, sun,
+                                   brdf_direct(surface, params->sun.xyz, sun));
+    } else if (foliage ? foliage_lights(material, surface, params->sun.xyz)
+                       : dot(surface.normal, params->sun.xyz) > 0.0) {
       g_count_sun = g_count;
 #ifdef RESOLVE_RAY_SHADOWS
       // The half pass's answer where this pixel's block was taken for its pair (R126), a foliage
@@ -1962,6 +1976,14 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
       indirect = diffuse * (albedo * (1.0 - surface.metallic)) +
                  ambient * brdf_env_specular(brdf_f0(albedo, surface.metallic), surface.roughness,
                                              n_dot_v);
+      // The backlit sun's tier (R177, above): the sun through the sheet at the share of the sky the
+      // cache measured reaching this point — what the scene let through of the front's hemisphere,
+      // its luminance — in place of the ray, as shadow-mapped foliage takes its back light at the
+      // front's shadow term (Crysis, GPU Gems 3 ch. 16). Zero wherever the pixel traced.
+      if (any(backlit_sun > float3(0.0))) {
+        sun_visibility = saturate(dot(gain, float3(0.2126, 0.7152, 0.0722)));
+        color += backlit_sun * sun_visibility;
+      }
     } else {
       indirect = ambient * (albedo * (1.0 - surface.metallic) +
                             brdf_env_specular(brdf_f0(albedo, surface.metallic), surface.roughness,

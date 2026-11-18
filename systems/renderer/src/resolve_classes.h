@@ -9,6 +9,7 @@
 
 #include <core/base/types.h>
 #include <domain/gfx/commands.h>
+#include <domain/gfx/pipeline.h>
 #include <domain/gfx/resolve_classes.h>
 #include <domain/gfx/rhi.h>
 #include <systems/renderer/settings.h>
@@ -18,6 +19,11 @@ namespace engine::renderer {
 // The resolve module of a combination (scene_renderer.cpp's `resolve_module`), for the split's
 // pipelines: the scene's own, and the same combination with no water.
 const char* resolve_module_name(bool shadows, bool water, bool terrain, bool stochastic) noexcept;
+
+// The specialization every pipeline of the resolve's family is made with (R177; renderer.md,
+// "Foliage lit from both sides"): `gfx::k_spec_scene_foliage` false where the scene has no foliage
+// material, so its foliage lines drop out at the driver's compile; nothing set where it has one.
+gfx::Specialization resolve_specialization(bool foliage) noexcept;
 
 struct ResolveClassPlan {
   u32 classes = 0;  // gfx::ResolveClass bits the resolve draws; 0: the one fullscreen draw

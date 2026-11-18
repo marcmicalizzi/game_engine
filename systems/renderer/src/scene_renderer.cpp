@@ -262,6 +262,13 @@ const char* resolve_module_name(bool shadows, bool water, bool terrain, bool sto
   return resolve_module(shadows, water, terrain, stochastic);
 }
 
+// R177: one SPIR-V, the foliage lines folded out by the driver where the scene has none.
+gfx::Specialization resolve_specialization(bool foliage) noexcept {
+  gfx::Specialization spec;
+  if (!foliage) spec.set(gfx::k_spec_scene_foliage, 0u);
+  return spec;
+}
+
 // **The retired set is freed on a worker** (R128; renderer.md, "A resize is swapped in, not waited
 // for"). A swapped resize hands the old buffers back, and until R128 they went to the slot's
 // deferred frees, which the frame's thread runs when the slot comes round: freeing a 1.6-2 GB CLAS
@@ -979,6 +986,7 @@ bool SceneRenderer::create_frame_pass_pipelines(std::string* error) {
   resolve_desc.fragment_entry = "fs_resolve";
   resolve_desc.layout = bindless.pipeline_layout();
   resolve_desc.color_format = k_frame_pass_format;
+  resolve_desc.specialization = resolve_specialization(scene_->has_foliage_materials());
   gfx::GraphicsPipelineDesc encode_desc;
   encode_desc.vertex = encode->module;
   encode_desc.vertex_entry = "vs_encode";
@@ -1458,7 +1466,7 @@ bool SceneRenderer::create_pipelines(std::string* error) {
     if (!gfx::create_compute_pipeline(
             device, half->module, "half_sun_main",
             std::span<const gfx::DescriptorSetLayoutHandle>(&set_layout, 1), sizeof(u64),
-            pipelines_.half_sun, error)) {
+            resolve_specialization(scene_->has_foliage_materials()), pipelines_.half_sun, error)) {
       return false;
     }
   }
@@ -1475,7 +1483,8 @@ bool SceneRenderer::create_pipelines(std::string* error) {
     if (!gfx::create_compute_pipeline(
             device, gi->module, "gi_sample_main",
             std::span<const gfx::DescriptorSetLayoutHandle>(&set_layout, 1),
-            sizeof(gfx::GiStepPush), pipelines_.gi_sample, error) ||
+            sizeof(gfx::GiStepPush), resolve_specialization(scene_->has_foliage_materials()),
+            pipelines_.gi_sample, error) ||
         !gfx::create_compute_pipeline(
             device, gi->module, "gi_fold_main",
             std::span<const gfx::DescriptorSetLayoutHandle>(&set_layout, 1),
@@ -1638,6 +1647,7 @@ bool SceneRenderer::create_pipelines(std::string* error) {
   resolve_desc.fragment_entry = "fs_resolve";
   resolve_desc.layout = bindless.pipeline_layout();
   resolve_desc.color_format = desc_.color_format;
+  resolve_desc.specialization = resolve_specialization(scene_->has_foliage_materials());
   return gfx::create_graphics_pipeline(device, vertex_desc, pipelines_.vertex, error) &&
          gfx::create_compute_pipeline(device, sw->module, "sw_raster_main", {},
                                       sizeof(gfx::ClusterDrawParams), pipelines_.software, error) &&
@@ -4134,6 +4144,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
                              resolved_.gi_shell_refresh, resolved_.gi_shell_first);
       resolve.gi_crowns = gi_crowns_.address;
       resolve.gi_crown_count = gi_crown_count_;
+      if ((gi_flags & gfx::k_gi_read) != 0u && foliage_backlit_tier_tunable() == 0u)
+        resolve.shadow_flags |= gfx::k_shadow_foliage_backlit_estimate;  // R177's low tier
     }
     std::memcpy(resolve_bytes + sizeof(gfx::ResolveParams) * v, &resolve, sizeof(resolve));
 

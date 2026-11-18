@@ -376,6 +376,14 @@ tunables::Int water_white_tier{
     "renderer.water.white_tier", 1, 0, 1,
     "The white water's tier: 0 the low tier's (the Froude rule and the steep bed's broken share), "
     "1 the top tier's (white where the air goes in, lit as a layer of bubbly water)"};
+// R177: the backlit sun's tier (renderer.md, "Foliage lit from both sides", "The backlit sun's
+// tier"; docs/experiments/foliage-two-sided-light.md). The top tier traces the ray R164 added from
+// the light's side of a backlit sheet; the low tier takes the cache's measure instead.
+tunables::Int foliage_backlit_tier{
+    "renderer.foliage.backlit_tier", 1, 0, 1,
+    "A foliage sheet lit from behind: 1 (the top tier) traces its sun ray from the light's side, "
+    "0 asks no ray and takes the sun at the share of the sky the world-space cache measured at "
+    "the point (only where the frame reads the cache; elsewhere it traces)"};
 // R97: a normal map's variance chain widens the GGX roughness (renderer.md, "Normal filtering").
 tunables::Bool material_normal_filter{
     "renderer.material.normal_filter", true,
@@ -758,6 +766,7 @@ f32 shadow_light_tolerance_tunable() noexcept {
   return static_cast<f32>(shadow_light_tolerance.get());
 }
 u32 water_white_tier_tunable() noexcept { return static_cast<u32>(water_white_tier.get()); }
+u32 foliage_backlit_tier_tunable() noexcept { return static_cast<u32>(foliage_backlit_tier.get()); }
 f32 half_rate_sides_tunable(u64 frame_index) noexcept {
   const f32 as_set = static_cast<f32>(resolve_half_rate_sides.get());
   if (!resolve_half_rate_sweep.get()) return as_set;

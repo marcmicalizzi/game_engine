@@ -1,0 +1,14 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "R177",
+  "reason": "R177: foliage's specialization constant and the backlit tier: has_foliage_materials (one accessor, one field, the material scan's two lines), the low tier's two lines in record_frame's cache block, and the pages that say what a scene with no foliage pays and what the tier gives back and loses",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "renderer.record_frame.lines": 2,
+    "renderer.gpu_scene_cpp.lines": 4,
+    "renderer.gpu_scene_h.lines": 4,
+    "page:docs/subsystems/renderer.md": 3559,
+    "page:docs/subsystems/gfx.md": 1769
+  }
+}

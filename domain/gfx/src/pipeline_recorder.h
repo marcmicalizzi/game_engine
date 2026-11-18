@@ -25,6 +25,7 @@ struct PipelineRequest {
   PipelineLayoutHandle layout;    // compute: made before the request, already in `compute_out`
   GraphicsPipelineDesc graphics;  // graphics
   MeshPipelineDesc mesh;          // mesh
+  Specialization specialization;  // compute (graphics: `graphics.specialization`)
   // compute: [0]; graphics: vertex, fragment; mesh: task, mesh, fragment
   std::string entries[3];
   ComputePipeline* compute_out = nullptr;  // compute
