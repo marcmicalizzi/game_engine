@@ -888,6 +888,10 @@ bool FlySession::start(const input::ActionMap& map, const SessionHeader& header,
 
 bool FlySession::can_walk() const noexcept { return walker_ != nullptr && walker_->available(); }
 
+f32 FlySession::eye_height() const noexcept {
+  return walker_ != nullptr ? walker_->eye_height() : header_.walk.eye_height;
+}
+
 void FlySession::set_walk_scale(f32 speed, f32 sprint) noexcept {
   if (walker_ != nullptr) walker_->set_speed_scale(speed, sprint);
 }

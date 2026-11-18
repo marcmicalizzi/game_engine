@@ -1521,9 +1521,6 @@ renderer::Camera player_camera(const view::FlySession& session, const view::FlyS
   // body's head-look layer as it is, whose yaw relative to the body is zero (player.cpp): so the
   // head looks the way the body walks, at the camera's pitch, and never turns round to the camera.
   const view::FlyState look = session.view_state(drawn);
-  // The walker's eye now, crouched or eased toward it (P54): where the body's feet are under it.
-  const f32 eye =
-      session.walker() != nullptr ? session.walker()->eye_height() : header.walk.eye_height;
   if (third) {
     // **Third person** (P53; apps.md "Third person"): the walker's eye moved back along the look,
     // and under `view.camera.collision=pull` (P14) pulled in to what stands behind it. With a body
@@ -1535,8 +1532,8 @@ renderer::Camera player_camera(const view::FlySession& session, const view::FlyS
     boom.back_m = view::fly_boom_length(look, boom, session.walker());
     const i64 cast_ns = time::monotonic_ns() - cast_started;
     renderer::Camera behind;
-    if (g_player == nullptr ||
-        !g_player->boom_camera(look, eye, boom, header.fov_y, header.znear, behind)) {
+    if (g_player == nullptr || !g_player->boom_camera(look, session.eye_height(), boom,
+                                                      header.fov_y, header.znear, behind)) {
       behind = view::fly_boom_view(look, boom, header.fov_y, header.znear);
     } else if (marker_tick != ~u64{0}) {
       g_player->note_marker(marker_tick);
@@ -1545,7 +1542,8 @@ renderer::Camera player_camera(const view::FlySession& session, const view::FlyS
     return behind;
   }
   renderer::Camera face;
-  if (g_player == nullptr || !g_player->face_camera(look, eye, header.fov_y, header.znear, face))
+  if (g_player == nullptr ||
+      !g_player->face_camera(look, session.eye_height(), header.fov_y, header.znear, face))
     return session.orbit() ? view::fly_view(look, header.fov_y, header.znear) : walker_camera;
   if (marker_tick != ~u64{0}) g_player->note_marker(marker_tick);
   return face;

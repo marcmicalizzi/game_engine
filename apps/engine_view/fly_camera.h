@@ -500,6 +500,10 @@ class FlySession {
   // Ticks the session walked in third person (the ticks a boom camera was drawn for).
   u64 third_person_ticks() const noexcept { return third_person_ticks_; }
   const Walker* walker() const noexcept { return walker_; }
+  // The walker's eye over its feet now — crouched, or eased toward it (P54, walk.h
+  // `Walker::eye_height`) — and the header's standing eye without a walker: where a body worn
+  // stands under the drawn eye.
+  f32 eye_height() const noexcept;
 
   // **A game's requests at a tick** (game_runner.h, `walker_teleport` and `walker_set`): made from
   // the tick observer and applied by the session right after it, inside the same tick and before
