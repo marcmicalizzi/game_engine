@@ -4,6 +4,7 @@
 // before its mend (a read past a buffer or a stack overflow); now each is a refusal with a message.
 
 #include <domain/assets/gltf.h>
+#include <domain/assets/gltf_document.h>
 
 #include <doctest/doctest.h>
 
@@ -148,4 +149,45 @@ TEST_CASE("gltf hostile: a node hierarchy deeper than the importer walks is refu
   CHECK_FALSE(load_text(hostile_gltf::node_chain_too_deep(), mesh, error));
   CHECK(error.find("256 levels") != std::string::npos);
   CHECK(mesh.positions.empty());
+}
+
+// The editable document's own reader (`gltf_document.h`, `engine-content morphs`): the JSON a
+// function builds, over a 12-byte buffer of three floats. `stride` replaces the view's
+// `byteStride` and `count` the accessor's count; the rest stays valid.
+namespace hostile_gltf_document {
+
+std::string three_floats_json(const char* count, const char* stride) {
+  return std::string(R"({"asset":{"version":"2.0"},"buffers":[{"byteLength":12}],)") +
+         R"("bufferViews":[{"buffer":0,"byteLength":12,"byteStride":)" + stride +
+         R"(}],"accessors":[{"bufferView":0,"componentType":5126,"type":"SCALAR","count":)" +
+         count + "}]}";
+}
+
+// Three elements 2^63 - 2 bytes apart: `(count - 1) * stride + element` is 2^64 - 4 + 4, which
+// wrapped to 0, passed both extent checks, and the second element was read 2^63 - 2 bytes past the
+// buffer (a fault).
+std::string stride_wraps() { return three_floats_json("3", "9223372036854775806"); }
+
+}  // namespace hostile_gltf_document
+
+TEST_CASE("gltf document hostile: an accessor whose extent wraps is refused before it is read") {
+  const auto read = [](const std::string& json, Vector<f64>& values, std::string& error) {
+    GltfDocument doc;
+    REQUIRE(parse_document_json(json, doc.json, &error));
+    const float floats[3] = {1.0f, 2.0f, 3.0f};
+    doc.bin.resize(sizeof(floats));
+    std::memcpy(doc.bin.data(), floats, sizeof(floats));
+    u32 components = 0;
+    return read_accessor(doc, 0, values, components, &error);
+  };
+  Vector<f64> values;
+  std::string error;
+  // The same document with an honest stride reads, so the refusal below is the stride's alone.
+  REQUIRE_MESSAGE(read(hostile_gltf_document::three_floats_json("3", "4"), values, error), error);
+  REQUIRE(values.size() == 3u);
+  CHECK(values[2] == 3.0);
+
+  CHECK_FALSE(read(hostile_gltf_document::stride_wraps(), values, error));
+  CHECK(error.find("accessor 0 (3 elements) runs past its buffer view") != std::string::npos);
+  CHECK(values.empty());
 }
