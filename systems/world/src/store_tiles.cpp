@@ -5,6 +5,7 @@
 #include <systems/world/store_tiles.h>
 
 #include <cmath>
+#include <schemas/world_settings.h>
 #include <string>
 #include <utility>
 
@@ -77,7 +78,29 @@ bool record_position(const doc::Document& document, const Id128& id, WorldPos& o
   return true;
 }
 
+// ---- the world seed -----------------------------------------------------------------------------
+
+bool document_world_seed(const doc::Document& document, u64& out) {
+  // One lookup at a fixed id, never a walk of the document for a type (AGENTS.md: ask the
+  // document); a deleted record names no seed.
+  if (!document.exists(k_world_settings) ||
+      document.type_of(k_world_settings) != std::string_view(k_world_settings_type))
+    return false;
+  u64 seed = WorldSettings{}.seed;
+  const JsonValue* value = document.property(k_world_settings, "seed");
+  if (value != nullptr && !value->get_u64(seed)) return false;
+  out = seed;
+  return true;
+}
+
 // ---- the store consumer -------------------------------------------------------------------------
+
+StoreTiles::StoreTiles(const StoreTilesBinding& binding) noexcept : binding_(binding) {
+  u64 seed = 0;
+  if (binding_.store != nullptr && binding_.document != nullptr &&
+      document_world_seed(*binding_.document, seed))
+    binding_.store->set_world_seed(seed);
+}
 
 TileConsumer StoreTiles::consumer(u8 rings) noexcept {
   TileConsumer out;

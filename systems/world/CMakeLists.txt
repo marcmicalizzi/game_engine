@@ -17,11 +17,12 @@
 engine_capability_requires(world store)
 
 # The capability's own types (ADR-0007): a tile's projection in the store and the world log's line
-# (world_tiles.schema), and a save game's manifest (world_save.schema). In `engine.world`, the
-# runtime world's namespace, but files of this capability's own — the engine's `schemas/world.schema`
-# already owns the name `world` — so the switch takes them out too.
+# (world_tiles.schema), a save game's manifest (world_save.schema), and the document's world
+# settings record, its seed (world_settings.schema, W11). In `engine.world`, the runtime world's
+# namespace, but files of this capability's own — the engine's `schemas/world.schema` already owns
+# the name `world` — so the switch takes them out too.
 engine_schema_library(NAME world_schemas
-  SCHEMAS schemas/world_tiles.schema schemas/world_save.schema
+  SCHEMAS schemas/world_tiles.schema schemas/world_save.schema schemas/world_settings.schema
   CAPABILITY world)
 
 # `input` for the player of a headless world, an observer an input log steers (input_observer.h).
