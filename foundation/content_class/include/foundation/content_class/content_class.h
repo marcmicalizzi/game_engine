@@ -166,6 +166,15 @@ bool read_classes(const Categories& categories, const content::ContentClasses& d
                   ContentClasses& out, std::string& error,
                   Vector<MaterialClass>* materials = nullptr);
 
+// Reads a provenance sidecar's text (`<stem>.provenance.json`) and the classes it declares: the
+// one reader the content build, the load and the store call, so that a sidecar cannot mean one
+// thing to one and another to the next. Absent `content_classes` is `none` everywhere. Refused,
+// with `out` the unreadable class: text that is not JSON, a key given twice in one object, a
+// `content_classes` of the wrong shape or type, and whatever `read_classes` refuses.
+bool read_sidecar_classes(const Categories& categories, std::string_view sidecar_json,
+                          ContentClasses& out, std::string& error,
+                          Vector<MaterialClass>* materials = nullptr);
+
 // The operator's policies, with `agent-default` compiled in. Cold data, built at start.
 struct NamedPolicy {
   std::string name;

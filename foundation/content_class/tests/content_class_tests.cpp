@@ -268,6 +268,53 @@ TEST_CASE("content_class: a class declared per material is read and joined into 
   CHECK(error.find("materials") != std::string::npos);
 }
 
+TEST_CASE(
+    "content_class: a key given twice is refused in a sidecar, a categories file and a "
+    "policies file") {
+  const Categories categories = with_glow();
+  std::string error;
+
+  // A sidecar that declares a class and then, by a merge or an append, `none`: before the
+  // mend the last won and the class was lost.
+  ContentClasses out;
+  CHECK_FALSE(read_sidecar_classes(categories,
+                                   R"({"schema":"engine.generation.provenance/1","name":"cube",
+          "content_classes":{"levels":{"fixture_glow":"bright","fixture_glow":"none"}}})",
+                                   out, error));
+  CHECK(error.find("'fixture_glow' is given twice") != std::string::npos);
+  CHECK(out == unreadable(categories));
+  // Anywhere in the sidecar, not only under content_classes.
+  CHECK_FALSE(read_sidecar_classes(categories, R"({"name":"a","name":"b"})", out, error));
+  CHECK(error.find("'name' is given twice") != std::string::npos);
+  // The same sidecar without the second key reads.
+  REQUIRE(read_sidecar_classes(
+      categories, R"({"name":"cube","content_classes":{"levels":{"fixture_glow":"bright"}}})", out,
+      error));
+  CHECK(out == classes_of(glow(), 2));
+  // No content_classes at all is none; not JSON is unreadable.
+  REQUIRE(read_sidecar_classes(categories, R"({"name":"cube"})", out, error));
+  CHECK(is_none(out));
+  CHECK_FALSE(read_sidecar_classes(categories, "{", out, error));
+  CHECK(out == unreadable(categories));
+
+  // A categories file with a key given twice, refused whole.
+  Categories more;
+  CHECK_FALSE(more.add_json(
+      R"({"categories":[{"name":"fixture_hum","name":"fixture_buzz","levels":["none"]}]})", error));
+  CHECK(error.find("'name' is given twice") != std::string::npos);
+  CHECK(more.size() == k_engine_categories);
+
+  // A policies file whose cap is given twice: before the mend it read as the second, `full`.
+  ViewPolicies set;
+  CHECK_FALSE(set.read_json(
+      categories,
+      R"({"policies":[{"name":"a","caps":[{"category":"nudity","cap":"none","cap":"full","substitution":"omit"}]}]})",
+      error));
+  CHECK(error.find("'cap' is given twice") != std::string::npos);
+  CHECK(set.size() == 1);
+  CHECK(set.find("a") == nullptr);
+}
+
 TEST_CASE("content_class: join is the per-category maximum") {
   const ContentClasses a = join(classes_of(k_nudity, 1), classes_of(glow(), 2));
   const ContentClasses b = join(classes_of(k_nudity, 2), classes_of(k_violence, 1));

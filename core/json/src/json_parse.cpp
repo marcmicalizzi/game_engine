@@ -118,15 +118,23 @@ class Parser {
     while (true) {
       skip_ws();
       if (peek() != '"') return fail("expected a string key");
+      const usize key_start = pos_;
       std::string key;
       if (!parse_string(key)) return false;
+      if (options_.refuse_duplicate_keys && members.contains(key)) {
+        pos_ = key_start;  // the error names the second key's place
+        fail("duplicate key in object");
+        error_.duplicate_key = std::move(key);
+        return false;
+      }
       skip_ws();
       if (peek() != ':') return fail("expected ':' after key");
       ++pos_;
       skip_ws();
       JsonValue value;
       if (!parse_value(value, depth + 1)) return false;
-      members.insert_or_assign(std::move(key), std::move(value));  // duplicate keys: last wins
+      // Duplicate keys: the last wins, unless the strict mode refused the second above.
+      members.insert_or_assign(std::move(key), std::move(value));
       skip_ws();
       if (peek() == ',') {
         ++pos_;

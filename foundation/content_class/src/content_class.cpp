@@ -24,13 +24,28 @@ std::string schema_error(const schema::ReadContext& ctx) {
   return d.path.empty() ? d.message : d.path + ": " + d.message;
 }
 
+// Every file this module reads is parsed strictly: a key given twice is refused, because the
+// parser's ordinary rule (the last one wins) would let a text merge or a tool's append declare a
+// class, or a cap, and silently lose it.
+bool parse_strict(std::string_view json, JsonValue& value, const char* what, std::string& error) {
+  JsonParseOptions options;
+  options.refuse_duplicate_keys = true;
+  const JsonParseResult r = parse_json(json, value, options);
+  if (r.ok) return true;
+  if (!r.duplicate_key.empty()) {
+    error = std::string(what) + ": the key '" + r.duplicate_key +
+            "' is given twice in one object (line " + std::to_string(r.line) + ")";
+  } else {
+    error =
+        std::string(what) + " is not JSON (line " + std::to_string(r.line) + ": " + r.message + ")";
+  }
+  return false;
+}
+
 template <class T>
 bool read_file_json(std::string_view json, T& out, const char* what, std::string& error) {
   JsonValue value;
-  if (!parse_json(json, value).ok) {
-    error = std::string(what) + " is not JSON";
-    return false;
-  }
+  if (!parse_strict(json, value, what, error)) return false;
   schema::ReadContext ctx;
   if (!schema::from_json(out, value, ctx) || !ctx.ok()) {
     error = std::string(what) + ": " + schema_error(ctx);
@@ -85,8 +100,8 @@ ViewPolicy agent_default() {
   ViewPolicy p;            // every category `none`, game categories included
   p.caps[k_violence] = 1;  // `mild`
   for (u32 i = 0; i < k_max_categories; ++i)
-    p.substitutions[i] =
-        i < k_engine_categories ? k_agent_default_substitutions[i] : k_agent_default_game_substitution;
+    p.substitutions[i] = i < k_engine_categories ? k_agent_default_substitutions[i]
+                                                 : k_agent_default_game_substitution;
   return p;
 }
 
@@ -212,8 +227,7 @@ bool read_classes(const Categories& categories, const content::ContentClasses& d
     return false;
   };
   ContentClasses classes;
-  if (!read_levels(categories, declared.levels, "content_classes", classes, error))
-    return refuse();
+  if (!read_levels(categories, declared.levels, "content_classes", classes, error)) return refuse();
   Vector<MaterialClass> per_material;
   for (u32 m = 0; m < declared.materials.size(); ++m) {
     MaterialClass material{declared.materials.key_at(m), ContentClasses{}};
@@ -228,6 +242,35 @@ bool read_classes(const Categories& categories, const content::ContentClasses& d
   out = classes;
   if (materials) *materials = std::move(per_material);
   return true;
+}
+
+bool read_sidecar_classes(const Categories& categories, std::string_view sidecar_json,
+                          ContentClasses& out, std::string& error,
+                          Vector<MaterialClass>* materials) {
+  const auto refuse = [&]() {
+    out = unreadable(categories);
+    if (materials) materials->clear();
+    return false;
+  };
+  JsonValue sidecar;
+  if (!parse_strict(sidecar_json, sidecar, "sidecar", error)) return refuse();
+  if (!sidecar.is_object()) {
+    error = "sidecar: not a JSON object";
+    return refuse();
+  }
+  const JsonValue* declared = sidecar.find("content_classes");
+  if (declared == nullptr) {  // declaring nothing is none everywhere
+    out = ContentClasses{};
+    if (materials) materials->clear();
+    return true;
+  }
+  content::ContentClasses typed;
+  schema::ReadContext ctx;
+  if (!schema::from_json(typed, *declared, ctx) || !ctx.ok()) {
+    error = "sidecar: content_classes: " + schema_error(ctx);
+    return refuse();
+  }
+  return read_classes(categories, typed, out, error, materials);
 }
 
 ViewPolicies::ViewPolicies() {
