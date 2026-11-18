@@ -107,17 +107,25 @@ TEST_CASE("frame capture: zones on several threads, and a stop that waits for it
   options.capacity = 1u << 16;
   REQUIRE(capture_start(options));
   std::atomic<bool> go{true};
+  std::atomic<u32> recorded{0};  // workers whose first zone has ended
   std::vector<std::thread> threads;
   for (int t = 0; t < 3; ++t) {
-    threads.emplace_back([&go, t] {
+    threads.emplace_back([&go, &recorded, t] {
       char name[16] = "worker-0";
       name[7] = static_cast<char>('0' + t);
       ENGINE_PROFILE_THREAD(name);
+      // One zone each before any spins, so a buffer the others fill cannot drop a late worker's
+      // first event; then zones until told to stop.
+      { ENGINE_PROFILE_ZONE_NAMED("capture tests: worker zone"); }
+      recorded.fetch_add(1);
+      while (recorded.load() < 3) std::this_thread::yield();
       while (go.load(std::memory_order_relaxed)) {
         ENGINE_PROFILE_ZONE_NAMED("capture tests: worker zone");
       }
     });
   }
+  // On a loaded machine a worker may not have run yet: the stop comes after every one has.
+  while (recorded.load() < 3) std::this_thread::yield();
   for (u64 f = 0; f < 50; ++f) {
     capture_frame(f);
     std::this_thread::yield();
