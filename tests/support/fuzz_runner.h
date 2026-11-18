@@ -147,6 +147,32 @@ inline std::string keep_current() {
   return path;
 }
 
+// The test main's own scratch (tests/support/test_main.cpp): the directory `ENGINE_TEST_RUN` names
+// and, when the run reports its devices, the directory holding the `opened` marker. The main removes
+// both as it returns; a process the harness ends with `std::_Exit` never returns, so the harness
+// removes them first, or every assert and hang found would leave a directory under the tests'
+// scratch root that nobody owns (AGENTS.md, "Conventions"). Each one removed is named on stderr,
+// which is how a parent case checks that its child left nothing behind. The case's own `fuzz-*`
+// scratch, which holds the kept input, is not touched.
+inline void remove_main_scratch() {
+  const std::string run = test::detail::environment("ENGINE_TEST_RUN");
+  std::string devices = test::detail::environment("ENGINE_TEST_DEVICES");
+  constexpr std::string_view k_marker = "/opened";
+  if (devices.size() > k_marker.size() &&
+      std::string_view(devices).substr(devices.size() - k_marker.size()) == k_marker) {
+    devices.resize(devices.size() - k_marker.size());
+  } else {
+    devices.clear();
+  }
+  const std::string* const dirs[] = {&run, &devices};
+  for (const std::string* dir : dirs) {
+    if (dir->empty()) continue;
+    std::error_code ec;
+    std::filesystem::remove_all(std::filesystem::path(*dir), ec);
+    std::fprintf(stderr, "fuzz: removed this process's test scratch %s\n", dir->c_str());
+  }
+}
+
 inline const char* current_id() {
   const std::string* id = g_current.id.load(std::memory_order_acquire);
   return id != nullptr ? id->c_str() : "?";
@@ -163,6 +189,7 @@ inline void on_assert(const char* expression, const char* message, const char* f
   std::fprintf(stderr, "\nfuzz finding: %s %s: ENGINE_ASSERT(%s) \"%s\" at %s:%d; input kept at %s\n",
                g_current.target, current_id(), expression, message != nullptr ? message : "", file,
                line, path.c_str());
+  remove_main_scratch();
   std::fflush(stderr);
   std::_Exit(k_exit_assert);
 }
@@ -215,6 +242,7 @@ class Watchdog {
                    "input kept at %s\n",
                    c.target, current_id(), static_cast<long long>(limit_ns_ / 1'000'000'000),
                    path.c_str());
+      remove_main_scratch();
       std::fflush(stderr);
       std::_Exit(k_exit_hang);
     }

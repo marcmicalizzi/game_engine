@@ -83,6 +83,26 @@ std::string kept_bytes(const engine::test::TempDir& dir, const char* target) {
   return std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
 }
 
+// A child the harness ended with `std::_Exit` names every directory of its test main's that it
+// removed first; each has to be gone, under the same scratch root as this case's own, and the run's
+// own directory has to be among them, so the child left the root nothing.
+void check_child_left_nothing(const ChildRun& child, const engine::test::TempDir& scratch) {
+  constexpr std::string_view k_line = "fuzz: removed this process's test scratch ";
+  const std::filesystem::path root = scratch.native().parent_path();
+  u32 named = 0;
+  for (usize at = child.output.find(k_line); at != std::string::npos;
+       at = child.output.find(k_line, at + 1)) {
+    const usize from = at + k_line.size();
+    usize to = child.output.find_first_of("\r\n", from);
+    if (to == std::string::npos) to = child.output.size();
+    const std::string dir = child.output.substr(from, to - from);
+    ++named;
+    CHECK_MESSAGE(!test::path_exists(dir), dir << " is still there");
+    CHECK(std::filesystem::path(dir).parent_path().lexically_normal() == root.lexically_normal());
+  }
+  CHECK_MESSAGE(named >= 1, "the child named no scratch of its own as removed");
+}
+
 std::string hex(u64 v) {
   static constexpr char k_digits[] = "0123456789abcdef";
   std::string out(16, '0');
@@ -172,6 +192,7 @@ TEST_CASE("fuzz harness: a planted target that asserts on one input fails its ca
   CHECK(child.output.find("fuzz finding: planted_assert builtin-0#0: ENGINE_ASSERT(") !=
         std::string::npos);
   CHECK(kept_bytes(scratch, "planted_assert") == "planted");
+  check_child_left_nothing(child, scratch);
 #else
   MESSAGE("ENGINE_ASSERT is compiled out of this configuration: no assert to plant");
 #endif
@@ -200,6 +221,7 @@ TEST_CASE("fuzz harness: the watchdog names a hung input") {
   CHECK(child.output.find("fuzz finding: planted_hang builtin-0#0: still running") !=
         std::string::npos);
   CHECK(kept_bytes(scratch, "planted_hang") == "planted");
+  check_child_left_nothing(child, scratch);
 }
 
 TEST_CASE("fuzz harness: a replay runs the one input it names") {
