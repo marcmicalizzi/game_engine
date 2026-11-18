@@ -1176,6 +1176,35 @@ TEST_CASE(
     REQUIRE_MESSAGE(describe_house(p, plan, i, d, text, error), error);
     CHECK(d.find("kit")->as_array().size() == h.kit.size());
     CHECK(d.find("kit_rows")->as_array().size() == p.kit.size());
+    // Every row as the entry states it (need 153 (e)): its class, front, heights and the piece it
+    // stands in for, by name.
+    for (u32 r = 0; r < p.kit.size(); ++r) {
+      const JsonValue& row = (*d.find("kit_rows"))[r];
+      REQUIRE(row.find("placement") != nullptr);
+      CHECK(row.find("placement")->as_string() == "Wall");
+      REQUIRE(row.find("front") != nullptr);
+      REQUIRE(row.find("height_min_m") != nullptr);
+      REQUIRE(row.find("height_max_m") != nullptr);
+      REQUIRE(row.find("scale") != nullptr);
+      CHECK(row.find("foot")->as_array().size() == 4);
+      CHECK(row.find("replaces")->as_string() == (r == 0   ? "TableSet"
+                                                  : r == 1 ? "Bed"
+                                                  : r == 2 ? "Chest"
+                                                  : r == 3 ? "Settle"
+                                                           : "None"));
+    }
+    CHECK((*d.find("kit_rows"))[1].find("front")->as_string() == "PosX");
+    // A kit chest's lid is a place (need 153 (a)).
+    u32 kit_chests = 0, lids = 0;
+    for (const KitPlace& k : h.kit)
+      kit_chests += k.row == 2 ? 1u : 0u;
+    for (const JsonValue& place : d.find("places")->as_array()) {
+      const u32 of = static_cast<u32>(place.find("of")->as_uint());
+      if (place.find("kind")->as_string() == "chest-lid" &&
+          (*d.find("pieces"))[of].find("kit_row") != nullptr)
+        ++lids;
+    }
+    CHECK(lids == kit_chests);
     const JsonValue& pieces = *d.find("pieces");
     const JsonValue& route = *d.find("route");
     for (const KitPlace& k : h.kit) {

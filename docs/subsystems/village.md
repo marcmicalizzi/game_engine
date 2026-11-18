@@ -393,9 +393,18 @@ gone from the recipe), and its mesh is a placement of the generator's:
 dwellings pins hold it) and the same plan hash. **What a kit piece does not get yet**: collision (a
 static mesh placement carries none, and a description's `Box` has no undrawn form a walker could
 meet; the route keeps off it instead), the named places on its own top (a kit table's top is its
-mesh's, which the engine does not read), and pieces that replace nothing — the rows of every other
-class are listed in each house's `kit_rows` for whoever lays them, and placed by nobody here (room
-inventories by use and household are the next row).
+mesh's, which the engine does not read; a **kit chest's lid** is named, its foot at its height,
+the one top a row states: [dwellings](dwellings.md#the-places-a-plan-knows)), and pieces that
+replace nothing — the rows of every other class are listed in each house's `kit_rows` for whoever
+lays them, and placed by nobody here (room inventories by use and household are the next row).
+
+**Each house's `kit_rows` states every row as the entry does** (need 153 (e), 2026-11-17): `row`,
+`name`, `mesh`, `placement` and `front` and `replaces` by the schema's names (`Wall`, `NegZ`,
+`Chest`, `None`, ...), `height_min_m` and `height_max_m`, `scale`, `bounds_min`, `bounds_max` and
+`foot` in the mesh's units, and for a row that stands in for a piece the `foot_cm` and `height_cm`
+the furnisher searched with; so a consumer laying the other rows reads one file and not the scene
+too. A stack's outside face is a place of its own (`stack-outside`, in no room), where a yard
+rule leans a woodpile.
 
 ## The wear
 
