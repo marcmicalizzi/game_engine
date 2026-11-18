@@ -172,15 +172,54 @@ TEST_CASE(
   out = classes_of(k_nudity, 1);
   CHECK_FALSE(read_classes(categories, unknown_category, out, error));
   CHECK(error.find("fixture_hum") != std::string::npos);
-  CHECK(out == classes_of(k_nudity, 1));  // untouched
+  // A refusal leaves the unreadable class, never the caller's value: a caller that ignores the
+  // answer still fails closed.
+  CHECK(out == unreadable(categories));
+  CHECK(decide(out, agent_default()).outcome == Outcome::omit);
 
   // The game's category is unknown to a table that was not given the game's file.
   const Categories engine_only;
+  out = ContentClasses{};
   CHECK_FALSE(read_classes(engine_only, declared, out, error));
+  CHECK(out == unreadable(engine_only));
+  CHECK_FALSE(is_none(out));
 
   // Declaring nothing is none everywhere.
   REQUIRE(read_classes(categories, content::ContentClasses{}, out, error));
   CHECK(is_none(out));
+}
+
+TEST_CASE("content_class: the unreadable class is every known category at its top") {
+  const Categories categories = with_glow();
+  const ContentClasses u = unreadable(categories);
+  CHECK(u.levels[k_nudity] == 2);
+  CHECK(u.levels[k_sexual] == 2);
+  CHECK(u.levels[k_violence] == 2);
+  CHECK(u.levels[glow()] == 2);
+  for (u32 i = categories.size(); i < k_max_categories; ++i)
+    CHECK(u.levels[i] == 0);
+  // Only a policy capping every known category at its top admits it.
+  ViewPolicy everything;
+  for (u32 c = 0; c < categories.size(); ++c)
+    everything.caps[c] = categories.top(c);
+  CHECK(decide(u, everything).outcome == Outcome::admit);
+  ViewPolicy one_short = everything;
+  one_short.caps[glow()] = 1;
+  one_short.substitutions[glow()] = Substitution::proxy;
+  CHECK(decide(u, one_short).outcome == Outcome::proxy);
+
+  // A refused material leaves no per-material classes behind it either.
+  content::ContentClasses declared;
+  content::MaterialContentClasses hum;
+  hum.levels.insert(std::string("fixture_hum"), std::string("none"));
+  declared.materials.insert(std::string("m0"), std::move(hum));
+  ContentClasses out;
+  Vector<MaterialClass> materials;
+  materials.push_back(MaterialClass{"stale", classes_of(k_nudity, 1)});
+  std::string error;
+  CHECK_FALSE(read_classes(categories, declared, out, error, &materials));
+  CHECK(out == u);
+  CHECK(materials.empty());
 }
 
 TEST_CASE("content_class: a class declared per material is read and joined into the asset's") {

@@ -142,6 +142,11 @@ class Categories {
   Vector<Vector<std::string>> ladders_;
 };
 
+// The class of something whose class cannot be read: every category the table knows at its
+// ladder's top. Only a policy that caps every one of them at its top admits it
+// (docs/content-classes.md, "Where a class is declared, and by whom").
+ContentClasses unreadable(const Categories& categories);
+
 // One material's own classes, as an asset declared them, for the part-wise substitution the
 // character work builds (C11, C12).
 struct MaterialClass {
@@ -155,6 +160,8 @@ struct MaterialClass {
 // refused (a level that cannot be ordered cannot be capped); a level its ladder does not have is
 // read as the ladder's highest, so an unknown level fails closed. `error` names the category and
 // where it was. `materials`, when given, receives each material's own classes, by name.
+// **On a refusal `out` is `unreadable(categories)`** and `materials` is emptied, so a caller that
+// ignores the answer still fails closed: a class that cannot be read is never `none`.
 bool read_classes(const Categories& categories, const content::ContentClasses& declared,
                   ContentClasses& out, std::string& error,
                   Vector<MaterialClass>* materials = nullptr);

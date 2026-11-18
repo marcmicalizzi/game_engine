@@ -196,17 +196,31 @@ bool read_levels(const Categories& categories, const LevelMap& levels, const std
 
 }  // namespace
 
+ContentClasses unreadable(const Categories& categories) {
+  ContentClasses out;
+  for (u32 c = 0; c < categories.size(); ++c)
+    out.levels[c] = categories.top(c);
+  return out;
+}
+
 bool read_classes(const Categories& categories, const content::ContentClasses& declared,
                   ContentClasses& out, std::string& error, Vector<MaterialClass>* materials) {
+  // Every refusal leaves the unreadable class behind it, never the caller's value.
+  const auto refuse = [&]() {
+    out = unreadable(categories);
+    if (materials) materials->clear();
+    return false;
+  };
   ContentClasses classes;
-  if (!read_levels(categories, declared.levels, "content_classes", classes, error)) return false;
+  if (!read_levels(categories, declared.levels, "content_classes", classes, error))
+    return refuse();
   Vector<MaterialClass> per_material;
   for (u32 m = 0; m < declared.materials.size(); ++m) {
     MaterialClass material{declared.materials.key_at(m), ContentClasses{}};
     const std::string where = "content_classes.materials['" + material.name + "']";
     if (!read_levels(categories, declared.materials.value_at(m).levels, where, material.classes,
                      error))
-      return false;
+      return refuse();
     // v0 decides per mesh: a material's class is the asset's too.
     classes = join(classes, material.classes);
     per_material.push_back(std::move(material));
