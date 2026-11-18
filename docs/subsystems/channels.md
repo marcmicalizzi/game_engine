@@ -788,6 +788,13 @@ through **the sections the ground has**, by the textbook's method
   solves in two minutes; `profile_tests.cpp`'s case (a bed falling one in two, boulders, 20 l/s, a
   0.8 m step) held a pool 1.7 m deep and a face of water 1.8 m high at the lip before the mend.
   No version moves: a world runs `flow solve` again.
+  **At the forest's stage** (`flow.stage` 2 on the same world: 539 wet lines, 55.9 km; the four
+  counts need 151 gave for v50, which this reproduces before the mend within a few): the lines
+  with stations over a bank 336 to **290** (the stations 7,126 to 3,652, the worst 7.0 to 1.7 m
+  over), the gaps on lines over 30 % 186 to 172, the climbs 37 to 35 (the worst 0.95 to 0.91 m),
+  the lines with stations under the ground 153 to 157 (the stations 1,720 to 1,763); open pools
+  1,633 to 402, the lip-to-foot pairs over 30 % 2,494 to 2,730, the drawn water there 0.286 to
+  0.310 m/s. Each solve 250 to 270 s and 2.45 GB.
 - **The regime by specific force.** Shooting water holds while its sequent level — the tranquil
   level with the same specific force — stands over what the tranquil profile holds a jump's
   length downstream; where it no longer does, a **jump**: its head between the two nodes the test
