@@ -234,7 +234,7 @@ The store is a pair of function pointers, not an include of `foundation/store`: 
 
 ## Testing
 
-`tools/dev.ps1 test -Preset msvc-debug -Filter sim` — 58 cases, 5,563 assertions:
+`tools/dev.ps1 test -Preset msvc-debug -Filter sim` — 62 cases, 5,675 assertions:
 
 - **Timing wheel**: the level ladder's exact resolutions; due order with ties in insertion order; O(1) cancel and refusal of a stale handle after slot reuse; cascading across all five levels checked with `validate()` after each of 2,940 one-minute advances; a 29-day timer found in a single jump; a periodic firing on its phase (registered at 09:13, first firing at 10:00) and keeping its handle across firings; a timer past the horizon kept in the far list and delivered 2,000 days later; a timer scheduled in the past due immediately; a sink that schedules and cancels mid-delivery; and byte-identical output from two runs of a 4,000-timer schedule with periodics and cancellations, including the same bytes when the same interval is walked in 997 advances instead of one.
 - **Fast-forward**: the plan's own case — an hourly economy over a 30-game-day gap delivers 720 events under a large budget, and under a small one makes exactly one summarize call per registered summarizer and fires nothing; an exact summarizer (a counter of game hours) ends at 720 either way; a periodic with no summarizer and a one-shot timer are delivered anyway; a gap under the budget is bit-for-bit an ordinary advance; and counting stops once it passes the budget.

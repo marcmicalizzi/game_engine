@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "b69-S18",
+  "reason": "S18: plan 05 §5.10 gains its status note for the door (what was built, the cases' numbers, what is not done); world.md gains the section The door in the store (what the store's log guarantees and the four calls a host must make) and its invariant and API lines",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/plan/05-simulation.md": 2512,
+    "page:docs/subsystems/world.md": 3809
+  }
+}
