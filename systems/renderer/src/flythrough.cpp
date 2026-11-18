@@ -12,7 +12,9 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <renderer_log.h>
+#include <string>
 #include <utility>
 
 namespace engine::renderer {
@@ -321,8 +323,20 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
     f64 fold_ms = 0.0;
     f64 submit_ms = 0.0;
   };
+  // The caller's counts and the path's, multiplied in 64 bits (T187): in `u32` a long path or many
+  // repeats wrapped the reservation, and a flight that cannot be counted in a `u32` is refused.
+  const u64 submitted =
+      (u64{options.warmup} + frames) * repeats + u64{options.frames_in_flight};
+  if (submitted > std::numeric_limits<u32>::max()) {
+    if (error != nullptr) {
+      *error = "a flight of " + std::to_string(frames) + " frames, " +
+               std::to_string(options.warmup) + " warm-up frames and " + std::to_string(repeats) +
+               " repeats submits more frames than a flight counts";
+    }
+    return false;
+  }
   Vector<Submission> submissions;
-  submissions.reserve((options.warmup + frames) * repeats + options.frames_in_flight);
+  submissions.reserve(static_cast<u32>(submitted));
   out.records.reserve(frames * repeats);
   renderer.reset_stats();
   u64 folded = renderer.stats().folded;
