@@ -631,7 +631,8 @@ bool load_session(protocol::Context& ctx, RenderHost& host,
     RenderHost::release(*scene);  // the GPU state goes; the id stays the session's
   }
   scene->kind = "session";
-  scene->source = session->dir();
+  // As the mesh and scene forms answer it: the root's name and a path under it, never the host's.
+  scene->source = protocol::portable_path(ctx, session->dir());
   scene->session = params.session;
   scene->request = request;
   scene->requested = settings;
@@ -759,13 +760,14 @@ bool render_load_followed(protocol::Context& ctx, const protocol::RenderLoadPara
   io::Admitted scene_at;
   io::Admitted overlay_at;
   io::Admitted ddc_at;
-  if ((!params.mesh.empty() && !protocol::admit_client_path(ctx, "mesh", params.mesh, base,
-                                                            io::Access::read, mesh_at, error)) ||
-      (!params.scene.empty() && !protocol::admit_client_path(ctx, "scene", params.scene, base,
-                                                             io::Access::read, scene_at, error)) ||
+  // A missing file is answered here, as a refused one is, before the other parameters are read:
+  // found later, its answer told a path under a root from one outside.
+  if ((!params.mesh.empty() &&
+       !protocol::admit_existing_path(ctx, "mesh", params.mesh, base, mesh_at, error)) ||
+      (!params.scene.empty() &&
+       !protocol::admit_existing_path(ctx, "scene", params.scene, base, scene_at, error)) ||
       (!params.overlay.empty() &&
-       !protocol::admit_client_path(ctx, "overlay", params.overlay, base, io::Access::read,
-                                    overlay_at, error)) ||
+       !protocol::admit_existing_path(ctx, "overlay", params.overlay, base, overlay_at, error)) ||
       (!params.ddc.empty() &&
        !protocol::admit_client_path(ctx, "ddc", params.ddc, base, io::Access::make_directory,
                                     ddc_at, error))) {
@@ -1121,9 +1123,8 @@ bool render_benchmark(protocol::Context& ctx, const protocol::RenderBenchmarkPar
                       protocol::RenderBenchmarkResult& out, protocol::RpcError& error) {
   io::Admitted camera_path_at;
   if (!params.camera_path.empty() &&
-      !protocol::admit_client_path(ctx, "camera_path", params.camera_path,
-                                   protocol::client_base(ctx, {}), io::Access::read, camera_path_at,
-                                   error)) {
+      !protocol::admit_existing_path(ctx, "camera_path", params.camera_path,
+                                     protocol::client_base(ctx, {}), camera_path_at, error)) {
     return false;
   }
   RenderHost* host = host_of(ctx);
@@ -1154,7 +1155,10 @@ bool render_benchmark(protocol::Context& ctx, const protocol::RenderBenchmarkPar
     if (!renderer::read_camera_path(camera_path_at.native,
                                     scene->data.terrain.enabled ? &scene->data.terrain : nullptr,
                                     path, path_error)) {
-      error = protocol::make_error(protocol::codes::k_io_error, std::move(path_error));
+      error =
+          protocol::make_error(protocol::codes::k_io_error,
+                               protocol::shown_message(std::move(path_error), camera_path_at.native,
+                                                       params.camera_path));
       return false;
     }
   }

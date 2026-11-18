@@ -72,6 +72,24 @@ bool admit_client_path(Context& ctx, std::string_view field, std::string_view pa
   return false;
 }
 
+bool admit_existing_path(Context& ctx, std::string_view field, std::string_view path,
+                         std::string_view base, io::Admitted& out, RpcError& error) {
+  if (!admit_client_path(ctx, field, path, base, io::Access::read, out, error)) return false;
+  if (io::exists(out.native)) return true;
+  out = io::Admitted{};
+  error = path_not_found(field, path, io::Access::read);
+  return false;
+}
+
+std::string shown_message(std::string message, std::string_view native, std::string_view spelled) {
+  if (native.empty()) return message;
+  for (usize at = message.find(native); at != std::string::npos;
+       at = message.find(native, at + spelled.size())) {
+    message.replace(at, native.size(), spelled);
+  }
+  return message;
+}
+
 bool is_plain_file_name(std::string_view name) noexcept {
   if (name.empty() || name == "." || name == "..") return false;
   if (name.find_first_of("/\\") != std::string_view::npos) return false;
@@ -203,7 +221,9 @@ std::string describe_host_roots(const io::Roots& roots, std::string_view program
 bool configure_host_roots(io::Roots& roots, const HostRootsConfig& config, std::string& error) {
   // The shell first, so a writable root over it is refused by name.
   if (!config.shell_dir.empty() && roots.serve(config.shell_dir) != io::Status::Ok) {
-    error = "the shell's directory " + config.shell_dir + " cannot be served: a root holds it";
+    // No root exists yet, so the one cause is a directory the system cannot resolve.
+    error = "the shell's directory " + config.shell_dir +
+            " cannot be served: the system cannot say what it is";
     return false;
   }
   if (!config.doc_dir.empty()) {
@@ -247,8 +267,12 @@ bool configure_host_roots(io::Roots& roots, const HostRootsConfig& config, std::
       return false;
     }
     std::string_view dir = std::string_view(spec).substr(eq + 1);
+    // `:rw` read and write, `:ro` read (the default, spelled out so a directory whose own name
+    // ends in ":rw", which Linux allows, can still be given read-only: `<dir>:rw:ro`).
     bool writable = false;
-    if (dir.ends_with(":rw")) {
+    if (dir.ends_with(":ro")) {
+      dir.remove_suffix(3);
+    } else if (dir.ends_with(":rw")) {
       writable = true;
       dir.remove_suffix(3);
     }

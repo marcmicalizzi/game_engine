@@ -104,7 +104,8 @@ bool session_open(Context& ctx, const SessionOpenParams& params, SessionInfo& ou
   // Held by the connection that asked (0: stdio and in-process callers), so a client that
   // vanishes lets go of what it opened and a close lets go of the caller's hold alone.
   Session* s = ctx.sessions->open(opened, ctx.connection, error,
-                                  may_write ? std::string_view{} : std::string_view(params.path));
+                                  may_write ? std::string_view{} : std::string_view(params.path),
+                                  portable_path(ctx, dir.native));
   if (s == nullptr) {
     // "no document at <path>" named the host's path; say only what the client sent.
     if (error.code == codes::k_not_found)

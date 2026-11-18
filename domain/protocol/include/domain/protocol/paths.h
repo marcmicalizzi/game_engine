@@ -33,6 +33,17 @@ bool admit_client_path(Context& ctx, std::string_view field, std::string_view pa
                        std::string_view base, io::Access access, io::Admitted& out,
                        RpcError& error);
 
+// `admit_client_path` for reading a file that must be there, which then also answers a missing
+// one, at the same point of the call and with the same error (`path_not_found`): a method that
+// found the file missing later, after validating its other parameters or after asking for a
+// device, told "under a root, not there" from "refused" by the answer it gave.
+bool admit_existing_path(Context& ctx, std::string_view field, std::string_view path,
+                         std::string_view base, io::Admitted& out, RpcError& error);
+
+// A reader's message with every occurrence of the admitted file's native path replaced by the
+// client's own spelling, so an error names what the client sent and never the host's directory.
+std::string shown_message(std::string message, std::string_view native, std::string_view spelled);
+
 // One plain file name a writer puts in a directory it admitted: no separator, not `.` or `..`,
 // and the text rules of a path (no device name, stream, trailing dot or space, reserved character).
 bool is_plain_file_name(std::string_view name) noexcept;

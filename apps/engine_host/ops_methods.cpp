@@ -1202,8 +1202,7 @@ bool content_build_method(protocol::Context& ctx, const protocol::ContentBuildPa
   } else {
     content_build::ManifestEntry entry;
     io::Admitted source;
-    if (!protocol::admit_client_path(ctx, "source", params.source, base, io::Access::read, source,
-                                     error)) {
+    if (!protocol::admit_existing_path(ctx, "source", params.source, base, source, error)) {
       return false;
     }
     entry.source = source.native;
@@ -1330,6 +1329,10 @@ bool content_build_method(protocol::Context& ctx, const protocol::ContentBuildPa
     }
     protocol::ContentBuildOutput output;
     fill_output(task, params.stats, output);
+    // The source as the client may see it, `<root>://<relative>`: before, it was the canonical
+    // path of the host's machine (it had echoed the client's string). `path` stays the file to
+    // open, as the captures' `file://` answers do (protocol.md, "What is built, and what is left").
+    output.source = protocol::portable_path(ctx, output.source);
     output.textures = content_build::textures_json(texture_results, m, textures, true);
     switch (task.state) {
       case content_build::TaskState::Built: ++out.built; break;
@@ -1349,7 +1352,9 @@ bool content_build_method(protocol::Context& ctx, const protocol::ContentBuildPa
                     log::field("detail", r.error));
   }
   out.textures = content_build::textures_json(texture_results, ~u32{0}, textures, false);
-  out.ddc = ddc;
+  // The derived-data root as a root's name and a path under it (the host's `ddc`, or the
+  // client's own admitted one), never the host's directory.
+  out.ddc = protocol::portable_path(ctx, ddc);
   out.seconds = ms_since(start_ns) / 1000.0;
   ENGINE_LOG_INFO(log_ops, "content.build", log::field("built", out.built),
                   log::field("skipped", out.skipped), log::field("failed", out.failed),
@@ -2411,7 +2416,7 @@ bool session_save_game(protocol::Context& ctx, const protocol::SaveGameParams& p
   }
   const std::string path = admitted.native;
   if (vfs.resolve(session->dir(), document_dir) != io::Status::Ok) {
-    error = io_error("the session's document directory '" + session->dir() + "' does not resolve");
+    error = io_error("the session's document directory does not resolve");
     return false;
   }
   HostState* state = state_of(ctx);
@@ -2501,8 +2506,8 @@ bool session_load_game(protocol::Context& ctx, const protocol::LoadGameParams& p
   io::Admitted save_at;
   io::Admitted target_at;
   const std::string base = protocol::client_base(ctx, {});
-  if (!protocol::admit_client_path(ctx, "path", params.path, base, io::Access::read, save_at,
-                                   error) ||
+  // A save that is not there is answered as a refused path, before anything else is checked.
+  if (!protocol::admit_existing_path(ctx, "path", params.path, base, save_at, error) ||
       !protocol::admit_client_path(ctx, "dir", params.dir, base, io::Access::make_directory,
                                    target_at, error)) {
     return false;
@@ -2515,7 +2520,10 @@ bool session_load_game(protocol::Context& ctx, const protocol::LoadGameParams& p
   world::SaveCheck check;
   std::string why;
   if (!world::read_save(save_dir, manifest, check, why)) {
-    error = protocol::make_error(protocol::codes::k_validation_failed, std::move(why));
+    // The reader names the directory it read; the client is told its own spelling of it.
+    error = protocol::make_error(
+        protocol::codes::k_validation_failed,
+        protocol::shown_message(std::move(why), io::normalize_path(save_dir), params.path));
     return false;
   }
   if (manifest.hz != RuntimeWorld::hz()) {
@@ -2555,7 +2563,8 @@ bool session_load_game(protocol::Context& ctx, const protocol::LoadGameParams& p
   }
   protocol::SessionOpenParams open;
   open.path = target;
-  protocol::Session* session = ctx.sessions->open(open, ctx.connection, error);
+  protocol::Session* session =
+      ctx.sessions->open(open, ctx.connection, error, {}, protocol::portable_path(ctx, target));
   if (session == nullptr) return false;
   (void)ctx.roots->protect(session->dir());
   const std::string session_id = session->id();

@@ -31,6 +31,11 @@ class Session {
 
   const std::string& id() const noexcept { return id_; }
   const std::string& dir() const noexcept { return dir_; }
+  // The directory as a client may see it, `<root>://<relative>` (paths.h, `portable_path`), set by
+  // whoever opened the session against the host's roots; empty when none was set or no root holds
+  // it. What the session's events carry: `dir()` is the host's own path and never leaves it.
+  const std::string& shown_path() const noexcept { return shown_path_; }
+  void set_shown_path(std::string path) { shown_path_ = std::move(path); }
   const std::string& name() const noexcept { return manifest_.name; }
   doc::Document& document() noexcept { return doc_; }
   const doc::Document& document() const noexcept { return doc_; }
@@ -333,6 +338,7 @@ class Session {
   io::Vfs* vfs_;
   std::string id_;
   std::string dir_;
+  std::string shown_path_;    // dir_ as `<root>://<relative>`, for events
   std::string read_only_as_;  // the client's path, when the session may not be written
   doc::Document doc_;
   doc::DocumentManifest manifest_;
@@ -414,8 +420,10 @@ class SessionManager {
   // `read_only_as` non-empty: the document was admitted for reading only (a read-only root), so
   // the session may not be written (`Session::writable`) and its refusals name that path. An
   // already open session is shared as it is, and made writable when this opener may write.
+  // `shown` is the directory as `<root>://<relative>` (Session::shown_path), set before the
+  // "opened" event is published so no event ever carries the host's own path.
   Session* open(const SessionOpenParams& params, u64 holder, RpcError& error,
-                std::string_view read_only_as = {});
+                std::string_view read_only_as = {}, std::string_view shown = {});
   Session* find(std::string_view id) noexcept;
   // Looks up the session named in params; sets SessionNotFound otherwise.
   Session* require(std::string_view id, RpcError& error) noexcept;

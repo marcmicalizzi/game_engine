@@ -733,7 +733,7 @@ void Session::publish_session(std::string_view change, const LeaseInfo* lease, u
   SessionChangeEvent event;
   event.session = id_;
   event.change = std::string(change);
-  event.path = dir_;
+  event.path = shown_path_;  // every subscriber's, so never the host's own path
   event.connection = connection;
   event.reason = std::string(reason);
   if (lease != nullptr) {
@@ -750,7 +750,7 @@ void Session::publish_ledger(std::string_view change, u64 task, u64 review, std:
   SessionChangeEvent event;
   event.session = id_;
   event.change = std::string(change);
-  event.path = dir_;
+  event.path = shown_path_;
   event.connection = connection;
   event.actor = std::string(actor);
   event.task = task;
@@ -1664,7 +1664,7 @@ bool Session::reject(const RejectParams& params, const Caller& caller, RpcError&
 // ---- SessionManager --------------------------------------------------------------------------
 
 Session* SessionManager::open(const SessionOpenParams& params, u64 holder, RpcError& error,
-                              std::string_view read_only_as) {
+                              std::string_view read_only_as, std::string_view shown) {
   if (params.path.empty()) {
     error = make_error(codes::k_invalid_argument, "path is required");
     return nullptr;
@@ -1702,6 +1702,7 @@ Session* SessionManager::open(const SessionOpenParams& params, u64 holder, RpcEr
     parked_.erase_at(i - 1);
   }
   session->set_events(events_);
+  session->set_shown_path(std::string(shown));
   session->hold(holder);
   sessions_.push_back(std::move(session));
   sessions_.back()->publish_session("opened");

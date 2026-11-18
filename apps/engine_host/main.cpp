@@ -585,7 +585,9 @@ int main(int argc, char** argv) {
     open.create = create_doc;
     open.name = doc_name;
     protocol::RpcError open_error;
-    protocol::Session* opened = sessions.open(open, 0, open_error);
+    std::string shown;
+    (void)roots.portable(open.path, shown);
+    protocol::Session* opened = sessions.open(open, 0, open_error, {}, shown);
     if (opened == nullptr) {
       std::fprintf(stderr, "engine-host: --doc %s: %s\n", doc_dir.c_str(),
                    open_error.message.c_str());

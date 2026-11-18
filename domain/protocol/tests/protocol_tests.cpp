@@ -875,6 +875,62 @@ TEST_CASE("roots: a session's derived data goes to the host's ddc root, else its
   h.dispatcher.context().roots = &h.roots;
 }
 
+// The session's events went to every subscriber with the host's own directory in `path`, and a
+// file admitted under a root but missing was answered later, and differently, than a refused one.
+TEST_CASE("roots: a session's events show its root form, and a missing file reads as refused") {
+  TempDir tmp("protocol_roots_shown");
+  Host h;
+  const JsonValue opened = h.ok(
+      "session.open", obj({{"path", JsonValue(tmp.file("world"))}, {"create", JsonValue(true)}}));
+  const Session* session =
+      h.dispatcher.context().sessions->find(std::string(at(opened, "session").as_string()));
+  REQUIRE(session != nullptr);
+  CHECK(session->shown_path().starts_with("tests://"));
+  CHECK(session->shown_path().ends_with("/world"));
+  CHECK(session->shown_path() == std::string(at(opened, "path").as_string()));
+  h.ok("session.close", obj({{"session", at(opened, "session")}}));
+
+  // Missing under a root and outside every root: one error, one sentence, at admission.
+  Context& ctx = h.dispatcher.context();
+  io::Admitted a;
+  RpcError missing;
+  CHECK_FALSE(admit_existing_path(ctx, "mesh", tmp.file("nothing.glb"), {}, a, missing));
+  CHECK(a.native.empty());
+  io::Roots narrow;
+  REQUIRE(narrow.add("work", tmp.file("work"), true) == io::Status::Ok);
+  ctx.roots = &narrow;
+  RpcError refused;
+  CHECK_FALSE(admit_existing_path(ctx, "mesh", tmp.file("nothing.glb"), {}, a, refused));
+  ctx.roots = &h.roots;
+  CHECK(missing.code == refused.code);
+  CHECK(missing.message == refused.message);
+  // And a present one is admitted.
+  REQUIRE(io::write_file(tmp.file("there.glb"), "x") == io::Status::Ok);
+  RpcError none;
+  CHECK(admit_existing_path(ctx, "mesh", tmp.file("there.glb"), {}, a, none));
+  // A reader's message is told the client's spelling, never the native path.
+  CHECK(shown_message("'D/x/save' is not a save; D/x/save has no manifest", "D/x/save",
+                      "out://save") == "'out://save' is not a save; out://save has no manifest");
+}
+
+// `<dir>:rw` was split on its suffix alone, so a directory whose name ends in ":rw" (Linux allows
+// it) could not be named read-only and was silently made writable; `:ro` says read-only outright.
+TEST_CASE("roots: --root takes :ro, so a directory named with :rw can be read-only") {
+  TempDir tmp("protocol_roots_ro");
+  const std::string dir = tmp.file("lib");
+  REQUIRE(io::make_directories(dir) == io::Status::Ok);
+  io::Roots roots;
+  HostRootsConfig config;
+  config.root_specs.push_back("lib=" + dir + ":ro");
+  config.root_specs.push_back("work=" + tmp.file("work") + ":rw");
+  std::string error;
+  REQUIRE(configure_host_roots(roots, config, error));
+  REQUIRE(roots.find("lib") != nullptr);
+  CHECK_FALSE(roots.find("lib")->writable);
+  CHECK(roots.find("lib")->spelled == dir);
+  CHECK(roots.find("work")->writable);
+}
+
 // No roots, no paths: a dispatcher made without them refuses every client path.
 TEST_CASE("roots: a context with no roots refuses every path") {
   TempDir tmp("protocol_roots_none");

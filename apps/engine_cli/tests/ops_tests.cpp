@@ -331,6 +331,10 @@ TEST_CASE(
   const JsonValue& first = at(built.result, "outputs")[0];
   CHECK(text(first, "status") == "built");
   CHECK(text(first, "path") == output);
+  // The source as a root's name and a path under it: before, the host's canonical path.
+  CHECK(text(first, "source").find("://") != std::string::npos);
+  CHECK(text(first, "source").ends_with("/grid.gltf"));
+  CHECK(text(first, "source").find(tmp.path()) == std::string::npos);
   CHECK(number(first, "triangles") == 512);
   CHECK(number(first, "clusters") > number(first, "leaf_clusters"));
   CHECK(number(first, "bytes") > 0);
@@ -392,7 +396,10 @@ TEST_CASE(
   CHECK(number(listed.result, "built") == 1);
   CHECK(number(listed.result, "skipped") == 1);
   CHECK(number(listed.result, "failed") == 1);
-  CHECK(text(listed.result, "ddc") == ddc);
+  // The root answered as a root's name and a path under it, never the host's directory.
+  CHECK(text(listed.result, "ddc").find("://") != std::string::npos);
+  CHECK(text(listed.result, "ddc").ends_with("/ddc"));
+  CHECK(text(listed.result, "ddc").find(tmp.path()) == std::string::npos);
   const JsonValue& outputs = at(listed.result, "outputs");
   REQUIRE(outputs.size() == 3);
   CHECK(text(outputs[0], "status") == "skipped");
