@@ -201,6 +201,15 @@ class Session {
   // Tests only (policy_tests.cpp): the next write of `transactions.json` fails, as a rename that a
   // scanner holds past its retries does, after everything before it in the call has happened.
   void fail_transactions_write_for_test() noexcept { test_fail_transactions_write_ = true; }
+  // **The one gate on every write beside the document**: `transactions.json` and `leases.json`
+  // (`update_transactions`, `update_leases`) and `ledger.json` (ledger.cpp's `update_ledger`) ask it
+  // before they take a lock or change anything, and a refusal is the call's answer. True for every
+  // session today; a session that may not write its directory (one opened from a read-only root)
+  // refuses here, and its side-file reads pass `make_lock = false` (side_file.h).
+  bool may_write_side_files(RpcError& error) const {
+    (void)error;
+    return true;
+  }
   // Tests only (policy_tests.cpp): the next save of the document fails before it writes anything,
   // as a layer file a scanner holds or a full disk does, after the journal has taken the patch.
   void fail_save_for_test() noexcept { test_fail_save_ = true; }
@@ -325,6 +334,7 @@ class Session {
 
 template <class Change>
 bool Session::update_transactions(Change&& change, RpcError& error) {
+  if (!may_write_side_files(error)) return false;
   return update_side_file(
       *vfs_, transactions_path(), transactions_,
       [&](TransactionsFile&, bool& write) {
@@ -343,6 +353,7 @@ bool Session::update_transactions(Change&& change, RpcError& error) {
 
 template <class Change>
 bool Session::update_leases(Change&& change, RpcError& error) {
+  if (!may_write_side_files(error)) return false;
   LeaseFile file;
   return update_side_file(
       *vfs_, leases_path(), file,

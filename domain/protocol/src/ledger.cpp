@@ -220,6 +220,9 @@ bool update_ledger(io::Vfs& vfs, const Session& session, bool read_only, F&& cha
     bool write = false;
     return change(none, write, error);
   }
+  // A read goes on to take the lock too, since it may let claims lapse and write: the session's
+  // one gate on writes beside its document (session.h) decides both.
+  if (!session.may_write_side_files(error)) return false;
   LedgerFile ledger;
   return update_side_file(
       vfs, path, ledger, [&](LedgerFile& l, bool& write) { return change(l, write, error); },

@@ -101,14 +101,19 @@ bool read_side_file(const io::Vfs& vfs, std::string_view path, T& out, bool& pre
 // the rename's retries), so a reader outside the lock is a writer's failure.
 // A table that is not there is read as its default without the lock, so opening a document that
 // has none makes no lock file in it (a writer makes the lock before the table).
+// `make_lock` false is the read of a session that may not write its document's directory (a
+// document opened from a read-only root): the lock file is never made there, so the table is read
+// without it — a writer elsewhere replaces it whole, so this sees the old table or the new, and on
+// Windows may make that writer's rename retry.
 template <class T>
 bool read_side_file_locked(const io::Vfs& vfs, std::string_view path, T& out, bool& present,
-                           RpcError& error) {
+                           RpcError& error, bool make_lock = true) {
   if (!vfs.exists(path)) {
     out = T{};
     present = false;
     return true;
   }
+  if (!make_lock) return read_side_file(vfs, path, out, present, error);
   SideFileLock lock;
   if (!lock_side_file(vfs, path, lock, error)) return false;
   return read_side_file(vfs, path, out, present, error);
