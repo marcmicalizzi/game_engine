@@ -1787,8 +1787,9 @@ reads the cache (`k_gi_read`): anywhere else the low tier traces as the top does
 cache's ratio is one there and the sun would come through every crown. Front-lit sheets trace as
 they always did. **What a person loses**: the sun's pattern on the back of a crown. A backlit
 needle the sun reaches through a gap and one a branch shades take the same mean of their cell,
-so the glow of lit-through leaves against the sun is even where it was dappled. The measured
-cost and the pictures are on [the experiment's page](../experiments/foliage-two-sided-light.md#the-backlit-suns-tier-r177).
+so the glow of lit-through leaves against the sun is even where it was dappled. On the grove at
+3840 x 2160 traced it gives back about 0.09 ms of resolve; the measured cost and the pictures are
+on [the experiment's page](../experiments/foliage-two-sided-light.md#the-backlit-suns-tier-r177).
 
 **What each reader does with it.** One model, in `brdf.slang` (`brdf_foliage_eval_cos`,
 `brdf_foliage_direct`, `brdf_foliage_ambient`), mirrored in double in `brdf_reference.h`:
