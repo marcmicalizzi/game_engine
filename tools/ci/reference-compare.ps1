@@ -74,10 +74,12 @@ class RpcHost {
   [System.Diagnostics.Process]$Process
   [int]$NextId = 1
 
-  RpcHost([string]$exe, [string]$arguments) {
+  # The arguments as a list, one each, so a directory ending in a backslash (`D:\`) cannot escape
+  # the quote a single command line would put after it.
+  RpcHost([string]$exe, [string[]]$arguments) {
     $info = [System.Diagnostics.ProcessStartInfo]::new()
     $info.FileName = $exe
-    $info.Arguments = $arguments
+    foreach ($a in $arguments) { $info.ArgumentList.Add($a) }
     $info.RedirectStandardInput = $true
     $info.RedirectStandardOutput = $true
     $info.RedirectStandardError = $false
@@ -145,8 +147,8 @@ $failures = @()
 $rpc = $null
 try {
   # The host reads the corpus under the repository and writes the evaluations under the output
-# directory, the two roots it is given (docs/subsystems/protocol.md, "The host's file roots").
-$rpc = [RpcHost]::new($hostExe, "--stdio --root `"repo=$Root`" --root `"out=$($OutDir):rw`"")
+  # directory, the two roots it is given (docs/subsystems/protocol.md, "The host's file roots").
+  $rpc = [RpcHost]::new($hostExe, @('--stdio', '--root', "repo=$Root", '--root', "out=$($OutDir):rw"))
   foreach ($file in $files) {
     $definition = Get-Content -Raw -Path $file.FullName | ConvertFrom-Json
     $name = if ($definition.name) { $definition.name } else { $file.BaseName }
@@ -166,10 +168,14 @@ $rpc = [RpcHost]::new($hostExe, "--stdio --root `"repo=$Root`" --root `"out=$($O
     $loadParams = ConvertTo-Hashtable $definition.load
     if ($null -eq $loadParams) { $loadParams = @{} }
     $loadParams['settings'] = ConvertTo-Hashtable $definition.settings
-    # A corpus names its files from the repository's root: the host's root "repo".
+    # A corpus names its files from the repository's root: the host's root "repo". On Windows a
+    # path with one leading slash is rooted to .NET but drive-relative to the host, which refuses
+    # it, so only a drive path or a UNC path is left as it is there.
     foreach ($key in 'mesh', 'scene', 'overlay') {
       $v = $loadParams[$key]
-      if ($v -and -not [System.IO.Path]::IsPathRooted($v) -and $v -notmatch '^[a-z0-9_]+://') { $loadParams[$key] = 'repo://' + ($v -replace '\\', '/') }
+      if (-not $v -or $v -match '^[a-z0-9_]+://') { continue }
+      $absolute = if ($IsWindows) { $v -match '^([A-Za-z]:[\\/]|[\\/]{2})' } else { [System.IO.Path]::IsPathRooted($v) }
+      if (-not $absolute) { $loadParams[$key] = 'repo://' + (($v -replace '\\', '/').TrimStart('/')) }
     }
     $loaded = $rpc.Call('render.load', $loadParams)
     if ($loaded.error) {
