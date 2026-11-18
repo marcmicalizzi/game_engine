@@ -7,7 +7,9 @@
   Builds a small repository and two slot worktrees in a fresh GUID directory under the system temp
   directory (two copies of this script never share one), then drives every subcommand through
   `pwsh -File tools/slot.ps1 ... -SlotsDir <fixture>` and asserts the exit code *and* the message:
-  list shows the head, branch or detached state, dirty count, build directories and owner; reset
+  list shows the head, branch or detached state, dirty count, build directories with their size
+  and file count, the owner and the pool's total; add makes a detached worktree at the commit and
+  refuses a slot that exists and an unknown commit; reset
   detaches at the commit and keeps build/, and refuses a dirty tree, a claimed slot (unless
   -Force), a running process from under the slot, and an unknown commit; claim refuses a second
   owner; release frees the slot; warm runs the slot's own tools/dev.ps1 with -Affected -Base.
@@ -61,12 +63,34 @@ try {
   New-Item -ItemType Directory -Force -Path (Join-Path $s1 'build/msvc-debug') | Out-Null
   Set-Content -LiteralPath (Join-Path $s1 'build/msvc-debug/obj.o') 'x'
   Set-Content -LiteralPath (Join-Path $repo '.git/info/exclude') '/build/'
+  # Two megabytes beside the object, so the tree's size is a number list has to add up.
+  [IO.File]::WriteAllBytes((Join-Path $s1 'build/msvc-debug/big.bin'), (New-Object byte[] 2000000))
+  $treeBytes = (Get-ChildItem -LiteralPath (Join-Path $s1 'build/msvc-debug') -File | Measure-Object Length -Sum).Sum
 
   $r = Invoke-Slot @('list')
   Test-That 'list exits 0 and names both slots' { $r.Code -eq 0 -and $r.Out.Contains('slot-1') -and $r.Out.Contains('slot-2') }
   Test-That 'list shows a detached head by its short sha' { $r.Out.Contains("head $($first.Substring(0, 8)) (detached)") }
   Test-That 'list shows the build directory and its time' { $r.Out -match 'builds: msvc-debug \(last \d{4}-\d\d-\d\d' }
   Test-That 'list says none for a slot with no build, and free for no owner' { $r.Out.Contains('builds: none') -and $r.Out.Contains('owner: free') }
+  Test-That "list shows a build tree's size and file count" { $r.Out -match 'builds: msvc-debug \(last [^,]+, 2 MB, 2 files\)' }
+  Test-That "list ends with the pool's total" { $r.Out.Contains("pool: 2 slots, build trees $('{0:N0} MB' -f ($treeBytes / 1e6)) in 2 files") }
+
+  # add makes a slot: a detached worktree of the repository at the commit, no build yet.
+  $r = (& pwsh -NoProfile -File $slotScript add -Slot 3 -To $first -SlotsDir $slots -Repo $repo *>&1 | Out-String)
+  $code = $LASTEXITCODE
+  $s3 = Join-Path $slots 'slot-3'
+  Test-That 'add makes slot-3 detached at the commit' {
+    $code -eq 0 -and $r.Contains('slot-3 added') -and (Test-Path (Join-Path $s3 '.git')) -and (Invoke-TGit $s3 @('rev-parse', 'HEAD')) -eq $first -and
+      (Invoke-TGit $s3 @('rev-parse', '--abbrev-ref', 'HEAD')) -eq 'HEAD'
+  }
+  $r = Invoke-Slot @('list')
+  Test-That 'list takes the new slot, with no build' { $r.Out -match '(?s)slot-3 .*head [0-9a-f]{8} \(detached\).*builds: none' -and $r.Out.Contains('pool: 3 slots') }
+  $r = (& pwsh -NoProfile -File $slotScript add -Slot 1 -SlotsDir $slots -Repo $repo *>&1 | Out-String)
+  Test-That 'add refuses a slot that exists' { $LASTEXITCODE -eq 1 -and $r.Contains('slot-1 already exists') }
+  $r = (& pwsh -NoProfile -File $slotScript add -Slot 4 -To no-such-ref -SlotsDir $slots -Repo $repo *>&1 | Out-String)
+  Test-That 'add refuses an unknown commit and makes nothing' { $LASTEXITCODE -eq 1 -and $r.Contains('is not a commit') -and -not (Test-Path (Join-Path $slots 'slot-4')) }
+  $r = Invoke-Slot @('add')
+  Test-That 'add without -Slot is a usage error (2)' { $r.Code -eq 2 }
 
   $r = Invoke-Slot @('claim', '-Slot', '1', '-Owner', 'W91')
   Test-That 'claim writes the marker and exits 0' { $r.Code -eq 0 -and (Test-Path (Join-Path $s1 'build/slot-owner.json')) }

@@ -315,6 +315,13 @@ if(ENGINE_PWSH)
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
   set_tests_properties(tools.slot PROPERTIES LABELS "tools")
 
+  # The disk-write reporter's arithmetic (T185) over canned counter samples: no counter is read.
+  add_test(NAME tools.disk_writes
+    COMMAND "${ENGINE_PWSH}" -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_SOURCE_DIR}/tools/disk-writes.Tests.ps1"
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+  set_tests_properties(tools.disk_writes PROPERTIES LABELS "tools")
+
   # The capability scaffold (ADR-0027) generates into a temporary tree and checks the result.
   add_test(NAME tools.new_capability
     COMMAND "${ENGINE_PWSH}" -NoProfile -ExecutionPolicy Bypass
