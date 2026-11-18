@@ -50,14 +50,14 @@ namespace {
 thread_local bool t_counting = false;
 thread_local u64 t_allocations = 0;
 
-void* counted_malloc(std::size_t size) {
+[[maybe_unused]] void* counted_malloc(std::size_t size) {
   if (t_counting) ++t_allocations;
   void* p = std::malloc(size != 0 ? size : 1);
   if (p == nullptr) std::abort();
   return p;
 }
 
-void* counted_aligned(std::size_t size, std::size_t align) {
+[[maybe_unused]] void* counted_aligned(std::size_t size, std::size_t align) {
   if (t_counting) ++t_allocations;
   if (size == 0) size = 1;
 #if defined(_WIN32)
@@ -70,7 +70,7 @@ void* counted_aligned(std::size_t size, std::size_t align) {
   return p;
 }
 
-void aligned_release(void* p) {
+[[maybe_unused]] void aligned_release(void* p) {
 #if defined(_WIN32)
   _aligned_free(p);
 #else
@@ -79,6 +79,22 @@ void aligned_release(void* p) {
 }
 }  // namespace
 
+// ThreadSanitizer's runtime links its own allocation functions whole, so a program built with it
+// cannot replace them (`linux-clang-tsan`'s first build, 2026-11-17: two of each at the link;
+// docs/ci/what-to-run.md, "Sanitizers"). Under it the test counts the engine's allocations and the
+// log's records and says it cannot count `operator new`.
+#if defined(__SANITIZE_THREAD__)
+#define ENGINE_AUDIO_TEST_COUNTS_NEW 0
+#elif defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+#define ENGINE_AUDIO_TEST_COUNTS_NEW 0
+#endif
+#endif
+#ifndef ENGINE_AUDIO_TEST_COUNTS_NEW
+#define ENGINE_AUDIO_TEST_COUNTS_NEW 1
+#endif
+
+#if ENGINE_AUDIO_TEST_COUNTS_NEW
 void* operator new(std::size_t size) { return counted_malloc(size); }
 void* operator new[](std::size_t size) { return counted_malloc(size); }
 void* operator new(std::size_t size, const std::nothrow_t&) noexcept {
@@ -101,6 +117,7 @@ void operator delete(void* p, std::align_val_t) noexcept { aligned_release(p); }
 void operator delete[](void* p, std::align_val_t) noexcept { aligned_release(p); }
 void operator delete(void* p, std::size_t, std::align_val_t) noexcept { aligned_release(p); }
 void operator delete[](void* p, std::size_t, std::align_val_t) noexcept { aligned_release(p); }
+#endif
 
 namespace {
 
@@ -207,6 +224,7 @@ TEST_CASE("the audio thread allocates nothing and logs nothing, whatever the com
     }
     CHECK(stats.events_dropped == 0u);
 
+    if (!ENGINE_AUDIO_TEST_COUNTS_NEW) MESSAGE("operator new is not counted under ThreadSanitizer");
     CHECK(total.new_calls == 0u);
     CHECK(total.engine_allocations == 0u);
     CHECK(total.log_records == 0u);
