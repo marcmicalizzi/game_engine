@@ -691,9 +691,11 @@ TEST_CASE("matgen: the same bytes from every toolchain") {
       // Version 11 (G203): the three sprays, branchlets drawn for their card, their outline in
       // the hash, the height each needle's own section (no brush back, no lift); no pin above
       // moved, the plaster's stain (Rock::stain_permille) leaving every rock at its bytes.
-      {"spruce/needles", 6464970840983327823ull},
-      {"pine/needles", 7135673228428157996ull},
-      {"conifer/needles", 11321737302096645126ull},
+      // Version 12 (G218): the needle's measured colour and the year's growth 1.17 times paler
+      // moved the three sprays and nothing else; re-taken on MSVC alone.
+      {"spruce/needles", 15400373418665014058ull},
+      {"pine/needles", 539025499953212412ull},
+      {"conifer/needles", 3405610361108083803ull},
   };
   for (const Pin& pin : pins) {
     CAPTURE(pin.role);

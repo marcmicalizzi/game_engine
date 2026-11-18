@@ -74,7 +74,8 @@ it from a recalled "near zero"; the measured numbers are half the reflectance. T
 stands, now on read sources. One finding beside it, not this row's to act on: the spruce recipe's
 needle colour (green 0.100, linear, [conifer crowns](conifer-crown-coverage.md)) is under the
 measured needle reflectance at 560 nm (0.139 to 0.165), and that page's recalled 0.08 to 0.12 is
-too; a card's texels are needles only, so it is the needle's own number that applies.
+too; a card's texels are needles only, so it is the needle's own number that applies. (G218
+moved the recipe to it: [light within a conifer crown](conifer-crown-light.md#a-needles-colour).)
 
 **What it costs.** One byte of the material's flags word, no word of any hot record. A foliage
 pixel asks the sun in every direction but straight against it, so more of a crown traces its sun

@@ -85,4 +85,93 @@ the CPU (a GPU number here is a ratio of two pictures, which load does not move)
 - **The shade is mostly light that is there anyway**: with the bounce off a shaded needle returns
   1.0 to 1.07, and the bounce's crown prior takes 10 to 30 % of it away.
 - Over half-metre blocks (a bough) the picture's 90th percentile is 1.45 to 1.70 times its 10th on
-  the spruce and 1.95 to 2.5 on the pine.
+  the spruce and 1.95 to 2.5 on the pine; per pixel 2.25 to 2.9 and 3.0 to 4.5. **The far form
+  averages a little of it away**: at 300 m the spruce's are 1.45 and 2.25, against 1.70 and 2.6 at
+  100 m.
+- **The gaps between boughs show wood as bright as the needles.** The tree's own trunk and bare
+  inner branches return 0.49 to 0.70 of an albedo of one (0.34 to 0.47 where the sun is blocked),
+  and their flat bark colour (0.26, 0.18, 0.12, luminance 0.19, where no pack names a
+  `conifer/bark`) is twice the needles' albedo, so a gap's pixels are 0.093 to 0.135 in luminance
+  against the needles' 0.074 to 0.12. A gap that should be the crown's dark inside is a lit
+  brown-orange line.
+
+### Is it the cards?
+
+The brief's two suspects in what a card states, each tried on main's own binary by a pack whose
+needle roles declare other optics (a role's `transmission` and `normal_spread` replace the part's
+own; materials.md), the same views, sun at 12:30, the bounce on (2026-11-17 21:43 to 21:52, the
+session locked):
+
+| needle card's `transmit`, `spread` | spruce: lit over blocked, 10 to 300 m | over half-metre blocks | pine |
+|---|---|---|---|
+| 0.47, 0.8 (main) | 1.50 to 1.64 | 1.45 to 1.70 | 1.36 to 1.65 |
+| 0.27, 0.8 | 1.47 to 1.65 | 1.42 to 1.71 | 1.31 to 1.66 |
+| 0.27, 0.4 | 1.51 to 1.78 | 1.48 to 1.72 | 1.34 to 1.67 |
+| 0.47, 0.4 | 1.59 to 1.76 | 1.47 to 1.71 | 1.40 to 1.67 |
+| 0.27, 0.13 | 1.57 to 1.87 | 1.53 to 1.73 | 1.37 to 1.67 |
+
+**Neither is the cause.** A card a quarter as transmissive moves the shade 7 % and the sun as much;
+a card nearly all sheet (spread 0.13, the sun answered by which way its plane faces) raises the
+lit over the blocked by a tenth and leaves a bough's spread where it was. The 0.27 is what the
+shoot's escape probability would make of a needle's 0.47 (0.47 × 4 STAR, 4 STAR about 0.6 for
+Palmroth et al.'s middle shoot): grounded, but it moves nothing a person would see, so the
+declared optics stand as R164 set them.
+
+### Where the evenness comes from
+
+The shade on a needle is ambient light, and there is a lot of it against the sun:
+
+- **The sun is weak against the sky in the frame.** On level sand in the open the engine's lit
+  over blocked is 2.1 with the bounce off (the sun at 63°, turbidity 2.5): the direct sun on a level
+  surface is about as much as the sky's. A clear sky at that height gives several times more
+  direct than diffuse light in the visible (*recalled*, not read tonight; the sky's own model is
+  the place to check it). A needle, which takes the sun by the Lambert sphere's law (a fifth to two
+  thirds of a sheet facing it) and the sky from both sides (1 + transmit of it), shows the same
+  flatness more.
+- **What lights the shade is the whole hemisphere, the sunlit ground below included**, scaled by
+  the crown's prior where the bounce reads it: the bounce takes 10 to 30 % of a shaded needle's
+  light on the crown's outside, where Stenberg et al. measured openness up to 0.9, and the wood
+  inside keeps half of an outer needle's light where the openness falls to 0.2.
+- **The gaps are bright wood** (above).
+
+None of those is a card's: they are the sky's balance, the ambient's reach inside a crown and the
+bark's colour, and the rows below are where each is answered.
+
+## What changed
+
+- **The needle's colour** (`matgen`, `k_matgen_version` 12; [matgen](../subsystems/matgen.md#spray-sets)):
+  the spruce's and the bare conifer's sprays draw a one-year-old needle's measured colour and the
+  year's growth 1.17 times paler; the pine follows at its own hue. Only the three sprays' images
+  move.
+- **Nothing in what a card declares**: the needle card's transmittance and its sphere's share stay
+  R164's, since neither moves a crown's light and dark (the table above).
+
+## What an imported asset gets, and a scene with none
+
+A spray is the engine's own image for a role a pack may leave to it, so an imported conifer and a
+pack that names its own needles draw exactly what they drew; a scene with no conifer, or with
+conifers on a pack's own needle images, draws the same bytes. What recooks: every generated set's
+key moves with `k_matgen_version`, so a materials root's `generated` folder is stale and is built
+again (`engine-content matgen --out <dir>`), and every generated mesh keyed against a pack with a
+`generated` folder recooks: **every forest recooks once**. No flora, renderer or shader byte moved.
+
+## Not done, and the rows it leaves
+
+- **The sky's direct against its diffuse light**, measured here at about one to one on level sand
+  at 63°; a renderer row to hold the sky model's sun and sky against a published clear-sky model
+  in the visible, since every shadow in every scene is as flat as this one.
+- **The ambient inside a crown**: the crown prior takes 10 to 30 % from a shaded needle on the
+  crown's outside and keeps half of an outer needle's light on the wood inside, where the
+  literature's openness falls to 0.2; and the sunlit ground below is in every needle's
+  hemisphere. The renderer's (the prior, the cache, the resolve's foliage ambient).
+- **The bark in the gaps**: the conifer's flat bark (luminance 0.19) is twice the needles' albedo;
+  a measured spruce and pine bark (Juola, Hovi and Rautiainen 2020, *Silva Fennica* 54(4) 10331:
+  spruce bark 0.07 to 0.53 over 400 to 1000 nm, its visible numbers in figures only, read
+  tonight) for `conifer/bark` and the flat colour.
+- **The year's growth at a bough's tips as a material of its own**: the solver knows each card's
+  shoot age along its axis (`needle_years`, `shoot_growth_m`); the outer card of every axis is
+  the current year's. A second needle material with the current-year colour carries it, any asset
+  can state the same with two materials, and the impostor chain's spray ranges have to be split
+  for it, which is why it was not done here.
+- **Sun and shade shoots**: shade shoots are flat and sun shoots bushy (Stenberg et al. 1999), which
+  the cards' lift already follows; a shade needle's own optics were not found in text.

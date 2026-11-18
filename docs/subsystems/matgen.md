@@ -571,7 +571,10 @@ row's hand-back). Version 4 (G188) added the two wood pins and moved no other; v
 (G187) moved the turf's and added the moss's, the soil's and the thatch's. What the containers
 made of versions 4 and 5 is under "What it measured". Version 9 (the masonry kind, 2026-11-15)
 added the flag's and the rubble's pins, taken on MSVC in `msvc-debug`, and moved no other; its
-container run is in the structures' row of the night's hand-back, not here yet. The streaks' distance below a
+container run is in the structures' row of the night's hand-back, not here yet. Version 12
+(G218, the needles' measured colour) moved the three spray pins and no other, re-taken on MSVC in
+`msvc-debug`; `linux-clang-debug` (2026-11-17 23:18, `-Filter "matgen|engine_content"`) printed
+the same three hashes. The streaks' distance below a
 source is an integer from two sweeps round each column, the lichen's owner of a texel is decided
 by an f64 comparison of two quotients of the same arithmetic, so neither adds an operation a
 toolchain rounds its own way. Nothing was needed that `core/math/deterministic.h` lacks: a normal draw is Box and Muller's
