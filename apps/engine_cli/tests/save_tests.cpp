@@ -31,6 +31,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -525,7 +526,22 @@ struct CorpusSave {
   const char* loaded;
   std::vector<std::string> migrations;
   const char* continued;
+  // The record type whose capability the save's world needs, which a build without it names when
+  // it refuses the save: the carts' for the replay test's world, the residents' for theirs.
+  const char* needs = "engine.kinematics.Mover";
 };
+
+// Whether this build has the capability a save's world needs (`CorpusSave::needs`).
+bool can_load(const CorpusSave& save) {
+  const std::string needs = save.needs;
+#if defined(ENGINE_CLI_TESTS_NPC)
+  if (needs == "engine.npc.Resident") return true;
+#endif
+#if defined(ENGINE_CLI_TESTS_KINEMATICS)
+  if (needs == "engine.kinematics.Mover") return true;
+#endif
+  return false;
+}
 
 const std::vector<CorpusSave>& corpus() {
   static const std::vector<CorpusSave> saves = {
@@ -566,6 +582,16 @@ const std::vector<CorpusSave>& corpus() {
       // at tick 300 as v3 — nothing the 300 ticks wrote depended on the change — in files that
       // name their versions.
       {"v4", 300, "8cdae985e86ab1d5", "8cdae985e86ab1d5", {}, "c9b72a04d230351f"},
+      // The npc capability's record types (D23): 400 generated residents and their places on 64 m
+      // tiles, streamed round a walking and a still observer and saved at tick 300 by
+      // npc_replay_tests.cpp's helper, in v4's formats. No player, so it continues on its own.
+      {"v4-residents",
+       300,
+       "30fe42fed65a7a18",
+       "30fe42fed65a7a18",
+       {},
+       "31278070c16babc9",
+       "engine.npc.Resident"},
   };
   return saves;
 }
@@ -629,31 +655,94 @@ TEST_CASE("save corpus: every save loads, migrates, and runs on as it was measur
     const JsonValue loaded =
         host.call("session.load_game", "{\"path\":" + json_string(path) +
                                            ",\"dir\":" + json_string(tmp.file(save.name)) + "}");
-#if defined(ENGINE_CLI_TESTS_KINEMATICS)
-    const JsonValue& load = result_of(loaded);
-    CHECK(number(load, "tick") == save.tick);
-    CHECK(text(load, "saved_state_hash") == save.saved);
-    CHECK(text(load, "state_hash") == save.loaded);
-    const JsonValue& steps = at(load, "migrations");
-    REQUIRE(steps.size() == save.migrations.size());
-    for (usize i = 0; i < steps.size(); ++i)
-      CHECK(steps[i].as_string() == save.migrations[i]);
-    const std::string session = text(load, "session");
-    const JsonValue run =
-        host.call("session.run_headless", "{\"session\":\"" + session + "\",\"seconds\":1}");
-    CHECK(number(result_of(run), "tick") == save.tick + 60);
-    const Hash on = state_hash(host, session);
-    MESSAGE(std::string(save.name)
-            << " loaded " << text(load, "state_hash") << ", continued " << on.value);
-    CHECK(on.value == std::string(save.continued));
-#else
-    // Its carts are the kinematics capability's, which this build does not have: the load is
-    // refused before it touches anything, naming the type, rather than loading a world whose carts
-    // would not move.
-    CHECK(error_code(loaded) == k_validation_failed);
-    CHECK(error_message(loaded).find("engine.kinematics.Mover") != std::string::npos);
-#endif
+    if (can_load(save)) {
+      const JsonValue& load = result_of(loaded);
+      CHECK(number(load, "tick") == save.tick);
+      CHECK(text(load, "saved_state_hash") == save.saved);
+      CHECK(text(load, "state_hash") == save.loaded);
+      const JsonValue& steps = at(load, "migrations");
+      REQUIRE(steps.size() == save.migrations.size());
+      for (usize i = 0; i < steps.size(); ++i)
+        CHECK(steps[i].as_string() == save.migrations[i]);
+      const std::string session = text(load, "session");
+      const JsonValue run =
+          host.call("session.run_headless", "{\"session\":\"" + session + "\",\"seconds\":1}");
+      CHECK(number(result_of(run), "tick") == save.tick + 60);
+      const Hash on = state_hash(host, session);
+      MESSAGE(std::string(save.name)
+              << " loaded " << text(load, "state_hash") << ", continued " << on.value);
+      CHECK(on.value == std::string(save.continued));
+    } else {
+      // Its carts (or residents) are a capability's this build does not have: the load is refused
+      // before it touches anything, naming the type, rather than loading a world whose records
+      // would not move.
+      CHECK(error_code(loaded) == k_validation_failed);
+      CHECK(error_message(loaded).find(save.needs) != std::string::npos);
+    }
   }
+}
+
+namespace {
+
+// A document directory's files as a function of their paths, the journal left out: its layer files
+// and its manifest, which are what a save of the document's content writes.
+std::map<std::string, std::string> document_files(const std::string& dir) {
+  std::map<std::string, std::string> out;
+  for (const auto& entry : std::filesystem::recursive_directory_iterator(dir)) {
+    if (!entry.is_regular_file()) continue;
+    const std::string relative = std::filesystem::relative(entry.path(), dir).generic_string();
+    if (relative == "journal.jsonl") continue;
+    out[relative] = file_bytes(entry.path().string());
+  }
+  return out;
+}
+
+}  // namespace
+
+// **The corpus's documents** (content/migration-corpus/README.md, "The documents"; plan 03 section
+// 3.8, "documents migrated on open and rewritten on the next checkpoint"; roadmap D24): every
+// save's document, opened on its own as a session opens any document — not through a load — and
+// saved. What a version wrote must open, and its next save must write what the current version
+// writes: `v3`'s document, written before layer files named their record types' versions, saves to
+// `v4`'s committed document byte for byte; `v1`'s, whose carts moved in float32, to what `v2`'s
+// saves to; and a document already in the current form saves to itself.
+TEST_CASE("document corpus: every save's document opens and saves to what this version writes") {
+  const std::string root = test::data_path(ENGINE_SOURCE_DIR "/content/migration-corpus/saves",
+                                           "content/migration-corpus/saves");
+  if (!test::path_exists(root)) {
+    REQUIRE_MESSAGE(!test::bundle_root().empty(), "the migration corpus is missing: " << root);
+    MESSAGE("not in this bundle: " << root);
+    return;
+  }
+  const test::TempDir tmp("cli_document_corpus");
+  REQUIRE(tmp.ok());
+  Host host;
+  REQUIRE(host.ok);
+  std::map<std::string, std::map<std::string, std::string>> saved;
+  for (const CorpusSave& save : corpus()) {
+    CAPTURE(save.name);
+    const std::string copy = tmp.file(save.name);
+    std::filesystem::copy(root + "/" + save.name + "/document", copy,
+                          std::filesystem::copy_options::recursive);
+    const std::string session = open_session(host, copy, false);
+    const JsonValue written = host.call("doc.save", "{\"session\":\"" + session + "\"}");
+    REQUIRE(error_code(written) == 0);
+    // Saved twice, the second writes nothing new: the first is the canonical form.
+    const std::map<std::string, std::string> once = document_files(copy);
+    REQUIRE(error_code(host.call("doc.save", "{\"session\":\"" + session + "\"}")) == 0);
+    CHECK(document_files(copy) == once);
+    host.call("session.close", "{\"session\":\"" + session + "\"}");
+    // A build without the capability a record type is a capability's keeps its records as data
+    // and leaves the type out of the layer's table, so its bytes are not the corpus's.
+    if (can_load(save)) saved[save.name] = once;
+  }
+  const auto committed = [&](const char* name) {
+    return document_files(root + "/" + name + "/document");
+  };
+  if (saved.count("v1") != 0 && saved.count("v2") != 0) CHECK(saved["v1"] == saved["v2"]);
+  if (saved.count("v3") != 0) CHECK(saved["v3"] == committed("v4"));
+  if (saved.count("v4") != 0) CHECK(saved["v4"] == committed("v4"));
+  if (saved.count("v4-residents") != 0) CHECK(saved["v4-residents"] == committed("v4-residents"));
 }
 
 #else

@@ -1,0 +1,299 @@
+{
+  "name": "residents",
+  "objects": [
+    {
+      "deleted": false,
+      "id": "6e70632d706c6163b456bcfc00000006",
+      "parent": null,
+      "properties": {
+        "capacity": 4,
+        "name": "home 6",
+        "position": [
+          46.5,
+          0.0,
+          -146.25
+        ],
+        "role": "Home"
+      },
+      "type": "engine.npc.Place"
+    },
+    {
+      "deleted": false,
+      "id": "6e70632d706c6163b456bcfc00000047",
+      "parent": null,
+      "properties": {
+        "capacity": 4,
+        "name": "home 71",
+        "position": [
+          1.5,
+          0.0,
+          -187.25
+        ],
+        "role": "Home"
+      },
+      "type": "engine.npc.Place"
+    },
+    {
+      "deleted": false,
+      "id": "6e70632d72657369b456bcfc0000006f",
+      "parent": null,
+      "properties": {
+        "clock_offset": 25195000000,
+        "home": "6e70632d706c6163b456bcfc00000047",
+        "job": "6e70632d706c6163b456bcfc00000073",
+        "leisure": "6e70632d706c6163b456bcfc00000076",
+        "next_event": 965000000,
+        "position": [
+          1.5,
+          0.0,
+          -187.25
+        ],
+        "routine": "Shopkeeper",
+        "service": "6e70632d706c6163b456bcfc00000070",
+        "state": "AtHome"
+      },
+      "type": "engine.npc.Resident"
+    },
+    {
+      "deleted": false,
+      "id": "6e70632d72657369b456bcfc0000007a",
+      "parent": null,
+      "properties": {
+        "clock_offset": 25195000000,
+        "home": "6e70632d706c6163b456bcfc00000047",
+        "job": "6e70632d706c6163b456bcfc00000067",
+        "leisure": "6e70632d706c6163b456bcfc00000078",
+        "next_event": 24545000000,
+        "position": [
+          1.5,
+          0.0,
+          -187.25
+        ],
+        "routine": "NightWorker",
+        "service": "6e70632d706c6163b456bcfc00000073",
+        "state": "Sleeping"
+      },
+      "type": "engine.npc.Resident"
+    },
+    {
+      "deleted": false,
+      "id": "6e70632d72657369b456bcfc00000098",
+      "parent": null,
+      "properties": {
+        "clock_offset": 25195000000,
+        "home": "6e70632d706c6163b456bcfc00000006",
+        "job": "6e70632d706c6163b456bcfc0000006b",
+        "leisure": "6e70632d706c6163b456bcfc00000076",
+        "next_event": 545000000,
+        "position": [
+          46.5,
+          0.0,
+          -146.25
+        ],
+        "routine": "Student",
+        "service": "6e70632d706c6163b456bcfc00000073",
+        "state": "Sleeping"
+      },
+      "type": "engine.npc.Resident"
+    },
+    {
+      "deleted": false,
+      "id": "6e70632d72657369b456bcfc000000d3",
+      "parent": null,
+      "properties": {
+        "clock_offset": 25195000000,
+        "home": "6e70632d706c6163b456bcfc00000006",
+        "job": "6e70632d706c6163b456bcfc00000066",
+        "leisure": "6e70632d706c6163b456bcfc00000077",
+        "next_event": 23225000000,
+        "position": [
+          46.5,
+          0.0,
+          -146.25
+        ],
+        "routine": "NightWorker",
+        "service": "6e70632d706c6163b456bcfc00000072",
+        "state": "Sleeping"
+      },
+      "type": "engine.npc.Resident"
+    },
+    {
+      "deleted": false,
+      "id": "6e70632d72657369b456bcfc000000f1",
+      "parent": null,
+      "properties": {
+        "clock_offset": 25195000000,
+        "home": "6e70632d706c6163b456bcfc00000047",
+        "job": "6e70632d706c6163b456bcfc0000006a",
+        "leisure": "6e70632d706c6163b456bcfc00000077",
+        "next_event": 24245000000,
+        "position": [
+          1.5,
+          0.0,
+          -187.25
+        ],
+        "routine": "NightWorker",
+        "service": "6e70632d706c6163b456bcfc0000006e",
+        "state": "Sleeping"
+      },
+      "type": "engine.npc.Resident"
+    },
+    {
+      "deleted": false,
+      "id": "6e70632d72657369b456bcfc000000fd",
+      "parent": null,
+      "properties": {
+        "clock_offset": 25195000000,
+        "home": "6e70632d706c6163b456bcfc00000006",
+        "leisure": "6e70632d706c6163b456bcfc00000078",
+        "next_event": 11465000000,
+        "position": [
+          46.5,
+          0.0,
+          -146.25
+        ],
+        "routine": "Idle",
+        "service": "6e70632d706c6163b456bcfc0000006e",
+        "state": "Sleeping"
+      },
+      "type": "engine.npc.Resident"
+    },
+    {
+      "deleted": false,
+      "id": "6e70632d72657369b456bcfc00000135",
+      "parent": null,
+      "properties": {
+        "clock_offset": 25195000000,
+        "home": "6e70632d706c6163b456bcfc00000047",
+        "job": "6e70632d706c6163b456bcfc00000065",
+        "leisure": "6e70632d706c6163b456bcfc00000079",
+        "next_event": 18845000000,
+        "position": [
+          1.5,
+          0.0,
+          -187.25
+        ],
+        "routine": "NightWorker",
+        "service": "6e70632d706c6163b456bcfc0000006f",
+        "state": "Sleeping"
+      },
+      "type": "engine.npc.Resident"
+    },
+    {
+      "deleted": false,
+      "id": "6e70632d72657369b456bcfc00000139",
+      "parent": null,
+      "properties": {
+        "clock_offset": 25195000000,
+        "home": "6e70632d706c6163b456bcfc00000047",
+        "job": "6e70632d706c6163b456bcfc00000067",
+        "leisure": "6e70632d706c6163b456bcfc00000079",
+        "next_event": 1205000000,
+        "position": [
+          1.5,
+          0.0,
+          -187.25
+        ],
+        "routine": "DayWorker",
+        "service": "6e70632d706c6163b456bcfc0000006e",
+        "state": "AtHome"
+      },
+      "type": "engine.npc.Resident"
+    },
+    {
+      "deleted": false,
+      "id": "6e70632d72657369b456bcfc00000166",
+      "parent": null,
+      "properties": {
+        "clock_offset": 25195000000,
+        "home": "6e70632d706c6163b456bcfc00000047",
+        "job": "6e70632d706c6163b456bcfc00000064",
+        "leisure": "6e70632d706c6163b456bcfc00000078",
+        "next_event": 22145000000,
+        "position": [
+          1.5,
+          0.0,
+          -187.25
+        ],
+        "routine": "NightWorker",
+        "service": "6e70632d706c6163b456bcfc00000074",
+        "state": "Sleeping"
+      },
+      "type": "engine.npc.Resident"
+    },
+    {
+      "deleted": false,
+      "id": "6e70632d72657369b456bcfc00000169",
+      "parent": null,
+      "properties": {
+        "clock_offset": 25195000000,
+        "home": "6e70632d706c6163b456bcfc00000047",
+        "job": "6e70632d706c6163b456bcfc0000006d",
+        "leisure": "6e70632d706c6163b456bcfc00000078",
+        "next_event": 22265000000,
+        "position": [
+          1.5,
+          0.0,
+          -187.25
+        ],
+        "routine": "NightWorker",
+        "service": "6e70632d706c6163b456bcfc00000072",
+        "state": "Sleeping"
+      },
+      "type": "engine.npc.Resident"
+    },
+    {
+      "deleted": false,
+      "id": "6e70632d72657369b456bcfc0000017a",
+      "parent": null,
+      "properties": {
+        "clock_offset": 25195000000,
+        "home": "6e70632d706c6163b456bcfc00000006",
+        "job": "6e70632d706c6163b456bcfc00000067",
+        "leisure": "6e70632d706c6163b456bcfc00000076",
+        "next_event": 1505000000,
+        "position": [
+          46.5,
+          0.0,
+          -146.25
+        ],
+        "routine": "Student",
+        "service": "6e70632d706c6163b456bcfc00000070",
+        "state": "Sleeping"
+      },
+      "type": "engine.npc.Resident"
+    },
+    {
+      "deleted": false,
+      "id": "6e70632d72657369b456bcfc00000186",
+      "parent": null,
+      "properties": {
+        "clock_offset": 25195000000,
+        "home": "6e70632d706c6163b456bcfc00000006",
+        "job": "6e70632d706c6163b456bcfc00000067",
+        "leisure": "6e70632d706c6163b456bcfc00000077",
+        "next_event": 23945000000,
+        "position": [
+          46.5,
+          0.0,
+          -146.25
+        ],
+        "routine": "NightWorker",
+        "service": "6e70632d706c6163b456bcfc00000070",
+        "state": "Sleeping"
+      },
+      "type": "engine.npc.Resident"
+    }
+  ],
+  "role": "Base",
+  "types": [
+    {
+      "name": "engine.npc.Place",
+      "version": 2
+    },
+    {
+      "name": "engine.npc.Resident",
+      "version": 2
+    }
+  ]
+}

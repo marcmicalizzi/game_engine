@@ -1,0 +1,22 @@
+{
+  "edit_layer": "residents",
+  "layers": [
+    {
+      "file": "base.json",
+      "name": "base",
+      "partition": null,
+      "role": "Base"
+    },
+    {
+      "file": "residents/index.json",
+      "name": "residents",
+      "partition": {
+        "property": "position",
+        "tile_size": 64.0
+      },
+      "role": "Base"
+    }
+  ],
+  "name": "residents",
+  "undo_position": 1
+}

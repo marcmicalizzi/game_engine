@@ -1,0 +1,53 @@
+{
+  "name": "residents",
+  "objects": [
+    {
+      "deleted": false,
+      "id": "6e70632d706c6163b456bcfc00000025",
+      "parent": null,
+      "properties": {
+        "capacity": 4,
+        "name": "home 37",
+        "position": [
+          126.5,
+          0.0,
+          -112.0
+        ],
+        "role": "Home"
+      },
+      "type": "engine.npc.Place"
+    },
+    {
+      "deleted": false,
+      "id": "6e70632d72657369b456bcfc0000008f",
+      "parent": null,
+      "properties": {
+        "clock_offset": 25195000000,
+        "home": "6e70632d706c6163b456bcfc00000025",
+        "job": "6e70632d706c6163b456bcfc00000065",
+        "leisure": "6e70632d706c6163b456bcfc00000079",
+        "next_event": 845000000,
+        "position": [
+          126.5,
+          0.0,
+          -112.0
+        ],
+        "routine": "Student",
+        "service": "6e70632d706c6163b456bcfc00000073",
+        "state": "Sleeping"
+      },
+      "type": "engine.npc.Resident"
+    }
+  ],
+  "role": "Base",
+  "types": [
+    {
+      "name": "engine.npc.Place",
+      "version": 2
+    },
+    {
+      "name": "engine.npc.Resident",
+      "version": 2
+    }
+  ]
+}
