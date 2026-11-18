@@ -117,7 +117,9 @@ exist yet (below, "Not yet").
 `CageSummary`, `cage_build_key`, `derive_cage`, `cage_summary_json`; and `ValidateOptions` carries
 a derived cage's source for its rows (`cage_source`, `cage_source_sha256`).
 `domain/tissue/soft_body.h`: `SoftBodyOptions`, `SoftBodyTarget`, `TissueSoftBody`,
-`build_soft_body`, `SettleResult`, `settle_soft_body`, `settle_json`. The types themselves are
+`build_soft_body`, `SettleResult`, `settle_soft_body`, `settle_json` (`SoftBodyOptions` carries plan
+07 §7.10's `limits.max_strain` 0.5 and, since C50, `limits.max_velocity` 20 m/s, which the settle's
+report names as `max_velocity_m_s`; [physics](physics.md#the-velocity-limit)). The types themselves are
 `engine::tissue::*` in `<schemas/tissue.h>`, generated from `schemas/tissue.schema`.
 
 **Depends on.** `base`, `containers`, `math`, `hash`, `io`, `json`, `schema`, `schemas`,

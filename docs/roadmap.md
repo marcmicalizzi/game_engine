@@ -553,7 +553,7 @@ The character standard and the tissue program: [ADR-0032](adr/0032-characters-ar
 | C47 | SDF adaptive lattice cage generator | open | | L | design | [07 §7.10](plan/07-content-pipeline.md#710-deformable-volume-assets) |
 | C48 | Authored cage overrides | open | C47 | M | routine | [07 §7.10](plan/07-content-pipeline.md#710-deformable-volume-assets) |
 | C49 | Deformable asset validators | open | C47 | M | routine | [07 §7.10](plan/07-content-pipeline.md#710-deformable-volume-assets) |
-| C50 | Enforce `limits.max_velocity` | open | S58 | S | routine | [07 §7.10](plan/07-content-pipeline.md#710-deformable-volume-assets) |
+| C50 | Enforce `limits.max_velocity` | done (2026-11-18: `physics::SoftBodyDesc::max_velocity` sets the backend's per-particle clamp and a second pass after the strain clamp's `dx / dt` corrections; `World::read_soft_body_velocities`; `tissue::SoftBodyOptions::max_velocity` 20 m/s, plan 07's default, in its report; `deformable_tests.cpp` "an authored velocity limit holds at every step boundary (C50)" on procedural lattices, which fails with the backend's clamp alone, 0.83 m/s against 0.25) | S58 | S | routine | [07 §7.10](plan/07-content-pipeline.md#710-deformable-volume-assets) |
 | C51 | Edge compliance converted and measured | open | S58 | S | research | [tissue](subsystems/tissue.md#not-yet) |
 | C52 | Tetrahedralizer for the tetrahedral cage kind | open | | M | research | [ADR-0026](adr/0026-deformable-volumes-first-class.md) |
 | C53 | Muscle line tier, stage 1: kernel, corpus, validator | done (202bdbb6) | | L | design | [muscle](subsystems/muscle.md) |

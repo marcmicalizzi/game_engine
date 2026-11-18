@@ -37,6 +37,9 @@ the only thing that advances it is `step()`.
   within one part in a thousand of the edge's rest length, unless both its ends are pinned or the
   clamp ran out of sweeps (`SoftBodyBudget::strain_clamp_saturated`). A cage with no limit runs no
   clamp and keeps no extra state.
+- A cage with a `max_velocity` has no particle faster than it once `step()` has returned
+  (`read_soft_body_velocities`), whether or not the strain clamp moved it after the backend
+  ("The velocity limit", below).
 - `WorldStats::soft_body_budget` describes the step that has just returned and nothing else: it is
   per step, unsmoothed, and wall clock rather than a sum of per-worker time
   ([ADR-0029](../adr/0029-deformable-volume-budgets.md)).
@@ -541,6 +544,25 @@ demands it cannot satisfy at once, and it is the clamp that loses. Measured on a
 cage: driven to 70% of its height it leaves **0** inverted cells against 63 unclamped, at 60% it
 leaves 50, and at 50% and 40% it leaves slightly *more* than no clamp at all.
 `SoftBodyBudget::strain_clamp_saturated` is how a caller sees that happening.
+
+### The velocity limit
+
+`SoftBodyDesc::max_velocity` is [plan 07 §7.10](../plan/07-content-pipeline.md#710-deformable-volume-assets)'s
+`limits.max_velocity` (m/s, default 20 in the asset's table and in `tissue::SoftBodyOptions`), which
+nothing read until C50 (2026-11-18). **Two places clamp, and both are needed.** The backend clamps
+every particle's speed once its update's sub-steps are done (Jolt's
+`SoftBodyCreationSettings::mMaxLinearVelocity`, 500 m/s unless the desc names a limit); the strain
+clamp then runs and adds `dx / dt` to the particles it moves, so it clamps every particle again
+after its sweeps. Measured on the module's case (a 27-particle lattice hung from its top face under
+thirty gravities, strain limit 0.5, MSVC): with the backend's clamp alone the fastest particle left
+a step at 0.83 m/s against a limit of 0.25; with the second pass, at 0.25. Falling free, the same
+lattice reaches 441 m/s in 90 steps with no limit and 2 with a limit of 2. The pass scales a
+velocity, so its direction is kept, and touches nothing under the limit. **What it costs**: one
+length a particle a step, only for a cage with both limits; a cage with neither pays nothing,
+and nothing is kept per particle. It bounds how fast an element leaves, not where it ends up
+(that is the strain clamp's job, above), so it is the guard against one bad step — a fast bone,
+a deep contact — flinging an element across the world. A negative or non-finite limit is refused
+as a negative strain limit is.
 
 ### Volume preservation is authored, and the conversion knows the cell size
 

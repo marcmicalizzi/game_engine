@@ -128,6 +128,15 @@ struct SoftBodyDesc {
   // from. E19 measured held stretch of 1.76 to 2.41 against an authored limit of 1.5, a peak of
   // 2.81, and one configuration diverging outright, all with nothing enforcing this number.
   f32 max_strain = 0.0f;
+  // plan 07 §7.10's `limits.max_velocity` (m/s), enforced (C50): no particle leaves a step faster
+  // than this. The backend clamps every particle's speed at the end of its update (Jolt's
+  // `SoftBodyCreationSettings::mMaxLinearVelocity`, which this sets), and the strain clamp above,
+  // which adds `dx / dt` to the particles it moves, clamps them again after it, so the bound holds
+  // at every step boundary. 0 leaves the backend's own ceiling (500 m/s) and adds no pass. A clamp
+  // and not a damping: a particle below the limit is not touched. It is what keeps one bad step (a
+  // fast bone, a deep contact) from flinging an element across the world, where the strain clamp
+  // only keeps it from being left somewhere it cannot come back from.
+  f32 max_velocity = 0.0f;
   u32 iterations = 5;  // solver iterations per sub-step; the cost knob of ADR-0026's tiers
   Layer layer = Layer::Moving;
   bool allow_sleeping = true;

@@ -10,6 +10,7 @@
 #include <Jolt/Physics/SoftBody/SoftBodySharedSettings.h>
 #include <Jolt/Physics/SoftBody/SoftBodyUpdateContext.h>
 
+#include <cmath>
 #include <utility>
 
 namespace engine::physics {
@@ -69,6 +70,10 @@ Status World::create_soft_body(const SoftBodyDesc& desc, SoftBodyId& out) {
   // inverting — and a limit of 1 makes the lower bound a length of zero, which is no bound at
   // all. Plan 07 §7.10's default is 0.5.
   if (desc.max_strain < 0.0f || desc.max_strain >= 1.0f) return Status::InvalidArgument;
+  // The same for the speed limit (C50): negative or not a number is a typo, and infinity is
+  // "no limit" spelled in a way the backend's square would turn into a NaN comparison.
+  if (!(desc.max_velocity >= 0.0f) || !std::isfinite(desc.max_velocity))
+    return Status::InvalidArgument;
   for (const SoftEdge& edge : desc.edges)
     if (edge.a >= vertex_count || edge.b >= vertex_count || edge.a == edge.b)
       return Status::InvalidArgument;
@@ -150,6 +155,9 @@ Status World::create_soft_body(const SoftBodyDesc& desc, SoftBodyId& out) {
   settings.mGravityFactor = desc.gravity_factor;
   settings.mAllowSleeping = desc.allow_sleeping;
   settings.mUpdatePosition = desc.update_position;
+  // `limits.max_velocity` (C50): the backend clamps each particle's speed to it once its update's
+  // sub-steps are done; 0 keeps the backend's default.
+  if (desc.max_velocity > 0.0f) settings.mMaxLinearVelocity = desc.max_velocity;
 
   const JPH::BodyID id =
       impl_->system.GetBodyInterface().CreateAndAddSoftBody(settings, JPH::EActivation::Activate);
@@ -162,6 +170,7 @@ Status World::create_soft_body(const SoftBodyDesc& desc, SoftBodyId& out) {
   entry.vertex_count = vertex_count;
   entry.iterations = desc.iterations;
   entry.max_strain = desc.max_strain;
+  entry.max_velocity = desc.max_velocity;
   entry.hero = desc.hero;
   entry.attachments.append(desc.attachments);
   out = SoftBodyId{impl_->soft_bodies.insert(std::move(entry))};
@@ -278,6 +287,17 @@ void World::Impl::clamp_soft_body_strain(f32 dt_seconds) {
     if (sweeps_used > soft_body_budget.strain_clamp_sweeps)
       soft_body_budget.strain_clamp_sweeps = sweeps_used;
     if (sweeps_used == k_strain_clamp_sweeps) soft_body_budget.strain_clamp_saturated = true;
+    // `limits.max_velocity` (C50) again, after the `dx / dt` the sweeps added: the backend clamped
+    // every particle at the end of its update, and this pass is the only thing since that moves a
+    // velocity. Scaled, not cut per axis, so the direction is kept. A cage with no speed limit, or
+    // no strain limit (whose particles nothing touched after the backend), pays nothing here.
+    if (entry.max_velocity > 0.0f) {
+      const f32 limit_sq = entry.max_velocity * entry.max_velocity;
+      for (JPH::SoftBodyVertex& v : motion->GetVertices()) {
+        const f32 speed_sq = v.mVelocity.LengthSq();
+        if (speed_sq > limit_sq) v.mVelocity *= entry.max_velocity / std::sqrt(speed_sq);
+      }
+    }
   }
 }
 
@@ -321,6 +341,25 @@ u32 World::read_soft_body_vertices(SoftBodyId body, WorldPos origin, std::span<V
       static_cast<u32>(out.size()) < available ? static_cast<u32>(out.size()) : available;
   for (u32 i = 0; i < count; ++i)
     out[i] = from_jph(JPH::Vec3(to_frame * motion->GetVertex(i).mPosition));
+  return count;
+}
+
+u32 World::read_soft_body_velocities(SoftBodyId body, std::span<Vec3> out) const {
+  if (impl_ == nullptr) return 0;
+  const Impl::SoftEntry* entry = impl_->soft_bodies.get(body.handle);
+  if (entry == nullptr) return 0;
+  const JPH::BodyLockRead lock(impl_->system.GetBodyLockInterfaceNoLock(), entry->id);
+  if (!lock.Succeeded()) return 0;
+  const JPH::Body& jph_body = lock.GetBody();
+  const auto* motion =
+      static_cast<const JPH::SoftBodyMotionProperties*>(jph_body.GetMotionProperties());
+  // A particle's velocity is in the body's centre-of-mass frame: its rotation, never a translation.
+  const JPH::Mat44 rotation = jph_body.GetCenterOfMassTransform().GetRotation();
+  const u32 available = static_cast<u32>(motion->GetVertices().size());
+  const u32 count =
+      static_cast<u32>(out.size()) < available ? static_cast<u32>(out.size()) : available;
+  for (u32 i = 0; i < count; ++i)
+    out[i] = from_jph(rotation.Multiply3x3(motion->GetVertex(i).mVelocity));
   return count;
 }
 
