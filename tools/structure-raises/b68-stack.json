@@ -1,12 +1,13 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "b68-stack",
-  "reason": "The stack's joins and notes: what-to-run.md holds the tool rows' sections together (T177, T76, T31, T171, sweep-T2) and B8's sentence; gfx.md the CullParams join's fade_turn bullet; renderer.md R181's paragraph as joined with W147, and review A4's note on the accumulation with the exposure",
+  "reason": "The stack's joins and notes: what-to-run.md holds the tool rows' sections together (T177, T76, T31, T171, sweep-T2) and B8's sentence; gfx.md the CullParams join's fade_turn bullet; renderer.md R181's paragraph as joined with W147 and review A4's note; protocol.md the A3 x D13 join (the methods line, D13's four writes among a connection's callers) and B2's collection roots",
   "date": "2026-11-18",
   "by": "Marc Micalizzi",
   "deltas": {
     "page:docs/subsystems/renderer.md": 222,
     "page:docs/subsystems/gfx.md": 780,
+    "page:docs/subsystems/protocol.md": 169,
     "page:AGENTS.md": -8,
     "page:docs/subsystems/scene_gen.md": -8,
     "page:docs/ci/what-to-run.md": 9307
