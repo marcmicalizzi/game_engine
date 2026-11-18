@@ -27,12 +27,13 @@ Plan 06 §6.8 asks for a task ledger agents resume from instead of their convers
 - Two hosts on one directory, any number of engine-cli processes among them, lose no ledger write and never share an id (`ledger_tests.cpp`, the engine-cli eight-process case). A ledger call costs one read and one write of the whole file, so a document that keeps every task it ever had pays for its history. Archiving is not built.
 - A host with no roles file restricts nothing else but cannot close a person's item. That is deliberate: the alternative is a default under which any caller is a person.
 - `human` is as strong as the credential: a connection bound to a credential whose role is not marked human cannot close a person's item, whatever role its calls name, and nothing else can. Over stdio and engine-cli nobody closes one. Nothing in the protocol stops an operator from issuing an agent a credential in a human role; the rule is that they must not (`content/roles/README.md`). engine-mcp starts its host with its own `--role`, which that host refuses, and forwards a call's attribution, which its host refuses too.
-- Held together in one tree by `ledger_tests.cpp` ("roles, and a review item for a person that no agent closes": a named `reviewer` refused, a connection bound to a `reviewer` credential closing) and `apps/engine_cli/tests/policy_tests.cpp` ("no start line runs in a role marked human").
+- Held together in one tree by `ledger_tests.cpp` ("roles, and a review item for a person that no agent closes": a named `reviewer` refused, a connection bound to a `reviewer` credential closing), `apps/engine_cli/tests/policy_tests.cpp` ("no start line runs in a role marked human") and, over a real listener, `listener_tests.cpp` ("a person's review item is closed by a credential for a human role alone": the shipped file's `reviewer` credential closes, a `director` credential is refused, and on a host with no roles file the `reviewer` credential only reads).
+- A ledger is bounded (256 open tasks and 256 open items per actor, 8 MiB of file; protocol.md, "The ledger's bounds"), so the cost of a call is too; done and closed work is still kept, and archiving it is a row of its own.
 - The plan's `work/tasks/*.json` is not built. §6.8's status note says so.
 
 ## Revisit when
 
 - ~~stdio or engine-cli calls need a person's authority~~ Closed the same day: no start line confers a person's role; a person at a command line connects with a credential issued for it. The editor's seat, a second way for a person to be known, is a later row.
 - A ledger grows past what one read and write per call is worth (thousands of tasks with long histories): archive closed work into a second file, or split per task under the same lock.
-- The side-file helper is shared with `leases.json` and `transactions.json`: this ADR's lock is then theirs too, and the note in decision 2 is closed.
-- The test holding a credential's role to this rule over a listener exists: the consequence naming it as a follow-up is then closed.
+- ~~The side-file helper is shared with `leases.json` and `transactions.json`~~ Closed the same day: the ledger goes through `side_file.h`'s `update_side_file`, as they and `proposals.json` do.
+- ~~The test holding a credential's role to this rule over a listener exists~~ Closed the same day: `listener_tests.cpp` holds it (Consequences, above).

@@ -18,10 +18,12 @@
 #include <foundation/net/websocket.h>
 
 #include <doctest/doctest.h>
+#include <test_paths.h>
 #include <test_temp_dir.h>
 
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <mutex>
 #include <string>
 
@@ -596,4 +598,132 @@ TEST_CASE("listener: the shell serves its own files and nothing a spelling or a 
     MESSAGE("no directory link could be made here; the link case is skipped");
   }
   listener.stop();
+}
+
+namespace {
+
+std::string rpc(int id, const char* method, const std::string& params) {
+  return R"({"jsonrpc":"2.0","id":)" + std::to_string(id) + R"(,"method":")" + method +
+         R"(","params":)" + params + "}";
+}
+
+// A call made on the host's own side, as its stdin is, under the lock the listener dispatches by.
+JsonValue direct(BoundHost& host, const std::string& text) {
+  JsonValue request;
+  REQUIRE(parse_json(text, request).ok);
+  const std::lock_guard<std::mutex> hold(host.lock);
+  host.dispatcher.context().connection = 0;
+  return host.dispatcher.dispatch(request);
+}
+
+JsonValue result_of(const JsonValue& response) {
+  const JsonValue* r = response.find("result");
+  REQUIRE_MESSAGE(r != nullptr, write_json(response));
+  return *r;
+}
+
+// The session a connection opens on `doc`, which the host made already.
+std::string open_on(net::WebSocket& ws, const std::string& doc) {
+  const JsonValue opened = call(ws, rpc(1, "session.open", R"({"path":)" + write_json(JsonValue(doc)) + "}"));
+  return std::string(result_of(opened).find("session")->as_string());
+}
+
+void connect_with(BoundHost& host, const std::string& token, net::WebSocket& ws) {
+  std::string error;
+  const std::pair<std::string, std::string> header[] = {{"X-Engine-Token", token}};
+  REQUIRE_MESSAGE(net::websocket_connect(host.listener.port(), "/", header, ws, error), error);
+}
+
+}  // namespace
+
+// ADR-0072, as amended the same day (protocol.md, "The task ledger and review items"): a person's
+// review item is closed over a listener by a connection bound to a credential the operator issued
+// for a role the roles file marks human, and by nothing else: not a credential bound to a role
+// that is not marked human, the director's included, and not any credential on a host with no
+// roles file, where a credential's role is one the host cannot enforce and may only read.
+TEST_CASE("listener: a person's review item is closed by a credential for a human role alone") {
+  const test::TempDir tmp("protocol_listener_person");
+  std::string person_token;
+  std::string director_token;
+  REQUIRE(protocol::make_token(person_token));
+  REQUIRE(protocol::make_token(director_token));
+  const std::string file =
+      R"({"credentials":[{"name":"person-at-desk","actor":"person","role":"reviewer",)"
+      R"("token_sha256":")" +
+      protocol::token_digest(person_token) +
+      R"("},{"name":"director-bot","actor":"bot","role":"director","token_sha256":")" +
+      protocol::token_digest(director_token) + R"("}]})";
+  std::string error;
+  // The item, raised on the host's own side (a validator's host would raise it), for a person.
+  const auto raise = [&](BoundHost& host, const std::string& doc) {
+    const JsonValue opened = result_of(direct(
+        host, rpc(1, "session.open",
+                  R"({"path":)" + write_json(JsonValue(doc)) + R"(,"create":true})")));
+    const std::string session(opened.find("session")->as_string());
+    const JsonValue raised = result_of(direct(
+        host, rpc(2, "review.raise",
+                  R"({"session":")" + session +
+                      R"(","kind":"classified content review","audience":"Human",)"
+                      R"("summary":"passed every numeric check",)"
+                      R"("attribution":{"actor":"validator","role":"designer"}})")));
+    const JsonValue* id = (*raised.find("reviews"))[0].find("id");
+    REQUIRE(id != nullptr);
+    return write_json(*id);
+  };
+  const auto close = [&](net::WebSocket& ws, const std::string& session, const std::string& id) {
+    return call(ws, rpc(3, "review.close",
+                        R"({"session":")" + session + R"(","review":)" + id +
+                            R"(,"resolution":"Accepted","attribution":{}})"));
+  };
+
+  SUBCASE("the shipped roles file: reviewer closes it, the director is refused") {
+    const std::string path = test::data_path(
+        std::string(ENGINE_SOURCE_DIR "/content/roles/roles.json"), "content/roles/roles.json");
+    std::ifstream in(path, std::ios::binary);
+    REQUIRE_MESSAGE(in.good(), "cannot read " << path);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    protocol::Policy policy;
+    REQUIRE_MESSAGE(policy.load_roles(path, text, error), error);
+    protocol::Credentials credentials;
+    REQUIRE_MESSAGE(credentials.load("c.json", file, &policy, error), error);
+    BoundHost host(policy, credentials);
+    const std::string doc = tmp.file("doc-shipped");
+    const std::string id = raise(host, doc);
+
+    net::WebSocket director;
+    connect_with(host, director_token, director);
+    const JsonValue refused = close(director, open_on(director, doc), id);
+    const JsonValue* e = refused.find("error");
+    REQUIRE_MESSAGE(e != nullptr, write_json(refused));
+    CHECK(e->find("code")->as_int() == 1008);
+    CHECK(e->find("data")->find("reason")->as_string() == "human review");
+
+    net::WebSocket person;
+    connect_with(host, person_token, person);
+    const JsonValue closed = result_of(close(person, open_on(person, doc), id));
+    const JsonValue& item = (*closed.find("reviews"))[0];
+    CHECK(item.find("state")->as_string() == "Closed");
+    CHECK(item.find("closed_by")->find("actor")->as_string() == "person");
+    CHECK(item.find("closed_via")->as_string() == "credential:person-at-desk");
+    CHECK(item.find("closed_human_via")->as_string() == "person-at-desk");
+  }
+  SUBCASE("no roles file: the reviewer's credential only reads, and closes nothing") {
+    protocol::Policy policy;
+    policy.identity.actor = "owner";
+    protocol::Credentials credentials;
+    REQUIRE_MESSAGE(credentials.load("c.json", file, &policy, error), error);
+    BoundHost host(policy, credentials);
+    const std::string doc = tmp.file("doc-unenforced");
+    const std::string id = raise(host, doc);
+    net::WebSocket person;
+    connect_with(host, person_token, person);
+    const std::string session = open_on(person, doc);
+    const JsonValue refused = close(person, session, id);
+    const JsonValue* e = refused.find("error");
+    REQUIRE_MESSAGE(e != nullptr, write_json(refused));
+    CHECK(e->find("code")->as_int() == 1008);
+    const JsonValue listed = result_of(call(
+        person, rpc(4, "review.list", R"({"session":")" + session + R"(","review":)" + id + "}")));
+    CHECK((*listed.find("reviews"))[0].find("state")->as_string() == "Open");
+  }
 }
