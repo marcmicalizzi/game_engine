@@ -2270,6 +2270,9 @@ void SceneRenderer::collect_slot(u32 slot) {
       last.gpu_trace += timer_.ms(k_zone_names[k_zone_trace][v]);
     }
     last.gpu_deform_alloc = timer_.ms("deform alloc");
+    // The static shape caches' rebuilds (R124): one dispatch per cached instance on a frame whose
+    // morph weights changed, zero on every other.
+    last.gpu_deform_cache = timer_.ms("deform cache");
     last.gpu_rt_records = timer_.ms("records");
     last.gpu_rt_ranges = timer_.ms("ranges");
     last.gpu_rt_drop = timer_.ms("ranges drop");

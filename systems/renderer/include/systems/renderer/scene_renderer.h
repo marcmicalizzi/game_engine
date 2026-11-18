@@ -190,6 +190,7 @@ struct GiStats {
   X(resolve, true)                                                                            \
   X(deform, true)                                                                             \
   X(deform_alloc, true)                                                                       \
+  X(deform_cache, true)                                                                       \
   X(trace, true)                                                                              \
   X(rt, true)                                                                                 \
   X(shadow, true)                                                                             \
