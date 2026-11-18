@@ -79,9 +79,23 @@ struct Rig {
   ResolvedSettings resolved;
   GpuScene scene;
   SceneRenderer renderer;
+  // `reversed`: the same placements listed last first, each instance's pairs moved with it (R174).
   bool build(const gfx::Device& device, const RenderSettings& settings, std::string& error,
-             const SceneDesc& desc_in = terrain_grid()) {
+             const SceneDesc& desc_in = terrain_grid(), bool reversed = false) {
     if (!load_scene(desc_in, data, error)) return false;
+    if (reversed) {
+      std::reverse(data.instances.begin(), data.instances.end());
+      std::reverse(data.instance_joints.begin(), data.instance_joints.end());
+      u32 first = 0;
+      for (gfx::InstanceDesc& instance : data.instances) {
+        instance.first_pair = first;
+        first += data.parts[instance.mesh].cluster_count;
+      }
+      if (first != data.pair_count) {
+        error = "the reversed instances do not cover the scene's pairs";
+        return false;
+      }
+    }
     resolve_settings(settings, device.features(), &data, resolved);
     if (!resolved.rt_chain) {
       error = "the settings resolved to no ray tracing chain";
@@ -1015,6 +1029,98 @@ void run_starved(const gfx::Device& device) {
 }
 
 }  // namespace
+
+// **Past the budget the kept set is a function of the placements** (R174; renderer.md, "Past the
+// capacity, by size on screen"): the grid's nine instances listed in two orders — the loader's
+// and its reverse, every instance's pairs moved with it — and drawn past the starved case's budget
+// trace the same picture, on the ray path (where a dropped instance is a hole) and under traced
+// shadows. What it compares is waited-for frames, and only once both runs stand at one capacity
+// and one limit: the guarantee is stated at one capacity. The ids name an instance by its place in
+// the list, so they are compared through the reversal. A pixel the two orders already part on at a
+// chain that holds everything (a tie at equal depth goes to the larger pair, and the pairs moved)
+// is left out and counted; past the budget no other pixel may differ. This holds what the walk's
+// "two runs drop the same instances" case held, with the order changed between the runs.
+TEST_CASE("rt chain: past the budget the traced picture follows the placement, not the order") {
+  gfx::Device device;
+  std::string error;
+  if (!device.create(renderer_test::device_options(), &error) || !traces(device)) {
+    MESSAGE("tracing unavailable: " << error);
+    return;
+  }
+  ScopedTunable per_frame("renderer.rt.cache", "false");  // the frame's own builds past the budget
+  for (const RasterMode raster : {RasterMode::RayTrace, RasterMode::Hardware}) {
+    RenderSettings settings;
+    settings.raster = raster;
+    settings.shadows = ShadowMode::RayTraced;
+    settings.lights = false;
+    settings.lod_px = 0.25f;  // the starved case's cut: several times what 1 MiB holds
+    const f32 distance = 0.8f;
+    // Each order at a chain that holds the scene, then past one mebibyte.
+    CapturedFrame shots[2][2];
+    RtStats starved[2];
+    for (u32 budgeted = 0; budgeted < 2; ++budgeted) {
+      settings.rt_budget_mib = budgeted != 0 ? 1u : 0u;
+      for (u32 order = 0; order < 2; ++order) {
+        Rig rig;
+        REQUIRE_MESSAGE(rig.build(device, settings, error, terrain_grid(), order != 0), error);
+        for (u32 f = 0; f < 6; ++f) {
+          REQUIRE_MESSAGE(rig.renderer.render_offscreen(frame_at(rig.data, distance, f), &error),
+                          error);
+        }
+        REQUIRE_MESSAGE(rig.renderer.capture(frame_at(rig.data, distance, 6),
+                                             {.color = true, .ids = true}, shots[budgeted][order],
+                                             &error),
+                        error);
+        if (budgeted != 0) starved[order] = rig.renderer.stats().rt;
+      }
+    }
+    for (const RtStats& rt : starved) {
+      REQUIRE(rt.wanted > rt.limit);  // the case is about frames past the budget
+      CHECK(rt.overflow_frames > 0);
+      CHECK(rt.built > 0);  // the kept set is not empty
+      CHECK(rt.built <= rt.capacity);
+    }
+    REQUIRE(starved[0].capacity == starved[1].capacity);
+    REQUIRE(starved[0].limit == starved[1].limit);
+    CHECK(starved[0].wanted == starved[1].wanted);
+    CHECK(starved[0].built == starved[1].built);
+    CHECK(starved[0].dropped_instances == starved[1].dropped_instances);
+    CHECK(starved[0].dropped_caster_instances == starved[1].dropped_caster_instances);
+    // Pixel by pixel through the reversal: colour, and the ids with the instance word mapped.
+    constexpr u32 k_instances = 9;
+    const auto parts = [&](const CapturedFrame& a, const CapturedFrame& b, u32 p) {
+      for (u32 c = 0; c < 4; ++c)
+        if (a.color[u64{p} * 4 + c] != b.color[u64{p} * 4 + c]) return true;
+      const u32* ia = a.ids.data() + u64{p} * k_id_words;
+      const u32* ib = b.ids.data() + u64{p} * k_id_words;
+      const u32 mapped = ib[0] < k_instances ? k_instances - 1 - ib[0] : ib[0];
+      return ia[0] != mapped || ia[1] != ib[1] || ia[2] != ib[2];
+    };
+    for (u32 b = 0; b < 2; ++b)
+      for (u32 o = 0; o < 2; ++o) {
+        REQUIRE(shots[b][o].color.size() == u64{k_width} * k_height * 4);
+        REQUIRE(shots[b][o].ids.size() == u64{k_width} * k_height * k_id_words);
+      }
+    u32 tied = 0;
+    u32 parted = 0;
+    for (u32 p = 0; p < k_width * k_height; ++p) {
+      if (parts(shots[0][0], shots[0][1], p)) {
+        ++tied;
+        continue;
+      }
+      parted += parts(shots[1][0], shots[1][1], p) ? 1u : 0u;
+    }
+    MESSAGE(std::string(raster_name(raster))
+            << ": capacity " << starved[0].capacity << " of " << starved[0].wanted
+            << " wanted, built " << starved[0].built << " in both orders; "
+            << starved[0].dropped_instances << " drawn and " << starved[0].dropped_caster_instances
+            << " casters' instances dropped; " << parted << " pixels part past the budget, "
+            << tied << " already parted at a whole chain");
+    CHECK(parted == 0);
+    CHECK(tied * 100 <= k_width * k_height);  // ties at equal depth are a seam, not the picture
+  }
+  device.destroy();
+}
 
 // ---- the resident cluster structure cache (renderer.md, "The resident cluster structure cache";
 // R101) ----------------------------------------------------------------------------------------

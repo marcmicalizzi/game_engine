@@ -14,6 +14,8 @@
 #include <test_temp_dir.h>
 
 #include <algorithm>
+#include <cmath>
+#include <cstdio>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -965,6 +967,129 @@ TEST_CASE("engine-view: past the budget the chain drops the same structures ever
           records_of(tmp.file(run == &a ? "a.jsonl" : "b.jsonl")) + 1);
   }
   CHECK(differing_pixels(tmp.file("a.png"), tmp.file("b.png")) == 0);
+}
+
+namespace {
+
+// The dense grove's 2,400 trees as a list the scene file holds, first to last or last to first
+// (R174): the same placements, each tree's line the same text in both, so the two scenes differ
+// only in the order their instances come in. The places are an annulus of 2 to 120 m drawn from a
+// fixed sequence, as the scatters' are, and stand on the ground.
+std::string listed_grove_text(bool reversed) {
+  constexpr u32 k_each = 1200;
+  std::vector<std::string> lines;
+  u64 state = 0x9e3779b97f4a7c15ull;
+  const auto next = [&state]() {
+    state = state * 6364136223846793005ull + 1442695040888963407ull;
+    return static_cast<f64>(state >> 11) / static_cast<f64>(u64{1} << 53);
+  };
+  for (u32 mesh = 0; mesh < 2; ++mesh) {
+    for (u32 k = 0; k < k_each; ++k) {
+      const f64 angle = next() * 6.283185307179586;
+      const f64 radius = std::sqrt(4.0 + (14400.0 - 4.0) * next());
+      const f64 scale = mesh == 0 ? 0.8 + 0.4 * next() : 1.0;
+      const f64 yaw = next() * 360.0;
+      char line[200];
+      std::snprintf(line, sizeof(line),
+                    R"({"mesh":%u,"translation":[%.3f,0,%.3f],"ground":true,"yaw_deg":%.2f,)"
+                    R"("scale":[%.3f,%.3f,%.3f]})",
+                    mesh, radius * std::cos(angle), radius * std::sin(angle), yaw, scale, scale,
+                    scale);
+      lines.emplace_back(line);
+    }
+  }
+  if (reversed) std::reverse(lines.begin(), lines.end());
+  std::string text =
+      R"({"format":"engine.scene.v1","name":"listed-grove",)"
+      R"("terrain":{"size":65,"extent":400,"seed":7,"dune_height":0.3,"dune_wavelength":60,)"
+      R"("generator":"Waves"},)"
+      R"("meshes":[{"name":"oak","path":"oak.flora.json"},)"
+      R"({"name":"spruce","path":"spruce.flora.json"}],"instances":[)";
+  for (usize i = 0; i < lines.size(); ++i) {
+    if (i > 0) text += ",";
+    text += lines[i];
+  }
+  return text + "]}";
+}
+
+}  // namespace
+
+// R174: past the budget which structures a frame keeps is a function of the placements and the
+// camera, not of the order the scene lists them (renderer.md, "Past the capacity, by size on
+// screen"). The grove listed first to last and last to first, under traced primaries past 16 MiB,
+// draws the same picture once both runs stand at one capacity and one limit — the frame's own
+// builds with the cache off, and with the cache on and the trees swaying (a swaying tree is built
+// every frame; the cache holds the ground), where the guarantee holds for a frame whose cache
+// misses all found room, so every frame's must have.
+TEST_CASE("engine-view: past the budget the chain drops the same structures in either order") {
+  const test::TempDir tmp("engine_view_rt_keep_order");
+  REQUIRE(write_text(tmp.file("oak.flora.json"), k_oak));
+  REQUIRE(write_text(tmp.file("spruce.flora.json"), k_spruce));
+  REQUIRE(write_text(tmp.file("forward.json"), listed_grove_text(false)));
+  REQUIRE(write_text(tmp.file("reversed.json"), listed_grove_text(true)));
+  REQUIRE(write_text(tmp.file("path.json"),
+                     R"({"format":"engine.camera-path.v1","name":"across","fps":10,"keys":[)"
+                     R"({"time":0,"position":[-60,14,10],"target":[30,2,0]}]})"));
+  struct Mode {
+    const char* name;
+    std::vector<const char*> args;
+    bool cache;
+  };
+  const Mode modes[] = {
+      {"the frame's own builds", {"--tunable", "renderer.rt.cache=false"}, false},
+      {"the cache on, the trees swaying",
+       {"--tunable", "renderer.rt.cache=true", "--tunable", "renderer.flora.motion=true"},
+       true}};
+  for (const Mode& mode : modes) {
+    CAPTURE(mode.name);
+    JsonValue summaries[2];
+    for (u32 order = 0; order < 2; ++order) {
+      std::vector<std::string> args =
+          base_args(tmp, order == 0 ? "forward.json" : "reversed.json", "path.json");
+      args[6] = "640";
+      args[8] = "360";
+      args[10] = "rt";  // --shadows rt
+      for (const std::string& a :
+           {std::string("--raster"), std::string("rt"), std::string("--rt-budget-mib"),
+            std::string("16"), std::string("--frames"), std::string("3"),
+            std::string("--benchmark"), tmp.file(order == 0 ? "forward.jsonl" : "reversed.jsonl"),
+            std::string("--capture"), tmp.file(order == 0 ? "forward.png" : "reversed.png")})
+        args.push_back(a);
+      for (const char* a : mode.args)
+        args.push_back(a);
+      const Run run = view(args);
+      if (run.exit_code == 3) {
+        MESSAGE("engine-view unavailable here: " << run.output);
+        return;
+      }
+      REQUIRE_MESSAGE(run.exit_code == 0, run.output);
+      summaries[order] = summary_of(run.output);
+    }
+    const JsonValue* rt[2] = {summaries[0].find("rt"), summaries[1].find("rt")};
+    REQUIRE(rt[0] != nullptr);
+    REQUIRE(rt[1] != nullptr);
+    for (u32 order = 0; order < 2; ++order) {
+      const u64 wanted = wanted_most(tmp.file(order == 0 ? "forward.jsonl" : "reversed.jsonl"));
+      MESSAGE((order == 0 ? "first to last: " : "last to first: ")
+              << wanted << " wanted against a capacity of " << field_u64(*rt[order], "capacity")
+              << " and a limit of " << field_u64(*rt[order], "limit") << ", built "
+              << field_u64(*rt[order], "built_last") << ", "
+              << field_u64(*rt[order], "overflow_frames") << " frames past it");
+      REQUIRE(wanted > field_u64(*rt[order], "limit"));  // the premise: past the budget
+      CHECK(field_u64(*rt[order], "overflow_frames") > 0);
+      CHECK(field_u64(*rt[order], "built_last") > 0);  // the kept set is not empty
+      if (mode.cache) {
+        const JsonValue* cache = rt[order]->find("cache");
+        REQUIRE(cache != nullptr);
+        CHECK(field_u64(*cache, "meshes") > 0);
+        CHECK(field_u64(*cache, "unbuilt_frames") == 0);
+      }
+    }
+    REQUIRE(field_u64(*rt[0], "capacity") == field_u64(*rt[1], "capacity"));
+    REQUIRE(field_u64(*rt[0], "limit") == field_u64(*rt[1], "limit"));
+    CHECK(field_u64(*rt[0], "built_last") == field_u64(*rt[1], "built_last"));
+    CHECK(differing_pixels(tmp.file("forward.png"), tmp.file("reversed.png")) == 0);
+  }
 }
 
 // R94: the caster horizon. With `--shadow-distance` and `renderer.rt.caster_horizon`, a shadow

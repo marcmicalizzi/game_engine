@@ -1046,6 +1046,7 @@ JsonValue rt_summary(const renderer::RtStats& rt) {
   cache.set("built_total", rt.cache_built_total);
   cache.set("build_frames", rt.cache_build_frames);
   cache.set("overflow", rt.cache_overflow);
+  cache.set("unbuilt_frames", rt.cache_unbuilt_frames);  // R174: frames outside the keep's promise
   cache.set("evictions", rt.cache_evictions);
   out.set("cache", std::move(cache));
   return out;
