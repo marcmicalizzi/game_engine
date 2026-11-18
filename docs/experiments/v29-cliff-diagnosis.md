@@ -7,11 +7,11 @@ and was replayed on `efe7e9c5` as `e38057a5`. Shared main and its release build 
 
 ## Evidence and reproduction
 
-Input: `D:/workspace/forest_wildlife_poc/reports/quality-v29/ledge-scene.json`,
+Input: `forest_wildlife_poc/reports/quality-v29/ledge-scene.json`,
 `ledge-close-path.json`, `ledge-close.png` and its report. The first of five cliff recipes is
 `world/v29/recipes/foothill-ledge-0.rock.json`. Authoring is in `scripts/build-quality-v29.py`.
 All diagnostic scripts, copied variants, GLBs, captures, logs and reports are outside the repo:
-`D:/workspace/game_engine_local/rocks/2026-11-04/v29-diagnosis/`.
+`game_engine_local/rocks/2026-11-04/v29-diagnosis/`.
 
 The local `capture.ps1` and `capture-followup.ps1` reproduce the POC review command using its
 packaged `runtime/efe7e9c5/bin/engine-view.exe`, original camera, hw raster, CSM, 1920x1080,

@@ -14,7 +14,7 @@
   ```
 
 - **Where the time goes** (new, and kept: [renderer](../subsystems/renderer.md#what-a-frame-waits-for), [apps](../subsystems/apps.md#flythroughs)): every frame record carries `cpu` — the renderer's `begin_frame` past its wait for the slot, and inside `submit_frame` the tables, `terrain_prepare`, declaring the passes, the graph's compile, its recording, the submission, and the pass whose recording took longest, from a clock the render graph now reads around every pass (`RenderGraph::pass_cpu_ns`). Offscreen, `cpu_ms` is `submit_frame`; the stages sum to it within a few microseconds.
-- **The owner's flights** (`D:\workspace\game_engine_local\flythrough\endless-2026-10-04T0902`, `T0910`, `T0912`, windowed, recorded on `70f88d15`), summarized by a script frame by frame — and two of them replayed offscreen from their input logs (`--replay-input ... --benchmark`) on the after build, which runs the session's ticks and the renderer but not the window.
+- **The owner's flights** (`game_engine_local\flythrough\endless-2026-10-04T0902`, `T0910`, `T0912`, windowed, recorded on `70f88d15`), summarized by a script frame by frame — and two of them replayed offscreen from their input logs (`--replay-input ... --benchmark`) on the after build, which runs the session's ticks and the renderer but not the window.
 
 ## The owner's windowed flights
 

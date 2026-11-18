@@ -51,7 +51,7 @@ no deadwood are unchanged.) Tests cover mesh validity, strict budgets, source wo
 registry round trips, empty output on failure, substrate weights, obstacle bands, hollows,
 tile order, ID/work bounds and precision 16 billion metres from the origin.
 
-Review outputs are under `D:/workspace/game_engine_local/captures/2026-10-29/forest-litter/`:
+Review outputs are under `game_engine_local/captures/2026-10-29/forest-litter/`:
 recipes, `.clusters`, capture scripts, exact cameras, per-capture stats, finest/coarse pictures
 and FLIP heat maps. `study` and `scene` have 5/20/60 m horizontal-offset views at sun azimuth
 45°, elevation 35°. The flat fallback is deliberately simple; `poc-soil-study` and `leaf-close`

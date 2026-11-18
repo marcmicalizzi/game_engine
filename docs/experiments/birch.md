@@ -1,6 +1,6 @@
 # The birch: a fuller crown and seeded clumps (G81, 2026-10-22)
 
-**What prompted it.** The owner's forest stress test (`D:\workspace\forest_wildlife_poc\`, three
+**What prompted it.** The owner's forest stress test (`forest_wildlife_poc\`, three
 birch recipes of `stems: 1`, `limbs: 14`, `droop: 0.8` on a 36,000-triangle budget) showed the
 birches **too sparse**: a few long limbs carrying strings of leaves, sky everywhere through the
 crown, where a silver birch has a full, fine-twigged ovoid crown. The second ask: **a birch that

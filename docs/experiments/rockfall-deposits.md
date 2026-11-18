@@ -57,7 +57,7 @@ mesh. A full 32 m tile can contain 16 patches: its explicit worst case at this r
 counts are an authoring choice, not an automatic budget escape.
 
 Offscreen captures and exact commands/recipes are under
-`D:/workspace/game_engine_local/rockfall/2026-11-04/final/`: `before/` retains the source cliffs,
+`game_engine_local/rockfall/2026-11-04/final/`: `before/` retains the source cliffs,
 `after/` adds deposits, and `finest/` uses a 0.05 px cut against the ordinary 1 px cut.
 Five views cover approximately 5, 20, 60 m, the drainage hollow and the far view. Sun azimuth
 -30 degrees, elevation 45 degrees; static terrain and sun; 1280x720, MSVC debug, RTX 5090,
@@ -163,7 +163,7 @@ cones, one a gully, apexes 5.87 m over their mouths and 4.5 m up their gullies, 
 face; 134 shed blocks out to 9.7 m from their talus tops, 61, 59 and 14 by thirds of that distance,
 their mean half-widths rising 0.56, 0.68, 0.79 m.
 
-**Pictures** (not committed; `D:/workspace/game_engine_local/fable_sub/scratch/b59/G143/`):
+**Pictures** (not committed; `game_engine_local/fable_sub/scratch/b59/G143/`):
 `scene/make-heightfield.ps1` writes the same face with three gullies as a heightfield, and
 `scene/scene-before.json` / `scene-after.json` dress it with deposits (no channel sediment, whose
 blanket over this meadow hid the rest; after: `cone_supply_m` 2, 30 blocks a 100 m², `block_m` 0.9,
@@ -175,7 +175,7 @@ outline steps with its 0.5 m samples, a patch's normals still show at its edge a
 the blocks are clean. Against reels r04, r19 and r22 they still lack the cones' pale coarse surface, lichen and
 turf on the blocks, and any change to the ground beneath (rocks.md, "What still reads as placed").
 
-**The second agent's pictures** (not committed; `D:/workspace/game_engine_local/fable_sub/scratch/b59/G143b/`,
+**The second agent's pictures** (not committed; `game_engine_local/fable_sub/scratch/b59/G143b/`,
 `captures/before/`, `after/`, `funnels/`; the base `606c072a`'s engine-view copied out of the tree
 against this row's, one derived-data cache, the engine's material pack unpacked, msvc-debug, 1600 x
 900, CSM shadows, sun -30, 40). The first agent's face at the default supply (3.5 m) stands a
@@ -211,7 +211,7 @@ the two sides; after locking the border, none, and every cut keeps the finest ch
 no cut sank more than 1.1 mm past its own error before or after, so the fault was at the edges only
 (rocks.md, "The coarse forms keep the patch's border").
 
-**The third pass's pictures** (not committed; `D:/workspace/game_engine_local/fable_sub/scratch/b59/G143c/`:
+**The third pass's pictures** (not committed; `game_engine_local/fable_sub/scratch/b59/G143c/`:
 `scene/` is the second agent's funnel face, its supply 1.5 m and 128 fragments a patch, with a camera
 path of five views: from the meadow, a walker at the toe outside the apron, one metre over the bed,
 across the valley at 80 m and at 160 m; `captures/before/` the base `44c80a0a`'s engine-view copied

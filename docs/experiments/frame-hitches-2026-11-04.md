@@ -1,6 +1,6 @@
 # The ray tracing chain's remaining hitch causes (R128, 2026-11-04)
 
-Roadmap R128, after R130 ([the measurement it continues](frame-hitches-2026-11-03.md)). R130 found four causes for the twenty hitch frames of the owner's v27 walk (`D:/workspace/forest_wildlife_poc/reports/lab/20261103-095454-764/`, 3840×2160, `--raster rt --shadows rt`) and fixed two. This page is the other two and what R128 changed for them: the one-thread drop rule (class A), the growth step while the demand rises, the counts naming the capacity they were built against, and the first build at a new capacity (class C) — which did not reproduce, and what did instead.
+Roadmap R128, after R130 ([the measurement it continues](frame-hitches-2026-11-03.md)). R130 found four causes for the twenty hitch frames of the owner's v27 walk (`forest_wildlife_poc/reports/lab/20261103-095454-764/`, 3840×2160, `--raster rt --shadows rt`) and fixed two. This page is the other two and what R128 changed for them: the one-thread drop rule (class A), the growth step while the demand rises, the counts naming the capacity they were built against, and the first build at a new capacity (class C) — which did not reproduce, and what did instead.
 
 ## The runs
 

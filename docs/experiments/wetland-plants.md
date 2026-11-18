@@ -133,7 +133,7 @@ Recorded `machine_state`: start CPU others/total 35.179%, own 0%; GPU 9%,
 End CPU others/total 28.646%, own 0%; GPU 3%, 5257/32607 MiB; no GPU lock.
 The quiet wait expired and the harness explicitly marked the result busy.
 Raw JSONL and text are under
-`D:/workspace/game_engine_local/wetland/2026-10-29/cpu-bench.*`.
+`game_engine_local/wetland/2026-10-29/cpu-bench.*`.
 The solve measurement excludes cluster construction and atlas baking.
 
 

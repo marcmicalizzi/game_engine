@@ -72,7 +72,7 @@ unchanged. The neutral-material captures intentionally expose the geometry's rem
 Existing proof-of-concept recipes may change, as explicitly authorized by the owner on
 2026-10-25. Captures, copied recipes, camera paths, exact command arguments, GLBs and reports
 live outside the repository at
-`D:\workspace\game_engine_local\rocks\2026-10-25\rock-structure`.
+`game_engine_local\rocks\2026-10-25\rock-structure`.
 The four before recipes use their old budgets and `surface.strength: 0`; the old default mesh
 hash is tested unchanged, establishing the baseline. Both sides use the same camera and sun.
 Close views use the finest cut; the distance views below use the runtime 1-pixel LOD cut.

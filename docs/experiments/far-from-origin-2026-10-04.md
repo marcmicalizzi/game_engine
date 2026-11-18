@@ -1,6 +1,6 @@
 # Far from the origin (2026-10-04)
 
-The owner set the fly speed to 10,000 m/s, flew the endless desert out to about 460 km and dropped into walk mode at (−419070, 80.24, −66781.11) (`D:\workspace\game_engine_local\flythrough\endless-2026-10-04T1710-frames.jsonl`, `8be7e369`). The ground's geometry refined as the tiles arrived; **the ripples stayed "very low resolution"**. A game with fast travel or a teleport lands a player exactly there.
+The owner set the fly speed to 10,000 m/s, flew the endless desert out to about 460 km and dropped into walk mode at (−419070, 80.24, −66781.11) (`game_engine_local\flythrough\endless-2026-10-04T1710-frames.jsonl`, `8be7e369`). The ground's geometry refined as the tiles arrived; **the ripples stayed "very low resolution"**. A game with fast travel or a teleport lands a player exactly there.
 
 This page has two parts. **Part 1** is what the low resolution was and the fix ([gfx](../subsystems/gfx.md), "Far from the origin"; [renderer](../subsystems/renderer.md#the-sand-far-from-the-origin)). **Part 2** is a survey, not a fix: every other place an absolute world position is a float32 on the way to the picture or the game, with what it does at 420 km and at 10,000 km, as the facts for the large-world decision.
 

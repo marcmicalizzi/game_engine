@@ -81,7 +81,7 @@ after another they are three times one.
 So a build takes the **machine-wide build lock** first and holds it until its last container has
 exited. It is the GPU lock's protocol and the GPU lock's implementation, pointed at a different
 file ([bench](../subsystems/bench.md#measuring-on-a-shared-machine), "The GPU lock";
-`tools/lib/MachineLock.psm1`): one JSON file, `D:\workspace\linux-build.lock` or
+`tools/lib/MachineLock.psm1`): one JSON file, `<workspace>\linux-build.lock` or
 `$env:ENGINE_LINUX_BUILD_LOCK`, created atomically with an owner, a purpose that names the presets
 and the checkout, and an expiry. An expired lock may be broken, an unexpired one never.
 
@@ -98,7 +98,7 @@ and the checkout, and an expiry. An expired lock may be broken, an unexpired one
   every waiter retried every 20 s and whoever's retry came first after a release had the lock, so
   on the night of 2026-11-10 four rows waited 110, 136, 147 and 240 minutes while later arrivals
   won, and four handed back without GCC having compiled them. A build now takes a ticket — a file
-  in `D:\workspace\linux-build.lock.line\` — when it starts to wait, and only the oldest live
+  in `<workspace>\linux-build.lock.line\` — when it starts to wait, and only the oldest live
   ticket tries the lock. Every build asks for the same ten-minute lease, so the order is plain
   first come, first served, and an agent whose build ends and who asks again stands behind
   everyone who was waiting. **A waiting script that is killed** (a tool timeout, with no `finally`)
@@ -131,10 +131,10 @@ and the checkout, and an expiry. An expired lock may be broken, an unexpired one
   *same* checkout from syncing over each other's build.
 - `-Shell` and `-Docs` take no lock: neither is a build, and a shell is interactive and may sit idle
   for an hour. Their containers are labelled so a build does not wait for them either.
-- On a machine without the lock's directory (no `D:\workspace`) there is nobody to coordinate with;
+- On a machine without the lock's directory (no `<workspace>`) there is nobody to coordinate with;
   the build says so and runs unlocked.
 
-`tools/gpu-lock.ps1 status -LockFile D:\workspace\linux-build.lock` says who is building, since
+`tools/gpu-lock.ps1 status -Kind linux-build` says who is building, since
 when and until when, and then who is waiting, in order, with how long each has waited.
 
 `tools/linux-build.ps1 -LockOnly <seconds>` takes the build lock exactly as a build does — the
@@ -436,10 +436,10 @@ that each follow from Windows:
   no time. Precompiled headers go off too, as in the containers: SDL3's and Jolt's.
 - **The paths differ per worktree, so the cache is told to ignore them**, and that has a cost that
   decides where it is on. Every setting rides on the launcher itself —
-  `ccache.exe;base_dir=D:/workspace;cache_dir=D:/workspace/game_engine_local/ccache;hash_dir=false;max_size=30G`
+  `ccache.exe;base_dir=<workspace>;cache_dir=<workspace>/game_engine_local/ccache;hash_dir=false;max_size=30G`
   — so a build run from an IDE or straight through `ninja` caches exactly as `dev.ps1`'s does.
   `base_dir` is the main checkout's parent, which holds it, its `.claude\worktrees\` and the gate's
-  `D:\workspace\ge-gate`; ccache rewrites every absolute path under it relative to the build
+  `ge-gate`; ccache rewrites every absolute path under it relative to the build
   directory, both in what it hashes and in what the compiler is given, so `..\..\core\base\src\x.cpp`
   is the same file in every checkout. `hash_dir=false` leaves the build directory's own path out of
   the key, which `/Z7` would otherwise put in it.
@@ -452,7 +452,7 @@ show **another worktree's source paths**, and an assert or a log line names a fi
 under `.claude\worktrees\`) **and in the gate worktree** (branch `gate`), where nobody debugs, and
 **off in the owner's primary checkout** — and in any other worktree — unless `ENGINE_CCACHE=1` is
 set, so the owner's own debugging never meets an agent's paths. `ENGINE_CCACHE=0` turns it off
-anywhere. The cache is `<main checkout>_local\ccache` (`D:\workspace\game_engine_local\ccache`,
+anywhere. The cache is `<main checkout>_local\ccache` (`game_engine_local\ccache`,
 beside the owner's other machine-local files) or `$env:ENGINE_CCACHE_DIR`, with the containers' 30 GB.
 A configured tree whose launcher is not the one the checkout now wants (ccache installed since,
 `ENGINE_CCACHE` changed) is configured again before it builds; switching the cache off removes the
@@ -631,10 +631,10 @@ the stale ones first, and then the total. On this machine on 2026-10-07, after t
 
 ```text
 == engine-linux checkout volumes on this daemon (-WhatIf: nothing is removed)
-keep   engine-linux-deps-049fb17c077a    6.37GB  D:\workspace\game_engine  -- the main checkout
-keep   engine-linux-src-049fb17c077a     4.41GB  D:\workspace\game_engine  -- the main checkout
-keep   engine-linux-deps-e0439115742d    1.61GB  D:\workspace\game_engine\.claude\worktrees\agent-aa2a94a027936b44e  -- the worktree is locked (claude agent agent-aa2a94a027936b44e (pid 63416))
-keep   engine-linux-src-e0439115742d      2.3GB  D:\workspace\game_engine\.claude\worktrees\agent-aa2a94a027936b44e  -- the worktree is locked (claude agent agent-aa2a94a027936b44e (pid 63416))
+keep   engine-linux-deps-049fb17c077a    6.37GB  game_engine  -- the main checkout
+keep   engine-linux-src-049fb17c077a     4.41GB  game_engine  -- the main checkout
+keep   engine-linux-deps-e0439115742d    1.61GB  game_engine\.claude\worktrees\agent-aa2a94a027936b44e  -- the worktree is locked (claude agent agent-aa2a94a027936b44e (pid 63416))
+keep   engine-linux-src-e0439115742d      2.3GB  game_engine\.claude\worktrees\agent-aa2a94a027936b44e  -- the worktree is locked (claude agent agent-aa2a94a027936b44e (pid 63416))
 -WhatIf: 0 volume(s), 0B, would be removed; nothing was.
 ```
 
@@ -650,7 +650,7 @@ Every volume the script creates since 2026-10-07 says whose it is:
 
 | Label | Value |
 |---|---|
-| `engine.root` | the checkout, spelt as the script's `$Root`: `D:\workspace\game_engine\.claude\worktrees\agent-…` |
+| `engine.root` | the checkout, spelt as the script's `$Root`: `<workspace>\game_engine\.claude\worktrees\agent-…` |
 | `engine.role` | `src`, `deps`, or `fetch-cache` |
 | `engine.scope` | `checkout`, or `shared` for `engine-linux-fetch-cache` |
 | `engine.created` | when the script created it, in UTC: `2026-10-07T12:30:05Z` |
@@ -659,8 +659,9 @@ Docker cannot label a volume that already exists, so one made before then stays 
 is pruned and made again. For such a volume the sweep does what the script does when it names one:
 it hashes the path of every checkout `git worktree list --porcelain` reports, the main checkout
 first, in the same spelling (`ConvertTo-CheckoutRoot` turns git's `D:/…` into `$Root`'s `D:\…`),
-and matches the hash against the volume's `<id>`. `tools/linux-build.Tests.ps1` pins that hash for
-`D:\workspace\game_engine` to the `049fb17c077a` this machine's volumes carry: if it ever changed,
+and matches the hash against the volume's `<id>`. `tools/linux-build.Tests.ps1` pins that hash on a
+neutral root (`D:\work\engine` to `89e4adbf589b`), and the same function gives the main checkout the
+`049fb17c077a` this machine's volumes carry: if it ever changed,
 every unlabelled volume would become an unknown checkout.
 
 #### The stale rule

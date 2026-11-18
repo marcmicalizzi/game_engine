@@ -55,7 +55,7 @@ composition and source scan sizes: leaves 2.3 m, mud 1.3 m and rock 1.8 m. Its 3
 fade is an authored quality/cost setting, not a physical landscape constant; distant rock
 becomes its linear mean while coverage painting remains. No new geology or ecology is claimed.
 
-Inspected captures under `D:/workspace/game_engine_local/native-terrain-w68/`:
+Inspected captures under `game_engine_local/native-terrain-w68/`:
 
 - `native-lake-south/view.png`: one continuous near shore and the same material beneath the
   analytic water; no intersecting floor patch.
@@ -97,7 +97,7 @@ The coordinate painting uses a smooth 256-texel ramp and checks the decoded/filt
 the display encoding within two codes. A two-texel black/white ramp was an unsuitable oracle:
 finite texture-filter weights become large display-code differences near black after encoding.
 
-External fixtures and raw logs: `D:/workspace/game_engine_local/native-terrain-w68/`; build/test
+External fixtures and raw logs: `game_engine_local/native-terrain-w68/`; build/test
 logs: the isolated worktree's `build/native-*.log`. The original v6 scene is retained as the
 regression fixture; the acceptance copy removes its 61 duplicate floor/land meshes and references
 the same unmodified heightfield. It reuses the existing v6 composition masks and recorded scan
@@ -119,7 +119,7 @@ The combined W67/W68 gate at `4b31ac77` used an external copy of the same native
 
 A 240-frame replay advances all thirteen wildlife poses at full animation detail (`--anim-lod off`) with flora wind, while the terrain remains at time/rate zero. It records nine tile swaps, 40 chunks built and 34 dropped, no failed rebuild, no layout lag, no refused game ground/move calls, and no frame-thread allocation or device buffer. A separate 61-frame camera travel records 26 swaps, 170 chunks built and 144 dropped, also without a failed rebuild. All six levels evaluate zero future fields in both runs. These are functional checks on a shared RTX 5090 workstation; the raw reports preserve machine state and are not new frame-cost measurements. The five existing frame-budget runs pass without a rebaseline.
 
-Evidence, commands, scene/cache provenance, frames, reports and inspected PNGs are under `D:/workspace/game_engine_local/acceptance/terrain-batch-20261023/`. The stock document-host follow-up and complete gate results are recorded in [static authored streaming](authored-terrain-streaming.md#combined-gate-and-document-host-follow-up).
+Evidence, commands, scene/cache provenance, frames, reports and inspected PNGs are under `game_engine_local/acceptance/terrain-batch-20261023/`. The stock document-host follow-up and complete gate results are recorded in [static authored streaming](authored-terrain-streaming.md#combined-gate-and-document-host-follow-up).
 
 ## Ground materials by place: costs
 
@@ -151,7 +151,7 @@ to 100%) while the GPU itself stayed at 0–7% utilization, so their GPU times a
 bounds, not costs. Every run, the control included, records the same 359 frame-loop allocations on
 the same 257–259 frames — the terrain tiles' own chunk builds — and no device buffer, so the masks
 add none. Raw frames and full machine states:
-`D:/workspace/game_engine_local/ground-materials/costs/<run>/frames.jsonl`.
+`game_engine_local/ground-materials/costs/<run>/frames.jsonl`.
 
 **Bytes**: a mask tile of 32 cells at 1 m is 1,873 words (7,492 bytes: the table, 1,497 points of
 four weights across six mips, and their wetness), 7.3 bytes a square metre; the scene's level is

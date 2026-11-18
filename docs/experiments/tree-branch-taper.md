@@ -184,7 +184,7 @@ Reviewed integration revision: Windows affected build passed; focused flora tape
 maturity and allometry checks passed 22 cases / 572,880 assertions. The two renderer wind
 attachment cases passed 130,882 assertions, including coarser budget rungs. Lint and docs checks
 passed. Native beech close-ups from two sides, whole foliage, maple/birch wood and a maple
-sapling are under `D:/workspace/game_engine_local/tree-growth/2026-11-04/upper-crown/review.html`.
+sapling are under `game_engine_local/tree-growth/2026-11-04/upper-crown/review.html`.
 The 26 m beech uses 421,432 triangles at its million-triangle cap, versus 453,316 at the prior
 checkpoint; its 8,000 budget solve uses 4,264 triangles. These are geometry counts on the shared
 machine, not performance measurements. The full affected selection, Linux and the previously

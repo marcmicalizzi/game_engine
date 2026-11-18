@@ -194,4 +194,4 @@ Age-series and birch views use clearly labeled fallback materials, not a new aut
 pack. The existing cutout-material pairs above establish the canopy-coverage review.
 
 Generated recipes, logs and captures live outside Git in
-`D:/workspace/game_engine_local/tree-growth/2026-10-25/maturity/`.
+`game_engine_local/tree-growth/2026-10-25/maturity/`.

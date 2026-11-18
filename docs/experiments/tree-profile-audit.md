@@ -208,7 +208,7 @@ material estimates are visible and revisable; no strength values are inferred fr
 
 Captures use identical cameras, recipes and material bindings at 5, 20 and 60 m, at both normal
 1 px and near-finest 0.01 px raster cuts. They live with the logs under
-D:/workspace/game_engine_local/tree-growth/2026-10-24/. The generic accepted spruce is captured
+game_engine_local/tree-growth/2026-10-24/. The generic accepted spruce is captured
 with the same explicit needle material as the new spruce, avoiding an opaque flat-colour comparison.
 
 The new spruce was sparse at 0.01 px too. G85 reduced its whole-shoot card from the accepted
@@ -416,7 +416,7 @@ purple leaf material and identical lighting with `--lod .01`. Inspection confirm
 unsqueezed maple silhouettes on fine wood. At crown distance the existing baked cards still use
 the solver's green colour; material-aware baking is separate. Machine state: shared workstation,
 RTX 5090, captures under the GPU lock; no quiet timing measurement. Files and reproducible camera/
-capture scripts are in `D:\workspace\game_engine_local\tree-growth\2026-10-24\maple-followup\`,
+capture scripts are in `game_engine_local\tree-growth\2026-10-24\maple-followup\`,
 with `review.html` and `manifest.json`. The active Forest files and materials were not modified.
 
 Follow-up validation: Windows `test -Affected -Base HEAD` (the preceding G86 commit) passed all
@@ -564,7 +564,7 @@ whole-tree bake. Willow retains geometric LOD, without a new authored bake chain
 
 Actual red and green Forest maples are also captured at matched 25/60/140/350 m cameras. The
 red variant retains its red colour in reduced detail. All review artifacts and staged Forest
-recipes are external under `D:/workspace/game_engine_local/tree-growth/2026-10-24/species-lod`
+recipes are external under `game_engine_local/tree-growth/2026-10-24/species-lod`
 and `forest-staged`; the active Forest scene and primary engine binaries are unchanged.
 
 The Windows GPU run exposed the documented raster/ray alpha-filtering difference in the fade

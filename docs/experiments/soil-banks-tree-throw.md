@@ -43,7 +43,7 @@ engine_content, documentation and lint). The command follow-up passed 7/7 Linux 
 fix. Windows `test -Affected` passed 123/123 (5,159 s shared-machine wall time); final-source soil and content-command follow-ups also passed. No existing
 solver pin moved.
 
-The five authored studies live at `D:/workspace/game_engine_local/soil/2026-10-28/`:
+The five authored studies live at `game_engine_local/soil/2026-10-28/`:
 recipe, terrain, scene, provenance, cameras and captures at 5, 20, 60 and 120 m.
 The 20 m comparison uses the same raster path at LOD 1 pixel and 0.000001 pixel;
 it includes terrain, shadows and the feature, not an isolated object mask. Full-frame
@@ -192,7 +192,7 @@ area below 1e-24; exact-weld closure is checked at both 5 mm and 45 mm root base
 
 ### Version 2 review and measurements
 
-The paired study is `D:/workspace/game_engine_local/soil/2026-10-29-review/`:
+The paired study is `game_engine_local/soil/2026-10-29-review/`:
 `before/` holds v1 containers and original terrain; `after-final/` holds v2 cooks,
 recipes and containers. Both draw through the same worktree-built renderer, so the
 intervening shadow-map bias change does not confound the comparison. Cameras,

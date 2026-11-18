@@ -6,7 +6,7 @@ Roadmap R135. The owner, 2026-11-06: "We still need to find some major performan
 
 ## 1. The owner's v34 walk, read from its records
 
-**The run** is `D:\workspace\forest_wildlife_poc\reports\lab\20261106-165421-150\` (outside this repository, read as text): the v34 scene (416 animated animals, the camp fire, the female player), 3840×2160 in one view, HDR10, `--raster rt --shadows rt`, `--terrain-tiles --terrain-far 6 --lod 1 --deform-pool-mib 64 --rt-budget-mib 0`, micromaps on, the proof of concept's game module, `--present immediate` with no ceiling; 7,515 frames over 341 s of walking and flying. The extraction streams `frames.jsonl` into one row a frame (`extract.ps1` and `stats.ps1` in the agent's scratch, not committed); the first 30 frames (the load) are left out, so every number below is over **7,486 frames**.
+**The run** is `forest_wildlife_poc\reports\lab\20261106-165421-150\` (outside this repository, read as text): the v34 scene (416 animated animals, the camp fire, the female player), 3840×2160 in one view, HDR10, `--raster rt --shadows rt`, `--terrain-tiles --terrain-far 6 --lod 1 --deform-pool-mib 64 --rt-budget-mib 0`, micromaps on, the proof of concept's game module, `--present immediate` with no ceiling; 7,515 frames over 341 s of walking and flying. The extraction streams `frames.jsonl` into one row a frame (`extract.ps1` and `stats.ps1` in the agent's scratch, not committed); the first 30 frames (the load) are left out, so every number below is over **7,486 frames**.
 
 **The frame**: median 46.4 ms, p95 76.2; **88.6% of frames over 16.7 ms, 68.2% over 33.3, 44.7% over 50**. It is GPU-bound throughout: the GPU's own total is 44.1 median (p95 72.1), and the CPU waits for the frame slot 27.4 ms of the median frame.
 

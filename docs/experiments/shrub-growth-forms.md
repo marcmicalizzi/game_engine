@@ -66,7 +66,7 @@ The inherited shrub compliance (.01,.07,.10,.14) is likewise an authored analogu
 ## Validation and remaining limits
 
 The specimen recipes and reproducible capture/compare scripts are under
-`D:/workspace/game_engine_local/shrubs/2026-10-29/`, outside the repository. Each specimen has
+`game_engine_local/shrubs/2026-10-29/`, outside the repository. Each specimen has
 its recipe, cooked container, scene and camera alongside normal and finest images at 5, 20,
 60 and 160 m. These are 1600×900, noon, wind disabled, shadows off, in the branch's
 `msvc-debug` viewer on an RTX 5090. They isolate morphology; they are not performance samples.

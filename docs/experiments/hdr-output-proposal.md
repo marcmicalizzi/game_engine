@@ -63,9 +63,9 @@ Two runs of one script (R80), with a release build: the engine changes no displa
 ```powershell
 tools/dev.ps1 build -Preset msvc-release
 # Run 1: "Use HDR" off for the Surround display, the NVIDIA control panel at 10 bpc.
-tools/hdr-measure.ps1 -Out D:\workspace\game_engine_local\e39\hdr-off
+tools/hdr-measure.ps1 -Out game_engine_local\e39\hdr-off
 # Run 2: "Use HDR" on (the SDR content brightness where you keep it: it is one of the paper whites).
-tools/hdr-measure.ps1 -Out D:\workspace\game_engine_local\e39\hdr-on
+tools/hdr-measure.ps1 -Out game_engine_local\e39\hdr-on
 ```
 
 Each run takes the GPU lock once, probes the displays (measurement 1: `displays.json`), then shows, borderless over the whole display for four seconds each, the ramp and the erg's sky at dusk, dawn and the moonlit night looking west and east (the banding test's hours) through `sdr10` with the dither on and off (measurement 2), `hdr10` at paper whites of 100, 200 and 300 nits and at Windows' SDR white level, the reported peak in all of them (measurement 3), and `scrgb` (measurement 4), each captured on its last frame as an EXR with its code histogram (and the SDR ones as a PNG too), with its present timings; and the offscreen linear radiance under each view (measurement 5). Formats the display does not offer with HDR off are recorded as not offered. **Read `README.md` in the folder while you look at the panels**: it says what each picture should and should not show, and holds the table of every capture's distinct codes and present timings. `-DryRun` shows what would run; `-Views`, `-Formats` and `-PaperWhites` run a part of it again. What it cannot measure is the eye: whether a band is visible, whether the highlights look right, whether HDR on the Surround group is worth having — that verdict, and R60, are the owner's.

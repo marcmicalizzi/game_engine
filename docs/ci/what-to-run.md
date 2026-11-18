@@ -326,7 +326,7 @@ you, each once, and no longer a lottery a re-asker wins: there is nothing to gai
 and often. (The pause GPU-LOCK.md's rule 9 asks between back-to-back holds is still what lets in
 a tool that takes no ticket, the Blender agent's: with nobody in the line, a re-asker has the
 lock back at once.)
-`tools/gpu-lock.ps1 status` (with `-LockFile D:\workspace\linux-build.lock` for builds) prints the
+`tools/gpu-lock.ps1 status` (with `-Kind linux-build` for builds) prints the
 holder and the line, and a waiter's own log says where it stands. What it changes for a plan:
 GPU tests beside other agents' now take turns hold by hold, so a long GPU suite run beside five
 others runs at a sixth of its pace instead of all at once after a wait; and a waiter that is
@@ -597,7 +597,7 @@ on the one machine-wide GPU lock they share.
 
 ### Gate b57, measured
 
-From gate b57's second run (2026-11-09, `D:\workspace\ge-gate\build\<preset>\Testing\Temporary\LastTest.log`
+From gate b57's second run (2026-11-09, `ge-gate\build\<preset>\Testing\Temporary\LastTest.log`
 and the gate's console logs; the first run's logs for the same tests beside it). The lock's own
 record of holds (`ENGINE_GPU_LOCK_LOG`, [gpu_lock](../subsystems/gpu_lock.md)) was not on, so what a
 log gives is a test's wall seconds and the waits its own process printed (`gpu-lock: taken after N

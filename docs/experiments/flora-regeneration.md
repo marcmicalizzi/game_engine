@@ -120,7 +120,7 @@ the single-precision intermediate in `height_m * radius_per_height` and `1 - lea
 before widening it: hoisting those conversions would change the already pinned MSVC geometry.
 
 Captures, recipes, cameras, cook reports and reproduction scripts live in
-`D:/workspace/game_engine_local/flora-regeneration/2026-11-04/`. The single-mesh views are
+`game_engine_local/flora-regeneration/2026-11-04/`. The single-mesh views are
 1280 x 720 at 5/20/60 m (also 200 m for the seven base profiles), sun azimuth/elevation
 135/45 degrees, CSM, frozen time. Close views supplement these. `specimens.png` frames
 the committed scene. `capture.ps1` reproduces the full set; `refresh.ps1` recooks the five

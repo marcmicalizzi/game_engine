@@ -53,7 +53,7 @@ rounding, new facets 2–18% of it; a bowl can be smooth while its lip stays nar
 ## Visual review and remaining work
 
 Local captures and scripts are under
-`D:\workspace\game_engine_local\rocks\2026-10-28\lithology` (not committed). The review uses
+`game_engine_local\rocks\2026-10-28\lithology` (not committed). The review uses
 the current debug engine, offscreen 1200 × 900, finest cut, sun 45°/45°, CSM, under the GPU lock.
 It separates untextured geometry from one PBR wiring check using the owner's existing local
 sandstone base-colour/normal/roughness set. That base-colour image is strongly yellow; the result
@@ -341,7 +341,7 @@ surface recession still depend on sampling. The charts remain structured and a f
 remesher would be needed to remove that limitation.
 
 Paired 1200-by-900 finest-cut captures at identical cameras and light are in local
-`D:/workspace/game_engine_local/rocks/2026-10-28/sampling/review.html`, alongside the exports,
+`game_engine_local/rocks/2026-10-28/sampling/review.html`, alongside the exports,
 camera paths and raw records. Obsidian and slate use scalar PBR; granite uses the baked rind.
 Obsidian/slate breaks are sharper, granite changes more subtly, and patterned furrows remain.
 These images do not establish photographic realism. The existing fresh-block test's area in
@@ -414,7 +414,7 @@ also degraded coarse-fragment culling, so it is restricted to chip boundaries. T
 cone test passes; broad folding stays.
 
 The accepted comparison set is in the owner's local
-`D:/workspace/game_engine_local/rocks/2026-10-28/chips/review.html`, with the final E10 report
+`game_engine_local/rocks/2026-10-28/chips/review.html`, with the final E10 report
 under `chips/e10-final/`. Before is solver v7; after is the v8 working tree built over
 `e7204397`. Matching 1200x900 captures isolate geometry; the granite rind also exercises the
 existing material export. These are diagnostic views, not a photorealistic scene benchmark.
@@ -482,7 +482,7 @@ only its version metadata/content hashes changed, with all geometry and cooked-t
 retained. Five exporter cases / 78 assertions pass. Full affected suites/merge gates were not
 run in this focused follow-up.
 
-The local review lives at `D:/workspace/game_engine_local/rocks/2026-10-29/terrain-contact/`:
+The local review lives at `game_engine_local/rocks/2026-10-29/terrain-contact/`:
 `scene.json` retains frozen v20 terrain, sky, water dependencies and the three cliff generators;
 unrelated instances and placements are removed. Seven cliff recipes acquired 18,901 samples
 total, 1,608–3,444 per patch, all at 1 m. Matching 1600x900 cameras, HW visibility and RT shadows
@@ -542,7 +542,7 @@ Existing tests retain deterministic pixels, chart-corner colour continuity, rind
 unchanged geometry. Four rock CLI cases / 70 assertions pass, including embedded-map GLB
 reimport. Lint, documentation, formatting and whitespace checks pass. Linux volumes are pruned.
 
-Local evidence: `D:/workspace/game_engine_local/rocks/2026-10-29/surface/`. Both sides use the
+Local evidence: `game_engine_local/rocks/2026-10-29/surface/`. Both sides use the
 same Debug build base (1a3de3ea plus the unmerged G117 changes), camera and illumination; only
 the bake changes. Granite and variant 02 normal-XY RMS over the first chart rise from .01898
 to .08004 and .00991 to .06255 respectively (decoded RGB8, every second interior texel).
@@ -626,7 +626,7 @@ Validation and review for this increment:
   21,064 / 15,290 at Low. The baseline v10 example exports 207,620 / 127,319. These are
   footprint measurements, not performance timings. The machine was shared with builds and GPU
   work, so no quiet-time speed or frame-rate claim is made.
-- Local artifacts: `D:/workspace/game_engine_local/rocks/2026-11-04/cliffs/review.html`, with
+- Local artifacts: `game_engine_local/rocks/2026-11-04/cliffs/review.html`, with
   recipes, exported meshes, fixed cameras, capture scripts and logs. Source geometry comparisons
   use bare material constants; a separate diagnostic uses the existing CC0 Poly Haven
   `rock_boulder_dry` set, retaining its provenance in the local `pack.json`. It is not a calibrated

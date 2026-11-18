@@ -91,7 +91,7 @@ previous oak card's 5.4 cm width produced only about 3.9 cm of visible leaf.
 
 The owner accepted the matched maple/whole-oak screenshots during this turn.
 Artifacts, exact counts, mask audit and before/after review:
-D:/workspace/game_engine_local/tree-growth/2026-10-27/leaf-sizing/review.html.
+game_engine_local/tree-growth/2026-10-27/leaf-sizing/review.html.
 
 ### Regression and review coverage
 

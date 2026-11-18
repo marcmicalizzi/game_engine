@@ -196,7 +196,7 @@ and Dry B as `palm/skirt` (1K, 0.12, 0.25; StableMaterials and PBRify) — and t
 as `rock/sandstone` (2K, 0.5; StableMaterials, a "warm beige limestone" prompt, ungraded) for the
 rock half of the proof. The staging script copied the files the lab's `materials.json` names and
 checked every one against the lab's own SHA-256 before packing; `pack-materials.ps1` made
-`materials-palm-2026-10-19.zip` (22.7 MB, 20 maps) under `D:\workspace\game_engine_local\packages\`
+`materials-palm-2026-10-19.zip` (22.7 MB, 20 maps) under `game_engine_local\packages\`
 and `fetch-materials.ps1` unpacked it into `content/materials/` against its hash.
 
 `engine-content flora content/flora/date-palm.flora.json --ddc <scratch>` found the pack beside the

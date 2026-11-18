@@ -91,7 +91,7 @@ that floor. The combined branch receives the full batch gate separately.
 ## External v6 fixture
 
 Artifacts live outside the engine repository under
-`D:\workspace\game_engine_local\acceptance\authored-terrain-streaming-20261023\`.
+`game_engine_local\acceptance\authored-terrain-streaming-20261023\`.
 The acceptance scene is produced from the project's existing v6 source with thirteen animated
 wildlife instances, flora wind, water, and static terrain tiles. Its set is built for the stock
 outer-ring spacing (2 m) and two far levels (8 and 16 m), rather than reusing the original v6
@@ -128,7 +128,7 @@ made from these runs.
 
 ## Combined gate and document-host follow-up
 
-The W67/W68 combined gate at `4b31ac77` passed all production checks: Windows debug 120/121, minimal 75/76 and no-ECS 109/110 initially, with each one's sole failure `tools.docs_gate` caused by Git's Unix tools missing from the hidden process's `PATH`. The same test then passed independently in all three presets (28 checks each) with that environment corrected; no source repair was needed. Release app end-to-end tests passed 7/7, the three Linux suites 120/120, 120/120 and 76/76, the Titan Xp suite 100/100, and the five frame budgets 5/5. Full logs and the first failed shell-test output are retained under `D:/workspace/game_engine_local/acceptance/terrain-batch-20261023/`.
+The W67/W68 combined gate at `4b31ac77` passed all production checks: Windows debug 120/121, minimal 75/76 and no-ECS 109/110 initially, with each one's sole failure `tools.docs_gate` caused by Git's Unix tools missing from the hidden process's `PATH`. The same test then passed independently in all three presets (28 checks each) with that environment corrected; no source repair was needed. Release app end-to-end tests passed 7/7, the three Linux suites 120/120, 120/120 and 76/76, the Titan Xp suite 100/100, and the five frame budgets 5/5. Full logs and the first failed shell-test output are retained under `game_engine_local/acceptance/terrain-batch-20261023/`.
 
 Review during the gate found an omitted host load hint: the document-backed `render.load` path passed `stream` before scene loading but omitted `terrain_tiles`, and an unchanged document could reuse its full source grid when that intent changed. The host now forwards the tile hint before loading and rebuilds under the same scene id when only that hint changes. A transport regression creates a 65-point authored source, checks the requested tiled load's 512 carrier triangles against the full grid's 8,192, and toggles both ways without a document revision change. Repeating the same intent reuses the scene. Windows host/docs/lint follow-ups pass 5/5 in each of debug, minimal, no-ECS and release; host follow-ups pass in all three Linux gate presets. The new authored regression is compiled only when the tile-set capability exists.
 

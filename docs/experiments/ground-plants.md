@@ -129,7 +129,7 @@ owns the standard frame-budget scenes. No per-frame renderer code or allocations
 
 ## Pictures and remaining limits
 
-The capture directory is `D:/workspace/game_engine_local/captures/2026-10-29/ground-plants-g103/`.
+The capture directory is `game_engine_local/captures/2026-10-29/ground-plants-g103/`.
 Each recipe's folder contains its before/after source, cooked container, camera, scene, image and
 logs. Whole-scene markers are under `before-markers/` and `after-markers/`; `measurements.json`
 retains the complete machine state and counters. `capture.ps1` forces recooking so an intermediate

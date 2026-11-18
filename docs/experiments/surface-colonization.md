@@ -80,7 +80,7 @@ Recorded `machine_state`: bare CPU others 99.963% at start and 100% at end, GPU 
 The RT run measures traced shadows, not cascade rendering; the merge's frame-budget gate is
 still required. No tile-placement generator or per-tile allocation was added.
 
-Evidence lives under `D:/workspace/game_engine_local/surface-colonization/2026-11-04/`:
+Evidence lives under `game_engine_local/surface-colonization/2026-11-04/`:
 recipes, built containers, cameras, bare/covered PNGs at close views and 20/60/120 m,
 build/stat reports, frame records and reproducible PowerShell scripts. The close views show
 sheltered green moss, exposed pale lichen and fungi/rosettes on the log. At 60 and 120 m the normal

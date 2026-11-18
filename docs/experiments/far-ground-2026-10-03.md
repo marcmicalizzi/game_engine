@@ -37,7 +37,7 @@ spacing, includes those whose centre has height >=200 m and z>=1024 m, and requi
 support inside the authored source. Min/max are over all source vertices in a box (extrema of
 the bilinear surface); the mean is the exact separable trapezoidal integral. Nearest-rank
 percentiles, one value per box. CPU arithmetic is independent of concurrent machine load.
-Raw counts and histograms: `D:/workspace/ge-codex-scratch/sol-far/mountain-errors.json`.
+Raw counts and histograms: `ge-codex-scratch/sol-far/mountain-errors.json`.
 
 | spacing, m | boxes | range median, m | range p95, m | mean-deviation p95, m |
 |---:|---:|---:|---:|---:|
@@ -371,7 +371,7 @@ image comparison including changed shadow fits/casters and foliage, not a geomet
 measurement. The controlled no-far-visible byte equality and exact seams remain the existing
 GPU tests' responsibility. Scratch `pixel-differences.json` carries the pixel counts and tails.
 
-**Capture paths**, rooted at `D:/workspace/ge-codex-scratch/sol-far/runs/`:
+**Capture paths**, rooted at `ge-codex-scratch/sol-far/runs/`:
 
 - `tag5-{2560x1440,11520x2160}-{baseline,px16,px8-final}/view.png`.
 - `ridge-{2560x1440,11520x2160}-{baseline,px16,px8-final}/view.png`.

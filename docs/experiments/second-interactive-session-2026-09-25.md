@@ -7,7 +7,7 @@
 
 ## The recording
 
-`D:\workspace\game_engine_local\flythrough\interactive-2026-09-25T1226-input.jsonl` (2,368 events after its header; 16,677 ticks at 240 Hz, 69.5 s) and `interactive-2026-09-25T1226-frames.jsonl` (5,677 frames: GPU 2.24 ms median and 3.11 ms p99; the frame time bimodal, 7.19 ms median and 22.6 ms p95, which is the present-pacing item of the [first session](first-interactive-session-2026-09-24.md#1-the-stutter-near-an-asset), settled in [Present pacing](#present-pacing) below). The header names the default map's hash (`95496522437046028`), so the marker is scancode 16, M, and the owner pressed it six times:
+`game_engine_local\flythrough\interactive-2026-09-25T1226-input.jsonl` (2,368 events after its header; 16,677 ticks at 240 Hz, 69.5 s) and `interactive-2026-09-25T1226-frames.jsonl` (5,677 frames: GPU 2.24 ms median and 3.11 ms p99; the frame time bimodal, 7.19 ms median and 22.6 ms p95, which is the present-pacing item of the [first session](first-interactive-session-2026-09-24.md#1-the-stutter-near-an-asset), settled in [Present pacing](#present-pacing) below). The header names the default map's hash (`95496522437046028`), so the marker is scancode 16, M, and the owner pressed it six times:
 
 | Marker | Tick | Camera | What he had just done |
 |---|---|---|---|
@@ -28,7 +28,7 @@ Markers 1 to 4 are a deliberate test: back and forth along one line, stopping to
 4. **A kit member up close.** A scene of two members (`ashlar-section-2m-h100`, `ashlar-corner-h100`) on a small terrain and a three-marker camera path — face on, along the wall at a grazing angle, and the corner — drawn shaded and in albedo by each build.
 5. **The kit's own data.** The GLB's material records and its embedded images, read out of the binary chunk; the metallic-roughness image's channels measured over all its texels; the texture it builds into, read with `engine-content info`.
 
-Everything is under `D:\workspace\game_engine_local\flythrough\diagnosis-2026-09-25\`: `markers\` (before, terrain fix, both fixes), `lod-cut\` (where the albedo moved between the two cuts, before and after), `sheets\move-b-albedo-before-top-after-bottom.png`, `closeup\` (scene, path and captures), `helmet\`, and the scripts (`Vis.cs` and `Glb.cs` are the analysis, loaded by `vis.ps1`).
+Everything is under `game_engine_local\flythrough\diagnosis-2026-09-25\`: `markers\` (before, terrain fix, both fixes), `lod-cut\` (where the albedo moved between the two cuts, before and after), `sheets\move-b-albedo-before-top-after-bottom.png`, `closeup\` (scene, path and captures), `helmet\`, and the scripts (`Vis.cs` and `Glb.cs` are the analysis, loaded by `vis.ps1`).
 
 ## (2): the ground — a material voted per cluster
 
@@ -78,7 +78,7 @@ Before the fix every pixel whose colour moved was on a changed cluster and none 
 
 ### The two recordings
 
-Both sessions' frame logs (`D:\workspace\game_engine_local\flythrough\interactive-2026-09-24T2253-frames.jsonl` and `…2026-09-25T1226-frames.jsonl`) were read again frame by frame. `frame_ms[i]` is the length of iteration *i−1* of the loop.
+Both sessions' frame logs (`game_engine_local\flythrough\interactive-2026-09-24T2253-frames.jsonl` and `…2026-09-25T1226-frames.jsonl`) were read again frame by frame. `frame_ms[i]` is the length of iteration *i−1* of the loop.
 
 | | 2026-09-24 (desert overlook, `--shadows rt`) | 2026-09-25 (ruins, `--shadows csm`) |
 |---|---|---|
@@ -245,7 +245,7 @@ Nothing the frame builds comes near the capacity: the chain held 65,536 clusters
 ## The ruins' traced shadows (2026-09-26)
 
 - **Question:** with `--shadows rt` the ruins cast no shadow on the sand at all, while the cascaded maps throw long wall and rubble shadows across it — and the two looked as if they disagreed about which faces of a wall face the sun ([What remains](#what-remains), second item). Which path is right about the sun, why do the rays miss the ruins, is it old or new, and what fixes it?
-- **Date:** 2026-09-26. **Machine:** the same i9-10980XE and RTX 5090, driver 610.88. **Build:** `msvc-release` of `e9284c7` and of the fix; `af1b071` for the bisect. **Reproduction:** `engine-view --scene fly-ashlar-100.json --ddc <main's> --replay-input …T1526-input.jsonl --width 3840 --height 2160 --offscreen --frames 900 --capture f900.png --view shadow|shaded --shadows rt|csm`, each under the GPU lock. Captures, the offset variants, the benchmarks and the scripts are in `D:\workspace\game_engine_local\flythrough\diagnosis-2026-09-26-rt-shadows\`.
+- **Date:** 2026-09-26. **Machine:** the same i9-10980XE and RTX 5090, driver 610.88. **Build:** `msvc-release` of `e9284c7` and of the fix; `af1b071` for the bisect. **Reproduction:** `engine-view --scene fly-ashlar-100.json --ddc <main's> --replay-input …T1526-input.jsonl --width 3840 --height 2160 --offscreen --frames 900 --capture f900.png --view shadow|shaded --shadows rt|csm`, each under the GPU lock. Captures, the offset variants, the benchmarks and the scripts are in `game_engine_local\flythrough\diagnosis-2026-09-26-rt-shadows\`.
 - **Machine state:** pictures and pixel counts are what a busy machine does not change. The timings below were taken with `--wait-quiet 120`, which found the machine quiet before each run; other processes then held 4.5–25% of the CPU and 9.2–10.7 GB of the card at the ends of the runs, the card 5–8% busy at the starts (the 94–99% at some ends is the run's own last frames), the owner's session unlocked. By the harness's rule every duration is an upper bound.
 - **Decision:** a shadow ray leaves its surface by one step of **that surface's own** 16-bit grid plus 2^-18 of the scene's reach, not by a thousandth of the scene's radius ([renderer](../subsystems/renderer.md#ray-traced)).
 

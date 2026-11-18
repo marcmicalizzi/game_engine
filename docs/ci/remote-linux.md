@@ -16,7 +16,7 @@ with no AVX2 — and every one of those found something the first time it was as
 ## The machine, and the rules for it
 
 Host alias `titanxp` in this desktop's SSH config. Key-only, user `claude`, unprivileged, no sudo,
-home `/home/volume/claude`, in the `video` group. Gentoo/OpenRC, kernel 6.16, **Intel Xeon
+home on the server's data volume, in the `video` group. Gentoo/OpenRC, kernel 6.16, **Intel Xeon
 E5-2670** (Sandy Bridge-EP, 2012: AVX, and none of AVX2, FMA, BMI1/2, F16C, LZCNT or MOVBE), 16
 threads, 31 GB, GCC 14.3.1, clang 22.1.8, CMake 4.3.4, Ninja 1.13.2, git 2.55. **No PowerShell, no
 X11 or Wayland development files, and none wanted.** Outbound HTTPS works. It is the

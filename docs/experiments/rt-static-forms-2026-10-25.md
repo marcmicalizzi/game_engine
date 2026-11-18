@@ -13,7 +13,7 @@ bottom-level structures built once per form, referenced per instance from the to
 
 ## The scenes
 
-The proof of concept's scenes as read-only data (`D:/workspace/forest_wildlife_poc`, never written
+The proof of concept's scenes as read-only data (`forest_wildlife_poc`, never written
 or run), their derived-data caches copied to scratch, through this worktree's own `msvc-release`
 `engine-view`, offscreen, the proof of concept's own flags (`--terrain-tiles --terrain-far 6
 --time-rate 0 --world-rate 1 --no-lights --time-of-day 15 --lod 1 --deform-pool-mib 64

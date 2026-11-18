@@ -21,15 +21,15 @@
 **The flythrough**, as ruins.md's: `engine-view --offscreen` at 1920 × 1080, the desert-overlook terrain (2,049² vertices, 187,660 clusters) and its camera path resampled to 600 frames, three repeats, occlusion on, shadows off, the hardware rasterizer. The scenes and scripts are under `game_engine_local\ruins\blocks\` (never committed):
 
 ```powershell
-engine-content ruins-kit D:\workspace\game_engine_local\ruins\blocks\kit
-engine-content ruins-block-kit D:\workspace\game_engine_local\ruins\blocks\blocks-mid --fidelity mid --thickness 0.64 --course 0.3 --stretcher 0.6
-pwsh D:\workspace\game_engine_local\ruins\blocks\make-scenes.ps1     # scene-<row>.json
+engine-content ruins-kit game_engine_local\ruins\blocks\kit
+engine-content ruins-block-kit game_engine_local\ruins\blocks\blocks-mid --fidelity mid --thickness 0.64 --course 0.3 --stretcher 0.6
+pwsh game_engine_local\ruins\blocks\make-scenes.ps1     # scene-<row>.json
 $env:ENGINE_GPU_LOCK_OWNER = 'agent-blocks'
-pwsh tools/gpu-lock.ps1 run -Purpose "E34 ..." -Exec "pwsh -NoProfile -File D:\workspace\game_engine_local\ruins\blocks\run-group.ps1 -Scenes blocks-mid-100,blocks-mid-200,blocks-mid-1000"
+pwsh tools/gpu-lock.ps1 run -Purpose "E34 ..." -Exec "pwsh -NoProfile -File game_engine_local\ruins\blocks\run-group.ps1 -Scenes blocks-mid-100,blocks-mid-200,blocks-mid-1000"
 #   each: engine-view --scene scene-<row>.json --camera-path content\test-scenes\desert-overlook\camera-path.json
 #     --offscreen --benchmark out\<row>.jsonl --frames 600 --repeat 3 --width 1920 --height 1080
 #     --shadows off --ddc <local ddc> --log info --wait-quiet 60
-pwsh D:\workspace\game_engine_local\ruins\blocks\parse.ps1          # the rows below
+pwsh game_engine_local\ruins\blocks\parse.ps1          # the rows below
 build\msvc-release\domain\ruins\engine_ruins_bench.exe --filter=ruins.* --wait-quiet=300
 ```
 
