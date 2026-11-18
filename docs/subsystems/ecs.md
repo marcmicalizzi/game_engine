@@ -305,6 +305,19 @@ The seams themselves are cold by construction: registration happens at world set
 
 And one flecs limit worth designing around: **hierarchy transform propagation cannot be `multi_threaded()`**. `cascade()` orders tables so parents come before children, but multi-threading splits each table's rows across workers with no barrier between tables, so a worker can read a parent's transform before the worker owning that row has written it. Propagation stays single-threaded until the engine's own scheduler can put a barrier per depth.
 
+### The state hash a tick's cost
+
+`build/msvc-release/domain/ecs/engine_ecs_bench.exe --filter=ecs.tick_hash.* --wait-quiet=1200` (`bench/tick_hash_bench.cpp`), 2026-11-18, i9-10980XE, `msvc-release`: **not quiet** — the wait gave up after 1,202 s with other processes at 100 % of the CPU and the GPU lock held by another agent, so every figure is an upper bound. A world of `n` entities each with a `Standing` (a vec3, an i64, an f32, a u32 and a transient u32) and a `Label` (a string and a u8), one flecs system writing `Standing` in `systems`; one item is one entity.
+
+| Benchmark | 10^4 entities | 10^5 entities | What it covers |
+|---|---|---|---|
+| `ecs.tick_hash.tick.off` | **13 µs** | **242 µs** | the scheduled tick with no hash: the baseline |
+| `ecs.tick_hash.phase` | **1.45 ms** (145 ns an entity) | **13.5 ms** (135 ns) | one phase's hash of the four tables, two of them full |
+| `ecs.tick_hash.tick.persist` | **1.28 ms** | **13.4 ms** | the tick hashed once, at `persist` |
+| `ecs.tick_hash.tick.all_phases` | **10.8 ms** | **118 ms** | the tick hashed at all eight phases |
+
+What the rows say: **off is the baseline**, since a host that constructs no `TickHash` has nothing of it. On, the hash is linear in what it reads — about 70 ns a component an entity on a loaded machine, a reflective walk over each field (a switch per field, a word mix per scalar, a string's bytes hashed) — and eight phases cost eight times one. It is a debugging and replay instrument, not something a shipped tick runs: a replay of a world of 10^4 entities that hashes once a tick (`phases` = `Persist`) costs about 1.3 ms a tick, and the bisector then re-runs only the run up to the tick it found with all eight phases to name the phase. **Not done, and where the time would come from**: a table whose fields are all scalars could be hashed from a precomputed list of (offset, width) runs instead of the recursive walk, and the tables could be hashed in parallel on the job system (a table's sum does not depend on the order of its rows, so a split is free); neither was needed for the cases. How it scales down: nothing it holds grows with entities, and a smaller machine pays the same per entity at its memory bandwidth.
+
 ## Not yet
 
 - **A budget a real application has chosen.** `hosted_worker_budget` defaults to "all but one", which is a sensible default and not a measured one: nothing yet runs a renderer, a streamer and a world on the same pool, so nobody has had to say how the performance pool is actually divided. The first app that does should set it deliberately and record what it found.
