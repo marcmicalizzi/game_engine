@@ -59,6 +59,15 @@ void Session::forget_transaction_hold(u64 transaction) {
   }
 }
 
+void Session::restore_transaction_hold(TransactionHold hold) {
+  for (const TransactionEntry& e : transactions_.transactions) {
+    if (e.info.id != hold.transaction) continue;
+    forget_transaction_hold(hold.transaction);
+    transaction_holds_.push_back(hold);
+    return;
+  }
+}
+
 u32 Session::release_connection_transactions(u64 connection) {
   if (connection == 0) return 0;
   u32 released = 0;

@@ -353,7 +353,9 @@ bool Session::load_side_files(RpcError& error) {
   // host's: one in the file that another host granted was left by a host that has gone, with its
   // client (two hosts on one document at once is unsupported). Dropped here, and the file written
   // again, so it stops standing against everyone else. This host's own stay: a session closed and
-  // opened again while the client is still connected keeps its client's lease.
+  // opened again while the client is still connected keeps its client's lease, and the session
+  // manager drops those of this host's connections that ended meanwhile
+  // (`drop_ended_connection_leases`).
   u32 orphaned = 0;
   for (u32 i = leases.leases.size(); i > 0; --i) {
     const LeaseInfo& l = leases.leases[i - 1];
@@ -909,6 +911,25 @@ u32 Session::release_connection_leases(u64 connection, i64 now_ms) {
   (void)save_leases(ignored);
   for (const LeaseInfo& l : gone)
     publish_session("lease_released", &l, connection, "connection closed");
+  return gone.size();
+}
+
+u32 Session::drop_ended_connection_leases(std::span<const u64> ended) {
+  if (ended.empty()) return 0;
+  Vector<u64> gone;
+  for (const LeaseInfo& l : leases_.leases()) {
+    if (l.connection == 0 || l.host != host_instance()) continue;
+    for (const u64 c : ended) {
+      if (c == l.connection) gone.push_back(l.id);
+    }
+  }
+  if (gone.empty()) return 0;
+  for (const u64 id : gone)
+    leases_.remove(id);
+  // As at the load: a save that fails leaves the lease in the file, and it is dropped again at the
+  // next open.
+  RpcError ignored;
+  (void)save_leases(ignored);
   return gone.size();
 }
 
@@ -1479,6 +1500,15 @@ Session* SessionManager::open(const SessionOpenParams& params, u64 holder, RpcEr
     return nullptr;
   }
   ++next_id_;
+  // What a connection left here when this document last closed in this process: the leases of
+  // the ones that have ended since go, and the transactions of the ones still connected are
+  // theirs again.
+  (void)session->drop_ended_connection_leases({ended_.data(), ended_.size()});
+  for (u32 i = parked_.size(); i > 0; --i) {
+    if (parked_[i - 1].dir != path) continue;
+    session->restore_transaction_hold(parked_[i - 1].hold);
+    parked_.erase_at(i - 1);
+  }
   session->set_events(events_);
   session->hold(holder);
   sessions_.push_back(std::move(session));
@@ -1511,6 +1541,7 @@ Session* SessionManager::require(std::string_view id, RpcError& error) noexcept 
 bool SessionManager::close(std::string_view id) {
   for (u32 i = 0; i < sessions_.size(); ++i) {
     if (sessions_[i]->id() == id) {
+      note_closing(*sessions_[i]);
       sessions_[i]->publish_session("closed");
       sessions_.erase_at(i);
       return true;
@@ -1527,8 +1558,32 @@ bool SessionManager::release(std::string_view id, u64 holder, bool& closed) {
   return true;
 }
 
+void SessionManager::note_closing(const Session& session) {
+  for (const LeaseInfo& l : session.leases().leases()) {
+    if (l.connection == 0 || l.host != host_instance()) continue;
+    u32 at = detached_.size();
+    while (at > 0 && detached_[at - 1] > l.connection)
+      --at;
+    if (at > 0 && detached_[at - 1] == l.connection) continue;
+    detached_.insert(at, l.connection);
+  }
+  for (const Session::TransactionHold& h : session.transaction_holds())
+    parked_.push_back({std::string(session.dir()), h});
+}
+
 void SessionManager::release_connection(u64 connection, i64 now_ms) {
   if (connection == 0) return;
+  // What it left in documents no session has open now: a lease there is dropped when the
+  // document is next opened, and a transaction's hold is let go now.
+  for (u32 i = 0; i < detached_.size(); ++i) {
+    if (detached_[i] != connection) continue;
+    detached_.erase_at(i);
+    ended_.push_back(connection);
+    break;
+  }
+  for (u32 i = parked_.size(); i > 0; --i) {
+    if (parked_[i - 1].hold.connection == connection) parked_.erase_at(i - 1);
+  }
   // Leases first, on every session (a client may lease on a session it did not open, such as the
   // host's --doc), then the holds; a session closed by the second loop is gone, so it walks a copy
   // of the ids.

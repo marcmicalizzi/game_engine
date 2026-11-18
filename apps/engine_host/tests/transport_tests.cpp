@@ -823,6 +823,83 @@ TEST_CASE("listen: a client's transactions and placements are its hello's, its c
   check_hello(at(last_patch(), "attribution"), "t-agent");
 }
 
+// A session closed before its connection drops (protocol.md, "Several clients, one host"): the
+// lease and the transaction the connection took in it are still its own while it is connected,
+// across the close and a reopen by someone else, and are let go when it drops although no session
+// open then names them — the lease when the document is next opened, the transaction at once.
+TEST_CASE("listen: a lease and a transaction outlive their session's close, not their connection") {
+  test::TempDir tmp("engine_host_listen_closed_first");
+  ListeningHost host({"--doc", tmp.file("hostdoc"), "--create", "--actor", "cli"});
+  const std::string doc = json_text(tmp.file("doc"));
+  Client agent;
+  Client twin;
+  Client shell;
+  REQUIRE(agent.connect(host.port, host.token));
+  REQUIRE(twin.connect(host.port, host.token));
+  REQUIRE(shell.connect(host.port, host.token));
+  REQUIRE(error_code(agent.call("client.hello", R"({"attribution":{"actor":"agent-1"}})")) == 0);
+  REQUIRE(error_code(twin.call("client.hello", R"({"attribution":{"actor":"agent-1"}})")) == 0);
+  REQUIRE(error_code(shell.call("client.hello", R"({"attribution":{"actor":"owner"}})")) == 0);
+  const auto open = [&](Client& c, bool create) {
+    const JsonValue r =
+        c.call("session.open", R"({"path":)" + doc + (create ? R"(,"create":true})" : "}"));
+    REQUIRE_MESSAGE(error_code(r) == 0, write_json(r));
+    return std::string(at(at(r, "result"), "session").as_string());
+  };
+  const auto close = [&](Client& c, const std::string& session) {
+    const JsonValue r = c.call("session.close", R"({"session":")" + session + "\"}");
+    REQUIRE_MESSAGE(error_code(r) == 0, write_json(r));
+    CHECK(at(at(r, "result"), "closed").as_bool());  // the caller was its last holder
+  };
+  const std::string lease_types = R"(,"layer":"base","object_types":["engine.scene.MeshPlacement"],
+    "ttl_seconds":86400})";
+
+  // The agent opens the document alone, leases a type for a day, begins a transaction, and closes.
+  const std::string first = open(agent, true);
+  REQUIRE(error_code(agent.call("lease.acquire", R"({"session":")" + first + "\"" + lease_types)) ==
+          0);
+  const JsonValue begun = agent.call("doc.begin", R"({"session":")" + first + "\"}");
+  REQUIRE_MESSAGE(error_code(begun) == 0, write_json(begun));
+  const std::string t = std::to_string(at(at(begun, "result"), "id").as_int());
+  REQUIRE(
+      error_code(agent.call(
+          "doc.apply", R"({"session":")" + first + R"(","transaction":)" + t + R"(,"commands":[)" +
+                           create_placement(k_left, "left", "[0,0,0]") + "]}")) == 0);
+  close(agent, first);
+
+  // Still connected, it still holds both: the twin, who says it is the same actor, reopens the
+  // document and may not commit the agent's transaction; the shell may not lease the type.
+  const std::string second = open(twin, false);
+  const std::string in_t = R"({"session":")" + second + R"(","transaction":)" + t;
+  CHECK(error_code(twin.call("doc.commit", in_t + "}")) == 1008);
+  CHECK(error_code(shell.call("lease.acquire", R"({"session":")" + second + "\"" + lease_types)) ==
+        1009);
+  close(twin, second);
+
+  // The agent drops with nothing open but a session of its own, whose closing the shell is pushed
+  // once the host has let go of everything the connection held.
+  REQUIRE(error_code(agent.call("session.open", R"({"path":)" + json_text(tmp.file("own")) +
+                                                    R"(,"create":true})")) == 0);
+  REQUIRE(error_code(shell.call("session.subscribe", R"({"kinds":["session"]})")) == 0);
+  agent.ws.socket().close();
+  CHECK(at(at(shell.next_event(), "params"), "change").as_string() == "closed");
+
+  // Opened again, the document no longer holds the dropped connection's lease, and its transaction
+  // is the actor's again, still staged: the twin commits it.
+  const std::string third = open(shell, false);
+  const JsonValue committed =
+      twin.call("doc.commit", R"({"session":")" + third + R"(","transaction":)" + t + "}");
+  CHECK_MESSAGE(error_code(committed) == 0, write_json(committed));
+  const JsonValue mine =
+      shell.call("lease.acquire", R"({"session":")" + third + "\"" + lease_types);
+  CHECK_MESSAGE(error_code(mine) == 0, write_json(mine));
+  const JsonValue leases = shell.call("lease.list", R"({"session":")" + third + "\"}");
+  REQUIRE(error_code(leases) == 0);
+  const JsonValue& held = at(at(leases, "result"), "leases");
+  REQUIRE(held.size() == 1);
+  CHECK(at(held[0], "actor").as_string() == "owner");
+}
+
 TEST_CASE("listen: a subscriber that never reads gets the bounded queue and a dropped count") {
   test::TempDir tmp("engine_host_listen_slow");
   ListeningHost host({"--doc", tmp.file("doc"), "--create", "--actor", "busy"});

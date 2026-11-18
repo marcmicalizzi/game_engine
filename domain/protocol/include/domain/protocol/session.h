@@ -107,6 +107,25 @@ class Session {
   // The same connection's open transactions stop being bound to it and are their opener actor's
   // again, still staged (protocol.md, "Several clients, one host"). The number let go.
   u32 release_connection_transactions(u64 connection);
+  // Opened again after its last holder closed it: the leases this host process granted to client
+  // connections that have ended since (`ended`) are dropped and saved, as another
+  // process's are when the document is loaded. The number dropped.
+  u32 drop_ended_connection_leases(std::span<const u64> ended);
+
+  // The client connection each open transaction was begun on (non-zero only), for as long as it
+  // lasts. Kept in memory and never in `transactions.json`: connections are this process's, and
+  // a transaction outlives the host that a call started, where its actor alone owns it. The
+  // session manager keeps them across a close and gives them back at the reopen.
+  struct TransactionHold {
+    u64 transaction = 0;
+    u64 connection = 0;
+  };
+  std::span<const TransactionHold> transaction_holds() const noexcept {
+    return {transaction_holds_.data(), transaction_holds_.size()};
+  }
+  // A hold the session manager kept while the session was closed; ignored when the transaction
+  // is no longer open.
+  void restore_transaction_hold(TransactionHold hold);
 
   // --- leases (leases.h) ---------------------------------------------------------------------
   // Every change is written to `leases.json` before the answer. `now_ms` is the host's clock.
@@ -200,14 +219,6 @@ class Session {
   // dropped.
   u32 expire_transactions(i64 now_ms);
   void forget_transaction_hold(u64 transaction);
-
-  // The client connection each open transaction was begun on (non-zero only), for as long as it
-  // lasts. Kept in memory and never in `transactions.json`: connections are this process's, and
-  // a transaction outlives the host that a call started, where its actor alone owns it.
-  struct TransactionHold {
-    u64 transaction = 0;
-    u64 connection = 0;
-  };
   std::string base_file(std::string_view proposal) const;
 
   io::Vfs* vfs_;
@@ -255,10 +266,27 @@ class SessionManager {
   io::Vfs& vfs() noexcept { return *vfs_; }
 
  private:
+  // What a connection left in a session that closed while it was still connected (protocol.md,
+  // "Several clients, one host"): the lease stays in the document's `leases.json` and the
+  // transaction's hold here, for the document's next open in this process, since a lease and a
+  // transaction are on a document's records and the session was only how the connection reached
+  // them.
+  struct ParkedHold {
+    std::string dir;
+    Session::TransactionHold hold;
+  };
+  void note_closing(const Session& session);
+
   io::Vfs* vfs_;
   Vector<std::unique_ptr<Session>> sessions_;
   u32 next_id_ = 1;
   Subscriptions* events_ = nullptr;
+  // Connections that held a lease in a session closed under them, still connected (ascending),
+  // and those of them that have since ended: a reopen drops the second kind's leases.
+  // Bounded by the leases taken, not by the connections served.
+  Vector<u64> detached_;
+  Vector<u64> ended_;
+  Vector<ParkedHold> parked_;
 };
 
 }  // namespace engine::protocol
