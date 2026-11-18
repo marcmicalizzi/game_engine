@@ -624,7 +624,9 @@ constexpr scene_gen::PlacementGeneratorDesc k_channels{.name = "channels",
                                                        .occupies = &occupies,
                                                        .representation = &representation,
                                                        .tile_meshes = true,
-                                                       .plan_ground = &plan_ground};
+                                                       .plan_ground = &plan_ground,
+                                                       // hands the pieces open kept, writes none
+                                                       .tile_reentrant = true};
 const scene_gen::Registrar k_registrar{k_channels};
 }  // namespace
 }  // namespace engine::channels

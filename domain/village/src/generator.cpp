@@ -219,7 +219,9 @@ constexpr scene_gen::PlacementGeneratorDesc k_village{.name = "village",
                                                       .representation = &representation,
                                                       .tile_meshes = true,
                                                       .tile_meshes_masked = false,
-                                                      .plan_ground = &plan_ground};
+                                                      .plan_ground = &plan_ground,
+                                                      // reads the plan and the kit, writes none
+                                                      .tile_reentrant = true};
 const scene_gen::Registrar k_registrar{k_village};
 
 }  // namespace
