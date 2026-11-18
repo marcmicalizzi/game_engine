@@ -136,3 +136,44 @@ TEST_CASE("far tile: an imported mesh's far forms, placed three times, are one r
            carried.lod.mesh.vertices[v].z == far.lod.mesh.vertices[v].z;
   CHECK(same);
 }
+
+// S91 (geometry.md, "Doors"): the leaves a container declares reach the tile's loaded source as
+// they were written, so a host places a door from the mesh it loaded and never from its triangles;
+// a container that declares none loads with none. Any mesh may declare one: this one is no
+// building.
+TEST_CASE("placement mesh: a container's declared doors reach the loaded source") {
+  test::TempDir scratch;
+  const std::string path = scratch.path() + "/gate.clusters";
+  geometry::ClusterFileData data = boulders();
+  std::string error;
+  REQUIRE_MESSAGE(geometry::write_cluster_file(path, data, &error), error);
+  renderer::PlacementMeshOptions options;
+  renderer::PlacementMeshData none;
+  REQUIRE_MESSAGE(
+      renderer::load_placement_mesh(scene_gen::PlacementMesh(path, "gate"), options, none, error),
+      error);
+  CHECK(none.source.doors.empty());
+  geometry::ClusterFileDoor gate;
+  gate.pivot = Vec3{4.0f, 0.0f, 8.0f};
+  gate.shut_x = 1.0f;
+  gate.shut_z = 0.0f;
+  gate.swing_x = 0.0f;
+  gate.swing_z = -1.0f;
+  gate.width_m = 1.2f;
+  gate.height_m = 1.1f;
+  gate.thickness_m = 0.06f;
+  gate.opening = 7;
+  gate.open_deg = 45;
+  gate.flags = geometry::k_door_flag_door;
+  data.doors.push_back(gate);
+  REQUIRE_MESSAGE(geometry::write_cluster_file(path, data, &error), error);
+  renderer::PlacementMeshData loaded;
+  REQUIRE_MESSAGE(
+      renderer::load_placement_mesh(scene_gen::PlacementMesh(path, "gate"), options, loaded, error),
+      error);
+  REQUIRE(loaded.source.doors.size() == 1u);
+  CHECK(loaded.source.doors[0].pivot == Vec3{4.0f, 0.0f, 8.0f});
+  CHECK(loaded.source.doors[0].swing_z == -1.0f);
+  CHECK(loaded.source.doors[0].opening == 7u);
+  CHECK(loaded.source.doors[0].open_deg == 45);
+}

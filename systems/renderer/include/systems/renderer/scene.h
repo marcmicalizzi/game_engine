@@ -730,6 +730,10 @@ struct SourceMesh {
   // apps.md, "What a module can ask the world"): mesh space, read by the collision's supports.
   // Empty for every mesh that declares none.
   Vector<geometry::ClusterFilePerch> perches;
+  // **The leaves on hinges the mesh declares** (S91; the container's section 53; geometry.md,
+  // "Doors"): mesh space, shut, with the way each swings, what a host places a door from. Empty for
+  // every mesh that declares none.
+  Vector<geometry::ClusterFileDoor> doors;
   // **The far form** (G198; the container's sections 44 to 48; renderer.md, "The far tile"): what a
   // far tile draws this mesh as, its parts' materials this mesh's parts. Empty for a container that
   // carries none, which a far tile bakes from the finest level instead (the same bytes).
