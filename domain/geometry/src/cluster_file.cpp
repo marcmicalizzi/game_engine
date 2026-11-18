@@ -397,6 +397,48 @@ bool read_string(std::span<const u8> bytes, const ClusterFileSection& strings, u
   return true;
 }
 
+// **Every cluster's ranges against the streams they index, once, at load** (T187, from T13's
+// reading). A cluster names a run of `vertices` and a run of `triangles`, and a triangle names
+// three of its cluster's vertices by an 8-bit local index; the same offsets become device
+// addresses on the GPU and indices on the CPU (`quantize_positions`, the bounds, the cones), where
+// only a debug assert stood between a file's bytes and a read past a stream. So a container whose
+// cluster reaches past a stream, or whose triangle names a vertex its cluster does not hold, is
+// refused here and nothing downstream indexes unchecked. `vertex_total` and `triangle_total` are
+// the streams' lengths — the decoded ones for a whole read, the section table's for the paged
+// reader, whose resident decode carries the paged streams empty; the triangles' locals are read
+// only when the triangles are in hand. A container a build wrote passes every check unchanged.
+bool check_cluster_ranges(const ClusterMesh& mesh, u64 vertex_total, u64 triangle_total,
+                          std::string* error) {
+  const bool triangles_here = mesh.triangles.size() == triangle_total;
+  for (u32 c = 0; c < mesh.clusters.size(); ++c) {
+    const ClusterDesc& cluster = mesh.clusters[c];
+    if (u64{cluster.vertex_offset} + cluster.vertex_count > vertex_total) {
+      return fail(error, "cluster file cluster " + std::to_string(c) + " names vertices " +
+                             std::to_string(cluster.vertex_offset) + " + " +
+                             std::to_string(cluster.vertex_count) + " of a stream of " +
+                             std::to_string(vertex_total));
+    }
+    if (u64{cluster.triangle_offset} + cluster.triangle_count > triangle_total) {
+      return fail(error, "cluster file cluster " + std::to_string(c) + " names triangles " +
+                             std::to_string(cluster.triangle_offset) + " + " +
+                             std::to_string(cluster.triangle_count) + " of a stream of " +
+                             std::to_string(triangle_total));
+    }
+    if (!triangles_here) continue;
+    for (u32 t = 0; t < cluster.triangle_count; ++t) {
+      const u32 packed = mesh.triangles[cluster.triangle_offset + t];
+      for (u32 k = 0; k < 3; ++k) {
+        if (ClusterMesh::unpack(packed, k) >= cluster.vertex_count) {
+          return fail(error, "cluster file cluster " + std::to_string(c) + " triangle " +
+                                 std::to_string(t) + " names a vertex outside the cluster's " +
+                                 std::to_string(cluster.vertex_count));
+        }
+      }
+    }
+  }
+  return true;
+}
+
 // Everything that can be checked without interpreting a payload: the header, the section table,
 // that no section runs past the end, and the content hash. Both readers start here, so a file
 // they disagree about does not exist.
@@ -611,7 +653,28 @@ bool read_cluster_file_identity(std::string_view path, u64& source_hash, u64& bu
                        source_hash, build_key, error);
 }
 
+namespace {
+
+// The lengths of the streams the paged reader keeps on disk, which its resident decode carries
+// empty (`ClusterFileReader::open`), so that the decode checks the clusters' ranges against them.
+struct PagedStreams {
+  u64 vertices = 0;
+  u64 triangles = 0;
+};
+
+bool read_memory(std::span<const u8> bytes, ClusterFileData& out, std::string* error,
+                 const PagedStreams* paged);
+
+}  // namespace
+
 bool read_cluster_file_memory(std::span<const u8> bytes, ClusterFileData& out, std::string* error) {
+  return read_memory(bytes, out, error, nullptr);
+}
+
+namespace {
+
+bool read_memory(std::span<const u8> bytes, ClusterFileData& out, std::string* error,
+                 const PagedStreams* paged) {
   out = ClusterFileData{};
   ClusterFileHeader header;
   Vector<ClusterFileSection> sections;
@@ -668,6 +731,13 @@ bool read_cluster_file_memory(std::span<const u8> bytes, ClusterFileData& out, s
   result.mesh.leaf_triangle_count = scalars.leaf_triangle_count;
   result.mesh.mesh.source_vertex_count = scalars.source_vertex_count;
   result.mesh.mesh.source_triangle_count = scalars.source_triangle_count;
+  // The ranges before anything indexes by them, `quantize_positions` below included.
+  if (!check_cluster_ranges(
+          result.mesh.mesh,
+          paged != nullptr ? paged->vertices : u64{result.mesh.mesh.vertices.size()},
+          paged != nullptr ? paged->triangles : u64{result.mesh.mesh.triangles.size()}, error)) {
+    return false;
+  }
   // The quantized stream and its grid; a file from before the section existed is requantized.
   if (const ClusterFileSection* quantized = found[static_cast<u32>(ClusterSection::Quantized)];
       quantized != nullptr) {
@@ -677,6 +747,16 @@ bool read_cluster_file_memory(std::span<const u8> bytes, ClusterFileData& out, s
                              "-byte elements, expected 2");
     }
     copy_section(bytes, *quantized, result.mesh.mesh.quantized);
+    // Three coordinates a vertex, and the one pad word `quantize_positions` adds when that is odd
+    // (so a shader reads every triple as two whole 32-bit words); a stream without it is taken as
+    // it always was.
+    const u64 coordinates = u64{result.mesh.mesh.vertices.size()} * 3;
+    const u64 stored = result.mesh.mesh.quantized.size();
+    if (stored != coordinates && stored != coordinates + 1) {
+      return fail(error, "cluster file has " + std::to_string(result.mesh.mesh.quantized.size()) +
+                             " quantized coordinates for " +
+                             std::to_string(result.mesh.mesh.vertices.size()) + " vertices");
+    }
     std::memcpy(&result.mesh.mesh.quant_origin.x, &scalars.pad[0], sizeof(f32));
     std::memcpy(&result.mesh.mesh.quant_origin.y, &scalars.pad[1], sizeof(f32));
     std::memcpy(&result.mesh.mesh.quant_origin.z, &scalars.pad[2], sizeof(f32));
@@ -1261,6 +1341,8 @@ bool read_cluster_file_memory(std::span<const u8> bytes, ClusterFileData& out, s
   return true;
 }
 
+}  // namespace
+
 // ---- the container as a random-access file -----------------------------------------------------
 
 namespace {
@@ -1511,7 +1593,25 @@ bool ClusterFileReader::open(std::string_view path, ClusterFileData* resident, s
   out_header.content_hash =
       hash_bytes(raw + k_header_bytes, static_cast<usize>(at - k_header_bytes));
   std::memcpy(raw, &out_header, k_header_bytes);
-  if (!read_cluster_file_memory(std::span<const u8>(raw, bytes.size()), *resident, error)) {
+  // The paged streams stay on disk, so the decode checks the clusters' ranges against the lengths
+  // the table gives them, and the per-vertex streams are held to the vertex count here, as a whole
+  // read holds the decoded ones (T187).
+  PagedStreams paged;
+  paged.vertices = element_count(ClusterSection::Vertices);
+  paged.triangles = element_count(ClusterSection::Triangles);
+  const u64 quantized = element_count(ClusterSection::Quantized);
+  if (element_count(ClusterSection::Attributes) != paged.vertices ||
+      element_count(ClusterSection::VertexSource) != paged.vertices ||
+      (by_kind_[static_cast<u32>(ClusterSection::Quantized)] != 0 &&
+       quantized != paged.vertices * 3 && quantized != paged.vertices * 3 + 1)) {
+    close();
+    return fail(error,
+                "cluster file vertex streams differ in length: " + std::to_string(paged.vertices) +
+                    " positions, " + std::to_string(element_count(ClusterSection::Attributes)) +
+                    " attributes, " + std::to_string(element_count(ClusterSection::VertexSource)) +
+                    " sources, " + std::to_string(quantized) + " quantized coordinates");
+  }
+  if (!read_memory(std::span<const u8>(raw, bytes.size()), *resident, error, &paged)) {
     close();
     return false;
   }

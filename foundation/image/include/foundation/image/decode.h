@@ -23,6 +23,13 @@
 
 namespace engine::image {
 
+// The widest and tallest image the decoder takes (T187): a header states its dimensions and stb
+// sizes its buffers from them before the pixels are read, so a header of a few dozen bytes asked
+// for up to 2 GiB. 16,384 is what the texture build takes on a side (`domain/texture`'s
+// `k_max_side`), so nothing the engine can build from is refused; `probe_image` refuses past it
+// too.
+inline constexpr u32 k_max_image_side = 16384;
+
 struct ImageInfo {
   u32 width = 0;
   u32 height = 0;

@@ -126,6 +126,19 @@ bool write_components(Kind kind, const void* p, JsonValue& out) {
   return true;
 }
 
+// A double as a float, or false when it is past the float's range (T187): the cast of a value
+// past FLT_MAX is undefined behaviour, and in practice an infinity that every field downstream —
+// a position, a scale, a rate — took as a number. The parser refuses an out-of-range double, so
+// `d` is finite here; within the range the cast rounds to nearest as it always did.
+bool f32_of(f64 d, f32& out) noexcept {
+  constexpr f64 k_max = static_cast<f64>(std::numeric_limits<f32>::max());
+  if (!(d >= -k_max && d <= k_max)) return false;
+  out = static_cast<f32>(d);
+  return true;
+}
+
+constexpr const char* k_f32_range = "a number past a 32-bit float's range (about 3.4e38)";
+
 bool read_components(Kind kind, void* p, const JsonValue& in, ReadContext& ctx) {
   const usize n = component_count(kind);
   if (!in.is_array() || in.size() != n) {
@@ -139,7 +152,10 @@ bool read_components(Kind kind, void* p, const JsonValue& in, ReadContext& ctx) 
       ctx.error("expected numeric components");
       return false;
     }
-    f[i] = static_cast<f32>(d);
+    if (!f32_of(d, f[i])) {
+      ctx.error(k_f32_range);
+      return false;
+    }
   }
   return true;
 }
@@ -464,7 +480,12 @@ bool from_json(const TypeRef& type, void* object, const JsonValue& in, ReadConte
         return false;
       }
       if (type.kind == Kind::F32) {
-        store<f32>(object, static_cast<f32>(d));
+        f32 f = 0.0f;
+        if (!f32_of(d, f)) {
+          ctx.error(k_f32_range);
+          return false;
+        }
+        store<f32>(object, f);
       } else {
         store<f64>(object, d);
       }
