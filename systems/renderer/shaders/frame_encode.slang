@@ -29,7 +29,7 @@ struct FrameEncodePush {
   uint view_y;
   uint texture;   // bindless sampled slot of the linear image
   uint encoding;  // gfx::DisplayEncoding
-  uint steps;     // the target's code steps the dither is one of; 0 for none
+  uint steps;     // gfx::display_word: the dither's steps (0 for none), the quantizer's codes
   float knee;     // the display curve's knee: the sky's shoulder, 1 with no sky
   float paper_white_nits;
   float peak_nits;
@@ -70,14 +70,16 @@ float3 encode_under_ui(float3 exposed, float4 ui, float knee, uint2 pixel, Displ
   if (target.encoding == k_display_sdr) {
     const float3 toned = float3(display_tone1(e.x, knee, 1.0), display_tone1(e.y, knee, 1.0),
                                 display_tone1(e.z, knee, 1.0));
-    return display_output(toned * (1.0 - ui.a) + ui.rgb, pixel, target.steps);
+    return display_stored(display_output(toned * (1.0 - ui.a) + ui.rgb, pixel, target.steps),
+                          target.codes);
   }
   const float ceiling = max(target.peak_nits / max(target.paper_white_nits, 1e-6), 1.0);
   const float3 toned = float3(display_tone1(e.x, knee, ceiling), display_tone1(e.y, knee, ceiling),
                               display_tone1(e.z, knee, ceiling));
   const float3 nits = (toned * (1.0 - ui.a) + ui.rgb) * target.paper_white_nits;
   if (target.encoding == k_display_scrgb) return nits / 80.0;
-  return display_dithered(pq_encode(bt709_to_bt2020(nits)), pixel, target.steps);
+  return display_stored(display_dithered(pq_encode(bt709_to_bt2020(nits)), pixel, target.steps),
+                        target.codes);
 }
 
 [shader("fragment")]
@@ -87,9 +89,10 @@ float4 fs_encode(EncodeOut in) : SV_Target {
   if (g_push.exposure != 0) value.rgb *= ((float*)g_push.exposure)[0];
   DisplayTarget target;
   target.encoding = g_push.encoding;
-  target.steps = g_push.steps;
+  target.steps = display_word_steps(g_push.steps);
   target.paper_white_nits = g_push.paper_white_nits;
   target.peak_nits = g_push.peak_nits;
+  target.codes = display_word_codes(g_push.steps);
   const uint2 noise_pixel = pixel - uint2(g_push.view_x, g_push.view_y);
   if (g_push.ui_texture != k_no_ui) {
     // The layer's pixel, if the UI touched it: composited over the scene, or over the stand-in

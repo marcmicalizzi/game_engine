@@ -115,6 +115,49 @@ inline f32 display_dithered(f32 encoded, u32 x, u32 y, u32 steps) noexcept {
   return v + display_dither(x, y) * room / s;
 }
 
+// **The engine's own quantizer** (display.slang's `display_stored`; renderer.md, "The output
+// encode", "The code is the engine's, not the store's"). The code of a UNORM target of `steps`
+// steps an encoded value rounds to — nearest, a half up — and the value the encode writes for it,
+// the code's centre.
+//
+// **Why the shader rounds and not the store** (2026-11-18). Vulkan's conversion of a float to
+// unsigned normalized fixed point returns "one of the two" integers nearest the scaled value, and
+// rounding to nearest is only a "should" (the specification's "Conversion From Floating-Point to
+// Normalized Fixed-Point"); only a whole number is pinned. The RTX 5090 cuts the value to b + 4
+// fraction bits before it rounds, so a value up to a sixteenth of a code above an edge stores as
+// the lower code — 3% of pixel-channels — and which pixels those are turns on the last bit of the
+// driver's own `pow`: a driver update moved one pixel of a dawn across the cut and left a step of
+// two codes where the float moved less than one (banding_tests.cpp). A value at a code's centre is
+// half a code from either edge: a store that cuts it, or errs by anything under 7/16 of a code
+// either way, returns this code, so the bytes are the engine's on every driver. (No float but 0 and
+// 1 scales to a whole number exactly — the scale is odd — so the centre is as safe as a float
+// gets.) `steps` 0 is the value as it came.
+inline u32 display_code(f32 encoded, u32 steps) noexcept {
+  const f32 v = encoded < 0.0f ? 0.0f : (encoded > 1.0f ? 1.0f : encoded);
+  const f32 scaled = v * static_cast<f32>(steps);
+  return static_cast<u32>(std::floor(scaled + 0.5f));
+}
+inline f32 display_stored(f32 encoded, u32 steps) noexcept {
+  if (steps == 0) return encoded;
+  return static_cast<f32>(display_code(encoded, steps)) / static_cast<f32>(steps);
+}
+
+// The two counts a picture's encode carries, in the one word it has for them
+// (`ResolveParams::dither_steps`, the encode pass's `steps`; display.slang's `display_word_steps`
+// and `display_word_codes`): the dither's steps in the low half, 0 for no noise, and the
+// quantizer's codes in the high half, 0 for a store left to round. One word because the resolve's
+// block had no pad left and the two were one number until the shader took the rounding; a caller
+// that writes a bare `display_steps` there — `domain/gfx`'s own tests — gets the dither and the
+// store's rounding, exactly as before.
+inline constexpr u32 display_word(u32 dither_steps, u32 codes) noexcept {
+  return (dither_steps & 0xFFFFu) | (codes << 16);
+}
+// That word for a picture drawn into `format`: its codes always, its dither when `dither`.
+inline u32 display_target_word(bool dither, Format format) noexcept {
+  const u32 steps = display_steps(format);
+  return display_word(dither ? steps : 0u, steps);
+}
+
 // ---- HDR output (E39; docs/experiments/hdr-output-proposal.md, renderer.md "HDR output") ------
 //
 // **Built so the owner can measure, not decided.** Two HDR routes beside the SDR encode, chosen by

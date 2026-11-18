@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "banding",
+  "reason": "The output encode's pages say why the encode rounds to the code itself and not the store: what Vulkan promises of the conversion, what the card does, what a driver's last bit cost the banding test, and what moved.",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/renderer.md": 3912,
+    "page:docs/subsystems/gfx.md": 1517
+  }
+}

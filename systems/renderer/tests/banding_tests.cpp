@@ -238,7 +238,7 @@ f32 noise_at(Noise n, u32 x, u32 y) {
 }
 
 // The float picture as a target of `steps` steps is handed it, with a candidate's noise and before
-// the store rounds it, in codes.
+// the encode rounds it, in codes.
 Vector<f32> scaled(const Picture& f, u32 steps, Noise noise) {
   Vector<f32> out(f.rgb.size());
   for (u32 y = 0; y < f.height; ++y) {
@@ -416,10 +416,17 @@ Bands measure(const Picture& f, const Vector<f32>& codes, u32 steps, const Vecto
 }
 
 // How far a captured picture is from the CPU's quantization of the float one: pixel-channels that
-// differ at all, by more than one code, and — for those that differ — how far the value the store
-// was handed lay from the half-code edge between the two codes, in codes. The store resolves that
-// edge to within a few hundredths of a code, not to the last bit (measured: 3% of pixel-channels
-// land on the other code, every one of them within 0.03 of the edge).
+// differ at all, by more than one code, and — for those that differ — how far the value the
+// quantizer was handed lay from the half-code edge between the two codes, in codes.
+//
+// **The quantizer is the encode's** (`display_stored`, since 2026-11-18), so an undithered picture
+// is the float rounded at every pixel, and a dithered one except where the device's noise is a
+// last bit from the CPU's at an edge. Until then it was the store's, which on the cards here cuts
+// the value to four bits under a code before it rounds: 3% of pixel-channels landed on the lower
+// code, every one within a sixteenth of a code above the edge, and a driver whose `pow` came out
+// one bit lower at one pixel of the dawn (617.42 to 621.24) put a step of two codes where the
+// float moved 0.999999 of one. Vulkan allows the store either code; it does not allow the engine
+// to call that its quantizer.
 struct Agreement {
   u64 compared = 0;
   u64 differ = 0;
@@ -583,9 +590,9 @@ TEST_CASE("banding: the sky's bands are the final quantizer's, and the dither br
         const u32 steps = p.steps;
         REQUIRE((steps == 255 || steps == 1023));
         const u32 depth = steps == 255 ? 0 : 1;
-        // The picture is the float rounded — with the CPU mirror's noise where the dither is on —
-        // except where the value lay within a few hundredths of a code of the edge between two,
-        // which the store resolves its own way.
+        // The picture is the float rounded — with the CPU mirror's noise where the dither is on,
+        // and there except where the value lay within a few hundredths of a code of the edge
+        // between two (the device's noise against the mirror's). The encode rounds, not the store.
         const Agreement a =
             agree(p, scaled(f, steps, t.dither ? Noise::IgnTriangular : Noise::None));
         const Bands b = measure(f, p.rgb, steps, mask);
@@ -604,6 +611,9 @@ TEST_CASE("banding: the sky's bands are the final quantizer's, and the dither br
         CHECK(b.distinct > 0.99);
         if (!t.dither) {
           plain[depth] = b;
+          // Undithered, every pixel-channel is the float's nearest code: the engine's rounding,
+          // with nothing left to the store (which cut 3% of them to the code below).
+          CHECK(a.differ == 0);
           // No step is coarser than one code where the float moved less than one, and the float
           // under the widest band moves no more than the one code the band is (and the store's
           // slop at each end): every band is a step of one code at the final quantizer.

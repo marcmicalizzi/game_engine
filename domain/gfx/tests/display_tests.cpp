@@ -119,6 +119,83 @@ TEST_CASE("display: the dither keeps black, white and every mean, and moves a va
   }
 }
 
+// The engine's own quantizer (display.h, `display_stored`): what the encode writes is a code's
+// centre, which every store the specification allows in practice returns as that code — to nearest,
+// the cards' cut to four bits under a code and then to nearest, and anything that errs by under
+// 7/16 of a code either way — and rounding to nearest never steps two codes where the value moved
+// less than one, which the cut does (the pair below is the dawn pixel a driver update moved).
+TEST_CASE("display: the encode rounds to a code's centre, which any store returns as that code") {
+  // What the RTX 5090 stores of a value handed over as it is: cut to bits + 4 fraction bits, then
+  // to nearest (measured 2026-11-18, driver 621.24; the same counts on 617.42 and 610.88).
+  const auto cut_store = [](f32 v, u32 bits) {
+    const f64 scale = static_cast<f64>(1u << (bits + 4));
+    const f64 cut = std::floor(static_cast<f64>(v) * scale) / scale;
+    return static_cast<u32>(std::floor(cut * static_cast<f64>((1u << bits) - 1u) + 0.5));
+  };
+  for (const u32 bits : {8u, 10u}) {
+    CAPTURE(bits);
+    const u32 steps = (1u << bits) - 1u;
+    const f32 s = static_cast<f32>(steps);
+    CHECK(gfx::display_stored(0.0f, steps) == 0.0f);
+    CHECK(gfx::display_stored(1.0f, steps) == 1.0f);
+    CHECK(gfx::display_stored(-0.25f, steps) == 0.0f);
+    CHECK(gfx::display_stored(1.5f, steps) == 1.0f);
+    u32 off_centre = 0;   // a written value more than a thousandth of a code from its code
+    u32 not_nearest = 0;  // a code that is not the value's nearest
+    u32 cut_moves = 0;    // a written value the cards' store returns as another code
+    u32 slop_moves = 0;   // one that a store erring 7/16 of a code either way would
+    u32 backwards = 0;    // a code below the one before it
+    u32 last = 0;
+    // Every code, at 64 places across it: its edges, a last bit either side of them, the middle.
+    for (u32 i = 0; i <= steps * 64u; ++i) {
+      const f32 v = static_cast<f32>(i) / (s * 64.0f);
+      const u32 code = gfx::display_code(v, steps);
+      const f32 w = gfx::display_stored(v, steps);
+      const f64 codes = static_cast<f64>(w) * static_cast<f64>(steps);
+      if (std::fabs(codes - static_cast<f64>(code)) > 1e-3) ++off_centre;
+      if (std::fabs(static_cast<f64>(v) * static_cast<f64>(steps) - static_cast<f64>(code)) >
+          0.5 + 1e-4) {
+        ++not_nearest;
+      }
+      if (cut_store(w, bits) != code) ++cut_moves;
+      if (static_cast<u32>(std::floor(codes - 0.4375 + 0.5)) != code ||
+          static_cast<u32>(std::floor(codes + 0.4375 + 0.5)) != code) {
+        ++slop_moves;
+      }
+      if (code < last) ++backwards;
+      last = code;
+    }
+    CHECK(off_centre == 0);
+    CHECK(not_nearest == 0);
+    CHECK(cut_moves == 0);
+    CHECK(slop_moves == 0);
+    CHECK(backwards == 0);
+    CHECK(last == steps);
+    // Zero steps: the value as it came, for a float target and a caller that leaves it to the
+    // store.
+    CHECK(gfx::display_stored(0.4321f, 0) == 0.4321f);
+  }
+  // The dawn's pixel pair (banding_tests.cpp, x 161, y 65 and 66, blue, at 10 bits): 0.999999 of a
+  // code apart. The cut stores them two codes apart; to nearest they are one apart, as any two
+  // values under a code apart are.
+  const f32 upper = 0.681823671f;  // 697.505615 codes
+  const f32 lower = 0.682801187f;  // 698.505614 codes
+  CHECK((lower - upper) * 1023.0f < 1.0f);
+  CHECK(cut_store(upper, 10) == 697);
+  CHECK(cut_store(lower, 10) == 699);
+  CHECK(gfx::display_code(upper, 1023) == 698);
+  CHECK(gfx::display_code(lower, 1023) == 699);
+  CHECK(cut_store(gfx::display_stored(upper, 1023), 10) == 698);
+  CHECK(cut_store(gfx::display_stored(lower, 1023), 10) == 699);
+  // The word that carries the dither's steps and the encode's codes.
+  CHECK(gfx::display_word(0, 0) == 0u);
+  CHECK(gfx::display_word(255, 0) ==
+        255u);  // a bare `display_steps`: the dither, the store's rounding
+  CHECK(gfx::display_target_word(true, gfx::Format::A2B10G10R10Unorm) == (1023u | (1023u << 16)));
+  CHECK(gfx::display_target_word(false, gfx::Format::R8G8B8A8Unorm) == (255u << 16));
+  CHECK(gfx::display_target_word(true, gfx::Format::R32G32B32A32Sfloat) == 0u);
+}
+
 namespace {
 
 gfx::Capture ten_bit(gfx::Format format, std::initializer_list<u32> words) {
