@@ -325,9 +325,26 @@ rebuilt round 301 bodies); at a new size the arrival's tick hands the build to a
 tick twelve updates on makes the body, waiting there for the 0.2 ms of the build a worker had not
 finished — the case's ticks run back to back, not at 240 Hz, so its twelve updates give the worker
 about 0.3 ms where a walk's give it 50 ms, and in a walk that wait is nothing. With no job system
-that tick builds it, as the arrival's tick did before. The ticks that do not change the set (the
-move-cost case's rows above, run again beside these) measured the same before and after within the
-machine's noise, and no tick of either case allocated in steady state.
+that tick builds it, as the arrival's tick did before. No tick of either case allocated in steady
+state. The ticks that do not change the set (the move-cost case's rows above) were first measured
+from two pairs, one of which put the one-mover rows 3.6 to 4 µs slower after; settled on
+2026-11-18 by five alternating pairs, before (main without this work) and after (with it and the
+doors), the same two `msvc-release` binaries throughout, the machine at 100 % CPU with 5 to 11
+compilers running beside every run. Medians of each run's tick median, µs, and the spread of the
+five:
+
+| props, moving | before | after | after against before, pair by pair |
+|---|---:|---:|---|
+| 30, 1 | 6.6 (6.2–6.7) | 6.4 (5.5–6.6) | one slower, four faster: not shown |
+| 300, 1 | 21.1 (17.3–22.5) | 18.2 (15.3–18.7) | faster in all five, by 2.0 to 5.3 |
+| 300, 30 | 35.7 (33.3–38.7) | 30.8 (29.8–33.9) | faster in all five, by 2.5 to 5.3 |
+| 30 and 300, none moving | 4.2–4.3 | 4.2 | the same |
+
+So there is no constant cost a tick now pays: the one-mover rows' slowdown was not there, and the
+rows whose props move are a few microseconds faster, which keeps its sign in every pair. Where
+that comes from was not taken apart; the moving path now compares a key `set_props` computed once
+(the rounded scale's, with a one-entry cache for a run of props of one mesh and scale) where it
+read the scale back out of the turned matrix for each moved prop.
 
 **What props and doors keep resident** (2026-11-18; a game's memory at its start is a budget). A
 prop's proxy is one a (mesh, rounded scale), never one an instance: its physics shape (the
