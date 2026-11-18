@@ -1577,6 +1577,51 @@ bool check_extents(const cgltf_data& data, std::string* error) {
   return true;
 }
 
+// **How deep below its scene's root a node may sit** (T187): `append_node` walks the hierarchy
+// recursively, so the depth is stack, and a file chooses it. 256 is the JSON parser's own nesting
+// cap (`JsonParseOptions::max_depth`) and the walk `subtree_has_mesh` already stops at; it keeps
+// the walk inside a quarter of a 1 MiB thread stack at up to 1 KiB a debug frame, far above a
+// character rig's few dozen levels. Past it a file is refused by name.
+inline constexpr u32 k_max_node_depth = 256;
+
+// Every node's depth below its root, each node settled once (so a chain of n nodes costs O(n),
+// where cgltf_validate's cycle walk and `collect_nodes`' ancestor walk each cost O(n * depth)),
+// refused past `k_max_node_depth`. Before cgltf_validate, so a parent cycle is not proven absent
+// yet: a cycle's nodes never settle and are refused as too deep, which is what bounds the walk.
+bool check_hierarchy(const cgltf_data& data, std::string* error) {
+  if (data.nodes_count > std::numeric_limits<u32>::max())
+    return fail(error, "glTF: too many nodes");
+  const u32 count = static_cast<u32>(data.nodes_count);
+  Vector<u32> settled(count, 0u);  // depth + 1 once known, 0 before
+  Vector<u32> path;
+  for (u32 i = 0; i < count; ++i) {
+    path.clear();
+    u32 depth = 0;  // the settled ancestor's depth + 1, or 0 when the walk reached a root
+    for (const cgltf_node* n = &data.nodes[i]; n != nullptr; n = n->parent) {
+      const u32 index = static_cast<u32>(n - data.nodes);
+      if (settled[index] != 0) {
+        depth = settled[index];
+        break;
+      }
+      if (path.size() > k_max_node_depth) {
+        return fail(error, "glTF: node " + std::to_string(i) + " sits more than " +
+                               std::to_string(k_max_node_depth) +
+                               " levels below its root (or in a cycle), deeper than the "
+                               "importer walks");
+      }
+      path.push_back(index);
+    }
+    for (u32 k = path.size(); k-- > 0;)
+      settled[path[k]] = ++depth;
+    if (depth > k_max_node_depth + 1) {
+      return fail(error, "glTF: node " + std::to_string(i) + " sits more than " +
+                             std::to_string(k_max_node_depth) +
+                             " levels below its root, deeper than the importer walks");
+    }
+  }
+  return true;
+}
+
 }  // namespace
 
 bool load_gltf_memory(std::span<const u8> bytes, std::string_view base_dir, MeshData& out,
@@ -1623,6 +1668,7 @@ bool load_bytes(std::span<const u8> bytes, std::string_view base_dir, std::strin
     return fail(error, std::string("glTF: reading buffers failed (") + result_text(result) + ")");
 
   if (!check_extents(*document.data, error)) return false;
+  if (!check_hierarchy(*document.data, error)) return false;
   result = cgltf_validate(document.data);
   if (result != cgltf_result_success)
     return fail(error,
