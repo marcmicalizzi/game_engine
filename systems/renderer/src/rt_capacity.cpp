@@ -69,16 +69,6 @@ tunables::Bool rt_swap_references{
     "Swap a step of the cluster cache's references like the chain's own buffers, "
     "each frame slot reading its own copy of the cache's table, instead of "
     "waiting for the device (R130)"};
-tunables::Bool rt_scan_near_capacity{
-    "renderer.rt.scan_near_capacity", true,
-    "Record the drop order's scan while the last read-back demand is at least half "
-    "the ray tracing chain's capacity, not only after a frame that dropped (R130)"};
-// R128 (2026-11-04): the drop order's scan on every frame, so no frame past its capacity takes the
-// one-thread rule (rt_capacity.h).
-tunables::Bool rt_scan_every_frame{
-    "renderer.rt.scan_every_frame", true,
-    "Record the drop order's scan on every frame of the ray tracing chain, so a frame past "
-    "its capacity never takes the one-thread rule (R128); false is R130's rule"};
 // R128 (2026-11-04): the chain's retired buffers freed on a worker, not on the frame's thread.
 tunables::Bool rt_free_on_worker{
     "renderer.rt.free_on_worker", true,
@@ -149,8 +139,6 @@ u32 rt_peak_frames_tunable() noexcept { return static_cast<u32>(rt_peak_frames.g
 u32 rt_step_tunable() noexcept { return static_cast<u32>(rt_step.get()); }
 bool rt_swap_resize_tunable() noexcept { return rt_swap_resize.get(); }
 bool rt_swap_references_tunable() noexcept { return rt_swap_references.get(); }
-bool rt_scan_near_capacity_tunable() noexcept { return rt_scan_near_capacity.get(); }
-bool rt_scan_every_frame_tunable() noexcept { return rt_scan_every_frame.get(); }
 bool rt_free_on_worker_tunable() noexcept { return rt_free_on_worker.get(); }
 u32 rt_slope_frames_tunable() noexcept { return static_cast<u32>(rt_slope_frames.get()); }
 f64 rt_first_seconds_tunable() noexcept { return rt_first_seconds.get(); }
@@ -242,31 +230,6 @@ u32 rt_device_cache_mib(u64 device_local_bytes) noexcept {
 RtBudget resolve_rt_cache_mib(u32 tunable_mib, u64 device_local_bytes) noexcept {
   if (tunable_mib != 0) return {tunable_mib, RtBudgetSource::Tunable};
   return {rt_device_cache_mib(device_local_bytes), RtBudgetSource::Device};
-}
-
-void rt_drop_order(u32 prefix_slots, std::span<RtDropBlock> blocks, Vector<u32>& out) {
-  std::sort(blocks.begin(), blocks.end(), [](const RtDropBlock& a, const RtDropBlock& b) {
-    return a.rank != b.rank ? a.rank < b.rank
-           : a.key != b.key ? a.key < b.key
-                            : a.first_slot < b.first_slot;
-  });
-  u64 count = prefix_slots;
-  for (const RtDropBlock& block : blocks)
-    count += block.slots;
-  out.resize(static_cast<u32>(2 + 2 * count));
-  out[0] = static_cast<u32>(count);
-  out[1] = 0;
-  u32 at = 2;
-  for (u32 s = 0; s < prefix_slots; ++s) {
-    out[at++] = s;
-    out[at++] = 0;
-  }
-  for (const RtDropBlock& block : blocks) {
-    for (u32 s = 0; s < block.slots; ++s) {
-      out[at++] = block.first_slot + s;
-      out[at++] = block.rank;
-    }
-  }
 }
 
 u32 rt_drop_bound(u32 wanted, u32 capacity, u32 limit, u32 references_wanted,

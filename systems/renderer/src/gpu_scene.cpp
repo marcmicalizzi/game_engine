@@ -1751,8 +1751,6 @@ bool GpuScene::set_dynamic_instances(std::span<const SceneInstance> tail,
   if (change.layout.compacted) ++compactions_;
   if (change.slots_written > 0 || change.slots_renumbered > 0 || change.grew)
     tables_changed_ = true;
-  // The drop order follows the tables (renderer.md, "The ray tracing chain's memory").
-  if (ray_tracing_ && (change.slots_written > 0 || change.grew)) lay_out_rt_order();
   // The policy counts followed the slots as they were written, and the ones trimmed off the end
   // (`policy_count`, W81): until 2026-10-31 every change counted the whole instance table again,
   // twice when a tree swayed in.
@@ -5658,11 +5656,6 @@ bool GpuScene::build_static_forms(std::string* error) {
   gfx::destroy_buffer(device, blas_records_once);
   gfx::destroy_buffer(device, scratch);
   if (!ok) {
-    for (gfx::BufferResource& buffer : rt_order_buffers_)
-      gfx::destroy_buffer(device, buffer);
-    rt_order_buffers_.clear();
-    rt_order_written_.clear();
-    rt_order_.clear();
     slot_rank_.clear();
     gfx::destroy_cluster_set(device, static_clas_);
     gfx::destroy_cluster_blas_set(device, static_blas_);
@@ -5989,44 +5982,6 @@ void GpuScene::uncount_static(u32 slot) noexcept {
   static_pairs_live_ -= data_->parts[desc.mesh].cluster_count;
 }
 
-// The prefix, then every live block by its ring's rank and its key (`rt_drop_order`); a block's
-// slack and the holes are null instances, which want nothing and are left out.
-void GpuScene::lay_out_rt_order() {
-  rt_order_blocks_.clear();
-  for (const TileBlock& block : layout_.blocks()) {
-    if (block.instances == 0) continue;
-    RtDropBlock drop;
-    drop.key = block.key;
-    drop.rank = block.inst_begin < slot_rank_.size() ? slot_rank_[block.inst_begin] : 1u;
-    drop.first_slot = block.inst_begin;
-    drop.slots = block.instances;
-    rt_order_blocks_.push_back(drop);
-  }
-  rt_drop_order(static_instances_,
-                std::span<RtDropBlock>(rt_order_blocks_.data(), rt_order_blocks_.size()),
-                rt_order_);
-  ++rt_order_version_;
-}
-
-u64 GpuScene::rt_drop_order_address(u32 slot, std::string* error) {
-  if (!ray_tracing_ || !dynamic_ || rt_order_.empty()) return 0;
-  if (rt_order_buffers_.size() <= slot) {
-    rt_order_buffers_.resize(slot + 1);
-    rt_order_written_.resize(slot + 1, ~u64{0});
-  }
-  gfx::BufferResource& buffer = rt_order_buffers_[slot];
-  if (rt_order_written_[slot] == rt_order_version_) return buffer.address;
-  const u64 bytes = u64{rt_order_.size()} * sizeof(u32);
-  if (buffer.size < bytes) {
-    // This slot's own copy: its previous frame has finished, and no other frame reads it.
-    gfx::destroy_buffer(*device_, buffer);
-    if (!gfx::create_buffer(*device_, bytes + bytes / 2, k_address, true, buffer, error)) return 0;
-  }
-  std::memcpy(buffer.mapped, rt_order_.data(), bytes);
-  rt_order_written_[slot] = rt_order_version_;
-  return buffer.address;
-}
-
 void GpuScene::destroy_ray_tracing_layout() noexcept {
   if (device_ == nullptr) return;
   const gfx::Device& device = *device_;
@@ -6039,6 +5994,7 @@ void GpuScene::destroy_ray_tracing_layout() noexcept {
   gfx::destroy_buffer(device, rt_instances);
   gfx::destroy_buffer(device, slots);
   gfx::destroy_buffer(device, instance_counts);
+  gfx::destroy_buffer(device, rt_keep_tables);
   gfx::destroy_buffer(device, blas_records);
   gfx::destroy_buffer(device, blas_dense);
   gfx::destroy_buffer(device, blas_slots);
@@ -6138,37 +6094,40 @@ bool GpuScene::lay_out_ray_tracing(std::string* error, RelayoutRetired* retired)
   Vector<u8> tlas_bytes(u64{uploaded} * gfx::k_instance_record_bytes, u8{0});
   gfx::write_instances(std::span<const gfx::TlasInstance>(tlas_records.data(), tlas_records.size()),
                        tlas_bytes.data());
-  bool ok = gfx::create_buffer(device, u64{rt_union_clusters_} * sizeof(u32), k_address, false,
-                               slots, error) &&
-            // Three words an instance: its drawn clusters, its casters, then its dense record base;
-            // then the ranges' scratch, eight more words an instance and eight a block of 1,024,
-            // which a frame past its capacity lays the drop order out in and dispatches the passes
-            // after the walk from (R106; `gfx::ClusterRecordParams::instance_counts`).
-            gfx::create_buffer(
-                device, gfx::cluster_instance_count_words(rt_instance_slots_) * sizeof(u32),
-                k_address | gfx::BufferUsage::TransferDst | gfx::BufferUsage::Indirect, false,
-                instance_counts, error) &&
-            // A dynamic scene's set is built over every slot of the capacity, so the records past
-            // the frame's instances are cleared to empty structures every frame.
-            // A transfer source too, so a test can read the drop rule's result back (R128).
-            gfx::create_buffer(
-                device, gfx::k_cluster_blas_record_bytes * rt_instance_slots_,
-                k_record_usage | gfx::BufferUsage::TransferDst | gfx::BufferUsage::TransferSrc,
-                false, blas_records, error) &&
-            // The records of the instances that reference anything, which the bottom-level build
-            // reads, and every instance's place among them (R143, `blas_compact_main`): 20 bytes a
-            // slot, so that the build costs the instances a frame draws and not the slots.
-            gfx::create_buffer(device, gfx::k_cluster_blas_record_bytes * rt_instance_slots_,
-                               k_record_usage, false, blas_dense, error) &&
-            gfx::create_buffer(device, sizeof(u32) * u64{rt_instance_slots_}, k_address, false,
-                               blas_slots, error) &&
-            gfx::create_tlas(device, rt_instance_slots_, gfx::k_build_fast_trace, tlas, error) &&
-            (retired == nullptr
-                 ? gfx::upload_buffer(device, tlas_bytes.data(), tlas_bytes.size(), k_tlas_usage,
-                                      rt_instances, error)
-                 : gfx::create_buffer(device,
-                                      u64{rt_instance_slots_} * gfx::k_instance_record_bytes,
-                                      k_tlas_usage, false, rt_instances, error));
+  bool ok =
+      gfx::create_buffer(device, u64{rt_union_clusters_} * sizeof(u32), k_address, false, slots,
+                         error) &&
+      // Three words an instance: its drawn clusters, its casters, then its dense record base;
+      // then the ranges' scratch, four words a block of 1,024 and eight, and the keep keys, two
+      // words an instance (R106, R174; `gfx::cluster_instance_count_words`).
+      gfx::create_buffer(device,
+                         gfx::cluster_instance_count_words(rt_instance_slots_) * sizeof(u32),
+                         k_address | gfx::BufferUsage::TransferDst | gfx::BufferUsage::Indirect,
+                         false, instance_counts, error) &&
+      // The keep block (R174; renderer.md, "Past the capacity, by size on screen"): 1 MiB of
+      // histograms and the cut words, written and cleared by every frame's reset pass.
+      gfx::create_buffer(device, k_rt_keep_bytes, k_address | gfx::BufferUsage::TransferDst, false,
+                         rt_keep_tables, error) &&
+      // A dynamic scene's set is built over every slot of the capacity, so the records past
+      // the frame's instances are cleared to empty structures every frame.
+      // A transfer source too, so a test can read the drop rule's result back (R128).
+      gfx::create_buffer(
+          device, gfx::k_cluster_blas_record_bytes * rt_instance_slots_,
+          k_record_usage | gfx::BufferUsage::TransferDst | gfx::BufferUsage::TransferSrc, false,
+          blas_records, error) &&
+      // The records of the instances that reference anything, which the bottom-level build
+      // reads, and every instance's place among them (R143, `blas_compact_main`): 20 bytes a
+      // slot, so that the build costs the instances a frame draws and not the slots.
+      gfx::create_buffer(device, gfx::k_cluster_blas_record_bytes * rt_instance_slots_,
+                         k_record_usage, false, blas_dense, error) &&
+      gfx::create_buffer(device, sizeof(u32) * u64{rt_instance_slots_}, k_address, false,
+                         blas_slots, error) &&
+      gfx::create_tlas(device, rt_instance_slots_, gfx::k_build_fast_trace, tlas, error) &&
+      (retired == nullptr
+           ? gfx::upload_buffer(device, tlas_bytes.data(), tlas_bytes.size(), k_tlas_usage,
+                                rt_instances, error)
+           : gfx::create_buffer(device, u64{rt_instance_slots_} * gfx::k_instance_record_bytes,
+                                k_tlas_usage, false, rt_instances, error));
   if (ok) {
     tlas_slot_ = bindless_.add_acceleration_structure(tlas.handle);
     if (tlas_slot_ == gfx::BindlessSet::k_invalid_slot) {
@@ -6178,9 +6137,10 @@ bool GpuScene::lay_out_ray_tracing(std::string* error, RelayoutRetired* retired)
   }
   if (!ok) return false;
   rt_scene_bytes_ = indices8.size + record_count.size + slots.size + instance_counts.size +
-                    blas_records.size + blas_dense.size + blas_slots.size + tlas.buffer.size +
-                    rt_instances.size + clas_templates.data.size + clas_templates.addresses.size +
-                    clas_templates.sizes.size + static_bytes_ + rt_cache_bytes_;
+                    rt_keep_tables.size + blas_records.size + blas_dense.size + blas_slots.size +
+                    tlas.buffer.size + rt_instances.size + clas_templates.data.size +
+                    clas_templates.addresses.size + clas_templates.sizes.size + static_bytes_ +
+                    rt_cache_bytes_;
 
   // **The budget, in clusters.** What one cluster of capacity costs comes from the driver's own
   // sizes at a probe count — the structure, its address and size words, its record, its share of
@@ -6612,11 +6572,6 @@ void GpuScene::destroy() noexcept {
   gfx::destroy_buffer(device, ring_pairs_);
   gfx::destroy_buffer(device, meshes);
   gfx::destroy_cluster_templates(device, clas_templates);
-  for (gfx::BufferResource& buffer : rt_order_buffers_)
-    gfx::destroy_buffer(device, buffer);
-  rt_order_buffers_.clear();
-  rt_order_written_.clear();
-  rt_order_.clear();
   slot_rank_.clear();
   gfx::destroy_cluster_set(device, static_clas_);
   gfx::destroy_cluster_blas_set(device, static_blas_);
@@ -6636,6 +6591,7 @@ void GpuScene::destroy() noexcept {
   gfx::destroy_buffer(device, blas_dense);
   gfx::destroy_buffer(device, blas_slots);
   gfx::destroy_buffer(device, instance_counts);
+  gfx::destroy_buffer(device, rt_keep_tables);
   gfx::destroy_buffer(device, slots);
   gfx::destroy_buffer(device, record_count);
   gfx::destroy_buffer(device, records);

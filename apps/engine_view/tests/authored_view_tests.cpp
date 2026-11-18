@@ -925,9 +925,10 @@ TEST_CASE("engine-view: four rings with static forms and grass keep traced caste
   CHECK(field_u64(*limited.find("world"), "refused") == 0);
 }
 
-// R94: past the budget a frame keeps the nearest ring first and, within one ring, drawn clusters
-// before casters (`gfx::ClusterRecordParams::drop_order`), and which structures it drops is a
-// function of the scene and the camera — two runs draw the same traced shadows.
+// R94, R174: past the budget a frame keeps the largest on screen first, drawn clusters before
+// casters at one size (`gfx::ClusterRecordParams::keep`; renderer.md, "Past the capacity, by size
+// on screen"), and which structures it drops is a function of the scene and the camera — two runs
+// draw the same traced shadows.
 TEST_CASE("engine-view: past the budget the chain drops the same structures every run") {
   const test::TempDir tmp("engine_view_rt_drop_order");
   REQUIRE(write_text(tmp.file("oak.flora.json"), k_oak));

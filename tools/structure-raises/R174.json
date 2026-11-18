@@ -1,11 +1,14 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "R174",
-  "reason": "R174: renderer.md's 'Past the capacity, by size on screen' (the design, its second pass: the guarantee at one capacity, the cache's misses and the counted exception, the cut's tables cleared every frame, a cut that keeps nothing at a small named budget, the kept set moving with the camera, the GPU sphere and the fixed-order centre), and gfx.md's 'The keep rule past the chain's capacity' for the CPU rule rt_keep.h adds",
+  "reason": "R174: gfx.md's 'The keep rule past the chain's capacity' for the CPU rule and the keep block the records chain reads; renderer.md's drop-order rule replaced by the keep-by-size section (what runs, the guarantee at one capacity, the cache's counted exception, the tables cleared every frame), the reasoning kept in ADR-0074",
   "date": "2026-11-18",
   "by": "Marc Micalizzi",
   "deltas": {
-    "page:docs/subsystems/renderer.md": 25403,
-    "page:docs/subsystems/gfx.md": 1822
+    "renderer.record_frame.lines": -2,
+    "renderer.gpu_scene_cpp.lines": -44,
+    "renderer.gpu_scene_h.lines": -1,
+    "page:docs/subsystems/renderer.md": 3010,
+    "page:docs/subsystems/gfx.md": 436
   }
 }
