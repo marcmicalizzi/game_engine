@@ -162,7 +162,7 @@ trees. A prop declared `None` is not kept past `set_props`. A cast that meets a 
 ### What a moving prop costs
 
 (2026-11-18.) The case `scene_collision: a prop moved every tick costs the walker's tick a move,
-not a rebuild` (`tests/far_forest_tests.cpp`; no device; about 3 s in `msvc-debug`) stands N
+not a rebuild` (`tests/far_forest_tests.cpp`; no device; 0.4 s in `msvc-debug`) stands N
 crates on the held tiles round a standing walker, moves k of them a centimetre a tick, and times
 300 ticks of what the walker's host does at 240 Hz — the ring's update, the props' list built and
 handed when one moved (`walk.cpp`), `update_props`, the character's step — one tick at a time. It
