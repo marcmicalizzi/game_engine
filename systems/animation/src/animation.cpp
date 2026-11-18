@@ -8,6 +8,7 @@
 
 #include <cmath>
 #include <schemas/animation_ecs.h>
+#include <schemas/animation_graph_ecs.h>
 
 namespace engine::animation {
 
@@ -151,6 +152,10 @@ void AnimationSystem::install(ecs::SimWorld& sim) {
   // Seam 1: the components come from the schema IDL, through the header schemac generated. This
   // is the only place this capability's types become known to the world, and it is one call.
   register_animation_components(world);
+  // And a graph-driven entity's two (animation_graph.schema). Registered whether or not a graph is
+  // ever added: a component type is a row of flecs' metadata, and no entity carries one until a
+  // host attaches a graph, so a world with no graph matches no query over them.
+  register_animation_graph_components(world);
 
   const sim::ComponentMask lod = ecs::mask_of<AnimationLod>(world);
   const sim::ComponentMask player_and_instance =
@@ -609,6 +614,77 @@ bool AnimationSystem::player(const Id128& entity, AnimationPlayer& out) const {
   const AnimationPlayer* player = found.try_get<AnimationPlayer>();
   if (player == nullptr) return false;
   out = *player;
+  return true;
+}
+
+// ---- graphs (S35 stage 1) ----------------------------------------------------------------------
+
+bool AnimationSystem::add_graph(const GraphDesc& desc, std::string& why) {
+  CompiledGraph compiled;
+  if (!compile_graph(desc, library_, compiled, why)) return false;
+  (void)graphs_.add(std::move(compiled));
+  return true;
+}
+
+bool AnimationSystem::attach_graph(const Id128& entity, const Id128& graph) {
+  if (world_ == nullptr) return false;
+  const CompiledGraph* compiled = graphs_.find(graph);
+  if (compiled == nullptr) return false;
+  const flecs::entity found = ecs::entity_for(*world_, entity);
+  if (found == 0) return false;
+  AnimationGraphInput input;
+  AnimationGraphState state;
+  init_graph_instance(*compiled, input, state);
+  found.set<AnimationGraphInput>(input);
+  found.set<AnimationGraphState>(state);
+  return true;
+}
+
+bool AnimationSystem::has_graph(const Id128& entity) const {
+  if (world_ == nullptr) return false;
+  const flecs::entity found = ecs::entity_for(*world_, entity);
+  return found != 0 && found.has<AnimationGraphInput>() && found.has<AnimationGraphState>();
+}
+
+u32 AnimationSystem::control_graph(const Id128& entity, std::span<const f32> values, u32 triggers,
+                                   f32 dt, GraphEnter* entered) {
+  if (world_ == nullptr) return 0;
+  const flecs::entity found = ecs::entity_for(*world_, entity);
+  if (found == 0) return 0;
+  AnimationGraphInput* input = found.try_get_mut<AnimationGraphInput>();
+  AnimationGraphState* state = found.try_get_mut<AnimationGraphState>();
+  if (input == nullptr || state == nullptr) return 0;
+  const CompiledGraph* graph = graphs_.find(input->graph);
+  if (graph == nullptr) return 0;
+  set_graph_inputs(*graph, *input, values, triggers);
+  GraphStep steps[k_graph_max_machines];
+  const u32 mask = graph_control(*graph, *input, *state, dt, steps);
+  for (u32 m = 0; m < graph->machines.size(); ++m)
+    entered[m] = graph_enter(*graph, m, steps[m]);
+  return mask;
+}
+
+bool AnimationSystem::apply_graph_step(const Id128& entity, const GraphEnter& enter) {
+  if (world_ == nullptr || enter.state == nullptr) return false;
+  const flecs::entity found = ecs::entity_for(*world_, entity);
+  if (found == 0) return false;
+  const StateInfo& to = *enter.state;
+  if (to.clip.empty()) {
+    AnimationPlayer* player = found.try_get_mut<AnimationPlayer>();
+    if (player == nullptr) return false;
+    const f32 speed = player->speed;
+    *player = AnimationPlayer{};
+    player->speed = speed;
+    if (SkeletonInstance* instance = found.try_get_mut<SkeletonInstance>()) {
+      instance->clip_index = Library::k_not_found;
+      instance->fade_index = Library::k_not_found;
+    }
+    return true;
+  }
+  if (!play(found, to.clip_id, enter.fade_s, to.looping)) return false;
+  if (!to.synced) {
+    if (AnimationPlayer* player = found.try_get_mut<AnimationPlayer>()) player->speed = to.rate;
+  }
   return true;
 }
 

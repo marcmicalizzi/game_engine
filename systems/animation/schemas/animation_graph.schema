@@ -1,0 +1,185 @@
+// Animation graphs as data (roadmap S35; docs/experiments/animation-graphs.md, "The design").
+//
+// A graph is a document record and its parts are its child records, so two people retuning two
+// transitions of one graph both keep their edits (the structural merge works per object) and the
+// change feed names the part that moved. None of the record types has a `materialize` declaration:
+// a graph is an asset entities refer to, like a clip, never an entity of its own.
+//
+// Stage 1 (this file's version 1) compiles machines whose states are single `Clip` nodes into a
+// control table (systems/animation/graph.h); the other node kinds, a transition's `exit_phase`, the
+// `Inertialize` blend and the `KeepPhase`/`MatchPhase` offsets are declared here so a document can
+// name them, and are refused by the compiler, by name, until the stage that builds them.
+//
+// The two components are the persisted half of a graph-driven entity: the inputs gameplay writes
+// and the machines' state a save needs to put the same pose back. They are fixed-width because they
+// are small and persisted; the counts (8 parameters, 2 machines, 2 sync groups) are stated limits
+// (ADR-0017), refused at compile with the count, and raised by a new component version.
+namespace engine.animation
+
+/// What a parameter holds.
+enum GraphParamKind : u8 {
+  /// A number, clamped into the parameter's range when it is written.
+  Float = 0
+  /// 0 or 1.
+  Bool = 1
+  /// A one-shot: a bit in `AnimationGraphInput.triggers`, cleared when a transition takes it.
+  Trigger = 2
+}
+
+/// What a node computes. Append-only (schemas/README.md, "Evolution rules"); a closed set compiles
+/// to a kernel table, so a studio that needs another kind adds an enumerator and a kernel in this
+/// capability rather than a call a node (plan 11 §11.4).
+enum GraphNodeKind : u8 {
+  /// One clip sampled at the state's clock (or at its sync group's phase).
+  Clip = 0
+  /// Stage 2: several clips by one parameter over thresholds.
+  Blend1D = 1
+  /// Stage 3: a layer over a base, through a mask.
+  Override = 2
+  /// Stage 3: a difference built at load, added with a weight.
+  Additive = 3
+  /// A machine's output as a node, so machines nest. Not compiled in stage 1.
+  Machine = 4
+}
+
+/// How a transition moves the pose.
+enum GraphBlend : u8 {
+  /// At once.
+  Cut = 0
+  /// Both states evaluated for the duration, faded linearly (today's `AnimationPlayer` fade).
+  CrossFade = 1
+  /// Stage 4: cut, and decay the difference with a quintic (Bollo 2017).
+  Inertialize = 2
+}
+
+/// Where the destination state's clock starts.
+enum GraphOffset : u8 {
+  /// At zero.
+  Zero = 0
+  /// Stage 2: at the source's normalized phase.
+  KeepPhase = 1
+  /// Stage 2: at the phase that matches the source's foot contacts.
+  MatchPhase = 2
+}
+
+/// A condition's comparison of a parameter's value against the condition's `value`.
+enum GraphCompare : u8 {
+  Less = 0
+  LessEqual = 1
+  Greater = 2
+  GreaterEqual = 3
+  Equal = 4
+  NotEqual = 5
+}
+
+/// A graph: the root record its parameters, machines and nodes are children of.
+struct Graph @version(1) @kind(record) {
+  name: string
+  /// Clips are named for the standard skeleton's clip sets rather than one library skeleton's.
+  /// Not compiled in stage 1 (no standard-skeleton clip set exists yet).
+  skeleton_roles: bool = false
+  /// The graph offers a root-motion output a host may apply. Not compiled in stage 1.
+  root_motion: bool = false
+}
+
+/// A parameter of a graph, in declaration order by id: its index is its slot in
+/// `AnimationGraphInput.values` (and, for a trigger, its bit in `triggers`).
+struct GraphParam @version(1) @kind(record) {
+  name: string
+  kind: GraphParamKind = Float
+  default_value: f32 = 0.0
+  /// The range a written value is clamped into (a float only); absent: unbounded. (Not `min` and
+  /// `max`: a field is its C++ member's name, and those two are macros under <windows.h>.)
+  range_min: f32?
+  range_max: f32?
+}
+
+/// A node of a graph: the pose of a `GraphState` (its one child node), or a child of another node.
+struct GraphNode @version(1) @kind(record) {
+  kind: GraphNodeKind = Clip
+  /// Child nodes, for the kinds that take inputs.
+  inputs: id128[]
+  /// The parameter a `Blend1D` reads, by name.
+  param: string
+  /// The clip a `Clip` node plays, as the library names it (`<prefix>/<name>`). Empty: the rest
+  /// pose. A name the library lacks is refused at compile, never played as a silent rest pose.
+  clip: string
+  /// The clip's own rate while the state is not phase-locked.
+  rate: f32 = 1.0
+  looping: bool = true
+  /// 0: the state keeps its own clock. 1 or 2: the state is phase-locked to its machine's sync
+  /// group, whose phase is the machine's `phase_param` (the gait's distance drive).
+  sync_group: u8 = 0
+  /// A `Blend1D`'s thresholds, one per input.
+  thresholds: f32[]
+  weight: f32 = 1.0
+}
+
+/// A state machine of a graph.
+struct GraphMachine @version(1) @kind(record) {
+  name: string
+  /// The state the machine starts in (a `GraphState` child of this machine).
+  entry: id128
+  /// The parameter whose value is this machine's sync-group phase, in [0, 1); empty: none.
+  phase_param: string
+}
+
+/// A state of a machine. Its pose is its one child `GraphNode`.
+struct GraphState @version(1) @kind(record) {
+  name: string
+}
+
+/// One condition of a transition: `param op value`. For a trigger, `Equal 1` (it holds while the
+/// bit is set) is the only form.
+struct GraphCondition @version(1) {
+  param: string
+  op: GraphCompare = Equal
+  value: f32 = 1.0
+}
+
+/// A transition of a machine, from a state (or from any state) to another, taken when all its
+/// conditions hold. Among those that hold, the smallest `priority` wins, then declaration order
+/// (the id), with `any` transitions queued first.
+struct GraphTransition @version(1) @kind(record) {
+  /// The state it leaves, or a null id for any state (never into the state it is in or heading to).
+  from: id128
+  to: id128
+  conditions: GraphCondition[]
+  /// Stage 2: the source's normalized phase after which it may fire.
+  exit_phase: f32?
+  duration_s: f32 = 0.0 @unit(s)
+  blend: GraphBlend = CrossFade
+  offset: GraphOffset = Zero
+  priority: i32 = 0
+}
+
+/// A graph-driven entity's inputs: the graph and its parameters' values, written by gameplay.
+struct AnimationGraphInput @version(1) @kind(component) {
+  /// The graph, as `animation::GraphLibrary` holds it (the `Graph` record's id).
+  graph: id128
+  /// The parameters in declaration order; a bool is 0 or 1.
+  values: f32[8]
+  /// One bit a trigger, by the trigger's parameter index; cleared when a transition takes it.
+  triggers: u32 = 0
+}
+
+/// A graph-driven entity's machines, as a save needs them to put the same pose back.
+struct AnimationGraphState @version(1) @kind(component) {
+  /// The graph this state was written for; a different graph's id makes the next control tick
+  /// start the machines at their entries.
+  graph: id128
+  /// Per machine: the state it is in, as its index in the compiled machine plus one; 0 before the
+  /// first control tick (which enters with a cut).
+  state: u16[2]
+  /// Per machine: the destination of the transition in flight, as an index plus one; 0: none.
+  next: u16[2]
+  /// Per machine: seconds into the transition in flight, and how long it lasts.
+  elapsed: f32[2]
+  duration: f32[2]
+  /// Per machine: seconds in the current state, and in the destination while a transition is in
+  /// flight.
+  time: f32[2]
+  next_time: f32[2]
+  /// Per sync group: the phase, in [0, 1).
+  phase: f32[2]
+}
