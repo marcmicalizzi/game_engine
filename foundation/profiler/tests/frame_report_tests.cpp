@@ -75,6 +75,37 @@ TEST_CASE("profiler: percentiles interpolate between the closest ranks") {
   CHECK(percentiles(none).max == 0.0);
 }
 
+// Found by batch 68's review of the capture: the end match and the name lookup became searches;
+// what they find must be what the walks found. An end goes to the latest mark of its index at or
+// before it, a repeated index included, an end with no such mark is ignored, and one name met
+// through two pointers is one series.
+TEST_CASE("profiler: ends find their marks and names their series, as the walks did") {
+  char first[] = "decode";
+  char second[] = "decode";  // the same name at another address
+  std::vector<CaptureEvent> events;
+  events.push_back(mark(5, 0));
+  events.push_back(mark(9, 10));
+  events.push_back(mark(5, 20));      // index 5 again: a host numbering by something else
+  events.push_back(mark_end(5, 26));  // the second 5's end, not the first's
+  events.push_back(mark_end(9, 13));
+  events.push_back(mark_end(5, 4));   // the first 5's: the latest 5 at or before 4 ms
+  events.push_back(mark_end(7, 15));  // no mark 7: ignored
+  events.push_back(zone(first, 1, 3));
+  events.push_back(zone(second, 11, 12));
+  events.push_back(zone(first, 21, 25));
+  CaptureInfo info;
+  info.stopped_ns = 40 * k_ms;
+  const FrameReport r = build_report(events, info, ReportOptions{});
+  REQUIRE(r.frames == 3);
+  CHECK(r.frame.max_ms == doctest::Approx(6.0));     // 20..26
+  CHECK(r.frame.median_ms == doctest::Approx(4.0));  // 0..4, 10..13
+  CHECK(r.frame.total_ms == doctest::Approx(13.0));
+  REQUIRE(r.zones.size() == 1);
+  CHECK(r.zones[0].count == 3);
+  CHECK(r.zones[0].frames_seen == 3);
+  CHECK(r.zones[0].total_ms == doctest::Approx(7.0));
+}
+
 TEST_CASE("profiler: a report attributes zones and values to their frames, over a window") {
   // Four frames: 0..10, 10..20, 20..25 (ended), 30..40 (the stop). A request's dispatch zone
   // wraps the first frames and begins before any mark: it is outside every frame.

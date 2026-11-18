@@ -1,5 +1,7 @@
 // What the frame capture costs while it is on, and what reading one into a report costs
-// (docs/subsystems/profiler.md, "What it costs"; roadmap A10, batch 68's review C3 and C5).
+// (docs/subsystems/profiling.md, "The frame capture", and profiler.md, "The frame report"; roadmap
+// A10: batch 68's review of the capture found a writer count every thread shared and a report
+// whose end match grew with the frames squared).
 //
 // - `profiler.capture.zone`: one zone recorded on the timed thread while `arg - 1` other threads
 //   record zones as fast as they can: the event path's cost, and how much of it is threads meeting

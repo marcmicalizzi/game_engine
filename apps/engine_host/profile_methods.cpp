@@ -162,7 +162,8 @@ bool profile_start(protocol::Context&, const protocol::ProfileStartParams& param
   }
   ++g_capture;
   out.running = true;
-  out.capacity = options.capacity;
+  // The buffer's own size, which is what the capture drops at, not the size asked for.
+  out.capacity = profiling::capture_capacity();
   out.capture = g_capture;
   return true;
 }

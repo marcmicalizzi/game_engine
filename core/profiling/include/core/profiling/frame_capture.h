@@ -13,9 +13,10 @@
 //     GPU time is frames behind the mark of the frame it arrives in.
 //
 // **Off it costs one relaxed atomic load per zone and allocates nothing.** On, an event enters as a
-// writer (a sequentially consistent add and later a release subtract on one counter every thread
-// shares, and two sequentially consistent loads), claims a slot with a relaxed add on a second
-// shared counter, writes 48 bytes and publishes them with a release store; a full buffer drops and
+// writer (a sequentially consistent add and later a release subtract on its thread's own writer
+// word, a cache line of its own, and two sequentially consistent loads), claims a slot with a
+// relaxed add on the one counter every thread shares, writes 48 bytes and publishes them with a
+// release store; a full buffer drops and
 // counts, and records when it filled, so a frame loop with the capture on still allocates nothing
 // (AGENTS.md, "No allocations in the frame loop").
 // `foundation/profiler` reads a stopped capture into a frame report and a trace a person opens.
@@ -81,8 +82,8 @@ inline bool capture_enabled() noexcept {
   return detail::g_capture_on.load(std::memory_order_relaxed);
 }
 
-// Starts recording: allocates the buffer (or keeps one large enough from the last capture) and
-// clears it. False when already on.
+// Starts recording into a buffer of exactly `options.capacity` events — the last capture's, when it
+// was that size, else a new one, the old given back first — and clears it. False when already on.
 bool capture_start(const CaptureOptions& options = {});
 // Stops recording, and returns only once no thread is still writing an event: a zone that began
 // while it was on and ends after it is dropped, not half written.
@@ -109,6 +110,9 @@ void capture_name_thread(const char* name) noexcept;
 u32 capture_snapshot(std::span<CaptureEvent> out, CaptureInfo& info) noexcept;
 // Events recorded so far (claimed and not dropped).
 u32 capture_count() noexcept;
+// The events the buffer holds before it drops: what the running or last capture asked for; 0 when
+// there is no buffer (before the first start, after a reset).
+u32 capture_capacity() noexcept;
 // The name the capture has for thread index `thread`: what it named itself, or "" when it did not.
 const char* capture_thread_name(u32 thread) noexcept;
 

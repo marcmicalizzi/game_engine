@@ -180,4 +180,18 @@ TEST_CASE(
   CHECK(number(second, "capture") == 2);
   REQUIRE(second.find("running")->get_bool(flag));
   CHECK_FALSE(flag);
+
+  // A small capture after a default one drops where it said it would, not at the larger buffer's
+  // end (batch 68's review of the capture found it kept the larger buffer): every ping is a
+  // dispatch zone, so 100 of them fill 64 events.
+  const JsonValue small_response = host.call("profile.start", R"({"capacity":64})");
+  CHECK(number(result_of(small_response), "capacity") == 64);
+  for (int i = 0; i < 100; ++i)
+    (void)host.call("engine.ping", "{}");
+  const JsonValue small_stop = host.call("profile.stop", "{}");
+  const JsonValue& small = result_of(small_stop);
+  CHECK(number(small, "events") == 64);
+  CHECK(number(small, "dropped_events") > 0);
+  REQUIRE(small.find("truncated")->get_bool(flag));
+  CHECK(flag);
 }

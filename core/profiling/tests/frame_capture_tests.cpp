@@ -101,6 +101,35 @@ TEST_CASE("frame capture: a full buffer counts what it dropped, and a restart cl
   capture_reset();
 }
 
+// Found by batch 68's review of the capture: a start kept a larger buffer from an earlier capture,
+// so it dropped later than the caller was told, and the largest buffer anyone asked for was never
+// given back.
+TEST_CASE("frame capture: a start holds exactly the capacity asked, and says it") {
+  capture_reset();
+  CHECK(capture_capacity() == 0);
+  CaptureOptions large;
+  large.capacity = 1024;
+  REQUIRE(capture_start(large));
+  CHECK(capture_capacity() == 1024);
+  capture_stop();
+  CaptureOptions small;
+  small.capacity = 64;
+  REQUIRE(capture_start(small));
+  CHECK(capture_capacity() == 64);
+  for (u64 f = 0; f < 100; ++f)
+    capture_frame(f);
+  capture_stop();
+  CaptureInfo info;
+  const std::vector<CaptureEvent> events = snapshot(info);
+  CHECK(events.size() == 64);  // the 65th was refused, where the caller was told it would be
+  CHECK(info.dropped == 36);
+  CHECK(info.full_ns >= 0);
+  // The stopped capture stays readable until the next start or a reset, which gives it back.
+  CHECK(capture_capacity() == 64);
+  capture_reset();
+  CHECK(capture_capacity() == 0);
+}
+
 TEST_CASE("frame capture: zones on several threads, and a stop that waits for its writers") {
   capture_reset();
   CaptureOptions options;
@@ -116,16 +145,20 @@ TEST_CASE("frame capture: zones on several threads, and a stop that waits for it
       ENGINE_PROFILE_THREAD(name);
       // One zone each before any spins, so a buffer the others fill cannot drop a late worker's
       // first event; then zones until told to stop.
-      { ENGINE_PROFILE_ZONE_NAMED("capture tests: worker zone"); }
+      {
+        ENGINE_PROFILE_ZONE_NAMED("capture tests: worker zone");
+      }
       recorded.fetch_add(1);
-      while (recorded.load() < 3) std::this_thread::yield();
+      while (recorded.load() < 3)
+        std::this_thread::yield();
       while (go.load(std::memory_order_relaxed)) {
         ENGINE_PROFILE_ZONE_NAMED("capture tests: worker zone");
       }
     });
   }
   // On a loaded machine a worker may not have run yet: the stop comes after every one has.
-  while (recorded.load() < 3) std::this_thread::yield();
+  while (recorded.load() < 3)
+    std::this_thread::yield();
   for (u64 f = 0; f < 50; ++f) {
     capture_frame(f);
     std::this_thread::yield();
