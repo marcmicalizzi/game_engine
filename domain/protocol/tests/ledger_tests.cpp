@@ -591,3 +591,79 @@ TEST_CASE("ledger: a version-1 ledger reads, keeps its ids and draws new ones") 
                                                          {"attribution", who("b")}}));
   CHECK(num(at(closed, "revision")) == 2);
 }
+// The ledger's bounds (protocol.md, "The ledger's bounds"): 256 open tasks and 256 open items per
+// actor, and 8 MiB of file, each refused 1004 naming the bound. The ledgers are written by hand,
+// since filling one through calls would cost each case a few thousand of them.
+TEST_CASE("ledger: a ledger refuses work past its bounds, and a full one can be worked down") {
+  test::TempDir tmp("protocol_ledger");
+  const auto bound_of = [](const JsonValue& error) {
+    return std::string(at(at(error, "data"), "bound").as_string());
+  };
+  JsonValue error;
+
+  SUBCASE("open tasks and open items per actor") {
+    const std::string dir = tmp.file("doc");
+    Host h;
+    h.open(dir, true);
+    std::string tasks, items;
+    for (int i = 1; i <= 256; ++i) {
+      const std::string id = std::to_string(i);
+      tasks += std::string(i > 1 ? "," : "") + R"({"id":)" + id + R"(,"key":"task/)" + id +
+               R"(","title":"t","created_by":{"actor":"loop"}})";
+      items += std::string(i > 1 ? "," : "") + R"({"id":)" + id +
+               R"(,"kind":"validation","summary":"s","revision":1,"raised_by":{"actor":"loop"}})";
+    }
+    {
+      std::ofstream out(dir + "/ledger.json", std::ios::binary);
+      out << R"({"tasks":[)" << tasks << R"(],"reviews":[)" << items << "]}";
+    }
+    CHECK(h.fails("task.create", obj({{"title", JsonValue("one more")}, {"attribution", who("loop")}}),
+                  &error) == codes::k_invalid_argument);
+    CHECK(reason_of(error) == "ledger bound");
+    CHECK(bound_of(error) == "open tasks per actor");
+    CHECK(num(at(at(error, "data"), "limit")) == 256);
+    // Another actor is not held to the first one's count, and a dropped task stops counting.
+    (void)h.task("task.create", obj({{"title", JsonValue("mine")}, {"attribution", who("other")}}));
+    (void)h.task("task.update", obj({{"task", JsonValue(u64{1})},
+                                     {"status", JsonValue("Dropped")},
+                                     {"attribution", who("loop")}}));
+    (void)h.task("task.create", obj({{"title", JsonValue("now")}, {"attribution", who("loop")}}));
+    CHECK(h.fails("review.raise", obj({{"kind", JsonValue("validation")},
+                                        {"summary", JsonValue("one more")},
+                                        {"attribution", who("loop")}}),
+                  &error) == codes::k_invalid_argument);
+    CHECK(bound_of(error) == "open items per actor");
+    (void)h.review("review.close", obj({{"review", JsonValue(u64{1})},
+                                        {"resolution", JsonValue("Withdrawn")},
+                                        {"attribution", who("loop")}}));
+    (void)h.review("review.raise", obj({{"kind", JsonValue("validation")},
+                                        {"summary", JsonValue("now")},
+                                        {"attribution", who("loop")}}));
+  }
+  SUBCASE("the file's size") {
+    const std::string dir = tmp.file("doc");
+    Host h;
+    h.open(dir, true);
+    {
+      std::ofstream out(dir + "/ledger.json", std::ios::binary);
+      out << R"({"tasks":[{"id":5,"key":"task/5","title":"big","created_by":{"actor":"a"},)"
+          << R"("history":[{"actor":"a","change":"note","text":")" << std::string(8u << 20, 'x')
+          << R"("}]}]})";
+    }
+    CHECK(h.fails("task.create", obj({{"title", JsonValue("t")}, {"attribution", who("a")}}),
+                  &error) == codes::k_invalid_argument);
+    CHECK(bound_of(error) == "ledger bytes");
+    CHECK(h.fails("task.update", obj({{"task", JsonValue(u64{5})},
+                                      {"note", JsonValue("more")},
+                                      {"attribution", who("a")}}),
+                  &error) == codes::k_invalid_argument);
+    CHECK(bound_of(error) == "ledger bytes");
+    // A claim and a status change still answer: a full ledger is worked down, not locked.
+    (void)h.task("task.claim", obj({{"task", JsonValue(u64{5})}, {"attribution", who("a")}}));
+    CHECK(at(h.task("task.update", obj({{"task", JsonValue(u64{5})},
+                                         {"status", JsonValue("Done")},
+                                         {"attribution", who("a")}})),
+             "status")
+              .as_string() == "Done");
+  }
+}

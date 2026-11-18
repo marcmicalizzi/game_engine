@@ -35,6 +35,13 @@ constexpr u32 k_link_max = 256;
 constexpr usize k_name_max = 200;
 constexpr usize k_report_max = 64 * 1024;
 constexpr f64 k_claim_ttl_max = 7.0 * 24.0 * 3600.0;
+// The ledger's bounds (protocol.md, "The ledger's bounds", where each number's reason is): every
+// call reads, parses and rewrites the whole file under a lock other callers wait 10 s for, so a
+// ledger that grows without limit makes every call slow and a person's close one of the waits that
+// runs out. Each refusal is 1004 naming the bound.
+constexpr u32 k_open_tasks_per_actor = 256;
+constexpr u32 k_open_items_per_actor = 256;
+constexpr u64 k_ledger_bytes_max = 8u << 20;
 
 bool blank(std::string_view s) noexcept { return s.find_first_not_of(" \t") == s.npos; }
 
@@ -226,6 +233,14 @@ u64 fresh_review_id(const LedgerFile& ledger) {
       &ledger);
 }
 
+RpcError bound_error(std::string_view bound, u64 limit, std::string message) {
+  JsonValue data = JsonValue::object();
+  data.set("reason", JsonValue("ledger bound"));
+  data.set("bound", JsonValue(bound));
+  data.set("limit", JsonValue(limit));
+  return make_error(codes::k_invalid_argument, std::move(message), std::move(data));
+}
+
 // ---- the store --------------------------------------------------------------------------------
 
 // The ledger's one read-modify-write: `change(ledger, write, error)` runs on the file as it is on
@@ -240,8 +255,11 @@ u64 fresh_review_id(const LedgerFile& ledger) {
 // a document nobody gave tasks leaves it as it was. `change` runs on the file as it is on disk now
 // (absent: empty), and its `write` is honoured whether or not it succeeded, since a refusal may
 // still have let lapsed claims go.
+// `grows`: the call adds a task, an item, a note or links, and is refused once the file holds
+// `k_ledger_bytes_max` (looked at under the lock, so no two writers both pass it); a claim, a
+// status change and a close still answer, so a full ledger can be worked down.
 template <class F>
-bool update_ledger(io::Vfs& vfs, const Session& session, bool read_only, F&& change,
+bool update_ledger(io::Vfs& vfs, const Session& session, bool read_only, bool grows, F&& change,
                    RpcError& error) {
   const std::string path = doc::DocumentStore::path_of(session.dir(), k_ledger_file);
   if (read_only && !vfs.exists(path)) {
@@ -254,7 +272,19 @@ bool update_ledger(io::Vfs& vfs, const Session& session, bool read_only, F&& cha
   if (!session.may_write_side_files(error)) return false;
   LedgerFile ledger;
   return update_side_file(
-      vfs, path, ledger, [&](LedgerFile& l, bool& write) { return change(l, write, error); },
+      vfs, path, ledger,
+      [&](LedgerFile& l, bool& write) {
+        io::FileInfo info;
+        if (grows && vfs.stat(path, info) == io::Status::Ok && info.size >= k_ledger_bytes_max) {
+          error = bound_error("ledger bytes", k_ledger_bytes_max,
+                              "the ledger holds " + std::to_string(info.size) +
+                                  " bytes, past its bound of 8 MiB: close, finish or drop work "
+                                  "before adding more (a claim, a status change and a close "
+                                  "still answer)");
+          return false;
+        }
+        return change(l, write, error);
+      },
       error);
 }
 
@@ -304,10 +334,22 @@ bool task_create(Context& ctx, const TaskCreateParams& params, TasksResult& out,
   }
   const i64 now = time::wall_unix_ms();
   TaskInfo made;
-  if (!update_ledger(
-          ctx.sessions->vfs(), *s, false,
+  if (!update_ledger(ctx.sessions->vfs(), *s, false, true,
           [&](LedgerFile& ledger, bool& write, RpcError& e) {
             out.lapsed = lapse_claims(ledger, now);
+            write = out.lapsed > 0;
+            u32 open = 0;
+            for (const TaskInfo& o : ledger.tasks) {
+              if (o.created_by.actor == caller.who.actor && o.status != TaskStatus::Done &&
+                  o.status != TaskStatus::Dropped)
+                ++open;
+            }
+            if (open >= k_open_tasks_per_actor) {
+              e = bound_error("open tasks per actor", k_open_tasks_per_actor,
+                              caller.who.actor + " has made 256 tasks that are not Done or Dropped: "
+                                                 "finish or drop some before making more");
+              return false;
+            }
             TaskInfo t;
             t.id = fresh_task_id(ledger);
             t.key = "task/" + std::to_string(t.id);
@@ -349,8 +391,7 @@ bool task_claim(Context& ctx, const TaskClaimParams& params, TasksResult& out, R
   const std::string role = role_of(caller);
   bool renewed = false;
   TaskInfo changed;
-  if (!update_ledger(
-          ctx.sessions->vfs(), *s, false,
+  if (!update_ledger(ctx.sessions->vfs(), *s, false, false,
           [&](LedgerFile& ledger, bool& write, RpcError& e) {
             out.lapsed = lapse_claims(ledger, now);
             write = out.lapsed > 0;
@@ -425,8 +466,7 @@ bool task_update(Context& ctx, const TaskUpdateParams& params, TasksResult& out,
   if (!text_ok("note", params.note, 0, k_text_max, true, error)) return false;
   const i64 now = time::wall_unix_ms();
   TaskInfo changed;
-  if (!update_ledger(
-          ctx.sessions->vfs(), *s, false,
+  if (!update_ledger(ctx.sessions->vfs(), *s, false, !blank(params.note) || !links_empty(params.links),
           [&](LedgerFile& ledger, bool& write, RpcError& e) {
             out.lapsed = lapse_claims(ledger, now);
             write = out.lapsed > 0;
@@ -518,8 +558,7 @@ bool task_list(Context& ctx, const TaskListParams& params, TasksResult& out, Rpc
   if (s == nullptr) return false;
   const i64 now = time::wall_unix_ms();
   out.now_unix_ms = now;
-  return update_ledger(
-      ctx.sessions->vfs(), *s, true,
+  return update_ledger(ctx.sessions->vfs(), *s, true, false,
       [&](LedgerFile& ledger, bool& write, RpcError& e) {
         out.lapsed = lapse_claims(ledger, now);
         write = out.lapsed > 0;
@@ -579,10 +618,20 @@ bool review_raise(Context& ctx, const ReviewRaiseParams& params, ReviewsResult& 
   }
   const i64 now = time::wall_unix_ms();
   ReviewInfo made;
-  if (!update_ledger(
-          ctx.sessions->vfs(), *s, false,
+  if (!update_ledger(ctx.sessions->vfs(), *s, false, true,
           [&](LedgerFile& ledger, bool& write, RpcError& e) {
-            (void)lapse_claims(ledger, now);
+            write = lapse_claims(ledger, now) > 0;
+            u32 open = 0;
+            for (const ReviewInfo& o : ledger.reviews) {
+              if (o.raised_by.actor == caller.who.actor && o.state == ReviewState::Open) ++open;
+            }
+            if (open >= k_open_items_per_actor) {
+              e = bound_error("open items per actor", k_open_items_per_actor,
+                              caller.who.actor + " has raised 256 review items that are still "
+                                                 "open: a raiser withdraws its own agent items, "
+                                                 "and a person's wait for the person");
+              return false;
+            }
             TaskInfo* task = nullptr;
             if (params.task != 0) {
               task = find_task(ledger, params.task, e);
@@ -636,8 +685,7 @@ bool review_close(Context& ctx, const ReviewCloseParams& params, ReviewsResult& 
   }
   const i64 now = time::wall_unix_ms();
   ReviewInfo changed;
-  if (!update_ledger(
-          ctx.sessions->vfs(), *s, false,
+  if (!update_ledger(ctx.sessions->vfs(), *s, false, false,
           [&](LedgerFile& ledger, bool& write, RpcError& e) {
             ReviewInfo* r = find_review(ledger, params.review, e);
             if (r == nullptr) return false;
@@ -712,8 +760,7 @@ bool review_list(Context& ctx, const ReviewListParams& params, ReviewsResult& ou
   Session* s = begin(ctx, params.session, nullptr, caller, error);
   if (s == nullptr) return false;
   out.now_unix_ms = time::wall_unix_ms();
-  return update_ledger(
-      ctx.sessions->vfs(), *s, true,
+  return update_ledger(ctx.sessions->vfs(), *s, true, false,
       [&](LedgerFile& ledger, bool& write, RpcError& e) {
         write = false;
         if (params.review != 0 && find_review(ledger, params.review, e) == nullptr) return false;
