@@ -684,8 +684,8 @@ bool read_texture_file_levels(std::string_view path, u32 first, TextureData& out
   if (const TextureFileSection* classes = found[static_cast<u32>(TextureSection::ContentClasses)];
       classes != nullptr && classes->element_size == 1 && classes->element_count != 0) {
     result.content_classes.resize(static_cast<u32>(classes->element_count));
-    if (file.read_at(classes->offset, result.content_classes.data(),
-                     result.content_classes.size(), got) != io::Status::Ok ||
+    if (file.read_at(classes->offset, result.content_classes.data(), result.content_classes.size(),
+                     got) != io::Status::Ok ||
         got != result.content_classes.size()) {
       return fail(error, "texture file's content classes cannot be read");
     }

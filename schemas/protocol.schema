@@ -1510,7 +1510,7 @@ struct ContentBuildParams @version(1) {
 }
 
 /// One output of `content.build`: a line of `engine-content build-all`, plus its metrics.
-struct ContentBuildOutput @version(1) {
+struct ContentBuildOutput @version(2) {
   source: string
   path: string
   /// "built", "skipped" (the container there already recorded this source and these options), or
@@ -1554,6 +1554,10 @@ struct ContentBuildOutput @version(1) {
   /// image: built, skipped, shared, missing, failed or unreadable, the key, the format and the
   /// time. `enabled` false when the call had no derived-data root or asked for no textures.
   textures: json
+  /// The source's own content class (C62; docs/content-classes.md, "How it travels through derived
+  /// data"), by name: `categories` with their ladders, `levels` and `materials`. Null when nothing is
+  /// classified, which is every source that declares nothing.
+  content_classes: json @since(2)
 }
 
 struct ContentBuildResult @version(1) {

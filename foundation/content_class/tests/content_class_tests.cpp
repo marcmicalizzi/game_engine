@@ -976,7 +976,8 @@ TEST_CASE("content_class: a section round-trips and teaches a host the game's la
   CHECK(same_bytes(again, bytes));
 }
 
-TEST_CASE("content_class: a section is unreadable when it is not the record or contradicts a host") {
+TEST_CASE(
+    "content_class: a section is unreadable when it is not the record or contradicts a host") {
   const Categories built = with_glow();
   Vector<u8> bytes;
   encode_classes(built, classes_of(glow(), 1), nullptr, bytes);
@@ -1024,7 +1025,7 @@ TEST_CASE("content_class: a node built from inputs carries their join, as a whol
   Vector<MaterialClass> read;
   REQUIRE(decode_classes(host, view(merged), out, error, &read));
   CHECK(out.levels[static_cast<u32>(host.find("fixture_glow"))] == 1);  // a neutral one joined
-  CHECK(read.empty());                                                    // with a dim one is dim
+  CHECK(read.empty());                                                  // with a dim one is dim
 
   const std::span<const u8> three[3] = {view(dim), view(neutral), view(violent)};
   REQUIRE(join_encoded(host, three, merged, error));

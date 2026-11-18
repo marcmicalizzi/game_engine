@@ -580,9 +580,11 @@ bool decode_classes(Categories& categories, std::span<const u8> bytes, ContentCl
   }
   FormReader r{bytes};
   std::string form;
-  if (!r.text(form) || form != k_section_form) return refuse("not an engine.content_classes/1 record");
+  if (!r.text(form) || form != k_section_form)
+    return refuse("not an engine.content_classes/1 record");
   u32 n = 0;
-  if (!r.count(n) || n > k_max_categories) return refuse("its category count is not one a class holds");
+  if (!r.count(n) || n > k_max_categories)
+    return refuse("its category count is not one a class holds");
   Vector<std::string> names;
   std::array<u32, k_max_categories> index{};
   for (u32 i = 0; i < n; ++i) {
@@ -639,7 +641,8 @@ bool decode_classes(Categories& categories, std::span<const u8> bytes, ContentCl
   for (u32 m = 0; m < count; ++m) {
     MaterialClass material;
     if (!r.text(material.name)) return refuse("a material's name runs short");
-    if (!read_pairs(material.classes, why)) return refuse("material '" + material.name + "': " + why);
+    if (!read_pairs(material.classes, why))
+      return refuse("material '" + material.name + "': " + why);
     classes = join(classes, material.classes);  // the asset's, as the reader joined it
     per_material.push_back(std::move(material));
   }

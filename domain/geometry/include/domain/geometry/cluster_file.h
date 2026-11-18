@@ -273,8 +273,7 @@ enum class ClusterSection : u32 {
 };
 
 // One past the highest kind this build knows, which is how wide a by-kind table has to be.
-inline constexpr u32 k_cluster_section_kinds =
-    static_cast<u32>(ClusterSection::ContentClasses) + 1;
+inline constexpr u32 k_cluster_section_kinds = static_cast<u32>(ClusterSection::ContentClasses) + 1;
 
 // Names the kinds this build knows, "unknown" for anything else; for diagnostics and for
 // `engine-content info`.

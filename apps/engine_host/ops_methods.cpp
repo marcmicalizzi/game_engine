@@ -1080,6 +1080,7 @@ void fill_output(const content_build::MeshTask& task, bool want_stats,
   out.cached = r.cached;
   out.source_hash = r.source_hash;
   out.build_key = r.build_key;
+  out.content_classes = r.content_classes;  // null unless the source is classified (C62)
   switch (task.state) {
     case content_build::TaskState::Built: {
       out.status = "built";
@@ -1173,6 +1174,8 @@ bool content_build_method(protocol::Context& ctx, const protocol::ContentBuildPa
       return false;
     }
     std::string message;
+    // No categories table (C62): a manifest naming a categories file is refused here, because
+    // that path would be read without the roots' admission every other path of the call takes.
     if (!content_build::read_manifest(manifest.native, options, entries, message)) {
       error = invalid(std::move(message));
       return false;

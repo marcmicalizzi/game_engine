@@ -10,6 +10,7 @@
 # configuration leaves out.
 engine_module(NAME content_build LAYER domain
   DEPS base containers math hash time jobs log io image json geometry materials assets atlas texture
+       content_class
   SOURCES src/content_build.cpp src/container_stats.cpp src/generator_hosts.cpp
           src/image_identities.cpp)
 
