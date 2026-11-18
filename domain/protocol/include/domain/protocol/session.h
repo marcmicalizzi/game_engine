@@ -104,6 +104,9 @@ class Session {
   // saved, each with `event.session` "lease_released" and the reason "connection closed". The
   // number released.
   u32 release_connection_leases(u64 connection, i64 now_ms);
+  // The same connection's open transactions stop being bound to it and are their opener actor's
+  // again, still staged (protocol.md, "Several clients, one host"). The number let go.
+  u32 release_connection_transactions(u64 connection);
 
   // --- leases (leases.h) ---------------------------------------------------------------------
   // Every change is written to `leases.json` before the answer. `now_ms` is the host's clock.
@@ -138,7 +141,8 @@ class Session {
   // as `apply` checks a write — the commands against the document with the transaction's earlier
   // ones applied, the caller's role, the proposal's owner, the leases — and changes no record; the
   // commit applies them all as one checked transaction and one journal patch, or none of them.
-  // Only the opener stages, commits or rolls back. `now_ms` is the host's clock.
+  // Only the opener stages, commits or rolls back: the actor that opened it and, while the client
+  // connection it was opened on lasts, that connection alone. `now_ms` is the host's clock.
 
   bool begin_transaction(const BeginParams& params, const Caller& caller, i64 now_ms,
                          TransactionInfo& out, RpcError& error);
@@ -189,10 +193,21 @@ class Session {
   bool save_proposals(RpcError& error);
   bool save_transactions(RpcError& error);
   // The open transaction `id` for the caller, after dropping lapsed ones: 1003 when there is none
-  // (or it lapsed), 1008 when another actor opened it.
+  // (or it lapsed), 1008 when another actor opened it or another connection than the one still
+  // holding it calls.
   TransactionEntry* find_transaction(u64 id, const Caller& caller, i64 now_ms, RpcError& error);
-  // Drops lapsed transactions; the number dropped.
+  // Drops lapsed transactions, and the holds of every transaction no longer open; the number
+  // dropped.
   u32 expire_transactions(i64 now_ms);
+  void forget_transaction_hold(u64 transaction);
+
+  // The client connection each open transaction was begun on (non-zero only), for as long as it
+  // lasts. Kept in memory and never in `transactions.json`: connections are this process's, and
+  // a transaction outlives the host that a call started, where its actor alone owns it.
+  struct TransactionHold {
+    u64 transaction = 0;
+    u64 connection = 0;
+  };
   std::string base_file(std::string_view proposal) const;
 
   io::Vfs* vfs_;
@@ -203,6 +218,7 @@ class Session {
   LeaseTable leases_;
   ProposalTable proposals_;
   TransactionsFile transactions_;
+  Vector<TransactionHold> transaction_holds_;
   Subscriptions* events_ = nullptr;
   Vector<u64> holders_;
 };

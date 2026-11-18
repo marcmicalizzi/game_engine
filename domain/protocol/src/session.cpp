@@ -1532,8 +1532,10 @@ void SessionManager::release_connection(u64 connection, i64 now_ms) {
   // Leases first, on every session (a client may lease on a session it did not open, such as the
   // host's --doc), then the holds; a session closed by the second loop is gone, so it walks a copy
   // of the ids.
-  for (const auto& s : sessions_)
+  for (const auto& s : sessions_) {
     (void)s->release_connection_leases(connection, now_ms);
+    (void)s->release_connection_transactions(connection);
+  }
   Vector<std::string> held;
   for (const auto& s : sessions_) {
     if (s->held_by(connection)) held.push_back(s->id());

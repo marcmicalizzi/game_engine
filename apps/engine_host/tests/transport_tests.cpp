@@ -729,6 +729,100 @@ TEST_CASE("listen: three clients of one host, one document, and a client that dr
   CHECK(at(at(after, "result"), "clients").size() == 2);  // the shell and QA
 }
 
+// The write methods the protocol line added beside A3 (protocol.md, "Several clients, one host"):
+// a transaction and a placement made by a client whose calls name nobody are its hello's, through
+// to the journal; and a transaction's opener is the connection that began it while it lasts, so a
+// second client that says it is the same actor cannot commit it until that connection drops.
+TEST_CASE("listen: a client's transactions and placements are its hello's, its connection's") {
+  test::TempDir tmp("engine_host_listen_client_tx");
+  const std::string roles = tmp.file("roles.json");
+  write_file(roles, R"({"default_role":"director","roles":[{"name":"director","methods":["*"],
+    "layers":["*"],"object_types":["*"]},{"name":"builder","methods":["*"],"layers":["*"],
+    "object_types":["*"]}]})");
+  ListeningHost host({"--roles", roles, "--doc", tmp.file("doc"), "--create", "--actor", "cli",
+                      "--task", "t-cli"});
+  const std::string in_session = R"({"session":")" + host.session + "\"";
+  REQUIRE(write_cube_glb(tmp.file("doc") + "/cube.glb"));
+
+  Client agent;
+  Client twin;
+  REQUIRE(agent.connect(host.port, host.token));
+  REQUIRE(twin.connect(host.port, host.token));
+  REQUIRE(error_code(agent.call("client.hello", R"({"name":"engine-mcp","attribution":{
+    "actor":"agent-1","role":"builder","task":"t-agent"}})")) == 0);
+  REQUIRE(error_code(twin.call("client.hello", R"({"name":"twin","attribution":{
+    "actor":"agent-1","role":"builder","task":"t-twin"}})")) == 0);
+  const auto last_patch = [&]() {
+    const JsonValue journal = host.stdio("doc.journal", in_session + "}");
+    const JsonValue& patches = at(at(journal, "result"), "patches");
+    REQUIRE(patches.size() > 0);
+    return patches[patches.size() - 1];
+  };
+  const auto check_hello = [](const JsonValue& attribution, const char* task) {
+    CHECK(at(attribution, "actor").as_string() == "agent-1");
+    CHECK(at(attribution, "role").as_string() == "builder");
+    CHECK(at(attribution, "task").as_string() == task);
+  };
+
+  // Begun, staged and committed with nobody named: the hello's actor, role and task, not the
+  // host's --actor, at the begin and in the journal's entry the commit wrote.
+  const JsonValue begun =
+      agent.call("doc.begin", in_session + R"(,"attribution":{"rationale":"two steps"}})");
+  REQUIRE_MESSAGE(error_code(begun) == 0, write_json(begun));
+  check_hello(at(at(begun, "result"), "attribution"), "t-agent");
+  const std::string t = std::to_string(at(at(begun, "result"), "id").as_int());
+  const std::string in_t = in_session + R"(,"transaction":)" + t;
+  const JsonValue staged = agent.call("doc.apply", in_t + R"(,"commands":[)" +
+                                                       create_placement(k_left, "left", "[0,0,0]") +
+                                                       R"(],"attribution":{"rationale":"stage"}})");
+  REQUIRE_MESSAGE(error_code(staged) == 0, write_json(staged));
+  CHECK(at(at(staged, "result"), "staged").as_int() == 1);
+
+  // The twin says it is agent-1 too, but the transaction is the agent's connection's while it is
+  // connected: the twin may not stage into it, commit it or roll it back.
+  const JsonValue stolen = twin.call("doc.commit", in_t + "}");
+  CHECK(error_code(stolen) == 1008);
+  CHECK(at(at(at(stolen, "error"), "data"), "reason").as_string() == "transaction owner");
+  CHECK(error_code(twin.call("doc.rollback", in_t + "}")) == 1008);
+  CHECK(error_code(twin.call("doc.apply", in_t + R"(,"commands":[)" +
+                                              create_placement(k_right, "right", "[2,0,0]") +
+                                              "]}")) == 1008);
+  CHECK(error_code(host.stdio("doc.commit", in_t + "}")) == 1008);  // "cli", another actor
+
+  const JsonValue committed = agent.call("doc.commit", in_t + "}");
+  REQUIRE_MESSAGE(at(at(committed, "result"), "committed").as_bool(), write_json(committed));
+  check_hello(at(last_patch(), "attribution"), "t-agent");
+
+  // A placement that names nobody is the hello's too.
+  const JsonValue placed =
+      agent.call("doc.place_asset", in_session + R"(,"asset":"cube.glb","placements":[
+        {"name":"crate","translation":[4,0,0]}],"attribution":{"rationale":"place"}})");
+  REQUIRE_MESSAGE(error_code(placed) == 0, write_json(placed));
+  CHECK(at(at(at(placed, "result"), "apply"), "committed").as_bool());
+  check_hello(at(last_patch(), "attribution"), "t-agent");
+
+  // A transaction left by a connection that drops is its actor's again, still staged, as the
+  // lease the connection took would be given back: the twin commits it.
+  const JsonValue again = agent.call("doc.begin", in_session + "}");
+  REQUIRE_MESSAGE(error_code(again) == 0, write_json(again));
+  const std::string in_u =
+      in_session + R"(,"transaction":)" + std::to_string(at(at(again, "result"), "id").as_int());
+  REQUIRE(error_code(agent.call(
+              "doc.apply", in_u + R"(,"commands":[)" + set_translation(k_left, 3) + "]}")) == 0);
+  CHECK(error_code(twin.call("doc.commit", in_u + "}")) == 1008);
+  // A session of the agent's own, so its drop is seen: "closed" is pushed once the host has let
+  // go of everything the connection held.
+  REQUIRE(error_code(agent.call("session.open", R"({"path":)" + json_text(tmp.file("scratch")) +
+                                                    R"(,"create":true})")) == 0);
+  REQUIRE(error_code(twin.call("session.subscribe", R"({"kinds":["session"]})")) == 0);
+  agent.ws.socket().close();
+  CHECK(at(at(twin.next_event(), "params"), "change").as_string() == "closed");
+  const JsonValue taken_over = twin.call("doc.commit", in_u + "}");
+  REQUIRE_MESSAGE(at(at(taken_over, "result"), "committed").as_bool(), write_json(taken_over));
+  // The opener's attribution as the begin recorded it: the agent's, though the twin committed.
+  check_hello(at(last_patch(), "attribution"), "t-agent");
+}
+
 TEST_CASE("listen: a subscriber that never reads gets the bounded queue and a dropped count") {
   test::TempDir tmp("engine_host_listen_slow");
   ListeningHost host({"--doc", tmp.file("doc"), "--create", "--actor", "busy"});
