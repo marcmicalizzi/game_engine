@@ -1625,6 +1625,80 @@ cliff, keeps its `may_fail` for one run of the eight, and that is the count's: a
 line stands half-way down the cliff's 25 cm ramp, the stretch into it falls at 44.5 degrees, and
 the fall is begun below it, half a metre short.
 
+### The line held down its trough, and a fall's foot seated (W140)
+
+(2026-11-16, roadmap W140, the planner's half of W131: on `region link 515` 80 of the 107
+stations still under the ground at the line after W131 had nothing as low within half a metre of
+it, the line ran 30 to 90 degrees off the fall line on 15 % of its length, and the seat was not
+read at a knickpoint's points.) What real water does decides both: a stream on a steep hillside
+runs down its fall line in the trough it has cut, and where it does run across the slope it has a
+bank on the downhill side or it leaves its course over it (Montgomery & Buffington 1997: steep
+channels are confined by their valley's walls; W116's grounding above for the bank). So:
+
+- **A steep line is held to its trough on both sides** (`build_line`, the trough test). The test
+  drew back a point that stood more than half a depth *over* the routed cells' polyline; where the
+  meander has faded out (`ChannelLink::meander` 0, the steep links) it now also draws back one
+  that stands as far *under* it, which is a point the low-pass carried across a bend's corner and
+  down the hillside. The cells run each to its steepest neighbour, so drawing the line back to them
+  is laying it down the fall line where the ground gives one. On a valley's floor, where meanders
+  swing a line, the test stays one-sided.
+- **A fall's foot reads its own bank** (`seat_section`). Since W122 no point within the read's reach
+  of a knickpoint took a seat, so a fall on a hillside landed on a bench with no downhill bank. Read
+  from below a step, the step's top stands *over* the foot and lowers nothing, so the points below a
+  knickpoint's last point now take their own read, dilated over feet and reaches only; the lip, the
+  face and what lies above stay unseated, as W122 left them.
+
+`k_channels_version` is 16; the plan file's layout did not change, its content did, so every
+world plans again and its cuts' tile set cooks again.
+
+**Measured on v47** (2026-11-16, `msvc-debug` `engine-content`, the machine shared with other rows'
+builds; the forest's world, re-planned into this row's own root and solved over the new cut;
+"W131" is the solve of the row before this one over the old plan):
+
+| v47 | W131 | W140 |
+|---|---:|---:|
+| plan: line 30 to 90 degrees off the fall line (of 43.7 km measured) | 8,066 m | 7,968 m |
+| plan: less than half a bank / no bank | 2,152 / 351 m | 2,094 / 339 m |
+| plan: seated tops over their lower bank by more than 2 cm | 59 | 31 |
+| stations under the ground at the line, whole world | 1,776 (3.78 %) | 1,658 (3.52 %) |
+| over 30 %: undrawn share, gaps, runs per 100 m | 1.39 %, 93, 2.87 | 1.29 %, 85, 2.72 |
+| over 30 %: the forest's own count (thin share, alternations per 100 m) | 1.00 %, 3.89 | 1.01 %, 3.99 |
+| `region link 515`: gaps, undrawn m, runs | 6, 5.9, 7 | 2, 2.9, 3 |
+| `region link 515`: stations under the ground (worst) | 107 (1.50 m) | 92 (1.17 m) |
+| `region link 515`: highest fall, pools | 1.45 m, 5 | 1.79 m, 7 |
+
+**On `torrent`** (re-planned and solved under both versions, 340 m of line measured) it is no
+better: the line 30 to 90 degrees off the fall line 49 to 60 m, the stations under the ground 8 to
+10 (worst 0.29 to 0.45 m), the over-30 % class drawn the same (no gap, 3.0 runs per 100 m). On a
+valley's floor the fall line over a width is the valley side's (the caution above), and the
+torrent's line is a valley's.
+
+**What it costs.** The re-plan (`engine-content channels --cut` over v47) took 224 s and 1.8 GB of
+commit; the first solve over the new cuts cooks their tile set and took 528 s at **37.0 GB of
+commit** (5.4 GB on disk). A forest that takes this plan pastes its cuts, its bodies, its bed regions and its two plan keys
+again. The gain is a step and not the end: the plan's own measure of a line off the fall line moved
+1 %, because the routed cells themselves bend across the hillside where the ground's troughs do,
+and drawing back to them keeps those bends. What is left is a cut whose width (the bankfull width
+with its swell) is wider than the bench a line across a steep slope keeps; narrowing the cut to the
+water's width there would change the section's area and every reader of the line's width, and was
+not built tonight. **No fixture fails first for the foot's seat**: the cliffs' scene runs its
+line at the toe of a bench whose edge is the feet's bank (they read 0 to 2.6 cm); its case holds
+that a foot never reads the step's height. The forest's count is the measure.
+
+**Verified** (2026-11-17, at the branch's tip): `test -Affected -Base d6534963` in `msvc-debug` with
+no driver 70 of 70; the `linux-gcc-release` container over `channels|water|scene_gen|engine_content`
+7 of 7, so GCC reproduces the three pins version 16 re-took (the two plan-byte hashes in
+`hollow_tests.cpp`, the clasts' recipe hash in `channels_tests.cpp`); on the GPU
+`engine_water_tests -tc=*channel*` 26 of 26 and `engine_view.frame_loop` passed (each on its second
+run: the first waited out the machine's GPU lock). **The pictures** are the forest session's small
+scene of `region link 515` with v47's re-plan pasted in by name (its 38 cuts, 17 bed regions, the
+tarn and the plan key; the crop alone cannot be planned, since its tarn's outlet leaves it), solved,
+and drawn with the water and the ground only, at the forest's poses: at *A-nappe4m-along* the ribbon
+that clung to the trench's wall now runs down the trench's floor, in the bed the walker sees; at
+*owner-b* the line is laid in a new trench and the water follows it, but stands there as stepped
+plates with vertical faces (W138's walls), and a raised plate still sits at the lip above the drop.
+The crop's over-30 % gaps went 20 to 15. The cook of the crop's tile set peaked at 38.3 GB of commit.
+
 ### The section under the line
 
 (2026-11-16, roadmap W131; the forest session's needs 121a, 121d and 127, from its small scene of

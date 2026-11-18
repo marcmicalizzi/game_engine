@@ -607,7 +607,7 @@ TEST_CASE("hollows: the same plan at one job and six, and through its file") {
   const std::string bodies = write_json(plan_bodies_json(p, serial.network));
   MESSAGE("plan " << hash_bytes(bytes.data(), bytes.size()) << ", bodies "
                   << hash_bytes(bodies.data(), bodies.size()));
-  CHECK(hash_bytes(bytes.data(), bytes.size()) == 15913977674637492989ull);
+  CHECK(hash_bytes(bytes.data(), bytes.size()) == 4629107548527418389ull);
   CHECK(hash_bytes(bodies.data(), bodies.size()) == 5206442785375341018ull);
 }
 
@@ -786,7 +786,7 @@ TEST_CASE("hollows: a lake that silted up is a floor its stream crosses") {
   const std::string text = write_json(fills);
   MESSAGE("plan " << hash_bytes(bytes.data(), bytes.size()) << ", floor "
                   << hash_bytes(text.data(), text.size()));
-  CHECK(hash_bytes(bytes.data(), bytes.size()) == 14829757048360263025ull);
+  CHECK(hash_bytes(bytes.data(), bytes.size()) == 13327008899158069507ull);
   CHECK(hash_bytes(text.data(), text.size()) == 6907369038180736851ull);
   // A floor is ground: an entry that is also `dry`, or leaks, is refused by its name.
   ChannelLayer both = layer();

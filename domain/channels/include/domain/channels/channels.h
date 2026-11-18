@@ -91,7 +91,10 @@ namespace engine::channels {
 // 15 (W122, the same night): the links that met at a confluence whose trunk a body took whole
 //    end in that body, at its level (what the forest's two lines at mark 8 were; 14 had been
 //    cooked by then).
-inline constexpr u32 k_channels_version = 15;
+// 16 (W140): a steep line held to its trough on both sides (a point standing more than half a
+//    depth under the trough has left it down the hillside), and a knickpoint's foot seated by its
+//    own read (channels.md, "A line across a slope"). The plan file's layout is unchanged.
+inline constexpr u32 k_channels_version = 16;
 
 // **The bed's surface sediment at a point** (W97; channels.md, "Bed sediment"; the sources in
 // docs/experiments/channels.md, "Bed sediment"): the surface grain-size distribution a pebble count
