@@ -18,15 +18,19 @@
 namespace engine::mem {
 
 // The default floor of the log, and the least a host may lower it to
-// (`set_large_allocation_floor`): below 1 MiB the table would be the heap, and every allocation would pay the log's compare.
+// (`set_large_allocation_floor`): below 1 MiB the table would be the heap, and every allocation
+// would pay the log's compare.
 inline constexpr usize k_large_allocation_bytes = usize{16} << 20;
 inline constexpr usize k_large_allocation_min_bytes = usize{1} << 20;
-inline constexpr u32 k_large_allocation_slots = 8192;
+inline constexpr u32 k_large_allocation_slots = 16384;
 inline constexpr u32 k_large_allocation_frames = 12;
 
 struct LargeAllocation {
   u64 address = 0;
   u64 bytes = 0;
+  // The bytes this entry stands for: `bytes` for a block at or above the floor, the sampling
+  // interval for a smaller block the sampler picked (`set_allocation_sampling`).
+  u64 weight = 0;
   TagId tag{};
   u16 depth = 0;
   void* stack[k_large_allocation_frames]{};
@@ -42,6 +46,17 @@ bool large_allocation_log() noexcept;
 // would otherwise stay in it. An allocation under 1 MiB still pays nothing for the log.
 void set_large_allocation_floor(usize bytes) noexcept;
 usize large_allocation_floor() noexcept;
+// **Sampling what is under the floor** (W51-2): with an interval other than zero, while the log is
+// on, each thread counts the bytes it allocates under the floor down from a gap drawn uniformly
+// in [interval/2, 3·interval/2), and the allocation that crosses zero is kept with its stack and a
+// `weight` of the interval, so the table's weights by call stack estimate the live heap by owner
+// at any block size (the method of tcmalloc's and jemalloc's heap profilers). A free under the
+// floor tests one bit of a static 2 MiB filter keyed by address and scans the table only when it
+// is set. Measured on the forest's staging: 9.5 GB of the 11.4 GB live engine heap was in blocks
+// under 1 MiB. Off — zero, the default — an allocation under the floor pays one relaxed load.
+// Set before the log is turned on; it empties the table.
+void set_allocation_sampling(usize interval_bytes) noexcept;
+usize allocation_sampling() noexcept;
 // Copies the live large allocations (up to `capacity`) and returns how many there are; those past
 // a full table are counted in `large_allocations_dropped`.
 u32 large_allocations(LargeAllocation* out, u32 capacity) noexcept;

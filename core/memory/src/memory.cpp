@@ -248,10 +248,36 @@ void large_lock() noexcept {
 }
 void large_unlock() noexcept { g_large_lock.store(false, std::memory_order_release); }
 
-void record_large(void* p, usize bytes) noexcept {
+// The sampler under the floor (large_allocations.h, `set_allocation_sampling`).
+std::atomic<usize> g_sample_interval{0};
+thread_local i64 t_sample_countdown = 0;
+thread_local u64 t_sample_state = 0;
+constexpr u32 k_sample_filter_bits = u32{1} << 24;  // 2 MiB of static bits, never allocated
+std::atomic<u64> g_sample_filter[k_sample_filter_bits / 64];
+
+u32 sample_filter_bit(const void* p) noexcept {
+  const u64 a = static_cast<u64>(reinterpret_cast<usize>(p)) >> 4;
+  return static_cast<u32>((a * 0x9E3779B97F4A7C15ull) >> 40);  // the top 24 bits
+}
+
+// A gap uniform in [interval/2, 3·interval/2): xorshift64, seeded once per thread.
+i64 sample_gap(usize interval) noexcept {
+  if (t_sample_state == 0)
+    t_sample_state =
+        0x2545F4914F6CDD1Dull ^ static_cast<u64>(reinterpret_cast<usize>(&t_sample_state));
+  u64 x = t_sample_state;
+  x ^= x << 13;
+  x ^= x >> 7;
+  x ^= x << 17;
+  t_sample_state = x;
+  return static_cast<i64>(interval / 2 + x % (interval > 0 ? interval : 1));
+}
+
+void record_large(void* p, usize bytes, u64 weight) noexcept {
   LargeAllocation entry{};
   entry.address = static_cast<u64>(reinterpret_cast<usize>(p));
   entry.bytes = bytes;
+  entry.weight = weight;
   entry.tag = t_current_tag;
 #if ENGINE_PLATFORM_WINDOWS
   entry.depth = ::CaptureStackBackTrace(2, k_large_allocation_frames, entry.stack, nullptr);
@@ -268,15 +294,37 @@ void record_large(void* p, usize bytes) noexcept {
   large_unlock();
 }
 
-void forget_large(void* p) noexcept {
+bool forget_large(void* p) noexcept {
   const u64 address = static_cast<u64>(reinterpret_cast<usize>(p));
+  bool found = false;
   large_lock();
   for (u32 i = 0; i < g_large_count; ++i) {
     if (g_large[i].address != address) continue;
     g_large[i] = g_large[--g_large_count];
+    found = true;
     break;
   }
   large_unlock();
+  return found;
+}
+
+void maybe_sample(void* p, usize bytes, usize interval) noexcept {
+  t_sample_countdown -= static_cast<i64>(bytes);
+  if (t_sample_countdown > 0) return;
+  t_sample_countdown += sample_gap(interval);
+  if (t_sample_countdown <= 0) t_sample_countdown = sample_gap(interval);
+  const u32 bit = sample_filter_bit(p);
+  g_sample_filter[bit / 64].fetch_or(u64{1} << (bit % 64), std::memory_order_relaxed);
+  record_large(p, bytes, interval);
+}
+
+void forget_sampled(void* p) noexcept {
+  const u32 bit = sample_filter_bit(p);
+  const u64 mask = u64{1} << (bit % 64);
+  if ((g_sample_filter[bit / 64].load(std::memory_order_relaxed) & mask) == 0) return;
+  // A cleared bit another live sample shares leaves that sample in the table when it is freed:
+  // with 16,384 entries over 2^24 bits a rare overcount, which the report's totals bound.
+  if (forget_large(p)) g_sample_filter[bit / 64].fetch_and(~mask, std::memory_order_relaxed);
 }
 
 }  // namespace
@@ -300,6 +348,17 @@ void set_large_allocation_floor(usize bytes) noexcept {
 }
 
 usize large_allocation_floor() noexcept { return g_large_floor.load(std::memory_order_relaxed); }
+
+void set_allocation_sampling(usize interval_bytes) noexcept {
+  large_lock();
+  g_sample_interval.store(interval_bytes, std::memory_order_relaxed);
+  g_large_count = 0;
+  for (std::atomic<u64>& word : g_sample_filter)
+    word.store(0, std::memory_order_relaxed);
+  large_unlock();
+}
+
+usize allocation_sampling() noexcept { return g_sample_interval.load(std::memory_order_relaxed); }
 
 u32 large_allocations(LargeAllocation* out, u32 capacity) noexcept {
   large_lock();
@@ -434,7 +493,10 @@ void* try_allocate(usize bytes, usize align) noexcept {
 #endif
   if (bytes >= k_large_allocation_min_bytes && g_large_on.load(std::memory_order_relaxed) &&
       bytes >= g_large_floor.load(std::memory_order_relaxed))
-    record_large(p, bytes);
+    record_large(p, bytes, bytes);
+  else if (const usize interval = g_sample_interval.load(std::memory_order_relaxed);
+           interval != 0 && g_large_on.load(std::memory_order_relaxed))
+    maybe_sample(p, bytes, interval);
   return p;
 }
 
@@ -462,7 +524,9 @@ void deallocate(void* p, usize bytes, [[maybe_unused]] usize align) noexcept {
 #endif
   if (bytes >= k_large_allocation_min_bytes && g_large_on.load(std::memory_order_relaxed) &&
       bytes >= g_large_floor.load(std::memory_order_relaxed))
-    forget_large(p);
+    (void)forget_large(p);
+  else if (g_sample_interval.load(std::memory_order_relaxed) != 0)
+    forget_sampled(p);
   g_total.record_free(bytes);
   backend_free(p);
 }

@@ -137,14 +137,20 @@ JsonValue snapshot(const char* when, const gfx::Device* device) {
     const mem::LargeAllocation& a = large[i];
     resident[i] = platform::resident_estimate(reinterpret_cast<const void*>(a.address), a.bytes,
                                               k_samples_per_block);
-    large_bytes += a.bytes;
+    // A sampled block stands for `weight` bytes (`mem::set_allocation_sampling`): its resident
+    // share is scaled to them.
+    const u64 weight = a.weight != 0 ? a.weight : a.bytes;
+    if (weight != a.bytes && a.bytes != 0)
+      resident[i] = static_cast<u64>(static_cast<f64>(resident[i]) * static_cast<f64>(weight) /
+                                     static_cast<f64>(a.bytes));
+    large_bytes += weight;
     large_resident += resident[i];
     u32 s = 0;
     while (s < sites.size() && !same_stack(large[sites[s].first], a))
       ++s;
     if (s == sites.size()) sites.push_back(Site{i, 0, 0, 0});
     sites[s].count += 1;
-    sites[s].bytes += a.bytes;
+    sites[s].bytes += weight;
     sites[s].resident += resident[i];
   }
   // Largest untouched first (a short list: an insertion sort is plenty).
@@ -393,6 +399,7 @@ void MemoryReport::enable(u64 floor_bytes) noexcept {
   on_ = true;
   if (floor_bytes != 0) {  // before the logs are on: setting a floor empties a log's table
     mem::set_large_allocation_floor(static_cast<usize>(floor_bytes));
+    mem::set_allocation_sampling(static_cast<usize>(floor_bytes));  // and under it, one a floor
     gfx::set_large_buffer_floor(floor_bytes);
   }
   mem::set_large_allocation_log(true);
@@ -462,6 +469,7 @@ JsonValue MemoryReport::block() const {
   out.set("first_frame", first_frame_);
   out.set("exit", exit_);
   out.set("floor_mib", mib(mem::large_allocation_floor()));
+  out.set("sample_mib", mib(mem::allocation_sampling()));
   return out;
 }
 

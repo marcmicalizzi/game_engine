@@ -248,3 +248,35 @@ TEST_CASE("memory: the large-allocation log keeps blocks down to the floor a hos
   mem::set_large_allocation_floor(mem::k_large_allocation_bytes);
   CHECK(mem::large_allocation_floor() == mem::k_large_allocation_bytes);
 }
+
+// Sampling under the floor (W51-2): 64 MiB in 4 KiB blocks, sampled at a 1 MiB mean gap, is kept
+// as about 64 entries of weight 1 MiB whose sum estimates the 64 MiB, and every one leaves when
+// its block is freed. The gaps are in [0.5, 1.5) MiB, so the count is bounded either side.
+TEST_CASE("memory: the sampler under the floor estimates small blocks by weight") {
+  std::vector<mem::LargeAllocation> seen(mem::k_large_allocation_slots);
+  constexpr usize k_block = 4096;
+  constexpr usize k_blocks = 16384;  // 64 MiB
+  constexpr usize k_interval = usize{1} << 20;
+  mem::set_allocation_sampling(k_interval);
+  CHECK(mem::allocation_sampling() == k_interval);
+  mem::set_large_allocation_log(true);
+  std::vector<void*> blocks(k_blocks);
+  for (void*& b : blocks)
+    b = mem::allocate(k_block, 16);
+  const u32 n = mem::large_allocations(seen.data(), mem::k_large_allocation_slots);
+  CHECK(n >= 40);
+  CHECK(n <= 130);
+  u64 weight = 0;
+  for (u32 i = 0; i < n && i < mem::k_large_allocation_slots; ++i) {
+    CHECK(seen[i].bytes == k_block);
+    CHECK(seen[i].weight == k_interval);
+    weight += seen[i].weight;
+  }
+  CHECK(weight == u64{n} * k_interval);
+  for (void* b : blocks)
+    mem::deallocate(b, k_block, 16);
+  CHECK(mem::large_allocations(seen.data(), mem::k_large_allocation_slots) == 0);
+  mem::set_large_allocation_log(false);
+  mem::set_allocation_sampling(0);
+  CHECK(mem::allocation_sampling() == 0);
+}
