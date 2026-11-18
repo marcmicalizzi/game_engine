@@ -75,18 +75,21 @@ ExposureOptions exposure_options_from_tunables();
 
 // ---- the model (exposure.slang does the same) --------------------------------------------------
 
-// **The key**: the display value the adapting luminance is shown at, from the luminance itself in
-// cd/m^2 (Krawczyk, Myszkowski and Seidel 2005; Krawczyk 2007 eq. 4.11): 0.18 is a photograph's
-// middle grey, and the eye's key falls as the light does — about 0.03 under a full moon, 0.42 in a
-// room lit to 100 lux, 0.72 on sunlit sand — so a night stays dark and sand stays bright where a
-// reflected-light meter would draw both grey.
+// **The key** from the adapting luminance itself in cd/m^2 (Krawczyk, Myszkowski and Seidel 2005;
+// Krawczyk 2007 eq. 4.11): 0.18 is a photograph's middle grey, and the eye's key falls as the light
+// does — about 0.03 under a full moon, 0.42 in a room lit to 100 lux, 0.72 on sunlit sand — so a
+// night stays dark and sand stays bright where a reflected-light meter would draw both grey.
 f64 exposure_key(f64 luminance) noexcept;
+// Where Reinhard's operator, which the key was chosen for, shows the adapting luminance: it scales
+// it to the key and maps the result through Y / (1 + Y) (Krawczyk 2007 eqs. 4.1 and 4.2), so the
+// display value is a / (1 + a): 0.30 in the room above, 0.42 on the sand.
+f64 exposure_shown(f64 key) noexcept;
 // The rods' share of vision at a luminance, 0.04 / (0.04 + L) (Krawczyk 2007 eq. 4.7, after Hunt).
 f64 exposure_rod_share(f64 luminance) noexcept;
-// **The exposure the eye settles at**, EV100, for an adapting luminance: the one that shows it at
-// its key. The renderer's exposure shows a luminance L at L pi / (2.5 2^EV100) (sky.h,
-// `gfx::sky_exposure_scale`), so EV100 = log2(pi L / (2.5 key(L))). Then `compensation` stops are
-// taken off (positive brighter) and the result is held within the options' floor and ceiling.
+// **The exposure the eye settles at**, EV100, for an adapting luminance: the one that shows it where
+// the operator does. The renderer's exposure shows a luminance L at L pi / (2.5 2^EV100) (sky.h,
+// `gfx::sky_exposure_scale`), so EV100 = log2(pi L / (2.5 shown(key(L)))). Then `compensation`
+// stops are taken off (positive brighter) and the result is held within the floor and ceiling.
 f64 exposure_target_ev100(f64 luminance, f64 compensation, const ExposureOptions& options) noexcept;
 // The time constant towards `target` from `current` (EV100) when the adapting luminance is
 // `luminance`: dark adaptation's when the picture brightens (the target is lower), light

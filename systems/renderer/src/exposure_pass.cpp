@@ -58,12 +58,15 @@ f64 exposure_key(f64 luminance) noexcept {
   return 1.03 - 2.0 / (2.0 + std::log10(std::max(luminance, 0.0) + 1.0));
 }
 
+f64 exposure_shown(f64 key) noexcept { return key / (1.0 + key); }
+
 f64 exposure_rod_share(f64 luminance) noexcept { return 0.04 / (0.04 + std::max(luminance, 0.0)); }
 
 f64 exposure_target_ev100(f64 luminance, f64 compensation,
                           const ExposureOptions& options) noexcept {
   const f64 key = std::max(exposure_key(luminance), 1e-3);
-  const f64 ev = std::log2(k_pi * std::max(luminance, 1e-30) / (2.5 * key)) - compensation;
+  const f64 ev =
+      std::log2(k_pi * std::max(luminance, 1e-30) / (2.5 * exposure_shown(key))) - compensation;
   return std::clamp(ev, static_cast<f64>(options.min_ev100), static_cast<f64>(options.max_ev100));
 }
 

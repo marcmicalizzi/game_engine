@@ -30,15 +30,19 @@ TEST_CASE("exposure model: the key is Krawczyk's, falling with the light") {
   CHECK(exposure_rod_share(1000.0) < 1e-4);
 }
 
-TEST_CASE("exposure model: sunlit sand meets the sky's rule, a room at noon is nine stops up") {
+TEST_CASE("exposure model: sunlit sand near the sky's rule, a room at noon is nine stops up") {
   const ExposureOptions options;
+  // Reinhard's operator shows the adapting luminance at a / (1 + a) (Krawczyk 2007 eqs. 4.1, 4.2).
+  CHECK(exposure_shown(0.18) == doctest::Approx(0.18 / 1.18));
+  CHECK(exposure_shown(1.0) == doctest::Approx(0.5));
   // Sand of albedo 0.7 under 110 klux: 0.7 x 110000 / pi cd/m^2. The sky's rule meters the light
-  // itself, log2(110000 / 2.5) = 15.4; the eye's key shows the sand bright, at about the same.
+  // itself, log2(110000 / 2.5) = 15.4, and shows the sand at its albedo; the eye shows it at 0.42,
+  // three quarters of a stop under.
   const f64 sand = 0.7 * 110000.0 / 3.14159265358979323846;
   const f64 rule = std::log2(110000.0 / 2.5);
-  CHECK(std::abs(exposure_target_ev100(sand, 0.0, options) - rule) < 0.5);
-  // A room lit to 100 lux, walls of 0.6: 19 cd/m^2, about EV100 5.8.
-  CHECK(exposure_target_ev100(19.0, 0.0, options) == doctest::Approx(5.8).epsilon(0.02));
+  CHECK(exposure_target_ev100(sand, 0.0, options) - rule == doctest::Approx(0.75).epsilon(0.05));
+  // A room lit to 100 lux, walls of 0.6: 19 cd/m^2, about EV100 6.3, nine stops up from noon.
+  CHECK(exposure_target_ev100(19.0, 0.0, options) == doctest::Approx(6.32).epsilon(0.01));
   // A step of compensation is a stop; the floor and the ceiling hold.
   CHECK(exposure_target_ev100(19.0, 1.0, options) ==
         doctest::Approx(exposure_target_ev100(19.0, 0.0, options) - 1.0));

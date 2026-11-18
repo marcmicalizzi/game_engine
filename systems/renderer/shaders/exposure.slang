@@ -113,8 +113,10 @@ float exposure_key(float luminance) {
 }
 
 float target_ev100(float luminance, float compensation, ExposureParams* p) {
+  // The adapting luminance is shown where Reinhard's operator puts it: a / (1 + a).
   const float key = max(exposure_key(luminance), 1e-3);
-  const float ev = log2(k_sky_pi * luminance / (2.5 * key)) - compensation;
+  const float shown = key / (1.0 + key);
+  const float ev = log2(k_sky_pi * luminance / (2.5 * shown)) - compensation;
   return clamp(ev, p->min_ev100, p->max_ev100);
 }
 
