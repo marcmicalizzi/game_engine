@@ -146,6 +146,15 @@ bark's colour, and the rows below are where each is answered.
 - **Nothing in what a card declares**: the needle card's transmittance and its sphere's share stay
   R164's, since neither moves a crown's light and dark (the table above).
 
+**What it does to the crowns** (the same views and runs as the table above, the branch's build
+with a pack its own `engine-content matgen` wrote, 2026-11-17 23:09 to 23:13, the session locked,
+the CPU at 100 %): the spruce's needles are 0.096 to 0.126 in luminance where they were 0.080 to
+0.103 (+19 to +23 %), the pine's 0.087 to 0.147 (+18 to +20 %); lit over blocked 1.49 to 1.65
+on the spruce and 1.36 to 1.68 on the pine, half-metre blocks 1.43 to 1.67, all where they were.
+The agent's reading of its own pictures: the crowns are lighter and more olive than main's
+grey-green, as a needle's measured colour is under a sky's blue ambient, and **as even as they
+were**: the colour was wrong and is right, and the evenness is the light's.
+
 ## What an imported asset gets, and a scene with none
 
 A spray is the engine's own image for a role a pack may leave to it, so an imported conifer and a
