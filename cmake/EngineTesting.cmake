@@ -368,6 +368,14 @@ if(ENGINE_PWSH)
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
   set_tests_properties(tools.affected PROPERTIES LABELS "tools")
 
+  # The no-driver form (tools/lib/NoDriver.psm1, `tools/dev.ps1 test -NoDriver`): its four
+  # variables set together and put back, nothing without the switch. No test runs, no GPU, no lock.
+  add_test(NAME tools.no_driver
+    COMMAND "${ENGINE_PWSH}" -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_SOURCE_DIR}/tools/no-driver.Tests.ps1"
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+  set_tests_properties(tools.no_driver PROPERTIES LABELS "tools")
+
   # Which Linux build volumes `tools/linux-build.ps1 -Prune -Stale` removes
   # (tools/lib/LinuxVolumes.psm1), over a machine written down in the test: the sweep deletes
   # build trees on a daemon every checkout shares, so its rule is tested as a rule. No daemon is

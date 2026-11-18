@@ -52,6 +52,11 @@
                 with no GPU, and then everything else as usual. In an all-on configuration it
                 changes nothing. It is the merge gate's (docs/ci/what-to-run.md, "The
                 off-configurations' GPU cases").
+                -NoDriver runs the whole test run, in any configuration, with no Vulkan driver to
+                find and the GPU lock's switch at 0 (tools/lib/NoDriver.psm1: four variables,
+                put back when the run ends), so every GPU case skips and nothing asks for the
+                machine-wide lock. It is the no-driver form of a change that needs no GPU
+                (docs/ci/what-to-run.md, "The no-driver form").
                 Every ctest pass's LastTest.log is also kept beside it as
                 LastTest-<yyyyMMdd-HHmmss>-<pass>.log (all, affected or filter, and with
                 -SkipInvariantGpu's two passes -invariant-no-driver and -rest), the newest 16,
@@ -87,10 +92,13 @@ param(
   [switch]$Fresh,
   [switch]$GpuLock,
   [ValidateRange(0, 64)][int]$Jobs = 0,
-  [switch]$SkipInvariantGpu
+  [switch]$SkipInvariantGpu,
+  [switch]$NoDriver
 )
 
 $ErrorActionPreference = 'Stop'
+# Only a test run has GPU cases to skip; a bench's GPU work is what -GpuLock is for.
+if ($NoDriver -and $Command -ne 'test') { throw "-NoDriver is a test run's switch (tools/dev.ps1 test -NoDriver), not $Command's." }
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $IsWin = $IsWindows -or ($env:OS -eq 'Windows_NT')
 
@@ -324,6 +332,7 @@ function Test-OffConfiguration {
 # one of them. Its LastTest.log is copied to a name of its own, `LastTest-<time>-<pass>.log` beside
 # it (tools/lib/CTestLogs.psm1), because the next pass or the next invocation writes the same file.
 Import-Module (Join-Path $PSScriptRoot 'lib/CTestLogs.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'lib/NoDriver.psm1') -Force
 function Invoke-CTest([string[]]$ctestArgs, [string]$pass) {
   Push-Location $Root
   $lines = @()
@@ -357,6 +366,11 @@ function Invoke-Test {
   # A run that skipped a test must not read as a pass, so it ends with 75 and says which
   # (docs/subsystems/gpu_lock.md, "A wait is bounded"); a failure in either run below fails the whole.
   $runs = @()
+  # The author's no-driver form: the four for the whole run, both passes included, and put back
+  # whatever happens (the variables are this pwsh process's, so the caller's session gets them back).
+  if ($NoDriver) { Write-Host "-NoDriver: no Vulkan driver to find and the GPU lock's switch at 0 for the whole run; every GPU case skips and nothing waits for the lock" -ForegroundColor Cyan }
+  $noDriverSaved = Enter-NoDriver -BuildDir $BuildDir -When ([bool]$NoDriver)
+  try {
   if ($SkipInvariantGpu -and (Test-OffConfiguration)) {
     # The libraries labelled `config_invariant` are the same code in every configuration (the
     # configure-time check in engine_module_tests and the lint's config-invariant-conditional
@@ -365,17 +379,16 @@ function Invoke-Test {
     # does on a hosted runner with no GPU, and no device means no GPU lock. First, so that the
     # main run's LastTest.log is the one the build tree keeps.
     Write-Host "-SkipInvariantGpu: $Preset leaves capabilities out; the config_invariant tests run with no Vulkan driver, then the rest" -ForegroundColor Cyan
-    $hide = @{ VK_DRIVER_FILES = (Join-Path $BuildDir 'no-vulkan-driver.json'); VK_ICD_FILENAMES = (Join-Path $BuildDir 'no-vulkan-driver.json');
-               VK_ADD_DRIVER_FILES = ''; ENGINE_GPU_LOCK_ON_DEVICE = '0' }
-    $saved = @{}
-    foreach ($k in $hide.Keys) { $saved[$k] = [Environment]::GetEnvironmentVariable($k); [Environment]::SetEnvironmentVariable($k, $(if ($hide[$k]) { $hide[$k] } else { $null })) }
+    $saved = Enter-NoDriver -BuildDir $BuildDir
     try { $runs += Invoke-CTest ($args + @('-L', '^config_invariant$')) "$kind-invariant-no-driver" }
-    finally { foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k]) } }
+    finally { Exit-NoDriver $saved }
     $runs += Invoke-CTest ($args + @('-LE', '^config_invariant$')) "$kind-rest"
   } else {
     if ($SkipInvariantGpu) { Write-Host "-SkipInvariantGpu: $Preset is an all-on configuration; nothing skipped" -ForegroundColor Cyan }
     $runs += Invoke-CTest $args $kind
   }
+  }
+  finally { Exit-NoDriver $noDriverSaved }
   $lines = @($runs | ForEach-Object { $_.Lines })
   $code = @($runs | Where-Object { $_.Code -ne 0 } | Select-Object -First 1 | ForEach-Object { $_.Code })
   $code = if ($code.Count -gt 0) { $code[0] } else { 0 }
