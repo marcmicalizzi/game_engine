@@ -18,7 +18,8 @@
 //
 // The room is lit through its door by the sky and, where the device traces, by the world-space
 // cache's sky visibility (`renderer.gi.mode sky`), which is what makes a room dark; without it the
-// sky's ambient reaches the room unoccluded and the room is about two stops under the noon outside.
+// sky's ambient reaches the room unoccluded, only the sun is lost, and the room is under the noon
+// outside by what its darker walls take (1.7 stops measured; `write_room` has why).
 
 #include "test_device.h"
 
@@ -99,8 +100,10 @@ struct MeshBuilder {
   }
 };
 
-// One primitive, one material, u32 indices (as gi_cache_tests.cpp writes its box).
-bool write_glb(const std::string& path, const MeshBuilder& m, Vec3 base_color, f32 roughness) {
+// Two primitives over one set of vertices, u32 indices (as gi_cache_tests.cpp writes its box): the
+// indices before `split` take the first material, the rest the second.
+bool write_glb(const std::string& path, const MeshBuilder& m, u32 split, Vec3 first_color,
+               Vec3 second_color, f32 roughness) {
   std::vector<u8> bin;
   for (const Vec3& p : m.positions) {
     put_f32(bin, p.x);
@@ -129,15 +132,20 @@ bool write_glb(const std::string& path, const MeshBuilder& m, Vec3 base_color, f
     hi = Vec3{std::fmax(hi.x, p.x), std::fmax(hi.y, p.y), std::fmax(hi.z, p.z)};
   }
   const u64 count = m.positions.size();
+  auto material = [&](Vec3 c) {
+    return "{\"pbrMetallicRoughness\":{\"baseColorFactor\":[" + f(c.x) + "," + f(c.y) + "," +
+           f(c.z) + ",1],\"metallicFactor\":0,\"roughnessFactor\":" + f(roughness) + "}}";
+  };
+  const std::string attributes = "\"attributes\":{\"POSITION\":0,\"NORMAL\":1,\"TEXCOORD_0\":2}";
   std::string json =
       "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[0]}],"
       "\"nodes\":[{\"mesh\":0}],"
-      "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"NORMAL\":1,"
-      "\"TEXCOORD_0\":2},\"indices\":3,\"material\":0}]}],"
-      "\"materials\":[{\"pbrMetallicRoughness\":{\"baseColorFactor\":[" +
-      f(base_color.x) + "," + f(base_color.y) + "," + f(base_color.z) +
-      ",1],\"metallicFactor\":0,\"roughnessFactor\":" + f(roughness) +
-      "}}],"
+      "\"meshes\":[{\"primitives\":[{" +
+      attributes + ",\"indices\":3,\"material\":0},{" + attributes +
+      ",\"indices\":4,\"material\":1}]}],"
+      "\"materials\":[" +
+      material(first_color) + "," + material(second_color) +
+      "],"
       "\"accessors\":["
       "{\"bufferView\":0,\"componentType\":5126,\"count\":" +
       n(count) + ",\"type\":\"VEC3\",\"min\":[" + f(lo.x) + "," + f(lo.y) + "," + f(lo.z) +
@@ -150,7 +158,10 @@ bool write_glb(const std::string& path, const MeshBuilder& m, Vec3 base_color, f
       n(count) +
       ",\"type\":\"VEC2\"},"
       "{\"bufferView\":3,\"componentType\":5125,\"count\":" +
-      n(m.indices.size()) +
+      n(split) +
+      ",\"type\":\"SCALAR\"},"
+      "{\"bufferView\":3,\"byteOffset\":" +
+      n(u64{split} * 4) + ",\"componentType\":5125,\"count\":" + n(m.indices.size() - split) +
       ",\"type\":\"SCALAR\"}],"
       "\"bufferViews\":["
       "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":" +
@@ -182,22 +193,31 @@ bool write_glb(const std::string& path, const MeshBuilder& m, Vec3 base_color, f
 // high in its east (+x) wall, on a ground 120 m across. Two shells — the inside facing in, the
 // outside facing out — and the door's reveals, so it is closed to the sky but for the door from
 // every side a ray or a camera comes.
+//
+// **The inside is darker than the outside** (a second material, about 0.55 of the outside's
+// albedo), and that is what keeps walking in a step of more than a stop where the device does not
+// trace: without the world-space cache nothing occludes the sky's ambient, so the room is lit as an
+// unshadowed surface out of the sun is, and the outside view is mostly the door's wall, which the
+// noon sun does not reach either. With one albedo the two metered a stop apart there (7574 and 3779
+// cd/m2, the targets 0.98 stops apart); with the inside at 0.55 they are 7556 and 2247, and the
+// targets 1.7 stops apart. Where the cache traces, the room meters about 25 cd/m2.
 bool write_room(const std::string& path) {
   MeshBuilder m;
-  const f32 h = 3.0f;                                   // the inside's half width
-  const f32 t = 0.3f;                                   // the walls
-  const f32 top = 3.0f;                                 // the ceiling
-  const f32 d = 0.6f;                                   // the door's half width
-  const f32 dh = 2.1f;                                  // and its height
-  m.rect(1, 0.0f, -60.0f, 60.0f, -60.0f, 60.0f, 1.0f);  // the ground, which is the room's floor
-  // The inside, facing in.
-  m.rect(1, top, -h, h, -h, h, -1.0f);
-  m.rect(0, -h, 0.0f, top, -h, h, 1.0f);
-  m.rect(2, -h, -h, h, 0.0f, top, 1.0f);
-  m.rect(2, h, -h, h, 0.0f, top, -1.0f);
-  m.rect(0, h, 0.0f, top, -h, -d, -1.0f);
-  m.rect(0, h, 0.0f, top, d, h, -1.0f);
-  m.rect(0, h, dh, top, -d, d, -1.0f);
+  const f32 h = 3.0f;    // the inside's half width
+  const f32 t = 0.3f;    // the walls
+  const f32 top = 3.0f;  // the ceiling
+  const f32 d = 0.6f;    // the door's half width
+  const f32 dh = 2.1f;   // and its height
+  const f32 g = 60.0f;   // the ground's half width
+  // The ground, around the room's floor: a three by three grid of rects without its middle, so
+  // every edge is shared whole (no T-junctions at the floor's).
+  const f32 cuts[4] = {-g, -h, h, g};
+  for (u32 i = 0; i < 3; ++i) {
+    for (u32 j = 0; j < 3; ++j) {
+      if (i == 1 && j == 1) continue;
+      m.rect(1, 0.0f, cuts[i], cuts[i + 1], cuts[j], cuts[j + 1], 1.0f);
+    }
+  }
   // The outside, facing out.
   const f32 o = h + t;
   m.rect(1, top + t, -o, o, -o, o, 1.0f);
@@ -211,7 +231,17 @@ bool write_room(const std::string& path) {
   m.rect(2, -d, h, o, 0.0f, dh, 1.0f);
   m.rect(2, d, h, o, 0.0f, dh, -1.0f);
   m.rect(1, dh, h, o, -d, d, -1.0f);
-  return write_glb(path, m, Vec3{0.6f, 0.58f, 0.55f}, 0.9f);
+  const u32 inside_from = static_cast<u32>(m.indices.size());
+  // The inside, facing in: its floor, its ceiling and its walls.
+  m.rect(1, 0.0f, -h, h, -h, h, 1.0f);
+  m.rect(1, top, -h, h, -h, h, -1.0f);
+  m.rect(0, -h, 0.0f, top, -h, h, 1.0f);
+  m.rect(2, -h, -h, h, 0.0f, top, 1.0f);
+  m.rect(2, h, -h, h, 0.0f, top, -1.0f);
+  m.rect(0, h, 0.0f, top, -h, -d, -1.0f);
+  m.rect(0, h, 0.0f, top, d, h, -1.0f);
+  m.rect(0, h, dh, top, -d, d, -1.0f);
+  return write_glb(path, m, inside_from, Vec3{0.6f, 0.58f, 0.55f}, Vec3{0.33f, 0.32f, 0.3f}, 0.9f);
 }
 
 std::string slashes(const std::filesystem::path& p) {
@@ -410,9 +440,11 @@ TEST_CASE("exposure: walked from noon into a room and out, the eye's adaptation 
   const ExposureState& inside = states[k_inside_end - 1];
   const ExposureState& back = states[k_out_end - 1];
   MESSAGE("outside: metered " << outside.luminance << " cd/m2, EV100 " << outside.ev100
-                              << " (the rule's " << outside.base_ev100 << "); inside: "
-                              << inside.luminance << " cd/m2, EV100 " << inside.ev100
-                              << "; out again " << back.ev100 << (gpu.traces ? "" : " (no cache)"));
+                              << " (target " << outside.target_ev100 << ", the rule's "
+                              << outside.base_ev100 << "); inside: " << inside.luminance
+                              << " cd/m2, EV100 " << inside.ev100 << " (target "
+                              << inside.target_ev100 << "); out again " << back.ev100
+                              << std::string(gpu.traces ? "" : " (no cache)"));
   // Outside, settled within the first second; inside, the room's target lower by more than a stop.
   CHECK(std::abs(outside.ev100 - outside.target_ev100) <= 0.05f);
   CHECK(inside.target_ev100 <= outside.target_ev100 - 1.0f);
