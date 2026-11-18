@@ -14,6 +14,8 @@
 #include <domain/protocol/session.h>
 #include <foundation/io/vfs.h>
 
+#include "document_path.h"
+
 #include <cstring>
 #include <schemas/scene.h>
 #include <string>
@@ -46,26 +48,6 @@ bool ends_with(std::string_view s, std::string_view suffix) {
     char c = s[s.size() - suffix.size() + i];
     if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
     if (c != suffix[i]) return false;
-  }
-  return true;
-}
-
-// A path that stays under the document's directory, the one root a scene's mesh paths resolve
-// against (`doc_scene`'s `resolve_path`): relative, no drive, no stream, no `..` component, no
-// empty or control-character name. A client names a file on the host's disk here, and a host has
-// clients of several roles: an absolute path or one that climbs out would let any of them learn
-// whether a file exists anywhere on the machine, and its first bytes (protocol.md, "Placing an
-// asset, instantiating a template").
-bool stays_under_document(std::string_view asset) {
-  if (asset.empty() || asset[0] == '/' || asset[0] == '\\') return false;
-  usize start = 0;
-  for (usize i = 0; i <= asset.size(); ++i) {
-    const char c = i < asset.size() ? asset[i] : '/';
-    if (static_cast<unsigned char>(c) < 0x20 || c == ':') return false;
-    if (c != '/' && c != '\\') continue;
-    const std::string_view name = asset.substr(start, i - start);
-    if (name.empty() || name == "..") return false;
-    start = i + 1;
   }
   return true;
 }
