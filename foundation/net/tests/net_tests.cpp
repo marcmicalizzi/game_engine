@@ -253,6 +253,41 @@ TEST_CASE("net: a server and a client on loopback") {
 // net.md, "Two bounds": sockets that never send a byte hold no place a client needs.
 // Before, the cap counted them, so twice its number of silent sockets kept every client out with a
 // 503 for the head timeout; now the newest needing a place shuts the oldest silent one down.
+// The head's timeout is one deadline for the whole head (net.md, "One deadline for the head"): a
+// client that sends a byte every half timeout never lets a per-wait timeout run out, and before the
+// mend held the read for as long as 16 KiB of single bytes takes.
+TEST_CASE("net: a head sent a byte at a time is cut at the head timeout") {
+  Listener listener;
+  std::string error;
+  REQUIRE_MESSAGE(listener.open_loopback(0, error), error);
+  Socket client;
+  REQUIRE_MESSAGE(connect_loopback(listener.port(), client, error), error);
+  Socket served;
+  REQUIRE_MESSAGE(listener.accept(10000, served, error), error);
+  constexpr i32 k_timeout_ms = 400;
+  std::atomic<bool> done{false};
+  std::thread trickle([&] {
+    const std::string head = "GET /a-long-path-sent-slowly HTTP/1.1\r\nHost: 127.0.0.1\r\n";
+    for (usize i = 0; i < head.size() && !done.load(); ++i) {
+      if (!client.send_all(std::string_view(head).substr(i, 1))) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(k_timeout_ms / 2));
+    }
+  });
+  HttpRequest request;
+  std::string leftover;
+  const auto started = std::chrono::steady_clock::now();
+  const HttpRead read = read_http_request(served, k_timeout_ms, request, leftover);
+  const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - started)
+                        .count();
+  done.store(true);
+  trickle.join();
+  CHECK((read == HttpRead::TimedOut));
+  // The deadline plus one wait's slack for a loaded machine; the trickle alone runs some fifty
+  // bytes at 200 ms, ten seconds and more, so a per-wait timeout cannot pass this.
+  CHECK(took < 4 * k_timeout_ms);
+}
+
 TEST_CASE("net: silent sockets do not keep a client off the server") {
   EchoHandler handler;
   Server server;

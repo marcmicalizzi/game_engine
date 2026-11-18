@@ -42,9 +42,10 @@ enum class HttpRead : u8 { Ok, Closed, TooLarge, Malformed, TimedOut };
 // The largest request head accepted, request line and headers together. A browser's is under 2 KB.
 inline constexpr usize k_max_http_head = 16 * 1024;
 
-// Reads one request head from `socket`, waiting at most `timeout_ms` for each piece. Bytes that
-// arrived after the head (a WebSocket client may send its first frame at once) are left in
-// `leftover`.
+// Reads one request head from `socket`, waiting at most `timeout_ms` for the whole head however it
+// arrives (negative: forever), so a client trickling bytes is cut at the same time as a silent one.
+// Bytes that arrived after the head (a WebSocket client may send its first frame at once) are left
+// in `leftover`.
 HttpRead read_http_request(Socket& socket, i32 timeout_ms, HttpRequest& out, std::string& leftover);
 
 struct HttpResponse {

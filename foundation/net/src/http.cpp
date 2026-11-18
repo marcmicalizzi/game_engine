@@ -1,6 +1,8 @@
 #include <foundation/net/http.h>
 #include <foundation/net/socket.h>
 
+#include <chrono>
+
 namespace engine::net {
 
 namespace {
@@ -131,6 +133,12 @@ HttpRead read_http_request(Socket& socket, i32 timeout_ms, HttpRequest& out,
   std::string buffer = std::move(leftover);
   leftover.clear();
   u8 chunk[4096];
+  // One deadline for the whole head, not a timeout for each piece: a client that sends a byte just
+  // inside every wait would otherwise hold its connection and its thread for as long as 16 KiB of
+  // single bytes takes (net.md, "One deadline for the head"). A negative timeout waits forever.
+  using steady = std::chrono::steady_clock;
+  const steady::time_point deadline =
+      steady::now() + std::chrono::milliseconds(timeout_ms < 0 ? 0 : timeout_ms);
   for (;;) {
     const usize end = buffer.find("\r\n\r\n");
     if (end != std::string::npos) {
@@ -141,7 +149,14 @@ HttpRead read_http_request(Socket& socket, i32 timeout_ms, HttpRequest& out,
                  : HttpRead::Malformed;
     }
     if (buffer.size() > k_max_http_head) return HttpRead::TooLarge;
-    const i32 ready = socket.wait_readable(timeout_ms);
+    i32 wait_ms = timeout_ms;
+    if (timeout_ms >= 0) {
+      const auto left =
+          std::chrono::duration_cast<std::chrono::milliseconds>(deadline - steady::now());
+      if (left.count() <= 0) return HttpRead::TimedOut;
+      wait_ms = static_cast<i32>(left.count());
+    }
+    const i32 ready = socket.wait_readable(wait_ms);
     if (ready == 0) return HttpRead::TimedOut;
     if (ready < 0) return HttpRead::Closed;
     const i64 n = socket.receive(std::span<u8>(chunk, sizeof(chunk)));
