@@ -282,6 +282,7 @@ class Session {
   void publish_journal(std::string_view action, u32 index, u64 connection) const;
 
   bool load_side_files(RpcError& error);
+  bool hold_host_mark(RpcError& error);
   // Writes this host's entry for the proposal `layer` into `proposals.json` under its lock, read
   // afresh, so another host's change to another proposal stays (protocol.md, "Two hosts, one side
   // file").
@@ -321,6 +322,9 @@ class Session {
   doc::Document doc_;
   doc::DocumentManifest manifest_;
   LeaseTable leases_;
+  // Held while this host's socket connections may hold leases here (session.cpp's
+  // `host_mark_path`): what another host's open tells this host's live leases by.
+  SideFileLock host_mark_;
   ProposalTable proposals_;
   TransactionsFile transactions_;
   Vector<TransactionHold> transaction_holds_;

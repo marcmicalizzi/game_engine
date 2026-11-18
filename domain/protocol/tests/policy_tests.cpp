@@ -1911,3 +1911,50 @@ TEST_CASE("side files: two hosts that each open a proposal keep both in proposal
   CHECK(std::find(layers.begin(), layers.end(), "dunes") != layers.end());
   CHECK(a.vfs.exists(dir + "/proposals.json.lock"));
 }
+// A host holds a mark on a document while its socket connections may hold leases there (the lock
+// of `leases.<host>`, session.cpp): a second host's open drops a connection's lease as a gone
+// host's only when nobody holds that host's mark. Before the mark, `host` alone could not tell the
+// two apart, so the open, a read any credential may make, ended a live host's clients' leases.
+TEST_CASE("side files: a second host's open keeps a live host's connection leases") {
+  test::TempDir tmp("protocol_live_host_leases");
+  const std::string dir = tmp.file("doc");
+  {
+    Host first;
+    first.open(dir, true);
+  }
+  const i64 now = time::wall_unix_ms();
+  const auto lease = [&](u64 id, const char* host) {
+    return std::string(R"({"id":)") + std::to_string(id) + R"(,"connection":3,"host":")" + host +
+           R"(","actor":"c","layer":"base","acquired_unix_ms":)" + std::to_string(now) +
+           R"(,"expires_unix_ms":)" + std::to_string(now + 3'600'000) + "}";
+  };
+  {
+    std::ofstream out(dir + "/leases.json", std::ios::binary);
+    out << R"({"leases":[)" << lease(77, "feedfacefeedface") << ","
+        << lease(78, "0000000000000001") << "]}";
+  }
+  // The live host's mark, held as that host holds it; the other host left none.
+  SideFileLock mark;
+  std::string message;
+  REQUIRE_MESSAGE(mark.acquire(dir + "/leases.feedfacefeedface", 10'000, message), message);
+  const auto listed = [&](Host& h) {
+    std::vector<i64> ids;
+    const JsonValue result = h.ok("lease.list");
+    const JsonValue& leases = at(result, "leases");
+    for (u32 i = 0; i < leases.size(); ++i) {
+      i64 id = 0;
+      REQUIRE(at(leases[i], "id").get_i64(id));
+      ids.push_back(id);
+    }
+    return ids;
+  };
+  Host second;
+  second.open(dir, false);
+  CHECK(listed(second) == std::vector<i64>{77});
+  // Once the host is gone its mark is free: the next open drops its lease and the mark with it.
+  mark.release();
+  Host third;
+  third.open(dir, false);
+  CHECK(listed(third).empty());
+  CHECK_FALSE(third.vfs.exists(dir + "/leases.feedfacefeedface.lock"));
+}

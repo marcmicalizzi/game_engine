@@ -93,6 +93,30 @@ bool drop_ledger_counters(JsonValue& object, schema::ReadContext&) {
   return true;
 }
 
+// The mark a host holds on a document while its socket connections may hold leases there: the
+// lock of `leases.<host>` (`leases.<host>.lock`, side_file.h), taken with the first such lease and
+// let go with the session or the process. Another host's open asks it before it drops that host's
+// connection leases as a gone host's (load_side_files).
+std::string host_mark_path(std::string_view dir, std::string_view host) {
+  return DocumentStore::path_of(dir, "leases." + std::string(host));
+}
+
+// Whether the host named `host` still holds its mark on `dir`. No mark, or a mark nobody holds, is
+// a host that has gone (a host's name is drawn once per process and never reused, so a free mark
+// is never taken again, and is removed here). A mark that cannot be opened is counted alive: the
+// lease then stands until its own expiry rather than being dropped from a live host.
+bool host_alive(const io::Vfs& vfs, std::string_view dir, std::string_view host) {
+  const std::string mark = host_mark_path(dir, host);
+  if (!vfs.exists(mark + ".lock")) return false;
+  std::string native;
+  if (vfs.resolve(mark, native, /*for_write=*/false) != io::Status::Ok) return true;
+  SideFileLock probe;
+  std::string message;
+  if (!probe.acquire(native, 0, message)) return true;
+  (void)vfs.remove(mark + ".lock");
+  return false;
+}
+
 void register_side_file_steps() {
   static const bool registered = [] {
     schema::MigrationRegistry::global().add({"engine.protocol.LeaseFile", 1, &drop_next_id});
@@ -364,8 +388,11 @@ bool Session::load_side_files(RpcError& error) {
   // (`drop_ended_connection_leases`).
   // Looked for without the lock, which a document with nothing to drop never takes, and dropped
   // under it from the table as it stands then.
-  const auto orphan = [](const LeaseInfo& l) {
-    return l.connection != 0 && l.host != host_instance();
+  // A host that is alive holds its mark (`host_mark_path`), so its clients' leases stay: before
+  // the mark, `host` alone could not tell a live host from a gone one, and a second host's open (a
+  // read any credential may make) ended a live host's socket clients' leases.
+  const auto orphan = [this](const LeaseInfo& l) {
+    return l.connection != 0 && l.host != host_instance() && !host_alive(*vfs_, dir_, l.host);
   };
   bool orphans = false;
   for (const LeaseInfo& l : leases.leases)
@@ -425,6 +452,12 @@ bool Session::load_side_files(RpcError& error) {
 }
 
 std::string Session::leases_path() const { return DocumentStore::path_of(dir_, k_leases_file); }
+
+bool Session::hold_host_mark(RpcError& error) {
+  if (host_mark_.held()) return true;
+  if (!may_write_side_files(error)) return false;
+  return lock_side_file(*vfs_, host_mark_path(dir_, host_instance()), host_mark_, error);
+}
 
 std::string Session::transactions_path() const {
   return DocumentStore::path_of(dir_, k_transactions_file);
@@ -1145,6 +1178,8 @@ bool Session::acquire_lease(const LeaseAcquireParams& params, const Caller& call
   // host"): one that vanishes must not hold tiles for the rest of a ttl nobody will renew.
   wanted.connection = caller.connection;
   if (caller.connection != 0) wanted.host = host_instance();
+  // The mark another host's open tells this host's live leases by (load_side_files).
+  if (caller.connection != 0 && !hold_host_mark(error)) return false;
   const bool ok = update_leases(
       [&](bool& write) {
         if (leases_.expire(now_ms) > 0) write = true;
