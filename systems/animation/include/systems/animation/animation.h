@@ -10,14 +10,16 @@
 //
 // What it does not do: draw. The renderer contract is a span and a pair of offsets (see "The
 // renderer contract" below and docs/subsystems/animation.md); wiring it to `gfx::DeformDesc` is
-// the renderer's change, not this module's. Also absent, and named rather than implied: blend
-// trees and state machines as data, IK, and motion matching (docs/plan/05-simulation.md §5.11).
+// the renderer's change, not this module's. Graphs as data exist in their first two stages
+// (graph.h, S35: a control table, and a pose program of 1D blends and cross-fades by the normalized
+// weighted sum); absent, and named rather than implied: layers and masks, IK, and motion matching
+// (docs/plan/05-simulation.md §5.11).
 //
 // ---- ADR-0027 decision 2, registration point by registration point ----------------------------
 //
 //   [x] capability graph    engine_capability_requires(animation ecs) — anything that ticks does
 //   [x] schema types        systems/animation/schemas/animation.schema, engine_schema_library
-//   [x] scheduler entry     three sim::SystemDesc, registered with ecs::register_system below
+//   [x] scheduler entry     five sim::SystemDesc, registered with ecs::register_system below
 //   [ ] render passes       none: this capability produces a buffer, it does not draw
 //   [ ] derived data        none: clips are imported at load, not precomputed by the content build
 //   [ ] protocol methods    none yet; the components are already reachable through world.apply
@@ -46,12 +48,14 @@
 #include <domain/ecs/systems.h>
 #include <domain/sim/scheduler.h>
 #include <domain/sim/tiers.h>
+#include <systems/animation/graph.h>
 #include <systems/animation/library.h>
 #include <systems/animation/pose_pool.h>
 
 #include <flecs.h>
 #include <schemas/animation.h>
 #include <span>
+#include <string>
 
 namespace engine::animation {
 
@@ -124,12 +128,14 @@ u8 lod_tier(f32 observer_score, u8 current, const sim::TierParams& params) noexc
 // not the world's total — a diagnostic, not a metric. `promotions` and `demotions` are exact,
 // because a tier transition never happens on a worker.
 struct AnimationStats {
-  u32 players = 0;       // players advanced
-  u32 sampled = 0;       // poses written
-  u32 skinned = 0;       // instances whose bone matrices were rebuilt
-  u32 promotions = 0;    // slots acquired since install
-  u32 demotions = 0;     // slots released since install
-  u32 skipped_tier = 0;  // instances whose divisor said "not this tick"
+  u32 players = 0;           // players advanced
+  u32 sampled = 0;           // poses written
+  u32 skinned = 0;           // instances whose bone matrices were rebuilt
+  u32 promotions = 0;        // slots acquired since install
+  u32 demotions = 0;         // slots released since install
+  u32 skipped_tier = 0;      // instances whose divisor said "not this tick"
+  u32 graph_controlled = 0;  // graph-driven instances (no player) whose control pass ran (stage 2)
+  u32 graph_sampled = 0;     // graph-driven instances whose pose program ran
 };
 
 struct AnimationConfig {
@@ -216,6 +222,55 @@ class AnimationSystem {
   // holds one. False for an id this world does not hold or that has no player.
   bool player(const Id128& entity, AnimationPlayer& out) const;
 
+  // --- graphs (S35 stage 1; graph.h, docs/subsystems/animation.md "Graphs") ---------------------
+  //
+  // An entity is driven by a graph when it carries `AnimationGraphInput` and `AnimationGraphState`
+  // (animation_graph.schema). In stage 1 the graph's control pass decides which state each machine
+  // is in and the state is played into the entity's `AnimationPlayer` by the same collapse-and-fade
+  // code `play()` is, so `sample_poses` and every hash of the pose are what those calls give.
+
+  // Compiles `desc` against this capability's library (every clip a state names must be in it) and
+  // adds it to `graphs()`, replacing a graph with the same id. False, with `why`, when the compile
+  // refuses it. Outside a tick; allocates.
+  bool add_graph(const GraphDesc& desc, std::string& why);
+  // Makes `entity` graph-driven by `graph` (in `graphs()`): its inputs at the parameters' defaults,
+  // no machine entered, so its first control tick enters with a cut. False for an entity or a
+  // graph this world does not hold.
+  bool attach_graph(const Id128& entity, const Id128& graph);
+  bool has_graph(const Id128& entity) const;
+  // One control tick of `dt` seconds for one graph-driven entity: `values` by parameter index and
+  // `triggers` written into its inputs, `graph_control` over its state, and for every machine that
+  // entered a state this tick its `GraphEnter` in `entered` (one a machine, at most
+  // `k_graph_max_machines`). Returns a bit a machine that entered; 0 for an entity with no graph.
+  // A host that keeps its own books for what it plays (engine-view's actors) plays the steps
+  // itself; one that does not calls `apply_graph_step`.
+  u32 control_graph(const Id128& entity, std::span<const f32> values, u32 triggers, f32 dt,
+                    GraphEnter* entered);
+  // Plays a step into the entity's `AnimationPlayer`: `play(clip, fade, looping)` and then, for a
+  // state with its own clock, its rate; a phase-locked state's rate is left to the host that drives
+  // its phase. A state with no clip is the rest pose, at once (a fade to rest is a weight, which a
+  // host's actors own; the capability's player cuts).
+  bool apply_graph_step(const Id128& entity, const GraphEnter& enter);
+  const GraphLibrary& graphs() const noexcept { return graphs_; }
+
+  // --- graph-driven poses (S35 stage 2; animation.md "Graphs: the pose program") ---------------
+  //
+  // An entity attached this way carries the two graph components, a `SkeletonInstance` and an
+  // `AnimationLod` and **no `AnimationPlayer`**: the scheduled `animation.graph_control` runs its
+  // control pass each tick its tier updates (the inputs are whatever gameplay last wrote into its
+  // `AnimationGraphInput`, through `set_graph_inputs` or `WorldCommands`), and
+  // `animation.graph_sample` evaluates the graph's pose program into its pool slot, which
+  // `build_skinning_matrices` then skins as it does a player's. False for an entity, a graph or a
+  // skeleton this world does not hold, an entity that already has a player (an entity is
+  // graph-driven or player-driven, never both), and a graph with no pose program
+  // (`CompiledGraph::program_why`).
+  bool attach_graph(const Id128& entity, const Id128& graph, const Id128& skeleton);
+  // Writes `values` (by parameter index) and `triggers` into a graph-driven entity's inputs, for
+  // the next control tick. False for an entity with no graph.
+  bool set_graph_inputs(const Id128& entity, std::span<const f32> values, u32 triggers);
+  // The entity's graph state as it stands (a copy). False for an entity with no graph.
+  bool graph_state(const Id128& entity, AnimationGraphState& out) const;
+
   // --- LOD -------------------------------------------------------------------------------------
 
   // Puts one instance at `tier`, acquiring or releasing its pool slot and advancing its playhead
@@ -257,10 +312,11 @@ class AnimationSystem {
   PosePool& poses() noexcept { return poses_; }
   const Library& library() const noexcept { return *library_; }
   const AnimationStats& stats() const noexcept { return stats_; }
-  // The three descriptors, in registration order, for a test or a tool that wants to read what
-  // this capability declared without going through the world's `SystemRegistry`.
+  // The five descriptors, in registration order — `advance_players`, `graph_control`,
+  // `sample_poses`, `graph_sample`, `build_skinning_matrices` — for a test or a tool that wants to
+  // read what this capability declared without going through the world's `SystemRegistry`.
   std::span<const sim::SystemDesc> descriptors() const noexcept { return {descs_, k_system_count}; }
-  static constexpr u32 k_system_count = 3;
+  static constexpr u32 k_system_count = 5;
 
   // The model-space transform of one joint of one instance, for a caller that needs a foot or a
   // hand where the renderer would draw it (a footstep query, a grab point). Identity when the
@@ -271,11 +327,14 @@ class AnimationSystem {
   void advance_players(flecs::iter& it);
   void sample_poses(flecs::iter& it);
   void build_skinning_matrices(flecs::iter& it);
+  void control_graphs(flecs::iter& it);
+  void sample_graphs(flecs::iter& it);
   void apply_tier(flecs::entity entity, u8 tier);
 
   Library* library_ = nullptr;
   flecs::world* world_ = nullptr;
   PosePool poses_;
+  GraphLibrary graphs_;  // empty, nothing allocated, for a world with no graph
   AnimationStats stats_;
   sim::SystemDesc descs_[k_system_count];
 };
