@@ -95,10 +95,15 @@ bool Session::collect_blobs(const CollectBlobsParams& params, CollectBlobsResult
 
 bool Session::checkpoint(std::string_view label, const Caller& caller, doc::CheckpointInfo& out,
                          RpcError& error) {
+  // The label is a client's text that becomes the commit's subject: refused, not altered.
+  std::string message;
+  if (!Checkpoints::check_label(label, &message)) {
+    error = make_error(codes::k_invalid_argument, std::move(message));
+    return false;
+  }
   // Every change is saved before its answer, so this writes nothing unless a load found files out
   // of their canonical form; then the checkpoint holds the canonical ones.
   if (!persist(error)) return false;
-  std::string message;
   doc::Attribution who = caller.who;
   if (who.timestamp_unix_ms == 0) who.timestamp_unix_ms = time::wall_unix_ms();
   if (!Checkpoints::take(*vfs_, dir_, doc_, manifest_, label, who, out, &message)) {

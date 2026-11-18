@@ -319,6 +319,14 @@ TEST_CASE("checkpoints: taken, rolled back across a tiled layer, undone, and ref
                                                    {"attribution", who("ann", "director")}}));
   const std::string id1(c1.find("id")->as_string());
   CHECK(id1.size() == 40);
+  // A label is a client's text: one line, bounded, refused rather than altered (b68 review B9).
+  CHECK(h.fails("doc.checkpoint",
+                obj({{"label", JsonValue(std::string("x\x1e") + std::string(40, 'a'))}})) ==
+        codes::k_invalid_argument);
+  CHECK(h.fails("doc.checkpoint",
+                obj({{"label", JsonValue(std::string(doc::Checkpoints::k_max_label_bytes + 1,
+                                                     'l'))}})) == codes::k_invalid_argument);
+  CHECK(h.ok("doc.checkpoints").find("checkpoints")->size() == 1);
   const auto world_then = h.files_of("layers/world");
   REQUIRE(world_then.size() >= 4);  // index, three or more tiles
 

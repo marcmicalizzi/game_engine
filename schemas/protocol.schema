@@ -2417,7 +2417,8 @@ struct CollectBlobsResult @version(1) {
 /// Parameters of `doc.checkpoint`: a commit of the document's directory in its own repository.
 struct CheckpointParams @version(1) {
   session: string
-  /// The commit's subject; "checkpoint" when empty.
+  /// The commit's subject; "checkpoint" when empty. One line of at most 200 bytes with no control
+  /// character, or 1004.
   label: string
   attribution: engine.doc.Attribution?
 }

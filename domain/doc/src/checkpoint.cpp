@@ -76,11 +76,15 @@ bool native_dir(const io::Vfs& vfs, std::string_view dir, bool for_write, std::s
   return true;
 }
 
-// One line: a trailer's value, or a commit's subject.
+bool is_control(char c) noexcept { return static_cast<unsigned char>(c) < 0x20 || c == 0x7f; }
+
+// One line: a trailer's value, a commit's subject, or what git printed. Every control character
+// becomes a space, not only CR and LF: the log's separators are control characters, and an
+// attribution is a client's text (b68 review B9).
 std::string one_line(std::string_view text) {
   std::string out;
   for (const char c : text)
-    out.push_back(c == '\n' || c == '\r' ? ' ' : c);
+    out.push_back(is_control(c) ? ' ' : c);
   while (!out.empty() && out.back() == ' ')
     out.pop_back();
   return out;
@@ -123,10 +127,23 @@ bool ensure_repository(const std::string& native, std::string* error) {
 
 // ---- reading a commit's log entry ---------------------------------------------------------------
 
+// A record ends at a NUL, which git refuses in a commit message, so no label, rationale or trailer
+// a client wrote can end one early or start another (b68 review B9: with a control character as
+// the record's end, a label holding it listed a fabricated checkpoint). Within a record the fields
+// whose form git fixes come first — the id, the parents, then the trailers — and the subject, the
+// one free text, is the rest, so a separator inside it stays in its own record's label.
 constexpr char k_field = '\x1f';
-constexpr char k_record = '\x1e';
+constexpr char k_record = '\0';
 
-// One commit's id, parent, subject and engine trailers, as `log_format` writes them.
+bool is_commit_name(std::string_view text) noexcept {
+  if (text.size() != 40 && text.size() != 64) return false;
+  for (const char c : text)
+    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+  return true;
+}
+
+// One commit's id, parent, engine trailers and subject, as `log_args` asks for them. A record whose
+// id or parents are not commit names is not one git wrote for this format, and is skipped.
 bool parse_log(std::string_view text, Vector<CheckpointInfo>& out) {
   while (!text.empty()) {
     usize end = text.find(k_record);
@@ -141,12 +158,17 @@ bool parse_log(std::string_view text, Vector<CheckpointInfo>& out) {
       fields[i] = record.substr(0, at);
       record = at == std::string_view::npos ? std::string_view{} : record.substr(at + 1);
     }
+    std::string_view parents = fields[1];
+    const std::string_view parent = parents.substr(0, parents.find(' '));
+    if (!is_commit_name(fields[0]) || !(parent.empty() || is_commit_name(parent))) continue;
     CheckpointInfo info;
     info.id = std::string(fields[0]);
-    std::string_view parents = fields[1];
-    info.parent = std::string(parents.substr(0, parents.find(' ')));
-    info.label = std::string(fields[2]);
-    std::string_view trailers = fields[3];
+    info.parent = std::string(parent);
+    std::string_view label = fields[3];
+    while (!label.empty() && (label.back() == '\n' || label.back() == '\r'))
+      label.remove_suffix(1);
+    info.label = one_line(label);
+    std::string_view trailers = fields[2];
     while (!trailers.empty()) {
       const usize nl = trailers.find('\n');
       std::string_view line = trailers.substr(0, nl);
@@ -154,7 +176,7 @@ bool parse_log(std::string_view text, Vector<CheckpointInfo>& out) {
       const usize colon = line.find(": ");
       if (colon == std::string_view::npos) continue;
       const std::string_view key = line.substr(0, colon);
-      const std::string value(line.substr(colon + 2));
+      const std::string value = one_line(line.substr(colon + 2));
       const auto number = [&]() { return std::strtoll(value.c_str(), nullptr, 10); };
       if (key == "Engine-Actor") info.attribution.actor = value;
       else if (key == "Engine-Role") info.attribution.role = value;
@@ -173,7 +195,7 @@ bool parse_log(std::string_view text, Vector<CheckpointInfo>& out) {
 void log_args(const std::string& native, Vector<std::string>& args) {
   base_args(native, args);
   args.push_back("log");
-  args.push_back("--format=%H%x1f%P%x1f%s%x1f%(trailers:only=true,unfold=true)%x1e");
+  args.push_back("--format=%H%x1f%P%x1f%(trailers:only=true,unfold=true)%x1f%s%x00");
 }
 
 // ---- a commit's files, through `git archive` ---------------------------------------------------
@@ -328,6 +350,17 @@ bool Checkpoints::available(std::string* version, std::string* error) {
   return true;
 }
 
+bool Checkpoints::check_label(std::string_view label, std::string* error) {
+  if (label.size() > k_max_label_bytes)
+    return fail(error, "a checkpoint label is at most " + std::to_string(k_max_label_bytes) +
+                           " bytes; this one is " + std::to_string(label.size()));
+  for (const char c : label)
+    if (is_control(c))
+      return fail(error, "a checkpoint label is one line of text: no control character (a newline, "
+                         "a tab, U+0000 to U+001F or U+007F)");
+  return true;
+}
+
 bool Checkpoints::initialized(const io::Vfs& vfs, std::string_view dir) noexcept {
   return vfs.exists(DocumentStore::path_of(DocumentStore::path_of(dir, k_git_dir), "HEAD"));
 }
@@ -336,6 +369,7 @@ bool Checkpoints::take(const io::Vfs& vfs, std::string_view dir, const Document&
                        const DocumentManifest& manifest, std::string_view label,
                        const Attribution& attribution, CheckpointInfo& out, std::string* error) {
   std::string native;
+  if (!check_label(label, error)) return false;
   if (!native_dir(vfs, dir, true, native, error)) return false;
   if (doc.dirty())
     return fail(error, "the document has changes that are not saved: save it before a checkpoint");
