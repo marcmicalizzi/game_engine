@@ -78,8 +78,7 @@ float3 encode_under_ui(float3 exposed, float4 ui, float knee, uint2 pixel, Displ
                               display_tone1(e.z, knee, ceiling));
   const float3 nits = (toned * (1.0 - ui.a) + ui.rgb) * target.paper_white_nits;
   if (target.encoding == k_display_scrgb) return nits / 80.0;
-  return display_stored(display_dithered(pq_encode(bt709_to_bt2020(nits)), pixel, target.steps),
-                        target.codes);
+  return display_dithered(pq_encode(bt709_to_bt2020(nits)), pixel, target.steps);
 }
 
 [shader("fragment")]
