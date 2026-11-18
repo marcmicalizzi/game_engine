@@ -1,6 +1,8 @@
 #include "profile_methods.h"
 
 #include <core/profiling/frame_capture.h>
+#include <domain/protocol/paths.h>
+#include <foundation/io/roots.h>
 #include <foundation/io/vfs.h>
 #include <foundation/profiler/frame_report.h>
 
@@ -56,37 +58,38 @@ void list_of(const Vector<profiler::SeriesStats>& in, Vector<protocol::ProfileSe
     series_of(s, out.emplace_back());
 }
 
-bool name_is_plain(std::string_view name) noexcept {
-  if (name.empty() || name == "." || name == "..") return false;
-  for (const char c : name)
-    if (c == '/' || c == '\\' || c == ':') return false;
-  return true;
-}
-
-// The parameters' bounds, checked before anything is stopped or read.
-bool valid(const protocol::ProfileReportParams& params, protocol::RpcError& error) {
+// The parameters' bounds, and where the trace goes, checked before anything is stopped or read: a
+// trace is written only under a writable root (protocol.md, "The host's file roots"), `out_dir`
+// admitted for making a directory and the file itself for writing, so a link at its name is
+// refused. `dir` is left empty when the call names no directory (no trace is written).
+bool valid(protocol::Context& ctx, const protocol::ProfileReportParams& params, io::Admitted& dir,
+           protocol::RpcError& error) {
   if (params.max_series == 0 || params.max_series > k_max_series) {
     error = protocol::make_error(protocol::codes::k_invalid_argument,
                                  "max_series must be 1 to " + std::to_string(k_max_series));
     return false;
   }
-  if (!params.out_dir.empty() && !name_is_plain(params.name)) {
-    error = protocol::make_error(protocol::codes::k_invalid_argument,
-                                 "name must be a plain file name, with no directory in it");
+  dir = io::Admitted{};
+  if (params.out_dir.empty()) return true;
+  if (!protocol::is_plain_file_name(params.name)) {
+    error = protocol::make_error(
+        protocol::codes::k_invalid_argument,
+        "name must be one plain file name, with no directory, '..' or device name");
     return false;
   }
-  return true;
+  return protocol::admit_client_path(ctx, "out_dir", params.out_dir, protocol::client_base(ctx, {}),
+                                     io::Access::make_directory, dir, error);
 }
 
 // The report over the capture as it stands, and its trace when the call names a directory.
-bool report(const protocol::ProfileReportParams& params, protocol::ProfileReport& out,
-            protocol::RpcError& error) {
+bool report(protocol::Context& ctx, const protocol::ProfileReportParams& params,
+            const io::Admitted& dir, protocol::ProfileReport& out, protocol::RpcError& error) {
   if (g_capture == 0) {
     error = protocol::make_error(protocol::codes::k_invalid_argument,
                                  "no capture: profile.start one, draw frames, then ask");
     return false;
   }
-  if (!valid(params, error) || !same_capture(params, error)) return false;
+  if (!same_capture(params, error)) return false;
   profiler::CaptureCopy copy;
   profiler::copy_capture(copy);
   profiler::ReportOptions options;
@@ -121,23 +124,25 @@ bool report(const protocol::ProfileReportParams& params, protocol::ProfileReport
   out.threads = r.threads;
   out.capture_ms = r.capture_ms;
   out.trace.clear();
-  // The trace is written as render.capture and render.compare write theirs (render_methods.cpp):
-  // through foundation/io, refused with k_io_error naming the path and the status.
-  if (!params.out_dir.empty()) {
-    io::Status status = io::make_directories(params.out_dir);
+  // The trace goes to the admitted file, replaced by a rename so a hard link there is never
+  // written through; a failure on the disk is k_io_error naming what the client named, and the
+  // answer is the portable path, never the host's (protocol.md, "The host's file roots").
+  if (!dir.native.empty()) {
+    const std::string file = params.name + ".trace.json";
+    io::Status status = io::make_directories(dir.native);
+    io::Admitted path;
+    if (status == io::Status::Ok &&
+        !protocol::admit_output_file(ctx, "out_dir", params.out_dir, dir, file, path, error))
+      return false;
+    if (status == io::Status::Ok)
+      status = io::write_file_atomic(path.native, profiler::chrome_trace_json(copy));
     if (status != io::Status::Ok) {
-      error = protocol::make_error(protocol::codes::k_io_error, "cannot create " + params.out_dir +
-                                                                    ": " + io::status_name(status));
+      error = protocol::make_error(
+          protocol::codes::k_io_error,
+          "cannot write " + params.out_dir + "/" + file + ": " + io::status_name(status));
       return false;
     }
-    const std::string path = io::join_path(params.out_dir, params.name + ".trace.json");
-    status = io::write_file(path, profiler::chrome_trace_json(copy));
-    if (status != io::Status::Ok) {
-      error = protocol::make_error(protocol::codes::k_io_error,
-                                   "cannot write " + path + ": " + io::status_name(status));
-      return false;
-    }
-    out.trace = path;
+    out.trace = protocol::portable_path(ctx, path.native);
   }
   return true;
 }
@@ -170,12 +175,13 @@ bool profile_start(protocol::Context&, const protocol::ProfileStartParams& param
   return true;
 }
 
-bool profile_report(protocol::Context&, const protocol::ProfileReportParams& params,
+bool profile_report(protocol::Context& ctx, const protocol::ProfileReportParams& params,
                     protocol::ProfileReport& out, protocol::RpcError& error) {
-  return report(params, out, error);
+  io::Admitted dir;
+  return valid(ctx, params, dir, error) && report(ctx, params, dir, out, error);
 }
 
-bool profile_stop(protocol::Context&, const protocol::ProfileReportParams& params,
+bool profile_stop(protocol::Context& ctx, const protocol::ProfileReportParams& params,
                   protocol::ProfileReport& out, protocol::RpcError& error) {
   // A capture named and replaced is that answer, before "nothing running" can hide it.
   if (!same_capture(params, error)) return false;
@@ -184,9 +190,10 @@ bool profile_stop(protocol::Context&, const protocol::ProfileReportParams& param
                                  "no capture is running: profile.start one first");
     return false;
   }
-  if (!valid(params, error)) return false;  // a refused call leaves the capture running
+  io::Admitted dir;
+  if (!valid(ctx, params, dir, error)) return false;  // a refused call leaves the capture running
   profiling::capture_stop();
-  return report(params, out, error);
+  return report(ctx, params, dir, out, error);
 }
 
 // A report leaves a file when it names a directory for its trace (protocol.md, "What a read may

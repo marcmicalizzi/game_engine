@@ -3441,7 +3441,9 @@ struct ProfileReportParams @version(1) {
   /// counted in `series_dropped`, so the result is bounded by this and never by the capture.
   max_series: u32 = 16
   /// When set, the trace (Chrome's JSON Object Format, which Perfetto opens) is written here as
-  /// `<name>.trace.json`, and its path returned as `trace`.
+  /// `<name>.trace.json`, and its path returned as `trace`. A client path (protocol.md, "The host's
+  /// file roots"): under a writable root (`out://` is the document's), relative to the host's
+  /// document, refused as a missing place is otherwise; `name` one plain file name.
   out_dir: string
   name: string = "profile"
   /// The capture `profile.start` returned. A call naming one that another start has replaced is
@@ -3525,7 +3527,7 @@ struct ProfileReport @version(2) {
   threads: u32 = 0
   /// The capture's length so far.
   capture_ms: f64 = 0
-  /// The trace's path, when `out_dir` was set.
+  /// The trace's path as `<root>://<relative>`, when `out_dir` was set: never the host's own path.
   trace: string
 }
 

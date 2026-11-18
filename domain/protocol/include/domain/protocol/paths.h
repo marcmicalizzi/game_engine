@@ -31,6 +31,20 @@ bool admit_client_path(Context& ctx, std::string_view field, std::string_view pa
                        std::string_view base, io::Access access, io::Admitted& out,
                        RpcError& error);
 
+// One plain file name a writer puts in a directory it admitted: no separator, not `.` or `..`,
+// and the text rules of a path (no device name, stream, trailing dot or space, reserved character).
+bool is_plain_file_name(std::string_view name) noexcept;
+
+// The file `name` in `dir` (admitted by `admit_client_path` for make_directory, and made), itself
+// admitted for writing: the last component may not be a link, a junction or a directory (roots.h,
+// rule 10), so a link planted at that name is refused rather than written through. The caller
+// writes it with `io::write_file_atomic`, which replaces a hard link there instead of writing
+// through it. `spelled` is the directory as the client named it, for the refusal's sentence, which
+// names `<spelled>/<name>` and never the native path.
+bool admit_output_file(Context& ctx, std::string_view field, std::string_view spelled,
+                       const io::Admitted& dir, std::string_view name, io::Admitted& out,
+                       RpcError& error);
+
 // Where a relative path starts: the document directory of the session `session` names, else the
 // host's own document (the root named "doc"), else nothing (a relative path is then refused).
 std::string client_base(Context& ctx, std::string_view session);

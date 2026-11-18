@@ -69,6 +69,25 @@ bool admit_client_path(Context& ctx, std::string_view field, std::string_view pa
   return false;
 }
 
+bool is_plain_file_name(std::string_view name) noexcept {
+  if (name.empty() || name == "." || name == "..") return false;
+  if (name.find_first_of("/\\") != std::string_view::npos) return false;
+  return io::check_path_text(name) == io::Refusal::none;
+}
+
+bool admit_output_file(Context& ctx, std::string_view field, std::string_view spelled,
+                       const io::Admitted& dir, std::string_view name, io::Admitted& out,
+                       RpcError& error) {
+  io::Refusal why = io::Refusal::outside;
+  if (is_plain_file_name(name) && ctx.roots != nullptr &&
+      ctx.roots->admit(io::join_path(dir.native, name), {}, io::Access::write, out, why))
+    return true;
+  std::string shown(spelled);
+  if (!shown.empty() && shown.back() != '/' && shown.back() != '\\') shown += '/';
+  error = path_not_found(field, shown + std::string(name), io::Access::write);
+  return false;
+}
+
 std::string client_base(Context& ctx, std::string_view session) {
   if (!session.empty() && ctx.sessions != nullptr) {
     if (const Session* s = ctx.sessions->find(session); s != nullptr) {

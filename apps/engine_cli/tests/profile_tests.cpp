@@ -134,6 +134,17 @@ TEST_CASE(
   CHECK(error_code(host.call("profile.stop", R"({"max_series":0})")) == k_invalid_argument);
   CHECK(error_code(host.call("profile.stop", R"({"out_dir":".","name":"../x"})")) ==
         k_invalid_argument);
+  CHECK(error_code(host.call("profile.stop", R"({"out_dir":".","name":"CON"})")) ==
+        k_invalid_argument);
+  // The trace is written only under a writable root: before, `out_dir` was made and written
+  // wherever it said, for every role, since the profile methods are reads (protocol.md, "The
+  // host's file roots"). Refused as a missing place is, and the capture still running.
+  {
+    const JsonValue escaped =
+        host.call("profile.stop", R"({"out_dir":"tests://../escape","name":"run"})");
+    CHECK(error_code(escaped) == k_not_found);
+    CHECK_FALSE(std::filesystem::exists(test::scratch_root() + "/../escape"));
+  }
 
   test::TempDir dir("profile-stop");
   const std::string out = dir.path();
@@ -148,9 +159,11 @@ TEST_CASE(
   REQUIRE(stopped.find("truncated")->get_bool(flag));
   CHECK_FALSE(flag);  // a buffer that did not fill (profiler.md, "A capture that filled")
   CHECK(number(stopped, "invalid_values") == 0);
+  // Answered as the root and the relative path, never the host's own path.
   const std::string trace(stopped.find("trace")->as_string());
-  CHECK(std::filesystem::path(trace).filename() == "run.trace.json");
-  std::ifstream file(trace, std::ios::binary);
+  CHECK(trace.starts_with("tests://"));
+  CHECK(trace.ends_with("/run.trace.json"));
+  std::ifstream file(dir.file("run.trace.json"), std::ios::binary);
   REQUIRE(file.good());
   std::stringstream text;
   text << file.rdbuf();
