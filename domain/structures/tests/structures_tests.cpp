@@ -521,6 +521,11 @@ TEST_CASE("structures: the recipe's file, its hash and its container") {
   CHECK(report.clusters > 0);
   CHECK(report.root_triangles > 0);
   CHECK(report.root_triangles <= report.triangles);
+  // S91: the cot's door and its windows' shutters reach the container as section 53's records.
+  Vector<geometry::ClusterFileDoor> doors;
+  door_records(recipe.description, doors);
+  CHECK(!doors.empty());
+  CHECK(container.doors.size() == doors.size());
   std::printf("structures: the cot's container is %u clusters, %u triangles at its root\n",
               report.clusters, report.root_triangles);
 }
@@ -565,6 +570,35 @@ TEST_CASE("structures: a leaf hangs in its frame, shut across the opening or ope
   CHECK(leaf.thickness == doctest::Approx(0.055));
   CHECK(leaf.y1 - leaf.y0 == doctest::Approx(1.90 - 0.02 - 0.005 - 0.063).epsilon(1e-3));
   CHECK(walk.openings.size() == cot.openings.size());  // an opening's record is as it was
+  // S91 (geometry.md, "Doors"): the same leaves as the container's door records, shut, with the
+  // way each swings. Turned to its angle about the pivot, a record lies where its walk leaf does.
+  Vector<geometry::ClusterFileDoor> doors;
+  door_records(cot, doors);
+  REQUIRE(doors.size() == walk.leaves.size());
+  for (u32 k = 0; k < doors.size(); ++k) {
+    const geometry::ClusterFileDoor& r = doors[k];
+    const WalkLeaf& w = walk.leaves[k];
+    CHECK(r.opening == w.opening);
+    CHECK(r.open_deg == w.open_deg);
+    CHECK(r.thickness_m == doctest::Approx(w.thickness));
+    CHECK(r.height_m == doctest::Approx(w.y1 - w.y0).epsilon(1e-4));
+    CHECK(r.pivot.y == doctest::Approx(w.y0).epsilon(1e-4));
+    CHECK(r.shut_x * r.swing_x + r.shut_z * r.swing_z == doctest::Approx(0.0).epsilon(1e-6));
+    if (w.open_deg != 0 && w.open_deg != 90) continue;  // the two angles with exact turns
+    const f64 c = w.open_deg == 90 ? 0.0 : 1.0, s = w.open_deg == 90 ? 1.0 : 0.0;
+    const f64 ux = c * r.shut_x + s * r.swing_x, uz = c * r.shut_z + s * r.swing_z;
+    const f64 vx = s * r.shut_x - c * r.swing_x, vz = s * r.shut_z - c * r.swing_z;
+    const f64 half = static_cast<f64>(r.thickness_m) * 0.5;
+    CHECK(static_cast<f64>(r.pivot.x) + vx * half == doctest::Approx(w.hinge.x).epsilon(1e-4));
+    CHECK(static_cast<f64>(r.pivot.z) + vz * half == doctest::Approx(w.hinge.y).epsilon(1e-4));
+    CHECK(static_cast<f64>(r.pivot.x) + vx * half + ux * static_cast<f64>(r.width_m) ==
+          doctest::Approx(w.tip.x).epsilon(1e-4));
+    CHECK(static_cast<f64>(r.pivot.z) + vz * half + uz * static_cast<f64>(r.width_m) ==
+          doctest::Approx(w.tip.y).epsilon(1e-4));
+  }
+  CHECK((doors[0].flags & geometry::k_door_flag_door) != 0);    // the door
+  CHECK((doors[1].flags & geometry::k_door_flag_door) == 0);    // a shutter
+  CHECK((doors[1].flags & geometry::k_door_flag_paired) != 0);  // one of a pair
   cot.openings[0].leaf_open = 0;
   REQUIRE(walk_records(cot, walk, error));
   CHECK(walk.leaves[0].tip.y == doctest::Approx(walk.leaves[0].hinge.y).epsilon(1e-4));

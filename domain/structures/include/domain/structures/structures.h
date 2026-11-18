@@ -218,6 +218,14 @@ bool read_file(std::string_view text, structure::Recipe& out, std::string& error
 std::string canonical_json(const structure::Recipe& recipe);
 u64 source_hash(const structure::Recipe& recipe);
 
+// The leaves of `d` that turn on a hinge — a door's, a casement's, a shutter's — as the container's
+// section 53 records them (structures.md, "Leaves and mullions"; geometry.md, "Doors"): shut, with
+// the way each
+// swings and the angle the description stands it at, in metres in the building's frame. Every
+// leaf the mesher hangs, in the openings' order and then hinge first; empty for a description
+// with none. `build_container` writes them into every container it builds.
+void door_records(const structure::Description& d, Vector<geometry::ClusterFileDoor>& out);
+
 // The container the mesh generator `structure` builds: each surface's triangles clustered and the
 // DAGs merged, a material a surface, its set the description's role from the host's pack through
 // the tile contract (the container names its images and carries their texture records).

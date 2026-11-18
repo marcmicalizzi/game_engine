@@ -220,6 +220,18 @@ quarter turn in a thick wall, the leaf lies in the reveal beside its hinge jamb 
 own thickness, 5.5 cm, off the clear width**, as a real one does; shut, it closes the opening.
 `leaf_places` (`src/emit.h`) is the one function the mesher and the walk records both ask.
 
+**The leaves reach a host as doors** (roadmap S91). `door_records` asks the same `leaf_places`
+and writes each leaf as the container's section 53 records it ([geometry](geometry.md#doors)):
+shut, with its pivot, the way it swings, its width, height and thickness, the opening, the angle
+the description stands it at, and whether it is a door's or a window's. The turn is undone with
+the same `turn_deg`, so the record is the same bits on every toolchain, and `build_container`
+writes it into every container a description with a leaf makes; a description that hangs one
+takes a tag in its source hash, so a cache entry from before the section is rebuilt. Nothing here
+keys on who wrote the description: any structure's description that states a leaf declares a
+door. **Not yet**: the leaf is still meshed into the house's own triangles (and so its collision
+proxy), and no host places a door from the records; those are the rest of S91
+([scene_collision](scene_collision.md#doors)).
+
 **Mullions.** `Opening.mullions` (a window's; 0 keeps the glazing bars) stands that many square
 timbers, 4.5 cm a side, **set on the cant** between the sill and the head in the frame's middle,
 evenly spaced: the unglazed window of an early cottage, closed by its shutters. It is how a

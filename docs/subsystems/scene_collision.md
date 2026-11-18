@@ -373,7 +373,11 @@ mesh that holds the leaf standing at `leaf_open`, and a kinematic leaf beside it
 drawn open leaf a wall whatever the door's state; **(3)** a tile's gather makes one `DoorBody` a
 leaf of each placed piece, keyed by the piece's name (`support_placement`) and the opening's
 index, so a door is the same door whenever its tile comes in. Until then a host hands doors itself
-(`set_doors`), and nothing in a scene does.
+(`set_doors`), and nothing in a scene does. **Piece (1) is built** (2026-11-18): the structure
+generator writes every leaf into its container as section 53 (`geometry::ClusterFileDoor`,
+[geometry](geometry.md#doors)), shut, with its pivot, the way it swings and the angle it stands at,
+so `DoorBody`'s hinge, heading and swing are the record's and the angle needs no arc tangent; the
+loaded scene does not carry it to this module yet, and pieces (2) and (3) stand as written.
 
 ## Holes
 

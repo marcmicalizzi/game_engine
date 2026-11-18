@@ -338,6 +338,11 @@ u64 encode(const ClusterFileData& data, std::string& out) {
     add_section(payloads, ClusterSection::Cameras, static_cast<u32>(sizeof(ClusterFileCamera)),
                 data.cameras.size(), data.cameras.data());
   }
+  // The leaves on hinges, and only for a mesh that declares one (S91; geometry.md, "Doors").
+  if (!data.doors.empty()) {
+    add_section(payloads, ClusterSection::Doors, static_cast<u32>(sizeof(ClusterFileDoor)),
+                data.doors.size(), data.doors.data());
+  }
   // The source's own class (C62), only when it is not `none`: the module's record is empty then,
   // so every unclassified container is the bytes it was before the section existed.
   if (!data.content_classes.empty()) {
@@ -576,6 +581,7 @@ const char* cluster_section_name(u32 kind) noexcept {
     case ClusterSection::MaterialUv1: return "material_uv1";
     case ClusterSection::Lights: return "lights";
     case ClusterSection::Cameras: return "cameras";
+    case ClusterSection::Doors: return "doors";
     case ClusterSection::ContentClasses: return "content_classes";
   }
   return "unknown";
@@ -907,6 +913,28 @@ bool read_memory(std::span<const u8> bytes, ClusterFileData& out, std::string* e
     if (cameras->element_size != sizeof(ClusterFileCamera))
       return fail(error, "cluster file section cameras is not 80-byte records");
     copy_section(bytes, *cameras, result.cameras);
+  }
+  // The leaves on hinges (S91): positive sizes, unit and perpendicular directions, an angle from
+  // 0 to 180 and a finite pivot, or the file is refused — a host turns a box by these.
+  if (const ClusterFileSection* doors = found[static_cast<u32>(ClusterSection::Doors)];
+      doors != nullptr && doors->element_count != 0) {
+    if (doors->element_size != sizeof(ClusterFileDoor))
+      return fail(error, "cluster file section doors is not 48-byte records");
+    copy_section(bytes, *doors, result.doors);
+    for (const ClusterFileDoor& d : result.doors) {
+      const f32 shut = d.shut_x * d.shut_x + d.shut_z * d.shut_z;
+      const f32 swing = d.swing_x * d.swing_x + d.swing_z * d.swing_z;
+      const f32 dot = d.shut_x * d.swing_x + d.shut_z * d.swing_z;
+      if (!(d.width_m > 0.0f) || !(d.height_m > 0.0f) || !(d.thickness_m > 0.0f) ||
+          !(shut > 0.998f && shut < 1.002f) || !(swing > 0.998f && swing < 1.002f) ||
+          !(dot > -1e-3f && dot < 1e-3f) || d.open_deg < 0 || d.open_deg > 180 ||
+          !std::isfinite(d.pivot.x) || !std::isfinite(d.pivot.y) || !std::isfinite(d.pivot.z)) {
+        return fail(error,
+                    "cluster file section doors has a leaf with no size, directions that are "
+                    "not unit and perpendicular, an angle out of 0 to 180, or a pivot that is "
+                    "not finite");
+      }
+    }
   }
   // The source's own class (C62), the module's record as bytes; absent is `none`.
   if (const ClusterFileSection* classes = found[static_cast<u32>(ClusterSection::ContentClasses)];
@@ -1429,6 +1457,8 @@ constexpr ClusterSection k_resident_kinds[] = {
     ClusterSection::MaterialUv1,
     ClusterSection::Lights,
     ClusterSection::Cameras,
+    // 48 bytes a leaf, and only in a mesh that declares one (S91).
+    ClusterSection::Doors,
     // A few dozen bytes, and only in a container whose source is classified (C62): the load
     // decides an instance on it before it reads a page.
     ClusterSection::ContentClasses,

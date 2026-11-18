@@ -2,6 +2,8 @@
 // and the container"): each surface's triangles clustered as a part and the DAGs merged into one
 // mesh of a material a surface, each its role's set from the host's pack through the tile contract.
 
+#include "emit.h"
+
 #include <core/hash/hash.h>
 #include <core/json/json.h>
 #include <core/schema/json_reflect.h>
@@ -43,7 +45,54 @@ std::string canonical_json(const structure::Recipe& recipe) {
 
 u64 source_hash(const structure::Recipe& recipe) {
   const std::string text = canonical_json(recipe);
-  return hash_combine(hash_bytes(text.data(), text.size()), k_structure_version);
+  u64 hash = hash_combine(hash_bytes(text.data(), text.size()), k_structure_version);
+  // A description that hangs a leaf has a container with section 53 since S91, so an entry built
+  // before it, which hands a host no doors, is rebuilt; every description with none keeps its key.
+  // A tag rather than a bump of `k_structure_version`, which would move every structure's key.
+  for (const structure::Opening& o : recipe.description.openings) {
+    if (o.leaf != structure::LeafKind::none && o.kind != structure::OpeningKind::doorway) {
+      hash = hash_combine(hash, u64{0x444f4f5253303533ull});  // "DOORS053"
+      break;
+    }
+  }
+  return hash;
+}
+
+// **The leaves as doors** (structures.md, "Leaves and mullions"; geometry.md, "Doors"; S91): every
+// leaf `leaf_places` hangs, as the container's section 53 records it, so a host places a door where
+// the description put one and never reads it back out of the triangles. The place turns the leaf to
+// the angle the description stands it at; the record keeps it shut and says which way it swings,
+// undoing that turn with the same whole-degree sine and cosine (`turn_deg`), so every toolchain
+// writes the same bytes.
+void door_records(const structure::Description& d, Vector<geometry::ClusterFileDoor>& out) {
+  out.clear();
+  for (u32 i = 0; i < d.openings.size(); ++i) {
+    const structure::Opening& o = d.openings[i];
+    detail::LeafPlace places[2];
+    const u32 leaves = detail::leaf_places(d, o, places);
+    f64 sine = 0.0, cosine = 1.0;
+    detail::turn_deg(o.leaf_open, sine, cosine);
+    for (u32 k = 0; k < leaves; ++k) {
+      const detail::LeafPlace& p = places[k];
+      // At the angle a, u = cos a shut + sin a swing and v = sin a shut - cos a swing.
+      const f64 shut_x = cosine * p.ux + sine * p.vx, shut_z = cosine * p.uz + sine * p.vz;
+      const f64 swing_x = sine * p.ux - cosine * p.vx, swing_z = sine * p.uz - cosine * p.vz;
+      geometry::ClusterFileDoor door;
+      door.pivot = detail::metres(p.px, p.y0, p.pz);
+      door.shut_x = static_cast<f32>(shut_x);
+      door.shut_z = static_cast<f32>(shut_z);
+      door.swing_x = static_cast<f32>(swing_x);
+      door.swing_z = static_cast<f32>(swing_z);
+      door.width_m = static_cast<f32>(p.width * detail::k_m);
+      door.height_m = static_cast<f32>((p.y1 - p.y0) * detail::k_m);
+      door.thickness_m = static_cast<f32>((p.boards + p.ledges) * detail::k_m);
+      door.opening = i;
+      door.open_deg = static_cast<i16>(o.leaf_open);
+      door.flags = static_cast<u16>((p.door ? geometry::k_door_flag_door : 0u) |
+                                    (leaves == 2 ? geometry::k_door_flag_paired : 0u));
+      out.push_back(door);
+    }
+  }
 }
 
 bool build_container(const structure::Recipe& recipe, const assets::MeshGeneratorInputs& inputs,
@@ -136,6 +185,7 @@ bool build_container(const structure::Recipe& recipe, const assets::MeshGenerato
   for (u32 c = 0; c < out.mesh.lod.size(); ++c)
     if (out.mesh.lod[c].parent_error == geometry::k_lod_terminal_error)
       report.root_triangles += out.mesh.mesh.clusters[c].triangle_count;
+  door_records(recipe.description, out.doors);
   out.source_hash = source_hash(recipe);
   out.build_key = assets::generated_mesh_build_key(out.source_hash, inputs, lod, page_bytes);
   out.generator = "structure";

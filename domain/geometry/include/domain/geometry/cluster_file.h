@@ -256,10 +256,13 @@ enum class ClusterSection : u32 {
   MaterialUv1 = 50,
   Lights = 51,
   Cameras = 52,
-  // 53 is **reserved**: it is a structure's door leaves (roadmap S91), on a line not yet merged
-  // here. Never write it from this line, and never give it to anything else, so the two lines
-  // merge without either renumbering.
-  //
+  // **The leaves a mesh declares** (S91; geometry.md, "Doors"; structures.md, "Leaves and
+  // mullions"): one
+  // `ClusterFileDoor` per leaf that turns on a hinge — a door's, a casement's — in the mesh's
+  // space, where its description put it, so that a cached build and a fresh one hand a host the
+  // same doors. **Written only when a mesh declares one**, like 34 to 52, so every other container
+  // is the bytes it was. Resident.
+  Doors = 53,
   // **The source's own content class** (C62; docs/content-classes.md, "How it travels through
   // derived data"; ADR-0073 decision 3): u8, `content_class::encode_classes`'s record — every
   // category it names with its ladder by name, the asset's levels, each classified material's,
@@ -463,6 +466,31 @@ struct ClusterFilePerch {
   u32 flags = 0;
 };
 
+// **A leaf on a hinge**, as section 53 records it (S91; geometry.md, "Doors"). 48 bytes, the mesh's
+// own space, metres. `pivot` is the hinge line's foot, on the face of the frame the leaf opens
+// toward; `shut` the unit direction, on the ground, from the hinge to the free edge with the leaf
+// shut; `swing` the unit direction it turns toward (perpendicular to `shut`: a quarter turn open,
+// the leaf points along it). At an angle `a` from shut the leaf runs along
+// `cos a * shut + sin a * swing` and its thickness lies behind its face along
+// `sin a * shut - cos a * swing`. `width_m`, `height_m` and `thickness_m` are the leaf's own,
+// `opening` the index of the opening in the description that declared it, `open_deg` the angle
+// the description stands it at (0 to 180), and `flags` `k_door_flag_*`. A record whose sizes are
+// not positive, whose directions are not unit and perpendicular within 1e-3, or whose angle is
+// out of range is refused by the reader.
+inline constexpr u16 k_door_flag_door = 1u << 0;    // a door's leaf; without it, a casement's
+inline constexpr u16 k_door_flag_paired = 1u << 1;  // one of a pair hung in one opening
+struct ClusterFileDoor {
+  Vec3 pivot{};
+  f32 shut_x = 1.0f, shut_z = 0.0f;
+  f32 swing_x = 0.0f, swing_z = 1.0f;
+  f32 width_m = 0.0f;
+  f32 height_m = 0.0f;
+  f32 thickness_m = 0.0f;
+  u32 opening = 0;
+  i16 open_deg = 0;
+  u16 flags = 0;
+};
+
 // The images a material's slots read through the **second** UV set (`TEXCOORD_1`), as section 50
 // records them (G2). 24 bytes, parallel to `Materials`, indexed by `k_slot_*`, each one-based like
 // `ClusterFileMaterial`'s optional slots (0: this slot reads no image through the second set). A
@@ -572,6 +600,7 @@ static_assert(sizeof(ClusterFileStructuralPart) == 16,
               "a cluster file structural part is 16 bytes");
 static_assert(sizeof(ClusterFileImpostor) == 48, "a cluster file impostor record is 48 bytes");
 static_assert(sizeof(ClusterFilePerch) == 32, "a cluster file perch is 32 bytes");
+static_assert(sizeof(ClusterFileDoor) == 48, "a cluster file door is 48 bytes");
 static_assert(sizeof(ClusterFileUv1Slots) == 24, "a material's second-UV slots are 24 bytes");
 static_assert(sizeof(ClusterFileLight) == 80, "a cluster file light is 80 bytes");
 static_assert(sizeof(ClusterFileCamera) == 80, "a cluster file camera is 80 bytes");
@@ -668,6 +697,9 @@ struct ClusterFileData {
   Vector<ClusterFileUv1Slots> material_uv1;
   Vector<ClusterFileLight> lights;
   Vector<ClusterFileCamera> cameras;
+  // The leaves the mesh declares (section 53, S91), in the mesh's space; empty for most. Written
+  // only when not empty.
+  Vector<ClusterFileDoor> doors;
   // The source's own class (section 54), `content_class::encode_classes`'s bytes: empty for every
   // source that is not classified, and written only when not empty (C62).
   Vector<u8> content_classes;
