@@ -66,6 +66,11 @@ u64 encode(const TextureData& data, std::string& out) {
   if (!data.normal_variance.empty())
     add_section(payloads, TextureSection::NormalVariance, 1u, data.normal_variance.size(),
                 data.normal_variance.data());
+  // The image's own class (C62), only when it is not `none`, so an unclassified texture is the
+  // bytes it was before the section existed.
+  if (!data.content_classes.empty())
+    add_section(payloads, TextureSection::ContentClasses, 1u, data.content_classes.size(),
+                data.content_classes.data());
 
   u64 offset = k_header_bytes + k_record_bytes * payloads.size();
   for (Payload& payload : payloads) {
@@ -238,6 +243,7 @@ const char* texture_section_name(u32 kind) noexcept {
     case TextureSection::Data: return "data";
     case TextureSection::SourceHash: return "source_hash";
     case TextureSection::NormalVariance: return "normal_variance";
+    case TextureSection::ContentClasses: return "content_classes";
   }
   return "unknown";
 }
@@ -504,6 +510,14 @@ bool read_texture_file_memory(std::span<const u8> bytes, TextureData& out, std::
       std::memcpy(result.normal_variance.data(), bytes.data() + variance->offset,
                   static_cast<usize>(variance->element_count));
   }
+  // The image's own class (C62), the classes module's record as bytes; absent is `none`.
+  const TextureFileSection* classes = found[static_cast<u32>(TextureSection::ContentClasses)];
+  if (classes != nullptr && classes->element_count != 0) {
+    if (classes->element_size != 1) return fail(error, "content classes require byte elements");
+    result.content_classes.resize(static_cast<u32>(classes->element_count));
+    std::memcpy(result.content_classes.data(), bytes.data() + classes->offset,
+                static_cast<usize>(classes->element_count));
+  }
   if (!validate_texture(result, error)) return false;
   out = std::move(result);
   return true;
@@ -534,6 +548,7 @@ void rebase_tail(const TextureData& head, const Vector<TextureFileLevel>& levels
   out.source_channels = head.source_channels;
   out.source_hash = head.source_hash;
   out.build_key = head.build_key;
+  out.content_classes = head.content_classes;  // a tail of the chain is the same image's
   const u64 base = levels[first].offset;
   out.levels.clear();
   for (u32 l = first; l < levels.size(); ++l) {
@@ -663,6 +678,16 @@ bool read_texture_file_levels(std::string_view path, u32 first, TextureData& out
                      result.normal_variance.size(), got) != io::Status::Ok ||
         got != result.normal_variance.size()) {
       return fail(error, "texture file's variance levels cannot be read");
+    }
+  }
+  // The image's class (C62) travels with any range of the chain: a streamed tail is the same image.
+  if (const TextureFileSection* classes = found[static_cast<u32>(TextureSection::ContentClasses)];
+      classes != nullptr && classes->element_size == 1 && classes->element_count != 0) {
+    result.content_classes.resize(static_cast<u32>(classes->element_count));
+    if (file.read_at(classes->offset, result.content_classes.data(),
+                     result.content_classes.size(), got) != io::Status::Ok ||
+        got != result.content_classes.size()) {
+      return fail(error, "texture file's content classes cannot be read");
     }
   }
   if (!validate_texture(result, error)) return false;

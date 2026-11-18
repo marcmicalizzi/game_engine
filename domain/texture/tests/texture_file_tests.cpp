@@ -75,6 +75,39 @@ void check_equal(const TextureData& a, const TextureData& b) {
                       a.normal_variance.size()) == 0);
 }
 
+// C62 (texture.md, "Content classes"): section 6 carries the image's class record as bytes, only
+// when there is one, so an unclassified texture is the bytes it was; a streamed tail keeps it.
+TEST_CASE("texture file: content classes are section 6, written only when classified") {
+  const test::TempDir tmp("texture_classes");
+  TextureData data = make_fixture();
+  const u64 plain_hash = texture_file_hash(data);
+  std::string error;
+  const std::string plain_path = tmp.file("plain.tex");
+  REQUIRE_MESSAGE(write_texture_file(plain_path, data, &error), error);
+  std::string plain;
+  REQUIRE(io::read_file(plain_path, plain) == io::Status::Ok);
+  TextureData none;
+  REQUIRE_MESSAGE(read_texture_file_memory(view(plain), none, &error), error);
+  CHECK(none.content_classes.empty());
+  CHECK(texture_file_hash(none) == plain_hash);
+
+  for (u8 b : {u8{24}, u8{0}, u8{0}, u8{0}, u8{'e'}})
+    data.content_classes.push_back(b);
+  CHECK(texture_file_hash(data) != plain_hash);
+  const std::string path = tmp.file("classed.tex");
+  REQUIRE_MESSAGE(write_texture_file(path, data, &error), error);
+  TextureData read;
+  REQUIRE_MESSAGE(read_texture_file(path, read, &error), error);
+  check_equal(read, data);
+  REQUIRE(read.content_classes.size() == data.content_classes.size());
+  CHECK(std::memcmp(read.content_classes.data(), data.content_classes.data(),
+                    data.content_classes.size()) == 0);
+  TextureData tail;
+  REQUIRE_MESSAGE(read_texture_file_levels(path, 1, tail, &error), error);
+  CHECK(tail.content_classes.size() == data.content_classes.size());
+  CHECK(std::string(texture_section_name(6)) == "content_classes");
+}
+
 TEST_CASE("texture variance: optional chain round trips and malformed payloads are refused") {
   const test::TempDir tmp("normal_variance");
   Vector<u8> pixels;

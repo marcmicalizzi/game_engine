@@ -101,8 +101,14 @@ enum class TextureSection : u32 {
   // normal)| over each level's footprint, one level per level of the map, each at a 16-byte aligned
   // offset, the padding zero. Its extents are the map's, so it has no level table of its own.
   NormalVariance = 5,
+  // u8: the source image's own content class (C62; texture.md, "Content classes"), the record
+  // `content_class::encode_classes` makes from the image's sidecar, opaque here. **Written only
+  // when some level is above `none`**, so every unclassified texture is the bytes it was. It is the
+  // image's alone: a texture is not built from the meshes that sample it and inherits nothing
+  // from them.
+  ContentClasses = 6,
 };
-inline constexpr u32 k_texture_section_kinds = static_cast<u32>(TextureSection::NormalVariance) + 1;
+inline constexpr u32 k_texture_section_kinds = static_cast<u32>(TextureSection::ContentClasses) + 1;
 // The name of a kind this build knows, "unknown" otherwise; for diagnostics and `engine-content
 // info`.
 const char* texture_section_name(u32 kind) noexcept;
@@ -163,6 +169,7 @@ struct TextureData {
   u64 source_hash = 0;
   u64 build_key = 0;
   Vector<u8> normal_variance;  // optional BC4 shortening chain, independent of normal strength
+  Vector<u8> content_classes;  // section 6: the image's class record, empty when unclassified
 
   // Level `index`'s bytes; empty for an index past the chain.
   std::span<const u8> level_bytes(u32 index) const noexcept;
