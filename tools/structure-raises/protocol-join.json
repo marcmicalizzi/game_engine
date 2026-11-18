@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "protocol-join",
+  "reason": "The protocol line over the ceilings that batch 68's raises were folded into: protocol.md grows by the capture mends A10 describes in its profile section (a writer word a thread, a buffer of exactly the capacity asked), whose raise file the fold removed; apps.md is 12 bytes under the sum of its raises after the joins",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/apps.md": -12,
+    "page:docs/subsystems/protocol.md": 206
+  }
+}
