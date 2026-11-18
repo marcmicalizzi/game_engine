@@ -130,7 +130,7 @@ class Categories {
   // The ladder's highest level.
   u8 top(u32 category) const { return static_cast<u8>(ladders_[category].size() - 1); }
   // The level's index in the category's ladder, or -1 when the ladder does not have it.
-  i32 level(u32 category, std::string_view level) const;
+  i32 level(u32 category, std::string_view name) const;
   const std::string& level_name(u32 category, u8 level) const { return ladders_[category][level]; }
 
  private:

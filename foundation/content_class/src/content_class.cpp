@@ -165,10 +165,10 @@ i32 Categories::find(std::string_view name) const {
   return -1;
 }
 
-i32 Categories::level(u32 category, std::string_view level) const {
+i32 Categories::level(u32 category, std::string_view name) const {
   const Vector<std::string>& ladder = ladders_[category];
   for (u32 i = 0; i < ladder.size(); ++i)
-    if (ladder[i] == level) return static_cast<i32>(i);
+    if (ladder[i] == name) return static_cast<i32>(i);
   return -1;
 }
 
@@ -197,8 +197,8 @@ ViewPolicies::ViewPolicies() {
 
 bool ViewPolicies::read(const Categories& categories, const content::ViewPoliciesFile& file,
                         std::string& error) {
-  Vector<NamedPolicy> read;
-  read.push_back(NamedPolicy{std::string(k_agent_default_name), agent_default()});
+  Vector<NamedPolicy> parsed;
+  parsed.push_back(NamedPolicy{std::string(k_agent_default_name), agent_default()});
   for (u32 i = 0; i < file.policies.size(); ++i) {
     const content::ViewPolicy& p = file.policies[i];
     const std::string where = "policies[" + std::to_string(i) + "]";
@@ -210,8 +210,8 @@ bool ViewPolicies::read(const Categories& categories, const content::ViewPolicie
       error = where + ": 'agent-default' is compiled in and may not be redefined";
       return false;
     }
-    for (u32 j = 0; j < read.size(); ++j) {
-      if (read[j].name == p.name) {
+    for (u32 j = 0; j < parsed.size(); ++j) {
+      if (parsed[j].name == p.name) {
         error = where + ": '" + p.name + "' is named twice";
         return false;
       }
@@ -254,9 +254,9 @@ bool ViewPolicies::read(const Categories& categories, const content::ViewPolicie
       named.policy.caps[c] = static_cast<u8>(level);
       named.policy.substitutions[c] = substitution;
     }
-    read.push_back(std::move(named));
+    parsed.push_back(std::move(named));
   }
-  policies_ = std::move(read);
+  policies_ = std::move(parsed);
   return true;
 }
 
