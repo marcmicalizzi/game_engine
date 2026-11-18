@@ -1736,6 +1736,7 @@ void SceneCollision::gather_placements(world::TileCoord coord, PlacementScratch&
       }
       const bool later = e + 1 < entries_.size();  // an entry after it reads what it placed
       if (later && !scratch.placed.shapes.empty()) {
+        profiling::TraceStage shaped_stage("collision exclusion");  // T172
         if (!has_shaped) shaped = scene_->terrain.exclusion;
         has_shaped = true;
         if (!shaped.add_footprints(scratch.placed.shapes.span(), &why)) {
