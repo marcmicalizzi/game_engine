@@ -55,8 +55,9 @@ inline constexpr std::string_view k_channel_generator = "water_channel";
 // nappe as wide as its lip and thinning to its sides (S108). 4 was taken twice, on two branches: a
 // reach vertex's UV.y carries the section's Froude number in its low bits (W139,
 // `pack_channel_hydraulic`), and no sheet climbs from or to a station over its bank (W138). 5:
-// both, assembled on one branch (b67-streams).
-inline constexpr u32 k_channel_mesh_version = 5;
+// both, assembled on one branch (b67-streams). 6: a vertex past the section's conveying reach
+// carries no Froude number and no slope (W144, `channel_carry`).
+inline constexpr u32 k_channel_mesh_version = 6;
 // The flow phase's period, seconds (water.slang's `k_channel_period_s`): UV.x lies in
 // [0, period + one triangle's travel time).
 inline constexpr f32 k_channel_phase_period_s = 8.0f;
@@ -202,6 +203,44 @@ void unpack_channel_hydraulic(f32 packed, f32& hydraulic_m, f32& froude) noexcep
 // rule on them keep the solve's own speed.
 inline constexpr f64 k_channel_jet_m = 0.25;
 f64 channel_travel_speed(f64 surface_speed, f64 slope) noexcept;
+// **A station's numbers describe the water that carries its discharge, not all the water at its
+// level** (W144; need 149's blotches on a slow pool; steep-streams.md, "The white's inputs per
+// vertex"). A station's speed, Froude number and fall are its conveying section's: a top width of
+// T = Q / (V D), which with D = V^2 / (g Fr^2) is Q g Fr^2 / V^3. Where a stream runs into a pool
+// the solve writes the station at the pool's level (W138) and its wet reach is where that level
+// meets the ground, the pool's own shore, ten metres off on the forest where T is under one: the
+// water out there stands. Until W144 every vertex of the reach carried the station's Froude number
+// and the stretch's fall, so a pool beside an inflow falling 12 % at Froude 0.44 was drawn with a
+// step-pool reach's white scattered over it (the forest's v50 mark 14; 791 such stations of its
+// 112,906 can whiten).
+//
+// So each side of a station has a **conveying reach**: its wet reach, or where that is wider, the
+// larger of the bed's own width (`width_m`: water within the bed's width of the line is the
+// channel's whatever the numbers say, which keeps a fall's foot written at a bank's top whole) and
+// what the top width leaves of `k_channel_convey_slack` T after the other side's reach (the slack
+// for a description's rounding: 96 % of the forest's stations have a wet reach within a quarter of
+// T). A vertex's **carry** is 1 wherever the section's conveying reach is its whole wet reach, and
+// where it is less, 1 within the conveying reach, the margin under the bank and a lattice cell
+// past it, falling to 0 over one more conveying reach (a choice: an inflow's jet spreads into
+// standing water over about its own width); the Froude number and the fall a vertex carries are
+// the section's times it. **A channel whose stations convey over their whole wet reach is written
+// to the same bytes as before the rule** (measured, 2026-11-18, each channel built with the rule
+// and without: the test fixtures, the torrent judging scene's eight channels and the forest's
+// 542, 1,973,721 vertices; by distance alone 311 vertices of 95 such channels moved, places the
+// sheet keeps past a section's own reach on the outer side of a bend whose stations' reaches
+// differ, which is why the rule asks first whether the section is narrowed at all). An authored
+// line gets it from its own numbers: one whose discharge, speed and Froude number agree with its
+// wet reach is untouched however wide it is.
+inline constexpr f64 k_channel_convey_slack = 1.25;
+// The top width a station's own numbers say, metres: Q g Fr^2 / V^3; where the speed or the Froude
+// number is 0 the numbers say nothing and the width is unbounded (1e30).
+f64 channel_convey_width(f64 discharge_m3s, f64 speed_mps, f64 froude) noexcept;
+// One side's conveying reach, metres: `wet_m` that side's wet reach, `other_wet_m` the other's,
+// `bed_width_m` the description's `width_m`, `top_m` `channel_convey_width`'s.
+f64 channel_convey_reach(f64 wet_m, f64 other_wet_m, f64 bed_width_m, f64 top_m) noexcept;
+// The carry at `distance_m` from the line where the side's conveying reach is `convey_m` and the
+// margin under the bank `margin_m`.
+f64 channel_carry(f64 distance_m, f64 convey_m, f64 margin_m) noexcept;
 
 // One channel as this capability draws it: the solved description about its origin, bounded.
 struct Channel {
@@ -218,6 +257,10 @@ struct Channel {
   Vector<f32> discharge_m3s;
   Vector<f32> wet_left_m;  // left is the side of (-dz, dx) for a line running (dx, dz)
   Vector<f32> wet_right_m;
+  // Each side's conveying reach (W144; `channel_convey_reach`): at most the wet reach. Empty (a
+  // channel not read from a description) is the wet reach.
+  Vector<f32> convey_left_m;
+  Vector<f32> convey_right_m;
   Vector<u16> flags;  // scene_gen/water_channel.h
   f32 manning_n = 0.04f;
   f32 shore_m = 2.0f;
@@ -295,8 +338,11 @@ struct ChannelAt {
   f32 along = 0.0f;
   f32 lateral = -1.0f;
   f32 margin = 0.0f;
-  f32 level = 0.0f;          // metres over the origin's y; on a fall the nappe's parabola
-  f32 slope = 0.0f;          // d level / d metre along the heading
+  f32 level = 0.0f;  // metres over the origin's y; on a fall the nappe's parabola
+  f32 slope = 0.0f;  // d level / d metre along the heading
+  // The share of the section's Froude number and fall the place's water has (W144,
+  // `channel_carry`): 1 in the conveying reach, 0 in water that stands at the station's level.
+  f32 carry = 1.0f;
   Vec2 heading{1.0f, 0.0f};  // the stretch's direction in plan, unit, downstream
   f32 speed = 0.0f;          // the section's mean, m/s; on a fall the nappe's own
   f64 tau = 0.0;             // the travel time from the head, seconds, unwrapped

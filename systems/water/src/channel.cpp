@@ -91,10 +91,22 @@ bool read_channel(const scene::WaterChannel& block, Channel& out, std::string* e
   out.flags = block.flags;
   out.speed_mps.reserve(n);
   out.froude.reserve(n);
+  out.convey_left_m.reserve(n);
+  out.convey_right_m.reserve(n);
   for (u32 i = 0; i < n; ++i) {
     out.speed_mps.push_back(
         std::clamp(block.speed_mps[i], k_channel_min_speed, k_channel_max_speed));
     out.froude.push_back(std::min(block.froude[i], k_channel_froude_max));
+    // The conveying reach from the description's own numbers, before any bound (channel.h,
+    // `k_channel_convey_slack`).
+    const f64 top = channel_convey_width(static_cast<f64>(block.discharge_m3s[i]),
+                                         static_cast<f64>(block.speed_mps[i]),
+                                         static_cast<f64>(block.froude[i]));
+    const f64 left = static_cast<f64>(block.wet_left_m[i]);
+    const f64 right = static_cast<f64>(block.wet_right_m[i]);
+    const f64 bed = static_cast<f64>(block.width_m[i]);
+    out.convey_left_m.push_back(static_cast<f32>(channel_convey_reach(left, right, bed, top)));
+    out.convey_right_m.push_back(static_cast<f32>(channel_convey_reach(right, left, bed, top)));
   }
   out.manning_n = block.manning_n;
   out.shore_m = block.shore_m;
@@ -189,6 +201,21 @@ f64 channel_travel_speed(f64 surface_speed, f64 slope) noexcept {
   const f64 v = std::max(surface_speed, 0.0);
   return std::sqrt(v * v + 2.0 * k_gravity * k_channel_jet_m *
                                smooth_step(k_channel_steep_from, k_channel_steep_full, slope));
+}
+
+f64 channel_convey_width(f64 discharge_m3s, f64 speed_mps, f64 froude) noexcept {
+  if (!(speed_mps > 0.0) || !(froude > 0.0)) return 1e30;
+  return discharge_m3s * k_gravity * froude * froude / (speed_mps * speed_mps * speed_mps);
+}
+
+f64 channel_convey_reach(f64 wet_m, f64 other_wet_m, f64 bed_width_m, f64 top_m) noexcept {
+  return std::min(wet_m, std::max(k_channel_convey_slack * top_m - other_wet_m, bed_width_m));
+}
+
+f64 channel_carry(f64 distance_m, f64 convey_m, f64 margin_m) noexcept {
+  const f64 from = convey_m + margin_m + static_cast<f64>(k_channel_lattice_min_m);
+  const f64 over = std::max(convey_m, static_cast<f64>(k_channel_lattice_min_m));
+  return 1.0 - smooth_step(from, from + over, distance_m);
 }
 
 f32 station_hydraulic_depth(const Channel& c, u32 i) noexcept {
@@ -337,6 +364,19 @@ ChannelAt channel_at_stretch(const Channel& c, const ChannelLine& line, u32 i, f
   at.along = along;
   at.lateral = wet - at.distance_m;
   at.margin = margin;
+  // What of the section's Froude number and fall the place's water has (W144; channel.h,
+  // `k_channel_convey_slack`): all of it in the conveying reach, none in water standing at the
+  // station's level beyond it. A nappe is its lip's water. Only where the conveying reach is under
+  // the wet reach: the sheet keeps places past a section's own reach (the outer side of a bend
+  // whose stations' reaches differ, a round end), and where the whole section conveys those are
+  // its water as they were, so a channel that conveys over its whole wet reach is the same bytes.
+  if (!(drop > 0.0f) && c.convey_left_m.size() == n && c.convey_right_m.size() == n) {
+    const f32 convey = at.left ? lerp(c.convey_left_m[i], c.convey_left_m[i + 1], t)
+                               : lerp(c.convey_right_m[i], c.convey_right_m[i + 1], t);
+    if (convey < wet)
+      at.carry = static_cast<f32>(channel_carry(
+          static_cast<f64>(at.distance_m), static_cast<f64>(convey), static_cast<f64>(margin)));
+  }
   if (stretch_drawn(c, i)) {
     // A round end (S108; channel.h, `Channel::cap_head`): no cut across the line at a station
     // that stands in other water, so past it the sheet reaches as far as it is wide.
@@ -655,17 +695,21 @@ bool build_sheet(const Channel& c, const ChannelLine& line, f32 h, const Channel
   const auto add = [&](Vec2 p, const ChannelAt& at) {
     Raw r;
     r.p = Vec3{p.x, at.level, p.y};
-    const Vec3 up{-at.slope * at.heading.x, 1.0f, -at.slope * at.heading.y};
+    // The fall the white reads is the conveying water's (W144): none where the water stands.
+    const f32 fall = at.slope * at.carry;
+    const Vec3 up{-fall * at.heading.x, 1.0f, -fall * at.heading.y};
     r.normal = up * (1.0f / length(up));
     r.tau = at.tau;
     r.hydraulic = at.hydraulic;
     r.depth = at.depth_m;
     // The place's speed over its hydraulic depth's wave speed: a station's own number at a
-    // station, and the phase's speed read back at every place between.
-    r.froude = at.hydraulic > 0.0f
-                   ? static_cast<f32>(static_cast<f64>(at.speed) /
-                                      std::sqrt(k_gravity * static_cast<f64>(at.hydraulic)))
-                   : 0.0f;
+    // station, and the phase's speed read back at every place between; times the carry (W144), so
+    // water standing past the conveying reach is still water to every reader.
+    r.froude =
+        at.hydraulic > 0.0f
+            ? at.carry * static_cast<f32>(static_cast<f64>(at.speed) /
+                                          std::sqrt(k_gravity * static_cast<f64>(at.hydraulic)))
+            : 0.0f;
     raw.push_back(r);
     return static_cast<u32>(raw.size() - 1);
   };
