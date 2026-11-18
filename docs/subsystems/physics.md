@@ -753,6 +753,16 @@ precision and the feet a `WorldPos` hashed as three doubles ([Far from the origi
 the hash covers different bits, computed by different arithmetic. The same walk moved to 419 km,
 10,000 km and 1e8 m is the far case above.
 
+### Crouching
+
+(2026-11-17, roadmap P54.) A character whose config names a `crouch_height` — a capsule of the same radius, shorter than standing and taller than the step — has **two capsules, both made at `create`**, and `CharacterInput::crouch` says, every step, which it wants. The stance is settled first in a step, so the sweep that follows is the stance's capsule:
+
+- **Down is at once.** The shorter capsule stands on the same feet inside the taller one, so it fits wherever the taller one did, and `SetShape` is asked with no penetration check.
+- **Up only where it fits.** Released, the character asks the backend to swap back with a penetration allowance of 1.5 times the physics settings' slop, the check the backend's own character sample makes before it stands; under a ceiling lower than `height` the swap is refused, the character stays crouched, `stand_refusals()` counts the step, and it asks again on the next. Nothing pushes it out from under the slab: a player who lets go under a low roof walks on crouched until there is room.
+- **Crouched, the crouch's speed** (`crouch_speed`), sprint held or not, times `speed_scale`; `eye()` is the feet plus `crouch_eye_height`.
+
+Making both shapes at `create` keeps a step allocation-free and keeps a session and its replay making the same shapes in the same order. **The stance is state**: `CharacterState::crouched` takes a byte of what was padding (the struct stays 64 bytes), and the hash folds it in with `ground` as `ground | crouched << 8`, so the stance is in the chain and a standing state hashes the same word it always did — which is why the scripted walk's pinned hash above did not move, and why a character that can crouch and never does is the same chain as one that cannot (the crouch case holds both). `tests/character_tests.cpp`'s crouch case, under a slab whose underside is at 1.4 m: standing stops at the slab's edge, crouched walks under it at 1 m/s with its eye at 1.1 m, a release under it is refused every step (30 of 30), and past the far edge it stands.
+
 **What a step costs** is `physics.character.step` in the bench (below): the sweep is a handful of
 shape queries against the bodies within reach. Over a 64 m heightfield among 200 static blocks,
 walking, turning back and jumping, **5.72 µs a step** on `msvc-release`
