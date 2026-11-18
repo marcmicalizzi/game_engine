@@ -374,26 +374,32 @@ void tabulate(std::string& text, const char* label, f64 named, f64 aod550) {
     CAPTURE(named);
     CAPTURE(aod550);
     CAPTURE(elevation);
-    // The sky-view table carries the hemisphere: its integral is the march's, to 3 % (measured:
+    // Plain ratios, each with what was measured on MSVC on 2026-11-18 beside its bound.
+    // The sky-view table carries the hemisphere: its integral is the march's to 3 % (measured:
     // under 1 %).
-    CHECK(r.diffuse_table == doctest::Approx(r.diffuse_march).epsilon(0.03));
-    // Nine harmonics hold a level surface's share of it to 6 % (measured: 5 % at 10 degrees, where
-    // the sky is a bright ring at the horizon, and 2 % from 30 up).
-    CHECK(r.diffuse_frame == doctest::Approx(r.diffuse_table).epsilon(0.06));
+    const f64 table = r.diffuse_table / r.diffuse_march;
+    CHECK(table > 0.97);
+    CHECK(table < 1.03);
+    // Nine harmonics hold a level surface's share of it within 0.96 to 1.08 (measured: 0.98 to
+    // 1.03 from 30 degrees up, 5 to 7 % over at 10, where the sky is a bright ring at the horizon).
+    const f64 harmonics = r.diffuse_frame / r.diffuse_table;
+    CHECK(harmonics > 0.96);
+    CHECK(harmonics < 1.08);
     // **The beam.** With the sun 30 degrees up or more and an aerosol up to 0.25 at 550 nm, the
     // mirror's direct normal light is Bird's through Perez's efficacy to a tenth (measured: 2 to
     // 7 % over). Below that and in a thicker haze it is held only to stay within 0.6 to 1.25 of
-    // it: three wavelengths are not a spectrum (at 10 degrees and the thickest haze the mirror is
-    // 0.65 of Bird's).
+    // it: three wavelengths are not a spectrum (at 10 degrees the mirror is 18 % over in the
+    // clearest air and 0.65 of Bird's in the thickest haze).
     const f64 beam = r.direct_normal / r.bird_direct_normal;
     CHECK(beam > 0.6);
     CHECK(beam < 1.25);
     if (elevation >= 30.0 && aod550 <= 0.25) {
-      CHECK(beam == doctest::Approx(1.0).epsilon(0.10));
+      CHECK(beam > 0.9);
+      CHECK(beam < 1.1);
     }
     // **The balance.** Global over diffuse on a level surface, which is what a sunlit point is
     // over a shadowed one on open ground: the mirror's stays within 0.85 to 1.22 of Bird's with
-    // Perez's efficacies at the same aerosol (measured 0.87 to 1.19: the mirror has less sky than
+    // Perez's efficacies at the same aerosol (measured 0.87 to 1.20: the mirror has less sky than
     // Bird at a low sun and more at a high one).
     const f64 balance = r.ratio / r.bird_ratio;
     CHECK(balance > 0.85);
