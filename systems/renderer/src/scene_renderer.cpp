@@ -24,6 +24,7 @@
 #include <accumulation_pass.h>
 #include <cull_instances.h>
 #include <reconstruction_pass.h>
+#include <exposure_pass.h>
 #include <texture_feedback.h>
 #include <algorithm>
 #include <cmath>
@@ -1148,6 +1149,19 @@ bool SceneRenderer::record_texture_residency(gfx::RenderGraph& graph, u32 slot, 
 }
 
 bool SceneRenderer::create_motion(std::string* error) {
+  // **The eye's adaptation** (exposure_pass.h; renderer.md, "Exposure: the eye's adaptation"): a
+  // frame pass of the renderer's own when the tunable or the scene's sky asks for it, and nothing
+  // otherwise.
+  if (const ExposureOptions options = exposure_options_from_tunables();
+      options.adapt ||
+      (sky_.active() && sky_.entry().exposure == scene::SkyExposure::Adapted)) {
+    exposure_ = new ExposurePass;
+    if (!exposure_->create(*device_, *scene_, shaders_, desc_.frames_in_flight, options, error) ||
+        !add_frame_pass(FramePassStage::Exposure, &ExposurePass::record_thunk, exposure_,
+                        "exposure", error)) {
+      return false;
+    }
+  }
   // The texture feedback (texture_feedback.h; texture.md, "Levels resident by what the frame
   // samples"): a measurement, a frame pass of its own, only when the tunable names a file.
   if (const std::string feedback = TextureFeedback::path_wanted(); !feedback.empty()) {
@@ -1207,6 +1221,13 @@ bool SceneRenderer::create_motion(std::string* error) {
                   log::field("device_bytes", accumulation_->device_bytes()),
                   log::field("linear_bytes", u64{width_} * height_ * 8),
                   log::field("inputs_bytes", motion_->device_bytes()));
+  return true;
+}
+
+bool SceneRenderer::exposure_state(ExposureState& out) {
+  if (exposure_ == nullptr) return false;
+  frames_.wait_idle();
+  out = exposure_->latest();
   return true;
 }
 
@@ -1683,6 +1704,11 @@ void SceneRenderer::destroy() noexcept {
     reconstruction_->destroy();
     delete reconstruction_;
     reconstruction_ = nullptr;
+  }
+  if (exposure_ != nullptr) {
+    exposure_->destroy();
+    delete exposure_;
+    exposure_ = nullptr;
   }
   if (texture_feedback_ != nullptr) {
     texture_feedback_->destroy();
@@ -6519,8 +6545,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     f32 paper_white_nits = 0.0f;
     f32 peak_nits = 0.0f;
     u32 ui_texture = ~u32{0};  // the overlay's UI layer, or none
+    u32 pad = 0;
+    u64 exposure = 0;  // the eye's adaptation's scale (FramePassReport::exposure), or none
   };
-  static_assert(sizeof(FrameEncodePush) == 36, "frame_encode.slang's FrameEncodePush");
+  static_assert(sizeof(FrameEncodePush) == 48, "frame_encode.slang's FrameEncodePush");
   FrameEncodePush encode_push[k_max_views];
   for (u32 v = 0; v < views && (frame_passes_on || texture_residency_ != nullptr); ++v) {
     const View& view = views_[v];
@@ -6609,7 +6637,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       push.paper_white_nits = levels.paper_white_nits;
       push.peak_nits = levels.peak_nits;
       if (ui_layer_on) push.ui_texture = ui_layer_slot_;
+      push.exposure = pass_report.exposure_address;
     }
+    if (exposure_ != nullptr) stats_.exposure = exposure_->reported();
     // **The overlay into its UI layer** (overlay.h, an HDR frame's): cleared to nothing, drawn with
     // its colours in linear light, and read by the encode below, which composites it at paper
     // white.
@@ -6641,6 +6671,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           b.color_attachment(color, gfx::LoadOp::Clear, sky);
           b.read(rg_linear, gfx::Access::SampledRead);
           if (ui_layer_on) b.read(rg_ui, gfx::Access::SampledRead);
+          if (pass_report.exposure.valid()) b.read(pass_report.exposure, gfx::Access::FragmentRead);
         },
         [&](gfx::CommandList cb, gfx::RenderGraph&) {
           cb.bind_pipeline(gfx::BindPoint::Graphics, pipelines.encode);

@@ -43,12 +43,14 @@ engine_module(NAME renderer LAYER systems
           src/flora_poser.cpp src/scene_fire.cpp src/far_forest.cpp src/far_tile.cpp src/far_offered.cpp src/water_reflect.cpp
           src/water_refract.cpp
           src/scene_ground_plan.cpp src/sway_forms.cpp
-          src/resolve_classes.cpp src/temporal_change.cpp src/texture_feedback.cpp)
+          src/resolve_classes.cpp src/temporal_change.cpp src/texture_feedback.cpp
+          src/exposure_pass.cpp)
 # The renderer's own shader: the output encode after the frame passes (frame_pass.h,
 # shaders/frame_encode.slang), which includes domain/gfx's display.slang by its path; the texture
-# feedback (R172), which includes material.slang the same way.
+# feedback (R172), which includes material.slang the same way; the eye's adaptation (R168), which
+# includes sky.slang for the sky's blocks.
 engine_shaders(NAME renderer SOURCES shaders/frame_encode.slang shaders/accumulate.slang
-               shaders/texture_feedback.slang)
+               shaders/texture_feedback.slang shaders/exposure.slang)
 if(TARGET engine_shaders_renderer)
   target_link_libraries(engine_renderer PRIVATE engine_shaders_renderer)
 endif()
@@ -133,7 +135,9 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     # T146: a crown's leaf measured from its cards' own masks, on the CPU.
                     tests/crown_prior_measure_tests.cpp
                     # R151: the resolve drawn once per pixel class is the one draw's bytes.
-                    tests/resolve_class_tests.cpp)
+                    tests/resolve_class_tests.cpp
+                    # R168: the eye's adaptation's model on the CPU (exposure.h); no device.
+                    tests/exposure_model_tests.cpp)
 if(TARGET engine::ruins)
   # A scene with a `ruins` entry read over a terrain: kits, meshes, instances and determinism; and,
   # where the terrain capability is too, the same buildings over the dunes a year apart.
@@ -170,7 +174,9 @@ if(TARGET engine::sky)
   list(APPEND _renderer_tests tests/sky_scene_tests.cpp
        # Where the sky's bands come from and what the output encode's dither leaves of them: the
        # erg's sky at its slowest hours in float, 8- and 10-bit targets, measured along its lines.
-       tests/banding_tests.cpp)
+       tests/banding_tests.cpp
+       # R168: the eye's adaptation walked from noon into a room with one door and out again.
+       tests/exposure_tests.cpp)
 endif()
 # Four CTest tests over the one executable (renderer.1 to renderer.4, the files dealt by
 # cmake/test-costs.txt's seconds and the rest by name): the whole suite outgrew one test's GPU work

@@ -40,6 +40,7 @@
 #include <domain/gfx/rhi.h>
 #include <domain/gfx/shader_library.h>
 #include <systems/renderer/capture.h>
+#include <systems/renderer/exposure.h>
 #include <systems/renderer/far_forest_handoff.h>
 #include <systems/renderer/fire.h>
 #include <systems/renderer/frame_pass.h>
@@ -564,6 +565,9 @@ struct Stats {
   // A moving terrain's field uploads' bytes, summed (`gpu_terrain_upload` is their time).
   u64 terrain_upload_bytes = 0;
   SkyStats sky;
+  // The eye's adaptation (exposure.h): what the frame last recorded in this slot reached, read when
+  // the slot came round. `frames` 0: no adaptation ran.
+  ExposureState exposure;
   // What the cache's passes counted in the latest frame folded (R69 stage 2; `gfx::k_gi_stat_*`),
   // read a frame or more late like the sky's sums and not summed: rays traced, stride pixels
   // sampled and those of them whose own cell was young (under `gfx::k_gi_young` samples:
@@ -955,6 +959,9 @@ class SceneRenderer {
   // **What samples this renderer's frames over time** (ADR-0064; settings.h, `Reconstruction`): the
   // block every frame's statistics carry. Its `native()` says whether a frame's times are a cost.
   Reconstruction reconstruction() const noexcept;
+  // **The eye's adaptation as the last submitted frame left it** (exposure.h): waits for the device.
+  // False when adaptation is off in this renderer.
+  bool exposure_state(ExposureState& out);
   // The next frame has no frame before it (`FrameDesc::history_reset`, for a host that knows before
   // it has a frame to say it on). Nothing without `renderer.reconstruction.inputs`.
   void reset_history() noexcept;
@@ -1151,6 +1158,9 @@ class SceneRenderer {
   // A provider found by name (src/reconstruction_pass.h; R159): null unless
   // `renderer.reconstruction.provider` names one other than the engine's own.
   class ReconstructionPass* reconstruction_ = nullptr;
+  // The eye's adaptation (src/exposure_pass.h; R168): null unless `renderer.exposure.adapt` or the
+  // scene's `Sky.exposure: Adapted`.
+  class ExposurePass* exposure_ = nullptr;
   // Which level of each texture the frames asked for (src/texture_feedback.h; R172): null unless
   // `renderer.textures.feedback` names a file.
   class TextureFeedback* texture_feedback_ = nullptr;
