@@ -336,6 +336,39 @@ TEST_CASE("sql query: a recursive query that never ends is stopped by max_ms") {
   CHECK(std::string_view(rows.result.bound) == "max_ms");
 }
 
+// max_ms is read between opcodes, so one opcode runs whole past it (store.md, "The bounds"). The
+// two costliest kinds on the list: a pattern over a long value, and a needle looked for at every
+// position of a haystack, which `instr` does with a full comparison at each. The case prints what
+// each ran past its bound; the page states the bound these follow.
+TEST_CASE("sql query: max_ms is kept between opcodes, and one opcode runs whole past it") {
+  TempDir dir("engine_store_sql");
+  const std::string path = make_store(dir, 8);
+  SqlQueryLimits limits;
+  limits.max_ms = 50;
+  std::string stars = "*";
+  for (u32 i = 0; i < 120; ++i)
+    stars += "a*";
+  stars += "b";  // 242 bytes, under the pattern limit of 256
+  const std::string glob = "SELECT replace(hex(zeroblob(500000)), '0', 'a') GLOB '" + stars + "'";
+  // 200,000 'a's searched for 100,000 'a's and a 'b': about 10^10 byte comparisons.
+  const std::string instr =
+      "SELECT instr(replace(hex(zeroblob(100000)), '0', 'a'), "
+      "replace(hex(zeroblob(50000)), '0', 'a') || 'b')";
+  for (const std::string* sql : {&glob, &instr}) {
+    CAPTURE(*sql);
+    const auto start = std::chrono::steady_clock::now();
+    Run run = query(path, *sql, {}, limits);
+    const f64 took =
+        std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - start).count();
+    CAPTURE(run.message);
+    // It ends with its answer or at the first check after the opcode, never later.
+    CHECK(run.status == Status::Ok);
+    CHECK(run.result.rows <= 1);
+    CHECK(took < 30'000.0);
+    MESSAGE("max_ms 50, ran " << took << " ms, bound '" << run.result.bound << "'");
+  }
+}
+
 TEST_CASE("sql query: a product of the tables is cut at max_rows") {
   TempDir dir("engine_store_sql");
   const std::string path = make_store(dir, 1000);
