@@ -70,6 +70,12 @@ bool Session::collect_blobs(const CollectBlobsParams& params, CollectBlobsResult
   // An open proposal's merge base is the target's records as the proposal first found them, which a
   // promotion with prefer Base can write back: their references are kept like the journal's.
   Vector<JsonValue> roots;
+  // A command staged in an open transaction names its blobs before any layer does, and its commit
+  // is refused if one was collected: kept like the journal's (review B2, batch 68). Lapsed
+  // transactions are rolled back first, as `doc.transactions` does, so their blobs are not kept.
+  if (expire_transactions(time::wall_unix_ms()) > 0 && !save_transactions(error)) return false;
+  for (const TransactionEntry& entry : transactions_.transactions)
+    roots.push_back(schema::to_json(entry));
   for (const ProposalTable::Entry& entry : proposals_.entries())
     for (const ProposalBaseEntry& base : entry.base)
       roots.push_back(schema::to_json(base));

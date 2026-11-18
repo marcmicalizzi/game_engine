@@ -18,10 +18,12 @@
 #include <test_environment.h>
 #include <test_temp_dir.h>
 
+#include <chrono>
 #include <filesystem>
 #include <random>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <vector>
 
 using namespace engine;
@@ -305,6 +307,43 @@ TEST_CASE("blobs: put, read back checked, referenced, refused when unheld, colle
   CHECK_FALSE(doc::BlobStore::has(h.vfs, h.dir, name));
 }
 
+TEST_CASE("blobs: a blob named only by a staged command is kept until its transaction ends") {
+  // Review B2 (batch 68): collect_blobs kept what layers, the journal and proposals name, not what
+  // an open transaction's staged commands name, so a collection past the grace period took the
+  // blob and the commit was refused. A lapsed transaction is rolled back first and keeps nothing.
+  TempDir tmp("engine_protocol_blobs_staged");
+  Host h;
+  h.make_world(tmp.path() + "/doc");
+  const JsonValue ref = *h.put("staged grid").find("ref");
+  const std::string name(ref.find("blob")->as_string());
+  const JsonValue begun = h.ok("doc.begin", obj({{"layer", JsonValue("world")},
+                                                 {"attribution", who("director")}}));
+  const JsonValue id = *begun.find("id");
+  h.ok("doc.apply", obj({{"commands", one(set(oid(1), "grid", ref))},
+                         {"attribution", who("director")},
+                         {"transaction", id}}));
+  const JsonValue kept = h.ok("doc.collect_blobs", obj({{"min_age_s", JsonValue(0.0)}}));
+  CHECK(kept.find("removed")->size() == 0);
+  CHECK(doc::BlobStore::has(h.vfs, h.dir, name));
+  h.ok("doc.commit", obj({{"transaction", id}, {"attribution", who("director")}}));
+  CHECK(h.document().property(oid(1), "grid") != nullptr);
+
+  // A transaction that lapsed holds nothing: its staged blob goes at the next collection.
+  const JsonValue other = *h.put("lapsed grid").find("ref");
+  const JsonValue short_lived =
+      *h.ok("doc.begin", obj({{"layer", JsonValue("world")},
+                              {"ttl_seconds", JsonValue(1.0)},
+                              {"attribution", who("director")}}))
+           .find("id");
+  h.ok("doc.apply", obj({{"commands", one(set(oid(2), "grid", other))},
+                         {"attribution", who("director")},
+                         {"transaction", short_lived}}));
+  std::this_thread::sleep_for(std::chrono::milliseconds(1300));
+  const JsonValue gone = h.ok("doc.collect_blobs", obj({{"min_age_s", JsonValue(0.0)}}));
+  CHECK(gone.find("removed")->size() == 1);
+  CHECK_FALSE(doc::BlobStore::has(h.vfs, h.dir, std::string(other.find("blob")->as_string())));
+  CHECK(doc::BlobStore::has(h.vfs, h.dir, name));
+}
 TEST_CASE("checkpoints: taken, rolled back across a tiled layer, undone, and refused whole") {
   if (!have_git()) return;
   TempDir tmp("engine_protocol_checkpoints");
