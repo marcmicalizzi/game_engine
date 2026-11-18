@@ -193,3 +193,78 @@ lost, which is the solve's business, every reader of the water should see the sa
 cut can carve what the plan names. The leg that builds it starts from the falls' cook (S104), which
 already turns a lip-to-foot pair into a nappe, and from W130.2's pool, which already stands water
 level at a sill; what it adds is the spacing and the carving.
+
+## The step-pool form in numbers (W132, 2026-11-17)
+
+(Roadmap W132, its research leg; nothing here is built yet.) What a staircase of steps and pools
+measures, read before its design. The reading was done by a research sub-agent of this row
+through a fetch tool that returns a PDF's text; "full" below means it read the paper's text,
+"abstract" and "snippet" what they say, and nothing was re-read by a second pass. H is a step's
+height, L the spacing of steps along the channel, W the channel's width, S the reach's slope,
+c = (H/L)/S the steps' steepness against the reach's, d_c the critical depth.
+
+| Quantity | Value | The data's range | Source | Read |
+|---|---|---|---|---|
+| Spacing by reach type | step-pool: a pool every 1 to 4 W; cascade: under 1 W; pool-riffle 5 to 7 W | Washington and Oregon | Montgomery & Buffington (1997), *GSA Bulletin* 109, 596–611 | full |
+| Spacing, measured | spectral wavelength 0.43 to 2.40 W, 2.1 to 7.1 m | Santa Monica Mountains | Chin (2002), *American Journal of Science* 302, 144–167 | full |
+| L/W, study by study | 0.6–1 (Chartrand & Whiting 2000), 1.1 (L against W, r² 0.87), 1.4 (Bowman 1977), 1.9 (Chin 1989), 2.7 (Whittaker 1987) | | compiled in Nickolotsky (2005, thesis; Nickolotsky & Pavlowsky 2007, *Geomorphology* 83) | secondary |
+| Spacing against slope | inversely proportional to S; a step-pool's pools 0.4 to 0.8 W long; unit slopes: rapid 0.029, cascade 0.055, step 0.173 | two Oregon streams | Grant, Swanson & Wolman (1990), *GSA Bulletin* 102, 340–352 | full (a scan's text) |
+| Steepness | S ≤ H/L ≤ 2S, H/L = 1.5 S at the greatest resistance | flume and field, S 0.05 to 0.20 | Abrahams, Li & Atkinson (1995), *Water Resources Research* 31, 2593–2602 | secondary (as the three rows below quote it) |
+| Steepness, a regression | **H/L = 1.42 S^1.05** (R² 0.80, n = 107); c 0.52 to 2.22; H/L 0.03 to 0.32 | Rio Cordon and the literature | Comiti and others (2007), *Journal of Hydrology* 340, 48–62 | full |
+| Steepness, compiled | 183 points: c most often 1 to 2, H/L most often about 0.1; c over 2 below S of 5 to 7 % | S 1.5 to 30 % | Canovaro & Solari (2007), *Earth Surface Processes and Landforms* 32, 1628–1640 | full |
+| Steepness, one reach over floods | c 1.30 before a flood, 0.79 after it, 1.33 four years on; H 0.66 to 1.28 m, L 3.95 to 6.5 m (0.8 to 1.1 W); the risers' D84 about 1.15 m, so H/D84 about 0.8 to 1.1 | W 4.8 to 6.6 m, S 0.09 to 0.22 | Lenzi (2001), *ESPL* 26, 991–1008 | full |
+| A step's height | about the largest grains the stream moves (D84 to D100 of the risers) | flume synthesis | Richardson & Carling (2021), *Earth-Science Reviews* 222 | snippet; Chin (1999), Chartrand & Whiting (2000), Curran & Wilcock (2005): not reached |
+| The drop taken at the steps | **60 % and 59 %** of 95 m in two surveys; 84 steps, H 0.68 ± 0.33 m, L 7.5 ± 5.0 m; c over 1 "not the norm" there | Erlenbach, S 0.15, D90 about 0.4 m | Molnar and others (2008), *IAHS Publication* 325, 302–307 | full |
+| Head lost from a step to its pool | about two thirds of the reach's | Rio Cordon, 36 to 57 % of bankfull | Wilcox, Wohl, Comiti & Mao (2011), *WRR* 47, W07514 | abstract |
+| Head lost against the pool's depth | 75 % where the pool's depth is 0.30 of the step's height, 40 % at 0.85 | Q 5 to 234 l/s, S 2.6 to 10 %, H 0.03 to 0.84 m, L 2.9 to 9.0 m | D'Agostino & Michelini (2015), *WRR* 51, 4650–4667 | full (the fit's coefficients read from a garbled extraction: not used) |
+| A pool's scour | its depth and length go with the falling jet's energy; natural and built pools alike once normalised | 110 pools, 10 streams | Comiti, Andreoli & Lenzi (2005), *ESPL* 30, 1567–1581 | abstract; the coefficients not reached |
+| Where the form holds | step-pool at S 0.03 to 0.065, cascade above; alluvial reaches end at S about 0.2 to 0.3, bedrock and colluvial channels beyond | as the first row | Montgomery & Buffington (1997) | full |
+| The steepest surveyed | step-pool and cascade reaches to 21 % | W 1.1 to 5.8 m | Yochum and others (2014), USDA RMRS-GTR-323 | full |
+| When a step's water is a free nappe | skimming from d_c/h = 1.057 − 0.465 h/l, ±30 % | flat steps, h/l 0.2 to 1.4 | Chanson (1994, 1996), *Journal of Hydraulic Research* | secondary |
+
+Not reached: Church & Zimmermann (2007, *WRR* 43, the review; refused), Chin (1999) and Chin &
+Wohl (2005) with their spacing regressions, Comiti, Cadol & Wohl (2009).
+
+**What holds across them, and what does not.** The spacing is half a width to three widths and
+shortens as the slope rises; a step is as high as the bed's largest clasts; on a settled bed above
+about 7 % the steps' steepness is one to two times the reach's, so the steps take the reach's
+whole fall and the pools' floors run level or back up to the next lip; self-formed step-pools are
+found from about 3 % to 20 or 30 %. Contested: whether the spacing follows the slope or only goes
+with it (Chin: height from the grain, spacing from the discharge); whether steps are periodic
+(Chin 2002) or placed at random with a least spacing (Curran & Wilcock 2005); and c itself after
+a large flood or on the Erlenbach, where steps take 60 % of the drop and c is about 0.6.
+
+**The forest's steep lines are past the surveyed range.** A line at 30 to 70 % is a bedrock or
+colluvial channel in these classifications, not an alluvial step-pool: the form (a drop, a pool, a
+drop) still holds, since at 5 to 200 l/s every drop of a clast's height is a free nappe (d_c of 1
+to 25 cm against steps of 0.3 m and more), but the regression is used outside its data (H/L to
+0.32) and is labelled so where it is.
+
+**What the solve writes today, against that** (v47 at stage 1, `main` with W140; the lip-to-foot
+pairs of the solved stations by the line's mean slope):
+
+| Slope class | Line, km | Steps | Steps a 100 m | Share of the fall at steps | Median height | Median spacing |
+|---|---:|---:|---:|---:|---:|---:|
+| 5 to 15 % | 5.12 | 4 | 0.08 | 0.5 % | 0.70 m | 2.8 W |
+| 15 to 30 % | 8.35 | 29 | 0.35 | 0.8 % | 0.42 m | 6.0 W |
+| over 30 % | 6.25 | 430 | 6.88 | 10.4 % | 0.51 m | 1.4 W |
+
+Between 5 and 30 %, where the literature has a step every one to three widths taking most of the
+fall, the solved water has almost none: 13.5 km of plane. Over 30 % a step stands every 15 m and
+takes a tenth of the fall. A step is written only where the *ground* drops at a metre a metre for
+three critical depths, and the cut is a smooth trench, so the steps there are the heightfield's
+own ledges.
+
+**The numbers a design takes from this**, each with its source:
+
+| Number | Value | From |
+|---|---|---|
+| Where steps are written | reaches of S ≥ 0.03 | Montgomery & Buffington (1997) |
+| A step's height H | the bed's D84 at the reach (the plan's sediment law already carries it per point), held to 0.15 to 1.0 m | Lenzi (2001): H/D84 0.8 to 1.1; Richardson & Carling (2021) |
+| The spacing L | H / (1.42 S^1.05), held to 0.5 to 4 W; outside the regression's data above H/L of 0.32 (S over 0.24) | Comiti and others (2007); Montgomery & Buffington (1997) for the bounds |
+| The share of the fall at the steps | min(1, c) with c = 1.42 S^0.05, about 1.2 to 1.4: the steps take all of it, and a pool's floor rises to the next lip by (c − 1) of the reach's fall over L | the same regression; Erlenbach's 60 % is the low case and a knob |
+| A pool's depth under its lip downstream | 0.3 H at the least (the residual pool), the scour deepening toward the step's foot | D'Agostino & Michelini (2015): head loss 75 % at 0.30; labelled a choice inside their 0.30 to 0.85 |
+| The jitter of the spacing | each L drawn within 0.5 to 1.5 of its mean, seeded from the plan | Molnar and others (2008): L 7.5 ± 5.0 m; Curran & Wilcock's random placing with a least spacing |
+
+At S = 0.10 with D84 = 0.3 m that is a 0.3 m step every 2.4 m; at 0.37 a step every 0.6 m, under
+a width of a metre-wide stream, which is a cascade.
