@@ -616,13 +616,20 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
     config.peak_frames = rt_peak_frames_tunable();
     config.step = rt_step_tunable();
     config.slope_frames = rt_slope_frames_tunable();
+    // A first capacity under the union is a guess, judged by its first frames (R81; renderer.md,
+    // "A guess is not a demand"); the whole union is a guarantee and is held as before.
+    config.first_seconds = rt_first_seconds_tunable();
     // The policy's clock is wall time (R116): seconds on the monotonic clock.
     const f64 now = static_cast<f64>(time::monotonic_ns()) / 1.0e9;
     rt_capacity_.reset(config, scene.rt_capacity(), now);
+    rt_capacity_.first_is_guess(scene.rt_capacity() < scene.rt_union_clusters());
     // The cache's references: the same arithmetic against their own ceiling.
     RtCapacityConfig references = config;
     references.limit = scene.rt_reference_limit();
     rt_reference_policy_.reset(references, scene.rt_reference_capacity(), now);
+    rt_reference_policy_.first_is_guess(scene.rt_reference_capacity() <
+                                        scene.rt_union_clusters());
+    rt_guess_estimate_ = scene.rt_frame_estimate() + scene.rt_reference_estimate();
     note_rt_bytes();
   }
   if (!frames_.create(device, desc.frames_in_flight, error) ||
@@ -1937,6 +1944,25 @@ bool SceneRenderer::set_dynamic_instances(std::span<const SceneInstance> tail,
         rt_reference_policy_.resized(scene_->rt_reference_capacity(), now);
       }
     }
+    // The tail changed the union, and with it whether what the chain holds is all of it (R81).
+    rt_capacity_.first_is_guess(scene_->rt_capacity() < scene_->rt_union_clusters());
+    rt_reference_policy_.first_is_guess(scene_->rt_reference_capacity() <
+                                        scene_->rt_union_clusters());
+  }
+  // **A world still arriving has not shown its frames what it holds** (R81; renderer.md, "A guess
+  // is not a demand"): while what a frame could build keeps rising by more than the headroom, the
+  // guess's first window starts again, so a load that outlasts `renderer.rt.first_seconds` is not
+  // judged by its own fast, empty frames (R116's v25 walk). A walk's tiles come and go and the
+  // estimate stays about where it was; a load's only come.
+  if (resolved_.rt_chain && (rt_capacity_.provisional() || rt_reference_policy_.provisional())) {
+    const u64 could = scene_->rt_frame_estimate() + scene_->rt_reference_estimate();
+    const u64 headroom = rt_guess_estimate_ * rt_capacity_.config().headroom_pct / 100;
+    if (could > rt_guess_estimate_ + headroom) {
+      rt_guess_estimate_ = could;
+      const f64 now = static_cast<f64>(time::monotonic_ns()) / 1.0e9;
+      rt_capacity_.scene_grew(now);
+      rt_reference_policy_.scene_grew(now);
+    }
   }
   // The static forms' instances the tail now holds, and the chain's bytes after any relayout.
   note_rt_bytes();
@@ -2422,6 +2448,13 @@ void SceneRenderer::begin_frame() {
       rt_observed_ = true;
       const f64 now = static_cast<f64>(begin_started) / 1.0e9;
       const u32 next = rt_capacity_.observe(stats_.rt.wanted, now);
+      const bool gives_back = rt_capacity_.guess_given_back() == scene_->rt_capacity();
+      if (gives_back && next < scene_->rt_capacity() && !rt_step_pending()) {
+        ENGINE_LOG_INFO(log_renderer, "the ray tracing chain's first capacity was a guess",
+                        log::field("held", scene_->rt_capacity()), log::field("fit", next),
+                        log::field("wanted", stats_.rt.wanted),
+                        log::field("union_clusters", scene_->rt_union_clusters()));
+      }
       // The cache's references by a policy of their own, the same arithmetic (rt_capacity.h).
       const u32 next_references =
           scene_->rt_cache() ? rt_reference_policy_.observe(stats_.rt.references_wanted, now) : 0u;

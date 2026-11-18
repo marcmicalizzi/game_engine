@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "R81",
+  "reason": "R81: renderer.md gains the section A guess is not a demand (the provisional first capacity, its pair, what is left by kind) and the place report by kind; apps.md names the memory report place block by kind",
+  "date": "2026-11-17",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/renderer.md": 5638,
+    "page:docs/subsystems/apps.md": 270
+  }
+}

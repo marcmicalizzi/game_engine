@@ -1335,6 +1335,8 @@ class SceneRenderer {
   Vector<RetiredTlas> retired_tlas_;
   void free_retired_tlas(bool all) noexcept;
   bool rt_observed_ = false;  // a frame's demand has reached the capacity policy
+  // What a frame could build when the first guess's window last began (R81; `scene_grew`).
+  u64 rt_guess_estimate_ = 0;
   // The ray tracing chain's capacity policy (rt_capacity.h): fed every folded frame's demand, and
   // the reason `GpuScene::resize_ray_tracing` is ever called.
   RtCapacity rt_capacity_;
