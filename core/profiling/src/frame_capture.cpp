@@ -32,7 +32,14 @@ struct Slot {
 
 std::unique_ptr<Slot[]> g_slots;
 u32 g_capacity = 0;
-std::atomic<u64> g_claimed{0};
+// The claim counter every recorded event moves sits on a cache line of its own, so its traffic does
+// not take from every writer the line holding the switch's generation and the buffer's address,
+// which every enter and publish reads (a concurrency review's finding; the 8-thread row of
+// profiler_bench says what it costs, profiling.md, "The frame capture").
+struct alignas(64) ClaimLine {
+  std::atomic<u64> claimed{0};
+};
+ClaimLine g_claim;
 std::atomic<u64> g_dropped{0};
 std::atomic<u32> g_generation{0};  // 0 is never a capture's
 std::atomic<u32> g_threads{0};
@@ -125,7 +132,7 @@ u16 thread_index(u32 generation) noexcept {
 
 // Claims a slot and writes `event` into it, or counts a drop. The caller holds a writer's entry.
 void publish(const CaptureEvent& event, u32 generation) noexcept {
-  const u64 at = g_claimed.fetch_add(1, std::memory_order_relaxed);
+  const u64 at = g_claim.claimed.fetch_add(1, std::memory_order_relaxed);
   if (at >= g_capacity) {
     // The one claim that finds the buffer just full stamps the time, after its claim: every event
     // recorded was stamped before its own (earlier) claim, so none is later than this. The report
@@ -200,7 +207,7 @@ bool capture_start(const CaptureOptions& options) {
     g_slots.reset(new Slot[capacity]);
     g_capacity = capacity;
   }
-  g_claimed.store(0, std::memory_order_relaxed);
+  g_claim.claimed.store(0, std::memory_order_relaxed);
   g_dropped.store(0, std::memory_order_relaxed);
   g_threads.store(0, std::memory_order_relaxed);
   clear_names();
@@ -227,7 +234,7 @@ void capture_reset() noexcept {
   capture_stop();
   g_slots.reset();
   g_capacity = 0;
-  g_claimed.store(0, std::memory_order_relaxed);
+  g_claim.claimed.store(0, std::memory_order_relaxed);
   g_dropped.store(0, std::memory_order_relaxed);
   g_threads.store(0, std::memory_order_relaxed);
 }
@@ -284,7 +291,7 @@ void capture_name_thread(const char* name) noexcept {
 u32 capture_snapshot(std::span<CaptureEvent> out, CaptureInfo& info) noexcept {
   const bool running = detail::g_capture_on.load(std::memory_order_acquire);
   const u32 generation = g_generation.load(std::memory_order_acquire);
-  const u64 claimed = std::min<u64>(g_claimed.load(std::memory_order_acquire), g_capacity);
+  const u64 claimed = std::min<u64>(g_claim.claimed.load(std::memory_order_acquire), g_capacity);
   u32 n = 0;
   for (u64 i = 0; i < claimed && n < out.size(); ++i) {
     const Slot& slot = g_slots[static_cast<usize>(i)];
@@ -304,7 +311,8 @@ u32 capture_snapshot(std::span<CaptureEvent> out, CaptureInfo& info) noexcept {
 u32 capture_capacity() noexcept { return g_slots ? g_capacity : 0; }
 
 u32 capture_count() noexcept {
-  return static_cast<u32>(std::min<u64>(g_claimed.load(std::memory_order_acquire), g_capacity));
+  return static_cast<u32>(
+      std::min<u64>(g_claim.claimed.load(std::memory_order_acquire), g_capacity));
 }
 
 void capture_thread_name(u32 thread, char (&out)[k_capture_thread_name_bytes]) noexcept {
