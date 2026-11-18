@@ -1317,11 +1317,11 @@ class SceneRenderer {
   // the cache serves no instance of records none, and its words say nothing of the slots).
   Vector<u8> slot_rt_cache_;
   bool rt_cache_recording_ = false;  // the frame being recorded records them
-  Vector<u64> slot_terrain_bytes_;   // per frame slot: the terrain field bytes that frame uploaded
-  Vector<FrameCpu> slot_cpu_;        // per frame slot: where that frame's CPU time went
-  Vector<f32> slot_visibility_;      // per frame slot: what its frame passes reported
-  FrameCpu frame_cpu_;               // the frame being begun and recorded's, until submit_frame
-  GpuScene::TableUpdate tables_;     // the frame being recorded's table update; its copies are kept
+  Vector<u64> slot_terrain_bytes_;  // per frame slot: the terrain field bytes that frame uploaded
+  Vector<FrameCpu> slot_cpu_;       // per frame slot: where that frame's CPU time went
+  Vector<f32> slot_visibility_;     // per frame slot: what its frame passes reported
+  FrameCpu frame_cpu_;              // the frame being begun and recorded's, until submit_frame
+  GpuScene::TableUpdate tables_;    // the frame being recorded's table update; its copies are kept
   // The frame being recorded's terrain levels: its table, the fields it copies in and reads.
   GpuScene::TerrainUpdate terrain_frame_;
   // The frame being recorded's record upload: instances moved and ring slots' records since the
