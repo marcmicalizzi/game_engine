@@ -8,10 +8,11 @@ engine_module(NAME store LAYER foundation
   OPTIONAL CAPABILITY store
   DEPS base containers ids log
   EXTERNAL_DEPS engine::sqlite3
-  SOURCES src/database.cpp src/event_log.cpp)
+  SOURCES src/database.cpp src/event_log.cpp src/sql_query.cpp)
 
 engine_module_tests(NAME store
-  SOURCES tests/database_tests.cpp tests/event_log_tests.cpp tests/size_table.cpp)
+  SOURCES tests/database_tests.cpp tests/event_log_tests.cpp tests/sql_query_tests.cpp
+          tests/size_table.cpp)
 
 # The E6 half that measures the store: 10^6 LOD3 projections, batched inserts, point and range
 # reads, hourly summarization, snapshots, WAL against a rollback journal, and event-log append

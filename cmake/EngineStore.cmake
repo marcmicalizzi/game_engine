@@ -19,9 +19,17 @@
 #                                  the right trade for a save file written every tick.
 #   SQLITE_DEFAULT_MEMSTATUS=0     drops the global allocation counters (and their atomics) from
 #                                  every malloc; nothing reads them.
-#   SQLITE_LIKE_DOESNT_MATCH_BLOBS, SQLITE_OMIT_SHARED_CACHE, SQLITE_USE_ALLOCA,
-#   SQLITE_MAX_EXPR_DEPTH=0        the recommended "smaller, faster" set from SQLite's own
-#                                  compile-options page.
+#   SQLITE_LIKE_DOESNT_MATCH_BLOBS, SQLITE_OMIT_SHARED_CACHE, SQLITE_USE_ALLOCA
+#                                  from the recommended "smaller, faster" set of SQLite's own
+#                                  compile-options page. That set's SQLITE_MAX_EXPR_DEPTH=0 is
+#                                  left out on purpose: it compiles the expression-depth check
+#                                  away, so `sqlite3_limit(SQLITE_LIMIT_EXPR_DEPTH)` would do
+#                                  nothing, and the store runs SQL a client wrote
+#                                  (`foundation/store/sql_query.h`), where an expression nested a
+#                                  few thousand deep must be refused rather than recursed into on
+#                                  the host's stack (sqlite.org/security.html; store.md, "SQL a
+#                                  client wrote"). The compiled maximum stays SQLite's 1,000 and
+#                                  that connection lowers it to 100.
 #
 # JSON is *not* behind SQLITE_ENABLE_JSON1: json1 has been built in and always on since 3.38,
 # and the flag is a no-op kept only for old build scripts. The document model of
@@ -61,8 +69,7 @@ target_compile_definitions(engine_sqlite3 PUBLIC
   SQLITE_DEFAULT_MEMSTATUS=0
   SQLITE_LIKE_DOESNT_MATCH_BLOBS
   SQLITE_OMIT_SHARED_CACHE
-  SQLITE_USE_ALLOCA
-  SQLITE_MAX_EXPR_DEPTH=0)
+  SQLITE_USE_ALLOCA)
 set_target_properties(engine_sqlite3 PROPERTIES C_STANDARD 99 POSITION_INDEPENDENT_CODE ON)
 if(MSVC)
   target_compile_options(engine_sqlite3 PRIVATE /W0)

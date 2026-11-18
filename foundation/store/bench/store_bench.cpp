@@ -13,6 +13,7 @@
 #include <core/time/time.h>
 #include <foundation/bench/bench.h>
 #include <foundation/store/event_log.h>
+#include <foundation/store/sql_query.h>
 
 #include <sqlite3.h>
 #include <test_temp_dir.h>
@@ -462,6 +463,54 @@ ENGINE_BENCH_ARGS(store_range_by_tile, "store.projections.range_by_tile", 0, 1) 
     bench::keep(bytes);
   }
   state.set_items(records() / tiles());
+}
+
+ENGINE_BENCH_ARGS(store_sql_query, "store.sql_query", 0, 1, 2) {
+  // SQL a client wrote over the million projections (store.md, "SQL a client wrote"), each call
+  // what `store.query` pays: a read-only connection opened and hardened, the text prepared under
+  // the authorizer, stepped, and everything closed again. 0 is one entity through the by-entity
+  // index, 1 one tile's rows through the primary key, 2 a scan of the whole table.
+  Corpus& c = corpus();
+  if (c.log == nullptr) return;
+  const char* sql[3] = {
+      ("SELECT tile, kind, length(blob) FROM projections WHERE entity_hi = ?1 AND entity_lo = ?2 "
+       "AND kind = ?3"),
+      "SELECT entity_hi, entity_lo, kind, length(blob) FROM projections WHERE tile = ?1",
+      "SELECT count(*), sum(length(blob)) FROM projections",
+  };
+  const u32 which = static_cast<u32>(state.arg());
+  SqlQueryLimits limits;
+  limits.max_rows = 10'000;
+  limits.max_bytes = 4u * 1024u * 1024u;
+  limits.max_ms = 10'000;
+  Rng rng;
+  u64 rows = 0;
+  while (state.keep_running()) {
+    const u32 index = rng.next() % records();
+    const Id128 entity = entity_for(index);
+    SqlValue params[3];
+    u32 count = 0;
+    if (which == 0) {
+      params[0] = SqlValue::of(static_cast<i64>(entity.hi));
+      params[1] = SqlValue::of(static_cast<i64>(entity.lo));
+      params[2] = SqlValue::of(static_cast<i64>(index % 4));
+      count = 3;
+    } else if (which == 1) {
+      params[0] = SqlValue::of(static_cast<i64>(index % tiles()));
+      count = 1;
+    }
+    SqlQueryResult result;
+    std::string message;
+    if (run_sql_query(c.path, sql[which], std::span<const SqlValue>(params, count), limits, result,
+                      message) != Status::Ok ||
+        !result.complete) {
+      std::printf("# store.sql_query: %s %s\n", message.c_str(), result.bound);
+      return;
+    }
+    rows += result.rows;
+    bench::keep(rows);
+  }
+  state.set_items(1);
 }
 
 ENGINE_BENCH(store_summarize_hour, "store.projections.summarize_hour") {

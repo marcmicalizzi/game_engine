@@ -2905,6 +2905,51 @@ struct QueryResult @version(1) {
   bytes: u32 = 0
 }
 
+/// Parameters of `store.query`: one SELECT a client wrote, run over the session's document's
+/// store (`world.db` in its directory: `events`, `projections` and `snapshots`) on a read-only
+/// connection of its own, under an authorizer, the connection's limits and the bounds below
+/// (protocol.md, "Querying the document"; store.md, "SQL a client wrote"). The method takes no
+/// path: the store is the session's.
+struct StoreQueryParams @version(1) {
+  session: string
+  /// One statement that writes nothing, at most 65,536 bytes; reads only the three tables'
+  /// columns and calls only the functions on the store's list.
+  sql: string
+  /// Values for the statement's parameters (`?1`, `?2`, ...), bound and never spliced into the
+  /// text: null, a boolean (bound as 1 or 0), a number (an integer when it is one, else a real),
+  /// a string (text, which may hold any character, NUL included), or `{"blob": "<base64>"}`.
+  /// Null or an array of as many values as the statement takes (at most 64).
+  params: json
+  /// Most rows returned (1 to 10,000).
+  max_rows: u32 = 1000
+  /// Most wall milliseconds from the prepare to the last step (1 to 10,000); the statement is
+  /// interrupted there and the rows it returned are kept.
+  max_ms: u32 = 2000
+  /// Most bytes of values returned, text and blobs at their length and a number at 8 (1,024 to
+  /// 4,194,304).
+  max_bytes: u32 = 262144
+}
+
+/// Result of `store.query`.
+struct StoreQueryResult @version(1) {
+  /// The result's column names, as SQLite gives them.
+  columns: string[]
+  /// One array a row, a value a column: null, an integer, a real, a string for text, and
+  /// `{"blob": "<base64>"}` for a blob; a real that is infinite is `{"real": "inf"}` or
+  /// `{"real": "-inf"}`, since JSON has no word for it.
+  rows: json
+  /// Every row the statement had was returned.
+  complete: bool = true
+  /// Which bound ended it: "" (none), "max_rows", "max_bytes" or "max_ms".
+  bound: string
+  /// Bytes of values returned, as `max_bytes` counts them.
+  bytes: u32 = 0
+  /// Wall milliseconds from the prepare to the last step.
+  elapsed_ms: f64 = 0
+  /// SQLite virtual-machine instructions run, to the nearest thousand.
+  instructions: u64 = 0
+}
+
 // ProposalState and ProposalInfo are declared before LayerInfo, which reports them.
 
 /// `proposals.json` in a document directory.

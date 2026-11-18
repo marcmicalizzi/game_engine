@@ -2874,6 +2874,7 @@ void add_ops_methods(protocol::Dispatcher& d) {
       "What has happened to a document, a page at a time: its journal's commits with attribution "
       "and, when the host has the store capability and the document a world.db, the world's event "
       "log. Filter by kind and actor; pass next back as cursor to continue or to poll.")));
+  add_store_query_method(d);
   d.add(protocol::read_only(protocol::method<protocol::BudgetsParams, protocol::BudgetsResult,
                                              &engine_budgets>(
       "engine.budgets",

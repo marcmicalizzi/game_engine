@@ -68,6 +68,7 @@ engine-cli content.build '{"source":"prop.glb","output":"prop.clusters","jobs":8
 engine-cli content.build '{"manifest":"content/meshes.json","cache":true}'   # skips what is up to date
 engine-cli --doc ./world session.events '{"limit":20}'                       # then '{"cursor":"<next>"}'
 engine-cli --doc ./world session.events '{"source":"store","since":600}'     # the document's world.db
+engine-cli --doc ./world store.query '{"sql":"SELECT tile, count(*) FROM events WHERE sim_tick >= ?1 GROUP BY tile","params":[600]}'   # one SELECT over world.db (store.md, "SQL a client wrote")
 engine-cli engine.budgets '{"scope":"process"}'
 engine-cli --doc ./world session.run_headless '{"seconds":0.5}'
 engine-cli --doc ./world session.run_headless '{"seconds":60,"until":{"object":"0000000000000010000000000000000a","property":"generator","equals":"done"}}'

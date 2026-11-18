@@ -548,6 +548,99 @@ TEST_CASE("ops: session.events pages the journal's commits after two apply comma
   CHECK(error_code(host.call("session.events", "{\"session\":\"nope\"}")) == k_session_not_found);
 }
 
+TEST_CASE("ops: store.query runs one SELECT over the document's world.db and refuses the rest") {
+  const test::TempDir tmp("ops_store_query");
+  REQUIRE(tmp.ok());
+  const std::string dir = tmp.file("world");
+  REQUIRE(cli({"--doc", dir, "--create", "--name", "Queried", "session.info"}).exit_code == 0);
+  Host host;
+  REQUIRE(host.ok);
+  const std::string session = open_session(host, dir, false);
+  const std::string s = "{\"session\":\"" + session + "\"";
+#if defined(ENGINE_CLI_TESTS_STORE)
+  constexpr i32 k_not_found = 1003;
+  // No world.db yet: not found, and the query makes none.
+  CHECK(error_code(host.call("store.query", s + ",\"sql\":\"SELECT 1\"}")) == k_not_found);
+  CHECK_FALSE(std::filesystem::exists(dir + "/world.db"));
+  {
+    store::Database db;
+    REQUIRE(db.open(dir + "/world.db") == store::Status::Ok);
+    store::EventLog event_log(db);
+    REQUIRE(event_log.open() == store::Status::Ok);
+    const u8 payload[2] = {9, 9};
+    store::EventRecord events[2];
+    for (u32 i = 0; i < 2; ++i) {
+      events[i].tile = 7;
+      events[i].sim_tick = 10 + i;
+      events[i].type = 40 + i;
+      events[i].subject = Id128::from_seed(1, i);
+      events[i].payload = std::span<const u8>(payload, 2);
+    }
+    REQUIRE(event_log.append(std::span<store::EventRecord>(events, 2)) == store::Status::Ok);
+    const u8 blob[4] = {0x00, 0x01, 0xFF, 0x00};
+    store::ProjectionRecord p;
+    p.entity = Id128::from_seed(2, 1);
+    p.tile = 7;
+    p.kind = 5;
+    p.blob = std::span<const u8>(blob, 4);
+    REQUIRE(event_log.upsert_projection(p) == store::Status::Ok);
+  }
+
+  // Values bound from params come back as they went in: text that would end a spliced
+  // statement, a blob as base64, null, and an integer.
+  const JsonValue r =
+      host.call("store.query",
+                s + ",\"sql\":\"SELECT seq, ?1 AS t, ?2 AS b, ?3 AS n, typeof(?2) AS k FROM events "
+                    "WHERE tile = ?4 ORDER BY seq\",\"params\":[\"'; DROP TABLE events; --\","
+                    "{\"blob\":\"AAH/AA==\"},null,7]}");
+  REQUIRE(error_code(r) == 0);
+  const JsonValue& result = at(r, "result");
+  CHECK(at(result, "columns").size() == 5);
+  CHECK(at(result, "columns")[1].as_string() == "t");
+  const JsonValue& rows = at(result, "rows");
+  REQUIRE(rows.size() == 2);
+  CHECK(rows[0][1].as_string() == "'; DROP TABLE events; --");
+  CHECK(text(rows[0][2], "blob") == "AAH/AA==");
+  CHECK(rows[0][3].is_null());
+  CHECK(rows[0][4].as_string() == "blob");
+  CHECK(at(result, "complete").as_bool());
+  // A blob column comes back as base64.
+  const JsonValue blob = host.call("store.query", s + ",\"sql\":\"SELECT blob FROM projections\"}");
+  REQUIRE(error_code(blob) == 0);
+  CHECK(text(at(at(blob, "result"), "rows")[0][0], "blob") == "AAH/AA==");
+  // A bound named in the result.
+  const JsonValue cut =
+      host.call("store.query", s + ",\"sql\":\"SELECT seq FROM events\",\"max_rows\":1}");
+  REQUIRE(error_code(cut) == 0);
+  CHECK(text(at(cut, "result"), "bound") == "max_rows");
+  CHECK_FALSE(at(at(cut, "result"), "complete").as_bool());
+  // Refusals: a write, two statements, PRAGMA, ATTACH, the schema table, a parameter of a shape
+  // it does not take, out-of-range bounds, and a path, which the method does not take at all.
+  for (const char* sql : {"DROP TABLE events", "SELECT 1; SELECT 2", "PRAGMA user_version",
+                          "ATTACH 'x.db' AS x", "SELECT sql FROM sqlite_schema"}) {
+    CAPTURE(sql);
+    CHECK(error_code(host.call("store.query", s + ",\"sql\":\"" + sql + "\"}")) ==
+          k_invalid_argument);
+  }
+  CHECK(error_code(host.call("store.query", s + ",\"sql\":\"SELECT ?1\",\"params\":[[1]]}")) ==
+        k_invalid_argument);
+  CHECK(error_code(host.call("store.query", s + ",\"sql\":\"SELECT 1\",\"params\":{}}")) ==
+        k_invalid_argument);
+  CHECK(error_code(host.call("store.query", s + ",\"sql\":\"SELECT 1\",\"max_rows\":0}")) ==
+        k_invalid_argument);
+  CHECK(error_code(host.call("store.query", s + ",\"sql\":\"SELECT 1\",\"max_bytes\":10}")) ==
+        k_invalid_argument);
+  CHECK(error_code(host.call("store.query", s + ",\"sql\":\"SELECT 1\",\"store\":\"x.db\"}")) != 0);
+  const JsonValue count = host.call("store.query", s + ",\"sql\":\"SELECT count(*) FROM events\"}");
+  REQUIRE_MESSAGE(error_code(count) == 0, write_json(count));
+  CHECK(at(at(count, "result"), "rows")[0][0].as_int() == 2);
+#else
+  CHECK(error_code(host.call("store.query", s + ",\"sql\":\"SELECT 1\"}")) == k_unavailable);
+#endif
+  CHECK(error_code(host.call("store.query", "{\"session\":\"nope\",\"sql\":\"SELECT 1\"}")) ==
+        k_session_not_found);
+}
+
 #if defined(ENGINE_CLI_TESTS_STORE)
 TEST_CASE("ops: session.events reads the document's world.db when the store is built") {
   const test::TempDir tmp("ops_store");

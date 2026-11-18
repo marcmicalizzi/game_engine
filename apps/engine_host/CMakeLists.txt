@@ -40,7 +40,8 @@ endforeach()
 # configure stops if the three differ.
 engine_host_generators(engine_host _host_deps)
 engine_app(NAME engine_host OUTPUT engine-host
-  SOURCES main.cpp render_methods.cpp ops_methods.cpp profile_methods.cpp console.cpp listen.cpp
+  SOURCES main.cpp render_methods.cpp ops_methods.cpp store_query.cpp profile_methods.cpp
+          console.cpp listen.cpp
   DEPS ${_host_deps}
   E2E_TESTS tests/transport_tests.cpp)
 if(_host_defs)
