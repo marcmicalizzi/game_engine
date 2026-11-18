@@ -6,7 +6,6 @@
   "by": "Marc Micalizzi",
   "deltas": {
     "page:docs/subsystems/renderer.md": 1720,
-    "page:docs/subsystems/apps.md": -12,
     "page:docs/subsystems/protocol.md": 3258,
     "page:AGENTS.md": 584
   }
