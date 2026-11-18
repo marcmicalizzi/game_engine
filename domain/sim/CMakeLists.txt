@@ -20,7 +20,8 @@ engine_schema_library(NAME sim_test_types
 
 engine_module_tests(NAME sim
   SOURCES tests/timing_wheel_tests.cpp tests/fast_forward_tests.cpp tests/tier_tests.cpp
-          tests/scheduler_tests.cpp tests/materialize_tests.cpp tests/size_table.cpp
+          tests/scheduler_tests.cpp tests/static_table_tests.cpp tests/materialize_tests.cpp
+          tests/size_table.cpp
   DEPS jobs sim_test_types)
 
 # 10^6 timers through insert, cancel and advance; tier assignment over 10^5 entities at 1/4/8

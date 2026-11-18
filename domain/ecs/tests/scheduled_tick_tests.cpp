@@ -6,6 +6,7 @@
 #include <domain/ecs/os_api.h>
 #include <domain/ecs/scheduled_tick.h>
 #include <domain/ecs/sim_world.h>
+#include <domain/ecs/systems.h>
 #include <domain/ecs/world_commands.h>
 #include <domain/sim/scheduler.h>
 
@@ -219,4 +220,59 @@ TEST_CASE("ecs: world commands drain at the top of EventsIn under the scheduler"
   CHECK(commands.pending() == 0);
   // Applied in EventsIn, merged at the phase's end, and seen by a system in a later phase.
   CHECK(seen == 1);
+}
+
+TEST_CASE("ecs: under the scheduler, flecs' systems are filtered by the active tiers") {
+  SimWorld world;
+  sim::SimScheduler scheduler;
+  u32 near_runs = 0;
+  u32 far_runs = 0;
+  u32 owned_runs = 0;
+  const auto make = [&world](const char* name, u8 tiers, u32* runs) {
+    sim::SystemDesc desc;
+    desc.name = name;
+    desc.phase = TickPhase::Systems;
+    desc.tiers = tiers;
+    return register_system(world, desc, [name, runs](flecs::world& w, flecs::entity phase) {
+      return w.system(name).kind(phase).run([runs](flecs::iter& it) {
+        while (it.next()) {
+        }
+        ++*runs;
+      });
+    });
+  };
+  make("near_only", 0x01u, &near_runs);
+  make("far_tiers", 0x0Eu, &far_runs);
+  // Disabled by its owner, and declared for tier 0: the filter must neither run it nor take it over.
+  const flecs::system owned = make("owner_disabled", 0x01u, &owned_runs);
+  owned.disable();
+
+  {
+    ScheduledTick tick(world, scheduler);
+    tick.step();
+    CHECK(near_runs == 1u);
+    CHECK(far_runs == 1u);
+    CHECK(tick.tier_disabled() == 0u);
+
+    scheduler.set_active_tiers(0x02u);
+    tick.step();
+    CHECK(near_runs == 1u);
+    CHECK(far_runs == 2u);
+    CHECK(tick.tier_disabled() == 1u);
+
+    scheduler.set_active_tiers(0xFFu);
+    tick.step();
+    CHECK(near_runs == 2u);
+    CHECK(far_runs == 3u);
+    CHECK(tick.tier_disabled() == 0u);
+    CHECK(owned_runs == 0u);
+
+    // Detached with a system still filtered out: the world gets it back.
+    scheduler.set_active_tiers(0x02u);
+    tick.step();
+    CHECK(near_runs == 2u);
+  }
+  world.step();
+  CHECK(near_runs == 3u);
+  CHECK(owned_runs == 0u);
 }

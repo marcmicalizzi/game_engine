@@ -173,6 +173,11 @@ struct SystemContext {
   GameTime step;
   void* context = nullptr;
   TickPhase phase = TickPhase::Systems;
+  // The tiers this invocation runs for: the system's declared `SystemDesc::tiers` and the
+  // scheduler's active tiers (`SimScheduler::set_active_tiers`), never empty — a system whose
+  // declaration meets no active tier is not invoked at all. It sits in what was the padding byte
+  // after `phase`, so the context is still 40 bytes.
+  u8 tiers = 0xFFu;
   u16 system = 0;
   u16 wave = 0;
 };
@@ -197,6 +202,69 @@ struct SystemDesc {
   void (*tick)(SystemContext&, Batch) = nullptr;
   void (*end_tick)(SystemContext&) = nullptr;
 };
+
+// ---- the static registration table (ADR-0027, "The registration table") -----------------------
+//
+// A module's systems as constant-initialized data, one registration object per module at namespace
+// scope, so the linker decides whether they exist: a capability that is not linked contributes no
+// row, and a host that links it gets its systems by calling `SimScheduler::add_static_systems()`.
+//
+//     constexpr sim::SystemDesc solve_desc() {
+//       sim::SystemDesc desc;
+//       desc.name = "cloth.solve";
+//       desc.phase = sim::TickPhase::Physics;
+//       desc.tiers = 0x03u;
+//       desc.tick = &solve;
+//       return desc;
+//     }
+//     constinit const sim::SystemDesc k_cloth_systems[] = {solve_desc()};
+//     const sim::SystemRegistration k_cloth_registration{{"cloth", k_cloth_systems, 0}};
+//
+// **The order is a function of the names, never of the link.** Static initialization runs in an
+// order the C++ standard leaves to the toolchain, and declaration order is what orders two
+// conflicting systems in a phase, so the scheduler sorts the tables by (`order`, `module`) before
+// adding them and keeps each table's systems in their array order. Two tables naming one module
+// are both refused and logged: a module name is the key the order rests on, and between two equal
+// keys the order would be the link's again, so keeping either would let the link choose.
+//
+// A system's state is the module's (its `context` a pointer to a namespace-scope object), which is
+// what makes the descriptor constant. A capability whose state is per world — npc, the
+// materialization driver — keeps calling `add_system` with a context it was handed; both forms land
+// in the same table and the schedule cannot tell them apart.
+struct SystemTable {
+  const char* module = nullptr;
+  std::span<const SystemDesc> systems;
+  // Tables sort by `order` first, then by `module`: a capability that must precede another in
+  // the declaration order (and so in the order of two conflicting systems) says so here.
+  i32 order = 0;
+};
+
+// Links one table into the process's list during static initialization. Holds a pointer, so the
+// table must outlive it (a namespace-scope array does). Not synchronized, like every registrar
+// that runs before `main`.
+class SystemRegistration {
+ public:
+  explicit SystemRegistration(const SystemTable& table) noexcept;
+  ENGINE_NON_COPYABLE(SystemRegistration);
+
+  const SystemTable& table() const noexcept { return table_; }
+  const SystemRegistration* next() const noexcept { return next_; }
+
+ private:
+  SystemTable table_;
+  const SystemRegistration* next_ = nullptr;
+};
+
+// The head of the process's list, most recently linked first: an order nobody should read. What
+// `add_static_systems` reads is `static_system_tables()`, sorted.
+const SystemRegistration* static_system_registrations() noexcept;
+// Every registered table in the order `add_static_systems` adds them: by (`order`, `module`), with
+// every table whose module another table also names left out. Cold: it sorts a copy.
+Vector<const SystemTable*> static_system_tables();
+
+// The tiers present in a population: bit `t` set when some entry is tier `t`. What a host hands
+// `SimScheduler::set_active_tiers` after its tier pass (tiers at or past 8 are ignored).
+u8 occupied_tiers(std::span<const u8> tiers) noexcept;
 
 // One system's place in its phase's schedule. Systems in the same wave provably do not conflict
 // and run in parallel; wave order is declaration order for everything that does.
@@ -353,6 +421,10 @@ class SimScheduler {
   // Returns the system's index, which is also the `system` id a periodic or a summarizer uses:
   // one number identifies a system to the tick, to the wheel and to the fast-forward path.
   u16 add_system(const SystemDesc& desc);
+  // Adds every system of the static registration table (`static_system_tables()`), in its order,
+  // and returns how many. Once per scheduler: a second call adds nothing and returns 0, since the
+  // same table twice would run every system twice.
+  u32 add_static_systems();
   u16 system_count() const noexcept { return static_cast<u16>(systems_.size()); }
   const SystemDesc& system(u16 index) const noexcept { return systems_[index]; }
 
@@ -379,6 +451,19 @@ class SimScheduler {
   // detaches.
   void set_executor(const TickExecutor& executor) noexcept { executor_ = executor; }
   const TickExecutor& executor() const noexcept { return executor_; }
+
+  // **Tier filtering.** The tiers anything is held at this tick, bit `t` for tier `t`; a system
+  // whose `SystemDesc::tiers` meets none of them is not invoked — not its `begin_tick`, its
+  // batches or its `end_tick` — and one that meets some is handed the intersection in
+  // `SystemContext::tiers`. All eight by default, which runs every system as before. The schedule
+  // (waves, `schedule_hash`) is not rebuilt: a filtered system leaves its place in its wave empty,
+  // so the order of the systems that run is the same whatever the mask, and the mask is read once
+  // per tick, at `step()`. The host sets it from its tier passes (`occupied_tiers`); an executor
+  // (flecs' systems through `ecs::ScheduledTick`) reads it to filter its own.
+  void set_active_tiers(u8 mask) noexcept { active_tiers_ = mask; }
+  u8 active_tiers() const noexcept { return active_tiers_; }
+  // Invocations (begin, batches, end) not made because of the mask, since construction.
+  u64 tier_skipped() const noexcept { return tier_skipped_; }
 
   // One fixed step: advances the tick and game time, then runs the eight phases in order.
   // Reads no clock, which is what lets a replay, a headless fast-forward and a live session
@@ -468,6 +553,12 @@ class SimScheduler {
   void* persist_context_ = nullptr;
   TickExecutor executor_;
   jobs::JobSystem* jobs_ = nullptr;
+  u64 tier_skipped_ = 0;
+  u8 active_tiers_ = 0xFFu;
+  // The mask this tick runs with: `active_tiers_` read once at `step()`, so a system that changes
+  // it mid-tick changes the next tick and not the rest of this one.
+  u8 tick_tiers_ = 0xFFu;
+  bool static_added_ = false;
 };
 
 }  // namespace engine::sim

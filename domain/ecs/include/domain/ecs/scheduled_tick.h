@@ -58,8 +58,14 @@ class ScheduledTick {
   u64 phases_skipped() const noexcept { return phases_skipped_; }
   // The flecs pipeline that runs one phase's systems.
   flecs::entity pipeline(TickPhase phase) const noexcept;
+  // flecs systems this executor has disabled because their `SystemDesc::tiers` meet none of the
+  // scheduler's active tiers (`sim::SimScheduler::set_active_tiers`). Read at the start of every
+  // tick and applied when the mask or the registry changed; a system disabled by anyone else is
+  // never touched, and the destructor enables what it disabled.
+  u32 tier_disabled() const noexcept { return tier_disabled_.size(); }
 
  private:
+  void apply_tiers(u8 tiers);
   static void begin_tick(void* context, SimTick tick, GameTime time, GameTime step);
   static void run_phase(void* context, TickPhase phase, SimTick tick, GameTime time, GameTime step);
   static void end_tick(void* context, SimTick tick, GameTime time);
@@ -71,6 +77,9 @@ class ScheduledTick {
   f32 step_seconds_ = 0.0f;
   u64 phases_run_ = 0;
   u64 phases_skipped_ = 0;
+  Vector<flecs::entity_t> tier_disabled_;
+  u32 applied_systems_ = 0;
+  u8 applied_tiers_ = 0xFFu;
 };
 
 }  // namespace engine::ecs

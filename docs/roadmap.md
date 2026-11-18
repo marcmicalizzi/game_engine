@@ -382,7 +382,7 @@ The scheduler, tiers, NPCs, destruction, deformation, physics, navigation, anima
 |---|---|---|---|---|---|---|
 | S1 | ECS decision and flecs' seams (E6) | done (ADR-0028, ADR-0030) | | L | research | [ADR-0028](adr/0028-ecs-and-persistent-store.md) |
 | S2 | Sim scheduler: phases and waves | done (7f83e862) | | M | design | [05 §5.2](plan/05-simulation.md#52-sim-scheduler) |
-| S3 | Static registration table and tier filtering | open | S2 | S | routine | [sim](subsystems/sim.md#what-is-stubbed) |
+| S3 | Static registration table and tier filtering | done (2026-11-17, b68-S12: `SystemRegistration` tables sorted by (order, module) and added by `add_static_systems`; `set_active_tiers` filters the table's systems and, through `ecs::ScheduledTick`, flecs'. Not done: no capability moved to the static form, no host sets a mask) | S2 | S | routine | [sim](subsystems/sim.md#the-static-table-and-tier-filtering) |
 | S4 | The scheduler owns the tick | done (bf1ba9e4) | S1, S2 | M | design | [ADR-0038](adr/0038-the-scheduler-owns-the-tick.md) |
 | S5 | flecs systems in the waves; engine-view on the scheduler | open | S4 | M | research | [ecs](subsystems/ecs.md#not-yet) |
 | S6 | Accept ADR-0038 | blocked (the owner's review) | S4 | S | design | [ADR-0038](adr/0038-the-scheduler-owns-the-tick.md) |
