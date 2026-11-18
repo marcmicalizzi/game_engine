@@ -51,12 +51,13 @@ struct CullInstances {
   }
   // Sizes the buffers for a frame of `run_count` cull runs (a view's two blocks each, then a block
   // per cascade, in the order of the frame's parameter blocks) over `instance_count` instances,
-  // `pair_count` pairs and `mesh_count` meshes, with `meshes` the mesh table's address and
-  // `meshes_written` whether this frame writes it. Off (`want` false, or more meshes than a row of
-  // a folded dispatch) leaves every run the pass over pairs. A buffer outgrown goes to `frames`, to
-  // be freed when the frames in flight are done.
+  // `pair_count` pairs and the mesh table, `meshes` its address and `table_bytes` its size — every
+  // `gfx::MeshDesc` in it is a mesh an instance may name, the scene's, a ring's or the room's slots
+  // and a dynamic scene's null mesh alike — and `meshes_written` whether this frame writes it. Off
+  // (`want` false, or more meshes than a row of a folded dispatch) leaves every run the pass over
+  // pairs. A buffer outgrown goes to `frames`, to be freed when the frames in flight are done.
   bool prepare(const gfx::Device& device, gfx::FrameContext& frames, bool want, u32 run_count,
-               u32 instance_count, u32 pair_count, u32 mesh_count, u64 meshes, bool meshes_written,
+               u32 instance_count, u32 pair_count, u64 table_bytes, u64 meshes, bool meshes_written,
                std::string* error);
   // Run `run`'s fields of its block: the items, their arguments, the spheres; 0 when off.
   void fill(gfx::CullParams& params, u32 run) const noexcept;

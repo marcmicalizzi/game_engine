@@ -175,6 +175,108 @@ bool write_cube_glb(const std::string& path, f32 morph = 0.0f) {
   return f.good();
 }
 
+// Unit cubes centred at `centres`, as one GLB mesh with normals: with `split`, a primitive and a
+// material a cube, so each is a cluster of its own; without, one primitive holding them all.
+bool write_cubes_glb(const std::string& path, std::span<const Vec3> centres, bool split) {
+  const Vec3 normals[6] = {Vec3{1, 0, 0},  Vec3{-1, 0, 0}, Vec3{0, 1, 0},
+                           Vec3{0, -1, 0}, Vec3{0, 0, 1},  Vec3{0, 0, -1}};
+  const Vec3 tangents[6] = {Vec3{0, 1, 0}, Vec3{0, 1, 0}, Vec3{0, 0, 1},
+                            Vec3{0, 0, 1}, Vec3{1, 0, 0}, Vec3{1, 0, 0}};
+  const u32 parts = split ? static_cast<u32>(centres.size()) : 1u;
+  const u32 cubes = split ? 1u : static_cast<u32>(centres.size());
+  std::vector<u8> bin;
+  std::string accessors;
+  std::string views;
+  std::string primitives;
+  std::string materials;
+  for (u32 p = 0; p < parts; ++p) {
+    Vec3 lo{1e30f, 1e30f, 1e30f};
+    Vec3 hi{-1e30f, -1e30f, -1e30f};
+    const u32 position_offset = static_cast<u32>(bin.size());
+    for (u32 k = 0; k < cubes; ++k) {
+      const Vec3 centre = centres[split ? p : k];
+      for (u32 f = 0; f < 6; ++f) {  // corners wound counter-clockwise seen from outside
+        const Vec3 nrm = normals[f];
+        const Vec3 t = tangents[f];
+        const Vec3 b = cross(nrm, t);
+        const Vec3 corners[4] = {nrm * 0.5f - t * 0.5f - b * 0.5f, nrm * 0.5f + t * 0.5f - b * 0.5f,
+                                 nrm * 0.5f + t * 0.5f + b * 0.5f,
+                                 nrm * 0.5f - t * 0.5f + b * 0.5f};
+        for (const Vec3& corner : corners) {
+          const Vec3 c = centre + corner;
+          lo = Vec3{std::min(lo.x, c.x), std::min(lo.y, c.y), std::min(lo.z, c.z)};
+          hi = Vec3{std::max(hi.x, c.x), std::max(hi.y, c.y), std::max(hi.z, c.z)};
+          put_f32(bin, c.x);
+          put_f32(bin, c.y);
+          put_f32(bin, c.z);
+        }
+      }
+    }
+    const u32 normal_offset = static_cast<u32>(bin.size());
+    for (u32 k = 0; k < cubes; ++k) {
+      for (u32 f = 0; f < 6; ++f) {
+        for (u32 c = 0; c < 4; ++c) {
+          put_f32(bin, normals[f].x);
+          put_f32(bin, normals[f].y);
+          put_f32(bin, normals[f].z);
+        }
+      }
+    }
+    const u32 index_offset = static_cast<u32>(bin.size());
+    for (u32 k = 0; k < cubes * 6; ++k) {
+      const u32 base = k * 4;
+      for (const u32 i : {base, base + 1, base + 2, base, base + 2, base + 3})
+        put_u32(bin, i);
+    }
+    const u32 end = static_cast<u32>(bin.size());
+    const std::string sep = p == 0 ? "" : ",";
+    accessors += sep + "{\"bufferView\":" + n(p * 3) +
+                 ",\"componentType\":5126,\"count\":" + n(cubes * 24) +
+                 ",\"type\":\"VEC3\","
+                 "\"min\":[" +
+                 std::to_string(lo.x) + "," + std::to_string(lo.y) + "," + std::to_string(lo.z) +
+                 "],\"max\":[" + std::to_string(hi.x) + "," + std::to_string(hi.y) + "," +
+                 std::to_string(hi.z) + "]},{\"bufferView\":" + n(p * 3 + 1) +
+                 ",\"componentType\":5126,\"count\":" + n(cubes * 24) +
+                 ",\"type\":\"VEC3\"},{\"bufferView\":" + n(p * 3 + 2) +
+                 ",\"componentType\":5125,\"count\":" + n(cubes * 36) + ",\"type\":\"SCALAR\"}";
+    views += sep + "{\"buffer\":0,\"byteOffset\":" + n(position_offset) +
+             ",\"byteLength\":" + n(normal_offset - position_offset) +
+             "},{\"buffer\":0,\"byteOffset\":" + n(normal_offset) +
+             ",\"byteLength\":" + n(index_offset - normal_offset) +
+             "},{\"buffer\":0,\"byteOffset\":" + n(index_offset) +
+             ",\"byteLength\":" + n(end - index_offset) + "}";
+    primitives += sep + "{\"attributes\":{\"POSITION\":" + n(p * 3) +
+                  ",\"NORMAL\":" + n(p * 3 + 1) + "},\"indices\":" + n(p * 3 + 2) +
+                  ",\"material\":" + n(p) + "}";
+    materials += sep + "{\"pbrMetallicRoughness\":{\"baseColorFactor\":[0.8," +
+                 std::to_string(0.2f + 0.3f * static_cast<f32>(p)) +
+                 ",0.2,1],\"metallicFactor\":0,\"roughnessFactor\":0.6}}";
+  }
+  std::string json =
+      "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[0]}],"
+      "\"nodes\":[{\"mesh\":0}],\"meshes\":[{\"primitives\":[" +
+      primitives + "]}],\"materials\":[" + materials + "],\"accessors\":[" + accessors +
+      "],\"bufferViews\":[" + views +
+      "],\"buffers\":[{\"byteLength\":" + n(static_cast<u32>(bin.size())) + "}]}";
+  while (json.size() % 4 != 0)
+    json += ' ';
+  std::vector<u8> glb;
+  put_u32(glb, 0x46546c67u);  // "glTF"
+  put_u32(glb, 2u);
+  put_u32(glb, static_cast<u32>(12 + 8 + json.size() + 8 + bin.size()));
+  put_u32(glb, static_cast<u32>(json.size()));
+  put_u32(glb, 0x4e4f534au);  // "JSON"
+  glb.insert(glb.end(), json.begin(), json.end());
+  put_u32(glb, static_cast<u32>(bin.size()));
+  put_u32(glb, 0x004e4942u);  // "BIN\0"
+  glb.insert(glb.end(), bin.begin(), bin.end());
+  std::ofstream f(path, std::ios::binary);
+  if (!f.is_open()) return false;
+  f.write(reinterpret_cast<const char*>(glb.data()), static_cast<std::streamsize>(glb.size()));
+  return f.good();
+}
+
 std::string slashes(const std::filesystem::path& p) {
   std::string s = p.string();
   for (char& c : s) {
@@ -1519,6 +1621,112 @@ TEST_CASE("renderer: occlusion culling's Hi-Z and coverage mask change no pixel"
             << " surface differences");
     CHECK(colour_mismatch == 0);
     CHECK(surface_mismatch == 0);
+  }
+}
+
+// R173's fix (renderer.md, "The cull culls instances first"; review finding A1): the occlusion
+// test compares the Hi-Z with the depth of a sphere's nearest point, and until the fix that point
+// was the one nearest the eye in distance, `c - r c/|c|`, whose view depth is `(|c| - r) cos θ` —
+// deeper than the sphere's least view depth `|c| cos θ - r` by `r (1 - cos θ)` off the view's
+// axis. A large sphere 45 degrees off the axis then reads about 0.29 r too deep, and a wall
+// between that depth and a surface inside the sphere hides the sphere while the surface shows.
+// The scene is that: a dumbbell of two unit cubes 37 m apart along the view's axis, its sphere
+// (r about 19.4) centred at (60, 0, -60) from an eye looking down -z with a 90-degree vertical
+// field; its near cube at view depth 41 to 42 in front of a wall whose face is at 42.95, which
+// covers the rest of the dumbbell's screen rectangle; the sphere's depth read the old way 46.3.
+// With the cubes as two clusters the instance pass's sphere is the large one and the pairs' are
+// small; with them as one cluster the pair's own sphere is the large one. Every way, occlusion on
+// — instances first and not — must draw exactly what occlusion off draws, and the near cube must
+// be in the picture.
+TEST_CASE("renderer: occlusion keeps a surface in front of the Hi-Z off the view's axis") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("renderer unavailable here: " << gpu.why);
+    return;
+  }
+  struct Restore {
+    ~Restore() { (void)tunables::apply_overrides("renderer.cull.instances=true"); }
+  } restore;
+  const test::TempDir tmp("engine_renderer_occlusion_off_axis");
+  const std::filesystem::path dir = tmp.native();
+  const std::string wall_mesh = slashes(dir / "cube.glb");
+  REQUIRE(write_cube_glb(wall_mesh));
+  const Vec3 centres[2] = {Vec3{0.0f, 0.0f, 18.5f}, Vec3{0.0f, 0.0f, -18.5f}};
+  constexpr u32 k_width = 302;
+  constexpr u32 k_height = 154;
+  constexpr u32 k_dumbbell = 1;  // the instance index of the dumbbell
+  for (const bool split : {true, false}) {
+    const std::string dumbbell =
+        slashes(dir / (split ? "dumbbell-split.glb" : "dumbbell-whole.glb"));
+    REQUIRE(write_cubes_glb(dumbbell, std::span<const Vec3>(centres, 2), split));
+    SceneDesc desc;
+    desc.meshes.push_back(wall_mesh);
+    desc.meshes.push_back(dumbbell);
+    desc.ddc = slashes(dir / "ddc");
+    SceneInstance wall;
+    wall.mesh = 0;
+    wall.transform.position = Vec3{75.0f, 0.0f, -43.0f};
+    wall.transform.scale = Vec3{150.0f, 120.0f, 0.1f};
+    desc.instances.push_back(wall);
+    SceneInstance bell;
+    bell.mesh = 1;
+    bell.transform.position = Vec3{60.0f, 0.0f, -60.0f};
+    desc.instances.push_back(bell);
+
+    FrameDesc frame;
+    frame.camera.position = absolute(WorldPos::origin(), Vec3{0.0f, 0.0f, 0.0f});
+    frame.camera.target = absolute(WorldPos::origin(), Vec3{0.0f, 0.0f, -1.0f});
+    frame.camera.znear = 0.1f;
+    frame.camera.fov_y = radians(90.0f);
+    CaptureChannels channels;
+    channels.ids = true;
+    // Three frames, so the second and third pass 1 test against a pyramid that holds the wall.
+    auto shoot = [&](bool occlusion, bool first, CapturedFrame& out) {
+      REQUIRE(tunables::apply_overrides(first ? "renderer.cull.instances=true"
+                                              : "renderer.cull.instances=false"));
+      RenderSettings settings;
+      settings.shadows = ShadowMode::Off;
+      settings.occlusion = occlusion;
+      Rig rig;
+      REQUIRE_MESSAGE(rig.build(gpu.device, desc, settings, k_width, k_height), rig.error);
+      REQUIRE(rig.resolved.occlusion == occlusion);
+      std::string error;
+      for (u32 f = 0; f < 3; ++f) {
+        frame.frame_index = f;
+        const bool ok = f < 2 ? rig.renderer.render_offscreen(frame, &error)
+                              : rig.renderer.capture(frame, channels, out, &error);
+        REQUIRE_MESSAGE(ok, error);
+      }
+    };
+    CapturedFrame reference;
+    shoot(false, false, reference);
+    u64 bell_px = 0;
+    for (u32 p = 0; p < k_width * k_height; ++p)
+      bell_px += reference.ids[u64{p} * k_id_words] == k_dumbbell ? 1u : 0u;
+    // The witness: the near cube shows in front of the wall.
+    REQUIRE(bell_px > 0);
+    for (const bool first : {false, true}) {
+      CapturedFrame shot;
+      shoot(true, first, shot);
+      u64 colour = 0;
+      u64 surface = 0;
+      u64 shown = 0;
+      for (u32 p = 0; p < k_width * k_height; ++p) {
+        for (u32 c = 0; c < 4; ++c)
+          colour += shot.color[u64{p} * 4 + c] != reference.color[u64{p} * 4 + c] ? 1u : 0u;
+        for (u32 w = 0; w < 2; ++w)
+          surface +=
+              shot.ids[u64{p} * k_id_words + w] != reference.ids[u64{p} * k_id_words + w] ? 1u : 0u;
+        shown += shot.ids[u64{p} * k_id_words] == k_dumbbell ? 1u : 0u;
+      }
+      const std::string what = std::string(split ? "two clusters, " : "one cluster, ") +
+                               (first ? "instances first" : "every pair");
+      MESSAGE(what << ": the near cube " << shown << " px of " << bell_px << " without occlusion; "
+                   << colour << " colour and " << surface << " surface differences");
+      CHECK(shown == bell_px);
+      CHECK(colour == 0);
+      CHECK(surface == 0);
+    }
   }
 }
 

@@ -3099,7 +3099,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   const u32 cascade_runs = csm ? scene.shadow_cascades() : 0u;
   if (!cull_instances_->prepare(*device_, frames_, cull_instances_tunable() && settings.cull,
                                 views * 2 + cascade_runs, instance_count, pair_count,
-                                scene.null_mesh() + 1, scene.meshes.address,
+                                scene.meshes.size, scene.meshes.address,
                                 !records_.meshes.empty(), error))  // R16, R173
     return false;
   ENGINE_ASSERT(!csm || ((!shadows || resolved_.hybrid) && !use_sw && !ray_path && !direct),
