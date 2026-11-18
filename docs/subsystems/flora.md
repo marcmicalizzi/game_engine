@@ -1133,6 +1133,17 @@ images of both materials (the last two since G93); same-path edits invalidate th
 hash takes each image's hash from the host's `hash_image` when it has one (since W75: a load's one
 identity per image, a material pack's from its index, so a cooked forest reads no base colour to key
 its trees) and from the bytes otherwise — the same number either way.
+**Which species the images key is the species table's answer** (G122, 2026-11-18): every profile
+of the table (`geometry::k_flora_species` with `profile`, `detail::is_tree_species`) bakes a chain
+from `Tree::card_bake_px`/`impostor_px`, so every one is keyed by its atlases, beside the bare
+`broadleaf`, `birch`, `ancient`, `conifer`, the alpine profiles and every regeneration form. Until
+then a list kept beside the key named maple, oak, elm, beech, ash and walnut and missed the five
+profiles added after it — basswood, black_cherry, sycamore, aspen and alder baked their atlases and
+an edit to a leaf or bark image did not move their key. `impostor_tests.cpp` walks the table and
+flips a byte of each atlas for every profile. **What rebuilds**: in a world with any of the five
+whose recipe bakes a chain (the default does) and whose materials name an image (a recipe's or a
+pack's), each such container is keyed anew once and recooks at its next load; no other species'
+key moves, and a world without images keys them as it did.
 Direct pure calls without an image host retain solver colours and the ellipse fallback, and the
 faces' geometry normals and the leaf's scalar roughness. Solver cache version **9** invalidated
 the previous geometry and atlases. Normal and roughness images are baked since G93 (the bake

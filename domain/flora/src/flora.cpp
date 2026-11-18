@@ -283,12 +283,15 @@ bool flora_source_hash_with(const FloraFile& file, const assets::MeshGeneratorIn
   // The bake samples a material's base-colour, normal and roughness images (G93), so the three of
   // each of the two materials key the tree. The key moves exactly when the atlases' bytes can: a
   // pack with no normal or roughness image hashes the base colours alone, as it did, and the
-  // species that bake no chain take none of this. The conifers bake one since G120.
+  // species that bake no chain take none of this. The conifers bake one since G120. Every profile
+  // of the species table bakes one from `Tree::card_bake_px`/`impostor_px` (`resolve`,
+  // species.cpp), so the table answers, not a list kept beside it: until G122 a list named six
+  // broadleaf profiles and missed the five added after it (basswood, black_cherry, sycamore, aspen,
+  // alder), whose atlases did not move their key.
   const bool baked = file.regeneration.has_value() || file.species == k_species_broadleaf ||
                      file.species == k_species_birch || file.species == k_species_ancient ||
-                     file.species == "maple" || file.species == "oak" || file.species == "elm" ||
-                     file.species == "beech" || file.species == "ash" || file.species == "walnut" ||
-                     builds_conifer(file.species) || alpine_profile(file.species) != nullptr;
+                     builds_conifer(file.species) || detail::is_tree_species(file.species) ||
+                     alpine_profile(file.species) != nullptr;
   if (!baked) return true;
   const bool enabled = file.regeneration ? file.regeneration->impostor_px != 0
                        : alpine_profile(file.species) != nullptr ? file.alpine.impostor_px != 0

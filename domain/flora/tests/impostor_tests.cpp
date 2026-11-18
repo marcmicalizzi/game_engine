@@ -8,6 +8,7 @@
 #include <domain/flora/impostor.h>
 #include <domain/flora/trees.h>
 #include <domain/geometry/cluster_file.h>
+#include <domain/geometry/flora_species.h>
 #include <foundation/image/decode.h>
 #include <foundation/image/png.h>
 
@@ -19,6 +20,7 @@
 #include <cstring>
 #include <span>
 #include <string>
+#include <string_view>
 
 using namespace engine;
 
@@ -642,6 +644,78 @@ TEST_CASE("impostor chain: a pack's normal and roughness reach the levels and ke
   REQUIRE(flora::flora_source_hash_with(colour_only, inputs, colour_hash, error));
   CHECK(colour_hash == without.source_hash);
   CHECK(colour_hash != hash);
+}
+
+TEST_CASE("impostor chain: every profile of the species table is keyed by the images it bakes") {
+  // G122: the species are the table's (`geometry::k_flora_species`, every `profile`, each baking a
+  // chain from `Tree::card_bake_px`/`impostor_px`), not a list kept beside the key. Until G122 the
+  // key named six broadleaf profiles by hand and basswood, black_cherry, sycamore, aspen and alder
+  // baked their atlases without them moving their key.
+  struct Images {
+    Vector<u8> bark, leaf;
+  } images;
+  REQUIRE(image::encode_png(4, 4, 4, solid_image(90, 70, 50, 255).pixels, images.bark));
+  REQUIRE(image::encode_png(4, 4, 4, solid_image(30, 160, 40, 255).pixels, images.leaf));
+  assets::MeshGeneratorHosts hosts;
+  hosts.context = &images;
+  hosts.read_image = [](void* context, std::string_view path, Vector<u8>& out, std::string& e) {
+    const Images& i = *static_cast<const Images*>(context);
+    if (path == "bark.png")
+      out = i.bark;
+    else if (path == "leaf.png")
+      out = i.leaf;
+    else {
+      e = "no such image";
+      return false;
+    }
+    return true;
+  };
+  const assets::MeshGeneratorInputs inputs{nullptr, &hosts};
+  u32 profiles = 0;
+  bool named[5] = {};
+  constexpr std::string_view k_late[5] = {"basswood", "black_cherry", "sycamore", "aspen", "alder"};
+  for (const geometry::FloraSpeciesInfo& info : geometry::k_flora_species) {
+    if (!info.profile) continue;
+    CAPTURE(info.name);
+    ++profiles;
+    for (u32 i = 0; i < 5; ++i)
+      named[i] = named[i] || info.name == k_late[i];
+    flora::FloraFile file;
+    std::string error;
+    REQUIRE_MESSAGE(
+        flora::read_flora_file(std::string(R"({"species":")") + std::string(info.name) +
+                                   R"(","tree":{"card_bake_px":16,"impostor_px":32},"materials":{)"
+                                   R"("bark":{"base_color":"bark.png","tile_m":1},)"
+                                   R"("leaf":{"base_color":"leaf.png","tile_m":1}}})",
+                               file, error),
+        error);
+    u64 key = 0, moved = 0;
+    REQUIRE_MESSAGE(flora::flora_source_hash_with(file, inputs, key, error), error);
+    // A byte of either atlas moves the key; put back, the key is the one it was.
+    images.leaf.back() ^= 0x55;
+    REQUIRE(flora::flora_source_hash_with(file, inputs, moved, error));
+    CHECK_MESSAGE(moved != key, info.name << ": a changed leaf atlas left the key where it was");
+    images.leaf.back() ^= 0x55;
+    images.bark.back() ^= 0x55;
+    REQUIRE(flora::flora_source_hash_with(file, inputs, moved, error));
+    CHECK_MESSAGE(moved != key, info.name << ": a changed bark atlas left the key where it was");
+    images.bark.back() ^= 0x55;
+    REQUIRE(flora::flora_source_hash_with(file, inputs, moved, error));
+    CHECK(moved == key);
+    // With the chain off there is nothing baked, and the images key nothing.
+    flora::FloraFile off = file;
+    off.tree.card_bake_px = 0;
+    off.tree.impostor_px = 0;
+    u64 off_key = 0;
+    REQUIRE(flora::flora_source_hash_with(off, inputs, off_key, error));
+    images.leaf.back() ^= 0x55;
+    REQUIRE(flora::flora_source_hash_with(off, inputs, moved, error));
+    images.leaf.back() ^= 0x55;
+    CHECK(moved == off_key);
+  }
+  MESSAGE(profiles << " profiles of the species table are keyed by their atlases");
+  for (u32 i = 0; i < 5; ++i)
+    CHECK_MESSAGE(named[i], k_late[i] << " is not a profile of the table");
 }
 
 // ---- the conifers' chain (G120) -----------------------------------------------------------------
