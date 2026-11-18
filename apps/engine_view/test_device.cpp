@@ -70,7 +70,8 @@ gfx::DeviceOverrides test_profile_overrides(std::string_view profile) {
         ++first;
       while (last > first && profile[last - 1] == ' ')
         --last;
-      if (last > first) overrides.absent.push_back(std::string(profile.substr(first, last - first)));
+      if (last > first)
+        overrides.absent.push_back(std::string(profile.substr(first, last - first)));
       start = end + 1;
     }
   }
@@ -90,7 +91,8 @@ const gfx::DeviceOverrides& test_device_overrides() {
     const bool exists = !run.empty() && std::filesystem::is_directory(run, run_error);
     switch (judge_test_profile(profile, run, root, exists)) {
       case TestProfile::honoured:
-        std::fprintf(stderr, "engine-view: %s=%s: the device opens as that profile (a test's run)\n",
+        std::fprintf(stderr,
+                     "engine-view: %s=%s: the device opens as that profile (a test's run)\n",
                      k_test_device_env, profile.c_str());
         return test_profile_overrides(profile);
       case TestProfile::no_test:
@@ -100,8 +102,7 @@ const gfx::DeviceOverrides& test_device_overrides() {
                      k_test_device_env, k_test_run_env);
         break;
       case TestProfile::stale_run:
-        std::fprintf(stderr,
-                     "engine-view: %s is set and ignored: %s names no live test run\n",
+        std::fprintf(stderr, "engine-view: %s is set and ignored: %s names no live test run\n",
                      k_test_device_env, k_test_run_env);
         break;
       case TestProfile::none: break;

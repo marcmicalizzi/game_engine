@@ -224,9 +224,9 @@ TEST_CASE("machine state: a run's end sample discounts its own GPU tail") {
   bench::MachineState loaded = gpu_at(97.0);
   loaded.cpu_others_pct = 60.0;
   FakeSampler cpu({loaded, gpu_at(2.0)});
-  CHECK_FALSE(bench::is_quiet(
-      bench::sample_after_own_gpu_work(cpu, bench::k_sample_window_ms, 0, {}),
-      bench::QuietThresholds{}));
+  CHECK_FALSE(
+      bench::is_quiet(bench::sample_after_own_gpu_work(cpu, bench::k_sample_window_ms, 0, {}),
+                      bench::QuietThresholds{}));
 }
 
 TEST_CASE("bench: --require-quiet refuses a busy machine and measures a quiet one") {
