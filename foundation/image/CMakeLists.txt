@@ -13,7 +13,7 @@ target_link_libraries(engine_image PRIVATE engine_tinyexr)
 
 engine_module_tests(NAME image
   SOURCES tests/png_tests.cpp tests/deflate_tests.cpp tests/decode_tests.cpp
-          tests/metrics_tests.cpp tests/exr_tests.cpp tests/size_table.cpp)
+          tests/metrics_tests.cpp tests/exr_tests.cpp tests/size_table.cpp tests/hostile_image_tests.cpp)
 if(TARGET engine_image_tests)
   # stb_image_write.h writes the baseline JPEG the decode test reads back; tests only, never
   # linked into the module.
