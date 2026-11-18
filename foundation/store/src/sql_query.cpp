@@ -9,13 +9,19 @@ namespace engine::store {
 
 namespace {
 
+// Off the list although they read only their arguments, because one call is one opcode, which
+// max_ms cannot stop, and their work is the product of two arguments' lengths rather than the sum
+// (store.md, "max_ms is kept between opcodes"): `instr` and `replace` compare a needle at every
+// position of a haystack, `trim`, `ltrim`, `rtrim` and `unhex` look each character of one argument
+// up in the whole of another, and `json_patch` looks each key of one object up among all of the
+// other's. Measured at the value limit with max_ms 1000: instr and replace 19.5 s, json_patch of
+// two objects of 40,000 keys 67 s, unhex of 600,000 characters skipping a set of 300,001 889 s.
 constexpr std::string_view k_function_names[] = {
     // Scalars over their arguments.
     "abs", "char", "coalesce", "concat", "concat_ws", "format", "glob", "hex", "if", "ifnull",
-    "iif", "instr", "length", "like", "likelihood", "likely", "lower", "ltrim", "max", "min",
-    "nullif", "octet_length", "printf", "quote", "random", "randomblob", "replace", "round",
-    "rtrim", "sign", "substr", "substring", "trim", "typeof", "unhex", "unicode", "unlikely",
-    "upper", "zeroblob",
+    "iif", "length", "like", "likelihood", "likely", "lower", "max", "min", "nullif",
+    "octet_length", "printf", "quote", "random", "randomblob", "round", "sign", "substr",
+    "substring", "typeof", "unicode", "unlikely", "upper", "zeroblob",
     // Aggregates.
     "avg", "count", "group_concat", "string_agg", "sum", "total",
     // Window functions.
@@ -25,9 +31,8 @@ constexpr std::string_view k_function_names[] = {
     "date", "time", "datetime", "julianday", "strftime", "unixepoch", "timediff",
     // JSON over a value (json_each and json_tree are virtual tables, which the prepare refuses).
     "json", "jsonb", "json_array", "json_array_length", "json_extract", "json_object", "json_quote",
-    "json_type", "json_valid", "json_patch", "json_insert", "json_replace", "json_set",
-    "json_remove", "json_group_array", "json_group_object", "json_error_position", "json_pretty",
-    "->", "->>"};
+    "json_type", "json_valid", "json_insert", "json_replace", "json_set", "json_remove",
+    "json_group_array", "json_group_object", "json_error_position", "json_pretty", "->", "->>"};
 
 constexpr std::string_view k_tables[] = {"events", "projections", "snapshots"};
 
