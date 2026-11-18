@@ -569,6 +569,9 @@ class GpuScene {
   // A material row carries gfx::k_material_stochastic (R131): the resolve draws with its
   // `_stochastic` module, which only such a scene pays for.
   bool has_stochastic_materials() const noexcept { return has_stochastic_materials_; }
+  // A material row carries foliage optics, or a tile may hand one (R177): the resolve's family is
+  // made with the foliage lines; without, they fold out (resolve_classes.h).
+  bool has_foliage_materials() const noexcept { return has_foliage_materials_; }
   // The terrain's mask level as uploaded (renderer.md, "Ground materials by place"): its bytes on
   // the GPU (page table and tiles) and its resident tiles; zero for a terrain without masks.
   u64 terrain_mask_bytes() const noexcept { return terrain_mask_bytes_; }
@@ -2170,6 +2173,7 @@ class GpuScene {
   u32 material_count_ = 0;
   bool has_terrain_materials_ = false;     // a native ground root actually exists in the table
   bool has_stochastic_materials_ = false;  // a row carries gfx::k_material_stochastic (R131)
+  bool has_foliage_materials_ = false;     // R177: see has_foliage_materials()
   u64 terrain_mask_bytes_ = 0;
   u32 terrain_mask_tiles_ = 0;
   bool has_water_ = false;                 // a material of the table carries gfx::k_material_water

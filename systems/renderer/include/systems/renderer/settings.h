@@ -687,6 +687,10 @@ f32 shadow_light_tolerance_tunable() noexcept;
 // `renderer.water.white_tier` (1): `gfx::ResolveParams::water_white_tier`, the white water's tier
 // (W139; water.md, "Shading"): 0 the low tier's white, 1 the top tier's.
 u32 water_white_tier_tunable() noexcept;
+// `renderer.foliage.backlit_tier` (1): a backlit foliage sheet's sun (R177; renderer.md, "Foliage
+// lit from both sides"): 1 the top tier's ray, 0 the cache's measure where the frame reads the
+// cache (`gfx::k_shadow_foliage_backlit_estimate`).
+u32 foliage_backlit_tier_tunable() noexcept;
 // **The sun ray's rule for alpha-tested casters this frame** (R115 stage 2): the opaque proxy's
 // threshold, whether every caster is forced solid, and the stop word's counting bit. From the
 // tunables — `renderer.shadow.opaque_rays` and the resolved threshold — unless

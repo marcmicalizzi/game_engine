@@ -113,6 +113,7 @@ bool SceneRenderer::create_resolve_class_pipelines(bool linear, std::string* err
     desc.depth_test = true;
     desc.depth_write = false;
     desc.depth_compare = gfx::CompareOp::Equal;
+    desc.specialization = resolve_specialization(scene_->has_foliage_materials());  // R177
     if (!pipelines_.resolve_class[f].valid() &&
         !gfx::create_graphics_pipeline(device, desc, pipelines_.resolve_class[f], error)) {
       return false;

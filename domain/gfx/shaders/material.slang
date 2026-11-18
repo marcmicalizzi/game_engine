@@ -95,9 +95,18 @@ uint slot_sampler(ResolveMaterial material, uint word, uint shift) {
   return slot == k_same_sampler ? material.sampler : slot;
 }
 
+// **Whether the scene has foliage at all** (gfx::k_spec_scene_foliage, R177; renderer.md, "Foliage
+// lit from both sides", "A scene with none pays nothing"): a specialization constant the pipeline
+// sets false where no material of the scene declares foliage optics. The driver folds it before it
+// allocates registers, so every foliage line below a `material_is_foliage` drops out of such a
+// pipeline and a scene with none pays what it paid before R164 (0.026 ms of resolve on the rock
+// field at 3840 x 2160, R164-2) — from the same SPIR-V, where a module of its own would have
+// doubled the resolve's sixteen. Unset (every other pipeline), it is true: the material decides.
+[vk::constant_id(177)] const bool k_scene_foliage = true;
+
 // The foliage optics' two numbers (k_material_foliage_shift, above).
 bool material_is_foliage(ResolveMaterial material) {
-  return (material.flags >> k_material_foliage_shift) != 0u;
+  return k_scene_foliage && (material.flags >> k_material_foliage_shift) != 0u;
 }
 float material_foliage_transmit(ResolveMaterial material) {
   return float((material.flags >> 24u) & 15u) / 15.0;

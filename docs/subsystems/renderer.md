@@ -1754,8 +1754,41 @@ transmission colour is not read, the base colour serves both sides; R164-3); a m
 `normal_spread` keys (`materials::MaterialSet`, nonzero values replacing the part's own); and
 flora's own parts (`k_leaf_transmission` 0.8 on every leaf and frond, `k_needle_transmission` 0.47
 and `k_needle_spread` 0.8 on every needle card; [flora](flora.md#foliage-optics)). **A material
-with none of it is drawn exactly as before**: every reader branches on the byte, and a scene with
-no foliage material runs the instructions it ran.
+with none of it is drawn exactly as before**: every reader branches on the byte.
+
+**A scene with none pays nothing** (R177, 2026-11-17). The branch alone cost a scene that never
+takes it: the rock field's resolve was 1.462 ms on main before R164 and 1.488 after, at 3840 x
+2160 traced (R164's second leg), the registers of code it never ran, which a build with the
+branch forced off gave back (1.466). So `material_is_foliage` (`material.slang`) is ANDed with a
+**specialization constant**, `k_scene_foliage` (`gfx::k_spec_scene_foliage`, true unless a
+pipeline sets it), and every pipeline of the resolve's family — the resolve, its linear twin for
+the frame passes, the split's class pipelines, the half-rate sun pass and the cache's sample pass —
+is made with it false where no material row of the scene has the byte
+(`GpuScene::has_foliage_materials`). The driver folds the constant before it allocates registers,
+so such a pipeline is the module without foliage, from the same SPIR-V: not a fifth bit of
+`resolve_module`, which would have doubled the resolve's sixteen modules to thirty-two and their
+build. A scene with a mesh room whose generators said their tiles hand alpha-tested meshes
+(`tile_meshes_masked`) keeps the lines, as it keeps the masked pipelines; a tile's foliage
+material in a scene made without them is drawn as a one-sided sheet and said in the log.
+`gfx::Specialization` (`pipeline.h`; [gfx](gfx.md#specialization-constants)) is how any pipeline
+sets such a constant.
+
+**The backlit sun's tier** (R177; `renderer.foliage.backlit_tier`, default 1). R164's lighting
+cost the grove 0.25 ms of resolve at 3840 x 2160 traced, and 0.20 of it is the sun rays a sheet
+lit from behind asks from the light's side of its card, which a turned-away sheet never asked.
+The top tier (1) keeps them. The low tier (0) asks none: a foliage pixel whose sun is behind its
+sheet holds the sun unshadowed, and once its ambient is known adds it at the share of the sky the
+world-space cache measured reaching the point — what the scene let through of the front's raw
+hemisphere, `scene_ambient` over it, its luminance, clamped to one. That is what shipped
+shadow-mapped foliage does (Crysis's leaves, *GPU Gems 3* ch. 16: the back term is multiplied by
+the shadow factor the front's lighting loop already took, no test of its own); a ray-traced
+renderer has no such free answer, and the cache's is the nearest measured one. Only where the frame
+reads the cache (`k_gi_read`): anywhere else the low tier traces as the top does, because the
+cache's ratio is one there and the sun would come through every crown. Front-lit sheets trace as
+they always did. **What a person loses**: the sun's pattern on the back of a crown. A backlit
+needle the sun reaches through a gap and one a branch shades take the same mean of their cell,
+so the glow of lit-through leaves against the sun is even where it was dappled. The measured
+cost and the pictures are on [the experiment's page](../experiments/foliage-two-sided-light.md#the-backlit-suns-tier-r177).
 
 **What each reader does with it.** One model, in `brdf.slang` (`brdf_foliage_eval_cos`,
 `brdf_foliage_direct`, `brdf_foliage_ambient`), mirrored in double in `brdf_reference.h`:
@@ -1794,9 +1827,17 @@ too and takes it whichever side the sun is on (`resolve_half_sun.slang`; R164's 
 first asked a lit-through pixel's own ray, so a surround's sides traced every such pixel at full
 rate). The cascaded maps read the same flipped normal for their lift.
 
-**Not done.** The world-space cache's update (`gi_update.slang`, which does not call `shade_hit`)
-still lights a foliage hit as a sheet, and water's flag-class mirror in `water.slang` does not name the byte (it checks only that
-the classes stay apart, which they do).
+**The cache's bounce lights a foliage hit as the resolve does** (R177). `gi_update.slang`'s
+`gi_bounce` takes the sun from behind the sheet through `transmit` and its sphere's share, its
+shadow ray from the light's side, and the back's and the sphere's ambient scaled by what the cache
+let through of the front's, so the light a bounce brings back from under a canopy is the leaves'
+lit-through green rather than a dark sheet's back. `water reflect: a foliage card in the water is
+shaded as the card on the screen` (systems/water) holds the reflected hit to the resolve: what the
+optics multiply a backlit card by, in the sun and in a wall's shadow, agrees on the screen and in
+the water within ln(1.05).
+
+**Not done.** Water's flag-class mirror in `water.slang` does not name the byte (it checks only
+that the classes stay apart, which they do).
 
 ## Alpha-tested geometry
 

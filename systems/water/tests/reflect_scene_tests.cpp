@@ -20,6 +20,7 @@
 #include <systems/renderer/settings.h>
 
 #include <doctest/doctest.h>
+#include <test_device.h>
 #include <test_temp_dir.h>
 
 #include <algorithm>
@@ -777,4 +778,230 @@ TEST_CASE(
   const f64 grass_bg = static_cast<f64>(k_grass[2]) / static_cast<f64>(k_grass[1]);
   CHECK(added[0] / added[1] > std::sqrt(sand_rg * grass_rg));
   CHECK(added[2] / added[1] > std::sqrt(sand_bg * grass_bg));
+}
+
+// ---- A leaf in the water is the leaf on the screen (R177; R164's foliage optics) --------------
+// Two foliage cards stand on the same pool's far bank, facing the eye with the stand-in's sun
+// behind them: card A in the open, card B in the shadow of a wall that stands behind it. Each is
+// drawn twice, as a two-sided leaf that transmits (`KHR_materials_diffuse_transmission`, foliage
+// optics) and as the same leaf without, and what the optics add is the ratio of the two pictures
+// over the card's pixels: on the screen (the resolve, `fs_resolve`) and in the water (the reflected
+// hit, hit_shade.slang's `shade_hit`). R164's review found the two shaded differently (the hit's
+// ambient one-sided, mended in R164-3's B7 with no case); this is that case. Card A's ratio is the
+// sun through the leaf and its back's ambient, card B's the back's ambient alone.
+//
+// Why the two ratios must agree: the cards are vertical and untextured, so the mirrored view meets
+// each at the same n.v as the eye does and the leaf's terms are the view's but for the sheet's
+// specular lobe, which a backlit sheet (n.l < 0) does not have and whose ambient share depends on
+// n.v alone; the stand-in's ambient has no position in it, the lights are off, and the hit's shadow
+// ray is asked at every pixel (`renderer.water.reflect_shadow=2`). A water pixel of the low tier
+// with a black body is the Fresnel times the hit's radiance, the same factor in both pictures, so
+// it cancels in a ratio of sums over the same pixels. What is left is the 8-bit store: half a code
+// of rounding and one of dither, a pixel at least 2.2 / m of the linear value at a mean code m;
+// over the hundreds of pixels a card's reflection covers at a mean over 30 codes that is under 1 %,
+// so the ratios are held within ln(1.05). A one-sided hit (the sun or the back's ambient missing)
+// moves card A's ratio by its whole size and card B's by the back's share: each checked to be
+// over 1.3, six times the bound.
+namespace {
+
+// A vertical quad in the mesh's x-y plane, facing -z, `x0`..`x1` by `y0`..`y1`, its material
+// `material` (a glTF material object), with its buffer inline.
+std::string quad_gltf(f32 x0, f32 x1, f32 y0, f32 y1, const char* material, bool transmit) {
+  std::vector<u8> bin;
+  const f32 p[4][3] = {{x0, y0, 0.0f}, {x1, y0, 0.0f}, {x1, y1, 0.0f}, {x0, y1, 0.0f}};
+  for (const auto& c : p)
+    for (const f32 v : c)
+      put(bin, v);
+  for (u32 c = 0; c < 4; ++c)
+    for (const f32 v : {0.0f, 0.0f, -1.0f})
+      put(bin, v);
+  for (const u16 i : {u16{0}, u16{2}, u16{1}, u16{0}, u16{3}, u16{2}})
+    put(bin, i);
+  char text[4096];
+  std::snprintf(text, sizeof(text), R"({
+  "asset": {"version": "2.0"},%s
+  "scene": 0, "scenes": [{"nodes": [0]}], "nodes": [{"mesh": 0}],
+  "materials": [%s],
+  "meshes": [{"primitives": [{"attributes": {"POSITION": 0, "NORMAL": 1}, "indices": 2,
+                              "material": 0}]}],
+  "buffers": [{"byteLength": %u, "uri": "data:application/octet-stream;base64,%s"}],
+  "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 48},
+                  {"buffer": 0, "byteOffset": 48, "byteLength": 48},
+                  {"buffer": 0, "byteOffset": 96, "byteLength": 12}],
+  "accessors": [
+    {"bufferView": 0, "componentType": 5126, "count": 4, "type": "VEC3",
+     "min": [%g, %g, 0], "max": [%g, %g, 0]},
+    {"bufferView": 1, "componentType": 5126, "count": 4, "type": "VEC3"},
+    {"bufferView": 2, "componentType": 5123, "count": 6, "type": "SCALAR"}]
+})",
+                transmit ? R"(
+  "extensionsUsed": ["KHR_materials_diffuse_transmission"],)"
+                         : "",
+                material, static_cast<u32>(bin.size()), base64(bin).c_str(), static_cast<f64>(x0),
+                static_cast<f64>(y0), static_cast<f64>(x1), static_cast<f64>(y1));
+  return text;
+}
+
+// The display's transfer is a 1/2.2 power (display.slang, `display_encode`).
+f64 linear22(u8 code) { return std::pow(static_cast<f64>(code) / 255.0, 2.2); }
+
+}  // namespace
+
+TEST_CASE("water reflect: a foliage card in the water is shaded as the card on the screen") {
+  if (!ray_queries_here()) return;
+  const test::TempDir tmp("water_reflect_foliage");
+  RestoreReflect restore;
+  struct RestoreShadow {
+    ~RestoreShadow() { (void)tunables::apply_overrides("renderer.water.reflect_shadow=1"); }
+  } restore_shadow;
+  REQUIRE(tunables::apply_overrides("renderer.water.reflect=1"));
+  REQUIRE(tunables::apply_overrides("renderer.water.reflect_shadow=2"));
+  std::string error;
+  const char* k_leaf = R"({"doubleSided": true, "pbrMetallicRoughness": {
+      "baseColorFactor": [0.15, 0.40, 0.08, 1], "metallicFactor": 0, "roughnessFactor": 0.7},
+      "extensions": {"KHR_materials_diffuse_transmission": {"diffuseTransmissionFactor": 0.4}}})";
+  const char* k_sheet = R"({"doubleSided": true, "pbrMetallicRoughness": {
+      "baseColorFactor": [0.15, 0.40, 0.08, 1], "metallicFactor": 0, "roughnessFactor": 0.7}})";
+  const char* k_wall = R"({"pbrMetallicRoughness": {
+      "baseColorFactor": [0.5, 0.5, 0.5, 1], "metallicFactor": 0, "roughnessFactor": 0.9}})";
+  {
+    std::ofstream leaf(tmp.file("leaf.gltf"), std::ios::binary);
+    leaf << quad_gltf(-4.0f, 4.0f, 0.0f, 8.0f, k_leaf, true);
+    std::ofstream sheet(tmp.file("sheet.gltf"), std::ios::binary);
+    sheet << quad_gltf(-4.0f, 4.0f, 0.0f, 8.0f, k_sheet, false);
+    std::ofstream wall(tmp.file("wall.gltf"), std::ios::binary);
+    wall << quad_gltf(-10.0f, 10.0f, 0.0f, 22.0f, k_wall, false);
+  }
+  // The cards 50 m from the eye on the far bank (its ground 1.8 m up there), their feet sunk in
+  // it; the wall 3 m behind card B, between it and the sun (north-east, 53 degrees up), wide and
+  // tall enough that the sun's ray from every point of card B meets it and none from card A.
+  struct Picture {
+    CapturedFrame frame;
+    u32 water = ~0u, a = ~0u, b = ~0u;
+  } pictures[2];
+  for (u32 s = 0; s < 2; ++s) {
+    const std::string path = tmp.file(s == 0 ? "leaf.json" : "sheet.json");
+    {
+      std::ofstream file(path, std::ios::binary);
+      file << R"({
+  "format": "engine.scene.v1",
+  "name": "reflect-foliage-test",
+  "meshes": [{"name": "card", "path": ")"
+           << (s == 0 ? "leaf.gltf" : "sheet.gltf")
+           << R"("}, {"name": "wall", "path": "wall.gltf"}],
+  "instances": [{"mesh": 0, "translation": [-8, 1, 26]}, {"mesh": 0, "translation": [7, 1, 26]},
+                {"mesh": 1, "translation": [12, 0, 29]}],
+  "terrain": {"provider": "reflect_bank_probe", "size": 65, "extent": 128},
+  "water": [{"name": "pool", "level_m": -1,
+             "shape": {"fill": {"seed": [0, 0, 0], "max_extent_m": 60}},
+             "shallow": [0, 0, 0], "deep": [0, 0, 0], "wind_follow": false,
+             "wave_amplitude_m": 0, "wet_m": 0, "foam_m": 0}]
+})";
+    }
+    SceneDesc desc;
+    REQUIRE_MESSAGE(read_scene_file(path, desc, error), error);
+    desc.ddc = tmp.file("ddc");
+    desc.cache = false;
+    SceneData data;
+    REQUIRE_MESSAGE(load_scene(desc, data, error), error);
+    for (u32 i = 0; i < data.instances.size(); ++i) {
+      const u32 mesh = data.instances[i].mesh;
+      if (mesh < data.mesh_info.size() && data.mesh_info[mesh].water.has_value())
+        pictures[s].water = i;
+      if (mesh == 0 && pictures[s].a == ~0u) {
+        pictures[s].a = i;
+      } else if (mesh == 0) {
+        pictures[s].b = i;
+      }
+    }
+    REQUIRE(pictures[s].water != ~0u);
+    REQUIRE(pictures[s].b != ~0u);
+    gfx::Device device;
+    if (!device.create(renderer_test::device_options(), &error)) {
+      MESSAGE("renderer unavailable here: " << error);
+      return;
+    }
+    RenderSettings settings;
+    settings.shadows = ShadowMode::RayTraced;
+    settings.water_quality = WaterQuality::Low;
+    settings.lights = false;
+    ResolvedSettings resolved;
+    resolve_settings(settings, device.features(), &data, resolved);
+    REQUIRE(check_availability(resolved, device.features()) == RenderAvailability::Ok);
+    {
+      GpuScene scene;
+      REQUIRE_MESSAGE(scene.create(device, data, resolved, &error), error);
+      CHECK(scene.has_foliage_materials() == (s == 0));
+      SceneRenderer renderer;
+      SceneRenderer::Desc rd;
+      rd.width = 480;
+      rd.height = 320;
+      REQUIRE_MESSAGE(renderer.create(device, scene, resolved, rd, &error), error);
+      FrameDesc frame;
+      frame.camera.position = WorldPos{0.0, static_cast<f64>(bowl(0.0, -24.0)) + 1.7, -24.0};
+      frame.camera.target = WorldPos{0.0, 1.0, 20.0};
+      frame.camera.fov_y = 60.0f * 3.14159265f / 180.0f;
+      frame.world_time_s = 0.0;
+      CaptureChannels channels;
+      channels.ids = true;
+      CapturedFrame warm;
+      REQUIRE_MESSAGE(renderer.capture(frame, channels, warm, &error), error);
+      REQUIRE_MESSAGE(renderer.capture(frame, channels, pictures[s].frame, &error), error);
+      renderer.destroy();
+      scene.destroy();
+    }
+    device.destroy();
+  }
+  const CapturedFrame& leaf = pictures[0].frame;
+  const CapturedFrame& sheet = pictures[1].frame;
+  REQUIRE(leaf.ids == sheet.ids);  // the optics are shading: no surface moves
+  const u32 w = leaf.width;
+  const u32 h = leaf.height;
+  const u32 cards[2] = {pictures[0].a, pictures[0].b};
+  for (u32 c = 0; c < 2; ++c) {
+    // The card on the screen: its pixels, and the columns they span, two in from either side.
+    u32 x_lo = w, x_hi = 0;
+    f64 seen[2] = {};
+    u32 seen_n = 0;
+    for (u32 p = 0; p < w * h; ++p) {
+      if (leaf.ids[p * k_id_words] != cards[c]) continue;
+      x_lo = std::min(x_lo, p % w);
+      x_hi = std::max(x_hi, p % w);
+      for (u32 k = 0; k < 3; ++k) {
+        seen[0] += linear22(leaf.color[p * 4 + k]);
+        seen[1] += linear22(sheet.color[p * 4 + k]);
+      }
+      ++seen_n;
+    }
+    REQUIRE(seen_n > 500u);
+    // The card in the water: the water pixels in those columns that the optics change by three
+    // codes or more in green.
+    f64 mirrored[2] = {};
+    u32 mirrored_n = 0;
+    f64 codes = 0.0;
+    for (u32 y = 0; y < h; ++y)
+      for (u32 x = x_lo + 2; x + 2 <= x_hi; ++x) {
+        const u32 p = y * w + x;
+        if (leaf.ids[p * k_id_words] != pictures[0].water) continue;
+        if (std::abs(i32{leaf.color[p * 4 + 1]} - i32{sheet.color[p * 4 + 1]}) < 3) continue;
+        for (u32 k = 0; k < 3; ++k) {
+          mirrored[0] += linear22(leaf.color[p * 4 + k]);
+          mirrored[1] += linear22(sheet.color[p * 4 + k]);
+        }
+        codes += static_cast<f64>(sheet.color[p * 4 + 1]);
+        ++mirrored_n;
+      }
+    REQUIRE(mirrored_n > 200u);
+    REQUIRE(seen[1] > 0.0);
+    REQUIRE(mirrored[1] > 0.0);
+    const f64 on_screen = seen[0] / seen[1];
+    const f64 in_water = mirrored[0] / mirrored[1];
+    MESSAGE("card " << (c == 0 ? "A (in the sun)" : "B (in the wall's shadow)") << ": " << seen_n
+                    << " pixels on the screen, the optics multiply them by " << on_screen << "; "
+                    << mirrored_n << " in the water (mean green code without the optics "
+                    << codes / mirrored_n << "), by " << in_water << "; bound ln(1.05)");
+    CHECK(on_screen > 1.3);
+    CHECK(codes / mirrored_n > 30.0);
+    CHECK(std::abs(std::log(in_water / on_screen)) < std::log(1.05));
+  }
 }

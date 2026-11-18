@@ -498,6 +498,19 @@ inline constexpr u32 k_material_stochastic = 131072u;
 // its sheet, and its shadow rays leave from the side of its plane the light is on.
 inline constexpr u32 k_material_foliage_shift = 24u;
 inline constexpr u32 k_material_foliage_mask = 0xFF000000u;
+// **A scene with no foliage pays nothing for it** (R177; renderer.md, "Foliage lit from both
+// sides"): the specialization constant (pipeline.h, `Specialization`) material.slang's
+// `k_scene_foliage` is, which a pipeline sets to 0 where no material of the scene has the byte
+// above. Every foliage line of the resolve, its half pass, the water's reflected hits and the
+// cache's bounce then drops out at the driver's compile. Unset, it is 1.
+inline constexpr u32 k_spec_scene_foliage = 177u;
+// **The backlit sun as a quality tier** (R177; renderer.md, "Foliage lit from both sides", "The
+// backlit sun's tier"): set, a foliage pixel whose sun is behind its sheet asks no shadow ray and
+// takes the sun at the visibility the frame's world-space cache measured there (what the scene let
+// through of the sky at the point, `scene_ambient` over the raw hemisphere, its luminance), as
+// shipped shadow-mapped foliage takes its back light at the front's shadow term. Only where the
+// frame reads a cache; anywhere else the pixel traces as the top tier does. Clear: the top tier.
+inline constexpr u32 k_shadow_foliage_backlit_estimate = 1u << 22;
 // A share (0..1) as the four-bit code the byte holds: the nearest fifteenth; a NaN reads 0.
 inline u32 foliage_code(f32 share) noexcept {
   const f32 clamped = share > 0.0f ? (share < 1.0f ? share : 1.0f) : 0.0f;
