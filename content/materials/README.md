@@ -30,7 +30,7 @@ tools/fetch-materials.ps1 -Source <zip path or URL> -Expect <sha256>
 The zip must hash to `-Expect` (or to the hash pinned in the script, once the owner hosts a
 default), and every map to what `pack.json` says, or nothing is unpacked. What was here is replaced;
 this README stays. **No default is hosted yet**: the first pack is built locally under
-`D:\workspace\game_engine_local\packages\` and fetched from there.
+`game_engine_local\packages\` and fetched from there.
 
 The repository's own hosts find the pack here, beside the derived-data cache: `engine-content
 flora`, `rocks`, `build` and `build-all`, and the renderer when it looks up `<repo>/ddc`

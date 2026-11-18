@@ -12,7 +12,7 @@ from the row to a closer view. Cook/capture with the worktree's `engine-view --s
 The checked-in scene needs no external textures; it has no ground mesh.
 
 Generated containers, captures, camera/recipe copies and measurements belong under
-`D:/workspace/game_engine_local/shrubs/<date>/`, never here. The sparse slope recipe needs
+`game_engine_local/shrubs/<date>/`, never here. The sparse slope recipe needs
 matching ground supplied by the consumer; it is not included in the flat specimen row.
 The all-dead asset uses geometric LOD, because it has no foliage to carry the far-chain contract.
 Visual review includes matched 5, 20 and 60 m views and a view beyond the measured far-form handover.

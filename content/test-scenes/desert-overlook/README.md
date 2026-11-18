@@ -17,7 +17,7 @@ engine-view --scene content/test-scenes/desert-overlook/scene.json `
             --camera-path content/test-scenes/desert-overlook/camera-path.json `
             --benchmark run.jsonl --width 1920 --height 1080 --shadows off
 # the owner's landmarks, where the local manifest exists:
-#            --overlay D:/workspace/game_engine_local/scenes/desert-overlook/landmarks.json
+#            --overlay $env:ENGINE_LOCAL_ROOT/scenes/desert-overlook/landmarks.json
 tools/flythrough.ps1 -Preset msvc-release -Set substitute   # the whole measurement matrix
 ```
 
@@ -38,7 +38,7 @@ Every placement is made through a mesh's **fit** — scale to a height or an ext
 | airplane wreck | 48 m long | BoomBox `278559b810e63c72` | airplane-wreck.glb `fde41005d2c2fa04` (2.00 M) |
 | palm (64 instances) | 12 m | SciFiHelmet `8fa4d013a805f5b5` | desert-palm-tree.glb `142d0a5d0c146395` (243 k) |
 
-The hashes are `assets::source_bytes_hash` of the files (their bytes and buffers, never the importer's cache key). The load hashes every file it reads and refuses one whose bytes differ from what the scene names, so a number measured on this scene names exactly what it measured; the summary of a run carries the scene file's hash, the path file's hash, every mesh's hash and where it came from, and one `identity` over all of them. **The landmarks are the owner's paid-plan outputs and are never committed**: the scene names them only by content hash, and the local manifest (`engine.scene.Overlay`, at `D:/workspace/game_engine_local/scenes/desert-overlook/landmarks.json` on the development machine) says where the files with those bytes are. Without it the scene runs on the substitutes alone. The props along the approach and at the oasis are the same seven Khronos samples at human scale, in both sets.
+The hashes are `assets::source_bytes_hash` of the files (their bytes and buffers, never the importer's cache key). The load hashes every file it reads and refuses one whose bytes differ from what the scene names, so a number measured on this scene names exactly what it measured; the summary of a run carries the scene file's hash, the path file's hash, every mesh's hash and where it came from, and one `identity` over all of them. **The landmarks are the owner's paid-plan outputs and are never committed**: the scene names them only by content hash, and the local manifest (`engine.scene.Overlay`, at `game_engine_local/scenes/desert-overlook/landmarks.json` on the development machine) says where the files with those bytes are. Without it the scene runs on the substitutes alone. The props along the approach and at the oasis are the same seven Khronos samples at human scale, in both sets.
 
 ## The layout
 

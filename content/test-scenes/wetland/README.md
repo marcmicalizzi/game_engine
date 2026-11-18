@@ -6,7 +6,7 @@ Floating blades sit at .502 m: a form study without simulated water.
 
 `camera-path.json` views the row centre from 5, 20, 60 and 120 metres.
 Use this branch's `engine-view --offscreen --capture`. Save copied recipes,
-cameras and captures under `D:/workspace/game_engine_local/wetland/2026-10-29/`.
+cameras and captures under `game_engine_local/wetland/2026-10-29/`.
 See [wetland](../../../docs/subsystems/wetland.md) and
 [research](../../../docs/experiments/wetland-plants.md).
 

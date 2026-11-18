@@ -47,7 +47,7 @@ no texture pack and every region reads as its colour; a scene with a material pa
 per layer as W68 does, and height maps (`height`) for the height blend.
 
 Captures (2026-10-24, `msvc-debug`, RTX 5090, 1600 × 900, under
-`D:/workspace/game_engine_local/ground-materials/captures/`): `overview` (the mountain's bands, the
+`game_engine_local/ground-materials/captures/`): `overview` (the mountain's bands, the
 trail, the clearing, the two ponds' margins), `mountain` and `mountain-north` (the snow lower on the
 north face, the scree band below the bedrock, the meadow at the foot), `sandy-shore` and
 `sandy-under` (gravel margin, the sand bed under the volume-tier water), `boggy-shore` (the dark wet

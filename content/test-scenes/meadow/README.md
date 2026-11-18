@@ -5,7 +5,7 @@ Eight source-bounded botanical recipes for the sward solver, separate from G75 t
 [contract](../../../docs/subsystems/flora.md#grass-sward-g90) state what is implemented and
 what still needs acceptance. `camera-path.json` moves through 1, 5, 20 and 80 m.
 
-`tools/sward-cook.ps1 -Out D:/workspace/game_engine_local/sward/2026-10-25/meadow` cooks a
+`tools/sward-cook.ps1 -Out $env:ENGINE_LOCAL_ROOT/sward/2026-10-25/meadow` cooks a
 dense tall-fescue family by default, the ground layer, density paint, heightfield and scene outside the checkout. `-Recipe <file>` selects another management state; `-Species` optionally overrides its species. No generated
 PNGs, meshes, height grids or capture outputs belong here. It also writes recipes and provenance.
 
@@ -34,7 +34,7 @@ The high candidate has an explicit 8500 all-rung triangle cap; dense-low stays w
 Neither is a claim about runtime performance or accepted visual quality.
 
 ```powershell
-tools/sward-showcase.ps1 -Out D:/workspace/game_engine_local/sward/showcase -Capture
+tools/sward-showcase.ps1 -Out $env:ENGINE_LOCAL_ROOT/sward/showcase -Capture
 ```
 
 The showcase cooks seven 8x8 m stands, near/card scenes and matching close, walking-height and
@@ -79,7 +79,7 @@ floor and the dry flank each draw what the site gives them. Like `scene.json` it
 template: its paths resolve in a directory outside the checkout, filled by these lines.
 
 ```powershell
-$out = 'D:/workspace/game_engine_local/meadow-community'; $bin = 'build/msvc-debug/bin'
+$out = "$env:ENGINE_LOCAL_ROOT/meadow-community"; $bin = 'build/msvc-debug/bin'
 foreach ($form in 'tall-sod','tall-tussock','short-sod','short-tussock') { foreach ($d in 50,100) { foreach ($v in 0,1) {
   $dir = "$out/$form/d$d-v$v"; New-Item -ItemType Directory -Force $dir | Out-Null
   $p = Get-Content "content/test-scenes/meadow/$form.flora.json" -Raw | ConvertFrom-Json -AsHashtable

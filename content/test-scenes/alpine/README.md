@@ -13,6 +13,6 @@ documents every input. All sources are text recipes and need no fetched assets.
 --camera-path content/test-scenes/alpine/camera-path.json --offscreen --frames 300
 --width 1280 --height 720 --marker-captures <external-dir>` captures an overview,
 close views of each habit and a distant view. Run non-test GPU work through
-`tools/gpu-lock.ps1 run`; write captures/caches under `D:/workspace/game_engine_local/`.
+`tools/gpu-lock.ps1 run`; write captures/caches under `game_engine_local/`.
 Markers 0/60/120/180/240/299 are overview/cushion/rosettes/scrub/pockets/distance.
 The fixture is for visual inspection, not a timed performance baseline.
