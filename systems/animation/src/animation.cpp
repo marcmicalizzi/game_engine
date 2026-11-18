@@ -40,6 +40,12 @@ tunables::Int lod_max_promotions{"animation.lod.max_promotions", 64, 1, 1 << 20,
 tunables::Int lod_max_demotions{"animation.lod.max_demotions", 256, 1, 1 << 20,
                                 "Instances that may release a pose slot in one tick"};
 
+// The pose program's batch (S35 stage 2; animation.md "Graphs: the pose program"): instances a
+// kernel runs over per op. The design sizes it so `batch × registers × joints × 40` bytes stays in
+// L2 (64 × 3 × 23 × 40 = 177 KB); `animation.graph.batch/<B>` measures the choice.
+tunables::Int graph_batch{"animation.graph.batch", 64, 1, 4096,
+                          "Graph-driven instances the pose program evaluates op by op at once"};
+
 f32 clamp01(f32 v) noexcept { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); }
 
 // The playhead, advanced by `delta` seconds of clip time. Looping wraps into [0, duration) and is
@@ -163,6 +169,10 @@ void AnimationSystem::install(ecs::SimWorld& sim) {
   const sim::ComponentMask all =
       ecs::mask_of<AnimationPlayer, SkeletonInstance, AnimationLod>(world);
   const sim::ComponentMask instance_and_lod = ecs::mask_of<SkeletonInstance, AnimationLod>(world);
+  const sim::ComponentMask graph_components =
+      ecs::mask_of<AnimationGraphInput, AnimationGraphState>(world);
+  const sim::ComponentMask graph_and_instance =
+      ecs::mask_of<AnimationGraphInput, AnimationGraphState, SkeletonInstance, AnimationLod>(world);
 
   // The capability's own storage, named so the schedule can order two systems by it. Registered
   // here rather than at namespace scope because the registry is the process's and a static
@@ -196,15 +206,37 @@ void AnimationSystem::install(ecs::SimWorld& sim) {
         .run([this](flecs::iter& it) { advance_players(it); });
   });
 
+  // S35 stage 2: a graph-driven entity's control pass (the scheduler owns the tick: the pass is a
+  // system, never a call a host makes on the world's behalf). It matches only entities with no
+  // player — the walker, whose host drives its graph into a player (stage 1), is not one — so its
+  // query and `advance_players`' are disjoint and the two share a wave.
   descs_[1] = sim::SystemDesc{};
-  descs_[1].name = "animation.sample_poses";
-  descs_[1].phase = k_phase_sample;
-  descs_[1].reads = all;
-  descs_[1].writes_resources = pose_pool;
+  descs_[1].name = "animation.graph_control";
+  descs_[1].phase = k_phase_advance;
+  descs_[1].reads = lod;
+  descs_[1].writes = graph_components;
   descs_[1].tiers = 0b0111u;
   descs_[1].determinism = sim::Determinism::Hashed;
   descs_[1].context = this;
   ecs::register_system(sim, descs_[1], [this](flecs::world& w, flecs::entity phase) {
+    return w
+        .system<AnimationGraphInput, AnimationGraphState, const AnimationLod>(
+            "animation.graph_control")
+        .without<AnimationPlayer>()
+        .kind(phase)
+        .multi_threaded()
+        .run([this](flecs::iter& it) { control_graphs(it); });
+  });
+
+  descs_[2] = sim::SystemDesc{};
+  descs_[2].name = "animation.sample_poses";
+  descs_[2].phase = k_phase_sample;
+  descs_[2].reads = all;
+  descs_[2].writes_resources = pose_pool;
+  descs_[2].tiers = 0b0111u;
+  descs_[2].determinism = sim::Determinism::Hashed;
+  descs_[2].context = this;
+  ecs::register_system(sim, descs_[2], [this](flecs::world& w, flecs::entity phase) {
     return w
         .system<const AnimationPlayer, const SkeletonInstance, const AnimationLod>(
             "animation.sample_poses")
@@ -213,18 +245,38 @@ void AnimationSystem::install(ecs::SimWorld& sim) {
         .run([this](flecs::iter& it) { sample_poses(it); });
   });
 
-  descs_[2] = sim::SystemDesc{};
-  descs_[2].name = "animation.build_skinning_matrices";
-  descs_[2].phase = k_phase_skin;
-  descs_[2].reads = instance_and_lod;
-  descs_[2].reads_resources = pose_pool;
-  descs_[2].writes_resources = joint_matrices;
-  descs_[2].tiers = 0b0011u;  // only the tiers whose plan says `skin`
+  // The pose program for the same entities: registered before the matrices, which read the pose
+  // pool it writes.
+  descs_[3] = sim::SystemDesc{};
+  descs_[3].name = "animation.graph_sample";
+  descs_[3].phase = k_phase_sample;
+  descs_[3].reads = graph_and_instance;
+  descs_[3].writes_resources = pose_pool;
+  descs_[3].tiers = 0b0111u;
+  descs_[3].determinism = sim::Determinism::Hashed;
+  descs_[3].context = this;
+  ecs::register_system(sim, descs_[3], [this](flecs::world& w, flecs::entity phase) {
+    return w
+        .system<const AnimationGraphInput, const AnimationGraphState, const SkeletonInstance,
+                const AnimationLod>("animation.graph_sample")
+        .without<AnimationPlayer>()
+        .kind(phase)
+        .multi_threaded()
+        .run([this](flecs::iter& it) { sample_graphs(it); });
+  });
+
+  descs_[4] = sim::SystemDesc{};
+  descs_[4].name = "animation.build_skinning_matrices";
+  descs_[4].phase = k_phase_skin;
+  descs_[4].reads = instance_and_lod;
+  descs_[4].reads_resources = pose_pool;
+  descs_[4].writes_resources = joint_matrices;
+  descs_[4].tiers = 0b0011u;  // only the tiers whose plan says `skin`
   // ADR-0010's other stance: the matrices are output nothing reads back into gameplay, and they
   // are rebuilt from the playhead after a load, so they are not in the sim hash.
-  descs_[2].determinism = sim::Determinism::Derived;
-  descs_[2].context = this;
-  ecs::register_system(sim, descs_[2], [this](flecs::world& w, flecs::entity phase) {
+  descs_[4].determinism = sim::Determinism::Derived;
+  descs_[4].context = this;
+  ecs::register_system(sim, descs_[4], [this](flecs::world& w, flecs::entity phase) {
     return w.system<const SkeletonInstance, const AnimationLod>("animation.build_skinning_matrices")
         .kind(phase)
         .multi_threaded()
@@ -391,6 +443,107 @@ void AnimationSystem::build_skinning_matrices(flecs::iter& it) {
   if (world_ref.get_stage_id() == 0) stats_.skinned = skinned;
 }
 
+// ---- graph-driven entities (S35 stage 2) --------------------------------------------------------
+
+namespace {
+
+// Per worker: the pose program's evaluator and the batch it is filling. Both grow to the largest
+// batch the worker has seen and never shrink, so a steady tick allocates nothing.
+struct GraphScratch {
+  PoseEvaluator evaluator;
+  Vector<GraphInstance> batch;
+};
+
+GraphScratch& graph_scratch() {
+  thread_local GraphScratch instance;
+  return instance;
+}
+
+}  // namespace
+
+void AnimationSystem::control_graphs(flecs::iter& it) {
+  const flecs::world world_ref = it.world();
+  const u64 tick = world_ref.get<SimTick>().value;
+  const f32 step = it.delta_time();
+  u32 controlled = 0;
+  const CompiledGraph* graph = nullptr;
+  GraphStep steps[k_graph_max_machines];
+
+  while (it.next()) {
+    auto inputs = it.field<AnimationGraphInput>(0);
+    auto states = it.field<AnimationGraphState>(1);
+    auto lods = it.field<const AnimationLod>(2);
+    for (auto row : it) {
+      const AnimationLod& lod = lods[row];
+      if (!updates_now(lod, tick)) continue;
+      AnimationGraphInput& input = inputs[row];
+      // The lookup is a scan of the library by id; a run of one graph's instances does it once.
+      if (graph == nullptr || graph->id != input.graph) graph = graphs_.find(input.graph);
+      if (graph == nullptr) continue;
+      // A divisor of n visits the instance every n ticks, so it owes n ticks of clock, as a
+      // player's playhead does.
+      (void)graph_control(*graph, input, states[row], step * static_cast<f32>(lod.divisor), steps);
+      ++controlled;
+    }
+  }
+  if (world_ref.get_stage_id() == 0) stats_.graph_controlled = controlled;
+}
+
+void AnimationSystem::sample_graphs(flecs::iter& it) {
+  const flecs::world world_ref = it.world();
+  const u64 tick = world_ref.get<SimTick>().value;
+  const f32 step = it.delta_time();
+  const Library& clips = *library_;
+  const u32 batch = static_cast<u32>(graph_batch.get());
+  GraphScratch& scratch = graph_scratch();
+  scratch.batch.clear();
+  const CompiledGraph* graph = nullptr;
+  u32 skeleton_index = Library::k_not_found;
+  u32 sampled = 0;
+  // A batch is one graph's instances of one skeleton; a change of either flushes it. The
+  // component pointers it holds stay valid for the whole run: nothing moves a table mid-system.
+  const auto flush = [&] {
+    if (!scratch.batch.empty() && graph != nullptr) {
+      scratch.evaluator.evaluate(
+          *graph, clips, clips.skeleton_data(skeleton_index),
+          std::span<const GraphInstance>(scratch.batch.data(), scratch.batch.size()), batch);
+    }
+    scratch.batch.clear();
+  };
+
+  while (it.next()) {
+    auto inputs = it.field<const AnimationGraphInput>(0);
+    auto states = it.field<const AnimationGraphState>(1);
+    auto instances = it.field<const SkeletonInstance>(2);
+    auto lods = it.field<const AnimationLod>(3);
+    for (auto row : it) {
+      const SkeletonInstance& instance = instances[row];
+      if (instance.pose_slot == k_no_slot) continue;
+      const AnimationLod& lod = lods[row];
+      if (!updates_now(lod, tick)) continue;
+      const AnimationGraphInput& input = inputs[row];
+      const CompiledGraph* g =
+          graph != nullptr && graph->id == input.graph ? graph : graphs_.find(input.graph);
+      if (g == nullptr || g->program.empty()) continue;
+      if (g != graph || instance.skeleton_index != skeleton_index) {
+        flush();
+        graph = g;
+        skeleton_index = instance.skeleton_index;
+      }
+      GraphInstance& gi = scratch.batch.emplace_back();
+      gi.input = &input;
+      gi.state = &states[row];
+      gi.lead = step * static_cast<f32>(lod.divisor);
+      gi.interpolate = lod.interpolate;
+      gi.out = poses_.pose(instance.pose_slot);
+      if (scratch.batch.size() >= batch) flush();
+      ++sampled;
+    }
+  }
+  flush();
+  if (world_ref.get_stage_id() == 0) stats_.graph_sampled = sampled;
+}
+
 // ---- instances ----------------------------------------------------------------------------------
 
 bool AnimationSystem::attach(flecs::entity entity, const Id128& skeleton, const Id128& clip) {
@@ -504,6 +657,16 @@ void AnimationSystem::apply_tier(flecs::entity entity, u8 tier) {
     instance->pose_slot = k_no_slot;
     ++stats_.demotions;
   } else if (!was_animated && plan.animated) {
+    if (!entity.has<AnimationPlayer>()) {
+      // A graph-driven entity (S35 stage 2): its machines' clocks over the gap, the same way.
+      AnimationGraphInput* input = entity.try_get_mut<AnimationGraphInput>();
+      AnimationGraphState* state = entity.try_get_mut<AnimationGraphState>();
+      const CompiledGraph* graph = input != nullptr ? graphs_.find(input->graph) : nullptr;
+      if (graph != nullptr && state != nullptr) {
+        graph_catch_up(*graph, *input, *state,
+                       static_cast<f32>(GameTime{now.us - lod->frozen_at_us}.seconds()));
+      }
+    }
     if (AnimationPlayer* player = entity.try_get_mut<AnimationPlayer>()) {
       // **Analytically, not by ticking.** A clip's playhead is affine in elapsed time and its wrap
       // is a modulo, so "where would it be after t seconds" is closed form — the same
@@ -656,7 +819,7 @@ u32 AnimationSystem::control_graph(const Id128& entity, std::span<const f32> val
   if (input == nullptr || state == nullptr) return 0;
   const CompiledGraph* graph = graphs_.find(input->graph);
   if (graph == nullptr) return 0;
-  set_graph_inputs(*graph, *input, values, triggers);
+  animation::set_graph_inputs(*graph, *input, values, triggers);
   GraphStep steps[k_graph_max_machines];
   const u32 mask = graph_control(*graph, *input, *state, dt, steps);
   for (u32 m = 0; m < graph->machines.size(); ++m)
@@ -669,6 +832,7 @@ bool AnimationSystem::apply_graph_step(const Id128& entity, const GraphEnter& en
   const flecs::entity found = ecs::entity_for(*world_, entity);
   if (found == 0) return false;
   const StateInfo& to = *enter.state;
+  if (to.blend) return false;  // a Blend1D is the pose program's (stage 2); a player plays one clip
   if (to.clip.empty()) {
     AnimationPlayer* player = found.try_get_mut<AnimationPlayer>();
     if (player == nullptr) return false;
@@ -685,6 +849,66 @@ bool AnimationSystem::apply_graph_step(const Id128& entity, const GraphEnter& en
   if (!to.synced) {
     if (AnimationPlayer* player = found.try_get_mut<AnimationPlayer>()) player->speed = to.rate;
   }
+  return true;
+}
+
+bool AnimationSystem::attach_graph(const Id128& entity, const Id128& graph, const Id128& skeleton) {
+  if (world_ == nullptr) return false;
+  const CompiledGraph* compiled = graphs_.find(graph);
+  if (compiled == nullptr || compiled->program.empty()) return false;
+  const flecs::entity found = ecs::entity_for(*world_, entity);
+  if (found == 0 || found.has<AnimationPlayer>()) return false;
+  const u32 skeleton_index = library_->skeleton_index(skeleton);
+  if (skeleton_index == Library::k_not_found) return false;
+  const anim::Skeleton& data = library_->skeleton_data(skeleton_index);
+
+  // The instance and its tier as `attach` gives a player's, with no clip: the program samples.
+  SkeletonInstance instance;
+  instance.skeleton = skeleton;
+  instance.skeleton_index = skeleton_index;
+  instance.joints = data.joint_count();
+  instance.pose_slot = poses_.acquire(skeleton_index, instance.joints);
+  instance.clip_index = Library::k_not_found;
+  instance.fade_index = Library::k_not_found;
+  if (instance.pose_slot != k_no_slot) {
+    anim::rest_pose(data, poses_.pose(instance.pose_slot));
+    ++stats_.promotions;
+  }
+  AnimationLod lod;
+  const LodPlan plan = lod_plan(0);
+  lod.divisor = plan.divisor;
+  lod.interpolate = plan.interpolate;
+  lod.skin = plan.skin;
+  AnimationGraphInput input;
+  AnimationGraphState state;
+  init_graph_instance(*compiled, input, state);
+  found.set<SkeletonInstance>(instance);
+  found.set<AnimationLod>(lod);
+  found.set<AnimationGraphInput>(input);
+  found.set<AnimationGraphState>(state);
+  return true;
+}
+
+bool AnimationSystem::set_graph_inputs(const Id128& entity, std::span<const f32> values,
+                                       u32 triggers) {
+  if (world_ == nullptr) return false;
+  const flecs::entity found = ecs::entity_for(*world_, entity);
+  if (found == 0) return false;
+  AnimationGraphInput* input = found.try_get_mut<AnimationGraphInput>();
+  if (input == nullptr) return false;
+  const CompiledGraph* graph = graphs_.find(input->graph);
+  if (graph == nullptr) return false;
+  animation::set_graph_inputs(*graph, *input, values, triggers);
+  return true;
+}
+
+bool AnimationSystem::graph_state(const Id128& entity, AnimationGraphState& out) const {
+  if (world_ == nullptr) return false;
+  const flecs::entity found = ecs::entity_for(*world_, entity);
+  if (found == 0) return false;
+  const AnimationGraphState* state = found.try_get<AnimationGraphState>();
+  if (state == nullptr) return false;
+  out = *state;
   return true;
 }
 

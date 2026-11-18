@@ -5,10 +5,12 @@
 // change feed names the part that moved. None of the record types has a `materialize` declaration:
 // a graph is an asset entities refer to, like a clip, never an entity of its own.
 //
-// Stage 1 (this file's version 1) compiles machines whose states are single `Clip` nodes into a
-// control table (systems/animation/graph.h); the other node kinds, a transition's `exit_phase`, the
-// `Inertialize` blend and the `KeepPhase`/`MatchPhase` offsets are declared here so a document can
-// name them, and are refused by the compiler, by name, until the stage that builds them.
+// Stage 1 compiles machines whose states are single `Clip` nodes into a control table, and stage 2
+// a state's pose as a `Clip` or a `Blend1D` of clips into a pose program (systems/animation/graph.h;
+// the records did not change, so this file's version stays 1). `Override`, `Additive` (stage 3),
+// `Machine`, a transition's `exit_phase`, the `Inertialize` blend (stage 4) and the
+// `KeepPhase`/`MatchPhase` offsets are declared here so a document can name them, and are refused
+// by the compiler, by name, with the stage that builds them or "no stage of the design yet".
 //
 // The two components are the persisted half of a graph-driven entity: the inputs gameplay writes
 // and the machines' state a save needs to put the same pose back. They are fixed-width because they
@@ -32,7 +34,7 @@ enum GraphParamKind : u8 {
 enum GraphNodeKind : u8 {
   /// One clip sampled at the state's clock (or at its sync group's phase).
   Clip = 0
-  /// Stage 2: several clips by one parameter over thresholds.
+  /// Several clips (its child Clip nodes) by one parameter over thresholds (stage 2).
   Blend1D = 1
   /// Stage 3: a layer over a base, through a mask.
   Override = 2
@@ -46,7 +48,8 @@ enum GraphNodeKind : u8 {
 enum GraphBlend : u8 {
   /// At once.
   Cut = 0
-  /// Both states evaluated for the duration, faded linearly (today's `AnimationPlayer` fade).
+  /// Both states evaluated for the duration, faded linearly: by a player's slerp for a host that
+  /// plays steps (stage 1), by the normalized weighted sum in the pose program (stage 2).
   CrossFade = 1
   /// Stage 4: cut, and decay the difference with a quintic (Bollo 2017).
   Inertialize = 2
@@ -56,9 +59,10 @@ enum GraphBlend : u8 {
 enum GraphOffset : u8 {
   /// At zero.
   Zero = 0
-  /// Stage 2: at the source's normalized phase.
+  /// At the source's normalized phase. In no stage of the design yet (a phase-locked state already
+  /// keeps its group's phase).
   KeepPhase = 1
-  /// Stage 2: at the phase that matches the source's foot contacts.
+  /// At the phase that matches the source's foot contacts. Waits for clips that carry them.
   MatchPhase = 2
 }
 
@@ -108,7 +112,8 @@ struct GraphNode @version(1) @kind(record) {
   rate: f32 = 1.0
   looping: bool = true
   /// 0: the state keeps its own clock. 1 or 2: the state is phase-locked to its machine's sync
-  /// group, whose phase is the machine's `phase_param` (the gait's distance drive).
+  /// group, whose phase is the machine's `phase_param` (the gait's distance drive) or, without one,
+  /// led by the group's clip of highest weight (stage 2). On a Blend1D it locks all its inputs.
   sync_group: u8 = 0
   /// A `Blend1D`'s thresholds, one per input.
   thresholds: f32[]
@@ -120,7 +125,8 @@ struct GraphMachine @version(1) @kind(record) {
   name: string
   /// The state the machine starts in (a `GraphState` child of this machine).
   entry: id128
-  /// The parameter whose value is this machine's sync-group phase, in [0, 1); empty: none.
+  /// The parameter whose value is this machine's sync-group phase, in [0, 1); empty: the group's
+  /// phase is led by its clip of highest weight.
   phase_param: string
 }
 
@@ -145,7 +151,7 @@ struct GraphTransition @version(1) @kind(record) {
   from: id128
   to: id128
   conditions: GraphCondition[]
-  /// Stage 2: the source's normalized phase after which it may fire.
+  /// The source's normalized phase after which it may fire. In no stage of the design yet.
   exit_phase: f32?
   duration_s: f32 = 0.0 @unit(s)
   blend: GraphBlend = CrossFade

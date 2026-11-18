@@ -1,7 +1,8 @@
 #pragma once
 
-// Animation graphs as data, stage 1: roadmap S35, the design
-// (docs/experiments/animation-graphs.md, "Stage 1") and what is built (animation.md, "Graphs").
+// Animation graphs as data, stages 1 and 2: roadmap S35, the design
+// (docs/experiments/animation-graphs.md, "Stages, in build order") and what is built (animation.md,
+// "Graphs").
 //
 // A graph is document records (systems/animation/schemas/animation_graph.schema): a `Graph`, its
 // `GraphParam`s, its `GraphMachine`s, each machine's `GraphState`s and `GraphTransition`s, and each
@@ -11,11 +12,12 @@
 //      from a document (`read_graph`) or built in code (`locomotion_graph`, the walker's).
 //   2. **The compile** (`compile_graph`): a control table per machine — the states, each with a
 //      contiguous run of its outgoing transitions sorted by (priority, id), `any` transitions in a
-//      run of their own evaluated first, every condition a `ControlCondition` — and per state what a
-//      host needs to play it (the clip by name and by library index, its rate, whether it is
+//      run of their own evaluated first, every condition a `ControlCondition` — and per state what
+//      a host needs to play it (the clip by name and by library index, its rate, whether it is
 //      phase-locked). A state's index is its position in its machine's states sorted by `Id128`, so
 //      one graph gives the same indices on every machine and in every process.
-//   3. **The control pass** (`graph_control`): per instance, the transitions that hold from the state
+//   3. **The control pass** (`graph_control`): per instance, the transitions that hold from the
+//   state
 //      the machine is in (or heading to), the clocks, the sync groups' phases — written into the
 //      instance's `AnimationGraphState` — and, for every machine whose state was entered this tick,
 //      a `GraphStep` saying which state and with what fade. A host plays the step into the entity's
@@ -23,21 +25,45 @@
 //      `play()` is), or through its own actors as engine-view's walker does, so `sample_poses` runs
 //      unchanged and every pose hash of a stage-1 graph is the pose its calls would have given.
 //
-// What stage 1 does not compile, and refuses by name rather than ignores: node kinds other than
-// `Clip`, a state with more than one pose node, `exit_phase`, the `Inertialize` blend, the
-// `KeepPhase`/`MatchPhase` offsets, `skeleton_roles` and `root_motion` (stages 2 to 4).
+// Stage 2 (animation.md, "Graphs: the pose program") adds the fourth:
+//
+//   4. **The pose program** (`GraphOp`, `PoseEvaluator`): a state's pose is a `Clip` or a `Blend1D`
+//      of clips by one parameter over thresholds, its clips phase-locked to a sync group (the
+//      machine's `phase_param`, or the leader's phase — the input of highest weight sets the
+//      cycle, Unreal's rule) or on the state's own clock; a cross-fade is the two states' poses
+//      summed by weight. Every blend is the **normalized weighted sum** (ozz-animation's blending
+//      job): quaternions aligned to the running sum by a sign and added with their weights,
+//      translations and scales added with theirs, the sum normalized once — never a slerp chain.
+//      The program is compiled once per graph, ops in a fixed order, and evaluated op-major over a
+//      batch of instances, each op's kernel over the compacted list of the instances it applies to.
+//      `AnimationSystem` runs it as the scheduled `animation.graph_sample` for graph-driven
+//      entities that carry no `AnimationPlayer`, after the scheduled `animation.graph_control`.
+//
+// What the compile refuses by name rather than ignores, with the stage that takes it: the
+// `Override` and `Additive` kinds and a node outside a state's pose or a `Blend1D`'s inputs (stage
+// 3's layers), a weight other than 1 on a node (stage 3), the `Inertialize` blend (stage 4), the
+// `Machine` kind, `exit_phase`, the `KeepPhase`/`MatchPhase` offsets, `skeleton_roles` and
+// `root_motion` (no stage of the design builds them yet). A graph of two machines compiles its
+// control tables but no pose program: composing two machines' poses is a layer (stage 3), so it
+// cannot be attached for sampling (`CompiledGraph::program_why` says so).
 //
 // **Stated limits** (ADR-0017): 8 parameters, 2 machines, 2 sync groups (the components' widths),
-// 65,534 states a machine and 65,535 transitions and conditions a graph (the tables' u16 indices).
-// A graph past any of them is refused at compile with the count.
+// 16 inputs a `Blend1D`, 65,534 states a machine and 65,535 transitions, conditions and pose ops a
+// graph (the tables' u16 indices). A graph past any of them is refused at compile with the count.
 //
 // **Determinism**: `hashed`, as the capability is. The control pass is per-instance arithmetic over
-// the instance's own two components — compares, adds of `dt`, a floor for the phase — with no shared
-// accumulator, so the batch form at any split and the single form give the same bytes.
+// the instance's own two components — compares, adds of `dt`, a floor for the phase — with no
+// shared accumulator, so the batch form at any split and the single form give the same bytes. The
+// pose program is per-instance arithmetic too, in the compiled op order: `+ - * / sqrt` and the
+// sign of a dot product, no C library call (the clip sampler's `slerp` inside a key interval is
+// `anim`'s), so it does not depend on the batch, the worker count or the order instances are
+// visited in.
 
 #include <core/base/types.h>
 #include <core/containers/vector.h>
 #include <core/ids/id128.h>
+#include <core/math/math.h>
+#include <domain/anim/skeleton.h>
 
 #include <memory>
 #include <schemas/animation_graph.h>
@@ -56,8 +82,9 @@ class Library;
 inline constexpr u32 k_graph_max_params = 8;
 inline constexpr u32 k_graph_max_machines = 2;
 inline constexpr u32 k_graph_max_sync_groups = 2;
-inline constexpr u32 k_graph_max_states = 0xFFFEu;      // a machine's; `state` is an index plus one
-inline constexpr u32 k_graph_max_records = 0xFFFFu;     // transitions, conditions: u16 indices
+inline constexpr u32 k_graph_max_states = 0xFFFEu;   // a machine's; `state` is an index plus one
+inline constexpr u32 k_graph_max_records = 0xFFFFu;  // transitions, conditions: u16 indices
+inline constexpr u32 k_graph_max_blend_inputs = 16;  // a Blend1D's clips
 inline constexpr u16 k_graph_no_param = 0xFFFFu;
 
 // ---- the compile's input -----------------------------------------------------------------------
@@ -85,7 +112,8 @@ struct GraphDesc {
 // transitions and nodes, by the `$type` each record carries. False, with `why` naming the record,
 // when the root is not a live `engine.animation.Graph` or a record's properties do not read as its
 // type. Records of other types under the graph are skipped (a comment, an editor's annotation).
-bool read_graph(const doc::Document& document, const Id128& graph, GraphDesc& out, std::string& why);
+bool read_graph(const doc::Document& document, const Id128& graph, GraphDesc& out,
+                std::string& why);
 
 // The walker's graph (engine-view's `PlayerBody`, apps.md "The procedural gait"): parameters
 // `moving` (bool), `fast` (bool) and `phase` (float, [0, 1)); one machine, `gait`, entered at
@@ -121,11 +149,11 @@ struct ControlTransition {
   u16 to = 0;               // the destination, as its index in the machine
   u16 first_condition = 0;  // into `CompiledGraph::conditions`
   u8 condition_count = 0;
-  u8 blend = 0;             // GraphBlend
-  u8 any = 0;               // 1: from any state (never into the one the machine is in or heading to)
+  u8 blend = 0;  // GraphBlend
+  u8 any = 0;    // 1: from any state (never into the one the machine is in or heading to)
   u8 _pad = 0;
   f32 duration_s = 0.0f;
-  u32 clears = 0;           // the trigger bits its conditions read, cleared when it fires
+  u32 clears = 0;  // the trigger bits its conditions read, cleared when it fires
 };
 
 // One state of a machine's table: its run of outgoing transitions. 4 bytes.
@@ -138,8 +166,8 @@ struct ControlState {
 struct ControlMachine {
   u32 first_state = 0;  // into `CompiledGraph::states` and `state_info`
   u16 state_count = 0;
-  u16 entry = 0;        // a state index in this machine
-  u16 any_first = 0;    // the `any` run, into `transitions`
+  u16 entry = 0;      // a state index in this machine
+  u16 any_first = 0;  // the `any` run, into `transitions`
   u16 any_count = 0;
   u16 phase_param = k_graph_no_param;  // the parameter that is the sync group's phase
   u8 sync_group = 0xFFu;               // the group it drives, 0 or 1; 0xFF: none
@@ -160,12 +188,60 @@ struct ParamInfo {
 struct StateInfo {
   Id128 id;
   std::string name;
-  std::string clip;  // as the library names it; empty: the rest pose
-  Id128 clip_id;     // `Library::clip_id(clip)`; null when `clip` is empty
+  std::string clip;               // as the library names it; empty: the rest pose
+  Id128 clip_id;                  // `Library::clip_id(clip)`; null when `clip` is empty
   u32 clip_index = 0xFFFF'FFFFu;  // in the library the graph was compiled against, if one was given
   f32 rate = 1.0f;
   bool looping = true;
   bool synced = false;  // phase-locked: its time is the sync group's phase, its rate 0
+  bool blend = false;   // a Blend1D (stage 2): only the pose program plays it, never a player
+};
+
+// ---- the pose program (stage 2) --------------------------------------------------------------
+
+// A state's pose, as the control pass's sync groups and the pose program read it. 8 bytes.
+inline constexpr u8 k_pose_state_blend = 1u;    // a Blend1D of `clip_count` clips by `param`
+inline constexpr u8 k_pose_state_synced = 2u;   // its clips are phase-locked to the machine's group
+inline constexpr u8 k_pose_state_looping = 4u;  // its clips loop
+struct PoseState {
+  u16 first_clip = 0;            // into `CompiledGraph::pose_clips`
+  u8 clip_count = 0;             // 1 for a Clip state
+  u8 flags = 0;                  // k_pose_state_*
+  u16 param = k_graph_no_param;  // a Blend1D's parameter
+  u16 first_op = 0;              // its first op in `CompiledGraph::program` (machine 0's states)
+};
+
+// One clip a state's pose samples. 16 bytes.
+struct PoseClip {
+  u32 clip_index = 0xFFFF'FFFFu;  // in the library the graph was compiled against; unset: rest pose
+  f32 rate = 1.0f;                // its own clock's rate, or the cycle's rate when it leads a group
+  f32 duration = 0.0f;            // the clip's, read from the library at compile; 0 without one
+  f32 threshold = 0.0f;           // a Blend1D input's
+};
+
+// What an op computes; the kernel table is indexed by it (plan 11 §11.4: one dispatch an op a
+// batch, never a call a node an instance).
+enum class PoseOpKind : u8 {
+  Sample = 0,      // the rest pose, then the clip at the instance's time, into `dst`
+  Accumulate = 1,  // `dst = w * a` for the first contributor, `dst += sign * w * a` after it
+  Normalize = 2,   // `dst`'s translation and scale over the weights' sum, its rotations to unit
+};
+inline constexpr u32 k_pose_op_kinds = 3;
+
+// One op of a graph's pose program. 16 bytes. Registers: 0 is the instance's own pool slot (the
+// program's output), 1 a clip's sample, 2 a Blend1D's sum.
+inline constexpr u8 k_pose_op_synced = 1u;   // Sample: its time is the group's phase × `k`
+inline constexpr u8 k_pose_op_looping = 2u;  // Sample: the clip loops
+inline constexpr u8 k_pose_op_state = 4u;    // Accumulate into register 0: weighted by its state
+struct GraphOp {
+  u8 kind = 0;    // PoseOpKind
+  u8 dst = 0;     // the register written
+  u8 a = 0;       // Accumulate: the register read
+  u8 b = 0;       // k_pose_op_* flags
+  u16 node = 0;   // the state (its index in machine 0) the op is part of; 0xFFFF: the output's
+  u16 param = 0;  // Sample and a Blend1D's Accumulate: the clip, as an index into its state's run
+  u32 data = 0;   // Sample: the clip's index in the library (0xFFFFFFFF: the rest pose)
+  f32 k = 0.0f;   // Sample: the rate on the state's clock, or the clip's duration when phase-locked
 };
 
 class CompiledGraph {
@@ -174,10 +250,18 @@ class CompiledGraph {
   std::string name;
   Vector<ParamInfo> params;
   Vector<ControlMachine> machines;
-  Vector<ControlState> states;           // every machine's, machine by machine
-  Vector<StateInfo> state_info;          // parallel to `states`
+  Vector<ControlState> states;   // every machine's, machine by machine
+  Vector<StateInfo> state_info;  // parallel to `states`
   Vector<ControlTransition> transitions;
   Vector<ControlCondition> conditions;
+  // Stage 2: every state's pose (parallel to `states`), the clips they sample, and the program for
+  // machine 0's pose. `program` is empty, and `program_why` says why, for a graph whose pose the
+  // program cannot compute yet (two machines: stage 3's layers compose them).
+  Vector<PoseState> pose_states;
+  Vector<PoseClip> pose_clips;
+  Vector<GraphOp> program;
+  u32 registers = 0;  // what the program writes: 0..registers-1
+  std::string program_why;
 
   u32 param_index(std::string_view param_name) const noexcept;  // 0xFFFFFFFF when absent
   // A state of machine `machine` by name, as its index in the machine; 0xFFFFFFFF when absent.
@@ -191,7 +275,9 @@ class CompiledGraph {
 
 // Compiles `desc`. With `library`, every clip a state names must be in it (refused by the graph's,
 // the state's and the clip's names otherwise); without one, the names are taken as given and
-// `StateInfo::clip_index` stays unset. False, with `why`, for everything stage 1 refuses (above).
+// `StateInfo::clip_index` stays unset (the program then samples the rest pose, and a led group,
+// knowing no duration, does not advance). False, with `why`, for everything refused (above). The
+// pose program is compiled with the control tables when the graph has one machine.
 bool compile_graph(const GraphDesc& desc, const Library* library, CompiledGraph& out,
                    std::string& why);
 
@@ -199,10 +285,10 @@ bool compile_graph(const GraphDesc& desc, const Library* library, CompiledGraph&
 
 // What a machine did this tick, when it entered a state. 12 bytes.
 struct GraphStep {
-  u16 entered = 0;   // the state entered, as its index in the machine plus one; 0: nothing entered
-  u8 blend = 0;      // GraphBlend: Cut on the first tick and for a zero duration
-  u8 first = 0;      // 1: the machine's first tick (it entered with a cut)
-  f32 fade_s = 0.0f; // 0 for a cut
+  u16 entered = 0;    // the state entered, as its index in the machine plus one; 0: nothing entered
+  u8 blend = 0;       // GraphBlend: Cut on the first tick and for a zero duration
+  u8 first = 0;       // 1: the machine's first tick (it entered with a cut)
+  f32 fade_s = 0.0f;  // 0 for a cut
   u32 _pad = 0;
 };
 
@@ -215,7 +301,8 @@ struct GraphEnter {
   u8 blend = 0;
   bool first = false;
 };
-inline GraphEnter graph_enter(const CompiledGraph& graph, u32 machine, const GraphStep& step) noexcept {
+inline GraphEnter graph_enter(const CompiledGraph& graph, u32 machine,
+                              const GraphStep& step) noexcept {
   GraphEnter out;
   if (step.entered == 0) return out;
   out.state = &graph.state(machine, step.entered - 1u);
@@ -238,18 +325,73 @@ void init_graph_instance(const CompiledGraph& graph, AnimationGraphInput& input,
 // One instance's control tick of `dt` seconds. `steps` holds one step a machine
 // (`graph.machines.size()` of them); returns a bit a machine that entered a state this tick. A
 // state whose `graph` is another graph's (a reload, a swap) starts again at the entries.
-u32 graph_control(const CompiledGraph& graph, AnimationGraphInput& input, AnimationGraphState& state,
-                  f32 dt, GraphStep* steps) noexcept;
+u32 graph_control(const CompiledGraph& graph, AnimationGraphInput& input,
+                  AnimationGraphState& state, f32 dt, GraphStep* steps) noexcept;
 
 // The same over `inputs.size()` instances of one graph, in order: `steps` is instance-major,
 // `graph.machines.size()` a instance. Returns how many instances entered a state on any machine.
 u32 graph_control(const CompiledGraph& graph, std::span<AnimationGraphInput> inputs,
-                  std::span<AnimationGraphState> states, f32 dt, std::span<GraphStep> steps) noexcept;
+                  std::span<AnimationGraphState> states, f32 dt,
+                  std::span<GraphStep> steps) noexcept;
+
+// A machine's sync group with no `phase_param` is led (stage 2): each control tick its phase
+// advances by `dt * rate / duration` of the clip of highest weight among the group's clips in the
+// state the machine is in and the one it is heading to (Unreal's sync groups: the leader sets the
+// cycle; a tie goes to the first in the program's order). A group none of whose clips plays this
+// tick keeps its phase.
+//
+// An instance promoted out of LOD3 (no control pass ran for `gap` seconds): the clocks, a
+// transition in flight (finished if its duration passed) and a led group's phase advanced over the
+// gap in closed form, as `apply_tier` advances a player; no transition is evaluated (the next
+// control tick does that on the inputs then). The design's full LOD3 rule is stage 5's.
+void graph_catch_up(const CompiledGraph& graph, const AnimationGraphInput& input,
+                    AnimationGraphState& state, f32 gap) noexcept;
+
+// ---- the pose program's evaluation (stage 2)
+// -----------------------------------------------------
+
+// One instance as the pose program reads it: its inputs and state after this tick's control pass,
+// the tick's step (`lead`: the control pass's clocks are the tick's start, the pose shows its end,
+// as a player advanced before it is sampled does), whether a cross-fade is interpolated (LOD0) or
+// cut at its midpoint (LOD1 and LOD2, as `LodPlan::interpolate` says), and where its pose goes.
+struct GraphInstance {
+  const AnimationGraphInput* input = nullptr;
+  const AnimationGraphState* state = nullptr;
+  f32 lead = 0.0f;
+  bool interpolate = true;
+  anim::PoseView out;
+};
+
+// The batched, op-major evaluator. One per thread (it holds the batch's registers and lists, grown
+// to the largest batch × registers × joints it has seen and never shrunk, so a steady tick
+// allocates nothing). `evaluate` runs `graph`'s program over `instances`, all of `skeleton`,
+// `batch` instances at a time: per batch, each instance's op weights and times from its state (no
+// per-op state is kept between ticks), then op by op the compacted list of the instances it applies
+// to and the op's kernel over that list. An instance's pose depends on its own input and state
+// alone.
+class PoseEvaluator {
+ public:
+  void evaluate(const CompiledGraph& graph, const Library& library, const anim::Skeleton& skeleton,
+                std::span<const GraphInstance> instances, u32 batch);
+  // The scratch it holds, in bytes.
+  usize bytes() const noexcept;
+
+ private:
+  void run_batch(const CompiledGraph& graph, const Library& library, const anim::Skeleton& skeleton,
+                 std::span<const GraphInstance> instances);
+
+  Vector<Vec3> translation_;  // registers 1.. of the batch, register-major, joint-minor
+  Vector<Quat> rotation_;
+  Vector<Vec3> scale_;
+  Vector<u8> code_;    // per op per instance: 0 skip, 1 set or apply, 2 add
+  Vector<f32> value_;  // per op per instance: the weight (the sum, for a normalize) or the time
+  Vector<u16> list_;   // the compacted list of one op
+};
 
 // ---- the library of compiled graphs ------------------------------------------------------------
 
-// The compiled graphs a world plays, by the `Graph` record's id. Empty — no heap, nothing resident —
-// for a world with no graph.
+// The compiled graphs a world plays, by the `Graph` record's id. Empty — no heap, nothing resident
+// — for a world with no graph.
 class GraphLibrary {
  public:
   // Adds `graph`, replacing one with the same id in place (its index, and every pointer

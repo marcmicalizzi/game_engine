@@ -46,3 +46,17 @@ ENGINE_EXPECT_SIZE(4, 2, animation::ControlState);
 ENGINE_EXPECT_SIZE(16, 4, animation::ControlMachine);
 // A machine's step, written per instance per machine per tick by the batch control pass.
 ENGINE_EXPECT_SIZE(12, 4, animation::GraphStep);
+
+// ---- the pose program (S35 stage 2; animation.md, "Graphs: the pose program") ------------------
+
+// One op, read per op per batch: kind, three registers and flags, the state and the clip within
+// it, the library clip index and a rate or a duration (the design's `GraphOp`, 16/4).
+ENGINE_EXPECT_SIZE(16, 4, animation::GraphOp);
+// A state's pose, read per instance per tick by the control pass's leader rule and the program's
+// weights: the first clip, the count and flags, the Blend1D's parameter, the first op.
+ENGINE_EXPECT_SIZE(8, 2, animation::PoseState);
+// A clip a state samples: the library index, the rate, the duration, the threshold.
+ENGINE_EXPECT_SIZE(16, 4, animation::PoseClip);
+// One instance of a batch the program runs over: its input and state, the tick's lead, the LOD
+// flag, and its output pose as three spans (48).
+ENGINE_EXPECT_SIZE(72, 8, animation::GraphInstance);

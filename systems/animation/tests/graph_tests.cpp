@@ -35,9 +35,9 @@ namespace {
 
 template <class T>
 void create(doc::Document& d, const Id128& id, const Id128& parent, const T& record) {
-  REQUIRE(d.apply(doc::cmd_create(id, schema::type_of<T>().qualified_name, parent,
-                                  schema::to_json(record)),
-                  nullptr, nullptr));
+  REQUIRE(d.apply(
+      doc::cmd_create(id, schema::type_of<T>().qualified_name, parent, schema::to_json(record)),
+      nullptr, nullptr));
 }
 
 void write_records(doc::Document& d, const GraphDesc& g) {
@@ -56,7 +56,8 @@ void write_records(doc::Document& d, const GraphDesc& g) {
 
 template <class T>
 bool same_bytes(const Vector<T>& a, const Vector<T>& b) {
-  return a.size() == b.size() && (a.empty() || std::memcmp(a.data(), b.data(), a.size() * sizeof(T)) == 0);
+  return a.size() == b.size() &&
+         (a.empty() || std::memcmp(a.data(), b.data(), a.size() * sizeof(T)) == 0);
 }
 
 bool same_tables(const CompiledGraph& a, const CompiledGraph& b) {
@@ -78,7 +79,8 @@ bool same_tables(const CompiledGraph& a, const CompiledGraph& b) {
          same_bytes(a.transitions, b.transitions) && same_bytes(a.conditions, b.conditions);
 }
 
-// ---- the machine engine-view's PlayerBody::tick_gait had before stage 1 --------------------------
+// ---- the machine engine-view's PlayerBody::tick_gait had before stage 1
+// --------------------------
 //
 // Copied from apps/engine_view/player.cpp at 5d0634bb (the block between `const u8 gait` and the
 // `if (!moving) return;` that follows it), with the actors' calls recorded instead of made.
@@ -170,8 +172,8 @@ GraphDesc two_state_graph() {
   return d;
 }
 
-GraphItem<GraphTransition>& add_transition(GraphDesc& d, u64 low, const Id128& from, const Id128& to,
-                                           i32 priority) {
+GraphItem<GraphTransition>& add_transition(GraphDesc& d, u64 low, const Id128& from,
+                                           const Id128& to, i32 priority) {
   auto& t = d.transitions.emplace_back();
   t.id = Id128::from_parts(0x9a, low);
   t.parent = d.machines[0].id;
@@ -185,7 +187,9 @@ GraphItem<GraphTransition>& add_transition(GraphDesc& d, u64 low, const Id128& f
 
 }  // namespace
 
-TEST_CASE("animation graph: the walker's graph as records in a document compiles as the one built in code") {
+TEST_CASE(
+    "animation graph: the walker's graph as records in a document compiles as the one built in "
+    "code") {
   const LocomotionClips clips{"rig/idle", "rig/walk", "rig/run", 0.2f};
   const GraphDesc built = locomotion_graph(clips);
   doc::Document d;
@@ -325,7 +329,8 @@ TEST_CASE("animation graph: transitions are taken by priority, then declaration 
   CHECK(graph_control(g, in, st, 0.01f, step) == 0u);
 }
 
-TEST_CASE("animation graph: a transition in flight finishes into its state; a trigger is taken once") {
+TEST_CASE(
+    "animation graph: a transition in flight finishes into its state; a trigger is taken once") {
   GraphDesc d = two_state_graph();
   auto& tp = d.params.emplace_back();
   tp.id = Id128::from_parts(0x9a, 5);
@@ -410,16 +415,29 @@ TEST_CASE("animation graph: the compile refuses what stage 1 does not build, by 
     add_transition(d, 99, d.states[0].id, s.id, 0);
     refused(d, "goes to a state not of this machine");
   }
-  {  // stage 2's and 4's
+  {  // later stages' (stage 2 accepts the Blend1D: its own cases are below)
     GraphDesc d = two_state_graph();
     add_transition(d, 99, d.states[0].id, d.states[1].id, 0).record.blend = GraphBlend::Inertialize;
     refused(d, "Inertialize is stage 4's");
     d.transitions[0].record.blend = GraphBlend::CrossFade;
     d.transitions[0].record.exit_phase = 0.5f;
-    refused(d, "exit_phase is stage 2's");
+    refused(d, "exit_phase is in no stage of the design yet");
     d.transitions[0].record.exit_phase.reset();
+    d.transitions[0].record.offset = GraphOffset::KeepPhase;
+    refused(d, "an offset other than Zero is in no stage of the design yet");
+    d.transitions[0].record.offset = GraphOffset::Zero;
+    d.nodes[0].record.kind = GraphNodeKind::Override;
+    refused(d, "an Override or Additive node is stage 3's");
+    d.nodes[0].record.kind = GraphNodeKind::Machine;
+    refused(d, "a Machine node");
     d.nodes[0].record.kind = GraphNodeKind::Blend1D;
-    refused(d, "a node other than a Clip");
+    refused(d, "a Blend1D of 0 inputs");
+    d.nodes[0].record.kind = GraphNodeKind::Clip;
+    d.nodes[0].record.weight = 0.5f;
+    refused(d, "a weight other than 1 is a layer's (stage 3)");
+    d.nodes[0].record.weight = 1.0f;
+    d.graph.skeleton_roles = true;
+    refused(d, "skeleton_roles is in no stage of the design yet");
   }
   {  // a condition on a parameter that is not declared
     GraphDesc d = two_state_graph();
@@ -436,12 +454,12 @@ TEST_CASE("animation graph: an unknown clip is refused at compile against the li
   std::string why;
   REQUIRE_MESSAGE(library.load_gltf(path, "rig", nullptr, &why), why);
   CompiledGraph g;
-  REQUIRE_MESSAGE(compile_graph(locomotion_graph({"rig/idle", "rig/walk", "rig/walk", 0.2f}),
-                                &library, g, why),
-                  why);
+  REQUIRE_MESSAGE(
+      compile_graph(locomotion_graph({"rig/idle", "rig/walk", "rig/walk", 0.2f}), &library, g, why),
+      why);
   CHECK(g.state(0, 1).clip_index != Library::k_not_found);
-  CHECK_FALSE(compile_graph(locomotion_graph({"rig/idle", "rig/walk", "rig/sprint", 0.2f}), &library,
-                            g, why));
+  CHECK_FALSE(compile_graph(locomotion_graph({"rig/idle", "rig/walk", "rig/sprint", 0.2f}),
+                            &library, g, why));
   CHECK(why.find("plays clip 'rig/sprint', not in the library") != std::string::npos);
 }
 
@@ -548,8 +566,8 @@ TEST_CASE("animation graph: a graph-driven entity's player and pose are what pla
     REQUIRE(animation.joint_run(driven, fa, ca));
     REQUIRE(animation.joint_run(played, fb, cb));
     REQUIRE(ca == cb);
-    CHECK(std::memcmp(animation.joint_matrices().data() + fa, animation.joint_matrices().data() + fb,
-                      ca * sizeof(anim::JointMatrix)) == 0);
+    CHECK(std::memcmp(animation.joint_matrices().data() + fa,
+                      animation.joint_matrices().data() + fb, ca * sizeof(anim::JointMatrix)) == 0);
   }
   MESSAGE("graph library bytes with the walker's graph: " << animation.graphs().bytes());
 }
