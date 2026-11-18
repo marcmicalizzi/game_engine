@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "R174",
+  "reason": "R174 design: renderer.md gains 'Past the capacity, by size on screen' (where the layout's order enters the chain's drop, the keep key and the prefix cut, the passes, bytes and waste in numbers, what was considered and not chosen, the CPU mirror and the tests the build names) and a pointer from the chain's memory",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/renderer.md": 13739
+  }
+}
