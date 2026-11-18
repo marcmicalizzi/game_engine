@@ -133,6 +133,18 @@ struct FieldInfo {
   const char* doc;
 };
 
+// A field's former name, from `@alias("old")` on the field (plan 03 §3.8: "rename is an alias,
+// never delete-and-add"; schemas/README.md, "Renaming a field or a type"). A reader takes a member
+// under it as the field and a writer writes the field's own name, so a file written before the
+// rename reads, and the next write is in the new name. Kept on the type rather than on `FieldInfo`
+// because a field's descriptor is an element of an array a hot-reloaded module hands the host,
+// whose stride must not change; the type's descriptor is checked by size and refused when it
+// differs.
+struct FieldAlias {
+  const char* former_name;
+  u32 field;  // index into TypeInfo::fields
+};
+
 struct EnumValueInfo {
   const char* name;
   i64 value;
@@ -165,8 +177,16 @@ struct TypeInfo {
   // Bit v set: the schema declares the step to version v additive (`@additive(v, ...)`), so
   // `additive_step` may derive it (schemas/README.md, "Evolution rules"). 0 for every other type.
   u64 additive_versions = 0;
+  // `@alias` on the struct: the qualified names the type had before it was renamed. A reader that
+  // meets one (a document record's `type`, a layer file's type table) takes it as this type
+  // (`Registry::resolve`); everything written names `qualified_name`.
+  std::span<const char* const> aliases;
+  // `@alias` on its fields, in declaration order.
+  std::span<const FieldAlias> field_aliases;
 
   const FieldInfo* find_field(std::string_view field_name) const noexcept;
+  // The field `former_name` was a name of, or nullptr.
+  const FieldInfo* find_field_alias(std::string_view former_name) const noexcept;
   const EnumValueInfo* find_value(std::string_view value_name) const noexcept;
   const EnumValueInfo* find_value(i64 value) const noexcept;
 };
@@ -182,12 +202,34 @@ class Registry {
   static Registry& global();
 
   void add(const TypeInfo& info);
+  // By the type's current name only: what a writer names, and what a check that a name is a
+  // registered one asks.
   const TypeInfo* find(std::string_view qualified_name) const noexcept;
+  // By a name the type had before a rename (`TypeInfo::aliases`), or nullptr.
+  const TypeInfo* find_former(std::string_view former_name) const noexcept;
+  // By either: what a reader of a stored name asks, so a file written before a rename reads.
+  const TypeInfo* resolve(std::string_view name) const noexcept {
+    const TypeInfo* info = find(name);
+    return info != nullptr ? info : find_former(name);
+  }
+  // Whether any registered type has a field with a former name, and whether `name` is one: a reader
+  // with nothing to rename skips the walk, and one that cannot tell a record's type can still say
+  // which of its properties might have been renamed.
+  bool has_field_aliases() const noexcept { return !former_field_names_.empty(); }
+  bool has_former_names() const noexcept {
+    return !by_former_name_.empty() || !former_field_names_.empty();
+  }
+  bool is_former_field_name(std::string_view name) const noexcept {
+    return former_field_names_.find_value(name) != nullptr;
+  }
   std::span<const TypeInfo* const> all() const noexcept { return {types_.data(), types_.size()}; }
 
  private:
   Vector<const TypeInfo*> types_;
   HashMap<std::string_view, const TypeInfo*> by_name_;
+  HashMap<std::string_view, const TypeInfo*> by_former_name_;
+  // Every field alias of every registered type, to the first type declaring it.
+  HashMap<std::string_view, const TypeInfo*> former_field_names_;
 };
 
 struct Registrar {

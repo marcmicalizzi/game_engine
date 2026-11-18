@@ -48,6 +48,19 @@ Its numbers were measured on MSVC; the Linux container's are in the hand-back of
 
 The corpus's documents are the saves' own (roadmap D24, 2026-11-17): every save holds the document directory its version wrote, and `save_tests.cpp`'s case "document corpus: every save's document opens and saves to what this version writes" opens each **on its own**, as a session opens any document and not through a load, and saves it — [plan 03 §3.8](../../docs/plan/03-data-model.md#38-schema-evolution)'s "documents migrated on open and rewritten on the next checkpoint". A second save writes nothing new, and the first is held to what this version writes: `v3`'s document, written before a layer file named its record types' versions ([doc](../../docs/subsystems/doc.md#a-layer-says-which-versions-it-holds)), saves to `v4`'s committed document byte for byte, manifest and every layer file; `v1`'s, whose carts moved in float32, saves to what `v2`'s saves to; `v4`'s and `v4-residents`' save to themselves. The journal is left out of the comparison: it is the history of the run, not the document's content. Copies of these directories under a `documents/` of their own would hold the same bytes twice, so a document that is not a save's — one at a record-type version no save holds — gets a directory here when there is one to commit.
 
+### `documents/renamed/` — a document written before a rename
+
+A rename is an alias (roadmap D28, [doc](../../docs/subsystems/doc.md#a-renamed-type-or-field)), and this is a document written before one: `before/` holds three records of `engine.doc.test.Beacon`, each with a `title`, two glowing with a `power`, in a layer of 32 m tiles (`places`), and above it a single-file layer (`notes`) with a `Fact`, an override of one beacon's `title`, an override of another's glow, and an override of an object no layer defines that sets a `title`. Since then the type is `engine.doc.test.Marker` (`@alias("Beacon")`), its `title` is `label` and the glow's `power` is `strength` (`domain/doc/tests/doc_test_types.schema`). `after/` is what this version saves `before/` to: every definition and override in the new names, the type tables naming `Marker`, the orphan override's `title` kept as written (nothing says which type it is a property of) and reported by the load.
+
+The test is `domain/doc/tests/rename_tests.cpp`, "the corpus's renamed document saves to the new names, byte for byte": it opens a copy of each directory as a document and saves it, and holds both to `after/`'s committed files byte for byte — the same bytes on every toolchain, since a layer file is canonical JSON whose numbers are the shortest text of their doubles. The types are the doc module's test types, not the engine's, because no engine type has been renamed yet; the document is the document format's, which is the same for every type. Both directories were written by the test's own helper, which writes nothing without its variable; `before/` is this version's save of the document in the old names with the type tables a build before the rename stamped (`engine.doc.test.Beacon` at version 1) put in by the helper:
+
+```powershell
+$env:ENGINE_DOC_CORPUS_RENAMED_OUT = "content/migration-corpus/documents/renamed"
+build/msvc-debug/domain/doc/engine_doc_tests.exe -tc="rename: write the corpus*"
+```
+
+Its bytes were taken on MSVC; the Linux containers check them at the merge.
+
 ### Adding a version
 
 When a change bumps a version a save names — a field added to the manifest's types, a store table migration, a record type's `@version` — the change also adds the save the new version writes, and the older saves stay:

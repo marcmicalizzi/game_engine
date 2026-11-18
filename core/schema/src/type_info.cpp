@@ -45,6 +45,13 @@ const FieldInfo* TypeInfo::find_field(std::string_view field_name) const noexcep
   return nullptr;
 }
 
+const FieldInfo* TypeInfo::find_field_alias(std::string_view former_name) const noexcept {
+  for (const FieldAlias& a : field_aliases) {
+    if (former_name == a.former_name && a.field < fields.size()) return &fields[a.field];
+  }
+  return nullptr;
+}
+
 const EnumValueInfo* TypeInfo::find_value(std::string_view value_name) const noexcept {
   for (const EnumValueInfo& v : values) {
     if (value_name == v.name) return &v;
@@ -74,10 +81,31 @@ void Registry::add(const TypeInfo& info) {
   }
   types_.push_back(&info);
   by_name_.insert(name, &info);
+  // A former name belongs to one type: two claiming it would make an old file's records whichever
+  // registered first. schemac refuses that within the files it compiles together; this is the check
+  // across libraries. A former name that is also a current one is not refused here (registration
+  // order decides nothing: `find` answers the current name first), but schemac refuses it too.
+  for (const char* former : info.aliases) {
+    const std::string_view f(former);
+    const TypeInfo* const* other = by_former_name_.find_value(f);
+    ENGINE_VERIFY(other == nullptr || *other == &info,
+                  "schema: two different types registered under the same former name");
+    if (other == nullptr) by_former_name_.insert(f, &info);
+  }
+  for (const FieldAlias& a : info.field_aliases) {
+    const std::string_view f(a.former_name);
+    if (former_field_names_.find_value(f) == nullptr) former_field_names_.insert(f, &info);
+  }
 }
 
 const TypeInfo* Registry::find(std::string_view qualified_name) const noexcept {
   const TypeInfo* const* p = by_name_.find_value(qualified_name);
+  return p != nullptr ? *p : nullptr;
+}
+
+const TypeInfo* Registry::find_former(std::string_view former_name) const noexcept {
+  if (by_former_name_.empty()) return nullptr;
+  const TypeInfo* const* p = by_former_name_.find_value(former_name);
   return p != nullptr ? *p : nullptr;
 }
 

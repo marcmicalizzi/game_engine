@@ -439,3 +439,57 @@ TEST_CASE("schemac: a point is not a displacement, and a vector default is check
   expect_rejected(tmp, "scalar_default", "namespace t.w7\nstruct A { at: worldpos = 0 }\n", 2,
                   "integer default on a field that is not a number");
 }
+
+// Roadmap D28, plan 03 §3.8: "rename is an alias, never delete-and-add". A former name reaches the
+// runtime's tables, the JSON Schema and the page; one that could mean two things is refused.
+TEST_CASE("schemac: a rename is an alias, carried into the tables") {
+  TempDir tmp("schemac");
+  const Run run = compile(tmp, "renamed",
+                          "namespace t.rn\n"
+                          "struct Marker @alias(\"Beacon\", \"t.old.Light\") @kind(record) {\n"
+                          "  label: string @alias(\"name\", \"title\")\n"
+                          "  height: f32 = 1\n"
+                          "}\n");
+  INFO(run.output);
+  REQUIRE(run.exit_code == 0);
+  std::string source;
+  REQUIRE(io::read_file(io::join_path(tmp.path(), "out/src/renamed.cpp"), source) ==
+          io::Status::Ok);
+  // A simple former name is in the file's namespace; a dotted one is taken as written.
+  CHECK(source.find("Marker_aliases[] = {\"t.rn.Beacon\", \"t.old.Light\"}") != std::string::npos);
+  CHECK(source.find("{\"name\", 0},") != std::string::npos);
+  CHECK(source.find("{\"title\", 0},") != std::string::npos);
+  CHECK(source.find(".aliases = std::span<const char* const>(Marker_aliases)") !=
+        std::string::npos);
+  CHECK(source.find(".field_aliases = std::span<const engine::schema::FieldAlias>(") !=
+        std::string::npos);
+  std::string json;
+  REQUIRE(io::read_file(io::join_path(tmp.path(), "out/json/renamed.schema.json"), json) ==
+          io::Status::Ok);
+  CHECK(json.find("\"x-aliases\": [\"t.rn.Beacon\", \"t.old.Light\"]") != std::string::npos);
+  CHECK(json.find("\"name\": {\"type\": \"string\", \"deprecated\": true, \"x-alias-of\": "
+                  "\"label\"}") != std::string::npos);
+  std::string page;
+  REQUIRE(io::read_file(io::join_path(tmp.path(), "out/docs/renamed.md"), page) == io::Status::Ok);
+  CHECK(page.find("formerly `name`") != std::string::npos);
+
+  expect_rejected(tmp, "alias_current",
+                  "namespace t.rn1\nstruct A {\n  x: u8 @alias(\"y\")\n  y: u8\n}\n", 3,
+                  "@alias(\"y\") on 'x' names a field 'A' still has");
+  expect_rejected(
+      tmp, "alias_twice",
+      "namespace t.rn2\nstruct A {\n  x: u8 @alias(\"old\")\n  y: u8 @alias(\"old\")\n}\n", 4,
+      "two fields of 'A' claim that former name");
+  expect_rejected(tmp, "alias_not_a_name",
+                  "namespace t.rn3\nstruct A {\n  x: u8 @alias(\"a b\")\n}\n", 3,
+                  "is not a field name");
+  expect_rejected(tmp, "alias_empty", "namespace t.rn4\nstruct A {\n  x: u8 @alias\n}\n", 3,
+                  "@alias names the field's former names");
+  expect_rejected(tmp, "alias_declared",
+                  "namespace t.rn5\nstruct A @alias(\"B\") { x: u8 }\nstruct B { y: u8 }\n", 2,
+                  "names a type that is declared");
+  expect_rejected(tmp, "alias_two_types",
+                  "namespace t.rn6\nstruct A @alias(\"Old\") { x: u8 }\n"
+                  "struct B @alias(\"t.rn6.Old\") { y: u8 }\n",
+                  3, "another type claims that former name");
+}

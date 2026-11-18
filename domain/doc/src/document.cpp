@@ -3,6 +3,7 @@
 #include <core/base/assert.h>
 #include <core/containers/flat_set.h>
 #include <core/json/json.h>
+#include <core/schema/json_reflect.h>
 #include <core/schema/type_info.h>
 #include <core/time/time.h>
 #include <domain/doc/document.h>
@@ -10,6 +11,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <utility>
 
 namespace engine::doc {
 
@@ -159,13 +161,84 @@ void stamp_record_types(LayerFile& file) {
 bool check_record_types(const LayerFile& file, std::string& why) {
   const schema::Registry& registry = schema::Registry::global();
   for (const RecordTypeVersion& v : file.types) {
-    const schema::TypeInfo* info = registry.find(v.name);
+    // A type the file names by a former name is the renamed type, at the version it was written at.
+    const schema::TypeInfo* info = registry.resolve(v.name);
     if (info == nullptr || info->kind != schema::Kind::Struct || v.version <= info->version)
       continue;
     why = "layer '" + file.name + "' holds " + v.name + " records at version " +
           std::to_string(v.version) + ", newer than this build's " + std::to_string(info->version) +
           ": it was written by a newer engine, and its fields may not be the ones this build reads";
     return false;
+  }
+  return true;
+}
+
+namespace {
+
+// Renames one record's properties (and every struct value inside them) from former names to its
+// type's current ones. False with `why` naming the layer, the record and both names when the record
+// carries a field under two of them.
+bool rename_record_properties(const schema::TypeInfo& info, std::string_view layer,
+                              ObjectRecord& record, u32& renamed, std::string& why) {
+  schema::ReadContext ctx;
+  if (schema::rename_former_fields(info, record.properties, ctx, renamed)) return true;
+  const schema::Diagnostic& d = ctx.diagnostics.front();
+  const std::string_view first = std::string_view(d.path).substr(0, d.path.find('.'));
+  why = describe_path(layer, record.id, first) +
+        (d.path.size() > first.size() ? d.path.substr(first.size()) : std::string()) + ": " +
+        d.message + " (" + info.qualified_name + " renamed it)";
+  return false;
+}
+
+}  // namespace
+
+bool rename_defining_records(LayerFile& file, std::string& why) {
+  const schema::Registry& registry = schema::Registry::global();
+  if (!registry.has_former_names()) return true;  // no type of this build was ever renamed
+  const bool fields = registry.has_field_aliases();
+  for (ObjectRecord& record : file.objects) {
+    if (record.type.empty()) continue;
+    const schema::TypeInfo* info = registry.find(record.type);
+    if (info == nullptr) {
+      info = registry.find_former(record.type);
+      if (info == nullptr) continue;  // a type this build does not have: kept as data
+      record.type = info->qualified_name;
+    }
+    if (!fields || info->kind != schema::Kind::Struct) continue;
+    u32 renamed = 0;
+    if (!rename_record_properties(*info, file.name, record, renamed, why)) return false;
+  }
+  return true;
+}
+
+bool Document::rename_override_records(u32& renamed, Vector<KeptName>& kept, std::string& why) {
+  const schema::Registry& registry = schema::Registry::global();
+  if (!registry.has_field_aliases()) return true;
+  for (u32 l = 0; l < layers_.size(); ++l) {
+    Layer& layer = layers_[l];  // not the mutable accessor: no record changes its composition
+    const FlatMap<ObjectId, ObjectRecord>& records = std::as_const(layer).records();
+    for (u32 i = 0; i < records.size(); ++i) {
+      if (!records.value_at(i).type.empty()) continue;  // renamed as its file was read
+      ObjectRecord& record = *layer.find(records.key_at(i));
+      // Its type is the composed one: the index's answer, never a search of the other layers.
+      const std::string_view type = type_of(record.id);
+      if (type.empty()) {
+        // No layer defines it, so nothing says which type's former names its properties are in:
+        // kept as written, and reported where a property bears a name some type used to have.
+        for (u32 p = 0; p < record.properties.size(); ++p) {
+          const std::string& name = record.properties.key_at(p);
+          if (registry.is_former_field_name(name)) kept.push_back({layer.name(), record.id, name});
+        }
+        continue;
+      }
+      const schema::TypeInfo* info = registry.find(type);
+      if (info == nullptr || info->kind != schema::Kind::Struct) continue;
+      u32 n = 0;
+      if (!rename_record_properties(*info, layer.name(), record, n, why)) return false;
+      if (n == 0) continue;
+      renamed += n;
+      changes_[l].ids.insert(record.id);  // a save looks at it, and writes the new name
+    }
   }
   return true;
 }
@@ -191,7 +264,7 @@ bool Layer::from_json_text(std::string_view text, Layer& out, schema::ReadContex
   LayerFile file;
   if (!schema::from_json(file, json, ctx)) return false;
   std::string why;
-  if (!check_record_types(file, why)) {
+  if (!check_record_types(file, why) || !rename_defining_records(file, why)) {
     ctx.error(why);
     return false;
   }

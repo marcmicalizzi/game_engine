@@ -66,6 +66,20 @@ bool from_json(T& value, const JsonValue& in, ReadContext& ctx) {
   return from_json(type_of<T>(), &value, in, ctx);
 }
 
+// --- former names (`@alias`; schemas/README.md, "Renaming a field or a type") ----------------
+//
+// `from_json` already reads a member under a field's former name as the field. These rewrite the
+// JSON itself, in place, for a holder of raw JSON that writes it back as it holds it (a document's
+// records, whose properties are JSON until validated): every member of `members`, an object of
+// `type`, named by a former name of one of its fields gets the field's name, and so does every
+// member of an object of a struct type reached through its fields — optionals, arrays, fixed arrays
+// and maps included. `renamed` counts the members renamed. An object carrying one field under two
+// of its names is refused, naming both: false, with `ctx` saying where, and the JSON is not to be
+// used (the members renamed before the refusal stay renamed).
+bool rename_former_fields(const TypeInfo& type, JsonValue::Object& members, ReadContext& ctx,
+                          u32& renamed);
+bool rename_former_fields(const TypeRef& type, JsonValue& value, ReadContext& ctx, u32& renamed);
+
 // --- migrations ---------------------------------------------------------------------------
 
 // Rewrites a JSON object of `type_qualified_name` from `from_version` to `from_version + 1`.
@@ -76,8 +90,9 @@ struct Migration {
 };
 
 // Whether the step to `to_version` only added fields: the schema declares it `@additive` and some
-// field of `type` is `@since(to_version)`. Such a step is generated — derived from the tables schemac emits — and changes nothing in the
-// JSON, since an absent field takes its default (schemas/README.md, "Evolution rules").
+// field of `type` is `@since(to_version)`. Such a step is generated — derived from the tables
+// schemac emits — and changes nothing in the JSON, since an absent field takes its default
+// (schemas/README.md, "Evolution rules").
 bool additive_step(const TypeInfo& type, u16 to_version) noexcept;
 
 class MigrationRegistry {

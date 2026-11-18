@@ -67,6 +67,20 @@ struct Undeclared @version(2) {
   added: i32 = 0 @since(2)
 }
 
+/// A struct value inside a renamed record, whose own field was renamed: `size` was `length`.
+struct RenamedPart @version(1) {
+  size: f32 = 0 @alias("length")
+}
+
+/// A type renamed twice (D28): read under either former name, written as `Renamed`. Its `label` was
+/// `name` and then `title`; its `parts` hold a struct whose field was renamed too.
+struct Renamed @version(1) @alias("Formerly", "engine.schema_test.old.Earlier") {
+  label: string @alias("name", "title")
+  count: i32 = 0
+  parts: RenamedPart[]
+  only: RenamedPart?
+}
+
 /// The f64 vector primitives (ADR-0053): a point in the world and a displacement.
 struct Far @version(1) @kind(record) {
   at: worldpos @unit(m)

@@ -59,6 +59,9 @@ struct Field {
   // `@unit(<symbol>)`: the physical unit the field's number is in. Only read by a `materialize`
   // row, which converts when the two sides it joins declare different units of one dimension.
   std::string unit;
+  // `@alias("old", ...)`: the names the field had before a rename, which a reader takes as it
+  // (schemas/README.md, "Renaming a field or a type").
+  std::vector<std::string> aliases;
 };
 
 struct EnumValue {
@@ -88,6 +91,9 @@ struct StructDecl {
   // @additive(v, ...): the versions whose step only adds fields, each @since it with a default,
   // so the reader derives the step (schemas/README.md, "Evolution rules").
   std::vector<uint16_t> additive;
+  // `@alias("Old", ...)`: the names the type had before a rename, as written; resolve() qualifies a
+  // simple one with the file's namespace.
+  std::vector<std::string> aliases;
   // Struct-level @transient: the whole type is runtime-only and is never persisted
   // (docs/plan/03-data-model.md §3.4). Field-level @transient, on Field, is the narrower thing:
   // one field of an otherwise persisted type.
