@@ -221,6 +221,8 @@ Tree expansion: [species profiles](tree-species-expansion.md) and [season design
 
 [G203: conifer crown coverage](conifer-crown-coverage.md) measures what the forest's pine and spruces cover of their own outline at 10, 30, 100 and 300 m against what foresters rate a healthy crown at, separates the geometry (not the fault), the needle image (most of it), the texture chain and the rasterizers' mask tap (the hardware rasterizer's thinner crowns, with their cause), and says what a needle image should be.
 
+[G218: light within a conifer crown](conifer-crown-light.md) measures why the engine's spruce and pine crowns read as one even grey-green (a sunlit needle returns half again what a shaded one does, where the ground beside it returns three to five times), grounds what light does inside a conifer crown and a needle's colour by age in the literature, and says what was changed in what an asset states.
+
 [R153: sampling over time](temporal-sampling.md) measures what one sample a pixel costs dense foliage against the same view supersampled (leaf-cards and the forest's staging), names the content faults no accumulation fixes, and designs the inputs, the engine's own accumulation, a reconstruction provider's registration point and the vendors' methods against ADR-0014, with a proposed decision that every measurement stays native.
 
 [G69: the plan of a village](village-plan-grounding.md) grounds the village filler's row plan: plan forms, the perch plots are laid out in, frontages and depths, the street's width, how many houses make a hamlet and a village, each with how far its source was read and which numbers are inferences or choices.
