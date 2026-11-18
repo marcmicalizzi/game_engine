@@ -619,6 +619,31 @@ T113's table (`msvc-debug`): renderer 131 + 74 + 88 + 77 and then 80 + 76 + 98 +
 + 64 + 38, both 177 of 179, the other two being `engine_view.generators`' own. Every name once, the
 same 712 names in the parts before and after, and `ctest -N` the same 158 tests.
 
+### The no-driver form
+
+**`tools/dev.ps1 test -NoDriver`** (T177) is how a change that needs no GPU is tested: `test
+-Affected -Base <base> -NoDriver`, in any configuration. It sets four variables for the whole run
+and puts them back when the run ends, failed or not (`tools/lib/NoDriver.psm1`, the one function
+the `-SkipInvariantGpu` pass below uses too; `tools.no_driver` tests it): `VK_DRIVER_FILES` and
+`VK_ICD_FILENAMES` at a file in the build directory that does not exist and `VK_ADD_DRIVER_FILES`
+removed, so the Vulkan loader finds no driver and every GPU case skips as on a hosted runner with
+no GPU; and `ENGINE_GPU_LOCK_ON_DEVICE=0`, so nothing in the run asks for the machine-wide GPU lock
+([gpu_lock](../subsystems/gpu_lock.md)). It prints one line saying so, and refuses any command but
+`test`. It cannot tell from a `-Filter` whether the tests named are wanted for their GPU cases (a
+test labelled `gpu` holds CPU cases too), so it does not refuse one: what it runs with a filter is
+those tests' CPU cases.
+
+**Why the loader's three set by hand still wait.** With the driver hidden, `gfx::Device::create`
+fails at the loader, before the hold it takes just before `vkCreateDevice` (ADR-0049), and asks for
+nothing. A Vulkan window does not get that far: it joins the process's hold *before it appears*
+([gpu_lock](../subsystems/gpu_lock.md#windows)), where nothing yet says a device cannot follow, so
+with the switch at the test main's `1` every windowed `engine-view` an end-to-end test starts takes
+its turn in the GPU's line before it finds there is no device. On the evening of 2026-11-17 runs
+that set the three and not the switch had `engine_view`'s parts each wait out their half-hour
+budget, in a line 12 to 21 deep, and skip with 75: about two hours of a run spent learning there
+was no GPU. The switch at `0` alone would be wrong the other way, since a run that forgot the three
+would open devices with no lock. So the four go together, from one switch.
+
 ### The off-configurations' GPU cases
 
 `msvc-minimal`, `msvc-no-ecs`, `linux-clang-minimal` and `linux-clang-no-ecs` exist to prove the tree
@@ -627,8 +652,7 @@ app test; what they no longer need to run is the GPU cases of a library that is 
 every configuration, which the all-on suite runs. **`tools/dev.ps1 test -SkipInvariantGpu`**, which
 the gate passes to the two Windows off-configurations: in a tree whose `modules.json` says `minimal`
 or names a disabled capability, the tests labelled `config_invariant` run first with no Vulkan driver
-to find (`VK_DRIVER_FILES` and `VK_ICD_FILENAMES` pointed at a file that does not exist, and the GPU
-lock off for them), so their CPU cases run and their GPU cases skip exactly as on a hosted runner
+to find (the four variables of [the no-driver form](#the-no-driver-form), for that pass alone), so their CPU cases run and their GPU cases skip exactly as on a hosted runner
 with no GPU, and then everything else runs as usual. In an all-on tree the switch changes nothing,
 and an author's run without it is what it was. The containers have no GPU at all, so there the two
 Linux off-configurations already skip every GPU case.
