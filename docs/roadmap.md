@@ -391,7 +391,7 @@ The scheduler, tiers, NPCs, destruction, deformation, physics, navigation, anima
 | S9 | Tier promotion for records other than residents | open | S8 | M | design | [sim](subsystems/sim.md#what-is-stubbed) |
 | S10 | SIMD trial on tier scoring, structure-of-arrays batches | open | S8 | M | research | [sim](subsystems/sim.md#positions-are-f64) |
 | S11 | Persistence flush: projections, change detection | open | D16 | M | design | [ecs](subsystems/ecs.md#not-yet) |
-| S12 | World event bus with runaway guards | open | S2 | M | design | [05 §5.7](plan/05-simulation.md#57-world-events-and-consequences) |
+| S12 | World event bus with runaway guards | done (2026-11-17, b68-S12: the capability `domain/events`, delivered at `EventsIn` and `EventsOut` in a sorted order, the document's feed, seven guards counted per tick, external raises logged and replayed. Not done: no consumer, no host makes a bus, telemetry not served over the protocol, external raises not in the store's log (S18)) | S2 | M | design | [events](subsystems/events.md) |
 | S13 | Scheduled residents: routines as data | done (5049d289, e8844219) | S7, S8 | L | design | [npc](subsystems/npc.md) |
 | S14 | Accept ADR-0045 | blocked (the owner's review) | S13 | S | design | [ADR-0045](adr/0045-routines-are-data-with-a-closed-form.md) |
 | S15 | E38 remainder: the store's share | open | S13 | S | research | [E38](experiments/e38-scheduled-npcs.md#caveats) |
