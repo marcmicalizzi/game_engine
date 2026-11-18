@@ -261,6 +261,18 @@ own (`SceneCollision::PropProxy`):
   walker passes it at a drop and at the first step after one (walk.h `set_props`), a replay drops
   and steps at the same ticks, and so takes the same proxies at the same update. Its cost is the
   build on that tick, which a drop already pays for the ring's tiles.
+- **A save holds no proxy state, and needs none.** When a body appears depends on the table's
+  history (which keys are resident, which are pending and until which update), and a fresh consumer
+  has none of it. But engine-view writes a game's state only when the session finishes
+  (`--game-state`, game_runner.h `finish`), so no session continues past its save, and a walk
+  restored from one begins, as every walk does, with a drop, which takes every proxy in reach: from
+  that update the resident set is the props in reach and the declared, what a session that had
+  walked there holds too, and every body in reach is made. A replay restores from its recording's
+  header and makes the same drop at the same tick, so it matches the recorded session. What would
+  differ is a session that continued past a save, which nothing makes: there, a prop whose proxy was
+  pending at the save would get its body at the restore's first tick instead of up to
+  `k_walk_prop_build_updates` ticks later. A save taken mid-session would have to carry each pending
+  proxy's remaining updates.
 - **Let go when no prop in reach names it, so with the tiles**: at an update whose props' set
   changed, whose ring moved, or at which a prop moved off the held tiles, each proxy is counted over
   the held props **whose tile is held**, and one none of them names (and not declared) goes, a proxy
@@ -279,7 +291,7 @@ scales, and are not this rule's. What an imported or hand-authored asset gets: t
 mesh's grid and fit, with nothing declared beyond `engine.scene.Prop`; a scene with no mesh props
 builds nothing at the load and pays nothing on the tick.
 
-Five cases hold it (`tests/far_forest_tests.cpp`, no device). `a mesh prop's proxy is one a mesh
+Six cases hold it (`tests/far_forest_tests.cpp`, no device). `a mesh prop's proxy is one a mesh
 and rounded scale, whatever its yaw, and goes when no prop names it`: one crate at ten yaws at its
 own size and at 1.1 is one build, for 1.1; 1.103 keeps the body and builds nothing (with the
 rounding and the letting go switched off it fails: three bodies made, three builds, three proxies
@@ -290,7 +302,10 @@ a declared boulder at 1.2 gets its body at the twelfth update after its hand-ove
 without. `a drop takes every pending prop's proxy now, so it lands on a boulder`: the boulder at
 1.5 handed on a walking update has no body yet and a ray straight down meets the floor; the drop's
 update after it makes the body, and the ray meets the boulder's top within the cut's error; handed
-at the drop itself it is built there; with workers and without. `a prop's proxy goes with its tile,
+at the drop itself it is built there; with workers and without. `a restored walk's first update has
+the bodies the saved walk had`: four props, three at sizes of their own, handed to one consumer and
+updated twenty times, and to a fresh one at a drop's update, give the same bodies, the same proxies
+resident and the same tops to the bit. `a prop's proxy goes with its tile,
 and comes back with it`: a boulder at 1.2 still handed, the ring moved a kilometre away, loses its
 body and its proxy while the declared two stay, and back it is built again. `a prop of a new mesh arriving mid-run costs the walker's tick no build` (0.4 s) measures
 it: 300 crates of which 30 move a centimetre a tick, and at tick 100 a boulder 3 m across (17,958

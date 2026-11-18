@@ -957,6 +957,58 @@ TEST_CASE(
   }
 }
 
+TEST_CASE("scene_collision: a restored walk's first update has the bodies the saved walk had") {
+  // A save holds no proxy state (scene_collision.md, "A prop's proxy"): a walk restored from one
+  // is a fresh consumer handed the same props, and begins with a drop, which takes every proxy in
+  // reach. So from that update it holds what the walk that was saved held after its props' builds
+  // came due: the same bodies, the same proxies resident, a ray down meeting the same top.
+  renderer::SceneData scene;
+  crate_and_boulder_scene(scene);
+  Config config;
+  config.prop_build_updates = k_walk_prop_build_updates;
+  jobs::JobSystemConfig workers;
+  workers.performance_workers = 2;
+  workers.pin_threads = false;
+  jobs::JobSystem jobs(workers);
+  Vector<PropBody> props;
+  for (u32 i = 0; i < 4; ++i) {
+    PropBody p = crate_at(20.0f + 4.0f * static_cast<f32>(i), 10 + i);
+    p.mesh = i % 2;
+    p.scale = 1.0f + 0.2f * static_cast<f32>(i);  // the first at its own size, three of their own
+    props.push_back(p);
+  }
+  const auto tops = [&](Rig& rig, Vector<f32>& out) {
+    out.clear();
+    for (u32 i = 0; i < 4; ++i) {
+      physics::RayHit hit;
+      const f32 z = 20.0f + 4.0f * static_cast<f32>(i);
+      REQUIRE(rig.physics.cast_ray(place(Vec3{0.0f, 10.0f, z}), Vec3{0.0f, -20.0f, 0.0f}, hit));
+      out.push_back(static_cast<f32>(relative(hit.position, WorldPos::origin()).y));
+    }
+  };
+  // The walk that was saved: handed on a walking update, twenty updates on.
+  Rig saved(scene, config, &jobs);
+  saved.collision.set_props({props.data(), props.size()});
+  for (u32 k = 0; k < 20; ++k)
+    (void)saved.collision.update_props();
+  // The restored one: a fresh consumer, the same props, a drop's update.
+  Rig restored(scene, config, &jobs);
+  restored.collision.set_props({props.data(), props.size()});
+  (void)restored.collision.update_props(true);
+  CHECK(saved.collision.stats().prop_bodies == 4);
+  CHECK(restored.collision.stats().prop_bodies == saved.collision.stats().prop_bodies);
+  CHECK(restored.collision.stats().prop_proxies == saved.collision.stats().prop_proxies);
+  Vector<f32> a;
+  Vector<f32> b;
+  tops(saved, a);
+  tops(restored, b);
+  for (u32 i = 0; i < 4; ++i) {
+    CAPTURE(i);
+    CHECK(a[i] > 0.5f);   // a prop's top, not the floor
+    CHECK(a[i] == b[i]);  // the same proxy at the same pose: the same float
+  }
+}
+
 TEST_CASE("scene_collision: a prop's proxy goes with its tile, and comes back with it") {
   // Until 2026-11-18 a proxy was counted over every prop handed, so one built while its prop was
   // near stayed resident after the walker left, until the game stopped handing that prop: the
