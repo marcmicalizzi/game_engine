@@ -484,3 +484,67 @@ TEST_CASE(
   CHECK(info.instance == 7);
   CHECK(info.mesh == 0);
 }
+
+// **A moved box is met by every cast the walker and a module make** (scene_collision.md, "What a
+// moving prop costs"): a box prop made kinematic at its first move is still what a module's cast
+// (`Walker::cast`), the camera's boom (`cast_boom`), a teleport's highest surface below (`drop`)
+// and the moving ground's standing ray meet, all of which cast with the walker's mask.
+TEST_CASE("scene_collision: a moved box prop is met by the walker's and a module's casts") {
+  renderer::SceneData scene;
+  crate_scene(scene);
+  Rig rig(scene);
+  // The mask those casts take (`k_scene_surfaces`). Until 2026-11-18 it was the static layer alone,
+  // and every answer after the move below met the floor under the box, or nothing.
+  const physics::LayerMask walker_mask = k_scene_surfaces;
+  CHECK(walker_mask.test(physics::Layer::Static));
+  CHECK(walker_mask.test(physics::Layer::Kinematic));
+  PropBody boxed = crate_at(20.0f);
+  boxed.collider.shape = renderer::PropShape::box;
+  boxed.collider.half_extents = Vec3{0.5f, 0.5f, 0.5f};
+  boxed.collider.center = Vec3{0.0f, 0.5f, 0.0f};
+  // Straight down onto the box's top at z (a teleport's ray, a module's ray), and a sphere swept at
+  // its face from the south (a module's sphere, the boom): what each met.
+  const auto down_onto = [&](f32 z, f32& top) {
+    physics::RayHit hit;
+    if (!rig.physics.cast_ray(place(Vec3{0.0f, 3.0f, z}), Vec3{0.0f, -10.0f, 0.0f}, hit,
+                              walker_mask))
+      return HitKind::none;
+    top = static_cast<f32>(relative(hit.position, WorldPos::origin()).y);
+    return rig.collision.describe_hit(hit.body, hit.child).kind;
+  };
+  const auto swept_at = [&](f32 z) {
+    physics::ShapeHit hit;
+    if (!rig.physics.cast_sphere(place(Vec3{0.0f, 0.5f, z - 5.0f}), 0.2f, Vec3{0.0f, 0.0f, 10.0f},
+                                 hit, walker_mask))
+      return HitKind::none;
+    return rig.collision.describe_hit(hit.body, hit.child).kind;
+  };
+  rig.hand({boxed});
+  f32 top = 0.0f;
+  CHECK(down_onto(20.0f, top) == HitKind::prop);
+  CHECK(top == doctest::Approx(1.0f).epsilon(0.002));
+  CHECK(swept_at(20.0f) == HitKind::prop);
+  // Moved once, made again as a kinematic body: the same answers at its new place.
+  for (const f32 z : {21.0f, 22.0f}) {
+    boxed.origin = place(Vec3{0.0f, 0.0f, z});
+    rig.hand({boxed});
+  }
+  top = 0.0f;
+  CHECK(down_onto(22.0f, top) == HitKind::prop);
+  CHECK(top == doctest::Approx(1.0f).epsilon(0.002));
+  CHECK(swept_at(22.0f) == HitKind::prop);
+
+  // A key handed twice in one call: the first handed is kept, one body, and none is left behind
+  // when the props go (two entries of one key once leaked a body nothing would let go).
+  rig.hand({});
+  const u32 bodies = rig.physics.body_count();
+  rig.hand({crate_at(20.0f), crate_at(25.0f)});
+  CHECK(rig.collision.stats().prop_duplicates == 1);
+  CHECK(rig.collision.stats().prop_bodies == 1);
+  CHECK(rig.physics.body_count() == bodies + 1);
+  CHECK(down_onto(20.0f, top) == HitKind::prop);
+  CHECK(down_onto(25.0f, top) == HitKind::none);
+  rig.hand({crate_at(20.0f), crate_at(25.0f)});
+  rig.hand({});
+  CHECK(rig.physics.body_count() == bodies);
+}

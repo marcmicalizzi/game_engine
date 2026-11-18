@@ -1118,9 +1118,10 @@ void SceneCollision::piece_supports(const Tile& tile, u32 piece, WorldPos at, f3
     const f32 height = proxy->hi.y - proxy->lo.y;
     physics::RayHit hit;
     const WorldPos from = top + DVec3{0.0, static_cast<f64>(k_top_ray_lift_m), 0.0};
-    const physics::LayerMask statics = physics::LayerMask::of(physics::Layer::Static);
+    // What the collision made (`k_scene_surfaces`): a prop standing on the piece, static or moved,
+    // covers its top alike.
     if (!physics_->cast_ray(from, Vec3{0.0f, -(height + 2.0f * k_top_ray_lift_m), 0.0f}, hit,
-                            statics)) {
+                            k_scene_surfaces)) {
       return;
     }
     // A triangle's normal is its winding's, which an asset may have either way round: the top's
@@ -1229,11 +1230,12 @@ u32 SceneCollision::follow(physics::CharacterBody& walker) {
   bool standing = false;
   if (walker.state().ground == physics::Ground::OnGround && ground_height(feet, before)) {
     physics::RayHit hit;
-    const physics::LayerMask statics = physics::LayerMask::of(physics::Layer::Static);
-    standing =
-        physics_->cast_ray(feet + DVec3{0.0, 0.05, 0.0},
-                           Vec3{0.0f, -(0.05f + walker.config().radius), 0.0f}, hit, statics) &&
-        ground_body(hit.body);
+    // Every body the collision made (`k_scene_surfaces`): a walker on a moved box or a door is on
+    // that, not on the ground.
+    standing = physics_->cast_ray(feet + DVec3{0.0, 0.05, 0.0},
+                                  Vec3{0.0f, -(0.05f + walker.config().radius), 0.0f}, hit,
+                                  k_scene_surfaces) &&
+               ground_body(hit.body);
   }
   const u32 done = refresh(feet, walker.config().radius);
   f32 after_f32 = 0.0f;
@@ -2249,9 +2251,18 @@ void SceneCollision::set_props(std::span<const PropBody> props) {
     held.prop = p;
     props_next_.push_back(held);
   }
-  if (!sorted)
-    std::sort(props_next_.begin(), props_next_.end(),
-              [](const HeldProp& a, const HeldProp& b) { return a.prop.key < b.prop.key; });
+  if (!sorted) {
+    // In key order, and **one prop a key**: a key handed twice keeps the first handed, since two
+    // held entries of one key would both claim the one body the merge keeps and leak the other.
+    std::stable_sort(props_next_.begin(), props_next_.end(),
+                     [](const HeldProp& a, const HeldProp& b) { return a.prop.key < b.prop.key; });
+    const auto last =
+        std::unique(props_next_.begin(), props_next_.end(),
+                    [](const HeldProp& a, const HeldProp& b) { return a.prop.key == b.prop.key; });
+    const u32 kept = static_cast<u32>(last - props_next_.begin());
+    stats_.prop_duplicates += props_next_.size() - kept;
+    props_next_.resize(kept);
+  }
   stats_.props = static_cast<u32>(props.size());
   props_handed_ = true;
 }

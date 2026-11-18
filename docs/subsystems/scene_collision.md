@@ -202,6 +202,32 @@ it the default, its mesh's proxy: right for a prop that stands, and for a creatu
 mesh body moved every tick, which widens the static tree the tiles' ground and placements live in
 until a tile comes or goes, and stops the walker on every limb of the mesh rather than its body.
 
+**A kinematic body is a surface like a static one** (2026-11-18): every query that asks what
+stops or carries the walker, or what a module's cast hits, takes `scene_collision::k_scene_surfaces`
+— the static layer and the kinematic one, every body the collision makes and nothing else in the
+world. They are a module's `Walker::cast`, the camera's boom (`cast_boom`), a drop's and a
+teleport's highest surface below (`Walker::drop`), the moving ground's "standing on the ground"
+ray (`follow`) and a piece's top support (`piece_supports`). Until then they took the static layer
+alone, so a box made kinematic by its first move dropped out of all of them while the walker's
+capsule, which meets every layer but `Query`, still stopped at it: a module's cast met what stood
+behind the crate, the boom passed through it and a teleport onto it landed under it. A door, a
+kinematic box too, is met the same way: the boom stops short of a closed door rather than passing
+through the leaf. `scene_collision: a moved box prop is met by the walker's and a module's casts`
+holds it, a ray down onto the box and a sphere at its face before and after it moves; the same
+case hands one key twice and holds that the first handed is kept (`Stats::prop_duplicates`) and no
+body is left behind.
+
+**A mesh prop's proxy is built on the tick when its scale is new** (not mended; a row). A body is
+made — and its proxy looked up by `proxy_for`, keyed by the exact float bits of the scale
+`decompose` reads from the turned and fitted matrix — only when a prop is placed, its tile comes
+in, or its shape changes; a miss cuts the proxy and builds its mesh shape inline, on the walker's
+tick, and the entry is kept for the consumer's life. **A module that moves or yaws a mesh prop
+every tick does not hit it**: a pose-only change is a move and asks for no proxy. **One that scales
+a mesh prop every tick does**: each new scale is a new shape, so a body let go and made, a proxy cut
+and built on the tick, a cache entry never freed and a broadphase rebuild, every tick. A prop placed
+at a fresh yaw may miss too, once, at the make, since a turned column's length is 1 within an ulp
+rather than exactly 1. A creature that grows or breathes should be a box.
+
 `scene_collision: a game's prop stops a walker, by its mesh or its box, while its tile is held`
 (`tests/far_forest_tests.cpp`, beside the far forest's case, whose scene is built the same way; no
 device) holds the rest: a crate a metre on a side declared as a prop and placed by nothing stops a
