@@ -34,6 +34,7 @@ set(ENGINE_LAYERS core foundation domain systems apps game)
 
 # The GENERATOR tag's list, engine_host_generators() and the hosts' check (roadmap T79).
 include("${CMAKE_CURRENT_LIST_DIR}/EngineGenerators.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/EngineTestReach.cmake")
 
 define_property(GLOBAL PROPERTY ENGINE_MODULES
   BRIEF_DOCS "Declared engine modules" FULL_DOCS "Declared engine modules, in declaration order")
@@ -670,6 +671,7 @@ function(engine_finalize_modules)
   # The hosts that read a scene carry the build's one generator list (EngineGenerators.cmake).
   _engine_check_generator_hosts()
   get_property(_modules GLOBAL PROPERTY ENGINE_MODULES)
+  _engine_test_reach_prepare()   # EngineTestReach.cmake: each row's `test_reach` (roadmap T31)
   set(_json "{\n  \"layers\": [")
   set(_first TRUE)
   foreach(_layer IN LISTS ENGINE_LAYERS)
@@ -712,12 +714,14 @@ function(engine_finalize_modules)
       list(JOIN _gen ", " _gen_list)
       set(_gen_json ", \"generator\": [${_gen_list}]")
     endif()
+    _engine_test_reach(${_m} _reach_json)
     if(NOT _first)
       string(APPEND _json ",\n")
     endif()
     string(APPEND _json
       "    {\"name\": \"${_m}\", \"layer\": \"${_layer}\", \"path\": \"${_rel}\", "
-      "\"optional\": ${_opt_json}${_gen_json}, \"deps\": [${_deps_json}]}")
+      "\"optional\": ${_opt_json}${_gen_json}, \"deps\": [${_deps_json}], "
+      "\"test_reach\": ${_reach_json}}")
     set(_first FALSE)
   endforeach()
   string(APPEND _json "\n  ],\n")
