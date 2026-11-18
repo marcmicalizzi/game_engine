@@ -224,3 +224,5 @@ Tree expansion: [species profiles](tree-species-expansion.md) and [season design
 [G69: the plan of a village](village-plan-grounding.md) grounds the village filler's row plan: plan forms, the perch plots are laid out in, frontages and depths, the street's width, how many houses make a hamlet and a village, each with how far its source was read and which numbers are inferences or choices.
 
 [G206: a village that grew](village-growth-grounding.md) grounds the grown plan beside it: regular and grown forms in one village, ways found over the ground, the green, tofts and cottages of uneven size, a house's turn to the slope and the sun, back lanes, where the church and the well stand, with how far each source was read (the procedural papers' constants were not).
+
+[R182: the sun against the sky on level ground](sun-and-sky-on-level-ground.md) holds the sky model's direct and diffuse light on a level surface to published clear-sky models, says what lights a shadow in the open, in a crown and in a room, and designs the mend.
