@@ -4039,10 +4039,23 @@ with `renderer.gi.log`, settles it in one run.
 - *The guided wall under the cosine rays' under the sky alone*: the figure stands, 0.40 % under
   (0.002356 against 0.002365; 0.08 % under with the bounce). Read again, the arithmetic still
   allows no bias (the mixture, the weight, the mirror, the clamp before the weight, the fixed
-  point); and the sixth leg's "always under, three runs" was not three draws: a sample's random
-  numbers are seeded by its pixel and frame, so each run repeats one realization of each
-  estimator and the sign cannot change between runs. A realization's own scatter is what the
-  0.4 % has to be read against, and it was not measured in this leg.
+  point). The sixth leg's "always under, three runs" was not three draws — a sample's random
+  numbers are seeded by its pixel and frame, so each run repeats one realization — but **the
+  bias is real**: the same wall drawn from five eyes one to three centimetres apart (other
+  pixels, other seeds, other cells; a scratch case) stands 0.40, 0.39, 0.40, 0.38 and 0.36 %
+  under with the guide, where the five differences scatter by 0.015 % among themselves. So a
+  guided wall's light is four parts in a thousand under the cosine rays' under the sky, by
+  something that is not in the estimator as written. **It moves with the random stream**: with
+  the choice between the lobe and the guide drawn from a stream of its own (one line, tried
+  and not kept; the guide's bin and place then take the stream's third to fifth numbers
+  instead of its fourth to sixth) the same five eyes stand 0.33, 0.31, 0.24, 0.28 and 0.25 %
+  under. A change of which numbers of one sample's stream feed which draw is not allowed to
+  move an unbiased estimate by a quarter of its bias, so the suspect is the joint distribution
+  of a sample's successive numbers (`rng_next` is a 32-bit generator stepped from a hashed
+  state; the sixth leg's check looked at the choice against the direction's two numbers at two
+  parts in a thousand a bin, and four in the opening's bins is all it takes). The next step
+  needs no GPU: a census on the CPU of the shader's own stream over its states, for the box's
+  bins.
 - *The memory failing the pre-roll's bound after a cut*: **it stands, and it is now the only
   case in the way.** With the guide and the memory set as the process's defaults, msvc-debug,
   nineteen of the twenty `gi cache:` cases pass (14,938 of 14,940 assertions): a scene moved by
@@ -4060,10 +4073,10 @@ with `renderer.gi.log`, settles it in one run.
   as written ("neither shows a fill"), and whether a wall that is a little grainier for a
   second and a half after a cut, then settles, breaks that promise is still the owner's to
   say. Nothing else stands between these tables and the two defaults in msvc-debug.
-- *The rounded rock under the memory in msvc-release*: in msvc-debug it passes with both on
-  (above); **msvc-release was not run on this base in this leg**, so the sixth leg's two
-  failures in three stand unanswered, and with them whether `blended < hard` is a property
-  under the memory or a count that was never three deviations apart.
+- *The rounded rock under the memory in msvc-release*: **it does not stand.** Three runs each in
+  msvc-release: 1,196 under 1,209 with the memory, 1,146 under 1,201 with both, 1,192 under
+  1,204 with neither, the same counts in every run. The sixth leg's two failures in three
+  were runs that differed among themselves, which an ordered cache's do not.
 
 **What a person sees.** At the defaults (both off) a dark room's walls crawl as they did: a
 third of the pixels flip a code every frame. With `renderer.gi.memory` and `renderer.gi.guide`
