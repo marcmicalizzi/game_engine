@@ -4,7 +4,7 @@
   One implementation of the machine-lock protocol, for every PowerShell tool that takes a lock.
 
 .DESCRIPTION
-  The protocol is D:\workspace\GPU-LOCK.md's, written for the shared GPU and reused unchanged for
+  The protocol is GPU-LOCK.md's (in the workspace folder, beside the locks), written for the shared GPU and reused unchanged for
   the Linux container build: one JSON file whose presence means "taken",
 
       {"owner":"claude-engine","purpose":"...","pid":1234,
@@ -14,10 +14,13 @@
   expired lock may be broken; an unexpired one never is; a lock owned by "marc" (a person) is never
   broken by a tool. Two files use it today:
 
-    gpu           $env:ENGINE_GPU_LOCK,          default D:\workspace\gpu.lock
-    linux-build   $env:ENGINE_LINUX_BUILD_LOCK,  default D:\workspace\linux-build.lock
+    gpu           $env:ENGINE_GPU_LOCK,          default <workspace>\gpu.lock
+    linux-build   $env:ENGINE_LINUX_BUILD_LOCK,  default <workspace>\linux-build.lock
 
-  (`/tmp/<name>.lock` off Windows.) tools/gpu-lock.ps1 is the command line over this module,
+  (`/tmp/<name>.lock` off Windows.) The defaults are the protocol's fixed paths, written once each
+  in Get-MachineLockPath below and in foundation/gpu_lock's default_path(), and never derived from
+  where a checkout is: tools outside the repository and binaries built at other commits take the
+  same files, and a lock that moved with a checkout would be two locks (docs/ci/machine-paths.md). tools/gpu-lock.ps1 is the command line over this module,
   tools/linux-build.ps1 takes the build lock through it, and tools/ci/gpu-smoke.ps1 and
   tools/ci/reference-compare.ps1 take the GPU lock through Open-MachineLockSession. The C++ side —
   the bench harness's --gpu-lock, and every test process that opens a GPU device, which takes the
@@ -62,11 +65,11 @@ function Get-MachineLockPath {
   switch ($Kind) {
     'gpu' {
       if ($env:ENGINE_GPU_LOCK) { return $env:ENGINE_GPU_LOCK }
-      if ($isWin) { return 'D:\workspace\gpu.lock' } else { return '/tmp/gpu.lock' }
+      if ($isWin) { return 'D:\workspace\gpu.lock' } else { return '/tmp/gpu.lock' }  # engine-lint: allow-machine-path the protocol's fixed path, shared with tools outside the repository and binaries of other commits
     }
     'linux-build' {
       if ($env:ENGINE_LINUX_BUILD_LOCK) { return $env:ENGINE_LINUX_BUILD_LOCK }
-      if ($isWin) { return 'D:\workspace\linux-build.lock' } else { return '/tmp/linux-build.lock' }
+      if ($isWin) { return 'D:\workspace\linux-build.lock' } else { return '/tmp/linux-build.lock' }  # engine-lint: allow-machine-path the protocol's fixed path, shared with every checkout's container builds
     }
   }
 }

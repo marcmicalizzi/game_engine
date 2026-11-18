@@ -17,7 +17,7 @@
   is not.
 
   **One build at a time on this machine, whoever started it.** A build takes the machine-wide
-  build lock first ($env:ENGINE_LINUX_BUILD_LOCK, default D:\workspace\linux-build.lock; the
+  build lock first ($env:ENGINE_LINUX_BUILD_LOCK, default <workspace>\linux-build.lock; the
   GPU-LOCK.md protocol, implemented once in tools/lib/MachineLock.psm1) and holds it until its
   last container has exited. A second invocation waits and says whom it is waiting for; -NoWait
   makes it fail at once with exit 2 instead. Three cold builds at once took over two and a half

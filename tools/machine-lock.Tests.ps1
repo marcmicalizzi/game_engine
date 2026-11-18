@@ -5,7 +5,7 @@
   CTest as `tools.machine_lock`.
 
 .DESCRIPTION
-  The lock protocol (D:\workspace\GPU-LOCK.md) is shared with tools that are not this repository's
+  The lock protocol (GPU-LOCK.md in the workspace folder) is shared with tools that are not this repository's
   — a Blender agent takes the same GPU lock from Python — so the rules are tested as rules: create
   is atomic, an unexpired lock is never broken, an expired one is, a person's never is, a release
   deletes only its own lock, a refresh is never seen half-written, and a holder that runs long

@@ -37,7 +37,7 @@ function Get-CheckoutVolumeName {
 
 function ConvertTo-CheckoutRoot([string]$Path) {
   # A path as linux-build.ps1's $Root spells it — full, with the platform's separators and none at
-  # the end — from git's spelling (`D:/workspace/...` on Windows). The volume id hashes that exact
+  # the end — from git's spelling (`<drive>:/<folder>/...` on Windows). The volume id hashes that exact
   # spelling, so an unlabelled volume is matched only through this.
   $full = [System.IO.Path]::GetFullPath($Path)
   $trimmed = $full.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)

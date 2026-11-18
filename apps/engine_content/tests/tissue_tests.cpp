@@ -15,8 +15,11 @@
 #include <test_temp_dir.h>
 
 #include <cmath>
+#include <filesystem>
 #include <span>
 #include <string>
+#include <string_view>
+#include <system_error>
 #include <vector>
 
 using namespace engine;
@@ -292,16 +295,55 @@ TEST_CASE("tissue: the layered model's fixtures, and a capability failure is exi
 
 namespace {
 
+// The folder that holds the primary checkout of the tree at `source_dir`, from its git metadata
+// alone: the primary's `.git` is the common directory, a worktree's is a file naming
+// `<common>/worktrees/<name>`, so every worktree answers what the primary does
+// (docs/ci/machine-paths.md). Empty for a tree that is no checkout, such as a test bundle's.
+std::string workspace_of(const std::string& source_dir) {
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  const fs::path source = fs::path(source_dir).lexically_normal();
+  const fs::path dot_git = source / ".git";
+  fs::path common;
+  if (fs::is_directory(dot_git, ec)) {
+    common = dot_git;
+  } else if (fs::is_regular_file(dot_git, ec)) {
+    std::string text;
+    if (io::read_file(dot_git.string(), text) != io::Status::Ok) return {};
+    constexpr std::string_view k_key = "gitdir:";
+    const usize at = text.find(k_key);
+    if (at == std::string::npos) return {};
+    std::string dir = text.substr(at + k_key.size());
+    while (!dir.empty() && (dir.front() == ' ' || dir.front() == '\t'))
+      dir.erase(0, 1);
+    while (!dir.empty() && (dir.back() == '\n' || dir.back() == '\r' || dir.back() == ' '))
+      dir.pop_back();
+    fs::path gitdir(dir);
+    if (gitdir.is_relative()) gitdir = source / gitdir;
+    gitdir = gitdir.lexically_normal();
+    if (gitdir.parent_path().filename() != "worktrees") return {};
+    common = gitdir.parent_path().parent_path();
+  } else {
+    return {};
+  }
+  if (common.filename() != ".git") return {};
+  return engine::test::detail::forward_slashes(common.parent_path().parent_path().string());
+}
+
 // The authoring side's native ten-node supine pair (docs/subsystems/tissue.md, "The supine
-// fixtures"), found by ENGINE_TISSUE_SUPINE_NATIVE or where the owner's machine keeps it, and
-// skipped where it is not: nothing of the packet is committed. Each file is checked against the
-// hash the regression pins before it is read, and copied to the test's own scratch directory
-// first — the packet's directory is never written or run from.
+// fixtures"), found by ENGINE_TISSUE_SUPINE_NATIVE or in the assets repository beside the primary
+// checkout (`game_engine_assets`, found from this tree's git metadata), and skipped where it is
+// not: nothing of the packet is committed. Each file is checked against the hash the regression
+// pins before it is read, and copied to the test's own scratch directory first — the packet's
+// directory is never written or run from.
 std::string supine_root() {
   std::string root = engine::test::detail::environment("ENGINE_TISSUE_SUPINE_NATIVE");
-  if (root.empty())
-    root =
-        "D:/workspace/game_engine_assets/Blender/_handoff/astra-supine-native-reference-2026-09-26";
+  if (root.empty()) {
+    const std::string workspace = workspace_of(ENGINE_SOURCE_DIR);
+    if (!workspace.empty())
+      root = workspace +
+             "/game_engine_assets/Blender/_handoff/astra-supine-native-reference-2026-09-26";
+  }
   return engine::test::path_exists(root) ? root : std::string();
 }
 
@@ -394,6 +436,37 @@ TEST_CASE("tissue: cage derives a runtime cage from the ten-node example, and va
         1);
   CHECK(content({"tissue", "validate", cage, "--nodes", "10"}).exit_code == 2);
   CHECK(content({"tissue", "cage", reference}).exit_code == 2);
+}
+
+TEST_CASE(
+    "tissue: the supine packet's folder is found beside the primary checkout, from a worktree "
+    "too") {
+  // A fake primary checkout and a worktree of it, laid out as git lays them out; no git is run
+  // and nothing outside the scratch directory is read.
+  engine::test::TempDir tmp("content_tissue_workspace");
+  const std::string workspace = engine::test::detail::forward_slashes(tmp.path());
+  const std::string primary = workspace + "/engine";
+  const std::string worktree = primary + "/.claude/worktrees/agent-a1";
+  std::error_code ec;
+  std::filesystem::create_directories(primary + "/.git/worktrees/agent-a1", ec);
+  std::filesystem::create_directories(worktree, ec);
+  REQUIRE(io::write_file(worktree + "/.git", "gitdir: " + primary + "/.git/worktrees/agent-a1\n") ==
+          io::Status::Ok);
+  CHECK(workspace_of(primary) == workspace);
+  CHECK(workspace_of(worktree) == workspace);
+  // A relative gitdir, as `git worktree add --relative-paths` writes it.
+  const std::string relative = primary + "/.claude/worktrees/agent-a2";
+  std::filesystem::create_directories(primary + "/.git/worktrees/agent-a2", ec);
+  std::filesystem::create_directories(relative, ec);
+  REQUIRE(io::write_file(relative + "/.git", "gitdir: ../../../.git/worktrees/agent-a2\r\n") ==
+          io::Status::Ok);
+  CHECK(workspace_of(relative) == workspace);
+  // No checkout, and a `.git` file that names no worktree: nothing.
+  CHECK(workspace_of(workspace + "/nowhere").empty());
+  std::filesystem::create_directories(workspace + "/odd", ec);
+  REQUIRE(io::write_file(workspace + "/odd/.git", "gitdir: " + workspace + "/elsewhere\n") ==
+          io::Status::Ok);
+  CHECK(workspace_of(workspace + "/odd").empty());
 }
 
 TEST_CASE("tissue: settle builds a runtime region as a soft body and settles it under a load") {

@@ -9,16 +9,16 @@
   tools/gpu-lock.ps1 wait    [-Purpose <text>] [-Minutes 30] [-PollSeconds 20] [-TimeoutMinutes 240]
   tools/gpu-lock.ps1 refresh [-Minutes 30]
   tools/gpu-lock.ps1 run -Purpose <text> [-Minutes 10] -Exec "<command line>"
-  ... [-LockFile <path>]
+  ... [-Kind gpu|linux-build] [-LockFile <path>]
 
-  The protocol (D:\workspace\GPU-LOCK.md, also docs/subsystems/bench.md "The GPU lock") is shared
-  with other agents on this machine, so the file and its rules are theirs as much as ours: a JSON
-  file at $env:ENGINE_GPU_LOCK (default D:\workspace\gpu.lock), created atomically, carrying an
-  owner, a purpose and an expiry. An expired lock may be broken; an unexpired one never is; a lock
-  owned by "marc" is never broken by a tool. The implementation is tools/lib/MachineLock.psm1,
-  which tools/linux-build.ps1 uses for its build lock too; -LockFile points this command line at
-  any lock of the same format (`status -LockFile D:\workspace\linux-build.lock` says who is
-  building).
+  The protocol (GPU-LOCK.md in the workspace folder, also docs/subsystems/bench.md "The GPU lock")
+  is shared with other agents on this machine, so the file and its rules are theirs as much as
+  ours: a JSON file at $env:ENGINE_GPU_LOCK (default the protocol's fixed path,
+  Get-MachineLockPath), created atomically, carrying an owner, a purpose and an expiry. An expired
+  lock may be broken; an unexpired one never is; a lock owned by "marc" is never broken by a tool.
+  The implementation is tools/lib/MachineLock.psm1, which tools/linux-build.ps1 uses for its build
+  lock too; -Kind linux-build points this command line at that lock where it is on this machine
+  (`status -Kind linux-build` says who is building), and -LockFile at any lock of the same format.
 
   The lock has a line (docs/subsystems/gpu_lock.md, "The line"): an ask takes a ticket in
   `<lock>.line\` and is served when no live ticket stands before it, in the order of arrival plus
@@ -59,12 +59,15 @@ param(
   [int]$PollSeconds = 20,
   [int]$TimeoutMinutes = 240,
   [string]$Exec = '',
-  [string]$LockFile = ''
+  [string]$LockFile = '',
+  [ValidateSet('gpu', 'linux-build')] [string]$Kind = 'gpu'
 )
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'lib/MachineLock.psm1') -Force
 
-$Lock = if ($LockFile) { $LockFile } else { Get-MachineLockPath -Kind gpu }
+# -Kind names a lock by what it is for, so a command written down names no path of this machine;
+# its path is Get-MachineLockPath's, the one every tool takes it at.
+$Lock = if ($LockFile) { $LockFile } else { Get-MachineLockPath -Kind $Kind }
 if (-not $Owner) { $Owner = Get-MachineLockOwner }
 # `run` refreshes its lease while the command runs, so its lease only bounds what a crash leaves
 # behind and can be short; the one-shot actions cannot refresh and keep the protocol's default.

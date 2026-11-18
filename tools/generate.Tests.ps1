@@ -488,6 +488,47 @@ try {
   [IO.File]::AppendAllText((Join-Path (Join-Path $tripo '2026-01-05') 'alpha-rock.glb'), 'x')
   $r = Invoke-Gen verify -Path $local -LocalRoot $local
   Test-That 'and verify fails an output that no longer matches its sidecar' { $r.Code -ne 0 -and $r.Json[0].status -eq 'failed' -and ($r.Json[0].problems -join ' ') -match 'no longer matches' }
+
+  # The local folder when nothing names it (tools/lib/LocalRoot.psm1, docs/ci/machine-paths.md):
+  # beside the primary checkout, from the primary and from a worktree of it alike. Tested here
+  # because this script is its first user and tools.generate the CTest test it already has.
+  Import-Module (Join-Path $repo 'tools/lib/LocalRoot.psm1') -Force
+  $fake = Join-Path $root 'ws'
+  $primary = Join-Path $fake 'engine'
+  $beside = Join-Path $fake 'engine_local'
+  Test-That 'a named folder wins, then the environment, then the folder beside the primary checkout' {
+    (Resolve-EngineLocalRoot -Explicit (Join-Path $fake 'a') -Environment (Join-Path $fake 'b') -CommonDir (Join-Path $primary '.git')) -eq (Join-Path $fake 'a') -and
+      (Resolve-EngineLocalRoot -Environment (Join-Path $fake 'b') -CommonDir (Join-Path $primary '.git')) -eq (Join-Path $fake 'b') -and
+      (Resolve-EngineLocalRoot -CommonDir (Join-Path $primary '.git')) -eq $beside -and
+      (Resolve-EngineLocalRoot -CommonDir ((Join-Path $primary '.git') + '/')) -eq $beside
+  }
+  Test-That 'a repository with no checkout beside its git directory, or no git at all, has no default' {
+    $null -eq (Resolve-EngineLocalRoot -CommonDir (Join-Path $fake 'engine.git')) -and $null -eq (Resolve-EngineLocalRoot)
+  }
+  $savedLocal = $env:ENGINE_LOCAL_ROOT
+  try {
+    $env:ENGINE_LOCAL_ROOT = ''
+    $git = @('-c', 'user.name=t', '-c', 'user.email=t@example.invalid', '-c', 'core.autocrlf=false')
+    & git init -q $primary 2>&1 | Out-Null
+    & git -C $primary @git commit -q --allow-empty -m init 2>&1 | Out-Null
+    $worktree = Join-Path $primary '.claude/worktrees/agent-a1'
+    & git -C $primary worktree add -q --detach $worktree 2>&1 | Out-Null
+    $fromPrimary = Get-EngineLocalRoot -From $primary
+    $fromWorktree = Get-EngineLocalRoot -From $worktree
+    Test-That 'a real primary checkout and its worktree both find the folder beside the primary' {
+      $fromPrimary -ieq $beside -and $fromWorktree -ieq $beside
+    }
+    $env:ENGINE_LOCAL_ROOT = (Join-Path $fake 'env')
+    Test-That 'and ENGINE_LOCAL_ROOT overrides it' { (Get-EngineLocalRoot -From $worktree) -eq (Join-Path $fake 'env') }
+    $env:ENGINE_LOCAL_ROOT = ''
+    $notGit = Join-Path $fake 'plain'
+    New-Item -ItemType Directory -Force -Path $notGit | Out-Null
+    $refusal = ''
+    try { Get-EngineLocalRoot -From $notGit | Out-Null } catch { $refusal = "$_" }
+    Test-That 'outside a checkout with nothing named, it refuses and says how to name one' { $refusal -match 'ENGINE_LOCAL_ROOT' }
+  } finally {
+    $env:ENGINE_LOCAL_ROOT = $savedLocal
+  }
 }
 finally {
   if ($KeepTemp) { Write-Host "kept $root" } else { Remove-Item -Recurse -Force -LiteralPath $root -ErrorAction SilentlyContinue }

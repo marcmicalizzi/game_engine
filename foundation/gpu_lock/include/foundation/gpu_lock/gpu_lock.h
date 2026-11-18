@@ -12,7 +12,8 @@
 // created atomically (create-new), deleted to release, and carrying an expiry that is the
 // holder's promise: "if I have not released or refreshed by then, treat me as dead". An expired
 // lock may be broken; an unexpired one never; a lock owned by "marc" (a person) never by a tool.
-// The protocol is written once for every tool on the machine in `D:\workspace\GPU-LOCK.md`;
+// The protocol is written once for every tool on the machine in `GPU-LOCK.md`, in the workspace
+// folder beside the lock;
 // `tools/lib/MachineLock.psm1` is the PowerShell implementation and this module is the C++ one.
 // There are those two and no more: the benchmark harness (`foundation/bench`, `--gpu-lock`) and
 // device creation (`device_hold.h`, through `gfx::Device`) both take the lock through here.
@@ -61,8 +62,10 @@ struct Identity {
   std::string host;    // COMPUTERNAME / gethostname; a lock naming another host is never mine
 };
 
-// $ENGINE_GPU_LOCK, else the machine default: `D:\workspace\gpu.lock` on Windows (the path
-// GPU-LOCK.md names) and `/tmp/gpu.lock` elsewhere.
+// $ENGINE_GPU_LOCK, else the machine default: `<workspace>\gpu.lock` on Windows (the path
+// GPU-LOCK.md names, written once in gpu_lock.cpp and once in MachineLock.psm1, never derived
+// from where a checkout is: tools outside the repository and binaries of other commits take the
+// same file) and `/tmp/gpu.lock` elsewhere.
 std::string default_path();
 
 // This process's identity, from the environment.

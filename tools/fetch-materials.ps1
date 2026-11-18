@@ -19,10 +19,10 @@
 
   **No default is hosted yet.** Until the owner hosts one, `$pinnedSource` is empty: pass
   `-Source <zip path or URL> -Expect <sha256>`, for instance the pack tools/pack-materials.ps1 wrote
-  under D:\workspace\game_engine_local\packages\.
+  under the local folder's packages\ (game_engine_local, beside the primary checkout).
 
 .EXAMPLE
-  tools/fetch-materials.ps1 -Source D:\workspace\game_engine_local\packages\materials-palm-2026-10-19.zip -Expect <sha256>
+  tools/fetch-materials.ps1 -Source $env:ENGINE_LOCAL_ROOT\packages\materials-palm-2026-10-19.zip -Expect <sha256>
 #>
 [CmdletBinding()]
 param(
@@ -46,7 +46,7 @@ function Fail([string]$message, [int]$code = 1) {
 if ($Source -eq '') {
   if ($pinnedSource -eq '') {
     Fail ("no default material pack is hosted yet: pass -Source <zip path or URL> -Expect <sha256>, " +
-      "for instance a pack tools/pack-materials.ps1 wrote under D:\workspace\game_engine_local\packages\") 2
+      "for instance a pack tools/pack-materials.ps1 wrote under the local folder's packages\") 2
   }
   $Source = $pinnedSource
 }
