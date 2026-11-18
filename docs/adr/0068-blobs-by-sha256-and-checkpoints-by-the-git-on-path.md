@@ -1,4 +1,4 @@
-# ADR-0067: A document's blobs are named by SHA-256, its checkpoints are commits by the git on PATH, and a rollback is a journaled edit
+# ADR-0068: A document's blobs are named by SHA-256, its checkpoints are commits by the git on PATH, and a rollback is a journaled edit
 
 - **Status:** Proposed
 - **Date:** 2026-11-17
