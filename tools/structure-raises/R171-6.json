@@ -1,11 +1,11 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "R171-6",
-  "reason": "R171 leg 6: renderer.md's account of the sixth leg (the cases by cause, the guide's training, a room whose light moves) and the temporal measure's channel shares on renderer.md and apps.md",
+  "reason": "R171 leg 6: renderer.md's account of the sixth leg (the table of cases with each feature alone, the five by cause, main's three, the pre-roll's bound back to main's, the guide's training by degrees, the guide's mean under the sky, the room whose light was not made to move) and the temporal measure's channel shares on renderer.md and apps.md",
   "date": "2026-11-18",
-  "by": "Marc Micalizzi",
+  "by": "R171-6",
   "deltas": {
-    "page:docs/subsystems/renderer.md": 500,
+    "page:docs/subsystems/renderer.md": 14922,
     "page:docs/subsystems/apps.md": 171
   }
 }
