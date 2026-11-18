@@ -1,11 +1,11 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "A3",
-  "reason": "A3: protocol.md gains the section on several clients of one host (client.hello and client.list, sessions held per client, leases bound to their connection and given back when it drops); apps.md the listener's clients and engine-mcp's hello",
+  "reason": "A3: protocol.md gains the section on several clients of one host (client.hello and client.list, sessions held per client, leases bound to their connection and given back when it drops); apps.md the listener's clients and engine-mcp's hello; joined onto the protocol line: the writes that resolve their caller from the connection, and a transaction held by the connection that began it",
   "date": "2026-11-18",
   "by": "Marc Micalizzi",
   "deltas": {
     "page:docs/subsystems/apps.md": 1005,
-    "page:docs/subsystems/protocol.md": 5914
+    "page:docs/subsystems/protocol.md": 8263
   }
 }
