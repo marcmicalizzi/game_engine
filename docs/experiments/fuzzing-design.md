@@ -61,7 +61,7 @@ Every row marked *checked* above was re-read at its line on this base; the rest 
 - **Paths a file names**: a layer's `file`, a save's unlisted files, record and pack paths — T174's design closes these with one admission function; a fuzz target only checks that it is used.
 - **Not a fuzzing finding, but found here**: the HTTP head's per-wait timeout (a slow client holds the listener); the stdin text mode. They want a test with a fake socket and a line each, not a mutator.
 
-The front door, `domain/protocol`, `apps/engine_host`, `engine_mcp` and `foundation/net` are the other coordinator's ground this wave; their findings are handed to it, not mended from here.
+The front door's findings, in `domain/protocol`, `apps/engine_host`, `engine_mcp` and `foundation/net`, are mended by the reader-defect rows (T187) and, for the paths a client names, by T174's admission function, not from here.
 
 ## 2. The harness: both, with different jobs
 
@@ -118,7 +118,7 @@ The order is by reach first (any role over the protocol, then writers, then the 
 
 **Declined, with the reason**: fuzzing hotload modules (opening a library runs it; the boundary is the operator's command line, and the checks after opening are tested); the shader manifest's `slangc` (a code boundary, closed by trust in the build directory, not by parsing); the Luau console beyond what stage 1 gives (its sandbox and budgets are tested, and a script reaches the engine only through `dispatch_text`).
 
-**The fixes need not wait for the harness.** The reading found about fifteen defects with a line each; each is a small row with its negative case, and the harness then pins the class rather than the instance. Rows proposed (unnumbered): the glTF accessor and depth bounds; the `.clusters` ranges validated at load; `STBI_MAX_DIMENSIONS`; `scatter.count` and the camera path's count; the `f32` read refused past its range; the HTTP head's deadline per request (the other coordinator's ground); a `$parent` cycle refused at load.
+**The fixes need not wait for the harness.** The reading found about fifteen defects with a line each; each is a small row with its negative case, and the harness then pins the class rather than the instance. Rows proposed (unnumbered): the glTF accessor and depth bounds; the `.clusters` ranges validated at load; `STBI_MAX_DIMENSIONS`; `scatter.count` and the camera path's count; the `f32` read refused past its range; the HTTP head's deadline per request (with the front door's other mends, T187); a `$parent` cycle refused at load.
 
 ## Open questions for the owner
 
